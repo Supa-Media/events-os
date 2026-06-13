@@ -208,6 +208,16 @@ export const listForEventModule = query({
         .collect()
     ).sort((a: any, b: any) => a.order - b.order);
 
+    // Map each event role → its assigned person, so an item's owner can be
+    // auto-derived from its role (with an explicit ownerPersonId as override).
+    const assignments = await ctx.db
+      .query("roleAssignments")
+      .withIndex("by_event", (q: any) => q.eq("eventId", eventId))
+      .collect();
+    const roleToPerson = new Map<string, Id<"people">>(
+      assignments.map((a: any) => [a.roleId, a.personId]),
+    );
+
     const items = await Promise.all(
       rawItems.map(async (it: any) => {
         let roleLabel: string | null = null;
@@ -215,12 +225,16 @@ export const listForEventModule = query({
           const role = await ctx.db.get(it.roleId as Id<"roles">);
           roleLabel = role?.label ?? null;
         }
+        // Explicit owner wins; otherwise inherit the person holding the role.
+        const inheritedId = it.roleId ? roleToPerson.get(it.roleId) : undefined;
+        const effectiveOwnerId = it.ownerPersonId ?? inheritedId;
+        const ownerIsInherited = !it.ownerPersonId && !!inheritedId;
         let owner: { _id: Id<"people">; name: string } | null = null;
-        if (it.ownerPersonId) {
-          const person = await ctx.db.get(it.ownerPersonId as Id<"people">);
+        if (effectiveOwnerId) {
+          const person = await ctx.db.get(effectiveOwnerId as Id<"people">);
           if (person) owner = { _id: person._id, name: person.name };
         }
-        return { ...it, roleLabel, owner };
+        return { ...it, roleLabel, owner, ownerIsInherited };
       }),
     );
 

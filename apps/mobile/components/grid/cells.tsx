@@ -270,7 +270,11 @@ function RoleCell({ value, roles, fallbackLabel, editable, onChange }: any) {
 }
 
 // ── Person / owner ─────────────────────────────────────────────────────────────
-function PersonCell({ value, ownerName, editable, onChange }: any) {
+// `ownerName` is the RESOLVED owner (explicit override, or inherited from the
+// role). `inherited` => show it muted/italic to signal it's auto-from-role.
+// `value` is the explicit override id (picker selection); clearing reverts to
+// the role-derived owner.
+function PersonCell({ value, ownerName, inherited, editable, onChange }: any) {
   const [open, setOpen] = useState(false);
   return (
     <>
@@ -279,11 +283,14 @@ function PersonCell({ value, ownerName, editable, onChange }: any) {
         onPress={() => setOpen(true)}
         className="flex-1 flex-row items-center gap-2 px-2 py-1.5 active:opacity-70"
       >
-        {value ? (
+        {ownerName ? (
           <>
-            <Avatar name={ownerName ?? "?"} size={22} />
-            <Text className="text-sm text-ink" numberOfLines={1}>
-              {ownerName ?? "Assigned"}
+            <Avatar name={ownerName} size={22} />
+            <Text
+              className={`text-sm ${inherited ? "italic text-muted" : "text-ink"}`}
+              numberOfLines={1}
+            >
+              {ownerName}
             </Text>
           </>
         ) : (
@@ -401,6 +408,7 @@ export function GridCell(ctx: CellContext) {
         <PersonCell
           value={value}
           ownerName={item.owner?.name}
+          inherited={item.ownerIsInherited}
           editable={editable}
           onChange={onChange}
         />

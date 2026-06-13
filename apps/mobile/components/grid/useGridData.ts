@@ -40,6 +40,8 @@ export interface GridItem {
   // Event-side resolved joins:
   roleLabel?: string | null;
   owner?: { _id: string; name: string } | null;
+  /** True when `owner` was inherited from the role (no explicit override). */
+  ownerIsInherited?: boolean;
 }
 
 /** The logical value backing a column for an item (promoted field or bag entry). */
