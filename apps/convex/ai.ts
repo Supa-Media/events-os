@@ -17,16 +17,19 @@ import {
   internalMutation,
 } from "./_generated/server";
 import { Id } from "./_generated/dataModel";
-import { v } from "convex/values";
+import { v, ConvexError } from "convex/values";
 import {
   requireUserId,
   requireChapterId,
   getChapterIdOrNull,
   requireInChapter,
 } from "./lib/context";
+import { isSuperuser } from "./lib/superuser";
 import {
   AI_BUDGETS,
   AI_BUDGET_WINDOW_MS,
+  AI_MODELS,
+  DEFAULT_AI_MODEL,
   overBudgetScope,
 } from "@events-os/shared";
 
@@ -199,6 +202,72 @@ export const budgetStatus = query({
       org: { spent: toCents(orgSpent), cap: AI_BUDGETS.orgUsd },
       over,
     };
+  },
+});
+
+// ── Public: AI model config (active model + superuser gate) ───────────────────
+/**
+ * The deployment-wide active AI model, the full model menu, and whether the
+ * caller is a superuser (so the client can show an editable picker). The active
+ * model lives in the singleton `aiSettings` row; it falls back to
+ * `DEFAULT_AI_MODEL` if unset or pointing at a model that no longer exists.
+ */
+export const aiConfig = query({
+  args: {},
+  handler: async (
+    ctx,
+  ): Promise<{
+    activeModel: string;
+    isSuperuser: boolean;
+    models: Array<{ slug: string; label: string }>;
+  }> => {
+    const settings = await ctx.db.query("aiSettings").first();
+    const stored = settings?.activeModel;
+    const activeModel =
+      stored && AI_MODELS[stored] ? stored : DEFAULT_AI_MODEL;
+    return {
+      activeModel,
+      isSuperuser: await isSuperuser(ctx),
+      models: Object.values(AI_MODELS).map((m) => ({
+        slug: m.slug,
+        label: m.label,
+      })),
+    };
+  },
+});
+
+/**
+ * Set the deployment-wide active AI model. Superuser-only; rejects unknown
+ * slugs. Upserts the singleton `aiSettings` row.
+ */
+export const setActiveModel = mutation({
+  args: { slug: v.string() },
+  handler: async (ctx, { slug }) => {
+    if (!(await isSuperuser(ctx))) {
+      throw new ConvexError({
+        code: "FORBIDDEN",
+        message: "Only superusers can change the AI model.",
+      });
+    }
+    if (!AI_MODELS[slug]) {
+      throw new ConvexError({ code: "BAD_MODEL", message: "Unknown model." });
+    }
+    const updatedBy = (await requireUserId(ctx)) as Id<"users">;
+    const existing = await ctx.db.query("aiSettings").first();
+    if (existing) {
+      await ctx.db.patch(existing._id, {
+        activeModel: slug,
+        updatedBy,
+        updatedAt: Date.now(),
+      });
+    } else {
+      await ctx.db.insert("aiSettings", {
+        activeModel: slug,
+        updatedBy,
+        updatedAt: Date.now(),
+      });
+    }
+    return null;
   },
 });
 

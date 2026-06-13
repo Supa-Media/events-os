@@ -306,6 +306,17 @@ const schema = defineSchema({
   })
     .index("by_chapter_time", ["chapterId", "createdAt"])
     .index("by_user_time", ["userId", "createdAt"]),
+
+  /**
+   * AI settings — a single-row (singleton) table holding the deployment-wide
+   * active model every run uses. Only superusers can change it. Read via
+   * `.first()`; no index needed.
+   */
+  aiSettings: defineTable({
+    activeModel: v.string(),
+    updatedBy: v.optional(v.id("users")),
+    updatedAt: v.number(),
+  }),
 });
 
 export default schema;

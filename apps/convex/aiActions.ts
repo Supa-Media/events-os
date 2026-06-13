@@ -16,7 +16,7 @@ import { action } from "./_generated/server";
 import { internal, api } from "./_generated/api";
 import { Id } from "./_generated/dataModel";
 import { v, ConvexError } from "convex/values";
-import { DEFAULT_AI_MODEL, aiCostUsd } from "@events-os/shared";
+import { aiCostUsd } from "@events-os/shared";
 
 const OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions";
 
@@ -166,7 +166,9 @@ export const fillSupplyPhotos = action({
       });
     }
 
-    const slug = model ?? DEFAULT_AI_MODEL;
+    // Resolve the model: explicit arg wins, else the deployment's active model.
+    const cfg = await ctx.runQuery(api.ai.aiConfig, {});
+    const slug = model ?? cfg.activeModel;
     const allItems = await ctx.runQuery(internal.ai.suppliesNeedingPhotos, {
       eventId,
     });

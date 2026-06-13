@@ -3,7 +3,7 @@ import { View, Text } from "react-native";
 import { ConvexError } from "convex/values";
 import { useAction, useMutation, useQuery } from "convex/react";
 import { api } from "@events-os/convex/_generated/api";
-import { Button } from "../ui";
+import { Button, Select } from "../ui";
 
 /**
  * "Auto-fill photos" agent trigger for an event's Supplies section.
@@ -32,13 +32,29 @@ export function AiPhotoFill({ eventId }: { eventId: string }) {
   const run = useAction(api.aiActions.fillSupplyPhotos);
   const revert = useMutation(api.ai.revertAiRun);
   const budget = useQuery(api.ai.budgetStatus);
+  const cfg = useQuery(api.ai.aiConfig);
+  const setActiveModel = useMutation(api.ai.setActiveModel);
 
   const [busy, setBusy] = useState(false);
   const [reverting, setReverting] = useState(false);
   const [result, setResult] = useState<Result | null>(null);
+  const [modelError, setModelError] = useState<string | null>(null);
 
   const over = budget?.over ?? null;
   const disabled = busy || reverting || !!over;
+
+  const activeModelLabel =
+    cfg?.models.find((m) => m.slug === cfg.activeModel)?.label ??
+    cfg?.activeModel;
+
+  async function handleModelChange(slug: string) {
+    setModelError(null);
+    try {
+      await setActiveModel({ slug });
+    } catch (err) {
+      setModelError(errorMessage(err));
+    }
+  }
 
   async function handleRun() {
     setBusy(true);
@@ -107,6 +123,23 @@ export function AiPhotoFill({ eventId }: { eventId: string }) {
             ? `AI budget reached (${over})`
             : `AI spend (30d): $${budget.user.spent.toFixed(2)} / $${budget.user.cap}`}
         </Text>
+      ) : null}
+
+      {cfg ? (
+        cfg.isSuperuser ? (
+          <View className="w-44 items-stretch gap-1">
+            <Select
+              value={cfg.activeModel}
+              options={cfg.models.map((m) => ({ value: m.slug, label: m.label }))}
+              onChange={handleModelChange}
+            />
+            {modelError ? (
+              <Text className="text-2xs text-danger">{modelError}</Text>
+            ) : null}
+          </View>
+        ) : (
+          <Text className="text-2xs text-muted">Model: {activeModelLabel}</Text>
+        )
       ) : null}
     </View>
   );
