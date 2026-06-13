@@ -17,6 +17,7 @@
   },
   "dependencies": {
     "@convex-dev/auth": "^0.0.90",
+    "@egjs/hammerjs": "^2.0.17",
     "@events-os/convex": "workspace:*",
     "@events-os/shared": "workspace:*",
     "@expo-google-fonts/corben": "^0.4.1",
@@ -37,6 +38,7 @@
     "expo-splash-screen": "^31.0.13",
     "expo-status-bar": "~3.0.9",
     "expo-updates": "^29.0.15",
+    "hoist-non-react-statics": "^3.3.2",
     "nativewind": "^4",
     "react": "19.1.0",
     "react-dom": "19.1.0",
