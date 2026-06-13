@@ -7,7 +7,19 @@
  * custom columns are all handled here uniformly.
  */
 import { useEffect, useRef, useState } from "react";
-import { View, Text, TextInput, Pressable, Image } from "react-native";
+import {
+  View,
+  Text,
+  TextInput,
+  Pressable,
+  Image,
+  Platform,
+  ActivityIndicator,
+} from "react-native";
+import { useMutation, useQuery } from "convex/react";
+import { api } from "@events-os/convex/_generated/api";
+// expo-image-picker is Expo Go-safe (classified `core`); only used on native.
+import * as ImagePicker from "expo-image-picker";
 import {
   formatDate,
   formatTime,
@@ -343,9 +355,77 @@ function ChipEditCell({ value, editable, onChange, format, placeholder }: any) {
   );
 }
 
-// ── Photo (URL-backed for now; native upload deferred) ────────────────────────
+// ── Photo (Convex file storage upload; legacy URL values still display) ───────
+// The field stores either a Convex `storageId` (new uploads) or a legacy
+// http(s) URL (pasted). Display resolution: a URL is used directly; anything
+// else is treated as a storageId and resolved through `api.storage.getUrl`.
+function isHttpUrl(v: any): boolean {
+  return typeof v === "string" && /^https?:\/\//i.test(v);
+}
+
 function PhotoCell({ value, editable, onChange }: any) {
   const { ref, anchor, visible, open, close } = useAnchor();
+  const [uploading, setUploading] = useState(false);
+  const generateUploadUrl = useMutation(api.storage.generateUploadUrl);
+
+  // Resolve a storageId to a servable URL; skip for empty/URL values.
+  const needsResolve = typeof value === "string" && value.length > 0 && !isHttpUrl(value);
+  const resolvedUrl = useQuery(
+    api.storage.getUrl,
+    needsResolve ? { storageId: value as any } : "skip",
+  );
+  const displayUri = isHttpUrl(value) ? value : needsResolve ? resolvedUrl ?? undefined : undefined;
+
+  // Upload a File (web) or Blob (native) and store the returned storageId.
+  async function uploadBlob(blob: Blob, contentType: string) {
+    setUploading(true);
+    try {
+      const uploadUrl = await generateUploadUrl();
+      const res = await fetch(uploadUrl, {
+        method: "POST",
+        headers: { "Content-Type": contentType },
+        body: blob,
+      });
+      const { storageId } = await res.json();
+      onChange(storageId);
+    } catch {
+      // Swallow; cell simply stays unchanged on failure.
+    } finally {
+      setUploading(false);
+    }
+  }
+
+  // WEB: DOM file input → File (already a Blob).
+  function pickWeb() {
+    const input = document.createElement("input");
+    input.type = "file";
+    input.accept = "image/*";
+    input.onchange = () => {
+      const file = input.files?.[0];
+      if (file) void uploadBlob(file, file.type || "image/jpeg");
+    };
+    input.click();
+  }
+
+  // NATIVE: expo-image-picker → asset uri → fetch into a Blob.
+  async function pickNative() {
+    const result = await ImagePicker.launchImageLibraryAsync({
+      mediaTypes: ImagePicker.MediaTypeOptions.Images,
+      quality: 0.9,
+    });
+    if (result.canceled || !result.assets?.length) return;
+    const asset = result.assets[0];
+    const resp = await fetch(asset.uri);
+    const blob = await resp.blob();
+    await uploadBlob(blob, asset.mimeType || blob.type || "image/jpeg");
+  }
+
+  function pickImage() {
+    close();
+    if (Platform.OS === "web") pickWeb();
+    else void pickNative();
+  }
+
   return (
     <>
       <Pressable
@@ -354,9 +434,11 @@ function PhotoCell({ value, editable, onChange }: any) {
         onPress={open}
         className="flex-1 px-2 py-1.5 active:opacity-70"
       >
-        {value ? (
+        {uploading ? (
+          <ActivityIndicator size="small" color={colors.faint} />
+        ) : displayUri ? (
           <Image
-            source={{ uri: value }}
+            source={{ uri: displayUri }}
             style={{ width: 34, height: 34, borderRadius: 6, backgroundColor: colors.sunken }}
           />
         ) : (
@@ -364,12 +446,21 @@ function PhotoCell({ value, editable, onChange }: any) {
         )}
       </Pressable>
       <Popover visible={visible} onClose={close} anchor={anchor} width={280}>
-        <View className="p-2">
+        <View className="gap-2 p-2">
+          <Pressable
+            onPress={pickImage}
+            className="flex-row items-center gap-2 rounded-md bg-sunken px-3 py-2 active:opacity-70"
+          >
+            <Icon name="image" size={16} color={colors.muted} />
+            <Text className="text-sm font-medium text-ink">Upload photo…</Text>
+          </Pressable>
           <InlineText
-            value={value}
-            placeholder="Paste image URL"
-            autoFocus
-            onCommit={(t) => { onChange(t && t.trim() ? t.trim() : null); }}
+            value={isHttpUrl(value) ? value : ""}
+            placeholder="…or paste image URL"
+            onCommit={(t) => {
+              close();
+              onChange(t && t.trim() ? t.trim() : null);
+            }}
           />
         </View>
       </Popover>

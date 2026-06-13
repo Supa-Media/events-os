@@ -40,6 +40,13 @@ module.exports = ({ config }) => ({
   },
   plugins: [
     "expo-router",
+    [
+      "expo-image-picker",
+      {
+        photosPermission:
+          "Allow Events OS to access your photos so you can attach images.",
+      },
+    ],
   ],
   extra: {
     eas: {

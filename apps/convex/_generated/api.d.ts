@@ -21,6 +21,7 @@ import type * as people from "../people.js";
 import type * as roleAssignments from "../roleAssignments.js";
 import type * as roles from "../roles.js";
 import type * as seed from "../seed.js";
+import type * as storage from "../storage.js";
 
 import type {
   ApiFromModules,
@@ -42,6 +43,7 @@ declare const fullApi: ApiFromModules<{
   roleAssignments: typeof roleAssignments;
   roles: typeof roles;
   seed: typeof seed;
+  storage: typeof storage;
 }>;
 
 /**

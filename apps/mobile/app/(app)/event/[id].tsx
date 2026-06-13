@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { View, Text, Pressable, Alert, useWindowDimensions } from "react-native";
+import { View, Text, Pressable, Alert, TextInput } from "react-native";
 import { Stack, useRouter, useLocalSearchParams } from "expo-router";
 import { useQuery, useMutation } from "convex/react";
 import { api } from "@events-os/convex/_generated/api";
@@ -32,8 +32,6 @@ export default function EventDetailScreen() {
   const router = useRouter();
   const { id } = useLocalSearchParams<{ id: string }>();
   const eventId = id as any;
-  const { width } = useWindowDimensions();
-  const desktop = width >= 960;
 
   const data = useQuery(api.events.get, { eventId });
   const roleRows = useQuery(api.roleAssignments.listForEvent, { eventId });
@@ -152,106 +150,6 @@ export default function EventDetailScreen() {
     ]);
   }
 
-  // ── Main column: per-module editable grids ─────────────────────────────────
-  const grids = (
-    <View>
-      {activeModules.length === 0 ? (
-        <Card padding="lg">
-          <Text className="text-base text-muted">
-            This event type has no planning modules enabled.
-          </Text>
-        </Card>
-      ) : (
-        activeModules.map((m: ModuleKey) => (
-          <View key={m}>
-            <SectionHeader title={MODULE_LABELS[m]} />
-            <EditableGrid
-              mode="event"
-              parentId={eventId}
-              module={m}
-              roles={chapterRoles}
-              eventDate={event.eventDate}
-              addLabel={`Add ${MODULE_LABELS[m].toLowerCase()} row`}
-            />
-          </View>
-        ))
-      )}
-    </View>
-  );
-
-  // ── Side rail: roles, status, schedule, budget, danger ─────────────────────
-  const sidePanel = (
-    <View className="gap-5">
-      <RolesPanel
-        roles={roleRows}
-        onAssign={(roleId, roleLabel, selectedId) =>
-          setPicker({ roleId, roleLabel, selectedId })
-        }
-        onClear={(roleId) => unassignRole({ eventId, roleId: roleId as any })}
-      />
-
-      <View>
-        <SectionHeader title="Status" />
-        <View className="flex-row flex-wrap gap-2">
-          {EVENT_STATUSES.map((s) => (
-            <StatusChip
-              key={s}
-              label={EVENT_STATUS_LABELS[s]}
-              tone={statusTone(s)}
-              selected={event.status === s}
-              onPress={() => setStatus({ eventId, status: s })}
-            />
-          ))}
-        </View>
-      </View>
-
-      <View>
-        <SectionHeader title="Schedule" />
-        <Card padding="md">
-          <TextField
-            label="Event date"
-            value={dateValue}
-            onChangeText={setDateInput}
-            placeholder="YYYY-MM-DD"
-            autoCapitalize="none"
-            hint="Moving the date reflows every due date."
-          />
-          <Button
-            title="Save date"
-            icon="calendar"
-            onPress={handleReschedule}
-            disabled={parseDateInput(dateValue) === null}
-          />
-        </Card>
-      </View>
-
-      <View>
-        <SectionHeader title="Budget" />
-        <Card padding="md">
-          <TextField
-            label="Budget"
-            value={budgetValue}
-            onChangeText={setBudgetInput}
-            placeholder="0"
-            keyboardType="numeric"
-            hint="Leave blank to clear."
-          />
-          <Button title="Save budget" icon="check" onPress={handleSaveBudget} />
-        </Card>
-      </View>
-
-      <View>
-        <SectionHeader title="Danger zone" />
-        <Button
-          title="Delete event"
-          icon="trash-2"
-          variant="danger"
-          onPress={confirmDelete}
-        />
-      </View>
-    </View>
-  );
-
   return (
     <>
       <Stack.Screen options={{ headerShown: false }} />
@@ -266,7 +164,7 @@ export default function EventDetailScreen() {
         </Pressable>
 
         {/* Workspace header */}
-        <Card className="mb-6">
+        <Card className="mb-4">
           <View className="flex-row items-center gap-5">
             <ReadinessRing value={readiness} size={84} />
             <View className="flex-1 gap-2">
@@ -304,11 +202,140 @@ export default function EventDetailScreen() {
           </View>
         </Card>
 
-        {/* Body: module grids + side rail */}
-        <View className={desktop ? "flex-row items-start gap-6" : "gap-6"}>
-          <View className={desktop ? "flex-1" : ""}>{grids}</View>
-          <View className={desktop ? "w-80" : ""}>{sidePanel}</View>
-        </View>
+        {/* Compact horizontal controls strip */}
+        <Card padding="md" className="mb-6">
+          <View className="flex-row flex-wrap items-start gap-x-6 gap-y-4">
+            {/* Roles — inline pills */}
+            <ControlBlock label="Roles" count={roleRows.length || undefined}>
+              {roleRows.length === 0 ? (
+                <Text className="text-sm text-faint">No roles</Text>
+              ) : (
+                <View className="flex-row flex-wrap gap-2">
+                  {roleRows.map((r) => (
+                    <RoleChip
+                      key={r.roleId}
+                      role={r}
+                      onPress={() =>
+                        setPicker({
+                          roleId: r.roleId,
+                          roleLabel: r.roleLabel,
+                          selectedId: r.person?._id ?? null,
+                        })
+                      }
+                    />
+                  ))}
+                </View>
+              )}
+            </ControlBlock>
+
+            {/* Status — inline chips */}
+            <ControlBlock label="Status">
+              <View className="flex-row flex-wrap gap-2">
+                {EVENT_STATUSES.map((s) => (
+                  <StatusChip
+                    key={s}
+                    label={EVENT_STATUS_LABELS[s]}
+                    tone={statusTone(s)}
+                    selected={event.status === s}
+                    onPress={() => setStatus({ eventId, status: s })}
+                  />
+                ))}
+              </View>
+            </ControlBlock>
+
+            {/* Schedule — inline date field */}
+            <ControlBlock label="Schedule">
+              <View className="flex-row items-center gap-2">
+                <InlineInput
+                  value={dateValue}
+                  onChangeText={setDateInput}
+                  onBlur={handleReschedule}
+                  placeholder="YYYY-MM-DD"
+                  autoCapitalize="none"
+                  width={120}
+                />
+                <Button
+                  title="Save"
+                  icon="calendar"
+                  size="sm"
+                  variant="secondary"
+                  onPress={handleReschedule}
+                  disabled={parseDateInput(dateValue) === null}
+                />
+              </View>
+              <Text className="mt-1 text-2xs text-faint">Reflows due dates.</Text>
+            </ControlBlock>
+
+            {/* Budget — inline numeric field */}
+            <ControlBlock label="Budget">
+              <View className="flex-row items-center gap-2">
+                <InlineInput
+                  value={budgetValue}
+                  onChangeText={setBudgetInput}
+                  onBlur={handleSaveBudget}
+                  placeholder="0"
+                  keyboardType="numeric"
+                  width={80}
+                />
+                <Button
+                  title="Save"
+                  icon="check"
+                  size="sm"
+                  variant="secondary"
+                  onPress={handleSaveBudget}
+                />
+              </View>
+              <Text className="mt-1 text-2xs text-faint">Blank clears.</Text>
+            </ControlBlock>
+
+            {/* Danger — delete affordance */}
+            <ControlBlock label="Danger">
+              <Button
+                title="Delete"
+                icon="trash-2"
+                size="sm"
+                variant="danger"
+                onPress={confirmDelete}
+              />
+            </ControlBlock>
+          </View>
+        </Card>
+
+        {/* Module grids — full width */}
+        {activeModules.length === 0 ? (
+          <Card padding="lg">
+            <Text className="text-base text-muted">
+              This event type has no planning modules enabled.
+            </Text>
+          </Card>
+        ) : (
+          activeModules.map((m: ModuleKey) => (
+            <View key={m}>
+              <SectionHeader
+                title={MODULE_LABELS[m]}
+                right={
+                  m === "supplies" ? (
+                    <Button
+                      title="Packing mode"
+                      icon="package"
+                      size="sm"
+                      variant="secondary"
+                      onPress={() => router.push(`/event/${eventId}/packing`)}
+                    />
+                  ) : undefined
+                }
+              />
+              <EditableGrid
+                mode="event"
+                parentId={eventId}
+                module={m}
+                roles={chapterRoles}
+                eventDate={event.eventDate}
+                addLabel={`Add ${MODULE_LABELS[m].toLowerCase()} row`}
+              />
+            </View>
+          ))
+        )}
       </Screen>
 
       <PersonPicker
@@ -350,6 +377,84 @@ function Meta({ icon, text }: { icon: any; text: string }) {
   );
 }
 
+/** A compact labelled block in the horizontal controls strip. */
+function ControlBlock({
+  label,
+  count,
+  children,
+}: {
+  label: string;
+  count?: number;
+  children: React.ReactNode;
+}) {
+  return (
+    <View className="gap-2">
+      <View className="flex-row items-baseline gap-1.5">
+        <Text className="text-2xs font-bold uppercase tracking-wider text-muted">
+          {label}
+        </Text>
+        {count !== undefined ? (
+          <Text className="text-2xs font-semibold text-faint">{count}</Text>
+        ) : null}
+      </View>
+      {children}
+    </View>
+  );
+}
+
+/** A small bordered text input for the controls strip (no label/hint chrome). */
+function InlineInput({
+  width,
+  ...inputProps
+}: React.ComponentProps<typeof TextInput> & { width: number }) {
+  const [focused, setFocused] = useState(false);
+  const border = focused ? "border-accent" : "border-border-strong";
+  return (
+    <TextInput
+      placeholderTextColor={colors.faint}
+      onFocus={() => setFocused(true)}
+      onBlur={(e) => {
+        setFocused(false);
+        inputProps.onBlur?.(e);
+      }}
+      style={{ width }}
+      className={`rounded-md border ${border} bg-raised px-2.5 py-1.5 text-sm text-ink`}
+      {...inputProps}
+    />
+  );
+}
+
+type RoleRow = {
+  roleId: string;
+  roleLabel: string;
+  person: { _id: string; name: string } | null;
+};
+
+/** A compact inline pill for one role: label + assigned person or "Assign". */
+function RoleChip({ role, onPress }: { role: RoleRow; onPress: () => void }) {
+  return (
+    <Pressable
+      onPress={onPress}
+      className="flex-row items-center gap-2 rounded-pill border border-border bg-sunken px-2.5 py-1.5 active:opacity-80 web:hover:border-border-strong"
+    >
+      <Text className="text-2xs font-bold uppercase tracking-wider text-muted">
+        {role.roleLabel}
+      </Text>
+      {role.person ? (
+        <View className="flex-row items-center gap-1.5">
+          <Avatar name={role.person.name} size={18} />
+          <Text className="text-sm text-ink">{role.person.name}</Text>
+        </View>
+      ) : (
+        <View className="flex-row items-center gap-1">
+          <Icon name="user-plus" size={13} color={colors.muted} />
+          <Text className="text-sm text-faint">Assign</Text>
+        </View>
+      )}
+    </Pressable>
+  );
+}
+
 function StatusChip({
   label,
   tone,
@@ -379,75 +484,5 @@ function StatusChip({
         {label}
       </Text>
     </Pressable>
-  );
-}
-
-type RoleRow = {
-  roleId: string;
-  roleLabel: string;
-  person: { _id: string; name: string } | null;
-};
-
-function RolesPanel({
-  roles,
-  onAssign,
-  onClear,
-}: {
-  roles: RoleRow[];
-  onAssign: (roleId: string, roleLabel: string, selectedId: string | null) => void;
-  onClear: (roleId: string) => void;
-}) {
-  return (
-    <View>
-      <SectionHeader title="Roles" count={roles.length || undefined} />
-      {roles.length === 0 ? (
-        <Card padding="md">
-          <Text className="text-base text-muted">This event type has no roles.</Text>
-        </Card>
-      ) : (
-        <Card padding="none">
-          {roles.map((r, i) => (
-            <View
-              key={r.roleId}
-              className={`flex-row items-center justify-between px-4 py-3 ${
-                i < roles.length - 1 ? "border-b border-border" : ""
-              }`}
-            >
-              <View className="flex-1">
-                <Text className="text-2xs font-bold uppercase tracking-wider text-muted">
-                  {r.roleLabel}
-                </Text>
-                <View className="mt-1.5 flex-row items-center gap-2">
-                  {r.person ? (
-                    <>
-                      <Avatar name={r.person.name} size={22} />
-                      <Text className="text-base text-ink">{r.person.name}</Text>
-                    </>
-                  ) : (
-                    <Text className="text-base text-faint">Unassigned</Text>
-                  )}
-                </View>
-              </View>
-              {r.person ? (
-                <Button
-                  title="Clear"
-                  size="sm"
-                  variant="ghost"
-                  onPress={() => onClear(r.roleId)}
-                />
-              ) : (
-                <Button
-                  title="Assign"
-                  icon="user-plus"
-                  size="sm"
-                  variant="secondary"
-                  onPress={() => onAssign(r.roleId, r.roleLabel, null)}
-                />
-              )}
-            </View>
-          ))}
-        </Card>
-      )}
-    </View>
   );
 }

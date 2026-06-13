@@ -11,6 +11,7 @@
     "expo-notifications",
     "expo-device",
     "expo-font",
+    "expo-image-picker",
     "expo-splash-screen",
     "@expo/vector-icons",
     "@expo/metro-runtime",
