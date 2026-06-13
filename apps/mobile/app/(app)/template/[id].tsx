@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
-import { View, Text, StyleSheet, Pressable } from "react-native";
-import { Stack, useRouter, useLocalSearchParams } from "expo-router";
+import { View, Text } from "react-native";
+import { useLocalSearchParams, useRouter } from "expo-router";
 import { useQuery, useMutation } from "convex/react";
 import { api } from "@events-os/convex/_generated/api";
 import {
@@ -11,492 +11,360 @@ import {
   Pill,
   TextField,
   SectionHeader,
+  EmptyState,
 } from "../../../components/ui";
-import { colors, radius, spacing } from "../../../lib/theme";
+import { EditableGrid } from "../../../components/grid/EditableGrid";
 import {
-  ROLE_KEYS,
-  ROLE_LABELS,
+  MODULE_LABELS,
+  COMPONENT_KEYS,
   COMPONENT_LABELS,
-  type RoleKey,
+  CORE_COMPONENTS,
+  LARGER_EVENT_COMPONENTS,
+  type ModuleKey,
   type ComponentKey,
 } from "@events-os/shared";
+import type { Id } from "@events-os/convex/_generated/dataModel";
 
+/**
+ * TEMPLATE EDITOR — author a reusable event template on the unified-items model.
+ *
+ * Edits the template's metadata, its active roles + components, and (for each
+ * active list-backed module) embeds an EditableGrid of base items. All edits
+ * save eagerly (toggles immediately, text fields on blur when dirty).
+ */
 export default function TemplateEditorScreen() {
   const router = useRouter();
   const { id } = useLocalSearchParams<{ id: string }>();
-  const eventTypeId = id as any;
+  const eventTypeId = id as Id<"eventTypes">;
 
   const data = useQuery(api.eventTypes.get, { eventTypeId });
-  const update = useMutation(api.eventTypes.update);
+  const allRoles = useQuery(api.roles.list);
+  const updateTemplate = useMutation(api.eventTypes.update);
 
-  if (data === undefined) {
-    return (
-      <>
-        <Stack.Screen options={{ headerShown: true, title: "Template" }} />
-        <Screen loading />
-      </>
-    );
-  }
+  if (data === undefined) return <Screen loading />;
 
   if (data === null) {
     return (
-      <>
-        <Stack.Screen options={{ headerShown: true, title: "Template" }} />
-        <Screen>
-          <Text style={styles.muted}>This template no longer exists.</Text>
-          <Button title="Back" variant="secondary" onPress={() => router.back()} />
-        </Screen>
-      </>
+      <Screen>
+        <EmptyState
+          icon="inbox"
+          title="Template not found"
+          message="This template no longer exists."
+          action={
+            <Button title="Back to pipeline" variant="secondary" onPress={() => router.back()} />
+          }
+        />
+      </Screen>
     );
   }
 
-  const { eventType, tasks, runOfShow } = data;
+  const { eventType, roles: activeRoles, modules } = data;
+  // The grid wants the full chapter role list (id + label); [] while loading.
+  const chapterRoles = (allRoles ?? []).map((r) => ({ _id: r._id, label: r.label }));
+  const activeRoleIds = (eventType.activeRoleIds ?? []) as string[];
+  const activeComponents = (eventType.activeComponents ?? []) as string[];
 
   return (
-    <>
-      <Stack.Screen options={{ headerShown: true, title: eventType.name }} />
-      <Screen>
-        <View style={styles.versionRow}>
-          <Badge label={`v${eventType.version}`} />
-        </View>
+    <Screen>
+      <NameEditor
+        key={eventType._id}
+        name={eventType.name}
+        version={eventType.version}
+        onSave={(name) => updateTemplate({ eventTypeId, name })}
+        onStart={() => router.push(`/event/new?templateId=${eventTypeId}`)}
+      />
 
-        <MetaEditor
-          key={eventType._id}
-          name={eventType.name}
-          description={eventType.description ?? ""}
-          onSave={(name, description) =>
-            update({ eventTypeId, name, description })
-          }
-        />
+      <DescriptionEditor
+        key={`desc-${eventType._id}`}
+        description={eventType.description ?? ""}
+        onSave={(description) => updateTemplate({ eventTypeId, description })}
+      />
 
-        {/* Roles + components (read-only) */}
-        <SectionHeader title="Roles" />
-        <View style={styles.pillWrap}>
-          {(eventType.roles as string[]).map((r) => (
-            <Pill key={r} label={ROLE_LABELS[r as RoleKey] ?? r} />
-          ))}
-        </View>
+      <RolesCard
+        activeRoles={activeRoles as Array<{ _id: string; label: string }>}
+        activeRoleIds={activeRoleIds}
+        chapterRoles={allRoles ?? []}
+        onToggleRole={(roleId) => {
+          const next = activeRoleIds.includes(roleId)
+            ? activeRoleIds.filter((r) => r !== roleId)
+            : [...activeRoleIds, roleId];
+          updateTemplate({
+            eventTypeId,
+            activeRoleIds: next as Id<"roles">[],
+          });
+        }}
+      />
 
-        <SectionHeader title="Components" />
-        <View style={styles.pillWrap}>
-          {(eventType.activeComponents as string[]).map((c) => (
-            <Pill key={c} label={COMPONENT_LABELS[c as ComponentKey] ?? c} />
-          ))}
-        </View>
+      <ComponentsCard
+        activeComponents={activeComponents}
+        onToggle={(component) => {
+          const next = activeComponents.includes(component)
+            ? activeComponents.filter((c) => c !== component)
+            : [...activeComponents, component];
+          updateTemplate({ eventTypeId, activeComponents: next });
+        }}
+      />
 
-        {/* Tasks */}
-        <TasksEditor eventTypeId={eventTypeId} tasks={tasks} />
-
-        {/* Run of show */}
-        <RunOfShowEditor eventTypeId={eventTypeId} rows={runOfShow} />
-
-        <View style={styles.startWrap}>
-          <Button
-            title="Start an event from this template"
-            onPress={() => router.push(`/event/new?templateId=${eventType._id}`)}
+      {modules.length === 0 ? (
+        <View className="mt-6">
+          <EmptyState
+            icon="layout"
+            title="No modules active"
+            message="Turn on a list-backed component above (Planning Doc, Supplies, Comms, or Run of Show) to start building."
           />
         </View>
-      </Screen>
-    </>
+      ) : (
+        modules.map((m: ModuleKey) => (
+          <View key={m}>
+            <SectionHeader title={MODULE_LABELS[m]} />
+            <EditableGrid
+              mode="template"
+              parentId={eventTypeId}
+              module={m}
+              roles={chapterRoles}
+              addLabel={`Add ${MODULE_LABELS[m].toLowerCase()} row`}
+            />
+          </View>
+        ))
+      )}
+    </Screen>
   );
 }
 
-/* ── Name / description ─────────────────────────────────────────────────── */
+/* ── Name + version + start ─────────────────────────────────────────────── */
 
-function MetaEditor({
+function NameEditor({
   name,
-  description,
+  version,
   onSave,
+  onStart,
 }: {
   name: string;
-  description: string;
-  onSave: (name: string, description: string) => Promise<unknown>;
+  version: number;
+  onSave: (name: string) => Promise<unknown>;
+  onStart: () => void;
 }) {
-  const [localName, setLocalName] = useState(name);
-  const [localDesc, setLocalDesc] = useState(description);
+  const [local, setLocal] = useState(name);
+  useEffect(() => setLocal(name), [name]);
 
-  // Re-sync if the server value changes underneath us.
-  useEffect(() => {
-    setLocalName(name);
-    setLocalDesc(description);
-  }, [name, description]);
-
-  const dirty = localName.trim() !== name || localDesc !== description;
-
-  return (
-    <Card>
-      <TextField label="Name" value={localName} onChangeText={setLocalName} />
-      <TextField
-        label="Description"
-        value={localDesc}
-        onChangeText={setLocalDesc}
-        placeholder="What is this template for?"
-        multiline
-      />
-      <Button
-        title="Save details"
-        size="sm"
-        variant="secondary"
-        disabled={!dirty || !localName.trim()}
-        onPress={() => onSave(localName.trim(), localDesc)}
-      />
-    </Card>
-  );
-}
-
-/* ── Tasks editor ───────────────────────────────────────────────────────── */
-
-function TasksEditor({
-  eventTypeId,
-  tasks,
-}: {
-  eventTypeId: string;
-  tasks: any[];
-}) {
-  const addTask = useMutation(api.eventTypes.addTask);
-  const reorder = useMutation(api.eventTypes.reorderTasks);
-
-  const [newTitle, setNewTitle] = useState("");
-  const [newOffset, setNewOffset] = useState("7");
-  const [newRole, setNewRole] = useState<RoleKey>("event_lead");
-
-  async function handleAdd() {
-    const title = newTitle.trim();
-    const offset = parseInt(newOffset, 10);
-    if (!title || Number.isNaN(offset)) return;
-    await addTask({
-      eventTypeId: eventTypeId as any,
-      title,
-      tMinusOffsetDays: offset,
-      owningRole: newRole,
-    });
-    setNewTitle("");
-    setNewOffset("7");
-  }
-
-  function move(index: number, dir: -1 | 1) {
-    const target = index + dir;
-    if (target < 0 || target >= tasks.length) return;
-    const ids = tasks.map((t) => t._id);
-    [ids[index], ids[target]] = [ids[target], ids[index]];
-    reorder({ eventTypeId: eventTypeId as any, orderedIds: ids });
+  function save() {
+    const trimmed = local.trim();
+    if (trimmed && trimmed !== name) onSave(trimmed);
+    else if (!trimmed) setLocal(name);
   }
 
   return (
-    <>
-      <SectionHeader title={`Tasks (${tasks.length})`} />
-      <View style={styles.list}>
-        {tasks.map((t, i) => (
-          <TaskEditorRow
-            key={t._id}
-            task={t}
-            isFirst={i === 0}
-            isLast={i === tasks.length - 1}
-            onUp={() => move(i, -1)}
-            onDown={() => move(i, 1)}
-          />
-        ))}
+    <View className="mb-6 flex-row items-start justify-between gap-4">
+      <View className="flex-1">
+        <Text className="mb-1 text-xs font-bold uppercase tracking-wider text-accent">
+          Template
+        </Text>
+        <TextField value={local} onChangeText={setLocal} onBlur={save} placeholder="Template name" />
       </View>
-
-      {/* Add task */}
-      <Card style={styles.addCard}>
-        <TextField
-          label="New task"
-          placeholder="Task title"
-          value={newTitle}
-          onChangeText={setNewTitle}
-        />
-        <View style={styles.inlineRow}>
-          <View style={styles.offsetField}>
-            <TextField
-              label="T-minus days"
-              value={newOffset}
-              onChangeText={setNewOffset}
-              keyboardType="number-pad"
-            />
-          </View>
-        </View>
-        <Text style={styles.fieldLabel}>Owning role</Text>
-        <RolePicker value={newRole} onChange={setNewRole} />
-        <Button
-          title="+ Add task"
-          size="sm"
-          onPress={handleAdd}
-          disabled={!newTitle.trim()}
-        />
-      </Card>
-    </>
-  );
-}
-
-function TaskEditorRow({
-  task,
-  isFirst,
-  isLast,
-  onUp,
-  onDown,
-}: {
-  task: any;
-  isFirst: boolean;
-  isLast: boolean;
-  onUp: () => void;
-  onDown: () => void;
-}) {
-  const updateTask = useMutation(api.eventTypes.updateTask);
-  const removeTask = useMutation(api.eventTypes.removeTask);
-
-  const [title, setTitle] = useState(task.title);
-  const [offset, setOffset] = useState(String(task.tMinusOffsetDays));
-
-  useEffect(() => {
-    setTitle(task.title);
-    setOffset(String(task.tMinusOffsetDays));
-  }, [task.title, task.tMinusOffsetDays]);
-
-  function saveTitle() {
-    const t = title.trim();
-    if (t && t !== task.title) {
-      updateTask({ templateTaskId: task._id, title: t });
-    }
-  }
-
-  function saveOffset() {
-    const n = parseInt(offset, 10);
-    if (!Number.isNaN(n) && n !== task.tMinusOffsetDays) {
-      updateTask({ templateTaskId: task._id, tMinusOffsetDays: n });
-    }
-  }
-
-  return (
-    <Card>
-      <TextField
-        value={title}
-        onChangeText={setTitle}
-        onBlur={saveTitle}
-        placeholder="Task title"
-      />
-      <View style={styles.inlineRow}>
-        <View style={styles.offsetField}>
-          <TextField
-            label="T-minus days"
-            value={offset}
-            onChangeText={setOffset}
-            onBlur={saveOffset}
-            keyboardType="number-pad"
-          />
-        </View>
+      <View className="flex-row items-center gap-3 pt-1">
+        <Badge label={`v${version}`} />
+        <Button title="Start an event" icon="play" onPress={onStart} />
       </View>
-      <Text style={styles.fieldLabel}>Owning role</Text>
-      <RolePicker
-        value={task.owningRole}
-        onChange={(role) =>
-          updateTask({ templateTaskId: task._id, owningRole: role })
-        }
-      />
-      <View style={styles.taskActions}>
-        <View style={styles.reorder}>
-          <SquareBtn label="↑" disabled={isFirst} onPress={onUp} />
-          <SquareBtn label="↓" disabled={isLast} onPress={onDown} />
-        </View>
-        <Button
-          title="Remove"
-          size="sm"
-          variant="ghost"
-          onPress={() => removeTask({ templateTaskId: task._id })}
-        />
-      </View>
-    </Card>
-  );
-}
-
-/* ── Run of show editor ─────────────────────────────────────────────────── */
-
-function RunOfShowEditor({
-  eventTypeId,
-  rows,
-}: {
-  eventTypeId: string;
-  rows: any[];
-}) {
-  const addRow = useMutation(api.eventTypes.addRunOfShowRow);
-  const removeRow = useMutation(api.eventTypes.removeRunOfShowRow);
-
-  const [offset, setOffset] = useState("0");
-  const [segment, setSegment] = useState("");
-  const [role, setRole] = useState<RoleKey | "">("");
-  const [notes, setNotes] = useState("");
-
-  async function handleAdd() {
-    const seg = segment.trim();
-    const off = parseInt(offset, 10);
-    if (!seg || Number.isNaN(off)) return;
-    await addRow({
-      eventTypeId: eventTypeId as any,
-      offsetMinutes: off,
-      segment: seg,
-      owningRole: role || undefined,
-      notes: notes.trim() || undefined,
-    });
-    setOffset("0");
-    setSegment("");
-    setRole("");
-    setNotes("");
-  }
-
-  return (
-    <>
-      <SectionHeader title={`Run of Show (${rows.length})`} />
-      <View style={styles.list}>
-        {rows.map((r) => (
-          <Card key={r._id}>
-            <View style={styles.rosRow}>
-              <Text style={styles.rosOffset}>
-                {r.offsetMinutes >= 0 ? `+${r.offsetMinutes}` : r.offsetMinutes}m
-              </Text>
-              <View style={styles.rosBody}>
-                <Text style={styles.rosSegment}>{r.segment}</Text>
-                {r.owningRole ? (
-                  <Text style={styles.muted}>
-                    {ROLE_LABELS[r.owningRole as RoleKey] ?? r.owningRole}
-                  </Text>
-                ) : null}
-                {r.notes ? <Text style={styles.muted}>{r.notes}</Text> : null}
-              </View>
-              <Button
-                title="Remove"
-                size="sm"
-                variant="ghost"
-                onPress={() => removeRow({ rowId: r._id })}
-              />
-            </View>
-          </Card>
-        ))}
-      </View>
-
-      <Card style={styles.addCard}>
-        <View style={styles.inlineRow}>
-          <View style={styles.offsetField}>
-            <TextField
-              label="Offset (min)"
-              value={offset}
-              onChangeText={setOffset}
-              keyboardType="numbers-and-punctuation"
-            />
-          </View>
-        </View>
-        <TextField
-          label="Segment"
-          placeholder="e.g. Doors open"
-          value={segment}
-          onChangeText={setSegment}
-        />
-        <Text style={styles.fieldLabel}>Owning role (optional)</Text>
-        <View style={styles.pillWrap}>
-          <Pill label="None" selected={role === ""} onPress={() => setRole("")} />
-          {ROLE_KEYS.map((r) => (
-            <Pill
-              key={r}
-              label={ROLE_LABELS[r]}
-              selected={role === r}
-              onPress={() => setRole(r)}
-            />
-          ))}
-        </View>
-        <TextField
-          label="Notes (optional)"
-          value={notes}
-          onChangeText={setNotes}
-          placeholder="Anything to flag"
-        />
-        <Button
-          title="+ Add row"
-          size="sm"
-          onPress={handleAdd}
-          disabled={!segment.trim()}
-        />
-      </Card>
-    </>
-  );
-}
-
-/* ── Shared bits ────────────────────────────────────────────────────────── */
-
-function RolePicker({
-  value,
-  onChange,
-}: {
-  value: string;
-  onChange: (role: RoleKey) => void;
-}) {
-  return (
-    <View style={styles.pillWrap}>
-      {ROLE_KEYS.map((r) => (
-        <Pill
-          key={r}
-          label={ROLE_LABELS[r]}
-          selected={value === r}
-          onPress={() => onChange(r)}
-        />
-      ))}
     </View>
   );
 }
 
-function SquareBtn({
-  label,
-  disabled,
-  onPress,
+/* ── Description ────────────────────────────────────────────────────────── */
+
+function DescriptionEditor({
+  description,
+  onSave,
 }: {
-  label: string;
-  disabled?: boolean;
-  onPress: () => void;
+  description: string;
+  onSave: (description: string) => Promise<unknown>;
 }) {
+  const [local, setLocal] = useState(description);
+  useEffect(() => setLocal(description), [description]);
+
+  function save() {
+    if (local !== description) onSave(local);
+  }
+
   return (
-    <Pressable
-      onPress={disabled ? undefined : onPress}
-      style={[styles.square, disabled && styles.squareDisabled]}
-    >
-      <Text style={styles.squareText}>{label}</Text>
-    </Pressable>
+    <Card className="mb-2">
+      <TextField
+        label="Description"
+        value={local}
+        placeholder="What is this template for?"
+        onChangeText={setLocal}
+        onBlur={save}
+        multiline
+      />
+    </Card>
   );
 }
 
-const styles = StyleSheet.create({
-  muted: { fontSize: 14, color: colors.muted },
-  versionRow: { flexDirection: "row", marginBottom: spacing.sm },
-  pillWrap: { flexDirection: "row", flexWrap: "wrap", gap: spacing.sm },
-  list: { gap: spacing.sm },
-  addCard: { gap: spacing.sm, marginTop: spacing.md },
-  inlineRow: { flexDirection: "row", gap: spacing.md },
-  offsetField: { flex: 1 },
-  fieldLabel: {
-    fontSize: 13,
-    fontWeight: "600",
-    color: colors.text,
-    marginBottom: spacing.xs,
-  },
-  taskActions: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-    marginTop: spacing.sm,
-  },
-  reorder: { flexDirection: "row", gap: spacing.sm },
-  square: {
-    width: 36,
-    height: 36,
-    borderRadius: radius.sm,
-    borderWidth: 1,
-    borderColor: colors.border,
-    backgroundColor: colors.card,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  squareDisabled: { opacity: 0.4 },
-  squareText: { fontSize: 16, fontWeight: "700", color: colors.text },
-  rosRow: { flexDirection: "row", gap: spacing.md, alignItems: "flex-start" },
-  rosOffset: { fontSize: 15, fontWeight: "700", color: colors.accent, minWidth: 48 },
-  rosBody: { flex: 1, gap: 2 },
-  rosSegment: { fontSize: 15, fontWeight: "600", color: colors.text },
-  startWrap: { marginTop: spacing.xl },
-});
+/* ── Roles ──────────────────────────────────────────────────────────────── */
+
+function RolesCard({
+  activeRoles,
+  activeRoleIds,
+  chapterRoles,
+  onToggleRole,
+}: {
+  activeRoles: Array<{ _id: string; label: string }>;
+  activeRoleIds: string[];
+  chapterRoles: Array<{ _id: string; label: string; description?: string }>;
+  onToggleRole: (roleId: string) => void;
+}) {
+  const updateRole = useMutation(api.roles.update);
+  const createRole = useMutation(api.roles.create);
+
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editLabel, setEditLabel] = useState("");
+  const [newLabel, setNewLabel] = useState("");
+  const [adding, setAdding] = useState(false);
+
+  function startEdit(role: { _id: string; label: string }) {
+    setEditingId(role._id);
+    setEditLabel(role.label);
+  }
+
+  function saveEdit(roleId: string) {
+    const trimmed = editLabel.trim();
+    if (trimmed) updateRole({ roleId: roleId as Id<"roles">, label: trimmed });
+    setEditingId(null);
+    setEditLabel("");
+  }
+
+  async function handleAdd() {
+    const trimmed = newLabel.trim();
+    if (!trimmed) return;
+    await createRole({ label: trimmed });
+    setNewLabel("");
+    setAdding(false);
+  }
+
+  return (
+    <Card className="mb-2">
+      <SectionHeader title="Active roles" />
+      {activeRoles.length === 0 ? (
+        <Text className="mb-3 text-sm text-faint">No roles active yet — pick from the chapter roles below.</Text>
+      ) : (
+        <View className="mb-4 flex-row flex-wrap gap-2">
+          {activeRoles.map((r) => (
+            <Pill key={r._id} label={r.label} />
+          ))}
+        </View>
+      )}
+
+      <SectionHeader title="Chapter roles" />
+      <Text className="mb-3 text-sm text-muted">
+        Tap a role to toggle it for this template. Long-form names rename inline.
+      </Text>
+      <View className="gap-2">
+        {chapterRoles.map((r) => {
+          const active = activeRoleIds.includes(r._id);
+          const editing = editingId === r._id;
+          return (
+            <View key={r._id} className="flex-row items-center gap-2">
+              <View className="flex-1">
+                {editing ? (
+                  <TextField
+                    value={editLabel}
+                    onChangeText={setEditLabel}
+                    onBlur={() => saveEdit(r._id)}
+                    autoFocus
+                  />
+                ) : (
+                  <Pill
+                    label={`${active ? "✓ " : ""}${r.label}`}
+                    selected={active}
+                    onPress={() => onToggleRole(r._id)}
+                  />
+                )}
+              </View>
+              <Button
+                title={editing ? "Save" : "Rename"}
+                size="sm"
+                variant="ghost"
+                onPress={() => (editing ? saveEdit(r._id) : startEdit(r))}
+              />
+            </View>
+          );
+        })}
+      </View>
+
+      {adding ? (
+        <View className="mt-3">
+          <TextField
+            label="New role"
+            placeholder="Role name"
+            value={newLabel}
+            onChangeText={setNewLabel}
+            onBlur={handleAdd}
+            autoFocus
+          />
+          <Button title="Add role" size="sm" onPress={handleAdd} disabled={!newLabel.trim()} />
+        </View>
+      ) : (
+        <View className="mt-3 flex-row">
+          <Button title="Add role" size="sm" variant="secondary" icon="plus" onPress={() => setAdding(true)} />
+        </View>
+      )}
+    </Card>
+  );
+}
+
+/* ── Components ─────────────────────────────────────────────────────────── */
+
+function ComponentsCard({
+  activeComponents,
+  onToggle,
+}: {
+  activeComponents: string[];
+  onToggle: (component: string) => void;
+}) {
+  return (
+    <Card className="mb-2">
+      <SectionHeader title="Components" />
+      <ComponentGroup
+        heading="Core"
+        keys={CORE_COMPONENTS}
+        activeComponents={activeComponents}
+        onToggle={onToggle}
+      />
+      <View className="mt-4">
+        <ComponentGroup
+          heading="Larger events"
+          keys={LARGER_EVENT_COMPONENTS}
+          activeComponents={activeComponents}
+          onToggle={onToggle}
+        />
+      </View>
+    </Card>
+  );
+}
+
+function ComponentGroup({
+  heading,
+  keys,
+  activeComponents,
+  onToggle,
+}: {
+  heading: string;
+  keys: ComponentKey[];
+  activeComponents: string[];
+  onToggle: (component: string) => void;
+}) {
+  return (
+    <View>
+      <Text className="mb-2 text-2xs font-bold uppercase tracking-wider text-faint">{heading}</Text>
+      <View className="flex-row flex-wrap gap-2">
+        {keys.map((c) => (
+          <Pill
+            key={c}
+            label={COMPONENT_LABELS[c]}
+            selected={activeComponents.includes(c)}
+            onPress={() => onToggle(c)}
+          />
+        ))}
+      </View>
+    </View>
+  );
+}

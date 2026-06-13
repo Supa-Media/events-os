@@ -10,13 +10,19 @@
     "expo-updates",
     "expo-notifications",
     "expo-device",
+    "expo-font",
+    "expo-splash-screen",
+    "@expo/vector-icons",
     "@expo/metro-runtime",
     "react-native",
     "react-native-web",
     "react-native-safe-area-context",
     "react-native-screens",
     "react-native-keyboard-controller",
-    "@react-native-community/netinfo"
+    "@react-native-community/netinfo",
+    "react-native-gesture-handler",
+    "react-native-reanimated",
+    "react-native-worklets"
   ],
   "gated": []
 }

@@ -1,11 +1,21 @@
+// Events OS UI kit — NativeWind components built on the brand token system.
+export { Icon, type IconName } from "./Icon";
 export { Screen } from "./Screen";
+export { AppShell } from "./AppShell";
+export { SidebarNavItem } from "./SidebarNav";
+export { PageHeader } from "./PageHeader";
 export { Card } from "./Card";
 export { Button } from "./Button";
-export { Badge } from "./Badge";
-export { ReadinessBadge } from "./ReadinessBadge";
+export { Badge, type BadgeTone } from "./Badge";
 export { Pill } from "./Pill";
-export { Field, TextField } from "./Field";
+export { Avatar } from "./Avatar";
+export { ReadinessBadge, ReadinessRing, ReadinessBar } from "./Readiness";
+export { Field, TextField, Select } from "./Field";
 export { EmptyState } from "./EmptyState";
 export { SectionHeader } from "./SectionHeader";
+export { Table, TableHeader, HeaderCell, Row, Cell } from "./Table";
 export { PersonPicker } from "./PersonPicker";
+export { RolePicker } from "./RolePicker";
+export { Popover } from "./Popover";
+export { OptionTag } from "./OptionTag";
 export { statusTone } from "./status";

@@ -1,25 +1,54 @@
+import "../global.css";
+
 import { Slot } from "expo-router";
 import { StatusBar } from "expo-status-bar";
+import { GestureHandlerRootView } from "react-native-gesture-handler";
 import { SafeAreaProvider } from "react-native-safe-area-context";
 import { SupaConvexProvider } from "@supa-media/core/providers";
 import { NotificationProvider } from "@supa-media/notifications";
+import {
+  useFonts,
+  Corben_400Regular,
+  Corben_700Bold,
+} from "@expo-google-fonts/corben";
+import {
+  DMSans_400Regular,
+  DMSans_500Medium,
+  DMSans_600SemiBold,
+  DMSans_700Bold,
+} from "@expo-google-fonts/dm-sans";
 
 /**
  * Root layout for Events OS.
  *
+ * Loads the brand type pairing (Corben serif display + DM Sans body) and the
+ * NativeWind global stylesheet, then mounts the Convex/auth + notification
+ * providers. Route groups under `(app)` and `(auth)` handle gating.
+ *
  * `SupaConvexProvider` provides both the Convex client and auth context
  * (it wraps @convex-dev/auth's ConvexAuthProvider with platform-aware secure
- * token storage). Route groups under `(app)` and `(auth)` handle gating.
+ * token storage).
  */
 export default function RootLayout() {
+  const [fontsLoaded] = useFonts({
+    Corben_400Regular,
+    Corben_700Bold,
+    DMSans_400Regular,
+    DMSans_500Medium,
+    DMSans_600SemiBold,
+    DMSans_700Bold,
+  });
+
   return (
-    <SafeAreaProvider>
-      <SupaConvexProvider url={process.env.EXPO_PUBLIC_CONVEX_URL}>
-        <NotificationProvider>
-        <StatusBar style="auto" />
-        <Slot />
-        </NotificationProvider>
-      </SupaConvexProvider>
-    </SafeAreaProvider>
+    <GestureHandlerRootView style={{ flex: 1 }}>
+      <SafeAreaProvider>
+        <SupaConvexProvider url={process.env.EXPO_PUBLIC_CONVEX_URL}>
+          <NotificationProvider>
+            <StatusBar style="dark" />
+            {fontsLoaded ? <Slot /> : null}
+          </NotificationProvider>
+        </SupaConvexProvider>
+      </SafeAreaProvider>
+    </GestureHandlerRootView>
   );
 }

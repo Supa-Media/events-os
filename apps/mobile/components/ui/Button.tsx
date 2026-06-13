@@ -1,16 +1,9 @@
 import { useState } from "react";
-import {
-  Pressable,
-  Text,
-  StyleSheet,
-  ActivityIndicator,
-  View,
-  StyleProp,
-  ViewStyle,
-} from "react-native";
-import { colors, radius, spacing } from "../../lib/theme";
+import { Pressable, Text, View, ActivityIndicator } from "react-native";
+import { Icon, type IconName } from "./Icon";
+import { colors } from "../../lib/theme";
 
-type Variant = "primary" | "secondary" | "danger" | "ghost";
+type Variant = "primary" | "secondary" | "ghost" | "danger";
 type Size = "md" | "sm";
 
 type Props = {
@@ -20,12 +13,17 @@ type Props = {
   size?: Size;
   disabled?: boolean;
   loading?: boolean;
-  style?: StyleProp<ViewStyle>;
+  /** Optional leading line icon. */
+  icon?: IconName;
+  /** Extra NativeWind classes for layout (width, margins). */
+  className?: string;
 };
 
 /**
- * Standard button. Press feedback via opacity state (web-safe — function-style
- * Pressable styles are ignored on react-native-web).
+ * Primary action control. Hover / pressed feedback is handled via state +
+ * NativeWind classes (react-native-web ignores function-style Pressable
+ * `style`, so we never use it for layout). Every variant has resting, hover,
+ * and pressed treatments plus a disabled state.
  */
 export function Button({
   title,
@@ -34,85 +32,93 @@ export function Button({
   size = "md",
   disabled = false,
   loading = false,
-  style,
+  icon,
+  className = "",
 }: Props) {
+  const [hovered, setHovered] = useState(false);
   const [pressed, setPressed] = useState(false);
-  const isInert = disabled || loading;
+  const inert = disabled || loading;
+
+  const v = VARIANTS[variant];
+  const bg = inert
+    ? v.bg
+    : pressed
+      ? v.bgPressed
+      : hovered
+        ? v.bgHover
+        : v.bg;
+
+  const pad = size === "sm" ? "px-3 py-1.5" : "px-4 py-2.5";
+  const textSize = size === "sm" ? "text-sm" : "text-base";
 
   return (
     <Pressable
       accessibilityRole="button"
-      onPress={isInert ? undefined : onPress}
+      disabled={inert}
+      onPress={inert ? undefined : onPress}
+      onHoverIn={() => setHovered(true)}
+      onHoverOut={() => setHovered(false)}
       onPressIn={() => setPressed(true)}
       onPressOut={() => setPressed(false)}
-      style={[
-        styles.base,
-        size === "sm" ? styles.sm : styles.md,
-        variantStyles[variant].container,
-        pressed && !isInert && styles.pressed,
-        isInert && styles.disabled,
-        style,
-      ]}
+      className={`flex-row items-center justify-center rounded-md ${pad} ${bg} ${v.border} ${inert ? "opacity-60" : ""} ${className}`}
     >
-      <View style={styles.inner}>
+      <View className="flex-row items-center gap-2">
         {loading ? (
-          <ActivityIndicator
-            size="small"
-            color={variantStyles[variant].text.color as string}
-          />
+          <ActivityIndicator size="small" color={v.iconColor} />
         ) : (
-          <Text
-            style={[
-              styles.text,
-              size === "sm" && styles.textSm,
-              variantStyles[variant].text,
-            ]}
-          >
-            {title}
-          </Text>
+          <>
+            {icon ? (
+              <Icon name={icon} size={size === "sm" ? 14 : 16} color={v.iconColor} />
+            ) : null}
+            <Text className={`font-semibold ${textSize} ${v.text}`}>{title}</Text>
+          </>
         )}
       </View>
     </Pressable>
   );
 }
 
-const styles = StyleSheet.create({
-  base: {
-    borderRadius: radius.md,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  md: { paddingVertical: spacing.md, paddingHorizontal: spacing.lg },
-  sm: { paddingVertical: spacing.sm, paddingHorizontal: spacing.md },
-  inner: { flexDirection: "row", alignItems: "center", gap: spacing.sm },
-  text: { fontSize: 15, fontWeight: "600" },
-  textSm: { fontSize: 13 },
-  pressed: { opacity: 0.8 },
-  disabled: { opacity: 0.5 },
-});
-
-const variantStyles: Record<
+const VARIANTS: Record<
   Variant,
-  { container: ViewStyle; text: { color: string } }
+  {
+    bg: string;
+    bgHover: string;
+    bgPressed: string;
+    border: string;
+    text: string;
+    iconColor: string;
+  }
 > = {
   primary: {
-    container: { backgroundColor: colors.accent },
-    text: { color: "#ffffff" },
+    bg: "bg-accent",
+    bgHover: "bg-accent-hover",
+    bgPressed: "bg-accent-hover",
+    border: "border border-transparent",
+    text: "text-white",
+    iconColor: "#FFFFFF",
   },
   secondary: {
-    container: {
-      backgroundColor: colors.card,
-      borderWidth: 1,
-      borderColor: colors.border,
-    },
-    text: { color: colors.text },
-  },
-  danger: {
-    container: { backgroundColor: colors.dangerBg, borderWidth: 1, borderColor: colors.danger },
-    text: { color: colors.danger },
+    bg: "bg-raised",
+    bgHover: "bg-sunken",
+    bgPressed: "bg-sunken",
+    border: "border border-border-strong",
+    text: "text-ink",
+    iconColor: colors.ink,
   },
   ghost: {
-    container: { backgroundColor: "transparent" },
-    text: { color: colors.accent },
+    bg: "bg-transparent",
+    bgHover: "bg-sunken",
+    bgPressed: "bg-brand-100",
+    border: "border border-transparent",
+    text: "text-accent",
+    iconColor: colors.accent,
+  },
+  danger: {
+    bg: "bg-danger-bg",
+    bgHover: "bg-brand-100",
+    bgPressed: "bg-brand-200",
+    border: "border border-danger",
+    text: "text-danger",
+    iconColor: colors.danger,
   },
 };

@@ -1,22 +1,31 @@
 import { useState } from "react";
-import { View, Text, StyleSheet } from "react-native";
+import { View, Text } from "react-native";
 import { useRouter } from "expo-router";
 import { useQuery, useMutation } from "convex/react";
 import { api } from "@events-os/convex/_generated/api";
 import {
   Screen,
+  PageHeader,
   Card,
   Button,
   Badge,
+  ReadinessBar,
   ReadinessBadge,
   EmptyState,
+  Icon,
+  type IconName,
+  Table,
+  TableHeader,
+  HeaderCell,
+  Row,
+  Cell,
   statusTone,
 } from "../../../components/ui";
-import { colors, spacing } from "../../../lib/theme";
+import { colors } from "../../../lib/theme";
 import { formatDate } from "../../../lib/format";
 import { EVENT_STATUS_LABELS, type EventStatus } from "@events-os/shared";
 
-/** PIPELINE / home: dashboard stats + upcoming event cards. */
+/** PIPELINE — the landing screen. Stat strip + a sortable table of events. */
 export default function PipelineScreen() {
   const router = useRouter();
   const summary = useQuery(api.dashboard.summary);
@@ -28,7 +37,6 @@ export default function PipelineScreen() {
 
   const loading =
     summary === undefined || pipeline === undefined || templates === undefined;
-
   if (loading) return <Screen loading />;
 
   const isEmpty = pipeline.length === 0;
@@ -44,135 +52,180 @@ export default function PipelineScreen() {
   }
 
   return (
-    <Screen>
-      <StatRow summary={summary} />
+    <Screen maxWidth={1120}>
+      <PageHeader
+        eyebrow="Operations"
+        title="Pipeline"
+        subtitle="Every upcoming event and how ready it is to run."
+        actions={
+          <Button
+            title="New event"
+            icon="plus"
+            onPress={() => router.push("/event/new")}
+          />
+        }
+      />
 
-      <View style={styles.actionRow}>
-        <Button
-          title="+ New event"
-          onPress={() => router.push("/event/new")}
-        />
-      </View>
+      <StatStrip summary={summary} />
 
       {isEmpty ? (
-        noTemplates ? (
-          <EmptyState
-            title="Nothing here yet"
-            message="Seed some demo data to explore the pipeline, templates, and people."
-            action={
-              <Button
-                title="Seed demo data"
-                variant="secondary"
-                loading={seeding}
-                onPress={handleSeed}
-              />
-            }
-          />
-        ) : (
-          <EmptyState
-            title="No upcoming events"
-            message="Start an event from one of your templates."
-            action={
-              <Button
-                title="+ New event"
-                onPress={() => router.push("/event/new")}
-              />
-            }
-          />
-        )
-      ) : (
-        <View style={styles.list}>
-          {pipeline.map((e: any) => (
-            <EventCard
-              key={e._id}
-              event={e}
-              onPress={() => router.push(`/event/${e._id}`)}
+        <View className="mt-6">
+          {noTemplates ? (
+            <EmptyState
+              icon="inbox"
+              title="Nothing here yet"
+              message="Seed some demo data to explore the pipeline, templates, and people."
+              action={
+                <Button
+                  title="Seed demo data"
+                  icon="download"
+                  variant="secondary"
+                  loading={seeding}
+                  onPress={handleSeed}
+                />
+              }
             />
-          ))}
+          ) : (
+            <EmptyState
+              icon="calendar"
+              title="No upcoming events"
+              message="Start an event from one of your templates."
+              action={
+                <Button
+                  title="New event"
+                  icon="plus"
+                  onPress={() => router.push("/event/new")}
+                />
+              }
+            />
+          )}
+        </View>
+      ) : (
+        <View className="mt-6">
+          <Table>
+            <TableHeader>
+              <HeaderCell flex={3}>Event</HeaderCell>
+              <HeaderCell flex={2}>Type</HeaderCell>
+              <HeaderCell flex={2}>Date</HeaderCell>
+              <HeaderCell flex={2}>Readiness</HeaderCell>
+              <HeaderCell width={96}>Blockers</HeaderCell>
+              <HeaderCell width={108}>Status</HeaderCell>
+            </TableHeader>
+            {pipeline.map((e: any, i: number) => (
+              <Row
+                key={e._id}
+                last={i === pipeline.length - 1}
+                onPress={() => router.push(`/event/${e._id}`)}
+              >
+                <Cell flex={3}>
+                  <Text className="text-base font-semibold text-ink" numberOfLines={1}>
+                    {e.name}
+                  </Text>
+                  <Text className="mt-0.5 text-sm text-muted">
+                    {e.taskDone}/{e.taskTotal} tasks done
+                  </Text>
+                </Cell>
+                <Cell flex={2}>
+                  <Text className="text-base text-muted" numberOfLines={1}>
+                    {e.eventTypeName}
+                  </Text>
+                </Cell>
+                <Cell flex={2}>
+                  <Text className="text-base text-ink">{formatDate(e.eventDate)}</Text>
+                </Cell>
+                <Cell flex={2}>
+                  <ReadinessBar value={e.readiness} />
+                </Cell>
+                <Cell width={96}>
+                  {e.blockerCount > 0 ? (
+                    <Badge label={String(e.blockerCount)} tone="danger" icon="alert-triangle" />
+                  ) : (
+                    <Text className="text-sm text-faint">—</Text>
+                  )}
+                </Cell>
+                <Cell width={108}>
+                  <Badge
+                    label={EVENT_STATUS_LABELS[e.status as EventStatus]}
+                    tone={statusTone(e.status as EventStatus)}
+                  />
+                </Cell>
+              </Row>
+            ))}
+          </Table>
         </View>
       )}
     </Screen>
   );
 }
 
-function StatRow({ summary }: { summary: any }) {
+function StatStrip({ summary }: { summary: any }) {
   return (
-    <Card style={styles.statCard}>
-      <Stat label="Upcoming" value={String(summary.upcomingCount)} />
-      <Divider />
-      <Stat label="Avg readiness" value={`${summary.avgReadiness}%`} />
-      <Divider />
-      <Stat label="People" value={String(summary.peopleCount)} />
-    </Card>
-  );
-}
-
-function Stat({ label, value }: { label: string; value: string }) {
-  return (
-    <View style={styles.stat}>
-      <Text style={styles.statValue}>{value}</Text>
-      <Text style={styles.statLabel}>{label}</Text>
+    <View className="flex-row flex-wrap gap-4">
+      <StatCard
+        icon="calendar"
+        tint={colors.accent}
+        tintBg="bg-accent-soft"
+        label="Upcoming events"
+        value={String(summary.upcomingCount)}
+        sub={
+          summary.nextEvent
+            ? `Next: ${summary.nextEvent.name}`
+            : "Nothing scheduled"
+        }
+      />
+      <StatCard
+        icon="activity"
+        tint={colors.success}
+        tintBg="bg-success-bg"
+        label="Avg readiness"
+        valueNode={<ReadinessBadge value={summary.avgReadiness} size="lg" />}
+        sub="Across the pipeline"
+      />
+      <StatCard
+        icon="users"
+        tint="#4B2A66"
+        tintBg="bg-lavender/40"
+        label="People"
+        value={String(summary.peopleCount)}
+        sub={`${summary.eventsLast90Days} events · 90 days`}
+      />
     </View>
   );
 }
 
-function Divider() {
-  return <View style={styles.divider} />;
-}
-
-function EventCard({ event, onPress }: { event: any; onPress: () => void }) {
+function StatCard({
+  icon,
+  tint,
+  tintBg,
+  label,
+  value,
+  valueNode,
+  sub,
+}: {
+  icon: IconName;
+  tint: string;
+  tintBg: string;
+  label: string;
+  value?: string;
+  valueNode?: React.ReactNode;
+  sub: string;
+}) {
   return (
-    <Card onPress={onPress}>
-      <View style={styles.cardTop}>
-        <Text style={styles.eventName} numberOfLines={1}>
-          {event.name}
-        </Text>
-        <ReadinessBadge value={event.readiness} />
+    <Card className="min-w-[220px] flex-1" padding="md">
+      <View className="flex-row items-center gap-2.5">
+        <View className={`h-9 w-9 items-center justify-center rounded-md ${tintBg}`}>
+          <Icon name={icon} size={17} color={tint} />
+        </View>
+        <Text className="text-sm font-medium text-muted">{label}</Text>
       </View>
-      <Text style={styles.eventMeta}>
-        {event.eventTypeName} · {formatDate(event.eventDate)}
+      <View className="mt-3">
+        {valueNode ?? (
+          <Text className="font-display text-3xl text-ink">{value}</Text>
+        )}
+      </View>
+      <Text className="mt-1 text-sm text-muted" numberOfLines={1}>
+        {sub}
       </Text>
-      <View style={styles.cardBottom}>
-        <Badge
-          label={EVENT_STATUS_LABELS[event.status as EventStatus]}
-          tone={statusTone(event.status as EventStatus)}
-        />
-        <Text style={styles.taskCount}>
-          {event.taskDone}/{event.taskTotal} tasks
-        </Text>
-        {event.blockerCount > 0 ? (
-          <Badge label={`${event.blockerCount} overdue`} tone="danger" />
-        ) : null}
-      </View>
     </Card>
   );
 }
-
-const styles = StyleSheet.create({
-  statCard: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-  },
-  stat: { flex: 1, alignItems: "center" },
-  statValue: { fontSize: 22, fontWeight: "700", color: colors.text },
-  statLabel: { fontSize: 12, color: colors.muted, marginTop: 2 },
-  divider: { width: 1, height: 32, backgroundColor: colors.border },
-  actionRow: { marginTop: spacing.lg },
-  list: { marginTop: spacing.lg, gap: spacing.md },
-  cardTop: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-    gap: spacing.sm,
-  },
-  eventName: { fontSize: 16, fontWeight: "700", color: colors.text, flex: 1 },
-  eventMeta: { fontSize: 13, color: colors.muted, marginTop: spacing.xs },
-  cardBottom: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: spacing.sm,
-    marginTop: spacing.md,
-  },
-  taskCount: { fontSize: 13, color: colors.muted },
-});

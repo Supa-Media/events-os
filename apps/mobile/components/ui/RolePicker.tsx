@@ -1,37 +1,35 @@
 import { useState } from "react";
 import { Modal, View, Text, Pressable, ScrollView } from "react-native";
-import { useQuery } from "convex/react";
-import { api } from "@events-os/convex/_generated/api";
 import { Icon } from "./Icon";
-import { Avatar } from "./Avatar";
 import { colors } from "../../lib/theme";
 
-type PersonId = string;
+type Role = { _id: string; label: string };
 
 type Props = {
   visible: boolean;
   title?: string;
-  selectedId?: PersonId | null;
-  onPick: (personId: PersonId) => void;
+  roles: Role[];
+  selectedId?: string | null;
+  onPick: (roleId: string) => void;
   onClear?: () => void;
   onClose: () => void;
 };
 
 /**
- * Centered modal popover that lists chapter people for assigning tasks/roles.
- * Loads people via api.people.list (undefined while loading). Rows have
- * class-driven hover and a selected check.
+ * Centered modal popover for assigning a role to a slot. Mirrors PersonPicker
+ * but takes roles as a prop (no query) and renders a neutral icon circle instead
+ * of an avatar, since roles aren't people. Rows have class-driven hover and a
+ * selected check.
  */
-export function PersonPicker({
+export function RolePicker({
   visible,
-  title = "Assign person",
+  title = "Assign role",
+  roles,
   selectedId,
   onPick,
   onClear,
   onClose,
 }: Props) {
-  const people = useQuery(api.people.list);
-
   return (
     <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
       <Pressable
@@ -51,22 +49,20 @@ export function PersonPicker({
 
           <ScrollView className="max-h-96">
             {onClear ? (
-              <Row label="Clear assignment" muted icon="user-x" onPress={onClear} />
+              <Row label="Clear role" muted icon="x" onPress={onClear} />
             ) : null}
 
-            {people === undefined ? (
-              <Text className="px-5 py-6 text-center text-base text-muted">Loading…</Text>
-            ) : people.length === 0 ? (
+            {roles.length === 0 ? (
               <Text className="px-5 py-6 text-center text-base text-muted">
-                No people yet. Add some first.
+                No roles defined
               </Text>
             ) : (
-              people.map((p: any) => (
+              roles.map((r) => (
                 <Row
-                  key={p._id}
-                  label={p.name}
-                  selected={p._id === selectedId}
-                  onPress={() => onPick(p._id)}
+                  key={r._id}
+                  label={r.label}
+                  selected={r._id === selectedId}
+                  onPress={() => onPick(r._id)}
                 />
               ))
             )}
@@ -87,7 +83,7 @@ function Row({
   label: string;
   selected?: boolean;
   muted?: boolean;
-  icon?: "user-x";
+  icon?: "x";
   onPress: () => void;
 }) {
   const [hovered, setHovered] = useState(false);
@@ -101,13 +97,9 @@ function Row({
       }`}
     >
       <View className="flex-row items-center gap-3">
-        {muted ? (
-          <View className="h-7 w-7 items-center justify-center rounded-pill bg-sunken">
-            <Icon name={icon ?? "user"} size={14} color={colors.muted} />
-          </View>
-        ) : (
-          <Avatar name={label} size={28} />
-        )}
+        <View className="h-7 w-7 items-center justify-center rounded-pill bg-sunken">
+          <Icon name={muted ? (icon ?? "tag") : "tag"} size={14} color={colors.muted} />
+        </View>
         <Text
           className={`text-base ${
             muted

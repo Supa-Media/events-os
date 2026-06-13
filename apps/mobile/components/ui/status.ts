@@ -1,12 +1,11 @@
 import type { EventStatus } from "@events-os/shared";
-
-type Tone = "neutral" | "accent" | "success" | "amber" | "danger";
+import type { BadgeTone } from "./Badge";
 
 /** Map an event lifecycle status to a Badge tone. */
-export function statusTone(status: EventStatus): Tone {
+export function statusTone(status: EventStatus): BadgeTone {
   switch (status) {
     case "planning":
-      return "amber";
+      return "warn";
     case "ready":
       return "accent";
     case "completed":

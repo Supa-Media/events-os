@@ -5,22 +5,21 @@ import { api } from "@events-os/convex/_generated/api";
 import { Screen, Card, SectionHeader } from "../../../../components/ui";
 import { colors, radius, spacing } from "../../../../lib/theme";
 import { formatTime } from "../../../../lib/format";
-import {
-  ROLE_LABELS,
-  TASK_STATUSES,
-  type RoleKey,
-  type TaskStatus,
-} from "@events-os/shared";
+import { TASK_STATUS_OPTIONS, computeRunTime } from "@events-os/shared";
 
-/** Cycle a task status forward. */
-function nextStatus(s: TaskStatus): TaskStatus {
-  const i = TASK_STATUSES.indexOf(s);
+/** The ordered planning-doc task status values (not_started → in_progress → done). */
+const TASK_STATUSES = TASK_STATUS_OPTIONS.map((o) => o.value);
+
+/** Cycle a task status forward through the task status option set. */
+function nextStatus(s: string | undefined): string {
+  const current = s ?? TASK_STATUSES[0];
+  const i = TASK_STATUSES.indexOf(current);
   return TASK_STATUSES[(i + 1) % TASK_STATUSES.length];
 }
 
 /** Compute the wall-clock time of a run-of-show row from event start. */
 function rowTime(eventDate: number, offsetMinutes: number): string {
-  return formatTime(eventDate + offsetMinutes * 60 * 1000);
+  return formatTime(computeRunTime(eventDate, offsetMinutes));
 }
 
 /** DAY-OF MODE: big, scannable field view. */
@@ -28,7 +27,7 @@ export default function DayOfScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const eventId = id as any;
   const data = useQuery(api.events.dayOf, { eventId });
-  const setTaskStatus = useMutation(api.tasks.setStatus);
+  const setTaskStatus = useMutation(api.items.setStatus);
 
   if (data === undefined) {
     return (
@@ -69,16 +68,16 @@ export default function DayOfScreen() {
               <Card key={r._id}>
                 <View style={styles.rosRow}>
                   <Text style={styles.rosTime}>
-                    {rowTime(event.eventDate, r.offsetMinutes)}
+                    {rowTime(event.eventDate, r.offsetMinutes ?? 0)}
                   </Text>
                   <View style={styles.rosBody}>
-                    <Text style={styles.rosSegment}>{r.segment}</Text>
-                    {r.owningRole ? (
-                      <Text style={styles.rosRole}>
-                        {ROLE_LABELS[r.owningRole as RoleKey] ?? r.owningRole}
-                      </Text>
+                    <Text style={styles.rosSegment}>{r.title}</Text>
+                    {r.roleLabel ? (
+                      <Text style={styles.rosRole}>{r.roleLabel}</Text>
                     ) : null}
-                    {r.notes ? <Text style={styles.rosNotes}>{r.notes}</Text> : null}
+                    {r.fields?.notes ? (
+                      <Text style={styles.rosNotes}>{r.fields.notes}</Text>
+                    ) : null}
                   </View>
                 </View>
               </Card>
@@ -93,10 +92,8 @@ export default function DayOfScreen() {
         ) : (
           <View style={styles.roleGrid}>
             {roles.map((r: any) => (
-              <Card key={r.role} style={styles.roleCard}>
-                <Text style={styles.roleLabel}>
-                  {ROLE_LABELS[r.role as RoleKey] ?? r.role}
-                </Text>
+              <Card key={r.roleId} style={styles.roleCard}>
+                <Text style={styles.roleLabel}>{r.roleLabel}</Text>
                 <Text style={styles.rolePerson}>
                   {r.person ? r.person.name : "Unassigned"}
                 </Text>
@@ -117,7 +114,7 @@ export default function DayOfScreen() {
                 <Pressable
                   key={t._id}
                   onPress={() =>
-                    setTaskStatus({ taskId: t._id, status: nextStatus(t.status) })
+                    setTaskStatus({ itemId: t._id, status: nextStatus(t.status) })
                   }
                 >
                   <Card>

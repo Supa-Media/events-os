@@ -1,6 +1,5 @@
 import { useState } from "react";
-import { Text, Pressable, StyleSheet } from "react-native";
-import { colors, radius, spacing } from "../../lib/theme";
+import { Text, Pressable, View } from "react-native";
 
 type Props = {
   label: string;
@@ -9,45 +8,39 @@ type Props = {
 };
 
 /**
- * A rounded pill, optionally selectable. Used for skills, components, and
- * compact pickers. Press feedback via opacity state (web-safe).
+ * A rounded selectable chip used for filters and segmented choices. Hover and
+ * selected states are class-driven (web-safe). When non-interactive it renders
+ * a static tag.
  */
 export function Pill({ label, selected = false, onPress }: Props) {
-  const [pressed, setPressed] = useState(false);
+  const [hovered, setHovered] = useState(false);
 
   if (!onPress) {
     return (
-      <Text style={[styles.pill, selected && styles.selected]}>{label}</Text>
+      <View className="self-start rounded-pill border border-border bg-sunken px-3 py-1">
+        <Text className="text-sm font-medium text-muted">{label}</Text>
+      </View>
     );
   }
+
+  const state = selected
+    ? "border-accent bg-accent-soft"
+    : hovered
+      ? "border-border-strong bg-sunken"
+      : "border-border bg-raised";
 
   return (
     <Pressable
       onPress={onPress}
-      onPressIn={() => setPressed(true)}
-      onPressOut={() => setPressed(false)}
-      style={[styles.pill, selected && styles.selected, pressed && styles.pressed]}
+      onHoverIn={() => setHovered(true)}
+      onHoverOut={() => setHovered(false)}
+      className={`self-start rounded-pill border px-3 py-1 ${state}`}
     >
-      <Text style={[styles.text, selected && styles.textSelected]}>{label}</Text>
+      <Text
+        className={`text-sm ${selected ? "font-semibold text-accent" : "font-medium text-muted"}`}
+      >
+        {label}
+      </Text>
     </Pressable>
   );
 }
-
-const styles = StyleSheet.create({
-  pill: {
-    borderRadius: radius.pill,
-    paddingVertical: spacing.xs,
-    paddingHorizontal: spacing.md,
-    backgroundColor: colors.mutedBg,
-    borderWidth: 1,
-    borderColor: colors.border,
-    overflow: "hidden",
-  },
-  selected: {
-    backgroundColor: colors.accentBg,
-    borderColor: colors.accent,
-  },
-  pressed: { opacity: 0.7 },
-  text: { fontSize: 13, color: colors.muted, fontWeight: "500" },
-  textSelected: { color: colors.accent, fontWeight: "600" },
-});

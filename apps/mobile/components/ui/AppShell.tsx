@@ -1,0 +1,163 @@
+import { ReactNode } from "react";
+import { View, Text, useWindowDimensions, Pressable } from "react-native";
+import { SafeAreaView } from "react-native-safe-area-context";
+import { usePathname, useRouter } from "expo-router";
+import { useAuthActions } from "@convex-dev/auth/react";
+import { useQuery } from "convex/react";
+import { api } from "@events-os/convex/_generated/api";
+import { SidebarNavItem } from "./SidebarNav";
+import { Avatar } from "./Avatar";
+import { Icon, type IconName } from "./Icon";
+import { colors } from "../../lib/theme";
+
+type NavEntry = { label: string; icon: IconName; path: string };
+
+const NAV: NavEntry[] = [
+  { label: "Pipeline", icon: "layout", path: "/" },
+  { label: "Templates", icon: "grid", path: "/templates" },
+  { label: "People", icon: "users", path: "/people" },
+];
+
+/** True when the current pathname maps to this nav entry. */
+function isActive(pathname: string, path: string): boolean {
+  if (path === "/") return pathname === "/" || pathname === "/index";
+  return pathname.startsWith(path);
+}
+
+/** Desktop breakpoint — at/above this width we show the persistent sidebar. */
+const DESKTOP = 760;
+
+/**
+ * The responsive app shell. On desktop it renders a persistent left sidebar
+ * (brand mark, nav, chapter + user footer) beside the page content. Below the
+ * breakpoint it collapses to a bottom navigation bar, so the same routes work
+ * on phones without a separate navigator.
+ */
+export function AppShell({ children }: { children: ReactNode }) {
+  const { width } = useWindowDimensions();
+  const desktop = width >= DESKTOP;
+
+  if (desktop) {
+    return (
+      <View className="flex-1 flex-row bg-surface">
+        <Sidebar />
+        <View className="flex-1">{children}</View>
+      </View>
+    );
+  }
+
+  return (
+    <SafeAreaView className="flex-1 bg-surface" edges={["top"]}>
+      <MobileTopBar />
+      <View className="flex-1">{children}</View>
+      <BottomNav />
+    </SafeAreaView>
+  );
+}
+
+function Sidebar() {
+  const router = useRouter();
+  const pathname = usePathname();
+  return (
+    <View className="w-60 border-r border-border bg-raised">
+      <SafeAreaView edges={["top"]} className="flex-1">
+        <View className="flex-1 px-3 pb-4 pt-5">
+          {/* Brand mark */}
+          <View className="mb-6 flex-row items-center gap-2.5 px-2">
+            <View className="h-8 w-8 items-center justify-center rounded-md bg-accent">
+              <Icon name="calendar" size={17} color="#FFFFFF" />
+            </View>
+            <View>
+              <Text className="font-display text-lg leading-5 text-ink">Events</Text>
+              <Text className="-mt-0.5 font-display text-lg leading-5 text-accent">OS</Text>
+            </View>
+          </View>
+
+          {/* Nav */}
+          <View className="gap-0.5">
+            {NAV.map((n) => (
+              <SidebarNavItem
+                key={n.path}
+                label={n.label}
+                icon={n.icon}
+                active={isActive(pathname, n.path)}
+                onPress={() => router.navigate(n.path as any)}
+              />
+            ))}
+          </View>
+
+          <View className="flex-1" />
+
+          {/* Chapter + user footer */}
+          <ChapterFooter />
+        </View>
+      </SafeAreaView>
+    </View>
+  );
+}
+
+function ChapterFooter() {
+  const { signOut } = useAuthActions();
+  const summary = useQuery(api.dashboard.summary);
+  return (
+    <View className="gap-1 border-t border-border pt-3">
+      <View className="flex-row items-center gap-2.5 px-2 py-1.5">
+        <View className="h-7 w-7 items-center justify-center rounded-md bg-mint">
+          <Icon name="home" size={14} color="#1F5A41" />
+        </View>
+        <View className="flex-1">
+          <Text className="text-sm font-semibold text-ink" numberOfLines={1}>
+            Chapter
+          </Text>
+          <Text className="text-xs text-muted">
+            {summary ? `${summary.peopleCount} people` : "—"}
+          </Text>
+        </View>
+      </View>
+      <Pressable
+        onPress={() => signOut()}
+        className="flex-row items-center gap-2.5 rounded-md px-2 py-2 active:bg-sunken web:hover:bg-sunken"
+      >
+        <Icon name="log-out" size={15} color={colors.muted} />
+        <Text className="text-sm text-muted">Sign out</Text>
+      </Pressable>
+    </View>
+  );
+}
+
+function MobileTopBar() {
+  return (
+    <View className="flex-row items-center gap-2 border-b border-border bg-raised px-4 py-3">
+      <View className="h-7 w-7 items-center justify-center rounded-md bg-accent">
+        <Icon name="calendar" size={15} color="#FFFFFF" />
+      </View>
+      <Text className="font-display text-lg text-ink">Events OS</Text>
+    </View>
+  );
+}
+
+function BottomNav() {
+  const router = useRouter();
+  const pathname = usePathname();
+  return (
+    <SafeAreaView edges={["bottom"]} className="border-t border-border bg-raised">
+      <View className="flex-row">
+        {NAV.map((n) => {
+          const active = isActive(pathname, n.path);
+          return (
+            <Pressable
+              key={n.path}
+              onPress={() => router.navigate(n.path as any)}
+              className="flex-1 items-center gap-1 py-2.5"
+            >
+              <Icon name={n.icon} size={20} color={active ? colors.accent : colors.muted} />
+              <Text className={`text-2xs ${active ? "font-semibold text-accent" : "text-muted"}`}>
+                {n.label}
+              </Text>
+            </Pressable>
+          );
+        })}
+      </View>
+    </SafeAreaView>
+  );
+}

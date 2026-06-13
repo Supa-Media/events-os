@@ -12,27 +12,36 @@ import {
   EmptyState,
 } from "../../../components/ui";
 import { colors, spacing } from "../../../lib/theme";
-import { CORE_COMPONENTS, LIGHTWEIGHT_ROLES } from "@events-os/shared";
+import { CORE_COMPONENTS, LIGHTWEIGHT_ROLE_KEYS } from "@events-os/shared";
 
 /** TEMPLATES list + inline "new template" creator. */
 export default function TemplatesScreen() {
   const router = useRouter();
   const templates = useQuery(api.eventTypes.list);
+  const roles = useQuery(api.roles.list);
   const create = useMutation(api.eventTypes.create);
 
   const [name, setName] = useState("");
   const [creating, setCreating] = useState(false);
 
-  if (templates === undefined) return <Screen loading />;
+  if (templates === undefined || roles === undefined) return <Screen loading />;
 
   async function handleCreate() {
     const trimmed = name.trim();
     if (!trimmed) return;
     setCreating(true);
     try {
+      // Map the lightweight role keys to this chapter's role ids; fall back to
+      // all roles if none of the lightweight keys are present.
+      const lightweight = roles!.filter((r: any) =>
+        LIGHTWEIGHT_ROLE_KEYS.includes(r.key),
+      );
+      const activeRoleIds = (lightweight.length > 0 ? lightweight : roles!).map(
+        (r: any) => r._id,
+      );
       const id = await create({
         name: trimmed,
-        roles: [...LIGHTWEIGHT_ROLES],
+        activeRoleIds,
         activeComponents: [...CORE_COMPONENTS],
       });
       setName("");

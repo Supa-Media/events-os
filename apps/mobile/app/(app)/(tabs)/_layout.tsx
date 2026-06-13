@@ -1,42 +1,10 @@
-import { Tabs } from "expo-router";
-import { Text } from "react-native";
-import { colors } from "../../../lib/theme";
+import { Slot } from "expo-router";
 
-/** Bottom tab bar: Pipeline (home), Templates, People. */
+/**
+ * The primary tab routes (Pipeline / Templates / People). Navigation chrome —
+ * the persistent sidebar / bottom nav — is provided by the AppShell in the
+ * parent (app) layout, so these screens just render into it.
+ */
 export default function TabsLayout() {
-  return (
-    <Tabs
-      screenOptions={{
-        headerShown: false,
-        tabBarActiveTintColor: colors.accent,
-        tabBarInactiveTintColor: colors.muted,
-      }}
-    >
-      <Tabs.Screen
-        name="index"
-        options={{
-          title: "Pipeline",
-          tabBarIcon: ({ color }) => <TabIcon emoji="📋" color={color} />,
-        }}
-      />
-      <Tabs.Screen
-        name="templates"
-        options={{
-          title: "Templates",
-          tabBarIcon: ({ color }) => <TabIcon emoji="🧩" color={color} />,
-        }}
-      />
-      <Tabs.Screen
-        name="people"
-        options={{
-          title: "People",
-          tabBarIcon: ({ color }) => <TabIcon emoji="👥" color={color} />,
-        }}
-      />
-    </Tabs>
-  );
-}
-
-function TabIcon({ emoji, color }: { emoji: string; color: string }) {
-  return <Text style={{ fontSize: 18, color }}>{emoji}</Text>;
+  return <Slot />;
 }

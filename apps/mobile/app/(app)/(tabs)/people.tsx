@@ -15,9 +15,9 @@ import {
 import { colors, spacing } from "../../../lib/theme";
 import { type VettingStatus } from "@events-os/shared";
 
-const VETTING_TONE: Record<VettingStatus, "neutral" | "amber" | "success"> = {
+const VETTING_TONE: Record<VettingStatus, "neutral" | "warn" | "success"> = {
   unvetted: "neutral",
-  pending: "amber",
+  pending: "warn",
   vetted: "success",
 };
 
