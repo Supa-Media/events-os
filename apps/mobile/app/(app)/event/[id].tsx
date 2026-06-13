@@ -96,8 +96,16 @@ export default function EventDetailScreen() {
     );
   }
 
-  const { event, eventTypeName, activeComponents, readiness, taskTotal, taskDone } =
-    data;
+  const {
+    event,
+    eventTypeName,
+    activeComponents,
+    readiness,
+    taskTotal,
+    taskDone,
+    budgetSpent,
+    budgetPct,
+  } = data;
 
   const nameValue = nameInput !== null ? nameInput : event.name;
   const dateValue = dateInput !== null ? dateInput : toDateInput(event.eventDate);
@@ -182,7 +190,15 @@ export default function EventDetailScreen() {
                 {event.location ? <Meta icon="map-pin" text={event.location} /> : null}
                 <Meta icon="check-circle" text={`${taskDone}/${taskTotal} tasks`} />
                 {event.budget != null ? (
-                  <Meta icon="dollar-sign" text={String(event.budget)} />
+                  <Meta
+                    icon="dollar-sign"
+                    text={`$${budgetSpent} / $${event.budget}${
+                      event.budget > 0 ? ` · ${budgetPct}%` : ""
+                    }`}
+                    danger={event.budget > 0 && budgetSpent > event.budget}
+                  />
+                ) : budgetSpent > 0 ? (
+                  <Meta icon="dollar-sign" text={`$${budgetSpent} planned`} />
                 ) : null}
               </View>
               <View className="mt-1 flex-row items-center gap-2">
@@ -368,11 +384,13 @@ export default function EventDetailScreen() {
 
 // ── Pieces ───────────────────────────────────────────────────────────────────
 
-function Meta({ icon, text }: { icon: any; text: string }) {
+function Meta({ icon, text, danger }: { icon: any; text: string; danger?: boolean }) {
   return (
     <View className="flex-row items-center gap-1.5">
-      <Icon name={icon} size={14} color={colors.muted} />
-      <Text className="text-base text-muted">{text}</Text>
+      <Icon name={icon} size={14} color={danger ? colors.danger : colors.muted} />
+      <Text className={`text-base ${danger ? "font-semibold text-danger" : "text-muted"}`}>
+        {text}
+      </Text>
     </View>
   );
 }

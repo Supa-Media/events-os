@@ -274,6 +274,7 @@ export const DEFAULT_COLUMNS: Record<ModuleKey, ColumnDef[]> = {
     { key: "due_date", label: "Due", kind: "system", type: "due_date", isVisible: true },
     { key: "role", label: "Role", kind: "system", type: "role", isVisible: true },
     { key: "owner", label: "Owner", kind: "system", type: "person", isVisible: true },
+    { key: "cost", label: "Cost", kind: "custom", type: "currency", isVisible: true },
     { key: "notes", label: "Notes", kind: "custom", type: "longtext", isVisible: true },
   ],
   supplies: [
@@ -284,6 +285,7 @@ export const DEFAULT_COLUMNS: Record<ModuleKey, ColumnDef[]> = {
     { key: "photo", label: "Photo", kind: "custom", type: "photo", isVisible: true },
     { key: "link", label: "Link", kind: "custom", type: "url", isVisible: true },
     { key: "qty", label: "Qty", kind: "custom", type: "number", isVisible: true },
+    { key: "cost", label: "Cost", kind: "custom", type: "currency", isVisible: true },
     { key: "owner", label: "Owner", kind: "system", type: "person", isVisible: true },
     { key: "role", label: "Role", kind: "system", type: "role", isVisible: false },
     { key: "notes", label: "Notes", kind: "custom", type: "longtext", isVisible: true },
@@ -297,6 +299,7 @@ export const DEFAULT_COLUMNS: Record<ModuleKey, ColumnDef[]> = {
     { key: "status", label: "Status", kind: "system", type: "status", options: COMMS_STATUS_OPTIONS, isVisible: true },
     { key: "owner", label: "Owner", kind: "system", type: "person", isVisible: true },
     { key: "role", label: "Role", kind: "system", type: "role", isVisible: false },
+    { key: "cost", label: "Cost", kind: "custom", type: "currency", isVisible: false },
     { key: "notes", label: "Notes / copy", kind: "custom", type: "longtext", isVisible: true },
     { key: "files", label: "Files & media", kind: "custom", type: "photo", isVisible: true },
   ],

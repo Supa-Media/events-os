@@ -138,6 +138,19 @@ export const get = query({
     if (!event || event.chapterId !== chapterId) return null;
     const eventType = await ctx.db.get(event.eventTypeId as Id<"eventTypes">);
     const r = await eventReadiness(ctx, eventId);
+
+    // Roll up every item's `cost` field against the event budget.
+    const allItems = await ctx.db
+      .query("eventItems")
+      .withIndex("by_event", (q: any) => q.eq("eventId", eventId))
+      .collect();
+    const budgetSpent = allItems.reduce((sum: number, it: any) => {
+      const c = Number(it.fields?.cost);
+      return sum + (Number.isFinite(c) ? c : 0);
+    }, 0);
+    const budget = event.budget ?? 0;
+    const budgetPct = budget > 0 ? Math.round((budgetSpent / budget) * 100) : 0;
+
     return {
       event,
       eventTypeName: eventType?.name ?? "Unknown",
@@ -145,6 +158,8 @@ export const get = query({
       readiness: r.readiness,
       taskTotal: r.total,
       taskDone: r.done,
+      budgetSpent,
+      budgetPct,
     };
   },
 });
