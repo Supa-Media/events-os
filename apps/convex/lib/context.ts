@@ -1,0 +1,49 @@
+/**
+ * Request context helpers for Events OS.
+ *
+ * Typed loosely (`ctx: any`) so this file doesn't depend on Convex's generated
+ * types — it's pure helper code, not a registered function. Every app function
+ * resolves the caller's chapter through `requireChapterId` so chapter scoping
+ * is enforced in one place.
+ */
+import { requireAuthId } from "@supa/convex/auth";
+import { ConvexError } from "convex/values";
+
+/** The authenticated user's id (throws if signed out). */
+export async function requireUserId(ctx: any): Promise<string> {
+  return await requireAuthId(ctx);
+}
+
+/**
+ * The chapter the caller belongs to (MVP: their first/only membership).
+ * Multi-chapter switching is V3; until then a user has exactly one chapter.
+ */
+export async function requireChapterId(ctx: any): Promise<string> {
+  const userId = await requireAuthId(ctx);
+  const membership = await ctx.db
+    .query("userChapters")
+    .withIndex("by_userId", (q: any) => q.eq("userId", userId))
+    .first();
+  if (!membership) {
+    throw new ConvexError({
+      code: "NO_CHAPTER",
+      message: "You don't belong to a chapter yet.",
+    });
+  }
+  return membership.chapterId as string;
+}
+
+/** Assert a document exists and belongs to the caller's chapter. */
+export async function requireInChapter(
+  ctx: any,
+  chapterId: string,
+  doc: { chapterId?: string } | null,
+  label = "Record",
+): Promise<void> {
+  if (!doc || doc.chapterId !== chapterId) {
+    throw new ConvexError({
+      code: "NOT_FOUND",
+      message: `${label} not found in your chapter.`,
+    });
+  }
+}

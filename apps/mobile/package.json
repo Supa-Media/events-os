@@ -20,6 +20,7 @@
     "expo-notifications": "~0.32.16",
     "expo-device": "~8.0.10",
     "@events-os/shared": "workspace:*",
+    "@events-os/convex": "workspace:*",
     "@convex-dev/auth": "^0.0.90",
     "convex": "^1.31.3",
     "expo": "~54.0.23",
