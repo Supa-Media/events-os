@@ -375,3 +375,6 @@ export function isCompleteStatus(
 // ── Vetting status ───────────────────────────────────────────────────────────
 export const VETTING_STATUSES = ["unvetted", "pending", "vetted"] as const;
 export type VettingStatus = (typeof VETTING_STATUSES)[number];
+
+// ── AI agent config (model registry, cost, budgets) ──────────────────────────
+export * from "./ai";

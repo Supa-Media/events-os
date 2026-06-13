@@ -246,6 +246,66 @@ const schema = defineSchema({
   })
     .index("by_chapter", ["chapterId"])
     .index("by_user", ["userId"]),
+
+  /**
+   * AI agent run — one invocation of an agent feature (e.g. "fill supply
+   * photos"). Carries status, how many items it touched, and total USD cost. A
+   * run owns a set of `aiChanges`, which makes every run one-click revertible.
+   */
+  aiRuns: defineTable({
+    chapterId: v.id("chapters"),
+    userId: v.id("users"),
+    feature: v.string(),
+    eventId: v.optional(v.id("events")),
+    model: v.string(),
+    status: v.union(
+      v.literal("running"),
+      v.literal("done"),
+      v.literal("error"),
+      v.literal("reverted"),
+    ),
+    itemsTouched: v.number(),
+    costUsd: v.number(),
+    summary: v.optional(v.string()),
+    createdAt: v.number(),
+  })
+    .index("by_chapter", ["chapterId"])
+    .index("by_chapter_time", ["chapterId", "createdAt"]),
+
+  /**
+   * AI change — one revertible edit an agent run made to an item field. The
+   * generic key/before/after shape is intentional: any future agent edit to any
+   * field reuses this same log, and Undo restores `before`.
+   */
+  aiChanges: defineTable({
+    runId: v.id("aiRuns"),
+    chapterId: v.id("chapters"),
+    eventId: v.optional(v.id("events")),
+    itemId: v.id("eventItems"),
+    key: v.string(),
+    before: v.optional(v.any()),
+    after: v.optional(v.any()),
+    revertedAt: v.optional(v.number()),
+  }).index("by_run", ["runId"]),
+
+  /**
+   * AI usage — token + dollar accounting per completion call, for the rolling
+   * per-user / per-chapter / org budget windows.
+   */
+  aiUsage: defineTable({
+    chapterId: v.id("chapters"),
+    userId: v.id("users"),
+    runId: v.optional(v.id("aiRuns")),
+    feature: v.string(),
+    model: v.string(),
+    inputTokens: v.number(),
+    outputTokens: v.number(),
+    cachedTokens: v.optional(v.number()),
+    costUsd: v.number(),
+    createdAt: v.number(),
+  })
+    .index("by_chapter_time", ["chapterId", "createdAt"])
+    .index("by_user_time", ["userId", "createdAt"]),
 });
 
 export default schema;

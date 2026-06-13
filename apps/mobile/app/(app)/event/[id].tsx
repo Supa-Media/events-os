@@ -17,6 +17,7 @@ import {
   statusTone,
 } from "../../../components/ui";
 import { EditableGrid } from "../../../components/grid/EditableGrid";
+import { AiPhotoFill } from "../../../components/ai/AiPhotoFill";
 import { colors } from "../../../lib/theme";
 import { formatDate, parseDateInput, toDateInput } from "../../../lib/format";
 import {
@@ -331,13 +332,16 @@ export default function EventDetailScreen() {
                 title={MODULE_LABELS[m]}
                 right={
                   m === "supplies" ? (
-                    <Button
-                      title="Packing mode"
-                      icon="package"
-                      size="sm"
-                      variant="secondary"
-                      onPress={() => router.push(`/event/${eventId}/packing`)}
-                    />
+                    <View className="flex-row items-start gap-2">
+                      <AiPhotoFill eventId={eventId} />
+                      <Button
+                        title="Packing mode"
+                        icon="package"
+                        size="sm"
+                        variant="secondary"
+                        onPress={() => router.push(`/event/${eventId}/packing`)}
+                      />
+                    </View>
                   ) : undefined
                 }
               />
