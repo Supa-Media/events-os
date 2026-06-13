@@ -9,15 +9,18 @@
  */
 
 import type * as auth from "../auth.js";
+import type * as columns from "../columns.js";
 import type * as dashboard from "../dashboard.js";
 import type * as eventTypes from "../eventTypes.js";
 import type * as events from "../events.js";
 import type * as http from "../http.js";
+import type * as items from "../items.js";
 import type * as lib_context from "../lib/context.js";
+import type * as lib_templates from "../lib/templates.js";
 import type * as people from "../people.js";
+import type * as roleAssignments from "../roleAssignments.js";
 import type * as roles from "../roles.js";
 import type * as seed from "../seed.js";
-import type * as tasks from "../tasks.js";
 
 import type {
   ApiFromModules,
@@ -27,15 +30,18 @@ import type {
 
 declare const fullApi: ApiFromModules<{
   auth: typeof auth;
+  columns: typeof columns;
   dashboard: typeof dashboard;
   eventTypes: typeof eventTypes;
   events: typeof events;
   http: typeof http;
+  items: typeof items;
   "lib/context": typeof lib_context;
+  "lib/templates": typeof lib_templates;
   people: typeof people;
+  roleAssignments: typeof roleAssignments;
   roles: typeof roles;
   seed: typeof seed;
-  tasks: typeof tasks;
 }>;
 
 /**

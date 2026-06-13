@@ -1,20 +1,28 @@
 /**
  * Events — dated instances of an event type.
  *
- * The core object the app revolves around. Created from a template, with its
- * tasks/run-of-show cloned as snapshots. Moving the event date re-derives every
- * task's due date (the whole timeline shifts).
+ * The core object the app revolves around. Created from a template by cloning
+ * its columns + items as snapshots (so later template edits never disrupt an
+ * in-flight event). Day-offset modules back-calculate every item's due date from
+ * the single event date; moving the date shifts the whole timeline.
  */
 import { query, mutation } from "./_generated/server";
 import { Id } from "./_generated/dataModel";
 import { v } from "convex/values";
-import { computeDueDate, computeReadiness } from "@events-os/shared";
+import {
+  computeDueDate,
+  computeReadiness,
+  isCompleteStatus,
+  DAY_OFFSET_MODULES,
+  type ModuleKey,
+} from "@events-os/shared";
 import {
   requireUserId,
   requireChapterId,
   requireInChapter,
   getChapterIdOrNull,
 } from "./lib/context";
+import { instantiateEvent } from "./lib/templates";
 
 const statusUnion = v.union(
   v.literal("planning"),
@@ -23,16 +31,40 @@ const statusUnion = v.union(
   v.literal("cancelled"),
 );
 
-/** Roll up a list of tasks into { total, done, readiness }. */
-function rollup(tasks: Array<{ status: string }>) {
-  const total = tasks.length;
-  const done = tasks.filter((t) => t.status === "done").length;
+function isDayOffsetModule(module: string): boolean {
+  return DAY_OFFSET_MODULES.includes(module as ModuleKey);
+}
+
+/**
+ * Per-event readiness off the planning-doc module: complete items / total,
+ * using that event's planning-doc status column to decide "complete".
+ */
+async function eventReadiness(ctx: any, eventId: Id<"events">) {
+  const items = await ctx.db
+    .query("eventItems")
+    .withIndex("by_event_module", (q: any) =>
+      q.eq("eventId", eventId).eq("module", "planning_doc"),
+    )
+    .collect();
+  const statusCol = await ctx.db
+    .query("eventColumns")
+    .withIndex("by_event_module", (q: any) =>
+      q.eq("eventId", eventId).eq("module", "planning_doc"),
+    )
+    .filter((q: any) => q.eq(q.field("key"), "status"))
+    .first();
+  const opts = statusCol?.options;
+  const total = items.length;
+  const done = items.filter((it: any) => isCompleteStatus(opts, it.status)).length;
   return { total, done, readiness: computeReadiness(total, done) };
 }
 
 /**
- * THE TEMPLATING ENGINE. Snapshot a template into a live event: clone its tasks
- * (with back-calculated due dates) and run-of-show rows.
+ * THE TEMPLATING ENGINE. Snapshot a template into a live event: clone its
+ * columns onto the event, then clone its items (back-calculating due dates for
+ * day-offset modules). Supplies items keep their template's acquisition status,
+ * which IS the "what do we still need" reset; tasks/comms start at their status
+ * column's first option.
  */
 export const createFromTemplate = mutation({
   args: {
@@ -40,65 +72,23 @@ export const createFromTemplate = mutation({
     name: v.string(),
     eventDate: v.number(),
     location: v.optional(v.string()),
+    budget: v.optional(v.number()),
   },
   handler: async (ctx, args) => {
     const chapterId = await requireChapterId(ctx);
     const userId = await requireUserId(ctx);
     const eventType = await ctx.db.get(args.eventTypeId);
     await requireInChapter(ctx, chapterId, eventType, "Event type");
-    const now = Date.now();
 
-    const eventId = await ctx.db.insert("events", {
+    return await instantiateEvent(ctx, {
+      eventType,
       chapterId: chapterId as Id<"chapters">,
-      eventTypeId: args.eventTypeId,
-      templateVersion: eventType!.version,
+      userId: userId as Id<"users">,
       name: args.name,
       eventDate: args.eventDate,
       location: args.location,
-      status: "planning",
-      createdBy: userId as Id<"users">,
-      createdAt: now,
-      updatedAt: now,
+      budget: args.budget,
     });
-
-    const templateTasks = await ctx.db
-      .query("templateTasks")
-      .withIndex("by_eventType", (q: any) =>
-        q.eq("eventTypeId", args.eventTypeId),
-      )
-      .collect();
-    for (const t of templateTasks) {
-      await ctx.db.insert("tasks", {
-        eventId,
-        chapterId: chapterId as Id<"chapters">,
-        title: t.title,
-        tMinusOffsetDays: t.tMinusOffsetDays,
-        dueDate: computeDueDate(args.eventDate, t.tMinusOffsetDays),
-        owningRole: t.owningRole,
-        status: "not_started",
-        order: t.order,
-        createdAt: now,
-      });
-    }
-
-    const templateRows = await ctx.db
-      .query("templateRunOfShow")
-      .withIndex("by_eventType", (q: any) =>
-        q.eq("eventTypeId", args.eventTypeId),
-      )
-      .collect();
-    for (const r of templateRows) {
-      await ctx.db.insert("eventRunOfShow", {
-        eventId,
-        offsetMinutes: r.offsetMinutes,
-        segment: r.segment,
-        owningRole: r.owningRole,
-        notes: r.notes,
-        order: r.order,
-      });
-    }
-
-    return eventId;
   },
 });
 
@@ -125,11 +115,7 @@ export const list = query({
     const enriched = await Promise.all(
       filtered.map(async (event: any) => {
         const eventType = await ctx.db.get(event.eventTypeId as Id<"eventTypes">);
-        const tasks = await ctx.db
-          .query("tasks")
-          .withIndex("by_event", (q: any) => q.eq("eventId", event._id))
-          .collect();
-        const r = rollup(tasks);
+        const r = await eventReadiness(ctx, event._id);
         return {
           ...event,
           eventTypeName: eventType?.name ?? "Unknown",
@@ -143,7 +129,7 @@ export const list = query({
   },
 });
 
-/** Fetch a single event plus its event-type name. */
+/** Fetch a single event plus its event-type name + readiness. */
 export const get = query({
   args: { eventId: v.id("events") },
   handler: async (ctx, { eventId }) => {
@@ -151,13 +137,19 @@ export const get = query({
     const event = await ctx.db.get(eventId);
     if (!event || event.chapterId !== chapterId) return null;
     const eventType = await ctx.db.get(event.eventTypeId as Id<"eventTypes">);
-    return { event, eventTypeName: eventType?.name ?? "Unknown" };
+    const r = await eventReadiness(ctx, eventId);
+    return {
+      event,
+      eventTypeName: eventType?.name ?? "Unknown",
+      activeComponents: eventType?.activeComponents ?? [],
+      readiness: r.readiness,
+      taskTotal: r.total,
+      taskDone: r.done,
+    };
   },
 });
 
-/**
- * Move an event's date and re-derive every task's due date from the new date.
- */
+/** Move an event's date and re-derive every day-offset item's due date. */
 export const reschedule = mutation({
   args: { eventId: v.id("events"), eventDate: v.number() },
   handler: async (ctx, { eventId, eventDate }) => {
@@ -165,15 +157,38 @@ export const reschedule = mutation({
     const event = await ctx.db.get(eventId);
     await requireInChapter(ctx, chapterId, event, "Event");
     await ctx.db.patch(eventId, { eventDate, updatedAt: Date.now() });
-    const tasks = await ctx.db
-      .query("tasks")
+    const items = await ctx.db
+      .query("eventItems")
       .withIndex("by_event", (q: any) => q.eq("eventId", eventId))
       .collect();
-    for (const t of tasks) {
-      await ctx.db.patch(t._id, {
-        dueDate: computeDueDate(eventDate, t.tMinusOffsetDays),
-      });
+    for (const it of items) {
+      if (isDayOffsetModule(it.module) && it.offsetDays !== undefined) {
+        await ctx.db.patch(it._id, {
+          dueDate: computeDueDate(eventDate, it.offsetDays),
+        });
+      }
     }
+    return eventId;
+  },
+});
+
+/** Edit an event's top-level fields (name, location, budget). */
+export const updateDetails = mutation({
+  args: {
+    eventId: v.id("events"),
+    name: v.optional(v.string()),
+    location: v.optional(v.union(v.string(), v.null())),
+    budget: v.optional(v.union(v.number(), v.null())),
+  },
+  handler: async (ctx, { eventId, ...patch }) => {
+    const chapterId = await requireChapterId(ctx);
+    const event = await ctx.db.get(eventId);
+    await requireInChapter(ctx, chapterId, event, "Event");
+    const fields: Record<string, unknown> = { updatedAt: Date.now() };
+    if (patch.name !== undefined) fields.name = patch.name;
+    if (patch.location !== undefined) fields.location = patch.location ?? undefined;
+    if (patch.budget !== undefined) fields.budget = patch.budget ?? undefined;
+    await ctx.db.patch(eventId, fields);
     return eventId;
   },
 });
@@ -190,7 +205,7 @@ export const setStatus = mutation({
   },
 });
 
-/** Delete an event and all its tasks, run-of-show rows, and role assignments. */
+/** Delete an event and all its columns, items, and role assignments. */
 export const remove = mutation({
   args: { eventId: v.id("events") },
   handler: async (ctx, { eventId }) => {
@@ -198,17 +213,17 @@ export const remove = mutation({
     const event = await ctx.db.get(eventId);
     await requireInChapter(ctx, chapterId, event, "Event");
 
-    const tasks = await ctx.db
-      .query("tasks")
+    const items = await ctx.db
+      .query("eventItems")
       .withIndex("by_event", (q: any) => q.eq("eventId", eventId))
       .collect();
-    for (const t of tasks) await ctx.db.delete(t._id);
+    for (const it of items) await ctx.db.delete(it._id);
 
-    const rows = await ctx.db
-      .query("eventRunOfShow")
+    const cols = await ctx.db
+      .query("eventColumns")
       .withIndex("by_event", (q: any) => q.eq("eventId", eventId))
       .collect();
-    for (const r of rows) await ctx.db.delete(r._id);
+    for (const c of cols) await ctx.db.delete(c._id);
 
     const assignments = await ctx.db
       .query("roleAssignments")
@@ -239,20 +254,36 @@ export const pipeline = query({
     const enriched = await Promise.all(
       upcoming.map(async (event: any) => {
         const eventType = await ctx.db.get(event.eventTypeId as Id<"eventTypes">);
-        const tasks = await ctx.db
-          .query("tasks")
-          .withIndex("by_event", (q: any) => q.eq("eventId", event._id))
+        const items = await ctx.db
+          .query("eventItems")
+          .withIndex("by_event_module", (q: any) =>
+            q.eq("eventId", event._id).eq("module", "planning_doc"),
+          )
           .collect();
-        const r = rollup(tasks);
-        const blockerCount = tasks.filter(
-          (t: any) => t.status !== "done" && t.dueDate < now,
+        const statusCol = await ctx.db
+          .query("eventColumns")
+          .withIndex("by_event_module", (q: any) =>
+            q.eq("eventId", event._id).eq("module", "planning_doc"),
+          )
+          .filter((q: any) => q.eq(q.field("key"), "status"))
+          .first();
+        const opts = statusCol?.options;
+        const total = items.length;
+        const done = items.filter((it: any) =>
+          isCompleteStatus(opts, it.status),
+        ).length;
+        const blockerCount = items.filter(
+          (it: any) =>
+            !isCompleteStatus(opts, it.status) &&
+            it.dueDate !== undefined &&
+            it.dueDate < now,
         ).length;
         return {
           ...event,
           eventTypeName: eventType?.name ?? "Unknown",
-          readiness: r.readiness,
-          taskTotal: r.total,
-          taskDone: r.done,
+          readiness: computeReadiness(total, done),
+          taskTotal: total,
+          taskDone: done,
           blockerCount,
         };
       }),
@@ -270,35 +301,48 @@ export const dayOf = query({
     if (!event || event.chapterId !== chapterId) return null;
     const eventType = await ctx.db.get(event.eventTypeId as Id<"eventTypes">);
 
-    const runOfShow = await ctx.db
-      .query("eventRunOfShow")
-      .withIndex("by_event", (q: any) => q.eq("eventId", eventId))
-      .collect();
+    const runOfShow = (
+      await ctx.db
+        .query("eventItems")
+        .withIndex("by_event_module", (q: any) =>
+          q.eq("eventId", eventId).eq("module", "run_of_show"),
+        )
+        .collect()
+    ).sort((a: any, b: any) => a.order - b.order);
 
-    const eventTypeRoles: string[] = eventType?.roles ?? [];
+    const roleIds: Id<"roles">[] = eventType?.activeRoleIds ?? [];
     const assignments = await ctx.db
       .query("roleAssignments")
       .withIndex("by_event", (q: any) => q.eq("eventId", eventId))
       .collect();
     const roles = await Promise.all(
-      eventTypeRoles.map(async (role) => {
-        const assignment = assignments.find((a: any) => a.role === role);
+      roleIds.map(async (roleId) => {
+        const role = await ctx.db.get(roleId);
+        const assignment = assignments.find((a: any) => a.roleId === roleId);
         const person = assignment ? await ctx.db.get(assignment.personId) : null;
-        return { role, person };
+        return {
+          roleId,
+          roleLabel: role?.label ?? "Unknown role",
+          person: person ? { _id: person._id, name: person.name } : null,
+        };
       }),
     );
 
-    const tasks = await ctx.db
-      .query("tasks")
-      .withIndex("by_event", (q: any) => q.eq("eventId", eventId))
-      .collect();
+    const tasks = (
+      await ctx.db
+        .query("eventItems")
+        .withIndex("by_event_module", (q: any) =>
+          q.eq("eventId", eventId).eq("module", "planning_doc"),
+        )
+        .collect()
+    ).sort((a: any, b: any) => (a.dueDate ?? 0) - (b.dueDate ?? 0));
 
     return {
       event,
       eventTypeName: eventType?.name ?? "Unknown",
-      runOfShow: runOfShow.sort((a: any, b: any) => a.order - b.order),
+      runOfShow,
       roles,
-      tasks: tasks.sort((a: any, b: any) => a.dueDate - b.dueDate),
+      tasks,
     };
   },
 });

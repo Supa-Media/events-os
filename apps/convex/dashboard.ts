@@ -6,7 +6,7 @@
  */
 import { query } from "./_generated/server";
 import { v } from "convex/values";
-import { computeReadiness, DAY_MS } from "@events-os/shared";
+import { computeReadiness, isCompleteStatus, DAY_MS } from "@events-os/shared";
 import { getChapterIdOrNull } from "./lib/context";
 
 const EMPTY = {
@@ -38,15 +38,27 @@ export const summary = query({
       .filter((e: any) => e.eventDate >= now && e.status !== "cancelled")
       .sort((a: any, b: any) => a.eventDate - b.eventDate);
 
-    // Per-upcoming-event readiness.
+    // Per-upcoming-event readiness, off the planning-doc module.
     const readinessByEvent = await Promise.all(
       upcoming.map(async (event: any) => {
-        const tasks = await ctx.db
-          .query("tasks")
-          .withIndex("by_event", (q: any) => q.eq("eventId", event._id))
+        const items = await ctx.db
+          .query("eventItems")
+          .withIndex("by_event_module", (q: any) =>
+            q.eq("eventId", event._id).eq("module", "planning_doc"),
+          )
           .collect();
-        const done = tasks.filter((t: any) => t.status === "done").length;
-        return computeReadiness(tasks.length, done);
+        const statusCol = await ctx.db
+          .query("eventColumns")
+          .withIndex("by_event_module", (q: any) =>
+            q.eq("eventId", event._id).eq("module", "planning_doc"),
+          )
+          .filter((q: any) => q.eq(q.field("key"), "status"))
+          .first();
+        const opts = statusCol?.options;
+        const done = items.filter((it: any) =>
+          isCompleteStatus(opts, it.status),
+        ).length;
+        return computeReadiness(items.length, done);
       }),
     );
     const avgReadiness =

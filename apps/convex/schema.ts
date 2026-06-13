@@ -8,23 +8,69 @@ import { supaAuthTables, supaNotificationTables } from "@supa-media/convex/schem
  * Framework base tables: auth (`users` + @convex-dev/auth), multi-tenant by
  * `chapter` (`chapters` + `userChapters`), and push notifications.
  *
- * App tables model the spec's core concepts:
- *   Event Type / Template → eventTypes (+ templateTasks, templateRunOfShow)
- *   Event                 → events (+ tasks, eventRunOfShow, roleAssignments)
- *   Person / Volunteer    → people
+ * App tables use a UNIFIED ITEMS model. Every planning surface — planning doc,
+ * supplies, comms, run-of-show — is a "module": a list of items rendered through
+ * a configurable column set.
  *
- * Chapter scoping is on every app table from day one (multi-city is V3, but the
- * column is here now so the migration is painless).
+ *   Roles            → roles (editable per chapter)
+ *   Event Type/Template → eventTypes (+ templateColumns, templateItems)
+ *   Event            → events (+ eventColumns, eventItems, roleAssignments)
+ *   Person/Volunteer → people
+ *
+ * Templates are extensible (authors add/hide/reorder columns + items). Events
+ * clone the template's columns AND items at creation, so they're insulated from
+ * later template edits and stay locked-but-editable. The fields the backend
+ * computes on (title, offset, status, role, owner, due date) are promoted to
+ * typed columns on each item; everything else lives in the `fields` bag.
+ *
+ * Chapter scoping is on every app table from day one (multi-city is V3).
  */
+
+/** Reusable validator for a select/status option (mirrors shared SelectOption). */
+const selectOption = v.object({
+  value: v.string(),
+  label: v.string(),
+  color: v.optional(v.string()),
+  isComplete: v.optional(v.boolean()),
+});
+
+/** Reusable validator for a column definition (template + event copies share it). */
+const columnFields = {
+  module: v.string(),
+  key: v.string(),
+  label: v.string(),
+  kind: v.union(v.literal("system"), v.literal("custom")),
+  type: v.string(),
+  options: v.optional(v.array(selectOption)),
+  config: v.optional(v.any()),
+  isVisible: v.boolean(),
+  order: v.number(),
+  width: v.optional(v.number()),
+};
+
+/** Reusable validator for an item's promoted fields + custom-field bag. */
+const itemFields = {
+  module: v.string(),
+  title: v.string(),
+  order: v.number(),
+  // Signed day offset (negative = before event), for planning_doc + comms.
+  offsetDays: v.optional(v.number()),
+  // Signed minute offset from event start, for run_of_show.
+  offsetMinutes: v.optional(v.number()),
+  // Status value (matches a value in the module's status column options).
+  status: v.optional(v.string()),
+  roleId: v.optional(v.id("roles")),
+  // Custom-column values, keyed by column key.
+  fields: v.optional(v.record(v.string(), v.any())),
+};
+
 const schema = defineSchema({
   ...supaAuthTables,
   ...supaNotificationTables,
 
   /**
    * Chapter (tenant) — a city. Owns its events, team, templates, and roster.
-   * Defined explicitly (rather than via the framework's `supaTenantTables`,
-   * whose computed keys erase the literal table names) so `Id<"chapters">` and
-   * typed `v.id("chapters")` references work throughout. Multi-city is V3.
+   * Multi-city is V3; the column is here now so the migration is painless.
    */
   chapters: defineTable({
     name: v.string(),
@@ -49,24 +95,38 @@ const schema = defineSchema({
     .index("by_userId_chapterId", ["userId", "chapterId"]),
 
   /**
+   * Role — an editable, chapter-scoped event-team role (Event Lead, Comms Lead,
+   * Logistics Lead, Production Lead by default). Renamable/reorderable; a
+   * template declares which roles it uses (`eventTypes.activeRoleIds`).
+   */
+  roles: defineTable({
+    chapterId: v.id("chapters"),
+    key: v.string(),
+    label: v.string(),
+    description: v.optional(v.string()),
+    order: v.number(),
+    isArchived: v.optional(v.boolean()),
+    createdAt: v.number(),
+  })
+    .index("by_chapter", ["chapterId"])
+    .index("by_chapter_key", ["chapterId", "key"]),
+
+  /**
    * Event Type / Template — the canonical, reusable blueprint for a kind of
-   * event (e.g. "Worship With Strangers", "Eden"). A template is structured
-   * data: a roles set + active components, with its task list and run-of-show
-   * in `templateTasks` / `templateRunOfShow`.
-   *
-   * `version` bumps on every edit. Events clone the template at creation, so
-   * in-flight events are never disrupted by later template edits.
+   * event. Its columns + base items live in `templateColumns` / `templateItems`.
+   * `version` bumps on every structural edit; events clone the template at
+   * creation so in-flight events are never disrupted by later edits.
    */
   eventTypes: defineTable({
     chapterId: v.id("chapters"),
     name: v.string(),
     slug: v.string(),
     description: v.optional(v.string()),
-    // WwS is a ~10% scaled-down variant of Eden — a template can inherit from
-    // a parent so variants stay structurally aligned.
+    // WwS is a ~10% scaled-down variant of Eden — a template can inherit from a
+    // parent so variants stay structurally aligned.
     deriveFromEventTypeId: v.optional(v.id("eventTypes")),
-    // Active role keys for this type (subset of the 4 canonical roles).
-    roles: v.array(v.string()),
+    // Active roles for this type (subset of the chapter's roles).
+    activeRoleIds: v.array(v.id("roles")),
     // Active component keys (6 core always; 2 more for larger events).
     activeComponents: v.array(v.string()),
     version: v.number(),
@@ -78,31 +138,26 @@ const schema = defineSchema({
     .index("by_chapter", ["chapterId"])
     .index("by_chapter_slug", ["chapterId", "slug"]),
 
-  /** A task in a template's task list, carrying its T-minus offset + owning role. */
-  templateTasks: defineTable({
+  /** Column definitions for a template's modules (configurable per template). */
+  templateColumns: defineTable({
     eventTypeId: v.id("eventTypes"),
-    title: v.string(),
-    // Days before the event date this task is due (T-minus). 0 = day-of.
-    tMinusOffsetDays: v.number(),
-    owningRole: v.string(),
-    order: v.number(),
-  }).index("by_eventType", ["eventTypeId"]),
+    ...columnFields,
+  })
+    .index("by_eventType", ["eventTypeId"])
+    .index("by_eventType_module", ["eventTypeId", "module"]),
 
-  /** A row in a template's run-of-show table. */
-  templateRunOfShow: defineTable({
+  /** Base items for a template's modules (the rows authors edit). */
+  templateItems: defineTable({
     eventTypeId: v.id("eventTypes"),
-    // Minutes relative to event start; negative = before start (setup/soundcheck).
-    offsetMinutes: v.number(),
-    segment: v.string(),
-    owningRole: v.optional(v.string()),
-    notes: v.optional(v.string()),
-    order: v.number(),
-  }).index("by_eventType", ["eventTypeId"]),
+    ...itemFields,
+  })
+    .index("by_eventType", ["eventTypeId"])
+    .index("by_eventType_module", ["eventTypeId", "module"]),
 
   /**
-   * Event — a dated instance of an event type (the core object the whole app
-   * revolves around). Created from a template; its tasks/run-of-show are cloned
-   * snapshots so it's insulated from later template edits.
+   * Event — a dated instance of an event type (the core object the app revolves
+   * around). Created from a template; its columns + items are cloned snapshots,
+   * so it's insulated from later template edits.
    */
   events: defineTable({
     chapterId: v.id("chapters"),
@@ -110,9 +165,10 @@ const schema = defineSchema({
     // Template version this event was spun up from (for display / drift checks).
     templateVersion: v.number(),
     name: v.string(),
-    // Event start (timestamp). Moving this re-derives every task's due date.
+    // Event start (timestamp). Moving this re-derives every item's due date.
     eventDate: v.number(),
     location: v.optional(v.string()),
+    budget: v.optional(v.number()),
     status: v.union(
       v.literal("planning"),
       v.literal("ready"),
@@ -127,40 +183,30 @@ const schema = defineSchema({
     .index("by_chapter_date", ["chapterId", "eventDate"])
     .index("by_eventType", ["eventTypeId"]),
 
-  /**
-   * A task on a specific event. Auto-scheduled off the single event date:
-   * `dueDate = eventDate - tMinusOffsetDays`. Rolls up into per-event readiness.
-   */
-  tasks: defineTable({
+  /** Column definitions cloned onto an event (snapshot of the template's). */
+  eventColumns: defineTable({
     eventId: v.id("events"),
-    chapterId: v.id("chapters"),
-    title: v.string(),
-    tMinusOffsetDays: v.number(),
-    // Back-calculated from the event date; recomputed when the date moves.
-    dueDate: v.number(),
-    owningRole: v.string(),
-    assigneePersonId: v.optional(v.id("people")),
-    status: v.union(
-      v.literal("not_started"),
-      v.literal("in_progress"),
-      v.literal("done"),
-    ),
-    order: v.number(),
-    createdAt: v.number(),
+    ...columnFields,
   })
     .index("by_event", ["eventId"])
-    .index("by_event_status", ["eventId", "status"])
-    .index("by_chapter", ["chapterId"]),
+    .index("by_event_module", ["eventId", "module"]),
 
-  /** A run-of-show row cloned onto a specific event (the day-of script). */
-  eventRunOfShow: defineTable({
+  /**
+   * An item on a specific event. Day-offset modules auto-schedule off the single
+   * event date (`dueDate = eventDate + offsetDays`). Rolls up into readiness.
+   */
+  eventItems: defineTable({
     eventId: v.id("events"),
-    offsetMinutes: v.number(),
-    segment: v.string(),
-    owningRole: v.optional(v.string()),
-    notes: v.optional(v.string()),
-    order: v.number(),
-  }).index("by_event", ["eventId"]),
+    chapterId: v.id("chapters"),
+    ...itemFields,
+    // Per-event owner (a person); template items have no owner.
+    ownerPersonId: v.optional(v.id("people")),
+    // Back-calculated from the event date for day-offset modules.
+    dueDate: v.optional(v.number()),
+  })
+    .index("by_event", ["eventId"])
+    .index("by_event_module", ["eventId", "module"])
+    .index("by_chapter", ["chapterId"]),
 
   /**
    * Role assignment — who holds which role on an event. Rotatable; the history
@@ -169,12 +215,12 @@ const schema = defineSchema({
   roleAssignments: defineTable({
     eventId: v.id("events"),
     chapterId: v.id("chapters"),
-    role: v.string(),
+    roleId: v.id("roles"),
     personId: v.id("people"),
     createdAt: v.number(),
   })
     .index("by_event", ["eventId"])
-    .index("by_event_role", ["eventId", "role"])
+    .index("by_event_role", ["eventId", "roleId"])
     .index("by_person", ["personId"]),
 
   /**
