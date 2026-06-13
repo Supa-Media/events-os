@@ -40,7 +40,7 @@ export const listForEvent = query({
         .map(async (t: any) => {
           let assignee: { _id: Id<"people">; name: string } | null = null;
           if (t.assigneePersonId) {
-            const person = await ctx.db.get(t.assigneePersonId);
+            const person = await ctx.db.get(t.assigneePersonId as Id<"people">);
             if (person) assignee = { _id: person._id, name: person.name };
           }
           return { ...t, assignee };

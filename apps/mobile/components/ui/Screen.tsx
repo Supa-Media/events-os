@@ -4,7 +4,7 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import { colors, spacing } from "../../lib/theme";
 
 type Props = {
-  children: ReactNode;
+  children?: ReactNode;
   /** When true, content is laid out in a scroll view (the default). */
   scroll?: boolean;
   /** Show a centered spinner instead of children. */

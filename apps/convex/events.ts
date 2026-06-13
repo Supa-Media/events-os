@@ -118,7 +118,7 @@ export const list = query({
 
     const enriched = await Promise.all(
       filtered.map(async (event: any) => {
-        const eventType = await ctx.db.get(event.eventTypeId);
+        const eventType = await ctx.db.get(event.eventTypeId as Id<"eventTypes">);
         const tasks = await ctx.db
           .query("tasks")
           .withIndex("by_event", (q: any) => q.eq("eventId", event._id))
@@ -144,7 +144,7 @@ export const get = query({
     const chapterId = await requireChapterId(ctx);
     const event = await ctx.db.get(eventId);
     if (!event || event.chapterId !== chapterId) return null;
-    const eventType = await ctx.db.get(event.eventTypeId);
+    const eventType = await ctx.db.get(event.eventTypeId as Id<"eventTypes">);
     return { event, eventTypeName: eventType?.name ?? "Unknown" };
   },
 });
@@ -231,7 +231,7 @@ export const pipeline = query({
 
     const enriched = await Promise.all(
       upcoming.map(async (event: any) => {
-        const eventType = await ctx.db.get(event.eventTypeId);
+        const eventType = await ctx.db.get(event.eventTypeId as Id<"eventTypes">);
         const tasks = await ctx.db
           .query("tasks")
           .withIndex("by_event", (q: any) => q.eq("eventId", event._id))
@@ -261,7 +261,7 @@ export const dayOf = query({
     const chapterId = await requireChapterId(ctx);
     const event = await ctx.db.get(eventId);
     if (!event || event.chapterId !== chapterId) return null;
-    const eventType = await ctx.db.get(event.eventTypeId);
+    const eventType = await ctx.db.get(event.eventTypeId as Id<"eventTypes">);
 
     const runOfShow = await ctx.db
       .query("eventRunOfShow")

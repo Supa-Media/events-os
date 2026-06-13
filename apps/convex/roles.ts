@@ -102,7 +102,7 @@ export const historyForPerson = query({
 
     const history = await Promise.all(
       assignments.map(async (a: any) => {
-        const event = await ctx.db.get(a.eventId);
+        const event = await ctx.db.get(a.eventId as Id<"events">);
         return {
           _id: a._id,
           role: a.role,

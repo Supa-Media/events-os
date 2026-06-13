@@ -1,10 +1,6 @@
 import { defineSchema, defineTable } from "convex/server";
 import { v } from "convex/values";
-import {
-  supaAuthTables,
-  supaTenantTables,
-  supaNotificationTables,
-} from "@supa/convex/schema";
+import { supaAuthTables, supaNotificationTables } from "@supa/convex/schema";
 
 /**
  * Database schema for Events OS.
@@ -22,8 +18,35 @@ import {
  */
 const schema = defineSchema({
   ...supaAuthTables,
-  ...supaTenantTables({ tenantName: "chapter" }),
   ...supaNotificationTables,
+
+  /**
+   * Chapter (tenant) — a city. Owns its events, team, templates, and roster.
+   * Defined explicitly (rather than via the framework's `supaTenantTables`,
+   * whose computed keys erase the literal table names) so `Id<"chapters">` and
+   * typed `v.id("chapters")` references work throughout. Multi-city is V3.
+   */
+  chapters: defineTable({
+    name: v.string(),
+    slug: v.optional(v.string()),
+    image: v.optional(v.string()),
+    isActive: v.optional(v.boolean()),
+    createdAt: v.optional(v.number()),
+  })
+    .index("by_slug", ["slug"])
+    .index("by_name", ["name"]),
+
+  /** Junction: which chapter a user belongs to, and their role within it. */
+  userChapters: defineTable({
+    userId: v.id("users"),
+    chapterId: v.id("chapters"),
+    role: v.optional(v.string()),
+    isActive: v.optional(v.boolean()),
+    joinedAt: v.optional(v.number()),
+  })
+    .index("by_userId", ["userId"])
+    .index("by_chapterId", ["chapterId"])
+    .index("by_userId_chapterId", ["userId", "chapterId"]),
 
   /**
    * Event Type / Template — the canonical, reusable blueprint for a kind of

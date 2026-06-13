@@ -53,7 +53,7 @@ export const seedDemoData = mutation({
     if (!membership) {
       await ctx.db.insert("userChapters", {
         userId: userId as Id<"users">,
-        chapterId: chapterId as unknown as string,
+        chapterId,
         role: "lead",
         isActive: true,
         joinedAt: now,
