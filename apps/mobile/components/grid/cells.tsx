@@ -64,6 +64,9 @@ function InlineText({
 }) {
   const initial = format ? format(value) : value == null ? "" : String(value);
   const [text, setText] = useState(initial);
+  // Auto-grow multiline inputs to their content height so wrapped text is never
+  // clipped and the row grows to fit (no fixed-height <textarea> truncation).
+  const [contentH, setContentH] = useState<number | undefined>(undefined);
   useEffect(() => {
     setText(format ? format(value) : value == null ? "" : String(value));
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -76,12 +79,21 @@ function InlineText({
       placeholderTextColor={colors.faint}
       multiline={multiline}
       autoFocus={autoFocus}
+      textAlignVertical="top"
       keyboardType={numeric ? "numbers-and-punctuation" : "default"}
+      onContentSizeChange={
+        multiline
+          ? (e) => setContentH(e.nativeEvent.contentSize.height)
+          : undefined
+      }
       onBlur={() => onCommit(parse ? parse(text) : text)}
-      className={`px-2 py-1.5 text-sm text-ink ${
+      className={`flex-1 px-2 py-1.5 text-sm leading-snug text-ink ${
         weight === "medium" ? "font-medium" : ""
       }`}
-      style={{ minWidth: 40 }}
+      style={[
+        { minWidth: 40 },
+        multiline && contentH ? { height: Math.max(contentH, 22) } : null,
+      ]}
     />
   );
 }
@@ -485,6 +497,7 @@ export function GridCell(ctx: CellContext) {
       return (
         <InlineText
           value={value}
+          multiline
           placeholder={column.key === "title" ? "Untitled" : "—"}
           weight={column.key === "title" ? "medium" : "normal"}
           parse={(t) => (column.key === "title" ? t : t.trim() ? t : null)}

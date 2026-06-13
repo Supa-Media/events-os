@@ -1,4 +1,4 @@
-import { ReactNode } from "react";
+import { ReactNode, useState } from "react";
 import { View, Text, useWindowDimensions, Pressable } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { usePathname, useRouter } from "expo-router";
@@ -36,12 +36,16 @@ const DESKTOP = 760;
 export function AppShell({ children }: { children: ReactNode }) {
   const { width } = useWindowDimensions();
   const desktop = width >= DESKTOP;
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
 
   if (desktop) {
     return (
       <View className="flex-1 flex-row bg-surface">
-        <Sidebar />
-        <View className="flex-1">{children}</View>
+        {!sidebarCollapsed && <Sidebar onCollapse={() => setSidebarCollapsed(true)} />}
+        <View className="flex-1">
+          {children}
+          {sidebarCollapsed && <SidebarOpenButton onPress={() => setSidebarCollapsed(false)} />}
+        </View>
       </View>
     );
   }
@@ -55,14 +59,15 @@ export function AppShell({ children }: { children: ReactNode }) {
   );
 }
 
-function Sidebar() {
+function Sidebar({ onCollapse }: { onCollapse: () => void }) {
   const router = useRouter();
   const pathname = usePathname();
+  const [collapseHovered, setCollapseHovered] = useState(false);
   return (
     <View className="w-60 border-r border-border bg-raised">
       <SafeAreaView edges={["top"]} className="flex-1">
         <View className="flex-1 px-3 pb-4 pt-5">
-          {/* Brand mark */}
+          {/* Brand mark + collapse toggle */}
           <View className="mb-6 flex-row items-center gap-2.5 px-2">
             <View className="h-8 w-8 items-center justify-center rounded-md bg-accent">
               <Icon name="calendar" size={17} color="#FFFFFF" />
@@ -71,6 +76,18 @@ function Sidebar() {
               <Text className="font-display text-lg leading-5 text-ink">Events</Text>
               <Text className="-mt-0.5 font-display text-lg leading-5 text-accent">OS</Text>
             </View>
+            <View className="flex-1" />
+            <Pressable
+              accessibilityLabel="Collapse sidebar"
+              onPress={onCollapse}
+              onHoverIn={() => setCollapseHovered(true)}
+              onHoverOut={() => setCollapseHovered(false)}
+              className={`h-7 w-7 items-center justify-center rounded-md ${
+                collapseHovered ? "bg-sunken" : ""
+              }`}
+            >
+              <Icon name="chevron-left" size={18} color={colors.muted} />
+            </Pressable>
           </View>
 
           {/* Nav */}
@@ -93,6 +110,29 @@ function Sidebar() {
         </View>
       </SafeAreaView>
     </View>
+  );
+}
+
+/**
+ * Floating affordance shown over the content area when the desktop sidebar is
+ * collapsed. Tapping it re-expands the sidebar.
+ */
+function SidebarOpenButton({ onPress }: { onPress: () => void }) {
+  const [hovered, setHovered] = useState(false);
+  return (
+    <SafeAreaView edges={["top"]} className="absolute left-0 top-0 z-50">
+      <Pressable
+        accessibilityLabel="Open sidebar"
+        onPress={onPress}
+        onHoverIn={() => setHovered(true)}
+        onHoverOut={() => setHovered(false)}
+        className={`m-3 h-9 w-9 items-center justify-center rounded-md border border-border ${
+          hovered ? "bg-sunken" : "bg-raised"
+        }`}
+      >
+        <Icon name="sidebar" size={18} color={colors.ink} />
+      </Pressable>
+    </SafeAreaView>
   );
 }
 

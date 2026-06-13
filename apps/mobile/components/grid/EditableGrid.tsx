@@ -16,6 +16,7 @@ import { TextField, Select } from "../ui/Field";
 import { Button } from "../ui/Button";
 import { GridCell } from "./cells";
 import { SortableRows } from "./SortableRows";
+import { ColumnOptionsEditor } from "./ColumnOptionsEditor";
 import {
   useGridData,
   buildPatch,
@@ -88,7 +89,9 @@ function defaultWidth(col: GridColumn): number {
   }
 }
 
-const ROW_ACTION_W = 72;
+// Drag grip lives in a LEFT gutter; delete in a small RIGHT gutter.
+const GRIP_W = 30;
+const DELETE_W = 38;
 
 type Props = {
   mode: GridMode;
@@ -112,7 +115,8 @@ export function EditableGrid({
 }: Props) {
   const grid = useGridData(mode, parentId, module);
   const [groupBy, setGroupBy] = useState<string | null>(null);
-  const [menu, setMenu] = useState<null | "columns" | "group" | "addField">(null);
+  const [menu, setMenu] = useState<null | "columns" | "group" | "addField" | "editOptions">(null);
+  const [editColId, setEditColId] = useState<string | null>(null);
 
   const columns = useMemo(() => {
     return grid.columns
@@ -128,7 +132,7 @@ export function EditableGrid({
     [columns],
   );
   const tableWidth =
-    widths.reduce((sum, w) => sum + w, 0) + (editable ? ROW_ACTION_W : 0);
+    widths.reduce((sum, w) => sum + w, 0) + (editable ? GRIP_W + DELETE_W : 0);
 
   /** Columns you can group the board by (single-choice tag columns). */
   const groupables = useMemo(
@@ -136,6 +140,7 @@ export function EditableGrid({
     [columns],
   );
   const groupCol = groupBy ? grid.columns.find((c) => c.key === groupBy) ?? null : null;
+  const editCol = editColId ? grid.columns.find((c) => c._id === editColId) ?? null : null;
 
   const commit = (item: GridItem, column: GridColumn, value: any) =>
     grid.updateItem(item._id, buildPatch(column, value, module));
@@ -242,6 +247,7 @@ export function EditableGrid({
         <View style={{ width: Math.max(tableWidth, 320) }}>
           {/* Column header */}
           <View className="flex-row items-center border-b border-border bg-sunken">
+            {editable ? <View style={{ width: GRIP_W }} /> : null}
             {columns.map((c, i) => (
               <View key={c._id} style={{ width: widths[i] }} className="px-2 py-2.5">
                 <Text className="text-2xs font-bold uppercase tracking-wider text-muted" numberOfLines={1}>
@@ -249,7 +255,7 @@ export function EditableGrid({
                 </Text>
               </View>
             ))}
-            {editable ? <View style={{ width: ROW_ACTION_W }} /> : null}
+            {editable ? <View style={{ width: DELETE_W }} /> : null}
           </View>
 
           {/* Body — grouped board, or a single drag-reorderable list. */}
@@ -312,6 +318,15 @@ export function EditableGrid({
               <View key={c._id} className="flex-row items-center justify-between px-3 py-2">
                 <Text className="text-sm text-ink">{c.label}</Text>
                 <View className="flex-row items-center gap-1">
+                  {mode === "template" && (c.type === "select" || c.type === "status" || c.type === "multiselect") ? (
+                    <Pressable
+                      hitSlop={6}
+                      onPress={() => { setEditColId(c._id); setMenu("editOptions"); }}
+                      className="rounded p-1 active:bg-sunken"
+                    >
+                      <Icon name="edit-2" size={14} color={colors.muted} />
+                    </Pressable>
+                  ) : null}
                   <Pressable
                     hitSlop={6}
                     onPress={() => grid.setColumnVisible(c._id, !c.isVisible)}
@@ -342,6 +357,19 @@ export function EditableGrid({
             setMenu(null);
           }}
         />
+      </Popover>
+
+      {/* Edit a select/status column's options (template only) */}
+      <Popover visible={menu === "editOptions"} onClose={() => setMenu(null)} width={300}>
+        {editCol ? (
+          <ColumnOptionsEditor
+            column={editCol}
+            onSave={async (options) => {
+              await grid.updateColumn(editCol._id, { options });
+              setMenu(null);
+            }}
+          />
+        ) : null}
       </Popover>
     </View>
   );
@@ -468,6 +496,22 @@ function Row({
         isLast ? "border-b-0" : ""
       }`}
     >
+      {/* Left gutter: drag grip */}
+      {editable ? (
+        <View style={{ width: GRIP_W }} className="items-center pt-2.5">
+          {drag ? (
+            <GestureDetector gesture={drag}>
+              <View
+                hitSlop={6}
+                className="cursor-grab rounded p-1 active:bg-sunken web:hover:bg-sunken"
+              >
+                <Icon name="menu" size={15} color={colors.faint} />
+              </View>
+            </GestureDetector>
+          ) : null}
+        </View>
+      ) : null}
+
       {columns.map((c, i) => (
         <View
           key={c._id}
@@ -486,24 +530,14 @@ function Row({
           />
         </View>
       ))}
+
+      {/* Right gutter: delete */}
       {editable ? (
         <View
-          style={{ width: ROW_ACTION_W }}
-          className="flex-row items-center justify-end gap-1 px-1.5 py-1.5"
+          style={{ width: DELETE_W }}
+          className="items-center justify-start pt-1.5"
         >
-          {drag ? (
-            <GestureDetector gesture={drag}>
-              <View
-                hitSlop={6}
-                className="cursor-grab rounded p-1 active:bg-sunken web:hover:bg-sunken"
-              >
-                <Icon name="menu" size={15} color={colors.faint} />
-              </View>
-            </GestureDetector>
-          ) : null}
-          {onRemove ? (
-            <RowBtn icon="trash-2" danger onPress={onRemove} />
-          ) : null}
+          {onRemove ? <RowBtn icon="trash-2" danger onPress={onRemove} /> : null}
         </View>
       ) : null}
     </View>
