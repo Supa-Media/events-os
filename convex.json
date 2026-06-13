@@ -1,0 +1,6 @@
+{
+  "functions": "apps/convex",
+  "node": {
+    "externalPackages": ["@supa/convex"]
+  }
+}

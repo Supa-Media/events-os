@@ -1,0 +1,12 @@
+{
+  "$schema": "https://supa.dev/schemas/native-deps.json",
+  "core": [
+    "expo",
+    "expo-router",
+    "expo-status-bar",
+    "react-native",
+    "react-native-safe-area-context",
+    "react-native-screens"
+  ],
+  "gated": []
+}
