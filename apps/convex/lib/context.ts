@@ -6,7 +6,7 @@
  * resolves the caller's chapter through `requireChapterId` so chapter scoping
  * is enforced in one place.
  */
-import { requireAuthId } from "@supa/convex/auth";
+import { requireAuthId } from "@supa-media/convex/auth";
 import { ConvexError } from "convex/values";
 
 /** The authenticated user's id (throws if signed out). */

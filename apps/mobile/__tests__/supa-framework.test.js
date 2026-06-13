@@ -1,5 +1,5 @@
 const path = require("path");
-const { createSupaTests, detectRoutingConflicts } = require("@supa/testing");
+const { createSupaTests, detectRoutingConflicts } = require("@supa-media/testing");
 
 // Static guardrails for the Expo/RN gotchas the framework has hit before.
 const appDir = path.join(__dirname, "..", "app");

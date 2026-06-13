@@ -1,8 +1,8 @@
 import { Slot } from "expo-router";
 import { StatusBar } from "expo-status-bar";
 import { SafeAreaProvider } from "react-native-safe-area-context";
-import { SupaConvexProvider } from "@supa/core/providers";
-import { NotificationProvider } from "@supa/notifications";
+import { SupaConvexProvider } from "@supa-media/core/providers";
+import { NotificationProvider } from "@supa-media/notifications";
 
 /**
  * Root layout for Events OS.

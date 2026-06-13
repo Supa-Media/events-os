@@ -1,6 +1,6 @@
 import { defineSchema, defineTable } from "convex/server";
 import { v } from "convex/values";
-import { supaAuthTables, supaNotificationTables } from "@supa/convex/schema";
+import { supaAuthTables, supaNotificationTables } from "@supa-media/convex/schema";
 
 /**
  * Database schema for Events OS.

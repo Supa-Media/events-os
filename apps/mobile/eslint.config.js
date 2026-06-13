@@ -1,4 +1,4 @@
-import supaConfig from "@supa/linter";
+import supaConfig from "@supa-media/linter";
 
 export default [
   ...supaConfig,

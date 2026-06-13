@@ -7,7 +7,7 @@
     "dev": "convex dev"
   },
   "dependencies": {
-    "@supa/convex": "^0.2.0",
+    "@supa-media/convex": "^0.2.0",
     "@events-os/shared": "workspace:*",
     "@convex-dev/auth": "^0.0.90",
     "convex": "^1.31.3"
