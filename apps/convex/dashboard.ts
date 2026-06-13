@@ -7,13 +7,26 @@
 import { query } from "./_generated/server";
 import { v } from "convex/values";
 import { computeReadiness, DAY_MS } from "@events-os/shared";
-import { requireChapterId } from "./lib/context";
+import { getChapterIdOrNull } from "./lib/context";
+
+const EMPTY = {
+  upcomingCount: 0,
+  avgReadiness: 0,
+  peopleCount: 0,
+  eventsLast90Days: 0,
+  nextEvent: null as {
+    name: string;
+    eventDate: number;
+    readiness: number;
+  } | null,
+};
 
 /** Chapter-level leadership summary. */
 export const summary = query({
   args: {},
   handler: async (ctx) => {
-    const chapterId = await requireChapterId(ctx);
+    const chapterId = await getChapterIdOrNull(ctx);
+    if (!chapterId) return EMPTY;
     const now = Date.now();
 
     const events = await ctx.db

@@ -9,7 +9,12 @@
 import { query, mutation } from "./_generated/server";
 import { Id } from "./_generated/dataModel";
 import { v } from "convex/values";
-import { requireUserId, requireChapterId, requireInChapter } from "./lib/context";
+import {
+  requireUserId,
+  requireChapterId,
+  requireInChapter,
+  getChapterIdOrNull,
+} from "./lib/context";
 
 /** Kebab-case slug from a display name. */
 function toSlug(name: string): string {
@@ -40,7 +45,8 @@ async function bumpVersion(ctx: any, eventTypeId: Id<"eventTypes">) {
 export const list = query({
   args: {},
   handler: async (ctx) => {
-    const chapterId = await requireChapterId(ctx);
+    const chapterId = await getChapterIdOrNull(ctx);
+    if (!chapterId) return [];
     const types = await ctx.db
       .query("eventTypes")
       .withIndex("by_chapter", (q: any) => q.eq("chapterId", chapterId))

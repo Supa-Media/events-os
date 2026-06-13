@@ -49,7 +49,7 @@ export default function LoginScreen() {
         email: identifier.trim(),
         code: code.trim(),
       });
-      router.replace("/(app)/(tabs)");
+      router.replace("/");
     } catch (e) {
       setError("That code didn't work. Try again.");
     } finally {

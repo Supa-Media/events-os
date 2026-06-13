@@ -1,7 +1,7 @@
 import { Slot } from "expo-router";
 import { StatusBar } from "expo-status-bar";
 import { SafeAreaProvider } from "react-native-safe-area-context";
-import { SupaConvexProvider } from "@supa/core";
+import { SupaConvexProvider } from "@supa/core/providers";
 import { NotificationProvider } from "@supa/notifications";
 
 /**

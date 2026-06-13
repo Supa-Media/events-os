@@ -9,7 +9,12 @@ import { query, mutation } from "./_generated/server";
 import { Id } from "./_generated/dataModel";
 import { v } from "convex/values";
 import { computeDueDate, computeReadiness } from "@events-os/shared";
-import { requireUserId, requireChapterId, requireInChapter } from "./lib/context";
+import {
+  requireUserId,
+  requireChapterId,
+  requireInChapter,
+  getChapterIdOrNull,
+} from "./lib/context";
 
 const statusUnion = v.union(
   v.literal("planning"),
@@ -103,7 +108,8 @@ export const list = query({
     scope: v.optional(v.union(v.literal("upcoming"), v.literal("all"))),
   },
   handler: async (ctx, { scope }) => {
-    const chapterId = await requireChapterId(ctx);
+    const chapterId = await getChapterIdOrNull(ctx);
+    if (!chapterId) return [];
     const now = Date.now();
     const all = await ctx.db
       .query("events")
@@ -219,7 +225,8 @@ export const remove = mutation({
 export const pipeline = query({
   args: {},
   handler: async (ctx) => {
-    const chapterId = await requireChapterId(ctx);
+    const chapterId = await getChapterIdOrNull(ctx);
+    if (!chapterId) return [];
     const now = Date.now();
     const all = await ctx.db
       .query("events")

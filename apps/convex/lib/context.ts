@@ -33,6 +33,20 @@ export async function requireChapterId(ctx: any): Promise<string> {
   return membership.chapterId as string;
 }
 
+/**
+ * The caller's chapter, or null if they don't belong to one yet. Auth is still
+ * required. Use in READ queries so a brand-new user (pre-seed / pre-onboarding)
+ * gets empty results instead of a thrown error that crashes the screen.
+ */
+export async function getChapterIdOrNull(ctx: any): Promise<string | null> {
+  const userId = await requireAuthId(ctx);
+  const membership = await ctx.db
+    .query("userChapters")
+    .withIndex("by_userId", (q: any) => q.eq("userId", userId))
+    .first();
+  return membership ? (membership.chapterId as string) : null;
+}
+
 /** Assert a document exists and belongs to the caller's chapter. */
 export async function requireInChapter(
   ctx: any,
