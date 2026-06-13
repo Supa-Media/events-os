@@ -42,6 +42,7 @@
     "@types/node": "^22.0.0",
     "@types/react": "~19.1.0",
     "eslint": "^8.57.0",
-    "typescript": "~5.9.2"
+    "typescript": "~5.9.2",
+    "@supa/metro": "^0.2.0"
   }
 }
