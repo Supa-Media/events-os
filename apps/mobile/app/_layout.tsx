@@ -14,7 +14,7 @@ import { NotificationProvider } from "@supa/notifications";
 export default function RootLayout() {
   return (
     <SafeAreaProvider>
-      <SupaConvexProvider>
+      <SupaConvexProvider url={process.env.EXPO_PUBLIC_CONVEX_URL}>
         <NotificationProvider>
         <StatusBar style="auto" />
         <Slot />
