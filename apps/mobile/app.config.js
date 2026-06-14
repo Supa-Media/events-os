@@ -20,6 +20,10 @@ module.exports = ({ config }) => ({
       ? "com.eventsos.staging"
       : "com.eventsos.mobile",
     associatedDomains: [],
+    infoPlist: {
+      // Standard/exempt encryption only — skips the App Store export-compliance prompt.
+      ITSAppUsesNonExemptEncryption: false,
+    },
   },
   android: {
     adaptiveIcon: {
