@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { View, Text } from "react-native";
 import { useQuery, useMutation } from "convex/react";
+import { useAuthActions } from "@convex-dev/auth/react";
 import { api } from "@events-os/convex/_generated/api";
 import { Screen, Card, Button, TextField, Field, Icon } from "../../components/ui";
 import { colors } from "../../lib/theme";
@@ -13,12 +14,24 @@ import { errorMessage } from "../../lib/errors";
 export default function ProfileScreen() {
   const me = useQuery(api.profiles.me);
   const update = useMutation(api.profiles.updateProfile);
+  const { signOut } = useAuthActions();
 
   const [name, setName] = useState("");
   const [phone, setPhone] = useState("");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [savedAt, setSavedAt] = useState<number | null>(null);
+  const [signingOut, setSigningOut] = useState(false);
+
+  async function handleSignOut() {
+    setSigningOut(true);
+    try {
+      // The (app) layout redirects to login once auth flips to signed-out.
+      await signOut();
+    } catch {
+      setSigningOut(false);
+    }
+  }
 
   // Seed the form once the profile loads.
   useEffect(() => {
@@ -116,6 +129,17 @@ export default function ProfileScreen() {
           disabled={!canSave}
         />
       </Card>
+
+      {/* Account actions */}
+      <View className="mt-4">
+        <Button
+          title="Sign out"
+          icon="log-out"
+          variant="secondary"
+          onPress={handleSignOut}
+          loading={signingOut}
+        />
+      </View>
     </Screen>
   );
 }
