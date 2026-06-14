@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { View, Text } from "react-native";
-import { SafeAreaView } from "react-native-safe-area-context";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { KeyboardAwareScrollView } from "react-native-keyboard-controller";
 import { useRouter } from "expo-router";
 import { useAuthActions } from "@convex-dev/auth/react";
 import { Card, Button, TextField, Icon } from "../../components/ui";
@@ -30,6 +31,7 @@ function toEmail(username: string): string {
 export default function LoginScreen() {
   const { signIn } = useAuthActions();
   const router = useRouter();
+  const insets = useSafeAreaInsets();
 
   const [step, setStep] = useState<"request" | "verify">("request");
   const [username, setUsername] = useState("");
@@ -73,8 +75,20 @@ export default function LoginScreen() {
   }
 
   return (
-    <SafeAreaView className="flex-1 bg-surface">
-      <View className="flex-1 items-center justify-center px-6">
+    <View className="flex-1 bg-surface">
+      <KeyboardAwareScrollView
+        bottomOffset={24}
+        keyboardShouldPersistTaps="handled"
+        showsVerticalScrollIndicator={false}
+        contentContainerStyle={{
+          flexGrow: 1,
+          justifyContent: "center",
+          alignItems: "center",
+          paddingHorizontal: 24,
+          paddingTop: insets.top + 24,
+          paddingBottom: insets.bottom + 24,
+        }}
+      >
         <View className="w-full max-w-md">
           {/* Brand mark */}
           <View className="mb-6 flex-row items-center gap-2.5">
@@ -165,7 +179,7 @@ export default function LoginScreen() {
             ) : null}
           </Card>
         </View>
-      </View>
-    </SafeAreaView>
+      </KeyboardAwareScrollView>
+    </View>
   );
 }

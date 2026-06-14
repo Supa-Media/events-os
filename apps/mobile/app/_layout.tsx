@@ -3,6 +3,7 @@ import "../global.css";
 import { Slot } from "expo-router";
 import { StatusBar } from "expo-status-bar";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
+import { KeyboardProvider } from "react-native-keyboard-controller";
 import { SafeAreaProvider } from "react-native-safe-area-context";
 import { SupaConvexProvider } from "@supa-media/core/providers";
 import { NotificationProvider } from "@supa-media/notifications";
@@ -41,14 +42,16 @@ export default function RootLayout() {
 
   return (
     <GestureHandlerRootView style={{ flex: 1 }}>
-      <SafeAreaProvider>
-        <SupaConvexProvider url={process.env.EXPO_PUBLIC_CONVEX_URL}>
-          <NotificationProvider>
-            <StatusBar style="dark" />
-            {fontsLoaded ? <Slot /> : null}
-          </NotificationProvider>
-        </SupaConvexProvider>
-      </SafeAreaProvider>
+      <KeyboardProvider>
+        <SafeAreaProvider>
+          <SupaConvexProvider url={process.env.EXPO_PUBLIC_CONVEX_URL}>
+            <NotificationProvider>
+              <StatusBar style="dark" />
+              {fontsLoaded ? <Slot /> : null}
+            </NotificationProvider>
+          </SupaConvexProvider>
+        </SafeAreaProvider>
+      </KeyboardProvider>
     </GestureHandlerRootView>
   );
 }

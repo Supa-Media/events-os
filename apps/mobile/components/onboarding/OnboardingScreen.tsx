@@ -1,6 +1,7 @@
 import { useState } from "react";
-import { View, Text, ScrollView, ActivityIndicator } from "react-native";
-import { SafeAreaView } from "react-native-safe-area-context";
+import { View, Text, ActivityIndicator } from "react-native";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { KeyboardAwareScrollView } from "react-native-keyboard-controller";
 import { useQuery, useMutation } from "convex/react";
 import { api } from "@events-os/convex/_generated/api";
 import { Card, Button, TextField, Icon } from "../ui";
@@ -16,6 +17,7 @@ type ChapterId = string;
  * the app renders.
  */
 export function OnboardingScreen() {
+  const insets = useSafeAreaInsets();
   const chapters = useQuery(api.profiles.listChapters);
   const complete = useMutation(api.profiles.completeOnboarding);
 
@@ -45,11 +47,18 @@ export function OnboardingScreen() {
   }
 
   return (
-    <SafeAreaView className="flex-1 bg-surface">
-      <ScrollView
-        className="flex-1"
-        contentContainerStyle={{ flexGrow: 1, alignItems: "center", justifyContent: "center" }}
+    <View className="flex-1 bg-surface">
+      <KeyboardAwareScrollView
+        bottomOffset={24}
         keyboardShouldPersistTaps="handled"
+        showsVerticalScrollIndicator={false}
+        contentContainerStyle={{
+          flexGrow: 1,
+          alignItems: "center",
+          justifyContent: "center",
+          paddingTop: insets.top + 16,
+          paddingBottom: insets.bottom + 16,
+        }}
       >
         <View className="w-full max-w-md px-6 py-8">
           <View className="mb-5 flex-row items-center gap-2.5">
@@ -135,8 +144,8 @@ export function OnboardingScreen() {
             />
           </Card>
         </View>
-      </ScrollView>
-    </SafeAreaView>
+      </KeyboardAwareScrollView>
+    </View>
   );
 }
 

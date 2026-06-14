@@ -1,5 +1,6 @@
 import { ReactNode } from "react";
-import { ScrollView, View, ActivityIndicator } from "react-native";
+import { View, ActivityIndicator } from "react-native";
+import { KeyboardAwareScrollView } from "react-native-keyboard-controller";
 import { colors } from "../../lib/theme";
 
 type Props = {
@@ -25,14 +26,17 @@ export function Screen({ children, loading = false, maxWidth = 1080 }: Props) {
   }
 
   return (
-    <ScrollView
-      className="flex-1 bg-surface"
-      contentContainerStyle={{ flexGrow: 1, alignItems: "center" }}
-      keyboardShouldPersistTaps="handled"
-    >
-      <View style={{ width: "100%", maxWidth }} className="px-6 py-7 sm:px-8 sm:py-8">
-        {children}
-      </View>
-    </ScrollView>
+    <View className="flex-1 bg-surface">
+      <KeyboardAwareScrollView
+        contentContainerStyle={{ flexGrow: 1, alignItems: "center" }}
+        keyboardShouldPersistTaps="handled"
+        bottomOffset={24}
+        showsVerticalScrollIndicator={false}
+      >
+        <View style={{ width: "100%", maxWidth }} className="px-6 py-7 sm:px-8 sm:py-8">
+          {children}
+        </View>
+      </KeyboardAwareScrollView>
+    </View>
   );
 }
