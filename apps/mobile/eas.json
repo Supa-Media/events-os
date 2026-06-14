@@ -28,5 +28,13 @@
       "channel": "production",
       "autoIncrement": true
     }
+  },
+  "submit": {
+    "production": {
+      "ios": {
+        "ascAppId": "6780260640",
+        "bundleIdentifier": "com.eventsos.mobile"
+      }
+    }
   }
 }
