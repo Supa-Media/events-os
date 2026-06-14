@@ -165,10 +165,16 @@ const schema = defineSchema({
     // Template version this event was spun up from (for display / drift checks).
     templateVersion: v.number(),
     name: v.string(),
-    // Event start (timestamp). Moving this re-derives every item's due date.
+    // Event start (timestamp, includes time-of-day). Moving this re-derives
+    // every item's due date.
     eventDate: v.number(),
     location: v.optional(v.string()),
     budget: v.optional(v.number()),
+    // The single person accountable for the event: fills in other owners and
+    // keeps every detail current. Distinct from role assignments.
+    ownerPersonId: v.optional(v.id("people")),
+    // Background image (Convex storageId or URL) for the venue site map.
+    siteMapImage: v.optional(v.string()),
     status: v.union(
       v.literal("planning"),
       v.literal("ready"),
@@ -233,7 +239,16 @@ const schema = defineSchema({
     email: v.optional(v.string()),
     phone: v.optional(v.string()),
     userId: v.optional(v.id("users")),
+    // Services this person can offer (worship, audio, videography…). The basis
+    // for "who can deliver X?" discovery. (Named `skills` for legacy reasons.)
     skills: v.optional(v.array(v.string())),
+    // Typical fee when engaged as a PAID vendor (prefills a paid engagement).
+    usualRateUsd: v.optional(v.number()),
+    // Free-form notes about this person (preferences, availability, context).
+    notes: v.optional(v.string()),
+    // On the core team (has / will get backend access). Only team members can be
+    // event owners or hold lead roles. Distinct from being a volunteer/vendor.
+    isTeamMember: v.optional(v.boolean()),
     vettingStatus: v.optional(
       v.union(
         v.literal("unvetted"),
@@ -246,6 +261,112 @@ const schema = defineSchema({
   })
     .index("by_chapter", ["chapterId"])
     .index("by_user", ["userId"]),
+
+  /**
+   * Site-map marker — a labelled pin placed on an event's venue map at a
+   * normalized position (x,y in 0..1 of the image), categorized (team area,
+   * station, equipment drop, stage…). The visual layout of where things go.
+   */
+  siteMarkers: defineTable({
+    chapterId: v.id("chapters"),
+    eventId: v.id("events"),
+    x: v.number(),
+    y: v.number(),
+    label: v.string(),
+    // Free color name (e.g. "red"); markers aren't a fixed category set.
+    color: v.optional(v.string()),
+    // Legacy category (older markers); no longer set by the UI.
+    category: v.optional(v.string()),
+    createdAt: v.number(),
+  })
+    .index("by_event", ["eventId"])
+    .index("by_chapter", ["chapterId"]),
+
+  /**
+   * Site-map shape — a basic sketched element so you can rough out the venue
+   * WITHOUT a background image. `rect`/`circle` use (x,y) top-left + (w,h);
+   * `line` uses (x,y)→(x2,y2). All coords normalized 0..1.
+   */
+  siteShapes: defineTable({
+    chapterId: v.id("chapters"),
+    eventId: v.id("events"),
+    type: v.union(v.literal("rect"), v.literal("circle"), v.literal("line")),
+    x: v.number(),
+    y: v.number(),
+    w: v.optional(v.number()),
+    h: v.optional(v.number()),
+    x2: v.optional(v.number()),
+    y2: v.optional(v.number()),
+    color: v.optional(v.string()),
+    label: v.optional(v.string()),
+    createdAt: v.number(),
+  })
+    .index("by_event", ["eventId"])
+    .index("by_chapter", ["chapterId"]),
+
+  /**
+   * Site-map placement — overlays an existing SUPPLY (eventItem, module
+   * "supplies") or VOLUNTEER (engagement, type "volunteer") onto the venue map
+   * as a positioned, draggable chip at a normalized position (x,y in 0..1).
+   * `refId` is the source row's _id (kept as a string so one table can point at
+   * either source); `kind` says which table it references.
+   */
+  siteMapPlacements: defineTable({
+    chapterId: v.id("chapters"),
+    eventId: v.id("events"),
+    kind: v.union(v.literal("supply"), v.literal("volunteer")),
+    refId: v.string(), // the eventItem _id (supply) or engagement _id (volunteer)
+    x: v.number(), // normalized 0..1
+    y: v.number(),
+    createdAt: v.number(),
+  })
+    .index("by_event", ["eventId"])
+    .index("by_event_kind", ["eventId", "kind"])
+    .index("by_chapter", ["chapterId"]),
+
+  /**
+   * Engagement — one PERSON's involvement in one EVENT, on specific terms.
+   *
+   * The key modeling insight: volunteer-vs-paid is NOT a property of a person,
+   * it's a property of THIS engagement. The same person can volunteer at one
+   * event and be a paid vendor at the next — just two engagements with different
+   * `type`. Surfaced on the event as two lists (Volunteers / Vendors). Paid
+   * engagements carry an amount + payment status and roll into the event budget.
+   */
+  engagements: defineTable({
+    chapterId: v.id("chapters"),
+    eventId: v.id("events"),
+    personId: v.id("people"),
+    type: v.union(v.literal("volunteer"), v.literal("paid")),
+    // Which teams/areas this volunteer is attached to (each matches a team value
+    // from the event's Volunteer Expectations team list). Volunteers only; a
+    // volunteer can serve on more than one team in the same event.
+    teams: v.optional(v.array(v.string())),
+    // What they're doing this event (e.g. "Videographer", "Welcome team").
+    service: v.optional(v.string()),
+    status: v.union(
+      v.literal("invited"),
+      v.literal("confirmed"),
+      v.literal("declined"),
+    ),
+    callTime: v.optional(v.string()),
+    responsibilities: v.optional(v.string()),
+    // Paid engagements only:
+    amountUsd: v.optional(v.number()),
+    paymentStatus: v.optional(
+      v.union(
+        v.literal("unpaid"),
+        v.literal("invoiced"),
+        v.literal("paid"),
+      ),
+    ),
+    notes: v.optional(v.string()),
+    createdAt: v.number(),
+  })
+    .index("by_event", ["eventId"])
+    .index("by_event_type", ["eventId", "type"])
+    .index("by_person", ["personId"])
+    .index("by_chapter", ["chapterId"]),
 
   /**
    * AI agent run — one invocation of an agent feature (e.g. "fill supply
@@ -273,9 +394,14 @@ const schema = defineSchema({
     .index("by_chapter_time", ["chapterId", "createdAt"]),
 
   /**
-   * AI change — one revertible edit an agent run made to an item field. The
-   * generic key/before/after shape is intentional: any future agent edit to any
-   * field reuses this same log, and Undo restores `before`.
+   * AI change — one revertible edit an agent run made to an item. The generic
+   * key/before/after shape is intentional: any agent edit to any field reuses
+   * this same log, and Undo restores `before`.
+   *
+   * `key` is interpreted by the revert logic:
+   *   - "__created"      → the run CREATED this item; Undo deletes it.
+   *   - "fields.<key>"   → a custom-column value in the item's `fields` bag.
+   *   - any other string → a promoted top-level field (title, status, roleId…).
    */
   aiChanges: defineTable({
     runId: v.id("aiRuns"),
@@ -287,6 +413,49 @@ const schema = defineSchema({
     after: v.optional(v.any()),
     revertedAt: v.optional(v.number()),
   }).index("by_run", ["runId"]),
+
+  /**
+   * AI assistant thread — a Notion-AI-style conversation pinned to one event.
+   * Messages stream into `aiMessages` as the agent works, so the panel renders
+   * reasoning + tool calls reactively.
+   */
+  aiThreads: defineTable({
+    chapterId: v.id("chapters"),
+    eventId: v.id("events"),
+    userId: v.id("users"),
+    title: v.string(),
+    createdAt: v.number(),
+    updatedAt: v.number(),
+  })
+    .index("by_event", ["eventId"])
+    .index("by_chapter", ["chapterId"]),
+
+  /**
+   * AI assistant message — one entry in a thread. `kind` distinguishes the
+   * user's prompt, the agent's reasoning trace, each tool call + its result, the
+   * final assistant reply, and errors — so the panel can render each distinctly
+   * (collapsible reasoning, tool-call chips, etc.). `order` is monotonic within
+   * a thread for stable display.
+   */
+  aiMessages: defineTable({
+    threadId: v.id("aiThreads"),
+    chapterId: v.id("chapters"),
+    runId: v.optional(v.id("aiRuns")),
+    kind: v.union(
+      v.literal("user"),
+      v.literal("assistant"),
+      v.literal("reasoning"),
+      v.literal("tool_call"),
+      v.literal("tool_result"),
+      v.literal("error"),
+    ),
+    text: v.optional(v.string()),
+    toolName: v.optional(v.string()),
+    toolArgs: v.optional(v.any()),
+    toolOk: v.optional(v.boolean()),
+    order: v.number(),
+    createdAt: v.number(),
+  }).index("by_thread", ["threadId"]),
 
   /**
    * AI usage — token + dollar accounting per completion call, for the rolling

@@ -1,4 +1,4 @@
-import { defineConfig } from "@supa/core/config";
+import { defineConfig } from "@supa-media/core/config";
 
 export default defineConfig({
   app: {

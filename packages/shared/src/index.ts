@@ -84,6 +84,9 @@ export const MODULE_KEYS = [
   "supplies",
   "comms",
   "run_of_show",
+  "permits",
+  "retro",
+  "volunteer_expectations",
 ] as const;
 export type ModuleKey = (typeof MODULE_KEYS)[number];
 
@@ -92,10 +95,13 @@ export const MODULE_LABELS: Record<ModuleKey, string> = {
   supplies: "Supplies & Packing",
   comms: "Comms & Content Schedule",
   run_of_show: "Run of Show",
+  permits: "Permits",
+  retro: "Retrospective",
+  volunteer_expectations: "Volunteer Expectations",
 };
 
 /** Modules that schedule off the event date (offset in days → due date). */
-export const DAY_OFFSET_MODULES: ModuleKey[] = ["planning_doc", "comms"];
+export const DAY_OFFSET_MODULES: ModuleKey[] = ["planning_doc", "comms", "permits"];
 /** Modules that schedule off the event start time (offset in minutes). */
 export const MINUTE_OFFSET_MODULES: ModuleKey[] = ["run_of_show"];
 
@@ -111,7 +117,6 @@ export const COMPONENT_KEYS = [
   "supplies",
   "retro",
   "volunteer_expectations",
-  "day_of_roles",
 ] as const;
 export type ComponentKey = (typeof COMPONENT_KEYS)[number];
 
@@ -126,7 +131,6 @@ export const CORE_COMPONENTS: ComponentKey[] = [
 
 export const LARGER_EVENT_COMPONENTS: ComponentKey[] = [
   "volunteer_expectations",
-  "day_of_roles",
 ];
 
 export const COMPONENT_LABELS: Record<ComponentKey, string> = {
@@ -137,7 +141,6 @@ export const COMPONENT_LABELS: Record<ComponentKey, string> = {
   supplies: "Supplies & Packing Checklist",
   retro: "Retrospective",
   volunteer_expectations: "Volunteer Expectations",
-  day_of_roles: "Day-Of Roles & Responsibilities",
 };
 
 // ── Columns ──────────────────────────────────────────────────────────────────
@@ -262,6 +265,45 @@ export const COMMS_AUDIENCE_OPTIONS: SelectOption[] = [
   { value: "general_public", label: "General public", color: "purple" },
 ];
 
+export const PERMIT_STATUS_OPTIONS: SelectOption[] = [
+  { value: "not_needed", label: "Not needed", color: "gray" },
+  { value: "to_apply", label: "To apply", color: "red", isComplete: false },
+  { value: "submitted", label: "Submitted", color: "amber" },
+  { value: "approved", label: "Approved", color: "green", isComplete: true },
+];
+
+export const RETRO_STATUS_OPTIONS: SelectOption[] = [
+  { value: "open", label: "Open", color: "amber" },
+  { value: "actioned", label: "Actioned", color: "green", isComplete: true },
+];
+
+export const VOLUNTEER_TEAM_OPTIONS: SelectOption[] = [
+  { value: "flower", label: "Flower", color: "pink" },
+  { value: "food_bev", label: "Food & Bev", color: "amber" },
+  { value: "welcome", label: "Welcome", color: "blue" },
+  { value: "prayer", label: "Prayer", color: "purple" },
+  { value: "content", label: "Content", color: "teal" },
+  { value: "production", label: "Production", color: "gray" },
+];
+
+/** Site-map marker categories (what a pin represents) + their pin colors. */
+export const SITE_MARKER_CATEGORIES: SelectOption[] = [
+  { value: "station", label: "Station", color: "red" },
+  { value: "team", label: "Team area", color: "pink" },
+  { value: "stage", label: "Stage / Worship", color: "amber" },
+  { value: "prayer", label: "Prayer", color: "purple" },
+  { value: "equipment", label: "Equipment", color: "blue" },
+  { value: "entrance", label: "Entrance", color: "teal" },
+  { value: "parking", label: "Parking", color: "gray" },
+  { value: "other", label: "Other", color: "gray" },
+];
+
+export const VOLUNTEER_STATUS_OPTIONS: SelectOption[] = [
+  { value: "invited", label: "Invited", color: "gray" },
+  { value: "confirmed", label: "Confirmed", color: "green", isComplete: true },
+  { value: "declined", label: "Declined", color: "red" },
+];
+
 // ── Default column sets per module (seed defaults; editable per template) ─────
 // Authors reorder/hide/rename these and add custom columns. `system` columns are
 // backed by promoted item fields; `custom` columns live in the `fields` bag.
@@ -310,6 +352,30 @@ export const DEFAULT_COLUMNS: Record<ModuleKey, ColumnDef[]> = {
     { key: "owner", label: "Owner", kind: "system", type: "person", isVisible: false },
     { key: "notes", label: "Notes / Tech", kind: "custom", type: "longtext", isVisible: true },
   ],
+  permits: [
+    { key: "title", label: "Permit", kind: "system", type: "text", isVisible: true },
+    { key: "status", label: "Status", kind: "system", type: "status", options: PERMIT_STATUS_OPTIONS, isVisible: true },
+    { key: "offset", label: "Deadline", kind: "system", type: "offset_days", isVisible: true },
+    { key: "due_date", label: "Due", kind: "system", type: "due_date", isVisible: true },
+    { key: "document", label: "Document", kind: "custom", type: "photo", isVisible: true },
+    { key: "owner", label: "Owner", kind: "system", type: "person", isVisible: true },
+    { key: "notes", label: "Notes", kind: "custom", type: "longtext", isVisible: true },
+  ],
+  retro: [
+    { key: "title", label: "What happened", kind: "system", type: "text", isVisible: true },
+    { key: "status", label: "Status", kind: "system", type: "status", options: RETRO_STATUS_OPTIONS, isVisible: true },
+    { key: "notes", label: "Detail", kind: "custom", type: "longtext", isVisible: true },
+    { key: "link", label: "Link", kind: "custom", type: "url", isVisible: true },
+  ],
+  // Rows are EXPECTATIONS (things we expect a team to do), each tagged to a
+  // team/area. The team column's options ARE the event's team list — both these
+  // rows and volunteer engagements reference those team values. WHO is on each
+  // team is tracked on engagements (the Volunteers list), not here.
+  volunteer_expectations: [
+    { key: "title", label: "Expectation", kind: "system", type: "text", isVisible: true },
+    { key: "team", label: "Team", kind: "custom", type: "select", options: VOLUNTEER_TEAM_OPTIONS, isVisible: true },
+    { key: "details", label: "Details", kind: "custom", type: "longtext", isVisible: true },
+  ],
 };
 
 /** The default status option set for a module (or undefined if no status). */
@@ -317,6 +383,8 @@ export function defaultStatusOptions(module: ModuleKey): SelectOption[] | undefi
   if (module === "planning_doc") return TASK_STATUS_OPTIONS;
   if (module === "supplies") return SUPPLY_STATUS_OPTIONS;
   if (module === "comms") return COMMS_STATUS_OPTIONS;
+  if (module === "permits") return PERMIT_STATUS_OPTIONS;
+  if (module === "retro") return RETRO_STATUS_OPTIONS;
   return undefined;
 }
 

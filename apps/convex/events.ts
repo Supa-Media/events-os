@@ -23,6 +23,7 @@ import {
   getChapterIdOrNull,
 } from "./lib/context";
 import { instantiateEvent } from "./lib/templates";
+import { paidTotalForEvent } from "./engagements";
 
 const statusUnion = v.union(
   v.literal("planning"),
@@ -144,22 +145,126 @@ export const get = query({
       .query("eventItems")
       .withIndex("by_event", (q: any) => q.eq("eventId", eventId))
       .collect();
-    const budgetSpent = allItems.reduce((sum: number, it: any) => {
+    const itemCost = allItems.reduce((sum: number, it: any) => {
       const c = Number(it.fields?.cost);
       return sum + (Number.isFinite(c) ? c : 0);
     }, 0);
+    // Paid vendors count against the budget too.
+    const paidVendorCost = await paidTotalForEvent(ctx, eventId);
+    const budgetSpent = itemCost + paidVendorCost;
     const budget = event.budget ?? 0;
     const budgetPct = budget > 0 ? Math.round((budgetSpent / budget) * 100) : 0;
+
+    // Resolve the accountable owner (a person) for display.
+    let owner: { _id: Id<"people">; name: string } | null = null;
+    if (event.ownerPersonId) {
+      const person = await ctx.db.get(event.ownerPersonId as Id<"people">);
+      if (person) owner = { _id: person._id, name: person.name };
+    }
 
     return {
       event,
       eventTypeName: eventType?.name ?? "Unknown",
       activeComponents: eventType?.activeComponents ?? [],
+      owner,
       readiness: r.readiness,
       taskTotal: r.total,
       taskDone: r.done,
       budgetSpent,
       budgetPct,
+    };
+  },
+});
+
+/**
+ * PUBLIC, no-auth volunteer briefing for an event — reachable by share link.
+ *
+ * Intentionally public-by-link: it does NOT call requireChapterId/requireUserId,
+ * so a logged-out caller can load it. It returns a sanitized, volunteer-facing
+ * payload ONLY — teams, their expectations, and who's on each team. No payment,
+ * vendor, or budget ($) information is ever included.
+ */
+export const publicCrew = query({
+  args: { eventId: v.id("events") },
+  handler: async (ctx, { eventId }) => {
+    const event = await ctx.db.get(eventId);
+    if (!event) return null;
+
+    // Team options come from the volunteer_expectations "team" column.
+    const teamCol = await ctx.db
+      .query("eventColumns")
+      .withIndex("by_event_module", (q: any) =>
+        q.eq("eventId", eventId).eq("module", "volunteer_expectations"),
+      )
+      .filter((q: any) => q.eq(q.field("key"), "team"))
+      .first();
+    const teamOptions: { value: string; label: string; color?: string | null }[] =
+      teamCol?.options ?? [];
+    const knownTeams = new Set(teamOptions.map((o) => o.value));
+
+    // Expectations = volunteer_expectations items, grouped by fields.team.
+    const expectationItems = await ctx.db
+      .query("eventItems")
+      .withIndex("by_event_module", (q: any) =>
+        q.eq("eventId", eventId).eq("module", "volunteer_expectations"),
+      )
+      .collect();
+    const toExpectation = (it: any) => ({
+      title: it.title ?? "",
+      details:
+        typeof it.fields?.details === "string" ? it.fields.details : null,
+    });
+
+    // People = volunteer engagements, person name resolved, grouped by team.
+    const volunteers = await ctx.db
+      .query("engagements")
+      .withIndex("by_event_type", (q: any) =>
+        q.eq("eventId", eventId).eq("type", "volunteer"),
+      )
+      .collect();
+    const people = await Promise.all(
+      volunteers.map(async (e: any) => {
+        const person = await ctx.db.get(e.personId as Id<"people">);
+        return {
+          teams: Array.isArray(e.teams) ? (e.teams as string[]) : [],
+          name: person?.name ?? "Unknown",
+          callTime: e.callTime ?? null,
+          status: e.status ?? null,
+        };
+      }),
+    );
+
+    const teams = teamOptions.map((opt) => ({
+      value: opt.value,
+      label: opt.label,
+      color: opt.color ?? null,
+      expectations: expectationItems
+        .filter((it: any) => it.fields?.team === opt.value)
+        .map(toExpectation),
+      people: people
+        .filter((p) => p.teams.includes(opt.value))
+        .map(({ name, callTime, status }) => ({ name, callTime, status })),
+    }));
+
+    // Anything whose team isn't a known option → the unassigned bucket.
+    const unassigned = {
+      expectations: expectationItems
+        .filter((it: any) => {
+          const t = it.fields?.team;
+          return typeof t !== "string" || !t || !knownTeams.has(t);
+        })
+        .map(toExpectation),
+      people: people
+        .filter((p) => !p.teams.some((t) => knownTeams.has(t)))
+        .map(({ name, callTime, status }) => ({ name, callTime, status })),
+    };
+
+    return {
+      name: event.name,
+      eventDate: event.eventDate,
+      location: event.location ?? null,
+      teams,
+      unassigned,
     };
   },
 });
@@ -187,22 +292,29 @@ export const reschedule = mutation({
   },
 });
 
-/** Edit an event's top-level fields (name, location, budget). */
+/** Edit an event's top-level fields (name, location, budget, owner). */
 export const updateDetails = mutation({
   args: {
     eventId: v.id("events"),
     name: v.optional(v.string()),
     location: v.optional(v.union(v.string(), v.null())),
     budget: v.optional(v.union(v.number(), v.null())),
+    ownerPersonId: v.optional(v.union(v.id("people"), v.null())),
   },
   handler: async (ctx, { eventId, ...patch }) => {
     const chapterId = await requireChapterId(ctx);
     const event = await ctx.db.get(eventId);
     await requireInChapter(ctx, chapterId, event, "Event");
+    if (patch.ownerPersonId) {
+      const person = await ctx.db.get(patch.ownerPersonId);
+      await requireInChapter(ctx, chapterId, person, "Person");
+    }
     const fields: Record<string, unknown> = { updatedAt: Date.now() };
     if (patch.name !== undefined) fields.name = patch.name;
     if (patch.location !== undefined) fields.location = patch.location ?? undefined;
     if (patch.budget !== undefined) fields.budget = patch.budget ?? undefined;
+    if (patch.ownerPersonId !== undefined)
+      fields.ownerPersonId = patch.ownerPersonId ?? undefined;
     await ctx.db.patch(eventId, fields);
     return eventId;
   },
@@ -343,6 +455,8 @@ export const dayOf = query({
       }),
     );
 
+    // Day-of view shows only what's imminent: tasks from T-2 onwards (and any
+    // undated tasks). Earlier prep tasks (T-14, T-7…) are hidden here.
     const tasks = (
       await ctx.db
         .query("eventItems")
@@ -350,7 +464,9 @@ export const dayOf = query({
           q.eq("eventId", eventId).eq("module", "planning_doc"),
         )
         .collect()
-    ).sort((a: any, b: any) => (a.dueDate ?? 0) - (b.dueDate ?? 0));
+    )
+      .filter((t: any) => t.offsetDays == null || t.offsetDays >= -2)
+      .sort((a: any, b: any) => (a.dueDate ?? 0) - (b.dueDate ?? 0));
 
     return {
       event,

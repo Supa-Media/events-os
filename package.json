@@ -20,5 +20,15 @@
   "engines": {
     "node": ">=22",
     "pnpm": ">=9"
+  },
+  "pnpm": {
+    "overrides": {
+      "@supa-media/core": "file:/tmp/supa-tgz/supa-media-core-0.2.0.tgz",
+      "@supa-media/convex": "file:/tmp/supa-tgz/supa-media-convex-0.2.0.tgz",
+      "@supa-media/linter": "file:/tmp/supa-tgz/supa-media-linter-0.2.0.tgz",
+      "@supa-media/notifications": "file:/tmp/supa-tgz/supa-media-notifications-0.2.0.tgz",
+      "@supa-media/metro": "file:/tmp/supa-tgz/supa-media-metro-0.2.0.tgz",
+      "@supa-media/testing": "file:/tmp/supa-tgz/supa-media-testing-0.2.0.tgz"
+    }
   }
 }

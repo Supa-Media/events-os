@@ -1,5 +1,12 @@
-import { useState } from "react";
-import { Modal, View, Text, Pressable, ScrollView } from "react-native";
+import { useEffect, useState } from "react";
+import {
+  Modal,
+  View,
+  Text,
+  Pressable,
+  ScrollView,
+  TextInput,
+} from "react-native";
 import { useQuery } from "convex/react";
 import { api } from "@events-os/convex/_generated/api";
 import { Icon } from "./Icon";
@@ -15,12 +22,23 @@ type Props = {
   onPick: (personId: PersonId) => void;
   onClear?: () => void;
   onClose: () => void;
+  /** "team" lists only team members (for owners/leads); default lists everyone. */
+  source?: "all" | "team";
+  /**
+   * When provided, the picker gains a search box + a "Create new person" row, so
+   * the caller can either CHOOSE an existing person or CREATE one by name. Left
+   * unset (e.g. role assignment), the picker stays a plain roster list.
+   */
+  onCreate?: (name: string) => void;
 };
 
 /**
  * Centered modal popover that lists chapter people for assigning tasks/roles.
- * Loads people via api.people.list (undefined while loading). Rows have
- * class-driven hover and a selected check.
+ * Loads people via api.people.list ("all") or api.people.teamMembers ("team");
+ * undefined while loading. Rows have class-driven hover and a selected check.
+ *
+ * With `onCreate`, it doubles as a combobox: type to filter the roster (choose),
+ * or create a brand-new person from the typed name when none matches.
  */
 export function PersonPicker({
   visible,
@@ -29,8 +47,28 @@ export function PersonPicker({
   onPick,
   onClear,
   onClose,
+  source = "all",
+  onCreate,
 }: Props) {
-  const people = useQuery(api.people.list);
+  const people = useQuery(
+    source === "team" ? api.people.teamMembers : api.people.list,
+  );
+
+  const [search, setSearch] = useState("");
+  // Reset the query each time the modal is dismissed so it opens fresh.
+  useEffect(() => {
+    if (!visible) setSearch("");
+  }, [visible]);
+
+  const q = search.trim().toLowerCase();
+  const list = people ?? [];
+  const filtered = q
+    ? list.filter((p: any) => p.name.toLowerCase().includes(q))
+    : list;
+  const exactMatch = list.some(
+    (p: any) => p.name.trim().toLowerCase() === q,
+  );
+  const canCreate = !!onCreate && search.trim().length > 0 && !exactMatch;
 
   return (
     <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
@@ -49,6 +87,20 @@ export function PersonPicker({
             </Pressable>
           </View>
 
+          {onCreate ? (
+            <View className="border-b border-border px-5 py-3">
+              <TextInput
+                value={search}
+                onChangeText={setSearch}
+                placeholder="Search people, or type a new name…"
+                placeholderTextColor={colors.faint}
+                autoFocus
+                autoCapitalize="words"
+                className="rounded-md border border-border bg-raised px-3 py-2.5 text-base text-ink"
+              />
+            </View>
+          ) : null}
+
           <ScrollView className="max-h-96">
             {onClear ? (
               <Row label="Clear assignment" muted icon="user-x" onPress={onClear} />
@@ -56,12 +108,14 @@ export function PersonPicker({
 
             {people === undefined ? (
               <Text className="px-5 py-6 text-center text-base text-muted">Loading…</Text>
-            ) : people.length === 0 ? (
+            ) : filtered.length === 0 && !canCreate ? (
               <Text className="px-5 py-6 text-center text-base text-muted">
-                No people yet. Add some first.
+                {list.length === 0
+                  ? "No people yet. Add some first."
+                  : "No matches."}
               </Text>
             ) : (
-              people.map((p: any) => (
+              filtered.map((p: any) => (
                 <Row
                   key={p._id}
                   label={p.name}
@@ -70,6 +124,15 @@ export function PersonPicker({
                 />
               ))
             )}
+
+            {canCreate ? (
+              <Row
+                label={`Create “${search.trim()}”`}
+                muted
+                icon="user-plus"
+                onPress={() => onCreate!(search.trim())}
+              />
+            ) : null}
           </ScrollView>
         </Pressable>
       </Pressable>
@@ -87,7 +150,7 @@ function Row({
   label: string;
   selected?: boolean;
   muted?: boolean;
-  icon?: "user-x";
+  icon?: "user-x" | "user-plus";
   onPress: () => void;
 }) {
   const [hovered, setHovered] = useState(false);

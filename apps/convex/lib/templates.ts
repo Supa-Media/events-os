@@ -70,6 +70,37 @@ function isDayOffsetModule(module: string): boolean {
 }
 
 /**
+ * Resolve the roster person for a user, creating one if they aren't on the
+ * roster yet — so the event creator can always be set as the accountable owner.
+ * The creator IS a team member; linking a `people` row (by `userId`) lets them
+ * own events and hold roles like anyone else.
+ */
+export async function getOrCreateOwnerPerson(
+  ctx: any,
+  chapterId: Id<"chapters">,
+  userId: Id<"users">,
+  now: number,
+): Promise<Id<"people">> {
+  const existing = await ctx.db
+    .query("people")
+    .withIndex("by_user", (q: any) => q.eq("userId", userId))
+    .first();
+  if (existing && existing.chapterId === chapterId)
+    return existing._id as Id<"people">;
+  const user = await ctx.db.get(userId);
+  const name = user?.name ?? user?.email ?? "Event owner";
+  return (await ctx.db.insert("people", {
+    chapterId,
+    name,
+    email: user?.email,
+    userId,
+    isActive: true,
+    isTeamMember: true,
+    createdAt: now,
+  })) as Id<"people">;
+}
+
+/**
  * THE TEMPLATING ENGINE. Snapshot a template into a live event: insert the
  * event, clone its columns onto the event, then clone its items (back-
  * calculating due dates for day-offset modules; tasks/comms start at their
@@ -90,6 +121,14 @@ export async function instantiateEvent(
   },
 ): Promise<Id<"events">> {
   const now = opts.now ?? Date.now();
+  // Never leave an event floating: the creator is the owner until they hand it
+  // off (events.updateDetails). Creates a roster person for them if needed.
+  const ownerPersonId = await getOrCreateOwnerPerson(
+    ctx,
+    opts.chapterId,
+    opts.userId,
+    now,
+  );
   const eventId = (await ctx.db.insert("events", {
     chapterId: opts.chapterId,
     eventTypeId: opts.eventType._id,
@@ -98,6 +137,7 @@ export async function instantiateEvent(
     eventDate: opts.eventDate,
     location: opts.location,
     budget: opts.budget,
+    ownerPersonId,
     status: "planning",
     createdBy: opts.userId,
     createdAt: now,

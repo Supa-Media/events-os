@@ -13,9 +13,55 @@
  */
 import { mutation, query } from "./_generated/server";
 import { Id } from "./_generated/dataModel";
-import { DEFAULT_ROLES, DEFAULT_COLUMNS, DAY_MS, type ModuleKey } from "@events-os/shared";
+import {
+  DEFAULT_ROLES,
+  DEFAULT_COLUMNS,
+  DAY_MS,
+  MODULE_KEYS,
+  DAY_OFFSET_MODULES,
+  computeDueDate,
+  defaultStatusValue,
+  type ModuleKey,
+} from "@events-os/shared";
 import { requireUserId } from "./lib/context";
 import { toSlug, instantiateEvent } from "./lib/templates";
+
+/** The active list-backed modules for a template (activeComponents ∩ MODULE_KEYS). */
+function activeModules(activeComponents: string[]): ModuleKey[] {
+  return MODULE_KEYS.filter((m) => activeComponents.includes(m));
+}
+
+/** Seed item rows for the new modules, shared between seedDemoData and backfillNewModules. */
+const PERMIT_ROWS: ItemRow[] = [
+  { title: "Maria Hernandez Park Permit", offsetDays: -3, status: "approved", fields: { notes: "Park permit — holder must attend." } },
+  { title: "Sound Permit", offsetDays: -3, status: "submitted", fields: { notes: "Amplified-sound permit via precinct officer ~3 days prior." } },
+];
+
+// Granular EXPECTATIONS — multiple per team, each tagged to a team value from
+// VOLUNTEER_TEAM_OPTIONS. Distilled from eden.md §6 (per-team task lists) and the
+// run-of-show setup notes. Columns are title / team / details (no status column).
+const VOLUNTEER_ROWS: ItemRow[] = [
+  // 💐 Flower Team
+  { title: "Set up flower tables, vases, and linens", fields: { team: "flower", details: "Dress the tables with linens, fill vases, and arrange flowers before guests arrive." } },
+  { title: "Lay out blankets + stones seating area", fields: { team: "flower", details: "Set the garden-picnic vibe: blankets and stones for guests to settle on." } },
+  // 🍅 Food/Bev Team
+  { title: "Set up the grazing table", fields: { team: "food_bev", details: "Arrange charcuterie, plates, napkins, and utensils on the grazing table." } },
+  { title: "Keep food + drinks stocked through the event", fields: { team: "food_bev", details: "Monitor levels, refill as needed, and keep the area clean." } },
+  // 👋 Welcome Team
+  { title: "Greet and direct guests on arrival", fields: { team: "welcome", details: "Welcome people in, point them to food/seating, and keep the entrance flowing." } },
+  { title: "Hand out connect cards", fields: { team: "welcome", details: "Offer connect cards to new guests and answer questions." } },
+  { title: "Run the merch + QR / donations table", fields: { team: "welcome", details: "Staff the small merch table, take Square payments, share the donations QR." } },
+  // 🙏 Prayer Team
+  { title: "Hold the prayer station", fields: { team: "prayer", details: "Set up the prayer sign + spot and be available throughout the event." } },
+  { title: "Pray with anyone who comes forward", fields: { team: "prayer", details: "Listen and pray one-on-one with guests who want prayer." } },
+  // 📷 Content Team
+  { title: "Capture photos + video clips throughout the day", fields: { team: "content", details: "Grab candid moments, worship, and setup for recap content." } },
+  { title: "Get key b-roll for the recap reel", fields: { team: "content", details: "Wide shots, crowd, and the gospel moment for the post-event clip." } },
+];
+
+const RETRO_ROWS: ItemRow[] = [
+  { title: "What went well?", status: "open" },
+];
 
 const DEMO_CHAPTER_NAME = "Public Worship — Demo";
 
@@ -106,6 +152,277 @@ export const clearDemo = mutation({
   },
 });
 
+/**
+ * Dev-only backfill (no auth) for the modules added after some templates/events
+ * were already created (permits, retro, volunteer_expectations). Without this,
+ * those modules render empty grids on pre-existing data. Idempotent: only inserts
+ * for a (template/event, module) pair that has zero columns yet.
+ *
+ * For each eventType: insert DEFAULT_COLUMNS + the seed items (PERMIT/VOLUNTEER/
+ * RETRO rows) for any active-but-empty new module. For each event: clone the now-
+ * present template columns + items for those modules onto the event (back-calc
+ * dueDate for day-offset modules), mirroring instantiateEvent's clone shape.
+ */
+export const backfillNewModules = mutation({
+  args: {},
+  handler: async (ctx) => {
+    const NEW_MODULES: ModuleKey[] = ["permits", "retro", "volunteer_expectations"];
+    const seedRowsFor = (module: ModuleKey): ItemRow[] => {
+      if (module === "permits") return PERMIT_ROWS;
+      if (module === "volunteer_expectations") return VOLUNTEER_ROWS;
+      if (module === "retro") return RETRO_ROWS;
+      return [];
+    };
+
+    let templatesPatched = 0;
+    let eventsPatched = 0;
+
+    // ── Templates ────────────────────────────────────────────────────────────
+    const eventTypes = await ctx.db.query("eventTypes").collect();
+    for (const et of eventTypes) {
+      let patched = false;
+      for (const module of NEW_MODULES) {
+        if (!(et.activeComponents ?? []).includes(module)) continue;
+        const existing = await ctx.db
+          .query("templateColumns")
+          .withIndex("by_eventType_module", (q: any) =>
+            q.eq("eventTypeId", et._id).eq("module", module),
+          )
+          .first();
+        if (existing) continue;
+
+        const defaults = DEFAULT_COLUMNS[module];
+        for (let i = 0; i < defaults.length; i++) {
+          const c = defaults[i];
+          await ctx.db.insert("templateColumns", {
+            eventTypeId: et._id,
+            module,
+            key: c.key,
+            label: c.label,
+            kind: c.kind,
+            type: c.type,
+            options: c.options,
+            config: c.config,
+            isVisible: c.isVisible,
+            order: i,
+          });
+        }
+        const rows = seedRowsFor(module);
+        for (let i = 0; i < rows.length; i++) {
+          const r = rows[i];
+          await ctx.db.insert("templateItems", {
+            eventTypeId: et._id,
+            module,
+            title: r.title,
+            order: i,
+            offsetDays: r.offsetDays,
+            offsetMinutes: r.offsetMinutes,
+            roleId: r.roleId,
+            status: r.status,
+            fields: r.fields,
+          });
+        }
+        patched = true;
+      }
+      if (patched) templatesPatched++;
+    }
+
+    // ── Events ───────────────────────────────────────────────────────────────
+    const events = await ctx.db.query("events").collect();
+    for (const ev of events) {
+      const et = await ctx.db.get(ev.eventTypeId);
+      if (!et) continue;
+      let patched = false;
+      for (const module of NEW_MODULES) {
+        if (!(et.activeComponents ?? []).includes(module)) continue;
+        const existingCol = await ctx.db
+          .query("eventColumns")
+          .withIndex("by_event_module", (q: any) =>
+            q.eq("eventId", ev._id).eq("module", module),
+          )
+          .first();
+        if (existingCol) continue;
+
+        // Clone the (now-present) template columns for this module.
+        const cols = await ctx.db
+          .query("templateColumns")
+          .withIndex("by_eventType_module", (q: any) =>
+            q.eq("eventTypeId", et._id).eq("module", module),
+          )
+          .collect();
+        for (const c of cols) {
+          const { _id, _creationTime, eventTypeId: _e, ...rest } = c as any;
+          await ctx.db.insert("eventColumns", { eventId: ev._id, ...rest });
+        }
+
+        // Clone the template items for this module onto the event.
+        const items = await ctx.db
+          .query("templateItems")
+          .withIndex("by_eventType_module", (q: any) =>
+            q.eq("eventTypeId", et._id).eq("module", module),
+          )
+          .collect();
+        const isDayOffset = DAY_OFFSET_MODULES.includes(module);
+        for (const it of items) {
+          const dueDate =
+            isDayOffset && it.offsetDays !== undefined
+              ? computeDueDate(ev.eventDate, it.offsetDays)
+              : undefined;
+          await ctx.db.insert("eventItems", {
+            eventId: ev._id,
+            chapterId: ev.chapterId,
+            module: it.module,
+            title: it.title,
+            order: it.order,
+            offsetDays: it.offsetDays,
+            offsetMinutes: it.offsetMinutes,
+            dueDate,
+            roleId: it.roleId,
+            status: it.status ?? defaultStatusValue(module),
+            fields: it.fields,
+          });
+        }
+        patched = true;
+      }
+      if (patched) eventsPatched++;
+    }
+
+    return { templatesPatched, eventsPatched };
+  },
+});
+
+/**
+ * Dev-only migration (no auth) for the RESHAPED volunteer_expectations module.
+ * Rows used to be one-per-team engagements (Volunteer/Team, team, status,
+ * call_time, phone, responsibilities, owner); they are now granular EXPECTATIONS
+ * with columns title / team / details. This rebuilds the columns + items on every
+ * template and event that has the module active, from DEFAULT_COLUMNS + the
+ * granular VOLUNTEER_ROWS above. Mirrors clearDemo/backfillNewModules style.
+ */
+export const migrateVolunteerExpectations = mutation({
+  args: {},
+  handler: async (ctx) => {
+    const MODULE: ModuleKey = "volunteer_expectations";
+    let templatesPatched = 0;
+    let eventsPatched = 0;
+
+    // ── Templates ────────────────────────────────────────────────────────────
+    const eventTypes = await ctx.db.query("eventTypes").collect();
+    for (const et of eventTypes) {
+      if (!(et.activeComponents ?? []).includes(MODULE)) continue;
+
+      // Replace columns with the new DEFAULT_COLUMNS shape.
+      for (const c of await ctx.db
+        .query("templateColumns")
+        .withIndex("by_eventType_module", (q: any) =>
+          q.eq("eventTypeId", et._id).eq("module", MODULE),
+        )
+        .collect())
+        await ctx.db.delete(c._id);
+
+      const defaults = DEFAULT_COLUMNS[MODULE];
+      for (let i = 0; i < defaults.length; i++) {
+        const c = defaults[i];
+        await ctx.db.insert("templateColumns", {
+          eventTypeId: et._id,
+          module: MODULE,
+          key: c.key,
+          label: c.label,
+          kind: c.kind,
+          type: c.type,
+          options: c.options,
+          config: c.config,
+          isVisible: c.isVisible,
+          order: i,
+        });
+      }
+
+      // Replace items with the granular expectation rows.
+      for (const it of await ctx.db
+        .query("templateItems")
+        .withIndex("by_eventType_module", (q: any) =>
+          q.eq("eventTypeId", et._id).eq("module", MODULE),
+        )
+        .collect())
+        await ctx.db.delete(it._id);
+
+      for (let i = 0; i < VOLUNTEER_ROWS.length; i++) {
+        const r = VOLUNTEER_ROWS[i];
+        await ctx.db.insert("templateItems", {
+          eventTypeId: et._id,
+          module: MODULE,
+          title: r.title,
+          order: i,
+          offsetDays: r.offsetDays,
+          offsetMinutes: r.offsetMinutes,
+          roleId: r.roleId,
+          status: r.status,
+          fields: r.fields,
+        });
+      }
+      templatesPatched++;
+    }
+
+    // ── Events ───────────────────────────────────────────────────────────────
+    const events = await ctx.db.query("events").collect();
+    for (const ev of events) {
+      const et = await ctx.db.get(ev.eventTypeId);
+      if (!et || !(et.activeComponents ?? []).includes(MODULE)) continue;
+
+      // Wipe the event's old volunteer_expectations columns + items.
+      for (const c of await ctx.db
+        .query("eventColumns")
+        .withIndex("by_event_module", (q: any) =>
+          q.eq("eventId", ev._id).eq("module", MODULE),
+        )
+        .collect())
+        await ctx.db.delete(c._id);
+      for (const it of await ctx.db
+        .query("eventItems")
+        .withIndex("by_event_module", (q: any) =>
+          q.eq("eventId", ev._id).eq("module", MODULE),
+        )
+        .collect())
+        await ctx.db.delete(it._id);
+
+      // Clone from the (now-updated) template.
+      const cols = await ctx.db
+        .query("templateColumns")
+        .withIndex("by_eventType_module", (q: any) =>
+          q.eq("eventTypeId", et._id).eq("module", MODULE),
+        )
+        .collect();
+      for (const c of cols) {
+        const { _id, _creationTime, eventTypeId: _e, ...rest } = c as any;
+        await ctx.db.insert("eventColumns", { eventId: ev._id, ...rest });
+      }
+
+      // volunteer_expectations is not a day-offset module — no dueDate.
+      const items = await ctx.db
+        .query("templateItems")
+        .withIndex("by_eventType_module", (q: any) =>
+          q.eq("eventTypeId", et._id).eq("module", MODULE),
+        )
+        .collect();
+      for (const it of items) {
+        await ctx.db.insert("eventItems", {
+          eventId: ev._id,
+          chapterId: ev.chapterId,
+          module: it.module,
+          title: it.title,
+          order: it.order,
+          roleId: it.roleId,
+          status: it.status,
+          fields: it.fields,
+        });
+      }
+      eventsPatched++;
+    }
+
+    return { templatesPatched, eventsPatched };
+  },
+});
+
 /** Dev-only: row counts across the unified-model tables (no auth). */
 export const health = query({
   args: {},
@@ -123,6 +440,31 @@ export const health = query({
       eventItems: await count("eventItems"),
       roleAssignments: await count("roleAssignments"),
     };
+  },
+});
+
+/**
+ * Dev backfill: mark existing people as team members if they already hold a lead
+ * role or own an event — so the owner/lead pickers (which now list team members
+ * only) aren't empty for pre-existing data.
+ */
+export const backfillTeamMembers = mutation({
+  args: {},
+  handler: async (ctx) => {
+    const ids = new Set<string>();
+    for (const a of await ctx.db.query("roleAssignments").collect())
+      ids.add(String(a.personId));
+    for (const e of await ctx.db.query("events").collect())
+      if (e.ownerPersonId) ids.add(String(e.ownerPersonId));
+    let marked = 0;
+    for (const id of ids) {
+      const person = await ctx.db.get(id as Id<"people">);
+      if (person && !person.isTeamMember) {
+        await ctx.db.patch(person._id, { isTeamMember: true });
+        marked++;
+      }
+    }
+    return { marked };
   },
 });
 
@@ -258,7 +600,7 @@ export const seedDemoData = mutation({
       activeRoleIds: allRoleIds,
       activeComponents: [
         "planning_doc", "run_of_show", "comms", "permits", "supplies", "retro",
-        "volunteer_expectations", "day_of_roles",
+        "volunteer_expectations",
       ],
       version: 1,
       isArchived: false,
@@ -267,7 +609,10 @@ export const seedDemoData = mutation({
       updatedAt: now,
     })) as Id<"eventTypes">;
 
-    for (const m of ["planning_doc", "supplies", "comms", "run_of_show"] as ModuleKey[]) {
+    for (const m of activeModules([
+      "planning_doc", "run_of_show", "comms", "permits", "supplies", "retro",
+      "volunteer_expectations",
+    ])) {
       await seedCols(edenId, m);
     }
 
@@ -316,6 +661,10 @@ export const seedDemoData = mutation({
       { title: "Strike / Load-out", offsetMinutes: 130, roleId: roleId.logistics_lead },
     ]);
 
+    await addItems(edenId, "permits", PERMIT_ROWS);
+    await addItems(edenId, "volunteer_expectations", VOLUNTEER_ROWS);
+    await addItems(edenId, "retro", RETRO_ROWS);
+
     // ── Love Thy Neighbor (derived from Eden — same structure) ───────────────
     const ltnId = (await ctx.db.insert("eventTypes", {
       chapterId,
@@ -327,7 +676,7 @@ export const seedDemoData = mutation({
       activeRoleIds: allRoleIds,
       activeComponents: [
         "planning_doc", "run_of_show", "comms", "permits", "supplies", "retro",
-        "volunteer_expectations", "day_of_roles",
+        "volunteer_expectations",
       ],
       version: 1,
       isArchived: false,
@@ -375,6 +724,8 @@ export const seedDemoData = mutation({
     await seedCols(wwsId, "supplies", ["qty", "owner", "role"]);
     await seedCols(wwsId, "comms");
     await seedCols(wwsId, "run_of_show");
+    await seedCols(wwsId, "permits");
+    await seedCols(wwsId, "retro");
 
     await addItems(wwsId, "planning_doc", [
       { title: "Update event date + create thread", offsetDays: -14, roleId: roleId.event_lead, fields: { details: "Update the event date; start the WWS thread tagging owners." } },
@@ -421,6 +772,10 @@ export const seedDemoData = mutation({
       { title: "Strike / Load-out", offsetMinutes: 55, roleId: roleId.logistics_lead },
     ]);
 
+    await addItems(wwsId, "permits", [
+      { title: "Public-space / sound permit", offsetDays: -3, status: "to_apply", fields: { notes: "Check the park's amplified-sound rules; apply if required." } },
+    ]);
+
     // ── Sample upcoming WwS event (~21 days out) ─────────────────────────────
     const eventDate = now + 21 * DAY_MS;
     const wwsType = await ctx.db.get(wwsId);
@@ -457,5 +812,61 @@ export const seedDemoData = mutation({
     });
 
     return { chapterId, seeded: true };
+  },
+});
+
+/**
+ * Dev-only migration (no auth): collapse the legacy single-`team` engagement
+ * model into the multi-`teams` model.
+ *
+ * Volunteers used to be stored as one engagement PER team, so the same person on
+ * two teams showed up as two rows. Now one engagement = one person's involvement
+ * in an event, carrying an array of teams. This merges duplicate
+ * (event, person, type) engagements into the earliest one, unioning their teams,
+ * and clears the obsolete `team` field. Idempotent. Run once, then drop `team`
+ * from the schema.
+ */
+export const mergeEngagementTeams = mutation({
+  args: {},
+  handler: async (ctx) => {
+    const all = await ctx.db.query("engagements").collect();
+
+    // Group by (event, person, type); the earliest row is the survivor.
+    const groups = new Map<string, typeof all>();
+    for (const e of all) {
+      const key = `${e.eventId}|${e.personId}|${e.type}`;
+      const list = groups.get(key) ?? [];
+      list.push(e);
+      groups.set(key, list);
+    }
+
+    let merged = 0;
+    let deleted = 0;
+    for (const list of groups.values()) {
+      list.sort((a, b) => a.createdAt - b.createdAt);
+      const [primary, ...dupes] = list;
+
+      // Union teams from every row's legacy `team` + any existing `teams`.
+      const teams = new Set<string>(primary.teams ?? []);
+      const legacy = (primary as any).team;
+      if (typeof legacy === "string" && legacy) teams.add(legacy);
+      for (const d of dupes) {
+        for (const t of d.teams ?? []) teams.add(t);
+        const dl = (d as any).team;
+        if (typeof dl === "string" && dl) teams.add(dl);
+      }
+
+      await ctx.db.patch(primary._id, {
+        teams: Array.from(teams),
+        team: undefined, // clear legacy field (no longer in schema)
+      } as any);
+      merged++;
+      for (const d of dupes) {
+        await ctx.db.delete(d._id);
+        deleted++;
+      }
+    }
+
+    return { groups: groups.size, merged, deletedDuplicates: deleted };
   },
 });

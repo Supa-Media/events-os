@@ -439,7 +439,7 @@ function PhotoCell({ value, editable, onChange }: any) {
         ) : displayUri ? (
           <Image
             source={{ uri: displayUri }}
-            style={{ width: 34, height: 34, borderRadius: 6, backgroundColor: colors.sunken }}
+            style={{ width: 56, height: 56, borderRadius: 8, backgroundColor: colors.sunken }}
           />
         ) : (
           <Icon name="image" size={16} color={colors.faint} />

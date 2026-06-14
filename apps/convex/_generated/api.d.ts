@@ -8,19 +8,24 @@
  * @module
  */
 
+import type * as ai from "../ai.js";
+import type * as aiActions from "../aiActions.js";
 import type * as auth from "../auth.js";
 import type * as columns from "../columns.js";
 import type * as dashboard from "../dashboard.js";
+import type * as engagements from "../engagements.js";
 import type * as eventTypes from "../eventTypes.js";
 import type * as events from "../events.js";
 import type * as http from "../http.js";
 import type * as items from "../items.js";
 import type * as lib_context from "../lib/context.js";
+import type * as lib_superuser from "../lib/superuser.js";
 import type * as lib_templates from "../lib/templates.js";
 import type * as people from "../people.js";
 import type * as roleAssignments from "../roleAssignments.js";
 import type * as roles from "../roles.js";
 import type * as seed from "../seed.js";
+import type * as siteMap from "../siteMap.js";
 import type * as storage from "../storage.js";
 
 import type {
@@ -30,19 +35,24 @@ import type {
 } from "convex/server";
 
 declare const fullApi: ApiFromModules<{
+  ai: typeof ai;
+  aiActions: typeof aiActions;
   auth: typeof auth;
   columns: typeof columns;
   dashboard: typeof dashboard;
+  engagements: typeof engagements;
   eventTypes: typeof eventTypes;
   events: typeof events;
   http: typeof http;
   items: typeof items;
   "lib/context": typeof lib_context;
+  "lib/superuser": typeof lib_superuser;
   "lib/templates": typeof lib_templates;
   people: typeof people;
   roleAssignments: typeof roleAssignments;
   roles: typeof roles;
   seed: typeof seed;
+  siteMap: typeof siteMap;
   storage: typeof storage;
 }>;
 

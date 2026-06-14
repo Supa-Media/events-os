@@ -1,5 +1,5 @@
-import { useMemo, useState } from "react";
-import { View, Text, Pressable, Alert, TextInput } from "react-native";
+import { createElement, useMemo, useState } from "react";
+import { View, Text, Pressable, Alert, TextInput, Platform } from "react-native";
 import { Stack, useRouter, useLocalSearchParams } from "expo-router";
 import { useQuery, useMutation } from "convex/react";
 import { api } from "@events-os/convex/_generated/api";
@@ -17,9 +17,16 @@ import {
   statusTone,
 } from "../../../components/ui";
 import { EditableGrid } from "../../../components/grid/EditableGrid";
-import { AiPhotoFill } from "../../../components/ai/AiPhotoFill";
+import { AiAssistantPanel } from "../../../components/ai/AiAssistantPanel";
+import { CrewSections } from "../../../components/event/CrewSections";
 import { colors } from "../../../lib/theme";
-import { formatDate, parseDateInput, toDateInput } from "../../../lib/format";
+import {
+  formatDateTime,
+  parseDateInput,
+  toDateInput,
+  toDateTimeLocal,
+  fromDateTimeLocal,
+} from "../../../lib/format";
 import {
   MODULE_KEYS,
   MODULE_LABELS,
@@ -53,6 +60,7 @@ export default function EventDetailScreen() {
     | { roleId: string; roleLabel: string; selectedId: string | null }
     | null
   >(null);
+  const [ownerOpen, setOwnerOpen] = useState(false);
 
   // Chapter roles, shaped for the grid's role cells ({_id, label}).
   const chapterRoles = useMemo(
@@ -101,6 +109,7 @@ export default function EventDetailScreen() {
     event,
     eventTypeName,
     activeComponents,
+    owner,
     readiness,
     taskTotal,
     taskDone,
@@ -117,7 +126,9 @@ export default function EventDetailScreen() {
         ? String(event.budget)
         : "";
 
-  // Only modules that the event type has switched on, in canonical order.
+  // Modules the event type switched on, in canonical order. The
+  // volunteer_expectations module is the team EXPECTATIONS list (rows = things a
+  // team does, tagged by team); WHO is on each team lives in CrewSections below.
   const activeModules = MODULE_KEYS.filter((m) => activeComponents.includes(m));
 
   async function handleSaveName() {
@@ -145,17 +156,25 @@ export default function EventDetailScreen() {
     setBudgetInput(null);
   }
 
+  async function doDelete() {
+    await removeEvent({ eventId });
+    router.replace("/");
+  }
+
   function confirmDelete() {
+    // RN's Alert.alert is a no-op on web — use the DOM confirm there.
+    if (Platform.OS === "web") {
+      if (
+        typeof window !== "undefined" &&
+        window.confirm("Delete this event and all its items? This can't be undone.")
+      ) {
+        void doDelete();
+      }
+      return;
+    }
     Alert.alert("Delete event?", "This removes the event and all its items.", [
       { text: "Cancel", style: "cancel" },
-      {
-        text: "Delete",
-        style: "destructive",
-        onPress: async () => {
-          await removeEvent({ eventId });
-          router.replace("/");
-        },
-      },
+      { text: "Delete", style: "destructive", onPress: doDelete },
     ]);
   }
 
@@ -187,7 +206,7 @@ export default function EventDetailScreen() {
                 placeholder="Event name"
               />
               <View className="flex-row flex-wrap items-center gap-x-4 gap-y-1">
-                <Meta icon="calendar" text={formatDate(event.eventDate)} />
+                <Meta icon="calendar" text={formatDateTime(event.eventDate)} />
                 {event.location ? <Meta icon="map-pin" text={event.location} /> : null}
                 <Meta icon="check-circle" text={`${taskDone}/${taskTotal} tasks`} />
                 {event.budget != null ? (
@@ -214,6 +233,14 @@ export default function EventDetailScreen() {
                   variant="secondary"
                   onPress={() => router.push(`/event/${eventId}/day-of`)}
                 />
+                <Button
+                  title="Site map"
+                  icon="map"
+                  size="sm"
+                  variant="secondary"
+                  onPress={() => router.push(`/event/${eventId}/site-map`)}
+                />
+                <ShareCrewButton eventId={eventId} />
               </View>
             </View>
           </View>
@@ -260,27 +287,55 @@ export default function EventDetailScreen() {
               </View>
             </ControlBlock>
 
-            {/* Schedule — inline date field */}
+            {/* Schedule — date + time picker (native datetime-local on web) */}
             <ControlBlock label="Schedule">
-              <View className="flex-row items-center gap-2">
-                <InlineInput
-                  value={dateValue}
-                  onChangeText={setDateInput}
-                  onBlur={handleReschedule}
-                  placeholder="YYYY-MM-DD"
-                  autoCapitalize="none"
-                  width={120}
+              {Platform.OS === "web" ? (
+                <WebDateTimeInput
+                  value={event.eventDate}
+                  onChange={(ts) => reschedule({ eventId, eventDate: ts })}
                 />
-                <Button
-                  title="Save"
-                  icon="calendar"
-                  size="sm"
-                  variant="secondary"
-                  onPress={handleReschedule}
-                  disabled={parseDateInput(dateValue) === null}
-                />
-              </View>
+              ) : (
+                <View className="flex-row items-center gap-2">
+                  <InlineInput
+                    value={dateValue}
+                    onChangeText={setDateInput}
+                    onBlur={handleReschedule}
+                    placeholder="YYYY-MM-DD"
+                    autoCapitalize="none"
+                    width={120}
+                  />
+                  <Button
+                    title="Save"
+                    icon="calendar"
+                    size="sm"
+                    variant="secondary"
+                    onPress={handleReschedule}
+                    disabled={parseDateInput(dateValue) === null}
+                  />
+                </View>
+              )}
               <Text className="mt-1 text-2xs text-faint">Reflows due dates.</Text>
+            </ControlBlock>
+
+            {/* Owner — the single accountable person */}
+            <ControlBlock label="Owner">
+              <Pressable
+                onPress={() => setOwnerOpen(true)}
+                className="flex-row items-center gap-2 active:opacity-70"
+              >
+                {owner ? (
+                  <>
+                    <Avatar name={owner.name} size={22} />
+                    <Text className="text-sm font-medium text-ink">{owner.name}</Text>
+                  </>
+                ) : (
+                  <>
+                    <Icon name="user-plus" size={15} color={colors.muted} />
+                    <Text className="text-sm text-muted">Assign owner</Text>
+                  </>
+                )}
+              </Pressable>
+              <Text className="mt-1 text-2xs text-faint">Keeps details current.</Text>
             </ControlBlock>
 
             {/* Budget — inline numeric field */}
@@ -332,16 +387,13 @@ export default function EventDetailScreen() {
                 title={MODULE_LABELS[m]}
                 right={
                   m === "supplies" ? (
-                    <View className="flex-row items-start gap-2">
-                      <AiPhotoFill eventId={eventId} />
-                      <Button
-                        title="Packing mode"
-                        icon="package"
-                        size="sm"
-                        variant="secondary"
-                        onPress={() => router.push(`/event/${eventId}/packing`)}
-                      />
-                    </View>
+                    <Button
+                      title="Packing mode"
+                      icon="package"
+                      size="sm"
+                      variant="secondary"
+                      onPress={() => router.push(`/event/${eventId}/packing`)}
+                    />
                   ) : undefined
                 }
               />
@@ -356,11 +408,15 @@ export default function EventDetailScreen() {
             </View>
           ))
         )}
+
+        {/* People on this event — volunteers + paid vendors (engagements) */}
+        <CrewSections eventId={eventId} />
       </Screen>
 
       <PersonPicker
         visible={picker !== null}
         title={picker ? `Assign ${picker.roleLabel}` : "Assign role"}
+        source="team"
         selectedId={picker?.selectedId ?? null}
         onPick={async (personId) => {
           if (!picker) return;
@@ -382,11 +438,95 @@ export default function EventDetailScreen() {
         }
         onClose={() => setPicker(null)}
       />
+
+      <PersonPicker
+        visible={ownerOpen}
+        title="Event owner"
+        source="team"
+        selectedId={owner?._id ?? null}
+        onPick={async (personId) => {
+          await updateDetails({ eventId, ownerPersonId: personId as any });
+          setOwnerOpen(false);
+        }}
+        onClear={
+          owner
+            ? async () => {
+                await updateDetails({ eventId, ownerPersonId: null });
+                setOwnerOpen(false);
+              }
+            : undefined
+        }
+        onClose={() => setOwnerOpen(false)}
+      />
+
+      <AiAssistantPanel eventId={eventId} eventName={event.name} />
     </>
   );
 }
 
 // ── Pieces ───────────────────────────────────────────────────────────────────
+
+/**
+ * Web-only date+time picker — a real `<input type="datetime-local">` so users
+ * get the browser's native calendar/clock instead of typing. Commits on change.
+ * (Rendered only when Platform.OS === "web"; native uses the text fallback.)
+ */
+function WebDateTimeInput({
+  value,
+  onChange,
+}: {
+  value: number;
+  onChange: (ts: number) => void;
+}) {
+  return createElement("input", {
+    type: "datetime-local",
+    value: toDateTimeLocal(value),
+    onChange: (e: any) => {
+      const ts = fromDateTimeLocal(e.target.value);
+      if (ts != null) onChange(ts);
+    },
+    style: {
+      font: "inherit",
+      fontSize: 14,
+      color: colors.ink,
+      border: `1px solid ${colors.border}`,
+      borderRadius: 8,
+      padding: "6px 10px",
+      background: colors.surface,
+      outline: "none",
+    },
+  });
+}
+
+/**
+ * Copies the event's PUBLIC volunteer-briefing link (/share/<id>) to the
+ * clipboard so it can be sent to volunteers — they view it without an account.
+ */
+function ShareCrewButton({ eventId }: { eventId: string }) {
+  const [copied, setCopied] = useState(false);
+  function share() {
+    const url =
+      (typeof window !== "undefined" ? window.location.origin : "") +
+      `/share/${eventId}`;
+    if (typeof navigator !== "undefined" && navigator.clipboard) {
+      navigator.clipboard.writeText(url).then(() => {
+        setCopied(true);
+        setTimeout(() => setCopied(false), 2000);
+      });
+    } else if (typeof window !== "undefined") {
+      window.prompt("Share this volunteer link:", url);
+    }
+  }
+  return (
+    <Button
+      title={copied ? "Link copied!" : "Share crew"}
+      icon={copied ? "check" : "share-2"}
+      size="sm"
+      variant="secondary"
+      onPress={share}
+    />
+  );
+}
 
 function Meta({ icon, text, danger }: { icon: any; text: string; danger?: boolean }) {
   return (

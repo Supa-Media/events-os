@@ -5,8 +5,10 @@
  * delete / reorder. Driven entirely by the module's ColumnDef set.
  */
 import { useMemo, useState } from "react";
-import { View, Text, Pressable, ScrollView } from "react-native";
+import { View, Text, Pressable, ScrollView, ActivityIndicator } from "react-native";
 import { GestureDetector, type GestureType } from "react-native-gesture-handler";
+import { useAction } from "convex/react";
+import { api } from "@events-os/convex/_generated/api";
 import { type ModuleKey } from "@events-os/shared";
 import { colors } from "../../lib/theme";
 import { Icon } from "../ui/Icon";
@@ -83,7 +85,7 @@ function defaultWidth(col: GridColumn): number {
     case "url":
       return 180;
     case "photo":
-      return 70;
+      return 84;
     default:
       return 160;
   }
@@ -114,6 +116,7 @@ export function EditableGrid({
   addLabel = "Add row",
 }: Props) {
   const grid = useGridData(mode, parentId, module);
+  const autofill = useAction(api.aiActions.autofillItem);
   const [groupBy, setGroupBy] = useState<string | null>(null);
   const [menu, setMenu] = useState<null | "columns" | "group" | "addField" | "editOptions">(null);
   const [editColId, setEditColId] = useState<string | null>(null);
@@ -144,6 +147,12 @@ export function EditableGrid({
 
   const commit = (item: GridItem, column: GridColumn, value: any) =>
     grid.updateItem(item._id, buildPatch(column, value, module));
+
+  // The per-row ✨ Autofill button only makes sense on a live event with a
+  // fillable column (photo / link / cost).
+  const canAutofill =
+    mode === "event" &&
+    columns.some((c) => ["photo", "url", "currency"].includes(c.type));
 
   const itemsById = useMemo(() => {
     const map = new Map<string, GridItem>();
@@ -193,6 +202,7 @@ export function EditableGrid({
       editable={editable}
       onCommit={commit}
       onRemove={editable ? () => grid.removeItem(item._id) : undefined}
+      onAutofill={canAutofill ? () => autofill({ itemId: item._id as any }) : undefined}
       drag={drag}
     />
   );
@@ -474,6 +484,7 @@ function Row({
   editable,
   onCommit,
   onRemove,
+  onAutofill,
   drag,
 }: {
   item: GridItem;
@@ -487,6 +498,8 @@ function Row({
   editable: boolean;
   onCommit: (item: GridItem, column: GridColumn, value: any) => void;
   onRemove?: () => void;
+  /** ✨ one-click enrich (photo/cost/link) from the item name. */
+  onAutofill?: () => Promise<unknown>;
   /** Pan gesture from SortableRows; attached to the grip handle when editable. */
   drag?: GestureType;
 }) {
@@ -531,16 +544,50 @@ function Row({
         </View>
       ))}
 
-      {/* Right gutter: delete */}
+      {/* Right gutter: ✨ autofill + delete */}
       {editable ? (
         <View
           style={{ width: DELETE_W }}
-          className="items-center justify-start pt-1.5"
+          className="items-center justify-start gap-0.5 pt-1.5"
         >
+          {onAutofill ? <AutofillBtn onPress={onAutofill} /> : null}
           {onRemove ? <RowBtn icon="trash-2" danger onPress={onRemove} /> : null}
         </View>
       ) : null}
     </View>
+  );
+}
+
+/**
+ * Per-row ✨ Autofill control — fills photo / cost / link from the item name in
+ * one click. Owns its busy state and surfaces a spinner while the agent works.
+ */
+function AutofillBtn({ onPress }: { onPress: () => Promise<unknown> }) {
+  const [busy, setBusy] = useState(false);
+  return (
+    <Pressable
+      onPress={async () => {
+        if (busy) return;
+        setBusy(true);
+        try {
+          await onPress();
+        } catch {
+          // Surfaced via the assistant panel / left as a no-op; never crash a row.
+        } finally {
+          setBusy(false);
+        }
+      }}
+      disabled={busy}
+      hitSlop={4}
+      accessibilityLabel="Autofill photo, cost and link"
+      className="rounded p-1 active:bg-sunken web:hover:bg-sunken"
+    >
+      {busy ? (
+        <ActivityIndicator size="small" color={colors.accent} />
+      ) : (
+        <Icon name="zap" size={14} color={colors.accent} />
+      )}
+    </Pressable>
   );
 }
 

@@ -9,10 +9,12 @@
  * org-wide (the whole deployment). Budgets are dollar amounts over a rolling
  * monthly window; each call's token usage × the model's price → cost.
  */
-import { DAY_MS } from "./index";
+// NOTE: self-contained on purpose — importing from "./index" (which re-exports
+// this file) creates a circular dependency and a temporal-dead-zone crash
+// ("Cannot access 'DAY_MS' before initialization") at app load.
 
 export interface AiModel {
-  /** OpenRouter slug, e.g. "anthropic/claude-sonnet-latest". */
+  /** OpenRouter slug, e.g. "openai/gpt-oss-120b:free". */
   slug: string;
   label: string;
   /** USD per 1M input / output tokens (for cost estimation when the gateway
@@ -22,48 +24,45 @@ export interface AiModel {
 }
 
 /**
- * The models offered in-app. Swap freely — anything OpenRouter serves works by
- * slug; these are the curated picks with known pricing for cost estimates.
+ * The models offered in-app — FREE OpenRouter models only (`:free` slugs), so
+ * running the assistant costs nothing. All are tool-calling capable; the ones
+ * marked below also stream a reasoning trace, which the panel renders so you can
+ * watch the agent think. `inputPerMTok`/`outputPerMTok` are 0 (free tier) — the
+ * budget plumbing stays in place for the day we add paid models back.
  */
 export const AI_MODELS: Record<string, AiModel> = {
-  "anthropic/claude-sonnet-latest": {
-    slug: "anthropic/claude-sonnet-latest",
-    label: "Claude Sonnet",
-    inputPerMTok: 3,
-    outputPerMTok: 15,
+  "openai/gpt-oss-120b:free": {
+    slug: "openai/gpt-oss-120b:free",
+    label: "GPT-OSS 120B (free)",
+    inputPerMTok: 0,
+    outputPerMTok: 0,
   },
-  "anthropic/claude-opus-latest": {
-    slug: "anthropic/claude-opus-latest",
-    label: "Claude Opus",
-    inputPerMTok: 5,
-    outputPerMTok: 25,
+  "nvidia/nemotron-3-super-120b-a12b:free": {
+    slug: "nvidia/nemotron-3-super-120b-a12b:free",
+    label: "Nemotron 3 Super (free)",
+    inputPerMTok: 0,
+    outputPerMTok: 0,
   },
-  "anthropic/claude-haiku-latest": {
-    slug: "anthropic/claude-haiku-latest",
-    label: "Claude Haiku",
-    inputPerMTok: 1,
-    outputPerMTok: 5,
+  "meta-llama/llama-3.3-70b-instruct:free": {
+    slug: "meta-llama/llama-3.3-70b-instruct:free",
+    label: "Llama 3.3 70B (free)",
+    inputPerMTok: 0,
+    outputPerMTok: 0,
   },
-  "openai/gpt-latest": {
-    slug: "openai/gpt-latest",
-    label: "GPT (latest)",
-    inputPerMTok: 5,
-    outputPerMTok: 15,
-  },
-  "google/gemini-2.5-flash": {
-    slug: "google/gemini-2.5-flash",
-    label: "Gemini 2.5 Flash",
-    inputPerMTok: 0.3,
-    outputPerMTok: 2.5,
+  "qwen/qwen3-coder:free": {
+    slug: "qwen/qwen3-coder:free",
+    label: "Qwen3 Coder (free)",
+    inputPerMTok: 0,
+    outputPerMTok: 0,
   },
 };
 
 /**
- * Default model for agent tasks. Sonnet balances capability and cost for the
- * bulk, many-small-calls workloads (e.g. finding a photo per item). Switch to a
- * cheaper slug for large batches, or a stronger one for harder reasoning.
+ * Default model for the assistant. GPT-OSS 120B is free, reliable at
+ * tool-calling, AND streams a reasoning trace (so "see its thinking" works out
+ * of the box). Superusers can swap to any slug above.
  */
-export const DEFAULT_AI_MODEL = "anthropic/claude-sonnet-latest";
+export const DEFAULT_AI_MODEL = "openai/gpt-oss-120b:free";
 
 export interface AiUsageTokens {
   inputTokens: number;
@@ -96,8 +95,8 @@ export const AI_BUDGETS = {
   orgUsd: 500,
 };
 
-/** Rolling budget window (30 days). */
-export const AI_BUDGET_WINDOW_MS = 30 * DAY_MS;
+/** Rolling budget window (30 days, in ms). */
+export const AI_BUDGET_WINDOW_MS = 30 * 24 * 60 * 60 * 1000;
 
 export type AiBudgetScope = "user" | "chapter" | "org";
 

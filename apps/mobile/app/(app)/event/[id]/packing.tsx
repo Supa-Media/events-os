@@ -13,8 +13,11 @@ import {
   OptionTag,
 } from "../../../../components/ui";
 import { colors } from "../../../../lib/theme";
+import { SiteMapPreview } from "../../../../components/event/SiteMapPreview";
 
 type Phase = "in" | "out";
+/** Top-level view: the read-only setup map, or one of the packing phases. */
+type PackingView = "setup" | Phase;
 
 /** The fields-bag boolean key the active phase reads/writes. */
 const PACKED_KEY: Record<Phase, "packedIn" | "packedOut"> = {
@@ -55,21 +58,31 @@ function ProgressBar({ fraction }: { fraction: number }) {
   );
 }
 
-/** Small rounded item photo, or a placeholder icon when there's no URL photo. */
+/**
+ * Item photo thumbnail. The `photo` field holds either a Convex `storageId`
+ * (new uploads / agent-found images) or a legacy http(s) URL — a URL displays
+ * directly, anything else is resolved to a servable URL via `api.storage.getUrl`.
+ */
 function ItemPhoto({ photo }: { photo: unknown }) {
   const isUrl = typeof photo === "string" && photo.startsWith("http");
-  if (isUrl) {
+  const needsResolve = typeof photo === "string" && !!photo && !isUrl;
+  const resolved = useQuery(
+    api.storage.getUrl,
+    needsResolve ? { storageId: photo as any } : "skip",
+  );
+  const uri = isUrl ? (photo as string) : (resolved ?? null);
+  if (uri) {
     return (
       <Image
-        source={{ uri: photo as string }}
-        className="h-11 w-11 rounded-md bg-sunken"
+        source={{ uri }}
+        className="h-20 w-20 rounded-lg bg-sunken"
         resizeMode="cover"
       />
     );
   }
   return (
-    <View className="h-11 w-11 items-center justify-center rounded-md border border-border bg-sunken">
-      <Icon name="image" size={18} color={colors.faint} />
+    <View className="h-20 w-20 items-center justify-center rounded-lg border border-border bg-sunken">
+      <Icon name="image" size={24} color={colors.faint} />
     </View>
   );
 }
@@ -196,7 +209,9 @@ export default function PackingScreen() {
   const router = useRouter();
   const eventId = id as any;
 
-  const [phase, setPhase] = useState<Phase>("in");
+  // Default to Load-in; "setup" swaps the checklist for the read-only site map.
+  const [view, setView] = useState<PackingView>("in");
+  const phase: Phase = view === "setup" ? "in" : view;
   const phaseKey = PACKED_KEY[phase];
 
   const eventData = useQuery(api.events.get, { eventId });
@@ -270,37 +285,50 @@ export default function PackingScreen() {
     <>
       <Stack.Screen options={{ headerShown: true, title: "Packing" }} />
       <Screen>
+        {/* Left-aligned back breadcrumb (matches the rest of the app). */}
+        <Pressable
+          onPress={() => router.back()}
+          className="mb-4 flex-row items-center gap-1.5 self-start active:opacity-70"
+        >
+          <Icon name="arrow-left" size={15} color={colors.muted} />
+          <Text className="text-sm font-medium text-muted">Back</Text>
+        </Pressable>
         <PageHeader
           eyebrow={eventName}
           title="Packing"
           subtitle="Check supplies in and back out so nothing gets left behind."
-          actions={
-            <Button
-              title="Back"
-              variant="ghost"
-              icon="arrow-left"
-              onPress={() => router.back()}
-            />
-          }
         />
 
-        {/* Phase toggle (segmented) */}
+        {/* View toggle (segmented): setup map + the two packing phases */}
         <View className="mb-5 flex-row self-start rounded-md border border-border bg-sunken p-1">
+          <PhaseTab
+            label="Setup"
+            icon="map"
+            active={view === "setup"}
+            onPress={() => setView("setup")}
+          />
           <PhaseTab
             label="Load-in"
             icon="download"
-            active={phase === "in"}
-            onPress={() => setPhase("in")}
+            active={view === "in"}
+            onPress={() => setView("in")}
           />
           <PhaseTab
             label="Load-out"
             icon="upload"
-            active={phase === "out"}
-            onPress={() => setPhase("out")}
+            active={view === "out"}
+            onPress={() => setView("out")}
           />
         </View>
 
-        {total === 0 ? (
+        {view === "setup" ? (
+          <View className="gap-3">
+            <Text className="text-base font-semibold text-ink">
+              Where everything goes
+            </Text>
+            <SiteMapPreview eventId={eventId} />
+          </View>
+        ) : total === 0 ? (
           <EmptyState
             icon="package"
             title="Nothing to pack yet"
@@ -359,7 +387,7 @@ function PhaseTab({
   onPress,
 }: {
   label: string;
-  icon: "download" | "upload";
+  icon: "map" | "download" | "upload";
   active: boolean;
   onPress: () => void;
 }) {

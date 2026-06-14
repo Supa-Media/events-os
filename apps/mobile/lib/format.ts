@@ -63,3 +63,21 @@ export function toDateInput(ts: number): string {
   const day = String(d.getDate()).padStart(2, "0");
   return `${y}-${m}-${day}`;
 }
+
+/** Render an epoch-ms timestamp for a `<input type="datetime-local">` value. */
+export function toDateTimeLocal(ts: number): string {
+  const d = new Date(ts);
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(
+    d.getDate(),
+  )}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
+/** Parse a `datetime-local` value ("YYYY-MM-DDTHH:mm") into epoch ms, or null. */
+export function fromDateTimeLocal(str: string): number | null {
+  const m = str.match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})/);
+  if (!m) return null;
+  const [, y, mo, da, h, mi] = m.map(Number);
+  const d = new Date(y, mo - 1, da, h, mi);
+  return Number.isNaN(d.getTime()) ? null : d.getTime();
+}

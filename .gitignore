@@ -38,3 +38,7 @@ Thumbs.db
 
 # Sentry
 .sentryclirc
+
+# Local agent tooling (Claude Code / Convex skills) — not product code
+.claude/
+.agents/
