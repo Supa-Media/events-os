@@ -40,10 +40,12 @@ jobs:
           node-version: 22
           cache: pnpm
 
-      # GITHUB_TOKEN authenticates the @supa-media/* GitHub Packages registry
-      # (see .npmrc). The default token can read org packages shared with this repo.
-      - name: Install dependencies
-        run: pnpm install --frozen-lockfile
+      # Install ONLY the backend and its deps (@events-os/shared + the public
+      # @supa-media/convex). Scoping avoids the app's other private @supa-media/*
+      # packages, so they can stay private without blocking the deploy.
+      # GITHUB_TOKEN still authenticates the registry for @supa-media/convex.
+      - name: Install backend dependencies
+        run: pnpm install --filter @events-os/convex... --frozen-lockfile
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
