@@ -19,7 +19,6 @@ module.exports = ({ config }) => ({
     bundleIdentifier: process.env.APP_ENV === "staging"
       ? "com.eventsos.staging"
       : "com.eventsos.mobile",
-    associatedDomains: [],
     infoPlist: {
       // Standard/exempt encryption only — skips the App Store export-compliance prompt.
       ITSAppUsesNonExemptEncryption: false,
