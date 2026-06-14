@@ -25,12 +25,34 @@ export function Field({ label, hint, children }: FieldProps) {
 type TextFieldProps = TextInputProps & {
   label?: string;
   hint?: string;
+  /** Static text shown inside the field, after the input (e.g. an email domain). */
+  suffix?: string;
 };
 
-/** A labelled text input with hover/focus ring. */
-export function TextField({ label, hint, ...inputProps }: TextFieldProps) {
+/** A labelled text input with hover/focus ring and an optional inline suffix. */
+export function TextField({ label, hint, suffix, ...inputProps }: TextFieldProps) {
   const [focused, setFocused] = useState(false);
   const border = focused ? "border-accent" : "border-border-strong";
+
+  if (suffix) {
+    return (
+      <Field label={label} hint={hint}>
+        <View
+          className={`flex-row items-center rounded-md border ${border} bg-raised px-3`}
+        >
+          <TextInput
+            placeholderTextColor={colors.faint}
+            onFocus={() => setFocused(true)}
+            onBlur={() => setFocused(false)}
+            className="flex-1 py-2.5 text-base text-ink"
+            {...inputProps}
+          />
+          <Text className="text-base text-faint">{suffix}</Text>
+        </View>
+      </Field>
+    );
+  }
+
   return (
     <Field label={label} hint={hint}>
       <TextInput

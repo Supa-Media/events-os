@@ -8,32 +8,40 @@ import { colors } from "../../lib/theme";
 
 const ALLOWED_DOMAIN = "publicworship.life";
 
-/** True iff the trimmed email is on the allowed domain (case-insensitive). */
-function isAllowedEmail(email: string): boolean {
-  return email.trim().toLowerCase().endsWith(`@${ALLOWED_DOMAIN}`);
+/**
+ * Turn a username into the full email on the allowed domain.
+ *
+ * Accepts either a bare username ("jane") or a full address ("jane@…"); we
+ * strip everything from the "@" on so a pasted full email still works, then
+ * append the allowed domain.
+ */
+function toEmail(username: string): string {
+  const local = username.trim().split("@")[0].toLowerCase();
+  return `${local}@${ALLOWED_DOMAIN}`;
 }
 
 /**
  * OTP login for Events OS.
  *
  * Two steps: request a one-time code for the email, then verify it. Access is
- * limited to @publicworship.life accounts; we validate that client-side before
- * requesting a code (the backend enforces it on every data function too).
+ * limited to @publicworship.life accounts, so people enter just their username
+ * (the part before @publicworship.life) and we build the full address.
  */
 export default function LoginScreen() {
   const { signIn } = useAuthActions();
   const router = useRouter();
 
   const [step, setStep] = useState<"request" | "verify">("request");
-  const [identifier, setIdentifier] = useState("");
+  const [username, setUsername] = useState("");
   const [code, setCode] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  const email = toEmail(username);
+
   async function requestCode() {
-    const email = identifier.trim();
-    if (!isAllowedEmail(email)) {
-      setError("Only publicworship.life emails can access Events OS.");
+    if (!username.trim()) {
+      setError("Enter your username to get a code.");
       return;
     }
     setError(null);
@@ -42,7 +50,7 @@ export default function LoginScreen() {
       await signIn("email", { email });
       setStep("verify");
     } catch (e) {
-      setError("Couldn't send your code. Check your email and try again.");
+      setError("Couldn't send your code. Check your username and try again.");
     } finally {
       setSubmitting(false);
     }
@@ -53,7 +61,7 @@ export default function LoginScreen() {
     setSubmitting(true);
     try {
       await signIn("email", {
-        email: identifier.trim(),
+        email,
         code: code.trim(),
       });
       router.replace("/");
@@ -86,23 +94,24 @@ export default function LoginScreen() {
             <Text className="mb-5 mt-1 text-sm text-muted">
               {step === "request"
                 ? "We'll email you a one-time code."
-                : `Enter the code sent to ${identifier.trim()}.`}
+                : `Enter the code sent to ${email}.`}
             </Text>
 
             {step === "request" ? (
               <TextField
-                label="Email"
-                hint={`Use your @${ALLOWED_DOMAIN} email.`}
-                value={identifier}
+                label="Username"
+                hint={`Your username is the first part of your @${ALLOWED_DOMAIN} email.`}
+                value={username}
                 onChangeText={(t) => {
-                  setIdentifier(t);
+                  setUsername(t);
                   if (error) setError(null);
                 }}
-                placeholder={`you@${ALLOWED_DOMAIN}`}
+                placeholder="you"
+                suffix={`@${ALLOWED_DOMAIN}`}
                 autoCapitalize="none"
                 autoCorrect={false}
                 keyboardType="email-address"
-                autoComplete="email"
+                autoComplete="username"
                 editable={!submitting}
                 onSubmitEditing={requestCode}
                 returnKeyType="go"
@@ -135,14 +144,14 @@ export default function LoginScreen() {
               title={step === "request" ? "Send code" : "Verify"}
               onPress={step === "request" ? requestCode : verifyCode}
               loading={submitting}
-              disabled={step === "request" ? !identifier.trim() : !code.trim()}
+              disabled={step === "request" ? !username.trim() : !code.trim()}
               className="w-full"
             />
 
             {step === "verify" ? (
               <View className="mt-2 items-center">
                 <Button
-                  title="Use a different email"
+                  title="Use a different username"
                   variant="ghost"
                   size="sm"
                   onPress={() => {
