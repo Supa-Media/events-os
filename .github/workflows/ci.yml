@@ -8,7 +8,7 @@ on:
 
 jobs:
   ci:
-    uses: supa-framework/supa-framework/.github/workflows/ci.yml@main
+    uses: Supa-Media/supa-framework/.github/workflows/ci.yml@main
     with:
       app-slug: "events-os"
       strictness: "standard"

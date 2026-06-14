@@ -1,4 +1,13 @@
-name: Deploy Convex
+# Deploy the Convex backend to PRODUCTION on every merge to `main`.
+#
+# Single environment by design (no staging, for now): a push to main that
+# touches the backend deploys straight to the production Convex deployment.
+#
+# This mirrors the Supa-Media/supa-framework deploy-convex pattern
+# (install → typecheck → deploy) but is kept self-contained because this backend
+# installs `@supa-media/convex` from GitHub Packages, which needs GITHUB_TOKEN
+# wired into `pnpm install` — not handled by the generic reusable workflow.
+name: Deploy Convex (production)
 
 on:
   push:
@@ -6,10 +15,21 @@ on:
     paths:
       - "apps/convex/**"
       - "packages/shared/**"
+      - "convex.json"
+  # Allow a manual run from the Actions tab (e.g. first deploy / re-deploy).
+  workflow_dispatch:
+
+# Never run two production deploys at once.
+concurrency:
+  group: convex-deploy-production
+  cancel-in-progress: false
 
 jobs:
   deploy:
+    name: Deploy to Convex (production)
     runs-on: ubuntu-latest
+    environment: production
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
 
@@ -17,12 +37,28 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
-          cache: "pnpm"
+          node-version: 22
+          cache: pnpm
 
-      - run: pnpm install --frozen-lockfile
+      # GITHUB_TOKEN authenticates the @supa-media/* GitHub Packages registry
+      # (see .npmrc). The default token can read org packages shared with this repo.
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Deploy to Convex
+      - name: Type check Convex functions
+        run: npx convex typecheck
+
+      - name: Deploy to Convex (production)
         run: npx convex deploy
         env:
           CONVEX_DEPLOY_KEY: ${{ secrets.CONVEX_DEPLOY_KEY }}
+
+      - name: Summary
+        if: always()
+        run: |
+          echo "## Convex production deploy" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Commit:** \`${GITHUB_SHA::7}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Triggered by:** ${{ github.actor }}" >> "$GITHUB_STEP_SUMMARY"
