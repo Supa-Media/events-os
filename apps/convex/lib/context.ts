@@ -8,6 +8,14 @@
  */
 import { requireAuthId } from "@supa-media/convex/auth";
 import { ConvexError } from "convex/values";
+import { requireAccess } from "./access";
+
+export {
+  ALLOWED_EMAIL_DOMAIN,
+  isAllowedEmail,
+  getUserEmail,
+  requireAccess,
+} from "./access";
 
 /** The authenticated user's id (throws if signed out). */
 export async function requireUserId(ctx: any): Promise<string> {
@@ -19,6 +27,7 @@ export async function requireUserId(ctx: any): Promise<string> {
  * Multi-chapter switching is V3; until then a user has exactly one chapter.
  */
 export async function requireChapterId(ctx: any): Promise<string> {
+  await requireAccess(ctx);
   const userId = await requireAuthId(ctx);
   const membership = await ctx.db
     .query("userChapters")
@@ -39,6 +48,7 @@ export async function requireChapterId(ctx: any): Promise<string> {
  * gets empty results instead of a thrown error that crashes the screen.
  */
 export async function getChapterIdOrNull(ctx: any): Promise<string | null> {
+  await requireAccess(ctx);
   const userId = await requireAuthId(ctx);
   const membership = await ctx.db
     .query("userChapters")

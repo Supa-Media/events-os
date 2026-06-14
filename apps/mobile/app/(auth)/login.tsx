@@ -1,22 +1,24 @@
 import { useState } from "react";
-import {
-  View,
-  Text,
-  TextInput,
-  Pressable,
-  StyleSheet,
-  ActivityIndicator,
-} from "react-native";
+import { View, Text } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { useRouter } from "expo-router";
 import { useAuthActions } from "@convex-dev/auth/react";
+import { Card, Button, TextField, Icon } from "../../components/ui";
+import { colors } from "../../lib/theme";
+
+const ALLOWED_DOMAIN = "publicworship.life";
+
+/** True iff the trimmed email is on the allowed domain (case-insensitive). */
+function isAllowedEmail(email: string): boolean {
+  return email.trim().toLowerCase().endsWith(`@${ALLOWED_DOMAIN}`);
+}
 
 /**
  * OTP login for Events OS.
  *
- * Two steps: request a one-time code for the email, then verify it.
- * Backed by @convex-dev/auth's "email" provider
- * (configured in apps/convex/auth.ts).
+ * Two steps: request a one-time code for the email, then verify it. Access is
+ * limited to @publicworship.life accounts; we validate that client-side before
+ * requesting a code (the backend enforces it on every data function too).
  */
 export default function LoginScreen() {
   const { signIn } = useAuthActions();
@@ -29,10 +31,15 @@ export default function LoginScreen() {
   const [error, setError] = useState<string | null>(null);
 
   async function requestCode() {
+    const email = identifier.trim();
+    if (!isAllowedEmail(email)) {
+      setError("Only publicworship.life emails can access Events OS.");
+      return;
+    }
     setError(null);
     setSubmitting(true);
     try {
-      await signIn("email", { email: identifier.trim() });
+      await signIn("email", { email });
       setStep("verify");
     } catch (e) {
       setError("Couldn't send your code. Check your email and try again.");
@@ -58,101 +65,98 @@ export default function LoginScreen() {
   }
 
   return (
-    <SafeAreaView style={styles.container}>
-      <View style={styles.content}>
-        <Text style={styles.title}>Events OS</Text>
-        <Text style={styles.subtitle}>
-          {step === "request"
-            ? "Sign in to continue"
-            : `Enter the code sent to ${identifier}`}
-        </Text>
+    <SafeAreaView className="flex-1 bg-surface">
+      <View className="flex-1 items-center justify-center px-6">
+        <View className="w-full max-w-md">
+          {/* Brand mark */}
+          <View className="mb-6 flex-row items-center gap-2.5">
+            <View className="h-9 w-9 items-center justify-center rounded-md bg-accent">
+              <Icon name="calendar" size={18} color="#FFFFFF" />
+            </View>
+            <View className="flex-row items-baseline gap-1">
+              <Text className="font-display text-xl text-ink">Events</Text>
+              <Text className="font-display text-xl text-accent">OS</Text>
+            </View>
+          </View>
 
-        {step === "request" ? (
-          <TextInput
-            style={styles.input}
-            value={identifier}
-            onChangeText={setIdentifier}
-            placeholder="you@example.com"
-            placeholderTextColor="#9ca3af"
-            autoCapitalize="none"
-            autoCorrect={false}
-            keyboardType="email-address"
-            autoComplete="email"
-            editable={!submitting}
-          />
-        ) : (
-          <TextInput
-            style={styles.input}
-            value={code}
-            onChangeText={setCode}
-            placeholder="123456"
-            placeholderTextColor="#9ca3af"
-            keyboardType="number-pad"
-            autoComplete="one-time-code"
-            editable={!submitting}
-          />
-        )}
-
-        {error ? <Text style={styles.error}>{error}</Text> : null}
-
-        <Pressable
-          style={[styles.button, submitting && styles.buttonDisabled]}
-          onPress={step === "request" ? requestCode : verifyCode}
-          disabled={submitting || (step === "request" ? !identifier : !code)}
-        >
-          {submitting ? (
-            <ActivityIndicator color="#fff" />
-          ) : (
-            <Text style={styles.buttonText}>
-              {step === "request" ? "Send code" : "Verify"}
+          <Card padding="lg">
+            <Text className="font-display text-2xl text-ink">
+              {step === "request" ? "Sign in" : "Check your email"}
             </Text>
-          )}
-        </Pressable>
+            <Text className="mb-5 mt-1 text-sm text-muted">
+              {step === "request"
+                ? "We'll email you a one-time code."
+                : `Enter the code sent to ${identifier.trim()}.`}
+            </Text>
 
-        {step === "verify" ? (
-          <Pressable
-            onPress={() => {
-              setStep("request");
-              setCode("");
-              setError(null);
-            }}
-            disabled={submitting}
-          >
-            <Text style={styles.link}>Use a different email</Text>
-          </Pressable>
-        ) : null}
+            {step === "request" ? (
+              <TextField
+                label="Email"
+                hint={`Use your @${ALLOWED_DOMAIN} email.`}
+                value={identifier}
+                onChangeText={(t) => {
+                  setIdentifier(t);
+                  if (error) setError(null);
+                }}
+                placeholder={`you@${ALLOWED_DOMAIN}`}
+                autoCapitalize="none"
+                autoCorrect={false}
+                keyboardType="email-address"
+                autoComplete="email"
+                editable={!submitting}
+                onSubmitEditing={requestCode}
+                returnKeyType="go"
+              />
+            ) : (
+              <TextField
+                label="Verification code"
+                value={code}
+                onChangeText={(t) => {
+                  setCode(t);
+                  if (error) setError(null);
+                }}
+                placeholder="123456"
+                keyboardType="number-pad"
+                autoComplete="one-time-code"
+                editable={!submitting}
+                onSubmitEditing={verifyCode}
+                returnKeyType="go"
+              />
+            )}
+
+            {error ? (
+              <View className="mb-3 flex-row items-center gap-1.5">
+                <Icon name="alert-circle" size={14} color={colors.danger} />
+                <Text className="flex-1 text-sm text-danger">{error}</Text>
+              </View>
+            ) : null}
+
+            <Button
+              title={step === "request" ? "Send code" : "Verify"}
+              onPress={step === "request" ? requestCode : verifyCode}
+              loading={submitting}
+              disabled={step === "request" ? !identifier.trim() : !code.trim()}
+              className="w-full"
+            />
+
+            {step === "verify" ? (
+              <View className="mt-2 items-center">
+                <Button
+                  title="Use a different email"
+                  variant="ghost"
+                  size="sm"
+                  onPress={() => {
+                    setStep("request");
+                    setCode("");
+                    setError(null);
+                  }}
+                  disabled={submitting}
+                />
+              </View>
+            ) : null}
+          </Card>
+        </View>
       </View>
     </SafeAreaView>
   );
 }
-
-const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: "#fff" },
-  content: {
-    flex: 1,
-    justifyContent: "center",
-    paddingHorizontal: 24,
-    gap: 12,
-  },
-  title: { fontSize: 32, fontWeight: "700", marginBottom: 4 },
-  subtitle: { fontSize: 16, color: "#666", marginBottom: 16 },
-  input: {
-    borderWidth: 1,
-    borderColor: "#d1d5db",
-    borderRadius: 10,
-    paddingHorizontal: 14,
-    paddingVertical: 12,
-    fontSize: 16,
-  },
-  button: {
-    backgroundColor: "#111827",
-    borderRadius: 10,
-    paddingVertical: 14,
-    alignItems: "center",
-    marginTop: 4,
-  },
-  buttonDisabled: { opacity: 0.5 },
-  buttonText: { color: "#fff", fontSize: 16, fontWeight: "600" },
-  link: { color: "#2563eb", textAlign: "center", marginTop: 4 },
-  error: { color: "#dc2626", fontSize: 14 },
-});

@@ -138,6 +138,7 @@ function SidebarOpenButton({ onPress }: { onPress: () => void }) {
 
 function ChapterFooter() {
   const { signOut } = useAuthActions();
+  const router = useRouter();
   const summary = useQuery(api.dashboard.summary);
   return (
     <View className="gap-1 border-t border-border pt-3">
@@ -155,6 +156,13 @@ function ChapterFooter() {
         </View>
       </View>
       <Pressable
+        onPress={() => router.navigate("/profile")}
+        className="flex-row items-center gap-2.5 rounded-md px-2 py-2 active:bg-sunken web:hover:bg-sunken"
+      >
+        <Icon name="user" size={15} color={colors.muted} />
+        <Text className="text-sm text-muted">Profile</Text>
+      </Pressable>
+      <Pressable
         onPress={() => signOut()}
         className="flex-row items-center gap-2.5 rounded-md px-2 py-2 active:bg-sunken web:hover:bg-sunken"
       >
@@ -166,12 +174,21 @@ function ChapterFooter() {
 }
 
 function MobileTopBar() {
+  const router = useRouter();
   return (
     <View className="flex-row items-center gap-2 border-b border-border bg-raised px-4 py-3">
       <View className="h-7 w-7 items-center justify-center rounded-md bg-accent">
         <Icon name="calendar" size={15} color="#FFFFFF" />
       </View>
       <Text className="font-display text-lg text-ink">Events OS</Text>
+      <View className="flex-1" />
+      <Pressable
+        accessibilityLabel="Profile"
+        onPress={() => router.navigate("/profile")}
+        className="h-8 w-8 items-center justify-center rounded-md active:bg-sunken"
+      >
+        <Icon name="user" size={18} color={colors.muted} />
+      </Pressable>
     </View>
   );
 }

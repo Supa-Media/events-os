@@ -82,6 +82,19 @@ const schema = defineSchema({
     .index("by_slug", ["slug"])
     .index("by_name", ["name"]),
 
+  /**
+   * App-layer user profile — name + phone the user supplies during onboarding.
+   * The framework `users` table owns auth + email; this holds the editable
+   * profile fields Events OS needs. One row per user.
+   */
+  userProfiles: defineTable({
+    userId: v.id("users"),
+    name: v.string(),
+    phone: v.string(),
+    createdAt: v.number(),
+    updatedAt: v.optional(v.number()),
+  }).index("by_userId", ["userId"]),
+
   /** Junction: which chapter a user belongs to, and their role within it. */
   userChapters: defineTable({
     userId: v.id("users"),
