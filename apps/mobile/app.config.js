@@ -50,17 +50,17 @@ module.exports = ({ config }) => ({
   ],
   extra: {
     eas: {
-      projectId: "YOUR_EAS_PROJECT_ID",
+      projectId: "4d2f4932-3e26-433f-a8db-6da4571dff18",
     },
     router: {
       origin: false,
     },
   },
-  owner: "supa-media",
+  owner: "lilseyi",
   runtimeVersion: {
     policy: "appVersion",
   },
   updates: {
-    url: `https://u.expo.dev/YOUR_EAS_PROJECT_ID`,
+    url: `https://u.expo.dev/4d2f4932-3e26-433f-a8db-6da4571dff18`,
   },
 });

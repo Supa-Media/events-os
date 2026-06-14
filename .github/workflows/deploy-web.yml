@@ -1,0 +1,76 @@
+# Deploy the Expo web app to EAS Hosting (production) on every merge to `main`.
+#
+# Single environment by design (no staging, for now) — mirrors the Convex deploy.
+# Exports the web bundle and publishes it to EAS Hosting at https://events-os.expo.app.
+name: Deploy Web (production)
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "apps/mobile/**"
+      - "packages/shared/**"
+      - ".github/workflows/deploy-web.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-web-production
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Deploy web to EAS Hosting (production)
+    runs-on: ubuntu-latest
+    environment: production
+    timeout-minutes: 20
+    env:
+      EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+      EXPO_PUBLIC_CONVEX_URL: ${{ secrets.EXPO_PUBLIC_CONVEX_URL }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      # All @supa-media/* packages are public on GitHub Packages; GITHUB_TOKEN
+      # authenticates the registry (see .npmrc).
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Setup EAS
+        uses: expo/expo-github-action@v8
+        with:
+          eas-version: latest
+          token: ${{ env.EXPO_TOKEN }}
+
+      - name: Verify required secrets
+        run: |
+          for var in EXPO_TOKEN EXPO_PUBLIC_CONVEX_URL; do
+            if [ -z "${!var:-}" ]; then
+              echo "ERROR: missing required secret '$var' in the 'production' environment."
+              exit 1
+            fi
+          done
+
+      - name: Export web bundle
+        working-directory: apps/mobile
+        run: npx expo export --platform web
+
+      - name: Deploy to EAS Hosting (production)
+        working-directory: apps/mobile
+        run: npx eas-cli deploy --prod --environment=production --non-interactive
+
+      - name: Summary
+        if: always()
+        run: |
+          echo "## Web deploy (production)" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **URL:** https://events-os.expo.app" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Commit:** \`${GITHUB_SHA::7}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Triggered by:** ${{ github.actor }}" >> "$GITHUB_STEP_SUMMARY"
