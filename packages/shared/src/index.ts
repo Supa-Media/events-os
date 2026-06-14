@@ -100,6 +100,26 @@ export const MODULE_LABELS: Record<ModuleKey, string> = {
   volunteer_expectations: "Volunteer Expectations",
 };
 
+/**
+ * Which chapter ROLE owns each module. Ownership isn't a separate field — it's
+ * derived by mapping a module to a default role key (see DEFAULT_ROLES), then
+ * resolving the person assigned to that role on the event (roleAssignments).
+ * This reuses the role infra instead of introducing a third owner concept, and
+ * mirrors the role descriptions (event_lead owns the planning doc + permits,
+ * comms_lead owns comms + volunteer coordination, logistics_lead owns supplies,
+ * production_lead owns the run of show). Per-template overrides can layer on
+ * later; for now this is the deployment-wide default.
+ */
+export const MODULE_OWNER_ROLE_KEY: Record<ModuleKey, string> = {
+  planning_doc: "event_lead",
+  supplies: "logistics_lead",
+  comms: "comms_lead",
+  run_of_show: "production_lead",
+  permits: "event_lead",
+  retro: "event_lead",
+  volunteer_expectations: "comms_lead",
+};
+
 /** Modules that schedule off the event date (offset in days → due date). */
 export const DAY_OFFSET_MODULES: ModuleKey[] = ["planning_doc", "comms", "permits"];
 /** Modules that schedule off the event start time (offset in minutes). */
