@@ -29,6 +29,47 @@ async function getMembership(ctx: any, userId: string) {
 }
 
 /**
+ * Mirror a logged-in staff member into the People roster as a TEAM MEMBER,
+ * linked back to their account via `people.userId`. This is what lets them be
+ * set as an event owner or hold a lead role (both reference `people`, not the
+ * auth account). Upserts the linked row and keeps name/email/phone in sync.
+ */
+async function syncStaffPerson(
+  ctx: any,
+  userId: string,
+  chapterId: string,
+  fields: { name?: string; email?: string | null; phone?: string | null },
+) {
+  const existing = await ctx.db
+    .query("people")
+    .withIndex("by_user", (q: any) => q.eq("userId", userId))
+    .first();
+
+  if (existing) {
+    await ctx.db.patch(existing._id, {
+      chapterId,
+      isTeamMember: true,
+      isActive: existing.isActive ?? true,
+      ...(fields.name !== undefined ? { name: fields.name } : null),
+      ...(fields.email !== undefined ? { email: fields.email ?? undefined } : null),
+      ...(fields.phone !== undefined ? { phone: fields.phone ?? undefined } : null),
+    });
+    return existing._id;
+  }
+
+  return await ctx.db.insert("people", {
+    chapterId,
+    userId,
+    name: fields.name ?? "Team member",
+    email: fields.email ?? undefined,
+    phone: fields.phone ?? undefined,
+    isTeamMember: true,
+    isActive: true,
+    createdAt: Date.now(),
+  });
+}
+
+/**
  * The signed-in user's onboarding/access status. Drives the app gate:
  *   - `allowed === false`  → access-denied screen
  *   - `!onboarded`         → onboarding screen
@@ -140,6 +181,14 @@ export const completeOnboarding = mutation({
       });
     }
 
+    // Mirror this staff member into the chapter's People roster (team member).
+    const auth = await getOptionalAuth(ctx);
+    await syncStaffPerson(ctx, userId, args.chapterId, {
+      name,
+      email: (auth?.email as string | undefined) ?? null,
+      phone,
+    });
+
     return { ok: true };
   },
 });
@@ -180,6 +229,43 @@ export const updateProfile = mutation({
     }
 
     await ctx.db.patch(profile._id, patch);
+
+    // Keep the linked People-roster row in sync.
+    const membership = await getMembership(ctx, userId);
+    if (membership) {
+      const auth = await getOptionalAuth(ctx);
+      await syncStaffPerson(ctx, userId, membership.chapterId as string, {
+        name: patch.name,
+        phone: patch.phone,
+        email: (auth?.email as string | undefined) ?? null,
+      });
+    }
+
     return { ok: true };
+  },
+});
+
+/**
+ * Dev/admin backfill: ensure every onboarded staff member has a linked People
+ * row (team member) in their chapter. Idempotent. Run once after deploying the
+ * People-sync change. No-auth, mirrors the other seed migrations.
+ */
+export const backfillStaffPeople = mutation({
+  args: {},
+  handler: async (ctx) => {
+    const profiles = await ctx.db.query("userProfiles").collect();
+    let synced = 0;
+    for (const p of profiles) {
+      const membership = await getMembership(ctx, p.userId);
+      if (!membership) continue; // not onboarded into a chapter yet
+      const user = await ctx.db.get(p.userId as Id<"users">);
+      await syncStaffPerson(ctx, p.userId as string, membership.chapterId as string, {
+        name: p.name as string,
+        phone: p.phone as string,
+        email: (user?.email as string | undefined) ?? null,
+      });
+      synced++;
+    }
+    return { profiles: profiles.length, synced };
   },
 });
