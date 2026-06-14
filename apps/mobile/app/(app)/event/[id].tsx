@@ -1,5 +1,13 @@
 import { createElement, useMemo, useState } from "react";
-import { View, Text, Pressable, Alert, TextInput, Platform } from "react-native";
+import {
+  View,
+  Text,
+  Pressable,
+  Alert,
+  TextInput,
+  Platform,
+  ScrollView,
+} from "react-native";
 import { Stack, useRouter, useLocalSearchParams } from "expo-router";
 import { useQuery, useMutation } from "convex/react";
 import { api } from "@events-os/convex/_generated/api";
@@ -21,6 +29,7 @@ import { AiAssistantPanel } from "../../../components/ai/AiAssistantPanel";
 import { CrewSections } from "../../../components/event/CrewSections";
 import { colors } from "../../../lib/theme";
 import {
+  formatDate,
   formatDateTime,
   parseDateInput,
   toDateInput,
@@ -30,6 +39,7 @@ import {
 import {
   MODULE_KEYS,
   MODULE_LABELS,
+  MODULE_OWNER_ROLE_KEY,
   EVENT_STATUSES,
   EVENT_STATUS_LABELS,
   type EventStatus,
@@ -38,12 +48,13 @@ import {
 
 export default function EventDetailScreen() {
   const router = useRouter();
-  const { id } = useLocalSearchParams<{ id: string }>();
+  const { id, tab } = useLocalSearchParams<{ id: string; tab?: string }>();
   const eventId = id as any;
 
   const data = useQuery(api.events.get, { eventId });
   const roleRows = useQuery(api.roleAssignments.listForEvent, { eventId });
   const chapterRolesRaw = useQuery(api.roles.list);
+  const summaries = useQuery(api.events.moduleSummaries, { eventId });
 
   const reschedule = useMutation(api.events.reschedule);
   const setStatus = useMutation(api.events.setStatus);
@@ -130,6 +141,43 @@ export default function EventDetailScreen() {
   // volunteer_expectations module is the team EXPECTATIONS list (rows = things a
   // team does, tagged by team); WHO is on each team lives in CrewSections below.
   const activeModules = MODULE_KEYS.filter((m) => activeComponents.includes(m));
+
+  // Tabs: Overview + each active module + Crew. The active tab lives in the URL
+  // (`?tab=`) so it's deep-linkable and survives back/forward; unknown/missing
+  // falls back to Overview.
+  const tabs: { key: string; label: string }[] = [
+    { key: "overview", label: "Overview" },
+    ...activeModules.map((m) => ({ key: m as string, label: MODULE_LABELS[m] })),
+    { key: "crew", label: "Crew" },
+  ];
+  const activeTab = tabs.some((t) => t.key === tab) ? (tab as string) : "overview";
+  const summaryByModule = new Map(
+    (summaries ?? []).map((s: any) => [s.module as string, s]),
+  );
+
+  // A module's owner is derived (not stored): map the module to its default
+  // role key, then resolve the person assigned to that role on this event.
+  function moduleOwner(module: ModuleKey) {
+    const roleKey = MODULE_OWNER_ROLE_KEY[module];
+    const role = (chapterRolesRaw ?? []).find((r: any) => r.key === roleKey);
+    if (!role) return null;
+    const row = roleRows.find((r) => r.roleId === role._id);
+    return {
+      roleId: role._id as string,
+      roleLabel: role.label as string,
+      person: row?.person ?? null,
+    };
+  }
+
+  function openOwnerPicker(module: ModuleKey) {
+    const info = moduleOwner(module);
+    if (!info) return;
+    setPicker({
+      roleId: info.roleId,
+      roleLabel: info.roleLabel,
+      selectedId: info.person?._id ?? null,
+    });
+  }
 
   async function handleSaveName() {
     const trimmed = nameValue.trim();
@@ -246,171 +294,211 @@ export default function EventDetailScreen() {
           </View>
         </Card>
 
-        {/* Compact horizontal controls strip */}
-        <Card padding="md" className="mb-6">
-          <View className="flex-row flex-wrap items-start gap-x-6 gap-y-4">
-            {/* Roles — inline pills */}
-            <ControlBlock label="Roles" count={roleRows.length || undefined}>
-              {roleRows.length === 0 ? (
-                <Text className="text-sm text-faint">No roles</Text>
-              ) : (
-                <View className="flex-row flex-wrap gap-2">
-                  {roleRows.map((r) => (
-                    <RoleChip
-                      key={r.roleId}
-                      role={r}
-                      onPress={() =>
-                        setPicker({
-                          roleId: r.roleId,
-                          roleLabel: r.roleLabel,
-                          selectedId: r.person?._id ?? null,
-                        })
-                      }
+        {/* Module navigation — same tab bar on web + mobile (scrolls on phones) */}
+        <TabBar
+          tabs={tabs}
+          activeKey={activeTab}
+          onSelect={(key) => router.setParams({ tab: key })}
+        />
+
+        {/* ── Overview: controls + per-module rollup ─────────────────────────── */}
+        {activeTab === "overview" ? (
+          <>
+            <Card padding="md" className="mb-6">
+              <View className="flex-row flex-wrap items-start gap-x-6 gap-y-4">
+                {/* Roles — inline pills */}
+                <ControlBlock label="Roles" count={roleRows.length || undefined}>
+                  {roleRows.length === 0 ? (
+                    <Text className="text-sm text-faint">No roles</Text>
+                  ) : (
+                    <View className="flex-row flex-wrap gap-2">
+                      {roleRows.map((r) => (
+                        <RoleChip
+                          key={r.roleId}
+                          role={r}
+                          onPress={() =>
+                            setPicker({
+                              roleId: r.roleId,
+                              roleLabel: r.roleLabel,
+                              selectedId: r.person?._id ?? null,
+                            })
+                          }
+                        />
+                      ))}
+                    </View>
+                  )}
+                </ControlBlock>
+
+                {/* Status — inline chips */}
+                <ControlBlock label="Status">
+                  <View className="flex-row flex-wrap gap-2">
+                    {EVENT_STATUSES.map((s) => (
+                      <StatusChip
+                        key={s}
+                        label={EVENT_STATUS_LABELS[s]}
+                        tone={statusTone(s)}
+                        selected={event.status === s}
+                        onPress={() => setStatus({ eventId, status: s })}
+                      />
+                    ))}
+                  </View>
+                </ControlBlock>
+
+                {/* Schedule — date + time picker (native datetime-local on web) */}
+                <ControlBlock label="Schedule">
+                  {Platform.OS === "web" ? (
+                    <WebDateTimeInput
+                      value={event.eventDate}
+                      onChange={(ts) => reschedule({ eventId, eventDate: ts })}
                     />
-                  ))}
-                </View>
-              )}
-            </ControlBlock>
+                  ) : (
+                    <View className="flex-row items-center gap-2">
+                      <InlineInput
+                        value={dateValue}
+                        onChangeText={setDateInput}
+                        onBlur={handleReschedule}
+                        placeholder="YYYY-MM-DD"
+                        autoCapitalize="none"
+                        width={120}
+                      />
+                      <Button
+                        title="Save"
+                        icon="calendar"
+                        size="sm"
+                        variant="secondary"
+                        onPress={handleReschedule}
+                        disabled={parseDateInput(dateValue) === null}
+                      />
+                    </View>
+                  )}
+                  <Text className="mt-1 text-2xs text-faint">Reflows due dates.</Text>
+                </ControlBlock>
 
-            {/* Status — inline chips */}
-            <ControlBlock label="Status">
-              <View className="flex-row flex-wrap gap-2">
-                {EVENT_STATUSES.map((s) => (
-                  <StatusChip
-                    key={s}
-                    label={EVENT_STATUS_LABELS[s]}
-                    tone={statusTone(s)}
-                    selected={event.status === s}
-                    onPress={() => setStatus({ eventId, status: s })}
-                  />
-                ))}
-              </View>
-            </ControlBlock>
+                {/* Owner — the single accountable person */}
+                <ControlBlock label="Owner">
+                  <Pressable
+                    onPress={() => setOwnerOpen(true)}
+                    className="flex-row items-center gap-2 active:opacity-70"
+                  >
+                    {owner ? (
+                      <>
+                        <Avatar name={owner.name} size={22} />
+                        <Text className="text-sm font-medium text-ink">
+                          {owner.name}
+                        </Text>
+                      </>
+                    ) : (
+                      <>
+                        <Icon name="user-plus" size={15} color={colors.muted} />
+                        <Text className="text-sm text-muted">Assign owner</Text>
+                      </>
+                    )}
+                  </Pressable>
+                  <Text className="mt-1 text-2xs text-faint">
+                    Keeps details current.
+                  </Text>
+                </ControlBlock>
 
-            {/* Schedule — date + time picker (native datetime-local on web) */}
-            <ControlBlock label="Schedule">
-              {Platform.OS === "web" ? (
-                <WebDateTimeInput
-                  value={event.eventDate}
-                  onChange={(ts) => reschedule({ eventId, eventDate: ts })}
-                />
-              ) : (
-                <View className="flex-row items-center gap-2">
-                  <InlineInput
-                    value={dateValue}
-                    onChangeText={setDateInput}
-                    onBlur={handleReschedule}
-                    placeholder="YYYY-MM-DD"
-                    autoCapitalize="none"
-                    width={120}
-                  />
-                  <Button
-                    title="Save"
-                    icon="calendar"
-                    size="sm"
-                    variant="secondary"
-                    onPress={handleReschedule}
-                    disabled={parseDateInput(dateValue) === null}
-                  />
-                </View>
-              )}
-              <Text className="mt-1 text-2xs text-faint">Reflows due dates.</Text>
-            </ControlBlock>
-
-            {/* Owner — the single accountable person */}
-            <ControlBlock label="Owner">
-              <Pressable
-                onPress={() => setOwnerOpen(true)}
-                className="flex-row items-center gap-2 active:opacity-70"
-              >
-                {owner ? (
-                  <>
-                    <Avatar name={owner.name} size={22} />
-                    <Text className="text-sm font-medium text-ink">{owner.name}</Text>
-                  </>
-                ) : (
-                  <>
-                    <Icon name="user-plus" size={15} color={colors.muted} />
-                    <Text className="text-sm text-muted">Assign owner</Text>
-                  </>
-                )}
-              </Pressable>
-              <Text className="mt-1 text-2xs text-faint">Keeps details current.</Text>
-            </ControlBlock>
-
-            {/* Budget — inline numeric field */}
-            <ControlBlock label="Budget">
-              <View className="flex-row items-center gap-2">
-                <InlineInput
-                  value={budgetValue}
-                  onChangeText={setBudgetInput}
-                  onBlur={handleSaveBudget}
-                  placeholder="0"
-                  keyboardType="numeric"
-                  width={80}
-                />
-                <Button
-                  title="Save"
-                  icon="check"
-                  size="sm"
-                  variant="secondary"
-                  onPress={handleSaveBudget}
-                />
-              </View>
-              <Text className="mt-1 text-2xs text-faint">Blank clears.</Text>
-            </ControlBlock>
-
-            {/* Danger — delete affordance */}
-            <ControlBlock label="Danger">
-              <Button
-                title="Delete"
-                icon="trash-2"
-                size="sm"
-                variant="danger"
-                onPress={confirmDelete}
-              />
-            </ControlBlock>
-          </View>
-        </Card>
-
-        {/* Module grids — full width */}
-        {activeModules.length === 0 ? (
-          <Card padding="lg">
-            <Text className="text-base text-muted">
-              This event type has no planning modules enabled.
-            </Text>
-          </Card>
-        ) : (
-          activeModules.map((m: ModuleKey) => (
-            <View key={m}>
-              <SectionHeader
-                title={MODULE_LABELS[m]}
-                right={
-                  m === "supplies" ? (
+                {/* Budget — inline numeric field */}
+                <ControlBlock label="Budget">
+                  <View className="flex-row items-center gap-2">
+                    <InlineInput
+                      value={budgetValue}
+                      onChangeText={setBudgetInput}
+                      onBlur={handleSaveBudget}
+                      placeholder="0"
+                      keyboardType="numeric"
+                      width={80}
+                    />
                     <Button
-                      title="Packing mode"
-                      icon="package"
+                      title="Save"
+                      icon="check"
                       size="sm"
                       variant="secondary"
-                      onPress={() => router.push(`/event/${eventId}/packing`)}
+                      onPress={handleSaveBudget}
                     />
-                  ) : undefined
-                }
-              />
-              <EditableGrid
-                mode="event"
-                parentId={eventId}
-                module={m}
-                roles={chapterRoles}
-                eventDate={event.eventDate}
-                addLabel={`Add ${MODULE_LABELS[m].toLowerCase()} row`}
-              />
-            </View>
-          ))
-        )}
+                  </View>
+                  <Text className="mt-1 text-2xs text-faint">Blank clears.</Text>
+                </ControlBlock>
 
-        {/* People on this event — volunteers + paid vendors (engagements) */}
-        <CrewSections eventId={eventId} />
+                {/* Danger — delete affordance */}
+                <ControlBlock label="Danger">
+                  <Button
+                    title="Delete"
+                    icon="trash-2"
+                    size="sm"
+                    variant="danger"
+                    onPress={confirmDelete}
+                  />
+                </ControlBlock>
+              </View>
+            </Card>
+
+            {/* Per-module rollup — owner (role → person), progress, next due. */}
+            {activeModules.length === 0 ? (
+              <Card padding="lg">
+                <Text className="text-base text-muted">
+                  This event type has no planning modules enabled.
+                </Text>
+              </Card>
+            ) : (
+              <>
+                <SectionHeader title="Modules" count={activeModules.length} />
+                <Card padding="none">
+                  {activeModules.map((m: ModuleKey, i) => (
+                    <ModuleRollupRow
+                      key={m}
+                      module={m}
+                      owner={moduleOwner(m)}
+                      summary={summaryByModule.get(m)}
+                      first={i === 0}
+                      onOpen={() => router.setParams({ tab: m })}
+                      onAssignOwner={() => openOwnerPicker(m)}
+                    />
+                  ))}
+                </Card>
+              </>
+            )}
+          </>
+        ) : activeTab === "crew" ? (
+          /* ── Crew: volunteers + paid vendors (engagements) ────────────────── */
+          <CrewSections eventId={eventId} />
+        ) : (
+          /* ── A single module: owner badge + its grid ──────────────────────── */
+          (() => {
+            const m = activeTab as ModuleKey;
+            return (
+              <View>
+                <ModuleOwnerBar
+                  owner={moduleOwner(m)}
+                  onPress={() => openOwnerPicker(m)}
+                />
+                <SectionHeader
+                  title={MODULE_LABELS[m]}
+                  right={
+                    m === "supplies" ? (
+                      <Button
+                        title="Packing mode"
+                        icon="package"
+                        size="sm"
+                        variant="secondary"
+                        onPress={() => router.push(`/event/${eventId}/packing`)}
+                      />
+                    ) : undefined
+                  }
+                />
+                <EditableGrid
+                  mode="event"
+                  parentId={eventId}
+                  module={m}
+                  roles={chapterRoles}
+                  eventDate={event.eventDate}
+                  addLabel={`Add ${MODULE_LABELS[m].toLowerCase()} row`}
+                />
+              </View>
+            );
+          })()
+        )}
       </Screen>
 
       <PersonPicker
@@ -525,6 +613,170 @@ function ShareCrewButton({ eventId }: { eventId: string }) {
       variant="secondary"
       onPress={share}
     />
+  );
+}
+
+type ModuleOwnerInfo = {
+  roleId: string;
+  roleLabel: string;
+  person: { _id: string; name: string } | null;
+} | null;
+
+/**
+ * Horizontal, scrollable tab bar — Overview, each active module, and Crew. Same
+ * component on web and mobile; on a phone it scrolls sideways instead of
+ * wrapping so the planning surfaces stay one tap apart.
+ */
+function TabBar({
+  tabs,
+  activeKey,
+  onSelect,
+}: {
+  tabs: { key: string; label: string }[];
+  activeKey: string;
+  onSelect: (key: string) => void;
+}) {
+  return (
+    <View className="mb-6 border-b border-border">
+      <ScrollView
+        horizontal
+        showsHorizontalScrollIndicator={false}
+        contentContainerStyle={{ gap: 4 }}
+      >
+        {tabs.map((t) => {
+          const active = t.key === activeKey;
+          return (
+            <Pressable
+              key={t.key}
+              onPress={() => onSelect(t.key)}
+              className={`border-b-2 px-3 py-2.5 ${
+                active ? "border-accent" : "border-transparent"
+              } active:opacity-80`}
+            >
+              <Text
+                className={`text-sm ${
+                  active ? "font-semibold text-accent" : "text-muted"
+                }`}
+              >
+                {t.label}
+              </Text>
+            </Pressable>
+          );
+        })}
+      </ScrollView>
+    </View>
+  );
+}
+
+/**
+ * The owning role for a module, rendered as "ROLE → person" (or an Assign
+ * affordance). Tapping opens the same role PersonPicker used elsewhere, so
+ * setting a module's owner just assigns that role on the event.
+ */
+function OwnerChip({
+  owner,
+  onPress,
+}: {
+  owner: ModuleOwnerInfo;
+  onPress: () => void;
+}) {
+  if (!owner) {
+    return <Text className="text-2xs text-faint">No owning role</Text>;
+  }
+  return (
+    <Pressable
+      onPress={onPress}
+      className="flex-row items-center gap-2 active:opacity-70"
+    >
+      <Text className="text-2xs font-bold uppercase tracking-wider text-muted">
+        {owner.roleLabel}
+      </Text>
+      {owner.person ? (
+        <View className="flex-row items-center gap-1.5">
+          <Avatar name={owner.person.name} size={18} />
+          <Text className="text-sm text-ink">{owner.person.name}</Text>
+        </View>
+      ) : (
+        <View className="flex-row items-center gap-1">
+          <Icon name="user-plus" size={13} color={colors.muted} />
+          <Text className="text-sm text-faint">Assign</Text>
+        </View>
+      )}
+    </Pressable>
+  );
+}
+
+/** The owner banner shown above a single module's grid. */
+function ModuleOwnerBar({
+  owner,
+  onPress,
+}: {
+  owner: ModuleOwnerInfo;
+  onPress: () => void;
+}) {
+  if (!owner) return null;
+  return (
+    <Card padding="sm" className="mt-2">
+      <View className="flex-row items-center gap-2">
+        <Icon name="shield" size={14} color={colors.muted} />
+        <Text className="text-2xs font-bold uppercase tracking-wider text-muted">
+          Owner
+        </Text>
+        <View className="flex-1" />
+        <OwnerChip owner={owner} onPress={onPress} />
+      </View>
+    </Card>
+  );
+}
+
+/** One row in the overview's per-module rollup. */
+function ModuleRollupRow({
+  module,
+  owner,
+  summary,
+  first,
+  onOpen,
+  onAssignOwner,
+}: {
+  module: ModuleKey;
+  owner: ModuleOwnerInfo;
+  summary: { total: number; done: number; hasStatus: boolean; nextDueDate: number | null } | undefined;
+  first: boolean;
+  onOpen: () => void;
+  onAssignOwner: () => void;
+}) {
+  const total = summary?.total ?? 0;
+  const done = summary?.done ?? 0;
+  const hasStatus = summary?.hasStatus ?? false;
+  const nextDueDate = summary?.nextDueDate ?? null;
+  return (
+    <View
+      className={`flex-row items-center gap-3 px-4 py-3 ${
+        first ? "" : "border-t border-border"
+      }`}
+    >
+      <Pressable onPress={onOpen} className="flex-1 active:opacity-70">
+        <Text className="text-sm font-semibold text-ink">
+          {MODULE_LABELS[module]}
+        </Text>
+        <View className="mt-0.5 flex-row flex-wrap items-center gap-x-3 gap-y-0.5">
+          <Text className="text-2xs text-muted">
+            {hasStatus
+              ? `${done}/${total} done`
+              : `${total} item${total === 1 ? "" : "s"}`}
+          </Text>
+          {nextDueDate ? (
+            <Text className="text-2xs text-faint">
+              Next due {formatDate(nextDueDate)}
+            </Text>
+          ) : null}
+        </View>
+      </Pressable>
+      <OwnerChip owner={owner} onPress={onAssignOwner} />
+      <Pressable onPress={onOpen} className="active:opacity-70">
+        <Icon name="chevron-right" size={16} color={colors.faint} />
+      </Pressable>
+    </View>
   );
 }
 

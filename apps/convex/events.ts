@@ -14,6 +14,7 @@ import {
   computeReadiness,
   isCompleteStatus,
   DAY_OFFSET_MODULES,
+  MODULE_KEYS,
   type ModuleKey,
 } from "@events-os/shared";
 import {
@@ -173,6 +174,68 @@ export const get = query({
       budgetSpent,
       budgetPct,
     };
+  },
+});
+
+/**
+ * Per-module rollup for the event overview: for each module the event type has
+ * switched on, how many items it has, how many are complete (via that module's
+ * status column, when it has one), and the next upcoming due date among the
+ * incomplete ones. Powers the overview's per-module cards so the accountable
+ * owner can scan progress without opening every tab. Read-only.
+ */
+export const moduleSummaries = query({
+  args: { eventId: v.id("events") },
+  handler: async (ctx, { eventId }) => {
+    const chapterId = await requireChapterId(ctx);
+    const event = await ctx.db.get(eventId);
+    if (!event || event.chapterId !== chapterId) return null;
+    const eventType = await ctx.db.get(event.eventTypeId as Id<"eventTypes">);
+    const active: string[] = eventType?.activeComponents ?? [];
+    const modules = MODULE_KEYS.filter((m) => active.includes(m));
+    const now = Date.now();
+
+    return await Promise.all(
+      modules.map(async (module) => {
+        const items = await ctx.db
+          .query("eventItems")
+          .withIndex("by_event_module", (q: any) =>
+            q.eq("eventId", eventId).eq("module", module),
+          )
+          .collect();
+        const statusCol = await ctx.db
+          .query("eventColumns")
+          .withIndex("by_event_module", (q: any) =>
+            q.eq("eventId", eventId).eq("module", module),
+          )
+          .filter((q: any) => q.eq(q.field("key"), "status"))
+          .first();
+        const opts = statusCol?.options;
+        const hasStatus = !!statusCol;
+        const total = items.length;
+        const done = hasStatus
+          ? items.filter((it: any) => isCompleteStatus(opts, it.status)).length
+          : 0;
+        // Next upcoming due date among still-incomplete, dated items.
+        const nextDueDate = items
+          .filter(
+            (it: any) =>
+              it.dueDate != null &&
+              it.dueDate >= now &&
+              (!hasStatus || !isCompleteStatus(opts, it.status)),
+          )
+          .map((it: any) => it.dueDate as number)
+          .sort((a: number, b: number) => a - b)[0] ?? null;
+        return {
+          module,
+          total,
+          done,
+          hasStatus,
+          readiness: computeReadiness(total, done),
+          nextDueDate,
+        };
+      }),
+    );
   },
 });
 

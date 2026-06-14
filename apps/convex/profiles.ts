@@ -29,10 +29,39 @@ async function getMembership(ctx: any, userId: string) {
 }
 
 /**
+ * Find a roster row in `chapterId` that matches `email` (case-insensitively)
+ * and isn't already linked to a user account. Used to adopt a pre-existing
+ * person instead of creating a duplicate when a staff member first signs in.
+ */
+async function findUnlinkedPersonByEmail(
+  ctx: any,
+  chapterId: string,
+  email?: string | null,
+) {
+  const target = email?.trim().toLowerCase();
+  if (!target) return null;
+  const roster = await ctx.db
+    .query("people")
+    .withIndex("by_chapter", (q: any) => q.eq("chapterId", chapterId))
+    .collect();
+  return (
+    roster.find(
+      (p: any) => p.userId == null && p.email?.trim().toLowerCase() === target,
+    ) ?? null
+  );
+}
+
+/**
  * Mirror a logged-in staff member into the People roster as a TEAM MEMBER,
  * linked back to their account via `people.userId`. This is what lets them be
  * set as an event owner or hold a lead role (both reference `people`, not the
  * auth account). Upserts the linked row and keeps name/email/phone in sync.
+ *
+ * To avoid duplicating someone who's already on the roster (e.g. they were
+ * added by email as a volunteer before they ever signed in), we first look for
+ * a row already linked to this account, then fall back to matching an UNLINKED
+ * row in the same chapter by email and adopt it (claiming it with `userId`).
+ * Only when neither exists do we insert a fresh row.
  */
 async function syncStaffPerson(
   ctx: any,
@@ -40,14 +69,17 @@ async function syncStaffPerson(
   chapterId: string,
   fields: { name?: string; email?: string | null; phone?: string | null },
 ) {
-  const existing = await ctx.db
-    .query("people")
-    .withIndex("by_user", (q: any) => q.eq("userId", userId))
-    .first();
+  const existing =
+    (await ctx.db
+      .query("people")
+      .withIndex("by_user", (q: any) => q.eq("userId", userId))
+      .first()) ?? (await findUnlinkedPersonByEmail(ctx, chapterId, fields.email));
 
   if (existing) {
     await ctx.db.patch(existing._id, {
       chapterId,
+      // Claim the row for this account (no-op if it was already linked).
+      userId,
       isTeamMember: true,
       isActive: existing.isActive ?? true,
       ...(fields.name !== undefined ? { name: fields.name } : null),
