@@ -1490,7 +1490,6 @@ export function SiteMapEditor({
   // from the legacy `eventId` prop. One of the two is always supplied.
   const scope: SiteMapScope =
     scopeProp ?? { kind: "event", eventId: eventIdProp! };
-  const isTemplate = scope.kind === "template";
 
   // Convex scope arg (matches the `scopeArg` union in apps/convex/siteMap.ts).
   const apiScope =
@@ -1502,36 +1501,31 @@ export function SiteMapEditor({
     scope.kind === "event"
       ? `event:${scope.eventId}`
       : `template:${scope.eventTypeId}`;
-  // The event id for placement (overlay) calls — null in template scope, where
-  // the supply/volunteer layers are hidden entirely.
-  const overlayEventId: any =
-    scope.kind === "event" ? scope.eventId : null;
-
-  // Only event scopes have an underlying event (for the header eyebrow) and the
-  // supply/volunteer overlay layers. Templates skip both.
+  // Only event scopes have an underlying event (for the header eyebrow); the
+  // supply/volunteer overlay layers now work on both scopes via `apiScope`.
   const eventData = useQuery(
     api.events.get,
     scope.kind === "event" ? { eventId: scope.eventId as any } : "skip",
   );
   const data = useQuery(api.siteMap.get, { scope: apiScope });
-  const overlays = useQuery(
-    api.siteMap.overlays,
-    scope.kind === "event" ? { eventId: scope.eventId as any } : "skip",
-  );
+  const overlays = useQuery(api.siteMap.overlays, { scope: apiScope });
 
   // Optimistic: update the local overlays cache immediately so a dragged chip
   // stays put instead of snapping to its old spot until the server round-trips.
-  // Overlays are event-only; the optimistic key is keyed by the event id and is
-  // never exercised in template scope (the layer UI is hidden there).
+  // Keyed by the active scope (event or template); both surfaces drag placements.
   const placeOrMove = useMutation(api.siteMap.placeOrMove).withOptimisticUpdate(
-    (store, { eventId: optEventId, kind, refId, x, y }) => {
-      const cur = store.getQuery(api.siteMap.overlays, { eventId: optEventId });
+    (store, { scope: optScope, kind, refId, x, y }) => {
+      const cur = store.getQuery(api.siteMap.overlays, { scope: optScope });
       if (!cur) return;
-      if (!cur.placements.some((p) => p.kind === kind && p.refId === refId))
+      if (
+        !cur.placements.some(
+          (p: Placement) => p.kind === kind && p.refId === refId,
+        )
+      )
         return; // new placement (insert) — no flicker to fix on create
-      store.setQuery(api.siteMap.overlays, { eventId: optEventId }, {
+      store.setQuery(api.siteMap.overlays, { scope: optScope }, {
         ...cur,
-        placements: cur.placements.map((p) =>
+        placements: cur.placements.map((p: Placement) =>
           p.kind === kind && p.refId === refId ? { ...p, x, y } : p,
         ),
       });
@@ -2223,9 +2217,9 @@ export function SiteMapEditor({
 
           {/* Overlay layer toggles — show/hide the supplies & volunteers
               chips on the canvas plus their trays. Independent of draw mode.
-              EVENT-ONLY: templates have no per-event supplies/volunteers to
-              place, so the whole placement layer is hidden in template scope. */}
-          {!isTemplate ? (
+              On TEMPLATE scope these drop the template's supplies (templateItems)
+              and placeholder crew (templatePeople); on EVENT scope, the event's
+              real supplies + volunteers. Both write scope-keyed placements. */}
           <View className="flex-row flex-wrap items-center gap-2">
             <Text className="text-2xs font-semibold uppercase tracking-wide text-faint">
               Layers
@@ -2266,16 +2260,15 @@ export function SiteMapEditor({
               );
             })}
           </View>
-          ) : null}
 
-          {/* Trays of not-yet-placed items for each enabled layer (event-only). */}
-          {!isTemplate && showSupplies ? (
+          {/* Trays of not-yet-placed items for each enabled layer. */}
+          {showSupplies ? (
             <OverlayTray
               kind="supply"
               items={unplacedSupplies}
               onPlace={(refId) =>
                 void placeOrMove({
-                  eventId: overlayEventId,
+                  scope: apiScope,
                   kind: "supply",
                   refId,
                   x: 0.5,
@@ -2284,13 +2277,13 @@ export function SiteMapEditor({
               }
             />
           ) : null}
-          {!isTemplate && showVolunteers ? (
+          {showVolunteers ? (
             <OverlayTray
               kind="volunteer"
               items={unplacedVolunteers}
               onPlace={(refId) =>
                 void placeOrMove({
-                  eventId: overlayEventId,
+                  scope: apiScope,
                   kind: "volunteer",
                   refId,
                   x: 0.5,
@@ -2491,8 +2484,8 @@ export function SiteMapEditor({
                         pointer-events:none overlay so its chips coexist with
                         shapes & markers without joining the selection. Each
                         placed chip drags freely; the "×" returns it to its
-                        tray. Only the enabled layers render. EVENT-ONLY. */}
-                    {!isTemplate && W > 0 && H > 0 ? (
+                        tray. Only the enabled layers render. */}
+                    {W > 0 && H > 0 ? (
                       <div
                         style={{
                           position: "absolute",
@@ -2526,7 +2519,7 @@ export function SiteMapEditor({
                                 H={H}
                                 onDragStop={(x, y) =>
                                   void placeOrMove({
-                                    eventId: overlayEventId,
+                                    scope: apiScope,
                                     kind: p.kind,
                                     refId: p.refId,
                                     x: clamp01(x / W),

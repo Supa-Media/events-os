@@ -291,100 +291,184 @@ export const removeShape = mutation({
 const placementKind = v.union(v.literal("supply"), v.literal("volunteer"));
 
 /**
- * Everything the site-map overlay UI needs for an event: the catalog of
- * supplies and volunteers available to drop, plus every existing placement
- * (with a resolved display label). Auth mirrors `get` — empty arrays if there's
- * no chapter or the event isn't in it.
+ * The droppable SUPPLIES for a scope (the catalog the tray reads).
+ *   - EVENT scope    → the event's supplies eventItems (refId = eventItem id)
+ *   - TEMPLATE scope → the template's supplies templateItems (refId = templateItem id)
+ * Rich fields (status/source/photo) are resolved for events; templates expose
+ * just the title (templates don't carry per-event acquisition state/photos).
+ */
+async function suppliesForScope(ctx: any, scope: Scope) {
+  if (scope.kind === "template") {
+    const rows = await ctx.db
+      .query("templateItems")
+      .withIndex("by_eventType_module", (q: any) =>
+        q.eq("eventTypeId", scope.eventTypeId).eq("module", "supplies"),
+      )
+      .collect();
+    return rows
+      .sort((a: any, b: any) => a.order - b.order)
+      .map((it: any) => ({
+        refId: it._id as string,
+        title: it.title as string,
+        photoUrl: null,
+        status: null,
+        packedIn: null,
+        source: null,
+        link: it.fields?.link ?? null,
+        qty: it.fields?.qty ?? null,
+        cost: it.fields?.cost ?? null,
+        notes: it.fields?.notes ?? null,
+      }));
+  }
+
+  const eventId = scope.eventId;
+  // Supplies columns → map of columnKey → (optionValue → label), so option
+  // values stored on items (status/container/source) resolve to human labels.
+  const supplyColumns = await ctx.db
+    .query("eventColumns")
+    .withIndex("by_event_module", (q: any) =>
+      q.eq("eventId", eventId).eq("module", "supplies"),
+    )
+    .collect();
+  const optionLabelsByKey = new Map<string, Map<string, string>>();
+  for (const col of supplyColumns as any[]) {
+    const byValue = new Map<string, string>();
+    for (const opt of (col.options ?? []) as any[]) {
+      byValue.set(opt.value, opt.label);
+    }
+    optionLabelsByKey.set(col.key, byValue);
+  }
+  const labelFor = (key: string, value: unknown): string | null => {
+    if (value == null || value === "") return null;
+    const raw = String(value);
+    return optionLabelsByKey.get(key)?.get(raw) ?? raw;
+  };
+
+  const supplyRows = await ctx.db
+    .query("eventItems")
+    .withIndex("by_event_module", (q: any) =>
+      q.eq("eventId", eventId).eq("module", "supplies"),
+    )
+    .collect();
+  return await Promise.all(
+    supplyRows.map(async (it: any) => {
+      const f = it.fields ?? {};
+      let photoUrl: string | null = null;
+      if (f.photo) {
+        photoUrl = isHttpUrl(f.photo)
+          ? (f.photo as string)
+          : await ctx.storage.getUrl(f.photo as Id<"_storage">);
+      }
+      return {
+        refId: it._id as string,
+        title: it.title as string,
+        photoUrl,
+        status: labelFor("status", f.status),
+        packedIn: labelFor("container", f.container),
+        source: labelFor("source", f.source),
+        link: f.link ?? null,
+        qty: f.qty ?? null,
+        cost: f.cost ?? null,
+        notes: f.notes ?? null,
+      };
+    }),
+  );
+}
+
+/**
+ * The droppable VOLUNTEERS for a scope (the tray's people).
+ *   - EVENT scope    → volunteer engagements (refId = engagement id; name from
+ *     the engagement's current person, so replacing a placeholder flows through)
+ *   - TEMPLATE scope → placeholder crew templatePeople (refId = templatePerson id)
+ */
+async function volunteersForScope(ctx: any, scope: Scope) {
+  if (scope.kind === "template") {
+    const rows = await ctx.db
+      .query("templatePeople")
+      .withIndex("by_template", (q: any) =>
+        q.eq("eventTypeId", scope.eventTypeId),
+      )
+      .collect();
+    return rows
+      .sort((a: any, b: any) => a.order - b.order)
+      .map((r: any) => {
+        const teams: string[] = r.teams ?? (r.team ? [r.team] : []);
+        return {
+          refId: r._id as string,
+          name: r.name as string,
+          phone: null,
+          email: null,
+          team: teams.length ? teams.join(", ") : null,
+          status: null,
+          service: r.role ?? null,
+        };
+      });
+  }
+
+  const volunteerRows = await ctx.db
+    .query("engagements")
+    .withIndex("by_event_type", (q: any) =>
+      q.eq("eventId", scope.eventId).eq("type", "volunteer"),
+    )
+    .collect();
+  return await Promise.all(
+    volunteerRows.map(async (e: any) => {
+      const person = await ctx.db.get(e.personId as Id<"people">);
+      return {
+        refId: e._id as string,
+        name: person?.name ?? "Unknown",
+        phone: person?.phone ?? null,
+        email: person?.email ?? null,
+        team:
+          Array.isArray(e.teams) && e.teams.length ? e.teams.join(", ") : null,
+        status: e.status ?? null,
+        service: e.service ?? null,
+      };
+    }),
+  );
+}
+
+/** Collect a scope's placements via the right index (by_event / by_template). */
+async function placementsForScope(ctx: any, scope: Scope) {
+  return scope.kind === "event"
+    ? ctx.db
+        .query("siteMapPlacements")
+        .withIndex("by_event", (q: any) => q.eq("eventId", scope.eventId))
+        .collect()
+    : ctx.db
+        .query("siteMapPlacements")
+        .withIndex("by_template", (q: any) =>
+          q.eq("eventTypeId", scope.eventTypeId),
+        )
+        .collect();
+}
+
+/**
+ * Everything the site-map overlay UI needs for a scope: the catalog of supplies
+ * and volunteers available to drop, plus every existing placement (with a
+ * resolved display label). Works on both EVENT and TEMPLATE scope. Auth mirrors
+ * `get` — empty arrays if there's no chapter or the parent isn't in it.
  */
 export const overlays = query({
-  args: { eventId: v.id("events") },
-  handler: async (ctx, { eventId }) => {
+  args: { scope: scopeArg },
+  handler: async (ctx, { scope }) => {
     const chapterId = await getChapterIdOrNull(ctx);
     if (!chapterId) return { supplies: [], volunteers: [], placements: [] };
-    const event = await ctx.db.get(eventId);
-    if (!event || event.chapterId !== chapterId)
+    const parent = await ctx.db.get(
+      scope.kind === "event" ? scope.eventId : scope.eventTypeId,
+    );
+    if (!parent || (parent as any).chapterId !== chapterId)
       return { supplies: [], volunteers: [], placements: [] };
 
-    // Supplies columns → map of columnKey → (optionValue → label), so option
-    // values stored on items (status/container/source) resolve to human labels.
-    const supplyColumns = await ctx.db
-      .query("eventColumns")
-      .withIndex("by_event_module", (q: any) =>
-        q.eq("eventId", eventId).eq("module", "supplies"),
-      )
-      .collect();
-    const optionLabelsByKey = new Map<string, Map<string, string>>();
-    for (const col of supplyColumns as any[]) {
-      const byValue = new Map<string, string>();
-      for (const opt of (col.options ?? []) as any[]) {
-        byValue.set(opt.value, opt.label);
-      }
-      optionLabelsByKey.set(col.key, byValue);
-    }
-    const labelFor = (key: string, value: unknown): string | null => {
-      if (value == null || value === "") return null;
-      const raw = String(value);
-      return optionLabelsByKey.get(key)?.get(raw) ?? raw;
-    };
+    const supplies = await suppliesForScope(ctx, scope);
+    const volunteers = await volunteersForScope(ctx, scope);
 
-    const supplyRows = await ctx.db
-      .query("eventItems")
-      .withIndex("by_event_module", (q: any) =>
-        q.eq("eventId", eventId).eq("module", "supplies"),
-      )
-      .collect();
-    const supplies = await Promise.all(
-      supplyRows.map(async (it: any) => {
-        const f = it.fields ?? {};
-        let photoUrl: string | null = null;
-        if (f.photo) {
-          photoUrl = isHttpUrl(f.photo)
-            ? (f.photo as string)
-            : await ctx.storage.getUrl(f.photo as Id<"_storage">);
-        }
-        return {
-          refId: it._id as string,
-          title: it.title as string,
-          photoUrl,
-          status: labelFor("status", f.status),
-          packedIn: labelFor("container", f.container),
-          source: labelFor("source", f.source),
-          link: f.link ?? null,
-          qty: f.qty ?? null,
-          cost: f.cost ?? null,
-          notes: f.notes ?? null,
-        };
-      }),
+    const supplyTitleByRef = new Map(supplies.map((s: any) => [s.refId, s.title]));
+    const volunteerNameByRef = new Map(
+      volunteers.map((vv: any) => [vv.refId, vv.name]),
     );
 
-    const volunteerRows = await ctx.db
-      .query("engagements")
-      .withIndex("by_event_type", (q: any) =>
-        q.eq("eventId", eventId).eq("type", "volunteer"),
-      )
-      .collect();
-    const volunteers = await Promise.all(
-      volunteerRows.map(async (e: any) => {
-        const person = await ctx.db.get(e.personId as Id<"people">);
-        return {
-          refId: e._id as string,
-          name: person?.name ?? "Unknown",
-          phone: person?.phone ?? null,
-          email: person?.email ?? null,
-          team: Array.isArray(e.teams) && e.teams.length ? e.teams.join(", ") : null,
-          status: e.status ?? null,
-          service: e.service ?? null,
-        };
-      }),
-    );
-
-    const supplyTitleByRef = new Map(supplies.map((s) => [s.refId, s.title]));
-    const volunteerNameByRef = new Map(volunteers.map((v) => [v.refId, v.name]));
-
-    const placementRows = await ctx.db
-      .query("siteMapPlacements")
-      .withIndex("by_event", (q: any) => q.eq("eventId", eventId))
-      .collect();
+    const placementRows = await placementsForScope(ctx, scope);
     const placements = placementRows.map((p: any) => ({
       _id: p._id,
       kind: p.kind,
@@ -517,12 +601,14 @@ export const publicSiteMap = query({
 
 /**
  * Drop a supply/volunteer onto the map, or move it if it's already placed.
- * Idempotent per (eventId, kind, refId): patches the existing placement's
- * position, otherwise inserts a new one. Returns the placement id.
+ * Works on both EVENT and TEMPLATE scope. Idempotent per (scope, kind, refId):
+ * patches the existing placement's position, otherwise inserts a new one. In
+ * template scope `refId` is a templateItems / templatePeople id; in event scope
+ * it's an eventItems / engagements id. Returns the placement id.
  */
 export const placeOrMove = mutation({
   args: {
-    eventId: v.id("events"),
+    scope: scopeArg,
     kind: placementKind,
     refId: v.string(),
     x: v.number(),
@@ -530,20 +616,27 @@ export const placeOrMove = mutation({
   },
   handler: async (ctx, args) => {
     const chapterId = await requireChapterId(ctx);
-    const event = await ctx.db.get(args.eventId);
-    await requireInChapter(ctx, chapterId, event, "Event");
+    const scope = args.scope;
+    await requireScopeParent(ctx, chapterId, scope);
 
     const x = clamp01(args.x);
     const y = clamp01(args.y);
 
-    const existing = (
-      await ctx.db
-        .query("siteMapPlacements")
-        .withIndex("by_event_kind", (q: any) =>
-          q.eq("eventId", args.eventId).eq("kind", args.kind),
-        )
-        .collect()
-    ).find((p: any) => p.refId === args.refId);
+    const existingRows =
+      scope.kind === "event"
+        ? await ctx.db
+            .query("siteMapPlacements")
+            .withIndex("by_event_kind", (q: any) =>
+              q.eq("eventId", scope.eventId).eq("kind", args.kind),
+            )
+            .collect()
+        : await ctx.db
+            .query("siteMapPlacements")
+            .withIndex("by_template_kind", (q: any) =>
+              q.eq("eventTypeId", scope.eventTypeId).eq("kind", args.kind),
+            )
+            .collect();
+    const existing = existingRows.find((p: any) => p.refId === args.refId);
 
     if (existing) {
       await ctx.db.patch(existing._id, { x, y });
@@ -551,7 +644,7 @@ export const placeOrMove = mutation({
     }
     return await ctx.db.insert("siteMapPlacements", {
       chapterId: chapterId as Id<"chapters">,
-      eventId: args.eventId,
+      ...scopeFields(scope),
       kind: args.kind,
       refId: args.refId,
       x,

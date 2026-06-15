@@ -40,9 +40,11 @@ export const list = query({
       .query("people")
       .withIndex("by_chapter", (q: any) => q.eq("chapterId", chapterId))
       .collect();
-    // Placeholder crew (materialized from template placeholders onto events) are
-    // event-scoped stand-ins, not real roster members — keep them out of the
-    // People roster. They surface only as event volunteers until replaced.
+    // These are PER-EVENT materialized copies of a template's placeholder crew
+    // (the reusable definitions live on the template as `templatePeople` and are
+    // never touched here) — event-scoped stand-ins, not real roster members, so
+    // keep them out of the People roster. Replacing one only consumes that
+    // event's copy; the template's placeholders persist for future instances.
     const sorted = people
       .filter((p: any) => p.isPlaceholder !== true)
       .sort((a: any, b: any) => a.name.localeCompare(b.name));
