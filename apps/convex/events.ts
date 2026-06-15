@@ -623,6 +623,57 @@ export const todos = query({
       }
     }
 
+    // ── "Mark module as ready" gates: one per active module that has a ready
+    // gate and isn't ready yet. Phase per the product spec: comms/permits are
+    // pre-plan; run_of_show/site_map/crew(volunteer_expectations)/supplies are
+    // planning. planning_doc and retro have no ready gate. The caller sees it in
+    // `yours` if they own the module, else `overseeing` (event owner) when at
+    // risk — same ownership rule as items. ──
+    const READY_TODO_PHASE: Record<string, PhaseKey> = {
+      comms: "prePlan",
+      permits: "prePlan",
+      run_of_show: "planning",
+      site_map: "planning",
+      volunteer_expectations: "planning",
+      supplies: "planning",
+    };
+    const readyByKey = new Map<string, boolean>(
+      (event.moduleReadiness ?? []).map((r: any) => [
+        r.key as string,
+        r.ready as boolean,
+      ]),
+    );
+    for (let mi = 0; mi < resolved.length; mi++) {
+      const m = resolved[mi];
+      const phase = READY_TODO_PHASE[m.key];
+      if (!phase) continue;
+      if (readyByKey.get(m.key) === true) continue;
+
+      const effectiveDue = event.eventDate as number;
+      const risk = computeRisk(effectiveDue);
+      const iOwnThisModule = iOwnModule.get(m.key) ?? false;
+      // Ready gates sort after items within a tier (high base sort key).
+      const sortKey = 10_000_000 + mi;
+      const action = {
+        id: "ready:" + m.key,
+        label:
+          "Review & update " +
+          moduleLabel(m.key) +
+          " — meet with team if needed, mark ready once solidified",
+        tab: tabForModule(m.key),
+        risk,
+        due: effectiveDue,
+        phase,
+        _sort: sortKey,
+      } as TodoAction & { _sort: number };
+
+      if (iOwnThisModule) {
+        yours.push(action);
+      } else if (iAmEventOwner && risk !== null) {
+        overseeing.push(action);
+      }
+    }
+
     // Order each group: overdue → soon → rest, then stable by module/item order.
     // Setup lines (no `_sort`) sort to the front (sortKey -1) within their tier.
     const order = (list: TodoAction[]) =>
