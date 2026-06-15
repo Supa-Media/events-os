@@ -201,6 +201,56 @@ export const getPublic = query({
   },
 });
 
+/**
+ * Search this chapter's how-to docs for ones relevant to `query` — the doc
+ * assistant's "reuse an existing guide" tool. Scoped to the caller's chapter, so
+ * the agent can pull in how-tos written for OTHER templates/events in the same
+ * community.
+ *
+ * Considers only `markdown`/`note` docs with a non-empty body, scores each by
+ * case-insensitive term overlap of the query against title + body, and returns
+ * the top ~5 as `{ title, body }` with each body truncated to ~2000 chars.
+ */
+export const searchForAi = query({
+  args: { query: v.string() },
+  handler: async (ctx, { query: rawQuery }) => {
+    const chapterId = await requireChapterId(ctx);
+
+    const terms = rawQuery
+      .toLowerCase()
+      .split(/[^a-z0-9]+/)
+      .filter((t) => t.length > 2);
+
+    const docs = await ctx.db
+      .query("docs")
+      .withIndex("by_chapter", (q: any) => q.eq("chapterId", chapterId))
+      .collect();
+
+    const scored = docs
+      .filter(
+        (d) =>
+          (d.kind === "markdown" || d.kind === "note") &&
+          typeof d.body === "string" &&
+          d.body.trim().length > 0,
+      )
+      .map((d) => {
+        const hay = `${d.title}\n${d.body ?? ""}`.toLowerCase();
+        // Score = number of query terms that appear anywhere in title + body.
+        const score = terms.reduce(
+          (acc, t) => acc + (hay.includes(t) ? 1 : 0),
+          0,
+        );
+        return { score, title: d.title, body: (d.body ?? "").slice(0, 2000) };
+      })
+      .filter((d) => d.score > 0)
+      .sort((a, b) => b.score - a.score)
+      .slice(0, 5)
+      .map(({ title, body }) => ({ title, body }));
+
+    return scored;
+  },
+});
+
 /** Internal: overwrite a doc's body (used by the AI generate/improve action). */
 export const setBody = internalMutation({
   args: { docId: v.id("docs"), body: v.string() },

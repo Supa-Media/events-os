@@ -18,7 +18,7 @@ import { action } from "./_generated/server";
 import { internal, api } from "./_generated/api";
 import { Id } from "./_generated/dataModel";
 import { v, ConvexError } from "convex/values";
-import { aiCostUsd, MODULE_KEYS } from "@events-os/shared";
+import { aiCostUsd, MODULE_KEYS, HOW_TO_SYSTEM_PROMPT } from "@events-os/shared";
 
 const OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions";
 
@@ -179,13 +179,21 @@ function callCost(slug: string, usage: OpenRouterUsage): number {
   });
 }
 
-/** One OpenRouter chat-completions call (raw fetch). Tools/reasoning on by default. */
+/**
+ * One OpenRouter chat-completions call (raw fetch), reasoning on by default.
+ *
+ * Tool set is configurable: pass `opts.tools` (an array of tool defs) to enable
+ * tool-calling with that exact set. Omit it for a plain completion (no tools).
+ * Each agent passes its OWN tool set — the event agent passes `TOOLS`, the doc
+ * agent passes `DOC_TOOLS`.
+ */
 async function openRouterCall(
   slug: string,
   messages: any[],
-  opts: { tools?: boolean; maxTokens?: number } = {},
+  opts: { tools?: any[]; maxTokens?: number } = {},
 ): Promise<{ message: any; usage: OpenRouterUsage }> {
-  const useTools = opts.tools ?? true;
+  const tools = opts.tools;
+  const useTools = Array.isArray(tools) && tools.length > 0;
   const res = await fetch(OPENROUTER_URL, {
     method: "POST",
     headers: {
@@ -197,7 +205,7 @@ async function openRouterCall(
     body: JSON.stringify({
       model: slug,
       messages,
-      ...(useTools ? { tools: TOOLS, tool_choice: "auto" } : {}),
+      ...(useTools ? { tools, tool_choice: "auto" } : {}),
       reasoning: { effort: "low" },
       max_tokens: opts.maxTokens ?? 1500,
     }),
@@ -300,6 +308,72 @@ async function searchImageUrls(query: string): Promise<string[]> {
   const ddg = await ddgImageUrls(query);
   if (ddg.length) return ddg;
   return await openverseImageUrls(query);
+}
+
+/**
+ * Free, no-key web TEXT search via DuckDuckGo's Instant Answer API — the doc
+ * agent's research tool. Pulls the instant answer (`Abstract`/`Heading`) plus
+ * the related-topics list, flattened into up to ~5 `{ title, snippet, url }`
+ * results. Defensive: any error or empty response returns `[]`.
+ */
+async function webSearch(
+  query: string,
+): Promise<{ title: string; snippet: string; url?: string }[]> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 10_000);
+  try {
+    const res = await fetch(
+      "https://api.duckduckgo.com/?q=" +
+        encodeURIComponent(query) +
+        "&format=json&no_redirect=1&no_html=1",
+      { signal: controller.signal, headers: { "User-Agent": SEARCH_UA } },
+    );
+    if (!res.ok) return [];
+    const json: any = await res.json();
+    const results: { title: string; snippet: string; url?: string }[] = [];
+
+    const abstract =
+      (typeof json?.AbstractText === "string" && json.AbstractText) ||
+      (typeof json?.Abstract === "string" && json.Abstract) ||
+      "";
+    if (abstract.trim()) {
+      results.push({
+        title:
+          (typeof json?.Heading === "string" && json.Heading) || query,
+        snippet: abstract.trim(),
+        url:
+          typeof json?.AbstractURL === "string" && json.AbstractURL
+            ? json.AbstractURL
+            : undefined,
+      });
+    }
+
+    // RelatedTopics can be a flat list or nested groups ({ Topics: [...] }).
+    const flatten = (topics: any[]): any[] =>
+      topics.flatMap((t) =>
+        Array.isArray(t?.Topics) ? flatten(t.Topics) : [t],
+      );
+    const related = Array.isArray(json?.RelatedTopics)
+      ? flatten(json.RelatedTopics)
+      : [];
+    for (const t of related) {
+      const text = typeof t?.Text === "string" ? t.Text.trim() : "";
+      if (!text) continue;
+      results.push({
+        title: text.length > 60 ? text.slice(0, 60) + "…" : text,
+        snippet: text,
+        url:
+          typeof t?.FirstURL === "string" && t.FirstURL ? t.FirstURL : undefined,
+      });
+      if (results.length >= 5) break;
+    }
+
+    return results.slice(0, 5);
+  } catch {
+    return [];
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 /** Fetch an image URL with a ~10s timeout; return a Blob iff it's an image. */
@@ -630,7 +704,9 @@ export const runAssistant = action({
 
     try {
       for (let step = 0; step < MAX_STEPS; step++) {
-        const { message, usage } = await openRouterCall(slug, messages);
+        const { message, usage } = await openRouterCall(slug, messages, {
+          tools: TOOLS,
+        });
 
         const cost = callCost(slug, usage);
         totalCost += cost;
@@ -840,7 +916,7 @@ export const autofillItem = action({
             },
             { role: "user", content: info.title },
           ],
-          { tools: false, maxTokens: 16 },
+          { maxTokens: 16 },
         );
         cost += callCost(slug, usage);
         const n = parseFloat(String(message.content ?? "").replace(/[^0-9.]/g, ""));
@@ -902,52 +978,112 @@ function docHistoryTurns(
     }));
 }
 
-/** Parse the model's JSON `{ reply, newBody }` reply defensively. */
-function parseDocReply(content: unknown): {
-  reply: string;
-  newBody: string | null;
-} {
-  const raw = typeof content === "string" ? content.trim() : "";
-  if (!raw) return { reply: "Done.", newBody: null };
+/** Max model round-trips in one doc-assistant turn (research + write). */
+const DOC_MAX_STEPS = 6;
 
-  // Models sometimes wrap JSON in ```json fences — strip them, then try to
-  // isolate the outermost {...} object before parsing.
-  const unfenced = raw
-    .replace(/^```(?:json)?\s*/i, "")
-    .replace(/\s*```$/i, "")
-    .trim();
-  const start = unfenced.indexOf("{");
-  const end = unfenced.lastIndexOf("}");
-  const candidate =
-    start !== -1 && end > start ? unfenced.slice(start, end + 1) : unfenced;
+/** The tools the doc assistant can call — research, then write the markdown. */
+const DOC_TOOLS = [
+  {
+    type: "function",
+    function: {
+      name: "search_how_to_docs",
+      description:
+        "Search existing How-To guides written for OTHER templates and events " +
+        "in this same community. Use this FIRST to reuse phrasing, steps, and " +
+        "conventions the team already relies on. Pass a short query of key " +
+        "terms describing the task.",
+      parameters: {
+        type: "object",
+        properties: {
+          query: {
+            type: "string",
+            description: "Key terms for the task (e.g. 'sound check soundboard').",
+          },
+        },
+        required: ["query"],
+        additionalProperties: false,
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "web_search",
+      description:
+        "Search the public web for factual context, definitions, or best " +
+        "practices to make the guide accurate and complete. Pass a short query.",
+      parameters: {
+        type: "object",
+        properties: {
+          query: { type: "string", description: "A short web search query." },
+        },
+        required: ["query"],
+        additionalProperties: false,
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "write_doc",
+      description:
+        "Save the document. Pass the FULL revised guide in GitHub-Flavored " +
+        "Markdown — it REPLACES the entire document, so include ALL content, " +
+        "not just the part you changed. Do NOT wrap it in code fences. Call " +
+        "this once you've gathered enough context and are ready to commit the " +
+        "guide.",
+      parameters: {
+        type: "object",
+        properties: {
+          body: { type: "string", description: "The full markdown document." },
+        },
+        required: ["body"],
+        additionalProperties: false,
+      },
+    },
+  },
+];
 
-  try {
-    const obj = JSON.parse(candidate);
-    const reply =
-      typeof obj?.reply === "string" && obj.reply.trim()
-        ? obj.reply.trim()
-        : "Done.";
-    const newBody =
-      typeof obj?.newBody === "string" && obj.newBody.trim()
-        ? obj.newBody
-        : null;
-    return { reply, newBody };
-  } catch {
-    // Not JSON — treat the whole response as a chat reply, no doc edit.
-    return { reply: raw, newBody: null };
-  }
+/** Compact text rendering of search_how_to_docs matches for the tool_result. */
+function renderHowToMatches(
+  matches: Array<{ title: string; body: string }>,
+): string {
+  if (!matches.length) return "No matching how-to guides found.";
+  return matches
+    .map((m) => {
+      const body = m.body.length > 800 ? m.body.slice(0, 800) + "…" : m.body;
+      return `## ${m.title}\n${body}`;
+    })
+    .join("\n\n");
+}
+
+/** Compact text rendering of web_search results for the tool_result. */
+function renderWebResults(
+  results: Array<{ title: string; snippet: string; url?: string }>,
+): string {
+  if (!results.length) return "No web results found.";
+  return results
+    .map(
+      (r) =>
+        `${r.title} — ${r.snippet}${r.url ? ` — ${r.url}` : ""}`,
+    )
+    .join("\n");
 }
 
 /**
- * Conversational How-To doc editor — one chat turn on a doc's thread.
+ * Tool-using How-To author agent — one chat turn on a doc's thread.
  *
- * The doc-page counterpart to `runAssistant`: the user chats with the assistant,
- * which replies briefly AND, when asked for changes, rewrites the WHOLE markdown
- * body. Single-shot (no tool loop): the model returns a structured JSON reply
- * `{ reply, newBody }` we parse defensively; a non-null `newBody` is written via
- * `internal.docs.setBody`. Every step (user message, assistant reply, errors)
- * streams into `aiMessages`, so the panel renders the conversation reactively.
- * Goes through the same budget gate + run/usage tracking as `runAssistant`.
+ * The doc-page counterpart to `runAssistant`: a multi-step tool loop on a FREE
+ * OpenRouter model. The agent gathers context (`search_how_to_docs` reuses
+ * guides from other templates/events; `web_search` pulls factual background),
+ * then commits the FULL revised markdown via `write_doc` (→ `internal.docs.setBody`),
+ * then gives the user a short final reply. Every step (user message, reasoning,
+ * each tool call + result, final reply, errors) streams into `aiMessages`, so
+ * the panel renders the agent's work live. The standard "explain it to a
+ * no-context volunteer" voice (`HOW_TO_SYSTEM_PROMPT`) is the base of its
+ * system prompt. Same budget gate + run/usage tracking as `runAssistant`.
+ *
+ * COW: writes to whatever `docId` it's given — the panel passes the forked copy.
  */
 export const runDocAssistant = action({
   args: {
@@ -1003,19 +1139,22 @@ export const runDocAssistant = action({
     const priorTurns = docHistoryTurns(history);
 
     const system = [
-      "You are a conversational editor for ONE markdown how-to document for a",
-      "church events team. You chat with the user and, when they ask for changes,",
-      "you rewrite the document.",
+      HOW_TO_SYSTEM_PROMPT,
       "",
-      "ALWAYS reply with a single JSON object and NOTHING else:",
-      '  { "reply": string, "newBody": string | null }',
-      "- `reply`: a SHORT, friendly message to the user (what you did, or your",
-      "  answer to their question).",
-      "- `newBody`: the FULL revised document in GitHub-Flavored Markdown when the",
-      "  user asked for a change, or null when no change is needed (e.g. they only",
-      "  asked a question). When set, it REPLACES the whole document — include all",
-      "  content, not just the edited part. Use headings, short paragraphs, and",
-      "  bullet/numbered lists. Do NOT wrap the markdown in code fences.",
+      "You are editing ONE markdown How-To document for a church events team by",
+      "calling tools. Workflow:",
+      "1. If it helps, gather context FIRST — call `search_how_to_docs` to reuse",
+      "   guides the team already wrote for other templates/events, and/or",
+      "   `web_search` for factual background. Skip research only for trivial",
+      "   edits or pure questions.",
+      "2. When you're ready to change the document, call `write_doc` with the",
+      "   FULL revised guide in GitHub-Flavored Markdown — it REPLACES the whole",
+      "   document, so include ALL content, not just the edited part.",
+      "3. After your edits (or if the user only asked a question), reply with a",
+      "   SHORT, friendly final message — no tool call — and the turn ends.",
+      "",
+      "If the user only asked a question, answer it directly without calling",
+      "`write_doc`. Be concise in your final reply; the detail goes in the guide.",
       "",
       `DOCUMENT TITLE: "${doc.title}".`,
       "CURRENT DOCUMENT:",
@@ -1034,44 +1173,140 @@ export const runDocAssistant = action({
       model: slug,
     });
 
+    let edited = false;
+    let totalCost = 0;
+    let finished = false;
+
     try {
-      const { message, usage } = await openRouterCall(slug, messages, {
-        tools: false,
-        maxTokens: 2500,
-      });
-      const cost = callCost(slug, usage);
-      await ctx.runMutation(internal.ai.logUsage, {
-        chapterId,
-        userId,
-        runId,
-        feature: "doc_assistant",
-        model: slug,
-        inputTokens: usage.prompt_tokens ?? 0,
-        outputTokens: usage.completion_tokens ?? 0,
-        cachedTokens: usage.prompt_tokens_details?.cached_tokens,
-        costUsd: cost,
-      });
+      for (let step = 0; step < DOC_MAX_STEPS; step++) {
+        const { message, usage } = await openRouterCall(slug, messages, {
+          tools: DOC_TOOLS,
+          maxTokens: 2500,
+        });
 
-      const { reply, newBody } = parseDocReply(message.content);
+        const cost = callCost(slug, usage);
+        totalCost += cost;
+        await ctx.runMutation(internal.ai.logUsage, {
+          chapterId,
+          userId,
+          runId,
+          feature: "doc_assistant",
+          model: slug,
+          inputTokens: usage.prompt_tokens ?? 0,
+          outputTokens: usage.completion_tokens ?? 0,
+          cachedTokens: usage.prompt_tokens_details?.cached_tokens,
+          costUsd: cost,
+        });
 
-      let edited = false;
-      if (newBody !== null) {
-        await ctx.runMutation(internal.docs.setBody, { docId, body: newBody });
-        edited = true;
+        // Surface the reasoning trace, if the model returned one.
+        const reasoning =
+          (typeof message.reasoning === "string" && message.reasoning) || "";
+        if (reasoning.trim()) {
+          await ctx.runMutation(internal.ai.appendMessage, {
+            threadId,
+            runId,
+            kind: "reasoning",
+            text: reasoning.trim(),
+          });
+        }
+
+        const toolCalls: any[] = message.tool_calls ?? [];
+        if (toolCalls.length === 0) {
+          // Final answer.
+          const text =
+            (typeof message.content === "string" && message.content.trim()) ||
+            "Done.";
+          await ctx.runMutation(internal.ai.appendMessage, {
+            threadId,
+            runId,
+            kind: "assistant",
+            text,
+          });
+          finished = true;
+          break;
+        }
+
+        // Record the assistant turn (with tool_calls) for the next round.
+        messages.push(message);
+
+        for (const tc of toolCalls) {
+          let parsed: any = {};
+          try {
+            parsed = JSON.parse(tc.function?.arguments ?? "{}");
+          } catch {
+            parsed = {};
+          }
+          const name = tc.function?.name;
+          await ctx.runMutation(internal.ai.appendMessage, {
+            threadId,
+            runId,
+            kind: "tool_call",
+            toolName: name,
+            toolArgs: parsed,
+          });
+
+          let ok = true;
+          let summary = "";
+          if (name === "search_how_to_docs") {
+            const matches = (await ctx.runQuery(api.docs.searchForAi, {
+              query: String(parsed.query ?? ""),
+            })) as Array<{ title: string; body: string }>;
+            ok = matches.length > 0;
+            summary = renderHowToMatches(matches);
+          } else if (name === "web_search") {
+            const results = await webSearch(String(parsed.query ?? ""));
+            ok = results.length > 0;
+            summary = renderWebResults(results);
+          } else if (name === "write_doc") {
+            const body =
+              typeof parsed.body === "string" ? parsed.body : "";
+            if (!body.trim()) {
+              ok = false;
+              summary = "No document body provided.";
+            } else {
+              await ctx.runMutation(internal.docs.setBody, { docId, body });
+              edited = true;
+              ok = true;
+              summary = "Document updated.";
+            }
+          } else {
+            ok = false;
+            summary = `Unknown tool "${name}".`;
+          }
+
+          await ctx.runMutation(internal.ai.appendMessage, {
+            threadId,
+            runId,
+            kind: "tool_result",
+            toolName: name,
+            toolOk: ok,
+            text: summary.length > 1200 ? summary.slice(0, 1200) + "…" : summary,
+          });
+          messages.push({
+            role: "tool",
+            tool_call_id: tc.id,
+            content: summary,
+          });
+        }
       }
 
-      await ctx.runMutation(internal.ai.appendMessage, {
-        threadId,
-        runId,
-        kind: "assistant",
-        text: reply,
-      });
+      // Step cap hit mid-work → still leave a closing summary in the thread.
+      if (!finished) {
+        await ctx.runMutation(internal.ai.appendMessage, {
+          threadId,
+          runId,
+          kind: "assistant",
+          text: edited
+            ? "Updated the guide. Ask me to continue if there's more."
+            : "Still working — ask me to continue.",
+        });
+      }
 
       await ctx.runMutation(internal.ai.finishRun, {
         runId,
         status: "done",
         itemsTouched: edited ? 1 : 0,
-        costUsd: cost,
+        costUsd: totalCost,
         summary: edited ? "Edited doc" : "Replied",
       });
       return { ok: true, runId, edited };
@@ -1089,8 +1324,8 @@ export const runDocAssistant = action({
       await ctx.runMutation(internal.ai.finishRun, {
         runId,
         status: "error",
-        itemsTouched: 0,
-        costUsd: 0,
+        itemsTouched: edited ? 1 : 0,
+        costUsd: totalCost,
         summary: "Doc assistant errored",
       });
       return { ok: false };

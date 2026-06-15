@@ -225,8 +225,9 @@ export function DocAssistantPanel({
               How can I help with this how-to?
             </Text>
             <Text className="text-2xs text-faint">
-              Chat with me to write or revise this document — I'll rewrite the
-              markdown for you. Try:
+              Chat with me to write or revise this how-to. I can research the web
+              and reuse your team's existing guides, then write it out so a
+              brand-new volunteer could follow it. Try:
             </Text>
             {SUGGESTIONS.map((s) => (
               <Pressable
@@ -334,6 +335,40 @@ function MessageRow({ m }: { m: any }) {
     );
   }
 
+  if (m.kind === "reasoning") {
+    return <Reasoning text={m.text ?? ""} />;
+  }
+
+  if (m.kind === "tool_call") {
+    const args = m.toolArgs ? compactArgs(m.toolArgs) : "";
+    return (
+      <View className="flex-row items-center gap-1.5 self-start rounded-lg bg-sunken px-2 py-1">
+        <Icon name="tool" size={11} color={colors.muted} />
+        <Text className="text-2xs font-semibold text-muted">{m.toolName}</Text>
+        {args ? <Text className="text-2xs text-faint">{args}</Text> : null}
+      </View>
+    );
+  }
+
+  if (m.kind === "tool_result") {
+    return (
+      <View className="flex-row items-center gap-1.5 self-start pl-2">
+        <Icon
+          name={m.toolOk ? "check" : "alert-circle"}
+          size={11}
+          color={m.toolOk ? colors.success : colors.danger}
+        />
+        <Text
+          className="text-2xs"
+          style={{ color: m.toolOk ? colors.success : colors.danger }}
+          numberOfLines={2}
+        >
+          {m.text}
+        </Text>
+      </View>
+    );
+  }
+
   if (m.kind === "error") {
     return (
       <View className="self-start rounded-lg border border-danger/40 bg-dangerBg px-3 py-2">
@@ -343,4 +378,40 @@ function MessageRow({ m }: { m: any }) {
   }
 
   return null;
+}
+
+/** Collapsible reasoning trace — collapsed by default, tap to expand. */
+function Reasoning({ text }: { text: string }) {
+  const [expanded, setExpanded] = useState(false);
+  return (
+    <Pressable
+      onPress={() => setExpanded((e) => !e)}
+      className="self-start rounded-lg bg-sunken px-2.5 py-1.5 active:opacity-70"
+      style={{ maxWidth: "92%" }}
+    >
+      <View className="flex-row items-center gap-1.5">
+        <Icon name="cpu" size={11} color={colors.faint} />
+        <Text className="text-2xs font-semibold text-faint">
+          Reasoning {expanded ? "▾" : "▸"}
+        </Text>
+      </View>
+      {expanded ? (
+        <Text className="mt-1 text-2xs italic text-muted">{text}</Text>
+      ) : null}
+    </Pressable>
+  );
+}
+
+/** Compact one-line render of a tool call's args. */
+function compactArgs(args: Record<string, unknown>): string {
+  const parts = Object.entries(args)
+    .filter(([, v]) => v !== undefined && v !== "")
+    .map(([k, v]) => {
+      const val = typeof v === "string" ? v : JSON.stringify(v);
+      // write_doc passes the whole markdown body — don't dump it inline.
+      const short = val.length > 40 ? val.slice(0, 39) + "…" : val;
+      return `${k}=${short}`;
+    });
+  const s = parts.join(", ");
+  return s.length > 80 ? s.slice(0, 79) + "…" : s;
 }
