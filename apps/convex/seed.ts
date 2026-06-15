@@ -1074,10 +1074,17 @@ export const importRoster = mutation({
       .withIndex("by_chapter", (q: any) => q.eq("chapterId", chapterId))
       .collect();
     const byPhone = new Map<string, (typeof existing)[number]>();
+    const byEmail = new Map<string, (typeof existing)[number]>();
     const byName = new Map<string, (typeof existing)[number]>();
     for (const p of existing) {
       const key = phoneKey(p.phone);
       if (key) byPhone.set(key, p);
+      // Index BOTH addresses so we also adopt a row created by an earlier
+      // sign-in (which stores the publicworship login email on pwEmail).
+      for (const e of [p.email, p.pwEmail]) {
+        const ek = e?.trim().toLowerCase();
+        if (ek) byEmail.set(ek, p);
+      }
       byName.set(p.name.trim().toLowerCase(), p);
     }
 
@@ -1086,8 +1093,12 @@ export const importRoster = mutation({
     let updated = 0;
     for (const r of roster) {
       const key = phoneKey(r.phone);
+      const emailMatch = [r.email, r.pwEmail]
+        .map((e) => (e ? byEmail.get(e.trim().toLowerCase()) : undefined))
+        .find(Boolean);
       const match =
         (key ? byPhone.get(key) : undefined) ??
+        emailMatch ??
         byName.get(r.name.trim().toLowerCase());
       const status: RosterStatus = r.status ?? "active";
       // Build the doc with only defined fields, so an enrich-patch never wipes
