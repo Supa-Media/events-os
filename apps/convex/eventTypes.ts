@@ -73,6 +73,43 @@ export const list = query({
   },
 });
 
+/** Like `list`, but archived-only — backs the "Archived templates" section. */
+export const listArchived = query({
+  args: {},
+  handler: async (ctx) => {
+    const chapterId = await getChapterIdOrNull(ctx);
+    if (!chapterId) return [];
+    const types = await ctx.db
+      .query("eventTypes")
+      .withIndex("by_chapter", (q: any) => q.eq("chapterId", chapterId))
+      .collect();
+    const archived = types.filter((t: any) => t.isArchived === true);
+    const withMeta = await Promise.all(
+      archived.map(async (t: any) => {
+        const tasks = await ctx.db
+          .query("templateItems")
+          .withIndex("by_eventType_module", (q: any) =>
+            q.eq("eventTypeId", t._id).eq("module", "planning_doc"),
+          )
+          .collect();
+        const roles = await templateRoles(ctx, t._id);
+        const modules = await templateActiveModules(ctx, t);
+        return {
+          _id: t._id,
+          name: t.name,
+          slug: t.slug,
+          description: t.description,
+          modules,
+          roles,
+          version: t.version,
+          taskCount: tasks.length,
+        };
+      }),
+    );
+    return withMeta.sort((a, b) => a.name.localeCompare(b.name));
+  },
+});
+
 /** Template detail: the event type, its resolved active roles, and active modules. */
 export const get = query({
   args: { eventTypeId: v.id("eventTypes") },
@@ -234,6 +271,106 @@ export const update = mutation({
   },
 });
 
+/** A slug unique within a chapter, suffixing `-2`, `-3`, … on collision. */
+async function uniqueSlug(
+  ctx: any,
+  chapterId: Id<"chapters">,
+  base: string,
+): Promise<string> {
+  const existing = await ctx.db
+    .query("eventTypes")
+    .withIndex("by_chapter", (q: any) => q.eq("chapterId", chapterId))
+    .collect();
+  const taken = new Set(existing.map((t: any) => t.slug));
+  if (!taken.has(base)) return base;
+  let n = 2;
+  while (taken.has(`${base}-${n}`)) n++;
+  return `${base}-${n}`;
+}
+
+/**
+ * Duplicate a template into an independent standalone copy (NOT a derive link):
+ * deep-copies its roles, columns, items (with role remap) and custom modules.
+ * Returns the new event type id.
+ */
+export const duplicate = mutation({
+  args: { eventTypeId: v.id("eventTypes") },
+  handler: async (ctx, { eventTypeId }) => {
+    const chapterId = await requireChapterId(ctx);
+    const userId = await requireUserId(ctx);
+    const src = await ctx.db.get(eventTypeId);
+    await requireInChapter(ctx, chapterId, src, "Event type");
+    const now = Date.now();
+
+    const newId = (await ctx.db.insert("eventTypes", {
+      chapterId: chapterId as Id<"chapters">,
+      name: `${src!.name} (copy)`,
+      slug: await uniqueSlug(ctx, chapterId as Id<"chapters">, toSlug(src!.name)),
+      description: src!.description,
+      // Standalone copy — deliberately NOT linked back to the source.
+      deriveFromEventTypeId: undefined,
+      disabledCoreModules: src!.disabledCoreModules ?? [],
+      coreModuleOverrides: src!.coreModuleOverrides,
+      version: 1,
+      isArchived: false,
+      createdBy: userId as Id<"users">,
+      createdAt: now,
+      updatedAt: now,
+    })) as Id<"eventTypes">;
+
+    // Deep-copy roles (new ids), building a srcRoleId→newRoleId map.
+    const srcRoles = await ctx.db
+      .query("templateRoles")
+      .withIndex("by_template", (q: any) => q.eq("eventTypeId", eventTypeId))
+      .collect();
+    const roleIdMap = new Map<string, Id<"templateRoles">>();
+    for (const r of srcRoles) {
+      const { _id, _creationTime, eventTypeId: _e, ...rest } = r as any;
+      const id = (await ctx.db.insert("templateRoles", {
+        eventTypeId: newId,
+        ...rest,
+      })) as Id<"templateRoles">;
+      roleIdMap.set(String(_id), id);
+    }
+
+    // Copy columns verbatim under the new event type.
+    const cols = await ctx.db
+      .query("templateColumns")
+      .withIndex("by_eventType", (q: any) => q.eq("eventTypeId", eventTypeId))
+      .collect();
+    for (const c of cols) {
+      const { _id, _creationTime, eventTypeId: _e, ...rest } = c as any;
+      await ctx.db.insert("templateColumns", { eventTypeId: newId, ...rest });
+    }
+
+    // Copy items, remapping each item's roleId through the role map.
+    const items = await ctx.db
+      .query("templateItems")
+      .withIndex("by_eventType", (q: any) => q.eq("eventTypeId", eventTypeId))
+      .collect();
+    for (const it of items) {
+      const { _id, _creationTime, eventTypeId: _e, ...rest } = it as any;
+      await ctx.db.insert("templateItems", {
+        eventTypeId: newId,
+        ...rest,
+        roleId: rest.roleId ? roleIdMap.get(String(rest.roleId)) : undefined,
+      });
+    }
+
+    // Copy custom modules verbatim.
+    const mods = await ctx.db
+      .query("templateModules")
+      .withIndex("by_template", (q: any) => q.eq("eventTypeId", eventTypeId))
+      .collect();
+    for (const m of mods) {
+      const { _id, _creationTime, eventTypeId: _e, ...rest } = m as any;
+      await ctx.db.insert("templateModules", { eventTypeId: newId, ...rest });
+    }
+
+    return newId;
+  },
+});
+
 /** Archive a template (soft delete; hidden from `list`). */
 export const archive = mutation({
   args: { eventTypeId: v.id("eventTypes") },
@@ -242,6 +379,21 @@ export const archive = mutation({
     const et = await ctx.db.get(eventTypeId);
     await requireInChapter(ctx, chapterId, et, "Event type");
     await ctx.db.patch(eventTypeId, { isArchived: true, updatedAt: Date.now() });
+    return eventTypeId;
+  },
+});
+
+/** Revive an archived template (restore to `list`). */
+export const unarchive = mutation({
+  args: { eventTypeId: v.id("eventTypes") },
+  handler: async (ctx, { eventTypeId }) => {
+    const chapterId = await requireChapterId(ctx);
+    const et = await ctx.db.get(eventTypeId);
+    await requireInChapter(ctx, chapterId, et, "Event type");
+    await ctx.db.patch(eventTypeId, {
+      isArchived: false,
+      updatedAt: Date.now(),
+    });
     return eventTypeId;
   },
 });
