@@ -163,12 +163,46 @@ export default function EventDetailScreen() {
   // combined "Crew & Expectations" tab. The active tab lives in the URL (`?tab=`)
   // so it's deep-linkable and survives back/forward; unknown/missing falls back
   // to Overview.
+  // Me view sets (myWork is only fetched while meView is on). `ownedModuleKeys`
+  // = modules whose owner resolves to me (show ALL their items); `myItemIds` =
+  // items I own; a module is "involved" if I own it OR own an item in it.
+  const ownedModuleKeys = myWork ? new Set(myWork.ownedModuleKeys) : null;
+  const myItemIds = myWork
+    ? new Set(myWork.tasks.map((t: any) => t.itemId as string))
+    : null;
+  const involvedModuleKeys = myWork
+    ? new Set<string>([
+        ...myWork.ownedModuleKeys,
+        ...myWork.tasks.map((t: any) => t.module as string),
+      ])
+    : null;
+  // Crew & Expectations is team work — show it in Me view if I'm on a team, have
+  // team tasks, own the expectations module, or own an expectation item.
+  const crewInvolved = myWork
+    ? myWork.myTeams.length > 0 ||
+      myWork.teamItemIds.length > 0 ||
+      (ownedModuleKeys?.has("volunteer_expectations") ?? false) ||
+      myWork.tasks.some((t: any) => t.module === "volunteer_expectations")
+    : true;
+  // Expectation item ids I should see in Me view (my team's tasks ∪ items I own).
+  const myExpectationItemIds =
+    meView && myWork
+      ? new Set<string>([...(myItemIds ?? []), ...myWork.teamItemIds])
+      : null;
+
+  // In Me view, only show module tabs I'm involved in, and the Crew tab only
+  // when team-involved. myWork still loading ⇒ leave tabs unfiltered briefly.
   const tabs: { key: string; label: string }[] = [
     { key: "overview", label: "Overview" },
     ...activeModules
       .filter((m) => m.key !== "volunteer_expectations")
+      .filter(
+        (m) => !meView || !involvedModuleKeys || involvedModuleKeys.has(m.key),
+      )
       .map((m) => ({ key: m.key, label: m.label })),
-    { key: "crew", label: "Crew & Expectations" },
+    ...(meView && !crewInvolved
+      ? []
+      : [{ key: "crew", label: "Crew & Expectations" }]),
   ];
   const activeTab = tabs.some((t) => t.key === tab) ? (tab as string) : "overview";
   const summaryByModule = new Map(
@@ -415,6 +449,15 @@ export default function EventDetailScreen() {
                   owner={moduleOwner(expectationsModule)}
                   ready={readyByModule.get(expectationsModule.key) ?? false}
                   onAssignOwner={() => openOwnerPicker(expectationsModule)}
+                  filterItemIds={
+                    // Me view: show my team's expectation tasks (+ any I own),
+                    // unless I own the expectations module (then show all).
+                    meView &&
+                    myExpectationItemIds &&
+                    !ownedModuleKeys?.has(expectationsModule.key)
+                      ? myExpectationItemIds
+                      : undefined
+                  }
                 />
               </View>
             ) : null}
@@ -429,6 +472,12 @@ export default function EventDetailScreen() {
                 mod.key === activeTab && mod.key !== "volunteer_expectations",
             );
             if (!m) return null;
+            // Me view: if I don't own this module, show only my items; if I own
+            // the module, show everything (no filter).
+            const filterItemIds =
+              meView && myItemIds && !ownedModuleKeys?.has(m.key)
+                ? myItemIds
+                : undefined;
             return (
               <ModuleSection
                 eventId={eventId}
@@ -438,6 +487,7 @@ export default function EventDetailScreen() {
                 owner={moduleOwner(m)}
                 ready={readyByModule.get(m.key) ?? false}
                 onAssignOwner={() => openOwnerPicker(m)}
+                filterItemIds={filterItemIds}
               />
             );
           })()

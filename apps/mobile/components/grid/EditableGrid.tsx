@@ -119,6 +119,12 @@ type Props = {
   editable?: boolean;
   /** Label for the add-row button, e.g. "Add task". */
   addLabel?: string;
+  /**
+   * When set, only rows whose item id is in this set are shown (used by the
+   * event "Me view" to show only items the current user owns, for modules they
+   * don't own). `null`/omitted shows every row.
+   */
+  filterItemIds?: Set<string> | null;
 };
 
 export function EditableGrid({
@@ -129,6 +135,7 @@ export function EditableGrid({
   eventDate,
   editable = true,
   addLabel = "Add row",
+  filterItemIds,
 }: Props) {
   const grid = useGridData(mode, parentId, module);
   const autofill = useAction(api.aiActions.autofillItem);
@@ -181,6 +188,14 @@ export function EditableGrid({
 
   const orderedIds = useMemo(() => grid.items.map((i) => i._id), [grid.items]);
 
+  // Rows to render. Me view passes a filter so only the user's own items show
+  // (for modules they don't own); otherwise every item is visible.
+  const visibleItems = useMemo(
+    () =>
+      filterItemIds ? grid.items.filter((i) => filterItemIds.has(i._id)) : grid.items,
+    [grid.items, filterItemIds],
+  );
+
   /** Buckets for the grouped/board view (one per option + a "none" bucket). */
   const groups = useMemo(() => {
     if (!groupCol) return null;
@@ -192,13 +207,13 @@ export function EditableGrid({
       items: [] as GridItem[],
     }));
     const none = { key: "__none", label: `No ${groupCol.label.toLowerCase()}`, color: undefined as any, items: [] as GridItem[] };
-    for (const it of grid.items) {
+    for (const it of visibleItems) {
       const v = cellValue(groupCol, it, module);
       const b = buckets.find((x) => x.key === v);
       (b ?? none).items.push(it);
     }
     return none.items.length ? [...buckets, none] : buckets;
-  }, [groupCol, grid.items, module]);
+  }, [groupCol, visibleItems, module]);
 
   if (grid.loading) {
     return (
@@ -308,9 +323,11 @@ export function EditableGrid({
           </View>
 
           {/* Body — grouped board, or a single drag-reorderable list. */}
-          {grid.items.length === 0 ? (
+          {visibleItems.length === 0 ? (
             <View className="px-3 py-6">
-              <Text className="text-sm text-faint">No rows yet.</Text>
+              <Text className="text-sm text-faint">
+                {filterItemIds ? "Nothing assigned to you here." : "No rows yet."}
+              </Text>
             </View>
           ) : groupCol && groups ? (
             groups.map((g) => (
@@ -326,7 +343,7 @@ export function EditableGrid({
               </View>
             ))
           ) : (
-            renderList(grid.items, true)
+            renderList(visibleItems, true)
           )}
         </View>
       </ScrollView>

@@ -23,6 +23,7 @@ export function ModuleSection({
   owner,
   ready,
   onAssignOwner,
+  filterItemIds,
 }: {
   eventId: string;
   module: ResolvedModule;
@@ -31,6 +32,8 @@ export function ModuleSection({
   owner: ModuleOwnerInfo;
   ready: boolean;
   onAssignOwner: () => void;
+  /** Me view: only show these item ids (for modules the user doesn't own). */
+  filterItemIds?: Set<string> | null;
 }) {
   const router = useRouter();
   const setReady = useMutation(api.modules.setReady);
@@ -71,6 +74,7 @@ export function ModuleSection({
           roles={roles}
           eventDate={eventDate}
           addLabel={`Add ${module.label.toLowerCase()} row`}
+          filterItemIds={filterItemIds}
         />
       )}
     </View>

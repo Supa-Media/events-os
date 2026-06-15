@@ -67,16 +67,20 @@ export function EventOverviewControls({
   return (
     <Card padding="md" className="mb-6">
       <View className="flex-row flex-wrap items-start gap-x-6 gap-y-4">
-        {/* Roles — inline chips: tap = assign, right-click/long-press = menu */}
-        <ControlBlock label="Roles" count={roleRows.length || undefined}>
-          <RolesControl
-            roleRows={roleRows}
-            onPickRole={onPickRole}
-            onRenameRole={onRenameRole}
-            onDeleteRole={onDeleteRole}
-            onAddRole={onAddRole}
-          />
-        </ControlBlock>
+        {/* Roles — full-width row so the chips wrap within the card instead of
+            overflowing once people are assigned. Tap = assign, right-click /
+            long-press = menu. */}
+        <View className="w-full">
+          <ControlBlock label="Roles" count={roleRows.length || undefined}>
+            <RolesControl
+              roleRows={roleRows}
+              onPickRole={onPickRole}
+              onRenameRole={onRenameRole}
+              onDeleteRole={onDeleteRole}
+              onAddRole={onAddRole}
+            />
+          </ControlBlock>
+        </View>
 
         {/* Status — inline chips */}
         <ControlBlock label="Status">

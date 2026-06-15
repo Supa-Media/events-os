@@ -284,7 +284,7 @@ export const myWork = query({
     const userId = await requireUserId(ctx);
     const event = await ctx.db.get(eventId);
     if (!event || event.chapterId !== chapterId) {
-      return { ownedModuleKeys: [], tasks: [] };
+      return { ownedModuleKeys: [], tasks: [], myTeams: [], teamItemIds: [] };
     }
 
     const me = await getPersonForUser(
@@ -292,7 +292,7 @@ export const myWork = query({
       chapterId as Id<"chapters">,
       userId as Id<"users">,
     );
-    if (!me) return { ownedModuleKeys: [], tasks: [] };
+    if (!me) return { ownedModuleKeys: [], tasks: [], myTeams: [], teamItemIds: [] };
 
     // Event roles + their assignments, so we can resolve a role → its person.
     const eventRoles = await ctx.db
@@ -356,7 +356,29 @@ export const myWork = query({
         status: (it.status ?? null) as string | null,
       }));
 
-    return { ownedModuleKeys, tasks };
+    // My team(s) on this event (Crew & Expectations is team work — I should see
+    // my team's tasks even if I don't own them). Engagements carry `teams`.
+    const engagements = await ctx.db
+      .query("engagements")
+      .withIndex("by_event", (q: any) => q.eq("eventId", eventId))
+      .collect();
+    const myTeamSet = new Set<string>();
+    for (const e of engagements) {
+      if (String(e.personId) !== String(me)) continue;
+      for (const t of (e.teams ?? []) as string[]) myTeamSet.add(t);
+    }
+    const myTeams = [...myTeamSet];
+    // volunteer_expectations items tagged with one of my teams.
+    const teamItemIds = items
+      .filter(
+        (it: any) =>
+          it.module === "volunteer_expectations" &&
+          typeof it.fields?.team === "string" &&
+          myTeamSet.has(it.fields.team),
+      )
+      .map((it: any) => it._id as Id<"eventItems">);
+
+    return { ownedModuleKeys, tasks, myTeams, teamItemIds };
   },
 });
 
