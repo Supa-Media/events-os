@@ -345,6 +345,120 @@ export const overlays = query({
 });
 
 /**
+ * PUBLIC, NO-AUTH read-only site map for an event — mirrors `publicCrew`.
+ *
+ * Looks the event up by id and derives its chapter internally; it never reads
+ * (or requires) the caller's chapter, so the public `/share/<eventId>` page can
+ * render the venue without a session. Returns the resolved image URL plus every
+ * marker, shape, and resolved placement. Empty arrays / null image if there's
+ * no event or no map content.
+ */
+export const publicSiteMap = query({
+  args: { eventId: v.id("events") },
+  handler: async (ctx, { eventId }) => {
+    const empty = {
+      imageUrl: null as string | null,
+      markers: [] as { x: number; y: number; label: string; color?: string | null }[],
+      shapes: [] as {
+        type: "rect" | "circle" | "line";
+        x: number;
+        y: number;
+        w?: number | null;
+        h?: number | null;
+        x2?: number | null;
+        y2?: number | null;
+        color?: string | null;
+        label?: string | null;
+      }[],
+      placements: [] as {
+        x: number;
+        y: number;
+        label: string;
+        kind: "supply" | "volunteer";
+      }[],
+    };
+
+    const event = await ctx.db.get(eventId);
+    if (!event) return empty;
+
+    // Image — same resolution as `get`: storageId → signed URL, else raw URL.
+    let imageUrl: string | null = null;
+    const img = event.siteMapImage;
+    if (img) {
+      imageUrl = isHttpUrl(img)
+        ? (img as string)
+        : await ctx.storage.getUrl(img as Id<"_storage">);
+    }
+
+    const markers = (
+      await ctx.db
+        .query("siteMarkers")
+        .withIndex("by_event", (q: any) => q.eq("eventId", eventId))
+        .collect()
+    )
+      .sort((a: any, b: any) => a.createdAt - b.createdAt)
+      .map((m: any) => ({
+        x: m.x,
+        y: m.y,
+        label: m.label ?? "",
+        color: m.color ?? null,
+      }));
+
+    const shapes = (
+      await ctx.db
+        .query("siteShapes")
+        .withIndex("by_event", (q: any) => q.eq("eventId", eventId))
+        .collect()
+    )
+      .sort((a: any, b: any) => a.createdAt - b.createdAt)
+      .map((s: any) => ({
+        type: s.type as "rect" | "circle" | "line",
+        x: s.x,
+        y: s.y,
+        w: s.w ?? null,
+        h: s.h ?? null,
+        x2: s.x2 ?? null,
+        y2: s.y2 ?? null,
+        color: s.color ?? null,
+        label: s.label ?? null,
+      }));
+
+    // Resolve placement labels — same logic as `overlays`: supply → eventItem
+    // title; volunteer → engagement's person name.
+    const placementRows = await ctx.db
+      .query("siteMapPlacements")
+      .withIndex("by_event", (q: any) => q.eq("eventId", eventId))
+      .collect();
+
+    const placements = await Promise.all(
+      placementRows.map(async (p: any) => {
+        let label = "";
+        if (p.kind === "supply") {
+          const item = await ctx.db.get(p.refId as Id<"eventItems">);
+          label = (item as any)?.title ?? "";
+        } else {
+          const engagement = await ctx.db.get(p.refId as Id<"engagements">);
+          if (engagement) {
+            const person = await ctx.db.get(
+              (engagement as any).personId as Id<"people">,
+            );
+            label = person?.name ?? "";
+          }
+        }
+        return {
+          x: p.x,
+          y: p.y,
+          label,
+          kind: p.kind as "supply" | "volunteer",
+        };
+      }),
+    );
+
+    return { imageUrl, markers, shapes, placements };
+  },
+});
+
+/**
  * Drop a supply/volunteer onto the map, or move it if it's already placed.
  * Idempotent per (eventId, kind, refId): patches the existing placement's
  * position, otherwise inserts a new one. Returns the placement id.

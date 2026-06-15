@@ -3,6 +3,7 @@ import { Stack, useLocalSearchParams } from "expo-router";
 import { useQuery } from "convex/react";
 import { api } from "@events-os/convex/_generated/api";
 import { Card, Icon, OptionTag } from "../../components/ui";
+import { SiteMapView } from "../../components/event/SiteMapView";
 import { colors } from "../../lib/theme";
 import { formatDateTime } from "../../lib/format";
 
@@ -36,18 +37,37 @@ function ExpectationRow({ item }: { item: Expectation }) {
   );
 }
 
-/** A single person on a team: name + optional call time + status. */
-function PersonRow({ person }: { person: Person }) {
+/** First letters of the first two words of a name, uppercase. */
+function initials(name: string) {
+  const words = name.trim().split(/\s+/).filter(Boolean);
+  if (words.length === 0) return "?";
+  if (words.length === 1) return words[0]!.charAt(0).toUpperCase();
+  return (words[0]!.charAt(0) + words[1]!.charAt(0)).toUpperCase();
+}
+
+/** A single person on a team, as a clean card: avatar + name + call time + status. */
+function PersonCard({ person }: { person: Person }) {
   return (
-    <View className="flex-row items-center gap-2">
-      <Icon name="user" size={14} color={colors.faint} />
-      <Text className="text-base text-ink">{person.name}</Text>
-      {person.callTime ? (
-        <View className="flex-row items-center gap-1">
-          <Icon name="clock" size={12} color={colors.faint} />
-          <Text className="text-sm text-muted">{person.callTime}</Text>
-        </View>
-      ) : null}
+    <View className="flex-row items-center gap-3 rounded-lg border border-border bg-surface px-3 py-2.5">
+      <View
+        className="h-9 w-9 items-center justify-center rounded-pill"
+        style={{ backgroundColor: colors.sunken }}
+      >
+        <Text className="text-xs font-bold text-muted">
+          {initials(person.name)}
+        </Text>
+      </View>
+      <View className="flex-1">
+        <Text className="text-base font-semibold text-ink" numberOfLines={1}>
+          {person.name}
+        </Text>
+        {person.callTime ? (
+          <View className="mt-0.5 flex-row items-center gap-1">
+            <Icon name="clock" size={12} color={colors.faint} />
+            <Text className="text-sm text-muted">Call time {person.callTime}</Text>
+          </View>
+        ) : null}
+      </View>
       {person.status ? (
         <Text className="text-xs capitalize text-faint">{person.status}</Text>
       ) : null}
@@ -94,9 +114,9 @@ function TeamCard({
           <Text className="mb-2 text-xs font-bold uppercase tracking-wide text-faint">
             On this team
           </Text>
-          <View className="gap-1.5">
+          <View className="gap-2">
             {people.map((p, i) => (
-              <PersonRow key={i} person={p} />
+              <PersonCard key={i} person={p} />
             ))}
           </View>
         </View>
@@ -108,6 +128,7 @@ function TeamCard({
 export default function ShareCrewScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const data = useQuery(api.events.publicCrew, { eventId: id as any });
+  const map = useQuery(api.siteMap.publicSiteMap, { eventId: id as any });
 
   // Loading.
   if (data === undefined) {
@@ -146,6 +167,14 @@ export default function ShareCrewScreen() {
     data.unassigned.expectations.length > 0 ||
     data.unassigned.people.length > 0;
 
+  // Only show the site map section when there's something to draw.
+  const hasMap =
+    !!map &&
+    (map.imageUrl !== null ||
+      map.markers.length > 0 ||
+      map.shapes.length > 0 ||
+      map.placements.length > 0);
+
   return (
     <>
       <Stack.Screen options={{ headerShown: false }} />
@@ -180,6 +209,26 @@ export default function ShareCrewScreen() {
               Volunteer briefing · who's serving and what each team is doing.
             </Text>
           </View>
+
+          {/* Site map — where everyone & everything is placed. */}
+          {hasMap ? (
+            <View className="gap-3">
+              <View className="gap-0.5">
+                <Text className="font-display text-xl text-ink">
+                  Where everyone is
+                </Text>
+                <Text className="text-sm text-faint">
+                  Site map · where each team and supply is set up.
+                </Text>
+              </View>
+              <SiteMapView
+                imageUrl={map.imageUrl}
+                markers={map.markers}
+                shapes={map.shapes}
+                placements={map.placements}
+              />
+            </View>
+          ) : null}
 
           {/* Teams */}
           <View className="gap-4">
