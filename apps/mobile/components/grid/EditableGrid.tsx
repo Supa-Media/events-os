@@ -384,7 +384,7 @@ export function EditableGrid({
               <View key={c._id} className="flex-row items-center justify-between px-3 py-2">
                 <Text className="text-sm text-ink">{c.label}</Text>
                 <View className="flex-row items-center gap-1">
-                  {mode === "template" && (c.type === "select" || c.type === "status" || c.type === "multiselect") ? (
+                  {(c.type === "select" || c.type === "status" || c.type === "multiselect") ? (
                     <Pressable
                       hitSlop={6}
                       onPress={() => { setEditColId(c._id); setMenu("editOptions"); }}

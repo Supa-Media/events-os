@@ -151,6 +151,7 @@ export function useGridData(
   const reorderColTpl = useMutation(api.columns.reorderColumns);
   const reorderColEvt = useMutation(api.columns.reorderEventColumns);
   const setColVisEvt = useMutation(api.columns.setEventColumnVisibility);
+  const updateColEvt = useMutation(api.columns.updateEventColumn);
 
   const data: any = isTemplate ? tplData : evtData;
 
@@ -178,7 +179,9 @@ export function useGridData(
     addColumn: ({ label, type, options }) =>
       addColTpl({ eventTypeId: parentId as any, module, label, type, options }),
     updateColumn: (columnId, patch) =>
-      updateColTpl({ columnId: columnId as any, ...patch }),
+      isTemplate
+        ? updateColTpl({ columnId: columnId as any, ...patch })
+        : updateColEvt({ columnId: columnId as any, ...patch }),
     removeColumn: (columnId) => removeColTpl({ columnId: columnId as any }),
     reorderColumns: (orderedIds) =>
       isTemplate
