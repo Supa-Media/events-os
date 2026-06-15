@@ -28,6 +28,7 @@ export function MarkdownEditor({
   onChange,
   editable = true,
   placeholder,
+  minHeight = 480,
 }: MarkdownEditorProps) {
   const webRef = useRef<WebView | null>(null);
   const readyRef = useRef(false);
@@ -76,7 +77,10 @@ export function MarkdownEditor({
   );
 
   return (
-    <View className="flex-1 overflow-hidden rounded-lg border border-border bg-surface">
+    <View
+      className="overflow-hidden rounded-lg border border-border bg-surface"
+      style={{ height: minHeight }}
+    >
       <WebView
         // Remount when editability flips (editable is a static CM facet here).
         key={editable ? "edit" : "read"}

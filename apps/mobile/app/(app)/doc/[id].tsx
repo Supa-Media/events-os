@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { View, Text, Pressable, Linking, Platform } from "react-native";
 import { Stack, useLocalSearchParams, useRouter } from "expo-router";
 import { useQuery, useMutation, useAction } from "convex/react";
@@ -27,9 +27,23 @@ export default function DocEditorScreen() {
   const generate = useAction(api.aiActions.generateDoc);
 
   const [titleInput, setTitleInput] = useState<string | null>(null);
+  // Body edits are buffered locally and flushed on a debounce so we don't fire a
+  // mutation per keystroke. `null` = mirror the server value (e.g. after AI fills
+  // it). `bodyInput` is also used for link/video/note kinds (committed on blur).
+  const [bodyInput, setBodyInput] = useState<string | null>(null);
+  const [urlInput, setUrlInput] = useState<string | null>(null);
   const [aiPrompt, setAiPrompt] = useState("");
   const [aiBusy, setAiBusy] = useState(false);
   const [copied, setCopied] = useState(false);
+  const bodySaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Flush any pending debounced body save on unmount.
+  useEffect(
+    () => () => {
+      if (bodySaveTimer.current) clearTimeout(bodySaveTimer.current);
+    },
+    [],
+  );
 
   if (doc === undefined) return <Screen loading />;
   if (doc === null) {
@@ -66,12 +80,23 @@ export default function DocEditorScreen() {
     void Linking.openURL(webUrl).catch(() => {});
   }
 
+  function onBodyChange(md: string) {
+    setBodyInput(md);
+    if (bodySaveTimer.current) clearTimeout(bodySaveTimer.current);
+    bodySaveTimer.current = setTimeout(() => {
+      void update({ docId: docId as any, body: md });
+    }, 500);
+  }
+
   async function runAi(mode: "generate" | "improve") {
     if (aiBusy) return;
     setAiBusy(true);
     try {
       await generate({ docId: docId as any, prompt: aiPrompt.trim(), mode });
       setAiPrompt("");
+      // The action wrote docs.body server-side; drop the local draft so the
+      // editor mirrors the freshly generated body.
+      setBodyInput(null);
     } catch {
       // Errors surface as a no-op here; body simply stays unchanged.
     } finally {
@@ -130,8 +155,13 @@ export default function DocEditorScreen() {
         <View className="mt-4">
           <TextField
             label={doc.kind === "video" ? "Video URL" : "Link URL"}
-            value={doc.url ?? ""}
-            onChangeText={(t) => void update({ docId: docId as any, url: t })}
+            value={urlInput ?? doc.url ?? ""}
+            onChangeText={setUrlInput}
+            onBlur={() => {
+              if (urlInput != null && urlInput !== (doc.url ?? "")) {
+                void update({ docId: docId as any, url: urlInput });
+              }
+            }}
             placeholder="https://…"
           />
         </View>
@@ -139,8 +169,13 @@ export default function DocEditorScreen() {
         <View className="mt-4">
           <TextField
             label="Note"
-            value={doc.body ?? ""}
-            onChangeText={(t) => void update({ docId: docId as any, body: t })}
+            value={bodyInput ?? doc.body ?? ""}
+            onChangeText={setBodyInput}
+            onBlur={() => {
+              if (bodyInput != null && bodyInput !== (doc.body ?? "")) {
+                void update({ docId: docId as any, body: bodyInput });
+              }
+            }}
             placeholder="Short note…"
             multiline
           />
@@ -177,8 +212,8 @@ export default function DocEditorScreen() {
 
           <View className="mt-4">
             <MarkdownEditor
-              value={doc.body ?? ""}
-              onChange={(md) => void update({ docId: docId as any, body: md })}
+              value={bodyInput ?? doc.body ?? ""}
+              onChange={onBodyChange}
               placeholder="Write your how-to in Markdown…"
             />
           </View>

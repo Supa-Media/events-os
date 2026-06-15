@@ -8,4 +8,11 @@ export type MarkdownEditorProps = {
   editable?: boolean;
   /** Placeholder shown when the document is empty. */
   placeholder?: string;
+  /**
+   * Concrete pixel height for the editor box. Required in practice because the
+   * editor is almost always mounted inside a scroll container (a content-sized
+   * parent), where a percentage/flex height collapses to ~0px and the editor
+   * disappears. Defaults to 480.
+   */
+  minHeight?: number;
 };

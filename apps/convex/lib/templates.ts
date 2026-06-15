@@ -361,6 +361,12 @@ export async function instantiateEvent(
       dueDate,
       roleId: it.roleId ? roleIdMap.get(String(it.roleId)) : undefined,
       status: it.status ?? defaultStatusValue(it.module as ModuleKey),
+      // `fields` is copied verbatim, which means any `how_to` cell's doc id is
+      // carried over by reference — the template's How-To doc is SHARED with every
+      // event spun up from it (and across sibling events). This is intentional:
+      // a How-To is a canonical reference ("how to set up the PA"), edited once
+      // and seen everywhere. If per-event copies are ever needed, clone the
+      // referenced `docs` rows here and rewrite the field ids.
       fields: it.fields,
     });
   }

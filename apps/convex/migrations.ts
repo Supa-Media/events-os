@@ -8,9 +8,13 @@
  *
  * `migrateRolesToScoped` reads the OLD shape (via `(... as any)`, since the new
  * schema no longer types those fields) and creates the new rows + repoints
- * references. It is written defensively + idempotent-ish (skips a template/event
- * that already has scoped roles), so it's safe to re-run. It does NOT need to run
- * as part of this task — dev uses a reseed.
+ * references. It is designed to run **once, to completion**: re-running after a
+ * COMPLETE run is a no-op (every template/event is skipped — it already has
+ * scoped roles). It is NOT safe to resume after a PARTIALLY-applied run: the
+ * skip branch for an already-scoped template does not rebuild the old
+ * key→id map, so events under it wouldn't get their item roleIds remapped. If a
+ * run is interrupted, restore from backup before retrying. It does NOT need to
+ * run as part of this task — dev uses a reseed.
  */
 import { internalMutation } from "./_generated/server";
 import { Id } from "./_generated/dataModel";

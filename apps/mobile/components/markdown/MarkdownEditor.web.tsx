@@ -35,6 +35,7 @@ export function MarkdownEditor({
   onChange,
   editable = true,
   placeholder,
+  minHeight = 480,
 }: MarkdownEditorProps) {
   const hostRef = useRef<HTMLDivElement | null>(null);
   const viewRef = useRef<EditorView | null>(null);
@@ -81,7 +82,7 @@ export function MarkdownEditor({
     <div
       ref={hostRef}
       style={{
-        height: "100%",
+        height: minHeight,
         width: "100%",
         overflow: "auto",
         backgroundColor: "#FDF6F6",

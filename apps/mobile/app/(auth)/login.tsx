@@ -1,8 +1,9 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { View, Text } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { KeyboardAwareScrollView } from "react-native-keyboard-controller";
 import { useRouter } from "expo-router";
+import { useConvexAuth } from "convex/react";
 import { useAuthActions } from "@convex-dev/auth/react";
 import { Card, Button, TextField, Icon } from "../../components/ui";
 import { colors } from "../../lib/theme";
@@ -30,8 +31,19 @@ function toEmail(username: string): string {
  */
 export default function LoginScreen() {
   const { signIn } = useAuthActions();
+  const { isAuthenticated } = useConvexAuth();
   const router = useRouter();
   const insets = useSafeAreaInsets();
+
+  // Navigate only once Convex reports the session is live. `signIn` resolves a
+  // render or two BEFORE `isAuthenticated` flips, so replacing the route inside
+  // verifyCode raced the (app) auth guard — it saw `!isAuthenticated` and
+  // bounced straight back to a fresh login (the "log in twice" bug). Driving the
+  // redirect off auth state instead means we leave /login exactly once, after
+  // the guard will let us through.
+  useEffect(() => {
+    if (isAuthenticated) router.replace("/");
+  }, [isAuthenticated, router]);
 
   const [step, setStep] = useState<"request" | "verify">("request");
   const [username, setUsername] = useState("");
@@ -66,7 +78,9 @@ export default function LoginScreen() {
         email,
         code: code.trim(),
       });
-      router.replace("/");
+      // Navigation happens in the effect above once `isAuthenticated` flips —
+      // replacing here would race the (app) guard. Keep showing the spinner
+      // until the redirect fires.
     } catch (e) {
       setError("That code didn't work. Try again.");
     } finally {
