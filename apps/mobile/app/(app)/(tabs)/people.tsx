@@ -25,7 +25,12 @@ import {
 } from "../../../components/ui";
 import { colors, spacing } from "../../../lib/theme";
 import { formatDate } from "../../../lib/format";
-import { VETTING_STATUSES, type VettingStatus } from "@events-os/shared";
+import {
+  VETTING_STATUSES,
+  type VettingStatus,
+  ROSTER_STATUSES,
+  type RosterStatus,
+} from "@events-os/shared";
 
 const VETTING_LABEL: Record<VettingStatus, string> = {
   unvetted: "Unvetted",
@@ -40,6 +45,23 @@ const VETTING_COLOR: Record<VettingStatus, string> = {
   vetted: "green",
 };
 
+const STATUS_LABEL: Record<RosterStatus, string> = {
+  active: "Active",
+  inactive: "Inactive",
+  transitioning_in: "Transitioning in",
+  transitioning_out: "Transitioning out",
+  unavailable: "Unavailable",
+};
+
+// active=green, inactive=red, transitioning_*=grey, unavailable=amber.
+const STATUS_COLOR: Record<RosterStatus, string> = {
+  active: "green",
+  inactive: "red",
+  transitioning_in: "gray",
+  transitioning_out: "gray",
+  unavailable: "amber",
+};
+
 type Person = {
   _id: string;
   name: string;
@@ -51,39 +73,78 @@ type Person = {
   isTeamMember?: boolean;
   vettingStatus?: VettingStatus;
   isActive?: boolean;
+  status?: RosterStatus;
+  role?: string;
+  gender?: "male" | "female" | "na";
+  pocName?: string;
+  projects?: string[];
+  commsPreferences?: string[];
+  pwEmail?: string;
+  company?: string;
+  socialLink?: string;
+  image?: string;
+  imageUrl?: string | null;
 };
+
+// Persona derives from signals, not a rigid kind: team members are flagged,
+// a usual rate marks vendor capability, and everyone else is a volunteer.
+type Persona = "all" | "team" | "volunteer" | "vendor";
+
+function personaOf(p: Person): Exclude<Persona, "all"> {
+  if (p.isTeamMember) return "team";
+  if (p.usualRateUsd != null) return "vendor";
+  return "volunteer";
+}
+
+const PERSONA_FILTERS: { key: Persona; label: string }[] = [
+  { key: "all", label: "All" },
+  { key: "team", label: "Team" },
+  { key: "volunteer", label: "Volunteers" },
+  { key: "vendor", label: "Vendors" },
+];
 
 // Fixed column widths (px) — mirrors EditableGrid's chrome so columns stay put
 // while the table scrolls horizontally on web.
 const COLS = {
-  name: 220,
-  email: 200,
-  phone: 150,
-  skills: 220,
-  rate: 110,
-  vetting: 130,
-  team: 96,
-  notes: 240,
-  events: 64,
+  name: 210,
+  status: 150,
+  role: 150,
+  email: 190,
+  pwEmail: 190,
+  phone: 140,
+  gender: 96,
+  skills: 200,
+  rate: 100,
+  company: 150,
+  vetting: 120,
+  team: 90,
+  poc: 150,
+  projects: 190,
+  comms: 160,
+  social: 190,
+  notes: 200,
+  events: 56,
 } as const;
 const DELETE_W = 38;
 const TABLE_WIDTH =
-  COLS.name +
-  COLS.email +
-  COLS.phone +
-  COLS.skills +
-  COLS.rate +
-  COLS.vetting +
-  COLS.team +
-  COLS.notes +
-  COLS.events +
-  DELETE_W;
+  Object.values(COLS).reduce((sum, w) => sum + w, 0) + DELETE_W;
 
-/** Parse a comma-separated skills string into a trimmed, lowercased, de-duped array. */
+/** Parse a comma list into trimmed, lowercased, de-duped values (skills). */
 function parseSkills(raw: string): string[] {
   const seen = new Set<string>();
   for (const part of raw.split(",")) {
     const s = part.trim().toLowerCase();
+    if (s) seen.add(s);
+  }
+  return Array.from(seen);
+}
+
+/** Parse a comma list into trimmed, de-duped values, PRESERVING case (e.g.
+ * Projects like "Eden" or comms channels). */
+function parseList(raw: string): string[] {
+  const seen = new Set<string>();
+  for (const part of raw.split(",")) {
+    const s = part.trim();
     if (s) seen.add(s);
   }
   return Array.from(seen);
@@ -104,6 +165,7 @@ export default function PeopleScreen() {
 
   const [search, setSearch] = useState("");
   const [skillFilter, setSkillFilter] = useState<string | null>(null);
+  const [persona, setPersona] = useState<Persona>("all");
   const [openId, setOpenId] = useState<string | null>(null);
 
   // Distinct skills across the roster, for the filter bar.
@@ -119,6 +181,7 @@ export default function PeopleScreen() {
 
   const query = search.trim().toLowerCase();
   const filtered = people.filter((p) => {
+    if (persona !== "all" && personaOf(p) !== persona) return false;
     if (skillFilter && !(p.skills ?? []).includes(skillFilter)) return false;
     if (query && !p.name.toLowerCase().includes(query)) return false;
     return true;
@@ -138,6 +201,30 @@ export default function PeopleScreen() {
         <Text className="text-2xs font-bold uppercase tracking-wider text-muted">
           Roster ({people.length})
         </Text>
+      </View>
+
+      {/* Persona segmented control (All · Team · Volunteers · Vendors) */}
+      <View style={styles.segmented}>
+        {PERSONA_FILTERS.map((f) => {
+          const active = persona === f.key;
+          return (
+            <Pressable
+              key={f.key}
+              onPress={() => setPersona(f.key)}
+              className={`rounded-md px-3 py-1.5 active:opacity-80 ${
+                active ? "bg-raised shadow-sm" : ""
+              }`}
+            >
+              <Text
+                className={`text-sm font-semibold ${
+                  active ? "text-ink" : "text-muted"
+                }`}
+              >
+                {f.label}
+              </Text>
+            </Pressable>
+          );
+        })}
       </View>
 
       {/* Search + skill filter chips */}
@@ -173,12 +260,21 @@ export default function PeopleScreen() {
             {/* Column header */}
             <View className="flex-row items-center border-b border-border bg-sunken">
               <HeaderCell label="Name" width={COLS.name} />
+              <HeaderCell label="Status" width={COLS.status} />
+              <HeaderCell label="Role" width={COLS.role} />
               <HeaderCell label="Email" width={COLS.email} />
+              <HeaderCell label="PW Email" width={COLS.pwEmail} />
               <HeaderCell label="Phone" width={COLS.phone} />
+              <HeaderCell label="Gender" width={COLS.gender} />
               <HeaderCell label="Skills" width={COLS.skills} />
               <HeaderCell label="Usual rate" width={COLS.rate} />
+              <HeaderCell label="Company" width={COLS.company} />
               <HeaderCell label="Vetting" width={COLS.vetting} />
               <HeaderCell label="Team" width={COLS.team} />
+              <HeaderCell label="POC" width={COLS.poc} />
+              <HeaderCell label="Projects" width={COLS.projects} />
+              <HeaderCell label="Comms" width={COLS.comms} />
+              <HeaderCell label="Social" width={COLS.social} />
               <HeaderCell label="Notes" width={COLS.notes} />
               <HeaderCell label="Events" width={COLS.events} />
               <View style={{ width: DELETE_W }} />
@@ -194,7 +290,7 @@ export default function PeopleScreen() {
             ) : filtered.length === 0 ? (
               <View className="px-3 py-6">
                 <Text className="text-sm text-faint">
-                  No one matches your search or skill filter.
+                  No one matches your filters.
                 </Text>
               </View>
             ) : (
@@ -259,9 +355,37 @@ function PersonRow({
 }) {
   const update = useMutation(api.people.update);
   const remove = useMutation(api.people.remove);
+  const generateUploadUrl = useMutation(api.storage.generateUploadUrl);
   const id = person._id as any;
 
   const vetting = (person.vettingStatus ?? "unvetted") as VettingStatus;
+  const status = (person.status ?? "active") as RosterStatus;
+
+  // Avatar upload — web file input (mirrors SiteMapEditor). Native picker is
+  // intentionally omitted; web is the test target.
+  function pickAvatar() {
+    if (Platform.OS !== "web" || typeof document === "undefined") return;
+    const input = document.createElement("input");
+    input.type = "file";
+    input.accept = "image/*";
+    input.onchange = async () => {
+      const file = input.files?.[0];
+      if (!file) return;
+      try {
+        const uploadUrl = await generateUploadUrl();
+        const res = await fetch(uploadUrl, {
+          method: "POST",
+          headers: { "Content-Type": file.type || "image/jpeg" },
+          body: file,
+        });
+        const { storageId } = await res.json();
+        await update({ personId: id, image: storageId });
+      } catch {
+        // Swallow; the avatar stays as-is on failure.
+      }
+    };
+    input.click();
+  }
 
   return (
     <View
@@ -269,13 +393,18 @@ function PersonRow({
         isLast ? "border-b-0" : ""
       }`}
     >
-      {/* Name: avatar + inline text; tapping the name (not the field) opens detail */}
+      {/* Name: avatar (tap to upload photo) + inline text */}
       <View
         style={{ width: COLS.name }}
         className="flex-row items-center gap-2 border-r border-border/60 px-2 py-1.5"
       >
-        <Pressable onPress={onOpen} hitSlop={4} className="active:opacity-70">
-          <Avatar name={person.name || "?"} size={26} />
+        <Pressable
+          onPress={pickAvatar}
+          hitSlop={4}
+          accessibilityLabel="Upload photo"
+          className="active:opacity-70"
+        >
+          <Avatar name={person.name || "?"} size={26} uri={person.imageUrl} />
         </Pressable>
         <InlineText
           value={person.name}
@@ -284,6 +413,23 @@ function PersonRow({
           onCommit={(t) => update({ personId: id, name: t })}
         />
       </View>
+
+      {/* Status (roster lifecycle select) */}
+      <Cell width={COLS.status}>
+        <StatusCell
+          value={status}
+          onChange={(v) => update({ personId: id, status: v })}
+        />
+      </Cell>
+
+      {/* Role (job title / vendor service line) */}
+      <Cell width={COLS.role}>
+        <InlineText
+          value={person.role ?? ""}
+          placeholder="—"
+          onCommit={(t) => update({ personId: id, role: t.trim() || null })}
+        />
+      </Cell>
 
       {/* Email */}
       <Cell width={COLS.email}>
@@ -296,6 +442,15 @@ function PersonRow({
         />
       </Cell>
 
+      {/* PW Email (publicworship.life address) */}
+      <Cell width={COLS.pwEmail}>
+        <InlineText
+          value={person.pwEmail ?? ""}
+          placeholder="—"
+          onCommit={(t) => update({ personId: id, pwEmail: t.trim() || null })}
+        />
+      </Cell>
+
       {/* Phone */}
       <Cell width={COLS.phone}>
         <InlineText
@@ -304,6 +459,14 @@ function PersonRow({
           onCommit={(t) =>
             update({ personId: id, phone: t.trim() || undefined })
           }
+        />
+      </Cell>
+
+      {/* Gender (male / female / na toggle) */}
+      <Cell width={COLS.gender}>
+        <GenderCell
+          value={person.gender}
+          onChange={(v) => update({ personId: id, gender: v })}
         />
       </Cell>
 
@@ -323,6 +486,15 @@ function PersonRow({
             if (v === undefined) return; // unparsable → leave unchanged
             update({ personId: id, usualRateUsd: v });
           }}
+        />
+      </Cell>
+
+      {/* Company (vendor org) */}
+      <Cell width={COLS.company}>
+        <InlineText
+          value={person.company ?? ""}
+          placeholder="—"
+          onCommit={(t) => update({ personId: id, company: t.trim() || null })}
         />
       </Cell>
 
@@ -346,6 +518,44 @@ function PersonRow({
             <Text className="text-sm text-faint">—</Text>
           )}
         </Pressable>
+      </Cell>
+
+      {/* POC (free-text point of contact) */}
+      <Cell width={COLS.poc}>
+        <InlineText
+          value={person.pocName ?? ""}
+          placeholder="—"
+          onCommit={(t) => update({ personId: id, pocName: t.trim() || null })}
+        />
+      </Cell>
+
+      {/* Projects: case-preserving comma list */}
+      <Cell width={COLS.projects}>
+        <ListCell
+          values={person.projects ?? []}
+          placeholder="Eden, Love Thy Neighbor…"
+          onCommit={(next) => update({ personId: id, projects: next })}
+        />
+      </Cell>
+
+      {/* Comms preferences: case-preserving comma list */}
+      <Cell width={COLS.comms}>
+        <ListCell
+          values={person.commsPreferences ?? []}
+          placeholder="slack, call, text…"
+          onCommit={(next) => update({ personId: id, commsPreferences: next })}
+        />
+      </Cell>
+
+      {/* Social link (single URL) */}
+      <Cell width={COLS.social}>
+        <InlineText
+          value={person.socialLink ?? ""}
+          placeholder="—"
+          onCommit={(t) =>
+            update({ personId: id, socialLink: t.trim() || null })
+          }
+        />
       </Cell>
 
       {/* Notes */}
@@ -589,6 +799,138 @@ function VettingCell({
   );
 }
 
+// ── Status cell: a color-coded OptionTag that opens a Popover of statuses ─────
+function StatusCell({
+  value,
+  onChange,
+}: {
+  value: RosterStatus;
+  onChange: (v: RosterStatus) => void;
+}) {
+  const ref = useRef<any>(null);
+  const [anchor, setAnchor] = useState<
+    { x: number; y: number; width: number; height: number } | undefined
+  >();
+  const [visible, setVisible] = useState(false);
+
+  const open = () => {
+    const node = ref.current;
+    if (node && typeof node.measureInWindow === "function") {
+      node.measureInWindow(
+        (x: number, y: number, width: number, height: number) => {
+          setAnchor({ x, y, width, height });
+          setVisible(true);
+        },
+      );
+    } else {
+      setVisible(true);
+    }
+  };
+
+  return (
+    <>
+      <Pressable
+        ref={ref}
+        onPress={open}
+        className="flex-1 px-2 py-1.5 active:opacity-70"
+      >
+        <OptionTag label={STATUS_LABEL[value]} color={STATUS_COLOR[value]} />
+      </Pressable>
+      <Popover visible={visible} onClose={() => setVisible(false)} anchor={anchor}>
+        <View className="py-1">
+          {ROSTER_STATUSES.map((s) => (
+            <Pressable
+              key={s}
+              onPress={() => {
+                onChange(s);
+                setVisible(false);
+              }}
+              className="flex-row items-center justify-between gap-3 px-3 py-2 active:bg-sunken web:hover:bg-sunken"
+            >
+              <OptionTag label={STATUS_LABEL[s]} color={STATUS_COLOR[s]} />
+              {s === value ? (
+                <Icon name="check" size={15} color={colors.accent} />
+              ) : null}
+            </Pressable>
+          ))}
+        </View>
+      </Popover>
+    </>
+  );
+}
+
+// ── Gender cell: tap to cycle male → female → na (na covers vendor orgs) ───────
+const GENDER_LABEL: Record<"male" | "female" | "na", string> = {
+  male: "Male",
+  female: "Female",
+  na: "N/A",
+};
+const GENDER_CYCLE = ["male", "female", "na"] as const;
+
+function GenderCell({
+  value,
+  onChange,
+}: {
+  value: "male" | "female" | "na" | undefined;
+  onChange: (v: "male" | "female" | "na") => void;
+}) {
+  const next = () => {
+    const i = value ? GENDER_CYCLE.indexOf(value) : -1;
+    onChange(GENDER_CYCLE[(i + 1) % GENDER_CYCLE.length]);
+  };
+  return (
+    <Pressable
+      onPress={next}
+      className="flex-1 flex-row items-center px-2 py-1.5 active:opacity-70 web:hover:opacity-90"
+    >
+      {value ? (
+        <OptionTag label={GENDER_LABEL[value]} color="gray" />
+      ) : (
+        <Text className="text-sm text-faint">—</Text>
+      )}
+    </Pressable>
+  );
+}
+
+// ── List cell: chips + inline comma editor, PRESERVING case (projects/comms) ──
+function ListCell({
+  values,
+  placeholder,
+  onCommit,
+}: {
+  values: string[];
+  placeholder: string;
+  onCommit: (next: string[]) => void;
+}) {
+  const [editing, setEditing] = useState(false);
+
+  if (editing) {
+    return (
+      <InlineText
+        value={values.join(", ")}
+        placeholder={placeholder}
+        onCommit={(t) => {
+          onCommit(parseList(t));
+          setEditing(false);
+        }}
+      />
+    );
+  }
+
+  return (
+    <Pressable
+      onPress={() => setEditing(true)}
+      className="flex-1 flex-row flex-wrap items-center gap-1 px-2 py-1.5 active:opacity-70 web:hover:opacity-90"
+    >
+      {values.length === 0 ? (
+        <Text className="text-sm text-faint">—</Text>
+      ) : (
+        values.map((s) => <OptionTag key={s} label={s} />)
+      )}
+    </Pressable>
+  );
+}
+
 /** Centered modal detail: read-only contact + event history. */
 function PersonDetail({
   person,
@@ -735,6 +1077,15 @@ const styles = StyleSheet.create({
     alignItems: "baseline",
     justifyContent: "space-between",
     marginBottom: spacing.md,
+  },
+  segmented: {
+    flexDirection: "row",
+    alignSelf: "flex-start",
+    gap: spacing.xs,
+    padding: 3,
+    marginBottom: spacing.sm,
+    borderRadius: 10,
+    backgroundColor: colors.sunken,
   },
   filterBar: {
     flexDirection: "row",

@@ -841,5 +841,16 @@ export function currentPhase(
 export const VETTING_STATUSES = ["unvetted", "pending", "vetted"] as const;
 export type VettingStatus = (typeof VETTING_STATUSES)[number];
 
+// ── Roster lifecycle status ──────────────────────────────────────────────────
+// Richer than the isActive flag — drives the People-screen Status cell.
+export const ROSTER_STATUSES = [
+  "active",
+  "inactive",
+  "transitioning_in",
+  "transitioning_out",
+  "unavailable",
+] as const;
+export type RosterStatus = (typeof ROSTER_STATUSES)[number];
+
 // ── AI agent config (model registry, cost, budgets) ──────────────────────────
 export * from "./ai";

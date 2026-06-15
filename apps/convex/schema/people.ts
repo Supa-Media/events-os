@@ -62,6 +62,10 @@ export const people = defineTable({
   pwEmail: v.optional(v.string()),
   // Vendor company / organization name (when this person represents a vendor).
   company: v.optional(v.string()),
+  // Profile photo (Convex file storageId). Resolved to a URL by `people.list`.
+  image: v.optional(v.id("_storage")),
+  // A single social / web link for this person (Instagram, LinkedIn, site, …).
+  socialLink: v.optional(v.string()),
   createdAt: v.number(),
 })
   .index("by_chapter", ["chapterId"])
