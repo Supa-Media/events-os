@@ -13,11 +13,14 @@ import {
   computeDueDate,
   computeReadiness,
   isCompleteStatus,
+  itemPhase,
+  itemScore,
   currentPhase,
   DAY_OFFSET_MODULES,
   MODULE_LABELS,
   type ModuleKey,
   type PhaseScores,
+  type SelectOption,
 } from "@events-os/shared";
 import {
   requireUserId,
@@ -379,6 +382,152 @@ export const myWork = query({
       .map((it: any) => it._id as Id<"eventItems">);
 
     return { ownedModuleKeys, tasks, myTeams, teamItemIds };
+  },
+});
+
+/**
+ * "What's next" to-do summary for the event Overview, phase-grouped.
+ *
+ * Reuses the SAME data the readiness engine reads (see `phaseReadiness` +
+ * `myWork`): the event's active grid modules, each module's columns (status
+ * options + a key→label map), all eventItems, and the role/owner-assignment
+ * state. It then surfaces the *outstanding* work as actionable lines, grouped by
+ * phase, each optionally deep-linking to the tab that holds it.
+ *
+ *   prePlan  — assign roles, assign module owners, and fill out any author-marked
+ *              pre-plan cells that aren't checked yet.
+ *   planning / dayOf / post — every grid item bucketed by `itemPhase` whose
+ *              `itemScore` < 1 (not complete — in-progress 0.5 still counts).
+ *
+ * A `TodoAction.tab` is the event tab to jump to (a module key, or "crew" for the
+ * volunteer_expectations module); omitted for actions that live on the Overview
+ * itself (role/owner assignment).
+ */
+export const todos = query({
+  args: { eventId: v.id("events") },
+  handler: async (ctx, { eventId }) => {
+    const empty = { prePlan: [], planning: [], dayOf: [], post: [] };
+    const chapterId = await requireChapterId(ctx);
+    await requireUserId(ctx);
+    const event = await ctx.db.get(eventId);
+    if (!event || event.chapterId !== chapterId) return empty;
+
+    type TodoAction = { id: string; label: string; tab?: string };
+    const prePlan: TodoAction[] = [];
+    const planning: TodoAction[] = [];
+    const dayOf: TodoAction[] = [];
+    const post: TodoAction[] = [];
+
+    // The same maps `itemPhase`/`tabForModule` need across the buckets.
+    const tabForModule = (k: string) =>
+      k === "volunteer_expectations" ? "crew" : k;
+
+    // Grid modules only — non-grid surfaces (site_map) have no status'd items.
+    const resolved = await eventActiveModules(ctx, event);
+    const gridModules = resolved.filter((m) => m.surface === "grid");
+    const labelByKey = new Map(resolved.map((m) => [m.key, m.label]));
+    const moduleLabel = (k: string) =>
+      MODULE_LABELS[k as ModuleKey] ?? labelByKey.get(k) ?? k;
+
+    // ── Pre-plan setup work: roles + module owners (live on the Overview). ──
+    const eventRoles = await ctx.db
+      .query("eventRoles")
+      .withIndex("by_event", (q: any) => q.eq("eventId", eventId))
+      .collect();
+    const assignments = await ctx.db
+      .query("roleAssignments")
+      .withIndex("by_event", (q: any) => q.eq("eventId", eventId))
+      .collect();
+    const assignedRoleIds = new Set(assignments.map((a: any) => String(a.roleId)));
+    const roleByKey = new Map(eventRoles.map((r: any) => [r.key, r]));
+
+    const totalRoles = eventRoles.length;
+    const assignedRoles = eventRoles.filter((r: any) =>
+      assignedRoleIds.has(String(r._id)),
+    ).length;
+    if (totalRoles > 0 && assignedRoles < totalRoles) {
+      prePlan.push({
+        id: "roles",
+        label: "Assign roles (" + assignedRoles + "/" + totalRoles + ")",
+      });
+    }
+
+    let ownerTotal = 0;
+    let ownerDone = 0;
+    for (const m of resolved) {
+      if (!m.ownerRoleKey) continue;
+      ownerTotal += 1;
+      const role: any = roleByKey.get(m.ownerRoleKey);
+      if (role && assignedRoleIds.has(String(role._id))) ownerDone += 1;
+    }
+    if (ownerTotal > 0 && ownerDone < ownerTotal) {
+      prePlan.push({
+        id: "owners",
+        label: "Assign module owners (" + ownerDone + "/" + ownerTotal + ")",
+      });
+    }
+
+    // ── Per grid module: pre-plan cell check-offs + incomplete timed items. ──
+    for (const m of gridModules) {
+      const items = (
+        await ctx.db
+          .query("eventItems")
+          .withIndex("by_event_module", (q: any) =>
+            q.eq("eventId", eventId).eq("module", m.key),
+          )
+          .collect()
+      ).sort((a: any, b: any) => a.order - b.order);
+
+      const columns = await ctx.db
+        .query("eventColumns")
+        .withIndex("by_event_module", (q: any) =>
+          q.eq("eventId", eventId).eq("module", m.key),
+        )
+        .collect();
+      // key → label, so a pre-plan cell action can name the column.
+      const colLabelByKey = new Map<string, string>(
+        columns.map((c: any) => [c.key as string, c.label as string]),
+      );
+      const statusCol = columns.find((c: any) => c.key === "status");
+      const statusOptions = statusCol?.options as SelectOption[] | undefined;
+
+      for (const it of items) {
+        const title = (it.title as string) || "Untitled";
+
+        // Pre-plan: every marked column NOT yet checked is an outstanding cell.
+        const marked = (it.prePlanColumns ?? []) as string[];
+        if (marked.length > 0) {
+          const checked = new Set((it.prePlanChecked ?? []) as string[]);
+          for (const colKey of marked) {
+            if (checked.has(colKey)) continue;
+            const columnLabel = colLabelByKey.get(colKey) ?? colKey;
+            prePlan.push({
+              id: it._id + ":" + colKey,
+              label: 'Fill out ' + columnLabel + ' for "' + title + '"',
+              tab: tabForModule(m.key),
+            });
+          }
+        }
+
+        // Timed items: anything not complete is outstanding for its phase.
+        if (itemScore(statusOptions, it.status) >= 1) continue;
+        const action: TodoAction = {
+          id: it._id as string,
+          label: moduleLabel(m.key) + ": " + title,
+          tab: tabForModule(m.key),
+        };
+        const phase = itemPhase({
+          module: m.key,
+          offsetDays: it.offsetDays ?? null,
+          offsetMinutes: it.offsetMinutes ?? null,
+        });
+        if (phase === "planning") planning.push(action);
+        else if (phase === "dayOf") dayOf.push(action);
+        else post.push(action);
+      }
+    }
+
+    return { prePlan, planning, dayOf, post };
   },
 });
 

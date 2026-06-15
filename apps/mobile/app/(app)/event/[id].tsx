@@ -16,6 +16,7 @@ import { CrewSections } from "../../../components/event/CrewSections";
 import { EventHeader } from "../../../components/event/EventHeader";
 import { EventTabBar } from "../../../components/event/EventTabBar";
 import { EventOverviewControls } from "../../../components/event/EventOverviewControls";
+import { EventTodos } from "../../../components/event/EventTodos";
 import {
   ModuleRollupRow,
   AddModuleButton,
@@ -58,6 +59,13 @@ export default function EventDetailScreen() {
   const myWork = useQuery(
     api.events.myWork,
     meView ? { eventId } : "skip",
+  );
+  // "What's next" to-dos for the normal Overview only (not Me view). Skip on
+  // other tabs to avoid the extra read while a module surface is open.
+  const onOverview = (tab ?? "overview") === "overview";
+  const todos = useQuery(
+    api.events.todos,
+    onOverview && !meView ? { eventId } : "skip",
   );
 
   const reschedule = useMutation(api.events.reschedule);
@@ -382,6 +390,18 @@ export default function EventDetailScreen() {
               }
               onAddRole={(label) => createEventRole({ eventId, label })}
             />
+
+            {/* What's next — outstanding work grouped by phase, each line
+                deep-linking to the module tab that holds it. */}
+            {todos ? (
+              <>
+                <SectionHeader title="What's next" />
+                <EventTodos
+                  todos={todos}
+                  onOpenTab={(t) => router.setParams({ tab: t })}
+                />
+              </>
+            ) : null}
 
             {/* Per-module rollup — owner (role → person), progress, next due.
                 Right-click / long-press a row to disable a core module or
