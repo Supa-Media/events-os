@@ -85,6 +85,7 @@ export default function EventDetailScreen() {
   const [nameInput, setNameInput] = useState<string | null>(null);
   const [dateInput, setDateInput] = useState<string | null>(null);
   const [budgetInput, setBudgetInput] = useState<string | null>(null);
+  const [locationInput, setLocationInput] = useState<string | null>(null);
   const [picker, setPicker] = useState<
     | { roleId: string; roleLabel: string; selectedId: string | null }
     | null
@@ -155,6 +156,8 @@ export default function EventDetailScreen() {
       : event.budget != null
         ? String(event.budget)
         : "";
+  const locationValue =
+    locationInput !== null ? locationInput : (event.location ?? "");
 
   // Resolved active modules (core + custom, with the event's deltas applied), in
   // canonical order. Includes the site_map module (surface "site_map"); the
@@ -281,6 +284,16 @@ export default function EventDetailScreen() {
     setBudgetInput(null);
   }
 
+  async function handleSaveLocation() {
+    const trimmed = locationValue.trim();
+    if (trimmed === (event.location ?? "")) {
+      setLocationInput(null);
+      return;
+    }
+    await updateDetails({ eventId, location: trimmed === "" ? null : trimmed });
+    setLocationInput(null);
+  }
+
   async function doDelete() {
     await removeEvent({ eventId });
     router.replace("/");
@@ -367,6 +380,7 @@ export default function EventDetailScreen() {
               owner={owner}
               dateValue={dateValue}
               budgetValue={budgetValue}
+              locationValue={locationValue}
               onPickRole={(r) =>
                 setPicker({
                   roleId: r.roleId,
@@ -381,6 +395,8 @@ export default function EventDetailScreen() {
               onOpenOwner={() => setOwnerOpen(true)}
               onChangeBudget={setBudgetInput}
               onSaveBudget={handleSaveBudget}
+              onChangeLocation={setLocationInput}
+              onSaveLocation={handleSaveLocation}
               onDelete={confirmDelete}
               onRenameRole={(roleId, label) =>
                 updateEventRole({ roleId: roleId as any, label })

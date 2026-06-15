@@ -682,7 +682,10 @@ export function itemPhase(item: {
   offsetMinutes?: number | null;
 }): Exclude<PhaseKey, "prePlan"> {
   if (item.module === "retro") return "post";
-  if (item.module === "supplies") return "dayOf";
+  // Supplies (packing/load-in) and volunteer expectations (what each team does
+  // on the day) are day-of work, regardless of any offset.
+  if (item.module === "supplies" || item.module === "volunteer_expectations")
+    return "dayOf";
   if (item.offsetMinutes != null) return "dayOf";
   if (item.offsetDays != null) {
     if (item.offsetDays < 0) return "planning";

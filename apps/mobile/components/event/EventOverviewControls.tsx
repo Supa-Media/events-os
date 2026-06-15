@@ -33,6 +33,7 @@ export function EventOverviewControls({
   owner,
   dateValue,
   budgetValue,
+  locationValue,
   onPickRole,
   onSetStatus,
   onReschedule,
@@ -41,6 +42,8 @@ export function EventOverviewControls({
   onOpenOwner,
   onChangeBudget,
   onSaveBudget,
+  onChangeLocation,
+  onSaveLocation,
   onDelete,
   onRenameRole,
   onDeleteRole,
@@ -51,6 +54,7 @@ export function EventOverviewControls({
   owner: { _id: string; name: string } | null;
   dateValue: string;
   budgetValue: string;
+  locationValue: string;
   onPickRole: (role: RoleRow) => void;
   onSetStatus: (status: EventStatus) => void;
   onReschedule: (ts: number) => void;
@@ -59,6 +63,8 @@ export function EventOverviewControls({
   onOpenOwner: () => void;
   onChangeBudget: (text: string) => void;
   onSaveBudget: () => void;
+  onChangeLocation: (text: string) => void;
+  onSaveLocation: () => void;
   onDelete: () => void;
   onRenameRole: (roleId: string, label: string) => void;
   onDeleteRole: (roleId: string) => void;
@@ -122,6 +128,17 @@ export function EventOverviewControls({
             </View>
           )}
           <Text className="mt-1 text-2xs text-faint">Reflows due dates.</Text>
+        </ControlBlock>
+
+        {/* Location — free-text venue; commits on blur */}
+        <ControlBlock label="Location">
+          <InlineInput
+            value={locationValue}
+            onChangeText={onChangeLocation}
+            onBlur={onSaveLocation}
+            placeholder="Where is it?"
+            width={200}
+          />
         </ControlBlock>
 
         {/* Owner — the single accountable person */}
