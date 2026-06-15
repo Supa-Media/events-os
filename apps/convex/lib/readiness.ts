@@ -62,5 +62,38 @@ export async function phaseReadiness(
     }),
   );
 
-  return computePhaseScores(modules);
+  // Pre-plan also counts setup work: assigning a person to each event ROLE and
+  // giving each active module an OWNER (its owner role being assigned). Each is a
+  // pre-plan item, equally weighted with the template-marked cell check-offs.
+  const eventRoles = await ctx.db
+    .query("eventRoles")
+    .withIndex("by_event", (q: any) => q.eq("eventId", event._id as Id<"events">))
+    .collect();
+  const assignments = await ctx.db
+    .query("roleAssignments")
+    .withIndex("by_event", (q: any) => q.eq("eventId", event._id as Id<"events">))
+    .collect();
+  const assignedRoleIds = new Set(assignments.map((a: any) => String(a.roleId)));
+  const roleByKey = new Map(eventRoles.map((r: any) => [r.key, r]));
+
+  const totalRoles = eventRoles.length;
+  const assignedRoles = eventRoles.filter((r: any) =>
+    assignedRoleIds.has(String(r._id)),
+  ).length;
+
+  let ownerTotal = 0;
+  let ownerDone = 0;
+  for (const m of resolved) {
+    if (!m.ownerRoleKey) continue;
+    ownerTotal += 1;
+    const role: any = roleByKey.get(m.ownerRoleKey);
+    if (role && assignedRoleIds.has(String(role._id))) ownerDone += 1;
+  }
+
+  const prePlanExtra = {
+    done: assignedRoles + ownerDone,
+    total: totalRoles + ownerTotal,
+  };
+
+  return computePhaseScores(modules, prePlanExtra);
 }

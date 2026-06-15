@@ -711,6 +711,11 @@ export function computePhaseScores(
       prePlanChecked?: string[];
     }>;
   }>,
+  // Extra pre-plan items the backend supplies — assigning each event ROLE and
+  // each module OWNER counts as a pre-plan item, equally weighted with the
+  // template-marked cells. `done` = how many are assigned; `total` = how many
+  // exist.
+  prePlanExtra?: { done: number; total: number },
 ): PhaseScores {
   type TimingPhase = Exclude<PhaseKey, "prePlan">;
   // Per phase: collect each module's average itemScore (only for modules that
@@ -760,8 +765,12 @@ export function computePhaseScores(
   const avg = (arr: number[]): number | null =>
     arr.length > 0 ? arr.reduce((sum, s) => sum + s, 0) / arr.length : null;
 
+  // Pre-plan = marked-cell check-offs + the extra role/owner-assignment items,
+  // all equally weighted. Null only when there's nothing to assign or mark.
+  const prePlanTotal = prePlanMarked + (prePlanExtra?.total ?? 0);
+  const prePlanDone = prePlanChecked + (prePlanExtra?.done ?? 0);
   return {
-    prePlan: prePlanMarked > 0 ? prePlanChecked / prePlanMarked : null,
+    prePlan: prePlanTotal > 0 ? prePlanDone / prePlanTotal : null,
     planning: avg(moduleScores.planning),
     dayOf: avg(moduleScores.dayOf),
     post: avg(moduleScores.post),
