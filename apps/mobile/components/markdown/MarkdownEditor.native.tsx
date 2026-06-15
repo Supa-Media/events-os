@@ -17,7 +17,7 @@
  * Same props as MarkdownEditor.web — see ./types.ts.
  */
 import { useCallback, useEffect, useRef, useState } from "react";
-import { ActivityIndicator, Pressable, Text, View } from "react-native";
+import { ActivityIndicator, Linking, Pressable, Text, View } from "react-native";
 import { WebView, type WebViewMessageEvent } from "react-native-webview";
 // expo-image-picker is Expo Go-safe (classified `core` in native-deps.json);
 // only used on native, where the WebView can't reach the OS clipboard/files.
@@ -25,6 +25,30 @@ import * as ImagePicker from "expo-image-picker";
 
 import type { MarkdownEditorProps } from "./types";
 import { buildEditorHtml } from "./webviewHtml";
+
+/**
+ * Open a tapped Markdown link in the OS browser. Only http(s) and mailto/tel
+ * schemes are allowed — anything malformed or with a different scheme (e.g.
+ * `javascript:`, `file:`) is ignored so a doc can't trigger arbitrary deep
+ * links or script execution.
+ */
+function openExternalUrl(raw: string): void {
+  const url = raw.trim();
+  if (!url) return;
+  // Bare URLs (autolinks may arrive without a scheme); prefix https:// so they
+  // resolve, then validate the scheme allowlist below.
+  const normalized = /^[a-zA-Z][a-zA-Z\d+.-]*:/.test(url) ? url : `https://${url}`;
+  let scheme: string;
+  try {
+    scheme = new URL(normalized).protocol.replace(/:$/, "").toLowerCase();
+  } catch {
+    return;
+  }
+  if (!["http", "https", "mailto", "tel"].includes(scheme)) return;
+  void Linking.openURL(normalized).catch(() => {
+    // Swallow — an unopenable link simply does nothing.
+  });
+}
 
 export function MarkdownEditor({
   value,
@@ -65,7 +89,7 @@ export function MarkdownEditor({
 
   const onMessage = useCallback(
     (e: WebViewMessageEvent) => {
-      let msg: { type?: string; value?: string };
+      let msg: { type?: string; value?: string; url?: string };
       try {
         msg = JSON.parse(e.nativeEvent.data);
       } catch {
@@ -80,6 +104,10 @@ export function MarkdownEditor({
       if (msg.type === "change" && typeof msg.value === "string") {
         lastSentRef.current = msg.value;
         onChange(msg.value);
+        return;
+      }
+      if (msg.type === "openLink" && typeof msg.url === "string") {
+        openExternalUrl(msg.url);
       }
     },
     [onChange, pushValue, value],

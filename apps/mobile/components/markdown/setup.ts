@@ -11,6 +11,7 @@ import { EditorState, Extension } from "@codemirror/state";
 import { EditorView, keymap, placeholder as placeholderExt } from "@codemirror/view";
 
 import { imagePreview, imagePreviewEditable } from "./imagePreview";
+import { linkClick } from "./linkClick";
 import { livePreview } from "./livePreview";
 import { editorTheme } from "./theme";
 
@@ -138,6 +139,11 @@ export function buildExtensions(opts: BuildExtensionsOptions): Extension[] {
   // editor reveals the raw source of the image the caret is on so its URL
   // stays editable.
   exts.push(opts.editable ? imagePreviewEditable : imagePreview);
+
+  // Clickable links: read mode opens on plain click; edit mode opens on
+  // Cmd/Ctrl+click and shows a hover hint. Added after image handling so the
+  // image plugin's own decorations/handlers are unaffected.
+  exts.push(...linkClick(opts.editable));
 
   if (opts.placeholder) exts.push(placeholderExt(opts.placeholder));
 
