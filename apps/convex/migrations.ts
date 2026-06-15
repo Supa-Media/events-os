@@ -388,3 +388,36 @@ export const migrateRolesToScoped = internalMutation({
     return { templatesMigrated, eventsMigrated, assignmentsRepointed };
   },
 });
+
+/**
+ * Un-hide the supplies `qty` column wherever it was hidden.
+ *
+ * The "Worship With Strangers" template (and events cloned from it) shipped with
+ * "trimmed" supplies columns — `qty` exists but `isVisible: false` — so it never
+ * rendered. `qty` is a default-VISIBLE column, so this restores it: sets
+ * isVisible=true for every supplies `qty` column (template + event) currently
+ * false. Idempotent (a second run finds none false).
+ *
+ * Run locally:   npx convex run migrations:showSuppliesQty
+ * Run on prod:   npx convex run --prod migrations:showSuppliesQty
+ */
+export const showSuppliesQty = internalMutation({
+  args: {},
+  handler: async (ctx) => {
+    let templateShown = 0;
+    let eventShown = 0;
+    for (const c of await ctx.db.query("templateColumns").collect()) {
+      if (c.module === "supplies" && c.key === "qty" && c.isVisible === false) {
+        await ctx.db.patch(c._id, { isVisible: true });
+        templateShown++;
+      }
+    }
+    for (const c of await ctx.db.query("eventColumns").collect()) {
+      if (c.module === "supplies" && c.key === "qty" && c.isVisible === false) {
+        await ctx.db.patch(c._id, { isVisible: true });
+        eventShown++;
+      }
+    }
+    return { templateShown, eventShown };
+  },
+});
