@@ -16,9 +16,11 @@ import { CrewSections } from "../../../components/event/CrewSections";
 import { EventHeader } from "../../../components/event/EventHeader";
 import { EventTabBar } from "../../../components/event/EventTabBar";
 import { EventOverviewControls } from "../../../components/event/EventOverviewControls";
-import { ModuleRollupRow } from "../../../components/event/EventModuleRollup";
+import {
+  ModuleRollupRow,
+  AddModuleButton,
+} from "../../../components/event/EventModuleRollup";
 import { ModuleSection } from "../../../components/event/ModuleSection";
-import { EventModulesCard } from "../../../components/event/EventModulesCard";
 import { colors } from "../../../lib/theme";
 import { parseDateInput, toDateInput } from "../../../lib/format";
 import type { ResolvedModule } from "@events-os/shared";
@@ -43,6 +45,9 @@ export default function EventDetailScreen() {
   const updateEventRole = useMutation(api.roles.updateEventRole);
   const createEventRole = useMutation(api.roles.createForEvent);
   const deleteEventRole = useMutation(api.roles.deleteEventRole);
+  const toggleCoreModule = useMutation(api.modules.toggleCoreForEvent);
+  const createCustomModule = useMutation(api.modules.createCustomForEvent);
+  const deleteCustomModule = useMutation(api.modules.deleteCustomForEvent);
 
   // Local edit buffers (null = mirror server value).
   const [nameInput, setNameInput] = useState<string | null>(null);
@@ -139,6 +144,11 @@ export default function EventDetailScreen() {
   );
   const readyByModule = new Map(
     (moduleReadiness ?? []).map((r: any) => [r.key as string, r.ready as boolean]),
+  );
+  // Custom event-module rows, keyed by module key, so a rollup row can resolve
+  // its `eventModules` id for deletion.
+  const customModuleIdByKey = new Map(
+    (moduleData?.customRows ?? []).map((r: any) => [r.key as string, r._id as string]),
   );
 
   // A module's owner is its resolved owner role KEY, resolved to the person
@@ -284,39 +294,55 @@ export default function EventDetailScreen() {
               onAddRole={(label) => createEventRole({ eventId, label })}
             />
 
-            {/* Add / re-enable modules at the event level. */}
-            <EventModulesCard
-              eventId={eventId}
-              disabledCore={moduleData?.disabledCore ?? []}
-              customRows={(moduleData?.customRows ?? []) as any}
-            />
-
-            {/* Per-module rollup — owner (role → person), progress, next due. */}
-            {activeModules.length === 0 ? (
-              <Card padding="lg">
-                <Text className="text-base text-muted">
-                  This event has no modules enabled.
-                </Text>
-              </Card>
-            ) : (
-              <>
-                <SectionHeader title="Modules" count={activeModules.length} />
-                <Card padding="none">
-                  {activeModules.map((m, i) => (
-                    <ModuleRollupRow
-                      key={m.key}
-                      label={m.label}
-                      ready={readyByModule.get(m.key) ?? false}
-                      owner={moduleOwner(m)}
-                      summary={summaryByModule.get(m.key)}
-                      first={i === 0}
-                      onOpen={() => router.setParams({ tab: m.key })}
-                      onAssignOwner={() => openOwnerPicker(m)}
-                    />
-                  ))}
-                </Card>
-              </>
-            )}
+            {/* Per-module rollup — owner (role → person), progress, next due.
+                Right-click / long-press a row to disable a core module or
+                remove a custom one; the bottom button adds / re-enables. */}
+            <SectionHeader title="Modules" count={activeModules.length} />
+            <Card padding="none">
+              {activeModules.length === 0 ? (
+                <View className="px-4 py-5">
+                  <Text className="text-base text-muted">
+                    This event has no modules enabled.
+                  </Text>
+                </View>
+              ) : (
+                activeModules.map((m, i) => (
+                  <ModuleRollupRow
+                    key={m.key}
+                    label={m.label}
+                    isCore={m.isCore}
+                    ready={readyByModule.get(m.key) ?? false}
+                    owner={moduleOwner(m)}
+                    summary={summaryByModule.get(m.key)}
+                    first={i === 0}
+                    onOpen={() => router.setParams({ tab: m.key })}
+                    onAssignOwner={() => openOwnerPicker(m)}
+                    onRemove={() => {
+                      if (m.isCore) {
+                        void toggleCoreModule({
+                          eventId,
+                          key: m.key,
+                          enabled: false,
+                        });
+                      } else {
+                        const rowId = customModuleIdByKey.get(m.key);
+                        if (rowId)
+                          void deleteCustomModule({ moduleId: rowId as any });
+                      }
+                    }}
+                  />
+                ))
+              )}
+              <AddModuleButton
+                disabledCore={moduleData?.disabledCore ?? []}
+                onEnableCore={(key) =>
+                  void toggleCoreModule({ eventId, key, enabled: true })
+                }
+                onCreateCustom={(label) =>
+                  void createCustomModule({ eventId, label })
+                }
+              />
+            </Card>
           </>
         ) : activeTab === "crew" ? (
           /* ── Crew: volunteers + paid vendors (engagements) ────────────────── */
