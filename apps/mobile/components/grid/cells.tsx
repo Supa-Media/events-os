@@ -61,6 +61,16 @@ export interface CellContext {
   onChange: (value: any) => void;
   /** Template mode: the eventType id, used to source placeholder-crew owners. */
   templateId?: string;
+  /**
+   * Open the full ColumnOptionsEditor (rename/remove/recolor) for a
+   * select/status/multiselect column, from inside its value-picker dropdown.
+   */
+  onEditOptions?: (columnId: string) => void;
+  /**
+   * Append a new option (label) to a select/status/multiselect column and
+   * persist it. Resolves to the new option's `value` so the cell can select it.
+   */
+  onAddOption?: (columnId: string, label: string) => Promise<string>;
 }
 
 // ── Inline text input (commits on blur) ──────────────────────────────────────
@@ -175,8 +185,105 @@ function OptionRow({
   );
 }
 
+/**
+ * In-dropdown option management for select/status/multiselect value pickers.
+ * Renders, when editable and the column-update callbacks are wired, an inline
+ * "+ Add option" quick-add and an "Edit options…" row at the bottom of the
+ * option list. The quick-add persists a new option via `onAddOption` and then
+ * `onSelect`s its value; "Edit options…" hands off to the full
+ * ColumnOptionsEditor (rename/remove/recolor) through `onEditOptions`.
+ */
+function OptionEditFooter({
+  columnId,
+  onAddOption,
+  onEditOptions,
+  onSelect,
+  closePopover,
+}: {
+  columnId: string;
+  onAddOption?: (columnId: string, label: string) => Promise<string>;
+  onEditOptions?: (columnId: string) => void;
+  /** Select the newly-added option's value (single-select) or toggle it (multi). */
+  onSelect: (value: string) => void;
+  closePopover: () => void;
+}) {
+  const [adding, setAdding] = useState(false);
+  const [label, setLabel] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  if (!onAddOption && !onEditOptions) return null;
+
+  const submit = async () => {
+    const text = label.trim();
+    if (!text || !onAddOption || busy) return;
+    setBusy(true);
+    try {
+      const value = await onAddOption(columnId, text);
+      onSelect(value);
+    } finally {
+      setBusy(false);
+      setLabel("");
+      setAdding(false);
+    }
+  };
+
+  return (
+    <View className="border-t border-border/60">
+      {onAddOption ? (
+        adding ? (
+          <View className="flex-row items-center gap-2 px-3 py-2">
+            <TextInput
+              value={label}
+              onChangeText={setLabel}
+              autoFocus
+              placeholder="New option"
+              placeholderTextColor={colors.faint}
+              onSubmitEditing={submit}
+              className="flex-1 rounded-md border border-border bg-raised px-2 py-1.5 text-sm text-ink"
+            />
+            <Pressable
+              onPress={submit}
+              disabled={!label.trim() || busy}
+              hitSlop={6}
+              className={`rounded p-1 active:bg-sunken ${
+                !label.trim() || busy ? "opacity-40" : ""
+              }`}
+            >
+              {busy ? (
+                <ActivityIndicator size="small" color={colors.accent} />
+              ) : (
+                <Icon name="check" size={16} color={colors.accent} />
+              )}
+            </Pressable>
+          </View>
+        ) : (
+          <Pressable
+            onPress={() => setAdding(true)}
+            className="flex-row items-center gap-2 px-3 py-2 active:bg-sunken web:hover:bg-sunken"
+          >
+            <Icon name="plus" size={14} color={colors.muted} />
+            <Text className="text-sm font-medium text-muted">Add option</Text>
+          </Pressable>
+        )
+      ) : null}
+      {onEditOptions ? (
+        <Pressable
+          onPress={() => {
+            closePopover();
+            onEditOptions(columnId);
+          }}
+          className="flex-row items-center gap-2 px-3 py-2 active:bg-sunken web:hover:bg-sunken"
+        >
+          <Icon name="edit-2" size={14} color={colors.muted} />
+          <Text className="text-sm font-medium text-muted">Edit options…</Text>
+        </Pressable>
+      ) : null}
+    </View>
+  );
+}
+
 // ── Select / status (single choice) ───────────────────────────────────────────
-function SelectCell({ column, value, editable, onChange }: any) {
+function SelectCell({ column, value, editable, onChange, onAddOption, onEditOptions }: any) {
   const { ref, anchor, visible, open, close } = useAnchor();
   const opts = column.options ?? [];
   const current = opts.find((o: any) => o.value === value);
@@ -209,13 +316,22 @@ function SelectCell({ column, value, editable, onChange }: any) {
             />
           ))}
         </View>
+        {editable ? (
+          <OptionEditFooter
+            columnId={column._id}
+            onAddOption={onAddOption}
+            onEditOptions={onEditOptions}
+            onSelect={(v) => { onChange(v); close(); }}
+            closePopover={close}
+          />
+        ) : null}
       </Popover>
     </>
   );
 }
 
 // ── Multiselect ───────────────────────────────────────────────────────────────
-function MultiSelectCell({ column, value, editable, onChange }: any) {
+function MultiSelectCell({ column, value, editable, onChange, onAddOption, onEditOptions }: any) {
   const { ref, anchor, visible, open, close } = useAnchor();
   const opts = column.options ?? [];
   const selected: string[] = Array.isArray(value) ? value : [];
@@ -255,6 +371,16 @@ function MultiSelectCell({ column, value, editable, onChange }: any) {
             />
           ))}
         </View>
+        {editable ? (
+          <OptionEditFooter
+            columnId={column._id}
+            onAddOption={onAddOption}
+            onEditOptions={onEditOptions}
+            // Multi-select: a freshly-added option is unselected, so select it.
+            onSelect={(v) => toggle(v)}
+            closePopover={close}
+          />
+        ) : null}
       </Popover>
     </>
   );
@@ -340,6 +466,9 @@ function TemplateOwnerCell({ item, templateId, editable, onChange }: any) {
   const [open, setOpen] = useState(false);
   const name = item.fields?.templateOwnerName ?? null;
   const selectedId = item.fields?.templateOwnerId ?? null;
+  // The row's team (Expectations `team` select value). When set, the picker
+  // surfaces crew on that team first so the assignment lines up.
+  const rowTeam = item.fields?.team ?? null;
   return (
     <>
       <Pressable
@@ -362,6 +491,7 @@ function TemplateOwnerCell({ item, templateId, editable, onChange }: any) {
         visible={open}
         eventTypeId={templateId}
         selectedId={selectedId}
+        preferTeam={rowTeam}
         onPick={(id: string, picked: string) => {
           onChange({ id, name: picked });
           setOpen(false);
@@ -786,7 +916,7 @@ function HowToCell({ value, editable, onChange, mode, eventItemId, colKey }: any
 
 // ── Dispatcher ────────────────────────────────────────────────────────────────
 export function GridCell(ctx: CellContext) {
-  const { column, item, module, mode, roles, eventDate, editable, onChange, templateId } = ctx;
+  const { column, item, module, mode, roles, eventDate, editable, onChange, templateId, onAddOption, onEditOptions } = ctx;
   const value = cellValue(column, item, module, mode);
 
   // Template Expectations owner = a placeholder crew member (templatePeople),
@@ -810,9 +940,27 @@ export function GridCell(ctx: CellContext) {
   switch (column.type) {
     case "status":
     case "select":
-      return <SelectCell column={column} value={value} editable={editable} onChange={onChange} />;
+      return (
+        <SelectCell
+          column={column}
+          value={value}
+          editable={editable}
+          onChange={onChange}
+          onAddOption={onAddOption}
+          onEditOptions={onEditOptions}
+        />
+      );
     case "multiselect":
-      return <MultiSelectCell column={column} value={value} editable={editable} onChange={onChange} />;
+      return (
+        <MultiSelectCell
+          column={column}
+          value={value}
+          editable={editable}
+          onChange={onChange}
+          onAddOption={onAddOption}
+          onEditOptions={onEditOptions}
+        />
+      );
     case "role":
       return (
         <RoleCell

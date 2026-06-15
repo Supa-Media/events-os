@@ -180,6 +180,35 @@ export function EditableGrid({
   const commit = (item: GridItem, column: GridColumn, value: any) =>
     grid.updateItem(item._id, buildPatch(column, value, module, mode));
 
+  // Open the full ColumnOptionsEditor for a column straight from a cell's
+  // value-picker dropdown (reuses the existing "editOptions" popover).
+  const openOptionsEditor = (columnId: string) => {
+    setEditColId(columnId);
+    setMenu("editOptions");
+  };
+
+  // Inline quick-add from a cell dropdown: append a new option to the column,
+  // preserving every existing option and slugging the label into a unique
+  // value (mirrors ColumnOptionsEditor). Returns the new value so the cell can
+  // immediately select it.
+  const addOption = async (columnId: string, label: string): Promise<string> => {
+    const col = grid.columns.find((c) => c._id === columnId);
+    const existing = col?.options ?? [];
+    const taken = new Set(existing.map((o) => o.value));
+    let value = slug(label);
+    if (taken.has(value)) {
+      let i = 2;
+      while (taken.has(`${value}_${i}`)) i++;
+      value = `${value}_${i}`;
+    }
+    const options = [
+      ...existing,
+      { value, label: label.trim(), color: OPTION_PALETTE[existing.length % OPTION_PALETTE.length] },
+    ];
+    await grid.updateColumn(columnId, { options });
+    return value;
+  };
+
   // The per-row ✨ Autofill button only makes sense on a live event with a
   // fillable column (photo / link / cost).
   const canAutofill =
@@ -242,6 +271,8 @@ export function EditableGrid({
       editable={editable}
       templateId={mode === "template" ? parentId : undefined}
       onCommit={commit}
+      onEditOptions={editable ? openOptionsEditor : undefined}
+      onAddOption={editable ? addOption : undefined}
       onRemove={editable ? () => grid.removeItem(item._id) : undefined}
       onAutofill={canAutofill ? () => autofill({ itemId: item._id as any }) : undefined}
       drag={drag}
@@ -571,6 +602,8 @@ function Row({
   editable,
   templateId,
   onCommit,
+  onEditOptions,
+  onAddOption,
   onRemove,
   onAutofill,
   drag,
@@ -588,6 +621,10 @@ function Row({
   editable: boolean;
   templateId?: string;
   onCommit: (item: GridItem, column: GridColumn, value: any) => void;
+  /** Open the full ColumnOptionsEditor for a select/status/multiselect column. */
+  onEditOptions?: (columnId: string) => void;
+  /** Append+persist a new option to a column; resolves to its new value. */
+  onAddOption?: (columnId: string, label: string) => Promise<string>;
   onRemove?: () => void;
   /** ✨ one-click enrich (photo/cost/link) from the item name. */
   onAutofill?: () => Promise<unknown>;
@@ -645,6 +682,8 @@ function Row({
               editable={editable}
               templateId={templateId}
               onChange={(value) => onCommit(item, c, value)}
+              onEditOptions={onEditOptions}
+              onAddOption={onAddOption}
             />
           </PrePlanCellWrapper>
         );

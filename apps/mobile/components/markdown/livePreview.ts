@@ -81,6 +81,14 @@ const MARK_NODES = new Set([
   "URL", // hidden link target (kept inside ListItem reveal logic)
 ]);
 
+/** True when `node` is (or is nested inside) an `Image` syntax node. */
+function hasImageAncestor(node: { name: string; parent: any } | null): boolean {
+  for (let n = node; n; n = n.parent) {
+    if (n.name === "Image") return true;
+  }
+  return false;
+}
+
 /** True when any cursor or selection range overlaps [from, to]. */
 function selectionTouchesLine(view: EditorView, from: number, to: number): boolean {
   for (const r of view.state.selection.ranges) {
@@ -170,6 +178,12 @@ function buildDecorations(view: EditorView): DecorationSet {
           // span); a standalone URL node should stay visible.
           if (name === "URL") return;
           const active = selectionTouchesLine(view, node.from, node.to);
+          // Inside an Image (`![](url)`), the imagePreview plugin replaces the
+          // whole node with an inline <img> when inactive — so we must NOT also
+          // conceal the image's marks here, or the two `Decoration.replace`s
+          // collide and the image renders as nothing. When active, fall through
+          // so the raw `![](url)` source is revealed for editing.
+          if (!active && hasImageAncestor(node.node)) return;
           if (!active) {
             deco.push(hideDeco.range(node.from, node.to));
           }

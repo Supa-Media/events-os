@@ -10,7 +10,7 @@ import { markdown, markdownLanguage } from "@codemirror/lang-markdown";
 import { EditorState, Extension } from "@codemirror/state";
 import { EditorView, keymap, placeholder as placeholderExt } from "@codemirror/view";
 
-import { imagePreview } from "./imagePreview";
+import { imagePreview, imagePreviewEditable } from "./imagePreview";
 import { livePreview } from "./livePreview";
 import { editorTheme } from "./theme";
 
@@ -55,9 +55,9 @@ function imageFromDataTransfer(dt: DataTransfer | null): File | null {
  * by exact string (re-located at swap time) so concurrent typing can't corrupt
  * positions.
  */
-function handleImageDrop(
+function embedImage(
   view: EditorView,
-  file: File,
+  file: Blob,
   pos: number,
   uploadImage: UploadImage,
 ) {
@@ -82,6 +82,19 @@ function handleImageDrop(
     .catch(() => replacePlaceholder("")); // drop the placeholder on failure.
 }
 
+/**
+ * Embed an image at the current caret position. Used by the web editor's
+ * "Add image" button (the file-picker path); paste/drop go through the
+ * domEventHandlers below. Exported so the host component can wire the button.
+ */
+export function insertImageAtCaret(
+  view: EditorView,
+  file: Blob,
+  uploadImage: UploadImage,
+) {
+  embedImage(view, file, view.state.selection.main.head, uploadImage);
+}
+
 export function buildExtensions(opts: BuildExtensionsOptions): Extension[] {
   const exts: Extension[] = [
     history(),
@@ -94,9 +107,11 @@ export function buildExtensions(opts: BuildExtensionsOptions): Extension[] {
     EditorView.editable.of(opts.editable),
   ];
 
-  // In read mode (e.g. MarkdownView), render `![](url)` as actual <img>. The
-  // editable editor keeps the raw Markdown text visible instead.
-  if (!opts.editable) exts.push(imagePreview);
+  // Render `![](url)` as actual <img> on both surfaces so pasted/uploaded
+  // images are visible. Read mode (MarkdownView) renders every image; the
+  // editor reveals the raw source of the image the caret is on so its URL
+  // stays editable.
+  exts.push(opts.editable ? imagePreviewEditable : imagePreview);
 
   if (opts.placeholder) exts.push(placeholderExt(opts.placeholder));
 
@@ -118,7 +133,7 @@ export function buildExtensions(opts: BuildExtensionsOptions): Extension[] {
           const file = imageFromDataTransfer(event.clipboardData);
           if (!file) return false;
           event.preventDefault();
-          handleImageDrop(view, file, view.state.selection.main.head, uploadImage);
+          embedImage(view, file, view.state.selection.main.head, uploadImage);
           return true;
         },
         drop(event, view) {
@@ -128,7 +143,7 @@ export function buildExtensions(opts: BuildExtensionsOptions): Extension[] {
           const pos =
             view.posAtCoords({ x: event.clientX, y: event.clientY }) ??
             view.state.selection.main.head;
-          handleImageDrop(view, file, pos, uploadImage);
+          embedImage(view, file, pos, uploadImage);
           return true;
         },
       }),
