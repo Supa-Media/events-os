@@ -15,30 +15,86 @@ import {
 const isHttpUrl = (v: unknown) =>
   typeof v === "string" && /^https?:\/\//i.test(v);
 
-/** The map image URL (resolved) + every marker and shape for an event. */
+/**
+ * Scope for site-map reads/writes: a live EVENT or a reusable TEMPLATE.
+ * Markers/shapes/image work on either; placements (which reference per-event
+ * rows) stay event-only and don't accept a scope.
+ */
+const scopeArg = v.union(
+  v.object({ kind: v.literal("event"), eventId: v.id("events") }),
+  v.object({ kind: v.literal("template"), eventTypeId: v.id("eventTypes") }),
+);
+type Scope =
+  | { kind: "event"; eventId: Id<"events"> }
+  | { kind: "template"; eventTypeId: Id<"eventTypes"> };
+
+/**
+ * Load the parent (event or eventType) for a scope and assert it's in the
+ * caller's chapter. Returns the parent doc so callers can read its image field.
+ * Throws (via requireInChapter) when the parent is missing or cross-chapter.
+ */
+async function requireScopeParent(ctx: any, chapterId: string, scope: Scope) {
+  if (scope.kind === "event") {
+    const event = await ctx.db.get(scope.eventId);
+    await requireInChapter(ctx, chapterId, event, "Event");
+    return event;
+  }
+  const eventType = await ctx.db.get(scope.eventTypeId);
+  await requireInChapter(ctx, chapterId, eventType, "Template");
+  return eventType;
+}
+
+/** Collect a scope's markers via the right index (by_event / by_template). */
+async function markersForScope(ctx: any, scope: Scope) {
+  return scope.kind === "event"
+    ? ctx.db
+        .query("siteMarkers")
+        .withIndex("by_event", (q: any) => q.eq("eventId", scope.eventId))
+        .collect()
+    : ctx.db
+        .query("siteMarkers")
+        .withIndex("by_template", (q: any) =>
+          q.eq("eventTypeId", scope.eventTypeId),
+        )
+        .collect();
+}
+
+/** Collect a scope's shapes via the right index (by_event / by_template). */
+async function shapesForScope(ctx: any, scope: Scope) {
+  return scope.kind === "event"
+    ? ctx.db
+        .query("siteShapes")
+        .withIndex("by_event", (q: any) => q.eq("eventId", scope.eventId))
+        .collect()
+    : ctx.db
+        .query("siteShapes")
+        .withIndex("by_template", (q: any) =>
+          q.eq("eventTypeId", scope.eventTypeId),
+        )
+        .collect();
+}
+
+/** The map image URL (resolved) + every marker and shape for a scope. */
 export const get = query({
-  args: { eventId: v.id("events") },
-  handler: async (ctx, { eventId }) => {
+  args: { scope: scopeArg },
+  handler: async (ctx, { scope }) => {
     const chapterId = await getChapterIdOrNull(ctx);
     if (!chapterId) return { imageUrl: null, markers: [], shapes: [] };
-    const event = await ctx.db.get(eventId);
-    if (!event || event.chapterId !== chapterId)
+    const parent = await ctx.db.get(
+      scope.kind === "event" ? scope.eventId : scope.eventTypeId,
+    );
+    if (!parent || (parent as any).chapterId !== chapterId)
       return { imageUrl: null, markers: [], shapes: [] };
 
     let imageUrl: string | null = null;
-    const img = event.siteMapImage;
+    const img = (parent as any).siteMapImage;
     if (img) {
       imageUrl = isHttpUrl(img)
         ? img
         : await ctx.storage.getUrl(img as Id<"_storage">);
     }
 
-    const markers = (
-      await ctx.db
-        .query("siteMarkers")
-        .withIndex("by_event", (q: any) => q.eq("eventId", eventId))
-        .collect()
-    )
+    const markers = (await markersForScope(ctx, scope))
       .sort((a: any, b: any) => a.createdAt - b.createdAt)
       .map((m: any) => ({
         _id: m._id,
@@ -49,12 +105,7 @@ export const get = query({
         category: m.category ?? null,
       }));
 
-    const shapes = (
-      await ctx.db
-        .query("siteShapes")
-        .withIndex("by_event", (q: any) => q.eq("eventId", eventId))
-        .collect()
-    )
+    const shapes = (await shapesForScope(ctx, scope))
       .sort((a: any, b: any) => a.createdAt - b.createdAt)
       .map((s: any) => ({
         _id: s._id,
@@ -76,25 +127,33 @@ export const get = query({
 /** Set (or replace) the venue map background image. Pass null to clear. */
 export const setImage = mutation({
   args: {
-    eventId: v.id("events"),
+    scope: scopeArg,
     storageId: v.union(v.id("_storage"), v.string(), v.null()),
   },
-  handler: async (ctx, { eventId, storageId }) => {
+  handler: async (ctx, { scope, storageId }) => {
     const chapterId = await requireChapterId(ctx);
-    const event = await ctx.db.get(eventId);
-    await requireInChapter(ctx, chapterId, event, "Event");
-    await ctx.db.patch(eventId, {
+    await requireScopeParent(ctx, chapterId, scope);
+    const parentId =
+      scope.kind === "event" ? scope.eventId : scope.eventTypeId;
+    await ctx.db.patch(parentId, {
       siteMapImage: storageId ?? undefined,
       updatedAt: Date.now(),
     });
-    return eventId;
+    return parentId;
   },
 });
+
+/** The scope-keyed parent field set on a new marker/shape row. */
+function scopeFields(scope: Scope) {
+  return scope.kind === "event"
+    ? { eventId: scope.eventId }
+    : { eventTypeId: scope.eventTypeId };
+}
 
 /** Drop a new labelled point on the map (free color + label). */
 export const addMarker = mutation({
   args: {
-    eventId: v.id("events"),
+    scope: scopeArg,
     x: v.number(),
     y: v.number(),
     label: v.optional(v.string()),
@@ -102,11 +161,10 @@ export const addMarker = mutation({
   },
   handler: async (ctx, args) => {
     const chapterId = await requireChapterId(ctx);
-    const event = await ctx.db.get(args.eventId);
-    await requireInChapter(ctx, chapterId, event, "Event");
+    await requireScopeParent(ctx, chapterId, args.scope);
     return await ctx.db.insert("siteMarkers", {
       chapterId: chapterId as Id<"chapters">,
-      eventId: args.eventId,
+      ...scopeFields(args.scope),
       x: Math.max(0, Math.min(1, args.x)),
       y: Math.max(0, Math.min(1, args.y)),
       label: args.label ?? "",
@@ -156,7 +214,7 @@ const clamp01 = (n: number) => Math.max(0, Math.min(1, n));
 /** Add a basic shape (rect / circle / line) — lets you sketch with no image. */
 export const addShape = mutation({
   args: {
-    eventId: v.id("events"),
+    scope: scopeArg,
     type: v.union(v.literal("rect"), v.literal("circle"), v.literal("line")),
     x: v.number(),
     y: v.number(),
@@ -169,11 +227,10 @@ export const addShape = mutation({
   },
   handler: async (ctx, args) => {
     const chapterId = await requireChapterId(ctx);
-    const event = await ctx.db.get(args.eventId);
-    await requireInChapter(ctx, chapterId, event, "Event");
+    await requireScopeParent(ctx, chapterId, args.scope);
     return await ctx.db.insert("siteShapes", {
       chapterId: chapterId as Id<"chapters">,
-      eventId: args.eventId,
+      ...scopeFields(args.scope),
       type: args.type,
       x: clamp01(args.x),
       y: clamp01(args.y),

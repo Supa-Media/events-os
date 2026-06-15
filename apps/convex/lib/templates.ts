@@ -436,5 +436,58 @@ export async function instantiateEvent(
     });
   }
 
+  // Clone the template's SITE MAP onto the event: the background image plus
+  // every marker and shape (new event-scoped rows, same geometry/labels/colors).
+  // Placements are deliberately NOT cloned — they reference per-event supplies/
+  // volunteers that don't exist yet.
+  if (opts.eventType.siteMapImage) {
+    await ctx.db.patch(eventId, {
+      siteMapImage: opts.eventType.siteMapImage,
+      updatedAt: now,
+    });
+  }
+
+  const templateMarkers = await ctx.db
+    .query("siteMarkers")
+    .withIndex("by_template", (q: any) =>
+      q.eq("eventTypeId", opts.eventType._id),
+    )
+    .collect();
+  for (const m of templateMarkers) {
+    await ctx.db.insert("siteMarkers", {
+      chapterId: opts.chapterId,
+      eventId,
+      x: m.x,
+      y: m.y,
+      label: m.label,
+      color: m.color,
+      category: m.category,
+      createdAt: now,
+    });
+  }
+
+  const templateShapes = await ctx.db
+    .query("siteShapes")
+    .withIndex("by_template", (q: any) =>
+      q.eq("eventTypeId", opts.eventType._id),
+    )
+    .collect();
+  for (const s of templateShapes) {
+    await ctx.db.insert("siteShapes", {
+      chapterId: opts.chapterId,
+      eventId,
+      type: s.type,
+      x: s.x,
+      y: s.y,
+      w: s.w,
+      h: s.h,
+      x2: s.x2,
+      y2: s.y2,
+      color: s.color,
+      label: s.label,
+      createdAt: now,
+    });
+  }
+
   return eventId;
 }

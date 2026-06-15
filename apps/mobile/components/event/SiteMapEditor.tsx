@@ -1464,29 +1464,72 @@ function ContextualLabelInput({
  * section on the event screen. When `embedded`, the page chrome (Screen wrapper,
  * back breadcrumb, PageHeader) is dropped so it sits inside the event layout.
  */
+/**
+ * Where this editor's map lives. An EVENT scope is the live venue (with
+ * supply/volunteer overlays); a TEMPLATE scope is the reusable blueprint
+ * (background + shapes + markers only — placements don't exist on templates and
+ * their UI is hidden). Callers that pass only `eventId` get an event scope.
+ */
+export type SiteMapScope =
+  | { kind: "event"; eventId: string }
+  | { kind: "template"; eventTypeId: string };
+
 export function SiteMapEditor({
   eventId: eventIdProp,
+  scope: scopeProp,
   embedded = false,
 }: {
-  eventId: string;
+  /** Legacy event-scoped entry point — kept so existing callers don't break. */
+  eventId?: string;
+  /** Explicit scope (event or template). Falls back to `eventId` when omitted. */
+  scope?: SiteMapScope;
   embedded?: boolean;
 }) {
   const router = useRouter();
-  const eventId = eventIdProp as any;
+  // Derive the scope: an explicit `scope` wins; otherwise build an event scope
+  // from the legacy `eventId` prop. One of the two is always supplied.
+  const scope: SiteMapScope =
+    scopeProp ?? { kind: "event", eventId: eventIdProp! };
+  const isTemplate = scope.kind === "template";
 
-  const eventData = useQuery(api.events.get, { eventId });
-  const data = useQuery(api.siteMap.get, { eventId });
-  const overlays = useQuery(api.siteMap.overlays, { eventId });
+  // Convex scope arg (matches the `scopeArg` union in apps/convex/siteMap.ts).
+  const apiScope =
+    scope.kind === "event"
+      ? ({ kind: "event", eventId: scope.eventId as any } as const)
+      : ({ kind: "template", eventTypeId: scope.eventTypeId as any } as const);
+  // Stable string identity of the scope — used as the keyboard effect dep.
+  const scopeKey =
+    scope.kind === "event"
+      ? `event:${scope.eventId}`
+      : `template:${scope.eventTypeId}`;
+  // The event id for placement (overlay) calls — null in template scope, where
+  // the supply/volunteer layers are hidden entirely.
+  const overlayEventId: any =
+    scope.kind === "event" ? scope.eventId : null;
+
+  // Only event scopes have an underlying event (for the header eyebrow) and the
+  // supply/volunteer overlay layers. Templates skip both.
+  const eventData = useQuery(
+    api.events.get,
+    scope.kind === "event" ? { eventId: scope.eventId as any } : "skip",
+  );
+  const data = useQuery(api.siteMap.get, { scope: apiScope });
+  const overlays = useQuery(
+    api.siteMap.overlays,
+    scope.kind === "event" ? { eventId: scope.eventId as any } : "skip",
+  );
 
   // Optimistic: update the local overlays cache immediately so a dragged chip
   // stays put instead of snapping to its old spot until the server round-trips.
+  // Overlays are event-only; the optimistic key is keyed by the event id and is
+  // never exercised in template scope (the layer UI is hidden there).
   const placeOrMove = useMutation(api.siteMap.placeOrMove).withOptimisticUpdate(
-    (store, { kind, refId, x, y }) => {
-      const cur = store.getQuery(api.siteMap.overlays, { eventId });
+    (store, { eventId: optEventId, kind, refId, x, y }) => {
+      const cur = store.getQuery(api.siteMap.overlays, { eventId: optEventId });
       if (!cur) return;
       if (!cur.placements.some((p) => p.kind === kind && p.refId === refId))
         return; // new placement (insert) — no flicker to fix on create
-      store.setQuery(api.siteMap.overlays, { eventId }, {
+      store.setQuery(api.siteMap.overlays, { eventId: optEventId }, {
         ...cur,
         placements: cur.placements.map((p) =>
           p.kind === kind && p.refId === refId ? { ...p, x, y } : p,
@@ -1501,11 +1544,11 @@ export function SiteMapEditor({
   const addMarker = useMutation(api.siteMap.addMarker);
   const updateMarker = useMutation(api.siteMap.updateMarker).withOptimisticUpdate(
     (store, { markerId, ...patch }) => {
-      const cur = store.getQuery(api.siteMap.get, { eventId });
+      const cur = store.getQuery(api.siteMap.get, { scope: apiScope });
       if (!cur) return;
-      store.setQuery(api.siteMap.get, { eventId }, {
+      store.setQuery(api.siteMap.get, { scope: apiScope }, {
         ...cur,
-        markers: cur.markers.map((m) =>
+        markers: cur.markers.map((m: Marker) =>
           m._id === markerId ? { ...m, ...patch } : m,
         ),
       });
@@ -1515,11 +1558,11 @@ export function SiteMapEditor({
   const addShape = useMutation(api.siteMap.addShape);
   const updateShape = useMutation(api.siteMap.updateShape).withOptimisticUpdate(
     (store, { shapeId, ...patch }) => {
-      const cur = store.getQuery(api.siteMap.get, { eventId });
+      const cur = store.getQuery(api.siteMap.get, { scope: apiScope });
       if (!cur) return;
-      store.setQuery(api.siteMap.get, { eventId }, {
+      store.setQuery(api.siteMap.get, { scope: apiScope }, {
         ...cur,
-        shapes: cur.shapes.map((s) =>
+        shapes: cur.shapes.map((s: Shape) =>
           s._id === shapeId ? { ...s, ...patch } : s,
         ),
       });
@@ -1606,32 +1649,32 @@ export function SiteMapEditor({
   // Create a shape and record it. The created id lives in a mutable closure so
   // that redo (which recreates the shape) keeps undo deleting the right row.
   async function opCreateShape(
-    props: Omit<Parameters<typeof addShape>[0], "eventId">,
+    props: Omit<Parameters<typeof addShape>[0], "scope">,
   ): Promise<string> {
-    const id = (await addShape({ eventId, ...props })) as string;
+    const id = (await addShape({ scope: apiScope, ...props })) as string;
     let curId = id;
     pushOp({
       undo: async () => {
         await removeShape({ shapeId: curId as any });
       },
       redo: async () => {
-        curId = (await addShape({ eventId, ...props })) as string;
+        curId = (await addShape({ scope: apiScope, ...props })) as string;
       },
     });
     return curId;
   }
 
   async function opCreateMarker(
-    props: Omit<Parameters<typeof addMarker>[0], "eventId">,
+    props: Omit<Parameters<typeof addMarker>[0], "scope">,
   ): Promise<string> {
-    const id = (await addMarker({ eventId, ...props })) as string;
+    const id = (await addMarker({ scope: apiScope, ...props })) as string;
     let curId = id;
     pushOp({
       undo: async () => {
         await removeMarker({ markerId: curId as any });
       },
       redo: async () => {
-        curId = (await addMarker({ eventId, ...props })) as string;
+        curId = (await addMarker({ scope: apiScope, ...props })) as string;
       },
     });
     return curId;
@@ -1700,7 +1743,7 @@ export function SiteMapEditor({
     pushOp({
       undo: async () => {
         curId = (await addShape({
-          eventId,
+          scope: apiScope,
           type: data.type,
           x: data.x,
           y: data.y,
@@ -1730,7 +1773,7 @@ export function SiteMapEditor({
     pushOp({
       undo: async () => {
         curId = (await addMarker({
-          eventId,
+          scope: apiScope,
           x: data.x,
           y: data.y,
           label: data.label ?? undefined,
@@ -1754,7 +1797,7 @@ export function SiteMapEditor({
         body: blob,
       });
       const { storageId } = await res.json();
-      await setImage({ eventId, storageId });
+      await setImage({ scope: apiScope, storageId });
       setAspect(null);
     } catch {
       // Swallow; the canvas simply stays as-is on failure.
@@ -1780,7 +1823,7 @@ export function SiteMapEditor({
 
   function removeImage() {
     setAspect(null);
-    void setImage({ eventId, storageId: null });
+    void setImage({ scope: apiScope, storageId: null });
   }
 
   function measureContainer() {
@@ -2095,11 +2138,15 @@ export function SiteMapEditor({
 
     document.addEventListener("keydown", onKeyDown);
     return () => document.removeEventListener("keydown", onKeyDown);
-    // Mutations are stable; selection/data are read from refs.
+    // Mutations are stable; selection/data are read from refs. Re-bind only when
+    // the scope identity changes.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [eventId]);
+  }, [scopeKey]);
 
-  if (eventData === undefined || data === undefined) {
+  // In template scope there's no event to load, so only gate on the map data.
+  const chromeLoading =
+    data === undefined || (scope.kind === "event" && eventData === undefined);
+  if (chromeLoading) {
     if (embedded) return <ActivityIndicator color={colors.accent} />;
     return (
       <>
@@ -2175,7 +2222,10 @@ export function SiteMapEditor({
           />
 
           {/* Overlay layer toggles — show/hide the supplies & volunteers
-              chips on the canvas plus their trays. Independent of draw mode. */}
+              chips on the canvas plus their trays. Independent of draw mode.
+              EVENT-ONLY: templates have no per-event supplies/volunteers to
+              place, so the whole placement layer is hidden in template scope. */}
+          {!isTemplate ? (
           <View className="flex-row flex-wrap items-center gap-2">
             <Text className="text-2xs font-semibold uppercase tracking-wide text-faint">
               Layers
@@ -2216,15 +2266,16 @@ export function SiteMapEditor({
               );
             })}
           </View>
+          ) : null}
 
-          {/* Trays of not-yet-placed items for each enabled layer. */}
-          {showSupplies ? (
+          {/* Trays of not-yet-placed items for each enabled layer (event-only). */}
+          {!isTemplate && showSupplies ? (
             <OverlayTray
               kind="supply"
               items={unplacedSupplies}
               onPlace={(refId) =>
                 void placeOrMove({
-                  eventId,
+                  eventId: overlayEventId,
                   kind: "supply",
                   refId,
                   x: 0.5,
@@ -2233,13 +2284,13 @@ export function SiteMapEditor({
               }
             />
           ) : null}
-          {showVolunteers ? (
+          {!isTemplate && showVolunteers ? (
             <OverlayTray
               kind="volunteer"
               items={unplacedVolunteers}
               onPlace={(refId) =>
                 void placeOrMove({
-                  eventId,
+                  eventId: overlayEventId,
                   kind: "volunteer",
                   refId,
                   x: 0.5,
@@ -2440,8 +2491,8 @@ export function SiteMapEditor({
                         pointer-events:none overlay so its chips coexist with
                         shapes & markers without joining the selection. Each
                         placed chip drags freely; the "×" returns it to its
-                        tray. Only the enabled layers render. */}
-                    {W > 0 && H > 0 ? (
+                        tray. Only the enabled layers render. EVENT-ONLY. */}
+                    {!isTemplate && W > 0 && H > 0 ? (
                       <div
                         style={{
                           position: "absolute",
@@ -2475,7 +2526,7 @@ export function SiteMapEditor({
                                 H={H}
                                 onDragStop={(x, y) =>
                                   void placeOrMove({
-                                    eventId,
+                                    eventId: overlayEventId,
                                     kind: p.kind,
                                     refId: p.refId,
                                     x: clamp01(x / W),

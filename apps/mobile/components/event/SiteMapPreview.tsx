@@ -308,7 +308,9 @@ function PreviewPlacement({
 }
 
 export function SiteMapPreview({ eventId }: { eventId: string }) {
-  const data = useQuery(api.siteMap.get, { eventId: eventId as any });
+  const data = useQuery(api.siteMap.get, {
+    scope: { kind: "event", eventId: eventId as any },
+  });
   const overlays = useQuery(api.siteMap.overlays, { eventId: eventId as any });
 
   // Measured container size, used for line geometry.
