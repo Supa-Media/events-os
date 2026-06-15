@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { View, Text, Pressable, TextInput, Platform } from "react-native";
 import { Card, Button, Avatar, Icon, statusTone } from "../ui";
 import { colors } from "../../lib/theme";
@@ -9,6 +9,12 @@ import {
   type EventStatus,
 } from "@events-os/shared";
 import { WebDateTimeInput } from "./EventHeader";
+import {
+  RoleChipMenu,
+  confirmDeleteRole,
+  measureAnchor,
+  type ChipAnchor,
+} from "../role/RoleChips";
 
 type RoleRow = {
   roleId: string;
@@ -36,6 +42,9 @@ export function EventOverviewControls({
   onChangeBudget,
   onSaveBudget,
   onDelete,
+  onRenameRole,
+  onDeleteRole,
+  onAddRole,
 }: {
   event: any;
   roleRows: RoleRow[];
@@ -51,21 +60,22 @@ export function EventOverviewControls({
   onChangeBudget: (text: string) => void;
   onSaveBudget: () => void;
   onDelete: () => void;
+  onRenameRole: (roleId: string, label: string) => void;
+  onDeleteRole: (roleId: string) => void;
+  onAddRole: (label: string) => void;
 }) {
   return (
     <Card padding="md" className="mb-6">
       <View className="flex-row flex-wrap items-start gap-x-6 gap-y-4">
-        {/* Roles — inline pills */}
+        {/* Roles — inline chips: tap = assign, right-click/long-press = menu */}
         <ControlBlock label="Roles" count={roleRows.length || undefined}>
-          {roleRows.length === 0 ? (
-            <Text className="text-sm text-faint">No roles</Text>
-          ) : (
-            <View className="flex-row flex-wrap gap-2">
-              {roleRows.map((r) => (
-                <RoleChip key={r.roleId} role={r} onPress={() => onPickRole(r)} />
-              ))}
-            </View>
-          )}
+          <RolesControl
+            roleRows={roleRows}
+            onPickRole={onPickRole}
+            onRenameRole={onRenameRole}
+            onDeleteRole={onDeleteRole}
+            onAddRole={onAddRole}
+          />
         </ControlBlock>
 
         {/* Status — inline chips */}
@@ -215,28 +225,192 @@ function InlineInput({
   );
 }
 
-/** A compact inline pill for one role: label + assigned person or "Assign". */
-function RoleChip({ role, onPress }: { role: RoleRow; onPress: () => void }) {
+/**
+ * The Roles control: a single row of role chips. Tapping a chip assigns its
+ * owner; right-click (web) / long-press (native) opens a Rename/Delete menu;
+ * the trailing "＋" chip adds an event role. The rename/delete/add + menu logic
+ * is shared with the template editor via `../role/RoleChips`.
+ */
+function RolesControl({
+  roleRows,
+  onPickRole,
+  onRenameRole,
+  onDeleteRole,
+  onAddRole,
+}: {
+  roleRows: RoleRow[];
+  onPickRole: (role: RoleRow) => void;
+  onRenameRole: (roleId: string, label: string) => void;
+  onDeleteRole: (roleId: string) => void;
+  onAddRole: (label: string) => void;
+}) {
+  const [menu, setMenu] = useState<{ roleId: string; anchor: ChipAnchor } | null>(
+    null,
+  );
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [adding, setAdding] = useState(false);
+
+  const menuRole = roleRows.find((r) => r.roleId === menu?.roleId) ?? null;
+
+  return (
+    <View className="flex-row flex-wrap items-center gap-2">
+      {roleRows.map((r) => (
+        <RoleChip
+          key={r.roleId}
+          role={r}
+          editing={editingId === r.roleId}
+          onPress={() => onPickRole(r)}
+          onOpenMenu={(anchor) => setMenu({ roleId: r.roleId, anchor })}
+          onCommitRename={(label) => {
+            const trimmed = label.trim();
+            if (trimmed && trimmed !== r.roleLabel) onRenameRole(r.roleId, trimmed);
+            setEditingId(null);
+          }}
+        />
+      ))}
+
+      {adding ? (
+        <AddRoleChip
+          onCommit={(label) => {
+            const trimmed = label.trim();
+            if (trimmed) onAddRole(trimmed);
+            setAdding(false);
+          }}
+          onCancel={() => setAdding(false)}
+        />
+      ) : (
+        <Pressable
+          onPress={() => setAdding(true)}
+          accessibilityRole="button"
+          accessibilityLabel="Add role"
+          className="flex-row items-center rounded-pill border border-dashed border-border-strong bg-raised px-2.5 py-1.5 active:opacity-80 web:hover:border-accent"
+        >
+          <Icon name="plus" size={14} color={colors.muted} />
+        </Pressable>
+      )}
+
+      <RoleChipMenu
+        anchor={menu?.anchor}
+        onClose={() => setMenu(null)}
+        onRename={() => {
+          if (menuRole) setEditingId(menuRole.roleId);
+          setMenu(null);
+        }}
+        onDelete={() => {
+          setMenu(null);
+          if (menuRole) confirmDeleteRole(() => onDeleteRole(menuRole.roleId));
+        }}
+      />
+    </View>
+  );
+}
+
+/**
+ * A compact inline chip for one role: label + assigned person or "Assign".
+ * Tap assigns; right-click/long-press opens the menu; `editing` swaps the label
+ * for an inline rename field.
+ */
+function RoleChip({
+  role,
+  editing,
+  onPress,
+  onOpenMenu,
+  onCommitRename,
+}: {
+  role: RoleRow;
+  editing: boolean;
+  onPress: () => void;
+  onOpenMenu: (anchor: ChipAnchor) => void;
+  onCommitRename: (label: string) => void;
+}) {
+  const ref = useRef<any>(null);
+  const [draft, setDraft] = useState(role.roleLabel);
+
+  if (editing) {
+    return (
+      <View
+        ref={ref}
+        className="rounded-pill border border-accent bg-raised px-2.5 py-1.5"
+      >
+        <TextInput
+          value={draft}
+          onChangeText={setDraft}
+          autoFocus
+          placeholderTextColor={colors.faint}
+          onBlur={() => onCommitRename(draft)}
+          onSubmitEditing={() => onCommitRename(draft)}
+          blurOnSubmit
+          className="text-2xs font-bold uppercase tracking-wider text-ink"
+          style={{ minWidth: 70, outlineWidth: 0 } as any}
+        />
+      </View>
+    );
+  }
+
+  const webProps =
+    Platform.OS === "web"
+      ? ({
+          onContextMenu: (e: any) => {
+            e?.preventDefault?.();
+            measureAnchor(ref.current, onOpenMenu);
+          },
+        } as any)
+      : {};
+
   return (
     <Pressable
       onPress={onPress}
-      className="flex-row items-center gap-2 rounded-pill border border-border bg-sunken px-2.5 py-1.5 active:opacity-80 web:hover:border-border-strong"
+      onLongPress={() => measureAnchor(ref.current, onOpenMenu)}
+      delayLongPress={300}
     >
-      <Text className="text-2xs font-bold uppercase tracking-wider text-muted">
-        {role.roleLabel}
-      </Text>
-      {role.person ? (
-        <View className="flex-row items-center gap-1.5">
-          <Avatar name={role.person.name} size={18} />
-          <Text className="text-sm text-ink">{role.person.name}</Text>
-        </View>
-      ) : (
-        <View className="flex-row items-center gap-1">
-          <Icon name="user-plus" size={13} color={colors.muted} />
-          <Text className="text-sm text-faint">Assign</Text>
-        </View>
-      )}
+      <View
+        ref={ref}
+        {...webProps}
+        className="flex-row items-center gap-2 rounded-pill border border-border bg-sunken px-2.5 py-1.5 active:opacity-80 web:hover:border-border-strong"
+      >
+        <Text className="text-2xs font-bold uppercase tracking-wider text-muted">
+          {role.roleLabel}
+        </Text>
+        {role.person ? (
+          <View className="flex-row items-center gap-1.5">
+            <Avatar name={role.person.name} size={18} />
+            <Text className="text-sm text-ink">{role.person.name}</Text>
+          </View>
+        ) : (
+          <View className="flex-row items-center gap-1">
+            <Icon name="user-plus" size={13} color={colors.muted} />
+            <Text className="text-sm text-faint">Assign</Text>
+          </View>
+        )}
+      </View>
     </Pressable>
+  );
+}
+
+/** Tiny inline input shown by the "＋" chip to name a new event role. */
+function AddRoleChip({
+  onCommit,
+  onCancel,
+}: {
+  onCommit: (label: string) => void;
+  onCancel: () => void;
+}) {
+  const [draft, setDraft] = useState("");
+  return (
+    <View className="rounded-pill border border-accent bg-raised px-2.5 py-1.5">
+      <TextInput
+        value={draft}
+        onChangeText={setDraft}
+        autoFocus
+        placeholder="Role name"
+        placeholderTextColor={colors.faint}
+        onBlur={() => (draft.trim() ? onCommit(draft) : onCancel())}
+        onSubmitEditing={() => onCommit(draft)}
+        blurOnSubmit
+        className="text-2xs font-bold uppercase tracking-wider text-ink"
+        style={{ minWidth: 80, outlineWidth: 0 } as any}
+      />
+    </View>
   );
 }
 

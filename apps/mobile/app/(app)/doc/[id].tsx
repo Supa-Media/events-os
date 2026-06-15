@@ -144,7 +144,8 @@ export default function DocEditorScreen() {
   }
 
   return (
-    <>
+    <View className="flex-1 flex-row">
+    <View className="flex-1">
     <Screen maxWidth={820}>
       <Stack.Screen options={{ title: doc.title || "Doc" }} />
 
@@ -230,11 +231,12 @@ export default function DocEditorScreen() {
         </View>
       ) : null}
     </Screen>
+    </View>
 
-    {/* Floating Notion-AI-style chat panel — markdown docs only. Docks right;
-        chats with an agent that rewrites the doc body. COW is honored via
-        `resolveTargetDocId`, which forks a shared template doc into an
-        event-local copy before the first edit. */}
+    {/* In-flow Notion-AI-style chat panel — markdown docs only. Docks right and
+        squeezes the content left when open; chats with an agent that rewrites
+        the doc body. COW is honored via `resolveTargetDocId`, which forks a
+        shared template doc into an event-local copy before the first edit. */}
     {isMarkdown ? (
       <DocAssistantPanel
         docId={activeDocId}
@@ -247,6 +249,6 @@ export default function DocEditorScreen() {
         onEdited={() => setBodyInput(null)}
       />
     ) : null}
-    </>
+    </View>
   );
 }

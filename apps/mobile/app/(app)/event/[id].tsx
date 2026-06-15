@@ -16,7 +16,6 @@ import { CrewSections } from "../../../components/event/CrewSections";
 import { EventHeader } from "../../../components/event/EventHeader";
 import { EventTabBar } from "../../../components/event/EventTabBar";
 import { EventOverviewControls } from "../../../components/event/EventOverviewControls";
-import { EventRolesCard } from "../../../components/event/EventRolesCard";
 import { ModuleRollupRow } from "../../../components/event/EventModuleRollup";
 import { ModuleSection } from "../../../components/event/ModuleSection";
 import { EventModulesCard } from "../../../components/event/EventModulesCard";
@@ -41,6 +40,9 @@ export default function EventDetailScreen() {
   const removeEvent = useMutation(api.events.remove);
   const assignRole = useMutation(api.roleAssignments.assign);
   const unassignRole = useMutation(api.roleAssignments.unassign);
+  const updateEventRole = useMutation(api.roles.updateEventRole);
+  const createEventRole = useMutation(api.roles.createForEvent);
+  const deleteEventRole = useMutation(api.roles.deleteEventRole);
 
   // Local edit buffers (null = mirror server value).
   const [nameInput, setNameInput] = useState<string | null>(null);
@@ -213,7 +215,9 @@ export default function EventDetailScreen() {
   return (
     <>
       <Stack.Screen options={{ headerShown: false }} />
-      <Screen maxWidth={1180}>
+      <View className="flex-1 flex-row">
+        <View className="flex-1">
+          <Screen maxWidth={1180}>
         {/* Breadcrumb / back */}
         <Pressable
           onPress={() => router.replace("/")}
@@ -271,10 +275,14 @@ export default function EventDetailScreen() {
               onChangeBudget={setBudgetInput}
               onSaveBudget={handleSaveBudget}
               onDelete={confirmDelete}
+              onRenameRole={(roleId, label) =>
+                updateEventRole({ roleId: roleId as any, label })
+              }
+              onDeleteRole={(roleId) =>
+                deleteEventRole({ roleId: roleId as any })
+              }
+              onAddRole={(label) => createEventRole({ eventId, label })}
             />
-
-            {/* Event roles — the event's own role list (diverges from template). */}
-            <EventRolesCard eventId={eventId} roles={eventRoles} />
 
             {/* Add / re-enable modules at the event level. */}
             <EventModulesCard
@@ -331,7 +339,12 @@ export default function EventDetailScreen() {
             );
           })()
         )}
-      </Screen>
+          </Screen>
+        </View>
+
+        {/* In-flow assistant panel — squeezes the content left when open. */}
+        <AiAssistantPanel eventId={eventId} eventName={event.name} />
+      </View>
 
       <PersonPicker
         visible={picker !== null}
@@ -378,8 +391,6 @@ export default function EventDetailScreen() {
         }
         onClose={() => setOwnerOpen(false)}
       />
-
-      <AiAssistantPanel eventId={eventId} eventName={event.name} />
     </>
   );
 }
