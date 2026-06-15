@@ -7,10 +7,13 @@
  * function.
  */
 import { Id } from "../../_generated/dataModel";
-import { DEFAULT_ROLES, LIGHTWEIGHT_ROLE_KEYS } from "@events-os/shared";
+import {
+  DEFAULT_ROLES,
+  LIGHTWEIGHT_ROLE_KEYS,
+  GRID_CORE_MODULE_KEYS,
+} from "@events-os/shared";
 import { toSlug, seedTemplateRoles } from "../templates";
 import {
-  activeModules,
   addTemplateItems,
   seedTemplateCols,
   type ItemRow,
@@ -74,10 +77,8 @@ export async function buildChapterRolesAndTemplates(
     slug: toSlug("Eden"),
     description:
       "Full-scale flagship gathering: worship, message, ministry, and community activity.",
-    activeComponents: [
-      "planning_doc", "run_of_show", "comms", "permits", "supplies", "retro",
-      "volunteer_expectations",
-    ],
+    // Eden runs every grid core module — nothing disabled (site_map stays on).
+    disabledCoreModules: [],
     version: 1,
     isArchived: false,
     createdBy,
@@ -88,10 +89,7 @@ export async function buildChapterRolesAndTemplates(
   // Eden owns the 4 default roles. Item rows resolve their role KEY to these ids.
   const edenRoleByKey = await seedTemplateRoles(ctx, edenId, DEFAULT_ROLES);
 
-  for (const m of activeModules([
-    "planning_doc", "run_of_show", "comms", "permits", "supplies", "retro",
-    "volunteer_expectations",
-  ])) {
+  for (const m of GRID_CORE_MODULE_KEYS) {
     await seedTemplateCols(ctx, edenId, m);
   }
 
@@ -152,10 +150,7 @@ export async function buildChapterRolesAndTemplates(
     description:
       "Annual neighbor-facing outreach — same structure as Eden, derived from it.",
     deriveFromEventTypeId: edenId,
-    activeComponents: [
-      "planning_doc", "run_of_show", "comms", "permits", "supplies", "retro",
-      "volunteer_expectations",
-    ],
+    disabledCoreModules: [],
     version: 1,
     isArchived: false,
     createdBy,
@@ -206,7 +201,9 @@ export async function buildChapterRolesAndTemplates(
     description:
       "Lightweight pop-up worship — a ~10% scaled-down variant of Eden, run by a 2–3 person team. The most important, most repeatable event.",
     deriveFromEventTypeId: edenId,
-    activeComponents: ["planning_doc", "run_of_show", "comms", "permits", "supplies", "retro"],
+    // WWS is lightweight: it skips volunteer_expectations (and keeps the rest +
+    // site_map on, matching its prior trimmed module set).
+    disabledCoreModules: ["volunteer_expectations"],
     version: 1,
     isArchived: false,
     createdBy,

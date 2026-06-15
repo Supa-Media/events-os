@@ -15,6 +15,76 @@
 import { internalMutation } from "./_generated/server";
 import { Id } from "./_generated/dataModel";
 
+/**
+ * Phase 3 migration: `eventTypes.activeComponents` (and the per-event copy via
+ * its eventType) → the core-module DELTA model.
+ *
+ * Modules used to be an explicit `activeComponents: string[]` allow-list of the
+ * 7 grid modules. They're now platform-wide CORE_MODULES with a per-scope
+ * `disabledCoreModules` deny-list (+ overrides, + custom rows). The general rule
+ * for introducing a new core module is that it's ABSENT from existing
+ * `disabledCoreModules`, so it defaults to ENABLED everywhere — which is exactly
+ * what we want for `site_map` (turns on for all existing templates/events).
+ *
+ * So we set `disabledCoreModules = PRIOR_CORE_KEYS − activeComponents` (the OLD
+ * 7-key set minus what was active — NOT including site_map). Cloned onto each
+ * event from its eventType. `activeComponents` is then cleared.
+ *
+ * Reads the OLD shape via `(... as any)`. Idempotent-ish: skips a row that
+ * already has `disabledCoreModules` set. Does NOT need to run for this task.
+ */
+const PRIOR_CORE_KEYS = [
+  "planning_doc",
+  "run_of_show",
+  "comms",
+  "permits",
+  "supplies",
+  "retro",
+  "volunteer_expectations",
+];
+
+export const migrateModulesToDeltas = internalMutation({
+  args: {},
+  handler: async (ctx) => {
+    let templatesMigrated = 0;
+    let eventsMigrated = 0;
+
+    // Map eventTypeId → its computed disabledCoreModules, so events can inherit.
+    const disabledByType = new Map<string, string[]>();
+
+    const eventTypes = await ctx.db.query("eventTypes").collect();
+    for (const et of eventTypes) {
+      const active: string[] = (et as any).activeComponents ?? [];
+      const disabled = PRIOR_CORE_KEYS.filter((k) => !active.includes(k));
+      disabledByType.set(String(et._id), disabled);
+
+      // Idempotent: skip a template already on the delta model.
+      if ((et as any).disabledCoreModules !== undefined) {
+        disabledByType.set(
+          String(et._id),
+          (et as any).disabledCoreModules ?? [],
+        );
+        continue;
+      }
+      await ctx.db.patch(et._id, {
+        disabledCoreModules: disabled,
+        activeComponents: undefined,
+      } as any);
+      templatesMigrated++;
+    }
+
+    const events = await ctx.db.query("events").collect();
+    for (const ev of events) {
+      if ((ev as any).disabledCoreModules !== undefined) continue;
+      const disabled = disabledByType.get(String(ev.eventTypeId)) ?? [];
+      await ctx.db.patch(ev._id, { disabledCoreModules: disabled } as any);
+      eventsMigrated++;
+    }
+
+    return { templatesMigrated, eventsMigrated };
+  },
+});
+
 export const migrateRolesToScoped = internalMutation({
   args: {},
   handler: async (ctx) => {

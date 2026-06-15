@@ -10,14 +10,19 @@
 import { query, mutation } from "./_generated/server";
 import { Id } from "./_generated/dataModel";
 import { v } from "convex/values";
-import { MODULE_KEYS, DEFAULT_ROLES, type ModuleKey } from "@events-os/shared";
+import { DEFAULT_ROLES, GRID_CORE_MODULE_KEYS } from "@events-os/shared";
 import {
   requireUserId,
   requireChapterId,
   requireInChapter,
   getChapterIdOrNull,
 } from "./lib/context";
-import { toSlug, seedModuleColumns, seedTemplateRoles } from "./lib/templates";
+import {
+  toSlug,
+  seedModuleColumns,
+  seedTemplateRoles,
+  templateActiveModules,
+} from "./lib/templates";
 
 /** A template's roles ({ _id, label }), ordered. */
 async function templateRoles(ctx: any, eventTypeId: Id<"eventTypes">) {
@@ -29,11 +34,6 @@ async function templateRoles(ctx: any, eventTypeId: Id<"eventTypes">) {
     .filter((r: any) => r.isArchived !== true)
     .sort((a: any, b: any) => a.order - b.order)
     .map((r: any) => ({ _id: r._id, label: r.label }));
-}
-
-/** The active modules (list-backed components) for a template. */
-function activeModules(activeComponents: string[]): ModuleKey[] {
-  return MODULE_KEYS.filter((m) => activeComponents.includes(m));
 }
 
 /** List the chapter's active event types with a planning-task count + roles. */
@@ -56,12 +56,13 @@ export const list = query({
           )
           .collect();
         const roles = await templateRoles(ctx, t._id);
+        const modules = await templateActiveModules(ctx, t);
         return {
           _id: t._id,
           name: t.name,
           slug: t.slug,
           description: t.description,
-          activeComponents: t.activeComponents,
+          modules,
           roles,
           version: t.version,
           taskCount: tasks.length,
@@ -82,7 +83,8 @@ export const get = query({
     return {
       eventType,
       roles: await templateRoles(ctx, eventTypeId),
-      modules: activeModules(eventType.activeComponents),
+      // Resolved active modules (core + custom, with deltas applied).
+      modules: await templateActiveModules(ctx, eventType),
     };
   },
 });
@@ -106,7 +108,8 @@ export const create = mutation({
         }),
       ),
     ),
-    activeComponents: v.array(v.string()),
+    // Core module keys to start DISABLED (everything else is on by default).
+    disabledCoreModules: v.optional(v.array(v.string())),
     deriveFromEventTypeId: v.optional(v.id("eventTypes")),
   },
   handler: async (ctx, args) => {
@@ -114,13 +117,13 @@ export const create = mutation({
     const userId = await requireUserId(ctx);
     const now = Date.now();
 
-    let activeComponents = args.activeComponents;
+    let disabledCoreModules = args.disabledCoreModules ?? [];
     let parent: any = null;
     if (args.deriveFromEventTypeId) {
       parent = await ctx.db.get(args.deriveFromEventTypeId);
       await requireInChapter(ctx, chapterId, parent, "Event type");
-      if (activeComponents.length === 0)
-        activeComponents = parent.activeComponents;
+      if (!args.disabledCoreModules)
+        disabledCoreModules = parent.disabledCoreModules ?? [];
     }
 
     const eventTypeId = (await ctx.db.insert("eventTypes", {
@@ -129,7 +132,10 @@ export const create = mutation({
       slug: toSlug(args.name),
       description: args.description,
       deriveFromEventTypeId: args.deriveFromEventTypeId,
-      activeComponents,
+      disabledCoreModules,
+      coreModuleOverrides: args.deriveFromEventTypeId
+        ? parent?.coreModuleOverrides
+        : undefined,
       version: 1,
       isArchived: false,
       createdBy: userId as Id<"users">,
@@ -179,10 +185,23 @@ export const create = mutation({
           roleId: rest.roleId ? roleIdMap.get(String(rest.roleId)) : undefined,
         });
       }
+      // Clone the parent's custom modules too.
+      const parentModules = await ctx.db
+        .query("templateModules")
+        .withIndex("by_template", (q: any) =>
+          q.eq("eventTypeId", args.deriveFromEventTypeId),
+        )
+        .collect();
+      for (const m of parentModules) {
+        const { _id, _creationTime, eventTypeId: _e, ...rest } = m as any;
+        await ctx.db.insert("templateModules", { eventTypeId, ...rest });
+      }
     } else {
-      // Seed this template's roles + default columns for each active module.
+      // Seed this template's roles + default columns for each active grid core.
       await seedTemplateRoles(ctx, eventTypeId, args.roleSeeds ?? DEFAULT_ROLES);
-      for (const m of activeModules(activeComponents)) {
+      const disabled = new Set(disabledCoreModules);
+      for (const m of GRID_CORE_MODULE_KEYS) {
+        if (disabled.has(m)) continue;
         await seedModuleColumns(ctx, eventTypeId, m);
       }
     }
@@ -191,13 +210,12 @@ export const create = mutation({
   },
 });
 
-/** Edit a template's metadata / active roles / active components; bumps version. */
+/** Edit a template's metadata (name/description); bumps version. */
 export const update = mutation({
   args: {
     eventTypeId: v.id("eventTypes"),
     name: v.optional(v.string()),
     description: v.optional(v.string()),
-    activeComponents: v.optional(v.array(v.string())),
   },
   handler: async (ctx, { eventTypeId, ...patch }) => {
     const chapterId = await requireChapterId(ctx);
@@ -209,23 +227,6 @@ export const update = mutation({
       fields.slug = toSlug(patch.name);
     }
     if (patch.description !== undefined) fields.description = patch.description;
-
-    if (patch.activeComponents !== undefined) {
-      fields.activeComponents = patch.activeComponents;
-      // Newly-activated list modules with no columns yet get default columns.
-      const before = activeModules(et!.activeComponents);
-      const after = activeModules(patch.activeComponents);
-      for (const m of after) {
-        if (before.includes(m)) continue;
-        const existing = await ctx.db
-          .query("templateColumns")
-          .withIndex("by_eventType_module", (q: any) =>
-            q.eq("eventTypeId", eventTypeId).eq("module", m),
-          )
-          .first();
-        if (!existing) await seedModuleColumns(ctx, eventTypeId, m);
-      }
-    }
     fields.version = (et!.version ?? 1) + 1;
     fields.updatedAt = Date.now();
     await ctx.db.patch(eventTypeId, fields);

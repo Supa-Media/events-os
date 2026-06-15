@@ -14,7 +14,6 @@ import {
   computeReadiness,
   isCompleteStatus,
   DAY_OFFSET_MODULES,
-  MODULE_KEYS,
   type ModuleKey,
 } from "@events-os/shared";
 import {
@@ -23,7 +22,7 @@ import {
   requireInChapter,
   getChapterIdOrNull,
 } from "./lib/context";
-import { instantiateEvent } from "./lib/templates";
+import { instantiateEvent, eventActiveModules } from "./lib/templates";
 import { paidTotalForEvent } from "./engagements";
 
 const statusUnion = v.union(
@@ -166,7 +165,9 @@ export const get = query({
     return {
       event,
       eventTypeName: eventType?.name ?? "Unknown",
-      activeComponents: eventType?.activeComponents ?? [],
+      // Resolved active modules (core + custom) from the EVENT's own deltas.
+      modules: await eventActiveModules(ctx, event),
+      moduleReadiness: event.moduleReadiness ?? [],
       owner,
       readiness: r.readiness,
       taskTotal: r.total,
@@ -190,9 +191,11 @@ export const moduleSummaries = query({
     const chapterId = await requireChapterId(ctx);
     const event = await ctx.db.get(eventId);
     if (!event || event.chapterId !== chapterId) return null;
-    const eventType = await ctx.db.get(event.eventTypeId as Id<"eventTypes">);
-    const active: string[] = eventType?.activeComponents ?? [];
-    const modules = MODULE_KEYS.filter((m) => active.includes(m));
+    // Grid modules only — site_map (and any non-grid surface) has no items.
+    const resolved = await eventActiveModules(ctx, event);
+    const modules = resolved
+      .filter((m) => m.surface === "grid")
+      .map((m) => m.key);
     const now = Date.now();
 
     return await Promise.all(
@@ -426,6 +429,12 @@ export const remove = mutation({
       .withIndex("by_event", (q: any) => q.eq("eventId", eventId))
       .collect();
     for (const r of eventRoles) await ctx.db.delete(r._id);
+
+    const eventModules = await ctx.db
+      .query("eventModules")
+      .withIndex("by_event", (q: any) => q.eq("eventId", eventId))
+      .collect();
+    for (const m of eventModules) await ctx.db.delete(m._id);
 
     await ctx.db.delete(eventId);
     return eventId;

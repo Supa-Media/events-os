@@ -11,22 +11,18 @@ import {
   PersonPicker,
   Icon,
 } from "../../../components/ui";
-import { EditableGrid } from "../../../components/grid/EditableGrid";
 import { AiAssistantPanel } from "../../../components/ai/AiAssistantPanel";
 import { CrewSections } from "../../../components/event/CrewSections";
 import { EventHeader } from "../../../components/event/EventHeader";
 import { EventTabBar } from "../../../components/event/EventTabBar";
 import { EventOverviewControls } from "../../../components/event/EventOverviewControls";
 import { EventRolesCard } from "../../../components/event/EventRolesCard";
-import { ModuleOwnerBar, ModuleRollupRow } from "../../../components/event/EventModuleRollup";
+import { ModuleRollupRow } from "../../../components/event/EventModuleRollup";
+import { ModuleSection } from "../../../components/event/ModuleSection";
+import { EventModulesCard } from "../../../components/event/EventModulesCard";
 import { colors } from "../../../lib/theme";
 import { parseDateInput, toDateInput } from "../../../lib/format";
-import {
-  MODULE_KEYS,
-  MODULE_LABELS,
-  MODULE_OWNER_ROLE_KEY,
-  type ModuleKey,
-} from "@events-os/shared";
+import type { ResolvedModule } from "@events-os/shared";
 
 export default function EventDetailScreen() {
   const router = useRouter();
@@ -36,6 +32,7 @@ export default function EventDetailScreen() {
   const data = useQuery(api.events.get, { eventId });
   const roleRows = useQuery(api.roleAssignments.listForEvent, { eventId });
   const eventRolesRaw = useQuery(api.roles.listForEvent, { eventId });
+  const moduleData = useQuery(api.modules.listForEvent, { eventId });
   const summaries = useQuery(api.events.moduleSummaries, { eventId });
 
   const reschedule = useMutation(api.events.reschedule);
@@ -101,7 +98,8 @@ export default function EventDetailScreen() {
   const {
     event,
     eventTypeName,
-    activeComponents,
+    modules: resolvedModules,
+    moduleReadiness,
     owner,
     readiness,
     taskTotal,
@@ -119,29 +117,32 @@ export default function EventDetailScreen() {
         ? String(event.budget)
         : "";
 
-  // Modules the event type switched on, in canonical order. The
-  // volunteer_expectations module is the team EXPECTATIONS list (rows = things a
-  // team does, tagged by team); WHO is on each team lives in CrewSections below.
-  const activeModules = MODULE_KEYS.filter((m) => activeComponents.includes(m));
+  // Resolved active modules (core + custom, with the event's deltas applied), in
+  // canonical order. Includes the site_map module (surface "site_map"); the
+  // volunteer_expectations module is the team EXPECTATIONS list (WHO is on each
+  // team lives in CrewSections below).
+  const activeModules: ResolvedModule[] = resolvedModules ?? [];
 
   // Tabs: Overview + each active module + Crew. The active tab lives in the URL
   // (`?tab=`) so it's deep-linkable and survives back/forward; unknown/missing
   // falls back to Overview.
   const tabs: { key: string; label: string }[] = [
     { key: "overview", label: "Overview" },
-    ...activeModules.map((m) => ({ key: m as string, label: MODULE_LABELS[m] })),
+    ...activeModules.map((m) => ({ key: m.key, label: m.label })),
     { key: "crew", label: "Crew" },
   ];
   const activeTab = tabs.some((t) => t.key === tab) ? (tab as string) : "overview";
   const summaryByModule = new Map(
     (summaries ?? []).map((s: any) => [s.module as string, s]),
   );
+  const readyByModule = new Map(
+    (moduleReadiness ?? []).map((r: any) => [r.key as string, r.ready as boolean]),
+  );
 
-  // A module's owner is derived (not stored): map the module to its default
-  // role key, then resolve the person assigned to that role on this event,
-  // looking the key up against the EVENT's roles.
-  function moduleOwner(module: ModuleKey) {
-    const roleKey = MODULE_OWNER_ROLE_KEY[module];
+  // A module's owner is its resolved owner role KEY, resolved to the person
+  // assigned to that role on this event (looked up against the EVENT's roles).
+  function moduleOwner(module: ResolvedModule) {
+    const roleKey = module.ownerRoleKey;
     const role = (eventRolesRaw ?? []).find((r: any) => r.key === roleKey);
     if (!role) return null;
     const row = (roleRows ?? []).find((r) => r.roleId === role._id);
@@ -152,7 +153,7 @@ export default function EventDetailScreen() {
     };
   }
 
-  function openOwnerPicker(module: ModuleKey) {
+  function openOwnerPicker(module: ResolvedModule) {
     const info = moduleOwner(module);
     if (!info) return;
     setPicker({
@@ -275,25 +276,33 @@ export default function EventDetailScreen() {
             {/* Event roles — the event's own role list (diverges from template). */}
             <EventRolesCard eventId={eventId} roles={eventRoles} />
 
+            {/* Add / re-enable modules at the event level. */}
+            <EventModulesCard
+              eventId={eventId}
+              disabledCore={moduleData?.disabledCore ?? []}
+              customRows={(moduleData?.customRows ?? []) as any}
+            />
+
             {/* Per-module rollup — owner (role → person), progress, next due. */}
             {activeModules.length === 0 ? (
               <Card padding="lg">
                 <Text className="text-base text-muted">
-                  This event type has no planning modules enabled.
+                  This event has no modules enabled.
                 </Text>
               </Card>
             ) : (
               <>
                 <SectionHeader title="Modules" count={activeModules.length} />
                 <Card padding="none">
-                  {activeModules.map((m: ModuleKey, i) => (
+                  {activeModules.map((m, i) => (
                     <ModuleRollupRow
-                      key={m}
-                      module={m}
+                      key={m.key}
+                      label={m.label}
+                      ready={readyByModule.get(m.key) ?? false}
                       owner={moduleOwner(m)}
-                      summary={summaryByModule.get(m)}
+                      summary={summaryByModule.get(m.key)}
                       first={i === 0}
-                      onOpen={() => router.setParams({ tab: m })}
+                      onOpen={() => router.setParams({ tab: m.key })}
                       onAssignOwner={() => openOwnerPicker(m)}
                     />
                   ))}
@@ -305,38 +314,20 @@ export default function EventDetailScreen() {
           /* ── Crew: volunteers + paid vendors (engagements) ────────────────── */
           <CrewSections eventId={eventId} />
         ) : (
-          /* ── A single module: owner badge + its grid ──────────────────────── */
+          /* ── A single module: owner bar + ready toggle + its surface ───────── */
           (() => {
-            const m = activeTab as ModuleKey;
+            const m = activeModules.find((mod) => mod.key === activeTab);
+            if (!m) return null;
             return (
-              <View>
-                <ModuleOwnerBar
-                  owner={moduleOwner(m)}
-                  onPress={() => openOwnerPicker(m)}
-                />
-                <SectionHeader
-                  title={MODULE_LABELS[m]}
-                  right={
-                    m === "supplies" ? (
-                      <Button
-                        title="Packing mode"
-                        icon="package"
-                        size="sm"
-                        variant="secondary"
-                        onPress={() => router.push(`/event/${eventId}/packing`)}
-                      />
-                    ) : undefined
-                  }
-                />
-                <EditableGrid
-                  mode="event"
-                  parentId={eventId}
-                  module={m}
-                  roles={eventRoles}
-                  eventDate={event.eventDate}
-                  addLabel={`Add ${MODULE_LABELS[m].toLowerCase()} row`}
-                />
-              </View>
+              <ModuleSection
+                eventId={eventId}
+                module={m}
+                roles={eventRoles}
+                eventDate={event.eventDate}
+                owner={moduleOwner(m)}
+                ready={readyByModule.get(m.key) ?? false}
+                onAssignOwner={() => openOwnerPicker(m)}
+              />
             );
           })()
         )}

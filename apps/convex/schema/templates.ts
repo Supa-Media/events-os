@@ -16,9 +16,20 @@ export const eventTypes = defineTable({
   // WwS is a ~10% scaled-down variant of Eden — a template can inherit from a
   // parent so variants stay structurally aligned.
   deriveFromEventTypeId: v.optional(v.id("eventTypes")),
-  // This type's roles live in `templateRoles` (keyed by eventTypeId).
-  // Active component keys (6 core always; 2 more for larger events).
-  activeComponents: v.array(v.string()),
+  // This type's roles live in `templateRoles` (keyed by eventTypeId); its custom
+  // modules live in `templateModules`. Core modules are platform-wide constants
+  // (CORE_MODULES in @events-os/shared) — this stores only the DELTAS against
+  // them: which core keys are toggled off + per-core label/owner overrides.
+  disabledCoreModules: v.optional(v.array(v.string())),
+  coreModuleOverrides: v.optional(
+    v.array(
+      v.object({
+        key: v.string(),
+        label: v.optional(v.string()),
+        ownerRoleKey: v.optional(v.string()),
+      }),
+    ),
+  ),
   version: v.number(),
   isArchived: v.optional(v.boolean()),
   createdBy: v.id("users"),

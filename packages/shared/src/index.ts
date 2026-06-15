@@ -87,6 +87,7 @@ export const MODULE_KEYS = [
   "supplies",
   "retro",
   "volunteer_expectations",
+  "site_map",
 ] as const;
 export type ModuleKey = (typeof MODULE_KEYS)[number];
 
@@ -131,7 +132,19 @@ export const CORE_MODULES: CoreModuleDef[] = [
   { key: "supplies", label: "Supplies & Packing Checklist", surface: "grid", defaultOwnerRoleKey: "logistics_lead", offsetMode: "none" },
   { key: "retro", label: "Retrospective", surface: "grid", defaultOwnerRoleKey: "event_lead", offsetMode: "none" },
   { key: "volunteer_expectations", label: "Volunteer Expectations", surface: "grid", defaultOwnerRoleKey: "comms_lead", offsetMode: "none" },
+  // Site map is a non-grid core module: it renders the venue-map editor instead
+  // of a spreadsheet grid. It has no columns (surface !== "grid"), so any
+  // grid-only code path must skip it.
+  { key: "site_map", label: "Site Map", surface: "site_map", defaultOwnerRoleKey: "logistics_lead", offsetMode: "none" },
 ];
+
+/**
+ * The grid-backed core modules, in order. Grid-only code paths (column seeding,
+ * default columns, module summaries) iterate these — never `site_map`.
+ */
+export const GRID_CORE_MODULE_KEYS: ModuleKey[] = CORE_MODULES.filter(
+  (m) => m.surface === "grid",
+).map((m) => m.key);
 
 /** Core module keys, in display order. */
 export const CORE_MODULE_KEYS: ModuleKey[] = CORE_MODULES.map((m) => m.key);
@@ -153,6 +166,102 @@ export const DAY_OFFSET_MODULES: ModuleKey[] = CORE_MODULES.filter(
 export const MINUTE_OFFSET_MODULES: ModuleKey[] = CORE_MODULES.filter(
   (m) => m.offsetMode === "minutes",
 ).map((m) => m.key);
+
+// ── Module deltas + active-module resolution ─────────────────────────────────
+// Core modules are platform-wide constants (CORE_MODULES). A template/event
+// stores only DELTAS against them: which core keys are toggled off, per-core
+// label/owner overrides, plus its own CUSTOM module rows. `resolveActiveModules`
+// folds those into one ordered active list, used by both the editors and the
+// event screen so the frontend never does the delta math itself.
+
+/** A per-core override: rename and/or repoint a core module's owner role. */
+export interface ModuleOverride {
+  key: string;
+  label?: string;
+  ownerRoleKey?: string;
+}
+
+/** A custom (author-created) module row — always a grid surface. */
+export interface CustomModule {
+  key: string;
+  label: string;
+  surface: "grid";
+  ownerRoleKey?: string;
+  offsetMode: ModuleOffsetMode;
+  order: number;
+  isActive?: boolean;
+}
+
+/** The module-delta state a template or event carries. */
+export interface ScopeModuleState {
+  disabledCoreModules?: string[];
+  coreModuleOverrides?: ModuleOverride[];
+  customModules: CustomModule[];
+}
+
+/** A fully-resolved active module (core or custom), ready to render. */
+export interface ResolvedModule {
+  key: string;
+  label: string;
+  surface: ModuleSurface;
+  ownerRoleKey: string | undefined;
+  offsetMode: ModuleOffsetMode;
+  isCore: boolean;
+}
+
+/** Apply a scope's per-core override (label / owner) to a core module. */
+function applyOverride(
+  m: CoreModuleDef,
+  overrides: ModuleOverride[] | undefined,
+): ResolvedModule {
+  const o = overrides?.find((ov) => ov.key === m.key);
+  return {
+    key: m.key,
+    label: o?.label ?? m.label,
+    surface: m.surface,
+    ownerRoleKey: o?.ownerRoleKey ?? m.defaultOwnerRoleKey,
+    offsetMode: m.offsetMode,
+    isCore: true,
+  };
+}
+
+/**
+ * Resolve a scope's ordered active module list: platform core modules (minus
+ * `disabledCoreModules`, with overrides applied) followed by its active custom
+ * modules in `order`.
+ */
+export function resolveActiveModules(scope: ScopeModuleState): ResolvedModule[] {
+  const disabled = new Set(scope.disabledCoreModules ?? []);
+  const core: ResolvedModule[] = CORE_MODULES.filter(
+    (m) => !disabled.has(m.key),
+  ).map((m) => applyOverride(m, scope.coreModuleOverrides));
+
+  const custom: ResolvedModule[] = [...scope.customModules]
+    .filter((c) => c.isActive !== false)
+    .sort((a, b) => a.order - b.order)
+    .map((c) => ({
+      key: c.key,
+      label: c.label,
+      surface: c.surface,
+      ownerRoleKey: c.ownerRoleKey,
+      offsetMode: c.offsetMode,
+      isCore: false,
+    }));
+
+  return [...core, ...custom];
+}
+
+/**
+ * The core modules a scope currently has DISABLED, as resolved defs — used by an
+ * editor to offer "re-enable" controls (event side re-enables a template-off
+ * core; template side just re-toggles).
+ */
+export function disabledCoreModules(scope: ScopeModuleState): ResolvedModule[] {
+  const disabled = new Set(scope.disabledCoreModules ?? []);
+  return CORE_MODULES.filter((m) => disabled.has(m.key)).map((m) =>
+    applyOverride(m, scope.coreModuleOverrides),
+  );
+}
 
 // ── Columns ──────────────────────────────────────────────────────────────────
 // A column tells the grid how to render/edit a field and (for `system` columns)
@@ -318,7 +427,10 @@ export const VOLUNTEER_STATUS_OPTIONS: SelectOption[] = [
 // ── Default column sets per module (seed defaults; editable per template) ─────
 // Authors reorder/hide/rename these and add custom columns. `system` columns are
 // backed by promoted item fields; `custom` columns live in the `fields` bag.
-export const DEFAULT_COLUMNS: Record<ModuleKey, ColumnDef[]> = {
+// `site_map` has no grid columns (surface !== "grid"), so it's intentionally
+// absent here — hence Partial. Grid code paths look modules up by key and skip
+// anything without a column set.
+export const DEFAULT_COLUMNS: Partial<Record<ModuleKey, ColumnDef[]>> = {
   planning_doc: [
     { key: "title", label: "Task", kind: "system", type: "text", isVisible: true },
     { key: "details", label: "Details", kind: "custom", type: "longtext", isVisible: true },
@@ -388,6 +500,18 @@ export const DEFAULT_COLUMNS: Record<ModuleKey, ColumnDef[]> = {
     { key: "details", label: "Details", kind: "custom", type: "longtext", isVisible: true },
   ],
 };
+
+/**
+ * Generic starter column set for a NEW custom module: the system Title plus a
+ * Status, Owner, and Notes column. Authors reorder/hide/rename and add their own
+ * from here — same shape as a core module's default columns.
+ */
+export const DEFAULT_CUSTOM_COLUMNS: ColumnDef[] = [
+  { key: "title", label: "Title", kind: "system", type: "text", isVisible: true },
+  { key: "status", label: "Status", kind: "system", type: "status", options: TASK_STATUS_OPTIONS, isVisible: true },
+  { key: "owner", label: "Owner", kind: "system", type: "person", isVisible: true },
+  { key: "notes", label: "Notes", kind: "custom", type: "longtext", isVisible: true },
+];
 
 /** The default status option set for a module (or undefined if no status). */
 export function defaultStatusOptions(module: ModuleKey): SelectOption[] | undefined {

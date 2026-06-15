@@ -12,7 +12,6 @@ import {
   EmptyState,
 } from "../../../components/ui";
 import { colors, spacing } from "../../../lib/theme";
-import { CORE_MODULE_KEYS } from "@events-os/shared";
 
 /** TEMPLATES list + inline "new template" creator. */
 export default function TemplatesScreen() {
@@ -30,11 +29,9 @@ export default function TemplatesScreen() {
     if (!trimmed) return;
     setCreating(true);
     try {
-      // The backend seeds the template's roles from DEFAULT_ROLES.
-      const id = await create({
-        name: trimmed,
-        activeComponents: [...CORE_MODULE_KEYS],
-      });
+      // The backend seeds the template's roles from DEFAULT_ROLES and enables
+      // every core module by default (deltas disable, not enable).
+      const id = await create({ name: trimmed });
       setName("");
       router.push(`/template/${id}`);
     } finally {

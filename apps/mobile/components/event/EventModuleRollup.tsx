@@ -2,7 +2,6 @@ import { View, Text, Pressable } from "react-native";
 import { Card, Avatar, Icon } from "../ui";
 import { colors } from "../../lib/theme";
 import { formatDate } from "../../lib/format";
-import { MODULE_LABELS, type ModuleKey } from "@events-os/shared";
 
 export type ModuleOwnerInfo = {
   roleId: string;
@@ -73,14 +72,16 @@ export function ModuleOwnerBar({
 
 /** One row in the overview's per-module rollup. */
 export function ModuleRollupRow({
-  module,
+  label,
+  ready,
   owner,
   summary,
   first,
   onOpen,
   onAssignOwner,
 }: {
-  module: ModuleKey;
+  label: string;
+  ready: boolean;
   owner: ModuleOwnerInfo;
   summary: { total: number; done: number; hasStatus: boolean; nextDueDate: number | null } | undefined;
   first: boolean;
@@ -98,9 +99,12 @@ export function ModuleRollupRow({
       }`}
     >
       <Pressable onPress={onOpen} className="flex-1 active:opacity-70">
-        <Text className="text-sm font-semibold text-ink">
-          {MODULE_LABELS[module]}
-        </Text>
+        <View className="flex-row items-center gap-1.5">
+          <Text className="text-sm font-semibold text-ink">{label}</Text>
+          {ready ? (
+            <Icon name="check-circle" size={13} color={colors.success} />
+          ) : null}
+        </View>
         <View className="mt-0.5 flex-row flex-wrap items-center gap-x-3 gap-y-0.5">
           <Text className="text-2xs text-muted">
             {hasStatus

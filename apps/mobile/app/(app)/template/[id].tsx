@@ -1,4 +1,4 @@
-import { View } from "react-native";
+import { View, Text } from "react-native";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { useQuery, useMutation } from "convex/react";
 import { api } from "@events-os/convex/_generated/api";
@@ -13,15 +13,16 @@ import { NameEditor } from "../../../components/template/NameEditor";
 import { DescriptionEditor } from "../../../components/template/DescriptionEditor";
 import { RolesCard } from "../../../components/template/RolesCard";
 import { ModulesCard } from "../../../components/template/ModulesCard";
-import { MODULE_LABELS, type ModuleKey } from "@events-os/shared";
+import type { ModuleKey } from "@events-os/shared";
 import type { Id } from "@events-os/convex/_generated/dataModel";
 
 /**
  * TEMPLATE EDITOR — author a reusable event template on the unified-items model.
  *
- * Edits the template's metadata, its active roles + modules, and (for each
- * active list-backed module) embeds an EditableGrid of base items. All edits
- * save eagerly (toggles immediately, text fields on blur when dirty).
+ * Edits the template's metadata, its roles + modules (core toggles + owner
+ * overrides, plus custom modules), and embeds an EditableGrid of base items for
+ * each active GRID module. Non-grid surfaces (e.g. site_map) are configured by
+ * toggle/owner only — they have no per-template grid. Edits save eagerly.
  */
 export default function TemplateEditorScreen() {
   const router = useRouter();
@@ -30,6 +31,7 @@ export default function TemplateEditorScreen() {
 
   const data = useQuery(api.eventTypes.get, { eventTypeId });
   const templateRoles = useQuery(api.roles.listForTemplate, { eventTypeId });
+  const moduleData = useQuery(api.modules.listForTemplate, { eventTypeId });
   const updateTemplate = useMutation(api.eventTypes.update);
 
   if (data === undefined) return <Screen loading />;
@@ -49,13 +51,16 @@ export default function TemplateEditorScreen() {
     );
   }
 
-  const { eventType, modules } = data;
-  // The grid wants the template's roles (id + label); [] while loading.
+  const { eventType } = data;
+  // The grid + module owner picker want the template's roles (id + key + label).
   const roleList = (templateRoles ?? []).map((r) => ({
     _id: r._id as string,
+    key: r.key as string,
     label: r.label,
   }));
-  const activeComponents = (eventType.activeComponents ?? []) as string[];
+
+  const active = moduleData?.active ?? [];
+  const gridModules = active.filter((m) => m.surface === "grid");
 
   return (
     <Screen>
@@ -76,33 +81,31 @@ export default function TemplateEditorScreen() {
       <RolesCard eventTypeId={eventTypeId} roles={roleList} />
 
       <ModulesCard
-        activeComponents={activeComponents}
-        onToggle={(module) => {
-          const next = activeComponents.includes(module)
-            ? activeComponents.filter((c) => c !== module)
-            : [...activeComponents, module];
-          updateTemplate({ eventTypeId, activeComponents: next });
-        }}
+        eventTypeId={eventTypeId}
+        active={active}
+        disabledCore={moduleData?.disabledCore ?? []}
+        customRows={(moduleData?.customRows ?? []) as any}
+        roles={roleList}
       />
 
-      {modules.length === 0 ? (
+      {gridModules.length === 0 ? (
         <View className="mt-6">
           <EmptyState
             icon="layout"
-            title="No modules active"
+            title="No grid modules active"
             message="Turn on a module above to start building."
           />
         </View>
       ) : (
-        modules.map((m: ModuleKey) => (
-          <View key={m}>
-            <SectionHeader title={MODULE_LABELS[m]} />
+        gridModules.map((m) => (
+          <View key={m.key}>
+            <SectionHeader title={m.label} />
             <EditableGrid
               mode="template"
               parentId={eventTypeId}
-              module={m}
+              module={m.key as ModuleKey}
               roles={roleList}
-              addLabel={`Add ${MODULE_LABELS[m].toLowerCase()} row`}
+              addLabel={`Add ${m.label.toLowerCase()} row`}
             />
           </View>
         ))

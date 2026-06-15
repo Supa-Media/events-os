@@ -23,6 +23,31 @@ export const events = defineTable({
   ownerPersonId: v.optional(v.id("people")),
   // Background image (Convex storageId or URL) for the venue site map.
   siteMapImage: v.optional(v.string()),
+  // Module deltas (cloned from the template, then editable). Core modules are
+  // platform-wide constants; this stores only which core keys are toggled off +
+  // per-core label/owner overrides. Custom modules live in `eventModules`.
+  disabledCoreModules: v.optional(v.array(v.string())),
+  coreModuleOverrides: v.optional(
+    v.array(
+      v.object({
+        key: v.string(),
+        label: v.optional(v.string()),
+        ownerRoleKey: v.optional(v.string()),
+      }),
+    ),
+  ),
+  // Per-module readiness ("mark as ready" while editing). Distinct from the
+  // whole-event `status` below — keyed by module key (core or custom).
+  moduleReadiness: v.optional(
+    v.array(
+      v.object({
+        key: v.string(),
+        ready: v.boolean(),
+        markedBy: v.optional(v.id("people")),
+        markedAt: v.optional(v.number()),
+      }),
+    ),
+  ),
   status: v.union(
     v.literal("planning"),
     v.literal("ready"),

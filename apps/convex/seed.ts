@@ -88,6 +88,11 @@ export const clearDemo = mutation({
         .withIndex("by_event", (q: any) => q.eq("eventId", e._id))
         .collect())
         await ctx.db.delete(r._id);
+      for (const m of await ctx.db
+        .query("eventModules")
+        .withIndex("by_event", (q: any) => q.eq("eventId", e._id))
+        .collect())
+        await ctx.db.delete(m._id);
       await ctx.db.delete(e._id);
     }
 
@@ -111,6 +116,11 @@ export const clearDemo = mutation({
         .withIndex("by_template", (q: any) => q.eq("eventTypeId", t._id))
         .collect())
         await ctx.db.delete(r._id);
+      for (const m of await ctx.db
+        .query("templateModules")
+        .withIndex("by_template", (q: any) => q.eq("eventTypeId", t._id))
+        .collect())
+        await ctx.db.delete(m._id);
       await ctx.db.delete(t._id);
     }
 
@@ -159,8 +169,9 @@ export const backfillNewModules = mutation({
     const eventTypes = await ctx.db.query("eventTypes").collect();
     for (const et of eventTypes) {
       let patched = false;
+      const etDisabled = new Set(et.disabledCoreModules ?? []);
       for (const module of NEW_MODULES) {
-        if (!(et.activeComponents ?? []).includes(module)) continue;
+        if (etDisabled.has(module)) continue;
         const existing = await ctx.db
           .query("templateColumns")
           .withIndex("by_eventType_module", (q: any) =>
@@ -169,7 +180,7 @@ export const backfillNewModules = mutation({
           .first();
         if (existing) continue;
 
-        const defaults = DEFAULT_COLUMNS[module];
+        const defaults = DEFAULT_COLUMNS[module] ?? [];
         for (let i = 0; i < defaults.length; i++) {
           const c = defaults[i];
           await ctx.db.insert("templateColumns", {
@@ -213,8 +224,9 @@ export const backfillNewModules = mutation({
       const et = await ctx.db.get(ev.eventTypeId);
       if (!et) continue;
       let patched = false;
+      const evDisabled = new Set(ev.disabledCoreModules ?? []);
       for (const module of NEW_MODULES) {
-        if (!(et.activeComponents ?? []).includes(module)) continue;
+        if (evDisabled.has(module)) continue;
         const existingCol = await ctx.db
           .query("eventColumns")
           .withIndex("by_event_module", (q: any) =>
@@ -290,7 +302,7 @@ export const migrateVolunteerExpectations = mutation({
     // ── Templates ────────────────────────────────────────────────────────────
     const eventTypes = await ctx.db.query("eventTypes").collect();
     for (const et of eventTypes) {
-      if (!(et.activeComponents ?? []).includes(MODULE)) continue;
+      if ((et.disabledCoreModules ?? []).includes(MODULE)) continue;
 
       // Replace columns with the new DEFAULT_COLUMNS shape.
       for (const c of await ctx.db
@@ -301,7 +313,7 @@ export const migrateVolunteerExpectations = mutation({
         .collect())
         await ctx.db.delete(c._id);
 
-      const defaults = DEFAULT_COLUMNS[MODULE];
+      const defaults = DEFAULT_COLUMNS[MODULE] ?? [];
       for (let i = 0; i < defaults.length; i++) {
         const c = defaults[i];
         await ctx.db.insert("templateColumns", {
@@ -349,7 +361,7 @@ export const migrateVolunteerExpectations = mutation({
     const events = await ctx.db.query("events").collect();
     for (const ev of events) {
       const et = await ctx.db.get(ev.eventTypeId);
-      if (!et || !(et.activeComponents ?? []).includes(MODULE)) continue;
+      if (!et || (ev.disabledCoreModules ?? []).includes(MODULE)) continue;
 
       // Wipe the event's old volunteer_expectations columns + items.
       for (const c of await ctx.db

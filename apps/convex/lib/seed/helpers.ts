@@ -6,11 +6,7 @@
  * mutations in `seed.ts` and the builder logic in `lib/seed/templates.ts`.
  */
 import { Id } from "../../_generated/dataModel";
-import {
-  DEFAULT_COLUMNS,
-  MODULE_KEYS,
-  type ModuleKey,
-} from "@events-os/shared";
+import { DEFAULT_COLUMNS, type ModuleKey } from "@events-os/shared";
 
 export interface ItemRow {
   title: string;
@@ -22,11 +18,6 @@ export interface ItemRow {
   fields?: Record<string, unknown>;
 }
 
-/** The active list-backed modules for a template (activeComponents ∩ MODULE_KEYS). */
-export function activeModules(activeComponents: string[]): ModuleKey[] {
-  return MODULE_KEYS.filter((m) => activeComponents.includes(m));
-}
-
 /** Insert a template module's default columns; `hideKeys` start hidden. */
 export async function seedTemplateCols(
   ctx: any,
@@ -34,7 +25,7 @@ export async function seedTemplateCols(
   module: ModuleKey,
   hideKeys: string[] = [],
 ) {
-  const defaults = DEFAULT_COLUMNS[module];
+  const defaults = DEFAULT_COLUMNS[module] ?? [];
   for (let i = 0; i < defaults.length; i++) {
     const c = defaults[i];
     await ctx.db.insert("templateColumns", {

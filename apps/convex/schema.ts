@@ -3,6 +3,7 @@ import { supaAuthTables, supaNotificationTables } from "@supa-media/convex/schem
 
 import { chapters, userProfiles, userChapters } from "./schema/chapters";
 import { templateRoles, eventRoles } from "./schema/roles";
+import { templateModules, eventModules } from "./schema/modules";
 import { eventTypes, templateColumns, templateItems } from "./schema/templates";
 import {
   events,
@@ -59,6 +60,10 @@ const schema = defineSchema({
   // Roles (template-owned + event-owned).
   templateRoles,
   eventRoles,
+
+  // Custom modules (template-owned + event-owned). Core modules are constants.
+  templateModules,
+  eventModules,
 
   // Templates (event types + their columns/items).
   eventTypes,
