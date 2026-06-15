@@ -489,6 +489,60 @@ const HOW_TO_KINDS: Array<{
   { value: "markdown", label: "Markdown page", icon: "book-open" },
 ];
 
+/**
+ * Small kind switcher for an EXISTING how-to cell. Renders a chevron button that
+ * opens a Popover listing the four kinds; picking one patches only `doc.kind`
+ * (lossless — `url`/`body` are left untouched so they reappear if switched
+ * back). Routes through `onPick`, which the parent wires to its copy-on-write
+ * commit so an event cell forks before changing kind.
+ */
+function HowToKindMenu({
+  currentKind,
+  editable,
+  onPick,
+}: {
+  currentKind: "link" | "video" | "note" | "markdown";
+  editable: boolean;
+  onPick: (kind: "link" | "video" | "note" | "markdown") => void;
+}) {
+  const { ref, anchor, visible, open, close } = useAnchor();
+  if (!editable) return null;
+  return (
+    <>
+      <Pressable
+        ref={ref}
+        onPress={open}
+        hitSlop={6}
+        className="rounded p-1 active:bg-sunken web:hover:bg-sunken"
+      >
+        <Icon name="chevron-down" size={13} color={colors.faint} />
+      </Pressable>
+      <Popover visible={visible} onClose={close} anchor={anchor} width={200}>
+        <View className="py-1">
+          {HOW_TO_KINDS.map((k) => (
+            <Pressable
+              key={k.value}
+              onPress={() => {
+                close();
+                if (k.value !== currentKind) onPick(k.value);
+              }}
+              className="flex-row items-center justify-between gap-2 px-3 py-2 active:bg-sunken web:hover:bg-sunken"
+            >
+              <View className="flex-row items-center gap-2">
+                <Icon name={k.icon} size={15} color={colors.muted} />
+                <Text className="text-sm text-ink">{k.label}</Text>
+              </View>
+              {k.value === currentKind ? (
+                <Icon name="check" size={15} color={colors.accent} />
+              ) : null}
+            </Pressable>
+          ))}
+        </View>
+      </Popover>
+    </>
+  );
+}
+
 function HowToCell({ value, editable, onChange, mode, eventItemId, colKey }: any) {
   const router = useRouter();
   const { ref, anchor, visible, open, close } = useAnchor();
@@ -507,8 +561,15 @@ function HowToCell({ value, editable, onChange, mode, eventItemId, colKey }: any
    * copy, then write the edit to the copy. A doc already `scope === "event"` (a
    * prior fork, or one created directly on this event) is updated in place.
    * Template cells just update in place — they never fork.
+   *
+   * Switching `kind` is lossless: we patch only `kind` and leave `url`/`body`
+   * alone, so the other field reappears if the user switches back.
    */
-  async function commitInline(patch: { url?: string; body?: string }) {
+  async function commitInline(patch: {
+    url?: string;
+    body?: string;
+    kind?: "link" | "video" | "note" | "markdown";
+  }) {
     if (!docId) return;
     if (isEvent && doc && doc.scope !== "event" && eventItemId && colKey) {
       const res = await forkDoc({ docId: docId as any, eventItemId, colKey });
@@ -601,6 +662,11 @@ function HowToCell({ value, editable, onChange, mode, eventItemId, colKey }: any
           parse={(t) => (t.trim() ? t : "")}
           onCommit={(t) => commitInline({ body: t })}
         />
+        <HowToKindMenu
+          currentKind={doc.kind}
+          editable={editable}
+          onPick={(kind) => commitInline({ kind })}
+        />
       </View>
     );
   }
@@ -625,6 +691,11 @@ function HowToCell({ value, editable, onChange, mode, eventItemId, colKey }: any
             <Icon name="external-link" size={14} color={colors.accent} />
           </Pressable>
         ) : null}
+        <HowToKindMenu
+          currentKind={doc.kind}
+          editable={editable}
+          onPick={(kind) => commitInline({ kind })}
+        />
       </View>
     );
   }
@@ -637,18 +708,25 @@ function HowToCell({ value, editable, onChange, mode, eventItemId, colKey }: any
       ? `/doc/${docId}?ownerItem=${eventItemId}&ownerCol=${encodeURIComponent(colKey)}`
       : `/doc/${docId}`;
   return (
-    <Pressable
-      onPress={() => router.push(markdownHref as any)}
-      className="flex-1 flex-row items-center justify-between gap-2 px-2 py-1.5 active:bg-sunken web:hover:bg-sunken"
-    >
-      <View className="flex-1 flex-row items-center gap-1.5">
-        <Icon name={kindIcon} size={14} color={colors.muted} />
-        <Text className="text-sm text-ink" numberOfLines={1}>
-          {doc.title || "Untitled"}
-        </Text>
-      </View>
-      <Icon name="chevron-right" size={15} color={colors.faint} />
-    </Pressable>
+    <View className="flex-1 flex-row items-center px-1">
+      <Pressable
+        onPress={() => router.push(markdownHref as any)}
+        className="flex-1 flex-row items-center justify-between gap-2 px-1 py-1.5 active:bg-sunken web:hover:bg-sunken"
+      >
+        <View className="flex-1 flex-row items-center gap-1.5">
+          <Icon name={kindIcon} size={14} color={colors.muted} />
+          <Text className="text-sm text-ink" numberOfLines={1}>
+            {doc.title || "Untitled"}
+          </Text>
+        </View>
+        <Icon name="chevron-right" size={15} color={colors.faint} />
+      </Pressable>
+      <HowToKindMenu
+        currentKind={doc.kind}
+        editable={editable}
+        onPick={(kind) => commitInline({ kind })}
+      />
+    </View>
   );
 }
 

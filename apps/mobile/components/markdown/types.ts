@@ -15,4 +15,11 @@ export type MarkdownEditorProps = {
    * disappears. Defaults to 480.
    */
   minHeight?: number;
+  /**
+   * Web only. When provided, images pasted or dropped into the editor are
+   * uploaded via this callback and embedded as Markdown `![](url)`. Receives the
+   * image blob and content type; resolves to a stable, servable URL. Native
+   * builds ignore it (no DOM clipboard/drag surface).
+   */
+  uploadImage?: (file: Blob, contentType: string) => Promise<string>;
 };

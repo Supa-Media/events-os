@@ -36,12 +36,17 @@ export function MarkdownEditor({
   editable = true,
   placeholder,
   minHeight = 480,
+  uploadImage,
 }: MarkdownEditorProps) {
   const hostRef = useRef<HTMLDivElement | null>(null);
   const viewRef = useRef<EditorView | null>(null);
   // Keep the latest onChange without re-creating the editor on every render.
   const onChangeRef = useRef(onChange);
   onChangeRef.current = onChange;
+  // Same for uploadImage — the paste/drop handlers read it through the ref so a
+  // new callback identity per render doesn't tear down the editor.
+  const uploadImageRef = useRef(uploadImage);
+  uploadImageRef.current = uploadImage;
 
   // Create the EditorView once (re-created only when editable/placeholder flip).
   useEffect(() => {
@@ -53,6 +58,11 @@ export function MarkdownEditor({
         editable,
         placeholder,
         onChange: (md) => onChangeRef.current(md),
+        // Wire image upload only when a callback is supplied. Indirect through
+        // the ref so the editor isn't re-created when the prop identity changes.
+        uploadImage: uploadImage
+          ? (file, contentType) => uploadImageRef.current!(file, contentType)
+          : undefined,
       }),
     });
 
@@ -64,7 +74,7 @@ export function MarkdownEditor({
       viewRef.current = null;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [editable, placeholder]);
+  }, [editable, placeholder, !!uploadImage]);
 
   // Sync external value changes into the editor without clobbering the caret
   // when the change originated from the editor itself.

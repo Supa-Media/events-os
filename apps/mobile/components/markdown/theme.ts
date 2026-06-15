@@ -77,4 +77,13 @@ export const editorTheme = EditorView.theme({
     fontSize: "0.9em",
   },
   ".cm-md-bullet": { color: ACCENT, paddingRight: "0.35em" },
+
+  // ── Images (rendered in read mode) ──────────────────────────────────────────
+  ".cm-md-image": {
+    maxWidth: "100%",
+    height: "auto",
+    borderRadius: "10px",
+    display: "block",
+    margin: "0.5em 0",
+  },
 });
