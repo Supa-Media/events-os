@@ -13,12 +13,14 @@ import {
   computeDueDate,
   computeReadiness,
   isCompleteStatus,
-  itemPhase,
   itemScore,
+  itemPhase,
   currentPhase,
+  DAY_MS,
   DAY_OFFSET_MODULES,
   MODULE_LABELS,
   type ModuleKey,
+  type PhaseKey,
   type PhaseScores,
   type SelectOption,
 } from "@events-os/shared";
@@ -386,39 +388,73 @@ export const myWork = query({
 });
 
 /**
- * "What's next" to-do summary for the event Overview, phase-grouped.
+ * "What's next" — the CURRENT USER's focused action list on this event.
  *
- * Reuses the SAME data the readiness engine reads (see `phaseReadiness` +
- * `myWork`): the event's active grid modules, each module's columns (status
- * options + a key→label map), all eventItems, and the role/owner-assignment
- * state. It then surfaces the *outstanding* work as actionable lines, grouped by
- * phase, each optionally deep-linking to the tab that holds it.
+ * Two groups instead of dumping every incomplete item by phase:
  *
- *   prePlan  — assign roles, assign module owners, and fill out any author-marked
- *              pre-plan cells that aren't checked yet.
- *   planning / dayOf / post — every grid item bucketed by `itemPhase` whose
- *              `itemScore` < 1 (not complete — in-progress 0.5 still counts).
+ *   yours      — incomplete things the caller OWNS, always shown (no date gate).
+ *                Item owner = `ownerPersonId === me`, or the item's `roleId`
+ *                resolves to me. PLUS, only when the caller is the EVENT owner,
+ *                the setup lines (assign roles / module owners). PLUS unchecked
+ *                pre-plan cells on items the caller owns.
+ *   overseeing — incomplete things the caller OVERSEES but doesn't own at the row
+ *                level, shown ONLY when AT RISK (due soon or overdue). "Oversees"
+ *                = the caller owns the item's module (via its owner role) OR the
+ *                caller is the event owner.
+ *
+ * Every incomplete grid item gets an EFFECTIVE DUE of `item.dueDate ?? eventDate`
+ * (day-of/undated items fall back to the event date). Risk is computed from now:
+ *   overdue — effectiveDue is before the start of today.
+ *   soon    — not overdue AND effectiveDue is on/before the end of tomorrow.
+ *   null    — otherwise.
  *
  * A `TodoAction.tab` is the event tab to jump to (a module key, or "crew" for the
- * volunteer_expectations module); omitted for actions that live on the Overview
- * itself (role/owner assignment).
+ * volunteer_expectations module); omitted for the role/owner setup lines.
  */
 export const todos = query({
   args: { eventId: v.id("events") },
   handler: async (ctx, { eventId }) => {
-    const empty = { prePlan: [], planning: [], dayOf: [], post: [] };
+    type Risk = "overdue" | "soon" | null;
+    type TodoAction = {
+      id: string;
+      label: string;
+      tab?: string;
+      risk: Risk;
+      due?: number | null;
+      phase: PhaseKey;
+    };
+    const empty: { yours: TodoAction[]; overseeing: TodoAction[] } = {
+      yours: [],
+      overseeing: [],
+    };
     const chapterId = await requireChapterId(ctx);
-    await requireUserId(ctx);
+    const userId = await requireUserId(ctx);
     const event = await ctx.db.get(eventId);
     if (!event || event.chapterId !== chapterId) return empty;
 
-    type TodoAction = { id: string; label: string; tab?: string };
-    const prePlan: TodoAction[] = [];
-    const planning: TodoAction[] = [];
-    const dayOf: TodoAction[] = [];
-    const post: TodoAction[] = [];
+    const me = await getPersonForUser(
+      ctx,
+      chapterId as Id<"chapters">,
+      userId as Id<"users">,
+    );
+    if (!me) return empty;
+    const iAmEventOwner =
+      !!event.ownerPersonId && String(event.ownerPersonId) === String(me);
 
-    // The same maps `itemPhase`/`tabForModule` need across the buckets.
+    // ── Risk: effective due (item.dueDate ?? eventDate) vs today/tomorrow. ──
+    const now = Date.now();
+    const startOfToday = new Date(now);
+    startOfToday.setHours(0, 0, 0, 0);
+    const endOfTomorrow = new Date(now);
+    endOfTomorrow.setHours(23, 59, 59, 999);
+    endOfTomorrow.setTime(endOfTomorrow.getTime() + DAY_MS);
+    const computeRisk = (effectiveDue: number): Risk => {
+      if (effectiveDue < startOfToday.getTime()) return "overdue";
+      if (effectiveDue <= endOfTomorrow.getTime()) return "soon";
+      return null;
+    };
+    const riskRank = (r: Risk) => (r === "overdue" ? 0 : r === "soon" ? 1 : 2);
+
     const tabForModule = (k: string) =>
       k === "volunteer_expectations" ? "crew" : k;
 
@@ -429,7 +465,7 @@ export const todos = query({
     const moduleLabel = (k: string) =>
       MODULE_LABELS[k as ModuleKey] ?? labelByKey.get(k) ?? k;
 
-    // ── Pre-plan setup work: roles + module owners (live on the Overview). ──
+    // ── Roles + assignments: resolve role → person and module → owner person. ──
     const eventRoles = await ctx.db
       .query("eventRoles")
       .withIndex("by_event", (q: any) => q.eq("eventId", eventId))
@@ -440,35 +476,59 @@ export const todos = query({
       .collect();
     const assignedRoleIds = new Set(assignments.map((a: any) => String(a.roleId)));
     const roleByKey = new Map(eventRoles.map((r: any) => [r.key, r]));
+    // roleId (eventRoles id) → assigned personId.
+    const personByRoleId = new Map<string, Id<"people">>(
+      assignments.map((a: any) => [String(a.roleId), a.personId as Id<"people">]),
+    );
 
-    const totalRoles = eventRoles.length;
-    const assignedRoles = eventRoles.filter((r: any) =>
-      assignedRoleIds.has(String(r._id)),
-    ).length;
-    if (totalRoles > 0 && assignedRoles < totalRoles) {
-      prePlan.push({
-        id: "roles",
-        label: "Assign roles (" + assignedRoles + "/" + totalRoles + ")",
-      });
-    }
-
-    let ownerTotal = 0;
-    let ownerDone = 0;
+    // Modules I own (my person resolves to the module's owner role).
+    const iOwnModule = new Map<string, boolean>();
     for (const m of resolved) {
-      if (!m.ownerRoleKey) continue;
-      ownerTotal += 1;
-      const role: any = roleByKey.get(m.ownerRoleKey);
-      if (role && assignedRoleIds.has(String(role._id))) ownerDone += 1;
-    }
-    if (ownerTotal > 0 && ownerDone < ownerTotal) {
-      prePlan.push({
-        id: "owners",
-        label: "Assign module owners (" + ownerDone + "/" + ownerTotal + ")",
-      });
+      const role: any = m.ownerRoleKey ? roleByKey.get(m.ownerRoleKey) : null;
+      const personId = role ? personByRoleId.get(String(role._id)) : undefined;
+      iOwnModule.set(m.key, personId != null && String(personId) === String(me));
     }
 
-    // ── Per grid module: pre-plan cell check-offs + incomplete timed items. ──
-    for (const m of gridModules) {
+    const yours: TodoAction[] = [];
+    const overseeing: TodoAction[] = [];
+
+    // ── Setup lines: caller-is-event-owner only, front of `yours`. ──
+    if (iAmEventOwner) {
+      const totalRoles = eventRoles.length;
+      const assignedRoles = eventRoles.filter((r: any) =>
+        assignedRoleIds.has(String(r._id)),
+      ).length;
+      if (totalRoles > 0 && assignedRoles < totalRoles) {
+        yours.push({
+          id: "roles",
+          label: "Assign roles (" + assignedRoles + "/" + totalRoles + ")",
+          risk: null,
+          phase: "prePlan",
+        });
+      }
+      let ownerTotal = 0;
+      let ownerDone = 0;
+      for (const m of resolved) {
+        if (!m.ownerRoleKey) continue;
+        ownerTotal += 1;
+        const role: any = roleByKey.get(m.ownerRoleKey);
+        if (role && assignedRoleIds.has(String(role._id))) ownerDone += 1;
+      }
+      if (ownerTotal > 0 && ownerDone < ownerTotal) {
+        yours.push({
+          id: "owners",
+          label: "Assign module owners (" + ownerDone + "/" + ownerTotal + ")",
+          risk: null,
+          phase: "prePlan",
+        });
+      }
+    }
+
+    // ── Per grid module: incomplete items + the caller's pre-plan cells. ──
+    // `mi` tracks module order; item `order` keeps rows stable within a module.
+    for (let mi = 0; mi < gridModules.length; mi++) {
+      const m = gridModules[mi];
+      const iOwnThisModule = iOwnModule.get(m.key) ?? false;
       const items = (
         await ctx.db
           .query("eventItems")
@@ -484,50 +544,104 @@ export const todos = query({
           q.eq("eventId", eventId).eq("module", m.key),
         )
         .collect();
-      // key → label, so a pre-plan cell action can name the column.
       const colLabelByKey = new Map<string, string>(
         columns.map((c: any) => [c.key as string, c.label as string]),
       );
       const statusCol = columns.find((c: any) => c.key === "status");
       const statusOptions = statusCol?.options as SelectOption[] | undefined;
 
-      for (const it of items) {
-        const title = (it.title as string) || "Untitled";
-
-        // Pre-plan: every marked column NOT yet checked is an outstanding cell.
-        const marked = (it.prePlanColumns ?? []) as string[];
-        if (marked.length > 0) {
-          const checked = new Set((it.prePlanChecked ?? []) as string[]);
-          for (const colKey of marked) {
-            if (checked.has(colKey)) continue;
-            const columnLabel = colLabelByKey.get(colKey) ?? colKey;
-            prePlan.push({
-              id: it._id + ":" + colKey,
-              label: 'Fill out ' + columnLabel + ' for "' + title + '"',
-              tab: tabForModule(m.key),
-            });
-          }
-        }
-
-        // Timed items: anything not complete is outstanding for its phase.
+      for (let ii = 0; ii < items.length; ii++) {
+        const it = items[ii];
+        // Skip complete items (in-progress 0.5 still counts as outstanding).
         if (itemScore(statusOptions, it.status) >= 1) continue;
-        const action: TodoAction = {
-          id: it._id as string,
-          label: moduleLabel(m.key) + ": " + title,
-          tab: tabForModule(m.key),
-        };
+
+        const title = (it.title as string) || "Untitled";
+        // Am I the row-level owner of this item?
+        const iOwnItem = it.ownerPersonId
+          ? String(it.ownerPersonId) === String(me)
+          : it.roleId
+            ? String(personByRoleId.get(String(it.roleId)) ?? "") === String(me)
+            : false;
+
+        // Effective due → risk. Day-of/undated items fall back to event date.
+        const effectiveDue = (it.dueDate ?? event.eventDate) as number;
+        const risk = computeRisk(effectiveDue);
         const phase = itemPhase({
           module: m.key,
-          offsetDays: it.offsetDays ?? null,
-          offsetMinutes: it.offsetMinutes ?? null,
+          offsetDays: it.offsetDays,
+          offsetMinutes: it.offsetMinutes,
         });
-        if (phase === "planning") planning.push(action);
-        else if (phase === "dayOf") dayOf.push(action);
-        else post.push(action);
+
+        // Sort key keeps module order then item order stable within a risk tier.
+        const sortKey = mi * 100000 + ii;
+
+        if (iOwnItem) {
+          // Mine — always shown, regardless of risk.
+          yours.push({
+            id: it._id as string,
+            label: moduleLabel(m.key) + ": " + title,
+            tab: tabForModule(m.key),
+            risk,
+            due: effectiveDue,
+            phase,
+            // @ts-expect-error transient sort field, stripped before return
+            _sort: sortKey,
+          });
+
+          // Pre-plan cells on items I own → "Fill out <col> for <title>".
+          const marked = (it.prePlanColumns ?? []) as string[];
+          if (marked.length > 0) {
+            const checked = new Set((it.prePlanChecked ?? []) as string[]);
+            for (const colKey of marked) {
+              if (checked.has(colKey)) continue;
+              const columnLabel = colLabelByKey.get(colKey) ?? colKey;
+              yours.push({
+                id: it._id + ":" + colKey,
+                label: 'Fill out ' + columnLabel + ' for "' + title + '"',
+                tab: tabForModule(m.key),
+                risk: null,
+                phase: "prePlan",
+                // @ts-expect-error transient sort field, stripped before return
+                _sort: sortKey,
+              });
+            }
+          }
+        } else if ((iOwnThisModule || iAmEventOwner) && risk !== null) {
+          // Not mine, but I oversee it — only surface when at risk.
+          overseeing.push({
+            id: it._id as string,
+            label: moduleLabel(m.key) + ": " + title,
+            tab: tabForModule(m.key),
+            risk,
+            due: effectiveDue,
+            phase,
+            // @ts-expect-error transient sort field, stripped before return
+            _sort: sortKey,
+          });
+        }
+        // else: caller neither owns nor oversees → skip.
       }
     }
 
-    return { prePlan, planning, dayOf, post };
+    // Order each group: overdue → soon → rest, then stable by module/item order.
+    // Setup lines (no `_sort`) sort to the front (sortKey -1) within their tier.
+    const order = (list: TodoAction[]) =>
+      list
+        .map((a, idx) => ({ a, idx }))
+        .sort((x, y) => {
+          const rr = riskRank(x.a.risk) - riskRank(y.a.risk);
+          if (rr !== 0) return rr;
+          const sx = (x.a as any)._sort ?? -1;
+          const sy = (y.a as any)._sort ?? -1;
+          if (sx !== sy) return sx - sy;
+          return x.idx - y.idx;
+        })
+        .map(({ a }) => {
+          const { _sort, ...rest } = a as any;
+          return rest as TodoAction;
+        });
+
+    return { yours: order(yours), overseeing: order(overseeing) };
   },
 });
 

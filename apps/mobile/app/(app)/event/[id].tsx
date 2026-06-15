@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useMemo, useState, type ComponentProps } from "react";
 import { View, Text, Pressable, Alert, Platform } from "react-native";
 import { Stack, useRouter, useLocalSearchParams } from "expo-router";
 import { useQuery, useMutation } from "convex/react";
@@ -63,9 +63,11 @@ export default function EventDetailScreen() {
   // "What's next" to-dos for the normal Overview only (not Me view). Skip on
   // other tabs to avoid the extra read while a module surface is open.
   const onOverview = (tab ?? "overview") === "overview";
+  // The "What's next" list powers both the normal Overview and Me view's task
+  // section, so fetch it on the overview regardless of Me view.
   const todos = useQuery(
     api.events.todos,
-    onOverview && !meView ? { eventId } : "skip",
+    onOverview ? { eventId } : "skip",
   );
 
   const reschedule = useMutation(api.events.reschedule);
@@ -360,7 +362,7 @@ export default function EventDetailScreen() {
         {activeTab === "overview" && meView ? (
           <MeView
             ownedModuleKeys={myWork?.ownedModuleKeys ?? null}
-            tasks={myWork?.tasks ?? null}
+            todos={todos}
             activeModules={activeModules}
             readyByModule={readyByModule}
             summaryByModule={summaryByModule}
@@ -370,6 +372,7 @@ export default function EventDetailScreen() {
                 tab: key === "volunteer_expectations" ? "crew" : key,
               })
             }
+            onOpenTab={(t) => router.setParams({ tab: t })}
             onAssignOwner={openOwnerPicker}
           />
         ) : activeTab === "overview" ? (
@@ -599,24 +602,26 @@ export default function EventDetailScreen() {
  */
 function MeView({
   ownedModuleKeys,
-  tasks,
+  todos,
   activeModules,
   readyByModule,
   summaryByModule,
   moduleOwner,
   onOpenModule,
+  onOpenTab,
   onAssignOwner,
 }: {
   ownedModuleKeys: string[] | null;
-  tasks: MyTask[] | null;
+  todos: ComponentProps<typeof EventTodos>["todos"] | undefined;
   activeModules: ResolvedModule[];
   readyByModule: Map<string, boolean>;
   summaryByModule: Map<string, any>;
   moduleOwner: (m: ResolvedModule) => ModuleOwner;
   onOpenModule: (key: string) => void;
+  onOpenTab: (tab: string) => void;
   onAssignOwner: (m: ResolvedModule) => void;
 }) {
-  if (ownedModuleKeys === null || tasks === null) {
+  if (ownedModuleKeys === null || todos === undefined) {
     return (
       <View className="py-10">
         <Text className="text-base text-muted">Loading your work…</Text>
@@ -626,17 +631,6 @@ function MeView({
 
   const ownedKeys = new Set(ownedModuleKeys);
   const myModules = activeModules.filter((m) => ownedKeys.has(m.key));
-  const hasNothing = myModules.length === 0 && tasks.length === 0;
-
-  if (hasNothing) {
-    return (
-      <View className="py-10">
-        <Text className="text-base text-muted">
-          Nothing assigned to you yet.
-        </Text>
-      </View>
-    );
-  }
 
   return (
     <>
@@ -666,36 +660,10 @@ function MeView({
         </Card>
       )}
 
-      <SectionHeader title="My tasks" count={tasks.length} />
-      {tasks.length === 0 ? (
-        <Card>
-          <Text className="text-base text-muted">No tasks assigned to you.</Text>
-        </Card>
-      ) : (
-        <Card padding="none">
-          {tasks.map((t, i) => (
-            <View
-              key={t.itemId}
-              className={`px-4 py-3 ${i === 0 ? "" : "border-t border-border"}`}
-            >
-              <Text className="text-sm font-semibold text-ink">{t.title}</Text>
-              <View className="mt-0.5 flex-row flex-wrap items-center gap-x-3 gap-y-0.5">
-                <Text className="text-2xs font-bold uppercase tracking-wider text-muted">
-                  {t.moduleLabel}
-                </Text>
-                {t.dueDate ? (
-                  <Text className="text-2xs text-faint">
-                    Due {formatDate(t.dueDate)}
-                  </Text>
-                ) : null}
-                {t.status ? (
-                  <Text className="text-2xs text-faint">{t.status}</Text>
-                ) : null}
-              </View>
-            </View>
-          ))}
-        </Card>
-      )}
+      {/* "My tasks" IS the What's next list — yours (always) + overseeing (at
+          risk), with overdue flagged red. */}
+      <SectionHeader title="What's next" />
+      <EventTodos todos={todos} onOpenTab={onOpenTab} />
     </>
   );
 }
