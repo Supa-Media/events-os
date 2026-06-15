@@ -47,6 +47,7 @@ import type * as schema_templates from "../schema/templates.js";
 import type * as seed from "../seed.js";
 import type * as siteMap from "../siteMap.js";
 import type * as storage from "../storage.js";
+import type * as templatePeople from "../templatePeople.js";
 
 import type {
   ApiFromModules,
@@ -94,6 +95,7 @@ declare const fullApi: ApiFromModules<{
   seed: typeof seed;
   siteMap: typeof siteMap;
   storage: typeof storage;
+  templatePeople: typeof templatePeople;
 }>;
 
 /**

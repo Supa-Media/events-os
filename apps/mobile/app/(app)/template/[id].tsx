@@ -14,6 +14,7 @@ import { EditableGrid } from "../../../components/grid/EditableGrid";
 import { NameEditor } from "../../../components/template/NameEditor";
 import { DescriptionEditor } from "../../../components/template/DescriptionEditor";
 import { RolesCard } from "../../../components/template/RolesCard";
+import { TemplateCrewCard } from "../../../components/template/TemplateCrewCard";
 import { ModulesCard } from "../../../components/template/ModulesCard";
 import type { ModuleKey } from "@events-os/shared";
 import type { Id } from "@events-os/convex/_generated/dataModel";
@@ -82,6 +83,8 @@ export default function TemplateEditorScreen() {
         />
 
         <RolesCard eventTypeId={eventTypeId} roles={roleList} />
+
+        <TemplateCrewCard eventTypeId={eventTypeId} />
 
         <ModulesCard
           eventTypeId={eventTypeId}

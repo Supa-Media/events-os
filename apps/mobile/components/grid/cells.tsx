@@ -41,7 +41,14 @@ import { OptionTag } from "../ui/OptionTag";
 import { Popover } from "../ui/Popover";
 import { RolePicker } from "../ui/RolePicker";
 import { PersonPicker } from "../ui/PersonPicker";
-import { cellValue, type GridColumn, type GridItem, type GridMode } from "./useGridData";
+import { TemplateOwnerPicker } from "../ui/TemplateOwnerPicker";
+import {
+  cellValue,
+  isTemplateOwnerCell,
+  type GridColumn,
+  type GridItem,
+  type GridMode,
+} from "./useGridData";
 
 export interface CellContext {
   column: GridColumn;
@@ -52,6 +59,8 @@ export interface CellContext {
   eventDate?: number;
   editable: boolean;
   onChange: (value: any) => void;
+  /** Template mode: the eventType id, used to source placeholder-crew owners. */
+  templateId?: string;
 }
 
 // ── Inline text input (commits on blur) ──────────────────────────────────────
@@ -316,6 +325,51 @@ function PersonCell({ value, ownerName, inherited, editable, onChange }: any) {
         selectedId={value ?? null}
         onPick={(id: string) => { onChange(id); setOpen(false); }}
         onClear={() => { onChange(null); setOpen(false); }}
+        onClose={() => setOpen(false)}
+      />
+    </>
+  );
+}
+
+// ── Template owner (placeholder crew) ─────────────────────────────────────────
+// On a TEMPLATE the Expectations owner is a placeholder crew member, not a real
+// person. The stored value is the templatePerson id (in fields.templateOwnerId)
+// plus a cached display name (fields.templateOwnerName). Picking reports
+// `{ id, name }`; clearing reports null.
+function TemplateOwnerCell({ item, templateId, editable, onChange }: any) {
+  const [open, setOpen] = useState(false);
+  const name = item.fields?.templateOwnerName ?? null;
+  const selectedId = item.fields?.templateOwnerId ?? null;
+  return (
+    <>
+      <Pressable
+        disabled={!editable}
+        onPress={() => setOpen(true)}
+        className="flex-1 flex-row items-center gap-2 px-2 py-1.5 active:opacity-70"
+      >
+        {name ? (
+          <>
+            <Avatar name={name} size={22} />
+            <Text className="text-sm text-ink" numberOfLines={1}>
+              {name}
+            </Text>
+          </>
+        ) : (
+          <Text className="text-sm text-faint">—</Text>
+        )}
+      </Pressable>
+      <TemplateOwnerPicker
+        visible={open}
+        eventTypeId={templateId}
+        selectedId={selectedId}
+        onPick={(id: string, picked: string) => {
+          onChange({ id, name: picked });
+          setOpen(false);
+        }}
+        onClear={() => {
+          onChange(null);
+          setOpen(false);
+        }}
         onClose={() => setOpen(false)}
       />
     </>
@@ -732,10 +786,23 @@ function HowToCell({ value, editable, onChange, mode, eventItemId, colKey }: any
 
 // ── Dispatcher ────────────────────────────────────────────────────────────────
 export function GridCell(ctx: CellContext) {
-  const { column, item, module, mode, roles, eventDate, editable, onChange } = ctx;
-  const value = cellValue(column, item, module);
+  const { column, item, module, mode, roles, eventDate, editable, onChange, templateId } = ctx;
+  const value = cellValue(column, item, module, mode);
 
-  // Owner is meaningless on a template (template items have no owner).
+  // Template Expectations owner = a placeholder crew member (templatePeople),
+  // stored in the fields bag rather than the promoted ownerPersonId.
+  if (isTemplateOwnerCell(column, module, mode)) {
+    return (
+      <TemplateOwnerCell
+        item={item}
+        templateId={templateId}
+        editable={editable}
+        onChange={onChange}
+      />
+    );
+  }
+
+  // Owner is meaningless on a template for every other module.
   if (column.key === "owner" && mode === "template") {
     return <Text className="px-2 py-1.5 text-sm text-faint">—</Text>;
   }

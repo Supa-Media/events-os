@@ -48,8 +48,34 @@ export interface GridItem {
   ownerIsInherited?: boolean;
 }
 
+/**
+ * Modules whose `owner` column is authored on the TEMPLATE against placeholder
+ * crew (templatePeople), stored in the item's `fields` bag rather than the
+ * promoted `ownerPersonId` (which is an `Id<"people">`). On events the same
+ * column works the normal way against chapter people.
+ */
+const TEMPLATE_OWNER_MODULES: ModuleKey[] = ["volunteer_expectations"];
+
+/** True when the `owner` column should resolve to a template placeholder. */
+export function isTemplateOwnerCell(
+  column: GridColumn,
+  module: ModuleKey,
+  mode: GridMode,
+): boolean {
+  return (
+    mode === "template" &&
+    column.key === "owner" &&
+    TEMPLATE_OWNER_MODULES.includes(module)
+  );
+}
+
 /** The logical value backing a column for an item (promoted field or bag entry). */
-export function cellValue(column: GridColumn, item: GridItem, module: ModuleKey): any {
+export function cellValue(
+  column: GridColumn,
+  item: GridItem,
+  module: ModuleKey,
+  mode: GridMode = "event",
+): any {
   switch (column.key) {
     case "title":
       return item.title;
@@ -58,6 +84,9 @@ export function cellValue(column: GridColumn, item: GridItem, module: ModuleKey)
     case "role":
       return item.roleId ?? null;
     case "owner":
+      // Template placeholder owner lives in the fields bag (templatePerson id).
+      if (isTemplateOwnerCell(column, module, mode))
+        return item.fields?.templateOwnerId ?? null;
       return item.ownerPersonId ?? null;
     case "offset":
       return DAY_OFFSET_MODULES.includes(module)
@@ -75,6 +104,7 @@ export function buildPatch(
   column: GridColumn,
   value: any,
   module: ModuleKey,
+  mode: GridMode = "event",
 ): Record<string, any> {
   switch (column.key) {
     case "title":
@@ -84,6 +114,16 @@ export function buildPatch(
     case "role":
       return { roleId: value ?? null };
     case "owner":
+      // Template placeholder owner: store id + display name in the fields bag.
+      // `value` is `{ id, name }` when picked, or null when cleared.
+      if (isTemplateOwnerCell(column, module, mode)) {
+        return {
+          fields: {
+            templateOwnerId: value?.id ?? null,
+            templateOwnerName: value?.name ?? null,
+          },
+        };
+      }
       return { ownerPersonId: value ?? null };
     case "offset":
       return DAY_OFFSET_MODULES.includes(module)

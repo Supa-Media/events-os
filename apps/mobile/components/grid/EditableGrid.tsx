@@ -147,14 +147,20 @@ export function EditableGrid({
     null | { itemId: string; colKey: string; marked: boolean; anchor: ContextMenuAnchor }
   >(null);
 
+  // In template mode the computed due date is meaningless, and `owner` has no
+  // owner to resolve — EXCEPT volunteer_expectations, whose owner is authored
+  // against the template's placeholder crew (templatePeople).
+  const stripInTemplate = (key: string) =>
+    key === "due_date" ||
+    (key === "owner" && module !== "volunteer_expectations");
+
   const columns = useMemo(() => {
     return grid.columns
       .filter((c) => c.isVisible)
-      // Owner + computed due date have no meaning while authoring a template.
-      .filter((c) => (mode === "template" ? !["owner", "due_date"].includes(c.key) : true))
+      .filter((c) => (mode === "template" ? !stripInTemplate(c.key) : true))
       .sort((a, b) => a.order - b.order);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [grid.columns, mode]);
+  }, [grid.columns, mode, module]);
 
   const widths = useMemo(
     () => columns.map((c) => c.width ?? defaultWidth(c)),
@@ -172,7 +178,7 @@ export function EditableGrid({
   const editCol = editColId ? grid.columns.find((c) => c._id === editColId) ?? null : null;
 
   const commit = (item: GridItem, column: GridColumn, value: any) =>
-    grid.updateItem(item._id, buildPatch(column, value, module));
+    grid.updateItem(item._id, buildPatch(column, value, module, mode));
 
   // The per-row ✨ Autofill button only makes sense on a live event with a
   // fillable column (photo / link / cost).
@@ -234,6 +240,7 @@ export function EditableGrid({
       roles={roles}
       eventDate={eventDate}
       editable={editable}
+      templateId={mode === "template" ? parentId : undefined}
       onCommit={commit}
       onRemove={editable ? () => grid.removeItem(item._id) : undefined}
       onAutofill={canAutofill ? () => autofill({ itemId: item._id as any }) : undefined}
@@ -378,7 +385,7 @@ export function EditableGrid({
       <Popover visible={menu === "columns"} onClose={() => setMenu(null)} width={280}>
         <View className="py-1">
           {grid.columns
-            .filter((c) => (mode === "template" ? !["owner", "due_date"].includes(c.key) : true))
+            .filter((c) => (mode === "template" ? !stripInTemplate(c.key) : true))
             .sort((a, b) => a.order - b.order)
             .map((c) => (
               <View key={c._id} className="flex-row items-center justify-between px-3 py-2">
@@ -562,6 +569,7 @@ function Row({
   roles,
   eventDate,
   editable,
+  templateId,
   onCommit,
   onRemove,
   onAutofill,
@@ -578,6 +586,7 @@ function Row({
   roles: Array<{ _id: string; label: string }>;
   eventDate?: number;
   editable: boolean;
+  templateId?: string;
   onCommit: (item: GridItem, column: GridColumn, value: any) => void;
   onRemove?: () => void;
   /** ✨ one-click enrich (photo/cost/link) from the item name. */
@@ -634,6 +643,7 @@ function Row({
               roles={roles}
               eventDate={eventDate}
               editable={editable}
+              templateId={templateId}
               onChange={(value) => onCommit(item, c, value)}
             />
           </PrePlanCellWrapper>

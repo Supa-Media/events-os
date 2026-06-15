@@ -11,7 +11,7 @@ import {
   eventItems,
   roleAssignments,
 } from "./schema/events";
-import { people, engagements } from "./schema/people";
+import { people, engagements, templatePeople } from "./schema/people";
 import { docs } from "./schema/docs";
 import { siteMarkers, siteShapes, siteMapPlacements } from "./schema/siteMap";
 import {
@@ -77,9 +77,10 @@ const schema = defineSchema({
   eventItems,
   roleAssignments,
 
-  // People (roster) + engagements.
+  // People (roster) + engagements + template placeholder crew.
   people,
   engagements,
+  templatePeople,
 
   // Docs (the standalone targets behind How-To cells).
   docs,
