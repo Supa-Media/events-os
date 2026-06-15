@@ -40,7 +40,6 @@ export function MarkdownEditor({
   uploadImage,
 }: MarkdownEditorProps) {
   const hostRef = useRef<HTMLDivElement | null>(null);
-  const fileInputRef = useRef<HTMLInputElement | null>(null);
   const viewRef = useRef<EditorView | null>(null);
   // Keep the latest onChange without re-creating the editor on every render.
   const onChangeRef = useRef(onChange);
@@ -103,36 +102,23 @@ export function MarkdownEditor({
   }
 
   return (
-    <div style={{ position: "relative", width: "100%" }}>
-      <div
-        ref={hostRef}
-        style={{
-          height: minHeight,
-          width: "100%",
-          overflow: "auto",
-          backgroundColor: "#FDF6F6",
-          borderRadius: 14,
-          border: "1px solid #EFE0DC",
-        }}
-      />
+    <div style={{ width: "100%" }}>
+      {/* Toolbar ABOVE the editor (not overlaying the text). The file input is
+          nested in the <label>, so a native label-click opens the OS picker —
+          more reliable cross-browser than a programmatic .click() on a hidden
+          input (which some browsers, e.g. Safari, refuse to open). */}
       {showAddImage ? (
-        <>
-          <input
-            ref={fileInputRef}
-            type="file"
-            accept="image/*"
-            onChange={onPickFile}
-            style={{ display: "none" }}
-          />
-          <button
-            type="button"
-            onClick={() => fileInputRef.current?.click()}
+        <div
+          style={{
+            display: "flex",
+            justifyContent: "flex-end",
+            marginBottom: 8,
+          }}
+        >
+          <label
             title="Add image"
             style={{
-              position: "absolute",
-              top: 10,
-              right: 14,
-              display: "flex",
+              display: "inline-flex",
               alignItems: "center",
               gap: 6,
               padding: "6px 10px",
@@ -149,9 +135,35 @@ export function MarkdownEditor({
               🖼
             </span>
             Add image
-          </button>
-        </>
+            <input
+              type="file"
+              accept="image/*"
+              onChange={onPickFile}
+              style={{
+                position: "absolute",
+                width: 1,
+                height: 1,
+                padding: 0,
+                margin: -1,
+                overflow: "hidden",
+                clip: "rect(0 0 0 0)",
+                border: 0,
+              }}
+            />
+          </label>
+        </div>
       ) : null}
+      <div
+        ref={hostRef}
+        style={{
+          height: minHeight,
+          width: "100%",
+          overflow: "auto",
+          backgroundColor: "#FDF6F6",
+          borderRadius: 14,
+          border: "1px solid #EFE0DC",
+        }}
+      />
     </div>
   );
 }

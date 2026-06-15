@@ -29,16 +29,21 @@ const DOC_KINDS: Array<{
  * `MarkdownEditor`, saving through `api.docs.update` (title on blur, body
  * debounced). For markdown docs, a floating Notion-AI-style `DocAssistantPanel`
  * docks to the right: the user chats with an agent that rewrites the doc's
- * markdown. A Share button copies the public `/doc/<shareId>` URL (web) /
- * surfaces the `eventsos://doc/<shareId>` deep link. Link/video/note docs get a
- * simple URL/text editor instead of the markdown surface.
+ * markdown. A Share button copies the public `/d/<shareId>` URL (web) /
+ * surfaces the `eventsos://d/<shareId>` deep link. A Public/Internal toggle
+ * controls whether that link resolves (default Public). Link/video/note docs get
+ * a simple URL/text editor instead of the markdown surface.
  */
 export default function DocEditorScreen() {
   const router = useRouter();
-  const { id, ownerItem, ownerCol } = useLocalSearchParams<{
+  const { id, ownerItem, ownerCol, from } = useLocalSearchParams<{
     id: string;
     ownerItem?: string;
     ownerCol?: string;
+    // The route this doc was opened from. Used by the back button to return
+    // there reliably, since the copy-on-write fork's `router.replace` rewrites
+    // history and breaks `router.back()`. Preserved across that replace.
+    from?: string;
   }>();
 
   // The doc currently being edited. Starts at the route id, but a copy-on-write
@@ -108,6 +113,7 @@ export default function DocEditorScreen() {
     url?: string;
     body?: string;
     kind?: "note" | "link" | "video" | "markdown";
+    visibility?: "public" | "internal";
   }): Promise<string> {
     const shouldFork =
       !!ownerItem &&
@@ -126,11 +132,13 @@ export default function DocEditorScreen() {
         });
         hasForkedRef.current = true;
         setActiveDocId(res._id);
-        router.replace(
+        // Preserve `from` so the back button still returns to the origin after
+        // the fork rewrites history.
+        const forkUrl =
           `/doc/${res._id}?ownerItem=${ownerItem}&ownerCol=${encodeURIComponent(
             ownerCol as string,
-          )}` as any,
-        );
+          )}` + (from ? `&from=${encodeURIComponent(from as string)}` : "");
+        router.replace(forkUrl as any);
         await update({ docId: res._id as any, ...patch });
         return res._id;
       } finally {
@@ -163,12 +171,15 @@ export default function DocEditorScreen() {
   const isNote = doc.kind === "note";
   const isLinkLike = doc.kind === "link" || doc.kind === "video";
 
-  // The public share targets.
+  // The public share targets. NOTE: the public viewer lives at `/d/<shareId>`,
+  // NOT `/doc/<shareId>` — the latter collides with THIS authed editor (the
+  // `(app)` group adds no URL segment) and would bounce recipients to login.
   const webUrl =
     Platform.OS === "web" && typeof window !== "undefined"
-      ? `${window.location.origin}/doc/${doc.shareId}`
-      : `/doc/${doc.shareId}`;
-  const deepLink = `eventsos://doc/${doc.shareId}`;
+      ? `${window.location.origin}/d/${doc.shareId}`
+      : `/d/${doc.shareId}`;
+  const deepLink = `eventsos://d/${doc.shareId}`;
+  const isInternal = doc.visibility === "internal";
 
   async function share() {
     if (Platform.OS === "web" && typeof navigator !== "undefined" && navigator.clipboard) {
@@ -201,7 +212,14 @@ export default function DocEditorScreen() {
       {/* Header: back + title + share */}
       <View className="mb-4 flex-row items-center gap-2">
         <Pressable
-          onPress={() => router.back()}
+          onPress={() => {
+            // Return to the origin route if we know it (replace, so we don't
+            // stack a duplicate history entry); otherwise fall back to normal
+            // back, then home.
+            if (from) router.replace(decodeURIComponent(from as string) as any);
+            else if (router.canGoBack()) router.back();
+            else router.replace("/" as any);
+          }}
           hitSlop={8}
           className="rounded-md p-1.5 active:bg-sunken web:hover:bg-sunken"
         >
@@ -247,6 +265,25 @@ export default function DocEditorScreen() {
           </View>
         </Popover>
         <View className="flex-1" />
+        {/* Public ↔ Internal toggle. Default Public; Internal makes the public
+            `/d/<shareId>` link return null (looks unavailable to the public). */}
+        <Pressable
+          onPress={() => {
+            void maybeForkThenUpdate({
+              visibility: isInternal ? "public" : "internal",
+            });
+          }}
+          className="flex-row items-center gap-1.5 rounded-md border border-border px-3 py-1.5 active:bg-sunken web:hover:bg-sunken"
+        >
+          <Icon
+            name={isInternal ? "lock" : "globe"}
+            size={14}
+            color={isInternal ? colors.muted : colors.accent}
+          />
+          <Text className="text-sm font-medium text-muted">
+            {isInternal ? "Internal" : "Public"}
+          </Text>
+        </Pressable>
         <Pressable
           onPress={share}
           className="flex-row items-center gap-1.5 rounded-md border border-border px-3 py-1.5 active:bg-sunken web:hover:bg-sunken"
@@ -272,8 +309,16 @@ export default function DocEditorScreen() {
       />
 
       <View className="mt-2">
-        <Text className="text-2xs text-faint">Public link · {webUrl}</Text>
-        <Text className="text-2xs text-faint">Deep link · {deepLink}</Text>
+        {isInternal ? (
+          <Text className="text-2xs text-faint">
+            Internal · not publicly viewable. Set to Public to share a link.
+          </Text>
+        ) : (
+          <>
+            <Text className="text-2xs text-faint">Public link · {webUrl}</Text>
+            <Text className="text-2xs text-faint">Deep link · {deepLink}</Text>
+          </>
+        )}
       </View>
 
       {/* Body editor by kind */}

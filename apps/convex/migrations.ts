@@ -18,6 +18,100 @@
  */
 import { internalMutation } from "./_generated/server";
 import { Id } from "./_generated/dataModel";
+import { DEFAULT_COLUMNS, type ModuleKey } from "@events-os/shared";
+
+/**
+ * Backfill: ensure every template/event grid module has all of its current
+ * DEFAULT_COLUMNS present.
+ *
+ * Columns are SNAPSHOTTED per scope — a template's columns are seeded from
+ * DEFAULT_COLUMNS when the module is set up (`seedModuleColumns`), and an event
+ * clones the template's columns at instantiation. They are NOT read live. So a
+ * template/event created before a default column existed (e.g. supplies `qty`)
+ * permanently lacks that column, and there's no way to surface it from the UI
+ * (the Columns menu only lists columns that exist).
+ *
+ * This walks each (scope, module) group and INSERTS any DEFAULT_COLUMNS column
+ * whose `key` is absent, copying label/kind/type/options/config/isVisible from
+ * the shared default. Missing columns are appended after the existing ones (next
+ * free `order`) so we never disturb a scope's authored column order/visibility.
+ *
+ * Idempotent: a second run is a no-op (every default key is already present).
+ *
+ * Run locally:   npx convex run migrations:backfillMissingDefaultColumns
+ * Run on prod:   npx convex run --prod migrations:backfillMissingDefaultColumns
+ */
+export const backfillMissingDefaultColumns = internalMutation({
+  args: {},
+  handler: async (ctx) => {
+    let templateColumnsAdded = 0;
+    let eventColumnsAdded = 0;
+
+    // ── Templates ──────────────────────────────────────────────────────────
+    const templateCols = await ctx.db.query("templateColumns").collect();
+    const byTemplateModule = new Map<string, typeof templateCols>();
+    for (const c of templateCols) {
+      const k = `${String(c.eventTypeId)}::${c.module}`;
+      (byTemplateModule.get(k) ?? byTemplateModule.set(k, []).get(k)!).push(c);
+    }
+    for (const [k, cols] of byTemplateModule) {
+      const [eventTypeId, module] = k.split("::");
+      const defaults = DEFAULT_COLUMNS[module as ModuleKey];
+      if (!defaults) continue;
+      const present = new Set(cols.map((c) => c.key));
+      let nextOrder = cols.reduce((m, c) => (c.order > m ? c.order : m), -1) + 1;
+      for (const d of defaults) {
+        if (present.has(d.key)) continue;
+        await ctx.db.insert("templateColumns", {
+          eventTypeId: eventTypeId as Id<"eventTypes">,
+          module,
+          key: d.key,
+          label: d.label,
+          kind: d.kind,
+          type: d.type,
+          options: d.options,
+          config: d.config,
+          isVisible: d.isVisible,
+          order: nextOrder++,
+        });
+        templateColumnsAdded++;
+      }
+    }
+
+    // ── Events ─────────────────────────────────────────────────────────────
+    const eventCols = await ctx.db.query("eventColumns").collect();
+    const byEventModule = new Map<string, typeof eventCols>();
+    for (const c of eventCols) {
+      const k = `${String(c.eventId)}::${c.module}`;
+      (byEventModule.get(k) ?? byEventModule.set(k, []).get(k)!).push(c);
+    }
+    for (const [k, cols] of byEventModule) {
+      const [eventId, module] = k.split("::");
+      const defaults = DEFAULT_COLUMNS[module as ModuleKey];
+      if (!defaults) continue;
+      const present = new Set(cols.map((c) => c.key));
+      let nextOrder = cols.reduce((m, c) => (c.order > m ? c.order : m), -1) + 1;
+      for (const d of defaults) {
+        if (present.has(d.key)) continue;
+        await ctx.db.insert("eventColumns", {
+          eventId: eventId as Id<"events">,
+          module,
+          key: d.key,
+          label: d.label,
+          kind: d.kind,
+          type: d.type,
+          options: d.options,
+          config: d.config,
+          isVisible: d.isVisible,
+          order: nextOrder++,
+        });
+        eventColumnsAdded++;
+      }
+    }
+
+    return { templateColumnsAdded, eventColumnsAdded };
+  },
+});
 
 /**
  * Phase 3 migration: `eventTypes.activeComponents` (and the per-event copy via

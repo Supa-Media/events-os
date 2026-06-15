@@ -12,7 +12,7 @@ import { v } from "convex/values";
  * link/video.
  *
  * `shareId` is a short, unguessable public slug — the capability for the no-auth
- * `/doc/<shareId>` route (same trust model as the crew share page). Chapter
+ * `/d/<shareId>` route (same trust model as the crew share page). Chapter
  * scoping keeps authed reads/writes inside the caller's chapter.
  */
 export const docs = defineTable({
@@ -30,6 +30,10 @@ export const docs = defineTable({
   body: v.optional(v.string()),
   // Short public slug for the unauthenticated share route.
   shareId: v.string(),
+  // Public/internal visibility. Undefined (or "public") → readable at the no-auth
+  // `/d/<shareId>` route; "internal" → `getPublic` returns null. Optional so all
+  // existing docs default to PUBLIC.
+  visibility: v.optional(v.union(v.literal("public"), v.literal("internal"))),
   // Copy-on-write origin. A template's How-To doc is `scope: "template"` and is
   // shared by reference into every event; editing it from an event forks a
   // `scope: "event"` copy (see `forkForEventItem` in docs.ts). Optional so rows

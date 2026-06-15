@@ -14,6 +14,7 @@
  *                   window.__insertImage(url)        (inserts ![](url) at caret)
  *   WebView -> RN:  postMessage(JSON{type:"change", value})
  *                   postMessage(JSON{type:"ready"})
+ *                   postMessage(JSON{type:"openLink", url})  (read mode link tap)
  *
  * NOTE: This variant requires a network connection on first load (CDN fetch).
  * For an offline-capable native build, pre-bundle CM6 with esbuild into an asset
@@ -207,7 +208,7 @@ export function buildEditorHtml(opts: {
     ".cm-md-strong": { fontWeight: "700" },
     ".cm-md-em": { fontStyle: "italic" },
     ".cm-md-code": { fontFamily: "ui-monospace, Menlo, monospace", backgroundColor: "#FAEEE9", borderRadius: "4px", padding: "0.1em 0.3em", fontSize: "0.9em" },
-    ".cm-md-link": { color: "#4A6BC0", textDecoration: "underline" },
+    ".cm-md-link": { color: "#4A6BC0", textDecoration: "underline", cursor: "pointer" },
     ".cm-md-quote": { borderLeft: "3px solid #EFE0DC", paddingLeft: "12px", color: "#7A5A5A", fontStyle: "italic" },
     ".cm-md-codeblock": { fontFamily: "ui-monospace, Menlo, monospace", backgroundColor: "#FAEEE9", fontSize: "0.9em" },
     ".cm-md-bullet": { color: "#D23B3A", paddingRight: "0.35em" },
@@ -217,6 +218,48 @@ export function buildEditorHtml(opts: {
   const post = (msg) => window.ReactNativeWebView && window.ReactNativeWebView.postMessage(JSON.stringify(msg));
   let suppress = false; // ignore change events caused by programmatic setValue
 
+  // ── link opening (read mode only) ─────────────────────────────────────────
+  // In read mode (editable=false) tapping a link should open it. In edit mode a
+  // tap must place the caret, so we leave link handling off there.
+  const ENABLE_LINK_OPEN = !(${editable});
+
+  // Resolve the URL for a [text](url) Link node, or a bare/autolink URL, at the
+  // given document position. Returns the raw URL string or null.
+  function resolveLinkUrl(view, pos) {
+    const tree = syntaxTree(view.state);
+    let node = tree.resolveInner(pos, 0);
+    while (node) {
+      if (node.name === "Link") {
+        // Find the URL child of the link node.
+        const url = node.getChild("URL");
+        if (url) return view.state.doc.sliceString(url.from, url.to).trim();
+        return null;
+      }
+      if (node.name === "URL" || node.name === "Autolink") {
+        // Bare URL / autolink not wrapped in a Link node.
+        let raw = view.state.doc.sliceString(node.from, node.to).trim();
+        // Strip optional <…> autolink brackets.
+        if (raw.startsWith("<") && raw.endsWith(">")) raw = raw.slice(1, -1).trim();
+        return raw;
+      }
+      node = node.parent;
+    }
+    return null;
+  }
+
+  const linkOpener = EditorView.domEventHandlers({
+    mousedown(event, view) {
+      if (!ENABLE_LINK_OPEN) return false;
+      const pos = view.posAtCoords({ x: event.clientX, y: event.clientY });
+      if (pos == null) return false;
+      const url = resolveLinkUrl(view, pos);
+      if (!url) return false;
+      event.preventDefault();
+      post({ type: "openLink", url });
+      return true;
+    },
+  });
+
   const PLACEHOLDER = ${placeholder};
   const exts = [
     history(),
@@ -225,6 +268,7 @@ export function buildEditorHtml(opts: {
     EditorView.lineWrapping,
     livePreview,
     imagePreview,
+    linkOpener,
     editorTheme,
     EditorState.readOnly.of(!(${editable})),
     EditorView.editable.of(${editable}),

@@ -64,6 +64,35 @@ export const editorTheme = EditorView.theme({
   },
   ".cm-md-link": { color: LINK, textDecoration: "underline" },
 
+  // Visible link text / bare URLs decorated by linkClick — read as interactive.
+  ".cm-md-clickable-link": {
+    color: LINK,
+    textDecoration: "underline",
+    cursor: "pointer",
+  },
+
+  // Edit-mode hover hint shown when hovering a link.
+  ".cm-md-link-tooltip": {
+    backgroundColor: INK,
+    color: SURFACE,
+    borderRadius: "8px",
+    padding: "6px 10px",
+    fontSize: "12px",
+    lineHeight: "1.4",
+    maxWidth: "320px",
+    boxShadow: "0 4px 14px rgba(33, 9, 9, 0.25)",
+  },
+  ".cm-md-link-tooltip .cm-md-link-tooltip-hint": { fontWeight: "600" },
+  ".cm-md-link-tooltip .cm-md-link-tooltip-url": {
+    color: FAINT,
+    wordBreak: "break-all",
+    marginTop: "2px",
+  },
+  ".cm-tooltip.cm-tooltip-hover": {
+    border: "none",
+    backgroundColor: "transparent",
+  },
+
   // ── Blocks ──────────────────────────────────────────────────────────────────
   ".cm-md-quote": {
     borderLeft: `3px solid ${BORDER}`,
