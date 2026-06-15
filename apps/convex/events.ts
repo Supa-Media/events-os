@@ -19,6 +19,7 @@ import {
   DAY_MS,
   DAY_OFFSET_MODULES,
   MODULE_LABELS,
+  MODULE_READY_PHASE,
   type ModuleKey,
   type PhaseKey,
   type PhaseScores,
@@ -655,14 +656,6 @@ export const todos = query({
     // planning. planning_doc and retro have no ready gate. The caller sees it in
     // `yours` if they own the module, else `overseeing` (event owner) when at
     // risk — same ownership rule as items. ──
-    const READY_TODO_PHASE: Record<string, PhaseKey> = {
-      comms: "prePlan",
-      permits: "prePlan",
-      run_of_show: "planning",
-      site_map: "planning",
-      volunteer_expectations: "planning",
-      supplies: "planning",
-    };
     const readyByKey = new Map<string, boolean>(
       (event.moduleReadiness ?? []).map((r: any) => [
         r.key as string,
@@ -671,7 +664,7 @@ export const todos = query({
     );
     for (let mi = 0; mi < resolved.length; mi++) {
       const m = resolved[mi];
-      const phase = READY_TODO_PHASE[m.key];
+      const phase = MODULE_READY_PHASE[m.key];
       if (!phase) continue;
       if (readyByKey.get(m.key) === true) continue;
 

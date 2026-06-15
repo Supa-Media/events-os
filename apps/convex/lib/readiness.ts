@@ -13,6 +13,7 @@
 import { Id } from "../_generated/dataModel";
 import {
   computePhaseScores,
+  MODULE_READY_PHASE,
   type PhaseScores,
   type SelectOption,
 } from "@events-os/shared";
@@ -95,5 +96,21 @@ export async function phaseReadiness(
     total: totalRoles + ownerTotal,
   };
 
-  return computePhaseScores(modules, prePlanExtra);
+  // Module "mark as ready" gates feed their mapped phase, so marking a module
+  // ready visibly moves that phase's ring. Covers non-grid modules too (site_map
+  // has no items but still has a ready gate).
+  const readyByKey = new Map<string, boolean>(
+    (event.moduleReadiness ?? []).map((r: any) => [
+      r.key as string,
+      r.ready as boolean,
+    ]),
+  );
+  const moduleReady = resolved
+    .filter((m: any) => MODULE_READY_PHASE[m.key])
+    .map((m: any) => ({
+      phase: MODULE_READY_PHASE[m.key],
+      ready: readyByKey.get(m.key) === true,
+    }));
+
+  return computePhaseScores(modules, prePlanExtra, moduleReady);
 }

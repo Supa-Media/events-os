@@ -612,6 +612,22 @@ export const PHASE_LABELS: Record<PhaseKey, string> = {
 export type PhaseScores = Record<PhaseKey, number | null>;
 
 /**
+ * Which phase each module's "mark as ready" gate counts toward — for BOTH the
+ * Overview "What's next" to-dos and the phase readiness rings, so the two never
+ * drift. Modules absent here have no ready gate (e.g. planning_doc, retro).
+ *   comms / permits                              → pre-plan
+ *   run_of_show / site_map / crew / supplies     → planning
+ */
+export const MODULE_READY_PHASE: Record<string, PhaseKey> = {
+  comms: "prePlan",
+  permits: "prePlan",
+  run_of_show: "planning",
+  site_map: "planning",
+  volunteer_expectations: "planning",
+  supplies: "planning",
+};
+
+/**
  * Status values that count as "started but not complete" → itemScore 0.5.
  *
  * The rule is "started toward done, but not done". Choices per vocabulary:
@@ -720,6 +736,10 @@ export function computePhaseScores(
   // template-marked cells. `done` = how many are assigned; `total` = how many
   // exist.
   prePlanExtra?: { done: number; total: number },
+  // Module "mark as ready" gates. Each gate is a unit of work in its phase: a
+  // ready gate counts as 1, an unmet gate as 0. Pre-plan gates fold into the
+  // pre-plan count; timing-phase gates weigh as one module-equivalent.
+  moduleReady?: Array<{ phase: PhaseKey; ready: boolean }>,
 ): PhaseScores {
   type TimingPhase = Exclude<PhaseKey, "prePlan">;
   // Per phase: collect each module's average itemScore (only for modules that
@@ -766,13 +786,30 @@ export function computePhaseScores(
     }
   }
 
+  // Module "ready" gates: a met gate is a completed unit in its phase, an unmet
+  // gate a 0. Pre-plan gates add to the pre-plan count; timing-phase gates push
+  // a 1/0 module-equivalent into that phase's average.
+  let readyPrePlanTotal = 0;
+  let readyPrePlanDone = 0;
+  for (const g of moduleReady ?? []) {
+    if (g.phase === "prePlan") {
+      readyPrePlanTotal += 1;
+      if (g.ready) readyPrePlanDone += 1;
+    } else {
+      moduleScores[g.phase].push(g.ready ? 1 : 0);
+    }
+  }
+
   const avg = (arr: number[]): number | null =>
     arr.length > 0 ? arr.reduce((sum, s) => sum + s, 0) / arr.length : null;
 
-  // Pre-plan = marked-cell check-offs + the extra role/owner-assignment items,
-  // all equally weighted. Null only when there's nothing to assign or mark.
-  const prePlanTotal = prePlanMarked + (prePlanExtra?.total ?? 0);
-  const prePlanDone = prePlanChecked + (prePlanExtra?.done ?? 0);
+  // Pre-plan = marked-cell check-offs + the extra role/owner-assignment items +
+  // pre-plan ready gates, all equally weighted. Null only when there's nothing
+  // to assign, mark, or ready.
+  const prePlanTotal =
+    prePlanMarked + (prePlanExtra?.total ?? 0) + readyPrePlanTotal;
+  const prePlanDone =
+    prePlanChecked + (prePlanExtra?.done ?? 0) + readyPrePlanDone;
   return {
     prePlan: prePlanTotal > 0 ? prePlanDone / prePlanTotal : null,
     planning: avg(moduleScores.planning),
