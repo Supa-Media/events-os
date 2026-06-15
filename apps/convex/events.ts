@@ -576,12 +576,17 @@ export const todos = query({
         if (itemScore(statusOptions, it.status) >= 1) continue;
 
         const title = (it.title as string) || "Untitled";
-        // Am I the row-level owner of this item?
-        const iOwnItem = it.ownerPersonId
-          ? String(it.ownerPersonId) === String(me)
-          : it.roleId
-            ? String(personByRoleId.get(String(it.roleId)) ?? "") === String(me)
-            : false;
+        // Who is RESPONSIBLE for this item: its row owner, else the person in
+        // its role, else (no row-level owner at all) the module's owner. If
+        // that resolves to me, it's mine — even when I'm "only" the module
+        // owner and the row is unassigned. This keeps my own unassigned rows in
+        // "Yours" instead of showing me as overseeing myself.
+        const responsiblePid =
+          (it.ownerPersonId as Id<"people"> | undefined) ??
+          (it.roleId ? personByRoleId.get(String(it.roleId)) : undefined) ??
+          modulePerson.get(m.key);
+        const iAmResponsible =
+          responsiblePid != null && String(responsiblePid) === String(me);
 
         // Effective due → risk. Day-of/undated items fall back to event date.
         const effectiveDue = (it.dueDate ?? event.eventDate) as number;
@@ -595,7 +600,7 @@ export const todos = query({
         // Sort key keeps module order then item order stable within a risk tier.
         const sortKey = mi * 100000 + ii;
 
-        if (iOwnItem) {
+        if (iAmResponsible) {
           // Mine — always shown, regardless of risk.
           yours.push({
             id: it._id as string,
@@ -627,13 +632,8 @@ export const todos = query({
             }
           }
         } else if ((iOwnThisModule || iAmEventOwner) && risk !== null) {
-          // Not mine, but I oversee it — only surface when at risk. Show whoever
-          // is responsible: the row owner, else the item's role assignee, else
-          // the module owner.
-          const ownerPid =
-            (it.ownerPersonId as Id<"people"> | undefined) ??
-            (it.roleId ? personByRoleId.get(String(it.roleId)) : undefined) ??
-            modulePerson.get(m.key);
+          // Someone ELSE is responsible, but I oversee it — only surface when at
+          // risk, labeled with the responsible person.
           overseeing.push({
             id: it._id as string,
             label: moduleLabel(m.key) + ": " + title,
@@ -641,7 +641,7 @@ export const todos = query({
             risk,
             due: effectiveDue,
             phase,
-            owner: await personName(ownerPid),
+            owner: await personName(responsiblePid),
             // @ts-expect-error transient sort field, stripped before return
             _sort: sortKey,
           });

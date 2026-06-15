@@ -115,7 +115,6 @@ const COLS = {
   gender: 96,
   skills: 200,
   rate: 100,
-  company: 150,
   vetting: 120,
   team: 90,
   poc: 150,
@@ -268,7 +267,6 @@ export default function PeopleScreen() {
               <HeaderCell label="Gender" width={COLS.gender} />
               <HeaderCell label="Skills" width={COLS.skills} />
               <HeaderCell label="Usual rate" width={COLS.rate} />
-              <HeaderCell label="Company" width={COLS.company} />
               <HeaderCell label="Vetting" width={COLS.vetting} />
               <HeaderCell label="Team" width={COLS.team} />
               <HeaderCell label="POC" width={COLS.poc} />
@@ -486,15 +484,6 @@ function PersonRow({
             if (v === undefined) return; // unparsable → leave unchanged
             update({ personId: id, usualRateUsd: v });
           }}
-        />
-      </Cell>
-
-      {/* Company (vendor org) */}
-      <Cell width={COLS.company}>
-        <InlineText
-          value={person.company ?? ""}
-          placeholder="—"
-          onCommit={(t) => update({ personId: id, company: t.trim() || null })}
         />
       </Cell>
 
