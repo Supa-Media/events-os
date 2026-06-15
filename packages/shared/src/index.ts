@@ -500,7 +500,9 @@ export const DEFAULT_COLUMNS: Partial<Record<ModuleKey, ColumnDef[]>> = {
   volunteer_expectations: [
     { key: "title", label: "Expectation", kind: "system", type: "text", isVisible: true },
     { key: "team", label: "Team", kind: "custom", type: "select", options: VOLUNTEER_TEAM_OPTIONS, isVisible: true },
+    { key: "owner", label: "Owner", kind: "system", type: "person", isVisible: true },
     { key: "details", label: "Details", kind: "custom", type: "longtext", isVisible: true },
+    { key: "how_to", label: "How-To", kind: "custom", type: "how_to", isVisible: true },
   ],
 };
 
