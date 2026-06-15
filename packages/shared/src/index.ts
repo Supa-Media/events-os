@@ -615,8 +615,11 @@ export type PhaseScores = Record<PhaseKey, number | null>;
  * Which phase each module's "mark as ready" gate counts toward — for BOTH the
  * Overview "What's next" to-dos and the phase readiness rings, so the two never
  * drift. Modules absent here have no ready gate (e.g. planning_doc, retro).
- *   comms / permits                              → pre-plan
- *   run_of_show / site_map / crew / supplies     → planning
+ *   comms / permits                                       → pre-plan
+ *   run_of_show / site_map / volunteer_expectations /
+ *   supplies                                              → planning
+ * Note: volunteer_expectations ITEMS phase to dayOf (itemPhase); only its
+ * "mark ready" gate is a planning milestone.
  */
 export const MODULE_READY_PHASE: Record<string, PhaseKey> = {
   comms: "prePlan",
@@ -650,12 +653,10 @@ export const PARTIAL_STATUS_VALUES: Set<string> = new Set([
   // tasks / custom modules
   "in_progress",
   // comms
-  "drafting",
   "drafted",
   "scheduled",
   // permits
   "to_apply",
-  "applied",
   "submitted",
   // supplies
   "need_to_order",
