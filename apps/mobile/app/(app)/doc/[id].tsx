@@ -312,9 +312,10 @@ export default function DocEditorScreen() {
             value={bodyInput ?? doc.body ?? ""}
             onChange={onBodyChange}
             placeholder="Write your how-to in Markdown…"
-            // Web only: paste/drop images → upload → embed as `![](url)`.
-            // Native ignores this (no DOM clipboard/drag surface).
-            uploadImage={Platform.OS === "web" ? uploadImage : undefined}
+            // Image embed → upload → `![](url)`. Web pastes/drops; native uses
+            // the editor's "Add image" button (image picker). The callback is
+            // platform-agnostic (generateUploadUrl + fetch + getUrl).
+            uploadImage={uploadImage}
           />
         </View>
       ) : null}

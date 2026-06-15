@@ -50,6 +50,32 @@ function imageFromDataTransfer(dt: DataTransfer | null): File | null {
 }
 
 /**
+ * True when the clipboard carries usable text (plain or HTML).
+ *
+ * Copying from rich sources — Word, Google Docs, Notes, Numbers/Excel, or a
+ * web page — puts BOTH text AND a rendered `image/*` representation on the
+ * clipboard. If we treated "has an image" as "this is an image paste" we'd
+ * hijack a normal text paste, upload the rendered bitmap, and silently DROP the
+ * text the user actually meant to paste. So a paste is only treated as an image
+ * upload when the clipboard has NO text to fall back on (a true screenshot /
+ * copied-image paste). `text/uri-list` is intentionally ignored — it rides
+ * along with copied images and isn't text the user wants inserted.
+ */
+function dataTransferHasText(dt: DataTransfer | null): boolean {
+  if (!dt) return false;
+  const types = Array.from(dt.types ?? []);
+  if (types.includes("text/plain") || types.includes("text/html")) {
+    // Some browsers list the type but expose an empty string; treat blank as
+    // "no text" so a copied image with an empty text slot still uploads.
+    return (
+      (dt.getData("text/plain") || "").length > 0 ||
+      (dt.getData("text/html") || "").length > 0
+    );
+  }
+  return false;
+}
+
+/**
  * Insert an `![uploading…]()` placeholder at `pos`, upload the image, then swap
  * the placeholder for `![](<url>)`. The placeholder text is matched and replaced
  * by exact string (re-located at swap time) so concurrent typing can't corrupt
@@ -130,6 +156,11 @@ export function buildExtensions(opts: BuildExtensionsOptions): Extension[] {
     exts.push(
       EditorView.domEventHandlers({
         paste(event, view) {
+          // Only hijack the paste to upload an image when the clipboard is
+          // image-ONLY. If it also carries text (rich copy from Word, Docs,
+          // Notes, a web page…), let CodeMirror paste the text normally —
+          // otherwise we'd silently swallow the text and upload its bitmap.
+          if (dataTransferHasText(event.clipboardData)) return false;
           const file = imageFromDataTransfer(event.clipboardData);
           if (!file) return false;
           event.preventDefault();
