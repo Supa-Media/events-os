@@ -81,13 +81,13 @@ export const EVENT_STATUS_LABELS: Record<EventStatus, string> = {
 // modules are active; see CORE_MODULES for the full registry.
 export const MODULE_KEYS = [
   "planning_doc",
-  "run_of_show",
   "comms",
   "permits",
   "supplies",
+  "site_map",
+  "run_of_show",
   "retro",
   "volunteer_expectations",
-  "site_map",
 ] as const;
 export type ModuleKey = (typeof MODULE_KEYS)[number];
 
@@ -125,17 +125,23 @@ export interface CoreModuleDef {
  * to edit a core module.
  */
 export const CORE_MODULES: CoreModuleDef[] = [
+  // Ordered by event lifecycle so the tabs/chips read Planning → Day-of → Post,
+  // matching the phase-readiness rings.
+  // ── Planning (before the date) ──
   { key: "planning_doc", label: "Planning Doc", surface: "grid", defaultOwnerRoleKey: "event_lead", offsetMode: "days" },
-  { key: "run_of_show", label: "Run of Show", surface: "grid", defaultOwnerRoleKey: "production_lead", offsetMode: "minutes" },
   { key: "comms", label: "Comms Schedule", surface: "grid", defaultOwnerRoleKey: "comms_lead", offsetMode: "days" },
   { key: "permits", label: "Permits", surface: "grid", defaultOwnerRoleKey: "event_lead", offsetMode: "days" },
+  // ── Day-of (pack → lay out the venue → run the show) ──
   { key: "supplies", label: "Supplies & Packing", surface: "grid", defaultOwnerRoleKey: "logistics_lead", offsetMode: "none" },
-  { key: "retro", label: "Retrospective", surface: "grid", defaultOwnerRoleKey: "event_lead", offsetMode: "none" },
-  { key: "volunteer_expectations", label: "Expectations", surface: "grid", defaultOwnerRoleKey: "comms_lead", offsetMode: "none" },
   // Site map is a non-grid core module: it renders the venue-map editor instead
-  // of a spreadsheet grid. It has no columns (surface !== "grid"), so any
-  // grid-only code path must skip it.
+  // of a spreadsheet grid (surface !== "grid"), so grid-only code paths skip it.
   { key: "site_map", label: "Site Map", surface: "site_map", defaultOwnerRoleKey: "logistics_lead", offsetMode: "none" },
+  { key: "run_of_show", label: "Run of Show", surface: "grid", defaultOwnerRoleKey: "production_lead", offsetMode: "minutes" },
+  // ── Post (after the date) ──
+  { key: "retro", label: "Retrospective", surface: "grid", defaultOwnerRoleKey: "event_lead", offsetMode: "none" },
+  // People / teams — the "who". On events this is the merged Crew & Expectations
+  // tab (appended after the modules), so it isn't a standalone module tab there.
+  { key: "volunteer_expectations", label: "Expectations", surface: "grid", defaultOwnerRoleKey: "comms_lead", offsetMode: "none" },
 ];
 
 /**
