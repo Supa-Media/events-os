@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { View, Text, Pressable } from "react-native";
 import { PHASE_KEYS, PHASE_LABELS, type PhaseKey } from "@events-os/shared";
-import { Card, Icon } from "../ui";
+import { Avatar, Card, Icon } from "../ui";
 import { colors } from "../../lib/theme";
 
 /** A risk tier for one action: how urgently its effective due date demands it. */
@@ -15,6 +15,8 @@ export type TodoAction = {
   risk: TodoRisk;
   due?: number | null;
   phase: PhaseKey;
+  /** For Overseeing rows: who's actually responsible (item/module owner). */
+  owner?: string;
 };
 
 /** The current-user action list returned by `api.events.todos`. */
@@ -208,6 +210,14 @@ function TodoRow({
       >
         {action.label}
       </Text>
+      {action.owner ? (
+        <View className="flex-row items-center gap-1.5 rounded-full bg-sunken py-0.5 pl-0.5 pr-2">
+          <Avatar name={action.owner} size={18} />
+          <Text className="text-2xs font-semibold text-muted" numberOfLines={1}>
+            {action.owner}
+          </Text>
+        </View>
+      ) : null}
       <RiskChip risk={action.risk} />
       {action.tab ? (
         <Icon name="chevron-right" size={15} color={colors.faint} />

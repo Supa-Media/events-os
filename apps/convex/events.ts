@@ -422,6 +422,8 @@ export const todos = query({
       risk: Risk;
       due?: number | null;
       phase: PhaseKey;
+      // For Overseeing rows: who's actually responsible (the item/module owner).
+      owner?: string;
     };
     const empty: { yours: TodoAction[]; overseeing: TodoAction[] } = {
       yours: [],
@@ -481,12 +483,29 @@ export const todos = query({
       assignments.map((a: any) => [String(a.roleId), a.personId as Id<"people">]),
     );
 
-    // Modules I own (my person resolves to the module's owner role).
+    // Cached personId → display name (for "Overseeing" owner labels).
+    const nameByPerson = new Map<string, string>();
+    const personName = async (
+      pid?: Id<"people"> | null,
+    ): Promise<string | undefined> => {
+      if (!pid) return undefined;
+      const key = String(pid);
+      if (nameByPerson.has(key)) return nameByPerson.get(key);
+      const p = await ctx.db.get(pid);
+      const name = (p?.name as string | undefined) ?? undefined;
+      if (name) nameByPerson.set(key, name);
+      return name;
+    };
+
+    // Modules I own (my person resolves to the module's owner role), plus the
+    // person who owns each module (for "Overseeing" owner labels).
     const iOwnModule = new Map<string, boolean>();
+    const modulePerson = new Map<string, Id<"people"> | undefined>();
     for (const m of resolved) {
       const role: any = m.ownerRoleKey ? roleByKey.get(m.ownerRoleKey) : null;
       const personId = role ? personByRoleId.get(String(role._id)) : undefined;
       iOwnModule.set(m.key, personId != null && String(personId) === String(me));
+      modulePerson.set(m.key, personId);
     }
 
     const yours: TodoAction[] = [];
@@ -607,7 +626,13 @@ export const todos = query({
             }
           }
         } else if ((iOwnThisModule || iAmEventOwner) && risk !== null) {
-          // Not mine, but I oversee it — only surface when at risk.
+          // Not mine, but I oversee it — only surface when at risk. Show whoever
+          // is responsible: the row owner, else the item's role assignee, else
+          // the module owner.
+          const ownerPid =
+            (it.ownerPersonId as Id<"people"> | undefined) ??
+            (it.roleId ? personByRoleId.get(String(it.roleId)) : undefined) ??
+            modulePerson.get(m.key);
           overseeing.push({
             id: it._id as string,
             label: moduleLabel(m.key) + ": " + title,
@@ -615,6 +640,7 @@ export const todos = query({
             risk,
             due: effectiveDue,
             phase,
+            owner: await personName(ownerPid),
             // @ts-expect-error transient sort field, stripped before return
             _sort: sortKey,
           });
@@ -670,6 +696,7 @@ export const todos = query({
       if (iOwnThisModule) {
         yours.push(action);
       } else if (iAmEventOwner && risk !== null) {
+        action.owner = await personName(modulePerson.get(m.key));
         overseeing.push(action);
       }
     }
