@@ -890,104 +890,210 @@ export const autofillItem = action({
   },
 });
 
+/** The most recent thread turns, as plain chat messages for model context. */
+function docHistoryTurns(
+  history: Array<{ kind: string; text?: string | null }>,
+): Array<{ role: "user" | "assistant"; content: string }> {
+  return history
+    .filter((m) => m.kind === "user" || m.kind === "assistant")
+    .map((m) => ({
+      role: m.kind === "user" ? ("user" as const) : ("assistant" as const),
+      content: m.text ?? "",
+    }));
+}
+
+/** Parse the model's JSON `{ reply, newBody }` reply defensively. */
+function parseDocReply(content: unknown): {
+  reply: string;
+  newBody: string | null;
+} {
+  const raw = typeof content === "string" ? content.trim() : "";
+  if (!raw) return { reply: "Done.", newBody: null };
+
+  // Models sometimes wrap JSON in ```json fences — strip them, then try to
+  // isolate the outermost {...} object before parsing.
+  const unfenced = raw
+    .replace(/^```(?:json)?\s*/i, "")
+    .replace(/\s*```$/i, "")
+    .trim();
+  const start = unfenced.indexOf("{");
+  const end = unfenced.lastIndexOf("}");
+  const candidate =
+    start !== -1 && end > start ? unfenced.slice(start, end + 1) : unfenced;
+
+  try {
+    const obj = JSON.parse(candidate);
+    const reply =
+      typeof obj?.reply === "string" && obj.reply.trim()
+        ? obj.reply.trim()
+        : "Done.";
+    const newBody =
+      typeof obj?.newBody === "string" && obj.newBody.trim()
+        ? obj.newBody
+        : null;
+    return { reply, newBody };
+  } catch {
+    // Not JSON — treat the whole response as a chat reply, no doc edit.
+    return { reply: raw, newBody: null };
+  }
+}
+
 /**
- * Generate or improve a How-To markdown doc with the active free model.
+ * Conversational How-To doc editor — one chat turn on a doc's thread.
  *
- * Single-shot completion (no tool loop): the model returns a clean Markdown body
- * which we write into `docs.body`. `mode: "generate"` writes from the prompt
- * alone; `mode: "improve"` includes the doc's current body so the model rewrites
- * it. Goes through the same budget gate + run/usage tracking as `runAssistant` /
- * `autofillItem`.
+ * The doc-page counterpart to `runAssistant`: the user chats with the assistant,
+ * which replies briefly AND, when asked for changes, rewrites the WHOLE markdown
+ * body. Single-shot (no tool loop): the model returns a structured JSON reply
+ * `{ reply, newBody }` we parse defensively; a non-null `newBody` is written via
+ * `internal.docs.setBody`. Every step (user message, assistant reply, errors)
+ * streams into `aiMessages`, so the panel renders the conversation reactively.
+ * Goes through the same budget gate + run/usage tracking as `runAssistant`.
  */
-export const generateDoc = action({
+export const runDocAssistant = action({
   args: {
+    threadId: v.id("aiThreads"),
     docId: v.id("docs"),
-    prompt: v.string(),
-    mode: v.union(v.literal("generate"), v.literal("improve")),
+    userText: v.string(),
   },
-  handler: async (ctx, { docId, prompt, mode }): Promise<{ ok: boolean }> => {
+  handler: async (
+    ctx,
+    { threadId, docId, userText },
+  ): Promise<{ ok: boolean; runId?: Id<"aiRuns">; edited?: boolean }> => {
     const { userId, chapterId } = await ctx.runQuery(internal.ai.myContext, {});
 
+    // Always record the user's message first so it shows immediately.
+    await ctx.runMutation(internal.ai.appendMessage, {
+      threadId,
+      kind: "user",
+      text: userText,
+    });
+
     const budget = await ctx.runQuery(api.ai.budgetStatus, {});
-    if (budget.over)
-      throw new ConvexError({
-        code: "AI_BUDGET",
-        message: `AI budget reached (${budget.over}).`,
+    if (budget.over) {
+      await ctx.runMutation(internal.ai.appendMessage, {
+        threadId,
+        kind: "error",
+        text: `AI budget reached (${budget.over}).`,
       });
-    if (!process.env.OPENROUTER_API_KEY)
-      throw new ConvexError({
-        code: "NO_OPENROUTER_KEY",
-        message: "OPENROUTER_API_KEY is not configured.",
+      return { ok: false };
+    }
+    if (!process.env.OPENROUTER_API_KEY) {
+      await ctx.runMutation(internal.ai.appendMessage, {
+        threadId,
+        kind: "error",
+        text: "OPENROUTER_API_KEY is not configured.",
       });
+      return { ok: false };
+    }
 
     const doc = await ctx.runQuery(api.docs.forAi, { docId });
-    if (!doc)
-      throw new ConvexError({ code: "NOT_FOUND", message: "Doc not found." });
+    if (!doc) {
+      await ctx.runMutation(internal.ai.appendMessage, {
+        threadId,
+        kind: "error",
+        text: "Doc not found.",
+      });
+      return { ok: false };
+    }
 
     const cfg = await ctx.runQuery(api.ai.aiConfig, {});
     const slug = cfg.activeModel;
 
+    const history = await ctx.runQuery(api.ai.listMessages, { threadId });
+    const priorTurns = docHistoryTurns(history);
+
+    const system = [
+      "You are a conversational editor for ONE markdown how-to document for a",
+      "church events team. You chat with the user and, when they ask for changes,",
+      "you rewrite the document.",
+      "",
+      "ALWAYS reply with a single JSON object and NOTHING else:",
+      '  { "reply": string, "newBody": string | null }',
+      "- `reply`: a SHORT, friendly message to the user (what you did, or your",
+      "  answer to their question).",
+      "- `newBody`: the FULL revised document in GitHub-Flavored Markdown when the",
+      "  user asked for a change, or null when no change is needed (e.g. they only",
+      "  asked a question). When set, it REPLACES the whole document — include all",
+      "  content, not just the edited part. Use headings, short paragraphs, and",
+      "  bullet/numbered lists. Do NOT wrap the markdown in code fences.",
+      "",
+      `DOCUMENT TITLE: "${doc.title}".`,
+      "CURRENT DOCUMENT:",
+      doc.body && doc.body.trim() ? doc.body : "(empty)",
+    ].join("\n");
+
+    const messages: any[] = [
+      { role: "system", content: system },
+      ...priorTurns,
+    ];
+
     const runId = await ctx.runMutation(internal.ai.startRun, {
       chapterId,
       userId,
-      feature: "generate_doc",
+      feature: "doc_assistant",
       model: slug,
     });
 
     try {
-      const system =
-        "You write clear, practical how-to documents for a church events team, " +
-        "in GitHub-Flavored Markdown. Use headings, short paragraphs, and " +
-        "bullet/numbered lists where helpful. Reply with ONLY the Markdown body " +
-        "(no code fences around the whole document, no preamble).";
-      const user =
-        mode === "improve"
-          ? `Improve the following how-to document.\n\nInstruction: ${prompt}\n\n` +
-            `Current document:\n\n${doc.body || "(empty)"}`
-          : `Write a how-to document titled "${doc.title}".\n\n${prompt}`;
-
-      const { message, usage } = await openRouterCall(
-        slug,
-        [
-          { role: "system", content: system },
-          { role: "user", content: user },
-        ],
-        { tools: false, maxTokens: 2000 },
-      );
+      const { message, usage } = await openRouterCall(slug, messages, {
+        tools: false,
+        maxTokens: 2500,
+      });
       const cost = callCost(slug, usage);
-      const body = (typeof message.content === "string" ? message.content : "").trim();
-
-      if (body) {
-        await ctx.runMutation(internal.docs.setBody, { docId, body });
-      }
       await ctx.runMutation(internal.ai.logUsage, {
         chapterId,
         userId,
         runId,
-        feature: "generate_doc",
+        feature: "doc_assistant",
         model: slug,
         inputTokens: usage.prompt_tokens ?? 0,
         outputTokens: usage.completion_tokens ?? 0,
         cachedTokens: usage.prompt_tokens_details?.cached_tokens,
         costUsd: cost,
       });
+
+      const { reply, newBody } = parseDocReply(message.content);
+
+      let edited = false;
+      if (newBody !== null) {
+        await ctx.runMutation(internal.docs.setBody, { docId, body: newBody });
+        edited = true;
+      }
+
+      await ctx.runMutation(internal.ai.appendMessage, {
+        threadId,
+        runId,
+        kind: "assistant",
+        text: reply,
+      });
+
       await ctx.runMutation(internal.ai.finishRun, {
         runId,
         status: "done",
-        itemsTouched: body ? 1 : 0,
+        itemsTouched: edited ? 1 : 0,
         costUsd: cost,
-        summary: mode === "improve" ? "Improved doc" : "Generated doc",
+        summary: edited ? "Edited doc" : "Replied",
       });
-      return { ok: !!body };
+      return { ok: true, runId, edited };
     } catch (err) {
+      const text =
+        err instanceof ConvexError
+          ? ((err.data as any)?.message ?? "Agent error.")
+          : "Agent error.";
+      await ctx.runMutation(internal.ai.appendMessage, {
+        threadId,
+        runId,
+        kind: "error",
+        text,
+      });
       await ctx.runMutation(internal.ai.finishRun, {
         runId,
         status: "error",
         itemsTouched: 0,
         costUsd: 0,
-        summary: "Doc generation errored",
+        summary: "Doc assistant errored",
       });
-      throw err;
+      return { ok: false };
     }
   },
 });

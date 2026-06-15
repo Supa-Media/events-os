@@ -466,6 +466,50 @@ export const newThread = mutation({
   },
 });
 
+/** The most recent thread for a How-To doc, creating one if none exists. */
+export const ensureDocThread = mutation({
+  args: { docId: v.id("docs") },
+  handler: async (ctx, { docId }) => {
+    const chapterId = await requireChapterId(ctx);
+    const doc = await ctx.db.get(docId);
+    await requireInChapter(ctx, chapterId, doc, "Doc");
+    const existing = await ctx.db
+      .query("aiThreads")
+      .withIndex("by_doc", (q: any) => q.eq("docId", docId))
+      .order("desc")
+      .first();
+    if (existing) return existing._id;
+    const userId = (await requireUserId(ctx)) as Id<"users">;
+    return await ctx.db.insert("aiThreads", {
+      chapterId: chapterId as Id<"chapters">,
+      docId,
+      userId,
+      title: "New chat",
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    });
+  },
+});
+
+/** Start a fresh thread for a How-To doc (the "New chat" button). */
+export const newDocThread = mutation({
+  args: { docId: v.id("docs") },
+  handler: async (ctx, { docId }) => {
+    const chapterId = await requireChapterId(ctx);
+    const doc = await ctx.db.get(docId);
+    await requireInChapter(ctx, chapterId, doc, "Doc");
+    const userId = (await requireUserId(ctx)) as Id<"users">;
+    return await ctx.db.insert("aiThreads", {
+      chapterId: chapterId as Id<"chapters">,
+      docId,
+      userId,
+      title: "New chat",
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    });
+  },
+});
+
 /** Messages in a thread, oldest-first — the panel's reactive feed. */
 export const listMessages = query({
   args: { threadId: v.optional(v.id("aiThreads")) },

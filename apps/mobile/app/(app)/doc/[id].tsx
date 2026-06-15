@@ -1,10 +1,11 @@
 import { useEffect, useRef, useState } from "react";
 import { View, Text, Pressable, Linking, Platform } from "react-native";
 import { Stack, useLocalSearchParams, useRouter } from "expo-router";
-import { useQuery, useMutation, useAction } from "convex/react";
+import { useQuery, useMutation } from "convex/react";
 import { api } from "@events-os/convex/_generated/api";
-import { Screen, Card, Button, TextField, Icon } from "../../../components/ui";
+import { Screen, TextField, Icon } from "../../../components/ui";
 import { MarkdownEditor } from "../../../components/markdown";
+import { DocAssistantPanel } from "../../../components/ai/DocAssistantPanel";
 import { colors } from "../../../lib/theme";
 
 /**
@@ -12,10 +13,11 @@ import { colors } from "../../../lib/theme";
  *
  * Edits the doc's title and (for markdown docs) its body via the Obsidian-style
  * `MarkdownEditor`, saving through `api.docs.update` (title on blur, body
- * debounced). An AI "Generate / Improve" action fills the body from a prompt,
- * and a Share button copies the public `/doc/<shareId>` URL (web) / surfaces the
- * `eventsos://doc/<shareId>` deep link. Link/video/note docs get a simple
- * URL/text editor instead of the markdown surface.
+ * debounced). For markdown docs, a floating Notion-AI-style `DocAssistantPanel`
+ * docks to the right: the user chats with an agent that rewrites the doc's
+ * markdown. A Share button copies the public `/doc/<shareId>` URL (web) /
+ * surfaces the `eventsos://doc/<shareId>` deep link. Link/video/note docs get a
+ * simple URL/text editor instead of the markdown surface.
  */
 export default function DocEditorScreen() {
   const router = useRouter();
@@ -36,16 +38,14 @@ export default function DocEditorScreen() {
   const doc = useQuery(api.docs.get, { docId: activeDocId as any });
   const update = useMutation(api.docs.update);
   const fork = useMutation(api.docs.forkForEventItem);
-  const generate = useAction(api.aiActions.generateDoc);
 
   const [titleInput, setTitleInput] = useState<string | null>(null);
   // Body edits are buffered locally and flushed on a debounce so we don't fire a
-  // mutation per keystroke. `null` = mirror the server value (e.g. after AI fills
-  // it). `bodyInput` is also used for link/video/note kinds (committed on blur).
+  // mutation per keystroke. `null` = mirror the server value (e.g. after the AI
+  // panel rewrites it). `bodyInput` is also used for link/video/note kinds
+  // (committed on blur).
   const [bodyInput, setBodyInput] = useState<string | null>(null);
   const [urlInput, setUrlInput] = useState<string | null>(null);
-  const [aiPrompt, setAiPrompt] = useState("");
-  const [aiBusy, setAiBusy] = useState(false);
   const [copied, setCopied] = useState(false);
   const bodySaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -143,27 +143,8 @@ export default function DocEditorScreen() {
     }, 500);
   }
 
-  async function runAi(mode: "generate" | "improve") {
-    if (aiBusy) return;
-    setAiBusy(true);
-    try {
-      // Fork first when in event context so AI edits land on the copy, not the
-      // shared master. The empty patch only triggers the fork (if needed); the
-      // returned id is the copy (or the original) the AI should target.
-      const targetId = await maybeForkThenUpdate({});
-      await generate({ docId: targetId as any, prompt: aiPrompt.trim(), mode });
-      setAiPrompt("");
-      // The action wrote docs.body server-side; drop the local draft so the
-      // editor mirrors the freshly generated body.
-      setBodyInput(null);
-    } catch {
-      // Errors surface as a no-op here; body simply stays unchanged.
-    } finally {
-      setAiBusy(false);
-    }
-  }
-
   return (
+    <>
     <Screen maxWidth={820}>
       <Stack.Screen options={{ title: doc.title || "Doc" }} />
 
@@ -240,44 +221,32 @@ export default function DocEditorScreen() {
           />
         </View>
       ) : isMarkdown ? (
-        <>
-          {/* AI generate / improve */}
-          <Card padding="md" className="mt-4">
-            <Text className="mb-2 text-xs font-bold uppercase tracking-wider text-muted">
-              AI assist
-            </Text>
-            <TextField
-              value={aiPrompt}
-              onChangeText={setAiPrompt}
-              placeholder="What should this how-to cover?"
-              multiline
-            />
-            <View className="mt-2 flex-row gap-2">
-              <Button
-                title={aiBusy ? "Working…" : "Generate"}
-                variant="secondary"
-                loading={aiBusy}
-                disabled={aiBusy || !aiPrompt.trim()}
-                onPress={() => void runAi("generate")}
-              />
-              <Button
-                title="Improve"
-                variant="ghost"
-                disabled={aiBusy || !(doc.body && doc.body.trim())}
-                onPress={() => void runAi("improve")}
-              />
-            </View>
-          </Card>
-
-          <View className="mt-4">
-            <MarkdownEditor
-              value={bodyInput ?? doc.body ?? ""}
-              onChange={onBodyChange}
-              placeholder="Write your how-to in Markdown…"
-            />
-          </View>
-        </>
+        <View className="mt-4">
+          <MarkdownEditor
+            value={bodyInput ?? doc.body ?? ""}
+            onChange={onBodyChange}
+            placeholder="Write your how-to in Markdown…"
+          />
+        </View>
       ) : null}
     </Screen>
+
+    {/* Floating Notion-AI-style chat panel — markdown docs only. Docks right;
+        chats with an agent that rewrites the doc body. COW is honored via
+        `resolveTargetDocId`, which forks a shared template doc into an
+        event-local copy before the first edit. */}
+    {isMarkdown ? (
+      <DocAssistantPanel
+        docId={activeDocId}
+        docTitle={doc.title}
+        resolveTargetDocId={
+          ownerItem && ownerCol
+            ? () => maybeForkThenUpdate({})
+            : undefined
+        }
+        onEdited={() => setBodyInput(null)}
+      />
+    ) : null}
+    </>
   );
 }

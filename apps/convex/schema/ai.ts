@@ -48,19 +48,23 @@ export const aiChanges = defineTable({
 }).index("by_run", ["runId"]);
 
 /**
- * AI assistant thread — a Notion-AI-style conversation pinned to one event.
- * Messages stream into `aiMessages` as the agent works, so the panel renders
- * reasoning + tool calls reactively.
+ * AI assistant thread — a Notion-AI-style conversation pinned to one event OR
+ * one How-To doc. Exactly one of `eventId` / `docId` is set: event threads drive
+ * the event-page agent, doc threads drive the doc editor's chat. Messages stream
+ * into `aiMessages` as the agent works, so the panel renders reasoning + tool
+ * calls reactively.
  */
 export const aiThreads = defineTable({
   chapterId: v.id("chapters"),
-  eventId: v.id("events"),
+  eventId: v.optional(v.id("events")),
+  docId: v.optional(v.id("docs")),
   userId: v.id("users"),
   title: v.string(),
   createdAt: v.number(),
   updatedAt: v.number(),
 })
   .index("by_event", ["eventId"])
+  .index("by_doc", ["docId"])
   .index("by_chapter", ["chapterId"]);
 
 /**
