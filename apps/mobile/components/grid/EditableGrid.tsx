@@ -41,6 +41,7 @@ const ADDABLE_TYPES: Array<{ value: string; label: string }> = [
   { value: "status", label: "Status" },
   { value: "person", label: "Person" },
   { value: "photo", label: "Photo" },
+  { value: "how_to", label: "How-To" },
 ];
 const OPTION_TYPES = ["select", "multiselect", "status"];
 const OPTION_PALETTE = ["red", "amber", "green", "blue", "teal", "purple", "pink", "orange", "gray"];
@@ -84,6 +85,8 @@ function defaultWidth(col: GridColumn): number {
       return 110;
     case "url":
       return 180;
+    case "how_to":
+      return 200;
     case "photo":
       return 84;
     default:

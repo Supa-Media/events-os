@@ -25,5 +25,7 @@
     "react-native-reanimated",
     "react-native-worklets"
   ],
-  "gated": []
+  "gated": [
+    "react-native-webview"
+  ]
 }

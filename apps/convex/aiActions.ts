@@ -889,3 +889,105 @@ export const autofillItem = action({
     }
   },
 });
+
+/**
+ * Generate or improve a How-To markdown doc with the active free model.
+ *
+ * Single-shot completion (no tool loop): the model returns a clean Markdown body
+ * which we write into `docs.body`. `mode: "generate"` writes from the prompt
+ * alone; `mode: "improve"` includes the doc's current body so the model rewrites
+ * it. Goes through the same budget gate + run/usage tracking as `runAssistant` /
+ * `autofillItem`.
+ */
+export const generateDoc = action({
+  args: {
+    docId: v.id("docs"),
+    prompt: v.string(),
+    mode: v.union(v.literal("generate"), v.literal("improve")),
+  },
+  handler: async (ctx, { docId, prompt, mode }): Promise<{ ok: boolean }> => {
+    const { userId, chapterId } = await ctx.runQuery(internal.ai.myContext, {});
+
+    const budget = await ctx.runQuery(api.ai.budgetStatus, {});
+    if (budget.over)
+      throw new ConvexError({
+        code: "AI_BUDGET",
+        message: `AI budget reached (${budget.over}).`,
+      });
+    if (!process.env.OPENROUTER_API_KEY)
+      throw new ConvexError({
+        code: "NO_OPENROUTER_KEY",
+        message: "OPENROUTER_API_KEY is not configured.",
+      });
+
+    const doc = await ctx.runQuery(api.docs.forAi, { docId });
+    if (!doc)
+      throw new ConvexError({ code: "NOT_FOUND", message: "Doc not found." });
+
+    const cfg = await ctx.runQuery(api.ai.aiConfig, {});
+    const slug = cfg.activeModel;
+
+    const runId = await ctx.runMutation(internal.ai.startRun, {
+      chapterId,
+      userId,
+      feature: "generate_doc",
+      model: slug,
+    });
+
+    try {
+      const system =
+        "You write clear, practical how-to documents for a church events team, " +
+        "in GitHub-Flavored Markdown. Use headings, short paragraphs, and " +
+        "bullet/numbered lists where helpful. Reply with ONLY the Markdown body " +
+        "(no code fences around the whole document, no preamble).";
+      const user =
+        mode === "improve"
+          ? `Improve the following how-to document.\n\nInstruction: ${prompt}\n\n` +
+            `Current document:\n\n${doc.body || "(empty)"}`
+          : `Write a how-to document titled "${doc.title}".\n\n${prompt}`;
+
+      const { message, usage } = await openRouterCall(
+        slug,
+        [
+          { role: "system", content: system },
+          { role: "user", content: user },
+        ],
+        { tools: false, maxTokens: 2000 },
+      );
+      const cost = callCost(slug, usage);
+      const body = (typeof message.content === "string" ? message.content : "").trim();
+
+      if (body) {
+        await ctx.runMutation(internal.docs.setBody, { docId, body });
+      }
+      await ctx.runMutation(internal.ai.logUsage, {
+        chapterId,
+        userId,
+        runId,
+        feature: "generate_doc",
+        model: slug,
+        inputTokens: usage.prompt_tokens ?? 0,
+        outputTokens: usage.completion_tokens ?? 0,
+        cachedTokens: usage.prompt_tokens_details?.cached_tokens,
+        costUsd: cost,
+      });
+      await ctx.runMutation(internal.ai.finishRun, {
+        runId,
+        status: "done",
+        itemsTouched: body ? 1 : 0,
+        costUsd: cost,
+        summary: mode === "improve" ? "Improved doc" : "Generated doc",
+      });
+      return { ok: !!body };
+    } catch (err) {
+      await ctx.runMutation(internal.ai.finishRun, {
+        runId,
+        status: "error",
+        itemsTouched: 0,
+        costUsd: 0,
+        summary: "Doc generation errored",
+      });
+      throw err;
+    }
+  },
+});

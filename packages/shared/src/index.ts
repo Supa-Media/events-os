@@ -283,6 +283,9 @@ export const COLUMN_TYPES = [
   "offset_days",
   "offset_minutes",
   "due_date",
+  // Links a cell to a standalone doc (link / video / note / markdown page) that
+  // opens natively and is shareable on its own URL. Cell value = the doc id.
+  "how_to",
 ] as const;
 export type ColumnType = (typeof COLUMN_TYPES)[number];
 

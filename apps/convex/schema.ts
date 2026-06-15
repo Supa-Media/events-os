@@ -12,6 +12,7 @@ import {
   roleAssignments,
 } from "./schema/events";
 import { people, engagements } from "./schema/people";
+import { docs } from "./schema/docs";
 import { siteMarkers, siteShapes, siteMapPlacements } from "./schema/siteMap";
 import {
   aiRuns,
@@ -79,6 +80,9 @@ const schema = defineSchema({
   // People (roster) + engagements.
   people,
   engagements,
+
+  // Docs (the standalone targets behind How-To cells).
+  docs,
 
   // Site map (markers, shapes, placements).
   siteMarkers,
