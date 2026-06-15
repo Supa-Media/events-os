@@ -37,6 +37,10 @@ export interface GridItem {
   ownerPersonId?: string | null;
   status?: string | null;
   fields?: Record<string, any>;
+  /** Column keys on this row marked "pre-plan" (template authoring). */
+  prePlanColumns?: string[];
+  /** Subset of prePlanColumns ticked off (event side only). */
+  prePlanChecked?: string[];
   // Event-side resolved joins:
   roleLabel?: string | null;
   owner?: { _id: string; name: string } | null;
@@ -108,6 +112,9 @@ export interface GridData {
   removeColumn: (columnId: string) => Promise<any>;
   reorderColumns: (orderedIds: string[]) => Promise<any>;
   setColumnVisible: (columnId: string, isVisible: boolean) => Promise<any>;
+  /** Pre-plan: template marks a cell; event ticks one off. */
+  toggleTemplatePrePlan: (itemId: string, colKey: string) => Promise<any>;
+  togglePrePlanChecked: (itemId: string, colKey: string) => Promise<any>;
 }
 
 export function useGridData(
@@ -134,6 +141,9 @@ export function useGridData(
   const removeEvt = useMutation(api.items.removeEventItem);
   const reorderTpl = useMutation(api.items.reorderTemplateItems);
   const reorderEvt = useMutation(api.items.reorderEventItems);
+
+  const toggleTplPrePlan = useMutation(api.items.toggleTemplatePrePlan);
+  const togglePrePlanChk = useMutation(api.items.togglePrePlanChecked);
 
   const addColTpl = useMutation(api.columns.addColumn);
   const updateColTpl = useMutation(api.columns.updateColumn);
@@ -178,5 +188,9 @@ export function useGridData(
       isTemplate
         ? updateColTpl({ columnId: columnId as any, isVisible })
         : setColVisEvt({ columnId: columnId as any, isVisible }),
+    toggleTemplatePrePlan: (itemId, colKey) =>
+      toggleTplPrePlan({ itemId: itemId as any, colKey }),
+    togglePrePlanChecked: (itemId, colKey) =>
+      togglePrePlanChk({ itemId: itemId as any, colKey }),
   };
 }

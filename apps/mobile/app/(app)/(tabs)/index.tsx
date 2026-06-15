@@ -23,7 +23,12 @@ import {
 } from "../../../components/ui";
 import { colors } from "../../../lib/theme";
 import { formatDate } from "../../../lib/format";
-import { EVENT_STATUS_LABELS, type EventStatus } from "@events-os/shared";
+import {
+  EVENT_STATUS_LABELS,
+  PHASE_LABELS,
+  type EventStatus,
+  type PhaseKey,
+} from "@events-os/shared";
 
 /** PIPELINE — the landing screen. Stat strip + a sortable table of events. */
 export default function PipelineScreen() {
@@ -107,7 +112,7 @@ export default function PipelineScreen() {
               <HeaderCell flex={3}>Event</HeaderCell>
               <HeaderCell flex={2}>Type</HeaderCell>
               <HeaderCell flex={2}>Date</HeaderCell>
-              <HeaderCell flex={2}>Readiness</HeaderCell>
+              <HeaderCell flex={2}>Phase readiness</HeaderCell>
               <HeaderCell width={96}>Blockers</HeaderCell>
               <HeaderCell width={108}>Status</HeaderCell>
             </TableHeader>
@@ -134,7 +139,16 @@ export default function PipelineScreen() {
                   <Text className="text-base text-ink">{formatDate(e.eventDate)}</Text>
                 </Cell>
                 <Cell flex={2}>
-                  <ReadinessBar value={e.readiness} />
+                  <Text className="text-2xs font-bold uppercase tracking-wider text-muted">
+                    {PHASE_LABELS[e.currentPhase as PhaseKey] ?? "Planning"}
+                  </Text>
+                  {e.currentPhasePct == null ? (
+                    <Text className="mt-0.5 text-sm text-faint">—</Text>
+                  ) : (
+                    <View className="mt-0.5">
+                      <ReadinessBar value={e.currentPhasePct} />
+                    </View>
+                  )}
                 </Cell>
                 <Cell width={96}>
                   {e.blockerCount > 0 ? (

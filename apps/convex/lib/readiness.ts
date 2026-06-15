@@ -1,0 +1,66 @@
+/**
+ * Phase-based readiness for an event.
+ *
+ * Replaces the single readiness % with four phase numbers (pre-plan / planning /
+ * day-of / post). Reads the event's active GRID modules, each module's status
+ * column options (for `isComplete`), and all of its `eventItems`, then defers the
+ * actual scoring to the pure `computePhaseScores` helper in @events-os/shared so
+ * the rule lives in one place and is testable without a DB.
+ *
+ * Typed loosely (`ctx: any`) like the rest of `lib/` — it's helper code, not a
+ * registered Convex function.
+ */
+import { Id } from "../_generated/dataModel";
+import {
+  computePhaseScores,
+  type PhaseScores,
+  type SelectOption,
+} from "@events-os/shared";
+import { eventActiveModules } from "./templates";
+
+/**
+ * Compute the four phase scores for an event. Each value is 0..1, or null when
+ * the phase has no items to measure (rendered "—", not "0%").
+ */
+export async function phaseReadiness(
+  ctx: any,
+  event: any,
+): Promise<PhaseScores> {
+  // Grid modules only — non-grid surfaces (site_map) have no status'd items.
+  const resolved = await eventActiveModules(ctx, event);
+  const gridModuleKeys = resolved
+    .filter((m: any) => m.surface === "grid")
+    .map((m: any) => m.key as string);
+
+  const modules = await Promise.all(
+    gridModuleKeys.map(async (module) => {
+      const items = await ctx.db
+        .query("eventItems")
+        .withIndex("by_event_module", (q: any) =>
+          q.eq("eventId", event._id as Id<"events">).eq("module", module),
+        )
+        .collect();
+      const statusCol = await ctx.db
+        .query("eventColumns")
+        .withIndex("by_event_module", (q: any) =>
+          q.eq("eventId", event._id as Id<"events">).eq("module", module),
+        )
+        .filter((q: any) => q.eq(q.field("key"), "status"))
+        .first();
+      const statusOptions = statusCol?.options as SelectOption[] | undefined;
+      return {
+        module,
+        statusOptions,
+        items: items.map((it: any) => ({
+          status: it.status ?? null,
+          offsetDays: it.offsetDays ?? null,
+          offsetMinutes: it.offsetMinutes ?? null,
+          prePlanColumns: it.prePlanColumns ?? undefined,
+          prePlanChecked: it.prePlanChecked ?? undefined,
+        })),
+      };
+    }),
+  );
+
+  return computePhaseScores(modules);
+}

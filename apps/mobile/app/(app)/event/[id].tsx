@@ -132,7 +132,7 @@ export default function EventDetailScreen() {
     modules: resolvedModules,
     moduleReadiness,
     owner,
-    readiness,
+    phases,
     taskTotal,
     taskDone,
     budgetSpent,
@@ -274,7 +274,7 @@ export default function EventDetailScreen() {
           event={event}
           eventId={eventId}
           eventTypeName={eventTypeName}
-          readiness={readiness}
+          phases={phases}
           taskDone={taskDone}
           taskTotal={taskTotal}
           budgetSpent={budgetSpent}

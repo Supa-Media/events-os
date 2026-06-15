@@ -4,7 +4,7 @@ import {
   Card,
   Button,
   Badge,
-  ReadinessRing,
+  PhaseBreakdown,
   TextField,
   Icon,
   statusTone,
@@ -14,6 +14,7 @@ import { formatDateTime, toDateTimeLocal, fromDateTimeLocal } from "../../lib/fo
 import {
   EVENT_STATUS_LABELS,
   type EventStatus,
+  type PhaseScores,
 } from "@events-os/shared";
 
 /**
@@ -25,7 +26,7 @@ export function EventHeader({
   event,
   eventId,
   eventTypeName,
-  readiness,
+  phases,
   taskDone,
   taskTotal,
   budgetSpent,
@@ -40,7 +41,7 @@ export function EventHeader({
   event: any;
   eventId: string;
   eventTypeName: string;
-  readiness: number;
+  phases: PhaseScores;
   taskDone: number;
   taskTotal: number;
   budgetSpent: number;
@@ -54,9 +55,8 @@ export function EventHeader({
 }) {
   return (
     <Card className="mb-4">
-      <View className="flex-row items-center gap-5">
-        <ReadinessRing value={readiness} size={84} />
-        <View className="flex-1 gap-2">
+      <View className="flex-row flex-wrap items-start gap-5">
+        <View className="flex-1 gap-2" style={{ minWidth: 280 }}>
           <Text className="text-xs font-bold uppercase tracking-wider text-accent">
             {eventTypeName}
           </Text>
@@ -103,6 +103,12 @@ export function EventHeader({
             />
             <ShareCrewButton eventId={eventId} />
           </View>
+        </View>
+
+        {/* Phase readiness — four small rings (Pre-plan / Planning / Day-of /
+            Post). Replaces the old single readiness ring. */}
+        <View className="justify-center">
+          <PhaseBreakdown phases={phases} size={54} />
         </View>
       </View>
     </Card>

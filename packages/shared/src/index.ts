@@ -580,6 +580,213 @@ export function isCompleteStatus(
   return options.some((o) => o.value === value && o.isComplete === true);
 }
 
+// ── Phase-based readiness ────────────────────────────────────────────────────
+// The single readiness % is replaced by FOUR phase numbers, so the team can see
+// not just "how done is this event" but "how done is each stage of running it":
+//   pre-plan  — explicit author-marked cells checked off (a separate mechanism;
+//               see prePlanScore below — it is NOT derived from item status)
+//   planning  — prep work scheduled before the event (T-minus)
+//   dayOf     — packing, run-of-show, and anything that lands on the event day
+//   post      — retro + follow-up after the event (T-plus)
+//
+// Scoring uses three primitives:
+//   itemScore   — 1 (complete) / 0.5 (started, "partial") / 0 (not started)
+//   moduleScore — average itemScore over that module's items in a phase
+//   phaseScore  — average moduleScore over modules with ≥1 item in the phase
+// A phase with no items anywhere is null (rendered "—"), so an empty phase does
+// NOT read as "0% ready". Equal-weight modules naturally cap any one module's
+// influence (Supplies is one module no matter how many packing rows it has).
+
+export const PHASE_KEYS = ["prePlan", "planning", "dayOf", "post"] as const;
+export type PhaseKey = (typeof PHASE_KEYS)[number];
+
+export const PHASE_LABELS: Record<PhaseKey, string> = {
+  prePlan: "Pre-plan",
+  planning: "Planning",
+  dayOf: "Day-of",
+  post: "Post",
+};
+
+/** A phase score is 0..1, or null when the phase has no items to measure. */
+export type PhaseScores = Record<PhaseKey, number | null>;
+
+/**
+ * Status values that count as "started but not complete" → itemScore 0.5.
+ *
+ * The rule is "started toward done, but not done". Choices per vocabulary:
+ *   tasks    — `in_progress` (only non-terminal status)
+ *   comms    — `drafted`, `scheduled` (drafting/queued toward `sent`)
+ *   permits  — `to_apply`, `submitted` (in flight toward `approved`). `to_apply`
+ *              is "we know we need it and intend to apply" — meaningful progress
+ *              over no status at all; `not_needed` is terminal-but-not-complete
+ *              so it stays 0 (it genuinely isn't done/handled work).
+ *   supplies — `need_to_order`, `need_to_buy`, `ordered`, `have_it`,
+ *              `pull_from_storage` (all en route to `packed`). Note: `need_to_*`
+ *              count as 0.5 because the item is identified + sourced, which is
+ *              real progress toward packing.
+ *   retro    — `open` is the not-started state, so retro has no partial value.
+ *   volunteer — `invited` is in-flight toward `confirmed`.
+ * `not_started`, `not_needed`, `declined`, `open`, `tbd` and any unknown value
+ * fall through to 0.
+ */
+export const PARTIAL_STATUS_VALUES: Set<string> = new Set([
+  // tasks / custom modules
+  "in_progress",
+  // comms
+  "drafting",
+  "drafted",
+  "scheduled",
+  // permits
+  "to_apply",
+  "applied",
+  "submitted",
+  // supplies
+  "need_to_order",
+  "need_to_buy",
+  "ordered",
+  "have_it",
+  "pull_from_storage",
+  // volunteer engagement-ish
+  "invited",
+]);
+
+/**
+ * Score a single item 1 / 0.5 / 0 from its status + the module's status options.
+ *   1   — status is a `isComplete` option
+ *   0.5 — status is in PARTIAL_STATUS_VALUES (started, not done)
+ *   0   — no status, or a not-started/terminal-incomplete status
+ */
+export function itemScore(
+  options: SelectOption[] | undefined,
+  value: string | undefined | null,
+): number {
+  if (value == null) return 0;
+  if (isCompleteStatus(options, value)) return 1;
+  if (PARTIAL_STATUS_VALUES.has(value)) return 0.5;
+  return 0;
+}
+
+/**
+ * Assign an item to exactly one phase from its module + timing. Pre-plan is a
+ * separate mechanism (explicit check-off) and is never returned here.
+ *   retro module                 → post
+ *   supplies module              → dayOf (packing / load-in)
+ *   minute-offset (run_of_show)  → dayOf
+ *   else by offsetDays: <0 planning · 0 dayOf · >0 post
+ *   no timing at all             → planning (default prep)
+ */
+export function itemPhase(item: {
+  module: string;
+  offsetDays?: number | null;
+  offsetMinutes?: number | null;
+}): Exclude<PhaseKey, "prePlan"> {
+  if (item.module === "retro") return "post";
+  if (item.module === "supplies") return "dayOf";
+  if (item.offsetMinutes != null) return "dayOf";
+  if (item.offsetDays != null) {
+    if (item.offsetDays < 0) return "planning";
+    if (item.offsetDays === 0) return "dayOf";
+    return "post";
+  }
+  return "planning";
+}
+
+/**
+ * Compute the four timing-based phase scores (planning / dayOf / post) plus a
+ * pre-plan score from a flat list of items grouped by module.
+ *
+ * `modules` is the list of (module key, its status options, its items). Each
+ * item carries `status`, `offsetDays`, `offsetMinutes`, plus the pre-plan
+ * arrays. Returns 0..1 per phase, or null when a phase has no measurable items.
+ */
+export function computePhaseScores(
+  modules: Array<{
+    module: string;
+    statusOptions: SelectOption[] | undefined;
+    items: Array<{
+      status?: string | null;
+      offsetDays?: number | null;
+      offsetMinutes?: number | null;
+      prePlanColumns?: string[];
+      prePlanChecked?: string[];
+    }>;
+  }>,
+): PhaseScores {
+  type TimingPhase = Exclude<PhaseKey, "prePlan">;
+  // Per phase: collect each module's average itemScore (only for modules that
+  // have ≥1 item in that phase), then average those module scores.
+  const moduleScores: Record<TimingPhase, number[]> = {
+    planning: [],
+    dayOf: [],
+    post: [],
+  };
+
+  // Pre-plan accumulators (across all modules/items).
+  let prePlanMarked = 0;
+  let prePlanChecked = 0;
+
+  for (const m of modules) {
+    const perPhaseItemScores: Record<TimingPhase, number[]> = {
+      planning: [],
+      dayOf: [],
+      post: [],
+    };
+    for (const it of m.items) {
+      const phase = itemPhase({
+        module: m.module,
+        offsetDays: it.offsetDays,
+        offsetMinutes: it.offsetMinutes,
+      });
+      perPhaseItemScores[phase].push(itemScore(m.statusOptions, it.status));
+
+      // Pre-plan: count marked cells on this item and how many are checked.
+      const marked = it.prePlanColumns ?? [];
+      if (marked.length > 0) {
+        const checkedSet = new Set(it.prePlanChecked ?? []);
+        prePlanMarked += marked.length;
+        prePlanChecked += marked.filter((k) => checkedSet.has(k)).length;
+      }
+    }
+    for (const phase of ["planning", "dayOf", "post"] as TimingPhase[]) {
+      const scores = perPhaseItemScores[phase];
+      if (scores.length > 0) {
+        moduleScores[phase].push(
+          scores.reduce((sum, s) => sum + s, 0) / scores.length,
+        );
+      }
+    }
+  }
+
+  const avg = (arr: number[]): number | null =>
+    arr.length > 0 ? arr.reduce((sum, s) => sum + s, 0) / arr.length : null;
+
+  return {
+    prePlan: prePlanMarked > 0 ? prePlanChecked / prePlanMarked : null,
+    planning: avg(moduleScores.planning),
+    dayOf: avg(moduleScores.dayOf),
+    post: avg(moduleScores.post),
+  };
+}
+
+/**
+ * The "current" phase of an event by date — what a pipeline card highlights.
+ *   same calendar day as the event → dayOf
+ *   after the event                → post
+ *   otherwise (before)             → planning
+ * Pre-plan is intentionally NOT auto-selected as "current": it's an explicit
+ * checklist the pipeline surfaces only via its own number, not as a stage.
+ */
+export function currentPhase(
+  eventDate: number,
+  now: number,
+): Exclude<PhaseKey, "prePlan"> {
+  const sameDay =
+    new Date(eventDate).toDateString() === new Date(now).toDateString();
+  if (sameDay) return "dayOf";
+  if (now > eventDate) return "post";
+  return "planning";
+}
+
 // ── Vetting status ───────────────────────────────────────────────────────────
 export const VETTING_STATUSES = ["unvetted", "pending", "vetted"] as const;
 export type VettingStatus = (typeof VETTING_STATUSES)[number];

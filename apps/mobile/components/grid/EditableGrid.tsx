@@ -4,8 +4,15 @@
  * or a live event. Columns are configurable; cells edit inline; rows add /
  * delete / reorder. Driven entirely by the module's ColumnDef set.
  */
-import { useMemo, useState } from "react";
-import { View, Text, Pressable, ScrollView, ActivityIndicator } from "react-native";
+import { useMemo, useRef, useState } from "react";
+import {
+  View,
+  Text,
+  Pressable,
+  ScrollView,
+  ActivityIndicator,
+  Platform,
+} from "react-native";
 import { GestureDetector, type GestureType } from "react-native-gesture-handler";
 import { useAction } from "convex/react";
 import { api } from "@events-os/convex/_generated/api";
@@ -14,6 +21,11 @@ import { colors } from "../../lib/theme";
 import { Icon } from "../ui/Icon";
 import { OptionTag } from "../ui/OptionTag";
 import { Popover } from "../ui/Popover";
+import {
+  ContextMenu,
+  measureAnchor,
+  type ContextMenuAnchor,
+} from "../ui/ContextMenu";
 import { TextField, Select } from "../ui/Field";
 import { Button } from "../ui/Button";
 import { GridCell } from "./cells";
@@ -123,6 +135,10 @@ export function EditableGrid({
   const [groupBy, setGroupBy] = useState<string | null>(null);
   const [menu, setMenu] = useState<null | "columns" | "group" | "addField" | "editOptions">(null);
   const [editColId, setEditColId] = useState<string | null>(null);
+  // Pre-plan cell context menu (template authoring): which cell + where.
+  const [prePlanMenu, setPrePlanMenu] = useState<
+    null | { itemId: string; colKey: string; marked: boolean; anchor: ContextMenuAnchor }
+  >(null);
 
   const columns = useMemo(() => {
     return grid.columns
@@ -207,6 +223,26 @@ export function EditableGrid({
       onRemove={editable ? () => grid.removeItem(item._id) : undefined}
       onAutofill={canAutofill ? () => autofill({ itemId: item._id as any }) : undefined}
       drag={drag}
+      // Template authors right-click / long-press a cell to (un)mark pre-plan;
+      // on an event a marked cell shows a check-off tick.
+      onPrePlanMenu={
+        mode === "template" && editable
+          ? (colKey, node) =>
+              measureAnchor(node, (anchor) =>
+                setPrePlanMenu({
+                  itemId: item._id,
+                  colKey,
+                  marked: (item.prePlanColumns ?? []).includes(colKey),
+                  anchor,
+                }),
+              )
+          : undefined
+      }
+      onToggleChecked={
+        mode === "event" && editable
+          ? (colKey) => grid.togglePrePlanChecked(item._id, colKey)
+          : undefined
+      }
     />
   );
 
@@ -384,6 +420,30 @@ export function EditableGrid({
           />
         ) : null}
       </Popover>
+
+      {/* Pre-plan cell mark menu (template authoring) */}
+      <ContextMenu
+        anchor={prePlanMenu?.anchor}
+        width={200}
+        onClose={() => setPrePlanMenu(null)}
+        actions={
+          prePlanMenu
+            ? [
+                {
+                  label: prePlanMenu.marked
+                    ? "Unmark pre-plan"
+                    : "Mark as pre-plan",
+                  icon: prePlanMenu.marked ? "x-circle" : "check-circle",
+                  onPress: () =>
+                    void grid.toggleTemplatePrePlan(
+                      prePlanMenu.itemId,
+                      prePlanMenu.colKey,
+                    ),
+                },
+              ]
+            : []
+        }
+      />
     </View>
   );
 }
@@ -489,6 +549,8 @@ function Row({
   onRemove,
   onAutofill,
   drag,
+  onPrePlanMenu,
+  onToggleChecked,
 }: {
   item: GridItem;
   isLast: boolean;
@@ -505,7 +567,13 @@ function Row({
   onAutofill?: () => Promise<unknown>;
   /** Pan gesture from SortableRows; attached to the grip handle when editable. */
   drag?: GestureType;
+  /** Template: open the pre-plan mark menu for a cell (right-click/long-press). */
+  onPrePlanMenu?: (colKey: string, node: any) => void;
+  /** Event: tick / untick a marked pre-plan cell. */
+  onToggleChecked?: (colKey: string) => void;
 }) {
+  const prePlanCols = new Set(item.prePlanColumns ?? []);
+  const checkedCols = new Set(item.prePlanChecked ?? []);
   return (
     <View
       className={`flex-row items-start border-b border-border bg-raised ${
@@ -528,24 +596,32 @@ function Row({
         </View>
       ) : null}
 
-      {columns.map((c, i) => (
-        <View
-          key={c._id}
-          style={{ width: widths[i] }}
-          className="flex-row border-r border-border/60"
-        >
-          <GridCell
-            column={c}
-            item={item}
-            module={module}
-            mode={mode}
-            roles={roles}
-            eventDate={eventDate}
-            editable={editable}
-            onChange={(value) => onCommit(item, c, value)}
-          />
-        </View>
-      ))}
+      {columns.map((c, i) => {
+        const isPrePlan = prePlanCols.has(c.key);
+        const isChecked = checkedCols.has(c.key);
+        return (
+          <PrePlanCellWrapper
+            key={c._id}
+            width={widths[i]}
+            isPrePlan={isPrePlan}
+            isChecked={isChecked}
+            colKey={c.key}
+            onPrePlanMenu={onPrePlanMenu}
+            onToggleChecked={onToggleChecked}
+          >
+            <GridCell
+              column={c}
+              item={item}
+              module={module}
+              mode={mode}
+              roles={roles}
+              eventDate={eventDate}
+              editable={editable}
+              onChange={(value) => onCommit(item, c, value)}
+            />
+          </PrePlanCellWrapper>
+        );
+      })}
 
       {/* Right gutter: ✨ autofill + delete */}
       {editable ? (
@@ -556,6 +632,93 @@ function Row({
           {onAutofill ? <AutofillBtn onPress={onAutofill} /> : null}
           {onRemove ? <RowBtn icon="trash-2" danger onPress={onRemove} /> : null}
         </View>
+      ) : null}
+    </View>
+  );
+}
+
+/**
+ * Wraps one grid cell to layer the pre-plan affordances on top of any cell type:
+ *  - TEMPLATE: right-click (web) / long-press (native) opens a menu to (un)mark
+ *    the cell as pre-plan; marked cells get a distinct tinted background + border.
+ *  - EVENT: a marked cell shows a small check-off tick in the corner; ticking it
+ *    toggles `prePlanChecked`. Checked cells read as done (green tint).
+ * Cells that aren't pre-plan render exactly as before (a plain bordered cell).
+ */
+function PrePlanCellWrapper({
+  width,
+  isPrePlan,
+  isChecked,
+  colKey,
+  onPrePlanMenu,
+  onToggleChecked,
+  children,
+}: {
+  width: number;
+  isPrePlan: boolean;
+  isChecked: boolean;
+  colKey: string;
+  onPrePlanMenu?: (colKey: string, node: any) => void;
+  onToggleChecked?: (colKey: string) => void;
+  children: React.ReactNode;
+}) {
+  const ref = useRef<any>(null);
+
+  // Template authors open the mark menu via right-click / long-press anywhere on
+  // the cell. We attach the DOM contextmenu handler on web; long-press on native.
+  const contextProps =
+    onPrePlanMenu != null
+      ? Platform.OS === "web"
+        ? {
+            // web-only DOM prop passed through react-native-web's View.
+            onContextMenu: (e: any) => {
+              e.preventDefault?.();
+              onPrePlanMenu(colKey, ref.current);
+            },
+          }
+        : {}
+      : {};
+
+  const tint = isChecked
+    ? "bg-success-bg"
+    : isPrePlan
+      ? "bg-warn-bg/40"
+      : "";
+  const ring = isPrePlan ? "border-l-2 border-l-warn" : "";
+
+  return (
+    <View
+      ref={ref}
+      style={{ width }}
+      className={`flex-row border-r border-border/60 ${tint} ${ring}`}
+      {...contextProps}
+    >
+      <View className="flex-1">{children}</View>
+      {/* Tick affordance: template = mark hint (long-press on native); event =
+          tappable check-off for marked cells. */}
+      {isPrePlan && onToggleChecked ? (
+        <Pressable
+          hitSlop={6}
+          onPress={() => onToggleChecked(colKey)}
+          accessibilityLabel={isChecked ? "Uncheck pre-plan cell" : "Check off pre-plan cell"}
+          className="items-center justify-center px-1 active:opacity-70"
+        >
+          <Icon
+            name={isChecked ? "check-circle" : "circle"}
+            size={15}
+            color={isChecked ? colors.success : colors.warn}
+          />
+        </Pressable>
+      ) : null}
+      {/* Native template authoring: long-press anywhere on the cell to mark. */}
+      {onPrePlanMenu && Platform.OS !== "web" ? (
+        <Pressable
+          hitSlop={4}
+          onLongPress={() => onPrePlanMenu(colKey, ref.current)}
+          className="items-center justify-center px-1 active:opacity-70"
+        >
+          <Icon name="more-vertical" size={14} color={colors.faint} />
+        </Pressable>
       ) : null}
     </View>
   );

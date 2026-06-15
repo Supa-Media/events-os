@@ -13,9 +13,11 @@ import {
   computeDueDate,
   computeReadiness,
   isCompleteStatus,
+  currentPhase,
   DAY_OFFSET_MODULES,
   MODULE_LABELS,
   type ModuleKey,
+  type PhaseScores,
 } from "@events-os/shared";
 import {
   requireUserId,
@@ -28,6 +30,7 @@ import {
   eventActiveModules,
   getPersonForUser,
 } from "./lib/templates";
+import { phaseReadiness } from "./lib/readiness";
 import { paidTotalForEvent } from "./engagements";
 
 const statusUnion = v.union(
@@ -63,6 +66,21 @@ async function eventReadiness(ctx: any, eventId: Id<"events">) {
   const total = items.length;
   const done = items.filter((it: any) => isCompleteStatus(opts, it.status)).length;
   return { total, done, readiness: computeReadiness(total, done) };
+}
+
+/**
+ * The current phase's score as a 0–100 integer (or null when that phase has no
+ * items to measure), for pipeline cards. "Current" is by date — see
+ * `currentPhase`. Returns the label too so the card can show "Planning · 60%".
+ */
+function currentPhasePct(
+  phases: PhaseScores,
+  eventDate: number,
+  now: number,
+): { phase: string; pct: number | null } {
+  const phase = currentPhase(eventDate, now);
+  const score = phases[phase];
+  return { phase, pct: score == null ? null : Math.round(score * 100) };
 }
 
 /**
@@ -144,6 +162,7 @@ export const get = query({
     if (!event || event.chapterId !== chapterId) return null;
     const eventType = await ctx.db.get(event.eventTypeId as Id<"eventTypes">);
     const r = await eventReadiness(ctx, eventId);
+    const phases = await phaseReadiness(ctx, event);
 
     // Roll up every item's `cost` field against the event budget.
     const allItems = await ctx.db
@@ -175,6 +194,8 @@ export const get = query({
       moduleReadiness: event.moduleReadiness ?? [],
       owner,
       readiness: r.readiness,
+      // Four phase scores (0..1 or null), the new headline readiness signal.
+      phases,
       taskTotal: r.total,
       taskDone: r.done,
       budgetSpent,
@@ -580,10 +601,16 @@ export const pipeline = query({
             it.dueDate !== undefined &&
             it.dueDate < now,
         ).length;
+        // Phase readiness → the card's current-phase label + number.
+        const phases = await phaseReadiness(ctx, event);
+        const current = currentPhasePct(phases, event.eventDate, now);
         return {
           ...event,
           eventTypeName: eventType?.name ?? "Unknown",
           readiness: computeReadiness(total, done),
+          phases,
+          currentPhase: current.phase,
+          currentPhasePct: current.pct,
           taskTotal: total,
           taskDone: done,
           blockerCount,

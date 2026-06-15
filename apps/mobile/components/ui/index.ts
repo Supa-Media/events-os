@@ -9,7 +9,7 @@ export { Button } from "./Button";
 export { Badge, type BadgeTone } from "./Badge";
 export { Pill } from "./Pill";
 export { Avatar } from "./Avatar";
-export { ReadinessBadge, ReadinessRing, ReadinessBar } from "./Readiness";
+export { ReadinessBadge, ReadinessRing, ReadinessBar, PhaseBreakdown } from "./Readiness";
 export { Field, TextField, Select } from "./Field";
 export { EmptyState } from "./EmptyState";
 export { SectionHeader } from "./SectionHeader";

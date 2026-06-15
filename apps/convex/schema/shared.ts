@@ -38,6 +38,11 @@ export const itemFieldsBase = {
   offsetMinutes: v.optional(v.number()),
   // Status value (matches a value in the module's status column options).
   status: v.optional(v.string()),
+  // Column keys on THIS row that a template author marked as "pre-plan" — cells
+  // that need explicit sign-off before the event (often pre-filled with
+  // placeholder text the user must edit, so completion is the explicit tick, not
+  // just filling the cell). Cloned template → event. Drives the pre-plan phase.
+  prePlanColumns: v.optional(v.array(v.string())),
   // Custom-column values, keyed by column key.
   fields: v.optional(v.record(v.string(), v.any())),
 };

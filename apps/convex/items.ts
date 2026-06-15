@@ -145,6 +145,31 @@ export const updateTemplateItem = mutation({
   },
 });
 
+/**
+ * Toggle whether a column on a template item is marked "pre-plan" (a cell that
+ * needs explicit sign-off before the event). Marks live on the templateItem's
+ * `prePlanColumns`; they clone onto every event spun up from the template.
+ */
+export const toggleTemplatePrePlan = mutation({
+  args: { itemId: v.id("templateItems"), colKey: v.string() },
+  handler: async (ctx, { itemId, colKey }) => {
+    const chapterId = await requireChapterId(ctx);
+    const item = await ctx.db.get(itemId);
+    if (!item) return itemId;
+    const et = await ctx.db.get(item.eventTypeId);
+    await requireInChapter(ctx, chapterId, et, "Event type");
+    const current = item.prePlanColumns ?? [];
+    const next = current.includes(colKey)
+      ? current.filter((k: string) => k !== colKey)
+      : [...current, colKey];
+    await ctx.db.patch(itemId, {
+      prePlanColumns: next.length > 0 ? next : undefined,
+    });
+    await bumpVersion(ctx, item.eventTypeId);
+    return itemId;
+  },
+});
+
 export const removeTemplateItem = mutation({
   args: { itemId: v.id("templateItems") },
   handler: async (ctx, { itemId }) => {
@@ -346,6 +371,33 @@ export const setStatus = mutation({
       "Event",
     );
     await ctx.db.patch(itemId, { status: status ?? undefined });
+    return itemId;
+  },
+});
+
+/**
+ * Tick / untick a pre-plan cell on an event item. `colKey` must be one of the
+ * item's `prePlanColumns` (the template author's marks). Toggling adds/removes
+ * the key in `prePlanChecked`; pre-plan% = checked ÷ marked across the event.
+ */
+export const togglePrePlanChecked = mutation({
+  args: { itemId: v.id("eventItems"), colKey: v.string() },
+  handler: async (ctx, { itemId, colKey }) => {
+    const chapterId = await requireChapterId(ctx);
+    const item = await ctx.db.get(itemId);
+    if (!item) return itemId;
+    const event = await ctx.db.get(item.eventId);
+    await requireInChapter(ctx, chapterId, event, "Event");
+    // Only checkable if the cell was actually marked pre-plan on this row.
+    const marked = item.prePlanColumns ?? [];
+    if (!marked.includes(colKey)) return itemId;
+    const current = item.prePlanChecked ?? [];
+    const next = current.includes(colKey)
+      ? current.filter((k: string) => k !== colKey)
+      : [...current, colKey];
+    await ctx.db.patch(itemId, {
+      prePlanChecked: next.length > 0 ? next : undefined,
+    });
     return itemId;
   },
 });

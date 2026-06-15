@@ -82,6 +82,9 @@ export const eventItems = defineTable({
   roleId: v.optional(v.id("eventRoles")),
   // Per-event owner (a person); template items have no owner.
   ownerPersonId: v.optional(v.id("people")),
+  // The subset of `prePlanColumns` (inherited from the template) that have been
+  // explicitly checked off on this event. pre-plan% = checked ÷ marked.
+  prePlanChecked: v.optional(v.array(v.string())),
   // Back-calculated from the event date for day-offset modules.
   dueDate: v.optional(v.number()),
 })

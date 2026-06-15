@@ -361,6 +361,9 @@ export async function instantiateEvent(
       dueDate,
       roleId: it.roleId ? roleIdMap.get(String(it.roleId)) : undefined,
       status: it.status ?? defaultStatusValue(it.module as ModuleKey),
+      // Carry the template author's pre-plan cell marks onto the event so they
+      // show up as check-off cells; nothing is checked yet (prePlanChecked unset).
+      prePlanColumns: it.prePlanColumns,
       // `fields` is copied verbatim, which means any `how_to` cell's doc id is
       // carried over by reference — the template's How-To doc (`scope:
       // "template"`) is SHARED with every event spun up from it (and across
