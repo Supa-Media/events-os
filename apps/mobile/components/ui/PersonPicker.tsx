@@ -25,6 +25,11 @@ type Props = {
   /** "team" lists only team members (for owners/leads); default lists everyone. */
   source?: "all" | "team";
   /**
+   * Optional predicate to narrow the roster (e.g. exclude placeholder people
+   * when replacing a placeholder volunteer). Applied before the search filter.
+   */
+  filter?: (person: any) => boolean;
+  /**
    * When provided, the picker gains a search box + a "Create new person" row, so
    * the caller can either CHOOSE an existing person or CREATE one by name. Left
    * unset (e.g. role assignment), the picker stays a plain roster list.
@@ -49,6 +54,7 @@ export function PersonPicker({
   onClose,
   source = "all",
   onCreate,
+  filter,
 }: Props) {
   const people = useQuery(
     source === "team" ? api.people.teamMembers : api.people.list,
@@ -61,7 +67,7 @@ export function PersonPicker({
   }, [visible]);
 
   const q = search.trim().toLowerCase();
-  const list = people ?? [];
+  const list = (people ?? []).filter((p: any) => (filter ? filter(p) : true));
   const filtered = q
     ? list.filter((p: any) => p.name.toLowerCase().includes(q))
     : list;
