@@ -20,6 +20,16 @@ const vettingStatus = v.union(
   v.literal("vetted"),
 );
 
+const rosterStatus = v.union(
+  v.literal("active"),
+  v.literal("inactive"),
+  v.literal("transitioning_in"),
+  v.literal("transitioning_out"),
+  v.literal("unavailable"),
+);
+
+const gender = v.union(v.literal("male"), v.literal("female"), v.literal("na"));
+
 /** List the chapter roster sorted by name. */
 export const list = query({
   args: {},
@@ -73,10 +83,21 @@ export const create = mutation({
     phone: v.optional(v.string()),
     skills: v.optional(v.array(v.string())),
     vettingStatus: v.optional(vettingStatus),
+    status: v.optional(rosterStatus),
+    role: v.optional(v.string()),
+    gender: v.optional(gender),
+    pocName: v.optional(v.string()),
+    projects: v.optional(v.array(v.string())),
+    commsPreferences: v.optional(v.array(v.string())),
+    pwEmail: v.optional(v.string()),
+    company: v.optional(v.string()),
+    usualRateUsd: v.optional(v.number()),
+    isTeamMember: v.optional(v.boolean()),
   },
   handler: async (ctx, args) => {
     const chapterId = await requireChapterId(ctx);
     await requireUserId(ctx);
+    const status = args.status ?? "active";
     return await ctx.db.insert("people", {
       chapterId: chapterId as Id<"chapters">,
       name: args.name,
@@ -84,7 +105,17 @@ export const create = mutation({
       phone: args.phone,
       skills: args.skills,
       vettingStatus: args.vettingStatus ?? "unvetted",
-      isActive: true,
+      status,
+      role: args.role,
+      gender: args.gender,
+      pocName: args.pocName,
+      projects: args.projects,
+      commsPreferences: args.commsPreferences,
+      pwEmail: args.pwEmail,
+      company: args.company,
+      usualRateUsd: args.usualRateUsd,
+      isTeamMember: args.isTeamMember,
+      isActive: status !== "inactive",
       createdAt: Date.now(),
     });
   },
@@ -103,6 +134,14 @@ export const update = mutation({
     isTeamMember: v.optional(v.boolean()),
     vettingStatus: v.optional(vettingStatus),
     isActive: v.optional(v.boolean()),
+    status: v.optional(rosterStatus),
+    role: v.optional(v.union(v.string(), v.null())),
+    gender: v.optional(gender),
+    pocName: v.optional(v.union(v.string(), v.null())),
+    projects: v.optional(v.union(v.array(v.string()), v.null())),
+    commsPreferences: v.optional(v.union(v.array(v.string()), v.null())),
+    pwEmail: v.optional(v.union(v.string(), v.null())),
+    company: v.optional(v.union(v.string(), v.null())),
   },
   handler: async (ctx, { personId, ...patch }) => {
     const chapterId = await requireChapterId(ctx);
@@ -112,6 +151,11 @@ export const update = mutation({
     for (const [key, value] of Object.entries(patch)) {
       // null = explicit clear (store undefined); undefined = leave unchanged.
       if (value !== undefined) fields[key] = value === null ? undefined : value;
+    }
+    // Keep the convenience isActive flag in sync when status changes (unless the
+    // caller set isActive explicitly in the same patch).
+    if (patch.status !== undefined && patch.isActive === undefined) {
+      fields.isActive = patch.status !== "inactive";
     }
     await ctx.db.patch(personId, fields);
     return personId;

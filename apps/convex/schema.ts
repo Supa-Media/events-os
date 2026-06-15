@@ -261,6 +261,10 @@ const schema = defineSchema({
     notes: v.optional(v.string()),
     // On the core team (has / will get backend access). Only team members can be
     // event owners or hold lead roles. Distinct from being a volunteer/vendor.
+    // Persona is not a single rigid kind: `isTeamMember` flags core team,
+    // `usualRateUsd` being set marks vendor capability, and everyone else is a
+    // volunteer — the same person can be a vendor on one event and volunteer on
+    // another, so these signals coexist rather than partition the roster.
     isTeamMember: v.optional(v.boolean()),
     vettingStatus: v.optional(
       v.union(
@@ -270,6 +274,35 @@ const schema = defineSchema({
       ),
     ),
     isActive: v.optional(v.boolean()),
+    // Roster lifecycle state (richer than isActive). isActive is kept in sync as
+    // a convenience flag (false only when status === "inactive").
+    status: v.optional(
+      v.union(
+        v.literal("active"),
+        v.literal("inactive"),
+        v.literal("transitioning_in"),
+        v.literal("transitioning_out"),
+        v.literal("unavailable"),
+      ),
+    ),
+    // Core-team job title (e.g. "Music Director") or a vendor's service line.
+    role: v.optional(v.string()),
+    // "na" is used for companies/vendor orgs that have no personal gender.
+    gender: v.optional(
+      v.union(v.literal("male"), v.literal("female"), v.literal("na")),
+    ),
+    // Point of contact — free-text name of the team member who owns this
+    // relationship (not yet a hard FK; some POCs aren't on the roster).
+    pocName: v.optional(v.string()),
+    // Initiatives/events this person is associated with (e.g. "Eden", "Love Thy
+    // Neighbor"). Stored as labels now; intended to map onto event modules later.
+    projects: v.optional(v.array(v.string())),
+    // Preferred contact channels in priority order (e.g. ["slack","call","text"]).
+    commsPreferences: v.optional(v.array(v.string())),
+    // Public Worship email (distinct from the personal `email`), for core team.
+    pwEmail: v.optional(v.string()),
+    // Vendor company / organization name (when this person represents a vendor).
+    company: v.optional(v.string()),
     createdAt: v.number(),
   })
     .index("by_chapter", ["chapterId"])
