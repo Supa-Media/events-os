@@ -190,19 +190,26 @@ export default function EventDetailScreen() {
       ? new Set<string>([...(myItemIds ?? []), ...myWork.teamItemIds])
       : null;
 
-  // In Me view, only show module tabs I'm involved in, and the Crew tab only
-  // when team-involved. myWork still loading ⇒ leave tabs unfiltered briefly.
+  // Crew shows outside Me view, or in Me view when I'm team-involved.
+  const showCrew = !meView || crewInvolved;
+  // Build the module tabs in lifecycle order, rendering the merged
+  // "Crew & Expectations" tab AT the volunteer_expectations slot (so it sits
+  // before the post-event Retrospective, not after it). In Me view, modules I'm
+  // not involved in are dropped. myWork still loading ⇒ tabs unfiltered briefly.
+  const moduleTabs = activeModules.flatMap((m) => {
+    if (m.key === "volunteer_expectations") {
+      return showCrew ? [{ key: "crew", label: "Crew & Expectations" }] : [];
+    }
+    if (meView && involvedModuleKeys && !involvedModuleKeys.has(m.key)) return [];
+    return [{ key: m.key, label: m.label }];
+  });
   const tabs: { key: string; label: string }[] = [
     { key: "overview", label: "Overview" },
-    ...activeModules
-      .filter((m) => m.key !== "volunteer_expectations")
-      .filter(
-        (m) => !meView || !involvedModuleKeys || involvedModuleKeys.has(m.key),
-      )
-      .map((m) => ({ key: m.key, label: m.label })),
-    ...(meView && !crewInvolved
-      ? []
-      : [{ key: "crew", label: "Crew & Expectations" }]),
+    ...moduleTabs,
+    // Fallback: if the expectations module is disabled, still surface Crew last.
+    ...(showCrew && !moduleTabs.some((t) => t.key === "crew")
+      ? [{ key: "crew", label: "Crew & Expectations" }]
+      : []),
   ];
   const activeTab = tabs.some((t) => t.key === tab) ? (tab as string) : "overview";
   const summaryByModule = new Map(

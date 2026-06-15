@@ -86,8 +86,8 @@ export const MODULE_KEYS = [
   "supplies",
   "site_map",
   "run_of_show",
-  "retro",
   "volunteer_expectations",
+  "retro",
 ] as const;
 export type ModuleKey = (typeof MODULE_KEYS)[number];
 
@@ -137,11 +137,12 @@ export const CORE_MODULES: CoreModuleDef[] = [
   // of a spreadsheet grid (surface !== "grid"), so grid-only code paths skip it.
   { key: "site_map", label: "Site Map", surface: "site_map", defaultOwnerRoleKey: "logistics_lead", offsetMode: "none" },
   { key: "run_of_show", label: "Run of Show", surface: "grid", defaultOwnerRoleKey: "production_lead", offsetMode: "minutes" },
+  // People / teams — the "who" (recruit + brief volunteers, who then execute on
+  // the day). On events this is the merged Crew & Expectations tab. Sits before
+  // the post-event Retrospective.
+  { key: "volunteer_expectations", label: "Expectations", surface: "grid", defaultOwnerRoleKey: "comms_lead", offsetMode: "none" },
   // ── Post (after the date) ──
   { key: "retro", label: "Retrospective", surface: "grid", defaultOwnerRoleKey: "event_lead", offsetMode: "none" },
-  // People / teams — the "who". On events this is the merged Crew & Expectations
-  // tab (appended after the modules), so it isn't a standalone module tab there.
-  { key: "volunteer_expectations", label: "Expectations", surface: "grid", defaultOwnerRoleKey: "comms_lead", offsetMode: "none" },
 ];
 
 /**
