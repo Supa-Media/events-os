@@ -82,11 +82,11 @@ export const EVENT_STATUS_LABELS: Record<EventStatus, string> = {
 export const MODULE_KEYS = [
   "planning_doc",
   "comms",
-  "permits",
-  "supplies",
-  "site_map",
   "run_of_show",
   "volunteer_expectations",
+  "site_map",
+  "supplies",
+  "permits",
   "retro",
 ] as const;
 export type ModuleKey = (typeof MODULE_KEYS)[number];
@@ -125,23 +125,17 @@ export interface CoreModuleDef {
  * to edit a core module.
  */
 export const CORE_MODULES: CoreModuleDef[] = [
-  // Ordered by event lifecycle so the tabs/chips read Planning → Day-of → Post,
-  // matching the phase-readiness rings.
-  // ── Planning (before the date) ──
+  // Display order (drives tabs/chips/rollup). volunteer_expectations is the
+  // merged "Crew & Expectations" tab on events. Retrospective stays last (post).
   { key: "planning_doc", label: "Planning Doc", surface: "grid", defaultOwnerRoleKey: "event_lead", offsetMode: "days" },
   { key: "comms", label: "Comms Schedule", surface: "grid", defaultOwnerRoleKey: "comms_lead", offsetMode: "days" },
-  { key: "permits", label: "Permits", surface: "grid", defaultOwnerRoleKey: "event_lead", offsetMode: "days" },
-  // ── Day-of (pack → lay out the venue → run the show) ──
-  { key: "supplies", label: "Supplies & Packing", surface: "grid", defaultOwnerRoleKey: "logistics_lead", offsetMode: "none" },
+  { key: "run_of_show", label: "Run of Show", surface: "grid", defaultOwnerRoleKey: "production_lead", offsetMode: "minutes" },
+  { key: "volunteer_expectations", label: "Expectations", surface: "grid", defaultOwnerRoleKey: "comms_lead", offsetMode: "none" },
   // Site map is a non-grid core module: it renders the venue-map editor instead
   // of a spreadsheet grid (surface !== "grid"), so grid-only code paths skip it.
   { key: "site_map", label: "Site Map", surface: "site_map", defaultOwnerRoleKey: "logistics_lead", offsetMode: "none" },
-  { key: "run_of_show", label: "Run of Show", surface: "grid", defaultOwnerRoleKey: "production_lead", offsetMode: "minutes" },
-  // People / teams — the "who" (recruit + brief volunteers, who then execute on
-  // the day). On events this is the merged Crew & Expectations tab. Sits before
-  // the post-event Retrospective.
-  { key: "volunteer_expectations", label: "Expectations", surface: "grid", defaultOwnerRoleKey: "comms_lead", offsetMode: "none" },
-  // ── Post (after the date) ──
+  { key: "supplies", label: "Supplies & Packing", surface: "grid", defaultOwnerRoleKey: "logistics_lead", offsetMode: "none" },
+  { key: "permits", label: "Permits", surface: "grid", defaultOwnerRoleKey: "event_lead", offsetMode: "days" },
   { key: "retro", label: "Retrospective", surface: "grid", defaultOwnerRoleKey: "event_lead", offsetMode: "none" },
 ];
 
