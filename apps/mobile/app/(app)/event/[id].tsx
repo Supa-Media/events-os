@@ -5,6 +5,8 @@ import { useQuery, useMutation } from "convex/react";
 import { api } from "@events-os/convex/_generated/api";
 import {
   Screen,
+  Narrow,
+  FULL_WIDTH,
   Card,
   Button,
   SectionHeader,
@@ -323,7 +325,8 @@ export default function EventDetailScreen() {
       <Stack.Screen options={{ headerShown: false }} />
       <View className="flex-1 flex-row">
         <View className="flex-1">
-          <Screen maxWidth={1180}>
+          <Screen maxWidth={FULL_WIDTH}>
+        <Narrow>
         {/* Breadcrumb / back */}
         <Pressable
           onPress={() => router.replace("/")}
@@ -357,9 +360,11 @@ export default function EventDetailScreen() {
           activeKey={activeTab}
           onSelect={(key) => router.setParams({ tab: key })}
         />
+        </Narrow>
 
         {/* ── Overview: controls + per-module rollup ─────────────────────────── */}
         {activeTab === "overview" && meView ? (
+          <Narrow>
           <MeView
             ownedModuleKeys={myWork?.ownedModuleKeys ?? null}
             todos={todos}
@@ -375,8 +380,9 @@ export default function EventDetailScreen() {
             onOpenTab={(t) => router.setParams({ tab: t })}
             onAssignOwner={openOwnerPicker}
           />
+          </Narrow>
         ) : activeTab === "overview" ? (
-          <>
+          <Narrow>
             <EventOverviewControls
               event={event}
               roleRows={roleRows}
@@ -478,12 +484,14 @@ export default function EventDetailScreen() {
                 }
               />
             </Card>
-          </>
+          </Narrow>
         ) : activeTab === "crew" ? (
           /* ── Crew & Expectations: WHO is on each team (engagements) plus, below,
                 WHAT each team is expected to do (the volunteer_expectations grid). */
           <View className="gap-8">
-            <CrewSections eventId={eventId} />
+            <Narrow>
+              <CrewSections eventId={eventId} />
+            </Narrow>
             {expectationsModule ? (
               <View>
                 <SectionHeader title="Expectations" />

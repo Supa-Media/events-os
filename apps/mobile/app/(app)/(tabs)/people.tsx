@@ -14,6 +14,8 @@ import { useQuery, useMutation } from "convex/react";
 import { api } from "@events-os/convex/_generated/api";
 import {
   Screen,
+  Narrow,
+  FULL_WIDTH,
   Badge,
   Pill,
   TextField,
@@ -193,7 +195,8 @@ export default function PeopleScreen() {
   }
 
   return (
-    <Screen>
+    <Screen maxWidth={FULL_WIDTH}>
+      <Narrow>
       {/* Title row */}
       <View style={styles.titleRow}>
         <Text className="font-display text-2xl text-ink">People</Text>
@@ -251,6 +254,7 @@ export default function PeopleScreen() {
           ))}
         </View>
       ) : null}
+      </Narrow>
 
       {/* The grid */}
       <View className="overflow-hidden rounded-lg border border-border bg-raised">
@@ -315,12 +319,14 @@ export default function PeopleScreen() {
       </View>
 
       {people.length === 0 ? (
-        <View style={{ marginTop: spacing.md }}>
-          <EmptyState
-            title="No people yet"
-            message="Use the “Add person” row to start your roster, then edit each cell inline."
-          />
-        </View>
+        <Narrow>
+          <View style={{ marginTop: spacing.md }}>
+            <EmptyState
+              title="No people yet"
+              message="Use the “Add person” row to start your roster, then edit each cell inline."
+            />
+          </View>
+        </Narrow>
       ) : null}
 
       <PersonDetail person={openPerson} onClose={() => setOpenId(null)} />

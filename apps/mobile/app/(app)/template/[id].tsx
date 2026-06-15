@@ -4,6 +4,8 @@ import { useQuery, useMutation } from "convex/react";
 import { api } from "@events-os/convex/_generated/api";
 import {
   Screen,
+  Narrow,
+  FULL_WIDTH,
   Button,
   SectionHeader,
   EmptyState,
@@ -63,39 +65,43 @@ export default function TemplateEditorScreen() {
   const gridModules = active.filter((m) => m.surface === "grid");
 
   return (
-    <Screen>
-      <NameEditor
-        key={eventType._id}
-        name={eventType.name}
-        version={eventType.version}
-        onSave={(name) => updateTemplate({ eventTypeId, name })}
-        onStart={() => router.push(`/event/new?templateId=${eventTypeId}`)}
-      />
+    <Screen maxWidth={FULL_WIDTH}>
+      <Narrow>
+        <NameEditor
+          key={eventType._id}
+          name={eventType.name}
+          version={eventType.version}
+          onSave={(name) => updateTemplate({ eventTypeId, name })}
+          onStart={() => router.push(`/event/new?templateId=${eventTypeId}`)}
+        />
 
-      <DescriptionEditor
-        key={`desc-${eventType._id}`}
-        description={eventType.description ?? ""}
-        onSave={(description) => updateTemplate({ eventTypeId, description })}
-      />
+        <DescriptionEditor
+          key={`desc-${eventType._id}`}
+          description={eventType.description ?? ""}
+          onSave={(description) => updateTemplate({ eventTypeId, description })}
+        />
 
-      <RolesCard eventTypeId={eventTypeId} roles={roleList} />
+        <RolesCard eventTypeId={eventTypeId} roles={roleList} />
 
-      <ModulesCard
-        eventTypeId={eventTypeId}
-        active={active}
-        disabledCore={moduleData?.disabledCore ?? []}
-        customRows={(moduleData?.customRows ?? []) as any}
-        roles={roleList}
-      />
+        <ModulesCard
+          eventTypeId={eventTypeId}
+          active={active}
+          disabledCore={moduleData?.disabledCore ?? []}
+          customRows={(moduleData?.customRows ?? []) as any}
+          roles={roleList}
+        />
+      </Narrow>
 
       {gridModules.length === 0 ? (
-        <View className="mt-6">
-          <EmptyState
-            icon="layout"
-            title="No grid modules active"
-            message="Turn on a module above to start building."
-          />
-        </View>
+        <Narrow>
+          <View className="mt-6">
+            <EmptyState
+              icon="layout"
+              title="No grid modules active"
+              message="Turn on a module above to start building."
+            />
+          </View>
+        </Narrow>
       ) : (
         gridModules.map((m) => (
           <View key={m.key}>
