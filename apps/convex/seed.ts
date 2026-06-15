@@ -20,6 +20,7 @@ import {
   DEFAULT_COLUMNS,
   DAY_MS,
   DAY_OFFSET_MODULES,
+  VOLUNTEER_TEAM_OPTIONS,
   computeDueDate,
   defaultStatusValue,
   type ModuleKey,
@@ -628,6 +629,232 @@ export const ensureChapters = mutation({
     }
 
     return { chapterId, created: true, templatesSeeded: false };
+  },
+});
+
+/**
+ * Dev-only reseed (no auth) of "The New York Chapter" for demoing. Cascade-
+ * deletes the chapter's existing events/templates/docs/site-map data, rebuilds
+ * the templates from `buildChapterRolesAndTemplates` (so they pick up the latest
+ * DEFAULT_COLUMNS — incl. Expectations' new Owner + How-To columns), ensures a
+ * handful of people, then instantiates one sample Eden event populated with
+ * volunteers-on-teams + a site map (shapes + placements) so the share page /
+ * site map / crew / Expectations surfaces are visibly demoable.
+ *
+ * Runnable with `npx convex run seed:reseedNyDemo`. Creates the chapter if it's
+ * missing (mirrors `ensureChapters`). Needs at least one `users` row for
+ * template `createdBy` / event creator.
+ */
+export const reseedNyDemo = mutation({
+  args: {},
+  handler: async (ctx) => {
+    const now = Date.now();
+
+    // ── Chapter (create if missing, mirroring ensureChapters) ────────────────
+    let chapter = await ctx.db
+      .query("chapters")
+      .withIndex("by_slug", (q: any) => q.eq("slug", NEW_YORK_CHAPTER_SLUG))
+      .first();
+    if (!chapter) {
+      const chapterId = (await ctx.db.insert("chapters", {
+        name: NEW_YORK_CHAPTER_NAME,
+        slug: NEW_YORK_CHAPTER_SLUG,
+        isActive: true,
+        createdAt: now,
+      })) as Id<"chapters">;
+      chapter = await ctx.db.get(chapterId);
+    }
+    const nyChapterId = chapter!._id as Id<"chapters">;
+
+    const firstUser = await ctx.db.query("users").first();
+    if (!firstUser) {
+      return { ok: false, reason: "no users — sign in once, then re-run" };
+    }
+
+    // ── Cascade-delete the chapter's existing content ────────────────────────
+    const events = await ctx.db
+      .query("events")
+      .withIndex("by_chapter", (q: any) => q.eq("chapterId", nyChapterId))
+      .collect();
+    for (const e of events) {
+      const byEvent = (table: string) =>
+        ctx.db
+          .query(table as any)
+          .withIndex("by_event", (q: any) => q.eq("eventId", e._id))
+          .collect();
+      for (const t of await byEvent("eventItems")) await ctx.db.delete(t._id);
+      for (const c of await byEvent("eventColumns")) await ctx.db.delete(c._id);
+      for (const r of await byEvent("roleAssignments"))
+        await ctx.db.delete(r._id);
+      for (const r of await byEvent("eventRoles")) await ctx.db.delete(r._id);
+      for (const m of await byEvent("eventModules")) await ctx.db.delete(m._id);
+      for (const g of await byEvent("engagements")) await ctx.db.delete(g._id);
+      for (const s of await byEvent("siteMarkers")) await ctx.db.delete(s._id);
+      for (const s of await byEvent("siteShapes")) await ctx.db.delete(s._id);
+      for (const p of await byEvent("siteMapPlacements"))
+        await ctx.db.delete(p._id);
+      await ctx.db.delete(e._id);
+    }
+
+    for (const d of await ctx.db
+      .query("docs")
+      .withIndex("by_chapter", (q: any) => q.eq("chapterId", nyChapterId))
+      .collect())
+      await ctx.db.delete(d._id);
+
+    const types = await ctx.db
+      .query("eventTypes")
+      .withIndex("by_chapter", (q: any) => q.eq("chapterId", nyChapterId))
+      .collect();
+    for (const t of types) {
+      for (const c of await ctx.db
+        .query("templateColumns")
+        .withIndex("by_eventType", (q: any) => q.eq("eventTypeId", t._id))
+        .collect())
+        await ctx.db.delete(c._id);
+      for (const it of await ctx.db
+        .query("templateItems")
+        .withIndex("by_eventType", (q: any) => q.eq("eventTypeId", t._id))
+        .collect())
+        await ctx.db.delete(it._id);
+      for (const r of await ctx.db
+        .query("templateRoles")
+        .withIndex("by_template", (q: any) => q.eq("eventTypeId", t._id))
+        .collect())
+        await ctx.db.delete(r._id);
+      for (const m of await ctx.db
+        .query("templateModules")
+        .withIndex("by_template", (q: any) => q.eq("eventTypeId", t._id))
+        .collect())
+        await ctx.db.delete(m._id);
+      await ctx.db.delete(t._id);
+    }
+
+    // ── Rebuild templates (picks up the latest DEFAULT_COLUMNS) ───────────────
+    const { edenId } = await buildChapterRolesAndTemplates(
+      ctx,
+      nyChapterId,
+      firstUser._id as Id<"users">,
+      now,
+    );
+
+    // ── People (ensure ~5) ───────────────────────────────────────────────────
+    let people = await ctx.db
+      .query("people")
+      .withIndex("by_chapter", (q: any) => q.eq("chapterId", nyChapterId))
+      .collect();
+    if (people.length < 5) {
+      const seed = [
+        { name: "Ada Okafor", vettingStatus: "vetted" as const },
+        { name: "Ben Carter", vettingStatus: "vetted" as const },
+        { name: "Chloe Martins", vettingStatus: "pending" as const },
+        { name: "Diego Ramos", vettingStatus: "pending" as const },
+        { name: "Esi Mensah", vettingStatus: "vetted" as const },
+      ];
+      for (const p of seed) {
+        await ctx.db.insert("people", {
+          chapterId: nyChapterId,
+          name: p.name,
+          vettingStatus: p.vettingStatus,
+          isActive: true,
+          createdAt: now,
+        });
+      }
+      people = await ctx.db
+        .query("people")
+        .withIndex("by_chapter", (q: any) => q.eq("chapterId", nyChapterId))
+        .collect();
+    }
+    const peopleIds = people.map((p: any) => p._id as Id<"people">);
+
+    // ── Sample Eden event (~30 days out) ─────────────────────────────────────
+    const edenType = await ctx.db.get(edenId);
+    const edenEventId = await instantiateEvent(ctx, {
+      eventType: edenType,
+      chapterId: nyChapterId,
+      userId: firstUser._id as Id<"users">,
+      name: "Eden — Central Park Great Lawn",
+      eventDate: now + 30 * DAY_MS,
+      location: "Central Park, Great Lawn",
+      budget: 1200,
+      now,
+    });
+
+    // ── Volunteers on teams (~4 engagements; one on two teams) ───────────────
+    const teamValues = VOLUNTEER_TEAM_OPTIONS.map((t) => t.value);
+    const engagementSpecs: { personId: Id<"people">; teams: string[] }[] = [
+      { personId: peopleIds[0], teams: [teamValues[0], teamValues[2]] }, // flower + welcome
+      { personId: peopleIds[1], teams: [teamValues[1]] }, // food_bev
+      { personId: peopleIds[2], teams: [teamValues[3]] }, // prayer
+      { personId: peopleIds[3], teams: [teamValues[4]] }, // content
+    ];
+    const engagementIds: Id<"engagements">[] = [];
+    for (const spec of engagementSpecs) {
+      const id = (await ctx.db.insert("engagements", {
+        chapterId: nyChapterId,
+        eventId: edenEventId,
+        personId: spec.personId,
+        type: "volunteer" as const,
+        teams: spec.teams,
+        status: "confirmed" as const,
+        createdAt: now,
+      })) as Id<"engagements">;
+      engagementIds.push(id);
+    }
+
+    // ── Site map: a couple shapes + two volunteer placements ──────────────────
+    await ctx.db.insert("siteShapes", {
+      chapterId: nyChapterId,
+      eventId: edenEventId,
+      type: "rect" as const,
+      x: 0.35,
+      y: 0.15,
+      w: 0.3,
+      h: 0.15,
+      color: "amber",
+      label: "Stage",
+      createdAt: now,
+    });
+    await ctx.db.insert("siteShapes", {
+      chapterId: nyChapterId,
+      eventId: edenEventId,
+      type: "circle" as const,
+      x: 0.1,
+      y: 0.7,
+      w: 0.12,
+      h: 0.12,
+      color: "teal",
+      label: "Check-in",
+      createdAt: now,
+    });
+    await ctx.db.insert("siteMapPlacements", {
+      chapterId: nyChapterId,
+      eventId: edenEventId,
+      kind: "volunteer" as const,
+      refId: String(engagementIds[0]),
+      x: 0.4,
+      y: 0.55,
+      createdAt: now,
+    });
+    await ctx.db.insert("siteMapPlacements", {
+      chapterId: nyChapterId,
+      eventId: edenEventId,
+      kind: "volunteer" as const,
+      refId: String(engagementIds[1]),
+      x: 0.6,
+      y: 0.6,
+      createdAt: now,
+    });
+
+    return {
+      ok: true,
+      chapterId: nyChapterId,
+      edenEventId,
+      eventsDeleted: events.length,
+      templatesDeleted: types.length,
+      people: peopleIds.length,
+      engagements: engagementIds.length,
+    };
   },
 });
 
