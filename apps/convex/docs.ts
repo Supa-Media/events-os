@@ -203,6 +203,10 @@ export const getPublic = query({
     if (!doc) return null;
     if (doc.visibility === "internal") return null;
     return {
+      // The doc id is not sensitive — it's needed to open the auth-gated editor
+      // (`/doc/<docId>`) from the public preview's Edit button. The (app) auth
+      // guard still gates whether the caller can actually open it.
+      _id: doc._id,
       kind: doc.kind,
       title: doc.title,
       url: doc.url ?? null,

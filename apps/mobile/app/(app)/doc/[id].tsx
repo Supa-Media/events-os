@@ -36,10 +36,14 @@ const DOC_KINDS: Array<{
  */
 export default function DocEditorScreen() {
   const router = useRouter();
-  const { id, ownerItem, ownerCol } = useLocalSearchParams<{
+  const { id, ownerItem, ownerCol, from } = useLocalSearchParams<{
     id: string;
     ownerItem?: string;
     ownerCol?: string;
+    // The route this doc was opened from. Used by the back button to return
+    // there reliably, since the copy-on-write fork's `router.replace` rewrites
+    // history and breaks `router.back()`. Preserved across that replace.
+    from?: string;
   }>();
 
   // The doc currently being edited. Starts at the route id, but a copy-on-write
@@ -128,11 +132,13 @@ export default function DocEditorScreen() {
         });
         hasForkedRef.current = true;
         setActiveDocId(res._id);
-        router.replace(
+        // Preserve `from` so the back button still returns to the origin after
+        // the fork rewrites history.
+        const forkUrl =
           `/doc/${res._id}?ownerItem=${ownerItem}&ownerCol=${encodeURIComponent(
             ownerCol as string,
-          )}` as any,
-        );
+          )}` + (from ? `&from=${encodeURIComponent(from as string)}` : "");
+        router.replace(forkUrl as any);
         await update({ docId: res._id as any, ...patch });
         return res._id;
       } finally {
@@ -206,7 +212,14 @@ export default function DocEditorScreen() {
       {/* Header: back + title + share */}
       <View className="mb-4 flex-row items-center gap-2">
         <Pressable
-          onPress={() => router.back()}
+          onPress={() => {
+            // Return to the origin route if we know it (replace, so we don't
+            // stack a duplicate history entry); otherwise fall back to normal
+            // back, then home.
+            if (from) router.replace(decodeURIComponent(from as string) as any);
+            else if (router.canGoBack()) router.back();
+            else router.replace("/" as any);
+          }}
           hitSlop={8}
           className="rounded-md p-1.5 active:bg-sunken web:hover:bg-sunken"
         >

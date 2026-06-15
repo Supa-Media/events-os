@@ -1,5 +1,5 @@
 import { View, Text, ScrollView, Pressable, Linking } from "react-native";
-import { Stack, useLocalSearchParams } from "expo-router";
+import { Stack, useLocalSearchParams, useRouter } from "expo-router";
 import { useQuery } from "convex/react";
 import { api } from "@events-os/convex/_generated/api";
 import { Icon } from "../../components/ui";
@@ -22,6 +22,7 @@ import { colors } from "../../lib/theme";
  * button out to the URL. No chapter data is ever exposed.
  */
 export default function DocShareScreen() {
+  const router = useRouter();
   const { shareId } = useLocalSearchParams<{ shareId: string }>();
   const doc = useQuery(api.docs.getPublic, { shareId: shareId as string });
 
@@ -61,6 +62,21 @@ export default function DocShareScreen() {
   return (
     <>
       <Stack.Screen options={{ headerShown: false }} />
+      {/* Small header with an Edit button → the auth-gated editor for this doc.
+          If the viewer isn't logged in / lacks access, the (app) auth guard
+          handles login / access-denied; with access they land in the editor. */}
+      <View
+        className="flex-row items-center justify-end border-b border-border px-5 py-3"
+        style={{ backgroundColor: colors.surface }}
+      >
+        <Pressable
+          onPress={() => router.push(`/doc/${doc._id}` as any)}
+          className="flex-row items-center gap-1.5 rounded-md border border-border px-3 py-1.5 active:bg-sunken web:hover:bg-sunken"
+        >
+          <Icon name="edit-2" size={14} color={colors.muted} />
+          <Text className="text-sm font-medium text-muted">Edit</Text>
+        </Pressable>
+      </View>
       <ScrollView
         style={{ flex: 1, backgroundColor: colors.surface }}
         contentContainerStyle={{

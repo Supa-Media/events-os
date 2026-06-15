@@ -17,7 +17,7 @@ import {
   ActivityIndicator,
   Linking,
 } from "react-native";
-import { useRouter } from "expo-router";
+import { useRouter, usePathname } from "expo-router";
 import { useMutation, useQuery } from "convex/react";
 import { api } from "@events-os/convex/_generated/api";
 // expo-image-picker is Expo Go-safe (classified `core`); only used on native.
@@ -729,6 +729,9 @@ function HowToKindMenu({
 
 function HowToCell({ value, editable, onChange, mode, eventItemId, colKey }: any) {
   const router = useRouter();
+  // The route the doc is being opened from, so the editor's back button can
+  // return here even after the copy-on-write fork rewrites history.
+  const pathname = usePathname();
   const { ref, anchor, visible, open, close } = useAnchor();
   const docId = typeof value === "string" && value.length > 0 ? value : null;
   const doc = useQuery(api.docs.get, docId ? { docId: docId as any } : "skip");
@@ -798,7 +801,10 @@ function HowToCell({ value, editable, onChange, mode, eventItemId, colKey }: any
                     scope: isEvent ? "event" : "template",
                   });
                   onChange(res._id);
-                  if (k.value === "markdown") router.push(`/doc/${res._id}` as any);
+                  if (k.value === "markdown")
+                    router.push(
+                      `/doc/${res._id}?from=${encodeURIComponent(pathname)}` as any,
+                    );
                 }}
                 className="flex-row items-center gap-2 px-3 py-2 active:bg-sunken web:hover:bg-sunken"
               >
@@ -887,10 +893,11 @@ function HowToCell({ value, editable, onChange, mode, eventItemId, colKey }: any
   // Markdown → title + Open (navigates to the doc editor screen). Event cells
   // carry owner context so the editor can fork-on-first-edit (copy-on-write);
   // template cells navigate plain so they always edit the master in place.
+  const fromParam = `from=${encodeURIComponent(pathname)}`;
   const markdownHref =
     isEvent && eventItemId && colKey
-      ? `/doc/${docId}?ownerItem=${eventItemId}&ownerCol=${encodeURIComponent(colKey)}`
-      : `/doc/${docId}`;
+      ? `/doc/${docId}?ownerItem=${eventItemId}&ownerCol=${encodeURIComponent(colKey)}&${fromParam}`
+      : `/doc/${docId}?${fromParam}`;
   return (
     <View className="flex-1 flex-row items-center px-1">
       <Pressable
