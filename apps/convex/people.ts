@@ -40,7 +40,16 @@ export const list = query({
       .query("people")
       .withIndex("by_chapter", (q: any) => q.eq("chapterId", chapterId))
       .collect();
-    return people.sort((a: any, b: any) => a.name.localeCompare(b.name));
+    const sorted = people.sort((a: any, b: any) =>
+      a.name.localeCompare(b.name),
+    );
+    // Resolve each profile photo storageId to a servable URL for display.
+    return await Promise.all(
+      sorted.map(async (p: any) => ({
+        ...p,
+        imageUrl: p.image ? await ctx.storage.getUrl(p.image) : null,
+      })),
+    );
   },
 });
 
@@ -93,6 +102,8 @@ export const create = mutation({
     company: v.optional(v.string()),
     usualRateUsd: v.optional(v.number()),
     isTeamMember: v.optional(v.boolean()),
+    image: v.optional(v.id("_storage")),
+    socialLink: v.optional(v.string()),
   },
   handler: async (ctx, args) => {
     const chapterId = await requireChapterId(ctx);
@@ -115,6 +126,8 @@ export const create = mutation({
       company: args.company,
       usualRateUsd: args.usualRateUsd,
       isTeamMember: args.isTeamMember,
+      image: args.image,
+      socialLink: args.socialLink,
       isActive: status !== "inactive",
       createdAt: Date.now(),
     });
@@ -142,6 +155,8 @@ export const update = mutation({
     commsPreferences: v.optional(v.union(v.array(v.string()), v.null())),
     pwEmail: v.optional(v.union(v.string(), v.null())),
     company: v.optional(v.union(v.string(), v.null())),
+    image: v.optional(v.union(v.id("_storage"), v.null())),
+    socialLink: v.optional(v.union(v.string(), v.null())),
   },
   handler: async (ctx, { personId, ...patch }) => {
     const chapterId = await requireChapterId(ctx);

@@ -76,11 +76,11 @@ export const eventContext = internalQuery({
 
     const roles = (
       await ctx.db
-        .query("roles")
-        .withIndex("by_chapter", (q: any) => q.eq("chapterId", event.chapterId))
+        .query("eventRoles")
+        .withIndex("by_event", (q: any) => q.eq("eventId", eventId))
         .collect()
     )
-      .filter((r: any) => !r.isArchived)
+      .sort((a: any, b: any) => a.order - b.order)
       .map((r: any) => ({ id: r._id, key: r.key, label: r.label }));
 
     const people = (
@@ -352,7 +352,7 @@ export const createItem = internalMutation({
     module: v.string(),
     title: v.string(),
     status: v.optional(v.string()),
-    roleId: v.optional(v.id("roles")),
+    roleId: v.optional(v.id("eventRoles")),
     offsetDays: v.optional(v.number()),
     fields: v.optional(v.record(v.string(), v.any())),
   },
@@ -458,6 +458,50 @@ export const newThread = mutation({
     return await ctx.db.insert("aiThreads", {
       chapterId: chapterId as Id<"chapters">,
       eventId,
+      userId,
+      title: "New chat",
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    });
+  },
+});
+
+/** The most recent thread for a How-To doc, creating one if none exists. */
+export const ensureDocThread = mutation({
+  args: { docId: v.id("docs") },
+  handler: async (ctx, { docId }) => {
+    const chapterId = await requireChapterId(ctx);
+    const doc = await ctx.db.get(docId);
+    await requireInChapter(ctx, chapterId, doc, "Doc");
+    const existing = await ctx.db
+      .query("aiThreads")
+      .withIndex("by_doc", (q: any) => q.eq("docId", docId))
+      .order("desc")
+      .first();
+    if (existing) return existing._id;
+    const userId = (await requireUserId(ctx)) as Id<"users">;
+    return await ctx.db.insert("aiThreads", {
+      chapterId: chapterId as Id<"chapters">,
+      docId,
+      userId,
+      title: "New chat",
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    });
+  },
+});
+
+/** Start a fresh thread for a How-To doc (the "New chat" button). */
+export const newDocThread = mutation({
+  args: { docId: v.id("docs") },
+  handler: async (ctx, { docId }) => {
+    const chapterId = await requireChapterId(ctx);
+    const doc = await ctx.db.get(docId);
+    await requireInChapter(ctx, chapterId, doc, "Doc");
+    const userId = (await requireUserId(ctx)) as Id<"users">;
+    return await ctx.db.insert("aiThreads", {
+      chapterId: chapterId as Id<"chapters">,
+      docId,
       userId,
       title: "New chat",
       createdAt: Date.now(),

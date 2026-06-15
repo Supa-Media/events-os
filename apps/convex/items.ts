@@ -84,7 +84,7 @@ export const addTemplateItem = mutation({
     title: v.optional(v.string()),
     offsetDays: v.optional(v.number()),
     offsetMinutes: v.optional(v.number()),
-    roleId: v.optional(v.id("roles")),
+    roleId: v.optional(v.id("templateRoles")),
     status: v.optional(v.string()),
     fields: fieldsValidator,
   },
@@ -120,7 +120,7 @@ export const updateTemplateItem = mutation({
     title: v.optional(v.string()),
     offsetDays: v.optional(v.number()),
     offsetMinutes: v.optional(v.number()),
-    roleId: v.optional(v.union(v.id("roles"), v.null())),
+    roleId: v.optional(v.union(v.id("templateRoles"), v.null())),
     status: v.optional(v.union(v.string(), v.null())),
     fields: fieldsValidator,
   },
@@ -140,6 +140,31 @@ export const updateTemplateItem = mutation({
     if (patch.fields !== undefined)
       fields.fields = mergeFields(item.fields, patch.fields);
     await ctx.db.patch(itemId, fields);
+    await bumpVersion(ctx, item.eventTypeId);
+    return itemId;
+  },
+});
+
+/**
+ * Toggle whether a column on a template item is marked "pre-plan" (a cell that
+ * needs explicit sign-off before the event). Marks live on the templateItem's
+ * `prePlanColumns`; they clone onto every event spun up from the template.
+ */
+export const toggleTemplatePrePlan = mutation({
+  args: { itemId: v.id("templateItems"), colKey: v.string() },
+  handler: async (ctx, { itemId, colKey }) => {
+    const chapterId = await requireChapterId(ctx);
+    const item = await ctx.db.get(itemId);
+    if (!item) return itemId;
+    const et = await ctx.db.get(item.eventTypeId);
+    await requireInChapter(ctx, chapterId, et, "Event type");
+    const current = item.prePlanColumns ?? [];
+    const next = current.includes(colKey)
+      ? current.filter((k: string) => k !== colKey)
+      : [...current, colKey];
+    await ctx.db.patch(itemId, {
+      prePlanColumns: next.length > 0 ? next : undefined,
+    });
     await bumpVersion(ctx, item.eventTypeId);
     return itemId;
   },
@@ -222,7 +247,7 @@ export const listForEventModule = query({
       rawItems.map(async (it: any) => {
         let roleLabel: string | null = null;
         if (it.roleId) {
-          const role = await ctx.db.get(it.roleId as Id<"roles">);
+          const role = await ctx.db.get(it.roleId as Id<"eventRoles">);
           roleLabel = role?.label ?? null;
         }
         // Explicit owner wins; otherwise inherit the person holding the role.
@@ -259,7 +284,7 @@ export const addEventItem = mutation({
     title: v.optional(v.string()),
     offsetDays: v.optional(v.number()),
     offsetMinutes: v.optional(v.number()),
-    roleId: v.optional(v.id("roles")),
+    roleId: v.optional(v.id("eventRoles")),
     ownerPersonId: v.optional(v.id("people")),
     status: v.optional(v.string()),
     fields: fieldsValidator,
@@ -301,7 +326,7 @@ export const updateEventItem = mutation({
     title: v.optional(v.string()),
     offsetDays: v.optional(v.number()),
     offsetMinutes: v.optional(v.number()),
-    roleId: v.optional(v.union(v.id("roles"), v.null())),
+    roleId: v.optional(v.union(v.id("eventRoles"), v.null())),
     ownerPersonId: v.optional(v.union(v.id("people"), v.null())),
     status: v.optional(v.union(v.string(), v.null())),
     fields: fieldsValidator,
@@ -346,6 +371,33 @@ export const setStatus = mutation({
       "Event",
     );
     await ctx.db.patch(itemId, { status: status ?? undefined });
+    return itemId;
+  },
+});
+
+/**
+ * Tick / untick a pre-plan cell on an event item. `colKey` must be one of the
+ * item's `prePlanColumns` (the template author's marks). Toggling adds/removes
+ * the key in `prePlanChecked`; pre-plan% = checked ÷ marked across the event.
+ */
+export const togglePrePlanChecked = mutation({
+  args: { itemId: v.id("eventItems"), colKey: v.string() },
+  handler: async (ctx, { itemId, colKey }) => {
+    const chapterId = await requireChapterId(ctx);
+    const item = await ctx.db.get(itemId);
+    if (!item) return itemId;
+    const event = await ctx.db.get(item.eventId);
+    await requireInChapter(ctx, chapterId, event, "Event");
+    // Only checkable if the cell was actually marked pre-plan on this row.
+    const marked = item.prePlanColumns ?? [];
+    if (!marked.includes(colKey)) return itemId;
+    const current = item.prePlanChecked ?? [];
+    const next = current.includes(colKey)
+      ? current.filter((k: string) => k !== colKey)
+      : [...current, colKey];
+    await ctx.db.patch(itemId, {
+      prePlanChecked: next.length > 0 ? next : undefined,
+    });
     return itemId;
   },
 });

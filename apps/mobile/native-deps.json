@@ -23,7 +23,8 @@
     "@react-native-community/netinfo",
     "react-native-gesture-handler",
     "react-native-reanimated",
-    "react-native-worklets"
+    "react-native-worklets",
+    "react-native-webview"
   ],
   "gated": []
 }

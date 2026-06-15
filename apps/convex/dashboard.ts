@@ -5,9 +5,9 @@
  * average readiness, roster size, recent throughput, and the next event.
  */
 import { query } from "./_generated/server";
-import { v } from "convex/values";
-import { computeReadiness, isCompleteStatus, DAY_MS } from "@events-os/shared";
+import { currentPhase, DAY_MS } from "@events-os/shared";
 import { getChapterIdOrNull } from "./lib/context";
+import { phaseReadiness } from "./lib/readiness";
 
 const EMPTY = {
   upcomingCount: 0,
@@ -38,34 +38,23 @@ export const summary = query({
       .filter((e: any) => e.eventDate >= now && e.status !== "cancelled")
       .sort((a: any, b: any) => a.eventDate - b.eventDate);
 
-    // Per-upcoming-event readiness, off the planning-doc module.
+    // Per-upcoming-event readiness = that event's CURRENT-phase score (by date),
+    // as a 0–100 integer. Events whose current phase has no items to measure
+    // (null) are excluded from the average so they don't drag it to 0.
     const readinessByEvent = await Promise.all(
       upcoming.map(async (event: any) => {
-        const items = await ctx.db
-          .query("eventItems")
-          .withIndex("by_event_module", (q: any) =>
-            q.eq("eventId", event._id).eq("module", "planning_doc"),
-          )
-          .collect();
-        const statusCol = await ctx.db
-          .query("eventColumns")
-          .withIndex("by_event_module", (q: any) =>
-            q.eq("eventId", event._id).eq("module", "planning_doc"),
-          )
-          .filter((q: any) => q.eq(q.field("key"), "status"))
-          .first();
-        const opts = statusCol?.options;
-        const done = items.filter((it: any) =>
-          isCompleteStatus(opts, it.status),
-        ).length;
-        return computeReadiness(items.length, done);
+        const phases = await phaseReadiness(ctx, event);
+        const score = phases[currentPhase(event.eventDate, now)];
+        return score == null ? null : Math.round(score * 100);
       }),
     );
+    const measured = readinessByEvent.filter(
+      (r): r is number => r != null,
+    );
     const avgReadiness =
-      readinessByEvent.length > 0
+      measured.length > 0
         ? Math.round(
-            readinessByEvent.reduce((sum, r) => sum + r, 0) /
-              readinessByEvent.length,
+            measured.reduce((sum, r) => sum + r, 0) / measured.length,
           )
         : 0;
 
@@ -84,7 +73,8 @@ export const summary = query({
         ? {
             name: upcoming[0].name,
             eventDate: upcoming[0].eventDate,
-            readiness: readinessByEvent[0],
+            // Current-phase score of the soonest event (0 when unmeasured).
+            readiness: readinessByEvent[0] ?? 0,
           }
         : null;
 

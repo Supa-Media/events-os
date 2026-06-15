@@ -1,5 +1,6 @@
 import { Platform, Text, View } from "react-native";
 import { readinessColor } from "../../lib/theme";
+import { PHASE_KEYS, PHASE_LABELS, type PhaseScores } from "@events-os/shared";
 
 /**
  * Readiness shown as a colored % chip. Color follows the value
@@ -31,13 +32,15 @@ export function ReadinessRing({
   value,
   size = 72,
 }: {
-  value: number;
+  /** 0–100, or null for an unmeasured phase (renders a dim "—"). */
+  value: number | null;
   size?: number;
 }) {
-  const color = readinessColor(value);
   const track = "#EFE0DC";
+  const color = value == null ? track : readinessColor(value);
   const thickness = Math.round(size * 0.13);
   const inner = size - thickness * 2;
+  const sweep = value == null ? 0 : value * 3.6;
 
   const ringStyle: any =
     Platform.OS === "web"
@@ -46,7 +49,7 @@ export function ReadinessRing({
           height: size,
           borderRadius: size / 2,
           // web-only CSS gradient — react-native-web passes it straight through.
-          backgroundImage: `conic-gradient(${color} ${value * 3.6}deg, ${track} ${value * 3.6}deg)`,
+          backgroundImage: `conic-gradient(${color} ${sweep}deg, ${track} ${sweep}deg)`,
         }
       : {
           width: size,
@@ -62,10 +65,43 @@ export function ReadinessRing({
         style={{ width: inner, height: inner, borderRadius: inner / 2 }}
         className="items-center justify-center bg-raised"
       >
-        <Text className="font-bold text-ink" style={{ fontSize: size * 0.26 }}>
-          {value}%
+        <Text
+          className={value == null ? "font-bold text-faint" : "font-bold text-ink"}
+          style={{ fontSize: size * (value == null ? 0.3 : 0.26) }}
+        >
+          {value == null ? "—" : `${value}%`}
         </Text>
       </View>
+    </View>
+  );
+}
+
+/**
+ * The four phase scores as a compact row of small labeled rings — the event
+ * header's headline readiness signal. Each value is 0..1 or null; null renders
+ * "—" so an empty phase doesn't read as "0% ready".
+ */
+export function PhaseBreakdown({
+  phases,
+  size = 52,
+}: {
+  phases: PhaseScores;
+  size?: number;
+}) {
+  return (
+    <View className="flex-row flex-wrap items-start gap-x-5 gap-y-2">
+      {PHASE_KEYS.map((key) => {
+        const score = phases[key];
+        const pct = score == null ? null : Math.round(score * 100);
+        return (
+          <View key={key} className="items-center gap-1">
+            <ReadinessRing value={pct} size={size} />
+            <Text className="text-2xs font-bold uppercase tracking-wider text-muted">
+              {PHASE_LABELS[key]}
+            </Text>
+          </View>
+        );
+      })}
     </View>
   );
 }

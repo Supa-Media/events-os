@@ -1,6 +1,6 @@
 // Events OS UI kit — NativeWind components built on the brand token system.
 export { Icon, type IconName } from "./Icon";
-export { Screen } from "./Screen";
+export { Screen, Narrow, FULL_WIDTH, NARROW_WIDTH } from "./Screen";
 export { AppShell } from "./AppShell";
 export { SidebarNavItem } from "./SidebarNav";
 export { PageHeader } from "./PageHeader";
@@ -9,7 +9,7 @@ export { Button } from "./Button";
 export { Badge, type BadgeTone } from "./Badge";
 export { Pill } from "./Pill";
 export { Avatar } from "./Avatar";
-export { ReadinessBadge, ReadinessRing, ReadinessBar } from "./Readiness";
+export { ReadinessBadge, ReadinessRing, ReadinessBar, PhaseBreakdown } from "./Readiness";
 export { Field, TextField, Select } from "./Field";
 export { EmptyState } from "./EmptyState";
 export { SectionHeader } from "./SectionHeader";
@@ -17,5 +17,11 @@ export { Table, TableHeader, HeaderCell, Row, Cell } from "./Table";
 export { PersonPicker } from "./PersonPicker";
 export { RolePicker } from "./RolePicker";
 export { Popover } from "./Popover";
+export {
+  ContextMenu,
+  measureAnchor,
+  type ContextMenuAction,
+  type ContextMenuAnchor,
+} from "./ContextMenu";
 export { OptionTag } from "./OptionTag";
 export { statusTone } from "./status";

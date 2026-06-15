@@ -8,10 +8,19 @@ import { Id } from "../_generated/dataModel";
 import {
   DEFAULT_COLUMNS,
   DAY_OFFSET_MODULES,
+  DEFAULT_ROLES,
   computeDueDate,
   defaultStatusValue,
+  resolveActiveModules,
+  type ColumnDef,
   type ModuleKey,
+  type CustomModule,
+  type ScopeModuleState,
+  type ResolvedModule,
 } from "@events-os/shared";
+
+/** A role seed: a stable key + display label + optional description. */
+type RoleSeedLike = { key: string; label: string; description?: string };
 import { findUnlinkedPersonByLoginEmail, claimFields } from "./people";
 
 /** Kebab-case slug from a display name. */
@@ -40,15 +49,17 @@ export async function bumpVersion(ctx: any, eventTypeId: Id<"eventTypes">) {
 }
 
 /**
- * Seed a template module with its default columns (from shared DEFAULT_COLUMNS).
- * Used when a from-scratch template turns a module/component on.
+ * Seed a template module's columns. Defaults to the core module's shared
+ * DEFAULT_COLUMNS, but a custom module passes its own `columns`
+ * (DEFAULT_CUSTOM_COLUMNS). Used when a module is turned on / created.
  */
 export async function seedModuleColumns(
   ctx: any,
   eventTypeId: Id<"eventTypes">,
-  module: ModuleKey,
+  module: string,
+  columns?: ColumnDef[],
 ) {
-  const defaults = DEFAULT_COLUMNS[module] ?? [];
+  const defaults = columns ?? DEFAULT_COLUMNS[module as ModuleKey] ?? [];
   for (let i = 0; i < defaults.length; i++) {
     const c = defaults[i];
     await ctx.db.insert("templateColumns", {
@@ -66,8 +77,143 @@ export async function seedModuleColumns(
   }
 }
 
+/** Map a templateModules / eventModules row to a shared CustomModule. */
+function toCustomModule(row: any): CustomModule {
+  return {
+    key: row.key,
+    label: row.label,
+    surface: "grid",
+    ownerRoleKey: row.ownerRoleKey,
+    offsetMode: row.offsetMode ?? "none",
+    order: row.order,
+    isActive: row.isActive,
+  };
+}
+
+/** Build a template's module-delta state for `resolveActiveModules`. */
+export async function templateModuleState(
+  ctx: any,
+  eventType: any,
+): Promise<ScopeModuleState> {
+  const rows = await ctx.db
+    .query("templateModules")
+    .withIndex("by_template", (q: any) => q.eq("eventTypeId", eventType._id))
+    .collect();
+  return {
+    disabledCoreModules: eventType.disabledCoreModules ?? [],
+    coreModuleOverrides: eventType.coreModuleOverrides ?? [],
+    customModules: rows.map(toCustomModule),
+  };
+}
+
+/** Build an event's module-delta state for `resolveActiveModules`. */
+export async function eventModuleState(
+  ctx: any,
+  event: any,
+): Promise<ScopeModuleState> {
+  const rows = await ctx.db
+    .query("eventModules")
+    .withIndex("by_event", (q: any) => q.eq("eventId", event._id))
+    .collect();
+  return {
+    disabledCoreModules: event.disabledCoreModules ?? [],
+    coreModuleOverrides: event.coreModuleOverrides ?? [],
+    customModules: rows.map(toCustomModule),
+  };
+}
+
+/** Resolved active modules for a template. */
+export async function templateActiveModules(
+  ctx: any,
+  eventType: any,
+): Promise<ResolvedModule[]> {
+  return resolveActiveModules(await templateModuleState(ctx, eventType));
+}
+
+/** Resolved active modules for an event. */
+export async function eventActiveModules(
+  ctx: any,
+  event: any,
+): Promise<ResolvedModule[]> {
+  return resolveActiveModules(await eventModuleState(ctx, event));
+}
+
+/** The roster person for a user in a chapter, or null (no insert). */
+export async function getPersonForUser(
+  ctx: any,
+  chapterId: Id<"chapters">,
+  userId: Id<"users">,
+): Promise<Id<"people"> | null> {
+  const existing = await ctx.db
+    .query("people")
+    .withIndex("by_user", (q: any) => q.eq("userId", userId))
+    .first();
+  if (existing && existing.chapterId === chapterId)
+    return existing._id as Id<"people">;
+  return null;
+}
+
 function isDayOffsetModule(module: string): boolean {
   return DAY_OFFSET_MODULES.includes(module as ModuleKey);
+}
+
+/**
+ * Seed a template's roles from a seed list (defaults to DEFAULT_ROLES). Used on
+ * template creation. Returns the created role ids keyed by role key.
+ */
+export async function seedTemplateRoles(
+  ctx: any,
+  eventTypeId: Id<"eventTypes">,
+  seeds: RoleSeedLike[] = DEFAULT_ROLES,
+): Promise<Record<string, Id<"templateRoles">>> {
+  const byKey: Record<string, Id<"templateRoles">> = {};
+  for (let i = 0; i < seeds.length; i++) {
+    const r = seeds[i];
+    byKey[r.key] = (await ctx.db.insert("templateRoles", {
+      eventTypeId,
+      key: r.key,
+      label: r.label,
+      description: r.description,
+      order: i,
+      isArchived: false,
+    })) as Id<"templateRoles">;
+  }
+  return byKey;
+}
+
+/**
+ * Clone a template's roles onto an event (`templateRoles` → `eventRoles`).
+ * Returns a map from the template-role id (string) to the new event-role id, so
+ * cloned items can remap their `roleId` from the template scope to the event
+ * scope. (Keyed by id because that's what template items carry.)
+ */
+export async function cloneRolesToEvent(
+  ctx: any,
+  eventTypeId: Id<"eventTypes">,
+  eventId: Id<"events">,
+): Promise<Map<string, Id<"eventRoles">>> {
+  const templateRoles = (
+    await ctx.db
+      .query("templateRoles")
+      .withIndex("by_template", (q: any) => q.eq("eventTypeId", eventTypeId))
+      .collect()
+  )
+    .filter((r: any) => r.isArchived !== true)
+    .sort((a: any, b: any) => a.order - b.order);
+
+  const idMap = new Map<string, Id<"eventRoles">>();
+  for (let i = 0; i < templateRoles.length; i++) {
+    const r = templateRoles[i];
+    const newId = (await ctx.db.insert("eventRoles", {
+      eventId,
+      key: r.key,
+      label: r.label,
+      description: r.description,
+      order: i,
+    })) as Id<"eventRoles">;
+    idMap.set(String(r._id), newId);
+  }
+  return idMap;
 }
 
 /**
@@ -151,11 +297,36 @@ export async function instantiateEvent(
     location: opts.location,
     budget: opts.budget,
     ownerPersonId,
+    // Clone the template's core-module deltas onto the event.
+    disabledCoreModules: opts.eventType.disabledCoreModules ?? [],
+    coreModuleOverrides: opts.eventType.coreModuleOverrides ?? [],
     status: "planning",
     createdBy: opts.userId,
     createdAt: now,
     updatedAt: now,
   })) as Id<"events">;
+
+  // Clone the template's roles onto the event; remap item roleId via this map.
+  const roleIdMap = await cloneRolesToEvent(ctx, opts.eventType._id, eventId);
+
+  // Clone the template's custom modules onto the event.
+  const templateMods = await ctx.db
+    .query("templateModules")
+    .withIndex("by_template", (q: any) =>
+      q.eq("eventTypeId", opts.eventType._id),
+    )
+    .collect();
+  for (const m of templateMods) {
+    if (m.isActive === false) continue;
+    await ctx.db.insert("eventModules", {
+      eventId,
+      key: m.key,
+      label: m.label,
+      ownerRoleKey: m.ownerRoleKey,
+      offsetMode: m.offsetMode,
+      order: m.order,
+    });
+  }
 
   const cols = await ctx.db
     .query("templateColumns")
@@ -188,8 +359,21 @@ export async function instantiateEvent(
       offsetDays: it.offsetDays,
       offsetMinutes: it.offsetMinutes,
       dueDate,
-      roleId: it.roleId,
+      roleId: it.roleId ? roleIdMap.get(String(it.roleId)) : undefined,
       status: it.status ?? defaultStatusValue(it.module as ModuleKey),
+      // Carry the template author's pre-plan cell marks onto the event so they
+      // show up as check-off cells; nothing is checked yet (prePlanChecked unset).
+      prePlanColumns: it.prePlanColumns,
+      // `fields` is copied verbatim, which means any `how_to` cell's doc id is
+      // carried over by reference — the template's How-To doc (`scope:
+      // "template"`) is SHARED with every event spun up from it (and across
+      // sibling events) at clone time. This is intentional: a How-To is a
+      // canonical reference ("how to set up the PA").
+      //
+      // Editing follows a COPY-ON-WRITE model: the first edit of a shared doc
+      // from an event forks a `scope: "event"` copy and repoints that event
+      // item's cell at it (see `docs.forkForEventItem`), so the master and all
+      // sibling events keep the original. Subsequent edits land on the copy.
       fields: it.fields,
     });
   }

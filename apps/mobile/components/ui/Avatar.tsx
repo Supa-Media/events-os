@@ -1,4 +1,4 @@
-import { View, Text } from "react-native";
+import { View, Text, Image } from "react-native";
 import { palette } from "../../lib/theme";
 
 const PASTELS = [
@@ -22,8 +22,28 @@ function hash(s: string): number {
   return Math.abs(h);
 }
 
-/** Initials avatar with a deterministic pastel fill keyed off the name. */
-export function Avatar({ name, size = 28 }: { name: string; size?: number }) {
+/**
+ * Avatar — a profile photo when `uri` is given, otherwise an initials chip with
+ * a deterministic pastel fill keyed off the name.
+ */
+export function Avatar({
+  name,
+  size = 28,
+  uri,
+}: {
+  name: string;
+  size?: number;
+  uri?: string | null;
+}) {
+  if (uri) {
+    return (
+      <Image
+        source={{ uri }}
+        style={{ width: size, height: size, borderRadius: size / 2 }}
+        resizeMode="cover"
+      />
+    );
+  }
   const c = PASTELS[hash(name) % PASTELS.length];
   return (
     <View

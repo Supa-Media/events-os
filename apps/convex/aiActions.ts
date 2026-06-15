@@ -18,7 +18,7 @@ import { action } from "./_generated/server";
 import { internal, api } from "./_generated/api";
 import { Id } from "./_generated/dataModel";
 import { v, ConvexError } from "convex/values";
-import { aiCostUsd, MODULE_KEYS } from "@events-os/shared";
+import { aiCostUsd, MODULE_KEYS, HOW_TO_SYSTEM_PROMPT } from "@events-os/shared";
 
 const OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions";
 
@@ -179,13 +179,21 @@ function callCost(slug: string, usage: OpenRouterUsage): number {
   });
 }
 
-/** One OpenRouter chat-completions call (raw fetch). Tools/reasoning on by default. */
+/**
+ * One OpenRouter chat-completions call (raw fetch), reasoning on by default.
+ *
+ * Tool set is configurable: pass `opts.tools` (an array of tool defs) to enable
+ * tool-calling with that exact set. Omit it for a plain completion (no tools).
+ * Each agent passes its OWN tool set — the event agent passes `TOOLS`, the doc
+ * agent passes `DOC_TOOLS`.
+ */
 async function openRouterCall(
   slug: string,
   messages: any[],
-  opts: { tools?: boolean; maxTokens?: number } = {},
+  opts: { tools?: any[]; maxTokens?: number } = {},
 ): Promise<{ message: any; usage: OpenRouterUsage }> {
-  const useTools = opts.tools ?? true;
+  const tools = opts.tools;
+  const useTools = Array.isArray(tools) && tools.length > 0;
   const res = await fetch(OPENROUTER_URL, {
     method: "POST",
     headers: {
@@ -197,7 +205,7 @@ async function openRouterCall(
     body: JSON.stringify({
       model: slug,
       messages,
-      ...(useTools ? { tools: TOOLS, tool_choice: "auto" } : {}),
+      ...(useTools ? { tools, tool_choice: "auto" } : {}),
       reasoning: { effort: "low" },
       max_tokens: opts.maxTokens ?? 1500,
     }),
@@ -302,6 +310,72 @@ async function searchImageUrls(query: string): Promise<string[]> {
   return await openverseImageUrls(query);
 }
 
+/**
+ * Free, no-key web TEXT search via DuckDuckGo's Instant Answer API — the doc
+ * agent's research tool. Pulls the instant answer (`Abstract`/`Heading`) plus
+ * the related-topics list, flattened into up to ~5 `{ title, snippet, url }`
+ * results. Defensive: any error or empty response returns `[]`.
+ */
+async function webSearch(
+  query: string,
+): Promise<{ title: string; snippet: string; url?: string }[]> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 10_000);
+  try {
+    const res = await fetch(
+      "https://api.duckduckgo.com/?q=" +
+        encodeURIComponent(query) +
+        "&format=json&no_redirect=1&no_html=1",
+      { signal: controller.signal, headers: { "User-Agent": SEARCH_UA } },
+    );
+    if (!res.ok) return [];
+    const json: any = await res.json();
+    const results: { title: string; snippet: string; url?: string }[] = [];
+
+    const abstract =
+      (typeof json?.AbstractText === "string" && json.AbstractText) ||
+      (typeof json?.Abstract === "string" && json.Abstract) ||
+      "";
+    if (abstract.trim()) {
+      results.push({
+        title:
+          (typeof json?.Heading === "string" && json.Heading) || query,
+        snippet: abstract.trim(),
+        url:
+          typeof json?.AbstractURL === "string" && json.AbstractURL
+            ? json.AbstractURL
+            : undefined,
+      });
+    }
+
+    // RelatedTopics can be a flat list or nested groups ({ Topics: [...] }).
+    const flatten = (topics: any[]): any[] =>
+      topics.flatMap((t) =>
+        Array.isArray(t?.Topics) ? flatten(t.Topics) : [t],
+      );
+    const related = Array.isArray(json?.RelatedTopics)
+      ? flatten(json.RelatedTopics)
+      : [];
+    for (const t of related) {
+      const text = typeof t?.Text === "string" ? t.Text.trim() : "";
+      if (!text) continue;
+      results.push({
+        title: text.length > 60 ? text.slice(0, 60) + "…" : text,
+        snippet: text,
+        url:
+          typeof t?.FirstURL === "string" && t.FirstURL ? t.FirstURL : undefined,
+      });
+      if (results.length >= 5) break;
+    }
+
+    return results.slice(0, 5);
+  } catch {
+    return [];
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 /** Fetch an image URL with a ~10s timeout; return a Blob iff it's an image. */
 async function fetchImageBlob(url: string): Promise<Blob | null> {
   const controller = new AbortController();
@@ -322,7 +396,7 @@ async function fetchImageBlob(url: string): Promise<Blob | null> {
 /** The shape `internal.ai.eventContext` returns — the agent's working snapshot. */
 interface EventCtx {
   event: { id: Id<"events">; name: string; date: number; budget: number | null };
-  roles: Array<{ id: Id<"roles">; key: string; label: string }>;
+  roles: Array<{ id: Id<"eventRoles">; key: string; label: string }>;
   people: Array<{ id: Id<"people">; name: string }>;
   optionsByModule: Record<string, Record<string, string[]>>;
   items: Array<{
@@ -342,12 +416,12 @@ interface EventCtx {
 type Ctx = EventCtx;
 
 /** Resolve a role label/key to a roleId from the event context. */
-function resolveRole(context: Ctx, raw: string): Id<"roles"> | undefined {
+function resolveRole(context: Ctx, raw: string): Id<"eventRoles"> | undefined {
   const needle = raw.trim().toLowerCase();
   const hit = context.roles.find(
     (r) => r.label.toLowerCase() === needle || r.key.toLowerCase() === needle,
   );
-  return hit?.id as Id<"roles"> | undefined;
+  return hit?.id as Id<"eventRoles"> | undefined;
 }
 
 /** Resolve a person name to a personId from the roster (case-insensitive). */
@@ -630,7 +704,9 @@ export const runAssistant = action({
 
     try {
       for (let step = 0; step < MAX_STEPS; step++) {
-        const { message, usage } = await openRouterCall(slug, messages);
+        const { message, usage } = await openRouterCall(slug, messages, {
+          tools: TOOLS,
+        });
 
         const cost = callCost(slug, usage);
         totalCost += cost;
@@ -840,7 +916,7 @@ export const autofillItem = action({
             },
             { role: "user", content: info.title },
           ],
-          { tools: false, maxTokens: 16 },
+          { maxTokens: 16 },
         );
         cost += callCost(slug, usage);
         const n = parseFloat(String(message.content ?? "").replace(/[^0-9.]/g, ""));
@@ -886,6 +962,373 @@ export const autofillItem = action({
         summary: "Autofill errored",
       });
       throw err;
+    }
+  },
+});
+
+/** The most recent thread turns, as plain chat messages for model context. */
+function docHistoryTurns(
+  history: Array<{ kind: string; text?: string | null }>,
+): Array<{ role: "user" | "assistant"; content: string }> {
+  return history
+    .filter((m) => m.kind === "user" || m.kind === "assistant")
+    .map((m) => ({
+      role: m.kind === "user" ? ("user" as const) : ("assistant" as const),
+      content: m.text ?? "",
+    }));
+}
+
+/** Max model round-trips in one doc-assistant turn (research + write). */
+const DOC_MAX_STEPS = 6;
+
+/** The tools the doc assistant can call — research, then write the markdown. */
+const DOC_TOOLS = [
+  {
+    type: "function",
+    function: {
+      name: "search_how_to_docs",
+      description:
+        "Search existing How-To guides written for OTHER templates and events " +
+        "in this same community. Use this FIRST to reuse phrasing, steps, and " +
+        "conventions the team already relies on. Pass a short query of key " +
+        "terms describing the task.",
+      parameters: {
+        type: "object",
+        properties: {
+          query: {
+            type: "string",
+            description: "Key terms for the task (e.g. 'sound check soundboard').",
+          },
+        },
+        required: ["query"],
+        additionalProperties: false,
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "web_search",
+      description:
+        "Search the public web for factual context, definitions, or best " +
+        "practices to make the guide accurate and complete. Pass a short query.",
+      parameters: {
+        type: "object",
+        properties: {
+          query: { type: "string", description: "A short web search query." },
+        },
+        required: ["query"],
+        additionalProperties: false,
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "write_doc",
+      description:
+        "Save the document. Pass the FULL revised guide in GitHub-Flavored " +
+        "Markdown — it REPLACES the entire document, so include ALL content, " +
+        "not just the part you changed. Do NOT wrap it in code fences. Call " +
+        "this once you've gathered enough context and are ready to commit the " +
+        "guide.",
+      parameters: {
+        type: "object",
+        properties: {
+          body: { type: "string", description: "The full markdown document." },
+        },
+        required: ["body"],
+        additionalProperties: false,
+      },
+    },
+  },
+];
+
+/** Compact text rendering of search_how_to_docs matches for the tool_result. */
+function renderHowToMatches(
+  matches: Array<{ title: string; body: string }>,
+): string {
+  if (!matches.length) return "No matching how-to guides found.";
+  return matches
+    .map((m) => {
+      const body = m.body.length > 800 ? m.body.slice(0, 800) + "…" : m.body;
+      return `## ${m.title}\n${body}`;
+    })
+    .join("\n\n");
+}
+
+/** Compact text rendering of web_search results for the tool_result. */
+function renderWebResults(
+  results: Array<{ title: string; snippet: string; url?: string }>,
+): string {
+  if (!results.length) return "No web results found.";
+  return results
+    .map(
+      (r) =>
+        `${r.title} — ${r.snippet}${r.url ? ` — ${r.url}` : ""}`,
+    )
+    .join("\n");
+}
+
+/**
+ * Tool-using How-To author agent — one chat turn on a doc's thread.
+ *
+ * The doc-page counterpart to `runAssistant`: a multi-step tool loop on a FREE
+ * OpenRouter model. The agent gathers context (`search_how_to_docs` reuses
+ * guides from other templates/events; `web_search` pulls factual background),
+ * then commits the FULL revised markdown via `write_doc` (→ `internal.docs.setBody`),
+ * then gives the user a short final reply. Every step (user message, reasoning,
+ * each tool call + result, final reply, errors) streams into `aiMessages`, so
+ * the panel renders the agent's work live. The standard "explain it to a
+ * no-context volunteer" voice (`HOW_TO_SYSTEM_PROMPT`) is the base of its
+ * system prompt. Same budget gate + run/usage tracking as `runAssistant`.
+ *
+ * COW: writes to whatever `docId` it's given — the panel passes the forked copy.
+ */
+export const runDocAssistant = action({
+  args: {
+    threadId: v.id("aiThreads"),
+    docId: v.id("docs"),
+    userText: v.string(),
+  },
+  handler: async (
+    ctx,
+    { threadId, docId, userText },
+  ): Promise<{ ok: boolean; runId?: Id<"aiRuns">; edited?: boolean }> => {
+    const { userId, chapterId } = await ctx.runQuery(internal.ai.myContext, {});
+
+    // Always record the user's message first so it shows immediately.
+    await ctx.runMutation(internal.ai.appendMessage, {
+      threadId,
+      kind: "user",
+      text: userText,
+    });
+
+    const budget = await ctx.runQuery(api.ai.budgetStatus, {});
+    if (budget.over) {
+      await ctx.runMutation(internal.ai.appendMessage, {
+        threadId,
+        kind: "error",
+        text: `AI budget reached (${budget.over}).`,
+      });
+      return { ok: false };
+    }
+    if (!process.env.OPENROUTER_API_KEY) {
+      await ctx.runMutation(internal.ai.appendMessage, {
+        threadId,
+        kind: "error",
+        text: "OPENROUTER_API_KEY is not configured.",
+      });
+      return { ok: false };
+    }
+
+    const doc = await ctx.runQuery(api.docs.forAi, { docId });
+    if (!doc) {
+      await ctx.runMutation(internal.ai.appendMessage, {
+        threadId,
+        kind: "error",
+        text: "Doc not found.",
+      });
+      return { ok: false };
+    }
+
+    const cfg = await ctx.runQuery(api.ai.aiConfig, {});
+    const slug = cfg.activeModel;
+
+    const history = await ctx.runQuery(api.ai.listMessages, { threadId });
+    const priorTurns = docHistoryTurns(history);
+
+    const system = [
+      HOW_TO_SYSTEM_PROMPT,
+      "",
+      "You are editing ONE markdown How-To document for a church events team by",
+      "calling tools. Workflow:",
+      "1. If it helps, gather context FIRST — call `search_how_to_docs` to reuse",
+      "   guides the team already wrote for other templates/events, and/or",
+      "   `web_search` for factual background. Skip research only for trivial",
+      "   edits or pure questions.",
+      "2. When you're ready to change the document, call `write_doc` with the",
+      "   FULL revised guide in GitHub-Flavored Markdown — it REPLACES the whole",
+      "   document, so include ALL content, not just the edited part.",
+      "3. After your edits (or if the user only asked a question), reply with a",
+      "   SHORT, friendly final message — no tool call — and the turn ends.",
+      "",
+      "If the user only asked a question, answer it directly without calling",
+      "`write_doc`. Be concise in your final reply; the detail goes in the guide.",
+      "",
+      `DOCUMENT TITLE: "${doc.title}".`,
+      "CURRENT DOCUMENT:",
+      doc.body && doc.body.trim() ? doc.body : "(empty)",
+    ].join("\n");
+
+    const messages: any[] = [
+      { role: "system", content: system },
+      ...priorTurns,
+    ];
+
+    const runId = await ctx.runMutation(internal.ai.startRun, {
+      chapterId,
+      userId,
+      feature: "doc_assistant",
+      model: slug,
+    });
+
+    let edited = false;
+    let totalCost = 0;
+    let finished = false;
+
+    try {
+      for (let step = 0; step < DOC_MAX_STEPS; step++) {
+        const { message, usage } = await openRouterCall(slug, messages, {
+          tools: DOC_TOOLS,
+          maxTokens: 2500,
+        });
+
+        const cost = callCost(slug, usage);
+        totalCost += cost;
+        await ctx.runMutation(internal.ai.logUsage, {
+          chapterId,
+          userId,
+          runId,
+          feature: "doc_assistant",
+          model: slug,
+          inputTokens: usage.prompt_tokens ?? 0,
+          outputTokens: usage.completion_tokens ?? 0,
+          cachedTokens: usage.prompt_tokens_details?.cached_tokens,
+          costUsd: cost,
+        });
+
+        // Surface the reasoning trace, if the model returned one.
+        const reasoning =
+          (typeof message.reasoning === "string" && message.reasoning) || "";
+        if (reasoning.trim()) {
+          await ctx.runMutation(internal.ai.appendMessage, {
+            threadId,
+            runId,
+            kind: "reasoning",
+            text: reasoning.trim(),
+          });
+        }
+
+        const toolCalls: any[] = message.tool_calls ?? [];
+        if (toolCalls.length === 0) {
+          // Final answer.
+          const text =
+            (typeof message.content === "string" && message.content.trim()) ||
+            "Done.";
+          await ctx.runMutation(internal.ai.appendMessage, {
+            threadId,
+            runId,
+            kind: "assistant",
+            text,
+          });
+          finished = true;
+          break;
+        }
+
+        // Record the assistant turn (with tool_calls) for the next round.
+        messages.push(message);
+
+        for (const tc of toolCalls) {
+          let parsed: any = {};
+          try {
+            parsed = JSON.parse(tc.function?.arguments ?? "{}");
+          } catch {
+            parsed = {};
+          }
+          const name = tc.function?.name;
+          await ctx.runMutation(internal.ai.appendMessage, {
+            threadId,
+            runId,
+            kind: "tool_call",
+            toolName: name,
+            toolArgs: parsed,
+          });
+
+          let ok = true;
+          let summary = "";
+          if (name === "search_how_to_docs") {
+            const matches = (await ctx.runQuery(api.docs.searchForAi, {
+              query: String(parsed.query ?? ""),
+            })) as Array<{ title: string; body: string }>;
+            ok = matches.length > 0;
+            summary = renderHowToMatches(matches);
+          } else if (name === "web_search") {
+            const results = await webSearch(String(parsed.query ?? ""));
+            ok = results.length > 0;
+            summary = renderWebResults(results);
+          } else if (name === "write_doc") {
+            const body =
+              typeof parsed.body === "string" ? parsed.body : "";
+            if (!body.trim()) {
+              ok = false;
+              summary = "No document body provided.";
+            } else {
+              await ctx.runMutation(internal.docs.setBody, { docId, body });
+              edited = true;
+              ok = true;
+              summary = "Document updated.";
+            }
+          } else {
+            ok = false;
+            summary = `Unknown tool "${name}".`;
+          }
+
+          await ctx.runMutation(internal.ai.appendMessage, {
+            threadId,
+            runId,
+            kind: "tool_result",
+            toolName: name,
+            toolOk: ok,
+            text: summary.length > 1200 ? summary.slice(0, 1200) + "…" : summary,
+          });
+          messages.push({
+            role: "tool",
+            tool_call_id: tc.id,
+            content: summary,
+          });
+        }
+      }
+
+      // Step cap hit mid-work → still leave a closing summary in the thread.
+      if (!finished) {
+        await ctx.runMutation(internal.ai.appendMessage, {
+          threadId,
+          runId,
+          kind: "assistant",
+          text: edited
+            ? "Updated the guide. Ask me to continue if there's more."
+            : "Still working — ask me to continue.",
+        });
+      }
+
+      await ctx.runMutation(internal.ai.finishRun, {
+        runId,
+        status: "done",
+        itemsTouched: edited ? 1 : 0,
+        costUsd: totalCost,
+        summary: edited ? "Edited doc" : "Replied",
+      });
+      return { ok: true, runId, edited };
+    } catch (err) {
+      const text =
+        err instanceof ConvexError
+          ? ((err.data as any)?.message ?? "Agent error.")
+          : "Agent error.";
+      await ctx.runMutation(internal.ai.appendMessage, {
+        threadId,
+        runId,
+        kind: "error",
+        text,
+      });
+      await ctx.runMutation(internal.ai.finishRun, {
+        runId,
+        status: "error",
+        itemsTouched: edited ? 1 : 0,
+        costUsd: totalCost,
+        summary: "Doc assistant errored",
+      });
+      return { ok: false };
     }
   },
 });

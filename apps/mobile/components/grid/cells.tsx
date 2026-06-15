@@ -15,7 +15,9 @@ import {
   Image,
   Platform,
   ActivityIndicator,
+  Linking,
 } from "react-native";
+import { useRouter } from "expo-router";
 import { useMutation, useQuery } from "convex/react";
 import { api } from "@events-os/convex/_generated/api";
 // expo-image-picker is Expo Go-safe (classified `core`); only used on native.
@@ -468,6 +470,188 @@ function PhotoCell({ value, editable, onChange }: any) {
   );
 }
 
+// ── How-To (links a cell to a standalone doc) ─────────────────────────────────
+// The cell value is the doc's id (a string in `fields[colKey]`), or empty.
+// Empty  → "+ How-To" opens a kind picker; picking calls api.docs.create and
+//          stores the new id back into the cell via onChange.
+// Filled → resolves the doc (api.docs.get) and renders by kind:
+//   link/video → title + open-out icon (opens the URL) and an inline URL field.
+//   note       → inline short text (writes docs.update body).
+//   markdown   → title + "Open" → navigates to the doc editor screen (/doc/<id>).
+const HOW_TO_KINDS: Array<{
+  value: "link" | "video" | "note" | "markdown";
+  label: string;
+  icon: any;
+}> = [
+  { value: "link", label: "Link", icon: "link" },
+  { value: "video", label: "Video", icon: "video" },
+  { value: "note", label: "Note", icon: "file-text" },
+  { value: "markdown", label: "Markdown page", icon: "book-open" },
+];
+
+function HowToCell({ value, editable, onChange, mode, eventItemId, colKey }: any) {
+  const router = useRouter();
+  const { ref, anchor, visible, open, close } = useAnchor();
+  const docId = typeof value === "string" && value.length > 0 ? value : null;
+  const doc = useQuery(api.docs.get, docId ? { docId: docId as any } : "skip");
+  const createDoc = useMutation(api.docs.create);
+  const updateDoc = useMutation(api.docs.update);
+  const forkDoc = useMutation(api.docs.forkForEventItem);
+
+  // Whether this cell lives on an event (vs a template) — only event cells fork.
+  const isEvent = mode === "event";
+
+  /**
+   * Inline commit for an EVENT cell, with copy-on-write. If the cell's doc is
+   * still a shared (template-origin) doc, fork it first, repoint the cell at the
+   * copy, then write the edit to the copy. A doc already `scope === "event"` (a
+   * prior fork, or one created directly on this event) is updated in place.
+   * Template cells just update in place — they never fork.
+   */
+  async function commitInline(patch: { url?: string; body?: string }) {
+    if (!docId) return;
+    if (isEvent && doc && doc.scope !== "event" && eventItemId && colKey) {
+      const res = await forkDoc({ docId: docId as any, eventItemId, colKey });
+      onChange(res._id);
+      await updateDoc({ docId: res._id as any, ...patch });
+      return;
+    }
+    await updateDoc({ docId: docId as any, ...patch });
+  }
+
+  // Empty cell → "+ How-To" with a kind picker.
+  if (!docId) {
+    return (
+      <>
+        <Pressable
+          ref={ref}
+          disabled={!editable}
+          onPress={open}
+          className="flex-1 flex-row items-center gap-1 px-2 py-1.5 active:opacity-70"
+        >
+          {editable ? (
+            <>
+              <Icon name="plus" size={13} color={colors.faint} />
+              <Text className="text-sm text-faint">How-To</Text>
+            </>
+          ) : (
+            <Text className="text-sm text-faint">—</Text>
+          )}
+        </Pressable>
+        <Popover visible={visible} onClose={close} anchor={anchor} width={220}>
+          <View className="py-1">
+            {HOW_TO_KINDS.map((k) => (
+              <Pressable
+                key={k.value}
+                onPress={async () => {
+                  close();
+                  // Created docs take the grid's scope: template grids author the
+                  // shared master; event grids author an event-local doc.
+                  const res = await createDoc({
+                    kind: k.value,
+                    title: "Untitled",
+                    scope: isEvent ? "event" : "template",
+                  });
+                  onChange(res._id);
+                  if (k.value === "markdown") router.push(`/doc/${res._id}` as any);
+                }}
+                className="flex-row items-center gap-2 px-3 py-2 active:bg-sunken web:hover:bg-sunken"
+              >
+                <Icon name={k.icon} size={15} color={colors.muted} />
+                <Text className="text-sm text-ink">{k.label}</Text>
+              </Pressable>
+            ))}
+          </View>
+        </Popover>
+      </>
+    );
+  }
+
+  if (doc === undefined) {
+    return (
+      <View className="flex-1 px-2 py-1.5">
+        <Text className="text-sm text-faint">…</Text>
+      </View>
+    );
+  }
+  if (doc === null) {
+    // Doc was deleted / not in chapter — let the author re-pick.
+    return (
+      <Pressable
+        disabled={!editable}
+        onPress={() => onChange(null)}
+        className="flex-1 px-2 py-1.5 active:opacity-70"
+      >
+        <Text className="text-sm text-faint">Missing — tap to clear</Text>
+      </Pressable>
+    );
+  }
+
+  const kindIcon =
+    HOW_TO_KINDS.find((k) => k.value === doc.kind)?.icon ?? "file-text";
+
+  // Note → inline editable short text (writes to docs.body).
+  if (doc.kind === "note") {
+    return (
+      <View className="flex-1 flex-row items-center gap-1 px-1">
+        <Icon name={kindIcon} size={13} color={colors.faint} />
+        <InlineText
+          value={doc.body ?? ""}
+          placeholder="Note…"
+          parse={(t) => (t.trim() ? t : "")}
+          onCommit={(t) => commitInline({ body: t })}
+        />
+      </View>
+    );
+  }
+
+  // Link / Video → title + open-out, and an inline editable URL.
+  if (doc.kind === "link" || doc.kind === "video") {
+    return (
+      <View className="flex-1 flex-row items-center gap-1 px-1">
+        <Icon name={kindIcon} size={13} color={colors.faint} />
+        <InlineText
+          value={doc.url ?? ""}
+          placeholder={doc.kind === "video" ? "Video URL" : "Link URL"}
+          parse={(t) => (t.trim() ? t.trim() : "")}
+          onCommit={(t) => commitInline({ url: t })}
+        />
+        {doc.url ? (
+          <Pressable
+            hitSlop={6}
+            onPress={() => Linking.openURL(doc.url as string)}
+            className="rounded p-1 active:bg-sunken web:hover:bg-sunken"
+          >
+            <Icon name="external-link" size={14} color={colors.accent} />
+          </Pressable>
+        ) : null}
+      </View>
+    );
+  }
+
+  // Markdown → title + Open (navigates to the doc editor screen). Event cells
+  // carry owner context so the editor can fork-on-first-edit (copy-on-write);
+  // template cells navigate plain so they always edit the master in place.
+  const markdownHref =
+    isEvent && eventItemId && colKey
+      ? `/doc/${docId}?ownerItem=${eventItemId}&ownerCol=${encodeURIComponent(colKey)}`
+      : `/doc/${docId}`;
+  return (
+    <Pressable
+      onPress={() => router.push(markdownHref as any)}
+      className="flex-1 flex-row items-center justify-between gap-2 px-2 py-1.5 active:bg-sunken web:hover:bg-sunken"
+    >
+      <View className="flex-1 flex-row items-center gap-1.5">
+        <Icon name={kindIcon} size={14} color={colors.muted} />
+        <Text className="text-sm text-ink" numberOfLines={1}>
+          {doc.title || "Untitled"}
+        </Text>
+      </View>
+      <Icon name="chevron-right" size={15} color={colors.faint} />
+    </Pressable>
+  );
+}
+
 // ── Dispatcher ────────────────────────────────────────────────────────────────
 export function GridCell(ctx: CellContext) {
   const { column, item, module, mode, roles, eventDate, editable, onChange } = ctx;
@@ -581,6 +765,17 @@ export function GridCell(ctx: CellContext) {
       );
     case "photo":
       return <PhotoCell value={value} editable={editable} onChange={onChange} />;
+    case "how_to":
+      return (
+        <HowToCell
+          value={value}
+          editable={editable}
+          onChange={onChange}
+          mode={mode}
+          eventItemId={item._id}
+          colKey={column.key}
+        />
+      );
     case "longtext":
       return (
         <InlineText

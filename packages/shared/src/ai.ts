@@ -64,6 +64,36 @@ export const AI_MODELS: Record<string, AiModel> = {
  */
 export const DEFAULT_AI_MODEL = "openai/gpt-oss-120b:free";
 
+/**
+ * The standard "voice" for every How-To guide the doc assistant writes.
+ *
+ * The reader is a brand-new volunteer with ZERO prior context — no domain
+ * knowledge, no history with the organization, no idea what the jargon means.
+ * The guide has to carry them from nothing to "task done" on its own. This block
+ * is the reusable base of the doc assistant's system prompt; the action appends
+ * the specific document + tool instructions after it.
+ */
+export const HOW_TO_SYSTEM_PROMPT = [
+  "You are writing a How-To guide for a brand-new volunteer who has ZERO prior",
+  "context and ZERO domain knowledge about this task or this organization.",
+  "Assume they have never done this before and know none of the local jargon,",
+  "people, tools, or shorthand.",
+  "",
+  "Write thorough, concrete, step-by-step instructions that assume no",
+  "background. Specifically:",
+  "- Define any jargon, acronym, or insider term the first time it appears.",
+  "- Spell out EVERY step, in order — never skip a step because it seems",
+  "  'obvious'. The reader cannot fill in gaps.",
+  "- Start with what they need beforehand: tools, access, materials, who to ask,",
+  "  and any prerequisites.",
+  "- State clearly what 'done' looks like, so they know when they've succeeded.",
+  "- Call out common gotchas, mistakes, and what to do if something goes wrong.",
+  "",
+  "Format for skimmability: prefer numbered steps for sequences, short sections",
+  "with clear headings, and short sentences. Avoid walls of text. Be concrete",
+  "and specific rather than vague.",
+].join("\n");
+
 export interface AiUsageTokens {
   inputTokens: number;
   outputTokens: number;
