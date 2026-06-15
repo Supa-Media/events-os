@@ -22,19 +22,43 @@ import {
 } from "../../../components/event/EventModuleRollup";
 import { ModuleSection } from "../../../components/event/ModuleSection";
 import { colors } from "../../../lib/theme";
-import { parseDateInput, toDateInput } from "../../../lib/format";
+import { parseDateInput, toDateInput, formatDate } from "../../../lib/format";
 import type { ResolvedModule } from "@events-os/shared";
+
+/** A task row in the "Me view" My-tasks list. */
+type MyTask = {
+  itemId: string;
+  module: string;
+  moduleLabel: string;
+  title: string;
+  dueDate?: number | null;
+  status?: string | null;
+};
+
+type ModuleOwner = {
+  roleId: string;
+  roleLabel: string;
+  person: { _id: string; name: string } | null;
+} | null;
 
 export default function EventDetailScreen() {
   const router = useRouter();
   const { id, tab } = useLocalSearchParams<{ id: string; tab?: string }>();
   const eventId = id as any;
 
+  // Personal "Me view" filter — when on, the Overview shows only the modules
+  // and tasks the current user owns (driven by api.events.myWork).
+  const [meView, setMeView] = useState(false);
+
   const data = useQuery(api.events.get, { eventId });
   const roleRows = useQuery(api.roleAssignments.listForEvent, { eventId });
   const eventRolesRaw = useQuery(api.roles.listForEvent, { eventId });
   const moduleData = useQuery(api.modules.listForEvent, { eventId });
   const summaries = useQuery(api.events.moduleSummaries, { eventId });
+  const myWork = useQuery(
+    api.events.myWork,
+    meView ? { eventId } : "skip",
+  );
 
   const reschedule = useMutation(api.events.reschedule);
   const setStatus = useMutation(api.events.setStatus);
@@ -259,7 +283,8 @@ export default function EventDetailScreen() {
           onChangeName={setNameInput}
           onSaveName={handleSaveName}
           onDayOf={() => router.push(`/event/${eventId}/day-of`)}
-          onSiteMap={() => router.push(`/event/${eventId}/site-map`)}
+          meView={meView}
+          onToggleMeView={() => setMeView((v) => !v)}
         />
 
         {/* Module navigation — same tab bar on web + mobile (scrolls on phones) */}
@@ -270,7 +295,22 @@ export default function EventDetailScreen() {
         />
 
         {/* ── Overview: controls + per-module rollup ─────────────────────────── */}
-        {activeTab === "overview" ? (
+        {activeTab === "overview" && meView ? (
+          <MeView
+            ownedModuleKeys={myWork?.ownedModuleKeys ?? null}
+            tasks={myWork?.tasks ?? null}
+            activeModules={activeModules}
+            readyByModule={readyByModule}
+            summaryByModule={summaryByModule}
+            moduleOwner={moduleOwner}
+            onOpenModule={(key) =>
+              router.setParams({
+                tab: key === "volunteer_expectations" ? "crew" : key,
+              })
+            }
+            onAssignOwner={openOwnerPicker}
+          />
+        ) : activeTab === "overview" ? (
           <>
             <EventOverviewControls
               event={event}
@@ -454,6 +494,115 @@ export default function EventDetailScreen() {
         }
         onClose={() => setOwnerOpen(false)}
       />
+    </>
+  );
+}
+
+/**
+ * The Overview's "Me view" — a focused "My work" surface showing only the
+ * modules the current user owns and a flat list of their tasks across every
+ * module. Reuses ModuleRollupRow for the modules so it matches the full rollup.
+ * `null` values mean the myWork query is still loading.
+ */
+function MeView({
+  ownedModuleKeys,
+  tasks,
+  activeModules,
+  readyByModule,
+  summaryByModule,
+  moduleOwner,
+  onOpenModule,
+  onAssignOwner,
+}: {
+  ownedModuleKeys: string[] | null;
+  tasks: MyTask[] | null;
+  activeModules: ResolvedModule[];
+  readyByModule: Map<string, boolean>;
+  summaryByModule: Map<string, any>;
+  moduleOwner: (m: ResolvedModule) => ModuleOwner;
+  onOpenModule: (key: string) => void;
+  onAssignOwner: (m: ResolvedModule) => void;
+}) {
+  if (ownedModuleKeys === null || tasks === null) {
+    return (
+      <View className="py-10">
+        <Text className="text-base text-muted">Loading your work…</Text>
+      </View>
+    );
+  }
+
+  const ownedKeys = new Set(ownedModuleKeys);
+  const myModules = activeModules.filter((m) => ownedKeys.has(m.key));
+  const hasNothing = myModules.length === 0 && tasks.length === 0;
+
+  if (hasNothing) {
+    return (
+      <View className="py-10">
+        <Text className="text-base text-muted">
+          Nothing assigned to you yet.
+        </Text>
+      </View>
+    );
+  }
+
+  return (
+    <>
+      <SectionHeader title="Modules you own" count={myModules.length} />
+      {myModules.length === 0 ? (
+        <Card>
+          <Text className="text-base text-muted">
+            You don't own any modules on this event.
+          </Text>
+        </Card>
+      ) : (
+        <Card padding="none">
+          {myModules.map((m, i) => (
+            <ModuleRollupRow
+              key={m.key}
+              label={m.label}
+              isCore={m.isCore}
+              ready={readyByModule.get(m.key) ?? false}
+              owner={moduleOwner(m)}
+              summary={summaryByModule.get(m.key)}
+              first={i === 0}
+              onOpen={() => onOpenModule(m.key)}
+              onAssignOwner={() => onAssignOwner(m)}
+              onRemove={() => {}}
+            />
+          ))}
+        </Card>
+      )}
+
+      <SectionHeader title="My tasks" count={tasks.length} />
+      {tasks.length === 0 ? (
+        <Card>
+          <Text className="text-base text-muted">No tasks assigned to you.</Text>
+        </Card>
+      ) : (
+        <Card padding="none">
+          {tasks.map((t, i) => (
+            <View
+              key={t.itemId}
+              className={`px-4 py-3 ${i === 0 ? "" : "border-t border-border"}`}
+            >
+              <Text className="text-sm font-semibold text-ink">{t.title}</Text>
+              <View className="mt-0.5 flex-row flex-wrap items-center gap-x-3 gap-y-0.5">
+                <Text className="text-2xs font-bold uppercase tracking-wider text-muted">
+                  {t.moduleLabel}
+                </Text>
+                {t.dueDate ? (
+                  <Text className="text-2xs text-faint">
+                    Due {formatDate(t.dueDate)}
+                  </Text>
+                ) : null}
+                {t.status ? (
+                  <Text className="text-2xs text-faint">{t.status}</Text>
+                ) : null}
+              </View>
+            </View>
+          ))}
+        </Card>
+      )}
     </>
   );
 }

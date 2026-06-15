@@ -14,6 +14,7 @@ import {
   computeReadiness,
   isCompleteStatus,
   DAY_OFFSET_MODULES,
+  MODULE_LABELS,
   type ModuleKey,
 } from "@events-os/shared";
 import {
@@ -22,7 +23,11 @@ import {
   requireInChapter,
   getChapterIdOrNull,
 } from "./lib/context";
-import { instantiateEvent, eventActiveModules } from "./lib/templates";
+import {
+  instantiateEvent,
+  eventActiveModules,
+  getPersonForUser,
+} from "./lib/templates";
 import { paidTotalForEvent } from "./engagements";
 
 const statusUnion = v.union(
@@ -239,6 +244,98 @@ export const moduleSummaries = query({
         };
       }),
     );
+  },
+});
+
+/**
+ * The current user's owned work on an event — drives the Overview "Me view"
+ * filter. Returns the module keys whose resolved owner person IS the caller
+ * (ownerRoleKey → eventRoles role → roleAssignments person), plus a flat list of
+ * the caller's tasks across all modules. A task is "yours" when its
+ * `ownerPersonId` is you, OR it has no owner and its `roleId`'s assignment
+ * resolves to you. If the caller has no roster person in this chapter (so they
+ * can't own anything), both arrays come back empty.
+ */
+export const myWork = query({
+  args: { eventId: v.id("events") },
+  handler: async (ctx, { eventId }) => {
+    const chapterId = await requireChapterId(ctx);
+    const userId = await requireUserId(ctx);
+    const event = await ctx.db.get(eventId);
+    if (!event || event.chapterId !== chapterId) {
+      return { ownedModuleKeys: [], tasks: [] };
+    }
+
+    const me = await getPersonForUser(
+      ctx,
+      chapterId as Id<"chapters">,
+      userId as Id<"users">,
+    );
+    if (!me) return { ownedModuleKeys: [], tasks: [] };
+
+    // Event roles + their assignments, so we can resolve a role → its person.
+    const eventRoles = await ctx.db
+      .query("eventRoles")
+      .withIndex("by_event", (q: any) => q.eq("eventId", eventId))
+      .collect();
+    const assignments = await ctx.db
+      .query("roleAssignments")
+      .withIndex("by_event", (q: any) => q.eq("eventId", eventId))
+      .collect();
+    // roleId (eventRoles id) → assigned personId.
+    const personByRoleId = new Map<string, Id<"people">>(
+      assignments.map((a: any) => [String(a.roleId), a.personId as Id<"people">]),
+    );
+    // role KEY → roleId, to resolve a module's ownerRoleKey to a role.
+    const roleIdByKey = new Map<string, string>(
+      eventRoles.map((r: any) => [r.key as string, String(r._id)]),
+    );
+
+    // Modules whose resolved owner person is the caller.
+    const resolved = await eventActiveModules(ctx, event);
+    const ownedModuleKeys: string[] = [];
+    // Custom-module labels (core labels come from MODULE_LABELS).
+    const labelByKey = new Map<string, string>(
+      resolved.map((m) => [m.key, m.label]),
+    );
+    for (const m of resolved) {
+      const roleId = m.ownerRoleKey
+        ? roleIdByKey.get(m.ownerRoleKey)
+        : undefined;
+      if (!roleId) continue;
+      const personId = personByRoleId.get(roleId);
+      if (personId && String(personId) === String(me)) {
+        ownedModuleKeys.push(m.key);
+      }
+    }
+
+    // Tasks: yours by direct owner, or by role assignment when unowned.
+    const items = await ctx.db
+      .query("eventItems")
+      .withIndex("by_event", (q: any) => q.eq("eventId", eventId))
+      .collect();
+    const tasks = items
+      .filter((it: any) => {
+        if (it.ownerPersonId) return String(it.ownerPersonId) === String(me);
+        if (it.roleId) {
+          const personId = personByRoleId.get(String(it.roleId));
+          return personId != null && String(personId) === String(me);
+        }
+        return false;
+      })
+      .map((it: any) => ({
+        itemId: it._id as Id<"eventItems">,
+        module: it.module as string,
+        moduleLabel:
+          MODULE_LABELS[it.module as ModuleKey] ??
+          labelByKey.get(it.module) ??
+          it.module,
+        title: it.title as string,
+        dueDate: (it.dueDate ?? null) as number | null,
+        status: (it.status ?? null) as string | null,
+      }));
+
+    return { ownedModuleKeys, tasks };
   },
 });
 

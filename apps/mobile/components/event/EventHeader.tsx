@@ -19,7 +19,7 @@ import {
 /**
  * Workspace header for an event — readiness ring, inline-editable name, the
  * meta strip (date/location/tasks/budget), status badge, and the day-of /
- * site-map / share affordances.
+ * me-view / share affordances.
  */
 export function EventHeader({
   event,
@@ -34,7 +34,8 @@ export function EventHeader({
   onChangeName,
   onSaveName,
   onDayOf,
-  onSiteMap,
+  meView,
+  onToggleMeView,
 }: {
   event: any;
   eventId: string;
@@ -48,7 +49,8 @@ export function EventHeader({
   onChangeName: (text: string) => void;
   onSaveName: () => void;
   onDayOf: () => void;
-  onSiteMap: () => void;
+  meView: boolean;
+  onToggleMeView: () => void;
 }) {
   return (
     <Card className="mb-4">
@@ -93,11 +95,11 @@ export function EventHeader({
               onPress={onDayOf}
             />
             <Button
-              title="Site map"
-              icon="map"
+              title="Me view"
+              icon="user"
               size="sm"
-              variant="secondary"
-              onPress={onSiteMap}
+              variant={meView ? "primary" : "secondary"}
+              onPress={onToggleMeView}
             />
             <ShareCrewButton eventId={eventId} />
           </View>
