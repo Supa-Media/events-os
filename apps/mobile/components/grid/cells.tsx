@@ -340,6 +340,9 @@ function TemplateOwnerCell({ item, templateId, editable, onChange }: any) {
   const [open, setOpen] = useState(false);
   const name = item.fields?.templateOwnerName ?? null;
   const selectedId = item.fields?.templateOwnerId ?? null;
+  // The row's team (Expectations `team` select value). When set, the picker
+  // surfaces crew on that team first so the assignment lines up.
+  const rowTeam = item.fields?.team ?? null;
   return (
     <>
       <Pressable
@@ -362,6 +365,7 @@ function TemplateOwnerCell({ item, templateId, editable, onChange }: any) {
         visible={open}
         eventTypeId={templateId}
         selectedId={selectedId}
+        preferTeam={rowTeam}
         onPick={(id: string, picked: string) => {
           onChange({ id, name: picked });
           setOpen(false);

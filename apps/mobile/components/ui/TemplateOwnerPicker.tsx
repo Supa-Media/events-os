@@ -10,6 +10,12 @@ type Props = {
   visible: boolean;
   eventTypeId?: string;
   selectedId?: string | null;
+  /**
+   * The Expectations row's team (the `team` select value). When set, crew on
+   * that team are surfaced in a "Matching team" group at the top; the rest follow
+   * under "Other crew" so any member is still pickable.
+   */
+  preferTeam?: string | null;
   onPick: (templatePersonId: string, name: string) => void;
   onClear?: () => void;
   onClose: () => void;
@@ -25,6 +31,7 @@ export function TemplateOwnerPicker({
   visible,
   eventTypeId,
   selectedId,
+  preferTeam,
   onPick,
   onClear,
   onClose,
@@ -33,6 +40,27 @@ export function TemplateOwnerPicker({
     api.templatePeople.list,
     eventTypeId ? { eventTypeId: eventTypeId as Id<"eventTypes"> } : "skip",
   );
+  // Resolve team option VALUES (what crew/Expectations store) to display labels.
+  const teamColumns = useQuery(
+    api.columns.listForTemplate,
+    eventTypeId
+      ? { eventTypeId: eventTypeId as Id<"eventTypes">, module: "volunteer_expectations" }
+      : "skip",
+  );
+  const teamOptions: Array<{ value: string; label: string }> =
+    (teamColumns?.find((c: any) => c.key === "team")?.options as any) ?? [];
+  const teamLabel = (value?: string | null) =>
+    value ? teamOptions.find((o) => o.value === value)?.label ?? value : undefined;
+
+  // When the row has a team, split crew into matching / other so the matching
+  // team surfaces first (but everyone stays pickable).
+  const matching = preferTeam
+    ? (crew ?? []).filter((c: any) => c.team === preferTeam)
+    : [];
+  const others = preferTeam
+    ? (crew ?? []).filter((c: any) => c.team !== preferTeam)
+    : (crew ?? []);
+  const grouped = preferTeam && matching.length > 0;
 
   return (
     <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
@@ -62,12 +90,39 @@ export function TemplateOwnerPicker({
               <Text className="px-5 py-6 text-center text-base text-muted">
                 No placeholder crew yet. Add some in the Crew card first.
               </Text>
+            ) : grouped ? (
+              <>
+                <SectionLabel label="Matching team" />
+                {matching.map((c: any) => (
+                  <Row
+                    key={c._id}
+                    label={c.name}
+                    sub={teamLabel(c.team)}
+                    selected={c._id === selectedId}
+                    onPress={() => onPick(c._id, c.name)}
+                  />
+                ))}
+                {others.length > 0 ? (
+                  <>
+                    <SectionLabel label="Other crew" />
+                    {others.map((c: any) => (
+                      <Row
+                        key={c._id}
+                        label={c.name}
+                        sub={teamLabel(c.team)}
+                        selected={c._id === selectedId}
+                        onPress={() => onPick(c._id, c.name)}
+                      />
+                    ))}
+                  </>
+                ) : null}
+              </>
             ) : (
-              crew.map((c: any) => (
+              others.map((c: any) => (
                 <Row
                   key={c._id}
                   label={c.name}
-                  sub={c.team}
+                  sub={teamLabel(c.team)}
                   selected={c._id === selectedId}
                   onPress={() => onPick(c._id, c.name)}
                 />
@@ -77,6 +132,17 @@ export function TemplateOwnerPicker({
         </Pressable>
       </Pressable>
     </Modal>
+  );
+}
+
+/** Small group header inside the picker (e.g. "Matching team" / "Other crew"). */
+function SectionLabel({ label }: { label: string }) {
+  return (
+    <View className="border-b border-border bg-sunken/60 px-5 py-1.5">
+      <Text className="text-2xs font-bold uppercase tracking-wider text-muted">
+        {label}
+      </Text>
+    </View>
   );
 }
 
