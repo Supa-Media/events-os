@@ -12,6 +12,7 @@ import {
   defaultStatusValue,
   type ModuleKey,
 } from "@events-os/shared";
+import { findUnlinkedPersonByLoginEmail, claimFields } from "./people";
 
 /** Kebab-case slug from a display name. */
 export function toSlug(name: string): string {
@@ -88,11 +89,23 @@ export async function getOrCreateOwnerPerson(
   if (existing && existing.chapterId === chapterId)
     return existing._id as Id<"people">;
   const user = await ctx.db.get(userId);
-  const name = user?.name ?? user?.email ?? "Event owner";
+  const email = user?.email as string | undefined;
+  const name = user?.name ?? email ?? "Event owner";
+
+  // Adopt an existing unlinked roster row (matched by personal email OR the
+  // publicworship pwEmail) instead of inserting a duplicate — keeps one person
+  // row per human even when they were imported before they ever signed in.
+  const unlinked = await findUnlinkedPersonByLoginEmail(ctx, chapterId, email ?? null);
+  if (unlinked) {
+    await ctx.db.patch(unlinked._id, claimFields(unlinked, userId, email));
+    return unlinked._id as Id<"people">;
+  }
+
   return (await ctx.db.insert("people", {
     chapterId,
     name,
-    email: user?.email,
+    email,
+    pwEmail: email,
     userId,
     isActive: true,
     isTeamMember: true,
