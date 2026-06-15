@@ -77,91 +77,82 @@ export const EVENT_STATUS_LABELS: Record<EventStatus, string> = {
 };
 
 // ── Modules ──────────────────────────────────────────────────────────────────
-// The four list-backed planning surfaces. Each module key is also a component
-// key (a template toggles which components/modules are active).
+// The built-in planning surfaces (keys + type). A template/event toggles which
+// modules are active; see CORE_MODULES for the full registry.
 export const MODULE_KEYS = [
   "planning_doc",
-  "supplies",
-  "comms",
   "run_of_show",
+  "comms",
   "permits",
+  "supplies",
   "retro",
   "volunteer_expectations",
 ] as const;
 export type ModuleKey = (typeof MODULE_KEYS)[number];
 
-export const MODULE_LABELS: Record<ModuleKey, string> = {
-  planning_doc: "Planning Doc",
-  supplies: "Supplies & Packing",
-  comms: "Comms & Content Schedule",
-  run_of_show: "Run of Show",
-  permits: "Permits",
-  retro: "Retrospective",
-  volunteer_expectations: "Volunteer Expectations",
-};
+/** How a module renders. Grid modules use the spreadsheet EditableGrid; bespoke
+ *  surfaces (e.g. the site map, wired up in a later phase) render their own
+ *  editor instead of a grid. */
+export type ModuleSurface = "grid" | "site_map";
+
+/** How a module's rows schedule relative to the event. */
+export type ModuleOffsetMode = "none" | "days" | "minutes";
 
 /**
- * Which chapter ROLE owns each module. Ownership isn't a separate field — it's
- * derived by mapping a module to a default role key (see DEFAULT_ROLES), then
- * resolving the person assigned to that role on the event (roleAssignments).
- * This reuses the role infra instead of introducing a third owner concept, and
- * mirrors the role descriptions (event_lead owns the planning doc + permits,
- * comms_lead owns comms + volunteer coordination, logistics_lead owns supplies,
- * production_lead owns the run of show). Per-template overrides can layer on
- * later; for now this is the deployment-wide default.
+ * A platform-wide CORE module definition.
+ *
+ * `defaultOwnerRoleKey` maps a module to the ROLE that owns it (resolved to a
+ * person via roleAssignments) — reusing the role infra instead of a third owner
+ * concept. Defaults mirror the role descriptions (event_lead owns the planning
+ * doc + permits, comms_lead owns comms + volunteer coordination, logistics_lead
+ * owns supplies, production_lead owns the run of show). Per-template/event owner
+ * overrides layer on later.
  */
-export const MODULE_OWNER_ROLE_KEY: Record<ModuleKey, string> = {
-  planning_doc: "event_lead",
-  supplies: "logistics_lead",
-  comms: "comms_lead",
-  run_of_show: "production_lead",
-  permits: "event_lead",
-  retro: "event_lead",
-  volunteer_expectations: "comms_lead",
-};
+export interface CoreModuleDef {
+  key: ModuleKey;
+  label: string;
+  surface: ModuleSurface;
+  defaultOwnerRoleKey: string;
+  offsetMode: ModuleOffsetMode;
+}
+
+/**
+ * CORE module registry — the single source of truth for the built-in modules,
+ * in display order. Every template/event gets these; they can be toggled off but
+ * never deleted (custom modules are added per template). The derived maps below
+ * (labels, owner, offsets) are projections of this list, so there is one place
+ * to edit a core module.
+ */
+export const CORE_MODULES: CoreModuleDef[] = [
+  { key: "planning_doc", label: "Planning Doc", surface: "grid", defaultOwnerRoleKey: "event_lead", offsetMode: "days" },
+  { key: "run_of_show", label: "Run of Show", surface: "grid", defaultOwnerRoleKey: "production_lead", offsetMode: "minutes" },
+  { key: "comms", label: "Comms & Content Schedule", surface: "grid", defaultOwnerRoleKey: "comms_lead", offsetMode: "days" },
+  { key: "permits", label: "Permits", surface: "grid", defaultOwnerRoleKey: "event_lead", offsetMode: "days" },
+  { key: "supplies", label: "Supplies & Packing Checklist", surface: "grid", defaultOwnerRoleKey: "logistics_lead", offsetMode: "none" },
+  { key: "retro", label: "Retrospective", surface: "grid", defaultOwnerRoleKey: "event_lead", offsetMode: "none" },
+  { key: "volunteer_expectations", label: "Volunteer Expectations", surface: "grid", defaultOwnerRoleKey: "comms_lead", offsetMode: "none" },
+];
+
+/** Core module keys, in display order. */
+export const CORE_MODULE_KEYS: ModuleKey[] = CORE_MODULES.map((m) => m.key);
+
+// ── Derived views of CORE_MODULES (single source of truth above) ─────────────
+export const MODULE_LABELS: Record<ModuleKey, string> = Object.fromEntries(
+  CORE_MODULES.map((m) => [m.key, m.label]),
+) as Record<ModuleKey, string>;
+
+export const MODULE_OWNER_ROLE_KEY: Record<ModuleKey, string> = Object.fromEntries(
+  CORE_MODULES.map((m) => [m.key, m.defaultOwnerRoleKey]),
+) as Record<ModuleKey, string>;
 
 /** Modules that schedule off the event date (offset in days → due date). */
-export const DAY_OFFSET_MODULES: ModuleKey[] = ["planning_doc", "comms", "permits"];
+export const DAY_OFFSET_MODULES: ModuleKey[] = CORE_MODULES.filter(
+  (m) => m.offsetMode === "days",
+).map((m) => m.key);
 /** Modules that schedule off the event start time (offset in minutes). */
-export const MINUTE_OFFSET_MODULES: ModuleKey[] = ["run_of_show"];
-
-// ── Template components ──────────────────────────────────────────────────────
-// Every template is assembled from a fixed set of components. Six are core
-// (present on every event); two switch on for larger events. The first four are
-// the list-backed MODULE_KEYS above.
-export const COMPONENT_KEYS = [
-  "planning_doc",
-  "run_of_show",
-  "comms",
-  "permits",
-  "supplies",
-  "retro",
-  "volunteer_expectations",
-] as const;
-export type ComponentKey = (typeof COMPONENT_KEYS)[number];
-
-export const CORE_COMPONENTS: ComponentKey[] = [
-  "planning_doc",
-  "run_of_show",
-  "comms",
-  "permits",
-  "supplies",
-  "retro",
-];
-
-export const LARGER_EVENT_COMPONENTS: ComponentKey[] = [
-  "volunteer_expectations",
-];
-
-export const COMPONENT_LABELS: Record<ComponentKey, string> = {
-  planning_doc: "Planning Doc",
-  run_of_show: "Run of Show",
-  comms: "Comms & Content Schedule",
-  permits: "Permits",
-  supplies: "Supplies & Packing Checklist",
-  retro: "Retrospective",
-  volunteer_expectations: "Volunteer Expectations",
-};
+export const MINUTE_OFFSET_MODULES: ModuleKey[] = CORE_MODULES.filter(
+  (m) => m.offsetMode === "minutes",
+).map((m) => m.key);
 
 // ── Columns ──────────────────────────────────────────────────────────────────
 // A column tells the grid how to render/edit a field and (for `system` columns)

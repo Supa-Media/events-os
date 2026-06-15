@@ -161,7 +161,7 @@ export default function EventDetailScreen() {
     const roleKey = MODULE_OWNER_ROLE_KEY[module];
     const role = (chapterRolesRaw ?? []).find((r: any) => r.key === roleKey);
     if (!role) return null;
-    const row = roleRows.find((r) => r.roleId === role._id);
+    const row = (roleRows ?? []).find((r) => r.roleId === role._id);
     return {
       roleId: role._id as string,
       roleLabel: role.label as string,

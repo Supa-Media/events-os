@@ -16,19 +16,15 @@ import {
 import { EditableGrid } from "../../../components/grid/EditableGrid";
 import {
   MODULE_LABELS,
-  COMPONENT_KEYS,
-  COMPONENT_LABELS,
-  CORE_COMPONENTS,
-  LARGER_EVENT_COMPONENTS,
+  CORE_MODULE_KEYS,
   type ModuleKey,
-  type ComponentKey,
 } from "@events-os/shared";
 import type { Id } from "@events-os/convex/_generated/dataModel";
 
 /**
  * TEMPLATE EDITOR — author a reusable event template on the unified-items model.
  *
- * Edits the template's metadata, its active roles + components, and (for each
+ * Edits the template's metadata, its active roles + modules, and (for each
  * active list-backed module) embeds an EditableGrid of base items. All edits
  * save eagerly (toggles immediately, text fields on blur when dirty).
  */
@@ -95,12 +91,12 @@ export default function TemplateEditorScreen() {
         }}
       />
 
-      <ComponentsCard
+      <ModulesCard
         activeComponents={activeComponents}
-        onToggle={(component) => {
-          const next = activeComponents.includes(component)
-            ? activeComponents.filter((c) => c !== component)
-            : [...activeComponents, component];
+        onToggle={(module) => {
+          const next = activeComponents.includes(module)
+            ? activeComponents.filter((c) => c !== module)
+            : [...activeComponents, module];
           updateTemplate({ eventTypeId, activeComponents: next });
         }}
       />
@@ -110,7 +106,7 @@ export default function TemplateEditorScreen() {
           <EmptyState
             icon="layout"
             title="No modules active"
-            message="Turn on a list-backed component above (Planning Doc, Supplies, Comms, or Run of Show) to start building."
+            message="Turn on a module above to start building."
           />
         </View>
       ) : (
@@ -311,46 +307,39 @@ function RolesCard({
   );
 }
 
-/* ── Components ─────────────────────────────────────────────────────────── */
+/* ── Modules ───────────────────────────────────────────────────────────── */
 
-function ComponentsCard({
+function ModulesCard({
   activeComponents,
   onToggle,
 }: {
   activeComponents: string[];
-  onToggle: (component: string) => void;
+  onToggle: (module: string) => void;
 }) {
   return (
     <Card className="mb-2">
-      <SectionHeader title="Components" />
-      <ComponentGroup
+      <SectionHeader title="Modules" />
+      <ModuleGroup
         heading="Core"
-        keys={CORE_COMPONENTS}
+        keys={CORE_MODULE_KEYS}
         activeComponents={activeComponents}
         onToggle={onToggle}
       />
-      <View className="mt-4">
-        <ComponentGroup
-          heading="Larger events"
-          keys={LARGER_EVENT_COMPONENTS}
-          activeComponents={activeComponents}
-          onToggle={onToggle}
-        />
-      </View>
+      {/* Custom modules (author-created, full grid) arrive in a later phase. */}
     </Card>
   );
 }
 
-function ComponentGroup({
+function ModuleGroup({
   heading,
   keys,
   activeComponents,
   onToggle,
 }: {
   heading: string;
-  keys: ComponentKey[];
+  keys: ModuleKey[];
   activeComponents: string[];
-  onToggle: (component: string) => void;
+  onToggle: (module: string) => void;
 }) {
   return (
     <View>
@@ -359,7 +348,7 @@ function ComponentGroup({
         {keys.map((c) => (
           <Pill
             key={c}
-            label={COMPONENT_LABELS[c]}
+            label={MODULE_LABELS[c]}
             selected={activeComponents.includes(c)}
             onPress={() => onToggle(c)}
           />

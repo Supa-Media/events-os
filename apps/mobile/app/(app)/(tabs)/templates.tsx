@@ -12,7 +12,7 @@ import {
   EmptyState,
 } from "../../../components/ui";
 import { colors, spacing } from "../../../lib/theme";
-import { CORE_COMPONENTS, LIGHTWEIGHT_ROLE_KEYS } from "@events-os/shared";
+import { CORE_MODULE_KEYS, LIGHTWEIGHT_ROLE_KEYS } from "@events-os/shared";
 
 /** TEMPLATES list + inline "new template" creator. */
 export default function TemplatesScreen() {
@@ -42,7 +42,7 @@ export default function TemplatesScreen() {
       const id = await create({
         name: trimmed,
         activeRoleIds,
-        activeComponents: [...CORE_COMPONENTS],
+        activeComponents: [...CORE_MODULE_KEYS],
       });
       setName("");
       router.push(`/template/${id}`);
