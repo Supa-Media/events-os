@@ -1,15 +1,18 @@
 /**
- * Read-mode image rendering for the Markdown view.
+ * Inline image rendering for the Markdown surface.
  *
- * The editor keeps Markdown as the literal source of truth and shows image
- * syntax (`![alt](url)`) as raw text. The read-only `MarkdownView`, however,
- * should render those images. This ViewPlugin walks the Lezer tree, finds
- * `Image` nodes, and REPLACES each one with an `<img>` widget pointing at the
- * embedded URL.
+ * Markdown stays the literal source of truth — image syntax (`![alt](url)`) is
+ * never converted to a rich model. This ViewPlugin walks the Lezer tree, finds
+ * `Image` nodes, and renders an `<img>` in their place so pasted/uploaded images
+ * are actually VISIBLE instead of showing as raw `![](url)` text.
  *
- * It is intentionally NOT part of the shared editing stack (`setup.ts`) — only
- * `MarkdownView` opts in — so the editor continues to display the raw
- * `![](url)` text the user typed/pasted.
+ * Two modes:
+ *
+ *  - Read mode (`MarkdownView`): every image renders inline, always.
+ *  - Edit mode (the live editor): images render inline too, EXCEPT the one the
+ *    caret/selection is currently touching — that one reveals its raw
+ *    `![](url)` source so the URL stays editable. This mirrors the live-preview
+ *    "reveal syntax on the active line" behaviour for the rest of the markdown.
  *
  * Plain JS (uses `document`) so it can also be inlined into the native WebView's
  * HTML bundle for the read surface if needed.
@@ -60,7 +63,23 @@ function parseImage(src: string): { url: string; alt: string } | null {
   return { url, alt: m[1] ?? "" };
 }
 
-function buildImageDecorations(view: EditorView): DecorationSet {
+/** True when any cursor or selection range overlaps [from, to]. */
+function selectionTouches(view: EditorView, from: number, to: number): boolean {
+  for (const r of view.state.selection.ranges) {
+    if (r.from <= to && r.to >= from) return true;
+  }
+  return false;
+}
+
+/**
+ * @param revealActive when true (edit mode), the image whose source the caret is
+ *   touching is left as raw text instead of being replaced with an `<img>`, so
+ *   the URL stays editable. When false (read mode), every image is replaced.
+ */
+function buildImageDecorations(
+  view: EditorView,
+  revealActive: boolean,
+): DecorationSet {
   const builder = new RangeSetBuilder<Decoration>();
   for (const { from, to } of view.visibleRanges) {
     syntaxTree(view.state).iterate({
@@ -71,6 +90,7 @@ function buildImageDecorations(view: EditorView): DecorationSet {
         const src = view.state.doc.sliceString(node.from, node.to);
         const parsed = parseImage(src);
         if (!parsed) return;
+        if (revealActive && selectionTouches(view, node.from, node.to)) return;
         builder.add(
           node.from,
           node.to,
@@ -84,21 +104,36 @@ function buildImageDecorations(view: EditorView): DecorationSet {
   return builder.finish();
 }
 
-/**
- * ViewPlugin that renders `![](url)` as inline images. Used only by the
- * read-only `MarkdownView`.
- */
-export const imagePreview = ViewPlugin.fromClass(
-  class {
-    decorations: DecorationSet;
-    constructor(view: EditorView) {
-      this.decorations = buildImageDecorations(view);
-    }
-    update(update: ViewUpdate) {
-      if (update.docChanged || update.viewportChanged) {
-        this.decorations = buildImageDecorations(update.view);
+function makeImagePreview(revealActive: boolean) {
+  return ViewPlugin.fromClass(
+    class {
+      decorations: DecorationSet;
+      constructor(view: EditorView) {
+        this.decorations = buildImageDecorations(view, revealActive);
       }
-    }
-  },
-  { decorations: (v) => v.decorations },
-);
+      update(update: ViewUpdate) {
+        if (
+          update.docChanged ||
+          update.viewportChanged ||
+          // In edit mode, moving the caret on/off an image toggles raw ↔ inline.
+          (revealActive && update.selectionSet)
+        ) {
+          this.decorations = buildImageDecorations(update.view, revealActive);
+        }
+      }
+    },
+    { decorations: (v) => v.decorations },
+  );
+}
+
+/**
+ * Renders `![](url)` as inline images, always. Used by the read-only
+ * `MarkdownView`.
+ */
+export const imagePreview = makeImagePreview(false);
+
+/**
+ * Renders `![](url)` as inline images in the editor, but reveals the raw source
+ * of the image the caret is touching so its URL stays editable.
+ */
+export const imagePreviewEditable = makeImagePreview(true);
