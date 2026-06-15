@@ -1016,3 +1016,87 @@ export const importRoster = mutation({
     };
   },
 });
+
+/**
+ * Dev mutation (no auth): create a NEAR-date Eden event with its roles assigned
+ * to OTHER team members, so the signed-in user (the event owner) can test the
+ * "Overseeing" view. The event is tomorrow, so day-of items read "soon" and the
+ * planning items read "overdue" — everything is at-risk and surfaces.
+ *
+ * Run AFTER `reseedNyDemo` (it needs the NY chapter + Eden template + people).
+ */
+export const seedOverseeingDemo = mutation({
+  args: {},
+  handler: async (ctx) => {
+    const now = Date.now();
+    const chapter = await ctx.db
+      .query("chapters")
+      .withIndex("by_slug", (q: any) => q.eq("slug", NEW_YORK_CHAPTER_SLUG))
+      .first();
+    if (!chapter) return { ok: false, reason: "run reseedNyDemo first" };
+    const nyChapterId = chapter._id as Id<"chapters">;
+
+    const firstUser = await ctx.db.query("users").first();
+    if (!firstUser) return { ok: false, reason: "no users — sign in once" };
+
+    const edenType = (
+      await ctx.db
+        .query("eventTypes")
+        .withIndex("by_chapter", (q: any) => q.eq("chapterId", nyChapterId))
+        .collect()
+    ).find((t: any) => t.name === "Eden");
+    if (!edenType) return { ok: false, reason: "no Eden template — run reseedNyDemo" };
+
+    const people = await ctx.db
+      .query("people")
+      .withIndex("by_chapter", (q: any) => q.eq("chapterId", nyChapterId))
+      .collect();
+    const byName = (n: string) => people.find((p: any) => p.name === n);
+    // The event owner = the person linked to the signed-in user.
+    const mePerson = people.find(
+      (p: any) => String(p.userId) === String(firstUser._id),
+    );
+
+    // Near-date event so day-of items are "soon" and planning items "overdue".
+    const eventId = await instantiateEvent(ctx, {
+      eventType: edenType,
+      chapterId: nyChapterId,
+      userId: firstUser._id as Id<"users">,
+      name: "Eden — Overseeing test (tomorrow)",
+      eventDate: now + DAY_MS,
+      location: "Central Park, Great Lawn",
+      budget: 1200,
+      now,
+    });
+
+    // Assign module-owning roles to OTHER people (so you oversee their work);
+    // Event Lead → you, so you also get a populated "Yours".
+    const eventRoles = await ctx.db
+      .query("eventRoles")
+      .withIndex("by_event", (q: any) => q.eq("eventId", eventId))
+      .collect();
+    const roleIdByKey = new Map(eventRoles.map((r: any) => [r.key, r._id]));
+    const assign = async (roleKey: string, person: any) => {
+      const roleId = roleIdByKey.get(roleKey);
+      if (!roleId || !person) return;
+      await ctx.db.insert("roleAssignments", {
+        eventId,
+        chapterId: nyChapterId,
+        roleId,
+        personId: person._id as Id<"people">,
+        createdAt: now,
+      });
+    };
+    await assign("event_lead", mePerson ?? byName("Ada Okafor"));
+    await assign("comms_lead", byName("Ada Okafor"));
+    await assign("logistics_lead", byName("Ben Carter"));
+    await assign("production_lead", byName("Chloe Martins"));
+
+    return {
+      ok: true,
+      eventId,
+      eventOwnerIsSignedInUser: !!mePerson,
+      assigned: ["event_lead→you", "comms→Ada", "logistics→Ben", "production→Chloe"],
+    };
+  },
+});
