@@ -30,6 +30,13 @@ export const docs = defineTable({
   body: v.optional(v.string()),
   // Short public slug for the unauthenticated share route.
   shareId: v.string(),
+  // Copy-on-write origin. A template's How-To doc is `scope: "template"` and is
+  // shared by reference into every event; editing it from an event forks a
+  // `scope: "event"` copy (see `forkForEventItem` in docs.ts). Optional so rows
+  // that predate this model still validate.
+  scope: v.optional(v.union(v.literal("template"), v.literal("event"))),
+  // Provenance for an event copy — the template-origin doc it was forked from.
+  forkedFromDocId: v.optional(v.id("docs")),
   createdBy: v.id("people"),
   createdAt: v.number(),
   updatedAt: v.number(),

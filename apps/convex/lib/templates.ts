@@ -362,11 +362,15 @@ export async function instantiateEvent(
       roleId: it.roleId ? roleIdMap.get(String(it.roleId)) : undefined,
       status: it.status ?? defaultStatusValue(it.module as ModuleKey),
       // `fields` is copied verbatim, which means any `how_to` cell's doc id is
-      // carried over by reference — the template's How-To doc is SHARED with every
-      // event spun up from it (and across sibling events). This is intentional:
-      // a How-To is a canonical reference ("how to set up the PA"), edited once
-      // and seen everywhere. If per-event copies are ever needed, clone the
-      // referenced `docs` rows here and rewrite the field ids.
+      // carried over by reference — the template's How-To doc (`scope:
+      // "template"`) is SHARED with every event spun up from it (and across
+      // sibling events) at clone time. This is intentional: a How-To is a
+      // canonical reference ("how to set up the PA").
+      //
+      // Editing follows a COPY-ON-WRITE model: the first edit of a shared doc
+      // from an event forks a `scope: "event"` copy and repoints that event
+      // item's cell at it (see `docs.forkForEventItem`), so the master and all
+      // sibling events keep the original. Subsequent edits land on the copy.
       fields: it.fields,
     });
   }

@@ -19,11 +19,23 @@ import { colors } from "../../../lib/theme";
  */
 export default function DocEditorScreen() {
   const router = useRouter();
-  const { id } = useLocalSearchParams<{ id: string }>();
-  const docId = id as string;
+  const { id, ownerItem, ownerCol } = useLocalSearchParams<{
+    id: string;
+    ownerItem?: string;
+    ownerCol?: string;
+  }>();
 
-  const doc = useQuery(api.docs.get, { docId: docId as any });
+  // The doc currently being edited. Starts at the route id, but a copy-on-write
+  // fork (see `maybeForkThenUpdate`) repoints it at the freshly forked copy so
+  // all reads/writes from then on target the copy, not the shared master.
+  const [activeDocId, setActiveDocId] = useState<string>(id as string);
+  // Guard against double-forking (and concurrent fork calls) within a session.
+  const hasForkedRef = useRef(false);
+  const forkingRef = useRef(false);
+
+  const doc = useQuery(api.docs.get, { docId: activeDocId as any });
   const update = useMutation(api.docs.update);
+  const fork = useMutation(api.docs.forkForEventItem);
   const generate = useAction(api.aiActions.generateDoc);
 
   const [titleInput, setTitleInput] = useState<string | null>(null);
@@ -36,6 +48,49 @@ export default function DocEditorScreen() {
   const [aiBusy, setAiBusy] = useState(false);
   const [copied, setCopied] = useState(false);
   const bodySaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Copy-on-write: when editing a SHARED (template-origin) doc from an event
+  // context, fork once into an event-local copy before applying the patch.
+  // Otherwise (template editor, or a doc already `scope === "event"`, or already
+  // forked this session) apply the patch in place. Handles the write itself so
+  // callers don't double-write. Returns the doc id the patch landed on (useful
+  // for follow-up actions like the AI generate that must target the same copy).
+  async function maybeForkThenUpdate(patch: {
+    title?: string;
+    url?: string;
+    body?: string;
+  }): Promise<string> {
+    const shouldFork =
+      !!ownerItem &&
+      !!ownerCol &&
+      !hasForkedRef.current &&
+      !forkingRef.current &&
+      doc != null &&
+      doc.scope !== "event";
+    if (shouldFork) {
+      forkingRef.current = true;
+      try {
+        const res = await fork({
+          docId: activeDocId as any,
+          eventItemId: ownerItem as any,
+          colKey: ownerCol as string,
+        });
+        hasForkedRef.current = true;
+        setActiveDocId(res._id);
+        router.replace(
+          `/doc/${res._id}?ownerItem=${ownerItem}&ownerCol=${encodeURIComponent(
+            ownerCol as string,
+          )}` as any,
+        );
+        await update({ docId: res._id as any, ...patch });
+        return res._id;
+      } finally {
+        forkingRef.current = false;
+      }
+    }
+    await update({ docId: activeDocId as any, ...patch });
+    return activeDocId;
+  }
 
   // Flush any pending debounced body save on unmount.
   useEffect(
@@ -84,7 +139,7 @@ export default function DocEditorScreen() {
     setBodyInput(md);
     if (bodySaveTimer.current) clearTimeout(bodySaveTimer.current);
     bodySaveTimer.current = setTimeout(() => {
-      void update({ docId: docId as any, body: md });
+      void maybeForkThenUpdate({ body: md });
     }, 500);
   }
 
@@ -92,7 +147,11 @@ export default function DocEditorScreen() {
     if (aiBusy) return;
     setAiBusy(true);
     try {
-      await generate({ docId: docId as any, prompt: aiPrompt.trim(), mode });
+      // Fork first when in event context so AI edits land on the copy, not the
+      // shared master. The empty patch only triggers the fork (if needed); the
+      // returned id is the copy (or the original) the AI should target.
+      const targetId = await maybeForkThenUpdate({});
+      await generate({ docId: targetId as any, prompt: aiPrompt.trim(), mode });
       setAiPrompt("");
       // The action wrote docs.body server-side; drop the local draft so the
       // editor mirrors the freshly generated body.
@@ -139,7 +198,7 @@ export default function DocEditorScreen() {
         onChangeText={setTitleInput}
         onBlur={() => {
           if (titleInput != null && titleInput !== doc.title) {
-            void update({ docId: docId as any, title: titleInput });
+            void maybeForkThenUpdate({ title: titleInput });
           }
         }}
         placeholder="Untitled"
@@ -159,7 +218,7 @@ export default function DocEditorScreen() {
             onChangeText={setUrlInput}
             onBlur={() => {
               if (urlInput != null && urlInput !== (doc.url ?? "")) {
-                void update({ docId: docId as any, url: urlInput });
+                void maybeForkThenUpdate({ url: urlInput });
               }
             }}
             placeholder="https://…"
@@ -173,7 +232,7 @@ export default function DocEditorScreen() {
             onChangeText={setBodyInput}
             onBlur={() => {
               if (bodyInput != null && bodyInput !== (doc.body ?? "")) {
-                void update({ docId: docId as any, body: bodyInput });
+                void maybeForkThenUpdate({ body: bodyInput });
               }
             }}
             placeholder="Short note…"

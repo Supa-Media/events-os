@@ -60,6 +60,9 @@ export const create = mutation({
     title: v.string(),
     url: v.optional(v.string()),
     body: v.optional(v.string()),
+    // Origin of the doc: a template master (`"template"`) shared by reference, or
+    // an event-local doc (`"event"`). Defaults to `"event"` when omitted.
+    scope: v.optional(v.union(v.literal("template"), v.literal("event"))),
   },
   handler: async (ctx, args) => {
     const chapterId = await requireChapterId(ctx);
@@ -72,12 +75,71 @@ export const create = mutation({
       url: args.url,
       body: args.body,
       shareId: makeShareId(),
+      scope: args.scope ?? "event",
       createdBy,
       createdAt: now,
       updatedAt: now,
     });
     const doc = await ctx.db.get(_id);
     return { _id, shareId: doc!.shareId };
+  },
+});
+
+/**
+ * Copy-on-write fork for an event item's How-To cell.
+ *
+ * When a How-To is edited from an EVENT instance but its cell still points at a
+ * template-origin (shared) doc, we must not mutate the master. This clones the
+ * doc into a fresh `scope: "event"` copy, repoints THAT event item's
+ * `fields[colKey]` at the copy, and returns the new doc id so the caller can
+ * apply the actual edit to the copy. The template master and all sibling events
+ * keep the original.
+ *
+ * Both the doc and the event item are authorized against the caller's chapter.
+ */
+export const forkForEventItem = mutation({
+  args: {
+    docId: v.id("docs"),
+    eventItemId: v.id("eventItems"),
+    colKey: v.string(),
+  },
+  handler: async (ctx, { docId, eventItemId, colKey }) => {
+    const chapterId = await requireChapterId(ctx);
+    const createdBy = await requireCallerPerson(ctx, chapterId);
+
+    const doc = await ctx.db.get(docId);
+    await requireInChapter(ctx, chapterId, doc, "Doc");
+
+    const item = await ctx.db.get(eventItemId);
+    if (!item) {
+      throw new ConvexError({
+        code: "NOT_FOUND",
+        message: "Event item not found in your chapter.",
+      });
+    }
+    const event = await ctx.db.get(item.eventId);
+    await requireInChapter(ctx, chapterId, event, "Event");
+
+    const now = Date.now();
+    const _id = await ctx.db.insert("docs", {
+      chapterId: chapterId as Id<"chapters">,
+      kind: doc!.kind,
+      title: doc!.title,
+      url: doc!.url,
+      body: doc!.body,
+      shareId: makeShareId(),
+      scope: "event",
+      forkedFromDocId: docId,
+      createdBy,
+      createdAt: now,
+      updatedAt: now,
+    });
+
+    // Repoint only this event item's cell at the copy; preserve the rest of fields.
+    const nextFields = { ...(item.fields ?? {}), [colKey]: _id };
+    await ctx.db.patch(eventItemId, { fields: nextFields });
+
+    return { _id };
   },
 });
 

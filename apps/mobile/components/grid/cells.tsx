@@ -489,13 +489,35 @@ const HOW_TO_KINDS: Array<{
   { value: "markdown", label: "Markdown page", icon: "book-open" },
 ];
 
-function HowToCell({ value, editable, onChange }: any) {
+function HowToCell({ value, editable, onChange, mode, eventItemId, colKey }: any) {
   const router = useRouter();
   const { ref, anchor, visible, open, close } = useAnchor();
   const docId = typeof value === "string" && value.length > 0 ? value : null;
   const doc = useQuery(api.docs.get, docId ? { docId: docId as any } : "skip");
   const createDoc = useMutation(api.docs.create);
   const updateDoc = useMutation(api.docs.update);
+  const forkDoc = useMutation(api.docs.forkForEventItem);
+
+  // Whether this cell lives on an event (vs a template) — only event cells fork.
+  const isEvent = mode === "event";
+
+  /**
+   * Inline commit for an EVENT cell, with copy-on-write. If the cell's doc is
+   * still a shared (template-origin) doc, fork it first, repoint the cell at the
+   * copy, then write the edit to the copy. A doc already `scope === "event"` (a
+   * prior fork, or one created directly on this event) is updated in place.
+   * Template cells just update in place — they never fork.
+   */
+  async function commitInline(patch: { url?: string; body?: string }) {
+    if (!docId) return;
+    if (isEvent && doc && doc.scope !== "event" && eventItemId && colKey) {
+      const res = await forkDoc({ docId: docId as any, eventItemId, colKey });
+      onChange(res._id);
+      await updateDoc({ docId: res._id as any, ...patch });
+      return;
+    }
+    await updateDoc({ docId: docId as any, ...patch });
+  }
 
   // Empty cell → "+ How-To" with a kind picker.
   if (!docId) {
@@ -523,7 +545,13 @@ function HowToCell({ value, editable, onChange }: any) {
                 key={k.value}
                 onPress={async () => {
                   close();
-                  const res = await createDoc({ kind: k.value, title: "Untitled" });
+                  // Created docs take the grid's scope: template grids author the
+                  // shared master; event grids author an event-local doc.
+                  const res = await createDoc({
+                    kind: k.value,
+                    title: "Untitled",
+                    scope: isEvent ? "event" : "template",
+                  });
                   onChange(res._id);
                   if (k.value === "markdown") router.push(`/doc/${res._id}` as any);
                 }}
@@ -571,7 +599,7 @@ function HowToCell({ value, editable, onChange }: any) {
           value={doc.body ?? ""}
           placeholder="Note…"
           parse={(t) => (t.trim() ? t : "")}
-          onCommit={(t) => updateDoc({ docId: docId as any, body: t })}
+          onCommit={(t) => commitInline({ body: t })}
         />
       </View>
     );
@@ -586,7 +614,7 @@ function HowToCell({ value, editable, onChange }: any) {
           value={doc.url ?? ""}
           placeholder={doc.kind === "video" ? "Video URL" : "Link URL"}
           parse={(t) => (t.trim() ? t.trim() : "")}
-          onCommit={(t) => updateDoc({ docId: docId as any, url: t })}
+          onCommit={(t) => commitInline({ url: t })}
         />
         {doc.url ? (
           <Pressable
@@ -601,10 +629,16 @@ function HowToCell({ value, editable, onChange }: any) {
     );
   }
 
-  // Markdown → title + Open (navigates to the doc editor screen).
+  // Markdown → title + Open (navigates to the doc editor screen). Event cells
+  // carry owner context so the editor can fork-on-first-edit (copy-on-write);
+  // template cells navigate plain so they always edit the master in place.
+  const markdownHref =
+    isEvent && eventItemId && colKey
+      ? `/doc/${docId}?ownerItem=${eventItemId}&ownerCol=${encodeURIComponent(colKey)}`
+      : `/doc/${docId}`;
   return (
     <Pressable
-      onPress={() => router.push(`/doc/${docId}` as any)}
+      onPress={() => router.push(markdownHref as any)}
       className="flex-1 flex-row items-center justify-between gap-2 px-2 py-1.5 active:bg-sunken web:hover:bg-sunken"
     >
       <View className="flex-1 flex-row items-center gap-1.5">
@@ -732,7 +766,16 @@ export function GridCell(ctx: CellContext) {
     case "photo":
       return <PhotoCell value={value} editable={editable} onChange={onChange} />;
     case "how_to":
-      return <HowToCell value={value} editable={editable} onChange={onChange} />;
+      return (
+        <HowToCell
+          value={value}
+          editable={editable}
+          onChange={onChange}
+          mode={mode}
+          eventItemId={item._id}
+          colKey={column.key}
+        />
+      );
     case "longtext":
       return (
         <InlineText
