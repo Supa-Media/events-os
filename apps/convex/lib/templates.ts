@@ -217,6 +217,42 @@ export async function cloneRolesToEvent(
 }
 
 /**
+ * Materialize a template's PLACEHOLDER crew (templatePeople) into real chapter
+ * `people` rows flagged `isPlaceholder`, one per template row. Returns a map
+ * from the templatePerson id (string) to the new `people` id, so cloned event
+ * Expectations items can repoint their owner from the placeholder reference
+ * (stored in the template item's `fields.templateOwnerId`) to the real row. The
+ * team then swaps each placeholder for a real volunteer later.
+ */
+export async function clonePlaceholderCrewToChapter(
+  ctx: any,
+  eventTypeId: Id<"eventTypes">,
+  chapterId: Id<"chapters">,
+  now: number,
+): Promise<Map<string, Id<"people">>> {
+  const rows = (
+    await ctx.db
+      .query("templatePeople")
+      .withIndex("by_template", (q: any) => q.eq("eventTypeId", eventTypeId))
+      .collect()
+  ).sort((a: any, b: any) => a.order - b.order);
+
+  const idMap = new Map<string, Id<"people">>();
+  for (const r of rows) {
+    const newId = (await ctx.db.insert("people", {
+      chapterId,
+      name: r.name,
+      role: r.role,
+      isPlaceholder: true,
+      isActive: true,
+      createdAt: now,
+    })) as Id<"people">;
+    idMap.set(String(r._id), newId);
+  }
+  return idMap;
+}
+
+/**
  * Resolve the roster person for a user, creating one if they aren't on the
  * roster yet — so the event creator can always be set as the accountable owner.
  * The creator IS a team member; linking a `people` row (by `userId`) lets them
@@ -309,6 +345,15 @@ export async function instantiateEvent(
   // Clone the template's roles onto the event; remap item roleId via this map.
   const roleIdMap = await cloneRolesToEvent(ctx, opts.eventType._id, eventId);
 
+  // Materialize the template's placeholder crew into real chapter people; map
+  // templatePerson id → new people id so Expectations items can be pre-owned.
+  const placeholderMap = await clonePlaceholderCrewToChapter(
+    ctx,
+    opts.eventType._id,
+    opts.chapterId,
+    now,
+  );
+
   // Clone the template's custom modules onto the event.
   const templateMods = await ctx.db
     .query("templateModules")
@@ -350,6 +395,18 @@ export async function instantiateEvent(
       isDayOffsetModule(it.module) && it.offsetDays !== undefined
         ? computeDueDate(opts.eventDate, it.offsetDays)
         : undefined;
+    // Expectations rows authored against a placeholder crew member carry the
+    // templatePerson id in fields.templateOwnerId — repoint it to the real
+    // materialized person and strip the now-stale template owner fields.
+    let ownerPersonId: Id<"people"> | undefined;
+    let fields = it.fields;
+    const templateOwnerId = it.fields?.templateOwnerId;
+    if (templateOwnerId) {
+      ownerPersonId = placeholderMap.get(String(templateOwnerId));
+      const { templateOwnerId: _o, templateOwnerName: _n, ...rest } =
+        it.fields as Record<string, any>;
+      fields = Object.keys(rest).length > 0 ? rest : undefined;
+    }
     await ctx.db.insert("eventItems", {
       eventId,
       chapterId: opts.chapterId,
@@ -360,6 +417,7 @@ export async function instantiateEvent(
       offsetMinutes: it.offsetMinutes,
       dueDate,
       roleId: it.roleId ? roleIdMap.get(String(it.roleId)) : undefined,
+      ownerPersonId,
       status: it.status ?? defaultStatusValue(it.module as ModuleKey),
       // Carry the template author's pre-plan cell marks onto the event so they
       // show up as check-off cells; nothing is checked yet (prePlanChecked unset).
@@ -374,7 +432,60 @@ export async function instantiateEvent(
       // from an event forks a `scope: "event"` copy and repoints that event
       // item's cell at it (see `docs.forkForEventItem`), so the master and all
       // sibling events keep the original. Subsequent edits land on the copy.
-      fields: it.fields,
+      fields,
+    });
+  }
+
+  // Clone the template's SITE MAP onto the event: the background image plus
+  // every marker and shape (new event-scoped rows, same geometry/labels/colors).
+  // Placements are deliberately NOT cloned — they reference per-event supplies/
+  // volunteers that don't exist yet.
+  if (opts.eventType.siteMapImage) {
+    await ctx.db.patch(eventId, {
+      siteMapImage: opts.eventType.siteMapImage,
+      updatedAt: now,
+    });
+  }
+
+  const templateMarkers = await ctx.db
+    .query("siteMarkers")
+    .withIndex("by_template", (q: any) =>
+      q.eq("eventTypeId", opts.eventType._id),
+    )
+    .collect();
+  for (const m of templateMarkers) {
+    await ctx.db.insert("siteMarkers", {
+      chapterId: opts.chapterId,
+      eventId,
+      x: m.x,
+      y: m.y,
+      label: m.label,
+      color: m.color,
+      category: m.category,
+      createdAt: now,
+    });
+  }
+
+  const templateShapes = await ctx.db
+    .query("siteShapes")
+    .withIndex("by_template", (q: any) =>
+      q.eq("eventTypeId", opts.eventType._id),
+    )
+    .collect();
+  for (const s of templateShapes) {
+    await ctx.db.insert("siteShapes", {
+      chapterId: opts.chapterId,
+      eventId,
+      type: s.type,
+      x: s.x,
+      y: s.y,
+      w: s.w,
+      h: s.h,
+      x2: s.x2,
+      y2: s.y2,
+      color: s.color,
+      label: s.label,
+      createdAt: now,
     });
   }
 

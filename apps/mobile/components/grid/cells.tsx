@@ -41,7 +41,14 @@ import { OptionTag } from "../ui/OptionTag";
 import { Popover } from "../ui/Popover";
 import { RolePicker } from "../ui/RolePicker";
 import { PersonPicker } from "../ui/PersonPicker";
-import { cellValue, type GridColumn, type GridItem, type GridMode } from "./useGridData";
+import { TemplateOwnerPicker } from "../ui/TemplateOwnerPicker";
+import {
+  cellValue,
+  isTemplateOwnerCell,
+  type GridColumn,
+  type GridItem,
+  type GridMode,
+} from "./useGridData";
 
 export interface CellContext {
   column: GridColumn;
@@ -52,6 +59,8 @@ export interface CellContext {
   eventDate?: number;
   editable: boolean;
   onChange: (value: any) => void;
+  /** Template mode: the eventType id, used to source placeholder-crew owners. */
+  templateId?: string;
 }
 
 // ── Inline text input (commits on blur) ──────────────────────────────────────
@@ -322,6 +331,51 @@ function PersonCell({ value, ownerName, inherited, editable, onChange }: any) {
   );
 }
 
+// ── Template owner (placeholder crew) ─────────────────────────────────────────
+// On a TEMPLATE the Expectations owner is a placeholder crew member, not a real
+// person. The stored value is the templatePerson id (in fields.templateOwnerId)
+// plus a cached display name (fields.templateOwnerName). Picking reports
+// `{ id, name }`; clearing reports null.
+function TemplateOwnerCell({ item, templateId, editable, onChange }: any) {
+  const [open, setOpen] = useState(false);
+  const name = item.fields?.templateOwnerName ?? null;
+  const selectedId = item.fields?.templateOwnerId ?? null;
+  return (
+    <>
+      <Pressable
+        disabled={!editable}
+        onPress={() => setOpen(true)}
+        className="flex-1 flex-row items-center gap-2 px-2 py-1.5 active:opacity-70"
+      >
+        {name ? (
+          <>
+            <Avatar name={name} size={22} />
+            <Text className="text-sm text-ink" numberOfLines={1}>
+              {name}
+            </Text>
+          </>
+        ) : (
+          <Text className="text-sm text-faint">—</Text>
+        )}
+      </Pressable>
+      <TemplateOwnerPicker
+        visible={open}
+        eventTypeId={templateId}
+        selectedId={selectedId}
+        onPick={(id: string, picked: string) => {
+          onChange({ id, name: picked });
+          setOpen(false);
+        }}
+        onClear={() => {
+          onChange(null);
+          setOpen(false);
+        }}
+        onClose={() => setOpen(false)}
+      />
+    </>
+  );
+}
+
 // ── Chip-edit (offsets): show a chip, tap to edit a number ────────────────────
 function ChipEditCell({ value, editable, onChange, format, placeholder }: any) {
   const [editing, setEditing] = useState(false);
@@ -489,6 +543,60 @@ const HOW_TO_KINDS: Array<{
   { value: "markdown", label: "Markdown page", icon: "book-open" },
 ];
 
+/**
+ * Small kind switcher for an EXISTING how-to cell. Renders a chevron button that
+ * opens a Popover listing the four kinds; picking one patches only `doc.kind`
+ * (lossless — `url`/`body` are left untouched so they reappear if switched
+ * back). Routes through `onPick`, which the parent wires to its copy-on-write
+ * commit so an event cell forks before changing kind.
+ */
+function HowToKindMenu({
+  currentKind,
+  editable,
+  onPick,
+}: {
+  currentKind: "link" | "video" | "note" | "markdown";
+  editable: boolean;
+  onPick: (kind: "link" | "video" | "note" | "markdown") => void;
+}) {
+  const { ref, anchor, visible, open, close } = useAnchor();
+  if (!editable) return null;
+  return (
+    <>
+      <Pressable
+        ref={ref}
+        onPress={open}
+        hitSlop={6}
+        className="rounded p-1 active:bg-sunken web:hover:bg-sunken"
+      >
+        <Icon name="chevron-down" size={13} color={colors.faint} />
+      </Pressable>
+      <Popover visible={visible} onClose={close} anchor={anchor} width={200}>
+        <View className="py-1">
+          {HOW_TO_KINDS.map((k) => (
+            <Pressable
+              key={k.value}
+              onPress={() => {
+                close();
+                if (k.value !== currentKind) onPick(k.value);
+              }}
+              className="flex-row items-center justify-between gap-2 px-3 py-2 active:bg-sunken web:hover:bg-sunken"
+            >
+              <View className="flex-row items-center gap-2">
+                <Icon name={k.icon} size={15} color={colors.muted} />
+                <Text className="text-sm text-ink">{k.label}</Text>
+              </View>
+              {k.value === currentKind ? (
+                <Icon name="check" size={15} color={colors.accent} />
+              ) : null}
+            </Pressable>
+          ))}
+        </View>
+      </Popover>
+    </>
+  );
+}
+
 function HowToCell({ value, editable, onChange, mode, eventItemId, colKey }: any) {
   const router = useRouter();
   const { ref, anchor, visible, open, close } = useAnchor();
@@ -507,8 +615,15 @@ function HowToCell({ value, editable, onChange, mode, eventItemId, colKey }: any
    * copy, then write the edit to the copy. A doc already `scope === "event"` (a
    * prior fork, or one created directly on this event) is updated in place.
    * Template cells just update in place — they never fork.
+   *
+   * Switching `kind` is lossless: we patch only `kind` and leave `url`/`body`
+   * alone, so the other field reappears if the user switches back.
    */
-  async function commitInline(patch: { url?: string; body?: string }) {
+  async function commitInline(patch: {
+    url?: string;
+    body?: string;
+    kind?: "link" | "video" | "note" | "markdown";
+  }) {
     if (!docId) return;
     if (isEvent && doc && doc.scope !== "event" && eventItemId && colKey) {
       const res = await forkDoc({ docId: docId as any, eventItemId, colKey });
@@ -601,6 +716,11 @@ function HowToCell({ value, editable, onChange, mode, eventItemId, colKey }: any
           parse={(t) => (t.trim() ? t : "")}
           onCommit={(t) => commitInline({ body: t })}
         />
+        <HowToKindMenu
+          currentKind={doc.kind}
+          editable={editable}
+          onPick={(kind) => commitInline({ kind })}
+        />
       </View>
     );
   }
@@ -625,6 +745,11 @@ function HowToCell({ value, editable, onChange, mode, eventItemId, colKey }: any
             <Icon name="external-link" size={14} color={colors.accent} />
           </Pressable>
         ) : null}
+        <HowToKindMenu
+          currentKind={doc.kind}
+          editable={editable}
+          onPick={(kind) => commitInline({ kind })}
+        />
       </View>
     );
   }
@@ -637,27 +762,47 @@ function HowToCell({ value, editable, onChange, mode, eventItemId, colKey }: any
       ? `/doc/${docId}?ownerItem=${eventItemId}&ownerCol=${encodeURIComponent(colKey)}`
       : `/doc/${docId}`;
   return (
-    <Pressable
-      onPress={() => router.push(markdownHref as any)}
-      className="flex-1 flex-row items-center justify-between gap-2 px-2 py-1.5 active:bg-sunken web:hover:bg-sunken"
-    >
-      <View className="flex-1 flex-row items-center gap-1.5">
-        <Icon name={kindIcon} size={14} color={colors.muted} />
-        <Text className="text-sm text-ink" numberOfLines={1}>
-          {doc.title || "Untitled"}
-        </Text>
-      </View>
-      <Icon name="chevron-right" size={15} color={colors.faint} />
-    </Pressable>
+    <View className="flex-1 flex-row items-center px-1">
+      <Pressable
+        onPress={() => router.push(markdownHref as any)}
+        className="flex-1 flex-row items-center justify-between gap-2 px-1 py-1.5 active:bg-sunken web:hover:bg-sunken"
+      >
+        <View className="flex-1 flex-row items-center gap-1.5">
+          <Icon name={kindIcon} size={14} color={colors.muted} />
+          <Text className="text-sm text-ink" numberOfLines={1}>
+            {doc.title || "Untitled"}
+          </Text>
+        </View>
+        <Icon name="chevron-right" size={15} color={colors.faint} />
+      </Pressable>
+      <HowToKindMenu
+        currentKind={doc.kind}
+        editable={editable}
+        onPick={(kind) => commitInline({ kind })}
+      />
+    </View>
   );
 }
 
 // ── Dispatcher ────────────────────────────────────────────────────────────────
 export function GridCell(ctx: CellContext) {
-  const { column, item, module, mode, roles, eventDate, editable, onChange } = ctx;
-  const value = cellValue(column, item, module);
+  const { column, item, module, mode, roles, eventDate, editable, onChange, templateId } = ctx;
+  const value = cellValue(column, item, module, mode);
 
-  // Owner is meaningless on a template (template items have no owner).
+  // Template Expectations owner = a placeholder crew member (templatePeople),
+  // stored in the fields bag rather than the promoted ownerPersonId.
+  if (isTemplateOwnerCell(column, module, mode)) {
+    return (
+      <TemplateOwnerCell
+        item={item}
+        templateId={templateId}
+        editable={editable}
+        onChange={onChange}
+      />
+    );
+  }
+
+  // Owner is meaningless on a template for every other module.
   if (column.key === "owner" && mode === "template") {
     return <Text className="px-2 py-1.5 text-sm text-faint">—</Text>;
   }

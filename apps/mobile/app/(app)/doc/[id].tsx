@@ -1,12 +1,26 @@
 import { useEffect, useRef, useState } from "react";
 import { View, Text, Pressable, Linking, Platform } from "react-native";
 import { Stack, useLocalSearchParams, useRouter } from "expo-router";
-import { useQuery, useMutation } from "convex/react";
+import { useQuery, useMutation, useConvex } from "convex/react";
 import { api } from "@events-os/convex/_generated/api";
 import { Screen, TextField, Icon } from "../../../components/ui";
+import { Popover } from "../../../components/ui/Popover";
 import { MarkdownEditor } from "../../../components/markdown";
 import { DocAssistantPanel } from "../../../components/ai/DocAssistantPanel";
 import { colors } from "../../../lib/theme";
+
+// How-To kinds, shared between the in-cell switcher (grid/cells) and this
+// editor's header dropdown. Switching kind is lossless — only `kind` is patched.
+const DOC_KINDS: Array<{
+  value: "note" | "link" | "video" | "markdown";
+  label: string;
+  icon: any;
+}> = [
+  { value: "note", label: "Note", icon: "file-text" },
+  { value: "link", label: "Link", icon: "link" },
+  { value: "video", label: "Video", icon: "video" },
+  { value: "markdown", label: "Markdown page", icon: "book-open" },
+];
 
 /**
  * Authed How-To doc editor — `/doc/<docId>`.
@@ -39,6 +53,23 @@ export default function DocEditorScreen() {
   const update = useMutation(api.docs.update);
   const fork = useMutation(api.docs.forkForEventItem);
 
+  // Image paste/drop in the markdown editor (web): upload to Convex storage and
+  // resolve a stable, servable URL to embed as `![](url)`.
+  const convex = useConvex();
+  const generateUploadUrl = useMutation(api.storage.generateUploadUrl);
+  async function uploadImage(file: Blob, contentType: string): Promise<string> {
+    const uploadUrl = await generateUploadUrl();
+    const res = await fetch(uploadUrl, {
+      method: "POST",
+      headers: { "Content-Type": contentType },
+      body: file,
+    });
+    const { storageId } = await res.json();
+    const url = await convex.query(api.storage.getUrl, { storageId });
+    if (!url) throw new Error("Could not resolve uploaded image URL");
+    return url;
+  }
+
   const [titleInput, setTitleInput] = useState<string | null>(null);
   // Body edits are buffered locally and flushed on a debounce so we don't fire a
   // mutation per keystroke. `null` = mirror the server value (e.g. after the AI
@@ -48,6 +79,23 @@ export default function DocEditorScreen() {
   const [urlInput, setUrlInput] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
   const bodySaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Header kind switcher (Note ↔ Link ↔ Video ↔ Markdown). Lossless — switching
+  // patches only `kind`, so url/body survive and reappear if switched back.
+  const kindBtnRef = useRef<any>(null);
+  const [kindMenu, setKindMenu] = useState<
+    { x: number; y: number; width: number; height: number } | null
+  >(null);
+  function openKindMenu() {
+    const node = kindBtnRef.current;
+    if (node && typeof node.measureInWindow === "function") {
+      node.measureInWindow((x: number, y: number, width: number, height: number) => {
+        setKindMenu({ x, y, width, height });
+      });
+    } else {
+      setKindMenu({ x: 0, y: 0, width: 0, height: 0 });
+    }
+  }
 
   // Copy-on-write: when editing a SHARED (template-origin) doc from an event
   // context, fork once into an event-local copy before applying the patch.
@@ -59,6 +107,7 @@ export default function DocEditorScreen() {
     title?: string;
     url?: string;
     body?: string;
+    kind?: "note" | "link" | "video" | "markdown";
   }): Promise<string> {
     const shouldFork =
       !!ownerItem &&
@@ -158,9 +207,45 @@ export default function DocEditorScreen() {
         >
           <Icon name="arrow-left" size={18} color={colors.muted} />
         </Pressable>
-        <Text className="text-xs font-bold uppercase tracking-wider text-faint">
-          {doc.kind} doc
-        </Text>
+        <Pressable
+          ref={kindBtnRef}
+          onPress={openKindMenu}
+          className="flex-row items-center gap-1 rounded-md px-1.5 py-1 active:bg-sunken web:hover:bg-sunken"
+        >
+          <Text className="text-xs font-bold uppercase tracking-wider text-faint">
+            {doc.kind} doc
+          </Text>
+          <Icon name="chevron-down" size={13} color={colors.faint} />
+        </Pressable>
+        <Popover
+          visible={kindMenu != null}
+          onClose={() => setKindMenu(null)}
+          anchor={kindMenu ?? undefined}
+          width={200}
+        >
+          <View className="py-1">
+            {DOC_KINDS.map((k) => (
+              <Pressable
+                key={k.value}
+                onPress={() => {
+                  setKindMenu(null);
+                  if (k.value !== doc.kind) {
+                    void maybeForkThenUpdate({ kind: k.value });
+                  }
+                }}
+                className="flex-row items-center justify-between gap-2 px-3 py-2 active:bg-sunken web:hover:bg-sunken"
+              >
+                <View className="flex-row items-center gap-2">
+                  <Icon name={k.icon} size={15} color={colors.muted} />
+                  <Text className="text-sm text-ink">{k.label}</Text>
+                </View>
+                {k.value === doc.kind ? (
+                  <Icon name="check" size={15} color={colors.accent} />
+                ) : null}
+              </Pressable>
+            ))}
+          </View>
+        </Popover>
         <View className="flex-1" />
         <Pressable
           onPress={share}
@@ -227,6 +312,9 @@ export default function DocEditorScreen() {
             value={bodyInput ?? doc.body ?? ""}
             onChange={onBodyChange}
             placeholder="Write your how-to in Markdown…"
+            // Web only: paste/drop images → upload → embed as `![](url)`.
+            // Native ignores this (no DOM clipboard/drag surface).
+            uploadImage={Platform.OS === "web" ? uploadImage : undefined}
           />
         </View>
       ) : null}

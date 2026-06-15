@@ -183,6 +183,36 @@ export const setEventColumnVisibility = mutation({
   },
 });
 
+/**
+ * Edit an EVENT column (label, options, width). Mirrors `updateColumn` for the
+ * template side so select/status/multiselect options can be added/removed/renamed
+ * on a live event too (event columns diverge from the template once edited —
+ * that's expected). Option `value`s are preserved by the client editor so item
+ * data isn't orphaned.
+ */
+export const updateEventColumn = mutation({
+  args: {
+    columnId: v.id("eventColumns"),
+    label: v.optional(v.string()),
+    options: v.optional(v.array(optionValidator)),
+    config: v.optional(v.any()),
+    width: v.optional(v.number()),
+  },
+  handler: async (ctx, { columnId, ...patch }) => {
+    const chapterId = await requireChapterId(ctx);
+    const col = await ctx.db.get(columnId);
+    if (!col) return columnId;
+    const event = await ctx.db.get(col.eventId);
+    await requireInChapter(ctx, chapterId, event, "Event");
+    const fields: Record<string, unknown> = {};
+    for (const [k, val] of Object.entries(patch)) {
+      if (val !== undefined) fields[k] = val;
+    }
+    await ctx.db.patch(columnId, fields);
+    return columnId;
+  },
+});
+
 /** Reorder an event module's columns. */
 export const reorderEventColumns = mutation({
   args: {

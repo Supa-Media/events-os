@@ -11,9 +11,11 @@ import {
   EmptyState,
 } from "../../../components/ui";
 import { EditableGrid } from "../../../components/grid/EditableGrid";
+import { SiteMapEditor } from "../../../components/event/SiteMapEditor";
 import { NameEditor } from "../../../components/template/NameEditor";
 import { DescriptionEditor } from "../../../components/template/DescriptionEditor";
 import { RolesCard } from "../../../components/template/RolesCard";
+import { TemplateCrewCard } from "../../../components/template/TemplateCrewCard";
 import { ModulesCard } from "../../../components/template/ModulesCard";
 import type { ModuleKey } from "@events-os/shared";
 import type { Id } from "@events-os/convex/_generated/dataModel";
@@ -63,6 +65,10 @@ export default function TemplateEditorScreen() {
 
   const active = moduleData?.active ?? [];
   const gridModules = active.filter((m) => m.surface === "grid");
+  // The site_map module is non-grid: when active, render the venue-map editor in
+  // TEMPLATE scope (background + shapes + markers; placements are event-only and
+  // hidden). The grid loop below skips it (it isn't surface === "grid").
+  const siteMapModule = active.find((m) => m.surface === "site_map") ?? null;
 
   return (
     <Screen maxWidth={FULL_WIDTH}>
@@ -83,6 +89,8 @@ export default function TemplateEditorScreen() {
 
         <RolesCard eventTypeId={eventTypeId} roles={roleList} />
 
+        <TemplateCrewCard eventTypeId={eventTypeId} />
+
         <ModulesCard
           eventTypeId={eventTypeId}
           active={active}
@@ -92,7 +100,7 @@ export default function TemplateEditorScreen() {
         />
       </Narrow>
 
-      {gridModules.length === 0 ? (
+      {gridModules.length === 0 && !siteMapModule ? (
         <Narrow>
           <View className="mt-6">
             <EmptyState
@@ -116,6 +124,19 @@ export default function TemplateEditorScreen() {
           </View>
         ))
       )}
+
+      {/* Site map (non-grid): author the template's venue layout — background
+          image + shapes + labelled markers. Cloned onto every event spun up
+          from this template. */}
+      {siteMapModule ? (
+        <View key={siteMapModule.key}>
+          <SectionHeader title={siteMapModule.label} />
+          <SiteMapEditor
+            scope={{ kind: "template", eventTypeId: eventTypeId as string }}
+            embedded
+          />
+        </View>
+      ) : null}
     </Screen>
   );
 }

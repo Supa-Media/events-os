@@ -66,10 +66,33 @@ export const people = defineTable({
   image: v.optional(v.id("_storage")),
   // A single social / web link for this person (Instagram, LinkedIn, site, …).
   socialLink: v.optional(v.string()),
+  // True when this row was materialized from a template's placeholder crew at
+  // event creation — a stand-in the team swaps for a real person later.
+  isPlaceholder: v.optional(v.boolean()),
   createdAt: v.number(),
 })
   .index("by_chapter", ["chapterId"])
   .index("by_user", ["userId"]);
+
+/**
+ * Template Crew (placeholder people) — stand-in crew authored on a TEMPLATE,
+ * before any real person exists. They name the slots an event's Expectations
+ * should be owned by (e.g. "Stage Manager", "Lead Usher"). When an event is
+ * created each row is materialized into a real chapter `people` row flagged
+ * `isPlaceholder`, and the event's Expectations items are pre-owned by them so
+ * the team can later swap each placeholder for a real volunteer.
+ */
+export const templatePeople = defineTable({
+  eventTypeId: v.id("eventTypes"),
+  name: v.string(),
+  // Which team/area this placeholder belongs to (free text, mirrors the
+  // Expectations team column values).
+  team: v.optional(v.string()),
+  // Free-form role/title for the placeholder (e.g. "Stage Manager").
+  role: v.optional(v.string()),
+  order: v.number(),
+  createdAt: v.number(),
+}).index("by_template", ["eventTypeId"]);
 
 /**
  * Engagement — one PERSON's involvement in one EVENT, on specific terms.

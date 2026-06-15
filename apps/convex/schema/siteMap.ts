@@ -2,13 +2,19 @@ import { defineTable } from "convex/server";
 import { v } from "convex/values";
 
 /**
- * Site-map marker — a labelled pin placed on an event's venue map at a
- * normalized position (x,y in 0..1 of the image), categorized (team area,
- * station, equipment drop, stage…). The visual layout of where things go.
+ * Site-map marker — a labelled pin placed on a venue map at a normalized
+ * position (x,y in 0..1 of the image), categorized (team area, station,
+ * equipment drop, stage…). The visual layout of where things go.
+ *
+ * Scope: belongs EITHER to a live event (`eventId`) or to a TEMPLATE
+ * (`eventTypeId`). Exactly one is set; template markers are cloned onto new
+ * events at creation. The full map (image + shapes + markers) lives on the
+ * template; placements (which reference per-event rows) stay event-only.
  */
 export const siteMarkers = defineTable({
   chapterId: v.id("chapters"),
-  eventId: v.id("events"),
+  eventId: v.optional(v.id("events")),
+  eventTypeId: v.optional(v.id("eventTypes")),
   x: v.number(),
   y: v.number(),
   label: v.string(),
@@ -19,16 +25,22 @@ export const siteMarkers = defineTable({
   createdAt: v.number(),
 })
   .index("by_event", ["eventId"])
+  .index("by_template", ["eventTypeId"])
   .index("by_chapter", ["chapterId"]);
 
 /**
  * Site-map shape — a basic sketched element so you can rough out the venue
  * WITHOUT a background image. `rect`/`circle` use (x,y) top-left + (w,h);
  * `line` uses (x,y)→(x2,y2). All coords normalized 0..1.
+ *
+ * Scope: belongs EITHER to a live event (`eventId`) or to a TEMPLATE
+ * (`eventTypeId`), exactly like `siteMarkers` — template shapes are cloned onto
+ * new events at creation.
  */
 export const siteShapes = defineTable({
   chapterId: v.id("chapters"),
-  eventId: v.id("events"),
+  eventId: v.optional(v.id("events")),
+  eventTypeId: v.optional(v.id("eventTypes")),
   type: v.union(v.literal("rect"), v.literal("circle"), v.literal("line")),
   x: v.number(),
   y: v.number(),
@@ -41,6 +53,7 @@ export const siteShapes = defineTable({
   createdAt: v.number(),
 })
   .index("by_event", ["eventId"])
+  .index("by_template", ["eventTypeId"])
   .index("by_chapter", ["chapterId"]);
 
 /**

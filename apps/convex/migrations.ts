@@ -89,6 +89,38 @@ export const migrateModulesToDeltas = internalMutation({
   },
 });
 
+/**
+ * Cleanup after `migrateRolesToScoped`: the roles migration repoints references
+ * but leaves two pieces of legacy state that the strict schema rejects —
+ *   1. `eventTypes.activeRoleIds` (field no longer in the schema), and
+ *   2. the orphaned old chapter `roles` table rows (table no longer in schema).
+ * Run this LAST (after both migrations) so a strict schema push validates clean.
+ * Idempotent: skips eventTypes already cleared; deletes whatever roles remain.
+ */
+export const cleanupLegacyRoles = internalMutation({
+  args: {},
+  handler: async (ctx) => {
+    let eventTypesCleared = 0;
+    let rolesDeleted = 0;
+
+    for (const et of await ctx.db.query("eventTypes").collect()) {
+      if ((et as any).activeRoleIds !== undefined) {
+        await ctx.db.patch(et._id, { activeRoleIds: undefined } as any);
+        eventTypesCleared++;
+      }
+    }
+
+    // The old chapter-role table is gone from the schema; its rows are orphaned
+    // once refs are repointed. Query/delete via `as any` since it's untyped now.
+    for (const r of await (ctx.db as any).query("roles").collect()) {
+      await ctx.db.delete(r._id);
+      rolesDeleted++;
+    }
+
+    return { eventTypesCleared, rolesDeleted };
+  },
+});
+
 export const migrateRolesToScoped = internalMutation({
   args: {},
   handler: async (ctx) => {
