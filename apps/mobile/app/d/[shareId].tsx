@@ -7,8 +7,13 @@ import { MarkdownView } from "../../components/markdown";
 import { colors } from "../../lib/theme";
 
 /**
- * PUBLIC, read-only How-To doc — reachable at `/doc/<shareId>` (and via the
- * `eventsos://doc/<shareId>` deep link).
+ * PUBLIC, read-only How-To doc — reachable at `/d/<shareId>` (and via the
+ * `eventsos://d/<shareId>` deep link).
+ *
+ * NOTE: this lives at `/d/<shareId>`, NOT `/doc/<shareId>`, to avoid colliding
+ * with the auth-gated editor at `(app)/doc/[id]` (the `(app)` group adds no URL
+ * segment, so it is also `/doc/<id>`). Two routes at one path let the authed one
+ * win, bouncing share-link recipients to login.
  *
  * Lives under `app/` OUTSIDE the `(app)`/`(auth)` route groups, so it is NOT
  * behind the auth guard — the root layout renders `<Slot/>` inside the Convex

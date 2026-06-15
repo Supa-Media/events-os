@@ -29,9 +29,10 @@ const DOC_KINDS: Array<{
  * `MarkdownEditor`, saving through `api.docs.update` (title on blur, body
  * debounced). For markdown docs, a floating Notion-AI-style `DocAssistantPanel`
  * docks to the right: the user chats with an agent that rewrites the doc's
- * markdown. A Share button copies the public `/doc/<shareId>` URL (web) /
- * surfaces the `eventsos://doc/<shareId>` deep link. Link/video/note docs get a
- * simple URL/text editor instead of the markdown surface.
+ * markdown. A Share button copies the public `/d/<shareId>` URL (web) /
+ * surfaces the `eventsos://d/<shareId>` deep link. A Public/Internal toggle
+ * controls whether that link resolves (default Public). Link/video/note docs get
+ * a simple URL/text editor instead of the markdown surface.
  */
 export default function DocEditorScreen() {
   const router = useRouter();
@@ -108,6 +109,7 @@ export default function DocEditorScreen() {
     url?: string;
     body?: string;
     kind?: "note" | "link" | "video" | "markdown";
+    visibility?: "public" | "internal";
   }): Promise<string> {
     const shouldFork =
       !!ownerItem &&
@@ -163,12 +165,15 @@ export default function DocEditorScreen() {
   const isNote = doc.kind === "note";
   const isLinkLike = doc.kind === "link" || doc.kind === "video";
 
-  // The public share targets.
+  // The public share targets. NOTE: the public viewer lives at `/d/<shareId>`,
+  // NOT `/doc/<shareId>` — the latter collides with THIS authed editor (the
+  // `(app)` group adds no URL segment) and would bounce recipients to login.
   const webUrl =
     Platform.OS === "web" && typeof window !== "undefined"
-      ? `${window.location.origin}/doc/${doc.shareId}`
-      : `/doc/${doc.shareId}`;
-  const deepLink = `eventsos://doc/${doc.shareId}`;
+      ? `${window.location.origin}/d/${doc.shareId}`
+      : `/d/${doc.shareId}`;
+  const deepLink = `eventsos://d/${doc.shareId}`;
+  const isInternal = doc.visibility === "internal";
 
   async function share() {
     if (Platform.OS === "web" && typeof navigator !== "undefined" && navigator.clipboard) {
@@ -247,6 +252,25 @@ export default function DocEditorScreen() {
           </View>
         </Popover>
         <View className="flex-1" />
+        {/* Public ↔ Internal toggle. Default Public; Internal makes the public
+            `/d/<shareId>` link return null (looks unavailable to the public). */}
+        <Pressable
+          onPress={() => {
+            void maybeForkThenUpdate({
+              visibility: isInternal ? "public" : "internal",
+            });
+          }}
+          className="flex-row items-center gap-1.5 rounded-md border border-border px-3 py-1.5 active:bg-sunken web:hover:bg-sunken"
+        >
+          <Icon
+            name={isInternal ? "lock" : "globe"}
+            size={14}
+            color={isInternal ? colors.muted : colors.accent}
+          />
+          <Text className="text-sm font-medium text-muted">
+            {isInternal ? "Internal" : "Public"}
+          </Text>
+        </Pressable>
         <Pressable
           onPress={share}
           className="flex-row items-center gap-1.5 rounded-md border border-border px-3 py-1.5 active:bg-sunken web:hover:bg-sunken"
@@ -272,8 +296,16 @@ export default function DocEditorScreen() {
       />
 
       <View className="mt-2">
-        <Text className="text-2xs text-faint">Public link · {webUrl}</Text>
-        <Text className="text-2xs text-faint">Deep link · {deepLink}</Text>
+        {isInternal ? (
+          <Text className="text-2xs text-faint">
+            Internal · not publicly viewable. Set to Public to share a link.
+          </Text>
+        ) : (
+          <>
+            <Text className="text-2xs text-faint">Public link · {webUrl}</Text>
+            <Text className="text-2xs text-faint">Deep link · {deepLink}</Text>
+          </>
+        )}
       </View>
 
       {/* Body editor by kind */}

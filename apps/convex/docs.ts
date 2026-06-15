@@ -4,7 +4,7 @@
  * Each How-To grid cell stores an `Id<"docs">`; this module is its CRUD. Authed
  * reads/writes are chapter-scoped through the shared context helpers. A doc also
  * carries a short unguessable `shareId` so it can be read with NO auth at
- * `/doc/<shareId>` via `getPublic` (same capability model as the crew share
+ * `/d/<shareId>` via `getPublic` (same capability model as the crew share
  * page) — that path returns ONLY the doc's safe display fields, never chapter
  * data.
  */
@@ -20,6 +20,9 @@ const docKind = v.union(
   v.literal("note"),
   v.literal("markdown"),
 );
+
+/** Public/internal visibility — mirrors the `docs` table union. */
+const docVisibility = v.union(v.literal("public"), v.literal("internal"));
 
 /**
  * A short, unguessable public slug. `Math.random` is fine inside Convex
@@ -154,7 +157,7 @@ export const get = query({
   },
 });
 
-/** Update a doc's title / url / body / kind (authed, chapter-scoped). */
+/** Update a doc's title / url / body / kind / visibility (authed, chapter-scoped). */
 export const update = mutation({
   args: {
     docId: v.id("docs"),
@@ -162,6 +165,7 @@ export const update = mutation({
     url: v.optional(v.string()),
     body: v.optional(v.string()),
     kind: v.optional(docKind),
+    visibility: v.optional(docVisibility),
   },
   handler: async (ctx, { docId, ...patch }) => {
     const chapterId = await requireChapterId(ctx);
@@ -172,17 +176,22 @@ export const update = mutation({
     if (patch.url !== undefined) fields.url = patch.url;
     if (patch.body !== undefined) fields.body = patch.body;
     if (patch.kind !== undefined) fields.kind = patch.kind;
+    if (patch.visibility !== undefined) fields.visibility = patch.visibility;
     await ctx.db.patch(docId, fields);
     return docId;
   },
 });
 
 /**
- * PUBLIC, no-auth doc read by share slug — reachable at `/doc/<shareId>`.
+ * PUBLIC, no-auth doc read by share slug — reachable at `/d/<shareId>`.
  *
  * Mirrors `events.publicCrew`: it does NOT call requireChapterId/requireUserId,
  * so a logged-out caller can load it. Returns ONLY the safe display fields; the
  * `chapterId`, `createdBy`, and timestamps are never leaked.
+ *
+ * Visibility gate: an `internal` doc returns null (looks like a missing link to a
+ * logged-out viewer). Undefined or `public` visibility returns the doc — so all
+ * existing docs stay public by default.
  */
 export const getPublic = query({
   args: { shareId: v.string() },
@@ -192,6 +201,7 @@ export const getPublic = query({
       .withIndex("by_share", (q: any) => q.eq("shareId", shareId))
       .first();
     if (!doc) return null;
+    if (doc.visibility === "internal") return null;
     return {
       kind: doc.kind,
       title: doc.title,
