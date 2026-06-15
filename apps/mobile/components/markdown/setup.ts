@@ -81,6 +81,15 @@ function dataTransferHasText(dt: DataTransfer | null): boolean {
  * the placeholder for `![](<url>)`. The placeholder text is matched and replaced
  * by exact string (re-located at swap time) so concurrent typing can't corrupt
  * positions.
+ *
+ * A Markdown image only renders as an inline `<img>` (see ./imagePreview.ts)
+ * when it parses as an `Image` node, which requires it to sit on its own line —
+ * glued onto the end of a paragraph (e.g. `…text.![](url)`) it stays raw text,
+ * so the user sees nothing appear and assumes the upload failed. The caret is
+ * usually mid-paragraph or at end-of-text, so we wrap the placeholder in
+ * newlines to drop it onto its own block. The surrounding newlines are plain
+ * inserted characters; the placeholder token itself is untouched, so the
+ * string-match in `replacePlaceholder` still relocates and swaps it correctly.
  */
 function embedImage(
   view: EditorView,
@@ -90,9 +99,22 @@ function embedImage(
 ) {
   // Unique token so multiple concurrent uploads don't collide.
   const token = `![uploading…#${Math.random().toString(36).slice(2, 8)}]()`;
+  // Drop the image onto its own line: add a leading newline unless we're
+  // already at the start of a line, and a trailing newline unless the next
+  // char is already a line break. A bare `![](url)` only parses as a block
+  // `Image` node — and so renders inline — when it's terminated by a line
+  // break, so at end-of-doc (no following char) we MUST append one.
+  const docText = view.state.doc.toString();
+  const prevChar = pos > 0 ? docText[pos - 1] : "\n";
+  const atDocEnd = pos >= docText.length;
+  const nextChar = atDocEnd ? "" : docText[pos];
+  const prefix = prevChar === "\n" ? "" : "\n";
+  const suffix = nextChar === "\n" ? "" : "\n";
+  const insert = `${prefix}${token}${suffix}`;
   view.dispatch({
-    changes: { from: pos, insert: token },
-    selection: { anchor: pos + token.length },
+    changes: { from: pos, insert },
+    // Park the caret right after the placeholder (before the trailing newline).
+    selection: { anchor: pos + prefix.length + token.length },
   });
 
   const replacePlaceholder = (replacement: string) => {
@@ -106,7 +128,11 @@ function embedImage(
 
   void uploadImage(file, file.type || "image/png")
     .then((url) => replacePlaceholder(`![](${url})`))
-    .catch(() => replacePlaceholder("")); // drop the placeholder on failure.
+    .catch((err) => {
+      // eslint-disable-next-line no-console
+      console.error("[markdown] image upload failed", err);
+      replacePlaceholder(""); // drop the placeholder on failure.
+    });
 }
 
 /**
