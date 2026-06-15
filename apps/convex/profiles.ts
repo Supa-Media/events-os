@@ -11,6 +11,7 @@ import { Id } from "./_generated/dataModel";
 import { v, ConvexError } from "convex/values";
 import { getOptionalAuth } from "@supa-media/convex/auth";
 import { requireUserId, requireAccess, isAllowedEmail } from "./lib/context";
+import { findUnlinkedPersonByLoginEmail, claimFields } from "./lib/people";
 
 /** Load the current user's profile row (or null). */
 async function getProfile(ctx: any, userId: string) {
@@ -29,39 +30,21 @@ async function getMembership(ctx: any, userId: string) {
 }
 
 /**
- * Find a roster row in `chapterId` that matches `email` (case-insensitively)
- * and isn't already linked to a user account. Used to adopt a pre-existing
- * person instead of creating a duplicate when a staff member first signs in.
- */
-async function findUnlinkedPersonByEmail(
-  ctx: any,
-  chapterId: string,
-  email?: string | null,
-) {
-  const target = email?.trim().toLowerCase();
-  if (!target) return null;
-  const roster = await ctx.db
-    .query("people")
-    .withIndex("by_chapter", (q: any) => q.eq("chapterId", chapterId))
-    .collect();
-  return (
-    roster.find(
-      (p: any) => p.userId == null && p.email?.trim().toLowerCase() === target,
-    ) ?? null
-  );
-}
-
-/**
  * Mirror a logged-in staff member into the People roster as a TEAM MEMBER,
  * linked back to their account via `people.userId`. This is what lets them be
  * set as an event owner or hold a lead role (both reference `people`, not the
- * auth account). Upserts the linked row and keeps name/email/phone in sync.
+ * auth account). Upserts the linked row and keeps name/phone in sync.
  *
  * To avoid duplicating someone who's already on the roster (e.g. they were
- * added by email as a volunteer before they ever signed in), we first look for
- * a row already linked to this account, then fall back to matching an UNLINKED
- * row in the same chapter by email and adopt it (claiming it with `userId`).
- * Only when neither exists do we insert a fresh row.
+ * imported as core team by email/pwEmail before they ever signed in), we first
+ * look for a row already linked to this account, then fall back to matching an
+ * UNLINKED row in the same chapter by EITHER their personal `email` or their
+ * publicworship `pwEmail` — the login email is always the publicworship one, so
+ * matching pwEmail is what catches an imported team member. Only when neither
+ * exists do we insert a fresh row.
+ *
+ * `fields.email` is the login (publicworship) address; we record it as `pwEmail`
+ * and never overwrite an existing personal `email` with it.
  */
 async function syncStaffPerson(
   ctx: any,
@@ -73,27 +56,28 @@ async function syncStaffPerson(
     (await ctx.db
       .query("people")
       .withIndex("by_user", (q: any) => q.eq("userId", userId))
-      .first()) ?? (await findUnlinkedPersonByEmail(ctx, chapterId, fields.email));
+      .first()) ??
+    (await findUnlinkedPersonByLoginEmail(ctx, chapterId, fields.email));
 
   if (existing) {
     await ctx.db.patch(existing._id, {
       chapterId,
-      // Claim the row for this account (no-op if it was already linked).
-      userId,
-      isTeamMember: true,
       isActive: existing.isActive ?? true,
+      // Claim the row for this account + sync pwEmail without clobbering email.
+      ...claimFields(existing, userId, fields.email),
       ...(fields.name !== undefined ? { name: fields.name } : null),
-      ...(fields.email !== undefined ? { email: fields.email ?? undefined } : null),
       ...(fields.phone !== undefined ? { phone: fields.phone ?? undefined } : null),
     });
     return existing._id;
   }
 
+  const loginEmail = fields.email ?? undefined;
   return await ctx.db.insert("people", {
     chapterId,
     userId,
     name: fields.name ?? "Team member",
-    email: fields.email ?? undefined,
+    email: loginEmail,
+    pwEmail: loginEmail,
     phone: fields.phone ?? undefined,
     isTeamMember: true,
     isActive: true,
