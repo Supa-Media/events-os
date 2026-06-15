@@ -11,6 +11,7 @@
  * Bridge contract:
  *   RN -> WebView:  window.__setValue(markdown)      (via injectJavaScript)
  *                   window.__setEditable(bool)
+ *                   window.__insertImage(url)        (inserts ![](url) at caret)
  *   WebView -> RN:  postMessage(JSON{type:"change", value})
  *                   postMessage(JSON{type:"ready"})
  *
@@ -52,6 +53,22 @@ export function buildEditorHtml(opts: {
   html, body { margin: 0; padding: 0; height: 100%; background: #FDF6F6; }
   #root { height: 100%; }
   .cm-editor { height: 100%; }
+  /* iOS WebView defaults to non-selectable content, which silently disables
+     text selection, the copy/paste callout, and clipboard paste in the
+     contentEditable. Force the editor surface to be selectable + pasteable. */
+  .cm-content, .cm-line {
+    -webkit-user-select: text !important;
+    user-select: text !important;
+    -webkit-touch-callout: default !important;
+  }
+  /* Inline images rendered in place of ![](url). */
+  .cm-md-image {
+    max-width: 100%;
+    height: auto;
+    border-radius: 8px;
+    display: block;
+    margin: 4px 0;
+  }
 </style>
 </head>
 <body>
@@ -132,6 +149,45 @@ export function buildEditorHtml(opts: {
     update(u) { if (u.docChanged || u.viewportChanged || u.selectionSet) this.decorations = buildDecorations(u.view); }
   }, { decorations: (v) => v.decorations });
 
+  // ── image preview (mirror of imagePreview.ts) ─────────────────────────────
+  // Renders ![alt](url) as an inline <img>, except the one the caret is touching
+  // in edit mode (so its URL stays editable).
+  class ImageWidget extends WidgetType {
+    constructor(url, alt) { super(); this.url = url; this.alt = alt; }
+    eq(other) { return other.url === this.url && other.alt === this.alt; }
+    toDOM() { const img = document.createElement("img"); img.className = "cm-md-image"; img.src = this.url; img.alt = this.alt; return img; }
+    ignoreEvent() { return false; }
+  }
+  function parseImage(src) {
+    const m = /^!\\[([^\\]]*)\\]\\(\\s*<?([^)\\s>]*)>?(?:\\s+["'][^)]*["'])?\\s*\\)$/.exec(src);
+    if (!m) return null;
+    const url = (m[2] || "").trim();
+    if (!url) return null;
+    return { url, alt: m[1] || "" };
+  }
+  function buildImageDecorations(view, revealActive) {
+    const builder = new RangeSetBuilder();
+    for (const { from, to } of view.visibleRanges) {
+      syntaxTree(view.state).iterate({ from, to, enter: (node) => {
+        if (node.name !== "Image") return;
+        const src = view.state.doc.sliceString(node.from, node.to);
+        const parsed = parseImage(src);
+        if (!parsed) return;
+        if (revealActive && touches(view, node.from, node.to)) return;
+        builder.add(node.from, node.to, Decoration.replace({ widget: new ImageWidget(parsed.url, parsed.alt) }));
+      }});
+    }
+    return builder.finish();
+  }
+  const REVEAL_ACTIVE_IMAGES = ${editable};
+  const imagePreview = ViewPlugin.fromClass(class {
+    constructor(view) { this.decorations = buildImageDecorations(view, REVEAL_ACTIVE_IMAGES); }
+    update(u) {
+      if (u.docChanged || u.viewportChanged || (REVEAL_ACTIVE_IMAGES && u.selectionSet))
+        this.decorations = buildImageDecorations(u.view, REVEAL_ACTIVE_IMAGES);
+    }
+  }, { decorations: (v) => v.decorations });
+
   // ── theme (mirror of theme.ts) ────────────────────────────────────────────
   const editorTheme = EditorView.theme({
     "&": { color: "#210909", backgroundColor: "#FDF6F6", fontSize: "16px", height: "100%" },
@@ -168,6 +224,7 @@ export function buildEditorHtml(opts: {
     markdown({ base: markdownLanguage }),
     EditorView.lineWrapping,
     livePreview,
+    imagePreview,
     editorTheme,
     EditorState.readOnly.of(!(${editable})),
     EditorView.editable.of(${editable}),
@@ -192,6 +249,24 @@ export function buildEditorHtml(opts: {
     // editable is a static facet here; full reconfigure would require a
     // Compartment. For the doc feature, editability is fixed per-mount, so we
     // simply re-render the WebView when it changes (handled on the RN side).
+  };
+
+  // Insert an image at the current caret. Native picks + uploads the image on
+  // the RN side (no clipboard/file access inside the WebView), then injects the
+  // resolved URL here. We embed it as ![](url) on its own line so the image
+  // preview plugin renders it inline. The change event flows back as usual.
+  window.__insertImage = (url) => {
+    if (!url) return;
+    const sel = view.state.selection.main;
+    const head = sel.head;
+    const before = head > 0 ? view.state.doc.sliceString(head - 1, head) : "\\n";
+    const lead = before === "\\n" || head === 0 ? "" : "\\n";
+    const snippet = lead + "![](" + url + ")\\n";
+    view.dispatch({
+      changes: { from: head, to: sel.to, insert: snippet },
+      selection: { anchor: head + snippet.length },
+    });
+    view.focus();
   };
 
   post({ type: "ready" });

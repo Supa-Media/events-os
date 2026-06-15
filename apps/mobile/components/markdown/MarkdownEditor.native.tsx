@@ -16,9 +16,12 @@
  *
  * Same props as MarkdownEditor.web — see ./types.ts.
  */
-import { useCallback, useEffect, useRef } from "react";
-import { View } from "react-native";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { ActivityIndicator, Pressable, Text, View } from "react-native";
 import { WebView, type WebViewMessageEvent } from "react-native-webview";
+// expo-image-picker is Expo Go-safe (classified `core` in native-deps.json);
+// only used on native, where the WebView can't reach the OS clipboard/files.
+import * as ImagePicker from "expo-image-picker";
 
 import type { MarkdownEditorProps } from "./types";
 import { buildEditorHtml } from "./webviewHtml";
@@ -29,9 +32,15 @@ export function MarkdownEditor({
   editable = true,
   placeholder,
   minHeight = 480,
+  uploadImage,
 }: MarkdownEditorProps) {
   const webRef = useRef<WebView | null>(null);
   const readyRef = useRef(false);
+  const [uploading, setUploading] = useState(false);
+  // Read the latest uploadImage through a ref so the picker callback never goes
+  // stale and the WebView isn't torn down when the prop identity changes.
+  const uploadImageRef = useRef(uploadImage);
+  uploadImageRef.current = uploadImage;
   // Latest value we have injected, so we don't echo our own edits back in.
   const lastSentRef = useRef(value);
 
@@ -76,6 +85,36 @@ export function MarkdownEditor({
     [onChange, pushValue, value],
   );
 
+  // Native image flow: the WebView can't paste binary images or upload to
+  // Convex itself, so we pick + upload on the RN side, then inject the resolved
+  // URL into the editor as `![](url)` at the caret via the bridge.
+  const pickAndInsertImage = useCallback(async () => {
+    const upload = uploadImageRef.current;
+    if (!upload || uploading) return;
+    try {
+      const result = await ImagePicker.launchImageLibraryAsync({
+        mediaTypes: ImagePicker.MediaTypeOptions.Images,
+        quality: 0.9,
+      });
+      if (result.canceled || !result.assets?.length) return;
+      const asset = result.assets[0];
+      if (!asset) return;
+      setUploading(true);
+      const resp = await fetch(asset.uri);
+      const blob = await resp.blob();
+      const url = await upload(blob, asset.mimeType || blob.type || "image/jpeg");
+      const js = `window.__insertImage(${JSON.stringify(url)}); true;`;
+      webRef.current?.injectJavaScript(js);
+    } catch {
+      // Swallow — a failed pick/upload simply leaves the document unchanged.
+    } finally {
+      setUploading(false);
+    }
+  }, [uploading]);
+
+  // Show the control only when editing AND an upload path is wired (matches web).
+  const showAddImage = editable && !!uploadImage;
+
   return (
     <View
       className="overflow-hidden rounded-lg border border-border bg-surface"
@@ -95,6 +134,37 @@ export function MarkdownEditor({
         scrollEnabled
         style={{ backgroundColor: "transparent" }}
       />
+      {showAddImage ? (
+        <Pressable
+          onPress={() => void pickAndInsertImage()}
+          disabled={uploading}
+          accessibilityLabel="Add image"
+          style={{
+            position: "absolute",
+            top: 10,
+            right: 14,
+            flexDirection: "row",
+            alignItems: "center",
+            gap: 6,
+            paddingVertical: 6,
+            paddingHorizontal: 10,
+            backgroundColor: "#FAEEE9",
+            borderWidth: 1,
+            borderColor: "#EFE0DC",
+            borderRadius: 8,
+            opacity: uploading ? 0.6 : 1,
+          }}
+        >
+          {uploading ? (
+            <ActivityIndicator size="small" color="#7A5A5A" />
+          ) : (
+            <Text style={{ fontSize: 14, lineHeight: 16 }}>🖼</Text>
+          )}
+          <Text style={{ fontSize: 13, fontWeight: "600", color: "#7A5A5A" }}>
+            {uploading ? "Uploading…" : "Add image"}
+          </Text>
+        </Pressable>
+      ) : null}
     </View>
   );
 }
