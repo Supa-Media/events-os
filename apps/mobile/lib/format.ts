@@ -24,12 +24,14 @@ export function formatDate(ts: number): string {
   return `${MONTHS[d.getMonth()]} ${d.getDate()}, ${d.getFullYear()}`;
 }
 
-/** e.g. "09:05" (24h, zero-padded). */
+/** e.g. "9:05 AM" (12h with AM/PM). */
 export function formatTime(ts: number): string {
   const d = new Date(ts);
-  const hh = String(d.getHours()).padStart(2, "0");
+  const h24 = d.getHours();
+  const ampm = h24 >= 12 ? "PM" : "AM";
+  const h12 = h24 % 12 === 0 ? 12 : h24 % 12;
   const mm = String(d.getMinutes()).padStart(2, "0");
-  return `${hh}:${mm}`;
+  return `${h12}:${mm} ${ampm}`;
 }
 
 /** e.g. "Mar 14, 2026 · 09:05" */
