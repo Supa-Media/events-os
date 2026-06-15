@@ -18,13 +18,14 @@ import {
   DEFAULT_COLUMNS,
   DAY_MS,
   MODULE_KEYS,
+  LIGHTWEIGHT_ROLE_KEYS,
   DAY_OFFSET_MODULES,
   computeDueDate,
   defaultStatusValue,
   type ModuleKey,
 } from "@events-os/shared";
 import { requireUserId } from "./lib/context";
-import { toSlug, instantiateEvent } from "./lib/templates";
+import { toSlug, instantiateEvent, seedTemplateRoles } from "./lib/templates";
 
 /** The active list-backed modules for a template (activeComponents ∩ MODULE_KEYS). */
 function activeModules(activeComponents: string[]): ModuleKey[] {
@@ -73,7 +74,8 @@ interface ItemRow {
   title: string;
   offsetDays?: number;
   offsetMinutes?: number;
-  roleId?: Id<"roles">;
+  // Role KEY (resolved to the template's own templateRoles id at insert time).
+  role?: string;
   status?: string;
   fields?: Record<string, unknown>;
 }
@@ -103,12 +105,14 @@ async function seedTemplateCols(
   }
 }
 
-/** Insert a template module's base item rows. */
+/** Insert a template module's base item rows, resolving each row's role KEY to
+ *  the template's own templateRoles id. */
 async function addTemplateItems(
   ctx: any,
   eventTypeId: Id<"eventTypes">,
   module: ModuleKey,
   rows: ItemRow[],
+  roleIdByKey: Record<string, Id<"templateRoles">>,
 ) {
   for (let i = 0; i < rows.length; i++) {
     const r = rows[i];
@@ -119,7 +123,7 @@ async function addTemplateItems(
       order: i,
       offsetDays: r.offsetDays,
       offsetMinutes: r.offsetMinutes,
-      roleId: r.roleId,
+      roleId: r.role ? roleIdByKey[r.role] : undefined,
       status: r.status,
       fields: r.fields,
     });
@@ -141,34 +145,10 @@ async function buildChapterRolesAndTemplates(
   createdBy: Id<"users">,
   now: number,
 ): Promise<{
-  roleId: Record<string, Id<"roles">>;
-  allRoleIds: Id<"roles">[];
-  wwsRoleIds: Id<"roles">[];
   edenId: Id<"eventTypes">;
   ltnId: Id<"eventTypes">;
   wwsId: Id<"eventTypes">;
 }> {
-  // ── Roles (the 4 editable defaults) ────────────────────────────────────────
-  const roleId: Record<string, Id<"roles">> = {};
-  for (let i = 0; i < DEFAULT_ROLES.length; i++) {
-    const r = DEFAULT_ROLES[i];
-    roleId[r.key] = (await ctx.db.insert("roles", {
-      chapterId,
-      key: r.key,
-      label: r.label,
-      description: r.description,
-      order: i,
-      isArchived: false,
-      createdAt: now,
-    })) as Id<"roles">;
-  }
-  const allRoleIds = DEFAULT_ROLES.map((r) => roleId[r.key]);
-  const wwsRoleIds = [
-    roleId.event_lead,
-    roleId.comms_lead,
-    roleId.logistics_lead,
-  ];
-
   // ── Eden template (full) ───────────────────────────────────────────────────
   const edenId = (await ctx.db.insert("eventTypes", {
     chapterId,
@@ -176,7 +156,6 @@ async function buildChapterRolesAndTemplates(
     slug: toSlug("Eden"),
     description:
       "Full-scale flagship gathering: worship, message, ministry, and community activity.",
-    activeRoleIds: allRoleIds,
     activeComponents: [
       "planning_doc", "run_of_show", "comms", "permits", "supplies", "retro",
       "volunteer_expectations",
@@ -187,6 +166,9 @@ async function buildChapterRolesAndTemplates(
     createdAt: now,
     updatedAt: now,
   })) as Id<"eventTypes">;
+
+  // Eden owns the 4 default roles. Item rows resolve their role KEY to these ids.
+  const edenRoleByKey = await seedTemplateRoles(ctx, edenId, DEFAULT_ROLES);
 
   for (const m of activeModules([
     "planning_doc", "run_of_show", "comms", "permits", "supplies", "retro",
@@ -196,17 +178,17 @@ async function buildChapterRolesAndTemplates(
   }
 
   await addTemplateItems(ctx, edenId, "planning_doc", [
-    { title: "Draft planning doc + budget", offsetDays: -21, roleId: roleId.event_lead, fields: { details: "Spin up the doc, set the budget, line up the meeting cadence." } },
-    { title: "Confirm venue + file permits", offsetDays: -21, roleId: roleId.event_lead, fields: { details: "Lock the park, file the sound permit, identify a weather backup." } },
-    { title: "Reach out to music team for worship leaders + band", offsetDays: -14, roleId: roleId.comms_lead, fields: { details: "Confirm 1–2 worship leaders + instrumentalists; send the song bank." } },
-    { title: "Open volunteer sign-ups + brief", offsetDays: -14, roleId: roleId.comms_lead },
-    { title: "Flyer + social push", offsetDays: -7, roleId: roleId.comms_lead },
-    { title: "Confirm production / AV plan", offsetDays: -7, roleId: roleId.production_lead, fields: { details: "Sound setup + power plan; contract videographer/photographer." } },
-    { title: "Confirm supplies + packing checklist", offsetDays: -3, roleId: roleId.logistics_lead },
-    { title: "Charge batteries + pack gear (night before)", offsetDays: -1, roleId: roleId.logistics_lead },
-    { title: "Day-of setup + soundcheck", offsetDays: 0, roleId: roleId.production_lead },
-    { title: "Retro + capture learnings", offsetDays: 2, roleId: roleId.event_lead },
-  ]);
+    { title: "Draft planning doc + budget", offsetDays: -21, role: "event_lead", fields: { details: "Spin up the doc, set the budget, line up the meeting cadence." } },
+    { title: "Confirm venue + file permits", offsetDays: -21, role: "event_lead", fields: { details: "Lock the park, file the sound permit, identify a weather backup." } },
+    { title: "Reach out to music team for worship leaders + band", offsetDays: -14, role: "comms_lead", fields: { details: "Confirm 1–2 worship leaders + instrumentalists; send the song bank." } },
+    { title: "Open volunteer sign-ups + brief", offsetDays: -14, role: "comms_lead" },
+    { title: "Flyer + social push", offsetDays: -7, role: "comms_lead" },
+    { title: "Confirm production / AV plan", offsetDays: -7, role: "production_lead", fields: { details: "Sound setup + power plan; contract videographer/photographer." } },
+    { title: "Confirm supplies + packing checklist", offsetDays: -3, role: "logistics_lead" },
+    { title: "Charge batteries + pack gear (night before)", offsetDays: -1, role: "logistics_lead" },
+    { title: "Day-of setup + soundcheck", offsetDays: 0, role: "production_lead" },
+    { title: "Retro + capture learnings", offsetDays: 2, role: "event_lead" },
+  ], edenRoleByKey);
 
   await addTemplateItems(ctx, edenId, "supplies", [
     { title: "2 x Shure SM58 Mics", status: "pull_from_storage", fields: { source: "storage", container: "green_luggage", qty: 2, notes: "With WWS audio kit" } },
@@ -216,33 +198,33 @@ async function buildChapterRolesAndTemplates(
     { title: "1 x Charged 200W Battery", status: "pull_from_storage", fields: { source: "storage", container: "green_luggage", qty: 1, notes: "Needs charging the night before" } },
     { title: "100 x Red Napkins", status: "need_to_buy", fields: { source: "buy_in_store", container: "cooler", qty: 100 } },
     { title: "Charcuterie supplies", status: "need_to_order", fields: { source: "order_online", container: "cooler" } },
-  ]);
+  ], edenRoleByKey);
 
   await addTemplateItems(ctx, edenId, "comms", [
-    { title: "Reach out to marketing for flyer", offsetDays: -14, roleId: roleId.comms_lead, fields: { channel: ["team_slack"], audience: ["leaders"], notes: "Hey [marketing], we're hosting Eden on [date] — can you create a flyer?" } },
-    { title: "Ensure intro thread created", offsetDays: -13, roleId: roleId.comms_lead, fields: { channel: ["team_slack"], audience: ["leaders"] } },
-    { title: "Announce event on socials", offsetDays: -7, roleId: roleId.comms_lead, fields: { channel: ["ig_post", "ig_stories"], audience: ["general_public"] } },
-    { title: "Send a reminder to be on time", offsetDays: -3, roleId: roleId.comms_lead, fields: { channel: ["imessage_group", "team_slack"], audience: ["leaders", "musicians"] } },
-    { title: "Location + how to find us (day-of)", offsetDays: 0, roleId: roleId.comms_lead, fields: { channel: ["ig_stories", "imessage_group"], audience: ["attendees", "general_public"] } },
-    { title: "Post recap content", offsetDays: 3, roleId: roleId.comms_lead, fields: { channel: ["ig_post"], audience: ["general_public"], notes: "Marketing decides exact timing — record what landed." } },
-  ]);
+    { title: "Reach out to marketing for flyer", offsetDays: -14, role: "comms_lead", fields: { channel: ["team_slack"], audience: ["leaders"], notes: "Hey [marketing], we're hosting Eden on [date] — can you create a flyer?" } },
+    { title: "Ensure intro thread created", offsetDays: -13, role: "comms_lead", fields: { channel: ["team_slack"], audience: ["leaders"] } },
+    { title: "Announce event on socials", offsetDays: -7, role: "comms_lead", fields: { channel: ["ig_post", "ig_stories"], audience: ["general_public"] } },
+    { title: "Send a reminder to be on time", offsetDays: -3, role: "comms_lead", fields: { channel: ["imessage_group", "team_slack"], audience: ["leaders", "musicians"] } },
+    { title: "Location + how to find us (day-of)", offsetDays: 0, role: "comms_lead", fields: { channel: ["ig_stories", "imessage_group"], audience: ["attendees", "general_public"] } },
+    { title: "Post recap content", offsetDays: 3, role: "comms_lead", fields: { channel: ["ig_post"], audience: ["general_public"], notes: "Marketing decides exact timing — record what landed." } },
+  ], edenRoleByKey);
 
   await addTemplateItems(ctx, edenId, "run_of_show", [
-    { title: "Load-in / Setup", offsetMinutes: -120, roleId: roleId.logistics_lead },
-    { title: "Soundcheck", offsetMinutes: -75, roleId: roleId.production_lead },
-    { title: "Volunteer huddle + prayer", offsetMinutes: -30, roleId: roleId.event_lead },
-    { title: "Doors / soft start", offsetMinutes: 0, roleId: roleId.event_lead },
-    { title: "Worship set", offsetMinutes: 15, roleId: roleId.production_lead },
-    { title: "Message / Scripture", offsetMinutes: 45, roleId: roleId.event_lead },
-    { title: "Prayer / Ministry", offsetMinutes: 70, roleId: roleId.event_lead },
-    { title: "Community activity", offsetMinutes: 90, roleId: roleId.comms_lead },
-    { title: "Closing / Gospel + next steps", offsetMinutes: 115, roleId: roleId.event_lead, fields: { notes: "Give the Gospel: we're all sinners; Jesus came and died for us so all who believe in Him are saved. Invite to connect + follow socials." } },
-    { title: "Strike / Load-out", offsetMinutes: 130, roleId: roleId.logistics_lead },
-  ]);
+    { title: "Load-in / Setup", offsetMinutes: -120, role: "logistics_lead" },
+    { title: "Soundcheck", offsetMinutes: -75, role: "production_lead" },
+    { title: "Volunteer huddle + prayer", offsetMinutes: -30, role: "event_lead" },
+    { title: "Doors / soft start", offsetMinutes: 0, role: "event_lead" },
+    { title: "Worship set", offsetMinutes: 15, role: "production_lead" },
+    { title: "Message / Scripture", offsetMinutes: 45, role: "event_lead" },
+    { title: "Prayer / Ministry", offsetMinutes: 70, role: "event_lead" },
+    { title: "Community activity", offsetMinutes: 90, role: "comms_lead" },
+    { title: "Closing / Gospel + next steps", offsetMinutes: 115, role: "event_lead", fields: { notes: "Give the Gospel: we're all sinners; Jesus came and died for us so all who believe in Him are saved. Invite to connect + follow socials." } },
+    { title: "Strike / Load-out", offsetMinutes: 130, role: "logistics_lead" },
+  ], edenRoleByKey);
 
-  await addTemplateItems(ctx, edenId, "permits", PERMIT_ROWS);
-  await addTemplateItems(ctx, edenId, "volunteer_expectations", VOLUNTEER_ROWS);
-  await addTemplateItems(ctx, edenId, "retro", RETRO_ROWS);
+  await addTemplateItems(ctx, edenId, "permits", PERMIT_ROWS, edenRoleByKey);
+  await addTemplateItems(ctx, edenId, "volunteer_expectations", VOLUNTEER_ROWS, edenRoleByKey);
+  await addTemplateItems(ctx, edenId, "retro", RETRO_ROWS, edenRoleByKey);
 
   // ── Love Thy Neighbor (derived from Eden — same structure) ─────────────────
   const ltnId = (await ctx.db.insert("eventTypes", {
@@ -252,7 +234,6 @@ async function buildChapterRolesAndTemplates(
     description:
       "Annual neighbor-facing outreach — same structure as Eden, derived from it.",
     deriveFromEventTypeId: edenId,
-    activeRoleIds: allRoleIds,
     activeComponents: [
       "planning_doc", "run_of_show", "comms", "permits", "supplies", "retro",
       "volunteer_expectations",
@@ -263,7 +244,21 @@ async function buildChapterRolesAndTemplates(
     createdAt: now,
     updatedAt: now,
   })) as Id<"eventTypes">;
-  // Clone Eden's columns + items so LTN starts structurally aligned.
+  // Clone Eden's roles, columns + items so LTN starts structurally aligned.
+  // Item roleIds are remapped from Eden's role ids to LTN's own copies.
+  const edenRoles = await ctx.db
+    .query("templateRoles")
+    .withIndex("by_template", (q: any) => q.eq("eventTypeId", edenId))
+    .collect();
+  const ltnRoleIdMap = new Map<string, Id<"templateRoles">>();
+  for (const r of edenRoles) {
+    const { _id, _creationTime, eventTypeId: _e, ...rest } = r as any;
+    const newId = (await ctx.db.insert("templateRoles", {
+      eventTypeId: ltnId,
+      ...rest,
+    })) as Id<"templateRoles">;
+    ltnRoleIdMap.set(String(_id), newId);
+  }
   const edenCols = await ctx.db
     .query("templateColumns")
     .withIndex("by_eventType", (q: any) => q.eq("eventTypeId", edenId))
@@ -278,7 +273,11 @@ async function buildChapterRolesAndTemplates(
     .collect();
   for (const it of edenItems) {
     const { _id, _creationTime, eventTypeId: _e, ...rest } = it as any;
-    await ctx.db.insert("templateItems", { eventTypeId: ltnId, ...rest });
+    await ctx.db.insert("templateItems", {
+      eventTypeId: ltnId,
+      ...rest,
+      roleId: rest.roleId ? ltnRoleIdMap.get(String(rest.roleId)) : undefined,
+    });
   }
 
   // ── Worship With Strangers (lightweight; trimmed supplies columns) ─────────
@@ -289,7 +288,6 @@ async function buildChapterRolesAndTemplates(
     description:
       "Lightweight pop-up worship — a ~10% scaled-down variant of Eden, run by a 2–3 person team. The most important, most repeatable event.",
     deriveFromEventTypeId: edenId,
-    activeRoleIds: wwsRoleIds,
     activeComponents: ["planning_doc", "run_of_show", "comms", "permits", "supplies", "retro"],
     version: 1,
     isArchived: false,
@@ -297,6 +295,12 @@ async function buildChapterRolesAndTemplates(
     createdAt: now,
     updatedAt: now,
   })) as Id<"eventTypes">;
+
+  // WWS owns only the 3 lightweight roles.
+  const wwsRoleSeeds = DEFAULT_ROLES.filter((r) =>
+    LIGHTWEIGHT_ROLE_KEYS.includes(r.key),
+  );
+  const wwsRoleByKey = await seedTemplateRoles(ctx, wwsId, wwsRoleSeeds);
 
   await seedTemplateCols(ctx, wwsId, "planning_doc");
   // WWS trims supplies down to what the team actually tracks (per the convo).
@@ -307,19 +311,19 @@ async function buildChapterRolesAndTemplates(
   await seedTemplateCols(ctx, wwsId, "retro");
 
   await addTemplateItems(ctx, wwsId, "planning_doc", [
-    { title: "Update event date + create thread", offsetDays: -14, roleId: roleId.event_lead, fields: { details: "Update the event date; start the WWS thread tagging owners." } },
-    { title: "Highlight in monthly team meeting", offsetDays: -13, roleId: roleId.event_lead, fields: { details: "Where it's happening this month + who's leading." } },
-    { title: "Scout + confirm location", offsetDays: -12, roleId: roleId.event_lead, fields: { details: "Identify a public spot + a weather/permitting backup; visit in person if possible (optional)." } },
-    { title: "Check permits + public-space rules", offsetDays: -12, roleId: roleId.event_lead },
-    { title: "Reach out to music leader to confirm worship leaders + band", offsetDays: -11, roleId: roleId.comms_lead, fields: { details: "1–2 worship leaders + instrumentalists (keyboard and/or guitar, cajon optional). Put names + numbers in notes. Send the song bank." } },
-    { title: "Announce event on socials", offsetDays: -7, roleId: roleId.comms_lead },
-    { title: "Get all items from storage", offsetDays: -1, roleId: roleId.logistics_lead, fields: { details: "Items live in the black/green luggage — just open and confirm everything's there." } },
-    { title: "Make sure battery is charged", offsetDays: -1, roleId: roleId.logistics_lead, fields: { details: "After bringing the battery out of storage, someone takes it home to charge — there's no charger in storage." } },
-    { title: "Assign someone to set up sound day-of", offsetDays: 0, roleId: roleId.event_lead },
-    { title: "Bring water for worship leaders + band", offsetDays: 0, roleId: roleId.logistics_lead, fields: { cost: 20 } },
-    { title: "Order food for worship leaders + volunteers", offsetDays: 0, roleId: roleId.comms_lead, fields: { details: "~$20/person.", cost: 80 } },
-    { title: "Hire videographer for clips", offsetDays: -10, roleId: roleId.comms_lead, fields: { details: "iPhone footage is fine; ~$150 if hiring.", cost: 150 } },
-  ]);
+    { title: "Update event date + create thread", offsetDays: -14, role: "event_lead", fields: { details: "Update the event date; start the WWS thread tagging owners." } },
+    { title: "Highlight in monthly team meeting", offsetDays: -13, role: "event_lead", fields: { details: "Where it's happening this month + who's leading." } },
+    { title: "Scout + confirm location", offsetDays: -12, role: "event_lead", fields: { details: "Identify a public spot + a weather/permitting backup; visit in person if possible (optional)." } },
+    { title: "Check permits + public-space rules", offsetDays: -12, role: "event_lead" },
+    { title: "Reach out to music leader to confirm worship leaders + band", offsetDays: -11, role: "comms_lead", fields: { details: "1–2 worship leaders + instrumentalists (keyboard and/or guitar, cajon optional). Put names + numbers in notes. Send the song bank." } },
+    { title: "Announce event on socials", offsetDays: -7, role: "comms_lead" },
+    { title: "Get all items from storage", offsetDays: -1, role: "logistics_lead", fields: { details: "Items live in the black/green luggage — just open and confirm everything's there." } },
+    { title: "Make sure battery is charged", offsetDays: -1, role: "logistics_lead", fields: { details: "After bringing the battery out of storage, someone takes it home to charge — there's no charger in storage." } },
+    { title: "Assign someone to set up sound day-of", offsetDays: 0, role: "event_lead" },
+    { title: "Bring water for worship leaders + band", offsetDays: 0, role: "logistics_lead", fields: { cost: 20 } },
+    { title: "Order food for worship leaders + volunteers", offsetDays: 0, role: "comms_lead", fields: { details: "~$20/person.", cost: 80 } },
+    { title: "Hire videographer for clips", offsetDays: -10, role: "comms_lead", fields: { details: "iPhone footage is fine; ~$150 if hiring.", cost: 150 } },
+  ], wwsRoleByKey);
 
   await addTemplateItems(ctx, wwsId, "supplies", [
     { title: "2 x Shure SM58 Mics", status: "pull_from_storage", fields: { source: "storage", container: "green_luggage", notes: "With WWS audio kit" } },
@@ -330,32 +334,32 @@ async function buildChapterRolesAndTemplates(
     { title: "Battery Charger", status: "pull_from_storage", fields: { source: "storage", container: "green_luggage" } },
     { title: "2 x QR Code Signs", status: "pull_from_storage", fields: { source: "storage", container: "green_luggage" } },
     { title: "Small table", status: "pull_from_storage", fields: { source: "storage", container: "green_luggage" } },
-  ]);
+  ], wwsRoleByKey);
 
   await addTemplateItems(ctx, wwsId, "comms", [
-    { title: "Reach out to marketing for flyer", offsetDays: -14, roleId: roleId.comms_lead, fields: { channel: ["team_slack"], audience: ["leaders"] } },
-    { title: "Ensure intro thread created for WWS", offsetDays: -13, roleId: roleId.comms_lead, fields: { channel: ["team_slack"], audience: ["leaders"], notes: "New thread: \"WWS [date] @Owner1, @Owner2\"" } },
-    { title: "Announce event on socials", offsetDays: -7, roleId: roleId.comms_lead, fields: { channel: ["ig_post", "ig_stories"], audience: ["general_public"] } },
-    { title: "Reminder to be on time for leaders + musicians", offsetDays: -3, roleId: roleId.comms_lead, fields: { channel: ["imessage_group", "team_slack"], audience: ["leaders", "musicians"], notes: "Friendly reminder WWS is at [location] [time] — show up ready to help set up." } },
-    { title: "Day-before reminder with call time", offsetDays: -1, roleId: roleId.comms_lead, fields: { channel: ["imessage_group"], audience: ["musicians"] } },
-    { title: "Location + how to find us (day-of)", offsetDays: 0, roleId: roleId.comms_lead, fields: { channel: ["ig_stories", "imessage_group"], audience: ["attendees", "general_public"], notes: "Pin the exact meet spot, what to look for, start time." } },
-    { title: "Post a clip from the day", offsetDays: 3, roleId: roleId.comms_lead, fields: { channel: ["ig_post"], audience: ["general_public"] } },
-  ]);
+    { title: "Reach out to marketing for flyer", offsetDays: -14, role: "comms_lead", fields: { channel: ["team_slack"], audience: ["leaders"] } },
+    { title: "Ensure intro thread created for WWS", offsetDays: -13, role: "comms_lead", fields: { channel: ["team_slack"], audience: ["leaders"], notes: "New thread: \"WWS [date] @Owner1, @Owner2\"" } },
+    { title: "Announce event on socials", offsetDays: -7, role: "comms_lead", fields: { channel: ["ig_post", "ig_stories"], audience: ["general_public"] } },
+    { title: "Reminder to be on time for leaders + musicians", offsetDays: -3, role: "comms_lead", fields: { channel: ["imessage_group", "team_slack"], audience: ["leaders", "musicians"], notes: "Friendly reminder WWS is at [location] [time] — show up ready to help set up." } },
+    { title: "Day-before reminder with call time", offsetDays: -1, role: "comms_lead", fields: { channel: ["imessage_group"], audience: ["musicians"] } },
+    { title: "Location + how to find us (day-of)", offsetDays: 0, role: "comms_lead", fields: { channel: ["ig_stories", "imessage_group"], audience: ["attendees", "general_public"], notes: "Pin the exact meet spot, what to look for, start time." } },
+    { title: "Post a clip from the day", offsetDays: 3, role: "comms_lead", fields: { channel: ["ig_post"], audience: ["general_public"] } },
+  ], wwsRoleByKey);
 
   await addTemplateItems(ctx, wwsId, "run_of_show", [
-    { title: "Load-in / Setup", offsetMinutes: -60, roleId: roleId.logistics_lead, fields: { notes: "Connect keyboard + recorder, then mics. Busking setup." } },
-    { title: "Soundcheck", offsetMinutes: -30, roleId: roleId.event_lead, fields: { notes: "Track playback, mic check levels." } },
-    { title: "Team huddle + prayer", offsetMinutes: -10, roleId: roleId.event_lead, fields: { notes: "Encouragement, have fun, worship boldly." } },
-    { title: "Worship set", offsetMinutes: 0, roleId: roleId.event_lead, fields: { notes: "Spontaneous worship — no set list." } },
-    { title: "Closing / Gospel + next steps", offsetMinutes: 40, roleId: roleId.event_lead, fields: { notes: "Give the Gospel: we're all sinners; Jesus came and died for us so all who believe in Him are saved. Invite to connect + follow socials." } },
-    { title: "Strike / Load-out", offsetMinutes: 55, roleId: roleId.logistics_lead },
-  ]);
+    { title: "Load-in / Setup", offsetMinutes: -60, role: "logistics_lead", fields: { notes: "Connect keyboard + recorder, then mics. Busking setup." } },
+    { title: "Soundcheck", offsetMinutes: -30, role: "event_lead", fields: { notes: "Track playback, mic check levels." } },
+    { title: "Team huddle + prayer", offsetMinutes: -10, role: "event_lead", fields: { notes: "Encouragement, have fun, worship boldly." } },
+    { title: "Worship set", offsetMinutes: 0, role: "event_lead", fields: { notes: "Spontaneous worship — no set list." } },
+    { title: "Closing / Gospel + next steps", offsetMinutes: 40, role: "event_lead", fields: { notes: "Give the Gospel: we're all sinners; Jesus came and died for us so all who believe in Him are saved. Invite to connect + follow socials." } },
+    { title: "Strike / Load-out", offsetMinutes: 55, role: "logistics_lead" },
+  ], wwsRoleByKey);
 
   await addTemplateItems(ctx, wwsId, "permits", [
     { title: "Public-space / sound permit", offsetDays: -3, status: "to_apply", fields: { notes: "Check the park's amplified-sound rules; apply if required." } },
-  ]);
+  ], wwsRoleByKey);
 
-  return { roleId, allRoleIds, wwsRoleIds, edenId, ltnId, wwsId };
+  return { edenId, ltnId, wwsId };
 }
 
 /**
@@ -394,6 +398,11 @@ export const clearDemo = mutation({
         .withIndex("by_event", (q: any) => q.eq("eventId", e._id))
         .collect())
         await ctx.db.delete(a._id);
+      for (const r of await ctx.db
+        .query("eventRoles")
+        .withIndex("by_event", (q: any) => q.eq("eventId", e._id))
+        .collect())
+        await ctx.db.delete(r._id);
       await ctx.db.delete(e._id);
     }
 
@@ -412,14 +421,14 @@ export const clearDemo = mutation({
         .withIndex("by_eventType", (q: any) => q.eq("eventTypeId", t._id))
         .collect())
         await ctx.db.delete(it._id);
+      for (const r of await ctx.db
+        .query("templateRoles")
+        .withIndex("by_template", (q: any) => q.eq("eventTypeId", t._id))
+        .collect())
+        await ctx.db.delete(r._id);
       await ctx.db.delete(t._id);
     }
 
-    for (const r of await ctx.db
-      .query("roles")
-      .withIndex("by_chapter", (q: any) => q.eq("chapterId", cid))
-      .collect())
-      await ctx.db.delete(r._id);
     for (const p of await ctx.db
       .query("people")
       .withIndex("by_chapter", (q: any) => q.eq("chapterId", cid))
@@ -501,7 +510,9 @@ export const backfillNewModules = mutation({
             order: i,
             offsetDays: r.offsetDays,
             offsetMinutes: r.offsetMinutes,
-            roleId: r.roleId,
+            // These backfilled modules (permits/retro/volunteer_expectations)
+            // carry no role on their seed rows.
+            roleId: undefined,
             status: r.status,
             fields: r.fields,
           });
@@ -561,7 +572,8 @@ export const backfillNewModules = mutation({
             offsetDays: it.offsetDays,
             offsetMinutes: it.offsetMinutes,
             dueDate,
-            roleId: it.roleId,
+            // These backfilled modules carry no role on their items.
+            roleId: undefined,
             status: it.status ?? defaultStatusValue(module),
             fields: it.fields,
           });
@@ -639,7 +651,8 @@ export const migrateVolunteerExpectations = mutation({
           order: i,
           offsetDays: r.offsetDays,
           offsetMinutes: r.offsetMinutes,
-          roleId: r.roleId,
+          // volunteer_expectations rows carry no role.
+          roleId: undefined,
           status: r.status,
           fields: r.fields,
         });
@@ -695,7 +708,8 @@ export const migrateVolunteerExpectations = mutation({
           module: it.module,
           title: it.title,
           order: it.order,
-          roleId: it.roleId,
+          // volunteer_expectations items carry no role.
+          roleId: undefined,
           status: it.status,
           fields: it.fields,
         });
@@ -715,7 +729,8 @@ export const health = query({
       (await ctx.db.query(table).collect()).length;
     return {
       chapters: await count("chapters"),
-      roles: await count("roles"),
+      templateRoles: await count("templateRoles"),
+      eventRoles: await count("eventRoles"),
       eventTypes: await count("eventTypes"),
       templateColumns: await count("templateColumns"),
       templateItems: await count("templateItems"),
@@ -787,7 +802,7 @@ export const seedDemoData = mutation({
     }
 
     // ── Roles + templates (shared with ensureChapters) ───────────────────────
-    const { roleId, wwsId } = await buildChapterRolesAndTemplates(
+    const { wwsId } = await buildChapterRolesAndTemplates(
       ctx,
       chapterId,
       userId as Id<"users">,
@@ -844,13 +859,27 @@ export const seedDemoData = mutation({
       await ctx.db.patch(t._id, { status: "done" });
     }
 
-    // Assign the lightweight roles.
-    await ctx.db.insert("roleAssignments", {
-      eventId, chapterId, roleId: roleId.event_lead, personId: peopleIds[0], createdAt: now,
-    });
-    await ctx.db.insert("roleAssignments", {
-      eventId, chapterId, roleId: roleId.logistics_lead, personId: peopleIds[1], createdAt: now,
-    });
+    // Assign the lightweight roles. The event's roles were cloned from the
+    // template by instantiateEvent, so look them up by key on the event.
+    const eventRoles = await ctx.db
+      .query("eventRoles")
+      .withIndex("by_event", (q: any) => q.eq("eventId", eventId))
+      .collect();
+    const eventRoleByKey = new Map<string, Id<"eventRoles">>(
+      eventRoles.map((r: any) => [r.key, r._id]),
+    );
+    const eventLeadRole = eventRoleByKey.get("event_lead");
+    const logisticsRole = eventRoleByKey.get("logistics_lead");
+    if (eventLeadRole) {
+      await ctx.db.insert("roleAssignments", {
+        eventId, chapterId, roleId: eventLeadRole, personId: peopleIds[0], createdAt: now,
+      });
+    }
+    if (logisticsRole) {
+      await ctx.db.insert("roleAssignments", {
+        eventId, chapterId, roleId: logisticsRole, personId: peopleIds[1], createdAt: now,
+      });
+    }
 
     return { chapterId, seeded: true };
   },

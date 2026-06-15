@@ -76,11 +76,11 @@ export const eventContext = internalQuery({
 
     const roles = (
       await ctx.db
-        .query("roles")
-        .withIndex("by_chapter", (q: any) => q.eq("chapterId", event.chapterId))
+        .query("eventRoles")
+        .withIndex("by_event", (q: any) => q.eq("eventId", eventId))
         .collect()
     )
-      .filter((r: any) => !r.isArchived)
+      .sort((a: any, b: any) => a.order - b.order)
       .map((r: any) => ({ id: r._id, key: r.key, label: r.label }));
 
     const people = (
@@ -352,7 +352,7 @@ export const createItem = internalMutation({
     module: v.string(),
     title: v.string(),
     status: v.optional(v.string()),
-    roleId: v.optional(v.id("roles")),
+    roleId: v.optional(v.id("eventRoles")),
     offsetDays: v.optional(v.number()),
     fields: v.optional(v.record(v.string(), v.any())),
   },

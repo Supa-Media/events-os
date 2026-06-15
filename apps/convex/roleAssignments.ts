@@ -2,23 +2,28 @@
  * Role assignments — who holds which role on an event.
  *
  * Rotatable (one person per role per event). The history across events surfaces
- * burnout and rotation opportunities. References a role by id (`roles` table),
- * scoped to the event's active roles.
+ * burnout and rotation opportunities. References a role by id (`eventRoles`
+ * table), scoped to the event's own roles.
  */
 import { query, mutation } from "./_generated/server";
 import { Id } from "./_generated/dataModel";
 import { v } from "convex/values";
 import { requireChapterId, requireInChapter } from "./lib/context";
 
-/** Every active role on an event's type, each with its assigned person (or null). */
+/** Every role on an event, each with its assigned person (or null). */
 export const listForEvent = query({
   args: { eventId: v.id("events") },
   handler: async (ctx, { eventId }) => {
     const chapterId = await requireChapterId(ctx);
     const event = await ctx.db.get(eventId);
     await requireInChapter(ctx, chapterId, event, "Event");
-    const eventType = await ctx.db.get(event!.eventTypeId);
-    const roleIds: Id<"roles">[] = eventType?.activeRoleIds ?? [];
+
+    const roles = (
+      await ctx.db
+        .query("eventRoles")
+        .withIndex("by_event", (q: any) => q.eq("eventId", eventId))
+        .collect()
+    ).sort((a: any, b: any) => a.order - b.order);
 
     const assignments = await ctx.db
       .query("roleAssignments")
@@ -26,15 +31,14 @@ export const listForEvent = query({
       .collect();
 
     return await Promise.all(
-      roleIds.map(async (roleId) => {
-        const role = await ctx.db.get(roleId);
+      roles.map(async (role: any) => {
         const assignment = assignments.find(
-          (a: any) => a.roleId === roleId,
+          (a: any) => a.roleId === role._id,
         );
         const person = assignment ? await ctx.db.get(assignment.personId) : null;
         return {
-          roleId,
-          roleLabel: role?.label ?? "Unknown role",
+          roleId: role._id as Id<"eventRoles">,
+          roleLabel: role.label ?? "Unknown role",
           person: person ? { _id: person._id, name: person.name } : null,
         };
       }),
@@ -46,7 +50,7 @@ export const listForEvent = query({
 export const assign = mutation({
   args: {
     eventId: v.id("events"),
-    roleId: v.id("roles"),
+    roleId: v.id("eventRoles"),
     personId: v.id("people"),
   },
   handler: async (ctx, { eventId, roleId, personId }) => {
@@ -76,7 +80,7 @@ export const assign = mutation({
 
 /** Clear a role's assignment on an event. */
 export const unassign = mutation({
-  args: { eventId: v.id("events"), roleId: v.id("roles") },
+  args: { eventId: v.id("events"), roleId: v.id("eventRoles") },
   handler: async (ctx, { eventId, roleId }) => {
     const chapterId = await requireChapterId(ctx);
     const event = await ctx.db.get(eventId);
@@ -108,7 +112,7 @@ export const historyForPerson = query({
     const history = await Promise.all(
       assignments.map(async (a: any) => {
         const event = await ctx.db.get(a.eventId as Id<"events">);
-        const role = await ctx.db.get(a.roleId as Id<"roles">);
+        const role = await ctx.db.get(a.roleId as Id<"eventRoles">);
         return {
           _id: a._id,
           roleId: a.roleId,

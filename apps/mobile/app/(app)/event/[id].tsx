@@ -53,7 +53,7 @@ export default function EventDetailScreen() {
 
   const data = useQuery(api.events.get, { eventId });
   const roleRows = useQuery(api.roleAssignments.listForEvent, { eventId });
-  const chapterRolesRaw = useQuery(api.roles.list);
+  const eventRolesRaw = useQuery(api.roles.listForEvent, { eventId });
   const summaries = useQuery(api.events.moduleSummaries, { eventId });
 
   const reschedule = useMutation(api.events.reschedule);
@@ -73,18 +73,18 @@ export default function EventDetailScreen() {
   >(null);
   const [ownerOpen, setOwnerOpen] = useState(false);
 
-  // Chapter roles, shaped for the grid's role cells ({_id, label}).
-  const chapterRoles = useMemo(
+  // Event roles, shaped for the grid's role cells ({_id, label}).
+  const eventRoles = useMemo(
     () =>
-      (chapterRolesRaw ?? []).map((r: any) => ({
+      (eventRolesRaw ?? []).map((r: any) => ({
         _id: r._id as string,
         label: r.label as string,
       })),
-    [chapterRolesRaw],
+    [eventRolesRaw],
   );
 
   const loading =
-    data === undefined || roleRows === undefined || chapterRolesRaw === undefined;
+    data === undefined || roleRows === undefined || eventRolesRaw === undefined;
 
   if (loading) {
     return (
@@ -156,10 +156,11 @@ export default function EventDetailScreen() {
   );
 
   // A module's owner is derived (not stored): map the module to its default
-  // role key, then resolve the person assigned to that role on this event.
+  // role key, then resolve the person assigned to that role on this event,
+  // looking the key up against the EVENT's roles.
   function moduleOwner(module: ModuleKey) {
     const roleKey = MODULE_OWNER_ROLE_KEY[module];
-    const role = (chapterRolesRaw ?? []).find((r: any) => r.key === roleKey);
+    const role = (eventRolesRaw ?? []).find((r: any) => r.key === roleKey);
     if (!role) return null;
     const row = (roleRows ?? []).find((r) => r.roleId === role._id);
     return {
@@ -434,6 +435,9 @@ export default function EventDetailScreen() {
               </View>
             </Card>
 
+            {/* Event roles — the event's own role list (diverges from template). */}
+            <EventRolesCard eventId={eventId} roles={eventRoles} />
+
             {/* Per-module rollup — owner (role → person), progress, next due. */}
             {activeModules.length === 0 ? (
               <Card padding="lg">
@@ -491,7 +495,7 @@ export default function EventDetailScreen() {
                   mode="event"
                   parentId={eventId}
                   module={m}
-                  roles={chapterRoles}
+                  roles={eventRoles}
                   eventDate={event.eventDate}
                   addLabel={`Add ${MODULE_LABELS[m].toLowerCase()} row`}
                 />
@@ -621,6 +625,115 @@ type ModuleOwnerInfo = {
   roleLabel: string;
   person: { _id: string; name: string } | null;
 } | null;
+
+/**
+ * The event OWNS its roles (cloned from its template, then edited freely). A
+ * single editable list — rename inline, delete, add — so an event can diverge
+ * from its template. Mirrors the template RolesCard.
+ */
+function EventRolesCard({
+  eventId,
+  roles,
+}: {
+  eventId: string;
+  roles: Array<{ _id: string; label: string }>;
+}) {
+  const updateRole = useMutation(api.roles.updateEventRole);
+  const createRole = useMutation(api.roles.createForEvent);
+  const deleteRole = useMutation(api.roles.deleteEventRole);
+
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editLabel, setEditLabel] = useState("");
+  const [newLabel, setNewLabel] = useState("");
+  const [adding, setAdding] = useState(false);
+
+  function startEdit(role: { _id: string; label: string }) {
+    setEditingId(role._id);
+    setEditLabel(role.label);
+  }
+
+  function saveEdit(roleId: string) {
+    const trimmed = editLabel.trim();
+    if (trimmed) updateRole({ roleId: roleId as any, label: trimmed });
+    setEditingId(null);
+    setEditLabel("");
+  }
+
+  async function handleAdd() {
+    const trimmed = newLabel.trim();
+    if (!trimmed) return;
+    await createRole({ eventId: eventId as any, label: trimmed });
+    setNewLabel("");
+    setAdding(false);
+  }
+
+  return (
+    <Card className="mb-6">
+      <SectionHeader title="Roles" count={roles.length || undefined} />
+      <Text className="mb-3 text-sm text-muted">
+        This event's roles. Rename inline, remove, or add event-only roles.
+      </Text>
+      {roles.length === 0 ? (
+        <Text className="mb-3 text-sm text-faint">No roles yet — add one below.</Text>
+      ) : (
+        <View className="gap-2">
+          {roles.map((r) => {
+            const editing = editingId === r._id;
+            return (
+              <View key={r._id} className="flex-row items-center gap-2">
+                <View className="flex-1">
+                  {editing ? (
+                    <TextField
+                      value={editLabel}
+                      onChangeText={setEditLabel}
+                      onBlur={() => saveEdit(r._id)}
+                      autoFocus
+                    />
+                  ) : (
+                    <Text className="text-sm font-medium text-ink">{r.label}</Text>
+                  )}
+                </View>
+                <Button
+                  title={editing ? "Save" : "Rename"}
+                  size="sm"
+                  variant="ghost"
+                  onPress={() => (editing ? saveEdit(r._id) : startEdit(r))}
+                />
+                {!editing ? (
+                  <Button
+                    title=""
+                    icon="trash-2"
+                    size="sm"
+                    variant="ghost"
+                    onPress={() => deleteRole({ roleId: r._id as any })}
+                  />
+                ) : null}
+              </View>
+            );
+          })}
+        </View>
+      )}
+
+      {adding ? (
+        <View className="mt-3">
+          <TextField
+            label="New role"
+            placeholder="Role name"
+            value={newLabel}
+            onChangeText={setNewLabel}
+            onBlur={handleAdd}
+            autoFocus
+          />
+          <Button title="Add role" size="sm" onPress={handleAdd} disabled={!newLabel.trim()} />
+        </View>
+      ) : (
+        <View className="mt-3 flex-row">
+          <Button title="Add role" size="sm" variant="secondary" icon="plus" onPress={() => setAdding(true)} />
+        </View>
+      )}
+    </Card>
+  );
+}
 
 /**
  * Horizontal, scrollable tab bar — Overview, each active module, and Crew. Same

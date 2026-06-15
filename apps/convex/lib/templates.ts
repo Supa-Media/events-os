@@ -8,10 +8,14 @@ import { Id } from "../_generated/dataModel";
 import {
   DEFAULT_COLUMNS,
   DAY_OFFSET_MODULES,
+  DEFAULT_ROLES,
   computeDueDate,
   defaultStatusValue,
   type ModuleKey,
 } from "@events-os/shared";
+
+/** A role seed: a stable key + display label + optional description. */
+type RoleSeedLike = { key: string; label: string; description?: string };
 import { findUnlinkedPersonByLoginEmail, claimFields } from "./people";
 
 /** Kebab-case slug from a display name. */
@@ -68,6 +72,65 @@ export async function seedModuleColumns(
 
 function isDayOffsetModule(module: string): boolean {
   return DAY_OFFSET_MODULES.includes(module as ModuleKey);
+}
+
+/**
+ * Seed a template's roles from a seed list (defaults to DEFAULT_ROLES). Used on
+ * template creation. Returns the created role ids keyed by role key.
+ */
+export async function seedTemplateRoles(
+  ctx: any,
+  eventTypeId: Id<"eventTypes">,
+  seeds: RoleSeedLike[] = DEFAULT_ROLES,
+): Promise<Record<string, Id<"templateRoles">>> {
+  const byKey: Record<string, Id<"templateRoles">> = {};
+  for (let i = 0; i < seeds.length; i++) {
+    const r = seeds[i];
+    byKey[r.key] = (await ctx.db.insert("templateRoles", {
+      eventTypeId,
+      key: r.key,
+      label: r.label,
+      description: r.description,
+      order: i,
+      isArchived: false,
+    })) as Id<"templateRoles">;
+  }
+  return byKey;
+}
+
+/**
+ * Clone a template's roles onto an event (`templateRoles` → `eventRoles`).
+ * Returns a map from the template-role id (string) to the new event-role id, so
+ * cloned items can remap their `roleId` from the template scope to the event
+ * scope. (Keyed by id because that's what template items carry.)
+ */
+export async function cloneRolesToEvent(
+  ctx: any,
+  eventTypeId: Id<"eventTypes">,
+  eventId: Id<"events">,
+): Promise<Map<string, Id<"eventRoles">>> {
+  const templateRoles = (
+    await ctx.db
+      .query("templateRoles")
+      .withIndex("by_template", (q: any) => q.eq("eventTypeId", eventTypeId))
+      .collect()
+  )
+    .filter((r: any) => r.isArchived !== true)
+    .sort((a: any, b: any) => a.order - b.order);
+
+  const idMap = new Map<string, Id<"eventRoles">>();
+  for (let i = 0; i < templateRoles.length; i++) {
+    const r = templateRoles[i];
+    const newId = (await ctx.db.insert("eventRoles", {
+      eventId,
+      key: r.key,
+      label: r.label,
+      description: r.description,
+      order: i,
+    })) as Id<"eventRoles">;
+    idMap.set(String(r._id), newId);
+  }
+  return idMap;
 }
 
 /**
@@ -157,6 +220,9 @@ export async function instantiateEvent(
     updatedAt: now,
   })) as Id<"events">;
 
+  // Clone the template's roles onto the event; remap item roleId via this map.
+  const roleIdMap = await cloneRolesToEvent(ctx, opts.eventType._id, eventId);
+
   const cols = await ctx.db
     .query("templateColumns")
     .withIndex("by_eventType", (q: any) =>
@@ -188,7 +254,7 @@ export async function instantiateEvent(
       offsetDays: it.offsetDays,
       offsetMinutes: it.offsetMinutes,
       dueDate,
-      roleId: it.roleId,
+      roleId: it.roleId ? roleIdMap.get(String(it.roleId)) : undefined,
       status: it.status ?? defaultStatusValue(it.module as ModuleKey),
       fields: it.fields,
     });

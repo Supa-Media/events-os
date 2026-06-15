@@ -48,8 +48,13 @@ const columnFields = {
   width: v.optional(v.number()),
 };
 
-/** Reusable validator for an item's promoted fields + custom-field bag. */
-const itemFields = {
+/**
+ * Reusable validator for an item's promoted fields + custom-field bag, WITHOUT
+ * the role reference. `roleId` is scope-specific (template items reference
+ * `templateRoles`, event items reference `eventRoles`), so each table adds its
+ * own `roleId` field on top of this base.
+ */
+const itemFieldsBase = {
   module: v.string(),
   title: v.string(),
   order: v.number(),
@@ -59,7 +64,6 @@ const itemFields = {
   offsetMinutes: v.optional(v.number()),
   // Status value (matches a value in the module's status column options).
   status: v.optional(v.string()),
-  roleId: v.optional(v.id("roles")),
   // Custom-column values, keyed by column key.
   fields: v.optional(v.record(v.string(), v.any())),
 };
@@ -108,21 +112,37 @@ const schema = defineSchema({
     .index("by_userId_chapterId", ["userId", "chapterId"]),
 
   /**
-   * Role — an editable, chapter-scoped event-team role (Event Lead, Comms Lead,
-   * Logistics Lead, Production Lead by default). Renamable/reorderable; a
-   * template declares which roles it uses (`eventTypes.activeRoleIds`).
+   * Template role — an editable role OWNED by a template (Event Lead, Comms
+   * Lead, … seeded from DEFAULT_ROLES). Renamable/reorderable/deletable per
+   * template; `key` stays stable across rename so item/owner references resolve.
+   * Cloned onto each event as `eventRoles` at creation.
    */
-  roles: defineTable({
-    chapterId: v.id("chapters"),
+  templateRoles: defineTable({
+    eventTypeId: v.id("eventTypes"),
     key: v.string(),
     label: v.string(),
     description: v.optional(v.string()),
     order: v.number(),
     isArchived: v.optional(v.boolean()),
-    createdAt: v.number(),
   })
-    .index("by_chapter", ["chapterId"])
-    .index("by_chapter_key", ["chapterId", "key"]),
+    .index("by_template", ["eventTypeId"])
+    .index("by_template_key", ["eventTypeId", "key"]),
+
+  /**
+   * Event role — a role owned by a live event, cloned from its template's
+   * `templateRoles` at creation and independently editable thereafter (so an
+   * event can add/remove roles its template didn't have). `roleAssignments` and
+   * event items reference these.
+   */
+  eventRoles: defineTable({
+    eventId: v.id("events"),
+    key: v.string(),
+    label: v.string(),
+    description: v.optional(v.string()),
+    order: v.number(),
+  })
+    .index("by_event", ["eventId"])
+    .index("by_event_key", ["eventId", "key"]),
 
   /**
    * Event Type / Template — the canonical, reusable blueprint for a kind of
@@ -138,8 +158,7 @@ const schema = defineSchema({
     // WwS is a ~10% scaled-down variant of Eden — a template can inherit from a
     // parent so variants stay structurally aligned.
     deriveFromEventTypeId: v.optional(v.id("eventTypes")),
-    // Active roles for this type (subset of the chapter's roles).
-    activeRoleIds: v.array(v.id("roles")),
+    // This type's roles live in `templateRoles` (keyed by eventTypeId).
     // Active component keys (6 core always; 2 more for larger events).
     activeComponents: v.array(v.string()),
     version: v.number(),
@@ -162,7 +181,9 @@ const schema = defineSchema({
   /** Base items for a template's modules (the rows authors edit). */
   templateItems: defineTable({
     eventTypeId: v.id("eventTypes"),
-    ...itemFields,
+    ...itemFieldsBase,
+    // Role reference scoped to this template's roles.
+    roleId: v.optional(v.id("templateRoles")),
   })
     .index("by_eventType", ["eventTypeId"])
     .index("by_eventType_module", ["eventTypeId", "module"]),
@@ -217,7 +238,9 @@ const schema = defineSchema({
   eventItems: defineTable({
     eventId: v.id("events"),
     chapterId: v.id("chapters"),
-    ...itemFields,
+    ...itemFieldsBase,
+    // Role reference scoped to this event's roles.
+    roleId: v.optional(v.id("eventRoles")),
     // Per-event owner (a person); template items have no owner.
     ownerPersonId: v.optional(v.id("people")),
     // Back-calculated from the event date for day-offset modules.
@@ -234,7 +257,7 @@ const schema = defineSchema({
   roleAssignments: defineTable({
     eventId: v.id("events"),
     chapterId: v.id("chapters"),
-    roleId: v.id("roles"),
+    roleId: v.id("eventRoles"),
     personId: v.id("people"),
     createdAt: v.number(),
   })

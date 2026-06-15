@@ -10,14 +10,26 @@
 import { query, mutation } from "./_generated/server";
 import { Id } from "./_generated/dataModel";
 import { v } from "convex/values";
-import { MODULE_KEYS, type ModuleKey } from "@events-os/shared";
+import { MODULE_KEYS, DEFAULT_ROLES, type ModuleKey } from "@events-os/shared";
 import {
   requireUserId,
   requireChapterId,
   requireInChapter,
   getChapterIdOrNull,
 } from "./lib/context";
-import { toSlug, seedModuleColumns } from "./lib/templates";
+import { toSlug, seedModuleColumns, seedTemplateRoles } from "./lib/templates";
+
+/** A template's roles ({ _id, label }), ordered. */
+async function templateRoles(ctx: any, eventTypeId: Id<"eventTypes">) {
+  const roles = await ctx.db
+    .query("templateRoles")
+    .withIndex("by_template", (q: any) => q.eq("eventTypeId", eventTypeId))
+    .collect();
+  return roles
+    .filter((r: any) => r.isArchived !== true)
+    .sort((a: any, b: any) => a.order - b.order)
+    .map((r: any) => ({ _id: r._id, label: r.label }));
+}
 
 /** The active modules (list-backed components) for a template. */
 function activeModules(activeComponents: string[]): ModuleKey[] {
@@ -43,19 +55,14 @@ export const list = query({
             q.eq("eventTypeId", t._id).eq("module", "planning_doc"),
           )
           .collect();
-        const roles = await Promise.all(
-          (t.activeRoleIds ?? []).map(async (rid: Id<"roles">) => {
-            const r = await ctx.db.get(rid);
-            return r ? { _id: r._id, label: r.label } : null;
-          }),
-        );
+        const roles = await templateRoles(ctx, t._id);
         return {
           _id: t._id,
           name: t.name,
           slug: t.slug,
           description: t.description,
           activeComponents: t.activeComponents,
-          roles: roles.filter(Boolean),
+          roles,
           version: t.version,
           taskCount: tasks.length,
         };
@@ -72,15 +79,9 @@ export const get = query({
     const chapterId = await requireChapterId(ctx);
     const eventType = await ctx.db.get(eventTypeId);
     if (!eventType || eventType.chapterId !== chapterId) return null;
-    const roles = await Promise.all(
-      (eventType.activeRoleIds ?? []).map(async (rid: Id<"roles">) => {
-        const r = await ctx.db.get(rid);
-        return r ? { _id: r._id, label: r.label } : null;
-      }),
-    );
     return {
       eventType,
-      roles: roles.filter(Boolean),
+      roles: await templateRoles(ctx, eventTypeId),
       modules: activeModules(eventType.activeComponents),
     };
   },
@@ -95,7 +96,16 @@ export const create = mutation({
   args: {
     name: v.string(),
     description: v.optional(v.string()),
-    activeRoleIds: v.array(v.id("roles")),
+    // Roles to seed on the new template; defaults to DEFAULT_ROLES.
+    roleSeeds: v.optional(
+      v.array(
+        v.object({
+          key: v.string(),
+          label: v.string(),
+          description: v.optional(v.string()),
+        }),
+      ),
+    ),
     activeComponents: v.array(v.string()),
     deriveFromEventTypeId: v.optional(v.id("eventTypes")),
   },
@@ -104,14 +114,13 @@ export const create = mutation({
     const userId = await requireUserId(ctx);
     const now = Date.now();
 
-    let activeRoleIds = args.activeRoleIds;
     let activeComponents = args.activeComponents;
+    let parent: any = null;
     if (args.deriveFromEventTypeId) {
-      const parent = await ctx.db.get(args.deriveFromEventTypeId);
+      parent = await ctx.db.get(args.deriveFromEventTypeId);
       await requireInChapter(ctx, chapterId, parent, "Event type");
-      if (activeRoleIds.length === 0) activeRoleIds = parent!.activeRoleIds;
       if (activeComponents.length === 0)
-        activeComponents = parent!.activeComponents;
+        activeComponents = parent.activeComponents;
     }
 
     const eventTypeId = (await ctx.db.insert("eventTypes", {
@@ -120,7 +129,6 @@ export const create = mutation({
       slug: toSlug(args.name),
       description: args.description,
       deriveFromEventTypeId: args.deriveFromEventTypeId,
-      activeRoleIds,
       activeComponents,
       version: 1,
       isArchived: false,
@@ -130,7 +138,23 @@ export const create = mutation({
     })) as Id<"eventTypes">;
 
     if (args.deriveFromEventTypeId) {
-      // Deep-copy the parent's columns + items.
+      // Deep-copy the parent's roles, columns + items. Item roleIds are remapped
+      // from the parent's role ids to the new copies (by id) so they resolve.
+      const parentRoles = await ctx.db
+        .query("templateRoles")
+        .withIndex("by_template", (q: any) =>
+          q.eq("eventTypeId", args.deriveFromEventTypeId),
+        )
+        .collect();
+      const roleIdMap = new Map<string, Id<"templateRoles">>();
+      for (const r of parentRoles) {
+        const { _id, _creationTime, eventTypeId: _e, ...rest } = r as any;
+        const newId = (await ctx.db.insert("templateRoles", {
+          eventTypeId,
+          ...rest,
+        })) as Id<"templateRoles">;
+        roleIdMap.set(String(_id), newId);
+      }
       const cols = await ctx.db
         .query("templateColumns")
         .withIndex("by_eventType", (q: any) =>
@@ -149,10 +173,15 @@ export const create = mutation({
         .collect();
       for (const it of items) {
         const { _id, _creationTime, eventTypeId: _e, ...rest } = it as any;
-        await ctx.db.insert("templateItems", { eventTypeId, ...rest });
+        await ctx.db.insert("templateItems", {
+          eventTypeId,
+          ...rest,
+          roleId: rest.roleId ? roleIdMap.get(String(rest.roleId)) : undefined,
+        });
       }
     } else {
-      // Seed default columns for each active list-backed module.
+      // Seed this template's roles + default columns for each active module.
+      await seedTemplateRoles(ctx, eventTypeId, args.roleSeeds ?? DEFAULT_ROLES);
       for (const m of activeModules(activeComponents)) {
         await seedModuleColumns(ctx, eventTypeId, m);
       }
@@ -168,7 +197,6 @@ export const update = mutation({
     eventTypeId: v.id("eventTypes"),
     name: v.optional(v.string()),
     description: v.optional(v.string()),
-    activeRoleIds: v.optional(v.array(v.id("roles"))),
     activeComponents: v.optional(v.array(v.string())),
   },
   handler: async (ctx, { eventTypeId, ...patch }) => {
@@ -181,8 +209,6 @@ export const update = mutation({
       fields.slug = toSlug(patch.name);
     }
     if (patch.description !== undefined) fields.description = patch.description;
-    if (patch.activeRoleIds !== undefined)
-      fields.activeRoleIds = patch.activeRoleIds;
 
     if (patch.activeComponents !== undefined) {
       fields.activeComponents = patch.activeComponents;

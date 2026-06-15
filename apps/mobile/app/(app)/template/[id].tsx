@@ -34,7 +34,7 @@ export default function TemplateEditorScreen() {
   const eventTypeId = id as Id<"eventTypes">;
 
   const data = useQuery(api.eventTypes.get, { eventTypeId });
-  const allRoles = useQuery(api.roles.list);
+  const templateRoles = useQuery(api.roles.listForTemplate, { eventTypeId });
   const updateTemplate = useMutation(api.eventTypes.update);
 
   if (data === undefined) return <Screen loading />;
@@ -54,10 +54,12 @@ export default function TemplateEditorScreen() {
     );
   }
 
-  const { eventType, roles: activeRoles, modules } = data;
-  // The grid wants the full chapter role list (id + label); [] while loading.
-  const chapterRoles = (allRoles ?? []).map((r) => ({ _id: r._id, label: r.label }));
-  const activeRoleIds = (eventType.activeRoleIds ?? []) as string[];
+  const { eventType, modules } = data;
+  // The grid wants the template's roles (id + label); [] while loading.
+  const roleList = (templateRoles ?? []).map((r) => ({
+    _id: r._id as string,
+    label: r.label,
+  }));
   const activeComponents = (eventType.activeComponents ?? []) as string[];
 
   return (
@@ -76,20 +78,7 @@ export default function TemplateEditorScreen() {
         onSave={(description) => updateTemplate({ eventTypeId, description })}
       />
 
-      <RolesCard
-        activeRoles={activeRoles as Array<{ _id: string; label: string }>}
-        activeRoleIds={activeRoleIds}
-        chapterRoles={allRoles ?? []}
-        onToggleRole={(roleId) => {
-          const next = activeRoleIds.includes(roleId)
-            ? activeRoleIds.filter((r) => r !== roleId)
-            : [...activeRoleIds, roleId];
-          updateTemplate({
-            eventTypeId,
-            activeRoleIds: next as Id<"roles">[],
-          });
-        }}
-      />
+      <RolesCard eventTypeId={eventTypeId} roles={roleList} />
 
       <ModulesCard
         activeComponents={activeComponents}
@@ -117,7 +106,7 @@ export default function TemplateEditorScreen() {
               mode="template"
               parentId={eventTypeId}
               module={m}
-              roles={chapterRoles}
+              roles={roleList}
               addLabel={`Add ${MODULE_LABELS[m].toLowerCase()} row`}
             />
           </View>
@@ -197,19 +186,21 @@ function DescriptionEditor({
 
 /* ── Roles ──────────────────────────────────────────────────────────────── */
 
+/**
+ * The template OWNS its roles — a single editable list (rename inline, delete,
+ * add). No active-vs-pool distinction. An event clones these and edits its own
+ * copy independently.
+ */
 function RolesCard({
-  activeRoles,
-  activeRoleIds,
-  chapterRoles,
-  onToggleRole,
+  eventTypeId,
+  roles,
 }: {
-  activeRoles: Array<{ _id: string; label: string }>;
-  activeRoleIds: string[];
-  chapterRoles: Array<{ _id: string; label: string; description?: string }>;
-  onToggleRole: (roleId: string) => void;
+  eventTypeId: Id<"eventTypes">;
+  roles: Array<{ _id: string; label: string }>;
 }) {
-  const updateRole = useMutation(api.roles.update);
-  const createRole = useMutation(api.roles.create);
+  const updateRole = useMutation(api.roles.updateTemplateRole);
+  const createRole = useMutation(api.roles.createForTemplate);
+  const deleteRole = useMutation(api.roles.deleteTemplateRole);
 
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editLabel, setEditLabel] = useState("");
@@ -223,7 +214,7 @@ function RolesCard({
 
   function saveEdit(roleId: string) {
     const trimmed = editLabel.trim();
-    if (trimmed) updateRole({ roleId: roleId as Id<"roles">, label: trimmed });
+    if (trimmed) updateRole({ roleId: roleId as Id<"templateRoles">, label: trimmed });
     setEditingId(null);
     setEditLabel("");
   }
@@ -231,60 +222,61 @@ function RolesCard({
   async function handleAdd() {
     const trimmed = newLabel.trim();
     if (!trimmed) return;
-    await createRole({ label: trimmed });
+    await createRole({ eventTypeId, label: trimmed });
     setNewLabel("");
     setAdding(false);
   }
 
   return (
     <Card className="mb-2">
-      <SectionHeader title="Active roles" />
-      {activeRoles.length === 0 ? (
-        <Text className="mb-3 text-sm text-faint">No roles active yet — pick from the chapter roles below.</Text>
+      <SectionHeader title="Roles" />
+      <Text className="mb-3 text-sm text-muted">
+        Roles for this template. Rename inline, remove, or add your own.
+      </Text>
+      {roles.length === 0 ? (
+        <Text className="mb-3 text-sm text-faint">
+          No roles yet — add one below.
+        </Text>
       ) : (
-        <View className="mb-4 flex-row flex-wrap gap-2">
-          {activeRoles.map((r) => (
-            <Pill key={r._id} label={r.label} />
-          ))}
+        <View className="gap-2">
+          {roles.map((r) => {
+            const editing = editingId === r._id;
+            return (
+              <View key={r._id} className="flex-row items-center gap-2">
+                <View className="flex-1">
+                  {editing ? (
+                    <TextField
+                      value={editLabel}
+                      onChangeText={setEditLabel}
+                      onBlur={() => saveEdit(r._id)}
+                      autoFocus
+                    />
+                  ) : (
+                    <Pill label={r.label} />
+                  )}
+                </View>
+                <Button
+                  title={editing ? "Save" : "Rename"}
+                  size="sm"
+                  variant="ghost"
+                  onPress={() => (editing ? saveEdit(r._id) : startEdit(r))}
+                />
+                {!editing ? (
+                  <Button
+                    title=""
+                    icon="trash-2"
+                    size="sm"
+                    variant="ghost"
+                    onPress={() =>
+                      deleteRole({ roleId: r._id as Id<"templateRoles"> })
+                    }
+                  />
+                ) : null}
+              </View>
+            );
+          })}
         </View>
       )}
-
-      <SectionHeader title="Chapter roles" />
-      <Text className="mb-3 text-sm text-muted">
-        Tap a role to toggle it for this template. Long-form names rename inline.
-      </Text>
-      <View className="gap-2">
-        {chapterRoles.map((r) => {
-          const active = activeRoleIds.includes(r._id);
-          const editing = editingId === r._id;
-          return (
-            <View key={r._id} className="flex-row items-center gap-2">
-              <View className="flex-1">
-                {editing ? (
-                  <TextField
-                    value={editLabel}
-                    onChangeText={setEditLabel}
-                    onBlur={() => saveEdit(r._id)}
-                    autoFocus
-                  />
-                ) : (
-                  <Pill
-                    label={`${active ? "✓ " : ""}${r.label}`}
-                    selected={active}
-                    onPress={() => onToggleRole(r._id)}
-                  />
-                )}
-              </View>
-              <Button
-                title={editing ? "Save" : "Rename"}
-                size="sm"
-                variant="ghost"
-                onPress={() => (editing ? saveEdit(r._id) : startEdit(r))}
-              />
-            </View>
-          );
-        })}
-      </View>
 
       {adding ? (
         <View className="mt-3">

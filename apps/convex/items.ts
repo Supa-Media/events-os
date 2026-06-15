@@ -84,7 +84,7 @@ export const addTemplateItem = mutation({
     title: v.optional(v.string()),
     offsetDays: v.optional(v.number()),
     offsetMinutes: v.optional(v.number()),
-    roleId: v.optional(v.id("roles")),
+    roleId: v.optional(v.id("templateRoles")),
     status: v.optional(v.string()),
     fields: fieldsValidator,
   },
@@ -120,7 +120,7 @@ export const updateTemplateItem = mutation({
     title: v.optional(v.string()),
     offsetDays: v.optional(v.number()),
     offsetMinutes: v.optional(v.number()),
-    roleId: v.optional(v.union(v.id("roles"), v.null())),
+    roleId: v.optional(v.union(v.id("templateRoles"), v.null())),
     status: v.optional(v.union(v.string(), v.null())),
     fields: fieldsValidator,
   },
@@ -222,7 +222,7 @@ export const listForEventModule = query({
       rawItems.map(async (it: any) => {
         let roleLabel: string | null = null;
         if (it.roleId) {
-          const role = await ctx.db.get(it.roleId as Id<"roles">);
+          const role = await ctx.db.get(it.roleId as Id<"eventRoles">);
           roleLabel = role?.label ?? null;
         }
         // Explicit owner wins; otherwise inherit the person holding the role.
@@ -259,7 +259,7 @@ export const addEventItem = mutation({
     title: v.optional(v.string()),
     offsetDays: v.optional(v.number()),
     offsetMinutes: v.optional(v.number()),
-    roleId: v.optional(v.id("roles")),
+    roleId: v.optional(v.id("eventRoles")),
     ownerPersonId: v.optional(v.id("people")),
     status: v.optional(v.string()),
     fields: fieldsValidator,
@@ -301,7 +301,7 @@ export const updateEventItem = mutation({
     title: v.optional(v.string()),
     offsetDays: v.optional(v.number()),
     offsetMinutes: v.optional(v.number()),
-    roleId: v.optional(v.union(v.id("roles"), v.null())),
+    roleId: v.optional(v.union(v.id("eventRoles"), v.null())),
     ownerPersonId: v.optional(v.union(v.id("people"), v.null())),
     status: v.optional(v.union(v.string(), v.null())),
     fields: fieldsValidator,

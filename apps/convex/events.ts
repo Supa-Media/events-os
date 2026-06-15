@@ -421,6 +421,12 @@ export const remove = mutation({
       .collect();
     for (const a of assignments) await ctx.db.delete(a._id);
 
+    const eventRoles = await ctx.db
+      .query("eventRoles")
+      .withIndex("by_event", (q: any) => q.eq("eventId", eventId))
+      .collect();
+    for (const r of eventRoles) await ctx.db.delete(r._id);
+
     await ctx.db.delete(eventId);
     return eventId;
   },
@@ -500,19 +506,23 @@ export const dayOf = query({
         .collect()
     ).sort((a: any, b: any) => a.order - b.order);
 
-    const roleIds: Id<"roles">[] = eventType?.activeRoleIds ?? [];
+    const eventRoles = (
+      await ctx.db
+        .query("eventRoles")
+        .withIndex("by_event", (q: any) => q.eq("eventId", eventId))
+        .collect()
+    ).sort((a: any, b: any) => a.order - b.order);
     const assignments = await ctx.db
       .query("roleAssignments")
       .withIndex("by_event", (q: any) => q.eq("eventId", eventId))
       .collect();
     const roles = await Promise.all(
-      roleIds.map(async (roleId) => {
-        const role = await ctx.db.get(roleId);
-        const assignment = assignments.find((a: any) => a.roleId === roleId);
+      eventRoles.map(async (role: any) => {
+        const assignment = assignments.find((a: any) => a.roleId === role._id);
         const person = assignment ? await ctx.db.get(assignment.personId) : null;
         return {
-          roleId,
-          roleLabel: role?.label ?? "Unknown role",
+          roleId: role._id as Id<"eventRoles">,
+          roleLabel: role.label ?? "Unknown role",
           person: person ? { _id: person._id, name: person.name } : null,
         };
       }),

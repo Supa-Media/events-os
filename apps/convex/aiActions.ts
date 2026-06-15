@@ -322,7 +322,7 @@ async function fetchImageBlob(url: string): Promise<Blob | null> {
 /** The shape `internal.ai.eventContext` returns — the agent's working snapshot. */
 interface EventCtx {
   event: { id: Id<"events">; name: string; date: number; budget: number | null };
-  roles: Array<{ id: Id<"roles">; key: string; label: string }>;
+  roles: Array<{ id: Id<"eventRoles">; key: string; label: string }>;
   people: Array<{ id: Id<"people">; name: string }>;
   optionsByModule: Record<string, Record<string, string[]>>;
   items: Array<{
@@ -342,12 +342,12 @@ interface EventCtx {
 type Ctx = EventCtx;
 
 /** Resolve a role label/key to a roleId from the event context. */
-function resolveRole(context: Ctx, raw: string): Id<"roles"> | undefined {
+function resolveRole(context: Ctx, raw: string): Id<"eventRoles"> | undefined {
   const needle = raw.trim().toLowerCase();
   const hit = context.roles.find(
     (r) => r.label.toLowerCase() === needle || r.key.toLowerCase() === needle,
   );
-  return hit?.id as Id<"roles"> | undefined;
+  return hit?.id as Id<"eventRoles"> | undefined;
 }
 
 /** Resolve a person name to a personId from the roster (case-insensitive). */

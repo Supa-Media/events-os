@@ -1,20 +1,20 @@
 /**
- * Roles — editable, chapter-scoped event-team role definitions.
+ * Roles — event-team role definitions, owned by a TEMPLATE and cloned to each
+ * EVENT on creation (the codebase's clone-on-create pattern).
  *
- * A new chapter is seeded with the 4 the events team settled on (Event Lead,
+ * A template is seeded with the defaults the events team settled on (Event Lead,
  * Comms Lead, Logistics Lead, Production Lead), but they're plain data: rename,
- * reorder, add, or archive freely. A template declares which roles it uses, and
- * items/run-of-show rows reference a role; on a live event a person is assigned
- * to each role (see roleAssignments).
+ * reorder, add, or delete freely per template. When an event is created its
+ * template's roles are cloned into `eventRoles`, after which the event edits its
+ * own copy independently. Items reference a role within their own scope, and on a
+ * live event a person is assigned to each event role (see roleAssignments).
+ *
+ * `key` stays stable across rename so item/owner references keep resolving.
  */
 import { query, mutation } from "./_generated/server";
 import { Id } from "./_generated/dataModel";
 import { v } from "convex/values";
-import {
-  requireChapterId,
-  requireInChapter,
-  getChapterIdOrNull,
-} from "./lib/context";
+import { requireChapterId, requireInChapter } from "./lib/context";
 
 /** Kebab-case slug from a display name. */
 function toKey(name: string): string {
@@ -30,15 +30,18 @@ function maxOrder(rows: Array<{ order: number }>): number {
   return rows.reduce((max, r) => (r.order > max ? r.order : max), -1);
 }
 
-/** The chapter's active roles, ordered. */
-export const list = query({
-  args: {},
-  handler: async (ctx) => {
-    const chapterId = await getChapterIdOrNull(ctx);
-    if (!chapterId) return [];
+// ── Template roles ────────────────────────────────────────────────────────────
+
+/** A template's roles (not archived), ordered. */
+export const listForTemplate = query({
+  args: { eventTypeId: v.id("eventTypes") },
+  handler: async (ctx, { eventTypeId }) => {
+    const chapterId = await requireChapterId(ctx);
+    const et = await ctx.db.get(eventTypeId);
+    if (!et || et.chapterId !== chapterId) return [];
     const roles = await ctx.db
-      .query("roles")
-      .withIndex("by_chapter", (q: any) => q.eq("chapterId", chapterId))
+      .query("templateRoles")
+      .withIndex("by_template", (q: any) => q.eq("eventTypeId", eventTypeId))
       .collect();
     return roles
       .filter((r: any) => r.isArchived !== true)
@@ -46,42 +49,46 @@ export const list = query({
   },
 });
 
-/** Add a role to the chapter (appended to the end). */
-export const create = mutation({
+/** Add a role to a template (appended to the end). */
+export const createForTemplate = mutation({
   args: {
+    eventTypeId: v.id("eventTypes"),
     label: v.string(),
     description: v.optional(v.string()),
     key: v.optional(v.string()),
   },
   handler: async (ctx, args) => {
     const chapterId = await requireChapterId(ctx);
+    const et = await ctx.db.get(args.eventTypeId);
+    await requireInChapter(ctx, chapterId, et, "Event type");
     const roles = await ctx.db
-      .query("roles")
-      .withIndex("by_chapter", (q: any) => q.eq("chapterId", chapterId))
+      .query("templateRoles")
+      .withIndex("by_template", (q: any) => q.eq("eventTypeId", args.eventTypeId))
       .collect();
-    return await ctx.db.insert("roles", {
-      chapterId: chapterId as Id<"chapters">,
+    return await ctx.db.insert("templateRoles", {
+      eventTypeId: args.eventTypeId,
       key: args.key ?? toKey(args.label),
       label: args.label,
       description: args.description,
       order: maxOrder(roles) + 1,
       isArchived: false,
-      createdAt: Date.now(),
     });
   },
 });
 
-/** Rename / re-describe a role. */
-export const update = mutation({
+/** Rename / re-describe a template role (key stays stable). */
+export const updateTemplateRole = mutation({
   args: {
-    roleId: v.id("roles"),
+    roleId: v.id("templateRoles"),
     label: v.optional(v.string()),
     description: v.optional(v.string()),
   },
   handler: async (ctx, { roleId, ...patch }) => {
     const chapterId = await requireChapterId(ctx);
     const role = await ctx.db.get(roleId);
-    await requireInChapter(ctx, chapterId, role, "Role");
+    if (!role) return roleId;
+    const et = await ctx.db.get(role.eventTypeId);
+    await requireInChapter(ctx, chapterId, et, "Event type");
     const fields: Record<string, unknown> = {};
     if (patch.label !== undefined) fields.label = patch.label;
     if (patch.description !== undefined) fields.description = patch.description;
@@ -90,14 +97,30 @@ export const update = mutation({
   },
 });
 
-/** Reorder the chapter's roles to match the given id array. */
-export const reorder = mutation({
-  args: { orderedIds: v.array(v.id("roles")) },
+/** Hard-delete a template role (template config, no live references). */
+export const deleteTemplateRole = mutation({
+  args: { roleId: v.id("templateRoles") },
+  handler: async (ctx, { roleId }) => {
+    const chapterId = await requireChapterId(ctx);
+    const role = await ctx.db.get(roleId);
+    if (!role) return roleId;
+    const et = await ctx.db.get(role.eventTypeId);
+    await requireInChapter(ctx, chapterId, et, "Event type");
+    await ctx.db.delete(roleId);
+    return roleId;
+  },
+});
+
+/** Reorder a template's roles to match the given id array. */
+export const reorderTemplateRoles = mutation({
+  args: { orderedIds: v.array(v.id("templateRoles")) },
   handler: async (ctx, { orderedIds }) => {
     const chapterId = await requireChapterId(ctx);
     for (let i = 0; i < orderedIds.length; i++) {
       const role = await ctx.db.get(orderedIds[i]);
-      if (role && role.chapterId === chapterId) {
+      if (!role) continue;
+      const et = await ctx.db.get(role.eventTypeId);
+      if (et && et.chapterId === chapterId) {
         await ctx.db.patch(orderedIds[i], { order: i });
       }
     }
@@ -105,14 +128,110 @@ export const reorder = mutation({
   },
 });
 
-/** Archive a role (soft delete; hidden from `list`). */
-export const archive = mutation({
-  args: { roleId: v.id("roles") },
-  handler: async (ctx, { roleId }) => {
+// ── Event roles ───────────────────────────────────────────────────────────────
+
+/** An event's roles, ordered. */
+export const listForEvent = query({
+  args: { eventId: v.id("events") },
+  handler: async (ctx, { eventId }) => {
+    const chapterId = await requireChapterId(ctx);
+    const event = await ctx.db.get(eventId);
+    if (!event || event.chapterId !== chapterId) return [];
+    const roles = await ctx.db
+      .query("eventRoles")
+      .withIndex("by_event", (q: any) => q.eq("eventId", eventId))
+      .collect();
+    return roles.sort((a: any, b: any) => a.order - b.order);
+  },
+});
+
+/** Add a role to an event (appended to the end). */
+export const createForEvent = mutation({
+  args: {
+    eventId: v.id("events"),
+    label: v.string(),
+    description: v.optional(v.string()),
+    key: v.optional(v.string()),
+  },
+  handler: async (ctx, args) => {
+    const chapterId = await requireChapterId(ctx);
+    const event = await ctx.db.get(args.eventId);
+    await requireInChapter(ctx, chapterId, event, "Event");
+    const roles = await ctx.db
+      .query("eventRoles")
+      .withIndex("by_event", (q: any) => q.eq("eventId", args.eventId))
+      .collect();
+    return await ctx.db.insert("eventRoles", {
+      eventId: args.eventId,
+      key: args.key ?? toKey(args.label),
+      label: args.label,
+      description: args.description,
+      order: maxOrder(roles) + 1,
+    });
+  },
+});
+
+/** Rename / re-describe an event role (key stays stable). */
+export const updateEventRole = mutation({
+  args: {
+    roleId: v.id("eventRoles"),
+    label: v.optional(v.string()),
+    description: v.optional(v.string()),
+  },
+  handler: async (ctx, { roleId, ...patch }) => {
     const chapterId = await requireChapterId(ctx);
     const role = await ctx.db.get(roleId);
-    await requireInChapter(ctx, chapterId, role, "Role");
-    await ctx.db.patch(roleId, { isArchived: true });
+    if (!role) return roleId;
+    const event = await ctx.db.get(role.eventId);
+    await requireInChapter(ctx, chapterId, event, "Event");
+    const fields: Record<string, unknown> = {};
+    if (patch.label !== undefined) fields.label = patch.label;
+    if (patch.description !== undefined) fields.description = patch.description;
+    await ctx.db.patch(roleId, fields);
     return roleId;
   },
 });
+
+/**
+ * Hard-delete an event role. Also removes any roleAssignments referencing it so
+ * no dangling refs are left behind.
+ */
+export const deleteEventRole = mutation({
+  args: { roleId: v.id("eventRoles") },
+  handler: async (ctx, { roleId }) => {
+    const chapterId = await requireChapterId(ctx);
+    const role = await ctx.db.get(roleId);
+    if (!role) return roleId;
+    const event = await ctx.db.get(role.eventId);
+    await requireInChapter(ctx, chapterId, event, "Event");
+    const assignments = await ctx.db
+      .query("roleAssignments")
+      .withIndex("by_event_role", (q: any) =>
+        q.eq("eventId", role.eventId).eq("roleId", roleId),
+      )
+      .collect();
+    for (const a of assignments) await ctx.db.delete(a._id);
+    await ctx.db.delete(roleId);
+    return roleId;
+  },
+});
+
+/** Reorder an event's roles to match the given id array. */
+export const reorderEventRoles = mutation({
+  args: { orderedIds: v.array(v.id("eventRoles")) },
+  handler: async (ctx, { orderedIds }) => {
+    const chapterId = await requireChapterId(ctx);
+    for (let i = 0; i < orderedIds.length; i++) {
+      const role = await ctx.db.get(orderedIds[i]);
+      if (!role) continue;
+      const event = await ctx.db.get(role.eventId);
+      if (event && event.chapterId === chapterId) {
+        await ctx.db.patch(orderedIds[i], { order: i });
+      }
+    }
+    return null;
+  },
+});
+
+// Re-exported helpers for use by other backend modules.
+export { toKey, maxOrder };
