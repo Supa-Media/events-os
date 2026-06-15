@@ -33,6 +33,7 @@ export const create = mutation({
     eventTypeId: v.id("eventTypes"),
     name: v.string(),
     team: v.optional(v.string()),
+    teams: v.optional(v.array(v.string())),
     role: v.optional(v.string()),
   },
   handler: async (ctx, args) => {
@@ -49,6 +50,7 @@ export const create = mutation({
       eventTypeId: args.eventTypeId,
       name: args.name,
       team: args.team,
+      teams: args.teams,
       role: args.role,
       order: maxOrder(rows) + 1,
       createdAt: Date.now(),
@@ -62,6 +64,7 @@ export const update = mutation({
     templatePersonId: v.id("templatePeople"),
     name: v.optional(v.string()),
     team: v.optional(v.union(v.string(), v.null())),
+    teams: v.optional(v.union(v.array(v.string()), v.null())),
     role: v.optional(v.union(v.string(), v.null())),
   },
   handler: async (ctx, { templatePersonId, ...patch }) => {

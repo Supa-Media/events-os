@@ -55,6 +55,7 @@ export const listForEvent = query({
                 email: person.email ?? null,
                 phone: person.phone ?? null,
                 skills: person.skills ?? [],
+                isPlaceholder: (person as any).isPlaceholder === true,
               }
             : null,
         };
@@ -152,6 +153,67 @@ export const update = mutation({
     if (patch.paymentStatus !== undefined) fields.paymentStatus = patch.paymentStatus;
     if (patch.notes !== undefined) fields.notes = patch.notes ?? undefined;
     await ctx.db.patch(engagementId, fields);
+    return engagementId;
+  },
+});
+
+/**
+ * Swap a placeholder volunteer for a real person on an event.
+ *
+ * The placeholder (`engagement.personId`) is a stand-in materialized from a
+ * template's crew at event creation; this repoints the engagement at a real
+ * roster person AND remaps every Expectations item the placeholder owned to that
+ * person. If the placeholder row is no longer referenced by any engagement, it's
+ * deleted (it only existed as a stand-in). Returns the engagement id.
+ */
+export const replacePlaceholderVolunteer = mutation({
+  args: {
+    engagementId: v.id("engagements"),
+    personId: v.id("people"),
+  },
+  handler: async (ctx, { engagementId, personId }) => {
+    const chapterId = await requireChapterId(ctx);
+    const eng = await ctx.db.get(engagementId);
+    await requireInChapter(ctx, chapterId, eng, "Engagement");
+    // The engagement's event must be in this chapter.
+    const event = await ctx.db.get(eng!.eventId as Id<"events">);
+    await requireInChapter(ctx, chapterId, event, "Event");
+    // The real replacement person must be in this chapter.
+    const person = await ctx.db.get(personId);
+    await requireInChapter(ctx, chapterId, person, "Person");
+
+    const oldPersonId = eng!.personId as Id<"people">;
+
+    // Repoint the engagement at the real person.
+    await ctx.db.patch(engagementId, { personId });
+
+    // Remap every Expectations (and any other) item this placeholder owned in
+    // the same event to the real person.
+    const items = await ctx.db
+      .query("eventItems")
+      .withIndex("by_event", (q: any) => q.eq("eventId", eng!.eventId))
+      .collect();
+    for (const it of items) {
+      if (it.ownerPersonId === oldPersonId) {
+        await ctx.db.patch(it._id, { ownerPersonId: personId });
+      }
+    }
+
+    // If the old row was a placeholder and nothing else references it anymore,
+    // delete it — it only ever existed as a stand-in.
+    if (oldPersonId !== personId) {
+      const oldPerson = await ctx.db.get(oldPersonId);
+      if (oldPerson && (oldPerson as any).isPlaceholder === true) {
+        const remaining = await ctx.db
+          .query("engagements")
+          .withIndex("by_person", (q: any) => q.eq("personId", oldPersonId))
+          .collect();
+        if (remaining.length === 0) {
+          await ctx.db.delete(oldPersonId);
+        }
+      }
+    }
+
     return engagementId;
   },
 });

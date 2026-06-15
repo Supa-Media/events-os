@@ -218,7 +218,9 @@ export async function cloneRolesToEvent(
 
 /**
  * Materialize a template's PLACEHOLDER crew (templatePeople) into real chapter
- * `people` rows flagged `isPlaceholder`, one per template row. Returns a map
+ * `people` rows flagged `isPlaceholder`, one per template row, AND attach each to
+ * the new event as a `volunteer` engagement (so placeholders show up in the
+ * event's Volunteers list, ready to be swapped for a real person). Returns a map
  * from the templatePerson id (string) to the new `people` id, so cloned event
  * Expectations items can repoint their owner from the placeholder reference
  * (stored in the template item's `fields.templateOwnerId`) to the real row. The
@@ -228,6 +230,7 @@ export async function clonePlaceholderCrewToChapter(
   ctx: any,
   eventTypeId: Id<"eventTypes">,
   chapterId: Id<"chapters">,
+  eventId: Id<"events">,
   now: number,
 ): Promise<Map<string, Id<"people">>> {
   const rows = (
@@ -248,6 +251,19 @@ export async function clonePlaceholderCrewToChapter(
       createdAt: now,
     })) as Id<"people">;
     idMap.set(String(r._id), newId);
+
+    // A placeholder can stand in across several teams; read multi-team `teams`,
+    // falling back to the single-team `team` for back-compat.
+    const teams: string[] = r.teams ?? (r.team ? [r.team] : []);
+    await ctx.db.insert("engagements", {
+      chapterId,
+      eventId,
+      personId: newId,
+      type: "volunteer",
+      teams,
+      status: "confirmed",
+      createdAt: now,
+    });
   }
   return idMap;
 }
@@ -351,6 +367,7 @@ export async function instantiateEvent(
     ctx,
     opts.eventType._id,
     opts.chapterId,
+    eventId,
     now,
   );
 

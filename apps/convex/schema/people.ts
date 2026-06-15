@@ -86,8 +86,11 @@ export const templatePeople = defineTable({
   eventTypeId: v.id("eventTypes"),
   name: v.string(),
   // Which team/area this placeholder belongs to (free text, mirrors the
-  // Expectations team column values).
+  // Expectations team column values). Single-team back-compat field.
   team: v.optional(v.string()),
+  // Multi-team membership — a placeholder can stand in across several teams.
+  // Supersedes `team` (kept for back-compat); read as `teams ?? (team ? [team] : [])`.
+  teams: v.optional(v.array(v.string())),
   // Free-form role/title for the placeholder (e.g. "Stage Manager").
   role: v.optional(v.string()),
   order: v.number(),

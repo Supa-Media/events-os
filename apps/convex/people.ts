@@ -40,9 +40,12 @@ export const list = query({
       .query("people")
       .withIndex("by_chapter", (q: any) => q.eq("chapterId", chapterId))
       .collect();
-    const sorted = people.sort((a: any, b: any) =>
-      a.name.localeCompare(b.name),
-    );
+    // Placeholder crew (materialized from template placeholders onto events) are
+    // event-scoped stand-ins, not real roster members — keep them out of the
+    // People roster. They surface only as event volunteers until replaced.
+    const sorted = people
+      .filter((p: any) => p.isPlaceholder !== true)
+      .sort((a: any, b: any) => a.name.localeCompare(b.name));
     // Resolve each profile photo storageId to a servable URL for display.
     return await Promise.all(
       sorted.map(async (p: any) => ({
