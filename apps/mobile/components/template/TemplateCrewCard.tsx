@@ -17,11 +17,12 @@ import { colors } from "../../lib/theme";
  * into a real chapter person (flagged a placeholder) the team swaps for a real
  * volunteer later.
  *
- * Each crew member is tagged with a TEAM that is the SAME set as the Expectations
- * grid's "team" select column (module `volunteer_expectations`, key `team`). The
- * dropdown is sourced from that column's `options`, the stored value is the
- * option `value`, and new teams added here are appended to that column — so a
- * crew member's team and an Expectations row's team always line up.
+ * Each crew member is tagged with one or more TEAMS drawn from the SAME set as the
+ * Expectations grid's "team" select column (module `volunteer_expectations`, key
+ * `team`). The dropdown is sourced from that column's `options`, the stored values
+ * are option `value`s (an array in `teams`), and new teams added here are appended
+ * to that column — so a crew member's teams and an Expectations row's team always
+ * line up.
  *
  * A simple inline list: edit each row's name + team in place, ＋ adds one, the
  * trash icon deletes. Mirrors the lightweight RolesCard style — NOT the heavy
@@ -93,17 +94,14 @@ export function TemplateCrewCard({
             <CrewRow
               key={c._id}
               name={c.name}
-              team={c.team ?? null}
+              teams={c.teams ?? (c.team ? [c.team] : [])}
               teamOptions={teamOptions}
               teamColumnReady={teamColumn != null}
               onSaveName={(name) =>
                 updateCrew({ templatePersonId: c._id, name })
               }
-              onSaveTeam={(team) =>
-                updateCrew({
-                  templatePersonId: c._id,
-                  team: team ? team : null,
-                })
+              onSaveTeams={(teams) =>
+                updateCrew({ templatePersonId: c._id, teams })
               }
               onAddTeam={addTeam}
               onDelete={() =>
@@ -172,23 +170,23 @@ function uniqueValue(base: string, taken: Set<string>): string {
   return `${base}_${i}`;
 }
 
-/** One placeholder crew row: avatar + inline name + team dropdown + delete. */
+/** One placeholder crew row: avatar + inline name + teams dropdown + delete. */
 function CrewRow({
   name,
-  team,
+  teams,
   teamOptions,
   teamColumnReady,
   onSaveName,
-  onSaveTeam,
+  onSaveTeams,
   onAddTeam,
   onDelete,
 }: {
   name: string;
-  team: string | null;
+  teams: string[];
   teamOptions: TeamOption[];
   teamColumnReady: boolean;
   onSaveName: (name: string) => void;
-  onSaveTeam: (team: string | null) => void;
+  onSaveTeams: (teams: string[]) => void;
   onAddTeam: (label: string) => Promise<string | null>;
   onDelete: () => void;
 }) {
@@ -211,10 +209,10 @@ function CrewRow({
         style={{ outlineWidth: 0 } as any}
       />
       <TeamSelect
-        team={team}
+        teams={teams}
         teamOptions={teamOptions}
         disabled={!teamColumnReady}
-        onSelect={onSaveTeam}
+        onToggle={onSaveTeams}
         onAddTeam={onAddTeam}
       />
       <Pressable
@@ -230,22 +228,23 @@ function CrewRow({
 }
 
 /**
- * Team dropdown for a crew row. Anchored Popover (matching the grid's select
- * cells) listing the Expectations `team` options; selecting one stores the
- * option `value`. A footer input lets the author add a NEW team — appended to
- * the shared column and immediately assigned to this crew member.
+ * Teams dropdown for a crew row — MULTI-select. Anchored Popover (matching the
+ * grid's select cells) listing the Expectations `team` options; tapping one
+ * toggles its option `value` in/out of the crew member's `teams` array. Selected
+ * teams render as OptionTag chips on the anchor. A footer input lets the author
+ * add a NEW team — appended to the shared column and immediately toggled on.
  */
 function TeamSelect({
-  team,
+  teams,
   teamOptions,
   disabled,
-  onSelect,
+  onToggle,
   onAddTeam,
 }: {
-  team: string | null;
+  teams: string[];
   teamOptions: TeamOption[];
   disabled: boolean;
-  onSelect: (team: string | null) => void;
+  onToggle: (teams: string[]) => void;
   onAddTeam: (label: string) => Promise<string | null>;
 }) {
   const ref = useRef<any>(null);
@@ -255,7 +254,8 @@ function TeamSelect({
   const [open, setOpen] = useState(false);
   const [newTeam, setNewTeam] = useState("");
 
-  const current = teamOptions.find((o) => o.value === team) ?? null;
+  const selected = new Set(teams);
+  const selectedOptions = teamOptions.filter((o) => selected.has(o.value));
 
   const openMenu = () => {
     const node = ref.current;
@@ -275,12 +275,19 @@ function TeamSelect({
     setNewTeam("");
   };
 
+  const toggle = (value: string) => {
+    const next = selected.has(value)
+      ? teams.filter((t) => t !== value)
+      : [...teams, value];
+    onToggle(next);
+  };
+
   const commitNewTeam = async () => {
     const label = newTeam.trim();
     if (!label) return;
     const value = await onAddTeam(label);
-    if (value) onSelect(value);
-    close();
+    if (value && !selected.has(value)) onToggle([...teams, value]);
+    setNewTeam("");
   };
 
   return (
@@ -289,37 +296,28 @@ function TeamSelect({
         ref={ref}
         disabled={disabled}
         onPress={openMenu}
-        accessibilityLabel="Set team"
+        accessibilityLabel="Set teams"
         className="w-28 px-1 py-1 active:opacity-70"
       >
-        {current ? (
-          <OptionTag label={current.label} color={current.color} />
+        {selectedOptions.length > 0 ? (
+          <View className="flex-row flex-wrap gap-1">
+            {selectedOptions.map((o) => (
+              <OptionTag key={o.value} label={o.label} color={o.color} />
+            ))}
+          </View>
         ) : (
-          <Text className="text-sm text-faint">Team…</Text>
+          <Text className="text-sm text-faint">Teams…</Text>
         )}
       </Pressable>
       <Popover visible={open} onClose={close} anchor={anchor} width={220}>
         <View className="py-1">
-          {team != null ? (
-            <TeamMenuRow
-              label="Clear"
-              muted
-              onPress={() => {
-                onSelect(null);
-                close();
-              }}
-            />
-          ) : null}
           {teamOptions.map((o) => (
             <TeamMenuRow
               key={o.value}
               label={o.label}
               color={o.color}
-              selected={o.value === team}
-              onPress={() => {
-                onSelect(o.value);
-                close();
-              }}
+              selected={selected.has(o.value)}
+              onPress={() => toggle(o.value)}
             />
           ))}
           {/* Add a new team — appended to the shared Expectations column. */}

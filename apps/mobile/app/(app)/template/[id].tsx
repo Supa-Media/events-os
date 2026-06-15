@@ -111,12 +111,6 @@ export default function TemplateEditorScreen() {
       ) : (
         gridModules.map((m) => (
           <View key={m.key}>
-            {/* Crew (placeholders) sits directly on top of the Expectations grid:
-                its team dropdown is sourced from this grid's `team` column, so the
-                two read as one unit. */}
-            {m.key === "volunteer_expectations" ? (
-              <TemplateCrewCard eventTypeId={eventTypeId} />
-            ) : null}
             <SectionHeader title={m.label} />
             <EditableGrid
               mode="template"
@@ -125,6 +119,12 @@ export default function TemplateEditorScreen() {
               roles={roleList}
               addLabel={`Add ${m.label.toLowerCase()} row`}
             />
+            {/* Crew (placeholders) sits directly below the Expectations grid:
+                its team dropdown is sourced from this grid's `team` column, so the
+                two read as one unit. */}
+            {m.key === "volunteer_expectations" ? (
+              <TemplateCrewCard eventTypeId={eventTypeId} />
+            ) : null}
           </View>
         ))
       )}

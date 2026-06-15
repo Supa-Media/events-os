@@ -52,6 +52,7 @@ type Person = {
   email?: string | null;
   phone?: string | null;
   skills?: string[];
+  isPlaceholder?: boolean;
 } | null;
 
 type TeamOption = { value: string; label: string; color?: string | null };
@@ -126,6 +127,7 @@ const VEN_COLS = {
   name: 220,
   email: 190,
   phone: 140,
+  team: 180,
   service: 170,
   amount: 100,
   payment: 120,
@@ -452,18 +454,51 @@ function RowAction({ label, onPress }: { label: string; onPress: () => void }) {
 }
 
 // ── Name cell: avatar (opens detail) + inline-editable person name. ───────────
+// Placeholder volunteers (created from a template's crew) instead render a
+// tappable "Replace" affordance and a Placeholder tag: their name isn't a real
+// person yet, so it can't be inline-edited — it must be swapped for a real one.
 function NameCell({
   person,
   width,
   onOpen,
   onCommitName,
+  onReplace,
 }: {
   person: Person;
   width: number;
   onOpen: () => void;
   onCommitName: (name: string) => void;
+  onReplace?: () => void;
 }) {
   const name = person?.name ?? "";
+  const isPlaceholder = person?.isPlaceholder === true && !!onReplace;
+
+  if (isPlaceholder) {
+    return (
+      <View
+        style={{ width }}
+        className="flex-row items-center gap-2 border-r border-border/60 px-2 py-1.5"
+      >
+        <Avatar name={name || "?"} size={26} />
+        <Pressable
+          onPress={onReplace}
+          hitSlop={4}
+          accessibilityRole="button"
+          accessibilityLabel="Replace placeholder volunteer"
+          className="min-w-0 flex-1 active:opacity-70 web:hover:opacity-90"
+        >
+          <Text className="text-sm font-medium text-ink" numberOfLines={1}>
+            {name || "Unassigned"}
+          </Text>
+          <View className="mt-0.5 flex-row items-center gap-1">
+            <OptionTag label="Placeholder" color="amber" />
+            <Text className="text-2xs font-semibold text-accent">Replace →</Text>
+          </View>
+        </Pressable>
+      </View>
+    );
+  }
+
   return (
     <View
       style={{ width }}
@@ -551,6 +586,7 @@ function VolunteerRow({
   onUpdatePerson,
   onUpdate,
   onRemove,
+  onReplace,
 }: {
   engagement: Engagement;
   teamOptions: TeamOption[];
@@ -560,6 +596,7 @@ function VolunteerRow({
   onUpdatePerson: (patch: Record<string, unknown>) => void;
   onUpdate: (patch: Record<string, unknown>) => void;
   onRemove: () => void;
+  onReplace: () => void;
 }) {
   const e = engagement;
   return (
@@ -573,6 +610,7 @@ function VolunteerRow({
         width={VOL_COLS.name}
         onOpen={onOpen}
         onCommitName={onCommitName}
+        onReplace={onReplace}
       />
       <Cell width={VOL_COLS.email}>
         <InlineText
@@ -633,6 +671,7 @@ function VolunteerRow({
 // ── Vendor (paid) row ──────────────────────────────────────────────────────────
 function VendorRow({
   engagement,
+  teamOptions,
   isLast,
   onOpen,
   onCommitName,
@@ -641,6 +680,7 @@ function VendorRow({
   onRemove,
 }: {
   engagement: Engagement;
+  teamOptions: TeamOption[];
   isLast: boolean;
   onOpen: () => void;
   onCommitName: (name: string) => void;
@@ -674,6 +714,13 @@ function VendorRow({
           value={e.person?.phone ?? ""}
           placeholder="—"
           onCommit={(t) => onUpdatePerson({ phone: t.trim() || undefined })}
+        />
+      </Cell>
+      <Cell width={VEN_COLS.team}>
+        <TeamCell
+          teams={e.teams}
+          options={teamOptions}
+          onChange={(teams) => onUpdate({ teams })}
         />
       </Cell>
       <Cell width={VEN_COLS.service}>
@@ -922,10 +969,15 @@ export function CrewSections({ eventId }: { eventId: string }) {
   const add = useMutation(api.engagements.add);
   const update = useMutation(api.engagements.update);
   const remove = useMutation(api.engagements.remove);
+  const replacePlaceholder = useMutation(
+    api.engagements.replacePlaceholderVolunteer,
+  );
   const updatePerson = useMutation(api.people.update);
   const createPerson = useMutation(api.people.create);
 
   const [picker, setPicker] = useState<EngagementType | null>(null);
+  // Engagement currently being re-pointed from a placeholder to a real person.
+  const [replacingId, setReplacingId] = useState<string | null>(null);
   const [openPersonId, setOpenPersonId] = useState<string | null>(null);
   const [openPersonName, setOpenPersonName] = useState("");
   const [sort, setSort] = useState<Sort>({ col: "team", dir: 1 });
@@ -953,6 +1005,28 @@ export function CrewSections({ eventId }: { eventId: string }) {
     const personId = await createPerson({ name });
     await add({ eventId: eventId as any, personId, type: picker });
     setPicker(null);
+  };
+
+  // Replace flow: point a placeholder volunteer's engagement at a REAL person.
+  // The backend mutation remaps Expectations owners and deletes the placeholder.
+  const onPickReplacement = async (personId: string) => {
+    if (!replacingId) return;
+    await replacePlaceholder({
+      engagementId: replacingId as any,
+      personId: personId as any,
+    });
+    setReplacingId(null);
+  };
+
+  // Replace via add-new: create the real person first, then re-point.
+  const onCreateReplacement = async (name: string) => {
+    if (!replacingId) return;
+    const personId = await createPerson({ name });
+    await replacePlaceholder({
+      engagementId: replacingId as any,
+      personId,
+    });
+    setReplacingId(null);
   };
 
   const onSort = (col: SortCol) =>
@@ -1062,6 +1136,7 @@ export function CrewSections({ eventId }: { eventId: string }) {
                   void update({ engagementId: e._id as any, ...patch })
                 }
                 onRemove={() => void remove({ engagementId: e._id as any })}
+                onReplace={() => setReplacingId(e._id)}
               />
             ))
           )}
@@ -1095,6 +1170,7 @@ export function CrewSections({ eventId }: { eventId: string }) {
                 <HeaderCell label="Name" width={VEN_COLS.name} />
                 <HeaderCell label="Email" width={VEN_COLS.email} />
                 <HeaderCell label="Phone" width={VEN_COLS.phone} />
+                <HeaderCell label="Team" width={VEN_COLS.team} />
                 <HeaderCell label="Service" width={VEN_COLS.service} />
                 <HeaderCell label="Amount" width={VEN_COLS.amount} />
                 <HeaderCell label="Payment" width={VEN_COLS.payment} />
@@ -1115,6 +1191,7 @@ export function CrewSections({ eventId }: { eventId: string }) {
                 <VendorRow
                   key={e._id}
                   engagement={e}
+                  teamOptions={teamOptions}
                   isLast={i === vendors.length - 1}
                   onOpen={() => openPerson(e.personId, e.person?.name ?? "")}
                   onCommitName={(name) =>
@@ -1149,6 +1226,16 @@ export function CrewSections({ eventId }: { eventId: string }) {
         onPick={onPick}
         onCreate={onCreate}
         onClose={() => setPicker(null)}
+      />
+
+      {/* Replace-placeholder picker: REAL chapter people only (+ add-new). */}
+      <PersonPicker
+        visible={replacingId !== null}
+        title="Replace with person"
+        filter={(p) => p.isPlaceholder !== true}
+        onPick={(id) => void onPickReplacement(id)}
+        onCreate={(name) => void onCreateReplacement(name)}
+        onClose={() => setReplacingId(null)}
       />
 
       {/* Person detail (read-only contact + engagement history) */}

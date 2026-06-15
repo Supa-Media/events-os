@@ -218,7 +218,9 @@ export async function cloneRolesToEvent(
 
 /**
  * Materialize a template's PLACEHOLDER crew (templatePeople) into real chapter
- * `people` rows flagged `isPlaceholder`, one per template row. Returns a map
+ * `people` rows flagged `isPlaceholder`, one per template row, AND attach each to
+ * the new event as a `volunteer` engagement (so placeholders show up in the
+ * event's Volunteers list, ready to be swapped for a real person). Returns a map
  * from the templatePerson id (string) to the new `people` id, so cloned event
  * Expectations items can repoint their owner from the placeholder reference
  * (stored in the template item's `fields.templateOwnerId`) to the real row. The
@@ -228,8 +230,12 @@ export async function clonePlaceholderCrewToChapter(
   ctx: any,
   eventTypeId: Id<"eventTypes">,
   chapterId: Id<"chapters">,
+  eventId: Id<"events">,
   now: number,
-): Promise<Map<string, Id<"people">>> {
+): Promise<{
+  peopleByTemplatePerson: Map<string, Id<"people">>;
+  engagementByTemplatePerson: Map<string, Id<"engagements">>;
+}> {
   const rows = (
     await ctx.db
       .query("templatePeople")
@@ -237,7 +243,8 @@ export async function clonePlaceholderCrewToChapter(
       .collect()
   ).sort((a: any, b: any) => a.order - b.order);
 
-  const idMap = new Map<string, Id<"people">>();
+  const peopleByTemplatePerson = new Map<string, Id<"people">>();
+  const engagementByTemplatePerson = new Map<string, Id<"engagements">>();
   for (const r of rows) {
     const newId = (await ctx.db.insert("people", {
       chapterId,
@@ -247,9 +254,23 @@ export async function clonePlaceholderCrewToChapter(
       isActive: true,
       createdAt: now,
     })) as Id<"people">;
-    idMap.set(String(r._id), newId);
+    peopleByTemplatePerson.set(String(r._id), newId);
+
+    // A placeholder can stand in across several teams; read multi-team `teams`,
+    // falling back to the single-team `team` for back-compat.
+    const teams: string[] = r.teams ?? (r.team ? [r.team] : []);
+    const engagementId = (await ctx.db.insert("engagements", {
+      chapterId,
+      eventId,
+      personId: newId,
+      type: "volunteer",
+      teams,
+      status: "confirmed",
+      createdAt: now,
+    })) as Id<"engagements">;
+    engagementByTemplatePerson.set(String(r._id), engagementId);
   }
-  return idMap;
+  return { peopleByTemplatePerson, engagementByTemplatePerson };
 }
 
 /**
@@ -346,13 +367,17 @@ export async function instantiateEvent(
   const roleIdMap = await cloneRolesToEvent(ctx, opts.eventType._id, eventId);
 
   // Materialize the template's placeholder crew into real chapter people; map
-  // templatePerson id → new people id so Expectations items can be pre-owned.
-  const placeholderMap = await clonePlaceholderCrewToChapter(
-    ctx,
-    opts.eventType._id,
-    opts.chapterId,
-    now,
-  );
+  // templatePerson id → new people id so Expectations items can be pre-owned,
+  // and templatePerson id → its volunteer engagement id so site-map person
+  // placements can be repointed at the engagement (like event placements).
+  const { peopleByTemplatePerson: placeholderMap, engagementByTemplatePerson } =
+    await clonePlaceholderCrewToChapter(
+      ctx,
+      opts.eventType._id,
+      opts.chapterId,
+      eventId,
+      now,
+    );
 
   // Clone the template's custom modules onto the event.
   const templateMods = await ctx.db
@@ -390,6 +415,9 @@ export async function instantiateEvent(
       q.eq("eventTypeId", opts.eventType._id),
     )
     .collect();
+  // templateItem id → cloned eventItem id, so site-map supply placements can be
+  // repointed from the template item to its clone on the event.
+  const eventItemByTemplateItem = new Map<string, Id<"eventItems">>();
   for (const it of items) {
     const dueDate =
       isDayOffsetModule(it.module) && it.offsetDays !== undefined
@@ -407,7 +435,7 @@ export async function instantiateEvent(
         it.fields as Record<string, any>;
       fields = Object.keys(rest).length > 0 ? rest : undefined;
     }
-    await ctx.db.insert("eventItems", {
+    const newItemId = (await ctx.db.insert("eventItems", {
       eventId,
       chapterId: opts.chapterId,
       module: it.module,
@@ -433,13 +461,12 @@ export async function instantiateEvent(
       // item's cell at it (see `docs.forkForEventItem`), so the master and all
       // sibling events keep the original. Subsequent edits land on the copy.
       fields,
-    });
+    })) as Id<"eventItems">;
+    eventItemByTemplateItem.set(String(it._id), newItemId);
   }
 
   // Clone the template's SITE MAP onto the event: the background image plus
   // every marker and shape (new event-scoped rows, same geometry/labels/colors).
-  // Placements are deliberately NOT cloned — they reference per-event supplies/
-  // volunteers that don't exist yet.
   if (opts.eventType.siteMapImage) {
     await ctx.db.patch(eventId, {
       siteMapImage: opts.eventType.siteMapImage,
@@ -485,6 +512,38 @@ export async function instantiateEvent(
       y2: s.y2,
       color: s.color,
       label: s.label,
+      createdAt: now,
+    });
+  }
+
+  // Clone the template's SITE-MAP PLACEMENTS onto the event, remapping `refId`
+  // from template references to the freshly-cloned event references:
+  //   - supply    → its cloned eventItem id (via the item map)
+  //   - volunteer → the materialized placeholder's VOLUNTEER ENGAGEMENT id
+  //     (template person placements pointed at a templatePeople id; event person
+  //     placements point at engagements, so replacing the placeholder later
+  //     flows through the overlay's engagement→person resolution automatically).
+  // Position + kind are kept verbatim. Placements whose source didn't clone (no
+  // matching map entry) are skipped — nothing to point at.
+  const templatePlacements = await ctx.db
+    .query("siteMapPlacements")
+    .withIndex("by_template", (q: any) =>
+      q.eq("eventTypeId", opts.eventType._id),
+    )
+    .collect();
+  for (const p of templatePlacements) {
+    const newRefId =
+      p.kind === "supply"
+        ? eventItemByTemplateItem.get(String(p.refId))
+        : engagementByTemplatePerson.get(String(p.refId));
+    if (!newRefId) continue;
+    await ctx.db.insert("siteMapPlacements", {
+      chapterId: opts.chapterId,
+      eventId,
+      kind: p.kind,
+      refId: String(newRefId),
+      x: p.x,
+      y: p.y,
       createdAt: now,
     });
   }

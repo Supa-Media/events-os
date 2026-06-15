@@ -311,7 +311,9 @@ export function SiteMapPreview({ eventId }: { eventId: string }) {
   const data = useQuery(api.siteMap.get, {
     scope: { kind: "event", eventId: eventId as any },
   });
-  const overlays = useQuery(api.siteMap.overlays, { eventId: eventId as any });
+  const overlays = useQuery(api.siteMap.overlays, {
+    scope: { kind: "event", eventId: eventId as any },
+  });
 
   // Measured container size, used for line geometry.
   const [size, setSize] = useState<{ width: number; height: number } | null>(

@@ -57,21 +57,33 @@ export const siteShapes = defineTable({
   .index("by_chapter", ["chapterId"]);
 
 /**
- * Site-map placement — overlays an existing SUPPLY (eventItem, module
- * "supplies") or VOLUNTEER (engagement, type "volunteer") onto the venue map
- * as a positioned, draggable chip at a normalized position (x,y in 0..1).
+ * Site-map placement — overlays an existing SUPPLY or VOLUNTEER onto the venue
+ * map as a positioned, draggable chip at a normalized position (x,y in 0..1).
  * `refId` is the source row's _id (kept as a string so one table can point at
  * either source); `kind` says which table it references.
+ *
+ * Scope: belongs EITHER to a live event (`eventId`) or to a TEMPLATE
+ * (`eventTypeId`), exactly like `siteMarkers`/`siteShapes`. Exactly one is set.
+ * What `refId` points at depends on scope + kind:
+ *   - EVENT  + supply    → an `eventItems` _id (module "supplies")
+ *   - EVENT  + volunteer → an `engagements` _id (type "volunteer")
+ *   - TEMPLATE + supply    → a `templateItems` _id (module "supplies")
+ *   - TEMPLATE + volunteer → a `templatePeople` _id (placeholder crew)
+ * Template placements are cloned onto new events at creation, with `refId`
+ * remapped to the cloned eventItem / materialized volunteer engagement.
  */
 export const siteMapPlacements = defineTable({
   chapterId: v.id("chapters"),
-  eventId: v.id("events"),
+  eventId: v.optional(v.id("events")),
+  eventTypeId: v.optional(v.id("eventTypes")),
   kind: v.union(v.literal("supply"), v.literal("volunteer")),
-  refId: v.string(), // the eventItem _id (supply) or engagement _id (volunteer)
+  refId: v.string(),
   x: v.number(), // normalized 0..1
   y: v.number(),
   createdAt: v.number(),
 })
   .index("by_event", ["eventId"])
   .index("by_event_kind", ["eventId", "kind"])
+  .index("by_template", ["eventTypeId"])
+  .index("by_template_kind", ["eventTypeId", "kind"])
   .index("by_chapter", ["chapterId"]);
