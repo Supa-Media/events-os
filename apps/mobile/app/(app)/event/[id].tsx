@@ -130,13 +130,21 @@ export default function EventDetailScreen() {
   // team lives in CrewSections below).
   const activeModules: ResolvedModule[] = resolvedModules ?? [];
 
-  // Tabs: Overview + each active module + Crew. The active tab lives in the URL
-  // (`?tab=`) so it's deep-linkable and survives back/forward; unknown/missing
-  // falls back to Overview.
+  // The volunteer_expectations module (the team EXPECTATIONS grid) is NOT a tab of
+  // its own — it's merged into the Crew tab below, alongside the crew engagements.
+  const expectationsModule =
+    activeModules.find((m) => m.key === "volunteer_expectations") ?? null;
+
+  // Tabs: Overview + each active module (minus volunteer_expectations) + the
+  // combined "Crew & Expectations" tab. The active tab lives in the URL (`?tab=`)
+  // so it's deep-linkable and survives back/forward; unknown/missing falls back
+  // to Overview.
   const tabs: { key: string; label: string }[] = [
     { key: "overview", label: "Overview" },
-    ...activeModules.map((m) => ({ key: m.key, label: m.label })),
-    { key: "crew", label: "Crew" },
+    ...activeModules
+      .filter((m) => m.key !== "volunteer_expectations")
+      .map((m) => ({ key: m.key, label: m.label })),
+    { key: "crew", label: "Crew & Expectations" },
   ];
   const activeTab = tabs.some((t) => t.key === tab) ? (tab as string) : "overview";
   const summaryByModule = new Map(
@@ -315,7 +323,14 @@ export default function EventDetailScreen() {
                     owner={moduleOwner(m)}
                     summary={summaryByModule.get(m.key)}
                     first={i === 0}
-                    onOpen={() => router.setParams({ tab: m.key })}
+                    onOpen={() =>
+                      router.setParams({
+                        // The expectations grid lives inside the Crew tab now, so
+                        // its rollup row opens there rather than its own key.
+                        tab:
+                          m.key === "volunteer_expectations" ? "crew" : m.key,
+                      })
+                    }
                     onAssignOwner={() => openOwnerPicker(m)}
                     onRemove={() => {
                       if (m.isCore) {
@@ -345,12 +360,34 @@ export default function EventDetailScreen() {
             </Card>
           </>
         ) : activeTab === "crew" ? (
-          /* ── Crew: volunteers + paid vendors (engagements) ────────────────── */
-          <CrewSections eventId={eventId} />
+          /* ── Crew & Expectations: WHO is on each team (engagements) plus, below,
+                WHAT each team is expected to do (the volunteer_expectations grid). */
+          <View className="gap-8">
+            <CrewSections eventId={eventId} />
+            {expectationsModule ? (
+              <View>
+                <SectionHeader title="Expectations" />
+                <ModuleSection
+                  eventId={eventId}
+                  module={expectationsModule}
+                  roles={eventRoles}
+                  eventDate={event.eventDate}
+                  owner={moduleOwner(expectationsModule)}
+                  ready={readyByModule.get(expectationsModule.key) ?? false}
+                  onAssignOwner={() => openOwnerPicker(expectationsModule)}
+                />
+              </View>
+            ) : null}
+          </View>
         ) : (
           /* ── A single module: owner bar + ready toggle + its surface ───────── */
           (() => {
-            const m = activeModules.find((mod) => mod.key === activeTab);
+            // volunteer_expectations is handled in the Crew tab, so skip it here —
+            // a stale `?tab=volunteer_expectations` URL falls through to Overview.
+            const m = activeModules.find(
+              (mod) =>
+                mod.key === activeTab && mod.key !== "volunteer_expectations",
+            );
             if (!m) return null;
             return (
               <ModuleSection

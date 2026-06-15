@@ -127,11 +127,11 @@ export interface CoreModuleDef {
 export const CORE_MODULES: CoreModuleDef[] = [
   { key: "planning_doc", label: "Planning Doc", surface: "grid", defaultOwnerRoleKey: "event_lead", offsetMode: "days" },
   { key: "run_of_show", label: "Run of Show", surface: "grid", defaultOwnerRoleKey: "production_lead", offsetMode: "minutes" },
-  { key: "comms", label: "Comms & Content Schedule", surface: "grid", defaultOwnerRoleKey: "comms_lead", offsetMode: "days" },
+  { key: "comms", label: "Comms Schedule", surface: "grid", defaultOwnerRoleKey: "comms_lead", offsetMode: "days" },
   { key: "permits", label: "Permits", surface: "grid", defaultOwnerRoleKey: "event_lead", offsetMode: "days" },
-  { key: "supplies", label: "Supplies & Packing Checklist", surface: "grid", defaultOwnerRoleKey: "logistics_lead", offsetMode: "none" },
+  { key: "supplies", label: "Supplies & Packing", surface: "grid", defaultOwnerRoleKey: "logistics_lead", offsetMode: "none" },
   { key: "retro", label: "Retrospective", surface: "grid", defaultOwnerRoleKey: "event_lead", offsetMode: "none" },
-  { key: "volunteer_expectations", label: "Volunteer Expectations", surface: "grid", defaultOwnerRoleKey: "comms_lead", offsetMode: "none" },
+  { key: "volunteer_expectations", label: "Expectations", surface: "grid", defaultOwnerRoleKey: "comms_lead", offsetMode: "none" },
   // Site map is a non-grid core module: it renders the venue-map editor instead
   // of a spreadsheet grid. It has no columns (surface !== "grid"), so any
   // grid-only code path must skip it.
