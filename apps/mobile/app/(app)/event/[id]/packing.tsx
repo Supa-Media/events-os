@@ -12,8 +12,11 @@ import {
   EmptyState,
   OptionTag,
 } from "../../../../components/ui";
+import { ToastView } from "../../../../components/ui/Toast";
 import { colors } from "../../../../lib/theme";
 import { SiteMapPreview } from "../../../../components/event/SiteMapPreview";
+import { useActionRunner } from "../../../../lib/useActionToast";
+import type { Id } from "@events-os/convex/_generated/dataModel";
 
 type Phase = "in" | "out";
 /** Top-level view: the read-only setup map, or one of the packing phases. */
@@ -91,15 +94,19 @@ function ItemPhoto({ photo }: { photo: unknown }) {
 function CheckControl({
   checked,
   onToggle,
+  label,
 }: {
   checked: boolean;
   onToggle: () => void;
+  label?: string;
 }) {
   return (
     <Pressable
-      accessibilityRole="button"
+      accessibilityRole="checkbox"
+      accessibilityState={{ checked }}
+      accessibilityLabel={label}
       onPress={onToggle}
-      hitSlop={8}
+      hitSlop={12}
       className="active:opacity-70"
     >
       <View
@@ -146,7 +153,13 @@ function ItemRow({
           <OptionTag label={source.label} color={source.color} />
         ) : null}
       </View>
-      <CheckControl checked={checked} onToggle={onToggle} />
+      <CheckControl
+        checked={checked}
+        onToggle={onToggle}
+        label={`${checked ? "Uncheck" : "Check"} ${
+          item.title || "Untitled item"
+        }`}
+      />
     </View>
   );
 }
@@ -207,7 +220,7 @@ function ContainerCard({
 export default function PackingScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const router = useRouter();
-  const eventId = id as any;
+  const eventId = id as Id<"events">;
 
   // Default to Load-in; "setup" swaps the checklist for the read-only site map.
   const [view, setView] = useState<PackingView>("in");
@@ -220,9 +233,13 @@ export default function PackingScreen() {
     module: "supplies",
   });
   const updateItem = useMutation(api.items.updateEventItem);
+  const { run, toast, dismiss } = useActionRunner();
 
-  const toggle = (item: any, next: boolean) => {
-    updateItem({ itemId: item._id, fields: { [phaseKey]: next } });
+  const toggle = (item: { _id: Id<"eventItems"> }, next: boolean) => {
+    void run(
+      () => updateItem({ itemId: item._id, fields: { [phaseKey]: next } }),
+      { errorTitle: "Couldn't update item" },
+    );
   };
 
   const containerCol = useMemo(
@@ -285,6 +302,7 @@ export default function PackingScreen() {
     <>
       <Stack.Screen options={{ headerShown: true, title: "Packing" }} />
       <Screen>
+        <ToastView toast={toast} onDismiss={dismiss} />
         {/* Left-aligned back breadcrumb (matches the rest of the app). */}
         <Pressable
           onPress={() => router.back()}

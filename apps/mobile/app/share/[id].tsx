@@ -6,6 +6,8 @@ import { Card, Icon, OptionTag } from "../../components/ui";
 import { SiteMapView } from "../../components/event/SiteMapView";
 import { colors } from "../../lib/theme";
 import { formatDateTime } from "../../lib/format";
+import type { FunctionReturnType } from "convex/server";
+import type { Id } from "@events-os/convex/_generated/dataModel";
 
 /**
  * PUBLIC, read-only volunteer briefing — reachable at `/share/<eventId>`.
@@ -17,8 +19,13 @@ import { formatDateTime } from "../../lib/format";
  * team. No edit controls, no pickers, no money — read-only by design.
  */
 
-type Person = { name: string; callTime: string | null; status: string | null };
-type Expectation = { title: string; details: string | null };
+// Person/Expectation are PROJECTIONS from the `publicCrew` query, not the
+// `people`/`eventItems` documents — `status`/`callTime` come off the volunteer
+// ENGAGEMENT, not the people row — so we derive the row types from the query's
+// own return type rather than from `Doc<"people">` (a different shape).
+type PublicCrew = NonNullable<FunctionReturnType<typeof api.events.publicCrew>>;
+type Person = PublicCrew["teams"][number]["people"][number];
+type Expectation = PublicCrew["teams"][number]["expectations"][number];
 
 /** A single bulleted expectation: check glyph + title + optional details. */
 function ExpectationRow({ item }: { item: Expectation }) {
@@ -69,7 +76,18 @@ function PersonCard({ person }: { person: Person }) {
         ) : null}
       </View>
       {person.status ? (
-        <Text className="text-xs capitalize text-faint">{person.status}</Text>
+        <View
+          className="flex-row items-center gap-1 rounded-pill border border-border bg-sunken px-2 py-0.5"
+          accessibilityLabel={`Status: ${person.status}`}
+        >
+          <View
+            className="h-1.5 w-1.5 rounded-pill"
+            style={{ backgroundColor: colors.muted }}
+          />
+          <Text className="text-xs font-semibold capitalize text-muted">
+            {person.status}
+          </Text>
+        </View>
       ) : null}
     </View>
   );
@@ -127,8 +145,9 @@ function TeamCard({
 
 export default function ShareCrewScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
-  const data = useQuery(api.events.publicCrew, { eventId: id as any });
-  const map = useQuery(api.siteMap.publicSiteMap, { eventId: id as any });
+  const eventId = id as Id<"events">;
+  const data = useQuery(api.events.publicCrew, { eventId });
+  const map = useQuery(api.siteMap.publicSiteMap, { eventId });
 
   // Loading.
   if (data === undefined) {

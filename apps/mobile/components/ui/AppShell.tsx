@@ -18,10 +18,14 @@ const NAV: NavEntry[] = [
   { label: "People", icon: "users", path: "/people" },
 ];
 
-/** True when the current pathname maps to this nav entry. */
+/**
+ * True when the current pathname maps to this nav entry. Matches on whole path
+ * segments so `/people` activates for `/people` and `/people/123` but NOT for a
+ * sibling like `/peopleX` (a plain `startsWith` prefix would over-match).
+ */
 function isActive(pathname: string, path: string): boolean {
   if (path === "/") return pathname === "/" || pathname === "/index";
-  return pathname.startsWith(path);
+  return pathname === path || pathname.startsWith(`${path}/`);
 }
 
 /** Desktop breakpoint — at/above this width we show the persistent sidebar. */
@@ -78,7 +82,9 @@ function Sidebar({ onCollapse }: { onCollapse: () => void }) {
             </View>
             <View className="flex-1" />
             <Pressable
+              accessibilityRole="button"
               accessibilityLabel="Collapse sidebar"
+              hitSlop={10}
               onPress={onCollapse}
               onHoverIn={() => setCollapseHovered(true)}
               onHoverOut={() => setCollapseHovered(false)}
@@ -122,7 +128,9 @@ function SidebarOpenButton({ onPress }: { onPress: () => void }) {
   return (
     <SafeAreaView edges={["top"]} className="absolute left-0 top-0 z-50">
       <Pressable
+        accessibilityRole="button"
         accessibilityLabel="Open sidebar"
+        hitSlop={8}
         onPress={onPress}
         onHoverIn={() => setHovered(true)}
         onHoverOut={() => setHovered(false)}
@@ -142,7 +150,19 @@ function ChapterFooter() {
   const summary = useQuery(api.dashboard.summary);
   return (
     <View className="gap-1 border-t border-border pt-3">
-      <View className="flex-row items-center gap-2.5 px-2 py-1.5">
+      {/* Static chapter label — NOT interactive. Multi-chapter switching isn't
+          built yet, so this is styled as a plain label (lower opacity, no press
+          affordance) to avoid implying it's tappable like the rows below. */}
+      <View
+        accessible
+        accessibilityRole="text"
+        accessibilityLabel={
+          summary
+            ? `Current chapter, ${summary.peopleCount} people`
+            : "Current chapter"
+        }
+        className="flex-row items-center gap-2.5 px-2 py-1.5 opacity-70"
+      >
         <View className="h-7 w-7 items-center justify-center rounded-md bg-mint">
           <Icon name="home" size={14} color="#1F5A41" />
         </View>
@@ -183,7 +203,9 @@ function MobileTopBar() {
       <Text className="font-display text-lg text-ink">Events OS</Text>
       <View className="flex-1" />
       <Pressable
+        accessibilityRole="button"
         accessibilityLabel="Profile"
+        hitSlop={8}
         onPress={() => router.navigate("/profile")}
         className="h-8 w-8 items-center justify-center rounded-md active:bg-sunken"
       >
@@ -204,6 +226,9 @@ function BottomNav() {
           return (
             <Pressable
               key={n.path}
+              accessibilityRole="tab"
+              accessibilityLabel={n.label}
+              accessibilityState={{ selected: active }}
               onPress={() => router.navigate(n.path as any)}
               className="flex-1 items-center gap-1 py-2.5"
             >

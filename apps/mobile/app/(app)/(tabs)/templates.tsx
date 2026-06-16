@@ -2,7 +2,9 @@ import { useRef, useState } from "react";
 import { View, Text, Pressable, Platform, Alert, StyleSheet } from "react-native";
 import { useRouter } from "expo-router";
 import { useQuery, useMutation } from "convex/react";
+import type { FunctionReturnType } from "convex/server";
 import { api } from "@events-os/convex/_generated/api";
+import type { Id } from "@events-os/convex/_generated/dataModel";
 import {
   Screen,
   Card,
@@ -13,9 +15,14 @@ import {
   Icon,
   ContextMenu,
   measureAnchor,
+  ToastView,
   type ContextMenuAnchor,
 } from "../../../components/ui";
 import { colors, spacing } from "../../../lib/theme";
+import { useActionRunner } from "../../../lib/useActionToast";
+
+/** A single template row from `api.eventTypes.list`. */
+type Template = FunctionReturnType<typeof api.eventTypes.list>[number];
 
 /** TEMPLATES list + inline "new template" creator + archived section. */
 export default function TemplatesScreen() {
@@ -27,13 +34,16 @@ export default function TemplatesScreen() {
   const archive = useMutation(api.eventTypes.archive);
   const unarchive = useMutation(api.eventTypes.unarchive);
 
+  const { run, toast, dismiss } = useActionRunner();
+
   const [name, setName] = useState("");
   const [creating, setCreating] = useState(false);
   const [showArchived, setShowArchived] = useState(false);
   // The card whose context menu is open (id + measured anchor rect).
-  const [menu, setMenu] = useState<{ id: string; anchor: ContextMenuAnchor } | null>(
-    null,
-  );
+  const [menu, setMenu] = useState<{
+    id: Id<"eventTypes">;
+    anchor: ContextMenuAnchor;
+  } | null>(null);
 
   if (templates === undefined) return <Screen loading />;
 
@@ -44,24 +54,32 @@ export default function TemplatesScreen() {
     try {
       // The backend seeds the template's roles from DEFAULT_ROLES and enables
       // every core module by default (deltas disable, not enable).
-      const id = await create({ name: trimmed });
-      setName("");
-      router.push(`/template/${id}`);
+      const id = await run(() => create({ name: trimmed }), {
+        errorTitle: "Couldn't create template",
+      });
+      if (id) {
+        setName("");
+        router.push(`/template/${id}`);
+      }
     } finally {
       setCreating(false);
     }
   }
 
-  const menuTemplate = templates.find((t: any) => t._id === menu?.id) ?? null;
+  const menuTemplate = templates.find((t) => t._id === menu?.id) ?? null;
 
-  async function handleDuplicate(id: string) {
-    const newId = await duplicate({ eventTypeId: id as any });
-    router.push(`/template/${newId}`);
+  async function handleDuplicate(id: Id<"eventTypes">) {
+    const newId = await run(() => duplicate({ eventTypeId: id }), {
+      errorTitle: "Couldn't duplicate template",
+    });
+    if (newId) router.push(`/template/${newId}`);
   }
 
-  function handleArchive(template: { _id: string; name: string }) {
+  function handleArchive(template: Template) {
     confirmArchiveTemplate(template.name, () =>
-      archive({ eventTypeId: template._id as any }),
+      run(() => archive({ eventTypeId: template._id }), {
+        errorTitle: "Couldn't archive template",
+      }),
     );
   }
 
@@ -69,6 +87,7 @@ export default function TemplatesScreen() {
 
   return (
     <Screen>
+      <ToastView toast={toast} onDismiss={dismiss} />
       <Card style={styles.creator}>
         <TextField
           label="New template"
@@ -93,7 +112,7 @@ export default function TemplatesScreen() {
         />
       ) : (
         <View style={styles.list}>
-          {templates.map((t: any) => (
+          {templates.map((t) => (
             <TemplateCard
               key={t._id}
               template={t}
@@ -121,7 +140,7 @@ export default function TemplatesScreen() {
           </Pressable>
           {showArchived ? (
             <View style={styles.list}>
-              {archived.map((t: any) => (
+              {archived.map((t) => (
                 <Card key={t._id} padding="md">
                   <View style={styles.archivedRow}>
                     <View style={{ flex: 1 }}>
@@ -135,7 +154,11 @@ export default function TemplatesScreen() {
                     <Button
                       title="Revive"
                       variant="secondary"
-                      onPress={() => unarchive({ eventTypeId: t._id as any })}
+                      onPress={() =>
+                        run(() => unarchive({ eventTypeId: t._id }), {
+                          errorTitle: "Couldn't revive template",
+                        })
+                      }
                     />
                   </View>
                 </Card>
@@ -196,11 +219,11 @@ function TemplateCard({
   onPress,
   onOpenMenu,
 }: {
-  template: any;
+  template: Template;
   onPress: () => void;
   onOpenMenu: (anchor: ContextMenuAnchor) => void;
 }) {
-  const ref = useRef<any>(null);
+  const ref = useRef<View>(null);
 
   function open() {
     measureAnchor(ref.current, onOpenMenu);
