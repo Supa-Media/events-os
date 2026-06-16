@@ -6,7 +6,7 @@
  * (buildPatch). System columns (title/offset/status/role/owner/due_date) and
  * custom columns are all handled here uniformly.
  */
-import { useEffect, useRef, useState } from "react";
+import { memo, useEffect, useRef, useState } from "react";
 import {
   View,
   Text,
@@ -22,18 +22,15 @@ import { useMutation, useQuery } from "convex/react";
 import { api } from "@events-os/convex/_generated/api";
 // expo-image-picker is Expo Go-safe (classified `core`); only used on native.
 import * as ImagePicker from "expo-image-picker";
-import {
-  formatDate,
-  formatTime,
-  parseDateInput,
-  toDateInput,
-} from "../../lib/format";
+import { formatDate, formatTime } from "../../lib/format";
 import {
   formatOffsetDays,
   formatOffsetMinutes,
   computeRunTime,
+  type ColumnType,
   type ModuleKey,
 } from "@events-os/shared";
+import { COLUMN_TYPE_REGISTRY } from "./columnRegistry";
 import { colors } from "../../lib/theme";
 import { Icon } from "../ui/Icon";
 import { Avatar } from "../ui/Avatar";
@@ -71,6 +68,51 @@ export interface CellContext {
    * persist it. Resolves to the new option's `value` so the cell can select it.
    */
   onAddOption?: (columnId: string, label: string) => Promise<string>;
+}
+
+/** Reporting a new logical value upstream (mapped to a patch by the grid). */
+type OnChange = (value: any) => void;
+
+/** Props shared by the simple editor cells (value in / value out). */
+interface BaseCellProps {
+  value: any;
+  editable: boolean;
+  onChange: OnChange;
+}
+
+/** Cells backed by a select/status/multiselect column (have options + editors). */
+interface OptionCellProps extends BaseCellProps {
+  column: GridColumn;
+  onAddOption?: (columnId: string, label: string) => Promise<string>;
+  onEditOptions?: (columnId: string) => void;
+}
+
+interface RoleCellProps extends BaseCellProps {
+  roles: Array<{ _id: string; label: string }>;
+  fallbackLabel?: string | null;
+}
+
+interface PersonCellProps extends BaseCellProps {
+  ownerName?: string | null;
+  inherited?: boolean;
+}
+
+interface TemplateOwnerCellProps {
+  item: GridItem;
+  templateId?: string;
+  editable: boolean;
+  onChange: OnChange;
+}
+
+interface ChipEditCellProps extends BaseCellProps {
+  format: (value: any) => string;
+  placeholder?: string;
+}
+
+interface HowToCellProps extends BaseCellProps {
+  mode: GridMode;
+  eventItemId: string;
+  colKey: string;
 }
 
 // ── Inline text input (commits on blur) ──────────────────────────────────────
@@ -283,10 +325,10 @@ function OptionEditFooter({
 }
 
 // ── Select / status (single choice) ───────────────────────────────────────────
-function SelectCell({ column, value, editable, onChange, onAddOption, onEditOptions }: any) {
+function SelectCell({ column, value, editable, onChange, onAddOption, onEditOptions }: OptionCellProps) {
   const { ref, anchor, visible, open, close } = useAnchor();
   const opts = column.options ?? [];
-  const current = opts.find((o: any) => o.value === value);
+  const current = opts.find((o) => o.value === value);
   return (
     <>
       <Pressable
@@ -306,7 +348,7 @@ function SelectCell({ column, value, editable, onChange, onAddOption, onEditOpti
           {value != null ? (
             <OptionRow label="Clear" muted onPress={() => { onChange(null); close(); }} />
           ) : null}
-          {opts.map((o: any) => (
+          {opts.map((o) => (
             <OptionRow
               key={o.value}
               label={o.label}
@@ -331,7 +373,7 @@ function SelectCell({ column, value, editable, onChange, onAddOption, onEditOpti
 }
 
 // ── Multiselect ───────────────────────────────────────────────────────────────
-function MultiSelectCell({ column, value, editable, onChange, onAddOption, onEditOptions }: any) {
+function MultiSelectCell({ column, value, editable, onChange, onAddOption, onEditOptions }: OptionCellProps) {
   const { ref, anchor, visible, open, close } = useAnchor();
   const opts = column.options ?? [];
   const selected: string[] = Array.isArray(value) ? value : [];
@@ -341,7 +383,7 @@ function MultiSelectCell({ column, value, editable, onChange, onAddOption, onEdi
     <>
       <View className="flex-1 flex-row flex-wrap items-center gap-1 px-2 py-1.5">
         {selected.map((v) => {
-          const o = opts.find((opt: any) => opt.value === v);
+          const o = opts.find((opt) => opt.value === v);
           return (
             <OptionTag
               key={v}
@@ -361,7 +403,7 @@ function MultiSelectCell({ column, value, editable, onChange, onAddOption, onEdi
       </View>
       <Popover visible={visible} onClose={close} anchor={anchor}>
         <View className="py-1">
-          {opts.map((o: any) => (
+          {opts.map((o) => (
             <OptionRow
               key={o.value}
               label={o.label}
@@ -387,9 +429,9 @@ function MultiSelectCell({ column, value, editable, onChange, onAddOption, onEdi
 }
 
 // ── Role ──────────────────────────────────────────────────────────────────────
-function RoleCell({ value, roles, fallbackLabel, editable, onChange }: any) {
+function RoleCell({ value, roles, fallbackLabel, editable, onChange }: RoleCellProps) {
   const [open, setOpen] = useState(false);
-  const role = roles.find((r: any) => r._id === value);
+  const role = roles.find((r) => r._id === value);
   const label = role?.label ?? (value ? fallbackLabel : null);
   return (
     <>
@@ -423,7 +465,7 @@ function RoleCell({ value, roles, fallbackLabel, editable, onChange }: any) {
 // role). `inherited` => show it muted/italic to signal it's auto-from-role.
 // `value` is the explicit override id (picker selection); clearing reverts to
 // the role-derived owner.
-function PersonCell({ value, ownerName, inherited, editable, onChange }: any) {
+function PersonCell({ value, ownerName, inherited, editable, onChange }: PersonCellProps) {
   const [open, setOpen] = useState(false);
   return (
     <>
@@ -462,7 +504,7 @@ function PersonCell({ value, ownerName, inherited, editable, onChange }: any) {
 // person. The stored value is the templatePerson id (in fields.templateOwnerId)
 // plus a cached display name (fields.templateOwnerName). Picking reports
 // `{ id, name }`; clearing reports null.
-function TemplateOwnerCell({ item, templateId, editable, onChange }: any) {
+function TemplateOwnerCell({ item, templateId, editable, onChange }: TemplateOwnerCellProps) {
   const [open, setOpen] = useState(false);
   const name = item.fields?.templateOwnerName ?? null;
   const selectedId = item.fields?.templateOwnerId ?? null;
@@ -507,7 +549,7 @@ function TemplateOwnerCell({ item, templateId, editable, onChange }: any) {
 }
 
 // ── Chip-edit (offsets): show a chip, tap to edit a number ────────────────────
-function ChipEditCell({ value, editable, onChange, format, placeholder }: any) {
+function ChipEditCell({ value, editable, onChange, format, placeholder }: ChipEditCellProps) {
   const [editing, setEditing] = useState(false);
   if (editing && editable) {
     return (
@@ -545,11 +587,11 @@ function ChipEditCell({ value, editable, onChange, format, placeholder }: any) {
 // The field stores either a Convex `storageId` (new uploads) or a legacy
 // http(s) URL (pasted). Display resolution: a URL is used directly; anything
 // else is treated as a storageId and resolved through `api.storage.getUrl`.
-function isHttpUrl(v: any): boolean {
+function isHttpUrl(v: unknown): boolean {
   return typeof v === "string" && /^https?:\/\//i.test(v);
 }
 
-function PhotoCell({ value, editable, onChange }: any) {
+function PhotoCell({ value, editable, onChange }: BaseCellProps) {
   const { ref, anchor, visible, open, close } = useAnchor();
   const [uploading, setUploading] = useState(false);
   const generateUploadUrl = useMutation(api.storage.generateUploadUrl);
@@ -727,7 +769,7 @@ function HowToKindMenu({
   );
 }
 
-function HowToCell({ value, editable, onChange, mode, eventItemId, colKey }: any) {
+function HowToCell({ value, editable, onChange, mode, eventItemId, colKey }: HowToCellProps) {
   const router = useRouter();
   // The route the doc is being opened from, so the editor's back button can
   // return here even after the copy-on-write fork rewrites history.
@@ -759,7 +801,7 @@ function HowToCell({ value, editable, onChange, mode, eventItemId, colKey }: any
   }) {
     if (!docId) return;
     if (isEvent && doc && doc.scope !== "event" && eventItemId && colKey) {
-      const res = await forkDoc({ docId: docId as any, eventItemId, colKey });
+      const res = await forkDoc({ docId: docId as any, eventItemId: eventItemId as any, colKey });
       onChange(res._id);
       await updateDoc({ docId: res._id as any, ...patch });
       return;
@@ -922,7 +964,13 @@ function HowToCell({ value, editable, onChange, mode, eventItemId, colKey }: any
 }
 
 // ── Dispatcher ────────────────────────────────────────────────────────────────
-export function GridCell(ctx: CellContext) {
+//
+// Renders the right editor for a column. The inline-text family (text/longtext/
+// number/currency/date/url) is driven entirely by the column-type registry's
+// `inlineText` config — no per-type case here. Cells with bespoke components
+// (select/multiselect/role/person/offset/due_date/photo/how_to) get an explicit
+// case. Adding an inline-text-shaped type means editing only the registry.
+export const GridCell = memo(function GridCell(ctx: CellContext) {
   const { column, item, module, mode, roles, eventDate, editable, onChange, templateId, onAddOption, onEditOptions } = ctx;
   const value = cellValue(column, item, module, mode);
 
@@ -942,6 +990,29 @@ export function GridCell(ctx: CellContext) {
   // Owner is meaningless on a template for every other module.
   if (column.key === "owner" && mode === "template") {
     return <Text className="px-2 py-1.5 text-sm text-faint">—</Text>;
+  }
+
+  // Inline-text family: one editor, configured from the registry.
+  const inline = COLUMN_TYPE_REGISTRY[column.type as ColumnType]?.inlineText;
+  if (inline) {
+    const placeholder =
+      typeof inline.placeholder === "function"
+        ? inline.placeholder(column)
+        : inline.placeholder;
+    const weight =
+      typeof inline.weight === "function" ? inline.weight(column) : inline.weight;
+    return (
+      <InlineText
+        value={value}
+        multiline={inline.multiline}
+        numeric={inline.numeric}
+        placeholder={placeholder}
+        weight={weight}
+        format={inline.format}
+        parse={inline.parse ? (t) => inline.parse!(t, column) : undefined}
+        onCommit={(v) => onChange(v)}
+      />
+    );
   }
 
   switch (column.type) {
@@ -1016,53 +1087,6 @@ export function GridCell(ctx: CellContext) {
           {value != null ? formatDate(value) : "—"}
         </Text>
       );
-    case "date":
-      return (
-        <InlineText
-          value={value}
-          placeholder="YYYY-MM-DD"
-          format={(v) => (v != null ? toDateInput(v) : "")}
-          parse={(t) => parseDateInput(t)}
-          onCommit={(v) => onChange(v)}
-        />
-      );
-    case "number":
-      return (
-        <InlineText
-          value={value}
-          numeric
-          placeholder="—"
-          parse={(t) => {
-            if (t.trim() === "") return null;
-            const n = Number(t);
-            return Number.isFinite(n) ? n : null;
-          }}
-          onCommit={(v) => onChange(v)}
-        />
-      );
-    case "currency":
-      return (
-        <InlineText
-          value={value}
-          numeric
-          placeholder="$—"
-          format={(v) => (v != null ? `$${v}` : "")}
-          parse={(t) => {
-            const n = Number(t.replace(/[^0-9.]/g, ""));
-            return t.trim() === "" ? null : Number.isFinite(n) ? n : null;
-          }}
-          onCommit={(v) => onChange(v)}
-        />
-      );
-    case "url":
-      return (
-        <InlineText
-          value={value}
-          placeholder="Link"
-          parse={(t) => (t.trim() ? t.trim() : null)}
-          onCommit={(v) => onChange(v)}
-        />
-      );
     case "photo":
       return <PhotoCell value={value} editable={editable} onChange={onChange} />;
     case "how_to":
@@ -1076,7 +1100,8 @@ export function GridCell(ctx: CellContext) {
           colKey={column.key}
         />
       );
-    case "longtext":
+    default:
+      // Unknown/legacy type → treat as plain text.
       return (
         <InlineText
           value={value}
@@ -1086,17 +1111,5 @@ export function GridCell(ctx: CellContext) {
           onCommit={(v) => onChange(v)}
         />
       );
-    case "text":
-    default:
-      return (
-        <InlineText
-          value={value}
-          multiline
-          placeholder={column.key === "title" ? "Untitled" : "—"}
-          weight={column.key === "title" ? "medium" : "normal"}
-          parse={(t) => (column.key === "title" ? t : t.trim() ? t : null)}
-          onCommit={(v) => onChange(v)}
-        />
-      );
   }
-}
+});

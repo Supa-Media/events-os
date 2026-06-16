@@ -7,7 +7,8 @@
  */
 import { useQuery, useMutation } from "convex/react";
 import { api } from "@events-os/convex/_generated/api";
-import { DAY_OFFSET_MODULES, type ModuleKey } from "@events-os/shared";
+import { type ModuleKey } from "@events-os/shared";
+import { SYSTEM_COLUMN_REGISTRY } from "./columnRegistry";
 
 export type GridMode = "template" | "event";
 
@@ -76,27 +77,9 @@ export function cellValue(
   module: ModuleKey,
   mode: GridMode = "event",
 ): any {
-  switch (column.key) {
-    case "title":
-      return item.title;
-    case "status":
-      return item.status ?? null;
-    case "role":
-      return item.roleId ?? null;
-    case "owner":
-      // Template placeholder owner lives in the fields bag (templatePerson id).
-      if (isTemplateOwnerCell(column, module, mode))
-        return item.fields?.templateOwnerId ?? null;
-      return item.ownerPersonId ?? null;
-    case "offset":
-      return DAY_OFFSET_MODULES.includes(module)
-        ? item.offsetDays
-        : item.offsetMinutes;
-    case "due_date":
-      return item.dueDate;
-    default:
-      return item.fields?.[column.key];
-  }
+  const sys = SYSTEM_COLUMN_REGISTRY[column.key];
+  if (sys) return sys.get(item, { column, module, mode });
+  return item.fields?.[column.key];
 }
 
 /** Translate a column + new value into a mutation patch (promoted field or bag). */
@@ -106,34 +89,9 @@ export function buildPatch(
   module: ModuleKey,
   mode: GridMode = "event",
 ): Record<string, any> {
-  switch (column.key) {
-    case "title":
-      return { title: value ?? "" };
-    case "status":
-      return { status: value ?? null };
-    case "role":
-      return { roleId: value ?? null };
-    case "owner":
-      // Template placeholder owner: store id + display name in the fields bag.
-      // `value` is `{ id, name }` when picked, or null when cleared.
-      if (isTemplateOwnerCell(column, module, mode)) {
-        return {
-          fields: {
-            templateOwnerId: value?.id ?? null,
-            templateOwnerName: value?.name ?? null,
-          },
-        };
-      }
-      return { ownerPersonId: value ?? null };
-    case "offset":
-      return DAY_OFFSET_MODULES.includes(module)
-        ? { offsetDays: value }
-        : { offsetMinutes: value };
-    case "due_date":
-      return {}; // computed, read-only
-    default:
-      return { fields: { [column.key]: value } };
-  }
+  const sys = SYSTEM_COLUMN_REGISTRY[column.key];
+  if (sys) return sys.set(value, { column, module, mode });
+  return { fields: { [column.key]: value } };
 }
 
 export interface GridData {
