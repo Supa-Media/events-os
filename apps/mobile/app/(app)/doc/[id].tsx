@@ -3,11 +3,12 @@ import { View, Text, Pressable, Linking, Platform } from "react-native";
 import { Stack, useLocalSearchParams, useRouter } from "expo-router";
 import { useQuery, useMutation, useConvex } from "convex/react";
 import { api } from "@events-os/convex/_generated/api";
-import { Screen, TextField, Icon } from "../../../components/ui";
+import { Screen, TextField, Icon, EmptyState } from "../../../components/ui";
 import { Popover } from "../../../components/ui/Popover";
 import { MarkdownEditor } from "../../../components/markdown";
 import { DocAssistantPanel } from "../../../components/ai/DocAssistantPanel";
 import { colors } from "../../../lib/theme";
+import type { Id } from "@events-os/convex/_generated/dataModel";
 
 // How-To kinds, shared between the in-cell switcher (grid/cells) and this
 // editor's header dropdown. Switching kind is lossless — only `kind` is patched.
@@ -54,7 +55,7 @@ export default function DocEditorScreen() {
   const hasForkedRef = useRef(false);
   const forkingRef = useRef(false);
 
-  const doc = useQuery(api.docs.get, { docId: activeDocId as any });
+  const doc = useQuery(api.docs.get, { docId: activeDocId as Id<"docs"> });
   const update = useMutation(api.docs.update);
   const fork = useMutation(api.docs.forkForEventItem);
 
@@ -126,8 +127,8 @@ export default function DocEditorScreen() {
       forkingRef.current = true;
       try {
         const res = await fork({
-          docId: activeDocId as any,
-          eventItemId: ownerItem as any,
+          docId: activeDocId as Id<"docs">,
+          eventItemId: ownerItem as Id<"eventItems">,
           colKey: ownerCol as string,
         });
         hasForkedRef.current = true;
@@ -139,13 +140,13 @@ export default function DocEditorScreen() {
             ownerCol as string,
           )}` + (from ? `&from=${encodeURIComponent(from as string)}` : "");
         router.replace(forkUrl as any);
-        await update({ docId: res._id as any, ...patch });
+        await update({ docId: res._id as Id<"docs">, ...patch });
         return res._id;
       } finally {
         forkingRef.current = false;
       }
     }
-    await update({ docId: activeDocId as any, ...patch });
+    await update({ docId: activeDocId as Id<"docs">, ...patch });
     return activeDocId;
   }
 
@@ -161,7 +162,11 @@ export default function DocEditorScreen() {
   if (doc === null) {
     return (
       <Screen>
-        <Text className="text-base text-muted">This document isn't available.</Text>
+        <EmptyState
+          icon="file-text"
+          title="Document not available"
+          message="This document no longer exists or you don't have access to it."
+        />
       </Screen>
     );
   }
@@ -221,6 +226,8 @@ export default function DocEditorScreen() {
             else router.replace("/" as any);
           }}
           hitSlop={8}
+          accessibilityRole="button"
+          accessibilityLabel="Go back"
           className="rounded-md p-1.5 active:bg-sunken web:hover:bg-sunken"
         >
           <Icon name="arrow-left" size={18} color={colors.muted} />
@@ -228,6 +235,8 @@ export default function DocEditorScreen() {
         <Pressable
           ref={kindBtnRef}
           onPress={openKindMenu}
+          accessibilityRole="button"
+          accessibilityLabel={`Document type: ${doc.kind}. Change type.`}
           className="flex-row items-center gap-1 rounded-md px-1.5 py-1 active:bg-sunken web:hover:bg-sunken"
         >
           <Text className="text-xs font-bold uppercase tracking-wider text-faint">
@@ -273,6 +282,12 @@ export default function DocEditorScreen() {
               visibility: isInternal ? "public" : "internal",
             });
           }}
+          accessibilityRole="button"
+          accessibilityLabel={
+            isInternal
+              ? "Visibility: Internal. Tap to make public."
+              : "Visibility: Public. Tap to make internal."
+          }
           className="flex-row items-center gap-1.5 rounded-md border border-border px-3 py-1.5 active:bg-sunken web:hover:bg-sunken"
         >
           <Icon
@@ -286,6 +301,8 @@ export default function DocEditorScreen() {
         </Pressable>
         <Pressable
           onPress={share}
+          accessibilityRole="button"
+          accessibilityLabel="Copy share link"
           className="flex-row items-center gap-1.5 rounded-md border border-border px-3 py-1.5 active:bg-sunken web:hover:bg-sunken"
         >
           <Icon name={copied ? "check" : "share-2"} size={14} color={colors.muted} />

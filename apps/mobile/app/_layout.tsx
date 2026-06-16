@@ -7,6 +7,7 @@ import { KeyboardProvider } from "react-native-keyboard-controller";
 import { SafeAreaProvider } from "react-native-safe-area-context";
 import { SupaConvexProvider } from "@supa-media/core/providers";
 import { NotificationProvider } from "@supa-media/notifications";
+import { ErrorBoundary } from "../components/ErrorBoundary";
 import {
   useFonts,
   Corben_400Regular,
@@ -47,7 +48,11 @@ export default function RootLayout() {
           <SupaConvexProvider url={process.env.EXPO_PUBLIC_CONVEX_URL}>
             <NotificationProvider>
               <StatusBar style="dark" />
-              {fontsLoaded ? <Slot /> : null}
+              {/* Catches render errors in any screen so a thrown exception shows
+                  a recovery UI instead of a blank tree. Kept below the Convex/
+                  auth + notification providers so its recovery Screen still has
+                  context, but above the route Slot so it wraps every screen. */}
+              <ErrorBoundary>{fontsLoaded ? <Slot /> : null}</ErrorBoundary>
             </NotificationProvider>
           </SupaConvexProvider>
         </SafeAreaProvider>

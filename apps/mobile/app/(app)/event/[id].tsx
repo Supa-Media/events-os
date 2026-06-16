@@ -13,6 +13,9 @@ import {
   PersonPicker,
   Icon,
 } from "../../../components/ui";
+import { ToastView } from "../../../components/ui/Toast";
+import { useActionRunner } from "../../../lib/useActionToast";
+import type { Id } from "@events-os/convex/_generated/dataModel";
 import { AiAssistantPanel } from "../../../components/ai/AiAssistantPanel";
 import { CrewSections } from "../../../components/event/CrewSections";
 import { EventHeader } from "../../../components/event/EventHeader";
@@ -47,7 +50,8 @@ type ModuleOwner = {
 export default function EventDetailScreen() {
   const router = useRouter();
   const { id, tab } = useLocalSearchParams<{ id: string; tab?: string }>();
-  const eventId = id as any;
+  const eventId = id as Id<"events">;
+  const { run, toast, dismiss } = useActionRunner();
 
   // Personal "Me view" filter — when on, the Overview shows only the modules
   // and tasks the current user owns (driven by api.events.myWork).
@@ -99,7 +103,7 @@ export default function EventDetailScreen() {
   // Event roles, shaped for the grid's role cells ({_id, label}).
   const eventRoles = useMemo(
     () =>
-      (eventRolesRaw ?? []).map((r: any) => ({
+      (eventRolesRaw ?? []).map((r) => ({
         _id: r._id as string,
         label: r.label as string,
       })),
@@ -183,12 +187,12 @@ export default function EventDetailScreen() {
   // items I own; a module is "involved" if I own it OR own an item in it.
   const ownedModuleKeys = myWork ? new Set(myWork.ownedModuleKeys) : null;
   const myItemIds = myWork
-    ? new Set(myWork.tasks.map((t: any) => t.itemId as string))
+    ? new Set(myWork.tasks.map((t) => t.itemId as string))
     : null;
   const involvedModuleKeys = myWork
     ? new Set<string>([
         ...myWork.ownedModuleKeys,
-        ...myWork.tasks.map((t: any) => t.module as string),
+        ...myWork.tasks.map((t) => t.module as string),
       ])
     : null;
   // Crew & Expectations is team work — show it in Me view if I'm on a team, have
@@ -197,7 +201,7 @@ export default function EventDetailScreen() {
     ? myWork.myTeams.length > 0 ||
       myWork.teamItemIds.length > 0 ||
       (ownedModuleKeys?.has("volunteer_expectations") ?? false) ||
-      myWork.tasks.some((t: any) => t.module === "volunteer_expectations")
+      myWork.tasks.some((t) => t.module === "volunteer_expectations")
     : true;
   // Expectation item ids I should see in Me view (my team's tasks ∪ items I own).
   const myExpectationItemIds =
@@ -228,22 +232,26 @@ export default function EventDetailScreen() {
   ];
   const activeTab = tabs.some((t) => t.key === tab) ? (tab as string) : "overview";
   const summaryByModule = new Map(
-    (summaries ?? []).map((s: any) => [s.module as string, s]),
+    (summaries ?? []).map((s) => [s.module as string, s] as const),
   );
   const readyByModule = new Map(
-    (moduleReadiness ?? []).map((r: any) => [r.key as string, r.ready as boolean]),
+    (moduleReadiness ?? []).map(
+      (r) => [r.key as string, r.ready as boolean] as const,
+    ),
   );
   // Custom event-module rows, keyed by module key, so a rollup row can resolve
   // its `eventModules` id for deletion.
   const customModuleIdByKey = new Map(
-    (moduleData?.customRows ?? []).map((r: any) => [r.key as string, r._id as string]),
+    (moduleData?.customRows ?? []).map(
+      (r) => [r.key as string, r._id as string] as const,
+    ),
   );
 
   // A module's owner is its resolved owner role KEY, resolved to the person
   // assigned to that role on this event (looked up against the EVENT's roles).
   function moduleOwner(module: ResolvedModule) {
     const roleKey = module.ownerRoleKey;
-    const role = (eventRolesRaw ?? []).find((r: any) => r.key === roleKey);
+    const role = (eventRolesRaw ?? []).find((r) => r.key === roleKey);
     if (!role) return null;
     const row = (roleRows ?? []).find((r) => r.roleId === role._id);
     return {
@@ -269,14 +277,18 @@ export default function EventDetailScreen() {
       setNameInput(null);
       return;
     }
-    await updateDetails({ eventId, name: trimmed });
+    await run(() => updateDetails({ eventId, name: trimmed }), {
+      errorTitle: "Couldn't rename event",
+    });
     setNameInput(null);
   }
 
   async function handleReschedule() {
     const ts = parseDateInput(dateValue);
     if (ts === null) return;
-    await reschedule({ eventId, eventDate: ts });
+    await run(() => reschedule({ eventId, eventDate: ts }), {
+      errorTitle: "Couldn't reschedule",
+    });
     setDateInput(null);
   }
 
@@ -284,7 +296,9 @@ export default function EventDetailScreen() {
     const trimmed = budgetValue.trim();
     const parsed = trimmed === "" ? null : Number(trimmed);
     if (parsed !== null && Number.isNaN(parsed)) return;
-    await updateDetails({ eventId, budget: parsed });
+    await run(() => updateDetails({ eventId, budget: parsed }), {
+      errorTitle: "Couldn't save budget",
+    });
     setBudgetInput(null);
   }
 
@@ -294,13 +308,23 @@ export default function EventDetailScreen() {
       setLocationInput(null);
       return;
     }
-    await updateDetails({ eventId, location: trimmed === "" ? null : trimmed });
+    await run(
+      () =>
+        updateDetails({
+          eventId,
+          location: trimmed === "" ? null : trimmed,
+        }),
+      { errorTitle: "Couldn't save location" },
+    );
     setLocationInput(null);
   }
 
   async function doDelete() {
-    await removeEvent({ eventId });
-    router.replace("/");
+    const ok = await run(() => removeEvent({ eventId }), {
+      errorTitle: "Couldn't delete event",
+    });
+    // Only navigate away once the delete actually succeeded.
+    if (ok !== undefined) router.replace("/");
   }
 
   function confirmDelete() {
@@ -327,6 +351,7 @@ export default function EventDetailScreen() {
         <View className="flex-1">
           <Screen maxWidth={FULL_WIDTH}>
         <Narrow>
+        <ToastView toast={toast} onDismiss={dismiss} />
         {/* Breadcrumb / back */}
         <Pressable
           onPress={() => router.replace("/")}
@@ -397,8 +422,16 @@ export default function EventDetailScreen() {
                   selectedId: r.person?._id ?? null,
                 })
               }
-              onSetStatus={(s) => setStatus({ eventId, status: s })}
-              onReschedule={(ts) => reschedule({ eventId, eventDate: ts })}
+              onSetStatus={(s) =>
+                run(() => setStatus({ eventId, status: s }), {
+                  errorTitle: "Couldn't change status",
+                })
+              }
+              onReschedule={(ts) =>
+                run(() => reschedule({ eventId, eventDate: ts }), {
+                  errorTitle: "Couldn't reschedule",
+                })
+              }
               onChangeDate={setDateInput}
               onSaveDate={handleReschedule}
               onOpenOwner={() => setOwnerOpen(true)}
@@ -408,12 +441,27 @@ export default function EventDetailScreen() {
               onSaveLocation={handleSaveLocation}
               onDelete={confirmDelete}
               onRenameRole={(roleId, label) =>
-                updateEventRole({ roleId: roleId as any, label })
+                run(
+                  () =>
+                    updateEventRole({
+                      roleId: roleId as Id<"eventRoles">,
+                      label,
+                    }),
+                  { errorTitle: "Couldn't rename role" },
+                )
               }
               onDeleteRole={(roleId) =>
-                deleteEventRole({ roleId: roleId as any })
+                run(
+                  () =>
+                    deleteEventRole({ roleId: roleId as Id<"eventRoles"> }),
+                  { errorTitle: "Couldn't delete role" },
+                )
               }
-              onAddRole={(label) => createEventRole({ eventId, label })}
+              onAddRole={(label) =>
+                run(() => createEventRole({ eventId, label }), {
+                  errorTitle: "Couldn't add role",
+                })
+              }
             />
 
             {/* What's next — outstanding work grouped by phase, each line
@@ -460,15 +508,25 @@ export default function EventDetailScreen() {
                     onAssignOwner={() => openOwnerPicker(m)}
                     onRemove={() => {
                       if (m.isCore) {
-                        void toggleCoreModule({
-                          eventId,
-                          key: m.key,
-                          enabled: false,
-                        });
+                        void run(
+                          () =>
+                            toggleCoreModule({
+                              eventId,
+                              key: m.key,
+                              enabled: false,
+                            }),
+                          { errorTitle: "Couldn't disable module" },
+                        );
                       } else {
                         const rowId = customModuleIdByKey.get(m.key);
                         if (rowId)
-                          void deleteCustomModule({ moduleId: rowId as any });
+                          void run(
+                            () =>
+                              deleteCustomModule({
+                                moduleId: rowId as Id<"eventModules">,
+                              }),
+                            { errorTitle: "Couldn't remove module" },
+                          );
                       }
                     }}
                   />
@@ -477,10 +535,15 @@ export default function EventDetailScreen() {
               <AddModuleButton
                 disabledCore={moduleData?.disabledCore ?? []}
                 onEnableCore={(key) =>
-                  void toggleCoreModule({ eventId, key, enabled: true })
+                  void run(
+                    () => toggleCoreModule({ eventId, key, enabled: true }),
+                    { errorTitle: "Couldn't enable module" },
+                  )
                 }
                 onCreateCustom={(label) =>
-                  void createCustomModule({ eventId, label })
+                  void run(() => createCustomModule({ eventId, label }), {
+                    errorTitle: "Couldn't add module",
+                  })
                 }
               />
             </Card>
@@ -560,18 +623,29 @@ export default function EventDetailScreen() {
         selectedId={picker?.selectedId ?? null}
         onPick={async (personId) => {
           if (!picker) return;
-          await assignRole({
-            eventId,
-            roleId: picker.roleId as any,
-            personId: personId as any,
-          });
+          await run(
+            () =>
+              assignRole({
+                eventId,
+                roleId: picker.roleId as Id<"eventRoles">,
+                personId: personId as Id<"people">,
+              }),
+            { errorTitle: "Couldn't assign role" },
+          );
           setPicker(null);
         }}
         onClear={
           picker && picker.selectedId
             ? async () => {
                 if (!picker) return;
-                await unassignRole({ eventId, roleId: picker.roleId as any });
+                await run(
+                  () =>
+                    unassignRole({
+                      eventId,
+                      roleId: picker.roleId as Id<"eventRoles">,
+                    }),
+                  { errorTitle: "Couldn't clear role" },
+                );
                 setPicker(null);
               }
             : undefined
@@ -585,13 +659,23 @@ export default function EventDetailScreen() {
         source="team"
         selectedId={owner?._id ?? null}
         onPick={async (personId) => {
-          await updateDetails({ eventId, ownerPersonId: personId as any });
+          await run(
+            () =>
+              updateDetails({
+                eventId,
+                ownerPersonId: personId as Id<"people">,
+              }),
+            { errorTitle: "Couldn't set owner" },
+          );
           setOwnerOpen(false);
         }}
         onClear={
           owner
             ? async () => {
-                await updateDetails({ eventId, ownerPersonId: null });
+                await run(
+                  () => updateDetails({ eventId, ownerPersonId: null }),
+                  { errorTitle: "Couldn't clear owner" },
+                );
                 setOwnerOpen(false);
               }
             : undefined
@@ -623,7 +707,10 @@ function MeView({
   todos: ComponentProps<typeof EventTodos>["todos"] | undefined;
   activeModules: ResolvedModule[];
   readyByModule: Map<string, boolean>;
-  summaryByModule: Map<string, any>;
+  summaryByModule: Map<
+    string,
+    { total: number; done: number; hasStatus: boolean; nextDueDate: number | null }
+  >;
   moduleOwner: (m: ResolvedModule) => ModuleOwner;
   onOpenModule: (key: string) => void;
   onOpenTab: (tab: string) => void;

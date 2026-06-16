@@ -1,5 +1,12 @@
-import { useState } from "react";
-import { View, Text, StyleSheet, Pressable } from "react-native";
+import { createElement, useState } from "react";
+import {
+  View,
+  Text,
+  StyleSheet,
+  Pressable,
+  Platform,
+  TextInput,
+} from "react-native";
 import { Stack, useRouter, useLocalSearchParams } from "expo-router";
 import { useQuery, useMutation } from "convex/react";
 import { api } from "@events-os/convex/_generated/api";
@@ -11,19 +18,117 @@ import {
   TextField,
   EmptyState,
   SectionHeader,
+  Field,
 } from "../../../components/ui";
 import { colors, radius, spacing } from "../../../lib/theme";
-import { parseDateInput } from "../../../lib/format";
+import { parseDateInput, formatDate } from "../../../lib/format";
+import { errorMessage } from "../../../lib/errors";
+import type { Id } from "@events-os/convex/_generated/dataModel";
+
+/**
+ * Date picker. On web this is the browser's native `<input type="date">` (real
+ * calendar). On native — where the app ships no date-picker dependency — three
+ * numeric fields (year / month / day) avoid the free-text typo trap of a single
+ * `YYYY-MM-DD` box while staying dependency-free. Both paths emit a canonical
+ * `YYYY-MM-DD` string so the timeline back-calculation downstream is unchanged.
+ */
+function DatePickerField({
+  value,
+  onChange,
+}: {
+  value: string;
+  onChange: (next: string) => void;
+}) {
+  if (Platform.OS === "web") {
+    return (
+      <Field
+        label="Date"
+        hint="The whole task timeline is back-calculated from this date."
+      >
+        {createElement("input", {
+          type: "date",
+          value,
+          "aria-label": "Event date",
+          onChange: (e: any) => onChange(e.target.value),
+          style: {
+            font: "inherit",
+            fontSize: 15,
+            color: colors.text,
+            border: `1px solid ${colors.border}`,
+            borderRadius: radius.md,
+            padding: "10px 12px",
+            background: colors.surface,
+            outline: "none",
+          },
+        })}
+      </Field>
+    );
+  }
+
+  // Native: split the YYYY-MM-DD string into three editable numeric fields.
+  const [y = "", m = "", d = ""] = value ? value.split("-") : [];
+  const part = (pos: "y" | "m" | "d", next: string) => {
+    const digits = next.replace(/[^0-9]/g, "");
+    const ny = pos === "y" ? digits : y;
+    const nm = pos === "m" ? digits : m;
+    const nd = pos === "d" ? digits : d;
+    // Emit "" when every sub-field is blank so the empty-date branch stays
+    // reachable (otherwise "--" reads as a non-empty, "invalid" date).
+    onChange(ny || nm || nd ? `${ny}-${nm}-${nd}` : "");
+  };
+  return (
+    <Field
+      label="Date"
+      hint="The whole task timeline is back-calculated from this date."
+    >
+      <View style={styles.dateParts}>
+        <TextInput
+          style={[styles.datePart, styles.datePartWide]}
+          placeholder="YYYY"
+          placeholderTextColor={colors.faint}
+          value={y}
+          onChangeText={(t) => part("y", t)}
+          keyboardType="number-pad"
+          maxLength={4}
+          accessibilityLabel="Event year"
+        />
+        <Text style={styles.dateSep}>-</Text>
+        <TextInput
+          style={styles.datePart}
+          placeholder="MM"
+          placeholderTextColor={colors.faint}
+          value={m}
+          onChangeText={(t) => part("m", t)}
+          keyboardType="number-pad"
+          maxLength={2}
+          accessibilityLabel="Event month"
+        />
+        <Text style={styles.dateSep}>-</Text>
+        <TextInput
+          style={styles.datePart}
+          placeholder="DD"
+          placeholderTextColor={colors.faint}
+          value={d}
+          onChangeText={(t) => part("d", t)}
+          keyboardType="number-pad"
+          maxLength={2}
+          accessibilityLabel="Event day"
+        />
+      </View>
+    </Field>
+  );
+}
 
 /** NEW EVENT: pick a template, name it, set a date, create. */
 export default function NewEventScreen() {
   const router = useRouter();
   const { templateId } = useLocalSearchParams<{ templateId?: string }>();
   const templates = useQuery(api.eventTypes.list);
+  type TemplateRow = NonNullable<typeof templates>[number];
   const create = useMutation(api.events.createFromTemplate);
 
-  const [selectedId, setSelectedId] = useState<string | null>(
-    templateId ?? null,
+  const [selectedId, setSelectedId] = useState<Id<"eventTypes"> | null>(
+    (templateId as Id<"eventTypes"> | undefined) ?? null,
   );
   const [name, setName] = useState("");
   const [touchedName, setTouchedName] = useState(false);
@@ -41,11 +146,12 @@ export default function NewEventScreen() {
     );
   }
 
-  const selected = templates.find((t: any) => t._id === selectedId) ?? null;
+  const selected = templates.find((t) => t._id === selectedId) ?? null;
   // Default the name to the template name until the user types their own.
   const effectiveName = touchedName ? name : selected?.name ?? "";
+  const parsedDate = date ? parseDateInput(date) : null;
 
-  function pickTemplate(t: any) {
+  function pickTemplate(t: TemplateRow) {
     setSelectedId(t._id);
     if (!touchedName) setName("");
   }
@@ -63,18 +169,24 @@ export default function NewEventScreen() {
     }
     const ts = parseDateInput(date);
     if (ts === null) {
-      setError("Enter a valid date as YYYY-MM-DD.");
+      setError(
+        date.trim()
+          ? "That date isn't valid — check the year, month, and day."
+          : "Pick an event date.",
+      );
       return;
     }
     setCreating(true);
     try {
       const id = await create({
-        eventTypeId: selectedId as any,
+        eventTypeId: selectedId,
         name: finalName,
         eventDate: ts,
         location: location.trim() || undefined,
       });
       router.replace(`/event/${id}`);
+    } catch (e) {
+      setError(errorMessage(e, "Couldn't create the event."));
     } finally {
       setCreating(false);
     }
@@ -99,7 +211,7 @@ export default function NewEventScreen() {
           />
         ) : (
           <View style={styles.templateList}>
-            {templates.map((t: any) => {
+            {templates.map((t: TemplateRow) => {
               const active = t._id === selectedId;
               return (
                 <Pressable
@@ -131,14 +243,10 @@ export default function NewEventScreen() {
               setName(v);
             }}
           />
-          <TextField
-            label="Date"
-            placeholder="YYYY-MM-DD"
-            value={date}
-            onChangeText={setDate}
-            hint="The whole task timeline is back-calculated from this date."
-            autoCapitalize="none"
-          />
+          <DatePickerField value={date} onChange={setDate} />
+          {parsedDate !== null ? (
+            <Text style={styles.dateConfirm}>{formatDate(parsedDate)}</Text>
+          ) : null}
           <TextField
             label="Location (optional)"
             placeholder="Where is it?"
@@ -175,4 +283,25 @@ const styles = StyleSheet.create({
   templateName: { fontSize: 15, fontWeight: "600", color: colors.text },
   templateMeta: { fontSize: 13, color: colors.muted },
   error: { color: colors.danger, fontSize: 13, marginBottom: spacing.sm },
+  dateParts: { flexDirection: "row", alignItems: "center", gap: spacing.xs },
+  datePart: {
+    borderWidth: 1,
+    borderColor: colors.borderStrong,
+    borderRadius: radius.md,
+    backgroundColor: colors.raised,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    fontSize: 16,
+    color: colors.text,
+    textAlign: "center",
+    minWidth: 56,
+  },
+  datePartWide: { minWidth: 84 },
+  dateSep: { fontSize: 16, color: colors.faint, fontWeight: "700" },
+  dateConfirm: {
+    marginTop: -spacing.xs,
+    marginBottom: spacing.sm,
+    fontSize: 13,
+    color: colors.muted,
+  },
 });

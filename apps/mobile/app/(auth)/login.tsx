@@ -5,8 +5,9 @@ import { KeyboardAwareScrollView } from "react-native-keyboard-controller";
 import { useRouter } from "expo-router";
 import { useConvexAuth } from "convex/react";
 import { useAuthActions } from "@convex-dev/auth/react";
-import { Card, Button, TextField, Icon } from "../../components/ui";
+import { Card, Button, TextField, Icon, ToastView } from "../../components/ui";
 import { colors } from "../../lib/theme";
+import { useActionRunner } from "../../lib/useActionToast";
 
 const ALLOWED_DOMAIN = "publicworship.life";
 
@@ -49,43 +50,44 @@ export default function LoginScreen() {
   const [username, setUsername] = useState("");
   const [code, setCode] = useState("");
   const [submitting, setSubmitting] = useState(false);
+  const [resending, setResending] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const { run, toast, dismiss } = useActionRunner();
 
   const email = toEmail(username);
 
-  async function requestCode() {
+  // Send (or re-send) the one-time code. `resend` keeps us on the verify step
+  // and uses a separate spinner so the primary button isn't blocked.
+  async function sendCode(resend = false) {
     if (!username.trim()) {
       setError("Enter your username to get a code.");
       return;
     }
     setError(null);
-    setSubmitting(true);
-    try {
-      await signIn("email", { email });
-      setStep("verify");
-    } catch (e) {
-      setError("Couldn't send your code. Check your username and try again.");
-    } finally {
-      setSubmitting(false);
-    }
+    if (resend) setResending(true);
+    else setSubmitting(true);
+    const ok = await run(() => signIn("email", { email }), {
+      errorTitle: resend ? "Couldn't resend your code" : "Couldn't send your code",
+    });
+    if (resend) setResending(false);
+    else setSubmitting(false);
+    if (ok !== undefined && !resend) setStep("verify");
+  }
+
+  async function requestCode() {
+    await sendCode(false);
   }
 
   async function verifyCode() {
     setError(null);
     setSubmitting(true);
-    try {
-      await signIn("email", {
-        email,
-        code: code.trim(),
-      });
-      // Navigation happens in the effect above once `isAuthenticated` flips —
-      // replacing here would race the (app) guard. Keep showing the spinner
-      // until the redirect fires.
-    } catch (e) {
-      setError("That code didn't work. Try again.");
-    } finally {
-      setSubmitting(false);
-    }
+    const ok = await run(() => signIn("email", { email, code: code.trim() }), {
+      errorTitle: "That code didn't work",
+    });
+    // On success, navigation happens in the effect above once `isAuthenticated`
+    // flips — replacing here would race the (app) guard, so we keep the spinner
+    // until the redirect fires. Only clear it when verification failed.
+    if (ok === undefined) setSubmitting(false);
   }
 
   return (
@@ -114,6 +116,12 @@ export default function LoginScreen() {
               <Text className="font-display text-xl text-accent">OS</Text>
             </View>
           </View>
+
+          {toast ? (
+            <View className="mb-3">
+              <ToastView toast={toast} onDismiss={dismiss} />
+            </View>
+          ) : null}
 
           <Card padding="lg">
             <Text className="font-display text-2xl text-ink">
@@ -177,7 +185,16 @@ export default function LoginScreen() {
             />
 
             {step === "verify" ? (
-              <View className="mt-2 items-center">
+              <View className="mt-2 items-center gap-0.5">
+                <Button
+                  title="Resend code"
+                  variant="ghost"
+                  size="sm"
+                  icon="refresh-cw"
+                  loading={resending}
+                  onPress={() => sendCode(true)}
+                  disabled={submitting || resending}
+                />
                 <Button
                   title="Use a different username"
                   variant="ghost"
@@ -187,7 +204,7 @@ export default function LoginScreen() {
                     setCode("");
                     setError(null);
                   }}
-                  disabled={submitting}
+                  disabled={submitting || resending}
                 />
               </View>
             ) : null}
