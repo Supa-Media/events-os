@@ -41,6 +41,12 @@ export const docs = defineTable({
   scope: v.optional(v.union(v.literal("template"), v.literal("event"))),
   // Provenance for an event copy — the template-origin doc it was forked from.
   forkedFromDocId: v.optional(v.id("docs")),
+  // INTENTIONAL: a `people` (roster) id, NOT a `users` id — unlike `events`/
+  // templates which store `createdBy: v.id("users")`. A doc is authored as a
+  // crew member, so docs.ts (`requireCallerPerson`) resolves the caller's linked
+  // roster person and stores THAT id here. Don't "reconcile" this to
+  // `v.id("users")`: the writes/reads in docs.ts deal in people ids and the
+  // value is never compared against a user id.
   createdBy: v.id("people"),
   createdAt: v.number(),
   updatedAt: v.number(),

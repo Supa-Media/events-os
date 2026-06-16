@@ -4,7 +4,7 @@
  * or a live event. Columns are configurable; cells edit inline; rows add /
  * delete / reorder. Driven entirely by the module's ColumnDef set.
  */
-import { useMemo, useRef, useState } from "react";
+import { memo, useCallback, useMemo, useRef, useState } from "react";
 import {
   View,
   Text,
@@ -31,6 +31,12 @@ import { Button } from "../ui/Button";
 import { GridCell } from "./cells";
 import { SortableRows } from "./SortableRows";
 import { ColumnOptionsEditor } from "./ColumnOptionsEditor";
+import {
+  GRIP_W,
+  DELETE_W,
+  MIN_TABLE_WIDTH,
+  getColumnWidth,
+} from "./columnRegistry";
 import {
   useGridData,
   buildPatch,
@@ -69,47 +75,6 @@ function parseOptions(raw: string) {
     .map((label, i) => ({ value: slug(label), label, color: OPTION_PALETTE[i % OPTION_PALETTE.length] }));
 }
 
-/** Sensible default column widths (px) by type; overridden by column.width. */
-function defaultWidth(col: GridColumn): number {
-  if (col.key === "title") return 240;
-  switch (col.type) {
-    case "longtext":
-      return 280;
-    case "status":
-      return 150;
-    case "select":
-      return 150;
-    case "multiselect":
-      return 210;
-    case "person":
-      return 170;
-    case "role":
-      return 150;
-    case "offset_days":
-    case "offset_minutes":
-      return 96;
-    case "due_date":
-    case "date":
-      return 130;
-    case "number":
-      return 90;
-    case "currency":
-      return 110;
-    case "url":
-      return 180;
-    case "how_to":
-      return 200;
-    case "photo":
-      return 84;
-    default:
-      return 160;
-  }
-}
-
-// Drag grip lives in a LEFT gutter; delete in a small RIGHT gutter.
-const GRIP_W = 30;
-const DELETE_W = 38;
-
 type Props = {
   mode: GridMode;
   parentId: string;
@@ -138,6 +103,11 @@ export function EditableGrid({
   filterItemIds,
 }: Props) {
   const grid = useGridData(mode, parentId, module);
+  // `useGridData` returns a fresh object (with fresh method closures) every
+  // render. Mirror it in a ref so the memoized Row's callbacks can stay stable
+  // across renders without depending on `grid` (which would defeat the memo).
+  const gridRef = useRef(grid);
+  gridRef.current = grid;
   const autofill = useAction(api.aiActions.autofillItem);
   const [groupBy, setGroupBy] = useState<string | null>(null);
   const [menu, setMenu] = useState<null | "columns" | "group" | "addField" | "editOptions">(null);
@@ -163,7 +133,7 @@ export function EditableGrid({
   }, [grid.columns, mode, module]);
 
   const widths = useMemo(
-    () => columns.map((c) => c.width ?? defaultWidth(c)),
+    () => columns.map((c) => c.width ?? getColumnWidth(c)),
     [columns],
   );
   const tableWidth =
@@ -177,37 +147,74 @@ export function EditableGrid({
   const groupCol = groupBy ? grid.columns.find((c) => c.key === groupBy) ?? null : null;
   const editCol = editColId ? grid.columns.find((c) => c._id === editColId) ?? null : null;
 
-  const commit = (item: GridItem, column: GridColumn, value: any) =>
-    grid.updateItem(item._id, buildPatch(column, value, module, mode));
+  const commit = useCallback(
+    (item: GridItem, column: GridColumn, value: any) =>
+      gridRef.current.updateItem(
+        item._id,
+        buildPatch(column, value, module, mode),
+      ),
+    [module, mode],
+  );
 
   // Open the full ColumnOptionsEditor for a column straight from a cell's
   // value-picker dropdown (reuses the existing "editOptions" popover).
-  const openOptionsEditor = (columnId: string) => {
+  const openOptionsEditor = useCallback((columnId: string) => {
     setEditColId(columnId);
     setMenu("editOptions");
-  };
+  }, []);
 
   // Inline quick-add from a cell dropdown: append a new option to the column,
   // preserving every existing option and slugging the label into a unique
   // value (mirrors ColumnOptionsEditor). Returns the new value so the cell can
   // immediately select it.
-  const addOption = async (columnId: string, label: string): Promise<string> => {
-    const col = grid.columns.find((c) => c._id === columnId);
-    const existing = col?.options ?? [];
-    const taken = new Set(existing.map((o) => o.value));
-    let value = slug(label);
-    if (taken.has(value)) {
-      let i = 2;
-      while (taken.has(`${value}_${i}`)) i++;
-      value = `${value}_${i}`;
-    }
-    const options = [
-      ...existing,
-      { value, label: label.trim(), color: OPTION_PALETTE[existing.length % OPTION_PALETTE.length] },
-    ];
-    await grid.updateColumn(columnId, { options });
-    return value;
-  };
+  const addOption = useCallback(
+    async (columnId: string, label: string): Promise<string> => {
+      const col = gridRef.current.columns.find((c) => c._id === columnId);
+      const existing = col?.options ?? [];
+      const taken = new Set(existing.map((o) => o.value));
+      let value = slug(label);
+      if (taken.has(value)) {
+        let i = 2;
+        while (taken.has(`${value}_${i}`)) i++;
+        value = `${value}_${i}`;
+      }
+      const options = [
+        ...existing,
+        {
+          value,
+          label: label.trim(),
+          color: OPTION_PALETTE[existing.length % OPTION_PALETTE.length],
+        },
+      ];
+      await gridRef.current.updateColumn(columnId, { options });
+      return value;
+    },
+    [],
+  );
+
+  // Stable per-item row callbacks (read the live grid through the ref).
+  const removeItem = useCallback((itemId: string) => {
+    void gridRef.current.removeItem(itemId);
+  }, []);
+  const autofillItem = useCallback(
+    (itemId: string) => autofill({ itemId: itemId as any }),
+    [autofill],
+  );
+  const openPrePlanMenu = useCallback(
+    (item: GridItem, colKey: string, node: any) =>
+      measureAnchor(node, (anchor) =>
+        setPrePlanMenu({
+          itemId: item._id,
+          colKey,
+          marked: (item.prePlanColumns ?? []).includes(colKey),
+          anchor,
+        }),
+      ),
+    [],
+  );
+  const toggleChecked = useCallback((itemId: string, colKey: string) => {
+    void gridRef.current.togglePrePlanChecked(itemId, colKey);
+  }, []);
 
   // The per-row ✨ Autofill button only makes sense on a live event with a
   // fillable column (photo / link / cost).
@@ -220,8 +227,6 @@ export function EditableGrid({
     for (const item of grid.items) map.set(item._id, item);
     return map;
   }, [grid.items]);
-
-  const orderedIds = useMemo(() => grid.items.map((i) => i._id), [grid.items]);
 
   // Rows to render. Me view passes a filter so only the user's own items show
   // (for modules they don't own); otherwise every item is visible.
@@ -250,6 +255,92 @@ export function EditableGrid({
     return none.items.length ? [...buckets, none] : buckets;
   }, [groupCol, visibleItems, module]);
 
+  const templateId = mode === "template" ? parentId : undefined;
+  const allowPrePlanMenu = mode === "template" && editable;
+  const allowToggleChecked = mode === "event" && editable;
+
+  const renderRow = useCallback(
+    (item: GridItem, isLast: boolean, drag?: GestureType) => (
+      <Row
+        key={item._id}
+        item={item}
+        isLast={isLast}
+        columns={columns}
+        widths={widths}
+        module={module}
+        mode={mode}
+        roles={roles}
+        eventDate={eventDate}
+        editable={editable}
+        templateId={templateId}
+        onCommit={commit}
+        onEditOptions={editable ? openOptionsEditor : undefined}
+        onAddOption={editable ? addOption : undefined}
+        onRemove={editable ? removeItem : undefined}
+        onAutofill={canAutofill ? autofillItem : undefined}
+        drag={drag}
+        // Template authors right-click / long-press a cell to (un)mark pre-plan;
+        // on an event a marked cell shows a check-off tick.
+        onPrePlanMenu={allowPrePlanMenu ? openPrePlanMenu : undefined}
+        onToggleChecked={allowToggleChecked ? toggleChecked : undefined}
+      />
+    ),
+    [
+      columns,
+      widths,
+      module,
+      mode,
+      roles,
+      eventDate,
+      editable,
+      templateId,
+      commit,
+      openOptionsEditor,
+      addOption,
+      removeItem,
+      canAutofill,
+      autofillItem,
+      allowPrePlanMenu,
+      openPrePlanMenu,
+      allowToggleChecked,
+      toggleChecked,
+    ],
+  );
+
+  const reorder = useCallback((ids: string[]) => {
+    void gridRef.current.reorder(ids);
+  }, []);
+
+  const renderList = useCallback(
+    (items: GridItem[], sortable: boolean) => {
+      if (items.length === 0) {
+        return (
+          <View className="px-3 py-3">
+            <Text className="text-sm text-faint">Empty</Text>
+          </View>
+        );
+      }
+      if (sortable && editable) {
+        return (
+          <SortableRows
+            ids={items.map((i) => i._id)}
+            onReorder={reorder}
+            renderRow={({ id, index, drag }) => {
+              const item = itemsById.get(id);
+              if (!item) return null;
+              return renderRow(item, index === items.length - 1, drag);
+            }}
+          />
+        );
+      }
+      return items.map((item, i) => renderRow(item, i === items.length - 1));
+    },
+    [editable, reorder, itemsById, renderRow],
+  );
+
+  // NOTE: keep this loading guard AFTER all hooks — an early return placed
+  // above the render* useCallbacks above causes "rendered more hooks than
+  // during the previous render" once loading flips to false.
   if (grid.loading) {
     return (
       <View className="items-center py-8">
@@ -257,73 +348,6 @@ export function EditableGrid({
       </View>
     );
   }
-
-  const renderRow = (item: GridItem, isLast: boolean, drag?: GestureType) => (
-    <Row
-      item={item}
-      isLast={isLast}
-      columns={columns}
-      widths={widths}
-      module={module}
-      mode={mode}
-      roles={roles}
-      eventDate={eventDate}
-      editable={editable}
-      templateId={mode === "template" ? parentId : undefined}
-      onCommit={commit}
-      onEditOptions={editable ? openOptionsEditor : undefined}
-      onAddOption={editable ? addOption : undefined}
-      onRemove={editable ? () => grid.removeItem(item._id) : undefined}
-      onAutofill={canAutofill ? () => autofill({ itemId: item._id as any }) : undefined}
-      drag={drag}
-      // Template authors right-click / long-press a cell to (un)mark pre-plan;
-      // on an event a marked cell shows a check-off tick.
-      onPrePlanMenu={
-        mode === "template" && editable
-          ? (colKey, node) =>
-              measureAnchor(node, (anchor) =>
-                setPrePlanMenu({
-                  itemId: item._id,
-                  colKey,
-                  marked: (item.prePlanColumns ?? []).includes(colKey),
-                  anchor,
-                }),
-              )
-          : undefined
-      }
-      onToggleChecked={
-        mode === "event" && editable
-          ? (colKey) => grid.togglePrePlanChecked(item._id, colKey)
-          : undefined
-      }
-    />
-  );
-
-  const renderList = (items: GridItem[], sortable: boolean) => {
-    if (items.length === 0) {
-      return (
-        <View className="px-3 py-3">
-          <Text className="text-sm text-faint">Empty</Text>
-        </View>
-      );
-    }
-    if (sortable && editable) {
-      return (
-        <SortableRows
-          ids={items.map((i) => i._id)}
-          onReorder={(ids) => grid.reorder(ids)}
-          renderRow={({ id, index, drag }) => {
-            const item = itemsById.get(id);
-            if (!item) return null;
-            return renderRow(item, index === items.length - 1, drag);
-          }}
-        />
-      );
-    }
-    return items.map((item, i) => (
-      <View key={item._id}>{renderRow(item, i === items.length - 1)}</View>
-    ));
-  };
 
   return (
     <View className="overflow-hidden rounded-lg border border-border bg-raised">
@@ -346,7 +370,7 @@ export function EditableGrid({
       ) : null}
 
       <ScrollView horizontal showsHorizontalScrollIndicator={false}>
-        <View style={{ width: Math.max(tableWidth, 320) }}>
+        <View style={{ width: Math.max(tableWidth, MIN_TABLE_WIDTH) }}>
           {/* Column header */}
           <View className="flex-row items-center border-b border-border bg-sunken">
             {editable ? <View style={{ width: GRIP_W }} /> : null}
@@ -371,7 +395,7 @@ export function EditableGrid({
             groups.map((g) => (
               <View key={g.key}>
                 <View
-                  style={{ width: Math.max(tableWidth, 320) }}
+                  style={{ width: Math.max(tableWidth, MIN_TABLE_WIDTH) }}
                   className="flex-row items-center gap-2 border-b border-border bg-sunken/60 px-3 py-1.5"
                 >
                   <OptionTag label={g.label} color={g.color} />
@@ -585,12 +609,45 @@ function AddFieldForm({
   );
 }
 
+/** Props for a single grid row. */
+interface RowProps {
+  item: GridItem;
+  isLast: boolean;
+  columns: GridColumn[];
+  widths: number[];
+  module: ModuleKey;
+  mode: GridMode;
+  roles: Array<{ _id: string; label: string }>;
+  eventDate?: number;
+  editable: boolean;
+  templateId?: string;
+  onCommit: (item: GridItem, column: GridColumn, value: any) => void;
+  /** Open the full ColumnOptionsEditor for a select/status/multiselect column. */
+  onEditOptions?: (columnId: string) => void;
+  /** Append+persist a new option to a column; resolves to its new value. */
+  onAddOption?: (columnId: string, label: string) => Promise<string>;
+  /** Remove THIS row (called with the row's item id). */
+  onRemove?: (itemId: string) => void;
+  /** ✨ one-click enrich (photo/cost/link) from the item name (by item id). */
+  onAutofill?: (itemId: string) => Promise<unknown>;
+  /** Pan gesture from SortableRows; attached to the grip handle when editable. */
+  drag?: GestureType;
+  /** Template: open the pre-plan mark menu for a cell (right-click/long-press). */
+  onPrePlanMenu?: (item: GridItem, colKey: string, node: any) => void;
+  /** Event: tick / untick a marked pre-plan cell (by item id). */
+  onToggleChecked?: (itemId: string, colKey: string) => void;
+}
+
 /**
  * A single grid row: the flex-row of fixed-width cells plus, when editable, the
  * row-actions column (drag grip + delete). Shared by the sortable (editable)
  * and read-only render paths so the markup stays in one place.
+ *
+ * Memoized: with stable callbacks from the parent, a row only re-renders when
+ * its own `item` (or layout) changes — so editing one cell no longer re-renders
+ * every other row in the grid (the highest-impact perf fix here).
  */
-function Row({
+const Row = memo(function Row({
   item,
   isLast,
   columns,
@@ -609,34 +666,15 @@ function Row({
   drag,
   onPrePlanMenu,
   onToggleChecked,
-}: {
-  item: GridItem;
-  isLast: boolean;
-  columns: GridColumn[];
-  widths: number[];
-  module: ModuleKey;
-  mode: GridMode;
-  roles: Array<{ _id: string; label: string }>;
-  eventDate?: number;
-  editable: boolean;
-  templateId?: string;
-  onCommit: (item: GridItem, column: GridColumn, value: any) => void;
-  /** Open the full ColumnOptionsEditor for a select/status/multiselect column. */
-  onEditOptions?: (columnId: string) => void;
-  /** Append+persist a new option to a column; resolves to its new value. */
-  onAddOption?: (columnId: string, label: string) => Promise<string>;
-  onRemove?: () => void;
-  /** ✨ one-click enrich (photo/cost/link) from the item name. */
-  onAutofill?: () => Promise<unknown>;
-  /** Pan gesture from SortableRows; attached to the grip handle when editable. */
-  drag?: GestureType;
-  /** Template: open the pre-plan mark menu for a cell (right-click/long-press). */
-  onPrePlanMenu?: (colKey: string, node: any) => void;
-  /** Event: tick / untick a marked pre-plan cell. */
-  onToggleChecked?: (colKey: string) => void;
-}) {
-  const prePlanCols = new Set(item.prePlanColumns ?? []);
-  const checkedCols = new Set(item.prePlanChecked ?? []);
+}: RowProps) {
+  const prePlanCols = useMemo(
+    () => new Set(item.prePlanColumns ?? []),
+    [item.prePlanColumns],
+  );
+  const checkedCols = useMemo(
+    () => new Set(item.prePlanChecked ?? []),
+    [item.prePlanChecked],
+  );
   return (
     <View
       className={`flex-row items-start border-b border-border bg-raised ${
@@ -659,35 +697,27 @@ function Row({
         </View>
       ) : null}
 
-      {columns.map((c, i) => {
-        const isPrePlan = prePlanCols.has(c.key);
-        const isChecked = checkedCols.has(c.key);
-        return (
-          <PrePlanCellWrapper
-            key={c._id}
-            width={widths[i]}
-            isPrePlan={isPrePlan}
-            isChecked={isChecked}
-            colKey={c.key}
-            onPrePlanMenu={onPrePlanMenu}
-            onToggleChecked={onToggleChecked}
-          >
-            <GridCell
-              column={c}
-              item={item}
-              module={module}
-              mode={mode}
-              roles={roles}
-              eventDate={eventDate}
-              editable={editable}
-              templateId={templateId}
-              onChange={(value) => onCommit(item, c, value)}
-              onEditOptions={onEditOptions}
-              onAddOption={onAddOption}
-            />
-          </PrePlanCellWrapper>
-        );
-      })}
+      {columns.map((c, i) => (
+        <RowCell
+          key={c._id}
+          column={c}
+          item={item}
+          width={widths[i]}
+          isPrePlan={prePlanCols.has(c.key)}
+          isChecked={checkedCols.has(c.key)}
+          module={module}
+          mode={mode}
+          roles={roles}
+          eventDate={eventDate}
+          editable={editable}
+          templateId={templateId}
+          onCommit={onCommit}
+          onEditOptions={onEditOptions}
+          onAddOption={onAddOption}
+          onPrePlanMenu={onPrePlanMenu}
+          onToggleChecked={onToggleChecked}
+        />
+      ))}
 
       {/* Right gutter: ✨ autofill + delete */}
       {editable ? (
@@ -695,13 +725,100 @@ function Row({
           style={{ width: DELETE_W }}
           className="items-center justify-start gap-0.5 pt-1.5"
         >
-          {onAutofill ? <AutofillBtn onPress={onAutofill} /> : null}
-          {onRemove ? <RowBtn icon="trash-2" danger onPress={onRemove} /> : null}
+          {onAutofill ? (
+            <AutofillBtn onPress={() => onAutofill(item._id)} />
+          ) : null}
+          {onRemove ? (
+            <RowBtn icon="trash-2" danger onPress={() => onRemove(item._id)} />
+          ) : null}
         </View>
       ) : null}
     </View>
   );
+});
+
+/** Props for a single cell within a row (one column × one item). */
+interface RowCellProps {
+  column: GridColumn;
+  item: GridItem;
+  width: number;
+  isPrePlan: boolean;
+  isChecked: boolean;
+  module: ModuleKey;
+  mode: GridMode;
+  roles: Array<{ _id: string; label: string }>;
+  eventDate?: number;
+  editable: boolean;
+  templateId?: string;
+  onCommit: (item: GridItem, column: GridColumn, value: any) => void;
+  onEditOptions?: (columnId: string) => void;
+  onAddOption?: (columnId: string, label: string) => Promise<string>;
+  onPrePlanMenu?: (item: GridItem, colKey: string, node: any) => void;
+  onToggleChecked?: (itemId: string, colKey: string) => void;
 }
+
+/**
+ * One memoized cell. Holds a stable `onChange` (bound to its item + column) and
+ * adapts the row-level pre-plan callbacks (which take the item) to the
+ * cell-level ones the wrapper expects (which take just the colKey), so the
+ * memoized `PrePlanCellWrapper` and `GridCell` only re-render when this cell's
+ * own inputs change.
+ */
+const RowCell = memo(function RowCell({
+  column,
+  item,
+  width,
+  isPrePlan,
+  isChecked,
+  module,
+  mode,
+  roles,
+  eventDate,
+  editable,
+  templateId,
+  onCommit,
+  onEditOptions,
+  onAddOption,
+  onPrePlanMenu,
+  onToggleChecked,
+}: RowCellProps) {
+  const onChange = useCallback(
+    (value: any) => onCommit(item, column, value),
+    [onCommit, item, column],
+  );
+  const handlePrePlanMenu = useCallback(
+    (colKey: string, node: any) => onPrePlanMenu?.(item, colKey, node),
+    [onPrePlanMenu, item],
+  );
+  const handleToggleChecked = useCallback(
+    (colKey: string) => onToggleChecked?.(item._id, colKey),
+    [onToggleChecked, item._id],
+  );
+  return (
+    <PrePlanCellWrapper
+      width={width}
+      isPrePlan={isPrePlan}
+      isChecked={isChecked}
+      colKey={column.key}
+      onPrePlanMenu={onPrePlanMenu ? handlePrePlanMenu : undefined}
+      onToggleChecked={onToggleChecked ? handleToggleChecked : undefined}
+    >
+      <GridCell
+        column={column}
+        item={item}
+        module={module}
+        mode={mode}
+        roles={roles}
+        eventDate={eventDate}
+        editable={editable}
+        templateId={templateId}
+        onChange={onChange}
+        onEditOptions={onEditOptions}
+        onAddOption={onAddOption}
+      />
+    </PrePlanCellWrapper>
+  );
+});
 
 /**
  * Wraps one grid cell to layer the pre-plan affordances on top of any cell type:

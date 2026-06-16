@@ -10,6 +10,8 @@ import {
   SectionHeader,
   EmptyState,
 } from "../../../components/ui";
+import { ToastView } from "../../../components/ui/Toast";
+import { useActionRunner } from "../../../lib/useActionToast";
 import { EditableGrid } from "../../../components/grid/EditableGrid";
 import { SiteMapEditor } from "../../../components/event/SiteMapEditor";
 import { NameEditor } from "../../../components/template/NameEditor";
@@ -36,7 +38,14 @@ export default function TemplateEditorScreen() {
   const data = useQuery(api.eventTypes.get, { eventTypeId });
   const templateRoles = useQuery(api.roles.listForTemplate, { eventTypeId });
   const moduleData = useQuery(api.modules.listForTemplate, { eventTypeId });
-  const updateTemplate = useMutation(api.eventTypes.update);
+  const updateTemplateMut = useMutation(api.eventTypes.update);
+  const { run, toast, dismiss } = useActionRunner();
+
+  // Wrap template edits so a failed save surfaces instead of silently no-op'ing.
+  const updateTemplate = (patch: { name?: string; description?: string }) =>
+    run(() => updateTemplateMut({ eventTypeId, ...patch }), {
+      errorTitle: "Couldn't save template",
+    });
 
   if (data === undefined) return <Screen loading />;
 
@@ -73,18 +82,19 @@ export default function TemplateEditorScreen() {
   return (
     <Screen maxWidth={FULL_WIDTH}>
       <Narrow>
+        <ToastView toast={toast} onDismiss={dismiss} />
         <NameEditor
           key={eventType._id}
           name={eventType.name}
           version={eventType.version}
-          onSave={(name) => updateTemplate({ eventTypeId, name })}
+          onSave={(name) => updateTemplate({ name })}
           onStart={() => router.push(`/event/new?templateId=${eventTypeId}`)}
         />
 
         <DescriptionEditor
           key={`desc-${eventType._id}`}
           description={eventType.description ?? ""}
-          onSave={(description) => updateTemplate({ eventTypeId, description })}
+          onSave={(description) => updateTemplate({ description })}
         />
 
         <RolesCard eventTypeId={eventTypeId} roles={roleList} />

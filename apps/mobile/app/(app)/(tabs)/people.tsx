@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useMemo, useState } from "react";
 import {
   View,
   Text,
@@ -7,7 +7,6 @@ import {
   Pressable,
   ScrollView,
   Linking,
-  TextInput,
   Platform,
 } from "react-native";
 import { useQuery, useMutation } from "convex/react";
@@ -23,82 +22,47 @@ import {
   Avatar,
   Icon,
   OptionTag,
-  Popover,
+  InlineText,
+  GridHeaderCell,
+  SelectCell,
+  type SelectOption,
 } from "../../../components/ui";
 import { colors, spacing } from "../../../lib/theme";
 import { formatDate } from "../../../lib/format";
+import type { Doc, Id } from "@events-os/convex/_generated/dataModel";
 import {
-  VETTING_STATUSES,
   type VettingStatus,
-  ROSTER_STATUSES,
   type RosterStatus,
+  personaOf,
+  type Persona,
 } from "@events-os/shared";
 
-const VETTING_LABEL: Record<VettingStatus, string> = {
-  unvetted: "Unvetted",
-  pending: "Pending",
-  vetted: "Vetted",
-};
+// Vetting select options (gray / amber / green) — fed to the shared SelectCell.
+const VETTING_OPTIONS: SelectOption<VettingStatus>[] = [
+  { value: "unvetted", label: "Unvetted", color: "gray" },
+  { value: "pending", label: "Pending", color: "amber" },
+  { value: "vetted", label: "Vetted", color: "green" },
+];
 
-// OptionTag colors mirror the grid's status palette (gray / amber / green).
-const VETTING_COLOR: Record<VettingStatus, string> = {
-  unvetted: "gray",
-  pending: "amber",
-  vetted: "green",
-};
+// Roster lifecycle select options. active=green, inactive=red,
+// transitioning_*=gray, unavailable=amber.
+const STATUS_OPTIONS: SelectOption<RosterStatus>[] = [
+  { value: "active", label: "Active", color: "green" },
+  { value: "inactive", label: "Inactive", color: "red" },
+  { value: "transitioning_in", label: "Transitioning in", color: "gray" },
+  { value: "transitioning_out", label: "Transitioning out", color: "gray" },
+  { value: "unavailable", label: "Unavailable", color: "amber" },
+];
 
-const STATUS_LABEL: Record<RosterStatus, string> = {
-  active: "Active",
-  inactive: "Inactive",
-  transitioning_in: "Transitioning in",
-  transitioning_out: "Transitioning out",
-  unavailable: "Unavailable",
-};
+// A roster row is the `people` document plus the `imageUrl` the list query
+// resolves from the stored storageId. Persona (`team` / `volunteer` / `vendor`)
+// is DERIVED from signals via the shared `personaOf`, not stored.
+type Person = Doc<"people"> & { imageUrl?: string | null };
 
-// active=green, inactive=red, transitioning_*=grey, unavailable=amber.
-const STATUS_COLOR: Record<RosterStatus, string> = {
-  active: "green",
-  inactive: "red",
-  transitioning_in: "gray",
-  transitioning_out: "gray",
-  unavailable: "amber",
-};
+// The segmented filter adds an "all" sentinel on top of the shared Persona set.
+type PersonaFilter = Persona | "all";
 
-type Person = {
-  _id: string;
-  name: string;
-  email?: string;
-  phone?: string;
-  skills?: string[];
-  usualRateUsd?: number;
-  notes?: string;
-  isTeamMember?: boolean;
-  vettingStatus?: VettingStatus;
-  isActive?: boolean;
-  status?: RosterStatus;
-  role?: string;
-  gender?: "male" | "female" | "na";
-  pocName?: string;
-  projects?: string[];
-  commsPreferences?: string[];
-  pwEmail?: string;
-  company?: string;
-  socialLink?: string;
-  image?: string;
-  imageUrl?: string | null;
-};
-
-// Persona derives from signals, not a rigid kind: team members are flagged,
-// a usual rate marks vendor capability, and everyone else is a volunteer.
-type Persona = "all" | "team" | "volunteer" | "vendor";
-
-function personaOf(p: Person): Exclude<Persona, "all"> {
-  if (p.isTeamMember) return "team";
-  if (p.usualRateUsd != null) return "vendor";
-  return "volunteer";
-}
-
-const PERSONA_FILTERS: { key: Persona; label: string }[] = [
+const PERSONA_FILTERS: { key: PersonaFilter; label: string }[] = [
   { key: "all", label: "All" },
   { key: "team", label: "Team" },
   { key: "volunteer", label: "Volunteers" },
@@ -166,7 +130,7 @@ export default function PeopleScreen() {
 
   const [search, setSearch] = useState("");
   const [skillFilter, setSkillFilter] = useState<string | null>(null);
-  const [persona, setPersona] = useState<Persona>("all");
+  const [persona, setPersona] = useState<PersonaFilter>("all");
   const [openId, setOpenId] = useState<string | null>(null);
 
   // Distinct skills across the roster, for the filter bar.
@@ -178,15 +142,19 @@ export default function PeopleScreen() {
     return Array.from(set).sort();
   }, [people]);
 
-  if (people === undefined) return <Screen loading />;
+  // Memoized so a re-render (e.g. typing in another field) doesn't re-scan the
+  // whole roster — only persona / skill / search changes recompute the rows.
+  const filtered = useMemo(() => {
+    const query = search.trim().toLowerCase();
+    return (people ?? []).filter((p) => {
+      if (persona !== "all" && personaOf(p) !== persona) return false;
+      if (skillFilter && !(p.skills ?? []).includes(skillFilter)) return false;
+      if (query && !p.name.toLowerCase().includes(query)) return false;
+      return true;
+    });
+  }, [people, persona, skillFilter, search]);
 
-  const query = search.trim().toLowerCase();
-  const filtered = people.filter((p) => {
-    if (persona !== "all" && personaOf(p) !== persona) return false;
-    if (skillFilter && !(p.skills ?? []).includes(skillFilter)) return false;
-    if (query && !p.name.toLowerCase().includes(query)) return false;
-    return true;
-  });
+  if (people === undefined) return <Screen loading />;
 
   const openPerson = openId ? people.find((p) => p._id === openId) ?? null : null;
 
@@ -262,23 +230,23 @@ export default function PeopleScreen() {
           <View style={{ width: Math.max(TABLE_WIDTH, 320) }}>
             {/* Column header */}
             <View className="flex-row items-center border-b border-border bg-sunken">
-              <HeaderCell label="Name" width={COLS.name} />
-              <HeaderCell label="Status" width={COLS.status} />
-              <HeaderCell label="Role" width={COLS.role} />
-              <HeaderCell label="Email" width={COLS.email} />
-              <HeaderCell label="PW Email" width={COLS.pwEmail} />
-              <HeaderCell label="Phone" width={COLS.phone} />
-              <HeaderCell label="Gender" width={COLS.gender} />
-              <HeaderCell label="Skills" width={COLS.skills} />
-              <HeaderCell label="Usual rate" width={COLS.rate} />
-              <HeaderCell label="Vetting" width={COLS.vetting} />
-              <HeaderCell label="Team" width={COLS.team} />
-              <HeaderCell label="POC" width={COLS.poc} />
-              <HeaderCell label="Projects" width={COLS.projects} />
-              <HeaderCell label="Comms" width={COLS.comms} />
-              <HeaderCell label="Social" width={COLS.social} />
-              <HeaderCell label="Notes" width={COLS.notes} />
-              <HeaderCell label="Events" width={COLS.events} />
+              <GridHeaderCell label="Name" width={COLS.name} />
+              <GridHeaderCell label="Status" width={COLS.status} />
+              <GridHeaderCell label="Role" width={COLS.role} />
+              <GridHeaderCell label="Email" width={COLS.email} />
+              <GridHeaderCell label="PW Email" width={COLS.pwEmail} />
+              <GridHeaderCell label="Phone" width={COLS.phone} />
+              <GridHeaderCell label="Gender" width={COLS.gender} />
+              <GridHeaderCell label="Skills" width={COLS.skills} />
+              <GridHeaderCell label="Usual rate" width={COLS.rate} />
+              <GridHeaderCell label="Vetting" width={COLS.vetting} />
+              <GridHeaderCell label="Team" width={COLS.team} />
+              <GridHeaderCell label="POC" width={COLS.poc} />
+              <GridHeaderCell label="Projects" width={COLS.projects} />
+              <GridHeaderCell label="Comms" width={COLS.comms} />
+              <GridHeaderCell label="Social" width={COLS.social} />
+              <GridHeaderCell label="Notes" width={COLS.notes} />
+              <GridHeaderCell label="Events" width={COLS.events} />
               <View style={{ width: DELETE_W }} />
             </View>
 
@@ -334,19 +302,6 @@ export default function PeopleScreen() {
   );
 }
 
-function HeaderCell({ label, width }: { label: string; width: number }) {
-  return (
-    <View style={{ width }} className="px-2 py-2.5">
-      <Text
-        className="text-2xs font-bold uppercase tracking-wider text-muted"
-        numberOfLines={1}
-      >
-        {label}
-      </Text>
-    </View>
-  );
-}
-
 /** A single roster row of fixed-width inline-editable cells + a delete gutter. */
 function PersonRow({
   person,
@@ -360,7 +315,7 @@ function PersonRow({
   const update = useMutation(api.people.update);
   const remove = useMutation(api.people.remove);
   const generateUploadUrl = useMutation(api.storage.generateUploadUrl);
-  const id = person._id as any;
+  const id = person._id as Id<"people">;
 
   const vetting = (person.vettingStatus ?? "unvetted") as VettingStatus;
   const status = (person.status ?? "active") as RosterStatus;
@@ -420,8 +375,9 @@ function PersonRow({
 
       {/* Status (roster lifecycle select) */}
       <Cell width={COLS.status}>
-        <StatusCell
+        <SelectCell
           value={status}
+          options={STATUS_OPTIONS}
           onChange={(v) => update({ personId: id, status: v })}
         />
       </Cell>
@@ -495,8 +451,9 @@ function PersonRow({
 
       {/* Vetting (status select) */}
       <Cell width={COLS.vetting}>
-        <VettingCell
+        <SelectCell
           value={vetting}
+          options={VETTING_OPTIONS}
           onChange={(v) => update({ personId: id, vettingStatus: v })}
         />
       </Cell>
@@ -607,47 +564,6 @@ function Cell({ width, children }: { width: number; children: React.ReactNode })
   );
 }
 
-// ── Inline text input (commits on blur) — mirrors cells.tsx InlineText ────────
-function InlineText({
-  value,
-  onCommit,
-  placeholder,
-  numeric,
-  parse,
-  format,
-  weight,
-}: {
-  value: any;
-  onCommit: (v: any) => void;
-  placeholder?: string;
-  numeric?: boolean;
-  parse?: (t: string) => any;
-  format?: (v: any) => string;
-  weight?: "normal" | "medium";
-}) {
-  const initial = format ? format(value) : value == null ? "" : String(value);
-  const [text, setText] = useState(initial);
-  useEffect(() => {
-    setText(format ? format(value) : value == null ? "" : String(value));
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [value]);
-  return (
-    <TextInput
-      value={text}
-      onChangeText={setText}
-      placeholder={placeholder}
-      placeholderTextColor={colors.faint}
-      keyboardType={numeric ? "numbers-and-punctuation" : "default"}
-      autoCapitalize="none"
-      onBlur={() => onCommit(parse ? parse(text) : text)}
-      className={`flex-1 px-2 py-1.5 text-sm leading-snug text-ink ${
-        weight === "medium" ? "font-medium" : ""
-      }`}
-      style={{ minWidth: 40 }}
-    />
-  );
-}
-
 // ── Rate cell: $X when set, else a green "Volunteer" tag. Tap to edit. ────────
 function RateCell({
   value,
@@ -660,7 +576,7 @@ function RateCell({
 
   if (editing) {
     return (
-      <InlineText
+      <InlineText<number | null | undefined>
         value={value}
         numeric
         placeholder="$0"
@@ -731,126 +647,6 @@ function SkillsCell({
         skills.map((s) => <OptionTag key={s} label={s} />)
       )}
     </Pressable>
-  );
-}
-
-// ── Vetting cell: an OptionTag that opens a Popover of statuses ───────────────
-function VettingCell({
-  value,
-  onChange,
-}: {
-  value: VettingStatus;
-  onChange: (v: VettingStatus) => void;
-}) {
-  const ref = useRef<any>(null);
-  const [anchor, setAnchor] = useState<
-    { x: number; y: number; width: number; height: number } | undefined
-  >();
-  const [visible, setVisible] = useState(false);
-
-  const open = () => {
-    const node = ref.current;
-    if (node && typeof node.measureInWindow === "function") {
-      node.measureInWindow(
-        (x: number, y: number, width: number, height: number) => {
-          setAnchor({ x, y, width, height });
-          setVisible(true);
-        },
-      );
-    } else {
-      setVisible(true);
-    }
-  };
-
-  return (
-    <>
-      <Pressable
-        ref={ref}
-        onPress={open}
-        className="flex-1 px-2 py-1.5 active:opacity-70"
-      >
-        <OptionTag label={VETTING_LABEL[value]} color={VETTING_COLOR[value]} />
-      </Pressable>
-      <Popover visible={visible} onClose={() => setVisible(false)} anchor={anchor}>
-        <View className="py-1">
-          {VETTING_STATUSES.map((s) => (
-            <Pressable
-              key={s}
-              onPress={() => {
-                onChange(s);
-                setVisible(false);
-              }}
-              className="flex-row items-center justify-between gap-3 px-3 py-2 active:bg-sunken web:hover:bg-sunken"
-            >
-              <OptionTag label={VETTING_LABEL[s]} color={VETTING_COLOR[s]} />
-              {s === value ? (
-                <Icon name="check" size={15} color={colors.accent} />
-              ) : null}
-            </Pressable>
-          ))}
-        </View>
-      </Popover>
-    </>
-  );
-}
-
-// ── Status cell: a color-coded OptionTag that opens a Popover of statuses ─────
-function StatusCell({
-  value,
-  onChange,
-}: {
-  value: RosterStatus;
-  onChange: (v: RosterStatus) => void;
-}) {
-  const ref = useRef<any>(null);
-  const [anchor, setAnchor] = useState<
-    { x: number; y: number; width: number; height: number } | undefined
-  >();
-  const [visible, setVisible] = useState(false);
-
-  const open = () => {
-    const node = ref.current;
-    if (node && typeof node.measureInWindow === "function") {
-      node.measureInWindow(
-        (x: number, y: number, width: number, height: number) => {
-          setAnchor({ x, y, width, height });
-          setVisible(true);
-        },
-      );
-    } else {
-      setVisible(true);
-    }
-  };
-
-  return (
-    <>
-      <Pressable
-        ref={ref}
-        onPress={open}
-        className="flex-1 px-2 py-1.5 active:opacity-70"
-      >
-        <OptionTag label={STATUS_LABEL[value]} color={STATUS_COLOR[value]} />
-      </Pressable>
-      <Popover visible={visible} onClose={() => setVisible(false)} anchor={anchor}>
-        <View className="py-1">
-          {ROSTER_STATUSES.map((s) => (
-            <Pressable
-              key={s}
-              onPress={() => {
-                onChange(s);
-                setVisible(false);
-              }}
-              className="flex-row items-center justify-between gap-3 px-3 py-2 active:bg-sunken web:hover:bg-sunken"
-            >
-              <OptionTag label={STATUS_LABEL[s]} color={STATUS_COLOR[s]} />
-              {s === value ? (
-                <Icon name="check" size={15} color={colors.accent} />
-              ) : null}
-            </Pressable>
-          ))}
-        </View>
-      </Popover>
-    </>
   );
 }
 

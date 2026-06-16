@@ -10,7 +10,7 @@ import { v } from "convex/values";
 import {
   requireUserId,
   requireChapterId,
-  requireInChapter,
+  requireOwned,
   getChapterIdOrNull,
 } from "./lib/context";
 
@@ -38,7 +38,7 @@ export const list = query({
     if (!chapterId) return [];
     const people = await ctx.db
       .query("people")
-      .withIndex("by_chapter", (q: any) => q.eq("chapterId", chapterId))
+      .withIndex("by_chapter", (q) => q.eq("chapterId", chapterId as Id<"chapters">))
       .collect();
     // These are PER-EVENT materialized copies of a template's placeholder crew
     // (the reusable definitions live on the template as `templatePeople` and are
@@ -46,11 +46,11 @@ export const list = query({
     // keep them out of the People roster. Replacing one only consumes that
     // event's copy; the template's placeholders persist for future instances.
     const sorted = people
-      .filter((p: any) => p.isPlaceholder !== true)
-      .sort((a: any, b: any) => a.name.localeCompare(b.name));
+      .filter((p) => p.isPlaceholder !== true)
+      .sort((a, b) => a.name.localeCompare(b.name));
     // Resolve each profile photo storageId to a servable URL for display.
     return await Promise.all(
-      sorted.map(async (p: any) => ({
+      sorted.map(async (p) => ({
         ...p,
         imageUrl: p.image ? await ctx.storage.getUrl(p.image) : null,
       })),
@@ -70,11 +70,11 @@ export const teamMembers = query({
     if (!chapterId) return [];
     const people = await ctx.db
       .query("people")
-      .withIndex("by_chapter", (q: any) => q.eq("chapterId", chapterId))
+      .withIndex("by_chapter", (q) => q.eq("chapterId", chapterId as Id<"chapters">))
       .collect();
     return people
-      .filter((p: any) => p.isTeamMember === true || p.userId != null)
-      .sort((a: any, b: any) => a.name.localeCompare(b.name));
+      .filter((p) => p.isTeamMember === true || p.userId != null)
+      .sort((a, b) => a.name.localeCompare(b.name));
   },
 });
 
@@ -82,10 +82,7 @@ export const teamMembers = query({
 export const get = query({
   args: { personId: v.id("people") },
   handler: async (ctx, { personId }) => {
-    const chapterId = await requireChapterId(ctx);
-    const person = await ctx.db.get(personId);
-    await requireInChapter(ctx, chapterId, person, "Person");
-    return person;
+    return await requireOwned(ctx, "people", personId, "Person");
   },
 });
 
@@ -164,9 +161,7 @@ export const update = mutation({
     socialLink: v.optional(v.union(v.string(), v.null())),
   },
   handler: async (ctx, { personId, ...patch }) => {
-    const chapterId = await requireChapterId(ctx);
-    const person = await ctx.db.get(personId);
-    await requireInChapter(ctx, chapterId, person, "Person");
+    await requireOwned(ctx, "people", personId, "Person");
     const fields: Record<string, unknown> = {};
     for (const [key, value] of Object.entries(patch)) {
       // null = explicit clear (store undefined); undefined = leave unchanged.
@@ -186,12 +181,10 @@ export const update = mutation({
 export const remove = mutation({
   args: { personId: v.id("people") },
   handler: async (ctx, { personId }) => {
-    const chapterId = await requireChapterId(ctx);
-    const person = await ctx.db.get(personId);
-    await requireInChapter(ctx, chapterId, person, "Person");
+    await requireOwned(ctx, "people", personId, "Person");
     const engagements = await ctx.db
       .query("engagements")
-      .withIndex("by_person", (q: any) => q.eq("personId", personId))
+      .withIndex("by_person", (q) => q.eq("personId", personId))
       .collect();
     for (const e of engagements) await ctx.db.delete(e._id);
     await ctx.db.delete(personId);

@@ -25,6 +25,9 @@ const OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions";
 /** Max model round-trips in one turn (each may carry several tool calls). */
 const MAX_STEPS = 12;
 
+/** Abort a single OpenRouter completion if it hangs longer than this. */
+const OPENROUTER_TIMEOUT_MS = 60_000;
+
 /** The editable fields of one item — shared by update_item and update_items. */
 const ITEM_EDIT_PROPS = {
   item_id: { type: "string" },
@@ -169,6 +172,40 @@ interface OpenRouterUsage {
   prompt_tokens_details?: { cached_tokens?: number };
 }
 
+/** One tool call the model emits (OpenAI/OpenRouter wire shape). */
+interface ToolCall {
+  id?: string;
+  function?: { name?: string; arguments?: string };
+}
+
+/** The assistant message the model returns each round. */
+interface ModelMessage {
+  role?: string;
+  content?: string | null;
+  reasoning?: string | null;
+  tool_calls?: ToolCall[];
+}
+
+/** A chat message we send to / push onto the OpenRouter conversation. */
+type ChatMessage =
+  | { role: "system" | "user" | "assistant"; content: string }
+  | ({ role: "assistant" } & ModelMessage)
+  | { role: "tool"; tool_call_id?: string; content: string };
+
+/**
+ * Parse a tool call's JSON arguments. Returns the parsed object, or null when
+ * the model emitted malformed JSON — callers surface that instead of silently
+ * dispatching with `{}` (which would no-op confusingly).
+ */
+function parseToolArgs(tc: ToolCall): Record<string, unknown> | null {
+  try {
+    const parsed = JSON.parse(tc.function?.arguments ?? "{}");
+    return parsed && typeof parsed === "object" ? parsed : {};
+  } catch {
+    return null;
+  }
+}
+
 /** Cost for one completion: prefer the gateway's exact cost, else estimate ($0 free). */
 function callCost(slug: string, usage: OpenRouterUsage): number {
   if (typeof usage.cost === "number") return usage.cost;
@@ -189,27 +226,45 @@ function callCost(slug: string, usage: OpenRouterUsage): number {
  */
 async function openRouterCall(
   slug: string,
-  messages: any[],
-  opts: { tools?: any[]; maxTokens?: number } = {},
-): Promise<{ message: any; usage: OpenRouterUsage }> {
+  messages: ChatMessage[],
+  opts: { tools?: unknown[]; maxTokens?: number } = {},
+): Promise<{ message: ModelMessage; usage: OpenRouterUsage }> {
   const tools = opts.tools;
   const useTools = Array.isArray(tools) && tools.length > 0;
-  const res = await fetch(OPENROUTER_URL, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${process.env.OPENROUTER_API_KEY}`,
-      "Content-Type": "application/json",
-      "HTTP-Referer": "https://events-os.app",
-      "X-OpenRouter-Title": "Events OS",
-    },
-    body: JSON.stringify({
-      model: slug,
-      messages,
-      ...(useTools ? { tools, tool_choice: "auto" } : {}),
-      reasoning: { effort: "low" },
-      max_tokens: opts.maxTokens ?? 1500,
-    }),
-  });
+  // A hung model call must not stall the whole action. Mirror the search
+  // helpers below, which all guard their fetches with an AbortController.
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), OPENROUTER_TIMEOUT_MS);
+  let res: Response;
+  try {
+    res = await fetch(OPENROUTER_URL, {
+      method: "POST",
+      signal: controller.signal,
+      headers: {
+        Authorization: `Bearer ${process.env.OPENROUTER_API_KEY}`,
+        "Content-Type": "application/json",
+        "HTTP-Referer": "https://events-os.app",
+        "X-OpenRouter-Title": "Events OS",
+      },
+      body: JSON.stringify({
+        model: slug,
+        messages,
+        ...(useTools ? { tools, tool_choice: "auto" } : {}),
+        reasoning: { effort: "low" },
+        max_tokens: opts.maxTokens ?? 1500,
+      }),
+    });
+  } catch (err) {
+    const aborted = err instanceof Error && err.name === "AbortError";
+    throw new ConvexError({
+      code: "OPENROUTER_ERROR",
+      message: aborted
+        ? `OpenRouter call timed out after ${OPENROUTER_TIMEOUT_MS / 1000}s.`
+        : "OpenRouter request failed.",
+    });
+  } finally {
+    clearTimeout(timer);
+  }
   if (!res.ok) {
     const body = await res.text().catch(() => "");
     throw new ConvexError({
@@ -219,7 +274,10 @@ async function openRouterCall(
   }
   const json: any = await res.json();
   return {
-    message: json?.choices?.[0]?.message ?? { role: "assistant", content: "" },
+    message: (json?.choices?.[0]?.message ?? {
+      role: "assistant",
+      content: "",
+    }) as ModelMessage,
     usage: (json?.usage ?? {}) as OpenRouterUsage,
   };
 }
@@ -376,12 +434,85 @@ async function webSearch(
   }
 }
 
+/**
+ * SSRF guard: reject any URL that isn't plain http(s) to a public host before
+ * we fetch it. Image URLs here are model-emitted (find_photos) or user-supplied
+ * (set_photo), so without this an attacker could make the Convex backend fetch
+ * internal/metadata endpoints (cloud metadata, localhost, private LANs). We
+ * only allow http/https and block loopback, link-local, and RFC1918/ULA hosts.
+ */
+function isSafePublicImageUrl(raw: string): boolean {
+  let parsed: URL;
+  try {
+    parsed = new URL(raw);
+  } catch {
+    return false;
+  }
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return false;
+
+  // Strip brackets from IPv6 literals; lowercase for matching.
+  const host = parsed.hostname.replace(/^\[|\]$/g, "").toLowerCase();
+  if (!host) return false;
+
+  // Block obvious loopback / "any" / metadata hostnames outright.
+  if (
+    host === "localhost" ||
+    host === "0.0.0.0" ||
+    host.endsWith(".localhost") ||
+    host.endsWith(".local") ||
+    host.endsWith(".internal")
+  ) {
+    return false;
+  }
+
+  // IPv4 literal → reject loopback, link-local, and private ranges.
+  const ipv4 = host.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+  if (ipv4) {
+    const octets = ipv4.slice(1).map((n) => parseInt(n, 10));
+    if (octets.some((n) => Number.isNaN(n) || n > 255)) return false; // malformed → unsafe
+    const [a, b] = octets;
+    if (a === 127 || a === 10 || a === 0) return false; // loopback / RFC1918 / "this host"
+    if (a === 169 && b === 254) return false; // link-local (incl. cloud metadata 169.254.169.254)
+    if (a === 172 && b >= 16 && b <= 31) return false; // RFC1918
+    if (a === 192 && b === 168) return false; // RFC1918
+    if (a === 100 && b >= 64 && b <= 127) return false; // CGNAT (RFC6598)
+    return true;
+  }
+
+  // IPv6 literal → reject loopback (::1), unspecified (::), link-local (fe80::),
+  // unique-local (fc00::/7 → fc/fd), and IPv4-mapped private space.
+  if (host.includes(":")) {
+    if (host === "::1" || host === "::") return false;
+    if (host.startsWith("fe80:") || host.startsWith("fc") || host.startsWith("fd"))
+      return false;
+    if (host.startsWith("::ffff:")) return false; // IPv4-mapped — can't vet the embedded v4 safely
+    return true;
+  }
+
+  // Must be a normal public DNS name: a dot plus an alphabetic (or punycode)
+  // TLD. This rejects ALTERNATE IP encodings that the fetch runtime would still
+  // resolve to a raw address but the dotted-quad/IPv6 checks above miss —
+  // decimal (2130706433), hex (0x7f000001), octal/short-form (0177.0.0.1,
+  // 127.1) — none of which we could vet against the private ranges.
+  // (DNS rebinding — a real hostname whose A record points at a private IP —
+  // remains unhandled: Convex's fetch gives no resolved-IP hook. `redirect:
+  // "error"` blocks the redirect variant; this is the documented residual risk.)
+  const bareHost = host.replace(/\.$/, ""); // tolerate a trailing-dot FQDN
+  const tld = bareHost.includes(".")
+    ? bareHost.slice(bareHost.lastIndexOf(".") + 1)
+    : "";
+  if (!/^([a-z]{2,}|xn--[a-z0-9]+)$/.test(tld)) return false;
+  return true;
+}
+
 /** Fetch an image URL with a ~10s timeout; return a Blob iff it's an image. */
 async function fetchImageBlob(url: string): Promise<Blob | null> {
+  // SSRF: never fetch a private/loopback/non-http(s) URL (see guard above).
+  if (!isSafePublicImageUrl(url)) return null;
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 10_000);
   try {
-    const res = await fetch(url, { signal: controller.signal });
+    const res = await fetch(url, { signal: controller.signal, redirect: "error" });
     if (!res.ok) return null;
     const ct = res.headers.get("content-type");
     if (!ct?.startsWith("image/")) return null;
@@ -436,6 +567,7 @@ function resolveOwner(context: Ctx, raw: string): Id<"people"> | null | undefine
 async function applyOneEdit(
   ctx: any,
   runId: Id<"aiRuns">,
+  chapterId: Id<"chapters">,
   context: Ctx,
   args: any,
 ): Promise<string | null> {
@@ -464,6 +596,7 @@ async function applyOneEdit(
   await ctx.runMutation(internal.ai.applyItemPatch, {
     runId,
     itemId,
+    chapterId,
     promoted,
     fields,
   });
@@ -475,12 +608,13 @@ async function dispatchTool(
   ctx: any,
   runId: Id<"aiRuns">,
   eventId: Id<"events">,
+  chapterId: Id<"chapters">,
   context: Ctx,
   name: string,
   args: any,
 ): Promise<{ ok: boolean; summary: string; edits?: number }> {
   if (name === "update_item") {
-    const err = await applyOneEdit(ctx, runId, context, args);
+    const err = await applyOneEdit(ctx, runId, chapterId, context, args);
     return err ? { ok: false, summary: err } : { ok: true, summary: "Updated.", edits: 1 };
   }
 
@@ -490,7 +624,7 @@ async function dispatchTool(
     let done = 0;
     const errors: string[] = [];
     for (const e of edits) {
-      const err = await applyOneEdit(ctx, runId, context, e);
+      const err = await applyOneEdit(ctx, runId, chapterId, context, e);
       if (err) errors.push(err);
       else done++;
     }
@@ -511,6 +645,7 @@ async function dispatchTool(
     await ctx.runMutation(internal.ai.createItem, {
       runId,
       eventId,
+      chapterId,
       module: args.module,
       title: String(args.title ?? "Untitled"),
       status: args.status,
@@ -541,6 +676,7 @@ async function dispatchTool(
           await ctx.runMutation(internal.ai.setItemPhoto, {
             runId,
             itemId,
+            chapterId,
             storageId,
           });
           done++;
@@ -563,7 +699,12 @@ async function dispatchTool(
     if (!blob)
       return { ok: false, summary: "That URL wasn't a direct image file." };
     const storageId = await ctx.storage.store(blob);
-    await ctx.runMutation(internal.ai.setItemPhoto, { runId, itemId, storageId });
+    await ctx.runMutation(internal.ai.setItemPhoto, {
+      runId,
+      itemId,
+      chapterId,
+      storageId,
+    });
     return { ok: true, summary: "Photo set." };
   }
 
@@ -662,8 +803,13 @@ export const runAssistant = action({
       return { ok: false };
     }
 
+    // TENANT BOUNDARY: eventContext only returns a snapshot when the event is in
+    // the caller's chapter (chapterId comes from myContext, never the client).
+    // A null result means missing OR cross-chapter — either way we refuse to run
+    // the agent loop, so a cross-tenant eventId can't drive the LLM.
     const context = (await ctx.runQuery(internal.ai.eventContext, {
       eventId,
+      chapterId,
     })) as EventCtx | null;
     if (!context) {
       await ctx.runMutation(internal.ai.appendMessage, {
@@ -682,10 +828,10 @@ export const runAssistant = action({
     const priorTurns = history
       .filter((m: any) => m.kind === "user" || m.kind === "assistant")
       .map((m: any) => ({
-        role: m.kind === "user" ? "user" : "assistant",
+        role: m.kind === "user" ? ("user" as const) : ("assistant" as const),
         content: m.text ?? "",
       }));
-    const messages: any[] = [
+    const messages: ChatMessage[] = [
       { role: "system", content: systemPrompt(context) },
       ...priorTurns,
     ];
@@ -734,7 +880,7 @@ export const runAssistant = action({
           });
         }
 
-        const toolCalls: any[] = message.tool_calls ?? [];
+        const toolCalls: ToolCall[] = message.tool_calls ?? [];
         if (toolCalls.length === 0) {
           // Final answer.
           const text =
@@ -751,14 +897,27 @@ export const runAssistant = action({
         }
 
         // Record the assistant turn (with tool_calls) for the next round.
-        messages.push(message);
+        messages.push(message as ChatMessage);
 
         for (const tc of toolCalls) {
-          let parsed: any = {};
-          try {
-            parsed = JSON.parse(tc.function?.arguments ?? "{}");
-          } catch {
-            parsed = {};
+          const parsed = parseToolArgs(tc);
+          if (parsed === null) {
+            // Malformed tool-arg JSON: surface it instead of silently no-op'ing.
+            const summary = "Couldn't parse the tool arguments (invalid JSON).";
+            await ctx.runMutation(internal.ai.appendMessage, {
+              threadId,
+              runId,
+              kind: "tool_result",
+              toolName: tc.function?.name,
+              toolOk: false,
+              text: summary,
+            });
+            messages.push({
+              role: "tool",
+              tool_call_id: tc.id,
+              content: JSON.stringify({ ok: false, summary }),
+            });
+            continue;
           }
           await ctx.runMutation(internal.ai.appendMessage, {
             threadId,
@@ -772,8 +931,9 @@ export const runAssistant = action({
             ctx,
             runId,
             eventId,
+            chapterId,
             context,
-            tc.function?.name,
+            tc.function?.name ?? "",
             parsed,
           );
           edits += result.edits ?? (result.ok ? 1 : 0);
@@ -862,7 +1022,14 @@ export const autofillItem = action({
         message: "OPENROUTER_API_KEY is not configured.",
       });
 
-    const info = await ctx.runQuery(internal.ai.itemForAutofill, { itemId });
+    // TENANT BOUNDARY: itemForAutofill only returns when the item is in the
+    // caller's chapter (chapterId from myContext, never the client). A null
+    // result means missing OR cross-chapter — we refuse before any LLM/storage
+    // work, so a cross-tenant itemId can't be read or enriched.
+    const info = await ctx.runQuery(internal.ai.itemForAutofill, {
+      itemId,
+      chapterId,
+    });
     if (!info)
       throw new ConvexError({ code: "NOT_FOUND", message: "Item not found." });
 
@@ -892,6 +1059,7 @@ export const autofillItem = action({
             await ctx.runMutation(internal.ai.setItemPhoto, {
               runId,
               itemId,
+              chapterId,
               storageId,
             });
             filled.push("photo");
@@ -931,7 +1099,12 @@ export const autofillItem = action({
       }
 
       if (Object.keys(fields).length) {
-        await ctx.runMutation(internal.ai.applyItemPatch, { runId, itemId, fields });
+        await ctx.runMutation(internal.ai.applyItemPatch, {
+          runId,
+          itemId,
+          chapterId,
+          fields,
+        });
         filled.push(...Object.keys(fields));
       }
 
@@ -1122,6 +1295,12 @@ export const runDocAssistant = action({
       return { ok: false };
     }
 
+    // TENANT BOUNDARY: docs.forAi runs in the caller's auth context and returns
+    // null unless the doc is in the caller's chapter (it does requireChapterId +
+    // a chapterId equality check). So a null result means missing OR
+    // cross-chapter — we refuse to run the agent loop, and write_doc below only
+    // ever targets this same verified docId. A cross-tenant docId can't be
+    // read or overwritten through this action.
     const doc = await ctx.runQuery(api.docs.forAi, { docId });
     if (!doc) {
       await ctx.runMutation(internal.ai.appendMessage, {
@@ -1161,7 +1340,7 @@ export const runDocAssistant = action({
       doc.body && doc.body.trim() ? doc.body : "(empty)",
     ].join("\n");
 
-    const messages: any[] = [
+    const messages: ChatMessage[] = [
       { role: "system", content: system },
       ...priorTurns,
     ];
@@ -1210,7 +1389,7 @@ export const runDocAssistant = action({
           });
         }
 
-        const toolCalls: any[] = message.tool_calls ?? [];
+        const toolCalls: ToolCall[] = message.tool_calls ?? [];
         if (toolCalls.length === 0) {
           // Final answer.
           const text =
@@ -1227,16 +1406,30 @@ export const runDocAssistant = action({
         }
 
         // Record the assistant turn (with tool_calls) for the next round.
-        messages.push(message);
+        messages.push(message as ChatMessage);
 
         for (const tc of toolCalls) {
-          let parsed: any = {};
-          try {
-            parsed = JSON.parse(tc.function?.arguments ?? "{}");
-          } catch {
-            parsed = {};
-          }
           const name = tc.function?.name;
+          const parsed = parseToolArgs(tc);
+          if (parsed === null) {
+            // Malformed tool-arg JSON: surface it instead of silently no-op'ing.
+            const failSummary =
+              "Couldn't parse the tool arguments (invalid JSON).";
+            await ctx.runMutation(internal.ai.appendMessage, {
+              threadId,
+              runId,
+              kind: "tool_result",
+              toolName: name,
+              toolOk: false,
+              text: failSummary,
+            });
+            messages.push({
+              role: "tool",
+              tool_call_id: tc.id,
+              content: failSummary,
+            });
+            continue;
+          }
           await ctx.runMutation(internal.ai.appendMessage, {
             threadId,
             runId,
@@ -1264,7 +1457,11 @@ export const runDocAssistant = action({
               ok = false;
               summary = "No document body provided.";
             } else {
-              await ctx.runMutation(internal.docs.setBody, { docId, body });
+              await ctx.runMutation(internal.docs.setBody, {
+                docId,
+                body,
+                expectedChapterId: chapterId,
+              });
               edited = true;
               ok = true;
               summary = "Document updated.";

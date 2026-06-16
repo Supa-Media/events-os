@@ -1,9 +1,9 @@
-import { useRef, useState } from "react";
+import { useState } from "react";
 import { View, Text, TextInput, Pressable, Platform, Alert } from "react-native";
 import { useQuery, useMutation } from "convex/react";
 import { api } from "@events-os/convex/_generated/api";
 import type { Id } from "@events-os/convex/_generated/dataModel";
-import { Card, SectionHeader, Icon, Avatar } from "../ui";
+import { Card, SectionHeader, Icon, Avatar, useAnchor } from "../ui";
 import { OptionTag } from "../ui/OptionTag";
 import { Popover } from "../ui/Popover";
 import { colors } from "../../lib/theme";
@@ -247,31 +247,14 @@ function TeamSelect({
   onToggle: (teams: string[]) => void;
   onAddTeam: (label: string) => Promise<string | null>;
 }) {
-  const ref = useRef<any>(null);
-  const [anchor, setAnchor] = useState<
-    { x: number; y: number; width: number; height: number } | undefined
-  >();
-  const [open, setOpen] = useState(false);
+  const { ref, anchor, visible: open, open: openMenu, close: closeAnchor } = useAnchor();
   const [newTeam, setNewTeam] = useState("");
 
   const selected = new Set(teams);
   const selectedOptions = teamOptions.filter((o) => selected.has(o.value));
 
-  const openMenu = () => {
-    const node = ref.current;
-    if (node && typeof node.measureInWindow === "function") {
-      node.measureInWindow(
-        (x: number, y: number, width: number, height: number) => {
-          setAnchor({ x, y, width, height });
-          setOpen(true);
-        },
-      );
-    } else {
-      setOpen(true);
-    }
-  };
   const close = () => {
-    setOpen(false);
+    closeAnchor();
     setNewTeam("");
   };
 

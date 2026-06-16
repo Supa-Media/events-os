@@ -6,35 +6,35 @@
  * table), scoped to the event's own roles.
  */
 import { query, mutation } from "./_generated/server";
-import { Id } from "./_generated/dataModel";
+import { Doc, Id } from "./_generated/dataModel";
 import { v } from "convex/values";
-import { requireChapterId, requireInChapter } from "./lib/context";
+import { requireEvent, requireOwned } from "./lib/context";
 
 /** Every role on an event, each with its assigned person (or null). */
 export const listForEvent = query({
   args: { eventId: v.id("events") },
   handler: async (ctx, { eventId }) => {
-    const chapterId = await requireChapterId(ctx);
-    const event = await ctx.db.get(eventId);
-    await requireInChapter(ctx, chapterId, event, "Event");
+    await requireEvent(ctx, eventId);
 
     const roles = (
       await ctx.db
         .query("eventRoles")
-        .withIndex("by_event", (q: any) => q.eq("eventId", eventId))
+        .withIndex("by_event", (q) => q.eq("eventId", eventId))
         .collect()
-    ).sort((a: any, b: any) => a.order - b.order);
+    ).sort((a, b) => a.order - b.order);
 
     const assignments = await ctx.db
       .query("roleAssignments")
-      .withIndex("by_event", (q: any) => q.eq("eventId", eventId))
+      .withIndex("by_event", (q) => q.eq("eventId", eventId))
       .collect();
+    // Build a roleId → assignment map once (O(n)), not a `.find` per role (O(n²)).
+    const assignmentByRole = new Map<string, Doc<"roleAssignments">>(
+      assignments.map((a) => [String(a.roleId), a]),
+    );
 
     return await Promise.all(
-      roles.map(async (role: any) => {
-        const assignment = assignments.find(
-          (a: any) => a.roleId === role._id,
-        );
+      roles.map(async (role) => {
+        const assignment = assignmentByRole.get(String(role._id));
         const person = assignment ? await ctx.db.get(assignment.personId) : null;
         return {
           roleId: role._id as Id<"eventRoles">,
@@ -54,15 +54,12 @@ export const assign = mutation({
     personId: v.id("people"),
   },
   handler: async (ctx, { eventId, roleId, personId }) => {
-    const chapterId = await requireChapterId(ctx);
-    const event = await ctx.db.get(eventId);
-    await requireInChapter(ctx, chapterId, event, "Event");
-    const person = await ctx.db.get(personId);
-    await requireInChapter(ctx, chapterId, person, "Person");
+    const event = await requireEvent(ctx, eventId);
+    await requireOwned(ctx, "people", personId, "Person");
 
     const existing = await ctx.db
       .query("roleAssignments")
-      .withIndex("by_event_role", (q: any) =>
+      .withIndex("by_event_role", (q) =>
         q.eq("eventId", eventId).eq("roleId", roleId),
       )
       .collect();
@@ -70,7 +67,7 @@ export const assign = mutation({
 
     return await ctx.db.insert("roleAssignments", {
       eventId,
-      chapterId: chapterId as Id<"chapters">,
+      chapterId: event.chapterId,
       roleId,
       personId,
       createdAt: Date.now(),
@@ -82,12 +79,10 @@ export const assign = mutation({
 export const unassign = mutation({
   args: { eventId: v.id("events"), roleId: v.id("eventRoles") },
   handler: async (ctx, { eventId, roleId }) => {
-    const chapterId = await requireChapterId(ctx);
-    const event = await ctx.db.get(eventId);
-    await requireInChapter(ctx, chapterId, event, "Event");
+    await requireEvent(ctx, eventId);
     const existing = await ctx.db
       .query("roleAssignments")
-      .withIndex("by_event_role", (q: any) =>
+      .withIndex("by_event_role", (q) =>
         q.eq("eventId", eventId).eq("roleId", roleId),
       )
       .collect();
@@ -100,17 +95,15 @@ export const unassign = mutation({
 export const historyForPerson = query({
   args: { personId: v.id("people") },
   handler: async (ctx, { personId }) => {
-    const chapterId = await requireChapterId(ctx);
-    const person = await ctx.db.get(personId);
-    await requireInChapter(ctx, chapterId, person, "Person");
+    await requireOwned(ctx, "people", personId, "Person");
 
     const assignments = await ctx.db
       .query("roleAssignments")
-      .withIndex("by_person", (q: any) => q.eq("personId", personId))
+      .withIndex("by_person", (q) => q.eq("personId", personId))
       .collect();
 
     const history = await Promise.all(
-      assignments.map(async (a: any) => {
+      assignments.map(async (a) => {
         const event = await ctx.db.get(a.eventId as Id<"events">);
         const role = await ctx.db.get(a.roleId as Id<"eventRoles">);
         return {

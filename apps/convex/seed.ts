@@ -14,8 +14,10 @@
  * The bulk builder logic + large seed-data literals live in `lib/seed/*`; this
  * file holds the thin registered mutations/queries that call them.
  */
-import { mutation, query } from "./_generated/server";
-import { Id } from "./_generated/dataModel";
+import { mutation, internalMutation, query } from "./_generated/server";
+import type { MutationCtx, QueryCtx } from "./_generated/server";
+import { Id, TableNames } from "./_generated/dataModel";
+import { ConvexError } from "convex/values";
 import {
   DEFAULT_COLUMNS,
   DAY_MS,
@@ -26,6 +28,7 @@ import {
   type ModuleKey,
 } from "@events-os/shared";
 import { requireUserId } from "./lib/context";
+import { isSuperuser } from "./lib/superuser";
 import { instantiateEvent } from "./lib/templates";
 import { type ItemRow, phoneKey } from "./lib/seed/helpers";
 import {
@@ -50,48 +53,53 @@ const NEW_YORK_CHAPTER_SLUG = "new-york";
 
 /**
  * Dev-only reset: wipe the demo chapter and everything scoped to it, so a fresh
- * `seedDemoData` (run from the app once logged in) starts clean. No auth — local
- * dev convenience only. (Orphaned pre-migration tables like `tasks` are no
- * longer in the schema and are left inert.)
+ * `seedDemoData` (run from the app once logged in) starts clean.
+ *
+ * SECURITY: converted from a public `mutation` to `internalMutation` — it is
+ * destructive (cascade-deletes a whole chapter) and is NOT called from the UI
+ * (grep of apps/mobile finds no caller). Now reachable only from the Convex
+ * dashboard / CLI (`npx convex run seed:clearDemo`), never from the public API.
+ * (Orphaned pre-migration tables like `tasks` are no longer in the schema and
+ * are left inert.)
  */
-export const clearDemo = mutation({
+export const clearDemo = internalMutation({
   args: {},
-  handler: async (ctx) => {
+  handler: async (ctx: MutationCtx) => {
     const chapter = await ctx.db
       .query("chapters")
-      .withIndex("by_name", (q: any) => q.eq("name", DEMO_CHAPTER_NAME))
+      .withIndex("by_name", (q) => q.eq("name", DEMO_CHAPTER_NAME))
       .first();
     if (!chapter) return { cleared: false };
-    const cid = chapter._id as Id<"chapters">;
+    const cid = chapter._id;
 
     const events = await ctx.db
       .query("events")
-      .withIndex("by_chapter", (q: any) => q.eq("chapterId", cid))
+      .withIndex("by_chapter", (q) => q.eq("chapterId", cid))
       .collect();
     for (const e of events) {
       for (const t of await ctx.db
         .query("eventItems")
-        .withIndex("by_event", (q: any) => q.eq("eventId", e._id))
+        .withIndex("by_event", (q) => q.eq("eventId", e._id))
         .collect())
         await ctx.db.delete(t._id);
       for (const c of await ctx.db
         .query("eventColumns")
-        .withIndex("by_event", (q: any) => q.eq("eventId", e._id))
+        .withIndex("by_event", (q) => q.eq("eventId", e._id))
         .collect())
         await ctx.db.delete(c._id);
       for (const a of await ctx.db
         .query("roleAssignments")
-        .withIndex("by_event", (q: any) => q.eq("eventId", e._id))
+        .withIndex("by_event", (q) => q.eq("eventId", e._id))
         .collect())
         await ctx.db.delete(a._id);
       for (const r of await ctx.db
         .query("eventRoles")
-        .withIndex("by_event", (q: any) => q.eq("eventId", e._id))
+        .withIndex("by_event", (q) => q.eq("eventId", e._id))
         .collect())
         await ctx.db.delete(r._id);
       for (const m of await ctx.db
         .query("eventModules")
-        .withIndex("by_event", (q: any) => q.eq("eventId", e._id))
+        .withIndex("by_event", (q) => q.eq("eventId", e._id))
         .collect())
         await ctx.db.delete(m._id);
       await ctx.db.delete(e._id);
@@ -99,27 +107,27 @@ export const clearDemo = mutation({
 
     const types = await ctx.db
       .query("eventTypes")
-      .withIndex("by_chapter", (q: any) => q.eq("chapterId", cid))
+      .withIndex("by_chapter", (q) => q.eq("chapterId", cid))
       .collect();
     for (const t of types) {
       for (const c of await ctx.db
         .query("templateColumns")
-        .withIndex("by_eventType", (q: any) => q.eq("eventTypeId", t._id))
+        .withIndex("by_eventType", (q) => q.eq("eventTypeId", t._id))
         .collect())
         await ctx.db.delete(c._id);
       for (const it of await ctx.db
         .query("templateItems")
-        .withIndex("by_eventType", (q: any) => q.eq("eventTypeId", t._id))
+        .withIndex("by_eventType", (q) => q.eq("eventTypeId", t._id))
         .collect())
         await ctx.db.delete(it._id);
       for (const r of await ctx.db
         .query("templateRoles")
-        .withIndex("by_template", (q: any) => q.eq("eventTypeId", t._id))
+        .withIndex("by_template", (q) => q.eq("eventTypeId", t._id))
         .collect())
         await ctx.db.delete(r._id);
       for (const m of await ctx.db
         .query("templateModules")
-        .withIndex("by_template", (q: any) => q.eq("eventTypeId", t._id))
+        .withIndex("by_template", (q) => q.eq("eventTypeId", t._id))
         .collect())
         await ctx.db.delete(m._id);
       await ctx.db.delete(t._id);
@@ -127,12 +135,12 @@ export const clearDemo = mutation({
 
     for (const p of await ctx.db
       .query("people")
-      .withIndex("by_chapter", (q: any) => q.eq("chapterId", cid))
+      .withIndex("by_chapter", (q) => q.eq("chapterId", cid))
       .collect())
       await ctx.db.delete(p._id);
     for (const uc of await ctx.db
       .query("userChapters")
-      .withIndex("by_chapterId", (q: any) => q.eq("chapterId", cid))
+      .withIndex("by_chapterId", (q) => q.eq("chapterId", cid))
       .collect())
       await ctx.db.delete(uc._id);
 
@@ -142,19 +150,23 @@ export const clearDemo = mutation({
 });
 
 /**
- * Dev-only backfill (no auth) for the modules added after some templates/events
- * were already created (permits, retro, volunteer_expectations). Without this,
- * those modules render empty grids on pre-existing data. Idempotent: only inserts
- * for a (template/event, module) pair that has zero columns yet.
+ * Dev-only backfill for the modules added after some templates/events were
+ * already created (permits, retro, volunteer_expectations). Without this, those
+ * modules render empty grids on pre-existing data. Idempotent: only inserts for a
+ * (template/event, module) pair that has zero columns yet.
  *
  * For each eventType: insert DEFAULT_COLUMNS + the seed items (PERMIT/VOLUNTEER/
  * RETRO rows) for any active-but-empty new module. For each event: clone the now-
  * present template columns + items for those modules onto the event (back-calc
  * dueDate for day-offset modules), mirroring instantiateEvent's clone shape.
+ *
+ * SECURITY: converted from a public `mutation` to `internalMutation` — it
+ * bulk-overwrites template/event grid data and is not called from the UI.
+ * Dashboard/CLI only.
  */
-export const backfillNewModules = mutation({
+export const backfillNewModules = internalMutation({
   args: {},
-  handler: async (ctx) => {
+  handler: async (ctx: MutationCtx) => {
     const NEW_MODULES: ModuleKey[] = ["permits", "retro", "volunteer_expectations"];
     const seedRowsFor = (module: ModuleKey): ItemRow[] => {
       if (module === "permits") return PERMIT_ROWS;
@@ -175,7 +187,7 @@ export const backfillNewModules = mutation({
         if (etDisabled.has(module)) continue;
         const existing = await ctx.db
           .query("templateColumns")
-          .withIndex("by_eventType_module", (q: any) =>
+          .withIndex("by_eventType_module", (q) =>
             q.eq("eventTypeId", et._id).eq("module", module),
           )
           .first();
@@ -230,7 +242,7 @@ export const backfillNewModules = mutation({
         if (evDisabled.has(module)) continue;
         const existingCol = await ctx.db
           .query("eventColumns")
-          .withIndex("by_event_module", (q: any) =>
+          .withIndex("by_event_module", (q) =>
             q.eq("eventId", ev._id).eq("module", module),
           )
           .first();
@@ -239,19 +251,19 @@ export const backfillNewModules = mutation({
         // Clone the (now-present) template columns for this module.
         const cols = await ctx.db
           .query("templateColumns")
-          .withIndex("by_eventType_module", (q: any) =>
+          .withIndex("by_eventType_module", (q) =>
             q.eq("eventTypeId", et._id).eq("module", module),
           )
           .collect();
         for (const c of cols) {
-          const { _id, _creationTime, eventTypeId: _e, ...rest } = c as any;
+          const { _id, _creationTime, eventTypeId: _e, ...rest } = c;
           await ctx.db.insert("eventColumns", { eventId: ev._id, ...rest });
         }
 
         // Clone the template items for this module onto the event.
         const items = await ctx.db
           .query("templateItems")
-          .withIndex("by_eventType_module", (q: any) =>
+          .withIndex("by_eventType_module", (q) =>
             q.eq("eventTypeId", et._id).eq("module", module),
           )
           .collect();
@@ -286,16 +298,20 @@ export const backfillNewModules = mutation({
 });
 
 /**
- * Dev-only migration (no auth) for the RESHAPED volunteer_expectations module.
- * Rows used to be one-per-team engagements (Volunteer/Team, team, status,
- * call_time, phone, responsibilities, owner); they are now granular EXPECTATIONS
- * with columns title / team / details. This rebuilds the columns + items on every
- * template and event that has the module active, from DEFAULT_COLUMNS + the
- * granular VOLUNTEER_ROWS above. Mirrors clearDemo/backfillNewModules style.
+ * Dev-only migration for the RESHAPED volunteer_expectations module. Rows used to
+ * be one-per-team engagements (Volunteer/Team, team, status, call_time, phone,
+ * responsibilities, owner); they are now granular EXPECTATIONS with columns title
+ * / team / details. This rebuilds the columns + items on every template and event
+ * that has the module active, from DEFAULT_COLUMNS + the granular VOLUNTEER_ROWS
+ * above. Mirrors clearDemo/backfillNewModules style.
+ *
+ * SECURITY: converted from a public `mutation` to `internalMutation` — it
+ * destructively rebuilds grid data and is not called from the UI. Dashboard/CLI
+ * only.
  */
-export const migrateVolunteerExpectations = mutation({
+export const migrateVolunteerExpectations = internalMutation({
   args: {},
-  handler: async (ctx) => {
+  handler: async (ctx: MutationCtx) => {
     const MODULE: ModuleKey = "volunteer_expectations";
     let templatesPatched = 0;
     let eventsPatched = 0;
@@ -308,7 +324,7 @@ export const migrateVolunteerExpectations = mutation({
       // Replace columns with the new DEFAULT_COLUMNS shape.
       for (const c of await ctx.db
         .query("templateColumns")
-        .withIndex("by_eventType_module", (q: any) =>
+        .withIndex("by_eventType_module", (q) =>
           q.eq("eventTypeId", et._id).eq("module", MODULE),
         )
         .collect())
@@ -334,7 +350,7 @@ export const migrateVolunteerExpectations = mutation({
       // Replace items with the granular expectation rows.
       for (const it of await ctx.db
         .query("templateItems")
-        .withIndex("by_eventType_module", (q: any) =>
+        .withIndex("by_eventType_module", (q) =>
           q.eq("eventTypeId", et._id).eq("module", MODULE),
         )
         .collect())
@@ -367,14 +383,14 @@ export const migrateVolunteerExpectations = mutation({
       // Wipe the event's old volunteer_expectations columns + items.
       for (const c of await ctx.db
         .query("eventColumns")
-        .withIndex("by_event_module", (q: any) =>
+        .withIndex("by_event_module", (q) =>
           q.eq("eventId", ev._id).eq("module", MODULE),
         )
         .collect())
         await ctx.db.delete(c._id);
       for (const it of await ctx.db
         .query("eventItems")
-        .withIndex("by_event_module", (q: any) =>
+        .withIndex("by_event_module", (q) =>
           q.eq("eventId", ev._id).eq("module", MODULE),
         )
         .collect())
@@ -383,19 +399,19 @@ export const migrateVolunteerExpectations = mutation({
       // Clone from the (now-updated) template.
       const cols = await ctx.db
         .query("templateColumns")
-        .withIndex("by_eventType_module", (q: any) =>
+        .withIndex("by_eventType_module", (q) =>
           q.eq("eventTypeId", et._id).eq("module", MODULE),
         )
         .collect();
       for (const c of cols) {
-        const { _id, _creationTime, eventTypeId: _e, ...rest } = c as any;
+        const { _id, _creationTime, eventTypeId: _e, ...rest } = c;
         await ctx.db.insert("eventColumns", { eventId: ev._id, ...rest });
       }
 
       // volunteer_expectations is not a day-offset module — no dueDate.
       const items = await ctx.db
         .query("templateItems")
-        .withIndex("by_eventType_module", (q: any) =>
+        .withIndex("by_eventType_module", (q) =>
           q.eq("eventTypeId", et._id).eq("module", MODULE),
         )
         .collect();
@@ -422,8 +438,8 @@ export const migrateVolunteerExpectations = mutation({
 /** Dev-only: row counts across the unified-model tables (no auth). */
 export const health = query({
   args: {},
-  handler: async (ctx) => {
-    const count = async (table: any) =>
+  handler: async (ctx: QueryCtx) => {
+    const count = async (table: TableNames) =>
       (await ctx.db.query(table).collect()).length;
     return {
       chapters: await count("chapters"),
@@ -444,10 +460,13 @@ export const health = query({
  * Dev backfill: mark existing people as team members if they already hold a lead
  * role or own an event — so the owner/lead pickers (which now list team members
  * only) aren't empty for pre-existing data.
+ *
+ * SECURITY: converted from a public `mutation` to `internalMutation` — it mass-
+ * patches roster rows and is not called from the UI. Dashboard/CLI only.
  */
-export const backfillTeamMembers = mutation({
+export const backfillTeamMembers = internalMutation({
   args: {},
-  handler: async (ctx) => {
+  handler: async (ctx: MutationCtx) => {
     const ids = new Set<string>();
     for (const a of await ctx.db.query("roleAssignments").collect())
       ids.add(String(a.personId));
@@ -467,13 +486,31 @@ export const backfillTeamMembers = mutation({
 
 export const seedDemoData = mutation({
   args: {},
-  handler: async (ctx) => {
+  handler: async (ctx: MutationCtx) => {
     const userId = await requireUserId(ctx);
+    // Gate: seeding demo data is allowed only for a superuser, UNLESS the
+    // deployment explicitly opts into open seeding via `IS_DEV="true"`.
+    // Prevents an authenticated non-admin from spraying a demo chapter + roster
+    // into a live deployment via the public API. The pipeline empty-state
+    // "Seed demo data" button stays functional for admins everywhere, and for
+    // everyone on dev/staging deployments that set `IS_DEV=true`.
+    //
+    // Fail-CLOSED by default: an unconfigured deployment (no `IS_DEV` env var)
+    // requires a superuser — so production is safe even if no env var is set.
+    // Dev deployments set `IS_DEV=true` to keep open seeding.
+    const isDev = process.env.IS_DEV === "true";
+    if (!isDev && !(await isSuperuser(ctx))) {
+      throw new ConvexError({
+        code: "FORBIDDEN",
+        message:
+          "Seeding demo data requires admin access on this deployment.",
+      });
+    }
     const now = Date.now();
 
     const existing = await ctx.db
       .query("chapters")
-      .withIndex("by_name", (q: any) => q.eq("name", DEMO_CHAPTER_NAME))
+      .withIndex("by_name", (q) => q.eq("name", DEMO_CHAPTER_NAME))
       .first();
     if (existing) return { chapterId: existing._id, seeded: false };
 
@@ -487,7 +524,7 @@ export const seedDemoData = mutation({
 
     const membership = await ctx.db
       .query("userChapters")
-      .withIndex("by_userId", (q: any) => q.eq("userId", userId))
+      .withIndex("by_userId", (q) => q.eq("userId", userId as Id<"users">))
       .first();
     if (!membership) {
       await ctx.db.insert("userChapters", {
@@ -508,20 +545,27 @@ export const seedDemoData = mutation({
     );
 
     // ── People ───────────────────────────────────────────────────────────────
-    const people = [
-      { name: "Ada Okafor", email: "ada@example.com", skills: ["worship", "vocals"], vettingStatus: "vetted" as const },
-      { name: "Ben Carter", email: "ben@example.com", phone: "+15555550101", skills: ["audio", "logistics"], vettingStatus: "vetted" as const },
-      { name: "Chloe Martins", email: "chloe@example.com", skills: ["marketing"], vettingStatus: "pending" as const },
-      { name: "Diego Ramos", phone: "+15555550102", skills: ["logistics"], vettingStatus: "unvetted" as const },
-      { name: "Esi Mensah", email: "esi@example.com", skills: ["worship", "audio"], vettingStatus: "vetted" as const },
+    type SeedPerson = {
+      name: string;
+      email?: string;
+      phone?: string;
+      skills: string[];
+      vettingStatus: "vetted" | "pending" | "unvetted";
+    };
+    const people: SeedPerson[] = [
+      { name: "Ada Okafor", email: "ada@example.com", skills: ["worship", "vocals"], vettingStatus: "vetted" },
+      { name: "Ben Carter", email: "ben@example.com", phone: "+15555550101", skills: ["audio", "logistics"], vettingStatus: "vetted" },
+      { name: "Chloe Martins", email: "chloe@example.com", skills: ["marketing"], vettingStatus: "pending" },
+      { name: "Diego Ramos", phone: "+15555550102", skills: ["logistics"], vettingStatus: "unvetted" },
+      { name: "Esi Mensah", email: "esi@example.com", skills: ["worship", "audio"], vettingStatus: "vetted" },
     ];
     const peopleIds: Id<"people">[] = [];
     for (const p of people) {
       const id = await ctx.db.insert("people", {
         chapterId,
         name: p.name,
-        email: (p as any).email,
-        phone: (p as any).phone,
+        email: p.email,
+        phone: p.phone,
         skills: p.skills,
         vettingStatus: p.vettingStatus,
         isActive: true,
@@ -548,11 +592,11 @@ export const seedDemoData = mutation({
     const eventTasks = (
       await ctx.db
         .query("eventItems")
-        .withIndex("by_event_module", (q: any) =>
+        .withIndex("by_event_module", (q) =>
           q.eq("eventId", eventId).eq("module", "planning_doc"),
         )
         .collect()
-    ).sort((a: any, b: any) => a.order - b.order);
+    ).sort((a, b) => a.order - b.order);
     for (const t of eventTasks.slice(0, 2)) {
       await ctx.db.patch(t._id, { status: "done" });
     }
@@ -561,10 +605,10 @@ export const seedDemoData = mutation({
     // template by instantiateEvent, so look them up by key on the event.
     const eventRoles = await ctx.db
       .query("eventRoles")
-      .withIndex("by_event", (q: any) => q.eq("eventId", eventId))
+      .withIndex("by_event", (q) => q.eq("eventId", eventId))
       .collect();
     const eventRoleByKey = new Map<string, Id<"eventRoles">>(
-      eventRoles.map((r: any) => [r.key, r._id]),
+      eventRoles.map((r) => [r.key, r._id]),
     );
     const eventLeadRole = eventRoleByKey.get("event_lead");
     const logisticsRole = eventRoleByKey.get("logistics_lead");
@@ -585,8 +629,8 @@ export const seedDemoData = mutation({
 
 /**
  * Bootstrap the one real (non-demo) chapter — "The New York Chapter" — that
- * users pick during onboarding. No auth (dev-style, like the migrations above);
- * idempotent: no-ops if a chapter with slug "new-york" already exists.
+ * users pick during onboarding. Idempotent: no-ops if a chapter with slug
+ * "new-york" already exists.
  *
  * Creates the chapter + the 4 default roles + the 3 default templates (Eden,
  * Love Thy Neighbor, Worship With Strangers) exactly as `seedDemoData` does.
@@ -596,13 +640,18 @@ export const seedDemoData = mutation({
  * `createdBy` on the templates needs a real user id; we use the first user in
  * the deployment. If there are no users yet, the chapter + roles are created and
  * templates are skipped (re-run after a user signs in to fill them in).
+ *
+ * SECURITY: converted from a public `mutation` to `internalMutation` — it had no
+ * auth and is not called from the UI (it's a one-time bootstrap run via the CLI:
+ * `npx convex run seed:ensureChapters`). Keeping it public let any client create
+ * chapters anonymously.
  */
-export const ensureChapters = mutation({
+export const ensureChapters = internalMutation({
   args: {},
-  handler: async (ctx) => {
+  handler: async (ctx: MutationCtx) => {
     const existing = await ctx.db
       .query("chapters")
-      .withIndex("by_slug", (q: any) => q.eq("slug", NEW_YORK_CHAPTER_SLUG))
+      .withIndex("by_slug", (q) => q.eq("slug", NEW_YORK_CHAPTER_SLUG))
       .first();
     if (existing) {
       return { chapterId: existing._id, created: false };
@@ -633,9 +682,9 @@ export const ensureChapters = mutation({
 });
 
 /**
- * Dev-only reseed (no auth) of "The New York Chapter" for demoing. Cascade-
- * deletes the chapter's existing events/templates/docs/site-map data, rebuilds
- * the templates from `buildChapterRolesAndTemplates` (so they pick up the latest
+ * Dev-only reseed of "The New York Chapter" for demoing. Cascade-deletes the
+ * chapter's existing events/templates/docs/site-map data, rebuilds the templates
+ * from `buildChapterRolesAndTemplates` (so they pick up the latest
  * DEFAULT_COLUMNS — incl. Expectations' new Owner + How-To columns), ensures a
  * handful of people, then instantiates one sample Eden event populated with
  * volunteers-on-teams + a site map (shapes + placements) so the share page /
@@ -644,16 +693,20 @@ export const ensureChapters = mutation({
  * Runnable with `npx convex run seed:reseedNyDemo`. Creates the chapter if it's
  * missing (mirrors `ensureChapters`). Needs at least one `users` row for
  * template `createdBy` / event creator.
+ *
+ * SECURITY: converted from a public `mutation` to `internalMutation` — it had no
+ * auth and is hugely destructive (cascade-deletes a chapter's events, templates,
+ * docs, and site-map). Not called from the UI. Dashboard/CLI only.
  */
-export const reseedNyDemo = mutation({
+export const reseedNyDemo = internalMutation({
   args: {},
-  handler: async (ctx) => {
+  handler: async (ctx: MutationCtx) => {
     const now = Date.now();
 
     // ── Chapter (create if missing, mirroring ensureChapters) ────────────────
     let chapter = await ctx.db
       .query("chapters")
-      .withIndex("by_slug", (q: any) => q.eq("slug", NEW_YORK_CHAPTER_SLUG))
+      .withIndex("by_slug", (q) => q.eq("slug", NEW_YORK_CHAPTER_SLUG))
       .first();
     if (!chapter) {
       const chapterId = (await ctx.db.insert("chapters", {
@@ -674,9 +727,13 @@ export const reseedNyDemo = mutation({
     // ── Cascade-delete the chapter's existing content ────────────────────────
     const events = await ctx.db
       .query("events")
-      .withIndex("by_chapter", (q: any) => q.eq("chapterId", nyChapterId))
+      .withIndex("by_chapter", (q) => q.eq("chapterId", nyChapterId))
       .collect();
     for (const e of events) {
+      // Generic helper over the per-event child tables (all share a `by_event`
+      // index keyed on `eventId`). The `table as any` is genuine: the table name
+      // is a runtime string spanning heterogeneous tables, so the index/query
+      // types can't be narrowed statically here.
       const byEvent = (table: string) =>
         ctx.db
           .query(table as any)
@@ -698,33 +755,33 @@ export const reseedNyDemo = mutation({
 
     for (const d of await ctx.db
       .query("docs")
-      .withIndex("by_chapter", (q: any) => q.eq("chapterId", nyChapterId))
+      .withIndex("by_chapter", (q) => q.eq("chapterId", nyChapterId))
       .collect())
       await ctx.db.delete(d._id);
 
     const types = await ctx.db
       .query("eventTypes")
-      .withIndex("by_chapter", (q: any) => q.eq("chapterId", nyChapterId))
+      .withIndex("by_chapter", (q) => q.eq("chapterId", nyChapterId))
       .collect();
     for (const t of types) {
       for (const c of await ctx.db
         .query("templateColumns")
-        .withIndex("by_eventType", (q: any) => q.eq("eventTypeId", t._id))
+        .withIndex("by_eventType", (q) => q.eq("eventTypeId", t._id))
         .collect())
         await ctx.db.delete(c._id);
       for (const it of await ctx.db
         .query("templateItems")
-        .withIndex("by_eventType", (q: any) => q.eq("eventTypeId", t._id))
+        .withIndex("by_eventType", (q) => q.eq("eventTypeId", t._id))
         .collect())
         await ctx.db.delete(it._id);
       for (const r of await ctx.db
         .query("templateRoles")
-        .withIndex("by_template", (q: any) => q.eq("eventTypeId", t._id))
+        .withIndex("by_template", (q) => q.eq("eventTypeId", t._id))
         .collect())
         await ctx.db.delete(r._id);
       for (const m of await ctx.db
         .query("templateModules")
-        .withIndex("by_template", (q: any) => q.eq("eventTypeId", t._id))
+        .withIndex("by_template", (q) => q.eq("eventTypeId", t._id))
         .collect())
         await ctx.db.delete(m._id);
       await ctx.db.delete(t._id);
@@ -741,7 +798,7 @@ export const reseedNyDemo = mutation({
     // ── People (ensure ~5) ───────────────────────────────────────────────────
     let people = await ctx.db
       .query("people")
-      .withIndex("by_chapter", (q: any) => q.eq("chapterId", nyChapterId))
+      .withIndex("by_chapter", (q) => q.eq("chapterId", nyChapterId))
       .collect();
     if (people.length < 5) {
       const seed = [
@@ -762,10 +819,10 @@ export const reseedNyDemo = mutation({
       }
       people = await ctx.db
         .query("people")
-        .withIndex("by_chapter", (q: any) => q.eq("chapterId", nyChapterId))
+        .withIndex("by_chapter", (q) => q.eq("chapterId", nyChapterId))
         .collect();
     }
-    const peopleIds = people.map((p: any) => p._id as Id<"people">);
+    const peopleIds = people.map((p) => p._id);
 
     // ── Sample Eden event (~30 days out) ─────────────────────────────────────
     const edenType = await ctx.db.get(edenId);
@@ -859,8 +916,8 @@ export const reseedNyDemo = mutation({
 });
 
 /**
- * Dev-only migration (no auth): collapse the legacy single-`team` engagement
- * model into the multi-`teams` model.
+ * Dev-only migration: collapse the legacy single-`team` engagement model into
+ * the multi-`teams` model.
  *
  * Volunteers used to be stored as one engagement PER team, so the same person on
  * two teams showed up as two rows. Now one engagement = one person's involvement
@@ -868,10 +925,14 @@ export const reseedNyDemo = mutation({
  * (event, person, type) engagements into the earliest one, unioning their teams,
  * and clears the obsolete `team` field. Idempotent. Run once, then drop `team`
  * from the schema.
+ *
+ * SECURITY: converted from a public `mutation` to `internalMutation` — it had no
+ * auth and destructively merges/deletes engagement rows. Not called from the UI.
+ * Dashboard/CLI only.
  */
-export const mergeEngagementTeams = mutation({
+export const mergeEngagementTeams = internalMutation({
   args: {},
-  handler: async (ctx) => {
+  handler: async (ctx: MutationCtx) => {
     const all = await ctx.db.query("engagements").collect();
 
     // Group by (event, person, type); the earliest row is the survivor.
@@ -924,32 +985,36 @@ export const mergeEngagementTeams = mutation({
 // volunteer — so the same person can vendor on one event and volunteer on
 // another.
 //
-// No auth — runnable with `npx convex run seed:importRoster` (add `--prod`
-// to target production). Safe to re-run: matches existing rows by phone (last
-// 10 digits), falling back to name, and enriches them in place rather than
-// duplicating.
+// Runnable with `npx convex run seed:importRoster` (add `--prod` to target
+// production). Safe to re-run: matches existing rows by phone (last 10 digits)
+// or email and enriches them in place rather than duplicating.
+//
+// SECURITY: this is an `internalMutation` — it had no auth and bulk-writes the
+// roster, so it must not be reachable from the public API. Dashboard/CLI only.
 // ---------------------------------------------------------------------------
 
-export const importRoster = mutation({
+export const importRoster = internalMutation({
   args: {},
-  handler: async (ctx) => {
+  handler: async (ctx: MutationCtx) => {
     let chapter = await ctx.db
       .query("chapters")
-      .withIndex("by_name", (q: any) => q.eq("name", NY_CHAPTER_NAME))
+      .withIndex("by_name", (q) => q.eq("name", NY_CHAPTER_NAME))
       .first();
     if (!chapter) chapter = await ctx.db.query("chapters").first();
     if (!chapter)
-      throw new Error("No chapter found — run seed:ensureChapters first.");
+      throw new ConvexError({
+        code: "NO_CHAPTER",
+        message: "No chapter found — run seed:ensureChapters first.",
+      });
     const chapterId = chapter._id;
     const now = Date.now();
 
     const existing = await ctx.db
       .query("people")
-      .withIndex("by_chapter", (q: any) => q.eq("chapterId", chapterId))
+      .withIndex("by_chapter", (q) => q.eq("chapterId", chapterId))
       .collect();
     const byPhone = new Map<string, (typeof existing)[number]>();
     const byEmail = new Map<string, (typeof existing)[number]>();
-    const byName = new Map<string, (typeof existing)[number]>();
     for (const p of existing) {
       const key = phoneKey(p.phone);
       if (key) byPhone.set(key, p);
@@ -959,7 +1024,6 @@ export const importRoster = mutation({
         const ek = e?.trim().toLowerCase();
         if (ek) byEmail.set(ek, p);
       }
-      byName.set(p.name.trim().toLowerCase(), p);
     }
 
     const roster: RosterPerson[] = [...CORE_TEAM, ...VOLUNTEERS];
@@ -970,10 +1034,12 @@ export const importRoster = mutation({
       const emailMatch = [r.email, r.pwEmail]
         .map((e) => (e ? byEmail.get(e.trim().toLowerCase()) : undefined))
         .find(Boolean);
-      const match =
-        (key ? byPhone.get(key) : undefined) ??
-        emailMatch ??
-        byName.get(r.name.trim().toLowerCase());
+      // Match ONLY on the strong identity keys (phone, then email/pwEmail).
+      // We deliberately do NOT fall back to a case-folded NAME match: two
+      // distinct people can share a name, and a name-merge would silently
+      // overwrite one person's row with another's. An unmatched roster entry is
+      // inserted as a new person instead.
+      const match = (key ? byPhone.get(key) : undefined) ?? emailMatch;
       const status: RosterStatus = r.status ?? "active";
       // Build the doc with only defined fields, so an enrich-patch never wipes
       // existing data (e.g. it won't downgrade a team member's isTeamMember).
@@ -1018,23 +1084,27 @@ export const importRoster = mutation({
 });
 
 /**
- * Dev mutation (no auth): create a NEAR-date Eden event with its roles assigned
- * to OTHER team members, so the signed-in user (the event owner) can test the
+ * Dev mutation: create a NEAR-date Eden event with its roles assigned to OTHER
+ * team members, so the signed-in user (the event owner) can test the
  * "Overseeing" view. The event is tomorrow, so day-of items read "soon" and the
  * planning items read "overdue" — everything is at-risk and surfaces.
  *
  * Run AFTER `reseedNyDemo` (it needs the NY chapter + Eden template + people).
+ *
+ * SECURITY: converted from a public `mutation` to `internalMutation` — it had no
+ * auth and creates events + assignments. Not called from the UI. Dashboard/CLI
+ * only.
  */
-export const seedOverseeingDemo = mutation({
+export const seedOverseeingDemo = internalMutation({
   args: {},
-  handler: async (ctx) => {
+  handler: async (ctx: MutationCtx) => {
     const now = Date.now();
     const chapter = await ctx.db
       .query("chapters")
-      .withIndex("by_slug", (q: any) => q.eq("slug", NEW_YORK_CHAPTER_SLUG))
+      .withIndex("by_slug", (q) => q.eq("slug", NEW_YORK_CHAPTER_SLUG))
       .first();
     if (!chapter) return { ok: false, reason: "run reseedNyDemo first" };
-    const nyChapterId = chapter._id as Id<"chapters">;
+    const nyChapterId = chapter._id;
 
     const firstUser = await ctx.db.query("users").first();
     if (!firstUser) return { ok: false, reason: "no users — sign in once" };
@@ -1042,19 +1112,21 @@ export const seedOverseeingDemo = mutation({
     const edenType = (
       await ctx.db
         .query("eventTypes")
-        .withIndex("by_chapter", (q: any) => q.eq("chapterId", nyChapterId))
+        .withIndex("by_chapter", (q) => q.eq("chapterId", nyChapterId))
         .collect()
-    ).find((t: any) => t.name === "Eden");
+    ).find((t) => t.name === "Eden");
     if (!edenType) return { ok: false, reason: "no Eden template — run reseedNyDemo" };
 
     const people = await ctx.db
       .query("people")
-      .withIndex("by_chapter", (q: any) => q.eq("chapterId", nyChapterId))
+      .withIndex("by_chapter", (q) => q.eq("chapterId", nyChapterId))
       .collect();
-    const byName = (n: string) => people.find((p: any) => p.name === n);
+    type PersonDoc = (typeof people)[number];
+    const byName = (n: string): PersonDoc | undefined =>
+      people.find((p) => p.name === n);
     // The event owner = the person linked to the signed-in user.
     const mePerson = people.find(
-      (p: any) => String(p.userId) === String(firstUser._id),
+      (p) => String(p.userId) === String(firstUser._id),
     );
 
     // Near-date event so day-of items are "soon" and planning items "overdue".
@@ -1073,17 +1145,20 @@ export const seedOverseeingDemo = mutation({
     // Event Lead → you, so you also get a populated "Yours".
     const eventRoles = await ctx.db
       .query("eventRoles")
-      .withIndex("by_event", (q: any) => q.eq("eventId", eventId))
+      .withIndex("by_event", (q) => q.eq("eventId", eventId))
       .collect();
-    const roleIdByKey = new Map(eventRoles.map((r: any) => [r.key, r._id]));
-    const assign = async (roleKey: string, person: any) => {
+    const roleIdByKey = new Map(eventRoles.map((r) => [r.key, r._id]));
+    const assign = async (
+      roleKey: string,
+      person: PersonDoc | undefined,
+    ) => {
       const roleId = roleIdByKey.get(roleKey);
       if (!roleId || !person) return;
       await ctx.db.insert("roleAssignments", {
         eventId,
         chapterId: nyChapterId,
         roleId,
-        personId: person._id as Id<"people">,
+        personId: person._id,
         createdAt: now,
       });
     };
