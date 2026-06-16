@@ -6,8 +6,8 @@
  * in-flight event). Day-offset modules back-calculate every item's due date from
  * the single event date; moving the date shifts the whole timeline.
  */
-import { query, mutation } from "./_generated/server";
-import { Id } from "./_generated/dataModel";
+import { query, mutation, QueryCtx } from "./_generated/server";
+import { Doc, Id } from "./_generated/dataModel";
 import { v } from "convex/values";
 import {
   computeDueDate,
@@ -28,7 +28,9 @@ import {
 import {
   requireUserId,
   requireChapterId,
-  requireInChapter,
+  requireEvent,
+  requireEventType,
+  requireOwned,
   getChapterIdOrNull,
 } from "./lib/context";
 import {
@@ -36,7 +38,7 @@ import {
   eventActiveModules,
   getPersonForUser,
 } from "./lib/templates";
-import { phaseReadiness } from "./lib/readiness";
+import { phaseReadiness, statusCountsFor } from "./lib/readiness";
 import { paidTotalForEvent } from "./engagements";
 
 const statusUnion = v.union(
@@ -54,23 +56,8 @@ function isDayOffsetModule(module: string): boolean {
  * Per-event readiness off the planning-doc module: complete items / total,
  * using that event's planning-doc status column to decide "complete".
  */
-async function eventReadiness(ctx: any, eventId: Id<"events">) {
-  const items = await ctx.db
-    .query("eventItems")
-    .withIndex("by_event_module", (q: any) =>
-      q.eq("eventId", eventId).eq("module", "planning_doc"),
-    )
-    .collect();
-  const statusCol = await ctx.db
-    .query("eventColumns")
-    .withIndex("by_event_module", (q: any) =>
-      q.eq("eventId", eventId).eq("module", "planning_doc"),
-    )
-    .filter((q: any) => q.eq(q.field("key"), "status"))
-    .first();
-  const opts = statusCol?.options;
-  const total = items.length;
-  const done = items.filter((it: any) => isCompleteStatus(opts, it.status)).length;
+async function eventReadiness(ctx: QueryCtx, eventId: Id<"events">) {
+  const { total, done } = await statusCountsFor(ctx, eventId, "planning_doc");
   return { total, done, readiness: computeReadiness(total, done) };
 }
 
@@ -105,14 +92,12 @@ export const createFromTemplate = mutation({
     budget: v.optional(v.number()),
   },
   handler: async (ctx, args) => {
-    const chapterId = await requireChapterId(ctx);
     const userId = await requireUserId(ctx);
-    const eventType = await ctx.db.get(args.eventTypeId);
-    await requireInChapter(ctx, chapterId, eventType, "Event type");
+    const eventType = await requireEventType(ctx, args.eventTypeId);
 
     return await instantiateEvent(ctx, {
       eventType,
-      chapterId: chapterId as Id<"chapters">,
+      chapterId: eventType.chapterId as Id<"chapters">,
       userId: userId as Id<"users">,
       name: args.name,
       eventDate: args.eventDate,
@@ -133,17 +118,15 @@ export const list = query({
     const now = Date.now();
     const all = await ctx.db
       .query("events")
-      .withIndex("by_chapter", (q: any) => q.eq("chapterId", chapterId))
+      .withIndex("by_chapter", (q) => q.eq("chapterId", chapterId as Id<"chapters">))
       .collect();
     const filtered =
       scope === "all"
         ? all
-        : all.filter(
-            (e: any) => e.eventDate >= now && e.status !== "cancelled",
-          );
+        : all.filter((e) => e.eventDate >= now && e.status !== "cancelled");
 
     const enriched = await Promise.all(
-      filtered.map(async (event: any) => {
+      filtered.map(async (event) => {
         const eventType = await ctx.db.get(event.eventTypeId as Id<"eventTypes">);
         const r = await eventReadiness(ctx, event._id);
         return {
@@ -173,9 +156,9 @@ export const get = query({
     // Roll up every item's `cost` field against the event budget.
     const allItems = await ctx.db
       .query("eventItems")
-      .withIndex("by_event", (q: any) => q.eq("eventId", eventId))
+      .withIndex("by_event", (q) => q.eq("eventId", eventId))
       .collect();
-    const itemCost = allItems.reduce((sum: number, it: any) => {
+    const itemCost = allItems.reduce((sum, it) => {
       const c = Number(it.fields?.cost);
       return sum + (Number.isFinite(c) ? c : 0);
     }, 0);
@@ -232,35 +215,18 @@ export const moduleSummaries = query({
 
     return await Promise.all(
       modules.map(async (module) => {
-        const items = await ctx.db
-          .query("eventItems")
-          .withIndex("by_event_module", (q: any) =>
-            q.eq("eventId", eventId).eq("module", module),
-          )
-          .collect();
-        const statusCol = await ctx.db
-          .query("eventColumns")
-          .withIndex("by_event_module", (q: any) =>
-            q.eq("eventId", eventId).eq("module", module),
-          )
-          .filter((q: any) => q.eq(q.field("key"), "status"))
-          .first();
-        const opts = statusCol?.options;
-        const hasStatus = !!statusCol;
-        const total = items.length;
-        const done = hasStatus
-          ? items.filter((it: any) => isCompleteStatus(opts, it.status)).length
-          : 0;
+        const { items, options, hasStatus, total, done } =
+          await statusCountsFor(ctx, eventId, module);
         // Next upcoming due date among still-incomplete, dated items.
         const nextDueDate = items
           .filter(
-            (it: any) =>
+            (it) =>
               it.dueDate != null &&
               it.dueDate >= now &&
-              (!hasStatus || !isCompleteStatus(opts, it.status)),
+              (!hasStatus || !isCompleteStatus(options, it.status)),
           )
-          .map((it: any) => it.dueDate as number)
-          .sort((a: number, b: number) => a - b)[0] ?? null;
+          .map((it) => it.dueDate as number)
+          .sort((a, b) => a - b)[0] ?? null;
         return {
           module,
           total,
@@ -303,19 +269,19 @@ export const myWork = query({
     // Event roles + their assignments, so we can resolve a role → its person.
     const eventRoles = await ctx.db
       .query("eventRoles")
-      .withIndex("by_event", (q: any) => q.eq("eventId", eventId))
+      .withIndex("by_event", (q) => q.eq("eventId", eventId))
       .collect();
     const assignments = await ctx.db
       .query("roleAssignments")
-      .withIndex("by_event", (q: any) => q.eq("eventId", eventId))
+      .withIndex("by_event", (q) => q.eq("eventId", eventId))
       .collect();
     // roleId (eventRoles id) → assigned personId.
     const personByRoleId = new Map<string, Id<"people">>(
-      assignments.map((a: any) => [String(a.roleId), a.personId as Id<"people">]),
+      assignments.map((a) => [String(a.roleId), a.personId as Id<"people">]),
     );
     // role KEY → roleId, to resolve a module's ownerRoleKey to a role.
     const roleIdByKey = new Map<string, string>(
-      eventRoles.map((r: any) => [r.key as string, String(r._id)]),
+      eventRoles.map((r) => [r.key as string, String(r._id)]),
     );
 
     // Modules whose resolved owner person is the caller.
@@ -339,10 +305,10 @@ export const myWork = query({
     // Tasks: yours by direct owner, or by role assignment when unowned.
     const items = await ctx.db
       .query("eventItems")
-      .withIndex("by_event", (q: any) => q.eq("eventId", eventId))
+      .withIndex("by_event", (q) => q.eq("eventId", eventId))
       .collect();
     const tasks = items
-      .filter((it: any) => {
+      .filter((it) => {
         if (it.ownerPersonId) return String(it.ownerPersonId) === String(me);
         if (it.roleId) {
           const personId = personByRoleId.get(String(it.roleId));
@@ -350,7 +316,7 @@ export const myWork = query({
         }
         return false;
       })
-      .map((it: any) => ({
+      .map((it) => ({
         itemId: it._id as Id<"eventItems">,
         module: it.module as string,
         moduleLabel:
@@ -366,7 +332,7 @@ export const myWork = query({
     // my team's tasks even if I don't own them). Engagements carry `teams`.
     const engagements = await ctx.db
       .query("engagements")
-      .withIndex("by_event", (q: any) => q.eq("eventId", eventId))
+      .withIndex("by_event", (q) => q.eq("eventId", eventId))
       .collect();
     const myTeamSet = new Set<string>();
     for (const e of engagements) {
@@ -377,12 +343,12 @@ export const myWork = query({
     // volunteer_expectations items tagged with one of my teams.
     const teamItemIds = items
       .filter(
-        (it: any) =>
+        (it) =>
           it.module === "volunteer_expectations" &&
           typeof it.fields?.team === "string" &&
-          myTeamSet.has(it.fields.team),
+          myTeamSet.has(it.fields.team as string),
       )
-      .map((it: any) => it._id as Id<"eventItems">);
+      .map((it) => it._id as Id<"eventItems">);
 
     return { ownedModuleKeys, tasks, myTeams, teamItemIds };
   },
@@ -471,17 +437,19 @@ export const todos = query({
     // ── Roles + assignments: resolve role → person and module → owner person. ──
     const eventRoles = await ctx.db
       .query("eventRoles")
-      .withIndex("by_event", (q: any) => q.eq("eventId", eventId))
+      .withIndex("by_event", (q) => q.eq("eventId", eventId))
       .collect();
     const assignments = await ctx.db
       .query("roleAssignments")
-      .withIndex("by_event", (q: any) => q.eq("eventId", eventId))
+      .withIndex("by_event", (q) => q.eq("eventId", eventId))
       .collect();
-    const assignedRoleIds = new Set(assignments.map((a: any) => String(a.roleId)));
-    const roleByKey = new Map(eventRoles.map((r: any) => [r.key, r]));
+    const assignedRoleIds = new Set(assignments.map((a) => String(a.roleId)));
+    const roleByKey = new Map<string, Doc<"eventRoles">>(
+      eventRoles.map((r) => [r.key, r]),
+    );
     // roleId (eventRoles id) → assigned personId.
     const personByRoleId = new Map<string, Id<"people">>(
-      assignments.map((a: any) => [String(a.roleId), a.personId as Id<"people">]),
+      assignments.map((a) => [String(a.roleId), a.personId as Id<"people">]),
     );
 
     // Cached personId → display name (for "Overseeing" owner labels).
@@ -503,7 +471,7 @@ export const todos = query({
     const iOwnModule = new Map<string, boolean>();
     const modulePerson = new Map<string, Id<"people"> | undefined>();
     for (const m of resolved) {
-      const role: any = m.ownerRoleKey ? roleByKey.get(m.ownerRoleKey) : null;
+      const role = m.ownerRoleKey ? roleByKey.get(m.ownerRoleKey) : null;
       const personId = role ? personByRoleId.get(String(role._id)) : undefined;
       iOwnModule.set(m.key, personId != null && String(personId) === String(me));
       modulePerson.set(m.key, personId);
@@ -515,7 +483,7 @@ export const todos = query({
     // ── Setup lines: caller-is-event-owner only, front of `yours`. ──
     if (iAmEventOwner) {
       const totalRoles = eventRoles.length;
-      const assignedRoles = eventRoles.filter((r: any) =>
+      const assignedRoles = eventRoles.filter((r) =>
         assignedRoleIds.has(String(r._id)),
       ).length;
       if (totalRoles > 0 && assignedRoles < totalRoles) {
@@ -531,7 +499,7 @@ export const todos = query({
       for (const m of resolved) {
         if (!m.ownerRoleKey) continue;
         ownerTotal += 1;
-        const role: any = roleByKey.get(m.ownerRoleKey);
+        const role = roleByKey.get(m.ownerRoleKey);
         if (role && assignedRoleIds.has(String(role._id))) ownerDone += 1;
       }
       if (ownerTotal > 0 && ownerDone < ownerTotal) {
@@ -552,22 +520,22 @@ export const todos = query({
       const items = (
         await ctx.db
           .query("eventItems")
-          .withIndex("by_event_module", (q: any) =>
+          .withIndex("by_event_module", (q) =>
             q.eq("eventId", eventId).eq("module", m.key),
           )
           .collect()
-      ).sort((a: any, b: any) => a.order - b.order);
+      ).sort((a, b) => a.order - b.order);
 
       const columns = await ctx.db
         .query("eventColumns")
-        .withIndex("by_event_module", (q: any) =>
+        .withIndex("by_event_module", (q) =>
           q.eq("eventId", eventId).eq("module", m.key),
         )
         .collect();
       const colLabelByKey = new Map<string, string>(
-        columns.map((c: any) => [c.key as string, c.label as string]),
+        columns.map((c) => [c.key as string, c.label as string]),
       );
-      const statusCol = columns.find((c: any) => c.key === "status");
+      const statusCol = columns.find((c) => c.key === "status");
       const statusOptions = statusCol?.options as SelectOption[] | undefined;
 
       for (let ii = 0; ii < items.length; ii++) {
@@ -657,7 +625,7 @@ export const todos = query({
     // `yours` if they own the module, else `overseeing` (event owner) when at
     // risk — same ownership rule as items. ──
     const readyByKey = new Map<string, boolean>(
-      (event.moduleReadiness ?? []).map((r: any) => [
+      (event.moduleReadiness ?? []).map((r) => [
         r.key as string,
         r.ready as boolean,
       ]),
@@ -697,18 +665,18 @@ export const todos = query({
     // Order each group: overdue → soon → rest, then stable by module/item order.
     // Setup lines (no `_sort`) sort to the front (sortKey -1) within their tier.
     const order = (list: TodoAction[]) =>
-      list
+      (list as Array<TodoAction & { _sort?: number }>)
         .map((a, idx) => ({ a, idx }))
         .sort((x, y) => {
           const rr = riskRank(x.a.risk) - riskRank(y.a.risk);
           if (rr !== 0) return rr;
-          const sx = (x.a as any)._sort ?? -1;
-          const sy = (y.a as any)._sort ?? -1;
+          const sx = x.a._sort ?? -1;
+          const sy = y.a._sort ?? -1;
           if (sx !== sy) return sx - sy;
           return x.idx - y.idx;
         })
         .map(({ a }) => {
-          const { _sort, ...rest } = a as any;
+          const { _sort, ...rest } = a;
           return rest as TodoAction;
         });
 
@@ -733,10 +701,10 @@ export const publicCrew = query({
     // Team options come from the volunteer_expectations "team" column.
     const teamCol = await ctx.db
       .query("eventColumns")
-      .withIndex("by_event_module", (q: any) =>
+      .withIndex("by_event_module", (q) =>
         q.eq("eventId", eventId).eq("module", "volunteer_expectations"),
       )
-      .filter((q: any) => q.eq(q.field("key"), "team"))
+      .filter((q) => q.eq(q.field("key"), "team"))
       .first();
     const teamOptions: { value: string; label: string; color?: string | null }[] =
       teamCol?.options ?? [];
@@ -745,11 +713,11 @@ export const publicCrew = query({
     // Expectations = volunteer_expectations items, grouped by fields.team.
     const expectationItems = await ctx.db
       .query("eventItems")
-      .withIndex("by_event_module", (q: any) =>
+      .withIndex("by_event_module", (q) =>
         q.eq("eventId", eventId).eq("module", "volunteer_expectations"),
       )
       .collect();
-    const toExpectation = (it: any) => ({
+    const toExpectation = (it: Doc<"eventItems">) => ({
       title: it.title ?? "",
       details:
         typeof it.fields?.details === "string" ? it.fields.details : null,
@@ -758,12 +726,12 @@ export const publicCrew = query({
     // People = volunteer engagements, person name resolved, grouped by team.
     const volunteers = await ctx.db
       .query("engagements")
-      .withIndex("by_event_type", (q: any) =>
+      .withIndex("by_event_type", (q) =>
         q.eq("eventId", eventId).eq("type", "volunteer"),
       )
       .collect();
     const people = await Promise.all(
-      volunteers.map(async (e: any) => {
+      volunteers.map(async (e) => {
         const person = await ctx.db.get(e.personId as Id<"people">);
         return {
           teams: Array.isArray(e.teams) ? (e.teams as string[]) : [],
@@ -779,7 +747,7 @@ export const publicCrew = query({
       label: opt.label,
       color: opt.color ?? null,
       expectations: expectationItems
-        .filter((it: any) => it.fields?.team === opt.value)
+        .filter((it) => it.fields?.team === opt.value)
         .map(toExpectation),
       people: people
         .filter((p) => p.teams.includes(opt.value))
@@ -789,7 +757,7 @@ export const publicCrew = query({
     // Anything whose team isn't a known option → the unassigned bucket.
     const unassigned = {
       expectations: expectationItems
-        .filter((it: any) => {
+        .filter((it) => {
           const t = it.fields?.team;
           return typeof t !== "string" || !t || !knownTeams.has(t);
         })
@@ -813,13 +781,11 @@ export const publicCrew = query({
 export const reschedule = mutation({
   args: { eventId: v.id("events"), eventDate: v.number() },
   handler: async (ctx, { eventId, eventDate }) => {
-    const chapterId = await requireChapterId(ctx);
-    const event = await ctx.db.get(eventId);
-    await requireInChapter(ctx, chapterId, event, "Event");
+    await requireEvent(ctx, eventId);
     await ctx.db.patch(eventId, { eventDate, updatedAt: Date.now() });
     const items = await ctx.db
       .query("eventItems")
-      .withIndex("by_event", (q: any) => q.eq("eventId", eventId))
+      .withIndex("by_event", (q) => q.eq("eventId", eventId))
       .collect();
     for (const it of items) {
       if (isDayOffsetModule(it.module) && it.offsetDays !== undefined) {
@@ -842,12 +808,9 @@ export const updateDetails = mutation({
     ownerPersonId: v.optional(v.union(v.id("people"), v.null())),
   },
   handler: async (ctx, { eventId, ...patch }) => {
-    const chapterId = await requireChapterId(ctx);
-    const event = await ctx.db.get(eventId);
-    await requireInChapter(ctx, chapterId, event, "Event");
+    await requireEvent(ctx, eventId);
     if (patch.ownerPersonId) {
-      const person = await ctx.db.get(patch.ownerPersonId);
-      await requireInChapter(ctx, chapterId, person, "Person");
+      await requireOwned(ctx, "people", patch.ownerPersonId, "Person");
     }
     const fields: Record<string, unknown> = { updatedAt: Date.now() };
     if (patch.name !== undefined) fields.name = patch.name;
@@ -864,9 +827,7 @@ export const updateDetails = mutation({
 export const setStatus = mutation({
   args: { eventId: v.id("events"), status: statusUnion },
   handler: async (ctx, { eventId, status }) => {
-    const chapterId = await requireChapterId(ctx);
-    const event = await ctx.db.get(eventId);
-    await requireInChapter(ctx, chapterId, event, "Event");
+    await requireEvent(ctx, eventId);
     await ctx.db.patch(eventId, { status, updatedAt: Date.now() });
     return eventId;
   },
@@ -876,37 +837,35 @@ export const setStatus = mutation({
 export const remove = mutation({
   args: { eventId: v.id("events") },
   handler: async (ctx, { eventId }) => {
-    const chapterId = await requireChapterId(ctx);
-    const event = await ctx.db.get(eventId);
-    await requireInChapter(ctx, chapterId, event, "Event");
+    await requireEvent(ctx, eventId);
 
     const items = await ctx.db
       .query("eventItems")
-      .withIndex("by_event", (q: any) => q.eq("eventId", eventId))
+      .withIndex("by_event", (q) => q.eq("eventId", eventId))
       .collect();
     for (const it of items) await ctx.db.delete(it._id);
 
     const cols = await ctx.db
       .query("eventColumns")
-      .withIndex("by_event", (q: any) => q.eq("eventId", eventId))
+      .withIndex("by_event", (q) => q.eq("eventId", eventId))
       .collect();
     for (const c of cols) await ctx.db.delete(c._id);
 
     const assignments = await ctx.db
       .query("roleAssignments")
-      .withIndex("by_event", (q: any) => q.eq("eventId", eventId))
+      .withIndex("by_event", (q) => q.eq("eventId", eventId))
       .collect();
     for (const a of assignments) await ctx.db.delete(a._id);
 
     const eventRoles = await ctx.db
       .query("eventRoles")
-      .withIndex("by_event", (q: any) => q.eq("eventId", eventId))
+      .withIndex("by_event", (q) => q.eq("eventId", eventId))
       .collect();
     for (const r of eventRoles) await ctx.db.delete(r._id);
 
     const eventModules = await ctx.db
       .query("eventModules")
-      .withIndex("by_event", (q: any) => q.eq("eventId", eventId))
+      .withIndex("by_event", (q) => q.eq("eventId", eventId))
       .collect();
     for (const m of eventModules) await ctx.db.delete(m._id);
 
@@ -924,36 +883,23 @@ export const pipeline = query({
     const now = Date.now();
     const all = await ctx.db
       .query("events")
-      .withIndex("by_chapter", (q: any) => q.eq("chapterId", chapterId))
+      .withIndex("by_chapter", (q) => q.eq("chapterId", chapterId as Id<"chapters">))
       .collect();
     const upcoming = all.filter(
-      (e: any) => e.eventDate >= now && e.status !== "cancelled",
+      (e) => e.eventDate >= now && e.status !== "cancelled",
     );
 
     const enriched = await Promise.all(
-      upcoming.map(async (event: any) => {
+      upcoming.map(async (event) => {
         const eventType = await ctx.db.get(event.eventTypeId as Id<"eventTypes">);
-        const items = await ctx.db
-          .query("eventItems")
-          .withIndex("by_event_module", (q: any) =>
-            q.eq("eventId", event._id).eq("module", "planning_doc"),
-          )
-          .collect();
-        const statusCol = await ctx.db
-          .query("eventColumns")
-          .withIndex("by_event_module", (q: any) =>
-            q.eq("eventId", event._id).eq("module", "planning_doc"),
-          )
-          .filter((q: any) => q.eq(q.field("key"), "status"))
-          .first();
-        const opts = statusCol?.options;
-        const total = items.length;
-        const done = items.filter((it: any) =>
-          isCompleteStatus(opts, it.status),
-        ).length;
+        const { items, options, total, done } = await statusCountsFor(
+          ctx,
+          event._id,
+          "planning_doc",
+        );
         const blockerCount = items.filter(
-          (it: any) =>
-            !isCompleteStatus(opts, it.status) &&
+          (it) =>
+            !isCompleteStatus(options, it.status) &&
             it.dueDate !== undefined &&
             it.dueDate < now,
         ).length;
@@ -989,25 +935,29 @@ export const dayOf = query({
     const runOfShow = (
       await ctx.db
         .query("eventItems")
-        .withIndex("by_event_module", (q: any) =>
+        .withIndex("by_event_module", (q) =>
           q.eq("eventId", eventId).eq("module", "run_of_show"),
         )
         .collect()
-    ).sort((a: any, b: any) => a.order - b.order);
+    ).sort((a, b) => a.order - b.order);
 
     const eventRoles = (
       await ctx.db
         .query("eventRoles")
-        .withIndex("by_event", (q: any) => q.eq("eventId", eventId))
+        .withIndex("by_event", (q) => q.eq("eventId", eventId))
         .collect()
-    ).sort((a: any, b: any) => a.order - b.order);
+    ).sort((a, b) => a.order - b.order);
     const assignments = await ctx.db
       .query("roleAssignments")
-      .withIndex("by_event", (q: any) => q.eq("eventId", eventId))
+      .withIndex("by_event", (q) => q.eq("eventId", eventId))
       .collect();
+    // Build a roleId → assignment map once (O(n)), not a `.find` per role (O(n²)).
+    const assignmentByRole = new Map<string, Doc<"roleAssignments">>(
+      assignments.map((a) => [String(a.roleId), a]),
+    );
     const roles = await Promise.all(
-      eventRoles.map(async (role: any) => {
-        const assignment = assignments.find((a: any) => a.roleId === role._id);
+      eventRoles.map(async (role) => {
+        const assignment = assignmentByRole.get(String(role._id));
         const person = assignment ? await ctx.db.get(assignment.personId) : null;
         return {
           roleId: role._id as Id<"eventRoles">,
@@ -1022,13 +972,13 @@ export const dayOf = query({
     const tasks = (
       await ctx.db
         .query("eventItems")
-        .withIndex("by_event_module", (q: any) =>
+        .withIndex("by_event_module", (q) =>
           q.eq("eventId", eventId).eq("module", "planning_doc"),
         )
         .collect()
     )
-      .filter((t: any) => t.offsetDays == null || t.offsetDays >= -2)
-      .sort((a: any, b: any) => (a.dueDate ?? 0) - (b.dueDate ?? 0));
+      .filter((t) => t.offsetDays == null || t.offsetDays >= -2)
+      .sort((a, b) => (a.dueDate ?? 0) - (b.dueDate ?? 0));
 
     return {
       event,

@@ -7,14 +7,14 @@
  * structural edit; events clone the template's columns AND items at creation so
  * in-flight events are never disrupted by later edits.
  */
-import { query, mutation } from "./_generated/server";
-import { Id } from "./_generated/dataModel";
+import { query, mutation, QueryCtx } from "./_generated/server";
+import { Doc, Id } from "./_generated/dataModel";
 import { v } from "convex/values";
 import { DEFAULT_ROLES, GRID_CORE_MODULE_KEYS } from "@events-os/shared";
 import {
   requireUserId,
   requireChapterId,
-  requireInChapter,
+  requireEventType,
   getChapterIdOrNull,
 } from "./lib/context";
 import {
@@ -22,18 +22,19 @@ import {
   seedModuleColumns,
   seedTemplateRoles,
   templateActiveModules,
+  deepCopyTemplate,
 } from "./lib/templates";
 
 /** A template's roles ({ _id, label }), ordered. */
-async function templateRoles(ctx: any, eventTypeId: Id<"eventTypes">) {
+async function templateRoles(ctx: QueryCtx, eventTypeId: Id<"eventTypes">) {
   const roles = await ctx.db
     .query("templateRoles")
-    .withIndex("by_template", (q: any) => q.eq("eventTypeId", eventTypeId))
+    .withIndex("by_template", (q) => q.eq("eventTypeId", eventTypeId))
     .collect();
   return roles
-    .filter((r: any) => r.isArchived !== true)
-    .sort((a: any, b: any) => a.order - b.order)
-    .map((r: any) => ({ _id: r._id, label: r.label }));
+    .filter((r) => r.isArchived !== true)
+    .sort((a, b) => a.order - b.order)
+    .map((r) => ({ _id: r._id, label: r.label }));
 }
 
 /** List the chapter's active event types with a planning-task count + roles. */
@@ -44,14 +45,14 @@ export const list = query({
     if (!chapterId) return [];
     const types = await ctx.db
       .query("eventTypes")
-      .withIndex("by_chapter", (q: any) => q.eq("chapterId", chapterId))
+      .withIndex("by_chapter", (q) => q.eq("chapterId", chapterId as Id<"chapters">))
       .collect();
-    const active = types.filter((t: any) => t.isArchived !== true);
+    const active = types.filter((t) => t.isArchived !== true);
     const withMeta = await Promise.all(
-      active.map(async (t: any) => {
+      active.map(async (t) => {
         const tasks = await ctx.db
           .query("templateItems")
-          .withIndex("by_eventType_module", (q: any) =>
+          .withIndex("by_eventType_module", (q) =>
             q.eq("eventTypeId", t._id).eq("module", "planning_doc"),
           )
           .collect();
@@ -81,14 +82,14 @@ export const listArchived = query({
     if (!chapterId) return [];
     const types = await ctx.db
       .query("eventTypes")
-      .withIndex("by_chapter", (q: any) => q.eq("chapterId", chapterId))
+      .withIndex("by_chapter", (q) => q.eq("chapterId", chapterId as Id<"chapters">))
       .collect();
-    const archived = types.filter((t: any) => t.isArchived === true);
+    const archived = types.filter((t) => t.isArchived === true);
     const withMeta = await Promise.all(
-      archived.map(async (t: any) => {
+      archived.map(async (t) => {
         const tasks = await ctx.db
           .query("templateItems")
-          .withIndex("by_eventType_module", (q: any) =>
+          .withIndex("by_eventType_module", (q) =>
             q.eq("eventTypeId", t._id).eq("module", "planning_doc"),
           )
           .collect();
@@ -155,10 +156,9 @@ export const create = mutation({
     const now = Date.now();
 
     let disabledCoreModules = args.disabledCoreModules ?? [];
-    let parent: any = null;
+    let parent: Doc<"eventTypes"> | null = null;
     if (args.deriveFromEventTypeId) {
-      parent = await ctx.db.get(args.deriveFromEventTypeId);
-      await requireInChapter(ctx, chapterId, parent, "Event type");
+      parent = await requireEventType(ctx, args.deriveFromEventTypeId);
       if (!args.disabledCoreModules)
         disabledCoreModules = parent.disabledCoreModules ?? [];
     }
@@ -181,58 +181,9 @@ export const create = mutation({
     })) as Id<"eventTypes">;
 
     if (args.deriveFromEventTypeId) {
-      // Deep-copy the parent's roles, columns + items. Item roleIds are remapped
-      // from the parent's role ids to the new copies (by id) so they resolve.
-      const parentRoles = await ctx.db
-        .query("templateRoles")
-        .withIndex("by_template", (q: any) =>
-          q.eq("eventTypeId", args.deriveFromEventTypeId),
-        )
-        .collect();
-      const roleIdMap = new Map<string, Id<"templateRoles">>();
-      for (const r of parentRoles) {
-        const { _id, _creationTime, eventTypeId: _e, ...rest } = r as any;
-        const newId = (await ctx.db.insert("templateRoles", {
-          eventTypeId,
-          ...rest,
-        })) as Id<"templateRoles">;
-        roleIdMap.set(String(_id), newId);
-      }
-      const cols = await ctx.db
-        .query("templateColumns")
-        .withIndex("by_eventType", (q: any) =>
-          q.eq("eventTypeId", args.deriveFromEventTypeId),
-        )
-        .collect();
-      for (const c of cols) {
-        const { _id, _creationTime, eventTypeId: _e, ...rest } = c as any;
-        await ctx.db.insert("templateColumns", { eventTypeId, ...rest });
-      }
-      const items = await ctx.db
-        .query("templateItems")
-        .withIndex("by_eventType", (q: any) =>
-          q.eq("eventTypeId", args.deriveFromEventTypeId),
-        )
-        .collect();
-      for (const it of items) {
-        const { _id, _creationTime, eventTypeId: _e, ...rest } = it as any;
-        await ctx.db.insert("templateItems", {
-          eventTypeId,
-          ...rest,
-          roleId: rest.roleId ? roleIdMap.get(String(rest.roleId)) : undefined,
-        });
-      }
-      // Clone the parent's custom modules too.
-      const parentModules = await ctx.db
-        .query("templateModules")
-        .withIndex("by_template", (q: any) =>
-          q.eq("eventTypeId", args.deriveFromEventTypeId),
-        )
-        .collect();
-      for (const m of parentModules) {
-        const { _id, _creationTime, eventTypeId: _e, ...rest } = m as any;
-        await ctx.db.insert("templateModules", { eventTypeId, ...rest });
-      }
+      // Deep-copy the parent's roles, columns, items + custom modules (item
+      // roleIds remapped to the new role copies). Shared with `duplicate`.
+      await deepCopyTemplate(ctx, args.deriveFromEventTypeId, eventTypeId);
     } else {
       // Seed this template's roles + default columns for each active grid core.
       await seedTemplateRoles(ctx, eventTypeId, args.roleSeeds ?? DEFAULT_ROLES);
@@ -255,16 +206,14 @@ export const update = mutation({
     description: v.optional(v.string()),
   },
   handler: async (ctx, { eventTypeId, ...patch }) => {
-    const chapterId = await requireChapterId(ctx);
-    const et = await ctx.db.get(eventTypeId);
-    await requireInChapter(ctx, chapterId, et, "Event type");
+    const et = await requireEventType(ctx, eventTypeId);
     const fields: Record<string, unknown> = {};
     if (patch.name !== undefined) {
       fields.name = patch.name;
       fields.slug = toSlug(patch.name);
     }
     if (patch.description !== undefined) fields.description = patch.description;
-    fields.version = (et!.version ?? 1) + 1;
+    fields.version = (et.version ?? 1) + 1;
     fields.updatedAt = Date.now();
     await ctx.db.patch(eventTypeId, fields);
     return eventTypeId;
@@ -273,15 +222,15 @@ export const update = mutation({
 
 /** A slug unique within a chapter, suffixing `-2`, `-3`, … on collision. */
 async function uniqueSlug(
-  ctx: any,
+  ctx: QueryCtx,
   chapterId: Id<"chapters">,
   base: string,
 ): Promise<string> {
   const existing = await ctx.db
     .query("eventTypes")
-    .withIndex("by_chapter", (q: any) => q.eq("chapterId", chapterId))
+    .withIndex("by_chapter", (q) => q.eq("chapterId", chapterId))
     .collect();
-  const taken = new Set(existing.map((t: any) => t.slug));
+  const taken = new Set(existing.map((t) => t.slug));
   if (!taken.has(base)) return base;
   let n = 2;
   while (taken.has(`${base}-${n}`)) n++;
@@ -298,19 +247,18 @@ export const duplicate = mutation({
   handler: async (ctx, { eventTypeId }) => {
     const chapterId = await requireChapterId(ctx);
     const userId = await requireUserId(ctx);
-    const src = await ctx.db.get(eventTypeId);
-    await requireInChapter(ctx, chapterId, src, "Event type");
+    const src = await requireEventType(ctx, eventTypeId);
     const now = Date.now();
 
     const newId = (await ctx.db.insert("eventTypes", {
       chapterId: chapterId as Id<"chapters">,
-      name: `${src!.name} (copy)`,
-      slug: await uniqueSlug(ctx, chapterId as Id<"chapters">, toSlug(src!.name)),
-      description: src!.description,
+      name: `${src.name} (copy)`,
+      slug: await uniqueSlug(ctx, chapterId as Id<"chapters">, toSlug(src.name)),
+      description: src.description,
       // Standalone copy — deliberately NOT linked back to the source.
       deriveFromEventTypeId: undefined,
-      disabledCoreModules: src!.disabledCoreModules ?? [],
-      coreModuleOverrides: src!.coreModuleOverrides,
+      disabledCoreModules: src.disabledCoreModules ?? [],
+      coreModuleOverrides: src.coreModuleOverrides,
       version: 1,
       isArchived: false,
       createdBy: userId as Id<"users">,
@@ -318,54 +266,9 @@ export const duplicate = mutation({
       updatedAt: now,
     })) as Id<"eventTypes">;
 
-    // Deep-copy roles (new ids), building a srcRoleId→newRoleId map.
-    const srcRoles = await ctx.db
-      .query("templateRoles")
-      .withIndex("by_template", (q: any) => q.eq("eventTypeId", eventTypeId))
-      .collect();
-    const roleIdMap = new Map<string, Id<"templateRoles">>();
-    for (const r of srcRoles) {
-      const { _id, _creationTime, eventTypeId: _e, ...rest } = r as any;
-      const id = (await ctx.db.insert("templateRoles", {
-        eventTypeId: newId,
-        ...rest,
-      })) as Id<"templateRoles">;
-      roleIdMap.set(String(_id), id);
-    }
-
-    // Copy columns verbatim under the new event type.
-    const cols = await ctx.db
-      .query("templateColumns")
-      .withIndex("by_eventType", (q: any) => q.eq("eventTypeId", eventTypeId))
-      .collect();
-    for (const c of cols) {
-      const { _id, _creationTime, eventTypeId: _e, ...rest } = c as any;
-      await ctx.db.insert("templateColumns", { eventTypeId: newId, ...rest });
-    }
-
-    // Copy items, remapping each item's roleId through the role map.
-    const items = await ctx.db
-      .query("templateItems")
-      .withIndex("by_eventType", (q: any) => q.eq("eventTypeId", eventTypeId))
-      .collect();
-    for (const it of items) {
-      const { _id, _creationTime, eventTypeId: _e, ...rest } = it as any;
-      await ctx.db.insert("templateItems", {
-        eventTypeId: newId,
-        ...rest,
-        roleId: rest.roleId ? roleIdMap.get(String(rest.roleId)) : undefined,
-      });
-    }
-
-    // Copy custom modules verbatim.
-    const mods = await ctx.db
-      .query("templateModules")
-      .withIndex("by_template", (q: any) => q.eq("eventTypeId", eventTypeId))
-      .collect();
-    for (const m of mods) {
-      const { _id, _creationTime, eventTypeId: _e, ...rest } = m as any;
-      await ctx.db.insert("templateModules", { eventTypeId: newId, ...rest });
-    }
+    // Deep-copy roles, columns, items (role-remapped) + custom modules. Same
+    // routine `create` uses when deriving from a parent.
+    await deepCopyTemplate(ctx, eventTypeId, newId);
 
     return newId;
   },
@@ -375,9 +278,7 @@ export const duplicate = mutation({
 export const archive = mutation({
   args: { eventTypeId: v.id("eventTypes") },
   handler: async (ctx, { eventTypeId }) => {
-    const chapterId = await requireChapterId(ctx);
-    const et = await ctx.db.get(eventTypeId);
-    await requireInChapter(ctx, chapterId, et, "Event type");
+    await requireEventType(ctx, eventTypeId);
     await ctx.db.patch(eventTypeId, { isArchived: true, updatedAt: Date.now() });
     return eventTypeId;
   },
@@ -387,9 +288,7 @@ export const archive = mutation({
 export const unarchive = mutation({
   args: { eventTypeId: v.id("eventTypes") },
   handler: async (ctx, { eventTypeId }) => {
-    const chapterId = await requireChapterId(ctx);
-    const et = await ctx.db.get(eventTypeId);
-    await requireInChapter(ctx, chapterId, et, "Event type");
+    await requireEventType(ctx, eventTypeId);
     await ctx.db.patch(eventTypeId, {
       isArchived: false,
       updatedAt: Date.now(),

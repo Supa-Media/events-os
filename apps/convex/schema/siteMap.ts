@@ -64,13 +64,24 @@ export const siteShapes = defineTable({
  *
  * Scope: belongs EITHER to a live event (`eventId`) or to a TEMPLATE
  * (`eventTypeId`), exactly like `siteMarkers`/`siteShapes`. Exactly one is set.
- * What `refId` points at depends on scope + kind:
- *   - EVENT  + supply    → an `eventItems` _id (module "supplies")
- *   - EVENT  + volunteer → an `engagements` _id (type "volunteer")
- *   - TEMPLATE + supply    → a `templateItems` _id (module "supplies")
- *   - TEMPLATE + volunteer → a `templatePeople` _id (placeholder crew)
+ * What `refId` points at depends on scope (event vs template) × `kind`:
+ *   - EVENT    + supply    → an `eventItems` _id     (module "supplies")
+ *   - EVENT    + volunteer → an `engagements` _id    (type "volunteer")
+ *   - TEMPLATE + supply    → a `templateItems` _id   (module "supplies")
+ *   - TEMPLATE + volunteer → a `templatePeople` _id  (placeholder crew)
  * Template placements are cloned onto new events at creation, with `refId`
  * remapped to the cloned eventItem / materialized volunteer engagement.
+ *
+ * INTEGRITY WARNING: `refId` is an untyped `v.string()`, so there is NO
+ * referential-integrity enforcement and NO automatic cascade. Deleting the
+ * referenced supply / engagement / template row leaves a DANGLING placement
+ * whose chip points at a now-missing target. Any mutation that deletes one of
+ * the four referenced row types MUST also delete the matching placements
+ * (query `by_event_kind` / `by_template_kind`, filter by `refId`) — readers
+ * should also tolerate a missing target defensively.
+ * TODO(integrity): add cross-table delete cleanup in the supply/engagement/
+ * template-item/template-people delete mutations (those files are out of scope
+ * for this change). Tracked as a follow-up.
  */
 export const siteMapPlacements = defineTable({
   chapterId: v.id("chapters"),

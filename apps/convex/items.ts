@@ -9,9 +9,9 @@
  * `offsetMinutes`. Editing the event date re-derives every due date (see
  * events.reschedule).
  */
-import { query, mutation } from "./_generated/server";
-import { Id } from "./_generated/dataModel";
-import { v } from "convex/values";
+import { query, mutation, QueryCtx } from "./_generated/server";
+import { Doc, Id } from "./_generated/dataModel";
+import { v, ConvexError } from "convex/values";
 import {
   computeDueDate,
   computeReadiness,
@@ -19,13 +19,57 @@ import {
   DAY_OFFSET_MODULES,
   type ModuleKey,
 } from "@events-os/shared";
-import { requireChapterId, requireInChapter } from "./lib/context";
-import { bumpVersion, maxOrder } from "./lib/templates";
+import {
+  requireChapterId,
+  requireEvent,
+  requireEventType,
+  requireOwned,
+} from "./lib/context";
+import {
+  bumpVersion,
+  maxOrder,
+  eventActiveModules,
+  templateActiveModules,
+} from "./lib/templates";
 
 const fieldsValidator = v.optional(v.record(v.string(), v.any()));
 
 function isDayOffsetModule(module: string): boolean {
   return DAY_OFFSET_MODULES.includes(module as ModuleKey);
+}
+
+/**
+ * Assert `module` is one of the event's resolved ACTIVE modules — rejecting
+ * arbitrary/disabled module strings so an item can't be written against a
+ * surface the event doesn't have. Throws a ConvexError when it isn't.
+ */
+async function requireActiveEventModule(
+  ctx: QueryCtx,
+  event: Doc<"events">,
+  module: string,
+): Promise<void> {
+  const active = await eventActiveModules(ctx, event);
+  if (!active.some((m) => m.key === module)) {
+    throw new ConvexError({
+      code: "UNKNOWN_MODULE",
+      message: `"${module}" is not an active module on this event.`,
+    });
+  }
+}
+
+/** Same as `requireActiveEventModule` but for a template's active modules. */
+async function requireActiveTemplateModule(
+  ctx: QueryCtx,
+  eventType: Doc<"eventTypes">,
+  module: string,
+): Promise<void> {
+  const active = await templateActiveModules(ctx, eventType);
+  if (!active.some((m) => m.key === module)) {
+    throw new ConvexError({
+      code: "UNKNOWN_MODULE",
+      message: `"${module}" is not an active module on this template.`,
+    });
+  }
 }
 
 /** Merge a `fields` patch into existing fields (so single-cell edits don't wipe). */
@@ -60,19 +104,19 @@ export const listForTemplate = query({
     const columns = (
       await ctx.db
         .query("templateColumns")
-        .withIndex("by_eventType_module", (q: any) =>
+        .withIndex("by_eventType_module", (q) =>
           q.eq("eventTypeId", eventTypeId).eq("module", module),
         )
         .collect()
-    ).sort((a: any, b: any) => a.order - b.order);
+    ).sort((a, b) => a.order - b.order);
     const items = (
       await ctx.db
         .query("templateItems")
-        .withIndex("by_eventType_module", (q: any) =>
+        .withIndex("by_eventType_module", (q) =>
           q.eq("eventTypeId", eventTypeId).eq("module", module),
         )
         .collect()
-    ).sort((a: any, b: any) => a.order - b.order);
+    ).sort((a, b) => a.order - b.order);
     return { columns, items };
   },
 });
@@ -89,12 +133,11 @@ export const addTemplateItem = mutation({
     fields: fieldsValidator,
   },
   handler: async (ctx, args) => {
-    const chapterId = await requireChapterId(ctx);
-    const et = await ctx.db.get(args.eventTypeId);
-    await requireInChapter(ctx, chapterId, et, "Event type");
+    const et = await requireEventType(ctx, args.eventTypeId);
+    await requireActiveTemplateModule(ctx, et, args.module);
     const items = await ctx.db
       .query("templateItems")
-      .withIndex("by_eventType_module", (q: any) =>
+      .withIndex("by_eventType_module", (q) =>
         q.eq("eventTypeId", args.eventTypeId).eq("module", args.module),
       )
       .collect();
@@ -125,11 +168,9 @@ export const updateTemplateItem = mutation({
     fields: fieldsValidator,
   },
   handler: async (ctx, { itemId, ...patch }) => {
-    const chapterId = await requireChapterId(ctx);
     const item = await ctx.db.get(itemId);
     if (!item) return itemId;
-    const et = await ctx.db.get(item.eventTypeId);
-    await requireInChapter(ctx, chapterId, et, "Event type");
+    await requireEventType(ctx, item.eventTypeId);
     const fields: Record<string, unknown> = {};
     if (patch.title !== undefined) fields.title = patch.title;
     if (patch.offsetDays !== undefined) fields.offsetDays = patch.offsetDays;
@@ -153,14 +194,12 @@ export const updateTemplateItem = mutation({
 export const toggleTemplatePrePlan = mutation({
   args: { itemId: v.id("templateItems"), colKey: v.string() },
   handler: async (ctx, { itemId, colKey }) => {
-    const chapterId = await requireChapterId(ctx);
     const item = await ctx.db.get(itemId);
     if (!item) return itemId;
-    const et = await ctx.db.get(item.eventTypeId);
-    await requireInChapter(ctx, chapterId, et, "Event type");
+    await requireEventType(ctx, item.eventTypeId);
     const current = item.prePlanColumns ?? [];
     const next = current.includes(colKey)
-      ? current.filter((k: string) => k !== colKey)
+      ? current.filter((k) => k !== colKey)
       : [...current, colKey];
     await ctx.db.patch(itemId, {
       prePlanColumns: next.length > 0 ? next : undefined,
@@ -173,11 +212,9 @@ export const toggleTemplatePrePlan = mutation({
 export const removeTemplateItem = mutation({
   args: { itemId: v.id("templateItems") },
   handler: async (ctx, { itemId }) => {
-    const chapterId = await requireChapterId(ctx);
     const item = await ctx.db.get(itemId);
     if (!item) return itemId;
-    const et = await ctx.db.get(item.eventTypeId);
-    await requireInChapter(ctx, chapterId, et, "Event type");
+    await requireEventType(ctx, item.eventTypeId);
     await ctx.db.delete(itemId);
     await bumpVersion(ctx, item.eventTypeId);
     return itemId;
@@ -191,9 +228,7 @@ export const reorderTemplateItems = mutation({
     orderedIds: v.array(v.id("templateItems")),
   },
   handler: async (ctx, { eventTypeId, module, orderedIds }) => {
-    const chapterId = await requireChapterId(ctx);
-    const et = await ctx.db.get(eventTypeId);
-    await requireInChapter(ctx, chapterId, et, "Event type");
+    await requireEventType(ctx, eventTypeId);
     for (let i = 0; i < orderedIds.length; i++) {
       const item = await ctx.db.get(orderedIds[i]);
       if (item && item.eventTypeId === eventTypeId && item.module === module) {
@@ -218,40 +253,42 @@ export const listForEventModule = query({
     const columns = (
       await ctx.db
         .query("eventColumns")
-        .withIndex("by_event_module", (q: any) =>
+        .withIndex("by_event_module", (q) =>
           q.eq("eventId", eventId).eq("module", module),
         )
         .collect()
-    ).sort((a: any, b: any) => a.order - b.order);
+    ).sort((a, b) => a.order - b.order);
 
     const rawItems = (
       await ctx.db
         .query("eventItems")
-        .withIndex("by_event_module", (q: any) =>
+        .withIndex("by_event_module", (q) =>
           q.eq("eventId", eventId).eq("module", module),
         )
         .collect()
-    ).sort((a: any, b: any) => a.order - b.order);
+    ).sort((a, b) => a.order - b.order);
 
     // Map each event role → its assigned person, so an item's owner can be
     // auto-derived from its role (with an explicit ownerPersonId as override).
     const assignments = await ctx.db
       .query("roleAssignments")
-      .withIndex("by_event", (q: any) => q.eq("eventId", eventId))
+      .withIndex("by_event", (q) => q.eq("eventId", eventId))
       .collect();
     const roleToPerson = new Map<string, Id<"people">>(
-      assignments.map((a: any) => [a.roleId, a.personId]),
+      assignments.map((a) => [String(a.roleId), a.personId]),
     );
 
     const items = await Promise.all(
-      rawItems.map(async (it: any) => {
+      rawItems.map(async (it) => {
         let roleLabel: string | null = null;
         if (it.roleId) {
           const role = await ctx.db.get(it.roleId as Id<"eventRoles">);
           roleLabel = role?.label ?? null;
         }
         // Explicit owner wins; otherwise inherit the person holding the role.
-        const inheritedId = it.roleId ? roleToPerson.get(it.roleId) : undefined;
+        const inheritedId = it.roleId
+          ? roleToPerson.get(String(it.roleId))
+          : undefined;
         const effectiveOwnerId = it.ownerPersonId ?? inheritedId;
         const ownerIsInherited = !it.ownerPersonId && !!inheritedId;
         let owner: { _id: Id<"people">; name: string } | null = null;
@@ -266,7 +303,7 @@ export const listForEventModule = query({
     const opts = statusOptions(columns);
     const total = rawItems.length;
     const complete = opts
-      ? rawItems.filter((it: any) => isCompleteStatus(opts, it.status)).length
+      ? rawItems.filter((it) => isCompleteStatus(opts, it.status)).length
       : 0;
 
     return {
@@ -290,22 +327,21 @@ export const addEventItem = mutation({
     fields: fieldsValidator,
   },
   handler: async (ctx, args) => {
-    const chapterId = await requireChapterId(ctx);
-    const event = await ctx.db.get(args.eventId);
-    await requireInChapter(ctx, chapterId, event, "Event");
+    const event = await requireEvent(ctx, args.eventId);
+    await requireActiveEventModule(ctx, event, args.module);
     const items = await ctx.db
       .query("eventItems")
-      .withIndex("by_event_module", (q: any) =>
+      .withIndex("by_event_module", (q) =>
         q.eq("eventId", args.eventId).eq("module", args.module),
       )
       .collect();
     const dueDate =
       isDayOffsetModule(args.module) && args.offsetDays !== undefined
-        ? computeDueDate(event!.eventDate, args.offsetDays)
+        ? computeDueDate(event.eventDate, args.offsetDays)
         : undefined;
     return await ctx.db.insert("eventItems", {
       eventId: args.eventId,
-      chapterId: chapterId as Id<"chapters">,
+      chapterId: event.chapterId,
       module: args.module,
       title: args.title ?? "",
       order: maxOrder(items) + 1,
@@ -332,11 +368,9 @@ export const updateEventItem = mutation({
     fields: fieldsValidator,
   },
   handler: async (ctx, { itemId, ...patch }) => {
-    const chapterId = await requireChapterId(ctx);
     const item = await ctx.db.get(itemId);
     if (!item) return itemId;
-    const event = await ctx.db.get(item.eventId);
-    await requireInChapter(ctx, chapterId, event, "Event");
+    const event = await requireEvent(ctx, item.eventId);
     const fields: Record<string, unknown> = {};
     if (patch.title !== undefined) fields.title = patch.title;
     if (patch.offsetMinutes !== undefined)
@@ -350,7 +384,7 @@ export const updateEventItem = mutation({
     if (patch.offsetDays !== undefined) {
       fields.offsetDays = patch.offsetDays;
       if (isDayOffsetModule(item.module)) {
-        fields.dueDate = computeDueDate(event!.eventDate, patch.offsetDays);
+        fields.dueDate = computeDueDate(event.eventDate, patch.offsetDays);
       }
     }
     await ctx.db.patch(itemId, fields);
@@ -362,14 +396,9 @@ export const updateEventItem = mutation({
 export const setStatus = mutation({
   args: { itemId: v.id("eventItems"), status: v.union(v.string(), v.null()) },
   handler: async (ctx, { itemId, status }) => {
-    const chapterId = await requireChapterId(ctx);
     const item = await ctx.db.get(itemId);
-    await requireInChapter(
-      ctx,
-      chapterId,
-      item ? await ctx.db.get(item.eventId) : null,
-      "Event",
-    );
+    if (!item) return itemId;
+    await requireEvent(ctx, item.eventId);
     await ctx.db.patch(itemId, { status: status ?? undefined });
     return itemId;
   },
@@ -383,17 +412,15 @@ export const setStatus = mutation({
 export const togglePrePlanChecked = mutation({
   args: { itemId: v.id("eventItems"), colKey: v.string() },
   handler: async (ctx, { itemId, colKey }) => {
-    const chapterId = await requireChapterId(ctx);
     const item = await ctx.db.get(itemId);
     if (!item) return itemId;
-    const event = await ctx.db.get(item.eventId);
-    await requireInChapter(ctx, chapterId, event, "Event");
+    await requireEvent(ctx, item.eventId);
     // Only checkable if the cell was actually marked pre-plan on this row.
     const marked = item.prePlanColumns ?? [];
     if (!marked.includes(colKey)) return itemId;
     const current = item.prePlanChecked ?? [];
     const next = current.includes(colKey)
-      ? current.filter((k: string) => k !== colKey)
+      ? current.filter((k) => k !== colKey)
       : [...current, colKey];
     await ctx.db.patch(itemId, {
       prePlanChecked: next.length > 0 ? next : undefined,
@@ -409,14 +436,11 @@ export const assignOwner = mutation({
     personId: v.optional(v.union(v.id("people"), v.null())),
   },
   handler: async (ctx, { itemId, personId }) => {
-    const chapterId = await requireChapterId(ctx);
     const item = await ctx.db.get(itemId);
     if (!item) return itemId;
-    const event = await ctx.db.get(item.eventId);
-    await requireInChapter(ctx, chapterId, event, "Event");
+    await requireEvent(ctx, item.eventId);
     if (personId) {
-      const person = await ctx.db.get(personId);
-      await requireInChapter(ctx, chapterId, person, "Person");
+      await requireOwned(ctx, "people", personId, "Person");
     }
     await ctx.db.patch(itemId, { ownerPersonId: personId ?? undefined });
     return itemId;
@@ -426,11 +450,9 @@ export const assignOwner = mutation({
 export const removeEventItem = mutation({
   args: { itemId: v.id("eventItems") },
   handler: async (ctx, { itemId }) => {
-    const chapterId = await requireChapterId(ctx);
     const item = await ctx.db.get(itemId);
     if (!item) return itemId;
-    const event = await ctx.db.get(item.eventId);
-    await requireInChapter(ctx, chapterId, event, "Event");
+    await requireEvent(ctx, item.eventId);
     await ctx.db.delete(itemId);
     return itemId;
   },
@@ -443,9 +465,7 @@ export const reorderEventItems = mutation({
     orderedIds: v.array(v.id("eventItems")),
   },
   handler: async (ctx, { eventId, module, orderedIds }) => {
-    const chapterId = await requireChapterId(ctx);
-    const event = await ctx.db.get(eventId);
-    await requireInChapter(ctx, chapterId, event, "Event");
+    await requireEvent(ctx, eventId);
     for (let i = 0; i < orderedIds.length; i++) {
       const item = await ctx.db.get(orderedIds[i]);
       if (item && item.eventId === eventId && item.module === module) {

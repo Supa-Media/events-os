@@ -19,8 +19,16 @@ export const generateUploadUrl = mutation({
   },
 });
 
-/** Resolve a stored file's id to a servable URL (null if missing). */
+/**
+ * Resolve a stored file's id to a servable URL (null if missing).
+ *
+ * Auth-gated: a stored URL is directly servable, so a logged-out caller must
+ * never be able to resolve an arbitrary `_storage` id into a fetchable file.
+ */
 export const getUrl = query({
   args: { storageId: v.id("_storage") },
-  handler: async (ctx, { storageId }) => await ctx.storage.getUrl(storageId),
+  handler: async (ctx, { storageId }) => {
+    await requireUserId(ctx);
+    return await ctx.storage.getUrl(storageId);
+  },
 });
