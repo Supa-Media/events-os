@@ -12,9 +12,12 @@
  * `key` stays stable across rename so item/owner references keep resolving.
  */
 import { query, mutation } from "./_generated/server";
-import { Id } from "./_generated/dataModel";
 import { v } from "convex/values";
-import { requireChapterId, requireInChapter } from "./lib/context";
+import {
+  requireChapterId,
+  requireEvent,
+  requireEventType,
+} from "./lib/context";
 
 /** Kebab-case slug from a display name. */
 function toKey(name: string): string {
@@ -41,11 +44,11 @@ export const listForTemplate = query({
     if (!et || et.chapterId !== chapterId) return [];
     const roles = await ctx.db
       .query("templateRoles")
-      .withIndex("by_template", (q: any) => q.eq("eventTypeId", eventTypeId))
+      .withIndex("by_template", (q) => q.eq("eventTypeId", eventTypeId))
       .collect();
     return roles
-      .filter((r: any) => r.isArchived !== true)
-      .sort((a: any, b: any) => a.order - b.order);
+      .filter((r) => r.isArchived !== true)
+      .sort((a, b) => a.order - b.order);
   },
 });
 
@@ -58,12 +61,10 @@ export const createForTemplate = mutation({
     key: v.optional(v.string()),
   },
   handler: async (ctx, args) => {
-    const chapterId = await requireChapterId(ctx);
-    const et = await ctx.db.get(args.eventTypeId);
-    await requireInChapter(ctx, chapterId, et, "Event type");
+    await requireEventType(ctx, args.eventTypeId);
     const roles = await ctx.db
       .query("templateRoles")
-      .withIndex("by_template", (q: any) => q.eq("eventTypeId", args.eventTypeId))
+      .withIndex("by_template", (q) => q.eq("eventTypeId", args.eventTypeId))
       .collect();
     return await ctx.db.insert("templateRoles", {
       eventTypeId: args.eventTypeId,
@@ -84,11 +85,9 @@ export const updateTemplateRole = mutation({
     description: v.optional(v.string()),
   },
   handler: async (ctx, { roleId, ...patch }) => {
-    const chapterId = await requireChapterId(ctx);
     const role = await ctx.db.get(roleId);
     if (!role) return roleId;
-    const et = await ctx.db.get(role.eventTypeId);
-    await requireInChapter(ctx, chapterId, et, "Event type");
+    await requireEventType(ctx, role.eventTypeId);
     const fields: Record<string, unknown> = {};
     if (patch.label !== undefined) fields.label = patch.label;
     if (patch.description !== undefined) fields.description = patch.description;
@@ -101,11 +100,9 @@ export const updateTemplateRole = mutation({
 export const deleteTemplateRole = mutation({
   args: { roleId: v.id("templateRoles") },
   handler: async (ctx, { roleId }) => {
-    const chapterId = await requireChapterId(ctx);
     const role = await ctx.db.get(roleId);
     if (!role) return roleId;
-    const et = await ctx.db.get(role.eventTypeId);
-    await requireInChapter(ctx, chapterId, et, "Event type");
+    await requireEventType(ctx, role.eventTypeId);
     await ctx.db.delete(roleId);
     return roleId;
   },
@@ -139,9 +136,9 @@ export const listForEvent = query({
     if (!event || event.chapterId !== chapterId) return [];
     const roles = await ctx.db
       .query("eventRoles")
-      .withIndex("by_event", (q: any) => q.eq("eventId", eventId))
+      .withIndex("by_event", (q) => q.eq("eventId", eventId))
       .collect();
-    return roles.sort((a: any, b: any) => a.order - b.order);
+    return roles.sort((a, b) => a.order - b.order);
   },
 });
 
@@ -154,12 +151,10 @@ export const createForEvent = mutation({
     key: v.optional(v.string()),
   },
   handler: async (ctx, args) => {
-    const chapterId = await requireChapterId(ctx);
-    const event = await ctx.db.get(args.eventId);
-    await requireInChapter(ctx, chapterId, event, "Event");
+    await requireEvent(ctx, args.eventId);
     const roles = await ctx.db
       .query("eventRoles")
-      .withIndex("by_event", (q: any) => q.eq("eventId", args.eventId))
+      .withIndex("by_event", (q) => q.eq("eventId", args.eventId))
       .collect();
     return await ctx.db.insert("eventRoles", {
       eventId: args.eventId,
@@ -179,11 +174,9 @@ export const updateEventRole = mutation({
     description: v.optional(v.string()),
   },
   handler: async (ctx, { roleId, ...patch }) => {
-    const chapterId = await requireChapterId(ctx);
     const role = await ctx.db.get(roleId);
     if (!role) return roleId;
-    const event = await ctx.db.get(role.eventId);
-    await requireInChapter(ctx, chapterId, event, "Event");
+    await requireEvent(ctx, role.eventId);
     const fields: Record<string, unknown> = {};
     if (patch.label !== undefined) fields.label = patch.label;
     if (patch.description !== undefined) fields.description = patch.description;
@@ -199,14 +192,12 @@ export const updateEventRole = mutation({
 export const deleteEventRole = mutation({
   args: { roleId: v.id("eventRoles") },
   handler: async (ctx, { roleId }) => {
-    const chapterId = await requireChapterId(ctx);
     const role = await ctx.db.get(roleId);
     if (!role) return roleId;
-    const event = await ctx.db.get(role.eventId);
-    await requireInChapter(ctx, chapterId, event, "Event");
+    await requireEvent(ctx, role.eventId);
     const assignments = await ctx.db
       .query("roleAssignments")
-      .withIndex("by_event_role", (q: any) =>
+      .withIndex("by_event_role", (q) =>
         q.eq("eventId", role.eventId).eq("roleId", roleId),
       )
       .collect();

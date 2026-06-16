@@ -11,7 +11,7 @@
  * Authorization mirrors roles.ts: every op is scoped through the chapter of the
  * parent eventType/event.
  */
-import { query, mutation } from "./_generated/server";
+import { query, mutation, MutationCtx } from "./_generated/server";
 import { Id } from "./_generated/dataModel";
 import { v } from "convex/values";
 import {
@@ -23,7 +23,12 @@ import {
   type ModuleKey,
   type ModuleOverride,
 } from "@events-os/shared";
-import { requireUserId, requireChapterId, requireInChapter } from "./lib/context";
+import {
+  requireUserId,
+  requireChapterId,
+  requireEvent,
+  requireEventType,
+} from "./lib/context";
 import { toKey } from "./roles";
 import {
   maxOrder,
@@ -51,12 +56,12 @@ export const listForTemplate = query({
     const state = await templateModuleState(ctx, et);
     const customRows = await ctx.db
       .query("templateModules")
-      .withIndex("by_template", (q: any) => q.eq("eventTypeId", eventTypeId))
+      .withIndex("by_template", (q) => q.eq("eventTypeId", eventTypeId))
       .collect();
     return {
       active: resolveActiveModules(state),
       disabledCore: resolveDisabledCore(state),
-      customRows: customRows.sort((a: any, b: any) => a.order - b.order),
+      customRows: customRows.sort((a, b) => a.order - b.order),
     };
   },
 });
@@ -69,12 +74,10 @@ export const createCustomForTemplate = mutation({
     ownerRoleKey: v.optional(v.string()),
   },
   handler: async (ctx, { eventTypeId, label, ownerRoleKey }) => {
-    const chapterId = await requireChapterId(ctx);
-    const et = await ctx.db.get(eventTypeId);
-    await requireInChapter(ctx, chapterId, et, "Event type");
+    await requireEventType(ctx, eventTypeId);
     const rows = await ctx.db
       .query("templateModules")
-      .withIndex("by_template", (q: any) => q.eq("eventTypeId", eventTypeId))
+      .withIndex("by_template", (q) => q.eq("eventTypeId", eventTypeId))
       .collect();
     const key = uniqueKey(toKey(label) || "module", rows);
     const id = await ctx.db.insert("templateModules", {
@@ -100,11 +103,9 @@ export const updateCustomForTemplate = mutation({
     isActive: v.optional(v.boolean()),
   },
   handler: async (ctx, { moduleId, ...patch }) => {
-    const chapterId = await requireChapterId(ctx);
     const row = await ctx.db.get(moduleId);
     if (!row) return moduleId;
-    const et = await ctx.db.get(row.eventTypeId);
-    await requireInChapter(ctx, chapterId, et, "Event type");
+    await requireEventType(ctx, row.eventTypeId);
     const fields: Record<string, unknown> = {};
     if (patch.label !== undefined) fields.label = patch.label;
     if (patch.isActive !== undefined) fields.isActive = patch.isActive;
@@ -118,11 +119,9 @@ export const updateCustomForTemplate = mutation({
 export const deleteCustomForTemplate = mutation({
   args: { moduleId: v.id("templateModules") },
   handler: async (ctx, { moduleId }) => {
-    const chapterId = await requireChapterId(ctx);
     const row = await ctx.db.get(moduleId);
     if (!row) return moduleId;
-    const et = await ctx.db.get(row.eventTypeId);
-    await requireInChapter(ctx, chapterId, et, "Event type");
+    await requireEventType(ctx, row.eventTypeId);
     await deleteTemplateModuleData(ctx, row.eventTypeId, row.key);
     await ctx.db.delete(moduleId);
     await bumpVersion(ctx, row.eventTypeId);
@@ -138,11 +137,9 @@ export const toggleCoreForTemplate = mutation({
     enabled: v.boolean(),
   },
   handler: async (ctx, { eventTypeId, key, enabled }) => {
-    const chapterId = await requireChapterId(ctx);
-    const et = await ctx.db.get(eventTypeId);
-    await requireInChapter(ctx, chapterId, et, "Event type");
+    const et = await requireEventType(ctx, eventTypeId);
     if (!isCoreKey(key)) return eventTypeId;
-    const disabled = new Set(et!.disabledCoreModules ?? []);
+    const disabled = new Set(et.disabledCoreModules ?? []);
     if (enabled) disabled.delete(key);
     else disabled.add(key);
     await ctx.db.patch(eventTypeId, {
@@ -163,14 +160,12 @@ export const setOwnerForTemplate = mutation({
     ownerRoleKey: v.union(v.string(), v.null()),
   },
   handler: async (ctx, { eventTypeId, key, ownerRoleKey }) => {
-    const chapterId = await requireChapterId(ctx);
-    const et = await ctx.db.get(eventTypeId);
-    await requireInChapter(ctx, chapterId, et, "Event type");
+    const et = await requireEventType(ctx, eventTypeId);
     const next = ownerRoleKey ?? undefined;
     if (isCoreKey(key)) {
       await ctx.db.patch(eventTypeId, {
         coreModuleOverrides: setOverrideOwner(
-          et!.coreModuleOverrides,
+          et.coreModuleOverrides,
           key,
           next,
         ),
@@ -178,7 +173,7 @@ export const setOwnerForTemplate = mutation({
     } else {
       const row = await ctx.db
         .query("templateModules")
-        .withIndex("by_template_key", (q: any) =>
+        .withIndex("by_template_key", (q) =>
           q.eq("eventTypeId", eventTypeId).eq("key", key),
         )
         .first();
@@ -197,13 +192,11 @@ export const renameCoreForTemplate = mutation({
     label: v.union(v.string(), v.null()),
   },
   handler: async (ctx, { eventTypeId, key, label }) => {
-    const chapterId = await requireChapterId(ctx);
-    const et = await ctx.db.get(eventTypeId);
-    await requireInChapter(ctx, chapterId, et, "Event type");
+    const et = await requireEventType(ctx, eventTypeId);
     if (!isCoreKey(key)) return eventTypeId;
     await ctx.db.patch(eventTypeId, {
       coreModuleOverrides: setOverrideLabel(
-        et!.coreModuleOverrides,
+        et.coreModuleOverrides,
         key,
         label ?? undefined,
       ),
@@ -226,12 +219,12 @@ export const listForEvent = query({
     const state = await eventModuleState(ctx, event);
     const customRows = await ctx.db
       .query("eventModules")
-      .withIndex("by_event", (q: any) => q.eq("eventId", eventId))
+      .withIndex("by_event", (q) => q.eq("eventId", eventId))
       .collect();
     return {
       active: resolveActiveModules(state),
       disabledCore: resolveDisabledCore(state),
-      customRows: customRows.sort((a: any, b: any) => a.order - b.order),
+      customRows: customRows.sort((a, b) => a.order - b.order),
       readiness: event.moduleReadiness ?? [],
     };
   },
@@ -245,12 +238,10 @@ export const createCustomForEvent = mutation({
     ownerRoleKey: v.optional(v.string()),
   },
   handler: async (ctx, { eventId, label, ownerRoleKey }) => {
-    const chapterId = await requireChapterId(ctx);
-    const event = await ctx.db.get(eventId);
-    await requireInChapter(ctx, chapterId, event, "Event");
+    await requireEvent(ctx, eventId);
     const rows = await ctx.db
       .query("eventModules")
-      .withIndex("by_event", (q: any) => q.eq("eventId", eventId))
+      .withIndex("by_event", (q) => q.eq("eventId", eventId))
       .collect();
     const key = uniqueKey(toKey(label) || "module", rows);
     const id = await ctx.db.insert("eventModules", {
@@ -285,11 +276,9 @@ export const createCustomForEvent = mutation({
 export const updateCustomForEvent = mutation({
   args: { moduleId: v.id("eventModules"), label: v.optional(v.string()) },
   handler: async (ctx, { moduleId, label }) => {
-    const chapterId = await requireChapterId(ctx);
     const row = await ctx.db.get(moduleId);
     if (!row) return moduleId;
-    const event = await ctx.db.get(row.eventId);
-    await requireInChapter(ctx, chapterId, event, "Event");
+    await requireEvent(ctx, row.eventId);
     if (label !== undefined) await ctx.db.patch(moduleId, { label });
     return moduleId;
   },
@@ -299,11 +288,9 @@ export const updateCustomForEvent = mutation({
 export const deleteCustomForEvent = mutation({
   args: { moduleId: v.id("eventModules") },
   handler: async (ctx, { moduleId }) => {
-    const chapterId = await requireChapterId(ctx);
     const row = await ctx.db.get(moduleId);
     if (!row) return moduleId;
-    const event = await ctx.db.get(row.eventId);
-    await requireInChapter(ctx, chapterId, event, "Event");
+    await requireEvent(ctx, row.eventId);
     await deleteEventModuleData(ctx, row.eventId, row.key);
     await ctx.db.delete(moduleId);
     return moduleId;
@@ -314,11 +301,9 @@ export const deleteCustomForEvent = mutation({
 export const toggleCoreForEvent = mutation({
   args: { eventId: v.id("events"), key: v.string(), enabled: v.boolean() },
   handler: async (ctx, { eventId, key, enabled }) => {
-    const chapterId = await requireChapterId(ctx);
-    const event = await ctx.db.get(eventId);
-    await requireInChapter(ctx, chapterId, event, "Event");
+    const event = await requireEvent(ctx, eventId);
     if (!isCoreKey(key)) return eventId;
-    const disabled = new Set(event!.disabledCoreModules ?? []);
+    const disabled = new Set(event.disabledCoreModules ?? []);
     if (enabled) disabled.delete(key);
     else disabled.add(key);
     await ctx.db.patch(eventId, { disabledCoreModules: Array.from(disabled) });
@@ -335,14 +320,12 @@ export const setOwnerForEvent = mutation({
     ownerRoleKey: v.union(v.string(), v.null()),
   },
   handler: async (ctx, { eventId, key, ownerRoleKey }) => {
-    const chapterId = await requireChapterId(ctx);
-    const event = await ctx.db.get(eventId);
-    await requireInChapter(ctx, chapterId, event, "Event");
+    const event = await requireEvent(ctx, eventId);
     const next = ownerRoleKey ?? undefined;
     if (isCoreKey(key)) {
       await ctx.db.patch(eventId, {
         coreModuleOverrides: setOverrideOwner(
-          event!.coreModuleOverrides,
+          event.coreModuleOverrides,
           key,
           next,
         ),
@@ -350,7 +333,7 @@ export const setOwnerForEvent = mutation({
     } else {
       const row = await ctx.db
         .query("eventModules")
-        .withIndex("by_event_key", (q: any) =>
+        .withIndex("by_event_key", (q) =>
           q.eq("eventId", eventId).eq("key", key),
         )
         .first();
@@ -364,16 +347,14 @@ export const setOwnerForEvent = mutation({
 export const setReady = mutation({
   args: { eventId: v.id("events"), key: v.string(), ready: v.boolean() },
   handler: async (ctx, { eventId, key, ready }) => {
-    const chapterId = await requireChapterId(ctx);
     const userId = await requireUserId(ctx);
-    const event = await ctx.db.get(eventId);
-    await requireInChapter(ctx, chapterId, event, "Event");
+    const event = await requireEvent(ctx, eventId);
     const markedBy = await getPersonForUser(
       ctx,
-      chapterId as Id<"chapters">,
+      event.chapterId as Id<"chapters">,
       userId as Id<"users">,
     );
-    const next = [...(event!.moduleReadiness ?? [])];
+    const next = [...(event.moduleReadiness ?? [])];
     const idx = next.findIndex((r) => r.key === key);
     const entry = {
       key,
@@ -444,7 +425,7 @@ function upsertOverride(
 }
 
 async function ensureTemplateCoreColumns(
-  ctx: any,
+  ctx: MutationCtx,
   eventTypeId: Id<"eventTypes">,
   key: string,
 ) {
@@ -452,7 +433,7 @@ async function ensureTemplateCoreColumns(
   if (!def || def.surface !== "grid") return;
   const existing = await ctx.db
     .query("templateColumns")
-    .withIndex("by_eventType_module", (q: any) =>
+    .withIndex("by_eventType_module", (q) =>
       q.eq("eventTypeId", eventTypeId).eq("module", key),
     )
     .first();
@@ -460,7 +441,7 @@ async function ensureTemplateCoreColumns(
 }
 
 async function ensureEventCoreColumns(
-  ctx: any,
+  ctx: MutationCtx,
   eventId: Id<"events">,
   key: string,
 ) {
@@ -468,7 +449,7 @@ async function ensureEventCoreColumns(
   if (!def || def.surface !== "grid") return;
   const existing = await ctx.db
     .query("eventColumns")
-    .withIndex("by_event_module", (q: any) =>
+    .withIndex("by_event_module", (q) =>
       q.eq("eventId", eventId).eq("module", key),
     )
     .first();
@@ -493,20 +474,20 @@ async function ensureEventCoreColumns(
 
 /** Delete a template module's columns + items by key. */
 async function deleteTemplateModuleData(
-  ctx: any,
+  ctx: MutationCtx,
   eventTypeId: Id<"eventTypes">,
   key: string,
 ) {
   for (const c of await ctx.db
     .query("templateColumns")
-    .withIndex("by_eventType_module", (q: any) =>
+    .withIndex("by_eventType_module", (q) =>
       q.eq("eventTypeId", eventTypeId).eq("module", key),
     )
     .collect())
     await ctx.db.delete(c._id);
   for (const it of await ctx.db
     .query("templateItems")
-    .withIndex("by_eventType_module", (q: any) =>
+    .withIndex("by_eventType_module", (q) =>
       q.eq("eventTypeId", eventTypeId).eq("module", key),
     )
     .collect())
@@ -515,20 +496,20 @@ async function deleteTemplateModuleData(
 
 /** Delete an event module's columns + items by key. */
 async function deleteEventModuleData(
-  ctx: any,
+  ctx: MutationCtx,
   eventId: Id<"events">,
   key: string,
 ) {
   for (const c of await ctx.db
     .query("eventColumns")
-    .withIndex("by_event_module", (q: any) =>
+    .withIndex("by_event_module", (q) =>
       q.eq("eventId", eventId).eq("module", key),
     )
     .collect())
     await ctx.db.delete(c._id);
   for (const it of await ctx.db
     .query("eventItems")
-    .withIndex("by_event_module", (q: any) =>
+    .withIndex("by_event_module", (q) =>
       q.eq("eventId", eventId).eq("module", key),
     )
     .collect())

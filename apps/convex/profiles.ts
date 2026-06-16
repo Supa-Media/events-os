@@ -6,7 +6,13 @@
  * `requireChapterId` — they're what a brand-new (pre-chapter) user calls to
  * onboard.
  */
-import { query, mutation } from "./_generated/server";
+import {
+  query,
+  mutation,
+  internalMutation,
+  QueryCtx,
+  MutationCtx,
+} from "./_generated/server";
 import { Id } from "./_generated/dataModel";
 import { v, ConvexError } from "convex/values";
 import { getOptionalAuth } from "@supa-media/convex/auth";
@@ -14,18 +20,18 @@ import { requireUserId, requireAccess, isAllowedEmail } from "./lib/context";
 import { findUnlinkedPersonByLoginEmail, claimFields } from "./lib/people";
 
 /** Load the current user's profile row (or null). */
-async function getProfile(ctx: any, userId: string) {
+async function getProfile(ctx: QueryCtx, userId: string) {
   return await ctx.db
     .query("userProfiles")
-    .withIndex("by_userId", (q: any) => q.eq("userId", userId))
+    .withIndex("by_userId", (q) => q.eq("userId", userId as Id<"users">))
     .first();
 }
 
 /** Does the user have a chapter membership yet? */
-async function getMembership(ctx: any, userId: string) {
+async function getMembership(ctx: QueryCtx, userId: string) {
   return await ctx.db
     .query("userChapters")
-    .withIndex("by_userId", (q: any) => q.eq("userId", userId))
+    .withIndex("by_userId", (q) => q.eq("userId", userId as Id<"users">))
     .first();
 }
 
@@ -47,7 +53,7 @@ async function getMembership(ctx: any, userId: string) {
  * and never overwrite an existing personal `email` with it.
  */
 async function syncStaffPerson(
-  ctx: any,
+  ctx: MutationCtx,
   userId: string,
   chapterId: string,
   fields: { name?: string; email?: string | null; phone?: string | null },
@@ -55,13 +61,13 @@ async function syncStaffPerson(
   const existing =
     (await ctx.db
       .query("people")
-      .withIndex("by_user", (q: any) => q.eq("userId", userId))
+      .withIndex("by_user", (q) => q.eq("userId", userId as Id<"users">))
       .first()) ??
     (await findUnlinkedPersonByLoginEmail(ctx, chapterId, fields.email));
 
   if (existing) {
     await ctx.db.patch(existing._id, {
-      chapterId,
+      chapterId: chapterId as Id<"chapters">,
       isActive: existing.isActive ?? true,
       // Claim the row for this account + sync pwEmail without clobbering email.
       ...claimFields(existing, userId, fields.email),
@@ -73,8 +79,8 @@ async function syncStaffPerson(
 
   const loginEmail = fields.email ?? undefined;
   return await ctx.db.insert("people", {
-    chapterId,
-    userId,
+    chapterId: chapterId as Id<"chapters">,
+    userId: userId as Id<"users">,
     name: fields.name ?? "Team member",
     email: loginEmail,
     pwEmail: loginEmail,
@@ -133,9 +139,9 @@ export const listChapters = query({
     await requireAccess(ctx);
     const chapters = await ctx.db.query("chapters").collect();
     return chapters
-      .filter((c: any) => c.isActive !== false)
-      .sort((a: any, b: any) => a.name.localeCompare(b.name))
-      .map((c: any) => ({ _id: c._id as Id<"chapters">, name: c.name as string }));
+      .filter((c) => c.isActive !== false)
+      .sort((a, b) => a.name.localeCompare(b.name))
+      .map((c) => ({ _id: c._id as Id<"chapters">, name: c.name as string }));
   },
 });
 
@@ -264,9 +270,10 @@ export const updateProfile = mutation({
 /**
  * Dev/admin backfill: ensure every onboarded staff member has a linked People
  * row (team member) in their chapter. Idempotent. Run once after deploying the
- * People-sync change. No-auth, mirrors the other seed migrations.
+ * People-sync change. Internal-only (one-off migration), invoked from the
+ * Convex dashboard or another backend function — never exposed to clients.
  */
-export const backfillStaffPeople = mutation({
+export const backfillStaffPeople = internalMutation({
   args: {},
   handler: async (ctx) => {
     const profiles = await ctx.db.query("userProfiles").collect();

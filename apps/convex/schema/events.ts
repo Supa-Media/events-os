@@ -1,5 +1,6 @@
 import { defineTable } from "convex/server";
 import { v } from "convex/values";
+import { EVENT_STATUSES } from "@events-os/shared";
 import { columnFields, itemFieldsBase } from "./shared";
 
 /**
@@ -48,12 +49,9 @@ export const events = defineTable({
       }),
     ),
   ),
-  status: v.union(
-    v.literal("planning"),
-    v.literal("ready"),
-    v.literal("completed"),
-    v.literal("cancelled"),
-  ),
+  // Built from the shared `EVENT_STATUSES` tuple so the schema validator and the
+  // app's status type stay in lock-step from one source of truth.
+  status: v.union(...EVENT_STATUSES.map((s) => v.literal(s))),
   createdBy: v.id("users"),
   createdAt: v.number(),
   updatedAt: v.number(),
