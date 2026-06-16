@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   View,
   Text,
@@ -25,30 +25,29 @@ import {
 } from "../ui";
 import { optionColor } from "../../lib/optionColor";
 import { colors } from "../../lib/theme";
+import {
+  CIRCLE_SIZE as BASE_CIRCLE_SIZE,
+  DEFAULT_MARKER_COLOR,
+  DEFAULT_SHAPE_COLOR,
+  DEFAULT_SHAPE_SIZE,
+  MARKER_HALF,
+  clamp01,
+  firstLetter,
+  initials,
+  lineGeometry,
+  markerHex,
+  percentPosition,
+  shapeFill,
+  shapeHex,
+  type MarkerGeometry,
+  type ShapeGeometry,
+} from "../../lib/siteMapGeometry";
 
 /** A site-map marker as returned by `api.siteMap.get`. */
-type Marker = {
-  _id: string;
-  x: number;
-  y: number;
-  label?: string | null;
-  color?: string | null;
-};
+type Marker = MarkerGeometry & { _id: string };
 
 /** A site-map shape as returned by `api.siteMap.get` (all coords normalized 0..1). */
-type ShapeType = "rect" | "circle" | "line";
-type Shape = {
-  _id: string;
-  type: ShapeType;
-  x: number;
-  y: number;
-  w?: number | null;
-  h?: number | null;
-  x2?: number | null;
-  y2?: number | null;
-  color?: string | null;
-  label?: string | null;
-};
+type Shape = ShapeGeometry & { _id: string };
 
 /** Draw-mode for the canvas toolbar. */
 type DrawMode = "select" | "pin" | "rect" | "circle" | "line";
@@ -99,21 +98,19 @@ type PlacementDetail =
   | { placement: Placement; kind: "volunteer"; item: VolunteerItem | null };
 
 const MAX_MAP_WIDTH = 900;
-const DEFAULT_SHAPE_SIZE = 0.18;
-const DEFAULT_SHAPE_COLOR = "blue";
-const DEFAULT_MARKER_COLOR = "red";
 
 /** Palette offered in the toolbar — reuses the OptionTag color names. */
 const SHAPE_COLORS = ["red", "blue", "green", "amber", "purple", "gray"] as const;
 
-function clamp01(n: number) {
-  return Math.max(0, Math.min(1, n));
-}
+/**
+ * Placed-circle diameter in the EDITOR — the canonical {@link BASE_CIRCLE_SIZE}
+ * scaled up to a comfortable drag/tap target. The read-only renderers use the
+ * shared base; only the interactive editor needs the larger hit area.
+ */
+const CIRCLE_SIZE = BASE_CIRCLE_SIZE + 6; // 42
 
-/** True only when every supplied value is a finite number (guards NaN CSS). */
-function allFinite(...ns: (number | null | undefined)[]) {
-  return ns.every((n) => typeof n === "number" && Number.isFinite(n));
-}
+/** Marker pin half-offset for react-rnd positioning (px). */
+const MARKER_RND_OFFSET = MARKER_HALF + 1; // 9
 
 /** Per-kind overlay styling — icon + readable theme background/foreground. */
 const OVERLAY_STYLE: Record<
@@ -128,28 +125,6 @@ const OVERLAY_STYLE: Record<
     label: "Volunteers",
   },
 };
-
-/** Resolve a shape color name → its hex value (falls back to the default). */
-function shapeHex(color?: string | null) {
-  return optionColor(color ?? DEFAULT_SHAPE_COLOR).text;
-}
-
-/** Diameter of a placed overlay circle (px). */
-const CIRCLE_SIZE = 42;
-
-/** Initials from a name — first letters of the first two words, uppercase.
- *  "Ada Okafor" → "AO"; single word → its first letter; empty → "". */
-function initials(name: string | null | undefined) {
-  const words = (name ?? "").trim().split(/\s+/).filter(Boolean);
-  if (words.length === 0) return "";
-  if (words.length === 1) return words[0]!.charAt(0).toUpperCase();
-  return (words[0]!.charAt(0) + words[1]!.charAt(0)).toUpperCase();
-}
-
-/** First letter of a title, uppercase (empty → ""). */
-function firstLetter(title: string | null | undefined) {
-  return (title ?? "").trim().charAt(0).toUpperCase();
-}
 
 // ── Draw-mode toolbar (mode selector + color picker + image control) ──────────
 function CanvasToolbar({
@@ -284,7 +259,11 @@ function CanvasToolbar({
 }
 
 // ── A single shape overlaid on the canvas (beneath the pins) ──────────────────
-function ShapeView({
+// Native-only (the web path uses the react-rnd shapes below). Same geometry as
+// the shared read-only `ShapeView` (via `lineGeometry`/`percentPosition`/
+// `shapeFill`), but wrapped in a Pressable for tap-to-select and emphasized
+// (thicker, ink border) while selected.
+function EditorShape({
   shape,
   selected,
   containerSize,
@@ -296,46 +275,24 @@ function ShapeView({
   onPress: () => void;
 }) {
   const hex = shapeHex(shape.color);
-  const fill = `${hex}1F`; // ~12% alpha
   const border = selected ? colors.ink : hex;
 
   if (shape.type === "line") {
-    // Compute pixel geometry from the measured container so the bar lands right.
-    const W = containerSize?.width ?? 0;
-    const H = containerSize?.height ?? 0;
-    // Coerce a half-defined line to its start point, and bail before measurement
-    // so we never feed NaN into left/top/width.
-    const nx = shape.x;
-    const ny = shape.y;
-    const nx2 = shape.x2 ?? shape.x;
-    const ny2 = shape.y2 ?? shape.y;
-    if (!(W > 0 && H > 0) || !allFinite(nx, ny, nx2, ny2)) return null;
-    const x1 = nx * W;
-    const y1 = ny * H;
-    const x2 = nx2 * W;
-    const y2 = ny2 * H;
-    const dx = x2 - x1;
-    const dy = y2 - y1;
-    const length = Math.hypot(dx, dy);
-    const angleDeg = (Math.atan2(dy, dx) * 180) / Math.PI;
-
+    const geo = lineGeometry(shape, containerSize);
+    if (!geo) return null;
     return (
       <Pressable
         onPress={onPress}
-        style={{
-          position: "absolute",
-          left: `${shape.x * 100}%`,
-          top: `${shape.y * 100}%`,
-        }}
+        style={{ position: "absolute", ...percentPosition(shape.x, shape.y) }}
       >
         <View
           style={{
-            width: length,
+            width: geo.length,
             height: selected ? 4 : 3,
             backgroundColor: hex,
             borderRadius: 2,
             // Rotate around the start point so the bar runs to the end point.
-            transform: [{ rotateZ: `${angleDeg}deg` }],
+            transform: [{ rotateZ: `${geo.angleDeg}deg` }],
             ...(Platform.OS === "web"
               ? ({ transformOrigin: "left center" } as any)
               : null),
@@ -367,8 +324,7 @@ function ShapeView({
       onPress={onPress}
       style={{
         position: "absolute",
-        left: `${shape.x * 100}%`,
-        top: `${shape.y * 100}%`,
+        ...percentPosition(shape.x, shape.y),
         width: `${w * 100}%`,
         height: `${h * 100}%`,
       }}
@@ -379,7 +335,7 @@ function ShapeView({
           height: "100%",
           borderWidth: selected ? 3 : 2,
           borderColor: border,
-          backgroundColor: fill,
+          backgroundColor: shapeFill(shape.color),
           borderRadius: shape.type === "circle" ? 9999 : 8,
         }}
       />
@@ -419,7 +375,7 @@ function Pin({
   onMove: (x: number, y: number) => void;
   toNorm: (e: GestureResponderEvent) => { x: number; y: number } | null;
 }) {
-  const color = optionColor(marker.color ?? DEFAULT_MARKER_COLOR).text;
+  const color = markerHex(marker.color);
   // Local drag position (normalized) while dragging; null = use the stored value.
   const [drag, setDrag] = useState<{ x: number; y: number } | null>(null);
   const dragged = useRef(false);
@@ -434,9 +390,8 @@ function Pin({
       // Center the pin on its point: shift left/up by half the badge.
       style={{
         position: "absolute",
-        left: `${x * 100}%`,
-        top: `${y * 100}%`,
-        transform: [{ translateX: -8 }, { translateY: -8 }],
+        ...percentPosition(x, y),
+        transform: [{ translateX: -MARKER_HALF }, { translateY: -MARKER_HALF }],
       }}
       // Drag handling via the responder system (web-safe). Tap is handled in
       // onResponderRelease so we don't fight the press handler.
@@ -564,7 +519,7 @@ function WebShapeRnd({
           borderStyle: "solid",
           borderWidth: selected ? 3 : 2,
           borderColor: selected ? colors.ink : hex,
-          backgroundColor: `${hex}1F`,
+          backgroundColor: shapeFill(shape.color),
           borderRadius: shape.type === "circle" ? 9999 : 8,
           position: "relative",
         }}
@@ -612,11 +567,14 @@ function WebMarkerRnd({
   onSelect: () => void;
   onDragStop: (x: number, y: number) => void;
 }) {
-  const color = optionColor(marker.color ?? DEFAULT_MARKER_COLOR).text;
+  const color = markerHex(marker.color);
 
   return (
     <Rnd
-      position={{ x: marker.x * W - 9, y: marker.y * H - 9 }}
+      position={{
+        x: marker.x * W - MARKER_RND_OFFSET,
+        y: marker.y * H - MARKER_RND_OFFSET,
+      }}
       enableResizing={false}
       bounds="parent"
       style={{ pointerEvents: "auto" }}
@@ -1134,16 +1092,11 @@ function WebLine({
 
   const cur = local ?? { x: sx, y: sy, x2: ex, y2: ey };
 
-  // Don't render before measurement or with a non-finite coord — feeding NaN
-  // into left/top/width triggers the "NaN is an invalid value" CSS warning.
-  if (!(W > 0 && H > 0) || !allFinite(cur.x, cur.y, cur.x2, cur.y2)) return null;
-
-  const x1px = cur.x * W;
-  const y1px = cur.y * H;
-  const x2px = cur.x2 * W;
-  const y2px = cur.y2 * H;
-  const length = Math.hypot(x2px - x1px, y2px - y1px);
-  const angleDeg = (Math.atan2(y2px - y1px, x2px - x1px) * 180) / Math.PI;
+  // Pixel geometry from the shared helper (returns null before measurement or
+  // on a non-finite coord, so we never feed NaN into left/top/width).
+  const geo = lineGeometry(cur, { width: W, height: H });
+  if (!geo) return null;
+  const { x1: x1px, y1: y1px, x2: x2px, y2: y2px, length, angleDeg } = geo;
 
   // Drag one endpoint ("start" or "end") via document mouse events.
   function startEndpointDrag(
@@ -1844,24 +1797,24 @@ export function SiteMapEditor({
     measureContainer();
   }
 
-  function clearSelection() {
+  const clearSelection = useCallback(() => {
     setSelectedId(null);
     setSelectedShapeId(null);
-  }
+  }, []);
 
   // Set on a shape/marker pointer-down so the canvas tap (which also fires via
   // the responder system) doesn't immediately clear the fresh selection.
   const interactingRef = useRef(false);
-  function selectShape(id: string) {
+  const selectShape = useCallback((id: string) => {
     interactingRef.current = true;
     setSelectedId(null);
     setSelectedShapeId(id);
-  }
-  function selectMarker(id: string) {
+  }, []);
+  const selectMarker = useCallback((id: string) => {
     interactingRef.current = true;
     setSelectedShapeId(null);
     setSelectedId(id);
-  }
+  }, []);
 
   /**
    * Normalized (0..1) position of a pointer event inside the canvas. Reads the
@@ -1869,45 +1822,56 @@ export function SiteMapEditor({
    * page coords each time — robust where RN-web's locationX / measureInWindow
    * are unreliable (which made everything snap to the corner).
    */
-  function eventToNorm(
-    e: GestureResponderEvent,
-  ): { x: number; y: number } | null {
-    const node: any = containerRef.current;
-    if (!node || typeof node.getBoundingClientRect !== "function") return null;
-    const rect = node.getBoundingClientRect();
-    if (!rect.width || !rect.height) return null;
-    const ne: any = e.nativeEvent;
-    const sx = typeof window !== "undefined" ? window.scrollX || 0 : 0;
-    const sy = typeof window !== "undefined" ? window.scrollY || 0 : 0;
-    const clientX =
-      ne.clientX != null ? ne.clientX : ne.pageX != null ? ne.pageX - sx : null;
-    const clientY =
-      ne.clientY != null ? ne.clientY : ne.pageY != null ? ne.pageY - sy : null;
-    if (clientX == null || clientY == null) return null;
-    return {
-      x: clamp01((clientX - rect.left) / rect.width),
-      y: clamp01((clientY - rect.top) / rect.height),
-    };
-  }
+  const eventToNorm = useCallback(
+    (e: GestureResponderEvent): { x: number; y: number } | null => {
+      const node: any = containerRef.current;
+      if (!node || typeof node.getBoundingClientRect !== "function")
+        return null;
+      const rect = node.getBoundingClientRect();
+      if (!rect.width || !rect.height) return null;
+      const ne: any = e.nativeEvent;
+      const sx = typeof window !== "undefined" ? window.scrollX || 0 : 0;
+      const sy = typeof window !== "undefined" ? window.scrollY || 0 : 0;
+      const clientX =
+        ne.clientX != null
+          ? ne.clientX
+          : ne.pageX != null
+            ? ne.pageX - sx
+            : null;
+      const clientY =
+        ne.clientY != null
+          ? ne.clientY
+          : ne.pageY != null
+            ? ne.pageY - sy
+            : null;
+      if (clientX == null || clientY == null) return null;
+      return {
+        x: clamp01((clientX - rect.left) / rect.width),
+        y: clamp01((clientY - rect.top) / rect.height),
+      };
+    },
+    [],
+  );
 
   /**
    * Normalized (0..1) position from raw DOM client coords (web only). Used by
    * the hand-rolled line endpoint/body drag, which listens to document mouse
    * events rather than the RN responder system.
    */
-  function clientToNorm(
-    clientX: number,
-    clientY: number,
-  ): { x: number; y: number } | null {
-    const node: any = containerRef.current;
-    if (!node || typeof node.getBoundingClientRect !== "function") return null;
-    const rect = node.getBoundingClientRect();
-    if (!rect.width || !rect.height) return null;
-    return {
-      x: clamp01((clientX - rect.left) / rect.width),
-      y: clamp01((clientY - rect.top) / rect.height),
-    };
-  }
+  const clientToNorm = useCallback(
+    (clientX: number, clientY: number): { x: number; y: number } | null => {
+      const node: any = containerRef.current;
+      if (!node || typeof node.getBoundingClientRect !== "function")
+        return null;
+      const rect = node.getBoundingClientRect();
+      if (!rect.width || !rect.height) return null;
+      return {
+        x: clamp01((clientX - rect.left) / rect.width),
+        y: clamp01((clientY - rect.top) / rect.height),
+      };
+    },
+    [],
+  );
 
   // Line draw-to-draw: pointer-down sets the start point (= end, zero length).
   function onCanvasGrant(e: GestureResponderEvent) {
@@ -2140,15 +2104,6 @@ export function SiteMapEditor({
   // In template scope there's no event to load, so only gate on the map data.
   const chromeLoading =
     data === undefined || (scope.kind === "event" && eventData === undefined);
-  if (chromeLoading) {
-    if (embedded) return <ActivityIndicator color={colors.accent} />;
-    return (
-      <>
-        <Stack.Screen options={{ headerShown: true, title: "Site map" }} />
-        <Screen loading />
-      </>
-    );
-  }
 
   const eventName = eventData?.event?.name ?? "Event";
   const markers = (data?.markers ?? []) as Marker[];
@@ -2172,16 +2127,44 @@ export function SiteMapEditor({
   const placements = (overlays?.placements ?? []) as Placement[];
   const supplyItems = (overlays?.supplies ?? []) as SupplyItem[];
   const volunteerItems = (overlays?.volunteers ?? []) as VolunteerItem[];
-  const placedRefs = (kind: PlacementKind) =>
-    new Set(placements.filter((p) => p.kind === kind).map((p) => p.refId));
-  const placedSupplyRefs = placedRefs("supply");
-  const placedVolunteerRefs = placedRefs("volunteer");
-  const unplacedSupplies: TrayItem[] = supplyItems
-    .filter((s) => !placedSupplyRefs.has(s.refId))
-    .map((s) => ({ refId: s.refId, label: s.title }));
-  const unplacedVolunteers: TrayItem[] = volunteerItems
-    .filter((vv) => !placedVolunteerRefs.has(vv.refId))
-    .map((vv) => ({ refId: vv.refId, label: vv.name }));
+  // Not-yet-placed items per layer, recomputed only when placements/items change.
+  const unplacedSupplies = useMemo<TrayItem[]>(() => {
+    const placed = new Set(
+      placements.filter((p) => p.kind === "supply").map((p) => p.refId),
+    );
+    return supplyItems
+      .filter((s) => !placed.has(s.refId))
+      .map((s) => ({ refId: s.refId, label: s.title }));
+  }, [placements, supplyItems]);
+  const unplacedVolunteers = useMemo<TrayItem[]>(() => {
+    const placed = new Set(
+      placements.filter((p) => p.kind === "volunteer").map((p) => p.refId),
+    );
+    return volunteerItems
+      .filter((vv) => !placed.has(vv.refId))
+      .map((vv) => ({ refId: vv.refId, label: vv.name }));
+  }, [placements, volunteerItems]);
+
+  // Live line-draw preview geometry (pixels) from the shared helper — null when
+  // not drawing, before measurement, or on a non-finite coord.
+  const draftGeo = useMemo(
+    () => (lineDraft ? lineGeometry(lineDraft, { width: W, height: H }) : null),
+    [lineDraft, W, H],
+  );
+
+  // NOTE: keep this loading guard AFTER all hooks (incl. the useMemos above).
+  // An early return placed before them causes "rendered more hooks than during
+  // the previous render" once the data loads. The derived consts above are all
+  // null-safe (optional chaining) so they're fine to compute while loading.
+  if (chromeLoading) {
+    if (embedded) return <ActivityIndicator color={colors.accent} />;
+    return (
+      <>
+        <Stack.Screen options={{ headerShown: true, title: "Site map" }} />
+        <Screen loading />
+      </>
+    );
+  }
 
   // The hint that runs beneath the toolbar, based on mode + selection.
   let hint: string;
@@ -2393,39 +2376,21 @@ export function SiteMapEditor({
                             />
                           ))}
 
-                        {/* Live preview of the line being drawn. Guarded so a
-                            non-finite coord or zero canvas size never yields a
-                            NaN left/top/width. */}
-                        {lineDraft &&
-                        W > 0 &&
-                        H > 0 &&
-                        allFinite(
-                          lineDraft.x,
-                          lineDraft.y,
-                          lineDraft.x2,
-                          lineDraft.y2,
-                        ) ? (
+                        {/* Live preview of the line being drawn. `draftGeo` is
+                            null before measurement or on a non-finite coord, so
+                            no NaN ever reaches left/top/width. */}
+                        {draftGeo ? (
                           <div
                             style={{
                               position: "absolute",
-                              left: lineDraft.x * W,
-                              top: lineDraft.y * H,
-                              width: Math.hypot(
-                                (lineDraft.x2 - lineDraft.x) * W,
-                                (lineDraft.y2 - lineDraft.y) * H,
-                              ),
+                              left: draftGeo.x1,
+                              top: draftGeo.y1,
+                              width: draftGeo.length,
                               height: 3,
                               backgroundColor: shapeHex(shapeColor),
                               opacity: 0.5,
                               borderRadius: 2,
-                              transform: `rotateZ(${
-                                (Math.atan2(
-                                  (lineDraft.y2 - lineDraft.y) * H,
-                                  (lineDraft.x2 - lineDraft.x) * W,
-                                ) *
-                                  180) /
-                                Math.PI
-                              }deg)`,
+                              transform: `rotateZ(${draftGeo.angleDeg}deg)`,
                               transformOrigin: "left center",
                               pointerEvents: "none",
                             }}
@@ -2471,8 +2436,8 @@ export function SiteMapEditor({
                             onSelect={() => selectMarker(m._id)}
                             onDragStop={(x, y) =>
                               opPatchMarker(m._id, {
-                                x: clamp01((x + 9) / W),
-                                y: clamp01((y + 9) / H),
+                                x: clamp01((x + MARKER_RND_OFFSET) / W),
+                                y: clamp01((y + MARKER_RND_OFFSET) / H),
                               })
                             }
                           />
@@ -2551,7 +2516,7 @@ export function SiteMapEditor({
                   <>
                     {/* Shapes layer — rendered BENEATH the pins. */}
                     {shapes.map((s) => (
-                      <ShapeView
+                      <EditorShape
                         key={s._id}
                         shape={s}
                         selected={s._id === selectedShapeId}
