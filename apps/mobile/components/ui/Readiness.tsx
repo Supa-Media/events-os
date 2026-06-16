@@ -1,6 +1,11 @@
 import { Platform, Text, View } from "react-native";
 import { readinessColor } from "../../lib/theme";
-import { PHASE_KEYS, PHASE_LABELS, type PhaseScores } from "@events-os/shared";
+import {
+  PHASE_KEYS,
+  PHASE_LABELS,
+  readinessTier,
+  type PhaseScores,
+} from "@events-os/shared";
 
 /**
  * Readiness shown as a colored % chip. Color follows the value
@@ -133,8 +138,12 @@ export function ReadinessBar({
   );
 }
 
+// Derives the tier from the shared `readinessTier` (one threshold rule) then
+// maps tier → NativeWind chip classes.
 function toneClass(value: number): { bg: string; text: string } {
-  if (value < 34) return { bg: "bg-danger-bg", text: "text-danger" };
-  if (value < 67) return { bg: "bg-warn-bg", text: "text-warn" };
-  return { bg: "bg-success-bg", text: "text-success" };
+  return {
+    danger: { bg: "bg-danger-bg", text: "text-danger" },
+    warn: { bg: "bg-warn-bg", text: "text-warn" },
+    success: { bg: "bg-success-bg", text: "text-success" },
+  }[readinessTier(value)];
 }

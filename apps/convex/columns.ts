@@ -8,10 +8,16 @@
  * bumps the template version; events keep their cloned snapshot (eventColumns).
  */
 import { query, mutation } from "./_generated/server";
-import { Id } from "./_generated/dataModel";
-import { v } from "convex/values";
-import { requireChapterId, requireInChapter } from "./lib/context";
+import { v, ConvexError } from "convex/values";
+import { COLUMN_TYPES } from "@events-os/shared";
+import {
+  requireEvent,
+  requireEventType,
+  requireOwned,
+} from "./lib/context";
 import { bumpVersion } from "./lib/templates";
+
+const KNOWN_COLUMN_TYPES = new Set<string>(COLUMN_TYPES);
 
 const optionValidator = v.object({
   value: v.string(),
@@ -39,16 +45,14 @@ function maxOrder(rows: Array<{ order: number }>): number {
 export const listForTemplate = query({
   args: { eventTypeId: v.id("eventTypes"), module: v.string() },
   handler: async (ctx, { eventTypeId, module }) => {
-    const chapterId = await requireChapterId(ctx);
-    const et = await ctx.db.get(eventTypeId);
-    await requireInChapter(ctx, chapterId, et, "Event type");
+    await requireEventType(ctx, eventTypeId);
     const cols = await ctx.db
       .query("templateColumns")
-      .withIndex("by_eventType_module", (q: any) =>
+      .withIndex("by_eventType_module", (q) =>
         q.eq("eventTypeId", eventTypeId).eq("module", module),
       )
       .collect();
-    return cols.sort((a: any, b: any) => a.order - b.order);
+    return cols.sort((a, b) => a.order - b.order);
   },
 });
 
@@ -63,19 +67,25 @@ export const addColumn = mutation({
     config: v.optional(v.any()),
   },
   handler: async (ctx, args) => {
-    const chapterId = await requireChapterId(ctx);
-    const et = await ctx.db.get(args.eventTypeId);
-    await requireInChapter(ctx, chapterId, et, "Event type");
+    await requireEventType(ctx, args.eventTypeId);
+    // Reject unknown column types so a bad client can't write a type the grid
+    // can't render (the value would silently break rendering/parsing).
+    if (!KNOWN_COLUMN_TYPES.has(args.type)) {
+      throw new ConvexError({
+        code: "INVALID_COLUMN_TYPE",
+        message: `Unknown column type "${args.type}".`,
+      });
+    }
     const cols = await ctx.db
       .query("templateColumns")
-      .withIndex("by_eventType_module", (q: any) =>
+      .withIndex("by_eventType_module", (q) =>
         q.eq("eventTypeId", args.eventTypeId).eq("module", args.module),
       )
       .collect();
 
     // Ensure a unique key within the module.
     let key = toKey(args.label);
-    const taken = new Set(cols.map((c: any) => c.key));
+    const taken = new Set(cols.map((c) => c.key));
     if (taken.has(key)) {
       let i = 2;
       while (taken.has(`${key}_${i}`)) i++;
@@ -110,11 +120,9 @@ export const updateColumn = mutation({
     width: v.optional(v.number()),
   },
   handler: async (ctx, { columnId, ...patch }) => {
-    const chapterId = await requireChapterId(ctx);
     const col = await ctx.db.get(columnId);
     if (!col) return columnId;
-    const et = await ctx.db.get(col.eventTypeId);
-    await requireInChapter(ctx, chapterId, et, "Event type");
+    await requireEventType(ctx, col.eventTypeId);
     const fields: Record<string, unknown> = {};
     for (const [k, val] of Object.entries(patch)) {
       if (val !== undefined) fields[k] = val;
@@ -129,11 +137,9 @@ export const updateColumn = mutation({
 export const removeColumn = mutation({
   args: { columnId: v.id("templateColumns") },
   handler: async (ctx, { columnId }) => {
-    const chapterId = await requireChapterId(ctx);
     const col = await ctx.db.get(columnId);
     if (!col) return columnId;
-    const et = await ctx.db.get(col.eventTypeId);
-    await requireInChapter(ctx, chapterId, et, "Event type");
+    await requireEventType(ctx, col.eventTypeId);
     if (col.kind === "system") {
       // System columns are structural; hide instead of delete.
       await ctx.db.patch(columnId, { isVisible: false });
@@ -154,9 +160,7 @@ export const reorderColumns = mutation({
     orderedIds: v.array(v.id("templateColumns")),
   },
   handler: async (ctx, { eventTypeId, module, orderedIds }) => {
-    const chapterId = await requireChapterId(ctx);
-    const et = await ctx.db.get(eventTypeId);
-    await requireInChapter(ctx, chapterId, et, "Event type");
+    await requireEventType(ctx, eventTypeId);
     for (let i = 0; i < orderedIds.length; i++) {
       const col = await ctx.db.get(orderedIds[i]);
       if (col && col.eventTypeId === eventTypeId && col.module === module) {
@@ -173,11 +177,9 @@ export const reorderColumns = mutation({
 export const setEventColumnVisibility = mutation({
   args: { columnId: v.id("eventColumns"), isVisible: v.boolean() },
   handler: async (ctx, { columnId, isVisible }) => {
-    const chapterId = await requireChapterId(ctx);
     const col = await ctx.db.get(columnId);
     if (!col) return columnId;
-    const event = await ctx.db.get(col.eventId);
-    await requireInChapter(ctx, chapterId, event, "Event");
+    await requireEvent(ctx, col.eventId);
     await ctx.db.patch(columnId, { isVisible });
     return columnId;
   },
@@ -199,11 +201,9 @@ export const updateEventColumn = mutation({
     width: v.optional(v.number()),
   },
   handler: async (ctx, { columnId, ...patch }) => {
-    const chapterId = await requireChapterId(ctx);
     const col = await ctx.db.get(columnId);
     if (!col) return columnId;
-    const event = await ctx.db.get(col.eventId);
-    await requireInChapter(ctx, chapterId, event, "Event");
+    await requireEvent(ctx, col.eventId);
     const fields: Record<string, unknown> = {};
     for (const [k, val] of Object.entries(patch)) {
       if (val !== undefined) fields[k] = val;
@@ -221,9 +221,7 @@ export const reorderEventColumns = mutation({
     orderedIds: v.array(v.id("eventColumns")),
   },
   handler: async (ctx, { eventId, module, orderedIds }) => {
-    const chapterId = await requireChapterId(ctx);
-    const event = await ctx.db.get(eventId);
-    await requireInChapter(ctx, chapterId, event, "Event");
+    await requireEvent(ctx, eventId);
     for (let i = 0; i < orderedIds.length; i++) {
       const col = await ctx.db.get(orderedIds[i]);
       if (col && col.eventId === eventId && col.module === module) {

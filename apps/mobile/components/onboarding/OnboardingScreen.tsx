@@ -3,12 +3,14 @@ import { View, Text, ActivityIndicator } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { KeyboardAwareScrollView } from "react-native-keyboard-controller";
 import { useQuery, useMutation } from "convex/react";
+import { useAuthActions } from "@convex-dev/auth/react";
 import { api } from "@events-os/convex/_generated/api";
+import type { Id } from "@events-os/convex/_generated/dataModel";
 import { Card, Button, TextField, Icon } from "../ui";
 import { colors } from "../../lib/theme";
 import { errorMessage } from "../../lib/errors";
 
-type ChapterId = string;
+type ChapterId = Id<"chapters">;
 
 /**
  * First-run onboarding. Collects the user's name + phone (both required) and
@@ -18,6 +20,7 @@ type ChapterId = string;
  */
 export function OnboardingScreen() {
   const insets = useSafeAreaInsets();
+  const { signOut } = useAuthActions();
   const chapters = useQuery(api.profiles.listChapters);
   const complete = useMutation(api.profiles.completeOnboarding);
 
@@ -37,7 +40,7 @@ export function OnboardingScreen() {
       await complete({
         name: name.trim(),
         phone: phone.trim(),
-        chapterId: chapterId as any,
+        chapterId,
       });
       // No navigation needed — the profiles.me gate re-runs and renders the app.
     } catch (e) {
@@ -110,7 +113,8 @@ export function OnboardingScreen() {
               </View>
             ) : chapters.length === 0 ? (
               <Text className="mb-3 text-sm text-muted">
-                No chapters are available yet. Check back soon.
+                No chapters are available yet. Check back soon, or sign out and
+                try a different account.
               </Text>
             ) : (
               <View className="mb-3 gap-2">
@@ -135,13 +139,29 @@ export function OnboardingScreen() {
               </View>
             ) : null}
 
-            <Button
-              title="Continue"
-              onPress={submit}
-              loading={submitting}
-              disabled={!canSubmit}
-              className="w-full"
-            />
+            {/* Only offer Continue when a chapter can actually be joined. With
+                no chapters the form can't be submitted, so we lead with the
+                sign-out escape instead of leaving the user on a dead end. */}
+            {chapters && chapters.length === 0 ? null : (
+              <Button
+                title="Continue"
+                onPress={submit}
+                loading={submitting}
+                disabled={!canSubmit}
+                className="w-full"
+              />
+            )}
+
+            <View className="mt-2 items-center">
+              <Button
+                title="Sign out"
+                variant="ghost"
+                size="sm"
+                icon="log-out"
+                onPress={() => signOut()}
+                disabled={submitting}
+              />
+            </View>
           </Card>
         </View>
       </KeyboardAwareScrollView>

@@ -265,12 +265,32 @@ export const searchForAi = query({
   },
 });
 
-/** Internal: overwrite a doc's body (used by the AI generate/improve action). */
+/**
+ * Internal: overwrite a doc's body (used by the AI generate/improve action).
+ *
+ * Defensive chapter guard: the AI action verifies the doc's chapter (via
+ * `forAi`) before running the agent loop, but this internalMutation is a raw
+ * write primitive — anything with the `internal` reference could call it with an
+ * arbitrary `docId`. When the caller passes `expectedChapterId` (the chapter it
+ * authorized against), we assert the target doc still belongs to that chapter
+ * and refuse the write otherwise — so the doc-assistant can't be tricked into a
+ * cross-chapter body overwrite via a swapped/stale docId.
+ */
 export const setBody = internalMutation({
-  args: { docId: v.id("docs"), body: v.string() },
-  handler: async (ctx, { docId, body }) => {
+  args: {
+    docId: v.id("docs"),
+    body: v.string(),
+    expectedChapterId: v.optional(v.id("chapters")),
+  },
+  handler: async (ctx, { docId, body, expectedChapterId }) => {
     const doc = await ctx.db.get(docId);
     if (!doc) return;
+    if (expectedChapterId !== undefined && doc.chapterId !== expectedChapterId) {
+      throw new ConvexError({
+        code: "CROSS_CHAPTER",
+        message: "Refusing to write a doc outside the authorized chapter.",
+      });
+    }
     await ctx.db.patch(docId, { body, updatedAt: Date.now() });
   },
 });
@@ -282,6 +302,11 @@ export const forAi = query({
     const chapterId = await requireChapterId(ctx);
     const doc = await ctx.db.get(docId);
     if (!doc || doc.chapterId !== chapterId) return null;
-    return { title: doc.title, body: doc.body ?? "", kind: doc.kind };
+    return {
+      chapterId: doc.chapterId,
+      title: doc.title,
+      body: doc.body ?? "",
+      kind: doc.kind,
+    };
   },
 });

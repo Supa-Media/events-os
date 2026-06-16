@@ -7,12 +7,12 @@
  * splits engagements into two lists (Volunteers / Vendors); paid engagements
  * carry an amount + payment status and roll into the event budget.
  */
-import { query, mutation } from "./_generated/server";
+import { query, mutation, QueryCtx } from "./_generated/server";
 import { Id } from "./_generated/dataModel";
 import { v } from "convex/values";
 import {
-  requireChapterId,
-  requireInChapter,
+  requireEvent,
+  requireOwned,
   getChapterIdOrNull,
 } from "./lib/context";
 
@@ -39,12 +39,12 @@ export const listForEvent = query({
 
     const rows = await ctx.db
       .query("engagements")
-      .withIndex("by_event", (q: any) => q.eq("eventId", eventId))
+      .withIndex("by_event", (q) => q.eq("eventId", eventId))
       .collect();
-    const filtered = type ? rows.filter((r: any) => r.type === type) : rows;
+    const filtered = type ? rows.filter((r) => r.type === type) : rows;
 
     const withPerson = await Promise.all(
-      filtered.map(async (e: any) => {
+      filtered.map(async (e) => {
         const person = await ctx.db.get(e.personId as Id<"people">);
         return {
           ...e,
@@ -55,29 +55,29 @@ export const listForEvent = query({
                 email: person.email ?? null,
                 phone: person.phone ?? null,
                 skills: person.skills ?? [],
-                isPlaceholder: (person as any).isPlaceholder === true,
+                isPlaceholder: person.isPlaceholder === true,
               }
             : null,
         };
       }),
     );
-    return withPerson.sort((a: any, b: any) => a.createdAt - b.createdAt);
+    return withPerson.sort((a, b) => a.createdAt - b.createdAt);
   },
 });
 
 /** Total paid-vendor spend committed on an event (sums paid engagements). */
 export async function paidTotalForEvent(
-  ctx: any,
+  ctx: QueryCtx,
   eventId: Id<"events">,
 ): Promise<number> {
   const rows = await ctx.db
     .query("engagements")
-    .withIndex("by_event_type", (q: any) =>
+    .withIndex("by_event_type", (q) =>
       q.eq("eventId", eventId).eq("type", "paid"),
     )
     .collect();
   return rows.reduce(
-    (sum: number, e: any) => sum + (Number.isFinite(e.amountUsd) ? e.amountUsd : 0),
+    (sum, e) => sum + (Number.isFinite(e.amountUsd) ? (e.amountUsd as number) : 0),
     0,
   );
 }
@@ -93,13 +93,10 @@ export const add = mutation({
     amountUsd: v.optional(v.number()),
   },
   handler: async (ctx, args) => {
-    const chapterId = await requireChapterId(ctx);
-    const event = await ctx.db.get(args.eventId);
-    await requireInChapter(ctx, chapterId, event, "Event");
-    const person = await ctx.db.get(args.personId);
-    await requireInChapter(ctx, chapterId, person, "Person");
+    const event = await requireEvent(ctx, args.eventId);
+    await requireOwned(ctx, "people", args.personId, "Person");
     return await ctx.db.insert("engagements", {
-      chapterId: chapterId as Id<"chapters">,
+      chapterId: event.chapterId,
       eventId: args.eventId,
       personId: args.personId,
       type: args.type,
@@ -128,9 +125,7 @@ export const update = mutation({
     notes: v.optional(v.union(v.string(), v.null())),
   },
   handler: async (ctx, { engagementId, ...patch }) => {
-    const chapterId = await requireChapterId(ctx);
-    const eng = await ctx.db.get(engagementId);
-    await requireInChapter(ctx, chapterId, eng, "Engagement");
+    const eng = await requireOwned(ctx, "engagements", engagementId, "Engagement");
     const fields: Record<string, unknown> = {};
     if (patch.type !== undefined) {
       fields.type = patch.type;
@@ -138,7 +133,7 @@ export const update = mutation({
       if (patch.type === "volunteer") {
         fields.amountUsd = undefined;
         fields.paymentStatus = undefined;
-      } else if (eng!.paymentStatus === undefined) {
+      } else if (eng.paymentStatus === undefined) {
         fields.paymentStatus = "unpaid";
       }
     }
@@ -172,17 +167,13 @@ export const replacePlaceholderVolunteer = mutation({
     personId: v.id("people"),
   },
   handler: async (ctx, { engagementId, personId }) => {
-    const chapterId = await requireChapterId(ctx);
-    const eng = await ctx.db.get(engagementId);
-    await requireInChapter(ctx, chapterId, eng, "Engagement");
+    const eng = await requireOwned(ctx, "engagements", engagementId, "Engagement");
     // The engagement's event must be in this chapter.
-    const event = await ctx.db.get(eng!.eventId as Id<"events">);
-    await requireInChapter(ctx, chapterId, event, "Event");
+    await requireEvent(ctx, eng.eventId);
     // The real replacement person must be in this chapter.
-    const person = await ctx.db.get(personId);
-    await requireInChapter(ctx, chapterId, person, "Person");
+    await requireOwned(ctx, "people", personId, "Person");
 
-    const oldPersonId = eng!.personId as Id<"people">;
+    const oldPersonId = eng.personId as Id<"people">;
 
     // Repoint the engagement at the real person.
     await ctx.db.patch(engagementId, { personId });
@@ -191,7 +182,7 @@ export const replacePlaceholderVolunteer = mutation({
     // the same event to the real person.
     const items = await ctx.db
       .query("eventItems")
-      .withIndex("by_event", (q: any) => q.eq("eventId", eng!.eventId))
+      .withIndex("by_event", (q) => q.eq("eventId", eng.eventId))
       .collect();
     for (const it of items) {
       if (it.ownerPersonId === oldPersonId) {
@@ -203,10 +194,10 @@ export const replacePlaceholderVolunteer = mutation({
     // delete it — it only ever existed as a stand-in.
     if (oldPersonId !== personId) {
       const oldPerson = await ctx.db.get(oldPersonId);
-      if (oldPerson && (oldPerson as any).isPlaceholder === true) {
+      if (oldPerson && oldPerson.isPlaceholder === true) {
         const remaining = await ctx.db
           .query("engagements")
-          .withIndex("by_person", (q: any) => q.eq("personId", oldPersonId))
+          .withIndex("by_person", (q) => q.eq("personId", oldPersonId))
           .collect();
         if (remaining.length === 0) {
           await ctx.db.delete(oldPersonId);
@@ -222,9 +213,7 @@ export const replacePlaceholderVolunteer = mutation({
 export const remove = mutation({
   args: { engagementId: v.id("engagements") },
   handler: async (ctx, { engagementId }) => {
-    const chapterId = await requireChapterId(ctx);
-    const eng = await ctx.db.get(engagementId);
-    await requireInChapter(ctx, chapterId, eng, "Engagement");
+    await requireOwned(ctx, "engagements", engagementId, "Engagement");
     await ctx.db.delete(engagementId);
     return engagementId;
   },
@@ -237,17 +226,15 @@ export const remove = mutation({
 export const historyForPerson = query({
   args: { personId: v.id("people") },
   handler: async (ctx, { personId }) => {
-    const chapterId = await requireChapterId(ctx);
-    const person = await ctx.db.get(personId);
-    await requireInChapter(ctx, chapterId, person, "Person");
+    await requireOwned(ctx, "people", personId, "Person");
 
     const rows = await ctx.db
       .query("engagements")
-      .withIndex("by_person", (q: any) => q.eq("personId", personId))
+      .withIndex("by_person", (q) => q.eq("personId", personId))
       .collect();
 
     const history = await Promise.all(
-      rows.map(async (e: any) => {
+      rows.map(async (e) => {
         const event = await ctx.db.get(e.eventId as Id<"events">);
         return {
           engagementId: e._id,

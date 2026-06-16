@@ -1,7 +1,8 @@
 import { useState } from "react";
-import { View, Text } from "react-native";
+import { View, Text, useWindowDimensions } from "react-native";
 import { useRouter } from "expo-router";
 import { useQuery, useMutation } from "convex/react";
+import type { FunctionReturnType } from "convex/server";
 import { api } from "@events-os/convex/_generated/api";
 import {
   Screen,
@@ -20,9 +21,11 @@ import {
   Row,
   Cell,
   statusTone,
+  ToastView,
 } from "../../../components/ui";
 import { colors } from "../../../lib/theme";
 import { formatDate } from "../../../lib/format";
+import { useActionRunner } from "../../../lib/useActionToast";
 import {
   EVENT_STATUS_LABELS,
   PHASE_LABELS,
@@ -30,15 +33,30 @@ import {
   type PhaseKey,
 } from "@events-os/shared";
 
+/** A single enriched row from `api.events.pipeline`. */
+type PipelineEvent = FunctionReturnType<typeof api.events.pipeline>[number];
+/** The `api.dashboard.summary` shape (non-null once loaded). */
+type Summary = NonNullable<FunctionReturnType<typeof api.dashboard.summary>>;
+
+/**
+ * Wide-viewport breakpoint. Mirrors AppShell's `DESKTOP` (760) — at/above it we
+ * render the data table; below it the table's fixed columns overlap on narrow
+ * screens, so we fall back to a readable card list.
+ */
+const WIDE = 760;
+
 /** PIPELINE — the landing screen. Stat strip + a sortable table of events. */
 export default function PipelineScreen() {
   const router = useRouter();
+  const { width } = useWindowDimensions();
+  const wide = width >= WIDE;
   const summary = useQuery(api.dashboard.summary);
   const pipeline = useQuery(api.events.pipeline);
   const templates = useQuery(api.eventTypes.list);
 
   const seed = useMutation(api.seed.seedDemoData);
   const [seeding, setSeeding] = useState(false);
+  const { run, toast, dismiss } = useActionRunner();
 
   const loading =
     summary === undefined || pipeline === undefined || templates === undefined;
@@ -50,7 +68,7 @@ export default function PipelineScreen() {
   async function handleSeed() {
     setSeeding(true);
     try {
-      await seed({});
+      await run(() => seed({}), { errorTitle: "Couldn't seed demo data" });
     } finally {
       setSeeding(false);
     }
@@ -58,6 +76,7 @@ export default function PipelineScreen() {
 
   return (
     <Screen maxWidth={1120}>
+      <ToastView toast={toast} onDismiss={dismiss} />
       <PageHeader
         eyebrow="Operations"
         title="Pipeline"
@@ -105,7 +124,7 @@ export default function PipelineScreen() {
             />
           )}
         </View>
-      ) : (
+      ) : wide ? (
         <View className="mt-6">
           <Table>
             <TableHeader>
@@ -116,7 +135,7 @@ export default function PipelineScreen() {
               <HeaderCell width={96}>Blockers</HeaderCell>
               <HeaderCell width={108}>Status</HeaderCell>
             </TableHeader>
-            {pipeline.map((e: any, i: number) => (
+            {pipeline.map((e, i) => (
               <Row
                 key={e._id}
                 last={i === pipeline.length - 1}
@@ -167,12 +186,79 @@ export default function PipelineScreen() {
             ))}
           </Table>
         </View>
+      ) : (
+        <View className="mt-6 gap-3">
+          {pipeline.map((e) => (
+            <PipelineCard
+              key={e._id}
+              event={e}
+              onPress={() => router.push(`/event/${e._id}`)}
+            />
+          ))}
+        </View>
       )}
     </Screen>
   );
 }
 
-function StatStrip({ summary }: { summary: any }) {
+/**
+ * Narrow-viewport pipeline row. Renders the same data as a table row but stacked
+ * into a tappable card so nothing overlaps or truncates on phones.
+ */
+function PipelineCard({
+  event,
+  onPress,
+}: {
+  event: PipelineEvent;
+  onPress: () => void;
+}) {
+  return (
+    <Card onPress={onPress} padding="md">
+      <View className="flex-row items-start gap-3">
+        <View className="flex-1">
+          <Text className="text-base font-semibold text-ink" numberOfLines={2}>
+            {event.name}
+          </Text>
+          <Text className="mt-0.5 text-sm text-muted" numberOfLines={1}>
+            {event.eventTypeName} · {formatDate(event.eventDate)}
+          </Text>
+        </View>
+        <Badge
+          label={EVENT_STATUS_LABELS[event.status as EventStatus]}
+          tone={statusTone(event.status as EventStatus)}
+        />
+      </View>
+
+      <View className="mt-3">
+        <View className="flex-row items-center justify-between">
+          <Text className="text-2xs font-bold uppercase tracking-wider text-muted">
+            {PHASE_LABELS[event.currentPhase as PhaseKey] ?? "Planning"}
+          </Text>
+          <Text className="text-sm text-muted">
+            {event.taskDone}/{event.taskTotal} tasks
+          </Text>
+        </View>
+        {event.currentPhasePct != null ? (
+          <View className="mt-1.5">
+            <ReadinessBar value={event.currentPhasePct} />
+          </View>
+        ) : null}
+      </View>
+
+      {event.blockerCount > 0 ? (
+        <View className="mt-2.5 flex-row">
+          <Badge
+            label={`${event.blockerCount} blocker${event.blockerCount === 1 ? "" : "s"}`}
+            tone="danger"
+            icon="alert-triangle"
+          />
+        </View>
+      ) : null}
+    </Card>
+  );
+}
+
+function StatStrip({ summary }: { summary: Summary }) {
   return (
     <View className="flex-row flex-wrap gap-4">
       <StatCard

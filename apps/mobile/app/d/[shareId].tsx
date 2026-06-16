@@ -71,6 +71,8 @@ export default function DocShareScreen() {
       >
         <Pressable
           onPress={() => router.push(`/doc/${doc._id}` as any)}
+          accessibilityRole="button"
+          accessibilityLabel="Edit this document"
           className="flex-row items-center gap-1.5 rounded-md border border-border px-3 py-1.5 active:bg-sunken web:hover:bg-sunken"
         >
           <Icon name="edit-2" size={14} color={colors.muted} />
@@ -95,6 +97,10 @@ export default function DocShareScreen() {
             doc.url ? (
               <Pressable
                 onPress={() => Linking.openURL(doc.url as string)}
+                accessibilityRole="link"
+                accessibilityLabel={
+                  doc.kind === "video" ? "Watch video" : "Open link"
+                }
                 className="flex-row items-center gap-2 self-start rounded-lg bg-accent px-4 py-2.5 active:opacity-80"
               >
                 <Icon

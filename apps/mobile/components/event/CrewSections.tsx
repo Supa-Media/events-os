@@ -6,7 +6,8 @@
  * pixel column widths inside a horizontal ScrollView, an uppercase header row,
  * bordered cells, inline text that commits on blur, OptionTag+Popover selects,
  * an add-row, and a delete gutter. Volunteers is a FLAT, sortable table with a
- * Team column (no team group-header bands).
+ * Team column (no team group-header bands). Both tables share the parameterized
+ * `<EngagementTable>` — they differ only in their column descriptors.
  *
  * PERSON-EDIT: Name / Email / Phone live on the shared `people` record, not on
  * the engagement — editing them here updates the person everywhere (every event
@@ -16,11 +17,10 @@
  * layout lives on inner Views with static className + active:/web:hover variants.
  * Inline cells commit on `onBlur` (onEndEditing does not fire on RN-web).
  */
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useMemo, useState } from "react";
 import {
   View,
   Text,
-  TextInput,
   Pressable,
   ScrollView,
   Modal,
@@ -29,6 +29,7 @@ import {
 } from "react-native";
 import { useQuery, useMutation } from "convex/react";
 import { api } from "@events-os/convex/_generated/api";
+import type { Doc, Id } from "@events-os/convex/_generated/dataModel";
 import {
   SectionHeader,
   Button,
@@ -38,40 +39,26 @@ import {
   Popover,
   PersonPicker,
   Badge,
+  InlineText,
+  useAnchor,
 } from "../ui";
 import { colors } from "../../lib/theme";
 import { formatDate } from "../../lib/format";
+import {
+  EngagementTable,
+  type EngagementColumn,
+} from "./EngagementTable";
+import type {
+  Engagement,
+  EngagementPerson,
+  TeamOption,
+  Sort,
+  SortCol,
+} from "./engagementTypes";
 
 type EngagementType = "volunteer" | "paid";
 type Status = "invited" | "confirmed" | "declined";
 type PaymentStatus = "unpaid" | "invoiced" | "paid";
-
-type Person = {
-  _id: string;
-  name: string;
-  email?: string | null;
-  phone?: string | null;
-  skills?: string[];
-  isPlaceholder?: boolean;
-} | null;
-
-type TeamOption = { value: string; label: string; color?: string | null };
-
-type Engagement = {
-  _id: string;
-  eventId: string;
-  personId: string;
-  type: EngagementType;
-  teams?: string[] | null;
-  service?: string | null;
-  status: Status;
-  callTime?: string | null;
-  responsibilities?: string | null;
-  amountUsd?: number | null;
-  paymentStatus?: PaymentStatus | null;
-  notes?: string | null;
-  person: Person;
-};
 
 // ── Chip cycle definitions ────────────────────────────────────────────────────
 const STATUS_CYCLE: Status[] = ["invited", "confirmed", "declined"];
@@ -134,140 +121,6 @@ const VEN_COLS = {
   status: 120,
   type: 140,
 } as const;
-const DELETE_W = 38;
-
-function sumWidths(cols: Record<string, number>): number {
-  return Object.values(cols).reduce((a, b) => a + b, 0) + DELETE_W;
-}
-
-// ── Header cells ──────────────────────────────────────────────────────────────
-function HeaderCell({ label, width }: { label: string; width: number }) {
-  return (
-    <View style={{ width }} className="px-2 py-2.5">
-      <Text
-        className="text-2xs font-bold uppercase tracking-wider text-muted"
-        numberOfLines={1}
-      >
-        {label}
-      </Text>
-    </View>
-  );
-}
-
-/** A clickable header cell that drives the table's sort state. */
-function SortHeaderCell({
-  label,
-  width,
-  active,
-  dir,
-  onPress,
-}: {
-  label: string;
-  width: number;
-  active: boolean;
-  dir: 1 | -1;
-  onPress: () => void;
-}) {
-  return (
-    <Pressable
-      style={{ width }}
-      onPress={onPress}
-      className="flex-row items-center gap-1 px-2 py-2.5 active:opacity-70 web:hover:bg-sunken"
-    >
-      <Text
-        className={`text-2xs font-bold uppercase tracking-wider ${
-          active ? "text-ink" : "text-muted"
-        }`}
-        numberOfLines={1}
-      >
-        {label}
-      </Text>
-      {active ? (
-        <Icon
-          name={dir === 1 ? "chevron-up" : "chevron-down"}
-          size={12}
-          color={colors.muted}
-        />
-      ) : null}
-    </Pressable>
-  );
-}
-
-function Cell({ width, children }: { width: number; children: React.ReactNode }) {
-  return (
-    <View
-      style={{ width }}
-      className="flex-row items-center border-r border-border/60"
-    >
-      {children}
-    </View>
-  );
-}
-
-// ── Inline text input (commits on blur) — mirrors people.tsx InlineText ───────
-function InlineText({
-  value,
-  onCommit,
-  placeholder,
-  numeric,
-  parse,
-  format,
-  weight,
-}: {
-  value: any;
-  onCommit: (v: any) => void;
-  placeholder?: string;
-  numeric?: boolean;
-  parse?: (t: string) => any;
-  format?: (v: any) => string;
-  weight?: "normal" | "medium";
-}) {
-  const initial = format ? format(value) : value == null ? "" : String(value);
-  const [text, setText] = useState(initial);
-  // Keep the field in sync when the underlying value changes from elsewhere.
-  useEffect(() => {
-    setText(format ? format(value) : value == null ? "" : String(value));
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [value]);
-  return (
-    <TextInput
-      value={text}
-      onChangeText={setText}
-      placeholder={placeholder}
-      placeholderTextColor={colors.faint}
-      keyboardType={numeric ? "numbers-and-punctuation" : "default"}
-      autoCapitalize="none"
-      onBlur={() => onCommit(parse ? parse(text) : text)}
-      className={`flex-1 px-2 py-1.5 text-sm leading-snug text-ink ${
-        weight === "medium" ? "font-medium" : ""
-      }`}
-      style={{ minWidth: 40 }}
-    />
-  );
-}
-
-// ── Anchored-popover helper (matches grid/cells.tsx) ──────────────────────────
-function useAnchor() {
-  const ref = useRef<any>(null);
-  const [anchor, setAnchor] = useState<
-    { x: number; y: number; width: number; height: number } | undefined
-  >();
-  const [visible, setVisible] = useState(false);
-  const open = () => {
-    const node = ref.current;
-    if (node && typeof node.measureInWindow === "function") {
-      node.measureInWindow(
-        (x: number, y: number, width: number, height: number) => {
-          setAnchor({ x, y, width, height });
-          setVisible(true);
-        },
-      );
-    } else {
-      setVisible(true);
-    }
-  };
-  return { ref, anchor, visible, open, close: () => setVisible(false) };
-}
 
 // ── A selectable option row inside a popover (matches grid/cells.tsx) ─────────
 function OptionRow({
@@ -305,7 +158,8 @@ function OptionRow({
 
 // ── Team cell: a MULTI-select — a volunteer can be on more than one team. ─────
 // Shows a chip per selected team; the popover toggles options on/off and stays
-// open so several can be picked at once.
+// open so several can be picked at once. (Multi-select, so the single-value
+// shared SelectCell doesn't apply.)
 function TeamCell({
   teams,
   options,
@@ -409,7 +263,7 @@ function AmountCell({
   const [editing, setEditing] = useState(false);
   if (editing) {
     return (
-      <InlineText
+      <InlineText<number | null | undefined>
         value={value}
         numeric
         placeholder="$0"
@@ -419,7 +273,7 @@ function AmountCell({
           return t.trim() === "" || !Number.isFinite(n) ? null : n;
         }}
         onCommit={(v) => {
-          onCommit(v);
+          onCommit(v ?? null);
           setEditing(false);
         }}
       />
@@ -457,15 +311,15 @@ function RowAction({ label, onPress }: { label: string; onPress: () => void }) {
 // Placeholder volunteers (created from a template's crew) instead render a
 // tappable "Replace" affordance and a Placeholder tag: their name isn't a real
 // person yet, so it can't be inline-edited — it must be swapped for a real one.
+// Renders inside EngagementTable's bordered <Cell>, so it draws no border of
+// its own — just the avatar + name layout.
 function NameCell({
   person,
-  width,
   onOpen,
   onCommitName,
   onReplace,
 }: {
-  person: Person;
-  width: number;
+  person: EngagementPerson;
   onOpen: () => void;
   onCommitName: (name: string) => void;
   onReplace?: () => void;
@@ -475,10 +329,7 @@ function NameCell({
 
   if (isPlaceholder) {
     return (
-      <View
-        style={{ width }}
-        className="flex-row items-center gap-2 border-r border-border/60 px-2 py-1.5"
-      >
+      <View className="flex-1 flex-row items-center gap-2 px-2 py-1.5">
         <Avatar name={name || "?"} size={26} />
         <Pressable
           onPress={onReplace}
@@ -500,10 +351,7 @@ function NameCell({
   }
 
   return (
-    <View
-      style={{ width }}
-      className="flex-row items-center gap-2 border-r border-border/60 px-2 py-1.5"
-    >
+    <View className="flex-1 flex-row items-center gap-2 px-2 py-1.5">
       <Pressable onPress={onOpen} hitSlop={4} className="active:opacity-70">
         <Avatar name={name || "?"} size={26} />
       </Pressable>
@@ -517,252 +365,7 @@ function NameCell({
   );
 }
 
-// ── Delete gutter ──────────────────────────────────────────────────────────────
-function DeleteGutter({
-  name,
-  onRemove,
-}: {
-  name: string;
-  onRemove: () => void;
-}) {
-  return (
-    <View style={{ width: DELETE_W }} className="items-center justify-center">
-      <Pressable
-        onPress={() => {
-          if (confirmRemove(name)) onRemove();
-        }}
-        hitSlop={4}
-        accessibilityLabel="Remove from event"
-        className="rounded p-1 active:bg-sunken web:hover:bg-sunken"
-      >
-        <Icon name="trash-2" size={14} color={colors.danger} />
-      </Pressable>
-    </View>
-  );
-}
-
-// ── A reusable table shell (header row + body + add-row) ──────────────────────
-function TableShell({
-  tableWidth,
-  header,
-  children,
-  addLabel,
-  onAdd,
-}: {
-  tableWidth: number;
-  header: React.ReactNode;
-  children: React.ReactNode;
-  addLabel: string;
-  onAdd: () => void;
-}) {
-  return (
-    <View className="overflow-hidden rounded-lg border border-border bg-raised">
-      <ScrollView horizontal showsHorizontalScrollIndicator={false}>
-        <View style={{ width: Math.max(tableWidth, 320) }}>
-          <View className="flex-row items-center border-b border-border bg-sunken">
-            {header}
-          </View>
-          {children}
-        </View>
-      </ScrollView>
-      <Pressable
-        onPress={onAdd}
-        className="flex-row items-center gap-1.5 border-t border-border px-3 py-2.5 active:bg-sunken web:hover:bg-sunken"
-      >
-        <Icon name="user-plus" size={15} color={colors.muted} />
-        <Text className="text-sm font-medium text-muted">{addLabel}</Text>
-      </Pressable>
-    </View>
-  );
-}
-
-// ── Volunteer row ──────────────────────────────────────────────────────────────
-function VolunteerRow({
-  engagement,
-  teamOptions,
-  isLast,
-  onOpen,
-  onCommitName,
-  onUpdatePerson,
-  onUpdate,
-  onRemove,
-  onReplace,
-}: {
-  engagement: Engagement;
-  teamOptions: TeamOption[];
-  isLast: boolean;
-  onOpen: () => void;
-  onCommitName: (name: string) => void;
-  onUpdatePerson: (patch: Record<string, unknown>) => void;
-  onUpdate: (patch: Record<string, unknown>) => void;
-  onRemove: () => void;
-  onReplace: () => void;
-}) {
-  const e = engagement;
-  return (
-    <View
-      className={`flex-row items-stretch border-b border-border bg-raised ${
-        isLast ? "border-b-0" : ""
-      }`}
-    >
-      <NameCell
-        person={e.person}
-        width={VOL_COLS.name}
-        onOpen={onOpen}
-        onCommitName={onCommitName}
-        onReplace={onReplace}
-      />
-      <Cell width={VOL_COLS.email}>
-        <InlineText
-          value={e.person?.email ?? ""}
-          placeholder="—"
-          onCommit={(t) => onUpdatePerson({ email: t.trim() || undefined })}
-        />
-      </Cell>
-      <Cell width={VOL_COLS.phone}>
-        <InlineText
-          value={e.person?.phone ?? ""}
-          placeholder="—"
-          onCommit={(t) => onUpdatePerson({ phone: t.trim() || undefined })}
-        />
-      </Cell>
-      <Cell width={VOL_COLS.team}>
-        <TeamCell
-          teams={e.teams}
-          options={teamOptions}
-          onChange={(teams) => onUpdate({ teams })}
-        />
-      </Cell>
-      <Cell width={VOL_COLS.service}>
-        <InlineText
-          value={e.service ?? ""}
-          placeholder="—"
-          onCommit={(t) => onUpdate({ service: t.trim() || null })}
-        />
-      </Cell>
-      <Cell width={VOL_COLS.status}>
-        <StatusCell
-          status={e.status}
-          onChange={(status) => onUpdate({ status })}
-        />
-      </Cell>
-      <Cell width={VOL_COLS.callTime}>
-        <InlineText
-          value={e.callTime ?? ""}
-          placeholder="—"
-          onCommit={(t) => onUpdate({ callTime: t.trim() || null })}
-        />
-      </Cell>
-      <Cell width={VOL_COLS.responsibilities}>
-        <InlineText
-          value={e.responsibilities ?? ""}
-          placeholder="—"
-          onCommit={(t) => onUpdate({ responsibilities: t.trim() || null })}
-        />
-      </Cell>
-      <Cell width={VOL_COLS.type}>
-        <RowAction label="Make paid →" onPress={() => onUpdate({ type: "paid" })} />
-      </Cell>
-      <DeleteGutter name={e.person?.name ?? ""} onRemove={onRemove} />
-    </View>
-  );
-}
-
-// ── Vendor (paid) row ──────────────────────────────────────────────────────────
-function VendorRow({
-  engagement,
-  teamOptions,
-  isLast,
-  onOpen,
-  onCommitName,
-  onUpdatePerson,
-  onUpdate,
-  onRemove,
-}: {
-  engagement: Engagement;
-  teamOptions: TeamOption[];
-  isLast: boolean;
-  onOpen: () => void;
-  onCommitName: (name: string) => void;
-  onUpdatePerson: (patch: Record<string, unknown>) => void;
-  onUpdate: (patch: Record<string, unknown>) => void;
-  onRemove: () => void;
-}) {
-  const e = engagement;
-  const payment = e.paymentStatus ?? "unpaid";
-  return (
-    <View
-      className={`flex-row items-stretch border-b border-border bg-raised ${
-        isLast ? "border-b-0" : ""
-      }`}
-    >
-      <NameCell
-        person={e.person}
-        width={VEN_COLS.name}
-        onOpen={onOpen}
-        onCommitName={onCommitName}
-      />
-      <Cell width={VEN_COLS.email}>
-        <InlineText
-          value={e.person?.email ?? ""}
-          placeholder="—"
-          onCommit={(t) => onUpdatePerson({ email: t.trim() || undefined })}
-        />
-      </Cell>
-      <Cell width={VEN_COLS.phone}>
-        <InlineText
-          value={e.person?.phone ?? ""}
-          placeholder="—"
-          onCommit={(t) => onUpdatePerson({ phone: t.trim() || undefined })}
-        />
-      </Cell>
-      <Cell width={VEN_COLS.team}>
-        <TeamCell
-          teams={e.teams}
-          options={teamOptions}
-          onChange={(teams) => onUpdate({ teams })}
-        />
-      </Cell>
-      <Cell width={VEN_COLS.service}>
-        <InlineText
-          value={e.service ?? ""}
-          placeholder="—"
-          onCommit={(t) => onUpdate({ service: t.trim() || null })}
-        />
-      </Cell>
-      <Cell width={VEN_COLS.amount}>
-        <AmountCell
-          value={e.amountUsd}
-          onCommit={(amountUsd) => onUpdate({ amountUsd })}
-        />
-      </Cell>
-      <Cell width={VEN_COLS.payment}>
-        <PaymentCell
-          payment={payment}
-          onChange={(paymentStatus) => onUpdate({ paymentStatus })}
-        />
-      </Cell>
-      <Cell width={VEN_COLS.status}>
-        <StatusCell
-          status={e.status}
-          onChange={(status) => onUpdate({ status })}
-        />
-      </Cell>
-      <Cell width={VEN_COLS.type}>
-        <RowAction
-          label="Make volunteer →"
-          onPress={() => onUpdate({ type: "volunteer" })}
-        />
-      </Cell>
-      <DeleteGutter name={e.person?.name ?? ""} onRemove={onRemove} />
-    </View>
-  );
-}
-
 // ── Sorting (volunteers) ───────────────────────────────────────────────────────
-type SortCol = "name" | "team" | "status";
-type Sort = { col: SortCol; dir: 1 | -1 };
-
 function sortVolunteers(
   rows: Engagement[],
   sort: Sort,
@@ -842,9 +445,11 @@ function PersonDetailBody({
   name: string;
   onClose: () => void;
 }) {
-  const person = useQuery(api.people.get, { personId: personId as any });
+  const person = useQuery(api.people.get, {
+    personId: personId as Id<"people">,
+  });
   const history = useQuery(api.engagements.historyForPerson, {
-    personId: personId as any,
+    personId: personId as Id<"people">,
   });
   const email = person?.email ?? null;
   const phone = person?.phone ?? null;
@@ -947,22 +552,22 @@ function ContactLink({
 // ── Sections ──────────────────────────────────────────────────────────────────
 export function CrewSections({ eventId }: { eventId: string }) {
   const volunteers = useQuery(api.engagements.listForEvent, {
-    eventId: eventId as any,
+    eventId: eventId as Id<"events">,
     type: "volunteer",
   }) as Engagement[] | undefined;
   const vendors = useQuery(api.engagements.listForEvent, {
-    eventId: eventId as any,
+    eventId: eventId as Id<"events">,
     type: "paid",
   }) as Engagement[] | undefined;
 
   // Team list = options of the "team" select column on the volunteer
   // expectations module. Falls back to an empty list (everyone is Unassigned).
   const volunteerModule = useQuery(api.items.listForEventModule, {
-    eventId: eventId as any,
+    eventId: eventId as Id<"events">,
     module: "volunteer_expectations",
   });
   const teamOptions: TeamOption[] =
-    (volunteerModule?.columns as any[] | undefined)?.find(
+    (volunteerModule?.columns as { key: string; options?: TeamOption[] }[] | undefined)?.find(
       (c) => c.key === "team",
     )?.options ?? [];
 
@@ -977,7 +582,7 @@ export function CrewSections({ eventId }: { eventId: string }) {
 
   const [picker, setPicker] = useState<EngagementType | null>(null);
   // Engagement currently being re-pointed from a placeholder to a real person.
-  const [replacingId, setReplacingId] = useState<string | null>(null);
+  const [replacingId, setReplacingId] = useState<Id<"engagements"> | null>(null);
   const [openPersonId, setOpenPersonId] = useState<string | null>(null);
   const [openPersonName, setOpenPersonName] = useState("");
   const [sort, setSort] = useState<Sort>({ col: "team", dir: 1 });
@@ -991,8 +596,8 @@ export function CrewSections({ eventId }: { eventId: string }) {
     );
     if (!existing) {
       void add({
-        eventId: eventId as any,
-        personId: personId as any,
+        eventId: eventId as Id<"events">,
+        personId: personId as Id<"people">,
         type: picker,
       });
     }
@@ -1003,7 +608,7 @@ export function CrewSections({ eventId }: { eventId: string }) {
   const onCreate = async (name: string) => {
     if (!picker) return;
     const personId = await createPerson({ name });
-    await add({ eventId: eventId as any, personId, type: picker });
+    await add({ eventId: eventId as Id<"events">, personId, type: picker });
     setPicker(null);
   };
 
@@ -1012,8 +617,8 @@ export function CrewSections({ eventId }: { eventId: string }) {
   const onPickReplacement = async (personId: string) => {
     if (!replacingId) return;
     await replacePlaceholder({
-      engagementId: replacingId as any,
-      personId: personId as any,
+      engagementId: replacingId,
+      personId: personId as Id<"people">,
     });
     setReplacingId(null);
   };
@@ -1022,15 +627,14 @@ export function CrewSections({ eventId }: { eventId: string }) {
   const onCreateReplacement = async (name: string) => {
     if (!replacingId) return;
     const personId = await createPerson({ name });
-    await replacePlaceholder({
-      engagementId: replacingId as any,
-      personId,
-    });
+    await replacePlaceholder({ engagementId: replacingId, personId });
     setReplacingId(null);
   };
 
   const onSort = (col: SortCol) =>
-    setSort((s) => (s.col === col ? { col, dir: (s.dir * -1) as 1 | -1 } : { col, dir: 1 }));
+    setSort((s) =>
+      s.col === col ? { col, dir: (s.dir * -1) as 1 | -1 } : { col, dir: 1 },
+    );
 
   const openPerson = (id: string, name: string) => {
     setOpenPersonId(id);
@@ -1047,8 +651,238 @@ export function CrewSections({ eventId }: { eventId: string }) {
     0,
   );
 
-  const VOL_WIDTH = sumWidths(VOL_COLS);
-  const VEN_WIDTH = sumWidths(VEN_COLS);
+  // ── Shared row callbacks (person edits vs engagement edits) ────────────────
+  const commitName = (e: Engagement) => (name: string) =>
+    void updatePerson({ personId: e.personId as Id<"people">, name });
+  const patchPerson =
+    (e: Engagement) => (patch: Record<string, unknown>) =>
+      void updatePerson({ personId: e.personId as Id<"people">, ...patch });
+  const patchEngagement =
+    (e: Engagement) => (patch: Record<string, unknown>) =>
+      void update({ engagementId: e._id as Id<"engagements">, ...patch });
+
+  // ── Column descriptors ──────────────────────────────────────────────────────
+  const volunteerColumns: EngagementColumn[] = [
+    {
+      key: "name",
+      label: "Name",
+      width: VOL_COLS.name,
+      sortCol: "name",
+      render: (e) => (
+        <NameCell
+          person={e.person}
+          onOpen={() => openPerson(e.personId, e.person?.name ?? "")}
+          onCommitName={commitName(e)}
+          onReplace={() => setReplacingId(e._id as Id<"engagements">)}
+        />
+      ),
+    },
+    {
+      key: "email",
+      label: "Email",
+      width: VOL_COLS.email,
+      render: (e) => (
+        <InlineText
+          value={e.person?.email ?? ""}
+          placeholder="—"
+          onCommit={(t) => patchPerson(e)({ email: t.trim() || undefined })}
+        />
+      ),
+    },
+    {
+      key: "phone",
+      label: "Phone",
+      width: VOL_COLS.phone,
+      render: (e) => (
+        <InlineText
+          value={e.person?.phone ?? ""}
+          placeholder="—"
+          onCommit={(t) => patchPerson(e)({ phone: t.trim() || undefined })}
+        />
+      ),
+    },
+    {
+      key: "team",
+      label: "Team",
+      width: VOL_COLS.team,
+      sortCol: "team",
+      render: (e) => (
+        <TeamCell
+          teams={e.teams}
+          options={teamOptions}
+          onChange={(teams) => patchEngagement(e)({ teams })}
+        />
+      ),
+    },
+    {
+      key: "service",
+      label: "Service / role",
+      width: VOL_COLS.service,
+      render: (e) => (
+        <InlineText
+          value={e.service ?? ""}
+          placeholder="—"
+          onCommit={(t) => patchEngagement(e)({ service: t.trim() || null })}
+        />
+      ),
+    },
+    {
+      key: "status",
+      label: "Status",
+      width: VOL_COLS.status,
+      sortCol: "status",
+      render: (e) => (
+        <StatusCell
+          status={e.status}
+          onChange={(status) => patchEngagement(e)({ status })}
+        />
+      ),
+    },
+    {
+      key: "callTime",
+      label: "Call time",
+      width: VOL_COLS.callTime,
+      render: (e) => (
+        <InlineText
+          value={e.callTime ?? ""}
+          placeholder="—"
+          onCommit={(t) => patchEngagement(e)({ callTime: t.trim() || null })}
+        />
+      ),
+    },
+    {
+      key: "responsibilities",
+      label: "Responsibilities",
+      width: VOL_COLS.responsibilities,
+      render: (e) => (
+        <InlineText
+          value={e.responsibilities ?? ""}
+          placeholder="—"
+          onCommit={(t) =>
+            patchEngagement(e)({ responsibilities: t.trim() || null })
+          }
+        />
+      ),
+    },
+    {
+      key: "type",
+      label: "Type",
+      width: VOL_COLS.type,
+      render: (e) => (
+        <RowAction
+          label="Make paid →"
+          onPress={() => patchEngagement(e)({ type: "paid" })}
+        />
+      ),
+    },
+  ];
+
+  const vendorColumns: EngagementColumn[] = [
+    {
+      key: "name",
+      label: "Name",
+      width: VEN_COLS.name,
+      render: (e) => (
+        <NameCell
+          person={e.person}
+          onOpen={() => openPerson(e.personId, e.person?.name ?? "")}
+          onCommitName={commitName(e)}
+        />
+      ),
+    },
+    {
+      key: "email",
+      label: "Email",
+      width: VEN_COLS.email,
+      render: (e) => (
+        <InlineText
+          value={e.person?.email ?? ""}
+          placeholder="—"
+          onCommit={(t) => patchPerson(e)({ email: t.trim() || undefined })}
+        />
+      ),
+    },
+    {
+      key: "phone",
+      label: "Phone",
+      width: VEN_COLS.phone,
+      render: (e) => (
+        <InlineText
+          value={e.person?.phone ?? ""}
+          placeholder="—"
+          onCommit={(t) => patchPerson(e)({ phone: t.trim() || undefined })}
+        />
+      ),
+    },
+    {
+      key: "team",
+      label: "Team",
+      width: VEN_COLS.team,
+      render: (e) => (
+        <TeamCell
+          teams={e.teams}
+          options={teamOptions}
+          onChange={(teams) => patchEngagement(e)({ teams })}
+        />
+      ),
+    },
+    {
+      key: "service",
+      label: "Service",
+      width: VEN_COLS.service,
+      render: (e) => (
+        <InlineText
+          value={e.service ?? ""}
+          placeholder="—"
+          onCommit={(t) => patchEngagement(e)({ service: t.trim() || null })}
+        />
+      ),
+    },
+    {
+      key: "amount",
+      label: "Amount",
+      width: VEN_COLS.amount,
+      render: (e) => (
+        <AmountCell
+          value={e.amountUsd}
+          onCommit={(amountUsd) => patchEngagement(e)({ amountUsd })}
+        />
+      ),
+    },
+    {
+      key: "payment",
+      label: "Payment",
+      width: VEN_COLS.payment,
+      render: (e) => (
+        <PaymentCell
+          payment={e.paymentStatus ?? "unpaid"}
+          onChange={(paymentStatus) => patchEngagement(e)({ paymentStatus })}
+        />
+      ),
+    },
+    {
+      key: "status",
+      label: "Status",
+      width: VEN_COLS.status,
+      render: (e) => (
+        <StatusCell
+          status={e.status}
+          onChange={(status) => patchEngagement(e)({ status })}
+        />
+      ),
+    },
+    {
+      key: "type",
+      label: "Type",
+      width: VEN_COLS.type,
+      render: (e) => (
+        <RowAction
+          label="Make volunteer →"
+          onPress={() => patchEngagement(e)({ type: "volunteer" })}
+        />
+      ),
+    },
+  ];
 
   return (
     <View>
@@ -1072,75 +906,19 @@ export function CrewSections({ eventId }: { eventId: string }) {
       {volunteers === undefined ? (
         <Text className="py-2 text-sm text-muted">Loading…</Text>
       ) : (
-        <TableShell
-          tableWidth={VOL_WIDTH}
+        <EngagementTable
+          rows={sortedVolunteers}
+          columns={volunteerColumns}
           addLabel="Add volunteer"
+          emptyLabel="No volunteers yet — use Add volunteer."
           onAdd={() => setPicker("volunteer")}
-          header={
-            <>
-              <SortHeaderCell
-                label="Name"
-                width={VOL_COLS.name}
-                active={sort.col === "name"}
-                dir={sort.dir}
-                onPress={() => onSort("name")}
-              />
-              <HeaderCell label="Email" width={VOL_COLS.email} />
-              <HeaderCell label="Phone" width={VOL_COLS.phone} />
-              <SortHeaderCell
-                label="Team"
-                width={VOL_COLS.team}
-                active={sort.col === "team"}
-                dir={sort.dir}
-                onPress={() => onSort("team")}
-              />
-              <HeaderCell label="Service / role" width={VOL_COLS.service} />
-              <SortHeaderCell
-                label="Status"
-                width={VOL_COLS.status}
-                active={sort.col === "status"}
-                dir={sort.dir}
-                onPress={() => onSort("status")}
-              />
-              <HeaderCell label="Call time" width={VOL_COLS.callTime} />
-              <HeaderCell
-                label="Responsibilities"
-                width={VOL_COLS.responsibilities}
-              />
-              <HeaderCell label="Type" width={VOL_COLS.type} />
-              <View style={{ width: DELETE_W }} />
-            </>
+          onRemove={(e) =>
+            void remove({ engagementId: e._id as Id<"engagements"> })
           }
-        >
-          {sortedVolunteers.length === 0 ? (
-            <View className="px-3 py-6">
-              <Text className="text-sm text-faint">
-                No volunteers yet — use Add volunteer.
-              </Text>
-            </View>
-          ) : (
-            sortedVolunteers.map((e, i) => (
-              <VolunteerRow
-                key={e._id}
-                engagement={e}
-                teamOptions={teamOptions}
-                isLast={i === sortedVolunteers.length - 1}
-                onOpen={() => openPerson(e.personId, e.person?.name ?? "")}
-                onCommitName={(name) =>
-                  void updatePerson({ personId: e.personId as any, name })
-                }
-                onUpdatePerson={(patch) =>
-                  void updatePerson({ personId: e.personId as any, ...patch })
-                }
-                onUpdate={(patch) =>
-                  void update({ engagementId: e._id as any, ...patch })
-                }
-                onRemove={() => void remove({ engagementId: e._id as any })}
-                onReplace={() => setReplacingId(e._id)}
-              />
-            ))
-          )}
-        </TableShell>
+          confirmRemove={confirmRemove}
+          sort={sort}
+          onSort={onSort}
+        />
       )}
 
       {/* Vendors (paid) — a matching database table */}
@@ -1161,53 +939,17 @@ export function CrewSections({ eventId }: { eventId: string }) {
         <Text className="py-2 text-sm text-muted">Loading…</Text>
       ) : (
         <>
-          <TableShell
-            tableWidth={VEN_WIDTH}
+          <EngagementTable
+            rows={vendors}
+            columns={vendorColumns}
             addLabel="Add vendor"
+            emptyLabel="No paid vendors yet — use Add vendor."
             onAdd={() => setPicker("paid")}
-            header={
-              <>
-                <HeaderCell label="Name" width={VEN_COLS.name} />
-                <HeaderCell label="Email" width={VEN_COLS.email} />
-                <HeaderCell label="Phone" width={VEN_COLS.phone} />
-                <HeaderCell label="Team" width={VEN_COLS.team} />
-                <HeaderCell label="Service" width={VEN_COLS.service} />
-                <HeaderCell label="Amount" width={VEN_COLS.amount} />
-                <HeaderCell label="Payment" width={VEN_COLS.payment} />
-                <HeaderCell label="Status" width={VEN_COLS.status} />
-                <HeaderCell label="Type" width={VEN_COLS.type} />
-                <View style={{ width: DELETE_W }} />
-              </>
+            onRemove={(e) =>
+              void remove({ engagementId: e._id as Id<"engagements"> })
             }
-          >
-            {vendors.length === 0 ? (
-              <View className="px-3 py-6">
-                <Text className="text-sm text-faint">
-                  No paid vendors yet — use Add vendor.
-                </Text>
-              </View>
-            ) : (
-              vendors.map((e, i) => (
-                <VendorRow
-                  key={e._id}
-                  engagement={e}
-                  teamOptions={teamOptions}
-                  isLast={i === vendors.length - 1}
-                  onOpen={() => openPerson(e.personId, e.person?.name ?? "")}
-                  onCommitName={(name) =>
-                    void updatePerson({ personId: e.personId as any, name })
-                  }
-                  onUpdatePerson={(patch) =>
-                    void updatePerson({ personId: e.personId as any, ...patch })
-                  }
-                  onUpdate={(patch) =>
-                    void update({ engagementId: e._id as any, ...patch })
-                  }
-                  onRemove={() => void remove({ engagementId: e._id as any })}
-                />
-              ))
-            )}
-          </TableShell>
+            confirmRemove={confirmRemove}
+          />
           {vendors.length > 0 ? (
             <View className="mt-2 flex-row items-center gap-1.5 px-1">
               <Icon name="dollar-sign" size={14} color={colors.muted} />
@@ -1232,7 +974,7 @@ export function CrewSections({ eventId }: { eventId: string }) {
       <PersonPicker
         visible={replacingId !== null}
         title="Replace with person"
-        filter={(p) => p.isPlaceholder !== true}
+        filter={(p: Doc<"people">) => p.isPlaceholder !== true}
         onPick={(id) => void onPickReplacement(id)}
         onCreate={(name) => void onCreateReplacement(name)}
         onClose={() => setReplacingId(null)}
