@@ -2104,15 +2104,6 @@ export function SiteMapEditor({
   // In template scope there's no event to load, so only gate on the map data.
   const chromeLoading =
     data === undefined || (scope.kind === "event" && eventData === undefined);
-  if (chromeLoading) {
-    if (embedded) return <ActivityIndicator color={colors.accent} />;
-    return (
-      <>
-        <Stack.Screen options={{ headerShown: true, title: "Site map" }} />
-        <Screen loading />
-      </>
-    );
-  }
 
   const eventName = eventData?.event?.name ?? "Event";
   const markers = (data?.markers ?? []) as Marker[];
@@ -2160,6 +2151,20 @@ export function SiteMapEditor({
     () => (lineDraft ? lineGeometry(lineDraft, { width: W, height: H }) : null),
     [lineDraft, W, H],
   );
+
+  // NOTE: keep this loading guard AFTER all hooks (incl. the useMemos above).
+  // An early return placed before them causes "rendered more hooks than during
+  // the previous render" once the data loads. The derived consts above are all
+  // null-safe (optional chaining) so they're fine to compute while loading.
+  if (chromeLoading) {
+    if (embedded) return <ActivityIndicator color={colors.accent} />;
+    return (
+      <>
+        <Stack.Screen options={{ headerShown: true, title: "Site map" }} />
+        <Screen loading />
+      </>
+    );
+  }
 
   // The hint that runs beneath the toolbar, based on mode + selection.
   let hint: string;
