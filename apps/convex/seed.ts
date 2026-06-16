@@ -488,23 +488,22 @@ export const seedDemoData = mutation({
   args: {},
   handler: async (ctx: MutationCtx) => {
     const userId = await requireUserId(ctx);
-    // Gate: seeding demo data is allowed only outside production OR for a
-    // superuser. Prevents an authenticated non-admin (in prod) from spraying a
-    // demo chapter + roster into the live deployment via the public API. The
-    // pipeline empty-state "Seed demo data" button stays functional in dev and
-    // for admins.
+    // Gate: seeding demo data is allowed only for a superuser, UNLESS the
+    // deployment explicitly opts into open seeding via `IS_DEV="true"`.
+    // Prevents an authenticated non-admin from spraying a demo chapter + roster
+    // into a live deployment via the public API. The pipeline empty-state
+    // "Seed demo data" button stays functional for admins everywhere, and for
+    // everyone on dev/staging deployments that set `IS_DEV=true`.
     //
-    // Prod is detected via the `IS_PROD` Convex env var (set to "true" on the
-    // production deployment only). When unset — i.e. dev/staging — seeding is
-    // unrestricted, matching the previous behavior there. NOTE: requires
-    // `IS_PROD=true` to be configured on the prod deployment for the guard to
-    // engage; until then prod falls through to the superuser-only path below
-    // only if set.
-    const isProd = process.env.IS_PROD === "true";
-    if (isProd && !(await isSuperuser(ctx))) {
+    // Fail-CLOSED by default: an unconfigured deployment (no `IS_DEV` env var)
+    // requires a superuser — so production is safe even if no env var is set.
+    // Dev deployments set `IS_DEV=true` to keep open seeding.
+    const isDev = process.env.IS_DEV === "true";
+    if (!isDev && !(await isSuperuser(ctx))) {
       throw new ConvexError({
         code: "FORBIDDEN",
-        message: "Seeding demo data is disabled in production.",
+        message:
+          "Seeding demo data requires admin access on this deployment.",
       });
     }
     const now = Date.now();

@@ -1446,7 +1446,11 @@ export const runDocAssistant = action({
               ok = false;
               summary = "No document body provided.";
             } else {
-              await ctx.runMutation(internal.docs.setBody, { docId, body });
+              await ctx.runMutation(internal.docs.setBody, {
+                docId,
+                body,
+                expectedChapterId: chapterId,
+              });
               edited = true;
               ok = true;
               summary = "Document updated.";
