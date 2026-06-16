@@ -81,13 +81,17 @@ export default function DayOfScreen() {
   const sorted = [...runOfShow].sort(
     (a, b) => (a.offsetMinutes ?? 0) - (b.offsetMinutes ?? 0),
   );
+  // The final row has no following start, so bound its "now" window instead of
+  // leaving it open (Infinity) — otherwise the last segment reads "Happening
+  // now" forever, even hours/days after the event has ended.
+  const FINAL_SEGMENT_WINDOW_MS = 2 * 60 * 60 * 1000;
   let nowIndex = -1;
   for (let i = 0; i < sorted.length; i++) {
     const start = computeRunTime(event.eventDate, sorted[i].offsetMinutes ?? 0);
     const nextStart =
       i + 1 < sorted.length
         ? computeRunTime(event.eventDate, sorted[i + 1].offsetMinutes ?? 0)
-        : Infinity;
+        : start + FINAL_SEGMENT_WINDOW_MS;
     if (now >= start && now < nextStart) {
       nowIndex = i;
       break;

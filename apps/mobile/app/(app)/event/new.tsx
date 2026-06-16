@@ -72,7 +72,9 @@ function DatePickerField({
     const ny = pos === "y" ? digits : y;
     const nm = pos === "m" ? digits : m;
     const nd = pos === "d" ? digits : d;
-    onChange(`${ny}-${nm}-${nd}`);
+    // Emit "" when every sub-field is blank so the empty-date branch stays
+    // reachable (otherwise "--" reads as a non-empty, "invalid" date).
+    onChange(ny || nm || nd ? `${ny}-${nm}-${nd}` : "");
   };
   return (
     <Field
