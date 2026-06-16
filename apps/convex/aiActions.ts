@@ -468,8 +468,9 @@ function isSafePublicImageUrl(raw: string): boolean {
   // IPv4 literal → reject loopback, link-local, and private ranges.
   const ipv4 = host.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
   if (ipv4) {
-    const [a, b] = ipv4.slice(1).map((n) => parseInt(n, 10));
-    if ([a, b].some((n) => Number.isNaN(n) || n > 255)) return false;
+    const octets = ipv4.slice(1).map((n) => parseInt(n, 10));
+    if (octets.some((n) => Number.isNaN(n) || n > 255)) return false; // malformed → unsafe
+    const [a, b] = octets;
     if (a === 127 || a === 10 || a === 0) return false; // loopback / RFC1918 / "this host"
     if (a === 169 && b === 254) return false; // link-local (incl. cloud metadata 169.254.169.254)
     if (a === 172 && b >= 16 && b <= 31) return false; // RFC1918
@@ -488,9 +489,19 @@ function isSafePublicImageUrl(raw: string): boolean {
     return true;
   }
 
-  // A regular DNS hostname. DNS could still resolve to a private IP (rebinding),
-  // but Convex's fetch gives no resolved-IP hook; scheme + literal-IP blocking
-  // covers the realistic model/user-emitted-URL threat here.
+  // Must be a normal public DNS name: a dot plus an alphabetic (or punycode)
+  // TLD. This rejects ALTERNATE IP encodings that the fetch runtime would still
+  // resolve to a raw address but the dotted-quad/IPv6 checks above miss —
+  // decimal (2130706433), hex (0x7f000001), octal/short-form (0177.0.0.1,
+  // 127.1) — none of which we could vet against the private ranges.
+  // (DNS rebinding — a real hostname whose A record points at a private IP —
+  // remains unhandled: Convex's fetch gives no resolved-IP hook. `redirect:
+  // "error"` blocks the redirect variant; this is the documented residual risk.)
+  const bareHost = host.replace(/\.$/, ""); // tolerate a trailing-dot FQDN
+  const tld = bareHost.includes(".")
+    ? bareHost.slice(bareHost.lastIndexOf(".") + 1)
+    : "";
+  if (!/^([a-z]{2,}|xn--[a-z0-9]+)$/.test(tld)) return false;
   return true;
 }
 
