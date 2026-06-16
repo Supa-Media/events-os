@@ -69,10 +69,15 @@ export const myContext = internalQuery({
  * and the roster). Re-fetched every turn, so the agent always sees live state.
  */
 export const eventContext = internalQuery({
-  args: { eventId: v.id("events") },
-  handler: async (ctx, { eventId }) => {
+  args: { eventId: v.id("events"), chapterId: v.id("chapters") },
+  handler: async (ctx, { eventId, chapterId }) => {
     const event = await ctx.db.get(eventId);
-    if (!event) return null;
+    // TENANT BOUNDARY: this is an internal fn reachable from an action that
+    // accepts an arbitrary eventId arg. We MUST confirm the event belongs to
+    // the caller's chapter (threaded in from myContext) — otherwise any
+    // authenticated user could read another chapter's event by passing its id.
+    // Mirror docs.forAi: return null on missing OR cross-chapter.
+    if (!event || event.chapterId !== chapterId) return null;
 
     const roles = (
       await ctx.db
@@ -144,10 +149,14 @@ export const eventContext = internalQuery({
 
 /** One item + which columns its module shows — for the per-row Autofill button. */
 export const itemForAutofill = internalQuery({
-  args: { itemId: v.id("eventItems") },
-  handler: async (ctx, { itemId }) => {
+  args: { itemId: v.id("eventItems"), chapterId: v.id("chapters") },
+  handler: async (ctx, { itemId, chapterId }) => {
     const item = await ctx.db.get(itemId);
-    if (!item) return null;
+    // TENANT BOUNDARY: itemId is an arbitrary arg from an action. Confirm the
+    // item is in the caller's chapter before returning anything about it —
+    // otherwise Autofill could read/enrich another chapter's item. Return null
+    // on missing OR cross-chapter (the action surfaces "Item not found").
+    if (!item || item.chapterId !== chapterId) return null;
     const cols = await ctx.db
       .query("eventColumns")
       .withIndex("by_event_module", (q: any) =>
@@ -290,12 +299,23 @@ export const applyItemPatch = internalMutation({
   args: {
     runId: v.id("aiRuns"),
     itemId: v.id("eventItems"),
+    chapterId: v.id("chapters"),
     promoted: v.optional(v.record(v.string(), v.any())),
     fields: v.optional(v.record(v.string(), v.any())),
   },
-  handler: async (ctx, { runId, itemId, promoted, fields }) => {
+  handler: async (ctx, { runId, itemId, chapterId, promoted, fields }) => {
     const item = await ctx.db.get(itemId);
+    // TENANT BOUNDARY: a write tool reachable from an action with an arbitrary
+    // itemId. Refuse to patch an item that isn't in the caller's chapter — a
+    // cross-tenant id must NOT be editable. Throw (not silent return) so a
+    // mismatch surfaces loudly rather than masquerading as a no-op success.
     if (!item) return;
+    if (item.chapterId !== chapterId) {
+      throw new ConvexError({
+        code: "FORBIDDEN",
+        message: "Item is not in your chapter.",
+      });
+    }
     const event = await ctx.db.get(item.eventId);
     if (!event) return;
 
@@ -349,6 +369,7 @@ export const createItem = internalMutation({
   args: {
     runId: v.id("aiRuns"),
     eventId: v.id("events"),
+    chapterId: v.id("chapters"),
     module: v.string(),
     title: v.string(),
     status: v.optional(v.string()),
@@ -358,7 +379,16 @@ export const createItem = internalMutation({
   },
   handler: async (ctx, args) => {
     const event = await ctx.db.get(args.eventId);
+    // TENANT BOUNDARY: eventId is an arbitrary arg from an action. Refuse to
+    // create an item under an event that isn't in the caller's chapter — a
+    // cross-tenant id must NOT be writable. Throw so the mismatch is loud.
     if (!event) return null;
+    if (event.chapterId !== args.chapterId) {
+      throw new ConvexError({
+        code: "FORBIDDEN",
+        message: "Event is not in your chapter.",
+      });
+    }
     const siblings = await ctx.db
       .query("eventItems")
       .withIndex("by_event_module", (q: any) =>
@@ -400,11 +430,21 @@ export const setItemPhoto = internalMutation({
   args: {
     runId: v.id("aiRuns"),
     itemId: v.id("eventItems"),
+    chapterId: v.id("chapters"),
     storageId: v.id("_storage"),
   },
-  handler: async (ctx, { runId, itemId, storageId }) => {
+  handler: async (ctx, { runId, itemId, chapterId, storageId }) => {
     const item = await ctx.db.get(itemId);
+    // TENANT BOUNDARY: itemId is an arbitrary arg from an action. Refuse to
+    // attach a photo to an item outside the caller's chapter — a cross-tenant
+    // id must NOT be writable. Throw so the mismatch is loud, not a silent skip.
     if (!item) return;
+    if (item.chapterId !== chapterId) {
+      throw new ConvexError({
+        code: "FORBIDDEN",
+        message: "Item is not in your chapter.",
+      });
+    }
     const before = item.fields?.photo;
     await ctx.db.patch(itemId, {
       fields: { ...(item.fields ?? {}), photo: storageId },
