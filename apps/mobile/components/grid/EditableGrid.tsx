@@ -255,14 +255,6 @@ export function EditableGrid({
     return none.items.length ? [...buckets, none] : buckets;
   }, [groupCol, visibleItems, module]);
 
-  if (grid.loading) {
-    return (
-      <View className="items-center py-8">
-        <Text className="text-sm text-muted">Loading…</Text>
-      </View>
-    );
-  }
-
   const templateId = mode === "template" ? parentId : undefined;
   const allowPrePlanMenu = mode === "template" && editable;
   const allowToggleChecked = mode === "event" && editable;
@@ -345,6 +337,17 @@ export function EditableGrid({
     },
     [editable, reorder, itemsById, renderRow],
   );
+
+  // NOTE: keep this loading guard AFTER all hooks — an early return placed
+  // above the render* useCallbacks above causes "rendered more hooks than
+  // during the previous render" once loading flips to false.
+  if (grid.loading) {
+    return (
+      <View className="items-center py-8">
+        <Text className="text-sm text-muted">Loading…</Text>
+      </View>
+    );
+  }
 
   return (
     <View className="overflow-hidden rounded-lg border border-border bg-raised">
