@@ -10,6 +10,7 @@
  * hex. The few places that need raw values at runtime (icon tints, chart fills,
  * the readiness ring) import from here.
  */
+import { readinessTier } from "@events-os/shared";
 
 // ── Brand palette (publicworship tokens) ─────────────────────────────────────
 export const palette = {
@@ -116,22 +117,28 @@ export const fontFamily = {
 } as const;
 
 // ── Readiness → semantic color (0–100) ───────────────────────────────────────
+// All four helpers below derive their tier from the shared `readinessTier`
+// (<34 danger · <67 warn · else success) so the threshold rule lives in ONE
+// place; this layer only maps tier → color / NativeWind class.
+
 /** <34 danger · <67 warn · else success. */
 export function readinessColor(pct: number): string {
-  if (pct < 34) return colors.danger;
-  if (pct < 67) return colors.warn;
-  return colors.success;
+  return { danger: colors.danger, warn: colors.warn, success: colors.success }[
+    readinessTier(pct)
+  ];
 }
 
 export function readinessBg(pct: number): string {
-  if (pct < 34) return colors.dangerBg;
-  if (pct < 67) return colors.warnBg;
-  return colors.successBg;
+  return {
+    danger: colors.dangerBg,
+    warn: colors.warnBg,
+    success: colors.successBg,
+  }[readinessTier(pct)];
 }
 
 /** NativeWind class helpers for readiness, so screens stay className-driven. */
 export function readinessTextClass(pct: number): string {
-  if (pct < 34) return "text-danger";
-  if (pct < 67) return "text-warn";
-  return "text-success";
+  return { danger: "text-danger", warn: "text-warn", success: "text-success" }[
+    readinessTier(pct)
+  ];
 }
