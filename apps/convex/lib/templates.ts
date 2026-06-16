@@ -317,6 +317,87 @@ export async function getOrCreateOwnerPerson(
 }
 
 /**
+ * Deep-copy a template's contents from one event type onto another, INDEPENDENT
+ * of any derive link: roles → columns → items → custom modules. Role ids are
+ * remapped (each source role is re-inserted under the target, and item `roleId`s
+ * are repointed through the resulting source-id → new-id map) so cloned items
+ * still resolve their roles. Columns and custom modules are copied verbatim
+ * (system fields and the source `eventTypeId` stripped). Both `eventTypes.create`
+ * (when deriving from a parent) and `eventTypes.duplicate` perform this exact
+ * clone — share it. Returns the role id map in case the caller needs it.
+ */
+export async function deepCopyTemplate(
+  ctx: any,
+  sourceEventTypeId: Id<"eventTypes">,
+  targetEventTypeId: Id<"eventTypes">,
+): Promise<Map<string, Id<"templateRoles">>> {
+  // Roles first — re-inserted under the target, building srcRoleId → newRoleId.
+  const srcRoles = await ctx.db
+    .query("templateRoles")
+    .withIndex("by_template", (q: any) =>
+      q.eq("eventTypeId", sourceEventTypeId),
+    )
+    .collect();
+  const roleIdMap = new Map<string, Id<"templateRoles">>();
+  for (const r of srcRoles) {
+    const { _id, _creationTime, eventTypeId: _e, ...rest } = r as any;
+    const newId = (await ctx.db.insert("templateRoles", {
+      eventTypeId: targetEventTypeId,
+      ...rest,
+    })) as Id<"templateRoles">;
+    roleIdMap.set(String(_id), newId);
+  }
+
+  // Columns — verbatim under the target.
+  const cols = await ctx.db
+    .query("templateColumns")
+    .withIndex("by_eventType", (q: any) =>
+      q.eq("eventTypeId", sourceEventTypeId),
+    )
+    .collect();
+  for (const c of cols) {
+    const { _id, _creationTime, eventTypeId: _e, ...rest } = c as any;
+    await ctx.db.insert("templateColumns", {
+      eventTypeId: targetEventTypeId,
+      ...rest,
+    });
+  }
+
+  // Items — remap each item's roleId through the role map.
+  const items = await ctx.db
+    .query("templateItems")
+    .withIndex("by_eventType", (q: any) =>
+      q.eq("eventTypeId", sourceEventTypeId),
+    )
+    .collect();
+  for (const it of items) {
+    const { _id, _creationTime, eventTypeId: _e, ...rest } = it as any;
+    await ctx.db.insert("templateItems", {
+      eventTypeId: targetEventTypeId,
+      ...rest,
+      roleId: rest.roleId ? roleIdMap.get(String(rest.roleId)) : undefined,
+    });
+  }
+
+  // Custom modules — verbatim under the target.
+  const mods = await ctx.db
+    .query("templateModules")
+    .withIndex("by_template", (q: any) =>
+      q.eq("eventTypeId", sourceEventTypeId),
+    )
+    .collect();
+  for (const m of mods) {
+    const { _id, _creationTime, eventTypeId: _e, ...rest } = m as any;
+    await ctx.db.insert("templateModules", {
+      eventTypeId: targetEventTypeId,
+      ...rest,
+    });
+  }
+
+  return roleIdMap;
+}
+
+/**
  * THE TEMPLATING ENGINE. Snapshot a template into a live event: insert the
  * event, clone its columns onto the event, then clone its items (back-
  * calculating due dates for day-offset modules; tasks/comms start at their

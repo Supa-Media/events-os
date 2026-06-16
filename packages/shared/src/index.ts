@@ -61,6 +61,10 @@ export const DEFAULT_ROLES: RoleSeed[] = [
 export const LIGHTWEIGHT_ROLE_KEYS = ["event_lead", "comms_lead", "logistics_lead"];
 
 // ── Event status ─────────────────────────────────────────────────────────────
+// Single source of truth for the event lifecycle. Exported as a readonly tuple
+// so the Convex schema can build its validator from this array
+// (`v.union(...EVENT_STATUSES.map(v.literal))`) instead of re-listing literals —
+// keeping schema + app in lock-step without pulling convex/values in here.
 export const EVENT_STATUSES = [
   "planning",
   "ready",
@@ -572,6 +576,18 @@ export function computeReadiness(total: number, complete: number): number {
   return Math.round((complete / total) * 100);
 }
 
+/**
+ * Bucket a 0–100 readiness percentage into a semantic tier. Returns the TIER
+ * only — consumers map tier → color/class in their own layer (theme.ts,
+ * Readiness.tsx), so the threshold rule (<34 danger · <67 warn · else success)
+ * lives in exactly one place instead of being hand-coded per surface.
+ */
+export function readinessTier(pct: number): "danger" | "warn" | "success" {
+  if (pct < 34) return "danger";
+  if (pct < 67) return "warn";
+  return "success";
+}
+
 /** Whether a status value counts as complete, given the column's option set. */
 export function isCompleteStatus(
   options: SelectOption[] | undefined,
@@ -841,6 +857,29 @@ export function currentPhase(
 // ── Vetting status ───────────────────────────────────────────────────────────
 export const VETTING_STATUSES = ["unvetted", "pending", "vetted"] as const;
 export type VettingStatus = (typeof VETTING_STATUSES)[number];
+
+// ── Persona ──────────────────────────────────────────────────────────────────
+// Persona is DERIVED from signals, not stored as a rigid `kind` field, so the
+// same person can be a vendor on one event and a volunteer on another. The rule
+// previously lived only in the People screen and in seed prose; this is the one
+// canonical encoding both backend and frontend call.
+export type Persona = "team" | "volunteer" | "vendor";
+
+/**
+ * Derive a person's persona from their signals:
+ *   isTeamMember === true  → "team"    (core team is explicitly flagged)
+ *   usualRateUsd != null   → "vendor"  (a usual rate marks vendor capability)
+ *   else                   → "volunteer"
+ * Accepts a minimal structural shape so any person-like row can be classified.
+ */
+export function personaOf(person: {
+  isTeamMember?: boolean | null;
+  usualRateUsd?: number | null;
+}): Persona {
+  if (person.isTeamMember === true) return "team";
+  if (person.usualRateUsd != null) return "vendor";
+  return "volunteer";
+}
 
 // ── Roster lifecycle status ──────────────────────────────────────────────────
 // Richer than the isActive flag — drives the People-screen Status cell.

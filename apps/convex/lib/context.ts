@@ -9,6 +9,8 @@
 import { requireAuthId } from "@supa-media/convex/auth";
 import { ConvexError } from "convex/values";
 import { requireAccess } from "./access";
+import { Doc, Id, TableNames } from "../_generated/dataModel";
+import { QueryCtx } from "../_generated/server";
 
 export {
   ALLOWED_EMAIL_DOMAIN,
@@ -70,4 +72,41 @@ export async function requireInChapter(
       message: `${label} not found in your chapter.`,
     });
   }
+}
+
+/**
+ * Load a chapter-scoped document by id, asserting it exists AND belongs to the
+ * caller's chapter, then return it fully typed. Collapses the ~50×-repeated
+ * preamble of `requireChapterId` → `ctx.db.get(id)` → `requireInChapter` into a
+ * single call. Throws a `ConvexError` (not a plain `Error`) so clients can
+ * recover instead of dead-ending in the root error boundary.
+ *
+ * Pass `label` for a friendlier "<label> not found in your chapter." message.
+ */
+export async function requireOwned<T extends TableNames>(
+  ctx: QueryCtx,
+  table: T,
+  id: Id<T>,
+  label = "Record",
+): Promise<Doc<T>> {
+  const chapterId = await requireChapterId(ctx);
+  const doc = await ctx.db.get(id);
+  await requireInChapter(ctx, chapterId, doc as { chapterId?: string } | null, label);
+  return doc as Doc<T>;
+}
+
+/** Load an event by id, asserting it belongs to the caller's chapter. */
+export async function requireEvent(
+  ctx: QueryCtx,
+  eventId: Id<"events">,
+): Promise<Doc<"events">> {
+  return requireOwned(ctx, "events", eventId, "Event");
+}
+
+/** Load an event type (template) by id, asserting it belongs to the caller's chapter. */
+export async function requireEventType(
+  ctx: QueryCtx,
+  templateId: Id<"eventTypes">,
+): Promise<Doc<"eventTypes">> {
+  return requireOwned(ctx, "eventTypes", templateId, "Event type");
 }
