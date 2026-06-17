@@ -7,11 +7,16 @@
  * Pure string math — no React, no platform APIs — so it's easy to unit-test.
  */
 
+/** True when `host` is exactly `base` or a subdomain of it (not a lookalike). */
+function hostIs(host: string, base: string): boolean {
+  return host === base || host.endsWith(`.${base}`);
+}
+
 /** Pull the YouTube video id from the common watch / short / embed URL shapes. */
 function youTubeId(u: URL): string | null {
   const host = u.hostname.replace(/^www\./, "");
   if (host === "youtu.be") return u.pathname.slice(1) || null;
-  if (host.endsWith("youtube.com")) {
+  if (hostIs(host, "youtube.com")) {
     if (u.pathname === "/watch") return u.searchParams.get("v");
     const m = u.pathname.match(/^\/(embed|shorts)\/([^/?]+)/);
     if (m) return m[2] ?? null;
@@ -37,12 +42,12 @@ export function videoEmbedUrl(raw: string | null | undefined): string | null {
   const yt = youTubeId(u);
   if (yt) return `https://www.youtube.com/embed/${yt}`;
 
-  if (host.endsWith("vimeo.com")) {
+  if (hostIs(host, "vimeo.com")) {
     const id = u.pathname.split("/").filter(Boolean)[0];
     if (id && /^\d+$/.test(id)) return `https://player.vimeo.com/video/${id}`;
   }
 
-  if (host.endsWith("loom.com")) {
+  if (hostIs(host, "loom.com")) {
     const m = u.pathname.match(/\/(share|embed)\/([^/?]+)/);
     if (m) return `https://www.loom.com/embed/${m[2]}`;
   }
