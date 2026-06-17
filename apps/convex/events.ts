@@ -717,11 +717,38 @@ export const publicCrew = query({
         q.eq("eventId", eventId).eq("module", "volunteer_expectations"),
       )
       .collect();
-    const toExpectation = (it: Doc<"eventItems">) => ({
-      title: it.title ?? "",
-      details:
-        typeof it.fields?.details === "string" ? it.fields.details : null,
-    });
+    // Resolve each expectation's optional How-To doc (the `how_to` cell stores a
+    // `docs` id) into safe display fields so the public briefing can inline a
+    // note/video or link out to a markdown page — equipping the team in place.
+    // PUBLIC-only: an internal-visibility doc is hidden (returned as null).
+    const toExpectation = async (it: Doc<"eventItems">) => {
+      let doc: {
+        kind: "link" | "video" | "note" | "markdown";
+        title: string;
+        url: string | null;
+        body: string | null;
+        shareId: string;
+      } | null = null;
+      const howToId = it.fields?.how_to;
+      if (typeof howToId === "string" && howToId) {
+        const d = await ctx.db.get(howToId as Id<"docs">);
+        if (d && (d.visibility ?? "public") === "public") {
+          doc = {
+            kind: d.kind,
+            title: d.title,
+            url: d.url ?? null,
+            body: d.body ?? null,
+            shareId: d.shareId,
+          };
+        }
+      }
+      return {
+        title: it.title ?? "",
+        details:
+          typeof it.fields?.details === "string" ? it.fields.details : null,
+        doc,
+      };
+    };
 
     // People = volunteer engagements, person name resolved, grouped by team.
     const volunteers = await ctx.db
@@ -742,26 +769,32 @@ export const publicCrew = query({
       }),
     );
 
-    const teams = teamOptions.map((opt) => ({
-      value: opt.value,
-      label: opt.label,
-      color: opt.color ?? null,
-      expectations: expectationItems
-        .filter((it) => it.fields?.team === opt.value)
-        .map(toExpectation),
-      people: people
-        .filter((p) => p.teams.includes(opt.value))
-        .map(({ name, callTime, status }) => ({ name, callTime, status })),
-    }));
+    const teams = await Promise.all(
+      teamOptions.map(async (opt) => ({
+        value: opt.value,
+        label: opt.label,
+        color: opt.color ?? null,
+        expectations: await Promise.all(
+          expectationItems
+            .filter((it) => it.fields?.team === opt.value)
+            .map(toExpectation),
+        ),
+        people: people
+          .filter((p) => p.teams.includes(opt.value))
+          .map(({ name, callTime, status }) => ({ name, callTime, status })),
+      })),
+    );
 
     // Anything whose team isn't a known option → the unassigned bucket.
     const unassigned = {
-      expectations: expectationItems
-        .filter((it) => {
-          const t = it.fields?.team;
-          return typeof t !== "string" || !t || !knownTeams.has(t);
-        })
-        .map(toExpectation),
+      expectations: await Promise.all(
+        expectationItems
+          .filter((it) => {
+            const t = it.fields?.team;
+            return typeof t !== "string" || !t || !knownTeams.has(t);
+          })
+          .map(toExpectation),
+      ),
       people: people
         .filter((p) => !p.teams.some((t) => knownTeams.has(t)))
         .map(({ name, callTime, status }) => ({ name, callTime, status })),

@@ -10,8 +10,8 @@
  * so it renders even before the first layout. Web-safe (no function-style
  * Pressable styles; `transformOrigin` is gated behind `Platform.OS === "web"`).
  */
-import type { ReactNode } from "react";
-import { View, Text, Platform } from "react-native";
+import { useState, type ReactNode } from "react";
+import { View, Text, Platform, Pressable } from "react-native";
 import { Icon } from "../ui";
 import { colors } from "../../lib/theme";
 import {
@@ -167,14 +167,23 @@ export function PlacementView({
   placement,
   inner,
   size = CIRCLE_SIZE,
+  labelOnHover = false,
 }: {
   placement: PlacementGeometry;
   /** Custom circle content (e.g. a supply photo). Omit for the default glyph. */
   inner?: ReactNode;
   size?: number;
+  /**
+   * When true, the name chip stays hidden until the circle is hovered (web) —
+   * keeping a busy map readable. On platforms without hover it falls back to a
+   * tappable reveal. Default false (the chip always shows).
+   */
+  labelOnHover?: boolean;
 }) {
   const style = PLACEMENT_STYLE[placement.kind];
   const label = placement.label ?? "";
+  const [hovered, setHovered] = useState(false);
+  const showLabel = !!label && (!labelOnHover || hovered);
 
   const circleStyle = inner
     ? {
@@ -184,6 +193,23 @@ export function PlacementView({
       }
     : { borderColor: "#fff", backgroundColor: style.bg };
 
+  const circle = (
+    <View
+      className="items-center justify-center rounded-pill border-2"
+      style={{
+        width: size,
+        height: size,
+        shadowColor: "#000",
+        shadowOpacity: 0.25,
+        shadowRadius: 3,
+        shadowOffset: { width: 0, height: 1 },
+        ...circleStyle,
+      }}
+    >
+      {inner ?? <PlacementGlyph placement={placement} style={style} />}
+    </View>
+  );
+
   return (
     <View
       style={{
@@ -192,23 +218,24 @@ export function PlacementView({
         transform: [{ translateX: -size / 2 }, { translateY: -size / 2 }],
       }}
     >
-      <View className="flex-row items-center gap-1.5">
-        <View
-          className="items-center justify-center rounded-pill border-2"
-          style={{
-            width: size,
-            height: size,
-            shadowColor: "#000",
-            shadowOpacity: 0.25,
-            shadowRadius: 3,
-            shadowOffset: { width: 0, height: 1 },
-            ...circleStyle,
-          }}
+      {labelOnHover ? (
+        // Pressable carries RN-web's onHoverIn/onHoverOut; a tap also toggles so
+        // touch users can still reveal the name.
+        <Pressable
+          onHoverIn={() => setHovered(true)}
+          onHoverOut={() => setHovered(false)}
+          onPress={() => setHovered((h) => !h)}
+          className="flex-row items-center gap-1.5"
         >
-          {inner ?? <PlacementGlyph placement={placement} style={style} />}
+          {circle}
+          {showLabel ? <LabelChip text={label} /> : null}
+        </Pressable>
+      ) : (
+        <View className="flex-row items-center gap-1.5">
+          {circle}
+          {showLabel ? <LabelChip text={label} /> : null}
         </View>
-        {label ? <LabelChip text={label} /> : null}
-      </View>
+      )}
     </View>
   );
 }

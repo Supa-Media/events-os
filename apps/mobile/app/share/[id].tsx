@@ -1,11 +1,13 @@
-import { View, Text, ScrollView } from "react-native";
-import { Stack, useLocalSearchParams } from "expo-router";
+import { View, Text, ScrollView, Pressable, Linking, Platform } from "react-native";
+import { Stack, useLocalSearchParams, useRouter } from "expo-router";
 import { useQuery } from "convex/react";
 import { api } from "@events-os/convex/_generated/api";
 import { Card, Icon, OptionTag } from "../../components/ui";
 import { SiteMapView } from "../../components/event/SiteMapView";
+import { MarkdownView } from "../../components/markdown";
 import { colors } from "../../lib/theme";
 import { formatDateTime } from "../../lib/format";
+import { videoEmbedUrl } from "../../lib/videoEmbed";
 import type { FunctionReturnType } from "convex/server";
 import type { Id } from "@events-os/convex/_generated/dataModel";
 
@@ -27,7 +29,102 @@ type PublicCrew = NonNullable<FunctionReturnType<typeof api.events.publicCrew>>;
 type Person = PublicCrew["teams"][number]["people"][number];
 type Expectation = PublicCrew["teams"][number]["expectations"][number];
 
-/** A single bulleted expectation: check glyph + title + optional details. */
+/** A doc as projected by `publicCrew` (safe display fields only). */
+type HowToDoc = NonNullable<Expectation["doc"]>;
+
+/** A pill button linking out to a doc URL or the public doc route. */
+function DocLinkButton({
+  icon,
+  label,
+  onPress,
+}: {
+  icon: "external-link" | "video" | "file-text";
+  label: string;
+  onPress: () => void;
+}) {
+  return (
+    <Pressable
+      onPress={onPress}
+      accessibilityRole="link"
+      accessibilityLabel={label}
+      className="flex-row items-center gap-2 self-start rounded-lg border border-border bg-surface px-3 py-2 active:opacity-80"
+    >
+      <Icon name={icon} size={14} color={colors.accent} />
+      <Text className="text-sm font-semibold text-accent">{label}</Text>
+    </Pressable>
+  );
+}
+
+/**
+ * Renders an expectation's attached How-To doc to actually EQUIP the team:
+ *  - note  → the note's Markdown, rendered inline.
+ *  - video → an inline player when the URL is embeddable (web); otherwise a
+ *            "Watch video" link.
+ *  - markdown → a link out to the full public doc page (`/d/<shareId>`).
+ *  - link  → a link out to the external URL.
+ */
+function HowToDocView({ doc }: { doc: HowToDoc }) {
+  const router = useRouter();
+
+  if (doc.kind === "note") {
+    return doc.body ? (
+      <View className="mt-2 rounded-lg border border-border bg-surface px-3 py-2">
+        <MarkdownView value={doc.body} />
+      </View>
+    ) : null;
+  }
+
+  if (doc.kind === "video") {
+    const embed = videoEmbedUrl(doc.url);
+    if (embed && Platform.OS === "web") {
+      return (
+        <View
+          className="mt-2 w-full overflow-hidden rounded-lg border border-border bg-ink"
+          style={{ aspectRatio: 16 / 9 }}
+        >
+          {/* RN-web renders this iframe directly in the DOM. */}
+          <iframe
+            src={embed}
+            title={doc.title || "Video"}
+            allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
+            allowFullScreen
+            style={{ width: "100%", height: "100%", border: "0" }}
+          />
+        </View>
+      );
+    }
+    return (
+      <View className="mt-2">
+        <DocLinkButton
+          icon="video"
+          label="Watch video"
+          onPress={() => doc.url && Linking.openURL(doc.url)}
+        />
+      </View>
+    );
+  }
+
+  // markdown → open the full public doc page; link → open the external URL.
+  return (
+    <View className="mt-2">
+      {doc.kind === "markdown" ? (
+        <DocLinkButton
+          icon="file-text"
+          label={doc.title ? `Open: ${doc.title}` : "Open guide"}
+          onPress={() => router.push(`/d/${doc.shareId}` as any)}
+        />
+      ) : (
+        <DocLinkButton
+          icon="external-link"
+          label={doc.title || "Open link"}
+          onPress={() => doc.url && Linking.openURL(doc.url)}
+        />
+      )}
+    </View>
+  );
+}
+
+/** A single bulleted expectation: check glyph + title + optional details + doc. */
 function ExpectationRow({ item }: { item: Expectation }) {
   return (
     <View className="flex-row gap-2">
@@ -39,6 +136,7 @@ function ExpectationRow({ item }: { item: Expectation }) {
         {item.details ? (
           <Text className="mt-0.5 text-sm text-muted">{item.details}</Text>
         ) : null}
+        {item.doc ? <HowToDocView doc={item.doc} /> : null}
       </View>
     </View>
   );
