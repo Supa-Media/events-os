@@ -135,6 +135,12 @@ function ItemRow({
   onToggle: () => void;
 }) {
   const source = resolveOption(sourceCol?.options, field(item, "source"));
+  const name = item.title || "Untitled item";
+  // Show the count up front ("3 × Shure SM58 Mics") so the checklist makes the
+  // quantity obvious. A single (or unspecified) unit shows the bare name.
+  const qtyRaw = Number(field(item, "qty"));
+  const qty = Number.isFinite(qtyRaw) ? qtyRaw : 1;
+  const displayName = qty > 1 ? `${qty} × ${name}` : name;
   return (
     <View
       className="flex-row items-center gap-3 rounded-md px-1 py-2"
@@ -147,7 +153,7 @@ function ItemRow({
           style={checked ? { textDecorationLine: "line-through" } : undefined}
           numberOfLines={2}
         >
-          {item.title || "Untitled item"}
+          {displayName}
         </Text>
         {source ? (
           <OptionTag label={source.label} color={source.color} />

@@ -32,7 +32,7 @@ import { ShapeView, MarkerView, PlacementView } from "./siteMapShapes";
 
 type Marker = MarkerGeometry & { label: string };
 type Shape = ShapeGeometry;
-type Placement = PlacementGeometry & { label: string };
+type Placement = PlacementGeometry & { label: string; photoUrl?: string | null };
 
 export function SiteMapView({
   imageUrl,
@@ -89,7 +89,23 @@ export function SiteMapView({
         <MarkerView key={`marker-${i}`} marker={m} />
       ))}
       {placements.map((p, i) => (
-        <PlacementView key={`placement-${i}`} placement={p} />
+        <PlacementView
+          key={`placement-${i}`}
+          placement={p}
+          // Keep the map uncluttered: names appear on hover, not always.
+          labelOnHover
+          // Render the supply's actual photo when we have one; otherwise the
+          // default glyph (first letter / volunteer initials) is used.
+          inner={
+            p.kind === "supply" && p.photoUrl ? (
+              <Image
+                source={{ uri: p.photoUrl }}
+                resizeMode="cover"
+                style={{ width: "100%", height: "100%", borderRadius: 9999 }}
+              />
+            ) : undefined
+          }
+        />
       ))}
     </View>
   );

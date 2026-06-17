@@ -643,6 +643,7 @@ function WebPlacementCircle({
   H,
   onDragStop,
   onOpenDetail,
+  onSplit,
 }: {
   placement: Placement;
   supply: SupplyItem | null;
@@ -651,17 +652,27 @@ function WebPlacementCircle({
   H: number;
   onDragStop: (x: number, y: number) => void;
   onOpenDetail: () => void;
+  /** Right-click action — peel one unit off a multi-quantity supply. */
+  onSplit: () => void;
 }) {
   const [hovered, setHovered] = useState(false);
+  // A supply with more than one unit can be split into separate chips.
+  const supplyQty =
+    placement.kind === "supply" && typeof supply?.qty === "number"
+      ? supply.qty
+      : null;
+  const splittable = supplyQty != null && supplyQty > 1;
   // Tracks whether the current pointer interaction actually dragged the circle,
   // so onDragStop can tell a click apart from a reposition.
   const movedRef = useRef(false);
 
   const isSupply = placement.kind === "supply";
   const ring = colors.raised; // white-ish ring so it reads on any background
-  const labelText = isSupply
+  const baseLabel = isSupply
     ? supply?.title || placement.label || OVERLAY_STYLE.supply.label
     : volunteer?.name || placement.label || OVERLAY_STYLE.volunteer.label;
+  // Prefix the quantity on multi-unit supplies so "5 × Mics" reads at a glance.
+  const labelText = splittable ? `${supplyQty} × ${baseLabel}` : baseLabel;
 
   // Inner content: supply photo, or a colored circle with a letter/initials/icon.
   let inner: React.ReactNode;
@@ -752,6 +763,14 @@ function WebPlacementCircle({
       <div
         onMouseEnter={() => setHovered(true)}
         onMouseLeave={() => setHovered(false)}
+        onContextMenu={(e) => {
+          // Right-click a multi-unit supply → peel one unit off as its own chip.
+          if (splittable) {
+            e.preventDefault();
+            e.stopPropagation();
+            onSplit();
+          }
+        }}
         style={{
           position: "relative",
           width: "100%",
@@ -759,7 +778,8 @@ function WebPlacementCircle({
           cursor: "pointer",
         }}
       >
-        {/* Hover label — floats just above the circle. */}
+        {/* Hover label — floats just above the circle. Multi-unit supplies hint
+            that right-click peels one off. */}
         {hovered ? (
           <div
             style={{
@@ -776,9 +796,15 @@ function WebPlacementCircle({
               whiteSpace: "nowrap",
               boxShadow: "0 2px 8px rgba(0,0,0,0.18)",
               pointerEvents: "none",
+              textAlign: "center",
             }}
           >
             {labelText}
+            {splittable ? (
+              <div style={{ fontSize: 10, fontWeight: 500, color: colors.muted }}>
+                Right-click to separate one
+              </div>
+            ) : null}
           </div>
         ) : null}
 
@@ -1485,6 +1511,7 @@ export function SiteMapEditor({
     },
   );
   const removePlacement = useMutation(api.siteMap.removePlacement);
+  const splitSupplyPlacement = useMutation(api.siteMap.splitSupplyPlacement);
 
   const generateUploadUrl = useMutation(api.storage.generateUploadUrl);
   const setImage = useMutation(api.siteMap.setImage);
@@ -1521,8 +1548,10 @@ export function SiteMapEditor({
   // Overlay layer visibility — supplies / volunteers chips + trays. Independent
   // of the shape/marker draw state; toggling a layer shows its placed chips and
   // its tray of not-yet-placed items.
-  const [showSupplies, setShowSupplies] = useState(false);
-  const [showVolunteers, setShowVolunteers] = useState(false);
+  // Default both overlay layers ON so the planner sees volunteers and equipment
+  // on the map straight away (they can still toggle either off).
+  const [showSupplies, setShowSupplies] = useState(true);
+  const [showVolunteers, setShowVolunteers] = useState(true);
   // Which placed circle's read-only detail panel is open (null = closed).
   const [detailPlacement, setDetailPlacement] = useState<PlacementDetail | null>(
     null,
@@ -2505,6 +2534,11 @@ export function SiteMapEditor({
                                           item: volunteer,
                                         },
                                   )
+                                }
+                                onSplit={() =>
+                                  void splitSupplyPlacement({
+                                    placementId: p._id as any,
+                                  })
                                 }
                               />
                             );

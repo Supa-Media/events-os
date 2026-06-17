@@ -516,6 +516,7 @@ export const publicSiteMap = query({
         y: number;
         label: string;
         kind: "supply" | "volunteer";
+        photoUrl: string | null;
       }[],
     };
 
@@ -574,9 +575,19 @@ export const publicSiteMap = query({
     const placements = await Promise.all(
       placementRows.map(async (p: any) => {
         let label = "";
+        let photoUrl: string | null = null;
         if (p.kind === "supply") {
           const item = await ctx.db.get(p.refId as Id<"eventItems">);
           label = (item as any)?.title ?? "";
+          // Resolve the supply's photo — same logic as `overlays`: a storageId
+          // becomes a signed URL, a raw http(s) URL passes through. This lets the
+          // public share map render the actual product photo, not just a glyph.
+          const photo = (item as any)?.fields?.photo;
+          if (photo) {
+            photoUrl = isHttpUrl(photo)
+              ? (photo as string)
+              : await ctx.storage.getUrl(photo as Id<"_storage">);
+          }
         } else {
           const engagement = await ctx.db.get(p.refId as Id<"engagements">);
           if (engagement) {
@@ -591,6 +602,7 @@ export const publicSiteMap = query({
           y: p.y,
           label,
           kind: p.kind as "supply" | "volunteer",
+          photoUrl,
         };
       }),
     );
@@ -649,6 +661,77 @@ export const placeOrMove = mutation({
       refId: args.refId,
       x,
       y,
+      createdAt: Date.now(),
+    });
+  },
+});
+
+/**
+ * Split ONE unit out of a multi-quantity supply placement (EVENT scope only).
+ *
+ * A supply placed on the map carries a `qty` (e.g. "5 × Shure SM58 Mics") but is
+ * a single chip. Right-clicking a chip calls this to peel off one unit: it
+ * decrements the original supply's `qty` by one and creates a NEW supplies item
+ * (qty 1, same title/photo, fresh packing state) placed just beside the original
+ * so it can be dragged somewhere else. No-op (returns the original placement)
+ * when the supply has only one unit. The new item flows through to the supplies
+ * grid and the packing checklist like any other supply.
+ */
+export const splitSupplyPlacement = mutation({
+  args: { placementId: v.id("siteMapPlacements") },
+  handler: async (ctx, { placementId }) => {
+    const chapterId = await requireChapterId(ctx);
+    const placement = await ctx.db.get(placementId);
+    await requireInChapter(ctx, chapterId, placement, "Placement");
+    const p = placement as any;
+    // Only supplies carry quantities; volunteers are individuals.
+    if (p.kind !== "supply" || !p.eventId) return placementId;
+
+    const item = await ctx.db.get(p.refId as Id<"eventItems">);
+    if (!item) return placementId;
+    const it = item as any;
+    const fields = it.fields ?? {};
+    const qty = Number(fields.qty);
+    // Nothing to split when there's a single (or unspecified) unit.
+    if (!Number.isFinite(qty) || qty <= 1) return placementId;
+
+    // Decrement the original, leaving the rest of its quantity in place.
+    await ctx.db.patch(it._id, {
+      fields: { ...fields, qty: qty - 1 },
+    });
+
+    // The peeled-off unit: a fresh supplies item with qty 1, same title/photo,
+    // but reset packing state (a separated unit hasn't been packed yet).
+    const supplyItems = await ctx.db
+      .query("eventItems")
+      .withIndex("by_event_module", (q: any) =>
+        q.eq("eventId", p.eventId).eq("module", "supplies"),
+      )
+      .collect();
+    const maxOrder = supplyItems.reduce(
+      (m: number, r: any) => Math.max(m, r.order ?? 0),
+      0,
+    );
+    const newItemId = await ctx.db.insert("eventItems", {
+      eventId: p.eventId,
+      chapterId: chapterId as Id<"chapters">,
+      module: "supplies",
+      title: it.title ?? "",
+      order: maxOrder + 1,
+      status: it.status,
+      fields: { ...fields, qty: 1, packedIn: false, packedOut: false },
+    });
+
+    // Place the new unit just below-right of the original so it's visible.
+    const nx = clamp01(p.x + 0.05);
+    const ny = clamp01(p.y + 0.05);
+    return await ctx.db.insert("siteMapPlacements", {
+      chapterId: chapterId as Id<"chapters">,
+      eventId: p.eventId,
+      kind: "supply",
+      refId: newItemId,
+      x: nx,
+      y: ny,
       createdAt: Date.now(),
     });
   },
