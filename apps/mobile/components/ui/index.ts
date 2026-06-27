@@ -17,6 +17,8 @@ export { Table, TableHeader, HeaderCell, Row, Cell } from "./Table";
 export { PersonPicker } from "./PersonPicker";
 export { RolePicker } from "./RolePicker";
 export { Popover } from "./Popover";
+export { Calendar } from "./Calendar";
+export { DateTimeField } from "./DateTimeField";
 export {
   ContextMenu,
   measureAnchor,

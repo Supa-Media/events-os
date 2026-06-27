@@ -22,6 +22,7 @@
  */
 import {
   DAY_OFFSET_MODULES,
+  offsetDaysBetween,
   type ColumnType,
   type ModuleKey,
 } from "@events-os/shared";
@@ -152,6 +153,9 @@ export interface SystemColumnCtx {
   column: GridColumn;
   module: ModuleKey;
   mode: GridMode;
+  /** The parent event's start timestamp — needed to convert a picked DUE day
+   *  back into the item's signed `offsetDays` (the source of truth). */
+  eventDate?: number;
 }
 
 export const SYSTEM_COLUMN_REGISTRY: Record<string, SystemColumnEntry> = {
@@ -200,6 +204,13 @@ export const SYSTEM_COLUMN_REGISTRY: Record<string, SystemColumnEntry> = {
   },
   due_date: {
     get: (item) => item.dueDate,
-    set: () => ({}), // computed, read-only
+    // DUE is derived (eventDate + offsetDays), so picking a calendar day writes
+    // back the SIGNED `offsetDays` instead — which reflows both the DUE date and
+    // the TIMING (T-…) label together. Compare day-starts so the event's
+    // time-of-day can't push the offset off by one.
+    set: (value, { eventDate }) => {
+      if (value == null || eventDate == null) return {};
+      return { offsetDays: offsetDaysBetween(eventDate, value) };
+    },
   },
 };

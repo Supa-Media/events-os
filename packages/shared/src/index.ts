@@ -549,6 +549,24 @@ export function computeDueDate(eventDate: number, offsetDays: number): number {
   return eventDate + offsetDays * DAY_MS;
 }
 
+/** Local-midnight timestamp for a day — the granularity day-selection works in. */
+export function startOfDay(ts: number): number {
+  const d = new Date(ts);
+  d.setHours(0, 0, 0, 0);
+  return d.getTime();
+}
+
+/**
+ * Inverse of {@link computeDueDate} for calendar-day picking: the SIGNED whole-day
+ * offset of `dayMs` relative to the event. Compares day-starts so the event's
+ * time-of-day can't push the result off by one (e.g. a 6pm event and a midnight
+ * pick still yield clean integer days). Negative = before, 0 = day-of, positive
+ * = after — round-trips with `computeDueDate` for any day a due date lands on.
+ */
+export function offsetDaysBetween(eventDate: number, dayMs: number): number {
+  return Math.round((startOfDay(dayMs) - startOfDay(eventDate)) / DAY_MS);
+}
+
 /** Wall-clock time of a run-of-show segment (offset minutes from event start). */
 export function computeRunTime(eventStart: number, offsetMinutes: number): number {
   return eventStart + offsetMinutes * MINUTE_MS;

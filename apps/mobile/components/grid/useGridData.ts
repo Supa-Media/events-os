@@ -88,9 +88,10 @@ export function buildPatch(
   value: any,
   module: ModuleKey,
   mode: GridMode = "event",
+  eventDate?: number,
 ): Record<string, any> {
   const sys = SYSTEM_COLUMN_REGISTRY[column.key];
-  if (sys) return sys.set(value, { column, module, mode });
+  if (sys) return sys.set(value, { column, module, mode, eventDate });
   return { fields: { [column.key]: value } };
 }
 
