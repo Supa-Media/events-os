@@ -43,9 +43,12 @@ import type * as schema_people from "../schema/people.js";
 import type * as schema_roles from "../schema/roles.js";
 import type * as schema_shared from "../schema/shared.js";
 import type * as schema_siteMap from "../schema/siteMap.js";
+import type * as schema_songs from "../schema/songs.js";
 import type * as schema_templates from "../schema/templates.js";
 import type * as seed from "../seed.js";
+import type * as setlists from "../setlists.js";
 import type * as siteMap from "../siteMap.js";
+import type * as songs from "../songs.js";
 import type * as storage from "../storage.js";
 import type * as templatePeople from "../templatePeople.js";
 
@@ -91,9 +94,12 @@ declare const fullApi: ApiFromModules<{
   "schema/roles": typeof schema_roles;
   "schema/shared": typeof schema_shared;
   "schema/siteMap": typeof schema_siteMap;
+  "schema/songs": typeof schema_songs;
   "schema/templates": typeof schema_templates;
   seed: typeof seed;
+  setlists: typeof setlists;
   siteMap: typeof siteMap;
+  songs: typeof songs;
   storage: typeof storage;
   templatePeople: typeof templatePeople;
 }>;

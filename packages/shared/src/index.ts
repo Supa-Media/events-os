@@ -892,5 +892,46 @@ export const ROSTER_STATUSES = [
 ] as const;
 export type RosterStatus = (typeof ROSTER_STATUSES)[number];
 
+// ── Songs / worship setlists ─────────────────────────────────────────────────
+// The Songs module: a chapter-wide song LIBRARY (title, author, lyrics, tags),
+// a per-event ordered SETLIST, and public, anonymous song REQUESTS submitted
+// from a QR/link page. The worship leader scrolls the setlist day-of, marks the
+// song they're currently on (its lyrics surface on the public page), and works
+// the incoming requests through a tiny lifecycle.
+export const SONG_REQUEST_STATUSES = [
+  "new",
+  "queued",
+  "done",
+  "dismissed",
+] as const;
+export type SongRequestStatus = (typeof SONG_REQUEST_STATUSES)[number];
+
+export const SONG_REQUEST_STATUS_LABELS: Record<SongRequestStatus, string> = {
+  new: "New",
+  queued: "Queued",
+  done: "Played",
+  dismissed: "Dismissed",
+};
+
+/**
+ * Suggested song tags (free-form tags are allowed too). The `doxology` tag is
+ * special: songs carrying it are offered as default suggestions on the public
+ * request page even when they're not on the event's setlist — so a congregation
+ * always has the common doxologies one tap away.
+ */
+export const COMMON_SONG_TAGS = [
+  "doxology",
+  "hymn",
+  "contemporary",
+  "spontaneous",
+] as const;
+
+/** Field length caps for anonymous public requests (defensive against abuse). */
+export const SONG_REQUEST_LIMITS = {
+  title: 120,
+  name: 60,
+  note: 400,
+} as const;
+
 // ── AI agent config (model registry, cost, budgets) ──────────────────────────
 export * from "./ai";

@@ -35,6 +35,7 @@ export function EventHeader({
   onChangeName,
   onSaveName,
   onDayOf,
+  onSongs,
   meView,
   onToggleMeView,
 }: {
@@ -50,6 +51,7 @@ export function EventHeader({
   onChangeName: (text: string) => void;
   onSaveName: () => void;
   onDayOf: () => void;
+  onSongs: () => void;
   meView: boolean;
   onToggleMeView: () => void;
 }) {
@@ -93,6 +95,13 @@ export function EventHeader({
               size="sm"
               variant="secondary"
               onPress={onDayOf}
+            />
+            <Button
+              title="Songs"
+              icon="music"
+              size="sm"
+              variant="secondary"
+              onPress={onSongs}
             />
             <Button
               title="Me view"

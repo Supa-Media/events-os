@@ -12,6 +12,7 @@ import {
   roleAssignments,
 } from "./schema/events";
 import { people, engagements, templatePeople } from "./schema/people";
+import { songs, setlistEntries, songRequests } from "./schema/songs";
 import { docs } from "./schema/docs";
 import { siteMarkers, siteShapes, siteMapPlacements } from "./schema/siteMap";
 import {
@@ -81,6 +82,11 @@ const schema = defineSchema({
   people,
   engagements,
   templatePeople,
+
+  // Songs (chapter library) + per-event setlists + public song requests.
+  songs,
+  setlistEntries,
+  songRequests,
 
   // Docs (the standalone targets behind How-To cells).
   docs,
