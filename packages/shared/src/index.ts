@@ -914,17 +914,43 @@ export const SONG_REQUEST_STATUS_LABELS: Record<SongRequestStatus, string> = {
 };
 
 /**
- * Suggested song tags (free-form tags are allowed too). The `doxology` tag is
- * special: songs carrying it are offered as default suggestions on the public
- * request page even when they're not on the event's setlist — so a congregation
- * always has the common doxologies one tap away.
+ * First-class song tags, always offered in the tag picker. `doxology` is also
+ * special on the backend: songs carrying it are surfaced as default suggestions
+ * on the public request page even when they're not on the event's setlist, so a
+ * congregation always has the common doxologies one tap away. Beyond these two,
+ * leaders can create any custom tag (e.g. "hymn", "christmas", "youth").
  */
-export const COMMON_SONG_TAGS = [
-  "doxology",
-  "hymn",
-  "contemporary",
-  "spontaneous",
-] as const;
+export const FIRST_CLASS_SONG_TAGS = ["doxology", "well_known"] as const;
+
+/** Display labels for known tags; custom tags fall back to a title-cased form. */
+export const SONG_TAG_LABELS: Record<string, string> = {
+  doxology: "Doxology",
+  well_known: "Well-known",
+  hymn: "Hymn",
+  contemporary: "Contemporary",
+  spontaneous: "Spontaneous",
+};
+
+/** Human label for a song tag — a known label, or a title-cased fallback. */
+export function songTagLabel(tag: string): string {
+  return (
+    SONG_TAG_LABELS[tag] ??
+    tag.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase())
+  );
+}
+
+/**
+ * Canonicalize a free-typed tag: lowercase, spaces → underscores, drop anything
+ * but `[a-z0-9_]`. Keeps custom tags tidy and dedupe-able (so "Youth Night" and
+ * "youth night" collapse to one `youth_night`). Returns "" if nothing's left.
+ */
+export function normalizeSongTag(raw: string): string {
+  return raw
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, "_")
+    .replace(/[^a-z0-9_]/g, "");
+}
 
 /** Field length caps for anonymous public requests (defensive against abuse). */
 export const SONG_REQUEST_LIMITS = {

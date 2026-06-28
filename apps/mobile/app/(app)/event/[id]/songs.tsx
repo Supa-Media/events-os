@@ -1,10 +1,11 @@
 import { useState } from "react";
 import { View, Text, Pressable, ScrollView } from "react-native";
-import { Stack, useLocalSearchParams } from "expo-router";
+import { Stack, useLocalSearchParams, useRouter } from "expo-router";
 import { useQuery, useMutation } from "convex/react";
 import { api } from "@events-os/convex/_generated/api";
 import { Screen, Card, Button, SectionHeader, TextField, Icon } from "../../../../components/ui";
 import { ToastView } from "../../../../components/ui/Toast";
+import { TagPicker } from "../../../../components/songs/SongTags";
 import { useActionRunner } from "../../../../lib/useActionToast";
 import { colors } from "../../../../lib/theme";
 import {
@@ -23,6 +24,7 @@ import type { Id } from "@events-os/convex/_generated/dataModel";
  */
 export default function EventSongsScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
+  const router = useRouter();
   const eventId = id as Id<"events">;
   const { run, toast, dismiss } = useActionRunner();
 
@@ -196,7 +198,6 @@ export default function EventSongsScreen() {
 
         {adding ? (
           <AddSongPanel
-            eventId={eventId}
             onClose={() => setAdding(false)}
             onAdd={(songId) =>
               run(() => addSong({ eventId, songId }), {
@@ -205,12 +206,20 @@ export default function EventSongsScreen() {
             }
           />
         ) : (
-          <Button
-            title="Add song"
-            icon="plus"
-            variant="secondary"
-            onPress={() => setAdding(true)}
-          />
+          <View className="flex-row flex-wrap gap-2">
+            <Button
+              title="Add song"
+              icon="plus"
+              variant="secondary"
+              onPress={() => setAdding(true)}
+            />
+            <Button
+              title="Manage library"
+              icon="book-open"
+              variant="ghost"
+              onPress={() => router.push("/song-library")}
+            />
+          </View>
         )}
 
         {/* Requests */}
@@ -421,11 +430,9 @@ function RequestRow({
  * or create a brand-new song (title + author + lyrics) on the spot.
  */
 function AddSongPanel({
-  eventId,
   onClose,
   onAdd,
 }: {
-  eventId: Id<"events">;
   onClose: () => void;
   onAdd: (songId: Id<"songs">) => void;
 }) {
@@ -435,9 +442,15 @@ function AddSongPanel({
   const [title, setTitle] = useState("");
   const [author, setAuthor] = useState("");
   const [lyrics, setLyrics] = useState("");
+  const [tags, setTags] = useState<string[]>([]);
 
   const library = useQuery(api.songs.list, { search });
   const createSong = useMutation(api.songs.create);
+
+  // Tags already used across the library, offered as picker suggestions.
+  const knownTags = Array.from(
+    new Set((library ?? []).flatMap((s) => s.tags ?? [])),
+  );
 
   async function handleCreate() {
     const trimmed = title.trim();
@@ -448,6 +461,7 @@ function AddSongPanel({
           title: trimmed,
           author: author.trim() || undefined,
           lyrics: lyrics.trim() || undefined,
+          tags: tags.length > 0 ? tags : undefined,
         }),
       { errorTitle: "Couldn't save song" },
     );
@@ -456,6 +470,7 @@ function AddSongPanel({
       setTitle("");
       setAuthor("");
       setLyrics("");
+      setTags([]);
       setCreating(false);
     }
   }
@@ -490,7 +505,9 @@ function AddSongPanel({
             numberOfLines={5}
             style={{ minHeight: 110, textAlignVertical: "top" }}
           />
-          <View className="mt-1 flex-row gap-2">
+          <Text className="mb-1.5 mt-1 text-sm font-semibold text-ink">Tags</Text>
+          <TagPicker value={tags} suggestions={knownTags} onChange={setTags} />
+          <View className="mt-2 flex-row gap-2">
             <Button title="Add to setlist" icon="plus" onPress={handleCreate} disabled={!title.trim()} />
             <Button title="Back" variant="secondary" onPress={() => setCreating(false)} />
           </View>

@@ -28,8 +28,9 @@ export const songs = defineTable({
   // Full lyrics (plain text / light markdown). Surfaced on the public page when
   // the song is the one the team is currently on.
   lyrics: v.optional(v.string()),
-  // Free-form tags; `doxology` is special (see COMMON_SONG_TAGS) — it makes the
-  // song a default suggestion on the public request page.
+  // Free-form tags; `doxology` and `well_known` are first-class (see
+  // FIRST_CLASS_SONG_TAGS), and `doxology` makes the song a default suggestion
+  // on the public request page.
   tags: v.optional(v.array(v.string())),
   createdBy: v.optional(v.id("people")),
   createdAt: v.number(),
