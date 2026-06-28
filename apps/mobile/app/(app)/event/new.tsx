@@ -122,7 +122,10 @@ function DatePickerField({
 /** NEW EVENT: pick a template, name it, set a date, create. */
 export default function NewEventScreen() {
   const router = useRouter();
-  const { templateId } = useLocalSearchParams<{ templateId?: string }>();
+  const { templateId, date: dateParam } = useLocalSearchParams<{
+    templateId?: string;
+    date?: string;
+  }>();
   const templates = useQuery(api.eventTypes.list);
   type TemplateRow = NonNullable<typeof templates>[number];
   const create = useMutation(api.events.createFromTemplate);
@@ -132,7 +135,13 @@ export default function NewEventScreen() {
   );
   const [name, setName] = useState("");
   const [touchedName, setTouchedName] = useState(false);
-  const [date, setDate] = useState("");
+  // Prefill from a `?date=YYYY-MM-DD` deep-link (e.g. tapping an open day on the
+  // calendar); fall back to empty so the picker opens unset otherwise.
+  const [date, setDate] = useState(
+    typeof dateParam === "string" && /^\d{4}-\d{2}-\d{2}$/.test(dateParam)
+      ? dateParam
+      : "",
+  );
   const [location, setLocation] = useState("");
   const [creating, setCreating] = useState(false);
   const [error, setError] = useState<string | null>(null);

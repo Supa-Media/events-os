@@ -11,7 +11,6 @@ import {
   Button,
   Badge,
   ReadinessBar,
-  ReadinessBadge,
   EmptyState,
   Icon,
   type IconName,
@@ -79,7 +78,7 @@ export default function PipelineScreen() {
       <ToastView toast={toast} onDismiss={dismiss} />
       <PageHeader
         eyebrow="Operations"
-        title="Pipeline"
+        title="Events"
         subtitle="Every upcoming event and how ready it is to run."
         actions={
           <Button
@@ -90,7 +89,11 @@ export default function PipelineScreen() {
         }
       />
 
-      <StatStrip summary={summary} />
+      <StatStrip
+        summary={summary}
+        onOpenCalendar={() => router.push("/calendar")}
+        onOpenPeople={() => router.push("/people")}
+      />
 
       {isEmpty ? (
         <View className="mt-6">
@@ -258,7 +261,15 @@ function PipelineCard({
   );
 }
 
-function StatStrip({ summary }: { summary: Summary }) {
+function StatStrip({
+  summary,
+  onOpenCalendar,
+  onOpenPeople,
+}: {
+  summary: Summary;
+  onOpenCalendar: () => void;
+  onOpenPeople: () => void;
+}) {
   return (
     <View className="flex-row flex-wrap gap-4">
       <StatCard
@@ -272,14 +283,8 @@ function StatStrip({ summary }: { summary: Summary }) {
             ? `Next: ${summary.nextEvent.name}`
             : "Nothing scheduled"
         }
-      />
-      <StatCard
-        icon="activity"
-        tint={colors.success}
-        tintBg="bg-success-bg"
-        label="Avg readiness"
-        valueNode={<ReadinessBadge value={summary.avgReadiness} size="lg" />}
-        sub="Across the pipeline"
+        cta="Calendar"
+        onPress={onOpenCalendar}
       />
       <StatCard
         icon="users"
@@ -288,6 +293,8 @@ function StatStrip({ summary }: { summary: Summary }) {
         label="People"
         value={String(summary.peopleCount)}
         sub={`${summary.eventsLast90Days} events · 90 days`}
+        cta="People"
+        onPress={onOpenPeople}
       />
     </View>
   );
@@ -301,6 +308,8 @@ function StatCard({
   value,
   valueNode,
   sub,
+  onPress,
+  cta,
 }: {
   icon: IconName;
   tint: string;
@@ -309,9 +318,13 @@ function StatCard({
   value?: string;
   valueNode?: React.ReactNode;
   sub: string;
+  /** Makes the whole card tappable. */
+  onPress?: () => void;
+  /** Footer affordance shown when the card navigates (e.g. "View calendar"). */
+  cta?: string;
 }) {
   return (
-    <Card className="min-w-[220px] flex-1" padding="md">
+    <Card className="min-w-[220px] flex-1" padding="md" onPress={onPress}>
       <View className="flex-row items-center gap-2.5">
         <View className={`h-9 w-9 items-center justify-center rounded-md ${tintBg}`}>
           <Icon name={icon} size={17} color={tint} />
@@ -323,9 +336,17 @@ function StatCard({
           <Text className="font-display text-3xl text-ink">{value}</Text>
         )}
       </View>
-      <Text className="mt-1 text-sm text-muted" numberOfLines={1}>
-        {sub}
-      </Text>
+      <View className="mt-1 flex-row items-center justify-between gap-2">
+        <Text className="flex-1 text-sm text-muted" numberOfLines={1}>
+          {sub}
+        </Text>
+        {cta ? (
+          <View className="flex-row items-center gap-1">
+            <Text className="text-xs font-semibold text-accent">{cta}</Text>
+            <Icon name="chevron-right" size={13} color={colors.accent} />
+          </View>
+        ) : null}
+      </View>
     </Card>
   );
 }
