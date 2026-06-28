@@ -29,7 +29,11 @@ import {
 import { ModuleSection } from "../../../components/event/ModuleSection";
 import { colors } from "../../../lib/theme";
 import { parseDateInput, toDateInput, formatDate } from "../../../lib/format";
-import type { ResolvedModule } from "@events-os/shared";
+import {
+  firstUnassignedRole,
+  firstModuleMissingOwner,
+  type ResolvedModule,
+} from "@events-os/shared";
 
 /** A task row in the "Me view" My-tasks list. */
 type MyTask = {
@@ -278,7 +282,7 @@ export default function EventDetailScreen() {
    */
   function handleSetupAction(id: string) {
     if (id === "roles") {
-      const next = (roleRows ?? []).find((r) => !r.person);
+      const next = firstUnassignedRole(roleRows ?? []);
       if (next) {
         setPicker({
           roleId: next.roleId,
@@ -287,8 +291,10 @@ export default function EventDetailScreen() {
         });
       }
     } else if (id === "owners") {
-      const m = activeModules.find(
-        (mod) => mod.ownerRoleKey && !moduleOwner(mod)?.person,
+      const m = firstModuleMissingOwner(
+        activeModules,
+        (mod) => !!mod.ownerRoleKey,
+        (mod) => !!moduleOwner(mod)?.person,
       );
       if (m) openOwnerPicker(m);
     }

@@ -20,8 +20,11 @@ import { useRouter } from "expo-router";
 import { useQuery } from "convex/react";
 import type { FunctionReturnType } from "convex/server";
 import { api } from "@events-os/convex/_generated/api";
-import { startOfDay } from "@events-os/shared";
 import {
+  startOfDay,
+  calendarMonthGrid,
+  groupByDay,
+  soonestUpcoming,
   EVENT_STATUS_LABELS,
   type EventStatus,
 } from "@events-os/shared";
@@ -66,20 +69,6 @@ const STATUS_CHIP: Record<
   cancelled: { dot: colors.faint, chip: "bg-sunken", text: "text-faint" },
 };
 
-/** Sunday-first 6×7 grid of day-cells for the given month. */
-function monthMatrix(year: number, month: number) {
-  const first = new Date(year, month, 1);
-  const gridStart = new Date(year, month, 1 - first.getDay());
-  return Array.from({ length: 42 }, (_, i) => {
-    const d = new Date(
-      gridStart.getFullYear(),
-      gridStart.getMonth(),
-      gridStart.getDate() + i,
-    );
-    return { ms: d.getTime(), day: d.getDate(), inMonth: d.getMonth() === month };
-  });
-}
-
 export default function CalendarScreen() {
   const router = useRouter();
   const { width } = useWindowDimensions();
@@ -100,10 +89,7 @@ export default function CalendarScreen() {
   useEffect(() => {
     if (didInit.current || events === undefined) return;
     didInit.current = true;
-    const now = Date.now();
-    const next = [...events]
-      .filter((e) => e.eventDate >= now)
-      .sort((a, b) => a.eventDate - b.eventDate)[0];
+    const next = soonestUpcoming(events, (e) => e.eventDate, Date.now());
     if (next) {
       const d = new Date(next.eventDate);
       setView({ year: d.getFullYear(), month: d.getMonth() });
@@ -113,20 +99,14 @@ export default function CalendarScreen() {
 
   // day-ms → events on that day, date-sorted. One pass over the full list.
   const byDay = useMemo(() => {
-    const m = new Map<number, EventRow[]>();
-    for (const e of events ?? []) {
-      const key = startOfDay(e.eventDate);
-      const arr = m.get(key) ?? [];
-      arr.push(e);
-      m.set(key, arr);
-    }
+    const m = groupByDay(events ?? [], (e) => e.eventDate);
     for (const arr of m.values()) arr.sort((a, b) => a.eventDate - b.eventDate);
     return m;
   }, [events]);
 
   if (events === undefined) return <Screen loading />;
 
-  const cells = monthMatrix(view.year, view.month);
+  const cells = calendarMonthGrid(view.year, view.month);
   const selectedEvents = byDay.get(selected) ?? [];
 
   const step = (delta: number) => {
