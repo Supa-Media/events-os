@@ -29,8 +29,8 @@ export const songs = defineTable({
   // the song is the one the team is currently on.
   lyrics: v.optional(v.string()),
   // Free-form tags; `doxology` and `well_known` are first-class (see
-  // FIRST_CLASS_SONG_TAGS), and `doxology` makes the song a default suggestion
-  // on the public request page.
+  // FIRST_CLASS_SONG_TAGS) — songs carrying either are surfaced as default
+  // suggestions on the public request page even when off the setlist.
   tags: v.optional(v.array(v.string())),
   createdBy: v.optional(v.id("people")),
   createdAt: v.number(),
@@ -79,4 +79,6 @@ export const songRequests = defineTable({
 })
   .index("by_event", ["eventId"])
   .index("by_event_status", ["eventId", "status"])
-  .index("by_event_song", ["eventId", "songId"]);
+  .index("by_event_song", ["eventId", "songId"])
+  // Lets `songs.remove` clear a deleted song's requests without a table scan.
+  .index("by_song", ["songId"]);

@@ -118,7 +118,7 @@ export const remove = mutation({
     for (const e of entries) await ctx.db.delete(e._id);
     const reqs = await ctx.db
       .query("songRequests")
-      .filter((q) => q.eq(q.field("songId"), songId))
+      .withIndex("by_song", (q) => q.eq("songId", songId))
       .collect();
     for (const r of reqs) await ctx.db.patch(r._id, { songId: undefined });
     await ctx.db.delete(songId);

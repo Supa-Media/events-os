@@ -914,11 +914,11 @@ export const SONG_REQUEST_STATUS_LABELS: Record<SongRequestStatus, string> = {
 };
 
 /**
- * First-class song tags, always offered in the tag picker. `doxology` is also
- * special on the backend: songs carrying it are surfaced as default suggestions
- * on the public request page even when they're not on the event's setlist, so a
- * congregation always has the common doxologies one tap away. Beyond these two,
- * leaders can create any custom tag (e.g. "hymn", "christmas", "youth").
+ * First-class song tags, always offered in the tag picker. They're also special
+ * on the backend: songs tagged `doxology` or `well_known` are surfaced as default
+ * suggestions on the public request page even when they're not on the event's
+ * setlist, so a congregation always has the common ones a tap away. Beyond these
+ * two, leaders can create any custom tag (e.g. "hymn", "christmas", "youth").
  */
 export const FIRST_CLASS_SONG_TAGS = ["doxology", "well_known"] as const;
 
