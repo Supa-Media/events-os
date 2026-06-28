@@ -572,6 +572,96 @@ export function computeRunTime(eventStart: number, offsetMinutes: number): numbe
   return eventStart + offsetMinutes * MINUTE_MS;
 }
 
+/** One cell in a calendar month grid. `ms` is that day at local midnight. */
+export type CalendarCell = { ms: number; day: number; inMonth: boolean };
+
+/**
+ * The 6×7 (42-cell) Sunday-first grid for a calendar month — the shape every
+ * month view renders. Starts on the Sunday on/before the 1st and runs 42 days so
+ * the grid height never jumps between months; cells outside the target month are
+ * flagged `inMonth: false`. Pure date math (no libs), so it's unit-tested in
+ * `@events-os/shared` rather than inside a screen.
+ */
+export function calendarMonthGrid(year: number, month: number): CalendarCell[] {
+  const first = new Date(year, month, 1);
+  const gridStart = new Date(year, month, 1 - first.getDay());
+  return Array.from({ length: 42 }, (_, i) => {
+    const d = new Date(
+      gridStart.getFullYear(),
+      gridStart.getMonth(),
+      gridStart.getDate() + i,
+    );
+    return { ms: d.getTime(), day: d.getDate(), inMonth: d.getMonth() === month };
+  });
+}
+
+/**
+ * Bucket items by local calendar day (`startOfDay`), keyed by that day's
+ * midnight ms. Time-of-day is ignored, so two events on the same date land in
+ * one bucket regardless of their clock times. Insertion order within a day is
+ * preserved; callers sort if they need to.
+ */
+export function groupByDay<T>(
+  items: readonly T[],
+  getMs: (item: T) => number,
+): Map<number, T[]> {
+  const out = new Map<number, T[]>();
+  for (const item of items) {
+    const key = startOfDay(getMs(item));
+    const bucket = out.get(key);
+    if (bucket) bucket.push(item);
+    else out.set(key, [item]);
+  }
+  return out;
+}
+
+/**
+ * The earliest item at or after `now` (the next upcoming one), or null if every
+ * item is in the past. The boundary is inclusive — an item exactly at `now`
+ * counts as upcoming. Does not mutate `items`.
+ */
+export function soonestUpcoming<T>(
+  items: readonly T[],
+  getMs: (item: T) => number,
+  now: number,
+): T | null {
+  let best: T | null = null;
+  let bestMs = Infinity;
+  for (const item of items) {
+    const ms = getMs(item);
+    if (ms >= now && ms < bestMs) {
+      best = item;
+      bestMs = ms;
+    }
+  }
+  return best;
+}
+
+/**
+ * First role row still missing an assignee, or null when all are staffed.
+ * Powers the "Assign roles" What's-next row, which opens the picker for exactly
+ * this role. A row is unassigned when its `person` is null/undefined.
+ */
+export function firstUnassignedRole<T extends { person: unknown }>(
+  rows: readonly T[],
+): T | null {
+  return rows.find((r) => r.person == null) ?? null;
+}
+
+/**
+ * First module that CAN have an owner (has an owner role) but doesn't yet, or
+ * null. Powers "Assign module owners". The owner-role guard matters: a module
+ * with no owner role can't be assigned one, so it must not be offered. Predicates
+ * keep this free of any module/owner type so it stays trivially testable.
+ */
+export function firstModuleMissingOwner<T>(
+  modules: readonly T[],
+  hasOwnerRole: (m: T) => boolean,
+  hasOwner: (m: T) => boolean,
+): T | null {
+  return modules.find((m) => hasOwnerRole(m) && !hasOwner(m)) ?? null;
+}
+
 /** Format a signed day offset as "T-14" / "T+3" / "Day of". */
 export function formatOffsetDays(offsetDays: number): string {
   if (offsetDays === 0) return "Day of";

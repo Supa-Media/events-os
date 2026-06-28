@@ -42,9 +42,16 @@ const VISIBLE_PER_GROUP = 8;
 export function EventTodos({
   todos,
   onOpenTab,
+  onSetupAction,
 }: {
   todos: EventTodosData;
   onOpenTab: (tab: string) => void;
+  /**
+   * Run a setup row that has no module tab (e.g. "Assign roles", "Assign module
+   * owners"), keyed by its action `id`. Lets the host open the matching picker so
+   * the row lands the user exactly where the change is made.
+   */
+  onSetupAction?: (id: string) => void;
 }) {
   const total = todos.yours.length + todos.overseeing.length;
 
@@ -66,6 +73,7 @@ export function EventTodos({
           actions={todos.yours}
           first
           onOpenTab={onOpenTab}
+          onSetupAction={onSetupAction}
         />
       ) : null}
       {todos.overseeing.length > 0 ? (
@@ -74,6 +82,7 @@ export function EventTodos({
           actions={todos.overseeing}
           first={todos.yours.length === 0}
           onOpenTab={onOpenTab}
+          onSetupAction={onSetupAction}
         />
       ) : null}
     </Card>
@@ -85,11 +94,13 @@ function TodoGroup({
   actions,
   first,
   onOpenTab,
+  onSetupAction,
 }: {
   title: string;
   actions: TodoAction[];
   first: boolean;
   onOpenTab: (tab: string) => void;
+  onSetupAction?: (id: string) => void;
 }) {
   // Sub-group by phase (Pre-plan → Planning → Day-of → Post). Within a phase the
   // backend order already puts overdue/soon first.
@@ -117,6 +128,7 @@ function TodoGroup({
           phase={p}
           actions={byPhase.get(p) as TodoAction[]}
           onOpenTab={onOpenTab}
+          onSetupAction={onSetupAction}
         />
       ))}
     </View>
@@ -128,10 +140,12 @@ function PhaseSubGroup({
   phase,
   actions,
   onOpenTab,
+  onSetupAction,
 }: {
   phase: PhaseKey;
   actions: TodoAction[];
   onOpenTab: (tab: string) => void;
+  onSetupAction?: (id: string) => void;
 }) {
   const [expanded, setExpanded] = useState(false);
   const visible = expanded ? actions : actions.slice(0, VISIBLE_PER_GROUP);
@@ -144,7 +158,12 @@ function PhaseSubGroup({
       </Text>
       <View className="gap-0.5">
         {visible.map((a) => (
-          <TodoRow key={a.id} action={a} onOpenTab={onOpenTab} />
+          <TodoRow
+            key={a.id}
+            action={a}
+            onOpenTab={onOpenTab}
+            onSetupAction={onSetupAction}
+          />
         ))}
         {hidden > 0 ? (
           <Pressable
@@ -186,11 +205,21 @@ function RiskChip({ risk }: { risk: TodoRisk }) {
 function TodoRow({
   action,
   onOpenTab,
+  onSetupAction,
 }: {
   action: TodoAction;
   onOpenTab: (tab: string) => void;
+  onSetupAction?: (id: string) => void;
 }) {
   const overdue = action.risk === "overdue";
+
+  // A row is tappable if it deep-links to a module tab, or if it's a setup row
+  // the host knows how to open (e.g. "Assign roles" → the role picker).
+  const onPress = action.tab
+    ? () => onOpenTab(action.tab as string)
+    : onSetupAction
+      ? () => onSetupAction(action.id)
+      : null;
 
   // Overdue rows get a red left border + red label so they clearly stand out.
   const content = (
@@ -219,20 +248,19 @@ function TodoRow({
         </View>
       ) : null}
       <RiskChip risk={action.risk} />
-      {action.tab ? (
+      {onPress ? (
         <Icon name="chevron-right" size={15} color={colors.faint} />
       ) : null}
     </View>
   );
 
-  if (!action.tab) {
+  if (!onPress) {
     return content;
   }
 
-  const tab = action.tab;
   return (
     <Pressable
-      onPress={() => onOpenTab(tab)}
+      onPress={onPress}
       className="-mx-2 rounded-md px-2 active:opacity-70 web:hover:bg-sunken"
     >
       {content}

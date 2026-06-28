@@ -29,7 +29,11 @@ import {
 import { ModuleSection } from "../../../components/event/ModuleSection";
 import { colors } from "../../../lib/theme";
 import { parseDateInput, toDateInput, formatDate } from "../../../lib/format";
-import type { ResolvedModule } from "@events-os/shared";
+import {
+  firstUnassignedRole,
+  firstModuleMissingOwner,
+  type ResolvedModule,
+} from "@events-os/shared";
 
 /** A task row in the "Me view" My-tasks list. */
 type MyTask = {
@@ -271,6 +275,31 @@ export default function EventDetailScreen() {
     });
   }
 
+  /**
+   * Run a "What's next" setup row (which has no module tab) by opening the picker
+   * where the work actually happens: "Assign roles" jumps to the first unassigned
+   * role, "Assign module owners" to the first owner-less module.
+   */
+  function handleSetupAction(id: string) {
+    if (id === "roles") {
+      const next = firstUnassignedRole(roleRows ?? []);
+      if (next) {
+        setPicker({
+          roleId: next.roleId,
+          roleLabel: next.roleLabel,
+          selectedId: null,
+        });
+      }
+    } else if (id === "owners") {
+      const m = firstModuleMissingOwner(
+        activeModules,
+        (mod) => !!mod.ownerRoleKey,
+        (mod) => !!moduleOwner(mod)?.person,
+      );
+      if (m) openOwnerPicker(m);
+    }
+  }
+
   async function handleSaveName() {
     const trimmed = nameValue.trim();
     if (trimmed.length === 0 || trimmed === event.name) {
@@ -404,6 +433,7 @@ export default function EventDetailScreen() {
               })
             }
             onOpenTab={(t) => router.setParams({ tab: t })}
+            onSetupAction={handleSetupAction}
             onAssignOwner={openOwnerPicker}
           />
           </Narrow>
@@ -473,6 +503,7 @@ export default function EventDetailScreen() {
                 <EventTodos
                   todos={todos}
                   onOpenTab={(t) => router.setParams({ tab: t })}
+                  onSetupAction={handleSetupAction}
                 />
               </>
             ) : null}
@@ -702,6 +733,7 @@ function MeView({
   moduleOwner,
   onOpenModule,
   onOpenTab,
+  onSetupAction,
   onAssignOwner,
 }: {
   ownedModuleKeys: string[] | null;
@@ -715,6 +747,7 @@ function MeView({
   moduleOwner: (m: ResolvedModule) => ModuleOwner;
   onOpenModule: (key: string) => void;
   onOpenTab: (tab: string) => void;
+  onSetupAction: (id: string) => void;
   onAssignOwner: (m: ResolvedModule) => void;
 }) {
   if (ownedModuleKeys === null || todos === undefined) {
@@ -759,7 +792,11 @@ function MeView({
       {/* "My tasks" IS the What's next list — yours (always) + overseeing (at
           risk), with overdue flagged red. */}
       <SectionHeader title="What's next" />
-      <EventTodos todos={todos} onOpenTab={onOpenTab} />
+      <EventTodos
+        todos={todos}
+        onOpenTab={onOpenTab}
+        onSetupAction={onSetupAction}
+      />
     </>
   );
 }
