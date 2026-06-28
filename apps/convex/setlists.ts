@@ -262,7 +262,10 @@ export const publicBoard = query({
           count: counts.get(e.songId) ?? 0,
         });
     }
-    const doxologies = (
+    // Songs tagged `doxology` or `well_known` are offered even when they're not
+    // on the setlist, so the congregation always has the common ones a tap away.
+    const SUGGESTED_TAGS = ["doxology", "well_known"];
+    const extraSuggested = (
       await ctx.db
         .query("songs")
         .withIndex("by_chapter", (q) => q.eq("chapterId", event.chapterId))
@@ -270,11 +273,11 @@ export const publicBoard = query({
     )
       .filter(
         (s) =>
-          (s.tags ?? []).includes("doxology") &&
+          (s.tags ?? []).some((t) => SUGGESTED_TAGS.includes(t)) &&
           !setlistSongIds.has(s._id as string),
       )
       .sort((a, b) => a.title.localeCompare(b.title));
-    for (const s of doxologies) {
+    for (const s of extraSuggested) {
       suggestions.push({
         songId: s._id,
         title: s.title,
