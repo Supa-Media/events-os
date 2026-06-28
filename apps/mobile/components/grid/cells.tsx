@@ -22,15 +22,16 @@ import { useMutation, useQuery } from "convex/react";
 import { api } from "@events-os/convex/_generated/api";
 // expo-image-picker is Expo Go-safe (classified `core`); only used on native.
 import * as ImagePicker from "expo-image-picker";
-import { formatDate, formatTime } from "../../lib/format";
+import { formatTime } from "../../lib/format";
 import {
-  formatOffsetDays,
   formatOffsetMinutes,
   computeRunTime,
   type ColumnType,
   type ModuleKey,
 } from "@events-os/shared";
 import { COLUMN_TYPE_REGISTRY } from "./columnRegistry";
+import { DueDateCell } from "./DueDateCell";
+import { TimingCell } from "./TimingCell";
 import { colors } from "../../lib/theme";
 import { Icon } from "../ui/Icon";
 import { Avatar } from "../ui/Avatar";
@@ -1061,12 +1062,11 @@ export const GridCell = memo(function GridCell(ctx: CellContext) {
       );
     case "offset_days":
       return (
-        <ChipEditCell
+        <TimingCell
           value={value}
+          eventDate={eventDate}
           editable={editable}
           onChange={onChange}
-          format={formatOffsetDays}
-          placeholder="T-…"
         />
       );
     case "offset_minutes":
@@ -1083,9 +1083,12 @@ export const GridCell = memo(function GridCell(ctx: CellContext) {
       );
     case "due_date":
       return (
-        <Text className="px-2 py-1.5 text-sm text-muted">
-          {value != null ? formatDate(value) : "—"}
-        </Text>
+        <DueDateCell
+          value={value}
+          eventDate={eventDate}
+          editable={editable}
+          onChange={onChange}
+        />
       );
     case "photo":
       return <PhotoCell value={value} editable={editable} onChange={onChange} />;

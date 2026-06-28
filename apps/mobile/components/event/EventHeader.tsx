@@ -1,4 +1,4 @@
-import { createElement, useState } from "react";
+import { useState } from "react";
 import { View, Text } from "react-native";
 import {
   Card,
@@ -10,7 +10,7 @@ import {
   statusTone,
 } from "../ui";
 import { colors } from "../../lib/theme";
-import { formatDateTime, toDateTimeLocal, fromDateTimeLocal } from "../../lib/format";
+import { formatDateTime } from "../../lib/format";
 import {
   EVENT_STATUS_LABELS,
   type EventStatus,
@@ -122,38 +122,6 @@ export function EventHeader({
       </View>
     </Card>
   );
-}
-
-/**
- * Web-only date+time picker — a real `<input type="datetime-local">` so users
- * get the browser's native calendar/clock instead of typing. Commits on change.
- * (Rendered only when Platform.OS === "web"; native uses the text fallback.)
- */
-export function WebDateTimeInput({
-  value,
-  onChange,
-}: {
-  value: number;
-  onChange: (ts: number) => void;
-}) {
-  return createElement("input", {
-    type: "datetime-local",
-    value: toDateTimeLocal(value),
-    onChange: (e: any) => {
-      const ts = fromDateTimeLocal(e.target.value);
-      if (ts != null) onChange(ts);
-    },
-    style: {
-      font: "inherit",
-      fontSize: 14,
-      color: colors.ink,
-      border: `1px solid ${colors.border}`,
-      borderRadius: 8,
-      padding: "6px 10px",
-      background: colors.surface,
-      outline: "none",
-    },
-  });
 }
 
 /**

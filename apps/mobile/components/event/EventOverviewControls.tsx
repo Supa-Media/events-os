@@ -1,6 +1,6 @@
 import { useRef, useState } from "react";
 import { View, Text, Pressable, TextInput, Platform } from "react-native";
-import { Card, Button, Avatar, Icon, statusTone } from "../ui";
+import { Card, Button, Avatar, Icon, statusTone, DateTimeField } from "../ui";
 import { colors } from "../../lib/theme";
 import { parseDateInput } from "../../lib/format";
 import {
@@ -8,7 +8,6 @@ import {
   EVENT_STATUS_LABELS,
   type EventStatus,
 } from "@events-os/shared";
-import { WebDateTimeInput } from "./EventHeader";
 import {
   RoleChipMenu,
   confirmDeleteRole,
@@ -106,7 +105,7 @@ export function EventOverviewControls({
         {/* Schedule — date + time picker (native datetime-local on web) */}
         <ControlBlock label="Schedule">
           {Platform.OS === "web" ? (
-            <WebDateTimeInput value={event.eventDate} onChange={onReschedule} />
+            <DateTimeField value={event.eventDate} onChange={onReschedule} />
           ) : (
             <View className="flex-row items-center gap-2">
               <InlineInput

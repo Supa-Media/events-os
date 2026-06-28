@@ -151,9 +151,9 @@ export function EditableGrid({
     (item: GridItem, column: GridColumn, value: any) =>
       gridRef.current.updateItem(
         item._id,
-        buildPatch(column, value, module, mode),
+        buildPatch(column, value, module, mode, eventDate),
       ),
-    [module, mode],
+    [module, mode, eventDate],
   );
 
   // Open the full ColumnOptionsEditor for a column straight from a cell's
