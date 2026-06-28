@@ -375,6 +375,7 @@ export default function EventDetailScreen() {
           onChangeName={setNameInput}
           onSaveName={handleSaveName}
           onDayOf={() => router.push(`/event/${eventId}/day-of`)}
+          onSongs={() => router.push(`/event/${eventId}/songs`)}
           meView={meView}
           onToggleMeView={() => setMeView((v) => !v)}
         />

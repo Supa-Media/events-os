@@ -24,6 +24,10 @@ export const events = defineTable({
   ownerPersonId: v.optional(v.id("people")),
   // Background image (Convex storageId or URL) for the venue site map.
   siteMapImage: v.optional(v.string()),
+  // Whether the public song-request page accepts new requests. Undefined is
+  // treated as OPEN (so the link works as soon as it's shared); the worship
+  // leader can explicitly close requests by setting this false.
+  songRequestsOpen: v.optional(v.boolean()),
   // Module deltas (cloned from the template, then editable). Core modules are
   // platform-wide constants; this stores only which core keys are toggled off +
   // per-core label/owner overrides. Custom modules live in `eventModules`.

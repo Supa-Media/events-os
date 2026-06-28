@@ -892,5 +892,72 @@ export const ROSTER_STATUSES = [
 ] as const;
 export type RosterStatus = (typeof ROSTER_STATUSES)[number];
 
+// ── Songs / worship setlists ─────────────────────────────────────────────────
+// The Songs module: a chapter-wide song LIBRARY (title, author, lyrics, tags),
+// a per-event ordered SETLIST, and public, anonymous song REQUESTS submitted
+// from a QR/link page. The worship leader scrolls the setlist day-of, marks the
+// song they're currently on (its lyrics surface on the public page), and works
+// the incoming requests through a tiny lifecycle.
+export const SONG_REQUEST_STATUSES = [
+  "new",
+  "queued",
+  "done",
+  "dismissed",
+] as const;
+export type SongRequestStatus = (typeof SONG_REQUEST_STATUSES)[number];
+
+export const SONG_REQUEST_STATUS_LABELS: Record<SongRequestStatus, string> = {
+  new: "New",
+  queued: "Queued",
+  done: "Played",
+  dismissed: "Dismissed",
+};
+
+/**
+ * First-class song tags, always offered in the tag picker. They're also special
+ * on the backend: songs tagged `doxology` or `well_known` are surfaced as default
+ * suggestions on the public request page even when they're not on the event's
+ * setlist, so a congregation always has the common ones a tap away. Beyond these
+ * two, leaders can create any custom tag (e.g. "hymn", "christmas", "youth").
+ */
+export const FIRST_CLASS_SONG_TAGS = ["doxology", "well_known"] as const;
+
+/** Display labels for known tags; custom tags fall back to a title-cased form. */
+export const SONG_TAG_LABELS: Record<string, string> = {
+  doxology: "Doxology",
+  well_known: "Well-known",
+  hymn: "Hymn",
+  contemporary: "Contemporary",
+  spontaneous: "Spontaneous",
+};
+
+/** Human label for a song tag — a known label, or a title-cased fallback. */
+export function songTagLabel(tag: string): string {
+  return (
+    SONG_TAG_LABELS[tag] ??
+    tag.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase())
+  );
+}
+
+/**
+ * Canonicalize a free-typed tag: lowercase, spaces → underscores, drop anything
+ * but `[a-z0-9_]`. Keeps custom tags tidy and dedupe-able (so "Youth Night" and
+ * "youth night" collapse to one `youth_night`). Returns "" if nothing's left.
+ */
+export function normalizeSongTag(raw: string): string {
+  return raw
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, "_")
+    .replace(/[^a-z0-9_]/g, "");
+}
+
+/** Field length caps for anonymous public requests (defensive against abuse). */
+export const SONG_REQUEST_LIMITS = {
+  title: 120,
+  name: 60,
+  note: 400,
+} as const;
+
 // ── AI agent config (model registry, cost, budgets) ──────────────────────────
 export * from "./ai";

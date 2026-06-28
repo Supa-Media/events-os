@@ -16,6 +16,7 @@ const NAV: NavEntry[] = [
   { label: "Pipeline", icon: "layout", path: "/" },
   { label: "Templates", icon: "grid", path: "/templates" },
   { label: "People", icon: "users", path: "/people" },
+  { label: "Songs", icon: "music", path: "/song-library" },
 ];
 
 /**

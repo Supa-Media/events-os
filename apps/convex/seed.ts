@@ -623,6 +623,98 @@ export const seedDemoData = mutation({
       });
     }
 
+    // ── Song library + a sample setlist on the WwS event ─────────────────────
+    // Lyrics here are public-domain hymns/doxologies. The `doxology`-tagged ones
+    // surface as default suggestions on the public request page.
+    const songSeeds: {
+      title: string;
+      author?: string;
+      tags: string[];
+      lyrics: string;
+    }[] = [
+      {
+        title: "Doxology (Praise God, from Whom All Blessings Flow)",
+        author: "Thomas Ken",
+        tags: ["doxology", "hymn"],
+        lyrics:
+          "Praise God, from whom all blessings flow;\nPraise Him, all creatures here below;\nPraise Him above, ye heavenly host;\nPraise Father, Son, and Holy Ghost. Amen.",
+      },
+      {
+        title: "Gloria Patri",
+        tags: ["doxology"],
+        lyrics:
+          "Glory be to the Father, and to the Son, and to the Holy Ghost;\nAs it was in the beginning, is now, and ever shall be,\nworld without end. Amen, amen.",
+      },
+      {
+        title: "Holy, Holy, Holy",
+        author: "Reginald Heber",
+        tags: ["hymn"],
+        lyrics:
+          "Holy, holy, holy! Lord God Almighty!\nEarly in the morning our song shall rise to Thee;\nHoly, holy, holy! merciful and mighty!\nGod in three Persons, blessèd Trinity!",
+      },
+      {
+        title: "Amazing Grace",
+        author: "John Newton",
+        tags: ["hymn"],
+        lyrics:
+          "Amazing grace! how sweet the sound,\nThat saved a wretch like me!\nI once was lost, but now am found,\nWas blind, but now I see.",
+      },
+      {
+        title: "It Is Well With My Soul",
+        author: "Horatio Spafford",
+        tags: ["hymn"],
+        lyrics:
+          "When peace like a river attendeth my way,\nWhen sorrows like sea billows roll;\nWhatever my lot, Thou hast taught me to say,\nIt is well, it is well with my soul.",
+      },
+    ];
+    const songIds: Id<"songs">[] = [];
+    for (const s of songSeeds) {
+      songIds.push(
+        await ctx.db.insert("songs", {
+          chapterId,
+          title: s.title,
+          author: s.author,
+          tags: s.tags,
+          lyrics: s.lyrics,
+          createdAt: now,
+          updatedAt: now,
+        }),
+      );
+    }
+    // First three songs onto the event setlist; mark the third "current" so the
+    // public page has live lyrics. Requests default to open.
+    const setlistSongs = songIds.slice(0, 3);
+    for (let i = 0; i < setlistSongs.length; i++) {
+      await ctx.db.insert("setlistEntries", {
+        eventId,
+        chapterId,
+        songId: setlistSongs[i],
+        order: i,
+        isCurrent: i === setlistSongs.length - 1,
+        createdAt: now,
+      });
+    }
+    await ctx.db.patch(eventId, { songRequestsOpen: true });
+    // A couple of sample requests so the performer view isn't empty.
+    await ctx.db.insert("songRequests", {
+      eventId,
+      chapterId,
+      songId: songIds[0],
+      songTitle: songSeeds[0].title,
+      requesterName: "Maria",
+      status: "new",
+      createdAt: now,
+    });
+    await ctx.db.insert("songRequests", {
+      eventId,
+      chapterId,
+      songTitle: "Way Maker",
+      requesterName: "Guest",
+      note: "If you all know it!",
+      status: "new",
+      createdAt: now,
+    });
+
     return { chapterId, seeded: true };
   },
 });
