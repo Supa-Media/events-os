@@ -141,7 +141,7 @@ export function AiAssistantPanel({
     >
       {/* Header */}
       <View className="flex-row items-center gap-2 border-b border-border px-3 py-2.5">
-        <Icon name="zap" size={16} color={colors.accent} />
+        <Icon name="sparkles" size={16} color={colors.accent} />
         <Text className="flex-1 text-sm font-bold text-ink" numberOfLines={1}>
           Assistant · {eventName}
         </Text>

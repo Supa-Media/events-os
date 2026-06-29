@@ -46,7 +46,7 @@ export function AssistantFab({ onPress }: { onPress: () => void }) {
         shadowOffset: { width: 0, height: 4 },
       }}
     >
-      <Icon name="zap" size={22} color={colors.accentText} />
+      <Icon name="sparkles" size={22} color={colors.accentText} />
     </Pressable>
   );
 }

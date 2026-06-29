@@ -1,4 +1,4 @@
-import { Feather } from "@expo/vector-icons";
+import { Feather, Ionicons } from "@expo/vector-icons";
 import { colors } from "../../lib/theme";
 
 /**
@@ -6,8 +6,19 @@ import { colors } from "../../lib/theme";
  * lucide-style line set that ships with Expo and renders reliably on web with
  * no extra native module (avoids pulling in react-native-svg). The whole UI kit
  * draws its glyphs through here so the icon language stays consistent.
+ *
+ * A small set of glyphs the AI surfaces need (e.g. the recognizable "sparkles"
+ * AI star) don't exist in Feather, so we map those names onto Ionicons — also
+ * part of `@expo/vector-icons`, font-based, and equally web-safe.
  */
-export type IconName = keyof typeof Feather.glyphMap;
+const IONICONS_ALIASES = {
+  // The four-point "sparkles" star is the widely recognized AI marker.
+  sparkles: "sparkles",
+} as const;
+
+export type IconName =
+  | keyof typeof Feather.glyphMap
+  | keyof typeof IONICONS_ALIASES;
 
 type Props = {
   name: IconName;
@@ -17,5 +28,11 @@ type Props = {
 };
 
 export function Icon({ name, size = 18, color = colors.ink }: Props) {
-  return <Feather name={name} size={size} color={color} />;
+  if (name in IONICONS_ALIASES) {
+    const ionName = IONICONS_ALIASES[name as keyof typeof IONICONS_ALIASES];
+    return <Ionicons name={ionName} size={size} color={color} />;
+  }
+  return (
+    <Feather name={name as keyof typeof Feather.glyphMap} size={size} color={color} />
+  );
 }

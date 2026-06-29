@@ -934,7 +934,7 @@ function AutofillBtn({ onPress }: { onPress: () => Promise<unknown> }) {
       {busy ? (
         <ActivityIndicator size="small" color={colors.accent} />
       ) : (
-        <Icon name="zap" size={14} color={colors.accent} />
+        <Icon name="sparkles" size={14} color={colors.accent} />
       )}
     </Pressable>
   );
