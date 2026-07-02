@@ -155,6 +155,11 @@ export function useModuleCalendar({
     });
   };
 
+  // Persist an inline rename from the day panel.
+  const saveTitle = (item: ScheduleItem, title: string) => {
+    void updateItem({ itemId: item._id as Id<"eventItems">, title });
+  };
+
   // Create an item on the selected day; its offset is derived from how far that
   // day sits from the event, so it lands where the table expects.
   const createItem = async (payload: {
@@ -207,6 +212,7 @@ export function useModuleCalendar({
     openComposeOn,
     cycleStatus,
     saveCopy,
+    saveTitle,
     createItem,
   };
 }
