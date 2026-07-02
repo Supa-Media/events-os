@@ -567,6 +567,32 @@ export function offsetDaysBetween(eventDate: number, dayMs: number): number {
   return Math.round((startOfDay(dayMs) - startOfDay(eventDate)) / DAY_MS);
 }
 
+/**
+ * How a comm's timing reads relative to its event, from the SEND's point of
+ * view: negative offset = before, positive = after, 0 = the event day itself,
+ * and a missing offset = not yet scheduled. The comms calendar and its day
+ * panel both label sends with this, so the phrasing lives in exactly one place.
+ */
+export function commsTimingLabel(offsetDays: number | null | undefined): string {
+  if (offsetDays == null) return "Unscheduled";
+  if (offsetDays === 0) return "On event day";
+  const n = Math.abs(offsetDays);
+  const unit = n === 1 ? "day" : "days";
+  return offsetDays < 0 ? `${n} ${unit} before` : `${n} ${unit} after`;
+}
+
+/**
+ * A whole-day countdown to the event: 0 = "Today", ahead = "in N days", past =
+ * "N days ago". Pairs with `offsetDaysBetween(today, eventDate)`, which yields
+ * the signed day-delta this expects.
+ */
+export function eventCountdownLabel(daysAway: number): string {
+  if (daysAway === 0) return "Today";
+  const n = Math.abs(daysAway);
+  const unit = n === 1 ? "day" : "days";
+  return daysAway > 0 ? `in ${n} ${unit}` : `${n} ${unit} ago`;
+}
+
 /** Wall-clock time of a run-of-show segment (offset minutes from event start). */
 export function computeRunTime(eventStart: number, offsetMinutes: number): number {
   return eventStart + offsetMinutes * MINUTE_MS;
