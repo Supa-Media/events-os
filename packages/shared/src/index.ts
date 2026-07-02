@@ -593,6 +593,17 @@ export function eventCountdownLabel(daysAway: number): string {
   return daysAway > 0 ? `in ${n} ${unit}` : `${n} ${unit} ago`;
 }
 
+/**
+ * The discreet per-day badge on a calendar cell: how that day sits relative to
+ * the event, as a compact countdown. Before the event → "7d" (days until);
+ * after → "+3d"; the event day itself → "" (it carries its own marker).
+ * `daysToEvent` is `offsetDaysBetween(cellDay, eventDate)` — positive before.
+ */
+export function daysToEventBadge(daysToEvent: number): string {
+  if (daysToEvent === 0) return "";
+  return daysToEvent > 0 ? `${daysToEvent}d` : `+${-daysToEvent}d`;
+}
+
 /** Wall-clock time of a run-of-show segment (offset minutes from event start). */
 export function computeRunTime(eventStart: number, offsetMinutes: number): number {
   return eventStart + offsetMinutes * MINUTE_MS;

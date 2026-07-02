@@ -2,6 +2,7 @@ import { describe, expect, test } from "vitest";
 import {
   commsTimingLabel,
   eventCountdownLabel,
+  daysToEventBadge,
   offsetDaysBetween,
   startOfDay,
   DAY_MS,
@@ -57,6 +58,27 @@ describe("eventCountdownLabel", () => {
   test("counts back for a past event", () => {
     expect(eventCountdownLabel(-3)).toBe("3 days ago");
     expect(eventCountdownLabel(-1)).toBe("1 day ago");
+  });
+});
+
+describe("daysToEventBadge", () => {
+  test("counts down whole days before the event", () => {
+    expect(daysToEventBadge(7)).toBe("7d");
+    expect(daysToEventBadge(1)).toBe("1d");
+  });
+
+  test("marks days after the event with a plus", () => {
+    expect(daysToEventBadge(-3)).toBe("+3d");
+  });
+
+  test("is blank on the event day itself (it carries its own marker)", () => {
+    expect(daysToEventBadge(0)).toBe("");
+  });
+
+  test("reads a cell's distance via offsetDaysBetween(cellDay, eventDate)", () => {
+    const eventDate = startOfDay(1_700_000_000_000) + 15 * 60 * 60 * 1000; // 3pm
+    const cellDay = startOfDay(eventDate) - 5 * DAY_MS;
+    expect(daysToEventBadge(offsetDaysBetween(cellDay, eventDate))).toBe("5d");
   });
 });
 

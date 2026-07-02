@@ -6,6 +6,7 @@
  */
 import { useState } from "react";
 import { View, Text, Pressable } from "react-native";
+import { daysToEventBadge } from "@events-os/shared";
 import { Icon } from "../../ui/Icon";
 import { colors } from "../../../lib/theme";
 import { optionColor } from "../../../lib/optionColor";
@@ -19,6 +20,7 @@ export function DayCell({
   isSelected,
   isEventDay,
   isPast,
+  daysToEvent,
   items,
   badgeField,
   badgeMap,
@@ -33,6 +35,8 @@ export function DayCell({
   isSelected: boolean;
   isEventDay: boolean;
   isPast: boolean;
+  /** offsetDaysBetween(thisDay, eventDate) — positive before the event. */
+  daysToEvent: number;
   items: ScheduleItem[];
   badgeField: string | null;
   badgeMap?: Map<string, SelectOption>;
@@ -42,6 +46,10 @@ export function DayCell({
   onAdd: () => void;
 }) {
   const [hovered, setHovered] = useState(false);
+
+  // Discreet countdown shown in the corner of every in-month day (not the event
+  // day, which flies its own flag) — how far this date sits from the event.
+  const offsetBadge = inMonth && !isEventDay ? daysToEventBadge(daysToEvent) : "";
 
   // The event day gets a solid brand wash so the schedule reads relative to it;
   // otherwise the selected day fills and hover hints interactivity.
@@ -98,12 +106,8 @@ export function DayCell({
             {isEventDay ? <Icon name="flag" size={11} color={colors.accent} /> : null}
           </View>
         )}
-        {compact && items.length > 0 ? (
-          <View className="h-4 min-w-4 items-center justify-center rounded-full bg-accent px-1">
-            <Text className="text-2xs font-bold text-white">{items.length}</Text>
-          </View>
-        ) : null}
-        {/* Web: a quick "+" to drop an item onto this exact day, on hover. */}
+        {/* Corner slot: hover "+" (web) wins, then the compact count pip, then
+            the discreet days-to-event countdown. */}
         {!compact && hovered ? (
           <Pressable
             onPress={(e) => {
@@ -115,6 +119,12 @@ export function DayCell({
           >
             <Icon name="plus" size={12} color={colors.raised} />
           </Pressable>
+        ) : compact && items.length > 0 ? (
+          <View className="h-4 min-w-4 items-center justify-center rounded-full bg-accent px-1">
+            <Text className="text-2xs font-bold text-white">{items.length}</Text>
+          </View>
+        ) : offsetBadge ? (
+          <Text className="text-2xs font-semibold text-faint">{offsetBadge}</Text>
         ) : null}
       </View>
 

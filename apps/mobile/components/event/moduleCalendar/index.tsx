@@ -10,7 +10,7 @@
  */
 import { useMemo } from "react";
 import { View, Text, Pressable } from "react-native";
-import { calendarMonthGrid } from "@events-os/shared";
+import { calendarMonthGrid, offsetDaysBetween } from "@events-os/shared";
 import { Card, Button } from "../../ui";
 import { Icon } from "../../ui/Icon";
 import { colors } from "../../../lib/theme";
@@ -161,6 +161,7 @@ export function ModuleCalendar({
                     isSelected={c.ms === selected}
                     isEventDay={c.ms === eventDay}
                     isPast={c.ms < today}
+                    daysToEvent={offsetDaysBetween(c.ms, eventDate)}
                     items={(byDay.get(c.ms) ?? []).map((x) => x.item)}
                     badgeField={config.badgeField}
                     badgeMap={badgeMap}
