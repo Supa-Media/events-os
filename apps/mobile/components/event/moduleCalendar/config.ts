@@ -88,6 +88,7 @@ const CHANNEL_ICON: Record<string, IconName> = {
   ig_stories: "camera",
   email: "mail",
   audience_preferred: "users",
+  partiful_posh: "tag",
 };
 
 /** Status value → glyph (comms + planning share these semantic names). */

@@ -17,9 +17,11 @@
 import { mutation, internalMutation, query } from "./_generated/server";
 import type { MutationCtx, QueryCtx } from "./_generated/server";
 import { Id, TableNames } from "./_generated/dataModel";
-import { ConvexError } from "convex/values";
+import { ConvexError, v } from "convex/values";
 import {
   DEFAULT_COLUMNS,
+  DEFAULT_ROLES,
+  GRID_CORE_MODULE_KEYS,
   DAY_MS,
   DAY_OFFSET_MODULES,
   VOLUNTEER_TEAM_OPTIONS,
@@ -29,14 +31,26 @@ import {
 } from "@events-os/shared";
 import { requireUserId } from "./lib/context";
 import { isSuperuser } from "./lib/superuser";
-import { instantiateEvent } from "./lib/templates";
-import { type ItemRow, phoneKey } from "./lib/seed/helpers";
+import { instantiateEvent, toSlug, seedTemplateRoles } from "./lib/templates";
+import {
+  type ItemRow,
+  phoneKey,
+  seedTemplateCols,
+  addTemplateItems,
+} from "./lib/seed/helpers";
 import {
   PERMIT_ROWS,
   VOLUNTEER_ROWS,
   RETRO_ROWS,
   buildChapterRolesAndTemplates,
 } from "./lib/seed/templates";
+import {
+  FIELD_DAY_COMMS,
+  FIELD_DAY_PLANNING,
+  FIELD_DAY_RUN_OF_SHOW,
+  FIELD_DAY_VOLUNTEER,
+  FIELD_DAY_PERMITS,
+} from "./lib/seed/fieldDay";
 import {
   NY_CHAPTER_NAME,
   CORE_TEAM,
@@ -1265,5 +1279,88 @@ export const seedOverseeingDemo = internalMutation({
       eventOwnerIsSignedInUser: !!mePerson,
       assigned: ["event_lead→you", "comms→Ada", "logistics→Ben", "production→Chloe"],
     };
+  },
+});
+
+/**
+ * Add the "Field Day" event template (ported from the Notion Field Day 2026
+ * plan) to an existing chapter. Creates one eventType with the default roles +
+ * all grid-core module columns, then fills Comms, Planning Doc, Run of Show,
+ * Volunteer Expectations, and Permits from `lib/seed/fieldDay`. Timing is
+ * event-relative, so the template reuses each year.
+ *
+ * Runnable with `npx convex run seed:fieldDayTemplate` (add `--prod` to target
+ * production). Defaults to the first chapter/user; pass `chapterId`/`createdBy`
+ * to target a specific one. NOT idempotent — running twice creates two copies.
+ *
+ * SECURITY: `internalMutation` — no auth, bulk-writes template data, not called
+ * from the UI. Dashboard/CLI only.
+ */
+export const fieldDayTemplate = internalMutation({
+  args: {
+    chapterId: v.optional(v.id("chapters")),
+    createdBy: v.optional(v.id("users")),
+    name: v.optional(v.string()),
+  },
+  handler: async (ctx: MutationCtx, args) => {
+    const chapter = args.chapterId
+      ? await ctx.db.get(args.chapterId)
+      : await ctx.db.query("chapters").first();
+    if (!chapter)
+      throw new ConvexError({
+        code: "NO_CHAPTER",
+        message: "No chapter found — pass chapterId explicitly.",
+      });
+    const user = args.createdBy
+      ? await ctx.db.get(args.createdBy)
+      : await ctx.db.query("users").first();
+    if (!user)
+      throw new ConvexError({
+        code: "NO_USER",
+        message: "No user found — pass createdBy explicitly.",
+      });
+
+    const name = args.name ?? "Field Day";
+    const now = Date.now();
+
+    const eventTypeId = (await ctx.db.insert("eventTypes", {
+      chapterId: chapter._id,
+      name,
+      slug: toSlug(name),
+      description:
+        "Public Worship Field Day — a park cookout + games gathering. Ported from the Notion Field Day 2026 plan; timing is relative to the event day.",
+      disabledCoreModules: [],
+      version: 1,
+      isArchived: false,
+      createdBy: user._id,
+      createdAt: now,
+      updatedAt: now,
+    })) as Id<"eventTypes">;
+
+    const roleIdByKey = await seedTemplateRoles(ctx, eventTypeId, DEFAULT_ROLES);
+    for (const m of GRID_CORE_MODULE_KEYS) {
+      await seedTemplateCols(ctx, eventTypeId, m);
+    }
+
+    const rowsByModule: Record<string, ItemRow[]> = {
+      comms: FIELD_DAY_COMMS,
+      planning_doc: FIELD_DAY_PLANNING,
+      run_of_show: FIELD_DAY_RUN_OF_SHOW,
+      volunteer_expectations: FIELD_DAY_VOLUNTEER,
+      permits: FIELD_DAY_PERMITS,
+    };
+    let itemsInserted = 0;
+    for (const [module, rows] of Object.entries(rowsByModule)) {
+      await addTemplateItems(
+        ctx,
+        eventTypeId,
+        module as ModuleKey,
+        rows,
+        roleIdByKey,
+      );
+      itemsInserted += rows.length;
+    }
+
+    return { eventTypeId, name, chapter: chapter.name, itemsInserted };
   },
 });
