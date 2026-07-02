@@ -383,6 +383,7 @@ export const COMMS_CHANNEL_OPTIONS: SelectOption[] = [
   { value: "ig_stories", label: "IG Stories", color: "pink" },
   { value: "email", label: "Email", color: "gray" },
   { value: "audience_preferred", label: "Audience preferred", color: "teal" },
+  { value: "partiful_posh", label: "Partiful / Posh", color: "orange" },
 ];
 
 export const COMMS_AUDIENCE_OPTIONS: SelectOption[] = [

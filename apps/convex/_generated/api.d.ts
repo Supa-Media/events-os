@@ -23,6 +23,7 @@ import type * as lib_access from "../lib/access.js";
 import type * as lib_context from "../lib/context.js";
 import type * as lib_people from "../lib/people.js";
 import type * as lib_readiness from "../lib/readiness.js";
+import type * as lib_seed_fieldDay from "../lib/seed/fieldDay.js";
 import type * as lib_seed_helpers from "../lib/seed/helpers.js";
 import type * as lib_seed_roster from "../lib/seed/roster.js";
 import type * as lib_seed_templates from "../lib/seed/templates.js";
@@ -75,6 +76,7 @@ declare const fullApi: ApiFromModules<{
   "lib/context": typeof lib_context;
   "lib/people": typeof lib_people;
   "lib/readiness": typeof lib_readiness;
+  "lib/seed/fieldDay": typeof lib_seed_fieldDay;
   "lib/seed/helpers": typeof lib_seed_helpers;
   "lib/seed/roster": typeof lib_seed_roster;
   "lib/seed/templates": typeof lib_seed_templates;
