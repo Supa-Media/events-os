@@ -46,6 +46,11 @@ export function ResizeHandle({
 }: Props) {
   // Mirrors the latest previewed size on the UI thread so onEnd can commit it.
   const current = useSharedValue(start);
+  // Base size captured at drag begin and FROZEN for the whole drag. `start` can
+  // change mid-drag (an auto-height row re-measures as each preview renders),
+  // and re-deriving the base from it while the translation keeps accumulating
+  // compounds every move into a runaway resize.
+  const base = useSharedValue(start);
 
   const pan = useMemo(() => {
     const clamp = (n: number) => (n < min ? min : n > max ? max : n);
@@ -55,12 +60,13 @@ export function ResizeHandle({
     g = axis === "x" ? g.activeOffsetX([-2, 2]) : g.activeOffsetY([-2, 2]);
     return g
       .onBegin(() => {
+        base.value = start;
         current.value = start;
         if (onActiveChange) runOnJS(onActiveChange)(true);
       })
       .onUpdate((e) => {
         const delta = axis === "x" ? e.translationX : e.translationY;
-        const next = clamp(start + delta);
+        const next = clamp(base.value + delta);
         current.value = next;
         runOnJS(onPreview)(next);
       })
@@ -70,7 +76,7 @@ export function ResizeHandle({
       .onFinalize(() => {
         if (onActiveChange) runOnJS(onActiveChange)(false);
       });
-  }, [axis, start, min, max, onPreview, onCommit, onActiveChange, current]);
+  }, [axis, start, min, max, onPreview, onCommit, onActiveChange, current, base]);
 
   // Absolutely positioned just inside the cell's trailing edge (not straddling
   // it) so it neither overlaps the neighbouring cell nor gets clipped by a row's

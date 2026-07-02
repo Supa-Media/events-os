@@ -743,18 +743,30 @@ const Row = memo(function Row({
   // row doesn't re-render the others.
   const [liveHeight, setLiveHeight] = useState<number | null>(null);
   // Last measured natural height — the drag's starting point when no manual
-  // height is set yet.
-  const measuredRef = useRef<number>(44);
+  // height is set yet. State (not a ref) so the handle actually re-renders with
+  // the real measured start before the first drag begins.
+  const [measuredH, setMeasuredH] = useState(44);
+  const previewHeight = useCallback((h: number) => setLiveHeight(h), []);
+  const commitHeight = useCallback(
+    (h: number) => {
+      setLiveHeight(null);
+      onResize?.(item._id, h);
+    },
+    [onResize, item._id],
+  );
   const effectiveHeight = liveHeight ?? rowHeight;
   return (
     <View
       onLayout={(e) => {
-        measuredRef.current = e.nativeEvent.layout.height;
+        const h = e.nativeEvent.layout.height;
+        setMeasuredH((prev) => (Math.abs(h - prev) > 1 ? h : prev));
       }}
       style={effectiveHeight != null ? { height: effectiveHeight } : undefined}
-      className={`relative flex-row items-start border-b border-border bg-raised ${
+      // With a manual height the cells stretch to fill it (so multiline inputs
+      // gain the extra room); auto rows keep top alignment.
+      className={`relative flex-row border-b border-border bg-raised ${
         isLast ? "border-b-0" : ""
-      } ${effectiveHeight != null ? "overflow-hidden" : ""}`}
+      } ${effectiveHeight != null ? "items-stretch overflow-hidden" : "items-start"}`}
     >
       {/* Left gutter: drag grip */}
       {editable ? (
@@ -813,15 +825,12 @@ const Row = memo(function Row({
       {editable && onResize ? (
         <ResizeHandle
           axis="y"
-          start={rowHeight ?? measuredRef.current}
+          start={rowHeight ?? measuredH}
           min={ROW_MIN_H}
           max={ROW_MAX_H}
           onActiveChange={onResizeActiveChange}
-          onPreview={(height) => setLiveHeight(height)}
-          onCommit={(height) => {
-            setLiveHeight(null);
-            onResize(item._id, height);
-          }}
+          onPreview={previewHeight}
+          onCommit={commitHeight}
         />
       ) : null}
     </View>

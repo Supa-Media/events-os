@@ -168,7 +168,10 @@ function InlineText({
       }`}
       style={[
         { minWidth: 40 },
-        multiline && contentH ? { height: Math.max(contentH, 22) } : null,
+        // minHeight (not height) so a manually-resized row's extra space is
+        // filled by the input (it stretches via flex) instead of being pinned
+        // to the content height.
+        multiline && contentH ? { minHeight: Math.max(contentH, 22) } : null,
       ]}
     />
   );
