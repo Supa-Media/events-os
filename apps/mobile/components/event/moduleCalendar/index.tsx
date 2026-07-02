@@ -30,7 +30,7 @@ import { useModuleCalendar } from "./useModuleCalendar";
 import { EventBanner } from "./EventBanner";
 import { DayCell } from "./DayCell";
 import { DayPanel } from "./DayPanel";
-import { SendRow } from "./SendRow";
+import { ItemCard } from "./ItemCard";
 import { Composer } from "./Composer";
 import { Legend, type LegendEntry } from "./badges";
 
@@ -88,8 +88,8 @@ export function ModuleCalendar({
     withIcons: field === config.badgeField,
   }));
 
-  const renderRow = (item: ScheduleItem) => (
-    <SendRow
+  const renderItemCard = (item: ScheduleItem) => (
+    <ItemCard
       key={item._id}
       item={item}
       statusMap={statusMap}
@@ -197,7 +197,7 @@ export function ModuleCalendar({
             items={selectedItems}
             itemNoun={config.itemNoun}
             onAdd={() => setComposing(true)}
-            renderItem={renderRow}
+            renderItem={renderItemCard}
           />
 
           {unscheduled.length > 0 ? (
@@ -205,7 +205,7 @@ export function ModuleCalendar({
               <Text className="mb-2 px-1 text-2xs font-bold uppercase tracking-wider text-warn">
                 Unscheduled · {unscheduled.length}
               </Text>
-              <View className="gap-2.5">{unscheduled.map(renderRow)}</View>
+              <View className="gap-2.5">{unscheduled.map(renderItemCard)}</View>
             </View>
           ) : null}
         </View>

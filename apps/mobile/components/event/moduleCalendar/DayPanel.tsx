@@ -59,7 +59,7 @@ export function DayPanel({
 
       {items.length === 0 ? (
         <EmptyState
-          icon="send"
+          icon="inbox"
           title={`No ${itemNoun}s this day`}
           message={`Nothing lands on this date. Tap another day, or add a ${itemNoun}.`}
           action={

@@ -1,8 +1,9 @@
 /**
- * One item in the day panel — the rich, badge-forward card. Leads with channel
- * badges (comms) or a status glyph (planning), then title, timing, meta tags,
- * owner, and a tappable status pill. Below, an ALWAYS-present editable box for
- * the item's copy/details, so the body can be written without opening the table.
+ * One item in the day panel — the rich, badge-forward card, shared by every
+ * calendar module (a comms send or a planning task). Leads with channel badges
+ * (comms) or a status glyph (planning), then title, timing, meta tags, owner,
+ * and a tappable status pill. Below, an ALWAYS-present editable box for the
+ * item's copy/details, so the body can be written without opening the table.
  */
 import { useState } from "react";
 import { View, Text, Pressable, TextInput } from "react-native";
@@ -16,7 +17,7 @@ import { ChannelBadge } from "./badges";
 
 export type MetaField = { field: string; map: Map<string, SelectOption> };
 
-export function SendRow({
+export function ItemCard({
   item,
   statusMap,
   badgeField,
