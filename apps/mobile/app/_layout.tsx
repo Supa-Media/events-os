@@ -1,5 +1,6 @@
 import "../global.css";
 
+import { useEffect, useState } from "react";
 import { Slot } from "expo-router";
 import { StatusBar } from "expo-status-bar";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
@@ -32,7 +33,7 @@ import {
  * token storage).
  */
 export default function RootLayout() {
-  const [fontsLoaded] = useFonts({
+  const [fontsLoaded, fontError] = useFonts({
     Corben_400Regular,
     Corben_700Bold,
     DMSans_400Regular,
@@ -40,6 +41,19 @@ export default function RootLayout() {
     DMSans_600SemiBold,
     DMSans_700Bold,
   });
+
+  // Never let fonts hold the app hostage. expo-font's web loader
+  // (fontfaceobserver) can reject after 6s — or stall forever without
+  // resolving OR erroring — which used to leave a permanently blank page.
+  // After a short grace period we render with fallback fonts; the @font-face
+  // rules are already registered, so the brand type still swaps in whenever
+  // the files finish loading.
+  const [graceOver, setGraceOver] = useState(false);
+  useEffect(() => {
+    const t = setTimeout(() => setGraceOver(true), 2000);
+    return () => clearTimeout(t);
+  }, []);
+  const showApp = fontsLoaded || fontError != null || graceOver;
 
   return (
     <GestureHandlerRootView style={{ flex: 1 }}>
@@ -52,7 +66,7 @@ export default function RootLayout() {
                   a recovery UI instead of a blank tree. Kept below the Convex/
                   auth + notification providers so its recovery Screen still has
                   context, but above the route Slot so it wraps every screen. */}
-              <ErrorBoundary>{fontsLoaded ? <Slot /> : null}</ErrorBoundary>
+              <ErrorBoundary>{showApp ? <Slot /> : null}</ErrorBoundary>
             </NotificationProvider>
           </SupaConvexProvider>
         </SafeAreaProvider>

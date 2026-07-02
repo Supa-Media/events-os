@@ -2,10 +2,10 @@
  * One item in the day panel — the rich, badge-forward card, shared by every
  * calendar module (a comms send or a planning task). Leads with channel badges
  * (comms) or a status glyph (planning), then title, timing, meta tags, owner,
- * and a tappable status pill. Below, an ALWAYS-present editable box for the
- * item's copy/details, so the body can be written without opening the table.
+ * and a tappable status pill. Title and the copy/details box below both edit
+ * inline, so an item can be renamed and written without opening the table.
  */
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { View, Text, Pressable, TextInput } from "react-native";
 import { commsTimingLabel } from "@events-os/shared";
 import { Card, OptionTag } from "../../ui";
@@ -28,6 +28,7 @@ export function ItemCard({
   initialCopy,
   onCycleStatus,
   onSaveCopy,
+  onSaveTitle,
 }: {
   item: ScheduleItem;
   statusMap: Map<string, SelectOption>;
@@ -39,6 +40,7 @@ export function ItemCard({
   initialCopy: string;
   onCycleStatus: () => void;
   onSaveCopy: (copy: string) => void;
+  onSaveTitle: (title: string) => void;
 }) {
   const statusOpt = item.status ? statusMap.get(item.status) : undefined;
   const badges = badgeField ? asArray(item.fields?.[badgeField]) : [];
@@ -58,9 +60,7 @@ export function ItemCard({
         </View>
 
         <View className="flex-1">
-          <Text className="text-sm font-semibold text-ink" numberOfLines={2}>
-            {item.title || "Untitled"}
-          </Text>
+          <TitleEditor initial={item.title} onSave={onSaveTitle} />
 
           {/* Timing relative to the event (day-granular). */}
           <View className="mt-1 flex-row items-center gap-1">
@@ -107,6 +107,66 @@ export function ItemCard({
         onSave={onSaveCopy}
       />
     </Card>
+  );
+}
+
+/**
+ * Inline title editor — reads as the plain card title until focused; commits on
+ * blur (Enter commits too, via the newline intercept below). An emptied title
+ * reverts to the last saved one rather than saving "".
+ */
+function TitleEditor({
+  initial,
+  onSave,
+}: {
+  initial: string;
+  onSave: (title: string) => void;
+}) {
+  const ref = useRef<TextInput>(null);
+  const [value, setValue] = useState(initial);
+  const [focused, setFocused] = useState(false);
+
+  // Track renames made elsewhere (e.g. the table view) — but never clobber an
+  // edit in flight.
+  useEffect(() => {
+    if (!focused) setValue(initial);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [initial]);
+
+  const commit = () => {
+    setFocused(false);
+    const next = value.replace(/\n/g, " ").trim();
+    if (!next) {
+      setValue(initial);
+      return;
+    }
+    if (next !== initial.trim()) onSave(next);
+  };
+
+  return (
+    <TextInput
+      ref={ref}
+      value={value}
+      // Multiline only so long titles wrap like the old <Text>; Enter commits
+      // instead of inserting a newline.
+      multiline
+      onChangeText={(t) => {
+        if (t.includes("\n")) {
+          setValue(t.replace(/\n/g, " "));
+          ref.current?.blur();
+          return;
+        }
+        setValue(t);
+      }}
+      onFocus={() => setFocused(true)}
+      onBlur={commit}
+      placeholder="Untitled"
+      placeholderTextColor={colors.faint}
+      textAlignVertical="top"
+      className={`-mx-1 rounded px-1 py-0 text-sm font-semibold leading-snug text-ink ${
+        focused ? "bg-sunken" : ""
+      }`}
+    />
   );
 }
 

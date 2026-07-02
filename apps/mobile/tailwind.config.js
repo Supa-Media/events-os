@@ -14,6 +14,11 @@ module.exports = {
     "./components/**/*.{js,jsx,ts,tsx}",
   ],
   presets: [require("nativewind/preset")],
+  // "class" (not the default "media") so NativeWind's <html> observer tolerates
+  // browser extensions mutating the class attribute — with "media" it throws
+  // "Cannot manually set color scheme" and blanks the whole app on web. We
+  // don't use dark: variants, so the strategy switch has no visual effect.
+  darkMode: "class",
   theme: {
     extend: {
       colors: {

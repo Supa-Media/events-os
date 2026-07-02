@@ -104,6 +104,7 @@ export function ModuleCalendar({
       initialCopy={readCopy(item, config.copyField)}
       onCycleStatus={() => cal.cycleStatus(item)}
       onSaveCopy={(copy) => cal.saveCopy(item, copy)}
+      onSaveTitle={(title) => cal.saveTitle(item, title)}
     />
   );
 
