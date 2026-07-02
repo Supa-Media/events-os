@@ -331,8 +331,10 @@ export default function EventDetailScreen() {
     setBudgetInput(null);
   }
 
-  async function handleSaveLocation() {
-    const trimmed = locationValue.trim();
+  async function handleSaveLocation(next?: string) {
+    // `next` is the explicit value when a suggestion is picked; otherwise fall
+    // back to the current edit buffer (a free-text blur commit).
+    const trimmed = (next ?? locationValue).trim();
     if (trimmed === (event.location ?? "")) {
       setLocationInput(null);
       return;

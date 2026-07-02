@@ -42,6 +42,8 @@ export interface GridItem {
   prePlanColumns?: string[];
   /** Subset of prePlanColumns ticked off (event side only). */
   prePlanChecked?: string[];
+  /** Manual row height (px) when drag-resized; absent = auto-fit content. */
+  rowHeight?: number;
   // Event-side resolved joins:
   roleLabel?: string | null;
   owner?: { _id: string; name: string } | null;

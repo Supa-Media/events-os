@@ -1,6 +1,14 @@
 import { useRef, useState } from "react";
 import { View, Text, Pressable, TextInput, Platform } from "react-native";
-import { Card, Button, Avatar, Icon, statusTone, DateTimeField } from "../ui";
+import {
+  Card,
+  Button,
+  Avatar,
+  Icon,
+  statusTone,
+  DateTimeField,
+  LocationAutocomplete,
+} from "../ui";
 import { colors } from "../../lib/theme";
 import { parseDateInput } from "../../lib/format";
 import {
@@ -63,7 +71,9 @@ export function EventOverviewControls({
   onChangeBudget: (text: string) => void;
   onSaveBudget: () => void;
   onChangeLocation: (text: string) => void;
-  onSaveLocation: () => void;
+  /** Commit the location. Receives the explicit value when a suggestion is
+   *  picked; called with no argument on a free-text blur (uses current value). */
+  onSaveLocation: (value?: string) => void;
   onDelete: () => void;
   onRenameRole: (roleId: string, label: string) => void;
   onDeleteRole: (roleId: string) => void;
@@ -129,11 +139,14 @@ export function EventOverviewControls({
           <Text className="mt-1 text-2xs text-faint">Reflows due dates.</Text>
         </ControlBlock>
 
-        {/* Location — free-text venue; commits on blur */}
+        {/* Location — venue with Google-Maps-style autocomplete; commits on
+            blur (free text) or when a suggestion is picked. */}
         <ControlBlock label="Location">
-          <InlineInput
+          <LocationAutocomplete
+            variant="inline"
             value={locationValue}
             onChangeText={onChangeLocation}
+            onSelect={onSaveLocation}
             onBlur={onSaveLocation}
             placeholder="Where is it?"
             width={200}

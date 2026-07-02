@@ -31,6 +31,7 @@ import { Button } from "../ui/Button";
 import { GridCell } from "./cells";
 import { SortableRows } from "./SortableRows";
 import { ColumnOptionsEditor } from "./ColumnOptionsEditor";
+import { ResizeHandle } from "./ResizeHandle";
 import {
   GRIP_W,
   DELETE_W,
@@ -45,6 +46,12 @@ import {
   type GridItem,
   type GridMode,
 } from "./useGridData";
+
+// Drag-resize clamps (px).
+const COL_MIN_W = 60;
+const COL_MAX_W = 640;
+const ROW_MIN_H = 36;
+const ROW_MAX_H = 480;
 
 /** Column types a template author can add as custom columns. */
 const ADDABLE_TYPES: Array<{ value: string; label: string }> = [
@@ -116,6 +123,14 @@ export function EditableGrid({
   const [prePlanMenu, setPrePlanMenu] = useState<
     null | { itemId: string; colKey: string; marked: boolean; anchor: ContextMenuAnchor }
   >(null);
+  // Live column-width override while a header border is being dragged (the
+  // committed width persists on release). Only one column resizes at a time.
+  const [liveColResize, setLiveColResize] = useState<
+    null | { id: string; width: number }
+  >(null);
+  // True while any column/row resize drag is in flight — suspends the horizontal
+  // ScrollView so a horizontal column drag isn't stolen by it.
+  const [resizing, setResizing] = useState(false);
 
   // In template mode the computed due date is meaningless, and `owner` has no
   // owner to resolve — EXCEPT volunteer_expectations, whose owner is authored
@@ -133,8 +148,13 @@ export function EditableGrid({
   }, [grid.columns, mode, module]);
 
   const widths = useMemo(
-    () => columns.map((c) => c.width ?? getColumnWidth(c)),
-    [columns],
+    () =>
+      columns.map((c) =>
+        liveColResize && liveColResize.id === c._id
+          ? liveColResize.width
+          : c.width ?? getColumnWidth(c),
+      ),
+    [columns, liveColResize],
   );
   const tableWidth =
     widths.reduce((sum, w) => sum + w, 0) + (editable ? GRIP_W + DELETE_W : 0);
@@ -216,6 +236,16 @@ export function EditableGrid({
     void gridRef.current.togglePrePlanChecked(itemId, colKey);
   }, []);
 
+  // Persist a drag-resized column width (clears the live override first).
+  const commitColumnWidth = useCallback((columnId: string, width: number) => {
+    setLiveColResize(null);
+    void gridRef.current.updateColumn(columnId, { width: Math.round(width) });
+  }, []);
+  // Persist a drag-resized row height.
+  const commitRowHeight = useCallback((itemId: string, height: number) => {
+    void gridRef.current.updateItem(itemId, { rowHeight: Math.round(height) });
+  }, []);
+
   // The per-row ✨ Autofill button only makes sense on a live event with a
   // fillable column (photo / link / cost).
   const canAutofill =
@@ -283,6 +313,9 @@ export function EditableGrid({
         // on an event a marked cell shows a check-off tick.
         onPrePlanMenu={allowPrePlanMenu ? openPrePlanMenu : undefined}
         onToggleChecked={allowToggleChecked ? toggleChecked : undefined}
+        rowHeight={item.rowHeight}
+        onResize={editable ? commitRowHeight : undefined}
+        onResizeActiveChange={setResizing}
       />
     ),
     [
@@ -304,6 +337,7 @@ export function EditableGrid({
       openPrePlanMenu,
       allowToggleChecked,
       toggleChecked,
+      commitRowHeight,
     ],
   );
 
@@ -369,16 +403,36 @@ export function EditableGrid({
         </View>
       ) : null}
 
-      <ScrollView horizontal showsHorizontalScrollIndicator={false}>
+      <ScrollView
+        horizontal
+        showsHorizontalScrollIndicator={false}
+        scrollEnabled={!resizing}
+      >
         <View style={{ width: Math.max(tableWidth, MIN_TABLE_WIDTH) }}>
           {/* Column header */}
           <View className="flex-row items-center border-b border-border bg-sunken">
             {editable ? <View style={{ width: GRIP_W }} /> : null}
             {columns.map((c, i) => (
-              <View key={c._id} style={{ width: widths[i] }} className="px-2 py-2.5">
+              <View
+                key={c._id}
+                style={{ width: widths[i] }}
+                className="relative px-2 py-2.5"
+              >
                 <Text className="text-2xs font-bold uppercase tracking-wider text-muted" numberOfLines={1}>
                   {c.label}
                 </Text>
+                {/* Drag the right border to resize this column. */}
+                {editable ? (
+                  <ResizeHandle
+                    axis="x"
+                    start={c.width ?? getColumnWidth(c)}
+                    min={COL_MIN_W}
+                    max={COL_MAX_W}
+                    onActiveChange={setResizing}
+                    onPreview={(width) => setLiveColResize({ id: c._id, width })}
+                    onCommit={(width) => commitColumnWidth(c._id, width)}
+                  />
+                ) : null}
               </View>
             ))}
             {editable ? <View style={{ width: DELETE_W }} /> : null}
@@ -636,6 +690,12 @@ interface RowProps {
   onPrePlanMenu?: (item: GridItem, colKey: string, node: any) => void;
   /** Event: tick / untick a marked pre-plan cell (by item id). */
   onToggleChecked?: (itemId: string, colKey: string) => void;
+  /** Committed manual row height (px); undefined = auto-fit content. */
+  rowHeight?: number;
+  /** Persist a drag-resized row height (by item id). */
+  onResize?: (itemId: string, height: number) => void;
+  /** Drag begin/end, to suspend the surrounding scroll view. */
+  onResizeActiveChange?: (active: boolean) => void;
 }
 
 /**
@@ -666,6 +726,9 @@ const Row = memo(function Row({
   drag,
   onPrePlanMenu,
   onToggleChecked,
+  rowHeight,
+  onResize,
+  onResizeActiveChange,
 }: RowProps) {
   const prePlanCols = useMemo(
     () => new Set(item.prePlanColumns ?? []),
@@ -675,11 +738,23 @@ const Row = memo(function Row({
     () => new Set(item.prePlanChecked ?? []),
     [item.prePlanChecked],
   );
+  // Live height while THIS row's bottom border is being dragged; null = use the
+  // committed `rowHeight` (or auto when that's unset). Kept local so dragging one
+  // row doesn't re-render the others.
+  const [liveHeight, setLiveHeight] = useState<number | null>(null);
+  // Last measured natural height — the drag's starting point when no manual
+  // height is set yet.
+  const measuredRef = useRef<number>(44);
+  const effectiveHeight = liveHeight ?? rowHeight;
   return (
     <View
-      className={`flex-row items-start border-b border-border bg-raised ${
+      onLayout={(e) => {
+        measuredRef.current = e.nativeEvent.layout.height;
+      }}
+      style={effectiveHeight != null ? { height: effectiveHeight } : undefined}
+      className={`relative flex-row items-start border-b border-border bg-raised ${
         isLast ? "border-b-0" : ""
-      }`}
+      } ${effectiveHeight != null ? "overflow-hidden" : ""}`}
     >
       {/* Left gutter: drag grip */}
       {editable ? (
@@ -732,6 +807,22 @@ const Row = memo(function Row({
             <RowBtn icon="trash-2" danger onPress={() => onRemove(item._id)} />
           ) : null}
         </View>
+      ) : null}
+
+      {/* Drag the bottom border to resize this row's height. */}
+      {editable && onResize ? (
+        <ResizeHandle
+          axis="y"
+          start={rowHeight ?? measuredRef.current}
+          min={ROW_MIN_H}
+          max={ROW_MAX_H}
+          onActiveChange={onResizeActiveChange}
+          onPreview={(height) => setLiveHeight(height)}
+          onCommit={(height) => {
+            setLiveHeight(null);
+            onResize(item._id, height);
+          }}
+        />
       ) : null}
     </View>
   );

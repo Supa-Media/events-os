@@ -31,6 +31,7 @@ import type * as lib_templates from "../lib/templates.js";
 import type * as migrations from "../migrations.js";
 import type * as modules from "../modules.js";
 import type * as people from "../people.js";
+import type * as places from "../places.js";
 import type * as profiles from "../profiles.js";
 import type * as roleAssignments from "../roleAssignments.js";
 import type * as roles from "../roles.js";
@@ -82,6 +83,7 @@ declare const fullApi: ApiFromModules<{
   migrations: typeof migrations;
   modules: typeof modules;
   people: typeof people;
+  places: typeof places;
   profiles: typeof profiles;
   roleAssignments: typeof roleAssignments;
   roles: typeof roles;

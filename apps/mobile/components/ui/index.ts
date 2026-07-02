@@ -11,6 +11,7 @@ export { Pill } from "./Pill";
 export { Avatar } from "./Avatar";
 export { ReadinessBadge, ReadinessRing, ReadinessBar, PhaseBreakdown } from "./Readiness";
 export { Field, TextField, Select } from "./Field";
+export { LocationAutocomplete } from "./LocationAutocomplete";
 export { EmptyState } from "./EmptyState";
 export { SectionHeader } from "./SectionHeader";
 export { Table, TableHeader, HeaderCell, Row, Cell } from "./Table";
