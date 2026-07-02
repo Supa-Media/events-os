@@ -43,6 +43,9 @@ export const itemFieldsBase = {
   // placeholder text the user must edit, so completion is the explicit tick, not
   // just filling the cell). Cloned template → event. Drives the pre-plan phase.
   prePlanColumns: v.optional(v.array(v.string())),
+  // Manual row height (px) when the user has drag-resized this row; absent means
+  // the row auto-fits its content. Cloned template → event like other fields.
+  rowHeight: v.optional(v.number()),
   // Custom-column values, keyed by column key.
   fields: v.optional(v.record(v.string(), v.any())),
 };

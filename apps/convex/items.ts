@@ -165,6 +165,8 @@ export const updateTemplateItem = mutation({
     offsetMinutes: v.optional(v.number()),
     roleId: v.optional(v.union(v.id("templateRoles"), v.null())),
     status: v.optional(v.union(v.string(), v.null())),
+    // Manual row height (px); null resets the row back to auto-fit.
+    rowHeight: v.optional(v.union(v.number(), v.null())),
     fields: fieldsValidator,
   },
   handler: async (ctx, { itemId, ...patch }) => {
@@ -178,6 +180,8 @@ export const updateTemplateItem = mutation({
       fields.offsetMinutes = patch.offsetMinutes;
     if (patch.roleId !== undefined) fields.roleId = patch.roleId ?? undefined;
     if (patch.status !== undefined) fields.status = patch.status ?? undefined;
+    if (patch.rowHeight !== undefined)
+      fields.rowHeight = patch.rowHeight ?? undefined;
     if (patch.fields !== undefined)
       fields.fields = mergeFields(item.fields, patch.fields);
     await ctx.db.patch(itemId, fields);
@@ -365,6 +369,8 @@ export const updateEventItem = mutation({
     roleId: v.optional(v.union(v.id("eventRoles"), v.null())),
     ownerPersonId: v.optional(v.union(v.id("people"), v.null())),
     status: v.optional(v.union(v.string(), v.null())),
+    // Manual row height (px); null resets the row back to auto-fit.
+    rowHeight: v.optional(v.union(v.number(), v.null())),
     fields: fieldsValidator,
   },
   handler: async (ctx, { itemId, ...patch }) => {
@@ -379,6 +385,8 @@ export const updateEventItem = mutation({
     if (patch.ownerPersonId !== undefined)
       fields.ownerPersonId = patch.ownerPersonId ?? undefined;
     if (patch.status !== undefined) fields.status = patch.status ?? undefined;
+    if (patch.rowHeight !== undefined)
+      fields.rowHeight = patch.rowHeight ?? undefined;
     if (patch.fields !== undefined)
       fields.fields = mergeFields(item.fields, patch.fields);
     if (patch.offsetDays !== undefined) {

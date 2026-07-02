@@ -19,6 +19,7 @@ import {
   EmptyState,
   SectionHeader,
   Field,
+  LocationAutocomplete,
 } from "../../../components/ui";
 import { colors, radius, spacing } from "../../../lib/theme";
 import { parseDateInput, formatDate } from "../../../lib/format";
@@ -256,7 +257,7 @@ export default function NewEventScreen() {
           {parsedDate !== null ? (
             <Text style={styles.dateConfirm}>{formatDate(parsedDate)}</Text>
           ) : null}
-          <TextField
+          <LocationAutocomplete
             label="Location (optional)"
             placeholder="Where is it?"
             value={location}
