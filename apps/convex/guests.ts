@@ -1,19 +1,29 @@
 /**
- * Guest allowlist management.
+ * Guest allowlist — the ONLY way a non-`publicworship.life` email gets access.
  *
- * These are the ONLY way a non-`publicworship.life` email gets access. They're
- * registered as INTERNAL functions on purpose: a guest's ability to log in must
- * be seeded from Convex (the dashboard function runner or a seed script), never
- * self-service from the app. To grant access, run `guests:allow` with the
- * guest's email; they then log in through the normal email-OTP flow.
+ * Three surfaces, one shared core:
+ *   - `checkEmail`         public pre-flight for the login screen (UX only).
+ *   - `allow`/`revoke`/`list`   internal, run from Convex (dashboard / seeds).
+ *   - `grantAccess`/`revokeAccess`/`listGuests`   public but superuser-gated,
+ *     for the in-app admin screen.
  *
- * Access is enforced downstream by `requireAccess` / `hasAccess` (see
- * lib/access.ts), which check this table for any email off the member domain.
+ * A fresh grant (new row or a re-activation) emails the guest to tell them they
+ * can sign in. Access is enforced downstream by `requireAccess` / `hasAccess`
+ * (see lib/access.ts) on every data function.
  */
-import { internalMutation, internalQuery, query } from "./_generated/server";
+import {
+  internalAction,
+  internalMutation,
+  internalQuery,
+  mutation,
+  query,
+} from "./_generated/server";
+import type { MutationCtx, QueryCtx } from "./_generated/server";
 import { ConvexError, v } from "convex/values";
+import { internal } from "./_generated/api";
+import { Doc, Id } from "./_generated/dataModel";
 import { hasAccess, isAllowedEmail, normalizeEmail } from "./lib/access";
-import { Doc } from "./_generated/dataModel";
+import { requireSuperuser } from "./lib/superuser";
 
 /**
  * Pre-flight access check for the login screen. Public + unauthenticated so the
@@ -30,71 +40,173 @@ export const checkEmail = query({
   },
 });
 
+// ── Shared allowlist core ────────────────────────────────────────────────────
+
 /**
- * Grant a guest email access (idempotent). Re-activates a revoked row and
- * refreshes the note. No-ops for domain members — they already have access.
+ * Upsert an active allowlist row. Returns `newlyGranted: true` when this call
+ * actually turned access on (fresh row, or re-activating a revoked one) so the
+ * caller can decide whether to email the guest. No-ops for domain members.
  */
+async function grantGuest(
+  ctx: MutationCtx,
+  email: string,
+  note?: string,
+): Promise<{ id: Id<"guestAllowlist">; newlyGranted: boolean }> {
+  const normalized = normalizeEmail(email);
+  if (!normalized) {
+    throw new ConvexError({
+      code: "INVALID_EMAIL",
+      message: "Provide a non-empty email to allow.",
+    });
+  }
+  if (isAllowedEmail(normalized)) {
+    throw new ConvexError({
+      code: "ALREADY_A_MEMBER",
+      message: `${normalized} is a publicworship.life member and already has access.`,
+    });
+  }
+
+  const existing = await ctx.db
+    .query("guestAllowlist")
+    .withIndex("by_email", (q) => q.eq("email", normalized))
+    .first();
+
+  if (existing) {
+    const wasActive = existing.isActive !== false;
+    await ctx.db.patch(existing._id, {
+      isActive: true,
+      ...(note !== undefined ? { note } : {}),
+    });
+    return { id: existing._id, newlyGranted: !wasActive };
+  }
+
+  const id = await ctx.db.insert("guestAllowlist", {
+    email: normalized,
+    note,
+    isActive: true,
+    createdAt: Date.now(),
+  });
+  return { id, newlyGranted: true };
+}
+
+/** Grant, then email the guest if this call freshly turned their access on. */
+async function grantAndNotify(
+  ctx: MutationCtx,
+  email: string,
+  note?: string,
+): Promise<Id<"guestAllowlist">> {
+  const { id, newlyGranted } = await grantGuest(ctx, email, note);
+  if (newlyGranted) {
+    await ctx.scheduler.runAfter(0, internal.guests.sendAccessGrantedEmail, {
+      email: normalizeEmail(email)!,
+    });
+  }
+  return id;
+}
+
+/** Revoke access, keeping the row (isActive=false) so the note/history survives. */
+async function revokeGuest(ctx: MutationCtx, email: string): Promise<null> {
+  const normalized = normalizeEmail(email);
+  if (!normalized) return null;
+  const existing = await ctx.db
+    .query("guestAllowlist")
+    .withIndex("by_email", (q) => q.eq("email", normalized))
+    .first();
+  if (existing) await ctx.db.patch(existing._id, { isActive: false });
+  return null;
+}
+
+/** Newest-first list of allowlist rows (bounded). */
+function listGuestRows(ctx: QueryCtx): Promise<Doc<"guestAllowlist">[]> {
+  return ctx.db.query("guestAllowlist").order("desc").take(500);
+}
+
+// ── Seeded from Convex (internal: dashboard function runner / seed scripts) ───
+
 export const allow = internalMutation({
   args: { email: v.string(), note: v.optional(v.string()) },
-  handler: async (ctx, { email, note }) => {
-    const normalized = normalizeEmail(email);
-    if (!normalized) {
-      throw new ConvexError({
-        code: "INVALID_EMAIL",
-        message: "Provide a non-empty email to allow.",
-      });
-    }
-    if (isAllowedEmail(normalized)) {
-      throw new ConvexError({
-        code: "ALREADY_A_MEMBER",
-        message: `${normalized} is a publicworship.life member and already has access.`,
-      });
-    }
-
-    const existing = await ctx.db
-      .query("guestAllowlist")
-      .withIndex("by_email", (q) => q.eq("email", normalized))
-      .first();
-
-    if (existing) {
-      await ctx.db.patch(existing._id, {
-        isActive: true,
-        ...(note !== undefined ? { note } : {}),
-      });
-      return existing._id;
-    }
-
-    return await ctx.db.insert("guestAllowlist", {
-      email: normalized,
-      note,
-      isActive: true,
-      createdAt: Date.now(),
-    });
-  },
+  handler: (ctx, { email, note }) => grantAndNotify(ctx, email, note),
 });
 
-/**
- * Revoke a guest's access. Keeps the row (isActive=false) so the note/audit
- * trail survives. No-ops if the email was never allowed.
- */
 export const revoke = internalMutation({
   args: { email: v.string() },
-  handler: async (ctx, { email }) => {
-    const normalized = normalizeEmail(email);
-    if (!normalized) return null;
-    const existing = await ctx.db
-      .query("guestAllowlist")
-      .withIndex("by_email", (q) => q.eq("email", normalized))
-      .first();
-    if (existing) await ctx.db.patch(existing._id, { isActive: false });
-    return null;
+  handler: (ctx, { email }) => revokeGuest(ctx, email),
+});
+
+export const list = internalQuery({
+  args: {},
+  handler: (ctx) => listGuestRows(ctx),
+});
+
+// ── Managed in-app by super admins (public, superuser-gated) ─────────────────
+
+export const grantAccess = mutation({
+  args: { email: v.string(), note: v.optional(v.string()) },
+  handler: async (ctx, { email, note }) => {
+    await requireSuperuser(ctx);
+    return await grantAndNotify(ctx, email, note);
   },
 });
 
-/** All guest allowlist rows (for inspection from the dashboard). */
-export const list = internalQuery({
+export const revokeAccess = mutation({
+  args: { email: v.string() },
+  handler: async (ctx, { email }) => {
+    await requireSuperuser(ctx);
+    return await revokeGuest(ctx, email);
+  },
+});
+
+export const listGuests = query({
   args: {},
   handler: async (ctx): Promise<Doc<"guestAllowlist">[]> => {
-    return await ctx.db.query("guestAllowlist").collect();
+    await requireSuperuser(ctx);
+    return await listGuestRows(ctx);
+  },
+});
+
+// ── Notification (internal action; fetch works in the default runtime) ───────
+
+/**
+ * Email a guest that they've been granted access. Mirrors the auth OTP mailer:
+ * uses Resend when `RESEND_API_KEY` is set, otherwise just logs (dev). Best
+ * effort — a send failure is logged, never thrown, so it can't fail the grant.
+ */
+export const sendAccessGrantedEmail = internalAction({
+  args: { email: v.string() },
+  handler: async (_ctx, { email }) => {
+    const apiKey = process.env.RESEND_API_KEY;
+    const from = process.env.AUTH_EMAIL_FROM ?? "auth@events-os.com";
+    const subject = "You've been given access to Events OS";
+    const html = `<div style="font-family:-apple-system,Segoe UI,Roboto,sans-serif;line-height:1.5;color:#111">
+  <h2 style="margin:0 0 12px">You're in 🎉</h2>
+  <p>You've been granted guest access to <strong>Events OS</strong>.</p>
+  <p>Open the app, choose <strong>Sign in as a guest</strong>, and enter this email
+  address (<strong>${email}</strong>). We'll email you a one-time code each time
+  you sign in.</p>
+  <p style="color:#666">See you inside.</p>
+</div>`;
+
+    if (!apiKey) {
+      console.log(
+        `[guests] access granted to ${email} (no RESEND_API_KEY — email skipped)`,
+      );
+      return null;
+    }
+
+    const response = await fetch("https://api.resend.com/emails", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ from, to: email, subject, html }),
+    });
+    if (!response.ok) {
+      console.error(
+        "[guests] access-granted email failed:",
+        await response.text(),
+      );
+    }
+    return null;
   },
 });

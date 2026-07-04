@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { View, Text } from "react-native";
+import { useRouter } from "expo-router";
 import { useQuery, useMutation } from "convex/react";
 import { useAuthActions } from "@convex-dev/auth/react";
 import { api } from "@events-os/convex/_generated/api";
@@ -15,6 +16,7 @@ export default function ProfileScreen() {
   const me = useQuery(api.profiles.me);
   const update = useMutation(api.profiles.updateProfile);
   const { signOut } = useAuthActions();
+  const router = useRouter();
 
   const [name, setName] = useState("");
   const [phone, setPhone] = useState("");
@@ -129,6 +131,18 @@ export default function ProfileScreen() {
           disabled={!canSave}
         />
       </Card>
+
+      {/* Super-admin tools */}
+      {me?.isSuperuser ? (
+        <View className="mt-4">
+          <Button
+            title="Manage guest access"
+            icon="user-plus"
+            variant="secondary"
+            onPress={() => router.push("/guest-access")}
+          />
+        </View>
+      ) : null}
 
       {/* Account actions */}
       <View className="mt-4">
