@@ -89,3 +89,48 @@ describe("guest allowlist access", () => {
     ).toEqual({ allowed: true });
   });
 });
+
+describe("superuser guest management", () => {
+  test("me reports isSuperuser for admin emails only", async () => {
+    const t = newT();
+    const { as: admin } = await signInAs(t, "seyi@publicworship.life");
+    const { as: member } = await signInAs(t, "member@publicworship.life");
+    expect((await admin.query(api.profiles.me, {}))?.isSuperuser).toBe(true);
+    expect((await member.query(api.profiles.me, {}))?.isSuperuser).toBe(false);
+  });
+
+  test("non-superuser cannot grant, revoke, or list", async () => {
+    const t = newT();
+    const { as } = await signInAs(t, "member@publicworship.life");
+    await expect(
+      as.mutation(api.guests.grantAccess, { email: "g@gmail.com" }),
+    ).rejects.toThrow(ConvexError);
+    await expect(
+      as.mutation(api.guests.revokeAccess, { email: "g@gmail.com" }),
+    ).rejects.toThrow(ConvexError);
+    await expect(as.query(api.guests.listGuests, {})).rejects.toThrow(
+      ConvexError,
+    );
+  });
+
+  test("superuser grants access (guest gets in) and can revoke it", async () => {
+    const t = newT();
+    const { as: admin } = await signInAs(t, "lkupo@publicworship.life");
+    const { as: guest } = await signInAs(t, "guest@gmail.com");
+
+    await admin.mutation(api.guests.grantAccess, {
+      email: "guest@gmail.com",
+      note: "VIP",
+    });
+    const rows = await admin.query(api.guests.listGuests, {});
+    expect(rows.find((r) => r.email === "guest@gmail.com")?.isActive).toBe(true);
+    expect((await guest.query(api.profiles.me, {}))?.allowed).toBe(true);
+
+    await admin.mutation(api.guests.revokeAccess, { email: "guest@gmail.com" });
+    expect((await guest.query(api.profiles.me, {}))?.allowed).toBe(false);
+    const after = await admin.query(api.guests.listGuests, {});
+    expect(after.find((r) => r.email === "guest@gmail.com")?.isActive).toBe(
+      false,
+    );
+  });
+});
