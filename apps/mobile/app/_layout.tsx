@@ -1,6 +1,7 @@
 import "../global.css";
 
 import { useEffect, useState } from "react";
+import Constants from "expo-constants";
 import { Slot } from "expo-router";
 import { StatusBar } from "expo-status-bar";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
@@ -59,7 +60,15 @@ export default function RootLayout() {
     <GestureHandlerRootView style={{ flex: 1 }}>
       <KeyboardProvider>
         <SafeAreaProvider>
-          <SupaConvexProvider url={process.env.EXPO_PUBLIC_CONVEX_URL}>
+          {/* extra.convexUrl is the env URL with loopback rewritten to the
+              machine's LAN IP at dev-server start (see app.config.js) —
+              Chrome blocks cross-origin loopback and devices can't reach it. */}
+          <SupaConvexProvider
+            url={
+              Constants.expoConfig?.extra?.convexUrl ??
+              process.env.EXPO_PUBLIC_CONVEX_URL
+            }
+          >
             <NotificationProvider>
               <StatusBar style="dark" />
               {/* Catches render errors in any screen so a thrown exception shows
