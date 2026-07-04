@@ -27,6 +27,7 @@ import {
   confirmRemoveModule,
 } from "../../../components/event/EventModuleRollup";
 import { ModuleSection } from "../../../components/event/ModuleSection";
+import TicketingTab from "../../../components/event/ticketing/TicketingTab";
 import { colors } from "../../../lib/theme";
 import { parseDateInput, toDateInput, formatDate } from "../../../lib/format";
 import {
@@ -234,6 +235,8 @@ export default function EventDetailScreen() {
   });
   const tabs: EventTab[] = [
     { key: "overview", label: "Overview" },
+    // The public event page: RSVPs, tickets, guest list, check-in, blasts.
+    { key: "tickets", label: "Tickets" },
     ...moduleTabs,
     // Fallback: if the expectations module is disabled, still surface Crew last.
     ...(showCrew && !moduleTabs.some((t) => t.key === "crew")
@@ -558,6 +561,11 @@ export default function EventDetailScreen() {
               </>
             ) : null}
 
+          </Narrow>
+        ) : activeTab === "tickets" ? (
+          /* ── Tickets: the shareable public page + RSVPs/tickets admin ─────── */
+          <Narrow>
+            <TicketingTab eventId={eventId} />
           </Narrow>
         ) : activeTab === "crew" ? (
           /* ── Crew & Expectations: WHO is on each team (engagements) plus, below,
