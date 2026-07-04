@@ -5,8 +5,9 @@ import { Card, Button, Icon } from "../ui";
 import { colors } from "../../lib/theme";
 
 /**
- * Shown when a signed-in user is NOT on the @publicworship.life domain. The app
- * is closed to them; their only action is to sign out and try another account.
+ * Shown when a signed-in user is neither a @publicworship.life member nor a
+ * seeded guest. The app is closed to them; their only action is to sign out and
+ * try another account (or ask an admin to be added to the guest allowlist).
  */
 export function AccessDeniedScreen({ email }: { email?: string | null }) {
   const { signOut } = useAuthActions();
@@ -22,9 +23,9 @@ export function AccessDeniedScreen({ email }: { email?: string | null }) {
               Access restricted
             </Text>
             <Text className="mb-1 mt-2 text-sm text-muted">
-              Events OS is only open to{" "}
+              This account isn't approved for Events OS. It's open to{" "}
               <Text className="font-semibold text-ink">@publicworship.life</Text>{" "}
-              accounts.
+              members and invited guests — ask an admin to add you.
             </Text>
             {email ? (
               <Text className="mb-5 text-sm text-muted">

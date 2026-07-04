@@ -16,7 +16,7 @@ import {
 import { Id } from "./_generated/dataModel";
 import { v, ConvexError } from "convex/values";
 import { getOptionalAuth } from "@supa-media/convex/auth";
-import { requireUserId, requireAccess, isAllowedEmail } from "./lib/context";
+import { requireUserId, requireAccess, hasAccess } from "./lib/context";
 import { findUnlinkedPersonByLoginEmail, claimFields } from "./lib/people";
 
 /** Load the current user's profile row (or null). */
@@ -107,7 +107,7 @@ export const me = query({
     if (!user) return null;
 
     const email = (user.email as string | undefined) ?? null;
-    const allowed = isAllowedEmail(email);
+    const allowed = await hasAccess(ctx, email);
 
     const profile = allowed ? await getProfile(ctx, user._id) : null;
     const membership = allowed ? await getMembership(ctx, user._id) : null;
