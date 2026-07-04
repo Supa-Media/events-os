@@ -26,6 +26,8 @@ export function DayCell({
   badgeMap,
   statusMap,
   compact,
+  isDropTarget,
+  moveMode,
   onPress,
   onAdd,
 }: {
@@ -42,6 +44,10 @@ export function DayCell({
   badgeMap?: Map<string, SelectOption>;
   statusMap: Map<string, SelectOption>;
   compact: boolean;
+  /** A card is being dragged and hovers this day — light it up as the drop. */
+  isDropTarget?: boolean;
+  /** Move mode ("pick a day on the calendar") — hovering previews the target. */
+  moveMode?: boolean;
   onPress: () => void;
   onAdd: () => void;
 }) {
@@ -52,14 +58,18 @@ export function DayCell({
   const offsetBadge = inMonth && !isEventDay ? daysToEventBadge(daysToEvent) : "";
 
   // The event day gets a solid brand wash so the schedule reads relative to it;
-  // otherwise the selected day fills and hover hints interactivity.
-  const cellBg = isEventDay
-    ? "bg-accent-soft"
-    : isSelected
-      ? "bg-accent-soft/70"
-      : hovered
-        ? "bg-sunken"
-        : "";
+  // otherwise the selected day fills and hover hints interactivity. A drop
+  // target (or a hovered day in move mode) outshines them all.
+  const cellBg =
+    isDropTarget || (moveMode && hovered)
+      ? "bg-accent-soft"
+      : isEventDay
+        ? "bg-accent-soft"
+        : isSelected
+          ? "bg-accent-soft/70"
+          : hovered
+            ? "bg-sunken"
+            : "";
 
   const badgesOf = (item: ScheduleItem): string[] =>
     badgeField ? asArray(item.fields?.[badgeField]) : [];
@@ -79,9 +89,16 @@ export function DayCell({
       onPress={onPress}
       onHoverIn={() => setHovered(true)}
       onHoverOut={() => setHovered(false)}
-      style={{ width: `${100 / 7}%`, minHeight: compact ? 58 : 112 }}
+      style={{ width: "100%", minHeight: compact ? 58 : 112 }}
       className={`border-b border-r border-border px-1.5 py-1.5 ${cellBg}`}
     >
+      {/* Drop-target ring — an unmissable "release here" affordance. */}
+      {isDropTarget ? (
+        <View
+          pointerEvents="none"
+          className="absolute bottom-0 left-0 right-0 top-0 z-10 border-2 border-accent"
+        />
+      ) : null}
       {/* Date number — today is a filled brand pip; the event day flies a flag. */}
       <View className="mb-1 flex-row items-center justify-between">
         {isToday ? (

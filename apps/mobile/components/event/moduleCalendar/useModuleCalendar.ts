@@ -5,7 +5,7 @@
  * edits, and creating an item on the selected day). Generic over the module via
  * its {@link ModuleCalendarConfig}.
  */
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { useWindowDimensions } from "react-native";
 import { useQuery, useMutation } from "convex/react";
 import { api } from "@events-os/convex/_generated/api";
@@ -18,13 +18,19 @@ import {
   groupByDay,
   soonestUpcoming,
 } from "@events-os/shared";
+import { formatDate } from "../../../lib/format";
 import {
   WIDE,
   MONTHS,
+  chipColumns,
+  type CalendarColumn,
   type ModuleCalendarConfig,
   type ScheduleItem,
   type SelectOption,
 } from "./config";
+
+/** A transient "Moved to …" confirmation with a one-tap Undo. */
+export type UndoToast = { message: string; undo: () => void };
 
 export type OptionSet = { list: SelectOption[]; map: Map<string, SelectOption> };
 
@@ -45,9 +51,13 @@ export function useModuleCalendar({
     eventId: eventId as Id<"events">,
     module: config.module,
   });
+  const roles = useQuery(api.roles.listForEvent, {
+    eventId: eventId as Id<"events">,
+  });
   const setItemStatus = useMutation(api.items.setStatus);
   const addItem = useMutation(api.items.addEventItem);
   const updateItem = useMutation(api.items.updateEventItem);
+  const setOwner = useMutation(api.items.assignOwner);
 
   const today = startOfDay(Date.now());
   const eventDay = startOfDay(eventDate);
@@ -136,15 +146,83 @@ export function useModuleCalendar({
     setComposing(true);
   };
 
-  // Advance an item one step along the status column (wraps).
-  const cycleStatus = (item: ScheduleItem) => {
-    const order = statusOpts.map((o) => o.value);
-    if (order.length === 0) return;
-    const idx = item.status ? order.indexOf(item.status) : -1;
-    void setItemStatus({
-      itemId: item._id as Id<"eventItems">,
-      status: order[(idx + 1) % order.length],
-    });
+  // The columns a day-panel card offers as editable field chips, plus the badge
+  // field's own column so the channel badges can edit themselves.
+  const columns = data?.columns ?? [];
+  const chipCols = useMemo(
+    () => chipColumns(columns, config),
+    [columns, config],
+  );
+  const badgeColumn = config.badgeField
+    ? columns.find((c) => c.key === config.badgeField)
+    : undefined;
+
+  // ── Undo toast — every reschedule confirms and offers a one-tap revert ──────
+  const [undoToast, setUndoToast] = useState<UndoToast | null>(null);
+  const undoTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const dismissUndo = () => {
+    if (undoTimer.current) clearTimeout(undoTimer.current);
+    setUndoToast(null);
+  };
+  const showUndo = (message: string, undo: () => void) => {
+    if (undoTimer.current) clearTimeout(undoTimer.current);
+    setUndoToast({ message, undo });
+    undoTimer.current = setTimeout(() => setUndoToast(null), 5000);
+  };
+
+  /**
+   * Move an item to a new signed offset (null unschedules). Keeps the panel on
+   * the item — selection follows it to its new day — and arms the Undo toast.
+   */
+  const reschedule = (item: ScheduleItem, offsetDays: number | null) => {
+    const prev = item.offsetDays ?? null;
+    if (prev === offsetDays) return;
+    const itemId = item._id as Id<"eventItems">;
+    void updateItem({ itemId, offsetDays });
+
+    const restore = () => {
+      void updateItem({ itemId, offsetDays: prev });
+      if (prev != null) setSelected(startOfDay(computeDueDate(eventDate, prev)));
+      setUndoToast(null);
+    };
+    if (offsetDays != null) {
+      const due = startOfDay(computeDueDate(eventDate, offsetDays));
+      setSelected(due);
+      showUndo(
+        `Moved to ${formatDate(due)} · ${commsTimingLabel(offsetDays)}`,
+        restore,
+      );
+    } else {
+      showUndo("Unscheduled", restore);
+    }
+  };
+
+  // ── Move mode — "pick a day on the calendar", the drag-free reschedule ──────
+  const [moving, setMoving] = useState<ScheduleItem | null>(null);
+  const startMove = (item: ScheduleItem) => setMoving(item);
+  const cancelMove = () => setMoving(null);
+  const completeMove = (dayMs: number) => {
+    if (!moving) return;
+    reschedule(moving, offsetDaysBetween(eventDate, dayMs));
+    setMoving(null);
+  };
+
+  // Set an item's status from the card's status picker (null clears).
+  const setStatus = (item: ScheduleItem, status: string | null) => {
+    void setItemStatus({ itemId: item._id as Id<"eventItems">, status });
+  };
+
+  // Persist a field-chip edit: system columns patch their promoted field, custom
+  // columns merge into the fields bag (null deletes the key server-side).
+  const saveField = (item: ScheduleItem, column: CalendarColumn, value: unknown) => {
+    const itemId = item._id as Id<"eventItems">;
+    if (column.key === "owner") {
+      void setOwner({ itemId, personId: (value as Id<"people"> | null) ?? null });
+    } else if (column.key === "role") {
+      void updateItem({ itemId, roleId: (value as Id<"eventRoles"> | null) ?? null });
+    } else {
+      void updateItem({ itemId, fields: { [column.key]: value ?? null } });
+    }
   };
 
   // Persist an inline copy/body edit for a single item.
@@ -204,13 +282,24 @@ export function useModuleCalendar({
     columnLabel,
     statusOpts,
     statusMap,
+    chipCols,
+    badgeColumn,
+    roles: roles ?? [],
     daysAway: offsetDaysBetween(today, eventDate),
     selectedTiming,
     step,
     goToEvent,
     goToday,
     openComposeOn,
-    cycleStatus,
+    setStatus,
+    saveField,
+    reschedule,
+    moving,
+    startMove,
+    cancelMove,
+    completeMove,
+    undoToast,
+    dismissUndo,
     saveCopy,
     saveTitle,
     createItem,

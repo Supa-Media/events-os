@@ -1,103 +1,147 @@
 /**
  * One item in the day panel — the rich, badge-forward card, shared by every
- * calendar module (a comms send or a planning task). Leads with channel badges
- * (comms) or a status glyph (planning), then title, timing, meta tags, owner,
- * and a tappable status pill. Title and the copy/details box below both edit
- * inline, so an item can be renamed and written without opening the table.
+ * calendar module (a comms send or a planning task). The card's rule is "tap the
+ * fact, not an edit button": every fact it shows is its own editor —
+ *
+ *   • title + the copy/details box edit inline ({@link ItemCardText}),
+ *   • the status glyph/pill opens the same option picker as the table, and the
+ *     channel badges (comms) open the channel multiselect ({@link ItemCardStatus}),
+ *   • the timing line opens the grid's TimingPanel, "pick a day on the calendar"
+ *     (move mode), and "Unschedule" ({@link ItemCardTiming}),
+ *   • every other column lives in the FieldChips strip below the title.
  */
-import { useEffect, useRef, useState } from "react";
-import { View, Text, Pressable, TextInput } from "react-native";
-import { commsTimingLabel } from "@events-os/shared";
-import { Card, OptionTag } from "../../ui";
-import { Icon } from "../../ui/Icon";
-import { colors } from "../../../lib/theme";
-import { optionColor } from "../../../lib/optionColor";
-import { asArray, statusIcon, type ScheduleItem, type SelectOption } from "./config";
+import { useRef, useState } from "react";
+import { View, Pressable } from "react-native";
+import { Card } from "../../ui";
+import { Popover } from "../../ui/Popover";
+import { type AnchorRect } from "../../ui/useAnchor";
+import { measureAnchor } from "../../ui/ContextMenu";
+import {
+  asArray,
+  statusIcon,
+  type CalendarColumn,
+  type ScheduleItem,
+  type SelectOption,
+} from "./config";
 import { ChannelBadge } from "./badges";
-
-export type MetaField = { field: string; map: Map<string, SelectOption> };
+import { FieldChips, type EventRole } from "./FieldChips";
+import { TimingChip } from "./ItemCardTiming";
+import { TitleEditor, CopyEditor } from "./ItemCardText";
+import {
+  StatusIconBadge,
+  StatusPill,
+  StatusRow,
+  BadgeEditor,
+} from "./ItemCardStatus";
 
 export function ItemCard({
   item,
+  eventDate,
+  statusOpts,
   statusMap,
   badgeField,
   badgeMap,
-  metas,
+  badgeColumn,
+  chipCols,
+  roles,
   copyLabel,
   copyPlaceholder,
   initialCopy,
-  onCycleStatus,
+  onSetStatus,
+  onSetOffset,
+  onPickOnCalendar,
+  onSaveField,
   onSaveCopy,
   onSaveTitle,
 }: {
   item: ScheduleItem;
+  eventDate: number;
+  statusOpts: SelectOption[];
   statusMap: Map<string, SelectOption>;
   badgeField: string | null;
   badgeMap?: Map<string, SelectOption>;
-  metas: MetaField[];
+  /** The badge field's column definition — makes the badges themselves editable. */
+  badgeColumn?: CalendarColumn;
+  /** Columns offered as editable field chips (see chipColumns in config). */
+  chipCols: CalendarColumn[];
+  roles: EventRole[];
   copyLabel: string;
   copyPlaceholder: string;
   initialCopy: string;
-  onCycleStatus: () => void;
+  onSetStatus: (status: string | null) => void;
+  /** Reschedule to a signed day offset; null unschedules. */
+  onSetOffset: (offsetDays: number | null) => void;
+  /** Hand off to move mode — "tap a day on the calendar". */
+  onPickOnCalendar: () => void;
+  onSaveField: (column: CalendarColumn, value: unknown) => void;
   onSaveCopy: (copy: string) => void;
   onSaveTitle: (title: string) => void;
 }) {
   const statusOpt = item.status ? statusMap.get(item.status) : undefined;
   const badges = badgeField ? asArray(item.fields?.[badgeField]) : [];
 
+  // One status picker serves both entry points (leading glyph + trailing pill).
+  const [statusAnchor, setStatusAnchor] = useState<AnchorRect | undefined>();
+  const [statusOpen, setStatusOpen] = useState(false);
+  const openStatus = (node: any) =>
+    measureAnchor(node, (a) => {
+      setStatusAnchor(a);
+      setStatusOpen(true);
+    });
+
+  // Channel badges → the channel multiselect, anchored on the badge cluster.
+  const badgeRef = useRef<any>(null);
+  const [badgeEditOpen, setBadgeEditOpen] = useState(false);
+  const [badgeAnchor, setBadgeAnchor] = useState<AnchorRect | undefined>();
+
   return (
     <Card padding="md">
       <View className="flex-row items-start gap-3">
-        {/* Leading badges — WHERE this goes (comms) or its status (planning). */}
-        <View className="flex-row flex-wrap gap-1" style={{ maxWidth: 56 }}>
-          {badges.length > 0 && badgeMap ? (
-            badges.map((b) => (
+        {/* Leading badges — WHERE this goes (comms, tap to edit the channels)
+            or its status (planning, tap for the status picker). */}
+        {badges.length > 0 && badgeMap ? (
+          <Pressable
+            ref={badgeRef}
+            onPress={
+              badgeColumn
+                ? () =>
+                    measureAnchor(badgeRef.current, (a) => {
+                      setBadgeAnchor(a);
+                      setBadgeEditOpen(true);
+                    })
+                : undefined
+            }
+            hitSlop={4}
+            className="flex-row flex-wrap gap-1 active:opacity-70"
+            style={{ maxWidth: 56 }}
+          >
+            {badges.map((b) => (
               <ChannelBadge key={b} value={b} option={badgeMap.get(b)} />
-            ))
-          ) : (
-            <StatusIconBadge option={statusOpt} />
-          )}
-        </View>
+            ))}
+          </Pressable>
+        ) : (
+          <StatusIconBadge option={statusOpt} onPress={openStatus} />
+        )}
 
         <View className="flex-1">
           <TitleEditor initial={item.title} onSave={onSaveTitle} />
 
-          {/* Timing relative to the event (day-granular). */}
-          <View className="mt-1 flex-row items-center gap-1">
-            <Icon name="clock" size={11} color={colors.faint} />
-            <Text className="text-xs text-muted">
-              {commsTimingLabel(item.offsetDays)}
-            </Text>
-          </View>
+          <TimingChip
+            item={item}
+            eventDate={eventDate}
+            onSetOffset={onSetOffset}
+            onPickOnCalendar={onPickOnCalendar}
+          />
 
-          {/* Meta tag chips (e.g. audience). */}
-          {metas.map(({ field, map }) => {
-            const values = asArray(item.fields?.[field]);
-            if (values.length === 0) return null;
-            return (
-              <View key={field} className="mt-1.5 flex-row flex-wrap gap-1">
-                {values.map((v) => (
-                  <OptionTag
-                    key={v}
-                    label={map.get(v)?.label ?? v}
-                    color={map.get(v)?.color}
-                  />
-                ))}
-              </View>
-            );
-          })}
-
-          {item.owner ? (
-            <View className="mt-1.5 flex-row items-center gap-1">
-              <Icon name="user" size={11} color={colors.faint} />
-              <Text className="text-xs text-muted" numberOfLines={1}>
-                {item.owner.name}
-              </Text>
-            </View>
-          ) : null}
+          <FieldChips
+            item={item}
+            columns={chipCols}
+            roles={roles}
+            onSaveField={onSaveField}
+          />
         </View>
 
-        <StatusPill option={statusOpt} onPress={onCycleStatus} />
+        <StatusPill option={statusOpt} onPress={openStatus} />
       </View>
 
       <CopyEditor
@@ -106,154 +150,54 @@ export function ItemCard({
         initial={initialCopy}
         onSave={onSaveCopy}
       />
-    </Card>
-  );
-}
 
-/**
- * Inline title editor — reads as the plain card title until focused; commits on
- * blur (Enter commits too, via the newline intercept below). An emptied title
- * reverts to the last saved one rather than saving "".
- */
-function TitleEditor({
-  initial,
-  onSave,
-}: {
-  initial: string;
-  onSave: (title: string) => void;
-}) {
-  const ref = useRef<TextInput>(null);
-  const [value, setValue] = useState(initial);
-  const [focused, setFocused] = useState(false);
-
-  // Track renames made elsewhere (e.g. the table view) — but never clobber an
-  // edit in flight.
-  useEffect(() => {
-    if (!focused) setValue(initial);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [initial]);
-
-  const commit = () => {
-    setFocused(false);
-    const next = value.replace(/\n/g, " ").trim();
-    if (!next) {
-      setValue(initial);
-      return;
-    }
-    if (next !== initial.trim()) onSave(next);
-  };
-
-  return (
-    <TextInput
-      ref={ref}
-      value={value}
-      // Multiline only so long titles wrap like the old <Text>; Enter commits
-      // instead of inserting a newline.
-      multiline
-      onChangeText={(t) => {
-        if (t.includes("\n")) {
-          setValue(t.replace(/\n/g, " "));
-          ref.current?.blur();
-          return;
-        }
-        setValue(t);
-      }}
-      onFocus={() => setFocused(true)}
-      onBlur={commit}
-      placeholder="Untitled"
-      placeholderTextColor={colors.faint}
-      textAlignVertical="top"
-      className={`-mx-1 rounded px-1 py-0 text-sm font-semibold leading-snug text-ink ${
-        focused ? "bg-sunken" : ""
-      }`}
-    />
-  );
-}
-
-/** Fallback lead when there are no badges — the item's status as a glyph badge. */
-function StatusIconBadge({ option }: { option?: SelectOption }) {
-  const c = optionColor(option?.color);
-  return (
-    <View
-      className="h-[22px] w-[22px] items-center justify-center rounded-md"
-      style={{ backgroundColor: c.bg }}
-    >
-      <Icon name={statusIcon(option?.value)} size={13} color={c.text} />
-    </View>
-  );
-}
-
-/** Tappable status chip; advancing wraps through the status column's values. */
-function StatusPill({
-  option,
-  onPress,
-}: {
-  option?: SelectOption;
-  onPress: () => void;
-}) {
-  const c = optionColor(option?.color);
-  return (
-    <Pressable onPress={onPress} hitSlop={6} className="active:opacity-70">
-      <View
-        className="flex-row items-center gap-1 rounded-pill px-2.5 py-1"
-        style={{ backgroundColor: c.bg }}
+      {/* Status picker — the same option rows the table's status cell shows. */}
+      <Popover
+        visible={statusOpen}
+        onClose={() => setStatusOpen(false)}
+        anchor={statusAnchor}
+        width={210}
       >
-        <Icon name={statusIcon(option?.value)} size={12} color={c.text} />
-        <Text className="text-2xs font-bold" style={{ color: c.text }}>
-          {option?.label ?? "Set status"}
-        </Text>
-      </View>
-    </Pressable>
-  );
-}
+        <View className="py-1">
+          {item.status != null ? (
+            <StatusRow
+              label="Clear"
+              muted
+              onPress={() => {
+                onSetStatus(null);
+                setStatusOpen(false);
+              }}
+            />
+          ) : null}
+          {statusOpts.map((o) => (
+            <StatusRow
+              key={o.value}
+              label={o.label}
+              color={o.color}
+              icon={statusIcon(o.value)}
+              selected={o.value === item.status}
+              onPress={() => {
+                onSetStatus(o.value);
+                setStatusOpen(false);
+              }}
+            />
+          ))}
+        </View>
+      </Popover>
 
-/**
- * The always-present copy/details box. Shows the body when set and a prompt when
- * empty; commits on blur so a stray tap never loses an edit. Seeded once from the
- * item — our own save keeps it in sync, which is all this fast path needs.
- */
-function CopyEditor({
-  label,
-  placeholder,
-  initial,
-  onSave,
-}: {
-  label: string;
-  placeholder: string;
-  initial: string;
-  onSave: (copy: string) => void;
-}) {
-  const [value, setValue] = useState(initial);
-  const [focused, setFocused] = useState(false);
-
-  const commit = () => {
-    setFocused(false);
-    const next = value.trim();
-    if (next !== initial.trim()) onSave(next);
-  };
-
-  return (
-    <View className="mt-2 border-t border-border pt-2">
-      <View className="mb-1 flex-row items-center gap-1">
-        <Icon name="edit-3" size={10} color={colors.faint} />
-        <Text className="text-2xs font-bold uppercase tracking-wider text-faint">
-          {label}
-        </Text>
-      </View>
-      <TextInput
-        value={value}
-        onChangeText={setValue}
-        onFocus={() => setFocused(true)}
-        onBlur={commit}
-        placeholder={placeholder}
-        placeholderTextColor={colors.faint}
-        multiline
-        textAlignVertical="top"
-        className={`rounded-md border bg-sunken px-2.5 py-2 text-xs text-ink ${
-          focused ? "border-accent" : "border-border"
-        }`}
-        style={{ minHeight: 44 }}
-      />
-    </View>
+      {/* Channel editor — toggle where this send goes, saved on close. */}
+      {badgeEditOpen && badgeColumn ? (
+        <BadgeEditor
+          column={badgeColumn}
+          initial={badges}
+          anchor={badgeAnchor}
+          onSave={(value) => {
+            onSaveField(badgeColumn, value);
+            setBadgeEditOpen(false);
+          }}
+          onClose={() => setBadgeEditOpen(false)}
+        />
+      ) : null}
+    </Card>
   );
 }

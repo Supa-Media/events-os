@@ -35,6 +35,7 @@ import { TimingCell } from "./TimingCell";
 import { colors } from "../../lib/theme";
 import { Icon } from "../ui/Icon";
 import { Avatar } from "../ui/Avatar";
+import { CopyButton } from "../ui/CopyButton";
 import { OptionTag } from "../ui/OptionTag";
 import { Popover } from "../ui/Popover";
 import { RolePicker } from "../ui/RolePicker";
@@ -143,11 +144,15 @@ function InlineText({
   // Auto-grow multiline inputs to their content height so wrapped text is never
   // clipped and the row grows to fit (no fixed-height <textarea> truncation).
   const [contentH, setContentH] = useState<number | undefined>(undefined);
+  // Copy affordance appears on hover (web) so a cell's text can be grabbed to
+  // paste elsewhere without selecting it by hand.
+  const [hovered, setHovered] = useState(false);
   useEffect(() => {
     setText(format ? format(value) : value == null ? "" : String(value));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [value]);
-  return (
+
+  const input = (
     <TextInput
       value={text}
       onChangeText={setText}
@@ -174,6 +179,24 @@ function InlineText({
         multiline && contentH ? { minHeight: Math.max(contentH, 22) } : null,
       ]}
     />
+  );
+
+  // Native keeps the bare input (no web clipboard, and no hover to reveal on).
+  if (Platform.OS !== "web") return input;
+
+  return (
+    <View
+      className="flex-1"
+      onPointerEnter={() => setHovered(true)}
+      onPointerLeave={() => setHovered(false)}
+    >
+      {input}
+      {hovered && text.trim().length > 0 ? (
+        <View className="absolute right-1 top-1">
+          <CopyButton text={text} />
+        </View>
+      ) : null}
+    </View>
   );
 }
 

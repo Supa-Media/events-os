@@ -13,6 +13,7 @@ import type { IconName } from "../../ui/Icon";
 
 export type ModuleData = FunctionReturnType<typeof api.items.listForEventModule>;
 export type ScheduleItem = ModuleData["items"][number];
+export type CalendarColumn = ModuleData["columns"][number];
 export type SelectOption = { value: string; label: string; color?: string | null };
 
 /** Below this width the calendar stacks the grid over the day panel. */
@@ -108,6 +109,35 @@ export function channelIcon(value: string): IconName {
 
 export function statusIcon(value: string | undefined): IconName {
   return value ? STATUS_ICON[value] ?? "circle" : "circle";
+}
+
+/**
+ * Column types a day-panel card can edit through its field-chip strip. Photo and
+ * how-to columns keep their bespoke grid editors (uploads / doc links don't fit
+ * a chip popover), and offset/due/status columns already have dedicated spots on
+ * the card (the timing chip and the status pill).
+ */
+const CHIP_TYPES = new Set([
+  "text", "longtext", "number", "currency", "date", "url",
+  "select", "multiselect", "person", "role",
+]);
+
+/**
+ * The columns a card offers as editable field chips: every visible column the
+ * card doesn't already surface somewhere better — the title, the status pill,
+ * the timing chip, the copy/details box, and the leading channel badges.
+ */
+export function chipColumns(
+  columns: CalendarColumn[],
+  config: ModuleCalendarConfig,
+): CalendarColumn[] {
+  const claimed = new Set(
+    ["title", "status", "offset", "due_date", config.copyField, config.badgeField]
+      .filter((k): k is string => k != null),
+  );
+  return columns.filter(
+    (c) => c.isVisible && !claimed.has(c.key) && CHIP_TYPES.has(c.type),
+  );
 }
 
 /** Normalize a multiselect field (stored as string[] | string | undefined). */

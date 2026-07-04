@@ -86,16 +86,25 @@ export function TimingCell({
   );
 }
 
-function TimingPanel({
+/**
+ * The timing dropdown's body — exported so the Module Calendar's day-panel cards
+ * can reuse the exact same editor. `live` (the grid default) commits every tweak
+ * as it happens; with `live: false` the custom controls only build a draft and an
+ * explicit "Set timing" row commits it — the calendar needs this because a commit
+ * moves the card to another day, unmounting the popover mid-edit.
+ */
+export function TimingPanel({
   value,
   eventDate,
   commit,
   close,
+  live = true,
 }: {
   value: number | null;
   eventDate?: number;
   commit: (offset: number) => void;
   close: () => void;
+  live?: boolean;
 }) {
   // Draft drives the header preview + custom controls; presets bypass it
   // (apply + close immediately). Seed custom from the current value, else T-7.
@@ -109,7 +118,7 @@ function TimingPanel({
 
   const setCustom = (offset: number) => {
     setDraft(offset);
-    commit(offset); // live — the row behind updates as you tweak
+    if (live) commit(offset); // live — the row behind updates as you tweak
   };
 
   return (
@@ -202,6 +211,21 @@ function TimingPanel({
             ? "0 = the event day"
             : `${absDays} day${absDays === 1 ? "" : "s"} ${after ? "after" : "before"} the event`}
         </Text>
+
+        {/* Draft mode: nothing has been written yet — commit the draft here. */}
+        {!live ? (
+          <Pressable
+            onPress={() => {
+              commit(draft);
+              close();
+            }}
+            className="mt-2 items-center rounded-md bg-accent py-1.5 active:opacity-80"
+          >
+            <Text className="text-xs font-bold text-white">
+              Set to {formatOffsetDays(draft)}
+            </Text>
+          </Pressable>
+        ) : null}
       </View>
     </View>
   );

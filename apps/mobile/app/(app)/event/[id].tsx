@@ -19,12 +19,12 @@ import type { Id } from "@events-os/convex/_generated/dataModel";
 import { AiAssistantPanel } from "../../../components/ai/AiAssistantPanel";
 import { CrewSections } from "../../../components/event/CrewSections";
 import { EventHeader } from "../../../components/event/EventHeader";
-import { EventTabBar } from "../../../components/event/EventTabBar";
+import { EventTabBar, type EventTab } from "../../../components/event/EventTabBar";
 import { EventOverviewControls } from "../../../components/event/EventOverviewControls";
 import { EventTodos } from "../../../components/event/EventTodos";
 import {
   ModuleRollupRow,
-  AddModuleButton,
+  confirmRemoveModule,
 } from "../../../components/event/EventModuleRollup";
 import { ModuleSection } from "../../../components/event/ModuleSection";
 import { colors } from "../../../lib/theme";
@@ -219,14 +219,20 @@ export default function EventDetailScreen() {
   // "Crew & Expectations" tab AT the volunteer_expectations slot (so it sits
   // before the post-event Retrospective, not after it). In Me view, modules I'm
   // not involved in are dropped. myWork still loading ⇒ tabs unfiltered briefly.
-  const moduleTabs = activeModules.flatMap((m) => {
+  const moduleTabs = activeModules.flatMap((m): EventTab[] => {
+    // Outside Me view, a module tab can disable/remove itself from its own menu.
+    const remove = !meView
+      ? { isCore: m.isCore, onRemove: () => removeModule(m) }
+      : undefined;
     if (m.key === "volunteer_expectations") {
-      return showCrew ? [{ key: "crew", label: "Crew & Expectations" }] : [];
+      return showCrew
+        ? [{ key: "crew", label: "Crew & Expectations", remove }]
+        : [];
     }
     if (meView && involvedModuleKeys && !involvedModuleKeys.has(m.key)) return [];
-    return [{ key: m.key, label: m.label }];
+    return [{ key: m.key, label: m.label, remove }];
   });
-  const tabs: { key: string; label: string }[] = [
+  const tabs: EventTab[] = [
     { key: "overview", label: "Overview" },
     ...moduleTabs,
     // Fallback: if the expectations module is disabled, still surface Crew last.
@@ -273,6 +279,32 @@ export default function EventDetailScreen() {
       roleLabel: info.roleLabel,
       selectedId: info.person?._id ?? null,
     });
+  }
+
+  /**
+   * Remove a module from its tab menu: a core module is disabled (re-enable it
+   * from the "＋" in the tab bar), a custom one is deleted (confirmed, since it
+   * takes its items with it).
+   */
+  function removeModule(module: ResolvedModule) {
+    const doRemove = () => {
+      if (module.isCore) {
+        void run(
+          () => toggleCoreModule({ eventId, key: module.key, enabled: false }),
+          { errorTitle: "Couldn't disable module" },
+        );
+      } else {
+        const rowId = customModuleIdByKey.get(module.key);
+        if (rowId)
+          void run(
+            () =>
+              deleteCustomModule({ moduleId: rowId as Id<"eventModules"> }),
+            { errorTitle: "Couldn't remove module" },
+          );
+      }
+    };
+    if (module.isCore) doRemove();
+    else confirmRemoveModule(doRemove);
   }
 
   /**
@@ -416,6 +448,22 @@ export default function EventDetailScreen() {
           tabs={tabs}
           activeKey={activeTab}
           onSelect={(key) => router.setParams({ tab: key })}
+          addModule={
+            meView
+              ? undefined
+              : {
+                  disabledCore: moduleData?.disabledCore ?? [],
+                  onEnableCore: (key) =>
+                    void run(
+                      () => toggleCoreModule({ eventId, key, enabled: true }),
+                      { errorTitle: "Couldn't enable module" },
+                    ),
+                  onCreateCustom: (label) =>
+                    void run(() => createCustomModule({ eventId, label }), {
+                      errorTitle: "Couldn't add module",
+                    }),
+                }
+          }
         />
         </Narrow>
 
@@ -510,77 +558,6 @@ export default function EventDetailScreen() {
               </>
             ) : null}
 
-            {/* Per-module rollup — owner (role → person), progress, next due.
-                Right-click / long-press a row to disable a core module or
-                remove a custom one; the bottom button adds / re-enables. */}
-            <SectionHeader title="Modules" count={activeModules.length} />
-            <Card padding="none">
-              {activeModules.length === 0 ? (
-                <View className="px-4 py-5">
-                  <Text className="text-base text-muted">
-                    This event has no modules enabled.
-                  </Text>
-                </View>
-              ) : (
-                activeModules.map((m, i) => (
-                  <ModuleRollupRow
-                    key={m.key}
-                    label={m.label}
-                    isCore={m.isCore}
-                    ready={readyByModule.get(m.key) ?? false}
-                    owner={moduleOwner(m)}
-                    summary={summaryByModule.get(m.key)}
-                    first={i === 0}
-                    onOpen={() =>
-                      router.setParams({
-                        // The expectations grid lives inside the Crew tab now, so
-                        // its rollup row opens there rather than its own key.
-                        tab:
-                          m.key === "volunteer_expectations" ? "crew" : m.key,
-                      })
-                    }
-                    onAssignOwner={() => openOwnerPicker(m)}
-                    onRemove={() => {
-                      if (m.isCore) {
-                        void run(
-                          () =>
-                            toggleCoreModule({
-                              eventId,
-                              key: m.key,
-                              enabled: false,
-                            }),
-                          { errorTitle: "Couldn't disable module" },
-                        );
-                      } else {
-                        const rowId = customModuleIdByKey.get(m.key);
-                        if (rowId)
-                          void run(
-                            () =>
-                              deleteCustomModule({
-                                moduleId: rowId as Id<"eventModules">,
-                              }),
-                            { errorTitle: "Couldn't remove module" },
-                          );
-                      }
-                    }}
-                  />
-                ))
-              )}
-              <AddModuleButton
-                disabledCore={moduleData?.disabledCore ?? []}
-                onEnableCore={(key) =>
-                  void run(
-                    () => toggleCoreModule({ eventId, key, enabled: true }),
-                    { errorTitle: "Couldn't enable module" },
-                  )
-                }
-                onCreateCustom={(label) =>
-                  void run(() => createCustomModule({ eventId, label }), {
-                    errorTitle: "Couldn't add module",
-                  })
-                }
-              />
-            </Card>
           </Narrow>
         ) : activeTab === "crew" ? (
           /* ── Crew & Expectations: WHO is on each team (engagements) plus, below,
@@ -630,7 +607,12 @@ export default function EventDetailScreen() {
                 ? myItemIds
                 : undefined;
             return (
+              // Key by module so switching tabs remounts the section, resetting
+              // its view to that module's default (Comms → calendar, others →
+              // table). Without this, one instance is reused across tabs and the
+              // view "sticks" — toggling Table on one module carried into others.
               <ModuleSection
+                key={m.key}
                 eventId={eventId}
                 module={m}
                 roles={eventRoles}
