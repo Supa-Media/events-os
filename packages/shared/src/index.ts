@@ -610,6 +610,33 @@ export function computeRunTime(eventStart: number, offsetMinutes: number): numbe
   return eventStart + offsetMinutes * MINUTE_MS;
 }
 
+/**
+ * Minute offset from the event start for a typed wall-clock time. A bare
+ * time-of-day is day-ambiguous because a run of show can cross midnight, so the
+ * time is placed on the occurrence nearest the segment's current time — nudging
+ * 11:30 PM → 11:45 PM stays on the same night. The inverse of `computeRunTime`
+ * for the run-of-show TIME picker.
+ */
+export function offsetForClockTime({
+  eventStart,
+  currentOffset,
+  hour24,
+  minute,
+}: {
+  eventStart: number;
+  currentOffset: number;
+  hour24: number;
+  minute: number;
+}): number {
+  const anchor = computeRunTime(eventStart, currentOffset);
+  const at = new Date(anchor);
+  at.setHours(hour24, minute, 0, 0);
+  let ts = at.getTime();
+  while (ts - anchor > DAY_MS / 2) ts -= DAY_MS;
+  while (anchor - ts > DAY_MS / 2) ts += DAY_MS;
+  return Math.round((ts - eventStart) / MINUTE_MS);
+}
+
 /** One cell in a calendar month grid. `ms` is that day at local midnight. */
 export type CalendarCell = { ms: number; day: number; inMonth: boolean };
 
