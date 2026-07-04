@@ -9,6 +9,7 @@ export { Button } from "./Button";
 export { Badge, type BadgeTone } from "./Badge";
 export { Pill } from "./Pill";
 export { Avatar } from "./Avatar";
+export { CopyButton } from "./CopyButton";
 export { ReadinessBadge, ReadinessRing, ReadinessBar, PhaseBreakdown } from "./Readiness";
 export { Field, TextField, Select } from "./Field";
 export { LocationAutocomplete } from "./LocationAutocomplete";

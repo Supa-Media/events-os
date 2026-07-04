@@ -364,7 +364,8 @@ export const updateEventItem = mutation({
   args: {
     itemId: v.id("eventItems"),
     title: v.optional(v.string()),
-    offsetDays: v.optional(v.number()),
+    // null unschedules the item (clears its offset and derived due date).
+    offsetDays: v.optional(v.union(v.number(), v.null())),
     offsetMinutes: v.optional(v.number()),
     roleId: v.optional(v.union(v.id("eventRoles"), v.null())),
     ownerPersonId: v.optional(v.union(v.id("people"), v.null())),
@@ -390,9 +391,12 @@ export const updateEventItem = mutation({
     if (patch.fields !== undefined)
       fields.fields = mergeFields(item.fields, patch.fields);
     if (patch.offsetDays !== undefined) {
-      fields.offsetDays = patch.offsetDays;
+      fields.offsetDays = patch.offsetDays ?? undefined;
       if (isDayOffsetModule(item.module)) {
-        fields.dueDate = computeDueDate(event.eventDate, patch.offsetDays);
+        fields.dueDate =
+          patch.offsetDays == null
+            ? undefined
+            : computeDueDate(event.eventDate, patch.offsetDays);
       }
     }
     await ctx.db.patch(itemId, fields);

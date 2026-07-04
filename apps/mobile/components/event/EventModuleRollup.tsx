@@ -193,7 +193,7 @@ export function ModuleRollupRow({
 }
 
 /** Confirm removing a custom module (web `window.confirm`, native `Alert`). */
-function confirmRemoveModule(onConfirm: () => void) {
+export function confirmRemoveModule(onConfirm: () => void) {
   if (Platform.OS === "web") {
     if (
       typeof window !== "undefined" &&
@@ -278,7 +278,7 @@ export function AddModuleButton({
 }
 
 /** Tiny inline input to name a new custom module. */
-function AddCustomModuleInput({
+export function AddCustomModuleInput({
   onCommit,
   onCancel,
 }: {

@@ -4,7 +4,7 @@ import { useRouter } from "expo-router";
 import { useMutation } from "convex/react";
 import { api } from "@events-os/convex/_generated/api";
 import type { ResolvedModule } from "@events-os/shared";
-import { Button, SectionHeader, Icon } from "../ui";
+import { Button, SectionHeader, Icon, Avatar } from "../ui";
 import type { IconName } from "../ui/Icon";
 import { colors } from "../../lib/theme";
 import { EditableGrid } from "../grid/EditableGrid";
@@ -15,7 +15,7 @@ import {
   defaultCalendarView,
 } from "./moduleCalendar/config";
 import { SiteMapEditor } from "./SiteMapEditor";
-import { ModuleOwnerBar, type ModuleOwnerInfo } from "./EventModuleRollup";
+import { type ModuleOwnerInfo } from "./EventModuleRollup";
 
 /**
  * One active module's section on the event screen. Renders the owner bar + a
@@ -56,9 +56,9 @@ export function ModuleSection({
 
   return (
     <View>
-      <ModuleOwnerBar owner={owner} onPress={onAssignOwner} />
       <SectionHeader
         title={module.label}
+        titleAccessory={<OwnerPill owner={owner} onPress={onAssignOwner} />}
         right={
           <View className="flex-row items-center gap-2">
             {hasCalendar ? (
@@ -111,6 +111,53 @@ export function ModuleSection({
         />
       )}
     </View>
+  );
+}
+
+/**
+ * The module's owner as a compact pill beside its title. Leads with a shield +
+ * "Owner" so it reads unmistakably as ownership (not just someone's job title),
+ * then the assigned person — or an "Assign" affordance with the owning role when
+ * empty. Tapping opens the same role picker the old owner card used, so
+ * ownership is set inline. Renders nothing when the module has no owning role.
+ */
+function OwnerPill({
+  owner,
+  onPress,
+}: {
+  owner: ModuleOwnerInfo;
+  onPress: () => void;
+}) {
+  if (!owner) return null;
+  const { roleLabel, person } = owner;
+  return (
+    <Pressable
+      onPress={onPress}
+      className="flex-row items-center gap-1.5 rounded-pill border border-border bg-raised py-1 pl-2 pr-2.5 active:opacity-80 web:hover:border-faint"
+    >
+      <Icon name="shield" size={12} color={colors.faint} />
+      <Text className="text-2xs font-bold uppercase tracking-wider text-faint">
+        Owner
+      </Text>
+      {person ? (
+        <View className="ml-0.5 flex-row items-center gap-1.5 border-l border-border pl-2">
+          <Avatar name={person.name} size={17} />
+          <Text className="text-xs font-semibold text-ink" numberOfLines={1}>
+            {person.name}
+          </Text>
+        </View>
+      ) : (
+        <View className="ml-0.5 flex-row items-center gap-1 border-l border-border pl-2">
+          <Icon name="user-plus" size={12} color={colors.accent} />
+          <Text
+            className="text-xs font-semibold text-accent"
+            numberOfLines={1}
+          >
+            Assign {roleLabel}
+          </Text>
+        </View>
+      )}
+    </Pressable>
   );
 }
 
