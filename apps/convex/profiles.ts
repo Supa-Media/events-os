@@ -17,6 +17,7 @@ import { Id } from "./_generated/dataModel";
 import { v, ConvexError } from "convex/values";
 import { getOptionalAuth } from "@supa-media/convex/auth";
 import { requireUserId, requireAccess, hasAccess } from "./lib/context";
+import { isSuperuserEmail } from "./lib/superuser";
 import { findUnlinkedPersonByLoginEmail, claimFields } from "./lib/people";
 
 /** Load the current user's profile row (or null). */
@@ -119,6 +120,7 @@ export const me = query({
       userId: user._id as Id<"users">,
       email,
       allowed,
+      isSuperuser: isSuperuserEmail(email),
       hasProfile,
       hasChapter,
       onboarded: hasProfile && hasChapter,
