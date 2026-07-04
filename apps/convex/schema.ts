@@ -2,6 +2,7 @@ import { defineSchema } from "convex/server";
 import { supaAuthTables, supaNotificationTables } from "@supa-media/convex/schema";
 
 import { chapters, userProfiles, userChapters } from "./schema/chapters";
+import { guestAllowlist } from "./schema/guests";
 import { templateRoles, eventRoles } from "./schema/roles";
 import { templateModules, eventModules } from "./schema/modules";
 import { eventTypes, templateColumns, templateItems } from "./schema/templates";
@@ -58,6 +59,9 @@ const schema = defineSchema({
   chapters,
   userProfiles,
   userChapters,
+
+  // Guest allowlist (non-domain emails granted access, seeded from Convex).
+  guestAllowlist,
 
   // Roles (template-owned + event-owned).
   templateRoles,

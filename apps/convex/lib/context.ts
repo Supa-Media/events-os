@@ -15,6 +15,8 @@ import { QueryCtx } from "../_generated/server";
 export {
   ALLOWED_EMAIL_DOMAIN,
   isAllowedEmail,
+  isGuestAllowed,
+  hasAccess,
   getUserEmail,
   requireAccess,
 } from "./access";

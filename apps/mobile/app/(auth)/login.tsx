@@ -1,40 +1,28 @@
-import { useEffect, useState } from "react";
+import { useEffect } from "react";
 import { View, Text } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { KeyboardAwareScrollView } from "react-native-keyboard-controller";
 import { useRouter } from "expo-router";
 import { useConvexAuth } from "convex/react";
-import { useAuthActions } from "@convex-dev/auth/react";
 import { Card, Button, TextField, Icon, ToastView } from "../../components/ui";
 import { colors } from "../../lib/theme";
-import { useActionRunner } from "../../lib/useActionToast";
-
-const ALLOWED_DOMAIN = "publicworship.life";
-
-/**
- * Turn a username into the full email on the allowed domain.
- *
- * Accepts either a bare username ("jane") or a full address ("jane@…"); we
- * strip everything from the "@" on so a pasted full email still works, then
- * append the allowed domain.
- */
-function toEmail(username: string): string {
-  const local = username.trim().split("@")[0].toLowerCase();
-  return `${local}@${ALLOWED_DOMAIN}`;
-}
+import { ALLOWED_DOMAIN } from "./login.helpers";
+import { useEmailOtpLogin } from "./useEmailOtpLogin";
 
 /**
  * OTP login for Events OS.
  *
- * Two steps: request a one-time code for the email, then verify it. Access is
- * limited to @publicworship.life accounts, so people enter just their username
- * (the part before @publicworship.life) and we build the full address.
+ * Members sign in with just their username (we build the @publicworship.life
+ * address). Invited guests — emails seeded into Convex's allowlist — switch to
+ * guest mode and enter their full email; the OTP flow is otherwise identical.
+ * All form state and logic live in `useEmailOtpLogin`; this screen just renders.
  */
 export default function LoginScreen() {
-  const { signIn } = useAuthActions();
   const { isAuthenticated } = useConvexAuth();
   const router = useRouter();
   const insets = useSafeAreaInsets();
+  const login = useEmailOtpLogin();
+  const { step, mode } = login;
 
   // Navigate only once Convex reports the session is live. `signIn` resolves a
   // render or two BEFORE `isAuthenticated` flips, so replacing the route inside
@@ -45,50 +33,6 @@ export default function LoginScreen() {
   useEffect(() => {
     if (isAuthenticated) router.replace("/");
   }, [isAuthenticated, router]);
-
-  const [step, setStep] = useState<"request" | "verify">("request");
-  const [username, setUsername] = useState("");
-  const [code, setCode] = useState("");
-  const [submitting, setSubmitting] = useState(false);
-  const [resending, setResending] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const { run, toast, dismiss } = useActionRunner();
-
-  const email = toEmail(username);
-
-  // Send (or re-send) the one-time code. `resend` keeps us on the verify step
-  // and uses a separate spinner so the primary button isn't blocked.
-  async function sendCode(resend = false) {
-    if (!username.trim()) {
-      setError("Enter your username to get a code.");
-      return;
-    }
-    setError(null);
-    if (resend) setResending(true);
-    else setSubmitting(true);
-    const ok = await run(() => signIn("email", { email }), {
-      errorTitle: resend ? "Couldn't resend your code" : "Couldn't send your code",
-    });
-    if (resend) setResending(false);
-    else setSubmitting(false);
-    if (ok !== undefined && !resend) setStep("verify");
-  }
-
-  async function requestCode() {
-    await sendCode(false);
-  }
-
-  async function verifyCode() {
-    setError(null);
-    setSubmitting(true);
-    const ok = await run(() => signIn("email", { email, code: code.trim() }), {
-      errorTitle: "That code didn't work",
-    });
-    // On success, navigation happens in the effect above once `isAuthenticated`
-    // flips — replacing here would race the (app) guard, so we keep the spinner
-    // until the redirect fires. Only clear it when verification failed.
-    if (ok === undefined) setSubmitting(false);
-  }
 
   return (
     <View className="flex-1 bg-surface">
@@ -117,9 +61,9 @@ export default function LoginScreen() {
             </View>
           </View>
 
-          {toast ? (
+          {login.toast ? (
             <View className="mb-3">
-              <ToastView toast={toast} onDismiss={dismiss} />
+              <ToastView toast={login.toast} onDismiss={login.dismiss} />
             </View>
           ) : null}
 
@@ -130,59 +74,88 @@ export default function LoginScreen() {
             <Text className="mb-5 mt-1 text-sm text-muted">
               {step === "request"
                 ? "We'll email you a one-time code."
-                : `Enter the code sent to ${email}.`}
+                : `Enter the code sent to ${login.email}.`}
             </Text>
 
             {step === "request" ? (
-              <TextField
-                label="Username"
-                hint={`Your username is the first part of your @${ALLOWED_DOMAIN} email.`}
-                value={username}
-                onChangeText={(t) => {
-                  setUsername(t);
-                  if (error) setError(null);
-                }}
-                placeholder="you"
-                suffix={`@${ALLOWED_DOMAIN}`}
-                autoCapitalize="none"
-                autoCorrect={false}
-                keyboardType="email-address"
-                autoComplete="username"
-                editable={!submitting}
-                onSubmitEditing={requestCode}
-                returnKeyType="go"
-              />
+              mode === "guest" ? (
+                <TextField
+                  label="Email"
+                  hint="Use the email you were invited with."
+                  value={login.guestEmail}
+                  onChangeText={login.changeGuestEmail}
+                  placeholder="you@example.com"
+                  autoCapitalize="none"
+                  autoCorrect={false}
+                  keyboardType="email-address"
+                  autoComplete="email"
+                  editable={!login.submitting}
+                  onSubmitEditing={login.requestCode}
+                  returnKeyType="go"
+                />
+              ) : (
+                <TextField
+                  label="Username"
+                  hint={`Your username is the first part of your @${ALLOWED_DOMAIN} email.`}
+                  value={login.username}
+                  onChangeText={login.changeUsername}
+                  placeholder="you"
+                  suffix={`@${ALLOWED_DOMAIN}`}
+                  autoCapitalize="none"
+                  autoCorrect={false}
+                  keyboardType="email-address"
+                  autoComplete="username"
+                  editable={!login.submitting}
+                  onSubmitEditing={login.requestCode}
+                  returnKeyType="go"
+                />
+              )
             ) : (
               <TextField
                 label="Verification code"
-                value={code}
-                onChangeText={(t) => {
-                  setCode(t);
-                  if (error) setError(null);
-                }}
+                value={login.code}
+                onChangeText={login.changeCode}
                 placeholder="123456"
                 keyboardType="number-pad"
                 autoComplete="one-time-code"
-                editable={!submitting}
-                onSubmitEditing={verifyCode}
+                editable={!login.submitting}
+                onSubmitEditing={login.verifyCode}
                 returnKeyType="go"
               />
             )}
 
-            {error ? (
+            {login.error ? (
               <View className="mb-3 flex-row items-center gap-1.5">
                 <Icon name="alert-circle" size={14} color={colors.danger} />
-                <Text className="flex-1 text-sm text-danger">{error}</Text>
+                <Text className="flex-1 text-sm text-danger">{login.error}</Text>
               </View>
             ) : null}
 
             <Button
               title={step === "request" ? "Send code" : "Verify"}
-              onPress={step === "request" ? requestCode : verifyCode}
-              loading={submitting}
-              disabled={step === "request" ? !username.trim() : !code.trim()}
+              onPress={step === "request" ? login.requestCode : login.verifyCode}
+              loading={login.submitting}
+              disabled={
+                step === "request" ? !login.canSubmitRequest : !login.code.trim()
+              }
               className="w-full"
             />
+
+            {step === "request" ? (
+              <View className="mt-2 items-center">
+                <Button
+                  title={
+                    mode === "guest"
+                      ? `Sign in with a @${ALLOWED_DOMAIN} account`
+                      : "Not a member? Sign in as a guest"
+                  }
+                  variant="ghost"
+                  size="sm"
+                  onPress={login.toggleMode}
+                  disabled={login.submitting}
+                />
+              </View>
+            ) : null}
 
             {step === "verify" ? (
               <View className="mt-2 items-center gap-0.5">
@@ -191,20 +164,20 @@ export default function LoginScreen() {
                   variant="ghost"
                   size="sm"
                   icon="refresh-cw"
-                  loading={resending}
-                  onPress={() => sendCode(true)}
-                  disabled={submitting || resending}
+                  loading={login.resending}
+                  onPress={login.resendCode}
+                  disabled={login.submitting || login.resending}
                 />
                 <Button
-                  title="Use a different username"
+                  title={
+                    mode === "guest"
+                      ? "Use a different email"
+                      : "Use a different username"
+                  }
                   variant="ghost"
                   size="sm"
-                  onPress={() => {
-                    setStep("request");
-                    setCode("");
-                    setError(null);
-                  }}
-                  disabled={submitting || resending}
+                  onPress={login.backToRequest}
+                  disabled={login.submitting || login.resending}
                 />
               </View>
             ) : null}
