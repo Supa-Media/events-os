@@ -50,18 +50,36 @@ export function DateTimeField({
       </Pressable>
 
       <Popover visible={visible} onClose={close} anchor={anchor} width={388}>
-        <View className="flex-row">
-          <View className="flex-1 border-r border-border">
-            <Calendar
-              selected={value}
-              seed={value}
-              onSelect={(dayMs) => onChange(withDay(value, dayMs))}
-            />
-          </View>
-          <TimeColumns value={value} onChange={onChange} />
-        </View>
+        <DateTimePanel value={value} onChange={onChange} />
       </Popover>
     </>
+  );
+}
+
+/**
+ * The picker body — shared {@link Calendar} paired with the scrolling time
+ * column — without the field trigger or popover. Extracted so other surfaces
+ * (e.g. grid time cells) can drop the same calendar + hour/minute/AM·PM UI into
+ * their own popover. Selecting a day keeps the time; changing time keeps the day.
+ */
+export function DateTimePanel({
+  value,
+  onChange,
+}: {
+  value: number;
+  onChange: (ts: number) => void;
+}) {
+  return (
+    <View className="flex-row">
+      <View className="flex-1 border-r border-border">
+        <Calendar
+          selected={value}
+          seed={value}
+          onSelect={(dayMs) => onChange(withDay(value, dayMs))}
+        />
+      </View>
+      <TimeColumns value={value} onChange={onChange} />
+    </View>
   );
 }
 
@@ -166,7 +184,8 @@ function TimeItem({
   );
 }
 
-function MeridiemButton({
+/** The AM·PM toggle chip. Exported so time-entry surfaces reuse the aesthetic. */
+export function MeridiemButton({
   label,
   active,
   onPress,

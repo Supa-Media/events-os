@@ -22,15 +22,13 @@ import { useMutation, useQuery } from "convex/react";
 import { api } from "@events-os/convex/_generated/api";
 // expo-image-picker is Expo Go-safe (classified `core`); only used on native.
 import * as ImagePicker from "expo-image-picker";
-import { formatTime } from "../../lib/format";
 import {
-  formatOffsetMinutes,
-  computeRunTime,
   type ColumnType,
   type ModuleKey,
 } from "@events-os/shared";
 import { COLUMN_TYPE_REGISTRY } from "./columnRegistry";
 import { DueDateCell } from "./DueDateCell";
+import { RunTimeCell } from "./RunTimeCell";
 import { TimingCell } from "./TimingCell";
 import { colors } from "../../lib/theme";
 import { Icon } from "../ui/Icon";
@@ -104,11 +102,6 @@ interface TemplateOwnerCellProps {
   templateId?: string;
   editable: boolean;
   onChange: OnChange;
-}
-
-interface ChipEditCellProps extends BaseCellProps {
-  format: (value: any) => string;
-  placeholder?: string;
 }
 
 interface HowToCellProps extends BaseCellProps {
@@ -572,41 +565,6 @@ function TemplateOwnerCell({ item, templateId, editable, onChange }: TemplateOwn
         onClose={() => setOpen(false)}
       />
     </>
-  );
-}
-
-// ── Chip-edit (offsets): show a chip, tap to edit a number ────────────────────
-function ChipEditCell({ value, editable, onChange, format, placeholder }: ChipEditCellProps) {
-  const [editing, setEditing] = useState(false);
-  if (editing && editable) {
-    return (
-      <InlineText
-        value={value}
-        numeric
-        autoFocus
-        placeholder={placeholder}
-        parse={(t) => {
-          const n = parseInt(t.replace(/[^0-9-]/g, ""), 10);
-          return Number.isFinite(n) ? n : 0;
-        }}
-        onCommit={(v) => { onChange(v); setEditing(false); }}
-      />
-    );
-  }
-  return (
-    <Pressable
-      disabled={!editable}
-      onPress={() => setEditing(true)}
-      className="flex-1 px-2 py-1.5 active:opacity-70"
-    >
-      {value != null ? (
-        <View className="self-start rounded-sm bg-sunken px-2 py-0.5">
-          <Text className="text-xs font-semibold text-muted">{format(value)}</Text>
-        </View>
-      ) : (
-        <Text className="text-sm text-faint">{placeholder ?? "—"}</Text>
-      )}
-    </Pressable>
   );
 }
 
@@ -1097,14 +1055,11 @@ export const GridCell = memo(function GridCell(ctx: CellContext) {
       );
     case "offset_minutes":
       return (
-        <ChipEditCell
+        <RunTimeCell
           value={value}
+          eventDate={eventDate}
           editable={editable}
           onChange={onChange}
-          format={(v: number) =>
-            eventDate != null ? formatTime(computeRunTime(eventDate, v)) : formatOffsetMinutes(v)
-          }
-          placeholder="0:00"
         />
       );
     case "due_date":

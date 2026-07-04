@@ -75,6 +75,9 @@ export function PersonPicker({
     (p: any) => p.name.trim().toLowerCase() === q,
   );
   const canCreate = !!onCreate && search.trim().length > 0 && !exactMatch;
+  // Show the search box whenever creating is allowed, or there is more than one
+  // person to choose from (no point searching a single-name roster).
+  const showSearch = !!onCreate || list.length > 1;
 
   return (
     <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
@@ -93,12 +96,16 @@ export function PersonPicker({
             </Pressable>
           </View>
 
-          {onCreate ? (
+          {showSearch ? (
             <View className="border-b border-border px-5 py-3">
               <TextInput
                 value={search}
                 onChangeText={setSearch}
-                placeholder="Search people, or type a new name…"
+                placeholder={
+                  onCreate
+                    ? "Search people, or type a new name…"
+                    : "Search people…"
+                }
                 placeholderTextColor={colors.faint}
                 autoFocus
                 autoCapitalize="words"
