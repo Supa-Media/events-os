@@ -28,7 +28,8 @@ import {
 } from "../../../components/event/EventModuleRollup";
 import { ModuleSection } from "../../../components/event/ModuleSection";
 import TicketingTab from "../../../components/event/ticketing/TicketingTab";
-import { colors } from "../../../lib/theme";
+import { colors, modulePhase } from "../../../lib/theme";
+import { usePhasePulse } from "../../../lib/usePhasePulse";
 import { parseDateInput, toDateInput, formatDate } from "../../../lib/format";
 import {
   firstUnassignedRole,
@@ -61,6 +62,10 @@ export default function EventDetailScreen() {
   // Personal "Me view" filter — when on, the Overview shows only the modules
   // and tasks the current user owns (driven by api.events.myWork).
   const [meView, setMeView] = useState(false);
+
+  // Tapping a header phase ring briefly pulses the tabs that feed that phase —
+  // the interactive answer to "which tabs move this number?".
+  const { pulsePhase, flash: flashPhase } = usePhasePulse();
 
   const data = useQuery(api.events.get, { eventId });
   const roleRows = useQuery(api.roleAssignments.listForEvent, { eventId });
@@ -216,6 +221,27 @@ export default function EventDetailScreen() {
 
   // Crew shows outside Me view, or in Me view when I'm team-involved.
   const showCrew = !meView || crewInvolved;
+  const summaryByModule = new Map(
+    (summaries ?? []).map((s) => [s.module as string, s] as const),
+  );
+  const readyByModule = new Map(
+    (moduleReadiness ?? []).map(
+      (r) => [r.key as string, r.ready as boolean] as const,
+    ),
+  );
+  // Phase hue + progress for a module tab: marked-ready counts as complete;
+  // otherwise done/total when the module has measurable items; else null (the
+  // tab shows a dim phase dot instead of a mini ring).
+  function tabMeta(moduleKey: string): Pick<EventTab, "phase" | "progress"> {
+    const summary = summaryByModule.get(moduleKey);
+    const progress =
+      readyByModule.get(moduleKey) === true
+        ? 1
+        : summary && summary.hasStatus && summary.total > 0
+          ? summary.done / summary.total
+          : null;
+    return { phase: modulePhase(moduleKey), progress };
+  }
   // Build the module tabs in lifecycle order, rendering the merged
   // "Crew & Expectations" tab AT the volunteer_expectations slot (so it sits
   // before the post-event Retrospective, not after it). In Me view, modules I'm
@@ -227,11 +253,18 @@ export default function EventDetailScreen() {
       : undefined;
     if (m.key === "volunteer_expectations") {
       return showCrew
-        ? [{ key: "crew", label: "Crew & Expectations", remove }]
+        ? [
+            {
+              key: "crew",
+              label: "Crew & Expectations",
+              remove,
+              ...tabMeta("volunteer_expectations"),
+            },
+          ]
         : [];
     }
     if (meView && involvedModuleKeys && !involvedModuleKeys.has(m.key)) return [];
-    return [{ key: m.key, label: m.label, remove }];
+    return [{ key: m.key, label: m.label, remove, ...tabMeta(m.key) }];
   });
   const tabs: EventTab[] = [
     { key: "overview", label: "Overview" },
@@ -244,14 +277,6 @@ export default function EventDetailScreen() {
       : []),
   ];
   const activeTab = tabs.some((t) => t.key === tab) ? (tab as string) : "overview";
-  const summaryByModule = new Map(
-    (summaries ?? []).map((s) => [s.module as string, s] as const),
-  );
-  const readyByModule = new Map(
-    (moduleReadiness ?? []).map(
-      (r) => [r.key as string, r.ready as boolean] as const,
-    ),
-  );
   // Custom event-module rows, keyed by module key, so a rollup row can resolve
   // its `eventModules` id for deletion.
   const customModuleIdByKey = new Map(
@@ -444,12 +469,15 @@ export default function EventDetailScreen() {
           onSongs={() => router.push(`/event/${eventId}/songs`)}
           meView={meView}
           onToggleMeView={() => setMeView((v) => !v)}
+          onSelectPhase={flashPhase}
+          activePhase={pulsePhase}
         />
 
         {/* Module navigation — same tab bar on web + mobile (scrolls on phones) */}
         <EventTabBar
           tabs={tabs}
           activeKey={activeTab}
+          highlightPhase={pulsePhase}
           onSelect={(key) => router.setParams({ tab: key })}
           addModule={
             meView
