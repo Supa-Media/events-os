@@ -753,7 +753,7 @@ export function isCompleteStatus(
 //   post      — retro + follow-up after the event (T-plus)
 //
 // Scoring uses three primitives:
-//   itemScore   — 1 (complete) / 0.5 (started, "partial") / 0 (not started)
+//   itemScore   — 1 (complete) / PARTIAL_ITEM_SCORE (started) / 0 (not started)
 //   moduleScore — average itemScore over that module's items in a phase
 //   phaseScore  — average moduleScore over modules with ≥1 item in the phase
 // A phase with no items anywhere is null (rendered "—"), so an empty phase does
@@ -793,7 +793,16 @@ export const MODULE_READY_PHASE: Record<string, PhaseKey> = {
 };
 
 /**
- * Status values that count as "started but not complete" → itemScore 0.5.
+ * Credit for a started-but-not-done item. Deliberately WELL below the midpoint:
+ * finishing must visibly move a phase ring more than starting does. At 0.5 the
+ * two transitions (not-started → in-progress, in-progress → done) bumped the
+ * diluted, rounded ring % by the same single point, which read as "in progress
+ * counts as much as done".
+ */
+export const PARTIAL_ITEM_SCORE = 0.25;
+
+/**
+ * Status values that count as "started but not complete" → PARTIAL_ITEM_SCORE.
  *
  * The rule is "started toward done, but not done". Choices per vocabulary:
  *   tasks    — `in_progress` (only non-terminal status)
@@ -804,8 +813,8 @@ export const MODULE_READY_PHASE: Record<string, PhaseKey> = {
  *              so it stays 0 (it genuinely isn't done/handled work).
  *   supplies — `need_to_order`, `need_to_buy`, `ordered`, `have_it`,
  *              `pull_from_storage` (all en route to `packed`). Note: `need_to_*`
- *              count as 0.5 because the item is identified + sourced, which is
- *              real progress toward packing.
+ *              earn partial credit because the item is identified + sourced,
+ *              which is real progress toward packing.
  *   retro    — `open` is the not-started state, so retro has no partial value.
  *   volunteer — `invited` is in-flight toward `confirmed`.
  * `not_started`, `not_needed`, `declined`, `open`, `tbd` and any unknown value
@@ -831,10 +840,10 @@ export const PARTIAL_STATUS_VALUES: Set<string> = new Set([
 ]);
 
 /**
- * Score a single item 1 / 0.5 / 0 from its status + the module's status options.
- *   1   — status is a `isComplete` option
- *   0.5 — status is in PARTIAL_STATUS_VALUES (started, not done)
- *   0   — no status, or a not-started/terminal-incomplete status
+ * Score a single item from its status + the module's status options.
+ *   1                  — status is a `isComplete` option
+ *   PARTIAL_ITEM_SCORE — status is in PARTIAL_STATUS_VALUES (started, not done)
+ *   0                  — no status, or a not-started/terminal-incomplete status
  */
 export function itemScore(
   options: SelectOption[] | undefined,
@@ -842,7 +851,7 @@ export function itemScore(
 ): number {
   if (value == null) return 0;
   if (isCompleteStatus(options, value)) return 1;
-  if (PARTIAL_STATUS_VALUES.has(value)) return 0.5;
+  if (PARTIAL_STATUS_VALUES.has(value)) return PARTIAL_ITEM_SCORE;
   return 0;
 }
 

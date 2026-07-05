@@ -7,10 +7,14 @@ import { Alert, Platform } from "react-native";
 
 /**
  * Base URL of the public event pages (served from Convex http routes).
- * Cloud deployments swap `.convex.cloud` → `.convex.site`; a local backend
- * serves http routes on the next port up (3210 → 3211).
+ * EXPO_PUBLIC_SITE_URL (custom domain, e.g. https://rsvp.publicworship.life)
+ * wins when set. Otherwise derived from the Convex URL: cloud deployments
+ * swap `.convex.cloud` → `.convex.site`; a local backend serves http routes
+ * on the next port up (3210 → 3211).
  */
 export function publicSiteUrl(): string {
+  const custom = (process.env.EXPO_PUBLIC_SITE_URL ?? "").replace(/\/+$/, "");
+  if (custom) return custom;
   const url = (process.env.EXPO_PUBLIC_CONVEX_URL ?? "").replace(/\/+$/, "");
   if (url.includes(".convex.cloud")) {
     return url.replace(".convex.cloud", ".convex.site");

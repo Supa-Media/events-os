@@ -8,15 +8,12 @@
 import { internalAction } from "./_generated/server";
 import { v } from "convex/values";
 import { internal } from "./_generated/api";
+import { siteUrl } from "./lib/siteUrl";
 
 const ACCENT = "#D23B3A";
 const INK = "#210909";
 const CREAM = "#FDF6F6";
 const MUTED = "#7A5A5A";
-
-function siteUrl(): string {
-  return (process.env.CONVEX_SITE_URL ?? "").replace(/\/$/, "");
-}
 
 function formatWhen(ts: number | null): string {
   if (!ts) return "";
@@ -62,6 +59,23 @@ export async function sendEmail(to: string, subject: string, html: string) {
     console.error(`[ticketing] email failed ("${subject}"):`, await response.text());
   }
 }
+
+/** The 6-digit email-verification code for an RSVP's email address. */
+export const sendVerificationEmail = internalAction({
+  args: { email: v.string(), code: v.string() },
+  handler: async (_ctx, { email, code }) => {
+    await sendEmail(
+      email,
+      `${code} is your verification code`,
+      emailShell(`
+      <h1 style="margin:0 0 12px;font-size:26px;line-height:1.2">Confirm your email</h1>
+      <p style="margin:0 0 20px;font-family:-apple-system,'Segoe UI',Roboto,sans-serif;font-size:14px;line-height:1.6;color:${MUTED}">Enter this code on the event page so the host knows this address is really yours. It expires in 15 minutes.</p>
+      <div style="background:#fff;border:1px dashed #E4CFCB;border-radius:14px;padding:18px;text-align:center;font-family:'SF Mono',Menlo,Consolas,monospace;font-size:32px;font-weight:700;letter-spacing:0.28em;color:${ACCENT}">${code}</div>
+      <p style="margin:16px 0 0;font-family:-apple-system,'Segoe UI',Roboto,sans-serif;font-size:12px;line-height:1.6;color:${MUTED}">Didn't RSVP to a Public Worship event? You can safely ignore this email.</p>`),
+    );
+    return null;
+  },
+});
 
 /** "You're in!" note after a public RSVP (going/maybe only). */
 export const sendRsvpEmail = internalAction({

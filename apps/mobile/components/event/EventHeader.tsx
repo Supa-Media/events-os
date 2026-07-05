@@ -14,6 +14,7 @@ import { formatDateTime } from "../../lib/format";
 import {
   EVENT_STATUS_LABELS,
   type EventStatus,
+  type PhaseKey,
   type PhaseScores,
 } from "@events-os/shared";
 
@@ -38,6 +39,8 @@ export function EventHeader({
   onSongs,
   meView,
   onToggleMeView,
+  onSelectPhase,
+  activePhase,
 }: {
   event: any;
   eventId: string;
@@ -54,6 +57,9 @@ export function EventHeader({
   onSongs: () => void;
   meView: boolean;
   onToggleMeView: () => void;
+  /** Tap a phase ring → pulse the tabs that feed it (see EventTabBar). */
+  onSelectPhase?: (phase: PhaseKey) => void;
+  activePhase?: PhaseKey | null;
 }) {
   return (
     <Card className="mb-4">
@@ -115,9 +121,14 @@ export function EventHeader({
         </View>
 
         {/* Phase readiness — four small rings (Pre-plan / Planning / Day-of /
-            Post). Replaces the old single readiness ring. */}
+            Post), each in its phase hue and tappable to spotlight its tabs. */}
         <View className="justify-center">
-          <PhaseBreakdown phases={phases} size={54} />
+          <PhaseBreakdown
+            phases={phases}
+            size={54}
+            onSelectPhase={onSelectPhase}
+            activePhase={activePhase}
+          />
         </View>
       </View>
     </Card>
