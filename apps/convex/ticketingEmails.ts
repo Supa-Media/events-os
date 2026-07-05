@@ -8,15 +8,12 @@
 import { internalAction } from "./_generated/server";
 import { v } from "convex/values";
 import { internal } from "./_generated/api";
+import { siteUrl } from "./lib/siteUrl";
 
 const ACCENT = "#D23B3A";
 const INK = "#210909";
 const CREAM = "#FDF6F6";
 const MUTED = "#7A5A5A";
-
-function siteUrl(): string {
-  return (process.env.CONVEX_SITE_URL ?? "").replace(/\/$/, "");
-}
 
 function formatWhen(ts: number | null): string {
   if (!ts) return "";
