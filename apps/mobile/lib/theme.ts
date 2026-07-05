@@ -10,7 +10,11 @@
  * hex. The few places that need raw values at runtime (icon tints, chart fills,
  * the readiness ring) import from here.
  */
-import { readinessTier } from "@events-os/shared";
+import {
+  MODULE_READY_PHASE,
+  readinessTier,
+  type PhaseKey,
+} from "@events-os/shared";
 
 // ── Brand palette (publicworship tokens) ─────────────────────────────────────
 export const palette = {
@@ -115,6 +119,43 @@ export const fontFamily = {
   bodySemi: "DMSans_600SemiBold",
   bodyBold: "DMSans_700Bold",
 } as const;
+
+// ── Phase identity colors ────────────────────────────────────────────────────
+// Each lifecycle phase owns a hue, used by BOTH the header readiness rings and
+// the module tabs that feed them — the shared hue is what visually links a ring
+// to its tabs. The sequence reads as a journey across the event's arc:
+// dawn amber (pre-plan) → brand-red heat (planning) → showtime plum (day-of) →
+// afterglow green (post). `main` draws rings/underlines/labels, `soft` is the
+// wash behind a highlighted tab, `glow` feeds web box-shadows / halos.
+export const phaseColors: Record<
+  PhaseKey,
+  { main: string; soft: string; glow: string }
+> = {
+  prePlan: { main: "#C9821E", soft: "#F9EDD8", glow: "rgba(201,130,30,0.38)" },
+  planning: {
+    main: palette.brand500,
+    soft: palette.brand50,
+    glow: "rgba(210,59,58,0.38)",
+  },
+  dayOf: { main: "#8A3FC2", soft: "#F2E7FA", glow: "rgba(138,63,194,0.38)" },
+  post: { main: "#2F7D5B", soft: "#E6F4ED", glow: "rgba(47,125,91,0.38)" },
+} as const;
+
+/**
+ * Which phase HUE a module tab wears — extends the scoring map
+ * (MODULE_READY_PHASE) with display-only assignments for modules that have no
+ * ready gate. Custom modules default to planning (they're prep work).
+ */
+const MODULE_DISPLAY_PHASE: Record<string, PhaseKey> = {
+  planning_doc: "planning",
+  retro: "post",
+};
+
+export function modulePhase(moduleKey: string): PhaseKey {
+  return (
+    MODULE_READY_PHASE[moduleKey] ?? MODULE_DISPLAY_PHASE[moduleKey] ?? "planning"
+  );
+}
 
 // ── Readiness → semantic color (0–100) ───────────────────────────────────────
 // All four helpers below derive their tier from the shared `readinessTier`

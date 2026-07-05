@@ -1,14 +1,13 @@
 import { useRef, useState } from "react";
 import { View, Text, Pressable, ScrollView, Platform } from "react-native";
-import {
-  Icon,
-  ContextMenu,
-  measureAnchor,
-  type ContextMenuAnchor,
-} from "../ui";
-import type { ResolvedModule } from "@events-os/shared";
-import { colors } from "../../lib/theme";
-import { AddCustomModuleInput } from "./EventModuleRollup";
+import { ContextMenu, MiniRing, measureAnchor, type ContextMenuAnchor } from "../ui";
+import type { PhaseKey } from "@events-os/shared";
+import { colors, phaseColors } from "../../lib/theme";
+import { AddModuleTab, type AddModuleConfig } from "./EventAddModuleTab";
+
+type PhaseHue = (typeof phaseColors)[PhaseKey];
+
+export type { AddModuleConfig };
 
 export type EventTab = {
   key: string;
@@ -19,13 +18,14 @@ export type EventTab = {
    * the tab itself, so the Overview no longer needs a separate Modules list.
    */
   remove?: { isCore: boolean; onRemove: () => void };
-};
-
-export type AddModuleConfig = {
-  /** Core modules currently disabled — each re-enables on press. */
-  disabledCore: ResolvedModule[];
-  onEnableCore: (key: string) => void;
-  onCreateCustom: (label: string) => void;
+  /**
+   * Which readiness ring this tab feeds. The tab wears the phase's identity
+   * hue (mini ring, active underline, label) so it visibly belongs to the
+   * header ring of the same color.
+   */
+  phase?: PhaseKey;
+  /** 0..1 module progress shown as a mini ring; null/undefined hides it. */
+  progress?: number | null;
 };
 
 /**
@@ -40,11 +40,17 @@ export function EventTabBar({
   activeKey,
   onSelect,
   addModule,
+  highlightPhase,
 }: {
   tabs: EventTab[];
   activeKey: string;
   onSelect: (key: string) => void;
   addModule?: AddModuleConfig;
+  /**
+   * Set (briefly) when a header phase ring is tapped — every tab feeding that
+   * phase pulses in its hue, making the ring↔tab link explicit.
+   */
+  highlightPhase?: PhaseKey | null;
 }) {
   return (
     <View className="mb-6 border-b border-border">
@@ -58,6 +64,7 @@ export function EventTabBar({
             key={t.key}
             tab={t}
             active={t.key === activeKey}
+            highlighted={t.phase != null && t.phase === highlightPhase}
             onSelect={() => onSelect(t.key)}
           />
         ))}
@@ -67,14 +74,53 @@ export function EventTabBar({
   );
 }
 
+/** Ring-tap pulse: a hue wash plus (web) two quick scale beats. */
+function pulseStyle(hue: PhaseHue): any {
+  const base = {
+    backgroundColor: hue.soft,
+    borderTopLeftRadius: 8,
+    borderTopRightRadius: 8,
+  };
+  if (Platform.OS !== "web") return base;
+  return {
+    ...base,
+    animationKeyframes: {
+      "0%": { transform: [{ scale: 1 }] },
+      "50%": { transform: [{ scale: 1.08 }] },
+      "100%": { transform: [{ scale: 1 }] },
+    },
+    animationDuration: "550ms",
+    animationIterationCount: 2,
+    animationTimingFunction: "ease-in-out",
+  };
+}
+
+/** The tab's lineage marker: a filled mini ring, or a dim dot pre-measurement. */
+function TabPhaseIndicator({ hue, pct }: { hue: PhaseHue; pct: number | null }) {
+  if (pct != null) return <MiniRing value={pct} size={13} color={hue.main} />;
+  return (
+    <View
+      style={{
+        width: 6,
+        height: 6,
+        borderRadius: 3,
+        backgroundColor: hue.main,
+        opacity: 0.4,
+      }}
+    />
+  );
+}
+
 /** One tab; owns its own remove context menu when the tab is a removable module. */
 function TabButton({
   tab,
   active,
+  highlighted,
   onSelect,
 }: {
   tab: EventTab;
   active: boolean;
+  highlighted: boolean;
   onSelect: () => void;
 }) {
   const ref = useRef<any>(null);
@@ -95,23 +141,29 @@ function TabButton({
         } as any)
       : {};
 
+  const hue = tab.phase ? phaseColors[tab.phase] : null;
+  const pct = tab.progress == null ? null : Math.round(Math.min(1, tab.progress) * 100);
+  // Phase tabs underline + label in their hue; phase-less tabs keep accent.
+  const activeColor = hue?.main ?? colors.accent;
+
   return (
-    <View ref={ref} {...webProps}>
+    <View ref={ref} {...webProps} style={highlighted && hue ? pulseStyle(hue) : null}>
       <Pressable
         onPress={onSelect}
         onLongPress={tab.remove ? openMenu : undefined}
         delayLongPress={300}
-        className={`border-b-2 px-3 py-2.5 ${
-          active ? "border-accent" : "border-transparent"
-        } active:opacity-80`}
+        className="border-b-2 border-transparent px-3 py-2.5 active:opacity-80"
+        style={active ? { borderBottomColor: activeColor } : undefined}
       >
-        <Text
-          className={`text-sm ${
-            active ? "font-semibold text-accent" : "text-muted"
-          }`}
-        >
-          {tab.label}
-        </Text>
+        <View className="flex-row items-center gap-1.5">
+          {hue ? <TabPhaseIndicator hue={hue} pct={pct} /> : null}
+          <Text
+            className={`text-sm ${active ? "font-semibold" : "text-muted"}`}
+            style={active ? { color: activeColor } : undefined}
+          >
+            {tab.label}
+          </Text>
+        </View>
       </Pressable>
 
       {tab.remove ? (
@@ -128,59 +180,6 @@ function TabButton({
           ]}
         />
       ) : null}
-    </View>
-  );
-}
-
-/** Trailing "＋" that adds a module — re-enable a core one or name a new custom one. */
-function AddModuleTab({ config }: { config: AddModuleConfig }) {
-  const ref = useRef<any>(null);
-  const [anchor, setAnchor] = useState<ContextMenuAnchor | undefined>(undefined);
-  const [adding, setAdding] = useState(false);
-
-  if (adding) {
-    return (
-      <View className="pl-1 pr-2">
-        <AddCustomModuleInput
-          onCommit={(label) => {
-            const trimmed = label.trim();
-            if (trimmed) config.onCreateCustom(trimmed);
-            setAdding(false);
-          }}
-          onCancel={() => setAdding(false)}
-        />
-      </View>
-    );
-  }
-
-  return (
-    <View ref={ref} className="pl-1 pr-2">
-      <Pressable
-        onPress={() => measureAnchor(ref.current, setAnchor)}
-        accessibilityRole="button"
-        accessibilityLabel="Add module"
-        className="flex-row items-center gap-1 rounded-pill border border-dashed border-border-strong px-2.5 py-1 active:opacity-80 web:hover:border-accent"
-      >
-        <Icon name="plus" size={13} color={colors.muted} />
-        <Text className="text-xs font-medium text-muted">Module</Text>
-      </Pressable>
-
-      <ContextMenu
-        anchor={anchor}
-        onClose={() => setAnchor(undefined)}
-        actions={[
-          ...config.disabledCore.map((m) => ({
-            label: m.label,
-            icon: "plus" as const,
-            onPress: () => config.onEnableCore(m.key),
-          })),
-          {
-            label: "New custom module",
-            icon: "edit-2" as const,
-            onPress: () => setAdding(true),
-          },
-        ]}
-      />
     </View>
   );
 }
