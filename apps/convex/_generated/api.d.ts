@@ -24,6 +24,8 @@ import type * as items from "../items.js";
 import type * as lib_access from "../lib/access.js";
 import type * as lib_context from "../lib/context.js";
 import type * as lib_landingPage from "../lib/landingPage.js";
+import type * as lib_landingPageClient from "../lib/landingPageClient.js";
+import type * as lib_landingPageStyles from "../lib/landingPageStyles.js";
 import type * as lib_people from "../lib/people.js";
 import type * as lib_readiness from "../lib/readiness.js";
 import type * as lib_seed_fieldDay from "../lib/seed/fieldDay.js";
@@ -86,6 +88,8 @@ declare const fullApi: ApiFromModules<{
   "lib/access": typeof lib_access;
   "lib/context": typeof lib_context;
   "lib/landingPage": typeof lib_landingPage;
+  "lib/landingPageClient": typeof lib_landingPageClient;
+  "lib/landingPageStyles": typeof lib_landingPageStyles;
   "lib/people": typeof lib_people;
   "lib/readiness": typeof lib_readiness;
   "lib/seed/fieldDay": typeof lib_seed_fieldDay;

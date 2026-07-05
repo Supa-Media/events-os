@@ -1,6 +1,8 @@
 import { httpRouter } from "convex/server";
 import { httpAction } from "./_generated/server";
+import type { ActionCtx } from "./_generated/server";
 import { api, internal } from "./_generated/api";
+import type { Id } from "./_generated/dataModel";
 import { auth } from "./auth";
 import {
   renderIcs,
@@ -35,15 +37,46 @@ function json(body: unknown, status = 200): Response {
   });
 }
 
-/** Map thrown ConvexErrors to a friendly JSON error payload. */
+/** Map a thrown ConvexError to its friendly message (generic fallback). */
 function errorJson(err: unknown): Response {
-  const data = (err as { data?: { message?: string } })?.data;
   const message =
-    data?.message ??
-    (err instanceof Error && !err.message.includes("Uncaught")
-      ? "Something went wrong. Please try again."
-      : "Something went wrong. Please try again.");
+    (err as { data?: { message?: string } })?.data?.message ??
+    "Something went wrong. Please try again.";
   return json({ error: message }, 400);
+}
+
+type JsonBody = Record<string, unknown>;
+
+/**
+ * Wrap a public JSON POST endpoint: parse the body, run the handler, return its
+ * result as JSON (or `{ ok: true }` for handlers that return nothing), and map
+ * any thrown ConvexError to a 400. Every /api/tickets/* route shares this shape.
+ */
+function jsonPost(run: (ctx: ActionCtx, body: JsonBody) => Promise<unknown>) {
+  return httpAction(async (ctx, req) => {
+    try {
+      const body = (await req.json()) as JsonBody;
+      return json((await run(ctx, body)) ?? { ok: true });
+    } catch (err) {
+      return errorJson(err);
+    }
+  });
+}
+
+/** Optional string field from an untrusted JSON body. */
+function optStr(value: unknown): string | undefined {
+  return value ? String(value) : undefined;
+}
+
+/** Coerce an untrusted cart payload into checkout line items (validated server-side). */
+function toCartItems(
+  raw: unknown,
+): Array<{ ticketTypeId: Id<"ticketTypes">; quantity: number }> {
+  if (!Array.isArray(raw)) return [];
+  return raw.map((item) => ({
+    ticketTypeId: (item as { ticketTypeId: Id<"ticketTypes"> }).ticketTypeId,
+    quantity: Number((item as { quantity: unknown }).quantity),
+  }));
 }
 
 // ── Public event pages: /e/<slug>[/cover|/calendar.ics] ─────────────────────
@@ -139,87 +172,58 @@ http.route({
 http.route({
   path: "/api/tickets/rsvp",
   method: "POST",
-  handler: httpAction(async (ctx, req) => {
-    try {
-      const body = await req.json();
-      const result = await ctx.runMutation(api.ticketing.submitRsvp, {
-        slug: String(body.slug ?? ""),
-        name: body.name ? String(body.name) : undefined,
-        email: body.email ? String(body.email) : undefined,
-        phone: body.phone ? String(body.phone) : undefined,
-        status: body.status,
-        token: body.token ? String(body.token) : undefined,
-      });
-      return json(result);
-    } catch (err) {
-      return errorJson(err);
-    }
-  }),
+  handler: jsonPost((ctx, body) =>
+    ctx.runMutation(api.ticketing.submitRsvp, {
+      slug: String(body.slug ?? ""),
+      name: optStr(body.name),
+      email: optStr(body.email),
+      phone: optStr(body.phone),
+      status: body.status as "going" | "maybe" | "not_going",
+      token: optStr(body.token),
+    }),
+  ),
 });
 
 http.route({
   path: "/api/tickets/comment",
   method: "POST",
-  handler: httpAction(async (ctx, req) => {
-    try {
-      const body = await req.json();
-      await ctx.runMutation(api.ticketing.addComment, {
-        slug: String(body.slug ?? ""),
-        token: String(body.token ?? ""),
-        body: String(body.body ?? ""),
-        parentId: body.parentId ?? undefined,
-        replyToRsvpId: body.replyToRsvpId ?? undefined,
-      });
-      return json({ ok: true });
-    } catch (err) {
-      return errorJson(err);
-    }
-  }),
+  handler: jsonPost((ctx, body) =>
+    ctx.runMutation(api.ticketing.addComment, {
+      slug: String(body.slug ?? ""),
+      token: String(body.token ?? ""),
+      body: String(body.body ?? ""),
+      parentId: body.parentId as never,
+      replyToRsvpId: body.replyToRsvpId as never,
+    }),
+  ),
 });
 
 http.route({
   path: "/api/tickets/react",
   method: "POST",
-  handler: httpAction(async (ctx, req) => {
-    try {
-      const body = await req.json();
-      const result = await ctx.runMutation(api.ticketing.toggleReaction, {
-        slug: String(body.slug ?? ""),
-        token: String(body.token ?? ""),
-        targetType: body.targetType,
-        targetId: String(body.targetId ?? ""),
-        emoji: String(body.emoji ?? ""),
-      });
-      return json(result);
-    } catch (err) {
-      return errorJson(err);
-    }
-  }),
+  handler: jsonPost((ctx, body) =>
+    ctx.runMutation(api.ticketing.toggleReaction, {
+      slug: String(body.slug ?? ""),
+      token: String(body.token ?? ""),
+      targetType: body.targetType as "rsvp" | "comment",
+      targetId: String(body.targetId ?? ""),
+      emoji: String(body.emoji ?? ""),
+    }),
+  ),
 });
 
 http.route({
   path: "/api/tickets/checkout",
   method: "POST",
-  handler: httpAction(async (ctx, req) => {
-    try {
-      const body = await req.json();
-      const result = await ctx.runAction(api.stripe.createCheckout, {
-        slug: String(body.slug ?? ""),
-        name: String(body.name ?? ""),
-        email: String(body.email ?? ""),
-        token: body.token ? String(body.token) : undefined,
-        items: Array.isArray(body.items)
-          ? body.items.map((i: { ticketTypeId: string; quantity: number }) => ({
-              ticketTypeId: i.ticketTypeId,
-              quantity: Number(i.quantity),
-            }))
-          : [],
-      });
-      return json(result);
-    } catch (err) {
-      return errorJson(err);
-    }
-  }),
+  handler: jsonPost((ctx, body) =>
+    ctx.runAction(api.stripe.createCheckout, {
+      slug: String(body.slug ?? ""),
+      name: String(body.name ?? ""),
+      email: String(body.email ?? ""),
+      token: optStr(body.token),
+      items: toCartItems(body.items),
+    }),
+  ),
 });
 
 // ── Stripe webhook ───────────────────────────────────────────────────────────

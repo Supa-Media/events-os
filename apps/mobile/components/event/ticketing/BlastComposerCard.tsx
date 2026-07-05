@@ -28,6 +28,11 @@ const STATUS_TONE: Record<string, BadgeTone> = {
   failed: "danger",
 };
 
+/** Display label for an audience value, falling back to the raw value. */
+function audienceLabelFor(value: string): string {
+  return AUDIENCES.find((a) => a.value === value)?.label ?? value;
+}
+
 export function BlastComposerCard({
   eventId,
   run,
@@ -43,16 +48,13 @@ export function BlastComposerCard({
   const [body, setBody] = useState("");
   const [sending, setSending] = useState(false);
 
-  const audienceLabel =
-    AUDIENCES.find((a) => a.value === audience)?.label ?? "Everyone";
-
   function handleSend() {
     if (!body.trim()) return;
-    confirmAction(
-      "Send blast?",
-      `This emails "${audienceLabel}" right away.`,
-      "Send",
-      () => {
+    confirmAction({
+      title: "Send blast?",
+      message: `This emails "${audienceLabelFor(audience)}" right away.`,
+      confirmLabel: "Send",
+      onConfirm: () => {
         setSending(true);
         void run(
           () =>
@@ -72,7 +74,7 @@ export function BlastComposerCard({
           }
         });
       },
-    );
+    });
   }
 
   return (
@@ -137,8 +139,7 @@ export function BlastComposerCard({
                   {b.subject || b.body.split("\n")[0]}
                 </Text>
                 <Text className="text-xs text-muted">
-                  {AUDIENCES.find((a) => a.value === b.audience)?.label ??
-                    b.audience}
+                  {audienceLabelFor(b.audience)}
                   {b.recipientCount != null
                     ? ` · ${b.recipientCount} recipient${b.recipientCount === 1 ? "" : "s"}`
                     : ""}

@@ -41,13 +41,19 @@ export function parseDollars(input: string): number | null {
 }
 
 /** Cross-platform confirm: window.confirm on web, Alert.alert on native. */
-export function confirmAction(
-  title: string,
-  message: string,
-  confirmLabel: string,
-  onConfirm: () => void,
+export function confirmAction({
+  title,
+  message,
+  confirmLabel,
+  onConfirm,
   destructive = false,
-): void {
+}: {
+  title: string;
+  message: string;
+  confirmLabel: string;
+  onConfirm: () => void;
+  destructive?: boolean;
+}): void {
   if (Platform.OS === "web") {
     if (
       typeof window !== "undefined" &&

@@ -8,21 +8,14 @@ import { Pressable, Text, View } from "react-native";
 import { useMutation } from "convex/react";
 import { api } from "@events-os/convex/_generated/api";
 import type { Doc, Id } from "@events-os/convex/_generated/dataModel";
-import { Badge, Button, Card, Icon, TextField } from "../../ui";
+import { Badge, Button, Card, Icon } from "../../ui";
 import { colors } from "../../../lib/theme";
 import type { ActionRunner } from "../../../lib/useActionToast";
 import { ToggleRow } from "./ToggleRow";
-import { confirmAction, formatPrice, parseDollars } from "./helpers";
+import { TicketTypeForm } from "./TicketTypeForm";
+import { confirmAction, formatPrice } from "./helpers";
 
 type TicketType = Doc<"ticketTypes">;
-
-type FormValues = {
-  name: string;
-  priceCents: number;
-  description?: string;
-  capacity: number | null;
-  maxPerOrder: number | null;
-};
 
 type Props = {
   eventId: Id<"events">;
@@ -41,18 +34,19 @@ export function TicketTypesCard({ eventId, page, ticketTypes, run }: Props) {
   const [editingId, setEditingId] = useState<string | null>(null);
 
   function handleDelete(tt: TicketType) {
-    confirmAction(
-      "Remove ticket type?",
-      tt.soldCount > 0
-        ? `${tt.soldCount} sold — "${tt.name}" will be deactivated to keep history.`
-        : `"${tt.name}" will be deleted.`,
-      "Remove",
-      () =>
+    confirmAction({
+      title: "Remove ticket type?",
+      message:
+        tt.soldCount > 0
+          ? `${tt.soldCount} sold — "${tt.name}" will be deactivated to keep history.`
+          : `"${tt.name}" will be deleted.`,
+      confirmLabel: "Remove",
+      onConfirm: () =>
         void run(() => deleteTicketType({ ticketTypeId: tt._id }), {
           errorTitle: "Couldn't remove ticket type",
         }),
-      true,
-    );
+      destructive: true,
+    });
   }
 
   return (
@@ -174,103 +168,5 @@ export function TicketTypesCard({ eventId, page, ticketTypes, run }: Props) {
         </View>
       )}
     </Card>
-  );
-}
-
-/** Shared add/edit form. Price is a dollar string, converted on submit. */
-function TicketTypeForm({
-  initial,
-  submitLabel,
-  onSubmit,
-}: {
-  initial?: TicketType;
-  submitLabel: string;
-  onSubmit: (values: FormValues) => Promise<void>;
-}) {
-  const [name, setName] = useState(initial?.name ?? "");
-  const [price, setPrice] = useState(
-    initial ? (initial.priceCents / 100).toString() : "",
-  );
-  const [description, setDescription] = useState(initial?.description ?? "");
-  const [capacity, setCapacity] = useState(
-    initial?.capacity != null ? String(initial.capacity) : "",
-  );
-  const [maxPerOrder, setMaxPerOrder] = useState(
-    initial?.maxPerOrder != null ? String(initial.maxPerOrder) : "",
-  );
-  const [submitting, setSubmitting] = useState(false);
-
-  const parseCount = (s: string): number | null => {
-    const t = s.trim();
-    if (t === "") return null;
-    const n = Math.floor(Number(t));
-    return Number.isNaN(n) || n < 0 ? null : n;
-  };
-
-  async function handleSubmit() {
-    const priceCents = price.trim() === "" ? 0 : parseDollars(price);
-    if (priceCents === null) return; // unparsable price — leave the form open
-    setSubmitting(true);
-    await onSubmit({
-      name: name.trim() || "General Admission",
-      priceCents,
-      description,
-      capacity: parseCount(capacity),
-      maxPerOrder: parseCount(maxPerOrder),
-    });
-    setSubmitting(false);
-  }
-
-  return (
-    <View className="mt-3">
-      <TextField
-        label="Name"
-        value={name}
-        onChangeText={setName}
-        placeholder="General Admission"
-      />
-      <TextField
-        label="Price"
-        value={price}
-        onChangeText={setPrice}
-        placeholder="0 = free"
-        keyboardType="decimal-pad"
-        hint="In dollars — e.g. 12 or 12.50."
-      />
-      <TextField
-        label="Description"
-        value={description}
-        onChangeText={setDescription}
-        placeholder="What's included (optional)"
-      />
-      <View className="flex-row gap-3">
-        <View className="flex-1">
-          <TextField
-            label="Capacity"
-            value={capacity}
-            onChangeText={setCapacity}
-            placeholder="Unlimited"
-            keyboardType="numeric"
-          />
-        </View>
-        <View className="flex-1">
-          <TextField
-            label="Max per order"
-            value={maxPerOrder}
-            onChangeText={setMaxPerOrder}
-            placeholder="10"
-            keyboardType="numeric"
-          />
-        </View>
-      </View>
-      <View className="flex-row justify-end">
-        <Button
-          title={submitLabel}
-          size="sm"
-          loading={submitting}
-          onPress={() => void handleSubmit()}
-        />
-      </View>
-    </View>
   );
 }

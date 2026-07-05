@@ -282,3 +282,99 @@ describe("orders & tickets", () => {
     expect(missing.result).toBe("not_found");
   });
 });
+
+describe("stripe webhook fulfillment", () => {
+  /** Publish a page with a paid tier and return its slug + ticket type id. */
+  async function paidSetup(s: ChapterSetup, eventId: Id<"events">) {
+    const { pageId, slug } = await publishPage(s, eventId);
+    await s.as.mutation(api.ticketing.updatePage, {
+      pageId,
+      patch: { ticketsEnabled: true },
+    });
+    const paidId = await s.as.mutation(api.ticketing.createTicketType, {
+      eventId,
+      name: "Supporter",
+      priceCents: 2500,
+    });
+    return { slug, paidId: paidId as Id<"ticketTypes"> };
+  }
+
+  test("markSessionPaid issues tickets, marks paid, and is idempotent on redelivery", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const eventId = await seedEvent(s);
+    const { slug, paidId } = await paidSetup(s, eventId);
+
+    const prepared = await t.mutation(internal.ticketing.prepareOrder, {
+      slug,
+      name: "Ben Buyer",
+      email: "ben@example.com",
+      items: [{ ticketTypeId: paidId, quantity: 2 }],
+    });
+    expect(prepared.totalCents).toBe(5000);
+
+    // Paid carts wait for Stripe — no tickets until the webhook fires.
+    expect(
+      await s.as.query(api.ticketing.listTicketsAdmin, { eventId }),
+    ).toHaveLength(0);
+
+    await t.mutation(internal.ticketing.attachStripeSession, {
+      orderId: prepared.orderId,
+      sessionId: "cs_test_webhook",
+    });
+    await t.mutation(internal.ticketing.markSessionPaid, {
+      sessionId: "cs_test_webhook",
+      paymentIntentId: "pi_123",
+    });
+
+    const tickets = await s.as.query(api.ticketing.listTicketsAdmin, { eventId });
+    expect(tickets).toHaveLength(2);
+    const orders = await s.as.query(api.ticketing.listOrdersAdmin, { eventId });
+    expect(orders[0]).toMatchObject({
+      status: "paid",
+      stripePaymentIntentId: "pi_123",
+    });
+    const pub = await t.query(api.ticketing.getPublicPage, {
+      slug,
+      token: prepared.guestToken,
+    });
+    expect(pub?.counts).toMatchObject({ going: 1, ticketsSold: 2 });
+    expect(pub?.viewer?.status).toBe("going");
+
+    // A duplicate webhook delivery must not double-issue.
+    await t.mutation(internal.ticketing.markSessionPaid, {
+      sessionId: "cs_test_webhook",
+      paymentIntentId: "pi_123",
+    });
+    expect(
+      await s.as.query(api.ticketing.listTicketsAdmin, { eventId }),
+    ).toHaveLength(2);
+  });
+
+  test("cancelPendingOrder expires an unpaid order without issuing tickets", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const eventId = await seedEvent(s);
+    const { slug, paidId } = await paidSetup(s, eventId);
+
+    const prepared = await t.mutation(internal.ticketing.prepareOrder, {
+      slug,
+      name: "Cara",
+      email: "cara@example.com",
+      items: [{ ticketTypeId: paidId, quantity: 1 }],
+    });
+    await t.mutation(internal.ticketing.attachStripeSession, {
+      orderId: prepared.orderId,
+      sessionId: "cs_test_expire",
+    });
+    await t.mutation(internal.ticketing.cancelPendingOrder, {
+      sessionId: "cs_test_expire",
+    });
+
+    const orders = await s.as.query(api.ticketing.listOrdersAdmin, { eventId });
+    expect(orders[0].status).toBe("expired");
+    expect(
+      await s.as.query(api.ticketing.listTicketsAdmin, { eventId }),
+    ).toHaveLength(0);
+  });
+});
