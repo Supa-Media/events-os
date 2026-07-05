@@ -13,12 +13,9 @@
 import { action } from "./_generated/server";
 import { ConvexError, v } from "convex/values";
 import { internal } from "./_generated/api";
+import { siteUrl } from "./lib/siteUrl";
 
 const STRIPE_API = "https://api.stripe.com/v1";
-
-function siteUrl(): string {
-  return (process.env.CONVEX_SITE_URL ?? "").replace(/\/$/, "");
-}
 
 /** Result of createCheckout: either done (free) or a Stripe redirect. */
 type CheckoutResult =

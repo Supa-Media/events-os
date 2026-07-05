@@ -9,6 +9,7 @@ import {
   renderTicketPage,
 } from "./lib/landingPage";
 import { registerTicketApiRoutes } from "./lib/ticketApiRoutes";
+import { siteUrl } from "./lib/siteUrl";
 import { verifyStripeSignature } from "./stripe";
 
 const http = httpRouter();
@@ -20,10 +21,6 @@ auth.addHttpRoutes(http);
 registerTicketApiRoutes(http);
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
-
-function siteUrl(): string {
-  return (process.env.CONVEX_SITE_URL ?? "").replace(/\/$/, "");
-}
 
 function html(body: string, status = 200): Response {
   return new Response(body, {

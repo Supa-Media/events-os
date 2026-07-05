@@ -18,6 +18,7 @@ import { ConvexError, v } from "convex/values";
 import { internal } from "./_generated/api";
 import { Id } from "./_generated/dataModel";
 import { requireEvent, requireUserId } from "./lib/context";
+import { siteUrl } from "./lib/siteUrl";
 import { emailShell, sendEmail } from "./ticketingEmails";
 
 const audienceValidator = v.union(
@@ -149,7 +150,7 @@ export const deliverBlast = internalAction({
     });
     if (!payload) return null;
     const { blast, emails, eventName, slug, hostName } = payload;
-    const site = (process.env.CONVEX_SITE_URL ?? "").replace(/\/$/, "");
+    const site = siteUrl();
     const subject = blast.subject || `An update on ${eventName}`;
     const paragraphs = blast.body
       .split(/\n{2,}/)
