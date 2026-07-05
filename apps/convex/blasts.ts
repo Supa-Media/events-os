@@ -102,10 +102,12 @@ export const getBlastPayload = internalQuery({
             .withIndex("by_event", (q) => q.eq("eventId", blast.eventId))
             .take(2000);
 
-    const filtered =
+    const inAudience =
       blast.audience === "ticket_holders"
         ? rows.filter((r) => r.source === "ticket")
         : rows;
+    // Skip addresses that failed to verify (undefined = legacy = verified).
+    const filtered = inAudience.filter((r) => r.emailVerified !== false);
 
     // One email per address (an attendee can RSVP + buy).
     const emails = [...new Set(filtered.map((r) => r.email))];
