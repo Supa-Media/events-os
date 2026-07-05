@@ -1,7 +1,10 @@
+import { VERIFY_JS } from "./landingPageVerifyClient";
+
 /**
  * Browser script for the public landing page. Vanilla JS (no build step),
  * talks to the same-origin /api/tickets/* httpActions. Deliberately avoids
- * template literals so it can be embedded inside one.
+ * template literals so it can be embedded inside one. The email-verification
+ * step lives in landingPageVerifyClient.ts and is spliced in below.
  */
 export const LANDING_SCRIPT = `
 (function(){
@@ -41,6 +44,7 @@ function saveToken(t){if(!t)return;TOKEN=t;try{localStorage.setItem(KEY,t);}catc
 /* ── sheet ── */
 function openSheet(title,sub,cta,action){
   pending=action;
+  setSheetMode('id');
   $('sheettitle').textContent=title;
   $('sheetsub').textContent=sub;
   $('sheetgo').textContent=cta;
@@ -53,23 +57,30 @@ function closeSheet(){$('overlay').classList.remove('open');pending=null;}
 $('sheetclose').onclick=closeSheet;
 $('overlay').addEventListener('click',function(e){if(e.target===$('overlay'))closeSheet();});
 $('sheetgo').onclick=function(){
+  if(sheetMode==='code'){submitVerify();return;}
   var name=$('f_name').value.trim(),email=$('f_email').value.trim();
   if(!name||email.indexOf('@')<0){$('sheeterr').textContent='Add your name and a real email ✨';return;}
   if(!pending)return closeSheet();
   var act=pending;
   $('sheetgo').disabled=true;
-  act(name,email).then(function(){$('sheetgo').disabled=false;closeSheet();})
+  act(name,email).then(function(r){
+      $('sheetgo').disabled=false;
+      if(r&&r.needsVerify)openVerifySheet(r.email);else closeSheet();
+    })
     .catch(function(err){$('sheetgo').disabled=false;$('sheeterr').textContent=err.message;});
 };
+${VERIFY_JS}
 
 /* ── rsvp ── */
 function doRsvp(status,name,email){
   return api('/api/tickets/rsvp',{slug:SLUG,token:TOKEN||undefined,name:name,email:email,status:status})
     .then(function(res){
       saveToken(res.token);
-      var m=STATUS_META[status];
       toast(status==='going'?'You are on the list! 🎉':(status==='maybe'?'Marked as maybe 🤔':'Sorry you will miss it 💔'));
-      return refresh();
+      return refresh().then(function(){
+        if(res.needsEmailVerification)return{needsVerify:true,email:email||(D.viewer?D.viewer.email:'your email')};
+        return null;
+      });
     });
 }
 function pickStatus(status){
@@ -139,7 +150,10 @@ function startCheckout(){
         if(res.kind==='stripe'){window.location.href=res.url;return;}
         cart={};
         toast('🎟️ Tickets sent — check your email!');
-        return refresh();
+        return refresh().then(function(){
+          if(res.needsEmailVerification)return{needsVerify:true,email:email};
+          return null;
+        });
       });
   };
   if(TOKEN&&D.viewer){run(D.viewer.name,D.viewer.email).catch(function(e){toast(e.message);});}
@@ -175,6 +189,7 @@ function renderRsvp(){
       function(name,email){return doRsvp(D.viewer.status,name,email);});};
     ya.appendChild(edit);
     card.appendChild(ya);
+    verifyPill(card);
   }
 }
 

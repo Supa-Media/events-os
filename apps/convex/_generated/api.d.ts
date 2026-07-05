@@ -23,17 +23,21 @@ import type * as http from "../http.js";
 import type * as items from "../items.js";
 import type * as lib_access from "../lib/access.js";
 import type * as lib_context from "../lib/context.js";
+import type * as lib_emailCodes from "../lib/emailCodes.js";
 import type * as lib_landingPage from "../lib/landingPage.js";
 import type * as lib_landingPageClient from "../lib/landingPageClient.js";
 import type * as lib_landingPageStyles from "../lib/landingPageStyles.js";
+import type * as lib_landingPageVerifyClient from "../lib/landingPageVerifyClient.js";
 import type * as lib_people from "../lib/people.js";
 import type * as lib_readiness from "../lib/readiness.js";
 import type * as lib_seed_fieldDay from "../lib/seed/fieldDay.js";
 import type * as lib_seed_helpers from "../lib/seed/helpers.js";
 import type * as lib_seed_roster from "../lib/seed/roster.js";
 import type * as lib_seed_templates from "../lib/seed/templates.js";
+import type * as lib_sha256 from "../lib/sha256.js";
 import type * as lib_superuser from "../lib/superuser.js";
 import type * as lib_templates from "../lib/templates.js";
+import type * as lib_ticketApiRoutes from "../lib/ticketApiRoutes.js";
 import type * as migrations from "../migrations.js";
 import type * as modules from "../modules.js";
 import type * as people from "../people.js";
@@ -64,6 +68,7 @@ import type * as stripe from "../stripe.js";
 import type * as templatePeople from "../templatePeople.js";
 import type * as ticketing from "../ticketing.js";
 import type * as ticketingEmails from "../ticketingEmails.js";
+import type * as ticketingVerification from "../ticketingVerification.js";
 
 import type {
   ApiFromModules,
@@ -87,17 +92,21 @@ declare const fullApi: ApiFromModules<{
   items: typeof items;
   "lib/access": typeof lib_access;
   "lib/context": typeof lib_context;
+  "lib/emailCodes": typeof lib_emailCodes;
   "lib/landingPage": typeof lib_landingPage;
   "lib/landingPageClient": typeof lib_landingPageClient;
   "lib/landingPageStyles": typeof lib_landingPageStyles;
+  "lib/landingPageVerifyClient": typeof lib_landingPageVerifyClient;
   "lib/people": typeof lib_people;
   "lib/readiness": typeof lib_readiness;
   "lib/seed/fieldDay": typeof lib_seed_fieldDay;
   "lib/seed/helpers": typeof lib_seed_helpers;
   "lib/seed/roster": typeof lib_seed_roster;
   "lib/seed/templates": typeof lib_seed_templates;
+  "lib/sha256": typeof lib_sha256;
   "lib/superuser": typeof lib_superuser;
   "lib/templates": typeof lib_templates;
+  "lib/ticketApiRoutes": typeof lib_ticketApiRoutes;
   migrations: typeof migrations;
   modules: typeof modules;
   people: typeof people;
@@ -128,6 +137,7 @@ declare const fullApi: ApiFromModules<{
   templatePeople: typeof templatePeople;
   ticketing: typeof ticketing;
   ticketingEmails: typeof ticketingEmails;
+  ticketingVerification: typeof ticketingVerification;
 }>;
 
 /**

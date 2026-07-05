@@ -102,6 +102,8 @@ export const rsvps = defineTable({
   token: v.string(),
   // How they arrived: a bare RSVP or a ticket purchase.
   source: v.optional(v.union(v.literal("rsvp"), v.literal("ticket"))),
+  // false = a code is pending, true = confirmed, undefined = legacy (verified).
+  emailVerified: v.optional(v.boolean()),
   createdAt: v.number(),
   updatedAt: v.number(),
 })
@@ -109,6 +111,19 @@ export const rsvps = defineTable({
   .index("by_event_email", ["eventId", "email"])
   .index("by_event_status", ["eventId", "status"])
   .index("by_token", ["token"]);
+
+/**
+ * Pending email-verification code for an RSVP (at most one per RSVP). Only a
+ * hash of the 6-digit code is stored; the plaintext goes out by email only.
+ */
+export const rsvpEmailCodes = defineTable({
+  rsvpId: v.id("rsvps"),
+  codeHash: v.string(),
+  expiresAt: v.number(),
+  attempts: v.number(),
+  lastSentAt: v.number(),
+  createdAt: v.number(),
+}).index("by_rsvp", ["rsvpId"]);
 
 /** A checkout order (one Stripe Checkout Session; free claims are $0 orders). */
 export const ticketOrders = defineTable({
