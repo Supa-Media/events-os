@@ -14,6 +14,16 @@ import {
 } from "./schema/events";
 import { people, engagements, templatePeople } from "./schema/people";
 import { songs, setlistEntries, songRequests } from "./schema/songs";
+import {
+  eventPages,
+  ticketTypes,
+  rsvps,
+  ticketOrders,
+  tickets,
+  eventComments,
+  pageReactions,
+  blasts,
+} from "./schema/ticketing";
 import { docs } from "./schema/docs";
 import { siteMarkers, siteShapes, siteMapPlacements } from "./schema/siteMap";
 import {
@@ -91,6 +101,16 @@ const schema = defineSchema({
   songs,
   setlistEntries,
   songRequests,
+
+  // Ticketing (public landing pages, RSVPs, Stripe orders, comments, blasts).
+  eventPages,
+  ticketTypes,
+  rsvps,
+  ticketOrders,
+  tickets,
+  eventComments,
+  pageReactions,
+  blasts,
 
   // Docs (the standalone targets behind How-To cells).
   docs,

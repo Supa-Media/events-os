@@ -1,0 +1,136 @@
+/**
+ * Ticketing transactional emails — RSVP confirmations and ticket delivery.
+ *
+ * Same Resend-over-fetch pattern as `guests.sendAccessGrantedEmail`: best
+ * effort (log, never throw), no-op without RESEND_API_KEY (dev). All emails
+ * carry the Public Worship look: cream card, deep-red accents.
+ */
+import { internalAction } from "./_generated/server";
+import { v } from "convex/values";
+import { internal } from "./_generated/api";
+
+const ACCENT = "#D23B3A";
+const INK = "#210909";
+const CREAM = "#FDF6F6";
+const MUTED = "#7A5A5A";
+
+function siteUrl(): string {
+  return (process.env.CONVEX_SITE_URL ?? "").replace(/\/$/, "");
+}
+
+function formatWhen(ts: number | null): string {
+  if (!ts) return "";
+  return new Date(ts).toLocaleString("en-US", {
+    weekday: "long",
+    month: "long",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+    timeZone: "America/New_York",
+  });
+}
+
+/** Shared shell: centered cream card on white with a red wordmark strip. */
+export function emailShell(inner: string): string {
+  return `<div style="margin:0;padding:32px 12px;background:#ffffff;font-family:Georgia,'Times New Roman',serif;color:${INK}">
+  <div style="max-width:520px;margin:0 auto">
+    <div style="text-align:center;padding-bottom:16px;font-family:-apple-system,'Segoe UI',Roboto,sans-serif;font-weight:700;letter-spacing:0.12em;font-size:12px;color:${ACCENT}">PUBLIC WORSHIP</div>
+    <div style="background:${CREAM};border:1px solid #EFE0DC;border-radius:20px;padding:32px 28px">
+      ${inner}
+    </div>
+    <div style="text-align:center;padding-top:16px;font-family:-apple-system,'Segoe UI',Roboto,sans-serif;font-size:11px;color:${MUTED}">Sent with love by Public Worship · Events OS</div>
+  </div>
+</div>`;
+}
+
+export async function sendEmail(to: string, subject: string, html: string) {
+  const apiKey = process.env.RESEND_API_KEY;
+  const from = process.env.AUTH_EMAIL_FROM ?? "auth@events-os.com";
+  if (!apiKey) {
+    console.log(`[ticketing] email skipped (no RESEND_API_KEY): "${subject}" → ${to}`);
+    return;
+  }
+  const response = await fetch("https://api.resend.com/emails", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ from, to, subject, html }),
+  });
+  if (!response.ok) {
+    console.error(`[ticketing] email failed ("${subject}"):`, await response.text());
+  }
+}
+
+/** "You're in!" note after a public RSVP (going/maybe only). */
+export const sendRsvpEmail = internalAction({
+  args: {
+    slug: v.string(),
+    name: v.string(),
+    email: v.string(),
+    status: v.union(v.literal("going"), v.literal("maybe")),
+  },
+  handler: async (_ctx, { slug, name, email, status }) => {
+    const url = `${siteUrl()}/e/${slug}`;
+    const firstName = name.split(/\s+/)[0];
+    const heading =
+      status === "going" ? `You're going, ${firstName} 🎉` : `Saved your maybe, ${firstName}`;
+    const line =
+      status === "going"
+        ? "We can't wait to see you. The details live on the event page — check back for updates from the host."
+        : "No pressure — you can change your RSVP any time on the event page.";
+    await sendEmail(
+      email,
+      status === "going" ? "You're on the list 🎉" : "Got your RSVP",
+      emailShell(`
+      <h1 style="margin:0 0 12px;font-size:26px;line-height:1.2">${heading}</h1>
+      <p style="margin:0 0 20px;font-family:-apple-system,'Segoe UI',Roboto,sans-serif;font-size:14px;line-height:1.6;color:${MUTED}">${line}</p>
+      <a href="${url}" style="display:inline-block;background:${ACCENT};color:#fff;text-decoration:none;font-family:-apple-system,'Segoe UI',Roboto,sans-serif;font-weight:600;font-size:14px;padding:12px 24px;border-radius:999px">Open the event page</a>`),
+    );
+    return null;
+  },
+});
+
+/** Ticket delivery after a paid (or free) order is fulfilled. */
+export const sendTicketsEmail = internalAction({
+  args: { orderId: v.id("ticketOrders") },
+  handler: async (ctx, { orderId }) => {
+    const payload = await ctx.runQuery(
+      internal.ticketing.getOrderEmailPayload,
+      { orderId },
+    );
+    if (!payload) return null;
+    const { order, tickets, eventName, startDate, venueName, slug } = payload;
+    const base = siteUrl();
+    const when = formatWhen(startDate);
+    const total =
+      order.totalCents === 0
+        ? "Free"
+        : `$${(order.totalCents / 100).toFixed(2)}`;
+
+    const ticketRows = tickets
+      .map(
+        (t) => `
+      <a href="${base}/t/${t.code}" style="display:block;text-decoration:none;color:${INK};background:#fff;border:1px dashed #E4CFCB;border-radius:14px;padding:14px 18px;margin:0 0 10px">
+        <div style="font-family:-apple-system,'Segoe UI',Roboto,sans-serif;font-size:11px;letter-spacing:0.08em;color:${MUTED};text-transform:uppercase">${t.ticketTypeName}</div>
+        <div style="font-family:'SF Mono',Menlo,Consolas,monospace;font-size:20px;font-weight:700;letter-spacing:0.06em;color:${ACCENT};padding-top:2px">${t.code}</div>
+      </a>`,
+      )
+      .join("");
+
+    await sendEmail(
+      order.email,
+      `Your ticket${tickets.length === 1 ? "" : "s"} to ${eventName}`,
+      emailShell(`
+      <h1 style="margin:0 0 6px;font-size:26px;line-height:1.2">${eventName}</h1>
+      <p style="margin:0 0 20px;font-family:-apple-system,'Segoe UI',Roboto,sans-serif;font-size:14px;line-height:1.6;color:${MUTED}">
+        ${when}${venueName ? ` · ${venueName}` : ""}<br/>
+        ${tickets.length} ticket${tickets.length === 1 ? "" : "s"} · ${total}
+      </p>
+      ${ticketRows}
+      <p style="margin:16px 0 0;font-family:-apple-system,'Segoe UI',Roboto,sans-serif;font-size:12px;line-height:1.6;color:${MUTED}">Tap a ticket to open it — each has a QR code for the door. ${slug ? `Event details: <a href="${base}/e/${slug}" style="color:${ACCENT}">${base}/e/${slug}</a>` : ""}</p>`),
+    );
+    return null;
+  },
+});

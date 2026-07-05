@@ -11,6 +11,7 @@
 import type * as ai from "../ai.js";
 import type * as aiActions from "../aiActions.js";
 import type * as auth from "../auth.js";
+import type * as blasts from "../blasts.js";
 import type * as columns from "../columns.js";
 import type * as dashboard from "../dashboard.js";
 import type * as docs from "../docs.js";
@@ -22,6 +23,9 @@ import type * as http from "../http.js";
 import type * as items from "../items.js";
 import type * as lib_access from "../lib/access.js";
 import type * as lib_context from "../lib/context.js";
+import type * as lib_landingPage from "../lib/landingPage.js";
+import type * as lib_landingPageClient from "../lib/landingPageClient.js";
+import type * as lib_landingPageStyles from "../lib/landingPageStyles.js";
 import type * as lib_people from "../lib/people.js";
 import type * as lib_readiness from "../lib/readiness.js";
 import type * as lib_seed_fieldDay from "../lib/seed/fieldDay.js";
@@ -49,12 +53,17 @@ import type * as schema_shared from "../schema/shared.js";
 import type * as schema_siteMap from "../schema/siteMap.js";
 import type * as schema_songs from "../schema/songs.js";
 import type * as schema_templates from "../schema/templates.js";
+import type * as schema_ticketing from "../schema/ticketing.js";
 import type * as seed from "../seed.js";
+import type * as seedTicketing from "../seedTicketing.js";
 import type * as setlists from "../setlists.js";
 import type * as siteMap from "../siteMap.js";
 import type * as songs from "../songs.js";
 import type * as storage from "../storage.js";
+import type * as stripe from "../stripe.js";
 import type * as templatePeople from "../templatePeople.js";
+import type * as ticketing from "../ticketing.js";
+import type * as ticketingEmails from "../ticketingEmails.js";
 
 import type {
   ApiFromModules,
@@ -66,6 +75,7 @@ declare const fullApi: ApiFromModules<{
   ai: typeof ai;
   aiActions: typeof aiActions;
   auth: typeof auth;
+  blasts: typeof blasts;
   columns: typeof columns;
   dashboard: typeof dashboard;
   docs: typeof docs;
@@ -77,6 +87,9 @@ declare const fullApi: ApiFromModules<{
   items: typeof items;
   "lib/access": typeof lib_access;
   "lib/context": typeof lib_context;
+  "lib/landingPage": typeof lib_landingPage;
+  "lib/landingPageClient": typeof lib_landingPageClient;
+  "lib/landingPageStyles": typeof lib_landingPageStyles;
   "lib/people": typeof lib_people;
   "lib/readiness": typeof lib_readiness;
   "lib/seed/fieldDay": typeof lib_seed_fieldDay;
@@ -104,12 +117,17 @@ declare const fullApi: ApiFromModules<{
   "schema/siteMap": typeof schema_siteMap;
   "schema/songs": typeof schema_songs;
   "schema/templates": typeof schema_templates;
+  "schema/ticketing": typeof schema_ticketing;
   seed: typeof seed;
+  seedTicketing: typeof seedTicketing;
   setlists: typeof setlists;
   siteMap: typeof siteMap;
   songs: typeof songs;
   storage: typeof storage;
+  stripe: typeof stripe;
   templatePeople: typeof templatePeople;
+  ticketing: typeof ticketing;
+  ticketingEmails: typeof ticketingEmails;
 }>;
 
 /**
