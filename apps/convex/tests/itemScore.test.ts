@@ -47,8 +47,8 @@ describe("computePhaseScores partial vs complete", () => {
   ];
 
   test("an in-progress item lifts a phase less than finishing it", () => {
-    const started = computePhaseScores(planningModule("in_progress")).planning;
-    const done = computePhaseScores(planningModule("done")).planning;
+    const started = computePhaseScores(planningModule("in_progress")).planning ?? 0;
+    const done = computePhaseScores(planningModule("done")).planning ?? 0;
     expect(started).toBe(PARTIAL_ITEM_SCORE);
     expect(done).toBe(1);
     expect(started).toBeLessThan(done);
