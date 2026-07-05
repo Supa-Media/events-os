@@ -22,7 +22,7 @@ function siteUrl(): string {
 
 /** Result of createCheckout: either done (free) or a Stripe redirect. */
 type CheckoutResult =
-  | { kind: "free"; token: string }
+  | { kind: "free"; token: string; needsEmailVerification: boolean }
   | { kind: "stripe"; url: string; token: string };
 
 /**
@@ -49,12 +49,17 @@ export const createCheckout = action({
       items: args.items,
     });
 
-    // Free cart → issue tickets immediately, no Stripe round-trip.
+    // Free cart → issue tickets immediately, no Stripe round-trip. No payment
+    // proves the email, so the client may still prompt for the code.
     if (prepared.totalCents === 0) {
       await ctx.runMutation(internal.ticketing.fulfillOrder, {
         orderId: prepared.orderId,
       });
-      return { kind: "free", token: prepared.guestToken };
+      return {
+        kind: "free",
+        token: prepared.guestToken,
+        needsEmailVerification: prepared.needsEmailVerification,
+      };
     }
 
     const secretKey = process.env.STRIPE_SECRET_KEY;

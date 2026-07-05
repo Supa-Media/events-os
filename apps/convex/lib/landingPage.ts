@@ -44,7 +44,12 @@ type PublicPage = {
     onSale: boolean;
     lowRemaining: number | null;
   }>;
-  viewer: { name: string; email: string; status: string } | null;
+  viewer: {
+    name: string;
+    email: string;
+    status: string;
+    emailVerified: boolean;
+  } | null;
   activityLocked: boolean;
   activity: unknown[] | null;
 };
@@ -203,8 +208,14 @@ ${coverUrl ? `<div class="backdrop" style="background-image:url('${coverUrl}')">
     <button class="x" id="sheetclose">✕</button>
     <h3 id="sheettitle" class="serif">You’re going!</h3>
     <div class="sub" id="sheetsub">Leave your details so the host can keep you posted.</div>
-    <div class="fld"><label for="f_name">Your name</label><input id="f_name" autocomplete="name" placeholder="First and last name"></div>
-    <div class="fld"><label for="f_email">Email</label><input id="f_email" type="email" autocomplete="email" placeholder="you@example.com"></div>
+    <div id="idfields">
+      <div class="fld"><label for="f_name">Your name</label><input id="f_name" autocomplete="name" placeholder="First and last name"></div>
+      <div class="fld"><label for="f_email">Email</label><input id="f_email" type="email" autocomplete="email" placeholder="you@example.com"></div>
+    </div>
+    <div id="codefields" style="display:none">
+      <div class="fld"><label for="f_code">6-digit code</label><input id="f_code" inputmode="numeric" maxlength="6" autocomplete="one-time-code" placeholder="123456"></div>
+      <button id="resendcode" type="button" style="background:none;border:none;padding:4px 0;color:var(--accent);font-size:13px;font-weight:600;cursor:pointer;text-decoration:underline">Resend code</button>
+    </div>
     <button class="sheetbtn" id="sheetgo">Count me in</button>
     <div class="sheeterr" id="sheeterr"></div>
   </div>

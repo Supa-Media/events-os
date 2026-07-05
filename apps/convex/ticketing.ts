@@ -25,6 +25,7 @@ import { internal } from "./_generated/api";
 import { Doc, Id } from "./_generated/dataModel";
 import { normalizeEmail } from "./lib/access";
 import { requireEvent, requireOwned, requireUserId } from "./lib/context";
+import { beginEmailVerification, clearEmailCode } from "./lib/emailCodes";
 import { RSVP_STATUSES } from "./schema/ticketing";
 
 // ── Small helpers ────────────────────────────────────────────────────────────
@@ -68,7 +69,7 @@ function slugify(name: string): string {
 }
 
 /** Load a published page by slug (null if missing or unpublished). */
-async function getPublishedPage(
+export async function getPublishedPage(
   ctx: QueryCtx,
   slug: string,
 ): Promise<Doc<"eventPages"> | null> {
@@ -81,7 +82,7 @@ async function getPublishedPage(
 }
 
 /** Load the viewer's RSVP for this event from their guest token (or null). */
-async function getViewerRsvp(
+export async function getViewerRsvp(
   ctx: QueryCtx,
   eventId: Id<"events">,
   token?: string | null,
@@ -544,7 +545,13 @@ export const getPublicPage = query({
       guests,
       ticketTypes,
       viewer: viewer
-        ? { name: viewer.name, email: viewer.email, status: viewer.status }
+        ? {
+            name: viewer.name,
+            email: viewer.email,
+            status: viewer.status,
+            // Legacy rows (undefined) predate verification — treat as verified.
+            emailVerified: viewer.emailVerified !== false,
+          }
         : null,
       activityLocked,
       activity,
@@ -713,6 +720,7 @@ export const submitRsvp = mutation({
     }
 
     if (rsvp) {
+      const emailChanged = email !== rsvp.email;
       if (rsvp.status !== args.status) {
         await bumpRsvpCounters(ctx, page, rsvp.status, args.status);
       }
@@ -723,11 +731,19 @@ export const submitRsvp = mutation({
         status: args.status,
         updatedAt: now,
       });
-      return { token: rsvp.token, status: args.status };
+      // A changed email must be re-verified; an unchanged one keeps its state.
+      if (emailChanged) {
+        await beginEmailVerification(ctx, { _id: rsvp._id, email });
+      }
+      return {
+        token: rsvp.token,
+        status: args.status,
+        needsEmailVerification: emailChanged || rsvp.emailVerified === false,
+      };
     }
 
     const token = newGuestToken();
-    await ctx.db.insert("rsvps", {
+    const rsvpId = await ctx.db.insert("rsvps", {
       eventId: page.eventId,
       chapterId: page.chapterId,
       name,
@@ -736,10 +752,12 @@ export const submitRsvp = mutation({
       status: args.status,
       token,
       source: "rsvp",
+      emailVerified: false,
       createdAt: now,
       updatedAt: now,
     });
     await bumpRsvpCounters(ctx, page, null, args.status);
+    await beginEmailVerification(ctx, { _id: rsvpId, email });
     if (args.status !== "not_going") {
       await ctx.scheduler.runAfter(0, internal.ticketingEmails.sendRsvpEmail, {
         slug: page.slug,
@@ -748,7 +766,7 @@ export const submitRsvp = mutation({
         status: args.status,
       });
     }
-    return { token, status: args.status };
+    return { token, status: args.status, needsEmailVerification: true };
   },
 });
 
@@ -979,12 +997,15 @@ export const prepareOrder = internalMutation({
     }
     let rsvpId: Id<"rsvps">;
     let guestToken: string;
+    let needsEmailVerification: boolean;
     if (rsvp) {
       rsvpId = rsvp._id;
       guestToken = rsvp.token;
+      needsEmailVerification = rsvp.emailVerified === false;
       await ctx.db.patch(rsvp._id, { name, updatedAt: now });
     } else {
       guestToken = newGuestToken();
+      needsEmailVerification = true;
       rsvpId = await ctx.db.insert("rsvps", {
         eventId: page.eventId,
         chapterId: page.chapterId,
@@ -993,6 +1014,7 @@ export const prepareOrder = internalMutation({
         status: "maybe", // flips to "going" when the order is fulfilled
         token: guestToken,
         source: "ticket",
+        emailVerified: false,
         createdAt: now,
         updatedAt: now,
       });
@@ -1003,6 +1025,11 @@ export const prepareOrder = internalMutation({
       (sum, l) => sum + l.quantity * l.unitPriceCents,
       0,
     );
+    // Free carts fulfill instantly with no Stripe step, so the code email goes
+    // out now. Paid carts wait: a completed Stripe payment verifies the email.
+    if (needsEmailVerification && totalCents === 0) {
+      await beginEmailVerification(ctx, { _id: rsvpId, email });
+    }
     const orderId = await ctx.db.insert("ticketOrders", {
       eventId: page.eventId,
       chapterId: page.chapterId,
@@ -1022,6 +1049,7 @@ export const prepareOrder = internalMutation({
       orderId,
       totalCents,
       guestToken,
+      needsEmailVerification,
       eventName: event?.name ?? "Event",
       lines,
     };
@@ -1117,6 +1145,20 @@ async function fulfill(
           source: "ticket",
           updatedAt: now,
         });
+      }
+      // A completed Stripe payment proves the buyer controls this email —
+      // count it as verified. Free (no-Stripe) claims still need the code.
+      const paidViaStripe =
+        stripePaymentIntentId !== undefined ||
+        order.stripeCheckoutSessionId !== undefined;
+      if (
+        rsvp &&
+        paidViaStripe &&
+        rsvp.email === order.email &&
+        rsvp.emailVerified === false
+      ) {
+        await ctx.db.patch(rsvp._id, { emailVerified: true });
+        await clearEmailCode(ctx, rsvp._id);
       }
     }
   }
