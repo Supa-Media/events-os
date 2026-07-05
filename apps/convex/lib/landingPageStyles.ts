@@ -133,7 +133,9 @@ section{margin-top:36px}
 .picker button{font-size:17px;padding:2px 4px;border-radius:8px;transition:transform .1s}
 .picker button:hover{transform:scale(1.25)}
 /* ── right column ── */
-.flyer{position:sticky;top:24px}
+/* Sticky only on desktop: on mobile the flyer is reordered to the top and a
+   sticky aside pins over the whole page, hiding the event details. */
+@media(min-width:881px){.flyer{position:sticky;top:24px}}
 .coverwrap{background:#fff;padding:10px;border-radius:24px;box-shadow:var(--shadow-pop);
   transform:rotate(-1.2deg);transition:transform .25s}
 .coverwrap:hover{transform:rotate(0deg) scale(1.005)}
