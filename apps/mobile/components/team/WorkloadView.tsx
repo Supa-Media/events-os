@@ -36,6 +36,7 @@ import {
 } from "../ui";
 import { ProjectCard, buildProjectTree, type ProjectDoc } from "./ProjectCard";
 import { CheckInModal } from "./CheckInModal";
+import { AddResponsibilityModal } from "./AddResponsibilityModal";
 import { colors, spacing } from "../../lib/theme";
 import { formatDate } from "../../lib/format";
 import { alertError } from "../../lib/errors";
@@ -70,6 +71,11 @@ export function WorkloadView({
     name: string;
   } | null>(null);
   const [historyOpen, setHistoryOpen] = useState(false);
+  const [addDutyFor, setAddDutyFor] = useState<{
+    _id: Id<"people">;
+    name: string;
+    role: string | null;
+  } | null>(null);
 
   const peopleById = useMemo(() => {
     const map = new Map<Id<"people">, string>();
@@ -335,14 +341,39 @@ export function WorkloadView({
           </View>
         )}
 
-        {/* Their responsibilities (recurring duties) */}
-        {ownResponsibilities.length > 0 ? (
+        {/* Their responsibilities (recurring duties). Managers always get the
+            section — it carries the quick-add — while plain members only see
+            it once something applies (the server rejects their edits anyway). */}
+        {ownResponsibilities.length > 0 || caller.canManage ? (
           <>
             <SectionHeader
               title="Responsibilities"
               count={ownResponsibilities.length}
+              right={
+                caller.canManage ? (
+                  <Button
+                    title="Add duty"
+                    icon="plus"
+                    size="sm"
+                    variant="secondary"
+                    onPress={() =>
+                      setAddDutyFor({
+                        _id: person._id,
+                        name: person.name,
+                        role: person.role,
+                      })
+                    }
+                  />
+                ) : undefined
+              }
             />
-            <ResponsibilityRows items={ownResponsibilities} />
+            {ownResponsibilities.length === 0 ? (
+              <Text className="text-sm text-faint">
+                No recurring duties yet — add one to them or their role.
+              </Text>
+            ) : (
+              <ResponsibilityRows items={ownResponsibilities} />
+            )}
           </>
         ) : null}
 
@@ -404,6 +435,16 @@ export function WorkloadView({
                       ownerPersonId: m._id,
                     }).catch(alertError)
                   }
+                  onAddDuty={
+                    caller.canManage
+                      ? () =>
+                          setAddDutyFor({
+                            _id: m._id,
+                            name: m.name,
+                            role: m.role,
+                          })
+                      : undefined
+                  }
                 />
               ))}
             </View>
@@ -441,6 +482,15 @@ export function WorkloadView({
           onClose={() => setCheckInFor(null)}
         />
       ) : null}
+
+      {addDutyFor ? (
+        <AddResponsibilityModal
+          key={addDutyFor._id}
+          person={addDutyFor}
+          responsibilities={responsibilities ?? []}
+          onClose={() => setAddDutyFor(null)}
+        />
+      ) : null}
     </Screen>
   );
 }
@@ -459,6 +509,7 @@ function TeamMemberBlock({
   onLog,
   onOpen,
   onAddProject,
+  onAddDuty,
 }: {
   member: Member;
   roots: ProjectDoc[];
@@ -472,6 +523,8 @@ function TeamMemberBlock({
   onLog: () => void;
   onOpen: () => void;
   onAddProject: () => void;
+  /** Present only when the caller may edit duty assignments. */
+  onAddDuty?: () => void;
 }) {
   const idle =
     roots.length === 0 &&
@@ -512,6 +565,17 @@ function TeamMemberBlock({
           <Icon name="plus" size={13} color={colors.muted} />
           <Text className="text-xs font-medium text-muted">Project</Text>
         </Pressable>
+        {onAddDuty ? (
+          <Pressable
+            onPress={onAddDuty}
+            hitSlop={6}
+            accessibilityLabel={`Add duty for ${member.name}`}
+            className="flex-row items-center gap-1 rounded p-1 active:bg-sunken web:hover:bg-sunken"
+          >
+            <Icon name="plus" size={13} color={colors.muted} />
+            <Text className="text-xs font-medium text-muted">Duty</Text>
+          </Pressable>
+        ) : null}
       </View>
       {idle ? (
         <Text className="text-sm text-faint">Nothing tracked yet.</Text>
