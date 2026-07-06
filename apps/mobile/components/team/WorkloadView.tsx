@@ -76,6 +76,11 @@ export function WorkloadView({
     name: string;
     role: string | null;
   } | null>(null);
+  // The full-project modal target — stored as an id and resolved live, so
+  // edits made inside the modal (or elsewhere) never render a stale snapshot.
+  const [fullProjectId, setFullProjectId] = useState<Id<"projects"> | null>(
+    null,
+  );
 
   const peopleById = useMemo(() => {
     const map = new Map<Id<"people">, string>();
@@ -93,16 +98,14 @@ export function WorkloadView({
     [projects],
   );
 
-  const memberIds = useMemo(
-    () => new Set((workload?.members ?? []).map((m) => m._id)),
-    [workload],
-  );
-
   /**
    * Each person's top-level cards, grouped once per data change. A project is
-   * a root for its owner UNLESS its nearest owned ancestor belongs to someone
-   * shown on this page — then it already renders nested inside that ancestor's
-   * card, and listing it again would put two live copies on one screen.
+   * a root for its owner UNLESS its nearest owned ancestor belongs to the SAME
+   * person — then it already renders nested inside their own root card, and
+   * listing it again would duplicate it within one section. A sub-project
+   * assigned to someone ELSE always lists under its assignee too (with a
+   * "part of" chip back to the full project), so cross-assigned work never
+   * hides from the person on the hook for it.
    */
   const rootsByOwner = useMemo(() => {
     const nearestAncestorOwner = (p: ProjectDoc): Id<"people"> | undefined => {
@@ -117,13 +120,13 @@ export function WorkloadView({
     for (const p of projects ?? []) {
       if (!p.ownerPersonId) continue;
       const ancestorOwner = nearestAncestorOwner(p);
-      if (ancestorOwner && memberIds.has(ancestorOwner)) continue;
+      if (ancestorOwner && ancestorOwner === p.ownerPersonId) continue;
       const list = map.get(p.ownerPersonId) ?? [];
       list.push(p);
       map.set(p.ownerPersonId, list);
     }
     return map;
-  }, [projects, projectById, memberIds]);
+  }, [projects, projectById]);
 
   /** Everyone's responsibilities (role fan-out + direct), one pass. */
   const respByPerson = useMemo(() => {
@@ -143,6 +146,29 @@ export function WorkloadView({
     return map;
   }, [responsibilities, workload]);
   const respFor = (id: Id<"people">) => respByPerson.get(id) ?? [];
+
+  /**
+   * "Part of {parent}" chip for a sub-project shown standalone under its
+   * assignee: names the immediate parent, opens the TOPMOST ancestor so the
+   * modal shows the whole project. Undefined for true roots (and when the
+   * parent is outside the caller's scope, where there's nothing to open).
+   */
+  const partOfFor = (p: ProjectDoc) => {
+    if (!p.parentProjectId) return undefined;
+    const parent = projectById.get(p.parentProjectId);
+    if (!parent) return undefined;
+    let root = parent;
+    for (let hops = 0; root.parentProjectId && hops < 100; hops++) {
+      const up = projectById.get(root.parentProjectId);
+      if (!up) break;
+      root = up;
+    }
+    const rootId = root._id;
+    return {
+      name: parent.name || "Untitled project",
+      onPress: () => setFullProjectId(rootId),
+    };
+  };
 
   /** Who's accountable for a project — its owner or nearest ancestor's. */
   const effectiveOwnerOf = (p: ProjectDoc): Id<"people"> | undefined => {
@@ -336,6 +362,7 @@ export function WorkloadView({
                 childrenOf={projectTree}
                 peopleById={peopleById}
                 showOwner={showOwner}
+                partOf={partOfFor(p)}
               />
             ))}
           </View>
@@ -425,6 +452,7 @@ export function WorkloadView({
                   projectTree={projectTree}
                   peopleById={peopleById}
                   showOwner={showOwner}
+                  partOfFor={partOfFor}
                   callerPersonId={checkIns?.callerPersonId ?? null}
                   canLog={canLogFor(m._id)}
                   onLog={() => setCheckInFor({ _id: m._id, name: m.name })}
@@ -491,7 +519,78 @@ export function WorkloadView({
           onClose={() => setAddDutyFor(null)}
         />
       ) : null}
+
+      {fullProjectId ? (
+        <FullProjectModal
+          project={projectById.get(fullProjectId) ?? null}
+          childrenOf={projectTree}
+          peopleById={peopleById}
+          showOwner={showOwner}
+          onClose={() => setFullProjectId(null)}
+        />
+      ) : null}
     </Screen>
+  );
+}
+
+/**
+ * The whole project a cross-assigned sub-project belongs to, opened in place
+ * from its "part of" chip — the full tree from the topmost ancestor, live and
+ * editable, without leaving the page you were scanning.
+ */
+function FullProjectModal({
+  project,
+  childrenOf,
+  peopleById,
+  showOwner,
+  onClose,
+}: {
+  project: ProjectDoc | null;
+  childrenOf: Map<Id<"projects">, ProjectDoc[]>;
+  peopleById: Map<Id<"people">, string>;
+  showOwner: boolean;
+  onClose: () => void;
+}) {
+  return (
+    <Modal visible transparent animationType="fade" onRequestClose={onClose}>
+      <Pressable
+        onPress={onClose}
+        className="flex-1 items-center justify-center bg-ink/30 p-6"
+      >
+        <Pressable
+          onPress={() => {}}
+          className="max-h-full w-full max-w-xl overflow-hidden rounded-xl border border-border bg-raised shadow-pop"
+        >
+          <View className="flex-row items-center justify-between border-b border-border px-5 py-4">
+            <Text className="font-display text-lg text-ink" numberOfLines={1}>
+              {project?.name || "Full project"}
+            </Text>
+            <Pressable onPress={onClose} hitSlop={8} className="rounded-md p-1">
+              <Icon name="x" size={18} color={colors.muted} />
+            </Pressable>
+          </View>
+          <ScrollView
+            style={{ maxHeight: 560 }}
+            contentContainerStyle={{ padding: spacing.lg }}
+          >
+            {project ? (
+              <ProjectCard
+                key={project._id}
+                project={project}
+                childrenOf={childrenOf}
+                peopleById={peopleById}
+                showOwner={showOwner}
+                defaultExpanded
+              />
+            ) : (
+              <Text className="text-sm text-faint">
+                This project is gone — it may have just been deleted.
+              </Text>
+            )}
+          </ScrollView>
+        </Pressable>
+      </Pressable>
+    </Modal>
   );
 }
 
@@ -504,6 +603,7 @@ function TeamMemberBlock({
   projectTree,
   peopleById,
   showOwner,
+  partOfFor,
   callerPersonId,
   canLog,
   onLog,
@@ -518,6 +618,10 @@ function TeamMemberBlock({
   projectTree: Map<Id<"projects">, ProjectDoc[]>;
   peopleById: Map<Id<"people">, string>;
   showOwner: boolean;
+  /** "Part of {parent}" chip data for cross-assigned sub-project roots. */
+  partOfFor: (
+    p: ProjectDoc,
+  ) => { name: string; onPress: () => void } | undefined;
   callerPersonId: Id<"people"> | null;
   canLog: boolean;
   onLog: () => void;
@@ -588,6 +692,7 @@ function TeamMemberBlock({
               childrenOf={projectTree}
               peopleById={peopleById}
               showOwner={showOwner}
+              partOf={partOfFor(p)}
             />
           ))}
           {responsibilities.length > 0 ? (
