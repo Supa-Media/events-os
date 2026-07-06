@@ -128,6 +128,7 @@ function confirmRemove(name: string): boolean {
 /** PEOPLE roster — a spreadsheet-style editable grid with per-person history. */
 export default function PeopleScreen() {
   const people = useQuery(api.people.list) as Person[] | undefined;
+  const org = useQuery(api.org.overview);
   const create = useMutation(api.people.create);
 
   const [search, setSearch] = useState("");
@@ -276,6 +277,7 @@ export default function PeopleScreen() {
                       ? people.find((m) => m._id === p.managerId)?.name ?? null
                       : null
                   }
+                  canEditManager={org?.isAdmin === true}
                   isLast={i === filtered.length - 1}
                   onOpen={() => setOpenId(p._id)}
                 />
@@ -314,11 +316,14 @@ export default function PeopleScreen() {
 function PersonRow({
   person,
   managerName,
+  canEditManager,
   isLast,
   onOpen,
 }: {
   person: Person;
   managerName: string | null;
+  /** Rewiring the org tree is admin-only (enforced server-side too). */
+  canEditManager: boolean;
   isLast: boolean;
   onOpen: () => void;
 }) {
@@ -483,45 +488,51 @@ function PersonRow({
         </Pressable>
       </Cell>
 
-      {/* Manager (roster person this one reports to — powers the Team view) */}
+      {/* Manager (roster person this one reports to — powers the Team view).
+          Read-only unless the caller is a chapter admin. */}
       <Cell width={COLS.manager}>
         <Pressable
-          onPress={() => setManagerPickerOpen(true)}
-          className="flex-1 flex-row items-center px-2 py-1.5 active:opacity-70 web:hover:opacity-90"
+          onPress={canEditManager ? () => setManagerPickerOpen(true) : undefined}
+          disabled={!canEditManager}
+          className={`flex-1 flex-row items-center px-2 py-1.5 ${
+            canEditManager ? "active:opacity-70 web:hover:opacity-90" : ""
+          }`}
         >
           {managerName ? (
             <Text className="text-sm text-ink" numberOfLines={1}>
               {managerName}
             </Text>
           ) : (
-            <Text className="text-sm text-faint">—</Text>
+            <Text className="text-sm text-faint">{canEditManager ? "—" : ""}</Text>
           )}
         </Pressable>
-        <PersonPicker
-          visible={managerPickerOpen}
-          title="Set manager"
-          selectedId={person.managerId ?? null}
-          source="team"
-          filter={(p) => p._id !== person._id}
-          onPick={async (managerId) => {
-            setManagerPickerOpen(false);
-            try {
-              await update({ personId: id, managerId: managerId as Id<"people"> });
-            } catch {
-              // Backend rejects manager cycles; tell the user why nothing changed.
-              if (Platform.OS === "web" && typeof window !== "undefined") {
-                window.alert(
-                  "Can't set that manager — it would create a reporting loop.",
-                );
+        {canEditManager ? (
+          <PersonPicker
+            visible={managerPickerOpen}
+            title="Set manager"
+            selectedId={person.managerId ?? null}
+            source="team"
+            filter={(p) => p._id !== person._id}
+            onPick={async (managerId) => {
+              setManagerPickerOpen(false);
+              try {
+                await update({ personId: id, managerId: managerId as Id<"people"> });
+              } catch {
+                // Backend rejects manager cycles; tell the user why nothing changed.
+                if (Platform.OS === "web" && typeof window !== "undefined") {
+                  window.alert(
+                    "Can't set that manager — it would create a reporting loop.",
+                  );
+                }
               }
-            }
-          }}
-          onClear={() => {
-            update({ personId: id, managerId: null });
-            setManagerPickerOpen(false);
-          }}
-          onClose={() => setManagerPickerOpen(false)}
-        />
+            }}
+            onClear={() => {
+              update({ personId: id, managerId: null });
+              setManagerPickerOpen(false);
+            }}
+            onClose={() => setManagerPickerOpen(false)}
+          />
+        ) : null}
       </Cell>
 
       {/* POC (free-text point of contact) */}

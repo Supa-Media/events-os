@@ -21,6 +21,16 @@ const NAV: NavEntry[] = [
 ];
 
 /**
+ * The nav entries the caller may see. Team is managers/admins only — the
+ * server decides (org.overview.canManage: admin, or has direct reports); this
+ * just hides the entry. The route itself is also gated server-side.
+ */
+function useNav(): NavEntry[] {
+  const org = useQuery(api.org.overview);
+  return NAV.filter((n) => n.path !== "/team" || org?.canManage === true);
+}
+
+/**
  * True when the current pathname maps to this nav entry. Matches on whole path
  * segments so `/people` activates for `/people` and `/people/123` but NOT for a
  * sibling like `/peopleX` (a plain `startsWith` prefix would over-match).
@@ -68,6 +78,7 @@ export function AppShell({ children }: { children: ReactNode }) {
 function Sidebar({ onCollapse }: { onCollapse: () => void }) {
   const router = useRouter();
   const pathname = usePathname();
+  const nav = useNav();
   const [collapseHovered, setCollapseHovered] = useState(false);
   return (
     <View className="w-60 border-r border-border bg-raised">
@@ -100,7 +111,7 @@ function Sidebar({ onCollapse }: { onCollapse: () => void }) {
 
           {/* Nav */}
           <View className="gap-0.5">
-            {NAV.map((n) => (
+            {nav.map((n) => (
               <SidebarNavItem
                 key={n.path}
                 label={n.label}
@@ -220,10 +231,11 @@ function MobileTopBar() {
 function BottomNav() {
   const router = useRouter();
   const pathname = usePathname();
+  const nav = useNav();
   return (
     <SafeAreaView edges={["bottom"]} className="border-t border-border bg-raised">
       <View className="flex-row">
-        {NAV.map((n) => {
+        {nav.map((n) => {
           const active = isActive(pathname, n.path);
           return (
             <Pressable

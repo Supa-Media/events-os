@@ -7,15 +7,18 @@
  * how many people and projects sit under it; tapping a person drills into
  * their workload page (their projects + everything their subtree owns).
  *
- * Projects with no owner surface at the bottom so orphaned work (e.g. after a
- * person is removed) never silently disappears.
+ * Who sees what is decided SERVER-SIDE by `org.overview`: chapter admins get
+ * the whole roster (plus the Unassigned-projects triage section), managers get
+ * exactly their own subtree, and everyone else gets nothing (the nav entry is
+ * hidden for them too). `projects.list` is scoped the same way.
  */
 import { useMemo, useState } from "react";
 import { View, Text, Pressable } from "react-native";
 import { useRouter } from "expo-router";
 import { useQuery, useMutation } from "convex/react";
+import type { FunctionReturnType } from "convex/server";
 import { api } from "@events-os/convex/_generated/api";
-import type { Doc, Id } from "@events-os/convex/_generated/dataModel";
+import type { Id } from "@events-os/convex/_generated/dataModel";
 import {
   Screen,
   Narrow,
@@ -31,27 +34,26 @@ import {
 } from "../../../components/team/ProjectCard";
 import { colors, spacing } from "../../../lib/theme";
 
-type Person = Doc<"people"> & { imageUrl?: string | null };
+type Overview = FunctionReturnType<typeof api.org.overview>;
+type Person = Overview["people"][number];
 
 export default function TeamScreen() {
   const router = useRouter();
-  const people = useQuery(api.people.list) as Person[] | undefined;
+  const overview = useQuery(api.org.overview);
   const projects = useQuery(api.projects.list);
   const createProject = useMutation(api.projects.create);
 
   // The org chart covers team members plus anyone wired into a manager
   // relationship (so a report who isn't flagged Team yet still shows up).
+  // `overview.people` is already scoped server-side (chapter for admins,
+  // the caller's subtree for managers).
   const org = useMemo(() => {
-    const roster = people ?? [];
+    const roster = overview?.people ?? [];
     const managerIds = new Set(
       roster.map((p) => p.managerId).filter((id): id is Id<"people"> => !!id),
     );
     const included = roster.filter(
-      (p) =>
-        p.isTeamMember === true ||
-        p.userId != null ||
-        p.managerId != null ||
-        managerIds.has(p._id),
+      (p) => p.isTeamMember || p.managerId != null || managerIds.has(p._id),
     );
     const includedIds = new Set(included.map((p) => p._id));
     const childrenOf = new Map<Id<"people">, Person[]>();
@@ -92,7 +94,7 @@ export default function TeamScreen() {
       );
     }
     return { included, childrenOf, roots, teamSize };
-  }, [people]);
+  }, [overview]);
 
   // Project rollups: how many (non-done) projects each person's subtree owns.
   const projectCount = useMemo(() => {
@@ -117,8 +119,8 @@ export default function TeamScreen() {
   }, [projects, org]);
 
   const peopleById = useMemo(
-    () => new Map((people ?? []).map((p) => [p._id, p.name])),
-    [people],
+    () => new Map((overview?.people ?? []).map((p) => [p._id, p.name])),
+    [overview],
   );
   const unassigned = useMemo(
     () =>
@@ -130,8 +132,21 @@ export default function TeamScreen() {
     [projects],
   );
 
-  if (people === undefined || projects === undefined) {
+  if (overview === undefined || projects === undefined) {
     return <Screen loading />;
+  }
+
+  if (!overview.canManage) {
+    return (
+      <Screen>
+        <Narrow>
+          <EmptyState
+            title="Nothing to manage yet"
+            message="This view unlocks when people report to you — ask a chapter admin to set the Manager column in the People tab."
+          />
+        </Narrow>
+      </Screen>
+    );
   }
 
   const hasHierarchy = org.childrenOf.size > 0;
@@ -160,7 +175,7 @@ export default function TeamScreen() {
           />
         ) : (
           <>
-            {!hasHierarchy ? (
+            {!hasHierarchy && overview.isAdmin ? (
               <Text className="mb-4 text-sm text-muted">
                 Set the Manager column in the People tab to nest reports under
                 their manager — tap anyone to see their projects.
@@ -181,8 +196,8 @@ export default function TeamScreen() {
           </>
         )}
 
-        {/* Orphaned work stays visible until someone re-owns it. */}
-        {unassigned.length > 0 ? (
+        {/* Org-level triage (admins only): work nobody owns yet. */}
+        {overview.isAdmin && unassigned.length > 0 ? (
           <>
             <SectionHeader
               title="Unassigned projects"
@@ -209,7 +224,7 @@ export default function TeamScreen() {
               ))}
             </View>
           </>
-        ) : org.included.length > 0 ? (
+        ) : overview.isAdmin && org.included.length > 0 ? (
           <View className="mt-4 flex-row justify-end">
             <Button
               title="New project"

@@ -10,6 +10,30 @@ import { api } from "../_generated/api";
 import type { Id } from "../_generated/dataModel";
 import { newT, run, setupChapter, type ChapterSetup } from "./setup.helpers";
 
+/**
+ * Add another signed-in user to the chapter (default role "member" — NOT an
+ * admin) and optionally link them to a roster person, returning their client.
+ */
+async function addUser(
+  s: ChapterSetup,
+  email: string,
+  opts: { role?: string; personId?: Id<"people"> } = {},
+) {
+  const userId = await run(s.t, async (ctx) => {
+    const userId = await ctx.db.insert("users", { email });
+    await ctx.db.insert("userChapters", {
+      userId,
+      chapterId: s.chapterId,
+      role: opts.role ?? "member",
+      isActive: true,
+      joinedAt: Date.now(),
+    });
+    if (opts.personId) await ctx.db.patch(opts.personId, { userId });
+    return userId;
+  });
+  return s.t.withIdentity({ subject: `${userId}|session`, issuer: "test" });
+}
+
 /** Seed a 3-deep chain: alice ← bob ← cara (cara reports to bob, etc.). */
 async function seedChain(s: ChapterSetup) {
   const alice = (await s.as.mutation(api.people.create, {
@@ -203,6 +227,32 @@ describe("org.workload", () => {
     expect(bobView!.members.map((m) => m.name).sort()).toEqual(["Bob", "Cara"]);
   });
 
+  test("is scoped to the caller's subtree (admins see anyone)", async () => {
+    const s = await setupChapter(newT());
+    const { alice, bob, cara } = await seedChain(s);
+    const asBob = await addUser(s, "bob@publicworship.life", { personId: bob });
+    const asCara = await addUser(s, "cara@publicworship.life", {
+      personId: cara,
+    });
+
+    // Bob (manager, not admin): his subtree yes, his own manager no.
+    expect(
+      await asBob.query(api.org.workload, { personId: cara }),
+    ).not.toBeNull();
+    expect(await asBob.query(api.org.workload, { personId: alice })).toBeNull();
+
+    // Cara (no reports): herself only.
+    expect(
+      await asCara.query(api.org.workload, { personId: cara }),
+    ).not.toBeNull();
+    expect(await asCara.query(api.org.workload, { personId: bob })).toBeNull();
+
+    // The admin session sees anyone.
+    expect(
+      await s.as.query(api.org.workload, { personId: alice }),
+    ).not.toBeNull();
+  });
+
   test("returns null for people outside the caller's chapter", async () => {
     const t = newT();
     const s1 = await setupChapter(t);
@@ -218,5 +268,127 @@ describe("org.workload", () => {
       personId: outsider,
     });
     expect(workload).toBeNull();
+  });
+});
+
+describe("access control", () => {
+  test("only admins may rewire the manager tree", async () => {
+    const s = await setupChapter(newT());
+    const { alice, bob, cara } = await seedChain(s);
+    const asBob = await addUser(s, "bob@publicworship.life", { personId: bob });
+
+    await expect(
+      asBob.mutation(api.people.update, { personId: cara, managerId: alice }),
+    ).rejects.toThrow(ConvexError);
+    await expect(
+      asBob.mutation(api.people.update, { personId: cara, managerId: null }),
+    ).rejects.toThrow(ConvexError);
+    await expect(
+      asBob.mutation(api.people.create, { name: "New hire", managerId: bob }),
+    ).rejects.toThrow(ConvexError);
+
+    // Non-manager fields stay editable by everyone.
+    await asBob.mutation(api.people.update, { personId: cara, role: "Designer" });
+    const caraDoc = await asBob.query(api.people.get, { personId: cara });
+    expect(caraDoc.role).toBe("Designer");
+    expect(caraDoc.managerId).toBe(bob);
+  });
+
+  test("overview: admins see the chapter, managers their subtree, others nothing", async () => {
+    const s = await setupChapter(newT());
+    const { bob, cara } = await seedChain(s);
+    const asBob = await addUser(s, "bob@publicworship.life", { personId: bob });
+    const asCara = await addUser(s, "cara@publicworship.life", {
+      personId: cara,
+    });
+
+    const adminView = await s.as.query(api.org.overview);
+    expect(adminView.isAdmin).toBe(true);
+    expect(adminView.canManage).toBe(true);
+    expect(adminView.people).toHaveLength(3);
+
+    const bobView = await asBob.query(api.org.overview);
+    expect(bobView.isAdmin).toBe(false);
+    expect(bobView.canManage).toBe(true);
+    expect(bobView.selfPersonId).toBe(bob);
+    expect(bobView.people.map((p) => p.name).sort()).toEqual(["Bob", "Cara"]);
+
+    const caraView = await asCara.query(api.org.overview);
+    expect(caraView.isAdmin).toBe(false);
+    expect(caraView.canManage).toBe(false);
+    expect(caraView.people).toHaveLength(0);
+  });
+
+  test("projects: visibility and mutations follow the subtree", async () => {
+    const s = await setupChapter(newT());
+    const { alice, bob, cara } = await seedChain(s);
+    const asBob = await addUser(s, "bob@publicworship.life", { personId: bob });
+    const asCara = await addUser(s, "cara@publicworship.life", {
+      personId: cara,
+    });
+
+    const pAlice = (await s.as.mutation(api.projects.create, {
+      name: "Alice's project",
+      ownerPersonId: alice,
+    })) as Id<"projects">;
+    const pBob = (await s.as.mutation(api.projects.create, {
+      name: "Bob's project",
+      ownerPersonId: bob,
+    })) as Id<"projects">;
+    await s.as.mutation(api.projects.create, {
+      name: "Cara's project",
+      ownerPersonId: cara,
+    });
+    await s.as.mutation(api.projects.create, { name: "Unowned" });
+    // An unowned sub-project inherits Bob's scope through its parent.
+    const pSub = (await s.as.mutation(api.projects.create, {
+      name: "Bob's sub",
+      parentProjectId: pBob,
+    })) as Id<"projects">;
+
+    const names = async (client: typeof asBob) =>
+      (await client.query(api.projects.list)).map((p) => p.name).sort();
+    expect(await names(s.as as never)).toHaveLength(5); // admin: everything
+    expect(await names(asBob)).toEqual([
+      "Bob's project",
+      "Bob's sub",
+      "Cara's project",
+    ]);
+    expect(await names(asCara)).toEqual(["Cara's project"]);
+
+    // Bob manages his subtree's work (incl. the unowned sub under his project)…
+    await asBob.mutation(api.projects.update, {
+      projectId: pSub,
+      statusNote: "On track",
+    });
+    // …but not work outside it, and he can't hand work out of his subtree.
+    await expect(
+      asBob.mutation(api.projects.update, {
+        projectId: pAlice,
+        statusNote: "Nope",
+      }),
+    ).rejects.toThrow(ConvexError);
+    await expect(
+      asBob.mutation(api.projects.create, {
+        name: "For Alice",
+        ownerPersonId: alice,
+      }),
+    ).rejects.toThrow(ConvexError);
+    await expect(
+      asBob.mutation(api.projects.update, {
+        projectId: pBob,
+        ownerPersonId: alice,
+      }),
+    ).rejects.toThrow(ConvexError);
+    await expect(
+      asBob.mutation(api.projects.remove, { projectId: pAlice }),
+    ).rejects.toThrow(ConvexError);
+
+    // Cara (no reports) still manages her own work.
+    const caraProjects = await asCara.query(api.projects.list);
+    await asCara.mutation(api.projects.update, {
+      projectId: caraProjects[0]._id,
+      status: "in_progress",
+    });
   });
 });

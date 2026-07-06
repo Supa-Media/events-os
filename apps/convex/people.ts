@@ -13,6 +13,7 @@ import {
   requireOwned,
   getChapterIdOrNull,
 } from "./lib/context";
+import { isChapterAdmin } from "./lib/org";
 
 const vettingStatus = v.union(
   v.literal("unvetted"),
@@ -29,6 +30,16 @@ const rosterStatus = v.union(
 );
 
 const gender = v.union(v.literal("male"), v.literal("female"), v.literal("na"));
+
+/** Assert the caller may rewire the org tree (admins only). */
+async function requireCanSetManager(ctx: QueryCtx): Promise<void> {
+  if (!(await isChapterAdmin(ctx))) {
+    throw new ConvexError({
+      code: "FORBIDDEN",
+      message: "Only chapter admins can change who reports to whom.",
+    });
+  }
+}
 
 /**
  * Assert that making `managerId` the manager of `personId` keeps the org tree
@@ -136,6 +147,7 @@ export const create = mutation({
     const chapterId = await requireChapterId(ctx);
     await requireUserId(ctx);
     if (args.managerId) {
+      await requireCanSetManager(ctx);
       await requireOwned(ctx, "people", args.managerId, "Manager");
     }
     const status = args.status ?? "active";
@@ -192,6 +204,10 @@ export const update = mutation({
   },
   handler: async (ctx, { personId, ...patch }) => {
     await requireOwned(ctx, "people", personId, "Person");
+    if (patch.managerId !== undefined) {
+      // Setting AND clearing a manager both reshape the org tree — admin only.
+      await requireCanSetManager(ctx);
+    }
     if (patch.managerId != null) {
       await requireOwned(ctx, "people", patch.managerId, "Manager");
       await assertNoManagerCycle(ctx, personId, patch.managerId);

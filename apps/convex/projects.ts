@@ -16,8 +16,48 @@ import {
   requireOwned,
   getChapterIdOrNull,
 } from "./lib/context";
+import { manageablePersonIds } from "./lib/org";
 
 const projectStatus = v.union(...PROJECT_STATUSES.map((s) => v.literal(s)));
+
+/**
+ * The person accountable for a project: its owner, or the nearest ancestor's
+ * owner (unowned sub-projects inherit their parent's scope). Undefined when
+ * the whole chain is unowned — such projects are admin territory.
+ */
+async function effectiveOwnerId(
+  ctx: QueryCtx,
+  project: { ownerPersonId?: Id<"people">; parentProjectId?: Id<"projects"> },
+): Promise<Id<"people"> | undefined> {
+  let cur = project;
+  for (let hops = 0; hops < 100; hops++) {
+    if (cur.ownerPersonId) return cur.ownerPersonId;
+    if (!cur.parentProjectId) return undefined;
+    const parent: Doc<"projects"> | null = await ctx.db.get(cur.parentProjectId);
+    if (!parent) return undefined;
+    cur = parent;
+  }
+  return undefined;
+}
+
+/**
+ * Assert the caller may manage work accountable to `ownerPersonId`: admins
+ * always; everyone else only within their own manager subtree (which includes
+ * themselves). Unowned work (undefined) is admin-only.
+ */
+async function requireProjectScope(
+  ctx: QueryCtx,
+  chapterId: Id<"chapters">,
+  ownerPersonId: Id<"people"> | undefined,
+): Promise<void> {
+  const manageable = await manageablePersonIds(ctx, chapterId);
+  if (manageable === null) return; // admin — no restriction
+  if (ownerPersonId && manageable.has(ownerPersonId)) return;
+  throw new ConvexError({
+    code: "FORBIDDEN",
+    message: "You can only manage projects for people on your team.",
+  });
+}
 
 /**
  * Assert that parenting `projectId` under `parentId` keeps the project tree
@@ -43,21 +83,38 @@ async function assertNoParentCycle(
 }
 
 /**
- * All the chapter's projects, oldest first. The frontend assembles the nesting
- * (parent → children) and per-owner grouping itself so one reactive query
- * serves both the Team overview and the per-person workload page.
+ * The projects the caller may see, oldest first: the whole chapter for
+ * admins, otherwise only projects whose effective owner sits in the caller's
+ * manager subtree. The frontend assembles the nesting (parent → children) and
+ * per-owner grouping itself so one reactive query serves both the Team
+ * overview and the per-person workload page.
  */
 export const list = query({
   args: {},
   handler: async (ctx) => {
     const chapterId = await getChapterIdOrNull(ctx);
     if (!chapterId) return [];
-    return await ctx.db
+    const all = await ctx.db
       .query("projects")
       .withIndex("by_chapter", (q) =>
         q.eq("chapterId", chapterId as Id<"chapters">),
       )
       .collect();
+    const manageable = await manageablePersonIds(
+      ctx,
+      chapterId as Id<"chapters">,
+    );
+    if (manageable === null) return all; // admin — no restriction
+    // Effective-owner walk done in memory — `all` already holds every ancestor.
+    const byId = new Map(all.map((p) => [p._id, p]));
+    return all.filter((p) => {
+      let cur: Doc<"projects"> | undefined = p;
+      for (let hops = 0; cur && hops < 100; hops++) {
+        if (cur.ownerPersonId) return manageable.has(cur.ownerPersonId);
+        cur = cur.parentProjectId ? byId.get(cur.parentProjectId) : undefined;
+      }
+      return false; // fully unowned chain — admin territory
+    });
   },
 });
 
@@ -83,12 +140,18 @@ export const create = mutation({
     if (args.ownerPersonId) {
       await requireOwned(ctx, "people", args.ownerPersonId, "Owner");
     }
+    let parent: Doc<"projects"> | undefined;
     if (args.parentProjectId) {
-      await requireOwned(ctx, "projects", args.parentProjectId, "Parent project");
+      parent = await requireOwned(ctx, "projects", args.parentProjectId, "Parent project");
     }
     if (args.eventId) {
       await requireOwned(ctx, "events", args.eventId, "Event");
     }
+    await requireProjectScope(
+      ctx,
+      chapterId as Id<"chapters">,
+      args.ownerPersonId ?? (parent ? await effectiveOwnerId(ctx, parent) : undefined),
+    );
     const now = Date.now();
     return await ctx.db.insert("projects", {
       chapterId: chapterId as Id<"chapters">,
@@ -129,9 +192,16 @@ export const update = mutation({
     nextSteps: v.optional(v.union(v.string(), v.null())),
   },
   handler: async (ctx, { projectId, ...patch }) => {
-    await requireOwned(ctx, "projects", projectId, "Project");
+    const project = await requireOwned(ctx, "projects", projectId, "Project");
+    await requireProjectScope(
+      ctx,
+      project.chapterId,
+      await effectiveOwnerId(ctx, project),
+    );
     if (patch.ownerPersonId != null) {
       await requireOwned(ctx, "people", patch.ownerPersonId, "Owner");
+      // Non-admins may only hand work to people still inside their subtree.
+      await requireProjectScope(ctx, project.chapterId, patch.ownerPersonId);
     }
     if (patch.parentProjectId != null) {
       await requireOwned(ctx, "projects", patch.parentProjectId, "Parent project");
@@ -159,6 +229,11 @@ export const remove = mutation({
   args: { projectId: v.id("projects") },
   handler: async (ctx, { projectId }) => {
     const project = await requireOwned(ctx, "projects", projectId, "Project");
+    await requireProjectScope(
+      ctx,
+      project.chapterId,
+      await effectiveOwnerId(ctx, project),
+    );
     const children = await ctx.db
       .query("projects")
       .withIndex("by_parent", (q) => q.eq("parentProjectId", projectId))
