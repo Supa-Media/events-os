@@ -17,17 +17,23 @@ const NAV: NavEntry[] = [
   { label: "Templates", icon: "grid", path: "/templates" },
   { label: "People", icon: "users", path: "/people" },
   { label: "Team", icon: "git-branch", path: "/team" },
+  { label: "Duties", icon: "check-square", path: "/responsibilities" },
   { label: "Songs", icon: "music", path: "/song-library" },
 ];
 
 /**
- * The nav entries the caller may see. Team is managers/admins only — the
- * server decides (org.nav.canManage: admin, or has direct reports); this
- * just hides the entry. The route itself is also gated server-side.
+ * The nav entries the caller may see. Team shows for managers/admins (the
+ * org view) and for anyone with a linked roster row (their own work view) —
+ * the server decides via org.nav; the route itself is also gated server-side.
  */
 function useNav(): NavEntry[] {
   const org = useQuery(api.org.nav);
-  return NAV.filter((n) => n.path !== "/team" || org?.canManage === true);
+  return NAV.filter(
+    (n) =>
+      n.path !== "/team" ||
+      org?.canManage === true ||
+      org?.selfPersonId != null,
+  );
 }
 
 /**

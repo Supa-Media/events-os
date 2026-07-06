@@ -1069,6 +1069,88 @@ export const PROJECT_STATUS_LABELS: Record<ProjectStatus, string> = {
   done: "Done",
 };
 
+// ── Responsibilities (ongoing duties) ────────────────────────────────────────
+// A responsibility is recurring org work ("Meet with directs", "Create event
+// flyers") assigned to a ROLE (so one row fans out to everyone holding it) or
+// to specific people when no role fits. Cadence is how often it recurs.
+export const RESPONSIBILITY_CADENCES = [
+  "daily",
+  "weekly",
+  "biweekly",
+  "monthly",
+  "quarterly",
+  "yearly",
+  "ad_hoc",
+] as const;
+export type ResponsibilityCadence = (typeof RESPONSIBILITY_CADENCES)[number];
+
+export const RESPONSIBILITY_CADENCE_LABELS: Record<
+  ResponsibilityCadence,
+  string
+> = {
+  daily: "Daily",
+  weekly: "Weekly",
+  biweekly: "Bi-weekly",
+  monthly: "Monthly",
+  quarterly: "Quarterly",
+  yearly: "Yearly",
+  ad_hoc: "Ad hoc",
+};
+
+/** Normalize a role/job title for matching responsibilities to people. */
+export function normalizeRole(role?: string | null): string {
+  return (role ?? "").trim().toLowerCase();
+}
+
+/**
+ * Does a responsibility row fan out to this person? True when their role
+ * matches one of the assignee roles (case-insensitively) or they're assigned
+ * directly. The single matching rule shared by every surface that expands
+ * definitions into per-person responsibilities.
+ */
+export function responsibilityAppliesTo(
+  r: {
+    assigneeRoles?: readonly string[] | null;
+    assigneePersonIds?: readonly string[] | null;
+  },
+  person: { _id: string; role?: string | null },
+): boolean {
+  const role = normalizeRole(person.role);
+  if (role && (r.assigneeRoles ?? []).some((x) => normalizeRole(x) === role)) {
+    return true;
+  }
+  return (r.assigneePersonIds ?? []).includes(person._id);
+}
+
+// ── 1:1 check-ins ────────────────────────────────────────────────────────────
+// A manager's log of a 1:1 with a direct report (or a skipped one): whether
+// each responsibility is being fulfilled (and the course of action when not),
+// prayer/personal updates the reporting chain should know, and how the report
+// feels about workload and the work itself (1-10 + notes).
+export const CHECKIN_TYPES = ["checkin", "skip"] as const;
+export type CheckInType = (typeof CHECKIN_TYPES)[number];
+
+export const CHECKIN_ACTIONS = [
+  "warning",
+  "reduce_responsibilities",
+  "transfer_responsibility",
+  "manager_took_over",
+  "reassigned",
+  "remove_from_team",
+  "other",
+] as const;
+export type CheckInAction = (typeof CHECKIN_ACTIONS)[number];
+
+export const CHECKIN_ACTION_LABELS: Record<CheckInAction, string> = {
+  warning: "Give a warning",
+  reduce_responsibilities: "Reduce responsibilities",
+  transfer_responsibility: "Transfer responsibility",
+  manager_took_over: "Manager takes it on",
+  reassigned: "Give to someone else",
+  remove_from_team: "Remove from team",
+  other: "Other",
+};
+
 // ── Songs / worship setlists ─────────────────────────────────────────────────
 // The Songs module: a chapter-wide song LIBRARY (title, author, lyrics, tags),
 // a per-event ordered SETLIST, and public, anonymous song REQUESTS submitted

@@ -14,6 +14,7 @@ import {
 } from "./schema/events";
 import { people, engagements, templatePeople } from "./schema/people";
 import { projects } from "./schema/projects";
+import { responsibilities, checkIns } from "./schema/responsibilities";
 import { songs, setlistEntries, songRequests } from "./schema/songs";
 import {
   eventPages,
@@ -101,6 +102,10 @@ const schema = defineSchema({
 
   // Projects (nestable units of work, owned by people, optionally event-backed).
   projects,
+
+  // Responsibilities (recurring duties, fanned out by role) + 1:1 check-ins.
+  responsibilities,
+  checkIns,
 
   // Songs (chapter library) + per-event setlists + public song requests.
   songs,
