@@ -26,9 +26,11 @@ import {
   GridHeaderCell,
   SelectCell,
   type SelectOption,
+  PersonPicker,
 } from "../../../components/ui";
 import { colors, spacing } from "../../../lib/theme";
 import { formatDate } from "../../../lib/format";
+import { alertError } from "../../../lib/errors";
 import type { Doc, Id } from "@events-os/convex/_generated/dataModel";
 import {
   type VettingStatus,
@@ -83,6 +85,7 @@ const COLS = {
   rate: 100,
   vetting: 120,
   team: 90,
+  manager: 170,
   poc: 150,
   projects: 190,
   comms: 160,
@@ -126,12 +129,19 @@ function confirmRemove(name: string): boolean {
 /** PEOPLE roster — a spreadsheet-style editable grid with per-person history. */
 export default function PeopleScreen() {
   const people = useQuery(api.people.list) as Person[] | undefined;
+  const org = useQuery(api.org.nav);
   const create = useMutation(api.people.create);
 
   const [search, setSearch] = useState("");
   const [skillFilter, setSkillFilter] = useState<string | null>(null);
   const [persona, setPersona] = useState<PersonaFilter>("all");
   const [openId, setOpenId] = useState<string | null>(null);
+
+  // Manager names by id — one map instead of a per-row roster scan.
+  const nameById = useMemo(
+    () => new Map((people ?? []).map((p) => [p._id, p.name])),
+    [people],
+  );
 
   // Distinct skills across the roster, for the filter bar.
   const allSkills = useMemo(() => {
@@ -241,6 +251,7 @@ export default function PeopleScreen() {
               <GridHeaderCell label="Usual rate" width={COLS.rate} />
               <GridHeaderCell label="Vetting" width={COLS.vetting} />
               <GridHeaderCell label="Team" width={COLS.team} />
+              <GridHeaderCell label="Manager" width={COLS.manager} />
               <GridHeaderCell label="POC" width={COLS.poc} />
               <GridHeaderCell label="Projects" width={COLS.projects} />
               <GridHeaderCell label="Comms" width={COLS.comms} />
@@ -268,6 +279,10 @@ export default function PeopleScreen() {
                 <PersonRow
                   key={p._id}
                   person={p}
+                  managerName={
+                    p.managerId ? nameById.get(p.managerId) ?? null : null
+                  }
+                  canEditManager={org?.isAdmin === true}
                   isLast={i === filtered.length - 1}
                   onOpen={() => setOpenId(p._id)}
                 />
@@ -305,16 +320,22 @@ export default function PeopleScreen() {
 /** A single roster row of fixed-width inline-editable cells + a delete gutter. */
 function PersonRow({
   person,
+  managerName,
+  canEditManager,
   isLast,
   onOpen,
 }: {
   person: Person;
+  managerName: string | null;
+  /** Rewiring the org tree is admin-only (enforced server-side too). */
+  canEditManager: boolean;
   isLast: boolean;
   onOpen: () => void;
 }) {
   const update = useMutation(api.people.update);
   const remove = useMutation(api.people.remove);
   const generateUploadUrl = useMutation(api.storage.generateUploadUrl);
+  const [managerPickerOpen, setManagerPickerOpen] = useState(false);
   const id = person._id as Id<"people">;
 
   const vetting = (person.vettingStatus ?? "unvetted") as VettingStatus;
@@ -470,6 +491,49 @@ function PersonRow({
             <Text className="text-sm text-faint">—</Text>
           )}
         </Pressable>
+      </Cell>
+
+      {/* Manager (roster person this one reports to — powers the Team view).
+          Read-only unless the caller is a chapter admin. */}
+      <Cell width={COLS.manager}>
+        <Pressable
+          onPress={canEditManager ? () => setManagerPickerOpen(true) : undefined}
+          disabled={!canEditManager}
+          className={`flex-1 flex-row items-center px-2 py-1.5 ${
+            canEditManager ? "active:opacity-70 web:hover:opacity-90" : ""
+          }`}
+        >
+          {managerName ? (
+            <Text className="text-sm text-ink" numberOfLines={1}>
+              {managerName}
+            </Text>
+          ) : (
+            <Text className="text-sm text-faint">{canEditManager ? "—" : ""}</Text>
+          )}
+        </Pressable>
+        {canEditManager ? (
+          <PersonPicker
+            visible={managerPickerOpen}
+            title="Set manager"
+            selectedId={person.managerId ?? null}
+            source="team"
+            filter={(p) => p._id !== person._id}
+            onPick={async (managerId) => {
+              setManagerPickerOpen(false);
+              try {
+                await update({ personId: id, managerId: managerId as Id<"people"> });
+              } catch (err) {
+                // Surface the server's reason (cycle, forbidden, …) verbatim.
+                alertError(err);
+              }
+            }}
+            onClear={() => {
+              update({ personId: id, managerId: null });
+              setManagerPickerOpen(false);
+            }}
+            onClose={() => setManagerPickerOpen(false)}
+          />
+        ) : null}
       </Cell>
 
       {/* POC (free-text point of contact) */}

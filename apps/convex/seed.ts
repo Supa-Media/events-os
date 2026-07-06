@@ -152,6 +152,11 @@ export const clearDemo = internalMutation({
       .withIndex("by_chapter", (q) => q.eq("chapterId", cid))
       .collect())
       await ctx.db.delete(p._id);
+    for (const pr of await ctx.db
+      .query("projects")
+      .withIndex("by_chapter", (q) => q.eq("chapterId", cid))
+      .collect())
+      await ctx.db.delete(pr._id);
     for (const uc of await ctx.db
       .query("userChapters")
       .withIndex("by_chapterId", (q) => q.eq("chapterId", cid))
@@ -856,6 +861,9 @@ export const reseedNyDemo = internalMutation({
       for (const s of await byEvent("siteShapes")) await ctx.db.delete(s._id);
       for (const p of await byEvent("siteMapPlacements"))
         await ctx.db.delete(p._id);
+      // Projects linked to the event survive the reseed — just unlink them.
+      for (const pr of await byEvent("projects"))
+        await ctx.db.patch(pr._id, { eventId: undefined, updatedAt: Date.now() });
       await ctx.db.delete(e._id);
     }
 

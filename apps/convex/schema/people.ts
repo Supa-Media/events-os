@@ -69,10 +69,15 @@ export const people = defineTable({
   // True when this row was materialized from a template's placeholder crew at
   // event creation — a stand-in the team swaps for a real person later.
   isPlaceholder: v.optional(v.boolean()),
+  // This person's manager (another roster person). Powers the Team org view:
+  // reports roll up to their manager, transitively, so a director can see the
+  // whole structure under them. Kept acyclic by `people.update`.
+  managerId: v.optional(v.id("people")),
   createdAt: v.number(),
 })
   .index("by_chapter", ["chapterId"])
-  .index("by_user", ["userId"]);
+  .index("by_user", ["userId"])
+  .index("by_manager", ["managerId"]);
 
 /**
  * Template Crew (placeholder people) — stand-in crew authored on a TEMPLATE,

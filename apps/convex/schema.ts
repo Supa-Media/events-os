@@ -13,6 +13,7 @@ import {
   roleAssignments,
 } from "./schema/events";
 import { people, engagements, templatePeople } from "./schema/people";
+import { projects } from "./schema/projects";
 import { songs, setlistEntries, songRequests } from "./schema/songs";
 import {
   eventPages,
@@ -97,6 +98,9 @@ const schema = defineSchema({
   people,
   engagements,
   templatePeople,
+
+  // Projects (nestable units of work, owned by people, optionally event-backed).
+  projects,
 
   // Songs (chapter library) + per-event setlists + public song requests.
   songs,
