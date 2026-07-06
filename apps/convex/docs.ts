@@ -12,6 +12,7 @@ import { query, mutation, internalMutation } from "./_generated/server";
 import { Id } from "./_generated/dataModel";
 import { v, ConvexError } from "convex/values";
 import { requireChapterId, requireUserId, requireInChapter } from "./lib/context";
+import { requireManagerOrAdmin } from "./lib/org";
 
 /** The doc kinds — mirrors the `docs` table union. */
 const docKind = v.union(
@@ -171,6 +172,16 @@ export const update = mutation({
     const chapterId = await requireChapterId(ctx);
     const doc = await ctx.db.get(docId);
     await requireInChapter(ctx, chapterId, doc, "Doc");
+    // A doc that backs a RESPONSIBILITY's How-To is part of the accountability
+    // loop: the row is manager-gated, so its runbook must be too — otherwise a
+    // report could quietly rewrite the duty they're held to before a 1:1.
+    const duties = await ctx.db
+      .query("responsibilities")
+      .withIndex("by_chapter", (q) => q.eq("chapterId", chapterId as Id<"chapters">))
+      .collect();
+    if (duties.some((d) => d.howToDocId === docId)) {
+      await requireManagerOrAdmin(ctx, chapterId as Id<"chapters">);
+    }
     const fields: Record<string, unknown> = { updatedAt: Date.now() };
     if (patch.title !== undefined) fields.title = patch.title;
     if (patch.url !== undefined) fields.url = patch.url;

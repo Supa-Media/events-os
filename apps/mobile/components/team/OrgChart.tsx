@@ -22,10 +22,12 @@ export type OrgChartPerson = {
 };
 
 const CARD_W = 252;
+/** Fixed card height — the elbow math depends on it, so cards without a role
+ *  line keep the same box instead of detaching their connectors. */
+const CARD_H = 48;
 /** Gap above each sibling card; the elbow meets the card's vertical center. */
 const GAP_Y = 6;
-const CARD_HALF = 23;
-const ELBOW_Y = GAP_Y + CARD_HALF;
+const ELBOW_Y = GAP_Y + CARD_H / 2;
 const INDENT = 14;
 const TICK_W = 12;
 const LINE = { backgroundColor: colors.border } as const;
@@ -151,8 +153,8 @@ function NodeCard({
   return (
     <Pressable
       onPress={onPress}
-      style={{ width: CARD_W }}
-      className="flex-row items-center gap-2.5 rounded-lg border border-border bg-raised px-3 py-2 shadow-sm active:bg-sunken web:hover:border-border-strong"
+      style={{ width: CARD_W, height: CARD_H }}
+      className="flex-row items-center gap-2.5 rounded-lg border border-border bg-raised px-3 shadow-sm active:bg-sunken web:hover:border-border-strong"
     >
       <Avatar name={person.name || "?"} size={28} uri={person.imageUrl} />
       <View className="flex-1">

@@ -7,7 +7,7 @@
  * column is the handoff documentation — how the work actually gets done —
  * and cadence says how often (daily … yearly, or ad hoc, e.g. event flyers).
  */
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { View, Text, Pressable, ScrollView, TextInput } from "react-native";
 import { useQuery, useMutation } from "convex/react";
 import { api } from "@events-os/convex/_generated/api";
@@ -361,7 +361,15 @@ function ResponsibilityRow({
         <HowToDocCell
           doc={row.howToDoc}
           legacyText={row.howTo ?? null}
-          onSetDoc={(docId) => update({ howToDocId: docId })}
+          onSetDoc={(docId) =>
+            // Setting a doc SUPERSEDES the legacy text — clear it so removing
+            // the doc later can't resurrect outdated instructions.
+            update(
+              docId
+                ? { howToDocId: docId, howTo: null }
+                : { howToDocId: null },
+            )
+          }
           onLegacyCommit={(t) => update({ howTo: t.trim() || null })}
         />
       </Cell>
@@ -473,8 +481,10 @@ function RolesCell({
 /**
  * Comma-list editor with a suggestions popover: as you type a role, existing
  * job titles matching the current (last) token appear; picking one completes
- * it in place. Commit is on blur, deferred long enough for a suggestion tap
- * to win the race between the input's blur and the popover press.
+ * it in place. Exactly ONE commit ever fires (a `done` guard), suggestion
+ * picks land on onPressIn (which fires BEFORE the input's blur on both
+ * platforms — no timing guesses), and the blur fallback timer is cleared on
+ * unmount so it can never fire into a re-opened editor.
  */
 function RolesEditor({
   initial,
@@ -487,9 +497,16 @@ function RolesEditor({
 }) {
   const [text, setText] = useState(initial.join(", "));
   const { ref, anchor, visible, open, close } = useAnchor();
-  const picked = useRef(false);
+  const done = useRef(false);
+  const blurTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const latest = useRef(text);
   latest.current = text;
+  useEffect(
+    () => () => {
+      if (blurTimer.current) clearTimeout(blurTimer.current);
+    },
+    [],
+  );
 
   const parts = text.split(",");
   const token = normalizeRole(parts[parts.length - 1]);
@@ -503,6 +520,9 @@ function RolesEditor({
     .slice(0, 6);
 
   function commit(finalText: string) {
+    if (done.current) return; // submit+blur / pick+blur must not double-fire
+    done.current = true;
+    if (blurTimer.current) clearTimeout(blurTimer.current);
     onDone(parseList(finalText));
   }
 
@@ -521,10 +541,8 @@ function RolesEditor({
         autoCapitalize="words"
         onSubmitEditing={() => commit(latest.current)}
         onBlur={() => {
-          // Give a suggestion tap time to land before blur-commit closes us.
-          setTimeout(() => {
-            if (!picked.current) commit(latest.current);
-          }, 250);
+          // Fallback only — a suggestion press commits on onPressIn first.
+          blurTimer.current = setTimeout(() => commit(latest.current), 250);
         }}
         className="flex-1 px-2 py-1.5 text-sm leading-snug text-ink"
         style={{ minWidth: 40 }}
@@ -534,8 +552,8 @@ function RolesEditor({
           {matches.map((r) => (
             <Pressable
               key={r}
-              onPress={() => {
-                picked.current = true;
+              onPressIn={() => {
+                // onPressIn beats the input's blur — commit deterministically.
                 const kept = parts.slice(0, -1).join(",");
                 commit(kept ? `${kept}, ${r}` : r);
               }}

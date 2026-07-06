@@ -117,6 +117,52 @@ describe("responsibilities", () => {
     await s.as.mutation(api.responsibilities.remove, { responsibilityId: id });
   });
 
+  test("a duty's How-To doc is manager-gated like the row itself", async () => {
+    const s = await setupChapter(newT());
+    const { bob, cara } = await seedChain(s);
+    const asBob = await addUser(s, "bob@publicworship.life", { personId: bob });
+    const asCara = await addUser(s, "cara@publicworship.life", {
+      personId: cara,
+    });
+
+    // Bob (manager) documents a duty with a markdown runbook.
+    const { _id: docId } = await asBob.mutation(api.docs.create, {
+      kind: "markdown",
+      title: "Setlist runbook",
+      body: "1. Pick songs 2. Share by Thursday",
+      scope: "template",
+    });
+    const dutyId = (await asBob.mutation(api.responsibilities.create, {
+      title: "Weekly setlist",
+      assigneePersonIds: [cara],
+    })) as Id<"responsibilities">;
+    await asBob.mutation(api.responsibilities.update, {
+      responsibilityId: dutyId,
+      howToDocId: docId as Id<"docs">,
+    });
+
+    // Cara (held to the duty, no reports) can't rewrite the runbook…
+    await expect(
+      asCara.mutation(api.docs.update, {
+        docId: docId as Id<"docs">,
+        body: "just wing it",
+      }),
+    ).rejects.toThrow(ConvexError);
+    // …but Bob still can, and Cara can still edit an UNLINKED doc of her own.
+    await asBob.mutation(api.docs.update, {
+      docId: docId as Id<"docs">,
+      body: "1. Pick songs 2. Share by Wednesday",
+    });
+    const { _id: caraDoc } = await asCara.mutation(api.docs.create, {
+      kind: "note",
+      title: "My notes",
+    });
+    await asCara.mutation(api.docs.update, {
+      docId: caraDoc as Id<"docs">,
+      body: "mine",
+    });
+  });
+
   test("removing a person strips their direct assignments and 1:1 record", async () => {
     const s = await setupChapter(newT());
     const { bob, cara } = await seedChain(s);

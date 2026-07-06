@@ -115,31 +115,44 @@ export const list = query({
       });
     }
     // Join each card's collapsed preview: the latest comment, attributed.
-    return await Promise.all(
-      visible.map(async (p) => {
-        const last = await ctx.db
+    // Author docs are shared across projects (one busy manager comments on
+    // many) — fetch each distinct author once, not once per project.
+    const lasts = await Promise.all(
+      visible.map((p) =>
+        ctx.db
           .query("projectComments")
           .withIndex("by_project", (q) => q.eq("projectId", p._id))
           .order("desc")
-          .first();
-        if (!last) return { ...p, lastComment: null };
-        const author = await ctx.db.get(last.authorPersonId);
-        return {
-          ...p,
-          lastComment: {
-            body: last.body,
-            authorName: author?.name ?? null,
-            createdAt: last.createdAt,
-          },
-        };
-      }),
+          .first(),
+      ),
     );
+    const authorName = new Map<Id<"people">, string | null>();
+    for (const last of lasts) {
+      if (!last || authorName.has(last.authorPersonId)) continue;
+      const author = await ctx.db.get(last.authorPersonId);
+      authorName.set(last.authorPersonId, author?.name ?? null);
+    }
+    return visible.map((p, i) => {
+      const last = lasts[i];
+      return {
+        ...p,
+        lastComment: last
+          ? {
+              body: last.body,
+              authorName: authorName.get(last.authorPersonId) ?? null,
+              createdAt: last.createdAt,
+            }
+          : null,
+      };
+    });
   },
 });
 
 /**
- * A project's full comment thread, oldest first — the progression record.
- * Visible to whoever can see the project (same effective-owner scope).
+ * A project's comment thread, oldest first — the progression record. Visible
+ * to whoever can see the project (same effective-owner scope); returns NULL
+ * when out of scope (matching the check-in queries) so denial is never
+ * mistaken for an empty thread. Bounded to the latest 200 entries.
  */
 export const comments = query({
   args: { projectId: v.id("projects") },
@@ -148,18 +161,24 @@ export const comments = query({
     const manageable = await manageablePersonIds(ctx, project.chapterId);
     if (manageable !== null) {
       const owner = await effectiveOwnerId(ctx, project);
-      if (!owner || !manageable.has(owner)) return [];
+      if (!owner || !manageable.has(owner)) return null;
     }
     const rows = await ctx.db
       .query("projectComments")
       .withIndex("by_project", (q) => q.eq("projectId", projectId))
-      .collect();
-    return await Promise.all(
-      rows.map(async (c) => {
-        const author = await ctx.db.get(c.authorPersonId);
-        return { ...c, authorName: author?.name ?? null };
-      }),
-    );
+      .order("desc")
+      .take(200);
+    rows.reverse(); // oldest first for reading the progression top-down
+    const authorName = new Map<Id<"people">, string | null>();
+    for (const c of rows) {
+      if (authorName.has(c.authorPersonId)) continue;
+      const author = await ctx.db.get(c.authorPersonId);
+      authorName.set(c.authorPersonId, author?.name ?? null);
+    }
+    return rows.map((c) => ({
+      ...c,
+      authorName: authorName.get(c.authorPersonId) ?? null,
+    }));
   },
 });
 
@@ -236,9 +255,7 @@ export const create = mutation({
     startDate: v.optional(v.number()),
     deadline: v.optional(v.number()),
     budgetUsd: v.optional(v.number()),
-    statusNote: v.optional(v.string()),
     blocker: v.optional(v.string()),
-    nextSteps: v.optional(v.string()),
   },
   handler: async (ctx, args) => {
     const chapterId = await requireChapterId(ctx);
@@ -271,9 +288,7 @@ export const create = mutation({
       startDate: args.startDate,
       deadline: args.deadline,
       budgetUsd: args.budgetUsd,
-      statusNote: args.statusNote,
       blocker: args.blocker,
-      nextSteps: args.nextSteps,
       createdBy: userId as Id<"users">,
       createdAt: now,
       updatedAt: now,
@@ -375,12 +390,16 @@ export const remove = mutation({
         updatedAt: Date.now(),
       });
     }
-    // The thread belongs to the project — it goes with it.
-    const thread = await ctx.db
-      .query("projectComments")
-      .withIndex("by_project", (q) => q.eq("projectId", projectId))
-      .collect();
-    for (const c of thread) await ctx.db.delete(c._id);
+    // The thread belongs to the project — it goes with it. Batched reads so
+    // a years-long thread can't blow the mutation's document limits.
+    for (;;) {
+      const batch = await ctx.db
+        .query("projectComments")
+        .withIndex("by_project", (q) => q.eq("projectId", projectId))
+        .take(200);
+      for (const c of batch) await ctx.db.delete(c._id);
+      if (batch.length < 200) break;
+    }
     await ctx.db.delete(projectId);
     return projectId;
   },

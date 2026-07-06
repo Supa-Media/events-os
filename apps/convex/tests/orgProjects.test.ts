@@ -619,7 +619,8 @@ describe("project comments", () => {
       ownerPersonId: alice,
     })) as Id<"projects">;
 
-    // Cara can't comment on (or read) work outside her subtree.
+    // Cara can't comment on (or read) work outside her subtree — denial is
+    // null, never mistakable for an empty thread.
     await expect(
       asCara.mutation(api.projects.addComment, {
         projectId: alicesProject,
@@ -628,19 +629,17 @@ describe("project comments", () => {
     ).rejects.toThrow(ConvexError);
     expect(
       await asCara.query(api.projects.comments, { projectId: alicesProject }),
-    ).toHaveLength(0);
+    ).toBeNull();
 
     // Deleting a project deletes its thread (no orphaned comments).
     const doomed = (await s.as.mutation(api.projects.create, {
       name: "Doomed",
       ownerPersonId: bob,
     })) as Id<"projects">;
-    await s.as.mutation(api.projects.addComment, {
-      projectId: doomed,
-      body: "…",
-    } as never).catch(() => {
-      // The admin session has no roster row — post as Cara's manager instead.
-    });
+    // The admin session has no roster row — commenting requires one.
+    await expect(
+      s.as.mutation(api.projects.addComment, { projectId: doomed, body: "x" }),
+    ).rejects.toThrow(ConvexError);
     const asBob = await addUser(s, "bobc@publicworship.life", { personId: bob });
     await asBob.mutation(api.projects.addComment, {
       projectId: doomed,

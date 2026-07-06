@@ -7,9 +7,9 @@
  * them (they're the org's how-to documentation); editing is open like the
  * People roster.
  */
-import { query, mutation, QueryCtx } from "./_generated/server";
+import { query, mutation } from "./_generated/server";
 import { Id } from "./_generated/dataModel";
-import { v, ConvexError } from "convex/values";
+import { v } from "convex/values";
 import { RESPONSIBILITY_CADENCES } from "@events-os/shared";
 import {
   requireUserId,
@@ -17,33 +17,13 @@ import {
   requireOwned,
   getChapterIdOrNull,
 } from "./lib/context";
-import { isChapterAdmin, viewerPerson } from "./lib/org";
+import { requireManagerOrAdmin } from "./lib/org";
 
 const cadence = v.union(...RESPONSIBILITY_CADENCES.map((c) => v.literal(c)));
 
-/**
- * Editing responsibilities is for managers and admins. These rows feed the
- * check-in accountability loop, so the person being held to a duty must not
- * be able to quietly delete or unassign it before their 1:1.
- */
-async function requireCanEdit(
-  ctx: QueryCtx,
-  chapterId: Id<"chapters">,
-): Promise<void> {
-  if (await isChapterAdmin(ctx, chapterId)) return;
-  const viewer = await viewerPerson(ctx, chapterId);
-  if (viewer) {
-    const firstReport = await ctx.db
-      .query("people")
-      .withIndex("by_manager", (q) => q.eq("managerId", viewer._id))
-      .first();
-    if (firstReport !== null) return;
-  }
-  throw new ConvexError({
-    code: "FORBIDDEN",
-    message: "Only managers and admins can edit responsibilities.",
-  });
-}
+// Editing responsibilities is for managers and admins (requireManagerOrAdmin):
+// these rows feed the check-in accountability loop, so the person being held
+// to a duty must not be able to quietly delete or unassign it before their 1:1.
 
 /**
  * All the chapter's responsibility definitions, oldest first, each with a
@@ -74,7 +54,9 @@ export const list = query({
                   kind: doc.kind,
                   title: doc.title,
                   url: doc.url ?? null,
-                  body: doc.body ?? null,
+                  // Only notes render their body on list surfaces — don't
+                  // stream every markdown runbook to every subscriber.
+                  body: doc.kind === "note" ? (doc.body ?? null) : null,
                 }
               : null,
         };
@@ -97,7 +79,7 @@ export const create = mutation({
   handler: async (ctx, args) => {
     const chapterId = await requireChapterId(ctx);
     const userId = await requireUserId(ctx);
-    await requireCanEdit(ctx, chapterId as Id<"chapters">);
+    await requireManagerOrAdmin(ctx, chapterId as Id<"chapters">);
     for (const personId of args.assigneePersonIds ?? []) {
       await requireOwned(ctx, "people", personId, "Assignee");
     }
@@ -140,7 +122,7 @@ export const update = mutation({
       responsibilityId,
       "Responsibility",
     );
-    await requireCanEdit(ctx, row.chapterId);
+    await requireManagerOrAdmin(ctx, row.chapterId);
     if (Array.isArray(patch.assigneePersonIds)) {
       for (const personId of patch.assigneePersonIds) {
         await requireOwned(ctx, "people", personId, "Assignee");
@@ -170,7 +152,7 @@ export const remove = mutation({
       responsibilityId,
       "Responsibility",
     );
-    await requireCanEdit(ctx, row.chapterId);
+    await requireManagerOrAdmin(ctx, row.chapterId);
     await ctx.db.delete(responsibilityId);
     return responsibilityId;
   },

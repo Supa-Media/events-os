@@ -138,6 +138,16 @@ export function WorkloadView({
   }, [responsibilities, workload]);
   const respFor = (id: Id<"people">) => respByPerson.get(id) ?? [];
 
+  /** Who's accountable for a project — its owner or nearest ancestor's. */
+  const effectiveOwnerOf = (p: ProjectDoc): Id<"people"> | undefined => {
+    let cur: ProjectDoc | undefined = p;
+    for (let hops = 0; cur && hops < 100; hops++) {
+      if (cur.ownerPersonId) return cur.ownerPersonId;
+      cur = cur.parentProjectId ? projectById.get(cur.parentProjectId) : undefined;
+    }
+    return undefined;
+  };
+
   const checkInsByPerson = useMemo(() => {
     const map = new Map<Id<"people">, CheckInRow[]>();
     for (const c of checkIns?.entries ?? []) {
@@ -419,7 +429,14 @@ export function WorkloadView({
             title: r.title,
           }))}
           projects={(projects ?? [])
-            .filter((p) => p.ownerPersonId === checkInFor._id)
+            .filter(
+              (p) =>
+                // Active work they're accountable for: finished projects
+                // shouldn't collect on-track attestations forever, and an
+                // unowned sub-project inherits its parent's owner.
+                p.status !== "done" &&
+                effectiveOwnerOf(p) === checkInFor._id,
+            )
             .map((p) => ({ _id: p._id, name: p.name }))}
           onClose={() => setCheckInFor(null)}
         />

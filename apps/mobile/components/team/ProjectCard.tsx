@@ -270,20 +270,41 @@ export function ProjectCard({
             onCommit={(t) => update({ projectId: id, blocker: t.trim() || null })}
           />
         </FieldRow>
-        {/* Pre-thread rows may carry the old one-slot fields — keep them
-            readable (the thread supersedes them for anything new). */}
+        {/* Pre-thread rows may carry the old one-slot fields — readable, with
+            a clear affordance so stale text can be retired once the thread
+            supersedes it. */}
         {project.statusNote ? (
           <FieldRow label="Note">
-            <Text className="px-2 py-1.5 text-sm text-muted">
-              {project.statusNote}
-            </Text>
+            <View className="flex-1 flex-row items-center gap-1">
+              <Text className="flex-1 px-2 py-1.5 text-sm text-muted">
+                {project.statusNote}
+              </Text>
+              <Pressable
+                onPress={() => update({ projectId: id, statusNote: null })}
+                hitSlop={6}
+                accessibilityLabel="Clear legacy note"
+                className="rounded p-0.5 active:bg-sunken web:hover:bg-sunken"
+              >
+                <Icon name="x" size={11} color={colors.faint} />
+              </Pressable>
+            </View>
           </FieldRow>
         ) : null}
         {project.nextSteps ? (
           <FieldRow label="Next">
-            <Text className="px-2 py-1.5 text-sm text-muted">
-              {project.nextSteps}
-            </Text>
+            <View className="flex-1 flex-row items-center gap-1">
+              <Text className="flex-1 px-2 py-1.5 text-sm text-muted">
+                {project.nextSteps}
+              </Text>
+              <Pressable
+                onPress={() => update({ projectId: id, nextSteps: null })}
+                hitSlop={6}
+                accessibilityLabel="Clear legacy next steps"
+                className="rounded p-0.5 active:bg-sunken web:hover:bg-sunken"
+              >
+                <Icon name="x" size={11} color={colors.faint} />
+              </Pressable>
+            </View>
           </FieldRow>
         ) : null}
       </View>
@@ -353,13 +374,21 @@ function ProjectComments({ projectId }: { projectId: Id<"projects"> }) {
     const body = draft.trim();
     if (!body) return;
     setDraft("");
-    void addComment({ projectId, body }).catch(alertError);
+    void addComment({ projectId, body }).catch((err) => {
+      // Put the text back — a rejected post must not eat the update.
+      setDraft(body);
+      alertError(err);
+    });
   }
 
   return (
     <View className="border-t border-border/60 px-2.5 py-1.5" style={{ gap: 4 }}>
       {comments === undefined ? (
         <Text className="text-xs text-faint">Loading history…</Text>
+      ) : comments === null ? (
+        <Text className="text-xs text-faint">
+          The thread is only visible to this project's team.
+        </Text>
       ) : (
         comments.map((c) => (
           <View key={c._id} className="flex-row items-start gap-1.5">

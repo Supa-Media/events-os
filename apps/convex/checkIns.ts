@@ -27,6 +27,7 @@ import {
   subtreeIds,
   viewerPerson,
   viewerFromRoster,
+  readableCheckInSubject,
 } from "./lib/org";
 
 const checkInType = v.union(...CHECKIN_TYPES.map((t) => v.literal(t)));
@@ -161,22 +162,9 @@ export const remove = mutation({
 export const historyForPerson = query({
   args: { personId: v.id("people") },
   handler: async (ctx, { personId }) => {
-    const chapterId = await getChapterIdOrNull(ctx);
-    if (!chapterId) return null;
-    const person = await ctx.db.get(personId);
-    if (!person || person.chapterId !== chapterId) return null;
-
-    const roster = await chapterRoster(ctx, person.chapterId);
-    const viewer = await viewerFromRoster(ctx, roster);
-    const manageable = await manageablePersonIds(
-      ctx,
-      person.chapterId,
-      roster,
-    );
-    if (manageable !== null) {
-      if (!manageable.has(personId)) return null;
-      if (viewer?._id === personId) return null; // never your own record
-    }
+    const subject = await readableCheckInSubject(ctx, personId);
+    if (!subject) return null;
+    const { roster, viewer } = subject;
 
     const nameById = new Map(roster.map((p) => [p._id, p.name]));
     const rows = await ctx.db
@@ -206,6 +194,9 @@ export const historyForPerson = query({
 export const listForSubtree = query({
   args: { personId: v.id("people") },
   handler: async (ctx, { personId }) => {
+    // Deliberately NOT readableCheckInSubject: unlike historyForPerson, a
+    // non-admin may target their own page here (their subtree root) — the
+    // self-record exclusion is applied PER MEMBER below instead.
     const chapterId = await getChapterIdOrNull(ctx);
     if (!chapterId) return null;
     const person = await ctx.db.get(personId);
