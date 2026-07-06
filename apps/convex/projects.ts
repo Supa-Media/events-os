@@ -41,22 +41,19 @@ async function effectiveOwnerId(
 }
 
 /**
- * Assert the caller may manage work accountable to `ownerPersonId`: admins
- * always; everyone else only within their own manager subtree (which includes
- * themselves). Unowned work (undefined) is admin-only.
+ * Assert work accountable to `ownerPersonId` is inside the caller's scope:
+ * `manageable === null` means admin (no restriction); otherwise the owner must
+ * sit in the caller's manager subtree (which includes themselves). Unowned
+ * work (undefined) is admin-only.
  */
-async function requireProjectScope(
-  ctx: QueryCtx,
-  chapterId: Id<"chapters">,
+function assertInScope(
+  manageable: Set<Id<"people">> | null,
   ownerPersonId: Id<"people"> | undefined,
-): Promise<void> {
-  const manageable = await manageablePersonIds(ctx, chapterId);
+  message = "You can only manage projects for people on your team.",
+): void {
   if (manageable === null) return; // admin — no restriction
   if (ownerPersonId && manageable.has(ownerPersonId)) return;
-  throw new ConvexError({
-    code: "FORBIDDEN",
-    message: "You can only manage projects for people on your team.",
-  });
+  throw new ConvexError({ code: "FORBIDDEN", message });
 }
 
 /**
@@ -147,11 +144,12 @@ export const create = mutation({
     if (args.eventId) {
       await requireOwned(ctx, "events", args.eventId, "Event");
     }
-    await requireProjectScope(
-      ctx,
-      chapterId as Id<"chapters">,
-      args.ownerPersonId ?? (parent ? await effectiveOwnerId(ctx, parent) : undefined),
-    );
+    const manageable = await manageablePersonIds(ctx, chapterId as Id<"chapters">);
+    const parentOwner = parent ? await effectiveOwnerId(ctx, parent) : undefined;
+    assertInScope(manageable, args.ownerPersonId ?? parentOwner);
+    // Nesting under someone else's project would surface this row in THEIR
+    // tree — the destination parent must be in scope too, not just the owner.
+    if (parent) assertInScope(manageable, parentOwner);
     const now = Date.now();
     return await ctx.db.insert("projects", {
       chapterId: chapterId as Id<"chapters">,
@@ -193,19 +191,41 @@ export const update = mutation({
   },
   handler: async (ctx, { projectId, ...patch }) => {
     const project = await requireOwned(ctx, "projects", projectId, "Project");
-    await requireProjectScope(
-      ctx,
-      project.chapterId,
-      await effectiveOwnerId(ctx, project),
-    );
+    const manageable = await manageablePersonIds(ctx, project.chapterId);
+    assertInScope(manageable, await effectiveOwnerId(ctx, project));
     if (patch.ownerPersonId != null) {
       await requireOwned(ctx, "people", patch.ownerPersonId, "Owner");
       // Non-admins may only hand work to people still inside their subtree.
-      await requireProjectScope(ctx, project.chapterId, patch.ownerPersonId);
+      assertInScope(manageable, patch.ownerPersonId);
     }
     if (patch.parentProjectId != null) {
-      await requireOwned(ctx, "projects", patch.parentProjectId, "Parent project");
+      const parent = await requireOwned(
+        ctx,
+        "projects",
+        patch.parentProjectId,
+        "Parent project",
+      );
       await assertNoParentCycle(ctx, projectId, patch.parentProjectId);
+      // Re-parenting surfaces this row in the destination tree — the new
+      // parent's effective owner must be in scope too.
+      assertInScope(manageable, await effectiveOwnerId(ctx, parent));
+    }
+    if (patch.ownerPersonId === null) {
+      // Clearing the owner: the project must still resolve to an in-scope
+      // owner through its (possibly new) parent chain, or the caller would
+      // push it into admin-only unowned territory and lose it themselves.
+      const parentId =
+        patch.parentProjectId !== undefined
+          ? patch.parentProjectId
+          : project.parentProjectId;
+      const chainOwner = parentId
+        ? await effectiveOwnerId(ctx, { parentProjectId: parentId })
+        : undefined;
+      assertInScope(
+        manageable,
+        chainOwner,
+        "Assign a different owner instead of leaving the project unowned.",
+      );
     }
     if (patch.eventId != null) {
       await requireOwned(ctx, "events", patch.eventId, "Event");
@@ -229,11 +249,9 @@ export const remove = mutation({
   args: { projectId: v.id("projects") },
   handler: async (ctx, { projectId }) => {
     const project = await requireOwned(ctx, "projects", projectId, "Project");
-    await requireProjectScope(
-      ctx,
-      project.chapterId,
-      await effectiveOwnerId(ctx, project),
-    );
+    const manageable = await manageablePersonIds(ctx, project.chapterId);
+    const effOwner = await effectiveOwnerId(ctx, project);
+    assertInScope(manageable, effOwner);
     const children = await ctx.db
       .query("projects")
       .withIndex("by_parent", (q) => q.eq("parentProjectId", projectId))
@@ -241,6 +259,10 @@ export const remove = mutation({
     for (const child of children) {
       await ctx.db.patch(child._id, {
         parentProjectId: project.parentProjectId,
+        // A child that inherited its owner through the deleted parent keeps
+        // that owner explicitly, so it stays visible/scoped exactly as before
+        // instead of falling into admin-only unowned territory.
+        ownerPersonId: child.ownerPersonId ?? effOwner,
         updatedAt: Date.now(),
       });
     }

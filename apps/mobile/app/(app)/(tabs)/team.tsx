@@ -33,6 +33,7 @@ import {
   buildProjectTree,
 } from "../../../components/team/ProjectCard";
 import { colors, spacing } from "../../../lib/theme";
+import { alertError } from "../../../lib/errors";
 
 type Overview = FunctionReturnType<typeof api.org.overview>;
 type Person = Overview["people"][number];
@@ -93,7 +94,7 @@ export default function TeamScreen() {
           a.name.localeCompare(b.name),
       );
     }
-    return { included, childrenOf, roots, teamSize };
+    return { included, includedIds, childrenOf, roots, teamSize };
   }, [overview]);
 
   // Project rollups: how many (non-done) projects each person's subtree owns.
@@ -122,10 +123,17 @@ export default function TeamScreen() {
     () => new Map((overview?.people ?? []).map((p) => [p._id, p.name])),
     [overview],
   );
+  // Triage list: root projects nobody owns, plus ones owned by a roster
+  // person who isn't in the org chart — otherwise those vanish from every
+  // Team surface (no OrgNode rolls them up).
   const unassigned = useMemo(
     () =>
-      (projects ?? []).filter((p) => !p.ownerPersonId && !p.parentProjectId),
-    [projects],
+      (projects ?? []).filter(
+        (p) =>
+          !p.parentProjectId &&
+          (!p.ownerPersonId || !org.includedIds.has(p.ownerPersonId)),
+      ),
+    [projects, org],
   );
   const projectTree = useMemo(
     () => buildProjectTree(projects ?? []),
@@ -208,7 +216,9 @@ export default function TeamScreen() {
                   icon="plus"
                   size="sm"
                   variant="secondary"
-                  onPress={() => createProject({ name: "New project" })}
+                  onPress={() =>
+                    void createProject({ name: "New project" }).catch(alertError)
+                  }
                 />
               }
             />
@@ -231,7 +241,9 @@ export default function TeamScreen() {
               icon="plus"
               size="sm"
               variant="secondary"
-              onPress={() => createProject({ name: "New project" })}
+              onPress={() =>
+                    void createProject({ name: "New project" }).catch(alertError)
+                  }
             />
           </View>
         ) : null}

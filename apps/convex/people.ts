@@ -32,8 +32,11 @@ const rosterStatus = v.union(
 const gender = v.union(v.literal("male"), v.literal("female"), v.literal("na"));
 
 /** Assert the caller may rewire the org tree (admins only). */
-async function requireCanSetManager(ctx: QueryCtx): Promise<void> {
-  if (!(await isChapterAdmin(ctx))) {
+async function requireCanSetManager(
+  ctx: QueryCtx,
+  chapterId: Id<"chapters">,
+): Promise<void> {
+  if (!(await isChapterAdmin(ctx, chapterId))) {
     throw new ConvexError({
       code: "FORBIDDEN",
       message: "Only chapter admins can change who reports to whom.",
@@ -147,7 +150,7 @@ export const create = mutation({
     const chapterId = await requireChapterId(ctx);
     await requireUserId(ctx);
     if (args.managerId) {
-      await requireCanSetManager(ctx);
+      await requireCanSetManager(ctx, chapterId as Id<"chapters">);
       await requireOwned(ctx, "people", args.managerId, "Manager");
     }
     const status = args.status ?? "active";
@@ -203,10 +206,10 @@ export const update = mutation({
     managerId: v.optional(v.union(v.id("people"), v.null())),
   },
   handler: async (ctx, { personId, ...patch }) => {
-    await requireOwned(ctx, "people", personId, "Person");
+    const person = await requireOwned(ctx, "people", personId, "Person");
     if (patch.managerId !== undefined) {
       // Setting AND clearing a manager both reshape the org tree — admin only.
-      await requireCanSetManager(ctx);
+      await requireCanSetManager(ctx, person.chapterId);
     }
     if (patch.managerId != null) {
       await requireOwned(ctx, "people", patch.managerId, "Manager");
@@ -232,6 +235,15 @@ export const remove = mutation({
   args: { personId: v.id("people") },
   handler: async (ctx, { personId }) => {
     const person = await requireOwned(ctx, "people", personId, "Person");
+    // Removing someone WITH reports rewires the org tree (their reports get a
+    // new manager) — that's the admin-only operation, same as the Manager cell.
+    const reports = await ctx.db
+      .query("people")
+      .withIndex("by_manager", (q) => q.eq("managerId", personId))
+      .collect();
+    if (reports.length > 0) {
+      await requireCanSetManager(ctx, person.chapterId);
+    }
     const engagements = await ctx.db
       .query("engagements")
       .withIndex("by_person", (q) => q.eq("personId", personId))
@@ -239,20 +251,21 @@ export const remove = mutation({
     for (const e of engagements) await ctx.db.delete(e._id);
     // Re-point direct reports at the removed person's own manager (or none) so
     // the org tree closes over the gap instead of stranding a subtree.
-    const reports = await ctx.db
-      .query("people")
-      .withIndex("by_manager", (q) => q.eq("managerId", personId))
-      .collect();
     for (const r of reports) {
       await ctx.db.patch(r._id, { managerId: person.managerId });
     }
-    // Their projects survive as unowned (surfaced under "Unassigned" on Team).
+    // Their projects roll up to their manager (so the work stays visible in
+    // that manager's Team view); with no manager they go unowned, surfacing in
+    // the admin-only "Unassigned" triage section.
     const owned = await ctx.db
       .query("projects")
       .withIndex("by_owner", (q) => q.eq("ownerPersonId", personId))
       .collect();
     for (const p of owned) {
-      await ctx.db.patch(p._id, { ownerPersonId: undefined });
+      await ctx.db.patch(p._id, {
+        ownerPersonId: person.managerId,
+        updatedAt: Date.now(),
+      });
     }
     await ctx.db.delete(personId);
     return personId;

@@ -22,11 +22,11 @@ const NAV: NavEntry[] = [
 
 /**
  * The nav entries the caller may see. Team is managers/admins only — the
- * server decides (org.overview.canManage: admin, or has direct reports); this
+ * server decides (org.nav.canManage: admin, or has direct reports); this
  * just hides the entry. The route itself is also gated server-side.
  */
 function useNav(): NavEntry[] {
-  const org = useQuery(api.org.overview);
+  const org = useQuery(api.org.nav);
   return NAV.filter((n) => n.path !== "/team" || org?.canManage === true);
 }
 

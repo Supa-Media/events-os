@@ -30,6 +30,7 @@ import {
 } from "../../../components/ui";
 import { colors, spacing } from "../../../lib/theme";
 import { formatDate } from "../../../lib/format";
+import { alertError } from "../../../lib/errors";
 import type { Doc, Id } from "@events-os/convex/_generated/dataModel";
 import {
   type VettingStatus,
@@ -128,13 +129,19 @@ function confirmRemove(name: string): boolean {
 /** PEOPLE roster — a spreadsheet-style editable grid with per-person history. */
 export default function PeopleScreen() {
   const people = useQuery(api.people.list) as Person[] | undefined;
-  const org = useQuery(api.org.overview);
+  const org = useQuery(api.org.nav);
   const create = useMutation(api.people.create);
 
   const [search, setSearch] = useState("");
   const [skillFilter, setSkillFilter] = useState<string | null>(null);
   const [persona, setPersona] = useState<PersonaFilter>("all");
   const [openId, setOpenId] = useState<string | null>(null);
+
+  // Manager names by id — one map instead of a per-row roster scan.
+  const nameById = useMemo(
+    () => new Map((people ?? []).map((p) => [p._id, p.name])),
+    [people],
+  );
 
   // Distinct skills across the roster, for the filter bar.
   const allSkills = useMemo(() => {
@@ -273,9 +280,7 @@ export default function PeopleScreen() {
                   key={p._id}
                   person={p}
                   managerName={
-                    p.managerId
-                      ? people.find((m) => m._id === p.managerId)?.name ?? null
-                      : null
+                    p.managerId ? nameById.get(p.managerId) ?? null : null
                   }
                   canEditManager={org?.isAdmin === true}
                   isLast={i === filtered.length - 1}
@@ -517,13 +522,9 @@ function PersonRow({
               setManagerPickerOpen(false);
               try {
                 await update({ personId: id, managerId: managerId as Id<"people"> });
-              } catch {
-                // Backend rejects manager cycles; tell the user why nothing changed.
-                if (Platform.OS === "web" && typeof window !== "undefined") {
-                  window.alert(
-                    "Can't set that manager — it would create a reporting loop.",
-                  );
-                }
+              } catch (err) {
+                // Surface the server's reason (cycle, forbidden, …) verbatim.
+                alertError(err);
               }
             }}
             onClear={() => {

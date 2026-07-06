@@ -1,9 +1,12 @@
 /**
  * Org hierarchy — the manager's view of their team.
  *
- * `overview` tells the client what the caller may manage: whether they're a
- * chapter admin, whether they have reports, and the slice of the roster their
- * Team view may show (whole chapter for admins, their own subtree for
+ * `nav` is the cheap gate the app shell polls on every screen: just "can this
+ * caller manage anyone?" with no roster payload.
+ *
+ * `overview` tells the Team screen what the caller may manage: whether they're
+ * a chapter admin, whether they have reports, and the slice of the roster
+ * their Team view may show (whole chapter for admins, their own subtree for
  * managers, nothing otherwise).
  *
  * `workload` answers "what is everyone under this person working on?" in one
@@ -20,8 +23,10 @@ import { getChapterIdOrNull } from "./lib/context";
 import {
   isChapterAdmin,
   viewerPerson,
+  viewerFromRoster,
   chapterRoster,
   buildChildrenOf,
+  subtreeNodes,
   subtreeIds,
 } from "./lib/org";
 
@@ -35,25 +40,47 @@ function slim(p: Doc<"people">) {
   };
 }
 
+/**
+ * The cheap manage-gate for navigation: no roster payload, no storage URLs.
+ * The app shell subscribes to this on every screen, so it reads only the
+ * caller's membership, their own roster row, and whether one report exists.
+ */
+export const nav = query({
+  args: {},
+  handler: async (ctx) => {
+    const chapterId = await getChapterIdOrNull(ctx);
+    if (!chapterId) {
+      return { isAdmin: false, canManage: false, selfPersonId: null };
+    }
+    const isAdmin = await isChapterAdmin(ctx, chapterId as Id<"chapters">);
+    const self = await viewerPerson(ctx, chapterId as Id<"chapters">);
+    let canManage = isAdmin;
+    if (!canManage && self) {
+      const firstReport = await ctx.db
+        .query("people")
+        .withIndex("by_manager", (q) => q.eq("managerId", self._id))
+        .first();
+      canManage = firstReport !== null;
+    }
+    return { isAdmin, canManage, selfPersonId: self?._id ?? null };
+  },
+});
+
 /** What the caller may manage, and the roster slice their Team view shows. */
 export const overview = query({
   args: {},
   handler: async (ctx) => {
-    const none = {
-      isAdmin: false,
-      selfPersonId: null as Id<"people"> | null,
-      canManage: false,
-      people: [] as Array<
-        ReturnType<typeof slim> & { isTeamMember: boolean; imageUrl: string | null }
-      >,
-    };
     const chapterId = await getChapterIdOrNull(ctx);
-    if (!chapterId) return none;
+    if (!chapterId) {
+      return { isAdmin: false, selfPersonId: null, canManage: false, people: [] };
+    }
 
-    const isAdmin = await isChapterAdmin(ctx);
-    const roster = await chapterRoster(ctx, chapterId as Id<"chapters">);
+    const [isAdmin, roster] = await Promise.all([
+      isChapterAdmin(ctx, chapterId as Id<"chapters">),
+      chapterRoster(ctx, chapterId as Id<"chapters">),
+    ]);
     const childrenOf = buildChildrenOf(roster);
-    const viewer = await viewerPerson(ctx, chapterId as Id<"chapters">);
+    const viewer = await viewerFromRoster(ctx, roster);
     const hasReports =
       viewer != null && (childrenOf.get(viewer._id) ?? []).length > 0;
     const canManage = isAdmin || hasReports;
@@ -62,7 +89,7 @@ export const overview = query({
     if (isAdmin) {
       visible = roster;
     } else if (viewer && hasReports) {
-      const ids = subtreeIds(childrenOf, viewer._id);
+      const ids = subtreeIds(childrenOf, viewer);
       visible = roster.filter((p) => ids.has(p._id));
     }
 
@@ -91,32 +118,20 @@ export const workload = query({
     const person = await ctx.db.get(personId);
     if (!person || person.chapterId !== chapterId) return null;
 
-    const roster = await chapterRoster(ctx, chapterId as Id<"chapters">);
+    const [isAdmin, roster] = await Promise.all([
+      isChapterAdmin(ctx, chapterId as Id<"chapters">),
+      chapterRoster(ctx, chapterId as Id<"chapters">),
+    ]);
     const childrenOf = buildChildrenOf(roster);
 
-    // Scope: admins may inspect anyone; others only their own subtree.
-    if (!(await isChapterAdmin(ctx))) {
-      const viewer = await viewerPerson(ctx, chapterId as Id<"chapters">);
+    // Scope: admins may inspect anyone; others only their own subtree. The
+    // caller's reach is also what decides whether the manager link is tappable.
+    let callerReach: Set<Id<"people">> | null = null; // null = unrestricted
+    if (!isAdmin) {
+      const viewer = await viewerFromRoster(ctx, roster);
       if (!viewer) return null;
-      if (!subtreeIds(childrenOf, viewer._id).has(personId)) return null;
-    }
-
-    // BFS the subtree from the person following managerId edges, depth-tagged.
-    const byName = (a: Doc<"people">, b: Doc<"people">) =>
-      a.name.localeCompare(b.name);
-    const subtree: { person: Doc<"people">; depth: number }[] = [];
-    const visited = new Set<Id<"people">>([person._id]);
-    const queue: { person: Doc<"people">; depth: number }[] = [
-      { person, depth: 0 },
-    ];
-    while (queue.length > 0) {
-      const node = queue.shift()!;
-      subtree.push(node);
-      for (const child of (childrenOf.get(node.person._id) ?? []).sort(byName)) {
-        if (visited.has(child._id)) continue;
-        visited.add(child._id);
-        queue.push({ person: child, depth: node.depth + 1 });
-      }
+      callerReach = subtreeIds(childrenOf, viewer);
+      if (!callerReach.has(personId)) return null;
     }
 
     // Events owned by anyone in the subtree (one chapter-wide read, then split).
@@ -125,9 +140,15 @@ export const workload = query({
       .withIndex("by_chapter", (q) => q.eq("chapterId", person.chapterId))
       .collect();
     const eventById = new Map(events.map((e) => [e._id, e]));
+    // Role docs are shared across assignments — fetch each unique role once.
+    const roleCache = new Map<Id<"eventRoles">, Doc<"eventRoles"> | null>();
+    const getRole = async (roleId: Id<"eventRoles">) => {
+      if (!roleCache.has(roleId)) roleCache.set(roleId, await ctx.db.get(roleId));
+      return roleCache.get(roleId) ?? null;
+    };
 
     const members = await Promise.all(
-      subtree.map(async ({ person: p, depth }) => {
+      subtreeNodes(childrenOf, person).map(async ({ person: p, depth }) => {
         const ownedEvents = events
           .filter((e) => e.ownerPersonId === p._id)
           .sort((a, b) => b.eventDate - a.eventDate)
@@ -147,7 +168,7 @@ export const workload = query({
           await Promise.all(
             assignments.map(async (a) => {
               const event = eventById.get(a.eventId);
-              const role = await ctx.db.get(a.roleId);
+              const role = await getRole(a.roleId);
               if (!event || !role) return null;
               return {
                 eventId: a.eventId,
@@ -168,11 +189,20 @@ export const workload = query({
     const manager = person.managerId
       ? roster.find((p) => p._id === person.managerId) ?? null
       : null;
-    const reports = (childrenOf.get(person._id) ?? []).sort(byName);
+    const reports = (childrenOf.get(person._id) ?? []).sort((a, b) =>
+      a.name.localeCompare(b.name),
+    );
 
     return {
       person: { ...slim(person), email: person.email ?? null },
-      manager: manager ? slim(manager) : null,
+      manager: manager
+        ? {
+            ...slim(manager),
+            // Whether the CALLER may open the manager's own workload page —
+            // false for a non-admin viewing their own boss.
+            viewable: callerReach === null || callerReach.has(manager._id),
+          }
+        : null,
       reports: reports.map((r) => ({
         ...slim(r),
         reportCount: (childrenOf.get(r._id) ?? []).length,

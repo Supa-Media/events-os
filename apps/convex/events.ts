@@ -902,6 +902,16 @@ export const remove = mutation({
       .collect();
     for (const m of eventModules) await ctx.db.delete(m._id);
 
+    // Projects that pointed at this event survive — just unlink them so their
+    // "Open event" affordance doesn't dangle into a deleted event.
+    const linkedProjects = await ctx.db
+      .query("projects")
+      .withIndex("by_event", (q) => q.eq("eventId", eventId))
+      .collect();
+    for (const p of linkedProjects) {
+      await ctx.db.patch(p._id, { eventId: undefined, updatedAt: Date.now() });
+    }
+
     await ctx.db.delete(eventId);
     return eventId;
   },

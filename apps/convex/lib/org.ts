@@ -17,17 +17,22 @@ import { isSuperuser } from "./superuser";
 const ADMIN_ROLES = new Set(["admin", "lead"]);
 
 /**
- * True iff the caller administers the chapter: a superuser email, or a
- * `userChapters` membership with an admin-grade role. (Production onboarding
- * assigns "member"; the chapter creator gets "lead".)
+ * True iff the caller administers THIS chapter: a superuser email, or a
+ * `userChapters` membership in this chapter with an admin-grade role.
+ * (Production onboarding assigns "member"; the chapter creator gets "lead".)
  */
-export async function isChapterAdmin(ctx: QueryCtx): Promise<boolean> {
+export async function isChapterAdmin(
+  ctx: QueryCtx,
+  chapterId: Id<"chapters">,
+): Promise<boolean> {
   if (await isSuperuser(ctx)) return true;
   try {
     const userId = await requireUserId(ctx);
     const membership = await ctx.db
       .query("userChapters")
-      .withIndex("by_userId", (q) => q.eq("userId", userId as Id<"users">))
+      .withIndex("by_userId_chapterId", (q) =>
+        q.eq("userId", userId as Id<"users">).eq("chapterId", chapterId),
+      )
       .first();
     return membership?.role != null && ADMIN_ROLES.has(membership.role);
   } catch {
@@ -46,6 +51,15 @@ export async function viewerPerson(
     .withIndex("by_user", (q) => q.eq("userId", userId as Id<"users">))
     .collect();
   return rows.find((p) => p.chapterId === chapterId) ?? null;
+}
+
+/** Find the caller's roster row in an already-loaded roster (no extra reads). */
+export async function viewerFromRoster(
+  ctx: QueryCtx,
+  roster: Doc<"people">[],
+): Promise<Doc<"people"> | null> {
+  const userId = await requireUserId(ctx);
+  return roster.find((p) => p.userId === userId) ?? null;
 }
 
 /** The non-placeholder roster of a chapter. */
@@ -75,38 +89,55 @@ export function buildChildrenOf(
 }
 
 /**
- * Every person id at-or-below `rootId` in the manager tree (root included).
- * Visited-set guarded so a (theoretically impossible) cycle can't hang.
+ * BFS the manager tree from `root` (inclusive), children name-sorted, each
+ * node tagged with its depth. The one traversal every org surface derives
+ * from. Visited-set guarded so a (theoretically impossible) cycle can't hang.
  */
-export function subtreeIds(
+export function subtreeNodes(
   childrenOf: Map<Id<"people">, Doc<"people">[]>,
-  rootId: Id<"people">,
-): Set<Id<"people">> {
-  const ids = new Set<Id<"people">>([rootId]);
-  const queue: Id<"people">[] = [rootId];
+  root: Doc<"people">,
+): { person: Doc<"people">; depth: number }[] {
+  const byName = (a: Doc<"people">, b: Doc<"people">) =>
+    a.name.localeCompare(b.name);
+  const nodes: { person: Doc<"people">; depth: number }[] = [];
+  const visited = new Set<Id<"people">>([root._id]);
+  const queue: { person: Doc<"people">; depth: number }[] = [
+    { person: root, depth: 0 },
+  ];
   while (queue.length > 0) {
-    const cur = queue.shift()!;
-    for (const child of childrenOf.get(cur) ?? []) {
-      if (ids.has(child._id)) continue;
-      ids.add(child._id);
-      queue.push(child._id);
+    const node = queue.shift()!;
+    nodes.push(node);
+    for (const child of (childrenOf.get(node.person._id) ?? []).sort(byName)) {
+      if (visited.has(child._id)) continue;
+      visited.add(child._id);
+      queue.push({ person: child, depth: node.depth + 1 });
     }
   }
-  return ids;
+  return nodes;
+}
+
+/** Every person id at-or-below `root` in the manager tree (root included). */
+export function subtreeIds(
+  childrenOf: Map<Id<"people">, Doc<"people">[]>,
+  root: Doc<"people">,
+): Set<Id<"people">> {
+  return new Set(subtreeNodes(childrenOf, root).map((n) => n.person._id));
 }
 
 /**
  * The person ids whose work the caller may see/manage: the whole chapter for
  * admins (returned as null, meaning "no restriction"), the caller's subtree if
- * they're on the roster, or the empty set.
+ * they're on the roster, or the empty set. Pass `roster` when the caller
+ * already loaded it, to avoid a second chapter-wide read.
  */
 export async function manageablePersonIds(
   ctx: QueryCtx,
   chapterId: Id<"chapters">,
+  roster?: Doc<"people">[],
 ): Promise<Set<Id<"people">> | null> {
-  if (await isChapterAdmin(ctx)) return null;
-  const viewer = await viewerPerson(ctx, chapterId);
+  if (await isChapterAdmin(ctx, chapterId)) return null;
+  const people = roster ?? (await chapterRoster(ctx, chapterId));
+  const viewer = await viewerFromRoster(ctx, people);
   if (!viewer) return new Set();
-  const roster = await chapterRoster(ctx, chapterId);
-  return subtreeIds(buildChildrenOf(roster), viewer._id);
+  return subtreeIds(buildChildrenOf(people), viewer);
 }

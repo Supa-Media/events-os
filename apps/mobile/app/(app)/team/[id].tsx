@@ -36,6 +36,7 @@ import {
 } from "../../../components/team/ProjectCard";
 import { colors, spacing } from "../../../lib/theme";
 import { formatDate } from "../../../lib/format";
+import { alertError } from "../../../lib/errors";
 
 type Workload = NonNullable<FunctionReturnType<typeof api.org.workload>>;
 type Member = Workload["members"][number];
@@ -65,18 +66,37 @@ export default function PersonWorkloadScreen() {
     [projects],
   );
 
+  const memberIds = useMemo(
+    () => new Set((workload?.members ?? []).map((m) => m._id)),
+    [workload],
+  );
+
   /**
-   * A person's top-level cards: projects they own that don't nest under
-   * another project of theirs (children render inside the parent's card).
+   * Each person's top-level cards, grouped once per data change. A project is
+   * a root for its owner UNLESS its nearest owned ancestor belongs to someone
+   * shown on this page — then it already renders nested inside that ancestor's
+   * card, and listing it again would put two live copies on one screen.
    */
-  function rootsFor(ownerId: Id<"people">): ProjectDoc[] {
-    return (projects ?? []).filter((p) => {
-      if (p.ownerPersonId !== ownerId) return false;
-      if (!p.parentProjectId) return true;
-      const parent = projectById.get(p.parentProjectId);
-      return !parent || parent.ownerPersonId !== ownerId;
-    });
-  }
+  const rootsByOwner = useMemo(() => {
+    const nearestAncestorOwner = (p: ProjectDoc): Id<"people"> | undefined => {
+      let cur = p.parentProjectId ? projectById.get(p.parentProjectId) : undefined;
+      for (let hops = 0; cur && hops < 100; hops++) {
+        if (cur.ownerPersonId) return cur.ownerPersonId;
+        cur = cur.parentProjectId ? projectById.get(cur.parentProjectId) : undefined;
+      }
+      return undefined;
+    };
+    const map = new Map<Id<"people">, ProjectDoc[]>();
+    for (const p of projects ?? []) {
+      if (!p.ownerPersonId) continue;
+      const ancestorOwner = nearestAncestorOwner(p);
+      if (ancestorOwner && memberIds.has(ancestorOwner)) continue;
+      const list = map.get(p.ownerPersonId) ?? [];
+      list.push(p);
+      map.set(p.ownerPersonId, list);
+    }
+    return map;
+  }, [projects, projectById, memberIds]);
 
   if (workload === undefined || projects === undefined) {
     return <Screen loading />;
@@ -107,7 +127,7 @@ export default function PersonWorkloadScreen() {
   const { person, manager, reports, members } = workload;
   const self = members.find((m) => m.isSelf);
   const team = members.filter((m) => !m.isSelf);
-  const ownRoots = rootsFor(person._id);
+  const ownRoots = rootsByOwner.get(person._id) ?? [];
 
   return (
     <Screen>
@@ -133,17 +153,26 @@ export default function PersonWorkloadScreen() {
                   <Text className="text-sm text-muted">{person.role}</Text>
                 ) : null}
                 {manager ? (
-                  <Pressable
-                    onPress={() => router.push(`/team/${manager._id}` as any)}
-                    className="active:opacity-70"
-                  >
+                  // Only link when the caller may open the manager's page —
+                  // a non-admin can't inspect their own boss's workload.
+                  manager.viewable ? (
+                    <Pressable
+                      onPress={() => router.push(`/team/${manager._id}` as any)}
+                      className="active:opacity-70"
+                    >
+                      <Text className="text-sm text-muted">
+                        {person.role ? "· " : ""}Reports to{" "}
+                        <Text className="font-semibold text-accent">
+                          {manager.name}
+                        </Text>
+                      </Text>
+                    </Pressable>
+                  ) : (
                     <Text className="text-sm text-muted">
                       {person.role ? "· " : ""}Reports to{" "}
-                      <Text className="font-semibold text-accent">
-                        {manager.name}
-                      </Text>
+                      <Text className="font-semibold">{manager.name}</Text>
                     </Text>
-                  </Pressable>
+                  )
                 ) : null}
               </View>
             </View>
@@ -182,10 +211,10 @@ export default function PersonWorkloadScreen() {
                 size="sm"
                 variant="secondary"
                 onPress={() =>
-                  createProject({
+                  void createProject({
                     name: "New project",
                     ownerPersonId: person._id,
-                  })
+                  }).catch(alertError)
                 }
               />
             }
@@ -225,15 +254,15 @@ export default function PersonWorkloadScreen() {
                   <TeamMemberBlock
                     key={m._id}
                     member={m}
-                    roots={rootsFor(m._id)}
+                    roots={rootsByOwner.get(m._id) ?? []}
                     projectTree={projectTree}
                     peopleById={peopleById}
                     onOpen={() => router.push(`/team/${m._id}` as any)}
                     onAddProject={() =>
-                      createProject({
+                      void createProject({
                         name: "New project",
                         ownerPersonId: m._id,
-                      })
+                      }).catch(alertError)
                     }
                   />
                 ))}

@@ -8,7 +8,7 @@
  * so "Music recording" can hold "Pitch to artists" and so on.
  */
 import { useState } from "react";
-import { View, Text, Pressable, Platform } from "react-native";
+import { View, Text, Pressable } from "react-native";
 import { useRouter } from "expo-router";
 import { useMutation } from "convex/react";
 import { api } from "@events-os/convex/_generated/api";
@@ -26,6 +26,8 @@ import {
 } from "../ui";
 import { colors } from "../../lib/theme";
 import { parseDateInput, toDateInput } from "../../lib/format";
+import { alertError } from "../../lib/errors";
+import { confirmAction } from "../event/ticketing/helpers";
 
 // Status palette: gray until started, blue while moving, red when stuck,
 // amber when parked, green when shipped.
@@ -53,14 +55,6 @@ export function buildProjectTree(
   return childrenOf;
 }
 
-/** Confirm a destructive action — window.confirm on web, no prompt on native. */
-function confirmRemove(name: string): boolean {
-  if (Platform.OS === "web" && typeof window !== "undefined") {
-    return window.confirm(`Delete ${name || "this project"} (sub-projects are kept)?`);
-  }
-  return true;
-}
-
 export function ProjectCard({
   project,
   childrenOf,
@@ -77,9 +71,17 @@ export function ProjectCard({
   showOwner?: boolean;
 }) {
   const router = useRouter();
-  const update = useMutation(api.projects.update);
-  const create = useMutation(api.projects.create);
-  const remove = useMutation(api.projects.remove);
+  const updateMutation = useMutation(api.projects.update);
+  const createMutation = useMutation(api.projects.create);
+  const removeMutation = useMutation(api.projects.remove);
+  // Cells commit fire-and-forget; surface server rejections (scope changes,
+  // concurrent edits) instead of a silent revert + unhandled rejection.
+  const update = (args: Parameters<typeof updateMutation>[0]) => {
+    void updateMutation(args).catch(alertError);
+  };
+  const create = (args: Parameters<typeof createMutation>[0]) => {
+    void createMutation(args).catch(alertError);
+  };
   const [ownerPickerOpen, setOwnerPickerOpen] = useState(false);
   const id = project._id;
   const children = childrenOf.get(id) ?? [];
@@ -111,9 +113,17 @@ export function ProjectCard({
           />
         </View>
         <Pressable
-          onPress={() => {
-            if (confirmRemove(project.name)) remove({ projectId: id });
-          }}
+          onPress={() =>
+            confirmAction({
+              title: "Delete project?",
+              message: `${project.name || "This project"} will be deleted. Sub-projects are kept.`,
+              confirmLabel: "Delete",
+              destructive: true,
+              onConfirm: () => {
+                void removeMutation({ projectId: id }).catch(alertError);
+              },
+            })
+          }
           hitSlop={4}
           accessibilityLabel="Delete project"
           className="rounded p-1 active:bg-sunken web:hover:bg-sunken"
@@ -146,7 +156,10 @@ export function ProjectCard({
             format={(v) => (v != null ? `$${v}` : "")}
             parse={(t) => {
               if (t.trim() === "") return null;
-              const n = Number(t.replace(/[^0-9.]/g, ""));
+              const cleaned = t.replace(/[^0-9.]/g, "");
+              // Digit-free input ("tbd") must NOT become $0 — leave unchanged.
+              if (cleaned === "") return undefined;
+              const n = Number(cleaned);
               return Number.isFinite(n) ? n : undefined;
             }}
             onCommit={(v) => {

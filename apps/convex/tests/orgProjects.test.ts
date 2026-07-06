@@ -80,7 +80,7 @@ describe("manager hierarchy", () => {
     ).rejects.toThrow(ConvexError);
   });
 
-  test("removing a manager re-points reports and orphans their projects", async () => {
+  test("removing a manager re-points reports and rolls projects up to their manager", async () => {
     const s = await setupChapter(newT());
     const { alice, bob, cara } = await seedChain(s);
     await s.as.mutation(api.projects.create, {
@@ -90,12 +90,26 @@ describe("manager hierarchy", () => {
 
     await s.as.mutation(api.people.remove, { personId: bob });
 
-    // Cara now reports straight to Alice; the project survives unowned.
+    // Cara now reports straight to Alice; Bob's work rolls up to Alice so it
+    // stays visible in her Team view instead of vanishing into admin triage.
     const caraDoc = await s.as.query(api.people.get, { personId: cara });
     expect(caraDoc.managerId).toBe(alice);
     const projects = await s.as.query(api.projects.list);
     expect(projects).toHaveLength(1);
-    expect(projects[0].ownerPersonId).toBeUndefined();
+    expect(projects[0].ownerPersonId).toBe(alice);
+  });
+
+  test("removing someone WITH reports is admin-only (it rewires the tree)", async () => {
+    const s = await setupChapter(newT());
+    const { bob, cara } = await seedChain(s);
+    const asBob = await addUser(s, "bob2@publicworship.life", { personId: bob });
+
+    // Bob (non-admin) can't delete a manager — that re-points reports…
+    await expect(
+      asBob.mutation(api.people.remove, { personId: bob }),
+    ).rejects.toThrow(ConvexError);
+    // …but removing a leaf (no reports) stays open to everyone.
+    await asBob.mutation(api.people.remove, { personId: cara });
   });
 });
 
@@ -390,5 +404,160 @@ describe("access control", () => {
       projectId: caraProjects[0]._id,
       status: "in_progress",
     });
+  });
+});
+
+describe("review-cycle regressions", () => {
+  test("non-admins can't graft projects into another team's tree", async () => {
+    const s = await setupChapter(newT());
+    const { alice, bob, cara } = await seedChain(s);
+    const asBob = await addUser(s, "bob@publicworship.life", { personId: bob });
+    // Alice is Bob's MANAGER, i.e. above him — outside his manageable subtree.
+    const pAlice = (await s.as.mutation(api.projects.create, {
+      name: "Alice's project",
+      ownerPersonId: alice,
+    })) as Id<"projects">;
+    const pBob = (await s.as.mutation(api.projects.create, {
+      name: "Bob's project",
+      ownerPersonId: bob,
+    })) as Id<"projects">;
+
+    // create: in-scope owner but foreign parent → rejected.
+    await expect(
+      asBob.mutation(api.projects.create, {
+        name: "Injected",
+        ownerPersonId: cara,
+        parentProjectId: pAlice,
+      }),
+    ).rejects.toThrow(ConvexError);
+    // update: re-parenting own project under a foreign tree → rejected.
+    await expect(
+      asBob.mutation(api.projects.update, {
+        projectId: pBob,
+        parentProjectId: pAlice,
+      }),
+    ).rejects.toThrow(ConvexError);
+  });
+
+  test("non-admins can't strand a root project by clearing its owner", async () => {
+    const s = await setupChapter(newT());
+    const { bob, cara } = await seedChain(s);
+    const asBob = await addUser(s, "bob@publicworship.life", { personId: bob });
+    const root = (await s.as.mutation(api.projects.create, {
+      name: "Root",
+      ownerPersonId: bob,
+    })) as Id<"projects">;
+    const sub = (await s.as.mutation(api.projects.create, {
+      name: "Sub",
+      ownerPersonId: cara,
+      parentProjectId: root,
+    })) as Id<"projects">;
+
+    // Clearing a ROOT's owner would push it into admin-only unowned land.
+    await expect(
+      asBob.mutation(api.projects.update, { projectId: root, ownerPersonId: null }),
+    ).rejects.toThrow(ConvexError);
+    // Clearing a SUB's owner is fine — it inherits Bob's scope via the parent.
+    await asBob.mutation(api.projects.update, {
+      projectId: sub,
+      ownerPersonId: null,
+    });
+    // Admins can still make anything unowned.
+    await s.as.mutation(api.projects.update, {
+      projectId: root,
+      ownerPersonId: null,
+    });
+  });
+
+  test("deleting a project gives its unowned children an explicit owner", async () => {
+    const s = await setupChapter(newT());
+    const { bob } = await seedChain(s);
+    const root = (await s.as.mutation(api.projects.create, {
+      name: "Root",
+      ownerPersonId: bob,
+    })) as Id<"projects">;
+    const sub = (await s.as.mutation(api.projects.create, {
+      name: "Sub",
+      parentProjectId: root, // no owner — inherits Bob through the parent
+    })) as Id<"projects">;
+
+    await s.as.mutation(api.projects.remove, { projectId: root });
+    const projects = await s.as.query(api.projects.list);
+    const subDoc = projects.find((p) => p._id === sub)!;
+    // "Sub-projects are kept" — including their effective owner.
+    expect(subDoc.ownerPersonId).toBe(bob);
+    expect(subDoc.parentProjectId).toBeUndefined();
+  });
+
+  test("deleting an event unlinks projects that pointed at it", async () => {
+    const s = await setupChapter(newT());
+    const eventId = await run(s.t, async (ctx) => {
+      const eventTypeId = await ctx.db.insert("eventTypes", {
+        chapterId: s.chapterId,
+        name: "Eden",
+        slug: "eden",
+        version: 1,
+        createdBy: s.userId,
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      });
+      return await ctx.db.insert("events", {
+        chapterId: s.chapterId,
+        eventTypeId,
+        templateVersion: 1,
+        name: "Eden June",
+        eventDate: 1770000000000,
+        status: "planning",
+        createdBy: s.userId,
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      });
+    });
+    const projectId = (await s.as.mutation(api.projects.create, {
+      name: "Eden prep",
+      eventId,
+    })) as Id<"projects">;
+
+    await s.as.mutation(api.events.remove, { eventId });
+    const projects = await s.as.query(api.projects.list);
+    const doc = projects.find((p) => p._id === projectId)!;
+    expect(doc.eventId).toBeUndefined();
+  });
+
+  test("org.nav reports manage rights without a roster payload", async () => {
+    const s = await setupChapter(newT());
+    const { bob, cara } = await seedChain(s);
+    const asBob = await addUser(s, "bob@publicworship.life", { personId: bob });
+    const asCara = await addUser(s, "cara@publicworship.life", {
+      personId: cara,
+    });
+
+    expect(await s.as.query(api.org.nav)).toMatchObject({
+      isAdmin: true,
+      canManage: true,
+    });
+    expect(await asBob.query(api.org.nav)).toMatchObject({
+      isAdmin: false,
+      canManage: true,
+      selfPersonId: bob,
+    });
+    expect(await asCara.query(api.org.nav)).toMatchObject({
+      isAdmin: false,
+      canManage: false,
+    });
+  });
+
+  test("workload flags whether the caller may open the manager's page", async () => {
+    const s = await setupChapter(newT());
+    const { bob } = await seedChain(s);
+    const asBob = await addUser(s, "bob@publicworship.life", { personId: bob });
+
+    // Bob viewing himself: his boss exists but is out of his reach.
+    const bobView = await asBob.query(api.org.workload, { personId: bob });
+    expect(bobView!.manager!.name).toBe("Alice");
+    expect(bobView!.manager!.viewable).toBe(false);
+    // The admin can hop anywhere.
+    const adminView = await s.as.query(api.org.workload, { personId: bob });
+    expect(adminView!.manager!.viewable).toBe(true);
   });
 });
