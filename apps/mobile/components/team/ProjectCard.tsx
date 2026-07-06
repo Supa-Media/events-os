@@ -178,7 +178,10 @@ export function ProjectCard({
               className={`text-sm ${ownerName ? "text-ink" : "text-faint"}`}
               numberOfLines={1}
             >
-              {ownerName ?? "Assign owner"}
+              {/* An owner whose name isn't in this page's map is still an
+                  owner — never present owned work as assignable-from-scratch. */}
+              {ownerName ??
+                (project.ownerPersonId ? "Owned elsewhere" : "Assign owner")}
             </Text>
           </Pressable>
         ) : null}

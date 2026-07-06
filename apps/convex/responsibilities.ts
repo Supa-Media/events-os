@@ -7,9 +7,9 @@
  * them (they're the org's how-to documentation); editing is open like the
  * People roster.
  */
-import { query, mutation } from "./_generated/server";
+import { query, mutation, QueryCtx } from "./_generated/server";
 import { Id } from "./_generated/dataModel";
-import { v } from "convex/values";
+import { v, ConvexError } from "convex/values";
 import { RESPONSIBILITY_CADENCES } from "@events-os/shared";
 import {
   requireUserId,
@@ -17,8 +17,33 @@ import {
   requireOwned,
   getChapterIdOrNull,
 } from "./lib/context";
+import { isChapterAdmin, viewerPerson } from "./lib/org";
 
 const cadence = v.union(...RESPONSIBILITY_CADENCES.map((c) => v.literal(c)));
+
+/**
+ * Editing responsibilities is for managers and admins. These rows feed the
+ * check-in accountability loop, so the person being held to a duty must not
+ * be able to quietly delete or unassign it before their 1:1.
+ */
+async function requireCanEdit(
+  ctx: QueryCtx,
+  chapterId: Id<"chapters">,
+): Promise<void> {
+  if (await isChapterAdmin(ctx, chapterId)) return;
+  const viewer = await viewerPerson(ctx, chapterId);
+  if (viewer) {
+    const firstReport = await ctx.db
+      .query("people")
+      .withIndex("by_manager", (q) => q.eq("managerId", viewer._id))
+      .first();
+    if (firstReport !== null) return;
+  }
+  throw new ConvexError({
+    code: "FORBIDDEN",
+    message: "Only managers and admins can edit responsibilities.",
+  });
+}
 
 /** All the chapter's responsibility definitions, oldest first. */
 export const list = query({
@@ -49,6 +74,7 @@ export const create = mutation({
   handler: async (ctx, args) => {
     const chapterId = await requireChapterId(ctx);
     const userId = await requireUserId(ctx);
+    await requireCanEdit(ctx, chapterId as Id<"chapters">);
     for (const personId of args.assigneePersonIds ?? []) {
       await requireOwned(ctx, "people", personId, "Assignee");
     }
@@ -84,12 +110,13 @@ export const update = mutation({
     notes: v.optional(v.union(v.string(), v.null())),
   },
   handler: async (ctx, { responsibilityId, ...patch }) => {
-    await requireOwned(
+    const row = await requireOwned(
       ctx,
       "responsibilities",
       responsibilityId,
       "Responsibility",
     );
+    await requireCanEdit(ctx, row.chapterId);
     if (Array.isArray(patch.assigneePersonIds)) {
       for (const personId of patch.assigneePersonIds) {
         await requireOwned(ctx, "people", personId, "Assignee");
@@ -110,12 +137,13 @@ export const update = mutation({
 export const remove = mutation({
   args: { responsibilityId: v.id("responsibilities") },
   handler: async (ctx, { responsibilityId }) => {
-    await requireOwned(
+    const row = await requireOwned(
       ctx,
       "responsibilities",
       responsibilityId,
       "Responsibility",
     );
+    await requireCanEdit(ctx, row.chapterId);
     await ctx.db.delete(responsibilityId);
     return responsibilityId;
   },

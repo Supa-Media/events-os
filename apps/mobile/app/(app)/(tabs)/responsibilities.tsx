@@ -8,7 +8,7 @@
  * and cadence says how often (daily … yearly, or ad hoc, e.g. event flyers).
  */
 import { useMemo, useState } from "react";
-import { View, Text, Pressable, ScrollView, Platform } from "react-native";
+import { View, Text, Pressable, ScrollView } from "react-native";
 import { useQuery, useMutation } from "convex/react";
 import { api } from "@events-os/convex/_generated/api";
 import type { Doc, Id } from "@events-os/convex/_generated/dataModel";
@@ -16,6 +16,7 @@ import {
   RESPONSIBILITY_CADENCES,
   RESPONSIBILITY_CADENCE_LABELS,
   responsibilityAppliesTo,
+  normalizeRole,
   type ResponsibilityCadence,
 } from "@events-os/shared";
 import {
@@ -33,7 +34,9 @@ import {
   type SelectOption,
 } from "../../../components/ui";
 import { colors, spacing } from "../../../lib/theme";
+import { parseList } from "../../../lib/format";
 import { alertError } from "../../../lib/errors";
+import { confirmAction } from "../../../components/event/ticketing/helpers";
 
 const CADENCE_OPTIONS: SelectOption<ResponsibilityCadence>[] =
   RESPONSIBILITY_CADENCES.map((c) => ({
@@ -59,35 +62,32 @@ const DELETE_W = 38;
 const TABLE_WIDTH =
   Object.values(COLS).reduce((sum, w) => sum + w, 0) + DELETE_W;
 
-/** Parse a comma list into trimmed, de-duped values, preserving case. */
-function parseList(raw: string): string[] {
-  const seen = new Set<string>();
-  for (const part of raw.split(",")) {
-    const s = part.trim();
-    if (s) seen.add(s);
-  }
-  return Array.from(seen);
-}
-
-/** Confirm a destructive action — window.confirm on web, no prompt on native. */
-function confirmRemove(title: string): boolean {
-  if (Platform.OS === "web" && typeof window !== "undefined") {
-    return window.confirm(`Delete "${title || "this responsibility"}"?`);
-  }
-  return true;
-}
-
 export default function ResponsibilitiesScreen() {
   const responsibilities = useQuery(api.responsibilities.list);
   const people = useQuery(api.people.list);
   const create = useMutation(api.responsibilities.create);
+  const update = useMutation(api.responsibilities.update);
 
   const [search, setSearch] = useState("");
+  // ONE picker for the whole grid (a per-row picker would mount a hidden
+  // Modal + roster watcher on every row); rows just say which row it's for.
+  const [pickerForRow, setPickerForRow] =
+    useState<Id<"responsibilities"> | null>(null);
 
   const nameById = useMemo(
     () => new Map((people ?? []).map((p) => [p._id, p.name])),
     [people],
   );
+  // How many people hold each (normalized) role — dangling-role warnings.
+  const roleHolders = useMemo(() => {
+    const map = new Map<string, number>();
+    for (const p of people ?? []) {
+      const role = normalizeRole(p.role);
+      if (role) map.set(role, (map.get(role) ?? 0) + 1);
+    }
+    return map;
+  }, [people]);
+
   // How many people each row currently fans out to (role match + direct).
   const holderCount = useMemo(() => {
     const map = new Map<Id<"responsibilities">, number>();
@@ -177,8 +177,10 @@ export default function ResponsibilitiesScreen() {
                   key={r._id}
                   row={r}
                   nameById={nameById}
+                  roleHolders={roleHolders}
                   holders={holderCount.get(r._id) ?? 0}
                   isLast={i === filtered.length - 1}
+                  onOpenPicker={() => setPickerForRow(r._id)}
                 />
               ))
             )}
@@ -187,9 +189,11 @@ export default function ResponsibilitiesScreen() {
 
         {/* Add row */}
         <Pressable
-          onPress={() =>
-            void create({ title: "New responsibility" }).catch(alertError)
-          }
+          onPress={() => {
+            // A live search filter would hide the new row — clear it first.
+            setSearch("");
+            void create({ title: "New responsibility" }).catch(alertError);
+          }}
           className="flex-row items-center gap-1.5 border-t border-border px-3 py-2.5 active:bg-sunken web:hover:bg-sunken"
         >
           <Icon name="plus" size={15} color={colors.muted} />
@@ -209,6 +213,24 @@ export default function ResponsibilitiesScreen() {
           </View>
         </Narrow>
       ) : null}
+
+      <PersonPicker
+        visible={pickerForRow !== null}
+        title="Assign to person"
+        onPick={(personId) => {
+          const row = responsibilities.find((r) => r._id === pickerForRow);
+          setPickerForRow(null);
+          if (!row) return;
+          const cur = row.assigneePersonIds ?? [];
+          if (!cur.includes(personId as Id<"people">)) {
+            void update({
+              responsibilityId: row._id,
+              assigneePersonIds: [...cur, personId as Id<"people">],
+            }).catch(alertError);
+          }
+        }}
+        onClose={() => setPickerForRow(null)}
+      />
     </Screen>
   );
 }
@@ -216,17 +238,20 @@ export default function ResponsibilitiesScreen() {
 function ResponsibilityRow({
   row,
   nameById,
+  roleHolders,
   holders,
   isLast,
+  onOpenPicker,
 }: {
   row: Responsibility;
   nameById: Map<Id<"people">, string>;
+  roleHolders: Map<string, number>;
   holders: number;
   isLast: boolean;
+  onOpenPicker: () => void;
 }) {
   const updateMutation = useMutation(api.responsibilities.update);
   const removeMutation = useMutation(api.responsibilities.remove);
-  const [pickerOpen, setPickerOpen] = useState(false);
   const id = row._id;
 
   const update = (args: Omit<Parameters<typeof updateMutation>[0], "responsibilityId">) => {
@@ -260,10 +285,12 @@ function ResponsibilityRow({
         />
       </Cell>
 
-      {/* Assignee roles (fan-out): comma-edited chips */}
+      {/* Assignee roles (fan-out): comma-edited chips; a role nobody holds
+          reads in danger red so a job-title rename can't silently detach it. */}
       <Cell width={COLS.roles}>
         <RolesCell
           values={row.assigneeRoles ?? []}
+          roleHolders={roleHolders}
           onCommit={(next) =>
             update({ assigneeRoles: next.length > 0 ? next : null })
           }
@@ -289,7 +316,7 @@ function ResponsibilityRow({
             />
           ))}
           <Pressable
-            onPress={() => setPickerOpen(true)}
+            onPress={onOpenPicker}
             hitSlop={6}
             accessibilityLabel="Assign a person"
             className="rounded p-0.5 active:bg-sunken web:hover:bg-sunken"
@@ -297,20 +324,6 @@ function ResponsibilityRow({
             <Icon name="plus" size={13} color={colors.faint} />
           </Pressable>
         </View>
-        <PersonPicker
-          visible={pickerOpen}
-          title="Assign to person"
-          onPick={(personId) => {
-            const cur = row.assigneePersonIds ?? [];
-            if (!cur.includes(personId as Id<"people">)) {
-              update({
-                assigneePersonIds: [...cur, personId as Id<"people">],
-              });
-            }
-            setPickerOpen(false);
-          }}
-          onClose={() => setPickerOpen(false)}
-        />
       </Cell>
 
       {/* Fan-out count (derived, read-only) */}
@@ -350,11 +363,17 @@ function ResponsibilityRow({
       {/* Delete gutter */}
       <View style={{ width: DELETE_W }} className="items-center justify-center">
         <Pressable
-          onPress={() => {
-            if (confirmRemove(row.title)) {
-              void removeMutation({ responsibilityId: id }).catch(alertError);
-            }
-          }}
+          onPress={() =>
+            confirmAction({
+              title: "Delete responsibility?",
+              message: `"${row.title || "This responsibility"}" will be removed for everyone holding it.`,
+              confirmLabel: "Delete",
+              destructive: true,
+              onConfirm: () => {
+                void removeMutation({ responsibilityId: id }).catch(alertError);
+              },
+            })
+          }
           hitSlop={4}
           accessibilityLabel="Delete responsibility"
           className="rounded p-1 active:bg-sunken web:hover:bg-sunken"
@@ -380,9 +399,11 @@ function Cell({ width, children }: { width: number; children: React.ReactNode })
 // Role chips + inline comma editor (case-preserving, like the People grid).
 function RolesCell({
   values,
+  roleHolders,
   onCommit,
 }: {
   values: string[];
+  roleHolders: Map<string, number>;
   onCommit: (next: string[]) => void;
 }) {
   const [editing, setEditing] = useState(false);
@@ -408,7 +429,16 @@ function RolesCell({
       {values.length === 0 ? (
         <Text className="text-sm text-faint">—</Text>
       ) : (
-        values.map((s) => <OptionTag key={s} label={s} color="purple" />)
+        values.map((s) => {
+          const holds = (roleHolders.get(normalizeRole(s)) ?? 0) > 0;
+          return (
+            <OptionTag
+              key={s}
+              label={holds ? s : `${s} — no one holds this role`}
+              color={holds ? "purple" : "red"}
+            />
+          );
+        })
       )}
     </Pressable>
   );

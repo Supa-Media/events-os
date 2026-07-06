@@ -39,13 +39,14 @@ import { CheckInModal } from "./CheckInModal";
 import { colors, spacing } from "../../lib/theme";
 import { formatDate } from "../../lib/format";
 import { alertError } from "../../lib/errors";
+import { confirmAction } from "../event/ticketing/helpers";
 
 type Workload = NonNullable<FunctionReturnType<typeof api.org.workload>>;
 type Member = Workload["members"][number];
 type Responsibility = Doc<"responsibilities">;
 type CheckInRow = NonNullable<
   FunctionReturnType<typeof api.checkIns.listForSubtree>
->[number];
+>["entries"][number];
 
 export function WorkloadView({
   personId,
@@ -60,7 +61,6 @@ export function WorkloadView({
   const projects = useQuery(api.projects.list);
   const responsibilities = useQuery(api.responsibilities.list);
   const checkIns = useQuery(api.checkIns.listForSubtree, { personId });
-  const nav = useQuery(api.org.nav);
   const createProject = useMutation(api.projects.create);
 
   const [checkInFor, setCheckInFor] = useState<{
@@ -116,19 +116,28 @@ export function WorkloadView({
     return map;
   }, [projects, projectById, memberIds]);
 
-  /** A member's responsibilities: role fan-out + direct assignments. */
-  function responsibilitiesFor(member: {
-    _id: Id<"people">;
-    role: string | null;
-  }): Responsibility[] {
-    return (responsibilities ?? []).filter((r) =>
-      responsibilityAppliesTo(r, member),
-    );
-  }
+  /** Everyone's responsibilities (role fan-out + direct), one pass. */
+  const respByPerson = useMemo(() => {
+    const map = new Map<Id<"people">, Responsibility[]>();
+    const people = [
+      ...(workload?.members ?? []).map((m) => ({ _id: m._id, role: m.role })),
+    ];
+    if (workload && !workload.members.some((m) => m.isSelf)) {
+      people.push({ _id: workload.person._id, role: workload.person.role });
+    }
+    for (const p of people) {
+      map.set(
+        p._id,
+        (responsibilities ?? []).filter((r) => responsibilityAppliesTo(r, p)),
+      );
+    }
+    return map;
+  }, [responsibilities, workload]);
+  const respFor = (id: Id<"people">) => respByPerson.get(id) ?? [];
 
   const checkInsByPerson = useMemo(() => {
     const map = new Map<Id<"people">, CheckInRow[]>();
-    for (const c of checkIns ?? []) {
+    for (const c of checkIns?.entries ?? []) {
       const list = map.get(c.personId) ?? [];
       list.push(c);
       map.set(c.personId, list);
@@ -138,9 +147,15 @@ export function WorkloadView({
 
   // Managers log 1:1s about others — never about themselves.
   const canLogFor = (memberId: Id<"people">) =>
-    nav?.selfPersonId != null && memberId !== nav.selfPersonId;
+    workload?.caller.personId != null &&
+    memberId !== workload.caller.personId;
 
-  if (workload === undefined || projects === undefined) {
+  // Responsibilities gate the check-in modal's seed list — wait for them too.
+  if (
+    workload === undefined ||
+    projects === undefined ||
+    responsibilities === undefined
+  ) {
     return <Screen loading />;
   }
 
@@ -168,12 +183,15 @@ export function WorkloadView({
     );
   }
 
-  const { person, manager, reports, members } = workload;
+  const { person, caller, manager, reports, members } = workload;
   const self = members.find((m) => m.isSelf);
   const team = members.filter((m) => !m.isSelf);
   const ownRoots = rootsByOwner.get(person._id) ?? [];
-  const ownResponsibilities = responsibilitiesFor(person);
+  const ownResponsibilities = respFor(person._id);
   const ownCheckIns = checkInsByPerson.get(person._id) ?? [];
+  // Owner reassignment is a manager/admin capability — plain members get
+  // read-only chips (the server rejects their reassignments anyway).
+  const showOwner = caller.canManage;
 
   return (
     <Screen>
@@ -289,7 +307,7 @@ export function WorkloadView({
                 project={p}
                 childrenOf={projectTree}
                 peopleById={peopleById}
-                showOwner
+                showOwner={showOwner}
               />
             ))}
           </View>
@@ -318,7 +336,10 @@ export function WorkloadView({
         {ownCheckIns.length > 0 ? (
           <>
             <SectionHeader title="1:1 log" count={ownCheckIns.length} />
-            <CheckInList items={ownCheckIns} />
+            <CheckInList
+              items={ownCheckIns}
+              callerPersonId={checkIns?.callerPersonId ?? null}
+            />
           </>
         ) : null}
 
@@ -332,10 +353,12 @@ export function WorkloadView({
                   key={m._id}
                   member={m}
                   roots={rootsByOwner.get(m._id) ?? []}
-                  responsibilities={responsibilitiesFor(m)}
+                  responsibilities={respFor(m._id)}
                   checkIns={checkInsByPerson.get(m._id) ?? []}
                   projectTree={projectTree}
                   peopleById={peopleById}
+                  showOwner={showOwner}
+                  callerPersonId={checkIns?.callerPersonId ?? null}
                   canLog={canLogFor(m._id)}
                   onLog={() => setCheckInFor({ _id: m._id, name: m.name })}
                   onOpen={() => router.push(`/team/${m._id}` as any)}
@@ -355,13 +378,13 @@ export function WorkloadView({
 
       {checkInFor ? (
         <CheckInModal
+          key={checkInFor._id}
           visible
           person={checkInFor}
-          responsibilities={responsibilitiesFor({
-            _id: checkInFor._id,
-            role:
-              members.find((m) => m._id === checkInFor._id)?.role ?? null,
-          }).map((r) => ({ _id: r._id, title: r.title }))}
+          responsibilities={respFor(checkInFor._id).map((r) => ({
+            _id: r._id,
+            title: r.title,
+          }))}
           onClose={() => setCheckInFor(null)}
         />
       ) : null}
@@ -377,6 +400,8 @@ function TeamMemberBlock({
   checkIns,
   projectTree,
   peopleById,
+  showOwner,
+  callerPersonId,
   canLog,
   onLog,
   onOpen,
@@ -388,6 +413,8 @@ function TeamMemberBlock({
   checkIns: CheckInRow[];
   projectTree: Map<Id<"projects">, ProjectDoc[]>;
   peopleById: Map<Id<"people">, string>;
+  showOwner: boolean;
+  callerPersonId: Id<"people"> | null;
   canLog: boolean;
   onLog: () => void;
   onOpen: () => void;
@@ -443,7 +470,7 @@ function TeamMemberBlock({
               project={p}
               childrenOf={projectTree}
               peopleById={peopleById}
-              showOwner
+              showOwner={showOwner}
             />
           ))}
           {responsibilities.length > 0 ? (
@@ -452,7 +479,13 @@ function TeamMemberBlock({
           {member.events.length > 0 || member.roles.length > 0 ? (
             <EventsAndRoles member={member} />
           ) : null}
-          {checkIns.length > 0 ? <CheckInList items={checkIns} limit={2} /> : null}
+          {checkIns.length > 0 ? (
+            <CheckInList
+              items={checkIns}
+              limit={2}
+              callerPersonId={callerPersonId}
+            />
+          ) : null}
         </View>
       )}
     </View>
@@ -490,7 +523,17 @@ function ResponsibilityRows({ items }: { items: Responsibility[] }) {
 }
 
 /** 1:1 history rows: newest first, scores + flags + updates at a glance. */
-function CheckInList({ items, limit }: { items: CheckInRow[]; limit?: number }) {
+function CheckInList({
+  items,
+  limit,
+  callerPersonId,
+}: {
+  items: CheckInRow[];
+  limit?: number;
+  /** The caller's roster id — authors get a delete (mis-log correction). */
+  callerPersonId: Id<"people"> | null;
+}) {
+  const removeCheckIn = useMutation(api.checkIns.remove);
   const shown = limit ? items.slice(0, limit) : items;
   return (
     <View style={{ gap: spacing.xs }}>
@@ -512,6 +555,28 @@ function CheckInList({ items, limit }: { items: CheckInRow[]; limit?: number }) 
                 {c.managerName ? ` · by ${c.managerName}` : ""}
               </Text>
               <View className="flex-1" />
+              {callerPersonId != null && c.managerPersonId === callerPersonId ? (
+                <Pressable
+                  onPress={() =>
+                    confirmAction({
+                      title: "Delete this 1:1 entry?",
+                      message: "Use this to correct a mis-logged check-in.",
+                      confirmLabel: "Delete",
+                      destructive: true,
+                      onConfirm: () => {
+                        void removeCheckIn({ checkInId: c._id }).catch(
+                          alertError,
+                        );
+                      },
+                    })
+                  }
+                  hitSlop={6}
+                  accessibilityLabel="Delete check-in"
+                  className="rounded p-0.5 active:bg-sunken web:hover:bg-sunken"
+                >
+                  <Icon name="trash-2" size={12} color={colors.faint} />
+                </Pressable>
+              ) : null}
               {c.workloadScore != null ? (
                 <OptionTag
                   label={`Load ${c.workloadScore}/10`}
@@ -560,7 +625,8 @@ function CheckInList({ items, limit }: { items: CheckInRow[]; limit?: number }) 
       })}
       {limit && items.length > limit ? (
         <Text className="text-2xs font-semibold text-faint">
-          +{items.length - limit} earlier — open their page for the full log
+          Showing {limit} of the {items.length} most recent — open their page
+          for the rest
         </Text>
       ) : null}
     </View>

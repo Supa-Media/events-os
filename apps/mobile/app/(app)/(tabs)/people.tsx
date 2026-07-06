@@ -29,7 +29,7 @@ import {
   PersonPicker,
 } from "../../../components/ui";
 import { colors, spacing } from "../../../lib/theme";
-import { formatDate } from "../../../lib/format";
+import { formatDate, parseList } from "../../../lib/format";
 import { alertError } from "../../../lib/errors";
 import type { Doc, Id } from "@events-os/convex/_generated/dataModel";
 import {
@@ -107,16 +107,6 @@ function parseSkills(raw: string): string[] {
   return Array.from(seen);
 }
 
-/** Parse a comma list into trimmed, de-duped values, PRESERVING case (e.g.
- * Projects like "Eden" or comms channels). */
-function parseList(raw: string): string[] {
-  const seen = new Set<string>();
-  for (const part of raw.split(",")) {
-    const s = part.trim();
-    if (s) seen.add(s);
-  }
-  return Array.from(seen);
-}
 
 /** Confirm a destructive action — window.confirm on web, no prompt on native. */
 function confirmRemove(name: string): boolean {

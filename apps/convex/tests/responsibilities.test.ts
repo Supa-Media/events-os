@@ -84,6 +84,60 @@ describe("responsibilities", () => {
     expect(responsibilityAppliesTo(flyers, person(bob, "Director"))).toBe(false);
   });
 
+  test("editing is for managers and admins only", async () => {
+    const s = await setupChapter(newT());
+    const { bob, cara } = await seedChain(s);
+    const asBob = await addUser(s, "bob@publicworship.life", { personId: bob });
+    const asCara = await addUser(s, "cara@publicworship.life", {
+      personId: cara,
+    });
+
+    // Cara (no reports) can't touch the definitions she's held to…
+    await expect(
+      asCara.mutation(api.responsibilities.create, { title: "X" }),
+    ).rejects.toThrow(ConvexError);
+    const id = (await asBob.mutation(api.responsibilities.create, {
+      title: "Weekly setlist",
+      assigneePersonIds: [cara],
+    })) as Id<"responsibilities">;
+    await expect(
+      asCara.mutation(api.responsibilities.update, {
+        responsibilityId: id,
+        assigneePersonIds: null,
+      }),
+    ).rejects.toThrow(ConvexError);
+    await expect(
+      asCara.mutation(api.responsibilities.remove, { responsibilityId: id }),
+    ).rejects.toThrow(ConvexError);
+    // …while her manager and admins can.
+    await asBob.mutation(api.responsibilities.update, {
+      responsibilityId: id,
+      cadence: "weekly",
+    });
+    await s.as.mutation(api.responsibilities.remove, { responsibilityId: id });
+  });
+
+  test("removing a person strips their direct assignments and 1:1 record", async () => {
+    const s = await setupChapter(newT());
+    const { bob, cara } = await seedChain(s);
+    const asBob = await addUser(s, "bob@publicworship.life", { personId: bob });
+    const id = (await s.as.mutation(api.responsibilities.create, {
+      title: "Flyers",
+      assigneePersonIds: [cara],
+    })) as Id<"responsibilities">;
+    await asBob.mutation(api.checkIns.log, { personId: cara, type: "checkin" });
+
+    await s.as.mutation(api.people.remove, { personId: cara });
+
+    const [row] = await s.as.query(api.responsibilities.list);
+    expect(row._id).toBe(id);
+    expect(row.assigneePersonIds).toBeUndefined();
+    const history = await asBob.query(api.checkIns.listForSubtree, {
+      personId: bob,
+    });
+    expect(history!.entries).toHaveLength(0);
+  });
+
   test("update patches and null clears; defaults apply", async () => {
     const s = await setupChapter(newT());
     const id = (await s.as.mutation(api.responsibilities.create, {
@@ -175,22 +229,81 @@ describe("check-ins", () => {
     const bobView = await asBob.query(api.checkIns.listForSubtree, {
       personId: bob,
     });
-    expect(bobView).toHaveLength(1);
-    expect(bobView![0].type).toBe("skip");
-    expect(bobView![0].managerName).toBe("Bob");
+    expect(bobView!.entries).toHaveLength(1);
+    expect(bobView!.entries[0].type).toBe("skip");
+    expect(bobView!.entries[0].managerName).toBe("Bob");
     // …the admin sees it from the top…
     const adminView = await s.as.query(api.checkIns.listForSubtree, {
       personId: alice,
     });
-    expect(adminView).toHaveLength(1);
-    // …but Cara can't read up or across the chain.
+    expect(adminView!.entries).toHaveLength(1);
+    // …but Cara can't read up or across the chain…
     expect(
       await asCara.query(api.checkIns.listForSubtree, { personId: bob }),
     ).toBeNull();
-    // Her own subtree (herself) shows her own history.
+    // …and the record ABOUT her is a managerial record: her own view of her
+    // own subtree deliberately excludes it.
     const caraView = await asCara.query(api.checkIns.listForSubtree, {
       personId: cara,
     });
-    expect(caraView).toHaveLength(1);
+    expect(caraView!.entries).toHaveLength(0);
+  });
+
+  test("only the author (or an admin) can delete a mis-logged entry", async () => {
+    const s = await setupChapter(newT());
+    const { bob, cara } = await seedChain(s);
+    const asBob = await addUser(s, "bob@publicworship.life", { personId: bob });
+    const asCara = await addUser(s, "cara@publicworship.life", {
+      personId: cara,
+    });
+
+    const checkInId = (await asBob.mutation(api.checkIns.log, {
+      personId: cara,
+      type: "checkin",
+      personalUpdate: "Logged on the wrong person",
+    })) as Id<"checkIns">;
+
+    await expect(
+      asCara.mutation(api.checkIns.remove, { checkInId }),
+    ).rejects.toThrow(ConvexError);
+    await asBob.mutation(api.checkIns.remove, { checkInId });
+    const after = await asBob.query(api.checkIns.listForSubtree, {
+      personId: bob,
+    });
+    expect(after!.entries).toHaveLength(0);
+  });
+
+  test("rejects garbage scores and cross-chapter responsibility references", async () => {
+    const s = await setupChapter(newT());
+    const { bob, cara } = await seedChain(s);
+    const asBob = await addUser(s, "bob@publicworship.life", { personId: bob });
+
+    for (const workloadScore of [Number.NaN, 7.5, 0, 11]) {
+      await expect(
+        asBob.mutation(api.checkIns.log, {
+          personId: cara,
+          type: "checkin",
+          workloadScore,
+        }),
+      ).rejects.toThrow(ConvexError);
+    }
+
+    // A responsibility id from ANOTHER chapter must not be storable.
+    const s2 = await setupChapter(s.t, {
+      email: "other@publicworship.life",
+      chapterName: "Austin",
+    });
+    const foreign = (await s2.as.mutation(api.responsibilities.create, {
+      title: "Foreign duty",
+    })) as Id<"responsibilities">;
+    await expect(
+      asBob.mutation(api.checkIns.log, {
+        personId: cara,
+        type: "checkin",
+        responsibilities: [
+          { responsibilityId: foreign, title: "Foreign duty", fulfilling: true },
+        ],
+      }),
+    ).rejects.toThrow(ConvexError);
   });
 });

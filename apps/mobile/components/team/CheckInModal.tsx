@@ -58,6 +58,9 @@ export function CheckInModal({
   responsibilities: { _id: Id<"responsibilities">; title: string }[];
   onClose: () => void;
 }) {
+  // The caller mounts this fresh per open (conditional render keyed by the
+  // person), so plain initializers ARE the reset — no re-seeding logic. Pass
+  // key={person._id} at the call site if the instance is ever kept mounted.
   const log = useMutation(api.checkIns.log);
   const [type, setType] = useState<CheckInType>("checkin");
   const [resp, setResp] = useState<RespInput[]>(() =>
@@ -75,27 +78,6 @@ export function CheckInModal({
   const [notes, setNotes] = useState("");
   const [saving, setSaving] = useState(false);
 
-  // Re-seed the responsibility rows whenever the modal opens fresh.
-  const [seededFor, setSeededFor] = useState<string | null>(null);
-  if (visible && seededFor !== person._id) {
-    setSeededFor(person._id);
-    setResp(
-      responsibilities.map((r) => ({
-        responsibilityId: r._id,
-        title: r.title,
-        fulfilling: true,
-      })),
-    );
-    setType("checkin");
-    setPersonalUpdate("");
-    setWorkloadScore(null);
-    setWorkloadNote("");
-    setInterestScore(null);
-    setInterestNote("");
-    setNotes("");
-  }
-  if (!visible && seededFor !== null) setSeededFor(null);
-
   function patchResp(i: number, patch: Partial<RespInput>) {
     setResp((cur) => cur.map((r, j) => (j === i ? { ...r, ...patch } : r)));
   }
@@ -106,13 +88,17 @@ export function CheckInModal({
       await log({
         personId: person._id,
         type,
-        responsibilities: resp.map((r) => ({
-          responsibilityId: r.responsibilityId,
-          title: r.title,
-          fulfilling: r.fulfilling,
-          action: r.fulfilling ? undefined : r.action,
-          note: r.note?.trim() || undefined,
-        })),
+        // A skipped 1:1 assessed nothing — don't record attestations for it.
+        responsibilities:
+          type === "skip"
+            ? undefined
+            : resp.map((r) => ({
+                responsibilityId: r.responsibilityId,
+                title: r.title,
+                fulfilling: r.fulfilling,
+                action: r.fulfilling ? undefined : r.action,
+                note: r.note?.trim() || undefined,
+              })),
         personalUpdate: personalUpdate.trim() || undefined,
         workloadScore: workloadScore ?? undefined,
         workloadNote: workloadNote.trim() || undefined,
@@ -179,8 +165,8 @@ export function CheckInModal({
               ))}
             </View>
 
-            {/* Responsibilities check */}
-            {resp.length > 0 ? (
+            {/* Responsibilities check (a skipped 1:1 assesses nothing) */}
+            {type === "skip" ? null : resp.length > 0 ? (
               <View style={{ gap: spacing.sm }}>
                 <FieldLabel>Responsibilities — on track?</FieldLabel>
                 {resp.map((r, i) => (
@@ -195,7 +181,16 @@ export function CheckInModal({
                       </Text>
                       <YesNo
                         value={r.fulfilling}
-                        onChange={(fulfilling) => patchResp(i, { fulfilling })}
+                        onChange={(fulfilling) =>
+                          patchResp(i, {
+                            fulfilling,
+                            // Seed the displayed default so what the manager
+                            // SEES selected is what actually gets saved.
+                            action: fulfilling
+                              ? undefined
+                              : (r.action ?? "warning"),
+                          })
+                        }
                       />
                     </View>
                     {!r.fulfilling ? (
@@ -273,7 +268,11 @@ export function CheckInModal({
             </View>
           </ScrollView>
 
-          <View className="flex-row justify-end gap-2 border-t border-border px-5 py-3">
+          <View className="flex-row items-center justify-between gap-2 border-t border-border px-5 py-3">
+            <Text className="flex-1 text-2xs text-faint">
+              Visible to the managers above {person.name} — not to{" "}
+              {person.name}.
+            </Text>
             <Button title="Cancel" variant="ghost" size="sm" onPress={onClose} />
             <Button
               title={type === "skip" ? "Log skip" : "Log check-in"}

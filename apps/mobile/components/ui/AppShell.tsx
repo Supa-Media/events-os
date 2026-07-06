@@ -22,18 +22,13 @@ const NAV: NavEntry[] = [
 ];
 
 /**
- * The nav entries the caller may see. Team shows for managers/admins (the
- * org view) and for anyone with a linked roster row (their own work view) —
- * the server decides via org.nav; the route itself is also gated server-side.
+ * The nav entries the caller may see. The server states the Team policy once
+ * (org.nav.teamView: "org" for managers/admins, "self" with a roster row,
+ * null otherwise) — this and the Team screen both just render that decision.
  */
 function useNav(): NavEntry[] {
   const org = useQuery(api.org.nav);
-  return NAV.filter(
-    (n) =>
-      n.path !== "/team" ||
-      org?.canManage === true ||
-      org?.selfPersonId != null,
-  );
+  return NAV.filter((n) => n.path !== "/team" || org?.teamView != null);
 }
 
 /**

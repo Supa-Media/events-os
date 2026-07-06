@@ -62,7 +62,15 @@ export const nav = query({
         .first();
       canManage = firstReport !== null;
     }
-    return { isAdmin, canManage, selfPersonId: self?._id ?? null };
+    // The three-way Team-surface policy, stated ONCE for every client: the
+    // org view for managers/admins, your own workload with a roster row,
+    // nothing otherwise. AppShell and the Team tab both switch on this.
+    const teamView: "org" | "self" | null = canManage
+      ? "org"
+      : self
+        ? "self"
+        : null;
+    return { isAdmin, canManage, teamView, selfPersonId: self?._id ?? null };
   },
 });
 
@@ -125,14 +133,20 @@ export const workload = query({
     const childrenOf = buildChildrenOf(roster);
 
     // Scope: admins may inspect anyone; others only their own subtree. The
-    // caller's reach is also what decides whether the manager link is tappable.
+    // caller's reach also decides whether the manager link is tappable and
+    // whether owner-editing affordances render (canManage).
+    const viewer = await viewerFromRoster(ctx, roster);
     let callerReach: Set<Id<"people">> | null = null; // null = unrestricted
     if (!isAdmin) {
-      const viewer = await viewerFromRoster(ctx, roster);
       if (!viewer) return null;
       callerReach = subtreeIds(childrenOf, viewer);
       if (!callerReach.has(personId)) return null;
     }
+    const caller = {
+      personId: viewer?._id ?? null,
+      // Admins, or anyone whose subtree extends beyond themselves.
+      canManage: isAdmin || (callerReach !== null && callerReach.size > 1),
+    };
 
     // Events owned by anyone in the subtree (one chapter-wide read, then split).
     const events = await ctx.db
@@ -195,6 +209,7 @@ export const workload = query({
 
     return {
       person: { ...slim(person), email: person.email ?? null },
+      caller,
       manager: manager
         ? {
             ...slim(manager),

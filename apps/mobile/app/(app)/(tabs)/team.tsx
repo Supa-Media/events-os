@@ -42,6 +42,7 @@ type Person = Overview["people"][number];
 
 export default function TeamScreen() {
   const router = useRouter();
+  const nav = useQuery(api.org.nav);
   const overview = useQuery(api.org.overview);
   const projects = useQuery(api.projects.list);
   const createProject = useMutation(api.projects.create);
@@ -143,16 +144,18 @@ export default function TeamScreen() {
     [projects],
   );
 
-  if (overview === undefined || projects === undefined) {
+  if (nav === undefined || overview === undefined || projects === undefined) {
     return <Screen loading />;
   }
 
-  if (!overview.canManage) {
+  // The server's three-way policy (org.nav.teamView) decides what this tab
+  // is — the same field AppShell used to show the nav entry.
+  if (nav.teamView !== "org") {
     // No reports to manage — but everyone on the roster still gets their OWN
     // work here: the projects assigned to them, their responsibilities, and
     // their events, fully editable.
-    if (overview.selfPersonId) {
-      return <WorkloadView personId={overview.selfPersonId} showBack={false} />;
+    if (nav.teamView === "self" && nav.selfPersonId) {
+      return <WorkloadView personId={nav.selfPersonId} showBack={false} />;
     }
     return (
       <Screen>

@@ -1,6 +1,10 @@
 import { defineTable } from "convex/server";
 import { v } from "convex/values";
-import { RESPONSIBILITY_CADENCES, CHECKIN_ACTIONS } from "@events-os/shared";
+import {
+  RESPONSIBILITY_CADENCES,
+  CHECKIN_TYPES,
+  CHECKIN_ACTIONS,
+} from "@events-os/shared";
 
 /**
  * Responsibility — ongoing, recurring org work ("Meet with directs", "Create
@@ -44,7 +48,7 @@ export const checkIns = defineTable({
   personId: v.id("people"),
   // The manager who logged it (their roster row).
   managerPersonId: v.id("people"),
-  type: v.union(v.literal("checkin"), v.literal("skip")),
+  type: v.union(...CHECKIN_TYPES.map((t) => v.literal(t))),
   // Per-responsibility fulfillment at the time of the 1:1. Title is
   // snapshotted so history survives edits/deletes of the responsibility row.
   responsibilities: v.optional(

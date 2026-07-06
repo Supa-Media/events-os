@@ -6,6 +6,7 @@
  * Wide trees scroll horizontally inside the caller's ScrollView. Same data
  * the list view uses; purely a different projection of `childrenOf`.
  */
+import { useMemo } from "react";
 import { View, Text, Pressable } from "react-native";
 import type { Id } from "@events-os/convex/_generated/dataModel";
 import { Avatar } from "../ui";
@@ -34,17 +35,35 @@ export function OrgChart({
   projectCount: Map<Id<"people">, number>;
   onOpen: (id: Id<"people">) => void;
 }) {
+  // Prune cycles/diamonds ONCE into plain data so ChartNode's render stays
+  // pure — mutating a shared visited set during render breaks under
+  // StrictMode double-renders and makes duplicate-edge layout order-dependent.
+  const prunedChildrenOf = useMemo(() => {
+    const pruned = new Map<Id<"people">, OrgChartPerson[]>();
+    const visited = new Set<Id<"people">>(roots.map((r) => r._id));
+    const queue = [...roots];
+    while (queue.length > 0) {
+      const cur = queue.shift()!;
+      const kids = (childrenOf.get(cur._id) ?? []).filter(
+        (c) => !visited.has(c._id),
+      );
+      for (const c of kids) visited.add(c._id);
+      pruned.set(cur._id, kids);
+      queue.push(...kids);
+    }
+    return pruned;
+  }, [roots, childrenOf]);
+
   return (
     <View className="flex-row items-start justify-center gap-6 py-2">
       {roots.map((p) => (
         <ChartNode
           key={p._id}
           person={p}
-          childrenOf={childrenOf}
+          childrenOf={prunedChildrenOf}
           teamSize={teamSize}
           projectCount={projectCount}
           onOpen={onOpen}
-          visited={new Set([p._id])}
         />
       ))}
     </View>
@@ -57,20 +76,15 @@ function ChartNode({
   teamSize,
   projectCount,
   onOpen,
-  visited,
 }: {
   person: OrgChartPerson;
+  /** Already cycle-pruned by OrgChart — pure tree, safe to recurse. */
   childrenOf: Map<Id<"people">, OrgChartPerson[]>;
   teamSize: Map<Id<"people">, number>;
   projectCount: Map<Id<"people">, number>;
   onOpen: (id: Id<"people">) => void;
-  visited: Set<Id<"people">>;
 }) {
-  // Cycle-safe like every other tree walk (a corrupt edge must not hang the UI).
-  const children = (childrenOf.get(person._id) ?? []).filter(
-    (c) => !visited.has(c._id),
-  );
-  for (const c of children) visited.add(c._id);
+  const children = childrenOf.get(person._id) ?? [];
   const reports = teamSize.get(person._id) ?? 0;
   const activeProjects = projectCount.get(person._id) ?? 0;
 
@@ -110,7 +124,6 @@ function ChartNode({
                   teamSize={teamSize}
                   projectCount={projectCount}
                   onOpen={onOpen}
-                  visited={visited}
                 />
               </View>
             ))}

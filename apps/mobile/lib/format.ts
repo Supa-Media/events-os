@@ -83,3 +83,18 @@ export function fromDateTimeLocal(str: string): number | null {
   const d = new Date(y, mo - 1, da, h, mi);
   return Number.isNaN(d.getTime()) ? null : d.getTime();
 }
+
+/**
+ * Parse a comma-separated list into trimmed, de-duped values, PRESERVING
+ * case. The shared editor behind chip cells (People projects/comms,
+ * Responsibilities roles) — one implementation so fan-out matching never
+ * depends on which grid a value was typed in.
+ */
+export function parseList(raw: string): string[] {
+  const seen = new Set<string>();
+  for (const part of raw.split(",")) {
+    const s = part.trim();
+    if (s) seen.add(s);
+  }
+  return Array.from(seen);
+}
