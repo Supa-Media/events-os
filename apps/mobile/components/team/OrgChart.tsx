@@ -1,10 +1,12 @@
 /**
- * OrgChart — the classic boxes-and-connector-lines org tree, house-styled.
+ * OrgChart — a compact VERTICAL org tree, house-styled.
  *
- * Each person is a card; children hang below their manager off a vertical
- * stub, a horizontal rail, and per-child stubs (all 1px border-token lines).
- * Wide trees scroll horizontally inside the caller's ScrollView. Same data
- * the list view uses; purely a different projection of `childrenOf`.
+ * Reports stack vertically under their manager, indented one step, hung off
+ * a vertical spine with an elbow into each card (the drawio-style layout) —
+ * far denser than a horizontal fan for real org shapes. Cards are one-line:
+ * avatar, name, role, rollup counts. Purely a different projection of the
+ * same `childrenOf` the list view uses; cycles are pruned once in a memo so
+ * the recursive render stays pure.
  */
 import { useMemo } from "react";
 import { View, Text, Pressable } from "react-native";
@@ -19,8 +21,14 @@ export type OrgChartPerson = {
   imageUrl?: string | null;
 };
 
+const CARD_W = 252;
+/** Gap above each sibling card; the elbow meets the card's vertical center. */
+const GAP_Y = 6;
+const CARD_HALF = 23;
+const ELBOW_Y = GAP_Y + CARD_HALF;
+const INDENT = 14;
+const TICK_W = 12;
 const LINE = { backgroundColor: colors.border } as const;
-const STUB_H = 14;
 
 export function OrgChart({
   roots,
@@ -55,7 +63,7 @@ export function OrgChart({
   }, [roots, childrenOf]);
 
   return (
-    <View className="flex-row items-start justify-center gap-6 py-2">
+    <View style={{ gap: 16 }} className="py-1">
       {roots.map((p) => (
         <ChartNode
           key={p._id}
@@ -85,39 +93,34 @@ function ChartNode({
   onOpen: (id: Id<"people">) => void;
 }) {
   const children = childrenOf.get(person._id) ?? [];
-  const reports = teamSize.get(person._id) ?? 0;
-  const activeProjects = projectCount.get(person._id) ?? 0;
 
   return (
-    <View className="items-center">
+    <View>
       <NodeCard
         person={person}
-        reports={reports}
-        activeProjects={activeProjects}
+        reports={teamSize.get(person._id) ?? 0}
+        activeProjects={projectCount.get(person._id) ?? 0}
         onPress={() => onOpen(person._id)}
       />
 
       {children.length > 0 ? (
-        <>
-          {/* Stub down from the parent card. */}
-          <View style={[LINE, { width: 1, height: STUB_H }]} />
-          <View className="flex-row items-start">
-            {children.map((child, i) => (
-              <View key={child._id} className="items-center px-2">
-                {/* Rail across the children row + stub down to each child.
-                    First/last children only draw their inner half. */}
-                <View className="w-full flex-row">
-                  <View
-                    style={[i > 0 ? LINE : null, { flex: 1, height: 1 }]}
-                  />
-                  <View
-                    style={[
-                      i < children.length - 1 ? LINE : null,
-                      { flex: 1, height: 1 },
-                    ]}
-                  />
-                </View>
-                <View style={[LINE, { width: 1, height: STUB_H }]} />
+        <View style={{ marginLeft: INDENT }}>
+          {children.map((child, i) => (
+            <View key={child._id} className="flex-row items-stretch">
+              {/* Spine: runs the full sibling row, stopping at the elbow on
+                  the last child so the line doesn't dangle past the tree. */}
+              <View
+                style={[
+                  LINE,
+                  { width: 1 },
+                  i === children.length - 1
+                    ? { height: ELBOW_Y }
+                    : { alignSelf: "stretch" },
+                ]}
+              />
+              {/* Elbow into this card's vertical center. */}
+              <View style={[LINE, { width: TICK_W, height: 1, marginTop: ELBOW_Y }]} />
+              <View style={{ paddingTop: GAP_Y, flexShrink: 1 }}>
                 <ChartNode
                   person={child}
                   childrenOf={childrenOf}
@@ -126,9 +129,9 @@ function ChartNode({
                   onOpen={onOpen}
                 />
               </View>
-            ))}
-          </View>
-        </>
+            </View>
+          ))}
+        </View>
       ) : null}
     </View>
   );
@@ -148,33 +151,33 @@ function NodeCard({
   return (
     <Pressable
       onPress={onPress}
-      style={{ width: 168 }}
-      className="items-center gap-1 rounded-lg border border-border bg-raised px-3 py-3 shadow-sm active:bg-sunken web:hover:border-border-strong"
+      style={{ width: CARD_W }}
+      className="flex-row items-center gap-2.5 rounded-lg border border-border bg-raised px-3 py-2 shadow-sm active:bg-sunken web:hover:border-border-strong"
     >
-      <Avatar name={person.name || "?"} size={34} uri={person.imageUrl} />
-      <Text
-        className="text-center text-sm font-semibold text-ink"
-        numberOfLines={1}
-      >
-        {person.name}
-      </Text>
-      {person.role ? (
-        <Text className="text-center text-xs text-muted" numberOfLines={1}>
-          {person.role}
+      <Avatar name={person.name || "?"} size={28} uri={person.imageUrl} />
+      <View className="flex-1">
+        <Text className="text-sm font-semibold text-ink" numberOfLines={1}>
+          {person.name}
         </Text>
-      ) : null}
+        {person.role ? (
+          <Text className="text-xs text-muted" numberOfLines={1}>
+            {person.role}
+          </Text>
+        ) : null}
+      </View>
       {reports > 0 || activeProjects > 0 ? (
-        <Text className="text-2xs font-semibold text-faint">
-          {reports > 0
-            ? `${reports} ${reports === 1 ? "report" : "reports"}`
-            : ""}
-          {reports > 0 && activeProjects > 0 ? " · " : ""}
-          {activeProjects > 0 ? (
-            <Text className="text-accent">
-              {activeProjects} {activeProjects === 1 ? "project" : "projects"}
+        <View className="items-end">
+          {reports > 0 ? (
+            <Text className="text-2xs font-semibold text-muted">
+              {reports} {reports === 1 ? "rep" : "reps"}
             </Text>
           ) : null}
-        </Text>
+          {activeProjects > 0 ? (
+            <Text className="text-2xs font-semibold text-accent">
+              {activeProjects} proj
+            </Text>
+          ) : null}
+        </View>
       ) : null}
     </Pressable>
   );

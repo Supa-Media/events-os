@@ -7,8 +7,8 @@
  * column is the handoff documentation — how the work actually gets done —
  * and cadence says how often (daily … yearly, or ad hoc, e.g. event flyers).
  */
-import { useMemo, useState } from "react";
-import { View, Text, Pressable, ScrollView } from "react-native";
+import { useMemo, useRef, useState } from "react";
+import { View, Text, Pressable, ScrollView, TextInput } from "react-native";
 import { useQuery, useMutation } from "convex/react";
 import { api } from "@events-os/convex/_generated/api";
 import type { Doc, Id } from "@events-os/convex/_generated/dataModel";
@@ -31,8 +31,14 @@ import {
   GridHeaderCell,
   SelectCell,
   PersonPicker,
+  Popover,
+  useAnchor,
   type SelectOption,
 } from "../../../components/ui";
+import {
+  HowToDocCell,
+  type HowToDocSummary,
+} from "../../../components/team/HowToDocCell";
 import { colors, spacing } from "../../../lib/theme";
 import { parseList } from "../../../lib/format";
 import { alertError } from "../../../lib/errors";
@@ -45,7 +51,9 @@ const CADENCE_OPTIONS: SelectOption<ResponsibilityCadence>[] =
     color: c === "ad_hoc" ? "gray" : "teal",
   }));
 
-type Responsibility = Doc<"responsibilities">;
+type Responsibility = Doc<"responsibilities"> & {
+  howToDoc: HowToDocSummary | null;
+};
 
 // Fixed column widths (px) — mirrors the People grid's chrome.
 const COLS = {
@@ -78,6 +86,16 @@ export default function ResponsibilitiesScreen() {
     () => new Map((people ?? []).map((p) => [p._id, p.name])),
     [people],
   );
+  // Distinct job titles across the roster (original casing) — autocomplete.
+  const allRoles = useMemo(() => {
+    const byNorm = new Map<string, string>();
+    for (const p of people ?? []) {
+      const norm = normalizeRole(p.role);
+      if (norm && !byNorm.has(norm)) byNorm.set(norm, p.role!.trim());
+    }
+    return Array.from(byNorm.values()).sort((a, b) => a.localeCompare(b));
+  }, [people]);
+
   // How many people hold each (normalized) role — dangling-role warnings.
   const roleHolders = useMemo(() => {
     const map = new Map<string, number>();
@@ -178,6 +196,7 @@ export default function ResponsibilitiesScreen() {
                   row={r}
                   nameById={nameById}
                   roleHolders={roleHolders}
+                  allRoles={allRoles}
                   holders={holderCount.get(r._id) ?? 0}
                   isLast={i === filtered.length - 1}
                   onOpenPicker={() => setPickerForRow(r._id)}
@@ -239,6 +258,7 @@ function ResponsibilityRow({
   row,
   nameById,
   roleHolders,
+  allRoles,
   holders,
   isLast,
   onOpenPicker,
@@ -246,6 +266,7 @@ function ResponsibilityRow({
   row: Responsibility;
   nameById: Map<Id<"people">, string>;
   roleHolders: Map<string, number>;
+  allRoles: string[];
   holders: number;
   isLast: boolean;
   onOpenPicker: () => void;
@@ -291,6 +312,7 @@ function ResponsibilityRow({
         <RolesCell
           values={row.assigneeRoles ?? []}
           roleHolders={roleHolders}
+          allRoles={allRoles}
           onCommit={(next) =>
             update({ assigneeRoles: next.length > 0 ? next : null })
           }
@@ -333,12 +355,14 @@ function ResponsibilityRow({
         </Text>
       </Cell>
 
-      {/* How to (the handoff doc) */}
+      {/* How to (the handoff doc): link / video / note / markdown page —
+          the same doc primitive behind event-grid How-To cells. */}
       <Cell width={COLS.howTo}>
-        <InlineText
-          value={row.howTo ?? ""}
-          placeholder="Steps, links, tools…"
-          onCommit={(t) => update({ howTo: t.trim() || null })}
+        <HowToDocCell
+          doc={row.howToDoc}
+          legacyText={row.howTo ?? null}
+          onSetDoc={(docId) => update({ howToDocId: docId })}
+          onLegacyCommit={(t) => update({ howTo: t.trim() || null })}
         />
       </Cell>
 
@@ -396,25 +420,27 @@ function Cell({ width, children }: { width: number; children: React.ReactNode })
   );
 }
 
-// Role chips + inline comma editor (case-preserving, like the People grid).
+// Role chips + comma editor with type-ahead over the roster's job titles.
 function RolesCell({
   values,
   roleHolders,
+  allRoles,
   onCommit,
 }: {
   values: string[];
   roleHolders: Map<string, number>;
+  allRoles: string[];
   onCommit: (next: string[]) => void;
 }) {
   const [editing, setEditing] = useState(false);
 
   if (editing) {
     return (
-      <InlineText
-        value={values.join(", ")}
-        placeholder="Director, Designer…"
-        onCommit={(t) => {
-          onCommit(parseList(t));
+      <RolesEditor
+        initial={values}
+        allRoles={allRoles}
+        onDone={(next) => {
+          onCommit(next);
           setEditing(false);
         }}
       />
@@ -441,5 +467,86 @@ function RolesCell({
         })
       )}
     </Pressable>
+  );
+}
+
+/**
+ * Comma-list editor with a suggestions popover: as you type a role, existing
+ * job titles matching the current (last) token appear; picking one completes
+ * it in place. Commit is on blur, deferred long enough for a suggestion tap
+ * to win the race between the input's blur and the popover press.
+ */
+function RolesEditor({
+  initial,
+  allRoles,
+  onDone,
+}: {
+  initial: string[];
+  allRoles: string[];
+  onDone: (next: string[]) => void;
+}) {
+  const [text, setText] = useState(initial.join(", "));
+  const { ref, anchor, visible, open, close } = useAnchor();
+  const picked = useRef(false);
+  const latest = useRef(text);
+  latest.current = text;
+
+  const parts = text.split(",");
+  const token = normalizeRole(parts[parts.length - 1]);
+  const already = new Set(parseList(text).map(normalizeRole));
+  const matches = allRoles
+    .filter(
+      (r) =>
+        !already.has(normalizeRole(r)) &&
+        (token === "" || normalizeRole(r).includes(token)),
+    )
+    .slice(0, 6);
+
+  function commit(finalText: string) {
+    onDone(parseList(finalText));
+  }
+
+  return (
+    <View ref={ref} className="flex-1">
+      <TextInput
+        value={text}
+        onChangeText={(t) => {
+          setText(t);
+          if (!visible) open();
+        }}
+        onFocus={open}
+        placeholder="Director, Designer…"
+        placeholderTextColor={colors.faint}
+        autoFocus
+        autoCapitalize="words"
+        onSubmitEditing={() => commit(latest.current)}
+        onBlur={() => {
+          // Give a suggestion tap time to land before blur-commit closes us.
+          setTimeout(() => {
+            if (!picked.current) commit(latest.current);
+          }, 250);
+        }}
+        className="flex-1 px-2 py-1.5 text-sm leading-snug text-ink"
+        style={{ minWidth: 40 }}
+      />
+      <Popover visible={visible && matches.length > 0} onClose={close} anchor={anchor} width={220}>
+        <View className="py-1">
+          {matches.map((r) => (
+            <Pressable
+              key={r}
+              onPress={() => {
+                picked.current = true;
+                const kept = parts.slice(0, -1).join(",");
+                commit(kept ? `${kept}, ${r}` : r);
+              }}
+              className="flex-row items-center gap-2 px-3 py-2 active:bg-sunken web:hover:bg-sunken"
+            >
+              <Icon name="user-check" size={14} color={colors.muted} />
+              <Text className="text-sm text-ink">{r}</Text>
+            </Pressable>
+          ))}
+        </View>
+      </Popover>
+    </View>
   );
 }

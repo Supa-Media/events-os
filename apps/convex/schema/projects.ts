@@ -29,12 +29,13 @@ export const projects = defineTable({
   startDate: v.optional(v.number()),
   deadline: v.optional(v.number()),
   budgetUsd: v.optional(v.number()),
-  // The manager-facing "state of the world" mini note (updated as things move).
+  // LEGACY: the one-slot status note / next-steps fields, superseded by
+  // `projectComments` (the append-only progression log). Kept so old rows
+  // still validate; the UI no longer writes them.
   statusNote: v.optional(v.string()),
+  nextSteps: v.optional(v.string()),
   // What's currently in the way, if anything.
   blocker: v.optional(v.string()),
-  // What's coming next.
-  nextSteps: v.optional(v.string()),
   createdBy: v.id("users"),
   createdAt: v.number(),
   updatedAt: v.number(),
@@ -43,3 +44,20 @@ export const projects = defineTable({
   .index("by_owner", ["ownerPersonId"])
   .index("by_parent", ["parentProjectId"])
   .index("by_event", ["eventId"]);
+
+/**
+ * Project comment — one update in a project's running history. Anyone who can
+ * see the project can post; the thread IS the progression record (the card's
+ * collapsed preview shows the latest one). Author is a roster person so
+ * attribution matches every other org surface.
+ */
+export const projectComments = defineTable({
+  chapterId: v.id("chapters"),
+  projectId: v.id("projects"),
+  authorPersonId: v.id("people"),
+  body: v.string(),
+  createdBy: v.id("users"),
+  createdAt: v.number(),
+})
+  .index("by_project", ["projectId"])
+  .index("by_chapter", ["chapterId"]);

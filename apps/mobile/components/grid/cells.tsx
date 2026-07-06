@@ -689,7 +689,8 @@ function PhotoCell({ value, editable, onChange }: BaseCellProps) {
 //   link/video → title + open-out icon (opens the URL) and an inline URL field.
 //   note       → inline short text (writes docs.update body).
 //   markdown   → title + "Open" → navigates to the doc editor screen (/doc/<id>).
-const HOW_TO_KINDS: Array<{
+// Exported: the Responsibilities grid's How-To cell offers the same kinds.
+export const HOW_TO_KINDS: Array<{
   value: "link" | "video" | "note" | "markdown";
   label: string;
   icon: any;

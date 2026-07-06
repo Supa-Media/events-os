@@ -45,18 +45,41 @@ async function requireCanEdit(
   });
 }
 
-/** All the chapter's responsibility definitions, oldest first. */
+/**
+ * All the chapter's responsibility definitions, oldest first, each with a
+ * summary of its How-To doc (kind/title/url) joined in so list surfaces can
+ * render the affordance without a doc query per row.
+ */
 export const list = query({
   args: {},
   handler: async (ctx) => {
     const chapterId = await getChapterIdOrNull(ctx);
     if (!chapterId) return [];
-    return await ctx.db
+    const rows = await ctx.db
       .query("responsibilities")
       .withIndex("by_chapter", (q) =>
         q.eq("chapterId", chapterId as Id<"chapters">),
       )
       .collect();
+    return await Promise.all(
+      rows.map(async (r) => {
+        if (!r.howToDocId) return { ...r, howToDoc: null };
+        const doc = await ctx.db.get(r.howToDocId);
+        return {
+          ...r,
+          howToDoc:
+            doc && doc.chapterId === chapterId
+              ? {
+                  _id: doc._id,
+                  kind: doc.kind,
+                  title: doc.title,
+                  url: doc.url ?? null,
+                  body: doc.body ?? null,
+                }
+              : null,
+        };
+      }),
+    );
   },
 });
 
@@ -102,6 +125,7 @@ export const update = mutation({
     title: v.optional(v.string()),
     description: v.optional(v.union(v.string(), v.null())),
     howTo: v.optional(v.union(v.string(), v.null())),
+    howToDocId: v.optional(v.union(v.id("docs"), v.null())),
     cadence: v.optional(cadence),
     assigneeRoles: v.optional(v.union(v.array(v.string()), v.null())),
     assigneePersonIds: v.optional(
@@ -121,6 +145,9 @@ export const update = mutation({
       for (const personId of patch.assigneePersonIds) {
         await requireOwned(ctx, "people", personId, "Assignee");
       }
+    }
+    if (patch.howToDocId != null) {
+      await requireOwned(ctx, "docs", patch.howToDocId, "How-To doc");
     }
     const fields: Record<string, unknown> = {};
     for (const [key, value] of Object.entries(patch)) {

@@ -9,8 +9,8 @@
  * report and the reporting chain reads the history.
  */
 import { useMemo, useState } from "react";
-import { View, Text, Pressable } from "react-native";
-import { useRouter } from "expo-router";
+import { View, Text, Pressable, Linking } from "react-native";
+import { useRouter, usePathname } from "expo-router";
 import { useQuery, useMutation } from "convex/react";
 import type { FunctionReturnType } from "convex/server";
 import { api } from "@events-os/convex/_generated/api";
@@ -43,7 +43,9 @@ import { confirmAction } from "../event/ticketing/helpers";
 
 type Workload = NonNullable<FunctionReturnType<typeof api.org.workload>>;
 type Member = Workload["members"][number];
-type Responsibility = Doc<"responsibilities">;
+type Responsibility = FunctionReturnType<
+  typeof api.responsibilities.list
+>[number];
 type CheckInRow = NonNullable<
   FunctionReturnType<typeof api.checkIns.listForSubtree>
 >["entries"][number];
@@ -492,32 +494,81 @@ function TeamMemberBlock({
   );
 }
 
-/** Compact recurring-duty rows: title · cadence · how-to hint. */
+/** Compact recurring-duty rows: title · cadence · how-to (doc-aware). */
 function ResponsibilityRows({ items }: { items: Responsibility[] }) {
+  const router = useRouter();
+  const pathname = usePathname();
   return (
     <View style={{ gap: spacing.xs }}>
-      {items.map((r) => (
-        <View
-          key={r._id}
-          className="rounded-md border border-border bg-raised px-3 py-2"
-        >
-          <View className="flex-row items-center gap-2">
-            <Icon name="repeat" size={13} color={colors.muted} />
-            <Text className="flex-1 text-sm font-medium text-ink" numberOfLines={1}>
-              {r.title}
-            </Text>
-            <OptionTag
-              label={RESPONSIBILITY_CADENCE_LABELS[r.cadence]}
-              color={r.cadence === "ad_hoc" ? "gray" : "teal"}
-            />
+      {items.map((r) => {
+        const doc = r.howToDoc;
+        const openDoc = doc
+          ? () => {
+              if ((doc.kind === "link" || doc.kind === "video") && doc.url) {
+                void Linking.openURL(doc.url);
+              } else {
+                router.push(
+                  `/doc/${doc._id}?from=${encodeURIComponent(pathname)}` as any,
+                );
+              }
+            }
+          : null;
+        return (
+          <View
+            key={r._id}
+            className="rounded-md border border-border bg-raised px-3 py-2"
+          >
+            <View className="flex-row items-center gap-2">
+              <Icon name="repeat" size={13} color={colors.muted} />
+              <Text
+                className="flex-1 text-sm font-medium text-ink"
+                numberOfLines={1}
+              >
+                {r.title}
+              </Text>
+              {doc && doc.kind !== "note" && openDoc ? (
+                <Pressable
+                  onPress={openDoc}
+                  hitSlop={6}
+                  className="flex-row items-center gap-1 rounded px-1 py-0.5 active:bg-sunken web:hover:bg-sunken"
+                >
+                  <Icon
+                    name={
+                      doc.kind === "video"
+                        ? "video"
+                        : doc.kind === "markdown"
+                          ? "book-open"
+                          : "external-link"
+                    }
+                    size={13}
+                    color={colors.accent}
+                  />
+                  <Text className="text-xs font-medium text-accent">
+                    How-To
+                  </Text>
+                </Pressable>
+              ) : null}
+              <OptionTag
+                label={RESPONSIBILITY_CADENCE_LABELS[r.cadence]}
+                color={r.cadence === "ad_hoc" ? "gray" : "teal"}
+              />
+            </View>
+            {doc?.kind === "note" && doc.body ? (
+              <Text className="mt-0.5 text-xs text-muted" numberOfLines={2}>
+                {doc.body}
+              </Text>
+            ) : !doc && (r.howTo || r.description) ? (
+              <Text className="mt-0.5 text-xs text-muted" numberOfLines={2}>
+                {r.howTo || r.description}
+              </Text>
+            ) : r.description ? (
+              <Text className="mt-0.5 text-xs text-muted" numberOfLines={2}>
+                {r.description}
+              </Text>
+            ) : null}
           </View>
-          {r.howTo || r.description ? (
-            <Text className="mt-0.5 text-xs text-muted" numberOfLines={2}>
-              {r.howTo || r.description}
-            </Text>
-          ) : null}
-        </View>
-      ))}
+        );
+      })}
     </View>
   );
 }

@@ -561,3 +561,98 @@ describe("review-cycle regressions", () => {
     expect(adminView!.manager!.viewable).toBe(true);
   });
 });
+
+describe("project comments", () => {
+  test("the thread is the history: post, list, preview join, author-only delete", async () => {
+    const s = await setupChapter(newT());
+    const { bob, cara } = await seedChain(s);
+    const asBob = await addUser(s, "bobc@publicworship.life", { personId: bob });
+    const asCara = await addUser(s, "carac@publicworship.life", {
+      personId: cara,
+    });
+    const projectId = (await s.as.mutation(api.projects.create, {
+      name: "Music recording",
+      ownerPersonId: cara,
+    })) as Id<"projects">;
+
+    // Cara (the owner) and Bob (her manager) both post updates.
+    await asCara.mutation(api.projects.addComment, {
+      projectId,
+      body: "Tracking day 1 done",
+    });
+    const bobsComment = (await asBob.mutation(api.projects.addComment, {
+      projectId,
+      body: "Great — booking mixing next",
+    })) as Id<"projectComments">;
+
+    const thread = await asBob.query(api.projects.comments, { projectId });
+    expect(thread.map((c) => c.body)).toEqual([
+      "Tracking day 1 done",
+      "Great — booking mixing next",
+    ]);
+    expect(thread[0].authorName).toBe("Cara");
+
+    // The list join surfaces the LATEST comment as the collapsed preview.
+    const projects = await asBob.query(api.projects.list);
+    const doc = projects.find((p) => p._id === projectId)!;
+    expect(doc.lastComment?.body).toBe("Great — booking mixing next");
+    expect(doc.lastComment?.authorName).toBe("Bob");
+
+    // Cara can't delete Bob's comment; Bob (author) can. Empty posts rejected.
+    await expect(
+      asCara.mutation(api.projects.removeComment, { commentId: bobsComment }),
+    ).rejects.toThrow(ConvexError);
+    await asBob.mutation(api.projects.removeComment, { commentId: bobsComment });
+    await expect(
+      asCara.mutation(api.projects.addComment, { projectId, body: "   " }),
+    ).rejects.toThrow(ConvexError);
+  });
+
+  test("commenting follows project scope; the thread dies with the project", async () => {
+    const s = await setupChapter(newT());
+    const { alice, bob, cara } = await seedChain(s);
+    const asCara = await addUser(s, "carac@publicworship.life", {
+      personId: cara,
+    });
+    const alicesProject = (await s.as.mutation(api.projects.create, {
+      name: "Alice's project",
+      ownerPersonId: alice,
+    })) as Id<"projects">;
+
+    // Cara can't comment on (or read) work outside her subtree.
+    await expect(
+      asCara.mutation(api.projects.addComment, {
+        projectId: alicesProject,
+        body: "drive-by",
+      }),
+    ).rejects.toThrow(ConvexError);
+    expect(
+      await asCara.query(api.projects.comments, { projectId: alicesProject }),
+    ).toHaveLength(0);
+
+    // Deleting a project deletes its thread (no orphaned comments).
+    const doomed = (await s.as.mutation(api.projects.create, {
+      name: "Doomed",
+      ownerPersonId: bob,
+    })) as Id<"projects">;
+    await s.as.mutation(api.projects.addComment, {
+      projectId: doomed,
+      body: "…",
+    } as never).catch(() => {
+      // The admin session has no roster row — post as Cara's manager instead.
+    });
+    const asBob = await addUser(s, "bobc@publicworship.life", { personId: bob });
+    await asBob.mutation(api.projects.addComment, {
+      projectId: doomed,
+      body: "final words",
+    });
+    await s.as.mutation(api.projects.remove, { projectId: doomed });
+    const orphans = await run(s.t, (ctx) =>
+      ctx.db
+        .query("projectComments")
+        .withIndex("by_project", (q) => q.eq("projectId", doomed))
+        .collect(),
+    );
+    expect(orphans).toHaveLength(0);
+  });
+});

@@ -8,9 +8,9 @@
  * so "Music recording" can hold "Pitch to artists" and so on.
  */
 import { useState } from "react";
-import { View, Text, Pressable } from "react-native";
+import { View, Text, Pressable, TextInput } from "react-native";
 import { useRouter } from "expo-router";
-import { useMutation } from "convex/react";
+import { useQuery, useMutation } from "convex/react";
 import { api } from "@events-os/convex/_generated/api";
 import type { Doc, Id } from "@events-os/convex/_generated/dataModel";
 import {
@@ -25,7 +25,7 @@ import {
   type SelectOption,
 } from "../ui";
 import { colors } from "../../lib/theme";
-import { parseDateInput, toDateInput } from "../../lib/format";
+import { parseDateInput, toDateInput, formatDate } from "../../lib/format";
 import { alertError } from "../../lib/errors";
 import { confirmAction } from "../event/ticketing/helpers";
 
@@ -39,7 +39,14 @@ export const PROJECT_STATUS_OPTIONS: SelectOption<ProjectStatus>[] = [
   { value: "done", label: PROJECT_STATUS_LABELS.done, color: "green" },
 ];
 
-export type ProjectDoc = Doc<"projects">;
+export type ProjectDoc = Doc<"projects"> & {
+  /** Joined by projects.list — the thread's newest entry, for the preview. */
+  lastComment?: {
+    body: string;
+    authorName: string | null;
+    createdAt: number;
+  } | null;
+};
 
 /** Group a flat project list into a parent → children map (sub-project tree). */
 export function buildProjectTree(
@@ -83,6 +90,9 @@ export function ProjectCard({
     void createMutation(args).catch(alertError);
   };
   const [ownerPickerOpen, setOwnerPickerOpen] = useState(false);
+  // Condensed by default: one row like a responsibility; expand IN PLACE for
+  // meta, the manager's fields, and sub-projects. Empty fields cost no space.
+  const [expanded, setExpanded] = useState(false);
   const id = project._id;
   const children = childrenOf.get(id) ?? [];
   const ownerName = project.ownerPersonId
@@ -92,11 +102,27 @@ export function ProjectCard({
   return (
     <View
       className={`rounded-lg border border-border bg-raised ${
-        depth > 0 ? "mt-2" : ""
+        depth > 0 ? "mt-1.5" : ""
       }`}
     >
-      {/* Name + status + delete */}
-      <View className="flex-row items-center gap-2 border-b border-border/60 py-1 pl-1 pr-2">
+      {/* The condensed row: expand toggle · title · at-a-glance chips · status */}
+      <View
+        className={`flex-row items-center gap-1.5 py-0.5 pl-1 pr-2 ${
+          expanded ? "border-b border-border/60" : ""
+        }`}
+      >
+        <Pressable
+          onPress={() => setExpanded((cur) => !cur)}
+          hitSlop={6}
+          accessibilityLabel={expanded ? "Collapse project" : "Expand project"}
+          className="rounded p-0.5 active:bg-sunken web:hover:bg-sunken"
+        >
+          <Icon
+            name={expanded ? "chevron-down" : "chevron-right"}
+            size={15}
+            color={colors.muted}
+          />
+        </Pressable>
         <InlineText
           value={project.name}
           placeholder="Project name"
@@ -105,7 +131,29 @@ export function ProjectCard({
             if (t.trim()) update({ projectId: id, name: t.trim() });
           }}
         />
-        <View style={{ width: 118 }}>
+        {!expanded ? (
+          <>
+            {project.blocker ? (
+              <Icon name="alert-triangle" size={13} color={colors.danger} />
+            ) : null}
+            {children.length > 0 ? (
+              <Text className="text-2xs font-semibold text-faint">
+                {children.length} sub{children.length === 1 ? "" : "s"}
+              </Text>
+            ) : null}
+            {project.deadline != null ? (
+              <Text className="text-xs text-muted">
+                {toDateInput(project.deadline)}
+              </Text>
+            ) : null}
+            {showOwner && ownerName ? (
+              <Text className="text-xs text-muted" numberOfLines={1}>
+                {ownerName}
+              </Text>
+            ) : null}
+          </>
+        ) : null}
+        <View style={{ width: 112 }}>
           <SelectCell
             value={project.status}
             options={PROJECT_STATUS_OPTIONS}
@@ -132,6 +180,16 @@ export function ProjectCard({
         </Pressable>
       </View>
 
+      {/* Quick preview: the latest comment IS the state of the project. */}
+      {!expanded && project.lastComment ? (
+        <Text className="px-8 pb-1.5 text-xs text-muted" numberOfLines={1}>
+          {project.lastComment.authorName ?? "Former member"}:{" "}
+          {project.lastComment.body}
+        </Text>
+      ) : null}
+
+      {expanded ? (
+        <>
       {/* Meta: deadline · budget · owner · linked event */}
       <View className="flex-row flex-wrap items-center gap-x-4 gap-y-1 border-b border-border/60 px-2 py-1">
         <MetaField icon="calendar" width={104}>
@@ -196,22 +254,13 @@ export function ProjectCard({
         ) : null}
       </View>
 
-      {/* The manager's read: purpose, running note, blocker, what's next. */}
+      {/* Purpose + blocker stay as fields; progression lives in the thread. */}
       <View className="px-1 py-1">
         <FieldRow label="Purpose">
           <InlineText
             value={project.purpose ?? ""}
             placeholder="—"
             onCommit={(t) => update({ projectId: id, purpose: t.trim() || null })}
-          />
-        </FieldRow>
-        <FieldRow label="Note">
-          <InlineText
-            value={project.statusNote ?? ""}
-            placeholder="State of the project…"
-            onCommit={(t) =>
-              update({ projectId: id, statusNote: t.trim() || null })
-            }
           />
         </FieldRow>
         <FieldRow label="Blocker" alert={!!project.blocker}>
@@ -221,16 +270,26 @@ export function ProjectCard({
             onCommit={(t) => update({ projectId: id, blocker: t.trim() || null })}
           />
         </FieldRow>
-        <FieldRow label="Next">
-          <InlineText
-            value={project.nextSteps ?? ""}
-            placeholder="—"
-            onCommit={(t) =>
-              update({ projectId: id, nextSteps: t.trim() || null })
-            }
-          />
-        </FieldRow>
+        {/* Pre-thread rows may carry the old one-slot fields — keep them
+            readable (the thread supersedes them for anything new). */}
+        {project.statusNote ? (
+          <FieldRow label="Note">
+            <Text className="px-2 py-1.5 text-sm text-muted">
+              {project.statusNote}
+            </Text>
+          </FieldRow>
+        ) : null}
+        {project.nextSteps ? (
+          <FieldRow label="Next">
+            <Text className="px-2 py-1.5 text-sm text-muted">
+              {project.nextSteps}
+            </Text>
+          </FieldRow>
+        ) : null}
       </View>
+
+      {/* The running history: every comment is one step of the progression. */}
+      <ProjectComments projectId={id} />
 
       {/* Sub-projects */}
       <View className={children.length > 0 ? "px-2 pb-2" : ""}>
@@ -258,6 +317,8 @@ export function ProjectCard({
         <Icon name="corner-down-right" size={12} color={colors.faint} />
         <Text className="text-xs font-medium text-faint">Add sub-project</Text>
       </Pressable>
+        </>
+      ) : null}
 
       <PersonPicker
         visible={ownerPickerOpen}
@@ -273,6 +334,81 @@ export function ProjectCard({
         }}
         onClose={() => setOwnerPickerOpen(false)}
       />
+    </View>
+  );
+}
+
+/**
+ * The project's comment thread — its history and progression, oldest first,
+ * with a composer anyone who can see the project may post to. Mounted only
+ * while the card is expanded, so collapsed cards cost no extra subscription.
+ */
+function ProjectComments({ projectId }: { projectId: Id<"projects"> }) {
+  const comments = useQuery(api.projects.comments, { projectId });
+  const addComment = useMutation(api.projects.addComment);
+  const removeComment = useMutation(api.projects.removeComment);
+  const [draft, setDraft] = useState("");
+
+  function post() {
+    const body = draft.trim();
+    if (!body) return;
+    setDraft("");
+    void addComment({ projectId, body }).catch(alertError);
+  }
+
+  return (
+    <View className="border-t border-border/60 px-2.5 py-1.5" style={{ gap: 4 }}>
+      {comments === undefined ? (
+        <Text className="text-xs text-faint">Loading history…</Text>
+      ) : (
+        comments.map((c) => (
+          <View key={c._id} className="flex-row items-start gap-1.5">
+            <Text className="flex-1 text-xs text-ink">
+              <Text className="font-semibold">
+                {c.authorName ?? "Former member"}
+              </Text>
+              <Text className="text-faint"> · {formatDate(c.createdAt)}  </Text>
+              {c.body}
+            </Text>
+            <Pressable
+              onPress={() =>
+                confirmAction({
+                  title: "Delete comment?",
+                  message: "Only the author or an admin can do this.",
+                  confirmLabel: "Delete",
+                  destructive: true,
+                  onConfirm: () => {
+                    void removeComment({ commentId: c._id }).catch(alertError);
+                  },
+                })
+              }
+              hitSlop={6}
+              accessibilityLabel="Delete comment"
+              className="rounded p-0.5 active:bg-sunken web:hover:bg-sunken"
+            >
+              <Icon name="x" size={11} color={colors.faint} />
+            </Pressable>
+          </View>
+        ))
+      )}
+      <View className="flex-row items-center gap-1.5">
+        <TextInput
+          value={draft}
+          onChangeText={setDraft}
+          placeholder="Add an update…"
+          placeholderTextColor={colors.faint}
+          onSubmitEditing={post}
+          className="flex-1 rounded-md border border-border bg-raised px-2 py-1 text-xs text-ink"
+        />
+        <Pressable
+          onPress={post}
+          hitSlop={6}
+          accessibilityLabel="Post update"
+          className="rounded p-1 active:bg-sunken web:hover:bg-sunken"
+        >
+          <Icon name="send" size={14} color={colors.accent} />
+        </Pressable>
+      </View>
     </View>
   );
 }
@@ -306,9 +442,12 @@ function FieldRow({
   return (
     <View className="flex-row items-center">
       <Text
-        className={`w-16 px-2 text-2xs font-bold uppercase tracking-wider ${
+        // Wide enough for "BLOCKER" at tracking-wider — w-16 wrapped mid-word.
+        style={{ width: 76 }}
+        className={`px-2 text-2xs font-bold uppercase tracking-wider ${
           alert ? "text-danger" : "text-faint"
         }`}
+        numberOfLines={1}
       >
         {label}
       </Text>
