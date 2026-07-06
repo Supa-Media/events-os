@@ -3,21 +3,28 @@
  *
  * Rows are DEFINITIONS: "Meet with directs, bi-weekly, all Directors" is one
  * row that shows up as an individual responsibility for every person whose
- * role matches (plus anyone assigned directly). The whole chapter can read
- * them (they're the org's how-to documentation); editing is open like the
- * People roster.
+ * role matches (plus anyone assigned directly). Managers and admins work the
+ * whole catalog (the Duties tab); everyone else only receives the duties that
+ * land on them, and editing is manager/admin-only throughout.
  */
 import { query, mutation } from "./_generated/server";
 import { Id } from "./_generated/dataModel";
 import { v } from "convex/values";
-import { RESPONSIBILITY_CADENCES } from "@events-os/shared";
+import {
+  RESPONSIBILITY_CADENCES,
+  responsibilityAppliesTo,
+} from "@events-os/shared";
 import {
   requireUserId,
   requireChapterId,
   requireOwned,
   getChapterIdOrNull,
 } from "./lib/context";
-import { requireManagerOrAdmin } from "./lib/org";
+import {
+  requireManagerOrAdmin,
+  isChapterAdmin,
+  viewerPerson,
+} from "./lib/org";
 
 const cadence = v.union(...RESPONSIBILITY_CADENCES.map((c) => v.literal(c)));
 
@@ -26,21 +33,39 @@ const cadence = v.union(...RESPONSIBILITY_CADENCES.map((c) => v.literal(c)));
 // to a duty must not be able to quietly delete or unassign it before their 1:1.
 
 /**
- * All the chapter's responsibility definitions, oldest first, each with a
- * summary of its How-To doc (kind/title/url) joined in so list surfaces can
- * render the affordance without a doc query per row.
+ * The caller's readable slice of the chapter's responsibility definitions,
+ * oldest first, each with a summary of its How-To doc (kind/title/url) joined
+ * in so list surfaces can render the affordance without a doc query per row.
+ *
+ * Managers and admins get the whole catalog — the Duties tab, subtree
+ * rollups, and quick-assign all need it. Everyone else gets ONLY the duties
+ * that land on them (direct assignment or role match): enough to render
+ * their own My-work view without exposing the org-wide duty database.
  */
 export const list = query({
   args: {},
   handler: async (ctx) => {
     const chapterId = await getChapterIdOrNull(ctx);
     if (!chapterId) return [];
-    const rows = await ctx.db
+    let rows = await ctx.db
       .query("responsibilities")
       .withIndex("by_chapter", (q) =>
         q.eq("chapterId", chapterId as Id<"chapters">),
       )
       .collect();
+    if (!(await isChapterAdmin(ctx, chapterId as Id<"chapters">))) {
+      const self = await viewerPerson(ctx, chapterId as Id<"chapters">);
+      if (!self) return [];
+      const firstReport = await ctx.db
+        .query("people")
+        .withIndex("by_manager", (q) => q.eq("managerId", self._id))
+        .first();
+      if (firstReport === null) {
+        rows = rows.filter((r) =>
+          responsibilityAppliesTo(r, { _id: self._id, role: self.role }),
+        );
+      }
+    }
     return await Promise.all(
       rows.map(async (r) => {
         if (!r.howToDocId) return { ...r, howToDoc: null };

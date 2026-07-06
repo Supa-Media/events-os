@@ -84,6 +84,39 @@ describe("responsibilities", () => {
     expect(responsibilityAppliesTo(flyers, person(bob, "Director"))).toBe(false);
   });
 
+  test("the list is the managers' catalog — members only receive their own duties", async () => {
+    const s = await setupChapter(newT());
+    const { bob, cara } = await seedChain(s);
+    const asBob = await addUser(s, "bob@publicworship.life", { personId: bob });
+    const asCara = await addUser(s, "cara@publicworship.life", {
+      personId: cara,
+    });
+    const asVisitor = await addUser(s, "visitor@publicworship.life");
+
+    await s.as.mutation(api.responsibilities.create, {
+      title: "Meet with directs",
+      assigneeRoles: ["director"],
+    });
+    await s.as.mutation(api.responsibilities.create, {
+      title: "Create event flyers",
+      assigneePersonIds: [cara],
+    });
+    await s.as.mutation(api.responsibilities.create, {
+      title: "Approve budgets",
+      assigneeRoles: ["treasurer"],
+    });
+
+    // Admins and managers (Bob has a report) read the whole catalog…
+    expect((await s.as.query(api.responsibilities.list)).length).toBe(3);
+    expect((await asBob.query(api.responsibilities.list)).length).toBe(3);
+    // …Cara (no reports) receives ONLY what lands on her — not the org's
+    // whole duty database…
+    const caras = await asCara.query(api.responsibilities.list);
+    expect(caras.map((r) => r.title)).toEqual(["Create event flyers"]);
+    // …and a signed-in member with no roster row receives nothing.
+    expect(await asVisitor.query(api.responsibilities.list)).toEqual([]);
+  });
+
   test("editing is for managers and admins only", async () => {
     const s = await setupChapter(newT());
     const { bob, cara } = await seedChain(s);
