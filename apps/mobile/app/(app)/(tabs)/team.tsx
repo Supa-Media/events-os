@@ -13,7 +13,7 @@
  * hidden for them too). `projects.list` is scoped the same way.
  */
 import { useMemo, useState } from "react";
-import { View, Text, Pressable } from "react-native";
+import { View, Text, Pressable, ScrollView } from "react-native";
 import { useRouter } from "expo-router";
 import { useQuery, useMutation } from "convex/react";
 import type { FunctionReturnType } from "convex/server";
@@ -32,6 +32,8 @@ import {
   ProjectCard,
   buildProjectTree,
 } from "../../../components/team/ProjectCard";
+import { OrgChart } from "../../../components/team/OrgChart";
+import { WorkloadView } from "../../../components/team/WorkloadView";
 import { colors, spacing } from "../../../lib/theme";
 import { alertError } from "../../../lib/errors";
 
@@ -40,9 +42,11 @@ type Person = Overview["people"][number];
 
 export default function TeamScreen() {
   const router = useRouter();
+  const nav = useQuery(api.org.nav);
   const overview = useQuery(api.org.overview);
   const projects = useQuery(api.projects.list);
   const createProject = useMutation(api.projects.create);
+  const [view, setView] = useState<"list" | "chart">("list");
 
   // The org chart covers team members plus anyone wired into a manager
   // relationship (so a report who isn't flagged Team yet still shows up).
@@ -140,17 +144,25 @@ export default function TeamScreen() {
     [projects],
   );
 
-  if (overview === undefined || projects === undefined) {
+  if (nav === undefined || overview === undefined || projects === undefined) {
     return <Screen loading />;
   }
 
-  if (!overview.canManage) {
+  // The server's three-way policy (org.nav.teamView) decides what this tab
+  // is — the same field AppShell used to show the nav entry.
+  if (nav.teamView !== "org") {
+    // No reports to manage — but everyone on the roster still gets their OWN
+    // work here: the projects assigned to them, their responsibilities, and
+    // their events, fully editable.
+    if (nav.teamView === "self" && nav.selfPersonId) {
+      return <WorkloadView personId={nav.selfPersonId} showBack={false} />;
+    }
     return (
       <Screen>
         <Narrow>
           <EmptyState
-            title="Nothing to manage yet"
-            message="This view unlocks when people report to you — ask a chapter admin to set the Manager column in the People tab."
+            title="Nothing here yet"
+            message="Your work shows up once your roster profile is linked — ask a chapter admin to connect your account on the People tab."
           />
         </Narrow>
       </Screen>
@@ -165,15 +177,55 @@ export default function TeamScreen() {
         <View
           style={{
             flexDirection: "row",
-            alignItems: "baseline",
+            alignItems: "center",
             justifyContent: "space-between",
             marginBottom: spacing.md,
           }}
         >
           <Text className="font-display text-2xl text-ink">Team</Text>
-          <Text className="text-2xs font-bold uppercase tracking-wider text-muted">
-            {org.included.length} people
-          </Text>
+          <View className="flex-row items-center gap-3">
+            {/* List ⇄ org-chart toggle */}
+            <View
+              className="flex-row rounded-lg bg-sunken"
+              style={{ padding: 3, gap: spacing.xs }}
+            >
+              {(
+                [
+                  { key: "list", icon: "list", label: "List" },
+                  { key: "chart", icon: "git-branch", label: "Chart" },
+                ] as const
+              ).map((v) => {
+                const active = view === v.key;
+                return (
+                  <Pressable
+                    key={v.key}
+                    onPress={() => setView(v.key)}
+                    accessibilityRole="tab"
+                    accessibilityState={{ selected: active }}
+                    className={`flex-row items-center gap-1.5 rounded-md px-2.5 py-1 active:opacity-80 ${
+                      active ? "bg-raised shadow-sm" : ""
+                    }`}
+                  >
+                    <Icon
+                      name={v.icon}
+                      size={13}
+                      color={active ? colors.ink : colors.muted}
+                    />
+                    <Text
+                      className={`text-xs font-semibold ${
+                        active ? "text-ink" : "text-muted"
+                      }`}
+                    >
+                      {v.label}
+                    </Text>
+                  </Pressable>
+                );
+              })}
+            </View>
+            <Text className="text-2xs font-bold uppercase tracking-wider text-muted">
+              {org.included.length} people
+            </Text>
+          </View>
         </View>
 
         {org.included.length === 0 ? (
@@ -189,18 +241,35 @@ export default function TeamScreen() {
                 their manager — tap anyone to see their projects.
               </Text>
             ) : null}
-            <View className="overflow-hidden rounded-lg border border-border bg-raised px-2 py-1.5">
-              {org.roots.map((p) => (
-                <OrgNode
-                  key={p._id}
-                  person={p}
+            {view === "chart" ? (
+              <ScrollView
+                horizontal
+                showsHorizontalScrollIndicator={false}
+                className="rounded-lg border border-border bg-surface"
+                contentContainerStyle={{ padding: spacing.lg, flexGrow: 1 }}
+              >
+                <OrgChart
+                  roots={org.roots}
                   childrenOf={org.childrenOf}
                   teamSize={org.teamSize}
                   projectCount={projectCount}
                   onOpen={(id) => router.push(`/team/${id}` as any)}
                 />
-              ))}
-            </View>
+              </ScrollView>
+            ) : (
+              <View className="overflow-hidden rounded-lg border border-border bg-raised px-2 py-1.5">
+                {org.roots.map((p) => (
+                  <OrgNode
+                    key={p._id}
+                    person={p}
+                    childrenOf={org.childrenOf}
+                    teamSize={org.teamSize}
+                    projectCount={projectCount}
+                    onOpen={(id) => router.push(`/team/${id}` as any)}
+                  />
+                ))}
+              </View>
+            )}
           </>
         )}
 

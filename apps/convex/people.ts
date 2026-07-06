@@ -267,6 +267,25 @@ export const remove = mutation({
         updatedAt: Date.now(),
       });
     }
+    // Strip them from direct responsibility assignments (no dangling '?' chips)
+    // and delete the 1:1 record about them — it's unreachable once they're gone.
+    const duties = await ctx.db
+      .query("responsibilities")
+      .withIndex("by_chapter", (q) => q.eq("chapterId", person.chapterId))
+      .collect();
+    for (const d of duties) {
+      if (!d.assigneePersonIds?.includes(personId)) continue;
+      const remaining = d.assigneePersonIds.filter((id) => id !== personId);
+      await ctx.db.patch(d._id, {
+        assigneePersonIds: remaining.length > 0 ? remaining : undefined,
+        updatedAt: Date.now(),
+      });
+    }
+    const theirCheckIns = await ctx.db
+      .query("checkIns")
+      .withIndex("by_person", (q) => q.eq("personId", personId))
+      .collect();
+    for (const c of theirCheckIns) await ctx.db.delete(c._id);
     await ctx.db.delete(personId);
     return personId;
   },

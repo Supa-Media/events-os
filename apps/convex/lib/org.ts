@@ -40,7 +40,9 @@ export async function isChapterAdmin(
   }
 }
 
-/** The caller's own roster row in this chapter (people.userId link), or null. */
+/** The caller's own roster row in this chapter (people.userId link), or null.
+ *  Placeholder rows never count — they're event-scoped stand-ins, and letting
+ *  one act as "self" would disagree with every roster-derived surface. */
 export async function viewerPerson(
   ctx: QueryCtx,
   chapterId: Id<"chapters">,
@@ -50,7 +52,10 @@ export async function viewerPerson(
     .query("people")
     .withIndex("by_user", (q) => q.eq("userId", userId as Id<"users">))
     .collect();
-  return rows.find((p) => p.chapterId === chapterId) ?? null;
+  return (
+    rows.find((p) => p.chapterId === chapterId && p.isPlaceholder !== true) ??
+    null
+  );
 }
 
 /** Find the caller's roster row in an already-loaded roster (no extra reads). */
