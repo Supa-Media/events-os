@@ -21,8 +21,12 @@ export const responsibilities = defineTable({
   chapterId: v.id("chapters"),
   title: v.string(),
   description: v.optional(v.string()),
-  // How to actually do this (steps, links, tools) — the handoff documentation.
+  // How to actually do this — the handoff documentation. Legacy plain text…
   howTo: v.optional(v.string()),
+  // …superseded by a standalone doc (link / video / note / markdown page),
+  // the SAME primitive behind event-grid How-To cells, so a duty's runbook
+  // gets its own page and share URL. When set, it wins over `howTo`.
+  howToDocId: v.optional(v.id("docs")),
   cadence: v.union(...RESPONSIBILITY_CADENCES.map((c) => v.literal(c))),
   // Role titles this fans out to (normalized match against people.role).
   assigneeRoles: v.optional(v.array(v.string())),
@@ -64,6 +68,24 @@ export const checkIns = defineTable({
       }),
     ),
   ),
+  // Per-project state at the time of the 1:1 — same shape of check as the
+  // responsibilities above. Names are snapshotted so history survives
+  // renames/deletes of the project.
+  projects: v.optional(
+    v.array(
+      v.object({
+        projectId: v.optional(v.id("projects")),
+        name: v.string(),
+        onTrack: v.boolean(),
+        note: v.optional(v.string()),
+      }),
+    ),
+  ),
+  // The manager's feedback: strengths, growth areas, and above-and-beyond
+  // moments worth naming up the chain.
+  feedbackWell: v.optional(v.string()),
+  feedbackImprove: v.optional(v.string()),
+  feedbackAboveBeyond: v.optional(v.string()),
   // Prayer requests / personal updates for the reporting chain.
   personalUpdate: v.optional(v.string()),
   // Workload pulse: 1 = far too little, 10 = far too much (5-6 ≈ right).

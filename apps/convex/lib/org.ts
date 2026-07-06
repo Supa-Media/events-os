@@ -8,9 +8,10 @@
  * ones who may rewire the tree itself (the Manager column). All of it enforced
  * here on the server — UI hiding is purely cosmetic.
  */
+import { ConvexError } from "convex/values";
 import { Doc, Id } from "../_generated/dataModel";
 import { QueryCtx } from "../_generated/server";
-import { requireUserId } from "./context";
+import { requireUserId, getChapterIdOrNull } from "./context";
 import { isSuperuser } from "./superuser";
 
 /** Membership roles that carry chapter-admin authority. */
@@ -127,6 +128,60 @@ export function subtreeIds(
   root: Doc<"people">,
 ): Set<Id<"people">> {
   return new Set(subtreeNodes(childrenOf, root).map((n) => n.person._id));
+}
+
+/**
+ * Assert the caller is a manager (has at least one direct report) or a
+ * chapter admin. The gate for org-shaping edits: responsibility definitions
+ * and the runbook docs they point at.
+ */
+export async function requireManagerOrAdmin(
+  ctx: QueryCtx,
+  chapterId: Id<"chapters">,
+): Promise<void> {
+  if (await isChapterAdmin(ctx, chapterId)) return;
+  const viewer = await viewerPerson(ctx, chapterId);
+  if (viewer) {
+    const firstReport = await ctx.db
+      .query("people")
+      .withIndex("by_manager", (q) => q.eq("managerId", viewer._id))
+      .first();
+    if (firstReport !== null) return;
+  }
+  throw new ConvexError({
+    code: "FORBIDDEN",
+    message: "Only managers and admins can do this.",
+  });
+}
+
+/**
+ * The chain-above read policy for 1:1 records, resolved once: who the record
+ * is about, the roster, the caller's row, and their reach. Returns null when
+ * the caller may NOT read this person's record — out of chapter, out of
+ * subtree, or (for non-admins) the person IS the caller: the log is the
+ * managerial record about someone, never readable by its subject.
+ */
+export async function readableCheckInSubject(
+  ctx: QueryCtx,
+  personId: Id<"people">,
+): Promise<{
+  person: Doc<"people">;
+  roster: Doc<"people">[];
+  viewer: Doc<"people"> | null;
+  manageable: Set<Id<"people">> | null;
+} | null> {
+  const chapterId = await getChapterIdOrNull(ctx);
+  if (!chapterId) return null;
+  const person = await ctx.db.get(personId);
+  if (!person || person.chapterId !== chapterId) return null;
+  const roster = await chapterRoster(ctx, person.chapterId);
+  const viewer = await viewerFromRoster(ctx, roster);
+  const manageable = await manageablePersonIds(ctx, person.chapterId, roster);
+  if (manageable !== null) {
+    if (!manageable.has(personId)) return null;
+    if (viewer?._id === personId) return null;
+  }
+  return { person, roster, viewer, manageable };
 }
 
 /**

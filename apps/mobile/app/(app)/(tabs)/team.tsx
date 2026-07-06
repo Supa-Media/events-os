@@ -246,7 +246,7 @@ export default function TeamScreen() {
                 horizontal
                 showsHorizontalScrollIndicator={false}
                 className="rounded-lg border border-border bg-surface"
-                contentContainerStyle={{ padding: spacing.lg, flexGrow: 1 }}
+                contentContainerStyle={{ padding: spacing.lg }}
               >
                 <OrgChart
                   roots={org.roots}

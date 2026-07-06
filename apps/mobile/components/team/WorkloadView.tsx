@@ -9,8 +9,8 @@
  * report and the reporting chain reads the history.
  */
 import { useMemo, useState } from "react";
-import { View, Text, Pressable } from "react-native";
-import { useRouter } from "expo-router";
+import { View, Text, Pressable, Linking, Modal, ScrollView } from "react-native";
+import { useRouter, usePathname } from "expo-router";
 import { useQuery, useMutation } from "convex/react";
 import type { FunctionReturnType } from "convex/server";
 import { api } from "@events-os/convex/_generated/api";
@@ -43,7 +43,9 @@ import { confirmAction } from "../event/ticketing/helpers";
 
 type Workload = NonNullable<FunctionReturnType<typeof api.org.workload>>;
 type Member = Workload["members"][number];
-type Responsibility = Doc<"responsibilities">;
+type Responsibility = FunctionReturnType<
+  typeof api.responsibilities.list
+>[number];
 type CheckInRow = NonNullable<
   FunctionReturnType<typeof api.checkIns.listForSubtree>
 >["entries"][number];
@@ -67,6 +69,7 @@ export function WorkloadView({
     _id: Id<"people">;
     name: string;
   } | null>(null);
+  const [historyOpen, setHistoryOpen] = useState(false);
 
   const peopleById = useMemo(() => {
     const map = new Map<Id<"people">, string>();
@@ -134,6 +137,16 @@ export function WorkloadView({
     return map;
   }, [responsibilities, workload]);
   const respFor = (id: Id<"people">) => respByPerson.get(id) ?? [];
+
+  /** Who's accountable for a project — its owner or nearest ancestor's. */
+  const effectiveOwnerOf = (p: ProjectDoc): Id<"people"> | undefined => {
+    let cur: ProjectDoc | undefined = p;
+    for (let hops = 0; cur && hops < 100; hops++) {
+      if (cur.ownerPersonId) return cur.ownerPersonId;
+      cur = cur.parentProjectId ? projectById.get(cur.parentProjectId) : undefined;
+    }
+    return undefined;
+  };
 
   const checkInsByPerson = useMemo(() => {
     const map = new Map<Id<"people">, CheckInRow[]>();
@@ -241,6 +254,15 @@ export function WorkloadView({
               ) : null}
             </View>
           </View>
+          {ownCheckIns.length > 0 || canLogFor(person._id) ? (
+            <Button
+              title="1:1 history"
+              icon="clock"
+              size="sm"
+              variant="secondary"
+              onPress={() => setHistoryOpen(true)}
+            />
+          ) : null}
           {canLogFor(person._id) ? (
             <Button
               title="Log 1:1"
@@ -335,9 +357,23 @@ export function WorkloadView({
         {/* Their 1:1 history (visible to the chain above them) */}
         {ownCheckIns.length > 0 ? (
           <>
-            <SectionHeader title="1:1 log" count={ownCheckIns.length} />
+            <SectionHeader
+              title="1:1 log"
+              count={ownCheckIns.length}
+              right={
+                <Pressable
+                  onPress={() => setHistoryOpen(true)}
+                  className="active:opacity-70"
+                >
+                  <Text className="text-xs font-semibold text-accent">
+                    See full history
+                  </Text>
+                </Pressable>
+              }
+            />
             <CheckInList
               items={ownCheckIns}
+              limit={5}
               callerPersonId={checkIns?.callerPersonId ?? null}
             />
           </>
@@ -376,6 +412,13 @@ export function WorkloadView({
         <View style={{ height: spacing.xl }} />
       </Narrow>
 
+      {historyOpen ? (
+        <CheckInHistoryModal
+          person={{ _id: person._id, name: person.name }}
+          onClose={() => setHistoryOpen(false)}
+        />
+      ) : null}
+
       {checkInFor ? (
         <CheckInModal
           key={checkInFor._id}
@@ -385,6 +428,16 @@ export function WorkloadView({
             _id: r._id,
             title: r.title,
           }))}
+          projects={(projects ?? [])
+            .filter(
+              (p) =>
+                // Active work they're accountable for: finished projects
+                // shouldn't collect on-track attestations forever, and an
+                // unowned sub-project inherits its parent's owner.
+                p.status !== "done" &&
+                effectiveOwnerOf(p) === checkInFor._id,
+            )
+            .map((p) => ({ _id: p._id, name: p.name }))}
           onClose={() => setCheckInFor(null)}
         />
       ) : null}
@@ -492,32 +545,81 @@ function TeamMemberBlock({
   );
 }
 
-/** Compact recurring-duty rows: title · cadence · how-to hint. */
+/** Compact recurring-duty rows: title · cadence · how-to (doc-aware). */
 function ResponsibilityRows({ items }: { items: Responsibility[] }) {
+  const router = useRouter();
+  const pathname = usePathname();
   return (
     <View style={{ gap: spacing.xs }}>
-      {items.map((r) => (
-        <View
-          key={r._id}
-          className="rounded-md border border-border bg-raised px-3 py-2"
-        >
-          <View className="flex-row items-center gap-2">
-            <Icon name="repeat" size={13} color={colors.muted} />
-            <Text className="flex-1 text-sm font-medium text-ink" numberOfLines={1}>
-              {r.title}
-            </Text>
-            <OptionTag
-              label={RESPONSIBILITY_CADENCE_LABELS[r.cadence]}
-              color={r.cadence === "ad_hoc" ? "gray" : "teal"}
-            />
+      {items.map((r) => {
+        const doc = r.howToDoc;
+        const openDoc = doc
+          ? () => {
+              if ((doc.kind === "link" || doc.kind === "video") && doc.url) {
+                void Linking.openURL(doc.url);
+              } else {
+                router.push(
+                  `/doc/${doc._id}?from=${encodeURIComponent(pathname)}` as any,
+                );
+              }
+            }
+          : null;
+        return (
+          <View
+            key={r._id}
+            className="rounded-md border border-border bg-raised px-3 py-2"
+          >
+            <View className="flex-row items-center gap-2">
+              <Icon name="repeat" size={13} color={colors.muted} />
+              <Text
+                className="flex-1 text-sm font-medium text-ink"
+                numberOfLines={1}
+              >
+                {r.title}
+              </Text>
+              {doc && doc.kind !== "note" && openDoc ? (
+                <Pressable
+                  onPress={openDoc}
+                  hitSlop={6}
+                  className="flex-row items-center gap-1 rounded px-1 py-0.5 active:bg-sunken web:hover:bg-sunken"
+                >
+                  <Icon
+                    name={
+                      doc.kind === "video"
+                        ? "video"
+                        : doc.kind === "markdown"
+                          ? "book-open"
+                          : "external-link"
+                    }
+                    size={13}
+                    color={colors.accent}
+                  />
+                  <Text className="text-xs font-medium text-accent">
+                    How-To
+                  </Text>
+                </Pressable>
+              ) : null}
+              <OptionTag
+                label={RESPONSIBILITY_CADENCE_LABELS[r.cadence]}
+                color={r.cadence === "ad_hoc" ? "gray" : "teal"}
+              />
+            </View>
+            {doc?.kind === "note" && doc.body ? (
+              <Text className="mt-0.5 text-xs text-muted" numberOfLines={2}>
+                {doc.body}
+              </Text>
+            ) : !doc && (r.howTo || r.description) ? (
+              <Text className="mt-0.5 text-xs text-muted" numberOfLines={2}>
+                {r.howTo || r.description}
+              </Text>
+            ) : r.description ? (
+              <Text className="mt-0.5 text-xs text-muted" numberOfLines={2}>
+                {r.description}
+              </Text>
+            ) : null}
           </View>
-          {r.howTo || r.description ? (
-            <Text className="mt-0.5 text-xs text-muted" numberOfLines={2}>
-              {r.howTo || r.description}
-            </Text>
-          ) : null}
-        </View>
-      ))}
+        );
+      })}
     </View>
   );
 }
@@ -598,13 +700,42 @@ function CheckInList({
             </View>
             {flagged.length > 0 ? (
               <Text className="text-xs text-danger">
-                Off track:{" "}
+                Duties off track:{" "}
                 {flagged
                   .map(
                     (r) =>
                       `${r.title}${r.action ? ` → ${CHECKIN_ACTION_LABELS[r.action]}` : ""}`,
                   )
                   .join(" · ")}
+              </Text>
+            ) : null}
+            {(c.projects ?? []).some((p) => !p.onTrack) ? (
+              <Text className="text-xs text-danger">
+                Projects off track:{" "}
+                {(c.projects ?? [])
+                  .filter((p) => !p.onTrack)
+                  .map((p) => `${p.name}${p.note ? ` — ${p.note}` : ""}`)
+                  .join(" · ")}
+              </Text>
+            ) : null}
+            {c.feedbackWell ? (
+              <Text className="text-xs text-ink">
+                <Text className="font-semibold text-success">Doing well: </Text>
+                {c.feedbackWell}
+              </Text>
+            ) : null}
+            {c.feedbackImprove ? (
+              <Text className="text-xs text-ink">
+                <Text className="font-semibold text-warn">Can improve: </Text>
+                {c.feedbackImprove}
+              </Text>
+            ) : null}
+            {c.feedbackAboveBeyond ? (
+              <Text className="text-xs text-ink">
+                <Text className="font-semibold text-accent">
+                  Above & beyond:{" "}
+                </Text>
+                {c.feedbackAboveBeyond}
               </Text>
             ) : null}
             {c.personalUpdate ? (
@@ -625,11 +756,80 @@ function CheckInList({
       })}
       {limit && items.length > limit ? (
         <Text className="text-2xs font-semibold text-faint">
-          Showing {limit} of the {items.length} most recent — open their page
-          for the rest
+          Showing {limit} of the {items.length} most recent — the full record
+          is under “1:1 history” on their page
         </Text>
       ) : null}
     </View>
+  );
+}
+
+/**
+ * The complete 1:1 record for one person, in a same-page modal — every
+ * check-in and skip ever logged, newest first, so the reporting chain can
+ * read the arc of someone's progress in one scroll. Mounted only while open,
+ * so the uncapped query costs nothing until asked for.
+ */
+function CheckInHistoryModal({
+  person,
+  onClose,
+}: {
+  person: { _id: Id<"people">; name: string };
+  onClose: () => void;
+}) {
+  const history = useQuery(api.checkIns.historyForPerson, {
+    personId: person._id,
+  });
+  return (
+    <Modal visible transparent animationType="fade" onRequestClose={onClose}>
+      <Pressable
+        onPress={onClose}
+        className="flex-1 items-center justify-center bg-ink/30 p-6"
+      >
+        <Pressable
+          onPress={() => {}}
+          className="max-h-full w-full max-w-xl overflow-hidden rounded-xl border border-border bg-raised shadow-pop"
+        >
+          <View className="flex-row items-center justify-between border-b border-border px-5 py-4">
+            <Text className="font-display text-lg text-ink" numberOfLines={1}>
+              1:1 history — {person.name}
+            </Text>
+            <Pressable onPress={onClose} hitSlop={8} className="rounded-md p-1">
+              <Icon name="x" size={18} color={colors.muted} />
+            </Pressable>
+          </View>
+          <ScrollView
+            style={{ maxHeight: 560 }}
+            contentContainerStyle={{ padding: spacing.lg }}
+          >
+            {history === undefined ? (
+              <Text className="text-sm text-faint">Loading history…</Text>
+            ) : history === null ? (
+              <Text className="text-sm text-faint">
+                This record is only visible to {person.name}'s reporting chain.
+              </Text>
+            ) : history.entries.length === 0 ? (
+              <Text className="text-sm text-faint">
+                No 1:1s logged yet — the history builds as their manager logs
+                check-ins.
+              </Text>
+            ) : (
+              <>
+                <Text className="mb-2 text-xs font-semibold text-muted">
+                  {history.entries.length}{" "}
+                  {history.entries.length === 1 ? "entry" : "entries"}, newest
+                  first
+                </Text>
+                <CheckInList
+                  items={history.entries}
+                  callerPersonId={history.callerPersonId}
+                />
+              </>
+            )}
+          </ScrollView>
+        </Pressable>
+      </Pressable>
+    </Modal>
   );
 }
 

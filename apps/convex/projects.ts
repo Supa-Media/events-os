@@ -16,7 +16,7 @@ import {
   requireOwned,
   getChapterIdOrNull,
 } from "./lib/context";
-import { manageablePersonIds } from "./lib/org";
+import { isChapterAdmin, manageablePersonIds, viewerPerson } from "./lib/org";
 
 const projectStatus = v.union(...PROJECT_STATUSES.map((s) => v.literal(s)));
 
@@ -101,17 +101,145 @@ export const list = query({
       ctx,
       chapterId as Id<"chapters">,
     );
-    if (manageable === null) return all; // admin — no restriction
-    // Effective-owner walk done in memory — `all` already holds every ancestor.
-    const byId = new Map(all.map((p) => [p._id, p]));
-    return all.filter((p) => {
-      let cur: Doc<"projects"> | undefined = p;
-      for (let hops = 0; cur && hops < 100; hops++) {
-        if (cur.ownerPersonId) return manageable.has(cur.ownerPersonId);
-        cur = cur.parentProjectId ? byId.get(cur.parentProjectId) : undefined;
-      }
-      return false; // fully unowned chain — admin territory
+    let visible = all;
+    if (manageable !== null) {
+      // Effective-owner walk done in memory — `all` already holds every ancestor.
+      const byId = new Map(all.map((p) => [p._id, p]));
+      visible = all.filter((p) => {
+        let cur: Doc<"projects"> | undefined = p;
+        for (let hops = 0; cur && hops < 100; hops++) {
+          if (cur.ownerPersonId) return manageable.has(cur.ownerPersonId);
+          cur = cur.parentProjectId ? byId.get(cur.parentProjectId) : undefined;
+        }
+        return false; // fully unowned chain — admin territory
+      });
+    }
+    // Join each card's collapsed preview: the latest comment, attributed.
+    // Author docs are shared across projects (one busy manager comments on
+    // many) — fetch each distinct author once, not once per project.
+    const lasts = await Promise.all(
+      visible.map((p) =>
+        ctx.db
+          .query("projectComments")
+          .withIndex("by_project", (q) => q.eq("projectId", p._id))
+          .order("desc")
+          .first(),
+      ),
+    );
+    const authorName = new Map<Id<"people">, string | null>();
+    for (const last of lasts) {
+      if (!last || authorName.has(last.authorPersonId)) continue;
+      const author = await ctx.db.get(last.authorPersonId);
+      authorName.set(last.authorPersonId, author?.name ?? null);
+    }
+    return visible.map((p, i) => {
+      const last = lasts[i];
+      return {
+        ...p,
+        lastComment: last
+          ? {
+              body: last.body,
+              authorName: authorName.get(last.authorPersonId) ?? null,
+              createdAt: last.createdAt,
+            }
+          : null,
+      };
     });
+  },
+});
+
+/**
+ * A project's comment thread, oldest first — the progression record. Visible
+ * to whoever can see the project (same effective-owner scope); returns NULL
+ * when out of scope (matching the check-in queries) so denial is never
+ * mistaken for an empty thread. Bounded to the latest 200 entries.
+ */
+export const comments = query({
+  args: { projectId: v.id("projects") },
+  handler: async (ctx, { projectId }) => {
+    const project = await requireOwned(ctx, "projects", projectId, "Project");
+    const manageable = await manageablePersonIds(ctx, project.chapterId);
+    if (manageable !== null) {
+      const owner = await effectiveOwnerId(ctx, project);
+      if (!owner || !manageable.has(owner)) return null;
+    }
+    const rows = await ctx.db
+      .query("projectComments")
+      .withIndex("by_project", (q) => q.eq("projectId", projectId))
+      .order("desc")
+      .take(200);
+    rows.reverse(); // oldest first for reading the progression top-down
+    const authorName = new Map<Id<"people">, string | null>();
+    for (const c of rows) {
+      if (authorName.has(c.authorPersonId)) continue;
+      const author = await ctx.db.get(c.authorPersonId);
+      authorName.set(c.authorPersonId, author?.name ?? null);
+    }
+    return rows.map((c) => ({
+      ...c,
+      authorName: authorName.get(c.authorPersonId) ?? null,
+    }));
+  },
+});
+
+/** Post a comment on a project — the unit of its history. */
+export const addComment = mutation({
+  args: { projectId: v.id("projects"), body: v.string() },
+  handler: async (ctx, { projectId, body }) => {
+    const project = await requireOwned(ctx, "projects", projectId, "Project");
+    const manageable = await manageablePersonIds(ctx, project.chapterId);
+    assertInScope(
+      manageable,
+      await effectiveOwnerId(ctx, project),
+      "You can only comment on your team's projects.",
+    );
+    const author = await viewerPerson(ctx, project.chapterId);
+    if (!author) {
+      throw new ConvexError({
+        code: "FORBIDDEN",
+        message: "You need a roster profile to comment.",
+      });
+    }
+    const trimmed = body.trim();
+    if (!trimmed) {
+      throw new ConvexError({
+        code: "INVALID",
+        message: "A comment needs some text.",
+      });
+    }
+    const userId = await requireUserId(ctx);
+    return await ctx.db.insert("projectComments", {
+      chapterId: project.chapterId,
+      projectId,
+      authorPersonId: author._id,
+      body: trimmed,
+      createdBy: userId as Id<"users">,
+      createdAt: Date.now(),
+    });
+  },
+});
+
+/** Delete a comment — its author, or a chapter admin. */
+export const removeComment = mutation({
+  args: { commentId: v.id("projectComments") },
+  handler: async (ctx, { commentId }) => {
+    const comment = await requireOwned(
+      ctx,
+      "projectComments",
+      commentId,
+      "Comment",
+    );
+    if (!(await isChapterAdmin(ctx, comment.chapterId))) {
+      const viewer = await viewerPerson(ctx, comment.chapterId);
+      if (!viewer || viewer._id !== comment.authorPersonId) {
+        throw new ConvexError({
+          code: "FORBIDDEN",
+          message: "Only the comment's author (or an admin) can delete it.",
+        });
+      }
+    }
+    await ctx.db.delete(commentId);
+    return commentId;
   },
 });
 
@@ -127,9 +255,7 @@ export const create = mutation({
     startDate: v.optional(v.number()),
     deadline: v.optional(v.number()),
     budgetUsd: v.optional(v.number()),
-    statusNote: v.optional(v.string()),
     blocker: v.optional(v.string()),
-    nextSteps: v.optional(v.string()),
   },
   handler: async (ctx, args) => {
     const chapterId = await requireChapterId(ctx);
@@ -162,9 +288,7 @@ export const create = mutation({
       startDate: args.startDate,
       deadline: args.deadline,
       budgetUsd: args.budgetUsd,
-      statusNote: args.statusNote,
       blocker: args.blocker,
-      nextSteps: args.nextSteps,
       createdBy: userId as Id<"users">,
       createdAt: now,
       updatedAt: now,
@@ -265,6 +389,16 @@ export const remove = mutation({
         ownerPersonId: child.ownerPersonId ?? effOwner,
         updatedAt: Date.now(),
       });
+    }
+    // The thread belongs to the project — it goes with it. Batched reads so
+    // a years-long thread can't blow the mutation's document limits.
+    for (;;) {
+      const batch = await ctx.db
+        .query("projectComments")
+        .withIndex("by_project", (q) => q.eq("projectId", projectId))
+        .take(200);
+      for (const c of batch) await ctx.db.delete(c._id);
+      if (batch.length < 200) break;
     }
     await ctx.db.delete(projectId);
     return projectId;

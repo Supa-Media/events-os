@@ -117,6 +117,52 @@ describe("responsibilities", () => {
     await s.as.mutation(api.responsibilities.remove, { responsibilityId: id });
   });
 
+  test("a duty's How-To doc is manager-gated like the row itself", async () => {
+    const s = await setupChapter(newT());
+    const { bob, cara } = await seedChain(s);
+    const asBob = await addUser(s, "bob@publicworship.life", { personId: bob });
+    const asCara = await addUser(s, "cara@publicworship.life", {
+      personId: cara,
+    });
+
+    // Bob (manager) documents a duty with a markdown runbook.
+    const { _id: docId } = await asBob.mutation(api.docs.create, {
+      kind: "markdown",
+      title: "Setlist runbook",
+      body: "1. Pick songs 2. Share by Thursday",
+      scope: "template",
+    });
+    const dutyId = (await asBob.mutation(api.responsibilities.create, {
+      title: "Weekly setlist",
+      assigneePersonIds: [cara],
+    })) as Id<"responsibilities">;
+    await asBob.mutation(api.responsibilities.update, {
+      responsibilityId: dutyId,
+      howToDocId: docId as Id<"docs">,
+    });
+
+    // Cara (held to the duty, no reports) can't rewrite the runbook…
+    await expect(
+      asCara.mutation(api.docs.update, {
+        docId: docId as Id<"docs">,
+        body: "just wing it",
+      }),
+    ).rejects.toThrow(ConvexError);
+    // …but Bob still can, and Cara can still edit an UNLINKED doc of her own.
+    await asBob.mutation(api.docs.update, {
+      docId: docId as Id<"docs">,
+      body: "1. Pick songs 2. Share by Wednesday",
+    });
+    const { _id: caraDoc } = await asCara.mutation(api.docs.create, {
+      kind: "note",
+      title: "My notes",
+    });
+    await asCara.mutation(api.docs.update, {
+      docId: caraDoc as Id<"docs">,
+      body: "mine",
+    });
+  });
+
   test("removing a person strips their direct assignments and 1:1 record", async () => {
     const s = await setupChapter(newT());
     const { bob, cara } = await seedChain(s);
@@ -247,6 +293,112 @@ describe("check-ins", () => {
       personId: cara,
     });
     expect(caraView!.entries).toHaveLength(0);
+  });
+
+  test("captures the project check and feedback alongside the duties", async () => {
+    const s = await setupChapter(newT());
+    const { bob, cara } = await seedChain(s);
+    const asBob = await addUser(s, "bobp@publicworship.life", { personId: bob });
+    const projectId = (await s.as.mutation(api.projects.create, {
+      name: "EP release",
+      ownerPersonId: cara,
+    })) as Id<"projects">;
+
+    await asBob.mutation(api.checkIns.log, {
+      personId: cara,
+      type: "checkin",
+      projects: [
+        {
+          projectId,
+          name: "EP release",
+          onTrack: false,
+          note: "Mixing slipped a week",
+        },
+      ],
+      feedbackWell: "Great artist communication",
+      feedbackImprove: "Flag slips earlier",
+      feedbackAboveBeyond: "Covered Sunday setup unasked",
+    });
+
+    const view = await asBob.query(api.checkIns.listForSubtree, {
+      personId: bob,
+    });
+    const entry = view!.entries[0];
+    expect(entry.projects![0]).toMatchObject({
+      name: "EP release",
+      onTrack: false,
+      note: "Mixing slipped a week",
+    });
+    expect(entry.feedbackWell).toBe("Great artist communication");
+    expect(entry.feedbackImprove).toBe("Flag slips earlier");
+    expect(entry.feedbackAboveBeyond).toBe("Covered Sunday setup unasked");
+
+    // Cross-chapter project references are rejected like responsibilities'.
+    const s2 = await setupChapter(s.t, {
+      email: "other2@publicworship.life",
+      chapterName: "Austin",
+    });
+    const foreign = (await s2.as.mutation(api.projects.create, {
+      name: "Foreign project",
+    })) as Id<"projects">;
+    await expect(
+      asBob.mutation(api.checkIns.log, {
+        personId: cara,
+        type: "checkin",
+        projects: [{ projectId: foreign, name: "Foreign", onTrack: true }],
+      }),
+    ).rejects.toThrow(ConvexError);
+  });
+
+  test("historyForPerson returns the complete record to the chain above only", async () => {
+    const s = await setupChapter(newT());
+    const { alice, bob, cara } = await seedChain(s);
+    const asAliceUser = await addUser(s, "aliceh@publicworship.life", {
+      personId: alice,
+    });
+    const asBob = await addUser(s, "bobh@publicworship.life", { personId: bob });
+    const asCara = await addUser(s, "carah@publicworship.life", {
+      personId: cara,
+    });
+
+    // 12 entries — beyond the rollup's per-member cap of 10.
+    for (let i = 0; i < 12; i++) {
+      await asBob.mutation(api.checkIns.log, {
+        personId: cara,
+        type: i % 3 === 0 ? "skip" : "checkin",
+        notes: `entry ${i}`,
+      });
+    }
+
+    // The rollup stays capped…
+    const rollup = await asBob.query(api.checkIns.listForSubtree, {
+      personId: bob,
+    });
+    expect(rollup!.entries).toHaveLength(10);
+    // …the history view returns everything, newest first.
+    const full = await asBob.query(api.checkIns.historyForPerson, {
+      personId: cara,
+    });
+    expect(full!.entries).toHaveLength(12);
+    expect(full!.entries[0].notes).toBe("entry 11");
+    // Alice (Bob's manager) reads it too — the whole chain above Cara.
+    expect(
+      (await asAliceUser.query(api.checkIns.historyForPerson, {
+        personId: cara,
+      }))!.entries,
+    ).toHaveLength(12);
+    // Cara never reads her own record; nor can she read up the chain.
+    expect(
+      await asCara.query(api.checkIns.historyForPerson, { personId: cara }),
+    ).toBeNull();
+    expect(
+      await asCara.query(api.checkIns.historyForPerson, { personId: bob }),
+    ).toBeNull();
+    // The admin session reads anyone.
+    expect(
+      (await s.as.query(api.checkIns.historyForPerson, { personId: cara }))!
+        .entries,
+    ).toHaveLength(12);
   });
 
   test("only the author (or an admin) can delete a mis-logged entry", async () => {

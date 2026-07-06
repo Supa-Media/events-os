@@ -27,6 +27,7 @@ import {
   subtreeIds,
   viewerPerson,
   viewerFromRoster,
+  readableCheckInSubject,
 } from "./lib/org";
 
 const checkInType = v.union(...CHECKIN_TYPES.map((t) => v.literal(t)));
@@ -48,6 +49,19 @@ export const log = mutation({
         }),
       ),
     ),
+    projects: v.optional(
+      v.array(
+        v.object({
+          projectId: v.optional(v.id("projects")),
+          name: v.string(),
+          onTrack: v.boolean(),
+          note: v.optional(v.string()),
+        }),
+      ),
+    ),
+    feedbackWell: v.optional(v.string()),
+    feedbackImprove: v.optional(v.string()),
+    feedbackAboveBeyond: v.optional(v.string()),
     personalUpdate: v.optional(v.string()),
     workloadScore: v.optional(v.number()),
     workloadNote: v.optional(v.string()),
@@ -83,6 +97,11 @@ export const log = mutation({
       const doc = await ctx.db.get(entry.responsibilityId);
       await requireInChapter(ctx, person.chapterId, doc, "Responsibility");
     }
+    for (const entry of args.projects ?? []) {
+      if (!entry.projectId) continue;
+      const doc = await ctx.db.get(entry.projectId);
+      await requireInChapter(ctx, person.chapterId, doc, "Project");
+    }
     for (const score of [args.workloadScore, args.interestScore]) {
       if (score === undefined) continue;
       if (!Number.isInteger(score) || score < 1 || score > 10) {
@@ -98,6 +117,10 @@ export const log = mutation({
       managerPersonId: viewer._id,
       type: args.type,
       responsibilities: args.responsibilities,
+      projects: args.projects,
+      feedbackWell: args.feedbackWell,
+      feedbackImprove: args.feedbackImprove,
+      feedbackAboveBeyond: args.feedbackAboveBeyond,
       personalUpdate: args.personalUpdate,
       workloadScore: args.workloadScore,
       workloadNote: args.workloadNote,
@@ -130,6 +153,36 @@ export const remove = mutation({
 });
 
 /**
+ * ONE person's complete 1:1 history, newest first — the "sense of progress"
+ * view. Same read policy as `listForSubtree`: admins anywhere, otherwise the
+ * person must be in the caller's subtree and must not BE the caller (the log
+ * is the managerial record about them). Returns null when out of scope.
+ * Bounded at 500 entries — ~20 years of bi-weekly 1:1s before truncation.
+ */
+export const historyForPerson = query({
+  args: { personId: v.id("people") },
+  handler: async (ctx, { personId }) => {
+    const subject = await readableCheckInSubject(ctx, personId);
+    if (!subject) return null;
+    const { roster, viewer } = subject;
+
+    const nameById = new Map(roster.map((p) => [p._id, p.name]));
+    const rows = await ctx.db
+      .query("checkIns")
+      .withIndex("by_person", (q) => q.eq("personId", personId))
+      .order("desc")
+      .take(500);
+    return {
+      entries: rows.map((c) => ({
+        ...c,
+        managerName: nameById.get(c.managerPersonId) ?? null,
+      })),
+      callerPersonId: viewer?._id ?? null,
+    };
+  },
+});
+
+/**
  * Recent check-ins for the members of `personId`'s subtree the CALLER may
  * read (newest first, bounded per member — history beyond that is out of UI
  * reach for now). Access mirrors `org.workload` with one tightening: for
@@ -141,6 +194,9 @@ export const remove = mutation({
 export const listForSubtree = query({
   args: { personId: v.id("people") },
   handler: async (ctx, { personId }) => {
+    // Deliberately NOT readableCheckInSubject: unlike historyForPerson, a
+    // non-admin may target their own page here (their subtree root) — the
+    // self-record exclusion is applied PER MEMBER below instead.
     const chapterId = await getChapterIdOrNull(ctx);
     if (!chapterId) return null;
     const person = await ctx.db.get(personId);
