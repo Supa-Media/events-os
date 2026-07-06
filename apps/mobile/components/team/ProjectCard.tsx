@@ -15,6 +15,7 @@ import { api } from "@events-os/convex/_generated/api";
 import type { Doc, Id } from "@events-os/convex/_generated/dataModel";
 import {
   PROJECT_STATUS_LABELS,
+  startOfDay,
   type ProjectStatus,
 } from "@events-os/shared";
 import {
@@ -22,10 +23,13 @@ import {
   InlineText,
   SelectCell,
   PersonPicker,
+  Popover,
+  Calendar,
+  useAnchor,
   type SelectOption,
 } from "../ui";
 import { colors } from "../../lib/theme";
-import { parseDateInput, toDateInput, formatDate } from "../../lib/format";
+import { formatDate } from "../../lib/format";
 import { alertError } from "../../lib/errors";
 import { confirmAction } from "../event/ticketing/helpers";
 
@@ -68,6 +72,8 @@ export function ProjectCard({
   peopleById,
   depth = 0,
   showOwner = false,
+  defaultExpanded = false,
+  partOf,
 }: {
   project: ProjectDoc;
   childrenOf: Map<Id<"projects">, ProjectDoc[]>;
@@ -76,6 +82,11 @@ export function ProjectCard({
   depth?: number;
   /** Show + edit the owner chip (rollup/unassigned surfaces). */
   showOwner?: boolean;
+  /** Open pre-expanded (the full-project modal's root). */
+  defaultExpanded?: boolean;
+  /** Set when this card is a sub-project shown OUTSIDE its parent (e.g. under
+   *  its assignee) — a chip back to the full project it belongs to. */
+  partOf?: { name: string; onPress: () => void };
 }) {
   const router = useRouter();
   const updateMutation = useMutation(api.projects.update);
@@ -92,12 +103,17 @@ export function ProjectCard({
   const [ownerPickerOpen, setOwnerPickerOpen] = useState(false);
   // Condensed by default: one row like a responsibility; expand IN PLACE for
   // meta, the manager's fields, and sub-projects. Empty fields cost no space.
-  const [expanded, setExpanded] = useState(false);
+  const [expanded, setExpanded] = useState(defaultExpanded);
   const id = project._id;
   const children = childrenOf.get(id) ?? [];
   const ownerName = project.ownerPersonId
     ? peopleById.get(project.ownerPersonId) ?? null
     : null;
+  // "Due today" isn't overdue; a shipped project can't be.
+  const overdue =
+    project.deadline != null &&
+    project.deadline < startOfDay(Date.now()) &&
+    project.status !== "done";
 
   return (
     <View
@@ -131,6 +147,23 @@ export function ProjectCard({
             if (t.trim()) update({ projectId: id, name: t.trim() });
           }}
         />
+        {partOf ? (
+          <Pressable
+            onPress={partOf.onPress}
+            hitSlop={4}
+            accessibilityLabel={`Open full project: ${partOf.name}`}
+            style={{ maxWidth: 160 }}
+            className="flex-row items-center gap-1 rounded px-1 py-0.5 active:bg-sunken web:hover:bg-sunken"
+          >
+            <Icon name="corner-left-up" size={12} color={colors.accent} />
+            <Text
+              className="text-xs font-medium text-accent"
+              numberOfLines={1}
+            >
+              {partOf.name}
+            </Text>
+          </Pressable>
+        ) : null}
         {!expanded ? (
           <>
             {project.blocker ? (
@@ -142,9 +175,20 @@ export function ProjectCard({
               </Text>
             ) : null}
             {project.deadline != null ? (
-              <Text className="text-xs text-muted">
-                {toDateInput(project.deadline)}
-              </Text>
+              <View className="flex-row items-center gap-1">
+                <Icon
+                  name="flag"
+                  size={12}
+                  color={overdue ? colors.danger : colors.muted}
+                />
+                <Text
+                  className={`text-xs ${
+                    overdue ? "font-medium text-danger" : "text-muted"
+                  }`}
+                >
+                  {formatDate(project.deadline)}
+                </Text>
+              </View>
             ) : null}
             {showOwner && ownerName ? (
               <Text className="text-xs text-muted" numberOfLines={1}>
@@ -192,20 +236,11 @@ export function ProjectCard({
         <>
       {/* Meta: deadline · budget · owner · linked event */}
       <View className="flex-row flex-wrap items-center gap-x-4 gap-y-1 border-b border-border/60 px-2 py-1">
-        <MetaField icon="calendar" width={104}>
-          <InlineText<number | null | undefined>
-            value={project.deadline}
-            placeholder="YYYY-MM-DD"
-            format={(v) => (v != null ? toDateInput(v) : "")}
-            parse={(t) =>
-              t.trim() === "" ? null : parseDateInput(t) ?? undefined
-            }
-            onCommit={(v) => {
-              if (v === undefined) return; // unparsable → leave unchanged
-              update({ projectId: id, deadline: v });
-            }}
-          />
-        </MetaField>
+        <DeadlineCell
+          value={project.deadline}
+          overdue={overdue}
+          onChange={(v) => update({ projectId: id, deadline: v })}
+        />
         <MetaField icon="dollar-sign" width={84}>
           <InlineText<number | null | undefined>
             value={project.budgetUsd}
@@ -439,6 +474,79 @@ function ProjectComments({ projectId }: { projectId: Id<"projects"> }) {
         </Pressable>
       </View>
     </View>
+  );
+}
+
+/**
+ * The deadline field — a flag-labelled trigger opening the shared Calendar
+ * (same picker as the event schedule / DUE cells), so nobody hand-types
+ * YYYY-MM-DD. Red flag + red date once it slips past today unshipped.
+ */
+function DeadlineCell({
+  value,
+  overdue,
+  onChange,
+}: {
+  value: number | null | undefined;
+  overdue: boolean;
+  onChange: (v: number | null) => void;
+}) {
+  const { ref, anchor, visible, open, close } = useAnchor();
+  return (
+    <>
+      <Pressable
+        ref={ref}
+        onPress={open}
+        accessibilityLabel={
+          value != null ? `Deadline: ${formatDate(value)}` : "Set deadline"
+        }
+        className="flex-row items-center gap-1.5 py-1 active:opacity-70 web:hover:opacity-90"
+      >
+        <Icon
+          name="flag"
+          size={13}
+          color={overdue ? colors.danger : colors.muted}
+        />
+        <Text
+          className={`text-sm ${
+            value != null
+              ? overdue
+                ? "font-medium text-danger"
+                : "text-ink"
+              : "text-faint"
+          }`}
+          numberOfLines={1}
+        >
+          {value != null ? `Due ${formatDate(value)}` : "Set deadline"}
+        </Text>
+      </Pressable>
+
+      <Popover visible={visible} onClose={close} anchor={anchor} width={288}>
+        <Calendar
+          selected={value ?? null}
+          onSelect={(ms) => {
+            onChange(ms);
+            close();
+          }}
+          footer={
+            value != null ? (
+              <Pressable
+                onPress={() => {
+                  onChange(null);
+                  close();
+                }}
+                className="mt-2 flex-row items-center justify-center gap-1.5 border-t border-border pt-2.5 active:opacity-70 web:hover:opacity-90"
+              >
+                <Icon name="x" size={13} color={colors.muted} />
+                <Text className="text-xs font-semibold text-muted">
+                  Clear deadline
+                </Text>
+              </Pressable>
+            ) : null
+          }
+        />
+      </Popover>
+    </>
   );
 }
 
