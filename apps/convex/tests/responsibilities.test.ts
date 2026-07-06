@@ -304,6 +304,57 @@ describe("check-ins", () => {
     ).rejects.toThrow(ConvexError);
   });
 
+  test("historyForPerson returns the complete record to the chain above only", async () => {
+    const s = await setupChapter(newT());
+    const { alice, bob, cara } = await seedChain(s);
+    const asAliceUser = await addUser(s, "aliceh@publicworship.life", {
+      personId: alice,
+    });
+    const asBob = await addUser(s, "bobh@publicworship.life", { personId: bob });
+    const asCara = await addUser(s, "carah@publicworship.life", {
+      personId: cara,
+    });
+
+    // 12 entries — beyond the rollup's per-member cap of 10.
+    for (let i = 0; i < 12; i++) {
+      await asBob.mutation(api.checkIns.log, {
+        personId: cara,
+        type: i % 3 === 0 ? "skip" : "checkin",
+        notes: `entry ${i}`,
+      });
+    }
+
+    // The rollup stays capped…
+    const rollup = await asBob.query(api.checkIns.listForSubtree, {
+      personId: bob,
+    });
+    expect(rollup!.entries).toHaveLength(10);
+    // …the history view returns everything, newest first.
+    const full = await asBob.query(api.checkIns.historyForPerson, {
+      personId: cara,
+    });
+    expect(full!.entries).toHaveLength(12);
+    expect(full!.entries[0].notes).toBe("entry 11");
+    // Alice (Bob's manager) reads it too — the whole chain above Cara.
+    expect(
+      (await asAliceUser.query(api.checkIns.historyForPerson, {
+        personId: cara,
+      }))!.entries,
+    ).toHaveLength(12);
+    // Cara never reads her own record; nor can she read up the chain.
+    expect(
+      await asCara.query(api.checkIns.historyForPerson, { personId: cara }),
+    ).toBeNull();
+    expect(
+      await asCara.query(api.checkIns.historyForPerson, { personId: bob }),
+    ).toBeNull();
+    // The admin session reads anyone.
+    expect(
+      (await s.as.query(api.checkIns.historyForPerson, { personId: cara }))!
+        .entries,
+    ).toHaveLength(12);
+  });
+
   test("only the author (or an admin) can delete a mis-logged entry", async () => {
     const s = await setupChapter(newT());
     const { bob, cara } = await seedChain(s);

@@ -152,6 +152,49 @@ export const remove = mutation({
 });
 
 /**
+ * ONE person's complete 1:1 history, newest first — the "sense of progress"
+ * view. Same read policy as `listForSubtree`: admins anywhere, otherwise the
+ * person must be in the caller's subtree and must not BE the caller (the log
+ * is the managerial record about them). Returns null when out of scope.
+ * Bounded at 500 entries — ~20 years of bi-weekly 1:1s before truncation.
+ */
+export const historyForPerson = query({
+  args: { personId: v.id("people") },
+  handler: async (ctx, { personId }) => {
+    const chapterId = await getChapterIdOrNull(ctx);
+    if (!chapterId) return null;
+    const person = await ctx.db.get(personId);
+    if (!person || person.chapterId !== chapterId) return null;
+
+    const roster = await chapterRoster(ctx, person.chapterId);
+    const viewer = await viewerFromRoster(ctx, roster);
+    const manageable = await manageablePersonIds(
+      ctx,
+      person.chapterId,
+      roster,
+    );
+    if (manageable !== null) {
+      if (!manageable.has(personId)) return null;
+      if (viewer?._id === personId) return null; // never your own record
+    }
+
+    const nameById = new Map(roster.map((p) => [p._id, p.name]));
+    const rows = await ctx.db
+      .query("checkIns")
+      .withIndex("by_person", (q) => q.eq("personId", personId))
+      .order("desc")
+      .take(500);
+    return {
+      entries: rows.map((c) => ({
+        ...c,
+        managerName: nameById.get(c.managerPersonId) ?? null,
+      })),
+      callerPersonId: viewer?._id ?? null,
+    };
+  },
+});
+
+/**
  * Recent check-ins for the members of `personId`'s subtree the CALLER may
  * read (newest first, bounded per member — history beyond that is out of UI
  * reach for now). Access mirrors `org.workload` with one tightening: for

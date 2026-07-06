@@ -9,7 +9,7 @@
  * report and the reporting chain reads the history.
  */
 import { useMemo, useState } from "react";
-import { View, Text, Pressable, Linking } from "react-native";
+import { View, Text, Pressable, Linking, Modal, ScrollView } from "react-native";
 import { useRouter, usePathname } from "expo-router";
 import { useQuery, useMutation } from "convex/react";
 import type { FunctionReturnType } from "convex/server";
@@ -69,6 +69,7 @@ export function WorkloadView({
     _id: Id<"people">;
     name: string;
   } | null>(null);
+  const [historyOpen, setHistoryOpen] = useState(false);
 
   const peopleById = useMemo(() => {
     const map = new Map<Id<"people">, string>();
@@ -243,6 +244,15 @@ export function WorkloadView({
               ) : null}
             </View>
           </View>
+          {ownCheckIns.length > 0 || canLogFor(person._id) ? (
+            <Button
+              title="1:1 history"
+              icon="clock"
+              size="sm"
+              variant="secondary"
+              onPress={() => setHistoryOpen(true)}
+            />
+          ) : null}
           {canLogFor(person._id) ? (
             <Button
               title="Log 1:1"
@@ -337,9 +347,23 @@ export function WorkloadView({
         {/* Their 1:1 history (visible to the chain above them) */}
         {ownCheckIns.length > 0 ? (
           <>
-            <SectionHeader title="1:1 log" count={ownCheckIns.length} />
+            <SectionHeader
+              title="1:1 log"
+              count={ownCheckIns.length}
+              right={
+                <Pressable
+                  onPress={() => setHistoryOpen(true)}
+                  className="active:opacity-70"
+                >
+                  <Text className="text-xs font-semibold text-accent">
+                    See full history
+                  </Text>
+                </Pressable>
+              }
+            />
             <CheckInList
               items={ownCheckIns}
+              limit={5}
               callerPersonId={checkIns?.callerPersonId ?? null}
             />
           </>
@@ -377,6 +401,13 @@ export function WorkloadView({
         ) : null}
         <View style={{ height: spacing.xl }} />
       </Narrow>
+
+      {historyOpen ? (
+        <CheckInHistoryModal
+          person={{ _id: person._id, name: person.name }}
+          onClose={() => setHistoryOpen(false)}
+        />
+      ) : null}
 
       {checkInFor ? (
         <CheckInModal
@@ -708,11 +739,80 @@ function CheckInList({
       })}
       {limit && items.length > limit ? (
         <Text className="text-2xs font-semibold text-faint">
-          Showing {limit} of the {items.length} most recent — open their page
-          for the rest
+          Showing {limit} of the {items.length} most recent — the full record
+          is under “1:1 history” on their page
         </Text>
       ) : null}
     </View>
+  );
+}
+
+/**
+ * The complete 1:1 record for one person, in a same-page modal — every
+ * check-in and skip ever logged, newest first, so the reporting chain can
+ * read the arc of someone's progress in one scroll. Mounted only while open,
+ * so the uncapped query costs nothing until asked for.
+ */
+function CheckInHistoryModal({
+  person,
+  onClose,
+}: {
+  person: { _id: Id<"people">; name: string };
+  onClose: () => void;
+}) {
+  const history = useQuery(api.checkIns.historyForPerson, {
+    personId: person._id,
+  });
+  return (
+    <Modal visible transparent animationType="fade" onRequestClose={onClose}>
+      <Pressable
+        onPress={onClose}
+        className="flex-1 items-center justify-center bg-ink/30 p-6"
+      >
+        <Pressable
+          onPress={() => {}}
+          className="max-h-full w-full max-w-xl overflow-hidden rounded-xl border border-border bg-raised shadow-pop"
+        >
+          <View className="flex-row items-center justify-between border-b border-border px-5 py-4">
+            <Text className="font-display text-lg text-ink" numberOfLines={1}>
+              1:1 history — {person.name}
+            </Text>
+            <Pressable onPress={onClose} hitSlop={8} className="rounded-md p-1">
+              <Icon name="x" size={18} color={colors.muted} />
+            </Pressable>
+          </View>
+          <ScrollView
+            style={{ maxHeight: 560 }}
+            contentContainerStyle={{ padding: spacing.lg }}
+          >
+            {history === undefined ? (
+              <Text className="text-sm text-faint">Loading history…</Text>
+            ) : history === null ? (
+              <Text className="text-sm text-faint">
+                This record is only visible to {person.name}'s reporting chain.
+              </Text>
+            ) : history.entries.length === 0 ? (
+              <Text className="text-sm text-faint">
+                No 1:1s logged yet — the history builds as their manager logs
+                check-ins.
+              </Text>
+            ) : (
+              <>
+                <Text className="mb-2 text-xs font-semibold text-muted">
+                  {history.entries.length}{" "}
+                  {history.entries.length === 1 ? "entry" : "entries"}, newest
+                  first
+                </Text>
+                <CheckInList
+                  items={history.entries}
+                  callerPersonId={history.callerPersonId}
+                />
+              </>
+            )}
+          </ScrollView>
+        </Pressable>
+      </Pressable>
+    </Modal>
   );
 }
 
