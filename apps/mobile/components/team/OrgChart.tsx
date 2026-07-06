@@ -1,12 +1,13 @@
 /**
- * OrgChart — a compact VERTICAL org tree, house-styled.
+ * OrgChart — the hybrid org tree, house-styled.
  *
- * Reports stack vertically under their manager, indented one step, hung off
- * a vertical spine with an elbow into each card (the drawio-style layout) —
- * far denser than a horizontal fan for real org shapes. Cards are one-line:
- * avatar, name, role, rollup counts. Purely a different projection of the
- * same `childrenOf` the list view uses; cycles are pruned once in a memo so
- * the recursive render stays pure.
+ * The root sits on top; their DIRECT reports fan out HORIZONTALLY beneath it
+ * (a rail with a drop into each column, drawio-style); everything below a
+ * direct stacks VERTICALLY — indented cards hung off a spine with elbow
+ * connectors — so wide leadership rows stay scannable while deep teams stay
+ * compact. Cards are one-line: avatar, name, role, rollup counts. Purely a
+ * different projection of the same `childrenOf` the list view uses; cycles
+ * are pruned once in a memo so the recursive render stays pure.
  */
 import { useMemo } from "react";
 import { View, Text, Pressable } from "react-native";
@@ -22,15 +23,26 @@ export type OrgChartPerson = {
 };
 
 const CARD_W = 252;
-/** Fixed card height — the elbow math depends on it, so cards without a role
- *  line keep the same box instead of detaching their connectors. */
+/** Fixed card height — the connector math depends on it, so cards without a
+ *  role line keep the same box instead of detaching their connectors. */
 const CARD_H = 48;
-/** Gap above each sibling card; the elbow meets the card's vertical center. */
+/** Vertical drop from the horizontal rail down into each direct's card. */
+const DROP_H = 14;
+/** Horizontal breathing room between sibling columns. */
+const COL_GAP = 16;
+/** Vertical-tree spacing: gap above each card; elbow meets its center. */
 const GAP_Y = 6;
 const ELBOW_Y = GAP_Y + CARD_H / 2;
 const INDENT = 14;
 const TICK_W = 12;
 const LINE = { backgroundColor: colors.border } as const;
+
+type TreeMaps = {
+  childrenOf: Map<Id<"people">, OrgChartPerson[]>;
+  teamSize: Map<Id<"people">, number>;
+  projectCount: Map<Id<"people">, number>;
+  onOpen: (id: Id<"people">) => void;
+};
 
 export function OrgChart({
   roots,
@@ -40,12 +52,10 @@ export function OrgChart({
   onOpen,
 }: {
   roots: OrgChartPerson[];
-  childrenOf: Map<Id<"people">, OrgChartPerson[]>;
-  teamSize: Map<Id<"people">, number>;
-  projectCount: Map<Id<"people">, number>;
-  onOpen: (id: Id<"people">) => void;
-}) {
-  // Prune cycles/diamonds ONCE into plain data so ChartNode's render stays
+} & Omit<TreeMaps, "childrenOf"> & {
+    childrenOf: Map<Id<"people">, OrgChartPerson[]>;
+  }) {
+  // Prune cycles/diamonds ONCE into plain data so the recursive render stays
   // pure — mutating a shared visited set during render breaks under
   // StrictMode double-renders and makes duplicate-edge layout order-dependent.
   const prunedChildrenOf = useMemo(() => {
@@ -64,46 +74,82 @@ export function OrgChart({
     return pruned;
   }, [roots, childrenOf]);
 
+  const maps: TreeMaps = {
+    childrenOf: prunedChildrenOf,
+    teamSize,
+    projectCount,
+    onOpen,
+  };
+
   return (
-    <View style={{ gap: 16 }} className="py-1">
-      {roots.map((p) => (
-        <ChartNode
-          key={p._id}
-          person={p}
-          childrenOf={prunedChildrenOf}
-          teamSize={teamSize}
-          projectCount={projectCount}
-          onOpen={onOpen}
-        />
+    <View style={{ gap: 28 }} className="py-1">
+      {roots.map((root) => (
+        <RootTree key={root._id} root={root} maps={maps} />
       ))}
     </View>
   );
 }
 
-function ChartNode({
+/** One root: card on top, directs as horizontal columns, subtrees vertical. */
+function RootTree({ root, maps }: { root: OrgChartPerson; maps: TreeMaps }) {
+  const directs = maps.childrenOf.get(root._id) ?? [];
+
+  return (
+    <View className="self-start">
+      <Card person={root} maps={maps} />
+
+      {directs.length > 0 ? (
+        <>
+          {/* Drop from the root's card down to the rail. */}
+          <View style={[LINE, { width: 1, height: DROP_H, marginLeft: CARD_W / 2 }]} />
+          <View className="flex-row items-start">
+            {directs.map((direct, i) => {
+              const first = i === 0;
+              const last = i === directs.length - 1;
+              return (
+                <View key={direct._id}>
+                  {/* Rail: each column draws its slice — up to its drop point
+                      (skipped on the first column) and onward to its right
+                      edge (skipped on the last), so the line runs unbroken
+                      between the first and last drops whatever each
+                      column's subtree width is. */}
+                  <View style={{ flexDirection: "row", height: 1 }}>
+                    <View
+                      style={[{ width: CARD_W / 2, height: 1 }, first ? null : LINE]}
+                    />
+                    <View style={[{ flex: 1, height: 1 }, last ? null : LINE]} />
+                  </View>
+                  {/* Drop into this direct's card. */}
+                  <View
+                    style={[LINE, { width: 1, height: DROP_H, marginLeft: CARD_W / 2 }]}
+                  />
+                  {/* The column: the direct + their team, vertical from here. */}
+                  <View style={{ paddingRight: last ? 0 : COL_GAP }}>
+                    <VerticalNode person={direct} maps={maps} />
+                  </View>
+                </View>
+              );
+            })}
+          </View>
+        </>
+      ) : null}
+    </View>
+  );
+}
+
+/** Depth ≥ 1: a card with its team stacked vertically off a spine + elbows. */
+function VerticalNode({
   person,
-  childrenOf,
-  teamSize,
-  projectCount,
-  onOpen,
+  maps,
 }: {
   person: OrgChartPerson;
-  /** Already cycle-pruned by OrgChart — pure tree, safe to recurse. */
-  childrenOf: Map<Id<"people">, OrgChartPerson[]>;
-  teamSize: Map<Id<"people">, number>;
-  projectCount: Map<Id<"people">, number>;
-  onOpen: (id: Id<"people">) => void;
+  maps: TreeMaps;
 }) {
-  const children = childrenOf.get(person._id) ?? [];
+  const children = maps.childrenOf.get(person._id) ?? [];
 
   return (
     <View>
-      <NodeCard
-        person={person}
-        reports={teamSize.get(person._id) ?? 0}
-        activeProjects={projectCount.get(person._id) ?? 0}
-        onPress={() => onOpen(person._id)}
-      />
+      <Card person={person} maps={maps} />
 
       {children.length > 0 ? (
         <View style={{ marginLeft: INDENT }}>
@@ -121,15 +167,11 @@ function ChartNode({
                 ]}
               />
               {/* Elbow into this card's vertical center. */}
-              <View style={[LINE, { width: TICK_W, height: 1, marginTop: ELBOW_Y }]} />
+              <View
+                style={[LINE, { width: TICK_W, height: 1, marginTop: ELBOW_Y }]}
+              />
               <View style={{ paddingTop: GAP_Y, flexShrink: 1 }}>
-                <ChartNode
-                  person={child}
-                  childrenOf={childrenOf}
-                  teamSize={teamSize}
-                  projectCount={projectCount}
-                  onOpen={onOpen}
-                />
+                <VerticalNode person={child} maps={maps} />
               </View>
             </View>
           ))}
@@ -139,20 +181,12 @@ function ChartNode({
   );
 }
 
-function NodeCard({
-  person,
-  reports,
-  activeProjects,
-  onPress,
-}: {
-  person: OrgChartPerson;
-  reports: number;
-  activeProjects: number;
-  onPress: () => void;
-}) {
+function Card({ person, maps }: { person: OrgChartPerson; maps: TreeMaps }) {
+  const reports = maps.teamSize.get(person._id) ?? 0;
+  const activeProjects = maps.projectCount.get(person._id) ?? 0;
   return (
     <Pressable
-      onPress={onPress}
+      onPress={() => maps.onOpen(person._id)}
       style={{ width: CARD_W, height: CARD_H }}
       className="flex-row items-center gap-2.5 rounded-lg border border-border bg-raised px-3 shadow-sm active:bg-sunken web:hover:border-border-strong"
     >
