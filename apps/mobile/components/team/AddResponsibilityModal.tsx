@@ -58,7 +58,11 @@ export function AddResponsibilityModal({
     }
     return !q || r.title.toLowerCase().includes(q);
   });
-  const exactMatch = candidates.some((r) => r.title.trim().toLowerCase() === q);
+  // Scan ALL definitions, not just candidates — a title that already applies
+  // to them is filtered from the list, and "Create" would duplicate it.
+  const exactMatch = responsibilities.some(
+    (r) => r.title.trim().toLowerCase() === q,
+  );
   const canCreate = query.trim().length > 0 && !exactMatch;
 
   async function assignExisting(r: ResponsibilityRow) {
