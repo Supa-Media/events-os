@@ -69,6 +69,7 @@ const TABLE_WIDTH =
   Object.values(COLS).reduce((sum, w) => sum + w, 0) + DELETE_W;
 
 export default function ResponsibilitiesScreen() {
+  const nav = useQuery(api.org.nav);
   const responsibilities = useQuery(api.responsibilities.list);
   const people = useQuery(api.people.list);
   const create = useMutation(api.responsibilities.create);
@@ -128,8 +129,26 @@ export default function ResponsibilitiesScreen() {
     );
   }, [responsibilities, search]);
 
-  if (responsibilities === undefined || people === undefined) {
+  if (
+    nav === undefined ||
+    responsibilities === undefined ||
+    people === undefined
+  ) {
     return <Screen loading />;
+  }
+
+  // The nav hides this tab for non-managers; still guard the direct URL.
+  if (!nav.canManage) {
+    return (
+      <Screen>
+        <Narrow>
+          <EmptyState
+            title="Duties are managed by team leads"
+            message="The duty catalog is only visible to managers and admins. Your own responsibilities are listed on your Team page."
+          />
+        </Narrow>
+      </Screen>
+    );
   }
 
   return (

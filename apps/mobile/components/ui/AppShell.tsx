@@ -22,13 +22,19 @@ const NAV: NavEntry[] = [
 ];
 
 /**
- * The nav entries the caller may see. The server states the Team policy once
- * (org.nav.teamView: "org" for managers/admins, "self" with a roster row,
- * null otherwise) — this and the Team screen both just render that decision.
+ * The nav entries the caller may see. The server states the policy once
+ * (org.nav): Team follows teamView ("org" for managers/admins, "self" with a
+ * roster row, null otherwise); the Duties catalog is managers/admins only
+ * (canManage) — members meet their own duties on their Team page instead.
+ * This and those screens all just render that decision.
  */
 function useNav(): NavEntry[] {
   const org = useQuery(api.org.nav);
-  return NAV.filter((n) => n.path !== "/team" || org?.teamView != null);
+  return NAV.filter((n) => {
+    if (n.path === "/team") return org?.teamView != null;
+    if (n.path === "/responsibilities") return org?.canManage === true;
+    return true;
+  });
 }
 
 /**
