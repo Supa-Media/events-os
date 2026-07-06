@@ -586,11 +586,11 @@ describe("project comments", () => {
     })) as Id<"projectComments">;
 
     const thread = await asBob.query(api.projects.comments, { projectId });
-    expect(thread.map((c) => c.body)).toEqual([
+    expect(thread!.map((c) => c.body)).toEqual([
       "Tracking day 1 done",
       "Great — booking mixing next",
     ]);
-    expect(thread[0].authorName).toBe("Cara");
+    expect(thread![0].authorName).toBe("Cara");
 
     // The list join surfaces the LATEST comment as the collapsed preview.
     const projects = await asBob.query(api.projects.list);
