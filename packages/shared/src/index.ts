@@ -1047,6 +1047,28 @@ export const ROSTER_STATUSES = [
 ] as const;
 export type RosterStatus = (typeof ROSTER_STATUSES)[number];
 
+// ── Projects (units of work) ─────────────────────────────────────────────────
+// A project is any unit of work the team is driving — an event prep effort, a
+// recording, a pitch — nestable (a project can contain sub-projects) and owned
+// by a roster person. Statuses are a readonly tuple so the Convex schema builds
+// its validator from this array (same pattern as EVENT_STATUSES).
+export const PROJECT_STATUSES = [
+  "not_started",
+  "in_progress",
+  "blocked",
+  "on_hold",
+  "done",
+] as const;
+export type ProjectStatus = (typeof PROJECT_STATUSES)[number];
+
+export const PROJECT_STATUS_LABELS: Record<ProjectStatus, string> = {
+  not_started: "Not started",
+  in_progress: "In progress",
+  blocked: "Blocked",
+  on_hold: "On hold",
+  done: "Done",
+};
+
 // ── Songs / worship setlists ─────────────────────────────────────────────────
 // The Songs module: a chapter-wide song LIBRARY (title, author, lyrics, tags),
 // a per-event ordered SETLIST, and public, anonymous song REQUESTS submitted

@@ -26,6 +26,7 @@ import {
   GridHeaderCell,
   SelectCell,
   type SelectOption,
+  PersonPicker,
 } from "../../../components/ui";
 import { colors, spacing } from "../../../lib/theme";
 import { formatDate } from "../../../lib/format";
@@ -83,6 +84,7 @@ const COLS = {
   rate: 100,
   vetting: 120,
   team: 90,
+  manager: 170,
   poc: 150,
   projects: 190,
   comms: 160,
@@ -241,6 +243,7 @@ export default function PeopleScreen() {
               <GridHeaderCell label="Usual rate" width={COLS.rate} />
               <GridHeaderCell label="Vetting" width={COLS.vetting} />
               <GridHeaderCell label="Team" width={COLS.team} />
+              <GridHeaderCell label="Manager" width={COLS.manager} />
               <GridHeaderCell label="POC" width={COLS.poc} />
               <GridHeaderCell label="Projects" width={COLS.projects} />
               <GridHeaderCell label="Comms" width={COLS.comms} />
@@ -268,6 +271,11 @@ export default function PeopleScreen() {
                 <PersonRow
                   key={p._id}
                   person={p}
+                  managerName={
+                    p.managerId
+                      ? people.find((m) => m._id === p.managerId)?.name ?? null
+                      : null
+                  }
                   isLast={i === filtered.length - 1}
                   onOpen={() => setOpenId(p._id)}
                 />
@@ -305,16 +313,19 @@ export default function PeopleScreen() {
 /** A single roster row of fixed-width inline-editable cells + a delete gutter. */
 function PersonRow({
   person,
+  managerName,
   isLast,
   onOpen,
 }: {
   person: Person;
+  managerName: string | null;
   isLast: boolean;
   onOpen: () => void;
 }) {
   const update = useMutation(api.people.update);
   const remove = useMutation(api.people.remove);
   const generateUploadUrl = useMutation(api.storage.generateUploadUrl);
+  const [managerPickerOpen, setManagerPickerOpen] = useState(false);
   const id = person._id as Id<"people">;
 
   const vetting = (person.vettingStatus ?? "unvetted") as VettingStatus;
@@ -470,6 +481,47 @@ function PersonRow({
             <Text className="text-sm text-faint">—</Text>
           )}
         </Pressable>
+      </Cell>
+
+      {/* Manager (roster person this one reports to — powers the Team view) */}
+      <Cell width={COLS.manager}>
+        <Pressable
+          onPress={() => setManagerPickerOpen(true)}
+          className="flex-1 flex-row items-center px-2 py-1.5 active:opacity-70 web:hover:opacity-90"
+        >
+          {managerName ? (
+            <Text className="text-sm text-ink" numberOfLines={1}>
+              {managerName}
+            </Text>
+          ) : (
+            <Text className="text-sm text-faint">—</Text>
+          )}
+        </Pressable>
+        <PersonPicker
+          visible={managerPickerOpen}
+          title="Set manager"
+          selectedId={person.managerId ?? null}
+          source="team"
+          filter={(p) => p._id !== person._id}
+          onPick={async (managerId) => {
+            setManagerPickerOpen(false);
+            try {
+              await update({ personId: id, managerId: managerId as Id<"people"> });
+            } catch {
+              // Backend rejects manager cycles; tell the user why nothing changed.
+              if (Platform.OS === "web" && typeof window !== "undefined") {
+                window.alert(
+                  "Can't set that manager — it would create a reporting loop.",
+                );
+              }
+            }
+          }}
+          onClear={() => {
+            update({ personId: id, managerId: null });
+            setManagerPickerOpen(false);
+          }}
+          onClose={() => setManagerPickerOpen(false)}
+        />
       </Cell>
 
       {/* POC (free-text point of contact) */}

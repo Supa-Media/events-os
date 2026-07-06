@@ -16,6 +16,7 @@ const NAV: NavEntry[] = [
   { label: "Events", icon: "layout", path: "/" },
   { label: "Templates", icon: "grid", path: "/templates" },
   { label: "People", icon: "users", path: "/people" },
+  { label: "Team", icon: "git-branch", path: "/team" },
   { label: "Songs", icon: "music", path: "/song-library" },
 ];
 

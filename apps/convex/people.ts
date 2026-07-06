@@ -4,9 +4,9 @@
  * Chapter-scoped roster CRUD. Every function resolves the caller's chapter via
  * `requireChapterId` and scopes reads/writes to it.
  */
-import { query, mutation } from "./_generated/server";
-import { Id } from "./_generated/dataModel";
-import { v } from "convex/values";
+import { query, mutation, QueryCtx } from "./_generated/server";
+import { Doc, Id } from "./_generated/dataModel";
+import { v, ConvexError } from "convex/values";
 import {
   requireUserId,
   requireChapterId,
@@ -29,6 +29,30 @@ const rosterStatus = v.union(
 );
 
 const gender = v.union(v.literal("male"), v.literal("female"), v.literal("na"));
+
+/**
+ * Assert that making `managerId` the manager of `personId` keeps the org tree
+ * acyclic: walk up the proposed manager's chain and throw if it passes through
+ * the person (or the person IS the manager). Bounded so a corrupt chain can't
+ * loop forever.
+ */
+async function assertNoManagerCycle(
+  ctx: QueryCtx,
+  personId: Id<"people">,
+  managerId: Id<"people">,
+): Promise<void> {
+  let cur: Id<"people"> | undefined = managerId;
+  for (let hops = 0; cur && hops < 100; hops++) {
+    if (cur === personId) {
+      throw new ConvexError({
+        code: "MANAGER_CYCLE",
+        message: "That would make someone their own manager (directly or through the chain).",
+      });
+    }
+    const doc: Doc<"people"> | null = await ctx.db.get(cur);
+    cur = doc?.managerId;
+  }
+}
 
 /** List the chapter roster sorted by name. */
 export const list = query({
@@ -106,10 +130,14 @@ export const create = mutation({
     isTeamMember: v.optional(v.boolean()),
     image: v.optional(v.id("_storage")),
     socialLink: v.optional(v.string()),
+    managerId: v.optional(v.id("people")),
   },
   handler: async (ctx, args) => {
     const chapterId = await requireChapterId(ctx);
     await requireUserId(ctx);
+    if (args.managerId) {
+      await requireOwned(ctx, "people", args.managerId, "Manager");
+    }
     const status = args.status ?? "active";
     return await ctx.db.insert("people", {
       chapterId: chapterId as Id<"chapters">,
@@ -130,6 +158,7 @@ export const create = mutation({
       isTeamMember: args.isTeamMember,
       image: args.image,
       socialLink: args.socialLink,
+      managerId: args.managerId,
       isActive: status !== "inactive",
       createdAt: Date.now(),
     });
@@ -159,9 +188,14 @@ export const update = mutation({
     company: v.optional(v.union(v.string(), v.null())),
     image: v.optional(v.union(v.id("_storage"), v.null())),
     socialLink: v.optional(v.union(v.string(), v.null())),
+    managerId: v.optional(v.union(v.id("people"), v.null())),
   },
   handler: async (ctx, { personId, ...patch }) => {
     await requireOwned(ctx, "people", personId, "Person");
+    if (patch.managerId != null) {
+      await requireOwned(ctx, "people", patch.managerId, "Manager");
+      await assertNoManagerCycle(ctx, personId, patch.managerId);
+    }
     const fields: Record<string, unknown> = {};
     for (const [key, value] of Object.entries(patch)) {
       // null = explicit clear (store undefined); undefined = leave unchanged.
@@ -181,12 +215,29 @@ export const update = mutation({
 export const remove = mutation({
   args: { personId: v.id("people") },
   handler: async (ctx, { personId }) => {
-    await requireOwned(ctx, "people", personId, "Person");
+    const person = await requireOwned(ctx, "people", personId, "Person");
     const engagements = await ctx.db
       .query("engagements")
       .withIndex("by_person", (q) => q.eq("personId", personId))
       .collect();
     for (const e of engagements) await ctx.db.delete(e._id);
+    // Re-point direct reports at the removed person's own manager (or none) so
+    // the org tree closes over the gap instead of stranding a subtree.
+    const reports = await ctx.db
+      .query("people")
+      .withIndex("by_manager", (q) => q.eq("managerId", personId))
+      .collect();
+    for (const r of reports) {
+      await ctx.db.patch(r._id, { managerId: person.managerId });
+    }
+    // Their projects survive as unowned (surfaced under "Unassigned" on Team).
+    const owned = await ctx.db
+      .query("projects")
+      .withIndex("by_owner", (q) => q.eq("ownerPersonId", personId))
+      .collect();
+    for (const p of owned) {
+      await ctx.db.patch(p._id, { ownerPersonId: undefined });
+    }
     await ctx.db.delete(personId);
     return personId;
   },
