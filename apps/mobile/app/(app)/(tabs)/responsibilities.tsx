@@ -7,7 +7,7 @@
  * column is the handoff documentation — how the work actually gets done —
  * and cadence says how often (daily … yearly, or ad hoc, e.g. event flyers).
  */
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { View, Text, Pressable, ScrollView, TextInput } from "react-native";
 import { useQuery, useMutation } from "convex/react";
 import { api } from "@events-os/convex/_generated/api";
@@ -31,8 +31,6 @@ import {
   GridHeaderCell,
   SelectCell,
   PersonPicker,
-  Popover,
-  useAnchor,
   type SelectOption,
 } from "../../../components/ui";
 import {
@@ -479,12 +477,14 @@ function RolesCell({
 }
 
 /**
- * Comma-list editor with a suggestions popover: as you type a role, existing
- * job titles matching the current (last) token appear; picking one completes
- * it in place. Exactly ONE commit ever fires (a `done` guard), suggestion
- * picks land on onPressIn (which fires BEFORE the input's blur on both
- * platforms — no timing guesses), and the blur fallback timer is cleared on
- * unmount so it can never fire into a re-opened editor.
+ * Comma-list editor with INLINE type-ahead: as you type a role, existing job
+ * titles matching the current (last) token render as tappable chips right
+ * below the input — inside the cell, NOT in a Modal popover. (A Modal steals
+ * focus from the input the moment it mounts on web, which blurred the field,
+ * fired the blur-commit, and closed the editor before a single keystroke —
+ * the flicker.) Exactly ONE commit ever fires (`done` guard): a chip's
+ * onPressIn wins over the input's blur, and blur itself is the click-away
+ * commit.
  */
 function RolesEditor({
   initial,
@@ -496,17 +496,9 @@ function RolesEditor({
   onDone: (next: string[]) => void;
 }) {
   const [text, setText] = useState(initial.join(", "));
-  const { ref, anchor, visible, open, close } = useAnchor();
   const done = useRef(false);
-  const blurTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const latest = useRef(text);
   latest.current = text;
-  useEffect(
-    () => () => {
-      if (blurTimer.current) clearTimeout(blurTimer.current);
-    },
-    [],
-  );
 
   const parts = text.split(",");
   const token = normalizeRole(parts[parts.length - 1]);
@@ -517,54 +509,48 @@ function RolesEditor({
         !already.has(normalizeRole(r)) &&
         (token === "" || normalizeRole(r).includes(token)),
     )
-    .slice(0, 6);
+    .slice(0, 5);
 
   function commit(finalText: string) {
-    if (done.current) return; // submit+blur / pick+blur must not double-fire
+    if (done.current) return; // pick+blur / submit+blur must not double-fire
     done.current = true;
-    if (blurTimer.current) clearTimeout(blurTimer.current);
     onDone(parseList(finalText));
   }
 
   return (
-    <View ref={ref} className="flex-1">
+    <View className="flex-1 py-1">
       <TextInput
         value={text}
-        onChangeText={(t) => {
-          setText(t);
-          if (!visible) open();
-        }}
-        onFocus={open}
+        onChangeText={setText}
         placeholder="Director, Designer…"
         placeholderTextColor={colors.faint}
         autoFocus
         autoCapitalize="words"
         onSubmitEditing={() => commit(latest.current)}
-        onBlur={() => {
-          // Fallback only — a suggestion press commits on onPressIn first.
-          blurTimer.current = setTimeout(() => commit(latest.current), 250);
-        }}
-        className="flex-1 px-2 py-1.5 text-sm leading-snug text-ink"
+        // Click-away commits; a chip's onPressIn already committed by the
+        // time this runs, and the `done` guard makes it a no-op.
+        onBlur={() => commit(latest.current)}
+        className="px-2 py-0.5 text-sm leading-snug text-ink"
         style={{ minWidth: 40 }}
       />
-      <Popover visible={visible && matches.length > 0} onClose={close} anchor={anchor} width={220}>
-        <View className="py-1">
+      {matches.length > 0 ? (
+        <View className="flex-row flex-wrap items-center gap-1 px-2 pt-1">
           {matches.map((r) => (
             <Pressable
               key={r}
               onPressIn={() => {
-                // onPressIn beats the input's blur — commit deterministically.
+                // Fires before the input's blur — deterministic pick.
                 const kept = parts.slice(0, -1).join(",");
                 commit(kept ? `${kept}, ${r}` : r);
               }}
-              className="flex-row items-center gap-2 px-3 py-2 active:bg-sunken web:hover:bg-sunken"
+              className="flex-row items-center gap-1 rounded-pill border border-border bg-sunken px-2 py-0.5 active:opacity-70 web:hover:border-border-strong"
             >
-              <Icon name="user-check" size={14} color={colors.muted} />
-              <Text className="text-sm text-ink">{r}</Text>
+              <Icon name="plus" size={10} color={colors.muted} />
+              <Text className="text-xs font-medium text-muted">{r}</Text>
             </Pressable>
           ))}
         </View>
-      </Popover>
+      ) : null}
     </View>
   );
 }
