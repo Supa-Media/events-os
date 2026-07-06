@@ -387,6 +387,9 @@ export function WorkloadView({
             _id: r._id,
             title: r.title,
           }))}
+          projects={(projects ?? [])
+            .filter((p) => p.ownerPersonId === checkInFor._id)
+            .map((p) => ({ _id: p._id, name: p.name }))}
           onClose={() => setCheckInFor(null)}
         />
       ) : null}
@@ -649,13 +652,42 @@ function CheckInList({
             </View>
             {flagged.length > 0 ? (
               <Text className="text-xs text-danger">
-                Off track:{" "}
+                Duties off track:{" "}
                 {flagged
                   .map(
                     (r) =>
                       `${r.title}${r.action ? ` → ${CHECKIN_ACTION_LABELS[r.action]}` : ""}`,
                   )
                   .join(" · ")}
+              </Text>
+            ) : null}
+            {(c.projects ?? []).some((p) => !p.onTrack) ? (
+              <Text className="text-xs text-danger">
+                Projects off track:{" "}
+                {(c.projects ?? [])
+                  .filter((p) => !p.onTrack)
+                  .map((p) => `${p.name}${p.note ? ` — ${p.note}` : ""}`)
+                  .join(" · ")}
+              </Text>
+            ) : null}
+            {c.feedbackWell ? (
+              <Text className="text-xs text-ink">
+                <Text className="font-semibold text-success">Doing well: </Text>
+                {c.feedbackWell}
+              </Text>
+            ) : null}
+            {c.feedbackImprove ? (
+              <Text className="text-xs text-ink">
+                <Text className="font-semibold text-warn">Can improve: </Text>
+                {c.feedbackImprove}
+              </Text>
+            ) : null}
+            {c.feedbackAboveBeyond ? (
+              <Text className="text-xs text-ink">
+                <Text className="font-semibold text-accent">
+                  Above & beyond:{" "}
+                </Text>
+                {c.feedbackAboveBeyond}
               </Text>
             ) : null}
             {c.personalUpdate ? (

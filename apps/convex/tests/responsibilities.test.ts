@@ -249,6 +249,61 @@ describe("check-ins", () => {
     expect(caraView!.entries).toHaveLength(0);
   });
 
+  test("captures the project check and feedback alongside the duties", async () => {
+    const s = await setupChapter(newT());
+    const { bob, cara } = await seedChain(s);
+    const asBob = await addUser(s, "bobp@publicworship.life", { personId: bob });
+    const projectId = (await s.as.mutation(api.projects.create, {
+      name: "EP release",
+      ownerPersonId: cara,
+    })) as Id<"projects">;
+
+    await asBob.mutation(api.checkIns.log, {
+      personId: cara,
+      type: "checkin",
+      projects: [
+        {
+          projectId,
+          name: "EP release",
+          onTrack: false,
+          note: "Mixing slipped a week",
+        },
+      ],
+      feedbackWell: "Great artist communication",
+      feedbackImprove: "Flag slips earlier",
+      feedbackAboveBeyond: "Covered Sunday setup unasked",
+    });
+
+    const view = await asBob.query(api.checkIns.listForSubtree, {
+      personId: bob,
+    });
+    const entry = view!.entries[0];
+    expect(entry.projects![0]).toMatchObject({
+      name: "EP release",
+      onTrack: false,
+      note: "Mixing slipped a week",
+    });
+    expect(entry.feedbackWell).toBe("Great artist communication");
+    expect(entry.feedbackImprove).toBe("Flag slips earlier");
+    expect(entry.feedbackAboveBeyond).toBe("Covered Sunday setup unasked");
+
+    // Cross-chapter project references are rejected like responsibilities'.
+    const s2 = await setupChapter(s.t, {
+      email: "other2@publicworship.life",
+      chapterName: "Austin",
+    });
+    const foreign = (await s2.as.mutation(api.projects.create, {
+      name: "Foreign project",
+    })) as Id<"projects">;
+    await expect(
+      asBob.mutation(api.checkIns.log, {
+        personId: cara,
+        type: "checkin",
+        projects: [{ projectId: foreign, name: "Foreign", onTrack: true }],
+      }),
+    ).rejects.toThrow(ConvexError);
+  });
+
   test("only the author (or an admin) can delete a mis-logged entry", async () => {
     const s = await setupChapter(newT());
     const { bob, cara } = await seedChain(s);

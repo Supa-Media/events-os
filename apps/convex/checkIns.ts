@@ -48,6 +48,19 @@ export const log = mutation({
         }),
       ),
     ),
+    projects: v.optional(
+      v.array(
+        v.object({
+          projectId: v.optional(v.id("projects")),
+          name: v.string(),
+          onTrack: v.boolean(),
+          note: v.optional(v.string()),
+        }),
+      ),
+    ),
+    feedbackWell: v.optional(v.string()),
+    feedbackImprove: v.optional(v.string()),
+    feedbackAboveBeyond: v.optional(v.string()),
     personalUpdate: v.optional(v.string()),
     workloadScore: v.optional(v.number()),
     workloadNote: v.optional(v.string()),
@@ -83,6 +96,11 @@ export const log = mutation({
       const doc = await ctx.db.get(entry.responsibilityId);
       await requireInChapter(ctx, person.chapterId, doc, "Responsibility");
     }
+    for (const entry of args.projects ?? []) {
+      if (!entry.projectId) continue;
+      const doc = await ctx.db.get(entry.projectId);
+      await requireInChapter(ctx, person.chapterId, doc, "Project");
+    }
     for (const score of [args.workloadScore, args.interestScore]) {
       if (score === undefined) continue;
       if (!Number.isInteger(score) || score < 1 || score > 10) {
@@ -98,6 +116,10 @@ export const log = mutation({
       managerPersonId: viewer._id,
       type: args.type,
       responsibilities: args.responsibilities,
+      projects: args.projects,
+      feedbackWell: args.feedbackWell,
+      feedbackImprove: args.feedbackImprove,
+      feedbackAboveBeyond: args.feedbackAboveBeyond,
       personalUpdate: args.personalUpdate,
       workloadScore: args.workloadScore,
       workloadNote: args.workloadNote,

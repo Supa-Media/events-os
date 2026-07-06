@@ -46,16 +46,26 @@ type RespInput = {
   note?: string;
 };
 
+type ProjectInput = {
+  projectId?: Id<"projects">;
+  name: string;
+  onTrack: boolean;
+  note?: string;
+};
+
 export function CheckInModal({
   visible,
   person,
   responsibilities,
+  projects,
   onClose,
 }: {
   visible: boolean;
   person: { _id: Id<"people">; name: string };
   /** The person's derived responsibilities (role fan-out + direct). */
   responsibilities: { _id: Id<"responsibilities">; title: string }[];
+  /** The projects they own — checked in the same pass as the duties. */
+  projects: { _id: Id<"projects">; name: string }[];
   onClose: () => void;
 }) {
   // The caller mounts this fresh per open (conditional render keyed by the
@@ -70,6 +80,12 @@ export function CheckInModal({
       fulfilling: true,
     })),
   );
+  const [proj, setProj] = useState<ProjectInput[]>(() =>
+    projects.map((p) => ({ projectId: p._id, name: p.name, onTrack: true })),
+  );
+  const [feedbackWell, setFeedbackWell] = useState("");
+  const [feedbackImprove, setFeedbackImprove] = useState("");
+  const [feedbackAboveBeyond, setFeedbackAboveBeyond] = useState("");
   const [personalUpdate, setPersonalUpdate] = useState("");
   const [workloadScore, setWorkloadScore] = useState<number | null>(null);
   const [workloadNote, setWorkloadNote] = useState("");
@@ -80,6 +96,10 @@ export function CheckInModal({
 
   function patchResp(i: number, patch: Partial<RespInput>) {
     setResp((cur) => cur.map((r, j) => (j === i ? { ...r, ...patch } : r)));
+  }
+
+  function patchProj(i: number, patch: Partial<ProjectInput>) {
+    setProj((cur) => cur.map((p, j) => (j === i ? { ...p, ...patch } : p)));
   }
 
   async function save() {
@@ -99,6 +119,19 @@ export function CheckInModal({
                 action: r.fulfilling ? undefined : r.action,
                 note: r.note?.trim() || undefined,
               })),
+        // Same rule as duties: a skipped 1:1 assessed nothing.
+        projects:
+          type === "skip"
+            ? undefined
+            : proj.map((p) => ({
+                projectId: p.projectId,
+                name: p.name,
+                onTrack: p.onTrack,
+                note: p.note?.trim() || undefined,
+              })),
+        feedbackWell: feedbackWell.trim() || undefined,
+        feedbackImprove: feedbackImprove.trim() || undefined,
+        feedbackAboveBeyond: feedbackAboveBeyond.trim() || undefined,
         personalUpdate: personalUpdate.trim() || undefined,
         workloadScore: workloadScore ?? undefined,
         workloadNote: workloadNote.trim() || undefined,
@@ -221,6 +254,59 @@ export function CheckInModal({
                 Responsibilities tab.
               </Text>
             )}
+
+            {/* Projects check — same pass as the duties */}
+            {type === "skip" ? null : proj.length > 0 ? (
+              <View style={{ gap: spacing.sm }}>
+                <FieldLabel>Projects — on track?</FieldLabel>
+                {proj.map((p, i) => (
+                  <View
+                    key={`${p.projectId ?? p.name}-${i}`}
+                    className="rounded-lg border border-border px-3 py-2"
+                    style={{ gap: spacing.xs }}
+                  >
+                    <View className="flex-row items-center gap-2">
+                      <Text className="flex-1 text-sm font-medium text-ink">
+                        {p.name}
+                      </Text>
+                      <YesNo
+                        value={p.onTrack}
+                        onChange={(onTrack) => patchProj(i, { onTrack })}
+                      />
+                    </View>
+                    {!p.onTrack ? (
+                      <NoteInput
+                        placeholder="What's off, and what was agreed…"
+                        value={p.note ?? ""}
+                        onChangeText={(note) => patchProj(i, { note })}
+                      />
+                    ) : null}
+                  </View>
+                ))}
+              </View>
+            ) : null}
+
+            {/* Feedback — name it while it's fresh */}
+            <View style={{ gap: spacing.xs }}>
+              <FieldLabel>Feedback — doing well</FieldLabel>
+              <NoteInput
+                placeholder="Where they're strong right now…"
+                value={feedbackWell}
+                onChangeText={setFeedbackWell}
+              />
+              <FieldLabel>Feedback — can improve</FieldLabel>
+              <NoteInput
+                placeholder="Where to grow, and how…"
+                value={feedbackImprove}
+                onChangeText={setFeedbackImprove}
+              />
+              <FieldLabel>Feedback — above & beyond</FieldLabel>
+              <NoteInput
+                placeholder="Moments worth naming up the chain…"
+                value={feedbackAboveBeyond}
+                onChangeText={setFeedbackAboveBeyond}
+              />
+            </View>
 
             {/* Pulse: workload */}
             <View style={{ gap: spacing.xs }}>
