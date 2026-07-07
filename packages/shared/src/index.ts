@@ -1097,6 +1097,43 @@ export const RESPONSIBILITY_CADENCE_LABELS: Record<
   ad_hoc: "Ad hoc",
 };
 
+/** One cadence cycle in milliseconds. `ad_hoc` has no cycle (absent here). */
+export const RESPONSIBILITY_CADENCE_MS: Partial<
+  Record<ResponsibilityCadence, number>
+> = {
+  daily: 24 * 60 * 60 * 1000,
+  weekly: 7 * 24 * 60 * 60 * 1000,
+  biweekly: 14 * 24 * 60 * 60 * 1000,
+  monthly: 30 * 24 * 60 * 60 * 1000,
+  quarterly: 91 * 24 * 60 * 60 * 1000,
+  yearly: 365 * 24 * 60 * 60 * 1000,
+};
+
+/**
+ * Fraction of a cadence cycle after which a duty is due for review again. At
+ * exactly 1.0 a monthly duty reviewed in a monthly 1:1 would miss its window
+ * whenever the meetings drift a day early, then wait a whole extra cycle —
+ * 0.75 keeps "roughly one review per cycle" under real scheduling jitter.
+ */
+const DUE_FOR_REVIEW_GRACE = 0.75;
+
+/**
+ * Should a responsibility be raised in a 1:1 happening `now`? True when it has
+ * never been reviewed, when enough of its cadence cycle has passed since the
+ * last review, or when it's `ad_hoc` (no cycle — the manager decides). Keeps
+ * quarterly duties from cluttering every weekly 1:1.
+ */
+export function responsibilityDueForReview(
+  cadence: ResponsibilityCadence,
+  lastReviewedAt: number | null | undefined,
+  now: number,
+): boolean {
+  if (lastReviewedAt == null) return true;
+  const cycleMs = RESPONSIBILITY_CADENCE_MS[cadence];
+  if (cycleMs === undefined) return true; // ad_hoc
+  return now - lastReviewedAt >= cycleMs * DUE_FOR_REVIEW_GRACE;
+}
+
 /** Normalize a role/job title for matching responsibilities to people. */
 export function normalizeRole(role?: string | null): string {
   return (role ?? "").trim().toLowerCase();

@@ -61,3 +61,22 @@ export const projectComments = defineTable({
 })
   .index("by_project", ["projectId"])
   .index("by_chapter", ["chapterId"]);
+
+/**
+ * Project email-action token — the capability behind the "mark this done /
+ * blocked / in progress" links in reminder emails. Each token authenticates
+ * ONE person acting on ONE project, without a login, until it expires
+ * (30 days — see projectActions.ts). Unguessable 32-char secret; rows are
+ * reused across sends while still fresh and purged daily once expired.
+ */
+export const projectEmailTokens = defineTable({
+  chapterId: v.id("chapters"),
+  projectId: v.id("projects"),
+  personId: v.id("people"),
+  token: v.string(),
+  expiresAt: v.number(),
+  createdAt: v.number(),
+})
+  .index("by_token", ["token"])
+  .index("by_project_and_person", ["projectId", "personId"])
+  .index("by_expiry", ["expiresAt"]);
