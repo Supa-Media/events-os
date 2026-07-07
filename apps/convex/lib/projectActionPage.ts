@@ -13,11 +13,17 @@
  * Same brand shell as the public event pages: cream paper, red ink, Corben.
  */
 import { BASE_CSS, FAVICON, FONTS } from "./landingPageStyles";
+import { escapeHtml } from "./html";
 import {
   PROJECT_STATUS_LABELS,
   type ProjectStatus,
 } from "@events-os/shared";
-import type { EmailActionStatus } from "../projectActions";
+import {
+  EMAIL_ACTION_STATUSES,
+  type EmailActionStatus,
+} from "../projectActions";
+
+const esc = escapeHtml;
 
 export type ProjectActionPageData = {
   personName: string | null;
@@ -39,15 +45,6 @@ export type ProjectActionPageData = {
     createdAt: number;
   }>;
 };
-
-function esc(s: string): string {
-  return s
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&#39;");
-}
 
 function fmtDate(ts: number): string {
   return new Date(ts).toLocaleDateString("en-US", {
@@ -129,16 +126,24 @@ export function renderProjectActionPage(
     p.budgetUsd != null ? `$${p.budgetUsd.toLocaleString("en-US")} budget` : null,
   ].filter(Boolean);
 
-  const buttons = (Object.keys(ACTION_LABELS) as EmailActionStatus[])
-    .map((status) => {
-      const active = p.status !== status;
-      const highlight = intent === status;
-      return `<form method="post" action="/p/${esc(token)}/status">
+  // Only a valid, own-property intent counts — `in` would treat inherited
+  // Object members ("constructor", "toString") as intents and render their
+  // source into the page.
+  const validIntent: EmailActionStatus | null =
+    intent && (EMAIL_ACTION_STATUSES as readonly string[]).includes(intent)
+      ? (intent as EmailActionStatus)
+      : null;
+
+  const buttons = EMAIL_ACTION_STATUSES.map((status) => {
+    const active = p.status !== status;
+    // Never highlight a disabled button (the project's current status) — a
+    // primary-styled dead button reads as a broken call-to-action.
+    const highlight = validIntent === status && active;
+    return `<form method="post" action="/p/${esc(token)}/status">
         <input type="hidden" name="status" value="${status}">
         <button class="btn${highlight ? " primary" : ""}" type="submit"${active ? "" : " disabled"}>${ACTION_LABELS[status]}</button>
       </form>`;
-    })
-    .join("");
+  }).join("");
 
   return shell(
     p.name,
@@ -159,7 +164,7 @@ export function renderProjectActionPage(
           : ""
       }
       <div class="actions">${buttons}</div>
-      ${intent && intent in ACTION_LABELS ? `<div class="hint">Confirm "${ACTION_LABELS[intent as EmailActionStatus]}" above — nothing changes until you tap it.</div>` : `<div class="hint">Signed in from your email as ${esc(data.personName ?? "a team member")} — this link works for 30 days.</div>`}
+      ${validIntent ? `<div class="hint">Confirm "${ACTION_LABELS[validIntent]}" above — nothing changes until you tap it.</div>` : `<div class="hint">Signed in from your email as ${esc(data.personName ?? "a team member")} — this link works for 30 days.</div>`}
       ${appUrl ? `<a class="applink" href="${esc(appUrl)}">Open in Events OS →</a>` : ""}
     </div>`,
   );

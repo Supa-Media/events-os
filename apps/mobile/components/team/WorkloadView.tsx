@@ -192,40 +192,28 @@ export function WorkloadView({
   }, [checkIns]);
 
   /**
-   * When each duty was last reviewed in a real 1:1, per person — feeds the
-   * cadence filter so a quarterly duty reviewed recently doesn't clutter
-   * every weekly check-in. Built from the (recent) entries already loaded;
-   * a review older than that window just reads as "never" and shows up,
-   * which errs on the side of asking.
+   * Last-reviewed times for the person about to be checked in — fetched from
+   * their OWN full history (not the 10-capped subtree feed), so a slow-cadence
+   * duty's last review isn't lost past the feed's window and wrongly treated
+   * as never-reviewed. Skipped until a 1:1 is actually being logged.
    */
-  const lastReviewedByPerson = useMemo(() => {
-    const map = new Map<Id<"people">, Map<Id<"responsibilities">, number>>();
-    for (const c of checkIns?.entries ?? []) {
-      if (c.type !== "checkin") continue;
-      for (const r of c.responsibilities ?? []) {
-        if (!r.responsibilityId) continue;
-        const perPerson =
-          map.get(c.personId) ?? new Map<Id<"responsibilities">, number>();
-        const prev = perPerson.get(r.responsibilityId) ?? 0;
-        if (c.createdAt > prev) perPerson.set(r.responsibilityId, c.createdAt);
-        map.set(c.personId, perPerson);
-      }
-    }
-    return map;
-  }, [checkIns]);
+  const checkInReviews = useQuery(
+    api.checkIns.reviewTimesForPerson,
+    checkInFor ? { personId: checkInFor._id } : "skip",
+  );
 
   // Managers log 1:1s about others — never about themselves.
   const canLogFor = (memberId: Id<"people">) =>
     workload?.caller.personId != null &&
     memberId !== workload.caller.personId;
 
-  // Responsibilities and check-in history gate the check-in modal's seed
-  // list (cadence filtering needs the last-reviewed times) — wait for them.
+  // Responsibilities gate the check-in modal's seed list — wait for them.
+  // (The 1:1 history and cadence review-times load async and don't block
+  // first paint.)
   if (
     workload === undefined ||
     projects === undefined ||
-    responsibilities === undefined ||
-    checkIns === undefined
+    responsibilities === undefined
   ) {
     return <Screen loading />;
   }
@@ -514,7 +502,7 @@ export function WorkloadView({
         />
       ) : null}
 
-      {checkInFor ? (
+      {checkInFor && checkInReviews !== undefined ? (
         <CheckInModal
           key={checkInFor._id}
           visible
@@ -525,7 +513,7 @@ export function WorkloadView({
             cadence: r.cadence,
             dueForReview: responsibilityDueForReview(
               r.cadence,
-              lastReviewedByPerson.get(checkInFor._id)?.get(r._id) ?? null,
+              (checkInReviews ?? {})[r._id] ?? null,
               Date.now(),
             ),
           }))}

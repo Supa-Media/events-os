@@ -15,7 +15,7 @@ import {
   internalMutation,
   QueryCtx,
 } from "./_generated/server";
-import { Doc } from "./_generated/dataModel";
+import { Doc, Id } from "./_generated/dataModel";
 import { v } from "convex/values";
 import {
   PROJECT_STATUS_LABELS,
@@ -58,21 +58,21 @@ export const mintProjectTokens = internalMutation({
   args: { personId: v.id("people"), projectIds: v.array(v.id("projects")) },
   handler: async (ctx, { personId, projectIds }) => {
     const now = Date.now();
-    const out: Record<string, string> = {};
+    const out: Record<Id<"projects">, string> = {};
     for (const projectId of projectIds) {
       const project = await ctx.db.get(projectId);
       if (!project) continue;
-      const existing = await ctx.db
+      // Every token for a (project, person) pair shares the fixed TTL, so the
+      // newest row is the only reuse candidate — read just that one.
+      const newest = await ctx.db
         .query("projectEmailTokens")
         .withIndex("by_project_and_person", (q) =>
           q.eq("projectId", projectId).eq("personId", personId),
         )
-        .collect();
-      const fresh = existing.find(
-        (t) => t.expiresAt - now >= REUSE_MIN_REMAINING_MS,
-      );
-      if (fresh) {
-        out[projectId] = fresh.token;
+        .order("desc")
+        .first();
+      if (newest && newest.expiresAt - now >= REUSE_MIN_REMAINING_MS) {
+        out[projectId] = newest.token;
         continue;
       }
       const token = newToken();

@@ -139,7 +139,7 @@ describe("window partitions", () => {
   });
 });
 
-describe("openWorkByRecipient", () => {
+describe("openWorkForChapter", () => {
   test("collects open deadlined projects with detail, per owner", async () => {
     const s = await setupChapter(newT());
     const now = Date.now();
@@ -164,8 +164,8 @@ describe("openWorkByRecipient", () => {
     });
 
     const recipients: RecipientWork[] = await s.t.query(
-      internal.reminders.openWorkByRecipient,
-      { now },
+      internal.reminders.openWorkForChapter,
+      { chapterId: s.chapterId, now },
     );
     const r = recipients.find((x) => x.personId === alice);
     expect(r).toBeDefined();
@@ -198,8 +198,8 @@ describe("openWorkByRecipient", () => {
     });
 
     const recipients: RecipientWork[] = await s.t.query(
-      internal.reminders.openWorkByRecipient,
-      { now },
+      internal.reminders.openWorkForChapter,
+      { chapterId: s.chapterId, now },
     );
     const kayla = recipients.find((x) => x.personId === direct);
     expect(kayla!.entries.map((e) => e.name).sort()).toEqual([
@@ -295,8 +295,8 @@ describe("openWorkByRecipient", () => {
     await addItem("Design flyer", { ownerPersonId: doer }); // → owner cell
 
     const recipients: RecipientWork[] = await s.t.query(
-      internal.reminders.openWorkByRecipient,
-      { now },
+      internal.reminders.openWorkForChapter,
+      { chapterId: s.chapterId, now },
     );
     const byPerson = (id: Id<"people">) =>
       recipients.find((x) => x.personId === id);
@@ -333,8 +333,105 @@ describe("openWorkByRecipient", () => {
       });
     }
     const recipients: RecipientWork[] = await s.t.query(
-      internal.reminders.openWorkByRecipient,
-      { now },
+      internal.reminders.openWorkForChapter,
+      { chapterId: s.chapterId, now },
+    );
+    expect(recipients).toHaveLength(0);
+  });
+
+  test("an event item owned by an unreachable person falls through to the event owner", async () => {
+    const s = await setupChapter(newT());
+    const now = Date.now();
+    const eventOwner = await addPerson(s, "Dami", { email: "dami@pw.life" });
+    // The item's owner-cell person has since gone inactive — the task must
+    // NOT vanish; it falls through to the reachable event owner.
+    const departed = await addPerson(s, "Idara", {
+      email: "idara@pw.life",
+      status: "inactive",
+    });
+    const eventId = await run(s.t, async (ctx) => {
+      const eventTypeId = await ctx.db.insert("eventTypes", {
+        chapterId: s.chapterId,
+        name: "Eden",
+        slug: "eden",
+        version: 1,
+        createdBy: s.userId,
+        createdAt: now,
+        updatedAt: now,
+      });
+      const eventId = await ctx.db.insert("events", {
+        chapterId: s.chapterId,
+        eventTypeId,
+        templateVersion: 1,
+        name: "Eden July",
+        eventDate: now + 10 * DAY,
+        status: "planning",
+        ownerPersonId: eventOwner,
+        createdBy: s.userId,
+        createdAt: now,
+        updatedAt: now,
+      });
+      await ctx.db.insert("eventItems", {
+        eventId,
+        chapterId: s.chapterId,
+        module: "comms",
+        title: "Post announcement",
+        order: 0,
+        ownerPersonId: departed,
+        dueDate: now + 2 * DAY,
+      });
+      return eventId;
+    });
+    void eventId;
+    const recipients: RecipientWork[] = await s.t.query(
+      internal.reminders.openWorkForChapter,
+      { chapterId: s.chapterId, now },
+    );
+    // Departed owner gets nothing; event owner covers the gap.
+    expect(recipients.find((x) => x.personId === departed)).toBeUndefined();
+    expect(
+      recipients.find((x) => x.personId === eventOwner)!.entries.map((e) => e.name),
+    ).toEqual(["Post announcement"]);
+  });
+
+  test("undated event items are never collected", async () => {
+    const s = await setupChapter(newT());
+    const now = Date.now();
+    const owner = await addPerson(s, "Bithja", { email: "bithja@pw.life" });
+    await run(s.t, async (ctx) => {
+      const eventTypeId = await ctx.db.insert("eventTypes", {
+        chapterId: s.chapterId,
+        name: "Eden",
+        slug: "eden",
+        version: 1,
+        createdBy: s.userId,
+        createdAt: now,
+        updatedAt: now,
+      });
+      const eventId = await ctx.db.insert("events", {
+        chapterId: s.chapterId,
+        eventTypeId,
+        templateVersion: 1,
+        name: "Eden July",
+        eventDate: now + 10 * DAY,
+        status: "planning",
+        createdBy: s.userId,
+        createdAt: now,
+        updatedAt: now,
+      });
+      // No dueDate — a run-of-show / undated row: must not surface.
+      await ctx.db.insert("eventItems", {
+        eventId,
+        chapterId: s.chapterId,
+        module: "run_of_show",
+        title: "Soundcheck",
+        order: 0,
+        ownerPersonId: owner,
+      });
+    });
+    const recipients: RecipientWork[] = await s.t.query(
+      internal.reminders.openWorkForChapter,
+      { chapterId: s.chapterId, now },
     );
     expect(recipients).toHaveLength(0);
   });

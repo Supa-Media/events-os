@@ -183,6 +183,39 @@ export const historyForPerson = query({
 });
 
 /**
+ * Per-responsibility last-reviewed timestamps for ONE person — the input to
+ * the 1:1 form's cadence gate (a quarterly duty reviewed recently shouldn't
+ * clutter a weekly check-in). Reads the person's OWN full history (bounded at
+ * 500, like historyForPerson) rather than the 10-capped subtree feed, so a
+ * slow-cadence duty's last review isn't lost past the feed's window and
+ * wrongly re-surfaced every time. Same read policy as historyForPerson;
+ * returns null when out of scope. Only actual check-ins (not skips) count as
+ * a review; the newest wins.
+ */
+export const reviewTimesForPerson = query({
+  args: { personId: v.id("people") },
+  handler: async (ctx, { personId }) => {
+    const subject = await readableCheckInSubject(ctx, personId);
+    if (!subject) return null;
+    const rows = await ctx.db
+      .query("checkIns")
+      .withIndex("by_person", (q) => q.eq("personId", personId))
+      .order("desc")
+      .take(500);
+    const lastReviewed: Record<Id<"responsibilities">, number> = {};
+    for (const c of rows) {
+      if (c.type !== "checkin") continue;
+      for (const r of c.responsibilities ?? []) {
+        if (!r.responsibilityId) continue;
+        const prev = lastReviewed[r.responsibilityId] ?? 0;
+        if (c.createdAt > prev) lastReviewed[r.responsibilityId] = c.createdAt;
+      }
+    }
+    return lastReviewed;
+  },
+});
+
+/**
  * Recent check-ins for the members of `personId`'s subtree the CALLER may
  * read (newest first, bounded per member — history beyond that is out of UI
  * reach for now). Access mirrors `org.workload` with one tightening: for

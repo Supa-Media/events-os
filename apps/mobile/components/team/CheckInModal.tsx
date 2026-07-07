@@ -100,15 +100,16 @@ export function CheckInModal({
         fulfilling: true,
       })),
   );
-  const [deferred, setDeferred] = useState<CheckInResponsibility[]>(() =>
-    responsibilities.filter((r) => !r.dueForReview),
-  );
   const [deferredOpen, setDeferredOpen] = useState(false);
+  // Derived, not a second source of truth: a duty is deferred until it's in
+  // `resp`. Pulling one in is a single append — the two lists can't diverge.
+  const deferred = responsibilities.filter(
+    (r) => !resp.some((x) => x.responsibilityId === r._id),
+  );
 
   function pullDeferred(dutyId: Id<"responsibilities">) {
-    const duty = deferred.find((d) => d._id === dutyId);
-    if (!duty) return;
-    setDeferred((cur) => cur.filter((d) => d._id !== dutyId));
+    const duty = responsibilities.find((d) => d._id === dutyId);
+    if (!duty || resp.some((x) => x.responsibilityId === dutyId)) return;
     setResp((cur) => [
       ...cur,
       { responsibilityId: duty._id, title: duty.title, fulfilling: true },

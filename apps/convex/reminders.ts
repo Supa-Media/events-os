@@ -32,6 +32,7 @@ import { Doc, Id } from "./_generated/dataModel";
 import { v } from "convex/values";
 import { internal } from "./_generated/api";
 import {
+  DAY_MS,
   isCompleteStatus,
   MODULE_LABELS,
   PROJECT_STATUS_LABELS,
@@ -40,14 +41,17 @@ import {
   type SelectOption,
 } from "@events-os/shared";
 import { sendEmail, emailShell } from "./ticketingEmails";
+import { escapeHtml } from "./lib/html";
 import { statusColumnFor } from "./lib/readiness";
 import { siteUrl } from "./lib/siteUrl";
 
-const DAY_MS = 24 * 60 * 60 * 1000;
 /** Don't resurface work overdue longer than this — it's stale, not urgent. */
 const OVERDUE_LOOKBACK_MS = 60 * DAY_MS;
 /** The digest looks this many days ahead (Sunday → the coming week). */
 const DIGEST_HORIZON_DAYS = 7;
+/** One extra day past the horizon so a "due tomorrow" nudge on the horizon's
+ * edge still has its item collected. */
+const WINDOW_AHEAD_MS = (DIGEST_HORIZON_DAYS + 1) * DAY_MS;
 
 const OPEN_PROJECT_STATUSES = new Set(["not_started", "in_progress", "blocked"]);
 
@@ -75,11 +79,15 @@ export type RecipientWork = {
   directs: Array<{ name: string; entries: WorkEntry[] }>;
 };
 
+// One formatter, reused — Intl.DateTimeFormat construction dwarfs .format(),
+// and dayKey runs several times per entry per recipient.
+const DAY_FMT = new Intl.DateTimeFormat("en-CA", {
+  timeZone: "America/New_York",
+});
+
 /** Calendar day in the team's timezone, as sortable "YYYY-MM-DD". */
 export function dayKey(ts: number): string {
-  return new Intl.DateTimeFormat("en-CA", {
-    timeZone: "America/New_York",
-  }).format(new Date(ts));
+  return DAY_FMT.format(new Date(ts));
 }
 
 function formatDue(ts: number): string {
@@ -123,106 +131,134 @@ export function partitionForDueSoon(
 }
 
 /**
- * Everyone's open dated work, chapter by chapter. Bounded to due dates inside
- * [now - lookback, now + digest horizon + 1d] so ancient stragglers and
- * far-future plans never enter either email.
+ * One chapter's open dated work per emailable person. Every table read is
+ * scoped to the chapter (so a single query transaction never spans the whole
+ * deployment) and bounded to due dates inside [now - lookback, now + horizon
+ * + 1d], so ancient stragglers, far-future plans, and undated rows never
+ * enter either email.
  */
-async function collectOpenWork(
+async function collectOpenWorkForChapter(
   ctx: QueryCtx,
+  chapterId: Id<"chapters">,
   now: number,
 ): Promise<RecipientWork[]> {
-  const chapters = await ctx.db.query("chapters").collect();
+  const windowStart = now - OVERDUE_LOOKBACK_MS;
+  const windowEnd = now + WINDOW_AHEAD_MS;
   const recipients: RecipientWork[] = [];
 
-  for (const chapter of chapters) {
-    const people = await ctx.db
-      .query("people")
-      .withIndex("by_chapter", (q) => q.eq("chapterId", chapter._id))
-      .collect();
-    const byOwner = new Map<Id<"people">, WorkEntry[]>();
-    const add = (owner: Id<"people">, entry: WorkEntry) => {
-      if (entry.dueDate < now - OVERDUE_LOOKBACK_MS) return;
-      if (entry.dueDate > now + (DIGEST_HORIZON_DAYS + 1) * DAY_MS) return;
-      const list = byOwner.get(owner) ?? [];
-      list.push(entry);
-      byOwner.set(owner, list);
-    };
+  const people = await ctx.db
+    .query("people")
+    .withIndex("by_chapter", (q) => q.eq("chapterId", chapterId))
+    .collect();
+  const personById = new Map(people.map((p) => [p._id, p]));
+  // A person can actually receive an email: on the roster, active, addressable.
+  const reachable = (id: Id<"people">): boolean => {
+    const p = personById.get(id);
+    return (
+      !!p &&
+      !p.isPlaceholder &&
+      p.status !== "inactive" &&
+      !!(p.pwEmail ?? p.email)
+    );
+  };
+  const byOwner = new Map<Id<"people">, WorkEntry[]>();
+  const add = (owner: Id<"people">, entry: WorkEntry) => {
+    if (entry.dueDate < windowStart || entry.dueDate > windowEnd) return;
+    const list = byOwner.get(owner) ?? [];
+    list.push(entry);
+    byOwner.set(owner, list);
+  };
 
-    // Projects — deadline'd open work, charged to the effective owner (an
-    // unowned sub-project inherits its nearest owned ancestor, same rule as
-    // the Team views).
-    const projects = await ctx.db
-      .query("projects")
-      .withIndex("by_chapter", (q) => q.eq("chapterId", chapter._id))
-      .collect();
-    const projectById = new Map(projects.map((p) => [p._id, p]));
-    const effectiveOwner = (p: Doc<"projects">): Id<"people"> | undefined => {
-      let cur: Doc<"projects"> | undefined = p;
-      for (let hops = 0; cur && hops < 100; hops++) {
-        if (cur.ownerPersonId) return cur.ownerPersonId;
-        cur = cur.parentProjectId
-          ? projectById.get(cur.parentProjectId)
-          : undefined;
-      }
-      return undefined;
-    };
-    for (const p of projects) {
-      if (!p.deadline || !OPEN_PROJECT_STATUSES.has(p.status)) continue;
-      const owner = effectiveOwner(p);
-      if (!owner) continue;
-      const parent = p.parentProjectId
-        ? projectById.get(p.parentProjectId)
+  // Projects — deadline'd open work, charged to the effective owner (an
+  // unowned sub-project inherits its nearest owned ancestor, same rule as
+  // the Team views).
+  const projects = await ctx.db
+    .query("projects")
+    .withIndex("by_chapter", (q) => q.eq("chapterId", chapterId))
+    .collect();
+  const projectById = new Map(projects.map((p) => [p._id, p]));
+  const effectiveOwner = (p: Doc<"projects">): Id<"people"> | undefined => {
+    let cur: Doc<"projects"> | undefined = p;
+    for (let hops = 0; cur && hops < 100; hops++) {
+      if (cur.ownerPersonId) return cur.ownerPersonId;
+      cur = cur.parentProjectId
+        ? projectById.get(cur.parentProjectId)
         : undefined;
-      // Full management detail: the email card should tell the owner (and
-      // their manager) everything without opening the app. The thread's
-      // latest entry only for projects inside the window (the add() bounds
-      // reject the rest before this read matters — check first).
-      const dueDate = p.deadline;
-      if (dueDate < now - OVERDUE_LOOKBACK_MS) continue;
-      if (dueDate > now + (DIGEST_HORIZON_DAYS + 1) * DAY_MS) continue;
-      const last = await ctx.db
+    }
+    return undefined;
+  };
+  const inWindowProjects = projects.filter(
+    (p) =>
+      p.deadline != null &&
+      p.deadline >= windowStart &&
+      p.deadline <= windowEnd &&
+      OPEN_PROJECT_STATUSES.has(p.status) &&
+      effectiveOwner(p) !== undefined,
+  );
+  // Independent per-project thread reads, run together rather than serially.
+  const lastComments = await Promise.all(
+    inWindowProjects.map((p) =>
+      ctx.db
         .query("projectComments")
         .withIndex("by_project", (q) => q.eq("projectId", p._id))
         .order("desc")
-        .first();
-      const lastAuthor = last ? await ctx.db.get(last.authorPersonId) : null;
-      add(owner, {
-        kind: "project",
-        name: p.name,
-        context: parent?.name ?? null,
-        dueDate,
-        projectId: p._id,
-        status: p.status,
-        purpose: p.purpose ?? null,
-        blocker: p.blocker ?? null,
-        lastComment: last
-          ? { body: last.body, authorName: lastAuthor?.name ?? null }
-          : null,
-      });
-    }
+        .first(),
+    ),
+  );
+  const lastAuthors = await Promise.all(
+    lastComments.map((c) => (c ? ctx.db.get(c.authorPersonId) : null)),
+  );
+  inWindowProjects.forEach((p, i) => {
+    const parent = p.parentProjectId
+      ? projectById.get(p.parentProjectId)
+      : undefined;
+    const last = lastComments[i];
+    add(effectiveOwner(p)!, {
+      kind: "project",
+      name: p.name,
+      context: parent?.name ?? null,
+      dueDate: p.deadline!,
+      projectId: p._id,
+      status: p.status,
+      purpose: p.purpose ?? null,
+      blocker: p.blocker ?? null,
+      lastComment: last
+        ? { body: last.body, authorName: lastAuthors[i]?.name ?? null }
+        : null,
+    });
+  });
 
-    // Event items — every due-dated grid row (planning doc, comms, permits,
-    // supplies, custom modules — the same rows the readiness bars count),
-    // from events still in flight. "Open" defers to the module's own status
-    // vocabulary (its status column's isComplete options); a module with no
-    // status column can't be completed, so its dated items stay open until
-    // the date. Accountability resolves like the app does: the item's owner
-    // cell first, else everyone assigned to the item's ROLE on this event,
-    // else the event's owner (whose job is filling exactly these gaps).
-    const events = await ctx.db
-      .query("events")
-      .withIndex("by_chapter", (q) => q.eq("chapterId", chapter._id))
-      .collect();
-    const eventById = new Map(
-      events
-        .filter((e) => e.status !== "completed" && e.status !== "cancelled")
-        .map((e) => [e._id, e]),
-    );
-    const items = await ctx.db
-      .query("eventItems")
-      .withIndex("by_chapter", (q) => q.eq("chapterId", chapter._id))
-      .collect();
-    const statusOptionsCache = new Map<string, SelectOption[] | undefined>();
+  // Event items — every due-dated grid row (planning doc, comms, permits,
+  // supplies, custom modules — the same rows the readiness bars count),
+  // from events still in flight. Read via the [chapterId, dueDate] index
+  // range-scanned to the window, so undated and out-of-window rows are never
+  // loaded. "Open" defers to the module's own status vocabulary (its status
+  // column's isComplete options); a module with no status column can't be
+  // completed, so its dated items stay open until the date. Accountability
+  // resolves like the app does: the item's owner cell first, else everyone
+  // assigned to the item's ROLE on this event, else the event's owner (whose
+  // job is filling exactly these gaps) — but an owner/role holder who can't
+  // receive email falls through to the event owner rather than silently
+  // dropping the task.
+  const events = await ctx.db
+    .query("events")
+    .withIndex("by_chapter", (q) => q.eq("chapterId", chapterId))
+    .collect();
+  const eventById = new Map(
+    events
+      .filter((e) => e.status !== "completed" && e.status !== "cancelled")
+      .map((e) => [e._id, e]),
+  );
+  const items = await ctx.db
+    .query("eventItems")
+    .withIndex("by_chapter_and_dueDate", (q) =>
+      q
+        .eq("chapterId", chapterId)
+        .gte("dueDate", windowStart)
+        .lte("dueDate", windowEnd),
+    )
+    .collect();
+  const statusOptionsCache = new Map<string, SelectOption[] | undefined>();
     // Per-event lookups, loaded once on first use: role → assigned people,
     // and custom-module key → label (for the "Eden · Comms" context line).
     const roleHoldersByEvent = new Map<
@@ -260,7 +296,7 @@ async function collectOpenWork(
       return { roleHolders, customLabels };
     };
     for (const item of items) {
-      if (!item.dueDate) continue;
+      if (item.dueDate == null) continue; // guaranteed by the range, narrows type
       const event = eventById.get(item.eventId);
       if (!event) continue;
       const cacheKey = `${item.eventId}:${item.module}`;
@@ -275,11 +311,14 @@ async function collectOpenWork(
         continue;
       }
       const { roleHolders, customLabels } = await eventLookups(item.eventId);
-      let owners: Id<"people">[] = item.ownerPersonId
+      const candidates: Id<"people">[] = item.ownerPersonId
         ? [item.ownerPersonId]
         : item.roleId
           ? (roleHolders.get(item.roleId) ?? [])
           : [];
+      // Skip an owner/role holder who can't receive email so the task falls
+      // through to the event owner instead of vanishing from every inbox.
+      let owners = candidates.filter(reachable);
       if (owners.length === 0 && event.ownerPersonId) {
         owners = [event.ownerPersonId];
       }
@@ -298,9 +337,8 @@ async function collectOpenWork(
     }
 
     for (const person of people) {
-      if (person.isPlaceholder || person.status === "inactive") continue;
-      const email = person.pwEmail ?? person.email;
-      if (!email) continue;
+      if (!reachable(person._id)) continue;
+      const email = (person.pwEmail ?? person.email)!;
       const entries = byOwner.get(person._id) ?? [];
       // Managers also carry their direct reports' dated work, so the digest
       // can flag what's slipping on their team (directs only — each layer of
@@ -323,15 +361,24 @@ async function collectOpenWork(
         directs,
       });
     }
-  }
   return recipients;
 }
 
-/** All open dated work per emailable person — the input to both crons. */
-export const openWorkByRecipient = internalQuery({
-  args: { now: v.number() },
-  handler: async (ctx, { now }) => {
-    return await collectOpenWork(ctx, now);
+/** Chapter ids to fan the collection over — one bounded transaction each. */
+export const listChapterIds = internalQuery({
+  args: {},
+  handler: async (ctx) => {
+    const chapters = await ctx.db.query("chapters").collect();
+    return chapters.map((c) => c._id);
+  },
+});
+
+/** One chapter's open dated work per emailable person — the crons fan this
+ * out per chapter so no single query transaction spans the deployment. */
+export const openWorkForChapter = internalQuery({
+  args: { chapterId: v.id("chapters"), now: v.number() },
+  handler: async (ctx, { chapterId, now }) => {
+    return await collectOpenWorkForChapter(ctx, chapterId, now);
   },
 });
 
@@ -340,13 +387,7 @@ export const openWorkByRecipient = internalQuery({
 const MUTED = "#7A5A5A";
 const ACCENT = "#D23B3A";
 
-function esc(s: string): string {
-  return s
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;");
-}
+const esc = escapeHtml;
 
 const SANS = "-apple-system,'Segoe UI',Roboto,sans-serif";
 
@@ -445,16 +486,31 @@ function sectionHeading(text: string, color = MUTED): string {
   return `<div style="font-family:-apple-system,'Segoe UI',Roboto,sans-serif;font-size:11px;font-weight:700;letter-spacing:0.1em;text-transform:uppercase;color:${color};padding:14px 0 8px">${text}</div>`;
 }
 
+/** Fan the collection over chapters — one bounded query transaction each —
+ * and flatten into every emailable recipient across the deployment. */
+async function allRecipients(
+  ctx: ActionCtx,
+  now: number,
+): Promise<RecipientWork[]> {
+  const chapterIds: Id<"chapters">[] = await ctx.runQuery(
+    internal.reminders.listChapterIds,
+    {},
+  );
+  const perChapter = await Promise.all(
+    chapterIds.map((chapterId) =>
+      ctx.runQuery(internal.reminders.openWorkForChapter, { chapterId, now }),
+    ),
+  );
+  return perChapter.flat();
+}
+
 /** Sunday-afternoon digest: the coming week's work, one email per person. */
 export const sendWeeklyDigests = internalAction({
   args: {},
   handler: async (ctx) => {
     const now = Date.now();
     const base = siteUrl();
-    const recipients: RecipientWork[] = await ctx.runQuery(
-      internal.reminders.openWorkByRecipient,
-      { now },
-    );
+    const recipients = await allRecipients(ctx, now);
     for (const r of recipients) {
       const { overdue, dueThisWeek } = partitionForDigest(r.entries, now);
       const directsOverdue = r.directs
@@ -503,10 +559,7 @@ export const sendDueReminders = internalAction({
   handler: async (ctx) => {
     const now = Date.now();
     const base = siteUrl();
-    const recipients: RecipientWork[] = await ctx.runQuery(
-      internal.reminders.openWorkByRecipient,
-      { now },
-    );
+    const recipients = await allRecipients(ctx, now);
     for (const r of recipients) {
       const { dueToday, dueTomorrow } = partitionForDueSoon(r.entries, now);
       if (dueToday.length === 0 && dueTomorrow.length === 0) continue;

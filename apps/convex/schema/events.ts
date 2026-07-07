@@ -92,7 +92,10 @@ export const eventItems = defineTable({
 })
   .index("by_event", ["eventId"])
   .index("by_event_module", ["eventId", "module"])
-  .index("by_chapter", ["chapterId"]);
+  .index("by_chapter", ["chapterId"])
+  // Range-scan a chapter's due-dated items inside a date window (reminder
+  // emails) without reading undated or out-of-window rows.
+  .index("by_chapter_and_dueDate", ["chapterId", "dueDate"]);
 
 /**
  * Role assignment — who holds which role on an event. Rotatable; the history
