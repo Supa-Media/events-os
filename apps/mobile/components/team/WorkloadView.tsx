@@ -20,6 +20,7 @@ import {
   RESPONSIBILITY_CADENCE_LABELS,
   CHECKIN_ACTION_LABELS,
   responsibilityAppliesTo,
+  responsibilityDueForReview,
   type EventStatus,
 } from "@events-os/shared";
 import {
@@ -190,12 +191,25 @@ export function WorkloadView({
     return map;
   }, [checkIns]);
 
+  /**
+   * Last-reviewed times for the person about to be checked in — fetched from
+   * their OWN full history (not the 10-capped subtree feed), so a slow-cadence
+   * duty's last review isn't lost past the feed's window and wrongly treated
+   * as never-reviewed. Skipped until a 1:1 is actually being logged.
+   */
+  const checkInReviews = useQuery(
+    api.checkIns.reviewTimesForPerson,
+    checkInFor ? { personId: checkInFor._id } : "skip",
+  );
+
   // Managers log 1:1s about others — never about themselves.
   const canLogFor = (memberId: Id<"people">) =>
     workload?.caller.personId != null &&
     memberId !== workload.caller.personId;
 
-  // Responsibilities gate the check-in modal's seed list — wait for them too.
+  // Responsibilities gate the check-in modal's seed list — wait for them.
+  // (The 1:1 history and cadence review-times load async and don't block
+  // first paint.)
   if (
     workload === undefined ||
     projects === undefined ||
@@ -488,7 +502,7 @@ export function WorkloadView({
         />
       ) : null}
 
-      {checkInFor ? (
+      {checkInFor && checkInReviews !== undefined ? (
         <CheckInModal
           key={checkInFor._id}
           visible
@@ -496,6 +510,12 @@ export function WorkloadView({
           responsibilities={respFor(checkInFor._id).map((r) => ({
             _id: r._id,
             title: r.title,
+            cadence: r.cadence,
+            dueForReview: responsibilityDueForReview(
+              r.cadence,
+              (checkInReviews ?? {})[r._id] ?? null,
+              Date.now(),
+            ),
           }))}
           projects={(projects ?? [])
             .filter(

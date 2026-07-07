@@ -1,12 +1,18 @@
 /**
  * CheckInModal — the 1:1 logging form, built for first-time managers.
  *
- * One pass through the conversation: did the 1:1 happen (or was it skipped),
- * is each responsibility being fulfilled (and if not, pick the course of
- * action — warning, reduce, transfer, take it on, reassign, remove), any
- * prayer requests / personal updates the chain should know, and two 1-10
- * pulses (workload amount, right-work interest) with notes. Saves one
- * `checkIns` row; history renders on the workload page.
+ * One pass through the conversation, in the order the conversation should
+ * actually go: did the 1:1 happen (or was it skipped), how is the PERSON
+ * doing first — personal/prayer updates and the two 1-10 pulses (workload
+ * amount, right-work interest) — and only then the work: is each
+ * responsibility being fulfilled (and if not, pick the course of action —
+ * warning, reduce, transfer, take it on, reassign, remove), are projects on
+ * track, and feedback. Saves one `checkIns` row; history renders on the
+ * workload page.
+ *
+ * Duties respect their cadence: a quarterly duty reviewed three weeks ago
+ * doesn't clutter a weekly 1:1 — it waits in a collapsed "not due yet" list
+ * the manager can still pull from.
  */
 import { useState } from "react";
 import {
@@ -23,8 +29,10 @@ import type { Id } from "@events-os/convex/_generated/dataModel";
 import {
   CHECKIN_ACTIONS,
   CHECKIN_ACTION_LABELS,
+  RESPONSIBILITY_CADENCE_LABELS,
   type CheckInAction,
   type CheckInType,
+  type ResponsibilityCadence,
 } from "@events-os/shared";
 import { Button, Icon, SelectCell, type SelectOption } from "../ui";
 import { colors, spacing } from "../../lib/theme";
@@ -53,6 +61,14 @@ type ProjectInput = {
   note?: string;
 };
 
+export type CheckInResponsibility = {
+  _id: Id<"responsibilities">;
+  title: string;
+  cadence: ResponsibilityCadence;
+  /** Cadence cycle elapsed since the last logged review (see shared helper). */
+  dueForReview: boolean;
+};
+
 export function CheckInModal({
   visible,
   person,
@@ -63,7 +79,7 @@ export function CheckInModal({
   visible: boolean;
   person: { _id: Id<"people">; name: string };
   /** The person's derived responsibilities (role fan-out + direct). */
-  responsibilities: { _id: Id<"responsibilities">; title: string }[];
+  responsibilities: CheckInResponsibility[];
   /** The projects they own — checked in the same pass as the duties. */
   projects: { _id: Id<"projects">; name: string }[];
   onClose: () => void;
@@ -73,13 +89,32 @@ export function CheckInModal({
   // key={person._id} at the call site if the instance is ever kept mounted.
   const log = useMutation(api.checkIns.log);
   const [type, setType] = useState<CheckInType>("checkin");
+  // Only duties due this cadence cycle seed the form; the rest wait in a
+  // collapsed list the manager can pull from ("we ended up discussing it").
   const [resp, setResp] = useState<RespInput[]>(() =>
-    responsibilities.map((r) => ({
-      responsibilityId: r._id,
-      title: r.title,
-      fulfilling: true,
-    })),
+    responsibilities
+      .filter((r) => r.dueForReview)
+      .map((r) => ({
+        responsibilityId: r._id,
+        title: r.title,
+        fulfilling: true,
+      })),
   );
+  const [deferredOpen, setDeferredOpen] = useState(false);
+  // Derived, not a second source of truth: a duty is deferred until it's in
+  // `resp`. Pulling one in is a single append — the two lists can't diverge.
+  const deferred = responsibilities.filter(
+    (r) => !resp.some((x) => x.responsibilityId === r._id),
+  );
+
+  function pullDeferred(dutyId: Id<"responsibilities">) {
+    const duty = responsibilities.find((d) => d._id === dutyId);
+    if (!duty || resp.some((x) => x.responsibilityId === dutyId)) return;
+    setResp((cur) => [
+      ...cur,
+      { responsibilityId: duty._id, title: duty.title, fulfilling: true },
+    ]);
+  }
   const [proj, setProj] = useState<ProjectInput[]>(() =>
     projects.map((p) => ({ projectId: p._id, name: p.name, onTrack: true })),
   );
@@ -198,10 +233,52 @@ export function CheckInModal({
               ))}
             </View>
 
+            {/* How are THEY doing — before any of the work. */}
+            <View style={{ gap: spacing.xs }}>
+              <FieldLabel>
+                How are they doing — prayer requests / personal updates
+              </FieldLabel>
+              <NoteInput
+                placeholder="Start here: life, faith, anything the reporting chain should know & pray for…"
+                value={personalUpdate}
+                onChangeText={setPersonalUpdate}
+                tall
+              />
+            </View>
+
+            {/* Pulse: workload */}
+            <View style={{ gap: spacing.xs }}>
+              <FieldLabel>Workload — 1 far too little · 10 far too much</FieldLabel>
+              <ScaleRow value={workloadScore} onChange={setWorkloadScore} />
+              <NoteInput
+                placeholder="Workload notes…"
+                value={workloadNote}
+                onChangeText={setWorkloadNote}
+              />
+            </View>
+
+            {/* Pulse: right work */}
+            <View style={{ gap: spacing.xs }}>
+              <FieldLabel>
+                Right work — 1 wrong/boring · 10 exactly right & interesting
+              </FieldLabel>
+              <ScaleRow value={interestScore} onChange={setInterestScore} />
+              <NoteInput
+                placeholder="Notes on the work itself…"
+                value={interestNote}
+                onChangeText={setInterestNote}
+              />
+            </View>
+
             {/* Responsibilities check (a skipped 1:1 assesses nothing) */}
-            {type === "skip" ? null : resp.length > 0 ? (
+            {type === "skip" ? null : resp.length > 0 || deferred.length > 0 ? (
               <View style={{ gap: spacing.sm }}>
                 <FieldLabel>Responsibilities — on track?</FieldLabel>
+                {resp.length === 0 ? (
+                  <Text className="text-sm text-faint">
+                    Nothing due this cycle — every duty was reviewed recently.
+                  </Text>
+                ) : null}
                 {resp.map((r, i) => (
                   <View
                     key={`${r.responsibilityId ?? r.title}-${i}`}
@@ -247,6 +324,51 @@ export function CheckInModal({
                     ) : null}
                   </View>
                 ))}
+                {deferred.length > 0 ? (
+                  <View style={{ gap: spacing.xs }}>
+                    <Pressable
+                      onPress={() => setDeferredOpen((o) => !o)}
+                      className="flex-row items-center gap-1 py-0.5 active:opacity-70"
+                    >
+                      <Icon
+                        name={deferredOpen ? "chevron-down" : "chevron-right"}
+                        size={14}
+                        color={colors.faint}
+                      />
+                      <Text className="text-xs font-medium text-faint">
+                        {deferred.length} not due this cycle — reviewed
+                        recently
+                      </Text>
+                    </Pressable>
+                    {deferredOpen
+                      ? deferred.map((d) => (
+                          <View
+                            key={d._id}
+                            className="flex-row items-center gap-2 rounded-lg border border-border bg-sunken px-3 py-2"
+                          >
+                            <Text
+                              className="flex-1 text-sm text-muted"
+                              numberOfLines={1}
+                            >
+                              {d.title}
+                            </Text>
+                            <Text className="text-2xs text-faint">
+                              {RESPONSIBILITY_CADENCE_LABELS[d.cadence]}
+                            </Text>
+                            <Pressable
+                              onPress={() => pullDeferred(d._id)}
+                              hitSlop={4}
+                              className="rounded-pill bg-raised px-2 py-0.5 active:opacity-70"
+                            >
+                              <Text className="text-xs font-semibold text-accent">
+                                Review anyway
+                              </Text>
+                            </Pressable>
+                          </View>
+                        ))
+                      : null}
+                  </View>
+                ) : null}
               </View>
             ) : (
               <Text className="text-sm text-faint">
@@ -305,41 +427,6 @@ export function CheckInModal({
                 placeholder="Moments worth naming up the chain…"
                 value={feedbackAboveBeyond}
                 onChangeText={setFeedbackAboveBeyond}
-              />
-            </View>
-
-            {/* Pulse: workload */}
-            <View style={{ gap: spacing.xs }}>
-              <FieldLabel>Workload — 1 far too little · 10 far too much</FieldLabel>
-              <ScaleRow value={workloadScore} onChange={setWorkloadScore} />
-              <NoteInput
-                placeholder="Workload notes…"
-                value={workloadNote}
-                onChangeText={setWorkloadNote}
-              />
-            </View>
-
-            {/* Pulse: right work */}
-            <View style={{ gap: spacing.xs }}>
-              <FieldLabel>
-                Right work — 1 wrong/boring · 10 exactly right & interesting
-              </FieldLabel>
-              <ScaleRow value={interestScore} onChange={setInterestScore} />
-              <NoteInput
-                placeholder="Notes on the work itself…"
-                value={interestNote}
-                onChangeText={setInterestNote}
-              />
-            </View>
-
-            {/* Prayer / personal */}
-            <View style={{ gap: spacing.xs }}>
-              <FieldLabel>Prayer requests / personal updates</FieldLabel>
-              <NoteInput
-                placeholder="Anything the reporting chain should know & pray for…"
-                value={personalUpdate}
-                onChangeText={setPersonalUpdate}
-                tall
               />
             </View>
 

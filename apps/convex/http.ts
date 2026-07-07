@@ -9,6 +9,12 @@ import {
   renderTicketPage,
 } from "./lib/landingPage";
 import { registerTicketApiRoutes } from "./lib/ticketApiRoutes";
+import {
+  renderProjectActionGone,
+  renderProjectActionPage,
+  renderProjectActionResult,
+} from "./lib/projectActionPage";
+import { EMAIL_ACTION_STATUSES, type EmailActionStatus } from "./projectActions";
 import { siteUrl } from "./lib/siteUrl";
 import { verifyStripeSignature } from "./stripe";
 
@@ -98,6 +104,70 @@ http.route({
       : null;
     if (!ticket) return html(renderNotFound(), 404);
     return html(renderTicketPage(ticket, siteUrl()));
+  }),
+});
+
+// ── Project email-action pages: /p/<token> ──────────────────────────────────
+// Where reminder-email links land. GET is read-only (mail scanners prefetch
+// links); the status change is the POST below, behind an explicit button.
+
+/** Deep link into the app for this person's work page, when APP_URL is set. */
+function appTeamUrl(personId: string): string | null {
+  const base = process.env.APP_URL?.replace(/\/+$/, "");
+  return base ? `${base}/team/${personId}` : null;
+}
+
+http.route({
+  pathPrefix: "/p/",
+  method: "GET",
+  handler: httpAction(async (ctx, req) => {
+    const url = new URL(req.url);
+    const segments = url.pathname.split("/").filter(Boolean); // ["p", token]
+    const token = decodeURIComponent(segments[1] ?? "");
+    if (!token || segments.length > 2) {
+      return html(renderProjectActionGone(), 404);
+    }
+    const data = await ctx.runQuery(internal.projectActions.pageData, {
+      token,
+    });
+    if (!data) return html(renderProjectActionGone(), 404);
+    return html(
+      renderProjectActionPage(
+        data,
+        token,
+        url.searchParams.get("intent"),
+        appTeamUrl(data.personId),
+      ),
+    );
+  }),
+});
+
+http.route({
+  pathPrefix: "/p/",
+  method: "POST",
+  handler: httpAction(async (ctx, req) => {
+    const url = new URL(req.url);
+    const segments = url.pathname.split("/").filter(Boolean); // ["p", token, "status"]
+    const token = decodeURIComponent(segments[1] ?? "");
+    if (!token || segments[2] !== "status" || segments.length > 3) {
+      return html(renderProjectActionGone(), 404);
+    }
+    // The page's <form> posts application/x-www-form-urlencoded. Parsed via
+    // URLSearchParams (not req.formData()) so this file also typechecks under
+    // the mobile app's React Native lib, whose FormData type has no .get().
+    const form = new URLSearchParams(await req.text());
+    const status = form.get("status") ?? "";
+    if (!(EMAIL_ACTION_STATUSES as readonly string[]).includes(status)) {
+      return html(renderProjectActionGone(), 400);
+    }
+    const result = await ctx.runMutation(
+      internal.projectActions.setStatusFromToken,
+      { token, status: status as EmailActionStatus },
+    );
+    if (!result) return html(renderProjectActionGone(), 404);
+    return html(
+      renderProjectActionResult(result.projectName, result.status, token),
+    );
   }),
 });
 

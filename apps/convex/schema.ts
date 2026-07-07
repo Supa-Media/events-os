@@ -13,7 +13,11 @@ import {
   roleAssignments,
 } from "./schema/events";
 import { people, engagements, templatePeople } from "./schema/people";
-import { projects, projectComments } from "./schema/projects";
+import {
+  projects,
+  projectComments,
+  projectEmailTokens,
+} from "./schema/projects";
 import { responsibilities, checkIns } from "./schema/responsibilities";
 import { songs, setlistEntries, songRequests } from "./schema/songs";
 import {
@@ -101,9 +105,10 @@ const schema = defineSchema({
   templatePeople,
 
   // Projects (nestable units of work, owned by people, optionally event-backed)
-  // + their running comment history.
+  // + their running comment history + email-action capability tokens.
   projects,
   projectComments,
+  projectEmailTokens,
 
   // Responsibilities (recurring duties, fanned out by role) + 1:1 check-ins.
   responsibilities,

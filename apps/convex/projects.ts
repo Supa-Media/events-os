@@ -7,6 +7,7 @@
  * event when the project IS an event. Chapter-scoped like everything else.
  */
 import { query, mutation, QueryCtx } from "./_generated/server";
+import { internal } from "./_generated/api";
 import { Doc, Id } from "./_generated/dataModel";
 import { v, ConvexError } from "convex/values";
 import { PROJECT_STATUSES } from "@events-os/shared";
@@ -208,7 +209,7 @@ export const addComment = mutation({
       });
     }
     const userId = await requireUserId(ctx);
-    return await ctx.db.insert("projectComments", {
+    const commentId = await ctx.db.insert("projectComments", {
       chapterId: project.chapterId,
       projectId,
       authorPersonId: author._id,
@@ -216,6 +217,28 @@ export const addComment = mutation({
       createdBy: userId as Id<"users">,
       createdAt: Date.now(),
     });
+    // Tell the person accountable — a "hey, add an update" left in the thread
+    // is useless if they never see it. Never for one's own comment, and only
+    // when the owner is reachable by email.
+    const ownerId = await effectiveOwnerId(ctx, project);
+    if (ownerId && ownerId !== author._id) {
+      const owner = await ctx.db.get(ownerId);
+      const to = owner?.pwEmail ?? owner?.email;
+      if (owner && to) {
+        await ctx.scheduler.runAfter(
+          0,
+          internal.reminders.sendProjectCommentEmail,
+          {
+            to,
+            recipientName: owner.name,
+            projectName: project.name,
+            authorName: author.name,
+            body: trimmed,
+          },
+        );
+      }
+    }
+    return commentId;
   },
 });
 
