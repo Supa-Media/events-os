@@ -221,6 +221,103 @@ describe("openWorkByRecipient", () => {
     expect(overdue.map((e) => e.name)).toEqual(["Newsletter"]);
   });
 
+  test("event items surface via owner cell, role assignment, or event-owner fallback", async () => {
+    const s = await setupChapter(newT());
+    const now = Date.now();
+    const eventOwner = await addPerson(s, "Dami", { email: "dami@pw.life" });
+    const commsLead = await addPerson(s, "Charisma", {
+      email: "charisma@pw.life",
+    });
+    const doer = await addPerson(s, "Bithja", { email: "bithja@pw.life" });
+
+    const { eventId, roleId } = await run(s.t, async (ctx) => {
+      const eventTypeId = await ctx.db.insert("eventTypes", {
+        chapterId: s.chapterId,
+        name: "Eden",
+        slug: "eden",
+        version: 1,
+        createdBy: s.userId,
+        createdAt: now,
+        updatedAt: now,
+      });
+      const eventId = await ctx.db.insert("events", {
+        chapterId: s.chapterId,
+        eventTypeId,
+        templateVersion: 1,
+        name: "Eden July",
+        eventDate: now + 10 * DAY,
+        status: "planning",
+        ownerPersonId: eventOwner,
+        createdBy: s.userId,
+        createdAt: now,
+        updatedAt: now,
+      });
+      const roleId = await ctx.db.insert("eventRoles", {
+        eventId,
+        key: "comms_lead",
+        label: "Comms Lead",
+        order: 0,
+      });
+      await ctx.db.insert("roleAssignments", {
+        eventId,
+        chapterId: s.chapterId,
+        roleId,
+        personId: commsLead,
+        createdAt: now,
+      });
+      return { eventId, roleId };
+    });
+
+    const addItem = (
+      title: string,
+      opts: {
+        ownerPersonId?: Id<"people">;
+        roleId?: Id<"eventRoles">;
+        module?: string;
+        status?: string;
+      } = {},
+    ) =>
+      run(s.t, (ctx) =>
+        ctx.db.insert("eventItems", {
+          eventId,
+          chapterId: s.chapterId,
+          module: opts.module ?? "comms",
+          title,
+          order: 0,
+          status: opts.status,
+          ownerPersonId: opts.ownerPersonId,
+          roleId: opts.roleId,
+          dueDate: now + 2 * DAY,
+        }),
+      );
+    await addItem("Post announcement", { roleId }); // → role holder
+    await addItem("Book venue", { module: "planning_doc" }); // → event owner
+    await addItem("Design flyer", { ownerPersonId: doer }); // → owner cell
+
+    const recipients: RecipientWork[] = await s.t.query(
+      internal.reminders.openWorkByRecipient,
+      { now },
+    );
+    const byPerson = (id: Id<"people">) =>
+      recipients.find((x) => x.personId === id);
+    expect(byPerson(commsLead)!.entries.map((e) => e.name)).toEqual([
+      "Post announcement",
+    ]);
+    expect(byPerson(eventOwner)!.entries.map((e) => e.name)).toEqual([
+      "Book venue",
+    ]);
+    expect(byPerson(doer)!.entries.map((e) => e.name)).toEqual([
+      "Design flyer",
+    ]);
+    // Context names the event AND the doc the task lives in.
+    expect(byPerson(commsLead)!.entries[0].context).toBe(
+      "Eden July · Comms Schedule",
+    );
+    expect(byPerson(eventOwner)!.entries[0].context).toBe(
+      "Eden July · Planning Doc",
+    );
+  });
+
   test("skips people without email and inactive people", async () => {
     const s = await setupChapter(newT());
     const now = Date.now();

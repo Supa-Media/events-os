@@ -33,7 +33,9 @@ import { v } from "convex/values";
 import { internal } from "./_generated/api";
 import {
   isCompleteStatus,
+  MODULE_LABELS,
   PROJECT_STATUS_LABELS,
+  type ModuleKey,
   type ProjectStatus,
   type SelectOption,
 } from "@events-os/shared";
@@ -199,10 +201,14 @@ async function collectOpenWork(
       });
     }
 
-    // Event items — due-dated grid rows with a person on them, from events
-    // still in flight. "Open" defers to the module's own status vocabulary
-    // (its status column's isComplete options); a module with no status
-    // column can't be completed, so its dated items stay open until the date.
+    // Event items — every due-dated grid row (planning doc, comms, permits,
+    // supplies, custom modules — the same rows the readiness bars count),
+    // from events still in flight. "Open" defers to the module's own status
+    // vocabulary (its status column's isComplete options); a module with no
+    // status column can't be completed, so its dated items stay open until
+    // the date. Accountability resolves like the app does: the item's owner
+    // cell first, else everyone assigned to the item's ROLE on this event,
+    // else the event's owner (whose job is filling exactly these gaps).
     const events = await ctx.db
       .query("events")
       .withIndex("by_chapter", (q) => q.eq("chapterId", chapter._id))
@@ -217,8 +223,44 @@ async function collectOpenWork(
       .withIndex("by_chapter", (q) => q.eq("chapterId", chapter._id))
       .collect();
     const statusOptionsCache = new Map<string, SelectOption[] | undefined>();
+    // Per-event lookups, loaded once on first use: role → assigned people,
+    // and custom-module key → label (for the "Eden · Comms" context line).
+    const roleHoldersByEvent = new Map<
+      Id<"events">,
+      Map<Id<"eventRoles">, Id<"people">[]>
+    >();
+    const customLabelsByEvent = new Map<Id<"events">, Map<string, string>>();
+    const eventLookups = async (eventId: Id<"events">) => {
+      let roleHolders = roleHoldersByEvent.get(eventId);
+      if (!roleHolders) {
+        roleHolders = new Map();
+        const assignments = await ctx.db
+          .query("roleAssignments")
+          .withIndex("by_event", (q) => q.eq("eventId", eventId))
+          .collect();
+        for (const a of assignments) {
+          const list = roleHolders.get(a.roleId) ?? [];
+          list.push(a.personId);
+          roleHolders.set(a.roleId, list);
+        }
+        roleHoldersByEvent.set(eventId, roleHolders);
+      }
+      let customLabels = customLabelsByEvent.get(eventId);
+      if (!customLabels) {
+        customLabels = new Map(
+          (
+            await ctx.db
+              .query("eventModules")
+              .withIndex("by_event", (q) => q.eq("eventId", eventId))
+              .collect()
+          ).map((m) => [m.key, m.label]),
+        );
+        customLabelsByEvent.set(eventId, customLabels);
+      }
+      return { roleHolders, customLabels };
+    };
     for (const item of items) {
-      if (!item.dueDate || !item.ownerPersonId) continue;
+      if (!item.dueDate) continue;
       const event = eventById.get(item.eventId);
       if (!event) continue;
       const cacheKey = `${item.eventId}:${item.module}`;
@@ -232,12 +274,27 @@ async function collectOpenWork(
       if (isCompleteStatus(statusOptionsCache.get(cacheKey), item.status)) {
         continue;
       }
-      add(item.ownerPersonId, {
-        kind: "task",
-        name: item.title,
-        context: event.name,
-        dueDate: item.dueDate,
-      });
+      const { roleHolders, customLabels } = await eventLookups(item.eventId);
+      let owners: Id<"people">[] = item.ownerPersonId
+        ? [item.ownerPersonId]
+        : item.roleId
+          ? (roleHolders.get(item.roleId) ?? [])
+          : [];
+      if (owners.length === 0 && event.ownerPersonId) {
+        owners = [event.ownerPersonId];
+      }
+      const moduleLabel =
+        MODULE_LABELS[item.module as ModuleKey] ??
+        customLabels.get(item.module) ??
+        item.module;
+      for (const owner of owners) {
+        add(owner, {
+          kind: "task",
+          name: item.title,
+          context: `${event.name} · ${moduleLabel}`,
+          dueDate: item.dueDate,
+        });
+      }
     }
 
     for (const person of people) {
