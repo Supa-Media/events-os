@@ -18,7 +18,7 @@ import { v, ConvexError } from "convex/values";
 import { getOptionalAuth } from "@supa-media/convex/auth";
 import { requireUserId, requireAccess, hasAccess } from "./lib/context";
 import { isSuperuserEmail } from "./lib/superuser";
-import { findUnlinkedPersonByLoginEmail, claimFields } from "./lib/people";
+import { reconcilePersonForUser } from "./lib/people";
 
 /** Load the current user's profile row (or null). */
 async function getProfile(ctx: QueryCtx, userId: string) {
@@ -40,18 +40,15 @@ async function getMembership(ctx: QueryCtx, userId: string) {
  * Mirror a logged-in staff member into the People roster as a TEAM MEMBER,
  * linked back to their account via `people.userId`. This is what lets them be
  * set as an event owner or hold a lead role (both reference `people`, not the
- * auth account). Upserts the linked row and keeps name/phone in sync.
+ * auth account).
  *
- * To avoid duplicating someone who's already on the roster (e.g. they were
- * imported as core team by email/pwEmail before they ever signed in), we first
- * look for a row already linked to this account, then fall back to matching an
- * UNLINKED row in the same chapter by EITHER their personal `email` or their
- * publicworship `pwEmail` — the login email is always the publicworship one, so
- * matching pwEmail is what catches an imported team member. Only when neither
- * exists do we insert a fresh row.
- *
- * `fields.email` is the login (publicworship) address; we record it as `pwEmail`
- * and never overwrite an existing personal `email` with it.
+ * Delegates to `reconcilePersonForUser`, which guarantees the account maps to
+ * exactly ONE roster row: it adopts an existing row (matched by `userId`, or by
+ * personal `email` / publicworship `pwEmail` for someone imported before they
+ * signed in), merges any duplicate rows into that survivor so their events,
+ * projects and duties aren't split across rows, and only inserts a fresh row
+ * when the person isn't on the roster at all. Keeps name/phone in sync and
+ * records the login (publicworship) address as `pwEmail`.
  */
 async function syncStaffPerson(
   ctx: MutationCtx,
@@ -59,37 +56,12 @@ async function syncStaffPerson(
   chapterId: string,
   fields: { name?: string; email?: string | null; phone?: string | null },
 ) {
-  const existing =
-    (await ctx.db
-      .query("people")
-      .withIndex("by_user", (q) => q.eq("userId", userId as Id<"users">))
-      .first()) ??
-    (await findUnlinkedPersonByLoginEmail(ctx, chapterId, fields.email));
-
-  if (existing) {
-    await ctx.db.patch(existing._id, {
-      chapterId: chapterId as Id<"chapters">,
-      isActive: existing.isActive ?? true,
-      // Claim the row for this account + sync pwEmail without clobbering email.
-      ...claimFields(existing, userId, fields.email),
-      ...(fields.name !== undefined ? { name: fields.name } : null),
-      ...(fields.phone !== undefined ? { phone: fields.phone ?? undefined } : null),
-    });
-    return existing._id;
-  }
-
-  const loginEmail = fields.email ?? undefined;
-  return await ctx.db.insert("people", {
-    chapterId: chapterId as Id<"chapters">,
-    userId: userId as Id<"users">,
-    name: fields.name ?? "Team member",
-    email: loginEmail,
-    pwEmail: loginEmail,
-    phone: fields.phone ?? undefined,
-    isTeamMember: true,
-    isActive: true,
-    createdAt: Date.now(),
-  });
+  return await reconcilePersonForUser(
+    ctx,
+    chapterId as Id<"chapters">,
+    userId as Id<"users">,
+    fields,
+  );
 }
 
 /**
@@ -266,6 +238,41 @@ export const updateProfile = mutation({
     }
 
     return { ok: true };
+  },
+});
+
+/**
+ * Reconcile the signed-in user's roster row on login. Idempotent: creates the
+ * linked People row if they don't have one yet, and merges any duplicate rows
+ * (imported twice, or created before they'd signed in) into a single survivor
+ * so they see ALL their tasks — not just whatever landed on the linked row.
+ *
+ * Safe to call on every app open: no-ops for accounts that lack access or
+ * haven't onboarded into a chapter yet (there's no chapter to attach a row to).
+ * The client fires this from the authenticated layout once `me.onboarded`.
+ */
+export const reconcileMyPerson = mutation({
+  args: {},
+  handler: async (ctx) => {
+    const user = await getOptionalAuth(ctx);
+    if (!user) return { ok: false as const, reason: "signed_out" as const };
+
+    const email = (user.email as string | undefined) ?? null;
+    if (!(await hasAccess(ctx, email))) {
+      return { ok: false as const, reason: "no_access" as const };
+    }
+
+    const userId = user._id as Id<"users">;
+    const membership = await getMembership(ctx, userId);
+    if (!membership) return { ok: false as const, reason: "no_chapter" as const };
+
+    const profile = await getProfile(ctx, userId);
+    const personId = await syncStaffPerson(ctx, userId, membership.chapterId as string, {
+      name: profile?.name as string | undefined,
+      phone: profile?.phone as string | undefined,
+      email,
+    });
+    return { ok: true as const, personId };
   },
 });
 
