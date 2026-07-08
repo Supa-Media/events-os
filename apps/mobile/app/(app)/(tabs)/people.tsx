@@ -382,6 +382,11 @@ function PersonRow({
           weight="medium"
           onCommit={(t) => update({ personId: id, name: t })}
         />
+        {/* Linked to a user account — they can sign in. Distinguishes a real
+            logged-in team member from a roster-only contact. */}
+        {person.userId ? (
+          <Icon name="user-check" size={14} color={colors.success} />
+        ) : null}
       </View>
 
       {/* Status (roster lifecycle select) */}

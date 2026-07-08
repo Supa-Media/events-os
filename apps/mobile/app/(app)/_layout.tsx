@@ -1,5 +1,6 @@
+import { useEffect } from "react";
 import { Redirect, Stack } from "expo-router";
-import { useConvexAuth, useQuery } from "convex/react";
+import { useConvexAuth, useQuery, useMutation } from "convex/react";
 import { api } from "@events-os/convex/_generated/api";
 import { AppShell } from "../../components/ui";
 import { AccessDeniedScreen } from "../../components/onboarding/AccessDeniedScreen";
@@ -20,6 +21,16 @@ import { OnboardingScreen } from "../../components/onboarding/OnboardingScreen";
 export default function AppLayout() {
   const { isAuthenticated, isLoading } = useConvexAuth();
   const me = useQuery(api.profiles.me, isAuthenticated ? {} : "skip");
+  const reconcileMyPerson = useMutation(api.profiles.reconcileMyPerson);
+
+  // On login, make sure the account maps to exactly one roster row: create it
+  // if missing, and merge any duplicates so the user sees all of their tasks.
+  // Idempotent + best-effort — a hiccup here must never block the app.
+  useEffect(() => {
+    if (me?.onboarded) {
+      reconcileMyPerson().catch(() => {});
+    }
+  }, [me?.onboarded, reconcileMyPerson]);
 
   if (isLoading) return null;
 
