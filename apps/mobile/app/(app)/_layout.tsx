@@ -28,7 +28,12 @@ export default function AppLayout() {
   // Idempotent + best-effort — a hiccup here must never block the app.
   useEffect(() => {
     if (me?.onboarded) {
-      reconcileMyPerson().catch(() => {});
+      reconcileMyPerson().catch((err) => {
+        // Best-effort: never block the app, but leave a breadcrumb so a
+        // persistently failing reconcile (e.g. transaction limits on a huge
+        // chapter) isn't completely silent.
+        console.warn("reconcileMyPerson failed", err);
+      });
     }
   }, [me?.onboarded, reconcileMyPerson]);
 

@@ -112,34 +112,70 @@ export async function repointPersonReferences(
   toId: Id<"people">,
 ): Promise<void> {
   // ── Indexed by person — cheap, direct re-points. ──
+  // Both duplicates may have been engaged on the SAME event (the import-twice
+  // case this feature targets), so don't blindly re-point: if the survivor is
+  // already engaged of that type on that event, drop the duplicate's row rather
+  // than create a second engagement (double-counted volunteer / budget history).
   const engagements = await ctx.db
     .query("engagements")
     .withIndex("by_person", (q) => q.eq("personId", fromId))
     .collect();
-  for (const e of engagements) await ctx.db.patch(e._id, { personId: toId });
+  for (const e of engagements) {
+    const sameEvent = await ctx.db
+      .query("engagements")
+      .withIndex("by_event_type", (q) =>
+        q.eq("eventId", e.eventId).eq("type", e.type),
+      )
+      .collect();
+    if (sameEvent.some((x) => x.personId === toId)) await ctx.db.delete(e._id);
+    else await ctx.db.patch(e._id, { personId: toId });
+  }
 
+  // Same for role assignments — one row per (event, role, person). Collapse a
+  // clash instead of duplicating the survivor on the same event role.
   const assignments = await ctx.db
     .query("roleAssignments")
     .withIndex("by_person", (q) => q.eq("personId", fromId))
     .collect();
-  for (const a of assignments) await ctx.db.patch(a._id, { personId: toId });
+  for (const a of assignments) {
+    const sameRole = await ctx.db
+      .query("roleAssignments")
+      .withIndex("by_event_role", (q) =>
+        q.eq("eventId", a.eventId).eq("roleId", a.roleId),
+      )
+      .collect();
+    if (sameRole.some((x) => x.personId === toId)) await ctx.db.delete(a._id);
+    else await ctx.db.patch(a._id, { personId: toId });
+  }
 
   const ownedProjects = await ctx.db
     .query("projects")
     .withIndex("by_owner", (q) => q.eq("ownerPersonId", fromId))
     .collect();
   for (const p of ownedProjects) {
-    await ctx.db.patch(p._id, { ownerPersonId: toId });
-    // Email-action tokens are keyed (project, person) — re-point the ones for
-    // the projects the duplicate owned so its live "act from email" links keep
-    // resolving. (Other tokens can't reference a non-owner, so this covers them.)
-    const tokens = await ctx.db
+    // Bump updatedAt so updatedAt-ordered project views reflect the new owner
+    // (matches how people.remove re-assigns ownership).
+    await ctx.db.patch(p._id, { ownerPersonId: toId, updatedAt: Date.now() });
+  }
+
+  // Email-action tokens are keyed (project, person). Reminders mint them for a
+  // project's EFFECTIVE owner — which, for an unowned sub-project, is an owned
+  // ANCESTOR's person — so a token can reference someone on a project they don't
+  // directly own. There's no by-person index, but a full scan is fine here:
+  // tokens are low-volume (reused per send, purged daily) and a merge only runs
+  // when duplicates exist. Collapse onto any token the survivor already holds
+  // for that project rather than leaving two rows for one (project, person).
+  const tokens = await ctx.db.query("projectEmailTokens").collect();
+  for (const tk of tokens) {
+    if (tk.personId !== fromId) continue;
+    const survivorToken = await ctx.db
       .query("projectEmailTokens")
       .withIndex("by_project_and_person", (q) =>
-        q.eq("projectId", p._id).eq("personId", fromId),
+        q.eq("projectId", tk.projectId).eq("personId", toId),
       )
-      .collect();
-    for (const tk of tokens) await ctx.db.patch(tk._id, { personId: toId });
+      .first();
+    if (survivorToken) await ctx.db.delete(tk._id);
+    else await ctx.db.patch(tk._id, { personId: toId });
   }
 
   // Reports that pointed at the duplicate as their manager move to the survivor.
@@ -234,10 +270,17 @@ export async function repointPersonReferences(
   }
 }
 
+// Default name a fresh linked row gets before a profile name is known. Treated
+// as "no real name yet" so a duplicate's real name wins over it on merge.
+export const PLACEHOLDER_PERSON_NAME = "Team member";
+
 // Roster fields carried from a duplicate onto the survivor when the survivor is
-// missing them, so merging never loses contact/profile data. Scalars fill only
-// when absent; list fields are unioned. `userId`/`name`/status are decided by
-// the caller (claimFields + the account's profile), so they're not listed here.
+// missing them, so merging never loses contact/profile data. Scalars and list
+// fields alike fill only when the survivor's is absent/empty — never overwriting
+// existing data, and never blending two ordered lists (e.g. commsPreferences is
+// a documented priority order, so a set-union would corrupt it). `userId`/status
+// are decided by the caller (claimFields + the account's profile); `name` is
+// handled specially below.
 const CARRY_SCALAR: (keyof Doc<"people">)[] = [
   "email",
   "pwEmail",
@@ -280,8 +323,20 @@ export async function mergePersonInto(
   }
   for (const f of CARRY_ARRAY) {
     const current = (survivor[f] as unknown[] | undefined) ?? [];
-    const merged = Array.from(new Set([...current, ...((dup[f] as unknown[]) ?? [])]));
-    if (merged.length > current.length) patch[f] = merged;
+    const dupValue = (dup[f] as unknown[] | undefined) ?? [];
+    if (current.length === 0 && dupValue.length > 0) patch[f] = dupValue;
+  }
+  // Adopt the duplicate's real name when the survivor only has the placeholder
+  // (e.g. a bare row auto-created on an earlier login), so a real name imported
+  // on the duplicate isn't lost when it's deleted.
+  const survivorHasRealName =
+    !!survivor.name && survivor.name !== PLACEHOLDER_PERSON_NAME;
+  if (
+    !survivorHasRealName &&
+    dup.name &&
+    dup.name !== PLACEHOLDER_PERSON_NAME
+  ) {
+    patch.name = dup.name;
   }
   if (dup.isTeamMember && !survivor.isTeamMember) patch.isTeamMember = true;
   if (Object.keys(patch).length) await ctx.db.patch(survivorId, patch);
@@ -313,7 +368,7 @@ export async function reconcilePersonForUser(
     return await ctx.db.insert("people", {
       chapterId,
       userId,
-      name: fields.name ?? "Team member",
+      name: fields.name ?? PLACEHOLDER_PERSON_NAME,
       email: loginEmail,
       pwEmail: loginEmail,
       phone: fields.phone ?? undefined,
@@ -336,7 +391,11 @@ export async function reconcilePersonForUser(
   const fresh = (await ctx.db.get(survivor._id)) ?? survivor;
   const desired: Record<string, unknown> = {
     chapterId,
-    isActive: fresh.isActive ?? true,
+    // A user actively signing in is active — don't leave them hidden because the
+    // row we claimed was an imported-inactive contact. Bump the paired `status`
+    // too so the two stay consistent (people.update keeps them in lock-step).
+    isActive: true,
+    ...(fresh.status === "inactive" ? { status: "active" as const } : null),
     ...claimFields(fresh, userId, fields.email),
     ...(fields.name !== undefined ? { name: fields.name } : null),
     ...(fields.phone != null ? { phone: fields.phone } : null),
