@@ -39,7 +39,7 @@ import {
   getPersonForUser,
 } from "./lib/templates";
 import { phaseReadiness, statusCountsFor } from "./lib/readiness";
-import { chapterRoster, manageablePersonIds } from "./lib/org";
+import { manageablePersonIds } from "./lib/org";
 import { paidTotalForEvent } from "./engagements";
 
 const statusUnion = v.union(
@@ -425,11 +425,11 @@ export const todos = query({
     //                    lane rather than counting as managing themselves.
     // When true, the caller oversees the whole event exactly like the event owner
     // does — at-risk items they don't own surface in the Overseeing group.
-    const roster = await chapterRoster(ctx, chapterId as Id<"chapters">);
+    // `manageablePersonIds` short-circuits to null on the admin check before it
+    // ever reads the roster, so we let it load lazily rather than eagerly scan.
     const manageable = await manageablePersonIds(
       ctx,
       chapterId as Id<"chapters">,
-      roster,
     );
     const iManageEventOwner =
       !!event.ownerPersonId &&

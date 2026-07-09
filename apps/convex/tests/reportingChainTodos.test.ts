@@ -187,6 +187,74 @@ describe("events.todos — reporting-chain oversight", () => {
     );
   });
 
+  test("a report's items that are NOT at risk stay hidden (risk gate)", async () => {
+    const t = newT();
+    const { as, chapterId, userId } = await setupChapter(t);
+    await demoteToMember(t, userId, chapterId);
+
+    const managerId = await makePerson(t, {
+      chapterId,
+      name: "Manager",
+      userId,
+    });
+    const reportId = await makePerson(t, {
+      chapterId,
+      name: "Report",
+      managerId,
+    });
+    // Event well in the future → its undated item is neither overdue nor due
+    // soon. Oversight is risk-gated, so nothing should surface for the manager.
+    const { eventId } = await run(t, async (ctx) => {
+      const now = Date.now();
+      const eventTypeId = await ctx.db.insert("eventTypes", {
+        chapterId,
+        name: "T",
+        slug: "t",
+        version: 1,
+        isArchived: false,
+        createdBy: userId,
+        createdAt: now,
+        updatedAt: now,
+      });
+      const eventId = await ctx.db.insert("events", {
+        chapterId,
+        eventTypeId,
+        templateVersion: 1,
+        name: "Future Event",
+        eventDate: now + 30 * 24 * 3600 * 1000,
+        status: "planning",
+        ownerPersonId: reportId,
+        createdBy: userId,
+        createdAt: now,
+        updatedAt: now,
+      });
+      await ctx.db.insert("eventColumns", {
+        eventId,
+        module: "planning_doc",
+        key: "status",
+        label: "Status",
+        kind: "system",
+        type: "status",
+        options: STATUS_OPTIONS,
+        isVisible: true,
+        order: 0,
+      });
+      await ctx.db.insert("eventItems", {
+        eventId,
+        chapterId,
+        module: "planning_doc",
+        title: "Not yet due",
+        order: 0,
+        status: "todo",
+      });
+      return { eventId };
+    });
+
+    const todos = await as.query(api.events.todos, { eventId });
+    expect(todos.yours).toEqual([]);
+    expect(todos.overseeing).toEqual([]);
+  });
+
   test("events owned OUTSIDE the reporting chain do not surface", async () => {
     const t = newT();
     const { as, chapterId, userId } = await setupChapter(t);
