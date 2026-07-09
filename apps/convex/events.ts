@@ -39,6 +39,7 @@ import {
   getPersonForUser,
 } from "./lib/templates";
 import { phaseReadiness, statusCountsFor } from "./lib/readiness";
+import { chapterRoster, manageablePersonIds } from "./lib/org";
 import { paidTotalForEvent } from "./engagements";
 
 const statusUnion = v.union(
@@ -367,7 +368,12 @@ export const myWork = query({
  *   overseeing — incomplete things the caller OVERSEES but doesn't own at the row
  *                level, shown ONLY when AT RISK (due soon or overdue). "Oversees"
  *                = the caller owns the item's module (via its owner role) OR the
- *                caller is the event owner.
+ *                caller is the event owner OR the event is owned by someone in the
+ *                caller's REPORTING CHAIN — a direct report or a report's report,
+ *                transitively down the manager tree (chapter admins oversee every
+ *                event in the chapter). This lets a manager see what their reports
+ *                are letting slip on events they own, even when the manager holds
+ *                no role on the event themselves.
  *
  * Every incomplete grid item gets an EFFECTIVE DUE of `item.dueDate ?? eventDate`
  * (day-of/undated items fall back to the event date). Risk is computed from now:
@@ -409,6 +415,27 @@ export const todos = query({
     if (!me) return empty;
     const iAmEventOwner =
       !!event.ownerPersonId && String(event.ownerPersonId) === String(me);
+
+    // ── Reporting-chain oversight: do I MANAGE the event's owner? ──
+    // `manageablePersonIds` is the canonical "whose work may I oversee" set:
+    //   null           → chapter admin (oversees everyone), so any owned event;
+    //   Set of ids     → the caller's subtree in the manager tree (self + reports,
+    //                    transitively). We exclude the caller themselves here so
+    //                    an event the caller owns stays in the `iAmEventOwner`
+    //                    lane rather than counting as managing themselves.
+    // When true, the caller oversees the whole event exactly like the event owner
+    // does — at-risk items they don't own surface in the Overseeing group.
+    const roster = await chapterRoster(ctx, chapterId as Id<"chapters">);
+    const manageable = await manageablePersonIds(
+      ctx,
+      chapterId as Id<"chapters">,
+      roster,
+    );
+    const iManageEventOwner =
+      !!event.ownerPersonId &&
+      String(event.ownerPersonId) !== String(me) &&
+      (manageable === null ||
+        manageable.has(event.ownerPersonId as Id<"people">));
 
     // ── Risk: effective due (item.dueDate ?? eventDate) vs today/tomorrow. ──
     const now = Date.now();
@@ -599,7 +626,10 @@ export const todos = query({
               });
             }
           }
-        } else if ((iOwnThisModule || iAmEventOwner) && risk !== null) {
+        } else if (
+          (iOwnThisModule || iAmEventOwner || iManageEventOwner) &&
+          risk !== null
+        ) {
           // Someone ELSE is responsible, but I oversee it — only surface when at
           // risk, labeled with the responsible person.
           overseeing.push({
@@ -656,7 +686,7 @@ export const todos = query({
 
       if (iOwnThisModule) {
         yours.push(action);
-      } else if (iAmEventOwner && risk !== null) {
+      } else if ((iAmEventOwner || iManageEventOwner) && risk !== null) {
         action.owner = await personName(modulePerson.get(m.key));
         overseeing.push(action);
       }
