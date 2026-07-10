@@ -18,15 +18,44 @@ import { action } from "./_generated/server";
 import { internal, api } from "./_generated/api";
 import { Id } from "./_generated/dataModel";
 import { v, ConvexError } from "convex/values";
-import { aiCostUsd, MODULE_KEYS, HOW_TO_SYSTEM_PROMPT } from "@events-os/shared";
+import {
+  aiCostUsd,
+  MODULE_KEYS,
+  MODULE_LABELS,
+  CORE_MODULE_KEYS,
+  HOW_TO_SYSTEM_PROMPT,
+  ASSISTANT_REASONING_EFFORT,
+  FREE_MODEL_FALLBACKS,
+  AI_MODELS,
+  DEFAULT_AI_MODEL,
+  isFreeModelSlug,
+  isOverChatBudget,
+  type AiCatalogModel,
+} from "@events-os/shared";
 
 const OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions";
+const OPENROUTER_MODELS_URL = "https://openrouter.ai/api/v1/models";
 
 /** Max model round-trips in one turn (each may carry several tool calls). */
 const MAX_STEPS = 12;
 
 /** Abort a single OpenRouter completion if it hangs longer than this. */
 const OPENROUTER_TIMEOUT_MS = 60_000;
+
+/**
+ * Token headroom for the assistant. High-reasoning models emit a long thinking
+ * trace BEFORE their tool calls; the old 1500 cap truncated that mid-plan, which
+ * is why the agent looped without ever acting. 4000 leaves room to think AND act.
+ */
+const ASSISTANT_MAX_TOKENS = 4000;
+
+/** Per-model retry attempts on a transient (429 / 5xx / timeout) failure. */
+const RETRY_ATTEMPTS = 3;
+
+/** Sleep helper for retry backoff (node action runtime). */
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
 
 /** The editable fields of one item — shared by update_item and update_items. */
 const ITEM_EDIT_PROPS = {
@@ -217,17 +246,35 @@ function callCost(slug: string, usage: OpenRouterUsage): number {
 }
 
 /**
- * One OpenRouter chat-completions call (raw fetch), reasoning on by default.
+ * A failed OpenRouter completion, tagged with whether it's worth retrying.
+ * `retryable` is true for rate limits (429), upstream 5xx, and timeouts — the
+ * transient failures the resilient wrapper backs off / falls back on. A 4xx like
+ * 400/401/403 is a hard error (bad request / bad key) — retrying won't help.
+ */
+class OpenRouterError extends Error {
+  constructor(
+    message: string,
+    readonly status: number | null,
+    readonly retryable: boolean,
+  ) {
+    super(message);
+    this.name = "OpenRouterError";
+  }
+}
+
+/**
+ * One OpenRouter chat-completions call (raw fetch), HIGH reasoning by default.
  *
  * Tool set is configurable: pass `opts.tools` (an array of tool defs) to enable
  * tool-calling with that exact set. Omit it for a plain completion (no tools).
  * Each agent passes its OWN tool set — the event agent passes `TOOLS`, the doc
- * agent passes `DOC_TOOLS`.
+ * agent passes `DOC_TOOLS`. Throws {@link OpenRouterError} on failure so the
+ * resilient wrapper can tell a transient 429 apart from a hard 400.
  */
 async function openRouterCall(
   slug: string,
   messages: ChatMessage[],
-  opts: { tools?: unknown[]; maxTokens?: number } = {},
+  opts: { tools?: unknown[]; maxTokens?: number; effort?: string } = {},
 ): Promise<{ message: ModelMessage; usage: OpenRouterUsage }> {
   const tools = opts.tools;
   const useTools = Array.isArray(tools) && tools.length > 0;
@@ -250,27 +297,34 @@ async function openRouterCall(
         model: slug,
         messages,
         ...(useTools ? { tools, tool_choice: "auto" } : {}),
-        reasoning: { effort: "low" },
-        max_tokens: opts.maxTokens ?? 1500,
+        reasoning: { effort: opts.effort ?? ASSISTANT_REASONING_EFFORT },
+        max_tokens: opts.maxTokens ?? ASSISTANT_MAX_TOKENS,
+        // Ask the gateway to return the exact billed cost + token details, so
+        // paid-model spend (and per-chat caps) are accounted from real numbers.
+        usage: { include: true },
       }),
     });
   } catch (err) {
     const aborted = err instanceof Error && err.name === "AbortError";
-    throw new ConvexError({
-      code: "OPENROUTER_ERROR",
-      message: aborted
+    // Timeouts are transient → retryable.
+    throw new OpenRouterError(
+      aborted
         ? `OpenRouter call timed out after ${OPENROUTER_TIMEOUT_MS / 1000}s.`
         : "OpenRouter request failed.",
-    });
+      null,
+      true,
+    );
   } finally {
     clearTimeout(timer);
   }
   if (!res.ok) {
     const body = await res.text().catch(() => "");
-    throw new ConvexError({
-      code: "OPENROUTER_ERROR",
-      message: `OpenRouter call failed (${res.status}): ${body.slice(0, 300)}`,
-    });
+    const retryable = res.status === 429 || res.status >= 500;
+    throw new OpenRouterError(
+      `OpenRouter call failed (${res.status}): ${body.slice(0, 300)}`,
+      res.status,
+      retryable,
+    );
   }
   const json: any = await res.json();
   return {
@@ -280,6 +334,143 @@ async function openRouterCall(
     }) as ModelMessage,
     usage: (json?.usage ?? {}) as OpenRouterUsage,
   };
+}
+
+/**
+ * Resilient completion: try the chosen model, and when it's a FREE model that's
+ * transiently failing (429 rate-limit / 5xx / timeout), retry with backoff and
+ * then transparently fall back to the next free model. This is the fix for the
+ * "assistant just dies on a 429" problem — free OpenRouter pools throttle
+ * constantly, so one busy provider must not sink the turn.
+ *
+ * Paid models never fall back (the user chose+paid for that specific one) but
+ * still get a couple of backed-off retries for a blip. A HARD error (bad key,
+ * malformed request) surfaces immediately — retrying it is pointless. Returns
+ * the actual model used, so cost is billed against what really ran.
+ */
+async function resilientCall(
+  slug: string,
+  messages: ChatMessage[],
+  opts: { tools?: unknown[]; maxTokens?: number; effort?: string } = {},
+): Promise<{ message: ModelMessage; usage: OpenRouterUsage; slug: string }> {
+  const candidates = [slug];
+  if (isFreeModelSlug(slug)) {
+    for (const fallback of FREE_MODEL_FALLBACKS) {
+      if (fallback !== slug) candidates.push(fallback);
+    }
+  }
+
+  let lastErr: unknown;
+  for (const model of candidates) {
+    for (let attempt = 0; attempt < RETRY_ATTEMPTS; attempt++) {
+      try {
+        const { message, usage } = await openRouterCall(model, messages, opts);
+        return { message, usage, slug: model };
+      } catch (err) {
+        lastErr = err;
+        const retryable = err instanceof OpenRouterError && err.retryable;
+        if (!retryable) {
+          // Hard error (bad key / bad request) → surface NOW with its detail.
+          // Re-wrap as a ConvexError so the callers' catch (which reads
+          // `err.data.message`) shows the status/body instead of "Agent error."
+          const message =
+            err instanceof Error ? err.message : "OpenRouter request failed.";
+          throw new ConvexError({ code: "OPENROUTER_ERROR", message });
+        }
+        // Backoff before the next attempt on this model (400ms, 800ms, …).
+        if (attempt < RETRY_ATTEMPTS - 1) await sleep(400 * 2 ** attempt);
+      }
+    }
+    // Exhausted retries on `model` → try the next free fallback (if any).
+  }
+  // Every candidate exhausted its retries — surface the last transient failure
+  // as a ConvexError so the panel shows a clean message.
+  const message =
+    lastErr instanceof OpenRouterError
+      ? lastErr.message
+      : "OpenRouter is unavailable right now. Please try again shortly.";
+  throw new ConvexError({ code: "OPENROUTER_ERROR", message });
+}
+
+/**
+ * Map an OpenRouter `/models` catalog entry to the compact `AiCatalogModel` the
+ * picker renders. Returns null for entries that can't tool-call (the agent needs
+ * function calling, so a non-tool model would be useless here).
+ */
+function toCatalogModel(entry: any): AiCatalogModel | null {
+  const slug = typeof entry?.id === "string" ? entry.id : null;
+  if (!slug) return null;
+  const params: string[] = Array.isArray(entry?.supported_parameters)
+    ? entry.supported_parameters
+    : [];
+  const toolCalling = params.includes("tools");
+  if (!toolCalling) return null;
+  const promptPrice = parseFloat(entry?.pricing?.prompt ?? "0") || 0;
+  const completionPrice = parseFloat(entry?.pricing?.completion ?? "0") || 0;
+  const inputPerMTok = promptPrice * 1_000_000;
+  const outputPerMTok = completionPrice * 1_000_000;
+  return {
+    slug,
+    label: typeof entry?.name === "string" ? entry.name : slug,
+    free: isFreeModelSlug(slug, { inputPerMTok, outputPerMTok }),
+    inputPerMTok,
+    outputPerMTok,
+    contextLength:
+      typeof entry?.context_length === "number" ? entry.context_length : null,
+    toolCalling,
+    reasoning: params.includes("reasoning") || !!entry?.reasoning,
+  };
+}
+
+/** Curated fallback catalog (our seed models) when the live fetch fails. */
+function curatedCatalog(): AiCatalogModel[] {
+  return Object.values(AI_MODELS).map((m) => ({
+    slug: m.slug,
+    label: m.label,
+    free: m.free,
+    inputPerMTok: m.inputPerMTok,
+    outputPerMTok: m.outputPerMTok,
+    contextLength: null,
+    toolCalling: true,
+    reasoning: true,
+  }));
+}
+
+/**
+ * Fetch the live OpenRouter model catalog, keeping only tool-calling models,
+ * sorted free-first then by name. Falls back to our curated list on any error,
+ * so the picker always has something to show.
+ */
+async function fetchCatalog(): Promise<AiCatalogModel[]> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 12_000);
+  try {
+    const res = await fetch(OPENROUTER_MODELS_URL, {
+      signal: controller.signal,
+      headers: {
+        ...(process.env.OPENROUTER_API_KEY
+          ? { Authorization: `Bearer ${process.env.OPENROUTER_API_KEY}` }
+          : {}),
+        "HTTP-Referer": "https://events-os.app",
+        "X-OpenRouter-Title": "Events OS",
+      },
+    });
+    if (!res.ok) return curatedCatalog();
+    const json: any = await res.json();
+    const entries: any[] = Array.isArray(json?.data) ? json.data : [];
+    const models = entries
+      .map(toCatalogModel)
+      .filter((m): m is AiCatalogModel => m !== null);
+    if (models.length === 0) return curatedCatalog();
+    return models.sort((a, b) => {
+      if (a.free !== b.free) return a.free ? -1 : 1; // free first
+      return a.label.localeCompare(b.label);
+    });
+  } catch {
+    return curatedCatalog();
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 const SEARCH_UA =
@@ -711,27 +902,62 @@ async function dispatchTool(
   return { ok: false, summary: `Unknown tool "${name}".` };
 }
 
-/** Build the system prompt with a live snapshot of the event the agent edits. */
+/**
+ * Build the system prompt with a live snapshot of the event the agent edits.
+ *
+ * Items are grouped BY MODULE (Supplies, Planning Doc, Comms, …), each section
+ * headed with that module's key + its allowed option values, then its rows. The
+ * old flat, interleaved dump forced the model to mentally de-interleave every
+ * module before it could reason about one — which is exactly what made it burn a
+ * whole turn "parsing" instead of acting. Grouping lets it reason module by
+ * module and see, per section, which items belong there and what values are legal.
+ */
 function systemPrompt(context: Ctx): string {
   const roleList = context.roles.map((r) => r.label).join(", ");
   const peopleList = context.people.map((p) => p.name).join(", ") || "(none)";
-  const vocab = Object.entries(context.optionsByModule)
-    .map(([mod, cols]) =>
-      Object.entries(cols)
-        .map(([col, vals]) => `${mod}.${col}: ${(vals as string[]).join(" | ")}`)
-        .join("\n"),
-    )
-    .join("\n");
-  const items = context.items
-    .map(
-      (it) =>
-        `- [${it.id}] (${it.module}) "${it.title}" status=${it.status ?? "-"} ` +
-        `role=${it.role ?? "-"}` +
-        (it.source ? ` source=${it.source}` : "") +
-        (it.container ? ` packed_in=${it.container}` : "") +
-        (it.cost != null ? ` cost=${it.cost}` : ""),
-    )
-    .join("\n");
+
+  const renderItem = (it: Ctx["items"][number]): string =>
+    `- [${it.id}] "${it.title}" status=${it.status ?? "-"} role=${it.role ?? "-"}` +
+    (it.source ? ` source=${it.source}` : "") +
+    (it.container ? ` packed_in=${it.container}` : "") +
+    (it.offsetDays != null ? ` offset_days=${it.offsetDays}` : "") +
+    (it.cost != null ? ` cost=${it.cost}` : "") +
+    (it.hasPhoto ? " photo=yes" : "");
+
+  // Group items by module, then render modules in the canonical display order
+  // (core modules first, any custom modules after), so the agent reads a stable,
+  // sectioned view instead of an interleaved stream.
+  const byModule = new Map<string, Ctx["items"]>();
+  for (const it of context.items) {
+    (byModule.get(it.module) ?? byModule.set(it.module, []).get(it.module)!).push(
+      it,
+    );
+  }
+  const moduleOrder = [
+    ...CORE_MODULE_KEYS,
+    ...[...byModule.keys()].filter(
+      (k) => !(CORE_MODULE_KEYS as readonly string[]).includes(k),
+    ),
+  ];
+
+  const sections: string[] = [];
+  for (const mod of moduleOrder) {
+    const rows = byModule.get(mod);
+    if (!rows || rows.length === 0) continue;
+    const label = (MODULE_LABELS as Record<string, string>)[mod] ?? mod;
+    const cols = context.optionsByModule[mod];
+    const vocab = cols
+      ? Object.entries(cols)
+          .map(([col, vals]) => `${col}=${(vals as string[]).join("|")}`)
+          .join("  ")
+      : "";
+    sections.push(
+      `## ${label}  (module=${mod}, ${rows.length} item(s))` +
+        (vocab ? `\nallowed values → ${vocab}` : "") +
+        "\n" +
+        rows.map(renderItem).join("\n"),
+    );
+  }
 
   return [
     "You are the Events OS planning assistant for a church event team. You help",
@@ -742,20 +968,28 @@ function systemPrompt(context: Ctx): string {
     `ROLES: ${roleList}.`,
     `PEOPLE: ${peopleList}.`,
     "",
-    "Allowed option VALUES (use these exact values for status/source/container):",
-    vocab || "(none)",
+    "The plan is organized into MODULES. Below, each module is its own section",
+    "with its allowed option values and its current items. To target an item,",
+    "use its [id] with update_item / update_items / set_photo. To add a new item,",
+    "call add_item with the module KEY shown in the section header.",
     "",
-    "CURRENT ITEMS (use the [id] to target update_item / set_photo):",
-    items || "(no items yet)",
+    "CURRENT PLAN, BY MODULE:",
+    sections.length ? sections.join("\n\n") : "(no items yet)",
     "",
-    "Rules: make every requested change with tool calls. CRITICAL FOR SPEED —",
-    "when changing MULTIPLE items, call update_items ONCE with all the edits in",
-    "its array; never call update_item over and over. Reference items by their",
-    "[id]; never invent ids. To find/add photos online, call find_photos with a",
-    "short search query per item (e.g. supply title + a type word) — pass every",
-    "item in one call. Once your edits are done, reply with a SHORT summary of",
-    "what changed. If the request is just a question, answer it without calling",
-    "tools. Be concise.",
+    "Rules:",
+    "- Reason module by module. When a request implies items in one module should",
+    "  exist or change in another (e.g. a planning task that needs a supplies row),",
+    "  ADD or UPDATE those rows so each module is fully built out.",
+    "- Make every requested change with tool calls. CRITICAL FOR SPEED: when",
+    "  changing MULTIPLE items, call update_items ONCE with all edits in its array;",
+    "  never call update_item over and over.",
+    "- Use the EXACT allowed values shown per module for status/source/container,",
+    "  and the role labels / people names listed above. Reference items by [id];",
+    "  never invent ids.",
+    "- To find/add photos online, call find_photos with a short search query per",
+    "  item — pass every item in one call.",
+    "- When done, reply with a SHORT summary of what changed. If the request is",
+    "  just a question, answer it without calling tools. Be concise.",
   ].join("\n");
 }
 
@@ -820,8 +1054,24 @@ export const runAssistant = action({
       return { ok: false };
     }
 
-    const cfg = await ctx.runQuery(api.ai.aiConfig, {});
-    const slug = cfg.activeModel;
+    // Per-chat model + spend cap. The chat runs on its own model (any free model
+    // for anyone; a paid model a superuser set) or the deployment default, and a
+    // superuser can cap this chat's total spend. Refuse a chat already at its cap.
+    const chat = await ctx.runQuery(internal.ai.threadRunContext, {
+      threadId,
+      chapterId,
+    });
+    if (chat && isOverChatBudget(chat.spentUsd, chat.spendLimitUsd)) {
+      await ctx.runMutation(internal.ai.appendMessage, {
+        threadId,
+        kind: "error",
+        text: `This chat's spend limit ($${chat.spendLimitUsd?.toFixed(2)}) is reached.`,
+      });
+      return { ok: false };
+    }
+    const slug = chat?.model ?? DEFAULT_AI_MODEL;
+    const spendLimitUsd = chat?.spendLimitUsd ?? null;
+    let chatSpent = chat?.spentUsd ?? 0;
 
     // Conversation context = system (live snapshot) + prior user/assistant turns.
     const history = await ctx.runQuery(api.ai.listMessages, { threadId });
@@ -841,6 +1091,7 @@ export const runAssistant = action({
       userId,
       feature: "assistant",
       eventId,
+      threadId,
       model: slug,
     });
 
@@ -850,18 +1101,22 @@ export const runAssistant = action({
 
     try {
       for (let step = 0; step < MAX_STEPS; step++) {
-        const { message, usage } = await openRouterCall(slug, messages, {
-          tools: TOOLS,
-        });
+        const {
+          message,
+          usage,
+          slug: usedSlug,
+        } = await resilientCall(slug, messages, { tools: TOOLS });
 
-        const cost = callCost(slug, usage);
+        const cost = callCost(usedSlug, usage);
         totalCost += cost;
+        chatSpent += cost;
         await ctx.runMutation(internal.ai.logUsage, {
           chapterId,
           userId,
           runId,
+          threadId,
           feature: "assistant",
-          model: slug,
+          model: usedSlug,
           inputTokens: usage.prompt_tokens ?? 0,
           outputTokens: usage.completion_tokens ?? 0,
           cachedTokens: usage.prompt_tokens_details?.cached_tokens,
@@ -950,6 +1205,19 @@ export const runAssistant = action({
             tool_call_id: tc.id,
             content: JSON.stringify(result),
           });
+        }
+
+        // Per-chat spend cap: if this chat has now spent its budget, stop before
+        // spending on another round. (Only bites once a paid model is in play.)
+        if (isOverChatBudget(chatSpent, spendLimitUsd)) {
+          await ctx.runMutation(internal.ai.appendMessage, {
+            threadId,
+            runId,
+            kind: "assistant",
+            text: `Made ${edits} edit(s), then stopped — this chat hit its spend limit ($${spendLimitUsd?.toFixed(2)}).`,
+          });
+          finished = true;
+          break;
         }
       }
 
@@ -1084,7 +1352,9 @@ export const autofillItem = action({
             },
             { role: "user", content: info.title },
           ],
-          { maxTokens: 16 },
+          // A one-shot price guess — low effort keeps this cheap and fast
+          // (the assistant chat is where high reasoning matters, not here).
+          { maxTokens: 16, effort: "low" },
         );
         cost += callCost(slug, usage);
         const n = parseFloat(String(message.content ?? "").replace(/[^0-9.]/g, ""));
@@ -1153,6 +1423,14 @@ function docHistoryTurns(
 
 /** Max model round-trips in one doc-assistant turn (research + write). */
 const DOC_MAX_STEPS = 6;
+
+/**
+ * Token headroom for the doc writer. `write_doc` replaces the ENTIRE guide, so
+ * its argument can be a long markdown body — and now that the writer runs HIGH
+ * reasoning, the thinking trace shares this budget with that body. Generous so a
+ * full-guide rewrite isn't truncated mid-document.
+ */
+const DOC_MAX_TOKENS = 6000;
 
 /** The tools the doc assistant can call — research, then write the markdown. */
 const DOC_TOOLS = [
@@ -1311,8 +1589,22 @@ export const runDocAssistant = action({
       return { ok: false };
     }
 
-    const cfg = await ctx.runQuery(api.ai.aiConfig, {});
-    const slug = cfg.activeModel;
+    // Per-chat model + spend cap (same as the event assistant): this doc chat
+    // runs on its own model or the deployment default, and a superuser cap stops
+    // it once spent.
+    const chat = await ctx.runQuery(internal.ai.threadRunContext, {
+      threadId,
+      chapterId,
+    });
+    if (chat && isOverChatBudget(chat.spentUsd, chat.spendLimitUsd)) {
+      await ctx.runMutation(internal.ai.appendMessage, {
+        threadId,
+        kind: "error",
+        text: `This chat's spend limit ($${chat.spendLimitUsd?.toFixed(2)}) is reached.`,
+      });
+      return { ok: false };
+    }
+    const slug = chat?.model ?? DEFAULT_AI_MODEL;
 
     const history = await ctx.runQuery(api.ai.listMessages, { threadId });
     const priorTurns = docHistoryTurns(history);
@@ -1349,6 +1641,7 @@ export const runDocAssistant = action({
       chapterId,
       userId,
       feature: "doc_assistant",
+      threadId,
       model: slug,
     });
 
@@ -1358,19 +1651,24 @@ export const runDocAssistant = action({
 
     try {
       for (let step = 0; step < DOC_MAX_STEPS; step++) {
-        const { message, usage } = await openRouterCall(slug, messages, {
+        const {
+          message,
+          usage,
+          slug: usedSlug,
+        } = await resilientCall(slug, messages, {
           tools: DOC_TOOLS,
-          maxTokens: 2500,
+          maxTokens: DOC_MAX_TOKENS,
         });
 
-        const cost = callCost(slug, usage);
+        const cost = callCost(usedSlug, usage);
         totalCost += cost;
         await ctx.runMutation(internal.ai.logUsage, {
           chapterId,
           userId,
           runId,
+          threadId,
           feature: "doc_assistant",
-          model: slug,
+          model: usedSlug,
           inputTokens: usage.prompt_tokens ?? 0,
           outputTokens: usage.completion_tokens ?? 0,
           cachedTokens: usage.prompt_tokens_details?.cached_tokens,
@@ -1527,5 +1825,118 @@ export const runDocAssistant = action({
       });
       return { ok: false };
     }
+  },
+});
+
+// ── Model catalog + per-chat model selection ─────────────────────────────────
+/**
+ * The live OpenRouter model catalog for the chat's model picker: every
+ * tool-calling model, free-first. `isSuperuser` rides along so the client can
+ * hide paid models (and the spend-limit editor) from non-superusers — but the
+ * real gate is server-side in `setThreadModel`, this flag is only cosmetic.
+ *
+ * Actions aren't reactive, so the panel calls this once when its settings open.
+ * Falls back to the curated list if OpenRouter is unreachable.
+ */
+export const listModels = action({
+  args: {},
+  handler: async (
+    ctx,
+  ): Promise<{ models: AiCatalogModel[]; isSuperuser: boolean }> => {
+    const cfg = await ctx.runQuery(api.ai.aiConfig, {});
+    const models = await fetchCatalog();
+    return { models, isSuperuser: cfg.isSuperuser };
+  },
+});
+
+/**
+ * Point a chat at a specific model (or clear the override with `slug: null` →
+ * back to the deployment default). ANY free model is allowed for anyone; a PAID
+ * model is superuser-only — the guardrail for real spend. We resolve free-vs-paid
+ * from the live catalog (not the client's claim), and require the model to
+ * actually support tool-calling, since the agent is useless without it.
+ */
+export const setThreadModel = action({
+  args: {
+    threadId: v.id("aiThreads"),
+    slug: v.union(v.string(), v.null()),
+  },
+  handler: async (ctx, { threadId, slug }): Promise<{ ok: boolean }> => {
+    const { chapterId } = await ctx.runQuery(internal.ai.myContext, {});
+
+    // Clearing the override is always allowed (reverts to the free default).
+    if (slug === null) {
+      await ctx.runMutation(internal.ai.persistThreadModel, {
+        threadId,
+        chapterId,
+        model: null,
+      });
+      return { ok: true };
+    }
+
+    // Resolve the model's free/paid status + tool-calling support from the live
+    // catalog, falling back to our curated table for a known slug.
+    const catalog = await fetchCatalog();
+    const found =
+      catalog.find((m) => m.slug === slug) ??
+      (AI_MODELS[slug]
+        ? {
+            slug,
+            label: AI_MODELS[slug].label,
+            free: AI_MODELS[slug].free,
+            inputPerMTok: AI_MODELS[slug].inputPerMTok,
+            outputPerMTok: AI_MODELS[slug].outputPerMTok,
+            contextLength: null,
+            toolCalling: true,
+            reasoning: true,
+          }
+        : null);
+
+    if (!found) {
+      // A `:free` slug is open to everyone and needs no paid-gate. If the live
+      // catalog fetch degraded (curated fallback of a few models), don't block a
+      // legitimately-free model the picker already showed — persist it as-is. A
+      // truly bad slug just fails later with a clear per-turn error.
+      if (isFreeModelSlug(slug)) {
+        await ctx.runMutation(internal.ai.persistThreadModel, {
+          threadId,
+          chapterId,
+          model: slug,
+        });
+        return { ok: true };
+      }
+      throw new ConvexError({
+        code: "BAD_MODEL",
+        message: "That model isn't available on OpenRouter.",
+      });
+    }
+    if (!found.toolCalling) {
+      throw new ConvexError({
+        code: "NO_TOOL_CALLING",
+        message: `${found.label} can't call tools, so the assistant can't use it.`,
+      });
+    }
+
+    // PAID model → superuser only.
+    const free = isFreeModelSlug(found.slug, {
+      inputPerMTok: found.inputPerMTok,
+      outputPerMTok: found.outputPerMTok,
+    });
+    if (!free) {
+      const cfg = await ctx.runQuery(api.ai.aiConfig, {});
+      if (!cfg.isSuperuser) {
+        throw new ConvexError({
+          code: "FORBIDDEN",
+          message: "Only super admins can use paid models.",
+        });
+      }
+    }
+
+    await ctx.runMutation(internal.ai.persistThreadModel, {
+      threadId,
+      chapterId,
+      model: found.slug,
+    });
+    return { ok: true };
   },
 });

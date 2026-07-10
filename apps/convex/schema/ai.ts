@@ -11,6 +11,9 @@ export const aiRuns = defineTable({
   userId: v.id("users"),
   feature: v.string(),
   eventId: v.optional(v.id("events")),
+  // The chat this run belongs to (assistant runs). Lets us total a single
+  // chat's spend for its per-chat cap. Optional: autofill runs have no thread.
+  threadId: v.optional(v.id("aiThreads")),
   model: v.string(),
   status: v.union(
     v.literal("running"),
@@ -60,6 +63,14 @@ export const aiThreads = defineTable({
   docId: v.optional(v.id("docs")),
   userId: v.id("users"),
   title: v.string(),
+  // Per-chat AI overrides (all optional; unset → deployment default).
+  //   model         — the OpenRouter slug THIS chat runs on (any free model for
+  //                   anyone; a paid slug only a superuser can set).
+  //   spendLimitUsd — a hard lifetime USD cap on this chat's spend; once total
+  //                   spend reaches it the chat stops accepting messages. The
+  //                   guardrail for a chat pointed at a paid model.
+  model: v.optional(v.string()),
+  spendLimitUsd: v.optional(v.number()),
   createdAt: v.number(),
   updatedAt: v.number(),
 })
@@ -102,6 +113,9 @@ export const aiUsage = defineTable({
   chapterId: v.id("chapters"),
   userId: v.id("users"),
   runId: v.optional(v.id("aiRuns")),
+  // The chat this call was billed to (assistant calls) — indexed so a single
+  // chat's lifetime spend totals cheaply for its per-chat cap.
+  threadId: v.optional(v.id("aiThreads")),
   feature: v.string(),
   model: v.string(),
   inputTokens: v.number(),
@@ -111,7 +125,8 @@ export const aiUsage = defineTable({
   createdAt: v.number(),
 })
   .index("by_chapter_time", ["chapterId", "createdAt"])
-  .index("by_user_time", ["userId", "createdAt"]);
+  .index("by_user_time", ["userId", "createdAt"])
+  .index("by_thread", ["threadId"]);
 
 /**
  * AI settings — a single-row (singleton) table holding the deployment-wide
