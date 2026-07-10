@@ -13,6 +13,11 @@ import { Id } from "./_generated/dataModel";
 import { v, ConvexError } from "convex/values";
 import { requireChapterId, requireUserId, requireInChapter } from "./lib/context";
 import { requireManagerOrAdmin } from "./lib/org";
+import {
+  makeShareId,
+  seedPlatformGuidesForChapter,
+  type SeedGuidesResult,
+} from "./lib/platformGuides";
 
 /** The doc kinds — mirrors the `docs` table union. */
 const docKind = v.union(
@@ -24,16 +29,6 @@ const docKind = v.union(
 
 /** Public/internal visibility — mirrors the `docs` table union. */
 const docVisibility = v.union(v.literal("public"), v.literal("internal"));
-
-/**
- * A short, unguessable public slug. `Math.random` is fine inside Convex
- * functions (it's seeded per-call, not the insecure script-side singleton), and
- * the slug is a capability, not a secret derived from anything sensitive.
- */
-function makeShareId(): string {
-  const rand = () => Math.random().toString(36).slice(2);
-  return (rand() + rand()).slice(0, 16);
-}
 
 /** The caller's linked roster person (for `createdBy`); falls back to any chapter person. */
 async function requireCallerPerson(
@@ -303,6 +298,63 @@ export const setBody = internalMutation({
       });
     }
     await ctx.db.patch(docId, { body, updatedAt: Date.now() });
+  },
+});
+
+/**
+ * Seed/refresh the platform enablement guides (docs/guides/*.md, compiled into
+ * `lib/guides.ts`) as markdown docs, keyed per chapter by `slug`.
+ *
+ * Upsert semantics per guide: create if missing; overwrite if the chapter
+ * hasn't edited it since the last seed (body hash matches `seedHash`); leave
+ * alone if they have (fork semantics — their copy stops tracking the platform).
+ *
+ * Runs for ONE chapter when `chapterId` is passed, else ALL chapters — the
+ * backfill entry point for pre-existing chapters, invoked from the dashboard/
+ * CLI exactly like the other seed backfills:
+ *
+ *   npx convex run docs:seedPlatformGuides
+ *
+ * New chapters get the guides automatically via the seed.ts entry points
+ * (`seedDemoData` / `reseedNyDemo`), which call the same helper.
+ *
+ * SECURITY: `internalMutation` — bulk-writes docs, not called from the UI.
+ */
+export const seedPlatformGuides = internalMutation({
+  args: { chapterId: v.optional(v.id("chapters")) },
+  handler: async (ctx, args) => {
+    const chapters = args.chapterId
+      ? [await ctx.db.get(args.chapterId)]
+      : await ctx.db.query("chapters").collect();
+
+    const results: Array<SeedGuidesResult & { chapter: string }> = [];
+    for (const chapter of chapters) {
+      if (!chapter) continue;
+      const res = await seedPlatformGuidesForChapter(ctx, chapter._id);
+      results.push({ chapter: chapter.name, ...res });
+    }
+    return results;
+  },
+});
+
+/**
+ * Look up a platform guide doc by its stable slug (authed, chapter-scoped) —
+ * powers the "How this works" links on workstream section headers. Returns
+ * just what the link needs (the doc id to navigate to + the title), or null
+ * when the chapter has no doc for that slug (the affordance hides).
+ */
+export const getGuideBySlug = query({
+  args: { slug: v.string() },
+  handler: async (ctx, { slug }) => {
+    const chapterId = await requireChapterId(ctx);
+    const doc = await ctx.db
+      .query("docs")
+      .withIndex("by_chapter_and_slug", (q) =>
+        q.eq("chapterId", chapterId as Id<"chapters">).eq("slug", slug),
+      )
+      .unique();
+    if (!doc) return null;
+    return { _id: doc._id, title: doc.title };
   },
 });
 

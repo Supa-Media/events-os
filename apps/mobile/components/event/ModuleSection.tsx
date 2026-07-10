@@ -16,6 +16,7 @@ import {
 } from "./moduleCalendar/config";
 import { SiteMapEditor } from "./SiteMapEditor";
 import { type ModuleOwnerInfo } from "./EventModuleRollup";
+import { GuideLink } from "./GuideLink";
 
 /**
  * One active module's section on the event screen. Renders the owner bar + a
@@ -58,7 +59,13 @@ export function ModuleSection({
     <View>
       <SectionHeader
         title={module.label}
-        titleAccessory={<OwnerPill owner={owner} onPress={onAssignOwner} />}
+        titleAccessory={
+          <View className="flex-row items-center gap-1">
+            <OwnerPill owner={owner} onPress={onAssignOwner} />
+            {/* Quiet "How this works" link to this workstream's guide. */}
+            <GuideLink moduleKey={module.key} />
+          </View>
+        }
         right={
           <View className="flex-row items-center gap-2">
             {hasCalendar ? (

@@ -30,6 +30,15 @@ export const docs = defineTable({
   body: v.optional(v.string()),
   // Short public slug for the unauthenticated share route.
   shareId: v.string(),
+  // Stable per-chapter key for PLATFORM-SEEDED guide docs (the filename of the
+  // source guide under docs/guides/, e.g. "so-you-own-a-workstream"). The
+  // seeder upserts by (chapterId, slug); user-created docs leave it unset.
+  slug: v.optional(v.string()),
+  // SHA-256 (hex) of the body as of the last platform seed. Lets the seeder
+  // tell "unedited since seed" (hash of current body matches → safe to update
+  // with new platform content) from "chapter edited it" (differs → fork
+  // semantics, leave the chapter's copy alone).
+  seedHash: v.optional(v.string()),
   // Public/internal visibility. Undefined (or "public") → readable at the no-auth
   // `/d/<shareId>` route; "internal" → `getPublic` returns null. Optional so all
   // existing docs default to PUBLIC.
@@ -52,4 +61,5 @@ export const docs = defineTable({
   updatedAt: v.number(),
 })
   .index("by_chapter", ["chapterId"])
-  .index("by_share", ["shareId"]);
+  .index("by_share", ["shareId"])
+  .index("by_chapter_and_slug", ["chapterId", "slug"]);
