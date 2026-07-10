@@ -255,6 +255,15 @@ mechanism.
 - **Enables later (not now):** the reverse direction — pulling template
   updates into an already-running event — uses the same provenance link.
 
+## 4.4 Rename: "modules" → "workstreams" (DECIDED)
+
+Human-facing term is **workstream** everywhere — UI labels, agent
+conversation, the playbook. Internal schema/tool keys stay `module` per the
+key-stability rule (label-only rename: `MODULE_LABELS`-adjacent UI strings,
+template editor group headings, event tab bar copy, AI prompt vocabulary).
+docs/agent.md Part I now defines the concept, its shared anatomy, and the
+expectations of event owners and workstream owners.
+
 ## 5. Open questions to decide together
 
 - **Q1 — Agent scope.** Keep it event-scoped, or add a chapter-level surface

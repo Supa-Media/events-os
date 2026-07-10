@@ -19,7 +19,143 @@ say.
 
 ---
 
-## Part I — Core philosophies
+## Part I — Core concepts: the words we use
+
+Get these five ideas and everything else in the app makes sense.
+
+### The template and the event
+
+A **template** is the reusable blueprint for a kind of event (e.g. "Worship
+With Strangers", "Eden"): its roles, its workstreams, and its standard tasks
+with T-offsets. An **event** is one dated instance of a template. Creating an
+event copies the template's whole structure, back-calculates every due date
+from the event date, and from then on the event is yours to edit freely.
+Templates hold what's *always* true; events hold what's true *this time*.
+
+### Workstreams
+
+A **workstream** is one owned area of the event plan — one stream of work that
+a single role carries end-to-end. The event plan is nothing more than its
+workstreams. The core eight:
+
+| Workstream | What it holds | Default owner |
+|---|---|---|
+| **Planning Doc** | The master task list — every to-do with owner, offset, status | Event Lead |
+| **Comms Schedule** | Every message: audience, channel, copy, T-offset | Comms Lead |
+| **Run of Show** | The minute-by-minute day-of program with call times | Production Lead |
+| **Expectations** | Volunteer teams, headcounts, per-team duties, dress code | Comms Lead |
+| **Site Map** | The venue layout: stage, stations, flow of arrival | Logistics Lead |
+| **Supplies & Packing** | Every physical item: source, location, qty, packed state | Logistics Lead |
+| **Permits** | Each permit: jurisdiction, lead time, status, documents | Event Lead |
+| **Retrospective** | What went well / broke / was missing / was excess | Event Lead |
+
+Chapters can add **custom workstreams** (a merch stand, a food operation) to a
+template or a single event; they behave exactly like the core ones.
+
+> Naming note: the codebase calls workstreams `modules` (and that key is
+> stable in the schema and tool APIs). In everything human-facing — UI labels,
+> agent conversation, this playbook — the word is **workstream**.
+
+### The shared anatomy of a workstream
+
+Every workstream, core or custom, is built from the same parts. Learn them
+once, use them everywhere:
+
+1. **An owner role.** Each workstream names the role accountable for it; the
+   person holding that role owns the stream (see expectations below).
+2. **Rows.** The unit of work or inventory: a task, a message, a segment, a
+   supply item, a permit, a retro entry. Every row has a title, a status, and
+   an accountable human (directly or via role).
+3. **Columns.** Each workstream's rows have fields configured per template —
+   statuses, selects, dates, people, costs, quantities. Templates decide the
+   columns; events inherit and can adjust.
+4. **A timing mode.** One of three: **T-day offsets** (Planning, Comms,
+   Permits — rows carry T-14-style offsets that become real due dates),
+   **minute offsets** (Run of Show — minutes from event start), or **undated
+   with a convention deadline** (Supplies terminal by T-1, Expectations set
+   before recruiting, Retro by T+7).
+5. **A status vocabulary with terminal states.** Every row's status either is
+   or isn't "done-equivalent" (Done, Packed, Approved, Sent…). Readiness math
+   runs on this.
+6. **Pre-plan sign-offs.** Templates can mark specific cells as requiring
+   explicit check-off during pre-planning (e.g. confirming a quantity).
+7. **A ready flag.** The workstream owner marks the stream ready when its
+   criteria are met (Philosophy 9) — this is a claim the owner is putting
+   their name on.
+8. **How-to links.** Any cell can link a how-to doc/video so the knowledge
+   survives the person (north star).
+9. **A surface.** Most workstreams are editable tables; Site Map is a drawing
+   surface. Same ownership, timing, and readiness rules regardless.
+
+### The cast: who's who
+
+- **The event owner** — the one person accountable for the event existing,
+  happening, and closing out. Every event has exactly one, from creation.
+  Usually the Event Lead, not necessarily.
+- **Roles / leads** — the named hats (Event Lead, Comms Lead, Production
+  Lead, Logistics Lead, Worship Lead…). Templates assign work to roles;
+  events put one person in each role.
+- **Workstream owners** — the person holding a workstream's owner role.
+- **Row owners** — a specific row can be assigned to a specific person,
+  overriding the role chain.
+- **Crew** — volunteers and paid vendors engaged for this event, organized
+  into teams (Welcome, Prayer, Content…) with invited → confirmed → declined
+  status and call times. Crew *execute on the day*; leads *own streams*.
+- **The roster** — the chapter's people directory that all of the above draw
+  from.
+
+Accountability for any row resolves down this chain: row owner → row's role →
+that role's person → the workstream owner → **the event owner**. If the chain
+dead-ends, the row is *unowned*, and unowned work silently fails.
+
+### What's expected of the event owner
+
+The event owner is the answer to "who do I ask?" for anything without a
+clearer owner. Concretely, they:
+
+1. **Own the calendar** — confirm the date and rain plan, run the feasibility
+   check, and own any reschedule (a date change is a plan change).
+2. **Fill the roles** — every role has a person and every placeholder is
+   resolved by T-10. Delegation is the job: if more than ~40% of rows resolve
+   to the event owner, they're failing at it.
+3. **Run the rhythm** — kickoff meeting, the leads' run-of-show meeting, the
+   day-of huddle, and the T+2 debrief. The owner runs these or explicitly
+   hands them off.
+4. **Hold the budget** — set it at kickoff, watch the rollup, reconcile
+   actuals in the debrief window.
+5. **Make the readiness call** — they declare the event Ready when the gates
+   are met, and they own any conscious override, out loud.
+6. **Catch what falls** — they are the end of the accountability chain and
+   the escalation contact for every lead.
+7. **Close the loop** — the event isn't done until the retro is captured,
+   learnings are dispatched to the template, vendors are paid, and thank-yous
+   are sent. The owner is accountable for "done means done."
+
+### What's expected of a workstream owner
+
+Owning a workstream means owning its **completeness**, not doing every row:
+
+1. **The stream tells the truth.** Rows exist for everything that must
+   happen, statuses reflect reality, and nothing in the stream is unowned.
+2. **Work to the deadlines.** Offset rows by their due dates; undated streams
+   by their conventions (supplies packed by T-1, run of show locked by T-3,
+   retro dispatched by T+7).
+3. **Flag cross-stream needs.** A planning task that implies a supply, a
+   permit that gates a comms post — the owner who spots it makes sure the
+   other stream's row exists.
+4. **Escalate early.** Blocked at T-9 is a conversation; blocked at T-2 is a
+   crisis. Raise blockers to the event owner the day they appear.
+5. **Mark it ready honestly** — criteria met, or the exceptions named when
+   overriding.
+6. **Bring the learnings** — their stream's retro entries, including actual
+   costs and quantities, and their view on what belongs in the template.
+
+---
+
+## Part II — Core philosophies
+
+These are drawn from what real events taught us, generalized into rules the
+agent (and the UI) should embody.
 
 ### 1. The template is the institutional memory
 
@@ -50,7 +186,7 @@ A task without timing is a wish.
 - **Every task gets an offset**, even a rough one. Offsets encode sequencing
   knowledge: venue at T-30, permits at T-21, announce at T-14, volunteers
   locked by T-10, supplies resolved by T-1, retro by T+7.
-- **Modules without per-item offsets still have deadlines by convention:**
+- **Workstreams without per-row offsets still have deadlines by convention:**
   - Supplies: every item at a terminal state (*Packed* / *Have it*) by **T-1**.
     Not "pull from storage." Packed.
   - Run of show: segment times, owners, and call times locked by **T-3** —
@@ -70,10 +206,9 @@ Logistics Lead, Worship Lead...); events map roles to **people**. This is
 deliberate: it keeps templates portable across cities and keeps
 accountability legible when people swap.
 
-- **Every item resolves to exactly one accountable human** through the chain:
-  item owner → item's role → role's assigned person → module owner's role →
-  event owner. If that chain dead-ends, the item is *unowned* and unowned
-  work silently fails. Zero unowned items by T-10.
+- **Every row resolves to exactly one accountable human** through the
+  accountability chain (Part I). If the chain dead-ends, the row is *unowned*
+  and unowned work silently fails. Zero unowned rows by T-10.
 - **One person per role per event.** Shared ownership is how "I thought you
   had it" happens. Helpers are crew; accountability is singular.
 - **Placeholders are debts.** A template can seed placeholder crew ("Flower
@@ -219,10 +354,10 @@ or overloaded.
 A status is a claim about reality; the plan should be able to defend the
 claim.
 
-- **Module readiness has criteria:** all items at terminal status, owner
-  assigned, pre-plan cells checked. Marking a module ready overrides these
-  only consciously ("ready, with 2 open items acknowledged").
-- **Event readiness is the conjunction:** all modules ready + all roles
+- **Workstream readiness has criteria:** all rows at terminal status, owner
+  assigned, pre-plan cells checked. Marking a workstream ready overrides
+  these only consciously ("ready, with 2 open items acknowledged").
+- **Event readiness is the conjunction:** all workstreams ready + all roles
   assigned + no placeholders + permits resolved (approved or consciously
   waived) + contingencies written. That's what "Ready" means; anything less
   is "Planning."
@@ -238,8 +373,8 @@ claim.
 
 - **Set the budget at kickoff** ($300 lightweight / ~$1000 full-scale are the
   proven anchors) and allocate to line items before spending starts.
-- **Track cost on items** as they're actually incurred; the budget rollup
-  (items + vendor commitments) should be glanceable at any T-window, not
+- **Track cost on rows** as they're actually incurred; the budget rollup
+  (rows + vendor commitments) should be glanceable at any T-window, not
   reconstructed afterward.
 - **Real learnings compound here too:** florists beat Costco for bulk flowers;
   8 pizzas fed the Eden crowd; "too much food" was a retro item. Actual costs
@@ -250,18 +385,19 @@ claim.
 How the agent conducts itself (humans: this is what you can expect from it):
 
 - **Situational awareness first.** Every working session starts by reading the
-  event's T-window, phase scores, overdue/unowned items, unassigned roles, and
+  event's T-window, phase scores, overdue/unowned rows, unassigned roles, and
   unresolved placeholders — then leads with the one or two things that matter
   most *now*. Not a firehose; a briefing.
 - **Propose, then apply.** Describe the batch of changes, apply it in one
-  revertible run, summarize what actually changed. Batch edits over item-by-
-  item dribbles.
-- **Free hand vs. confirmation.** Freely: editing items, statuses, offsets,
+  revertible run, summarize what actually changed. Batch edits over row-by-
+  row dribbles.
+- **Free hand vs. confirmation.** Freely: editing rows, statuses, offsets,
   owners, and role assignments (all revertible). Ask first: deleting anything,
-  marking modules/event ready, changing the event date or status, and
-  anything volunteer- or public-facing (messages, blasts, share pages).
-- **Exact values, real ids.** Use each module's exact option vocabulary and
-  reference items by id; never invent either.
+  marking workstreams/event ready, changing the event date or status,
+  promoting changes to the template, and anything volunteer- or public-facing
+  (messages, blasts, share pages).
+- **Exact values, real ids.** Use each workstream's exact option vocabulary
+  and reference rows by id; never invent either.
 - **Nudge like a great producer, not a nag.** Tie every nudge to the T-window
   and the playbook ("We're at T-9 and 3 volunteer roles are unfilled — the
   lock point is T-10. Want me to draft the ask for the group chat?"). One
@@ -274,7 +410,7 @@ How the agent conducts itself (humans: this is what you can expect from it):
 
 ---
 
-## Part II — The lifecycle: five windows
+## Part III — The lifecycle: five windows
 
 What "good" looks like at each stage, what the agent checks, and the failure
 modes we've actually hit.
@@ -337,7 +473,7 @@ still unreviewed at T-10; song bank unsent at T-7.
 
 **Agent watches for:** anyone still "invited" at T-3; supplies not packed at
 T-1; run-of-show TBDs after T-3 (setlist "[TBD]" at T-2 is a red flag we've
-seen); scope creep — new non-critical items entering the plan inside T-7
+seen); scope creep — new non-critical rows entering the plan inside T-7
 (default answer: next event's template).
 
 ### Window 4 — Day-of (T-0)
@@ -364,7 +500,7 @@ triage.
 
 - T+1: thank-you/recap to attendees
 - T+3: feedback request out (attendees + volunteers); reconcile budget
-  (actuals on items, vendors invoiced → paid)
+  (actuals on rows, vendors invoiced → paid)
 - By T+7: retro session held while memories are fresh. Structure it:
   *what went well / what broke / what was missing / what was excess* —
   Eden's retro had all four (worship placement worked; sound underpowered;
@@ -381,19 +517,20 @@ agent should be genuinely pushy about.
 
 ---
 
-## Part III — Module playbooks
+## Part IV — Workstream playbooks
 
-**Planning Doc** — the master task list; the only module that sees everything.
-Every task: owner, offset, status, and details rich enough for a stranger.
-Link out to the module or doc that holds the substance rather than duplicating
-it. Gate tasks (venue, permits, announce, recruit) get extra scrutiny.
+**Planning Doc** — the master task list; the only workstream that sees
+everything. Every task: owner, offset, status, and details rich enough for a
+stranger. Link out to the workstream or doc that holds the substance rather
+than duplicating it. Gate tasks (venue, permits, announce, recruit) get extra
+scrutiny.
 
 **Comms Schedule** — the cadence table in philosophy 6 is the default; adapt,
 don't skip. Each row: audience + channel + owner + offset + the actual copy
 (or a link to it) in notes. Removed messages get status *Removed*, not
 deleted — the decision is a learning too.
 
-**Permits** — start applications at kickoff; track each permit as its own item
+**Permits** — start applications at kickoff; track each permit as its own row
 with jurisdiction contact, lead time, cost, and the document attached when
 granted. Sound permits: local precinct, ~3 days out, permit holder attends.
 Food: COI required — know your insurance contact before you need one. Every
@@ -413,8 +550,8 @@ huddle, and strike as real segments — they're where day-of actually goes
 wrong. Program assets (setlist, playback tracks, spoken points/script) each
 have an owner and must not be TBD after lock.
 
-**Volunteer Expectations** — teams with target headcounts, per-team goals and
-task lists ("you'll set up… you'll do…"), dress code, what to bring, arrival
+**Expectations** — teams with target headcounts, per-team goals and task
+lists ("you'll set up… you'll do…"), dress code, what to bring, arrival
 time, volunteer lead contact, safety escalation. Written before recruitment;
 shared via the public briefing page; kept true as teams shift.
 
@@ -436,7 +573,7 @@ written.
 
 ---
 
-## Part IV — Quick reference
+## Part V — Quick reference
 
 **T-notation:** T-N = N days before the event; T+N = N days after. T-0 = event
 day. Run-of-show offsets are minutes from event start.
@@ -448,8 +585,8 @@ Day-of (T-0) · Debrief (T+1→T+7).
 volunteers locked T-10 · song bank T-7 · run of show + setlist locked T-3 ·
 supplies packed + batteries charged T-1 · retro dispatched T+7.
 
-**The accountability chain:** item owner → item role → role's person → module
-owner's role → event owner. Unowned = broken chain = fix it.
+**The accountability chain:** row owner → row's role → role's person →
+workstream owner → event owner. Unowned = broken chain = fix it.
 
 **Done means:** happened + retro captured + learnings dispatched + vendors
 paid + thank-yous sent + template improved.
