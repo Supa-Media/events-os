@@ -519,6 +519,9 @@ export async function instantiateEvent(
     const newItemId = (await ctx.db.insert("eventItems", {
       eventId,
       chapterId: opts.chapterId,
+      // Provenance link back to the template row this clone came from, so the
+      // event can later be diffed/promoted against its template exactly.
+      sourceTemplateItemId: it._id,
       module: it.module,
       title: it.title,
       order: it.order,

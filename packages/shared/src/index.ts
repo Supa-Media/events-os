@@ -406,6 +406,16 @@ export const RETRO_STATUS_OPTIONS: SelectOption[] = [
   { value: "actioned", label: "Actioned", color: "green", isComplete: true },
 ];
 
+/**
+ * Where a retro row ended up in the debrief loop: promoted into the template,
+ * kept as context for future events, or consciously dropped.
+ */
+export const RETRO_DISPATCH_OPTIONS: SelectOption[] = [
+  { value: "promoted", label: "Promoted", color: "green" },
+  { value: "context", label: "Context", color: "blue" },
+  { value: "dropped", label: "Dropped", color: "gray" },
+];
+
 export const VOLUNTEER_TEAM_OPTIONS: SelectOption[] = [
   { value: "flower", label: "Flower", color: "pink" },
   { value: "food_bev", label: "Food & Bev", color: "amber" },
@@ -496,6 +506,7 @@ export const DEFAULT_COLUMNS: Partial<Record<ModuleKey, ColumnDef[]>> = {
   retro: [
     { key: "title", label: "What happened", kind: "system", type: "text", isVisible: true },
     { key: "status", label: "Status", kind: "system", type: "status", options: RETRO_STATUS_OPTIONS, isVisible: true },
+    { key: "dispatch", label: "Dispatch", kind: "custom", type: "select", options: RETRO_DISPATCH_OPTIONS, isVisible: true },
     { key: "notes", label: "Detail", kind: "custom", type: "longtext", isVisible: true },
     { key: "link", label: "Link", kind: "custom", type: "url", isVisible: true },
   ],

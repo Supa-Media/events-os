@@ -77,6 +77,7 @@ import type * as songs from "../songs.js";
 import type * as storage from "../storage.js";
 import type * as stripe from "../stripe.js";
 import type * as templatePeople from "../templatePeople.js";
+import type * as templateSync from "../templateSync.js";
 import type * as ticketing from "../ticketing.js";
 import type * as ticketingEmails from "../ticketingEmails.js";
 import type * as ticketingVerification from "../ticketingVerification.js";
@@ -157,6 +158,7 @@ declare const fullApi: ApiFromModules<{
   storage: typeof storage;
   stripe: typeof stripe;
   templatePeople: typeof templatePeople;
+  templateSync: typeof templateSync;
   ticketing: typeof ticketing;
   ticketingEmails: typeof ticketingEmails;
   ticketingVerification: typeof ticketingVerification;
