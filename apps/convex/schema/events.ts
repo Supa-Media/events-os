@@ -82,6 +82,11 @@ export const eventItems = defineTable({
   ...itemFieldsBase,
   // Role reference scoped to this event's roles.
   roleId: v.optional(v.id("eventRoles")),
+  // Provenance: the template item this row was cloned from (stamped at event
+  // creation; backfilled when an event item is promoted to the template).
+  // Powers exact event↔template diffing — rows without it (pre-provenance
+  // events, hand-added items) fall back to (module, title) matching.
+  sourceTemplateItemId: v.optional(v.id("templateItems")),
   // Per-event owner (a person); template items have no owner.
   ownerPersonId: v.optional(v.id("people")),
   // The subset of `prePlanColumns` (inherited from the template) that have been
