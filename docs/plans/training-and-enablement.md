@@ -1,0 +1,169 @@
+# Plan: training & enablement — how people learn Events OS
+
+**Goal.** Nobody should need a training session to run an event. The software
+teaches the person, in context, at the moment they take on a responsibility —
+with the agent as the always-available trainer. This plan defines the
+curriculum, the delivery mechanics, and the infra needed.
+
+Companion docs: `docs/agent.md` (the playbook — the *craft* source of truth),
+`docs/plans/worship-event-planning-agent.md` (agent capabilities).
+
+---
+
+## 1. Principles for training
+
+1. **One source of truth, many doors.** The playbook (`docs/agent.md`) holds
+   the craft. Guides don't restate philosophy — they slice it by role and add
+   the software mechanics ("here's your job" + "here's the button"). When the
+   playbook changes, guides inherit it.
+2. **Just-in-time beats up-front.** People don't read manuals; they read the
+   guide that appears the moment they're assigned Comms Lead for an event
+   three weeks out. Every guide is delivered at the moment of responsibility,
+   not at signup.
+3. **The agent is the trainer.** Every guide ends with "ask the agent"
+   example prompts. Training people to converse with the agent *is* training
+   them on the software — and the agent knows the playbook, the guide, and
+   the person's live event state, so it can tutor against real work instead
+   of abstractions.
+4. **The system knows who's new.** `roleAssignments.by_person` and engagement
+   history tell us whether this is someone's first time as a workstream
+   owner, an event owner, or crew. First-timers get the walkthrough; veterans
+   get the checklist.
+5. **Training is part of the north star.** "Runnable by one person alone with
+   zero tribal knowledge" — the guides are where the tribal knowledge goes to
+   become non-tribal.
+
+---
+
+## 2. The curriculum (four levels, by responsibility)
+
+### Level 0 — Volunteer / crew (no login required)
+**Needs to know:** their team, their lead's name + number, call time, dress
+code, where the run of show is. **Delivery:** the public briefing page
+(`share/[id]`) already does this — it IS the volunteer training. Add: a short
+"what to expect at a public worship event" intro block for first-time
+volunteers.
+
+### Level 1 — Team member with a login
+**Needs to know:** how to find their work (Me view, Team page), update a row
+status, read the day-of screen. **Delivery:** a 5-minute "Finding your work"
+guide + first-login pointer to it.
+
+### Level 2 — Workstream owner
+**Needs to know:** the generic craft of owning a stream (the six expectations
+in playbook Part I), plus their specific workstream's guide. **Delivery:**
+two docs — "So you own a workstream" (generic, short) and the per-workstream
+guide (see catalog) — delivered when the role that owns the workstream is
+assigned to them.
+
+### Level 3 — Event owner
+**Needs to know:** the seven expectations (playbook Part I), the five-window
+lifecycle, and the event-owner mechanics (create from template, feasibility,
+roles, readiness call, reschedule, debrief). **Delivery:** "So you own an
+event" guide at assignment/creation + the agent's kickoff briefing.
+
+### Level 4 — Template author / chapter admin
+**Needs to know:** template editing, the event → template promotion loop,
+roles/workstreams/columns design, and that templates are the institution.
+**Delivery:** "Building templates that teach" guide.
+
+---
+
+## 3. The guide catalog
+
+All guides live in-repo under `docs/guides/` (source of truth, reviewed like
+code) and are **seeded into the app as platform how-to docs** (markdown docs
+with share URLs) so they're linkable, shareable to people without accounts,
+and AI-assistable. Chapters can fork/extend but platform updates flow to
+un-forked copies.
+
+**The standard guide skeleton** (every guide follows it — see the exemplar
+`docs/guides/owning-the-comms-workstream.md`):
+
+1. **Your role in one paragraph** — what you own, where you sit in the
+   accountability chain
+2. **Your deadlines** — the T-table for this responsibility
+3. **Window by window** — what to do in Kickoff / Build / Lock / Day-of /
+   Debrief
+4. **In the app** — the mechanics: where things live, how to edit, what
+   "ready" means and how to mark it
+5. **Working with others** — your cross-stream touchpoints
+6. **"Done" looks like** — the readiness criteria you're signing your name to
+7. **Wisdom from past events** — real failure modes and learnings
+8. **Ask the agent** — copy-paste example prompts for this role
+
+Catalog (⭐ = write first):
+
+| Guide | Level | Status |
+|---|---|---|
+| What to expect (volunteer intro) | 0 | to write |
+| Finding your work | 1 | to write |
+| ⭐ So you own a workstream (generic) | 2 | to write |
+| ⭐ Owning the Comms workstream | 2 | **written — exemplar** |
+| Owning the Planning Doc | 2 | to write |
+| Owning Supplies & Packing | 2 | to write |
+| Owning the Run of Show | 2 | to write |
+| Owning Permits | 2 | to write |
+| Owning Expectations (volunteer teams) | 2 | to write |
+| Owning the Site Map | 2 | to write |
+| Owning the Retro | 2 | to write |
+| Owning the Setlist (Worship Lead) | 2 | to write |
+| ⭐ So you own an event | 3 | to write |
+| Building templates that teach | 4 | to write |
+
+Per-workstream guides should be short (1–2 screens); the generic workstream
+guide carries the shared anatomy so specific guides only carry what's
+different.
+
+---
+
+## 4. Delivery mechanics (the infra to build)
+
+1. **Seed guides as platform docs.** Extend the existing `docs` table seeding:
+   platform-authored markdown docs keyed by guide slug, upserted on deploy
+   (like core workstreams: platform-owned, chapter-forkable). Guides get
+   share URLs for free.
+2. **Assignment-triggered delivery.** When `roleAssignments.assign` fires (or
+   an engagement is confirmed): if the role owns workstreams, the
+   notification/email includes links to the matching guides. **First-time
+   detection:** no prior `roleAssignments.by_person` rows for this role →
+   lead with "first time? start here" framing and have the agent proactively
+   offer a walkthrough in that event's chat.
+3. **"How this works" affordance on every surface.** Each workstream section
+   header, the event overview, and the template editor get a quiet help
+   affordance linking the matching guide (reuses the how_to doc-linking
+   pattern that already exists for cells).
+4. **Agent as trainer.** Add guides to the agent's retrievable context
+   (`get_guide(slug)` tool or compiled alongside the playbook). Behaviors:
+   the kickoff briefing for a new event owner; "I notice this is your first
+   time owning Comms — want the 2-minute version?"; answering "what am I
+   supposed to do?" with the person's actual next actions from their guide +
+   live event state.
+5. **Onboarding checklists as rows.** For first-time event owners, the agent
+   can offer to add a "learn the ropes" mini-checklist into their Planning
+   Doc (meta: the training uses the same row/status machinery being taught).
+
+---
+
+## 5. Sequencing
+
+1. Write the ⭐ guides (comms exemplar done; generic workstream; event owner).
+2. Guide seeding as platform docs + "How this works" links (small, high
+   leverage, zero new UI patterns).
+3. Assignment-triggered guide delivery + first-time detection.
+4. Agent trainer behaviors (needs the playbook-in-prompt work from the
+   capabilities plan anyway — same PR territory).
+5. Remaining catalog, prioritized by which roles are assigned most.
+
+---
+
+## 6. Open questions
+
+- **Q1 — Forking semantics.** When a chapter edits a platform guide, do they
+  fork (frozen from platform updates) or overlay? (Recommend fork-with-drift-
+  badge: simplest, and the drift badge invites re-syncing.)
+- **Q2 — Email vs in-app delivery.** Assignment emails already exist
+  (Resend); is a guide link in that email enough, or do we want an in-app
+  "you have a new responsibility" surface? (Recommend email link first.)
+- **Q3 — Completion tracking.** Do we track "read the guide"? (Recommend no —
+  track outcomes via readiness/todos instead; reading receipts are theater.)
