@@ -210,6 +210,51 @@ fallback.
 
 ---
 
+## 4.3 Event → template editing (DECIDED: we're building this)
+
+The capability underneath P1/the debrief loop: changes made while running an
+event can flow back into the template. Three complementary flows, one shared
+mechanism.
+
+**Flows**
+1. **Promote (single change, anytime).** On any event item / custom module /
+   column / role: "Promote to template." An event item with no template source
+   becomes a new `templateItems` row (offset derived from its dueDate vs the
+   event date, or carried directly); an edited item patches its source row.
+2. **Sync review (bulk diff, the debrief default).** Diff the event against
+   its template and present a checklist — "12 things changed in this event
+   that aren't in the template" — promote per-line.
+3. **Agent-proposed diffs.** The debrief interview turns retro rows into
+   concrete proposals routed through the same promote machinery, applied only
+   on per-line approval.
+
+**Mechanics**
+- **Schema: `sourceTemplateItemId: v.optional(v.id("templateItems"))` on
+  `eventItems`**, stamped at clone. The clone already builds exactly this map
+  transiently (`lib/templates.ts:501`, `eventItemByTemplateItem`) — persist
+  it. Modules and roles already match template↔event by stable `key`; columns
+  by `(module, key)`. Items are the only artifact needing an id link.
+  Existing events without the link fall back to `(module, title)` matching in
+  the diff, marked lower-confidence.
+- **Promote structure, never state.** Templates are role-based blueprints
+  (P3): promotion carries title, details, offsets, role, qty/config, how-to
+  links, column options — and strips person owners, statuses (reset to the
+  module default), prePlanChecked, photos-of-this-event, and costs (actuals
+  go to retro context instead; the author can opt a cost in as a budget
+  guide).
+- **Backend:** `templates.diffEventAgainstTemplate` (query) +
+  `templates.promoteFromEvent` (mutation taking a list of promotions);
+  both reuse `bumpVersion` so `events.templateVersion` drift display keeps
+  working. Promotions target the event's own `eventTypeId`; propagating
+  further up a `deriveFromEventTypeId` chain is out of scope.
+- **Retro dispatch state** (promoted / context / dropped) needs no schema —
+  it's a seeded select column on the retro module; "promoted" rows link to
+  the promotion.
+- **Agent tools:** `diff_event_vs_template` (read) and `promote_to_template`
+  (write, confirmation required — it edits shared institutional state).
+- **Enables later (not now):** the reverse direction — pulling template
+  updates into an already-running event — uses the same provenance link.
+
 ## 5. Open questions to decide together
 
 - **Q1 — Agent scope.** Keep it event-scoped, or add a chapter-level surface
