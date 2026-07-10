@@ -407,6 +407,69 @@ const TOOLS = [
       },
     },
   },
+  {
+    type: "function",
+    function: {
+      name: "diff_event_vs_template",
+      description:
+        "READ how this event has diverged from its template: items added/" +
+        "modified/removed in the event (structure only — statuses and owners " +
+        "never count), new custom workstreams, and column changes. Use it " +
+        "during the debrief (playbook Window 5) or when the user asks what " +
+        "should be promoted back to the template.",
+      parameters: {
+        type: "object",
+        properties: {},
+        additionalProperties: false,
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "promote_to_template",
+      description:
+        "WRITE approved changes from this event back into its template — the " +
+        "institutional memory (playbook Philosophy 1). Only call after the " +
+        "user approved the specific promotions in this conversation; template " +
+        "edits affect every future event and are NOT covered by the run's " +
+        "Undo. Promotes structure, never event state. Entries reference ids " +
+        "from diff_event_vs_template.",
+      parameters: {
+        type: "object",
+        properties: {
+          promotions: {
+            type: "array",
+            items: {
+              type: "object",
+              properties: {
+                kind: {
+                  type: "string",
+                  enum: [
+                    "add_item",
+                    "update_item",
+                    "remove_item",
+                    "add_module",
+                    "column",
+                  ],
+                },
+                event_item_id: { type: "string" },
+                template_item_id: { type: "string" },
+                fields: { type: "array", items: { type: "string" } },
+                module_key: { type: "string" },
+                module: { type: "string" },
+                key: { type: "string" },
+              },
+              required: ["kind"],
+              additionalProperties: false,
+            },
+          },
+        },
+        required: ["promotions"],
+        additionalProperties: false,
+      },
+    },
+  },
 ];
 
 interface OpenRouterUsage {
@@ -1502,6 +1565,71 @@ async function dispatchTool(
     };
   }
 
+  if (name === "diff_event_vs_template") {
+    const diff = await ctx.runQuery(api.templateSync.diffEventAgainstTemplate, {
+      eventId,
+    });
+    const total =
+      diff.items.length + diff.modules.length + diff.columns.length;
+    return {
+      ok: true,
+      summary:
+        total === 0
+          ? "No structural divergence — the event matches its template."
+          : JSON.stringify(diff),
+      edits: 0,
+    };
+  }
+
+  if (name === "promote_to_template") {
+    const raw = Array.isArray(args.promotions) ? args.promotions : [];
+    if (raw.length === 0)
+      return { ok: false, summary: "promotions[] is empty.", edits: 0 };
+    const promotions: any[] = [];
+    for (const p of raw) {
+      const kind = String(p?.kind ?? "");
+      if (kind === "add_item" && p.event_item_id) {
+        promotions.push({ kind, eventItemId: p.event_item_id });
+      } else if (kind === "update_item" && p.event_item_id) {
+        promotions.push({
+          kind,
+          eventItemId: p.event_item_id,
+          ...(Array.isArray(p.fields) && p.fields.length
+            ? { fields: p.fields.map(String) }
+            : {}),
+          ...(p.template_item_id ? { templateItemId: p.template_item_id } : {}),
+        });
+      } else if (kind === "remove_item" && p.template_item_id) {
+        promotions.push({ kind, templateItemId: p.template_item_id });
+      } else if (kind === "add_module" && p.module_key) {
+        promotions.push({ kind, moduleKey: String(p.module_key) });
+      } else if (kind === "column" && p.module && p.key) {
+        promotions.push({
+          kind,
+          module: String(p.module),
+          key: String(p.key),
+        });
+      } else {
+        return {
+          ok: false,
+          summary: `Malformed promotion entry: ${JSON.stringify(p)}.`,
+          edits: 0,
+        };
+      }
+    }
+    const res = await ctx.runMutation(api.templateSync.promoteFromEvent, {
+      eventId,
+      promotions,
+    });
+    return {
+      ok: true,
+      summary:
+        `Promoted ${res.applied.length} change(s) to the template ` +
+        `(version bumped). Future events created from it inherit them.`,
+      edits: 0,
+    };
+  }
+
   return { ok: false, summary: `Unknown tool "${name}".` };
 }
 
@@ -1638,8 +1766,13 @@ function systemPrompt(context: Ctx, now: number): string {
     "- ASK FIRST — only call these when the user explicitly requested that",
     "  action in this conversation: remove_item (deleting anything),",
     "  reschedule_event (a date change is a plan change), toggling a workstream",
-    "  off, marking workstreams/the event ready or changing event status, and",
-    "  anything volunteer- or public-facing.",
+    "  off, marking workstreams/the event ready or changing event status,",
+    "  promote_to_template (edits the template every future event inherits, and",
+    "  is not undoable from this run), and anything volunteer- or public-facing.",
+    "- DEBRIEF (playbook Window 5): after the event date passes, drive the",
+    "  retro — interview the user, fill retro rows, then call",
+    "  diff_event_vs_template and propose promotions line-by-line; every retro",
+    "  row ends promoted, context, or dropped (its dispatch column).",
     "- To find/add photos online, call find_photos with a short search query per",
     "  item — pass every item in one call.",
     "- When done, reply with a SHORT summary of what changed, tied to the",

@@ -66,6 +66,21 @@ workstreams. The core eight:
 Chapters can add **custom workstreams** (a merch stand, a food operation) to a
 template or a single event; they behave exactly like the core ones.
 
+Two shapes worth naming: most workstreams are **task-shaped** (rows are
+to-dos or messages), while Run of Show is **program-shaped** (rows are
+segments of the day) and Site Map is **artifact-shaped** (one deliverable —
+the map — instead of many rows). All three share the same ownership, timing,
+and readiness rules; only the surface differs.
+
+**Workstreams vs. tools.** Not everything on an event page is a workstream.
+Tickets, day-of mode, the crew table, and the assistant are **operational
+tools** — machinery the event uses. Tools have no owner role, rows, or ready
+flag, and they don't feed readiness. The rule of thumb: **plan in
+workstreams, operate in tools.** The *work* of ticketing (set up tiers,
+publish the page, plan check-in) lives as rows in a workstream (Planning Doc
+tasks, or a custom Ticketing workstream for a ticketed event); the Tickets
+tab is where you run the result.
+
 > Naming note: the codebase calls workstreams \`modules\` (and that key is
 > stable in the schema and tool APIs). In everything human-facing — UI labels,
 > agent conversation, this playbook — the word is **workstream**.

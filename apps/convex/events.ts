@@ -532,7 +532,7 @@ export const todos = query({
       if (ownerTotal > 0 && ownerDone < ownerTotal) {
         yours.push({
           id: "owners",
-          label: "Assign module owners (" + ownerDone + "/" + ownerTotal + ")",
+          label: "Assign workstream owners (" + ownerDone + "/" + ownerTotal + ")",
           risk: null,
           phase: "prePlan",
         });
