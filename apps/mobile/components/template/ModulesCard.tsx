@@ -83,10 +83,10 @@ export function ModulesCard({
 
   return (
     <Card className="mb-2">
-      <SectionHeader title="Modules" />
+      <SectionHeader title="Workstreams" />
       <Text className="mb-3 text-sm text-muted">
-        Right-click a chip to rename, set its owner, or disable it; use Add module
-        to re-enable a core module or create a custom one.
+        Right-click a chip to rename, set its owner, or disable it; use Add
+        workstream to re-enable a core workstream or create a custom one.
       </Text>
 
       <View className="flex-row flex-wrap items-center gap-2">
@@ -290,11 +290,11 @@ function AddModuleButton({
           <Pressable
             onPress={openMenu}
             accessibilityRole="button"
-            accessibilityLabel="Add module"
+            accessibilityLabel="Add workstream"
             className="flex-row items-center gap-1.5 rounded-pill border border-dashed border-border-strong bg-raised px-3 py-1.5 active:opacity-80 web:hover:border-accent"
           >
             <Icon name="plus" size={14} color={colors.muted} />
-            <Text className="text-sm font-medium text-muted">Add module</Text>
+            <Text className="text-sm font-medium text-muted">Add workstream</Text>
           </Pressable>
         </View>
       )}
@@ -309,7 +309,7 @@ function AddModuleButton({
             onPress: () => onEnableCore(m.key),
           })),
           {
-            label: "New custom module",
+            label: "New custom workstream",
             icon: "edit-2" as const,
             onPress: () => setAdding(true),
           },
@@ -334,7 +334,7 @@ function AddCustomModuleInput({
         value={draft}
         onChangeText={setDraft}
         autoFocus
-        placeholder="Module name"
+        placeholder="Workstream name"
         placeholderTextColor={colors.faint}
         onBlur={() => (draft.trim() ? onCommit(draft) : onCancel())}
         onSubmitEditing={() => onCommit(draft)}
@@ -351,13 +351,13 @@ function confirmRemoveModule(onConfirm: () => void) {
   if (Platform.OS === "web") {
     if (
       typeof window !== "undefined" &&
-      window.confirm("Delete this module and all its items?")
+      window.confirm("Delete this workstream and all its items?")
     ) {
       onConfirm();
     }
     return;
   }
-  Alert.alert("Delete module?", "This removes the module and its items.", [
+  Alert.alert("Delete workstream?", "This removes the workstream and its items.", [
     { text: "Cancel", style: "cancel" },
     { text: "Delete", style: "destructive", onPress: onConfirm },
   ]);
