@@ -369,7 +369,14 @@ async function resilientCall(
       } catch (err) {
         lastErr = err;
         const retryable = err instanceof OpenRouterError && err.retryable;
-        if (!retryable) throw err; // hard error → surface now, no fallback
+        if (!retryable) {
+          // Hard error (bad key / bad request) → surface NOW with its detail.
+          // Re-wrap as a ConvexError so the callers' catch (which reads
+          // `err.data.message`) shows the status/body instead of "Agent error."
+          const message =
+            err instanceof Error ? err.message : "OpenRouter request failed.";
+          throw new ConvexError({ code: "OPENROUTER_ERROR", message });
+        }
         // Backoff before the next attempt on this model (400ms, 800ms, …).
         if (attempt < RETRY_ATTEMPTS - 1) await sleep(400 * 2 ** attempt);
       }
@@ -1417,6 +1424,14 @@ function docHistoryTurns(
 /** Max model round-trips in one doc-assistant turn (research + write). */
 const DOC_MAX_STEPS = 6;
 
+/**
+ * Token headroom for the doc writer. `write_doc` replaces the ENTIRE guide, so
+ * its argument can be a long markdown body — and now that the writer runs HIGH
+ * reasoning, the thinking trace shares this budget with that body. Generous so a
+ * full-guide rewrite isn't truncated mid-document.
+ */
+const DOC_MAX_TOKENS = 6000;
+
 /** The tools the doc assistant can call — research, then write the markdown. */
 const DOC_TOOLS = [
   {
@@ -1642,7 +1657,7 @@ export const runDocAssistant = action({
           slug: usedSlug,
         } = await resilientCall(slug, messages, {
           tools: DOC_TOOLS,
-          maxTokens: 2500,
+          maxTokens: DOC_MAX_TOKENS,
         });
 
         const cost = callCost(usedSlug, usage);
@@ -1878,6 +1893,18 @@ export const setThreadModel = action({
         : null);
 
     if (!found) {
+      // A `:free` slug is open to everyone and needs no paid-gate. If the live
+      // catalog fetch degraded (curated fallback of a few models), don't block a
+      // legitimately-free model the picker already showed — persist it as-is. A
+      // truly bad slug just fails later with a clear per-turn error.
+      if (isFreeModelSlug(slug)) {
+        await ctx.runMutation(internal.ai.persistThreadModel, {
+          threadId,
+          chapterId,
+          model: slug,
+        });
+        return { ok: true };
+      }
       throw new ConvexError({
         code: "BAD_MODEL",
         message: "That model isn't available on OpenRouter.",
