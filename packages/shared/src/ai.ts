@@ -181,6 +181,67 @@ export const HOW_TO_SYSTEM_PROMPT = [
   "and specific rather than vague.",
 ].join("\n");
 
+// ── T-windows (the playbook's five lifecycle windows) ────────────────────────
+// The playbook (docs/agent.md, Part III) divides an event's life into five
+// windows keyed off days-until-event. The assistant states the current window
+// in its system prompt so every nudge is tied to where the event actually is.
+// Self-contained day math on purpose (this file must not import ./index).
+
+export type EventWindowKey = "kickoff" | "build" | "lock" | "dayOf" | "debrief";
+
+export interface EventWindow {
+  key: EventWindowKey;
+  label: string;
+  /** The window's T-range as the playbook writes it, e.g. "T-7→T-1". */
+  range: string;
+}
+
+/** The five playbook windows, in lifecycle order. */
+export const EVENT_WINDOWS: EventWindow[] = [
+  { key: "kickoff", label: "Kickoff", range: "T-∞→T-14" },
+  { key: "build", label: "Build", range: "T-14→T-7" },
+  { key: "lock", label: "Lock", range: "T-7→T-1" },
+  { key: "dayOf", label: "Day-of", range: "T-0" },
+  { key: "debrief", label: "Debrief", range: "T+1→T+7" },
+];
+
+/**
+ * Which playbook window a whole-day countdown falls in. `daysUntil` is the
+ * signed whole-day delta to the event (positive before, 0 = event day,
+ * negative after — i.e. `offsetDaysBetween(now, eventDate)`). Boundary days
+ * belong to the earlier window's end per the playbook ranges (T-14 is the last
+ * Kickoff day, T-7 the last Build day). Past T+7 the debrief window has closed
+ * but the stance is the same (close the loop), so it still returns "debrief".
+ */
+export function eventWindowFor(daysUntil: number): EventWindow {
+  if (daysUntil >= 14) return EVENT_WINDOWS[0]; // kickoff
+  if (daysUntil >= 7) return EVENT_WINDOWS[1]; // build
+  if (daysUntil >= 1) return EVENT_WINDOWS[2]; // lock
+  if (daysUntil === 0) return EVENT_WINDOWS[3]; // dayOf
+  return EVENT_WINDOWS[4]; // debrief (T+1 onward)
+}
+
+/** "T-9" / "T-0" / "T+3" for a signed days-until-event. */
+export function tNotation(daysUntil: number): string {
+  return daysUntil >= 0 ? `T-${daysUntil}` : `T+${-daysUntil}`;
+}
+
+/**
+ * The one-line T-window statement the assistant's system prompt carries, e.g.
+ * "T-9 — Build window (T-14→T-7); next: Lock (T-7→T-1)". Includes the next
+ * window so the agent nudges toward upcoming checkpoints, not just the current
+ * ones.
+ */
+export function tWindowLine(daysUntil: number): string {
+  const current = eventWindowFor(daysUntil);
+  const idx = EVENT_WINDOWS.findIndex((w) => w.key === current.key);
+  const next = idx >= 0 && idx < EVENT_WINDOWS.length - 1 ? EVENT_WINDOWS[idx + 1] : null;
+  const head = `${tNotation(daysUntil)} — ${current.label} window (${current.range})`;
+  return next && daysUntil > 0
+    ? `${head}; next: ${next.label} (${next.range})`
+    : head;
+}
+
 export interface AiUsageTokens {
   inputTokens: number;
   outputTokens: number;
