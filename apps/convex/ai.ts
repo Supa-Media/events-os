@@ -35,6 +35,8 @@ import {
   DEFAULT_AI_MODEL,
   computeDueDate,
   DAY_OFFSET_MODULES,
+  isFreeModelSlug,
+  isOverChatBudget,
   overBudgetScope,
   type ModuleKey,
 } from "@events-os/shared";
@@ -182,6 +184,7 @@ export const startRun = internalMutation({
     userId: v.id("users"),
     feature: v.string(),
     eventId: v.optional(v.id("events")),
+    threadId: v.optional(v.id("aiThreads")),
     model: v.string(),
   },
   handler: async (ctx, args) => {
@@ -190,6 +193,7 @@ export const startRun = internalMutation({
       userId: args.userId,
       feature: args.feature,
       eventId: args.eventId,
+      threadId: args.threadId,
       model: args.model,
       status: "running",
       itemsTouched: 0,
@@ -222,6 +226,7 @@ export const logUsage = internalMutation({
     chapterId: v.id("chapters"),
     userId: v.id("users"),
     runId: v.optional(v.id("aiRuns")),
+    threadId: v.optional(v.id("aiThreads")),
     feature: v.string(),
     model: v.string(),
     inputTokens: v.number(),
@@ -682,6 +687,156 @@ export const setActiveModel = mutation({
         updatedAt: Date.now(),
       });
     }
+    return null;
+  },
+});
+
+// ── Per-chat model + spend limit ─────────────────────────────────────────────
+/** A single chat's lifetime spend = sum of every usage row billed to it. */
+async function sumThreadSpend(
+  ctx: any,
+  threadId: Id<"aiThreads">,
+): Promise<number> {
+  const rows = await ctx.db
+    .query("aiUsage")
+    .withIndex("by_thread", (q: any) => q.eq("threadId", threadId))
+    .collect();
+  return rows.reduce((s: number, r: any) => s + r.costUsd, 0);
+}
+
+/**
+ * The model + spend-cap the ACTION needs to run a turn on a thread, resolved in
+ * the caller's auth context. Returns null on a missing/cross-chapter thread so
+ * the action refuses to run. `model` is the chat's override or the deployment
+ * default; `spentUsd` is this chat's lifetime spend (for the per-chat cap).
+ */
+export const threadRunContext = internalQuery({
+  args: { threadId: v.id("aiThreads"), chapterId: v.id("chapters") },
+  handler: async (ctx, { threadId, chapterId }) => {
+    const thread = await ctx.db.get(threadId);
+    if (!thread || thread.chapterId !== chapterId) return null;
+    const settings = await ctx.db.query("aiSettings").first();
+    const deploymentDefault =
+      settings?.activeModel && AI_MODELS[settings.activeModel]
+        ? settings.activeModel
+        : DEFAULT_AI_MODEL;
+    return {
+      model: thread.model ?? deploymentDefault,
+      spendLimitUsd: thread.spendLimitUsd ?? null,
+      spentUsd: await sumThreadSpend(ctx, threadId),
+    };
+  },
+});
+
+/**
+ * Everything the assistant panel needs to render its per-chat model + budget
+ * controls: the chat's active model (its override, else the deployment default),
+ * its spend cap and lifetime spend, whether that cap is already hit, and whether
+ * the caller is a superuser (so paid models + the cap editor are offered).
+ */
+export const threadAiSettings = query({
+  args: { threadId: v.optional(v.id("aiThreads")) },
+  handler: async (ctx, { threadId }) => {
+    const superuser = await isSuperuser(ctx);
+    const settings = await ctx.db.query("aiSettings").first();
+    const deploymentDefault =
+      settings?.activeModel && AI_MODELS[settings.activeModel]
+        ? settings.activeModel
+        : DEFAULT_AI_MODEL;
+
+    if (!threadId) {
+      return {
+        model: deploymentDefault,
+        isCustomModel: false,
+        deploymentDefault,
+        spendLimitUsd: null as number | null,
+        spentUsd: 0,
+        overLimit: false,
+        isSuperuser: superuser,
+      };
+    }
+    const chapterId = await getChapterIdOrNull(ctx);
+    const thread = await ctx.db.get(threadId);
+    if (!thread || !chapterId || thread.chapterId !== chapterId) {
+      return {
+        model: deploymentDefault,
+        isCustomModel: false,
+        deploymentDefault,
+        spendLimitUsd: null as number | null,
+        spentUsd: 0,
+        overLimit: false,
+        isSuperuser: superuser,
+      };
+    }
+    const spentUsd = await sumThreadSpend(ctx, threadId);
+    return {
+      model: thread.model ?? deploymentDefault,
+      isCustomModel: !!thread.model,
+      deploymentDefault,
+      spendLimitUsd: thread.spendLimitUsd ?? null,
+      spentUsd: toCents(spentUsd),
+      overLimit: isOverChatBudget(spentUsd, thread.spendLimitUsd ?? null),
+      isSuperuser: superuser,
+    };
+  },
+});
+
+/**
+ * Persist a chat's model override (or clear it → null). Called by the
+ * `setThreadModel` ACTION, which has already fetched the slug's pricing and
+ * enforced "paid models are superuser-only" — this internal write just records
+ * the vetted choice, so it takes no auth decision of its own.
+ */
+export const persistThreadModel = internalMutation({
+  args: {
+    threadId: v.id("aiThreads"),
+    chapterId: v.id("chapters"),
+    model: v.union(v.string(), v.null()),
+  },
+  handler: async (ctx, { threadId, chapterId, model }) => {
+    const thread = await ctx.db.get(threadId);
+    if (!thread || thread.chapterId !== chapterId) {
+      throw new ConvexError({
+        code: "NOT_FOUND",
+        message: "Chat not found.",
+      });
+    }
+    await ctx.db.patch(threadId, {
+      model: model ?? undefined,
+      updatedAt: Date.now(),
+    });
+    return null;
+  },
+});
+
+/**
+ * Set (or clear, with null) a chat's hard spend cap. Superuser-only: a spend
+ * limit is only meaningful once a paid model is in play, and only superusers can
+ * put a chat on a paid model. A negative cap is rejected; 0 means "no more
+ * spend" (freezes the chat).
+ */
+export const setThreadSpendLimit = mutation({
+  args: { threadId: v.id("aiThreads"), limitUsd: v.union(v.number(), v.null()) },
+  handler: async (ctx, { threadId, limitUsd }) => {
+    if (!(await isSuperuser(ctx))) {
+      throw new ConvexError({
+        code: "FORBIDDEN",
+        message: "Only super admins can set a chat spend limit.",
+      });
+    }
+    if (limitUsd != null && (!Number.isFinite(limitUsd) || limitUsd < 0)) {
+      throw new ConvexError({
+        code: "BAD_LIMIT",
+        message: "Spend limit must be zero or a positive dollar amount.",
+      });
+    }
+    const chapterId = await requireChapterId(ctx);
+    const thread = await ctx.db.get(threadId);
+    await requireInChapter(ctx, chapterId, thread, "Chat");
+    await ctx.db.patch(threadId, {
+      spendLimitUsd: limitUsd ?? undefined,
+      updatedAt: Date.now(),
+    });
     return null;
   },
 });

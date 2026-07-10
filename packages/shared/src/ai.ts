@@ -21,48 +21,135 @@ export interface AiModel {
    * doesn't return an exact cost). */
   inputPerMTok: number;
   outputPerMTok: number;
+  /** Free tier (`:free` slug, $0 to run). Paid models are superuser-only. */
+  free: boolean;
 }
 
 /**
- * The models offered in-app — FREE OpenRouter models only (`:free` slugs), so
- * running the assistant costs nothing. All are tool-calling capable; the ones
- * marked below also stream a reasoning trace, which the panel renders so you can
- * watch the agent think. `inputPerMTok`/`outputPerMTok` are 0 (free tier) — the
- * budget plumbing stays in place for the day we add paid models back.
+ * The curated in-app model menu — a small, known-good SEED/fallback list.
+ *
+ * The live picker fetches the full OpenRouter catalog at runtime (see
+ * `listModels`), so users aren't limited to this list — they can pick ANY free
+ * model, and superusers any paid one. This constant is what we fall back to when
+ * the catalog fetch fails, and the source of truth for cost estimation of these
+ * slugs. Free models cost $0; the paid entries carry real per-token prices so
+ * the budget math (and per-chat spend caps) work when a superuser opts into one.
  */
 export const AI_MODELS: Record<string, AiModel> = {
+  // ── Free (open to everyone) ────────────────────────────────────────────────
   "openai/gpt-oss-120b:free": {
     slug: "openai/gpt-oss-120b:free",
     label: "GPT-OSS 120B (free)",
     inputPerMTok: 0,
     outputPerMTok: 0,
+    free: true,
   },
   "nvidia/nemotron-3-super-120b-a12b:free": {
     slug: "nvidia/nemotron-3-super-120b-a12b:free",
     label: "Nemotron 3 Super (free)",
     inputPerMTok: 0,
     outputPerMTok: 0,
+    free: true,
+  },
+  "deepseek/deepseek-r1:free": {
+    slug: "deepseek/deepseek-r1:free",
+    label: "DeepSeek R1 (free)",
+    inputPerMTok: 0,
+    outputPerMTok: 0,
+    free: true,
   },
   "meta-llama/llama-3.3-70b-instruct:free": {
     slug: "meta-llama/llama-3.3-70b-instruct:free",
     label: "Llama 3.3 70B (free)",
     inputPerMTok: 0,
     outputPerMTok: 0,
+    free: true,
   },
   "qwen/qwen3-coder:free": {
     slug: "qwen/qwen3-coder:free",
     label: "Qwen3 Coder (free)",
     inputPerMTok: 0,
     outputPerMTok: 0,
+    free: true,
+  },
+  // ── Paid (superuser-only; prices are per-1M-token estimates for budgeting) ──
+  "anthropic/claude-sonnet-5": {
+    slug: "anthropic/claude-sonnet-5",
+    label: "Claude Sonnet 5",
+    inputPerMTok: 3,
+    outputPerMTok: 15,
+    free: false,
+  },
+  "openai/gpt-5.6-luna": {
+    slug: "openai/gpt-5.6-luna",
+    label: "GPT-5.6 Luna",
+    inputPerMTok: 1,
+    outputPerMTok: 6,
+    free: false,
   },
 };
 
 /**
- * Default model for the assistant. GPT-OSS 120B is free, reliable at
- * tool-calling, AND streams a reasoning trace (so "see its thinking" works out
- * of the box). Superusers can swap to any slug above.
+ * Default model for the assistant when a chat hasn't picked its own. GPT-OSS
+ * 120B is free, reliable at tool-calling, AND streams a reasoning trace (so
+ * "see its thinking" works out of the box). Every chat can override this with
+ * any free model; superusers can point a chat at a paid model.
  */
 export const DEFAULT_AI_MODEL = "openai/gpt-oss-120b:free";
+
+/**
+ * Fallback chain the agent walks when its chosen FREE model is rate-limited
+ * upstream (OpenRouter 429). Free models share heavily throttled upstream pools,
+ * so a single provider being busy must not kill the turn — we transparently try
+ * the next free model. Paid models never fall back (the user picked+paid for a
+ * specific one), so this list is free-only. The chosen model is always tried
+ * first regardless of its place here.
+ */
+export const FREE_MODEL_FALLBACKS = [
+  "openai/gpt-oss-120b:free",
+  "nvidia/nemotron-3-super-120b-a12b:free",
+  "deepseek/deepseek-r1:free",
+  "meta-llama/llama-3.3-70b-instruct:free",
+] as const;
+
+/**
+ * Reasoning effort for the assistant — always HIGH. These are hard, multi-step
+ * "reason across every module and edit the plan" tasks; low effort was the root
+ * cause of the agent under-planning and looping. OpenRouter maps this onto each
+ * model's own reasoning knob (or ignores it for non-reasoning models).
+ */
+export const ASSISTANT_REASONING_EFFORT = "high" as const;
+
+/**
+ * A single model as the live picker shows it — the projection of an OpenRouter
+ * catalog entry (see `listModels`) the UI needs: identity, whether it's free
+ * (→ open to all) or paid (→ superuser-only), its per-token price for budgeting,
+ * and whether it can actually tool-call (we only offer models that can).
+ */
+export interface AiCatalogModel {
+  slug: string;
+  label: string;
+  free: boolean;
+  inputPerMTok: number;
+  outputPerMTok: number;
+  contextLength: number | null;
+  toolCalling: boolean;
+  reasoning: boolean;
+}
+
+/**
+ * Is this slug a FREE model? Free when the slug carries the `:free` suffix, or
+ * (when pricing is known) both per-token prices are zero. Used to gate paid
+ * models behind superuser and to decide fallback eligibility.
+ */
+export function isFreeModelSlug(
+  slug: string,
+  pricing?: { inputPerMTok: number; outputPerMTok: number },
+): boolean {
+  if (slug.endsWith(":free")) return true;
+  if (pricing) return pricing.inputPerMTok === 0 && pricing.outputPerMTok === 0;
+  return AI_MODELS[slug]?.free ?? false;
+}
 
 /**
  * The standard "voice" for every How-To guide the doc assistant writes.
@@ -102,20 +189,33 @@ export interface AiUsageTokens {
 }
 
 /**
- * Estimate USD cost from token usage + a model slug. Cached reads bill ~0.1×
- * input, cache writes ~1.25×. If the gateway returns an exact `cost`, prefer it
- * over this estimate (see the action).
+ * Estimate USD cost from token usage + per-1M-token prices. Cached reads bill
+ * ~0.1× input, cache writes ~1.25×. If the gateway returns an exact `cost`,
+ * prefer it over this estimate (see the action).
  */
-export function aiCostUsd(slug: string, u: AiUsageTokens): number {
-  const m = AI_MODELS[slug];
-  if (!m) return 0;
+export function costFromPricing(
+  price: { inputPerMTok: number; outputPerMTok: number },
+  u: AiUsageTokens,
+): number {
   const billableInput =
     (u.inputTokens ?? 0) +
     (u.cacheWriteTokens ?? 0) * 0.25 -
     (u.cachedTokens ?? 0) * 0.9;
-  const inputCost = (Math.max(0, billableInput) * m.inputPerMTok) / 1_000_000;
-  const outputCost = ((u.outputTokens ?? 0) * m.outputPerMTok) / 1_000_000;
+  const inputCost = (Math.max(0, billableInput) * price.inputPerMTok) / 1_000_000;
+  const outputCost = ((u.outputTokens ?? 0) * price.outputPerMTok) / 1_000_000;
   return inputCost + outputCost;
+}
+
+/**
+ * Estimate USD cost from token usage + a model slug, using our curated price
+ * table. Unknown slugs (a free catalog model we don't list) estimate to $0 —
+ * for paid catalog models the gateway's exact `cost` is used instead, and the
+ * action can pass live pricing to {@link costFromPricing} directly.
+ */
+export function aiCostUsd(slug: string, u: AiUsageTokens): number {
+  const m = AI_MODELS[slug];
+  if (!m) return 0;
+  return costFromPricing(m, u);
 }
 
 /** Dollar caps over the rolling window. Deployment = one org. */
@@ -140,4 +240,28 @@ export function overBudgetScope(spend: {
   if (spend.chapter >= AI_BUDGETS.perChapterUsd) return "chapter";
   if (spend.org >= AI_BUDGETS.orgUsd) return "org";
   return null;
+}
+
+// ── Per-chat spend limits ─────────────────────────────────────────────────────
+// A superuser can put a hard dollar cap on a single CHAT (thread) — the guardrail
+// for pointing a chat at a paid model. Unlike the rolling per-user/chapter/org
+// caps, this is a LIFETIME cap on that one thread's total spend. A free chat
+// costs $0 so its cap never trips; the plumbing only bites once a paid model is
+// selected for the chat.
+
+/** Reasonable default cap to pre-fill when a superuser first caps a paid chat. */
+export const DEFAULT_CHAT_SPEND_LIMIT_USD = 5;
+
+/**
+ * Has this chat hit its per-chat spend cap? False when there's no cap set
+ * (`null`/`undefined` → uncapped) or spend is still under it. The action checks
+ * this BEFORE each turn (so a capped chat stops accepting messages once spent)
+ * and the panel renders spend-vs-cap from the same rule.
+ */
+export function isOverChatBudget(
+  spentUsd: number,
+  limitUsd: number | null | undefined,
+): boolean {
+  if (limitUsd == null) return false;
+  return spentUsd >= limitUsd;
 }

@@ -9,9 +9,10 @@ import {
 } from "react-native";
 import { useAction, useMutation, useQuery } from "convex/react";
 import { api } from "@events-os/convex/_generated/api";
-import { Icon, Select } from "../ui";
+import { Icon } from "../ui";
 import { colors } from "../../lib/theme";
-import { AssistantFab, MessageRow, errorMessage } from "./shared";
+import { AssistantFab, MessageRow } from "./shared";
+import { ChatModelSettings } from "./ChatModelSettings";
 
 /**
  * Floating, Notion-AI-style assistant docked to the event page.
@@ -41,20 +42,21 @@ export function AiAssistantPanel({
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
   const [reverting, setReverting] = useState(false);
-  const [modelError, setModelError] = useState<string | null>(null);
 
   const ensureThread = useMutation(api.ai.ensureThread);
   const newThread = useMutation(api.ai.newThread);
   const run = useAction(api.aiActions.runAssistant);
   const revert = useMutation(api.ai.revertAiRun);
-  const setActiveModel = useMutation(api.ai.setActiveModel);
 
   const messages = useQuery(
     api.ai.listMessages,
     threadId ? { threadId: threadId as any } : "skip",
   );
   const budget = useQuery(api.ai.budgetStatus);
-  const cfg = useQuery(api.ai.aiConfig);
+  const chatSettings = useQuery(
+    api.ai.threadAiSettings,
+    threadId ? { threadId: threadId as any } : "skip",
+  );
   const runs = useQuery(api.ai.listRuns, { eventId: eventId as any });
 
   const scrollRef = useRef<ScrollView>(null);
@@ -78,9 +80,6 @@ export function AiAssistantPanel({
   const lastRun = runs?.find((r: any) => r.eventId === eventId);
   const canUndo =
     !!lastRun && lastRun.status === "done" && lastRun.revertableCount > 0;
-
-  const activeModelLabel =
-    cfg?.models.find((m) => m.slug === cfg.activeModel)?.label ?? cfg?.activeModel;
 
   async function send(text: string) {
     const body = text.trim();
@@ -116,15 +115,6 @@ export function AiAssistantPanel({
     } catch {
     } finally {
       setReverting(false);
-    }
-  }
-
-  async function handleModelChange(slug: string) {
-    setModelError(null);
-    try {
-      await setActiveModel({ slug });
-    } catch (err) {
-      setModelError(errorMessage(err));
     }
   }
 
@@ -213,22 +203,12 @@ export function AiAssistantPanel({
           ) : null}
         </View>
 
-        {cfg ? (
-          cfg.isSuperuser ? (
-            <View className="gap-1 pb-1">
-              <Select
-                value={cfg.activeModel}
-                options={cfg.models.map((m) => ({ value: m.slug, label: m.label }))}
-                onChange={handleModelChange}
-              />
-              {modelError ? (
-                <Text className="text-2xs text-danger">{modelError}</Text>
-              ) : null}
-            </View>
-          ) : (
-            <Text className="text-2xs text-faint">Model: {activeModelLabel}</Text>
-          )
-        ) : null}
+        {/* Per-chat model + spend limit (any free model for all; paid + caps for
+            super admins). */}
+        <ChatModelSettings
+          threadId={threadId}
+          settings={chatSettings}
+        />
       </View>
 
       {/* Input */}
