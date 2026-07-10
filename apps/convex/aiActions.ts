@@ -28,8 +28,11 @@ import {
   FREE_MODEL_FALLBACKS,
   AI_MODELS,
   DEFAULT_AI_MODEL,
+  PLAYBOOK_MD,
   isFreeModelSlug,
   isOverChatBudget,
+  offsetDaysBetween,
+  tWindowLine,
   type AiCatalogModel,
 } from "@events-os/shared";
 
@@ -188,6 +191,218 @@ const TOOLS = [
           image_url: { type: "string" },
         },
         required: ["item_id", "image_url"],
+        additionalProperties: false,
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "get_readiness",
+      description:
+        "READ the event's situational-awareness snapshot: phase scores, " +
+        "days-to-event + current T-window, unassigned roles, workstreams " +
+        "missing owners, per-workstream ready flags, overdue / due-in-3-days / " +
+        "unowned items, placeholder crew still engaged, and engagement " +
+        "invited/confirmed/declined counts. Call this FIRST in a working " +
+        "session to build your opening briefing.",
+      parameters: {
+        type: "object",
+        properties: {},
+        additionalProperties: false,
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "remove_item",
+      description:
+        "DELETE an item by id. Destructive — only call when the user " +
+        "explicitly asked for a deletion in this conversation. The delete is " +
+        "revertible from the run's Undo.",
+      parameters: {
+        type: "object",
+        properties: { item_id: { type: "string" } },
+        required: ["item_id"],
+        additionalProperties: false,
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "assign_role",
+      description:
+        "Put a person in an event role. One person per role — assigning " +
+        "replaces the current holder. role is a role label or key from the " +
+        "context; person is a roster name.",
+      parameters: {
+        type: "object",
+        properties: {
+          role: { type: "string" },
+          person: { type: "string" },
+        },
+        required: ["role", "person"],
+        additionalProperties: false,
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "unassign_role",
+      description: "Clear an event role's assignment. role is a label or key.",
+      parameters: {
+        type: "object",
+        properties: { role: { type: "string" } },
+        required: ["role"],
+        additionalProperties: false,
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "add_engagement",
+      description:
+        "Engage a roster person on this event as crew (they start 'invited'). " +
+        "type is volunteer or paid; teams are team VALUES from the " +
+        "Expectations team column; call_time is a display string like " +
+        "'7:30 AM'. If the person is already engaged, use update_engagement.",
+      parameters: {
+        type: "object",
+        properties: {
+          person: { type: "string" },
+          type: { type: "string", enum: ["volunteer", "paid"] },
+          teams: { type: "array", items: { type: "string" } },
+          service: { type: "string" },
+          call_time: { type: "string" },
+        },
+        required: ["person", "type"],
+        additionalProperties: false,
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "update_engagement",
+      description:
+        "Update a person's existing crew engagement on this event: status " +
+        "(invited|confirmed|declined), teams, service, call_time, and/or type " +
+        "(volunteer|paid). Pass only the fields to change.",
+      parameters: {
+        type: "object",
+        properties: {
+          person: { type: "string" },
+          status: {
+            type: "string",
+            enum: ["invited", "confirmed", "declined"],
+          },
+          teams: { type: "array", items: { type: "string" } },
+          service: { type: "string" },
+          call_time: { type: "string" },
+          type: { type: "string", enum: ["volunteer", "paid"] },
+        },
+        required: ["person"],
+        additionalProperties: false,
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "add_person",
+      description:
+        "Add a new person to the chapter roster (so they can then be engaged " +
+        "or assigned). Only name is required.",
+      parameters: {
+        type: "object",
+        properties: {
+          name: { type: "string" },
+          email: { type: "string" },
+          phone: { type: "string" },
+        },
+        required: ["name"],
+        additionalProperties: false,
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "set_workstream_owner",
+      description:
+        "Set which ROLE owns a workstream (accountability, not day-to-day " +
+        "assignment). workstream is a key or label from the context; role is " +
+        "a role label/key, or 'none' to clear.",
+      parameters: {
+        type: "object",
+        properties: {
+          workstream: { type: "string" },
+          role: { type: "string" },
+        },
+        required: ["workstream", "role"],
+        additionalProperties: false,
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "toggle_workstream",
+      description:
+        "Enable or disable a CORE workstream on this event (custom " +
+        "workstreams can't be toggled). Disabling hides its surface — ask " +
+        "the user before disabling anything with items in it.",
+      parameters: {
+        type: "object",
+        properties: {
+          workstream: { type: "string" },
+          enabled: { type: "boolean" },
+        },
+        required: ["workstream", "enabled"],
+        additionalProperties: false,
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "create_custom_workstream",
+      description:
+        "Create a new custom workstream on this event (e.g. a merch stand or " +
+        "food operation), with default columns seeded. owner_role is a role " +
+        "label/key; offset_mode is none (default), days, or minutes.",
+      parameters: {
+        type: "object",
+        properties: {
+          label: { type: "string" },
+          owner_role: { type: "string" },
+          offset_mode: {
+            type: "string",
+            enum: ["none", "days", "minutes"],
+          },
+        },
+        required: ["label"],
+        additionalProperties: false,
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "reschedule_event",
+      description:
+        "Move the event to a new date — only when the user explicitly asked. " +
+        "date is an ISO date (YYYY-MM-DD keeps the current start time) or a " +
+        "full ISO datetime. Every offset-derived due date is re-derived, and " +
+        "the result reports how many tasks are now past due (feasibility).",
+      parameters: {
+        type: "object",
+        properties: { date: { type: "string" } },
+        required: ["date"],
         additionalProperties: false,
       },
     },
@@ -717,9 +932,28 @@ async function fetchImageBlob(url: string): Promise<Blob | null> {
 
 /** The shape `internal.ai.eventContext` returns — the agent's working snapshot. */
 interface EventCtx {
-  event: { id: Id<"events">; name: string; date: number; budget: number | null };
-  roles: Array<{ id: Id<"eventRoles">; key: string; label: string }>;
+  event: {
+    id: Id<"events">;
+    name: string;
+    date: number;
+    budget: number | null;
+    status: string;
+    location: string | null;
+  };
+  roles: Array<{
+    id: Id<"eventRoles">;
+    key: string;
+    label: string;
+    person: string | null;
+  }>;
   people: Array<{ id: Id<"people">; name: string }>;
+  modules: Array<{
+    key: string;
+    label: string;
+    surface: string;
+    ownerRoleKey: string | null;
+    ready: boolean;
+  }>;
   optionsByModule: Record<string, Record<string, string[]>>;
   items: Array<{
     id: Id<"eventItems">;
@@ -752,6 +986,86 @@ function resolveOwner(context: Ctx, raw: string): Id<"people"> | null | undefine
   if (needle === "none" || needle === "") return null; // explicit clear
   const hit = context.people.find((p) => p.name.toLowerCase() === needle);
   return (hit?.id as Id<"people">) ?? undefined;
+}
+
+/**
+ * Resolve a person by name, STRICTLY: exact (case-insensitive) match first,
+ * then a unique substring match. Ambiguity or a miss returns an error string
+ * listing the candidates instead of silently picking one — the crew/role tools
+ * must never guess a person.
+ */
+function resolvePersonStrict(
+  context: Ctx,
+  raw: string,
+): { id: Id<"people">; name: string } | { error: string } {
+  const needle = raw.trim().toLowerCase();
+  if (!needle) return { error: "No person name given." };
+  let matches = context.people.filter((p) => p.name.toLowerCase() === needle);
+  if (matches.length === 0) {
+    matches = context.people.filter((p) =>
+      p.name.toLowerCase().includes(needle),
+    );
+  }
+  if (matches.length === 0) {
+    return {
+      error: `No person named "${raw}" on the roster. Use add_person to add them first.`,
+    };
+  }
+  if (matches.length > 1) {
+    return {
+      error: `"${raw}" is ambiguous — candidates: ${matches
+        .map((m) => m.name)
+        .join(", ")}. Use the full name.`,
+    };
+  }
+  return { id: matches[0].id as Id<"people">, name: matches[0].name };
+}
+
+/** Resolve a workstream key or label to its module key (case-insensitive). */
+function resolveWorkstream(context: Ctx, raw: string): string | undefined {
+  const needle = raw.trim().toLowerCase();
+  const hit = context.modules.find(
+    (m) => m.key.toLowerCase() === needle || m.label.toLowerCase() === needle,
+  );
+  if (hit) return hit.key;
+  // Core modules the event currently has toggled OFF still resolve, so
+  // toggle_workstream can re-enable them.
+  const core = (MODULE_KEYS as readonly string[]).find(
+    (k) =>
+      k === needle ||
+      (MODULE_LABELS as Record<string, string>)[k]?.toLowerCase() === needle,
+  );
+  return core;
+}
+
+/** Resolve a role label/key to the role's KEY (for workstream ownership). */
+function resolveRoleKey(context: Ctx, raw: string): string | undefined {
+  const needle = raw.trim().toLowerCase();
+  const hit = context.roles.find(
+    (r) => r.label.toLowerCase() === needle || r.key.toLowerCase() === needle,
+  );
+  return hit?.key;
+}
+
+/**
+ * Parse the reschedule_event date argument. A bare YYYY-MM-DD keeps the
+ * event's current time-of-day (events.reschedule expects a full timestamp);
+ * anything else goes through Date.parse. Returns null when unparseable.
+ */
+function parseRescheduleDate(raw: string, currentDate: number): number | null {
+  const s = raw.trim();
+  const dateOnly = /^(\d{4})-(\d{2})-(\d{2})$/.exec(s);
+  if (dateOnly) {
+    const d = new Date(currentDate);
+    d.setFullYear(
+      parseInt(dateOnly[1], 10),
+      parseInt(dateOnly[2], 10) - 1,
+      parseInt(dateOnly[3], 10),
+    );
+    return d.getTime();
+  }
+  const ts = Date.parse(s);
+  return Number.isNaN(ts) ? null : ts;
 }
 
 /** Apply one item edit (revertibly). Returns an error string, or null on success. */
@@ -899,6 +1213,295 @@ async function dispatchTool(
     return { ok: true, summary: "Photo set." };
   }
 
+  if (name === "get_readiness") {
+    const summary = await ctx.runQuery(internal.ai.readinessSummary, {
+      eventId,
+      chapterId,
+    });
+    if (!summary)
+      return { ok: false, summary: "Couldn't read the event.", edits: 0 };
+    return { ok: true, summary: JSON.stringify(summary), edits: 0 };
+  }
+
+  if (name === "remove_item") {
+    const itemId = args.item_id as Id<"eventItems">;
+    const idx = context.items.findIndex(
+      (it) => String(it.id) === String(itemId),
+    );
+    if (idx < 0)
+      return { ok: false, summary: `No item with id ${args.item_id}.`, edits: 0 };
+    const title = context.items[idx].title;
+    await ctx.runMutation(internal.ai.removeItem, { runId, itemId, chapterId });
+    context.items.splice(idx, 1);
+    return { ok: true, summary: `Deleted "${title}".`, edits: 1 };
+  }
+
+  if (name === "assign_role") {
+    const roleId = resolveRole(context, String(args.role ?? ""));
+    if (!roleId)
+      return { ok: false, summary: `Unknown role "${args.role}".`, edits: 0 };
+    const person = resolvePersonStrict(context, String(args.person ?? ""));
+    if ("error" in person) return { ok: false, summary: person.error, edits: 0 };
+    await ctx.runMutation(internal.ai.assignRole, {
+      eventId,
+      chapterId,
+      roleId,
+      personId: person.id,
+    });
+    const role = context.roles.find((r) => String(r.id) === String(roleId));
+    if (role) role.person = person.name;
+    return {
+      ok: true,
+      summary: `Assigned ${person.name} to ${role?.label ?? args.role}.`,
+      edits: 1,
+    };
+  }
+
+  if (name === "unassign_role") {
+    const roleId = resolveRole(context, String(args.role ?? ""));
+    if (!roleId)
+      return { ok: false, summary: `Unknown role "${args.role}".`, edits: 0 };
+    await ctx.runMutation(internal.ai.unassignRole, {
+      eventId,
+      chapterId,
+      roleId,
+    });
+    const role = context.roles.find((r) => String(r.id) === String(roleId));
+    if (role) role.person = null;
+    return {
+      ok: true,
+      summary: `Cleared ${role?.label ?? args.role}.`,
+      edits: 1,
+    };
+  }
+
+  if (name === "add_engagement") {
+    const person = resolvePersonStrict(context, String(args.person ?? ""));
+    if ("error" in person) return { ok: false, summary: person.error, edits: 0 };
+    const type = args.type === "paid" ? ("paid" as const) : ("volunteer" as const);
+    const res = await ctx.runMutation(internal.ai.addEngagement, {
+      eventId,
+      chapterId,
+      personId: person.id,
+      type,
+      teams: Array.isArray(args.teams) ? args.teams.map(String) : undefined,
+      service: args.service !== undefined ? String(args.service) : undefined,
+      callTime: args.call_time !== undefined ? String(args.call_time) : undefined,
+    });
+    if (!res)
+      return { ok: false, summary: "Couldn't engage — event not found.", edits: 0 };
+    if (res.alreadyEngaged)
+      return {
+        ok: false,
+        summary: `${person.name} is already engaged on this event — use update_engagement.`,
+        edits: 0,
+      };
+    return {
+      ok: true,
+      summary: `Engaged ${person.name} as ${type} (status: invited).`,
+      edits: 1,
+    };
+  }
+
+  if (name === "update_engagement") {
+    const person = resolvePersonStrict(context, String(args.person ?? ""));
+    if ("error" in person) return { ok: false, summary: person.error, edits: 0 };
+    const patch: Record<string, unknown> = {};
+    if (args.status !== undefined) {
+      if (!["invited", "confirmed", "declined"].includes(args.status))
+        return { ok: false, summary: `Bad status "${args.status}".`, edits: 0 };
+      patch.status = args.status;
+    }
+    if (args.type !== undefined) {
+      if (!["volunteer", "paid"].includes(args.type))
+        return { ok: false, summary: `Bad type "${args.type}".`, edits: 0 };
+      patch.type = args.type;
+    }
+    if (args.teams !== undefined)
+      patch.teams = Array.isArray(args.teams) ? args.teams.map(String) : null;
+    if (args.service !== undefined) patch.service = String(args.service);
+    if (args.call_time !== undefined) patch.callTime = String(args.call_time);
+    if (Object.keys(patch).length === 0)
+      return { ok: false, summary: "No engagement fields to change.", edits: 0 };
+    const res = await ctx.runMutation(internal.ai.updateEngagement, {
+      eventId,
+      chapterId,
+      personId: person.id,
+      ...patch,
+    });
+    if (!res)
+      return {
+        ok: false,
+        summary: `${person.name} has no engagement on this event — use add_engagement.`,
+        edits: 0,
+      };
+    return { ok: true, summary: `Updated ${person.name}'s engagement.`, edits: 1 };
+  }
+
+  if (name === "add_person") {
+    const personName = String(args.name ?? "").trim();
+    if (!personName) return { ok: false, summary: "No name given.", edits: 0 };
+    if (
+      context.people.some(
+        (p) => p.name.toLowerCase() === personName.toLowerCase(),
+      )
+    )
+      return {
+        ok: false,
+        summary: `"${personName}" is already on the roster.`,
+        edits: 0,
+      };
+    const personId = await ctx.runMutation(internal.ai.addPerson, {
+      chapterId,
+      name: personName,
+      email: args.email !== undefined ? String(args.email) : undefined,
+      phone: args.phone !== undefined ? String(args.phone) : undefined,
+    });
+    // Keep the turn's snapshot current so follow-up tools resolve the name.
+    context.people.push({ id: personId, name: personName });
+    return { ok: true, summary: `Added ${personName} to the roster.`, edits: 1 };
+  }
+
+  if (name === "set_workstream_owner") {
+    const key = resolveWorkstream(context, String(args.workstream ?? ""));
+    if (!key)
+      return {
+        ok: false,
+        summary: `Unknown workstream "${args.workstream}".`,
+        edits: 0,
+      };
+    const roleRaw = String(args.role ?? "").trim();
+    let ownerRoleKey: string | null = null;
+    if (roleRaw && roleRaw.toLowerCase() !== "none") {
+      const rk = resolveRoleKey(context, roleRaw);
+      if (!rk)
+        return { ok: false, summary: `Unknown role "${args.role}".`, edits: 0 };
+      ownerRoleKey = rk;
+    }
+    const res = await ctx.runMutation(internal.ai.setModuleOwner, {
+      eventId,
+      chapterId,
+      key,
+      ownerRoleKey,
+    });
+    if (!res)
+      return {
+        ok: false,
+        summary: `Couldn't set an owner for "${args.workstream}".`,
+        edits: 0,
+      };
+    const mod = context.modules.find((m) => m.key === key);
+    if (mod) mod.ownerRoleKey = ownerRoleKey;
+    return {
+      ok: true,
+      summary: ownerRoleKey
+        ? `${mod?.label ?? key} is now owned by the ${roleRaw} role.`
+        : `Cleared ${mod?.label ?? key}'s owner role.`,
+      edits: 1,
+    };
+  }
+
+  if (name === "toggle_workstream") {
+    const key = resolveWorkstream(context, String(args.workstream ?? ""));
+    if (!key)
+      return {
+        ok: false,
+        summary: `Unknown workstream "${args.workstream}".`,
+        edits: 0,
+      };
+    const enabled = args.enabled === true;
+    const res = await ctx.runMutation(internal.ai.toggleModule, {
+      eventId,
+      chapterId,
+      key,
+      enabled,
+    });
+    if (!res)
+      return {
+        ok: false,
+        summary: `Only core workstreams can be toggled — "${args.workstream}" is custom.`,
+        edits: 0,
+      };
+    return {
+      ok: true,
+      summary: `${enabled ? "Enabled" : "Disabled"} the ${
+        (MODULE_LABELS as Record<string, string>)[key] ?? key
+      } workstream.`,
+      edits: 1,
+    };
+  }
+
+  if (name === "create_custom_workstream") {
+    const label = String(args.label ?? "").trim();
+    if (!label) return { ok: false, summary: "No label given.", edits: 0 };
+    let ownerRoleKey: string | undefined;
+    if (args.owner_role !== undefined && String(args.owner_role).trim()) {
+      ownerRoleKey = resolveRoleKey(context, String(args.owner_role));
+      if (!ownerRoleKey)
+        return {
+          ok: false,
+          summary: `Unknown role "${args.owner_role}".`,
+          edits: 0,
+        };
+    }
+    const offsetMode = ["none", "days", "minutes"].includes(args.offset_mode)
+      ? (args.offset_mode as "none" | "days" | "minutes")
+      : undefined;
+    const res = await ctx.runMutation(internal.ai.createCustomModule, {
+      eventId,
+      chapterId,
+      label,
+      ownerRoleKey,
+      offsetMode,
+    });
+    if (!res)
+      return { ok: false, summary: "Couldn't create the workstream.", edits: 0 };
+    context.modules.push({
+      key: res.key,
+      label,
+      surface: "grid",
+      ownerRoleKey: ownerRoleKey ?? null,
+      ready: false,
+    });
+    return {
+      ok: true,
+      summary: `Created workstream "${label}" (key=${res.key}) with default columns.`,
+      edits: 1,
+    };
+  }
+
+  if (name === "reschedule_event") {
+    const ts = parseRescheduleDate(String(args.date ?? ""), context.event.date);
+    if (ts == null)
+      return {
+        ok: false,
+        summary: `Couldn't parse date "${args.date}" — use YYYY-MM-DD.`,
+        edits: 0,
+      };
+    const res = await ctx.runMutation(internal.ai.rescheduleEvent, {
+      eventId,
+      chapterId,
+      eventDate: ts,
+    });
+    if (!res)
+      return { ok: false, summary: "Couldn't reschedule the event.", edits: 0 };
+    context.event.date = ts;
+    const feasibility =
+      res.pastDueCount > 0
+        ? ` FEASIBILITY WARNING: ${res.pastDueCount} incomplete task(s) now ` +
+          `have past due dates (${res.pastDueTitles.slice(0, 5).join("; ")}) ` +
+          `— replan, compress, or drop them with the user.`
+        : " No incomplete tasks fell into the past.";
+    return {
+      ok: true,
+      summary:
+        `Event moved to ${new Date(ts).toISOString()}; ` +
+        `${res.shifted} due date(s) re-derived.` +
+        feasibility,
+      edits: 1,
+    };
+  }
+
   return { ok: false, summary: `Unknown tool "${name}".` };
 }
 
@@ -912,9 +1515,29 @@ async function dispatchTool(
  * whole turn "parsing" instead of acting. Grouping lets it reason module by
  * module and see, per section, which items belong there and what values are legal.
  */
-function systemPrompt(context: Ctx): string {
-  const roleList = context.roles.map((r) => r.label).join(", ");
+function systemPrompt(context: Ctx, now: number): string {
+  const roleList =
+    context.roles
+      .map((r) => `${r.label}${r.person ? ` = ${r.person}` : " = UNASSIGNED"}`)
+      .join(", ") || "(none)";
   const peopleList = context.people.map((p) => p.name).join(", ") || "(none)";
+
+  // T-window awareness: where this event sits in the playbook's five windows.
+  const daysUntil = offsetDaysBetween(now, context.event.date);
+  const isoDay = (ts: number) => new Date(ts).toISOString().slice(0, 10);
+  const timing =
+    `TODAY: ${isoDay(now)}. EVENT DATE: ${isoDay(context.event.date)}. ` +
+    `T-WINDOW: ${tWindowLine(daysUntil)}.`;
+
+  // Workstream roster (core + custom), incl. owner roles and ready flags —
+  // the setup surface the workstream tools edit.
+  const workstreamLines = context.modules
+    .map(
+      (m) =>
+        `- ${m.label} (key=${m.key}) owner_role=${m.ownerRoleKey ?? "NONE"}` +
+        ` ready=${m.ready ? "yes" : "no"}`,
+    )
+    .join("\n");
 
   const renderItem = (it: Ctx["items"][number]): string =>
     `- [${it.id}] "${it.title}" status=${it.status ?? "-"} role=${it.role ?? "-"}` +
@@ -961,35 +1584,67 @@ function systemPrompt(context: Ctx): string {
 
   return [
     "You are the Events OS planning assistant for a church event team. You help",
-    "edit an event plan by calling tools. The north star: any plan must be",
+    "plan and edit one event by calling tools. The north star: any plan must be",
     "runnable by one person alone, with zero tribal knowledge.",
     "",
-    `EVENT: "${context.event.name}".`,
-    `ROLES: ${roleList}.`,
-    `PEOPLE: ${peopleList}.`,
+    "THE PLAYBOOK — your philosophy and operating standards. Every nudge,",
+    "proposal, and edit should be traceable to it:",
     "",
-    "The plan is organized into MODULES. Below, each module is its own section",
-    "with its allowed option values and its current items. To target an item,",
-    "use its [id] with update_item / update_items / set_photo. To add a new item,",
-    "call add_item with the module KEY shown in the section header.",
+    PLAYBOOK_MD,
     "",
-    "CURRENT PLAN, BY MODULE:",
+    "────────────────────────────────────────",
+    "LIVE EVENT SNAPSHOT",
+    "",
+    timing,
+    `EVENT: "${context.event.name}" — status=${context.event.status}` +
+      (context.event.location ? `, location=${context.event.location}` : "") +
+      (context.event.budget != null ? `, budget=$${context.event.budget}` : "") +
+      ".",
+    `ROLES (who holds each): ${roleList}.`,
+    `PEOPLE (roster): ${peopleList}.`,
+    "WORKSTREAMS (the sections of the plan; tool args take the key):",
+    workstreamLines || "(none)",
+    "",
+    "Below, each workstream with items is its own section with its allowed",
+    "option values and its current items. To target an item, use its [id] with",
+    "update_item / update_items / remove_item / set_photo. To add a new item,",
+    "call add_item with the workstream KEY (its `module` argument) shown in the",
+    "section header.",
+    "",
+    "CURRENT PLAN, BY WORKSTREAM:",
     sections.length ? sections.join("\n\n") : "(no items yet)",
     "",
     "Rules:",
-    "- Reason module by module. When a request implies items in one module should",
-    "  exist or change in another (e.g. a planning task that needs a supplies row),",
-    "  ADD or UPDATE those rows so each module is fully built out.",
+    "- VOCABULARY: in everything you SAY to the user, call these surfaces",
+    '  "workstreams", never "modules" (tool arguments still take the module/',
+    "  workstream keys shown above).",
+    "- BRIEFING FIRST (playbook Philosophy 11): when a session starts or the",
+    "  user asks anything substantive about the plan, call get_readiness and",
+    "  open your reply with a short situational briefing — the T-window and the",
+    "  one or two things that matter most right now. A briefing, not a firehose.",
+    "- Reason workstream by workstream. When a request implies items in one",
+    "  workstream should exist or change in another (e.g. a planning task that",
+    "  needs a supplies row), ADD or UPDATE those rows so each workstream is",
+    "  fully built out.",
     "- Make every requested change with tool calls. CRITICAL FOR SPEED: when",
     "  changing MULTIPLE items, call update_items ONCE with all edits in its array;",
     "  never call update_item over and over.",
-    "- Use the EXACT allowed values shown per module for status/source/container,",
-    "  and the role labels / people names listed above. Reference items by [id];",
-    "  never invent ids.",
+    "- Use the EXACT allowed values shown per workstream for status/source/",
+    "  container, and the role labels / people names listed above. Reference",
+    "  items by [id]; never invent ids or values.",
+    "- FREE HAND (no confirmation needed): adding/editing items, statuses,",
+    "  offsets, owners, role assignments, crew engagements, adding roster",
+    "  people, setting workstream owners. All logged; item edits revertible.",
+    "- ASK FIRST — only call these when the user explicitly requested that",
+    "  action in this conversation: remove_item (deleting anything),",
+    "  reschedule_event (a date change is a plan change), toggling a workstream",
+    "  off, marking workstreams/the event ready or changing event status, and",
+    "  anything volunteer- or public-facing.",
     "- To find/add photos online, call find_photos with a short search query per",
     "  item — pass every item in one call.",
-    "- When done, reply with a SHORT summary of what changed. If the request is",
-    "  just a question, answer it without calling tools. Be concise.",
+    "- When done, reply with a SHORT summary of what changed, tied to the",
+    "  T-window where useful. If the request is just a question, answer it",
+    "  without calling tools. Be concise.",
   ].join("\n");
 }
 
@@ -1082,7 +1737,7 @@ export const runAssistant = action({
         content: m.text ?? "",
       }));
     const messages: ChatMessage[] = [
-      { role: "system", content: systemPrompt(context) },
+      { role: "system", content: systemPrompt(context, Date.now()) },
       ...priorTurns,
     ];
 

@@ -1257,3 +1257,6 @@ export const SONG_REQUEST_LIMITS = {
 
 // ── AI agent config (model registry, cost, budgets) ──────────────────────────
 export * from "./ai";
+
+// ── The planning playbook (generated from docs/agent.md) ─────────────────────
+export * from "./playbook";
