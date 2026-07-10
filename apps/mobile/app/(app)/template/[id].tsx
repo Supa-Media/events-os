@@ -113,8 +113,8 @@ export default function TemplateEditorScreen() {
           <View className="mt-6">
             <EmptyState
               icon="layout"
-              title="No grid modules active"
-              message="Turn on a module above to start building."
+              title="No workstreams active"
+              message="Turn on a workstream above to start building."
             />
           </View>
         </Narrow>

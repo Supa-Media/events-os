@@ -43,11 +43,11 @@ export function AddModuleTab({ config }: { config: AddModuleConfig }) {
       <Pressable
         onPress={() => measureAnchor(ref.current, setAnchor)}
         accessibilityRole="button"
-        accessibilityLabel="Add module"
+        accessibilityLabel="Add workstream"
         className="flex-row items-center gap-1 rounded-pill border border-dashed border-border-strong px-2.5 py-1 active:opacity-80 web:hover:border-accent"
       >
         <Icon name="plus" size={13} color={colors.muted} />
-        <Text className="text-xs font-medium text-muted">Module</Text>
+        <Text className="text-xs font-medium text-muted">Workstream</Text>
       </Pressable>
 
       <ContextMenu
@@ -60,7 +60,7 @@ export function AddModuleTab({ config }: { config: AddModuleConfig }) {
             onPress: () => config.onEnableCore(m.key),
           })),
           {
-            label: "New custom module",
+            label: "New custom workstream",
             icon: "edit-2" as const,
             onPress: () => setAdding(true),
           },
