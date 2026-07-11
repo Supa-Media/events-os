@@ -242,6 +242,112 @@ export function tWindowLine(daysUntil: number): string {
     : head;
 }
 
+// ── Planning timezone (calendar-day math for the agent) ──────────────────────
+// Event timestamps are stored as absolute ms; the SERVER runs in UTC while the
+// team plans in local wall-clock time. Naive UTC day math makes an evening
+// event (11 PM ET, stored as 03:00Z the NEXT day) look one calendar day late —
+// so days-to-event, T-windows, and overdue checks must count days in the
+// chapter's operating timezone, not the server's.
+
+/**
+ * The chapter's operating timezone. Single-valued for now — every chapter
+ * plans in Eastern time; a multi-TZ deployment gets a `timezone` field on
+ * chapters as a future follow-up, at which point call sites thread it through.
+ */
+export const PLANNING_TIME_ZONE = "America/New_York";
+
+/** Wall-clock date+time parts of a timestamp, in a target timezone. */
+export interface ZonedParts {
+  year: number;
+  month: number; // 1-12
+  day: number; // 1-31
+  hour: number; // 0-23
+  minute: number; // 0-59
+}
+
+const ZONED_DAY_MS = 24 * 60 * 60 * 1000; // self-contained (no ./index import)
+
+/**
+ * Decompose a timestamp into its wall-clock parts in `timeZone`, via
+ * `Intl.DateTimeFormat` (available in the Convex runtime, Node, and
+ * RN/Hermes) — dependency-free on purpose.
+ */
+export function zonedParts(
+  ts: number,
+  timeZone: string = PLANNING_TIME_ZONE,
+): ZonedParts {
+  const fmt = new Intl.DateTimeFormat("en-US", {
+    timeZone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hourCycle: "h23",
+  });
+  const parts: Record<string, string> = {};
+  for (const p of fmt.formatToParts(ts)) parts[p.type] = p.value;
+  return {
+    year: parseInt(parts.year, 10),
+    month: parseInt(parts.month, 10),
+    day: parseInt(parts.day, 10),
+    // Some engines render midnight as "24" despite h23 — normalize to 0.
+    hour: parseInt(parts.hour, 10) % 24,
+    minute: parseInt(parts.minute, 10),
+  };
+}
+
+/** The "YYYY-MM-DD" calendar day a timestamp falls on in `timeZone`. */
+export function dayKeyInTz(
+  ts: number,
+  timeZone: string = PLANNING_TIME_ZONE,
+): string {
+  const p = zonedParts(ts, timeZone);
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${p.year}-${pad(p.month)}-${pad(p.day)}`;
+}
+
+/**
+ * Signed whole-calendar-day delta between two timestamps in `timeZone`:
+ * positive when `toTs` falls on a later local calendar day than `fromTs`,
+ * 0 when they share a day. The TZ-aware sibling of `offsetDaysBetween` —
+ * `daysBetweenInTz(now, eventDate)` is the agent's days-to-event.
+ */
+export function daysBetweenInTz(
+  fromTs: number,
+  toTs: number,
+  timeZone: string = PLANNING_TIME_ZONE,
+): number {
+  const a = zonedParts(fromTs, timeZone);
+  const b = zonedParts(toTs, timeZone);
+  return Math.round(
+    (Date.UTC(b.year, b.month - 1, b.day) - Date.UTC(a.year, a.month - 1, a.day)) /
+      ZONED_DAY_MS,
+  );
+}
+
+/**
+ * The UTC timestamp of a wall-clock date+time in `timeZone` (the inverse of
+ * {@link zonedParts}). Uses the Intl offset-probe technique: start from the
+ * parts read as UTC, then correct by however far the rendered wall clock is
+ * off — two iterations converge across DST transitions. For a nonexistent
+ * local time (spring-forward gap) this lands on the closest valid instant.
+ */
+export function zonedTimeToUtc(
+  parts: { year: number; month: number; day: number; hour?: number; minute?: number },
+  timeZone: string = PLANNING_TIME_ZONE,
+): number {
+  const { year, month, day, hour = 0, minute = 0 } = parts;
+  const asUtc = Date.UTC(year, month - 1, day, hour, minute);
+  let ts = asUtc;
+  for (let i = 0; i < 2; i++) {
+    const p = zonedParts(ts, timeZone);
+    const rendered = Date.UTC(p.year, p.month - 1, p.day, p.hour, p.minute);
+    ts += asUtc - rendered;
+  }
+  return ts;
+}
+
 export interface AiUsageTokens {
   inputTokens: number;
   outputTokens: number;

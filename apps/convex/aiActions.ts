@@ -29,10 +29,13 @@ import {
   AI_MODELS,
   DEFAULT_AI_MODEL,
   PLAYBOOK_MD,
+  dayKeyInTz,
+  daysBetweenInTz,
   isFreeModelSlug,
   isOverChatBudget,
-  offsetDaysBetween,
   tWindowLine,
+  zonedParts,
+  zonedTimeToUtc,
   type AiCatalogModel,
 } from "@events-os/shared";
 
@@ -87,7 +90,10 @@ const TOOLS = [
         "Edit MANY items at once — the efficient way to change multiple rows. " +
         "Pass an array of edits, each with an item_id plus only the fields to " +
         "change. ALWAYS prefer this over calling update_item repeatedly: to " +
-        "change 8 items, make ONE update_items call with 8 edits.",
+        "change 8 items, make ONE update_items call with 8 edits. Each edit " +
+        "may also carry any CUSTOM column key from the workstream's " +
+        "allowed-values line (e.g. dispatch on retro rows) as an extra " +
+        "property.",
       parameters: {
         type: "object",
         properties: {
@@ -97,7 +103,9 @@ const TOOLS = [
               type: "object",
               properties: ITEM_EDIT_PROPS,
               required: ["item_id"],
-              additionalProperties: false,
+              // Extra keys = custom column keys for that item's workstream
+              // (validated at dispatch against the event's actual columns).
+              additionalProperties: true,
             },
           },
         },
@@ -113,12 +121,17 @@ const TOOLS = [
       description:
         "Edit fields of ONE existing item. For multiple items use update_items " +
         "instead. Use the exact status/source/container VALUES and role labels " +
-        "from the context. owner is a person's name, or 'none' to clear.",
+        "from the context. owner is a person's name, or 'none' to clear. You " +
+        "may also pass any CUSTOM column key from the workstream's " +
+        "allowed-values line (e.g. dispatch on retro rows) as an extra " +
+        "property, with a value from that column's options.",
       parameters: {
         type: "object",
         properties: ITEM_EDIT_PROPS,
         required: ["item_id"],
-        additionalProperties: false,
+        // Extra keys = custom column keys for that item's workstream
+        // (validated at dispatch against the event's actual columns).
+        additionalProperties: true,
       },
     },
   },
@@ -127,13 +140,16 @@ const TOOLS = [
     function: {
       name: "add_item",
       description:
-        "Add a new item to a module. module is one of: " +
-        MODULE_KEYS.join(", ") +
-        ". Provide a clear title; other fields optional.",
+        "Add a new item to a workstream. module is a workstream KEY from the " +
+        "event context's WORKSTREAMS list (core or custom). Provide a clear " +
+        "title; other fields optional.",
       parameters: {
         type: "object",
         properties: {
-          module: { type: "string", enum: MODULE_KEYS as unknown as string[] },
+          module: {
+            type: "string",
+            description: "A workstream key from the event context.",
+          },
           title: { type: "string" },
           status: { type: "string" },
           role: { type: "string" },
@@ -269,7 +285,8 @@ const TOOLS = [
         "Engage a roster person on this event as crew (they start 'invited'). " +
         "type is volunteer or paid; teams are team VALUES from the " +
         "Expectations team column; call_time is a display string like " +
-        "'7:30 AM'. If the person is already engaged, use update_engagement.",
+        "'7:30 AM'; amount_usd is the payment amount for PAID engagements. " +
+        "If the person is already engaged, use update_engagement.",
       parameters: {
         type: "object",
         properties: {
@@ -278,6 +295,10 @@ const TOOLS = [
           teams: { type: "array", items: { type: "string" } },
           service: { type: "string" },
           call_time: { type: "string" },
+          amount_usd: {
+            type: "number",
+            description: "Payment amount in US dollars (paid engagements).",
+          },
         },
         required: ["person", "type"],
         additionalProperties: false,
@@ -290,8 +311,10 @@ const TOOLS = [
       name: "update_engagement",
       description:
         "Update a person's existing crew engagement on this event: status " +
-        "(invited|confirmed|declined), teams, service, call_time, and/or type " +
-        "(volunteer|paid). Pass only the fields to change.",
+        "(invited|confirmed|declined), teams, service, call_time, amount_usd " +
+        "(payment, for paid engagements), and/or type (volunteer|paid). Pass " +
+        "only the fields to change; pass null for service/call_time/amount_usd " +
+        "to CLEAR them.",
       parameters: {
         type: "object",
         properties: {
@@ -301,8 +324,13 @@ const TOOLS = [
             enum: ["invited", "confirmed", "declined"],
           },
           teams: { type: "array", items: { type: "string" } },
-          service: { type: "string" },
-          call_time: { type: "string" },
+          service: { type: ["string", "null"] },
+          call_time: { type: ["string", "null"] },
+          amount_usd: {
+            type: ["number", "null"],
+            description:
+              "Payment amount in US dollars (paid engagements); null clears it.",
+          },
           type: { type: "string", enum: ["volunteer", "paid"] },
         },
         required: ["person"],
@@ -556,6 +584,25 @@ async function openRouterCall(
 ): Promise<{ message: ModelMessage; usage: OpenRouterUsage }> {
   const tools = opts.tools;
   const useTools = Array.isArray(tools) && tools.length > 0;
+  // Prompt caching: the system message is by far the largest block (playbook +
+  // live snapshot) and is stable within a turn's tool loop. Send it as a text
+  // block tagged `cache_control` so providers that support explicit caching
+  // (Anthropic, via OpenRouter's pass-through) reuse it; providers that don't
+  // simply ignore the field.
+  const wireMessages = messages.map((m) =>
+    m.role === "system" && typeof m.content === "string"
+      ? {
+          role: "system" as const,
+          content: [
+            {
+              type: "text",
+              text: m.content,
+              cache_control: { type: "ephemeral" },
+            },
+          ],
+        }
+      : m,
+  );
   // A hung model call must not stall the whole action. Mirror the search
   // helpers below, which all guard their fetches with an AbortController.
   const controller = new AbortController();
@@ -573,7 +620,7 @@ async function openRouterCall(
       },
       body: JSON.stringify({
         model: slug,
-        messages,
+        messages: wireMessages,
         ...(useTools ? { tools, tool_choice: "auto" } : {}),
         reasoning: { effort: opts.effort ?? ASSISTANT_REASONING_EFFORT },
         max_tokens: opts.maxTokens ?? ASSISTANT_MAX_TOKENS,
@@ -1018,6 +1065,10 @@ interface EventCtx {
     ready: boolean;
   }>;
   optionsByModule: Record<string, Record<string, string[]>>;
+  columnsByModule: Record<
+    string,
+    Array<{ key: string; kind: string; type: string; options: string[] | null }>
+  >;
   items: Array<{
     id: Id<"eventItems">;
     module: string;
@@ -1112,24 +1163,58 @@ function resolveRoleKey(context: Ctx, raw: string): string | undefined {
 
 /**
  * Parse the reschedule_event date argument. A bare YYYY-MM-DD keeps the
- * event's current time-of-day (events.reschedule expects a full timestamp);
- * anything else goes through Date.parse. Returns null when unparseable.
+ * event's current wall-clock time in the PLANNING timezone on the requested
+ * local calendar date (events.reschedule expects a full timestamp); anything
+ * else goes through Date.parse. Returns null when unparseable OR when the
+ * calendar date is invalid — month/day out of range, or a rollover date like
+ * 2026-06-31 that would silently land on July 1st.
+ *
+ * Exported for tests.
  */
-function parseRescheduleDate(raw: string, currentDate: number): number | null {
+export function parseRescheduleDate(
+  raw: string,
+  currentDate: number,
+): number | null {
   const s = raw.trim();
   const dateOnly = /^(\d{4})-(\d{2})-(\d{2})$/.exec(s);
   if (dateOnly) {
-    const d = new Date(currentDate);
-    d.setFullYear(
-      parseInt(dateOnly[1], 10),
-      parseInt(dateOnly[2], 10) - 1,
-      parseInt(dateOnly[3], 10),
-    );
-    return d.getTime();
+    const year = parseInt(dateOnly[1], 10);
+    const month = parseInt(dateOnly[2], 10);
+    const day = parseInt(dateOnly[3], 10);
+    if (month < 1 || month > 12 || day < 1 || day > 31) return null;
+    // Keep the event's current local wall-clock time on the new local day.
+    const wall = zonedParts(currentDate);
+    const ts = zonedTimeToUtc({
+      year,
+      month,
+      day,
+      hour: wall.hour,
+      minute: wall.minute,
+    });
+    // Round-trip verify: the constructed instant must land on the REQUESTED
+    // local calendar day (rejects rollovers like Jun 31 → Jul 1).
+    if (dayKeyInTz(ts) !== `${dateOnly[1]}-${dateOnly[2]}-${dateOnly[3]}`) {
+      return null;
+    }
+    return ts;
   }
   const ts = Date.parse(s);
   return Number.isNaN(ts) ? null : ts;
 }
+
+/** The edit props update_item handles directly (see ITEM_EDIT_PROPS). Any
+ * OTHER prop must match a custom column of the item's workstream. */
+const KNOWN_EDIT_KEYS = new Set(Object.keys(ITEM_EDIT_PROPS));
+
+/** Column types whose cell values are ids/artifacts (storage ids, doc ids,
+ * people ids) that the model must not write raw strings into. */
+const UNWRITABLE_COLUMN_TYPES = new Set([
+  "photo",
+  "person",
+  "role",
+  "how_to",
+  "due_date",
+]);
 
 /** Apply one item edit (revertibly). Returns an error string, or null on success. */
 async function applyOneEdit(
@@ -1140,8 +1225,8 @@ async function applyOneEdit(
   args: any,
 ): Promise<string | null> {
   const itemId = args.item_id as Id<"eventItems">;
-  if (!context.items.some((it) => String(it.id) === String(itemId)))
-    return `No item with id ${args.item_id}.`;
+  const item = context.items.find((it) => String(it.id) === String(itemId));
+  if (!item) return `No item with id ${args.item_id}.`;
   const promoted: Record<string, any> = {};
   const fields: Record<string, any> = {};
   if (args.title !== undefined) promoted.title = args.title;
@@ -1161,6 +1246,42 @@ async function applyOneEdit(
   if (args.notes !== undefined) fields.notes = args.notes;
   if (args.source !== undefined) fields.source = args.source;
   if (args.container !== undefined) fields.container = args.container;
+
+  // Any other prop must be a CUSTOM column of this item's workstream (e.g. the
+  // retro `dispatch` column) — validated against the column's options and
+  // written into the `fields` bag. A prop that matches nothing is an ERROR,
+  // not a silent success.
+  const columns = context.columnsByModule[item.module] ?? [];
+  for (const [key, value] of Object.entries(args)) {
+    if (KNOWN_EDIT_KEYS.has(key)) continue;
+    const col = columns.find((c) => c.key === key && c.kind === "custom");
+    if (!col) {
+      const customKeys = columns
+        .filter((c) => c.kind === "custom")
+        .map((c) => c.key);
+      return (
+        `Unknown property "${key}" for this item` +
+        (customKeys.length
+          ? ` — its custom columns are: ${customKeys.join(", ")}.`
+          : ".")
+      );
+    }
+    if (UNWRITABLE_COLUMN_TYPES.has(col.type)) {
+      return `The "${key}" column can't be set through update_item.`;
+    }
+    if (col.options && value !== null) {
+      // select = one option value; multiselect = an array of them.
+      const values = Array.isArray(value) ? value.map(String) : [String(value)];
+      const bad = values.find((v) => !col.options!.includes(v));
+      if (bad !== undefined) {
+        return `"${bad}" isn't a valid ${key} value — options: ${col.options.join(", ")}.`;
+      }
+      fields[key] = col.type === "multiselect" ? values : values[0];
+    } else {
+      fields[key] = value; // null clears the cell
+    }
+  }
+
   await ctx.runMutation(internal.ai.applyItemPatch, {
     runId,
     itemId,
@@ -1171,8 +1292,33 @@ async function applyOneEdit(
   return null;
 }
 
-/** Run one tool call; apply the edit(s) (revertibly) and return a short result. */
-async function dispatchTool(
+/**
+ * Turn a template-sync failure into a tool-result summary the model can act
+ * on. A ConvexError carries an application message (NO_TEMPLATE_MATCH,
+ * NOT_FOUND, …) — surface it verbatim. Anything else is almost always a
+ * hallucinated/stale id failing argument validation — say what to do instead.
+ */
+function toolErrorSummary(err: unknown, fallback: string): string {
+  if (err instanceof ConvexError) {
+    const data = err.data as any;
+    const message =
+      (typeof data === "object" && data !== null && data.message) ||
+      (typeof data === "string" && data) ||
+      null;
+    if (message) return String(message);
+  }
+  return fallback;
+}
+
+/** Generic-but-actionable message for a promote/diff failure without a
+ * ConvexError message — almost always a hallucinated or stale id. */
+const BAD_PROMOTION_IDS_MSG =
+  "One of the promotion ids wasn't valid — re-run diff_event_vs_template " +
+  "and use its ids.";
+
+/** Run one tool call; apply the edit(s) (revertibly) and return a short result.
+ * Exported for tests. */
+export async function dispatchTool(
   ctx: any,
   runId: Id<"aiRuns">,
   eventId: Id<"events">,
@@ -1204,8 +1350,16 @@ async function dispatchTool(
   }
 
   if (name === "add_item") {
-    if (!(MODULE_KEYS as readonly string[]).includes(args.module))
-      return { ok: false, summary: `Unknown module "${args.module}".` };
+    // Validate against the event's ACTUAL active workstreams (core + custom),
+    // not the static core list — items must be addable to custom workstreams.
+    const activeKeys = context.modules.map((m) => m.key);
+    if (!activeKeys.includes(args.module))
+      return {
+        ok: false,
+        summary:
+          `Unknown workstream "${args.module}" — valid keys: ` +
+          `${activeKeys.join(", ")}.`,
+      };
     const roleId = args.role ? resolveRole(context, String(args.role)) : undefined;
     const fields: Record<string, any> = {};
     if (args.cost !== undefined) fields.cost = args.cost;
@@ -1348,8 +1502,10 @@ async function dispatchTool(
       personId: person.id,
       type,
       teams: Array.isArray(args.teams) ? args.teams.map(String) : undefined,
-      service: args.service !== undefined ? String(args.service) : undefined,
-      callTime: args.call_time !== undefined ? String(args.call_time) : undefined,
+      service: args.service != null ? String(args.service) : undefined,
+      callTime: args.call_time != null ? String(args.call_time) : undefined,
+      amountUsd:
+        typeof args.amount_usd === "number" ? args.amount_usd : undefined,
     });
     if (!res)
       return { ok: false, summary: "Couldn't engage — event not found.", edits: 0 };
@@ -1382,8 +1538,20 @@ async function dispatchTool(
     }
     if (args.teams !== undefined)
       patch.teams = Array.isArray(args.teams) ? args.teams.map(String) : null;
-    if (args.service !== undefined) patch.service = String(args.service);
-    if (args.call_time !== undefined) patch.callTime = String(args.call_time);
+    // Explicit null CLEARS service / call_time / amount_usd.
+    if (args.service !== undefined)
+      patch.service = args.service === null ? null : String(args.service);
+    if (args.call_time !== undefined)
+      patch.callTime = args.call_time === null ? null : String(args.call_time);
+    if (args.amount_usd !== undefined) {
+      if (args.amount_usd !== null && typeof args.amount_usd !== "number")
+        return {
+          ok: false,
+          summary: `Bad amount_usd "${args.amount_usd}" — pass a number or null.`,
+          edits: 0,
+        };
+      patch.amountUsd = args.amount_usd;
+    }
     if (Object.keys(patch).length === 0)
       return { ok: false, summary: "No engagement fields to change.", edits: 0 };
     const res = await ctx.runMutation(internal.ai.updateEngagement, {
@@ -1566,9 +1734,23 @@ async function dispatchTool(
   }
 
   if (name === "diff_event_vs_template") {
-    const diff = await ctx.runQuery(api.templateSync.diffEventAgainstTemplate, {
-      eventId,
-    });
+    // Defensive: a template-sync failure (e.g. the template was deleted) must
+    // come back as a tool error the model can react to, not kill the run.
+    let diff: any;
+    try {
+      diff = await ctx.runQuery(api.templateSync.diffEventAgainstTemplate, {
+        eventId,
+      });
+    } catch (err) {
+      return {
+        ok: false,
+        summary: toolErrorSummary(
+          err,
+          "Couldn't diff against the template — the event may no longer have one.",
+        ),
+        edits: 0,
+      };
+    }
     const total =
       diff.items.length + diff.modules.length + diff.columns.length;
     return {
@@ -1617,10 +1799,22 @@ async function dispatchTool(
         };
       }
     }
-    const res = await ctx.runMutation(api.templateSync.promoteFromEvent, {
-      eventId,
-      promotions,
-    });
+    // Defensive: a hallucinated/stale id (ArgumentValidationError) or a
+    // template-sync ConvexError (NO_TEMPLATE_MATCH, NOT_FOUND) must come back
+    // as a tool error the model can react to, not kill the run.
+    let res: any;
+    try {
+      res = await ctx.runMutation(api.templateSync.promoteFromEvent, {
+        eventId,
+        promotions,
+      });
+    } catch (err) {
+      return {
+        ok: false,
+        summary: toolErrorSummary(err, BAD_PROMOTION_IDS_MSG),
+        edits: 0,
+      };
+    }
     return {
       ok: true,
       summary:
@@ -1651,10 +1845,11 @@ function systemPrompt(context: Ctx, now: number): string {
   const peopleList = context.people.map((p) => p.name).join(", ") || "(none)";
 
   // T-window awareness: where this event sits in the playbook's five windows.
-  const daysUntil = offsetDaysBetween(now, context.event.date);
-  const isoDay = (ts: number) => new Date(ts).toISOString().slice(0, 10);
+  // Calendar days count in the chapter's PLANNING timezone — the server runs
+  // UTC, so naive UTC day math puts an evening event a day late.
+  const daysUntil = daysBetweenInTz(now, context.event.date);
   const timing =
-    `TODAY: ${isoDay(now)}. EVENT DATE: ${isoDay(context.event.date)}. ` +
+    `TODAY: ${dayKeyInTz(now)}. EVENT DATE: ${dayKeyInTz(context.event.date)}. ` +
     `T-WINDOW: ${tWindowLine(daysUntil)}.`;
 
   // Workstream roster (core + custom), incl. owner roles and ready flags —
@@ -2373,6 +2568,23 @@ export const runDocAssistant = action({
         threadId,
         kind: "error",
         text: "Doc not found.",
+      });
+      return { ok: false };
+    }
+
+    // PLATFORM GUIDE (slug set) → read-only. Refuse BEFORE the model loop:
+    // docs.setBody would reject the write anyway, but only after tokens were
+    // spent — and the throw would error the whole run. A friendly reply, not
+    // an error. (ensureDocThread/newDocThread also refuse; this is the
+    // belt-and-braces for pre-existing threads.)
+    if (doc.slug != null) {
+      await ctx.runMutation(internal.ai.appendMessage, {
+        threadId,
+        kind: "assistant",
+        text:
+          "This is a platform guide — it updates automatically with the " +
+          "platform and is read-only, so I can't edit it. Put chapter " +
+          "specifics in your own templates and how-to docs instead.",
       });
       return { ok: false };
     }
