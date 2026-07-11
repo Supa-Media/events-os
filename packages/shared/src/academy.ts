@@ -597,7 +597,7 @@ const SECTIONS_IN_ORDER: Omit<AcademySection, "order">[] = [
       { kind: "heading", text: "Am I where I should be?" },
       {
         kind: "p",
-        text: "A percentage alone can't tell you if you're in trouble — 40% planned is great at two months out and a crisis at three days. So each ring also knows its **pace target**: the score it would show if everything due by today were done. Fall meaningfully behind and the ring grows a “▲ 54%” pill — that's the number to catch up to, and the gap is what you close *today*.",
+        text: "A percentage alone can't tell you if you're in trouble — 40% planned is great at two months out and a crisis at three days. So each ring also knows its **pace target**: the score it would have if everything due by today were done. A dashed tick marks the target on the ring itself, and underneath you get one of two words: a green **“✓ on pace”**, or an amber **“▲ target 54%”** when you've fallen meaningfully behind — that gap is what you close *today*.",
       },
       {
         kind: "rule",

@@ -99,24 +99,74 @@ function Playhead({
   );
 }
 
+/** Hollow dashed dot marking the PACE TARGET on the ring — "you should be
+ *  here by today". Sits on the track like the playhead, but dashed and
+ *  unfilled so actual (solid) and target (outline) never read as the same
+ *  thing. */
+function GhostTick({
+  size,
+  thickness,
+  sweep,
+  color,
+}: {
+  size: number;
+  thickness: number;
+  sweep: number;
+  color: string;
+}) {
+  const dot = thickness + 4;
+  return (
+    <View
+      pointerEvents="none"
+      style={{
+        position: "absolute",
+        width: size,
+        height: size,
+        transform: [{ rotate: `${sweep}deg` }],
+      }}
+    >
+      <View
+        style={{
+          position: "absolute",
+          top: thickness / 2 - dot / 2,
+          left: size / 2 - dot / 2,
+          width: dot,
+          height: dot,
+          borderRadius: dot / 2,
+          backgroundColor: "#FFFFFF",
+          borderWidth: 1.5,
+          borderStyle: "dashed",
+          borderColor: color,
+        }}
+      />
+    </View>
+  );
+}
+
 /**
  * A circular readiness meter, animated: the sweep eases in, the % counts up, a
  * playhead dot rides the leading edge, and a phase-colored glow intensifies as
  * the value climbs. At 100% the number gives way to a checkmark and (on web) a
  * sonar halo pings outward. `color`/`glowColor` override the default
  * readiness-tier tint so phase rings can wear their identity hue.
+ *
+ * `ghost` (0–100) draws a dashed target tick on the track — the pacing
+ * ghost: where the value SHOULD be right now. Omitted/0 renders nothing.
  */
 export function ReadinessRing({
   value,
   size = 72,
   color,
   glowColor,
+  ghost,
 }: {
   /** 0–100, or null for an unmeasured phase (renders a dim "—"). */
   value: number | null;
   size?: number;
   color?: string;
   glowColor?: string;
+  /** 0–100 pace target position, or null/undefined for no tick. */
+  ghost?: number | null;
 }) {
   const eased = useEasedValue(value ?? 0);
   const complete = (value ?? 0) >= 100;
@@ -155,6 +205,15 @@ export function ReadinessRing({
             </Text>
           )}
         </View>
+
+        {ghost != null && ghost > 0 && !complete ? (
+          <GhostTick
+            size={size}
+            thickness={thickness}
+            sweep={ghost * 3.6}
+            color={ringColor}
+          />
+        ) : null}
 
         {isWeb && value != null && eased > 2 && !complete ? (
           <Playhead size={size} thickness={thickness} sweep={sweep} color={ringColor} />
