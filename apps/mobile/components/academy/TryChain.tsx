@@ -8,7 +8,7 @@ const LINKS = [
   "Row owner",
   "Row's role",
   "Role's person",
-  "Workstream owner",
+  "Area owner",
   "Event owner",
 ];
 

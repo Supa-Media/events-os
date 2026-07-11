@@ -43,8 +43,8 @@ function PhaseLabel({
   );
 }
 
-/** Points behind pace before the ghost line appears — a ring 1–2 points shy
- *  of its target is noise, not a warning. */
+/** Points behind pace before the target caption turns into a warning — a
+ *  ring 1–2 points shy of its target is noise, not a fire. */
 const PACE_GAP_THRESHOLD = 3;
 
 /** One tappable phase ring + its label. Tapping asks the parent to spotlight it. */
@@ -66,10 +66,14 @@ function PhaseRing({
 }) {
   const hue = phaseColors[phase];
   const complete = pct != null && pct >= 100;
-  // Behind pace: everything due by today would put this ring at expectedPct.
+  // Pace: everything due by today would put this ring at expectedPct. The
+  // target is ALWAYS shown when it exists (even "target 0%" — it answers
+  // "nothing is due yet, you're ahead"); it only turns amber when the ring
+  // is meaningfully behind it.
   const gap =
     pct != null && expectedPct != null ? expectedPct - pct : null;
   const behind = gap != null && gap >= PACE_GAP_THRESHOLD;
+  const showTarget = expectedPct != null && !complete;
   return (
     <Pressable
       onPress={onSelect ? () => onSelect(phase) : undefined}
@@ -79,7 +83,11 @@ function PhaseRing({
       accessibilityLabel={`${PHASE_LABELS[phase]} readiness${
         pct == null ? "" : `, ${pct}%`
       }${
-        behind ? `, ${gap} points behind the ${expectedPct}% target for today` : ""
+        showTarget
+          ? behind
+            ? `, ${gap} points behind today's ${expectedPct}% target`
+            : `, on pace for today's ${expectedPct}% target`
+          : ""
       }. Highlights this phase's tabs.`}
       className="items-center gap-1 active:opacity-70 web:hover:opacity-85"
       style={active ? { transform: [{ scale: 1.06 }] } : undefined}
@@ -89,6 +97,7 @@ function PhaseRing({
         size={size}
         color={pct == null ? undefined : hue.main}
         glowColor={hue.glow}
+        ghost={expectedPct}
       />
       <PhaseLabel
         label={PHASE_LABELS[phase]}
@@ -96,15 +105,28 @@ function PhaseRing({
         lit={active || complete}
         dim={pct == null}
       />
-      {behind ? (
-        <View
-          className="flex-row items-center rounded-pill px-1.5 py-px"
-          style={{ backgroundColor: colors.amberBg }}
-        >
-          <Text className="text-2xs font-bold" style={{ color: colors.amber }}>
-            ▲ {expectedPct}%
+      {showTarget ? (
+        behind ? (
+          <View
+            className="flex-row items-center rounded-pill px-1.5 py-px"
+            style={{ backgroundColor: colors.amberBg }}
+          >
+            <Text
+              className="text-2xs font-bold"
+              style={{ color: colors.amber }}
+            >
+              ▲ target {expectedPct}%
+            </Text>
+          </View>
+        ) : (
+          // On pace is GOOD NEWS — say so, don't just go quiet.
+          <Text
+            className="text-2xs font-semibold"
+            style={{ color: colors.success }}
+          >
+            ✓ on pace
           </Text>
-        </View>
+        )
       ) : null}
     </Pressable>
   );
