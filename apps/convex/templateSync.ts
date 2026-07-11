@@ -345,7 +345,7 @@ export const diffEventAgainstTemplate = query({
     // on label/options. Columns of a brand-new workstream are skipped — they
     // ride along with its add_module promotion.
     const templateColByKey = new Map(
-      sync.templateColumns.map((c) => [`${c.module} ${c.key}`, c]),
+      sync.templateColumns.map((c) => [`${c.module}\u0000${c.key}`, c]),
     );
     const columns: Array<{
       kind: "column_change";
@@ -358,7 +358,7 @@ export const diffEventAgainstTemplate = query({
     }> = [];
     for (const c of sync.eventColumns) {
       if (newModuleKeys.has(c.module)) continue;
-      const tc = templateColByKey.get(`${c.module} ${c.key}`);
+      const tc = templateColByKey.get(`${c.module}\u0000${c.key}`);
       if (!tc) {
         columns.push({
           kind: "column_change",
@@ -426,8 +426,9 @@ const promotionValidator = v.union(
 /**
  * Apply a reviewed batch of event→template promotions. Structure only, never
  * state (see module doc). The whole batch is one transaction and bumps the
- * template's version exactly once. Returns the applied entries with the
- * template-side ids they created or updated.
+ * template's version exactly once — and only when at least one promotion
+ * actually wrote (no-op entries neither appear in `applied` nor bump). Returns
+ * the applied entries with the template-side ids they created or updated.
  */
 export const promoteFromEvent = mutation({
   args: {
@@ -441,7 +442,7 @@ export const promoteFromEvent = mutation({
     // Event column types by (module, key) — used to strip state-valued cells
     // (photos, costs, people) out of promoted `fields` bags.
     const eventColType = new Map(
-      sync.eventColumns.map((c) => [`${c.module} ${c.key}`, c.type]),
+      sync.eventColumns.map((c) => [`${c.module}\u0000${c.key}`, c.type]),
     );
 
     /** The event item's fields bag reduced to structure-valued cells. */
@@ -451,7 +452,7 @@ export const promoteFromEvent = mutation({
       if (!item.fields) return undefined;
       const out: Record<string, unknown> = {};
       for (const [key, value] of Object.entries(item.fields)) {
-        const type = eventColType.get(`${item.module} ${key}`);
+        const type = eventColType.get(`${item.module}\u0000${key}`);
         if (!type || STATE_VALUE_COLUMN_TYPES.has(type)) continue;
         out[key] = value;
       }
@@ -468,6 +469,20 @@ export const promoteFromEvent = mutation({
       sync.templateRoles.filter((r) => r.isArchived === true).map((r) => r.key),
     );
     let nextRoleOrder = maxOrder(sync.templateRoles) + 1;
+
+    // Next `order` per module, seeded lazily from the preloaded template items
+    // (mirrors `nextRoleOrder`) and bumped in memory per insert — so several
+    // add_items into the same module within one batch keep appending after each
+    // other without re-collecting the module every time.
+    const nextItemOrderByModule = new Map<string, number>();
+    const nextItemOrder = (module: string): number => {
+      const next =
+        nextItemOrderByModule.get(module) ??
+        maxOrder(sync.templateItems.filter((ti) => ti.module === module)) + 1;
+      nextItemOrderByModule.set(module, next + 1);
+      return next;
+    };
+
     const ensureTemplateRole = async (
       eventRoleId: Id<"eventRoles"> | undefined,
     ): Promise<Id<"templateRoles"> | undefined> => {
@@ -521,19 +536,11 @@ export const promoteFromEvent = mutation({
     for (const promo of promotions) {
       if (promo.kind === "add_item") {
         const item = await requireEventItemOnEvent(promo.eventItemId);
-        // Re-query (not the preloaded snapshot) so several add_items into the
-        // same module within one batch keep appending after each other.
-        const siblings = await ctx.db
-          .query("templateItems")
-          .withIndex("by_eventType_module", (q) =>
-            q.eq("eventTypeId", eventType._id).eq("module", item.module),
-          )
-          .collect();
         const templateItemId = await ctx.db.insert("templateItems", {
           eventTypeId: eventType._id,
           module: item.module,
           title: item.title,
-          order: maxOrder(siblings) + 1,
+          order: nextItemOrder(item.module),
           offsetDays: effectiveOffsetDays(item, event.eventDate),
           offsetMinutes: item.offsetMinutes,
           roleId: await ensureTemplateRole(item.roleId),
@@ -587,22 +594,34 @@ export const promoteFromEvent = mutation({
             const value = item.fields?.[key];
             if (value === undefined || value === null) delete fieldsPatch[key];
             else fieldsPatch[key] = value;
+          } else {
+            // itemChanges() and this chain must stay in lockstep: a diff field
+            // added there without a promote arm here should fail loudly, not
+            // silently drop an approved change.
+            throw new ConvexError({
+              code: "PROMOTE_UNSUPPORTED_FIELD",
+              message: `Promotion doesn't know how to apply field "${change.field}".`,
+            });
           }
         }
         if (fieldsPatch) {
           patch.fields =
             Object.keys(fieldsPatch).length > 0 ? fieldsPatch : undefined;
         }
-        if (Object.keys(patch).length > 0) await ctx.db.patch(target._id, patch);
         // Backfill/repair provenance so future diffs match this pair exactly.
+        // (An event-item link fix alone is not a template edit — it doesn't
+        // count as an applied promotion or bump the version.)
         if (item.sourceTemplateItemId !== target._id)
           await ctx.db.patch(item._id, { sourceTemplateItemId: target._id });
-        applied.push({
-          kind: promo.kind,
-          eventItemId: item._id,
-          templateItemId: target._id,
-          fields: Object.keys(patch),
-        });
+        if (Object.keys(patch).length > 0) {
+          await ctx.db.patch(target._id, patch);
+          applied.push({
+            kind: promo.kind,
+            eventItemId: item._id,
+            templateItemId: target._id,
+            fields: Object.keys(patch),
+          });
+        }
       } else if (promo.kind === "remove_item") {
         const target = await ctx.db.get(promo.templateItemId);
         if (!target || target.eventTypeId !== eventType._id) {
@@ -623,14 +642,12 @@ export const promoteFromEvent = mutation({
             message: `"${promo.moduleKey}" is not a custom module on this event.`,
           });
         }
-        // Idempotent: the template already has this workstream (by key).
+        // Idempotent: the template already has this workstream (by key) — a
+        // no-op, so it's not an applied write and mustn't bump the version.
         const existing = sync.templateModules.find(
           (m) => m.key === promo.moduleKey,
         );
-        if (existing) {
-          applied.push({ kind: promo.kind, moduleKey: promo.moduleKey, templateModuleId: existing._id });
-          continue;
-        }
+        if (existing) continue;
         const templateModuleId = await ctx.db.insert("templateModules", {
           eventTypeId: eventType._id,
           key: eventModule.key,
@@ -699,9 +716,11 @@ export const promoteFromEvent = mutation({
       }
     }
 
-    // One structural edit → exactly one version bump, so the existing
-    // `events.templateVersion` drift display keeps working.
-    await bumpVersion(ctx, eventType._id);
+    // One batch with ≥1 structural edit → exactly one version bump, so the
+    // existing `events.templateVersion` drift display keeps working. `applied`
+    // only collects entries that actually wrote, so an all-no-op batch (e.g. an
+    // update_item whose patch ended empty) leaves the version untouched.
+    if (applied.length > 0) await bumpVersion(ctx, eventType._id);
 
     return { eventTypeId: eventType._id, applied };
   },

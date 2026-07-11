@@ -325,6 +325,13 @@ describe("templateSync.promoteFromEvent", () => {
     expect(promotedA).not.toHaveProperty("ownerPersonId");
     expect(promotedA).not.toHaveProperty("prePlanChecked");
 
+    // Two add_items into the same module within one batch keep appending:
+    // strictly increasing order values, after the existing template rows.
+    const promotedB = await run(t, (ctx) =>
+      ctx.db.get(result.applied[1].templateItemId as Id<"templateItems">),
+    );
+    expect(promotedB!.order).toBeGreaterThan(promotedA!.order);
+
     // Provenance backfilled → the follow-up diff is clean again.
     const eventItemA = await run(t, (ctx) => ctx.db.get(itemA));
     expect(eventItemA!.sourceTemplateItemId).toBe(promotedA!._id);
@@ -438,6 +445,27 @@ describe("templateSync.promoteFromEvent", () => {
       eventId,
     });
     expect(diff.items).toEqual([]);
+  });
+
+  test("a batch whose only entry no-ops (state-only edits → empty patch) does not bump the version", async () => {
+    const t = newT();
+    const { as, eventId, eventTypeId, templateItemId } =
+      await setupTemplateAndEvent(t);
+
+    // A STATE-only edit on the clone: no structural divergence, so the
+    // update_item promotion has nothing to patch onto the template.
+    const clone = await cloneOf(t, eventId, templateItemId);
+    await as.mutation(api.items.setStatus, { itemId: clone._id, status: "done" });
+
+    const versionBefore = await templateVersion(t, eventTypeId);
+    const result = await as.mutation(api.templateSync.promoteFromEvent, {
+      eventId,
+      promotions: [{ kind: "update_item", eventItemId: clone._id }],
+    });
+
+    // Nothing was written → nothing applied, and NO version bump.
+    expect(result.applied).toEqual([]);
+    expect(await templateVersion(t, eventTypeId)).toBe(versionBefore);
   });
 
   test("add_module + column promotions copy workstreams and column defs to the template", async () => {
