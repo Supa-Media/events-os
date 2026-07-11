@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { View, Text, Pressable } from "react-native";
 import { Icon, Badge } from "../ui";
+import { DemoRow } from "./DemoRow";
 import { colors } from "../../lib/theme";
 
 const LINKS = [
@@ -58,16 +59,13 @@ export function TryChain() {
       </View>
 
       {/* The row the chain resolves (or fails to) */}
-      <View className="mt-3 flex-row items-center gap-3 rounded-md border border-border bg-raised px-3 py-2.5">
-        <Text className="flex-1 text-sm font-medium text-ink" numberOfLines={2}>
-          Book porta-potty vendor
-        </Text>
+      <DemoRow title="Book porta-potty vendor" className="mt-3">
         {broken ? (
           <Badge label="Unowned" tone="danger" icon="alert-circle" />
         ) : (
           <Badge label="Jordan · Logistics Lead" tone="success" />
         )}
-      </View>
+      </DemoRow>
 
       {/* Toggle */}
       <Pressable

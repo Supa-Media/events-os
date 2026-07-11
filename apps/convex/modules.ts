@@ -18,6 +18,7 @@ import {
   CORE_MODULES,
   DEFAULT_COLUMNS,
   DEFAULT_CUSTOM_COLUMNS,
+  RESERVED_TAB_KEYS,
   resolveActiveModules,
   disabledCoreModules as resolveDisabledCore,
   type ModuleKey,
@@ -377,8 +378,9 @@ function isCoreKey(key: string): boolean {
 
 /** A key not already used by a custom row in the scope. */
 function uniqueKey(base: string, rows: Array<{ key: string }>): string {
-  const used = new Set(rows.map((r) => r.key));
+  const used = new Set<string>(rows.map((r) => r.key));
   if (isCoreKey(base)) used.add(base); // never collide with a core key
+  for (const k of RESERVED_TAB_KEYS) used.add(k); // never shadow a tool tab
   if (!used.has(base)) return base;
   let i = 2;
   while (used.has(`${base}_${i}`)) i++;

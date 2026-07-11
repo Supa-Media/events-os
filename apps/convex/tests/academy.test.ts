@@ -148,8 +148,11 @@ describe("curriculum content", () => {
           }
         }
         if (b.kind === "try_status") {
-          // The terminal value must be reachable by cycling the options.
+          // The terminal value must be reachable by cycling the options —
+          // and never the STARTING option, or the widget would show its
+          // success caption before the learner taps anything.
           expect(b.options.map((o) => o.value)).toContain(b.terminal);
+          expect(b.options[0]?.value).not.toBe(b.terminal);
         }
       }
       // Every teaching section (1-6) practices hands-on: ≥1 interactive block.

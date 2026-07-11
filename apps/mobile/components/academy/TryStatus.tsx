@@ -2,6 +2,7 @@ import { useState } from "react";
 import { View, Text } from "react-native";
 import type { AcademyStatusOption } from "@events-os/shared";
 import { Icon, OptionTag } from "../ui";
+import { DemoRow } from "./DemoRow";
 import { colors } from "../../lib/theme";
 
 const DEFAULT_CAPTION =
@@ -29,16 +30,13 @@ export function TryStatus({
 
   return (
     <View>
-      <View className="flex-row items-center gap-3 rounded-md border border-border bg-raised px-3 py-2.5">
-        <Text className="flex-1 text-sm font-medium text-ink" numberOfLines={2}>
-          {title}
-        </Text>
+      <DemoRow title={title}>
         <OptionTag
           label={current?.label ?? ""}
           color={current?.color}
           onPress={() => setIdx((i) => (i + 1) % options.length)}
         />
-      </View>
+      </DemoRow>
       {done ? (
         <View className="mt-2 flex-row items-start gap-2">
           <View className="mt-0.5">

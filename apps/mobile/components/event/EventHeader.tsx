@@ -96,7 +96,9 @@ export function EventHeader({
               <Meta icon="dollar-sign" text={`$${budgetSpent} planned`} />
             ) : null}
           </View>
-          <View className="mt-1 flex-row items-center gap-2">
+          {/* flex-wrap: Tickets lives ONLY here now, so the tools row must
+              never push buttons off-screen on phone widths. */}
+          <View className="mt-1 flex-row flex-wrap items-center gap-2">
             <Badge
               label={EVENT_STATUS_LABELS[event.status as EventStatus]}
               tone={statusTone(event.status as EventStatus)}

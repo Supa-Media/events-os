@@ -114,7 +114,7 @@ export default function AcademySectionScreen() {
 
       {/* The article */}
       <View className="mt-4">
-        <ArticleBlocks blocks={section.blocks} />
+        <ArticleBlocks blocks={section.blocks} sectionKey={section.slug} />
       </View>
 
       {/* Quiz or capstone quest checklist */}

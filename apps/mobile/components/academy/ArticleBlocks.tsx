@@ -19,11 +19,20 @@ import { AgentDemo } from "./AgentDemo";
  * simulator, scenario reveals, the assistant demo). Interactive blocks hold
  * throwaway local state only — nothing here writes to the backend.
  */
-export function ArticleBlocks({ blocks }: { blocks: AcademyBlock[] }) {
+export function ArticleBlocks({
+  blocks,
+  sectionKey,
+}: {
+  blocks: AcademyBlock[];
+  // Keys are scoped by section so an interactive widget's local state can
+  // never survive a slug change on this reused screen (same hazard the event
+  // screen keys its module sections against).
+  sectionKey: string;
+}) {
   return (
     <View className="gap-3.5">
       {blocks.map((block, i) => (
-        <Block key={i} block={block} />
+        <Block key={`${sectionKey}:${i}`} block={block} />
       ))}
     </View>
   );
@@ -65,32 +74,12 @@ function Block({ block }: { block: AcademyBlock }) {
     case "tip":
       return <Tip text={block.text} />;
     case "try_status":
-      return (
-        <TryCard eyebrow="Try it" icon="mouse-pointer">
-          <TryStatus
-            title={block.title}
-            options={block.options}
-            terminal={block.terminal}
-            caption={block.caption}
-          />
-        </TryCard>
-      );
     case "try_offset":
-      return (
-        <TryCard eyebrow="Try it" icon="mouse-pointer">
-          <TryOffset eventDateLabel={block.eventDateLabel} />
-        </TryCard>
-      );
     case "try_chain":
-      return (
-        <TryCard eyebrow="Try it" icon="mouse-pointer">
-          <TryChain />
-        </TryCard>
-      );
     case "try_ready":
       return (
         <TryCard eyebrow="Try it" icon="mouse-pointer">
-          <TryReady criteria={block.criteria} />
+          <TryWidget block={block} />
         </TryCard>
       );
     case "reveal":
@@ -105,6 +94,38 @@ function Block({ block }: { block: AcademyBlock }) {
           <AgentDemo exchanges={block.exchanges} />
         </TryCard>
       );
+    default:
+      // Exhaustiveness: a new AcademyBlock kind without a renderer is a
+      // compile error here, never a silently-missing block on the page.
+      return block satisfies never;
+  }
+}
+
+/** The four practice widgets share the TryCard shell; dispatch the body. */
+function TryWidget({
+  block,
+}: {
+  block: Extract<
+    AcademyBlock,
+    { kind: "try_status" | "try_offset" | "try_chain" | "try_ready" }
+  >;
+}) {
+  switch (block.kind) {
+    case "try_status":
+      return (
+        <TryStatus
+          title={block.title}
+          options={block.options}
+          terminal={block.terminal}
+          caption={block.caption}
+        />
+      );
+    case "try_offset":
+      return <TryOffset eventDateLabel={block.eventDateLabel} />;
+    case "try_chain":
+      return <TryChain />;
+    case "try_ready":
+      return <TryReady criteria={block.criteria} />;
   }
 }
 
@@ -193,8 +214,15 @@ function BlockTable({
   const widths = columnWidths(headers, rows);
   return (
     <View className="overflow-hidden rounded-lg border border-border bg-raised">
-      <ScrollView horizontal showsHorizontalScrollIndicator={false}>
-        <View style={{ minWidth: "100%" }}>
+      <ScrollView
+        horizontal
+        showsHorizontalScrollIndicator={false}
+        // flexGrow stretches narrow tables to the article column on native,
+        // where a percentage minWidth would resolve as auto and leave the
+        // header band hugging its content.
+        contentContainerStyle={{ flexGrow: 1 }}
+      >
+        <View className="flex-1">
           <View className="flex-row border-b border-border bg-sunken">
             {headers.map((h, c) => (
               <View key={c} style={{ width: widths[c] }} className="px-3 py-2">

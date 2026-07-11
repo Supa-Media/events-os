@@ -1,10 +1,13 @@
 import { useState } from "react";
 import { View, Text, Pressable } from "react-native";
+import { formatOffsetDays } from "@events-os/shared";
 import { Icon } from "../ui";
 import { colors } from "../../lib/theme";
 
-// A fixed sample Saturday — the demo teaches derivation, not calendars.
-const BASE_DATE = new Date(2026, 5, 6);
+// A fixed sample Saturday — the demo teaches derivation, not calendars. All
+// arithmetic runs in UTC so 24h multiples can never cross a DST boundary and
+// skew the displayed day (the widget's whole lesson is that offsets are exact).
+const BASE_UTC = Date.UTC(2026, 5, 6);
 const DAY = 24 * 60 * 60 * 1000;
 
 const OFFSETS = [-14, -10, -7, -3, -1, 2];
@@ -16,15 +19,15 @@ const SAMPLE_TASKS = [
   { title: "Supplies packed", offset: -1 },
 ];
 
-function offsetLabel(o: number): string {
-  return o < 0 ? `T-${-o}` : o === 0 ? "T-0" : `T+${o}`;
-}
+// The same notation every real grid cell uses (shared formatOffsetDays).
+const offsetLabel = formatOffsetDays;
 
-function fmt(d: Date): string {
-  return d.toLocaleDateString("en-US", {
+function fmt(ts: number): string {
+  return new Date(ts).toLocaleDateString("en-US", {
     weekday: "short",
     month: "short",
     day: "numeric",
+    timeZone: "UTC",
   });
 }
 
@@ -37,8 +40,8 @@ export function TryOffset({ eventDateLabel }: { eventDateLabel?: string }) {
   const [offset, setOffset] = useState(-7);
   const [shift, setShift] = useState(0);
 
-  const eventDate = new Date(BASE_DATE.getTime() + shift * DAY);
-  const due = new Date(eventDate.getTime() + offset * DAY);
+  const eventDate = BASE_UTC + shift * DAY;
+  const due = eventDate + offset * DAY;
 
   return (
     <View>
@@ -112,7 +115,7 @@ export function TryOffset({ eventDateLabel }: { eventDateLabel?: string }) {
             </Text>
             <Text className="flex-1 text-xs text-muted">{t.title}</Text>
             <Text className="text-xs font-semibold text-ink">
-              {fmt(new Date(eventDate.getTime() + t.offset * DAY))}
+              {fmt(eventDate + t.offset * DAY)}
             </Text>
           </View>
         ))}
