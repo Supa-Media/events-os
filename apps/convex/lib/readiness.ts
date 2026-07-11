@@ -17,6 +17,7 @@ import {
   computePhaseOverdue,
   computePhaseScores,
   isCompleteStatus,
+  isSupplyPacked,
   MODULE_READY_PHASE,
   type PhaseKey,
   type PhasePace,
@@ -129,7 +130,9 @@ export async function phaseReadinessBundle(
           offsetMinutes: it.offsetMinutes ?? null,
           // Supplies: the Packing-checklist boolean — feeds the day-of ring
           // (status covers acquisition only; packing is its own signal).
-          packedIn: it.fields?.packedIn === true,
+          // isSupplyPacked also grandfathers unmigrated legacy `packed`
+          // statuses so pre-migration events keep honest rings.
+          packedIn: isSupplyPacked(it),
           prePlanColumns: it.prePlanColumns ?? undefined,
           prePlanChecked: it.prePlanChecked ?? undefined,
         })),

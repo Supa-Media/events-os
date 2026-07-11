@@ -682,7 +682,7 @@ const SECTIONS_IN_ORDER: Omit<AcademySection, "order">[] = [
     ],
   },
 
-  // ── 5 · The four phase rings ───────────────────────────────────────────────
+  // ── 6 · The four phase rings ───────────────────────────────────────────────
   {
     slug: "phase-rings",
     title: "The four rings",
@@ -798,7 +798,7 @@ const SECTIONS_IN_ORDER: Omit<AcademySection, "order">[] = [
     ],
   },
 
-  // ── 5 · Tasks ──────────────────────────────────────────────────────────────
+  // ── 7 · Tasks ──────────────────────────────────────────────────────────────
   {
     slug: "tab-tasks",
     title: "Tasks",
@@ -947,7 +947,7 @@ const SECTIONS_IN_ORDER: Omit<AcademySection, "order">[] = [
     ],
   },
 
-  // ── 6 · Comms Schedule ─────────────────────────────────────────────────────
+  // ── 8 · Comms Schedule ─────────────────────────────────────────────────────
   {
     slug: "tab-comms",
     title: "Comms Schedule",
@@ -1054,7 +1054,7 @@ const SECTIONS_IN_ORDER: Omit<AcademySection, "order">[] = [
     ],
   },
 
-  // ── 7 · Run of Show ────────────────────────────────────────────────────────
+  // ── 9 · Run of Show ────────────────────────────────────────────────────────
   {
     slug: "tab-run-of-show",
     title: "Run of Show",
@@ -1130,7 +1130,7 @@ const SECTIONS_IN_ORDER: Omit<AcademySection, "order">[] = [
     ],
   },
 
-  // ── 8 · Crew Duties ────────────────────────────────────────────────────────
+  // ── 10 · Crew Duties ────────────────────────────────────────────────────────
   {
     slug: "tab-crew-duties",
     title: "Crew Duties",
@@ -1248,7 +1248,7 @@ const SECTIONS_IN_ORDER: Omit<AcademySection, "order">[] = [
     ],
   },
 
-  // ── 9 · Supplies & Logistics ───────────────────────────────────────────────
+  // ── 11 · Supplies & Logistics ───────────────────────────────────────────────
   {
     slug: "tab-supplies",
     title: "Supplies & Logistics",
@@ -1366,7 +1366,7 @@ const SECTIONS_IN_ORDER: Omit<AcademySection, "order">[] = [
     ],
   },
 
-  // ── 10 · Permits ───────────────────────────────────────────────────────────
+  // ── 12 · Permits ───────────────────────────────────────────────────────────
   {
     slug: "tab-permits",
     title: "Permits",
@@ -1448,7 +1448,7 @@ const SECTIONS_IN_ORDER: Omit<AcademySection, "order">[] = [
     ],
   },
 
-  // ── 11 · Debrief ───────────────────────────────────────────────────────────
+  // ── 13 · Debrief ───────────────────────────────────────────────────────────
   {
     slug: "tab-debrief",
     title: "Debrief",
@@ -1524,7 +1524,7 @@ const SECTIONS_IN_ORDER: Omit<AcademySection, "order">[] = [
     ],
   },
 
-  // ── 12 · The assistant ─────────────────────────────────────────────────────
+  // ── 14 · The assistant ─────────────────────────────────────────────────────
   {
     // Renamed from the v1 slug "working-with-the-assistant" ON PURPOSE: this
     // section gates the first capstone, and a surviving slug would let a
@@ -1626,7 +1626,7 @@ const SECTIONS_IN_ORDER: Omit<AcademySection, "order">[] = [
     ],
   },
 
-  // ── 13 · Capstone: join an event ───────────────────────────────────────────
+  // ── 15 · Capstone: join an event ───────────────────────────────────────────
   {
     slug: "capstone-join-an-event",
     title: "Capstone: join an event",
@@ -1674,7 +1674,7 @@ const SECTIONS_IN_ORDER: Omit<AcademySection, "order">[] = [
     quiz: [],
   },
 
-  // ── 14 · Capstone: plan a party ────────────────────────────────────────────
+  // ── 16 · Capstone: plan a party ────────────────────────────────────────────
   {
     slug: "capstone-birthday-party",
     title: "Capstone: plan a party from scratch",
@@ -1714,7 +1714,7 @@ const SECTIONS_IN_ORDER: Omit<AcademySection, "order">[] = [
     quiz: [],
   },
 
-  // ── 15 · Bonus capstone: worship event ─────────────────────────────────────
+  // ── 17 · Bonus capstone: worship event ─────────────────────────────────────
   {
     slug: "capstone-worship-event",
     title: "Bonus: plan a worship event",

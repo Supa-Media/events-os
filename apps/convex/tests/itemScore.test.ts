@@ -5,6 +5,7 @@ import {
   computeExpectedPhaseScores,
   computePhaseOverdue,
   computePhaseScores,
+  isSupplyPacked,
   itemScore,
   startOfDay,
   type SelectOption,
@@ -56,6 +57,19 @@ describe("computePhaseScores partial vs complete", () => {
     expect(started).toBe(PARTIAL_ITEM_SCORE);
     expect(done).toBe(1);
     expect(started).toBeLessThan(done);
+  });
+});
+
+describe("isSupplyPacked — the canonical packed read", () => {
+  test("the Packing-checklist boolean is the signal, strictly boolean", () => {
+    expect(isSupplyPacked({ status: "have_it", fields: { packedIn: true } })).toBe(true);
+    expect(isSupplyPacked({ status: "have_it", fields: {} })).toBe(false);
+    expect(isSupplyPacked({ status: "have_it", fields: { packedIn: "true" } })).toBe(false);
+    expect(isSupplyPacked({ status: null, fields: null })).toBe(false);
+  });
+
+  test("legacy `packed` STATUS still reads as packed (unmigrated events)", () => {
+    expect(isSupplyPacked({ status: "packed" })).toBe(true);
   });
 });
 
@@ -304,6 +318,27 @@ describe("computePhaseOverdue — the pace signal", () => {
     const after = computePhaseOverdue(modules, [], EVENT, EVENT + DAY_MS);
     expect(after.dayOf).toEqual({ dueTotal: 2, overdue: 1 });
     expect(after.planning).toEqual({ dueTotal: 2, overdue: 0 });
+  });
+
+  test("a day-of purchase (offset 0) owes no packing before the event itself", () => {
+    // "Bags of ice — buy morning-of": its pack deadline floors at its own
+    // have-it-by timing (T-0), not the blanket T-1 convention, so the ring
+    // can't demand packing for an item that doesn't exist yet.
+    const modules = [
+      {
+        module: "supplies",
+        statusOptions: [
+          { value: "have_it", label: "Have it", isComplete: true },
+        ] as SelectOption[],
+        items: [{ status: null, offsetDays: 0, packedIn: false }],
+      },
+    ];
+    const eventMorning = computePhaseOverdue(modules, [], EVENT, EVENT);
+    expect(eventMorning.dayOf).toEqual({ dueTotal: 0, overdue: 0 });
+    // Once its own deadline passes, both of the item's units pace: the
+    // acquisition (offset 0 → day-of) and the packing unit.
+    const dayAfter = computePhaseOverdue(modules, [], EVENT, EVENT + DAY_MS);
+    expect(dayAfter.dayOf).toEqual({ dueTotal: 2, overdue: 2 });
   });
 
   test("an unmet ready gate past its convention deadline counts overdue", () => {

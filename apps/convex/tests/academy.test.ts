@@ -355,6 +355,41 @@ describe("quiz grading", () => {
     expect(bySlug.get(ACADEMY_SECTIONS[3].slug)!.unlocked).toBe(false);
   });
 
+  test("a passed section stays unlocked (and retakeable) across a curriculum insert", async () => {
+    const s = await setupLearner(newT());
+    // Simulate a mid-curriculum INSERT: the learner passed section 3 under an
+    // older ordering, but its (new) predecessor has no pass row.
+    const section = ACADEMY_SECTIONS[2];
+    await run(s.t, (ctx) =>
+      ctx.db.insert("academyProgress", {
+        chapterId: s.chapterId,
+        personId: s.personId,
+        sectionSlug: section.slug,
+        quizBestScore: section.quiz.length,
+        quizTotal: section.quiz.length,
+        passedAt: Date.now(),
+      }),
+    );
+    const progress = await s.as.query(api.academy.myProgress, {});
+    const row = progress.sections.find((x) => x.slug === section.slug)!;
+    expect(row.passed).toBe(true);
+    // Passed ⇒ unlocked, even with an unpassed gap before it — an insert
+    // must never re-lock sections people already finished.
+    expect(row.unlocked).toBe(true);
+    // …and a retake isn't gated on the gap either.
+    const res = await s.as.mutation(api.academy.submitQuiz, {
+      sectionSlug: section.slug,
+      answers: correctAnswers(section.slug),
+    });
+    expect(res.passed).toBe(true);
+    // The gap itself stays locked: the unpassed section 2 still requires its
+    // own predecessor (sequential order holds for new work).
+    expect(
+      progress.sections.find((x) => x.slug === ACADEMY_SECTIONS[1].slug)!
+        .unlocked,
+    ).toBe(false);
+  });
+
   test("markRead stamps readAt once and never blocks on order", async () => {
     const s = await setupLearner(newT());
     // Reading is never locked — mark a LATE section read with nothing passed.

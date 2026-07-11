@@ -208,7 +208,10 @@ export const get = query({
       // by now were done (0..1 or null) — places the target tick.
       expectedPhases,
       // The pace signal: per-phase overdue tallies, computed with the same
-      // rule as the What's-next OVERDUE badges so the two never disagree.
+      // rule as the What's-next OVERDUE badges so the two never disagree —
+      // with ONE addition the list doesn't carry: unpacked supplies past
+      // their pack deadline count as Day-of overdue units, and that debt
+      // lives on the Packing checklist (see computePhaseOverdue).
       pacePhases,
       taskTotal: r.total,
       taskDone: r.done,
