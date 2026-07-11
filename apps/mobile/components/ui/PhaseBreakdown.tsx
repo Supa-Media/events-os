@@ -11,17 +11,23 @@ import {
 
 type PhaseHue = { main: string; glow: string };
 
-/** Label under a phase ring: a hue dot + the phase name, lit when active/done. */
+/**
+ * Label under a phase ring. Quiet by default (the ring's hue already encodes
+ * the phase); lit in the hue when active/done, tinted amber when the phase has
+ * overdue work — the only loud state.
+ */
 function PhaseLabel({
   label,
   hue,
   lit,
   dim,
+  behind,
 }: {
   label: string;
   hue: PhaseHue;
   lit: boolean;
   dim: boolean;
+  behind: boolean;
 }) {
   return (
     <View className="flex-row items-center gap-1">
@@ -30,13 +36,13 @@ function PhaseLabel({
           width: 6,
           height: 6,
           borderRadius: 3,
-          backgroundColor: hue.main,
-          opacity: dim ? 0.35 : 1,
+          backgroundColor: behind ? colors.warn : hue.main,
+          opacity: dim && !behind ? 0.35 : 1,
         }}
       />
       <Text
         className="text-2xs font-bold uppercase tracking-wider text-muted"
-        style={lit ? { color: hue.main } : undefined}
+        style={behind ? { color: colors.warn } : lit ? { color: hue.main } : undefined}
       >
         {label}
       </Text>
@@ -68,10 +74,10 @@ function PhaseRing({
   const complete = pct != null && pct >= 100;
   // The pace signal is the overdue count — the SAME rows the What's-next
   // list badges OVERDUE, tallied per phase, so ring and list always agree.
-  // The expected % only places the dashed target tick on the ring.
+  // Per-ring it only tints the label; the header's single pace pill carries
+  // the loud aggregate signal (one attention element, not four).
   const overdue = pace?.overdue ?? 0;
   const behind = overdue > 0 && !complete;
-  const showPace = pace != null && !complete;
   return (
     <Pressable
       onPress={onSelect ? () => onSelect(phase) : undefined}
@@ -81,10 +87,8 @@ function PhaseRing({
       accessibilityLabel={`${PHASE_LABELS[phase]} readiness${
         pct == null ? "" : `, ${pct}%`
       }${
-        showPace
-          ? behind
-            ? `, ${overdue} overdue item${overdue === 1 ? "" : "s"}`
-            : ", on pace — nothing overdue"
+        behind
+          ? `, ${overdue} overdue item${overdue === 1 ? "" : "s"}`
           : ""
       }. Highlights this phase's tabs.`}
       className="items-center gap-1 active:opacity-70 web:hover:opacity-85"
@@ -102,30 +106,8 @@ function PhaseRing({
         hue={hue}
         lit={active || complete}
         dim={pct == null}
+        behind={behind}
       />
-      {showPace ? (
-        behind ? (
-          <View
-            className="flex-row items-center rounded-pill px-1.5 py-px"
-            style={{ backgroundColor: colors.amberBg }}
-          >
-            <Text
-              className="text-2xs font-bold"
-              style={{ color: colors.amber }}
-            >
-              ▲ {overdue} overdue
-            </Text>
-          </View>
-        ) : (
-          // On pace is GOOD NEWS — say so, don't just go quiet.
-          <Text
-            className="text-2xs font-semibold"
-            style={{ color: colors.success }}
-          >
-            ✓ on pace
-          </Text>
-        )
-      ) : null}
     </Pressable>
   );
 }
@@ -140,10 +122,10 @@ function PhaseRing({
  * `expected` places each ring's dashed BASELINE TICK — the actual score
  * with all overdue debt cleared (early work shifts it up, so the tick is
  * always at-or-above the playhead); `pace` carries each phase's overdue
- * tally — the signal behind
- * the green "✓ on pace" / amber "▲ N overdue" captions. The overdue counts
- * are computed with the same rule as the What's-next list's OVERDUE badges,
- * so the rings and the list always tell the same story.
+ * tally, which here only tints a behind phase's label amber. The loud
+ * aggregate signal ("▲ N overdue" / "✓ on pace") is the header's single
+ * pace pill, computed from the same counts, so rings, pill, and the
+ * What's-next list always tell the same story.
  */
 export function PhaseBreakdown({
   phases,

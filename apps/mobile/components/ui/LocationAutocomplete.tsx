@@ -45,6 +45,8 @@ type Props = {
   /** Fixed width for the inline variant. */
   width?: number;
   autoCapitalize?: TextInputProps["autoCapitalize"];
+  /** Focus the input on mount (for tap-to-edit swaps). */
+  autoFocus?: boolean;
 };
 
 /**
@@ -66,6 +68,7 @@ export function LocationAutocomplete({
   hint,
   width,
   autoCapitalize,
+  autoFocus,
 }: Props) {
   const runAutocomplete = useAction(api.places.autocomplete);
   const [focused, setFocused] = useState(false);
@@ -153,6 +156,7 @@ export function LocationAutocomplete({
         placeholderTextColor={colors.faint}
         autoCapitalize={autoCapitalize}
         autoCorrect={false}
+        autoFocus={autoFocus}
         className={inputClass}
       />
 

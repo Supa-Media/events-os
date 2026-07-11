@@ -18,9 +18,8 @@ import { useActionRunner } from "../../../lib/useActionToast";
 import type { Id } from "@events-os/convex/_generated/dataModel";
 import { AiAssistantPanel } from "../../../components/ai/AiAssistantPanel";
 import { CrewSections } from "../../../components/event/CrewSections";
-import { EventHeader } from "../../../components/event/EventHeader";
+import { EventHeader, EventTools } from "../../../components/event/EventHeader";
 import { EventTabBar, type EventTab } from "../../../components/event/EventTabBar";
-import { EventOverviewControls } from "../../../components/event/EventOverviewControls";
 import { EventTodos } from "../../../components/event/EventTodos";
 import { GuidesSection } from "../../../components/event/GuidesSection";
 import { SandboxScope } from "../../../components/event/SandboxScope";
@@ -32,7 +31,6 @@ import { ModuleSection } from "../../../components/event/ModuleSection";
 import TicketingTab from "../../../components/event/ticketing/TicketingTab";
 import { colors, modulePhase } from "../../../lib/theme";
 import { usePhasePulse } from "../../../lib/usePhasePulse";
-import { parseDateInput, toDateInput, formatDate } from "../../../lib/format";
 import {
   firstUnassignedRole,
   firstModuleMissingOwner,
@@ -65,10 +63,10 @@ export default function EventDetailScreen() {
   // down to the modules and tasks the current user owns (api.events.myWork).
   const [meView, setMeView] = useState(false);
 
-  // The Overview tab is gone: its two halves live as header-toggled panels
-  // that work on ANY tab — "details" (roles/status/schedule/location/budget/
-  // delete) and "next" (outstanding work + guides).
-  const [panel, setPanel] = useState<null | "details" | "next">(null);
+  // The Overview tab is gone: its details half now edits INLINE in the header
+  // (title, status pill, meta line, people row), and its "What's next" half is
+  // a panel toggled by the header's pace pill — available on any tab.
+  const [nextOpen, setNextOpen] = useState(false);
 
   // Tapping a header phase ring briefly pulses the tabs that feed that phase —
   // the interactive answer to "which tabs move this number?".
@@ -87,7 +85,7 @@ export default function EventDetailScreen() {
   // both the normal panel and Me view's task section).
   const todos = useQuery(
     api.events.todos,
-    panel === "next" ? { eventId } : "skip",
+    nextOpen ? { eventId } : "skip",
   );
 
   const reschedule = useMutation(api.events.reschedule);
@@ -105,7 +103,6 @@ export default function EventDetailScreen() {
 
   // Local edit buffers (null = mirror server value).
   const [nameInput, setNameInput] = useState<string | null>(null);
-  const [dateInput, setDateInput] = useState<string | null>(null);
   const [budgetInput, setBudgetInput] = useState<string | null>(null);
   const [locationInput, setLocationInput] = useState<string | null>(null);
   const [picker, setPicker] = useState<
@@ -166,14 +163,11 @@ export default function EventDetailScreen() {
     phases,
     expectedPhases,
     pacePhases,
-    taskTotal,
-    taskDone,
     budgetSpent,
     budgetPct,
   } = data;
 
   const nameValue = nameInput !== null ? nameInput : event.name;
-  const dateValue = dateInput !== null ? dateInput : toDateInput(event.eventDate);
   const budgetValue =
     budgetInput !== null
       ? budgetInput
@@ -389,13 +383,10 @@ export default function EventDetailScreen() {
     setNameInput(null);
   }
 
-  async function handleReschedule() {
-    const ts = parseDateInput(dateValue);
-    if (ts === null) return;
-    await run(() => reschedule({ eventId, eventDate: ts }), {
+  function handleReschedule(ts: number) {
+    void run(() => reschedule({ eventId, eventDate: ts }), {
       errorTitle: "Couldn't reschedule",
     });
-    setDateInput(null);
   }
 
   async function handleSaveBudget() {
@@ -472,108 +463,73 @@ export default function EventDetailScreen() {
           <Text className="text-sm font-medium text-muted">Pipeline</Text>
         </Pressable>
 
-        {/* Workspace header */}
+        {/* Workspace header — everything from the old Overview edits inline
+            here: title, status pill, date/location/budget meta line, and the
+            owner + roles row. The pace pill toggles the What's-next panel. */}
         <EventHeader
           event={event}
-          eventId={eventId}
           eventTypeName={eventTypeName}
           phases={phases}
           expectedPhases={expectedPhases}
           pacePhases={pacePhases}
-          taskDone={taskDone}
-          taskTotal={taskTotal}
           budgetSpent={budgetSpent}
           budgetPct={budgetPct}
           nameValue={nameValue}
           onChangeName={setNameInput}
           onSaveName={handleSaveName}
-          onDayOf={() => router.push(`/event/${eventId}/day-of`)}
-          onSongs={() => router.push(`/event/${eventId}/songs`)}
-          onTickets={() => router.setParams({ tab: "tickets" })}
-          ticketsActive={activeTab === "tickets"}
-          meView={meView}
-          onToggleMeView={() => setMeView((v) => !v)}
-          detailsOpen={panel === "details"}
-          onToggleDetails={() =>
-            setPanel((p) => (p === "details" ? null : "details"))
+          onSetStatus={(s) =>
+            void run(() => setStatus({ eventId, status: s }), {
+              errorTitle: "Couldn't change status",
+            })
           }
-          whatsNextOpen={panel === "next"}
-          onToggleWhatsNext={() =>
-            setPanel((p) => (p === "next" ? null : "next"))
+          onReschedule={handleReschedule}
+          locationValue={locationValue}
+          onChangeLocation={setLocationInput}
+          onSaveLocation={handleSaveLocation}
+          budgetValue={budgetValue}
+          onChangeBudget={setBudgetInput}
+          onSaveBudget={handleSaveBudget}
+          owner={owner}
+          roleRows={roleRows}
+          onOpenOwner={() => setOwnerOpen(true)}
+          onPickRole={(r) =>
+            setPicker({
+              roleId: r.roleId,
+              roleLabel: r.roleLabel,
+              selectedId: r.person?._id ?? null,
+            })
           }
-          whatsNextCount={
-            pacePhases
-              ? Object.values(pacePhases).reduce(
-                  (n, p) => n + (p?.overdue ?? 0),
-                  0,
-                )
-              : 0
+          onRenameRole={(roleId, label) =>
+            void run(
+              () =>
+                updateEventRole({
+                  roleId: roleId as Id<"eventRoles">,
+                  label,
+                }),
+              { errorTitle: "Couldn't rename role" },
+            )
           }
+          onDeleteRole={(roleId) =>
+            void run(
+              () => deleteEventRole({ roleId: roleId as Id<"eventRoles"> }),
+              { errorTitle: "Couldn't delete role" },
+            )
+          }
+          onAddRole={(label) =>
+            void run(() => createEventRole({ eventId, label }), {
+              errorTitle: "Couldn't add role",
+            })
+          }
+          whatsNextOpen={nextOpen}
+          onToggleWhatsNext={() => setNextOpen((v) => !v)}
           onSelectPhase={flashPhase}
           activePhase={pulsePhase}
         />
 
-        {/* ── Header panels (the old Overview, folded in): available on any
-            tab. "Details" = roles/status/schedule/location/budget/delete;
-            "What's next" = outstanding work (+ guides), or the Me-view work
-            summary while Me view is on. ─────────────────────────────────── */}
-        {panel === "details" ? (
-          <EventOverviewControls
-            event={event}
-            roleRows={roleRows}
-            owner={owner}
-            dateValue={dateValue}
-            budgetValue={budgetValue}
-            locationValue={locationValue}
-            onPickRole={(r) =>
-              setPicker({
-                roleId: r.roleId,
-                roleLabel: r.roleLabel,
-                selectedId: r.person?._id ?? null,
-              })
-            }
-            onSetStatus={(s) =>
-              run(() => setStatus({ eventId, status: s }), {
-                errorTitle: "Couldn't change status",
-              })
-            }
-            onReschedule={(ts) =>
-              run(() => reschedule({ eventId, eventDate: ts }), {
-                errorTitle: "Couldn't reschedule",
-              })
-            }
-            onChangeDate={setDateInput}
-            onSaveDate={handleReschedule}
-            onOpenOwner={() => setOwnerOpen(true)}
-            onChangeBudget={setBudgetInput}
-            onSaveBudget={handleSaveBudget}
-            onChangeLocation={setLocationInput}
-            onSaveLocation={handleSaveLocation}
-            onDelete={confirmDelete}
-            onRenameRole={(roleId, label) =>
-              run(
-                () =>
-                  updateEventRole({
-                    roleId: roleId as Id<"eventRoles">,
-                    label,
-                  }),
-                { errorTitle: "Couldn't rename role" },
-              )
-            }
-            onDeleteRole={(roleId) =>
-              run(
-                () => deleteEventRole({ roleId: roleId as Id<"eventRoles"> }),
-                { errorTitle: "Couldn't delete role" },
-              )
-            }
-            onAddRole={(label) =>
-              run(() => createEventRole({ eventId, label }), {
-                errorTitle: "Couldn't add role",
-              })
-            }
-          />
-        ) : null}
-        {panel === "next" ? (
+        {/* ── What's next (the old Overview's work half): outstanding work
+            (+ guides), or the Me-view work summary while Me view is on.
+            Toggled by the header's pace pill; available on any tab. ─────── */}
+        {nextOpen ? (
           meView ? (
             <View className="mb-6">
               <MeView
@@ -610,12 +566,24 @@ export default function EventDetailScreen() {
           )
         ) : null}
 
-        {/* Module navigation — same tab bar on web + mobile (scrolls on phones) */}
+        {/* Module navigation — same tab bar on web + mobile (scrolls on
+            phones); the operational tools ride the same rail, pinned right. */}
         <EventTabBar
           tabs={tabs}
           activeKey={activeTab}
           highlightPhase={pulsePhase}
           onSelect={(key) => router.setParams({ tab: key })}
+          trailing={
+            <EventTools
+              eventId={eventId}
+              onDayOf={() => router.push(`/event/${eventId}/day-of`)}
+              onTickets={() => router.setParams({ tab: "tickets" })}
+              onSongs={() => router.push(`/event/${eventId}/songs`)}
+              meView={meView}
+              onToggleMeView={() => setMeView((v) => !v)}
+              onDelete={confirmDelete}
+            />
+          }
           addModule={
             meView
               ? undefined
