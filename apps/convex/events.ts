@@ -112,15 +112,20 @@ export const createFromTemplate = mutation({
 export const list = query({
   args: {
     scope: v.optional(v.union(v.literal("upcoming"), v.literal("all"))),
+    // Academy training events are sandboxes — hidden from every operational
+    // list (both scopes) unless a caller explicitly opts in.
+    includeTraining: v.optional(v.boolean()),
   },
-  handler: async (ctx, { scope }) => {
+  handler: async (ctx, { scope, includeTraining }) => {
     const chapterId = await getChapterIdOrNull(ctx);
     if (!chapterId) return [];
     const now = Date.now();
-    const all = await ctx.db
-      .query("events")
-      .withIndex("by_chapter", (q) => q.eq("chapterId", chapterId as Id<"chapters">))
-      .collect();
+    const all = (
+      await ctx.db
+        .query("events")
+        .withIndex("by_chapter", (q) => q.eq("chapterId", chapterId as Id<"chapters">))
+        .collect()
+    ).filter((e) => includeTraining === true || e.isTraining !== true);
     const filtered =
       scope === "all"
         ? all
@@ -958,8 +963,10 @@ export const pipeline = query({
       .query("events")
       .withIndex("by_chapter", (q) => q.eq("chapterId", chapterId as Id<"chapters">))
       .collect();
+    // Training sandboxes never appear on the operations landing screen.
     const upcoming = all.filter(
-      (e) => e.eventDate >= now && e.status !== "cancelled",
+      (e) =>
+        e.eventDate >= now && e.status !== "cancelled" && e.isTraining !== true,
     );
 
     const enriched = await Promise.all(

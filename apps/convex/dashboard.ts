@@ -29,10 +29,13 @@ export const summary = query({
     if (!chapterId) return EMPTY;
     const now = Date.now();
 
-    const events = await ctx.db
-      .query("events")
-      .withIndex("by_chapter", (q: any) => q.eq("chapterId", chapterId))
-      .collect();
+    // Academy training sandboxes never count toward chapter operations.
+    const events = (
+      await ctx.db
+        .query("events")
+        .withIndex("by_chapter", (q: any) => q.eq("chapterId", chapterId))
+        .collect()
+    ).filter((e: any) => e.isTraining !== true);
 
     const upcoming = events
       .filter((e: any) => e.eventDate >= now && e.status !== "cancelled")

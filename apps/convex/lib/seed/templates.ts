@@ -8,6 +8,7 @@
  */
 import { Id } from "../../_generated/dataModel";
 import {
+  ACADEMY_TRAINING_TEMPLATE_SLUG,
   DEFAULT_ROLES,
   LIGHTWEIGHT_ROLE_KEYS,
   GRID_CORE_MODULE_KEYS,
@@ -50,6 +51,140 @@ export const VOLUNTEER_ROWS: ItemRow[] = [
 export const RETRO_ROWS: ItemRow[] = [
   { title: "What went well?", status: "open" },
 ];
+
+// ── Academy training template (the capstone's sandbox) ───────────────────────
+// The quest rows the Training Event is built from. Quests are ordinary grid
+// rows whose title starts with "Quest:" — academy.trainingStatus finds them by
+// that prefix and counts one done when its status is terminal for its module.
+// Each quest drills one move from the curriculum; the `details` field tells the
+// learner exactly how to do it in the app.
+
+/** Title prefix that marks a training-event row as a quest. */
+export const QUEST_TITLE_PREFIX = "Quest:";
+
+export const TRAINING_PLANNING_ROWS: ItemRow[] = [
+  {
+    title: "Quest: Assign yourself the Comms Lead role",
+    offsetDays: -10,
+    role: "event_lead",
+    fields: {
+      details:
+        "Roles before people: templates assign work to roles, events put one person in each role. Open the Overview tab, find Roles, and put yourself in Comms Lead. Then come back here and tap this row's status until it reads Done.",
+    },
+  },
+  {
+    title: "Quest: Add a T-3 reminder task",
+    offsetDays: -7,
+    role: "event_lead",
+    fields: {
+      details:
+        "Plan backwards from the event date. Add a new row to this Planning Doc (the + Add row button, or ask the assistant: \"add a task 'Send the reminder' at T-3\") and give it a Timing of T-3 — watch it get a real due date. Then mark this quest Done.",
+    },
+  },
+  {
+    title: "Quest: Mark Supplies & Logistics ready",
+    offsetDays: -3,
+    role: "event_lead",
+    fields: {
+      details:
+        "First finish the battery quest on the Supplies & Logistics tab, then hit \"Mark ready\" on that tab's section header — that's you signing your name to the stream. Then mark this quest Done.",
+    },
+  },
+  {
+    title: "Quest: Ask the assistant for a readiness briefing",
+    offsetDays: -1,
+    role: "event_lead",
+    fields: {
+      details:
+        "Open the assistant on this event and ask: \"Give me a readiness briefing — what's done, what's at risk, what's unowned?\" It reads your live plan and answers from the playbook. Then mark this quest Done.",
+    },
+  },
+];
+
+export const TRAINING_SUPPLY_ROWS: ItemRow[] = [
+  {
+    title: "Quest: Mark this battery Packed",
+    status: "pull_from_storage",
+    fields: {
+      source: "storage",
+      container: "green_luggage",
+      qty: 1,
+      notes:
+        "Supplies must be TERMINAL by T-1 — Packed, not \"pull from storage\" (batteries charge at home the night before; there's no charger in storage). Tap the status chip and walk it to Packed.",
+    },
+  },
+];
+
+/**
+ * Ensure the chapter has the platform "Academy: Training Run" template the
+ * capstone instantiates. Idempotent BY SLUG (`academy-training`): returns the
+ * existing template's id when one exists, otherwise creates it — the 3
+ * lightweight roles, Planning Doc + Supplies columns, and the quest rows above.
+ * Every other core module is disabled so the sandbox stays focused on the
+ * drills. Called from `buildChapterRolesAndTemplates` (new chapters) and from
+ * `academy.startTraining` (self-heals chapters seeded before the Academy).
+ */
+export async function ensureTrainingTemplate(
+  ctx: any,
+  chapterId: Id<"chapters">,
+  createdBy: Id<"users">,
+  now: number,
+): Promise<Id<"eventTypes">> {
+  const existing = await ctx.db
+    .query("eventTypes")
+    .withIndex("by_chapter_slug", (q: any) =>
+      q.eq("chapterId", chapterId).eq("slug", ACADEMY_TRAINING_TEMPLATE_SLUG),
+    )
+    .first();
+  if (existing) return existing._id as Id<"eventTypes">;
+
+  const trainingId = (await ctx.db.insert("eventTypes", {
+    chapterId,
+    name: "Academy: Training Run",
+    slug: ACADEMY_TRAINING_TEMPLATE_SLUG,
+    description:
+      "The Academy capstone sandbox — a tiny event whose rows are the training quests. Instantiated per person by \"Start training\"; training events never appear in the pipeline or reminder emails.",
+    // Keep the sandbox to the two workstreams the quests live in.
+    disabledCoreModules: [
+      "comms",
+      "run_of_show",
+      "volunteer_expectations",
+      "permits",
+      "retro",
+    ],
+    version: 1,
+    isArchived: false,
+    createdBy,
+    createdAt: now,
+    updatedAt: now,
+  })) as Id<"eventTypes">;
+
+  // The lightweight roles — the Comms Lead quest needs comms_lead to exist.
+  const roleSeeds = DEFAULT_ROLES.filter((r) =>
+    LIGHTWEIGHT_ROLE_KEYS.includes(r.key),
+  );
+  const roleByKey = await seedTemplateRoles(ctx, trainingId, roleSeeds);
+
+  await seedTemplateCols(ctx, trainingId, "planning_doc");
+  await seedTemplateCols(ctx, trainingId, "supplies");
+
+  await addTemplateItems(
+    ctx,
+    trainingId,
+    "planning_doc",
+    TRAINING_PLANNING_ROWS,
+    roleByKey,
+  );
+  await addTemplateItems(
+    ctx,
+    trainingId,
+    "supplies",
+    TRAINING_SUPPLY_ROWS,
+    roleByKey,
+  );
+
+  return trainingId;
+}
 
 /**
  * Bootstrap a chapter's roles + default templates (the "group types"): the 4
@@ -272,6 +407,9 @@ export async function buildChapterRolesAndTemplates(
   await addTemplateItems(ctx, wwsId, "permits", [
     { title: "Public-space / sound permit", offsetDays: -3, status: "to_apply", fields: { notes: "Check the park's amplified-sound rules; apply if required." } },
   ], wwsRoleByKey);
+
+  // ── Academy training template (the capstone's sandbox) ─────────────────────
+  await ensureTrainingTemplate(ctx, chapterId, createdBy, now);
 
   return { edenId, ltnId, wwsId };
 }

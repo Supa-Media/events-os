@@ -414,6 +414,8 @@ export async function instantiateEvent(
     eventDate: number;
     location?: string;
     budget?: number;
+    /** Academy sandbox flag — see schema/events.ts. */
+    isTraining?: boolean;
     now?: number;
   },
 ): Promise<Id<"events">> {
@@ -434,6 +436,7 @@ export async function instantiateEvent(
     eventDate: opts.eventDate,
     location: opts.location,
     budget: opts.budget,
+    isTraining: opts.isTraining === true ? true : undefined,
     ownerPersonId,
     // Clone the template's core-module deltas onto the event.
     disabledCoreModules: opts.eventType.disabledCoreModules ?? [],

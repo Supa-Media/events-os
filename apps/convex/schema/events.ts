@@ -28,6 +28,10 @@ export const events = defineTable({
   // treated as OPEN (so the link works as soon as it's shared); the worship
   // leader can explicitly close requests by setting this false.
   songRequestsOpen: v.optional(v.boolean()),
+  // Academy sandbox flag. Training events are real events (real workstreams,
+  // rows, assistant) but must never pollute operations: they're excluded from
+  // events.list/pipeline, dashboard rollups, and reminder emails.
+  isTraining: v.optional(v.boolean()),
   // Module deltas (cloned from the template, then editable). Core modules are
   // platform-wide constants; this stores only which core keys are toggled off +
   // per-core label/owner overrides. Custom modules live in `eventModules`.

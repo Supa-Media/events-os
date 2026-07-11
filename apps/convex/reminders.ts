@@ -246,7 +246,13 @@ async function collectOpenWorkForChapter(
     .collect();
   const eventById = new Map(
     events
-      .filter((e) => e.status !== "completed" && e.status !== "cancelled")
+      .filter(
+        (e) =>
+          e.status !== "completed" &&
+          e.status !== "cancelled" &&
+          // Academy training sandboxes never email anyone about quest rows.
+          e.isTraining !== true,
+      )
       .map((e) => [e._id, e]),
   );
   const items = await ctx.db
