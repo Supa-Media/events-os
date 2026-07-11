@@ -295,3 +295,51 @@ expectations of event owners and workstream owners.
 - Shared inventory across events (storage contention) — noted as P-adjacent,
   not blocking.
 - Real-time collaborative planning.
+
+---
+
+## 7. Deferred review findings (from the pre-merge review of PR #50)
+
+Structural debt confirmed by review but too invasive to bolt onto the merge —
+each is a self-contained follow-up:
+
+1. **One implementation per mutation.** The AI internal mutations in `ai.ts`
+   are hand-copied twins of the canonical mutations (owner-override upsert,
+   `ensureEventCoreColumns`, `uniqueKey` + custom-module creation, engagement
+   paid/volunteer patch rules, reschedule core). Extract each into
+   `apps/convex/lib/` helpers called by BOTH the public mutation and the AI
+   path; the "kept byte-compatible" comments are the only sync mechanism
+   today and they will rot.
+2. **Tool registry.** Tool constraints exist in three places (TOOLS JSON
+   schema, dispatch if-chain, Convex validators). Move to a
+   {name, validator, handler} registry with the JSON schema derived from the
+   validator; also replaces the 900-line dispatch if-chain and its repeated
+   resolve-role/person/workstream boilerplate.
+3. **Finish the surface migration.** `ModuleSurface` keeps a dead
+   `"site_map"` literal while the capability lives in a bolted-on
+   `hasSiteMap` boolean; generalize to `artifacts?: ArtifactKey[]` + an
+   artifact→component registry (unblocks the next attached artifact, e.g. a
+   stage plot on run_of_show), and drop the always-true `surface === "grid"`
+   filters + `GRID_CORE_MODULE_KEYS` alias.
+4. **One date→lifecycle mapping.** `eventWindowFor` (five windows, shared/ai)
+   and `currentPhase` (four phases, shared/index) are independent day-math
+   forks; define the windows next to the phase machinery and derive phases
+   from windows, one boundary primitive, one timezone rule
+   (PLANNING_TIME_ZONE).
+5. **Guide metadata registry.** `MODULE_GUIDE_SLUGS` + `GUIDE_ORDER` are
+   hand-lists in mobile components; move `module`/`order` into guide
+   frontmatter emitted by sync-guides.mjs so a new guide is a one-file
+   change.
+6. **readinessSummary read dedup.** It re-collects tables `phaseReadiness`
+   already read; refactor phaseReadiness to accept preloaded rows (or call
+   `computePhaseScores` directly) so each assistant turn reads each table
+   once.
+7. **Site-map orphan edges (legacy data).** An event/template that disabled
+   supplies pre-merge but used the site map loses UI access to its map (the
+   event deep-link route still works; the template editor has no path); and
+   a legacy explicit `disabledCoreModules: ["site_map"]` no longer hides the
+   map. Both are rare-legacy edges — handle in a small migration if they
+   materialize.
+8. **Retro dispatch column backfill.** Existing retro grids lack the new
+   `dispatch` column until `npx convex run migrations:backfillMissingDefaultColumns`
+   is run once post-deploy — run it as part of the deploy checklist.
