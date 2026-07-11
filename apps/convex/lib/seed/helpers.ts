@@ -6,7 +6,11 @@
  * mutations in `seed.ts` and the builder logic in `lib/seed/templates.ts`.
  */
 import { Id } from "../../_generated/dataModel";
-import { DEFAULT_COLUMNS, type ModuleKey } from "@events-os/shared";
+import {
+  DEFAULT_COLUMNS,
+  type ModuleKey,
+  type SelectOption,
+} from "@events-os/shared";
 
 export interface ItemRow {
   title: string;
@@ -18,12 +22,16 @@ export interface ItemRow {
   fields?: Record<string, unknown>;
 }
 
-/** Insert a template module's default columns; `hideKeys` start hidden. */
+/** Insert a template module's default columns; `hideKeys` start hidden.
+ *  `optionOverrides` swaps a column's select options by column key (e.g. the
+ *  Academy birthday-party template replaces the worship crew teams with
+ *  party teams on the Crew Duties `team` column). */
 export async function seedTemplateCols(
   ctx: any,
   eventTypeId: Id<"eventTypes">,
   module: ModuleKey,
   hideKeys: string[] = [],
+  optionOverrides: Record<string, SelectOption[]> = {},
 ) {
   const defaults = DEFAULT_COLUMNS[module] ?? [];
   for (let i = 0; i < defaults.length; i++) {
@@ -35,7 +43,7 @@ export async function seedTemplateCols(
       label: c.label,
       kind: c.kind,
       type: c.type,
-      options: c.options,
+      options: optionOverrides[c.key] ?? c.options,
       config: c.config,
       isVisible: hideKeys.includes(c.key) ? false : c.isVisible,
       order: i,

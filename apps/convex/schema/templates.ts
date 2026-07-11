@@ -35,10 +35,16 @@ export const eventTypes = defineTable({
   // exactly like `events.siteMapImage` (a storageId or an http URL); cloned onto
   // new events at creation alongside the template's markers + shapes.
   siteMapImage: v.optional(v.string()),
-  // Platform-managed template (the Academy training template). Hidden from
+  // Platform-managed template (an Academy training template). Hidden from
   // the Templates tab / New Event picker, and protected from user edits,
   // archiving, and direct event creation — only the Academy instantiates it.
   isPlatform: v.optional(v.boolean()),
+  // Stable identity for a platform template (ACADEMY_TRAINING_TEMPLATES
+  // templateKey values). Unlike `slug` it is never suffixed past a squatter,
+  // so the Academy looks templates up by `isPlatform && platformKey`. Legacy
+  // platform templates (the pre-2026-07 single-capstone sandbox) have no key
+  // and are simply ignored by the current capstones.
+  platformKey: v.optional(v.string()),
   version: v.number(),
   isArchived: v.optional(v.boolean()),
   createdBy: v.id("users"),

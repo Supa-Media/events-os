@@ -9,8 +9,8 @@ covers what's true for all of them.*
 
 A workstream is one owned area of the event plan — a stream of work one person
 carries end-to-end. The event plan is nothing more than its workstreams:
-Planning Doc, Comms Schedule, Run of Show, Expectations, Supplies & Logistics
-(which includes the site map), Permits, Retrospective (plus any custom ones
+Tasks, Comms Schedule, Run of Show, Crew Duties, Supplies & Logistics
+(which includes the site map), Permits, Debrief (plus any custom ones
 this event added). Each renders as a tab on the event page.
 
 Every workstream is built the same way:

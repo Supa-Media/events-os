@@ -19,12 +19,13 @@ import { colors } from "../../../lib/theme";
 import { useActionRunner } from "../../../lib/useActionToast";
 import { errorMessage } from "../../../lib/errors";
 import {
-  ACADEMY_CAPSTONE_SLUG,
   ACADEMY_SECTION_COUNT,
+  MODULE_LABELS,
   getAcademySection,
   nextAcademySection,
   previousAcademySection,
   type AcademySection,
+  type ModuleKey,
 } from "@events-os/shared";
 
 type QuizResult = FunctionReturnType<typeof api.academy.submitQuiz>;
@@ -75,7 +76,7 @@ export default function AcademySectionScreen() {
 
   const state = progress.sections.find((s) => s.slug === section.slug);
   const next = nextAcademySection(section.slug);
-  const isCapstone = section.slug === ACADEMY_CAPSTONE_SLUG;
+  const isCapstone = section.capstone != null;
 
   return (
     <Screen maxWidth={820}>
@@ -120,6 +121,7 @@ export default function AcademySectionScreen() {
       {/* Quiz or capstone quest checklist */}
       {isCapstone ? (
         <Capstone
+          capstoneSlug={section.slug}
           complete={state?.passed === true}
           unlocked={state?.unlocked !== false}
         />
@@ -400,14 +402,16 @@ function startTrainingErrorMessage(err: unknown): string {
 }
 
 /**
- * The capstone screen owns the single Start-training flow (the hub's capstone
- * row only routes here). Locked until the previous section is passed — the
- * server gates too; the UI just doesn't offer the button.
+ * The capstone screen owns each capstone's Start-training flow (the hub's
+ * capstone rows only route here). Locked until the previous section is
+ * passed — the server gates too; the UI just doesn't offer the button.
  */
 function Capstone({
+  capstoneSlug,
   complete,
   unlocked,
 }: {
+  capstoneSlug: string;
   complete: boolean;
   unlocked: boolean;
 }) {
@@ -417,7 +421,7 @@ function Capstone({
   const reachable = unlocked || complete;
   const training: TrainingStatus | undefined = useQuery(
     api.academy.trainingStatus,
-    reachable ? {} : "skip",
+    reachable ? { capstoneSlug } : "skip",
   );
   const startTraining = useMutation(api.academy.startTraining);
   const { run, toast, dismiss } = useActionRunner();
@@ -428,15 +432,16 @@ function Capstone({
   const syncCapstone = useMutation(api.academy.syncCapstone);
 
   // Persist completion once when the live checklist finishes (ref-guarded so
-  // the reactive query can't spam the mutation).
-  const syncedRef = useRef(false);
+  // the reactive query can't spam the mutation; keyed by slug because the
+  // route reuses this component across capstones).
+  const syncedRef = useRef<string | null>(null);
   const trainingComplete = training != null && training.complete;
   useEffect(() => {
-    if (trainingComplete && !syncedRef.current) {
-      syncedRef.current = true;
-      void syncCapstone({}).catch(() => {});
+    if (trainingComplete && syncedRef.current !== capstoneSlug) {
+      syncedRef.current = capstoneSlug;
+      void syncCapstone({ capstoneSlug }).catch(() => {});
     }
-  }, [trainingComplete, syncCapstone]);
+  }, [trainingComplete, capstoneSlug, syncCapstone]);
 
   if (!reachable) {
     return (
@@ -458,7 +463,7 @@ function Capstone({
       await run(
         async () => {
           try {
-            return await startTraining({});
+            return await startTraining({ capstoneSlug });
           } catch (err) {
             throw new Error(startTrainingErrorMessage(err));
           }
@@ -534,7 +539,7 @@ function Capstone({
                     {q.title}
                   </Text>
                   <Badge
-                    label={q.module === "supplies" ? "Supplies" : "Planning Doc"}
+                    label={MODULE_LABELS[q.module as ModuleKey] ?? q.module}
                     tone="neutral"
                   />
                 </View>

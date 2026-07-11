@@ -1,14 +1,19 @@
 /**
  * The Academy — the ordered training curriculum.
  *
- * Seven article sections, each capped by a short quiz, ending in the Training
- * Event capstone. Content is authored FROM the playbook (docs/agent.md) and the
- * enablement guides (docs/guides/*) — this file is the single source both the
- * mobile Academy screens and the Convex grading backend read, so the quiz is
- * always graded server-side against exactly what the reader saw.
+ * Fifteen short sections: four concept pages, one page per native workstream
+ * tab, an assistant page, and three hands-on capstones (two required, one
+ * optional bonus). Content is authored FROM the playbook (docs/agent.md) and
+ * the enablement guides (docs/guides/*) — this file is the single source both
+ * the mobile Academy screens and the Convex grading backend read, so the quiz
+ * is always graded server-side against exactly what the reader saw.
  *
- * Quizzes are written to teach, not to trick: every explanation restates the
- * playbook rule the question is checking.
+ * Authoring rules (learned from the v1 rewrite):
+ *  - Teach the SOFTWARE first, the doctrine second. Numbers like "announce at
+ *    T-14" are the templates' proven defaults, not laws of the app — say so.
+ *  - Short pages (2–4 min). One idea per block. The click path is part of the
+ *    lesson, not a footnote.
+ *  - Quizzes teach, not trick: every explanation restates the rule checked.
  */
 
 /** One quiz question. `answerIndex` points into `options`. */
@@ -16,7 +21,7 @@ export interface AcademyQuestion {
   prompt: string;
   options: string[];
   answerIndex: number;
-  /** Shown after grading — restates the playbook rule, right or wrong. */
+  /** Shown after grading — restates the rule, right or wrong. */
   explanation: string;
 }
 
@@ -37,10 +42,10 @@ export interface AcademyExchange {
 /**
  * One typed content block of an Academy article. Articles are authored as a
  * sequence of blocks (not a markdown blob) so the mobile renderer can give
- * each kind a designed treatment — story callouts, principle cards, cadence
- * tables, and interactive practice widgets — instead of generic markdown
- * output. Prose (`text` / `items` / table cells) may carry `**bold**` and
- * `*italic*` inline emphasis.
+ * each kind a designed treatment — story callouts, principle cards, tables,
+ * and interactive practice widgets — instead of generic markdown output.
+ * Prose (`text` / `items` / table cells) may carry `**bold**` and `*italic*`
+ * inline emphasis.
  *
  * The `try_*` / `reveal` / `agent_demo` kinds are INTERACTIVE: self-contained
  * widgets with throwaway local state, styled pixel-close to the real app so
@@ -55,7 +60,7 @@ export type AcademyBlock =
   | { kind: "story"; title: string; text: string }
   /** Key-principle card — the rule the section hangs on. */
   | { kind: "rule"; title: string; text: string }
-  /** Tabular content (comms cadence, T-checkpoints, lead times…). */
+  /** Tabular content (tab overviews, cadences, lead times…). */
   | { kind: "table"; headers: string[]; rows: string[][] }
   /** "In the app · …" pointer to the concrete UI move. */
   | { kind: "tip"; text: string }
@@ -89,6 +94,21 @@ export const ACADEMY_INTERACTIVE_KINDS = [
   "agent_demo",
 ] as const satisfies readonly AcademyBlock["kind"][];
 
+/**
+ * Which training sandbox a capstone section drives. Each kind maps to its own
+ * platform training template (ACADEMY_TRAINING_TEMPLATES) and each learner
+ * gets their own sandbox event per capstone.
+ */
+export type AcademyTrainingKind =
+  | "join_event"
+  | "birthday_party"
+  | "worship_event";
+
+/** Capstone metadata carried by a capstone section. */
+export interface AcademyCapstoneMeta {
+  kind: AcademyTrainingKind;
+}
+
 /** One curriculum section: an article (typed content blocks) + its quiz. */
 export interface AcademySection {
   slug: string;
@@ -100,15 +120,30 @@ export interface AcademySection {
   minutes: number;
   /** The article, as an ordered sequence of typed blocks. */
   blocks: AcademyBlock[];
-  /** Empty for the capstone — its "quiz" is the Training Event quest list. */
+  /** Empty for capstones — their "quiz" is the training-event quest list. */
   quiz: AcademyQuestion[];
+  /** Present on capstone sections: which training sandbox completes them. */
+  capstone?: AcademyCapstoneMeta;
+  /**
+   * A bonus section: unlocks in order like any other, but does NOT count
+   * toward "fully trained" (completed/total exclude it).
+   */
+  optional?: boolean;
 }
 
-/** Slug of the capstone section (completed via the Training Event, not a quiz). */
-export const ACADEMY_CAPSTONE_SLUG = "capstone-training-event";
-
-/** Slug of the platform training template the capstone instantiates. */
-export const ACADEMY_TRAINING_TEMPLATE_SLUG = "academy-training";
+/**
+ * The per-kind platform training templates the capstones instantiate.
+ * `templateKey` is the stable `eventTypes.platformKey` value (never suffixed,
+ * unlike the slug, so a slug squatter can't hijack the lookup).
+ */
+export const ACADEMY_TRAINING_TEMPLATES: Record<
+  AcademyTrainingKind,
+  { templateKey: string }
+> = {
+  join_event: { templateKey: "academy-join-event" },
+  birthday_party: { templateKey: "academy-birthday-party" },
+  worship_event: { templateKey: "academy-worship-event" },
+};
 
 /**
  * Whether an event counts toward chapter OPERATIONS. Academy training
@@ -127,201 +162,223 @@ export function isOperationalEvent(e: {
 // never silently break the sequential-unlock chain with duplicate or gapped
 // order numbers.
 const SECTIONS_IN_ORDER: Omit<AcademySection, "order">[] = [
-  // ── 1 ─────────────────────────────────────────────────────────────────────
+  // ── 1 · What Events OS is ──────────────────────────────────────────────────
   {
     slug: "what-is-events-os",
     title: "What Events OS is",
-    subtitle: "Templates, events, and the north star",
-    minutes: 4,
+    subtitle: "One place for the whole plan",
+    minutes: 3,
     blocks: [
       {
         kind: "p",
-        text: 'Events OS exists to answer one question: **what would happen if the lead got sick tomorrow?** If the answer is "chaos," the plan isn\'t done — no matter what the statuses say.',
+        text: "Events OS is where an event's plan lives: every task, message, supply, permit, and person — in one place, instead of a group chat, three spreadsheets, and somebody's memory.",
       },
       {
         kind: "rule",
-        title: "The north star",
-        text: "Any event plan must be runnable by **one person alone, with zero tribal knowledge**. Everything else in this curriculum is a consequence of that sentence.",
+        title: "The plan lives in the app, not in a head",
+        text: "Anyone on the team should be able to open the event and see exactly what's left, whose it is, and when it's due. Every feature you'll learn exists to make that sentence true.",
       },
       { kind: "heading", text: "Templates and events" },
-      { kind: "p", text: "The two objects everything hangs off:" },
       {
         kind: "bullets",
         items: [
-          'A **template** is the reusable blueprint for a *kind* of event — "Worship With Strangers", "Eden", "Field Day". It holds the roles, the workstreams, and the standard tasks with their timing. Templates hold what\'s **always** true.',
-          "An **event** is one dated instance of a template. Creating an event copies the template's whole structure, back-calculates every due date from the event date, and from then on the event is yours to edit freely. Events hold what's true **this time**.",
+          'A **template** is the reusable blueprint for a *kind* of event — "Worship With Strangers", "Eden", or one you make. It holds the roles, the tabs, and the standard to-dos with their timing.',
+          "An **event** is one dated copy of a template. Creating an event copies the whole structure and turns every \"10 days before\" into a real due date. From then on the event is yours to edit freely.",
         ],
       },
       {
         kind: "p",
-        text: "The relationship runs both ways, and that's the trick. The template is the **institutional memory**: every event exists twice — once as the thing that happens in the park, and once as the learnings it deposits back into the template so the next city, the next lead, the next year starts smarter.",
+        text: "Templates hold what's **always** true; events hold what's true **this time**. When you learn something that will matter at every future event, fix the *template* — that's how the next team starts smarter than you did.",
       },
-      { kind: "heading", text: "Never fix the same problem twice" },
       {
         kind: "story",
         title: "Eden, 2026",
-        text: 'At Eden — the flagship gathering these rules were distilled from — the retro said *"we needed trash bags."* The fix was not a note in a doc somewhere. The fix was a **new supplies row in the template**, so no future event can forget them. The retro also said *"arrive earlier to secure space"* — that became an earlier call time in the template\'s run of show.',
-      },
-      {
-        kind: "p",
-        text: "That's the loop: event → retro → template → better event. A note gets read once. A template row gets executed forever.",
-      },
-      { kind: "heading", text: "What that means for you" },
-      {
-        kind: "bullets",
-        items: [
-          'When you spot something an event is missing, ask: is this missing *this time*, or *always*? "This time" → edit the event. "Always" → it belongs in the template.',
-          "When something goes wrong, the debrief turns it into a template change — that's why the debrief is a working session, not a feelings meeting.",
-          'Details and how-to notes exist so the **reason survives the person**. "Sound permit via precinct officer, ~3 days prior, permit holder must attend" is worth ten "get sound permit" tasks.',
-        ],
+        text: 'At Eden — the flagship gathering this app grew out of — the debrief said *"we needed trash bags."* The fix was not a note in a doc somewhere. It was a **new supplies row in the template**, so no future event can forget them.',
       },
       {
         kind: "reveal",
         prompt:
-          'Your debrief says the sound check ran long — again, third event in a row. Is that a note, or a template change?',
+          "Sound check ran long — for the third event in a row. Quick note, or template change?",
         answer:
-          'A template change. "Again" means *always*: move the sound-check call time earlier in the template\'s run of show, and every future event inherits the fix automatically. A note gets read once; a template row gets executed forever.',
+          'Template change. "Third time in a row" means *always*, not *this time*: move the sound-check call time earlier in the template, and every future event inherits the fix. A note gets read once; a template row gets executed forever.',
       },
       {
         kind: "tip",
         text: "Spot something missing? Edit the event for a this-time fix; open the template to fix it for every future event.",
       },
-      {
-        kind: "p",
-        text: "Keep the north star in your pocket as you read the rest: every rule in this Academy — ownership, T-offsets, readiness, the debrief — is just a different way of making sure the plan doesn't live in anyone's head.",
-      },
     ],
     quiz: [
       {
-        prompt:
-          "What's the difference between a template and an event?",
+        prompt: "What's the difference between a template and an event?",
         options: [
           "A template is read-only; an event can be edited by admins",
-          "A template is the reusable blueprint for a kind of event; an event is one dated instance cloned from it",
-          "They're the same object — 'event' is just a template with a date",
+          "A template is the reusable blueprint for a kind of event; an event is one dated copy of it",
+          "They're the same thing — 'event' is just a template with a date",
           "Templates are for big events, events are for small ones",
         ],
         answerIndex: 1,
         explanation:
-          "Templates hold what's ALWAYS true for a kind of event; an event clones that structure for one date and is then freely editable. The clone means later template edits never disrupt an in-flight event.",
-      },
-      {
-        prompt: "The north star of Events OS is that any event plan must be…",
-        options: [
-          "Approved by a chapter admin before day-of",
-          "Under budget with every task marked Done",
-          "Runnable by one person alone, with zero tribal knowledge",
-          "Created at least 30 days before the event date",
-        ],
-        answerIndex: 2,
-        explanation:
-          "\"Runnable by one person alone with zero tribal knowledge\" — if the lead got sick tomorrow and the answer is chaos, the plan isn't done, regardless of statuses.",
+          "Templates hold what's ALWAYS true for a kind of event; an event copies that structure for one date and is then freely editable — later template edits never disturb an in-flight event.",
       },
       {
         prompt:
-          "Eden's retro said \"we needed trash bags.\" Per the playbook, what's the correct fix?",
-        options: [
-          "Add a note to the retro doc so people remember",
-          "Tell the next event lead in person",
-          "Add a trash-bags row to the template's supplies workstream",
-          "Buy trash bags now and store them",
-        ],
-        answerIndex: 2,
-        explanation:
-          "Never fix the same problem twice: retro learnings become TEMPLATE changes (a supplies row, an earlier call time), so every future event inherits the fix automatically.",
-      },
-      {
-        prompt:
-          "You notice this Saturday's event needs an extra welcome table because the venue has two entrances. Where does that change belong?",
+          "This Saturday's venue has two entrances, so you need an extra welcome table. Where does that change go?",
         options: [
           "In the event — it's true this time, not always",
-          "In the template — everything goes in the template",
-          "Nowhere; mention it at the huddle",
-          "In a separate planning spreadsheet",
+          "In the template — every change goes in the template",
+          "Nowhere; just mention it in the group chat",
+          "In a separate spreadsheet",
         ],
         answerIndex: 0,
         explanation:
-          "Templates hold what's always true; events hold what's true this time. A venue-specific tweak edits the event. If it turns out every venue needs it, the retro promotes it to the template.",
+          "Events hold what's true THIS time. If it turns out every venue needs it, the debrief promotes it to the template later.",
+      },
+      {
+        prompt:
+          'The debrief says "we needed trash bags." What\'s the right fix?',
+        options: [
+          "Write it in the debrief notes so people remember",
+          "Tell the next event lead in person",
+          "Add a trash-bags row to the template's supplies",
+          "Buy trash bags now and store them at home",
+        ],
+        answerIndex: 2,
+        explanation:
+          "Never fix the same problem twice: learnings become TEMPLATE changes, so every future event inherits the fix automatically. That exact fix came out of Eden's real debrief.",
+      },
+      {
+        prompt: "What happens when you create an event from a template?",
+        options: [
+          "You get a blank event with the template's name",
+          "The template locks until the event is over",
+          "The whole structure is copied and every timing offset becomes a real due date",
+          "The template's past events are merged into it",
+        ],
+        answerIndex: 2,
+        explanation:
+          "Creating an event clones the template's tabs, rows, and roles, and back-calculates every due date from the event date. The copy is yours to edit; the template stays untouched.",
       },
     ],
   },
 
-  // ── 2 ─────────────────────────────────────────────────────────────────────
+  // ── 2 · Organizers and crew ────────────────────────────────────────────────
   {
-    slug: "core-concepts",
-    title: "Core concepts",
-    subtitle: "Workstreams, the cast, and the accountability chain",
-    minutes: 6,
+    slug: "organizers-and-crew",
+    title: "Organizers and crew",
+    subtitle: "Who this app is for (and who never needs it)",
+    minutes: 3,
     blocks: [
       {
         kind: "p",
-        text: "Get these three ideas and every screen in the app makes sense.",
-      },
-      { kind: "heading", text: "Workstreams" },
-      {
-        kind: "p",
-        text: "A **workstream** is one owned area of the event plan — one stream of work that a single role carries end-to-end. The event plan is nothing more than its workstreams. The core seven:",
+        text: "Two kinds of people touch every event, and Events OS treats them very differently.",
       },
       {
         kind: "table",
-        headers: ["Workstream", "What it holds", "Default owner"],
+        headers: ["Who", "What they do", "What they need"],
         rows: [
-          ["**Planning Doc**", "The master task list", "Event Lead"],
           [
-            "**Comms Schedule**",
-            "Every message: audience, channel, copy, timing",
-            "Comms Lead",
+            "**Organizers**",
+            "Plan for weeks: own tabs, keep statuses true, make the calls",
+            "This app — that's what this training is for",
           ],
           [
-            "**Run of Show**",
-            "The minute-by-minute day-of program",
-            "Production Lead",
-          ],
-          [
-            "**Expectations**",
-            "Volunteer teams, headcounts, duties",
-            "Comms Lead",
-          ],
-          [
-            "**Supplies & Logistics**",
-            "Every physical item + the site map",
-            "Logistics Lead",
-          ],
-          [
-            "**Permits**",
-            "Each permit, its lead time and status",
-            "Event Lead",
-          ],
-          [
-            "**Retrospective**",
-            "What went well / broke / was missing / was excess",
-            "Event Lead",
+            "**Crew**",
+            "Show up day-of to fill a role: run the welcome table, grill, play a set, shoot photos",
+            "A call time, a duty, and a contact — **not** the app",
           ],
         ],
       },
       {
         kind: "p",
-        text: "Chapters can add custom workstreams (a merch stand, a food operation); they behave exactly like the core ones.",
+        text: "Crew can be volunteers (your uncle on the grill) or paid help (a photographer, a hired musician). Both live on the event's **Crew** list with an invited → confirmed status and a call time. What each crew team actually does is written in **Crew Duties** — *before* anyone is recruited into it.",
       },
       {
-        kind: "tip",
-        text: "Every workstream renders as a tab on the event page.",
+        kind: "rule",
+        title: "Organizers plan; crew execute",
+        text: "If someone's job starts and ends on event day, they're crew. They should never need to open this app — the plan hands them everything they need: their team, their contact, their call time, their duty.",
       },
-      { kind: "heading", text: "The shared anatomy" },
+      { kind: "heading", text: "The best organizers might not even be there" },
       {
         kind: "p",
-        text: "Learn the parts once, use them everywhere. Every workstream is built from:",
+        text: "A well-planned event runs without its planner standing in the park. If your event only works when you're physically present, the plan still lives in your head — which is exactly what the app exists to prevent. Strong organizers can hand a fully-planned event to the day-of team and do it consistently. And when you *do* attend, you get to actually be present instead of firefighting.",
       },
       {
-        kind: "bullets",
-        items: [
-          "**An owner role** — the role accountable for the stream.",
-          "**Rows** — the unit of work: a task, a message, a supply item, a permit. Every row has a title, a status, and an accountable human.",
-          "**Columns** — configured per template; events inherit and can adjust.",
-          "**A timing mode** — day offsets (T-14 becomes a real due date), minute offsets (Run of Show), or a convention deadline (supplies packed by T-1).",
-          "**A status vocabulary with terminal states** — Done, Packed, Approved, Sent. Readiness math runs on these, so keeping statuses true isn't bookkeeping; it *is* the plan.",
-          "**A ready flag** — the owner marks the stream ready when its criteria are met. That's a claim they're putting their name on.",
+        kind: "reveal",
+        prompt:
+          "Your friend agreed to run sound during the event. Organizer or crew?",
+        answer:
+          "Crew — it's a day-of role. Add them to the Crew list with a call time and their duty. If they also start planning the audio setup weeks out and owning supply rows, *now* they're an organizer too. Same human, two different hats.",
+      },
+    ],
+    quiz: [
+      {
+        prompt: "Who is Events OS built for?",
+        options: [
+          "Everyone who attends the event",
+          "Organizers — the people planning and helping plan",
+          "Only the single event lead",
+          "The venue and the vendors",
         ],
+        answerIndex: 1,
+        explanation:
+          "The app is for organizers. Crew — people filling a day-of role — get what they need FROM the plan (call time, duty, contact) without ever opening the app.",
+      },
+      {
+        prompt:
+          "Your cousin is showing up Saturday morning to help set up chairs, then staying for the event. What are they?",
+        options: [
+          "An organizer — they're doing work",
+          "Crew — their job starts and ends on event day",
+          "Neither; setup isn't a role",
+          "An event owner",
+        ],
+        answerIndex: 1,
+        explanation:
+          "If the job starts and ends on event day, they're crew: put them on the Crew list with a call time and a duty. Organizing means carrying part of the plan in the weeks before.",
+      },
+      {
+        prompt:
+          "The event ran perfectly and the person who planned it wasn't even in town. What does that mean?",
+        options: [
+          "The event didn't really need planning",
+          "Someone else must have re-planned it day-of",
+          "The plan was real: it lived in the app, not in the planner's head",
+          "The organizer failed to show commitment",
+        ],
+        answerIndex: 2,
+        explanation:
+          "That's the goal state. A plan that runs without its author is proof nothing lived in anyone's head — the best organizers can do this consistently.",
+      },
+    ],
+  },
+
+  // ── 3 · Anatomy of an event ────────────────────────────────────────────────
+  {
+    slug: "anatomy-of-an-event",
+    title: "Anatomy of an event",
+    subtitle: "Tabs, rows, statuses, and roles",
+    minutes: 4,
+    blocks: [
+      {
+        kind: "p",
+        text: "Open any event and you'll see tabs. Each tab is one area of the plan with one owner — the app calls these **workstreams**. Seven come built in, and each gets its own short section after this one:",
+      },
+      {
+        kind: "table",
+        headers: ["Tab", "What it holds"],
+        rows: [
+          ["**Tasks**", "The master to-do list"],
+          ["**Comms Schedule**", "Every message the event sends"],
+          ["**Run of Show**", "The minute-by-minute day-of program"],
+          ["**Crew Duties**", "What each crew team does"],
+          ["**Supplies & Logistics**", "Every physical item + the site map"],
+          ["**Permits**", "Permission paperwork"],
+          ["**Debrief**", "What you learned, after"],
+        ],
+      },
+      {
+        kind: "p",
+        text: "A chapter can add custom tabs (a merch stand, a food operation) and toggle off tabs an event doesn't need. Every tab works the same way: it's a table of **rows**. A row is one unit of work — a task, a message, a supply item — and every row has a **title**, a **status**, and a **person it resolves to**.",
       },
       {
         kind: "try_status",
@@ -333,588 +390,744 @@ const SECTIONS_IN_ORDER: Omit<AcademySection, "order">[] = [
         ],
         terminal: "done",
         caption:
-          "That's what done looks like — readiness math runs on this. Every row on every workstream tab works exactly like this chip.",
+          "Every row on every tab works exactly like this chip. Statuses aren't bookkeeping — the event's readiness numbers are computed from them, so a stale status is a small lie the whole team steers by.",
       },
-      { kind: "heading", text: "The cast" },
-      {
-        kind: "bullets",
-        items: [
-          "**The event owner** — the one person accountable for the event existing, happening, and closing out. Every event has exactly one.",
-          "**Roles / leads** — the named hats (Event Lead, Comms Lead, Production Lead, Logistics Lead…). Templates assign work to roles; events put one person in each role. Roles before people is deliberate: it keeps templates portable across cities and accountability legible when people swap.",
-          "**Workstream owners** — whoever holds a workstream's owner role.",
-          "**Crew** — volunteers and vendors engaged for the day, organized into teams. Crew *execute on the day*; leads *own streams*.",
-        ],
-      },
-      { kind: "heading", text: "The accountability chain" },
+      { kind: "heading", text: "Roles: assign hats, then people" },
       {
         kind: "p",
-        text: "Accountability for any row resolves down one chain: **row owner → row's role → that role's person → the workstream owner → the event owner.**",
+        text: "Templates attach work to **roles** — Event Lead, Comms Lead, Logistics Lead, Production Lead — and each event puts one person in each hat. That's why a template written in New York works in Austin: the work follows the hat, not the human. **One person per role, per event** — helpers are crew; accountability is singular.",
+      },
+      {
+        kind: "p",
+        text: "So who's on the hook for any given row? Follow the chain:",
       },
       { kind: "try_chain" },
       {
-        kind: "p",
-        text: 'If the chain dead-ends, the row is **unowned** — and unowned work silently fails. Nobody decides to drop it; it just never happens. That\'s why "zero unowned rows by T-10" is a hard rule, and why the event owner is the end of the chain: anything that falls through every other hand lands on them until they hand it to someone.',
-      },
-      {
         kind: "rule",
-        title: "One person per role per event",
-        text: 'One more rule worth tattooing. Shared ownership is how "I thought you had it" happens. Helpers are crew; accountability is singular.',
+        title: "Every row ends at one human",
+        text: "Row owner → row's role → that role's person → the tab's owner → the event owner. If the chain dead-ends, the row is **unowned** — and unowned work doesn't get argued about, it just silently doesn't happen.",
       },
     ],
     quiz: [
       {
-        prompt: "A row in the Comms Schedule has no owner and no role. Who is accountable for it?",
+        prompt: "What is a row, on any tab?",
         options: [
-          "Nobody — it's optional work",
-          "The workstream owner, then the event owner if that dead-ends",
-          "Whoever notices it first",
-          "The chapter admin",
+          "A comment about the event",
+          "One unit of work with a title, a status, and a person it resolves to",
+          "A read-only line the template wrote",
+          "A message to the crew",
         ],
         answerIndex: 1,
         explanation:
-          "Accountability resolves down the chain: row owner → row's role → role's person → workstream owner → event owner. A dead-ended chain means UNOWNED work, and unowned work silently fails.",
+          "Every tab is a table of rows, and every row — task, message, supply, permit — carries the same three things: title, status, accountable human.",
       },
       {
-        prompt: "Why do templates assign work to roles instead of directly to people?",
+        prompt: "Why do templates assign work to roles instead of people?",
         options: [
-          "Because people's names change too often to store",
-          "It keeps templates portable across cities and accountability legible when people swap",
-          "Roles are cheaper to store in the database",
+          "Because names change too often to store",
+          "So the same template works with any team — the work follows the hat, not the human",
+          "Roles are cheaper to store",
           "So nobody feels personally responsible",
         ],
         answerIndex: 1,
         explanation:
-          "Roles before people: the template says 'Comms Lead does this', and each event maps that role to one person. The same template works in any city with any team.",
+          "Roles before people: the template says 'Comms Lead does this', and each event puts one person in that hat. Portable across cities, legible when people swap.",
       },
       {
-        prompt: "Two capable people both want to co-own the Run of Show. Per the playbook, what should happen?",
+        prompt:
+          "Two capable friends both want to co-own the Run of Show. What does the app expect?",
         options: [
-          "Assign both — more owners means more gets done",
+          "Assign both — more owners, more done",
           "One holds the role and is accountable; the other helps as crew",
-          "Split the workstream into two workstreams",
-          "Let the assistant own it instead",
+          "Split the tab in two",
+          "Let the assistant own it",
         ],
         answerIndex: 1,
         explanation:
           "One person per role per event. Shared ownership is how 'I thought you had it' happens — helpers are crew, accountability is singular.",
       },
       {
-        prompt: "What does marking a workstream 'ready' actually mean?",
+        prompt: "A row has no owner and no role. What happens to it?",
         options: [
-          "The owner is signing their name to a claim: criteria met, or exceptions named out loud",
-          "The tab gets locked from further edits",
-          "All of its rows are automatically marked Done",
-          "The event date is confirmed",
+          "It's optional, so nothing needs to happen",
+          "It escalates to the chapter admin",
+          "It lands on the event owner — the end of the chain — until they hand it to someone",
+          "It gets deleted automatically",
         ],
-        answerIndex: 0,
+        answerIndex: 2,
         explanation:
-          "Readiness is earned, not declared: all rows terminal, owner assigned, pre-plan cells checked — or a conscious, out-loud override ('ready, with 2 open items acknowledged').",
+          "The accountability chain always terminates at the event owner. Anything that falls through every other hand is theirs until they place it — otherwise it's unowned, and unowned work silently fails.",
       },
     ],
   },
 
-  // ── 3 ─────────────────────────────────────────────────────────────────────
+  // ── 4 · Timing ─────────────────────────────────────────────────────────────
   {
-    slug: "planning-backwards",
-    title: "Planning backwards",
-    subtitle: "T-offsets, the five windows, and the hard checkpoints",
-    minutes: 6,
+    slug: "timing-and-offsets",
+    title: "Timing that moves with the date",
+    subtitle: "Offsets, due dates, and real-world lead times",
+    minutes: 3,
     blocks: [
       {
         kind: "p",
-        text: "The event date is the only fixed point; everything else is T-minus arithmetic.",
-      },
-      {
-        kind: "rule",
-        title: "A task without timing is a wish",
-        text: "Every task gets an offset, even a rough one, because offsets encode sequencing knowledge: venue at T-30, permits at T-21, announce at T-14, volunteers locked by T-10, supplies resolved by T-1, retro by T+7.",
-      },
-      { kind: "heading", text: "T-notation and offsets" },
-      {
-        kind: "p",
-        text: "T-N means N days *before* the event; T+N means N days after; T-0 is the day. When you create an event, every offset becomes a **real due date** back-calculated from the event date. Move the date and the whole timeline moves with it — that's the entire point.",
+        text: 'Put real dates in a spreadsheet, then move the event a week — everything is wrong. Events OS stores timing as an **offset** instead: "10 days before the event." The shorthand you\'ll see is T-notation: **T-10** is 10 days before, **T-0** is event day, **T+2** is two days after.',
       },
       { kind: "try_offset", eventDateLabel: "Worship With Strangers" },
       {
         kind: "p",
-        text: "But beware: **a date change is a plan change**. Offset-derived dates shift automatically; lead-time-bound tasks (permits!) don't compress just because the calendar moved. After any reschedule, re-check feasibility.",
+        text: "Where do the numbers come from? **Your template.** Announce at T-14, lock volunteers by T-10, pack supplies by T-1 — those are the proven defaults our worship templates ship with, distilled from real events. They're the template's earned opinion, not the app's law. Planning something smaller? Change the number. New number works better? Change the *template*.",
       },
-      { kind: "heading", text: "Lead times are laws of physics" },
+      {
+        kind: "rule",
+        title: "A task without timing is invisible",
+        text: "Due dates come from offsets, and reminder emails come from due dates. A row with no timing never lands on anyone's list — give every task an offset, even a rough one.",
+      },
+      { kind: "heading", text: "The one thing a reschedule can't fix" },
       {
         kind: "p",
-        text: "Some things cannot be compressed by working harder. Earned knowledge from real events:",
-      },
-      {
-        kind: "table",
-        headers: ["Item", "Lead time", "What we learned"],
-        rows: [
-          [
-            "Park/venue permit",
-            "3+ weeks",
-            "Apply at kickoff — approval is never guaranteed",
-          ],
-          [
-            "Sound permit",
-            "~3 days",
-            "Via the local precinct — and the permit holder must attend the event",
-          ],
-          [
-            "Food permit",
-            "Weeks, often blocked",
-            "Requires proof of insurance. Know your COI contact *before* you need one",
-          ],
-          [
-            "Battery charging",
-            "T-1, non-negotiable",
-            'Pull from storage early enough to charge at home. "VERY IMPORTANT" in the original template for a reason',
-          ],
-        ],
+        text: "Move the date and every derived due date moves with it — that's the point. But the outside world doesn't compress: a park permit still takes weeks, a custom order still ships in days. After any date change, re-check anything with a real-world lead time.",
       },
       {
         kind: "story",
         title: "Eden, 2026",
-        text: "Eden applied for the park permit and *still didn't get it* — survivable only because the plan had slack and a written fallback. Permits start at kickoff precisely because approval is never in your hands.",
-      },
-      {
-        kind: "p",
-        text: "When a lead time can't be met, the plan changes **now**: drop the item, substitute, or move the event. Hoping is not a mitigation.",
-      },
-      { kind: "heading", text: "The five windows" },
-      {
-        kind: "p",
-        text: 'The lifecycle runs in five windows, each with its own definition of "good":',
-      },
-      {
-        kind: "table",
-        headers: ["Window", "Span", "Definition of good"],
-        rows: [
-          [
-            "**Kickoff**",
-            "→ T-14",
-            "The skeleton is real: date + rain plan confirmed, venue secured, **permit applications in flight**, budget set, core roles assigned, worship leader confirmed",
-          ],
-          [
-            "**Build**",
-            "T-14 → T-7",
-            "Everything is drafted and everyone is asked: announcement out (gated on venue lock), expectations written *then* volunteers recruited, run of show drafted, song bank sent by T-7, online orders placed",
-          ],
-          [
-            "**Lock**",
-            "T-7 → T-1",
-            'Convert every "planned" into "confirmed". **No new scope** — late ideas go to the next event\'s template',
-          ],
-          [
-            "**Day-of**",
-            "T-0",
-            "Execute the locked plan. Capture issues; don't re-plan in the park",
-          ],
-          [
-            "**Debrief**",
-            "T+1 → T+7",
-            "Thank-yous, feedback ask at T+3, retro by T+7, every retro item dispatched. This window is why the *next* event is easier",
-          ],
-        ],
-      },
-      { kind: "heading", text: "The hard checkpoints" },
-      {
-        kind: "p",
-        text: "Memorize these — the reminders and readiness math are built on them:",
-      },
-      {
-        kind: "table",
-        headers: ["Checkpoint", "Deadline"],
-        rows: [
-          [
-            "Permit applications started",
-            "**Kickoff** — they resolve later; they start now",
-          ],
-          [
-            "Announcement",
-            "**Gated on venue lock** — never announce an unconfirmed venue",
-          ],
-          [
-            "Volunteers locked",
-            "**T-10** — placeholders are debts; a placeholder at T-3 is a hole in the day-of plan",
-          ],
-          ["Song bank sent", "**T-7**"],
-          [
-            "Run of show + setlist locked",
-            "**T-3** — the T-3 and T-1 reminders quote its call times",
-          ],
-          [
-            "Supplies packed + batteries charged",
-            '**T-1** — Packed, not "pull from storage"',
-          ],
-          ["Retro dispatched", "**T+7**"],
-        ],
+        text: "Eden applied for its park permit with plenty of runway and *still didn't get it* — survivable only because the plan had slack and a written fallback. Anything on someone else's clock starts as early as possible, with a plan B next to it.",
       },
       {
         kind: "tip",
-        text: "Reschedule on the event's Overview tab moves every derived due date with the date — then re-check permits and other lead-time work yourself.",
+        text: "Reschedule from the event's Overview tab — every derived due date moves with the date. Then re-check permits and orders yourself; calendars move, lead times don't.",
       },
     ],
     quiz: [
       {
-        prompt: "An event moves from June 7 to June 14. What happens to the plan?",
+        prompt: "The event moves from June 7 to June 14. What happens?",
         options: [
-          "Nothing — dates are independent of tasks",
-          "Every offset-derived due date shifts automatically, but you must re-check feasibility because lead times don't compress",
+          "Nothing — dates and tasks are independent",
+          "Every offset-derived due date shifts automatically, but lead-time work (permits, orders) needs a manual re-check",
           "All tasks reset to Not started",
-          "Only day-of tasks move; everything else stays",
+          "Only day-of tasks move",
         ],
         answerIndex: 1,
         explanation:
-          "A date change is a plan change. Offsets re-derive due dates automatically (that's the point of T-offsets), but permits and other lead-time-bound work obey physics, not the calendar — so feasibility gets re-checked after every reschedule.",
+          "Offsets re-derive due dates automatically — that's why the app stores timing as offsets. But permits and shipping obey the real world, not your calendar, so feasibility gets re-checked after every reschedule.",
       },
       {
-        prompt: "When should permit applications start?",
+        prompt: 'Your template says "announce at T-14" but your event is a small pop-up planned 10 days out. What do you do?',
         options: [
-          "In the Lock window, once everything else is confirmed",
-          "At kickoff — they start now and resolve later",
-          "T-3, when the sound permit is due",
-          "Whenever the venue asks for them",
-        ],
-        answerIndex: 1,
-        explanation:
-          "Permits are a kickoff task, not a Build task. Eden treated the park permit casually, applied, and didn't get it — survivable only because the plan had slack and a fallback. 3+ weeks of lead time means they start on day one.",
-      },
-      {
-        prompt: "It's T-5 and someone proposes adding a photo booth to Saturday's event. The playbook's default answer?",
-        options: [
-          "Add it — enthusiasm should be rewarded",
-          "Add it only if it's under budget",
-          "No new scope inside T-7; it goes to the next event's template",
-          "Ask the volunteers to vote",
+          "Cancel — the template's rule can't be met",
+          "Announce at T-14 anyway by backdating",
+          "Change the offset on your event; if the new timing works well, improve the template",
+          "Skip the announcement entirely",
         ],
         answerIndex: 2,
         explanation:
-          "The Lock window (T-7 → T-1) converts 'planned' into 'confirmed' — no new scope. Late ideas aren't killed, they're deposited in the template where the next event gets them properly planned.",
+          "Template numbers are earned defaults, not laws of the app. Events adapt freely — and good adaptations flow back into the template so it gets smarter.",
       },
       {
-        prompt: "Why must the run of show be locked by T-3 specifically?",
+        prompt: "Why does every task need an offset, even a rough one?",
         options: [
-          "Because printing takes three days",
-          "The T-3 and T-1 volunteer reminders quote its call times — an unlocked run of show means reminders quoting fiction",
-          "Because the venue requires it",
-          "It's an arbitrary tradition",
+          "The app refuses to save rows without one",
+          "Offsets drive due dates, and due dates drive reminders — an untimed task never lands on anyone's list",
+          "It makes the grid look complete",
+          "Offsets are required for the budget rollup",
         ],
         answerIndex: 1,
         explanation:
-          "Checkpoints gate each other: the reminder cadence quotes call times from the run of show, so it locks at T-3. A setlist still '[TBD]' at T-2 is a red flag we've actually seen.",
+          "A task without timing is invisible: no due date, no reminder, no place in anyone's day. Even a rough offset puts it on the radar.",
       },
       {
-        prompt: "What's the supplies rule at T-1?",
+        prompt: "What did Eden's park permit teach the playbook?",
         options: [
-          "Every item at a terminal state — Packed, batteries charged — not 'pull from storage'",
-          "Half the items packed is acceptable",
-          "Supplies can be resolved morning-of",
-          "Only audio gear needs to be packed",
+          "Permits are optional for outdoor events",
+          "Apply as early as possible and write a fallback — approval is never in your hands",
+          "Permits only take a day or two",
+          "Only paid events need permits",
         ],
-        answerIndex: 0,
+        answerIndex: 1,
         explanation:
-          "Supplies terminal by T-1. 'Pull from storage' is a plan, not a state — and the battery has to come out of storage early enough to charge at home, because there's no charger in storage.",
+          "Eden applied in time and still got denied — survivable only because of slack and a written plan B. Lead-time work starts at kickoff and always carries a fallback.",
       },
     ],
   },
 
-  // ── 4 ─────────────────────────────────────────────────────────────────────
+  // ── 5 · Tasks ──────────────────────────────────────────────────────────────
   {
-    slug: "owning-a-workstream",
-    title: "Owning a workstream",
-    subtitle: "The six expectations",
-    minutes: 5,
+    slug: "tab-tasks",
+    title: "Tasks",
+    subtitle: "The master to-do list",
+    minutes: 3,
     blocks: [
       {
         kind: "p",
-        text: "You've been assigned a role that owns a workstream — Comms, Supplies, Run of Show, any of them. Owning a workstream means owning its **completeness**, not doing every row yourself. Six expectations, true for every stream:",
+        text: "The **Tasks** tab is the event's master to-do list — the one tab that sees everything. Default owner: the Event Lead.",
       },
-      { kind: "heading", text: "1. Your stream tells the truth" },
       {
         kind: "p",
-        text: "Rows exist for everything that must happen, statuses reflect reality, and nothing in the stream is unowned. Update statuses **the day things happen**, not the night before the event. Readiness is computed from statuses, so a stale status isn't a small lie — it corrupts the number the event owner is steering by.",
+        text: "**When to use it:** anything that must happen that isn't a message (Comms), a physical item (Supplies), paperwork (Permits), or a day-of segment (Run of Show). Book the venue, confirm the worship leader, hire the videographer, schedule the meeting. Not sure where something goes? Put it in Tasks — you can always move it.",
+      },
+      {
+        kind: "p",
+        text: 'Each row: the task, **details rich enough for a stranger**, a status, timing, and who it resolves to. "Sound permit via precinct officer, ~3 days prior, permit holder must attend" is worth ten "get sound permit" rows — details are how the reason survives the person.',
+      },
+      {
+        kind: "try_status",
+        title: "Book videographer for recap clips",
+        options: [
+          { value: "not_started", label: "Not started", color: "gray" },
+          { value: "in_progress", label: "In progress", color: "amber" },
+          { value: "done", label: "Done", color: "green" },
+        ],
+        terminal: "done",
+        caption:
+          "Update statuses the day things happen, not the night before the event — the readiness numbers everyone steers by are computed from these.",
+      },
+      {
+        kind: "rule",
+        title: "One row per promise",
+        text: 'If someone said "I\'ll handle it," there\'s a row with their name on it. No row, no plan — just a vibe.',
+      },
+      {
+        kind: "tip",
+        text: "**Me view** filters every tab down to just your rows — the fastest answer to \"what's mine this week?\"",
+      },
+    ],
+    quiz: [
+      {
+        prompt: "What belongs on the Tasks tab?",
+        options: [
+          "Only the event lead's personal to-dos",
+          "Work that isn't a message, supply, permit, or day-of segment — and anything you're not sure where to put",
+          "Every row from every other tab, duplicated",
+          "Day-of segments with call times",
+        ],
+        answerIndex: 1,
+        explanation:
+          "Tasks is the master list and the safe default: if it doesn't clearly belong to a specialist tab, it starts here and can move later.",
+      },
+      {
+        prompt: 'Why is "Sound permit via precinct officer, ~3 days prior, holder must attend" a better row than "Get sound permit"?',
+        options: [
+          "It's longer, so it looks more thorough",
+          "Details rich enough for a stranger mean the task survives the person who knew how",
+          "Short titles break the grid",
+          "The assistant requires full sentences",
+        ],
+        answerIndex: 1,
+        explanation:
+          "The plan must be runnable with zero tribal knowledge. Details carry the HOW and the WHY so anyone can pick the row up cold.",
+      },
+      {
+        prompt: "When should you update a task's status?",
+        options: [
+          "The night before the event, all at once",
+          "The day it actually changes",
+          "Only when the event owner asks",
+          "At the debrief",
+        ],
+        answerIndex: 1,
+        explanation:
+          "Readiness is computed from statuses. A stale status isn't a small delay — it corrupts the number the whole team is steering by.",
+      },
+    ],
+  },
+
+  // ── 6 · Comms Schedule ─────────────────────────────────────────────────────
+  {
+    slug: "tab-comms",
+    title: "Comms Schedule",
+    subtitle: "Every message, planned like a task",
+    minutes: 3,
+    blocks: [
+      {
+        kind: "p",
+        text: "Comms is not \"post about it sometime.\" Every message the event sends is a row: **who** it's for (audience), **where** it goes (channel), **when** (timing), and the actual copy in notes. Default owner: the Comms Lead.",
+      },
+      {
+        kind: "p",
+        text: "**When to use it:** the announcement, the volunteer ask, reminders, day-of \"here's the pin, here's how to find us\", and thank-yous after. If it reaches people outside the planning team, it's a row here.",
+      },
+      {
+        kind: "try_status",
+        title: "Announce the event on socials",
+        options: [
+          { value: "not_started", label: "Not started", color: "gray" },
+          { value: "drafted", label: "Drafted", color: "amber" },
+          { value: "scheduled", label: "Scheduled", color: "blue" },
+          { value: "sent", label: "Sent", color: "green" },
+        ],
+        terminal: "sent",
+        caption:
+          "Sent is the terminal state — a drafted message helps nobody find the park.",
+      },
+      {
+        kind: "p",
+        text: "Repetition is a feature, not spam. Our templates remind volunteers at T-7, T-3, *and* T-1 — that cadence is how twenty people show up at the same spot at the same time. And thank-yous are planned rows too (day-of to crew, T+1 to attendees): gratitude is a retention strategy, not an afterthought.",
+      },
+      {
+        kind: "rule",
+        title: "If it isn't scheduled, it doesn't get sent",
+        text: "Every audience — public, attendees, crew, leaders — should hear from you in every phase. A volunteer who hears nothing between the ask and event day is a volunteer who doesn't show.",
+      },
+      {
+        kind: "tip",
+        text: "One hard gate worth memorizing: **never announce a venue that isn't locked.** The announcement row waits on the venue row.",
+      },
+    ],
+    quiz: [
+      {
+        prompt: "What makes something a Comms row instead of a Task?",
+        options: [
+          "It costs money",
+          "It reaches people outside the planning team",
+          "It happens on event day",
+          "The comms lead created it",
+        ],
+        answerIndex: 1,
+        explanation:
+          "Comms rows are messages: announcement, asks, reminders, thank-yous. Each carries audience + channel + timing + the actual copy.",
+      },
+      {
+        prompt: "Volunteers get reminders at T-7, T-3, AND T-1. Why?",
+        options: [
+          "The app sends them automatically no matter what",
+          "Repetition is how twenty people actually show up at the same place and time",
+          "It fills out the schedule so it looks planned",
+          "One reminder is legally insufficient",
+        ],
+        answerIndex: 1,
+        explanation:
+          "That cadence is earned knowledge from real events. Repetition isn't spam — it's the difference between 'invited' and 'present'.",
+      },
+      {
+        prompt: "The venue isn't confirmed yet, but the announcement post is ready. Send it?",
+        options: [
+          "Yes — momentum matters most",
+          "Yes, but delete it if the venue falls through",
+          "No — never announce an unconfirmed venue; the announcement waits on the venue lock",
+          "Only if the event is under two weeks out",
+        ],
+        answerIndex: 2,
+        explanation:
+          "This is one of the few hard gates: announcing an unlocked venue means potentially re-announcing a move to your whole audience — or worse, people showing up at the wrong park.",
+      },
+    ],
+  },
+
+  // ── 7 · Run of Show ────────────────────────────────────────────────────────
+  {
+    slug: "tab-run-of-show",
+    title: "Run of Show",
+    subtitle: "The day itself, minute by minute",
+    minutes: 3,
+    blocks: [
+      {
+        kind: "p",
+        text: "Run of Show is the program of the day. Its rows are **segments**, timed in minutes from event start: load-in at −60, sound check at −30, huddle at −10, worship set at 0, strike at the end. Default owner: the Production Lead.",
+      },
+      {
+        kind: "p",
+        text: "**When to use it:** everything that happens on the day, in order — including the unglamorous parts. Setup, sound check, the huddle, and strike are real segments with real owners, because they're where the day actually goes wrong.",
+      },
+      {
+        kind: "rule",
+        title: "Every segment has one named owner",
+        text: '"All" is acceptable only for arrival, setup, and strike. A segment owned by everyone is owned by no one — and the awkward silence while people look at each other happens in front of your guests.',
+      },
+      {
+        kind: "reveal",
+        prompt:
+          "Guests have arrived and it's time to shift from background music into the worship set. Who makes that call?",
+        answer:
+          "Whoever owns that segment — by name, on the row. If the row says a team or \"all\", nobody moves. The run of show exists so day-of needs zero improvisation about *who*.",
+      },
+      {
+        kind: "p",
+        text: "Call times live here too — work backwards from start: team arrival, setup, sound check, doors. Real-event learning: arrive *earlier* than feels necessary; in a public space you don't reserve your spot, you occupy it.",
+      },
+      {
+        kind: "tip",
+        text: "Lock the run of show a few days out — our templates lock at T-3, because the T-3 and T-1 reminder messages quote its call times. An unlocked run of show means reminders quoting fiction.",
+      },
+    ],
+    quiz: [
+      {
+        prompt: "How are Run of Show rows timed?",
+        options: [
+          "In days before the event, like tasks",
+          "In minutes from event start — negative before, positive after",
+          "They aren't timed; order is enough",
+          "By exact clock times typed by hand",
+        ],
+        answerIndex: 1,
+        explanation:
+          "Segments carry minute offsets from start (−60 = an hour before). Move the start time and the whole day's math holds.",
+      },
+      {
+        prompt: "Which of these should be a Run of Show segment?",
+        options: [
+          "Ordering the food (a week before)",
+          "The announcement post",
+          "Setup and strike",
+          "The debrief meeting",
+        ],
+        answerIndex: 2,
+        explanation:
+          "Everything that happens on the day is a segment — especially setup, sound check, huddle, and strike, because that's where days actually go wrong.",
+      },
+      {
+        prompt: "Why lock the run of show a few days before the event?",
+        options: [
+          "Because printing takes three days",
+          "Reminder messages quote its call times — an unlocked run of show means reminders quoting fiction",
+          "The app locks it automatically anyway",
+          "So the venue can approve it",
+        ],
+        answerIndex: 1,
+        explanation:
+          "The T-3/T-1 reminders pull call times from these rows. That's why our templates lock the run of show at T-3 — the number is a consequence, not a superstition.",
+      },
+    ],
+  },
+
+  // ── 8 · Crew Duties ────────────────────────────────────────────────────────
+  {
+    slug: "tab-crew-duties",
+    title: "Crew Duties",
+    subtitle: "Who's coming day-of, and what each team does",
+    minutes: 4,
+    blocks: [
+      {
+        kind: "p",
+        text: "This tab is the day-of people system, in two halves. The **Crew list**: every volunteer and paid helper, with their team, an invited → confirmed status, and a call time. And the **duty rows**: what each team actually does — \"Welcome ×6: greet, direct, hand out connect cards.\"",
+      },
+      {
+        kind: "p",
+        text: "Volunteers and paid help live on the same list: your friend praying with guests and a hired photographer are both crew. Paid crew carry an amount and an unpaid → paid status that rolls into the event budget.",
+      },
+      {
+        kind: "try_status",
+        title: "Jordan — Welcome team",
+        options: [
+          { value: "invited", label: "Invited", color: "gray" },
+          { value: "confirmed", label: "Confirmed", color: "green" },
+        ],
+        terminal: "confirmed",
+        caption:
+          "Invited is a maybe. A crew list full of 'invited' three days out is a list of holes — chase confirmations early.",
+      },
+      {
+        kind: "rule",
+        title: "Write duties before you recruit",
+        text: "Recruiting against unwritten expectations gets you warm bodies with no idea what to do. Write the team duties first, then post the ask — and every crew member knows five things before they arrive: their team, their contact, their call time, what to wear, what to bring.",
+      },
+      {
+        kind: "p",
+        text: "Remember: crew never need the app. The briefing page carries their five things out to them — the plan reaches the crew; the crew never has to reach into the plan.",
+      },
+      {
+        kind: "reveal",
+        prompt:
+          "It's five days out. Your crew list shows 8 people: 3 confirmed, 5 invited. How worried are you?",
+        answer:
+          "Worried enough to act today. Invited ≠ confirmed — you have 3 crew and 5 maybes. Chase every 'invited' now, while there's still time to recruit replacements. Our templates treat unconfirmed crew inside T-10 as a fire.",
+      },
+    ],
+    quiz: [
+      {
+        prompt: "What are the two halves of the Crew Duties tab?",
+        options: [
+          "A budget and a schedule",
+          "The crew list (who, with status + call time) and duty rows (what each team does)",
+          "Organizers and attendees",
+          "Invites and thank-yous",
+        ],
+        answerIndex: 1,
+        explanation:
+          "WHO is coming lives on the crew list; WHAT each team does lives in the duty rows. Together they're everything the day-of people system needs.",
+      },
+      {
+        prompt: "Where does a paid photographer belong?",
+        options: [
+          "On the Tasks tab as a to-do",
+          "On the crew list, with an amount and a payment status that rolls into the budget",
+          "In a separate vendors spreadsheet",
+          "They're an organizer",
+        ],
+        answerIndex: 1,
+        explanation:
+          "Volunteers and paid help are both crew — same list, same call times. Paid engagements add an amount and unpaid → paid tracking into the budget rollup.",
+      },
+      {
+        prompt: "Why do duties get written BEFORE the volunteer ask goes out?",
+        options: [
+          "The app blocks recruiting until they exist",
+          "So you recruit people into specific, known jobs instead of collecting warm bodies with no idea what to do",
+          "Because duties can't be edited later",
+          "To make the tab look complete",
+        ],
+        answerIndex: 1,
+        explanation:
+          "Expectations before recruitment: people say yes to a clear job and show up knowing their team, contact, call time, dress, and gear.",
+      },
+      {
+        prompt: "What does 'invited' mean on the crew list?",
+        options: [
+          "They're coming",
+          "They're a maybe — only 'confirmed' counts",
+          "They've been paid",
+          "They declined",
+        ],
+        answerIndex: 1,
+        explanation:
+          "Invited ≠ confirmed. A list of 'invited' near event day is a list of holes — chase confirmations early enough to recruit replacements.",
+      },
+    ],
+  },
+
+  // ── 9 · Supplies & Logistics ───────────────────────────────────────────────
+  {
+    slug: "tab-supplies",
+    title: "Supplies & Logistics",
+    subtitle: "Every physical thing, plus the site map",
+    minutes: 3,
+    blocks: [
+      {
+        kind: "p",
+        text: "Every physical item the event needs is a row: where it comes from (storage / order / someone's home), what it's packed in (\"green luggage\" beats \"somewhere\"), quantity, and who's bringing it. Default owner: the Logistics Lead.",
+      },
+      {
+        kind: "p",
+        text: "The statuses walk an item from idea to in-hand: *pull from storage*, *need to order*, *need to buy*, *ordered*, *have it*, and the terminal state — **packed**.",
       },
       {
         kind: "try_status",
         title: "Battery (main speaker)",
         options: [
-          { value: "needed", label: "Needed", color: "gray" },
-          {
-            value: "pull_from_storage",
-            label: "Pull from storage",
-            color: "amber",
-          },
+          { value: "pull_from_storage", label: "Pull from storage", color: "blue" },
+          { value: "have_it", label: "Have it", color: "teal" },
           { value: "packed", label: "Packed", color: "green" },
         ],
         terminal: "packed",
         caption:
-          'Packed — a terminal state, not a plan. "Pull from storage" the night before is how the battery arrives flat.',
+          "Packed — a state, not a plan. The battery comes out of storage early enough to charge at home, because there's no charger in storage. (\"VERY IMPORTANT\" in the original checklist, learned the hard way.)",
       },
-      { kind: "heading", text: "2. Work to the deadlines" },
-      {
-        kind: "p",
-        text: "Dated rows by their due dates; undated streams by their conventions — supplies packed by T-1, run of show locked by T-3, retro dispatched by T+7.",
-      },
-      {
-        kind: "tip",
-        text: "Your rows land in your **reminder emails** automatically. If a row isn't getting reminders, it's missing an offset — fix that first.",
-      },
-      { kind: "heading", text: "3. Flag cross-stream needs" },
-      {
-        kind: "p",
-        text: "A planning task that implies a supply. A permit that gates a comms post. A comms message that quotes call times from the run of show. **The owner who spots it makes sure the other stream's row exists.** You don't do the other stream's work — you make sure it's *seen*. The person who noticed is responsible for the handoff happening.",
-      },
-      { kind: "heading", text: "4. Escalate early" },
       {
         kind: "rule",
-        title: "Blocked at T-9 is a conversation; blocked at T-2 is a crisis",
-        text: "Raise blockers to the event owner the day they appear, not once you've exhausted your own ideas. Early escalation is a professional habit, not an admission of failure — the event owner exists exactly for this.",
+        title: "\"Packed\" is a state; \"I'll grab it\" is a hope",
+        text: "Our templates want every item terminal by T-1 — packed, batteries charged, day-of purchases assigned to a named person with a time. Online orders happen weeks out; shipping is a lead time like any other.",
       },
-      { kind: "heading", text: "5. Mark it ready honestly" },
       {
         kind: "p",
-        text: 'The **Mark ready** button on your section header is you signing your name. Criteria: all rows at a terminal status, everything owned, pre-plan cells checked. You *can* override with open items — real events have judgment calls — but you name the exceptions out loud: "ready, with two open items acknowledged." The system makes overrides explicit and visible; it never silently allows drift.',
-      },
-      {
-        kind: "try_ready",
-        criteria: [
-          "All rows at a terminal status",
-          "Every row has an owner",
-          "Pre-plan cells checked",
-        ],
-      },
-      { kind: "heading", text: "6. Bring the learnings" },
-      {
-        kind: "p",
-        text: "After the event, your stream's retro entries: what broke, what was missing, what was excess — with real costs and quantities. Your opinion on what belongs in the template is part of the job, because the template is where your knowledge outlives your tenure.",
-      },
-      {
-        kind: "story",
-        title: "Eden, 2026",
-        text: 'Eden\'s supplies retro produced *"more blankets, fewer plates"* and layout learnings — a circular stage area beat a pointed one. Concrete, costed, quantified: exactly the kind of entry that becomes a template row.',
-      },
-      { kind: "heading", text: "In the app" },
-      {
-        kind: "p",
-        text: "Your workstream is a tab on the event page. Click any cell to edit; status chips cycle when tapped; changes save instantly. **Me view** filters everything to just your work. Any cell can carry a **how-to link** — if you figured out something the next person will need, attach it.",
-      },
-      {
-        kind: "tip",
-        text: 'The assistant knows this playbook, your guide, and your live rows. Ask it: *"Brief me on my workstream — what\'s due, what\'s at risk, what\'s unowned?"*',
+        text: "This tab also carries the **site map**: a drawing of the venue — stage, stations, tables, flow of arrival — with supplies and crew placed on it. Walk the site before the event and map it; the map is the spatial view of everything the grid tracks.",
       },
     ],
     quiz: [
       {
-        prompt: "Owning a workstream primarily means…",
+        prompt: "What's the terminal status for a supply item?",
         options: [
-          "Personally doing every row in it",
-          "Owning its completeness: rows exist, statuses are true, nothing is unowned",
-          "Attending every planning meeting",
-          "Approving other people's edits to your tab",
-        ],
-        answerIndex: 1,
-        explanation:
-          "Expectation #1: the stream tells the truth. You're accountable that every needed row exists, statuses reflect reality, and nothing dead-ends — not that your name is on every row.",
-      },
-      {
-        prompt:
-          "While planning your Comms rows you notice the T-3 reminder needs call times that only exist in the Run of Show. It's not drafted yet. What do you do?",
-        options: [
-          "Nothing — Run of Show isn't your workstream",
-          "Draft the run of show yourself",
-          "Make sure the Run of Show owner knows and the row exists — the person who spots a cross-stream need is responsible for it being seen",
-          "Remove your reminder row so it's not blocked",
+          "Have it",
+          "Ordered",
+          "Packed",
+          "Pull from storage",
         ],
         answerIndex: 2,
         explanation:
-          "Expectation #3: flag cross-stream needs. You don't do the other stream's work, but spotting the dependency makes you responsible for the handoff happening.",
+          "Having it at home isn't the same as it arriving at the park. Packed is the only state that survives the drive.",
       },
       {
-        prompt: "You're blocked on a vendor reply and the event is 9 days out. When do you tell the event owner?",
+        prompt: "Why does the battery row deserve special paranoia?",
         options: [
-          "Today — blocked at T-9 is a conversation, blocked at T-2 is a crisis",
-          "At T-2, once it's actually urgent",
-          "Only if the vendor never replies",
-          "Never — solve your own blockers",
-        ],
-        answerIndex: 0,
-        explanation:
-          "Expectation #4: escalate early, the day the blocker appears. Nine days out there are options; two days out there's only damage control.",
-      },
-      {
-        prompt: "Your stream has 2 genuinely-acceptable open items at readiness time. The honest move is…",
-        options: [
-          "Mark the items Done so the numbers look right",
-          "Mark ready and name the exceptions out loud: 'ready, with 2 open items acknowledged'",
-          "Refuse to mark ready until literally everything is terminal",
-          "Delete the open items",
+          "Batteries are expensive",
+          "It must leave storage early enough to charge at home — there's no charger in storage",
+          "It's the heaviest item",
+          "The venue provides batteries anyway",
         ],
         answerIndex: 1,
         explanation:
-          "Expectation #5: mark ready honestly. Overrides are allowed — real events have judgment calls — but they're conscious and visible, never silent. Faking statuses corrupts the readiness math everyone steers by.",
+          "A battery pulled from storage the night before arrives flat. This exact failure is why the original checklist marked it VERY IMPORTANT.",
+      },
+      {
+        prompt: "What is the site map?",
+        options: [
+          "A photo of the venue from Google Maps",
+          "The venue layout drawing — stage, stations, arrival flow — with supplies and crew placed on it",
+          "A list of driving directions",
+          "The run of show in graphical form",
+        ],
+        answerIndex: 1,
+        explanation:
+          "The site map lives with Supplies & Logistics because it's the spatial view of the same workstream: everything the grid tracks, placed where it goes.",
       },
     ],
   },
 
-  // ── 5 ─────────────────────────────────────────────────────────────────────
+  // ── 10 · Permits ───────────────────────────────────────────────────────────
   {
-    slug: "owning-an-event",
-    title: "Owning an event",
-    subtitle: "The seven expectations",
-    minutes: 6,
+    slug: "tab-permits",
+    title: "Permits",
+    subtitle: "Paperwork on someone else's clock",
+    minutes: 3,
     blocks: [
       {
         kind: "p",
-        text: 'You created an event, or someone made you its owner. You are now the one person accountable for it **existing, happening, and closing out** — the answer to "who do I ask?" for anything without a clearer owner. Seven expectations:',
+        text: "Public worship happens in public space — which means park permits, amplified-sound permits, sometimes food permits. Each permit is a row: jurisdiction contact, deadline, status, and the document attached once granted. Default owner: the Event Lead.",
       },
-      { kind: "heading", text: "1. Own the calendar" },
       {
         kind: "p",
-        text: "Confirm the date and the rain plan. When the date moves, *you* move it — and you re-check that every task is still feasible, because permits don't compress just because the calendar did.",
+        text: "**When to use it:** any event in a space you don't control. Backyard hangout? Toggle the tab off — not every event needs every tab. Public park with a speaker? Start at kickoff.",
       },
-      { kind: "heading", text: "2. Fill the roles" },
       {
-        kind: "p",
-        text: "Every role has one person, and every placeholder volunteer is a named human by **T-10**.",
+        kind: "try_status",
+        title: "Park permit — Maria Hernandez Park",
+        options: [
+          { value: "to_apply", label: "To apply", color: "red" },
+          { value: "submitted", label: "Submitted", color: "amber" },
+          { value: "approved", label: "Approved", color: "green" },
+        ],
+        terminal: "approved",
+        caption:
+          "Approved is the only terminal state — 'submitted' is the government thinking about it.",
       },
       {
         kind: "rule",
-        title: "Delegation is the job",
-        text: "If more than about 40% of rows resolve to you, you're failing at the core skill. The lead who assigns well runs three events a year without burning out; the lead who does everything runs two and quits.",
-      },
-      { kind: "heading", text: "3. Run the rhythm" },
-      {
-        kind: "p",
-        text: "Kickoff meeting, the leads' run-of-show meeting, the day-of huddle, and the T+2 debrief. You run them or you explicitly hand them off — they don't happen by default.",
-      },
-      { kind: "heading", text: "4. Hold the budget" },
-      {
-        kind: "p",
-        text: "Set it at kickoff ($300 lightweight / ~$1000 full-scale are the proven anchors), watch the rollup as costs land on rows, reconcile actuals in the debrief window.",
+        title: "Approval is never in your hands",
+        text: "Permits are the clearest case of a real-world lead time: park permits take 3+ weeks, sound permits ~3 days via the local precinct (and the permit holder must attend), food permits need proof of insurance. Apply at kickoff, and write every permit's \"what if denied\" line before you need it.",
       },
       {
-        kind: "story",
-        title: "Eden, 2026",
-        text: 'Real learnings compound here too: florists beat Costco for bulk flowers; 8 pizzas fed the Eden crowd; *"too much food"* was a retro item. Priced, counted, remembered — the next budget starts smarter.',
-      },
-      { kind: "heading", text: "5. Make the readiness call" },
-      {
-        kind: "p",
-        text: '"Ready" means the conjunction — every one of these, at the same time. You declare it, and you own any override, out loud. Anything less is "Planning":',
-      },
-      {
-        kind: "bullets",
-        items: [
-          "All workstreams marked ready",
-          "All roles assigned, no placeholder volunteers",
-          "Permits resolved — approved or consciously waived",
-          "Contingencies written: rain plan with its own permit answer, sound fallback, safety lead with a visible phone number",
+        kind: "table",
+        headers: ["Permit", "Lead time", "Learned the hard way"],
+        rows: [
+          ["Park / venue", "3+ weeks", "Eden applied in time and still got denied — the fallback saved the event"],
+          ["Amplified sound", "~3 days", "Via the local precinct; the permit holder must be on site"],
+          ["Food", "Weeks, often blocked", "Requires proof of insurance — know your contact before you need one"],
         ],
-      },
-      {
-        kind: "reveal",
-        prompt:
-          'Every workstream is marked ready, but two volunteer rows still say "Placeholder". Is the event Ready?',
-        answer:
-          "No. Ready is a **conjunction** — workstreams ready AND roles assigned AND no placeholders AND permits resolved AND contingencies written. A placeholder isn't a person; it's a hole in the day-of plan wearing a name tag. The event stays \"Planning\" until a named human fills it — or you override, out loud, and own it.",
-      },
-      { kind: "heading", text: "6. Catch what falls" },
-      {
-        kind: "p",
-        text: "You are the end of the accountability chain and the escalation contact for every lead. Respond to blockers the day they're raised. Any row whose owner chain dead-ends lands on you until you hand it to someone.",
-      },
-      {
-        kind: "reveal",
-        prompt:
-          "Your comms lead has gone quiet and their stream shows four overdue rows at T-9. What happens next?",
-        answer:
-          "You do — **today**. Blocked at T-9 is a conversation; blocked at T-2 is a crisis. You're the escalation contact: check in, unblock or reassign, and if the role has genuinely dead-ended, those rows land on you until you hand them to someone. What you don't do is wait to find out at T-2.",
-      },
-      { kind: "heading", text: "7. Close the loop" },
-      {
-        kind: "p",
-        text: "The event isn't done when the crowd goes home. **Done means done**: retro captured by T+7, every retro item dispatched (promoted to the template, logged as context, or explicitly dropped), vendors paid, thank-yous sent. The debrief is the most-skipped, highest-value hour in the lifecycle — Eden's produced a dozen template improvements. Protect it.",
-      },
-      { kind: "heading", text: "In the app" },
-      {
-        kind: "p",
-        text: 'The **Overview tab** is your cockpit: status, reschedule, budget, roles, and "What\'s next" — your prioritized action list. The four **phase rings** (Pre-plan / Planning / Day-of / Post) are your honesty meter: they\'re computed from row statuses, so they only work if owners keep statuses true. **Day-of mode** is the big-print field view for the park. **Reschedule** moves every derived due date with the event.',
-      },
-      {
-        kind: "tip",
-        text: 'As owner, use the assistant as your chief of staff: *"Give me the owner\'s briefing — T-window, risks, unowned work, unfilled roles."* · *"Is this event actually ready? Check it against the readiness criteria."*',
       },
     ],
     quiz: [
       {
-        prompt: "More than ~40% of an event's rows resolve to the event owner. What does the playbook call this?",
+        prompt: "When do permit applications start?",
         options: [
-          "Strong leadership",
-          "A delegation failure and a bus-factor problem — redistribute before it becomes a burnout problem",
-          "Normal for small events",
-          "A reason to extend the timeline",
+          "The week of the event",
+          "At kickoff — they start now and resolve later",
+          "After the announcement goes out",
+          "Whenever the venue asks",
         ],
         answerIndex: 1,
         explanation:
-          "Expectation #2: delegation IS the job. One person carrying 40%+ of the plan means the institution depends on one human — exactly what the north star forbids.",
+          "Approval is on someone else's clock and never guaranteed. Starting at kickoff buys the slack that saved Eden when its permit was denied.",
       },
       {
-        prompt: "Which of these is NOT required before an event is genuinely 'Ready'?",
+        prompt: "Your event is in a friend's backyard. What happens to the Permits tab?",
         options: [
-          "All workstreams marked ready",
-          "No placeholder volunteers remaining",
-          "Contingencies written (rain plan, sound fallback, safety lead)",
-          "Every retro item dispatched",
-        ],
-        answerIndex: 3,
-        explanation:
-          "Readiness is the pre-event conjunction: workstreams ready + roles assigned + no placeholders + permits resolved + contingencies written. The retro belongs to the DEBRIEF window — it's what makes the event 'completed', not 'ready'.",
-      },
-      {
-        prompt: "The event happened and went great. When is it 'completed'?",
-        options: [
-          "The moment the crowd goes home",
-          "Once photos are posted",
-          "After the retro is captured, learnings dispatched to the template, vendors paid, and thank-yous sent",
-          "When the owner archives it",
-        ],
-        answerIndex: 2,
-        explanation:
-          "Expectation #7: close the loop. Done = happened + retro captured + learnings dispatched + vendors paid + thank-yous sent. Skipping the debrief is the one failure mode worth being pushy about.",
-      },
-      {
-        prompt: "What are the phase rings on the event header actually measuring?",
-        options: [
-          "How much time is left before the event",
-          "Row statuses rolled up per lifecycle phase — an honesty meter that only works if owners keep statuses true",
-          "The owner's manual estimate of progress",
-          "Budget consumption",
+          "Fill it with 'not needed' rows",
+          "Toggle it off — not every event needs every tab",
+          "Delete the template",
+          "Leave it empty forever",
         ],
         answerIndex: 1,
         explanation:
-          "The rings are computed from real row statuses (Pre-plan / Planning / Day-of / Post). That's why 'the stream tells the truth' matters: stale statuses corrupt the very number the owner steers by.",
+          "Tabs are toggleable per event and per template. An event only carries the workstreams it actually uses.",
+      },
+      {
+        prompt: "Every permit row should carry a \"what if denied\" line. Why?",
+        options: [
+          "The city requires it",
+          "Because approval is never in your hands — the fallback is written while you're calm, not improvised at T-2",
+          "It speeds up the application",
+          "It's needed for the budget",
+        ],
+        answerIndex: 1,
+        explanation:
+          "Hoping is not a mitigation. A written fallback (different spot, no amplification, adjusted food plan) is what makes a denial survivable.",
       },
     ],
   },
 
-  // ── 6 ─────────────────────────────────────────────────────────────────────
+  // ── 11 · Debrief ───────────────────────────────────────────────────────────
+  {
+    slug: "tab-debrief",
+    title: "Debrief",
+    subtitle: "How the next event gets easier",
+    minutes: 3,
+    blocks: [
+      {
+        kind: "p",
+        text: "After the event, while memories are fresh (our templates say within a week), the team captures four things: what went well, what broke, what was missing, what was excess. Each is a row on the Debrief tab. Default owner: the Event Lead.",
+      },
+      {
+        kind: "p",
+        text: "Every row then gets **dispatched** — one of three fates: *promoted* into the template, kept as *context* for future teams, or *dropped* on purpose. A row that just sits there is a lesson nobody learns.",
+      },
+      {
+        kind: "try_status",
+        title: "We needed trash bags",
+        options: [
+          { value: "open", label: "Open", color: "amber" },
+          { value: "actioned", label: "Actioned", color: "green" },
+        ],
+        terminal: "actioned",
+        caption:
+          "Actioned = dispatched: promoted to the template, logged as context, or consciously dropped. This exact row became a template supplies row at Eden.",
+      },
+      {
+        kind: "rule",
+        title: "The debrief is finished when the template is better",
+        text: "Not when the notes are written. Eden's debrief produced a dozen template improvements — earlier call times, more blankets, fewer plates, a circular stage layout. It's the most-skipped, highest-value hour in the whole lifecycle. Protect it.",
+      },
+      {
+        kind: "p",
+        text: "Concrete beats vague: \"more blankets, fewer plates\" with counts and costs becomes a template row; \"food was kinda off\" becomes nothing.",
+      },
+    ],
+    quiz: [
+      {
+        prompt: "What are the three fates of a debrief row?",
+        options: [
+          "Approved, rejected, pending",
+          "Promoted to the template, kept as context, or dropped on purpose",
+          "Archived, deleted, or emailed",
+          "Assigned, unassigned, escalated",
+        ],
+        answerIndex: 1,
+        explanation:
+          "Every learning gets dispatched. 'Actioned' with no artifact isn't a state — the row either changes the template, informs the future, or is consciously let go.",
+      },
+      {
+        prompt: "When is the debrief actually done?",
+        options: [
+          "When the meeting ends",
+          "When all rows are written down",
+          "When the template is better — every row dispatched",
+          "When the event is marked completed",
+        ],
+        answerIndex: 2,
+        explanation:
+          "The debrief is a template-editing session, not a feelings meeting. It's finished when the learnings are in the template, not on a page.",
+      },
+      {
+        prompt: "Which debrief row is actually useful?",
+        options: [
+          "\"Food was kinda off\"",
+          "\"Vibes were good\"",
+          "\"8 pizzas fed everyone; we threw out 3 — order 6 next time\"",
+          "\"Someone should look into the sound situation\"",
+        ],
+        answerIndex: 2,
+        explanation:
+          "Concrete, counted, costed rows become template changes. Vague rows become nothing. (The pizza math is a real Eden learning.)",
+      },
+    ],
+  },
+
+  // ── 12 · The assistant ─────────────────────────────────────────────────────
   {
     slug: "working-with-the-assistant",
     title: "Working with the assistant",
-    subtitle: "Briefings, batching, undo, and what needs your consent",
-    minutes: 5,
+    subtitle: "Briefings, batch edits, and what needs your consent",
+    minutes: 3,
     blocks: [
       {
         kind: "p",
-        text: "Every event page has an assistant that knows the playbook, the guides, and your live plan — statuses, due dates, owners, readiness. It's not a chatbot bolted on; it's a planning partner trained on the same rules you just read. Knowing how it conducts itself makes you faster with it.",
-      },
-      { kind: "heading", text: "It briefs before it acts" },
-      {
-        kind: "p",
-        text: "Every working session starts with situational awareness: your T-window, phase scores, overdue and unowned rows, unassigned roles, unresolved placeholders — then it leads with the one or two things that matter most *now*. Not a firehose; a briefing.",
-      },
-      {
-        kind: "tip",
-        text: 'The fastest way to start any session: open the assistant and say *"Brief me on this event."*',
+        text: "Every event page has an assistant that knows the playbook, the guides, and your live plan — statuses, due dates, owners, readiness. Open any event and ask it to brief you; it reads the real rows and leads with what matters *now*.",
       },
       {
         kind: "agent_demo",
@@ -922,183 +1135,208 @@ const SECTIONS_IN_ORDER: Omit<AcademySection, "order">[] = [
           { who: "you", text: "Brief me on this event." },
           {
             who: "agent",
-            text: "We're at T-9, readiness 62%. The headline: 3 volunteer roles are still placeholders and the lock point is T-10 — that's the thing to fix today.",
+            text: "We're at T-9, readiness 62%. The headline: 3 crew spots are still unconfirmed and your template locks crew at T-10 — that's today's fix.",
           },
           {
             who: "agent",
-            text: "Also: the sound permit row has no owner, and the run of show is drafted but not locked (due T-3). Want me to assign owners to every unassigned task from its role?",
+            text: "Also: the sound permit row has no owner, and the run of show isn't locked (due T-3). Want me to assign owners to every unassigned task from its role?",
           },
-          {
-            who: "you",
-            text: "Yes — and draft the volunteer ask for the group chat.",
-          },
+          { who: "you", text: "Yes — and draft the crew ask for the group chat." },
           {
             who: "agent",
-            text: "Done: 6 tasks assigned from their roles, in one revertible run. The volunteer ask is drafted — it's public-facing, so nothing sends until you say so.",
+            text: "Done: 6 tasks assigned, one revertible run. The crew ask is drafted — it's public-facing, so nothing sends until you say so.",
           },
         ],
       },
-      { kind: "heading", text: "It proposes, then applies — in batches" },
       {
         kind: "p",
-        text: 'The assistant describes a batch of changes, applies it in **one revertible run**, and summarizes what actually changed. Batch edits over row-by-row dribbles: "add these five supplies rows and set their owners" is one proposal, one application, one undo. Every run is reversible — if a batch lands wrong, you can revert it. That\'s why you can let it work freely on plan internals without babysitting each edit.',
+        text: "It works in **batches**: describes the changes, applies them in one revertible run, summarizes what changed. A wrong batch can be undone as a unit — which is why you can let it work freely on plan internals without babysitting every edit.",
       },
-      { kind: "heading", text: "Free hand vs. your consent" },
-      { kind: "p", text: "The line is drawn by blast radius:" },
       {
         kind: "table",
         headers: ["It wants to…", "Who decides"],
         rows: [
-          [
-            "Edit rows, statuses, offsets, owners, role assignments",
-            "**Free hand** — revertible plan internals",
-          ],
-          ["Delete anything", "**Asks first**"],
-          [
-            "Mark a workstream or the event *ready*",
-            "**Asks first** — that's a human signing their name",
-          ],
+          ["Edit rows, statuses, offsets, owners", "**Free hand** — revertible plan internals"],
+          ["Delete anything, or mark anything *ready*", "**Asks first**"],
           ["Change the event date or status", "**Asks first**"],
-          ["Promote changes to the template", "**Asks first**"],
-          [
-            "Anything volunteer- or public-facing — messages, blasts, share pages",
-            "**Asks first**",
-          ],
+          ["Anything crew- or public-facing (messages, blasts, pages)", "**Asks first**"],
         ],
       },
       {
         kind: "rule",
         title: "The consent line",
-        text: "The plan is yours to iterate; what reaches other humans needs a human's consent.",
+        text: "The plan is yours to iterate together; anything that reaches other humans — or signs your name to a claim — waits for a human's yes.",
       },
-      { kind: "heading", text: "It uses exact values and real ids" },
-      {
-        kind: "p",
-        text: 'Each workstream\'s status vocabulary is exact — supplies go *pull_from_storage → packed*, comms go *drafted → sent*. The assistant never invents a status or a row; neither should you when you ask for changes. "Mark the battery packed" works because *packed* is a real status on a real row.',
-      },
-      { kind: "heading", text: "It nudges like a producer, not a nag" },
-      {
-        kind: "p",
-        text: 'Expect nudges tied to the T-window and the playbook: *"We\'re at T-9 and 3 volunteer roles are unfilled — the lock point is T-10. Want me to draft the ask for the group chat?"* One clear nudge beats five vague ones. And it teaches while doing: ask *what* to do and you\'ll get the *why* from the playbook too. The goal is not dependence — it\'s a lead who could run it alone. North star, again.',
-      },
-      { kind: "heading", text: "Prompts worth stealing" },
       {
         kind: "bullets",
         items: [
           '*"Brief me on my workstream — what\'s due, what\'s at risk, what\'s unowned?"*',
+          '*"We\'re moving to June 14 — reschedule and tell me what becomes infeasible."*',
           '*"Is this event actually ready? Check it against the readiness criteria."*',
-          '*"We\'re moving to June 14th — reschedule and tell me what becomes infeasible."*',
-          '*"Assign owners to every unassigned task from its role."*',
-          '*"Run my debrief — interview me and draft the retro."*',
+          '*"Run my debrief — interview me and draft the rows."*',
         ],
       },
     ],
     quiz: [
       {
-        prompt: "Which of these will the assistant do WITHOUT asking you first?",
+        prompt: "Which of these will the assistant do WITHOUT asking first?",
         options: [
-          "Send a reminder blast to volunteers",
-          "Mark the Supplies workstream ready",
-          "Update row statuses, offsets, and owners in a revertible batch",
+          "Send the reminder blast to crew",
+          "Mark Supplies & Logistics ready",
+          "Update statuses, offsets, and owners in one revertible batch",
           "Delete the stale comms rows",
         ],
         answerIndex: 2,
         explanation:
-          "Free hand covers revertible plan-internal edits (rows, statuses, offsets, owners, role assignments). Deleting, marking ready, date/status changes, template promotions, and anything volunteer- or public-facing all need your explicit consent.",
+          "Plan internals are free-hand because every batch is revertible. Deleting, marking ready, date changes, and anything human-facing wait for your yes.",
       },
       {
-        prompt: "Why does the assistant batch its edits instead of applying them one by one?",
+        prompt: "Why does the assistant apply edits in batches?",
         options: [
           "Batches are cheaper to compute",
-          "One proposal → one revertible run → one summary; a wrong batch can be undone as a unit",
+          "One proposal → one revertible run → one summary; a wrong batch undoes as a unit",
           "It can only write once per conversation",
           "To hide what it changed",
         ],
         answerIndex: 1,
         explanation:
-          "Propose, apply, verify, stay reversible: the batch is described first, applied in one revertible run, then summarized. That's what makes giving it a free hand on plan internals safe.",
+          "Propose, apply, verify, stay reversible — that's what makes giving it a free hand on plan internals safe.",
       },
       {
-        prompt: "Why won't the assistant mark a workstream ready on its own, even when every row is Done?",
+        prompt: "Every row is Done, but the assistant won't mark the workstream ready itself. Why?",
         options: [
-          "It can't read the ready flag",
-          "Marking ready is a human signing their name to a claim — the assistant asks first",
+          "It can't see the ready flag",
+          "Marking ready is a human signing their name to a claim — it will tell you the criteria are met, but the signature is yours",
           "Ready flags are admin-only",
-          "It waits until T-1 to evaluate readiness",
+          "It waits until T-1 to evaluate",
         ],
         answerIndex: 1,
         explanation:
-          "Readiness is earned and DECLARED by the accountable human. The assistant can tell you the criteria are met, but the signature on the claim is yours.",
-      },
-      {
-        prompt: "What's the best first message when you open the assistant on an event you haven't looked at in a week?",
-        options: [
-          "\"List every row in every workstream\"",
-          "\"Brief me on this event\" — it leads with the one or two things that matter most now",
-          "\"Mark everything done\"",
-          "\"What's the weather Saturday?\"",
-        ],
-        answerIndex: 1,
-        explanation:
-          "Situational awareness first: the assistant reads the T-window, phase scores, overdue/unowned rows, and unfilled roles, then briefs — not a firehose, a briefing.",
+          "Readiness is a claim someone puts their name on. The assistant checks the criteria; the human makes the claim.",
       },
     ],
   },
 
-  // ── 7 ─────────────────────────────────────────────────────────────────────
+  // ── 13 · Capstone: join an event ───────────────────────────────────────────
   {
-    slug: ACADEMY_CAPSTONE_SLUG,
-    title: "Capstone: the Training Event",
-    subtitle: "Run the drills in a real sandbox event",
-    minutes: 10,
+    slug: "capstone-join-an-event",
+    title: "Capstone: join an event",
+    subtitle: "Step into a big gathering as its Comms Lead",
+    minutes: 8,
+    capstone: { kind: "join_event" },
     blocks: [
       {
         kind: "p",
-        text: "You've read the rules. Now you run them — in a **real event** that only you can see.",
-      },
-      {
-        kind: "p",
-        text: "Hitting **Start training** creates a sandbox event from the platform training template. It's flagged as training, so it never appears in the chapter's pipeline, dashboards, or reminder emails — but inside, it's the real thing: real workstreams, real rows, real status chips, the real assistant.",
+        text: "This is how most people actually meet Events OS: someone else created a big event from a template, and you got handed a role. **Start training** spins up that exact situation — a large worship gathering, mid-planning, dozens of real rows across every tab — visible only to you. Your role: **Comms Lead**.",
       },
       {
         kind: "rule",
         title: "Nothing here is a mock-up",
-        text: "The sandbox is the real thing behind a training flag — which is why everything you do here transfers one-to-one to your first real event.",
+        text: "The sandbox is the real product behind a training flag — real tabs, real status chips, the real assistant. It never appears in the chapter's pipeline, dashboards, or reminder emails. Everything you do here transfers one-to-one.",
       },
       { kind: "heading", text: "Your quests" },
       {
         kind: "p",
-        text: 'Your quests are rows in the event itself, prefixed **"Quest:"**. Each one drills a move you\'ll make on every real event:',
+        text: 'Quests are rows in the event itself, prefixed **"Quest:"** — the checklist below ticks as each row reaches its terminal status. Each quest drills a move every workstream owner makes on every real event:',
       },
       {
         kind: "table",
         headers: ["Quest", "The move it drills"],
         rows: [
-          [
-            "**Assign yourself the Comms Lead role**",
-            "The roles-before-people move",
-          ],
-          [
-            "**Mark the battery supply Packed**",
-            "Walk a supplies row to its terminal state — the T-1 ritual",
-          ],
-          [
-            "**Add a T-3 reminder task**",
-            "Plan backwards with a real offset",
-          ],
-          [
-            "**Mark Supplies & Logistics ready**",
-            "Sign your name to a workstream",
-          ],
-          [
-            "**Ask the assistant for a readiness briefing**",
-            "Meet your chief of staff",
-          ],
+          ["**Take the Comms Lead role**", "Roles before people — put yourself in the hat"],
+          ["**Find your work in Me view**", "Filter the whole event down to what's yours"],
+          ["**Send the announcement**", "Walk a comms row to its terminal state"],
+          ["**Post the crew ask**", "Check Crew Duties is written first — the cross-stream gate"],
+          ["**Send the day-before call-time reminder**", "Your message quotes the Run of Show — streams depend on each other"],
+          ["**Ask the assistant to brief you on your workstream**", "Meet your chief of staff"],
+          ["**Mark the Comms Schedule ready**", "Sign your name to a stream, honestly"],
         ],
       },
       {
         kind: "tip",
-        text: "The checklist below tracks itself: quests tick as their rows hit a terminal status in your training event. The assistant inside the event knows it's a training run — ask it for help on any quest.",
+        text: "The assistant inside the event knows it's a training run — ask it for help on any quest.",
+      },
+    ],
+    quiz: [],
+  },
+
+  // ── 14 · Capstone: plan a party ────────────────────────────────────────────
+  {
+    slug: "capstone-birthday-party",
+    title: "Capstone: plan a party from scratch",
+    subtitle: "A birthday, an empty plan, two teammates, and a clown",
+    minutes: 10,
+    capstone: { kind: "birthday_party" },
+    blocks: [
+      {
+        kind: "p",
+        text: "Now the other direction: nothing is planned yet. **Start training** creates a nearly-empty birthday party sandbox. You're the event owner. On your team: **Maya and Jordan**, two sample teammates who've been through this same training — put them in roles and hand them real streams. On your crew: **Uncle Ray** has agreed to run the grill and **Cousin Lena** is on decorations — and you still need to hire **Sunny the Clown** (yes, a paid professional; every party has a budget line that raises an eyebrow).",
+      },
+      {
+        kind: "rule",
+        title: "Same machine, any event",
+        text: "A birthday party uses the exact same machinery as a worship gathering for two hundred people: tabs, rows, offsets, crew, readiness. If you can plan this party so it would run without you standing in the backyard, you can plan anything.",
+      },
+      { kind: "heading", text: "Your quests" },
+      {
+        kind: "table",
+        headers: ["Quest", "The move it drills"],
+        rows: [
+          ["**Rename the party + set the date**", "Own the calendar — watch due dates derive"],
+          ["**Add three tasks of your own, with timing**", "Build a plan backwards from the date"],
+          ["**Give Maya and Jordan each a role**", "Delegation is the job — hand off whole streams"],
+          ["**Hire Sunny the Clown as paid crew**", "Paid crew: amount, payment status, budget rollup"],
+          ["**Send the invites**", "A comms row from draft to sent"],
+          ["**Get the cake to Packed**", "Walk a supply to its terminal state"],
+          ["**Ask the assistant to poke holes in your plan**", "Use the readiness check before you trust the plan"],
+          ["**Log one learning and mark it Actioned**", "Close the loop — the debrief habit"],
+        ],
+      },
+      {
+        kind: "tip",
+        text: "Uncle Ray and Cousin Lena are already on the Crew list as samples — check how their team, status, and call time are set up before you add Sunny.",
+      },
+    ],
+    quiz: [],
+  },
+
+  // ── 15 · Bonus capstone: worship event ─────────────────────────────────────
+  {
+    slug: "capstone-worship-event",
+    title: "Bonus: plan a worship event",
+    subtitle: "Optional — the real thing, from scratch",
+    minutes: 12,
+    capstone: { kind: "worship_event" },
+    optional: true,
+    blocks: [
+      {
+        kind: "p",
+        text: "Optional, and the best dress rehearsal there is: plan a pop-up worship event from scratch — the kind our chapters actually run. Public space, amplified sound, a worship leader to confirm, a battery that had better be charged. Everything you've drilled, in the domain you'll use it.",
+      },
+      {
+        kind: "rule",
+        title: "This is the event you'll actually run",
+        text: "Finish this and your first real Worship With Strangers is a repeat, not a first attempt. It doesn't count toward your trained badge — it counts toward your first Saturday going smoothly.",
+      },
+      { kind: "heading", text: "Your quests" },
+      {
+        kind: "table",
+        headers: ["Quest", "The move it drills"],
+        rows: [
+          ["**Set your date + location**", "The skeleton: a date and a place"],
+          ["**Scout the spot + write the rain plan**", "Contingencies are structure, not vibes"],
+          ["**Confirm a worship leader**", "The one person the program hangs on"],
+          ["**Sort the sound permit**", "Lead-time work on someone else's clock"],
+          ["**Build the run of show**", "Load-in → sound check → huddle → worship → strike, one owner each"],
+          ["**Announce it**", "The comms moment — gated on your location being locked"],
+          ["**Pack the battery, charged**", "The T-1 ritual, drilled once more"],
+          ["**Ask the assistant for a readiness briefing**", "The pre-flight check"],
+          ["**Capture one learning and dispatch it**", "Feed the template — the loop that makes next time easier"],
+        ],
+      },
+      {
+        kind: "tip",
+        text: "This one is yours to keep as a reference: when you plan your first real event, open this sandbox next to it and copy your own moves.",
       },
     ],
     quiz: [],
@@ -1114,8 +1352,25 @@ export const ACADEMY_SECTIONS: AcademySection[] = SECTIONS_IN_ORDER.map(
   (s, i) => ({ ...s, order: i + 1 }),
 );
 
-/** Total number of curriculum sections (including the capstone). */
+/** Total number of curriculum sections (including optional bonus sections). */
 export const ACADEMY_SECTION_COUNT = ACADEMY_SECTIONS.length;
+
+/**
+ * How many sections count toward "fully trained" — optional bonus sections
+ * are excluded. This is the denominator progress UIs and completion counts use.
+ */
+export const ACADEMY_REQUIRED_SECTION_COUNT = ACADEMY_SECTIONS.filter(
+  (s) => s.optional !== true,
+).length;
+
+/** The capstone sections, in curriculum order. */
+export const ACADEMY_CAPSTONE_SECTIONS: AcademySection[] =
+  ACADEMY_SECTIONS.filter((s) => s.capstone != null);
+
+/** Whether a slug names a capstone section. */
+export function isAcademyCapstoneSlug(slug: string): boolean {
+  return ACADEMY_CAPSTONE_SECTIONS.some((s) => s.slug === slug);
+}
 
 /** Look up a section by slug, or undefined. */
 export function getAcademySection(slug: string): AcademySection | undefined {

@@ -1,28 +1,44 @@
 /**
  * Academy — server-side quiz grading (right/wrong/partial, best-score
  * retention, passedAt only on perfect), slug validation, the sequential quiz
- * lock, tenant isolation, the Training Event capstone (sequential gate,
- * idempotent start incl. completed events, the 5-run cap, quest self-heal,
- * persisted capstone via syncCapstone), the platform training template's
- * protections (hidden from list, no direct events, no edits, squatter slugs),
- * and the operational exclusions (events.list / pipeline / dashboard.summary /
- * org.workload / reminder collection must never see training events).
+ * lock, tenant isolation, the training-event capstones (three of them:
+ * sequential gates incl. capstone→capstone, idempotent start per capstone,
+ * the per-capstone 5-run cap, quest self-heal, persisted passes via
+ * syncCapstone, the optional bonus never counting), the platform training
+ * templates' protections (hidden from list, no direct events, no edits,
+ * squatter slugs), and the operational exclusions (events.list / pipeline /
+ * dashboard.summary / org.workload / reminder collection must never see
+ * training events).
  */
 import { describe, expect, test } from "vitest";
 import { api, internal } from "../_generated/api";
 import type { Id } from "../_generated/dataModel";
 import {
-  ACADEMY_CAPSTONE_SLUG,
+  ACADEMY_CAPSTONE_SECTIONS,
   ACADEMY_INTERACTIVE_KINDS,
+  ACADEMY_REQUIRED_SECTION_COUNT,
   ACADEMY_SECTIONS,
   ACADEMY_SECTION_COUNT,
-  ACADEMY_TRAINING_TEMPLATE_SLUG,
+  ACADEMY_TRAINING_TEMPLATES,
 } from "@events-os/shared";
 import { newT, run, setupChapter, type ChapterSetup } from "./setup.helpers";
 
 const SECTION_1 = ACADEMY_SECTIONS[0];
 const SECTION_2 = ACADEMY_SECTIONS[1];
+// Curriculum order: join-an-event, birthday party, then the optional worship
+// bonus. The suite leans on that order — the assertion below pins it.
+const [CAPSTONE_JOIN, CAPSTONE_PARTY, CAPSTONE_BONUS] =
+  ACADEMY_CAPSTONE_SECTIONS;
 const DAY = 24 * 60 * 60 * 1000;
+
+/** Each quest module's terminal status (mirrors the default status columns). */
+const TERMINAL_BY_MODULE: Record<string, string> = {
+  planning_doc: "done",
+  comms: "sent",
+  supplies: "packed",
+  permits: "approved",
+  retro: "actioned",
+};
 
 /** The all-correct answer vector for a section's quiz. */
 function correctAnswers(slug: string): number[] {
@@ -62,7 +78,7 @@ async function setupLearner(
   return { ...s, personId };
 }
 
-/** Pass every quiz section in order (unlocks the capstone). */
+/** Pass every quiz section in order (unlocks the first capstone). */
 async function passAllQuizzes(s: LearnerSetup) {
   for (const section of ACADEMY_SECTIONS) {
     if (section.quiz.length === 0) continue;
@@ -73,15 +89,7 @@ async function passAllQuizzes(s: LearnerSetup) {
   }
 }
 
-/** A learner with the capstone unlocked and a training event started. */
-async function setupTrainee(): Promise<LearnerSetup & { eventId: Id<"events"> }> {
-  const s = await setupLearner(newT());
-  await passAllQuizzes(s);
-  const { eventId } = await s.as.mutation(api.academy.startTraining, {});
-  return { ...s, eventId };
-}
-
-/** Mark every quest row of an event terminal (done / packed). */
+/** Mark every quest row of an event terminal for its module. */
 async function completeAllQuests(s: ChapterSetup, eventId: Id<"events">) {
   await run(s.t, async (ctx) => {
     const items = await ctx.db
@@ -91,14 +99,24 @@ async function completeAllQuests(s: ChapterSetup, eventId: Id<"events">) {
     for (const it of items) {
       if (!it.title.startsWith("Quest:")) continue;
       await ctx.db.patch(it._id, {
-        status: it.module === "supplies" ? "packed" : "done",
+        status: TERMINAL_BY_MODULE[it.module] ?? "done",
       });
     }
   });
 }
 
-/** The person's stored capstone progress row, or null. */
-async function capstoneRow(s: LearnerSetup) {
+/** A learner with quizzes passed and the FIRST capstone's sandbox started. */
+async function setupTrainee(): Promise<LearnerSetup & { eventId: Id<"events"> }> {
+  const s = await setupLearner(newT());
+  await passAllQuizzes(s);
+  const { eventId } = await s.as.mutation(api.academy.startTraining, {
+    capstoneSlug: CAPSTONE_JOIN.slug,
+  });
+  return { ...s, eventId };
+}
+
+/** The person's stored progress row for a capstone, or null. */
+async function capstoneRow(s: LearnerSetup, slug: string) {
   return await run(s.t, async (ctx) => {
     const rows = await ctx.db
       .query("academyProgress")
@@ -106,16 +124,51 @@ async function capstoneRow(s: LearnerSetup) {
         q.eq("chapterId", s.chapterId).eq("personId", s.personId),
       )
       .collect();
-    return rows.find((r) => r.sectionSlug === ACADEMY_CAPSTONE_SLUG) ?? null;
+    return rows.find((r) => r.sectionSlug === slug) ?? null;
   });
 }
 
+/** The chapter's platform templates, keyed by platformKey. */
+async function platformTemplates(s: ChapterSetup) {
+  return await run(s.t, async (ctx) =>
+    (
+      await ctx.db
+        .query("eventTypes")
+        .withIndex("by_chapter", (q) => q.eq("chapterId", s.chapterId))
+        .collect()
+    ).filter((et) => et.isPlatform === true),
+  );
+}
+
 describe("curriculum content", () => {
-  test("seven ordered sections; every quiz question is well-formed", () => {
-    expect(ACADEMY_SECTION_COUNT).toBe(7);
-    expect(ACADEMY_SECTIONS.map((s) => s.order)).toEqual([1, 2, 3, 4, 5, 6, 7]);
+  test("fifteen ordered sections; three capstones; one optional bonus", () => {
+    expect(ACADEMY_SECTION_COUNT).toBe(15);
+    expect(ACADEMY_SECTIONS.map((s) => s.order)).toEqual(
+      Array.from({ length: 15 }, (_v, i) => i + 1),
+    );
+    // The optional bonus is excluded from the trained denominator.
+    expect(ACADEMY_REQUIRED_SECTION_COUNT).toBe(14);
+    expect(ACADEMY_CAPSTONE_SECTIONS).toHaveLength(3);
+    // The suite leans on this order — pin it.
+    expect(CAPSTONE_JOIN.capstone!.kind).toBe("join_event");
+    expect(CAPSTONE_PARTY.capstone!.kind).toBe("birthday_party");
+    expect(CAPSTONE_BONUS.capstone!.kind).toBe("worship_event");
+    // Only the bonus is optional, and it's last.
+    expect(ACADEMY_SECTIONS.filter((s) => s.optional === true)).toEqual([
+      CAPSTONE_BONUS,
+    ]);
+    expect(ACADEMY_SECTIONS[ACADEMY_SECTIONS.length - 1]).toBe(CAPSTONE_BONUS);
+    // Every capstone kind has a training-template key.
+    for (const c of ACADEMY_CAPSTONE_SECTIONS) {
+      expect(
+        ACADEMY_TRAINING_TEMPLATES[c.capstone!.kind].templateKey,
+      ).toBeTruthy();
+    }
+  });
+
+  test("every quiz question is well-formed; capstones have no quiz", () => {
     for (const s of ACADEMY_SECTIONS) {
-      if (s.slug === ACADEMY_CAPSTONE_SLUG) {
+      if (s.capstone) {
         expect(s.quiz).toHaveLength(0);
         continue;
       }
@@ -155,8 +208,8 @@ describe("curriculum content", () => {
           expect(b.options[0]?.value).not.toBe(b.terminal);
         }
       }
-      // Every teaching section (1-6) practices hands-on: ≥1 interactive block.
-      if (s.slug !== ACADEMY_CAPSTONE_SLUG) {
+      // Every teaching section practices hands-on: ≥1 interactive block.
+      if (!s.capstone) {
         expect(s.blocks.some((b) => interactive.has(b.kind))).toBe(true);
       }
     }
@@ -185,7 +238,7 @@ describe("quiz grading", () => {
     expect(row.passedAt).not.toBeNull();
     expect(row.quizBestScore).toBe(res.total);
     expect(progress.completed).toBe(1);
-    expect(progress.total).toBe(ACADEMY_SECTION_COUNT);
+    expect(progress.total).toBe(ACADEMY_REQUIRED_SECTION_COUNT);
   });
 
   test("partial attempt: correct count graded server-side, no pass", async () => {
@@ -238,7 +291,7 @@ describe("quiz grading", () => {
     expect(row.passed).toBe(true);
   });
 
-  test("validation: unknown slug, wrong answer count, capstone has no quiz", async () => {
+  test("validation: unknown slug, wrong answer count, capstones have no quiz", async () => {
     const s = await setupLearner(newT());
     await expect(
       s.as.mutation(api.academy.submitQuiz, {
@@ -257,10 +310,21 @@ describe("quiz grading", () => {
     ).rejects.toThrow(/Expected \d+ answers/);
     await expect(
       s.as.mutation(api.academy.submitQuiz, {
-        sectionSlug: ACADEMY_CAPSTONE_SLUG,
+        sectionSlug: CAPSTONE_JOIN.slug,
         answers: [],
       }),
-    ).rejects.toThrow(/Training Event/);
+    ).rejects.toThrow(/training event/);
+    // Capstone-only mutations reject non-capstone slugs.
+    await expect(
+      s.as.mutation(api.academy.startTraining, {
+        capstoneSlug: SECTION_1.slug,
+      }),
+    ).rejects.toThrow(/not a capstone/);
+    await expect(
+      s.as.mutation(api.academy.syncCapstone, {
+        capstoneSlug: SECTION_1.slug,
+      }),
+    ).rejects.toThrow(/not a capstone/);
   });
 
   test("quizzes unlock sequentially: section 2 is locked until section 1 passes", async () => {
@@ -374,7 +438,7 @@ describe("tenant isolation + chapterProgress gating", () => {
     });
     const view = await s.as.query(api.academy.chapterProgress, {});
     expect(view).not.toBeNull();
-    expect(view!.total).toBe(ACADEMY_SECTION_COUNT);
+    expect(view!.total).toBe(ACADEMY_REQUIRED_SECTION_COUNT);
     const me = view!.people.find((p) => p.completed === 1);
     expect(me).toBeDefined();
 
@@ -423,11 +487,11 @@ describe("tenant isolation + chapterProgress gating", () => {
   });
 });
 
-describe("the Training Event capstone", () => {
+describe("the training-event capstones", () => {
   test("startTraining is gated on the last quiz section (CAPSTONE_LOCKED)", async () => {
     const s = await setupLearner(newT());
     const err = await s.as
-      .mutation(api.academy.startTraining, {})
+      .mutation(api.academy.startTraining, { capstoneSlug: CAPSTONE_JOIN.slug })
       .then(() => null)
       .catch((e) => e);
     expect(err).not.toBeNull();
@@ -442,40 +506,60 @@ describe("the Training Event capstone", () => {
     expect(events).toHaveLength(0);
   });
 
-  test("startTraining instantiates the training template once per person", async () => {
+  test("capstone 2 is gated on capstone 1 (live quest completion counts)", async () => {
+    const s = await setupTrainee();
+    // Quizzes passed, capstone-1 sandbox started but unfinished → locked.
+    const err = await s.as
+      .mutation(api.academy.startTraining, {
+        capstoneSlug: CAPSTONE_PARTY.slug,
+      })
+      .then(() => null)
+      .catch((e) => e);
+    expect(err).not.toBeNull();
+    expect(String(err)).toMatch(/CAPSTONE_LOCKED/);
+
+    // Finishing capstone 1's quests unlocks capstone 2 WITHOUT a sync — the
+    // gate accepts live derivation, not only the stored stamp.
+    await completeAllQuests(s, s.eventId);
+    const { eventId } = await s.as.mutation(api.academy.startTraining, {
+      capstoneSlug: CAPSTONE_PARTY.slug,
+    });
+    expect(eventId).not.toBe(s.eventId);
+  });
+
+  test("startTraining instantiates each capstone's template once per person", async () => {
     const s = await setupTrainee();
     // Calling again resumes the same event instead of creating another.
-    const again = await s.as.mutation(api.academy.startTraining, {});
+    const again = await s.as.mutation(api.academy.startTraining, {
+      capstoneSlug: CAPSTONE_JOIN.slug,
+    });
     expect(again.eventId).toBe(s.eventId);
 
-    const { event, templates } = await run(s.t, async (ctx) => ({
-      event: await ctx.db.get(s.eventId),
-      templates: (
-        await ctx.db
-          .query("eventTypes")
-          .withIndex("by_chapter", (q) => q.eq("chapterId", s.chapterId))
-          .collect()
-      ).filter((et) => et.isPlatform === true),
-    }));
+    const event = await run(s.t, (ctx) => ctx.db.get(s.eventId));
     expect(event!.isTraining).toBe(true);
-    expect(event!.name).toMatch(/^Training: .+'s first event$/);
+    expect(event!.name).toMatch(/^Training: .+ joins the gathering$/);
     // ~14 days out.
     const days = (event!.eventDate - Date.now()) / DAY;
     expect(days).toBeGreaterThan(13);
     expect(days).toBeLessThan(15);
-    // Template seeding is idempotent — exactly one platform template.
-    expect(templates).toHaveLength(1);
-    expect(templates[0].slug).toBe(ACADEMY_TRAINING_TEMPLATE_SLUG);
+    // Template seeding is idempotent — exactly one platform template per key.
+    const joinKey = ACADEMY_TRAINING_TEMPLATES.join_event.templateKey;
+    const platforms = await platformTemplates(s);
+    expect(platforms.filter((p) => p.platformKey === joinKey)).toHaveLength(1);
   });
 
   test("a completed training event is reused, not replaced", async () => {
     const s = await setupTrainee();
     await completeAllQuests(s, s.eventId);
-    await s.as.mutation(api.academy.syncCapstone, {});
+    await s.as.mutation(api.academy.syncCapstone, {
+      capstoneSlug: CAPSTONE_JOIN.slug,
+    });
     await run(s.t, (ctx) => ctx.db.patch(s.eventId, { status: "completed" }));
 
-    const again = await s.as.mutation(api.academy.startTraining, {});
-    expect(again.eventId).toBe(s.eventId); // no fresh 0/5 sandbox
+    const again = await s.as.mutation(api.academy.startTraining, {
+      capstoneSlug: CAPSTONE_JOIN.slug,
+    });
+    expect(again.eventId).toBe(s.eventId); // no fresh sandbox
     const trainingEvents = await run(s.t, async (ctx) =>
       (
         await ctx.db
@@ -487,16 +571,18 @@ describe("the Training Event capstone", () => {
     expect(trainingEvents).toHaveLength(1);
   });
 
-  test("TRAINING_LIMIT caps a person at 5 training events ever", async () => {
+  test("TRAINING_LIMIT caps a person at 5 training events per capstone", async () => {
     const s = await setupLearner(newT());
     await passAllQuizzes(s);
     for (let i = 0; i < 5; i++) {
-      const { eventId } = await s.as.mutation(api.academy.startTraining, {});
+      const { eventId } = await s.as.mutation(api.academy.startTraining, {
+        capstoneSlug: CAPSTONE_JOIN.slug,
+      });
       // Cancelled events don't satisfy idempotency, but they count forever.
       await run(s.t, (ctx) => ctx.db.patch(eventId, { status: "cancelled" }));
     }
     const err = await s.as
-      .mutation(api.academy.startTraining, {})
+      .mutation(api.academy.startTraining, { capstoneSlug: CAPSTONE_JOIN.slug })
       .then(() => null)
       .catch((e) => e);
     expect(err).not.toBeNull();
@@ -512,12 +598,22 @@ describe("the Training Event capstone", () => {
         .collect();
       for (const it of items) await ctx.db.delete(it._id);
     });
-    expect((await s.as.query(api.academy.trainingStatus, {}))!.total).toBe(0);
+    expect(
+      (
+        await s.as.query(api.academy.trainingStatus, {
+          capstoneSlug: CAPSTONE_JOIN.slug,
+        })
+      )!.total,
+    ).toBe(0);
 
-    const again = await s.as.mutation(api.academy.startTraining, {});
+    const again = await s.as.mutation(api.academy.startTraining, {
+      capstoneSlug: CAPSTONE_JOIN.slug,
+    });
     expect(again.eventId).toBe(s.eventId);
-    const status = await s.as.query(api.academy.trainingStatus, {});
-    expect(status!.total).toBe(5); // 4 planning quests + the battery, restored
+    const status = await s.as.query(api.academy.trainingStatus, {
+      capstoneSlug: CAPSTONE_JOIN.slug,
+    });
+    expect(status!.total).toBe(7); // 4 Tasks quests + 3 Comms quests, restored
     expect(status!.doneCount).toBe(0);
     // Re-seeded rows carry real due dates + role links like the originals.
     const items = await run(s.t, (ctx) =>
@@ -527,20 +623,33 @@ describe("the Training Event capstone", () => {
         .collect(),
     );
     expect(
-      items.filter((it) => it.module === "planning_doc" && it.dueDate != null),
+      items.filter(
+        (it) =>
+          it.module === "planning_doc" &&
+          it.title.startsWith("Quest:") &&
+          it.dueDate != null,
+      ),
     ).toHaveLength(4);
   });
 
-  test("trainingStatus tracks quest rows live; capstone derives into myProgress", async () => {
+  test("trainingStatus tracks quests live; both capstones roll into myProgress", async () => {
     const t = newT();
     const s = await setupLearner(t);
-    expect(await s.as.query(api.academy.trainingStatus, {})).toBeNull();
+    expect(
+      await s.as.query(api.academy.trainingStatus, {
+        capstoneSlug: CAPSTONE_JOIN.slug,
+      }),
+    ).toBeNull();
     await passAllQuizzes(s);
 
-    const { eventId } = await s.as.mutation(api.academy.startTraining, {});
-    let status = await s.as.query(api.academy.trainingStatus, {});
+    const { eventId } = await s.as.mutation(api.academy.startTraining, {
+      capstoneSlug: CAPSTONE_JOIN.slug,
+    });
+    let status = await s.as.query(api.academy.trainingStatus, {
+      capstoneSlug: CAPSTONE_JOIN.slug,
+    });
     expect(status!.eventId).toBe(eventId);
-    expect(status!.total).toBe(5); // 4 planning quests + the battery
+    expect(status!.total).toBe(7);
     expect(status!.doneCount).toBe(0);
     expect(status!.complete).toBe(false);
     // Quest titles come back with the "Quest:" prefix stripped.
@@ -548,129 +657,220 @@ describe("the Training Event capstone", () => {
       true,
     );
 
-    // Tick one quest (the battery → packed, supplies' terminal state).
+    // Tick one quest (a comms row → sent, comms' terminal state).
     await run(s.t, async (ctx) => {
       const items = await ctx.db
         .query("eventItems")
         .withIndex("by_event_module", (q) =>
-          q.eq("eventId", eventId).eq("module", "supplies"),
+          q.eq("eventId", eventId).eq("module", "comms"),
         )
         .collect();
-      await ctx.db.patch(items[0]._id, { status: "packed" });
+      const quest = items.find((it) => it.title.startsWith("Quest:"))!;
+      await ctx.db.patch(quest._id, { status: "sent" });
     });
-    status = await s.as.query(api.academy.trainingStatus, {});
+    status = await s.as.query(api.academy.trainingStatus, {
+      capstoneSlug: CAPSTONE_JOIN.slug,
+    });
     expect(status!.doneCount).toBe(1);
     expect(status!.complete).toBe(false);
 
-    // Capstone not passed yet — and myProgress carries the live quest tally.
+    // Capstone not passed yet — and myProgress carries the live quest tally
+    // on the RIGHT capstone entry.
     let progress = await s.as.query(api.academy.myProgress, {});
-    let capstone = progress.sections.find(
-      (x) => x.slug === ACADEMY_CAPSTONE_SLUG,
-    )!;
-    expect(capstone.passed).toBe(false);
-    expect(capstone.training).toEqual({
+    let join = progress.sections.find((x) => x.slug === CAPSTONE_JOIN.slug)!;
+    expect(join.passed).toBe(false);
+    expect(join.training).toEqual({
       eventId,
       started: true,
       questsDone: 1,
-      questsTotal: 5,
+      questsTotal: 7,
       complete: false,
     });
-    // Non-capstone sections never carry training state.
+    // Other sections (incl. the not-yet-started party capstone) carry none.
     expect(
       progress.sections
-        .filter((x) => x.slug !== ACADEMY_CAPSTONE_SLUG)
+        .filter((x) => x.slug !== CAPSTONE_JOIN.slug)
         .every((x) => x.training === null),
     ).toBe(true);
 
-    // …until every quest row is terminal.
+    // Finish capstone 1, then run capstone 2 end-to-end.
     await completeAllQuests(s, eventId);
-    status = await s.as.query(api.academy.trainingStatus, {});
-    expect(status!.doneCount).toBe(5);
-    expect(status!.complete).toBe(true);
     progress = await s.as.query(api.academy.myProgress, {});
-    capstone = progress.sections.find(
-      (x) => x.slug === ACADEMY_CAPSTONE_SLUG,
-    )!;
-    expect(capstone.passed).toBe(true);
-    expect(capstone.training!.complete).toBe(true);
-    expect(progress.completed).toBe(ACADEMY_SECTION_COUNT); // the full path
+    join = progress.sections.find((x) => x.slug === CAPSTONE_JOIN.slug)!;
+    expect(join.passed).toBe(true);
+    expect(
+      progress.sections.find((x) => x.slug === CAPSTONE_PARTY.slug)!.unlocked,
+    ).toBe(true);
+    expect(progress.completed).toBe(ACADEMY_REQUIRED_SECTION_COUNT - 1);
 
-    // …and the manager view derives the same capstone completion.
+    const party = await s.as.mutation(api.academy.startTraining, {
+      capstoneSlug: CAPSTONE_PARTY.slug,
+    });
+    expect(party.eventId).not.toBe(eventId);
+    await completeAllQuests(s, party.eventId);
+    progress = await s.as.query(api.academy.myProgress, {});
+    expect(
+      progress.sections.find((x) => x.slug === CAPSTONE_PARTY.slug)!.passed,
+    ).toBe(true);
+    expect(progress.completed).toBe(ACADEMY_REQUIRED_SECTION_COUNT); // trained
+
+    // …and the manager view derives the same completion.
     const view = await s.as.query(api.academy.chapterProgress, {});
     expect(
-      view!.people.some((p) => p.completed === ACADEMY_SECTION_COUNT),
+      view!.people.some(
+        (p) => p.completed === ACADEMY_REQUIRED_SECTION_COUNT,
+      ),
     ).toBe(true);
+  });
+
+  test("the optional bonus unlocks after capstone 2 but never counts", async () => {
+    const s = await setupTrainee();
+    await completeAllQuests(s, s.eventId);
+    const party = await s.as.mutation(api.academy.startTraining, {
+      capstoneSlug: CAPSTONE_PARTY.slug,
+    });
+    // Bonus locked until the party capstone is done.
+    let err = await s.as
+      .mutation(api.academy.startTraining, {
+        capstoneSlug: CAPSTONE_BONUS.slug,
+      })
+      .then(() => null)
+      .catch((e) => e);
+    expect(String(err)).toMatch(/CAPSTONE_LOCKED/);
+
+    await completeAllQuests(s, party.eventId);
+    let progress = await s.as.query(api.academy.myProgress, {});
+    expect(progress.completed).toBe(ACADEMY_REQUIRED_SECTION_COUNT);
+    expect(
+      progress.sections.find((x) => x.slug === CAPSTONE_BONUS.slug)!.unlocked,
+    ).toBe(true);
+
+    // Run the bonus end-to-end: passed, but completed/total unchanged.
+    const bonus = await s.as.mutation(api.academy.startTraining, {
+      capstoneSlug: CAPSTONE_BONUS.slug,
+    });
+    await completeAllQuests(s, bonus.eventId);
+    await s.as.mutation(api.academy.syncCapstone, {
+      capstoneSlug: CAPSTONE_BONUS.slug,
+    });
+    progress = await s.as.query(api.academy.myProgress, {});
+    expect(
+      progress.sections.find((x) => x.slug === CAPSTONE_BONUS.slug)!.passed,
+    ).toBe(true);
+    expect(progress.completed).toBe(ACADEMY_REQUIRED_SECTION_COUNT);
+    expect(progress.total).toBe(ACADEMY_REQUIRED_SECTION_COUNT);
+    // chapterProgress ignores it too.
+    const view = await s.as.query(api.academy.chapterProgress, {});
+    const me = view!.people.find((p) => p.personId === s.personId)!;
+    expect(me.completed).toBe(ACADEMY_REQUIRED_SECTION_COUNT);
+  });
+
+  test("the party capstone seeds sample teammates + crew, exactly once", async () => {
+    const s = await setupTrainee();
+    await completeAllQuests(s, s.eventId);
+    const party = await s.as.mutation(api.academy.startTraining, {
+      capstoneSlug: CAPSTONE_PARTY.slug,
+    });
+
+    const { placeholders, engagements } = await run(s.t, async (ctx) => ({
+      placeholders: (
+        await ctx.db
+          .query("people")
+          .withIndex("by_chapter", (q) => q.eq("chapterId", s.chapterId))
+          .collect()
+      ).filter((p) => p.isPlaceholder === true),
+      engagements: await ctx.db
+        .query("engagements")
+        .withIndex("by_event", (q) => q.eq("eventId", party.eventId))
+        .collect(),
+    }));
+    // Maya + Jordan (teammates, no engagement) exist as placeholders…
+    const names = placeholders.map((p) => p.name);
+    expect(names).toContain("Maya (sample teammate)");
+    expect(names).toContain("Jordan (sample teammate)");
+    // …and Uncle Ray + Cousin Lena were materialized as sandbox crew.
+    expect(engagements.length).toBeGreaterThanOrEqual(2);
+
+    // Restarting training never duplicates the teammates.
+    await s.as.mutation(api.academy.startTraining, {
+      capstoneSlug: CAPSTONE_PARTY.slug,
+    });
+    const after = await run(s.t, async (ctx) =>
+      (
+        await ctx.db
+          .query("people")
+          .withIndex("by_chapter", (q) => q.eq("chapterId", s.chapterId))
+          .collect()
+      ).filter((p) => p.name === "Maya (sample teammate)"),
+    );
+    expect(after).toHaveLength(1);
   });
 });
 
-describe("syncCapstone persists the capstone", () => {
+describe("syncCapstone persists a capstone", () => {
   test("no stamp before the quests are done", async () => {
     const s = await setupTrainee();
-    const res = await s.as.mutation(api.academy.syncCapstone, {});
+    const res = await s.as.mutation(api.academy.syncCapstone, {
+      capstoneSlug: CAPSTONE_JOIN.slug,
+    });
     expect(res.passed).toBe(false);
-    expect(await capstoneRow(s)).toBeNull();
+    expect(await capstoneRow(s, CAPSTONE_JOIN.slug)).toBeNull();
   });
 
   test("stamps once done; the pass survives completing the sandbox", async () => {
     const s = await setupTrainee();
     await completeAllQuests(s, s.eventId);
-    const res = await s.as.mutation(api.academy.syncCapstone, {});
+    const res = await s.as.mutation(api.academy.syncCapstone, {
+      capstoneSlug: CAPSTONE_JOIN.slug,
+    });
     expect(res.passed).toBe(true);
-    const row = await capstoneRow(s);
+    const row = await capstoneRow(s, CAPSTONE_JOIN.slug);
     expect(row?.passedAt).toBeTypeOf("number");
 
     // Idempotent — a second sync never re-stamps.
-    await s.as.mutation(api.academy.syncCapstone, {});
-    expect((await capstoneRow(s))!.passedAt).toBe(row!.passedAt);
+    await s.as.mutation(api.academy.syncCapstone, {
+      capstoneSlug: CAPSTONE_JOIN.slug,
+    });
+    expect((await capstoneRow(s, CAPSTONE_JOIN.slug))!.passedAt).toBe(
+      row!.passedAt,
+    );
 
     // The learner completes their sandbox (exactly what the curriculum
     // teaches) — the capstone must stay passed.
     await run(s.t, (ctx) => ctx.db.patch(s.eventId, { status: "completed" }));
     const progress = await s.as.query(api.academy.myProgress, {});
-    const capstone = progress.sections.find(
-      (x) => x.slug === ACADEMY_CAPSTONE_SLUG,
+    const join = progress.sections.find(
+      (x) => x.slug === CAPSTONE_JOIN.slug,
     )!;
-    expect(capstone.passed).toBe(true);
-    expect(capstone.passedAt).toBe(row!.passedAt);
-    expect(progress.completed).toBe(ACADEMY_SECTION_COUNT);
-    // chapterProgress reads the stored stamp too.
-    const view = await s.as.query(api.academy.chapterProgress, {});
-    expect(
-      view!.people.find((p) => p.personId === s.personId)!.completed,
-    ).toBe(ACADEMY_SECTION_COUNT);
+    expect(join.passed).toBe(true);
+    expect(join.passedAt).toBe(row!.passedAt);
   });
 });
 
-describe("the platform training template is protected + hidden", () => {
-  test("eventTypes.list hides it; update/archive/createFromTemplate reject it", async () => {
+describe("the platform training templates are protected + hidden", () => {
+  test("eventTypes.list hides them; update/archive/createFromTemplate reject them", async () => {
     const s = await setupTrainee();
-    const platform = await run(s.t, async (ctx) =>
-      (
-        await ctx.db
-          .query("eventTypes")
-          .withIndex("by_chapter", (q) => q.eq("chapterId", s.chapterId))
-          .collect()
-      ).find((et) => et.isPlatform === true),
-    );
-    expect(platform).toBeDefined();
+    const platforms = await platformTemplates(s);
+    expect(platforms.length).toBeGreaterThanOrEqual(1);
+    const platform = platforms[0];
 
     // Gone from the Templates tab / New Event picker…
     const listed = await s.as.query(api.eventTypes.list, {});
-    expect(listed.some((t) => t._id === platform!._id)).toBe(false);
+    expect(listed.some((t) => t._id === platform._id)).toBe(false);
 
     // …and immune to user edits, archiving, and direct event creation.
     await expect(
       s.as.mutation(api.eventTypes.update, {
-        eventTypeId: platform!._id,
+        eventTypeId: platform._id,
         name: "My template now",
       }),
     ).rejects.toThrow(/managed by the platform/);
     await expect(
-      s.as.mutation(api.eventTypes.archive, { eventTypeId: platform!._id }),
+      s.as.mutation(api.eventTypes.archive, { eventTypeId: platform._id }),
     ).rejects.toThrow(/managed by the platform/);
     await expect(
       s.as.mutation(api.events.createFromTemplate, {
-        eventTypeId: platform!._id,
+        eventTypeId: platform._id,
         name: "Sneaky real event",
         eventDate: Date.now() + 7 * DAY,
       }),
@@ -680,12 +880,13 @@ describe("the platform training template is protected + hidden", () => {
   test("a user template squatting the slug doesn't hijack the Academy", async () => {
     const s = await setupLearner(newT());
     await passAllQuizzes(s);
-    // A user-made template grabs the exact 'academy-training' slug…
+    const joinKey = ACADEMY_TRAINING_TEMPLATES.join_event.templateKey;
+    // A user-made template grabs the exact platform slug…
     const squatterId = await run(s.t, (ctx) =>
       ctx.db.insert("eventTypes", {
         chapterId: s.chapterId,
-        name: "Academy Training",
-        slug: ACADEMY_TRAINING_TEMPLATE_SLUG,
+        name: "Academy Join Event",
+        slug: joinKey,
         disabledCoreModules: [],
         version: 1,
         isArchived: false,
@@ -696,7 +897,9 @@ describe("the platform training template is protected + hidden", () => {
     );
 
     // …but startTraining seeds + uses the REAL platform template anyway.
-    const { eventId } = await s.as.mutation(api.academy.startTraining, {});
+    const { eventId } = await s.as.mutation(api.academy.startTraining, {
+      capstoneSlug: CAPSTONE_JOIN.slug,
+    });
     const { event, platform } = await run(s.t, async (ctx) => ({
       event: await ctx.db.get(eventId),
       platform: (
@@ -704,29 +907,30 @@ describe("the platform training template is protected + hidden", () => {
           .query("eventTypes")
           .withIndex("by_chapter", (q) => q.eq("chapterId", s.chapterId))
           .collect()
-      ).find((et) => et.isPlatform === true),
+      ).find((et) => et.isPlatform === true && et.platformKey === joinKey),
     }));
     expect(platform).toBeDefined();
     expect(platform!._id).not.toBe(squatterId);
-    expect(platform!.slug).toBe(`${ACADEMY_TRAINING_TEMPLATE_SLUG}-2`);
+    expect(platform!.slug).toBe(`${joinKey}-2`);
     expect(event!.eventTypeId).toBe(platform!._id);
     // The sandbox has its quests (proof it wasn't spun from the empty squatter).
-    expect((await s.as.query(api.academy.trainingStatus, {}))!.total).toBe(5);
+    expect(
+      (
+        await s.as.query(api.academy.trainingStatus, {
+          capstoneSlug: CAPSTONE_JOIN.slug,
+        })
+      )!.total,
+    ).toBe(7);
     // The squatter stays a normal user template: listed, editable.
     const listed = await s.as.query(api.eventTypes.list, {});
     expect(listed.some((t) => t._id === squatterId)).toBe(true);
     expect(listed.some((t) => t._id === platform!._id)).toBe(false);
-    // Repeat starts keep matching on isPlatform — no duplicate seeding.
-    await s.as.mutation(api.academy.startTraining, {});
-    const platforms = await run(s.t, async (ctx) =>
-      (
-        await ctx.db
-          .query("eventTypes")
-          .withIndex("by_chapter", (q) => q.eq("chapterId", s.chapterId))
-          .collect()
-      ).filter((et) => et.isPlatform === true),
-    );
-    expect(platforms).toHaveLength(1);
+    // Repeat starts keep matching on platformKey — no duplicate seeding.
+    await s.as.mutation(api.academy.startTraining, {
+      capstoneSlug: CAPSTONE_JOIN.slug,
+    });
+    const platforms = await platformTemplates(s);
+    expect(platforms.filter((p) => p.platformKey === joinKey)).toHaveLength(1);
   });
 });
 
@@ -782,7 +986,7 @@ describe("training events never pollute operations", () => {
 
   test("reminder collection skips training quest rows entirely", async () => {
     const s = await withTraining();
-    // Quest rows are due-dated (T-10…T-1 of an event 14 days out) and resolve
+    // Quest rows are due-dated (T-14…T-1 of an event 14 days out) and resolve
     // to the emailable event owner — without the exclusion they would email.
     const recipients = await s.t.query(internal.reminders.openWorkForChapter, {
       chapterId: s.chapterId,
@@ -829,9 +1033,9 @@ describe("training events never pollute operations", () => {
 
   test("a REAL event still flows to lists and reminders (control)", async () => {
     const s = await withTraining();
-    // A non-training event from the same training template shape: reuse the
-    // WwS-style path by instantiating from the training template WITHOUT the
-    // flag — the exclusions must key on isTraining, not on the template.
+    // A non-training event from the same training template shape: instantiate
+    // from the platform template WITHOUT the flag — the exclusions must key
+    // on isTraining, not on the template.
     await run(s.t, async (ctx) => {
       const et = (
         await ctx.db

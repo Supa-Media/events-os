@@ -343,7 +343,7 @@ export const myWork = query({
         status: (it.status ?? null) as string | null,
       }));
 
-    // My team(s) on this event (Crew & Expectations is team work — I should see
+    // My team(s) on this event (Crew & Duties is team work — I should see
     // my team's tasks even if I don't own them). Engagements carry `teams`.
     const engagements = await ctx.db
       .query("engagements")

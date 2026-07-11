@@ -190,7 +190,7 @@ export default function EventDetailScreen() {
     activeModules.find((m) => m.key === "volunteer_expectations") ?? null;
 
   // Tabs: Overview + each active module (minus volunteer_expectations) + the
-  // combined "Crew & Expectations" tab. The active tab lives in the URL (`?tab=`)
+  // combined "Crew & Duties" tab. The active tab lives in the URL (`?tab=`)
   // so it's deep-linkable and survives back/forward; unknown/missing falls back
   // to Overview.
   // Me view sets (myWork is only fetched while meView is on). `ownedModuleKeys`
@@ -206,7 +206,7 @@ export default function EventDetailScreen() {
         ...myWork.tasks.map((t) => t.module as string),
       ])
     : null;
-  // Crew & Expectations is team work — show it in Me view if I'm on a team, have
+  // Crew & Duties is team work — show it in Me view if I'm on a team, have
   // team tasks, own the expectations module, or own an expectation item.
   const crewInvolved = myWork
     ? myWork.myTeams.length > 0 ||
@@ -244,8 +244,8 @@ export default function EventDetailScreen() {
     return { phase: modulePhase(moduleKey), progress };
   }
   // Build the module tabs in lifecycle order, rendering the merged
-  // "Crew & Expectations" tab AT the volunteer_expectations slot (so it sits
-  // before the post-event Retrospective, not after it). In Me view, modules I'm
+  // "Crew & Duties" tab AT the volunteer_expectations slot (so it sits
+  // before the post-event Debrief, not after it). In Me view, modules I'm
   // not involved in are dropped. myWork still loading ⇒ tabs unfiltered briefly.
   const moduleTabs = activeModules.flatMap((m): EventTab[] => {
     // Outside Me view, a module tab can disable/remove itself from its own menu.
@@ -257,7 +257,7 @@ export default function EventDetailScreen() {
         ? [
             {
               key: "crew",
-              label: "Crew & Expectations",
+              label: "Crew & Duties",
               remove,
               ...tabMeta("volunteer_expectations"),
             },
@@ -272,7 +272,7 @@ export default function EventDetailScreen() {
     ...moduleTabs,
     // Fallback: if the expectations module is disabled, still surface Crew last.
     ...(showCrew && !moduleTabs.some((t) => t.key === "crew")
-      ? [{ key: "crew", label: "Crew & Expectations" }]
+      ? [{ key: "crew", label: "Crew & Duties" }]
       : []),
   ];
   // Tickets (the public event page: RSVPs, tickets, guest list, check-in,
@@ -624,7 +624,7 @@ export default function EventDetailScreen() {
             <TicketingTab eventId={eventId} />
           </Narrow>
         ) : activeTab === "crew" ? (
-          /* ── Crew & Expectations: WHO is on each team (engagements) plus, below,
+          /* ── Crew & Duties: WHO is on each team (engagements) plus, below,
                 WHAT each team is expected to do (the volunteer_expectations grid). */
           <View className="gap-8">
             <Narrow>
@@ -632,7 +632,7 @@ export default function EventDetailScreen() {
             </Narrow>
             {expectationsModule ? (
               <View>
-                <SectionHeader title="Expectations" />
+                <SectionHeader title="Duties" />
                 <ModuleSection
                   eventId={eventId}
                   module={expectationsModule}

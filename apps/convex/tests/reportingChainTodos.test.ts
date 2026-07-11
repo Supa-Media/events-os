@@ -147,7 +147,7 @@ describe("events.todos — reporting-chain oversight", () => {
     // Not the manager's own work — nothing in Yours.
     expect(todos.yours).toEqual([]);
     const labels = todos.overseeing.map((a) => a.label);
-    expect(labels).toContain("Planning Doc: Report task");
+    expect(labels).toContain("Tasks: Report task");
     expect(
       todos.overseeing.every((a) => a.risk === "overdue"),
     ).toBe(true);
@@ -183,7 +183,7 @@ describe("events.todos — reporting-chain oversight", () => {
 
     const todos = await as.query(api.events.todos, { eventId });
     expect(todos.overseeing.map((a) => a.label)).toContain(
-      "Planning Doc: Sub task",
+      "Tasks: Sub task",
     );
   });
 
@@ -293,7 +293,7 @@ describe("events.todos — reporting-chain oversight", () => {
 
     const todos = await as.query(api.events.todos, { eventId });
     expect(todos.overseeing.map((a) => a.label)).toContain(
-      "Planning Doc: Stranger task",
+      "Tasks: Stranger task",
     );
   });
 });

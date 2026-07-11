@@ -167,11 +167,11 @@ describe("readinessSummary planning-timezone day math", () => {
     expect(summary).not.toBeNull();
     expect(summary!.items.overdue.count).toBe(1);
     expect(summary!.items.overdue.titles).toEqual([
-      "Planning Doc: Due yesterday",
+      "Tasks: Due yesterday",
     ]);
     expect(summary!.items.dueInNext3Days.count).toBe(1);
     expect(summary!.items.dueInNext3Days.titles).toEqual([
-      "Planning Doc: Due earlier today",
+      "Tasks: Due earlier today",
     ]);
   });
 });
