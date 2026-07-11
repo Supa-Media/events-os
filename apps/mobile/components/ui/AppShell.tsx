@@ -19,6 +19,8 @@ const NAV: NavEntry[] = [
   { label: "Team", icon: "git-branch", path: "/team" },
   { label: "Duties", icon: "check-square", path: "/responsibilities" },
   { label: "Songs", icon: "music", path: "/song-library" },
+  // The Academy is for everyone — never permission-gated (see useNav).
+  { label: "Academy", icon: "award", path: "/academy" },
 ];
 
 /**
