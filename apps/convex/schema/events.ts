@@ -66,6 +66,9 @@ export const events = defineTable({
 })
   .index("by_chapter", ["chapterId"])
   .index("by_chapter_date", ["chapterId", "eventDate"])
+  // A person's owned events within their chapter — the Academy resolves a
+  // caller's training events through this instead of scanning the chapter.
+  .index("by_chapter_and_ownerPersonId", ["chapterId", "ownerPersonId"])
   .index("by_eventType", ["eventTypeId"]);
 
 /** Column definitions cloned onto an event (snapshot of the template's). */

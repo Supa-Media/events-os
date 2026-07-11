@@ -5,7 +5,7 @@
  * average readiness, roster size, recent throughput, and the next event.
  */
 import { query } from "./_generated/server";
-import { currentPhase, DAY_MS } from "@events-os/shared";
+import { currentPhase, DAY_MS, isOperationalEvent } from "@events-os/shared";
 import { getChapterIdOrNull } from "./lib/context";
 import { phaseReadiness } from "./lib/readiness";
 
@@ -35,7 +35,7 @@ export const summary = query({
         .query("events")
         .withIndex("by_chapter", (q: any) => q.eq("chapterId", chapterId))
         .collect()
-    ).filter((e: any) => e.isTraining !== true);
+    ).filter((e: any) => isOperationalEvent(e));
 
     const upcoming = events
       .filter((e: any) => e.eventDate >= now && e.status !== "cancelled")

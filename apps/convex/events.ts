@@ -8,11 +8,12 @@
  */
 import { query, mutation, QueryCtx } from "./_generated/server";
 import { Doc, Id } from "./_generated/dataModel";
-import { v } from "convex/values";
+import { ConvexError, v } from "convex/values";
 import {
   computeDueDate,
   computeReadiness,
   isCompleteStatus,
+  isOperationalEvent,
   itemScore,
   itemPhase,
   currentPhase,
@@ -95,6 +96,14 @@ export const createFromTemplate = mutation({
   handler: async (ctx, args) => {
     const userId = await requireUserId(ctx);
     const eventType = await requireEventType(ctx, args.eventTypeId);
+    // The Academy training template only instantiates through startTraining
+    // (which flags the event isTraining and scopes it to the learner).
+    if (eventType.isPlatform === true) {
+      throw new ConvexError({
+        code: "PLATFORM_TEMPLATE",
+        message: "Training runs start from the Academy.",
+      });
+    }
 
     return await instantiateEvent(ctx, {
       eventType,
@@ -125,7 +134,7 @@ export const list = query({
         .query("events")
         .withIndex("by_chapter", (q) => q.eq("chapterId", chapterId as Id<"chapters">))
         .collect()
-    ).filter((e) => includeTraining === true || e.isTraining !== true);
+    ).filter((e) => includeTraining === true || isOperationalEvent(e));
     const filtered =
       scope === "all"
         ? all
@@ -966,7 +975,9 @@ export const pipeline = query({
     // Training sandboxes never appear on the operations landing screen.
     const upcoming = all.filter(
       (e) =>
-        e.eventDate >= now && e.status !== "cancelled" && e.isTraining !== true,
+        e.eventDate >= now &&
+        e.status !== "cancelled" &&
+        isOperationalEvent(e),
     );
 
     const enriched = await Promise.all(

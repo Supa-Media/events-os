@@ -34,6 +34,7 @@ import { internal } from "./_generated/api";
 import {
   DAY_MS,
   isCompleteStatus,
+  isOperationalEvent,
   MODULE_LABELS,
   PROJECT_STATUS_LABELS,
   type ModuleKey,
@@ -169,6 +170,18 @@ async function collectOpenWorkForChapter(
     byOwner.set(owner, list);
   };
 
+  // Events, read once for both branches below: the item branch needs the
+  // in-flight operational events; the project branch needs to know which
+  // events are Academy training sandboxes so projects wrapping one never
+  // email anyone either.
+  const events = await ctx.db
+    .query("events")
+    .withIndex("by_chapter", (q) => q.eq("chapterId", chapterId))
+    .collect();
+  const trainingEventIds = new Set(
+    events.filter((e) => !isOperationalEvent(e)).map((e) => e._id),
+  );
+
   // Projects — deadline'd open work, charged to the effective owner (an
   // unowned sub-project inherits its nearest owned ancestor, same rule as
   // the Team views).
@@ -193,6 +206,8 @@ async function collectOpenWorkForChapter(
       p.deadline >= windowStart &&
       p.deadline <= windowEnd &&
       OPEN_PROJECT_STATUSES.has(p.status) &&
+      // A project wrapping an Academy training sandbox is training too.
+      !(p.eventId && trainingEventIds.has(p.eventId)) &&
       effectiveOwner(p) !== undefined,
   );
   // Independent per-project thread reads, run together rather than serially.
@@ -240,10 +255,6 @@ async function collectOpenWorkForChapter(
   // job is filling exactly these gaps) — but an owner/role holder who can't
   // receive email falls through to the event owner rather than silently
   // dropping the task.
-  const events = await ctx.db
-    .query("events")
-    .withIndex("by_chapter", (q) => q.eq("chapterId", chapterId))
-    .collect();
   const eventById = new Map(
     events
       .filter(
@@ -251,7 +262,7 @@ async function collectOpenWorkForChapter(
           e.status !== "completed" &&
           e.status !== "cancelled" &&
           // Academy training sandboxes never email anyone about quest rows.
-          e.isTraining !== true,
+          isOperationalEvent(e),
       )
       .map((e) => [e._id, e]),
   );
