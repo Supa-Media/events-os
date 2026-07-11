@@ -597,7 +597,7 @@ const SECTIONS_IN_ORDER: Omit<AcademySection, "order">[] = [
       { kind: "heading", text: "Am I where I should be?" },
       {
         kind: "p",
-        text: "A percentage alone can't tell you if you're in trouble — 40% planned is great at two months out and a crisis at three days. So each ring also knows its **pace target**: the score it would have if everything due by today were done. A dashed tick marks the target on the ring itself, and underneath you get one of two words: a green **“✓ on pace”**, or an amber **“▲ target 54%”** when you've fallen meaningfully behind — that gap is what you close *today*.",
+        text: "A percentage alone can't tell you if you're in trouble — 40% planned is great at two months out and a crisis at three days. So each ring carries a pace check built on one blunt question: **is anything in this phase overdue?** Nothing overdue → a green **“✓ on pace”**. Something overdue → an amber **“▲ 3 overdue”** — the very same rows the What's-next list flags, counted per ring. A dashed tick on the ring also marks where the score *would* be if everything due by today were done.",
       },
       {
         kind: "rule",
@@ -643,16 +643,16 @@ const SECTIONS_IN_ORDER: Omit<AcademySection, "order">[] = [
           "The sorting is automatic by tab and timing: Debrief rows are always Post, Supplies and Crew Duties always Day-of, and everything else follows its offset.",
       },
       {
-        prompt: "Your Planning ring reads 20% with a \"▲ 50%\" pill next to it. What does that mean?",
+        prompt: "Your Planning ring reads 20% with \"▲ 6 overdue\" under it. What does that mean?",
         options: [
           "The ring is broken",
           "You've done 20% of the whole event",
-          "If everything due by today were done you'd be at 50% — you have a 30-point gap to close as soon as possible",
-          "The template requires 50% before you can continue",
+          "Six of that phase's rows are past due and not done — the same rows the What's-next list flags — and clearing them is today's job",
+          "The template requires 6 more tasks before you can continue",
         ],
         answerIndex: 2,
         explanation:
-          "The pill is the pace target: the score the same ring would show if every row due by now were complete. The gap between it and your actual number is today's catch-up work.",
+          "The pace check is blunt on purpose: anything overdue in a phase and its ring says so, with the count. Ring and What's-next list read the same rows, so they always agree.",
       },
       {
         prompt: "Why does a stale status matter more than it seems?",

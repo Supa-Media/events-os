@@ -3,8 +3,10 @@ import {
   DAY_MS,
   PARTIAL_ITEM_SCORE,
   computeExpectedPhaseScores,
+  computePhaseOverdue,
   computePhaseScores,
   itemScore,
+  startOfDay,
   type SelectOption,
 } from "@events-os/shared";
 
@@ -150,5 +152,72 @@ describe("computeExpectedPhaseScores — the pacing ghost", () => {
     const at = computeExpectedPhaseScores(modules, [], EVENT, EVENT);
     // The module contributes a 0 module-score, same as the actual side.
     expect(at.dayOf).toBe(0);
+  });
+});
+
+
+describe("computePhaseOverdue — the pace signal", () => {
+  const EVENT = startOfDay(Date.UTC(2026, 7, 8)) + 100 * DAY_MS; // arbitrary
+  const NOW = EVENT - 28 * DAY_MS; // T-28
+
+  test("overdue = incomplete rows whose deadline passed; matches per phase", () => {
+    const pace = computePhaseOverdue(
+      [
+        {
+          module: "planning_doc",
+          statusOptions: STATUS_OPTIONS,
+          items: [
+            { status: null, dueDate: NOW - 5 * DAY_MS }, // overdue
+            { status: "in_progress", dueDate: NOW - 2 * DAY_MS }, // started ≠ done → overdue
+            { status: "done", dueDate: NOW - 2 * DAY_MS }, // done on time
+            { status: null, dueDate: NOW + 5 * DAY_MS }, // not due yet
+          ].map((it) => ({ ...it, offsetDays: -30 })),
+        },
+      ],
+      [],
+      EVENT,
+      NOW,
+    );
+    expect(pace.planning).toEqual({ dueTotal: 3, overdue: 2 });
+    expect(pace.prePlan).toBeNull();
+  });
+
+  test("partial credit can NEVER mask overdue rows (the on-pace bug)", () => {
+    // A plan whose aggregate score exceeds its expected score while rows sit
+    // overdue — the exact Field Day screenshot shape. The pace signal must
+    // still say behind.
+    const modules = [
+      {
+        module: "planning_doc",
+        statusOptions: STATUS_OPTIONS,
+        items: [
+          // 2 overdue, untouched
+          { status: null, offsetDays: -30, dueDate: NOW - DAY_MS },
+          { status: null, offsetDays: -30, dueDate: NOW - DAY_MS },
+          // 10 not-yet-due, all started (inflates the actual score)
+          ...Array.from({ length: 10 }, () => ({
+            status: "in_progress",
+            offsetDays: -3,
+            dueDate: EVENT - 3 * DAY_MS,
+          })),
+        ],
+      },
+    ];
+    const pace = computePhaseOverdue(modules, [], EVENT, NOW);
+    expect(pace.planning!.overdue).toBe(2);
+  });
+
+  test("an unmet ready gate past its convention deadline counts overdue", () => {
+    const gates = [
+      { module: "run_of_show", phase: "planning" as const, ready: false },
+      { module: "supplies", phase: "planning" as const, ready: true },
+    ];
+    // At T-1: run_of_show was due locked at T-3 (unmet → overdue), supplies'
+    // T-1 gate is due today, not yet overdue (strict start-of-today rule).
+    const pace = computePhaseOverdue([], gates, EVENT, EVENT - DAY_MS);
+    expect(pace.planning).toEqual({ dueTotal: 1, overdue: 1 });
+    // At T+1 supplies' gate is past too — but it was met, so no overdue.
+    const later = computePhaseOverdue([], gates, EVENT, EVENT + DAY_MS);
+    expect(later.planning).toEqual({ dueTotal: 2, overdue: 1 });
   });
 });

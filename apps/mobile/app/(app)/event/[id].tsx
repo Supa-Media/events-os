@@ -163,6 +163,7 @@ export default function EventDetailScreen() {
     owner,
     phases,
     expectedPhases,
+    pacePhases,
     taskTotal,
     taskDone,
     budgetSpent,
@@ -474,6 +475,7 @@ export default function EventDetailScreen() {
           eventTypeName={eventTypeName}
           phases={phases}
           expectedPhases={expectedPhases}
+          pacePhases={pacePhases}
           taskDone={taskDone}
           taskTotal={taskTotal}
           budgetSpent={budgetSpent}

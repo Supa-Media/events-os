@@ -15,6 +15,7 @@ import {
   EVENT_STATUS_LABELS,
   type EventStatus,
   type PhaseKey,
+  type PhasePace,
   type PhaseScores,
 } from "@events-os/shared";
 
@@ -29,6 +30,7 @@ export function EventHeader({
   eventTypeName,
   phases,
   expectedPhases,
+  pacePhases,
   taskDone,
   taskTotal,
   budgetSpent,
@@ -51,6 +53,8 @@ export function EventHeader({
   phases: PhaseScores;
   /** Pacing ghost: where each ring should be today (see PhaseBreakdown). */
   expectedPhases?: PhaseScores;
+  /** Per-phase overdue tallies — the on-pace / behind signal. */
+  pacePhases?: Record<PhaseKey, PhasePace | null>;
   taskDone: number;
   taskTotal: number;
   budgetSpent: number;
@@ -144,6 +148,7 @@ export function EventHeader({
           <PhaseBreakdown
             phases={phases}
             expected={expectedPhases}
+            pace={pacePhases}
             size={54}
             onSelectPhase={onSelectPhase}
             activePhase={activePhase}

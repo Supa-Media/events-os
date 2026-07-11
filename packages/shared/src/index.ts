@@ -1045,18 +1045,22 @@ export const EXPECTED_READY_OFFSET: Partial<Record<string, number>> = {
   volunteer_expectations: -10,
 };
 
-/** When an item is EXPECTED to be complete, or null when no expectation can
- *  be formed (statusless modules can't score, so they carry no expectation —
- *  mirroring the 0 they contribute to the actual score). */
+/** When an item is EXPECTED to be complete. The stored due date wins (it's
+ *  what every overdue badge in the app reads); explicit offsets next
+ *  (mirroring itemPhase's precedence); conventions cover undated rows. */
 function expectedDoneBy(
   module: string,
-  item: { offsetDays?: number | null; offsetMinutes?: number | null },
+  item: {
+    dueDate?: number | null;
+    offsetDays?: number | null;
+    offsetMinutes?: number | null;
+  },
   eventDate: number,
 ): number {
-  // Explicit timing always wins (mirroring itemPhase's precedence)…
+  if (item.dueDate != null) return item.dueDate;
   if (item.offsetMinutes != null) return eventDate; // day-of segments
   if (item.offsetDays != null) return eventDate + item.offsetDays * DAY_MS;
-  // …conventions cover the undated rows of convention-deadline areas…
+  // Conventions for the undated rows of convention-deadline areas…
   if (module === "supplies") return eventDate - DAY_MS; // packed by T-1
   if (module === "retro") return eventDate + 7 * DAY_MS; // dispatched by T+7
   // …and untimed rows elsewhere still have to be true before the event.
@@ -1077,6 +1081,7 @@ export function computeExpectedPhaseScores(
     module: string;
     statusOptions: SelectOption[] | undefined;
     items: Array<{
+      dueDate?: number | null;
       offsetDays?: number | null;
       offsetMinutes?: number | null;
     }>;
@@ -1114,6 +1119,75 @@ export function computeExpectedPhaseScores(
     }));
   const scores = computePhaseScores(synthesized, undefined, gates);
   return { ...scores, prePlan: null };
+}
+
+// ── Per-phase overdue counts (the pace SIGNAL) ───────────────────────────────
+// The expected % above places the ghost tick; whether a ring is "on pace" is
+// decided by something blunter and impossible to argue with: ARE ANY OF THIS
+// PHASE'S ROWS OVERDUE? Counted with the exact same rule the What's-next list
+// uses (incomplete + effective due date before the start of today), so the
+// ring's "▲ N overdue" and the list's OVERDUE badges are the same rows —
+// aggregate score math (partial credit, gate dilution) can never make the two
+// disagree again.
+
+/** One phase's pace: how many rows are due by today, and how many of those
+ *  are still incomplete (the overdue count the ring surfaces). */
+export interface PhasePace {
+  dueTotal: number;
+  overdue: number;
+}
+
+/** Per-phase pace tallies, or null for phases with no deadline mechanism
+ *  (pre-plan). Gates count too: an unmet ready gate past its convention
+ *  deadline (run of show T-3, supplies T-1, crew T-10) is one overdue unit. */
+export function computePhaseOverdue(
+  modules: Array<{
+    module: string;
+    statusOptions: SelectOption[] | undefined;
+    items: Array<{
+      status?: string | null;
+      dueDate?: number | null;
+      offsetDays?: number | null;
+      offsetMinutes?: number | null;
+    }>;
+  }>,
+  gates: Array<{ module: string; phase: PhaseKey; ready: boolean }>,
+  eventDate: number,
+  now: number,
+): Record<PhaseKey, PhasePace | null> {
+  // Same boundary as the What's-next risk rule: due strictly before the
+  // start of TODAY is overdue; due today is merely "soon".
+  const cutoff = startOfDay(now);
+  const acc: Record<Exclude<PhaseKey, "prePlan">, PhasePace> = {
+    planning: { dueTotal: 0, overdue: 0 },
+    dayOf: { dueTotal: 0, overdue: 0 },
+    post: { dueTotal: 0, overdue: 0 },
+  };
+  for (const m of modules) {
+    for (const it of m.items) {
+      const due = expectedDoneBy(m.module, it, eventDate);
+      if (due >= cutoff) continue;
+      const phase = itemPhase({
+        module: m.module,
+        offsetDays: it.offsetDays,
+        offsetMinutes: it.offsetMinutes,
+      });
+      acc[phase].dueTotal += 1;
+      if (!isCompleteStatus(m.statusOptions, it.status)) {
+        acc[phase].overdue += 1;
+      }
+    }
+  }
+  for (const g of gates) {
+    if (g.phase === "prePlan") continue;
+    const offset = EXPECTED_READY_OFFSET[g.module];
+    if (offset == null) continue;
+    const deadline = eventDate + offset * DAY_MS;
+    if (deadline >= cutoff) continue;
+    acc[g.phase].dueTotal += 1;
+    if (!g.ready) acc[g.phase].overdue += 1;
+  }
+  return { prePlan: null, ...acc };
 }
 
 /**

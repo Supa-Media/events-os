@@ -5,6 +5,7 @@ import {
   PHASE_KEYS,
   PHASE_LABELS,
   type PhaseKey,
+  type PhasePace,
   type PhaseScores,
 } from "@events-os/shared";
 
@@ -43,37 +44,34 @@ function PhaseLabel({
   );
 }
 
-/** Points behind pace before the target caption turns into a warning — a
- *  ring 1–2 points shy of its target is noise, not a fire. */
-const PACE_GAP_THRESHOLD = 3;
-
 /** One tappable phase ring + its label. Tapping asks the parent to spotlight it. */
 function PhaseRing({
   phase,
   pct,
   expectedPct,
+  pace,
   size,
   active,
   onSelect,
 }: {
   phase: PhaseKey;
   pct: number | null;
-  /** Where this ring SHOULD be today (the pacing ghost), or null. */
+  /** Where this ring SHOULD be today (places the ghost tick), or null. */
   expectedPct: number | null;
+  /** Overdue tally for this phase (the pace SIGNAL), or null (pre-plan). */
+  pace: PhasePace | null;
   size: number;
   active: boolean;
   onSelect?: (phase: PhaseKey) => void;
 }) {
   const hue = phaseColors[phase];
   const complete = pct != null && pct >= 100;
-  // Pace: everything due by today would put this ring at expectedPct. The
-  // target is ALWAYS shown when it exists (even "target 0%" — it answers
-  // "nothing is due yet, you're ahead"); it only turns amber when the ring
-  // is meaningfully behind it.
-  const gap =
-    pct != null && expectedPct != null ? expectedPct - pct : null;
-  const behind = gap != null && gap >= PACE_GAP_THRESHOLD;
-  const showTarget = expectedPct != null && !complete;
+  // The pace signal is the overdue count — the SAME rows the What's-next
+  // list badges OVERDUE, tallied per phase, so ring and list always agree.
+  // The expected % only places the dashed target tick on the ring.
+  const overdue = pace?.overdue ?? 0;
+  const behind = overdue > 0 && !complete;
+  const showPace = pace != null && !complete;
   return (
     <Pressable
       onPress={onSelect ? () => onSelect(phase) : undefined}
@@ -83,10 +81,10 @@ function PhaseRing({
       accessibilityLabel={`${PHASE_LABELS[phase]} readiness${
         pct == null ? "" : `, ${pct}%`
       }${
-        showTarget
+        showPace
           ? behind
-            ? `, ${gap} points behind today's ${expectedPct}% target`
-            : `, on pace for today's ${expectedPct}% target`
+            ? `, ${overdue} overdue item${overdue === 1 ? "" : "s"}`
+            : ", on pace — nothing overdue"
           : ""
       }. Highlights this phase's tabs.`}
       className="items-center gap-1 active:opacity-70 web:hover:opacity-85"
@@ -105,7 +103,7 @@ function PhaseRing({
         lit={active || complete}
         dim={pct == null}
       />
-      {showTarget ? (
+      {showPace ? (
         behind ? (
           <View
             className="flex-row items-center rounded-pill px-1.5 py-px"
@@ -115,7 +113,7 @@ function PhaseRing({
               className="text-2xs font-bold"
               style={{ color: colors.amber }}
             >
-              ▲ target {expectedPct}%
+              ▲ {overdue} overdue
             </Text>
           </View>
         ) : (
@@ -139,20 +137,25 @@ function PhaseRing({
  * it, answering "what do I do to move this number?". Values are 0..1 or null;
  * null renders "—" so an empty phase doesn't read as "0% ready".
  *
- * `expected` is the PACING GHOST: where each ring should be today if
- * everything due by now were done. A ring meaningfully behind its target
- * grows a "▲ N%" pace pill — the catch-up number to close today.
+ * `expected` places each ring's dashed TARGET TICK (where the score should
+ * be today); `pace` carries each phase's overdue tally — the signal behind
+ * the green "✓ on pace" / amber "▲ N overdue" captions. The overdue counts
+ * are computed with the same rule as the What's-next list's OVERDUE badges,
+ * so the rings and the list always tell the same story.
  */
 export function PhaseBreakdown({
   phases,
   expected,
+  pace,
   size = 52,
   onSelectPhase,
   activePhase,
 }: {
   phases: PhaseScores;
-  /** Expected (on-pace) scores; omit to render without pace pills. */
+  /** Expected (on-pace) scores; omit to render without target ticks. */
   expected?: PhaseScores;
+  /** Per-phase overdue tallies; omit to render without pace captions. */
+  pace?: Record<PhaseKey, PhasePace | null>;
   size?: number;
   /** Tap a ring → pulse its tabs. Rings are inert when omitted. */
   onSelectPhase?: (phase: PhaseKey) => void;
@@ -169,6 +172,7 @@ export function PhaseBreakdown({
             phase={key}
             pct={score == null ? null : Math.round(score * 100)}
             expectedPct={target == null ? null : Math.round(target * 100)}
+            pace={pace?.[key] ?? null}
             size={size}
             active={activePhase === key}
             onSelect={onSelectPhase}
