@@ -707,6 +707,10 @@ const SECTIONS_IN_ORDER: Omit<AcademySection, "order">[] = [
       },
       {
         kind: "tip",
+        text: "Rows sort themselves by due date, so reading top-to-bottom is reading the timeline: **overdue rows are flagged red**, and finished rows whose dates have passed fade out. The red band is where your problems live.",
+      },
+      {
+        kind: "tip",
         text: "**Me view** filters every tab down to just your rows — the fastest answer to \"what's mine this week?\"",
       },
     ],

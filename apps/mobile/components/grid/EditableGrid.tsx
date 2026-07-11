@@ -16,7 +16,12 @@ import {
 import { GestureDetector, type GestureType } from "react-native-gesture-handler";
 import { useAction } from "convex/react";
 import { api } from "@events-os/convex/_generated/api";
-import { type ModuleKey } from "@events-os/shared";
+import {
+  DAY_OFFSET_MODULES,
+  isCompleteStatus,
+  startOfDay,
+  type ModuleKey,
+} from "@events-os/shared";
 import { colors } from "../../lib/theme";
 import { Icon } from "../ui/Icon";
 import { OptionTag } from "../ui/OptionTag";
@@ -258,12 +263,44 @@ export function EditableGrid({
     return map;
   }, [grid.items]);
 
+  // Day-offset EVENT grids read as a timeline: rows sort by due date (undated
+  // last, manual order as the tie-break) so the eye scans past → future, and
+  // drag-reorder yields to the dates (timing edits move rows instead).
+  const dueSorted =
+    mode === "event" && DAY_OFFSET_MODULES.includes(module as ModuleKey);
+
   // Rows to render. Me view passes a filter so only the user's own items show
   // (for modules they don't own); otherwise every item is visible.
-  const visibleItems = useMemo(
-    () =>
-      filterItemIds ? grid.items.filter((i) => filterItemIds.has(i._id)) : grid.items,
-    [grid.items, filterItemIds],
+  const visibleItems = useMemo(() => {
+    const base = filterItemIds
+      ? grid.items.filter((i) => filterItemIds.has(i._id))
+      : grid.items;
+    if (!dueSorted) return base;
+    return [...base].sort((a, b) => {
+      const da = a.dueDate ?? Number.POSITIVE_INFINITY;
+      const db = b.dueDate ?? Number.POSITIVE_INFINITY;
+      return da === db ? a.order - b.order : da - db;
+    });
+  }, [grid.items, filterItemIds, dueSorted]);
+
+  // Per-row pace state for visual triage (event mode, status-bearing rows):
+  //   "overdue" — due before today, not complete → flagged red
+  //   "past"    — due before today, complete     → dimmed (handled history)
+  // Same due-before-start-of-today rule as the What's-next OVERDUE badges.
+  const statusColumn = useMemo(
+    () => (grid.columns ?? []).find((c) => c.key === "status"),
+    [grid.columns],
+  );
+  const startOfToday = startOfDay(Date.now());
+  const paceOf = useCallback(
+    (item: GridItem): "overdue" | "past" | null => {
+      if (mode !== "event" || !statusColumn || item.dueDate == null) return null;
+      if (item.dueDate >= startOfToday) return null;
+      return isCompleteStatus(statusColumn.options, item.status)
+        ? "past"
+        : "overdue";
+    },
+    [mode, statusColumn, startOfToday],
   );
 
   /** Buckets for the grouped/board view (one per option + a "none" bucket). */
@@ -294,6 +331,7 @@ export function EditableGrid({
       <Row
         key={item._id}
         item={item}
+        pace={paceOf(item)}
         isLast={isLast}
         columns={columns}
         widths={widths}
@@ -338,6 +376,7 @@ export function EditableGrid({
       allowToggleChecked,
       toggleChecked,
       commitRowHeight,
+      paceOf,
     ],
   );
 
@@ -459,7 +498,7 @@ export function EditableGrid({
               </View>
             ))
           ) : (
-            renderList(visibleItems, true)
+            renderList(visibleItems, !dueSorted)
           )}
         </View>
       </ScrollView>
@@ -666,6 +705,8 @@ function AddFieldForm({
 /** Props for a single grid row. */
 interface RowProps {
   item: GridItem;
+  /** Visual triage: "overdue" flags red, "past" (done + gone by) dims. */
+  pace?: "overdue" | "past" | null;
   isLast: boolean;
   columns: GridColumn[];
   widths: number[];
@@ -709,6 +750,7 @@ interface RowProps {
  */
 const Row = memo(function Row({
   item,
+  pace,
   isLast,
   columns,
   widths,
@@ -761,12 +803,22 @@ const Row = memo(function Row({
         const h = e.nativeEvent.layout.height;
         setMeasuredH((prev) => (Math.abs(h - prev) > 1 ? h : prev));
       }}
-      style={effectiveHeight != null ? { height: effectiveHeight } : undefined}
+      style={{
+        ...(effectiveHeight != null ? { height: effectiveHeight } : null),
+        // Done-and-gone-by rows recede; the eye lands on live work.
+        ...(pace === "past" ? { opacity: 0.5 } : null),
+        // Overdue rows wear the same red left bar as What's-next.
+        ...(pace === "overdue"
+          ? { borderLeftWidth: 3, borderLeftColor: colors.danger }
+          : null),
+      }}
       // With a manual height the cells stretch to fill it (so multiline inputs
       // gain the extra room); auto rows keep top alignment.
-      className={`relative flex-row border-b border-border bg-raised ${
-        isLast ? "border-b-0" : ""
-      } ${effectiveHeight != null ? "items-stretch overflow-hidden" : "items-start"}`}
+      className={`relative flex-row border-b border-border ${
+        pace === "overdue" ? "bg-danger-bg" : "bg-raised"
+      } ${isLast ? "border-b-0" : ""} ${
+        effectiveHeight != null ? "items-stretch overflow-hidden" : "items-start"
+      }`}
     >
       {/* Left gutter: drag grip */}
       {editable ? (
