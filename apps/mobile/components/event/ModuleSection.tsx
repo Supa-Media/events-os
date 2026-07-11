@@ -14,15 +14,17 @@ import {
   CALENDAR_MODULES,
   defaultCalendarView,
 } from "./moduleCalendar/config";
-import { SiteMapEditor } from "./SiteMapEditor";
+import { SiteMapSubsection } from "./SiteMapSubsection";
 import { type ModuleOwnerInfo } from "./EventModuleRollup";
+import { GuideLink } from "./GuideLink";
 
 /**
  * One active module's section on the event screen. Renders the owner bar + a
- * "Mark ready / Ready ✓" toggle in the header, then switches on the module's
- * SURFACE: grid modules render the EditableGrid (or, for day-offset modules like
- * Comms/Planning, a table ↔ calendar toggle); the site_map module renders the
- * venue-map editor inline (the same component the standalone route uses).
+ * "Mark ready / Ready ✓" toggle in the header, then the module's grid (or, for
+ * day-offset modules like Comms/Planning, a table ↔ calendar toggle). A module
+ * that carries the site-map artifact (Supplies & Logistics, `hasSiteMap`)
+ * additionally renders the venue-map editor beneath its grid — same editor as
+ * the standalone `/event/[id]/site-map` route, one ready flag for both.
  */
 export function ModuleSection({
   eventId,
@@ -58,7 +60,13 @@ export function ModuleSection({
     <View>
       <SectionHeader
         title={module.label}
-        titleAccessory={<OwnerPill owner={owner} onPress={onAssignOwner} />}
+        titleAccessory={
+          <View className="flex-row items-center gap-1">
+            <OwnerPill owner={owner} onPress={onAssignOwner} />
+            {/* Quiet "How this works" link to this workstream's guide. */}
+            <GuideLink moduleKey={module.key} />
+          </View>
+        }
         right={
           <View className="flex-row items-center gap-2">
             {hasCalendar ? (
@@ -90,9 +98,7 @@ export function ModuleSection({
         }
       />
 
-      {module.surface === "site_map" ? (
-        <SiteMapEditor eventId={eventId} embedded />
-      ) : hasCalendar && view === "calendar" ? (
+      {hasCalendar && view === "calendar" ? (
         <ModuleCalendar
           eventId={eventId}
           eventDate={eventDate}
@@ -110,6 +116,12 @@ export function ModuleSection({
           filterItemIds={filterItemIds}
         />
       )}
+
+      {/* Supplies & Logistics carries the site map: the spatial view of the
+          same workstream, under the same owner + ready flag. */}
+      {module.hasSiteMap ? (
+        <SiteMapSubsection scope={{ kind: "event", eventId }} />
+      ) : null}
     </View>
   );
 }

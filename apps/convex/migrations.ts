@@ -122,11 +122,14 @@ export const backfillMissingDefaultColumns = internalMutation({
  * `disabledCoreModules` deny-list (+ overrides, + custom rows). The general rule
  * for introducing a new core module is that it's ABSENT from existing
  * `disabledCoreModules`, so it defaults to ENABLED everywhere — which is exactly
- * what we want for `site_map` (turns on for all existing templates/events).
+ * what we wanted for the then-new `site_map` module. (Historical: the standalone
+ * `site_map` core module has since been folded into Supplies & Logistics; any
+ * lingering `"site_map"` strings in `disabledCoreModules` are ignored by
+ * `resolveActiveModules`.)
  *
  * So we set `disabledCoreModules = PRIOR_CORE_KEYS − activeComponents` (the OLD
- * 7-key set minus what was active — NOT including site_map). Cloned onto each
- * event from its eventType. `activeComponents` is then cleared.
+ * 7-key set minus what was active). Cloned onto each event from its eventType.
+ * `activeComponents` is then cleared.
  *
  * Reads the OLD shape via `(... as any)`. Idempotent-ish: skips a row that
  * already has `disabledCoreModules` set. Does NOT need to run for this task.

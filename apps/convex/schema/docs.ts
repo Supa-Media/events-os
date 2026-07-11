@@ -30,6 +30,18 @@ export const docs = defineTable({
   body: v.optional(v.string()),
   // Short public slug for the unauthenticated share route.
   shareId: v.string(),
+  // Stable per-chapter key for PLATFORM-SEEDED guide docs (the filename of the
+  // source guide under docs/guides/, e.g. "so-you-own-a-workstream"). The
+  // seeder upserts by (chapterId, slug); user-created docs leave it unset.
+  // A set slug also marks the doc PLATFORM-OWNED: read-only in the app
+  // (docs.ts rejects user writes) and always updated to the latest platform
+  // version on seed.
+  slug: v.optional(v.string()),
+  // DEPRECATED — never read. Pre-merge branch builds of the guide seeder wrote
+  // a content hash here, and Convex validates EXISTING rows on schema push, so
+  // the field must stay declared for historical guide rows to validate. Safe to
+  // drop after running `npx convex run docs:clearSeedHash` on the deployment.
+  seedHash: v.optional(v.string()),
   // Public/internal visibility. Undefined (or "public") → readable at the no-auth
   // `/d/<shareId>` route; "internal" → `getPublic` returns null. Optional so all
   // existing docs default to PUBLIC.
@@ -52,4 +64,5 @@ export const docs = defineTable({
   updatedAt: v.number(),
 })
   .index("by_chapter", ["chapterId"])
-  .index("by_share", ["shareId"]);
+  .index("by_share", ["shareId"])
+  .index("by_chapter_and_slug", ["chapterId", "slug"]);

@@ -22,6 +22,7 @@ import { EventHeader } from "../../../components/event/EventHeader";
 import { EventTabBar, type EventTab } from "../../../components/event/EventTabBar";
 import { EventOverviewControls } from "../../../components/event/EventOverviewControls";
 import { EventTodos } from "../../../components/event/EventTodos";
+import { GuidesSection } from "../../../components/event/GuidesSection";
 import {
   ModuleRollupRow,
   confirmRemoveModule,
@@ -178,9 +179,9 @@ export default function EventDetailScreen() {
     locationInput !== null ? locationInput : (event.location ?? "");
 
   // Resolved active modules (core + custom, with the event's deltas applied), in
-  // canonical order. Includes the site_map module (surface "site_map"); the
-  // volunteer_expectations module is the team EXPECTATIONS list (WHO is on each
-  // team lives in CrewSections below).
+  // canonical order. Supplies & Logistics carries the site map (rendered under
+  // its grid by ModuleSection); the volunteer_expectations module is the team
+  // EXPECTATIONS list (WHO is on each team lives in CrewSections below).
   const activeModules: ResolvedModule[] = resolvedModules ?? [];
 
   // The volunteer_expectations module (the team EXPECTATIONS grid) is NOT a tab of
@@ -319,7 +320,7 @@ export default function EventDetailScreen() {
       if (module.isCore) {
         void run(
           () => toggleCoreModule({ eventId, key: module.key, enabled: false }),
-          { errorTitle: "Couldn't disable module" },
+          { errorTitle: "Couldn't disable workstream" },
         );
       } else {
         const rowId = customModuleIdByKey.get(module.key);
@@ -327,7 +328,7 @@ export default function EventDetailScreen() {
           void run(
             () =>
               deleteCustomModule({ moduleId: rowId as Id<"eventModules"> }),
-            { errorTitle: "Couldn't remove module" },
+            { errorTitle: "Couldn't remove workstream" },
           );
       }
     };
@@ -487,11 +488,11 @@ export default function EventDetailScreen() {
                   onEnableCore: (key) =>
                     void run(
                       () => toggleCoreModule({ eventId, key, enabled: true }),
-                      { errorTitle: "Couldn't enable module" },
+                      { errorTitle: "Couldn't enable workstream" },
                     ),
                   onCreateCustom: (label) =>
                     void run(() => createCustomModule({ eventId, label }), {
-                      errorTitle: "Couldn't add module",
+                      errorTitle: "Couldn't add workstream",
                     }),
                 }
           }
@@ -588,6 +589,11 @@ export default function EventDetailScreen() {
                 />
               </>
             ) : null}
+
+            {/* Guides — the browsable index of platform guides (how to own an
+                event, a workstream, each core workstream). Hides itself when
+                the chapter has no seeded guides. */}
+            <GuidesSection />
 
           </Narrow>
         ) : activeTab === "tickets" ? (
@@ -783,11 +789,11 @@ function MeView({
 
   return (
     <>
-      <SectionHeader title="Modules you own" count={myModules.length} />
+      <SectionHeader title="Workstreams you own" count={myModules.length} />
       {myModules.length === 0 ? (
         <Card>
           <Text className="text-base text-muted">
-            You don't own any modules on this event.
+            You don't own any workstreams on this event.
           </Text>
         </Card>
       ) : (

@@ -88,16 +88,18 @@ export const MODULE_KEYS = [
   "comms",
   "run_of_show",
   "volunteer_expectations",
-  "site_map",
   "supplies",
   "permits",
   "retro",
 ] as const;
 export type ModuleKey = (typeof MODULE_KEYS)[number];
 
-/** How a module renders. Grid modules use the spreadsheet EditableGrid; bespoke
- *  surfaces (e.g. the site map, wired up in a later phase) render their own
- *  editor instead of a grid. */
+/** How a module renders. Every current module is a grid (the spreadsheet
+ *  EditableGrid); a module can ALSO carry a non-grid artifact alongside its
+ *  rows (`hasSiteMap` — Supplies & Logistics carries the site map). The
+ *  `"site_map"` member is kept only for backward compatibility with code that
+ *  switches on the surface: no module resolves to it anymore (the old
+ *  standalone Site Map module was folded into Supplies & Logistics). */
 export type ModuleSurface = "grid" | "site_map";
 
 /** How a module's rows schedule relative to the event. */
@@ -119,6 +121,14 @@ export interface CoreModuleDef {
   surface: ModuleSurface;
   defaultOwnerRoleKey: string;
   offsetMode: ModuleOffsetMode;
+  /**
+   * The module carries the site-map artifact (the venue-layout drawing surface)
+   * alongside its grid. Supplies & Logistics is the only carrier: site-map
+   * placements bind supply items to map positions, so the map is the spatial
+   * view of the same workstream. Ownership, timing, and the ready flag are the
+   * module's own — the map has no separate readiness.
+   */
+  hasSiteMap?: boolean;
 }
 
 /**
@@ -135,17 +145,17 @@ export const CORE_MODULES: CoreModuleDef[] = [
   { key: "comms", label: "Comms Schedule", surface: "grid", defaultOwnerRoleKey: "comms_lead", offsetMode: "days" },
   { key: "run_of_show", label: "Run of Show", surface: "grid", defaultOwnerRoleKey: "production_lead", offsetMode: "minutes" },
   { key: "volunteer_expectations", label: "Expectations", surface: "grid", defaultOwnerRoleKey: "comms_lead", offsetMode: "none" },
-  // Site map is a non-grid core module: it renders the venue-map editor instead
-  // of a spreadsheet grid (surface !== "grid"), so grid-only code paths skip it.
-  { key: "site_map", label: "Site Map", surface: "site_map", defaultOwnerRoleKey: "logistics_lead", offsetMode: "none" },
-  { key: "supplies", label: "Supplies & Packing", surface: "grid", defaultOwnerRoleKey: "logistics_lead", offsetMode: "none" },
+  // Supplies & Logistics carries the site map (hasSiteMap): the venue-map
+  // editor renders beneath its grid, and its single ready flag covers both.
+  { key: "supplies", label: "Supplies & Logistics", surface: "grid", defaultOwnerRoleKey: "logistics_lead", offsetMode: "none", hasSiteMap: true },
   { key: "permits", label: "Permits", surface: "grid", defaultOwnerRoleKey: "event_lead", offsetMode: "days" },
   { key: "retro", label: "Retrospective", surface: "grid", defaultOwnerRoleKey: "event_lead", offsetMode: "none" },
 ];
 
 /**
  * The grid-backed core modules, in order. Grid-only code paths (column seeding,
- * default columns, module summaries) iterate these — never `site_map`.
+ * default columns, module summaries) iterate these. Currently every core module
+ * is a grid; the filter guards against any future non-grid surface.
  */
 export const GRID_CORE_MODULE_KEYS: ModuleKey[] = CORE_MODULES.filter(
   (m) => m.surface === "grid",
@@ -212,6 +222,8 @@ export interface ResolvedModule {
   ownerRoleKey: string | undefined;
   offsetMode: ModuleOffsetMode;
   isCore: boolean;
+  /** Renders the site-map editor beneath its grid (see CoreModuleDef). */
+  hasSiteMap?: boolean;
 }
 
 /** Apply a scope's per-core override (label / owner) to a core module. */
@@ -227,6 +239,7 @@ function applyOverride(
     ownerRoleKey: o?.ownerRoleKey ?? m.defaultOwnerRoleKey,
     offsetMode: m.offsetMode,
     isCore: true,
+    hasSiteMap: m.hasSiteMap === true,
   };
 }
 
@@ -406,6 +419,16 @@ export const RETRO_STATUS_OPTIONS: SelectOption[] = [
   { value: "actioned", label: "Actioned", color: "green", isComplete: true },
 ];
 
+/**
+ * Where a retro row ended up in the debrief loop: promoted into the template,
+ * kept as context for future events, or consciously dropped.
+ */
+export const RETRO_DISPATCH_OPTIONS: SelectOption[] = [
+  { value: "promoted", label: "Promoted", color: "green" },
+  { value: "context", label: "Context", color: "blue" },
+  { value: "dropped", label: "Dropped", color: "gray" },
+];
+
 export const VOLUNTEER_TEAM_OPTIONS: SelectOption[] = [
   { value: "flower", label: "Flower", color: "pink" },
   { value: "food_bev", label: "Food & Bev", color: "amber" },
@@ -436,9 +459,8 @@ export const VOLUNTEER_STATUS_OPTIONS: SelectOption[] = [
 // ── Default column sets per module (seed defaults; editable per template) ─────
 // Authors reorder/hide/rename these and add custom columns. `system` columns are
 // backed by promoted item fields; `custom` columns live in the `fields` bag.
-// `site_map` has no grid columns (surface !== "grid"), so it's intentionally
-// absent here — hence Partial. Grid code paths look modules up by key and skip
-// anything without a column set.
+// Kept Partial defensively: grid code paths look modules up by (sometimes
+// arbitrary) key and fall back to [] for anything without a column set.
 export const DEFAULT_COLUMNS: Partial<Record<ModuleKey, ColumnDef[]>> = {
   planning_doc: [
     { key: "title", label: "Task", kind: "system", type: "text", isVisible: true },
@@ -496,6 +518,7 @@ export const DEFAULT_COLUMNS: Partial<Record<ModuleKey, ColumnDef[]>> = {
   retro: [
     { key: "title", label: "What happened", kind: "system", type: "text", isVisible: true },
     { key: "status", label: "Status", kind: "system", type: "status", options: RETRO_STATUS_OPTIONS, isVisible: true },
+    { key: "dispatch", label: "Dispatch", kind: "custom", type: "select", options: RETRO_DISPATCH_OPTIONS, isVisible: true },
     { key: "notes", label: "Detail", kind: "custom", type: "longtext", isVisible: true },
     { key: "link", label: "Link", kind: "custom", type: "url", isVisible: true },
   ],
@@ -778,16 +801,16 @@ export type PhaseScores = Record<PhaseKey, number | null>;
  * Overview "What's next" to-dos and the phase readiness rings, so the two never
  * drift. Modules absent here have no ready gate (e.g. planning_doc, retro).
  *   comms / permits                                       → pre-plan
- *   run_of_show / site_map / volunteer_expectations /
- *   supplies                                              → planning
+ *   run_of_show / volunteer_expectations / supplies       → planning
  * Note: volunteer_expectations ITEMS phase to dayOf (itemPhase); only its
- * "mark ready" gate is a planning milestone.
+ * "mark ready" gate is a planning milestone. Supplies' single gate covers the
+ * whole workstream, site map included; a legacy `site_map` readiness entry on
+ * an old event is simply ignored (the key is no longer a core module).
  */
 export const MODULE_READY_PHASE: Record<string, PhaseKey> = {
   comms: "prePlan",
   permits: "prePlan",
   run_of_show: "planning",
-  site_map: "planning",
   volunteer_expectations: "planning",
   supplies: "planning",
 };
@@ -1257,3 +1280,6 @@ export const SONG_REQUEST_LIMITS = {
 
 // ── AI agent config (model registry, cost, budgets) ──────────────────────────
 export * from "./ai";
+
+// ── The planning playbook (generated from docs/agent.md) ─────────────────────
+export * from "./playbook";

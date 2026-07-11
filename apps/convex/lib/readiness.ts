@@ -86,7 +86,8 @@ export async function phaseReadiness(
   ctx: any,
   event: any,
 ): Promise<PhaseScores> {
-  // Grid modules only — non-grid surfaces (site_map) have no status'd items.
+  // Grid modules only — a non-grid surface would have no status'd items. (The
+  // site map is not a module of its own: it rides along with supplies.)
   const resolved = await eventActiveModules(ctx, event);
   const gridModuleKeys = resolved
     .filter((m: any) => m.surface === "grid")
@@ -154,8 +155,9 @@ export async function phaseReadiness(
   };
 
   // Module "mark as ready" gates feed their mapped phase, so marking a module
-  // ready visibly moves that phase's ring. Covers non-grid modules too (site_map
-  // has no items but still has a ready gate).
+  // ready visibly moves that phase's ring. Only ACTIVE modules with a gate
+  // count — a legacy `site_map` entry in moduleReadiness is harmlessly ignored
+  // (site_map is no longer a core module; supplies' gate covers the map).
   const readyByKey = new Map<string, boolean>(
     (event.moduleReadiness ?? []).map((r: any) => [
       r.key as string,

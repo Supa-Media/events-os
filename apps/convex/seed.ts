@@ -32,6 +32,7 @@ import {
 import { requireUserId } from "./lib/context";
 import { isSuperuser } from "./lib/superuser";
 import { instantiateEvent, toSlug, seedTemplateRoles } from "./lib/templates";
+import { seedPlatformGuidesForChapter } from "./lib/platformGuides";
 import {
   type ItemRow,
   phoneKey,
@@ -593,6 +594,9 @@ export const seedDemoData = mutation({
       peopleIds.push(id);
     }
 
+    // ── Platform enablement guides (docs/guides/*.md → markdown docs) ────────
+    await seedPlatformGuidesForChapter(ctx, chapterId);
+
     // ── Sample upcoming WwS event (~21 days out) ─────────────────────────────
     const eventDate = now + 21 * DAY_MS;
     const wwsType = await ctx.db.get(wwsId);
@@ -937,6 +941,9 @@ export const reseedNyDemo = internalMutation({
         .collect();
     }
     const peopleIds = people.map((p) => p._id);
+
+    // ── Platform enablement guides (recreated — the wipe above removed docs) ──
+    await seedPlatformGuidesForChapter(ctx, nyChapterId);
 
     // ── Sample Eden event (~30 days out) ─────────────────────────────────────
     const edenType = await ctx.db.get(edenId);

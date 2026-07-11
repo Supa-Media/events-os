@@ -8,11 +8,26 @@
  * page) — that path returns ONLY the doc's safe display fields, never chapter
  * data.
  */
-import { query, mutation, internalMutation } from "./_generated/server";
-import { Id } from "./_generated/dataModel";
+import {
+  query,
+  mutation,
+  internalMutation,
+  MutationCtx,
+} from "./_generated/server";
+import { Doc, Id } from "./_generated/dataModel";
 import { v, ConvexError } from "convex/values";
-import { requireChapterId, requireUserId, requireInChapter } from "./lib/context";
+import {
+  requireChapterId,
+  requireUserId,
+  requireInChapter,
+  getChapterIdOrNull,
+} from "./lib/context";
 import { requireManagerOrAdmin } from "./lib/org";
+import {
+  makeShareId,
+  seedPlatformGuidesForChapter,
+  type SeedGuidesResult,
+} from "./lib/platformGuides";
 
 /** The doc kinds — mirrors the `docs` table union. */
 const docKind = v.union(
@@ -26,13 +41,65 @@ const docKind = v.union(
 const docVisibility = v.union(v.literal("public"), v.literal("internal"));
 
 /**
- * A short, unguessable public slug. `Math.random` is fine inside Convex
- * functions (it's seeded per-call, not the insecure script-side singleton), and
- * the slug is a capability, not a secret derived from anything sensitive.
+ * Reject content writes to a PLATFORM GUIDE (a doc with `slug` set — only the
+ * seeder creates those). Guides are platform-owned and never forked: every
+ * seed brings them to the latest platform version, so user edits would be
+ * silently blown away. The app renders them read-only; this is the server
+ * back-stop. Chapter-specific knowledge belongs in templates/how-to docs.
+ *
+ * Only the internal seeding path (`seedPlatformGuidesForChapter`, which writes
+ * through `ctx.db` directly) may modify them.
  */
-function makeShareId(): string {
-  const rand = () => Math.random().toString(36).slice(2);
-  return (rand() + rand()).slice(0, 16);
+function rejectPlatformGuideWrite(doc: { slug?: string } | null | undefined): void {
+  if (doc?.slug !== undefined) {
+    throw new ConvexError({
+      code: "PLATFORM_GUIDE_READONLY",
+      message:
+        "This platform guide is read-only — it updates automatically with the platform. Put chapter specifics in your templates and how-to docs instead.",
+    });
+  }
+}
+
+/**
+ * The one sanctioned gate in front of every doc WRITE in this module: load the
+ * doc, authorize it against a chapter, and reject platform guides
+ * (slug-bearing docs are read-only). Returns the doc so callers don't
+ * re-fetch. A future doc mutation should go through here rather than
+ * hand-rolling the get + chapter check + guide rejection.
+ *
+ * Two auth modes, matching the two kinds of writers:
+ * - `{ callerChapterId }` — authed mutations (`update`, `forkForEventItem`):
+ *   a missing or cross-chapter doc throws NOT_FOUND, like every other
+ *   chapter-scoped load.
+ * - `{ internal: true, expectedChapterId? }` — the internal write primitive
+ *   (`setBody`), whose caller authorized separately: a vanished doc returns
+ *   null (the caller no-ops instead of crashing a background action), and a
+ *   mismatch against the chapter the caller authorized throws CROSS_CHAPTER.
+ */
+async function requireWritableDoc(
+  ctx: MutationCtx,
+  docId: Id<"docs">,
+  auth:
+    | { callerChapterId: Id<"chapters"> }
+    | { internal: true; expectedChapterId?: Id<"chapters"> },
+): Promise<Doc<"docs"> | null> {
+  const doc = await ctx.db.get(docId);
+  if ("callerChapterId" in auth) {
+    await requireInChapter(ctx, auth.callerChapterId, doc, "Doc");
+  } else {
+    if (!doc) return null;
+    if (
+      auth.expectedChapterId !== undefined &&
+      doc.chapterId !== auth.expectedChapterId
+    ) {
+      throw new ConvexError({
+        code: "CROSS_CHAPTER",
+        message: "Refusing to write a doc outside the authorized chapter.",
+      });
+    }
+  }
+  rejectPlatformGuideWrite(doc);
+  return doc;
 }
 
 /** The caller's linked roster person (for `createdBy`); falls back to any chapter person. */
@@ -111,8 +178,10 @@ export const forkForEventItem = mutation({
     const chapterId = await requireChapterId(ctx);
     const createdBy = await requireCallerPerson(ctx, chapterId);
 
-    const doc = await ctx.db.get(docId);
-    await requireInChapter(ctx, chapterId, doc, "Doc");
+    // Guides are never forked — the platform owns the one copy per chapter.
+    const doc = await requireWritableDoc(ctx, docId, {
+      callerChapterId: chapterId as Id<"chapters">,
+    });
 
     const item = await ctx.db.get(eventItemId);
     if (!item) {
@@ -158,7 +227,10 @@ export const get = query({
   },
 });
 
-/** Update a doc's title / url / body / kind / visibility (authed, chapter-scoped). */
+/**
+ * Update a doc's title / url / body / kind / visibility (authed,
+ * chapter-scoped). Platform guides (slug set) are read-only and rejected.
+ */
 export const update = mutation({
   args: {
     docId: v.id("docs"),
@@ -170,8 +242,9 @@ export const update = mutation({
   },
   handler: async (ctx, { docId, ...patch }) => {
     const chapterId = await requireChapterId(ctx);
-    const doc = await ctx.db.get(docId);
-    await requireInChapter(ctx, chapterId, doc, "Doc");
+    await requireWritableDoc(ctx, docId, {
+      callerChapterId: chapterId as Id<"chapters">,
+    });
     // A doc that backs a RESPONSIBILITY's How-To is part of the accountability
     // loop: the row is manager-gated, so its runbook must be too — otherwise a
     // report could quietly rewrite the duty they're held to before a 1:1.
@@ -286,6 +359,11 @@ export const searchForAi = query({
  * authorized against), we assert the target doc still belongs to that chapter
  * and refuse the write otherwise — so the doc-assistant can't be tricked into a
  * cross-chapter body overwrite via a swapped/stale docId.
+ *
+ * Platform guides (slug set) are rejected here too: this is the doc
+ * assistant's write path, and user-triggered AI edits must not touch
+ * platform-owned content. The seeder doesn't write through this mutation, so
+ * seeding keeps its access.
  */
 export const setBody = internalMutation({
   args: {
@@ -294,15 +372,129 @@ export const setBody = internalMutation({
     expectedChapterId: v.optional(v.id("chapters")),
   },
   handler: async (ctx, { docId, body, expectedChapterId }) => {
-    const doc = await ctx.db.get(docId);
+    const doc = await requireWritableDoc(ctx, docId, {
+      internal: true,
+      expectedChapterId,
+    });
     if (!doc) return;
-    if (expectedChapterId !== undefined && doc.chapterId !== expectedChapterId) {
-      throw new ConvexError({
-        code: "CROSS_CHAPTER",
-        message: "Refusing to write a doc outside the authorized chapter.",
-      });
-    }
     await ctx.db.patch(docId, { body, updatedAt: Date.now() });
+  },
+});
+
+/**
+ * Seed/refresh the platform enablement guides (docs/guides/*.md, compiled into
+ * `lib/guides.ts`) as markdown docs, keyed per chapter by `slug`.
+ *
+ * Upsert semantics per guide: create if missing; otherwise overwrite with the
+ * latest platform version. Guides are platform-owned and read-only in the app
+ * (user writes are rejected with PLATFORM_GUIDE_READONLY), so seeding always
+ * wins — there are no chapter forks to preserve.
+ *
+ * Runs for ONE chapter when `chapterId` is passed, else ALL chapters — the
+ * backfill entry point for pre-existing chapters, invoked from the dashboard/
+ * CLI exactly like the other seed backfills:
+ *
+ *   npx convex run docs:seedPlatformGuides
+ *
+ * New chapters get the guides automatically via the seed.ts entry points
+ * (`seedDemoData` / `reseedNyDemo`), which call the same helper.
+ *
+ * SECURITY: `internalMutation` — bulk-writes docs, not called from the UI.
+ */
+export const seedPlatformGuides = internalMutation({
+  args: { chapterId: v.optional(v.id("chapters")) },
+  handler: async (ctx, args) => {
+    const chapters = args.chapterId
+      ? [await ctx.db.get(args.chapterId)]
+      : await ctx.db.query("chapters").collect();
+
+    const results: Array<SeedGuidesResult & { chapter: string }> = [];
+    for (const chapter of chapters) {
+      if (!chapter) continue;
+      const res = await seedPlatformGuidesForChapter(ctx, chapter._id);
+      results.push({ chapter: chapter.name, ...res });
+    }
+    return results;
+  },
+});
+
+/**
+ * One-shot cleanup for the DEPRECATED `docs.seedHash` field (see
+ * schema/docs.ts): pre-merge branch builds of the guide seeder stamped it on
+ * guide docs. Bounded: only slug-bearing (guide) docs ever carried it, so this
+ * walks just the guide rows of each chapter via the by_chapter_and_slug index.
+ * Once run on a deployment, the schema field can be dropped:
+ *
+ *   npx convex run docs:clearSeedHash
+ *
+ * SECURITY: `internalMutation` — maintenance-only, never called from the UI.
+ */
+export const clearSeedHash = internalMutation({
+  args: {},
+  handler: async (ctx) => {
+    const chapters = await ctx.db.query("chapters").collect();
+    let cleared = 0;
+    for (const chapter of chapters) {
+      const guideDocs = await ctx.db
+        .query("docs")
+        .withIndex("by_chapter_and_slug", (q) =>
+          q.eq("chapterId", chapter._id).gte("slug", ""),
+        )
+        .collect();
+      for (const doc of guideDocs) {
+        if (doc.seedHash !== undefined) {
+          await ctx.db.patch(doc._id, { seedHash: undefined });
+          cleared++;
+        }
+      }
+    }
+    return { cleared };
+  },
+});
+
+/**
+ * Look up a platform guide doc by its stable slug (authed, chapter-scoped) —
+ * powers the "How this works" links on workstream section headers. Returns
+ * just what the link needs (the doc id to navigate to + the title), or null
+ * when the chapter has no doc for that slug (the affordance hides).
+ */
+export const getGuideBySlug = query({
+  args: { slug: v.string() },
+  handler: async (ctx, { slug }) => {
+    const chapterId = await requireChapterId(ctx);
+    const doc = await ctx.db
+      .query("docs")
+      .withIndex("by_chapter_and_slug", (q) =>
+        q.eq("chapterId", chapterId as Id<"chapters">).eq("slug", slug),
+      )
+      .unique();
+    if (!doc) return null;
+    return { _id: doc._id, title: doc.title };
+  },
+});
+
+/**
+ * Every platform guide seeded into the caller's chapter, for the event
+ * Overview's Guides section. Slug order is stable (alphabetical) so callers
+ * can impose their own curated ordering by slug.
+ */
+export const listGuides = query({
+  args: {},
+  handler: async (ctx) => {
+    const chapterId = await getChapterIdOrNull(ctx);
+    if (!chapterId) return [];
+    // In index order, docs WITHOUT a slug (undefined) sort before "", so this
+    // range reads ONLY the slug-bearing guide rows — a small platform-owned
+    // set — never the chapter's whole how-to library.
+    const docs = await ctx.db
+      .query("docs")
+      .withIndex("by_chapter_and_slug", (q) =>
+        q.eq("chapterId", chapterId as Id<"chapters">).gte("slug", ""),
+      )
+      .collect();
+    return docs
+      .map((d) => ({ _id: d._id, slug: d.slug as string, title: d.title }))
+      .sort((a, b) => a.slug.localeCompare(b.slug));
   },
 });
 
@@ -318,6 +510,8 @@ export const forAi = query({
       title: doc.title,
       body: doc.body ?? "",
       kind: doc.kind,
+      // Set on platform guides only — the AI action refuses to edit those.
+      slug: doc.slug ?? null,
     };
   },
 });

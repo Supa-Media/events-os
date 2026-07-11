@@ -18,6 +18,8 @@ import {
   mutation,
   internalQuery,
   internalMutation,
+  type QueryCtx,
+  type MutationCtx,
 } from "./_generated/server";
 import { Id } from "./_generated/dataModel";
 import { v, ConvexError } from "convex/values";
@@ -32,14 +34,26 @@ import {
   AI_BUDGETS,
   AI_BUDGET_WINDOW_MS,
   AI_MODELS,
+  CORE_MODULES,
   DEFAULT_AI_MODEL,
+  DEFAULT_CUSTOM_COLUMNS,
+  DEFAULT_COLUMNS,
   computeDueDate,
   DAY_OFFSET_MODULES,
+  daysBetweenInTz,
+  eventWindowFor,
+  isCompleteStatus,
   isFreeModelSlug,
   isOverChatBudget,
   overBudgetScope,
+  tNotation,
   type ModuleKey,
+  type ModuleOverride,
+  type SelectOption,
 } from "@events-os/shared";
+import { eventActiveModules } from "./lib/templates";
+import { phaseReadiness, statusColumnFor } from "./lib/readiness";
+import { toKey } from "./roles";
 
 /** Round a USD amount to whole cents. */
 function toCents(usd: number): number {
@@ -81,6 +95,23 @@ export const eventContext = internalQuery({
     // Mirror docs.forAi: return null on missing OR cross-chapter.
     if (!event || event.chapterId !== chapterId) return null;
 
+    const people = (
+      await ctx.db
+        .query("people")
+        .withIndex("by_chapter", (q: any) => q.eq("chapterId", event.chapterId))
+        .collect()
+    ).map((p: any) => ({ id: p._id, name: p.name }));
+    const personName = new Map(people.map((p) => [String(p.id), p.name]));
+
+    // Roles come with the name of the person currently holding each (or null),
+    // so the agent can see role coverage without a readiness call.
+    const assignments = await ctx.db
+      .query("roleAssignments")
+      .withIndex("by_event", (q: any) => q.eq("eventId", eventId))
+      .collect();
+    const personByRoleId = new Map<string, string>(
+      assignments.map((a: any) => [String(a.roleId), String(a.personId)]),
+    );
     const roles = (
       await ctx.db
         .query("eventRoles")
@@ -88,14 +119,27 @@ export const eventContext = internalQuery({
         .collect()
     )
       .sort((a: any, b: any) => a.order - b.order)
-      .map((r: any) => ({ id: r._id, key: r.key, label: r.label }));
+      .map((r: any) => ({
+        id: r._id,
+        key: r.key,
+        label: r.label,
+        person:
+          personName.get(personByRoleId.get(String(r._id)) ?? "") ?? null,
+      }));
 
-    const people = (
-      await ctx.db
-        .query("people")
-        .withIndex("by_chapter", (q: any) => q.eq("chapterId", event.chapterId))
-        .collect()
-    ).map((p: any) => ({ id: p._id, name: p.name }));
+    // The event's resolved active modules (workstreams) — core + custom — with
+    // each one's owner role and ready flag, so the agent can reason about (and
+    // edit) workstream setup, not just items.
+    const readyByKey = new Map<string, boolean>(
+      (event.moduleReadiness ?? []).map((r: any) => [r.key, r.ready]),
+    );
+    const modules = (await eventActiveModules(ctx, event)).map((m: any) => ({
+      key: m.key as string,
+      label: m.label as string,
+      surface: m.surface as string,
+      ownerRoleKey: (m.ownerRoleKey ?? null) as string | null,
+      ready: readyByKey.get(m.key) === true,
+    }));
 
     const columns = await ctx.db
       .query("eventColumns")
@@ -110,6 +154,25 @@ export const eventContext = internalQuery({
           (o: any) => o.value,
         );
       }
+    }
+
+    // Per-module: every column's key/kind/type/options, so the agent's
+    // update_item path can validate + write CUSTOM columns (e.g. the retro
+    // dispatch column) into the item's `fields` bag.
+    const columnsByModule: Record<
+      string,
+      Array<{ key: string; kind: string; type: string; options: string[] | null }>
+    > = {};
+    for (const c of columns) {
+      (columnsByModule[c.module] ??= []).push({
+        key: c.key,
+        kind: c.kind,
+        type: c.type,
+        options:
+          Array.isArray(c.options) && c.options.length
+            ? c.options.map((o: any) => o.value as string)
+            : null,
+      });
     }
 
     const rawItems = await ctx.db
@@ -140,10 +203,14 @@ export const eventContext = internalQuery({
         name: event.name,
         date: event.eventDate,
         budget: event.budget ?? null,
+        status: event.status as string,
+        location: event.location ?? null,
       },
       roles,
       people,
+      modules,
       optionsByModule,
+      columnsByModule,
       items,
     };
   },
@@ -466,6 +533,691 @@ export const setItemPhoto = internalMutation({
   },
 });
 
+// ── Internal: planning-agent tools (readiness, roles, crew, workstreams) ─────
+// Every function below is reachable from the assistant action with arbitrary
+// ids, so each one re-checks the tenant boundary exactly like applyItemPatch:
+// missing → null/no-op, cross-chapter → throw FORBIDDEN.
+
+/** Load an event iff it's in the caller's chapter (null missing, throw cross). */
+async function eventInChapter(
+  ctx: QueryCtx | MutationCtx,
+  eventId: Id<"events">,
+  chapterId: Id<"chapters">,
+) {
+  const event = await ctx.db.get(eventId);
+  if (!event) return null;
+  if (event.chapterId !== chapterId) {
+    throw new ConvexError({
+      code: "FORBIDDEN",
+      message: "Event is not in your chapter.",
+    });
+  }
+  return event;
+}
+
+/** Load a person iff they're in the caller's chapter (throw on cross-chapter). */
+async function personInChapter(
+  ctx: QueryCtx | MutationCtx,
+  personId: Id<"people">,
+  chapterId: Id<"chapters">,
+) {
+  const person = await ctx.db.get(personId);
+  if (!person) return null;
+  if (person.chapterId !== chapterId) {
+    throw new ConvexError({
+      code: "FORBIDDEN",
+      message: "Person is not in your chapter.",
+    });
+  }
+  return person;
+}
+
+function isCoreModuleKey(key: string): boolean {
+  return CORE_MODULES.some((m) => m.key === key);
+}
+
+/**
+ * Upsert a core-module override's ownerRoleKey, dropping overrides that no
+ * longer carry any value. Mirrors modules.setOwnerForEvent's private helpers
+ * (`setOverrideOwner`/`upsertOverride`) — kept byte-compatible so agent edits
+ * and UI edits produce identical override rows.
+ */
+function upsertOwnerOverride(
+  overrides: ModuleOverride[] | undefined,
+  key: string,
+  ownerRoleKey: string | undefined,
+): ModuleOverride[] {
+  const list = [...(overrides ?? [])];
+  const idx = list.findIndex((o) => o.key === key);
+  const next = { ...(idx >= 0 ? list[idx] : { key }), ownerRoleKey };
+  const isEmpty = next.label === undefined && next.ownerRoleKey === undefined;
+  if (idx >= 0) {
+    if (isEmpty) list.splice(idx, 1);
+    else list[idx] = next;
+  } else if (!isEmpty) {
+    list.push(next);
+  }
+  return list;
+}
+
+/** How many titles a readiness list carries before truncating to a count. */
+const READINESS_TITLE_CAP = 12;
+
+/**
+ * The agent's situational-awareness read (`get_readiness`): one compact object
+ * with everything the playbook's "briefing first" behavior needs — phase
+ * scores, T-window, role/owner coverage, at-risk items, the owner-chain
+ * dead-ends, placeholder crew, and engagement confirmation counts.
+ */
+export const readinessSummary = internalQuery({
+  args: { eventId: v.id("events"), chapterId: v.id("chapters") },
+  handler: async (ctx, { eventId, chapterId }) => {
+    const event = await ctx.db.get(eventId);
+    // TENANT BOUNDARY: reads mirror eventContext — null on missing OR cross-chapter.
+    if (!event || event.chapterId !== chapterId) return null;
+    const now = Date.now();
+
+    // Phase scores (the same math the event screen shows), as 0-100 ints.
+    const phaseScores = await phaseReadiness(ctx, event);
+    const phases = Object.fromEntries(
+      Object.entries(phaseScores).map(([k, s]) => [
+        k,
+        s == null ? null : Math.round(s * 100),
+      ]),
+    );
+
+    // Calendar days in the chapter's PLANNING timezone — the server runs UTC,
+    // so naive UTC day math makes an evening event look a day late.
+    const daysToEvent = daysBetweenInTz(now, event.eventDate);
+    const window = eventWindowFor(daysToEvent);
+
+    // Role coverage.
+    const roles = await ctx.db
+      .query("eventRoles")
+      .withIndex("by_event", (q: any) => q.eq("eventId", eventId))
+      .collect();
+    const assignments = await ctx.db
+      .query("roleAssignments")
+      .withIndex("by_event", (q: any) => q.eq("eventId", eventId))
+      .collect();
+    const assignedRoleIds = new Set(assignments.map((a: any) => String(a.roleId)));
+    const personByRoleId = new Map<string, Id<"people">>(
+      assignments.map((a: any) => [String(a.roleId), a.personId]),
+    );
+    const roleByKey = new Map(roles.map((r: any) => [r.key as string, r]));
+    const unassignedRoles = roles
+      .filter((r: any) => !assignedRoleIds.has(String(r._id)))
+      .map((r: any) => r.label as string);
+
+    // Workstream (module) owner coverage + ready flags.
+    const resolved = await eventActiveModules(ctx, event);
+    const workstreamsMissingOwner: string[] = [];
+    const ownerPersonByModule = new Map<string, Id<"people"> | undefined>();
+    for (const m of resolved) {
+      const role: any = m.ownerRoleKey ? roleByKey.get(m.ownerRoleKey) : null;
+      const personId = role ? personByRoleId.get(String(role._id)) : undefined;
+      ownerPersonByModule.set(m.key, personId);
+      if (!personId) workstreamsMissingOwner.push(m.label);
+    }
+    const readyByKey = new Map<string, boolean>(
+      (event.moduleReadiness ?? []).map((r: any) => [r.key, r.ready]),
+    );
+    const workstreamReadiness = resolved.map((m: any) => ({
+      workstream: m.label as string,
+      key: m.key as string,
+      ready: readyByKey.get(m.key) === true,
+    }));
+
+    // Item sweep across grid workstreams: overdue / due within 3 days /
+    // owner-chain dead-ends, incomplete items only. Overdue/due-soon are
+    // DAY-granular in the planning timezone (matching the events.ts todos
+    // surface): overdue = due on an earlier calendar day than today; due today
+    // is "due soon", not overdue.
+    // TODO(follow-up): this sweep re-reads the items + status columns that
+    // phaseReadiness above already read — consolidate into one shared read.
+    const overdue: string[] = [];
+    const dueSoon: string[] = [];
+    const unowned: string[] = [];
+    let overdueCount = 0;
+    let dueSoonCount = 0;
+    let unownedCount = 0;
+    const sweeps = await Promise.all(
+      resolved
+        .filter((m: any) => m.surface === "grid")
+        .map(async (m: any) => ({
+          m,
+          items: await ctx.db
+            .query("eventItems")
+            .withIndex("by_event_module", (q: any) =>
+              q.eq("eventId", eventId).eq("module", m.key),
+            )
+            .collect(),
+          statusCol: await statusColumnFor(ctx, eventId, m.key),
+        })),
+    );
+    for (const { m, items, statusCol } of sweeps) {
+      const options = statusCol?.options as SelectOption[] | undefined;
+      for (const it of items) {
+        if (statusCol && isCompleteStatus(options, it.status)) continue;
+        const title = `${m.label}: ${it.title || "Untitled"}`;
+        if (it.dueDate != null) {
+          const dueInDays = daysBetweenInTz(now, it.dueDate);
+          if (dueInDays < 0) {
+            overdueCount++;
+            if (overdue.length < READINESS_TITLE_CAP) overdue.push(title);
+          } else if (dueInDays <= 3) {
+            dueSoonCount++;
+            if (dueSoon.length < READINESS_TITLE_CAP) dueSoon.push(title);
+          }
+        }
+        // Owner chain: row owner → row's role's person → workstream owner's
+        // person. A dead-end here falls through to the event owner — which is
+        // exactly the "unowned work" the playbook wants surfaced by T-10.
+        const resolvedOwner =
+          it.ownerPersonId ??
+          (it.roleId ? personByRoleId.get(String(it.roleId)) : undefined) ??
+          ownerPersonByModule.get(m.key);
+        if (!resolvedOwner) {
+          unownedCount++;
+          if (unowned.length < READINESS_TITLE_CAP) unowned.push(title);
+        }
+      }
+    }
+
+    // Crew: engagement confirmation counts + placeholder people still engaged.
+    const engagements = await ctx.db
+      .query("engagements")
+      .withIndex("by_event", (q: any) => q.eq("eventId", eventId))
+      .collect();
+    const engagementStatus = { invited: 0, confirmed: 0, declined: 0 };
+    const placeholders: string[] = [];
+    const uniquePersonIds = [
+      ...new Set(engagements.map((e: any) => String(e.personId))),
+    ];
+    const personById = new Map(
+      (
+        await Promise.all(
+          uniquePersonIds.map((id) => ctx.db.get(id as Id<"people">)),
+        )
+      ).map((p, i) => [uniquePersonIds[i], p]),
+    );
+    for (const e of engagements) {
+      if (e.status in engagementStatus) {
+        engagementStatus[e.status as keyof typeof engagementStatus]++;
+      }
+      const person = personById.get(String(e.personId));
+      if (person?.isPlaceholder === true && !placeholders.includes(person.name)) {
+        placeholders.push(person.name);
+      }
+    }
+
+    return {
+      event: {
+        name: event.name,
+        status: event.status as string,
+        date: new Date(event.eventDate).toISOString(),
+      },
+      daysToEvent,
+      tWindow: `${tNotation(daysToEvent)} — ${window.label} (${window.range})`,
+      phases,
+      unassignedRoles,
+      workstreamsMissingOwner,
+      workstreamReadiness,
+      items: {
+        overdue: { count: overdueCount, titles: overdue },
+        dueInNext3Days: { count: dueSoonCount, titles: dueSoon },
+        unowned: { count: unownedCount, titles: unowned },
+      },
+      crew: {
+        engagementStatus,
+        placeholdersStillEngaged: placeholders,
+      },
+    };
+  },
+});
+
+/**
+ * Delete an event item (the `remove_item` tool), revertibly: the full item
+ * snapshot is logged as a `__deleted` change whose `before` holds the row, and
+ * `revertAiRun` re-inserts it on Undo — the delete-side sibling of the
+ * `__created` marker. Mirrors the canonical `items.removeEventItem`, which
+ * cascades nothing (an event item owns no child rows), so a plain delete is
+ * the whole job.
+ */
+export const removeItem = internalMutation({
+  args: {
+    runId: v.id("aiRuns"),
+    itemId: v.id("eventItems"),
+    chapterId: v.id("chapters"),
+  },
+  handler: async (ctx, { runId, itemId, chapterId }) => {
+    const item = await ctx.db.get(itemId);
+    if (!item) return null;
+    if (item.chapterId !== chapterId) {
+      throw new ConvexError({
+        code: "FORBIDDEN",
+        message: "Item is not in your chapter.",
+      });
+    }
+    // Snapshot everything except the system fields, so revert can re-insert.
+    const { _id, _creationTime, ...snapshot } = item as any;
+    await ctx.db.insert("aiChanges", {
+      runId,
+      chapterId: item.chapterId,
+      eventId: item.eventId,
+      itemId,
+      key: "__deleted",
+      before: snapshot,
+      after: undefined,
+    });
+    await ctx.db.delete(itemId);
+    return itemId;
+  },
+});
+
+/**
+ * Put a person in an event role (the `assign_role` tool). Mirrors
+ * roleAssignments.assign's upsert semantics: one person per role — any
+ * existing assignment rows for the role are replaced.
+ */
+export const assignRole = internalMutation({
+  args: {
+    eventId: v.id("events"),
+    chapterId: v.id("chapters"),
+    roleId: v.id("eventRoles"),
+    personId: v.id("people"),
+  },
+  handler: async (ctx, { eventId, chapterId, roleId, personId }) => {
+    const event = await eventInChapter(ctx, eventId, chapterId);
+    if (!event) return null;
+    const role = await ctx.db.get(roleId);
+    if (!role || role.eventId !== eventId) return null;
+    const person = await personInChapter(ctx, personId, chapterId);
+    if (!person) return null;
+
+    const existing = await ctx.db
+      .query("roleAssignments")
+      .withIndex("by_event_role", (q: any) =>
+        q.eq("eventId", eventId).eq("roleId", roleId),
+      )
+      .collect();
+    for (const a of existing) await ctx.db.delete(a._id);
+
+    return await ctx.db.insert("roleAssignments", {
+      eventId,
+      chapterId: event.chapterId,
+      roleId,
+      personId,
+      createdAt: Date.now(),
+    });
+  },
+});
+
+/** Clear a role's assignment (the `unassign_role` tool). Mirrors roleAssignments.unassign. */
+export const unassignRole = internalMutation({
+  args: {
+    eventId: v.id("events"),
+    chapterId: v.id("chapters"),
+    roleId: v.id("eventRoles"),
+  },
+  handler: async (ctx, { eventId, chapterId, roleId }) => {
+    const event = await eventInChapter(ctx, eventId, chapterId);
+    if (!event) return null;
+    const existing = await ctx.db
+      .query("roleAssignments")
+      .withIndex("by_event_role", (q: any) =>
+        q.eq("eventId", eventId).eq("roleId", roleId),
+      )
+      .collect();
+    for (const a of existing) await ctx.db.delete(a._id);
+    return eventId;
+  },
+});
+
+const engagementTypeV = v.union(v.literal("volunteer"), v.literal("paid"));
+const engagementStatusV = v.union(
+  v.literal("invited"),
+  v.literal("confirmed"),
+  v.literal("declined"),
+);
+
+/**
+ * Engage a person on the event (the `add_engagement` tool). Mirrors
+ * engagements.add (status starts "invited"; paid engagements seed
+ * paymentStatus "unpaid"), plus an optional call time set on creation.
+ * Refuses a duplicate engagement for the same person so the agent is steered
+ * to update_engagement instead.
+ */
+export const addEngagement = internalMutation({
+  args: {
+    eventId: v.id("events"),
+    chapterId: v.id("chapters"),
+    personId: v.id("people"),
+    type: engagementTypeV,
+    teams: v.optional(v.array(v.string())),
+    service: v.optional(v.string()),
+    callTime: v.optional(v.string()),
+    amountUsd: v.optional(v.number()),
+  },
+  handler: async (ctx, args) => {
+    const event = await eventInChapter(ctx, args.eventId, args.chapterId);
+    if (!event) return null;
+    const person = await personInChapter(ctx, args.personId, args.chapterId);
+    if (!person) return null;
+
+    // A person has few engagements; an event can have many — scan by person.
+    const existing = await ctx.db
+      .query("engagements")
+      .withIndex("by_person", (q: any) => q.eq("personId", args.personId))
+      .collect();
+    if (existing.some((e: any) => String(e.eventId) === String(args.eventId))) {
+      return { alreadyEngaged: true as const };
+    }
+
+    const engagementId = await ctx.db.insert("engagements", {
+      chapterId: event.chapterId,
+      eventId: args.eventId,
+      personId: args.personId,
+      type: args.type,
+      teams: args.teams,
+      service: args.service,
+      status: "invited",
+      callTime: args.callTime,
+      amountUsd: args.type === "paid" ? args.amountUsd : undefined,
+      paymentStatus: args.type === "paid" ? ("unpaid" as const) : undefined,
+      createdAt: Date.now(),
+    });
+    return { alreadyEngaged: false as const, engagementId };
+  },
+});
+
+/**
+ * Update a person's engagement on the event (the `update_engagement` tool),
+ * located by person. Mirrors engagements.update's semantics — including the
+ * volunteer↔paid flip clearing/seeding payment fields.
+ */
+export const updateEngagement = internalMutation({
+  args: {
+    eventId: v.id("events"),
+    chapterId: v.id("chapters"),
+    personId: v.id("people"),
+    type: v.optional(engagementTypeV),
+    teams: v.optional(v.union(v.array(v.string()), v.null())),
+    service: v.optional(v.union(v.string(), v.null())),
+    status: v.optional(engagementStatusV),
+    callTime: v.optional(v.union(v.string(), v.null())),
+    amountUsd: v.optional(v.union(v.number(), v.null())),
+  },
+  handler: async (ctx, { eventId, chapterId, personId, ...patch }) => {
+    const event = await eventInChapter(ctx, eventId, chapterId);
+    if (!event) return null;
+    // A person has few engagements; an event can have many — scan by person.
+    const eng = (
+      await ctx.db
+        .query("engagements")
+        .withIndex("by_person", (q: any) => q.eq("personId", personId))
+        .collect()
+    ).find((e: any) => String(e.eventId) === String(eventId));
+    if (!eng) return null;
+
+    const fields: Record<string, unknown> = {};
+    if (patch.type !== undefined) {
+      fields.type = patch.type;
+      // Mirror engagements.update: leaving paid clears payment fields;
+      // entering paid seeds unpaid.
+      if (patch.type === "volunteer") {
+        fields.amountUsd = undefined;
+        fields.paymentStatus = undefined;
+      } else if (eng.paymentStatus === undefined) {
+        fields.paymentStatus = "unpaid";
+      }
+    }
+    if (patch.teams !== undefined) fields.teams = patch.teams ?? undefined;
+    if (patch.service !== undefined) fields.service = patch.service ?? undefined;
+    if (patch.status !== undefined) fields.status = patch.status;
+    if (patch.callTime !== undefined) fields.callTime = patch.callTime ?? undefined;
+    // Explicit amount wins over the type-flip defaults above (null clears).
+    if (patch.amountUsd !== undefined) fields.amountUsd = patch.amountUsd ?? undefined;
+    await ctx.db.patch(eng._id, fields);
+    return eng._id;
+  },
+});
+
+/**
+ * Add a person to the chapter roster (the `add_person` tool), with the same
+ * defaults people.create applies: unvetted, active.
+ */
+export const addPerson = internalMutation({
+  args: {
+    chapterId: v.id("chapters"),
+    name: v.string(),
+    email: v.optional(v.string()),
+    phone: v.optional(v.string()),
+  },
+  handler: async (ctx, { chapterId, name, email, phone }) => {
+    return await ctx.db.insert("people", {
+      chapterId,
+      name,
+      email,
+      phone,
+      vettingStatus: "unvetted",
+      status: "active",
+      isActive: true,
+      createdAt: Date.now(),
+    });
+  },
+});
+
+/**
+ * Set (or clear) a workstream's owner role (the `set_workstream_owner` tool).
+ * Mirrors modules.setOwnerForEvent: core modules write a coreModuleOverrides
+ * delta; custom modules patch their eventModules row.
+ */
+export const setModuleOwner = internalMutation({
+  args: {
+    eventId: v.id("events"),
+    chapterId: v.id("chapters"),
+    key: v.string(),
+    ownerRoleKey: v.union(v.string(), v.null()),
+  },
+  handler: async (ctx, { eventId, chapterId, key, ownerRoleKey }) => {
+    const event = await eventInChapter(ctx, eventId, chapterId);
+    if (!event) return null;
+    const next = ownerRoleKey ?? undefined;
+    if (isCoreModuleKey(key)) {
+      await ctx.db.patch(eventId, {
+        coreModuleOverrides: upsertOwnerOverride(
+          event.coreModuleOverrides,
+          key,
+          next,
+        ),
+      });
+      return eventId;
+    }
+    const row = await ctx.db
+      .query("eventModules")
+      .withIndex("by_event_key", (q: any) =>
+        q.eq("eventId", eventId).eq("key", key),
+      )
+      .first();
+    if (!row) return null;
+    await ctx.db.patch(row._id, { ownerRoleKey: next });
+    return eventId;
+  },
+});
+
+/**
+ * Toggle a CORE workstream on/off for the event (the `toggle_workstream`
+ * tool). Mirrors modules.toggleCoreForEvent, including re-seeding a grid
+ * core's default columns when re-enabling one that never had any. Custom event
+ * modules have no enabled flag (they're created/deleted instead), so a custom
+ * key returns null and the tool surfaces that.
+ */
+export const toggleModule = internalMutation({
+  args: {
+    eventId: v.id("events"),
+    chapterId: v.id("chapters"),
+    key: v.string(),
+    enabled: v.boolean(),
+  },
+  handler: async (ctx, { eventId, chapterId, key, enabled }) => {
+    const event = await eventInChapter(ctx, eventId, chapterId);
+    if (!event) return null;
+    if (!isCoreModuleKey(key)) return null;
+    const disabled = new Set<string>(event.disabledCoreModules ?? []);
+    if (enabled) disabled.delete(key);
+    else disabled.add(key);
+    await ctx.db.patch(eventId, { disabledCoreModules: Array.from(disabled) });
+    if (enabled) {
+      // Mirror modules.ensureEventCoreColumns: a re-enabled grid core with no
+      // columns yet gets its defaults seeded.
+      const def = CORE_MODULES.find((m) => m.key === key);
+      if (def && def.surface === "grid") {
+        const existing = await ctx.db
+          .query("eventColumns")
+          .withIndex("by_event_module", (q: any) =>
+            q.eq("eventId", eventId).eq("module", key),
+          )
+          .first();
+        if (!existing) {
+          const defaults = DEFAULT_COLUMNS[key as ModuleKey] ?? [];
+          for (let i = 0; i < defaults.length; i++) {
+            const c = defaults[i];
+            await ctx.db.insert("eventColumns", {
+              eventId,
+              module: key,
+              key: c.key,
+              label: c.label,
+              kind: c.kind,
+              type: c.type,
+              options: c.options,
+              config: c.config,
+              isVisible: c.isVisible,
+              order: i,
+            });
+          }
+        }
+      }
+    }
+    return eventId;
+  },
+});
+
+/**
+ * Create a custom workstream on the event (the `create_custom_workstream`
+ * tool). Mirrors modules.createCustomForEvent — unique key derived from the
+ * label, default custom columns seeded — plus the optional offset mode the
+ * canonical mutation hardcodes to "none".
+ */
+export const createCustomModule = internalMutation({
+  args: {
+    eventId: v.id("events"),
+    chapterId: v.id("chapters"),
+    label: v.string(),
+    ownerRoleKey: v.optional(v.string()),
+    offsetMode: v.optional(
+      v.union(v.literal("none"), v.literal("days"), v.literal("minutes")),
+    ),
+  },
+  handler: async (ctx, { eventId, chapterId, label, ownerRoleKey, offsetMode }) => {
+    const event = await eventInChapter(ctx, eventId, chapterId);
+    if (!event) return null;
+    const rows = await ctx.db
+      .query("eventModules")
+      .withIndex("by_event", (q: any) => q.eq("eventId", eventId))
+      .collect();
+    // Mirror modules.uniqueKey: never collide with a core key or a sibling.
+    const base = toKey(label) || "module";
+    const used = new Set(rows.map((r: any) => r.key as string));
+    if (isCoreModuleKey(base)) used.add(base);
+    let key = base;
+    for (let i = 2; used.has(key); i++) key = `${base}_${i}`;
+
+    const order =
+      rows.reduce((m: number, r: any) => Math.max(m, r.order), -1) + 1;
+    await ctx.db.insert("eventModules", {
+      eventId,
+      key,
+      label,
+      ownerRoleKey,
+      offsetMode: offsetMode ?? "none",
+      order,
+    });
+    for (let i = 0; i < DEFAULT_CUSTOM_COLUMNS.length; i++) {
+      const c = DEFAULT_CUSTOM_COLUMNS[i];
+      await ctx.db.insert("eventColumns", {
+        eventId,
+        module: key,
+        key: c.key,
+        label: c.label,
+        kind: c.kind,
+        type: c.type,
+        options: c.options,
+        config: c.config,
+        isVisible: c.isVisible,
+        order: i,
+      });
+    }
+    return { key };
+  },
+});
+
+/**
+ * Move the event date (the `reschedule_event` tool). Mirrors
+ * events.reschedule — patch the date, re-derive every day-offset item's due
+ * date — then runs the playbook's feasibility check: how many still-incomplete
+ * items now have a due date in the past.
+ */
+export const rescheduleEvent = internalMutation({
+  args: {
+    eventId: v.id("events"),
+    chapterId: v.id("chapters"),
+    eventDate: v.number(),
+  },
+  handler: async (ctx, { eventId, chapterId, eventDate }) => {
+    const event = await eventInChapter(ctx, eventId, chapterId);
+    if (!event) return null;
+    await ctx.db.patch(eventId, { eventDate, updatedAt: Date.now() });
+
+    const items = await ctx.db
+      .query("eventItems")
+      .withIndex("by_event", (q: any) => q.eq("eventId", eventId))
+      .collect();
+    const now = Date.now();
+    const optionsByModule = new Map<string, SelectOption[] | undefined>();
+    let shifted = 0;
+    let pastDueCount = 0;
+    const pastDueTitles: string[] = [];
+    for (const it of items) {
+      if (
+        !DAY_OFFSET_MODULES.includes(it.module as ModuleKey) ||
+        it.offsetDays === undefined
+      )
+        continue;
+      const dueDate = computeDueDate(eventDate, it.offsetDays);
+      await ctx.db.patch(it._id, { dueDate });
+      shifted++;
+      // Day-granular in the planning timezone (a task due later today isn't
+      // "past due") — matches readinessSummary and the events.ts todos surface.
+      if (daysBetweenInTz(now, dueDate) < 0) {
+        if (!optionsByModule.has(it.module)) {
+          const col = await statusColumnFor(ctx, eventId, it.module);
+          optionsByModule.set(
+            it.module,
+            col?.options as SelectOption[] | undefined,
+          );
+        }
+        if (!isCompleteStatus(optionsByModule.get(it.module), it.status)) {
+          pastDueCount++;
+          if (pastDueTitles.length < READINESS_TITLE_CAP)
+            pastDueTitles.push(it.title || "Untitled");
+        }
+      }
+    }
+    return { shifted, pastDueCount, pastDueTitles };
+  },
+});
+
 // ── Public: assistant threads ────────────────────────────────────────────────
 /** The most recent thread for an event, creating one if none exists. */
 export const ensureThread = mutation({
@@ -511,6 +1263,20 @@ export const newThread = mutation({
   },
 });
 
+/**
+ * Refuse an assistant thread on a PLATFORM GUIDE (a doc with `slug` set).
+ * Guides are read-only (docs.setBody rejects the write), so letting a thread
+ * open would burn model budget before failing on the first write_doc.
+ */
+function rejectPlatformGuideThread(doc: { slug?: string } | null): void {
+  if (doc?.slug !== undefined) {
+    throw new ConvexError({
+      code: "PLATFORM_GUIDE_READONLY",
+      message: "Platform guides are read-only — the assistant can't edit them.",
+    });
+  }
+}
+
 /** The most recent thread for a How-To doc, creating one if none exists. */
 export const ensureDocThread = mutation({
   args: { docId: v.id("docs") },
@@ -518,6 +1284,7 @@ export const ensureDocThread = mutation({
     const chapterId = await requireChapterId(ctx);
     const doc = await ctx.db.get(docId);
     await requireInChapter(ctx, chapterId, doc, "Doc");
+    rejectPlatformGuideThread(doc);
     const existing = await ctx.db
       .query("aiThreads")
       .withIndex("by_doc", (q: any) => q.eq("docId", docId))
@@ -543,6 +1310,7 @@ export const newDocThread = mutation({
     const chapterId = await requireChapterId(ctx);
     const doc = await ctx.db.get(docId);
     await requireInChapter(ctx, chapterId, doc, "Doc");
+    rejectPlatformGuideThread(doc);
     const userId = (await requireUserId(ctx)) as Id<"users">;
     return await ctx.db.insert("aiThreads", {
       chapterId: chapterId as Id<"chapters">,
@@ -881,6 +1649,7 @@ export const listRuns = query({
 /**
  * Undo every not-yet-reverted change of a run, in reverse insertion order:
  *   - "__created"    → delete the item the run created.
+ *   - "__deleted"    → re-insert the item from the snapshot in `before`.
  *   - "fields.<key>" → restore the custom-field value in the `fields` bag.
  *   - promoted field → restore the top-level field (re-deriving due date).
  * A field edit is only restored if the item's current value still equals what
@@ -904,14 +1673,37 @@ export const revertAiRun = mutation({
 
     let reverted = 0;
     let skipped = 0;
+    // When a `__deleted` revert re-inserts a row, Convex gives it a FRESH id.
+    // This run's EARLIER change rows (field edits, `__created`) still point at
+    // the old id, so every lookup below resolves through this remap first —
+    // otherwise those rows would find nothing and be skipped, leaving the
+    // re-inserted item with the AI's edits (or resurrecting a created-then-
+    // deleted item).
+    const remap = new Map<string, Id<"eventItems">>();
     for (const change of changes) {
-      const item = await ctx.db.get(change.itemId);
+      const itemId = remap.get(String(change.itemId)) ?? change.itemId;
+      const item = await ctx.db.get(itemId);
 
       if (change.key === "__created") {
         // Created by the run → undo means delete (if still present).
-        if (item) await ctx.db.delete(change.itemId);
+        if (item) await ctx.db.delete(itemId);
         await ctx.db.patch(change._id, { revertedAt: Date.now() });
         reverted++;
+        continue;
+      }
+
+      if (change.key === "__deleted") {
+        // Deleted by the run → undo means re-insert the snapshot, and remap the
+        // old id to the fresh one so this run's earlier change rows (processed
+        // next, since we walk newest-first) still find the row.
+        if (change.before && typeof change.before === "object") {
+          const newId = await ctx.db.insert("eventItems", change.before);
+          remap.set(String(change.itemId), newId);
+          reverted++;
+        } else {
+          skipped++;
+        }
+        await ctx.db.patch(change._id, { revertedAt: Date.now() });
         continue;
       }
 
@@ -930,7 +1722,7 @@ export const revertAiRun = mutation({
         const fields = { ...(item.fields ?? {}) };
         if (change.before === undefined) delete fields[key];
         else fields[key] = change.before;
-        await ctx.db.patch(change.itemId, { fields });
+        await ctx.db.patch(itemId, { fields });
       } else {
         // Promoted top-level field.
         const current = (item as any)[change.key] ?? undefined;
@@ -946,7 +1738,7 @@ export const revertAiRun = mutation({
               ? computeDueDate(event.eventDate, change.before)
               : undefined;
         }
-        await ctx.db.patch(change.itemId, patch);
+        await ctx.db.patch(itemId, patch);
       }
 
       await ctx.db.patch(change._id, { revertedAt: Date.now() });
