@@ -565,7 +565,7 @@ function AddSongPanel({
 
 /**
  * Copies the public request link (`/songs/<eventId>`) — the URL a printed QR
- * code points at. Mirrors EventHeader's ShareCrewButton.
+ * code points at. Mirrors the "Share crew link" copy behavior in EventTools.
  */
 function CopyLinkButton({ eventId }: { eventId: string }) {
   const [copied, setCopied] = useState(false);

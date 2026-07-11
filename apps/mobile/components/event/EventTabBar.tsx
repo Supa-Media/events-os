@@ -41,6 +41,7 @@ export function EventTabBar({
   onSelect,
   addModule,
   highlightPhase,
+  trailing,
 }: {
   tabs: EventTab[];
   activeKey: string;
@@ -51,25 +52,38 @@ export function EventTabBar({
    * phase pulses in its hue, making the ring↔tab link explicit.
    */
   highlightPhase?: PhaseKey | null;
+  /**
+   * Right-aligned tools pinned to the tab rail (Day-of / Me view / ⋯). Tabs
+   * are NAVIGATION and tools are ACTIONS, but they share the one rail so the
+   * header above stays pure event vitals. The tab strip scrolls under the
+   * pinned tools on narrow screens.
+   */
+  trailing?: React.ReactNode;
 }) {
   return (
     <View className="mb-6 border-b border-border">
-      <ScrollView
-        horizontal
-        showsHorizontalScrollIndicator={false}
-        contentContainerStyle={{ gap: 4, alignItems: "center" }}
-      >
-        {tabs.map((t) => (
-          <TabButton
-            key={t.key}
-            tab={t}
-            active={t.key === activeKey}
-            highlighted={t.phase != null && t.phase === highlightPhase}
-            onSelect={() => onSelect(t.key)}
-          />
-        ))}
-        {addModule ? <AddModuleTab config={addModule} /> : null}
-      </ScrollView>
+      <View className="flex-row items-center gap-3">
+        <ScrollView
+          horizontal
+          showsHorizontalScrollIndicator={false}
+          style={{ flexGrow: 1, flexShrink: 1 }}
+          contentContainerStyle={{ gap: 4, alignItems: "center" }}
+        >
+          {tabs.map((t) => (
+            <TabButton
+              key={t.key}
+              tab={t}
+              active={t.key === activeKey}
+              highlighted={t.phase != null && t.phase === highlightPhase}
+              onSelect={() => onSelect(t.key)}
+            />
+          ))}
+          {addModule ? <AddModuleTab config={addModule} /> : null}
+        </ScrollView>
+        {trailing ? (
+          <View className="flex-row items-center gap-1.5 pb-1.5">{trailing}</View>
+        ) : null}
+      </View>
     </View>
   );
 }
