@@ -36,7 +36,7 @@ Templates hold what's *always* true; events hold what's true *this time*.
 
 A **workstream** is one owned area of the event plan — one stream of work that
 a single role carries end-to-end. The event plan is nothing more than its
-workstreams. The core eight:
+workstreams. The core seven:
 
 | Workstream | What it holds | Default owner |
 |---|---|---|
@@ -44,8 +44,7 @@ workstreams. The core eight:
 | **Comms Schedule** | Every message: audience, channel, copy, T-offset | Comms Lead |
 | **Run of Show** | The minute-by-minute day-of program with call times | Production Lead |
 | **Expectations** | Volunteer teams, headcounts, per-team duties, dress code | Comms Lead |
-| **Site Map** | The venue layout: stage, stations, flow of arrival | Logistics Lead |
-| **Supplies & Packing** | Every physical item: source, location, qty, packed state | Logistics Lead |
+| **Supplies & Logistics** | Every physical item (source, location, qty, packed state) **plus the site map** — the venue layout: stage, stations, flow of arrival | Logistics Lead |
 | **Permits** | Each permit: jurisdiction, lead time, status, documents | Event Lead |
 | **Retrospective** | What went well / broke / was missing / was excess | Event Lead |
 
@@ -54,9 +53,10 @@ template or a single event; they behave exactly like the core ones.
 
 Two shapes worth naming: most workstreams are **task-shaped** (rows are
 to-dos or messages), while Run of Show is **program-shaped** (rows are
-segments of the day) and Site Map is **artifact-shaped** (one deliverable —
-the map — instead of many rows). All three share the same ownership, timing,
-and readiness rules; only the surface differs.
+segments of the day). A workstream can also carry an **artifact** alongside
+its rows — Supplies & Logistics holds the site map (a drawing surface, the
+spatial view of everything the grid tracks). Same ownership, timing, and
+readiness rules throughout; only the surface differs.
 
 **Workstreams vs. tools.** Not everything on an event page is a workstream.
 Tickets, day-of mode, the crew table, and the assistant are **operational
@@ -99,8 +99,9 @@ once, use them everywhere:
    their name on.
 8. **How-to links.** Any cell can link a how-to doc/video so the knowledge
    survives the person (north star).
-9. **A surface.** Most workstreams are editable tables; Site Map is a drawing
-   surface. Same ownership, timing, and readiness rules regardless.
+9. **A surface.** Most workstreams are editable tables; Supplies & Logistics
+   adds a drawing surface (the site map) alongside its grid. Same ownership,
+   timing, and readiness rules regardless.
 
 ### The cast: who's who
 
@@ -551,13 +552,17 @@ granted. Sound permits: local precinct, ~3 days out, permit holder attends.
 Food: COI required — know your insurance contact before you need one. Every
 permit has a "what if denied" line.
 
-**Supplies & Packing** — each item: source (storage / order / someone's home),
-current location, quantity, owner, and packing container ("green luggage" beats
-"somewhere"). Statuses run pull-from-storage / need-to-order / have-it /
-packed; everything terminal by T-1. Charge batteries the night before. Orders
-placed in Build window, not Lock. After the event: returns tracked back to
-storage, and quantity learnings (20 more blankets, fewer plates) go to the
-template.
+**Supplies & Logistics** — each item: source (storage / order / someone's
+home), current location, quantity, owner, and packing container ("green
+luggage" beats "somewhere"). Statuses run pull-from-storage / need-to-order /
+have-it / packed; everything terminal by T-1. Charge batteries the night
+before. Orders placed in Build window, not Lock. This workstream also owns
+the **site map**: walk the site early (Lock window at latest); map the stage/
+worship area, prayer stations, food, merch, welcome points, and flow of
+arrival, and place the supplies on it. Photos from the walkthrough double as
+countdown content. After the event: returns tracked back to storage; quantity
+learnings (20 more blankets, fewer plates) and layout learnings (circular vs.
+pointed stage came out of Eden's retro) go to the template.
 
 **Run of Show** — minute-offset segments from start; every segment one named
 owner; call times per philosophy 7. Lock at T-3. Include setup, soundcheck,
@@ -569,11 +574,6 @@ have an owner and must not be TBD after lock.
 lists ("you'll set up… you'll do…"), dress code, what to bring, arrival
 time, volunteer lead contact, safety escalation. Written before recruitment;
 shared via the public briefing page; kept true as teams shift.
-
-**Site Map** — walk the site early (Lock window at latest); map stage/worship
-area, prayer stations, food, merch, welcome points, and flow of arrival.
-Photos from the walkthrough double as countdown content. Layout learnings
-(circular vs. pointed stage came out of Eden's retro) are template learnings.
 
 **Setlist / Songs** — worship leader confirmed at kickoff; songs chosen to
 serve bold public worship and the gospel invitation (per the song-selection

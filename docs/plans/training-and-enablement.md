@@ -73,9 +73,10 @@ roles/workstreams/columns design, and that templates are the institution.
 
 All guides live in-repo under `docs/guides/` (source of truth, reviewed like
 code) and are **seeded into the app as platform how-to docs** (markdown docs
-with share URLs) so they're linkable, shareable to people without accounts,
-and AI-assistable. Chapters can fork/extend but platform updates flow to
-un-forked copies.
+with share URLs) so they're linkable and shareable to people without
+accounts. Guides are **platform-owned and read-only** — seeding always
+updates them to the latest version. Chapter-specific knowledge lives in
+templates and how-to docs, never in guide forks.
 
 **The standard guide skeleton** (every guide follows it — see the exemplar
 `docs/guides/owning-the-comms-workstream.md`):
@@ -101,11 +102,10 @@ Catalog (⭐ = write first):
 | ⭐ So you own a workstream (generic) | 2 | to write |
 | ⭐ Owning the Comms workstream | 2 | **written — exemplar** |
 | Owning the Planning Doc | 2 | to write |
-| Owning Supplies & Packing | 2 | to write |
+| Owning Supplies & Logistics (incl. site map) | 2 | to write |
 | Owning the Run of Show | 2 | to write |
 | Owning Permits | 2 | to write |
 | Owning Expectations (volunteer teams) | 2 | to write |
-| Owning the Site Map | 2 | to write |
 | Owning the Retro | 2 | to write |
 | Owning the Setlist (Worship Lead) | 2 | to write |
 | ⭐ So you own an event | 3 | to write |
@@ -120,9 +120,9 @@ different.
 ## 4. Delivery mechanics (the infra to build)
 
 1. **Seed guides as platform docs.** Extend the existing `docs` table seeding:
-   platform-authored markdown docs keyed by guide slug, upserted on deploy
-   (like core workstreams: platform-owned, chapter-forkable). Guides get
-   share URLs for free.
+   platform-authored markdown docs keyed by guide slug, always updated to the
+   latest platform version on seed (like core workstreams: platform-owned,
+   never forked; read-only in the app). Guides get share URLs for free.
 2. **Assignment-triggered delivery.** When `roleAssignments.assign` fires (or
    an engagement is confirmed): if the role owns workstreams, the
    notification/email includes links to the matching guides. **First-time
@@ -159,9 +159,11 @@ different.
 
 ## 6. Open questions
 
-- **Q1 — Forking semantics.** When a chapter edits a platform guide, do they
-  fork (frozen from platform updates) or overlay? (Recommend fork-with-drift-
-  badge: simplest, and the drift badge invites re-syncing.)
+- **Q1 — Forking semantics: RESOLVED — guides are platform-owned, never
+  forked.** Guides teach invariant mechanics (roles, ownership, the app);
+  chapter variation belongs in templates and how-to docs (different
+  permitting, car city vs. train city). Seeding always updates guides to the
+  latest platform version and they render read-only in-app.
 - **Q2 — Email vs in-app delivery.** Assignment emails already exist
   (Resend); is a guide link in that email enough, or do we want an in-app
   "you have a new responsibility" surface? (Recommend email link first.)
