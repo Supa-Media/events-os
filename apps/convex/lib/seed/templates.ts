@@ -131,7 +131,7 @@ const PARTY_TEAM_OPTIONS: SelectOption[] = [
  */
 const JOIN_EVENT_SPEC: TrainingTemplateSpec = {
   name: "Academy: Join a Gathering",
-  version: 2,
+  version: 3,
   eventName: (firstName) => `Training: ${firstName} joins the gathering`,
   eventDaysOut: 30,
   description:
@@ -153,7 +153,7 @@ const JOIN_EVENT_SPEC: TrainingTemplateSpec = {
         role: "comms_lead",
         fields: {
           details:
-            "Roles before people. Open the Overview tab, find Roles, and put yourself in Comms Lead. Then come back and tap this row's status to Done.",
+            "Roles before people. Tap Details in the event header, find Roles, and put yourself in Comms Lead. Then come back and tap this row's status to Done.",
         },
       },
       {
@@ -285,7 +285,7 @@ const JOIN_EVENT_SPEC: TrainingTemplateSpec = {
  */
 const BIRTHDAY_PARTY_SPEC: TrainingTemplateSpec = {
   name: "Academy: Birthday Party",
-  version: 2,
+  version: 3,
   eventName: (firstName) => `Training: ${firstName}'s birthday party`,
   eventDaysOut: 14,
   description:
@@ -300,7 +300,7 @@ const BIRTHDAY_PARTY_SPEC: TrainingTemplateSpec = {
         role: "event_lead",
         fields: {
           details:
-            "Overview tab → edit details. Name it after the birthday human, pick a date, and watch every due date re-derive from it. Then mark this Done.",
+            "Tap Details in the event header. Name it after the birthday human, pick a date, and watch every due date re-derive from it. Then mark this Done.",
         },
       },
       {
@@ -318,7 +318,7 @@ const BIRTHDAY_PARTY_SPEC: TrainingTemplateSpec = {
         role: "event_lead",
         fields: {
           details:
-            "Maya and Jordan are sample teammates who've been through this training. Overview → Roles: put one in Comms Lead and one in Logistics Lead. Delegation is the job — if everything resolves to you, you're doing it wrong. Then mark this Done.",
+            "Maya and Jordan are sample teammates who've been through this training. Details (event header) → Roles: put one in Comms Lead and one in Logistics Lead. Delegation is the job — if everything resolves to you, you're doing it wrong. Then mark this Done.",
         },
       },
       {
@@ -402,7 +402,7 @@ const BIRTHDAY_PARTY_SPEC: TrainingTemplateSpec = {
  */
 const WORSHIP_EVENT_SPEC: TrainingTemplateSpec = {
   name: "Academy: Worship Event",
-  version: 2,
+  version: 3,
   eventName: (firstName) => `Training: ${firstName}'s worship event`,
   eventDaysOut: 14,
   description:
@@ -417,7 +417,7 @@ const WORSHIP_EVENT_SPEC: TrainingTemplateSpec = {
         role: "event_lead",
         fields: {
           details:
-            "Overview tab: pick a date and put a real public spot in the location. The skeleton comes first — a date and a place. Then mark this Done.",
+            "Details (event header): pick a date and put a real public spot in the location. The skeleton comes first — a date and a place. Then mark this Done.",
         },
       },
       {

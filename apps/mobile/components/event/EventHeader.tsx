@@ -44,6 +44,11 @@ export function EventHeader({
   ticketsActive,
   meView,
   onToggleMeView,
+  detailsOpen,
+  onToggleDetails,
+  whatsNextOpen,
+  onToggleWhatsNext,
+  whatsNextCount,
   onSelectPhase,
   activePhase,
 }: {
@@ -70,6 +75,14 @@ export function EventHeader({
   ticketsActive: boolean;
   meView: boolean;
   onToggleMeView: () => void;
+  /** The Details panel (roles/status/schedule/budget/…) toggled below. */
+  detailsOpen: boolean;
+  onToggleDetails: () => void;
+  /** The What's-next panel (outstanding work) toggled below. */
+  whatsNextOpen: boolean;
+  onToggleWhatsNext: () => void;
+  /** Overdue tally shown on the What's-next button (0 hides the count). */
+  whatsNextCount: number;
   /** Tap a phase ring → pulse the tabs that feed it (see EventTabBar). */
   onSelectPhase?: (phase: PhaseKey) => void;
   activePhase?: PhaseKey | null;
@@ -139,6 +152,26 @@ export function EventHeader({
               onPress={onToggleMeView}
             />
             <ShareCrewButton eventId={eventId} />
+            {/* Overview's controls + What's-next live HERE now (no Overview
+                tab): each toggles a panel between the header and the tabs. */}
+            <Button
+              title={
+                whatsNextCount > 0
+                  ? `What's next · ${whatsNextCount}`
+                  : "What's next"
+              }
+              icon="list"
+              size="sm"
+              variant={whatsNextOpen ? "primary" : "secondary"}
+              onPress={onToggleWhatsNext}
+            />
+            <Button
+              title="Details"
+              icon="sliders"
+              size="sm"
+              variant={detailsOpen ? "primary" : "secondary"}
+              onPress={onToggleDetails}
+            />
           </View>
         </View>
 

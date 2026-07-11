@@ -61,9 +61,14 @@ export default function EventDetailScreen() {
   const eventId = id as Id<"events">;
   const { run, toast, dismiss } = useActionRunner();
 
-  // Personal "Me view" filter — when on, the Overview shows only the modules
-  // and tasks the current user owns (driven by api.events.myWork).
+  // Personal "Me view" filter — filters the tabs (and the What's-next panel)
+  // down to the modules and tasks the current user owns (api.events.myWork).
   const [meView, setMeView] = useState(false);
+
+  // The Overview tab is gone: its two halves live as header-toggled panels
+  // that work on ANY tab — "details" (roles/status/schedule/location/budget/
+  // delete) and "next" (outstanding work + guides).
+  const [panel, setPanel] = useState<null | "details" | "next">(null);
 
   // Tapping a header phase ring briefly pulses the tabs that feed that phase —
   // the interactive answer to "which tabs move this number?".
@@ -78,14 +83,11 @@ export default function EventDetailScreen() {
     api.events.myWork,
     meView ? { eventId } : "skip",
   );
-  // "What's next" to-dos for the normal Overview only (not Me view). Skip on
-  // other tabs to avoid the extra read while a module surface is open.
-  const onOverview = (tab ?? "overview") === "overview";
-  // The "What's next" list powers both the normal Overview and Me view's task
-  // section, so fetch it on the overview regardless of Me view.
+  // "What's next" to-dos, fetched only while its panel is open (it powers
+  // both the normal panel and Me view's task section).
   const todos = useQuery(
     api.events.todos,
-    onOverview ? { eventId } : "skip",
+    panel === "next" ? { eventId } : "skip",
   );
 
   const reschedule = useMutation(api.events.reschedule);
@@ -271,25 +273,27 @@ export default function EventDetailScreen() {
     return [{ key: m.key, label: m.label, remove, ...tabMeta(m.key) }];
   });
   const tabs: EventTab[] = [
-    { key: "overview", label: "Overview" },
     ...moduleTabs,
     // Fallback: if the expectations module is disabled, still surface Crew last.
     ...(showCrew && !moduleTabs.some((t) => t.key === "crew")
       ? [{ key: "crew", label: "Crew & Duties" }]
       : []),
   ];
+  // With no Overview tab, unknown/missing/legacy (?tab=overview) keys land on
+  // the first area tab.
+  const fallbackTab = tabs[0]?.key ?? "crew";
   // Tickets (the public event page: RSVPs, tickets, guest list, check-in,
   // blasts) is an operational TOOL, not an area — it opens from the
   // header tools row, not the tab row, but still lives at `?tab=tickets` so
   // deep links and back/forward keep working. While it's open no tab is
   // active (activeKey matches nothing). Any other unknown/stale key falls
-  // back to Overview.
+  // back to the first area tab.
   const activeTab =
     tab === "tickets"
       ? "tickets"
       : tabs.some((t) => t.key === tab)
         ? (tab as string)
-        : "overview";
+        : fallbackTab;
   // Custom event-module rows, keyed by module key, so a rollup row can resolve
   // its `eventModules` id for deletion.
   const customModuleIdByKey = new Map(
@@ -489,9 +493,122 @@ export default function EventDetailScreen() {
           ticketsActive={activeTab === "tickets"}
           meView={meView}
           onToggleMeView={() => setMeView((v) => !v)}
+          detailsOpen={panel === "details"}
+          onToggleDetails={() =>
+            setPanel((p) => (p === "details" ? null : "details"))
+          }
+          whatsNextOpen={panel === "next"}
+          onToggleWhatsNext={() =>
+            setPanel((p) => (p === "next" ? null : "next"))
+          }
+          whatsNextCount={
+            pacePhases
+              ? Object.values(pacePhases).reduce(
+                  (n, p) => n + (p?.overdue ?? 0),
+                  0,
+                )
+              : 0
+          }
           onSelectPhase={flashPhase}
           activePhase={pulsePhase}
         />
+
+        {/* ── Header panels (the old Overview, folded in): available on any
+            tab. "Details" = roles/status/schedule/location/budget/delete;
+            "What's next" = outstanding work (+ guides), or the Me-view work
+            summary while Me view is on. ─────────────────────────────────── */}
+        {panel === "details" ? (
+          <EventOverviewControls
+            event={event}
+            roleRows={roleRows}
+            owner={owner}
+            dateValue={dateValue}
+            budgetValue={budgetValue}
+            locationValue={locationValue}
+            onPickRole={(r) =>
+              setPicker({
+                roleId: r.roleId,
+                roleLabel: r.roleLabel,
+                selectedId: r.person?._id ?? null,
+              })
+            }
+            onSetStatus={(s) =>
+              run(() => setStatus({ eventId, status: s }), {
+                errorTitle: "Couldn't change status",
+              })
+            }
+            onReschedule={(ts) =>
+              run(() => reschedule({ eventId, eventDate: ts }), {
+                errorTitle: "Couldn't reschedule",
+              })
+            }
+            onChangeDate={setDateInput}
+            onSaveDate={handleReschedule}
+            onOpenOwner={() => setOwnerOpen(true)}
+            onChangeBudget={setBudgetInput}
+            onSaveBudget={handleSaveBudget}
+            onChangeLocation={setLocationInput}
+            onSaveLocation={handleSaveLocation}
+            onDelete={confirmDelete}
+            onRenameRole={(roleId, label) =>
+              run(
+                () =>
+                  updateEventRole({
+                    roleId: roleId as Id<"eventRoles">,
+                    label,
+                  }),
+                { errorTitle: "Couldn't rename role" },
+              )
+            }
+            onDeleteRole={(roleId) =>
+              run(
+                () => deleteEventRole({ roleId: roleId as Id<"eventRoles"> }),
+                { errorTitle: "Couldn't delete role" },
+              )
+            }
+            onAddRole={(label) =>
+              run(() => createEventRole({ eventId, label }), {
+                errorTitle: "Couldn't add role",
+              })
+            }
+          />
+        ) : null}
+        {panel === "next" ? (
+          meView ? (
+            <View className="mb-6">
+              <MeView
+                ownedModuleKeys={myWork?.ownedModuleKeys ?? null}
+                todos={todos}
+                activeModules={activeModules}
+                readyByModule={readyByModule}
+                summaryByModule={summaryByModule}
+                moduleOwner={moduleOwner}
+                onOpenModule={(key) =>
+                  router.setParams({
+                    tab: key === "volunteer_expectations" ? "crew" : key,
+                  })
+                }
+                onOpenTab={(t) => router.setParams({ tab: t })}
+                onSetupAction={handleSetupAction}
+                onAssignOwner={openOwnerPicker}
+              />
+            </View>
+          ) : (
+            <View className="mb-6">
+              <SectionHeader title="What's next" />
+              {todos ? (
+                <EventTodos
+                  todos={todos}
+                  onOpenTab={(t) => router.setParams({ tab: t })}
+                  onSetupAction={handleSetupAction}
+                />
+              ) : (
+                <Text className="py-4 text-sm text-muted">Loading…</Text>
+              )}
+              <GuidesSection />
+            </View>
+          )
+        ) : null}
 
         {/* Module navigation — same tab bar on web + mobile (scrolls on phones) */}
         <EventTabBar
@@ -518,115 +635,19 @@ export default function EventDetailScreen() {
         />
         </Narrow>
 
-        {/* ── Overview: controls + per-module rollup ─────────────────────────── */}
-        {activeTab === "overview" && meView ? (
-          <Narrow>
-          <MeView
-            ownedModuleKeys={myWork?.ownedModuleKeys ?? null}
-            todos={todos}
-            activeModules={activeModules}
-            readyByModule={readyByModule}
-            summaryByModule={summaryByModule}
-            moduleOwner={moduleOwner}
-            onOpenModule={(key) =>
-              router.setParams({
-                tab: key === "volunteer_expectations" ? "crew" : key,
-              })
-            }
-            onOpenTab={(t) => router.setParams({ tab: t })}
-            onSetupAction={handleSetupAction}
-            onAssignOwner={openOwnerPicker}
-          />
-          </Narrow>
-        ) : activeTab === "overview" ? (
-          <Narrow>
-            <EventOverviewControls
-              event={event}
-              roleRows={roleRows}
-              owner={owner}
-              dateValue={dateValue}
-              budgetValue={budgetValue}
-              locationValue={locationValue}
-              onPickRole={(r) =>
-                setPicker({
-                  roleId: r.roleId,
-                  roleLabel: r.roleLabel,
-                  selectedId: r.person?._id ?? null,
-                })
-              }
-              onSetStatus={(s) =>
-                run(() => setStatus({ eventId, status: s }), {
-                  errorTitle: "Couldn't change status",
-                })
-              }
-              onReschedule={(ts) =>
-                run(() => reschedule({ eventId, eventDate: ts }), {
-                  errorTitle: "Couldn't reschedule",
-                })
-              }
-              onChangeDate={setDateInput}
-              onSaveDate={handleReschedule}
-              onOpenOwner={() => setOwnerOpen(true)}
-              onChangeBudget={setBudgetInput}
-              onSaveBudget={handleSaveBudget}
-              onChangeLocation={setLocationInput}
-              onSaveLocation={handleSaveLocation}
-              onDelete={confirmDelete}
-              onRenameRole={(roleId, label) =>
-                run(
-                  () =>
-                    updateEventRole({
-                      roleId: roleId as Id<"eventRoles">,
-                      label,
-                    }),
-                  { errorTitle: "Couldn't rename role" },
-                )
-              }
-              onDeleteRole={(roleId) =>
-                run(
-                  () =>
-                    deleteEventRole({ roleId: roleId as Id<"eventRoles"> }),
-                  { errorTitle: "Couldn't delete role" },
-                )
-              }
-              onAddRole={(label) =>
-                run(() => createEventRole({ eventId, label }), {
-                  errorTitle: "Couldn't add role",
-                })
-              }
-            />
+        {activeTab === "tickets" ? (
 
-            {/* What's next — outstanding work grouped by phase, each line
-                deep-linking to the module tab that holds it. */}
-            {todos ? (
-              <>
-                <SectionHeader title="What's next" />
-                <EventTodos
-                  todos={todos}
-                  onOpenTab={(t) => router.setParams({ tab: t })}
-                  onSetupAction={handleSetupAction}
-                />
-              </>
-            ) : null}
-
-            {/* Guides — the browsable index of platform guides (how to own an
-                event, an area, each core area). Hides itself when
-                the chapter has no seeded guides. */}
-            <GuidesSection />
-
-          </Narrow>
-        ) : activeTab === "tickets" ? (
           /* ── Tickets: the shareable public page + RSVPs/tickets admin.
                 Opened from the header tools row (no tab is active here), so
                 give an explicit way back to the planning surface. ─────────── */
           <Narrow>
             <Pressable
-              onPress={() => router.setParams({ tab: "overview" })}
+              onPress={() => router.setParams({ tab: fallbackTab })}
               className="mb-2 flex-row items-center gap-1.5 self-start active:opacity-70"
             >
               <Icon name="arrow-left" size={15} color={colors.muted} />
               <Text className="text-sm font-medium text-muted">
-                Back to Overview
+                Back to planning
               </Text>
             </Pressable>
             <TicketingTab eventId={eventId} />
