@@ -1,0 +1,33 @@
+import { defineTable } from "convex/server";
+import { v } from "convex/values";
+
+/**
+ * Academy progress — one row per (person, curriculum section).
+ *
+ * The curriculum itself (sections, bodies, quizzes) is code, not data
+ * (ACADEMY_SECTIONS in @events-os/shared); this table stores only the
+ * per-person state the hub renders: when the article was read, the best quiz
+ * score across retakes, and when the quiz was passed (all answers correct).
+ * The capstone section's completion is DERIVED live from the person's training
+ * event (quest rows all terminal) rather than stored here, so it can never
+ * drift from the actual event state.
+ */
+export const academyProgress = defineTable({
+  chapterId: v.id("chapters"),
+  personId: v.id("people"),
+  // A slug from ACADEMY_SECTIONS — validated at the mutation boundary.
+  sectionSlug: v.string(),
+  // First time the article was opened.
+  readAt: v.optional(v.number()),
+  // Best score across quiz attempts (retakes allowed, best kept).
+  quizBestScore: v.optional(v.number()),
+  // Question count at the time of the best attempt (denominator for display).
+  quizTotal: v.optional(v.number()),
+  // Set the first time an attempt scores perfect. Never cleared by retakes.
+  passedAt: v.optional(v.number()),
+})
+  // A person's rows within their chapter (myProgress; markRead/submitQuiz
+  // upsert by scanning these ≤ ACADEMY_SECTION_COUNT rows for the slug).
+  .index("by_person", ["chapterId", "personId"])
+  // The whole chapter's rows (chapterProgress — "who's trained").
+  .index("by_chapter", ["chapterId"]);
