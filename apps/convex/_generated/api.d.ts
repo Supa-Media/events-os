@@ -8,6 +8,7 @@
  * @module
  */
 
+import type * as academy from "../academy.js";
 import type * as ai from "../ai.js";
 import type * as aiActions from "../aiActions.js";
 import type * as auth from "../auth.js";
@@ -54,6 +55,7 @@ import type * as reminders from "../reminders.js";
 import type * as responsibilities from "../responsibilities.js";
 import type * as roleAssignments from "../roleAssignments.js";
 import type * as roles from "../roles.js";
+import type * as schema_academy from "../schema/academy.js";
 import type * as schema_ai from "../schema/ai.js";
 import type * as schema_chapters from "../schema/chapters.js";
 import type * as schema_docs from "../schema/docs.js";
@@ -89,6 +91,7 @@ import type {
 } from "convex/server";
 
 declare const fullApi: ApiFromModules<{
+  academy: typeof academy;
   ai: typeof ai;
   aiActions: typeof aiActions;
   auth: typeof auth;
@@ -135,6 +138,7 @@ declare const fullApi: ApiFromModules<{
   responsibilities: typeof responsibilities;
   roleAssignments: typeof roleAssignments;
   roles: typeof roles;
+  "schema/academy": typeof schema_academy;
   "schema/ai": typeof schema_ai;
   "schema/chapters": typeof schema_chapters;
   "schema/docs": typeof schema_docs;

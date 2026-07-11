@@ -19,6 +19,7 @@
 import { query } from "./_generated/server";
 import { Doc, Id } from "./_generated/dataModel";
 import { v } from "convex/values";
+import { isOperationalEvent } from "@events-os/shared";
 import { getChapterIdOrNull } from "./lib/context";
 import {
   isChapterAdmin,
@@ -148,11 +149,16 @@ export const workload = query({
       canManage: isAdmin || (callerReach !== null && callerReach.size > 1),
     };
 
-    // Events owned by anyone in the subtree (one chapter-wide read, then split).
-    const events = await ctx.db
-      .query("events")
-      .withIndex("by_chapter", (q) => q.eq("chapterId", person.chapterId))
-      .collect();
+    // Events owned by anyone in the subtree (one chapter-wide read, then
+    // split). Academy training sandboxes are filtered out up front, which
+    // also drops role-assignment rows pointing at them (their event lookup
+    // below misses) — a learner's practice run is not Team workload.
+    const events = (
+      await ctx.db
+        .query("events")
+        .withIndex("by_chapter", (q) => q.eq("chapterId", person.chapterId))
+        .collect()
+    ).filter(isOperationalEvent);
     const eventById = new Map(events.map((e) => [e._id, e]));
     // Role docs are shared across assignments — fetch each unique role once.
     const roleCache = new Map<Id<"eventRoles">, Doc<"eventRoles"> | null>();

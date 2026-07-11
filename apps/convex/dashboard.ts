@@ -5,7 +5,7 @@
  * average readiness, roster size, recent throughput, and the next event.
  */
 import { query } from "./_generated/server";
-import { currentPhase, DAY_MS } from "@events-os/shared";
+import { currentPhase, DAY_MS, isOperationalEvent } from "@events-os/shared";
 import { getChapterIdOrNull } from "./lib/context";
 import { phaseReadiness } from "./lib/readiness";
 
@@ -29,10 +29,13 @@ export const summary = query({
     if (!chapterId) return EMPTY;
     const now = Date.now();
 
-    const events = await ctx.db
-      .query("events")
-      .withIndex("by_chapter", (q: any) => q.eq("chapterId", chapterId))
-      .collect();
+    // Academy training sandboxes never count toward chapter operations.
+    const events = (
+      await ctx.db
+        .query("events")
+        .withIndex("by_chapter", (q: any) => q.eq("chapterId", chapterId))
+        .collect()
+    ).filter((e: any) => isOperationalEvent(e));
 
     const upcoming = events
       .filter((e: any) => e.eventDate >= now && e.status !== "cancelled")

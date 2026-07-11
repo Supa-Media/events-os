@@ -41,6 +41,7 @@ import {
   aiUsage,
   aiSettings,
 } from "./schema/ai";
+import { academyProgress } from "./schema/academy";
 
 /**
  * Database schema for Events OS.
@@ -145,6 +146,9 @@ const schema = defineSchema({
   aiMessages,
   aiUsage,
   aiSettings,
+
+  // Academy (per-person curriculum progress).
+  academyProgress,
 });
 
 export default schema;

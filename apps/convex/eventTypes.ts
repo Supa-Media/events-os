@@ -9,7 +9,7 @@
  */
 import { query, mutation, QueryCtx } from "./_generated/server";
 import { Doc, Id } from "./_generated/dataModel";
-import { v } from "convex/values";
+import { ConvexError, v } from "convex/values";
 import { DEFAULT_ROLES, GRID_CORE_MODULE_KEYS } from "@events-os/shared";
 import {
   requireUserId,
@@ -24,6 +24,20 @@ import {
   templateActiveModules,
   deepCopyTemplate,
 } from "./lib/templates";
+
+/**
+ * Throw unless the template is user-managed. Platform templates (the Academy
+ * training template) are seeded and owned by the platform — users can't edit
+ * or archive them, and events are only spun up from them by the Academy.
+ */
+function requireUserManaged(eventType: Doc<"eventTypes">): void {
+  if (eventType.isPlatform === true) {
+    throw new ConvexError({
+      code: "PLATFORM_TEMPLATE",
+      message: "This template is managed by the platform and can't be changed.",
+    });
+  }
+}
 
 /** A template's roles ({ _id, label }), ordered. */
 async function templateRoles(ctx: QueryCtx, eventTypeId: Id<"eventTypes">) {
@@ -47,7 +61,11 @@ export const list = query({
       .query("eventTypes")
       .withIndex("by_chapter", (q) => q.eq("chapterId", chapterId as Id<"chapters">))
       .collect();
-    const active = types.filter((t) => t.isArchived !== true);
+    // Platform templates (the Academy training run) never surface in the
+    // Templates tab or the New Event picker — the Academy owns that flow.
+    const active = types.filter(
+      (t) => t.isArchived !== true && t.isPlatform !== true,
+    );
     const withMeta = await Promise.all(
       active.map(async (t) => {
         const tasks = await ctx.db
@@ -207,6 +225,7 @@ export const update = mutation({
   },
   handler: async (ctx, { eventTypeId, ...patch }) => {
     const et = await requireEventType(ctx, eventTypeId);
+    requireUserManaged(et);
     const fields: Record<string, unknown> = {};
     if (patch.name !== undefined) {
       fields.name = patch.name;
@@ -278,7 +297,7 @@ export const duplicate = mutation({
 export const archive = mutation({
   args: { eventTypeId: v.id("eventTypes") },
   handler: async (ctx, { eventTypeId }) => {
-    await requireEventType(ctx, eventTypeId);
+    requireUserManaged(await requireEventType(ctx, eventTypeId));
     await ctx.db.patch(eventTypeId, { isArchived: true, updatedAt: Date.now() });
     return eventTypeId;
   },
