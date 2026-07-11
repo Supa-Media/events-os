@@ -1283,3 +1283,6 @@ export * from "./ai";
 
 // ── The planning playbook (generated from docs/agent.md) ─────────────────────
 export * from "./playbook";
+
+// ── The Academy curriculum (sections + quizzes + capstone constants) ──────────
+export * from "./academy";
