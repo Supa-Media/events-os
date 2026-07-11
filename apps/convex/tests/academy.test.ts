@@ -144,13 +144,13 @@ async function platformTemplates(s: ChapterSetup) {
 }
 
 describe("curriculum content", () => {
-  test("sixteen ordered sections; three capstones; one optional bonus", () => {
-    expect(ACADEMY_SECTION_COUNT).toBe(16);
+  test("seventeen ordered sections; three capstones; one optional bonus", () => {
+    expect(ACADEMY_SECTION_COUNT).toBe(17);
     expect(ACADEMY_SECTIONS.map((s) => s.order)).toEqual(
-      Array.from({ length: 16 }, (_v, i) => i + 1),
+      Array.from({ length: 17 }, (_v, i) => i + 1),
     );
     // The optional bonus is excluded from the trained denominator.
-    expect(ACADEMY_REQUIRED_SECTION_COUNT).toBe(15);
+    expect(ACADEMY_REQUIRED_SECTION_COUNT).toBe(16);
     expect(ACADEMY_CAPSTONE_SECTIONS).toHaveLength(3);
     // The suite leans on this order — pin it.
     expect(CAPSTONE_JOIN.capstone!.kind).toBe("join_event");
@@ -1015,7 +1015,7 @@ describe("syncCapstone persists a capstone", () => {
     expect(join.passed).toBe(true);
     expect(join.passedAt).toBe(row!.passedAt);
 
-    // chapterProgress reads the stored stamp too (12 quizzes + 1 capstone).
+    // chapterProgress reads the stored stamp too (13 quizzes + 1 capstone).
     const view = await s.as.query(api.academy.chapterProgress, {});
     expect(
       view!.people.find((p) => p.personId === s.personId)!.completed,

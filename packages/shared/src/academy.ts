@@ -1,7 +1,7 @@
 /**
  * The Academy — the ordered training curriculum.
  *
- * Sixteen short sections: five concept pages, one page per native area
+ * Seventeen short sections: six concept pages, one page per native area
  * tab, an assistant page, and three hands-on capstones (two required, one
  * optional bonus). Content is authored FROM the playbook (docs/agent.md) and
  * the enablement guides (docs/guides/*) — this file is the single source both
@@ -461,7 +461,136 @@ const SECTIONS_IN_ORDER: Omit<AcademySection, "order">[] = [
     ],
   },
 
-  // ── 4 · Timing ─────────────────────────────────────────────────────────────
+  // ── 4 · Being an owner ─────────────────────────────────────────────────────
+  {
+    slug: "being-an-owner",
+    title: "Being an owner",
+    subtitle: "Accountability, oversight, and building for your own absence",
+    minutes: 4,
+    blocks: [
+      {
+        kind: "p",
+        text: "You've seen that every row, tab, and event resolves to an owner. Now the part nobody tells you when you get handed one: **doing work and owning work are two different jobs.** Most people meet Events OS as a doer — rows with their name on them. Owning is the graduation: you're no longer measured by the rows you finish, but by whether the *whole thing* happens.",
+      },
+      {
+        kind: "table",
+        headers: ["", "A doer", "An owner"],
+        rows: [
+          [
+            "**Cares about**",
+            "Their rows: execute, update the status, flag blockers",
+            "The whole area or event: every needed row exists, has an owner, has timing",
+          ],
+          [
+            "**Success is**",
+            "\"My work is done and my statuses are true\"",
+            "\"It would happen even if I did nothing else today\"",
+          ],
+          [
+            "**When something's missing**",
+            "Tells the owner",
+            "Is the person the gap lands on — finds it, rows it, places it",
+          ],
+        ],
+      },
+      {
+        kind: "rule",
+        title: "If it doesn't happen, it's on you",
+        text: "That's the whole definition. You can delegate every piece of the work; you can never delegate the accountability. But delegation done right CREATES accountability at each layer: someone handed a clear row — details, timing, owner — owns getting it done on their own. Layers of accountability, not layers of excuses.",
+      },
+      { kind: "heading", text: "Oversight is a dial, not a fixed job" },
+      {
+        kind: "p",
+        text: "How much active oversight you owe depends entirely on your team. With strong role-holders who keep their statuses true, owning is light: read the rings, scan What's-next, handle the exceptions. With a team that updates the plan inconsistently, the dial turns up — you walk the tabs, ask the humans what's actually true, and fix the plan until it matches reality. The rings only steer you if someone makes sure they're honest; below the best teams, that someone is you.",
+      },
+      {
+        kind: "reveal",
+        prompt:
+          "You own the event. At T-8 the Comms tab says the announcement is still 'Drafted' — and the Comms Lead hasn't touched a status in a week. What's the owner move?",
+        answer:
+          "Turn the dial up, through the person: ask the Comms Lead what's true, get the statuses honest, and unblock them if something's stuck. Don't silently do it yourself (that teaches the plan to lie and the lead to lean), and don't just wait (the outcome is still yours). Accountability flows through people — but it ends at you.",
+      },
+      { kind: "heading", text: "The owner's test: plan yourself out" },
+      {
+        kind: "p",
+        text: "Read the plan as if you won't be there. If every role-holder reasonably follows their rows — the timing, the details, the duties — **does the event happen?** Every place the answer wobbles is a gap: a missing row, an unowned row, a detail that lives only in your head. Fix the plan, not the moment. Building for your own absence is not a stretch goal; it's what owning means here.",
+      },
+      {
+        kind: "p",
+        text: "It's also how you carve up the work: shape the plan into **roles that make sense**, then put people in them. Usually an event lead, someone on comms, someone on logistics; add production or more as the event grows and as you have hands. Each role gets whole areas — real slices someone can own — not loose errands. One person per role: helpers are crew, accountability is singular.",
+      },
+      {
+        kind: "tip",
+        text: "Ask the assistant to run your test for you: \"If I disappeared today, what breaks? What's unowned, undated, or only in my head?\" It reads the live rows and answers honestly.",
+      },
+    ],
+    quiz: [
+      {
+        prompt: "What changes when you go from doing rows to OWNING an area or event?",
+        options: [
+          "You do all the rows yourself now",
+          "You're accountable that the whole thing happens — every row exists, resolves to someone, and gets done",
+          "You only attend the meetings",
+          "Nothing — owner is a label for the busiest person",
+        ],
+        answerIndex: 1,
+        explanation:
+          "A doer is measured by their rows; an owner by the outcome. Owning means the gaps land on you: if something needed doesn't have a row, an owner, and timing, finding and fixing that is your job.",
+      },
+      {
+        prompt:
+          "Your role-holders keep every status true and nothing sits unowned. How much active oversight do you owe?",
+        options: [
+          "The same as always — walk every tab daily no matter what",
+          "Little: read the rings and What's-next, handle exceptions — a strong team turns the dial down",
+          "None — a good team means the owner can check out",
+          "More — good teams need more supervision",
+        ],
+        answerIndex: 1,
+        explanation:
+          "Oversight is a dial, not a fixed job. It scales with how consistently the team keeps the plan true — but it never reaches zero: someone has to verify the rings are honest, and that someone is the owner.",
+      },
+      {
+        prompt: "What is the owner's test of a plan?",
+        options: [
+          "Is every row marked Done?",
+          "Did the budget come in under?",
+          "If I weren't there and everyone reasonably followed their rows and roles, would this event happen?",
+          "Has every teammate opened the app this week?",
+        ],
+        answerIndex: 2,
+        explanation:
+          "Read the plan as if you'll be absent. Every place it would wobble without you is a gap — a missing row, an unowned row, a detail only in your head. Owners build for their own absence.",
+      },
+      {
+        prompt:
+          "You handed the Comms area to a lead with clear duties, details, and timing. A message never goes out. Who's accountable?",
+        options: [
+          "Nobody — plans fail sometimes",
+          "Only you — delegation keeps all accountability with the owner",
+          "Only the comms lead — you delegated it away",
+          "Both, at different layers: the lead owns their area's outcome, and the event is still on you",
+        ],
+        answerIndex: 3,
+        explanation:
+          "Delegation transfers the work and creates accountability at the new layer — someone given the right information owns delivering on it. But it never removes yours: every layer answers for its slice, and the event ends at the owner.",
+      },
+      {
+        prompt: "How does an owner carve an event into roles?",
+        options: [
+          "One role per task, so nothing is shared",
+          "Start with event lead + comms + logistics, add roles as the event and the available hands grow — whole areas per role, one person per role",
+          "Everyone shares all the roles for flexibility",
+          "Roles are only for events over 100 people",
+        ],
+        answerIndex: 1,
+        explanation:
+          "Shape the work into role-sized slices someone can genuinely own — the lightweight trio covers most events, and bigger events with more hands add production and beyond. Helpers are crew; accountability stays singular.",
+      },
+    ],
+  },
+
+  // ── 5 · Timing ─────────────────────────────────────────────────────────────
   {
     slug: "timing-and-offsets",
     title: "Timing that moves with the date",

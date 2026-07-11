@@ -151,6 +151,19 @@ clearer owner. Concretely, they:
    learnings are dispatched to the template, vendors are paid, and thank-yous
    are sent. The owner is accountable for "done means done."
 
+Two truths sit under all seven. **Owning is accountability, not doing:** the
+owner can delegate every piece of the work but never the accountability — if
+it doesn't happen, it's on them. Delegation done right creates accountability
+at each layer (someone handed a clear row with details and timing owns
+delivering it on their own), so oversight is a **dial, not a fixed job**: a
+team that keeps its statuses true needs an owner who reads the rings and
+handles exceptions; a team that doesn't needs an owner who walks the tabs and
+makes the plan match reality. And the standing test of the plan is the
+**owner's test**: read it as if you won't be there — if every role-holder
+reasonably follows their rows, does the event happen? Every wobble is a gap
+(a missing row, an unowned row, a detail living in a head) to fix in the
+plan, not the moment.
+
 ### What's expected of an area owner
 
 Owning an area means owning its **completeness**, not doing every row:
