@@ -269,15 +269,24 @@ export default function EventDetailScreen() {
   });
   const tabs: EventTab[] = [
     { key: "overview", label: "Overview" },
-    // The public event page: RSVPs, tickets, guest list, check-in, blasts.
-    { key: "tickets", label: "Tickets" },
     ...moduleTabs,
     // Fallback: if the expectations module is disabled, still surface Crew last.
     ...(showCrew && !moduleTabs.some((t) => t.key === "crew")
       ? [{ key: "crew", label: "Crew & Expectations" }]
       : []),
   ];
-  const activeTab = tabs.some((t) => t.key === tab) ? (tab as string) : "overview";
+  // Tickets (the public event page: RSVPs, tickets, guest list, check-in,
+  // blasts) is an operational TOOL, not a workstream — it opens from the
+  // header tools row, not the tab row, but still lives at `?tab=tickets` so
+  // deep links and back/forward keep working. While it's open no tab is
+  // active (activeKey matches nothing). Any other unknown/stale key falls
+  // back to Overview.
+  const activeTab =
+    tab === "tickets"
+      ? "tickets"
+      : tabs.some((t) => t.key === tab)
+        ? (tab as string)
+        : "overview";
   // Custom event-module rows, keyed by module key, so a rollup row can resolve
   // its `eventModules` id for deletion.
   const customModuleIdByKey = new Map(
@@ -468,6 +477,8 @@ export default function EventDetailScreen() {
           onSaveName={handleSaveName}
           onDayOf={() => router.push(`/event/${eventId}/day-of`)}
           onSongs={() => router.push(`/event/${eventId}/songs`)}
+          onTickets={() => router.setParams({ tab: "tickets" })}
+          ticketsActive={activeTab === "tickets"}
           meView={meView}
           onToggleMeView={() => setMeView((v) => !v)}
           onSelectPhase={flashPhase}
@@ -597,8 +608,19 @@ export default function EventDetailScreen() {
 
           </Narrow>
         ) : activeTab === "tickets" ? (
-          /* ── Tickets: the shareable public page + RSVPs/tickets admin ─────── */
+          /* ── Tickets: the shareable public page + RSVPs/tickets admin.
+                Opened from the header tools row (no tab is active here), so
+                give an explicit way back to the planning surface. ─────────── */
           <Narrow>
+            <Pressable
+              onPress={() => router.setParams({ tab: "overview" })}
+              className="mb-2 flex-row items-center gap-1.5 self-start active:opacity-70"
+            >
+              <Icon name="arrow-left" size={15} color={colors.muted} />
+              <Text className="text-sm font-medium text-muted">
+                Back to Overview
+              </Text>
+            </Pressable>
             <TicketingTab eventId={eventId} />
           </Narrow>
         ) : activeTab === "crew" ? (
