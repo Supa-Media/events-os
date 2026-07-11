@@ -77,7 +77,10 @@ const ITEM_EDIT_PROPS = {
   cost: { type: "number" },
   notes: { type: "string" },
   source: { type: "string", description: "Supplies only." },
-  container: { type: "string", description: "Supplies: where it's packed." },
+  container: {
+    type: "string",
+    description: "Supplies: which container it travels in ('Packed in').",
+  },
 };
 
 /** The tools the agent can call — all scoped to the current event, all revertible. */
@@ -1078,6 +1081,8 @@ interface EventCtx {
     offsetDays: number | null;
     source: string | null;
     container: string | null;
+    /** Supplies: the Packing-checklist boolean (fields.packedIn). */
+    packedIn: boolean;
     cost: unknown;
     notes: unknown;
     hasPhoto: boolean;
@@ -1865,7 +1870,8 @@ function systemPrompt(context: Ctx, now: number): string {
   const renderItem = (it: Ctx["items"][number]): string =>
     `- [${it.id}] "${it.title}" status=${it.status ?? "-"} role=${it.role ?? "-"}` +
     (it.source ? ` source=${it.source}` : "") +
-    (it.container ? ` packed_in=${it.container}` : "") +
+    (it.container ? ` container=${it.container}` : "") +
+    (it.module === "supplies" ? ` packed=${it.packedIn ? "yes" : "no"}` : "") +
     (it.offsetDays != null ? ` offset_days=${it.offsetDays}` : "") +
     (it.cost != null ? ` cost=${it.cost}` : "") +
     (it.hasPhoto ? " photo=yes" : "");
@@ -1955,6 +1961,13 @@ function systemPrompt(context: Ctx, now: number): string {
     "- Use the EXACT allowed values shown per area for status/source/",
     "  container, and the role labels / people names listed above. Reference",
     "  items by [id]; never invent ids or values.",
+    "- SUPPLIES: status tracks ACQUISITION only and terminates at have_it;",
+    "  whether an item is packed is the separate packed=yes/no signal (the",
+    "  team's Packing checklist — you can read it, not set it). A supply's",
+    "  offset_days is its have-it-by deadline (orders early enough to ship;",
+    "  everything in hand by T-1). When an item reaches have_it, its",
+    "  source/notes should say where it lives now so pack day isn't a",
+    "  scavenger hunt. Buying feeds the Planning ring; packing feeds Day-of.",
     "- FREE HAND (no confirmation needed): adding/editing items, statuses,",
     "  offsets, owners, role assignments, crew engagements, adding roster",
     "  people, setting area owners. All logged; item edits revertible.",

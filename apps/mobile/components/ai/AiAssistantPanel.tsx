@@ -26,7 +26,7 @@ import { ChatModelSettings } from "./ChatModelSettings";
 
 const SUGGESTIONS = [
   "Assign owners to every unassigned task from its role",
-  "Mark all the storage supplies as packed",
+  "Mark all the storage supplies as Have it",
   "Add a T-2 task to confirm the worship set list",
 ];
 

@@ -17,8 +17,13 @@
  * run as part of this task — dev uses a reseed.
  */
 import { internalMutation } from "./_generated/server";
+import { internal } from "./_generated/api";
 import { Id } from "./_generated/dataModel";
-import { DEFAULT_COLUMNS, type ModuleKey } from "@events-os/shared";
+import {
+  DEFAULT_COLUMNS,
+  SUPPLY_STATUS_OPTIONS,
+  type ModuleKey,
+} from "@events-os/shared";
 
 /**
  * Backfill: ensure every template/event grid module has all of its current
@@ -389,6 +394,146 @@ export const migrateRolesToScoped = internalMutation({
     }
 
     return { templatesMigrated, eventsMigrated, assignmentsRepointed };
+  },
+});
+
+/**
+ * Retire the supplies `packed` STATUS in favor of the Packing checklist.
+ *
+ * Supply status now tracks ACQUISITION only and terminates at `have_it`;
+ * whether an item is packed is the `fields.packedIn` boolean the Packing
+ * screen toggles. The old `packed` status duplicated that signal (a row could
+ * read "Packed" while its packing checkbox said otherwise). For every scope
+ * whose supplies STATUS column still carries the legacy `packed` option:
+ *   1. drop `packed` and make `have_it` the canonical complete option
+ *      (copied from SUPPLY_STATUS_OPTIONS so migrated and freshly-seeded
+ *      columns can't drift; appended if an author had removed have_it, so
+ *      the rewritten items below always land on a real option);
+ *   2. rewrite items whose status is `packed` to `have_it`;
+ *   3. on EVENT items, backfill `fields.packedIn = true` for any item whose
+ *      status was complete under the OLD option set — under the old model a
+ *      terminal supply status (packed, or an author-customized complete
+ *      value) meant packed, and that fact now lives on the checklist.
+ * Scopes already on the new vocabulary (no `packed` option) are untouched,
+ * so have_it items on new events never get a phantom packedIn.
+ *
+ * Reads are scoped per template/event via the `by_*_module` indexes — only
+ * supplies rows are ever read, keeping the single transaction proportional
+ * to supplies data rather than every row in the database.
+ *
+ * Idempotent: a second run finds no `packed` options and changes nothing.
+ * Finishes by scheduling `backfillMissingDefaultColumns`, which adds the new
+ * supplies Timing/Due columns to existing scopes — one run leaves existing
+ * data fully on the new model.
+ *
+ * Run locally:   npx convex run migrations:retireSuppliesPackedStatus
+ * Run on prod:   npx convex run --prod migrations:retireSuppliesPackedStatus
+ */
+export const retireSuppliesPackedStatus = internalMutation({
+  args: {},
+  handler: async (ctx) => {
+    let columnsUpdated = 0;
+    let templateItemsUpdated = 0;
+    let eventItemsUpdated = 0;
+
+    const canonicalHaveIt = SUPPLY_STATUS_OPTIONS.find(
+      (o) => o.value === "have_it",
+    )!;
+
+    // New options for a LEGACY set (has `packed`), or null to leave alone.
+    const fixOptions = (options: any[] | undefined): any[] | null => {
+      if (!options?.some((o) => o.value === "packed")) return null;
+      const kept = options.filter((o) => o.value !== "packed");
+      return kept.some((o) => o.value === "have_it")
+        ? kept.map((o) =>
+            o.value === "have_it" ? { ...o, ...canonicalHaveIt } : o,
+          )
+        : [...kept, { ...canonicalHaveIt }];
+    };
+
+    // ── Templates ──────────────────────────────────────────────────────────
+    for (const et of await ctx.db.query("eventTypes").collect()) {
+      const cols = await ctx.db
+        .query("templateColumns")
+        .withIndex("by_eventType_module", (q) =>
+          q.eq("eventTypeId", et._id).eq("module", "supplies"),
+        )
+        .collect();
+      const statusCol = cols.find((c) => c.key === "status");
+      const next = fixOptions(statusCol?.options as any[] | undefined);
+      if (statusCol && next) {
+        await ctx.db.patch(statusCol._id, { options: next });
+        columnsUpdated++;
+      }
+      const items = await ctx.db
+        .query("templateItems")
+        .withIndex("by_eventType_module", (q) =>
+          q.eq("eventTypeId", et._id).eq("module", "supplies"),
+        )
+        .collect();
+      for (const it of items) {
+        if (it.status !== "packed") continue;
+        await ctx.db.patch(it._id, { status: "have_it" });
+        templateItemsUpdated++;
+      }
+    }
+
+    // ── Events ─────────────────────────────────────────────────────────────
+    for (const ev of await ctx.db.query("events").collect()) {
+      const cols = await ctx.db
+        .query("eventColumns")
+        .withIndex("by_event_module", (q) =>
+          q.eq("eventId", ev._id).eq("module", "supplies"),
+        )
+        .collect();
+      const statusCol = cols.find((c) => c.key === "status");
+      const original = (statusCol?.options ?? []) as any[];
+      // Only legacy sets (still carrying `packed`) get the item backfill —
+      // on a new-vocabulary event, have_it means in-hand, NOT packed.
+      const isLegacySet = original.some((o) => o.value === "packed");
+      const next = fixOptions(statusCol?.options as any[] | undefined);
+      if (statusCol && next) {
+        await ctx.db.patch(statusCol._id, { options: next });
+        columnsUpdated++;
+      }
+      if (!isLegacySet) continue;
+
+      const completeValues = new Set(
+        original.filter((o) => o.isComplete === true).map((o) => o.value),
+      );
+      const items = await ctx.db
+        .query("eventItems")
+        .withIndex("by_event_module", (q) =>
+          q.eq("eventId", ev._id).eq("module", "supplies"),
+        )
+        .collect();
+      for (const it of items) {
+        const wasPacked =
+          it.status === "packed" ||
+          (it.status != null && completeValues.has(it.status));
+        const rewriteStatus = it.status === "packed";
+        const backfillPackedIn =
+          wasPacked && (it.fields as any)?.packedIn !== true;
+        if (!rewriteStatus && !backfillPackedIn) continue;
+        await ctx.db.patch(it._id, {
+          ...(rewriteStatus ? { status: "have_it" } : {}),
+          ...(backfillPackedIn
+            ? { fields: { ...((it.fields as any) ?? {}), packedIn: true } }
+            : {}),
+        });
+        eventItemsUpdated++;
+      }
+    }
+
+    // The new supplies Timing/Due columns are snapshot-seeded per scope —
+    // chain the backfill so nobody has to remember the second migration.
+    await ctx.scheduler.runAfter(
+      0,
+      internal.migrations.backfillMissingDefaultColumns,
+      {},
+    );
+
+    return { columnsUpdated, templateItemsUpdated, eventItemsUpdated };
   },
 });
 

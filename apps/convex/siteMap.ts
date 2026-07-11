@@ -719,6 +719,12 @@ export const splitSupplyPlacement = mutation({
       title: it.title ?? "",
       order: maxOrder + 1,
       status: it.status,
+      // Supplies carry a have-it-by deadline now — the peeled unit keeps the
+      // original's timing so it doesn't fall off the due-date radar.
+      offsetDays: it.offsetDays,
+      dueDate: it.dueDate,
+      roleId: it.roleId,
+      ownerPersonId: it.ownerPersonId,
       fields: { ...fields, qty: 1, packedIn: false, packedOut: false },
     });
 

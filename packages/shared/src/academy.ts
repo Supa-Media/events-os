@@ -1,7 +1,7 @@
 /**
  * The Academy — the ordered training curriculum.
  *
- * Sixteen short sections: five concept pages, one page per native area
+ * Seventeen short sections: six concept pages, one page per native area
  * tab, an assistant page, and three hands-on capstones (two required, one
  * optional bonus). Content is authored FROM the playbook (docs/agent.md) and
  * the enablement guides (docs/guides/*) — this file is the single source both
@@ -461,7 +461,136 @@ const SECTIONS_IN_ORDER: Omit<AcademySection, "order">[] = [
     ],
   },
 
-  // ── 4 · Timing ─────────────────────────────────────────────────────────────
+  // ── 4 · Being an owner ─────────────────────────────────────────────────────
+  {
+    slug: "being-an-owner",
+    title: "Being an owner",
+    subtitle: "Accountability, oversight, and building for your own absence",
+    minutes: 4,
+    blocks: [
+      {
+        kind: "p",
+        text: "You've seen that every row, tab, and event resolves to an owner. Now the part nobody tells you when you get handed one: **doing work and owning work are two different jobs.** Most people meet Events OS as a doer — rows with their name on them. Owning is the graduation: you're no longer measured by the rows you finish, but by whether the *whole thing* happens.",
+      },
+      {
+        kind: "table",
+        headers: ["", "A doer", "An owner"],
+        rows: [
+          [
+            "**Cares about**",
+            "Their rows: execute, update the status, flag blockers",
+            "The whole area or event: every needed row exists, has an owner, has timing",
+          ],
+          [
+            "**Success is**",
+            "\"My work is done and my statuses are true\"",
+            "\"It would happen even if I did nothing else today\"",
+          ],
+          [
+            "**When something's missing**",
+            "Tells the owner",
+            "Is the person the gap lands on — finds it, rows it, places it",
+          ],
+        ],
+      },
+      {
+        kind: "rule",
+        title: "If it doesn't happen, it's on you",
+        text: "That's the whole definition. You can delegate every piece of the work; you can never delegate the accountability. But delegation done right CREATES accountability at each layer: someone handed a clear row — details, timing, owner — owns getting it done on their own. Layers of accountability, not layers of excuses.",
+      },
+      { kind: "heading", text: "Oversight is a dial, not a fixed job" },
+      {
+        kind: "p",
+        text: "How much active oversight you owe depends entirely on your team. With strong role-holders who keep their statuses true, owning is light: read the rings, scan What's-next, handle the exceptions. With a team that updates the plan inconsistently, the dial turns up — you walk the tabs, ask the humans what's actually true, and fix the plan until it matches reality. The rings only steer you if someone makes sure they're honest; below the best teams, that someone is you.",
+      },
+      {
+        kind: "reveal",
+        prompt:
+          "You own the event. At T-8 the Comms tab says the announcement is still 'Drafted' — and the Comms Lead hasn't touched a status in a week. What's the owner move?",
+        answer:
+          "Turn the dial up, through the person: ask the Comms Lead what's true, get the statuses honest, and unblock them if something's stuck. Don't silently do it yourself (that teaches the plan to lie and the lead to lean), and don't just wait (the outcome is still yours). Accountability flows through people — but it ends at you.",
+      },
+      { kind: "heading", text: "The owner's test: plan yourself out" },
+      {
+        kind: "p",
+        text: "Read the plan as if you won't be there. If every role-holder reasonably follows their rows — the timing, the details, the duties — **does the event happen?** Every place the answer wobbles is a gap: a missing row, an unowned row, a detail that lives only in your head. Fix the plan, not the moment. Building for your own absence is not a stretch goal; it's what owning means here.",
+      },
+      {
+        kind: "p",
+        text: "It's also how you carve up the work: shape the plan into **roles that make sense**, then put people in them. Usually an event lead, someone on comms, someone on logistics; add production or more as the event grows and as you have hands. Each role gets whole areas — real slices someone can own — not loose errands. One person per role: helpers are crew, accountability is singular.",
+      },
+      {
+        kind: "tip",
+        text: "Ask the assistant to run your test for you: \"If I disappeared today, what breaks? What's unowned, undated, or only in my head?\" It reads the live rows and answers honestly.",
+      },
+    ],
+    quiz: [
+      {
+        prompt: "What changes when you go from doing rows to OWNING an area or event?",
+        options: [
+          "You do all the rows yourself now",
+          "You're accountable that the whole thing happens — every row exists, resolves to someone, and gets done",
+          "You only attend the meetings",
+          "Nothing — owner is a label for the busiest person",
+        ],
+        answerIndex: 1,
+        explanation:
+          "A doer is measured by their rows; an owner by the outcome. Owning means the gaps land on you: if something needed doesn't have a row, an owner, and timing, finding and fixing that is your job.",
+      },
+      {
+        prompt:
+          "Your role-holders keep every status true and nothing sits unowned. How much active oversight do you owe?",
+        options: [
+          "The same as always — walk every tab daily no matter what",
+          "Little: read the rings and What's-next, handle exceptions — a strong team turns the dial down",
+          "None — a good team means the owner can check out",
+          "More — good teams need more supervision",
+        ],
+        answerIndex: 1,
+        explanation:
+          "Oversight is a dial, not a fixed job. It scales with how consistently the team keeps the plan true — but it never reaches zero: someone has to verify the rings are honest, and that someone is the owner.",
+      },
+      {
+        prompt: "What is the owner's test of a plan?",
+        options: [
+          "Is every row marked Done?",
+          "Did the budget come in under?",
+          "If I weren't there and everyone reasonably followed their rows and roles, would this event happen?",
+          "Has every teammate opened the app this week?",
+        ],
+        answerIndex: 2,
+        explanation:
+          "Read the plan as if you'll be absent. Every place it would wobble without you is a gap — a missing row, an unowned row, a detail only in your head. Owners build for their own absence.",
+      },
+      {
+        prompt:
+          "You handed the Comms area to a lead with clear duties, details, and timing. A message never goes out. Who's accountable?",
+        options: [
+          "Nobody — plans fail sometimes",
+          "Only you — delegation keeps all accountability with the owner",
+          "Only the comms lead — you delegated it away",
+          "Both, at different layers: the lead owns their area's outcome, and the event is still on you",
+        ],
+        answerIndex: 3,
+        explanation:
+          "Delegation transfers the work and creates accountability at the new layer — someone given the right information owns delivering on it. But it never removes yours: every layer answers for its slice, and the event ends at the owner.",
+      },
+      {
+        prompt: "How does an owner carve an event into roles?",
+        options: [
+          "One role per task, so nothing is shared",
+          "Start with event lead + comms + logistics, add roles as the event and the available hands grow — whole areas per role, one person per role",
+          "Everyone shares all the roles for flexibility",
+          "Roles are only for events over 100 people",
+        ],
+        answerIndex: 1,
+        explanation:
+          "Shape the work into role-sized slices someone can genuinely own — the lightweight trio covers most events, and bigger events with more hands add production and beyond. Helpers are crew; accountability stays singular.",
+      },
+    ],
+  },
+
+  // ── 5 · Timing ─────────────────────────────────────────────────────────────
   {
     slug: "timing-and-offsets",
     title: "Timing that moves with the date",
@@ -553,7 +682,7 @@ const SECTIONS_IN_ORDER: Omit<AcademySection, "order">[] = [
     ],
   },
 
-  // ── 5 · The four phase rings ───────────────────────────────────────────────
+  // ── 6 · The four phase rings ───────────────────────────────────────────────
   {
     slug: "phase-rings",
     title: "The four rings",
@@ -576,12 +705,12 @@ const SECTIONS_IN_ORDER: Omit<AcademySection, "order">[] = [
           [
             "**Planning**",
             "Is the prep on track?",
-            "Every row due *before* the event (T-minus tasks, messages, permits) + locking Run of Show, Crew Duties, Supplies",
+            "Every row due *before* the event (T-minus tasks, messages, permits, supply buying/ordering) + locking Run of Show, Crew Duties, Supplies",
           ],
           [
             "**Day-of**",
             "Will the day itself run?",
-            "Supplies walked to Packed, Crew Duties, day-of rows",
+            "Supplies checked off the Packing checklist, Crew Duties, day-of rows",
           ],
           [
             "**Post**",
@@ -592,7 +721,7 @@ const SECTIONS_IN_ORDER: Omit<AcademySection, "order">[] = [
       },
       {
         kind: "p",
-        text: "The sorting is automatic: a row's tab and timing decide its ring. Debrief rows are always Post. Supplies and Crew Duties are always Day-of. Everything else follows its offset — before the event feeds Planning, on the day feeds Day-of, after feeds Post. **Pre-plan is different**: it isn't statuses at all, but the explicit setup checklist — people in roles, owners on areas, and the specific cells your template flagged for a deliberate check-off.",
+        text: "The sorting is automatic: a row's tab and timing decide its ring. Debrief rows are always Post. Crew Duties are always Day-of. Supplies count twice, because every item is two jobs: *getting it* (order, buy, pull from storage) follows the item's timing — that's Planning work, weeks out — while *packing it* always counts toward Day-of, even when you pack early. Everything else follows its offset — before the event feeds Planning, on the day feeds Day-of, after feeds Post. **Pre-plan is different**: it isn't statuses at all, but the explicit setup checklist — people in roles, owners on areas, and the specific cells your template flagged for a deliberate check-off.",
       },
       { kind: "heading", text: "Am I where I should be?" },
       {
@@ -640,7 +769,7 @@ const SECTIONS_IN_ORDER: Omit<AcademySection, "order">[] = [
         ],
         answerIndex: 2,
         explanation:
-          "The sorting is automatic by tab and timing: Debrief rows are always Post, Supplies and Crew Duties always Day-of, and everything else follows its offset.",
+          "The sorting is automatic by tab and timing: Debrief rows are always Post, Crew Duties always Day-of, supplies split their two jobs (buying feeds Planning, packing feeds Day-of), and everything else follows its offset.",
       },
       {
         prompt: "Your Planning ring reads 20% with \"▲ 6 overdue\" under it. What does that mean?",
@@ -669,28 +798,67 @@ const SECTIONS_IN_ORDER: Omit<AcademySection, "order">[] = [
     ],
   },
 
-  // ── 5 · Tasks ──────────────────────────────────────────────────────────────
+  // ── 7 · Tasks ──────────────────────────────────────────────────────────────
   {
     slug: "tab-tasks",
     title: "Tasks",
-    subtitle: "The master to-do list",
-    minutes: 3,
+    subtitle: "The master to-do list — and what does NOT go on it",
+    minutes: 4,
     blocks: [
       {
         kind: "p",
-        text: "The **Tasks** tab is the event's master to-do list — the one tab that sees everything. Default owner: the Event Lead.",
+        text: "The **Tasks** tab is the event's master to-do list — the one tab that sees everything. Default owner: the Event Lead. A row with no owner and no role isn't nobody's — it's the **tab owner's**, so leaving Owner blank on a task is assigning it to the Event Lead.",
       },
       {
         kind: "p",
-        text: "**When to use it:** anything that must happen that isn't a message (Comms), a physical item (Supplies), paperwork (Permits), or a day-of segment (Run of Show). Book the venue, confirm the worship leader, hire the videographer, schedule the meeting. Not sure where something goes? Put it in Tasks — you can always move it.",
+        text: "**When to use it:** anything that must happen that isn't a message (Comms), a physical item (Supplies), a person to recruit (Crew Duties), paperwork (Permits), or a day-of segment (Run of Show). Book the venue, confirm the worship leader, schedule the planning meeting. Not sure where something goes? Put it in Tasks — you can always move it.",
+      },
+      { kind: "heading", text: "The most common mistake: tasks that aren't tasks" },
+      {
+        kind: "p",
+        text: "Most \"tasks\" that clog this tab are really rows for another area, wearing a to-do costume. The tell: the specialist tab tracks things a task row can't — cost and packing for supplies, confirmations and call times for crew, deadlines and documents for permits.",
+      },
+      {
+        kind: "table",
+        headers: ["Sounds like a task…", "Where it actually lives"],
+        rows: [
+          [
+            '"Buy lawn games" / "Order napkins"',
+            "**Supplies & Logistics** — a physical item, with source, cost, link, and a have-it-by date",
+          ],
+          [
+            '"We need a videographer"',
+            "**Crew Duties** — write the duty on the Content team, then fill the slot with a volunteer or a paid vendor",
+          ],
+          [
+            '"Post the announcement"',
+            "**Comms Schedule** — a message, with audience, channel, and timing",
+          ],
+          [
+            '"Secure the park permit"',
+            "**Permits** — paperwork on someone else's clock, with a deadline and the document attached",
+          ],
+        ],
+      },
+      {
+        kind: "rule",
+        title: "Write it once, where it lives",
+        text: "A task that restates a row on another tab is sprawl: two copies of one fact means one of them is stale, and soon nobody trusts either. If the work is already a supply, comms, crew, or permit row, that row IS the plan — don't shadow it with a task.",
+      },
+      {
+        kind: "reveal",
+        prompt:
+          '"We need someone to film the event." Your finger is hovering over + Add row on Tasks. What do you actually do?',
+        answer:
+          "Open Crew Duties instead. Write the duty on the Content team (\"shoot recap clips: worship, crowd, the gospel moment\"), then fill the slot — a friend who volunteers, or a hired videographer as paid crew with an amount. An unfilled crew slot is the honest signal that recruiting isn't done; a task named \"find videographer\" just hides it.",
       },
       {
         kind: "p",
-        text: 'Each row: the task, **details rich enough for a stranger**, a status, timing, and who it resolves to. "Sound permit via precinct officer, ~3 days prior, permit holder must attend" is worth ten "get sound permit" rows — details are how the reason survives the person.',
+        text: 'For the rows that DO belong here: the task, **details rich enough for a stranger**, a status, timing, and who it resolves to. "Sound permit via precinct officer, ~3 days prior, permit holder must attend" is worth ten "get sound permit" rows — details are how the reason survives the person.',
       },
       {
         kind: "try_status",
-        title: "Book videographer for recap clips",
+        title: "Confirm the worship leader",
         options: [
           { value: "not_started", label: "Not started", color: "red" },
           { value: "in_progress", label: "In progress", color: "amber" },
@@ -716,16 +884,41 @@ const SECTIONS_IN_ORDER: Omit<AcademySection, "order">[] = [
     ],
     quiz: [
       {
-        prompt: "What belongs on the Tasks tab?",
+        prompt: "Which of these does NOT belong on the Tasks tab?",
         options: [
-          "Only the event lead's personal to-dos",
-          "Work that isn't a message, supply, permit, or day-of segment — and anything you're not sure where to put",
-          "Every row from every other tab, duplicated",
-          "Day-of segments with call times",
+          '"Book the venue walkthrough"',
+          '"Buy 100 red napkins"',
+          '"Schedule the planning meeting"',
+          '"Confirm the rain plan"',
         ],
         answerIndex: 1,
         explanation:
-          "Tasks is the master list and the safe default: if it doesn't clearly belong to a specialist tab, it starts here and can move later.",
+          "Buying things is a Supplies & Logistics row — that tab tracks what a task can't: source, cost, link, quantity, a have-it-by date, and packing. Booking, scheduling, and confirming are true tasks.",
+      },
+      {
+        prompt: '"We need a videographer." What\'s the right move?',
+        options: [
+          'Add a task: "Find videographer"',
+          "Write the duty on Crew Duties' Content team, then fill the slot with a volunteer or a paid vendor",
+          "Mention it in the group chat",
+          "Add it to the Comms Schedule",
+        ],
+        answerIndex: 1,
+        explanation:
+          "Recruiting lives in Crew Duties: the duty says what the job is, and the slot tracks who fills it — volunteer or paid, with confirmation, call time, and (for vendors) an amount that rolls into the budget.",
+      },
+      {
+        prompt:
+          'Tasks has a row "Secure the sound permit" and the Permits tab has a sound-permit row. What\'s wrong?',
+        options: [
+          "Nothing — redundancy is safety",
+          "The task should have an owner too",
+          "The same fact lives twice, so one copy WILL go stale — the Permits row is the plan; delete the shadow task",
+          "The permit row should move to Tasks",
+        ],
+        answerIndex: 2,
+        explanation:
+          "Write it once, where it lives. Duplicated rows drift apart, and the team stops trusting both. The specialist tab's row carries the deadline and the document — it's the single source of truth.",
       },
       {
         prompt: 'Why is "Sound permit via precinct officer, ~3 days prior, holder must attend" a better row than "Get sound permit"?',
@@ -740,21 +933,21 @@ const SECTIONS_IN_ORDER: Omit<AcademySection, "order">[] = [
           "The plan must be runnable with zero tribal knowledge. Details carry the HOW and the WHY so anyone can pick the row up cold.",
       },
       {
-        prompt: "When should you update a task's status?",
+        prompt: "A task row has no owner and no role. Whose is it?",
         options: [
-          "The night before the event, all at once",
-          "The day it actually changes",
-          "Only when the event owner asks",
-          "At the debrief",
+          "Nobody's — it's optional",
+          "The tab owner's — for Tasks, the Event Lead",
+          "The last person who edited it",
+          "The assistant's",
         ],
         answerIndex: 1,
         explanation:
-          "Readiness is computed from statuses. A stale status isn't a small delay — it corrupts the number the whole team is steering by.",
+          "Blank isn't neutral: an unowned row defaults to whoever owns the tab. Same rule on every tab — which is why area owners fill in owners, or accept that everything blank is theirs.",
       },
     ],
   },
 
-  // ── 6 · Comms Schedule ─────────────────────────────────────────────────────
+  // ── 8 · Comms Schedule ─────────────────────────────────────────────────────
   {
     slug: "tab-comms",
     title: "Comms Schedule",
@@ -763,7 +956,20 @@ const SECTIONS_IN_ORDER: Omit<AcademySection, "order">[] = [
     blocks: [
       {
         kind: "p",
-        text: "Comms is not \"post about it sometime.\" Every message the event sends is a row: **who** it's for (audience), **where** it goes (channel), **when** (timing), and the actual copy in notes. Default owner: the Comms Lead.",
+        text: "Comms is not \"post about it sometime.\" Every message the event sends is a row, and each column answers one question about it. Default owner: the Comms Lead — a comms row with no owner is theirs by default.",
+      },
+      {
+        kind: "table",
+        headers: ["Column", "The question it answers"],
+        rows: [
+          ["**Comm**", "What is this message? (\"Announcement\", \"T-1 call-time reminder\")"],
+          ["**Timing / Date**", "When does it go out? An offset (T-7) that derives the real date"],
+          ["**Channel**", "Where does it post — IG, the iMessage group, email, Slack?"],
+          ["**Audience**", "Who is it for — leaders, volunteers, attendees, the public?"],
+          ["**Status**", "Not started → Drafted → Scheduled → **Sent** (the only terminal state)"],
+          ["**Owner**", "Who sends it. Blank = the Comms Lead, the tab's owner"],
+          ["**Notes / copy**", "The actual message text lives HERE — not in someone's drafts folder"],
+        ],
       },
       {
         kind: "p",
@@ -833,10 +1039,22 @@ const SECTIONS_IN_ORDER: Omit<AcademySection, "order">[] = [
         explanation:
           "This is one of the few hard gates: announcing an unlocked venue means potentially re-announcing a move to your whole audience — or worse, people showing up at the wrong park.",
       },
+      {
+        prompt: "Where does the actual text of a message live?",
+        options: [
+          "In the owner's drafts folder",
+          "In the row's Notes / copy column",
+          "In the group chat, pinned",
+          "In a linked Google Doc, always",
+        ],
+        answerIndex: 1,
+        explanation:
+          "The copy lives on the row, so anyone can send it — including whoever covers for you. A message that lives in your drafts dies with your availability. (And an unowned comms row belongs to the Comms Lead, the tab's owner.)",
+      },
     ],
   },
 
-  // ── 7 · Run of Show ────────────────────────────────────────────────────────
+  // ── 9 · Run of Show ────────────────────────────────────────────────────────
   {
     slug: "tab-run-of-show",
     title: "Run of Show",
@@ -912,20 +1130,31 @@ const SECTIONS_IN_ORDER: Omit<AcademySection, "order">[] = [
     ],
   },
 
-  // ── 8 · Crew Duties ────────────────────────────────────────────────────────
+  // ── 10 · Crew Duties ────────────────────────────────────────────────────────
   {
     slug: "tab-crew-duties",
     title: "Crew Duties",
     subtitle: "Who's coming day-of, and what each team does",
-    minutes: 4,
+    minutes: 5,
     blocks: [
       {
         kind: "p",
-        text: "This tab is the day-of people system, in two halves. The **Crew list**: every volunteer and paid helper, with their team, an invited → confirmed status, and a call time. And the **duty rows**: what each team actually does — \"Welcome ×6: greet, direct, hand out connect cards.\"",
+        text: "This tab is the day-of people system, in two halves. The **Crew list**: every volunteer and paid helper, with their team, an invited → confirmed status, and a call time. And the **duty rows**: what each team actually does — \"Welcome ×6: greet, direct, hand out connect cards.\" Default owner: the Comms Lead — duty rows with no owner are theirs.",
+      },
+      { kind: "heading", text: "How to build it, in order" },
+      {
+        kind: "bullets",
+        items: [
+          "**1 · Name your teams.** The Team column's options ARE the event's team list. Teams are day-of *functions*: Welcome, Food & Bev, Production, Content, Prayer — the stations your event needs humans at. (\"Budget\" and \"Venue research\" are planning workstreams, not crew teams.)",
+          "**2 · Write each team's duties.** One row per expectation, with details of what done looks like. This is the job description someone says yes to.",
+          "**3 · Fill the slots.** Recruit people INTO teams — a friend who volunteers and a hired videographer go on the same crew list. Paid crew carry an amount and an unpaid → paid status that rolls into the budget.",
+          "**4 · Chase to confirmed, with call times.** Invited is a maybe; only confirmed counts. Every confirmed crew member gets a call time.",
+        ],
       },
       {
-        kind: "p",
-        text: "Volunteers and paid help live on the same list: your friend praying with guests and a hired photographer are both crew. Paid crew carry an amount and an unpaid → paid status that rolls into the event budget.",
+        kind: "rule",
+        title: "Needing a person = a duty + an open slot, not a task",
+        text: '"We need a videographer" is not a to-do — it\'s an unfilled role. Write the duty (Content team: "shoot recap clips"), then fill it with a volunteer or a vendor. The open slot IS the honest status of your recruiting; a task named "find someone" just hides the hole.',
       },
       {
         kind: "try_status",
@@ -969,6 +1198,18 @@ const SECTIONS_IN_ORDER: Omit<AcademySection, "order">[] = [
           "WHO is coming lives on the crew list; WHAT each team does lives in the duty rows. Together they're everything the day-of people system needs.",
       },
       {
+        prompt: "Which of these is a crew TEAM you'd expect on this tab?",
+        options: [
+          "Welcome",
+          "Budget",
+          "Venue research",
+          "Permits",
+        ],
+        answerIndex: 0,
+        explanation:
+          "Teams are day-of functions — Welcome, Food & Bev, Production, Content, Prayer: stations that need humans at the event. Budget, venue research, and permits are planning work that lives on other tabs, owned by organizers.",
+      },
+      {
         prompt: "Where does a paid photographer belong?",
         options: [
           "On the Tasks tab as a to-do",
@@ -1007,37 +1248,54 @@ const SECTIONS_IN_ORDER: Omit<AcademySection, "order">[] = [
     ],
   },
 
-  // ── 9 · Supplies & Logistics ───────────────────────────────────────────────
+  // ── 11 · Supplies & Logistics ───────────────────────────────────────────────
   {
     slug: "tab-supplies",
     title: "Supplies & Logistics",
-    subtitle: "Every physical thing, plus the site map",
-    minutes: 3,
+    subtitle: "Every physical thing: get it, know where it is, pack it",
+    minutes: 4,
     blocks: [
       {
         kind: "p",
-        text: "Every physical item the event needs is a row: where it comes from (storage / order / someone's home), what it's packed in (\"green luggage\" beats \"somewhere\"), quantity, and who's bringing it. Default owner: the Logistics Lead.",
+        text: "Every physical item the event needs is a row. Default owner: the Logistics Lead — an item with no owner is theirs to bring. Each column carries one fact the day depends on:",
       },
       {
+        kind: "table",
+        headers: ["Column", "The question it answers"],
+        rows: [
+          ["**Status**", "How close is it to in-hand? Pull from storage / need to order / need to buy / ordered → **Have it**"],
+          ["**Timing / Due**", "When must you HAVE it? Orders need shipping time — set it weeks out, not T-1"],
+          ["**Source**", "Where does it come from — and once you have it, where does it LIVE now?"],
+          ["**Packed in**", 'Which container? "Green luggage" beats "somewhere"'],
+          ["**Qty · Cost · Link**", "How many, what it costs (feeds the budget), where to re-order it"],
+          ["**Owner**", "Who's bringing it. Blank = the Logistics Lead"],
+        ],
+      },
+      { kind: "heading", text: "Every item is two jobs on two clocks" },
+      {
         kind: "p",
-        text: "The statuses walk an item from idea to in-hand: *pull from storage*, *need to order*, *need to buy*, *ordered*, *have it*, and the terminal state — **packed**.",
+        text: "**Getting it** happens early: online orders go out weeks ahead (shipping is a lead time like any other), store runs a few days out. That's planning work, and the Timing column is its deadline. **Packing it** happens at the end — everything in hand by T-1, checked into its container. Getting feeds the Planning ring; packing feeds the Day-of ring, even when you pack early.",
       },
       {
         kind: "try_status",
         title: "Battery (main speaker)",
         options: [
           { value: "pull_from_storage", label: "Pull from storage", color: "blue" },
-          { value: "have_it", label: "Have it", color: "teal" },
-          { value: "packed", label: "Packed", color: "green" },
+          { value: "ordered", label: "Ordered", color: "amber" },
+          { value: "have_it", label: "Have it", color: "green" },
         ],
-        terminal: "packed",
+        terminal: "have_it",
         caption:
-          "Packed — a state, not a plan. The battery comes out of storage early enough to charge at home, because there's no charger in storage. (\"VERY IMPORTANT\" in the original checklist, learned the hard way.)",
+          "Status ends at Have it — in your hands, not \"on the way\". This battery leaves storage early enough to charge at home, because there's no charger in storage. (\"VERY IMPORTANT\" in the original checklist, learned the hard way.)",
       },
       {
         kind: "rule",
-        title: "\"Packed\" is a state; \"I'll grab it\" is a hope",
-        text: "Our templates want every item terminal by T-1 — packed, batteries charged, day-of purchases assigned to a named person with a time. Online orders happen weeks out; shipping is a lead time like any other.",
+        title: "Packing is a checklist, not a status",
+        text: "Whether something is packed is tracked in ONE place: the Packing checklist, where items group by container and get checked in (and back out at strike). Status stops at Have it — a status can claim \"packed\" while the trunk says otherwise, which is exactly why we don't track it there.",
+      },
+      {
+        kind: "p",
+        text: "The moment you HAVE something — bought, delivered, or borrowed — update **Source** and notes with where it lives: *\"with Maya\"*, *\"Sam's garage\"*, *\"fridge at Mom's\"*. Pack day should be a checklist run, not a scavenger hunt. And keep **Cost** and **Link** current: cost rolls into the event budget, and the link is how the next event re-orders without the archaeology.",
       },
       {
         kind: "p",
@@ -1046,16 +1304,40 @@ const SECTIONS_IN_ORDER: Omit<AcademySection, "order">[] = [
     ],
     quiz: [
       {
-        prompt: "What's the terminal status for a supply item?",
+        prompt: "What's the terminal STATUS for a supply item?",
         options: [
-          "Have it",
-          "Ordered",
           "Packed",
+          "Have it — status tracks acquisition; packing is tracked on the Packing checklist",
+          "Ordered",
           "Pull from storage",
         ],
-        answerIndex: 2,
+        answerIndex: 1,
         explanation:
-          "Having it at home isn't the same as it arriving at the park. Packed is the only state that survives the drive.",
+          "Status walks an item to in-hand and stops at Have it. Packed-or-not lives in exactly one place — the Packing checklist — so a status can never claim what the trunk contradicts.",
+      },
+      {
+        prompt: "You just picked up the borrowed speaker and marked it Have it. What else does the row need?",
+        options: [
+          "Nothing — Have it says it all",
+          "Update Source/notes with where it lives now, so whoever packs knows where to grab it",
+          "A new task on the Tasks tab",
+          "Set its status back to Ordered for the record",
+        ],
+        answerIndex: 1,
+        explanation:
+          "Have it answers \"do we have it?\" — Source answers \"WHERE is it?\" The packer may not be the person who fetched it, so the row carries the location.",
+      },
+      {
+        prompt: "Which ring does each half of a supply row feed?",
+        options: [
+          "Everything supplies feeds Day-of",
+          "Getting it (order/buy) feeds Planning; packing it feeds Day-of",
+          "Both feed Planning until the event starts",
+          "Supplies don't affect the rings",
+        ],
+        answerIndex: 1,
+        explanation:
+          "Buying and ordering are prep on a real-world clock — Planning. Packing is what makes the day run — Day-of, even if you pack early. That's why the Timing column matters: orders have lead times.",
       },
       {
         prompt: "Why does the battery row deserve special paranoia?",
@@ -1084,7 +1366,7 @@ const SECTIONS_IN_ORDER: Omit<AcademySection, "order">[] = [
     ],
   },
 
-  // ── 10 · Permits ───────────────────────────────────────────────────────────
+  // ── 12 · Permits ───────────────────────────────────────────────────────────
   {
     slug: "tab-permits",
     title: "Permits",
@@ -1166,7 +1448,7 @@ const SECTIONS_IN_ORDER: Omit<AcademySection, "order">[] = [
     ],
   },
 
-  // ── 11 · Debrief ───────────────────────────────────────────────────────────
+  // ── 13 · Debrief ───────────────────────────────────────────────────────────
   {
     slug: "tab-debrief",
     title: "Debrief",
@@ -1242,7 +1524,7 @@ const SECTIONS_IN_ORDER: Omit<AcademySection, "order">[] = [
     ],
   },
 
-  // ── 12 · The assistant ─────────────────────────────────────────────────────
+  // ── 14 · The assistant ─────────────────────────────────────────────────────
   {
     // Renamed from the v1 slug "working-with-the-assistant" ON PURPOSE: this
     // section gates the first capstone, and a surviving slug would let a
@@ -1344,7 +1626,7 @@ const SECTIONS_IN_ORDER: Omit<AcademySection, "order">[] = [
     ],
   },
 
-  // ── 13 · Capstone: join an event ───────────────────────────────────────────
+  // ── 15 · Capstone: join an event ───────────────────────────────────────────
   {
     slug: "capstone-join-an-event",
     title: "Capstone: join an event",
@@ -1392,7 +1674,7 @@ const SECTIONS_IN_ORDER: Omit<AcademySection, "order">[] = [
     quiz: [],
   },
 
-  // ── 14 · Capstone: plan a party ────────────────────────────────────────────
+  // ── 16 · Capstone: plan a party ────────────────────────────────────────────
   {
     slug: "capstone-birthday-party",
     title: "Capstone: plan a party from scratch",
@@ -1419,7 +1701,7 @@ const SECTIONS_IN_ORDER: Omit<AcademySection, "order">[] = [
           ["**Give Maya and Jordan each a role**", "Delegation is the job — hand off whole areas"],
           ["**Hire Sunny the Clown as paid crew**", "Paid crew: amount, payment status, budget rollup"],
           ["**Send the invites**", "A comms row from draft to sent"],
-          ["**Get the cake to Packed**", "Walk a supply to its terminal state"],
+          ["**Get the cake in hand**", "Walk a supply to Have it — and record where it lives"],
           ["**Ask the assistant to poke holes in your plan**", "Use the readiness check before you trust the plan"],
           ["**Log one learning and mark it Actioned**", "Close the loop — the debrief habit"],
         ],
@@ -1432,7 +1714,7 @@ const SECTIONS_IN_ORDER: Omit<AcademySection, "order">[] = [
     quiz: [],
   },
 
-  // ── 15 · Bonus capstone: worship event ─────────────────────────────────────
+  // ── 17 · Bonus capstone: worship event ─────────────────────────────────────
   {
     slug: "capstone-worship-event",
     title: "Bonus: plan a worship event",
@@ -1461,7 +1743,7 @@ const SECTIONS_IN_ORDER: Omit<AcademySection, "order">[] = [
           ["**Sort the sound permit**", "Lead-time work on someone else's clock"],
           ["**Build the run of show**", "Load-in → sound check → huddle → worship → strike, one owner each"],
           ["**Announce it**", "The comms moment — gated on your location being locked"],
-          ["**Pack the battery, charged**", "The T-1 ritual, drilled once more"],
+          ["**Get the battery out, charged**", "Charged, in hand, on the Packing checklist — the T-1 ritual"],
           ["**Ask the assistant for a readiness briefing**", "The pre-flight check"],
           ["**Capture one learning and dispatch it**", "Feed the template — the loop that makes next time easier"],
         ],

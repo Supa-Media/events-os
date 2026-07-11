@@ -144,13 +144,13 @@ async function platformTemplates(s: ChapterSetup) {
 }
 
 describe("curriculum content", () => {
-  test("sixteen ordered sections; three capstones; one optional bonus", () => {
-    expect(ACADEMY_SECTION_COUNT).toBe(16);
+  test("seventeen ordered sections; three capstones; one optional bonus", () => {
+    expect(ACADEMY_SECTION_COUNT).toBe(17);
     expect(ACADEMY_SECTIONS.map((s) => s.order)).toEqual(
-      Array.from({ length: 16 }, (_v, i) => i + 1),
+      Array.from({ length: 17 }, (_v, i) => i + 1),
     );
     // The optional bonus is excluded from the trained denominator.
-    expect(ACADEMY_REQUIRED_SECTION_COUNT).toBe(15);
+    expect(ACADEMY_REQUIRED_SECTION_COUNT).toBe(16);
     expect(ACADEMY_CAPSTONE_SECTIONS).toHaveLength(3);
     // The suite leans on this order — pin it.
     expect(CAPSTONE_JOIN.capstone!.kind).toBe("join_event");
@@ -353,6 +353,41 @@ describe("quiz grading", () => {
     const bySlug = new Map(progress.sections.map((x) => [x.slug, x]));
     expect(bySlug.get(ACADEMY_SECTIONS[2].slug)!.unlocked).toBe(true);
     expect(bySlug.get(ACADEMY_SECTIONS[3].slug)!.unlocked).toBe(false);
+  });
+
+  test("a passed section stays unlocked (and retakeable) across a curriculum insert", async () => {
+    const s = await setupLearner(newT());
+    // Simulate a mid-curriculum INSERT: the learner passed section 3 under an
+    // older ordering, but its (new) predecessor has no pass row.
+    const section = ACADEMY_SECTIONS[2];
+    await run(s.t, (ctx) =>
+      ctx.db.insert("academyProgress", {
+        chapterId: s.chapterId,
+        personId: s.personId,
+        sectionSlug: section.slug,
+        quizBestScore: section.quiz.length,
+        quizTotal: section.quiz.length,
+        passedAt: Date.now(),
+      }),
+    );
+    const progress = await s.as.query(api.academy.myProgress, {});
+    const row = progress.sections.find((x) => x.slug === section.slug)!;
+    expect(row.passed).toBe(true);
+    // Passed ⇒ unlocked, even with an unpassed gap before it — an insert
+    // must never re-lock sections people already finished.
+    expect(row.unlocked).toBe(true);
+    // …and a retake isn't gated on the gap either.
+    const res = await s.as.mutation(api.academy.submitQuiz, {
+      sectionSlug: section.slug,
+      answers: correctAnswers(section.slug),
+    });
+    expect(res.passed).toBe(true);
+    // The gap itself stays locked: the unpassed section 2 still requires its
+    // own predecessor (sequential order holds for new work).
+    expect(
+      progress.sections.find((x) => x.slug === ACADEMY_SECTIONS[1].slug)!
+        .unlocked,
+    ).toBe(false);
   });
 
   test("markRead stamps readAt once and never blocks on order", async () => {
@@ -1015,7 +1050,7 @@ describe("syncCapstone persists a capstone", () => {
     expect(join.passed).toBe(true);
     expect(join.passedAt).toBe(row!.passedAt);
 
-    // chapterProgress reads the stored stamp too (12 quizzes + 1 capstone).
+    // chapterProgress reads the stored stamp too (13 quizzes + 1 capstone).
     const view = await s.as.query(api.academy.chapterProgress, {});
     expect(
       view!.people.find((p) => p.personId === s.personId)!.completed,

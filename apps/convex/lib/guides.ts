@@ -146,13 +146,17 @@ this event added). Each renders as a tab on the event page.
 Every area is built the same way:
 
 - **Rows** — the unit of work: a task, a message, a supply item, a permit.
-  Every row has a title, a status, and an accountable human.
-- **Statuses with a "done" state** — Done, Packed, Approved, Sent. Readiness
-  is computed from these, so keeping them true is not bookkeeping, it *is*
-  the plan.
+  Every row has a title, a status, and an accountable human. A row with no
+  owner and no role defaults to YOU, the area's owner — blank isn't nobody,
+  it's you.
+- **Statuses with a "done" state** — Done, Have it, Approved, Sent.
+  Readiness is computed from these, so keeping them true is not bookkeeping,
+  it *is* the plan. (Supplies also carry a separate Packing checklist —
+  status tracks getting an item; the checklist tracks packing it.)
 - **Timing** — rows carry T-offsets that become real due dates (T-7 = seven
-  days before the event), minute offsets (Run of Show), or a convention
-  deadline for the whole stream (e.g. Supplies packed by T-1).
+  days before the event; a supply's offset is its have-it-by deadline),
+  minute offsets (Run of Show), or a convention deadline for the whole
+  stream (e.g. everything packed by T-1).
 - **A ready flag** — the button on your section header. Marking your stream
   ready is you signing your name to it.
 

@@ -44,6 +44,7 @@ import {
   eventWindowFor,
   isCompleteStatus,
   isFreeModelSlug,
+  isSupplyPacked,
   isOverChatBudget,
   overBudgetScope,
   RESERVED_TAB_KEYS,
@@ -193,6 +194,10 @@ export const eventContext = internalQuery({
         offsetDays: it.offsetDays ?? null,
         source: it.fields?.source ?? null,
         container: it.fields?.container ?? null,
+        // Supplies: the Packing-checklist boolean (status stops at have_it;
+        // packed-ness is this separate signal; legacy `packed` statuses
+        // still read as packed until migrated).
+        packedIn: isSupplyPacked(it),
         cost: it.fields?.cost ?? null,
         notes: it.fields?.notes ?? null,
         hasPhoto: !!it.fields?.photo,

@@ -134,6 +134,113 @@ describe("event readiness (statusCountsFor via events.get)", () => {
   });
 });
 
+describe("phase readiness — supplies acquisition vs packing (via events.get)", () => {
+  const SUPPLY_OPTIONS = [
+    { value: "need_to_order", label: "Need to order", isComplete: false },
+    { value: "have_it", label: "Have it", isComplete: true },
+  ];
+
+  /** An event with ONLY supplies rows: statuses + fields.packedIn. */
+  async function seedSupplies(
+    t: ReturnType<typeof newT>,
+    chapterId: Id<"chapters">,
+    userId: Id<"users">,
+    items: { status: string; packedIn: boolean }[],
+  ) {
+    return await run(t, async (ctx) => {
+      const now = Date.now();
+      // Only the supplies tab is active, so the phase math reads one module.
+      const onlySupplies = [
+        "planning_doc",
+        "comms",
+        "run_of_show",
+        "volunteer_expectations",
+        "permits",
+        "retro",
+      ];
+      const eventTypeId = await ctx.db.insert("eventTypes", {
+        chapterId,
+        name: "S",
+        slug: "s",
+        version: 1,
+        isArchived: false,
+        disabledCoreModules: onlySupplies,
+        createdBy: userId,
+        createdAt: now,
+        updatedAt: now,
+      });
+      const eventId = await ctx.db.insert("events", {
+        chapterId,
+        eventTypeId,
+        templateVersion: 1,
+        name: "Supplies Event",
+        eventDate: now + 7 * 24 * 3600 * 1000,
+        status: "planning",
+        // Events carry their own module deltas (not read from the type here).
+        disabledCoreModules: onlySupplies,
+        // Mark the supplies ready gate met so it doesn't dilute the planning
+        // average — these tests isolate the item-level acquisition/packing math.
+        moduleReadiness: [{ key: "supplies", ready: true }],
+        createdBy: userId,
+        createdAt: now,
+        updatedAt: now,
+      });
+      await ctx.db.insert("eventColumns", {
+        eventId,
+        module: "supplies",
+        key: "status",
+        label: "Status",
+        kind: "system",
+        type: "status",
+        options: SUPPLY_OPTIONS,
+        isVisible: true,
+        order: 0,
+      });
+      let order = 0;
+      for (const it of items) {
+        await ctx.db.insert("eventItems", {
+          eventId,
+          chapterId,
+          module: "supplies",
+          title: `Supply ${order}`,
+          order: order++,
+          status: it.status,
+          fields: { packedIn: it.packedIn },
+        });
+      }
+      return { eventId };
+    });
+  }
+
+  test("statuses feed Planning; the packedIn checklist feeds Day-of", async () => {
+    const t = newT();
+    const { as, chapterId, userId } = await setupChapter(t);
+    // Both in hand, one packed: acquisition is 100% planning-side, and the
+    // Day-of ring reads exactly the packing checklist (1 of 2).
+    const { eventId } = await seedSupplies(t, chapterId, userId, [
+      { status: "have_it", packedIn: true },
+      { status: "have_it", packedIn: false },
+    ]);
+    const result = await as.query(api.events.get, { eventId });
+    expect(result!.phases.planning).toBe(1);
+    expect(result!.phases.dayOf).toBeCloseTo(0.5);
+  });
+
+  test("an unpacked but fully-acquired plan shows a Day-of gap, not Planning", async () => {
+    const t = newT();
+    const { as, chapterId, userId } = await setupChapter(t);
+    const { eventId } = await seedSupplies(t, chapterId, userId, [
+      { status: "need_to_order", packedIn: false },
+      { status: "have_it", packedIn: false },
+    ]);
+    const result = await as.query(api.events.get, { eventId });
+    // Acquisition half-way (partial + complete), nothing packed.
+    expect(result!.phases.planning).toBeGreaterThan(0);
+    expect(result!.phases.planning).toBeLessThan(1);
+    expect(result!.phases.dayOf).toBe(0);
+  });
+});
+
 describe("moduleSummaries (statusCountsFor per active module)", () => {
   test("planning_doc summary reports total/done/hasStatus from the status column", async () => {
     const t = newT();

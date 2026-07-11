@@ -475,8 +475,13 @@ export const myProgress = query({
         quizTotal: row?.quizTotal ?? null,
         passedAt: row?.passedAt ?? null,
         passed: passedBySlug.get(s.slug) === true,
+        // A section you already passed is always unlocked — a mid-curriculum
+        // INSERT (a new, unpassed section) must never re-lock the passed
+        // sections after it. Mirrors submitQuiz's `storedPass || unlockedNow`.
         unlocked:
-          previous == null || passedBySlug.get(previous.slug) === true,
+          passedBySlug.get(s.slug) === true ||
+          previous == null ||
+          passedBySlug.get(previous.slug) === true,
         training: trainingBySlug.get(s.slug) ?? null,
       };
     });
@@ -545,9 +550,15 @@ export const submitQuiz = mutation({
     // Sequential unlock: the previous section's quiz must be passed first.
     // (Reading is never gated — only completing out of order is. Every quiz
     // section's predecessor is itself a quiz section, so the stored stamp is
-    // the whole answer here.)
+    // the whole answer here.) A section the caller ALREADY passed stays open
+    // for retakes even when a newly-inserted earlier section is unpassed.
     const previous = previousAcademySection(sectionSlug);
-    if (previous && bySlug.get(previous.slug)?.passedAt == null) {
+    const alreadyPassed = bySlug.get(sectionSlug)?.passedAt != null;
+    if (
+      !alreadyPassed &&
+      previous &&
+      bySlug.get(previous.slug)?.passedAt == null
+    ) {
       throw new ConvexError({
         code: "QUIZ_LOCKED",
         message: `Pass "${previous.title}" first — sections complete in order.`,
@@ -766,12 +777,24 @@ async function reseedMissingRows(
       .map((it) => (it.sourceTemplateItemId ? String(it.sourceTemplateItemId) : null))
       .filter((v): v is string => v != null),
   );
+  // A spec-version refresh WIPES the template's rows, so a sandbox cloned
+  // from the previous version points at ids that no longer exist and the
+  // id match above would reinsert the entire new row set on top of the
+  // surviving old rows. The (module, title) key catches those survivors —
+  // NUL-separated so a crafted title can't collide across the boundary.
+  const existingKeys = new Set(
+    existing.map((it) => `${it.module}\u0000${it.title}`),
+  );
   const questItems = (
     await ctx.db
       .query("templateItems")
       .withIndex("by_eventType", (q) => q.eq("eventTypeId", event.eventTypeId))
       .collect()
-  ).filter((it) => !clonedFrom.has(String(it._id)));
+  ).filter(
+    (it) =>
+      !clonedFrom.has(String(it._id)) &&
+      !existingKeys.has(`${it.module}\u0000${it.title}`),
+  );
   if (questItems.length === 0) return;
 
   const [templateRoles, eventRoles] = await Promise.all([
