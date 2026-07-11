@@ -63,7 +63,7 @@ export function ModuleSection({
         titleAccessory={
           <View className="flex-row items-center gap-1">
             <OwnerPill owner={owner} onPress={onAssignOwner} />
-            {/* Quiet "How this works" link to this workstream's guide. */}
+            {/* Quiet "How this works" link to this area's guide. */}
             <GuideLink moduleKey={module.key} />
           </View>
         }
@@ -118,7 +118,7 @@ export function ModuleSection({
       )}
 
       {/* Supplies & Logistics carries the site map: the spatial view of the
-          same workstream, under the same owner + ready flag. */}
+          same area, under the same owner + ready flag. */}
       {module.hasSiteMap ? (
         <SiteMapSubsection scope={{ kind: "event", eventId }} />
       ) : null}

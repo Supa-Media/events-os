@@ -1,19 +1,19 @@
-# So you own a workstream
+# So you own an area
 
-*You've been assigned a role that owns one or more workstreams of an event.
-This is the five-minute version of what that means. Your specific workstream
+*You've been assigned a role that owns one or more areas of an event.
+This is the five-minute version of what that means. Your specific area
 (Comms, Supplies, Run of Show…) has its own guide with the details — this one
 covers what's true for all of them.*
 
-## What a workstream is
+## What an area is
 
-A workstream is one owned area of the event plan — a stream of work one person
-carries end-to-end. The event plan is nothing more than its workstreams:
+An area is one owned slice of the event plan — a stream of work one person
+carries end-to-end. The event plan is nothing more than its areas:
 Tasks, Comms Schedule, Run of Show, Crew Duties, Supplies & Logistics
 (which includes the site map), Permits, Debrief (plus any custom ones
 this event added). Each renders as a tab on the event page.
 
-Every workstream is built the same way:
+Every area is built the same way:
 
 - **Rows** — the unit of work: a task, a message, a supply item, a permit.
   Every row has a title, a status, and an accountable human.
@@ -28,7 +28,7 @@ Every workstream is built the same way:
 
 ## What's expected of you
 
-Owning a workstream means owning its **completeness**, not doing every row:
+Owning an area means owning its **completeness**, not doing every row:
 
 1. **Your stream tells the truth.** Rows exist for everything that must
    happen, statuses reflect reality, nothing is unowned. Update statuses the
@@ -49,7 +49,7 @@ Owning a workstream means owning its **completeness**, not doing every row:
 
 ## In the app
 
-- Your workstream is a **tab on the event page**. Click any cell to edit;
+- Your area is a **tab on the event page**. Click any cell to edit;
   status chips cycle when tapped; changes save instantly.
 - Rows assigned to your role (or to you) appear in your **reminder emails**
   and in **"What's next"** on the event overview.
@@ -62,10 +62,10 @@ Owning a workstream means owning its **completeness**, not doing every row:
 
 ## Ask the agent
 
-The assistant on the event page knows the playbook, your workstream's guide,
+The assistant on the event page knows the playbook, your area's guide,
 and your live rows. Try:
 
-- *"Brief me on my workstream — what's due, what's at risk, what's unowned?"*
+- *"Brief me on my area — what's due, what's at risk, what's unowned?"*
 - *"What does 'ready' mean for this stream and how far am I?"*
 - *"Add the rows I'm missing compared to the template."*
 - *"I'm blocked on X — who should I talk to and what's the fallback?"*

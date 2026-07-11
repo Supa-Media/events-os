@@ -970,7 +970,10 @@ export function CrewSections({ eventId }: { eventId: string }) {
         onClose={() => setPicker(null)}
       />
 
-      {/* Replace-placeholder picker: REAL chapter people only (+ add-new). */}
+      {/* Replace-placeholder picker: non-placeholder people only (+ add-new).
+          Works in sandboxes too — the server scopes the roster to the learner
+          + sample people (not placeholders), so the swap quest's bench passes
+          this filter while the sandbox's own placeholder slots don't. */}
       <PersonPicker
         visible={replacingId !== null}
         title="Replace with person"

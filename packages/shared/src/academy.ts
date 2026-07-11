@@ -1,7 +1,7 @@
 /**
  * The Academy — the ordered training curriculum.
  *
- * Fifteen short sections: four concept pages, one page per native workstream
+ * Sixteen short sections: five concept pages, one page per native area
  * tab, an assistant page, and three hands-on capstones (two required, one
  * optional bonus). Content is authored FROM the playbook (docs/agent.md) and
  * the enablement guides (docs/guides/*) — this file is the single source both
@@ -361,7 +361,7 @@ const SECTIONS_IN_ORDER: Omit<AcademySection, "order">[] = [
     blocks: [
       {
         kind: "p",
-        text: "Open any event and you'll see tabs. Each tab is one area of the plan with one owner — the app calls these **workstreams**. Seven come built in, and each gets its own short section after this one:",
+        text: "Open any event and you'll see tabs. Each tab is one **area** of the plan — one owned slice of the work. Seven come built in, and each gets its own short section after this one:",
       },
       {
         kind: "table",
@@ -478,6 +478,10 @@ const SECTIONS_IN_ORDER: Omit<AcademySection, "order">[] = [
         text: "Where do the numbers come from? **Your template.** Announce at T-14, lock volunteers by T-10, pack supplies by T-1 — those are the proven defaults our worship templates ship with, distilled from real events. They're the template's earned opinion, not the app's law. Planning something smaller? Change the number. New number works better? Change the *template*.",
       },
       {
+        kind: "p",
+        text: "And horizons scale with the event. A flagship gathering starts **months** out — venues and permits can need T-60 or more. A backyard party still wants two weeks. Treat **two weeks as the floor** for planning anything involving other people, not as the standard length of a plan.",
+      },
+      {
         kind: "rule",
         title: "A task without timing is invisible",
         text: "Due dates come from offsets, and reminder emails come from due dates. A row with no timing never lands on anyone's list — give every task an offset, even a rough one.",
@@ -545,6 +549,122 @@ const SECTIONS_IN_ORDER: Omit<AcademySection, "order">[] = [
         answerIndex: 1,
         explanation:
           "Eden applied in time and still got denied — survivable only because of slack and a written plan B. Lead-time work starts at kickoff and always carries a fallback.",
+      },
+    ],
+  },
+
+  // ── 5 · The four phase rings ───────────────────────────────────────────────
+  {
+    slug: "phase-rings",
+    title: "The four rings",
+    subtitle: "Pre-plan, Planning, Day-of, Post — and staying on pace",
+    minutes: 3,
+    blocks: [
+      {
+        kind: "p",
+        text: "Every event header shows four rings. They're computed from your real rows — an honesty meter, not a vibe — and each one answers a different question:",
+      },
+      {
+        kind: "table",
+        headers: ["Ring", "The question", "What moves it"],
+        rows: [
+          [
+            "**Pre-plan**",
+            "Is the event set up to be planned?",
+            "Roles filled, area owners assigned, template-marked cells checked off, Comms + Permits marked ready",
+          ],
+          [
+            "**Planning**",
+            "Is the prep on track?",
+            "Every row due *before* the event (T-minus tasks, messages, permits) + locking Run of Show, Crew Duties, Supplies",
+          ],
+          [
+            "**Day-of**",
+            "Will the day itself run?",
+            "Supplies walked to Packed, Crew Duties, day-of rows",
+          ],
+          [
+            "**Post**",
+            "Did we close the loop?",
+            "Debrief rows dispatched, anything dated after the event (T-plus)",
+          ],
+        ],
+      },
+      {
+        kind: "p",
+        text: "The sorting is automatic: a row's tab and timing decide its ring. Debrief rows are always Post. Supplies and Crew Duties are always Day-of. Everything else follows its offset — before the event feeds Planning, on the day feeds Day-of, after feeds Post. **Pre-plan is different**: it isn't statuses at all, but the explicit setup checklist — people in roles, owners on areas, and the specific cells your template flagged for a deliberate check-off.",
+      },
+      { kind: "heading", text: "Am I where I should be?" },
+      {
+        kind: "p",
+        text: "A percentage alone can't tell you if you're in trouble — 40% planned is great at two months out and a crisis at three days. So each ring also knows its **pace target**: the score it would show if everything due by today were done. Fall meaningfully behind and the ring grows a “▲ 54%” pill — that's the number to catch up to, and the gap is what you close *today*.",
+      },
+      {
+        kind: "rule",
+        title: "The rings only tell the truth you tell them",
+        text: "Every number here is computed from row statuses and due dates. A stale status doesn't just lie about one row — it corrupts the pace math the whole team steers by. Update statuses the day things happen.",
+      },
+      {
+        kind: "try_ready",
+        criteria: [
+          "All rows at a terminal status",
+          "Every row has an owner",
+          "Pre-plan cells checked",
+        ],
+      },
+      {
+        kind: "tip",
+        text: "Tap any ring on the event header — the tabs that feed it pulse, answering \"what do I do to move this number?\"",
+      },
+    ],
+    quiz: [
+      {
+        prompt: "What makes the Pre-plan ring different from the other three?",
+        options: [
+          "It's the only one an admin can edit",
+          "It tracks the explicit setup checklist — roles, area owners, flagged cells — not row statuses",
+          "It's computed from the budget",
+          "It only appears on large events",
+        ],
+        answerIndex: 1,
+        explanation:
+          "Planning/Day-of/Post are computed from row statuses and timing. Pre-plan is the deliberate check-off layer: people in roles, owners on areas, and the cells your template marked for explicit confirmation.",
+      },
+      {
+        prompt: "Which ring does a Debrief row feed?",
+        options: [
+          "Planning",
+          "Day-of",
+          "Post — always",
+          "Whichever the owner picks",
+        ],
+        answerIndex: 2,
+        explanation:
+          "The sorting is automatic by tab and timing: Debrief rows are always Post, Supplies and Crew Duties always Day-of, and everything else follows its offset.",
+      },
+      {
+        prompt: "Your Planning ring reads 20% with a \"▲ 50%\" pill next to it. What does that mean?",
+        options: [
+          "The ring is broken",
+          "You've done 20% of the whole event",
+          "If everything due by today were done you'd be at 50% — you have a 30-point gap to close as soon as possible",
+          "The template requires 50% before you can continue",
+        ],
+        answerIndex: 2,
+        explanation:
+          "The pill is the pace target: the score the same ring would show if every row due by now were complete. The gap between it and your actual number is today's catch-up work.",
+      },
+      {
+        prompt: "Why does a stale status matter more than it seems?",
+        options: [
+          "It doesn't — statuses are just labels",
+          "The rings and pace math are computed from statuses, so one stale row corrupts the numbers everyone steers by",
+          "Stale statuses get auto-deleted",
+          "It blocks other people from editing the row",
+        ],
+        answerIndex: 1,
+        explanation:
+          "The rings are an honesty meter. They only work if owners keep statuses true the day things happen — that's why 'the area tells the truth' is expectation #1.",
       },
     ],
   },
@@ -955,7 +1075,7 @@ const SECTIONS_IN_ORDER: Omit<AcademySection, "order">[] = [
         ],
         answerIndex: 1,
         explanation:
-          "The site map lives with Supplies & Logistics because it's the spatial view of the same workstream: everything the grid tracks, placed where it goes.",
+          "The site map lives with Supplies & Logistics because it's the spatial view of the same area: everything the grid tracks, placed where it goes.",
       },
     ],
   },
@@ -1025,7 +1145,7 @@ const SECTIONS_IN_ORDER: Omit<AcademySection, "order">[] = [
         ],
         answerIndex: 1,
         explanation:
-          "Tabs are toggleable per event and per template. An event only carries the workstreams it actually uses.",
+          "Tabs are toggleable per event and per template. An event only carries the areas it actually uses.",
       },
       {
         prompt: "Every permit row should carry a \"what if denied\" line. Why?",
@@ -1173,7 +1293,7 @@ const SECTIONS_IN_ORDER: Omit<AcademySection, "order">[] = [
       {
         kind: "bullets",
         items: [
-          '*"Brief me on my workstream — what\'s due, what\'s at risk, what\'s unowned?"*',
+          '*"Brief me on my area — what\'s due, what\'s at risk, what\'s unowned?"*',
           '*"We\'re moving to June 14 — reschedule and tell me what becomes infeasible."*',
           '*"Is this event actually ready? Check it against the readiness criteria."*',
           '*"Run my debrief — interview me and draft the rows."*',
@@ -1206,7 +1326,7 @@ const SECTIONS_IN_ORDER: Omit<AcademySection, "order">[] = [
           "Propose, apply, verify, stay reversible — that's what makes giving it a free hand on plan internals safe.",
       },
       {
-        prompt: "Every row is Done, but the assistant won't mark the workstream ready itself. Why?",
+        prompt: "Every row is Done, but the assistant won't mark the area ready itself. Why?",
         options: [
           "It can't see the ready flag",
           "Marking ready is a human signing their name to a claim — it will tell you the criteria are met, but the signature is yours",
@@ -1230,7 +1350,7 @@ const SECTIONS_IN_ORDER: Omit<AcademySection, "order">[] = [
     blocks: [
       {
         kind: "p",
-        text: "This is how most people actually meet Events OS: someone else created a big event from a template, and you got handed a role. **Start training** spins up that exact situation — a large worship gathering, mid-planning, dozens of real rows across every tab — visible only to you. Your role: **Comms Lead**.",
+        text: "This is how most people actually meet Events OS: someone else created a big event from a template, and you got handed a role. **Start training** spins up that exact situation — a large worship gathering a month out (big events plan on long horizons), mid-planning, dozens of real rows across every tab — visible only to you. Your role: **Comms Lead**.",
       },
       {
         kind: "rule",
@@ -1240,7 +1360,7 @@ const SECTIONS_IN_ORDER: Omit<AcademySection, "order">[] = [
       { kind: "heading", text: "Your quests" },
       {
         kind: "p",
-        text: 'Quests are rows in the event itself, prefixed **"Quest:"** — the checklist below ticks as each row reaches its terminal status. Each quest drills a move every workstream owner makes on every real event:',
+        text: 'Quests are rows in the event itself, prefixed **"Quest:"** — the checklist below ticks as each row reaches its terminal status. Each quest drills a move every area owner makes on every real event:',
       },
       {
         kind: "table",
@@ -1249,11 +1369,16 @@ const SECTIONS_IN_ORDER: Omit<AcademySection, "order">[] = [
           ["**Take the Comms Lead role**", "Roles before people — put yourself in the hat"],
           ["**Find your work in Me view**", "Filter the whole event down to what's yours"],
           ["**Send the announcement**", "Walk a comms row to its terminal state"],
-          ["**Post the crew ask**", "Check Crew Duties is written first — the cross-stream gate"],
-          ["**Send the day-before call-time reminder**", "Your message quotes the Run of Show — streams depend on each other"],
-          ["**Ask the assistant to brief you on your workstream**", "Meet your chief of staff"],
-          ["**Mark the Comms Schedule ready**", "Sign your name to a stream, honestly"],
+          ["**Post the crew ask**", "Check Crew Duties is written first — areas gate each other"],
+          ["**Send the day-before call-time reminder**", "Your message quotes the Run of Show — areas depend on each other"],
+          ["**Swap the Greeter placeholder for a person**", "Placeholders are debts — fill the slot from your sample bench"],
+          ["**Ask the assistant to brief you on your area**", "Meet your chief of staff"],
+          ["**Mark the Comms Schedule ready**", "Sign your name to an area, honestly"],
         ],
+      },
+      {
+        kind: "p",
+        text: "Two more things live in the sandbox: the Crew list has a couple of **role-shaped placeholder slots** (\"Greeter\") waiting to be filled, and your bench for filling them is **Maya and Jordan** — sample people. Person pickers inside a sandbox only ever offer *you and sample people*, so there's no way to accidentally rope a real teammate into a drill.",
       },
       {
         kind: "tip",
@@ -1273,7 +1398,7 @@ const SECTIONS_IN_ORDER: Omit<AcademySection, "order">[] = [
     blocks: [
       {
         kind: "p",
-        text: "Now the other direction: nothing is planned yet. **Start training** creates a nearly-empty birthday party sandbox. You're the event owner. On your team: **Maya and Jordan**, two sample teammates who've been through this same training — put them in roles and hand them real streams. On your crew: **Uncle Ray** has agreed to run the grill and **Cousin Lena** is on decorations — and you still need to hire **Sunny the Clown** (yes, a paid professional; every party has a budget line that raises an eyebrow).",
+        text: "Now the other direction: nothing is planned yet. **Start training** creates a nearly-empty birthday party sandbox. You're the event owner. On your team: **Maya and Jordan**, two sample teammates who've been through this same training — put them in roles and hand them real areas of the plan. On your crew: **Uncle Ray** has agreed to run the grill and **Cousin Lena** is on decorations — and you still need to hire **Sunny the Clown** (yes, a paid professional; every party has a budget line that raises an eyebrow).",
       },
       {
         kind: "rule",
@@ -1287,7 +1412,7 @@ const SECTIONS_IN_ORDER: Omit<AcademySection, "order">[] = [
         rows: [
           ["**Rename the party + set the date**", "Own the calendar — watch due dates derive"],
           ["**Add three tasks of your own, with timing**", "Build a plan backwards from the date"],
-          ["**Give Maya and Jordan each a role**", "Delegation is the job — hand off whole streams"],
+          ["**Give Maya and Jordan each a role**", "Delegation is the job — hand off whole areas"],
           ["**Hire Sunny the Clown as paid crew**", "Paid crew: amount, payment status, budget rollup"],
           ["**Send the invites**", "A comms row from draft to sent"],
           ["**Get the cake to Packed**", "Walk a supply to its terminal state"],

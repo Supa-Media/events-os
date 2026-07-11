@@ -83,10 +83,10 @@ export function ModulesCard({
 
   return (
     <Card className="mb-2">
-      <SectionHeader title="Workstreams" />
+      <SectionHeader title="Areas" />
       <Text className="mb-3 text-sm text-muted">
         Right-click a chip to rename, set its owner, or disable it; use Add
-        workstream to re-enable a core workstream or create a custom one.
+        area to re-enable a core area or create a custom one.
       </Text>
 
       <View className="flex-row flex-wrap items-center gap-2">
@@ -290,11 +290,11 @@ function AddModuleButton({
           <Pressable
             onPress={openMenu}
             accessibilityRole="button"
-            accessibilityLabel="Add workstream"
+            accessibilityLabel="Add area"
             className="flex-row items-center gap-1.5 rounded-pill border border-dashed border-border-strong bg-raised px-3 py-1.5 active:opacity-80 web:hover:border-accent"
           >
             <Icon name="plus" size={14} color={colors.muted} />
-            <Text className="text-sm font-medium text-muted">Add workstream</Text>
+            <Text className="text-sm font-medium text-muted">Add area</Text>
           </Pressable>
         </View>
       )}
@@ -309,7 +309,7 @@ function AddModuleButton({
             onPress: () => onEnableCore(m.key),
           })),
           {
-            label: "New custom workstream",
+            label: "New custom area",
             icon: "edit-2" as const,
             onPress: () => setAdding(true),
           },
@@ -334,7 +334,7 @@ function AddCustomModuleInput({
         value={draft}
         onChangeText={setDraft}
         autoFocus
-        placeholder="Workstream name"
+        placeholder="Area name"
         placeholderTextColor={colors.faint}
         onBlur={() => (draft.trim() ? onCommit(draft) : onCancel())}
         onSubmitEditing={() => onCommit(draft)}
@@ -351,13 +351,13 @@ function confirmRemoveModule(onConfirm: () => void) {
   if (Platform.OS === "web") {
     if (
       typeof window !== "undefined" &&
-      window.confirm("Delete this workstream and all its items?")
+      window.confirm("Delete this area and all its items?")
     ) {
       onConfirm();
     }
     return;
   }
-  Alert.alert("Delete workstream?", "This removes the workstream and its items.", [
+  Alert.alert("Delete area?", "This removes the area and its items.", [
     { text: "Cancel", style: "cancel" },
     { text: "Delete", style: "destructive", onPress: onConfirm },
   ]);

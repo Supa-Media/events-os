@@ -6,10 +6,10 @@ import { Icon } from "../ui";
 import { colors } from "../../lib/theme";
 
 /**
- * Which platform guide teaches each workstream (module key → guide slug under
- * docs/guides/). Workstreams whose specific guide isn't written yet — and
- * custom workstreams, which aren't in this map at all — fall back to the
- * generic "So you own a workstream" guide.
+ * Which platform guide teaches each area (module key → guide slug under
+ * docs/guides/). Areas whose specific guide isn't written yet — and
+ * custom areas, which aren't in this map at all — fall back to the
+ * generic "So you own an area" guide.
  */
 const MODULE_GUIDE_SLUGS: Record<string, string> = {
   planning_doc: "owning-the-planning-doc",
@@ -21,13 +21,13 @@ const MODULE_GUIDE_SLUGS: Record<string, string> = {
   retro: "owning-the-retro",
 };
 
-/** The generic workstream-owner guide every workstream can fall back to. */
+/** The generic area-owner guide every area can fall back to. */
 const FALLBACK_GUIDE_SLUG = "so-you-own-a-workstream";
 
 /**
- * Quiet "How this works" affordance for a workstream's section header: a small
- * "?" that opens the platform guide for this workstream (its specific guide
- * when seeded, else the generic workstream-owner guide). Renders nothing when
+ * Quiet "How this works" affordance for an area's section header: a small
+ * "?" that opens the platform guide for this area (its specific guide
+ * when seeded, else the generic area-owner guide). Renders nothing when
  * the chapter has neither doc — so it never points at a missing page.
  *
  * Reads the same `listGuides` query as GuidesSection — the Convex client

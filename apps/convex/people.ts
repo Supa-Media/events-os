@@ -68,23 +68,72 @@ async function assertNoManagerCycle(
   }
 }
 
-/** List the chapter roster sorted by name. */
+/**
+ * TRAINING-SANDBOX people scope. Pickers rendered inside an Academy training
+ * event pass that event's id; when it really is a training event in the
+ * caller's chapter, the roster collapses to the CALLER + PLACEHOLDER people
+ * (the sandbox's sample bench) — never the real roster, so a learner can't
+ * accidentally rope real teammates into a drill. Returns null for any
+ * non-training event (normal scoping applies); enforced here server-side, not
+ * in the picker UI.
+ */
+async function sandboxPeopleFilter(
+  ctx: QueryCtx,
+  chapterId: Id<"chapters">,
+  eventId: Id<"events">,
+): Promise<((p: Doc<"people">) => boolean) | null> {
+  const event = await ctx.db.get(eventId);
+  if (!event || event.chapterId !== chapterId || event.isTraining !== true) {
+    return null;
+  }
+  const userId = await requireUserId(ctx);
+  const mine = await ctx.db
+    .query("people")
+    .withIndex("by_user", (q) => q.eq("userId", userId as Id<"users">))
+    .first();
+  const meId = mine?.chapterId === chapterId ? mine._id : null;
+  // THIS sandbox's own crew slots — placeholders engaged on this event. Other
+  // events' placeholder stand-ins (real events', other learners' sandboxes')
+  // must never surface here.
+  const engaged = new Set(
+    (
+      await ctx.db
+        .query("engagements")
+        .withIndex("by_event", (q) => q.eq("eventId", eventId))
+        .collect()
+    ).map((e) => String(e.personId)),
+  );
+  return (p) =>
+    (meId != null && p._id === meId) ||
+    p.isSamplePerson === true ||
+    (p.isPlaceholder === true && engaged.has(String(p._id)));
+}
+
+/** List the chapter roster sorted by name. In a training sandbox (`eventId`
+ *  of a training event), lists only the caller + placeholder people. */
 export const list = query({
-  args: {},
-  handler: async (ctx) => {
+  args: { eventId: v.optional(v.id("events")) },
+  handler: async (ctx, { eventId }) => {
     const chapterId = await getChapterIdOrNull(ctx);
     if (!chapterId) return [];
     const people = await ctx.db
       .query("people")
       .withIndex("by_chapter", (q) => q.eq("chapterId", chapterId as Id<"chapters">))
       .collect();
-    // These are PER-EVENT materialized copies of a template's placeholder crew
-    // (the reusable definitions live on the template as `templatePeople` and are
-    // never touched here) — event-scoped stand-ins, not real roster members, so
-    // keep them out of the People roster. Replacing one only consumes that
-    // event's copy; the template's placeholders persist for future instances.
+    const sandbox = eventId
+      ? await sandboxPeopleFilter(ctx, chapterId as Id<"chapters">, eventId)
+      : null;
+    // Placeholders are PER-EVENT materialized copies of a template's crew
+    // (the reusable definitions live on the template as `templatePeople` and
+    // are never touched here) — event-scoped stand-ins, not real roster
+    // members, so keep them out of the People roster. Replacing one only
+    // consumes that event's copy. Inside a training sandbox the rule flips:
+    // placeholders (+ the caller) are the ONLY people offered.
     const sorted = people
-      .filter((p) => p.isPlaceholder !== true)
+      .filter(
+        sandbox ??
+          ((p) => p.isPlaceholder !== true && p.isSamplePerson !== true),
+      )
       .sort((a, b) => a.name.localeCompare(b.name));
     // Resolve each profile photo storageId to a servable URL for display.
     return await Promise.all(
@@ -99,19 +148,29 @@ export const list = query({
 /**
  * Team members only — the people who can be event owners or hold lead roles
  * (they have, or will be granted, backend access). A person counts as a team
- * member if explicitly flagged OR already linked to a user account.
+ * member if explicitly flagged OR already linked to a user account. In a
+ * training sandbox (`eventId` of a training event), returns the caller +
+ * placeholder people instead — the sandbox's sample bench holds the roles.
  */
 export const teamMembers = query({
-  args: {},
-  handler: async (ctx) => {
+  args: { eventId: v.optional(v.id("events")) },
+  handler: async (ctx, { eventId }) => {
     const chapterId = await getChapterIdOrNull(ctx);
     if (!chapterId) return [];
     const people = await ctx.db
       .query("people")
       .withIndex("by_chapter", (q) => q.eq("chapterId", chapterId as Id<"chapters">))
       .collect();
+    const sandbox = eventId
+      ? await sandboxPeopleFilter(ctx, chapterId as Id<"chapters">, eventId)
+      : null;
     return people
-      .filter((p) => p.isTeamMember === true || p.userId != null)
+      .filter(
+        sandbox ??
+          ((p) =>
+            p.isSamplePerson !== true &&
+            (p.isTeamMember === true || p.userId != null)),
+      )
       .sort((a, b) => a.name.localeCompare(b.name));
   },
 });

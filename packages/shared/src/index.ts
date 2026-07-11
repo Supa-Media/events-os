@@ -1025,6 +1025,97 @@ export function computePhaseScores(
   };
 }
 
+// ── Expected progress (the pacing ghost) ─────────────────────────────────────
+// "At this point I should be at 50% — I'm at 20%." The expected score for a
+// phase is the score the SAME rings would show if every item due by `now`
+// were complete and nothing else were: each item's deadline passes → it
+// counts 1, otherwise 0, aggregated through the identical module-averaging
+// as computePhaseScores so expected and actual are directly comparable.
+// Deadlines come from due dates where rows have them, and from the playbook
+// conventions where they don't (supplies packed by T-1, debrief by T+7,
+// untimed-but-statused rows by T-0). Pre-plan has no deadline mechanism, so
+// its expectation is null (no ghost on that ring).
+
+/** Convention deadlines (in offset days) for each module's READY gate — the
+ *  playbook's earned defaults: run of show locked by T-3, supplies packed by
+ *  T-1, crew locked by T-10. Pre-plan gates (comms/permits) have no ghost. */
+export const EXPECTED_READY_OFFSET: Partial<Record<string, number>> = {
+  run_of_show: -3,
+  supplies: -1,
+  volunteer_expectations: -10,
+};
+
+/** When an item is EXPECTED to be complete, or null when no expectation can
+ *  be formed (statusless modules can't score, so they carry no expectation —
+ *  mirroring the 0 they contribute to the actual score). */
+function expectedDoneBy(
+  module: string,
+  item: { offsetDays?: number | null; offsetMinutes?: number | null },
+  eventDate: number,
+): number {
+  // Explicit timing always wins (mirroring itemPhase's precedence)…
+  if (item.offsetMinutes != null) return eventDate; // day-of segments
+  if (item.offsetDays != null) return eventDate + item.offsetDays * DAY_MS;
+  // …conventions cover the undated rows of convention-deadline areas…
+  if (module === "supplies") return eventDate - DAY_MS; // packed by T-1
+  if (module === "retro") return eventDate + 7 * DAY_MS; // dispatched by T+7
+  // …and untimed rows elsewhere still have to be true before the event.
+  return eventDate;
+}
+
+/**
+ * The expected (on-pace) phase scores at `now`, aggregated exactly like
+ * computePhaseScores: same inputs, plus the event date. An item counts 1 when
+ * its deadline (due date or convention) has passed, 0 otherwise; ready gates
+ * count 1 once their convention deadline (EXPECTED_READY_OFFSET) passes.
+ * Modules without a status column contribute 0 expectation — the same 0 they
+ * contribute to the actual score — so gaps stay apples-to-apples. Pre-plan is
+ * always null. Compare per phase: `expected - actual` is the catch-up gap.
+ */
+export function computeExpectedPhaseScores(
+  modules: Array<{
+    module: string;
+    statusOptions: SelectOption[] | undefined;
+    items: Array<{
+      offsetDays?: number | null;
+      offsetMinutes?: number | null;
+    }>;
+  }>,
+  moduleReady: Array<{ module: string; phase: PhaseKey }>,
+  eventDate: number,
+  now: number,
+): PhaseScores {
+  // Synthesize each item's status: a complete-flagged option value when the
+  // deadline has passed, nothing otherwise — then reuse the REAL aggregator.
+  const synthesized = modules.map((m) => {
+    const completeValue = m.statusOptions?.find(
+      (o) => o.isComplete === true,
+    )?.value;
+    return {
+      module: m.module,
+      statusOptions: m.statusOptions,
+      items: m.items.map((it) => ({
+        status:
+          completeValue != null &&
+          now >= expectedDoneBy(m.module, it, eventDate)
+            ? completeValue
+            : null,
+        offsetDays: it.offsetDays,
+        offsetMinutes: it.offsetMinutes,
+        // No pre-plan marks: expected pre-plan stays null (no deadlines).
+      })),
+    };
+  });
+  const gates = moduleReady
+    .filter((g) => g.phase !== "prePlan" && EXPECTED_READY_OFFSET[g.module] != null)
+    .map((g) => ({
+      phase: g.phase,
+      ready: now >= eventDate + EXPECTED_READY_OFFSET[g.module]! * DAY_MS,
+    }));
+  const scores = computePhaseScores(synthesized, undefined, gates);
+  return { ...scores, prePlan: null };
+}
+
 /**
  * The "current" phase of an event by date — what a pipeline card highlights.
  *   same calendar day as the event → dayOf

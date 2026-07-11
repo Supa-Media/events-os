@@ -9,7 +9,7 @@ the ten-minute version of the job.*
 The event owner is the answer to "who do I ask?" for anything without a
 clearer owner. You don't do everything — in fact, if more than about 40% of
 tasks resolve to you, you're failing at the core skill, which is delegation.
-Your job is that every workstream has an owner, every owner knows their
+Your job is that every area has an owner, every owner knows their
 deadlines, blockers reach you early, and the plan is honest. You are the end
 of the accountability chain: any row whose owner chain dead-ends lands on
 you until you hand it to someone.
@@ -27,7 +27,7 @@ you until you hand it to someone.
 4. **Hold the budget.** Set it at kickoff ($300 lightweight / ~$1000
    full-scale are the proven anchors), watch the rollup, reconcile actuals
    afterward.
-5. **Make the readiness call.** "Ready" means: all workstreams marked ready,
+5. **Make the readiness call.** "Ready" means: all areas marked ready,
    all roles assigned, no placeholders, permits resolved or consciously
    waived, contingencies written. You declare it, and you own any override —
    out loud.
@@ -65,7 +65,7 @@ you until you hand it to someone.
 - The four **phase rings** in the header (Pre-plan / Planning / Day-of /
   Post) are your honesty meter — they're computed from row statuses, so they
   only work if owners keep statuses true.
-- **Assign roles** from the Overview; assign workstream owners from each
+- **Assign roles** from the Overview; assign area owners from each
   section header. **"Share crew"** gives volunteers their no-login briefing
   page.
 - **Day-of mode** (button on the event) is the big-print field view for the

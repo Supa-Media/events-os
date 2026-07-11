@@ -813,15 +813,14 @@ async function reseedMissingRows(
 
 /**
  * Ensure a capstone's sample teammates (spec.sampleTeammates) exist on the
- * chapter roster. Flags matter here:
- *  - `isPlaceholder` keeps them out of the People roster and chapterRoster
- *    views ("who's trained", Team, workload) — they're props, not people.
- *  - `isTeamMember` puts them in api.people.teamMembers, the source behind
- *    the role-assignment PersonPicker — WITHOUT it the "Give Maya and Jordan
- *    each a role" quest is impossible to perform as instructed. The
- *    tradeoff: they also appear in role pickers on real events, which their
- *    "(sample teammate)" names make self-explanatory.
- * Reused by name across learners — one Maya per chapter, not one per run.
+ * chapter roster, flagged `isSamplePerson`: excluded from every operational
+ * surface (People roster, chapterRoster views, real events' pickers) but
+ * offered by sandbox-scoped pickers — exactly where the role quests need
+ * them. Deliberately NOT `isPlaceholder`: replacing a placeholder crew slot
+ * with a sample person must CLEAR the placeholder debt (and a later
+ * re-replace must never garbage-collect the shared bench row). Reused by
+ * name across learners — one Maya per chapter, not one per run; legacy rows
+ * from earlier releases are healed onto the new flags.
  */
 async function ensureSampleTeammates(
   ctx: MutationCtx,
@@ -835,16 +834,34 @@ async function ensureSampleTeammates(
     .withIndex("by_chapter", (q) => q.eq("chapterId", chapterId))
     .collect();
   for (const seed of seeds) {
-    const exists = people.some(
-      (p) => p.isPlaceholder === true && p.name === seed.name,
+    const existing = people.find(
+      (p) =>
+        p.name === seed.name &&
+        (p.isSamplePerson === true ||
+          p.isPlaceholder === true ||
+          p.isTeamMember === true),
     );
-    if (exists) continue;
+    if (existing) {
+      // Heal rows created by earlier releases (placeholder and/or
+      // isTeamMember variants) onto the sample-person shape.
+      if (
+        existing.isSamplePerson !== true ||
+        existing.isPlaceholder === true ||
+        existing.isTeamMember === true
+      ) {
+        await ctx.db.patch(existing._id, {
+          isSamplePerson: true,
+          isPlaceholder: undefined,
+          isTeamMember: undefined,
+        });
+      }
+      continue;
+    }
     await ctx.db.insert("people", {
       chapterId,
       name: seed.name,
       role: seed.role,
-      isPlaceholder: true,
-      isTeamMember: true,
+      isSamplePerson: true,
       isActive: true,
       createdAt: now,
     });
@@ -907,6 +924,12 @@ export const startTraining = mutation({
       kind,
     );
 
+    // Sample teammates the capstone's role quests assign (if the spec has
+    // any). Runs on RESUME too — it also heals bench rows created by earlier
+    // releases onto the current flags.
+    const spec = trainingTemplateSpec(kind);
+    await ensureSampleTeammates(ctx, chapterId, now, spec.sampleTeammates ?? []);
+
     const mine = await trainingEventsFor(ctx, chapterId, me, trainingTypeId);
     const existing = mine.find((e) => e.status !== "cancelled");
     if (existing) {
@@ -927,10 +950,6 @@ export const startTraining = mutation({
       });
     }
 
-    // Sample teammates the capstone's role quests assign (if the spec has any).
-    const spec = trainingTemplateSpec(kind);
-    await ensureSampleTeammates(ctx, chapterId, now, spec.sampleTeammates ?? []);
-
     const eventType = await ctx.db.get(trainingTypeId);
     const person = await ctx.db.get(me);
     const firstName = (person?.name ?? "Your").split(/\s+/)[0];
@@ -939,7 +958,9 @@ export const startTraining = mutation({
       chapterId,
       userId,
       name: spec.eventName(firstName),
-      eventDate: now + 14 * DAY_MS,
+      // Horizons scale with the event — the join sandbox sits a month out,
+      // the party/pop-up sandboxes at the ~2-week planning floor.
+      eventDate: now + spec.eventDaysOut * DAY_MS,
       isTraining: true,
       now,
     });

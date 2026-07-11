@@ -26,19 +26,19 @@ Get these five ideas and everything else in the app makes sense.
 ### The template and the event
 
 A **template** is the reusable blueprint for a kind of event (e.g. "Worship
-With Strangers", "Eden"): its roles, its workstreams, and its standard tasks
+With Strangers", "Eden"): its roles, its areas, and its standard tasks
 with T-offsets. An **event** is one dated instance of a template. Creating an
 event copies the template's whole structure, back-calculates every due date
 from the event date, and from then on the event is yours to edit freely.
 Templates hold what's *always* true; events hold what's true *this time*.
 
-### Workstreams
+### Areas
 
-A **workstream** is one owned area of the event plan — one stream of work that
+An **area** is one owned slice of the event plan — one stream of work that
 a single role carries end-to-end. The event plan is nothing more than its
-workstreams. The core seven:
+areas. The core seven:
 
-| Workstream | What it holds | Default owner |
+| Area | What it holds | Default owner |
 |---|---|---|
 | **Tasks** | The master task list — every to-do with owner, offset, status | Event Lead |
 | **Comms Schedule** | Every message: audience, channel, copy, T-offset | Comms Lead |
@@ -48,41 +48,41 @@ workstreams. The core seven:
 | **Permits** | Each permit: jurisdiction, lead time, status, documents | Event Lead |
 | **Debrief** | What went well / broke / was missing / was excess | Event Lead |
 
-Chapters can add **custom workstreams** (a merch stand, a food operation) to a
+Chapters can add **custom areas** (a merch stand, a food operation) to a
 template or a single event; they behave exactly like the core ones.
 
-Two shapes worth naming: most workstreams are **task-shaped** (rows are
+Two shapes worth naming: most areas are **task-shaped** (rows are
 to-dos or messages), while Run of Show is **program-shaped** (rows are
-segments of the day). A workstream can also carry an **artifact** alongside
+segments of the day). An area can also carry an **artifact** alongside
 its rows — Supplies & Logistics holds the site map (a drawing surface, the
 spatial view of everything the grid tracks). Same ownership, timing, and
 readiness rules throughout; only the surface differs.
 
-**Workstreams vs. tools.** Not everything on an event page is a workstream.
+**Areas vs. tools.** Not everything on an event page is an area.
 Tickets, day-of mode, the crew table, and the assistant are **operational
 tools** — machinery the event uses. Tools have no owner role, rows, or ready
 flag, and they don't feed readiness. The rule of thumb: **plan in
-workstreams, operate in tools.** The *work* of ticketing (set up tiers,
-publish the page, plan check-in) lives as rows in a workstream (Tasks
-rows, or a custom Ticketing workstream for a ticketed event); the Tickets
+areas, operate in tools.** The *work* of ticketing (set up tiers,
+publish the page, plan check-in) lives as rows in an area (Tasks
+rows, or a custom Ticketing area for a ticketed event); the Tickets
 tool — the button in the event header, next to Day-of view — is where you
 run the result.
 
-> Naming note: the codebase calls workstreams `modules` (and that key is
+> Naming note: the codebase calls areas `modules` (and that key is
 > stable in the schema and tool APIs). In everything human-facing — UI labels,
-> agent conversation, this playbook — the word is **workstream**.
+> agent conversation, this playbook — the word is **area**.
 
-### The shared anatomy of a workstream
+### The shared anatomy of an area
 
-Every workstream, core or custom, is built from the same parts. Learn them
+Every area, core or custom, is built from the same parts. Learn them
 once, use them everywhere:
 
-1. **An owner role.** Each workstream names the role accountable for it; the
+1. **An owner role.** Each area names the role accountable for it; the
    person holding that role owns the stream (see expectations below).
 2. **Rows.** The unit of work or inventory: a task, a message, a segment, a
    supply item, a permit, a retro entry. Every row has a title, a status, and
    an accountable human (directly or via role).
-3. **Columns.** Each workstream's rows have fields configured per template —
+3. **Columns.** Each area's rows have fields configured per template —
    statuses, selects, dates, people, costs, quantities. Templates decide the
    columns; events inherit and can adjust.
 4. **A timing mode.** One of three: **T-day offsets** (Planning, Comms,
@@ -95,12 +95,12 @@ once, use them everywhere:
    runs on this.
 6. **Pre-plan sign-offs.** Templates can mark specific cells as requiring
    explicit check-off during pre-planning (e.g. confirming a quantity).
-7. **A ready flag.** The workstream owner marks the stream ready when its
+7. **A ready flag.** The area owner marks the stream ready when its
    criteria are met (Philosophy 9) — this is a claim the owner is putting
    their name on.
 8. **How-to links.** Any cell can link a how-to doc/video so the knowledge
    survives the person (north star).
-9. **A surface.** Most workstreams are editable tables; Supplies & Logistics
+9. **A surface.** Most areas are editable tables; Supplies & Logistics
    adds a drawing surface (the site map) alongside its grid. Same ownership,
    timing, and readiness rules regardless.
 
@@ -112,7 +112,7 @@ once, use them everywhere:
 - **Roles / leads** — the named hats (Event Lead, Comms Lead, Production
   Lead, Logistics Lead, Worship Lead…). Templates assign work to roles;
   events put one person in each role.
-- **Workstream owners** — the person holding a workstream's owner role.
+- **Area owners** — the person holding an area's owner role.
 - **Row owners** — a specific row can be assigned to a specific person,
   overriding the role chain.
 - **Crew** — volunteers and paid vendors engaged for this event, organized
@@ -122,7 +122,7 @@ once, use them everywhere:
   from.
 
 Accountability for any row resolves down this chain: row owner → row's role →
-that role's person → the workstream owner → **the event owner**. If the chain
+that role's person → the area owner → **the event owner**. If the chain
 dead-ends, the row is *unowned*, and unowned work silently fails.
 
 ### What's expected of the event owner
@@ -148,9 +148,9 @@ clearer owner. Concretely, they:
    learnings are dispatched to the template, vendors are paid, and thank-yous
    are sent. The owner is accountable for "done means done."
 
-### What's expected of a workstream owner
+### What's expected of an area owner
 
-Owning a workstream means owning its **completeness**, not doing every row:
+Owning an area means owning its **completeness**, not doing every row:
 
 1. **The stream tells the truth.** Rows exist for everything that must
    happen, statuses reflect reality, and nothing in the stream is unowned.
@@ -203,7 +203,7 @@ A task without timing is a wish.
 - **Every task gets an offset**, even a rough one. Offsets encode sequencing
   knowledge: venue at T-30, permits at T-21, announce at T-14, volunteers
   locked by T-10, supplies resolved by T-1, retro by T+7.
-- **Workstreams without per-row offsets still have deadlines by convention:**
+- **Areas without per-row offsets still have deadlines by convention:**
   - Supplies: every item at a terminal state (*Packed* / *Have it*) by **T-1**.
     Not "pull from storage." Packed.
   - Run of show: segment times, owners, and call times locked by **T-3** —
@@ -371,10 +371,10 @@ or overloaded.
 A status is a claim about reality; the plan should be able to defend the
 claim.
 
-- **Workstream readiness has criteria:** all rows at terminal status, owner
-  assigned, pre-plan cells checked. Marking a workstream ready overrides
+- **Area readiness has criteria:** all rows at terminal status, owner
+  assigned, pre-plan cells checked. Marking an area ready overrides
   these only consciously ("ready, with 2 open items acknowledged").
-- **Event readiness is the conjunction:** all workstreams ready + all roles
+- **Event readiness is the conjunction:** all areas ready + all roles
   assigned + no placeholders + permits resolved (approved or consciously
   waived) + contingencies written. That's what "Ready" means; anything less
   is "Planning."
@@ -410,10 +410,10 @@ How the agent conducts itself (humans: this is what you can expect from it):
   row dribbles.
 - **Free hand vs. confirmation.** Freely: editing rows, statuses, offsets,
   owners, and role assignments (all revertible). Ask first: deleting anything,
-  marking workstreams/event ready, changing the event date or status,
+  marking areas/event ready, changing the event date or status,
   promoting changes to the template, and anything volunteer- or public-facing
   (messages, blasts, share pages).
-- **Exact values, real ids.** Use each workstream's exact option vocabulary
+- **Exact values, real ids.** Use each area's exact option vocabulary
   and reference rows by id; never invent either.
 - **Nudge like a great producer, not a nag.** Tie every nudge to the T-window
   and the playbook ("We're at T-9 and 3 volunteer roles are unfilled — the
@@ -534,11 +534,11 @@ agent should be genuinely pushy about.
 
 ---
 
-## Part IV — Workstream playbooks
+## Part IV — Area playbooks
 
-**Tasks** — the master task list; the only workstream that sees
+**Tasks** — the master task list; the only area that sees
 everything. Every task: owner, offset, status, and details rich enough for a
-stranger. Link out to the workstream or doc that holds the substance rather
+stranger. Link out to the area or doc that holds the substance rather
 than duplicating it. Gate tasks (venue, permits, announce, recruit) get extra
 scrutiny.
 
@@ -557,7 +557,7 @@ permit has a "what if denied" line.
 home), current location, quantity, owner, and packing container ("green
 luggage" beats "somewhere"). Statuses run pull-from-storage / need-to-order /
 have-it / packed; everything terminal by T-1. Charge batteries the night
-before. Orders placed in Build window, not Lock. This workstream also owns
+before. Orders placed in Build window, not Lock. This area also owns
 the **site map**: walk the site early (Lock window at latest); map the stage/
 worship area, prayer stations, food, merch, welcome points, and flow of
 arrival, and place the supplies on it. Photos from the walkthrough double as
@@ -602,7 +602,7 @@ volunteers locked T-10 · song bank T-7 · run of show + setlist locked T-3 ·
 supplies packed + batteries charged T-1 · retro dispatched T+7.
 
 **The accountability chain:** row owner → row's role → role's person →
-workstream owner → event owner. Unowned = broken chain = fix it.
+area owner → event owner. Unowned = broken chain = fix it.
 
 **Done means:** happened + retro captured + learnings dispatched + vendors
 paid + thank-yous sent + template improved.

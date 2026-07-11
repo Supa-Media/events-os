@@ -118,7 +118,7 @@ function confirmRemove(name: string): boolean {
 
 /** PEOPLE roster — a spreadsheet-style editable grid with per-person history. */
 export default function PeopleScreen() {
-  const people = useQuery(api.people.list) as Person[] | undefined;
+  const people = useQuery(api.people.list, {}) as Person[] | undefined;
   const org = useQuery(api.org.nav);
   const create = useMutation(api.people.create);
 

@@ -172,7 +172,7 @@ function TabButton({
           onClose={() => setAnchor(undefined)}
           actions={[
             {
-              label: tab.remove.isCore ? "Disable workstream" : "Remove workstream",
+              label: tab.remove.isCore ? "Disable area" : "Remove area",
               icon: tab.remove.isCore ? "slash" : "trash-2",
               destructive: !tab.remove.isCore,
               onPress: tab.remove.onRemove,

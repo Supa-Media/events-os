@@ -91,7 +91,7 @@ const TOOLS = [
         "Pass an array of edits, each with an item_id plus only the fields to " +
         "change. ALWAYS prefer this over calling update_item repeatedly: to " +
         "change 8 items, make ONE update_items call with 8 edits. Each edit " +
-        "may also carry any CUSTOM column key from the workstream's " +
+        "may also carry any CUSTOM column key from the area's " +
         "allowed-values line (e.g. dispatch on retro rows) as an extra " +
         "property.",
       parameters: {
@@ -122,7 +122,7 @@ const TOOLS = [
         "Edit fields of ONE existing item. For multiple items use update_items " +
         "instead. Use the exact status/source/container VALUES and role labels " +
         "from the context. owner is a person's name, or 'none' to clear. You " +
-        "may also pass any CUSTOM column key from the workstream's " +
+        "may also pass any CUSTOM column key from the area's " +
         "allowed-values line (e.g. dispatch on retro rows) as an extra " +
         "property, with a value from that column's options.",
       parameters: {
@@ -140,15 +140,15 @@ const TOOLS = [
     function: {
       name: "add_item",
       description:
-        "Add a new item to a workstream. module is a workstream KEY from the " +
-        "event context's WORKSTREAMS list (core or custom). Provide a clear " +
+        "Add a new item to an area. module is an area KEY from the " +
+        "event context's AREAS list (core or custom). Provide a clear " +
         "title; other fields optional.",
       parameters: {
         type: "object",
         properties: {
           module: {
             type: "string",
-            description: "A workstream key from the event context.",
+            description: "An area key from the event context.",
           },
           title: { type: "string" },
           status: { type: "string" },
@@ -217,8 +217,8 @@ const TOOLS = [
       name: "get_readiness",
       description:
         "READ the event's situational-awareness snapshot: phase scores, " +
-        "days-to-event + current T-window, unassigned roles, workstreams " +
-        "missing owners, per-workstream ready flags, overdue / due-in-3-days / " +
+        "days-to-event + current T-window, unassigned roles, areas " +
+        "missing owners, per-area ready flags, overdue / due-in-3-days / " +
         "unowned items, placeholder crew still engaged, and engagement " +
         "invited/confirmed/declined counts. Call this FIRST in a working " +
         "session to build your opening briefing.",
@@ -362,8 +362,8 @@ const TOOLS = [
     function: {
       name: "set_workstream_owner",
       description:
-        "Set which ROLE owns a workstream (accountability, not day-to-day " +
-        "assignment). workstream is a key or label from the context; role is " +
+        "Set which ROLE owns an area / workstream (accountability, not day-to-day " +
+        "assignment). workstream is an area key or label from the context; role is " +
         "a role label/key, or 'none' to clear.",
       parameters: {
         type: "object",
@@ -381,8 +381,8 @@ const TOOLS = [
     function: {
       name: "toggle_workstream",
       description:
-        "Enable or disable a CORE workstream on this event (custom " +
-        "workstreams can't be toggled). Disabling hides its surface — ask " +
+        "Enable or disable a CORE area on this event (custom " +
+        "areas can't be toggled). Disabling hides its surface — ask " +
         "the user before disabling anything with items in it.",
       parameters: {
         type: "object",
@@ -400,7 +400,7 @@ const TOOLS = [
     function: {
       name: "create_custom_workstream",
       description:
-        "Create a new custom workstream on this event (e.g. a merch stand or " +
+        "Create a new custom area on this event (e.g. a merch stand or " +
         "food operation), with default columns seeded. owner_role is a role " +
         "label/key; offset_mode is none (default), days, or minutes.",
       parameters: {
@@ -442,7 +442,7 @@ const TOOLS = [
       description:
         "READ how this event has diverged from its template: items added/" +
         "modified/removed in the event (structure only — statuses and owners " +
-        "never count), new custom workstreams, and column changes. Use it " +
+        "never count), new custom areas, and column changes. Use it " +
         "during the debrief (playbook Window 5) or when the user asks what " +
         "should be promoted back to the template.",
       parameters: {
@@ -1657,7 +1657,7 @@ export async function dispatchTool(
       ok: true,
       summary: `${enabled ? "Enabled" : "Disabled"} the ${
         (MODULE_LABELS as Record<string, string>)[key] ?? key
-      } workstream.`,
+      } area.`,
       edits: 1,
     };
   }
@@ -1686,7 +1686,7 @@ export async function dispatchTool(
       offsetMode,
     });
     if (!res)
-      return { ok: false, summary: "Couldn't create the workstream.", edits: 0 };
+      return { ok: false, summary: "Couldn't create the area.", edits: 0 };
     context.modules.push({
       key: res.key,
       label,
@@ -1696,7 +1696,7 @@ export async function dispatchTool(
     });
     return {
       ok: true,
-      summary: `Created workstream "${label}" (key=${res.key}) with default columns.`,
+      summary: `Created area "${label}" (key=${res.key}) with default columns.`,
       edits: 1,
     };
   }
@@ -1925,43 +1925,43 @@ function systemPrompt(context: Ctx, now: number): string {
       ".",
     `ROLES (who holds each): ${roleList}.`,
     `PEOPLE (roster): ${peopleList}.`,
-    "WORKSTREAMS (the sections of the plan; tool args take the key):",
+    "AREAS (the owned sections of the plan; tool args take the key):",
     workstreamLines || "(none)",
     "",
-    "Below, each workstream with items is its own section with its allowed",
+    "Below, each area with items is its own section with its allowed",
     "option values and its current items. To target an item, use its [id] with",
     "update_item / update_items / remove_item / set_photo. To add a new item,",
-    "call add_item with the workstream KEY (its `module` argument) shown in the",
+    "call add_item with the area KEY (its `module` argument) shown in the",
     "section header.",
     "",
-    "CURRENT PLAN, BY WORKSTREAM:",
+    "CURRENT PLAN, BY AREA:",
     sections.length ? sections.join("\n\n") : "(no items yet)",
     "",
     "Rules:",
     "- VOCABULARY: in everything you SAY to the user, call these surfaces",
-    '  "workstreams", never "modules" (tool arguments still take the module/',
-    "  workstream keys shown above).",
+    '  "areas", never "modules" or "workstreams" (tool arguments still take',
+    "  the module/workstream keys shown above).",
     "- BRIEFING FIRST (playbook Philosophy 11): when a session starts or the",
     "  user asks anything substantive about the plan, call get_readiness and",
     "  open your reply with a short situational briefing — the T-window and the",
     "  one or two things that matter most right now. A briefing, not a firehose.",
-    "- Reason workstream by workstream. When a request implies items in one",
-    "  workstream should exist or change in another (e.g. a planning task that",
-    "  needs a supplies row), ADD or UPDATE those rows so each workstream is",
+    "- Reason area by area. When a request implies items in one",
+    "  area should exist or change in another (e.g. a planning task that",
+    "  needs a supplies row), ADD or UPDATE those rows so each area is",
     "  fully built out.",
     "- Make every requested change with tool calls. CRITICAL FOR SPEED: when",
     "  changing MULTIPLE items, call update_items ONCE with all edits in its array;",
     "  never call update_item over and over.",
-    "- Use the EXACT allowed values shown per workstream for status/source/",
+    "- Use the EXACT allowed values shown per area for status/source/",
     "  container, and the role labels / people names listed above. Reference",
     "  items by [id]; never invent ids or values.",
     "- FREE HAND (no confirmation needed): adding/editing items, statuses,",
     "  offsets, owners, role assignments, crew engagements, adding roster",
-    "  people, setting workstream owners. All logged; item edits revertible.",
+    "  people, setting area owners. All logged; item edits revertible.",
     "- ASK FIRST — only call these when the user explicitly requested that",
     "  action in this conversation: remove_item (deleting anything),",
-    "  reschedule_event (a date change is a plan change), toggling a workstream",
-    "  off, marking workstreams/the event ready or changing event status,",
+    "  reschedule_event (a date change is a plan change), toggling an area",
+    "  off, marking areas/the event ready or changing event status,",
     "  promote_to_template (edits the template every future event inherits, and",
     "  is not undoable from this run), and anything volunteer- or public-facing.",
     "- DEBRIEF (playbook Window 5): after the event date passes, drive the",

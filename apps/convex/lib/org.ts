@@ -77,7 +77,9 @@ export async function chapterRoster(
     .query("people")
     .withIndex("by_chapter", (q) => q.eq("chapterId", chapterId))
     .collect();
-  return people.filter((p) => p.isPlaceholder !== true);
+  return people.filter(
+    (p) => p.isPlaceholder !== true && p.isSamplePerson !== true,
+  );
 }
 
 /** Group a roster into a manager → direct-reports map. */

@@ -28,6 +28,7 @@ export function EventHeader({
   eventId,
   eventTypeName,
   phases,
+  expectedPhases,
   taskDone,
   taskTotal,
   budgetSpent,
@@ -48,6 +49,8 @@ export function EventHeader({
   eventId: string;
   eventTypeName: string;
   phases: PhaseScores;
+  /** Pacing ghost: where each ring should be today (see PhaseBreakdown). */
+  expectedPhases?: PhaseScores;
   taskDone: number;
   taskTotal: number;
   budgetSpent: number;
@@ -140,6 +143,7 @@ export function EventHeader({
         <View className="justify-center">
           <PhaseBreakdown
             phases={phases}
+            expected={expectedPhases}
             size={54}
             onSelectPhase={onSelectPhase}
             activePhase={activePhase}

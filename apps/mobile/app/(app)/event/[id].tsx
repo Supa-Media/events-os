@@ -23,6 +23,7 @@ import { EventTabBar, type EventTab } from "../../../components/event/EventTabBa
 import { EventOverviewControls } from "../../../components/event/EventOverviewControls";
 import { EventTodos } from "../../../components/event/EventTodos";
 import { GuidesSection } from "../../../components/event/GuidesSection";
+import { SandboxScope } from "../../../components/event/SandboxScope";
 import {
   ModuleRollupRow,
   confirmRemoveModule,
@@ -161,6 +162,7 @@ export default function EventDetailScreen() {
     moduleReadiness,
     owner,
     phases,
+    expectedPhases,
     taskTotal,
     taskDone,
     budgetSpent,
@@ -276,7 +278,7 @@ export default function EventDetailScreen() {
       : []),
   ];
   // Tickets (the public event page: RSVPs, tickets, guest list, check-in,
-  // blasts) is an operational TOOL, not a workstream — it opens from the
+  // blasts) is an operational TOOL, not an area — it opens from the
   // header tools row, not the tab row, but still lives at `?tab=tickets` so
   // deep links and back/forward keep working. While it's open no tab is
   // active (activeKey matches nothing). Any other unknown/stale key falls
@@ -329,7 +331,7 @@ export default function EventDetailScreen() {
       if (module.isCore) {
         void run(
           () => toggleCoreModule({ eventId, key: module.key, enabled: false }),
-          { errorTitle: "Couldn't disable workstream" },
+          { errorTitle: "Couldn't disable area" },
         );
       } else {
         const rowId = customModuleIdByKey.get(module.key);
@@ -337,7 +339,7 @@ export default function EventDetailScreen() {
           void run(
             () =>
               deleteCustomModule({ moduleId: rowId as Id<"eventModules"> }),
-            { errorTitle: "Couldn't remove workstream" },
+            { errorTitle: "Couldn't remove area" },
           );
       }
     };
@@ -446,7 +448,10 @@ export default function EventDetailScreen() {
   }
 
   return (
-    <>
+    // Training sandboxes scope every person picker below (roles, grid cells,
+    // crew) to the learner + placeholder people — enforced server-side; the
+    // scope just carries the event id down to the pickers.
+    <SandboxScope value={event.isTraining === true ? String(eventId) : null}>
       <Stack.Screen options={{ headerShown: false }} />
       <View className="flex-1 flex-row">
         <View className="flex-1">
@@ -468,6 +473,7 @@ export default function EventDetailScreen() {
           eventId={eventId}
           eventTypeName={eventTypeName}
           phases={phases}
+          expectedPhases={expectedPhases}
           taskDone={taskDone}
           taskTotal={taskTotal}
           budgetSpent={budgetSpent}
@@ -499,11 +505,11 @@ export default function EventDetailScreen() {
                   onEnableCore: (key) =>
                     void run(
                       () => toggleCoreModule({ eventId, key, enabled: true }),
-                      { errorTitle: "Couldn't enable workstream" },
+                      { errorTitle: "Couldn't enable area" },
                     ),
                   onCreateCustom: (label) =>
                     void run(() => createCustomModule({ eventId, label }), {
-                      errorTitle: "Couldn't add workstream",
+                      errorTitle: "Couldn't add area",
                     }),
                 }
           }
@@ -602,7 +608,7 @@ export default function EventDetailScreen() {
             ) : null}
 
             {/* Guides — the browsable index of platform guides (how to own an
-                event, a workstream, each core workstream). Hides itself when
+                event, an area, each core area). Hides itself when
                 the chapter has no seeded guides. */}
             <GuidesSection />
 
@@ -762,7 +768,7 @@ export default function EventDetailScreen() {
         }
         onClose={() => setOwnerOpen(false)}
       />
-    </>
+    </SandboxScope>
   );
 }
 
@@ -811,11 +817,11 @@ function MeView({
 
   return (
     <>
-      <SectionHeader title="Workstreams you own" count={myModules.length} />
+      <SectionHeader title="Areas you own" count={myModules.length} />
       {myModules.length === 0 ? (
         <Card>
           <Text className="text-base text-muted">
-            You don't own any workstreams on this event.
+            You don't own any areas on this event.
           </Text>
         </Card>
       ) : (

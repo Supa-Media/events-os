@@ -197,13 +197,13 @@ export function confirmRemoveModule(onConfirm: () => void) {
   if (Platform.OS === "web") {
     if (
       typeof window !== "undefined" &&
-      window.confirm("Remove this workstream and all its items?")
+      window.confirm("Remove this area and all its items?")
     ) {
       onConfirm();
     }
     return;
   }
-  Alert.alert("Remove workstream?", "This removes the workstream and its items.", [
+  Alert.alert("Remove area?", "This removes the area and its items.", [
     { text: "Cancel", style: "cancel" },
     { text: "Remove", style: "destructive", onPress: onConfirm },
   ]);
@@ -248,11 +248,11 @@ export function AddModuleButton({
           <Pressable
             onPress={openMenu}
             accessibilityRole="button"
-            accessibilityLabel="Add workstream"
+            accessibilityLabel="Add area"
             className="flex-row items-center gap-1.5 rounded-pill border border-dashed border-border-strong bg-raised px-3 py-1.5 active:opacity-80 web:hover:border-accent"
           >
             <Icon name="plus" size={14} color={colors.muted} />
-            <Text className="text-sm font-medium text-muted">Add workstream</Text>
+            <Text className="text-sm font-medium text-muted">Add area</Text>
           </Pressable>
         </View>
       )}
@@ -267,7 +267,7 @@ export function AddModuleButton({
             onPress: () => onEnableCore(m.key),
           })),
           {
-            label: "New custom workstream",
+            label: "New custom area",
             icon: "edit-2" as const,
             onPress: () => setAdding(true),
           },
@@ -292,7 +292,7 @@ export function AddCustomModuleInput({
         value={draft}
         onChangeText={setDraft}
         autoFocus
-        placeholder="Workstream name"
+        placeholder="Area name"
         placeholderTextColor={colors.faint}
         onBlur={() => (draft.trim() ? onCommit(draft) : onCancel())}
         onSubmitEditing={() => onCommit(draft)}

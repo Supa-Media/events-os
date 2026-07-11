@@ -71,7 +71,7 @@ const TABLE_WIDTH =
 export default function ResponsibilitiesScreen() {
   const nav = useQuery(api.org.nav);
   const responsibilities = useQuery(api.responsibilities.list);
-  const people = useQuery(api.people.list);
+  const people = useQuery(api.people.list, {});
   const create = useMutation(api.responsibilities.create);
   const update = useMutation(api.responsibilities.update);
 
