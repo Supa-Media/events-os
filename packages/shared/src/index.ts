@@ -1068,30 +1068,38 @@ function expectedDoneBy(
 }
 
 /**
- * The expected (on-pace) phase scores at `now`, aggregated exactly like
- * computePhaseScores: same inputs, plus the event date. An item counts 1 when
- * its deadline (due date or convention) has passed, 0 otherwise; ready gates
- * count 1 once their convention deadline (EXPECTED_READY_OFFSET) passes.
- * Modules without a status column contribute 0 expectation — the same 0 they
- * contribute to the actual score — so gaps stay apples-to-apples. Pre-plan is
- * always null. Compare per phase: `expected - actual` is the catch-up gap.
+ * The expected (on-pace) phase scores at `now` — the BASELINE the target tick
+ * marks. Defined as: YOUR ACTUAL SCORE WITH ALL OVERDUE DEBT CLEARED. Per
+ * item that's max(actual credit, 1-if-its-deadline-passed), aggregated
+ * exactly like computePhaseScores — so:
+ *  - rows due by now count complete whether or not they are;
+ *  - rows finished (or started) EARLY keep their credit — working ahead
+ *    shifts the baseline up with you, it's never treated as "extra";
+ *  - ready gates count once met OR once their convention deadline
+ *    (EXPECTED_READY_OFFSET) passes.
+ * The tick therefore always sits at-or-above the actual score, and the gap
+ * between them is exactly the phase's overdue debt in score terms. Modules
+ * without a status column contribute the same 0 on both sides. Pre-plan is
+ * always null (no deadline mechanism).
  */
 export function computeExpectedPhaseScores(
   modules: Array<{
     module: string;
     statusOptions: SelectOption[] | undefined;
     items: Array<{
+      status?: string | null;
       dueDate?: number | null;
       offsetDays?: number | null;
       offsetMinutes?: number | null;
     }>;
   }>,
-  moduleReady: Array<{ module: string; phase: PhaseKey }>,
+  moduleReady: Array<{ module: string; phase: PhaseKey; ready?: boolean }>,
   eventDate: number,
   now: number,
 ): PhaseScores {
   // Synthesize each item's status: a complete-flagged option value when the
-  // deadline has passed, nothing otherwise — then reuse the REAL aggregator.
+  // deadline has passed, otherwise the item's REAL status (early credit
+  // survives) — then reuse the real aggregator.
   const synthesized = modules.map((m) => {
     const completeValue = m.statusOptions?.find(
       (o) => o.isComplete === true,
@@ -1104,7 +1112,7 @@ export function computeExpectedPhaseScores(
           completeValue != null &&
           now >= expectedDoneBy(m.module, it, eventDate)
             ? completeValue
-            : null,
+            : (it.status ?? null),
         offsetDays: it.offsetDays,
         offsetMinutes: it.offsetMinutes,
         // No pre-plan marks: expected pre-plan stays null (no deadlines).
@@ -1115,7 +1123,9 @@ export function computeExpectedPhaseScores(
     .filter((g) => g.phase !== "prePlan" && EXPECTED_READY_OFFSET[g.module] != null)
     .map((g) => ({
       phase: g.phase,
-      ready: now >= eventDate + EXPECTED_READY_OFFSET[g.module]! * DAY_MS,
+      ready:
+        g.ready === true ||
+        now >= eventDate + EXPECTED_READY_OFFSET[g.module]! * DAY_MS,
     }));
   const scores = computePhaseScores(synthesized, undefined, gates);
   return { ...scores, prePlan: null };

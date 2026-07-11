@@ -597,7 +597,7 @@ const SECTIONS_IN_ORDER: Omit<AcademySection, "order">[] = [
       { kind: "heading", text: "Am I where I should be?" },
       {
         kind: "p",
-        text: "A percentage alone can't tell you if you're in trouble — 40% planned is great at two months out and a crisis at three days. So each ring carries a pace check built on one blunt question: **is anything in this phase overdue?** Nothing overdue → a green **“✓ on pace”**. Something overdue → an amber **“▲ 3 overdue”** — the very same rows the What's-next list flags, counted per ring. A dashed tick on the ring also marks where the score *would* be if everything due by today were done.",
+        text: "A percentage alone can't tell you if you're in trouble — 40% planned is great at two months out and a crisis at three days. So each ring carries a pace check built on one blunt question: **is anything in this phase overdue?** Nothing overdue → a green **“✓ on pace”**. Something overdue → an amber **“▲ 3 overdue”** — the very same rows the What's-next list flags, counted per ring. A dashed tick on the ring marks your **baseline**: your score with every overdue row cleared — and it moves up with you when you finish things early, so working ahead always shows.",
       },
       {
         kind: "rule",

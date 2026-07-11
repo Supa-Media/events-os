@@ -56,7 +56,7 @@ function PhaseRing({
 }: {
   phase: PhaseKey;
   pct: number | null;
-  /** Where this ring SHOULD be today (places the ghost tick), or null. */
+  /** The baseline (actual + overdue debt cleared) — places the ghost tick. */
   expectedPct: number | null;
   /** Overdue tally for this phase (the pace SIGNAL), or null (pre-plan). */
   pace: PhasePace | null;
@@ -137,8 +137,10 @@ function PhaseRing({
  * it, answering "what do I do to move this number?". Values are 0..1 or null;
  * null renders "—" so an empty phase doesn't read as "0% ready".
  *
- * `expected` places each ring's dashed TARGET TICK (where the score should
- * be today); `pace` carries each phase's overdue tally — the signal behind
+ * `expected` places each ring's dashed BASELINE TICK — the actual score
+ * with all overdue debt cleared (early work shifts it up, so the tick is
+ * always at-or-above the playhead); `pace` carries each phase's overdue
+ * tally — the signal behind
  * the green "✓ on pace" / amber "▲ N overdue" captions. The overdue counts
  * are computed with the same rule as the What's-next list's OVERDUE badges,
  * so the rings and the list always tell the same story.

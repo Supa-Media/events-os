@@ -95,6 +95,38 @@ describe("computeExpectedPhaseScores — the pacing ghost", () => {
     expect(dayOf.planning).toBe(1);
   });
 
+  test("early-finished work shifts the baseline up, never lost", () => {
+    const modules = [
+      {
+        module: "planning_doc",
+        statusOptions: STATUS_OPTIONS,
+        items: [
+          // Finished EARLY (due T-3, done long before)…
+          { status: "done", offsetDays: -3, dueDate: EVENT - 3 * DAY_MS },
+          // …while one row sits overdue at T-10.
+          { status: null, offsetDays: -30, dueDate: EVENT - 30 * DAY_MS },
+        ],
+      },
+    ];
+    const expected = computeExpectedPhaseScores(
+      modules,
+      [],
+      EVENT,
+      EVENT - 10 * DAY_MS,
+    );
+    // Baseline = overdue cleared (1) + early credit kept (1) → 100%, not the
+    // 50% a due-by-now-only definition would claim.
+    expect(expected.planning).toBe(1);
+  });
+
+  test("a gate met EARLY counts toward the baseline before its deadline", () => {
+    const gates = [
+      { module: "run_of_show", phase: "planning" as const, ready: true },
+    ];
+    const early = computeExpectedPhaseScores([], gates, EVENT, EVENT - 20 * DAY_MS);
+    expect(early.planning).toBe(1); // locked at T-20 — baseline absorbs it
+  });
+
   test("expected and actual share the aggregation, so gaps are comparable", () => {
     // Actual at T-10 with the overdue item done = 50% — exactly the target.
     const actual = computePhaseScores([
