@@ -13,6 +13,7 @@ export { CopyButton } from "./CopyButton";
 export { ReadinessBadge, ReadinessBar } from "./Readiness";
 export { ReadinessRing, MiniRing } from "./ReadinessRing";
 export { PhaseBreakdown } from "./PhaseBreakdown";
+export { ProgressBar } from "./ProgressBar";
 export { Field, TextField, Select } from "./Field";
 export { LocationAutocomplete } from "./LocationAutocomplete";
 export { EmptyState } from "./EmptyState";

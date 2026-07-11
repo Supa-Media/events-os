@@ -1,7 +1,6 @@
-import { useState } from "react";
 import { View, Text } from "react-native";
 import { useRouter } from "expo-router";
-import { useQuery, useMutation } from "convex/react";
+import { useQuery } from "convex/react";
 import type { FunctionReturnType } from "convex/server";
 import { api } from "@events-os/convex/_generated/api";
 import {
@@ -12,10 +11,9 @@ import {
   Badge,
   Icon,
   SectionHeader,
-  ToastView,
+  ProgressBar,
 } from "../../../components/ui";
 import { colors } from "../../../lib/theme";
-import { useActionRunner } from "../../../lib/useActionToast";
 import {
   ACADEMY_CAPSTONE_SLUG,
   ACADEMY_SECTIONS,
@@ -30,38 +28,44 @@ type TrainingStatus = FunctionReturnType<typeof api.academy.trainingStatus>;
  * THE ACADEMY HUB — the ordered curriculum as a completion path. Every section
  * is always readable (adults skim); only the quiz-passed "complete" state
  * unlocks sequentially, and the server enforces that gate. The capstone row
- * doubles as the Training Event launcher.
+ * routes to the capstone section screen, which owns the Start-training flow.
  */
 export default function AcademyScreen() {
   const router = useRouter();
   const progress = useQuery(api.academy.myProgress);
-  const training = useQuery(api.academy.trainingStatus);
-  const chapter = useQuery(api.academy.chapterProgress);
-  const startTraining = useMutation(api.academy.startTraining);
-  const [starting, setStarting] = useState(false);
-  const { run, toast, dismiss } = useActionRunner();
 
-  if (progress === undefined || training === undefined) {
+  // Subscribe to the (broad) training-event query only once the capstone is
+  // actually reachable — locked-out newcomers don't need a live event feed.
+  // TODO(academy-backend-merge): once myProgress capstone entries carry
+  // `training: null | { eventId, started, questsDone, questsTotal, complete }`,
+  // derive the in-flight quest count from it here and drop this subscription
+  // from the hub entirely.
+  const capstone = progress?.sections.find(
+    (s) => s.slug === ACADEMY_CAPSTONE_SLUG,
+  );
+  const wantTraining =
+    capstone != null && (capstone.unlocked || capstone.passed);
+  const training = useQuery(
+    api.academy.trainingStatus,
+    wantTraining ? {} : "skip",
+  );
+
+  // "Who's trained" is a managers/admins surface — only they subscribe.
+  // org.nav is the app-wide policy signal AppShell already consumes.
+  const org = useQuery(api.org.nav);
+  const chapter = useQuery(
+    api.academy.chapterProgress,
+    org?.canManage === true ? {} : "skip",
+  );
+
+  if (progress === undefined || (wantTraining && training === undefined)) {
     return <Screen loading />;
   }
 
   const bySlug = new Map(progress.sections.map((s) => [s.slug, s]));
 
-  async function handleStart() {
-    setStarting(true);
-    try {
-      const res = await run(() => startTraining({}), {
-        errorTitle: "Couldn't start training",
-      });
-      if (res) router.push(`/academy/${ACADEMY_CAPSTONE_SLUG}`);
-    } finally {
-      setStarting(false);
-    }
-  }
-
   return (
     <Screen maxWidth={860}>
-      <ToastView toast={toast} onDismiss={dismiss} />
       <PageHeader
         eyebrow="Academy"
         title="Academy"
@@ -78,12 +82,11 @@ export default function AcademyScreen() {
             <Badge label="Fully trained 🎉" tone="success" icon="award" />
           ) : null}
         </View>
-        <View className="mt-2.5 h-2 overflow-hidden rounded-pill bg-sunken">
-          <View
-            className="h-full rounded-pill bg-accent"
-            style={{
-              width: `${Math.round((progress.completed / progress.total) * 100)}%`,
-            }}
+        <View className="mt-2.5">
+          <ProgressBar
+            fraction={
+              progress.total === 0 ? 0 : progress.completed / progress.total
+            }
           />
         </View>
       </Card>
@@ -98,12 +101,8 @@ export default function AcademyScreen() {
               key={section.slug}
               section={section}
               state={state}
-              training={training}
-              starting={starting}
-              onStart={handleStart}
-              onOpen={() =>
-                router.push(`/academy/${section.slug}`)
-              }
+              training={training ?? null}
+              onOpen={() => router.push(`/academy/${section.slug}`)}
             />
           ) : (
             <SectionRow
@@ -117,7 +116,8 @@ export default function AcademyScreen() {
       </View>
 
       {/* Who's trained — managers/admins only (the server returns null
-          otherwise, mirroring how the Team/Duties nav gates). */}
+          otherwise, mirroring how the Team/Duties nav gates; the query is
+          skipped entirely for everyone else). */}
       {chapter ? (
         <>
           <SectionHeader title="Who's trained" count={chapter.people.length} />
@@ -134,14 +134,9 @@ export default function AcademyScreen() {
                   >
                     {p.name}
                   </Text>
-                  <View className="h-1.5 w-28 overflow-hidden rounded-pill bg-sunken">
-                    <View
-                      className={`h-full rounded-pill ${
-                        p.completed === p.total ? "bg-success" : "bg-accent"
-                      }`}
-                      style={{
-                        width: `${Math.round((p.completed / p.total) * 100)}%`,
-                      }}
+                  <View className="w-28">
+                    <ProgressBar
+                      fraction={p.total === 0 ? 0 : p.completed / p.total}
                     />
                   </View>
                   <Text className="w-10 text-right text-xs font-semibold text-muted">
@@ -241,25 +236,26 @@ function SectionRow({
   );
 }
 
+/**
+ * The capstone row. Locked until the previous section is passed (the server
+ * gates too — the UI just shouldn't offer it). All interaction routes to the
+ * capstone section screen, which owns the single Start-training flow.
+ */
 function CapstoneRow({
   section,
   state,
   training,
-  starting,
-  onStart,
   onOpen,
 }: {
   section: AcademySection;
   state: SectionProgress | undefined;
   training: TrainingStatus;
-  starting: boolean;
-  onStart: () => void;
   onOpen: () => void;
 }) {
   const complete = state?.passed === true;
-  const locked = state ? !state.unlocked : true;
+  const locked = !complete && (state ? !state.unlocked : true);
   return (
-    <Card padding="md" onPress={onOpen}>
+    <Card padding="md" onPress={locked ? undefined : onOpen}>
       <View className="flex-row items-center gap-3.5">
         <OrderMark order={section.order} passed={complete} locked={locked} />
         <View className="flex-1">
@@ -278,23 +274,28 @@ function CapstoneRow({
         <View className="items-end gap-1.5">
           {complete ? (
             <Badge label="Complete 🎉" tone="success" />
+          ) : locked ? (
+            <Badge label="Locked" tone="neutral" icon="lock" />
           ) : training ? (
             <Badge label="In progress" tone="accent" icon="play" />
           ) : (
             <Badge label="Not started" tone="neutral" />
           )}
-          {!complete ? (
-            training ? (
-              <Button title="Resume" size="sm" variant="secondary" onPress={onOpen} />
-            ) : (
-              <Button
-                title="Start training"
-                size="sm"
-                icon="play"
-                loading={starting}
-                onPress={onStart}
-              />
-            )
+          {locked ? (
+            <View className="flex-row items-center gap-1">
+              <Icon name="lock" size={11} color={colors.faint} />
+              <Text className="text-2xs text-faint">
+                Pass the previous section to unlock
+              </Text>
+            </View>
+          ) : !complete ? (
+            <Button
+              title={training ? "Resume" : "Start training"}
+              size="sm"
+              variant={training ? "secondary" : "primary"}
+              icon={training ? undefined : "play"}
+              onPress={onOpen}
+            />
           ) : null}
         </View>
       </View>
