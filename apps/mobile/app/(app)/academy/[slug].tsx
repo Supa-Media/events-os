@@ -14,7 +14,7 @@ import {
   EmptyState,
   ToastView,
 } from "../../../components/ui";
-import { MarkdownView } from "../../../components/markdown";
+import { ArticleBlocks } from "../../../components/academy/ArticleBlocks";
 import { colors } from "../../../lib/theme";
 import { useActionRunner } from "../../../lib/useActionToast";
 import { errorMessage } from "../../../lib/errors";
@@ -31,12 +31,13 @@ type QuizResult = FunctionReturnType<typeof api.academy.submitQuiz>;
 type TrainingStatus = FunctionReturnType<typeof api.academy.trainingStatus>;
 
 /**
- * ACADEMY SECTION — `/academy/<slug>`. Renders the article (markdown, same
- * MarkdownView the doc pages use), then the section's quiz: answer all
- * questions, submit, the SERVER grades, and each question comes back with its
- * correctness + the teaching explanation. Retakes keep the best score. The
- * capstone section renders the live Training Event quest checklist instead of
- * a quiz. Reading is never gated; only the quiz unlocks sequentially.
+ * ACADEMY SECTION — `/academy/<slug>`. Renders the article (typed content
+ * blocks via ArticleBlocks — designed callouts, tables, and interactive
+ * practice widgets), then the section's quiz: answer all questions, submit,
+ * the SERVER grades, and each question comes back with its correctness + the
+ * teaching explanation. Retakes keep the best score. The capstone section
+ * renders the live Training Event quest checklist instead of a quiz. Reading
+ * is never gated; only the quiz unlocks sequentially.
  */
 export default function AcademySectionScreen() {
   const router = useRouter();
@@ -113,7 +114,7 @@ export default function AcademySectionScreen() {
 
       {/* The article */}
       <View className="mt-4">
-        <MarkdownView value={section.body} />
+        <ArticleBlocks blocks={section.blocks} />
       </View>
 
       {/* Quiz or capstone quest checklist */}
