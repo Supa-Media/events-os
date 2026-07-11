@@ -157,7 +157,37 @@ different.
 
 ---
 
-## 6. Open questions
+## 6. Engaging guides: from markdown to interactive (next phase — own PR)
+
+Markdown docs are the reference layer, not the training experience. Three
+layers, in build order:
+
+1. **Guide pages (routes, not rendered markdown).** `/guide/[slug]` composed
+   from a guide-component kit: hero, step cards, callouts (Eden pull-quotes),
+   the T-deadline table as a styled timeline, annotated screenshots, pretty
+   cross-links, and "ask the agent" prompts as one-tap chips that open the
+   assistant pre-filled. The repo markdown stays the canonical *text* source
+   feeding prose blocks; pages are TSX. A public no-auth `/g/[slug]` variant
+   (same pattern as `share/[id]` / `d/[shareId]`) keeps no-login volunteer
+   sharing. The Overview Guides section and workstream "?" links point here;
+   the seeded read-only docs remain as the fallback/share layer until pages
+   fully replace them.
+2. **"Try it" blocks — the real UI embedded with throwaway local state.** A
+   real grid row whose status chip you practice cycling, a real role picker,
+   a real "Mark ready" toggle. No mock UI to build or maintain; nothing
+   touches the database; practice is pixel-identical to the job.
+3. **The Training Event (the game).** A platform "Training: run your first
+   event" template; "Start training" instantiates a real sandbox event
+   (flagged `isTraining`, excluded from pipeline stats + reminder emails)
+   whose rows ARE the quests: assign yourself the Comms role · mark the
+   battery packed · add a T-3 task · mark a workstream ready · ask the
+   assistant for a briefing. Completion detection is the real data
+   (statuses/assignments/readiness) rendered as a quest checklist; the
+   assistant is the tutor (it already has the playbook + get_readiness).
+   Finish = wrap-up screen; the training event archives itself. Learning by
+   doing the actual job in the actual interface — everything transfers 1:1.
+
+## 7. Open questions
 
 - **Q1 — Forking semantics: RESOLVED — guides are platform-owned, never
   forked.** Guides teach invariant mechanics (roles, ownership, the app);
