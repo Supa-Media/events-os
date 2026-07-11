@@ -22,6 +22,7 @@ import { EventHeader } from "../../../components/event/EventHeader";
 import { EventTabBar, type EventTab } from "../../../components/event/EventTabBar";
 import { EventOverviewControls } from "../../../components/event/EventOverviewControls";
 import { EventTodos } from "../../../components/event/EventTodos";
+import { GuidesSection } from "../../../components/event/GuidesSection";
 import {
   ModuleRollupRow,
   confirmRemoveModule,
@@ -588,6 +589,11 @@ export default function EventDetailScreen() {
                 />
               </>
             ) : null}
+
+            {/* Guides — the browsable index of platform guides (how to own an
+                event, a workstream, each core workstream). Hides itself when
+                the chapter has no seeded guides. */}
+            <GuidesSection />
 
           </Narrow>
         ) : activeTab === "tickets" ? (

@@ -11,7 +11,12 @@
 import { query, mutation, internalMutation } from "./_generated/server";
 import { Id } from "./_generated/dataModel";
 import { v, ConvexError } from "convex/values";
-import { requireChapterId, requireUserId, requireInChapter } from "./lib/context";
+import {
+  requireChapterId,
+  requireUserId,
+  requireInChapter,
+  getChapterIdOrNull,
+} from "./lib/context";
 import { requireManagerOrAdmin } from "./lib/org";
 import {
   makeShareId,
@@ -388,6 +393,27 @@ export const getGuideBySlug = query({
       .unique();
     if (!doc) return null;
     return { _id: doc._id, title: doc.title };
+  },
+});
+
+/**
+ * Every platform guide seeded into the caller's chapter, for the event
+ * Overview's Guides section. Slug order is stable (alphabetical) so callers
+ * can impose their own curated ordering by slug.
+ */
+export const listGuides = query({
+  args: {},
+  handler: async (ctx) => {
+    const chapterId = await getChapterIdOrNull(ctx);
+    if (!chapterId) return [];
+    const docs = await ctx.db
+      .query("docs")
+      .withIndex("by_chapter", (q) => q.eq("chapterId", chapterId as Id<"chapters">))
+      .collect();
+    return docs
+      .filter((d) => d.slug !== undefined)
+      .map((d) => ({ _id: d._id, slug: d.slug as string, title: d.title }))
+      .sort((a, b) => a.slug.localeCompare(b.slug));
   },
 });
 
