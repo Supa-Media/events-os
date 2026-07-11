@@ -127,6 +127,9 @@ export async function phaseReadinessBundle(
           dueDate: it.dueDate ?? null,
           offsetDays: it.offsetDays ?? null,
           offsetMinutes: it.offsetMinutes ?? null,
+          // Supplies: the Packing-checklist boolean — feeds the day-of ring
+          // (status covers acquisition only; packing is its own signal).
+          packedIn: it.fields?.packedIn === true,
           prePlanColumns: it.prePlanColumns ?? undefined,
           prePlanChecked: it.prePlanChecked ?? undefined,
         })),

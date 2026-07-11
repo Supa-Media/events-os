@@ -393,6 +393,74 @@ export const migrateRolesToScoped = internalMutation({
 });
 
 /**
+ * Retire the supplies `packed` STATUS in favor of the Packing checklist.
+ *
+ * Supply status now tracks ACQUISITION only and terminates at `have_it`;
+ * whether an item is packed is the `fields.packedIn` boolean the Packing
+ * screen toggles. The old `packed` status duplicated that signal (a row could
+ * read "Packed" while its packing checkbox said otherwise). This walks every
+ * supplies STATUS column (template + event) and:
+ *   1. drops the `packed` option and flags `have_it` as the complete state
+ *      (color green), leaving any author-added custom options untouched;
+ *   2. rewrites items whose status is `packed` to `have_it` — and, for EVENT
+ *      items, sets `fields.packedIn = true` so the packed fact is preserved
+ *      where it now lives.
+ *
+ * Idempotent: a second run finds no `packed` options or statuses. Run
+ * `backfillMissingDefaultColumns` as well to add the new supplies Timing/Due
+ * columns to existing scopes.
+ *
+ * Run locally:   npx convex run migrations:retireSuppliesPackedStatus
+ * Run on prod:   npx convex run --prod migrations:retireSuppliesPackedStatus
+ */
+export const retireSuppliesPackedStatus = internalMutation({
+  args: {},
+  handler: async (ctx) => {
+    let columnsUpdated = 0;
+    let templateItemsUpdated = 0;
+    let eventItemsUpdated = 0;
+
+    const fixOptions = (options: any[] | undefined): any[] | null => {
+      if (!options?.some((o) => o.value === "packed")) return null;
+      return options
+        .filter((o) => o.value !== "packed")
+        .map((o) =>
+          o.value === "have_it"
+            ? { ...o, color: "green", isComplete: true }
+            : o,
+        );
+    };
+
+    for (const table of ["templateColumns", "eventColumns"] as const) {
+      for (const c of await ctx.db.query(table).collect()) {
+        if (c.module !== "supplies" || c.key !== "status") continue;
+        const next = fixOptions(c.options as any[] | undefined);
+        if (!next) continue;
+        await ctx.db.patch(c._id as any, { options: next });
+        columnsUpdated++;
+      }
+    }
+
+    for (const it of await ctx.db.query("templateItems").collect()) {
+      if (it.module !== "supplies" || it.status !== "packed") continue;
+      await ctx.db.patch(it._id, { status: "have_it" });
+      templateItemsUpdated++;
+    }
+
+    for (const it of await ctx.db.query("eventItems").collect()) {
+      if (it.module !== "supplies" || it.status !== "packed") continue;
+      await ctx.db.patch(it._id, {
+        status: "have_it",
+        fields: { ...((it.fields as any) ?? {}), packedIn: true },
+      });
+      eventItemsUpdated++;
+    }
+
+    return { columnsUpdated, templateItemsUpdated, eventItemsUpdated };
+  },
+});
+
+/**
  * Un-hide the supplies `qty` column wherever it was hidden.
  *
  * The "Worship With Strangers" template (and events cloned from it) shipped with

@@ -151,7 +151,9 @@ export const CORE_MODULES: CoreModuleDef[] = [
   { key: "volunteer_expectations", label: "Crew Duties", surface: "grid", defaultOwnerRoleKey: "comms_lead", offsetMode: "none" },
   // Supplies & Logistics carries the site map (hasSiteMap): the venue-map
   // editor renders beneath its grid, and its single ready flag covers both.
-  { key: "supplies", label: "Supplies & Logistics", surface: "grid", defaultOwnerRoleKey: "logistics_lead", offsetMode: "none", hasSiteMap: true },
+  // Day offsets (2026-07): supply rows are time-bound — ordering has a real
+  // lead time, so each item can carry a "have it by" offset/due date.
+  { key: "supplies", label: "Supplies & Logistics", surface: "grid", defaultOwnerRoleKey: "logistics_lead", offsetMode: "days", hasSiteMap: true },
   { key: "permits", label: "Permits", surface: "grid", defaultOwnerRoleKey: "event_lead", offsetMode: "days" },
   { key: "retro", label: "Debrief", surface: "grid", defaultOwnerRoleKey: "event_lead", offsetMode: "none" },
 ];
@@ -367,13 +369,18 @@ export const TASK_STATUS_OPTIONS: SelectOption[] = [
   { value: "done", label: "Done", color: "green", isComplete: true },
 ];
 
+// Supply status tracks ACQUISITION only — the walk from "identified" to
+// "in hand". Terminal state: `have_it`. Whether an item is PACKED is a
+// separate signal (the `packedIn` boolean the Packing checklist toggles),
+// not a status — the old `packed` status duplicated it, and the two could
+// disagree. Legacy events keep their own copied option sets, so an old
+// `packed` value still reads as complete there.
 export const SUPPLY_STATUS_OPTIONS: SelectOption[] = [
   { value: "pull_from_storage", label: "Pull from storage", color: "blue" },
   { value: "need_to_order", label: "Need to order", color: "red" },
   { value: "need_to_buy", label: "Need to buy", color: "red" },
   { value: "ordered", label: "Ordered", color: "amber" },
-  { value: "have_it", label: "Have it", color: "teal" },
-  { value: "packed", label: "Packed", color: "green", isComplete: true },
+  { value: "have_it", label: "Have it", color: "green", isComplete: true },
 ];
 
 export const COMMS_STATUS_OPTIONS: SelectOption[] = [
@@ -488,6 +495,11 @@ export const DEFAULT_COLUMNS: Partial<Record<ModuleKey, ColumnDef[]>> = {
   supplies: [
     { key: "title", label: "Item", kind: "system", type: "text", isVisible: true },
     { key: "status", label: "Status", kind: "system", type: "status", options: SUPPLY_STATUS_OPTIONS, isVisible: true },
+    // "Have it by" deadline: ordering has a real-world lead time, so each item
+    // carries an offset (order-online rows early, buy-in-store rows later; the
+    // playbook wants everything in hand by T-1 so packing can happen).
+    { key: "offset", label: "Timing", kind: "system", type: "offset_days", isVisible: true },
+    { key: "due_date", label: "Due", kind: "system", type: "due_date", isVisible: true },
     { key: "source", label: "Source", kind: "custom", type: "select", options: SUPPLY_SOURCE_OPTIONS, isVisible: true },
     { key: "container", label: "Packed in", kind: "custom", type: "select", options: CONTAINER_OPTIONS, isVisible: true },
     { key: "photo", label: "Photo", kind: "custom", type: "photo", isVisible: true },
@@ -783,8 +795,10 @@ export function isCompleteStatus(
 // not just "how done is this event" but "how done is each stage of running it":
 //   pre-plan  — explicit author-marked cells checked off (a separate mechanism;
 //               see prePlanScore below — it is NOT derived from item status)
-//   planning  — prep work scheduled before the event (T-minus)
-//   dayOf     — packing, run-of-show, and anything that lands on the event day
+//   planning  — prep work scheduled before the event (T-minus), including
+//               ACQUIRING supplies (ordering/buying happens weeks out)
+//   dayOf     — run-of-show, crew duties, PACKING supplies (the `packedIn`
+//               checklist), and anything that lands on the event day
 //   post      — retro + follow-up after the event (T-plus)
 //
 // Scoring uses three primitives:
@@ -846,10 +860,12 @@ export const PARTIAL_ITEM_SCORE = 0.25;
  *              is "we know we need it and intend to apply" — meaningful progress
  *              over no status at all; `not_needed` is terminal-but-not-complete
  *              so it stays 0 (it genuinely isn't done/handled work).
- *   supplies — `need_to_order`, `need_to_buy`, `ordered`, `have_it`,
- *              `pull_from_storage` (all en route to `packed`). Note: `need_to_*`
- *              earn partial credit because the item is identified + sourced,
- *              which is real progress toward packing.
+ *   supplies — `need_to_order`, `need_to_buy`, `ordered`, `pull_from_storage`
+ *              (all en route to `have_it`). Note: `need_to_*` earn partial
+ *              credit because the item is identified + sourced, which is real
+ *              progress toward having it. `have_it` stays listed for LEGACY
+ *              option sets where `packed` was the terminal state — current
+ *              sets flag it `isComplete`, which wins before this set is read.
  *   retro    — `open` is the not-started state, so retro has no partial value.
  *   volunteer — `invited` is in-flight toward `confirmed`.
  * `not_started`, `not_needed`, `declined`, `open`, `tbd` and any unknown value
@@ -894,10 +910,14 @@ export function itemScore(
  * Assign an item to exactly one phase from its module + timing. Pre-plan is a
  * separate mechanism (explicit check-off) and is never returned here.
  *   retro module                 → post
- *   supplies module              → dayOf (packing / load-in)
  *   minute-offset (run_of_show)  → dayOf
  *   else by offsetDays: <0 planning · 0 dayOf · >0 post
  *   no timing at all             → planning (default prep)
+ *
+ * Supplies items phase by their timing like any other day-offset row: the
+ * STATUS walk (order → buy → have it) is acquisition, i.e. planning work.
+ * PACKING is the separate `packedIn` signal, and it always counts toward
+ * day-of (see computePhaseScores) — even when packing happens early.
  */
 export function itemPhase(item: {
   module: string;
@@ -905,10 +925,9 @@ export function itemPhase(item: {
   offsetMinutes?: number | null;
 }): Exclude<PhaseKey, "prePlan"> {
   if (item.module === "retro") return "post";
-  // Supplies (packing/load-in) and volunteer expectations (what each team does
-  // on the day) are day-of work, regardless of any offset.
-  if (item.module === "supplies" || item.module === "volunteer_expectations")
-    return "dayOf";
+  // Volunteer expectations (what each crew team does on the day) are day-of
+  // work, regardless of any offset.
+  if (item.module === "volunteer_expectations") return "dayOf";
   if (item.offsetMinutes != null) return "dayOf";
   if (item.offsetDays != null) {
     if (item.offsetDays < 0) return "planning";
@@ -934,6 +953,11 @@ export function computePhaseScores(
       status?: string | null;
       offsetDays?: number | null;
       offsetMinutes?: number | null;
+      /** Supplies only: the Packing-checklist boolean (fields.packedIn). Each
+       *  supply item contributes a packed 0/1 unit to DAY-OF on top of its
+       *  status (acquisition) score — buying feeds planning, packing feeds
+       *  day-of, even when packing happens early. */
+      packedIn?: boolean | null;
       prePlanColumns?: string[];
       prePlanChecked?: string[];
     }>;
@@ -974,6 +998,12 @@ export function computePhaseScores(
         offsetMinutes: it.offsetMinutes,
       });
       perPhaseItemScores[phase].push(itemScore(m.statusOptions, it.status));
+
+      // Supplies: packing is its own day-of unit per item, read from the
+      // Packing checklist's `packedIn` — never from status.
+      if (m.module === "supplies") {
+        perPhaseItemScores.dayOf.push(it.packedIn === true ? 1 : 0);
+      }
 
       // Pre-plan: count marked cells on this item and how many are checked.
       const marked = it.prePlanColumns ?? [];
@@ -1032,13 +1062,14 @@ export function computePhaseScores(
 // counts 1, otherwise 0, aggregated through the identical module-averaging
 // as computePhaseScores so expected and actual are directly comparable.
 // Deadlines come from due dates where rows have them, and from the playbook
-// conventions where they don't (supplies packed by T-1, debrief by T+7,
-// untimed-but-statused rows by T-0). Pre-plan has no deadline mechanism, so
-// its expectation is null (no ghost on that ring).
+// conventions where they don't (supplies in hand by T-1 and packed by T-1,
+// debrief by T+7, untimed-but-statused rows by T-0). Pre-plan has no deadline
+// mechanism, so its expectation is null (no ghost on that ring).
 
 /** Convention deadlines (in offset days) for each module's READY gate — the
- *  playbook's earned defaults: run of show locked by T-3, supplies packed by
- *  T-1, crew locked by T-10. Pre-plan gates (comms/permits) have no ghost. */
+ *  playbook's earned defaults: run of show locked by T-3, supplies in hand
+ *  and packed by T-1, crew locked by T-10. Pre-plan gates (comms/permits)
+ *  have no ghost. */
 export const EXPECTED_READY_OFFSET: Partial<Record<string, number>> = {
   run_of_show: -3,
   supplies: -1,
@@ -1061,7 +1092,7 @@ function expectedDoneBy(
   if (item.offsetMinutes != null) return eventDate; // day-of segments
   if (item.offsetDays != null) return eventDate + item.offsetDays * DAY_MS;
   // Conventions for the undated rows of convention-deadline areas…
-  if (module === "supplies") return eventDate - DAY_MS; // packed by T-1
+  if (module === "supplies") return eventDate - DAY_MS; // in hand by T-1
   if (module === "retro") return eventDate + 7 * DAY_MS; // dispatched by T+7
   // …and untimed rows elsewhere still have to be true before the event.
   return eventDate;
@@ -1091,6 +1122,7 @@ export function computeExpectedPhaseScores(
       dueDate?: number | null;
       offsetDays?: number | null;
       offsetMinutes?: number | null;
+      packedIn?: boolean | null;
     }>;
   }>,
   moduleReady: Array<{ module: string; phase: PhaseKey; ready?: boolean }>,
@@ -1099,7 +1131,10 @@ export function computeExpectedPhaseScores(
 ): PhaseScores {
   // Synthesize each item's status: a complete-flagged option value when the
   // deadline has passed, otherwise the item's REAL status (early credit
-  // survives) — then reuse the real aggregator.
+  // survives) — then reuse the real aggregator. Supplies' packing units get
+  // the same treatment: expected packed once T-1 passes (the pack-by
+  // convention), early packing keeps its credit before that.
+  const packDeadline = eventDate - DAY_MS;
   const synthesized = modules.map((m) => {
     const completeValue = m.statusOptions?.find(
       (o) => o.isComplete === true,
@@ -1115,6 +1150,10 @@ export function computeExpectedPhaseScores(
             : (it.status ?? null),
         offsetDays: it.offsetDays,
         offsetMinutes: it.offsetMinutes,
+        packedIn:
+          m.module === "supplies" && now >= packDeadline
+            ? true
+            : (it.packedIn ?? null),
         // No pre-plan marks: expected pre-plan stays null (no deadlines).
       })),
     };
@@ -1149,7 +1188,11 @@ export interface PhasePace {
 
 /** Per-phase pace tallies, or null for phases with no deadline mechanism
  *  (pre-plan). Gates count too: an unmet ready gate past its convention
- *  deadline (run of show T-3, supplies T-1, crew T-10) is one overdue unit. */
+ *  deadline (run of show T-3, supplies T-1, crew T-10) is one overdue unit.
+ *  Supplies packing units count as well: an unpacked item past T-1 is one
+ *  overdue DAY-OF unit — the one place this can outrun the What's-next list,
+ *  whose row view tracks status; the Packing checklist is where the packing
+ *  debt itself lives. */
 export function computePhaseOverdue(
   modules: Array<{
     module: string;
@@ -1159,6 +1202,7 @@ export function computePhaseOverdue(
       dueDate?: number | null;
       offsetDays?: number | null;
       offsetMinutes?: number | null;
+      packedIn?: boolean | null;
     }>;
   }>,
   gates: Array<{ module: string; phase: PhaseKey; ready: boolean }>,
@@ -1168,6 +1212,7 @@ export function computePhaseOverdue(
   // Same boundary as the What's-next risk rule: due strictly before the
   // start of TODAY is overdue; due today is merely "soon".
   const cutoff = startOfDay(now);
+  const packDeadline = eventDate - DAY_MS; // pack by T-1
   const acc: Record<Exclude<PhaseKey, "prePlan">, PhasePace> = {
     planning: { dueTotal: 0, overdue: 0 },
     dayOf: { dueTotal: 0, overdue: 0 },
@@ -1175,6 +1220,11 @@ export function computePhaseOverdue(
   };
   for (const m of modules) {
     for (const it of m.items) {
+      // Supplies: the packing unit paces separately from acquisition.
+      if (m.module === "supplies" && packDeadline < cutoff) {
+        acc.dayOf.dueTotal += 1;
+        if (it.packedIn !== true) acc.dayOf.overdue += 1;
+      }
       const due = expectedDoneBy(m.module, it, eventDate);
       if (due >= cutoff) continue;
       const phase = itemPhase({

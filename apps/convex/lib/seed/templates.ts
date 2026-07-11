@@ -131,7 +131,7 @@ const PARTY_TEAM_OPTIONS: SelectOption[] = [
  */
 const JOIN_EVENT_SPEC: TrainingTemplateSpec = {
   name: "Academy: Join a Gathering",
-  version: 3,
+  version: 4,
   eventName: (firstName) => `Training: ${firstName} joins the gathering`,
   eventDaysOut: 30,
   description:
@@ -247,11 +247,14 @@ const JOIN_EVENT_SPEC: TrainingTemplateSpec = {
       { title: "Strike / leave-no-trace", offsetMinutes: 110, role: "logistics_lead" },
     ],
     supplies: [
-      { title: "2 x Shure SM58 Mics", status: "packed", fields: { source: "storage", container: "green_luggage", qty: 2 } },
-      { title: "Mixer", status: "pull_from_storage", fields: { source: "storage", container: "green_luggage", qty: 1 } },
-      { title: "1 x ALTO 600W Speaker", status: "have_it", fields: { source: "storage", container: "on_its_own", qty: 1 } },
-      { title: "1 x 200W Battery", status: "pull_from_storage", fields: { source: "storage", container: "green_luggage", qty: 1, notes: "Charge at home the night before — no charger in storage." } },
-      { title: "100 x Connect cards", status: "need_to_order", fields: { source: "order_online", qty: 100 } },
+      // "Timing" is the HAVE-IT-BY deadline: storage pulls resolve by T-1;
+      // order-online rows carry the shipping lead time. Packing is tracked on
+      // the Packing checklist (fields.packedIn), never as a status.
+      { title: "2 x Shure SM58 Mics", status: "have_it", offsetDays: -1, fields: { source: "storage", container: "green_luggage", qty: 2, notes: "With the audio kit at Sam's place." } },
+      { title: "Mixer", status: "pull_from_storage", offsetDays: -1, fields: { source: "storage", container: "green_luggage", qty: 1 } },
+      { title: "1 x ALTO 600W Speaker", status: "have_it", offsetDays: -1, fields: { source: "storage", container: "on_its_own", qty: 1, notes: "In storage — confirm before pack day." } },
+      { title: "1 x 200W Battery", status: "pull_from_storage", offsetDays: -2, fields: { source: "storage", container: "green_luggage", qty: 1, notes: "Charge at home the night before — no charger in storage." } },
+      { title: "100 x Connect cards", status: "need_to_order", offsetDays: -10, fields: { source: "order_online", qty: 100, notes: "Shipping takes ~a week — order well before the T-1 pack." } },
     ],
     permits: [
       { title: "Park permit — Maria Hernandez Park", offsetDays: -21, status: "approved", fields: { notes: "Approved. Holder must attend." } },
@@ -285,7 +288,7 @@ const JOIN_EVENT_SPEC: TrainingTemplateSpec = {
  */
 const BIRTHDAY_PARTY_SPEC: TrainingTemplateSpec = {
   name: "Academy: Birthday Party",
-  version: 3,
+  version: 4,
   eventName: (firstName) => `Training: ${firstName}'s birthday party`,
   eventDaysOut: 14,
   description:
@@ -356,13 +359,14 @@ const BIRTHDAY_PARTY_SPEC: TrainingTemplateSpec = {
     ],
     supplies: [
       {
-        title: "Quest: Get the cake to Packed",
+        title: "Quest: Get the cake in hand",
         status: "need_to_order",
+        offsetDays: -1,
         fields: {
           source: "order_online",
           qty: 1,
           notes:
-            "Ordered → Have it → Packed (boxed, by the door, ready to travel). Nothing gets 'grabbed on the way' — that's how parties end up cakeless.",
+            "Walk the status: Ordered → Have it. Then update Source + notes with where it lives ('fridge at Mom's') so whoever packs knows where to grab it. Packing itself is the Packing checklist, not a status — and nothing gets 'grabbed on the way'; that's how parties end up cakeless.",
         },
       },
     ],
@@ -402,7 +406,7 @@ const BIRTHDAY_PARTY_SPEC: TrainingTemplateSpec = {
  */
 const WORSHIP_EVENT_SPEC: TrainingTemplateSpec = {
   name: "Academy: Worship Event",
-  version: 3,
+  version: 4,
   eventName: (firstName) => `Training: ${firstName}'s worship event`,
   eventDaysOut: 14,
   description:
@@ -470,14 +474,15 @@ const WORSHIP_EVENT_SPEC: TrainingTemplateSpec = {
     ],
     supplies: [
       {
-        title: "Quest: Pack the battery, charged",
+        title: "Quest: Get the battery out, charged",
         status: "pull_from_storage",
+        offsetDays: -2,
         fields: {
           source: "storage",
           container: "green_luggage",
           qty: 1,
           notes:
-            "The battery leaves storage early enough to charge at home — there's no charger in storage. Walk it to Packed.",
+            "The battery leaves storage early enough to charge at home — there's no charger in storage. Walk it to Have it once it's charged and with you; day-before, check it off on the Packing checklist.",
         },
       },
     ],
@@ -736,14 +741,17 @@ export async function buildChapterRolesAndTemplates(
     { title: "Retro + capture learnings", offsetDays: 2, role: "event_lead" },
   ], edenRoleByKey);
 
+  // Supply "Timing" is the HAVE-IT-BY deadline: storage pulls by T-1 (pack
+  // day), the battery by T-2 (charges at home overnight), in-store buys a
+  // couple of days out, online orders early enough to survive shipping.
   await addTemplateItems(ctx, edenId, "supplies", [
-    { title: "2 x Shure SM58 Mics", status: "pull_from_storage", fields: { source: "storage", container: "green_luggage", qty: 2, notes: "With WWS audio kit" } },
-    { title: "Mixer", status: "pull_from_storage", fields: { source: "storage", container: "green_luggage", qty: 1 } },
-    { title: "4 x XLR Cabling", status: "pull_from_storage", fields: { source: "storage", container: "green_luggage", qty: 4 } },
-    { title: "1 x ALTO 600W Speaker", status: "pull_from_storage", fields: { source: "storage", container: "on_its_own", qty: 1 } },
-    { title: "1 x Charged 200W Battery", status: "pull_from_storage", fields: { source: "storage", container: "green_luggage", qty: 1, notes: "Needs charging the night before" } },
-    { title: "100 x Red Napkins", status: "need_to_buy", fields: { source: "buy_in_store", container: "cooler", qty: 100 } },
-    { title: "Charcuterie supplies", status: "need_to_order", fields: { source: "order_online", container: "cooler" } },
+    { title: "2 x Shure SM58 Mics", status: "pull_from_storage", offsetDays: -1, fields: { source: "storage", container: "green_luggage", qty: 2, notes: "With WWS audio kit" } },
+    { title: "Mixer", status: "pull_from_storage", offsetDays: -1, fields: { source: "storage", container: "green_luggage", qty: 1 } },
+    { title: "4 x XLR Cabling", status: "pull_from_storage", offsetDays: -1, fields: { source: "storage", container: "green_luggage", qty: 4 } },
+    { title: "1 x ALTO 600W Speaker", status: "pull_from_storage", offsetDays: -1, fields: { source: "storage", container: "on_its_own", qty: 1 } },
+    { title: "1 x Charged 200W Battery", status: "pull_from_storage", offsetDays: -2, fields: { source: "storage", container: "green_luggage", qty: 1, notes: "Needs charging the night before — no charger in storage." } },
+    { title: "100 x Red Napkins", status: "need_to_buy", offsetDays: -2, fields: { source: "buy_in_store", container: "cooler", qty: 100 } },
+    { title: "Charcuterie supplies", status: "need_to_order", offsetDays: -7, fields: { source: "order_online", container: "cooler", notes: "Order online — shipping is a lead time like any other." } },
   ], edenRoleByKey);
 
   await addTemplateItems(ctx, edenId, "comms", [
@@ -870,14 +878,14 @@ export async function buildChapterRolesAndTemplates(
   ], wwsRoleByKey);
 
   await addTemplateItems(ctx, wwsId, "supplies", [
-    { title: "2 x Shure SM58 Mics", status: "pull_from_storage", fields: { source: "storage", container: "green_luggage", notes: "With WWS audio kit" } },
-    { title: "Mixer", status: "pull_from_storage", fields: { source: "storage", container: "green_luggage" } },
-    { title: "4 x XLR Cabling", status: "pull_from_storage", fields: { source: "storage", container: "green_luggage" } },
-    { title: "1 x ALTO 600W Speaker", status: "pull_from_storage", fields: { source: "storage", container: "on_its_own" } },
-    { title: "1 x Charged 200W Battery", status: "pull_from_storage", fields: { source: "storage", container: "green_luggage", notes: "Charge the night before" } },
-    { title: "Battery Charger", status: "pull_from_storage", fields: { source: "storage", container: "green_luggage" } },
-    { title: "2 x QR Code Signs", status: "pull_from_storage", fields: { source: "storage", container: "green_luggage" } },
-    { title: "Small table", status: "pull_from_storage", fields: { source: "storage", container: "green_luggage" } },
+    { title: "2 x Shure SM58 Mics", status: "pull_from_storage", offsetDays: -1, fields: { source: "storage", container: "green_luggage", notes: "With WWS audio kit" } },
+    { title: "Mixer", status: "pull_from_storage", offsetDays: -1, fields: { source: "storage", container: "green_luggage" } },
+    { title: "4 x XLR Cabling", status: "pull_from_storage", offsetDays: -1, fields: { source: "storage", container: "green_luggage" } },
+    { title: "1 x ALTO 600W Speaker", status: "pull_from_storage", offsetDays: -1, fields: { source: "storage", container: "on_its_own" } },
+    { title: "1 x Charged 200W Battery", status: "pull_from_storage", offsetDays: -2, fields: { source: "storage", container: "green_luggage", notes: "Charge the night before — no charger in storage." } },
+    { title: "Battery Charger", status: "pull_from_storage", offsetDays: -2, fields: { source: "storage", container: "green_luggage" } },
+    { title: "2 x QR Code Signs", status: "pull_from_storage", offsetDays: -1, fields: { source: "storage", container: "green_luggage" } },
+    { title: "Small table", status: "pull_from_storage", offsetDays: -1, fields: { source: "storage", container: "green_luggage" } },
   ], wwsRoleByKey);
 
   await addTemplateItems(ctx, wwsId, "comms", [

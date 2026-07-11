@@ -44,7 +44,7 @@ areas. The core seven:
 | **Comms Schedule** | Every message: audience, channel, copy, T-offset | Comms Lead |
 | **Run of Show** | The minute-by-minute day-of program with call times | Production Lead |
 | **Crew Duties** | Volunteer teams, headcounts, per-team duties, dress code | Comms Lead |
-| **Supplies & Logistics** | Every physical item (source, location, qty, packed state) **plus the site map** — the venue layout: stage, stations, flow of arrival | Logistics Lead |
+| **Supplies & Logistics** | Every physical item (source, current location, qty, have-it-by date, packing checklist) **plus the site map** — the venue layout: stage, stations, flow of arrival | Logistics Lead |
 | **Permits** | Each permit: jurisdiction, lead time, status, documents | Event Lead |
 | **Debrief** | What went well / broke / was missing / was excess | Event Lead |
 
@@ -85,14 +85,17 @@ once, use them everywhere:
 3. **Columns.** Each area's rows have fields configured per template —
    statuses, selects, dates, people, costs, quantities. Templates decide the
    columns; events inherit and can adjust.
-4. **A timing mode.** One of three: **T-day offsets** (Planning, Comms,
-   Permits — rows carry T-14-style offsets that become real due dates),
-   **minute offsets** (Run of Show — minutes from event start), or **undated
-   with a convention deadline** (Supplies terminal by T-1, Crew Duties set
+4. **A timing mode.** One of three: **T-day offsets** (Tasks, Comms,
+   Permits, Supplies — rows carry T-14-style offsets that become real due
+   dates; a supply's offset is its have-it-by deadline, so orders go out
+   early enough to ship), **minute offsets** (Run of Show — minutes from
+   event start), or **undated with a convention deadline** (Crew Duties set
    before recruiting, Debrief by T+7).
 5. **A status vocabulary with terminal states.** Every row's status either is
-   or isn't "done-equivalent" (Done, Packed, Approved, Sent…). Readiness math
-   runs on this.
+   or isn't "done-equivalent" (Done, Have it, Approved, Sent…). Readiness math
+   runs on this. Supplies also carry a second, separate signal: the **Packing
+   checklist** (packed in / packed out per item) — status tracks *acquisition*,
+   the checklist tracks *packed*, and the two are never conflated.
 6. **Pre-plan sign-offs.** Templates can mark specific cells as requiring
    explicit check-off during pre-planning (e.g. confirming a quantity).
 7. **A ready flag.** The area owner marks the stream ready when its
@@ -155,8 +158,8 @@ Owning an area means owning its **completeness**, not doing every row:
 1. **The stream tells the truth.** Rows exist for everything that must
    happen, statuses reflect reality, and nothing in the stream is unowned.
 2. **Work to the deadlines.** Offset rows by their due dates; undated streams
-   by their conventions (supplies packed by T-1, run of show locked by T-3,
-   retro dispatched by T+7).
+   by their conventions (supplies in hand AND packed by T-1, run of show
+   locked by T-3, retro dispatched by T+7).
 3. **Flag cross-stream needs.** A planning task that implies a supply, a
    permit that gates a comms post — the owner who spots it makes sure the
    other stream's row exists.
@@ -204,8 +207,10 @@ A task without timing is a wish.
   knowledge: venue at T-30, permits at T-21, announce at T-14, volunteers
   locked by T-10, supplies resolved by T-1, retro by T+7.
 - **Areas without per-row offsets still have deadlines by convention:**
-  - Supplies: every item at a terminal state (*Packed* / *Have it*) by **T-1**.
-    Not "pull from storage." Packed.
+  - Supplies: every item *Have it* by its own have-it-by offset (orders weeks
+    out — shipping is a lead time), everything in hand by **T-1**, and every
+    item checked off the Packing checklist by **T-1**. Not "pull from
+    storage." In hand, packed.
   - Run of show: segment times, owners, and call times locked by **T-3** —
     because the T-3 and T-1 volunteer reminders quote them.
   - Setlist: confirmed and sent to vocalists/instrumentalists by **T-7**.
@@ -481,9 +486,10 @@ still unreviewed at T-10; song bank unsent at T-7.
 - Run of show locked (T-3): times, owners, call times final
 - Reminder cadence firing: T-7 / T-3 / T-1 to volunteers, be-on-time to
   leaders, countdowns to public
-- Supplies at terminal state by T-1: packed, batteries charged (pull from
-  storage early enough to charge!), storage pickup done, day-of purchases
-  (ice, flowers, food orders) assigned to a named person with a time
+- Supplies all *Have it* and checked off the Packing checklist by T-1:
+  batteries charged (pull from storage early enough to charge!), storage
+  pickup done, day-of purchases (ice, flowers, food orders) assigned to a
+  named person with a time
 - Permits resolved: in hand, or precinct sound permit on its ~T-3 schedule,
   or consciously waived with the fallback written
 - Site map + layout walkthrough done; signage printed and picked up
@@ -554,10 +560,17 @@ Food: COI required — know your insurance contact before you need one. Every
 permit has a "what if denied" line.
 
 **Supplies & Logistics** — each item: source (storage / order / someone's
-home), current location, quantity, owner, and packing container ("green
-luggage" beats "somewhere"). Statuses run pull-from-storage / need-to-order /
-have-it / packed; everything terminal by T-1. Charge batteries the night
-before. Orders placed in Build window, not Lock. This area also owns
+home), current location, quantity, owner, a have-it-by offset, and packing
+container ("green luggage" beats "somewhere"). Statuses track acquisition
+only — pull-from-storage / need-to-order / need-to-buy / ordered — and
+terminate at *have-it*; whether an item is PACKED lives on the Packing
+checklist (grouped by container, checked in and back out), never in a
+status. The moment an item is in hand, update its source/notes with where it
+lives now ("with Maya", "Sam's garage") so pack day is a checklist run, not
+a scavenger hunt — and keep cost + link current (budget rollup, painless
+re-orders). Everything in hand and packed by T-1. Charge batteries the night
+before. Orders placed in Build window, not Lock — acquiring feeds the
+Planning ring; packing feeds Day-of. This area also owns
 the **site map**: walk the site early (Lock window at latest); map the stage/
 worship area, prayer stations, food, merch, welcome points, and flow of
 arrival, and place the supplies on it. Photos from the walkthrough double as

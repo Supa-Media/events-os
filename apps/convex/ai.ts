@@ -193,6 +193,9 @@ export const eventContext = internalQuery({
         offsetDays: it.offsetDays ?? null,
         source: it.fields?.source ?? null,
         container: it.fields?.container ?? null,
+        // Supplies: the Packing-checklist boolean (status stops at have_it;
+        // packed-ness is this separate signal).
+        packedIn: it.fields?.packedIn === true,
         cost: it.fields?.cost ?? null,
         notes: it.fields?.notes ?? null,
         hasPhoto: !!it.fields?.photo,
