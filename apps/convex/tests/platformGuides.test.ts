@@ -230,6 +230,70 @@ describe("platform guide seeding", () => {
     expect(docs).toHaveLength(0);
   });
 
+  test("listGuides returns only the guide docs, even among many non-guide docs", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await addPerson(s);
+
+    const other = {
+      slug: "so-you-own-an-event",
+      title: "So you own an event",
+      body: "# So you own an event\n\nEvent-owner content.\n",
+    };
+    await run(t, (ctx) =>
+      seedPlatformGuidesForChapter(ctx, s.chapterId, [GUIDE_V1, other]),
+    );
+
+    // A pile of ordinary (slug-less) how-to docs in the same chapter — the
+    // indexed slug range must skip straight past all of them.
+    for (let i = 0; i < 25; i++) {
+      await s.as.mutation(api.docs.create, {
+        kind: "markdown",
+        title: `How-to ${i}`,
+        body: `body ${i}`,
+      });
+    }
+
+    const guides = await s.as.query(api.docs.listGuides, {});
+    expect(guides).toEqual([
+      expect.objectContaining({ slug: GUIDE_V1.slug, title: GUIDE_V1.title }),
+      expect.objectContaining({ slug: other.slug, title: other.title }),
+    ]);
+  });
+
+  test("clearSeedHash unsets the deprecated field on docs that carry it", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await addPerson(s);
+    await run(t, (ctx) =>
+      seedPlatformGuidesForChapter(ctx, s.chapterId, [GUIDE_V1]),
+    );
+
+    // Simulate a row written by a pre-merge branch build of the seeder.
+    const guide = await run(t, (ctx) =>
+      ctx.db
+        .query("docs")
+        .withIndex("by_chapter_and_slug", (q) =>
+          q.eq("chapterId", s.chapterId).eq("slug", GUIDE_V1.slug),
+        )
+        .unique(),
+    );
+    await run(t, (ctx) => ctx.db.patch(guide!._id, { seedHash: "abc123" }));
+
+    const res = await t.mutation(internal.docs.clearSeedHash, {});
+    expect(res).toMatchObject({ cleared: 1 });
+
+    const after = await run(t, (ctx) => ctx.db.get(guide!._id));
+    expect(after!.seedHash).toBeUndefined();
+    expect("seedHash" in after!).toBe(false);
+    // Everything else survives.
+    expect(after!.body).toBe(GUIDE_V1.body);
+
+    // Idempotent: a second run finds nothing to clear.
+    const again = await t.mutation(internal.docs.clearSeedHash, {});
+    expect(again).toMatchObject({ cleared: 0 });
+  });
+
   test("getGuideBySlug resolves the caller's chapter's copy (and null when missing)", async () => {
     const t = newT();
     const s = await setupChapter(t);

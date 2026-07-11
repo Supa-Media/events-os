@@ -29,22 +29,24 @@ const FALLBACK_GUIDE_SLUG = "so-you-own-a-workstream";
  * "?" that opens the platform guide for this workstream (its specific guide
  * when seeded, else the generic workstream-owner guide). Renders nothing when
  * the chapter has neither doc — so it never points at a missing page.
+ *
+ * Reads the same `listGuides` query as GuidesSection — the Convex client
+ * dedupes identical useQuery(fn, args) pairs into ONE subscription, so every
+ * GuideLink on the page (plus the Guides section) shares a single query
+ * instead of fanning out per-header slug lookups with a fallback waterfall.
+ * Specific-vs-fallback resolution happens client-side on the small guide list.
  */
 export function GuideLink({ moduleKey }: { moduleKey: string }) {
   const router = useRouter();
   const pathname = usePathname();
 
-  const slug = MODULE_GUIDE_SLUGS[moduleKey] ?? FALLBACK_GUIDE_SLUG;
-  const specific = useQuery(api.docs.getGuideBySlug, { slug });
-  // Only fetch the fallback once the specific guide is known to be missing.
-  const fallback = useQuery(
-    api.docs.getGuideBySlug,
-    specific === null && slug !== FALLBACK_GUIDE_SLUG
-      ? { slug: FALLBACK_GUIDE_SLUG }
-      : "skip",
-  );
+  const guides = useQuery(api.docs.listGuides, {});
 
-  const guide = specific ?? fallback ?? null;
+  const slug = MODULE_GUIDE_SLUGS[moduleKey] ?? FALLBACK_GUIDE_SLUG;
+  const guide =
+    guides?.find((g) => g.slug === slug) ??
+    guides?.find((g) => g.slug === FALLBACK_GUIDE_SLUG) ??
+    null;
   if (!guide) return null;
 
   return (
