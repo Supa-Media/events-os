@@ -9,9 +9,11 @@ import {
 } from "react-native";
 import { useQuery } from "convex/react";
 import { api } from "@events-os/convex/_generated/api";
+import type { Id } from "@events-os/convex/_generated/dataModel";
 import { Icon } from "./Icon";
 import { Avatar } from "./Avatar";
 import { colors } from "../../lib/theme";
+import { useSandboxEventId } from "../event/SandboxScope";
 
 type PersonId = string;
 
@@ -56,8 +58,13 @@ export function PersonPicker({
   onCreate,
   filter,
 }: Props) {
+  // Inside an Academy training sandbox, both sources collapse SERVER-SIDE to
+  // the learner + placeholder people — real teammates are never offered from
+  // within a drill.
+  const sandboxEventId = useSandboxEventId();
   const people = useQuery(
     source === "team" ? api.people.teamMembers : api.people.list,
+    sandboxEventId ? { eventId: sandboxEventId as Id<"events"> } : {},
   );
 
   const [search, setSearch] = useState("");

@@ -77,8 +77,23 @@ interface TrainingPersonSeed {
 export interface TrainingTemplateSpec {
   name: string;
   description: string;
+  /**
+   * Bump when the spec's CONTENT changes (rows, roles, people, columns,
+   * modules). ensureTrainingTemplate refreshes an existing chapter's platform
+   * template in place when its stored version is older — without this,
+   * curriculum pages describing new quests would ship everywhere while
+   * pre-existing chapters kept minting sandboxes from the frozen v1 template.
+   */
+  version: number;
   /** The sandbox event's name, from the learner's first name. */
   eventName: (firstName: string) => string;
+  /**
+   * How far out the sandbox event is dated. Horizons scale with the event —
+   * the join-a-gathering sandbox sits a month out (big events plan on long
+   * horizons); the party/pop-up sandboxes sit at ~2 weeks (the FLOOR for
+   * planning anything, not the standard length of a plan).
+   */
+  eventDaysOut: number;
   disabledCoreModules: string[];
   /** Role keys from DEFAULT_ROLES this template carries. */
   roleKeys: string[];
@@ -116,7 +131,9 @@ const PARTY_TEAM_OPTIONS: SelectOption[] = [
  */
 const JOIN_EVENT_SPEC: TrainingTemplateSpec = {
   name: "Academy: Join a Gathering",
+  version: 2,
   eventName: (firstName) => `Training: ${firstName} joins the gathering`,
+  eventDaysOut: 30,
   description:
     "Capstone 1 sandbox — a large worship gathering already built from a template. The learner joins as Comms Lead. Instantiated per person by \"Start training\"; training events never appear in the pipeline or reminder emails.",
   disabledCoreModules: [],
@@ -149,12 +166,21 @@ const JOIN_EVENT_SPEC: TrainingTemplateSpec = {
         },
       },
       {
-        title: "Quest: Ask the assistant to brief you on your workstream",
+        title: "Quest: Swap the Greeter placeholder for a person",
         offsetDays: -10,
         role: "comms_lead",
         fields: {
           details:
-            'Open the assistant and ask: "Brief me on my workstream — what\'s due, what\'s at risk, what\'s unowned?" It reads your live rows. Then mark this Done.',
+            "Placeholders are role-shaped slots ('Greeter'), and placeholders are debts — each becomes a named human before your template's crew lock point. Open the Crew tab and replace the Greeter placeholder with Maya or Jordan. (Sandbox pickers only ever offer you and sample people — you can't rope in real teammates from in here.) Then mark this Done.",
+        },
+      },
+      {
+        title: "Quest: Ask the assistant to brief you on your area",
+        offsetDays: -9,
+        role: "comms_lead",
+        fields: {
+          details:
+            'Open the assistant and ask: "Brief me on my area — what\'s due, what\'s at risk, what\'s unowned?" It reads your live rows. Then mark this Done.',
         },
       },
       {
@@ -238,9 +264,15 @@ const JOIN_EVENT_SPEC: TrainingTemplateSpec = {
       { title: "Capture photos + clips", fields: { team: "content", details: "Candid moments, worship, and setup for the recap." } },
     ],
   },
+  // Crew placeholders are ROLE-SHAPED slots ("Greeter"), not fake humans —
+  // the learner's swap quest replaces one with a person from the sample bench.
   people: [
-    { name: "Priya (sample crew)", team: "welcome", role: "Welcome team" },
-    { name: "Marcus (sample crew)", team: "production", role: "Sound + setup" },
+    { name: "Greeter (placeholder)", team: "welcome", role: "Greeter" },
+    { name: "Sound + setup (placeholder)", team: "production", role: "Sound + setup" },
+  ],
+  sampleTeammates: [
+    { name: "Maya (sample teammate)", role: "Trained organizer — sample" },
+    { name: "Jordan (sample teammate)", role: "Trained organizer — sample" },
   ],
 };
 
@@ -253,7 +285,9 @@ const JOIN_EVENT_SPEC: TrainingTemplateSpec = {
  */
 const BIRTHDAY_PARTY_SPEC: TrainingTemplateSpec = {
   name: "Academy: Birthday Party",
+  version: 2,
   eventName: (firstName) => `Training: ${firstName}'s birthday party`,
+  eventDaysOut: 14,
   description:
     "Capstone 2 sandbox — a from-scratch birthday party with sample teammates and crew. Instantiated per person by \"Start training\"; training events never appear in the pipeline or reminder emails.",
   disabledCoreModules: ["permits"],
@@ -368,7 +402,9 @@ const BIRTHDAY_PARTY_SPEC: TrainingTemplateSpec = {
  */
 const WORSHIP_EVENT_SPEC: TrainingTemplateSpec = {
   name: "Academy: Worship Event",
+  version: 2,
   eventName: (firstName) => `Training: ${firstName}'s worship event`,
+  eventDaysOut: 14,
   description:
     "Bonus capstone sandbox — a from-scratch pop-up worship event. Instantiated per person by \"Start training\"; training events never appear in the pipeline or reminder emails.",
   disabledCoreModules: ["volunteer_expectations"],
@@ -514,7 +550,24 @@ export async function ensureTrainingTemplate(
   const existing = chapterTypes.find(
     (t) => t.isPlatform === true && t.platformKey === key,
   );
-  if (existing) return existing._id;
+  if (existing) {
+    // Refresh a stale template IN PLACE when the spec's content version
+    // moved on. Existing sandboxes already cloned their content, so wiping
+    // the template's rows/roles/columns/people never touches them; new
+    // sandboxes (and reseedMissingRows self-heals) read the fresh content.
+    if ((existing.version ?? 1) !== spec.version) {
+      await wipeTemplateContent(ctx, existing._id);
+      await ctx.db.patch(existing._id, {
+        name: spec.name,
+        description: spec.description,
+        disabledCoreModules: spec.disabledCoreModules,
+        version: spec.version,
+        updatedAt: now,
+      });
+      await seedSpecContent(ctx, existing._id, spec, now);
+    }
+    return existing._id;
+  }
 
   // A user template may be squatting on the exact slug — suffix past it.
   const taken = new Set(chapterTypes.map((t) => t.slug));
@@ -531,13 +584,53 @@ export async function ensureTrainingTemplate(
     platformKey: key,
     description: spec.description,
     disabledCoreModules: spec.disabledCoreModules,
-    version: 1,
+    version: spec.version,
     isArchived: false,
     createdBy,
     createdAt: now,
     updatedAt: now,
   });
+  await seedSpecContent(ctx, trainingId, spec, now);
+  return trainingId;
+}
 
+/** Delete a platform template's content rows (items, columns, roles, people)
+ *  ahead of a spec-version refresh. The template doc itself stays. */
+async function wipeTemplateContent(
+  ctx: MutationCtx,
+  eventTypeId: Id<"eventTypes">,
+): Promise<void> {
+  const [items, cols, roles, people] = await Promise.all([
+    ctx.db
+      .query("templateItems")
+      .withIndex("by_eventType", (q) => q.eq("eventTypeId", eventTypeId))
+      .collect(),
+    ctx.db
+      .query("templateColumns")
+      .withIndex("by_eventType", (q) => q.eq("eventTypeId", eventTypeId))
+      .collect(),
+    ctx.db
+      .query("templateRoles")
+      .withIndex("by_template", (q) => q.eq("eventTypeId", eventTypeId))
+      .collect(),
+    ctx.db
+      .query("templatePeople")
+      .withIndex("by_template", (q) => q.eq("eventTypeId", eventTypeId))
+      .collect(),
+  ]);
+  for (const doc of [...items, ...cols, ...roles, ...people]) {
+    await ctx.db.delete(doc._id);
+  }
+}
+
+/** Seed a training template's content from its spec: roles, columns (with
+ *  overrides), rows, and sample crew placeholders. */
+async function seedSpecContent(
+  ctx: MutationCtx,
+  trainingId: Id<"eventTypes">,
+  spec: TrainingTemplateSpec,
+  now: number,
+): Promise<void> {
   const roleSeeds = DEFAULT_ROLES.filter((r) => spec.roleKeys.includes(r.key));
   const roleByKey = await seedTemplateRoles(ctx, trainingId, roleSeeds);
 
@@ -572,8 +665,6 @@ export async function ensureTrainingTemplate(
       createdAt: now,
     });
   }
-
-  return trainingId;
 }
 
 /** Ensure all capstone training templates exist for a chapter. */

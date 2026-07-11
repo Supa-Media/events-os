@@ -1,4 +1,4 @@
-# Owning the Comms workstream
+# Owning the Comms area
 
 *You've been assigned Comms Lead for an event. This is your guide. Ten-minute
 read; keep it open the first week.*

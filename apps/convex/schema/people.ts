@@ -69,6 +69,12 @@ export const people = defineTable({
   // True when this row was materialized from a template's placeholder crew at
   // event creation — a stand-in the team swaps for a real person later.
   isPlaceholder: v.optional(v.boolean()),
+  // Academy sample person (Maya/Jordan — the training sandboxes' bench).
+  // NOT a placeholder: they can hold roles and replace placeholder crew like
+  // a real person, but every operational surface (People roster, Team views,
+  // "who's trained", real events' pickers) excludes them. Only sandbox-scoped
+  // pickers (people.list/teamMembers with a training eventId) offer them.
+  isSamplePerson: v.optional(v.boolean()),
   // This person's manager (another roster person). Powers the Team org view:
   // reports roll up to their manager, transitively, so a director can see the
   // whole structure under them. Kept acyclic by `people.update`.

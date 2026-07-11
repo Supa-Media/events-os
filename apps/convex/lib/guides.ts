@@ -19,8 +19,8 @@ export type PlatformGuide = {
 export const PLATFORM_GUIDES: PlatformGuide[] = [
   {
     slug: "owning-the-comms-workstream",
-    title: "Owning the Comms workstream",
-    body: `# Owning the Comms workstream
+    title: "Owning the Comms area",
+    body: `# Owning the Comms area
 
 *You've been assigned Comms Lead for an event. This is your guide. Ten-minute
 read; keep it open the first week.*
@@ -127,23 +127,23 @@ Try:
   },
   {
     slug: "so-you-own-a-workstream",
-    title: "So you own a workstream",
-    body: `# So you own a workstream
+    title: "So you own an area",
+    body: `# So you own an area
 
-*You've been assigned a role that owns one or more workstreams of an event.
-This is the five-minute version of what that means. Your specific workstream
+*You've been assigned a role that owns one or more areas of an event.
+This is the five-minute version of what that means. Your specific area
 (Comms, Supplies, Run of Show…) has its own guide with the details — this one
 covers what's true for all of them.*
 
-## What a workstream is
+## What an area is
 
-A workstream is one owned area of the event plan — a stream of work one person
-carries end-to-end. The event plan is nothing more than its workstreams:
+An area is one owned slice of the event plan — a stream of work one person
+carries end-to-end. The event plan is nothing more than its areas:
 Tasks, Comms Schedule, Run of Show, Crew Duties, Supplies & Logistics
 (which includes the site map), Permits, Debrief (plus any custom ones
 this event added). Each renders as a tab on the event page.
 
-Every workstream is built the same way:
+Every area is built the same way:
 
 - **Rows** — the unit of work: a task, a message, a supply item, a permit.
   Every row has a title, a status, and an accountable human.
@@ -158,7 +158,7 @@ Every workstream is built the same way:
 
 ## What's expected of you
 
-Owning a workstream means owning its **completeness**, not doing every row:
+Owning an area means owning its **completeness**, not doing every row:
 
 1. **Your stream tells the truth.** Rows exist for everything that must
    happen, statuses reflect reality, nothing is unowned. Update statuses the
@@ -179,7 +179,7 @@ Owning a workstream means owning its **completeness**, not doing every row:
 
 ## In the app
 
-- Your workstream is a **tab on the event page**. Click any cell to edit;
+- Your area is a **tab on the event page**. Click any cell to edit;
   status chips cycle when tapped; changes save instantly.
 - Rows assigned to your role (or to you) appear in your **reminder emails**
   and in **"What's next"** on the event overview.
@@ -192,10 +192,10 @@ Owning a workstream means owning its **completeness**, not doing every row:
 
 ## Ask the agent
 
-The assistant on the event page knows the playbook, your workstream's guide,
+The assistant on the event page knows the playbook, your area's guide,
 and your live rows. Try:
 
-- *"Brief me on my workstream — what's due, what's at risk, what's unowned?"*
+- *"Brief me on my area — what's due, what's at risk, what's unowned?"*
 - *"What does 'ready' mean for this stream and how far am I?"*
 - *"Add the rows I'm missing compared to the template."*
 - *"I'm blocked on X — who should I talk to and what's the fallback?"*
@@ -215,7 +215,7 @@ the ten-minute version of the job.*
 The event owner is the answer to "who do I ask?" for anything without a
 clearer owner. You don't do everything — in fact, if more than about 40% of
 tasks resolve to you, you're failing at the core skill, which is delegation.
-Your job is that every workstream has an owner, every owner knows their
+Your job is that every area has an owner, every owner knows their
 deadlines, blockers reach you early, and the plan is honest. You are the end
 of the accountability chain: any row whose owner chain dead-ends lands on
 you until you hand it to someone.
@@ -233,7 +233,7 @@ you until you hand it to someone.
 4. **Hold the budget.** Set it at kickoff ($300 lightweight / ~$1000
    full-scale are the proven anchors), watch the rollup, reconcile actuals
    afterward.
-5. **Make the readiness call.** "Ready" means: all workstreams marked ready,
+5. **Make the readiness call.** "Ready" means: all areas marked ready,
    all roles assigned, no placeholders, permits resolved or consciously
    waived, contingencies written. You declare it, and you own any override —
    out loud.
@@ -271,7 +271,7 @@ you until you hand it to someone.
 - The four **phase rings** in the header (Pre-plan / Planning / Day-of /
   Post) are your honesty meter — they're computed from row statuses, so they
   only work if owners keep statuses true.
-- **Assign roles** from the Overview; assign workstream owners from each
+- **Assign roles** from the Overview; assign area owners from each
   section header. **"Share crew"** gives volunteers their no-login briefing
   page.
 - **Day-of mode** (button on the event) is the big-print field view for the

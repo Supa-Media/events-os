@@ -13,6 +13,7 @@
 import { Doc, Id } from "../_generated/dataModel";
 import { QueryCtx } from "../_generated/server";
 import {
+  computeExpectedPhaseScores,
   computePhaseScores,
   isCompleteStatus,
   MODULE_READY_PHASE,
@@ -79,13 +80,16 @@ export async function statusCountsFor(
 }
 
 /**
- * Compute the four phase scores for an event. Each value is 0..1, or null when
- * the phase has no items to measure (rendered "—", not "0%").
+ * Compute the four phase scores for an event — plus the EXPECTED (on-pace)
+ * scores at `now`, the pacing ghost: what the same rings would read if
+ * everything due by today were done. Each value is 0..1, or null when the
+ * phase has no items to measure (rendered "—", not "0%").
  */
-export async function phaseReadiness(
+export async function phaseReadinessBundle(
   ctx: any,
   event: any,
-): Promise<PhaseScores> {
+  now: number = Date.now(),
+): Promise<{ phases: PhaseScores; expected: PhaseScores }> {
   // Grid modules only — a non-grid surface would have no status'd items. (The
   // site map is not a module of its own: it rides along with supplies.)
   const resolved = await eventActiveModules(ctx, event);
@@ -164,12 +168,31 @@ export async function phaseReadiness(
       r.ready as boolean,
     ]),
   );
-  const moduleReady = resolved
-    .filter((m: any) => MODULE_READY_PHASE[m.key])
-    .map((m: any) => ({
-      phase: MODULE_READY_PHASE[m.key],
-      ready: readyByKey.get(m.key) === true,
-    }));
+  const gatedModules = resolved.filter((m: any) => MODULE_READY_PHASE[m.key]);
+  const moduleReady = gatedModules.map((m: any) => ({
+    phase: MODULE_READY_PHASE[m.key],
+    ready: readyByKey.get(m.key) === true,
+  }));
 
-  return computePhaseScores(modules, prePlanExtra, moduleReady);
+  return {
+    phases: computePhaseScores(modules, prePlanExtra, moduleReady),
+    // Same inputs, deadline-derived: the pacing ghost the rings compare to.
+    expected: computeExpectedPhaseScores(
+      modules,
+      gatedModules.map((m: any) => ({
+        module: m.key as string,
+        phase: MODULE_READY_PHASE[m.key],
+      })),
+      event.eventDate as number,
+      now,
+    ),
+  };
+}
+
+/** The actual phase scores only (see phaseReadinessBundle for the ghost). */
+export async function phaseReadiness(
+  ctx: any,
+  event: any,
+): Promise<PhaseScores> {
+  return (await phaseReadinessBundle(ctx, event)).phases;
 }

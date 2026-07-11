@@ -1,5 +1,5 @@
 import { Pressable, Text, View } from "react-native";
-import { phaseColors } from "../../lib/theme";
+import { phaseColors, colors } from "../../lib/theme";
 import { ReadinessRing } from "./ReadinessRing";
 import {
   PHASE_KEYS,
@@ -43,22 +43,33 @@ function PhaseLabel({
   );
 }
 
+/** Points behind pace before the ghost line appears — a ring 1–2 points shy
+ *  of its target is noise, not a warning. */
+const PACE_GAP_THRESHOLD = 3;
+
 /** One tappable phase ring + its label. Tapping asks the parent to spotlight it. */
 function PhaseRing({
   phase,
   pct,
+  expectedPct,
   size,
   active,
   onSelect,
 }: {
   phase: PhaseKey;
   pct: number | null;
+  /** Where this ring SHOULD be today (the pacing ghost), or null. */
+  expectedPct: number | null;
   size: number;
   active: boolean;
   onSelect?: (phase: PhaseKey) => void;
 }) {
   const hue = phaseColors[phase];
   const complete = pct != null && pct >= 100;
+  // Behind pace: everything due by today would put this ring at expectedPct.
+  const gap =
+    pct != null && expectedPct != null ? expectedPct - pct : null;
+  const behind = gap != null && gap >= PACE_GAP_THRESHOLD;
   return (
     <Pressable
       onPress={onSelect ? () => onSelect(phase) : undefined}
@@ -67,6 +78,8 @@ function PhaseRing({
       accessibilityRole={onSelect ? "button" : undefined}
       accessibilityLabel={`${PHASE_LABELS[phase]} readiness${
         pct == null ? "" : `, ${pct}%`
+      }${
+        behind ? `, ${gap} points behind the ${expectedPct}% target for today` : ""
       }. Highlights this phase's tabs.`}
       className="items-center gap-1 active:opacity-70 web:hover:opacity-85"
       style={active ? { transform: [{ scale: 1.06 }] } : undefined}
@@ -83,6 +96,16 @@ function PhaseRing({
         lit={active || complete}
         dim={pct == null}
       />
+      {behind ? (
+        <View
+          className="flex-row items-center rounded-pill px-1.5 py-px"
+          style={{ backgroundColor: colors.amberBg }}
+        >
+          <Text className="text-2xs font-bold" style={{ color: colors.amber }}>
+            ▲ {expectedPct}%
+          </Text>
+        </View>
+      ) : null}
     </Pressable>
   );
 }
@@ -93,14 +116,21 @@ function PhaseRing({
  * module tabs wear below) and is pressable: tapping pulses the tabs that feed
  * it, answering "what do I do to move this number?". Values are 0..1 or null;
  * null renders "—" so an empty phase doesn't read as "0% ready".
+ *
+ * `expected` is the PACING GHOST: where each ring should be today if
+ * everything due by now were done. A ring meaningfully behind its target
+ * grows a "▲ N%" pace pill — the catch-up number to close today.
  */
 export function PhaseBreakdown({
   phases,
+  expected,
   size = 52,
   onSelectPhase,
   activePhase,
 }: {
   phases: PhaseScores;
+  /** Expected (on-pace) scores; omit to render without pace pills. */
+  expected?: PhaseScores;
   size?: number;
   /** Tap a ring → pulse its tabs. Rings are inert when omitted. */
   onSelectPhase?: (phase: PhaseKey) => void;
@@ -110,11 +140,13 @@ export function PhaseBreakdown({
     <View className="flex-row flex-wrap items-start gap-x-5 gap-y-2">
       {PHASE_KEYS.map((key) => {
         const score = phases[key];
+        const target = expected?.[key];
         return (
           <PhaseRing
             key={key}
             phase={key}
             pct={score == null ? null : Math.round(score * 100)}
+            expectedPct={target == null ? null : Math.round(target * 100)}
             size={size}
             active={activePhase === key}
             onSelect={onSelectPhase}

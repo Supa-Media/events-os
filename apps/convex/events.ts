@@ -39,7 +39,7 @@ import {
   eventActiveModules,
   getPersonForUser,
 } from "./lib/templates";
-import { phaseReadiness, statusCountsFor } from "./lib/readiness";
+import { phaseReadiness, phaseReadinessBundle, statusCountsFor } from "./lib/readiness";
 import { manageablePersonIds } from "./lib/org";
 import { paidTotalForEvent } from "./engagements";
 
@@ -166,7 +166,10 @@ export const get = query({
     if (!event || event.chapterId !== chapterId) return null;
     const eventType = await ctx.db.get(event.eventTypeId as Id<"eventTypes">);
     const r = await eventReadiness(ctx, eventId);
-    const phases = await phaseReadiness(ctx, event);
+    const { phases, expected: expectedPhases } = await phaseReadinessBundle(
+      ctx,
+      event,
+    );
 
     // Roll up every item's `cost` field against the event budget.
     const allItems = await ctx.db
@@ -200,6 +203,9 @@ export const get = query({
       readiness: r.readiness,
       // Four phase scores (0..1 or null), the new headline readiness signal.
       phases,
+      // The pacing ghost: where each ring SHOULD be today if everything due
+      // by now were done (0..1 or null). expected - actual = catch-up gap.
+      expectedPhases,
       taskTotal: r.total,
       taskDone: r.done,
       budgetSpent,

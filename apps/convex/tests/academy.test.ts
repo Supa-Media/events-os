@@ -144,13 +144,13 @@ async function platformTemplates(s: ChapterSetup) {
 }
 
 describe("curriculum content", () => {
-  test("fifteen ordered sections; three capstones; one optional bonus", () => {
-    expect(ACADEMY_SECTION_COUNT).toBe(15);
+  test("sixteen ordered sections; three capstones; one optional bonus", () => {
+    expect(ACADEMY_SECTION_COUNT).toBe(16);
     expect(ACADEMY_SECTIONS.map((s) => s.order)).toEqual(
-      Array.from({ length: 15 }, (_v, i) => i + 1),
+      Array.from({ length: 16 }, (_v, i) => i + 1),
     );
     // The optional bonus is excluded from the trained denominator.
-    expect(ACADEMY_REQUIRED_SECTION_COUNT).toBe(14);
+    expect(ACADEMY_REQUIRED_SECTION_COUNT).toBe(15);
     expect(ACADEMY_CAPSTONE_SECTIONS).toHaveLength(3);
     // The suite leans on this order — pin it.
     expect(CAPSTONE_JOIN.capstone!.kind).toBe("join_event");
@@ -541,10 +541,10 @@ describe("the training-event capstones", () => {
     const event = await run(s.t, (ctx) => ctx.db.get(s.eventId));
     expect(event!.isTraining).toBe(true);
     expect(event!.name).toMatch(/^Training: .+ joins the gathering$/);
-    // ~14 days out.
+    // ~30 days out — the join sandbox models a big event's longer horizon.
     const days = (event!.eventDate - Date.now()) / DAY;
-    expect(days).toBeGreaterThan(13);
-    expect(days).toBeLessThan(15);
+    expect(days).toBeGreaterThan(29);
+    expect(days).toBeLessThan(31);
     // Template seeding is idempotent — exactly one platform template per key.
     const joinKey = ACADEMY_TRAINING_TEMPLATES.join_event.templateKey;
     const platforms = await platformTemplates(s);
@@ -616,7 +616,7 @@ describe("the training-event capstones", () => {
     const status = await s.as.query(api.academy.trainingStatus, {
       capstoneSlug: CAPSTONE_JOIN.slug,
     });
-    expect(status!.total).toBe(7); // 4 Tasks quests + 3 Comms quests, restored
+    expect(status!.total).toBe(8); // 5 Tasks quests + 3 Comms quests, restored
     expect(status!.doneCount).toBe(0);
     // The heal restores load-bearing SCENERY too, not just quests — the
     // comms quests send the learner to read the Run of Show and Crew Duties.
@@ -646,7 +646,7 @@ describe("the training-event capstones", () => {
           it.title.startsWith("Quest:") &&
           it.dueDate != null,
       ),
-    ).toHaveLength(4);
+    ).toHaveLength(5);
   });
 
   test("trainingStatus tracks quests live; both capstones roll into myProgress", async () => {
@@ -666,7 +666,7 @@ describe("the training-event capstones", () => {
       capstoneSlug: CAPSTONE_JOIN.slug,
     });
     expect(status!.eventId).toBe(eventId);
-    expect(status!.total).toBe(7);
+    expect(status!.total).toBe(8);
     expect(status!.doneCount).toBe(0);
     expect(status!.complete).toBe(false);
     // Quest titles come back with the "Quest:" prefix stripped.
@@ -676,7 +676,7 @@ describe("the training-event capstones", () => {
     // Checklist keeps workstream story order: Tasks quests before Comms
     // quests (alphabetical would invert them — 'comms' < 'planning_doc').
     expect(status!.quests.map((q) => q.module)).toEqual([
-      ...Array(4).fill("planning_doc"),
+      ...Array(5).fill("planning_doc"),
       ...Array(3).fill("comms"),
     ]);
 
@@ -706,7 +706,7 @@ describe("the training-event capstones", () => {
       eventId,
       started: true,
       questsDone: 1,
-      questsTotal: 7,
+      questsTotal: 8,
       complete: false,
     });
     // Other sections (incl. the not-yet-started party capstone) carry none.
@@ -795,22 +795,29 @@ describe("the training-event capstones", () => {
       capstoneSlug: CAPSTONE_PARTY.slug,
     });
 
-    const { placeholders, engagements } = await run(s.t, async (ctx) => ({
-      placeholders: (
+    const { samples, engagements } = await run(s.t, async (ctx) => ({
+      samples: (
         await ctx.db
           .query("people")
           .withIndex("by_chapter", (q) => q.eq("chapterId", s.chapterId))
           .collect()
-      ).filter((p) => p.isPlaceholder === true),
+      ).filter((p) => p.isSamplePerson === true),
       engagements: await ctx.db
         .query("engagements")
         .withIndex("by_event", (q) => q.eq("eventId", party.eventId))
         .collect(),
     }));
-    // Maya + Jordan (teammates, no engagement) exist as placeholders…
-    const names = placeholders.map((p) => p.name);
+    // Maya + Jordan (teammates, no engagement) exist as SAMPLE people — not
+    // placeholders (they must clear a placeholder slot when swapped in) and
+    // not team members (real events' pickers never offer them).
+    const names = samples.map((p) => p.name);
     expect(names).toContain("Maya (sample teammate)");
     expect(names).toContain("Jordan (sample teammate)");
+    expect(
+      samples.every(
+        (p) => p.isPlaceholder !== true && p.isTeamMember !== true,
+      ),
+    ).toBe(true);
     // …and Uncle Ray + Cousin Lena were materialized as sandbox crew.
     expect(engagements.length).toBeGreaterThanOrEqual(2);
 
@@ -827,6 +834,146 @@ describe("the training-event capstones", () => {
       ).filter((p) => p.name === "Maya (sample teammate)"),
     );
     expect(after).toHaveLength(1);
+
+    // Legacy rows from earlier releases (isPlaceholder / isTeamMember Mayas)
+    // heal onto the sample-person shape instead of duplicating.
+    await run(s.t, (ctx) =>
+      ctx.db.patch(after[0]._id, {
+        isSamplePerson: undefined,
+        isPlaceholder: true,
+        isTeamMember: true,
+      }),
+    );
+    await s.as.mutation(api.academy.startTraining, {
+      capstoneSlug: CAPSTONE_PARTY.slug,
+    });
+    const healed = await run(s.t, (ctx) => ctx.db.get(after[0]._id));
+    expect(healed!.isSamplePerson).toBe(true);
+    expect(healed!.isPlaceholder).toBeUndefined();
+    expect(healed!.isTeamMember).toBeUndefined();
+  });
+
+  test("sandbox pickers collapse to the learner + placeholder people", async () => {
+    const s = await setupTrainee();
+    await completeAllQuests(s, s.eventId);
+    const party = await s.as.mutation(api.academy.startTraining, {
+      capstoneSlug: CAPSTONE_PARTY.slug,
+    });
+
+    // Another REAL team member exists on the roster…
+    await run(s.t, (ctx) =>
+      ctx.db.insert("people", {
+        chapterId: s.chapterId,
+        name: "Real Rachel",
+        isTeamMember: true,
+        isActive: true,
+        createdAt: Date.now(),
+      }),
+    );
+
+    // Without an eventId: the normal rules — no placeholders and no sample
+    // people anywhere.
+    const normalTeam = await s.as.query(api.people.teamMembers, {});
+    expect(normalTeam.some((p) => p.name === "Real Rachel")).toBe(true);
+    expect(normalTeam.some((p) => p.isPlaceholder === true)).toBe(false);
+    expect(normalTeam.some((p) => p.isSamplePerson === true)).toBe(false);
+    const normalList = await s.as.query(api.people.list, {});
+    expect(normalList.some((p) => p.isPlaceholder === true)).toBe(false);
+    expect(normalList.some((p) => p.isSamplePerson === true)).toBe(false);
+
+    // Scoped to the training sandbox: the learner + sample people + THIS
+    // event's own placeholder crew slots ONLY — Real Rachel can never be
+    // roped into a drill, and the JOIN sandbox's Greeter slot (a different
+    // event's placeholder) never bleeds into the party sandbox.
+    for (const q of [api.people.teamMembers, api.people.list] as const) {
+      const scoped = await s.as.query(q, { eventId: party.eventId });
+      expect(scoped.some((p) => p.name === "Real Rachel")).toBe(false);
+      expect(scoped.some((p) => p._id === s.personId)).toBe(true);
+      expect(scoped.some((p) => p.name === "Maya (sample teammate)")).toBe(true);
+      expect(scoped.some((p) => p.name === "Greeter (placeholder)")).toBe(
+        false,
+      );
+      expect(
+        scoped.every(
+          (p) =>
+            p._id === s.personId ||
+            p.isSamplePerson === true ||
+            p.isPlaceholder === true,
+        ),
+      ).toBe(true);
+    }
+
+    // A REAL event's id gives no special scope — normal rules apply.
+    const realEventId = await run(s.t, async (ctx) => {
+      const anyType = (await ctx.db
+        .query("eventTypes")
+        .withIndex("by_chapter", (q) => q.eq("chapterId", s.chapterId))
+        .first())!;
+      return await ctx.db.insert("events", {
+        chapterId: s.chapterId,
+        eventTypeId: anyType._id,
+        templateVersion: 1,
+        name: "Real event",
+        eventDate: Date.now() + 7 * DAY,
+        ownerPersonId: s.personId,
+        status: "planning",
+        createdBy: s.userId,
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      });
+    });
+    const unscoped = await s.as.query(api.people.teamMembers, {
+      eventId: realEventId,
+    });
+    expect(unscoped.some((p) => p.name === "Real Rachel")).toBe(true);
+    expect(unscoped.some((p) => p.isPlaceholder === true)).toBe(false);
+  });
+});
+
+describe("training template spec-version refresh", () => {
+  test("a stale platform template is rebuilt in place on next start", async () => {
+    const s = await setupTrainee();
+    // Simulate a chapter seeded by an older release: wind the join template
+    // back to version 1 and strip its quest rows.
+    const platform = (await platformTemplates(s)).find(
+      (t) =>
+        t.platformKey === ACADEMY_TRAINING_TEMPLATES.join_event.templateKey,
+    )!;
+    await run(s.t, async (ctx) => {
+      await ctx.db.patch(platform._id, { version: 1 });
+      const items = await ctx.db
+        .query("templateItems")
+        .withIndex("by_eventType", (q) => q.eq("eventTypeId", platform._id))
+        .collect();
+      for (const it of items) await ctx.db.delete(it._id);
+    });
+
+    // A fresh learner starting the capstone gets the CURRENT spec content.
+    const other = await setupLearner(s.t, {
+      email: "second@publicworship.life",
+      name: "Second Learner",
+    });
+    // Same chapter: rebind the second learner's membership + person row.
+    await run(s.t, async (ctx) => {
+      const memberships = await ctx.db.query("userChapters").collect();
+      for (const m of memberships) {
+        if (m.userId === other.userId) {
+          await ctx.db.patch(m._id, { chapterId: s.chapterId });
+        }
+      }
+      await ctx.db.patch(other.personId, { chapterId: s.chapterId });
+    });
+    await passAllQuizzes(other);
+    const { eventId } = await other.as.mutation(api.academy.startTraining, {
+      capstoneSlug: CAPSTONE_JOIN.slug,
+    });
+    const status = await other.as.query(api.academy.trainingStatus, {
+      capstoneSlug: CAPSTONE_JOIN.slug,
+    });
+    expect(status!.eventId).toBe(eventId);
+    expect(status!.total).toBe(8); // rebuilt from the current spec
+    const refreshed = await run(s.t, (ctx) => ctx.db.get(platform._id));
+    expect(refreshed!.version).toBeGreaterThan(1);
   });
 });
 
@@ -949,7 +1096,7 @@ describe("the platform training templates are protected + hidden", () => {
           capstoneSlug: CAPSTONE_JOIN.slug,
         })
       )!.total,
-    ).toBe(7);
+    ).toBe(8);
     // The squatter stays a normal user template: listed, editable.
     const listed = await s.as.query(api.eventTypes.list, {});
     expect(listed.some((t) => t._id === squatterId)).toBe(true);
