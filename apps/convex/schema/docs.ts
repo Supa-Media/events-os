@@ -33,12 +33,10 @@ export const docs = defineTable({
   // Stable per-chapter key for PLATFORM-SEEDED guide docs (the filename of the
   // source guide under docs/guides/, e.g. "so-you-own-a-workstream"). The
   // seeder upserts by (chapterId, slug); user-created docs leave it unset.
+  // A set slug also marks the doc PLATFORM-OWNED: read-only in the app
+  // (docs.ts rejects user writes) and always updated to the latest platform
+  // version on seed.
   slug: v.optional(v.string()),
-  // SHA-256 (hex) of the body as of the last platform seed. Lets the seeder
-  // tell "unedited since seed" (hash of current body matches → safe to update
-  // with new platform content) from "chapter edited it" (differs → fork
-  // semantics, leave the chapter's copy alone).
-  seedHash: v.optional(v.string()),
   // Public/internal visibility. Undefined (or "public") → readable at the no-auth
   // `/d/<shareId>` route; "internal" → `getPublic` returns null. Optional so all
   // existing docs default to PUBLIC.

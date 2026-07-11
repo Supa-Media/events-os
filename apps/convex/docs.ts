@@ -30,6 +30,26 @@ const docKind = v.union(
 /** Public/internal visibility — mirrors the `docs` table union. */
 const docVisibility = v.union(v.literal("public"), v.literal("internal"));
 
+/**
+ * Reject content writes to a PLATFORM GUIDE (a doc with `slug` set — only the
+ * seeder creates those). Guides are platform-owned and never forked: every
+ * seed brings them to the latest platform version, so user edits would be
+ * silently blown away. The app renders them read-only; this is the server
+ * back-stop. Chapter-specific knowledge belongs in templates/how-to docs.
+ *
+ * Only the internal seeding path (`seedPlatformGuidesForChapter`, which writes
+ * through `ctx.db` directly) may modify them.
+ */
+function rejectPlatformGuideWrite(doc: { slug?: string } | null | undefined): void {
+  if (doc?.slug !== undefined) {
+    throw new ConvexError({
+      code: "PLATFORM_GUIDE_READONLY",
+      message:
+        "This platform guide is read-only — it updates automatically with the platform. Put chapter specifics in your templates and how-to docs instead.",
+    });
+  }
+}
+
 /** The caller's linked roster person (for `createdBy`); falls back to any chapter person. */
 async function requireCallerPerson(
   ctx: any,
@@ -108,6 +128,8 @@ export const forkForEventItem = mutation({
 
     const doc = await ctx.db.get(docId);
     await requireInChapter(ctx, chapterId, doc, "Doc");
+    // Guides are never forked — the platform owns the one copy per chapter.
+    rejectPlatformGuideWrite(doc);
 
     const item = await ctx.db.get(eventItemId);
     if (!item) {
@@ -153,7 +175,10 @@ export const get = query({
   },
 });
 
-/** Update a doc's title / url / body / kind / visibility (authed, chapter-scoped). */
+/**
+ * Update a doc's title / url / body / kind / visibility (authed,
+ * chapter-scoped). Platform guides (slug set) are read-only and rejected.
+ */
 export const update = mutation({
   args: {
     docId: v.id("docs"),
@@ -167,6 +192,7 @@ export const update = mutation({
     const chapterId = await requireChapterId(ctx);
     const doc = await ctx.db.get(docId);
     await requireInChapter(ctx, chapterId, doc, "Doc");
+    rejectPlatformGuideWrite(doc);
     // A doc that backs a RESPONSIBILITY's How-To is part of the accountability
     // loop: the row is manager-gated, so its runbook must be too — otherwise a
     // report could quietly rewrite the duty they're held to before a 1:1.
@@ -281,6 +307,11 @@ export const searchForAi = query({
  * authorized against), we assert the target doc still belongs to that chapter
  * and refuse the write otherwise — so the doc-assistant can't be tricked into a
  * cross-chapter body overwrite via a swapped/stale docId.
+ *
+ * Platform guides (slug set) are rejected here too: this is the doc
+ * assistant's write path, and user-triggered AI edits must not touch
+ * platform-owned content. The seeder doesn't write through this mutation, so
+ * seeding keeps its access.
  */
 export const setBody = internalMutation({
   args: {
@@ -297,6 +328,7 @@ export const setBody = internalMutation({
         message: "Refusing to write a doc outside the authorized chapter.",
       });
     }
+    rejectPlatformGuideWrite(doc);
     await ctx.db.patch(docId, { body, updatedAt: Date.now() });
   },
 });
@@ -305,9 +337,10 @@ export const setBody = internalMutation({
  * Seed/refresh the platform enablement guides (docs/guides/*.md, compiled into
  * `lib/guides.ts`) as markdown docs, keyed per chapter by `slug`.
  *
- * Upsert semantics per guide: create if missing; overwrite if the chapter
- * hasn't edited it since the last seed (body hash matches `seedHash`); leave
- * alone if they have (fork semantics — their copy stops tracking the platform).
+ * Upsert semantics per guide: create if missing; otherwise overwrite with the
+ * latest platform version. Guides are platform-owned and read-only in the app
+ * (user writes are rejected with PLATFORM_GUIDE_READONLY), so seeding always
+ * wins — there are no chapter forks to preserve.
  *
  * Runs for ONE chapter when `chapterId` is passed, else ALL chapters — the
  * backfill entry point for pre-existing chapters, invoked from the dashboard/

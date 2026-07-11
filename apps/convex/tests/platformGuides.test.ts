@@ -2,18 +2,20 @@
  * Platform guide seeding — upserting docs/guides/*.md (compiled into
  * lib/guides.ts) into a chapter's `docs` table.
  *
- * Covers the fork semantics from the training-and-enablement plan:
+ * Covers the ownership semantics from the training-and-enablement plan (Q1):
+ * guides are PLATFORM-OWNED and never forked —
  *   - first seed creates one markdown doc per guide, keyed by (chapter, slug)
- *   - re-seeding an UNEDITED doc overwrites it with new platform content
- *   - a doc the chapter edited is left alone (their fork keeps its edits)
+ *   - re-seeding always overwrites drift back to the latest platform version
+ *   - user-facing writes (docs.update, the assistant's setBody path) are
+ *     rejected with PLATFORM_GUIDE_READONLY; normal docs stay writable
  * plus the `getGuideBySlug` lookup that powers the "How this works" links.
  */
 import { describe, expect, test } from "vitest";
+import { ConvexError } from "convex/values";
 import { api, internal } from "../_generated/api";
 import type { Id } from "../_generated/dataModel";
 import { PLATFORM_GUIDES } from "../lib/guides";
 import { seedPlatformGuidesForChapter } from "../lib/platformGuides";
-import { sha256Hex } from "../lib/sha256";
 import { newT, run, setupChapter, type ChapterSetup } from "./setup.helpers";
 
 /** A roster person for `createdBy` attribution (linked to the chapter user). */
@@ -54,7 +56,7 @@ describe("platform guide seeding", () => {
       seeded: true,
       created: PLATFORM_GUIDES.length,
       updated: 0,
-      skippedEdited: 0,
+      unchanged: 0,
     });
 
     const docs = await run(t, (ctx) =>
@@ -72,13 +74,12 @@ describe("platform guide seeding", () => {
         title: guide.title,
         body: guide.body,
         createdBy: personId,
-        seedHash: sha256Hex(guide.body),
       });
       expect(doc!.shareId).toBeTruthy();
     }
   });
 
-  test("re-seed is idempotent, updates unedited docs, and leaves edited docs alone", async () => {
+  test("re-seed is idempotent and always overwrites drift with the platform version", async () => {
     const t = newT();
     const s = await setupChapter(t);
     await addPerson(s);
@@ -97,15 +98,12 @@ describe("platform guide seeding", () => {
     const again = await run(t, (ctx) =>
       seedPlatformGuidesForChapter(ctx, s.chapterId, [GUIDE_V1, other]),
     );
-    expect(again).toMatchObject({
-      created: 0,
-      updated: 0,
-      unchanged: 2,
-      skippedEdited: 0,
-    });
+    expect(again).toMatchObject({ created: 0, updated: 0, unchanged: 2 });
 
-    // The chapter edits ONE doc (as a user would, via docs.update).
-    const editedDoc = await run(t, (ctx) =>
+    // ONE doc drifts from the platform version (raw write — the user-facing
+    // mutations reject guide edits, see the read-only test below; this covers
+    // legacy rows edited before guides became read-only).
+    const driftedDoc = await run(t, (ctx) =>
       ctx.db
         .query("docs")
         .withIndex("by_chapter_and_slug", (q) =>
@@ -113,26 +111,24 @@ describe("platform guide seeding", () => {
         )
         .unique(),
     );
-    await s.as.mutation(api.docs.update, {
-      docId: editedDoc!._id,
-      body: "My chapter's own take on owning a workstream.",
-    });
+    await run(t, (ctx) =>
+      ctx.db.patch(driftedDoc!._id, {
+        body: "My chapter's own take on owning a workstream.",
+      }),
+    );
 
-    // Platform ships v2 of both guides.
+    // Platform ships v2 of one guide. Re-seed overwrites BOTH the drifted doc
+    // and nothing else: guides are platform-owned, never forked.
     const reseed = await run(t, (ctx) =>
-      seedPlatformGuidesForChapter(ctx, s.chapterId, [
-        GUIDE_V2,
-        { ...other, body: other.body + "\nMore platform wisdom.\n" },
-      ]),
+      seedPlatformGuidesForChapter(ctx, s.chapterId, [GUIDE_V2, other]),
     );
     expect(reseed).toMatchObject({
       created: 0,
-      updated: 1, // the unedited guide took the update…
-      unchanged: 0,
-      skippedEdited: 1, // …the edited one kept the chapter's fork
+      updated: 1, // the drifted guide was reset to the platform version
+      unchanged: 1,
     });
 
-    const [forked, followed] = await run(t, async (ctx) => {
+    const [reset, untouched] = await run(t, async (ctx) => {
       const bySlug = (slug: string) =>
         ctx.db
           .query("docs")
@@ -142,9 +138,78 @@ describe("platform guide seeding", () => {
           .unique();
       return [await bySlug(GUIDE_V1.slug), await bySlug(other.slug)];
     });
-    expect(forked!.body).toBe("My chapter's own take on owning a workstream.");
-    expect(followed!.body).toBe(other.body + "\nMore platform wisdom.\n");
-    expect(followed!.seedHash).toBe(sha256Hex(followed!.body!));
+    // The drifted edit is gone — the platform version always wins, in place
+    // (same row, so shareId/links survive)…
+    expect(reset!.body).toBe(GUIDE_V2.body);
+    expect(reset!._id).toBe(driftedDoc!._id);
+    // …and identical docs are left alone.
+    expect(untouched!.body).toBe(other.body);
+  });
+
+  test("platform guides are read-only: update and the assistant's setBody reject; normal docs unaffected", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await addPerson(s);
+    await run(t, (ctx) =>
+      seedPlatformGuidesForChapter(ctx, s.chapterId, [GUIDE_V1]),
+    );
+    const guide = await run(t, (ctx) =>
+      ctx.db
+        .query("docs")
+        .withIndex("by_chapter_and_slug", (q) =>
+          q.eq("chapterId", s.chapterId).eq("slug", GUIDE_V1.slug),
+        )
+        .unique(),
+    );
+
+    // The user-facing update mutation refuses every field, not just body.
+    await expect(
+      s.as.mutation(api.docs.update, {
+        docId: guide!._id,
+        body: "chapter-specific edits",
+      }),
+    ).rejects.toThrow(/PLATFORM_GUIDE_READONLY/);
+    await expect(
+      s.as.mutation(api.docs.update, {
+        docId: guide!._id,
+        title: "Our workstream guide",
+      }),
+    ).rejects.toThrow(ConvexError);
+
+    // The doc assistant's write primitive refuses guides too (the seeder
+    // writes through ctx.db directly, so seeding keeps its access).
+    await expect(
+      t.mutation(internal.docs.setBody, {
+        docId: guide!._id,
+        body: "AI rewrite",
+        expectedChapterId: s.chapterId,
+      }),
+    ).rejects.toThrow(/PLATFORM_GUIDE_READONLY/);
+
+    // Nothing landed.
+    const after = await run(t, (ctx) => ctx.db.get(guide!._id));
+    expect(after!.title).toBe(GUIDE_V1.title);
+    expect(after!.body).toBe(GUIDE_V1.body);
+
+    // A normal (slug-less) doc is unaffected by the guard.
+    const { _id: normalId } = await s.as.mutation(api.docs.create, {
+      kind: "markdown",
+      title: "Our own how-to",
+      body: "original",
+    });
+    await s.as.mutation(api.docs.update, {
+      docId: normalId as Id<"docs">,
+      body: "edited freely",
+      title: "Our own how-to v2",
+    });
+    await t.mutation(internal.docs.setBody, {
+      docId: normalId as Id<"docs">,
+      body: "AI rewrite ok",
+      expectedChapterId: s.chapterId,
+    });
+    const normal = await run(t, (ctx) => ctx.db.get(normalId as Id<"docs">));
+    expect(normal!.title).toBe("Our own how-to v2");
+    expect(normal!.body).toBe("AI rewrite ok");
   });
 
   test("skips a chapter with no roster person to attribute authorship to", async () => {

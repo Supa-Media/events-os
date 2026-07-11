@@ -3,11 +3,12 @@
  * (`lib/guides.ts`, synced from docs/guides/*.md) into a chapter's `docs`
  * table as markdown how-to docs.
  *
- * Fork semantics (training-and-enablement plan, Q1): a chapter that edits its
- * copy of a guide keeps its edits — the seeder only overwrites a doc whose
- * body is UNEDITED since the last seed. "Unedited" is detected by comparing
- * the current body's hash against `seedHash` (the hash stored when the
- * platform last wrote the body).
+ * Ownership semantics (training-and-enablement plan, Q1): guides are
+ * PLATFORM-OWNED and never forked — seeding always brings every chapter's
+ * copy up to the latest platform version, and the app renders slug-bearing
+ * docs read-only (docs.ts rejects user writes with PLATFORM_GUIDE_READONLY).
+ * Chapter-specific knowledge belongs in templates/how-to docs, not guide
+ * edits.
  *
  * Called from the dev-seed entry points in `seed.ts` (new chapters get the
  * guides on creation) and from the `docs:seedPlatformGuides` internal
@@ -17,7 +18,6 @@
 import type { MutationCtx } from "../_generated/server";
 import type { Id } from "../_generated/dataModel";
 import { PLATFORM_GUIDES, type PlatformGuide } from "./guides";
-import { sha256Hex } from "./sha256";
 
 /**
  * A short, unguessable public slug. `Math.random` is fine inside Convex
@@ -35,8 +35,6 @@ export interface SeedGuidesResult {
   created: number;
   updated: number;
   unchanged: number;
-  /** Docs left alone because the chapter edited them (fork semantics). */
-  skippedEdited: number;
 }
 
 /**
@@ -67,9 +65,13 @@ async function resolveAuthorPerson(
  * Upsert one markdown doc per guide into the chapter, keyed by
  * (chapterId, slug):
  *
- * - missing            → create (kind "markdown", fresh shareId, seedHash)
- * - unedited since seed → overwrite body/title, refresh seedHash
- * - edited by chapter  → leave alone (their fork; platform updates stop)
+ * - missing         → create (kind "markdown", fresh shareId)
+ * - content differs → overwrite title/body with the platform version
+ * - already current → leave alone
+ *
+ * Guides are platform-owned and read-only in the app, so any drift from the
+ * platform version is stale content, never a chapter fork — seeding always
+ * wins.
  */
 export async function seedPlatformGuidesForChapter(
   ctx: MutationCtx,
@@ -81,7 +83,6 @@ export async function seedPlatformGuidesForChapter(
     created: 0,
     updated: 0,
     unchanged: 0,
-    skippedEdited: 0,
   };
 
   const createdBy = await resolveAuthorPerson(ctx, chapterId);
@@ -96,8 +97,6 @@ export async function seedPlatformGuidesForChapter(
       )
       .unique();
 
-    const newHash = sha256Hex(guide.body);
-
     if (!existing) {
       await ctx.db.insert("docs", {
         chapterId,
@@ -106,7 +105,6 @@ export async function seedPlatformGuidesForChapter(
         body: guide.body,
         shareId: makeShareId(),
         slug: guide.slug,
-        seedHash: newHash,
         createdBy,
         createdAt: now,
         updatedAt: now,
@@ -115,19 +113,7 @@ export async function seedPlatformGuidesForChapter(
       continue;
     }
 
-    // Edited since the last seed? (Missing seedHash — a pre-hash row — is
-    // treated as unedited so the backfill can adopt it.)
-    const currentHash = sha256Hex(existing.body ?? "");
-    if (existing.seedHash !== undefined && currentHash !== existing.seedHash) {
-      result.skippedEdited++;
-      continue;
-    }
-
     if (existing.body === guide.body && existing.title === guide.title) {
-      // Content already current; just make sure the seed hash is recorded.
-      if (existing.seedHash !== newHash) {
-        await ctx.db.patch(existing._id, { seedHash: newHash });
-      }
       result.unchanged++;
       continue;
     }
@@ -135,7 +121,6 @@ export async function seedPlatformGuidesForChapter(
     await ctx.db.patch(existing._id, {
       title: guide.title,
       body: guide.body,
-      seedHash: newHash,
       updatedAt: now,
     });
     result.updated++;

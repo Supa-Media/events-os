@@ -5,7 +5,7 @@ import { useQuery, useMutation, useConvex } from "convex/react";
 import { api } from "@events-os/convex/_generated/api";
 import { Screen, TextField, Icon, EmptyState } from "../../../components/ui";
 import { Popover } from "../../../components/ui/Popover";
-import { MarkdownEditor } from "../../../components/markdown";
+import { MarkdownEditor, MarkdownView } from "../../../components/markdown";
 import { DocAssistantPanel } from "../../../components/ai/DocAssistantPanel";
 import { colors } from "../../../lib/theme";
 import type { Id } from "@events-os/convex/_generated/dataModel";
@@ -34,6 +34,12 @@ const DOC_KINDS: Array<{
  * surfaces the `eventsos://d/<shareId>` deep link. A Public/Internal toggle
  * controls whether that link resolves (default Public). Link/video/note docs get
  * a simple URL/text editor instead of the markdown surface.
+ *
+ * PLATFORM GUIDES (docs with `slug` set) are platform-owned and read-only:
+ * every editing affordance (title field, kind switcher, visibility toggle,
+ * markdown editor, AI panel) is hidden and the body renders via the read-only
+ * `MarkdownView`. Share keeps working. The server enforces the same rule
+ * (`PLATFORM_GUIDE_READONLY`), this screen just matches it.
  */
 export default function DocEditorScreen() {
   const router = useRouter();
@@ -175,6 +181,9 @@ export default function DocEditorScreen() {
   const isMarkdown = doc.kind === "markdown";
   const isNote = doc.kind === "note";
   const isLinkLike = doc.kind === "link" || doc.kind === "video";
+  // Platform guide = seeded doc with a stable `slug`. Platform-owned and
+  // read-only here; the server rejects writes too (PLATFORM_GUIDE_READONLY).
+  const isPlatformGuide = doc.slug != null;
 
   // The public share targets. NOTE: the public viewer lives at `/d/<shareId>`,
   // NOT `/doc/<shareId>` — the latter collides with THIS authed editor (the
@@ -232,18 +241,27 @@ export default function DocEditorScreen() {
         >
           <Icon name="arrow-left" size={18} color={colors.muted} />
         </Pressable>
-        <Pressable
-          ref={kindBtnRef}
-          onPress={openKindMenu}
-          accessibilityRole="button"
-          accessibilityLabel={`Document type: ${doc.kind}. Change type.`}
-          className="flex-row items-center gap-1 rounded-md px-1.5 py-1 active:bg-sunken web:hover:bg-sunken"
-        >
-          <Text className="text-xs font-bold uppercase tracking-wider text-faint">
-            {doc.kind} doc
-          </Text>
-          <Icon name="chevron-down" size={13} color={colors.faint} />
-        </Pressable>
+        {isPlatformGuide ? (
+          <View className="flex-row items-center gap-1 rounded-md px-1.5 py-1">
+            <Icon name="book-open" size={13} color={colors.faint} />
+            <Text className="text-xs font-bold uppercase tracking-wider text-faint">
+              Platform guide
+            </Text>
+          </View>
+        ) : (
+          <Pressable
+            ref={kindBtnRef}
+            onPress={openKindMenu}
+            accessibilityRole="button"
+            accessibilityLabel={`Document type: ${doc.kind}. Change type.`}
+            className="flex-row items-center gap-1 rounded-md px-1.5 py-1 active:bg-sunken web:hover:bg-sunken"
+          >
+            <Text className="text-xs font-bold uppercase tracking-wider text-faint">
+              {doc.kind} doc
+            </Text>
+            <Icon name="chevron-down" size={13} color={colors.faint} />
+          </Pressable>
+        )}
         <Popover
           visible={kindMenu != null}
           onClose={() => setKindMenu(null)}
@@ -275,30 +293,33 @@ export default function DocEditorScreen() {
         </Popover>
         <View className="flex-1" />
         {/* Public ↔ Internal toggle. Default Public; Internal makes the public
-            `/d/<shareId>` link return null (looks unavailable to the public). */}
-        <Pressable
-          onPress={() => {
-            void maybeForkThenUpdate({
-              visibility: isInternal ? "public" : "internal",
-            });
-          }}
-          accessibilityRole="button"
-          accessibilityLabel={
-            isInternal
-              ? "Visibility: Internal. Tap to make public."
-              : "Visibility: Public. Tap to make internal."
-          }
-          className="flex-row items-center gap-1.5 rounded-md border border-border px-3 py-1.5 active:bg-sunken web:hover:bg-sunken"
-        >
-          <Icon
-            name={isInternal ? "lock" : "globe"}
-            size={14}
-            color={isInternal ? colors.muted : colors.accent}
-          />
-          <Text className="text-sm font-medium text-muted">
-            {isInternal ? "Internal" : "Public"}
-          </Text>
-        </Pressable>
+            `/d/<shareId>` link return null (looks unavailable to the public).
+            Hidden for platform guides — the toggle is a doc write. */}
+        {!isPlatformGuide ? (
+          <Pressable
+            onPress={() => {
+              void maybeForkThenUpdate({
+                visibility: isInternal ? "public" : "internal",
+              });
+            }}
+            accessibilityRole="button"
+            accessibilityLabel={
+              isInternal
+                ? "Visibility: Internal. Tap to make public."
+                : "Visibility: Public. Tap to make internal."
+            }
+            className="flex-row items-center gap-1.5 rounded-md border border-border px-3 py-1.5 active:bg-sunken web:hover:bg-sunken"
+          >
+            <Icon
+              name={isInternal ? "lock" : "globe"}
+              size={14}
+              color={isInternal ? colors.muted : colors.accent}
+            />
+            <Text className="text-sm font-medium text-muted">
+              {isInternal ? "Internal" : "Public"}
+            </Text>
+          </Pressable>
+        ) : null}
         <Pressable
           onPress={share}
           accessibilityRole="button"
@@ -312,21 +333,32 @@ export default function DocEditorScreen() {
         </Pressable>
       </View>
 
-      {/* Title */}
-      <TextField
-        label="Title"
-        value={title}
-        onChangeText={setTitleInput}
-        onBlur={() => {
-          if (titleInput != null && titleInput !== doc.title) {
-            void maybeForkThenUpdate({ title: titleInput });
-          }
-        }}
-        placeholder="Untitled"
-      />
+      {/* Title — read-only heading for platform guides, editable otherwise */}
+      {isPlatformGuide ? (
+        <Text className="font-display text-3xl text-ink">
+          {doc.title || "Untitled"}
+        </Text>
+      ) : (
+        <TextField
+          label="Title"
+          value={title}
+          onChangeText={setTitleInput}
+          onBlur={() => {
+            if (titleInput != null && titleInput !== doc.title) {
+              void maybeForkThenUpdate({ title: titleInput });
+            }
+          }}
+          placeholder="Untitled"
+        />
+      )}
 
       <View className="mt-2">
-        {isInternal ? (
+        {isPlatformGuide ? (
+          <Text className="text-2xs text-faint">
+            Platform guide — updates automatically. Chapter specifics belong in
+            your templates.
+          </Text>
+        ) : isInternal ? (
           <Text className="text-2xs text-faint">
             Internal · not publicly viewable. Set to Public to share a link.
           </Text>
@@ -370,25 +402,32 @@ export default function DocEditorScreen() {
         </View>
       ) : isMarkdown ? (
         <View className="mt-4">
-          <MarkdownEditor
-            value={bodyInput ?? doc.body ?? ""}
-            onChange={onBodyChange}
-            placeholder="Write your how-to in Markdown…"
-            // Image embed → upload → `![](url)`. Web pastes/drops; native uses
-            // the editor's "Add image" button (image picker). The callback is
-            // platform-agnostic (generateUploadUrl + fetch + getUrl).
-            uploadImage={uploadImage}
-          />
+          {isPlatformGuide ? (
+            // Read-only render — platform guides can't be edited in-app.
+            <MarkdownView value={doc.body ?? ""} />
+          ) : (
+            <MarkdownEditor
+              value={bodyInput ?? doc.body ?? ""}
+              onChange={onBodyChange}
+              placeholder="Write your how-to in Markdown…"
+              // Image embed → upload → `![](url)`. Web pastes/drops; native uses
+              // the editor's "Add image" button (image picker). The callback is
+              // platform-agnostic (generateUploadUrl + fetch + getUrl).
+              uploadImage={uploadImage}
+            />
+          )}
         </View>
       ) : null}
     </Screen>
     </View>
 
-    {/* In-flow Notion-AI-style chat panel — markdown docs only. Docks right and
-        squeezes the content left when open; chats with an agent that rewrites
-        the doc body. COW is honored via `resolveTargetDocId`, which forks a
-        shared template doc into an event-local copy before the first edit. */}
-    {isMarkdown ? (
+    {/* In-flow Notion-AI-style chat panel — markdown docs only, and never for
+        platform guides (the assistant rewrites the doc body, which guides
+        reject server-side). Docks right and squeezes the content left when
+        open; chats with an agent that rewrites the doc body. COW is honored
+        via `resolveTargetDocId`, which forks a shared template doc into an
+        event-local copy before the first edit. */}
+    {isMarkdown && !isPlatformGuide ? (
       <DocAssistantPanel
         docId={activeDocId}
         docTitle={doc.title}
