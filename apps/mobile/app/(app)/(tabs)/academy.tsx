@@ -22,7 +22,6 @@ import {
 
 type MyProgress = FunctionReturnType<typeof api.academy.myProgress>;
 type SectionProgress = MyProgress["sections"][number];
-type TrainingStatus = FunctionReturnType<typeof api.academy.trainingStatus>;
 
 /**
  * THE ACADEMY HUB — the ordered curriculum as a completion path. Every section
@@ -34,21 +33,12 @@ export default function AcademyScreen() {
   const router = useRouter();
   const progress = useQuery(api.academy.myProgress);
 
-  // Subscribe to the (broad) training-event query only once the capstone is
-  // actually reachable — locked-out newcomers don't need a live event feed.
-  // TODO(academy-backend-merge): once myProgress capstone entries carry
-  // `training: null | { eventId, started, questsDone, questsTotal, complete }`,
-  // derive the in-flight quest count from it here and drop this subscription
-  // from the hub entirely.
+  // The capstone entry of myProgress carries the live quest counts — the hub
+  // needs no training-event subscription of its own.
   const capstone = progress?.sections.find(
     (s) => s.slug === ACADEMY_CAPSTONE_SLUG,
   );
-  const wantTraining =
-    capstone != null && (capstone.unlocked || capstone.passed);
-  const training = useQuery(
-    api.academy.trainingStatus,
-    wantTraining ? {} : "skip",
-  );
+  const training = capstone?.training ?? null;
 
   // "Who's trained" is a managers/admins surface — only they subscribe.
   // org.nav is the app-wide policy signal AppShell already consumes.
@@ -58,7 +48,7 @@ export default function AcademyScreen() {
     org?.canManage === true ? {} : "skip",
   );
 
-  if (progress === undefined || (wantTraining && training === undefined)) {
+  if (progress === undefined) {
     return <Screen loading />;
   }
 
@@ -249,7 +239,7 @@ function CapstoneRow({
 }: {
   section: AcademySection;
   state: SectionProgress | undefined;
-  training: TrainingStatus;
+  training: { questsDone: number; questsTotal: number } | null;
   onOpen: () => void;
 }) {
   const complete = state?.passed === true;
@@ -267,7 +257,7 @@ function CapstoneRow({
           </Text>
           {training && !complete ? (
             <Text className="mt-0.5 text-xs font-semibold text-accent">
-              {training.doneCount}/{training.total} quests done
+              {training.questsDone}/{training.questsTotal} quests done
             </Text>
           ) : null}
         </View>

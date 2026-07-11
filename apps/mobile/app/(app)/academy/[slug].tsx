@@ -422,12 +422,9 @@ function Capstone({
   const { run, toast, dismiss } = useActionRunner();
   const [starting, setStarting] = useState(false);
 
-  // TODO(academy-backend-merge): replace this no-op with
-  // `useMutation(api.academy.syncCapstone)` once the backend lands the
-  // mutation — it persists the finished capstone server-side so the pass
-  // survives the sandbox event being completed/cleaned up.
-  const syncCapstone = useCallback(async (_args: Record<string, never>) => {},
-  []);
+  // Persists the finished capstone server-side so the pass survives the
+  // sandbox event being completed/cleaned up.
+  const syncCapstone = useMutation(api.academy.syncCapstone);
 
   // Persist completion once when the live checklist finishes (ref-guarded so
   // the reactive query can't spam the mutation).
