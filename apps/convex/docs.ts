@@ -429,6 +429,8 @@ export const forAi = query({
       title: doc.title,
       body: doc.body ?? "",
       kind: doc.kind,
+      // Set on platform guides only — the AI action refuses to edit those.
+      slug: doc.slug ?? null,
     };
   },
 });

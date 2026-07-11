@@ -18,6 +18,8 @@ import {
   mutation,
   internalQuery,
   internalMutation,
+  type QueryCtx,
+  type MutationCtx,
 } from "./_generated/server";
 import { Id } from "./_generated/dataModel";
 import { v, ConvexError } from "convex/values";
@@ -33,17 +35,16 @@ import {
   AI_BUDGET_WINDOW_MS,
   AI_MODELS,
   CORE_MODULES,
-  DAY_MS,
   DEFAULT_AI_MODEL,
   DEFAULT_CUSTOM_COLUMNS,
   DEFAULT_COLUMNS,
   computeDueDate,
   DAY_OFFSET_MODULES,
+  daysBetweenInTz,
   eventWindowFor,
   isCompleteStatus,
   isFreeModelSlug,
   isOverChatBudget,
-  offsetDaysBetween,
   overBudgetScope,
   tNotation,
   type ModuleKey,
@@ -155,6 +156,25 @@ export const eventContext = internalQuery({
       }
     }
 
+    // Per-module: every column's key/kind/type/options, so the agent's
+    // update_item path can validate + write CUSTOM columns (e.g. the retro
+    // dispatch column) into the item's `fields` bag.
+    const columnsByModule: Record<
+      string,
+      Array<{ key: string; kind: string; type: string; options: string[] | null }>
+    > = {};
+    for (const c of columns) {
+      (columnsByModule[c.module] ??= []).push({
+        key: c.key,
+        kind: c.kind,
+        type: c.type,
+        options:
+          Array.isArray(c.options) && c.options.length
+            ? c.options.map((o: any) => o.value as string)
+            : null,
+      });
+    }
+
     const rawItems = await ctx.db
       .query("eventItems")
       .withIndex("by_event", (q: any) => q.eq("eventId", eventId))
@@ -190,6 +210,7 @@ export const eventContext = internalQuery({
       people,
       modules,
       optionsByModule,
+      columnsByModule,
       items,
     };
   },
@@ -519,7 +540,7 @@ export const setItemPhoto = internalMutation({
 
 /** Load an event iff it's in the caller's chapter (null missing, throw cross). */
 async function eventInChapter(
-  ctx: any,
+  ctx: QueryCtx | MutationCtx,
   eventId: Id<"events">,
   chapterId: Id<"chapters">,
 ) {
@@ -536,7 +557,7 @@ async function eventInChapter(
 
 /** Load a person iff they're in the caller's chapter (throw on cross-chapter). */
 async function personInChapter(
-  ctx: any,
+  ctx: QueryCtx | MutationCtx,
   personId: Id<"people">,
   chapterId: Id<"chapters">,
 ) {
@@ -605,7 +626,9 @@ export const readinessSummary = internalQuery({
       ]),
     );
 
-    const daysToEvent = offsetDaysBetween(now, event.eventDate);
+    // Calendar days in the chapter's PLANNING timezone — the server runs UTC,
+    // so naive UTC day math makes an evening event look a day late.
+    const daysToEvent = daysBetweenInTz(now, event.eventDate);
     const window = eventWindowFor(daysToEvent);
 
     // Role coverage.
@@ -646,32 +669,43 @@ export const readinessSummary = internalQuery({
     }));
 
     // Item sweep across grid workstreams: overdue / due within 3 days /
-    // owner-chain dead-ends, incomplete items only.
-    const soonCutoff = now + 3 * DAY_MS;
+    // owner-chain dead-ends, incomplete items only. Overdue/due-soon are
+    // DAY-granular in the planning timezone (matching the events.ts todos
+    // surface): overdue = due on an earlier calendar day than today; due today
+    // is "due soon", not overdue.
+    // TODO(follow-up): this sweep re-reads the items + status columns that
+    // phaseReadiness above already read — consolidate into one shared read.
     const overdue: string[] = [];
     const dueSoon: string[] = [];
     const unowned: string[] = [];
     let overdueCount = 0;
     let dueSoonCount = 0;
     let unownedCount = 0;
-    for (const m of resolved) {
-      if (m.surface !== "grid") continue;
-      const items = await ctx.db
-        .query("eventItems")
-        .withIndex("by_event_module", (q: any) =>
-          q.eq("eventId", eventId).eq("module", m.key),
-        )
-        .collect();
-      const statusCol = await statusColumnFor(ctx, eventId, m.key);
+    const sweeps = await Promise.all(
+      resolved
+        .filter((m: any) => m.surface === "grid")
+        .map(async (m: any) => ({
+          m,
+          items: await ctx.db
+            .query("eventItems")
+            .withIndex("by_event_module", (q: any) =>
+              q.eq("eventId", eventId).eq("module", m.key),
+            )
+            .collect(),
+          statusCol: await statusColumnFor(ctx, eventId, m.key),
+        })),
+    );
+    for (const { m, items, statusCol } of sweeps) {
       const options = statusCol?.options as SelectOption[] | undefined;
       for (const it of items) {
         if (statusCol && isCompleteStatus(options, it.status)) continue;
         const title = `${m.label}: ${it.title || "Untitled"}`;
         if (it.dueDate != null) {
-          if (it.dueDate < now) {
+          const dueInDays = daysBetweenInTz(now, it.dueDate);
+          if (dueInDays < 0) {
             overdueCount++;
             if (overdue.length < READINESS_TITLE_CAP) overdue.push(title);
-          } else if (it.dueDate <= soonCutoff) {
+          } else if (dueInDays <= 3) {
             dueSoonCount++;
             if (dueSoon.length < READINESS_TITLE_CAP) dueSoon.push(title);
           }
@@ -697,11 +731,21 @@ export const readinessSummary = internalQuery({
       .collect();
     const engagementStatus = { invited: 0, confirmed: 0, declined: 0 };
     const placeholders: string[] = [];
+    const uniquePersonIds = [
+      ...new Set(engagements.map((e: any) => String(e.personId))),
+    ];
+    const personById = new Map(
+      (
+        await Promise.all(
+          uniquePersonIds.map((id) => ctx.db.get(id as Id<"people">)),
+        )
+      ).map((p, i) => [uniquePersonIds[i], p]),
+    );
     for (const e of engagements) {
       if (e.status in engagementStatus) {
         engagementStatus[e.status as keyof typeof engagementStatus]++;
       }
-      const person = await ctx.db.get(e.personId as Id<"people">);
+      const person = personById.get(String(e.personId));
       if (person?.isPlaceholder === true && !placeholders.includes(person.name)) {
         placeholders.push(person.name);
       }
@@ -861,11 +905,12 @@ export const addEngagement = internalMutation({
     const person = await personInChapter(ctx, args.personId, args.chapterId);
     if (!person) return null;
 
+    // A person has few engagements; an event can have many — scan by person.
     const existing = await ctx.db
       .query("engagements")
-      .withIndex("by_event", (q: any) => q.eq("eventId", args.eventId))
+      .withIndex("by_person", (q: any) => q.eq("personId", args.personId))
       .collect();
-    if (existing.some((e: any) => String(e.personId) === String(args.personId))) {
+    if (existing.some((e: any) => String(e.eventId) === String(args.eventId))) {
       return { alreadyEngaged: true as const };
     }
 
@@ -901,16 +946,18 @@ export const updateEngagement = internalMutation({
     service: v.optional(v.union(v.string(), v.null())),
     status: v.optional(engagementStatusV),
     callTime: v.optional(v.union(v.string(), v.null())),
+    amountUsd: v.optional(v.union(v.number(), v.null())),
   },
   handler: async (ctx, { eventId, chapterId, personId, ...patch }) => {
     const event = await eventInChapter(ctx, eventId, chapterId);
     if (!event) return null;
+    // A person has few engagements; an event can have many — scan by person.
     const eng = (
       await ctx.db
         .query("engagements")
-        .withIndex("by_event", (q: any) => q.eq("eventId", eventId))
+        .withIndex("by_person", (q: any) => q.eq("personId", personId))
         .collect()
-    ).find((e: any) => String(e.personId) === String(personId));
+    ).find((e: any) => String(e.eventId) === String(eventId));
     if (!eng) return null;
 
     const fields: Record<string, unknown> = {};
@@ -929,6 +976,8 @@ export const updateEngagement = internalMutation({
     if (patch.service !== undefined) fields.service = patch.service ?? undefined;
     if (patch.status !== undefined) fields.status = patch.status;
     if (patch.callTime !== undefined) fields.callTime = patch.callTime ?? undefined;
+    // Explicit amount wins over the type-flip defaults above (null clears).
+    if (patch.amountUsd !== undefined) fields.amountUsd = patch.amountUsd ?? undefined;
     await ctx.db.patch(eng._id, fields);
     return eng._id;
   },
@@ -1148,7 +1197,9 @@ export const rescheduleEvent = internalMutation({
       const dueDate = computeDueDate(eventDate, it.offsetDays);
       await ctx.db.patch(it._id, { dueDate });
       shifted++;
-      if (dueDate < now) {
+      // Day-granular in the planning timezone (a task due later today isn't
+      // "past due") — matches readinessSummary and the events.ts todos surface.
+      if (daysBetweenInTz(now, dueDate) < 0) {
         if (!optionsByModule.has(it.module)) {
           const col = await statusColumnFor(ctx, eventId, it.module);
           optionsByModule.set(
@@ -1212,6 +1263,20 @@ export const newThread = mutation({
   },
 });
 
+/**
+ * Refuse an assistant thread on a PLATFORM GUIDE (a doc with `slug` set).
+ * Guides are read-only (docs.setBody rejects the write), so letting a thread
+ * open would burn model budget before failing on the first write_doc.
+ */
+function rejectPlatformGuideThread(doc: { slug?: string } | null): void {
+  if (doc?.slug !== undefined) {
+    throw new ConvexError({
+      code: "PLATFORM_GUIDE_READONLY",
+      message: "Platform guides are read-only — the assistant can't edit them.",
+    });
+  }
+}
+
 /** The most recent thread for a How-To doc, creating one if none exists. */
 export const ensureDocThread = mutation({
   args: { docId: v.id("docs") },
@@ -1219,6 +1284,7 @@ export const ensureDocThread = mutation({
     const chapterId = await requireChapterId(ctx);
     const doc = await ctx.db.get(docId);
     await requireInChapter(ctx, chapterId, doc, "Doc");
+    rejectPlatformGuideThread(doc);
     const existing = await ctx.db
       .query("aiThreads")
       .withIndex("by_doc", (q: any) => q.eq("docId", docId))
@@ -1244,6 +1310,7 @@ export const newDocThread = mutation({
     const chapterId = await requireChapterId(ctx);
     const doc = await ctx.db.get(docId);
     await requireInChapter(ctx, chapterId, doc, "Doc");
+    rejectPlatformGuideThread(doc);
     const userId = (await requireUserId(ctx)) as Id<"users">;
     return await ctx.db.insert("aiThreads", {
       chapterId: chapterId as Id<"chapters">,
@@ -1606,23 +1673,32 @@ export const revertAiRun = mutation({
 
     let reverted = 0;
     let skipped = 0;
+    // When a `__deleted` revert re-inserts a row, Convex gives it a FRESH id.
+    // This run's EARLIER change rows (field edits, `__created`) still point at
+    // the old id, so every lookup below resolves through this remap first —
+    // otherwise those rows would find nothing and be skipped, leaving the
+    // re-inserted item with the AI's edits (or resurrecting a created-then-
+    // deleted item).
+    const remap = new Map<string, Id<"eventItems">>();
     for (const change of changes) {
-      const item = await ctx.db.get(change.itemId);
+      const itemId = remap.get(String(change.itemId)) ?? change.itemId;
+      const item = await ctx.db.get(itemId);
 
       if (change.key === "__created") {
         // Created by the run → undo means delete (if still present).
-        if (item) await ctx.db.delete(change.itemId);
+        if (item) await ctx.db.delete(itemId);
         await ctx.db.patch(change._id, { revertedAt: Date.now() });
         reverted++;
         continue;
       }
 
       if (change.key === "__deleted") {
-        // Deleted by the run → undo means re-insert the snapshot. The row gets
-        // a fresh id (Convex ids can't be reused), which is fine — nothing else
-        // in this run's change log points at a row it deleted.
+        // Deleted by the run → undo means re-insert the snapshot, and remap the
+        // old id to the fresh one so this run's earlier change rows (processed
+        // next, since we walk newest-first) still find the row.
         if (change.before && typeof change.before === "object") {
-          await ctx.db.insert("eventItems", change.before);
+          const newId = await ctx.db.insert("eventItems", change.before);
+          remap.set(String(change.itemId), newId);
           reverted++;
         } else {
           skipped++;
@@ -1646,7 +1722,7 @@ export const revertAiRun = mutation({
         const fields = { ...(item.fields ?? {}) };
         if (change.before === undefined) delete fields[key];
         else fields[key] = change.before;
-        await ctx.db.patch(change.itemId, { fields });
+        await ctx.db.patch(itemId, { fields });
       } else {
         // Promoted top-level field.
         const current = (item as any)[change.key] ?? undefined;
@@ -1662,7 +1738,7 @@ export const revertAiRun = mutation({
               ? computeDueDate(event.eventDate, change.before)
               : undefined;
         }
-        await ctx.db.patch(change.itemId, patch);
+        await ctx.db.patch(itemId, patch);
       }
 
       await ctx.db.patch(change._id, { revertedAt: Date.now() });
