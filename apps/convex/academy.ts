@@ -7,13 +7,14 @@
  * a score, only its answers.
  *
  * The capstone is completed by finishing the quests inside the caller's
- * Training Event (a real, sandboxed event flagged `isTraining`). Its "passed"
- * state is DERIVED live from those quest rows in `myProgress`/`chapterProgress`
- * rather than written to `academyProgress` — computed state can't drift from
- * the event, needs no client-triggered write, and un-completes honestly if a
- * quest row is reopened.
+ * Training Event (a real, sandboxed event flagged `isTraining`). Completion is
+ * PERSISTED: `syncCapstone` server-verifies every quest terminal and stamps
+ * `passedAt` on the capstone `academyProgress` row, so the pass survives the
+ * sandbox being completed or cleaned up. Reads treat capstone passed as
+ * "stored passedAt OR live-derived from the quest rows" — the derivation is a
+ * fallback for events finished before syncing, never the only record.
  */
-import { query, mutation, QueryCtx } from "./_generated/server";
+import { query, mutation, MutationCtx, QueryCtx } from "./_generated/server";
 import { Doc, Id } from "./_generated/dataModel";
 import { ConvexError, v } from "convex/values";
 import {
@@ -21,9 +22,13 @@ import {
   ACADEMY_SECTIONS,
   ACADEMY_SECTION_COUNT,
   DAY_MS,
+  DAY_OFFSET_MODULES,
+  computeDueDate,
+  defaultStatusValue,
   getAcademySection,
   isCompleteStatus,
   previousAcademySection,
+  type ModuleKey,
   type SelectOption,
 } from "@events-os/shared";
 import {
@@ -49,6 +54,9 @@ import {
   subtreeIds,
 } from "./lib/org";
 
+/** A person may hold at most this many training events, ever (incl. cancelled). */
+const TRAINING_EVENT_LIMIT = 5;
+
 /** Throw unless `slug` names a real curriculum section. */
 function requireSection(slug: string) {
   const section = getAcademySection(slug);
@@ -61,6 +69,28 @@ function requireSection(slug: string) {
   return section;
 }
 
+/**
+ * The caller's roster person, read-only — never inserts or claims a row.
+ * markRead/submitQuiz are progress bookkeeping, not identity-binding actions,
+ * so a caller with no roster row gets a friendly error instead of a silently
+ * created (or claimed) `people` row.
+ */
+async function requirePerson(
+  ctx: QueryCtx,
+  chapterId: Id<"chapters">,
+  userId: Id<"users">,
+): Promise<Id<"people">> {
+  const me = await getPersonForUser(ctx, chapterId, userId);
+  if (!me) {
+    throw new ConvexError({
+      code: "NO_PERSON",
+      message:
+        "You're not on this chapter's roster yet — ask an admin to add you to the team, then come back to the Academy.",
+    });
+  }
+  return me;
+}
+
 /** A person's progress rows (≤ one per section), keyed by section slug. */
 async function progressBySlug(
   ctx: QueryCtx,
@@ -69,36 +99,86 @@ async function progressBySlug(
 ): Promise<Map<string, Doc<"academyProgress">>> {
   const rows = await ctx.db
     .query("academyProgress")
-    .withIndex("by_person", (q) =>
+    .withIndex("by_chapter_and_person", (q) =>
       q.eq("chapterId", chapterId).eq("personId", personId),
     )
     .collect();
   return new Map(rows.map((r) => [r.sectionSlug, r]));
 }
 
+/** The fields markRead/submitQuiz/syncCapstone may stamp on a progress row. */
+type ProgressPatch = Partial<
+  Pick<
+    Doc<"academyProgress">,
+    "readAt" | "quizBestScore" | "quizTotal" | "passedAt"
+  >
+>;
+
+/** Patch the person's row for a section, or insert it — the one write path. */
+async function upsertProgress(
+  ctx: MutationCtx,
+  chapterId: Id<"chapters">,
+  personId: Id<"people">,
+  sectionSlug: string,
+  existing: Doc<"academyProgress"> | undefined,
+  patch: ProgressPatch,
+): Promise<void> {
+  if (existing) {
+    await ctx.db.patch(existing._id, patch);
+  } else {
+    await ctx.db.insert("academyProgress", {
+      chapterId,
+      personId,
+      sectionSlug,
+      ...patch,
+    });
+  }
+}
+
+// ── Training events ───────────────────────────────────────────────────────────
+
+/** Whether a training event is still in flight (not completed/cancelled). */
+function isActiveTrainingEvent(e: Doc<"events">): boolean {
+  return (
+    e.isTraining === true &&
+    e.status !== "completed" &&
+    e.status !== "cancelled"
+  );
+}
+
 /**
- * The caller's ACTIVE training event (isTraining, owned by them, not
- * completed/cancelled). The newest one wins if bad data ever leaves several.
+ * A person's training events, newest first — an indexed range over their
+ * owned events (never a chapter-wide scan). Bounded by TRAINING_EVENT_LIMIT
+ * plus whatever real events they own.
  */
-async function activeTrainingEventFor(
+async function trainingEventsFor(
+  ctx: QueryCtx,
+  chapterId: Id<"chapters">,
+  personId: Id<"people">,
+): Promise<Doc<"events">[]> {
+  const owned = await ctx.db
+    .query("events")
+    .withIndex("by_chapter_and_ownerPersonId", (q) =>
+      q.eq("chapterId", chapterId).eq("ownerPersonId", personId),
+    )
+    .collect();
+  return owned
+    .filter((e) => e.isTraining === true)
+    .sort((a, b) => b.createdAt - a.createdAt);
+}
+
+/**
+ * The training event a person's capstone reads from: their newest
+ * NON-CANCELLED one. Completed events count — finishing the sandbox (exactly
+ * what the curriculum teaches) must never un-train the learner.
+ */
+async function newestTrainingEventFor(
   ctx: QueryCtx,
   chapterId: Id<"chapters">,
   personId: Id<"people">,
 ): Promise<Doc<"events"> | null> {
-  const events = await ctx.db
-    .query("events")
-    .withIndex("by_chapter", (q) => q.eq("chapterId", chapterId))
-    .collect();
-  const mine = events
-    .filter(
-      (e) =>
-        e.isTraining === true &&
-        String(e.ownerPersonId) === String(personId) &&
-        e.status !== "completed" &&
-        e.status !== "cancelled",
-    )
-    .sort((a, b) => b.createdAt - a.createdAt);
-  return mine[0] ?? null;
+  const mine = await trainingEventsFor(ctx, chapterId, personId);
+  return mine.find((e) => e.status !== "cancelled") ?? null;
 }
 
 /** One quest row of a training event, resolved to done/not-done. */
@@ -112,28 +192,37 @@ type Quest = {
 };
 
 /**
- * The quest checklist of a training event: every row whose title starts with
- * "Quest:", done when its status is terminal for its module's status column
- * (the same complete rule readiness runs on).
+ * The raw quest rows of a training event: every item whose title starts with
+ * "Quest:", planning-doc quests first (their order tells the story), supplies
+ * after. No status resolution — see `questsFor` for the done/not-done pass.
  */
-async function questsFor(
+async function questRowsFor(
   ctx: QueryCtx,
   event: Doc<"events">,
-): Promise<Quest[]> {
-  const items = (
-    await ctx.db
-      .query("eventItems")
-      .withIndex("by_event", (q) => q.eq("eventId", event._id))
-      .collect()
-  )
+): Promise<Doc<"eventItems">[]> {
+  const items = await ctx.db
+    .query("eventItems")
+    .withIndex("by_event", (q) => q.eq("eventId", event._id))
+    .collect();
+  return items
     .filter((it) => (it.title ?? "").startsWith(QUEST_TITLE_PREFIX))
-    // Planning-doc quests first (their order tells the story), supplies after.
     .sort((a, b) =>
       a.module === b.module
         ? a.order - b.order
         : a.module.localeCompare(b.module),
     );
+}
 
+/**
+ * The quest checklist of a training event, each row done when its status is
+ * terminal for its module's status column (the same complete rule readiness
+ * runs on).
+ */
+async function questsFor(
+  ctx: QueryCtx,
+  event: Doc<"events">,
+): Promise<Quest[]> {
+  const items = await questRowsFor(ctx, event);
   const optionsByModule = new Map<string, SelectOption[] | undefined>();
   const quests: Quest[] = [];
   for (const it of items) {
@@ -152,26 +241,31 @@ async function questsFor(
   return quests;
 }
 
-/** Capstone completion for a person: all quests of their training event done. */
-async function capstoneComplete(
-  ctx: QueryCtx,
-  chapterId: Id<"chapters">,
-  personId: Id<"people">,
-): Promise<boolean> {
-  const event = await activeTrainingEventFor(ctx, chapterId, personId);
-  if (!event) return false;
-  const quests = await questsFor(ctx, event);
+/** The capstone's completion rule: at least one quest, and every quest done. */
+function questsComplete(quests: Quest[]): boolean {
   return quests.length > 0 && quests.every((q) => q.done);
 }
 
 // ── Progress ──────────────────────────────────────────────────────────────────
 
+/** The capstone's training sub-state myProgress returns (fix for the hub). */
+type CapstoneTraining = {
+  eventId: Id<"events">;
+  started: true;
+  questsDone: number;
+  questsTotal: number;
+  complete: boolean;
+} | null;
+
 /**
  * The caller's per-section progress + the overall completion count the hub's
  * path renders. `passed` is the canonical per-section flag: quiz sections pass
  * via a perfect quiz (persisted `passedAt`), the capstone via its Training
- * Event quests (derived — see module docstring). `unlocked` mirrors the
- * sequential-quiz rule submitQuiz enforces (reading is never locked).
+ * Event quests (stored `passedAt` stamped by syncCapstone, OR live-derived as
+ * a fallback). `unlocked` mirrors the sequential-quiz rule submitQuiz
+ * enforces (reading is never locked). The capstone entry additionally carries
+ * `training` — its sandbox's live quest tally — so the hub can render the
+ * capstone row from this query alone.
  */
 export const myProgress = query({
   args: {},
@@ -185,6 +279,7 @@ export const myProgress = query({
         passedAt: null as number | null,
         passed: false,
         unlocked: s.order === 1,
+        training: null as CapstoneTraining,
       })),
       completed: 0,
       total: ACADEMY_SECTION_COUNT,
@@ -200,18 +295,56 @@ export const myProgress = query({
     if (!me) return empty;
 
     const bySlug = await progressBySlug(ctx, chapterId as Id<"chapters">, me);
-    const capstoneDone = await capstoneComplete(
-      ctx,
-      chapterId as Id<"chapters">,
-      me,
-    );
+
+    const storedPass =
+      bySlug.get(ACADEMY_CAPSTONE_SLUG)?.passedAt != null;
+    const beforeCapstone = previousAcademySection(ACADEMY_CAPSTONE_SLUG);
+    const capstoneUnlocked =
+      beforeCapstone == null ||
+      bySlug.get(beforeCapstone.slug)?.passedAt != null;
+
+    // Capstone training state. Short-circuits: a still-locked (and unpassed)
+    // capstone can't have a sandbox, so no event reads at all; a stored pass
+    // settles `passed` without deriving quest statuses.
+    let training: CapstoneTraining = null;
+    let capstonePassed = storedPass;
+    if (storedPass || capstoneUnlocked) {
+      const event = await newestTrainingEventFor(
+        ctx,
+        chapterId as Id<"chapters">,
+        me,
+      );
+      if (event) {
+        if (storedPass) {
+          const rows = await questRowsFor(ctx, event);
+          training = {
+            eventId: event._id,
+            started: true,
+            questsDone: rows.length,
+            questsTotal: rows.length,
+            complete: true,
+          };
+        } else {
+          const quests = await questsFor(ctx, event);
+          const complete = questsComplete(quests);
+          training = {
+            eventId: event._id,
+            started: true,
+            questsDone: quests.filter((q) => q.done).length,
+            questsTotal: quests.length,
+            complete,
+          };
+          capstonePassed = complete;
+        }
+      }
+    }
 
     const passedBySlug = new Map<string, boolean>();
     for (const s of ACADEMY_SECTIONS) {
       passedBySlug.set(
         s.slug,
         s.slug === ACADEMY_CAPSTONE_SLUG
-          ? capstoneDone
+          ? capstonePassed
           : bySlug.get(s.slug)?.passedAt != null,
       );
     }
@@ -228,6 +361,7 @@ export const myProgress = query({
         passed: passedBySlug.get(s.slug) === true,
         unlocked:
           previous == null || passedBySlug.get(previous.slug) === true,
+        training: s.slug === ACADEMY_CAPSTONE_SLUG ? training : null,
       };
     });
     return {
@@ -245,24 +379,14 @@ export const markRead = mutation({
     requireSection(sectionSlug);
     const chapterId = (await requireChapterId(ctx)) as Id<"chapters">;
     const userId = (await requireUserId(ctx)) as Id<"users">;
-    const now = Date.now();
-    // Reading the Academy makes you a roster person if you weren't one yet —
-    // same resolve-or-create the event paths use.
-    const me = await getOrCreateOwnerPerson(ctx, chapterId, userId, now);
+    const me = await requirePerson(ctx, chapterId, userId);
 
-    const bySlug = await progressBySlug(ctx, chapterId, me);
-    const existing = bySlug.get(sectionSlug);
-    if (existing) {
-      if (existing.readAt == null) {
-        await ctx.db.patch(existing._id, { readAt: now });
-      }
-      return null;
-    }
-    await ctx.db.insert("academyProgress", {
-      chapterId,
-      personId: me,
+    const existing = (await progressBySlug(ctx, chapterId, me)).get(
       sectionSlug,
-      readAt: now,
+    );
+    if (existing?.readAt != null) return null;
+    await upsertProgress(ctx, chapterId, me, sectionSlug, existing, {
+      readAt: Date.now(),
     });
     return null;
   },
@@ -295,7 +419,7 @@ export const submitQuiz = mutation({
     const chapterId = (await requireChapterId(ctx)) as Id<"chapters">;
     const userId = (await requireUserId(ctx)) as Id<"users">;
     const now = Date.now();
-    const me = await getOrCreateOwnerPerson(ctx, chapterId, userId, now);
+    const me = await requirePerson(ctx, chapterId, userId);
     const bySlug = await progressBySlug(ctx, chapterId, me);
 
     // Sequential unlock: the previous section's quiz must be passed first.
@@ -318,24 +442,46 @@ export const submitQuiz = mutation({
     const passed = score === total;
 
     const existing = bySlug.get(sectionSlug);
-    if (existing) {
-      await ctx.db.patch(existing._id, {
-        quizBestScore: Math.max(existing.quizBestScore ?? 0, score),
-        quizTotal: total,
-        passedAt: existing.passedAt ?? (passed ? now : undefined),
-      });
-    } else {
-      await ctx.db.insert("academyProgress", {
-        chapterId,
-        personId: me,
-        sectionSlug,
-        quizBestScore: score,
-        quizTotal: total,
-        passedAt: passed ? now : undefined,
-      });
-    }
+    await upsertProgress(ctx, chapterId, me, sectionSlug, existing, {
+      quizBestScore: Math.max(existing?.quizBestScore ?? 0, score),
+      quizTotal: total,
+      passedAt: existing?.passedAt ?? (passed ? now : undefined),
+    });
 
     return { score, total, passed, results };
+  },
+});
+
+/**
+ * Persist the capstone: resolve the caller's newest non-cancelled training
+ * event, server-verify every quest terminal, and stamp `passedAt` on the
+ * capstone progress row. Idempotent — an already-stamped row is left alone —
+ * and a no-op (`passed: false`) while the quests aren't done. The client
+ * calls this when the checklist completes; the stored stamp is what keeps a
+ * learner trained after their sandbox is completed or deleted.
+ */
+export const syncCapstone = mutation({
+  args: {},
+  handler: async (ctx) => {
+    const chapterId = (await requireChapterId(ctx)) as Id<"chapters">;
+    const userId = (await requireUserId(ctx)) as Id<"users">;
+    const me = await getPersonForUser(ctx, chapterId, userId);
+    if (!me) return { passed: false }; // no roster row → nothing to sync
+
+    const existing = (await progressBySlug(ctx, chapterId, me)).get(
+      ACADEMY_CAPSTONE_SLUG,
+    );
+    if (existing?.passedAt != null) return { passed: true };
+
+    const event = await newestTrainingEventFor(ctx, chapterId, me);
+    if (!event) return { passed: false };
+    const quests = await questsFor(ctx, event);
+    if (!questsComplete(quests)) return { passed: false };
+
+    await upsertProgress(ctx, chapterId, me, ACADEMY_CAPSTONE_SLUG, existing, {
+      passedAt: Date.now(),
+    });
+    return { passed: true };
   },
 });
 
@@ -362,22 +508,31 @@ export const chapterProgress = query({
       ? roster
       : roster.filter((p) => subtreeIds(childrenOf, viewer!).has(p._id));
 
-    // One chapter-wide read of progress rows, grouped by person.
+    // One chapter-wide read of progress rows, grouped by person. Only slugs
+    // in the CURRENT curriculum count — rows stranded by a renamed section
+    // must not inflate anyone past the real total.
+    const currentSlugs = new Set(ACADEMY_SECTIONS.map((s) => s.slug));
     const rows = await ctx.db
       .query("academyProgress")
       .withIndex("by_chapter", (q) =>
         q.eq("chapterId", chapterId as Id<"chapters">),
       )
       .collect();
-    const passedByPerson = new Map<string, number>();
+    const quizPassedByPerson = new Map<string, number>();
+    const capstoneStored = new Set<string>();
     for (const r of rows) {
-      if (r.passedAt == null) continue;
+      if (r.passedAt == null || !currentSlugs.has(r.sectionSlug)) continue;
       const key = String(r.personId);
-      passedByPerson.set(key, (passedByPerson.get(key) ?? 0) + 1);
+      if (r.sectionSlug === ACADEMY_CAPSTONE_SLUG) {
+        capstoneStored.add(key);
+      } else {
+        quizPassedByPerson.set(key, (quizPassedByPerson.get(key) ?? 0) + 1);
+      }
     }
 
-    // Capstone state in ONE pass over the chapter's events (not per person):
-    // each person's newest active training event → are all its quests done?
+    // Each person's newest non-cancelled training event, in ONE pass over the
+    // chapter's events — the live-derivation fallback for people whose quests
+    // finished before syncCapstone stamped them.
     const allEvents = await ctx.db
       .query("events")
       .withIndex("by_chapter", (q) =>
@@ -386,12 +541,7 @@ export const chapterProgress = query({
       .collect();
     const trainingByOwner = new Map<string, Doc<"events">>();
     for (const e of allEvents) {
-      if (
-        e.isTraining !== true ||
-        !e.ownerPersonId ||
-        e.status === "completed" ||
-        e.status === "cancelled"
-      )
+      if (e.isTraining !== true || !e.ownerPersonId || e.status === "cancelled")
         continue;
       const key = String(e.ownerPersonId);
       const current = trainingByOwner.get(key);
@@ -402,17 +552,22 @@ export const chapterProgress = query({
 
     const people = await Promise.all(
       visible.map(async (p) => {
-        const quizPassed = passedByPerson.get(String(p._id)) ?? 0;
-        const training = trainingByOwner.get(String(p._id));
-        let capstone = false;
-        if (training) {
-          const quests = await questsFor(ctx, training);
-          capstone = quests.length > 0 && quests.every((q) => q.done);
+        const key = String(p._id);
+        const quizPassed = quizPassedByPerson.get(key) ?? 0;
+        // Stored capstone stamps first; quest derivation only for the (few)
+        // visible people who lack one but do have a training event.
+        let capstone = capstoneStored.has(key);
+        if (!capstone) {
+          const training = trainingByOwner.get(key);
+          if (training) capstone = questsComplete(await questsFor(ctx, training));
         }
         return {
           personId: p._id,
           name: p.name,
-          completed: quizPassed + (capstone ? 1 : 0),
+          completed: Math.min(
+            quizPassed + (capstone ? 1 : 0),
+            ACADEMY_SECTION_COUNT,
+          ),
           total: ACADEMY_SECTION_COUNT,
         };
       }),
@@ -429,10 +584,73 @@ export const chapterProgress = query({
 // ── The Training Event capstone ───────────────────────────────────────────────
 
 /**
+ * Re-seed the quest rows of an existing training event from its template —
+ * the self-heal for a sandbox whose quest rows were deleted. Same cloning
+ * rules as instantiateEvent: due dates back-calculated from the event date,
+ * roleIds remapped template-role → event-role by role key.
+ */
+async function reseedQuestRows(
+  ctx: MutationCtx,
+  event: Doc<"events">,
+): Promise<void> {
+  const questItems = (
+    await ctx.db
+      .query("templateItems")
+      .withIndex("by_eventType", (q) => q.eq("eventTypeId", event.eventTypeId))
+      .collect()
+  ).filter((it) => (it.title ?? "").startsWith(QUEST_TITLE_PREFIX));
+  if (questItems.length === 0) return;
+
+  const [templateRoles, eventRoles] = await Promise.all([
+    ctx.db
+      .query("templateRoles")
+      .withIndex("by_template", (q) => q.eq("eventTypeId", event.eventTypeId))
+      .collect(),
+    ctx.db
+      .query("eventRoles")
+      .withIndex("by_event", (q) => q.eq("eventId", event._id))
+      .collect(),
+  ]);
+  const roleKeyById = new Map(templateRoles.map((r) => [String(r._id), r.key]));
+  const eventRoleByKey = new Map(eventRoles.map((r) => [r.key, r._id]));
+
+  for (const it of questItems) {
+    const roleKey = it.roleId ? roleKeyById.get(String(it.roleId)) : undefined;
+    await ctx.db.insert("eventItems", {
+      eventId: event._id,
+      chapterId: event.chapterId,
+      sourceTemplateItemId: it._id,
+      module: it.module,
+      title: it.title,
+      order: it.order,
+      offsetDays: it.offsetDays,
+      offsetMinutes: it.offsetMinutes,
+      dueDate:
+        DAY_OFFSET_MODULES.includes(it.module as ModuleKey) &&
+        it.offsetDays !== undefined
+          ? computeDueDate(event.eventDate, it.offsetDays)
+          : undefined,
+      roleId: roleKey ? eventRoleByKey.get(roleKey) : undefined,
+      status: it.status ?? defaultStatusValue(it.module as ModuleKey),
+      prePlanColumns: it.prePlanColumns,
+      fields: it.fields,
+    });
+  }
+}
+
+/**
  * Create (or resume) the caller's Training Event: a real event instantiated
  * from the platform training template, flagged `isTraining`, dated ~14 days
- * out so the quest offsets land in the future. Idempotent per person — an
- * existing active training event is returned instead of creating another.
+ * out so the quest offsets land in the future.
+ *
+ * Server-side rules:
+ *  - CAPSTONE_LOCKED — the last article section's quiz must be passed first
+ *    (the same sequential rule submitQuiz enforces).
+ *  - Idempotent per person: the newest NON-CANCELLED training event is
+ *    returned, completed ones included (the capstone stamp survives) — a new
+ *    sandbox is only minted when none exists or all were cancelled. An active
+ *    sandbox whose quest rows were deleted gets them re-seeded.
+ *  - TRAINING_LIMIT — at most 5 training events ever per person.
  */
 export const startTraining = mutation({
   args: {},
@@ -440,12 +658,42 @@ export const startTraining = mutation({
     const chapterId = (await requireChapterId(ctx)) as Id<"chapters">;
     const userId = (await requireUserId(ctx)) as Id<"users">;
     const now = Date.now();
+    // Starting training genuinely makes you an event owner — the one Academy
+    // path where resolve-or-create is the right person lookup.
     const me = await getOrCreateOwnerPerson(ctx, chapterId, userId, now);
 
-    const existing = await activeTrainingEventFor(ctx, chapterId, me);
-    if (existing) return { eventId: existing._id };
+    // The capstone unlocks like every other section: previous section passed.
+    const bySlug = await progressBySlug(ctx, chapterId, me);
+    const beforeCapstone = previousAcademySection(ACADEMY_CAPSTONE_SLUG);
+    if (beforeCapstone && bySlug.get(beforeCapstone.slug)?.passedAt == null) {
+      throw new ConvexError({
+        code: "CAPSTONE_LOCKED",
+        message: `Pass "${beforeCapstone.title}" first — sections complete in order.`,
+      });
+    }
 
-    // Idempotent by slug — also self-heals chapters seeded before the Academy.
+    const mine = await trainingEventsFor(ctx, chapterId, me);
+    const existing = mine.find((e) => e.status !== "cancelled");
+    if (existing) {
+      // Self-heal an in-flight sandbox whose quest rows are gone.
+      if (
+        isActiveTrainingEvent(existing) &&
+        (await questRowsFor(ctx, existing)).length === 0
+      ) {
+        await reseedQuestRows(ctx, existing);
+      }
+      return { eventId: existing._id };
+    }
+    if (mine.length >= TRAINING_EVENT_LIMIT) {
+      throw new ConvexError({
+        code: "TRAINING_LIMIT",
+        message:
+          "You've reached the training-run limit for this account — your capstone progress is already saved.",
+      });
+    }
+
+    // Idempotent platform-template lookup — also self-heals chapters seeded
+    // before the Academy.
     const trainingTypeId = await ensureTrainingTemplate(
       ctx,
       chapterId,
@@ -471,8 +719,9 @@ export const startTraining = mutation({
 
 /**
  * The caller's training event + its live quest checklist (quests tick as the
- * rows hit terminal statuses in the real event). Null when training hasn't
- * been started.
+ * rows hit terminal statuses in the real event). Reads the newest
+ * non-cancelled sandbox — completing the event keeps the checklist (and the
+ * pass) visible. Null when training hasn't been started.
  */
 export const trainingStatus = query({
   args: {},
@@ -486,7 +735,7 @@ export const trainingStatus = query({
       userId as Id<"users">,
     );
     if (!me) return null;
-    const event = await activeTrainingEventFor(
+    const event = await newestTrainingEventFor(
       ctx,
       chapterId as Id<"chapters">,
       me,
@@ -501,7 +750,7 @@ export const trainingStatus = query({
       quests,
       doneCount,
       total: quests.length,
-      complete: quests.length > 0 && doneCount === quests.length,
+      complete: questsComplete(quests),
     };
   },
 });

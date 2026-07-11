@@ -8,9 +8,10 @@ import { v } from "convex/values";
  * (ACADEMY_SECTIONS in @events-os/shared); this table stores only the
  * per-person state the hub renders: when the article was read, the best quiz
  * score across retakes, and when the quiz was passed (all answers correct).
- * The capstone section's completion is DERIVED live from the person's training
- * event (quest rows all terminal) rather than stored here, so it can never
- * drift from the actual event state.
+ * The capstone section's row is stamped by `academy.syncCapstone` once the
+ * training event's quest rows are all terminal (server-verified), so the pass
+ * SURVIVES the training event being completed or deleted; reads additionally
+ * fall back to live quest derivation for events stamped before syncing.
  */
 export const academyProgress = defineTable({
   chapterId: v.id("chapters"),
@@ -23,11 +24,12 @@ export const academyProgress = defineTable({
   quizBestScore: v.optional(v.number()),
   // Question count at the time of the best attempt (denominator for display).
   quizTotal: v.optional(v.number()),
-  // Set the first time an attempt scores perfect. Never cleared by retakes.
+  // Set the first time an attempt scores perfect (or, for the capstone, when
+  // syncCapstone verifies every quest terminal). Never cleared by retakes.
   passedAt: v.optional(v.number()),
 })
   // A person's rows within their chapter (myProgress; markRead/submitQuiz
   // upsert by scanning these ≤ ACADEMY_SECTION_COUNT rows for the slug).
-  .index("by_person", ["chapterId", "personId"])
+  .index("by_chapter_and_person", ["chapterId", "personId"])
   // The whole chapter's rows (chapterProgress — "who's trained").
   .index("by_chapter", ["chapterId"]);

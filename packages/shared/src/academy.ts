@@ -41,11 +41,26 @@ export const ACADEMY_CAPSTONE_SLUG = "capstone-training-event";
 /** Slug of the platform training template the capstone instantiates. */
 export const ACADEMY_TRAINING_TEMPLATE_SLUG = "academy-training";
 
-export const ACADEMY_SECTIONS: AcademySection[] = [
+/**
+ * Whether an event counts toward chapter OPERATIONS. Academy training
+ * sandboxes (`isTraining`) are real events, but they must never surface in
+ * operational views: event lists, the pipeline, dashboards, Team workload
+ * views, or reminder emails. Every exclusion site shares this one predicate.
+ */
+export function isOperationalEvent(e: {
+  isTraining?: boolean | null;
+}): boolean {
+  return e.isTraining !== true;
+}
+
+// The curriculum, in reading order. `order` is DERIVED from array position
+// (see the ACADEMY_SECTIONS export below) so a mid-curriculum insert can
+// never silently break the sequential-unlock chain with duplicate or gapped
+// order numbers.
+const SECTIONS_IN_ORDER: Omit<AcademySection, "order">[] = [
   // ── 1 ─────────────────────────────────────────────────────────────────────
   {
     slug: "what-is-events-os",
-    order: 1,
     title: "What Events OS is",
     subtitle: "Templates, events, and the north star",
     minutes: 4,
@@ -156,7 +171,6 @@ way of making sure the plan doesn't live in anyone's head.`,
   // ── 2 ─────────────────────────────────────────────────────────────────────
   {
     slug: "core-concepts",
-    order: 2,
     title: "Core concepts",
     subtitle: "Workstreams, the cast, and the accountability chain",
     minutes: 6,
@@ -281,7 +295,6 @@ accountability is singular.`,
   // ── 3 ─────────────────────────────────────────────────────────────────────
   {
     slug: "planning-backwards",
-    order: 3,
     title: "Planning backwards",
     subtitle: "T-offsets, the five windows, and the hard checkpoints",
     minutes: 6,
@@ -419,7 +432,6 @@ Memorize these — the reminders and readiness math are built on them:
   // ── 4 ─────────────────────────────────────────────────────────────────────
   {
     slug: "owning-a-workstream",
-    order: 4,
     title: "Owning a workstream",
     subtitle: "The six expectations",
     minutes: 5,
@@ -541,7 +553,6 @@ unowned?"*`,
   // ── 5 ─────────────────────────────────────────────────────────────────────
   {
     slug: "owning-an-event",
-    order: 5,
     title: "Owning an event",
     subtitle: "The seven expectations",
     minutes: 6,
@@ -666,7 +677,6 @@ event actually ready? Check it against the readiness criteria."*`,
   // ── 6 ─────────────────────────────────────────────────────────────────────
   {
     slug: "working-with-the-assistant",
-    order: 6,
     title: "Working with the assistant",
     subtitle: "Briefings, batching, undo, and what needs your consent",
     minutes: 5,
@@ -785,7 +795,6 @@ alone. North star, again.
   // ── 7 ─────────────────────────────────────────────────────────────────────
   {
     slug: ACADEMY_CAPSTONE_SLUG,
-    order: 7,
     title: "Capstone: the Training Event",
     subtitle: "Run the drills in a real sandbox event",
     minutes: 10,
@@ -816,17 +825,21 @@ training run — ask it for help on any quest.`,
   },
 ];
 
+/**
+ * The ordered curriculum. `order` is frozen from array position (1-based) so
+ * it is always contiguous — the sequential-unlock chain in the backend walks
+ * `order ± 1` and would silently break on duplicated or gapped numbers.
+ */
+export const ACADEMY_SECTIONS: AcademySection[] = SECTIONS_IN_ORDER.map(
+  (s, i) => ({ ...s, order: i + 1 }),
+);
+
 /** Total number of curriculum sections (including the capstone). */
 export const ACADEMY_SECTION_COUNT = ACADEMY_SECTIONS.length;
 
 /** Look up a section by slug, or undefined. */
 export function getAcademySection(slug: string): AcademySection | undefined {
   return ACADEMY_SECTIONS.find((s) => s.slug === slug);
-}
-
-/** Whether a slug names a real curriculum section. */
-export function isAcademySectionSlug(slug: string): boolean {
-  return getAcademySection(slug) !== undefined;
 }
 
 /** The section after this one in curriculum order, or undefined at the end. */

@@ -7,6 +7,7 @@
  * function.
  */
 import { Id } from "../../_generated/dataModel";
+import { MutationCtx } from "../../_generated/server";
 import {
   ACADEMY_TRAINING_TEMPLATE_SLUG,
   DEFAULT_ROLES,
@@ -117,31 +118,44 @@ export const TRAINING_SUPPLY_ROWS: ItemRow[] = [
 
 /**
  * Ensure the chapter has the platform "Academy: Training Run" template the
- * capstone instantiates. Idempotent BY SLUG (`academy-training`): returns the
- * existing template's id when one exists, otherwise creates it — the 3
- * lightweight roles, Planning Doc + Supplies columns, and the quest rows above.
- * Every other core module is disabled so the sandbox stays focused on the
- * drills. Called from `buildChapterRolesAndTemplates` (new chapters) and from
+ * capstone instantiates. Idempotent by the `isPlatform` flag: returns the
+ * existing PLATFORM template's id when one exists, otherwise creates it — the
+ * 3 lightweight roles, Planning Doc + Supplies columns, and the quest rows
+ * above. A user template that happens to hold the `academy-training` slug
+ * never satisfies the lookup; the real one is seeded anyway under a suffixed
+ * slug and matched on `isPlatform` from then on. Every other core module is
+ * disabled so the sandbox stays focused on the drills. Called from
+ * `buildChapterRolesAndTemplates` (new chapters) and from
  * `academy.startTraining` (self-heals chapters seeded before the Academy).
  */
 export async function ensureTrainingTemplate(
-  ctx: any,
+  ctx: MutationCtx,
   chapterId: Id<"chapters">,
   createdBy: Id<"users">,
   now: number,
 ): Promise<Id<"eventTypes">> {
-  const existing = await ctx.db
+  // Chapters hold a handful of templates — a full read here stays tiny, and
+  // it's what lets the lookup key on isPlatform even when a slug squatter
+  // forced the platform template onto a suffixed slug.
+  const chapterTypes = await ctx.db
     .query("eventTypes")
-    .withIndex("by_chapter_slug", (q: any) =>
-      q.eq("chapterId", chapterId).eq("slug", ACADEMY_TRAINING_TEMPLATE_SLUG),
-    )
-    .first();
-  if (existing) return existing._id as Id<"eventTypes">;
+    .withIndex("by_chapter", (q) => q.eq("chapterId", chapterId))
+    .collect();
+  const existing = chapterTypes.find((t) => t.isPlatform === true);
+  if (existing) return existing._id;
 
-  const trainingId = (await ctx.db.insert("eventTypes", {
+  // A user template may be squatting on the exact slug — suffix past it.
+  const taken = new Set(chapterTypes.map((t) => t.slug));
+  let slug = ACADEMY_TRAINING_TEMPLATE_SLUG;
+  for (let n = 2; taken.has(slug); n++) {
+    slug = `${ACADEMY_TRAINING_TEMPLATE_SLUG}-${n}`;
+  }
+
+  const trainingId = await ctx.db.insert("eventTypes", {
     chapterId,
     name: "Academy: Training Run",
-    slug: ACADEMY_TRAINING_TEMPLATE_SLUG,
+    slug,
+    isPlatform: true,
     description:
       "The Academy capstone sandbox — a tiny event whose rows are the training quests. Instantiated per person by \"Start training\"; training events never appear in the pipeline or reminder emails.",
     // Keep the sandbox to the two workstreams the quests live in.
@@ -157,7 +171,7 @@ export async function ensureTrainingTemplate(
     createdBy,
     createdAt: now,
     updatedAt: now,
-  })) as Id<"eventTypes">;
+  });
 
   // The lightweight roles — the Comms Lead quest needs comms_lead to exist.
   const roleSeeds = DEFAULT_ROLES.filter((r) =>
