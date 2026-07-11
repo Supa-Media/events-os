@@ -26,6 +26,7 @@ import {
   ACADEMY_REQUIRED_SECTION_COUNT,
   ACADEMY_SECTIONS,
   ACADEMY_TRAINING_TEMPLATES,
+  CORE_MODULE_KEYS,
   DAY_MS,
   DAY_OFFSET_MODULES,
   computeDueDate,
@@ -50,6 +51,7 @@ import {
 } from "./lib/templates";
 import {
   ensureTrainingTemplate,
+  trainingTemplateSpec,
   QUEST_TITLE_PREFIX,
 } from "./lib/seed/templates";
 import { statusColumnFor } from "./lib/readiness";
@@ -65,21 +67,10 @@ import {
  *  (incl. cancelled). */
 const TRAINING_EVENT_LIMIT = 5;
 
-/** The sandbox event name each capstone mints, from the learner's first name. */
-const TRAINING_EVENT_NAMES: Record<
-  AcademyTrainingKind,
-  (firstName: string) => string
-> = {
-  join_event: (n) => `Training: ${n} joins the gathering`,
-  birthday_party: (n) => `Training: ${n}'s birthday party`,
-  worship_event: (n) => `Training: ${n}'s worship event`,
-};
-
-/** Sample teammates the birthday capstone's role quests need on the roster. */
-const SAMPLE_TEAMMATES = [
-  { name: "Maya (sample teammate)", role: "Trained organizer — sample" },
-  { name: "Jordan (sample teammate)", role: "Trained organizer — sample" },
-];
+/** Workstream display order — quest checklists group modules by this, not
+ *  alphabetically, so the checklist tells the story the specs authored
+ *  (Tasks quests before Comms quests, Debrief last). */
+const MODULE_ORDER = new Map(CORE_MODULE_KEYS.map((k, i) => [k as string, i]));
 
 /** Throw unless `slug` names a real curriculum section. */
 function requireSection(slug: string) {
@@ -185,25 +176,33 @@ function isActiveTrainingEvent(e: Doc<"events">): boolean {
 }
 
 /**
- * The chapter's platform template for a capstone kind, or null when it hasn't
- * been seeded yet (queries can't create it; startTraining does). Matched on
- * `isPlatform && platformKey` — never on slug — so slug squatters and the
- * legacy pre-2026-07 platform template (no key) can't hijack the lookup.
+ * The chapter's platform templates for EVERY capstone kind, resolved from one
+ * read of the (small, per-chapter) eventTypes range — callers that need
+ * several kinds (myProgress, chapterProgress) must not re-collect per kind.
+ * Matched on `isPlatform && platformKey` — never on slug — so slug squatters
+ * and the legacy pre-2026-07 platform template (no key) can't hijack the
+ * lookup. Kinds whose template isn't seeded yet are absent from the map
+ * (queries can't create templates; startTraining does).
  */
-async function platformTemplateIdFor(
+async function platformTemplateIdsFor(
   ctx: QueryCtx,
   chapterId: Id<"chapters">,
-  kind: AcademyTrainingKind,
-): Promise<Id<"eventTypes"> | null> {
-  const key = ACADEMY_TRAINING_TEMPLATES[kind].templateKey;
+): Promise<Map<AcademyTrainingKind, Id<"eventTypes">>> {
   const types = await ctx.db
     .query("eventTypes")
     .withIndex("by_chapter", (q) => q.eq("chapterId", chapterId))
     .collect();
-  return (
-    types.find((t) => t.isPlatform === true && t.platformKey === key)?._id ??
-    null
-  );
+  const ids = new Map<AcademyTrainingKind, Id<"eventTypes">>();
+  for (const kind of Object.keys(
+    ACADEMY_TRAINING_TEMPLATES,
+  ) as AcademyTrainingKind[]) {
+    const key = ACADEMY_TRAINING_TEMPLATES[kind].templateKey;
+    const match = types.find(
+      (t) => t.isPlatform === true && t.platformKey === key,
+    );
+    if (match) ids.set(kind, match._id);
+  }
+  return ids;
 }
 
 /**
@@ -242,7 +241,7 @@ async function newestTrainingEventFor(
   personId: Id<"people">,
   kind: AcademyTrainingKind,
 ): Promise<Doc<"events"> | null> {
-  const templateId = await platformTemplateIdFor(ctx, chapterId, kind);
+  const templateId = (await platformTemplateIdsFor(ctx, chapterId)).get(kind);
   if (!templateId) return null;
   const mine = await trainingEventsFor(ctx, chapterId, personId, templateId);
   return mine.find((e) => e.status !== "cancelled") ?? null;
@@ -260,8 +259,10 @@ type Quest = {
 
 /**
  * The raw quest rows of a training event: every item whose title starts with
- * "Quest:", grouped by module (module order tells the story), ordered within.
- * No status resolution — see `questsFor` for the done/not-done pass.
+ * "Quest:", grouped by module in WORKSTREAM DISPLAY ORDER (Tasks first,
+ * Debrief last — the story order the specs authored), ordered within a
+ * module by row order. No status resolution — see `questsFor` for the
+ * done/not-done pass.
  */
 async function questRowsFor(
   ctx: QueryCtx,
@@ -271,12 +272,13 @@ async function questRowsFor(
     .query("eventItems")
     .withIndex("by_event", (q) => q.eq("eventId", event._id))
     .collect();
+  const rank = (m: string) => MODULE_ORDER.get(m) ?? MODULE_ORDER.size;
   return items
     .filter((it) => (it.title ?? "").startsWith(QUEST_TITLE_PREFIX))
     .sort((a, b) =>
       a.module === b.module
         ? a.order - b.order
-        : a.module.localeCompare(b.module),
+        : rank(a.module) - rank(b.module),
     );
 }
 
@@ -387,6 +389,33 @@ export const myProgress = query({
 
     const bySlug = await progressBySlug(ctx, chapterId as Id<"chapters">, me);
 
+    // ONE read each of the chapter's templates and the caller's owned events
+    // serves every capstone below — never re-collected per kind.
+    const templateIds = await platformTemplateIdsFor(
+      ctx,
+      chapterId as Id<"chapters">,
+    );
+    const ownedEvents = await ctx.db
+      .query("events")
+      .withIndex("by_chapter_and_ownerPersonId", (q) =>
+        q.eq("chapterId", chapterId as Id<"chapters">).eq("ownerPersonId", me),
+      )
+      .collect();
+    const sandboxFor = (kind: AcademyTrainingKind): Doc<"events"> | null => {
+      const templateId = templateIds.get(kind);
+      if (!templateId) return null;
+      return (
+        ownedEvents
+          .filter(
+            (e) =>
+              e.isTraining === true &&
+              e.eventTypeId === templateId &&
+              e.status !== "cancelled",
+          )
+          .sort((a, b) => b.createdAt - a.createdAt)[0] ?? null
+      );
+    };
+
     // Resolve passed per section IN CURRICULUM ORDER — a capstone's unlock
     // depends on the section before it, which may itself be a capstone.
     const passedBySlug = new Map<string, boolean>();
@@ -402,17 +431,12 @@ export const myProgress = query({
         previous == null || passedBySlug.get(previous.slug) === true;
 
       // Short-circuits: a still-locked (and unpassed) capstone can't have a
-      // sandbox, so no event reads at all; a stored pass settles `passed`
+      // sandbox, so no quest reads at all; a stored pass settles `passed`
       // without deriving quest statuses.
       let training: CapstoneTraining = null;
       let passed = storedPass;
       if (storedPass || unlockedNow) {
-        const event = await newestTrainingEventFor(
-          ctx,
-          chapterId as Id<"chapters">,
-          me,
-          s.capstone.kind,
-        );
+        const event = sandboxFor(s.capstone.kind);
         if (event) {
           if (storedPass) {
             const rows = await questRowsFor(ctx, event);
@@ -649,13 +673,13 @@ export const chapterProgress = query({
     // person's newest non-cancelled training event PER capstone in ONE pass
     // over the chapter's events — the live-derivation fallback for people
     // whose quests finished before syncCapstone stamped them.
+    const templateIds = await platformTemplateIdsFor(
+      ctx,
+      chapterId as Id<"chapters">,
+    );
     const capstoneByTemplateId = new Map<string, string>(); // templateId → slug
     for (const s of requiredCapstones) {
-      const templateId = await platformTemplateIdFor(
-        ctx,
-        chapterId as Id<"chapters">,
-        s.capstone!.kind,
-      );
+      const templateId = templateIds.get(s.capstone!.kind);
       if (templateId) capstoneByTemplateId.set(String(templateId), s.slug);
     }
     const allEvents = await ctx.db
@@ -719,21 +743,35 @@ export const chapterProgress = query({
 // ── The training-event capstones ──────────────────────────────────────────────
 
 /**
- * Re-seed the quest rows of an existing training event from its template —
- * the self-heal for a sandbox whose quest rows were deleted. Same cloning
- * rules as instantiateEvent: due dates back-calculated from the event date,
- * roleIds remapped template-role → event-role by role key.
+ * Re-seed an existing training event's missing rows from its template — the
+ * self-heal for a sandbox whose quest rows were deleted. Restores EVERY
+ * template row with no surviving clone (matched by sourceTemplateItemId),
+ * not just quests: the join-event sandbox's scenery rows are load-bearing
+ * (quests send the learner to read call times off the Run of Show, duties
+ * off Crew Duties), so a quest-only heal would restore a pedagogically
+ * broken sandbox. Same cloning rules as instantiateEvent: due dates
+ * back-calculated from the event date, roleIds remapped template-role →
+ * event-role by role key.
  */
-async function reseedQuestRows(
+async function reseedMissingRows(
   ctx: MutationCtx,
   event: Doc<"events">,
 ): Promise<void> {
+  const existing = await ctx.db
+    .query("eventItems")
+    .withIndex("by_event", (q) => q.eq("eventId", event._id))
+    .collect();
+  const clonedFrom = new Set(
+    existing
+      .map((it) => (it.sourceTemplateItemId ? String(it.sourceTemplateItemId) : null))
+      .filter((v): v is string => v != null),
+  );
   const questItems = (
     await ctx.db
       .query("templateItems")
       .withIndex("by_eventType", (q) => q.eq("eventTypeId", event.eventTypeId))
       .collect()
-  ).filter((it) => (it.title ?? "").startsWith(QUEST_TITLE_PREFIX));
+  ).filter((it) => !clonedFrom.has(String(it._id)));
   if (questItems.length === 0) return;
 
   const [templateRoles, eventRoles] = await Promise.all([
@@ -774,21 +812,29 @@ async function reseedQuestRows(
 }
 
 /**
- * Ensure the birthday capstone's sample teammates exist on the chapter
- * roster, as placeholder people (excluded from chapterRoster views, so they
- * never pollute Team or "who's trained"). Reused by name across learners —
- * one Maya per chapter, not one per training run.
+ * Ensure a capstone's sample teammates (spec.sampleTeammates) exist on the
+ * chapter roster. Flags matter here:
+ *  - `isPlaceholder` keeps them out of the People roster and chapterRoster
+ *    views ("who's trained", Team, workload) — they're props, not people.
+ *  - `isTeamMember` puts them in api.people.teamMembers, the source behind
+ *    the role-assignment PersonPicker — WITHOUT it the "Give Maya and Jordan
+ *    each a role" quest is impossible to perform as instructed. The
+ *    tradeoff: they also appear in role pickers on real events, which their
+ *    "(sample teammate)" names make self-explanatory.
+ * Reused by name across learners — one Maya per chapter, not one per run.
  */
 async function ensureSampleTeammates(
   ctx: MutationCtx,
   chapterId: Id<"chapters">,
   now: number,
+  seeds: { name: string; role: string }[],
 ): Promise<void> {
+  if (seeds.length === 0) return;
   const people = await ctx.db
     .query("people")
     .withIndex("by_chapter", (q) => q.eq("chapterId", chapterId))
     .collect();
-  for (const seed of SAMPLE_TEAMMATES) {
+  for (const seed of seeds) {
     const exists = people.some(
       (p) => p.isPlaceholder === true && p.name === seed.name,
     );
@@ -798,6 +844,7 @@ async function ensureSampleTeammates(
       name: seed.name,
       role: seed.role,
       isPlaceholder: true,
+      isTeamMember: true,
       isActive: true,
       createdAt: now,
     });
@@ -868,7 +915,7 @@ export const startTraining = mutation({
         isActiveTrainingEvent(existing) &&
         (await questRowsFor(ctx, existing)).length === 0
       ) {
-        await reseedQuestRows(ctx, existing);
+        await reseedMissingRows(ctx, existing);
       }
       return { eventId: existing._id };
     }
@@ -880,10 +927,9 @@ export const startTraining = mutation({
       });
     }
 
-    // The birthday capstone's role quests need Maya + Jordan on the roster.
-    if (kind === "birthday_party") {
-      await ensureSampleTeammates(ctx, chapterId, now);
-    }
+    // Sample teammates the capstone's role quests assign (if the spec has any).
+    const spec = trainingTemplateSpec(kind);
+    await ensureSampleTeammates(ctx, chapterId, now, spec.sampleTeammates ?? []);
 
     const eventType = await ctx.db.get(trainingTypeId);
     const person = await ctx.db.get(me);
@@ -892,7 +938,7 @@ export const startTraining = mutation({
       eventType,
       chapterId,
       userId,
-      name: TRAINING_EVENT_NAMES[kind](firstName),
+      name: spec.eventName(firstName),
       eventDate: now + 14 * DAY_MS,
       isTraining: true,
       now,

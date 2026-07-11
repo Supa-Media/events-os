@@ -73,10 +73,12 @@ interface TrainingPersonSeed {
   role?: string;
 }
 
-/** Everything needed to build one capstone's platform template. */
-interface TrainingTemplateSpec {
+/** Everything needed to build one capstone's platform template + sandbox. */
+export interface TrainingTemplateSpec {
   name: string;
   description: string;
+  /** The sandbox event's name, from the learner's first name. */
+  eventName: (firstName: string) => string;
   disabledCoreModules: string[];
   /** Role keys from DEFAULT_ROLES this template carries. */
   roleKeys: string[];
@@ -89,6 +91,12 @@ interface TrainingTemplateSpec {
   >;
   /** Sample crew placeholders, materialized as volunteer engagements. */
   people?: TrainingPersonSeed[];
+  /**
+   * Sample TEAMMATES the capstone's role quests assign — seeded onto the
+   * chapter roster (once, reused across learners) by startTraining, not the
+   * template: they're organizers to put in roles, not day-of crew.
+   */
+  sampleTeammates?: { name: string; role: string }[];
 }
 
 /** Party-appropriate crew teams for the birthday capstone's Crew Duties tab. */
@@ -108,6 +116,7 @@ const PARTY_TEAM_OPTIONS: SelectOption[] = [
  */
 const JOIN_EVENT_SPEC: TrainingTemplateSpec = {
   name: "Academy: Join a Gathering",
+  eventName: (firstName) => `Training: ${firstName} joins the gathering`,
   description:
     "Capstone 1 sandbox — a large worship gathering already built from a template. The learner joins as Comms Lead. Instantiated per person by \"Start training\"; training events never appear in the pipeline or reminder emails.",
   disabledCoreModules: [],
@@ -244,6 +253,7 @@ const JOIN_EVENT_SPEC: TrainingTemplateSpec = {
  */
 const BIRTHDAY_PARTY_SPEC: TrainingTemplateSpec = {
   name: "Academy: Birthday Party",
+  eventName: (firstName) => `Training: ${firstName}'s birthday party`,
   description:
     "Capstone 2 sandbox — a from-scratch birthday party with sample teammates and crew. Instantiated per person by \"Start training\"; training events never appear in the pipeline or reminder emails.",
   disabledCoreModules: ["permits"],
@@ -345,6 +355,10 @@ const BIRTHDAY_PARTY_SPEC: TrainingTemplateSpec = {
     { name: "Uncle Ray (sample crew)", team: "food", role: "Grill master" },
     { name: "Cousin Lena (sample crew)", team: "decor", role: "Decorations" },
   ],
+  sampleTeammates: [
+    { name: "Maya (sample teammate)", role: "Trained organizer — sample" },
+    { name: "Jordan (sample teammate)", role: "Trained organizer — sample" },
+  ],
 };
 
 /**
@@ -354,6 +368,7 @@ const BIRTHDAY_PARTY_SPEC: TrainingTemplateSpec = {
  */
 const WORSHIP_EVENT_SPEC: TrainingTemplateSpec = {
   name: "Academy: Worship Event",
+  eventName: (firstName) => `Training: ${firstName}'s worship event`,
   description:
     "Bonus capstone sandbox — a from-scratch pop-up worship event. Instantiated per person by \"Start training\"; training events never appear in the pipeline or reminder emails.",
   disabledCoreModules: ["volunteer_expectations"],
@@ -462,6 +477,11 @@ const TRAINING_TEMPLATE_SPECS: Record<AcademyTrainingKind, TrainingTemplateSpec>
   birthday_party: BIRTHDAY_PARTY_SPEC,
   worship_event: WORSHIP_EVENT_SPEC,
 };
+
+/** The spec for one capstone kind (startTraining reads eventName/teammates). */
+export function trainingTemplateSpec(kind: AcademyTrainingKind): TrainingTemplateSpec {
+  return TRAINING_TEMPLATE_SPECS[kind];
+}
 
 /**
  * Ensure the chapter has the platform template for one capstone kind.

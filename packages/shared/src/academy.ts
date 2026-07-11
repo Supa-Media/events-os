@@ -384,7 +384,7 @@ const SECTIONS_IN_ORDER: Omit<AcademySection, "order">[] = [
         kind: "try_status",
         title: "Confirm porta-potty vendor",
         options: [
-          { value: "not_started", label: "Not started", color: "gray" },
+          { value: "not_started", label: "Not started", color: "red" },
           { value: "in_progress", label: "In progress", color: "amber" },
           { value: "done", label: "Done", color: "green" },
         ],
@@ -572,7 +572,7 @@ const SECTIONS_IN_ORDER: Omit<AcademySection, "order">[] = [
         kind: "try_status",
         title: "Book videographer for recap clips",
         options: [
-          { value: "not_started", label: "Not started", color: "gray" },
+          { value: "not_started", label: "Not started", color: "red" },
           { value: "in_progress", label: "In progress", color: "amber" },
           { value: "done", label: "Done", color: "green" },
         ],
@@ -649,7 +649,7 @@ const SECTIONS_IN_ORDER: Omit<AcademySection, "order">[] = [
         kind: "try_status",
         title: "Announce the event on socials",
         options: [
-          { value: "not_started", label: "Not started", color: "gray" },
+          { value: "not_started", label: "Not started", color: "red" },
           { value: "drafted", label: "Drafted", color: "amber" },
           { value: "scheduled", label: "Scheduled", color: "blue" },
           { value: "sent", label: "Sent", color: "green" },
@@ -1120,7 +1120,10 @@ const SECTIONS_IN_ORDER: Omit<AcademySection, "order">[] = [
 
   // ── 12 · The assistant ─────────────────────────────────────────────────────
   {
-    slug: "working-with-the-assistant",
+    // Renamed from the v1 slug "working-with-the-assistant" ON PURPOSE: this
+    // section gates the first capstone, and a surviving slug would let a
+    // pre-redesign pass unlock the capstones past the ten new sections.
+    slug: "using-the-assistant",
     title: "Working with the assistant",
     subtitle: "Briefings, batch edits, and what needs your consent",
     minutes: 3,
@@ -1366,11 +1369,6 @@ export const ACADEMY_REQUIRED_SECTION_COUNT = ACADEMY_SECTIONS.filter(
 /** The capstone sections, in curriculum order. */
 export const ACADEMY_CAPSTONE_SECTIONS: AcademySection[] =
   ACADEMY_SECTIONS.filter((s) => s.capstone != null);
-
-/** Whether a slug names a capstone section. */
-export function isAcademyCapstoneSlug(slug: string): boolean {
-  return ACADEMY_CAPSTONE_SECTIONS.some((s) => s.slug === slug);
-}
 
 /** Look up a section by slug, or undefined. */
 export function getAcademySection(slug: string): AcademySection | undefined {

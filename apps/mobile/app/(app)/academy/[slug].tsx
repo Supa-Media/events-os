@@ -118,9 +118,12 @@ export default function AcademySectionScreen() {
         <ArticleBlocks blocks={section.blocks} sectionKey={section.slug} />
       </View>
 
-      {/* Quiz or capstone quest checklist */}
+      {/* Quiz or capstone quest checklist. Keyed by slug so navigating
+          between capstones remounts with fresh local state (sync guard,
+          toasts) instead of carrying one capstone's state into the next. */}
       {isCapstone ? (
         <Capstone
+          key={section.slug}
           capstoneSlug={section.slug}
           complete={state?.passed === true}
           unlocked={state?.unlocked !== false}
@@ -432,13 +435,13 @@ function Capstone({
   const syncCapstone = useMutation(api.academy.syncCapstone);
 
   // Persist completion once when the live checklist finishes (ref-guarded so
-  // the reactive query can't spam the mutation; keyed by slug because the
-  // route reuses this component across capstones).
-  const syncedRef = useRef<string | null>(null);
+  // the reactive query can't spam the mutation; the component is keyed by
+  // slug at its render site, so each capstone mounts with a fresh guard).
+  const syncedRef = useRef(false);
   const trainingComplete = training != null && training.complete;
   useEffect(() => {
-    if (trainingComplete && syncedRef.current !== capstoneSlug) {
-      syncedRef.current = capstoneSlug;
+    if (trainingComplete && !syncedRef.current) {
+      syncedRef.current = true;
       void syncCapstone({ capstoneSlug }).catch(() => {});
     }
   }, [trainingComplete, capstoneSlug, syncCapstone]);

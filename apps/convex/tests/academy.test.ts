@@ -20,6 +20,8 @@ import {
   ACADEMY_SECTIONS,
   ACADEMY_SECTION_COUNT,
   ACADEMY_TRAINING_TEMPLATES,
+  defaultStatusOptions,
+  type ModuleKey,
 } from "@events-os/shared";
 import { newT, run, setupChapter, type ChapterSetup } from "./setup.helpers";
 
@@ -31,14 +33,15 @@ const [CAPSTONE_JOIN, CAPSTONE_PARTY, CAPSTONE_BONUS] =
   ACADEMY_CAPSTONE_SECTIONS;
 const DAY = 24 * 60 * 60 * 1000;
 
-/** Each quest module's terminal status (mirrors the default status columns). */
-const TERMINAL_BY_MODULE: Record<string, string> = {
-  planning_doc: "done",
-  comms: "sent",
-  supplies: "packed",
-  permits: "approved",
-  retro: "actioned",
-};
+/** A module's terminal status, from the SAME source production's quest-done
+ *  rule reads (defaultStatusOptions + isComplete) — no hand-kept mirror. */
+function terminalStatusFor(module: string): string {
+  const terminal = defaultStatusOptions(module as ModuleKey)?.find(
+    (o) => o.isComplete === true,
+  );
+  if (!terminal) throw new Error(`no terminal status for module ${module}`);
+  return terminal.value;
+}
 
 /** The all-correct answer vector for a section's quiz. */
 function correctAnswers(slug: string): number[] {
@@ -99,7 +102,7 @@ async function completeAllQuests(s: ChapterSetup, eventId: Id<"events">) {
     for (const it of items) {
       if (!it.title.startsWith("Quest:")) continue;
       await ctx.db.patch(it._id, {
-        status: TERMINAL_BY_MODULE[it.module] ?? "done",
+        status: terminalStatusFor(it.module),
       });
     }
   });
@@ -615,6 +618,20 @@ describe("the training-event capstones", () => {
     });
     expect(status!.total).toBe(7); // 4 Tasks quests + 3 Comms quests, restored
     expect(status!.doneCount).toBe(0);
+    // The heal restores load-bearing SCENERY too, not just quests — the
+    // comms quests send the learner to read the Run of Show and Crew Duties.
+    const healed = await run(s.t, (ctx) =>
+      ctx.db
+        .query("eventItems")
+        .withIndex("by_event", (q) => q.eq("eventId", s.eventId))
+        .collect(),
+    );
+    expect(healed.some((it) => it.module === "run_of_show")).toBe(true);
+    expect(
+      healed.filter(
+        (it) => it.module === "planning_doc" && !it.title.startsWith("Quest:"),
+      ).length,
+    ).toBeGreaterThan(0);
     // Re-seeded rows carry real due dates + role links like the originals.
     const items = await run(s.t, (ctx) =>
       ctx.db
@@ -656,6 +673,12 @@ describe("the training-event capstones", () => {
     expect(status!.quests.every((q) => !q.title.startsWith("Quest:"))).toBe(
       true,
     );
+    // Checklist keeps workstream story order: Tasks quests before Comms
+    // quests (alphabetical would invert them — 'comms' < 'planning_doc').
+    expect(status!.quests.map((q) => q.module)).toEqual([
+      ...Array(4).fill("planning_doc"),
+      ...Array(3).fill("comms"),
+    ]);
 
     // Tick one quest (a comms row → sent, comms' terminal state).
     await run(s.t, async (ctx) => {
@@ -844,6 +867,12 @@ describe("syncCapstone persists a capstone", () => {
     )!;
     expect(join.passed).toBe(true);
     expect(join.passedAt).toBe(row!.passedAt);
+
+    // chapterProgress reads the stored stamp too (12 quizzes + 1 capstone).
+    const view = await s.as.query(api.academy.chapterProgress, {});
+    expect(
+      view!.people.find((p) => p.personId === s.personId)!.completed,
+    ).toBe(ACADEMY_REQUIRED_SECTION_COUNT - 1);
   });
 });
 

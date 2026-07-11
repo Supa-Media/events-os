@@ -284,7 +284,7 @@ const TOOLS = [
       description:
         "Engage a roster person on this event as crew (they start 'invited'). " +
         "type is volunteer or paid; teams are team VALUES from the " +
-        "Expectations team column; call_time is a display string like " +
+        "Crew Duties team column; call_time is a display string like " +
         "'7:30 AM'; amount_usd is the payment amount for PAID engagements. " +
         "If the person is already engaged, use update_engagement.",
       parameters: {
