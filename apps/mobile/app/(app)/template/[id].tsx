@@ -13,7 +13,7 @@ import {
 import { ToastView } from "../../../components/ui/Toast";
 import { useActionRunner } from "../../../lib/useActionToast";
 import { EditableGrid } from "../../../components/grid/EditableGrid";
-import { SiteMapEditor } from "../../../components/event/SiteMapEditor";
+import { SiteMapSubsection } from "../../../components/event/SiteMapSubsection";
 import { NameEditor } from "../../../components/template/NameEditor";
 import { DescriptionEditor } from "../../../components/template/DescriptionEditor";
 import { RolesCard } from "../../../components/template/RolesCard";
@@ -27,8 +27,9 @@ import type { Id } from "@events-os/convex/_generated/dataModel";
  *
  * Edits the template's metadata, its roles + modules (core toggles + owner
  * overrides, plus custom modules), and embeds an EditableGrid of base items for
- * each active GRID module. Non-grid surfaces (e.g. site_map) are configured by
- * toggle/owner only — they have no per-template grid. Edits save eagerly.
+ * each active module. Supplies & Logistics (`hasSiteMap`) also gets the
+ * venue-map editor beneath its grid, authored in TEMPLATE scope. Edits save
+ * eagerly.
  */
 export default function TemplateEditorScreen() {
   const router = useRouter();
@@ -74,10 +75,6 @@ export default function TemplateEditorScreen() {
 
   const active = moduleData?.active ?? [];
   const gridModules = active.filter((m) => m.surface === "grid");
-  // The site_map module is non-grid: when active, render the venue-map editor in
-  // TEMPLATE scope (background + shapes + markers; placements are event-only and
-  // hidden). The grid loop below skips it (it isn't surface === "grid").
-  const siteMapModule = active.find((m) => m.surface === "site_map") ?? null;
 
   return (
     <Screen maxWidth={FULL_WIDTH}>
@@ -108,7 +105,7 @@ export default function TemplateEditorScreen() {
         />
       </Narrow>
 
-      {gridModules.length === 0 && !siteMapModule ? (
+      {gridModules.length === 0 ? (
         <Narrow>
           <View className="mt-6">
             <EmptyState
@@ -135,22 +132,17 @@ export default function TemplateEditorScreen() {
             {m.key === "volunteer_expectations" ? (
               <TemplateCrewCard eventTypeId={eventTypeId} />
             ) : null}
+            {/* Supplies & Logistics carries the site map: author the template's
+                venue layout (background + shapes + markers; placements are
+                event-only). Cloned onto every event spun up from this template. */}
+            {m.hasSiteMap ? (
+              <SiteMapSubsection
+                scope={{ kind: "template", eventTypeId: eventTypeId as string }}
+              />
+            ) : null}
           </View>
         ))
       )}
-
-      {/* Site map (non-grid): author the template's venue layout — background
-          image + shapes + labelled markers. Cloned onto every event spun up
-          from this template. */}
-      {siteMapModule ? (
-        <View key={siteMapModule.key}>
-          <SectionHeader title={siteMapModule.label} />
-          <SiteMapEditor
-            scope={{ kind: "template", eventTypeId: eventTypeId as string }}
-            embedded
-          />
-        </View>
-      ) : null}
     </Screen>
   );
 }

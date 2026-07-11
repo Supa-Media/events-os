@@ -77,7 +77,7 @@ export async function buildChapterRolesAndTemplates(
     slug: toSlug("Eden"),
     description:
       "Full-scale flagship gathering: worship, message, ministry, and community activity.",
-    // Eden runs every grid core module — nothing disabled (site_map stays on).
+    // Eden runs every core module — nothing disabled.
     disabledCoreModules: [],
     version: 1,
     isArchived: false,
@@ -201,8 +201,7 @@ export async function buildChapterRolesAndTemplates(
     description:
       "Lightweight pop-up worship — a ~10% scaled-down variant of Eden, run by a 2–3 person team. The most important, most repeatable event.",
     deriveFromEventTypeId: edenId,
-    // WWS is lightweight: it skips volunteer_expectations (and keeps the rest +
-    // site_map on, matching its prior trimmed module set).
+    // WWS is lightweight: it skips volunteer_expectations and keeps the rest.
     disabledCoreModules: ["volunteer_expectations"],
     version: 1,
     isArchived: false,
