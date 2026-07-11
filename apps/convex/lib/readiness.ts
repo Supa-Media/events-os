@@ -14,9 +14,12 @@ import { Doc, Id } from "../_generated/dataModel";
 import { QueryCtx } from "../_generated/server";
 import {
   computeExpectedPhaseScores,
+  computePhaseOverdue,
   computePhaseScores,
   isCompleteStatus,
   MODULE_READY_PHASE,
+  type PhaseKey,
+  type PhasePace,
   type PhaseScores,
   type SelectOption,
 } from "@events-os/shared";
@@ -89,7 +92,12 @@ export async function phaseReadinessBundle(
   ctx: any,
   event: any,
   now: number = Date.now(),
-): Promise<{ phases: PhaseScores; expected: PhaseScores }> {
+): Promise<{
+  phases: PhaseScores;
+  expected: PhaseScores;
+  /** Per-phase overdue tallies — the pace SIGNAL (see computePhaseOverdue). */
+  pace: Record<PhaseKey, PhasePace | null>;
+}> {
   // Grid modules only — a non-grid surface would have no status'd items. (The
   // site map is not a module of its own: it rides along with supplies.)
   const resolved = await eventActiveModules(ctx, event);
@@ -116,6 +124,7 @@ export async function phaseReadinessBundle(
         statusOptions,
         items: items.map((it: any) => ({
           status: it.status ?? null,
+          dueDate: it.dueDate ?? null,
           offsetDays: it.offsetDays ?? null,
           offsetMinutes: it.offsetMinutes ?? null,
           prePlanColumns: it.prePlanColumns ?? undefined,
@@ -174,18 +183,22 @@ export async function phaseReadinessBundle(
     ready: readyByKey.get(m.key) === true,
   }));
 
+  const gateInfo = gatedModules.map((m: any) => ({
+    module: m.key as string,
+    phase: MODULE_READY_PHASE[m.key],
+    ready: readyByKey.get(m.key) === true,
+  }));
   return {
     phases: computePhaseScores(modules, prePlanExtra, moduleReady),
     // Same inputs, deadline-derived: the pacing ghost the rings compare to.
     expected: computeExpectedPhaseScores(
       modules,
-      gatedModules.map((m: any) => ({
-        module: m.key as string,
-        phase: MODULE_READY_PHASE[m.key],
-      })),
+      gateInfo,
       event.eventDate as number,
       now,
     ),
+    // The pace signal: overdue rows per phase, same rule as What's-next.
+    pace: computePhaseOverdue(modules, gateInfo, event.eventDate as number, now),
   };
 }
 

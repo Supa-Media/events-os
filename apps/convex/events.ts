@@ -166,10 +166,11 @@ export const get = query({
     if (!event || event.chapterId !== chapterId) return null;
     const eventType = await ctx.db.get(event.eventTypeId as Id<"eventTypes">);
     const r = await eventReadiness(ctx, eventId);
-    const { phases, expected: expectedPhases } = await phaseReadinessBundle(
-      ctx,
-      event,
-    );
+    const {
+      phases,
+      expected: expectedPhases,
+      pace: pacePhases,
+    } = await phaseReadinessBundle(ctx, event);
 
     // Roll up every item's `cost` field against the event budget.
     const allItems = await ctx.db
@@ -204,8 +205,11 @@ export const get = query({
       // Four phase scores (0..1 or null), the new headline readiness signal.
       phases,
       // The pacing ghost: where each ring SHOULD be today if everything due
-      // by now were done (0..1 or null). expected - actual = catch-up gap.
+      // by now were done (0..1 or null) — places the target tick.
       expectedPhases,
+      // The pace signal: per-phase overdue tallies, computed with the same
+      // rule as the What's-next OVERDUE badges so the two never disagree.
+      pacePhases,
       taskTotal: r.total,
       taskDone: r.done,
       budgetSpent,
