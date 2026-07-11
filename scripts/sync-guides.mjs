@@ -16,15 +16,11 @@
 import { readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, dirname, basename } from "node:path";
 import { fileURLToPath } from "node:url";
+import { escapeTemplateLiteral } from "./lib/codegen.mjs";
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
 const guidesDir = join(repoRoot, "docs", "guides");
 const outFile = join(repoRoot, "apps", "convex", "lib", "guides.ts");
-
-/** Escape a string for embedding inside a TS template literal. */
-function escapeTemplateLiteral(s) {
-  return s.replace(/\\/g, "\\\\").replace(/`/g, "\\`").replace(/\$\{/g, "\\${");
-}
 
 const files = readdirSync(guidesDir)
   .filter((f) => f.endsWith(".md"))
