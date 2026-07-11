@@ -30,7 +30,8 @@ export const eventTypes = defineTable({
       }),
     ),
   ),
-  // Optional venue-map background for this template's site_map module. Stored
+  // Optional venue-map background for this template's site map (carried by the
+  // Supplies & Logistics workstream). Stored
   // exactly like `events.siteMapImage` (a storageId or an http URL); cloned onto
   // new events at creation alongside the template's markers + shapes.
   siteMapImage: v.optional(v.string()),

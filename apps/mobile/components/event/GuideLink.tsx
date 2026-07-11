@@ -16,8 +16,7 @@ const MODULE_GUIDE_SLUGS: Record<string, string> = {
   comms: "owning-the-comms-workstream",
   run_of_show: "owning-the-run-of-show",
   volunteer_expectations: "owning-expectations",
-  site_map: "owning-the-site-map",
-  supplies: "owning-supplies-and-packing",
+  supplies: "owning-supplies-and-logistics",
   permits: "owning-permits",
   retro: "owning-the-retro",
 };

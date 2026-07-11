@@ -1439,9 +1439,10 @@ function ContextualLabelInput({
  */
 /**
  * SITE MAP EDITOR — the venue-map canvas, extracted so it renders BOTH as the
- * standalone `/event/[id]/site-map` route AND inline as the site_map module's
- * section on the event screen. When `embedded`, the page chrome (Screen wrapper,
- * back breadcrumb, PageHeader) is dropped so it sits inside the event layout.
+ * standalone `/event/[id]/site-map` route AND inline beneath the Supplies &
+ * Logistics workstream's grid (SiteMapSubsection). When `embedded`, the page
+ * chrome (Screen wrapper, back breadcrumb, PageHeader) is dropped so it sits
+ * inside the event/template layout.
  */
 /**
  * Where this editor's map lives. An EVENT scope is the live venue (with

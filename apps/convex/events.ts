@@ -207,7 +207,7 @@ export const moduleSummaries = query({
     const chapterId = await requireChapterId(ctx);
     const event = await ctx.db.get(eventId);
     if (!event || event.chapterId !== chapterId) return null;
-    // Grid modules only — site_map (and any non-grid surface) has no items.
+    // Grid modules only — a non-grid surface would have no items.
     const resolved = await eventActiveModules(ctx, event);
     const modules = resolved
       .filter((m) => m.surface === "grid")
@@ -454,7 +454,7 @@ export const todos = query({
     const tabForModule = (k: string) =>
       k === "volunteer_expectations" ? "crew" : k;
 
-    // Grid modules only — non-grid surfaces (site_map) have no status'd items.
+    // Grid modules only — a non-grid surface would have no status'd items.
     const resolved = await eventActiveModules(ctx, event);
     const gridModules = resolved.filter((m) => m.surface === "grid");
     const labelByKey = new Map(resolved.map((m) => [m.key, m.label]));
@@ -650,7 +650,7 @@ export const todos = query({
 
     // ── "Mark module as ready" gates: one per active module that has a ready
     // gate and isn't ready yet. Phase per the product spec: comms/permits are
-    // pre-plan; run_of_show/site_map/crew(volunteer_expectations)/supplies are
+    // pre-plan; run_of_show/crew(volunteer_expectations)/supplies are
     // planning. planning_doc and retro have no ready gate. The caller sees it in
     // `yours` if they own the module, else `overseeing` (event owner) when at
     // risk — same ownership rule as items. ──

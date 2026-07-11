@@ -178,9 +178,9 @@ export default function EventDetailScreen() {
     locationInput !== null ? locationInput : (event.location ?? "");
 
   // Resolved active modules (core + custom, with the event's deltas applied), in
-  // canonical order. Includes the site_map module (surface "site_map"); the
-  // volunteer_expectations module is the team EXPECTATIONS list (WHO is on each
-  // team lives in CrewSections below).
+  // canonical order. Supplies & Logistics carries the site map (rendered under
+  // its grid by ModuleSection); the volunteer_expectations module is the team
+  // EXPECTATIONS list (WHO is on each team lives in CrewSections below).
   const activeModules: ResolvedModule[] = resolvedModules ?? [];
 
   // The volunteer_expectations module (the team EXPECTATIONS grid) is NOT a tab of
