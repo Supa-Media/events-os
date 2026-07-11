@@ -157,12 +157,14 @@ different.
 
 ---
 
-## 6. The Academy: one-stop tutorial (next phase — own PR, DECIDED)
+## 6. The Academy (next phase — own PR, DECIDED)
 
 Markdown docs are the reference layer, not the training experience. The
-decided shape is a **one-stop "Learn Events OS" hub**: an ordered curriculum
-of article sections, each ending in a short quiz, capped by the Training
-Event. Proposed curriculum (drawn from the playbook + guides):
+decided shape is **"Academy" — a top-level section in the left nav**
+(alongside Events / Templates / People / Team / Duties / Songs, route
+`/academy`): an ordered curriculum of article sections, each ending in a
+short quiz, capped by the Training Event. Proposed curriculum (drawn from the
+playbook + guides):
 
 1. What Events OS is — templates, events, and the north star
 2. Core concepts — workstreams, the cast, the accountability chain
@@ -173,8 +175,10 @@ Event. Proposed curriculum (drawn from the playbook + guides):
 7. **Capstone: the Training Event** (quest checklist, assistant as tutor)
 
 Per-person progress (sections read, quiz scores, capstone state) is stored so
-the hub shows a completion path and leads know who's trained. Mechanics
-below; original three-layer framing kept for the component detail:
+the hub shows a completion path and leads know who's trained. The Overview
+"Guides" section and workstream "?" links become on-ramps into the matching
+Academy section. Mechanics below; original three-layer framing kept for the
+component detail:
 
 1. **Guide pages (routes, not rendered markdown).** `/guide/[slug]` composed
    from a guide-component kit: hero, step cards, callouts (Eden pull-quotes),
