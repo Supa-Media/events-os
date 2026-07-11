@@ -11,6 +11,7 @@ import {
   Icon,
   EmptyState,
   OptionTag,
+  ProgressBar,
 } from "../../../../components/ui";
 import { ToastView } from "../../../../components/ui/Toast";
 import { colors } from "../../../../lib/theme";
@@ -42,23 +43,6 @@ function resolveOption(
 /** Read a field from an item's fields bag (default falsy). */
 function field(item: any, key: string): unknown {
   return item?.fields?.[key];
-}
-
-/** Thin progress bar driven by a 0..1 fraction. */
-function ProgressBar({ fraction }: { fraction: number }) {
-  const pct = Math.round(Math.max(0, Math.min(1, fraction)) * 100);
-  const done = pct >= 100;
-  return (
-    <View className="h-2 w-full overflow-hidden rounded-pill bg-sunken">
-      <View
-        className="h-full rounded-pill"
-        style={{
-          width: `${pct}%`,
-          backgroundColor: done ? colors.success : colors.accent,
-        }}
-      />
-    </View>
-  );
 }
 
 /**

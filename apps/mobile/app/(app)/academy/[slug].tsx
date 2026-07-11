@@ -1,7 +1,8 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { View, Text, Pressable } from "react-native";
 import { Stack, useLocalSearchParams, useRouter } from "expo-router";
 import { useQuery, useMutation } from "convex/react";
+import { ConvexError } from "convex/values";
 import type { FunctionReturnType } from "convex/server";
 import { api } from "@events-os/convex/_generated/api";
 import {
@@ -16,6 +17,7 @@ import {
 import { MarkdownView } from "../../../components/markdown";
 import { colors } from "../../../lib/theme";
 import { useActionRunner } from "../../../lib/useActionToast";
+import { errorMessage } from "../../../lib/errors";
 import {
   ACADEMY_CAPSTONE_SLUG,
   ACADEMY_SECTION_COUNT,
@@ -116,7 +118,10 @@ export default function AcademySectionScreen() {
 
       {/* Quiz or capstone quest checklist */}
       {isCapstone ? (
-        <Capstone complete={state?.passed === true} />
+        <Capstone
+          complete={state?.passed === true}
+          unlocked={state?.unlocked !== false}
+        />
       ) : (
         <Quiz
           section={section}
@@ -164,6 +169,12 @@ function Quiz({
   const submitQuiz = useMutation(api.academy.submitQuiz);
   const { run, toast, dismiss } = useActionRunner();
   const [answers, setAnswers] = useState<Record<number, number>>({});
+  // Snapshot of the answers actually sent to the server — graded highlights
+  // render against THIS, never live state, so a tap racing the submit
+  // round-trip can't shift what the marks point at.
+  const [submitted, setSubmitted] = useState<Record<number, number> | null>(
+    null,
+  );
   const [result, setResult] = useState<QuizResult | null>(null);
   const [submitting, setSubmitting] = useState(false);
 
@@ -171,6 +182,7 @@ function Quiz({
   // component instance across slugs).
   useEffect(() => {
     setAnswers({});
+    setSubmitted(null);
     setResult(null);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [section.slug]);
@@ -197,21 +209,28 @@ function Quiz({
   }
 
   async function handleSubmit() {
+    const snapshot = { ...answers };
+    setSubmitted(snapshot);
     setSubmitting(true);
     try {
       const res = await run(
         () =>
           submitQuiz({
             sectionSlug: section.slug,
-            answers: section.quiz.map((_q, i) => answers[i] ?? -1),
+            answers: section.quiz.map((_q, i) => snapshot[i] ?? -1),
           }),
         { errorTitle: "Couldn't grade the quiz" },
       );
       if (res) setResult(res);
+      else setSubmitted(null); // failed — back to an editable, ungraded quiz
     } finally {
       setSubmitting(false);
     }
   }
+
+  // What the option rows reflect: the graded snapshot once results are in,
+  // live picks otherwise.
+  const shownAnswers = result != null && submitted != null ? submitted : answers;
 
   return (
     <View className="mt-6">
@@ -250,14 +269,14 @@ function Quiz({
               </View>
               <View className="mt-3 gap-1.5">
                 {q.options.map((opt, oi) => {
-                  const selected = answers[qi] === oi;
+                  const selected = shownAnswers[qi] === oi;
                   const showCorrect = graded != null && oi === graded.correctIndex;
                   const showWrong =
                     graded != null && selected && !graded.correct;
                   return (
                     <Pressable
                       key={oi}
-                      disabled={graded != null}
+                      disabled={submitting || graded != null}
                       onPress={() =>
                         setAnswers((prev) => ({ ...prev, [qi]: oi }))
                       }
@@ -323,7 +342,7 @@ function Quiz({
             <Button
               title="Submit answers"
               icon="check"
-              disabled={answered < total}
+              disabled={answered < total || submitting}
               loading={submitting}
               onPress={handleSubmit}
             />
@@ -349,6 +368,7 @@ function Quiz({
                 icon="rotate-ccw"
                 onPress={() => {
                   setAnswers({});
+                  setSubmitted(null);
                   setResult(null);
                 }}
               />
@@ -362,23 +382,91 @@ function Quiz({
 
 // ── Capstone (Training Event quest checklist) ─────────────────────────────────
 
-function Capstone({ complete }: { complete: boolean }) {
+const CAPSTONE_LOCKED_HINT = "Pass the previous section to unlock";
+
+/**
+ * Map a startTraining failure to user words. The server throws ConvexError
+ * payloads with codes CAPSTONE_LOCKED / TRAINING_LIMIT / NO_PERSON —
+ * CAPSTONE_LOCKED gets the same hint the locked UI shows; everything else
+ * surfaces its own message.
+ */
+function startTrainingErrorMessage(err: unknown): string {
+  if (err instanceof ConvexError) {
+    const data = err.data as { code?: string; message?: string } | undefined;
+    if (data?.code === "CAPSTONE_LOCKED") return `${CAPSTONE_LOCKED_HINT}.`;
+  }
+  return errorMessage(err);
+}
+
+/**
+ * The capstone screen owns the single Start-training flow (the hub's capstone
+ * row only routes here). Locked until the previous section is passed — the
+ * server gates too; the UI just doesn't offer the button.
+ */
+function Capstone({
+  complete,
+  unlocked,
+}: {
+  complete: boolean;
+  unlocked: boolean;
+}) {
   const router = useRouter();
+  // Don't subscribe to the training-event feed while the capstone is still
+  // locked — there's nothing to show and the query is broad.
+  const reachable = unlocked || complete;
   const training: TrainingStatus | undefined = useQuery(
     api.academy.trainingStatus,
+    reachable ? {} : "skip",
   );
   const startTraining = useMutation(api.academy.startTraining);
   const { run, toast, dismiss } = useActionRunner();
   const [starting, setStarting] = useState(false);
 
+  // TODO(academy-backend-merge): replace this no-op with
+  // `useMutation(api.academy.syncCapstone)` once the backend lands the
+  // mutation — it persists the finished capstone server-side so the pass
+  // survives the sandbox event being completed/cleaned up.
+  const syncCapstone = useCallback(async (_args: Record<string, never>) => {},
+  []);
+
+  // Persist completion once when the live checklist finishes (ref-guarded so
+  // the reactive query can't spam the mutation).
+  const syncedRef = useRef(false);
+  const trainingComplete = training != null && training.complete;
+  useEffect(() => {
+    if (trainingComplete && !syncedRef.current) {
+      syncedRef.current = true;
+      void syncCapstone({}).catch(() => {});
+    }
+  }, [trainingComplete, syncCapstone]);
+
+  if (!reachable) {
+    return (
+      <Card padding="md" className="mt-6">
+        <View className="flex-row items-center gap-2.5">
+          <Icon name="lock" size={16} color={colors.muted} />
+          <Text className="flex-1 text-sm text-muted">
+            {CAPSTONE_LOCKED_HINT}. Reading ahead is always allowed.
+          </Text>
+        </View>
+      </Card>
+    );
+  }
   if (training === undefined) return null;
 
   async function handleStart() {
     setStarting(true);
     try {
-      await run(() => startTraining({}), {
-        errorTitle: "Couldn't start training",
-      });
+      await run(
+        async () => {
+          try {
+            return await startTraining({});
+          } catch (err) {
+            throw new Error(startTrainingErrorMessage(err));
+          }
+        },
+        { errorTitle: "Couldn't start training" },
+      );
     } finally {
       setStarting(false);
     }
@@ -402,23 +490,30 @@ function Capstone({ complete }: { complete: boolean }) {
       </View>
 
       {training == null ? (
-        <Card padding="lg">
-          <Text className="text-base font-semibold text-ink">
-            Ready to run the drills?
-          </Text>
-          <Text className="mt-1 text-sm leading-5 text-muted">
-            Start training to get your own sandbox event — real workstreams,
-            real rows, invisible to the rest of the chapter.
-          </Text>
-          <View className="mt-3 flex-row">
-            <Button
-              title="Start training"
-              icon="play"
-              loading={starting}
-              onPress={handleStart}
-            />
-          </View>
-        </Card>
+        // No live training event. A stored pass (myProgress) still shows the
+        // congratulations — completion survives the sandbox event being
+        // completed or cleaned up.
+        complete ? (
+          <CapstoneCongrats />
+        ) : (
+          <Card padding="lg">
+            <Text className="text-base font-semibold text-ink">
+              Ready to run the drills?
+            </Text>
+            <Text className="mt-1 text-sm leading-5 text-muted">
+              Start training to get your own sandbox event — real workstreams,
+              real rows, invisible to the rest of the chapter.
+            </Text>
+            <View className="mt-3 flex-row">
+              <Button
+                title="Start training"
+                icon="play"
+                loading={starting}
+                onPress={handleStart}
+              />
+            </View>
+          </Card>
+        )
       ) : (
         <>
           {/* Live quest checklist — rows tick as they hit terminal statuses
@@ -450,19 +545,7 @@ function Capstone({ complete }: { complete: boolean }) {
           </Card>
 
           {training.complete || complete ? (
-            <Card padding="lg" className="mt-3">
-              <View className="flex-row items-center gap-2.5">
-                <Icon name="award" size={20} color={colors.success} />
-                <Text className="flex-1 text-base font-semibold text-ink">
-                  You've run the drills — the real thing works exactly the same
-                  way. 🎉
-                </Text>
-              </View>
-              <Text className="mt-1.5 text-sm leading-5 text-muted">
-                Every move you just made — roles, statuses, offsets, readiness,
-                the assistant — transfers one-to-one to your first real event.
-              </Text>
-            </Card>
+            <CapstoneCongrats className="mt-3" />
           ) : null}
 
           <View className="mt-3 flex-row">
@@ -478,5 +561,23 @@ function Capstone({ complete }: { complete: boolean }) {
         </>
       )}
     </View>
+  );
+}
+
+/** "You've run the drills" — shown from the live checklist OR a stored pass. */
+function CapstoneCongrats({ className }: { className?: string }) {
+  return (
+    <Card padding="lg" className={className}>
+      <View className="flex-row items-center gap-2.5">
+        <Icon name="award" size={20} color={colors.success} />
+        <Text className="flex-1 text-base font-semibold text-ink">
+          You've run the drills — the real thing works exactly the same way. 🎉
+        </Text>
+      </View>
+      <Text className="mt-1.5 text-sm leading-5 text-muted">
+        Every move you just made — roles, statuses, offsets, readiness, the
+        assistant — transfers one-to-one to your first real event.
+      </Text>
+    </Card>
   );
 }
