@@ -80,6 +80,10 @@ export function LocationAutocomplete({
   // free-text blur-save (the pick already committed the right value) and skip
   // re-querying for the text we just filled in.
   const justSelectedRef = useRef(false);
+  // The deferred blur-commit timer — cancelled if the user refocuses within
+  // the window, so a quick click-away-and-back never commits mid-edit (and,
+  // in tap-to-edit hosts, never unmounts the input out from under the caret).
+  const blurTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Debounced suggestion fetch. Only runs while focused so the dropdown doesn't
   // reappear after the field is committed.
@@ -122,13 +126,23 @@ export function LocationAutocomplete({
     setFocused(false);
     // Let a suggestion press (onPressIn) flip the ref before we decide whether
     // this blur is a free-text commit.
-    setTimeout(() => {
+    blurTimerRef.current = setTimeout(() => {
+      blurTimerRef.current = null;
       if (justSelectedRef.current) {
         justSelectedRef.current = false;
       } else {
         onBlur?.();
       }
     }, 120);
+  }
+
+  function handleFocus() {
+    // Refocused before the deferred commit fired — the edit continues.
+    if (blurTimerRef.current) {
+      clearTimeout(blurTimerRef.current);
+      blurTimerRef.current = null;
+    }
+    setFocused(true);
   }
 
   const showDropdown = focused && results.length > 0;
@@ -149,7 +163,7 @@ export function LocationAutocomplete({
           justSelectedRef.current = false;
           onChangeText(t);
         }}
-        onFocus={() => setFocused(true)}
+        onFocus={handleFocus}
         onBlur={handleBlur}
         onLayout={(e) => setInputHeight(e.nativeEvent.layout.height)}
         placeholder={placeholder}

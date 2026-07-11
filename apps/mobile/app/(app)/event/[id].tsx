@@ -392,7 +392,12 @@ export default function EventDetailScreen() {
   async function handleSaveBudget() {
     const trimmed = budgetValue.trim();
     const parsed = trimmed === "" ? null : Number(trimmed);
-    if (parsed !== null && Number.isNaN(parsed)) return;
+    if (parsed !== null && Number.isNaN(parsed)) {
+      // Unparseable → revert to the server value; keeping the rejected draft
+      // in the buffer would silently mask the real budget on the next open.
+      setBudgetInput(null);
+      return;
+    }
     await run(() => updateDetails({ eventId, budget: parsed }), {
       errorTitle: "Couldn't save budget",
     });
@@ -578,6 +583,7 @@ export default function EventDetailScreen() {
               eventId={eventId}
               onDayOf={() => router.push(`/event/${eventId}/day-of`)}
               onTickets={() => router.setParams({ tab: "tickets" })}
+              ticketsActive={activeTab === "tickets"}
               onSongs={() => router.push(`/event/${eventId}/songs`)}
               meView={meView}
               onToggleMeView={() => setMeView((v) => !v)}

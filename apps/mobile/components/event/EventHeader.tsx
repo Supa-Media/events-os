@@ -1,5 +1,12 @@
 import { useEffect, useRef, useState } from "react";
-import { View, Text, Pressable, TextInput, Platform } from "react-native";
+import {
+  View,
+  Text,
+  Pressable,
+  TextInput,
+  Platform,
+  Dimensions,
+} from "react-native";
 import {
   Card,
   Button,
@@ -121,9 +128,11 @@ export function EventHeader({
   activePhase?: PhaseKey | null;
 }) {
   return (
-    <Card className="mb-4">
+    // z-10 keeps overlays that escape the card (the location dropdown) above
+    // the later-in-DOM siblings below it (tab rail, grids).
+    <Card className="z-10 mb-4">
       <View className="flex-row flex-wrap items-start gap-x-6 gap-y-4">
-        <View className="flex-1 gap-2.5" style={{ minWidth: 300 }}>
+        <View className="flex-1 gap-2.5" style={{ minWidth: 280 }}>
           {/* Event type eyebrow — only when it says something the title doesn't. */}
           {eventTypeName && eventTypeName !== event.name ? (
             <Text className="-mb-1 text-xs font-bold uppercase tracking-wider text-accent">
@@ -141,25 +150,38 @@ export function EventHeader({
             <StatusPill status={event.status as EventStatus} onSetStatus={onSetStatus} />
           </View>
 
-          {/* Row 2 — the quiet meta line: date · location · budget */}
-          <View className="flex-row flex-wrap items-center gap-x-1.5 gap-y-1">
+          {/* Row 2 — the quiet meta line: date · location · budget. Each
+              "· segment" pair is grouped so a wrap never strands a dot at a
+              line start; the zIndex lifts the row (and the location
+              autocomplete dropdown inside it) above the people row below. */}
+          <View
+            className="flex-row flex-wrap items-center gap-x-1.5 gap-y-1"
+            style={{ zIndex: 20 }}
+          >
             <DateSeg eventDate={event.eventDate} onReschedule={onReschedule} />
-            <MetaDot />
-            <LocationSeg
-              location={event.location ?? null}
-              value={locationValue}
-              onChangeText={onChangeLocation}
-              onSave={onSaveLocation}
-            />
-            <MetaDot />
-            <BudgetSeg
-              budget={event.budget ?? null}
-              spent={budgetSpent}
-              pct={budgetPct}
-              value={budgetValue}
-              onChangeText={onChangeBudget}
-              onSave={onSaveBudget}
-            />
+            <View
+              className="flex-row items-center gap-x-1.5"
+              style={{ flexShrink: 1, minWidth: 0 }}
+            >
+              <MetaDot />
+              <LocationSeg
+                location={event.location ?? null}
+                value={locationValue}
+                onChangeText={onChangeLocation}
+                onSave={onSaveLocation}
+              />
+            </View>
+            <View className="flex-row items-center gap-x-1.5">
+              <MetaDot />
+              <BudgetSeg
+                budget={event.budget ?? null}
+                spent={budgetSpent}
+                pct={budgetPct}
+                value={budgetValue}
+                onChangeText={onChangeBudget}
+                onSave={onSaveBudget}
+              />
+            </View>
           </View>
 
           {/* Row 3 — people: owner, assigned roles, folded open roles, ＋ */}
@@ -342,13 +364,25 @@ function MetaSeg({
       onHoverOut={() => setHovered(false)}
       accessibilityRole="button"
       accessibilityLabel={editLabel}
+      // Shrinkable + single-line so a long value (a full venue address)
+      // ellipsizes instead of overflowing the card.
+      style={{ flexShrink: 1, minWidth: 0 }}
       className={`-mx-1 flex-row items-center gap-1 rounded-md px-1 py-0.5 active:opacity-70 ${
         hovered ? "bg-sunken" : ""
       }`}
     >
-      <Text className={`text-base ${tone}`}>{text}</Text>
+      <Text
+        numberOfLines={1}
+        style={{ flexShrink: 1 }}
+        className={`text-base ${tone}`}
+      >
+        {text}
+      </Text>
       {suffix ? <Text className="text-base text-muted">{suffix}</Text> : null}
-      {hovered ? <Icon name="edit-2" size={11} color={colors.faint} /> : null}
+      {/* Always mounted (opacity-toggled) so hover doesn't reflow the line. */}
+      <View style={{ opacity: hovered ? 1 : 0 }}>
+        <Icon name="edit-2" size={11} color={colors.faint} />
+      </View>
     </Pressable>
   );
 }
@@ -362,21 +396,37 @@ function DateSeg({
   onReschedule: (ts: number) => void;
 }) {
   const { ref, anchor, visible, open, close } = useAnchor();
+  // Local draft while the popover is open: each edit must compound on the
+  // previous one immediately — driving the panel from the server value would
+  // let a quick second tap (before the query echo lands) clobber the first.
+  const [draft, setDraft] = useState<number | null>(null);
+  // Fit the calendar+time panel on phone screens (Popover clamps position,
+  // not width).
+  const width = Math.min(388, Dimensions.get("window").width - 16);
   return (
     <>
       <MetaSeg
         innerRef={ref}
         text={formatDateTime(eventDate)}
-        onPress={open}
+        onPress={() => {
+          setDraft(null);
+          open();
+        }}
         editLabel="Reschedule event"
       />
-      <Popover visible={visible} anchor={anchor} width={388} onClose={close}>
+      <Popover visible={visible} anchor={anchor} width={width} onClose={close}>
         <View className="border-b border-border bg-warn-bg px-3 py-2">
           <Text className="text-xs font-semibold text-warn">
             Rescheduling reflows every relative due date.
           </Text>
         </View>
-        <DateTimePanel value={eventDate} onChange={onReschedule} />
+        <DateTimePanel
+          value={draft ?? eventDate}
+          onChange={(ts) => {
+            setDraft(ts);
+            onReschedule(ts);
+          }}
+        />
       </Popover>
     </>
   );
@@ -442,6 +492,9 @@ function BudgetSeg({
   onSave: () => void;
 }) {
   const { ref, anchor, visible, open, close } = useAnchor();
+  // Any dismissal commits a touched draft (matching the old field's
+  // blur-commit), so tapping outside never silently discards an edit.
+  const dirtyRef = useRef(false);
   const over = budget != null && budget > 0 && spent > budget;
   const text =
     budget != null
@@ -449,6 +502,13 @@ function BudgetSeg({
       : spent > 0
         ? `$${spent} planned`
         : "Add budget";
+
+  function commitClose() {
+    close();
+    if (dirtyRef.current) onSave();
+    dirtyRef.current = false;
+  }
+
   return (
     <>
       <MetaSeg
@@ -457,21 +517,28 @@ function BudgetSeg({
         faint={budget == null && spent === 0}
         danger={over}
         suffix={budget != null && budget > 0 ? `· ${pct}%` : undefined}
-        onPress={open}
+        onPress={() => {
+          dirtyRef.current = false;
+          open();
+        }}
         editLabel="Edit budget"
       />
-      <Popover visible={visible} anchor={anchor} width={240} onClose={close}>
+      <Popover visible={visible} anchor={anchor} width={240} onClose={commitClose}>
         <View className="gap-2 p-3">
           <Text className="text-2xs font-bold uppercase tracking-wider text-muted">
             Budget
           </Text>
           <TextInput
             value={value}
-            onChangeText={onChangeText}
+            onChangeText={(t) => {
+              dirtyRef.current = true;
+              onChangeText(t);
+            }}
             placeholder="0"
             placeholderTextColor={colors.faint}
             keyboardType="numeric"
             autoFocus
+            onSubmitEditing={commitClose}
             className="rounded-md border border-border-strong bg-raised px-2.5 py-1.5 text-sm text-ink"
             style={{ outlineWidth: 0 } as any}
           />
@@ -482,10 +549,7 @@ function BudgetSeg({
               icon="check"
               size="sm"
               variant="secondary"
-              onPress={() => {
-                close();
-                onSave();
-              }}
+              onPress={commitClose}
             />
           </View>
         </View>
@@ -533,6 +597,12 @@ function PeopleRow({
   const assigned = roleRows.filter((r) => r.person !== null);
   const unassigned = roleRows.filter((r) => r.person === null);
   const menuRole = roleRows.find((r) => r.roleId === menu?.roleId) ?? null;
+  // An UNASSIGNED role being renamed surfaces as its own inline input chip
+  // (it normally lives inside the folded "open roles" chip).
+  const editingOpen = unassigned.find((r) => r.roleId === editingId) ?? null;
+  const foldRoles = editingOpen
+    ? unassigned.filter((r) => r.roleId !== editingOpen.roleId)
+    : unassigned;
 
   return (
     <View className="flex-row flex-wrap items-center gap-2">
@@ -554,11 +624,24 @@ function PeopleRow({
         />
       ))}
 
-      {unassigned.length > 0 ? (
+      {editingOpen ? (
+        <RenameRoleInput
+          initial={editingOpen.roleLabel}
+          onCommit={(label) => {
+            const trimmed = label.trim();
+            if (trimmed && trimmed !== editingOpen.roleLabel)
+              onRenameRole(editingOpen.roleId, trimmed);
+            setEditingId(null);
+          }}
+        />
+      ) : null}
+      {foldRoles.length > 0 ? (
         <OpenRolesChip
-          roles={unassigned}
+          roles={foldRoles}
           onPickRole={onPickRole}
           onDeleteRole={onDeleteRole}
+          onStartRename={setEditingId}
+          onOpenMenu={(roleId, anchor) => setMenu({ roleId, anchor })}
         />
       ) : null}
 
@@ -656,26 +739,10 @@ function RolePill({
   onCommitRename: (label: string) => void;
 }) {
   const ref = useRef<any>(null);
-  const [draft, setDraft] = useState(role.roleLabel);
 
   if (editing) {
     return (
-      <View
-        ref={ref}
-        className="rounded-pill border border-accent bg-raised px-2.5 py-1"
-      >
-        <TextInput
-          value={draft}
-          onChangeText={setDraft}
-          autoFocus
-          placeholderTextColor={colors.faint}
-          onBlur={() => onCommitRename(draft)}
-          onSubmitEditing={() => onCommitRename(draft)}
-          blurOnSubmit
-          className="text-sm text-ink"
-          style={{ minWidth: 70, outlineWidth: 0 } as any}
-        />
-      </View>
+      <RenameRoleInput initial={role.roleLabel} onCommit={onCommitRename} />
     );
   }
 
@@ -711,33 +778,60 @@ function RolePill({
 
 /**
  * All UNASSIGNED roles folded into one dashed chip. One open role assigns
- * directly; several open a popover listing each (assign on tap, trash to
- * delete an unwanted one).
+ * directly on tap (context menu = rename/delete, like any role chip);
+ * several open a popover listing each — assign on tap, pencil to rename,
+ * trash to delete.
  */
 function OpenRolesChip({
   roles,
   onPickRole,
   onDeleteRole,
+  onStartRename,
+  onOpenMenu,
 }: {
   roles: RoleRow[];
   onPickRole: (role: RoleRow) => void;
   onDeleteRole: (roleId: string) => void;
+  onStartRename: (roleId: string) => void;
+  /** Open the shared Rename/Delete menu (single-role chip only). */
+  onOpenMenu: (roleId: string, anchor: ChipAnchor) => void;
 }) {
   const { ref, anchor, visible, open, close } = useAnchor();
-  const label = roles.length === 1 ? "1 open role" : `${roles.length} open roles`;
+  const single = roles.length === 1 ? roles[0] : null;
+  const label = single ? "1 open role" : `${roles.length} open roles`;
+
+  const openSingleMenu = single
+    ? () => measureAnchor(ref.current, (a) => onOpenMenu(single.roleId, a))
+    : undefined;
+  const webProps =
+    single && Platform.OS === "web"
+      ? ({
+          onContextMenu: (e: any) => {
+            e?.preventDefault?.();
+            openSingleMenu?.();
+          },
+        } as any)
+      : {};
+
   return (
     <>
       <Pressable
-        ref={ref}
-        onPress={roles.length === 1 ? () => onPickRole(roles[0]) : open}
+        onPress={single ? () => onPickRole(single) : open}
+        onLongPress={openSingleMenu}
+        delayLongPress={300}
         accessibilityRole="button"
         accessibilityLabel={`${label}: ${roles.map((r) => r.roleLabel).join(", ")}. Assign`}
-        className="flex-row items-center gap-1.5 rounded-pill border border-dashed border-border-strong bg-raised px-2.5 py-1 active:opacity-80 web:hover:border-accent"
       >
-        <Icon name="user-plus" size={12} color={colors.muted} />
-        <Text className="text-sm text-muted">{label}</Text>
+        <View
+          ref={ref}
+          {...webProps}
+          className="flex-row items-center gap-1.5 rounded-pill border border-dashed border-border-strong bg-raised px-2.5 py-1 active:opacity-80 web:hover:border-accent"
+        >
+          <Icon name="user-plus" size={12} color={colors.muted} />
+          <Text className="text-sm text-muted">{label}</Text>
+        </View>
       </Pressable>
-      <Popover visible={visible} anchor={anchor} width={230} onClose={close}>
+      <Popover visible={visible} anchor={anchor} width={250} onClose={close}>
         {roles.map((r) => (
           <View key={r.roleId} className="flex-row items-center">
             <Pressable
@@ -745,6 +839,8 @@ function OpenRolesChip({
                 close();
                 onPickRole(r);
               }}
+              accessibilityRole="button"
+              accessibilityLabel={`Assign ${r.roleLabel}`}
               className="flex-1 flex-row items-center gap-2 px-3 py-2.5 active:bg-sunken web:hover:bg-sunken"
             >
               <Icon name="user-plus" size={13} color={colors.muted} />
@@ -755,12 +851,24 @@ function OpenRolesChip({
             <Pressable
               onPress={() => {
                 close();
+                onStartRename(r.roleId);
+              }}
+              accessibilityRole="button"
+              accessibilityLabel={`Rename role ${r.roleLabel}`}
+              hitSlop={4}
+              className="px-2 py-2.5 active:opacity-70 web:hover:bg-sunken"
+            >
+              <Icon name="edit-2" size={13} color={colors.faint} />
+            </Pressable>
+            <Pressable
+              onPress={() => {
+                close();
                 confirmDeleteRole(() => onDeleteRole(r.roleId));
               }}
               accessibilityRole="button"
               accessibilityLabel={`Delete role ${r.roleLabel}`}
               hitSlop={4}
-              className="px-3 py-2.5 active:opacity-70 web:hover:bg-sunken"
+              className="py-2.5 pl-2 pr-3 active:opacity-70 web:hover:bg-sunken"
             >
               <Icon name="trash-2" size={13} color={colors.faint} />
             </Pressable>
@@ -768,6 +876,37 @@ function OpenRolesChip({
         ))}
       </Popover>
     </>
+  );
+}
+
+/**
+ * Inline rename field for a role chip. A dedicated component so it MOUNTS
+ * when editing starts and the draft always seeds from the current label —
+ * a draft held in the always-mounted chip goes stale if the label changes
+ * from another surface.
+ */
+function RenameRoleInput({
+  initial,
+  onCommit,
+}: {
+  initial: string;
+  onCommit: (label: string) => void;
+}) {
+  const [draft, setDraft] = useState(initial);
+  return (
+    <View className="rounded-pill border border-accent bg-raised px-2.5 py-1">
+      <TextInput
+        value={draft}
+        onChangeText={setDraft}
+        autoFocus
+        placeholderTextColor={colors.faint}
+        onBlur={() => onCommit(draft)}
+        onSubmitEditing={() => onCommit(draft)}
+        blurOnSubmit
+        className="text-sm text-ink"
+        style={{ minWidth: 70, outlineWidth: 0 } as any}
+      />
+    </View>
   );
 }
 
@@ -872,6 +1011,7 @@ export function EventTools({
   eventId,
   onDayOf,
   onTickets,
+  ticketsActive,
   onSongs,
   meView,
   onToggleMeView,
@@ -880,6 +1020,8 @@ export function EventTools({
   eventId: string;
   onDayOf: () => void;
   onTickets: () => void;
+  /** True while the Tickets surface is showing — flags ⋯ and its menu row. */
+  ticketsActive: boolean;
   onSongs: () => void;
   meView: boolean;
   onToggleMeView: () => void;
@@ -888,12 +1030,26 @@ export function EventTools({
   const { ref, anchor, visible, open, close } = useAnchor();
   const [copied, setCopied] = useState(false);
   const copyTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  useEffect(
-    () => () => {
-      if (copyTimer.current) clearTimeout(copyTimer.current);
-    },
-    [],
-  );
+
+  // The copy timer auto-closes the menu after "Link copied!" — cancel it on
+  // every other open/close so it can never dismiss a menu the user reopened.
+  function clearCopyTimer() {
+    if (copyTimer.current) {
+      clearTimeout(copyTimer.current);
+      copyTimer.current = null;
+    }
+  }
+  useEffect(() => clearCopyTimer, []);
+  function openMenu() {
+    clearCopyTimer();
+    setCopied(false);
+    open();
+  }
+  function closeMenu() {
+    clearCopyTimer();
+    setCopied(false);
+    close();
+  }
 
   /**
    * Copy the event's PUBLIC volunteer-briefing link (/share/<id>) — volunteers
@@ -906,6 +1062,7 @@ export function EventTools({
     const done = () => {
       setCopied(true);
       copyTimer.current = setTimeout(() => {
+        copyTimer.current = null;
         setCopied(false);
         close();
       }, 1200);
@@ -914,7 +1071,7 @@ export function EventTools({
       navigator.clipboard.writeText(url).then(done);
     } else if (typeof window !== "undefined") {
       window.prompt("Share this volunteer link:", url);
-      close();
+      closeMenu();
     }
   }
 
@@ -936,19 +1093,28 @@ export function EventTools({
       />
       <Pressable
         ref={ref}
-        onPress={open}
+        onPress={openMenu}
         accessibilityRole="button"
-        accessibilityLabel="More tools"
-        className="rounded-md border border-border-strong bg-raised px-2.5 py-2 active:opacity-80 web:hover:bg-sunken"
+        accessibilityLabel={ticketsActive ? "More tools (Tickets open)" : "More tools"}
+        className={`rounded-md border px-2.5 py-2 active:opacity-80 web:hover:bg-sunken ${
+          ticketsActive
+            ? "border-accent bg-accent-soft"
+            : "border-border-strong bg-raised"
+        }`}
       >
-        <Icon name="more-horizontal" size={15} color={colors.ink} />
+        <Icon
+          name="more-horizontal"
+          size={15}
+          color={ticketsActive ? colors.accent : colors.ink}
+        />
       </Pressable>
-      <Popover visible={visible} anchor={anchor} width={210} onClose={close}>
+      <Popover visible={visible} anchor={anchor} width={210} onClose={closeMenu}>
         <ToolsMenuRow
           icon="tag"
           label="Tickets"
+          active={ticketsActive}
           onPress={() => {
-            close();
+            closeMenu();
             onTickets();
           }}
         />
@@ -956,7 +1122,7 @@ export function EventTools({
           icon="music"
           label="Songs"
           onPress={() => {
-            close();
+            closeMenu();
             onSongs();
           }}
         />
@@ -971,7 +1137,7 @@ export function EventTools({
           label="Delete event…"
           danger
           onPress={() => {
-            close();
+            closeMenu();
             onDelete();
           }}
         />
@@ -984,11 +1150,14 @@ function ToolsMenuRow({
   icon,
   label,
   danger,
+  active,
   onPress,
 }: {
   icon: React.ComponentProps<typeof Icon>["name"];
   label: string;
   danger?: boolean;
+  /** The row's surface is currently open (e.g. Tickets) — shows a check. */
+  active?: boolean;
   onPress: () => void;
 }) {
   return (
@@ -997,9 +1166,13 @@ function ToolsMenuRow({
       className="flex-row items-center gap-2.5 px-3 py-2.5 active:bg-sunken web:hover:bg-sunken"
     >
       <Icon name={icon} size={14} color={danger ? colors.danger : colors.muted} />
-      <Text className="text-sm" style={{ color: danger ? colors.danger : colors.ink }}>
+      <Text
+        className="flex-1 text-sm"
+        style={{ color: danger ? colors.danger : colors.ink }}
+      >
         {label}
       </Text>
+      {active ? <Icon name="check" size={14} color={colors.accent} /> : null}
     </Pressable>
   );
 }
