@@ -216,7 +216,7 @@ describe("ai.readinessSummary (get_readiness)", () => {
     // Only core defaults exist and no module owners resolve except those whose
     // owner role is assigned: event_lead is assigned, comms_lead isn't.
     expect(s!.workstreamsMissingOwner).toContain("Comms Schedule");
-    expect(s!.workstreamsMissingOwner).not.toContain("Planning Doc");
+    expect(s!.workstreamsMissingOwner).not.toContain("Tasks");
 
     // moduleReadiness flags flow through.
     const comms = s!.workstreamReadiness.find((w) => w.key === "comms");

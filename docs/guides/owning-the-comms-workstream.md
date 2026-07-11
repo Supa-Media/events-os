@@ -19,7 +19,7 @@ the week after.
 | When | What must be true |
 |---|---|
 | Kickoff (by T-14) | Comms Schedule reviewed against the template; flyer requested from marketing (T-14); team thread created |
-| T-14 → T-11 | Main announcement out (**only after venue + date are locked — never announce an unconfirmed venue**); call for volunteers out (after the Expectations doc exists) |
+| T-14 → T-11 | Main announcement out (**only after venue + date are locked — never announce an unconfirmed venue**); call for volunteers out (after the Crew Duties rows exist) |
 | T-8 | Volunteer group chat created, first message sent |
 | T-7 | Countdown post; volunteer role reminder; guest message; song bank sent (worship lead does it — you confirm it happened) |
 | T-3 | Volunteer + guest reminders |
@@ -36,7 +36,7 @@ people show up at the same park at the same time. It's not spam; it's the job.
   apply *(status → Removed, don't delete — the decision is a learning)*, add
   what's missing. Request the flyer now — design takes a week.
 - **Build:** announcement and volunteer call go out. Check the gate first:
-  is the venue locked? Is the Expectations doc written? If not, chase those
+  is the venue locked? Are the Crew Duties written? If not, chase those
   owners before posting anything.
 - **Lock:** the reminder cadence fires. Your main job is *confirmations* —
   did each message actually go out? Mark rows Done as they post, same day.
@@ -64,7 +64,7 @@ people show up at the same park at the same time. It's not spam; it's the job.
 
 - **Event owner:** venue/date lock gates your announcement. Confirm before
   posting.
-- **Expectations owner:** the volunteer call points at the Expectations doc —
+- **Crew Duties owner:** the volunteer call points at the Crew Duties rows —
   don't recruit into a vacuum.
 - **Worship lead:** you confirm the song bank went to vocalists and
   instrumentalists by T-7 (they send it; you verify).

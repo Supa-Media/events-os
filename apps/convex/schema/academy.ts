@@ -8,7 +8,7 @@ import { v } from "convex/values";
  * (ACADEMY_SECTIONS in @events-os/shared); this table stores only the
  * per-person state the hub renders: when the article was read, the best quiz
  * score across retakes, and when the quiz was passed (all answers correct).
- * The capstone section's row is stamped by `academy.syncCapstone` once the
+ * Each capstone section's row is stamped by `academy.syncCapstone` once its
  * training event's quest rows are all terminal (server-verified), so the pass
  * SURVIVES the training event being completed or deleted; reads additionally
  * fall back to live quest derivation for events stamped before syncing.

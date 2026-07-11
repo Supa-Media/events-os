@@ -9,10 +9,13 @@
 import { Id } from "../../_generated/dataModel";
 import { MutationCtx } from "../../_generated/server";
 import {
-  ACADEMY_TRAINING_TEMPLATE_SLUG,
+  ACADEMY_TRAINING_TEMPLATES,
   DEFAULT_ROLES,
   LIGHTWEIGHT_ROLE_KEYS,
   GRID_CORE_MODULE_KEYS,
+  type AcademyTrainingKind,
+  type ModuleKey,
+  type SelectOption,
 } from "@events-os/shared";
 import { toSlug, seedTemplateRoles } from "../templates";
 import {
@@ -53,78 +56,442 @@ export const RETRO_ROWS: ItemRow[] = [
   { title: "What went well?", status: "open" },
 ];
 
-// ── Academy training template (the capstone's sandbox) ───────────────────────
-// The quest rows the Training Event is built from. Quests are ordinary grid
-// rows whose title starts with "Quest:" — academy.trainingStatus finds them by
-// that prefix and counts one done when its status is terminal for its module.
-// Each quest drills one move from the curriculum; the `details` field tells the
-// learner exactly how to do it in the app.
+// ── Academy training templates (the capstones' sandboxes) ────────────────────
+// Each capstone instantiates its own platform template. Quests are ordinary
+// grid rows whose title starts with "Quest:" — academy.trainingStatus finds
+// them by that prefix and counts one done when its status is terminal for its
+// module. Each quest drills one move from the curriculum; the `details` /
+// `notes` field tells the learner exactly how to do it in the app.
 
 /** Title prefix that marks a training-event row as a quest. */
 export const QUEST_TITLE_PREFIX = "Quest:";
 
-export const TRAINING_PLANNING_ROWS: ItemRow[] = [
-  {
-    title: "Quest: Assign yourself the Comms Lead role",
-    offsetDays: -10,
-    role: "event_lead",
-    fields: {
-      details:
-        "Roles before people: templates assign work to roles, events put one person in each role. Open the Overview tab, find Roles, and put yourself in Comms Lead. Then come back here and tap this row's status until it reads Done.",
-    },
-  },
-  {
-    title: "Quest: Add a T-3 reminder task",
-    offsetDays: -7,
-    role: "event_lead",
-    fields: {
-      details:
-        "Plan backwards from the event date. Add a new row to this Planning Doc (the + Add row button, or ask the assistant: \"add a task 'Send the reminder' at T-3\") and give it a Timing of T-3 — watch it get a real due date. Then mark this quest Done.",
-    },
-  },
-  {
-    title: "Quest: Mark Supplies & Logistics ready",
-    offsetDays: -3,
-    role: "event_lead",
-    fields: {
-      details:
-        "First finish the battery quest on the Supplies & Logistics tab, then hit \"Mark ready\" on that tab's section header — that's you signing your name to the stream. Then mark this quest Done.",
-    },
-  },
-  {
-    title: "Quest: Ask the assistant for a readiness briefing",
-    offsetDays: -1,
-    role: "event_lead",
-    fields: {
-      details:
-        "Open the assistant on this event and ask: \"Give me a readiness briefing — what's done, what's at risk, what's unowned?\" It reads your live plan and answers from the playbook. Then mark this quest Done.",
-    },
-  },
-];
+/** A placeholder crew member a training template materializes onto its events. */
+interface TrainingPersonSeed {
+  name: string;
+  team?: string;
+  role?: string;
+}
 
-export const TRAINING_SUPPLY_ROWS: ItemRow[] = [
-  {
-    title: "Quest: Mark this battery Packed",
-    status: "pull_from_storage",
-    fields: {
-      source: "storage",
-      container: "green_luggage",
-      qty: 1,
-      notes:
-        "Supplies must be TERMINAL by T-1 — Packed, not \"pull from storage\" (batteries charge at home the night before; there's no charger in storage). Tap the status chip and walk it to Packed.",
-    },
-  },
+/** Everything needed to build one capstone's platform template + sandbox. */
+export interface TrainingTemplateSpec {
+  name: string;
+  description: string;
+  /** The sandbox event's name, from the learner's first name. */
+  eventName: (firstName: string) => string;
+  disabledCoreModules: string[];
+  /** Role keys from DEFAULT_ROLES this template carries. */
+  roleKeys: string[];
+  /** Per-module rows (quests + scenery). Modules not listed still get columns
+   *  seeded if active, so their tabs render empty-but-usable. */
+  rows: Partial<Record<ModuleKey, ItemRow[]>>;
+  /** Select-option overrides per module+column (party crew teams). */
+  columnOptionOverrides?: Partial<
+    Record<ModuleKey, Record<string, SelectOption[]>>
+  >;
+  /** Sample crew placeholders, materialized as volunteer engagements. */
+  people?: TrainingPersonSeed[];
+  /**
+   * Sample TEAMMATES the capstone's role quests assign — seeded onto the
+   * chapter roster (once, reused across learners) by startTraining, not the
+   * template: they're organizers to put in roles, not day-of crew.
+   */
+  sampleTeammates?: { name: string; role: string }[];
+}
+
+/** Party-appropriate crew teams for the birthday capstone's Crew Duties tab. */
+const PARTY_TEAM_OPTIONS: SelectOption[] = [
+  { value: "food", label: "Food", color: "amber" },
+  { value: "games", label: "Games", color: "purple" },
+  { value: "decor", label: "Decorations", color: "pink" },
+  { value: "setup", label: "Setup", color: "blue" },
 ];
 
 /**
- * Ensure the chapter has the platform "Academy: Training Run" template the
- * capstone instantiates. Idempotent by the `isPlatform` flag: returns the
- * existing PLATFORM template's id when one exists, otherwise creates it — the
- * 3 lightweight roles, Planning Doc + Supplies columns, and the quest rows
- * above. A user template that happens to hold the `academy-training` slug
- * never satisfies the lookup; the real one is seeded anyway under a suffixed
- * slug and matched on `isPlatform` from then on. Every other core module is
- * disabled so the sandbox stays focused on the drills. Called from
+ * CAPSTONE 1 — "Join an event": a large worship gathering mid-planning. The
+ * learner takes the Comms Lead role; every tab is populated so the sandbox
+ * feels like the real situation of being handed a role on someone else's
+ * event. Quests live in Tasks (self-checked moves) and Comms (rows the
+ * learner walks to Sent).
+ */
+const JOIN_EVENT_SPEC: TrainingTemplateSpec = {
+  name: "Academy: Join a Gathering",
+  eventName: (firstName) => `Training: ${firstName} joins the gathering`,
+  description:
+    "Capstone 1 sandbox — a large worship gathering already built from a template. The learner joins as Comms Lead. Instantiated per person by \"Start training\"; training events never appear in the pipeline or reminder emails.",
+  disabledCoreModules: [],
+  roleKeys: DEFAULT_ROLES.map((r) => r.key),
+  rows: {
+    planning_doc: [
+      // Scenery — the event is mid-flight; earlier work is already done.
+      { title: "Confirm date + rain plan", offsetDays: -30, role: "event_lead", status: "done" },
+      { title: "Secure the park + start permit applications", offsetDays: -28, role: "event_lead", status: "done", fields: { details: "Park permit submitted at kickoff; the sound permit goes to the precinct ~3 days out." } },
+      { title: "Confirm worship leaders + band", offsetDays: -21, role: "production_lead", status: "done" },
+      { title: "Confirm production / AV plan", offsetDays: -7, role: "production_lead", status: "in_progress" },
+      { title: "Pack gear + charge batteries", offsetDays: -1, role: "logistics_lead", status: "not_started" },
+      // Quests.
+      {
+        title: "Quest: Take the Comms Lead role",
+        offsetDays: -14,
+        role: "comms_lead",
+        fields: {
+          details:
+            "Roles before people. Open the Overview tab, find Roles, and put yourself in Comms Lead. Then come back and tap this row's status to Done.",
+        },
+      },
+      {
+        title: "Quest: Find your work in Me view",
+        offsetDays: -13,
+        role: "comms_lead",
+        fields: {
+          details:
+            "Switch to Me view — every tab filters down to rows that resolve to you. Count your comms rows so you know what you own. Then mark this Done.",
+        },
+      },
+      {
+        title: "Quest: Ask the assistant to brief you on your workstream",
+        offsetDays: -10,
+        role: "comms_lead",
+        fields: {
+          details:
+            'Open the assistant and ask: "Brief me on my workstream — what\'s due, what\'s at risk, what\'s unowned?" It reads your live rows. Then mark this Done.',
+        },
+      },
+      {
+        title: "Quest: Mark the Comms Schedule ready",
+        offsetDays: -2,
+        role: "comms_lead",
+        fields: {
+          details:
+            'Once your three comms quests read Sent, hit "Mark ready" on the Comms Schedule tab header — that\'s you signing your name to the stream. Then mark this Done.',
+        },
+      },
+    ],
+    comms: [
+      // Scenery.
+      { title: "Flyer request to marketing", offsetDays: -16, role: "comms_lead", status: "sent", fields: { channel: ["team_slack"], audience: ["leaders"] } },
+      { title: "Countdown post", offsetDays: -7, role: "comms_lead", status: "drafted", fields: { channel: ["ig_stories"], audience: ["general_public"] } },
+      { title: "Recap post", offsetDays: 3, role: "comms_lead", status: "not_started", fields: { channel: ["ig_post"], audience: ["general_public"] } },
+      // Quests — real comms rows the learner walks to Sent.
+      {
+        title: "Quest: Send the announcement",
+        offsetDays: -14,
+        role: "comms_lead",
+        status: "not_started",
+        fields: {
+          channel: ["ig_post", "ig_stories"],
+          audience: ["general_public"],
+          notes:
+            "The venue is locked (check Tasks — that's the gate), so this can go out. Walk the status to Sent. In this sandbox nothing actually posts; statuses are claims you keep true.",
+        },
+      },
+      {
+        title: "Quest: Post the crew ask",
+        offsetDays: -11,
+        role: "comms_lead",
+        status: "not_started",
+        fields: {
+          channel: ["ig_stories"],
+          audience: ["general_public"],
+          notes:
+            "Cross-stream gate: never recruit against unwritten duties. Check the Crew Duties tab first — a past comms lead already wrote them. Then walk this to Sent.",
+        },
+      },
+      {
+        title: "Quest: Send the day-before call-time reminder",
+        offsetDays: -1,
+        role: "comms_lead",
+        status: "not_started",
+        fields: {
+          channel: ["imessage_group"],
+          audience: ["volunteers"],
+          notes:
+            "Your copy quotes call times — go read them off the Run of Show tab. That dependency is exactly why templates lock the run of show days before the event. Walk this to Sent.",
+        },
+      },
+    ],
+    run_of_show: [
+      { title: "Load-in / Setup", offsetMinutes: -120, role: "logistics_lead" },
+      { title: "Soundcheck", offsetMinutes: -75, role: "production_lead" },
+      { title: "Crew huddle + prayer", offsetMinutes: -30, role: "event_lead" },
+      { title: "Doors / guest arrival", offsetMinutes: 0, role: "event_lead" },
+      { title: "Worship set", offsetMinutes: 15, role: "production_lead" },
+      { title: "Message + response", offsetMinutes: 45, role: "event_lead" },
+      { title: "Closing / next steps", offsetMinutes: 90, role: "event_lead" },
+      { title: "Strike / leave-no-trace", offsetMinutes: 110, role: "logistics_lead" },
+    ],
+    supplies: [
+      { title: "2 x Shure SM58 Mics", status: "packed", fields: { source: "storage", container: "green_luggage", qty: 2 } },
+      { title: "Mixer", status: "pull_from_storage", fields: { source: "storage", container: "green_luggage", qty: 1 } },
+      { title: "1 x ALTO 600W Speaker", status: "have_it", fields: { source: "storage", container: "on_its_own", qty: 1 } },
+      { title: "1 x 200W Battery", status: "pull_from_storage", fields: { source: "storage", container: "green_luggage", qty: 1, notes: "Charge at home the night before — no charger in storage." } },
+      { title: "100 x Connect cards", status: "need_to_order", fields: { source: "order_online", qty: 100 } },
+    ],
+    permits: [
+      { title: "Park permit — Maria Hernandez Park", offsetDays: -21, status: "approved", fields: { notes: "Approved. Holder must attend." } },
+      { title: "Amplified sound permit", offsetDays: -3, status: "submitted", fields: { notes: "Via the precinct officer, ~3 days prior." } },
+    ],
+    volunteer_expectations: [
+      { title: "Greet and direct guests on arrival", fields: { team: "welcome", details: "Welcome people in, point them to seating, keep the entrance flowing." } },
+      { title: "Hand out connect cards", fields: { team: "welcome", details: "Offer connect cards to new guests and answer questions." } },
+      { title: "Hold the prayer station", fields: { team: "prayer", details: "Set up the prayer spot and be available throughout." } },
+      { title: "Capture photos + clips", fields: { team: "content", details: "Candid moments, worship, and setup for the recap." } },
+    ],
+  },
+  people: [
+    { name: "Priya (sample crew)", team: "welcome", role: "Welcome team" },
+    { name: "Marcus (sample crew)", team: "production", role: "Sound + setup" },
+  ],
+};
+
+/**
+ * CAPSTONE 2 — "Plan a party from scratch": a nearly-empty birthday party.
+ * The learner owns the event, roles in two sample teammates (created by
+ * startTraining, not the template), hires a paid clown, and walks rows across
+ * four tabs to their terminal states. Permits toggled off — it also teaches
+ * that not every event needs every tab.
+ */
+const BIRTHDAY_PARTY_SPEC: TrainingTemplateSpec = {
+  name: "Academy: Birthday Party",
+  eventName: (firstName) => `Training: ${firstName}'s birthday party`,
+  description:
+    "Capstone 2 sandbox — a from-scratch birthday party with sample teammates and crew. Instantiated per person by \"Start training\"; training events never appear in the pipeline or reminder emails.",
+  disabledCoreModules: ["permits"],
+  roleKeys: LIGHTWEIGHT_ROLE_KEYS,
+  rows: {
+    planning_doc: [
+      {
+        title: "Quest: Rename the party + set the date",
+        offsetDays: -14,
+        role: "event_lead",
+        fields: {
+          details:
+            "Overview tab → edit details. Name it after the birthday human, pick a date, and watch every due date re-derive from it. Then mark this Done.",
+        },
+      },
+      {
+        title: "Quest: Add three tasks of your own, with timing",
+        offsetDays: -12,
+        role: "event_lead",
+        fields: {
+          details:
+            "Use + Add row: e.g. send invites (T-10), order the cake (T-3), build the playlist (T-1). Give each an offset — a task without timing is invisible. Then mark this Done.",
+        },
+      },
+      {
+        title: "Quest: Give Maya and Jordan each a role",
+        offsetDays: -10,
+        role: "event_lead",
+        fields: {
+          details:
+            "Maya and Jordan are sample teammates who've been through this training. Overview → Roles: put one in Comms Lead and one in Logistics Lead. Delegation is the job — if everything resolves to you, you're doing it wrong. Then mark this Done.",
+        },
+      },
+      {
+        title: "Quest: Hire Sunny the Clown as paid crew",
+        offsetDays: -7,
+        role: "event_lead",
+        fields: {
+          details:
+            "Crew tab → add crew → paid, amount $150, call time 30 minutes before guests. Uncle Ray and Cousin Lena are already there as volunteers — copy how they're set up. Watch the budget pick up Sunny's fee. Then mark this Done.",
+        },
+      },
+      {
+        title: "Quest: Ask the assistant to poke holes in your plan",
+        offsetDays: -2,
+        role: "event_lead",
+        fields: {
+          details:
+            'Ask the assistant: "Is this party actually ready? What am I missing?" It checks your live rows against the readiness criteria. Then mark this Done.',
+        },
+      },
+    ],
+    comms: [
+      {
+        title: "Quest: Send the invites",
+        offsetDays: -10,
+        role: "comms_lead",
+        status: "not_started",
+        fields: {
+          channel: ["imessage_group"],
+          audience: ["attendees"],
+          notes:
+            "Draft the invite copy in this row's notes, then walk the status to Sent. Nothing actually sends in the sandbox — statuses are claims you keep true.",
+        },
+      },
+    ],
+    supplies: [
+      {
+        title: "Quest: Get the cake to Packed",
+        status: "need_to_order",
+        fields: {
+          source: "order_online",
+          qty: 1,
+          notes:
+            "Ordered → Have it → Packed (boxed, by the door, ready to travel). Nothing gets 'grabbed on the way' — that's how parties end up cakeless.",
+        },
+      },
+    ],
+    retro: [
+      {
+        title: "Quest: Log one learning and mark it Actioned",
+        status: "open",
+        fields: {
+          notes:
+            "Pretend the party happened. Write one concrete learning (\"the clown ran long; order more ice\"), pick a dispatch — promoted / context / dropped — then mark it Actioned.",
+        },
+      },
+    ],
+    volunteer_expectations: [
+      { title: "Keep the grill going + food coming", fields: { team: "food", details: "Uncle Ray owns the grill. Keep the table stocked; flag when supplies run low." } },
+      { title: "Decorate before guests arrive", fields: { team: "decor", details: "Cousin Lena: balloons, streamers, table setup — finished 30 minutes before guests." } },
+      { title: "Run a 20-minute show after cake", fields: { team: "games", details: "Sunny the Clown's set. Someone owns the intro and the wrap-up." } },
+    ],
+  },
+  columnOptionOverrides: {
+    volunteer_expectations: { team: PARTY_TEAM_OPTIONS },
+  },
+  people: [
+    { name: "Uncle Ray (sample crew)", team: "food", role: "Grill master" },
+    { name: "Cousin Lena (sample crew)", team: "decor", role: "Decorations" },
+  ],
+  sampleTeammates: [
+    { name: "Maya (sample teammate)", role: "Trained organizer — sample" },
+    { name: "Jordan (sample teammate)", role: "Trained organizer — sample" },
+  ],
+};
+
+/**
+ * BONUS CAPSTONE — "Plan a worship event from scratch": the real thing, in
+ * the domain the chapter actually runs. Optional; doesn't count toward the
+ * trained badge.
+ */
+const WORSHIP_EVENT_SPEC: TrainingTemplateSpec = {
+  name: "Academy: Worship Event",
+  eventName: (firstName) => `Training: ${firstName}'s worship event`,
+  description:
+    "Bonus capstone sandbox — a from-scratch pop-up worship event. Instantiated per person by \"Start training\"; training events never appear in the pipeline or reminder emails.",
+  disabledCoreModules: ["volunteer_expectations"],
+  roleKeys: LIGHTWEIGHT_ROLE_KEYS,
+  rows: {
+    planning_doc: [
+      {
+        title: "Quest: Set your date + location",
+        offsetDays: -14,
+        role: "event_lead",
+        fields: {
+          details:
+            "Overview tab: pick a date and put a real public spot in the location. The skeleton comes first — a date and a place. Then mark this Done.",
+        },
+      },
+      {
+        title: "Quest: Scout the spot + write the rain plan",
+        offsetDays: -12,
+        role: "event_lead",
+        fields: {
+          details:
+            "Write your backup spot and what happens if it rains in this row's notes. Contingencies are structure, not vibes — written before you need them. Then mark this Done.",
+        },
+      },
+      {
+        title: "Quest: Confirm a worship leader",
+        offsetDays: -11,
+        role: "comms_lead",
+        fields: {
+          details:
+            "In real life this is a call to the music team. Here: put the (pretend) name and number in this row's notes — details rich enough for a stranger. Then mark this Done.",
+        },
+      },
+      {
+        title: "Quest: Build the run of show",
+        offsetDays: -3,
+        role: "event_lead",
+        fields: {
+          details:
+            "On the Run of Show tab, add segments with minute offsets: Load-in (−60), Sound check (−30), Huddle + prayer (−10), Worship set (0), Gospel + next steps (40), Strike (55). One named owner each. Then mark this Done.",
+        },
+      },
+      {
+        title: "Quest: Ask the assistant for a readiness briefing",
+        offsetDays: -1,
+        role: "event_lead",
+        fields: {
+          details:
+            'Ask: "Is this event actually ready? Check it against the readiness criteria." Then mark this Done.',
+        },
+      },
+    ],
+    permits: [
+      {
+        title: "Quest: Sort the sound permit",
+        offsetDays: -3,
+        status: "to_apply",
+        fields: {
+          notes:
+            "Amplified sound in public space needs a permit — via the local precinct, ~3 days out, and the permit holder must attend. Walk this row To apply → Submitted → Approved (in the sandbox, you're pretending the precinct said yes).",
+        },
+      },
+    ],
+    supplies: [
+      {
+        title: "Quest: Pack the battery, charged",
+        status: "pull_from_storage",
+        fields: {
+          source: "storage",
+          container: "green_luggage",
+          qty: 1,
+          notes:
+            "The battery leaves storage early enough to charge at home — there's no charger in storage. Walk it to Packed.",
+        },
+      },
+    ],
+    comms: [
+      {
+        title: "Quest: Announce it",
+        offsetDays: -7,
+        role: "comms_lead",
+        status: "not_started",
+        fields: {
+          channel: ["ig_post", "ig_stories"],
+          audience: ["general_public"],
+          notes:
+            "Gate check: is your location locked (quest 1 done)? Never announce an unconfirmed venue. Then walk this to Sent.",
+        },
+      },
+    ],
+    retro: [
+      {
+        title: "Quest: Capture one learning and dispatch it",
+        status: "open",
+        fields: {
+          notes:
+            "Pretend the event ran. Write one concrete, counted learning and dispatch it — promoted / context / dropped — then mark it Actioned. The debrief is finished when the template is better.",
+        },
+      },
+    ],
+  },
+};
+
+const TRAINING_TEMPLATE_SPECS: Record<AcademyTrainingKind, TrainingTemplateSpec> = {
+  join_event: JOIN_EVENT_SPEC,
+  birthday_party: BIRTHDAY_PARTY_SPEC,
+  worship_event: WORSHIP_EVENT_SPEC,
+};
+
+/** The spec for one capstone kind (startTraining reads eventName/teammates). */
+export function trainingTemplateSpec(kind: AcademyTrainingKind): TrainingTemplateSpec {
+  return TRAINING_TEMPLATE_SPECS[kind];
+}
+
+/**
+ * Ensure the chapter has the platform template for one capstone kind.
+ * Idempotent by `isPlatform && platformKey`: returns the existing template's
+ * id when one exists, otherwise builds it from its spec — roles, columns
+ * (with any option overrides), quest + scenery rows, and sample crew
+ * placeholders. A user template squatting the slug never satisfies the
+ * lookup; the real one is seeded under a suffixed slug and matched on
+ * `platformKey` from then on. Legacy platform templates (the pre-2026-07
+ * single sandbox, which has no platformKey) are ignored. Called from
  * `buildChapterRolesAndTemplates` (new chapters) and from
  * `academy.startTraining` (self-heals chapters seeded before the Academy).
  */
@@ -133,39 +500,37 @@ export async function ensureTrainingTemplate(
   chapterId: Id<"chapters">,
   createdBy: Id<"users">,
   now: number,
+  kind: AcademyTrainingKind,
 ): Promise<Id<"eventTypes">> {
+  const key = ACADEMY_TRAINING_TEMPLATES[kind].templateKey;
+  const spec = TRAINING_TEMPLATE_SPECS[kind];
   // Chapters hold a handful of templates — a full read here stays tiny, and
-  // it's what lets the lookup key on isPlatform even when a slug squatter
+  // it's what lets the lookup key on platformKey even when a slug squatter
   // forced the platform template onto a suffixed slug.
   const chapterTypes = await ctx.db
     .query("eventTypes")
     .withIndex("by_chapter", (q) => q.eq("chapterId", chapterId))
     .collect();
-  const existing = chapterTypes.find((t) => t.isPlatform === true);
+  const existing = chapterTypes.find(
+    (t) => t.isPlatform === true && t.platformKey === key,
+  );
   if (existing) return existing._id;
 
   // A user template may be squatting on the exact slug — suffix past it.
   const taken = new Set(chapterTypes.map((t) => t.slug));
-  let slug = ACADEMY_TRAINING_TEMPLATE_SLUG;
+  let slug = key;
   for (let n = 2; taken.has(slug); n++) {
-    slug = `${ACADEMY_TRAINING_TEMPLATE_SLUG}-${n}`;
+    slug = `${key}-${n}`;
   }
 
   const trainingId = await ctx.db.insert("eventTypes", {
     chapterId,
-    name: "Academy: Training Run",
+    name: spec.name,
     slug,
     isPlatform: true,
-    description:
-      "The Academy capstone sandbox — a tiny event whose rows are the training quests. Instantiated per person by \"Start training\"; training events never appear in the pipeline or reminder emails.",
-    // Keep the sandbox to the two workstreams the quests live in.
-    disabledCoreModules: [
-      "comms",
-      "run_of_show",
-      "volunteer_expectations",
-      "permits",
-      "retro",
-    ],
+    platformKey: key,
+    description: spec.description,
+    disabledCoreModules: spec.disabledCoreModules,
     version: 1,
     isArchived: false,
     createdBy,
@@ -173,31 +538,56 @@ export async function ensureTrainingTemplate(
     updatedAt: now,
   });
 
-  // The lightweight roles — the Comms Lead quest needs comms_lead to exist.
-  const roleSeeds = DEFAULT_ROLES.filter((r) =>
-    LIGHTWEIGHT_ROLE_KEYS.includes(r.key),
-  );
+  const roleSeeds = DEFAULT_ROLES.filter((r) => spec.roleKeys.includes(r.key));
   const roleByKey = await seedTemplateRoles(ctx, trainingId, roleSeeds);
 
-  await seedTemplateCols(ctx, trainingId, "planning_doc");
-  await seedTemplateCols(ctx, trainingId, "supplies");
+  // Columns for every ACTIVE module (rows or not) so each tab renders ready
+  // to use; rows only where the spec authored them.
+  const disabled = new Set(spec.disabledCoreModules);
+  for (const m of GRID_CORE_MODULE_KEYS) {
+    if (disabled.has(m)) continue;
+    await seedTemplateCols(
+      ctx,
+      trainingId,
+      m,
+      [],
+      spec.columnOptionOverrides?.[m] ?? {},
+    );
+    const rows = spec.rows[m];
+    if (rows && rows.length > 0) {
+      await addTemplateItems(ctx, trainingId, m, rows, roleByKey);
+    }
+  }
 
-  await addTemplateItems(
-    ctx,
-    trainingId,
-    "planning_doc",
-    TRAINING_PLANNING_ROWS,
-    roleByKey,
-  );
-  await addTemplateItems(
-    ctx,
-    trainingId,
-    "supplies",
-    TRAINING_SUPPLY_ROWS,
-    roleByKey,
-  );
+  // Sample crew placeholders — materialized into volunteer engagements on
+  // each sandbox by instantiateEvent's placeholder-crew pass.
+  for (let i = 0; i < (spec.people?.length ?? 0); i++) {
+    const p = spec.people![i];
+    await ctx.db.insert("templatePeople", {
+      eventTypeId: trainingId,
+      name: p.name,
+      team: p.team,
+      role: p.role,
+      order: i,
+      createdAt: now,
+    });
+  }
 
   return trainingId;
+}
+
+/** Ensure all capstone training templates exist for a chapter. */
+export async function ensureTrainingTemplates(
+  ctx: MutationCtx,
+  chapterId: Id<"chapters">,
+  createdBy: Id<"users">,
+  now: number,
+): Promise<void> {
+  for (const kind of Object.keys(
+    ACADEMY_TRAINING_TEMPLATES,
+  ) as AcademyTrainingKind[]) {
+    await ensureTrainingTemplate(ctx, chapterId, createdBy, now, kind);
+  }
 }
 
 /**
@@ -243,7 +633,7 @@ export async function buildChapterRolesAndTemplates(
   }
 
   await addTemplateItems(ctx, edenId, "planning_doc", [
-    { title: "Draft planning doc + budget", offsetDays: -21, role: "event_lead", fields: { details: "Spin up the doc, set the budget, line up the meeting cadence." } },
+    { title: "Draft the plan + budget", offsetDays: -21, role: "event_lead", fields: { details: "Review the Tasks tab, set the budget, line up the meeting cadence." } },
     { title: "Confirm venue + file permits", offsetDays: -21, role: "event_lead", fields: { details: "Lock the park, file the sound permit, identify a weather backup." } },
     { title: "Reach out to music team for worship leaders + band", offsetDays: -14, role: "comms_lead", fields: { details: "Confirm 1–2 worship leaders + instrumentalists; send the song bank." } },
     { title: "Open volunteer sign-ups + brief", offsetDays: -14, role: "comms_lead" },
@@ -422,8 +812,8 @@ export async function buildChapterRolesAndTemplates(
     { title: "Public-space / sound permit", offsetDays: -3, status: "to_apply", fields: { notes: "Check the park's amplified-sound rules; apply if required." } },
   ], wwsRoleByKey);
 
-  // ── Academy training template (the capstone's sandbox) ─────────────────────
-  await ensureTrainingTemplate(ctx, chapterId, createdBy, now);
+  // ── Academy training templates (the capstones' sandboxes) ──────────────────
+  await ensureTrainingTemplates(ctx, chapterId, createdBy, now);
 
   return { edenId, ltnId, wwsId };
 }

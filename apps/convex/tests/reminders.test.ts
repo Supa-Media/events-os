@@ -314,7 +314,7 @@ describe("openWorkForChapter", () => {
       "Eden July · Comms Schedule",
     );
     expect(byPerson(eventOwner)!.entries[0].context).toBe(
-      "Eden July · Planning Doc",
+      "Eden July · Tasks",
     );
   });
 

@@ -40,13 +40,13 @@ workstreams. The core seven:
 
 | Workstream | What it holds | Default owner |
 |---|---|---|
-| **Planning Doc** | The master task list — every to-do with owner, offset, status | Event Lead |
+| **Tasks** | The master task list — every to-do with owner, offset, status | Event Lead |
 | **Comms Schedule** | Every message: audience, channel, copy, T-offset | Comms Lead |
 | **Run of Show** | The minute-by-minute day-of program with call times | Production Lead |
-| **Expectations** | Volunteer teams, headcounts, per-team duties, dress code | Comms Lead |
+| **Crew Duties** | Volunteer teams, headcounts, per-team duties, dress code | Comms Lead |
 | **Supplies & Logistics** | Every physical item (source, location, qty, packed state) **plus the site map** — the venue layout: stage, stations, flow of arrival | Logistics Lead |
 | **Permits** | Each permit: jurisdiction, lead time, status, documents | Event Lead |
-| **Retrospective** | What went well / broke / was missing / was excess | Event Lead |
+| **Debrief** | What went well / broke / was missing / was excess | Event Lead |
 
 Chapters can add **custom workstreams** (a merch stand, a food operation) to a
 template or a single event; they behave exactly like the core ones.
@@ -63,8 +63,8 @@ Tickets, day-of mode, the crew table, and the assistant are **operational
 tools** — machinery the event uses. Tools have no owner role, rows, or ready
 flag, and they don't feed readiness. The rule of thumb: **plan in
 workstreams, operate in tools.** The *work* of ticketing (set up tiers,
-publish the page, plan check-in) lives as rows in a workstream (Planning Doc
-tasks, or a custom Ticketing workstream for a ticketed event); the Tickets
+publish the page, plan check-in) lives as rows in a workstream (Tasks
+rows, or a custom Ticketing workstream for a ticketed event); the Tickets
 tool — the button in the event header, next to Day-of view — is where you
 run the result.
 
@@ -88,8 +88,8 @@ once, use them everywhere:
 4. **A timing mode.** One of three: **T-day offsets** (Planning, Comms,
    Permits — rows carry T-14-style offsets that become real due dates),
    **minute offsets** (Run of Show — minutes from event start), or **undated
-   with a convention deadline** (Supplies terminal by T-1, Expectations set
-   before recruiting, Retro by T+7).
+   with a convention deadline** (Supplies terminal by T-1, Crew Duties set
+   before recruiting, Debrief by T+7).
 5. **A status vocabulary with terminal states.** Every row's status either is
    or isn't "done-equivalent" (Done, Packed, Approved, Sent…). Readiness math
    runs on this.
@@ -346,7 +346,7 @@ Volunteers and leads come back when the experience was organized, they knew
 what to do, and they felt thanked. They quit when they were confused, idle,
 or overloaded.
 
-- **Expectations before recruitment.** The volunteer expectations doc — teams,
+- **Expectations before recruitment.** The Crew Duties rows — teams,
   headcounts, dress code, what to bring, call times, safety escalation — is
   written *before* the volunteer call goes out. Proven team shapes for a
   park worship event: Welcome ×6, Prayer ×4, Flower/Decor ×2, Food/Bev ×2,
@@ -536,7 +536,7 @@ agent should be genuinely pushy about.
 
 ## Part IV — Workstream playbooks
 
-**Planning Doc** — the master task list; the only workstream that sees
+**Tasks** — the master task list; the only workstream that sees
 everything. Every task: owner, offset, status, and details rich enough for a
 stranger. Link out to the workstream or doc that holds the substance rather
 than duplicating it. Gate tasks (venue, permits, announce, recruit) get extra
@@ -571,7 +571,7 @@ huddle, and strike as real segments — they're where day-of actually goes
 wrong. Program assets (setlist, playback tracks, spoken points/script) each
 have an owner and must not be TBD after lock.
 
-**Expectations** — teams with target headcounts, per-team goals and task
+**Crew Duties** — teams with target headcounts, per-team goals and task
 lists ("you'll set up… you'll do…"), dress code, what to bring, arrival
 time, volunteer lead contact, safety escalation. Written before recruitment;
 shared via the public briefing page; kept true as teams shift.
@@ -582,7 +582,7 @@ philosophy doc); song bank to vocalists and instrumentalists by T-7; final
 setlist locked with the run of show at T-3. Song requests from the audience
 are a connection mechanism — decide before day-of whether they're open.
 
-**Retrospective** — seeded with the four standing questions before the event
+**Debrief** — seeded with the four standing questions before the event
 ends. Capture by T+7. Each row gets dispatched (template / context / dropped).
 The retro is finished when the template diff is merged, not when the rows are
 written.

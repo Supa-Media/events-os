@@ -140,16 +140,20 @@ export interface CoreModuleDef {
  */
 export const CORE_MODULES: CoreModuleDef[] = [
   // Display order (drives tabs/chips/rollup). volunteer_expectations is the
-  // merged "Crew & Expectations" tab on events. Retrospective stays last (post).
-  { key: "planning_doc", label: "Planning Doc", surface: "grid", defaultOwnerRoleKey: "event_lead", offsetMode: "days" },
+  // merged "Crew & Duties" tab on events. Debrief stays last (post).
+  // Renamed 2026-07 for teachability: "Planning Doc" → "Tasks" (it's a task
+  // list, not a doc), "Expectations" → "Crew Duties" (what each crew team
+  // does), "Retrospective" → "Debrief" (the word the team actually uses).
+  // Keys stay frozen — only labels changed.
+  { key: "planning_doc", label: "Tasks", surface: "grid", defaultOwnerRoleKey: "event_lead", offsetMode: "days" },
   { key: "comms", label: "Comms Schedule", surface: "grid", defaultOwnerRoleKey: "comms_lead", offsetMode: "days" },
   { key: "run_of_show", label: "Run of Show", surface: "grid", defaultOwnerRoleKey: "production_lead", offsetMode: "minutes" },
-  { key: "volunteer_expectations", label: "Expectations", surface: "grid", defaultOwnerRoleKey: "comms_lead", offsetMode: "none" },
+  { key: "volunteer_expectations", label: "Crew Duties", surface: "grid", defaultOwnerRoleKey: "comms_lead", offsetMode: "none" },
   // Supplies & Logistics carries the site map (hasSiteMap): the venue-map
   // editor renders beneath its grid, and its single ready flag covers both.
   { key: "supplies", label: "Supplies & Logistics", surface: "grid", defaultOwnerRoleKey: "logistics_lead", offsetMode: "none", hasSiteMap: true },
   { key: "permits", label: "Permits", surface: "grid", defaultOwnerRoleKey: "event_lead", offsetMode: "days" },
-  { key: "retro", label: "Retrospective", surface: "grid", defaultOwnerRoleKey: "event_lead", offsetMode: "none" },
+  { key: "retro", label: "Debrief", surface: "grid", defaultOwnerRoleKey: "event_lead", offsetMode: "none" },
 ];
 
 /**

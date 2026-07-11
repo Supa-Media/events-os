@@ -14,11 +14,7 @@ import {
   ProgressBar,
 } from "../../../components/ui";
 import { colors } from "../../../lib/theme";
-import {
-  ACADEMY_CAPSTONE_SLUG,
-  ACADEMY_SECTIONS,
-  type AcademySection,
-} from "@events-os/shared";
+import { ACADEMY_SECTIONS, type AcademySection } from "@events-os/shared";
 
 type MyProgress = FunctionReturnType<typeof api.academy.myProgress>;
 type SectionProgress = MyProgress["sections"][number];
@@ -32,13 +28,6 @@ type SectionProgress = MyProgress["sections"][number];
 export default function AcademyScreen() {
   const router = useRouter();
   const progress = useQuery(api.academy.myProgress);
-
-  // The capstone entry of myProgress carries the live quest counts — the hub
-  // needs no training-event subscription of its own.
-  const capstone = progress?.sections.find(
-    (s) => s.slug === ACADEMY_CAPSTONE_SLUG,
-  );
-  const training = capstone?.training ?? null;
 
   // "Who's trained" is a managers/admins surface — only they subscribe.
   // org.nav is the app-wide policy signal AppShell already consumes.
@@ -86,12 +75,14 @@ export default function AcademyScreen() {
       <View className="gap-3">
         {ACADEMY_SECTIONS.map((section) => {
           const state = bySlug.get(section.slug);
-          return section.slug === ACADEMY_CAPSTONE_SLUG ? (
+          // Each capstone entry of myProgress carries its own live quest
+          // counts — the hub needs no training-event subscription of its own.
+          return section.capstone ? (
             <CapstoneRow
               key={section.slug}
               section={section}
               state={state}
-              training={training ?? null}
+              training={state?.training ?? null}
               onOpen={() => router.push(`/academy/${section.slug}`)}
             />
           ) : (
@@ -249,9 +240,17 @@ function CapstoneRow({
       <View className="flex-row items-center gap-3.5">
         <OrderMark order={section.order} passed={complete} locked={locked} />
         <View className="flex-1">
-          <Text className="text-base font-semibold text-ink" numberOfLines={1}>
-            {section.title}
-          </Text>
+          <View className="flex-row items-center gap-2">
+            <Text
+              className="shrink text-base font-semibold text-ink"
+              numberOfLines={1}
+            >
+              {section.title}
+            </Text>
+            {section.optional ? (
+              <Badge label="Bonus" tone="info" />
+            ) : null}
+          </View>
           <Text className="mt-0.5 text-sm text-muted" numberOfLines={2}>
             {section.subtitle}
           </Text>
