@@ -498,7 +498,7 @@ const SECTIONS_IN_ORDER: Omit<AcademySection, "order">[] = [
       },
       {
         kind: "tip",
-        text: "Reschedule from the event's Overview tab — every derived due date moves with the date. Then re-check permits and orders yourself; calendars move, lead times don't.",
+        text: "Reschedule from **Details** in the event header — every derived due date moves with the date. Then re-check permits and orders yourself; calendars move, lead times don't.",
       },
     ],
     quiz: [

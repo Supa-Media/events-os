@@ -19,6 +19,7 @@ import { api } from "@events-os/convex/_generated/api";
 import {
   DAY_OFFSET_MODULES,
   isCompleteStatus,
+  offsetDaysBetween,
   startOfDay,
   type ModuleKey,
 } from "@events-os/shared";
@@ -85,6 +86,25 @@ function parseOptions(raw: string) {
     .map((s) => s.trim())
     .filter(Boolean)
     .map((label, i) => ({ value: slug(label), label, color: OPTION_PALETTE[i % OPTION_PALETTE.length] }));
+}
+
+/**
+ * The single id a drag moved: comparing the pre-drag order with the dropped
+ * order, it's the id whose removal makes both arrays equal. Null when nothing
+ * moved (or the arrays don't describe a single-row move).
+ */
+function findMovedId(prev: string[], next: string[]): string | null {
+  if (prev.length !== next.length) return null;
+  let i = 0;
+  while (i < prev.length && prev[i] === next[i]) i++;
+  if (i === prev.length) return null; // identical
+  const without = (arr: string[], id: string) => arr.filter((x) => x !== id);
+  for (const cand of [next[i], prev[i]]) {
+    const a = without(prev, cand);
+    const b = without(next, cand);
+    if (a.length === b.length && a.every((x, k) => x === b[k])) return cand;
+  }
+  return null;
 }
 
 type Props = {
@@ -264,8 +284,9 @@ export function EditableGrid({
   }, [grid.items]);
 
   // Day-offset EVENT grids read as a timeline: rows sort by due date (undated
-  // last, manual order as the tie-break) so the eye scans past → future, and
-  // drag-reorder yields to the dates (timing edits move rows instead).
+  // last, manual order as the tie-break) so the eye scans past → future. On
+  // these grids DRAGGING RE-TIMES: a dropped row takes the midpoint of its new
+  // neighbors' offsets (see the reorder handler below).
   const dueSorted =
     mode === "event" && DAY_OFFSET_MODULES.includes(module as ModuleKey);
 
@@ -380,8 +401,49 @@ export function EditableGrid({
     ],
   );
 
+  // The displayed row order + timeline context, mirrored into refs so the
+  // reorder callback stays referentially stable for SortableRows.
+  const visibleIdsRef = useRef<string[]>([]);
+  visibleIdsRef.current = visibleItems.map((i) => i._id);
+  const dueSortedRef = useRef(dueSorted);
+  dueSortedRef.current = dueSorted;
+  const eventDateRef = useRef(eventDate);
+  eventDateRef.current = eventDate;
+
   const reorder = useCallback((ids: string[]) => {
-    void gridRef.current.reorder(ids);
+    const g = gridRef.current;
+    // On a due-sorted timeline, dragging a row RE-TIMES it: the row takes the
+    // midpoint of its new neighbors' offsets (same day as the sole dated
+    // neighbor at the edges; dropped into the undated tail → timing clears).
+    // The order write below persists the drop position as the sort tie-break.
+    const evDate = eventDateRef.current;
+    if (dueSortedRef.current && evDate != null) {
+      const moved = findMovedId(visibleIdsRef.current, ids);
+      if (moved) {
+        const byId = new Map(g.items.map((i) => [i._id, i]));
+        const idx = ids.indexOf(moved);
+        const offsetOf = (id: string | undefined): number | null => {
+          if (!id) return null;
+          const it = byId.get(id);
+          if (!it) return null;
+          if (it.offsetDays != null) return it.offsetDays;
+          if (it.dueDate != null) return offsetDaysBetween(evDate, it.dueDate);
+          return null;
+        };
+        const before = offsetOf(ids[idx - 1]);
+        const after = offsetOf(ids[idx + 1]);
+        const target =
+          before != null && after != null
+            ? Math.round((before + after) / 2)
+            : before != null
+              ? before
+              : after != null
+                ? after
+                : null;
+        void g.updateItem(moved, { offsetDays: target });
+      }
+    }
+    void g.reorder(ids);
   }, []);
 
   const renderList = useCallback(
@@ -498,7 +560,7 @@ export function EditableGrid({
               </View>
             ))
           ) : (
-            renderList(visibleItems, !dueSorted)
+            renderList(visibleItems, true)
           )}
         </View>
       </ScrollView>

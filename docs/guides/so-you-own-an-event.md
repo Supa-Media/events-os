@@ -60,17 +60,17 @@ you until you hand it to someone.
 
 - **Create** from Pipeline → New event: template, name, date, location. The
   whole task timeline back-calculates from the date.
-- The **Overview tab** is your cockpit: status, reschedule, budget, roles,
+- The **event header** is your cockpit — tap **Details** for status, reschedule, budget, roles,
   and **"What's next"** — your prioritized action list, grouped by phase.
 - The four **phase rings** in the header (Pre-plan / Planning / Day-of /
   Post) are your honesty meter — they're computed from row statuses, so they
   only work if owners keep statuses true.
-- **Assign roles** from the Overview; assign area owners from each
+- **Assign roles** from the header's Details panel; assign area owners from each
   section header. **"Share crew"** gives volunteers their no-login briefing
   page.
 - **Day-of mode** (button on the event) is the big-print field view for the
   park: live clock, now/next, call times, contacts.
-- **Reschedule** from the Overview moves every derived due date with the
+- **Reschedule** from the Details panel moves every derived due date with the
   event.
 
 ## Wisdom from past events
