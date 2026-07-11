@@ -20,8 +20,8 @@ import {
 
 /**
  * Workspace header for an event — readiness ring, inline-editable name, the
- * meta strip (date/location/tasks/budget), status badge, and the day-of /
- * me-view / share affordances.
+ * meta strip (date/location/tasks/budget), status badge, and the operational
+ * tools row (day-of / tickets / songs / me-view / share).
  */
 export function EventHeader({
   event,
@@ -37,6 +37,8 @@ export function EventHeader({
   onSaveName,
   onDayOf,
   onSongs,
+  onTickets,
+  ticketsActive,
   meView,
   onToggleMeView,
   onSelectPhase,
@@ -55,6 +57,10 @@ export function EventHeader({
   onSaveName: () => void;
   onDayOf: () => void;
   onSongs: () => void;
+  /** Open the Tickets tool (the public page / RSVPs / check-in surface). */
+  onTickets: () => void;
+  /** True while the Tickets surface is showing — the button reads as active. */
+  ticketsActive: boolean;
   meView: boolean;
   onToggleMeView: () => void;
   /** Tap a phase ring → pulse the tabs that feed it (see EventTabBar). */
@@ -90,7 +96,9 @@ export function EventHeader({
               <Meta icon="dollar-sign" text={`$${budgetSpent} planned`} />
             ) : null}
           </View>
-          <View className="mt-1 flex-row items-center gap-2">
+          {/* flex-wrap: Tickets lives ONLY here now, so the tools row must
+              never push buttons off-screen on phone widths. */}
+          <View className="mt-1 flex-row flex-wrap items-center gap-2">
             <Badge
               label={EVENT_STATUS_LABELS[event.status as EventStatus]}
               tone={statusTone(event.status as EventStatus)}
@@ -101,6 +109,13 @@ export function EventHeader({
               size="sm"
               variant="secondary"
               onPress={onDayOf}
+            />
+            <Button
+              title="Tickets"
+              icon="tag"
+              size="sm"
+              variant={ticketsActive ? "primary" : "secondary"}
+              onPress={onTickets}
             />
             <Button
               title="Songs"

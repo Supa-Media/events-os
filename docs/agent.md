@@ -65,7 +65,8 @@ flag, and they don't feed readiness. The rule of thumb: **plan in
 workstreams, operate in tools.** The *work* of ticketing (set up tiers,
 publish the page, plan check-in) lives as rows in a workstream (Planning Doc
 tasks, or a custom Ticketing workstream for a ticketed event); the Tickets
-tab is where you run the result.
+tool — the button in the event header, next to Day-of view — is where you
+run the result.
 
 > Naming note: the codebase calls workstreams `modules` (and that key is
 > stable in the schema and tool APIs). In everything human-facing — UI labels,

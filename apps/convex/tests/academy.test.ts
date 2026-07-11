@@ -13,6 +13,7 @@ import { api, internal } from "../_generated/api";
 import type { Id } from "../_generated/dataModel";
 import {
   ACADEMY_CAPSTONE_SLUG,
+  ACADEMY_INTERACTIVE_KINDS,
   ACADEMY_SECTIONS,
   ACADEMY_SECTION_COUNT,
   ACADEMY_TRAINING_TEMPLATE_SLUG,
@@ -126,6 +127,37 @@ describe("curriculum content", () => {
         expect(q.answerIndex).toBeGreaterThanOrEqual(0);
         expect(q.answerIndex).toBeLessThan(q.options.length);
         expect(q.explanation.length).toBeGreaterThan(0);
+      }
+    }
+  });
+
+  test("every article is authored as designed, well-formed blocks", () => {
+    const interactive = new Set<string>(ACADEMY_INTERACTIVE_KINDS);
+    for (const s of ACADEMY_SECTIONS) {
+      expect(s.blocks.length).toBeGreaterThan(0);
+      // Every section anchors on at least one principle card or field story.
+      expect(
+        s.blocks.some((b) => b.kind === "rule" || b.kind === "story"),
+      ).toBe(true);
+      // Table blocks are rectangular: every row matches its header count.
+      for (const b of s.blocks) {
+        if (b.kind === "table") {
+          expect(b.headers.length).toBeGreaterThan(1);
+          for (const row of b.rows) {
+            expect(row).toHaveLength(b.headers.length);
+          }
+        }
+        if (b.kind === "try_status") {
+          // The terminal value must be reachable by cycling the options —
+          // and never the STARTING option, or the widget would show its
+          // success caption before the learner taps anything.
+          expect(b.options.map((o) => o.value)).toContain(b.terminal);
+          expect(b.options[0]?.value).not.toBe(b.terminal);
+        }
+      }
+      // Every teaching section (1-6) practices hands-on: ≥1 interactive block.
+      if (s.slug !== ACADEMY_CAPSTONE_SLUG) {
+        expect(s.blocks.some((b) => interactive.has(b.kind))).toBe(true);
       }
     }
   });

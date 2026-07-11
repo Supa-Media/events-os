@@ -46,6 +46,7 @@ import {
   isFreeModelSlug,
   isOverChatBudget,
   overBudgetScope,
+  RESERVED_TAB_KEYS,
   tNotation,
   type ModuleKey,
   type ModuleOverride,
@@ -1126,10 +1127,12 @@ export const createCustomModule = internalMutation({
       .query("eventModules")
       .withIndex("by_event", (q: any) => q.eq("eventId", eventId))
       .collect();
-    // Mirror modules.uniqueKey: never collide with a core key or a sibling.
+    // Mirror modules.uniqueKey: never collide with a core key, a sibling, or
+    // a reserved tool-tab key.
     const base = toKey(label) || "module";
-    const used = new Set(rows.map((r: any) => r.key as string));
+    const used = new Set<string>(rows.map((r: any) => r.key as string));
     if (isCoreModuleKey(base)) used.add(base);
+    for (const k of RESERVED_TAB_KEYS) used.add(k);
     let key = base;
     for (let i = 2; used.has(key); i++) key = `${base}_${i}`;
 

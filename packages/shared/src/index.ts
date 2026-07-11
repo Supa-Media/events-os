@@ -164,6 +164,14 @@ export const GRID_CORE_MODULE_KEYS: ModuleKey[] = CORE_MODULES.filter(
 /** Core module keys, in display order. */
 export const CORE_MODULE_KEYS: ModuleKey[] = CORE_MODULES.map((m) => m.key);
 
+/**
+ * Tab keys the event screen claims for non-workstream surfaces. A custom
+ * workstream must never mint one of these as its key — the screen's `?tab=`
+ * routing would hijack its tab (e.g. a custom "Tickets" workstream would
+ * always open the ticketing tool instead of its grid).
+ */
+export const RESERVED_TAB_KEYS = ["overview", "tickets", "crew"] as const;
+
 // ── Derived views of CORE_MODULES (single source of truth above) ─────────────
 export const MODULE_LABELS: Record<ModuleKey, string> = Object.fromEntries(
   CORE_MODULES.map((m) => [m.key, m.label]),
