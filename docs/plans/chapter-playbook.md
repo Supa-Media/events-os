@@ -59,16 +59,30 @@ changelog ("WWS now includes the rain-plan task; added the battery-charging
 duty"), publish. A release is immutable once published; corrections are a new
 release.
 
-### Chapters subscribe, not copy
+### Chapters subscribe, not copy — and subscribed means auto-track
 
-A chapter runs "v6 + local forks." The chapter admin sees a quiet **Playbook
-panel**: current version, what's new, and which of their items have drifted
-from canonical ("your WWS fork is 2 versions behind — see what changed").
-Adopting an update is a **choice, not a forced sync** — chapters have local
-reality (their venue, their people, their weather). Per-entry adoption
-states: `canonical` (tracking latest), `behind` (tracking, updates
-available), `forked` (local divergence), `declined` (saw the update, chose to
-stay).
+A chapter runs "canon + local forks." **Tracked entries auto-update on each
+release** — there is no per-update veto. If a chapter hasn't touched their
+WWS template, they're running canon, and canon got better; the network's
+learning propagates by default (that's the mission). This is safe because
+events already snapshot their template at creation (`templateVersion`): an
+update never disrupts an in-flight event, only the next one created.
+
+**Fork is the only escape hatch, and forks show permanent visible drift.**
+When a chapter has locally diverged and canonical changes, the prompt is
+"canonical changed — adopt / merge / keep your fork," and keeping the fork
+leaves the gap on display to both the chapter and PW Central ("your WWS fork
+is 2 versions behind — see what changed"). There is no `declined` state: a
+veto would let the gap pretend to be resolved, quietly re-creating the exact
+knowledge-stops-propagating failure the playbook exists to kill.
+
+**Mandatory entries can't fork.** Brand assets, identity, the
+non-negotiables are marked `mandatory` in the release and always track
+canon.
+
+Per-entry states: `tracking` (auto-updates), `forked` (local divergence,
+drift visible). The chapter admin's **Playbook panel** shows the current
+version, what changed, and every fork's drift.
 
 ### Upstream proposals feed the next release
 
@@ -110,12 +124,13 @@ data" first-run CTA for good.
   `publishedBy`. Immutable after publish.
 - **`playbookEntries`** — `releaseId` → typed refs to
   templates / docs / songs / courses / kit items, each with a pinned
-  version. Entry kinds mirror the table of contents (§1); prose sections
-  (identity, brand) are doc refs.
+  version and a `mandatory` flag (mandatory entries can't fork). Entry
+  kinds mirror the table of contents (§1); prose sections (identity,
+  brand) are doc refs.
 - **`chapterPlaybookState`** — `chapterId` → subscribed `releaseId`, plus
-  per-entry adoption status (`canonical` / `behind` / `forked` /
-  `declined`, with the local fork's ref when forked). Powers the chapter's
-  drift panel and PW Central's adoption dashboard.
+  per-entry state (`tracking` — auto-updates each release — or `forked`,
+  with the local fork's ref and the canonical version it diverged from).
+  Powers the chapter's drift panel and PW Central's adoption dashboard.
 
 Upstream proposals reuse the promotion machinery: a proposal row references
 the chapter item + its provenance (`sourceTemplateItemId` chain) and lands in
@@ -147,9 +162,9 @@ Rides the rebrand plan's phase 4 (Central):
 
 - Release cadence and numbering: date-based ("2026.07") vs. sequential
   ("v6"); whether entries can be hotfixed between releases.
-- Can a chapter subscribe to *some* entries and not others at provisioning
-  time (e.g. a chapter that will never run LTN), or is trimming done by
-  declining after the fact?
+- Subscription scope (distinct from update behavior): can a chapter's
+  subscription exclude entries it will never use (e.g. a chapter that never
+  runs LTN), and who approves that — the chapter or PW Central?
 - Where brand *assets* live (storage + licensing) vs. brand *guidelines*
   (docs).
 - Whether the Launch Track's completion gates anything (e.g. a chapter is
