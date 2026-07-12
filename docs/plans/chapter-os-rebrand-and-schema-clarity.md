@@ -350,14 +350,14 @@ experience makes the name true, not before.
 blueprints stay **Templates**; planning surfaces are **Areas**; recurring
 work is **Duties**; the public surface is the **Event page**; no Home tab
 (derived default tab + "Mine" views instead); Academy keeps its tab as the
-central learning hub with role/ownership/team-scoped courses.
+central learning hub with role/ownership/team-scoped courses; Central's
+workspace is branded **PW Central**.
 
 **Still open:**
 
-- Whether Central's workspace shares the Chapter OS brand or gets its own
-  (e.g. "PW Central").
 - The Chapter Playbook's form: a structured entity (versioned bundle of
-  templates/songs/guides/courses) vs. a curated doc collection that
+  templates/songs/guides/courses/kit, with subscribe + drift + upstream
+  proposals — the current lean) vs. a curated doc collection that
   references them.
 - Upstream proposal review: does Central accept/reject per-item, or pull a
   chapter fork wholesale (PR-style)?
