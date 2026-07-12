@@ -184,6 +184,81 @@ describe("retireSuppliesPackedStatus", () => {
     expect((items[1]!.fields as any).packedIn).toBe(true);
   });
 
+  test("backfill inserts missing defaults AND normalizes the leading column order", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    // A pre-rule supplies grid: no Timing/Due columns, plus an author-added
+    // custom column sitting mid-list.
+    const { eventId } = await seedSuppliesEvent(
+      t,
+      s.chapterId,
+      s.userId,
+      NEW_OPTIONS,
+      [],
+    );
+    await run(t, async (ctx) => {
+      const extras = [
+        { key: "source", label: "Source", kind: "custom", type: "select" },
+        { key: "warehouse", label: "Warehouse", kind: "custom", type: "text" },
+        { key: "notes", label: "Notes", kind: "custom", type: "longtext" },
+      ] as const;
+      for (let i = 0; i < extras.length; i++) {
+        await ctx.db.insert("eventColumns", {
+          eventId,
+          module: "supplies",
+          ...extras[i],
+          isVisible: true,
+          order: i + 1, // after the status column seeded at order 0
+        });
+      }
+      // Title snapshotted at the tail — an out-of-order legacy layout.
+      await ctx.db.insert("eventColumns", {
+        eventId,
+        module: "supplies",
+        key: "title",
+        label: "Item",
+        kind: "system",
+        type: "text",
+        isVisible: true,
+        order: 4,
+      });
+    });
+
+    const res = await t.mutation(
+      internal.migrations.backfillMissingDefaultColumns,
+      {},
+    );
+    expect(res.eventColumnsAdded).toBeGreaterThan(0); // offset/due_date at least
+    expect(res.columnsReordered).toBeGreaterThan(0);
+
+    const keys = await run(t, async (ctx) =>
+      (
+        await ctx.db
+          .query("eventColumns")
+          .withIndex("by_event_module", (q) =>
+            q.eq("eventId", eventId).eq("module", "supplies"),
+          )
+          .collect()
+      )
+        .sort((a, b) => a.order - b.order)
+        .map((c) => c.key),
+    );
+    // Canonical lead first; the author's columns keep their relative order;
+    // the other backfilled defaults follow.
+    expect(keys.slice(0, 4)).toEqual(["title", "status", "offset", "due_date"]);
+    expect(keys.indexOf("source")).toBeLessThan(keys.indexOf("warehouse"));
+    expect(keys.indexOf("warehouse")).toBeLessThan(keys.indexOf("notes"));
+    expect(keys).toContain("container");
+
+    // Idempotent: a second run adds and reorders nothing.
+    const again = await t.mutation(
+      internal.migrations.backfillMissingDefaultColumns,
+      {},
+    );
+    expect(again.eventColumnsAdded).toBe(0);
+    expect(again.columnsReordered).toBe(0);
+  });
+
   test("idempotent: a second run changes nothing", async () => {
     const t = newT();
     const s = await setupChapter(t);
