@@ -5,6 +5,7 @@
   "main": "expo-router/entry",
   "scripts": {
     "start": "expo start",
+    "postinstall": "node scripts/ensure-local-react.mjs",
     "dev": "expo start --dev-client",
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
