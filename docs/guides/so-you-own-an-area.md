@@ -7,11 +7,11 @@ covers what's true for all of them.*
 
 ## What an area is
 
-An area is one owned slice of the event plan — a stream of work one person
+An area is one owned slice of the event plan that one person
 carries end-to-end. The event plan is nothing more than its areas:
-Tasks, Comms Schedule, Run of Show, Crew Duties, Supplies & Logistics
+Tasks, Comms Schedule, Run of Show, Crew expectations, Supplies & Logistics
 (which includes the site map), Permits, Debrief (plus any custom ones
-this event added). Each renders as a tab on the event page.
+this event added). Each renders as a tab on the event screen.
 
 Every area is built the same way:
 
@@ -26,21 +26,21 @@ Every area is built the same way:
 - **Timing** — rows carry T-offsets that become real due dates (T-7 = seven
   days before the event; a supply's offset is its have-it-by deadline),
   minute offsets (Run of Show), or a convention deadline for the whole
-  stream (e.g. everything packed by T-1).
-- **A ready flag** — the button on your section header. Marking your stream
+  area (e.g. everything packed by T-1).
+- **A ready flag** — the button on your section header. Marking your area
   ready is you signing your name to it.
 
 ## What's expected of you
 
 Owning an area means owning its **completeness**, not doing every row:
 
-1. **Your stream tells the truth.** Rows exist for everything that must
+1. **Your area tells the truth.** Rows exist for everything that must
    happen, statuses reflect reality, nothing is unowned. Update statuses the
    day things happen, not the night before the event.
-2. **Work to the deadlines.** Dated rows by their due dates; undated streams
+2. **Work to the deadlines.** Dated rows by their due dates; undated areas
    by their conventions. Your guide has your T-table.
-3. **Flag cross-stream needs.** A task in your stream that implies a supply,
-   a permit, or a message in another stream? Make sure the other stream's
+3. **Flag cross-area needs.** A task in your area that implies a supply,
+   a permit, or a message in another area? Make sure the other area's
    owner has the row — the person who spots it is responsible for it being
    seen.
 4. **Escalate early.** Blocked at T-9 is a conversation; blocked at T-2 is a
@@ -53,11 +53,11 @@ Owning an area means owning its **completeness**, not doing every row:
 
 ## In the app
 
-- Your area is a **tab on the event page**. Click any cell to edit;
+- Your area is a **tab on the event screen**. Click any cell to edit;
   status chips cycle when tapped; changes save instantly.
 - Rows assigned to your role (or to you) appear in your **reminder emails**
   and in **"What's next"** on the event overview.
-- **Me view** (toggle on the event page) filters everything to just your
+- **Me view** (toggle on the event screen) filters everything to just your
   work.
 - The **Mark ready** button lives on your section header.
 - Any cell can carry a **how-to link** — if you figured out something the
@@ -66,10 +66,10 @@ Owning an area means owning its **completeness**, not doing every row:
 
 ## Ask the agent
 
-The assistant on the event page knows the playbook, your area's guide,
-and your live rows. Try:
+The assistant on the event screen knows this event's template, your
+area's guide, and your live rows. Try:
 
 - *"Brief me on my area — what's due, what's at risk, what's unowned?"*
-- *"What does 'ready' mean for this stream and how far am I?"*
+- *"What does 'ready' mean for this area and how far am I?"*
 - *"Add the rows I'm missing compared to the template."*
 - *"I'm blocked on X — who should I talk to and what's the fallback?"*

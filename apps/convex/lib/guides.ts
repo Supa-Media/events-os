@@ -18,7 +18,7 @@ export type PlatformGuide = {
 
 export const PLATFORM_GUIDES: PlatformGuide[] = [
   {
-    slug: "owning-the-comms-workstream",
+    slug: "owning-the-comms-area",
     title: "Owning the Comms area",
     body: `# Owning the Comms area
 
@@ -29,10 +29,10 @@ read; keep it open the first week.*
 
 You own **everything the event says to anyone**: announcements to the public,
 reminders to volunteers, briefings to leaders, thank-yous afterward. Owning
-the stream doesn't mean writing every post yourself — it means the Comms
+the area doesn't mean writing every post yourself — it means the Comms
 Schedule *tells the truth*: every message that must go out has a row, a date,
 an owner, and copy, and nothing goes out late or not at all. If a row in your
-stream has no owner, it's yours until you hand it to someone. Your escalation
+area has no owner, it's yours until you hand it to someone. Your escalation
 contact is the event owner — go to them the day something gets blocked, not
 the week after.
 
@@ -41,7 +41,7 @@ the week after.
 | When | What must be true |
 |---|---|
 | Kickoff (by T-14) | Comms Schedule reviewed against the template; flyer requested from marketing (T-14); team thread created |
-| T-14 → T-11 | Main announcement out (**only after venue + date are locked — never announce an unconfirmed venue**); call for volunteers out (after the Crew Duties rows exist) |
+| T-14 → T-11 | Main announcement out (**only after venue + date are locked — never announce an unconfirmed venue**); call for volunteers out (after the Crew expectations rows exist) |
 | T-8 | Volunteer group chat created, first message sent |
 | T-7 | Countdown post; volunteer role reminder; guest message; song bank sent (worship lead does it — you confirm it happened) |
 | T-3 | Volunteer + guest reminders |
@@ -58,7 +58,7 @@ people show up at the same park at the same time. It's not spam; it's the job.
   apply *(status → Removed, don't delete — the decision is a learning)*, add
   what's missing. Request the flyer now — design takes a week.
 - **Build:** announcement and volunteer call go out. Check the gate first:
-  is the venue locked? Are the Crew Duties written? If not, chase those
+  is the venue locked? Are the Crew expectations written? If not, chase those
   owners before posting anything.
 - **Lock:** the reminder cadence fires. Your main job is *confirmations* —
   did each message actually go out? Mark rows Done as they post, same day.
@@ -69,14 +69,14 @@ people show up at the same park at the same time. It's not spam; it's the job.
 
 ## In the app
 
-- Your stream is the **Comms Schedule tab** on the event. Each row is one
+- Your area is the **Comms Schedule tab** on the event. Each row is one
   message: audience, channel, T-offset (which becomes a real due date),
   owner, and the copy (or a link to it) in notes.
 - **Edit anything inline** — click a cell, type, click away. Status chips
   cycle when tapped.
 - The **calendar toggle** at the top of your tab shows your rows on a
   calendar — useful for spotting pile-up days.
-- **Mark the stream ready** (button on your section header) when every row is
+- **Mark the area ready** (button on your section header) when every row is
   owned, dated, and drafted — that's you signing your name to it. If you
   override with open items, say so to the event owner.
 - Your **due dates land in your reminder emails** automatically. If a row
@@ -86,7 +86,7 @@ people show up at the same park at the same time. It's not spam; it's the job.
 
 - **Event owner:** venue/date lock gates your announcement. Confirm before
   posting.
-- **Crew Duties owner:** the volunteer call points at the Crew Duties rows —
+- **Crew expectations owner:** the volunteer call points at the Crew expectations rows —
   don't recruit into a vacuum.
 - **Worship lead:** you confirm the song bank went to vocalists and
   instrumentalists by T-7 (they send it; you verify).
@@ -113,7 +113,7 @@ feedback request out · your retro notes captured.
 
 ## Ask the agent
 
-The assistant on your event page knows this playbook and your live schedule.
+The assistant on your event screen knows this guide and your live schedule.
 Try:
 
 - *"Brief me on comms — what's due this week and what's at risk?"*
@@ -126,7 +126,7 @@ Try:
 `,
   },
   {
-    slug: "so-you-own-a-workstream",
+    slug: "so-you-own-an-area",
     title: "So you own an area",
     body: `# So you own an area
 
@@ -137,11 +137,11 @@ covers what's true for all of them.*
 
 ## What an area is
 
-An area is one owned slice of the event plan — a stream of work one person
+An area is one owned slice of the event plan that one person
 carries end-to-end. The event plan is nothing more than its areas:
-Tasks, Comms Schedule, Run of Show, Crew Duties, Supplies & Logistics
+Tasks, Comms Schedule, Run of Show, Crew expectations, Supplies & Logistics
 (which includes the site map), Permits, Debrief (plus any custom ones
-this event added). Each renders as a tab on the event page.
+this event added). Each renders as a tab on the event screen.
 
 Every area is built the same way:
 
@@ -156,21 +156,21 @@ Every area is built the same way:
 - **Timing** — rows carry T-offsets that become real due dates (T-7 = seven
   days before the event; a supply's offset is its have-it-by deadline),
   minute offsets (Run of Show), or a convention deadline for the whole
-  stream (e.g. everything packed by T-1).
-- **A ready flag** — the button on your section header. Marking your stream
+  area (e.g. everything packed by T-1).
+- **A ready flag** — the button on your section header. Marking your area
   ready is you signing your name to it.
 
 ## What's expected of you
 
 Owning an area means owning its **completeness**, not doing every row:
 
-1. **Your stream tells the truth.** Rows exist for everything that must
+1. **Your area tells the truth.** Rows exist for everything that must
    happen, statuses reflect reality, nothing is unowned. Update statuses the
    day things happen, not the night before the event.
-2. **Work to the deadlines.** Dated rows by their due dates; undated streams
+2. **Work to the deadlines.** Dated rows by their due dates; undated areas
    by their conventions. Your guide has your T-table.
-3. **Flag cross-stream needs.** A task in your stream that implies a supply,
-   a permit, or a message in another stream? Make sure the other stream's
+3. **Flag cross-area needs.** A task in your area that implies a supply,
+   a permit, or a message in another area? Make sure the other area's
    owner has the row — the person who spots it is responsible for it being
    seen.
 4. **Escalate early.** Blocked at T-9 is a conversation; blocked at T-2 is a
@@ -183,11 +183,11 @@ Owning an area means owning its **completeness**, not doing every row:
 
 ## In the app
 
-- Your area is a **tab on the event page**. Click any cell to edit;
+- Your area is a **tab on the event screen**. Click any cell to edit;
   status chips cycle when tapped; changes save instantly.
 - Rows assigned to your role (or to you) appear in your **reminder emails**
   and in **"What's next"** on the event overview.
-- **Me view** (toggle on the event page) filters everything to just your
+- **Me view** (toggle on the event screen) filters everything to just your
   work.
 - The **Mark ready** button lives on your section header.
 - Any cell can carry a **how-to link** — if you figured out something the
@@ -196,11 +196,11 @@ Owning an area means owning its **completeness**, not doing every row:
 
 ## Ask the agent
 
-The assistant on the event page knows the playbook, your area's guide,
-and your live rows. Try:
+The assistant on the event screen knows this event's template, your
+area's guide, and your live rows. Try:
 
 - *"Brief me on my area — what's due, what's at risk, what's unowned?"*
-- *"What does 'ready' mean for this stream and how far am I?"*
+- *"What does 'ready' mean for this area and how far am I?"*
 - *"Add the rows I'm missing compared to the template."*
 - *"I'm blocked on X — who should I talk to and what's the fallback?"*
 `,
@@ -268,7 +268,7 @@ you until you hand it to someone.
 
 ## In the app
 
-- **Create** from Pipeline → New event: template, name, date, location. The
+- **Create** from Events → New event: template, name, date, location. The
   whole task timeline back-calculates from the date.
 - The **event header** is your cockpit — tap **Details** for status, reschedule, budget, roles,
   and **"What's next"** — your prioritized action list, grouped by phase.
@@ -296,7 +296,7 @@ you until you hand it to someone.
 
 ## Ask the agent
 
-The assistant on your event page reads the live plan. As owner, use it as
+The assistant on your event screen reads the live plan. As owner, use it as
 your chief of staff:
 
 - *"Give me the owner's briefing — T-window, risks, unowned work, unfilled

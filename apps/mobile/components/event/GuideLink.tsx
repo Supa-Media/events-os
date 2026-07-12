@@ -13,7 +13,7 @@ import { colors } from "../../lib/theme";
  */
 const MODULE_GUIDE_SLUGS: Record<string, string> = {
   planning_doc: "owning-the-planning-doc",
-  comms: "owning-the-comms-workstream",
+  comms: "owning-the-comms-area",
   run_of_show: "owning-the-run-of-show",
   volunteer_expectations: "owning-expectations",
   supplies: "owning-supplies-and-logistics",
@@ -22,7 +22,7 @@ const MODULE_GUIDE_SLUGS: Record<string, string> = {
 };
 
 /** The generic area-owner guide every area can fall back to. */
-const FALLBACK_GUIDE_SLUG = "so-you-own-a-workstream";
+const FALLBACK_GUIDE_SLUG = "so-you-own-an-area";
 
 /**
  * Quiet "How this works" affordance for an area's section header: a small

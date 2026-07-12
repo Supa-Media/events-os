@@ -58,7 +58,7 @@ you until you hand it to someone.
 
 ## In the app
 
-- **Create** from Pipeline → New event: template, name, date, location. The
+- **Create** from Events → New event: template, name, date, location. The
   whole task timeline back-calculates from the date.
 - The **event header** is your cockpit — tap **Details** for status, reschedule, budget, roles,
   and **"What's next"** — your prioritized action list, grouped by phase.
@@ -86,7 +86,7 @@ you until you hand it to someone.
 
 ## Ask the agent
 
-The assistant on your event page reads the live plan. As owner, use it as
+The assistant on your event screen reads the live plan. As owner, use it as
 your chief of staff:
 
 - *"Give me the owner's briefing — T-window, risks, unowned work, unfilled

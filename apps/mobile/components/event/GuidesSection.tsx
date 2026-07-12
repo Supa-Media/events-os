@@ -7,15 +7,15 @@ import { colors } from "../../lib/theme";
 
 /**
  * Curated display order for the Overview's Guides section: responsibility
- * guides first (event owner, then the generic workstream one), then the
- * per-workstream guides. Slugs not listed here (future guides) sort after,
+ * guides first (event owner, then the generic area one), then the
+ * per-area guides. Slugs not listed here (future guides) sort after,
  * alphabetically — nothing seeded is ever hidden.
  */
 const GUIDE_ORDER = [
   "so-you-own-an-event",
-  "so-you-own-a-workstream",
+  "so-you-own-an-area",
   "owning-the-planning-doc",
-  "owning-the-comms-workstream",
+  "owning-the-comms-area",
   "owning-the-run-of-show",
   "owning-expectations",
   "owning-supplies-and-logistics",
@@ -26,7 +26,7 @@ const GUIDE_ORDER = [
 /**
  * "Guides" on the event Overview — the browsable index of the platform guides
  * seeded into this chapter, so finding "how do I use this?" doesn't depend on
- * already standing on the right workstream header. Renders nothing while
+ * already standing on the right area header. Renders nothing while
  * loading or when the chapter has no guides.
  */
 export function GuidesSection() {

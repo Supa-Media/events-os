@@ -143,7 +143,7 @@ export default function EventDetailScreen() {
               This event no longer exists.
             </Text>
             <Button
-              title="Back to pipeline"
+              title="Back to events"
               icon="arrow-left"
               variant="secondary"
               onPress={() => router.replace("/")}
@@ -465,7 +465,7 @@ export default function EventDetailScreen() {
           className="mb-4 flex-row items-center gap-1.5 self-start active:opacity-70"
         >
           <Icon name="arrow-left" size={15} color={colors.muted} />
-          <Text className="text-sm font-medium text-muted">Pipeline</Text>
+          <Text className="text-sm font-medium text-muted">Events</Text>
         </Pressable>
 
         {/* Workspace header — everything from the old Overview edits inline
@@ -635,7 +635,7 @@ export default function EventDetailScreen() {
             </Narrow>
             {expectationsModule ? (
               <View>
-                <SectionHeader title="Duties" />
+                <SectionHeader title={expectationsModule.label} />
                 <ModuleSection
                   eventId={eventId}
                   module={expectationsModule}

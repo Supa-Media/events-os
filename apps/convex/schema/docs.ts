@@ -31,7 +31,7 @@ export const docs = defineTable({
   // Short public slug for the unauthenticated share route.
   shareId: v.string(),
   // Stable per-chapter key for PLATFORM-SEEDED guide docs (the filename of the
-  // source guide under docs/guides/, e.g. "so-you-own-a-workstream"). The
+  // source guide under docs/guides/, e.g. "so-you-own-an-area"). The
   // seeder upserts by (chapterId, slug); user-created docs leave it unset.
   // A set slug also marks the doc PLATFORM-OWNED: read-only in the app
   // (docs.ts rejects user writes) and always updated to the latest platform

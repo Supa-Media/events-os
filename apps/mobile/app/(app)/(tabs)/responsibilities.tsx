@@ -144,7 +144,7 @@ export default function ResponsibilitiesScreen() {
         <Narrow>
           <EmptyState
             title="Duties are managed by team leads"
-            message="The duty catalog is only visible to managers and admins. Your own responsibilities are listed on your Team page."
+            message="The duty catalog is only visible to managers and admins. Your own duties are listed on your Team page."
           />
         </Narrow>
       </Screen>
@@ -162,9 +162,7 @@ export default function ResponsibilitiesScreen() {
             marginBottom: spacing.md,
           }}
         >
-          <Text className="font-display text-2xl text-ink">
-            Responsibilities
-          </Text>
+          <Text className="font-display text-2xl text-ink">Duties</Text>
           <Text className="text-2xs font-bold uppercase tracking-wider text-muted">
             {responsibilities.length} ongoing
           </Text>
@@ -182,7 +180,7 @@ export default function ResponsibilitiesScreen() {
         <ScrollView horizontal showsHorizontalScrollIndicator={false}>
           <View style={{ width: Math.max(TABLE_WIDTH, 320) }}>
             <View className="flex-row items-center border-b border-border bg-sunken">
-              <GridHeaderCell label="Responsibility" width={COLS.title} />
+              <GridHeaderCell label="Duty" width={COLS.title} />
               <GridHeaderCell label="Cadence" width={COLS.cadence} />
               <GridHeaderCell label="Roles" width={COLS.roles} />
               <GridHeaderCell label="People" width={COLS.people} />
@@ -196,8 +194,8 @@ export default function ResponsibilitiesScreen() {
             {responsibilities.length === 0 ? (
               <View className="px-3 py-6">
                 <Text className="text-sm text-faint">
-                  No responsibilities yet — add the ongoing duties your team
-                  runs on below.
+                  No duties yet — add the ongoing work your team runs on
+                  below.
                 </Text>
               </View>
             ) : filtered.length === 0 ? (
@@ -228,13 +226,13 @@ export default function ResponsibilitiesScreen() {
           onPress={() => {
             // A live search filter would hide the new row — clear it first.
             setSearch("");
-            void create({ title: "New responsibility" }).catch(alertError);
+            void create({ title: "New duty" }).catch(alertError);
           }}
           className="flex-row items-center gap-1.5 border-t border-border px-3 py-2.5 active:bg-sunken web:hover:bg-sunken"
         >
           <Icon name="plus" size={15} color={colors.muted} />
           <Text className="text-sm font-medium text-muted">
-            Add responsibility
+            Add duty
           </Text>
         </Pressable>
       </View>
@@ -306,7 +304,7 @@ function ResponsibilityRow({
       <Cell width={COLS.title}>
         <InlineText
           value={row.title}
-          placeholder="Responsibility"
+          placeholder="Duty"
           weight="medium"
           onCommit={(t) => {
             if (t.trim()) update({ title: t.trim() });
@@ -414,8 +412,8 @@ function ResponsibilityRow({
         <Pressable
           onPress={() =>
             confirmAction({
-              title: "Delete responsibility?",
-              message: `"${row.title || "This responsibility"}" will be removed for everyone holding it.`,
+              title: "Delete duty?",
+              message: `"${row.title || "This duty"}" will be removed for everyone holding it.`,
               confirmLabel: "Delete",
               destructive: true,
               onConfirm: () => {
@@ -424,7 +422,7 @@ function ResponsibilityRow({
             })
           }
           hitSlop={4}
-          accessibilityLabel="Delete responsibility"
+          accessibilityLabel="Delete duty"
           className="rounded p-1 active:bg-sunken web:hover:bg-sunken"
         >
           <Icon name="trash-2" size={14} color={colors.danger} />

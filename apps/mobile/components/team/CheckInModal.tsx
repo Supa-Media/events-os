@@ -273,7 +273,7 @@ export function CheckInModal({
             {/* Responsibilities check (a skipped 1:1 assesses nothing) */}
             {type === "skip" ? null : resp.length > 0 || deferred.length > 0 ? (
               <View style={{ gap: spacing.sm }}>
-                <FieldLabel>Responsibilities — on track?</FieldLabel>
+                <FieldLabel>Duties — on track?</FieldLabel>
                 {resp.length === 0 ? (
                   <Text className="text-sm text-faint">
                     Nothing due this cycle — every duty was reviewed recently.
@@ -372,8 +372,8 @@ export function CheckInModal({
               </View>
             ) : (
               <Text className="text-sm text-faint">
-                No responsibilities assigned yet — add them in the
-                Responsibilities tab.
+                No duties assigned yet — add them in the
+                Duties tab.
               </Text>
             )}
 

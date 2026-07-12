@@ -1095,7 +1095,7 @@ export function EventTools({
         ref={ref}
         onPress={openMenu}
         accessibilityRole="button"
-        accessibilityLabel={ticketsActive ? "More tools (Tickets open)" : "More tools"}
+        accessibilityLabel={ticketsActive ? "More tools (Event page open)" : "More tools"}
         className={`rounded-md border px-2.5 py-2 active:opacity-80 web:hover:bg-sunken ${
           ticketsActive
             ? "border-accent bg-accent-soft"
@@ -1111,7 +1111,7 @@ export function EventTools({
       <Popover visible={visible} anchor={anchor} width={210} onClose={closeMenu}>
         <ToolsMenuRow
           icon="tag"
-          label="Tickets"
+          label="Event page"
           active={ticketsActive}
           onPress={() => {
             closeMenu();

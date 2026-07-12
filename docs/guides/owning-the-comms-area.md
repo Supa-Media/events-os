@@ -7,10 +7,10 @@ read; keep it open the first week.*
 
 You own **everything the event says to anyone**: announcements to the public,
 reminders to volunteers, briefings to leaders, thank-yous afterward. Owning
-the stream doesn't mean writing every post yourself — it means the Comms
+the area doesn't mean writing every post yourself — it means the Comms
 Schedule *tells the truth*: every message that must go out has a row, a date,
 an owner, and copy, and nothing goes out late or not at all. If a row in your
-stream has no owner, it's yours until you hand it to someone. Your escalation
+area has no owner, it's yours until you hand it to someone. Your escalation
 contact is the event owner — go to them the day something gets blocked, not
 the week after.
 
@@ -19,7 +19,7 @@ the week after.
 | When | What must be true |
 |---|---|
 | Kickoff (by T-14) | Comms Schedule reviewed against the template; flyer requested from marketing (T-14); team thread created |
-| T-14 → T-11 | Main announcement out (**only after venue + date are locked — never announce an unconfirmed venue**); call for volunteers out (after the Crew Duties rows exist) |
+| T-14 → T-11 | Main announcement out (**only after venue + date are locked — never announce an unconfirmed venue**); call for volunteers out (after the Crew expectations rows exist) |
 | T-8 | Volunteer group chat created, first message sent |
 | T-7 | Countdown post; volunteer role reminder; guest message; song bank sent (worship lead does it — you confirm it happened) |
 | T-3 | Volunteer + guest reminders |
@@ -36,7 +36,7 @@ people show up at the same park at the same time. It's not spam; it's the job.
   apply *(status → Removed, don't delete — the decision is a learning)*, add
   what's missing. Request the flyer now — design takes a week.
 - **Build:** announcement and volunteer call go out. Check the gate first:
-  is the venue locked? Are the Crew Duties written? If not, chase those
+  is the venue locked? Are the Crew expectations written? If not, chase those
   owners before posting anything.
 - **Lock:** the reminder cadence fires. Your main job is *confirmations* —
   did each message actually go out? Mark rows Done as they post, same day.
@@ -47,14 +47,14 @@ people show up at the same park at the same time. It's not spam; it's the job.
 
 ## In the app
 
-- Your stream is the **Comms Schedule tab** on the event. Each row is one
+- Your area is the **Comms Schedule tab** on the event. Each row is one
   message: audience, channel, T-offset (which becomes a real due date),
   owner, and the copy (or a link to it) in notes.
 - **Edit anything inline** — click a cell, type, click away. Status chips
   cycle when tapped.
 - The **calendar toggle** at the top of your tab shows your rows on a
   calendar — useful for spotting pile-up days.
-- **Mark the stream ready** (button on your section header) when every row is
+- **Mark the area ready** (button on your section header) when every row is
   owned, dated, and drafted — that's you signing your name to it. If you
   override with open items, say so to the event owner.
 - Your **due dates land in your reminder emails** automatically. If a row
@@ -64,7 +64,7 @@ people show up at the same park at the same time. It's not spam; it's the job.
 
 - **Event owner:** venue/date lock gates your announcement. Confirm before
   posting.
-- **Crew Duties owner:** the volunteer call points at the Crew Duties rows —
+- **Crew expectations owner:** the volunteer call points at the Crew expectations rows —
   don't recruit into a vacuum.
 - **Worship lead:** you confirm the song bank went to vocalists and
   instrumentalists by T-7 (they send it; you verify).
@@ -91,7 +91,7 @@ feedback request out · your retro notes captured.
 
 ## Ask the agent
 
-The assistant on your event page knows this playbook and your live schedule.
+The assistant on your event screen knows this guide and your live schedule.
 Try:
 
 - *"Brief me on comms — what's due this week and what's at risk?"*

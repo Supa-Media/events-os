@@ -111,7 +111,7 @@ export function AddResponsibilityModal({
         >
           <View className="flex-row items-center justify-between border-b border-border px-5 py-4">
             <Text className="font-display text-lg text-ink" numberOfLines={1}>
-              Add responsibility
+              Add duty
             </Text>
             <Pressable onPress={onClose} hitSlop={8} className="rounded-md p-1">
               <Icon name="x" size={18} color={colors.muted} />
@@ -127,7 +127,7 @@ export function AddResponsibilityModal({
                   ? [
                       {
                         key: "role",
-                        label: `Everyone with role “${person.role}”`,
+                        label: `Everyone with title “${person.role}”`,
                       } as const,
                     ]
                   : []),
