@@ -353,12 +353,11 @@ work is **Duties**; the public surface is the **Event page**; no Home tab
 central learning hub with role/ownership/team-scoped courses; Central's
 workspace is branded **PW Central**.
 
-**Still open:**
+Also decided: the Chapter Playbook is a **structured entity** — a versioned
+bundle of templates/songs/guides/courses/kit with subscribe + drift +
+upstream proposals. Full design in `docs/plans/chapter-playbook.md`.
 
-- The Chapter Playbook's form: a structured entity (versioned bundle of
-  templates/songs/guides/courses/kit, with subscribe + drift + upstream
-  proposals — the current lean) vs. a curated doc collection that
-  references them.
+**Still open:**
 - Upstream proposal review: does Central accept/reject per-item, or pull a
   chapter fork wholesale (PR-style)?
 - Person↔user auto-link policy for people with multiple emails / no
