@@ -475,11 +475,46 @@ export const VOLUNTEER_STATUS_OPTIONS: SelectOption[] = [
   { value: "declined", label: "Declined", color: "red" },
 ];
 
+// ── Canonical column order ───────────────────────────────────────────────────
+// Every grid leads with the same columns, in the same order: Title, Details
+// (when the module has one), Status, Timing (offset), Due. Everything after
+// that is the module's own business. One rule across tabs means a reader who
+// learned one grid has learned them all.
+
+/** The shared leading columns, in their fixed order. */
+export const CANONICAL_LEADING_COLUMN_KEYS = [
+  "title",
+  "details",
+  "status",
+  "offset",
+  "due_date",
+] as const;
+
+/**
+ * Apply the canonical order to a column list: the leading keys first (those
+ * present, in CANONICAL_LEADING_COLUMN_KEYS order), then every other column
+ * in the relative order given. Pure + stable, so callers can normalize a
+ * scope's stored columns without disturbing an author's ordering of the rest.
+ */
+export function canonicalColumnOrder<T extends { key: string }>(
+  columns: readonly T[],
+): T[] {
+  const leadKeys = new Set<string>(CANONICAL_LEADING_COLUMN_KEYS);
+  const lead: T[] = [];
+  for (const key of CANONICAL_LEADING_COLUMN_KEYS) {
+    const col = columns.find((c) => c.key === key);
+    if (col) lead.push(col);
+  }
+  return [...lead, ...columns.filter((c) => !leadKeys.has(c.key))];
+}
+
 // ── Default column sets per module (seed defaults; editable per template) ─────
 // Authors reorder/hide/rename these and add custom columns. `system` columns are
 // backed by promoted item fields; `custom` columns live in the `fields` bag.
 // Kept Partial defensively: grid code paths look modules up by (sometimes
 // arbitrary) key and fall back to [] for anything without a column set.
+// Every set below leads with the canonical columns (see above) — a test pins
+// this, so a reordered edit here fails loudly instead of shipping drift.
 export const DEFAULT_COLUMNS: Partial<Record<ModuleKey, ColumnDef[]>> = {
   planning_doc: [
     { key: "title", label: "Task", kind: "system", type: "text", isVisible: true },
@@ -512,11 +547,11 @@ export const DEFAULT_COLUMNS: Partial<Record<ModuleKey, ColumnDef[]>> = {
   ],
   comms: [
     { key: "title", label: "Comm", kind: "system", type: "text", isVisible: true },
+    { key: "status", label: "Status", kind: "system", type: "status", options: COMMS_STATUS_OPTIONS, isVisible: true },
     { key: "offset", label: "Timing", kind: "system", type: "offset_days", isVisible: true },
     { key: "due_date", label: "Date", kind: "system", type: "due_date", isVisible: true },
     { key: "channel", label: "Channel", kind: "custom", type: "multiselect", options: COMMS_CHANNEL_OPTIONS, isVisible: true },
     { key: "audience", label: "Audience", kind: "custom", type: "multiselect", options: COMMS_AUDIENCE_OPTIONS, isVisible: true },
-    { key: "status", label: "Status", kind: "system", type: "status", options: COMMS_STATUS_OPTIONS, isVisible: true },
     { key: "owner", label: "Owner", kind: "system", type: "person", isVisible: true },
     { key: "role", label: "Role", kind: "system", type: "role", isVisible: false },
     { key: "cost", label: "Cost", kind: "custom", type: "currency", isVisible: false },
@@ -552,9 +587,9 @@ export const DEFAULT_COLUMNS: Partial<Record<ModuleKey, ColumnDef[]>> = {
   // team is tracked on engagements (the Volunteers list), not here.
   volunteer_expectations: [
     { key: "title", label: "Expectation", kind: "system", type: "text", isVisible: true },
+    { key: "details", label: "Details", kind: "custom", type: "longtext", isVisible: true },
     { key: "team", label: "Team", kind: "custom", type: "select", options: VOLUNTEER_TEAM_OPTIONS, isVisible: true },
     { key: "owner", label: "Owner", kind: "system", type: "person", isVisible: true },
-    { key: "details", label: "Details", kind: "custom", type: "longtext", isVisible: true },
     { key: "how_to", label: "How-To", kind: "custom", type: "how_to", isVisible: true },
   ],
 };

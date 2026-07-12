@@ -20,6 +20,7 @@ import { internalMutation } from "./_generated/server";
 import { internal } from "./_generated/api";
 import { Id } from "./_generated/dataModel";
 import {
+  canonicalColumnOrder,
   DEFAULT_COLUMNS,
   SUPPLY_STATUS_OPTIONS,
   type ModuleKey,
@@ -38,10 +39,15 @@ import {
  *
  * This walks each (scope, module) group and INSERTS any DEFAULT_COLUMNS column
  * whose `key` is absent, copying label/kind/type/options/config/isVisible from
- * the shared default. Missing columns are appended after the existing ones (next
- * free `order`) so we never disturb a scope's authored column order/visibility.
+ * the shared default — then NORMALIZES the group's order to the canonical
+ * rule (canonicalColumnOrder): Title, Details, Status, Timing, Due first,
+ * everything else keeping its existing relative order. Without the
+ * normalization, backfilled columns would land at the tail of every existing
+ * grid (Timing/Due after Notes) and older scopes would keep pre-rule layouts
+ * (comms' Status after its dates) forever.
  *
- * Idempotent: a second run is a no-op (every default key is already present).
+ * Idempotent: a second run inserts nothing and finds every order already
+ * canonical.
  *
  * Run locally:   npx convex run migrations:backfillMissingDefaultColumns
  * Run on prod:   npx convex run --prod migrations:backfillMissingDefaultColumns
@@ -51,6 +57,43 @@ export const backfillMissingDefaultColumns = internalMutation({
   handler: async (ctx) => {
     let templateColumnsAdded = 0;
     let eventColumnsAdded = 0;
+    let columnsReordered = 0;
+
+    /** Missing defaults for a group, as insertable field bags (sans scope). */
+    const missingDefaults = (
+      module: string,
+      cols: Array<{ key: string }>,
+    ): Array<Record<string, unknown>> => {
+      const defaults = DEFAULT_COLUMNS[module as ModuleKey];
+      if (!defaults) return [];
+      const present = new Set(cols.map((c) => c.key));
+      return defaults
+        .filter((d) => !present.has(d.key))
+        .map((d) => ({
+          module,
+          key: d.key,
+          label: d.label,
+          kind: d.kind,
+          type: d.type,
+          options: d.options,
+          config: d.config,
+          isVisible: d.isVisible,
+        }));
+    };
+
+    /** Re-stamp `order` so the canonical leading columns come first and the
+     *  rest keep their current relative order; patches only real changes. */
+    const normalizeOrder = async (
+      cols: Array<{ _id: Id<"templateColumns"> | Id<"eventColumns">; key: string; order: number }>,
+    ) => {
+      const sorted = [...cols].sort((a, b) => a.order - b.order);
+      const finalOrder = canonicalColumnOrder(sorted);
+      for (let i = 0; i < finalOrder.length; i++) {
+        if (finalOrder[i].order === i) continue;
+        await ctx.db.patch(finalOrder[i]._id as any, { order: i });
+        columnsReordered++;
+      }
+    };
 
     // ── Templates ──────────────────────────────────────────────────────────
     const templateCols = await ctx.db.query("templateColumns").collect();
@@ -61,26 +104,20 @@ export const backfillMissingDefaultColumns = internalMutation({
     }
     for (const [k, cols] of byTemplateModule) {
       const [eventTypeId, module] = k.split("::");
-      const defaults = DEFAULT_COLUMNS[module as ModuleKey];
-      if (!defaults) continue;
-      const present = new Set(cols.map((c) => c.key));
+      if (!DEFAULT_COLUMNS[module as ModuleKey]) continue;
       let nextOrder = cols.reduce((m, c) => (c.order > m ? c.order : m), -1) + 1;
-      for (const d of defaults) {
-        if (present.has(d.key)) continue;
-        await ctx.db.insert("templateColumns", {
+      const added: Array<{ _id: Id<"templateColumns">; key: string; order: number }> = [];
+      for (const d of missingDefaults(module, cols)) {
+        const order = nextOrder++;
+        const _id = await ctx.db.insert("templateColumns", {
           eventTypeId: eventTypeId as Id<"eventTypes">,
-          module,
-          key: d.key,
-          label: d.label,
-          kind: d.kind,
-          type: d.type,
-          options: d.options,
-          config: d.config,
-          isVisible: d.isVisible,
-          order: nextOrder++,
-        });
+          ...d,
+          order,
+        } as any);
+        added.push({ _id, key: d.key as string, order });
         templateColumnsAdded++;
       }
+      await normalizeOrder([...cols, ...added]);
     }
 
     // ── Events ─────────────────────────────────────────────────────────────
@@ -92,29 +129,23 @@ export const backfillMissingDefaultColumns = internalMutation({
     }
     for (const [k, cols] of byEventModule) {
       const [eventId, module] = k.split("::");
-      const defaults = DEFAULT_COLUMNS[module as ModuleKey];
-      if (!defaults) continue;
-      const present = new Set(cols.map((c) => c.key));
+      if (!DEFAULT_COLUMNS[module as ModuleKey]) continue;
       let nextOrder = cols.reduce((m, c) => (c.order > m ? c.order : m), -1) + 1;
-      for (const d of defaults) {
-        if (present.has(d.key)) continue;
-        await ctx.db.insert("eventColumns", {
+      const added: Array<{ _id: Id<"eventColumns">; key: string; order: number }> = [];
+      for (const d of missingDefaults(module, cols)) {
+        const order = nextOrder++;
+        const _id = await ctx.db.insert("eventColumns", {
           eventId: eventId as Id<"events">,
-          module,
-          key: d.key,
-          label: d.label,
-          kind: d.kind,
-          type: d.type,
-          options: d.options,
-          config: d.config,
-          isVisible: d.isVisible,
-          order: nextOrder++,
-        });
+          ...d,
+          order,
+        } as any);
+        added.push({ _id, key: d.key as string, order });
         eventColumnsAdded++;
       }
+      await normalizeOrder([...cols, ...added]);
     }
 
-    return { templateColumnsAdded, eventColumnsAdded };
+    return { templateColumnsAdded, eventColumnsAdded, columnsReordered };
   },
 });
 
