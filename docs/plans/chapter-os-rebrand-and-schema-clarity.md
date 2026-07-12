@@ -49,7 +49,7 @@ confusion across schema, UI, and docs, and already the tenancy unit
 (`schema/chapters.ts`). Under the chapter frame, the surfaces stop fighting
 the name:
 
-- A chapter has **Events** (time-boxed, playbook-driven — the wedge and the
+- A chapter has **Events** (time-boxed, template-driven — the wedge and the
   most mature surface),
 - **People** (roster, engagements, org),
 - **Projects** (finite non-event work),
@@ -68,15 +68,16 @@ done: a new lead never has to be told which of two same-named things you mean.
 
 | Concept | Canonical name | Replaces / notes |
 |---|---|---|
-| Reusable event blueprint | **Playbook** | "template" (UI), `eventTypes` (table), the `template*` file family. The README already calls the source material "the Public Worship event playbook"; a playbook *sounds like* it contains institutional memory, which is the point. Backend renames ride the legacy-purge migration (§8c). |
+| Chapter founding & operating doc | **Chapter Playbook** | New, Central-published (§5): how to start and run a chapter. "Playbook" is *reserved* for this level — it contains the event Templates, song bank, guides, and Academy courses. Never use "playbook" for an event blueprint. |
+| Reusable event blueprint | **Template** | Keeps the existing UI word (zero retraining). The backend split-brain heals the cheap way: `eventTypes` table → `templates`, unifying with the `template*` file family in the purge migration (§7c). The wisdom-carrying artifact lives one level up as the Chapter Playbook, so "template" no longer has to imply an empty form. |
 | Dated event instance | **Event** | Retire "Pipeline" as a synonym for the events list in docs; the screen keeps "Pipeline" only as the list's title, never as the entity name. |
 | Planning surface inside an event | **Area** | Ban "workstream" and "stream" from all UI text and doc prose (fix the "No workstreams active" leak in `apps/mobile/app/(app)/template/[id].tsx`; retitle/redirect the `so-you-own-a-workstream` guide slug). `module` may survive as a code-only term. |
 | Recurring org work | **Duty** | Retitle the "Responsibilities" screen header to Duties; rename the event-crew `volunteer_expectations` grid label from "Crew Duties" to **Crew expectations** so the word isn't doubled on one screen. |
 | Finite non-event work | **Project** | Relabel the People-grid `people.projects` column to **Involvements** (it's participation history, not links to the `projects` table). |
 | Event staffing role | **Role** | `people.role` becomes **Title**; `userChapters.role` becomes **Access level**. "Role" then has exactly one meaning. |
 | Org-chart surface | **Org** (a view inside People, not a tab) | Frees "Team" for its crew-sub-team meaning only (`engagements.teams`). |
-| Public-facing side of an event | **Guests** (working name; alt: "Front door") | Replaces "Tickets/Ticketing" as the surface name — see §7d. |
-| Auth allowlist | `accessAllowlist` | Rename the `guests` table — it contains an OTP allowlist, not guests, and the name will collide fatally with the Guests surface. |
+| Public-facing side of an event | **Event page** | Replaces "Tickets/Ticketing" as the surface name — the tab holds the public landing page plus everything that flows from it (RSVPs, tickets, giving, check-in, blasts). See §7d. **Discipline:** the internal event detail screen is never called a "page" — you open *the event*, you share *the event page*. |
+| Auth allowlist | `accessAllowlist` | Rename the `guests` table — it contains an OTP allowlist, not guests. |
 
 Module key → label drift (`planning_doc` → "Tasks", `retro` → "Debrief", …)
 stays as-is — keys are storage, labels are product — but the canonical labels
@@ -119,16 +120,28 @@ become automatic at first login (match on auth email ↔ `people.pwEmail`, with
 an admin fallback for ambiguity), or the scoping model has nothing to hang
 off.
 
+### No Home tab — the default tab is derived, and "mine" is a view
+
+A "Home" aggregator tab is what apps build when they don't trust their
+pillars, and it dilutes the identity statement (this product is about
+events). Instead:
+
+- **The default tab is derived, not added.** A volunteer's app *opens on*
+  their event briefing; everyone else's opens on Events. No new tab — a
+  per-tier starting point.
+- **"My work" is a pinned view inside each pillar, not a place.** Events
+  leads with a "Mine" section (my events, my due items); Work leads with my
+  duties and projects. The seam between the three work systems is a
+  consistent *pattern* ("every pillar leads with your slice") rather than a
+  fifth surface competing for identity.
+
 ### Navigation (all tiers, before scoping removes items)
 
-1. **Home** — "my work this week" across event items, projects, and duties;
-   also the volunteer home. This is a new screen and the seam that makes the
-   three work systems (event items / projects / duties) feel like one plate.
-2. **Events** — the pipeline, unchanged as the wedge.
-3. **People** — roster + Org merged (Org becomes a view).
-4. **Work** — Projects and Duties together (siblings: finite vs. recurring).
-5. **Songs** / **Academy** — Academy is surfaced hard during first-run and
-   from Home; it may not need a permanent tab for most tiers.
+1. **Events** — the pipeline, unchanged as the wedge; opens on "Mine."
+2. **People** — roster + Org merged (Org becomes a view).
+3. **Work** — Projects and Duties together (siblings: finite vs. recurring).
+4. **Songs**
+5. **Academy** — the central learning hub (see §5a); keeps its tab.
 
 This cuts the 7-item mobile tab bar to ≤5 for every tier.
 
@@ -144,17 +157,22 @@ scaled-down Eden"). Promote that from a boolean to a tenant:
 > **Central is a workspace one level above chapters. Central publishes;
 > chapters run.**
 
-- **Playbooks.** Central authors and versions the canonical playbooks
-  (Eden, WWS, LTN). Chapters *subscribe*: they always see the current
-  canonical version, may fork locally, and — using the existing
+- **The Chapter Playbook.** Central's flagship artifact: the versioned
+  founding-and-operating document for a chapter. It is the container for
+  everything below — the event Templates, the song bank, the guides, and
+  the Academy courses. "Provision a chapter" (§5b) means "instantiate the
+  Chapter Playbook."
+- **Templates.** Central authors and versions the canonical event
+  templates (Eden, WWS, LTN). Chapters *subscribe*: they always see the
+  current canonical version, may fork locally, and — using the existing
   retro→template promotion machinery (`sourceTemplateItemId`,
   `templateSync.ts`) — a chapter's retro learning either promotes to their
   fork or is **proposed upstream** to Central. Central accepts it into the
-  canonical playbook and every chapter inherits it. Institutional memory at
+  canonical template and every chapter inherits it. Institutional memory at
   network scale, built from machinery that already exists.
 - **Songs.** Central owns the canonical song bank (the "Songwriting &
   Selection Philosophy" made executable); chapters see central + local
-  additions. Publish/local-overlay, same as playbooks.
+  additions. Publish/local-overlay, same as templates.
 - **Docs & brand.** Guides, brand assets, comms templates:
   Central-published, chapter-readable, local additions clearly marked local.
 - **People.** A person belongs to the network; chapters hold engagements
@@ -164,16 +182,37 @@ scaled-down Eden"). Promote that from a boolean to a tenant:
 - **Inventory.** Chapter-owned by default (the green luggage lives in
   Brooklyn); Central can own loanable assets and see the aggregate.
 - **Central's home.** Cross-chapter pipeline: every upcoming event across
-  the network, readiness, playbook version drift ("Austin runs WWS v3,
+  the network, readiness, template version drift ("Austin runs WWS v3,
   canonical is v5"), and the queue of upstream proposals.
 
-**Chapter cloning (V3) stops being a feature and becomes a consequence.**
-Spinning up a chapter = provisioning an empty chapter subscribed to Central's
-playbooks, song bank, guides, and academy. Day one, a new lead lands in a
-lobby containing exactly one thing: "Create your first event from the WWS
-Playbook." That retires the CLI-only `seed:ensureChapters` path and the
-"Seed demo data" first-run CTA (which currently throws a permission error for
-non-superusers).
+### 5a. Academy: the central learning hub, with scoped courses
+
+Academy stays a first-class pillar with its own tab — it is *the* learning
+hub, published by Central like everything else in the Chapter Playbook. The
+catalog is scoped by what a course teaches:
+
+- **Role courses** — how to play a role in an event: Production Lead,
+  Comms Lead, worship-team roles.
+- **Ownership course** — owning an event end-to-end. The existing
+  capstone-with-training-event mechanic is exactly right here.
+- **Team courses** — per-team tracks (e.g. music team), plus management
+  tracks for leads: people management, project management.
+
+Distribution comes free from the lobby model (§4): **courses surface
+contextually based on what you hold.** First time assigned
+`production_lead` → "Take the Production Lead course" appears on that
+event. About to own your first event → the ownership course is suggested
+at creation. Academy stays the hub; the pillars become its funnels.
+
+### 5b. Provisioning replaces chapter cloning (V3)
+
+**Chapter cloning stops being a feature and becomes a consequence.**
+Spinning up a chapter = provisioning an empty chapter with the Chapter
+Playbook — its templates, song bank, guides, and courses. Day one, a new
+lead lands in a lobby containing exactly one thing: "Create your first
+event from the WWS Template." That retires the CLI-only
+`seed:ensureChapters` path and the "Seed demo data" first-run CTA (which
+currently throws a permission error for non-superusers).
 
 ---
 
@@ -183,8 +222,10 @@ With Central provisioning and scoped lobbies in place, first-run becomes:
 
 1. OTP login → person auto-linked (§4 keystone).
 2. Lobby sized to what you hold; a brand-new chapter admin's lobby says
-   "Create your first event from the WWS Playbook."
-3. Academy surfaced on Home for anyone with zero completed tracks.
+   "Create your first event from the WWS Template."
+3. Academy courses surface contextually (§5a): first-role and
+   first-ownership prompts, plus a starter course for anyone with zero
+   completed tracks.
 4. Guides are Central-published product content — they exist for every
    chapter from day zero instead of vanishing when seeds weren't run.
 
@@ -238,15 +279,16 @@ with one chapter is the cheapest this will ever be:
 - `projects.statusNote` / `nextSteps` (superseded by `projectComments`).
 - `docs.seedHash` (self-declared "DEPRECATED — never read").
 - `siteMarkers.category` (legacy, no longer written).
-- Table renames ride the same wave: `eventTypes` → `playbooks` (and the
-  `template*` file/function family), `guests` → `accessAllowlist`.
+- Table renames ride the same wave: `eventTypes` → `templates` (unifying
+  with the `template*` file/function family), `guests` → `accessAllowlist`.
 
-### 7d. The Guests surface (ticketing, reframed)
+### 7d. The Event page surface (ticketing, reframed)
 
 Keep the machinery — it exists so fundraiser and RSVP data never has to
-leave the app — but reframe it as **the public-facing side of an event**:
+leave the app — but reframe it as **the Event page**: the public-facing
+side of an event and everything that flows from it:
 
-- **Event page** (landing), **RSVPs** (free events), **Tickets**
+- The **landing page** itself, **RSVPs** (free events), **Tickets**
   (fundraisers), **Giving** (donations, new — §7a), **Check-in**, and
   **Blasts**.
 - Blast audiences must include **crew/volunteers** (engagements) — the
@@ -288,9 +330,9 @@ same milestones:
 2. **Lobbies** (the Home screen + derived nav + auto person↔user link):
    the single biggest lever on "only see what you worry about." Riders #4–6.
 3. **Purge** (one migration release): §7c legacy fields + table renames
-   (`playbooks`, `accessAllowlist`); grid-engine validation (§7b).
+   (`templates`, `accessAllowlist`); grid-engine validation (§7b).
 4. **Central** (tenancy lift): platform flags → Central workspace;
-   playbook subscribe/fork/propose-upstream; provisioning replaces chapter
+   template subscribe/fork/propose-upstream; provisioning replaces chapter
    cloning; Central home.
 5. **Typed domain** (feature-by-feature, §7a): **Giving first** (unlocks the
    fundraising story), then Run of show, Permits, Budget line items,
@@ -301,12 +343,22 @@ experience makes the name true, not before.
 
 ---
 
-## 10. Open questions
+## 10. Decided / open
 
-- Final name: Chapter OS vs. a PW-branded name (and whether Central's
-  workspace shares the brand or gets its own, e.g. "PW Central").
-- Guests vs. Front door (vs. something warmer) for the public surface.
-- Does Academy keep a tab or live entirely inside Home + first-run?
+**Decided (July 2026 discussion):** product name direction is Chapter OS;
+"Playbook" is reserved for the chapter level (Chapter Playbook); event
+blueprints stay **Templates**; planning surfaces are **Areas**; recurring
+work is **Duties**; the public surface is the **Event page**; no Home tab
+(derived default tab + "Mine" views instead); Academy keeps its tab as the
+central learning hub with role/ownership/team-scoped courses.
+
+**Still open:**
+
+- Whether Central's workspace shares the Chapter OS brand or gets its own
+  (e.g. "PW Central").
+- The Chapter Playbook's form: a structured entity (versioned bundle of
+  templates/songs/guides/courses) vs. a curated doc collection that
+  references them.
 - Upstream proposal review: does Central accept/reject per-item, or pull a
   chapter fork wholesale (PR-style)?
 - Person↔user auto-link policy for people with multiple emails / no
