@@ -57,6 +57,15 @@ jobs:
         env:
           CONVEX_DEPLOY_KEY: ${{ secrets.CONVEX_DEPLOY_KEY }}
 
+      # Self-applying migrations: the runner walks the ordered MIGRATIONS
+      # registry and runs only those absent from the `schemaMigrations` ledger,
+      # so this is a no-op when nothing is pending and never re-runs history.
+      # (Local equivalent: `npx convex run migrations:runPending`.)
+      - name: Apply pending migrations (post-deploy)
+        run: npx convex run migrations:runPending
+        env:
+          CONVEX_DEPLOY_KEY: ${{ secrets.CONVEX_DEPLOY_KEY }}
+
       - name: Summary
         if: always()
         run: |

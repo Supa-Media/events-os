@@ -42,6 +42,7 @@ import {
   aiSettings,
 } from "./schema/ai";
 import { academyProgress } from "./schema/academy";
+import { schemaMigrations } from "./schema/migrations";
 
 /**
  * Database schema for Events OS.
@@ -149,6 +150,9 @@ const schema = defineSchema({
 
   // Academy (per-person curriculum progress).
   academyProgress,
+
+  // Migration ledger (which data migrations have run on this deployment).
+  schemaMigrations,
 });
 
 export default schema;
