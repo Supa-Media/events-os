@@ -13,6 +13,10 @@ import { query, mutation, QueryCtx } from "./_generated/server";
 import { Doc, Id } from "./_generated/dataModel";
 import { v, ConvexError } from "convex/values";
 import {
+  deleteEventPlacementsForRef,
+  deleteTemplatePlacementsForRef,
+} from "./lib/placements";
+import {
   computeDueDate,
   computeReadiness,
   isCompleteStatus,
@@ -219,6 +223,15 @@ export const removeTemplateItem = mutation({
     const item = await ctx.db.get(itemId);
     if (!item) return itemId;
     await requireEventType(ctx, item.eventTypeId);
+    // Cascade: drop any site-map chips pointing at this supply item.
+    if (item.module === "supplies") {
+      await deleteTemplatePlacementsForRef(
+        ctx,
+        String(item.eventTypeId),
+        "supply",
+        String(itemId),
+      );
+    }
     await ctx.db.delete(itemId);
     await bumpVersion(ctx, item.eventTypeId);
     return itemId;
@@ -465,6 +478,15 @@ export const removeEventItem = mutation({
     const item = await ctx.db.get(itemId);
     if (!item) return itemId;
     await requireEvent(ctx, item.eventId);
+    // Cascade: drop any site-map chips pointing at this supply item.
+    if (item.module === "supplies") {
+      await deleteEventPlacementsForRef(
+        ctx,
+        String(item.eventId),
+        "supply",
+        String(itemId),
+      );
+    }
     await ctx.db.delete(itemId);
     return itemId;
   },

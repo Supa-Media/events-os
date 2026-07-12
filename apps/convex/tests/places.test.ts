@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test, vi } from "vitest";
 import { api } from "../_generated/api";
-import { newT } from "./setup.helpers";
+import { newT, setupChapter } from "./setup.helpers";
 
 /**
  * Characterization tests for the `places.autocomplete` action — the server-side
@@ -48,8 +48,9 @@ describe("places.autocomplete — guards (no network)", () => {
     vi.stubEnv("GOOGLE_PLACES_API_KEY", KEY);
     const fetchMock = stubFetchOk({ status: "OK", predictions: [] });
     const t = newT();
+    const s = await setupChapter(t);
 
-    const res = await t.action(api.places.autocomplete, { query: "we" });
+    const res = await s.as.action(api.places.autocomplete, { query: "we" });
 
     expect(res).toEqual({ suggestions: [] });
     expect(fetchMock).not.toHaveBeenCalled();
@@ -59,8 +60,9 @@ describe("places.autocomplete — guards (no network)", () => {
     vi.stubEnv("GOOGLE_PLACES_API_KEY", KEY);
     const fetchMock = stubFetchOk({ status: "OK", predictions: [] });
     const t = newT();
+    const s = await setupChapter(t);
 
-    const res = await t.action(api.places.autocomplete, { query: "   " });
+    const res = await s.as.action(api.places.autocomplete, { query: "   " });
 
     expect(res.suggestions).toEqual([]);
     expect(fetchMock).not.toHaveBeenCalled();
@@ -70,8 +72,9 @@ describe("places.autocomplete — guards (no network)", () => {
     // No stubEnv → process.env.GOOGLE_PLACES_API_KEY is undefined.
     const fetchMock = stubFetchOk({ status: "OK", predictions: [] });
     const t = newT();
+    const s = await setupChapter(t);
 
-    const res = await t.action(api.places.autocomplete, { query: "wembley" });
+    const res = await s.as.action(api.places.autocomplete, { query: "wembley" });
 
     expect(res.suggestions).toEqual([]);
     expect(fetchMock).not.toHaveBeenCalled();
@@ -86,8 +89,9 @@ describe("places.autocomplete — network / status failures fail soft", () => {
       vi.fn(async () => ({ ok: false, status: 500, json: async () => ({}) })),
     );
     const t = newT();
+    const s = await setupChapter(t);
 
-    const res = await t.action(api.places.autocomplete, { query: "wembley" });
+    const res = await s.as.action(api.places.autocomplete, { query: "wembley" });
 
     expect(res.suggestions).toEqual([]);
   });
@@ -101,8 +105,9 @@ describe("places.autocomplete — network / status failures fail soft", () => {
       }),
     );
     const t = newT();
+    const s = await setupChapter(t);
 
-    const res = await t.action(api.places.autocomplete, { query: "wembley" });
+    const res = await s.as.action(api.places.autocomplete, { query: "wembley" });
 
     expect(res.suggestions).toEqual([]);
   });
@@ -115,8 +120,9 @@ describe("places.autocomplete — network / status failures fail soft", () => {
       predictions: [{ description: "should be ignored" }],
     });
     const t = newT();
+    const s = await setupChapter(t);
 
-    const res = await t.action(api.places.autocomplete, { query: "wembley" });
+    const res = await s.as.action(api.places.autocomplete, { query: "wembley" });
 
     expect(res.suggestions).toEqual([]);
   });
@@ -125,8 +131,9 @@ describe("places.autocomplete — network / status failures fail soft", () => {
     vi.stubEnv("GOOGLE_PLACES_API_KEY", KEY);
     stubFetchOk({ status: "ZERO_RESULTS", predictions: [] });
     const t = newT();
+    const s = await setupChapter(t);
 
-    const res = await t.action(api.places.autocomplete, { query: "zzzzqqq" });
+    const res = await s.as.action(api.places.autocomplete, { query: "zzzzqqq" });
 
     expect(res.suggestions).toEqual([]);
   });
@@ -149,8 +156,9 @@ describe("places.autocomplete — prediction → suggestion mapping", () => {
       ],
     });
     const t = newT();
+    const s = await setupChapter(t);
 
-    const { suggestions } = await t.action(api.places.autocomplete, {
+    const { suggestions } = await s.as.action(api.places.autocomplete, {
       query: "wembley",
     });
 
@@ -171,8 +179,9 @@ describe("places.autocomplete — prediction → suggestion mapping", () => {
       predictions: [{ description: "Some Venue", place_id: "p" }],
     });
     const t = newT();
+    const s = await setupChapter(t);
 
-    const { suggestions } = await t.action(api.places.autocomplete, {
+    const { suggestions } = await s.as.action(api.places.autocomplete, {
       query: "some venue",
     });
 
@@ -191,8 +200,9 @@ describe("places.autocomplete — prediction → suggestion mapping", () => {
       ],
     });
     const t = newT();
+    const s = await setupChapter(t);
 
-    const { suggestions } = await t.action(api.places.autocomplete, {
+    const { suggestions } = await s.as.action(api.places.autocomplete, {
       query: "place",
     });
 
@@ -210,8 +220,9 @@ describe("places.autocomplete — prediction → suggestion mapping", () => {
       })),
     });
     const t = newT();
+    const s = await setupChapter(t);
 
-    const { suggestions } = await t.action(api.places.autocomplete, {
+    const { suggestions } = await s.as.action(api.places.autocomplete, {
       query: "venue",
     });
 
@@ -230,13 +241,28 @@ describe("places.autocomplete — prediction → suggestion mapping", () => {
     vi.stubEnv("GOOGLE_PLACES_API_KEY", KEY);
     const fetchMock = stubFetchOk({ status: "OK", predictions: [] });
     const t = newT();
+    const s = await setupChapter(t);
 
-    await t.action(api.places.autocomplete, { query: "  New York  " });
+    await s.as.action(api.places.autocomplete, { query: "  New York  " });
 
     expect(fetchMock).toHaveBeenCalledOnce();
     const url = fetchMock.mock.calls[0][0];
     expect(url).toContain("input=New%20York");
     expect(url).not.toContain("input=%20%20New");
     expect(url).toContain(`key=${KEY}`);
+  });
+});
+
+describe("places.autocomplete — auth gate", () => {
+  test("an unauthenticated caller is rejected before any network call", async () => {
+    vi.stubEnv("GOOGLE_PLACES_API_KEY", KEY);
+    const fetchMock = stubFetchOk({ status: "OK", predictions: [] });
+    const t = newT();
+
+    // No identity → the assertAccess gate throws before fetching.
+    await expect(
+      t.action(api.places.autocomplete, { query: "wembley" }),
+    ).rejects.toThrow();
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 });

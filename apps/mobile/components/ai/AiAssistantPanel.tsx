@@ -9,8 +9,9 @@ import {
 } from "react-native";
 import { useAction, useMutation, useQuery } from "convex/react";
 import { api } from "@events-os/convex/_generated/api";
-import { Icon } from "../ui";
+import { Icon, ToastView } from "../ui";
 import { colors } from "../../lib/theme";
+import { useActionRunner } from "../../lib/useActionToast";
 import { AssistantFab, MessageRow } from "./shared";
 import { ChatModelSettings } from "./ChatModelSettings";
 
@@ -60,15 +61,17 @@ export function AiAssistantPanel({
   const runs = useQuery(api.ai.listRuns, { eventId: eventId as any });
 
   const scrollRef = useRef<ScrollView>(null);
+  const { run: runAction, toast, dismiss } = useActionRunner();
 
   // Create/find the thread the first time the panel opens.
   useEffect(() => {
     if (open && !threadId) {
-      ensureThread({ eventId: eventId as any })
-        .then((id) => setThreadId(id as string))
-        .catch(() => {});
+      void runAction(() => ensureThread({ eventId: eventId as any }), {
+        errorTitle: "Couldn't open the assistant",
+        onSuccess: (id) => setThreadId(id as string),
+      });
     }
-  }, [open, threadId, eventId, ensureThread]);
+  }, [open, threadId, eventId, ensureThread, runAction]);
 
   // Keep the feed pinned to the latest message.
   useEffect(() => {
@@ -101,10 +104,10 @@ export function AiAssistantPanel({
   }
 
   async function handleNewChat() {
-    try {
-      const id = (await newThread({ eventId: eventId as any })) as string;
-      setThreadId(id);
-    } catch {}
+    await runAction(() => newThread({ eventId: eventId as any }), {
+      errorTitle: "Couldn't start a new chat",
+      onSuccess: (id) => setThreadId(id as string),
+    });
   }
 
   async function handleUndo() {
@@ -129,6 +132,7 @@ export function AiAssistantPanel({
       className="h-full border-l border-border bg-raised"
       style={{ width: 380 }}
     >
+      <ToastView toast={toast} onDismiss={dismiss} />
       {/* Header */}
       <View className="flex-row items-center gap-2 border-b border-border px-3 py-2.5">
         <Icon name="sparkles" size={16} color={colors.accent} />

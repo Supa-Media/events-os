@@ -47,10 +47,14 @@ export default function AcademySectionScreen() {
 
   const progress = useQuery(api.academy.myProgress);
   const markRead = useMutation(api.academy.markRead);
+  const { run: runMarkRead, toast, dismiss } = useActionRunner();
 
   // Stamp "read" once per section visit (first open wins server-side).
   useEffect(() => {
-    if (section) void markRead({ sectionSlug: section.slug }).catch(() => {});
+    if (section)
+      void runMarkRead(() => markRead({ sectionSlug: section.slug }), {
+        errorTitle: "Couldn't mark this section as read",
+      });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [section?.slug]);
 
@@ -81,6 +85,7 @@ export default function AcademySectionScreen() {
   return (
     <Screen maxWidth={820}>
       <Stack.Screen options={{ title: section.title }} />
+      <ToastView toast={toast} onDismiss={dismiss} />
 
       {/* Header: back + position + state */}
       <View className="mb-2 flex-row items-center gap-2">
@@ -442,9 +447,11 @@ function Capstone({
   useEffect(() => {
     if (trainingComplete && !syncedRef.current) {
       syncedRef.current = true;
-      void syncCapstone({ capstoneSlug }).catch(() => {});
+      void run(() => syncCapstone({ capstoneSlug }), {
+        errorTitle: "Couldn't save your progress",
+      });
     }
-  }, [trainingComplete, capstoneSlug, syncCapstone]);
+  }, [trainingComplete, capstoneSlug, syncCapstone, run]);
 
   if (!reachable) {
     return (
@@ -507,7 +514,7 @@ function Capstone({
               Ready to run the drills?
             </Text>
             <Text className="mt-1 text-sm leading-5 text-muted">
-              Start training to get your own sandbox event — real workstreams,
+              Start training to get your own sandbox event — real areas,
               real rows, invisible to the rest of the chapter.
             </Text>
             <View className="mt-3 flex-row">

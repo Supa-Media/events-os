@@ -72,7 +72,9 @@
     "@supa-media/testing": "^0.2.0",
     "@types/node": "^22.0.0",
     "@types/react": "~19.1.0",
+    "@typescript-eslint/parser": "^8",
     "eslint": "^8.57.0",
+    "eslint-plugin-react-hooks": "^4",
     "jest": "^29.7.0",
     "typescript": "~5.9.2"
   }
