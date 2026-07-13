@@ -1,14 +1,11 @@
-import { View, Text, ScrollView, Pressable, Linking, Platform } from "react-native";
-import { Stack, useLocalSearchParams, useRouter } from "expo-router";
+import { View, Text, ScrollView } from "react-native";
+import { Stack, useLocalSearchParams } from "expo-router";
 import { useQuery } from "convex/react";
 import { api } from "@events-os/convex/_generated/api";
-import { Card, Icon, OptionTag } from "../../components/ui";
+import { Icon } from "../../components/ui";
 import { SiteMapView } from "../../components/event/SiteMapView";
-import { MarkdownView } from "../../components/markdown";
+import { BriefingView } from "../../components/crew/BriefingView";
 import { colors } from "../../lib/theme";
-import { formatDateTime } from "../../lib/format";
-import { videoEmbedUrl } from "../../lib/videoEmbed";
-import type { FunctionReturnType } from "convex/server";
 import type { Id } from "@events-os/convex/_generated/dataModel";
 
 /**
@@ -18,229 +15,8 @@ import type { Id } from "@events-os/convex/_generated/dataModel";
  * is NOT behind the auth guard; the root layout just renders `<Slot/>` inside the
  * Convex provider. It reads the no-auth `api.events.publicCrew` query and renders
  * a warm, scannable briefing of teams, their expectations, and who's on each
- * team. No edit controls, no pickers, no money — read-only by design.
+ * team via the shared `BriefingView`. No edit controls, no pickers, no money.
  */
-
-// Person/Expectation are PROJECTIONS from the `publicCrew` query, not the
-// `people`/`eventItems` documents — `status`/`callTime` come off the volunteer
-// ENGAGEMENT, not the people row — so we derive the row types from the query's
-// own return type rather than from `Doc<"people">` (a different shape).
-type PublicCrew = NonNullable<FunctionReturnType<typeof api.events.publicCrew>>;
-type Person = PublicCrew["teams"][number]["people"][number];
-type Expectation = PublicCrew["teams"][number]["expectations"][number];
-
-/** A doc as projected by `publicCrew` (safe display fields only). */
-type HowToDoc = NonNullable<Expectation["doc"]>;
-
-/** A pill button linking out to a doc URL or the public doc route. */
-function DocLinkButton({
-  icon,
-  label,
-  onPress,
-}: {
-  icon: "external-link" | "video" | "file-text";
-  label: string;
-  onPress: () => void;
-}) {
-  return (
-    <Pressable
-      onPress={onPress}
-      accessibilityRole="link"
-      accessibilityLabel={label}
-      className="flex-row items-center gap-2 self-start rounded-lg border border-border bg-surface px-3 py-2 active:opacity-80"
-    >
-      <Icon name={icon} size={14} color={colors.accent} />
-      <Text className="text-sm font-semibold text-accent">{label}</Text>
-    </Pressable>
-  );
-}
-
-/**
- * Renders an expectation's attached How-To doc to actually EQUIP the team:
- *  - note  → the note's Markdown, rendered inline.
- *  - video → an inline player when the URL is embeddable (web); otherwise a
- *            "Watch video" link.
- *  - markdown → a link out to the full public doc page (`/d/<shareId>`).
- *  - link  → a link out to the external URL.
- */
-function HowToDocView({ doc }: { doc: HowToDoc }) {
-  const router = useRouter();
-
-  if (doc.kind === "note") {
-    return doc.body ? (
-      <View className="mt-2 rounded-lg border border-border bg-surface px-3 py-2">
-        <MarkdownView value={doc.body} />
-      </View>
-    ) : null;
-  }
-
-  if (doc.kind === "video") {
-    const embed = videoEmbedUrl(doc.url);
-    if (embed && Platform.OS === "web") {
-      return (
-        <View
-          className="mt-2 w-full overflow-hidden rounded-lg border border-border bg-ink"
-          style={{ aspectRatio: 16 / 9 }}
-        >
-          {/* RN-web renders this iframe directly in the DOM. */}
-          <iframe
-            src={embed}
-            title={doc.title || "Video"}
-            allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
-            allowFullScreen
-            style={{ width: "100%", height: "100%", border: "0" }}
-          />
-        </View>
-      );
-    }
-    return (
-      <View className="mt-2">
-        <DocLinkButton
-          icon="video"
-          label="Watch video"
-          onPress={() => doc.url && Linking.openURL(doc.url)}
-        />
-      </View>
-    );
-  }
-
-  // markdown → open the full public doc page; link → open the external URL.
-  return (
-    <View className="mt-2">
-      {doc.kind === "markdown" ? (
-        <DocLinkButton
-          icon="file-text"
-          label={doc.title ? `Open: ${doc.title}` : "Open guide"}
-          onPress={() => router.push(`/d/${doc.shareId}` as any)}
-        />
-      ) : (
-        <DocLinkButton
-          icon="external-link"
-          label={doc.title || "Open link"}
-          onPress={() => doc.url && Linking.openURL(doc.url)}
-        />
-      )}
-    </View>
-  );
-}
-
-/** A single bulleted expectation: check glyph + title + optional details + doc. */
-function ExpectationRow({ item }: { item: Expectation }) {
-  return (
-    <View className="flex-row gap-2">
-      <View className="pt-0.5">
-        <Icon name="check" size={15} color={colors.success} />
-      </View>
-      <View className="flex-1">
-        <Text className="text-base font-semibold text-ink">{item.title}</Text>
-        {item.details ? (
-          <Text className="mt-0.5 text-sm text-muted">{item.details}</Text>
-        ) : null}
-        {item.doc ? <HowToDocView doc={item.doc} /> : null}
-      </View>
-    </View>
-  );
-}
-
-/** First letters of the first two words of a name, uppercase. */
-function initials(name: string) {
-  const words = name.trim().split(/\s+/).filter(Boolean);
-  if (words.length === 0) return "?";
-  if (words.length === 1) return words[0]!.charAt(0).toUpperCase();
-  return (words[0]!.charAt(0) + words[1]!.charAt(0)).toUpperCase();
-}
-
-/** A single person on a team, as a clean card: avatar + name + call time + status. */
-function PersonCard({ person }: { person: Person }) {
-  return (
-    <View className="flex-row items-center gap-3 rounded-lg border border-border bg-surface px-3 py-2.5">
-      <View
-        className="h-9 w-9 items-center justify-center rounded-pill"
-        style={{ backgroundColor: colors.sunken }}
-      >
-        <Text className="text-xs font-bold text-muted">
-          {initials(person.name)}
-        </Text>
-      </View>
-      <View className="flex-1">
-        <Text className="text-base font-semibold text-ink" numberOfLines={1}>
-          {person.name}
-        </Text>
-        {person.callTime ? (
-          <View className="mt-0.5 flex-row items-center gap-1">
-            <Icon name="clock" size={12} color={colors.faint} />
-            <Text className="text-sm text-muted">Call time {person.callTime}</Text>
-          </View>
-        ) : null}
-      </View>
-      {person.status ? (
-        <View
-          className="flex-row items-center gap-1 rounded-pill border border-border bg-sunken px-2 py-0.5"
-          accessibilityLabel={`Status: ${person.status}`}
-        >
-          <View
-            className="h-1.5 w-1.5 rounded-pill"
-            style={{ backgroundColor: colors.muted }}
-          />
-          <Text className="text-xs font-semibold capitalize text-muted">
-            {person.status}
-          </Text>
-        </View>
-      ) : null}
-    </View>
-  );
-}
-
-/** One team's card: label tag + people count, expectations, then people. */
-function TeamCard({
-  label,
-  color,
-  expectations,
-  people,
-}: {
-  label: string;
-  color?: string | null;
-  expectations: Expectation[];
-  people: Person[];
-}) {
-  return (
-    <Card padding="lg">
-      <View className="mb-3 flex-row items-center justify-between gap-2">
-        <OptionTag label={label} color={color} />
-        <View className="flex-row items-center gap-1.5">
-          <Icon name="users" size={14} color={colors.muted} />
-          <Text className="text-sm font-bold text-muted">{people.length}</Text>
-        </View>
-      </View>
-
-      {expectations.length > 0 ? (
-        <View className="gap-2.5">
-          {expectations.map((e, i) => (
-            <ExpectationRow key={i} item={e} />
-          ))}
-        </View>
-      ) : (
-        <Text className="text-sm italic text-faint">
-          No expectations listed yet.
-        </Text>
-      )}
-
-      {people.length > 0 ? (
-        <View className="mt-4 border-t border-border pt-3">
-          <Text className="mb-2 text-xs font-bold uppercase tracking-wide text-faint">
-            On this team
-          </Text>
-          <View className="gap-2">
-            {people.map((p, i) => (
-              <PersonCard key={i} person={p} />
-            ))}
-          </View>
-        </View>
-      ) : null}
-    </Card>
-  );
-}
-
 export default function ShareCrewScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const eventId = id as Id<"events">;
@@ -280,10 +56,6 @@ export default function ShareCrewScreen() {
     );
   }
 
-  const hasUnassigned =
-    data.unassigned.expectations.length > 0 ||
-    data.unassigned.people.length > 0;
-
   // Only show the site map section when there's something to draw.
   const hasMap =
     !!map &&
@@ -304,71 +76,30 @@ export default function ShareCrewScreen() {
           paddingHorizontal: 20,
         }}
       >
-        <View style={{ width: "100%", maxWidth: 720 }} className="gap-6">
-          {/* Header */}
-          <View className="gap-1">
-            <Text className="font-display text-3xl text-ink">{data.name}</Text>
-            <View className="flex-row flex-wrap items-center gap-x-4 gap-y-1">
-              <View className="flex-row items-center gap-1.5">
-                <Icon name="calendar" size={14} color={colors.muted} />
-                <Text className="text-sm text-muted">
-                  {formatDateTime(data.eventDate)}
-                </Text>
-              </View>
-              {data.location ? (
-                <View className="flex-row items-center gap-1.5">
-                  <Icon name="map-pin" size={14} color={colors.muted} />
-                  <Text className="text-sm text-muted">{data.location}</Text>
+        <BriefingView
+          crew={data}
+          subtitle="Volunteer briefing · who's serving and what each team is doing."
+          siteMap={
+            hasMap ? (
+              <View className="gap-3">
+                <View className="gap-0.5">
+                  <Text className="font-display text-xl text-ink">
+                    Where everyone is
+                  </Text>
+                  <Text className="text-sm text-faint">
+                    Site map · where each team and supply is set up.
+                  </Text>
                 </View>
-              ) : null}
-            </View>
-            <Text className="mt-1 text-sm text-faint">
-              Volunteer briefing · who's serving and what each team is doing.
-            </Text>
-          </View>
-
-          {/* Site map — where everyone & everything is placed. */}
-          {hasMap ? (
-            <View className="gap-3">
-              <View className="gap-0.5">
-                <Text className="font-display text-xl text-ink">
-                  Where everyone is
-                </Text>
-                <Text className="text-sm text-faint">
-                  Site map · where each team and supply is set up.
-                </Text>
+                <SiteMapView
+                  imageUrl={map.imageUrl}
+                  markers={map.markers}
+                  shapes={map.shapes}
+                  placements={map.placements}
+                />
               </View>
-              <SiteMapView
-                imageUrl={map.imageUrl}
-                markers={map.markers}
-                shapes={map.shapes}
-                placements={map.placements}
-              />
-            </View>
-          ) : null}
-
-          {/* Teams */}
-          <View className="gap-4">
-            {data.teams.map((team) => (
-              <TeamCard
-                key={team.value}
-                label={team.label}
-                color={team.color}
-                expectations={team.expectations}
-                people={team.people}
-              />
-            ))}
-
-            {hasUnassigned ? (
-              <TeamCard
-                label="Unassigned"
-                color="gray"
-                expectations={data.unassigned.expectations}
-                people={data.unassigned.people}
-              />
-            ) : null}
-          </View>
-        </View>
+            ) : undefined
+          }
+        />
       </ScrollView>
     </>
   );

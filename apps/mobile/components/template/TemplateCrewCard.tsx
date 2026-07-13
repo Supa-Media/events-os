@@ -77,10 +77,11 @@ export function TemplateCrewCard({
     <Card className="mb-2">
       <SectionHeader title="Crew (placeholders)" />
       <Text className="mb-3 text-sm text-muted">
-        Stand-in crew for this template. Set them as the owner of Crew Duties
-        rows below — each becomes a real (placeholder) person on every event you
-        create, ready to swap for a real volunteer. Their team uses the same set
-        as the Crew Duties grid; add a team here or edit options with the grid's
+        Stand-in crew for this template. Set them as the owner of Crew
+        expectations rows below — each becomes a real (placeholder) person on
+        every event you create, ready to swap for a real volunteer. Their team
+        uses the same set as the Crew expectations grid; add a team here or edit
+        options with the grid's
         Columns pencil.
       </Text>
 
