@@ -19,8 +19,11 @@ export async function runBackfillPeopleServices(ctx: MutationCtx) {
   let copied = 0;
   for (const person of await ctx.db.query("people").collect()) {
     if (person.services !== undefined) continue;
-    if (person.skills === undefined) continue;
-    await ctx.db.patch(person._id, { services: person.skills });
+    // `skills` was dropped from the schema in Deploy C; this ledgered migration
+    // only needs to typecheck (it never re-runs on prod), so read it via `any`.
+    const skills = (person as any).skills as string[] | undefined;
+    if (skills === undefined) continue;
+    await ctx.db.patch(person._id, { services: skills });
     copied++;
   }
   return { copied };

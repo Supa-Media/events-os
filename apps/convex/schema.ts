@@ -2,7 +2,6 @@ import { defineSchema } from "convex/server";
 import { supaAuthTables, supaNotificationTables } from "@supa-media/convex/schema";
 
 import { chapters, userProfiles, userChapters } from "./schema/chapters";
-import { guestAllowlist } from "./schema/guests";
 import { accessAllowlist } from "./schema/accessAllowlist";
 import { templateRoles, eventRoles } from "./schema/roles";
 import { templateModules, eventModules } from "./schema/modules";
@@ -80,15 +79,10 @@ const schema = defineSchema({
   userProfiles,
   userChapters,
 
-  // Guest allowlist (non-domain emails granted access, seeded from Convex).
-  // LEGACY — superseded by `accessAllowlist` (Chapter-OS rename). Kept intact
-  // through Deploy A: the `copyGuestAllowlist` migration copies its rows over
-  // and `lib/access.ts` reads it as a fallback. Dropped in a later Deploy C.
-  guestAllowlist,
-
-  // Access allowlist — Chapter-OS successor to `guestAllowlist` (same shape).
-  // New grants/revokes write here; reads prefer it, falling back to the legacy
-  // table until `copyGuestAllowlist` finishes.
+  // Access allowlist — non-domain emails granted access (seeded from Convex).
+  // Chapter-OS successor to the retired `guestAllowlist` table, which was copied
+  // over by `copyGuestAllowlist`, drained by `purgeGuestAllowlist`, and dropped
+  // from the schema in Deploy C. New grants/revokes and all reads target this.
   accessAllowlist,
 
   // Roles (template-owned + event-owned).

@@ -12,13 +12,9 @@ export const people = defineTable({
   phone: v.optional(v.string()),
   userId: v.optional(v.id("users")),
   // Services this person can offer (worship, audio, videography…). The basis
-  // for "who can deliver X?" discovery. (Named `skills` for legacy reasons.)
-  skills: v.optional(v.array(v.string())),
-  // Chapter-OS rename of `skills` → `services`. Additive/optional so existing
-  // rows (which only carry `skills`) still validate; the `backfillPeopleServices`
-  // migration copies `skills` → `services`, writers target this field, and
-  // readers prefer `services ?? skills`. `skills` is kept intact (dropped in a
-  // later Deploy C), never removed here.
+  // for "who can deliver X?" discovery. Chapter-OS successor to the retired
+  // `skills` field (dropped in Deploy C after `backfillPeopleServices` copied
+  // `skills` → `services` and `clearLegacyFields` drained the legacy column).
   services: v.optional(v.array(v.string())),
   // Typical fee when engaged as a PAID vendor (prefills a paid engagement).
   usualRateUsd: v.optional(v.number()),
@@ -38,9 +34,9 @@ export const people = defineTable({
       v.literal("vetted"),
     ),
   ),
-  isActive: v.optional(v.boolean()),
-  // Roster lifecycle state (richer than isActive). isActive is kept in sync as
-  // a convenience flag (false only when status === "inactive").
+  // Roster lifecycle state. Chapter-OS successor to the retired `isActive`
+  // boolean (dropped in Deploy C after `backfillPersonStatus` derived `status`
+  // from it and `clearLegacyFields` drained the legacy column).
   status: v.optional(
     v.union(
       v.literal("active"),
@@ -102,11 +98,10 @@ export const people = defineTable({
 export const templatePeople = defineTable({
   eventTypeId: v.id("eventTypes"),
   name: v.string(),
-  // Which team/area this placeholder belongs to (free text, mirrors the
-  // Expectations team column values). Single-team back-compat field.
-  team: v.optional(v.string()),
-  // Multi-team membership — a placeholder can stand in across several teams.
-  // Supersedes `team` (kept for back-compat); read as `teams ?? (team ? [team] : [])`.
+  // Team/area membership — a placeholder can stand in across several teams
+  // (each matches an Expectations team column value). Chapter-OS successor to
+  // the retired single-team `team` string (dropped in Deploy C after
+  // `backfillTemplatePeopleTeams` copied `team` → `teams`).
   teams: v.optional(v.array(v.string())),
   // Free-form role/title for the placeholder (e.g. "Stage Manager").
   role: v.optional(v.string()),

@@ -37,11 +37,6 @@ export const docs = defineTable({
   // (docs.ts rejects user writes) and always updated to the latest platform
   // version on seed.
   slug: v.optional(v.string()),
-  // DEPRECATED — never read. Pre-merge branch builds of the guide seeder wrote
-  // a content hash here, and Convex validates EXISTING rows on schema push, so
-  // the field must stay declared for historical guide rows to validate. Safe to
-  // drop after running `npx convex run docs:clearSeedHash` on the deployment.
-  seedHash: v.optional(v.string()),
   // Public/internal visibility. Undefined (or "public") → readable at the no-auth
   // `/d/<shareId>` route; "internal" → `getPublic` returns null. Optional so all
   // existing docs default to PUBLIC.

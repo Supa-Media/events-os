@@ -53,7 +53,13 @@ export async function runFoldProjectStatusNotes(ctx: MutationCtx) {
   let skippedNoAuthor = 0;
 
   for (const project of await ctx.db.query("projects").collect()) {
-    const body = composeBody(project.statusNote, project.nextSteps);
+    // `statusNote` / `nextSteps` were dropped from the schema in Deploy C; this
+    // ledgered migration only needs to typecheck (it never re-runs on prod), so
+    // read them via `any`.
+    const body = composeBody(
+      (project as any).statusNote as string | undefined,
+      (project as any).nextSteps as string | undefined,
+    );
     if (!body) continue;
 
     // Idempotency: a matching comment already exists → this project is folded.

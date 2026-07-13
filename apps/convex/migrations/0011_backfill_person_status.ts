@@ -18,8 +18,12 @@ export async function runBackfillPersonStatus(ctx: MutationCtx) {
   let copied = 0;
   for (const person of await ctx.db.query("people").collect()) {
     if (person.status !== undefined) continue;
+    // `isActive` was dropped from the schema in Deploy C; this ledgered
+    // migration only needs to typecheck (it never re-runs on prod), so read it
+    // via `any`.
+    const isActive = (person as any).isActive as boolean | undefined;
     await ctx.db.patch(person._id, {
-      status: person.isActive === false ? "inactive" : "active",
+      status: isActive === false ? "inactive" : "active",
     });
     copied++;
   }

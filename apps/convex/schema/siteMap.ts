@@ -20,8 +20,6 @@ export const siteMarkers = defineTable({
   label: v.string(),
   // Free color name (e.g. "red"); markers aren't a fixed category set.
   color: v.optional(v.string()),
-  // Legacy category (older markers); no longer set by the UI.
-  category: v.optional(v.string()),
   createdAt: v.number(),
 })
   .index("by_event", ["eventId"])

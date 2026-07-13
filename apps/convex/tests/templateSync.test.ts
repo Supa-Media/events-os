@@ -137,7 +137,6 @@ describe("templateSync.diffEventAgainstTemplate", () => {
       ctx.db.insert("people", {
         chapterId,
         name: "Volunteer",
-        isActive: true,
         createdAt: Date.now(),
       }),
     );
@@ -262,7 +261,6 @@ describe("templateSync.promoteFromEvent", () => {
       ctx.db.insert("people", {
         chapterId,
         name: "Volunteer",
-        isActive: true,
         createdAt: Date.now(),
       }),
     );

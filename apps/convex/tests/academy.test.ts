@@ -73,7 +73,6 @@ async function setupLearner(
       name: opts.name ?? "Casey Learner",
       email: s.email,
       userId: s.userId,
-      isActive: true,
       isTeamMember: true,
       createdAt: Date.now(),
     }),
@@ -901,7 +900,6 @@ describe("the training-event capstones", () => {
         chapterId: s.chapterId,
         name: "Real Rachel",
         isTeamMember: true,
-        isActive: true,
         createdAt: Date.now(),
       }),
     );

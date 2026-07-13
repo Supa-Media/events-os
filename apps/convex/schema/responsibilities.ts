@@ -21,11 +21,11 @@ export const responsibilities = defineTable({
   chapterId: v.id("chapters"),
   title: v.string(),
   description: v.optional(v.string()),
-  // How to actually do this — the handoff documentation. Legacy plain text…
-  howTo: v.optional(v.string()),
-  // …superseded by a standalone doc (link / video / note / markdown page),
-  // the SAME primitive behind event-grid How-To cells, so a duty's runbook
-  // gets its own page and share URL. When set, it wins over `howTo`.
+  // How to actually do this — the handoff documentation, a standalone doc
+  // (link / video / note / markdown page), the SAME primitive behind event-grid
+  // How-To cells, so a duty's runbook gets its own page and share URL.
+  // Chapter-OS successor to the retired plain-text `howTo` field (dropped in
+  // Deploy C after `materializeHowToDocs` migrated the text into docs).
   howToDocId: v.optional(v.id("docs")),
   cadence: v.union(...RESPONSIBILITY_CADENCES.map((c) => v.literal(c))),
   // Role titles this fans out to (normalized match against people.role).

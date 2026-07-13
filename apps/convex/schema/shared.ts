@@ -1,4 +1,5 @@
 import { v } from "convex/values";
+import { COLUMN_TYPES } from "@events-os/shared";
 
 /** Reusable validator for a select/status option (mirrors shared SelectOption). */
 export const selectOption = v.object({
@@ -14,8 +15,20 @@ export const columnFields = {
   key: v.string(),
   label: v.string(),
   kind: v.union(v.literal("system"), v.literal("custom")),
-  type: v.string(),
+  // Constrained to the canonical `COLUMN_TYPES` universe (packages/shared).
+  // The `0015_audit_column_types` migration reported 0 out-of-vocabulary `type`
+  // values on prod, so tightening from `v.string()` to this union validates
+  // against every existing template/event column.
+  type: v.union(...COLUMN_TYPES.map((t) => v.literal(t))),
   options: v.optional(v.array(selectOption)),
+  // Type-specific config bag (mirrors shared `ColumnDef.config`, typed
+  // `Record<string, unknown>`). Left as `v.any()` — NOT tightened. Unlike
+  // `type` (verified safe by the `0015` 0-offenders audit), there is no
+  // `0015`-style audit of config VALUE shapes on prod, and the public
+  // `columns.addColumn/update` args accept `v.any()`, so a stored config could
+  // in principle be a non-object. `config` is "reserved" and currently unread,
+  // so tightening it has ~zero value while risking a rejected schema push on a
+  // destructive deploy. Tightening is deferred until a config-shape audit exists.
   config: v.optional(v.any()),
   isVisible: v.boolean(),
   order: v.number(),
