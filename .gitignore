@@ -40,5 +40,7 @@ Thumbs.db
 .sentryclirc
 
 # Local agent tooling (Claude Code / Convex skills) — not product code
-.claude/
+.claude/*
+# ...except the committed permission allowlist the cloud-setup script applies
+!.claude/settings.json
 .agents/
