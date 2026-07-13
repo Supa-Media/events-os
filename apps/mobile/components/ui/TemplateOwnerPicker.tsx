@@ -52,13 +52,18 @@ export function TemplateOwnerPicker({
   const teamLabel = (value?: string | null) =>
     value ? teamOptions.find((o) => o.value === value)?.label ?? value : undefined;
 
+  // A placeholder's team(s): prefer the multi-team `teams`, falling back to the
+  // legacy single `team` (Chapter-OS rename — new rows carry only `teams`).
+  const crewTeams = (c: any): string[] => c.teams ?? (c.team ? [c.team] : []);
+  const primaryTeam = (c: any): string | null => crewTeams(c)[0] ?? null;
+
   // When the row has a team, split crew into matching / other so the matching
   // team surfaces first (but everyone stays pickable).
   const matching = preferTeam
-    ? (crew ?? []).filter((c: any) => c.team === preferTeam)
+    ? (crew ?? []).filter((c: any) => crewTeams(c).includes(preferTeam))
     : [];
   const others = preferTeam
-    ? (crew ?? []).filter((c: any) => c.team !== preferTeam)
+    ? (crew ?? []).filter((c: any) => !crewTeams(c).includes(preferTeam))
     : (crew ?? []);
   const grouped = preferTeam && matching.length > 0;
 
@@ -97,7 +102,7 @@ export function TemplateOwnerPicker({
                   <Row
                     key={c._id}
                     label={c.name}
-                    sub={teamLabel(c.team)}
+                    sub={teamLabel(primaryTeam(c))}
                     selected={c._id === selectedId}
                     onPress={() => onPick(c._id, c.name)}
                   />
@@ -109,7 +114,7 @@ export function TemplateOwnerPicker({
                       <Row
                         key={c._id}
                         label={c.name}
-                        sub={teamLabel(c.team)}
+                        sub={teamLabel(primaryTeam(c))}
                         selected={c._id === selectedId}
                         onPress={() => onPick(c._id, c.name)}
                       />
@@ -122,7 +127,7 @@ export function TemplateOwnerPicker({
                 <Row
                   key={c._id}
                   label={c.name}
-                  sub={teamLabel(c.team)}
+                  sub={teamLabel(primaryTeam(c))}
                   selected={c._id === selectedId}
                   onPress={() => onPick(c._id, c.name)}
                 />
