@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { View, Text, useWindowDimensions } from "react-native";
-import { useRouter } from "expo-router";
+import { useRouter, Redirect } from "expo-router";
 import { useQuery, useMutation } from "convex/react";
 import type { FunctionReturnType } from "convex/server";
 import { api } from "@events-os/convex/_generated/api";
@@ -25,6 +25,7 @@ import {
 import { colors } from "../../../lib/theme";
 import { formatDate } from "../../../lib/format";
 import { useActionRunner } from "../../../lib/useActionToast";
+import { MineSection } from "../../../components/events/MineSection";
 import {
   EVENT_STATUS_LABELS,
   PHASE_LABELS,
@@ -49,6 +50,7 @@ export default function PipelineScreen() {
   const router = useRouter();
   const { width } = useWindowDimensions();
   const wide = width >= WIDE;
+  const org = useQuery(api.org.nav);
   const summary = useQuery(api.dashboard.summary);
   const pipeline = useQuery(api.events.pipeline);
   const templates = useQuery(api.eventTypes.list);
@@ -56,6 +58,11 @@ export default function PipelineScreen() {
   const seed = useMutation(api.seed.seedDemoData);
   const [seeding, setSeeding] = useState(false);
   const { run, toast, dismiss } = useActionRunner();
+
+  // The derived landing: a volunteer has no Events screen — their lobby is the
+  // briefing. Decided before the Events data renders (all hooks already ran).
+  if (org === undefined) return <Screen loading />;
+  if (org.tier === "volunteer") return <Redirect href="/briefing" />;
 
   const loading =
     summary === undefined || pipeline === undefined || templates === undefined;
@@ -94,6 +101,8 @@ export default function PipelineScreen() {
         onOpenCalendar={() => router.push("/calendar")}
         onOpenPeople={() => router.push("/people")}
       />
+
+      <MineSection />
 
       {isEmpty ? (
         <View className="mt-6">

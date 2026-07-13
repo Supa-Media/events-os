@@ -22,8 +22,10 @@ import type { Id } from "@events-os/convex/_generated/dataModel";
 import {
   Screen,
   Narrow,
+  FULL_WIDTH,
   Avatar,
   Icon,
+  type IconName,
   Button,
   EmptyState,
   SectionHeader,
@@ -34,6 +36,7 @@ import {
 } from "../../../components/team/ProjectCard";
 import { OrgChart } from "../../../components/team/OrgChart";
 import { WorkloadView } from "../../../components/team/WorkloadView";
+import { DutiesGrid } from "../../../components/work/DutiesGrid";
 import { colors, spacing } from "../../../lib/theme";
 import { alertError } from "../../../lib/errors";
 
@@ -47,6 +50,9 @@ export default function TeamScreen() {
   const projects = useQuery(api.projects.list);
   const createProject = useMutation(api.projects.create);
   const [view, setView] = useState<"list" | "chart">("list");
+  // Top-level Work segments: the org's Projects vs the chapter's Duties catalog
+  // (leads/admins only — this whole branch is gated on teamView === "org").
+  const [section, setSection] = useState<"projects" | "duties">("projects");
 
   // The org chart covers team members plus anyone wired into a manager
   // relationship (so a report who isn't flagged Team yet still shows up).
@@ -172,7 +178,7 @@ export default function TeamScreen() {
   const hasHierarchy = org.childrenOf.size > 0;
 
   return (
-    <Screen>
+    <Screen maxWidth={section === "duties" ? FULL_WIDTH : undefined}>
       <Narrow>
         <View
           style={{
@@ -182,51 +188,46 @@ export default function TeamScreen() {
             marginBottom: spacing.md,
           }}
         >
-          <Text className="font-display text-2xl text-ink">Team</Text>
-          <View className="flex-row items-center gap-3">
-            {/* List ⇄ org-chart toggle */}
-            <View
-              className="flex-row rounded-lg bg-sunken"
-              style={{ padding: 3, gap: spacing.xs }}
-            >
-              {(
-                [
+          <Text className="font-display text-2xl text-ink">Work</Text>
+          {/* Top-level Projects ⇄ Duties segments (reuses the toggle pattern). */}
+          <Segmented
+            options={[
+              { key: "projects", icon: "git-branch", label: "Projects" },
+              { key: "duties", icon: "check-square", label: "Duties" },
+            ]}
+            value={section}
+            onChange={setSection}
+          />
+        </View>
+      </Narrow>
+
+      {section === "duties" ? (
+        <DutiesGrid />
+      ) : (
+        <Narrow>
+          <View
+            style={{
+              flexDirection: "row",
+              alignItems: "center",
+              justifyContent: "flex-end",
+              marginBottom: spacing.md,
+            }}
+          >
+            <View className="flex-row items-center gap-3">
+              {/* List ⇄ org-chart toggle */}
+              <Segmented
+                options={[
                   { key: "list", icon: "list", label: "List" },
                   { key: "chart", icon: "git-branch", label: "Chart" },
-                ] as const
-              ).map((v) => {
-                const active = view === v.key;
-                return (
-                  <Pressable
-                    key={v.key}
-                    onPress={() => setView(v.key)}
-                    accessibilityRole="tab"
-                    accessibilityState={{ selected: active }}
-                    className={`flex-row items-center gap-1.5 rounded-md px-2.5 py-1 active:opacity-80 ${
-                      active ? "bg-raised shadow-sm" : ""
-                    }`}
-                  >
-                    <Icon
-                      name={v.icon}
-                      size={13}
-                      color={active ? colors.ink : colors.muted}
-                    />
-                    <Text
-                      className={`text-xs font-semibold ${
-                        active ? "text-ink" : "text-muted"
-                      }`}
-                    >
-                      {v.label}
-                    </Text>
-                  </Pressable>
-                );
-              })}
+                ]}
+                value={view}
+                onChange={setView}
+              />
+              <Text className="text-2xs font-bold uppercase tracking-wider text-muted">
+                {org.included.length} people
+              </Text>
             </View>
-            <Text className="text-2xs font-bold uppercase tracking-wider text-muted">
-              {org.included.length} people
-            </Text>
           </View>
-        </View>
 
         {org.included.length === 0 ? (
           <EmptyState
@@ -316,8 +317,58 @@ export default function TeamScreen() {
             />
           </View>
         ) : null}
-      </Narrow>
+        </Narrow>
+      )}
     </Screen>
+  );
+}
+
+/**
+ * The compact segmented toggle used across the Work tab (Projects⇄Duties and
+ * List⇄Chart). Generic over its option keys so both callers reuse one pattern.
+ */
+function Segmented<T extends string>({
+  options,
+  value,
+  onChange,
+}: {
+  options: { key: T; icon: IconName; label: string }[];
+  value: T;
+  onChange: (key: T) => void;
+}) {
+  return (
+    <View
+      className="flex-row rounded-lg bg-sunken"
+      style={{ padding: 3, gap: spacing.xs }}
+    >
+      {options.map((v) => {
+        const active = value === v.key;
+        return (
+          <Pressable
+            key={v.key}
+            onPress={() => onChange(v.key)}
+            accessibilityRole="tab"
+            accessibilityState={{ selected: active }}
+            className={`flex-row items-center gap-1.5 rounded-md px-2.5 py-1 active:opacity-80 ${
+              active ? "bg-raised shadow-sm" : ""
+            }`}
+          >
+            <Icon
+              name={v.icon}
+              size={13}
+              color={active ? colors.ink : colors.muted}
+            />
+            <Text
+              className={`text-xs font-semibold ${
+                active ? "text-ink" : "text-muted"
+              }`}
+            >
+              {v.label}
+            </Text>
+          </Pressable>
+        );
+      })}
+    </View>
   );
 }
 

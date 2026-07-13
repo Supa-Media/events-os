@@ -12,30 +12,52 @@ import { colors } from "../../lib/theme";
 
 type NavEntry = { label: string; icon: IconName; path: string };
 
+// Fixed order — tabs appear/disappear by tier but NEVER reorder. Briefing sits
+// right after Events so a volunteer (who sees Briefing, not Events) still gets
+// a stable leading tab. Duties is gone from the nav (folded into Work); its
+// route survives for deep links.
 const NAV: NavEntry[] = [
   { label: "Events", icon: "layout", path: "/" },
+  { label: "Briefing", icon: "clipboard", path: "/briefing" },
   { label: "Templates", icon: "grid", path: "/templates" },
   { label: "People", icon: "users", path: "/people" },
-  { label: "Team", icon: "git-branch", path: "/team" },
-  { label: "Duties", icon: "check-square", path: "/responsibilities" },
+  { label: "Work", icon: "git-branch", path: "/team" },
   { label: "Songs", icon: "music", path: "/song-library" },
   // The Academy is for everyone — never permission-gated (see useNav).
   { label: "Academy", icon: "award", path: "/academy" },
 ];
 
 /**
- * The nav entries the caller may see. The server states the policy once
- * (org.nav): Team follows teamView ("org" for managers/admins, "self" with a
- * roster row, null otherwise); the Duties catalog is managers/admins only
- * (canManage) — members meet their own duties on their Team page instead.
- * This and those screens all just render that decision.
+ * The nav entries the caller may see, as a per-tier switch on the derived
+ * `org.nav.tier` (admin | lead | member | volunteer). The server states the
+ * policy once; this and every scoped screen's own guard just render it:
+ *   Events   everyone except volunteer      Briefing  volunteer only
+ *   Templates / People  admin or lead       Work      everyone except volunteer
+ *   Songs / Academy     everyone
+ * Nav hiding is NOT access control — each screen keeps its in-screen guard.
  */
 function useNav(): NavEntry[] {
   const org = useQuery(api.org.nav);
+  const tier = org?.tier;
   return NAV.filter((n) => {
-    if (n.path === "/team") return org?.teamView != null;
-    if (n.path === "/responsibilities") return org?.canManage === true;
-    return true;
+    switch (n.path) {
+      case "/":
+        return tier != null && tier !== "volunteer";
+      case "/briefing":
+        return tier === "volunteer";
+      case "/templates":
+      case "/people":
+        return tier === "admin" || tier === "lead";
+      case "/team":
+        // Work: everyone except volunteer — but keep the teamView nuance so a
+        // caller with no roster row isn't shown an empty Work tab.
+        return tier != null && tier !== "volunteer" && org?.teamView != null;
+      case "/song-library":
+      case "/academy":
+        return true;
+      default:
+        return false;
+    }
   });
 }
 

@@ -8,7 +8,7 @@
  */
 import { query, mutation, QueryCtx } from "./_generated/server";
 import { Doc, Id } from "./_generated/dataModel";
-import { ConvexError, v } from "convex/values";
+import { ConvexError, v, type Infer } from "convex/values";
 import {
   computeDueDate,
   computeReadiness,
@@ -17,6 +17,7 @@ import {
   itemScore,
   itemPhase,
   currentPhase,
+  startOfDay,
   DAY_MS,
   DAY_OFFSET_MODULES,
   MODULE_LABELS,
@@ -39,7 +40,11 @@ import {
   eventActiveModules,
   getPersonForUser,
 } from "./lib/templates";
-import { phaseReadiness, phaseReadinessBundle, statusCountsFor } from "./lib/readiness";
+import {
+  phaseReadiness,
+  phaseReadinessBundle,
+  statusCountsFor,
+} from "./lib/readiness";
 import { manageablePersonIds } from "./lib/org";
 import { paidTotalForEvent } from "./engagements";
 
@@ -132,7 +137,9 @@ export const list = query({
     const all = (
       await ctx.db
         .query("events")
-        .withIndex("by_chapter", (q) => q.eq("chapterId", chapterId as Id<"chapters">))
+        .withIndex("by_chapter", (q) =>
+          q.eq("chapterId", chapterId as Id<"chapters">),
+        )
         .collect()
     ).filter((e) => includeTraining === true || isOperationalEvent(e));
     const filtered =
@@ -142,7 +149,9 @@ export const list = query({
 
     const enriched = await Promise.all(
       filtered.map(async (event) => {
-        const eventType = await ctx.db.get(event.eventTypeId as Id<"eventTypes">);
+        const eventType = await ctx.db.get(
+          event.eventTypeId as Id<"eventTypes">,
+        );
         const r = await eventReadiness(ctx, event._id);
         return {
           ...event,
@@ -246,15 +255,16 @@ export const moduleSummaries = query({
         const { items, options, hasStatus, total, done } =
           await statusCountsFor(ctx, eventId, module);
         // Next upcoming due date among still-incomplete, dated items.
-        const nextDueDate = items
-          .filter(
-            (it) =>
-              it.dueDate != null &&
-              it.dueDate >= now &&
-              (!hasStatus || !isCompleteStatus(options, it.status)),
-          )
-          .map((it) => it.dueDate as number)
-          .sort((a, b) => a - b)[0] ?? null;
+        const nextDueDate =
+          items
+            .filter(
+              (it) =>
+                it.dueDate != null &&
+                it.dueDate >= now &&
+                (!hasStatus || !isCompleteStatus(options, it.status)),
+            )
+            .map((it) => it.dueDate as number)
+            .sort((a, b) => a - b)[0] ?? null;
         return {
           module,
           total,
@@ -292,7 +302,8 @@ export const myWork = query({
       chapterId as Id<"chapters">,
       userId as Id<"users">,
     );
-    if (!me) return { ownedModuleKeys: [], tasks: [], myTeams: [], teamItemIds: [] };
+    if (!me)
+      return { ownedModuleKeys: [], tasks: [], myTeams: [], teamItemIds: [] };
 
     // Event roles + their assignments, so we can resolve a role → its person.
     const eventRoles = await ctx.db
@@ -527,7 +538,10 @@ export const todos = query({
     for (const m of resolved) {
       const role = m.ownerRoleKey ? roleByKey.get(m.ownerRoleKey) : null;
       const personId = role ? personByRoleId.get(String(role._id)) : undefined;
-      iOwnModule.set(m.key, personId != null && String(personId) === String(me));
+      iOwnModule.set(
+        m.key,
+        personId != null && String(personId) === String(me),
+      );
       modulePerson.set(m.key, personId);
     }
 
@@ -559,7 +573,8 @@ export const todos = query({
       if (ownerTotal > 0 && ownerDone < ownerTotal) {
         yours.push({
           id: "owners",
-          label: "Assign workstream owners (" + ownerDone + "/" + ownerTotal + ")",
+          label:
+            "Assign workstream owners (" + ownerDone + "/" + ownerTotal + ")",
           risk: null,
           phase: "prePlan",
         });
@@ -644,7 +659,7 @@ export const todos = query({
               const columnLabel = colLabelByKey.get(colKey) ?? colKey;
               yours.push({
                 id: it._id + ":" + colKey,
-                label: 'Fill out ' + columnLabel + ' for "' + title + '"',
+                label: "Fill out " + columnLabel + ' for "' + title + '"',
                 tab: tabForModule(m.key),
                 risk: null,
                 phase: "prePlan",
@@ -749,121 +764,254 @@ export const todos = query({
  * payload ONLY — teams, their expectations, and who's on each team. No payment,
  * vendor, or budget ($) information is ever included.
  */
-export const publicCrew = query({
-  args: { eventId: v.id("events") },
-  handler: async (ctx, { eventId }) => {
-    const event = await ctx.db.get(eventId);
-    if (!event) return null;
+/** Doc shape of one crew expectation's inlined How-To doc, or null. */
+const crewDocValidator = v.union(
+  v.object({
+    kind: v.union(
+      v.literal("link"),
+      v.literal("video"),
+      v.literal("note"),
+      v.literal("markdown"),
+    ),
+    title: v.string(),
+    url: v.union(v.string(), v.null()),
+    body: v.union(v.string(), v.null()),
+    shareId: v.string(),
+  }),
+  v.null(),
+);
+const crewExpectationValidator = v.object({
+  title: v.string(),
+  details: v.union(v.string(), v.null()),
+  doc: crewDocValidator,
+});
+const crewPersonValidator = v.object({
+  name: v.string(),
+  callTime: v.union(v.string(), v.null()),
+  status: v.union(v.string(), v.null()),
+});
+/** The sanitized, volunteer-facing crew briefing for one event — NO money,
+ *  vendor, or budget info. Shared by `publicCrew` and `myBriefing`. */
+export const crewBriefingValidator = v.object({
+  name: v.string(),
+  eventDate: v.number(),
+  location: v.union(v.string(), v.null()),
+  teams: v.array(
+    v.object({
+      value: v.string(),
+      label: v.string(),
+      color: v.union(v.string(), v.null()),
+      expectations: v.array(crewExpectationValidator),
+      people: v.array(crewPersonValidator),
+    }),
+  ),
+  unassigned: v.object({
+    expectations: v.array(crewExpectationValidator),
+    people: v.array(crewPersonValidator),
+  }),
+});
 
-    // Team options come from the volunteer_expectations "team" column.
-    const teamCol = await ctx.db
-      .query("eventColumns")
-      .withIndex("by_event_module", (q) =>
-        q.eq("eventId", eventId).eq("module", "volunteer_expectations"),
-      )
-      .filter((q) => q.eq(q.field("key"), "team"))
-      .first();
-    const teamOptions: { value: string; label: string; color?: string | null }[] =
-      teamCol?.options ?? [];
-    const knownTeams = new Set(teamOptions.map((o) => o.value));
+/**
+ * The sanitized volunteer briefing for one event: teams, their expectations,
+ * and who's on each team. Extracted so both the public share query and the
+ * authenticated `myBriefing` render the SAME shape. Never includes payment,
+ * vendor, or budget info.
+ */
+export async function buildCrewBriefing(
+  ctx: QueryCtx,
+  event: Doc<"events">,
+): Promise<Infer<typeof crewBriefingValidator>> {
+  const eventId = event._id;
 
-    // Expectations = volunteer_expectations items, grouped by fields.team.
-    const expectationItems = await ctx.db
-      .query("eventItems")
-      .withIndex("by_event_module", (q) =>
-        q.eq("eventId", eventId).eq("module", "volunteer_expectations"),
-      )
-      .collect();
-    // Resolve each expectation's optional How-To doc (the `how_to` cell stores a
-    // `docs` id) into safe display fields so the public briefing can inline a
-    // note/video or link out to a markdown page — equipping the team in place.
-    // PUBLIC-only: an internal-visibility doc is hidden (returned as null).
-    const toExpectation = async (it: Doc<"eventItems">) => {
-      let doc: {
-        kind: "link" | "video" | "note" | "markdown";
-        title: string;
-        url: string | null;
-        body: string | null;
-        shareId: string;
-      } | null = null;
-      const howToId = it.fields?.how_to;
-      if (typeof howToId === "string" && howToId) {
-        const d = await ctx.db.get(howToId as Id<"docs">);
-        if (d && (d.visibility ?? "public") === "public") {
-          doc = {
-            kind: d.kind,
-            title: d.title,
-            url: d.url ?? null,
-            body: d.body ?? null,
-            shareId: d.shareId,
-          };
-        }
-      }
-      return {
-        title: it.title ?? "",
-        details:
-          typeof it.fields?.details === "string" ? it.fields.details : null,
-        doc,
-      };
-    };
+  // Team options come from the volunteer_expectations "team" column. Read the
+  // module's columns via the index, then pick the "team" key in JS (no
+  // `.filter()` — see Convex guidelines).
+  const columns = await ctx.db
+    .query("eventColumns")
+    .withIndex("by_event_module", (q) =>
+      q.eq("eventId", eventId).eq("module", "volunteer_expectations"),
+    )
+    .collect();
+  const teamCol = columns.find((c) => c.key === "team") ?? null;
+  const teamOptions: { value: string; label: string; color?: string | null }[] =
+    teamCol?.options ?? [];
+  const knownTeams = new Set(teamOptions.map((o) => o.value));
 
-    // People = volunteer engagements, person name resolved, grouped by team.
-    const volunteers = await ctx.db
-      .query("engagements")
-      .withIndex("by_event_type", (q) =>
-        q.eq("eventId", eventId).eq("type", "volunteer"),
-      )
-      .collect();
-    const people = await Promise.all(
-      volunteers.map(async (e) => {
-        const person = await ctx.db.get(e.personId as Id<"people">);
-        return {
-          teams: Array.isArray(e.teams) ? (e.teams as string[]) : [],
-          name: person?.name ?? "Unknown",
-          callTime: e.callTime ?? null,
-          status: e.status ?? null,
+  // Expectations = volunteer_expectations items, grouped by fields.team.
+  const expectationItems = await ctx.db
+    .query("eventItems")
+    .withIndex("by_event_module", (q) =>
+      q.eq("eventId", eventId).eq("module", "volunteer_expectations"),
+    )
+    .collect();
+  // Resolve each expectation's optional How-To doc (the `how_to` cell stores a
+  // `docs` id) into safe display fields so the public briefing can inline a
+  // note/video or link out to a markdown page — equipping the team in place.
+  // PUBLIC-only: an internal-visibility doc is hidden (returned as null).
+  const toExpectation = async (it: Doc<"eventItems">) => {
+    let doc: {
+      kind: "link" | "video" | "note" | "markdown";
+      title: string;
+      url: string | null;
+      body: string | null;
+      shareId: string;
+    } | null = null;
+    const howToId = it.fields?.how_to;
+    if (typeof howToId === "string" && howToId) {
+      const d = await ctx.db.get(howToId as Id<"docs">);
+      if (d && (d.visibility ?? "public") === "public") {
+        doc = {
+          kind: d.kind,
+          title: d.title,
+          url: d.url ?? null,
+          body: d.body ?? null,
+          shareId: d.shareId,
         };
-      }),
-    );
+      }
+    }
+    return {
+      title: it.title ?? "",
+      details:
+        typeof it.fields?.details === "string" ? it.fields.details : null,
+      doc,
+    };
+  };
 
-    const teams = await Promise.all(
-      teamOptions.map(async (opt) => ({
-        value: opt.value,
-        label: opt.label,
-        color: opt.color ?? null,
-        expectations: await Promise.all(
-          expectationItems
-            .filter((it) => it.fields?.team === opt.value)
-            .map(toExpectation),
-        ),
-        people: people
-          .filter((p) => p.teams.includes(opt.value))
-          .map(({ name, callTime, status }) => ({ name, callTime, status })),
-      })),
-    );
+  // People = volunteer engagements, person name resolved, grouped by team.
+  const volunteers = await ctx.db
+    .query("engagements")
+    .withIndex("by_event_type", (q) =>
+      q.eq("eventId", eventId).eq("type", "volunteer"),
+    )
+    .collect();
+  const people = await Promise.all(
+    volunteers.map(async (e) => {
+      const person = await ctx.db.get(e.personId as Id<"people">);
+      return {
+        teams: Array.isArray(e.teams) ? (e.teams as string[]) : [],
+        name: person?.name ?? "Unknown",
+        callTime: e.callTime ?? null,
+        status: e.status ?? null,
+      };
+    }),
+  );
 
-    // Anything whose team isn't a known option → the unassigned bucket.
-    const unassigned = {
+  const teams = await Promise.all(
+    teamOptions.map(async (opt) => ({
+      value: opt.value,
+      label: opt.label,
+      color: opt.color ?? null,
       expectations: await Promise.all(
         expectationItems
-          .filter((it) => {
-            const t = it.fields?.team;
-            return typeof t !== "string" || !t || !knownTeams.has(t);
-          })
+          .filter((it) => it.fields?.team === opt.value)
           .map(toExpectation),
       ),
       people: people
-        .filter((p) => !p.teams.some((t) => knownTeams.has(t)))
+        .filter((p) => p.teams.includes(opt.value))
         .map(({ name, callTime, status }) => ({ name, callTime, status })),
-    };
+    })),
+  );
 
-    return {
-      name: event.name,
-      eventDate: event.eventDate,
-      location: event.location ?? null,
-      teams,
-      unassigned,
-    };
+  // Anything whose team isn't a known option → the unassigned bucket.
+  const unassigned = {
+    expectations: await Promise.all(
+      expectationItems
+        .filter((it) => {
+          const t = it.fields?.team;
+          return typeof t !== "string" || !t || !knownTeams.has(t);
+        })
+        .map(toExpectation),
+    ),
+    people: people
+      .filter((p) => !p.teams.some((t) => knownTeams.has(t)))
+      .map(({ name, callTime, status }) => ({ name, callTime, status })),
+  };
+
+  return {
+    name: event.name,
+    eventDate: event.eventDate,
+    location: event.location ?? null,
+    teams,
+    unassigned,
+  };
+}
+
+export const publicCrew = query({
+  args: { eventId: v.id("events") },
+  returns: v.union(crewBriefingValidator, v.null()),
+  handler: async (ctx, { eventId }) => {
+    const event = await ctx.db.get(eventId);
+    if (!event) return null;
+    return await buildCrewBriefing(ctx, event);
+  },
+});
+
+/**
+ * The authenticated volunteer's own briefing: every upcoming operational event
+ * they're engaged on, each with the same sanitized crew payload the public
+ * share route shows, plus this viewer's own teams / call time / status.
+ */
+export const myBriefing = query({
+  args: {},
+  returns: v.object({
+    events: v.array(
+      v.object({
+        eventId: v.id("events"),
+        name: v.string(),
+        eventDate: v.number(),
+        myTeams: v.array(v.string()),
+        myCallTime: v.union(v.string(), v.null()),
+        myStatus: v.union(v.string(), v.null()),
+        crew: crewBriefingValidator,
+      }),
+    ),
+  }),
+  handler: async (ctx) => {
+    const chapterId = await getChapterIdOrNull(ctx);
+    if (!chapterId) return { events: [] };
+    const userId = await requireUserId(ctx);
+    const me = await getPersonForUser(
+      ctx,
+      chapterId as Id<"chapters">,
+      userId as Id<"users">,
+    );
+    if (!me) return { events: [] };
+
+    // The viewer's engagements — bounded read, then multi-chapter-safety keep.
+    const engagements = await ctx.db
+      .query("engagements")
+      .withIndex("by_person", (q) => q.eq("personId", me))
+      .take(100);
+    const mine = engagements.filter((e) => e.chapterId === chapterId);
+
+    const todayStart = startOfDay(Date.now());
+    const results: Array<{
+      eventId: Id<"events">;
+      name: string;
+      eventDate: number;
+      myTeams: string[];
+      myCallTime: string | null;
+      myStatus: string | null;
+      crew: Infer<typeof crewBriefingValidator>;
+    }> = [];
+    for (const e of mine) {
+      const event = await ctx.db.get(e.eventId);
+      if (!event) continue;
+      if (!isOperationalEvent(event)) continue;
+      if (event.status === "cancelled") continue;
+      if (event.eventDate < todayStart) continue;
+      results.push({
+        eventId: event._id,
+        name: event.name,
+        eventDate: event.eventDate,
+        myTeams: Array.isArray(e.teams) ? (e.teams as string[]) : [],
+        myCallTime: e.callTime ?? null,
+        myStatus: e.status ?? null,
+        crew: await buildCrewBriefing(ctx, event),
+      });
+    }
+    results.sort((a, b) => a.eventDate - b.eventDate);
+    return { events: results };
   },
 });
 
@@ -904,7 +1052,8 @@ export const updateDetails = mutation({
     }
     const fields: Record<string, unknown> = { updatedAt: Date.now() };
     if (patch.name !== undefined) fields.name = patch.name;
-    if (patch.location !== undefined) fields.location = patch.location ?? undefined;
+    if (patch.location !== undefined)
+      fields.location = patch.location ?? undefined;
     if (patch.budget !== undefined) fields.budget = patch.budget ?? undefined;
     if (patch.ownerPersonId !== undefined)
       fields.ownerPersonId = patch.ownerPersonId ?? undefined;
@@ -983,19 +1132,21 @@ export const pipeline = query({
     const now = Date.now();
     const all = await ctx.db
       .query("events")
-      .withIndex("by_chapter", (q) => q.eq("chapterId", chapterId as Id<"chapters">))
+      .withIndex("by_chapter", (q) =>
+        q.eq("chapterId", chapterId as Id<"chapters">),
+      )
       .collect();
     // Training sandboxes never appear on the operations landing screen.
     const upcoming = all.filter(
       (e) =>
-        e.eventDate >= now &&
-        e.status !== "cancelled" &&
-        isOperationalEvent(e),
+        e.eventDate >= now && e.status !== "cancelled" && isOperationalEvent(e),
     );
 
     const enriched = await Promise.all(
       upcoming.map(async (event) => {
-        const eventType = await ctx.db.get(event.eventTypeId as Id<"eventTypes">);
+        const eventType = await ctx.db.get(
+          event.eventTypeId as Id<"eventTypes">,
+        );
         const { items, options, total, done } = await statusCountsFor(
           ctx,
           event._id,
@@ -1062,7 +1213,9 @@ export const dayOf = query({
     const roles = await Promise.all(
       eventRoles.map(async (role) => {
         const assignment = assignmentByRole.get(String(role._id));
-        const person = assignment ? await ctx.db.get(assignment.personId) : null;
+        const person = assignment
+          ? await ctx.db.get(assignment.personId)
+          : null;
         return {
           roleId: role._id as Id<"eventRoles">,
           roleLabel: role.label ?? "Unknown role",

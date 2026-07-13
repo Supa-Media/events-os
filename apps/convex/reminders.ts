@@ -54,7 +54,11 @@ const DIGEST_HORIZON_DAYS = 7;
  * edge still has its item collected. */
 const WINDOW_AHEAD_MS = (DIGEST_HORIZON_DAYS + 1) * DAY_MS;
 
-const OPEN_PROJECT_STATUSES = new Set(["not_started", "in_progress", "blocked"]);
+const OPEN_PROJECT_STATUSES = new Set([
+  "not_started",
+  "in_progress",
+  "blocked",
+]);
 
 export type WorkEntry = {
   kind: "project" | "task";
@@ -138,10 +142,11 @@ export function partitionForDueSoon(
  * + 1d], so ancient stragglers, far-future plans, and undated rows never
  * enter either email.
  */
-async function collectOpenWorkForChapter(
+export async function collectOpenWorkForChapter(
   ctx: QueryCtx,
   chapterId: Id<"chapters">,
   now: number,
+  onlyPersonId?: Id<"people">,
 ): Promise<RecipientWork[]> {
   const windowStart = now - OVERDUE_LOOKBACK_MS;
   const windowEnd = now + WINDOW_AHEAD_MS;
@@ -165,6 +170,9 @@ async function collectOpenWorkForChapter(
   const byOwner = new Map<Id<"people">, WorkEntry[]>();
   const add = (owner: Id<"people">, entry: WorkEntry) => {
     if (entry.dueDate < windowStart || entry.dueDate > windowEnd) return;
+    // "Mine" scoping: when collecting one person's own open work, drop
+    // everything charged to anyone else before it's ever grouped.
+    if (onlyPersonId && owner !== onlyPersonId) return;
     const list = byOwner.get(owner) ?? [];
     list.push(entry);
     byOwner.set(owner, list);
@@ -276,108 +284,130 @@ async function collectOpenWorkForChapter(
     )
     .collect();
   const statusOptionsCache = new Map<string, SelectOption[] | undefined>();
-    // Per-event lookups, loaded once on first use: role → assigned people,
-    // and custom-module key → label (for the "Eden · Comms" context line).
-    const roleHoldersByEvent = new Map<
-      Id<"events">,
-      Map<Id<"eventRoles">, Id<"people">[]>
-    >();
-    const customLabelsByEvent = new Map<Id<"events">, Map<string, string>>();
-    const eventLookups = async (eventId: Id<"events">) => {
-      let roleHolders = roleHoldersByEvent.get(eventId);
-      if (!roleHolders) {
-        roleHolders = new Map();
-        const assignments = await ctx.db
-          .query("roleAssignments")
-          .withIndex("by_event", (q) => q.eq("eventId", eventId))
-          .collect();
-        for (const a of assignments) {
-          const list = roleHolders.get(a.roleId) ?? [];
-          list.push(a.personId);
-          roleHolders.set(a.roleId, list);
-        }
-        roleHoldersByEvent.set(eventId, roleHolders);
+  // Per-event lookups, loaded once on first use: role → assigned people,
+  // and custom-module key → label (for the "Eden · Comms" context line).
+  const roleHoldersByEvent = new Map<
+    Id<"events">,
+    Map<Id<"eventRoles">, Id<"people">[]>
+  >();
+  const customLabelsByEvent = new Map<Id<"events">, Map<string, string>>();
+  const eventLookups = async (eventId: Id<"events">) => {
+    let roleHolders = roleHoldersByEvent.get(eventId);
+    if (!roleHolders) {
+      roleHolders = new Map();
+      const assignments = await ctx.db
+        .query("roleAssignments")
+        .withIndex("by_event", (q) => q.eq("eventId", eventId))
+        .collect();
+      for (const a of assignments) {
+        const list = roleHolders.get(a.roleId) ?? [];
+        list.push(a.personId);
+        roleHolders.set(a.roleId, list);
       }
-      let customLabels = customLabelsByEvent.get(eventId);
-      if (!customLabels) {
-        customLabels = new Map(
-          (
-            await ctx.db
-              .query("eventModules")
-              .withIndex("by_event", (q) => q.eq("eventId", eventId))
-              .collect()
-          ).map((m) => [m.key, m.label]),
-        );
-        customLabelsByEvent.set(eventId, customLabels);
-      }
-      return { roleHolders, customLabels };
-    };
-    for (const item of items) {
-      if (item.dueDate == null) continue; // guaranteed by the range, narrows type
-      const event = eventById.get(item.eventId);
-      if (!event) continue;
-      const cacheKey = `${item.eventId}:${item.module}`;
-      if (!statusOptionsCache.has(cacheKey)) {
-        const col = await statusColumnFor(ctx, item.eventId, item.module);
-        statusOptionsCache.set(
-          cacheKey,
-          col?.options as SelectOption[] | undefined,
-        );
-      }
-      if (isCompleteStatus(statusOptionsCache.get(cacheKey), item.status)) {
-        continue;
-      }
-      const { roleHolders, customLabels } = await eventLookups(item.eventId);
-      const candidates: Id<"people">[] = item.ownerPersonId
-        ? [item.ownerPersonId]
-        : item.roleId
-          ? (roleHolders.get(item.roleId) ?? [])
-          : [];
-      // Skip an owner/role holder who can't receive email so the task falls
-      // through to the event owner instead of vanishing from every inbox.
-      let owners = candidates.filter(reachable);
-      if (owners.length === 0 && event.ownerPersonId) {
-        owners = [event.ownerPersonId];
-      }
-      const moduleLabel =
-        MODULE_LABELS[item.module as ModuleKey] ??
-        customLabels.get(item.module) ??
-        item.module;
-      for (const owner of owners) {
-        add(owner, {
-          kind: "task",
-          name: item.title,
-          context: `${event.name} · ${moduleLabel}`,
-          dueDate: item.dueDate,
-        });
-      }
+      roleHoldersByEvent.set(eventId, roleHolders);
     }
-
-    for (const person of people) {
-      if (!reachable(person._id)) continue;
-      const email = (person.pwEmail ?? person.email)!;
-      const entries = byOwner.get(person._id) ?? [];
-      // Managers also carry their direct reports' dated work, so the digest
-      // can flag what's slipping on their team (directs only — each layer of
-      // the chain watches its own layer).
-      const directs = people
-        .filter(
-          (d) =>
-            d.managerId === person._id &&
-            !d.isPlaceholder &&
-            d.status !== "inactive" &&
-            (byOwner.get(d._id)?.length ?? 0) > 0,
-        )
-        .map((d) => ({ name: d.name, entries: byOwner.get(d._id)! }));
-      if (entries.length === 0 && directs.length === 0) continue;
-      recipients.push({
-        personId: person._id,
-        name: person.name,
-        email,
-        entries,
-        directs,
+    let customLabels = customLabelsByEvent.get(eventId);
+    if (!customLabels) {
+      customLabels = new Map(
+        (
+          await ctx.db
+            .query("eventModules")
+            .withIndex("by_event", (q) => q.eq("eventId", eventId))
+            .collect()
+        ).map((m) => [m.key, m.label]),
+      );
+      customLabelsByEvent.set(eventId, customLabels);
+    }
+    return { roleHolders, customLabels };
+  };
+  for (const item of items) {
+    if (item.dueDate == null) continue; // guaranteed by the range, narrows type
+    const event = eventById.get(item.eventId);
+    if (!event) continue;
+    const cacheKey = `${item.eventId}:${item.module}`;
+    if (!statusOptionsCache.has(cacheKey)) {
+      const col = await statusColumnFor(ctx, item.eventId, item.module);
+      statusOptionsCache.set(
+        cacheKey,
+        col?.options as SelectOption[] | undefined,
+      );
+    }
+    if (isCompleteStatus(statusOptionsCache.get(cacheKey), item.status)) {
+      continue;
+    }
+    const { roleHolders, customLabels } = await eventLookups(item.eventId);
+    const candidates: Id<"people">[] = item.ownerPersonId
+      ? [item.ownerPersonId]
+      : item.roleId
+        ? (roleHolders.get(item.roleId) ?? [])
+        : [];
+    // Skip an owner/role holder who can't receive email so the task falls
+    // through to the event owner instead of vanishing from every inbox.
+    // Keep the "Mine" viewer even when they can't receive email — their own
+    // items must surface in-app regardless of an address. For the digest
+    // (no onlyPersonId) this is exactly the old reachable-only filter.
+    let owners = candidates.filter(
+      (id) => reachable(id) || id === onlyPersonId,
+    );
+    if (owners.length === 0 && event.ownerPersonId) {
+      owners = [event.ownerPersonId];
+    }
+    const moduleLabel =
+      MODULE_LABELS[item.module as ModuleKey] ??
+      customLabels.get(item.module) ??
+      item.module;
+    for (const owner of owners) {
+      add(owner, {
+        kind: "task",
+        name: item.title,
+        context: `${event.name} · ${moduleLabel}`,
+        dueDate: item.dueDate,
       });
     }
+  }
+
+  // "Mine" path: return just this person's own entries, skipping the
+  // emailability fan-out and the manager directs rollup entirely.
+  if (onlyPersonId) {
+    const person = personById.get(onlyPersonId);
+    const entries = byOwner.get(onlyPersonId) ?? [];
+    if (!person || entries.length === 0) return [];
+    return [
+      {
+        personId: onlyPersonId,
+        name: person.name,
+        email: person.pwEmail ?? person.email ?? "",
+        entries,
+        directs: [],
+      },
+    ];
+  }
+
+  for (const person of people) {
+    if (!reachable(person._id)) continue;
+    const email = (person.pwEmail ?? person.email)!;
+    const entries = byOwner.get(person._id) ?? [];
+    // Managers also carry their direct reports' dated work, so the digest
+    // can flag what's slipping on their team (directs only — each layer of
+    // the chain watches its own layer).
+    const directs = people
+      .filter(
+        (d) =>
+          d.managerId === person._id &&
+          !d.isPlaceholder &&
+          d.status !== "inactive" &&
+          (byOwner.get(d._id)?.length ?? 0) > 0,
+      )
+      .map((d) => ({ name: d.name, entries: byOwner.get(d._id)! }));
+    if (entries.length === 0 && directs.length === 0) continue;
+    recipients.push({
+      personId: person._id,
+      name: person.name,
+      email,
+      entries,
+      directs,
+    });
+  }
   return recipients;
 }
 
@@ -473,7 +503,8 @@ function directsOverdueRows(
         <div style="font-family:${SANS};font-size:13px;font-weight:700">${esc(d.name)}</div>
         ${d.overdue
           .map(
-            (e) => `<div style="font-family:${SANS};font-size:13px;color:${MUTED};padding-top:4px">${esc(e.name)}${e.context ? ` <span style="color:#A98C8C">· ${esc(e.context)}</span>` : ""} · was due ${formatDue(e.dueDate)}</div>`,
+            (e) =>
+              `<div style="font-family:${SANS};font-size:13px;color:${MUTED};padding-top:4px">${esc(e.name)}${e.context ? ` <span style="color:#A98C8C">· ${esc(e.context)}</span>` : ""} · was due ${formatDue(e.dueDate)}</div>`,
           )
           .join("")}
       </div>`,
@@ -614,7 +645,10 @@ export const sendProjectCommentEmail = internalAction({
     authorName: v.string(),
     body: v.string(),
   },
-  handler: async (_ctx, { to, recipientName, projectName, authorName, body }) => {
+  handler: async (
+    _ctx,
+    { to, recipientName, projectName, authorName, body },
+  ) => {
     const firstName = recipientName.split(/\s+/)[0];
     await sendEmail(
       to,
