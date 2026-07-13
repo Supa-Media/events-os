@@ -1,11 +1,22 @@
 /**
- * Guest allowlist — the ONLY way a non-`publicworship.life` email gets access.
+ * Access allowlist (Chapter-OS canonical name; formerly `guests`).
+ *
+ * The ONLY way a non-`publicworship.life` email gets access. This is the API
+ * module — functions are exposed as `api.accessAllowlist.*`; a thin `guests.ts`
+ * re-export shim keeps `api.guests.*` resolving for OTA-lagged mobile clients.
  *
  * Three surfaces, one shared core:
  *   - `checkEmail`         public pre-flight for the login screen (UX only).
  *   - `allow`/`revoke`/`list`   internal, run from Convex (dashboard / seeds).
  *   - `grantAccess`/`revokeAccess`/`listGuests`   public but superuser-gated,
  *     for the in-app admin screen.
+ *
+ * WRITES target the new `accessAllowlist` table; a revoke also clears any
+ * matching legacy `guestAllowlist` row so a revocation sticks regardless of
+ * which table the row lived in. READS (here and in `lib/access.ts`) prefer
+ * `accessAllowlist` and fall back to the legacy `guestAllowlist` so login and
+ * the admin list work before/after the `copyGuestAllowlist` migration. Nothing
+ * in `guestAllowlist` is deleted (dropped only in a later Deploy C).
  *
  * A fresh grant (new row or a re-activation) emails the guest to tell them they
  * can sign in. Access is enforced downstream by `requireAccess` / `hasAccess`
@@ -51,7 +62,7 @@ async function grantGuest(
   ctx: MutationCtx,
   email: string,
   note?: string,
-): Promise<{ id: Id<"guestAllowlist">; newlyGranted: boolean }> {
+): Promise<{ id: Id<"accessAllowlist">; newlyGranted: boolean }> {
   const normalized = normalizeEmail(email);
   if (!normalized) {
     throw new ConvexError({
@@ -67,7 +78,7 @@ async function grantGuest(
   }
 
   const existing = await ctx.db
-    .query("guestAllowlist")
+    .query("accessAllowlist")
     .withIndex("by_email", (q) => q.eq("email", normalized))
     .first();
 
@@ -80,13 +91,22 @@ async function grantGuest(
     return { id: existing._id, newlyGranted: !wasActive };
   }
 
-  const id = await ctx.db.insert("guestAllowlist", {
+  // No row in the new table yet — but a legacy `guestAllowlist` row may already
+  // grant this email. Treat granting as "newly on" only when it wasn't already
+  // active somewhere, so we don't re-email an already-allowed guest.
+  const legacy = await ctx.db
+    .query("guestAllowlist")
+    .withIndex("by_email", (q) => q.eq("email", normalized))
+    .first();
+  const legacyActive = !!legacy && legacy.isActive !== false;
+
+  const id = await ctx.db.insert("accessAllowlist", {
     email: normalized,
-    note,
+    note: note ?? legacy?.note,
     isActive: true,
-    createdAt: Date.now(),
+    createdAt: legacy?.createdAt ?? Date.now(),
   });
-  return { id, newlyGranted: true };
+  return { id, newlyGranted: !legacyActive };
 }
 
 /** Grant, then email the guest if this call freshly turned their access on. */
@@ -94,31 +114,59 @@ async function grantAndNotify(
   ctx: MutationCtx,
   email: string,
   note?: string,
-): Promise<Id<"guestAllowlist">> {
+): Promise<Id<"accessAllowlist">> {
   const { id, newlyGranted } = await grantGuest(ctx, email, note);
   if (newlyGranted) {
-    await ctx.scheduler.runAfter(0, internal.guests.sendAccessGrantedEmail, {
-      email: normalizeEmail(email)!,
-    });
+    await ctx.scheduler.runAfter(
+      0,
+      internal.accessAllowlist.sendAccessGrantedEmail,
+      { email: normalizeEmail(email)! },
+    );
   }
   return id;
 }
 
-/** Revoke access, keeping the row (isActive=false) so the note/history survives. */
+/**
+ * Revoke access, keeping the row(s) (isActive=false) so the note/history
+ * survives. Clears BOTH the new `accessAllowlist` row and any legacy
+ * `guestAllowlist` row for the email, so a revocation sticks no matter which
+ * table the grant lived in (and can't be resurrected by the fallback read).
+ */
 async function revokeGuest(ctx: MutationCtx, email: string): Promise<null> {
   const normalized = normalizeEmail(email);
   if (!normalized) return null;
-  const existing = await ctx.db
+  const access = await ctx.db
+    .query("accessAllowlist")
+    .withIndex("by_email", (q) => q.eq("email", normalized))
+    .first();
+  if (access) await ctx.db.patch(access._id, { isActive: false });
+  const legacy = await ctx.db
     .query("guestAllowlist")
     .withIndex("by_email", (q) => q.eq("email", normalized))
     .first();
-  if (existing) await ctx.db.patch(existing._id, { isActive: false });
+  if (legacy) await ctx.db.patch(legacy._id, { isActive: false });
   return null;
 }
 
-/** Newest-first list of allowlist rows (bounded). */
-function listGuestRows(ctx: QueryCtx): Promise<Doc<"guestAllowlist">[]> {
-  return ctx.db.query("guestAllowlist").order("desc").take(500);
+/**
+ * Newest-first list of allowlist rows (bounded). Unions the new
+ * `accessAllowlist` with any legacy `guestAllowlist` rows not yet copied over
+ * (preferring the new table per email), so the admin screen is complete before
+ * and after `copyGuestAllowlist`.
+ */
+async function listGuestRows(ctx: QueryCtx): Promise<Doc<"accessAllowlist">[]> {
+  const rows = await ctx.db.query("accessAllowlist").order("desc").take(500);
+  const seen = new Set(rows.map((r) => r.email));
+  const legacy = await ctx.db.query("guestAllowlist").order("desc").take(500);
+  for (const g of legacy) {
+    if (seen.has(g.email)) continue;
+    seen.add(g.email);
+    // Same shape as `accessAllowlist`; surfaced read-only until the copy lands.
+    rows.push(g as unknown as Doc<"accessAllowlist">);
+  }
+  return rows
+    .sort((a, b) => b._creationTime - a._creationTime)
+    .slice(0, 500);
 }
 
 // ── Seeded from Convex (internal: dashboard function runner / seed scripts) ───
@@ -158,7 +206,7 @@ export const revokeAccess = mutation({
 
 export const listGuests = query({
   args: {},
-  handler: async (ctx): Promise<Doc<"guestAllowlist">[]> => {
+  handler: async (ctx): Promise<Doc<"accessAllowlist">[]> => {
     await requireSuperuser(ctx);
     return await listGuestRows(ctx);
   },

@@ -63,7 +63,7 @@ export function useEmailOtpLogin() {
   /** True unless the server says this email definitively lacks access. */
   async function hasServerAccess(): Promise<boolean> {
     try {
-      const { allowed } = await convex.query(api.guests.checkEmail, { email });
+      const { allowed } = await convex.query(api.accessAllowlist.checkEmail, { email });
       return allowed;
     } catch {
       return true; // fail-open — the server still gates every data call
