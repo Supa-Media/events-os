@@ -8,12 +8,23 @@ import { Screen, Card, Button, TextField, Field, Icon } from "../../components/u
 import { colors } from "../../lib/theme";
 import { errorMessage } from "../../lib/errors";
 
+/** How each derived tier reads on the profile ("Access" line). */
+const TIER_LABELS = {
+  admin: "Chapter admin",
+  lead: "Team lead",
+  member: "Member",
+  volunteer: "Volunteer",
+} as const;
+
 /**
- * Profile screen — edit name + phone (email is read-only, owned by auth) and
- * save via `profiles.updateProfile`. Reached from the sidebar / bottom-nav.
+ * Profile screen — edit name + phone (email is read-only, owned by auth),
+ * save via `profiles.updateProfile`, and show WHO you are here: your chapter,
+ * your derived access tier, and the "why do I see this" reasons behind it
+ * (the identity-legibility decision D3 in the IA proposal).
  */
 export default function ProfileScreen() {
   const me = useQuery(api.profiles.me);
+  const org = useQuery(api.org.nav);
   const update = useMutation(api.profiles.updateProfile);
   const { signOut } = useAuthActions();
   const router = useRouter();
@@ -131,6 +142,40 @@ export default function ProfileScreen() {
           disabled={!canSave}
         />
       </Card>
+
+      {/* Chapter & access: which chapter you operate as, your derived tier,
+          and why the app shows you what it shows. */}
+      {org ? (
+        <View className="mt-4">
+          <Card padding="lg">
+            <View className="mb-3 flex-row items-center gap-2">
+              <View className="h-7 w-7 items-center justify-center rounded-md bg-mint">
+                <Icon name="home" size={14} color="#1F5A41" />
+              </View>
+              <View className="flex-1">
+                <Text className="text-sm font-semibold text-ink" numberOfLines={1}>
+                  {org.chapterName ?? "No chapter yet"}
+                </Text>
+                <Text className="text-xs text-muted">
+                  Access: {TIER_LABELS[org.tier]}
+                </Text>
+              </View>
+            </View>
+            {org.tierReasons.length > 0 ? (
+              <View className="gap-1 border-t border-border pt-3">
+                <Text className="text-2xs font-bold uppercase tracking-wider text-faint">
+                  Why you see what you see
+                </Text>
+                {org.tierReasons.map((reason, i) => (
+                  <Text key={i} className="text-xs text-muted">
+                    · {reason}
+                  </Text>
+                ))}
+              </View>
+            ) : null}
+          </Card>
+        </View>
+      ) : null}
 
       {/* Super-admin tools */}
       {me?.isSuperuser ? (
