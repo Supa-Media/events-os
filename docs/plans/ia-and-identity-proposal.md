@@ -1,6 +1,20 @@
 # IA & identity design proposal (July 2026)
 
-**Status: PROPOSED — awaiting founder decisions on D1–D4.**
+**Status: DECIDED (founder, 2026-07-13).**
+
+- **D1 → Option C: Move Mine into Work.** The Phase-2 "no Home tab" decision
+  *holds*. Events becomes purely the pipeline (+ Templates per D2); the
+  personal digest (overdue / due this week / my events) moves to the top of
+  Work; the Briefing remains the volunteer surface. (The implementer
+  recommended a generalized Home tab; the founder chose C with the tradeoffs
+  on the table — recorded here so the decision isn't relitigated by the next
+  agent.)
+- **D2 → Fold Templates into Events** (as recommended).
+- **D3 → Legibility now, tenancy later** (as recommended). The Central
+  tenancy model gets its own proposal with the Phase-4 build.
+- **D4 → Catalog in code + stored badges** (as recommended): themes → courses
+  (level + audience) → modules; `courseCompletions` table as the badge;
+  progress re-keyed by migration.
 
 Responds to `docs/plans/ux-review-and-next-phase.md` §B/§D-1. Four decisions
 gate the next-phase screens; each is presented as problem → options →
