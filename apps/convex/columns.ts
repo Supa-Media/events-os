@@ -9,7 +9,7 @@
  */
 import { query, mutation } from "./_generated/server";
 import { v, ConvexError } from "convex/values";
-import { COLUMN_TYPES } from "@events-os/shared";
+import { COLUMN_TYPES, type ColumnType } from "@events-os/shared";
 import {
   requireEvent,
   requireEventType,
@@ -98,7 +98,9 @@ export const addColumn = mutation({
       key,
       label: args.label,
       kind: "custom",
-      type: args.type,
+      // Runtime-guarded above (KNOWN_COLUMN_TYPES) so this is a real ColumnType;
+      // the cast bridges the `v.string()` arg to the tightened column `type` union.
+      type: args.type as ColumnType,
       options: args.options,
       config: args.config,
       isVisible: true,

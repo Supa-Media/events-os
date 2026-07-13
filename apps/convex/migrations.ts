@@ -20,7 +20,7 @@ import { internalMutation, internalQuery } from "./_generated/server";
 import { internal } from "./_generated/api";
 import { Id } from "./_generated/dataModel";
 import { v } from "convex/values";
-import { COLUMN_TYPES } from "@events-os/shared";
+import { COLUMN_TYPES, type ColumnType } from "@events-os/shared";
 import {
   canonicalColumnOrder,
   DEFAULT_COLUMNS,
@@ -659,7 +659,11 @@ export const auditColumnTypes = internalQuery({
 export const fixColumnTypes = internalMutation({
   args: { toType: v.optional(v.string()) },
   handler: async (ctx, { toType }) => {
-    const target = toType ?? "text";
+    // `type` is the tightened column union now, so `target` (a free `v.string()`
+    // arg, defaulting to the valid "text") is cast to `ColumnType` for the patch.
+    // Post-tightening every stored `type` is already in-vocabulary, so the
+    // `known.has` guard always continues — this fixer is now a runtime no-op.
+    const target = (toType ?? "text") as ColumnType;
     const known = new Set<string>(COLUMN_TYPES);
     let templateColumnsFixed = 0;
     let eventColumnsFixed = 0;

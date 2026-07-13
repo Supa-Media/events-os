@@ -1,4 +1,5 @@
 import { v } from "convex/values";
+import { COLUMN_TYPES } from "@events-os/shared";
 
 /** Reusable validator for a select/status option (mirrors shared SelectOption). */
 export const selectOption = v.object({
@@ -14,9 +15,21 @@ export const columnFields = {
   key: v.string(),
   label: v.string(),
   kind: v.union(v.literal("system"), v.literal("custom")),
-  type: v.string(),
+  // Constrained to the canonical `COLUMN_TYPES` universe (packages/shared).
+  // The `0015_audit_column_types` migration reported 0 out-of-vocabulary `type`
+  // values on prod, so tightening from `v.string()` to this union validates
+  // against every existing template/event column.
+  type: v.union(...COLUMN_TYPES.map((t) => v.literal(t))),
   options: v.optional(v.array(selectOption)),
-  config: v.optional(v.any()),
+  // Type-specific config bag (mirrors shared `ColumnDef.config`, typed
+  // `Record<string, unknown>`). Tightened from `v.any()` to a string-keyed
+  // record — the field is documented as, and only ever produced from, that
+  // record type. A per-key STRUCTURED validator is DEFERRED: `config` is
+  // "reserved" and currently unread anywhere, DEFAULT_COLUMNS never sets it, and
+  // there is no `0015`-style audit of config VALUE shapes — so no structured
+  // object of known keys can be proven to accept all existing prod configs.
+  // Keeping it a permissive record avoids any risk of rejecting prod data.
+  config: v.optional(v.record(v.string(), v.any())),
   isVisible: v.boolean(),
   order: v.number(),
   width: v.optional(v.number()),
