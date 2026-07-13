@@ -62,6 +62,8 @@ const NAV_RETURNS = v.object({
   selfPersonId: v.union(v.id("people"), v.null()),
   tier: TIER_VALIDATOR,
   tierReasons: v.array(v.string()),
+  /** The chapter's display name — the shell shows who you're operating as. */
+  chapterName: v.union(v.string(), v.null()),
 });
 
 /**
@@ -138,8 +140,10 @@ export const nav = query({
         selfPersonId: null,
         tier: "member" as const,
         tierReasons: ["You're not in a chapter yet"],
+        chapterName: null,
       };
     }
+    const chapter = await ctx.db.get(chapterId as Id<"chapters">);
     const isAdmin = await isChapterAdmin(ctx, chapterId as Id<"chapters">);
     const self = await viewerPerson(ctx, chapterId as Id<"chapters">);
     let canManage = isAdmin;
@@ -172,6 +176,7 @@ export const nav = query({
       selfPersonId: self?._id ?? null,
       tier,
       tierReasons,
+      chapterName: chapter?.name ?? null,
     };
   },
 });

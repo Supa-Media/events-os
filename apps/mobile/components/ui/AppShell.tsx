@@ -192,9 +192,11 @@ function ChapterFooter() {
   const { signOut } = useAuthActions();
   const router = useRouter();
   const summary = useQuery(api.dashboard.summary);
+  const org = useQuery(api.org.nav);
+  const chapterName = org?.chapterName ?? "Chapter";
   return (
     <View className="gap-1 border-t border-border pt-3">
-      {/* Static chapter label — NOT interactive. Multi-chapter switching isn't
+      {/* Chapter identity — NOT interactive. Multi-chapter switching isn't
           built yet, so this is styled as a plain label (lower opacity, no press
           affordance) to avoid implying it's tappable like the rows below. */}
       <View
@@ -202,8 +204,8 @@ function ChapterFooter() {
         accessibilityRole="text"
         accessibilityLabel={
           summary
-            ? `Current chapter, ${summary.peopleCount} people`
-            : "Current chapter"
+            ? `Current chapter: ${chapterName}, ${summary.peopleCount} people`
+            : `Current chapter: ${chapterName}`
         }
         className="flex-row items-center gap-2.5 px-2 py-1.5 opacity-70"
       >
@@ -212,7 +214,7 @@ function ChapterFooter() {
         </View>
         <View className="flex-1">
           <Text className="text-sm font-semibold text-ink" numberOfLines={1}>
-            Chapter
+            {chapterName}
           </Text>
           <Text className="text-xs text-muted">
             {summary ? `${summary.peopleCount} people` : "—"}
@@ -239,6 +241,7 @@ function ChapterFooter() {
 
 function MobileTopBar() {
   const router = useRouter();
+  const org = useQuery(api.org.nav);
   return (
     <View className="flex-row items-center gap-2 border-b border-border bg-raised px-4 py-3">
       <View className="h-7 w-7 items-center justify-center rounded-md bg-accent">
@@ -246,6 +249,12 @@ function MobileTopBar() {
       </View>
       <Text className="font-display text-lg text-ink">Events OS</Text>
       <View className="flex-1" />
+      {/* Which chapter you're operating as — the sidebar footer's mobile twin. */}
+      {org?.chapterName ? (
+        <Text className="max-w-[40%] text-xs text-muted" numberOfLines={1}>
+          {org.chapterName}
+        </Text>
+      ) : null}
       <Pressable
         accessibilityRole="button"
         accessibilityLabel="Profile"
