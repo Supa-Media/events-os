@@ -22,14 +22,14 @@ export const columnFields = {
   type: v.union(...COLUMN_TYPES.map((t) => v.literal(t))),
   options: v.optional(v.array(selectOption)),
   // Type-specific config bag (mirrors shared `ColumnDef.config`, typed
-  // `Record<string, unknown>`). Tightened from `v.any()` to a string-keyed
-  // record — the field is documented as, and only ever produced from, that
-  // record type. A per-key STRUCTURED validator is DEFERRED: `config` is
-  // "reserved" and currently unread anywhere, DEFAULT_COLUMNS never sets it, and
-  // there is no `0015`-style audit of config VALUE shapes — so no structured
-  // object of known keys can be proven to accept all existing prod configs.
-  // Keeping it a permissive record avoids any risk of rejecting prod data.
-  config: v.optional(v.record(v.string(), v.any())),
+  // `Record<string, unknown>`). Left as `v.any()` — NOT tightened. Unlike
+  // `type` (verified safe by the `0015` 0-offenders audit), there is no
+  // `0015`-style audit of config VALUE shapes on prod, and the public
+  // `columns.addColumn/update` args accept `v.any()`, so a stored config could
+  // in principle be a non-object. `config` is "reserved" and currently unread,
+  // so tightening it has ~zero value while risking a rejected schema push on a
+  // destructive deploy. Tightening is deferred until a config-shape audit exists.
+  config: v.optional(v.any()),
   isVisible: v.boolean(),
   order: v.number(),
   width: v.optional(v.number()),
