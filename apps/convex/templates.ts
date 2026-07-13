@@ -1,5 +1,11 @@
 /**
- * Event Types / Templates.
+ * Templates (Chapter-OS canonical name; formerly `eventTypes`).
+ *
+ * This is the API module — functions are exposed as `api.templates.*`. The
+ * SCHEMA TABLE is still named `eventTypes` and its foreign keys are still
+ * `eventTypeId` (Convex can't rename a table in place — see the loud comment in
+ * `schema.ts`). A thin `eventTypes.ts` re-export shim keeps `api.eventTypes.*`
+ * resolving for OTA-lagged mobile clients that predate the rename.
  *
  * The reusable blueprint for a kind of event: an active roles set + active
  * components, each list-backed component holding its own configurable columns

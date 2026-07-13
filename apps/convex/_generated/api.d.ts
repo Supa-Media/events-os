@@ -9,6 +9,7 @@
  */
 
 import type * as academy from "../academy.js";
+import type * as accessAllowlist from "../accessAllowlist.js";
 import type * as ai from "../ai.js";
 import type * as aiActions from "../aiActions.js";
 import type * as auth from "../auth.js";
@@ -80,6 +81,7 @@ import type * as storage from "../storage.js";
 import type * as stripe from "../stripe.js";
 import type * as templatePeople from "../templatePeople.js";
 import type * as templateSync from "../templateSync.js";
+import type * as templates from "../templates.js";
 import type * as ticketing from "../ticketing.js";
 import type * as ticketingEmails from "../ticketingEmails.js";
 import type * as ticketingVerification from "../ticketingVerification.js";
@@ -93,6 +95,7 @@ import type {
 
 declare const fullApi: ApiFromModules<{
   academy: typeof academy;
+  accessAllowlist: typeof accessAllowlist;
   ai: typeof ai;
   aiActions: typeof aiActions;
   auth: typeof auth;
@@ -164,6 +167,7 @@ declare const fullApi: ApiFromModules<{
   stripe: typeof stripe;
   templatePeople: typeof templatePeople;
   templateSync: typeof templateSync;
+  templates: typeof templates;
   ticketing: typeof ticketing;
   ticketingEmails: typeof ticketingEmails;
   ticketingVerification: typeof ticketingVerification;

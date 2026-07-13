@@ -53,7 +53,7 @@ export default function PipelineScreen() {
   const org = useQuery(api.org.nav);
   const summary = useQuery(api.dashboard.summary);
   const pipeline = useQuery(api.events.pipeline);
-  const templates = useQuery(api.eventTypes.list);
+  const templates = useQuery(api.templates.list);
 
   const seed = useMutation(api.seed.seedDemoData);
   const [seeding, setSeeding] = useState(false);

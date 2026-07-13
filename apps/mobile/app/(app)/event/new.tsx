@@ -127,7 +127,7 @@ export default function NewEventScreen() {
     templateId?: string;
     date?: string;
   }>();
-  const templates = useQuery(api.eventTypes.list);
+  const templates = useQuery(api.templates.list);
   type TemplateRow = NonNullable<typeof templates>[number];
   const create = useMutation(api.events.createFromTemplate);
 
