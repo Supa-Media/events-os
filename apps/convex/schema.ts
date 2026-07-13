@@ -172,3 +172,5 @@ const schema = defineSchema({
 });
 
 export default schema;
+
+// ci-verify: trigger test-convex to exercise reusable workflow (temporary)
