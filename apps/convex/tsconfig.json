@@ -6,7 +6,7 @@
     "strict": true,
     "skipLibCheck": true,
     "allowJs": true,
-    "types": ["node", "vite/client"],
+    "types": ["node"],
     "noEmit": true,
     "paths": {
       "@shared/*": ["../../packages/shared/src/*"]
