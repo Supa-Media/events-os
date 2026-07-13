@@ -10,7 +10,7 @@ import { ALLOWED_DOMAIN } from "./login.helpers";
 import { useEmailOtpLogin } from "./useEmailOtpLogin";
 
 /**
- * OTP login for Events OS.
+ * OTP login for Chapter OS.
  *
  * Members sign in with just their username (we build the @publicworship.life
  * address). Invited guests — emails seeded into Convex's allowlist — switch to
@@ -56,7 +56,7 @@ export default function LoginScreen() {
               <Icon name="calendar" size={18} color="#FFFFFF" />
             </View>
             <View className="flex-row items-baseline gap-1">
-              <Text className="font-display text-xl text-ink">Events</Text>
+              <Text className="font-display text-xl text-ink">Chapter</Text>
               <Text className="font-display text-xl text-accent">OS</Text>
             </View>
           </View>

@@ -1,4 +1,4 @@
-// Events OS UI kit — NativeWind components built on the brand token system.
+// Chapter OS UI kit — NativeWind components built on the brand token system.
 export { Icon, type IconName } from "./Icon";
 export { Screen, Narrow, FULL_WIDTH, NARROW_WIDTH } from "./Screen";
 export { AppShell } from "./AppShell";

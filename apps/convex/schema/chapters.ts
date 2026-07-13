@@ -18,7 +18,7 @@ export const chapters = defineTable({
 /**
  * App-layer user profile — name + phone the user supplies during onboarding.
  * The framework `users` table owns auth + email; this holds the editable
- * profile fields Events OS needs. One row per user.
+ * profile fields Chapter OS needs. One row per user.
  */
 export const userProfiles = defineTable({
   userId: v.id("users"),

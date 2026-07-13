@@ -23,7 +23,7 @@ export function AccessDeniedScreen({ email }: { email?: string | null }) {
               Access restricted
             </Text>
             <Text className="mb-1 mt-2 text-sm text-muted">
-              This account isn't approved for Events OS. It's open to{" "}
+              This account isn't approved for Chapter OS. It's open to{" "}
               <Text className="font-semibold text-ink">@publicworship.life</Text>{" "}
               members and invited guests — ask an admin to add you.
             </Text>

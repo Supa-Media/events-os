@@ -2,7 +2,7 @@ import { defineConfig } from "@supa-media/core/config";
 
 export default defineConfig({
   app: {
-    name: "Events OS",
+    name: "Chapter OS",
     slug: "events-os",
     scheme: "eventsos",
     bundleId: {

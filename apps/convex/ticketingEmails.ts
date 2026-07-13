@@ -35,7 +35,7 @@ export function emailShell(inner: string): string {
     <div style="background:${CREAM};border:1px solid #EFE0DC;border-radius:20px;padding:32px 28px">
       ${inner}
     </div>
-    <div style="text-align:center;padding-top:16px;font-family:-apple-system,'Segoe UI',Roboto,sans-serif;font-size:11px;color:${MUTED}">Sent with love by Public Worship · Events OS</div>
+    <div style="text-align:center;padding-top:16px;font-family:-apple-system,'Segoe UI',Roboto,sans-serif;font-size:11px;color:${MUTED}">Sent with love by Public Worship · Chapter OS</div>
   </div>
 </div>`;
 }

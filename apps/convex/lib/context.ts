@@ -1,5 +1,5 @@
 /**
- * Request context helpers for Events OS.
+ * Request context helpers for Chapter OS.
  *
  * Typed loosely (`ctx: any`) so this file doesn't depend on Convex's generated
  * types — it's pure helper code, not a registered function. Every app function

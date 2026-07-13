@@ -1,5 +1,5 @@
 /**
- * Events OS design tokens — the SINGLE source of truth for the visual system.
+ * Chapter OS design tokens — the SINGLE source of truth for the visual system.
  *
  * Brand DNA comes from publicworship.life: warm cream surfaces, dark reddish
  * "ink" text, a confident red accent, and a set of pastel secondaries used for

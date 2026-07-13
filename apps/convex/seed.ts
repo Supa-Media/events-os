@@ -1,5 +1,5 @@
 /**
- * Demo seed data for Events OS.
+ * Demo seed data for Chapter OS.
  *
  * Idempotent: no-ops if the demo chapter already exists. Builds a realistic
  * starting point on the unified items model — a chapter (linked to the caller),

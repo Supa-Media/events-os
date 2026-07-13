@@ -23,7 +23,7 @@ import {
 } from "@expo-google-fonts/dm-sans";
 
 /**
- * Root layout for Events OS.
+ * Root layout for Chapter OS.
  *
  * Loads the brand type pairing (Corben serif display + DM Sans body) and the
  * NativeWind global stylesheet, then mounts the Convex/auth + notification

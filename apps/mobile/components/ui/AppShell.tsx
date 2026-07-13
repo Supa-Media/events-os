@@ -121,7 +121,7 @@ function Sidebar({ onCollapse }: { onCollapse: () => void }) {
               <Icon name="calendar" size={17} color="#FFFFFF" />
             </View>
             <View>
-              <Text className="font-display text-lg leading-5 text-ink">Events</Text>
+              <Text className="font-display text-lg leading-5 text-ink">Chapter</Text>
               <Text className="-mt-0.5 font-display text-lg leading-5 text-accent">OS</Text>
             </View>
             <View className="flex-1" />
@@ -244,7 +244,7 @@ function MobileTopBar() {
       <View className="h-7 w-7 items-center justify-center rounded-md bg-accent">
         <Icon name="calendar" size={15} color="#FFFFFF" />
       </View>
-      <Text className="font-display text-lg text-ink">Events OS</Text>
+      <Text className="font-display text-lg text-ink">Chapter OS</Text>
       <View className="flex-1" />
       <Pressable
         accessibilityRole="button"

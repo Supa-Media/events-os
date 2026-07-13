@@ -45,7 +45,7 @@ import { academyProgress } from "./schema/academy";
 import { schemaMigrations } from "./schema/migrations";
 
 /**
- * Database schema for Events OS.
+ * Database schema for Chapter OS.
  *
  * Framework base tables: auth (`users` + @convex-dev/auth), multi-tenant by
  * `chapter` (`chapters` + `userChapters`), and push notifications.

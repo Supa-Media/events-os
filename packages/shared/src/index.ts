@@ -1,5 +1,5 @@
 /**
- * Shared domain model for Events OS.
+ * Shared domain model for Chapter OS.
  *
  * Pure constants + helpers used by BOTH the Convex backend and the Expo app, so
  * roles, statuses, column shapes, and date math never drift between the two.
@@ -14,7 +14,7 @@
  * template authors can add custom columns without a schema change.
  */
 
-export const APP_NAME = "Events OS";
+export const APP_NAME = "Chapter OS";
 export const APP_SLUG = "events-os";
 
 export const DAY_MS = 24 * 60 * 60 * 1000;

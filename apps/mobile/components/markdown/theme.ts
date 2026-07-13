@@ -1,5 +1,5 @@
 /**
- * CodeMirror 6 theme for the Markdown editor, tuned to the Events OS visual
+ * CodeMirror 6 theme for the Markdown editor, tuned to the Chapter OS visual
  * tokens (warm cream surface, dark "ink" text, red accent). Kept as a plain
  * EditorView.theme so it works identically on web and inside the native WebView.
  *

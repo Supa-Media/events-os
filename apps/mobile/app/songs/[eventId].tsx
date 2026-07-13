@@ -261,7 +261,7 @@ export default function PublicSongsScreen() {
           )}
 
           <Text className="text-center text-xs text-faint">
-            Powered by Events OS
+            Powered by Chapter OS
           </Text>
         </View>
       </ScrollView>
