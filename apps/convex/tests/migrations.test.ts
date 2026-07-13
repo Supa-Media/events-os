@@ -290,6 +290,13 @@ const REGISTRY_NAMES = [
   "0000_seed_ledger",
   "0007_cleanup_renamed_guide_slugs",
   "0008_cleanup_orphaned_placements",
+  "0009_backfill_people_services",
+  "0010_backfill_template_people_teams",
+  "0011_backfill_person_status",
+  "0012_materialize_how_to_docs",
+  "0013_fold_project_status_notes",
+  "0014_copy_guest_allowlist",
+  "0015_audit_column_types",
 ];
 const SEEDED_HISTORICAL = [
   "backfillMissingDefaultColumns",
@@ -336,10 +343,9 @@ describe("migrations.runPending", () => {
     });
     const res = await t.mutation(internal.migrations.runPending, {});
     expect(res.skipped).toEqual(["0000_seed_ledger"]);
-    expect(res.applied).toEqual([
-      "0007_cleanup_renamed_guide_slugs",
-      "0008_cleanup_orphaned_placements",
-    ]);
+    expect(res.applied).toEqual(
+      REGISTRY_NAMES.filter((n) => n !== "0000_seed_ledger"),
+    );
     const names = await run(t, async (ctx) =>
       (await ctx.db.query("schemaMigrations").collect()).map((r) => r.name),
     );

@@ -21,6 +21,13 @@ import type { MutationCtx } from "../_generated/server";
 import { seedLedger } from "./0000_seed_ledger";
 import { cleanupRenamedGuideSlugs } from "./0007_cleanup_renamed_guide_slugs";
 import { cleanupOrphanedPlacements } from "./0008_cleanup_orphaned_placements";
+import { backfillPeopleServices } from "./0009_backfill_people_services";
+import { backfillTemplatePeopleTeams } from "./0010_backfill_template_people_teams";
+import { backfillPersonStatus } from "./0011_backfill_person_status";
+import { materializeHowToDocs } from "./0012_materialize_how_to_docs";
+import { foldProjectStatusNotes } from "./0013_fold_project_status_notes";
+import { copyGuestAllowlist } from "./0014_copy_guest_allowlist";
+import { auditColumnTypes } from "./0015_audit_column_types";
 
 /** One registered migration: a stable `name` (the ledger key) + its effect. */
 export type Migration = {
@@ -33,4 +40,12 @@ export const MIGRATIONS: Migration[] = [
   seedLedger,
   cleanupRenamedGuideSlugs,
   cleanupOrphanedPlacements,
+  // Phase 3 Deploy A — additive backfills (copy old → new, never delete old).
+  backfillPeopleServices,
+  backfillTemplatePeopleTeams,
+  backfillPersonStatus,
+  materializeHowToDocs,
+  foldProjectStatusNotes,
+  copyGuestAllowlist,
+  auditColumnTypes,
 ];

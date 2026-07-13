@@ -189,7 +189,11 @@ export const create = mutation({
     name: v.string(),
     email: v.optional(v.string()),
     phone: v.optional(v.string()),
+    // `skills` is the legacy arg name (OTA-lagged clients still send it);
+    // `services` is the Chapter-OS name. Either is accepted; the writer stores
+    // the value in the new `services` field.
     skills: v.optional(v.array(v.string())),
+    services: v.optional(v.array(v.string())),
     vettingStatus: v.optional(vettingStatus),
     status: v.optional(rosterStatus),
     role: v.optional(v.string()),
@@ -218,7 +222,9 @@ export const create = mutation({
       name: args.name,
       email: args.email,
       phone: args.phone,
-      skills: args.skills,
+      // Writer targets the new `services` field; legacy `skills` is left unset
+      // (still readable on old rows via the `services ?? skills` fallback).
+      services: args.services ?? args.skills,
       vettingStatus: args.vettingStatus ?? "unvetted",
       status,
       role: args.role,
@@ -246,7 +252,9 @@ export const update = mutation({
     name: v.optional(v.string()),
     email: v.optional(v.string()),
     phone: v.optional(v.string()),
-    skills: v.optional(v.array(v.string())),
+    // Either arg accepted; the writer stores it in the new `services` field.
+    skills: v.optional(v.union(v.array(v.string()), v.null())),
+    services: v.optional(v.union(v.array(v.string()), v.null())),
     usualRateUsd: v.optional(v.union(v.number(), v.null())),
     notes: v.optional(v.union(v.string(), v.null())),
     isTeamMember: v.optional(v.boolean()),
@@ -278,6 +286,13 @@ export const update = mutation({
     for (const [key, value] of Object.entries(patch)) {
       // null = explicit clear (store undefined); undefined = leave unchanged.
       if (value !== undefined) fields[key] = value === null ? undefined : value;
+    }
+    // Services rename: the writer targets the new `services` field. Accept the
+    // legacy `skills` arg (OTA-lagged clients) but never write the legacy field.
+    if (patch.services !== undefined || patch.skills !== undefined) {
+      const val = patch.services !== undefined ? patch.services : patch.skills;
+      fields.services = val === null ? undefined : val;
+      delete fields.skills;
     }
     // Keep the convenience isActive flag in sync when status changes (unless the
     // caller set isActive explicitly in the same patch).

@@ -14,6 +14,12 @@ export const people = defineTable({
   // Services this person can offer (worship, audio, videography…). The basis
   // for "who can deliver X?" discovery. (Named `skills` for legacy reasons.)
   skills: v.optional(v.array(v.string())),
+  // Chapter-OS rename of `skills` → `services`. Additive/optional so existing
+  // rows (which only carry `skills`) still validate; the `backfillPeopleServices`
+  // migration copies `skills` → `services`, writers target this field, and
+  // readers prefer `services ?? skills`. `skills` is kept intact (dropped in a
+  // later Deploy C), never removed here.
+  services: v.optional(v.array(v.string())),
   // Typical fee when engaged as a PAID vendor (prefills a paid engagement).
   usualRateUsd: v.optional(v.number()),
   // Free-form notes about this person (preferences, availability, context).

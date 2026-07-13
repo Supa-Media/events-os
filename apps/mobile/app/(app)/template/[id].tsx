@@ -36,10 +36,10 @@ export default function TemplateEditorScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const eventTypeId = id as Id<"eventTypes">;
 
-  const data = useQuery(api.eventTypes.get, { eventTypeId });
+  const data = useQuery(api.templates.get, { eventTypeId });
   const templateRoles = useQuery(api.roles.listForTemplate, { eventTypeId });
   const moduleData = useQuery(api.modules.listForTemplate, { eventTypeId });
-  const updateTemplateMut = useMutation(api.eventTypes.update);
+  const updateTemplateMut = useMutation(api.templates.update);
   const { run, toast, dismiss } = useActionRunner();
 
   // Wrap template edits so a failed save surfaces instead of silently no-op'ing.

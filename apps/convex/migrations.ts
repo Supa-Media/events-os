@@ -16,9 +16,11 @@
  * run is interrupted, restore from backup before retrying. It does NOT need to
  * run as part of this task — dev uses a reseed.
  */
-import { internalMutation } from "./_generated/server";
+import { internalMutation, internalQuery } from "./_generated/server";
 import { internal } from "./_generated/api";
 import { Id } from "./_generated/dataModel";
+import { v } from "convex/values";
+import { COLUMN_TYPES } from "@events-os/shared";
 import {
   canonicalColumnOrder,
   DEFAULT_COLUMNS,
@@ -27,6 +29,7 @@ import {
 } from "@events-os/shared";
 import { MIGRATIONS } from "./migrations/index";
 import { runCleanupRenamedGuideSlugs } from "./migrations/0007_cleanup_renamed_guide_slugs";
+import { scanColumnTypes } from "./migrations/0015_audit_column_types";
 
 /**
  * Backfill: ensure every template/event grid module has all of its current
@@ -622,6 +625,55 @@ export const cleanupRenamedGuideSlugs = internalMutation({
     // Body lives in the registry file so `runPending` and this manual
     // entrypoint share one implementation.
     return await runCleanupRenamedGuideSlugs(ctx);
+  },
+});
+
+/**
+ * REPORT-ONLY audit of grid column `type` values outside `COLUMN_TYPES`.
+ *
+ * Manual entrypoint sharing the body with the `0015_audit_column_types`
+ * registry migration (which runs it automatically post-deploy and records the
+ * findings in the ledger). Run it by hand any time to re-check before the
+ * Deploy-C validator tightening.
+ *
+ * Run locally:   npx convex run migrations:auditColumnTypes
+ * Run on prod:   npx convex run --prod migrations:auditColumnTypes
+ */
+export const auditColumnTypes = internalQuery({
+  args: {},
+  handler: (ctx) => scanColumnTypes(ctx),
+});
+
+/**
+ * OPTIONAL fixer for `auditColumnTypes`: coerce any grid column whose `type`
+ * is outside `COLUMN_TYPES` to a safe known type (default `"text"`), so a later
+ * Deploy-C tightening of the `type` validator validates. Does NOT tighten the
+ * validator itself and is NOT in the auto-run registry — invoke deliberately
+ * once the audit shows what's out there.
+ *
+ * Idempotent: a second run finds nothing outside the vocabulary.
+ *
+ * Run locally:   npx convex run migrations:fixColumnTypes
+ * Run on prod:   npx convex run --prod migrations:fixColumnTypes '{"toType":"text"}'
+ */
+export const fixColumnTypes = internalMutation({
+  args: { toType: v.optional(v.string()) },
+  handler: async (ctx, { toType }) => {
+    const target = toType ?? "text";
+    const known = new Set<string>(COLUMN_TYPES);
+    let templateColumnsFixed = 0;
+    let eventColumnsFixed = 0;
+    for (const c of await ctx.db.query("templateColumns").collect()) {
+      if (known.has(c.type)) continue;
+      await ctx.db.patch(c._id, { type: target });
+      templateColumnsFixed++;
+    }
+    for (const c of await ctx.db.query("eventColumns").collect()) {
+      if (known.has(c.type)) continue;
+      await ctx.db.patch(c._id, { type: target });
+      eventColumnsFixed++;
+    }
+    return { target, templateColumnsFixed, eventColumnsFixed };
   },
 });
 

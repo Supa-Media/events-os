@@ -16,9 +16,9 @@ import type { Doc } from "@events-os/convex/_generated/dataModel";
  */
 export default function GuestAccessScreen() {
   const me = useQuery(api.profiles.me);
-  const guests = useQuery(api.guests.listGuests, me?.isSuperuser ? {} : "skip");
-  const grant = useMutation(api.guests.grantAccess);
-  const revoke = useMutation(api.guests.revokeAccess);
+  const guests = useQuery(api.accessAllowlist.listGuests, me?.isSuperuser ? {} : "skip");
+  const grant = useMutation(api.accessAllowlist.grantAccess);
+  const revoke = useMutation(api.accessAllowlist.revokeAccess);
 
   const [email, setEmail] = useState("");
   const [note, setNote] = useState("");
@@ -133,7 +133,7 @@ function GuestRow({
   onRevoke,
   onRestore,
 }: {
-  guest: Doc<"guestAllowlist">;
+  guest: Doc<"accessAllowlist">;
   isLast: boolean;
   onRevoke: () => Promise<unknown>;
   onRestore: () => Promise<unknown>;

@@ -8,9 +8,11 @@
  *
  * Two ways in:
  *   1. Any `@publicworship.life` address (`isAllowedEmail`).
- *   2. An individual email seeded into the `guestAllowlist` table
- *      (`isGuestAllowed`) — the guest-login path. Seeded from Convex only; see
- *      `guests.ts`.
+ *   2. An individual email seeded into the allowlist (`isGuestAllowed`) — the
+ *      guest-login path. Seeded from Convex only; see `accessAllowlist.ts`.
+ *      Reads prefer the new `accessAllowlist` table and fall back to the legacy
+ *      `guestAllowlist` so login works before/after the `copyGuestAllowlist`
+ *      migration and regardless of which table a given row landed in.
  */
 import { getOptionalAuth } from "@supa-media/convex/auth";
 import { ConvexError } from "convex/values";
@@ -32,9 +34,13 @@ export function isAllowedEmail(email?: string | null): boolean {
 }
 
 /**
- * True iff the email has an active row in the `guestAllowlist` table. Needs
- * `ctx.db`, so it's only callable from queries/mutations (all access checks run
- * there — actions resolve context through an internalQuery).
+ * True iff the email has an active allowlist row. Prefers the new
+ * `accessAllowlist` table; when there's NO row there for the email, falls back
+ * to the legacy `guestAllowlist` — so login works before/after the
+ * `copyGuestAllowlist` migration and regardless of which table a row landed in.
+ * A revoke clears both tables (see `accessAllowlist.ts`), so the new table is
+ * authoritative once present. Needs `ctx.db`, so it's only callable from
+ * queries/mutations (actions resolve context through an internalQuery).
  */
 export async function isGuestAllowed(
   ctx: any,
@@ -42,6 +48,11 @@ export async function isGuestAllowed(
 ): Promise<boolean> {
   const normalized = normalizeEmail(email);
   if (!normalized) return false;
+  const access = await ctx.db
+    .query("accessAllowlist")
+    .withIndex("by_email", (q: any) => q.eq("email", normalized))
+    .first();
+  if (access) return access.isActive !== false;
   const guest = await ctx.db
     .query("guestAllowlist")
     .withIndex("by_email", (q: any) => q.eq("email", normalized))

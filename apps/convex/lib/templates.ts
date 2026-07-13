@@ -251,6 +251,9 @@ export async function clonePlaceholderCrewToChapter(
       name: r.name,
       role: r.role,
       isPlaceholder: true,
+      // Writer targets the new `status` field; `isActive` kept in sync as the
+      // legacy convenience flag (read path prefers `status`).
+      status: "active",
       isActive: true,
       createdAt: now,
     })) as Id<"people">;
@@ -310,6 +313,7 @@ export async function getOrCreateOwnerPerson(
     email,
     pwEmail: email,
     userId,
+    status: "active",
     isActive: true,
     isTeamMember: true,
     createdAt: now,

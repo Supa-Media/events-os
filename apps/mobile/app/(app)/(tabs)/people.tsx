@@ -137,7 +137,7 @@ export default function PeopleScreen() {
   const allSkills = useMemo(() => {
     const set = new Set<string>();
     for (const p of people ?? []) {
-      for (const s of p.skills ?? []) set.add(s);
+      for (const s of p.services ?? p.skills ?? []) set.add(s);
     }
     return Array.from(set).sort();
   }, [people]);
@@ -148,7 +148,8 @@ export default function PeopleScreen() {
     const query = search.trim().toLowerCase();
     return (people ?? []).filter((p) => {
       if (persona !== "all" && personaOf(p) !== persona) return false;
-      if (skillFilter && !(p.skills ?? []).includes(skillFilter)) return false;
+      if (skillFilter && !(p.services ?? p.skills ?? []).includes(skillFilter))
+        return false;
       if (query && !p.name.toLowerCase().includes(query)) return false;
       return true;
     });
@@ -449,8 +450,8 @@ function PersonRow({
       {/* Skills: chips + comma-separated inline editor */}
       <Cell width={COLS.skills}>
         <SkillsCell
-          skills={person.skills ?? []}
-          onCommit={(next) => update({ personId: id, skills: next })}
+          skills={person.services ?? person.skills ?? []}
+          onCommit={(next) => update({ personId: id, services: next })}
         />
       </Cell>
 

@@ -21,18 +21,18 @@ import {
 import { colors, spacing } from "../../../lib/theme";
 import { useActionRunner } from "../../../lib/useActionToast";
 
-/** A single template row from `api.eventTypes.list`. */
-type Template = FunctionReturnType<typeof api.eventTypes.list>[number];
+/** A single template row from `api.templates.list`. */
+type Template = FunctionReturnType<typeof api.templates.list>[number];
 
 /** TEMPLATES list + inline "new template" creator + archived section. */
 export default function TemplatesScreen() {
   const router = useRouter();
-  const templates = useQuery(api.eventTypes.list);
-  const archivedTemplates = useQuery(api.eventTypes.listArchived);
-  const create = useMutation(api.eventTypes.create);
-  const duplicate = useMutation(api.eventTypes.duplicate);
-  const archive = useMutation(api.eventTypes.archive);
-  const unarchive = useMutation(api.eventTypes.unarchive);
+  const templates = useQuery(api.templates.list);
+  const archivedTemplates = useQuery(api.templates.listArchived);
+  const create = useMutation(api.templates.create);
+  const duplicate = useMutation(api.templates.duplicate);
+  const archive = useMutation(api.templates.archive);
+  const unarchive = useMutation(api.templates.unarchive);
 
   const { run, toast, dismiss } = useActionRunner();
 

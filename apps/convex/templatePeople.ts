@@ -50,8 +50,10 @@ export const create = mutation({
     return await ctx.db.insert("templatePeople", {
       eventTypeId: args.eventTypeId,
       name: args.name,
-      team: args.team,
-      teams: args.teams,
+      // Writer targets the multi-team `teams` field; accept the legacy single
+      // `team` arg (OTA-lagged clients) by promoting it into the array. The
+      // legacy `team` field is left unset (old rows still read via the fallback).
+      teams: args.teams ?? (args.team ? [args.team] : undefined),
       role: args.role,
       order: maxOrder(rows) + 1,
       createdAt: Date.now(),
@@ -78,6 +80,18 @@ export const update = mutation({
     for (const [key, value] of Object.entries(patch)) {
       // null = explicit clear (store undefined); undefined = leave unchanged.
       if (value !== undefined) fields[key] = value === null ? undefined : value;
+    }
+    // Teams rename: the writer targets the multi-team `teams` field. Accept the
+    // legacy `team` arg (OTA-lagged clients) but never write the legacy field.
+    if (patch.teams !== undefined || patch.team !== undefined) {
+      const val =
+        patch.teams !== undefined
+          ? patch.teams
+          : patch.team
+            ? [patch.team]
+            : null;
+      fields.teams = val === null ? undefined : val;
+      delete fields.team;
     }
     await ctx.db.patch(templatePersonId, fields);
     return templatePersonId;
