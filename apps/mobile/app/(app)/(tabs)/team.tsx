@@ -37,6 +37,7 @@ import {
 import { OrgChart } from "../../../components/team/OrgChart";
 import { WorkloadView } from "../../../components/team/WorkloadView";
 import { DutiesGrid } from "../../../components/work/DutiesGrid";
+import { MineSection } from "../../../components/work/MineSection";
 import { colors, spacing } from "../../../lib/theme";
 import { alertError } from "../../../lib/errors";
 
@@ -161,7 +162,13 @@ export default function TeamScreen() {
     // work here: the projects assigned to them, their responsibilities, and
     // their events, fully editable.
     if (nav.teamView === "self" && nav.selfPersonId) {
-      return <WorkloadView personId={nav.selfPersonId} showBack={false} />;
+      return (
+        <WorkloadView
+          personId={nav.selfPersonId}
+          showBack={false}
+          lead={<MineSection />}
+        />
+      );
     }
     return (
       <Screen>
@@ -199,10 +206,15 @@ export default function TeamScreen() {
             onChange={setSection}
           />
         </View>
+        {/* Every pillar leads with your slice — the caller's own due work and
+            events, above the org-wide sections. */}
+        <MineSection />
       </Narrow>
 
       {section === "duties" ? (
-        <DutiesGrid />
+        // compact: this screen already owns the header — a second "Duties"
+        // title block here is the founder-reported "overlaid screens" bug.
+        <DutiesGrid header="compact" />
       ) : (
         <Narrow>
           <View

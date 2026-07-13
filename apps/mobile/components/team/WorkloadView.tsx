@@ -8,7 +8,7 @@
  * report under them — plus the 1:1 layer: managers log check-ins/skips per
  * report and the reporting chain reads the history.
  */
-import { useMemo, useState } from "react";
+import { useMemo, useState, type ReactNode } from "react";
 import { View, Text, Pressable, Linking, Modal, ScrollView } from "react-native";
 import { useRouter, usePathname } from "expo-router";
 import { useQuery, useMutation } from "convex/react";
@@ -55,10 +55,13 @@ type CheckInRow = NonNullable<
 export function WorkloadView({
   personId,
   showBack = true,
+  lead,
 }: {
   personId: Id<"people">;
   /** Hide the "← Team" affordance when embedded as someone's own view. */
   showBack?: boolean;
+  /** Rendered above everything (the Work tab passes the Mine digest here). */
+  lead?: ReactNode;
 }) {
   const router = useRouter();
   const workload = useQuery(api.org.workload, { personId });
@@ -255,6 +258,7 @@ export function WorkloadView({
   return (
     <Screen>
       <Narrow>
+        {lead}
         {showBack ? (
           <Pressable
             onPress={() => router.navigate("/team" as any)}

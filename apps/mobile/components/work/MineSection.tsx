@@ -64,9 +64,10 @@ function Bucket({
 
 /**
  * "Mine" — the signed-in person's own open work + the events they own or hold a
- * role on, shown above the chapter-wide events table. Renders NOTHING when the
- * query returns null (unlinked / admin with no roster row) or every bucket is
- * empty, so accounts with no personal items see the plain Events screen.
+ * role on. Leads the Work tab (every pillar leads with your slice; moved here
+ * from Events in the July 2026 IA pass). Renders NOTHING when the query returns
+ * null (unlinked / admin with no roster row) or every bucket is empty, so
+ * accounts with no personal items see the plain Work screen.
  */
 export function MineSection() {
   const router = useRouter();
@@ -78,7 +79,7 @@ export function MineSection() {
   }
 
   return (
-    <Card className="mt-6" padding="lg">
+    <Card className="mb-6" padding="lg">
       <View className="mb-3 flex-row items-center gap-2">
         <Icon name="user" size={16} color={colors.ink} />
         <Text className="font-display text-lg text-ink">Mine</Text>

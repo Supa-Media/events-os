@@ -25,7 +25,6 @@ import {
 import { colors } from "../../../lib/theme";
 import { formatDate } from "../../../lib/format";
 import { useActionRunner } from "../../../lib/useActionToast";
-import { MineSection } from "../../../components/events/MineSection";
 import {
   EVENT_STATUS_LABELS,
   PHASE_LABELS,
@@ -101,8 +100,6 @@ export default function PipelineScreen() {
         onOpenCalendar={() => router.push("/calendar")}
         onOpenPeople={() => router.push("/people")}
       />
-
-      <MineSection />
 
       {isEmpty ? (
         <View className="mt-6">
