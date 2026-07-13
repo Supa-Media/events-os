@@ -34,7 +34,7 @@ describe("profiles.reconcileMyPerson", () => {
           name: "Jamie R.",
           pwEmail: email,
           phone: "+15555551234", // only the newer row has a phone
-          skills: ["audio"],
+          services: ["audio"],
           createdAt: 2,
         });
         const projectId = await ctx.db.insert("projects", {
@@ -104,7 +104,7 @@ describe("profiles.reconcileMyPerson", () => {
     expect(state.survivor!.isTeamMember).toBe(true);
     // Missing fields were carried over from the merged duplicate.
     expect(state.survivor!.phone).toBe("+15555551234");
-    expect(state.survivor!.skills).toEqual(["audio"]);
+    expect(state.survivor!.services).toEqual(["audio"]);
 
     // Every reference now points at the survivor — no orphaned tasks.
     expect(state.project!.ownerPersonId).toBe(dupOld);
