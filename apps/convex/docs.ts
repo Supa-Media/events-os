@@ -442,8 +442,12 @@ export const clearSeedHash = internalMutation({
         )
         .collect();
       for (const doc of guideDocs) {
-        if (doc.seedHash !== undefined) {
-          await ctx.db.patch(doc._id, { seedHash: undefined });
+        // `seedHash` was dropped from the docs schema in Deploy C, so it's gone
+        // from the typed `Doc<"docs">` and from `patch`. This maintenance
+        // mutation is now a runtime no-op (no row carries the field); the `any`
+        // casts keep it typechecking without changing behavior.
+        if ((doc as any).seedHash !== undefined) {
+          await ctx.db.patch(doc._id, { seedHash: undefined } as any);
           cleared++;
         }
       }

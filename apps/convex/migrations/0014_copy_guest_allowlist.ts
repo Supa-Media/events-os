@@ -15,7 +15,10 @@ import type { Migration } from "./index";
  */
 export async function runCopyGuestAllowlist(ctx: MutationCtx) {
   let copied = 0;
-  for (const guest of await ctx.db.query("guestAllowlist").collect()) {
+  // `guestAllowlist` was dropped from the schema in Deploy C; this ledgered
+  // migration only needs to typecheck (it never re-runs on prod), so query the
+  // now-undeclared table via `any` (same pattern as `cleanupLegacyRoles`).
+  for (const guest of await (ctx.db as any).query("guestAllowlist").collect()) {
     const existing = await ctx.db
       .query("accessAllowlist")
       .withIndex("by_email", (q) => q.eq("email", guest.email))

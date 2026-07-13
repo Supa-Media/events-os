@@ -16,8 +16,11 @@ import type { Migration } from "./index";
  */
 export async function runPurgeGuestAllowlist(ctx: MutationCtx) {
   let deleted = 0;
+  // `guestAllowlist` was dropped from the schema in Deploy C; this ledgered
+  // migration only needs to typecheck (it never re-runs on prod), so query the
+  // now-undeclared table via `any` (same pattern as `cleanupLegacyRoles`).
   for (;;) {
-    const batch = await ctx.db.query("guestAllowlist").take(200);
+    const batch = await (ctx.db as any).query("guestAllowlist").take(200);
     if (batch.length === 0) break;
     for (const row of batch) {
       await ctx.db.delete(row._id);

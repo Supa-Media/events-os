@@ -29,16 +29,22 @@ import type { Migration } from "./index";
 export async function runClearLegacyFields(ctx: MutationCtx) {
   let cleared = 0;
 
-  const clear = async <T extends { _id: any }>(
-    row: T,
-    keys: (keyof T)[],
+  // Every legacy field below was dropped from the schema in Deploy C, so the
+  // typed `Doc<...>` no longer carries them and `ctx.db.patch` no longer accepts
+  // them. This migration is ledgered (it never re-runs on prod) and stays a
+  // runtime no-op on the new schema (rows carry none of these fields), so the
+  // legacy reads/patches are routed through `any` purely to satisfy the
+  // typechecker — runtime behavior is unchanged.
+  const clear = async (
+    row: { _id: any } & Record<string, unknown>,
+    keys: readonly string[],
   ): Promise<void> => {
     const patch: Record<string, undefined> = {};
     for (const k of keys) {
-      if (row[k] !== undefined) patch[k as string] = undefined;
+      if ((row as any)[k] !== undefined) patch[k] = undefined;
     }
     if (Object.keys(patch).length > 0) {
-      await ctx.db.patch(row._id, patch);
+      await ctx.db.patch(row._id, patch as any);
       cleared++;
     }
   };

@@ -56,7 +56,9 @@ export async function runMaterializeHowToDocs(ctx: MutationCtx) {
 
   for (const duty of await ctx.db.query("responsibilities").collect()) {
     if (duty.howToDocId) continue;
-    const text = duty.howTo?.trim();
+    // `howTo` was dropped from the schema in Deploy C; this ledgered migration
+    // only needs to typecheck (it never re-runs on prod), so read it via `any`.
+    const text = ((duty as any).howTo as string | undefined)?.trim();
     if (!text) continue;
 
     const author = await resolveAuthor(duty.chapterId, duty.createdBy);
