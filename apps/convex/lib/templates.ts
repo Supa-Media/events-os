@@ -575,7 +575,6 @@ export async function instantiateEvent(
       y: m.y,
       label: m.label,
       color: m.color,
-      category: m.category,
       createdAt: now,
     });
   }

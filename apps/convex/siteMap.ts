@@ -102,7 +102,6 @@ export const get = query({
         y: m.y,
         label: m.label,
         color: m.color ?? null,
-        category: m.category ?? null,
       }));
 
     const shapes = (await shapesForScope(ctx, scope))
