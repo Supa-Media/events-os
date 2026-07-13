@@ -71,7 +71,17 @@ const DELETE_W = 38;
 const TABLE_WIDTH =
   Object.values(COLS).reduce((sum, w) => sum + w, 0) + DELETE_W;
 
-export function DutiesGrid() {
+export function DutiesGrid({
+  header = "full",
+}: {
+  /**
+   * "full" renders the standalone route's own title block; "compact" renders
+   * just the search + count row for embedding under the Work tab's header
+   * (which already says where you are — a second title read as two screens
+   * stacked on top of each other).
+   */
+  header?: "full" | "compact";
+} = {}) {
   const responsibilities = useQuery(api.responsibilities.list);
   const people = useQuery(api.people.list, {});
   const create = useMutation(api.responsibilities.create);
@@ -144,19 +154,34 @@ export function DutiesGrid() {
   return (
     <>
       <Narrow>
-        <View
-          style={{
-            flexDirection: "row",
-            alignItems: "baseline",
-            justifyContent: "space-between",
-            marginBottom: spacing.md,
-          }}
-        >
-          <Text className="font-display text-2xl text-ink">Duties</Text>
-          <Text className="text-2xs font-bold uppercase tracking-wider text-muted">
-            {responsibilities.length} ongoing
-          </Text>
-        </View>
+        {header === "full" ? (
+          <View
+            style={{
+              flexDirection: "row",
+              alignItems: "baseline",
+              justifyContent: "space-between",
+              marginBottom: spacing.md,
+            }}
+          >
+            <Text className="font-display text-2xl text-ink">Duties</Text>
+            <Text className="text-2xs font-bold uppercase tracking-wider text-muted">
+              {responsibilities.length} ongoing
+            </Text>
+          </View>
+        ) : (
+          <View
+            style={{
+              flexDirection: "row",
+              alignItems: "center",
+              justifyContent: "flex-end",
+              marginBottom: spacing.sm,
+            }}
+          >
+            <Text className="text-2xs font-bold uppercase tracking-wider text-muted">
+              {responsibilities.length} ongoing
+            </Text>
+          </View>
+        )}
         <TextField
           placeholder="Search by title or role…"
           value={search}

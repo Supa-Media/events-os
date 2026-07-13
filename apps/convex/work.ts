@@ -1,6 +1,6 @@
 /**
- * "Mine" — the signed-in person's own open work, for the Events-screen section
- * and any personal dashboard. `myOpenWork` reuses the reminder digest's
+ * "Mine" — the signed-in person's own open work, for the Work tab's leading
+ * digest and any personal dashboard. `myOpenWork` reuses the reminder digest's
  * collection + partition machinery (`collectOpenWorkForChapter` scoped to one
  * person, `partitionForDigest`) so the in-app view and the weekly email stay
  * in lock-step, then adds the events this person owns or holds a role on.
