@@ -150,6 +150,63 @@ describe("responsibilities", () => {
     await s.as.mutation(api.responsibilities.remove, { responsibilityId: id });
   });
 
+  test("addAssignee / removeAssignee edit one membership, race-safely", async () => {
+    const s = await setupChapter(newT());
+    const { alice, cara } = await seedChain(s);
+    const asCara = await addUser(s, "cara@publicworship.life", {
+      personId: cara,
+    });
+
+    const id = (await s.as.mutation(api.responsibilities.create, {
+      title: "Storage upkeep",
+      assigneeRoles: ["director"],
+      assigneePersonIds: [alice],
+    })) as Id<"responsibilities">;
+    const row = async () =>
+      (await s.as.query(api.responsibilities.list)).find((r) => r._id === id)!;
+
+    // Targeted add appends without rewriting the array; re-adding is a no-op.
+    await s.as.mutation(api.responsibilities.addAssignee, {
+      responsibilityId: id,
+      personId: cara,
+    });
+    await s.as.mutation(api.responsibilities.addAssignee, {
+      responsibilityId: id,
+      personId: cara,
+    });
+    expect((await row()).assigneePersonIds).toEqual([alice, cara]);
+
+    // Targeted remove drops only the named person; role fan-out is untouched.
+    await s.as.mutation(api.responsibilities.removeAssignee, {
+      responsibilityId: id,
+      personId: alice,
+    });
+    expect((await row()).assigneePersonIds).toEqual([cara]);
+    expect((await row()).assigneeRoles).toEqual(["director"]);
+
+    // Removing the last direct assignee clears the field entirely (the same
+    // shape update's null-clear leaves) rather than storing [].
+    await s.as.mutation(api.responsibilities.removeAssignee, {
+      responsibilityId: id,
+      personId: cara,
+    });
+    expect((await row()).assigneePersonIds).toBeUndefined();
+
+    // Both are manager/admin-gated like every other assignment edit.
+    await expect(
+      asCara.mutation(api.responsibilities.addAssignee, {
+        responsibilityId: id,
+        personId: cara,
+      }),
+    ).rejects.toThrow(ConvexError);
+    await expect(
+      asCara.mutation(api.responsibilities.removeAssignee, {
+        responsibilityId: id,
+        personId: cara,
+      }),
+    ).rejects.toThrow(ConvexError);
+  });
+
   test("a duty's How-To doc is manager-gated like the row itself", async () => {
     const s = await setupChapter(newT());
     const { bob, cara } = await seedChain(s);

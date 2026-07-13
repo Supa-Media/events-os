@@ -9,15 +9,14 @@
  * report and the reporting chain reads the history.
  */
 import { useMemo, useState, type ReactNode } from "react";
-import { View, Text, Pressable, Linking, Modal, ScrollView } from "react-native";
-import { useRouter, usePathname } from "expo-router";
+import { View, Text, Pressable, Modal, ScrollView } from "react-native";
+import { useRouter } from "expo-router";
 import { useQuery, useMutation } from "convex/react";
 import type { FunctionReturnType } from "convex/server";
 import { api } from "@events-os/convex/_generated/api";
 import type { Doc, Id } from "@events-os/convex/_generated/dataModel";
 import {
   EVENT_STATUS_LABELS,
-  RESPONSIBILITY_CADENCE_LABELS,
   CHECKIN_ACTION_LABELS,
   responsibilityAppliesTo,
   responsibilityDueForReview,
@@ -38,6 +37,7 @@ import {
 import { ProjectCard, buildProjectTree, type ProjectDoc } from "./ProjectCard";
 import { CheckInModal } from "./CheckInModal";
 import { AddResponsibilityModal } from "./AddResponsibilityModal";
+import { DutyRows } from "../work/DutyRows";
 import { colors, spacing } from "../../lib/theme";
 import { formatDate } from "../../lib/format";
 import { alertError } from "../../lib/errors";
@@ -417,7 +417,11 @@ export function WorkloadView({
                 No recurring duties yet — add one to them or their role.
               </Text>
             ) : (
-              <ResponsibilityRows items={ownResponsibilities} />
+              <DutyRows
+                items={ownResponsibilities}
+                person={{ _id: person._id, role: person.role }}
+                canUnassign={caller.canManage}
+              />
             )}
           </>
         ) : null}
@@ -720,7 +724,11 @@ function TeamMemberBlock({
             />
           ))}
           {responsibilities.length > 0 ? (
-            <ResponsibilityRows items={responsibilities} />
+            <DutyRows
+              items={responsibilities}
+              person={{ _id: member._id, role: member.role }}
+              canUnassign={!!onAddDuty}
+            />
           ) : null}
           {member.events.length > 0 || member.roles.length > 0 ? (
             <EventsAndRoles member={member} />
@@ -738,80 +746,6 @@ function TeamMemberBlock({
   );
 }
 
-/** Compact recurring-duty rows: title · cadence · how-to (doc-aware). */
-function ResponsibilityRows({ items }: { items: Responsibility[] }) {
-  const router = useRouter();
-  const pathname = usePathname();
-  return (
-    <View style={{ gap: spacing.xs }}>
-      {items.map((r) => {
-        const doc = r.howToDoc;
-        const openDoc = doc
-          ? () => {
-              if ((doc.kind === "link" || doc.kind === "video") && doc.url) {
-                void Linking.openURL(doc.url);
-              } else {
-                router.push(
-                  `/doc/${doc._id}?from=${encodeURIComponent(pathname)}` as any,
-                );
-              }
-            }
-          : null;
-        return (
-          <View
-            key={r._id}
-            className="rounded-md border border-border bg-raised px-3 py-2"
-          >
-            <View className="flex-row items-center gap-2">
-              <Icon name="repeat" size={13} color={colors.muted} />
-              <Text
-                className="flex-1 text-sm font-medium text-ink"
-                numberOfLines={1}
-              >
-                {r.title}
-              </Text>
-              {doc && doc.kind !== "note" && openDoc ? (
-                <Pressable
-                  onPress={openDoc}
-                  hitSlop={6}
-                  className="flex-row items-center gap-1 rounded px-1 py-0.5 active:bg-sunken web:hover:bg-sunken"
-                >
-                  <Icon
-                    name={
-                      doc.kind === "video"
-                        ? "video"
-                        : doc.kind === "markdown"
-                          ? "book-open"
-                          : "external-link"
-                    }
-                    size={13}
-                    color={colors.accent}
-                  />
-                  <Text className="text-xs font-medium text-accent">
-                    How-To
-                  </Text>
-                </Pressable>
-              ) : null}
-              <OptionTag
-                label={RESPONSIBILITY_CADENCE_LABELS[r.cadence]}
-                color={r.cadence === "ad_hoc" ? "gray" : "teal"}
-              />
-            </View>
-            {doc?.kind === "note" && doc.body ? (
-              <Text className="mt-0.5 text-xs text-muted" numberOfLines={2}>
-                {doc.body}
-              </Text>
-            ) : r.description ? (
-              <Text className="mt-0.5 text-xs text-muted" numberOfLines={2}>
-                {r.description}
-              </Text>
-            ) : null}
-          </View>
-        );
-      })}
-    </View>
-  );
-}
 
 /** 1:1 history rows: newest first, scores + flags + updates at a glance. */
 function CheckInList({

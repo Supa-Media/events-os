@@ -36,8 +36,11 @@ import {
   type VettingStatus,
   type RosterStatus,
   personaOf,
+  responsibilityAppliesTo,
   type Persona,
 } from "@events-os/shared";
+import { DutyRows } from "../../../components/work/DutyRows";
+import { AddResponsibilityModal } from "../../../components/team/AddResponsibilityModal";
 
 // Vetting select options (gray / amber / green) — fed to the shared SelectCell.
 const VETTING_OPTIONS: SelectOption<VettingStatus>[] = [
@@ -822,6 +825,16 @@ function PersonDetailBody({
   const history = useQuery(api.engagements.historyForPerson, {
     personId: person._id as any,
   });
+  // Duties are shown only to callers who can act on them (managers/admins) —
+  // for anyone else `responsibilities.list` returns just the CALLER's own
+  // duties, which would render a misleadingly empty section for this person.
+  const nav = useQuery(api.org.nav);
+  const canManage = nav?.canManage === true;
+  const duties = useQuery(api.responsibilities.list, canManage ? {} : "skip");
+  const [addDutyOpen, setAddDutyOpen] = useState(false);
+  const personDuties = (duties ?? []).filter((r) =>
+    responsibilityAppliesTo(r, { _id: person._id, role: person.role ?? null }),
+  );
 
   return (
     <>
@@ -856,6 +869,52 @@ function PersonDetailBody({
               />
             ) : null}
           </View>
+        ) : null}
+
+        {/* Duties (managers/admins): the per-person assignment surface the
+            founder's review asked for — see, add, and unassign right here. */}
+        {canManage ? (
+          <>
+            <View className="mb-2 flex-row items-center justify-between">
+              <Text className="text-2xs font-bold uppercase tracking-wider text-muted">
+                Duties
+              </Text>
+              {/* Held back until the catalog is loaded: the modal's duplicate-
+                  title guard scans the definitions, so an empty loading list
+                  would let "Create" duplicate an existing duty. */}
+              {duties !== undefined ? (
+                <Pressable
+                  onPress={() => setAddDutyOpen(true)}
+                  hitSlop={6}
+                  accessibilityLabel={`Add duty for ${person.name}`}
+                  className="flex-row items-center gap-1 rounded p-1 active:bg-sunken web:hover:bg-sunken"
+                >
+                  <Icon name="plus" size={13} color={colors.accent} />
+                  <Text className="text-xs font-medium text-accent">
+                    Add duty
+                  </Text>
+                </Pressable>
+              ) : null}
+            </View>
+            {duties === undefined ? (
+              <Text style={styles.historyEmpty}>Loading duties…</Text>
+            ) : personDuties.length === 0 ? (
+              <Text style={styles.historyEmpty}>
+                No recurring duties yet.
+              </Text>
+            ) : (
+              <View className="mb-4">
+                <DutyRows
+                  items={personDuties}
+                  person={{ _id: person._id, role: person.role ?? null }}
+                  canUnassign
+                  // This surface lives in a Modal — close it before pushing
+                  // the How-To doc route, or the page opens underneath it.
+                  onBeforeNavigate={onClose}
+                />
+              </View>
+            )}
+          </>
         ) : null}
 
         {/* History */}
@@ -898,6 +957,18 @@ function PersonDetailBody({
           </>
         )}
       </ScrollView>
+
+      {addDutyOpen ? (
+        <AddResponsibilityModal
+          person={{
+            _id: person._id,
+            name: person.name,
+            role: person.role ?? null,
+          }}
+          responsibilities={duties ?? []}
+          onClose={() => setAddDutyOpen(false)}
+        />
+      ) : null}
     </>
   );
 }

@@ -243,6 +243,69 @@ export const update = mutation({
   },
 });
 
+/**
+ * Directly assign one person to a duty. Targeted — membership is read and
+ * rewritten inside this transaction — so two people editing assignments at
+ * once can't clobber each other the way whole-array `update` patches computed
+ * from stale client state can. No-op when already assigned.
+ */
+export const addAssignee = mutation({
+  args: {
+    responsibilityId: v.id("responsibilities"),
+    personId: v.id("people"),
+  },
+  handler: async (ctx, { responsibilityId, personId }) => {
+    const row = await requireOwned(
+      ctx,
+      "responsibilities",
+      responsibilityId,
+      "Responsibility",
+    );
+    await requireManagerOrAdmin(ctx, row.chapterId);
+    await requireOwned(ctx, "people", personId, "Assignee");
+    const current = row.assigneePersonIds ?? [];
+    if (!current.includes(personId)) {
+      await ctx.db.patch(responsibilityId, {
+        assigneePersonIds: [...current, personId],
+        updatedAt: Date.now(),
+      });
+    }
+    return responsibilityId;
+  },
+});
+
+/**
+ * Remove one person's DIRECT assignment from a duty. Role-derived application
+ * is deliberately untouched: a duty that reaches them via their title keeps
+ * applying until the definition's roles change (Duties grid) or their title
+ * does — unassigning a role-match per person would silently fork the fan-out.
+ * No-op when not directly assigned.
+ */
+export const removeAssignee = mutation({
+  args: {
+    responsibilityId: v.id("responsibilities"),
+    personId: v.id("people"),
+  },
+  handler: async (ctx, { responsibilityId, personId }) => {
+    const row = await requireOwned(
+      ctx,
+      "responsibilities",
+      responsibilityId,
+      "Responsibility",
+    );
+    await requireManagerOrAdmin(ctx, row.chapterId);
+    const current = row.assigneePersonIds ?? [];
+    if (current.includes(personId)) {
+      const next = current.filter((id) => id !== personId);
+      await ctx.db.patch(responsibilityId, {
+        assigneePersonIds: next.length > 0 ? next : undefined,
+        updatedAt: Date.now(),
+      });
+    }
+    return responsibilityId;
+  },
+});
+
 /** Delete a responsibility definition (check-in history keeps its snapshot). */
 export const remove = mutation({
   args: { responsibilityId: v.id("responsibilities") },
