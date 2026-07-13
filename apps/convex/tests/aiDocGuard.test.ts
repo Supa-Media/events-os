@@ -20,7 +20,6 @@ async function seedDocs(t: TestConvex, chapterId: Id<"chapters">) {
       name: "Author",
       vettingStatus: "unvetted",
       status: "active",
-      isActive: true,
       createdAt: now,
     });
     const guideId = await ctx.db.insert("docs", {

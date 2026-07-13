@@ -90,7 +90,6 @@ async function seed(
       name: "Ana Diaz",
       vettingStatus: "unvetted",
       status: "active",
-      isActive: true,
       createdAt: now,
     });
     const runId = await ctx.db.insert("aiRuns", {

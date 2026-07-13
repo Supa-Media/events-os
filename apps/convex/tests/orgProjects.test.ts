@@ -146,7 +146,9 @@ describe("projects", () => {
     });
     [p] = await s.as.query(api.projects.list);
     expect(p.status).toBe("in_progress");
-    expect(p.statusNote).toBeUndefined();
+    // `statusNote` was dropped from the schema in Deploy C, so it's no longer a
+    // field on the projects return shape; the fold into `lastComment` is the
+    // remaining observable behavior.
     expect(p.lastComment?.body).toBe("Tracking week 2");
     expect(p.blocker).toBe("Studio availability");
 

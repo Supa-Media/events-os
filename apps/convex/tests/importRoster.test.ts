@@ -32,7 +32,6 @@ describe("seed.importRoster name-match guard", () => {
         name: "AJ",
         email: "different-aj@example.com",
         phone: "+15555550000",
-        isActive: true,
         createdAt: Date.now(),
       });
     });

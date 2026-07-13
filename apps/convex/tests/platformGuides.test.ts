@@ -26,7 +26,6 @@ async function addPerson(s: ChapterSetup): Promise<Id<"people">> {
       name: "Ada Okafor",
       userId: s.userId,
       isTeamMember: true,
-      isActive: true,
       createdAt: Date.now(),
     }),
   );
@@ -261,38 +260,10 @@ describe("platform guide seeding", () => {
     ]);
   });
 
-  test("clearSeedHash unsets the deprecated field on docs that carry it", async () => {
-    const t = newT();
-    const s = await setupChapter(t);
-    await addPerson(s);
-    await run(t, (ctx) =>
-      seedPlatformGuidesForChapter(ctx, s.chapterId, [GUIDE_V1]),
-    );
-
-    // Simulate a row written by a pre-merge branch build of the seeder.
-    const guide = await run(t, (ctx) =>
-      ctx.db
-        .query("docs")
-        .withIndex("by_chapter_and_slug", (q) =>
-          q.eq("chapterId", s.chapterId).eq("slug", GUIDE_V1.slug),
-        )
-        .unique(),
-    );
-    await run(t, (ctx) => ctx.db.patch(guide!._id, { seedHash: "abc123" }));
-
-    const res = await t.mutation(internal.docs.clearSeedHash, {});
-    expect(res).toMatchObject({ cleared: 1 });
-
-    const after = await run(t, (ctx) => ctx.db.get(guide!._id));
-    expect(after!.seedHash).toBeUndefined();
-    expect("seedHash" in after!).toBe(false);
-    // Everything else survives.
-    expect(after!.body).toBe(GUIDE_V1.body);
-
-    // Idempotent: a second run finds nothing to clear.
-    const again = await t.mutation(internal.docs.clearSeedHash, {});
-    expect(again).toMatchObject({ cleared: 0 });
-  });
+  // NOTE: the `docs.clearSeedHash` maintenance test was removed in Deploy C —
+  // `docs.seedHash` was dropped from the schema, so a `seedHash` row can no
+  // longer be seeded (convex-test validates against the schema) and the field
+  // is gone from the typed doc. The mutation is kept as a now-no-op shim.
 
   test("getGuideBySlug resolves the caller's chapter's copy (and null when missing)", async () => {
     const t = newT();

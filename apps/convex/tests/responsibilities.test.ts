@@ -234,7 +234,8 @@ describe("responsibilities", () => {
     });
     [r] = await s.as.query(api.responsibilities.list);
     expect(r.cadence).toBe("weekly");
-    expect(r.howTo).toBeUndefined();
+    // `howTo` was dropped from the schema in Deploy C, so it's no longer a field
+    // on the responsibilities return shape (the arg is still accepted + ignored).
 
     // Pointing at a How-To doc still works (the canonical path).
     const docId = await run(s.t, async (ctx) => {

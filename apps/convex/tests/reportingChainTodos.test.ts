@@ -53,7 +53,6 @@ function makePerson(
       userId: fields.userId,
       managerId: fields.managerId,
       isTeamMember: true,
-      isActive: true,
       createdAt: Date.now(),
     }),
   );
