@@ -879,17 +879,22 @@ function PersonDetailBody({
               <Text className="text-2xs font-bold uppercase tracking-wider text-muted">
                 Duties
               </Text>
-              <Pressable
-                onPress={() => setAddDutyOpen(true)}
-                hitSlop={6}
-                accessibilityLabel={`Add duty for ${person.name}`}
-                className="flex-row items-center gap-1 rounded p-1 active:bg-sunken web:hover:bg-sunken"
-              >
-                <Icon name="plus" size={13} color={colors.accent} />
-                <Text className="text-xs font-medium text-accent">
-                  Add duty
-                </Text>
-              </Pressable>
+              {/* Held back until the catalog is loaded: the modal's duplicate-
+                  title guard scans the definitions, so an empty loading list
+                  would let "Create" duplicate an existing duty. */}
+              {duties !== undefined ? (
+                <Pressable
+                  onPress={() => setAddDutyOpen(true)}
+                  hitSlop={6}
+                  accessibilityLabel={`Add duty for ${person.name}`}
+                  className="flex-row items-center gap-1 rounded p-1 active:bg-sunken web:hover:bg-sunken"
+                >
+                  <Icon name="plus" size={13} color={colors.accent} />
+                  <Text className="text-xs font-medium text-accent">
+                    Add duty
+                  </Text>
+                </Pressable>
+              ) : null}
             </View>
             {duties === undefined ? (
               <Text style={styles.historyEmpty}>Loading duties…</Text>
@@ -903,6 +908,9 @@ function PersonDetailBody({
                   items={personDuties}
                   person={{ _id: person._id, role: person.role ?? null }}
                   canUnassign
+                  // This surface lives in a Modal — close it before pushing
+                  // the How-To doc route, or the page opens underneath it.
+                  onBeforeNavigate={onClose}
                 />
               </View>
             )}

@@ -33,12 +33,17 @@ export function DutyRows({
   items,
   person,
   canUnassign = false,
+  onBeforeNavigate,
 }: {
   items: Responsibility[];
   /** The person these rows are shown FOR — enables provenance + unassign. */
   person?: { _id: Id<"people">; role: string | null };
   /** Show the unassign ✕ on directly-assigned rows (managers/admins). */
   canUnassign?: boolean;
+  /** Called right before an in-app route push (the How-To doc page). A host
+   *  rendering these rows inside a Modal MUST close it here — RN modals sit
+   *  above the navigator, so the pushed screen would otherwise be buried. */
+  onBeforeNavigate?: () => void;
 }) {
   const router = useRouter();
   const pathname = usePathname();
@@ -50,8 +55,9 @@ export function DutyRows({
         const openDoc = doc
           ? () => {
               if ((doc.kind === "link" || doc.kind === "video") && doc.url) {
-                void Linking.openURL(doc.url);
+                void Linking.openURL(doc.url); // external — any host modal can stay
               } else {
+                onBeforeNavigate?.();
                 router.push(
                   `/doc/${doc._id}?from=${encodeURIComponent(pathname)}` as any,
                 );
