@@ -69,7 +69,7 @@ export function OnboardingScreen() {
               <Icon name="calendar" size={18} color="#FFFFFF" />
             </View>
             <View className="flex-row items-baseline gap-1">
-              <Text className="font-display text-xl text-ink">Events</Text>
+              <Text className="font-display text-xl text-ink">Chapter</Text>
               <Text className="font-display text-xl text-accent">OS</Text>
             </View>
           </View>

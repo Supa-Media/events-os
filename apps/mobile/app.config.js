@@ -30,7 +30,7 @@ function resolveConvexUrl() {
 /** @type {import('expo/config').ExpoConfig} */
 module.exports = ({ config }) => ({
   ...config,
-  name: "Events OS",
+  name: "Chapter OS",
   slug: "events-os",
   version: "1.0.0",
   scheme: "eventsos",
@@ -76,7 +76,7 @@ module.exports = ({ config }) => ({
       "expo-image-picker",
       {
         photosPermission:
-          "Allow Events OS to access your photos so you can attach images.",
+          "Allow Chapter OS to access your photos so you can attach images.",
       },
     ],
   ],

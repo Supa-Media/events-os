@@ -162,16 +162,16 @@ export function isOperationalEvent(e: {
 // never silently break the sequential-unlock chain with duplicate or gapped
 // order numbers.
 const SECTIONS_IN_ORDER: Omit<AcademySection, "order">[] = [
-  // ── 1 · What Events OS is ──────────────────────────────────────────────────
+  // ── 1 · What Chapter OS is ──────────────────────────────────────────────────
   {
     slug: "what-is-events-os",
-    title: "What Events OS is",
+    title: "What Chapter OS is",
     subtitle: "One place for the whole plan",
     minutes: 3,
     blocks: [
       {
         kind: "p",
-        text: "Events OS is where an event's plan lives: every task, message, supply, permit, and person — in one place, instead of a group chat, three spreadsheets, and somebody's memory.",
+        text: "Chapter OS is where an event's plan lives: every task, message, supply, permit, and person — in one place, instead of a group chat, three spreadsheets, and somebody's memory.",
       },
       {
         kind: "rule",
@@ -270,7 +270,7 @@ const SECTIONS_IN_ORDER: Omit<AcademySection, "order">[] = [
     blocks: [
       {
         kind: "p",
-        text: "Two kinds of people touch every event, and Events OS treats them very differently.",
+        text: "Two kinds of people touch every event, and Chapter OS treats them very differently.",
       },
       {
         kind: "table",
@@ -312,7 +312,7 @@ const SECTIONS_IN_ORDER: Omit<AcademySection, "order">[] = [
     ],
     quiz: [
       {
-        prompt: "Who is Events OS built for?",
+        prompt: "Who is Chapter OS built for?",
         options: [
           "Everyone who attends the event",
           "Organizers — the people planning and helping plan",
@@ -470,7 +470,7 @@ const SECTIONS_IN_ORDER: Omit<AcademySection, "order">[] = [
     blocks: [
       {
         kind: "p",
-        text: "You've seen that every row, tab, and event resolves to an owner. Now the part nobody tells you when you get handed one: **doing work and owning work are two different jobs.** Most people meet Events OS as a doer — rows with their name on them. Owning is the graduation: you're no longer measured by the rows you finish, but by whether the *whole thing* happens.",
+        text: "You've seen that every row, tab, and event resolves to an owner. Now the part nobody tells you when you get handed one: **doing work and owning work are two different jobs.** Most people meet Chapter OS as a doer — rows with their name on them. Owning is the graduation: you're no longer measured by the rows you finish, but by whether the *whole thing* happens.",
       },
       {
         kind: "table",
@@ -599,7 +599,7 @@ const SECTIONS_IN_ORDER: Omit<AcademySection, "order">[] = [
     blocks: [
       {
         kind: "p",
-        text: 'Put real dates in a spreadsheet, then move the event a week — everything is wrong. Events OS stores timing as an **offset** instead: "10 days before the event." The shorthand you\'ll see is T-notation: **T-10** is 10 days before, **T-0** is event day, **T+2** is two days after.',
+        text: 'Put real dates in a spreadsheet, then move the event a week — everything is wrong. Chapter OS stores timing as an **offset** instead: "10 days before the event." The shorthand you\'ll see is T-notation: **T-10** is 10 days before, **T-0** is event day, **T+2** is two days after.',
       },
       { kind: "try_offset", eventDateLabel: "Worship With Strangers" },
       {
@@ -1636,7 +1636,7 @@ const SECTIONS_IN_ORDER: Omit<AcademySection, "order">[] = [
     blocks: [
       {
         kind: "p",
-        text: "This is how most people actually meet Events OS: someone else created a big event from a template, and you got handed a role. **Start training** spins up that exact situation — a large worship gathering a month out (big events plan on long horizons), mid-planning, dozens of real rows across every tab — visible only to you. Your role: **Comms Lead**.",
+        text: "This is how most people actually meet Chapter OS: someone else created a big event from a template, and you got handed a role. **Start training** spins up that exact situation — a large worship gathering a month out (big events plan on long horizons), mid-planning, dozens of real rows across every tab — visible only to you. Your role: **Comms Lead**.",
       },
       {
         kind: "rule",

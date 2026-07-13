@@ -619,7 +619,7 @@ async function openRouterCall(
         Authorization: `Bearer ${process.env.OPENROUTER_API_KEY}`,
         "Content-Type": "application/json",
         "HTTP-Referer": "https://events-os.app",
-        "X-OpenRouter-Title": "Events OS",
+        "X-OpenRouter-Title": "Chapter OS",
       },
       body: JSON.stringify({
         model: slug,
@@ -780,7 +780,7 @@ async function fetchCatalog(): Promise<AiCatalogModel[]> {
           ? { Authorization: `Bearer ${process.env.OPENROUTER_API_KEY}` }
           : {}),
         "HTTP-Referer": "https://events-os.app",
-        "X-OpenRouter-Title": "Events OS",
+        "X-OpenRouter-Title": "Chapter OS",
       },
     });
     if (!res.ok) return curatedCatalog();
@@ -862,7 +862,7 @@ async function openverseImageUrls(query: string): Promise<string[]> {
         encodeURIComponent(query),
       {
         signal: controller.signal,
-        headers: { "User-Agent": "Events OS (https://events-os.app)" },
+        headers: { "User-Agent": "Chapter OS (https://events-os.app)" },
       },
     );
     if (!res.ok) return [];
@@ -1912,7 +1912,7 @@ function systemPrompt(context: Ctx, now: number): string {
   }
 
   return [
-    "You are the Events OS planning assistant for a church event team. You help",
+    "You are the Chapter OS planning assistant for a church event team. You help",
     "plan and edit one event by calling tools. The north star: any plan must be",
     "runnable by one person alone, with zero tribal knowledge.",
     "",

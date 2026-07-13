@@ -200,7 +200,7 @@ ${coverUrl ? `<div class="backdrop" style="background-image:url('${coverUrl}')">
       <div class="card" id="rsvpcard" style="display:none"></div>
     </aside>
   </div>
-  <footer>Made with <span class="hearts">♥</span> by ${esc(p.hostName)} · RSVP &amp; tickets by Events OS</footer>
+  <footer>Made with <span class="hearts">♥</span> by ${esc(p.hostName)} · RSVP &amp; tickets by Chapter OS</footer>
 </main>
 
 <div class="overlay" id="overlay">
@@ -350,7 +350,7 @@ export function renderIcs(args: {
   return [
     "BEGIN:VCALENDAR",
     "VERSION:2.0",
-    "PRODID:-//Public Worship//Events OS//EN",
+    "PRODID:-//Public Worship//Chapter OS//EN",
     "BEGIN:VEVENT",
     `UID:${args.slug}@events-os`,
     `DTSTAMP:${dt(Date.now())}`,

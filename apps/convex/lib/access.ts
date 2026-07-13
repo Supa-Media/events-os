@@ -1,5 +1,5 @@
 /**
- * App-layer access control for Events OS.
+ * App-layer access control for Chapter OS.
  *
  * Auth is framework-owned (email OTP via @supa-media/convex). There's no
  * framework hook to restrict the email domain, so the access rule lives here and
@@ -79,7 +79,7 @@ export async function requireAccess(ctx: any): Promise<void> {
   if (!(await hasAccess(ctx, email))) {
     throw new ConvexError({
       code: "ACCESS_DENIED",
-      message: "This account isn't approved for Events OS.",
+      message: "This account isn't approved for Chapter OS.",
     });
   }
 }

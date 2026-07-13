@@ -196,10 +196,10 @@ export const sendAccessGrantedEmail = internalAction({
   handler: async (_ctx, { email }) => {
     const apiKey = process.env.RESEND_API_KEY;
     const from = process.env.AUTH_EMAIL_FROM ?? "auth@events-os.com";
-    const subject = "You've been given access to Events OS";
+    const subject = "You've been given access to Chapter OS";
     const html = `<div style="font-family:-apple-system,Segoe UI,Roboto,sans-serif;line-height:1.5;color:#111">
   <h2 style="margin:0 0 12px">You're in 🎉</h2>
-  <p>You've been granted guest access to <strong>Events OS</strong>.</p>
+  <p>You've been granted guest access to <strong>Chapter OS</strong>.</p>
   <p>Open the app, choose <strong>Sign in as a guest</strong>, and enter this email
   address (<strong>${email}</strong>). We'll email you a one-time code each time
   you sign in.</p>

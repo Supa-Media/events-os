@@ -657,7 +657,7 @@ export const sendProjectCommentEmail = internalAction({
       <h1 style="margin:0 0 8px;font-size:22px;line-height:1.3">New comment on ${esc(projectName)}</h1>
       <p style="margin:0 0 16px;font-family:-apple-system,'Segoe UI',Roboto,sans-serif;font-size:14px;line-height:1.6;color:${MUTED}">Hey ${esc(firstName)} — ${esc(authorName)} left an update on your project:</p>
       <div style="background:#fff;border-left:3px solid ${ACCENT};border-radius:0 12px 12px 0;padding:12px 16px;font-family:-apple-system,'Segoe UI',Roboto,sans-serif;font-size:14px;line-height:1.6">${esc(body)}</div>
-      <p style="margin:16px 0 0;font-family:-apple-system,'Segoe UI',Roboto,sans-serif;font-size:12px;line-height:1.6;color:${MUTED}">Reply on the project's thread in Events OS so the progression stays in one place.</p>`),
+      <p style="margin:16px 0 0;font-family:-apple-system,'Segoe UI',Roboto,sans-serif;font-size:12px;line-height:1.6;color:${MUTED}">Reply on the project's thread in Chapter OS so the progression stays in one place.</p>`),
     );
     return null;
   },

@@ -1,5 +1,5 @@
 /**
- * Tailwind / NativeWind theme for Events OS.
+ * Tailwind / NativeWind theme for Chapter OS.
  *
  * Tokens here mirror `lib/theme.ts` (the runtime source of truth). Screens use
  * semantic class names — bg-surface / bg-raised / text-ink / text-muted /

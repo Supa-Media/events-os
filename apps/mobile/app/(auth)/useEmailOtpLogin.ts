@@ -8,7 +8,7 @@ import { Mode, isValidEmail, toEmail } from "./login.helpers";
 type Step = "request" | "verify";
 
 const NO_ACCESS_MESSAGE =
-  "This account doesn't have access to Events OS. Ask an admin to add you.";
+  "This account doesn't have access to Chapter OS. Ask an admin to add you.";
 
 /**
  * Email-OTP login flow. Owns all form state so the screen stays pure

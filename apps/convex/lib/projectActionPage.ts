@@ -165,7 +165,7 @@ export function renderProjectActionPage(
       }
       <div class="actions">${buttons}</div>
       ${validIntent ? `<div class="hint">Confirm "${ACTION_LABELS[validIntent]}" above — nothing changes until you tap it.</div>` : `<div class="hint">Signed in from your email as ${esc(data.personName ?? "a team member")} — this link works for 30 days.</div>`}
-      ${appUrl ? `<a class="applink" href="${esc(appUrl)}">Open in Events OS →</a>` : ""}
+      ${appUrl ? `<a class="applink" href="${esc(appUrl)}">Open in Chapter OS →</a>` : ""}
     </div>`,
   );
 }
@@ -194,7 +194,7 @@ export function renderProjectActionGone(): string {
     `<div class="center">
       <div style="font-size:44px">⏳</div>
       <h1>This link has expired</h1>
-      <p style="color:var(--muted);max-width:340px">Email action links work for 30 days. You'll get a fresh one in the next digest — or open the project in Events OS.</p>
+      <p style="color:var(--muted);max-width:340px">Email action links work for 30 days. You'll get a fresh one in the next digest — or open the project in Chapter OS.</p>
     </div>`,
   );
 }
