@@ -44,7 +44,7 @@ import {
 import { sendEmail, emailShell } from "./ticketingEmails";
 import { escapeHtml } from "./lib/html";
 import { statusColumnFor } from "./lib/readiness";
-import { siteUrl } from "./lib/siteUrl";
+import { appUrl, siteUrl } from "./lib/siteUrl";
 
 /** Don't resurface work overdue longer than this — it's stale, not urgent. */
 const OVERDUE_LOOKBACK_MS = 60 * DAY_MS;
@@ -641,15 +641,17 @@ export const sendProjectCommentEmail = internalAction({
   args: {
     to: v.string(),
     recipientName: v.string(),
+    projectId: v.optional(v.id("projects")),
     projectName: v.string(),
     authorName: v.string(),
     body: v.string(),
   },
   handler: async (
     _ctx,
-    { to, recipientName, projectName, authorName, body },
+    { to, recipientName, projectId, projectName, authorName, body },
   ) => {
     const firstName = recipientName.split(/\s+/)[0];
+    const link = projectId ? appUrl(`/project/${projectId}`) : null;
     await sendEmail(
       to,
       `${authorName} commented on ${projectName}`,
@@ -657,7 +659,12 @@ export const sendProjectCommentEmail = internalAction({
       <h1 style="margin:0 0 8px;font-size:22px;line-height:1.3">New comment on ${esc(projectName)}</h1>
       <p style="margin:0 0 16px;font-family:-apple-system,'Segoe UI',Roboto,sans-serif;font-size:14px;line-height:1.6;color:${MUTED}">Hey ${esc(firstName)} — ${esc(authorName)} left an update on your project:</p>
       <div style="background:#fff;border-left:3px solid ${ACCENT};border-radius:0 12px 12px 0;padding:12px 16px;font-family:-apple-system,'Segoe UI',Roboto,sans-serif;font-size:14px;line-height:1.6">${esc(body)}</div>
-      <p style="margin:16px 0 0;font-family:-apple-system,'Segoe UI',Roboto,sans-serif;font-size:12px;line-height:1.6;color:${MUTED}">Reply on the project's thread in Chapter OS so the progression stays in one place.</p>`),
+      ${
+        link
+          ? `<div style="font-family:${SANS};font-size:12px;font-weight:600;padding-top:14px"><a href="${link}" style="color:#fff;background:${ACCENT};text-decoration:none;border:1px solid ${ACCENT};border-radius:999px;padding:6px 12px;display:inline-block">Open the project →</a></div>`
+          : ""
+      }
+      <p style="margin:16px 0 0;font-family:-apple-system,'Segoe UI',Roboto,sans-serif;font-size:12px;line-height:1.6;color:${MUTED}">Reply on the project's thread so the progression stays in one place.</p>`),
     );
     return null;
   },

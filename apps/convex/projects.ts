@@ -248,6 +248,7 @@ export const addComment = mutation({
           {
             to,
             recipientName: owner.name,
+            projectId,
             projectName: project.name,
             authorName: author.name,
             body: trimmed,

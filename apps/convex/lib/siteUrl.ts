@@ -9,3 +9,13 @@ export function siteUrl(): string {
   const base = process.env.PUBLIC_SITE_URL ?? process.env.CONVEX_SITE_URL ?? "";
   return base.replace(/\/+$/, "");
 }
+
+/**
+ * Deep link into the authenticated app (the Expo web build) at `path`, when
+ * APP_URL is configured. Null otherwise — callers omit the link entirely
+ * rather than sending a dead one.
+ */
+export function appUrl(path: string): string | null {
+  const base = process.env.APP_URL?.replace(/\/+$/, "");
+  return base ? `${base}${path}` : null;
+}

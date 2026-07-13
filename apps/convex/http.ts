@@ -15,7 +15,7 @@ import {
   renderProjectActionResult,
 } from "./lib/projectActionPage";
 import { EMAIL_ACTION_STATUSES, type EmailActionStatus } from "./projectActions";
-import { siteUrl } from "./lib/siteUrl";
+import { appUrl, siteUrl } from "./lib/siteUrl";
 import { verifyStripeSignature } from "./stripe";
 
 const http = httpRouter();
@@ -111,12 +111,6 @@ http.route({
 // Where reminder-email links land. GET is read-only (mail scanners prefetch
 // links); the status change is the POST below, behind an explicit button.
 
-/** Deep link into the app for this person's work page, when APP_URL is set. */
-function appTeamUrl(personId: string): string | null {
-  const base = process.env.APP_URL?.replace(/\/+$/, "");
-  return base ? `${base}/team/${personId}` : null;
-}
-
 http.route({
   pathPrefix: "/p/",
   method: "GET",
@@ -136,7 +130,8 @@ http.route({
         data,
         token,
         url.searchParams.get("intent"),
-        appTeamUrl(data.personId),
+        // Deep link straight to the project's own page, when APP_URL is set.
+        appUrl(`/project/${data.project._id}`),
       ),
     );
   }),
