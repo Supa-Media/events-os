@@ -3,6 +3,7 @@ import { supaAuthTables, supaNotificationTables } from "@supa-media/convex/schem
 
 import { chapters, userProfiles, userChapters } from "./schema/chapters";
 import { guestAllowlist } from "./schema/guests";
+import { accessAllowlist } from "./schema/accessAllowlist";
 import { templateRoles, eventRoles } from "./schema/roles";
 import { templateModules, eventModules } from "./schema/modules";
 import { eventTypes, templateColumns, templateItems } from "./schema/templates";
@@ -80,7 +81,15 @@ const schema = defineSchema({
   userChapters,
 
   // Guest allowlist (non-domain emails granted access, seeded from Convex).
+  // LEGACY — superseded by `accessAllowlist` (Chapter-OS rename). Kept intact
+  // through Deploy A: the `copyGuestAllowlist` migration copies its rows over
+  // and `lib/access.ts` reads it as a fallback. Dropped in a later Deploy C.
   guestAllowlist,
+
+  // Access allowlist — Chapter-OS successor to `guestAllowlist` (same shape).
+  // New grants/revokes write here; reads prefer it, falling back to the legacy
+  // table until `copyGuestAllowlist` finishes.
+  accessAllowlist,
 
   // Roles (template-owned + event-owned).
   templateRoles,
@@ -91,6 +100,13 @@ const schema = defineSchema({
   eventModules,
 
   // Templates (event types + their columns/items).
+  //
+  // ⚠️ STORAGE-LEGACY NAME — DO NOT RENAME. The Chapter-OS vocabulary calls
+  // these "Templates" and the API module is `templates.ts` (`api.templates.*`),
+  // but the SCHEMA TABLE KEY stays `eventTypes` and every `eventTypeId` foreign
+  // key keeps its name. Convex cannot rename a table in place; a copy-migration
+  // would rewrite ~390 references and invalidate client-cached ids for zero user
+  // benefit. So the table name is intentionally frozen as legacy storage.
   eventTypes,
   templateColumns,
   templateItems,
