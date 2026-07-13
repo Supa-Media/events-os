@@ -251,17 +251,14 @@ export async function clonePlaceholderCrewToChapter(
       name: r.name,
       role: r.role,
       isPlaceholder: true,
-      // Writer targets the new `status` field; `isActive` kept in sync as the
-      // legacy convenience flag (read path prefers `status`).
+      // Person lifecycle lives on `status` only now (legacy `isActive` retired).
       status: "active",
-      isActive: true,
       createdAt: now,
     })) as Id<"people">;
     peopleByTemplatePerson.set(String(r._id), newId);
 
-    // A placeholder can stand in across several teams; read multi-team `teams`,
-    // falling back to the single-team `team` for back-compat.
-    const teams: string[] = r.teams ?? (r.team ? [r.team] : []);
+    // A placeholder can stand in across several teams (multi-team `teams`).
+    const teams: string[] = r.teams ?? [];
     const engagementId = (await ctx.db.insert("engagements", {
       chapterId,
       eventId,
@@ -314,7 +311,6 @@ export async function getOrCreateOwnerPerson(
     pwEmail: email,
     userId,
     status: "active",
-    isActive: true,
     isTeamMember: true,
     createdAt: now,
   })) as Id<"people">;

@@ -296,7 +296,7 @@ const CARRY_SCALAR: (keyof Doc<"people">)[] = [
   "vettingStatus",
 ];
 const CARRY_ARRAY: (keyof Doc<"people">)[] = [
-  "skills",
+  "services",
   "projects",
   "commsPreferences",
 ];
@@ -373,10 +373,8 @@ export async function reconcilePersonForUser(
       pwEmail: loginEmail,
       phone: fields.phone ?? undefined,
       isTeamMember: true,
-      // Writer targets the new `status` field; `isActive` kept in sync as the
-      // legacy convenience flag (read path prefers `status`).
+      // Person lifecycle lives on `status` only now (legacy `isActive` retired).
       status: "active",
-      isActive: true,
       createdAt: Date.now(),
     });
   }
@@ -395,9 +393,8 @@ export async function reconcilePersonForUser(
   const desired: Record<string, unknown> = {
     chapterId,
     // A user actively signing in is active — don't leave them hidden because the
-    // row we claimed was an imported-inactive contact. Bump the paired `status`
-    // too so the two stay consistent (people.update keeps them in lock-step).
-    isActive: true,
+    // row we claimed was an imported-inactive contact. Lifecycle lives on
+    // `status` only now (legacy `isActive` retired).
     ...(fresh.status === "inactive" ? { status: "active" as const } : null),
     ...claimFields(fresh, userId, fields.email),
     ...(fields.name !== undefined ? { name: fields.name } : null),

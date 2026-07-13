@@ -222,8 +222,8 @@ export const create = mutation({
       name: args.name,
       email: args.email,
       phone: args.phone,
-      // Writer targets the new `services` field; legacy `skills` is left unset
-      // (still readable on old rows via the `services ?? skills` fallback).
+      // Writer targets the new `services` field only; the legacy `skills` arg
+      // (OTA-lagged clients) is accepted but its value is stored in `services`.
       services: args.services ?? args.skills,
       vettingStatus: args.vettingStatus ?? "unvetted",
       status,
@@ -239,7 +239,6 @@ export const create = mutation({
       image: args.image,
       socialLink: args.socialLink,
       managerId: args.managerId,
-      isActive: status !== "inactive",
       createdAt: Date.now(),
     });
   },
@@ -294,11 +293,9 @@ export const update = mutation({
       fields.services = val === null ? undefined : val;
       delete fields.skills;
     }
-    // Keep the convenience isActive flag in sync when status changes (unless the
-    // caller set isActive explicitly in the same patch).
-    if (patch.status !== undefined && patch.isActive === undefined) {
-      fields.isActive = patch.status !== "inactive";
-    }
+    // Person lifecycle lives on `status` only now; the legacy `isActive` flag is
+    // no longer written (accept the arg from OTA-lagged clients, then drop it).
+    delete fields.isActive;
     await ctx.db.patch(personId, fields);
     return personId;
   },

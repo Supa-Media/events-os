@@ -8,6 +8,7 @@
  * land on them, and editing is manager/admin-only throughout.
  */
 import { query, mutation } from "./_generated/server";
+import type { MutationCtx } from "./_generated/server";
 import { Id } from "./_generated/dataModel";
 import { v } from "convex/values";
 import {
@@ -25,6 +26,52 @@ import {
   isChapterAdmin,
   viewerPerson,
 } from "./lib/org";
+import { makeShareId } from "./lib/platformGuides";
+
+/**
+ * Materialize plain how-to TEXT into a standalone `note` doc and return its id,
+ * so a duty points at a doc via `howToDocId` (the legacy plain-text `howTo`
+ * field is never written). Mirrors the `materializeHowToDocs` migration: a doc
+ * is authored AS a roster person (`docs.createdBy` is an `Id<"people">`), so we
+ * attribute it to the creating user's linked roster person, else the oldest
+ * person in the chapter. Returns null when the text is empty or the chapter has
+ * no roster person to own the doc (caller leaves `howToDocId` unset).
+ */
+async function materializeHowToDoc(
+  ctx: MutationCtx,
+  chapterId: Id<"chapters">,
+  userId: Id<"users">,
+  title: string,
+  text: string | null | undefined,
+): Promise<Id<"docs"> | null> {
+  const body = text?.trim();
+  if (!body) return null;
+  const linked = await ctx.db
+    .query("people")
+    .withIndex("by_user", (q) => q.eq("userId", userId))
+    .first();
+  let author: Id<"people"> | null =
+    linked && linked.chapterId === chapterId ? linked._id : null;
+  if (!author) {
+    const anyPerson = await ctx.db
+      .query("people")
+      .withIndex("by_chapter", (q) => q.eq("chapterId", chapterId))
+      .first();
+    author = anyPerson?._id ?? null;
+  }
+  if (!author) return null;
+  const now = Date.now();
+  return (await ctx.db.insert("docs", {
+    chapterId,
+    kind: "note",
+    title: title || "How-to",
+    body,
+    shareId: makeShareId(),
+    createdBy: author,
+    createdAt: now,
+    updatedAt: now,
+  })) as Id<"docs">;
+}
 
 const cadence = v.union(...RESPONSIBILITY_CADENCES.map((c) => v.literal(c)));
 
@@ -108,12 +155,22 @@ export const create = mutation({
     for (const personId of args.assigneePersonIds ?? []) {
       await requireOwned(ctx, "people", personId, "Assignee");
     }
+    // Legacy plain-text `howTo` is no longer written; materialize any supplied
+    // text into a note doc and point at it via `howToDocId`.
+    const howToDocId =
+      (await materializeHowToDoc(
+        ctx,
+        chapterId as Id<"chapters">,
+        userId as Id<"users">,
+        args.title,
+        args.howTo,
+      )) ?? undefined;
     const now = Date.now();
     return await ctx.db.insert("responsibilities", {
       chapterId: chapterId as Id<"chapters">,
       title: args.title,
       description: args.description,
-      howTo: args.howTo,
+      howToDocId,
       cadence: args.cadence ?? "ad_hoc",
       assigneeRoles: args.assigneeRoles,
       assigneePersonIds: args.assigneePersonIds,
@@ -160,6 +217,25 @@ export const update = mutation({
     for (const [key, value] of Object.entries(patch)) {
       // null = explicit clear (store undefined); undefined = leave unchanged.
       if (value !== undefined) fields[key] = value === null ? undefined : value;
+    }
+    // Legacy plain-text `howTo` is no longer written. Accept the arg (OTA-lagged
+    // clients) but drop it; when it carries text and no doc is being set, fold
+    // it into a note doc and point the duty at it via `howToDocId`.
+    delete fields.howTo;
+    if (
+      typeof patch.howTo === "string" &&
+      patch.howTo.trim() &&
+      patch.howToDocId === undefined &&
+      !row.howToDocId
+    ) {
+      const docId = await materializeHowToDoc(
+        ctx,
+        row.chapterId,
+        (await requireUserId(ctx)) as Id<"users">,
+        patch.title ?? row.title,
+        patch.howTo,
+      );
+      if (docId) fields.howToDocId = docId;
     }
     fields.updatedAt = Date.now();
     await ctx.db.patch(responsibilityId, fields);

@@ -22,6 +22,23 @@ import { isChapterAdmin, manageablePersonIds, viewerPerson } from "./lib/org";
 const projectStatus = v.union(...PROJECT_STATUSES.map((s) => v.literal(s)));
 
 /**
+ * Combine the legacy one-slot `statusNote` / `nextSteps` into a single comment
+ * body (or null when both are empty). Mirrors the `foldProjectStatusNotes`
+ * migration's shape so a fresh write and a migrated row read identically.
+ */
+function composeStatusBody(
+  statusNote?: string | null,
+  nextSteps?: string | null,
+): string | null {
+  const parts: string[] = [];
+  const s = statusNote?.trim();
+  const n = nextSteps?.trim();
+  if (s) parts.push(s);
+  if (n) parts.push(`Next steps: ${n}`);
+  return parts.length ? parts.join("\n\n") : null;
+}
+
+/**
  * The person accountable for a project: its owner, or the nearest ancestor's
  * owner (unowned sub-projects inherit their parent's scope). Undefined when
  * the whole chain is unowned — such projects are admin territory.
@@ -381,6 +398,27 @@ export const update = mutation({
     for (const [key, value] of Object.entries(patch)) {
       // null = explicit clear (store undefined); undefined = leave unchanged.
       if (value !== undefined) fields[key] = value === null ? undefined : value;
+    }
+    // The one-slot `statusNote`/`nextSteps` fields are superseded by the comment
+    // thread — never written to the project anymore. Fold any supplied text into
+    // one comment (same shape as `foldProjectStatusNotes`), authored by the
+    // caller's roster person. Nothing to fold (a bare clear) is a no-op.
+    delete fields.statusNote;
+    delete fields.nextSteps;
+    const noteBody = composeStatusBody(patch.statusNote, patch.nextSteps);
+    if (noteBody) {
+      const author = await viewerPerson(ctx, project.chapterId);
+      if (author) {
+        const userId = await requireUserId(ctx);
+        await ctx.db.insert("projectComments", {
+          chapterId: project.chapterId,
+          projectId,
+          authorPersonId: author._id,
+          body: noteBody,
+          createdBy: userId as Id<"users">,
+          createdAt: Date.now(),
+        });
+      }
     }
     fields.updatedAt = Date.now();
     await ctx.db.patch(projectId, fields);

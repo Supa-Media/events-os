@@ -885,7 +885,7 @@ async function ensureSampleTeammates(
       name: seed.name,
       role: seed.role,
       isSamplePerson: true,
-      isActive: true,
+      status: "active",
       createdAt: now,
     });
   }
