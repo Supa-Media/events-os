@@ -116,6 +116,18 @@ describe("manager hierarchy", () => {
 describe("projects", () => {
   test("create defaults, update patches, null clears", async () => {
     const s = await setupChapter(newT());
+    // Link a roster person to the caller so status-note folding can author a
+    // comment (see below).
+    await run(s.t, async (ctx) => {
+      await ctx.db.insert("people", {
+        chapterId: s.chapterId,
+        userId: s.userId,
+        name: "Me",
+        status: "active",
+        isTeamMember: true,
+        createdAt: Date.now(),
+      });
+    });
     const id = (await s.as.mutation(api.projects.create, {
       name: "Music recording",
     })) as Id<"projects">;
@@ -126,13 +138,16 @@ describe("projects", () => {
     await s.as.mutation(api.projects.update, {
       projectId: id,
       status: "in_progress",
+      // Legacy one-slot `statusNote` is never stored on the project anymore —
+      // it folds into the comment thread.
       statusNote: "Tracking week 2",
       deadline: 1770000000000,
       blocker: "Studio availability",
     });
     [p] = await s.as.query(api.projects.list);
     expect(p.status).toBe("in_progress");
-    expect(p.statusNote).toBe("Tracking week 2");
+    expect(p.statusNote).toBeUndefined();
+    expect(p.lastComment?.body).toBe("Tracking week 2");
     expect(p.blocker).toBe("Studio availability");
 
     await s.as.mutation(api.projects.update, {
@@ -141,7 +156,6 @@ describe("projects", () => {
     });
     [p] = await s.as.query(api.projects.list);
     expect(p.blocker).toBeUndefined();
-    expect(p.statusNote).toBe("Tracking week 2"); // undefined = untouched
   });
 
   test("sub-projects nest but never cycle", async () => {

@@ -664,7 +664,7 @@ async function seedSpecContent(
     await ctx.db.insert("templatePeople", {
       eventTypeId: trainingId,
       name: p.name,
-      team: p.team,
+      teams: p.team ? [p.team] : undefined,
       role: p.role,
       order: i,
       createdAt: now,

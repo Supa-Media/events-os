@@ -586,9 +586,9 @@ export const seedDemoData = mutation({
         name: p.name,
         email: p.email,
         phone: p.phone,
-        skills: p.skills,
+        services: p.skills,
         vettingStatus: p.vettingStatus,
-        isActive: true,
+        status: "active",
         createdAt: now,
       });
       peopleIds.push(id);
@@ -931,7 +931,7 @@ export const reseedNyDemo = internalMutation({
           chapterId: nyChapterId,
           name: p.name,
           vettingStatus: p.vettingStatus,
-          isActive: true,
+          status: "active",
           createdAt: now,
         });
       }
@@ -1167,7 +1167,6 @@ export const importRoster = internalMutation({
       const doc: Record<string, unknown> = {
         name: r.name,
         status,
-        isActive: status !== "inactive",
         vettingStatus: "vetted",
       };
       if (r.email !== undefined) doc.email = r.email;
@@ -1175,7 +1174,7 @@ export const importRoster = internalMutation({
       if (r.pwEmail !== undefined) doc.pwEmail = r.pwEmail;
       if (r.role !== undefined) doc.role = r.role;
       if (r.gender !== undefined) doc.gender = r.gender;
-      if (r.skills !== undefined) doc.skills = r.skills;
+      if (r.skills !== undefined) doc.services = r.skills;
       if (r.projects !== undefined) doc.projects = r.projects;
       if (r.commsPreferences !== undefined)
         doc.commsPreferences = r.commsPreferences;

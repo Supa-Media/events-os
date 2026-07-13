@@ -229,18 +229,39 @@ describe("responsibilities", () => {
     await s.as.mutation(api.responsibilities.update, {
       responsibilityId: id,
       cadence: "weekly",
+      // Legacy `howTo` text is accepted but never written to the row anymore.
       howTo: "Fill the template, post in #reports",
     });
     [r] = await s.as.query(api.responsibilities.list);
     expect(r.cadence).toBe("weekly");
-    expect(r.howTo).toBe("Fill the template, post in #reports");
+    expect(r.howTo).toBeUndefined();
 
+    // Pointing at a How-To doc still works (the canonical path).
+    const docId = await run(s.t, async (ctx) => {
+      const person = await ctx.db.insert("people", {
+        chapterId: s.chapterId,
+        name: "Doc author",
+        status: "active",
+        createdAt: Date.now(),
+      });
+      return await ctx.db.insert("docs", {
+        chapterId: s.chapterId,
+        kind: "note",
+        title: "Runbook",
+        body: "Steps",
+        shareId: `sh-${Date.now()}`,
+        createdBy: person,
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      });
+    });
     await s.as.mutation(api.responsibilities.update, {
       responsibilityId: id,
-      howTo: null,
+      howToDocId: docId,
     });
     [r] = await s.as.query(api.responsibilities.list);
-    expect(r.howTo).toBeUndefined();
+    expect(r.howToDoc?.kind).toBe("note");
+    expect(r.howToDoc?.body).toBe("Steps");
   });
 });
 

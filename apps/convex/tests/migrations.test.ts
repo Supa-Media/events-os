@@ -297,6 +297,8 @@ const REGISTRY_NAMES = [
   "0013_fold_project_status_notes",
   "0014_copy_guest_allowlist",
   "0015_audit_column_types",
+  "0016_clear_legacy_fields",
+  "0017_purge_guest_allowlist",
 ];
 const SEEDED_HISTORICAL = [
   "backfillMissingDefaultColumns",

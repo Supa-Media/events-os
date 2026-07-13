@@ -52,9 +52,8 @@ export function TemplateOwnerPicker({
   const teamLabel = (value?: string | null) =>
     value ? teamOptions.find((o) => o.value === value)?.label ?? value : undefined;
 
-  // A placeholder's team(s): prefer the multi-team `teams`, falling back to the
-  // legacy single `team` (Chapter-OS rename — new rows carry only `teams`).
-  const crewTeams = (c: any): string[] => c.teams ?? (c.team ? [c.team] : []);
+  // A placeholder's team(s): the multi-team `teams` (Chapter-OS canonical).
+  const crewTeams = (c: any): string[] => c.teams ?? [];
   const primaryTeam = (c: any): string | null => crewTeams(c)[0] ?? null;
 
   // When the row has a team, split crew into matching / other so the matching

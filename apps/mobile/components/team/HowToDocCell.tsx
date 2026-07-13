@@ -4,9 +4,6 @@
  * an external link, a video, a short inline note, or a full markdown page
  * with its own route and share URL. No copy-on-write here — responsibility
  * docs are shared masters, edited in place.
- *
- * Legacy plain-text `howTo` strings (pre-doc rows) keep rendering as an
- * inline text editor until a doc kind is picked, which supersedes them.
  */
 import { View, Text, Pressable, Linking } from "react-native";
 import { useRouter, usePathname } from "expo-router";
@@ -28,16 +25,12 @@ export type HowToDocSummary = {
 
 export function HowToDocCell({
   doc,
-  legacyText,
   editable = true,
   onSetDoc,
-  onLegacyCommit,
 }: {
   doc: HowToDocSummary | null;
-  legacyText?: string | null;
   editable?: boolean;
   onSetDoc: (docId: Id<"docs"> | null) => void;
-  onLegacyCommit?: (text: string) => void;
 }) {
   const router = useRouter();
   const pathname = usePathname();
@@ -50,9 +43,7 @@ export function HowToDocCell({
     try {
       const res = await createDoc({
         kind,
-        // Carry legacy text into the note body so nothing typed is lost.
         title: "Untitled",
-        body: kind === "note" ? (legacyText ?? undefined) : undefined,
         scope: "template",
       });
       onSetDoc(res._id as Id<"docs">);
@@ -120,21 +111,8 @@ export function HowToDocCell({
     </>
   );
 
-  // No doc yet → legacy text editor (if any text) with a "+" to upgrade, or
-  // the plain "+ How-To" affordance.
+  // No doc yet → the plain "+ How-To" affordance.
   if (!doc) {
-    if (legacyText != null && legacyText !== "" && onLegacyCommit) {
-      return (
-        <View className="flex-1 flex-row items-center gap-1 px-1">
-          <InlineText
-            value={legacyText}
-            placeholder="Steps, links, tools…"
-            onCommit={onLegacyCommit}
-          />
-          {kindMenu}
-        </View>
-      );
-    }
     return (
       <View className="flex-1 flex-row items-center px-1">
         <Pressable

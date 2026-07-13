@@ -1008,7 +1008,6 @@ export const addPerson = internalMutation({
       phone,
       vettingStatus: "unvetted",
       status: "active",
-      isActive: true,
       createdAt: Date.now(),
     });
   },

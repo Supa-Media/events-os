@@ -28,6 +28,8 @@ import { materializeHowToDocs } from "./0012_materialize_how_to_docs";
 import { foldProjectStatusNotes } from "./0013_fold_project_status_notes";
 import { copyGuestAllowlist } from "./0014_copy_guest_allowlist";
 import { auditColumnTypes } from "./0015_audit_column_types";
+import { clearLegacyFields } from "./0016_clear_legacy_fields";
+import { purgeGuestAllowlist } from "./0017_purge_guest_allowlist";
 
 /** One registered migration: a stable `name` (the ledger key) + its effect. */
 export type Migration = {
@@ -48,4 +50,8 @@ export const MIGRATIONS: Migration[] = [
   foldProjectStatusNotes,
   copyGuestAllowlist,
   auditColumnTypes,
+  // Phase 3 Deploy B — drain the legacy fields/table (reads now use new fields
+  // only) so Deploy C can drop them from the schema. Run AFTER the backfills.
+  clearLegacyFields,
+  purgeGuestAllowlist,
 ];

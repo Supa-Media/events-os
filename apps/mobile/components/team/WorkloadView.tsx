@@ -797,10 +797,6 @@ function ResponsibilityRows({ items }: { items: Responsibility[] }) {
               <Text className="mt-0.5 text-xs text-muted" numberOfLines={2}>
                 {doc.body}
               </Text>
-            ) : !doc && (r.howTo || r.description) ? (
-              <Text className="mt-0.5 text-xs text-muted" numberOfLines={2}>
-                {r.howTo || r.description}
-              </Text>
             ) : r.description ? (
               <Text className="mt-0.5 text-xs text-muted" numberOfLines={2}>
                 {r.description}

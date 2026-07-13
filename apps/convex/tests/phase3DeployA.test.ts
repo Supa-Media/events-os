@@ -307,10 +307,12 @@ describe("copyGuestAllowlist + OTP access fallback", () => {
     return t.withIdentity({ subject: `${userId}|session`, issuer: "test" });
   }
 
-  test("login works reading the LEGACY guestAllowlist table (before copy)", async () => {
+  test("Deploy B: a legacy-only guestAllowlist row is NO LONGER honored", async () => {
     const t = newT();
     const as = await signInAs(t, "legacy@gmail.com");
-    // Only a legacy row exists — no accessAllowlist row yet.
+    // Only a legacy row exists — no accessAllowlist row. Post-Deploy-B the
+    // fallback is gone (rows were copied by copyGuestAllowlist), so a
+    // legacy-only row does not grant access.
     await run(t, (ctx) =>
       ctx.db.insert("guestAllowlist", {
         email: "legacy@gmail.com",
@@ -318,14 +320,14 @@ describe("copyGuestAllowlist + OTP access fallback", () => {
         createdAt: Date.now(),
       }),
     );
-    expect((await as.query(api.profiles.me, {}))?.allowed).toBe(true);
+    expect((await as.query(api.profiles.me, {}))?.allowed).toBe(false);
   });
 
-  test("login works reading the NEW accessAllowlist table, which wins over legacy", async () => {
+  test("login works reading the accessAllowlist table only", async () => {
     const t = newT();
     const as = await signInAs(t, "moved@gmail.com");
     await run(t, async (ctx) => {
-      // Legacy says active, but the new table (authoritative) says revoked.
+      // A stale legacy row saying active is ignored; only accessAllowlist counts.
       await ctx.db.insert("guestAllowlist", {
         email: "moved@gmail.com",
         isActive: true,
@@ -337,7 +339,7 @@ describe("copyGuestAllowlist + OTP access fallback", () => {
         createdAt: Date.now(),
       });
     });
-    // accessAllowlist row present → it's authoritative → revoked wins.
+    // accessAllowlist row present and revoked → denied (legacy row ignored).
     expect((await as.query(api.profiles.me, {}))?.allowed).toBe(false);
   });
 
