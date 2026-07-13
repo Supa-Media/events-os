@@ -10,9 +10,8 @@
  *   1. Any `@publicworship.life` address (`isAllowedEmail`).
  *   2. An individual email seeded into the allowlist (`isGuestAllowed`) — the
  *      guest-login path. Seeded from Convex only; see `accessAllowlist.ts`.
- *      Reads prefer the new `accessAllowlist` table and fall back to the legacy
- *      `guestAllowlist` so login works before/after the `copyGuestAllowlist`
- *      migration and regardless of which table a given row landed in.
+ *      Reads the `accessAllowlist` table only (the legacy `guestAllowlist` rows
+ *      were folded in by the `copyGuestAllowlist` migration).
  */
 import { getOptionalAuth } from "@supa-media/convex/auth";
 import { ConvexError } from "convex/values";
@@ -34,13 +33,11 @@ export function isAllowedEmail(email?: string | null): boolean {
 }
 
 /**
- * True iff the email has an active allowlist row. Prefers the new
- * `accessAllowlist` table; when there's NO row there for the email, falls back
- * to the legacy `guestAllowlist` — so login works before/after the
- * `copyGuestAllowlist` migration and regardless of which table a row landed in.
- * A revoke clears both tables (see `accessAllowlist.ts`), so the new table is
- * authoritative once present. Needs `ctx.db`, so it's only callable from
- * queries/mutations (actions resolve context through an internalQuery).
+ * True iff the email has an active `accessAllowlist` row. The legacy
+ * `guestAllowlist` rows were copied into `accessAllowlist` by the
+ * `copyGuestAllowlist` migration, so this reads the new table ONLY. Needs
+ * `ctx.db`, so it's only callable from queries/mutations (actions resolve
+ * context through an internalQuery).
  */
 export async function isGuestAllowed(
   ctx: any,
@@ -52,12 +49,7 @@ export async function isGuestAllowed(
     .query("accessAllowlist")
     .withIndex("by_email", (q: any) => q.eq("email", normalized))
     .first();
-  if (access) return access.isActive !== false;
-  const guest = await ctx.db
-    .query("guestAllowlist")
-    .withIndex("by_email", (q: any) => q.eq("email", normalized))
-    .first();
-  return !!guest && guest.isActive !== false;
+  return !!access && access.isActive !== false;
 }
 
 /**

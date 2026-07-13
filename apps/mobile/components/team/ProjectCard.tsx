@@ -305,43 +305,6 @@ export function ProjectCard({
             onCommit={(t) => update({ projectId: id, blocker: t.trim() || null })}
           />
         </FieldRow>
-        {/* Pre-thread rows may carry the old one-slot fields — readable, with
-            a clear affordance so stale text can be retired once the thread
-            supersedes it. */}
-        {project.statusNote ? (
-          <FieldRow label="Note">
-            <View className="flex-1 flex-row items-center gap-1">
-              <Text className="flex-1 px-2 py-1.5 text-sm text-muted">
-                {project.statusNote}
-              </Text>
-              <Pressable
-                onPress={() => update({ projectId: id, statusNote: null })}
-                hitSlop={6}
-                accessibilityLabel="Clear legacy note"
-                className="rounded p-0.5 active:bg-sunken web:hover:bg-sunken"
-              >
-                <Icon name="x" size={11} color={colors.faint} />
-              </Pressable>
-            </View>
-          </FieldRow>
-        ) : null}
-        {project.nextSteps ? (
-          <FieldRow label="Next">
-            <View className="flex-1 flex-row items-center gap-1">
-              <Text className="flex-1 px-2 py-1.5 text-sm text-muted">
-                {project.nextSteps}
-              </Text>
-              <Pressable
-                onPress={() => update({ projectId: id, nextSteps: null })}
-                hitSlop={6}
-                accessibilityLabel="Clear legacy next steps"
-                className="rounded p-0.5 active:bg-sunken web:hover:bg-sunken"
-              >
-                <Icon name="x" size={11} color={colors.faint} />
-              </Pressable>
-            </View>
-          </FieldRow>
-        ) : null}
       </View>
 
       {/* The running history: every comment is one step of the progression. */}

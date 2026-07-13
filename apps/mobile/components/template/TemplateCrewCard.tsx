@@ -95,7 +95,7 @@ export function TemplateCrewCard({
             <CrewRow
               key={c._id}
               name={c.name}
-              teams={c.teams ?? (c.team ? [c.team] : [])}
+              teams={c.teams ?? []}
               teamOptions={teamOptions}
               teamColumnReady={teamColumn != null}
               onSaveName={(name) =>

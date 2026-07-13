@@ -392,7 +392,7 @@ async function volunteersForScope(ctx: any, scope: Scope) {
     return rows
       .sort((a: any, b: any) => a.order - b.order)
       .map((r: any) => {
-        const teams: string[] = r.teams ?? (r.team ? [r.team] : []);
+        const teams: string[] = r.teams ?? [];
         return {
           refId: r._id as string,
           name: r.name as string,

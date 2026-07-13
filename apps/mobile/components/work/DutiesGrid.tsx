@@ -365,17 +365,9 @@ function ResponsibilityRow({
       <Cell width={COLS.howTo}>
         <HowToDocCell
           doc={row.howToDoc}
-          legacyText={row.howTo ?? null}
           onSetDoc={(docId) =>
-            // Setting a doc SUPERSEDES the legacy text — clear it so removing
-            // the doc later can't resurrect outdated instructions.
-            update(
-              docId
-                ? { howToDocId: docId, howTo: null }
-                : { howToDocId: null },
-            )
+            update(docId ? { howToDocId: docId } : { howToDocId: null })
           }
-          onLegacyCommit={(t) => update({ howTo: t.trim() || null })}
         />
       </Cell>
 

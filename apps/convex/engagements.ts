@@ -55,7 +55,7 @@ export const listForEvent = query({
                 name: person.name,
                 email: person.email ?? null,
                 phone: person.phone ?? null,
-                skills: person.services ?? person.skills ?? [],
+                skills: person.services ?? [],
                 isPlaceholder: person.isPlaceholder === true,
               }
             : null,

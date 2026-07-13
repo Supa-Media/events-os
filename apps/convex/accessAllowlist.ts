@@ -11,12 +11,10 @@
  *   - `grantAccess`/`revokeAccess`/`listGuests`   public but superuser-gated,
  *     for the in-app admin screen.
  *
- * WRITES target the new `accessAllowlist` table; a revoke also clears any
- * matching legacy `guestAllowlist` row so a revocation sticks regardless of
- * which table the row lived in. READS (here and in `lib/access.ts`) prefer
- * `accessAllowlist` and fall back to the legacy `guestAllowlist` so login and
- * the admin list work before/after the `copyGuestAllowlist` migration. Nothing
- * in `guestAllowlist` is deleted (dropped only in a later Deploy C).
+ * READS and WRITES both target the `accessAllowlist` table only. The legacy
+ * `guestAllowlist` rows were copied in by `copyGuestAllowlist` (Deploy A) and
+ * are emptied by `purgeGuestAllowlist` (Deploy B); the table itself is dropped
+ * in a later Deploy C.
  *
  * A fresh grant (new row or a re-activation) emails the guest to tell them they
  * can sign in. Access is enforced downstream by `requireAccess` / `hasAccess`
@@ -91,22 +89,14 @@ async function grantGuest(
     return { id: existing._id, newlyGranted: !wasActive };
   }
 
-  // No row in the new table yet — but a legacy `guestAllowlist` row may already
-  // grant this email. Treat granting as "newly on" only when it wasn't already
-  // active somewhere, so we don't re-email an already-allowed guest.
-  const legacy = await ctx.db
-    .query("guestAllowlist")
-    .withIndex("by_email", (q) => q.eq("email", normalized))
-    .first();
-  const legacyActive = !!legacy && legacy.isActive !== false;
-
+  // No row yet — a fresh grant turns access on for the first time.
   const id = await ctx.db.insert("accessAllowlist", {
     email: normalized,
-    note: note ?? legacy?.note,
+    note,
     isActive: true,
-    createdAt: legacy?.createdAt ?? Date.now(),
+    createdAt: Date.now(),
   });
-  return { id, newlyGranted: !legacyActive };
+  return { id, newlyGranted: true };
 }
 
 /** Grant, then email the guest if this call freshly turned their access on. */
@@ -127,10 +117,9 @@ async function grantAndNotify(
 }
 
 /**
- * Revoke access, keeping the row(s) (isActive=false) so the note/history
- * survives. Clears BOTH the new `accessAllowlist` row and any legacy
- * `guestAllowlist` row for the email, so a revocation sticks no matter which
- * table the grant lived in (and can't be resurrected by the fallback read).
+ * Revoke access, keeping the row (isActive=false) so the note/history
+ * survives. Targets the `accessAllowlist` table only (legacy `guestAllowlist`
+ * rows were folded in by `copyGuestAllowlist`).
  */
 async function revokeGuest(ctx: MutationCtx, email: string): Promise<null> {
   const normalized = normalizeEmail(email);
@@ -140,33 +129,16 @@ async function revokeGuest(ctx: MutationCtx, email: string): Promise<null> {
     .withIndex("by_email", (q) => q.eq("email", normalized))
     .first();
   if (access) await ctx.db.patch(access._id, { isActive: false });
-  const legacy = await ctx.db
-    .query("guestAllowlist")
-    .withIndex("by_email", (q) => q.eq("email", normalized))
-    .first();
-  if (legacy) await ctx.db.patch(legacy._id, { isActive: false });
   return null;
 }
 
 /**
- * Newest-first list of allowlist rows (bounded). Unions the new
- * `accessAllowlist` with any legacy `guestAllowlist` rows not yet copied over
- * (preferring the new table per email), so the admin screen is complete before
- * and after `copyGuestAllowlist`.
+ * Newest-first list of allowlist rows (bounded). Reads the `accessAllowlist`
+ * table only — the legacy `guestAllowlist` rows were folded in by
+ * `copyGuestAllowlist`.
  */
 async function listGuestRows(ctx: QueryCtx): Promise<Doc<"accessAllowlist">[]> {
-  const rows = await ctx.db.query("accessAllowlist").order("desc").take(500);
-  const seen = new Set(rows.map((r) => r.email));
-  const legacy = await ctx.db.query("guestAllowlist").order("desc").take(500);
-  for (const g of legacy) {
-    if (seen.has(g.email)) continue;
-    seen.add(g.email);
-    // Same shape as `accessAllowlist`; surfaced read-only until the copy lands.
-    rows.push(g as unknown as Doc<"accessAllowlist">);
-  }
-  return rows
-    .sort((a, b) => b._creationTime - a._creationTime)
-    .slice(0, 500);
+  return await ctx.db.query("accessAllowlist").order("desc").take(500);
 }
 
 // ── Seeded from Convex (internal: dashboard function runner / seed scripts) ───
