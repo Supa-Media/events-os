@@ -373,6 +373,9 @@ export async function reconcilePersonForUser(
       pwEmail: loginEmail,
       phone: fields.phone ?? undefined,
       isTeamMember: true,
+      // Writer targets the new `status` field; `isActive` kept in sync as the
+      // legacy convenience flag (read path prefers `status`).
+      status: "active",
       isActive: true,
       createdAt: Date.now(),
     });
