@@ -75,7 +75,7 @@ export function DutiesGrid() {
   const responsibilities = useQuery(api.responsibilities.list);
   const people = useQuery(api.people.list, {});
   const create = useMutation(api.responsibilities.create);
-  const update = useMutation(api.responsibilities.update);
+  const addAssignee = useMutation(api.responsibilities.addAssignee);
 
   const [search, setSearch] = useState("");
   // ONE picker for the whole grid (a per-row picker would mount a hidden
@@ -245,13 +245,12 @@ export function DutiesGrid() {
           const row = responsibilities.find((r) => r._id === pickerForRow);
           setPickerForRow(null);
           if (!row) return;
-          const cur = row.assigneePersonIds ?? [];
-          if (!cur.includes(personId as Id<"people">)) {
-            void update({
-              responsibilityId: row._id,
-              assigneePersonIds: [...cur, personId as Id<"people">],
-            }).catch(alertError);
-          }
+          // Targeted membership write — safe against concurrent edits of the
+          // same definition's assignments (server no-ops when already there).
+          void addAssignee({
+            responsibilityId: row._id,
+            personId: personId as Id<"people">,
+          }).catch(alertError);
         }}
         onClose={() => setPickerForRow(null)}
       />
@@ -278,6 +277,7 @@ function ResponsibilityRow({
 }) {
   const updateMutation = useMutation(api.responsibilities.update);
   const removeMutation = useMutation(api.responsibilities.remove);
+  const removeAssignee = useMutation(api.responsibilities.removeAssignee);
   const id = row._id;
 
   const update = (args: Omit<Parameters<typeof updateMutation>[0], "responsibilityId">) => {
@@ -332,13 +332,10 @@ function ResponsibilityRow({
               key={pid}
               label={nameById.get(pid) ?? "?"}
               onRemove={() =>
-                update({
-                  assigneePersonIds:
-                    (row.assigneePersonIds ?? []).filter((x) => x !== pid)
-                      .length > 0
-                      ? (row.assigneePersonIds ?? []).filter((x) => x !== pid)
-                      : null,
-                })
+                void removeAssignee({
+                  responsibilityId: id,
+                  personId: pid,
+                }).catch(alertError)
               }
             />
           ))}

@@ -41,6 +41,7 @@ export function AddResponsibilityModal({
 }) {
   const create = useMutation(api.responsibilities.create);
   const update = useMutation(api.responsibilities.update);
+  const addAssignee = useMutation(api.responsibilities.addAssignee);
   const [query, setQuery] = useState("");
   const hasRole = !!normalizeRole(person.role);
   const [target, setTarget] = useState<"person" | "role">("person");
@@ -73,10 +74,9 @@ export function AddResponsibilityModal({
           assigneeRoles: [...(r.assigneeRoles ?? []), person.role.trim()],
         });
       } else {
-        await update({
-          responsibilityId: r._id,
-          assigneePersonIds: [...(r.assigneePersonIds ?? []), person._id],
-        });
+        // Targeted, not a whole-array patch — safe against a concurrent edit
+        // of the same definition's assignments.
+        await addAssignee({ responsibilityId: r._id, personId: person._id });
       }
       onClose();
     } catch (err) {
