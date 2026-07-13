@@ -58,7 +58,7 @@ export default function TemplateEditorScreen() {
           title="Template not found"
           message="This template no longer exists."
           action={
-            <Button title="Back to pipeline" variant="secondary" onPress={() => router.back()} />
+            <Button title="Back to events" variant="secondary" onPress={() => router.back()} />
           }
         />
       </Screen>
@@ -110,8 +110,8 @@ export default function TemplateEditorScreen() {
           <View className="mt-6">
             <EmptyState
               icon="layout"
-              title="No workstreams active"
-              message="Turn on a workstream above to start building."
+              title="No areas active"
+              message="Turn on an area above to start building."
             />
           </View>
         </Narrow>

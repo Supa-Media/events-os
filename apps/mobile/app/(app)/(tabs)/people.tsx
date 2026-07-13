@@ -232,18 +232,18 @@ export default function PeopleScreen() {
             <View className="flex-row items-center border-b border-border bg-sunken">
               <GridHeaderCell label="Name" width={COLS.name} />
               <GridHeaderCell label="Status" width={COLS.status} />
-              <GridHeaderCell label="Role" width={COLS.role} />
+              <GridHeaderCell label="Title" width={COLS.role} />
               <GridHeaderCell label="Email" width={COLS.email} />
               <GridHeaderCell label="PW Email" width={COLS.pwEmail} />
               <GridHeaderCell label="Phone" width={COLS.phone} />
               <GridHeaderCell label="Gender" width={COLS.gender} />
-              <GridHeaderCell label="Skills" width={COLS.skills} />
+              <GridHeaderCell label="Services" width={COLS.skills} />
               <GridHeaderCell label="Usual rate" width={COLS.rate} />
               <GridHeaderCell label="Vetting" width={COLS.vetting} />
               <GridHeaderCell label="Team" width={COLS.team} />
               <GridHeaderCell label="Manager" width={COLS.manager} />
               <GridHeaderCell label="POC" width={COLS.poc} />
-              <GridHeaderCell label="Projects" width={COLS.projects} />
+              <GridHeaderCell label="Involvements" width={COLS.projects} />
               <GridHeaderCell label="Comms" width={COLS.comms} />
               <GridHeaderCell label="Social" width={COLS.social} />
               <GridHeaderCell label="Notes" width={COLS.notes} />

@@ -9,8 +9,9 @@ import {
 } from "react-native";
 import { useAction, useMutation, useQuery } from "convex/react";
 import { api } from "@events-os/convex/_generated/api";
-import { Icon, Select } from "../ui";
+import { Icon, Select, ToastView } from "../ui";
 import { colors } from "../../lib/theme";
+import { useActionRunner } from "../../lib/useActionToast";
 import { AssistantFab, MessageRow, errorMessage } from "./shared";
 
 /**
@@ -71,6 +72,7 @@ export function DocAssistantPanel({
   const cfg = useQuery(api.ai.aiConfig);
 
   const scrollRef = useRef<ScrollView>(null);
+  const { run: runAction, toast, dismiss } = useActionRunner();
 
   // Keep the feed pinned to the latest message.
   useEffect(() => {
@@ -108,14 +110,15 @@ export function DocAssistantPanel({
   // Only safe to pre-resolve when there's no COW fork to defer to first send.
   useEffect(() => {
     if (open && !threadId && !resolveTargetDocId) {
-      ensureDocThread({ docId: docId as any })
-        .then((id) => {
+      void runAction(() => ensureDocThread({ docId: docId as any }), {
+        errorTitle: "Couldn't open the assistant",
+        onSuccess: (id) => {
           setThreadId(id as string);
           setTargetDocId(docId);
-        })
-        .catch(() => {});
+        },
+      });
     }
-  }, [open, threadId, docId, resolveTargetDocId, ensureDocThread]);
+  }, [open, threadId, docId, resolveTargetDocId, ensureDocThread, runAction]);
 
   async function send(text: string) {
     const body = text.trim();
@@ -138,11 +141,11 @@ export function DocAssistantPanel({
   }
 
   async function handleNewChat() {
-    try {
-      const did = targetDocId ?? docId;
-      const id = (await newDocThread({ docId: did as any })) as string;
-      setThreadId(id);
-    } catch {}
+    const did = targetDocId ?? docId;
+    await runAction(() => newDocThread({ docId: did as any }), {
+      errorTitle: "Couldn't start a new chat",
+      onSuccess: (id) => setThreadId(id as string),
+    });
   }
 
   async function handleModelChange(slug: string) {
@@ -165,6 +168,7 @@ export function DocAssistantPanel({
       className="h-full border-l border-border bg-raised"
       style={{ width: 380 }}
     >
+      <ToastView toast={toast} onDismiss={dismiss} />
       {/* Header */}
       <View className="flex-row items-center gap-2 border-b border-border px-3 py-2.5">
         <Icon name="sparkles" size={16} color={colors.accent} />

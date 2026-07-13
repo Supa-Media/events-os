@@ -752,7 +752,7 @@ export function CrewSections({ eventId }: { eventId: string }) {
     },
     {
       key: "responsibilities",
-      label: "Responsibilities",
+      label: "Duties",
       width: VOL_COLS.responsibilities,
       render: (e) => (
         <InlineText

@@ -15,6 +15,7 @@ import {
   requireOwned,
   getChapterIdOrNull,
 } from "./lib/context";
+import { deleteEventPlacementsForRef } from "./lib/placements";
 
 const engagementType = v.union(v.literal("volunteer"), v.literal("paid"));
 const engagementStatus = v.union(
@@ -214,6 +215,16 @@ export const remove = mutation({
   args: { engagementId: v.id("engagements") },
   handler: async (ctx, { engagementId }) => {
     await requireOwned(ctx, "engagements", engagementId, "Engagement");
+    const engagement = await ctx.db.get(engagementId);
+    // Cascade: drop any site-map chips pointing at this engagement.
+    if (engagement) {
+      await deleteEventPlacementsForRef(
+        ctx,
+        String(engagement.eventId),
+        "volunteer",
+        String(engagementId),
+      );
+    }
     await ctx.db.delete(engagementId);
     return engagementId;
   },

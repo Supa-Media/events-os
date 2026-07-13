@@ -388,7 +388,7 @@ export function WorkloadView({
         {ownResponsibilities.length > 0 || caller.canManage ? (
           <>
             <SectionHeader
-              title="Responsibilities"
+              title="Duties"
               count={ownResponsibilities.length}
               right={
                 caller.canManage ? (

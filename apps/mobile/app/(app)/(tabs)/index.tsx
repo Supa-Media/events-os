@@ -101,7 +101,7 @@ export default function PipelineScreen() {
             <EmptyState
               icon="inbox"
               title="Nothing here yet"
-              message="Seed some demo data to explore the pipeline, templates, and people."
+              message="Seed some demo data to explore events, templates, and people."
               action={
                 <Button
                   title="Seed demo data"

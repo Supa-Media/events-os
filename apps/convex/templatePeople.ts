@@ -11,6 +11,7 @@ import { query, mutation } from "./_generated/server";
 import { v } from "convex/values";
 import { requireChapterId, requireInChapter } from "./lib/context";
 import { maxOrder } from "./lib/templates";
+import { deleteTemplatePlacementsForRef } from "./lib/placements";
 
 /** A template's placeholder crew, ordered. */
 export const list = query({
@@ -92,6 +93,13 @@ export const remove = mutation({
     if (!row) return templatePersonId;
     const et = await ctx.db.get(row.eventTypeId);
     await requireInChapter(ctx, chapterId, et, "Event type");
+    // Cascade: drop any site-map chips pointing at this placeholder crew row.
+    await deleteTemplatePlacementsForRef(
+      ctx,
+      String(row.eventTypeId),
+      "volunteer",
+      String(templatePersonId),
+    );
     await ctx.db.delete(templatePersonId);
     return templatePersonId;
   },

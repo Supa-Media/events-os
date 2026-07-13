@@ -12,8 +12,10 @@
  * `npx convex env set GOOGLE_PLACES_API_KEY <key>`). If it's missing the action
  * degrades gracefully to zero suggestions, so the field stays a plain text box.
  */
-import { action } from "./_generated/server";
+import { action, internalQuery } from "./_generated/server";
+import { internal } from "./_generated/api";
 import { v } from "convex/values";
+import { requireAccess } from "./lib/context";
 
 const AUTOCOMPLETE_URL =
   "https://maps.googleapis.com/maps/api/place/autocomplete/json";
@@ -88,10 +90,28 @@ function toSuggestions(predictions: Prediction[]) {
     .filter((s) => s.description.length > 0);
 }
 
+/**
+ * Access gate for the autocomplete action. Actions have no `ctx.db`, so the
+ * allowlist check (which reads the user row + guest table) runs inside this
+ * internalQuery that the action calls first — the established pattern for
+ * authenticating actions in this codebase (see `ai.myContext`).
+ */
+export const assertAccess = internalQuery({
+  args: {},
+  returns: v.null(),
+  handler: async (ctx) => {
+    await requireAccess(ctx);
+    return null;
+  },
+});
+
 export const autocomplete = action({
   args: { query: v.string() },
   returns: v.object({ suggestions: v.array(suggestionValidator) }),
-  handler: async (_ctx, { query }) => {
+  handler: async (ctx, { query }) => {
+    // Gate before spending a Google quota call on an unauthenticated request.
+    await ctx.runQuery(internal.places.assertAccess, {});
+
     const q = query.trim();
     if (q.length < MIN_QUERY_LENGTH) return { suggestions: [] };
 

@@ -33,13 +33,13 @@ async function addPerson(s: ChapterSetup): Promise<Id<"people">> {
 }
 
 const GUIDE_V1 = {
-  slug: "so-you-own-a-workstream",
-  title: "So you own a workstream",
-  body: "# So you own a workstream\n\nOriginal platform content.\n",
+  slug: "so-you-own-an-area",
+  title: "So you own an area",
+  body: "# So you own an area\n\nOriginal platform content.\n",
 };
 const GUIDE_V2 = {
   ...GUIDE_V1,
-  body: "# So you own a workstream\n\nUpdated platform content.\n",
+  body: "# So you own an area\n\nUpdated platform content.\n",
 };
 
 describe("platform guide seeding", () => {
@@ -113,7 +113,7 @@ describe("platform guide seeding", () => {
     );
     await run(t, (ctx) =>
       ctx.db.patch(driftedDoc!._id, {
-        body: "My chapter's own take on owning a workstream.",
+        body: "My chapter's own take on owning an area.",
       }),
     );
 
@@ -172,7 +172,7 @@ describe("platform guide seeding", () => {
     await expect(
       s.as.mutation(api.docs.update, {
         docId: guide!._id,
-        title: "Our workstream guide",
+        title: "Our area guide",
       }),
     ).rejects.toThrow(ConvexError);
 

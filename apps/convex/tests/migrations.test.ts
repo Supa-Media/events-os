@@ -279,3 +279,117 @@ describe("retireSuppliesPackedStatus", () => {
     expect(second.eventItemsUpdated).toBe(0);
   });
 });
+
+/**
+ * The auto-migration runner (`migrations.runPending`) + its ledger. Walks the
+ * ordered `MIGRATIONS` registry, running each entry not yet in the
+ * `schemaMigrations` ledger and recording it, so deploys self-apply and
+ * already-run migrations skip.
+ */
+const REGISTRY_NAMES = [
+  "0000_seed_ledger",
+  "0007_cleanup_renamed_guide_slugs",
+  "0008_cleanup_orphaned_placements",
+];
+const SEEDED_HISTORICAL = [
+  "backfillMissingDefaultColumns",
+  "migrateRolesToScoped",
+  "cleanupLegacyRoles",
+  "retireSuppliesPackedStatus",
+  "showSuppliesQty",
+  "migrateModulesToDeltas",
+];
+
+describe("migrations.runPending", () => {
+  test("clean DB: applies every registry migration and writes the ledger", async () => {
+    const t = newT();
+    const res = await t.mutation(internal.migrations.runPending, {});
+    expect(res.applied).toEqual(REGISTRY_NAMES);
+
+    const names = await run(t, async (ctx) =>
+      (await ctx.db.query("schemaMigrations").collect()).map((r) => r.name),
+    );
+    // 3 registry entries + 6 historical names seeded by 0000_seed_ledger.
+    for (const n of [...REGISTRY_NAMES, ...SEEDED_HISTORICAL]) {
+      expect(names).toContain(n);
+    }
+    expect(names).toHaveLength(REGISTRY_NAMES.length + SEEDED_HISTORICAL.length);
+  });
+
+  test("second run is a no-op (everything already ledgered)", async () => {
+    const t = newT();
+    await t.mutation(internal.migrations.runPending, {});
+    const res = await t.mutation(internal.migrations.runPending, {});
+    expect(res.applied).toEqual([]);
+    expect(res.skipped).toEqual(REGISTRY_NAMES);
+  });
+
+  test("a ledgered name is skipped even when its effect is absent", async () => {
+    const t = newT();
+    // Pre-ledger 0000_seed_ledger WITHOUT running it, so its effect (the 6
+    // historical names) is absent — the ledger, not the effect, is the truth.
+    await run(t, async (ctx) => {
+      await ctx.db.insert("schemaMigrations", {
+        name: "0000_seed_ledger",
+        ranAt: Date.now(),
+      });
+    });
+    const res = await t.mutation(internal.migrations.runPending, {});
+    expect(res.skipped).toEqual(["0000_seed_ledger"]);
+    expect(res.applied).toEqual([
+      "0007_cleanup_renamed_guide_slugs",
+      "0008_cleanup_orphaned_placements",
+    ]);
+    const names = await run(t, async (ctx) =>
+      (await ctx.db.query("schemaMigrations").collect()).map((r) => r.name),
+    );
+    // 0000's body never ran, so no historical names were seeded.
+    for (const n of SEEDED_HISTORICAL) expect(names).not.toContain(n);
+  });
+});
+
+describe("cleanupOrphanedPlacements", () => {
+  test("deletes placements whose ref row is gone, keeps live ones", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const { eventId, itemIds } = await seedSuppliesEvent(
+      t,
+      s.chapterId,
+      s.userId,
+      NEW_OPTIONS,
+      [{}, {}],
+    );
+    const { orphanId, liveId } = await run(t, async (ctx) => {
+      const liveId = await ctx.db.insert("siteMapPlacements", {
+        chapterId: s.chapterId,
+        eventId,
+        kind: "supply",
+        refId: String(itemIds[0]),
+        x: 0.1,
+        y: 0.1,
+        createdAt: Date.now(),
+      });
+      const orphanId = await ctx.db.insert("siteMapPlacements", {
+        chapterId: s.chapterId,
+        eventId,
+        kind: "supply",
+        refId: String(itemIds[1]),
+        x: 0.2,
+        y: 0.2,
+        createdAt: Date.now(),
+      });
+      // Delete the second item, dangling its placement.
+      await ctx.db.delete(itemIds[1]);
+      return { orphanId, liveId };
+    });
+
+    await t.mutation(internal.migrations.runPending, {});
+
+    const { orphan, live } = await run(t, async (ctx) => ({
+      orphan: await ctx.db.get(orphanId),
+      live: await ctx.db.get(liveId),
+    }));
+    expect(orphan).toBeNull();
+    expect(live).not.toBeNull();
+  });
+});

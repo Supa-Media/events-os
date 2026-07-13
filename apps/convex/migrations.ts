@@ -25,6 +25,8 @@ import {
   SUPPLY_STATUS_OPTIONS,
   type ModuleKey,
 } from "@events-os/shared";
+import { MIGRATIONS } from "./migrations/index";
+import { runCleanupRenamedGuideSlugs } from "./migrations/0007_cleanup_renamed_guide_slugs";
 
 /**
  * Backfill: ensure every template/event grid module has all of its current
@@ -598,5 +600,68 @@ export const showSuppliesQty = internalMutation({
       }
     }
     return { templateShown, eventShown };
+  },
+});
+
+/**
+ * Cleanup after the guide slug renames (workstream → area vocabulary):
+ * docs/guides/so-you-own-a-workstream.md → so-you-own-an-area.md and
+ * owning-the-comms-workstream.md → owning-the-comms-area.md. The seeder
+ * upserts by (chapterId, slug), so every chapter re-seeds the guides under
+ * the NEW slugs and the old-slug rows linger as orphaned platform docs.
+ * This deletes the old-slug rows in every chapter.
+ *
+ * Idempotent: a second run finds nothing to delete.
+ *
+ * Run locally:   npx convex run migrations:cleanupRenamedGuideSlugs
+ * Run on prod:   npx convex run --prod migrations:cleanupRenamedGuideSlugs
+ */
+export const cleanupRenamedGuideSlugs = internalMutation({
+  args: {},
+  handler: async (ctx) => {
+    // Body lives in the registry file so `runPending` and this manual
+    // entrypoint share one implementation.
+    return await runCleanupRenamedGuideSlugs(ctx);
+  },
+});
+
+/**
+ * Auto-migration runner.
+ *
+ * Walks the ordered `MIGRATIONS` registry (see `migrations/index.ts`) and, for
+ * each entry not yet in the `schemaMigrations` ledger, runs it then records the
+ * ledger row. Idempotent by construction: a name already in the ledger is
+ * skipped, so re-running is a no-op and only genuinely-pending migrations fire.
+ * Intended to be called post-deploy (CI runs `npx convex run migrations:runPending`).
+ *
+ * Run locally:   npx convex run migrations:runPending
+ * Run on prod:   npx convex run --prod migrations:runPending
+ */
+export const runPending = internalMutation({
+  args: {},
+  handler: async (ctx) => {
+    const applied: string[] = [];
+    const skipped: string[] = [];
+    for (const migration of MIGRATIONS) {
+      const existing = await ctx.db
+        .query("schemaMigrations")
+        .withIndex("by_name", (q) => q.eq("name", migration.name))
+        .unique();
+      if (existing) {
+        skipped.push(migration.name);
+        continue;
+      }
+      const result = await migration.run(ctx);
+      await ctx.db.insert("schemaMigrations", {
+        name: migration.name,
+        ranAt: Date.now(),
+        result:
+          result === undefined || result === null
+            ? undefined
+            : JSON.stringify(result),
+      });
+      applied.push(migration.name);
+    }
+    return { applied, skipped };
   },
 });

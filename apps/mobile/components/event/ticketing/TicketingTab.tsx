@@ -35,7 +35,7 @@ export default function TicketingTab({ eventId }: { eventId: Id<"events"> }) {
   if (data === undefined) {
     return (
       <View className="py-10">
-        <Text className="text-base text-muted">Loading tickets…</Text>
+        <Text className="text-base text-muted">Loading event page…</Text>
       </View>
     );
   }

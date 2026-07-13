@@ -26,10 +26,10 @@ async function seedDocs(t: TestConvex, chapterId: Id<"chapters">) {
     const guideId = await ctx.db.insert("docs", {
       chapterId,
       kind: "markdown",
-      title: "So You Own a Workstream",
+      title: "So You Own an Area",
       body: "Platform guide body.",
       shareId: "guide-share",
-      slug: "so-you-own-a-workstream",
+      slug: "so-you-own-an-area",
       createdBy: personId,
       createdAt: now,
       updatedAt: now,
@@ -83,7 +83,7 @@ describe("doc assistant platform-guide guard", () => {
     const { guideId, normalDocId } = await seedDocs(t, chapterId);
 
     const guide = await as.query(api.docs.forAi, { docId: guideId });
-    expect(guide!.slug).toBe("so-you-own-a-workstream");
+    expect(guide!.slug).toBe("so-you-own-an-area");
     const doc = await as.query(api.docs.forAi, { docId: normalDocId });
     expect(doc!.slug).toBeNull();
   });

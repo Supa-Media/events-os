@@ -13,9 +13,6 @@ import { requireUserId } from "./context";
 export const SUPERUSER_EMAILS = [
   "lkupo@publicworship.life",
   "seyi@publicworship.life",
-  "seyi@events.com",
-  "test@events.com",
-  "seyi@events.test",
 ];
 
 /** True iff the (lowercased) email is in the superuser allowlist. */
