@@ -17,9 +17,10 @@
  * admins can inspect anyone; everyone else only people in their own subtree.
  */
 import { query } from "./_generated/server";
+import type { QueryCtx } from "./_generated/server";
 import { Doc, Id } from "./_generated/dataModel";
 import { v } from "convex/values";
-import { isOperationalEvent } from "@events-os/shared";
+import { isOperationalEvent, responsibilityAppliesTo } from "@events-os/shared";
 import { getChapterIdOrNull } from "./lib/context";
 import {
   isChapterAdmin,
@@ -42,16 +43,102 @@ function slim(p: Doc<"people">) {
 }
 
 /**
+ * The tier a caller lands in — the app's derived lobby. Ordered strongest →
+ * weakest: an admin outranks a lead outranks a member outranks a volunteer.
+ * The nav shows/hides tabs by tier and volunteers are redirected to /briefing.
+ */
+export const TIER_VALIDATOR = v.union(
+  v.literal("admin"),
+  v.literal("lead"),
+  v.literal("member"),
+  v.literal("volunteer"),
+);
+export type Tier = "admin" | "lead" | "member" | "volunteer";
+
+const NAV_RETURNS = v.object({
+  isAdmin: v.boolean(),
+  canManage: v.boolean(),
+  teamView: v.union(v.literal("org"), v.literal("self"), v.null()),
+  selfPersonId: v.union(v.id("people"), v.null()),
+  tier: TIER_VALIDATOR,
+  tierReasons: v.array(v.string()),
+});
+
+/**
+ * Derive the caller's tier by short-circuit — each step a bounded read, the
+ * first that matches wins. `tierReasons` collects the short human strings the
+ * UI shows in a "why do I see this?" line.
+ */
+async function deriveTier(
+  ctx: QueryCtx,
+  chapterId: Id<"chapters">,
+  isAdmin: boolean,
+  canManage: boolean,
+  self: Doc<"people"> | null,
+): Promise<{ tier: Tier; tierReasons: string[] }> {
+  if (isAdmin)
+    return { tier: "admin", tierReasons: ["You're a chapter admin"] };
+  if (canManage)
+    return { tier: "lead", tierReasons: ["You manage direct reports"] };
+
+  if (self) {
+    // Owns a duty? Chapter-scoped, small — a bounded read, tested against the
+    // caller's roster row exactly as the Duties grid fans them out.
+    const duties = await ctx.db
+      .query("responsibilities")
+      .withIndex("by_chapter", (q) => q.eq("chapterId", chapterId))
+      .take(500);
+    const owned = duties.find((r) => responsibilityAppliesTo(r, self));
+    if (owned)
+      return {
+        tier: "lead",
+        tierReasons: [`You own the duty "${owned.title}"`],
+      };
+
+    if (self.isTeamMember === true)
+      return { tier: "member", tierReasons: ["You're a core team member"] };
+
+    const anyRole = await ctx.db
+      .query("roleAssignments")
+      .withIndex("by_person", (q) => q.eq("personId", self._id))
+      .first();
+    if (anyRole !== null)
+      return { tier: "member", tierReasons: ["You hold a role on an event"] };
+
+    const anyEngagement = await ctx.db
+      .query("engagements")
+      .withIndex("by_person", (q) => q.eq("personId", self._id))
+      .first();
+    if (anyEngagement !== null)
+      return {
+        tier: "volunteer",
+        tierReasons: ["You're signed up to volunteer"],
+      };
+  }
+
+  return { tier: "member", tierReasons: ["Default team access"] };
+}
+
+/**
  * The cheap manage-gate for navigation: no roster payload, no storage URLs.
  * The app shell subscribes to this on every screen, so it reads only the
  * caller's membership, their own roster row, and whether one report exists.
+ * Also carries the derived `tier` + `tierReasons` the lobby switches on.
  */
 export const nav = query({
   args: {},
+  returns: NAV_RETURNS,
   handler: async (ctx) => {
     const chapterId = await getChapterIdOrNull(ctx);
     if (!chapterId) {
-      return { isAdmin: false, canManage: false, selfPersonId: null };
+      return {
+        isAdmin: false,
+        canManage: false,
+        teamView: null,
+        selfPersonId: null,
+        tier: "member" as const,
+        tierReasons: ["You're not in a chapter yet"],
+      };
     }
     const isAdmin = await isChapterAdmin(ctx, chapterId as Id<"chapters">);
     const self = await viewerPerson(ctx, chapterId as Id<"chapters">);
@@ -71,7 +158,21 @@ export const nav = query({
       : self
         ? "self"
         : null;
-    return { isAdmin, canManage, teamView, selfPersonId: self?._id ?? null };
+    const { tier, tierReasons } = await deriveTier(
+      ctx,
+      chapterId as Id<"chapters">,
+      isAdmin,
+      canManage,
+      self,
+    );
+    return {
+      isAdmin,
+      canManage,
+      teamView,
+      selfPersonId: self?._id ?? null,
+      tier,
+      tierReasons,
+    };
   },
 });
 
@@ -81,7 +182,12 @@ export const overview = query({
   handler: async (ctx) => {
     const chapterId = await getChapterIdOrNull(ctx);
     if (!chapterId) {
-      return { isAdmin: false, selfPersonId: null, canManage: false, people: [] };
+      return {
+        isAdmin: false,
+        selfPersonId: null,
+        canManage: false,
+        people: [],
+      };
     }
 
     const [isAdmin, roster] = await Promise.all([
@@ -163,7 +269,8 @@ export const workload = query({
     // Role docs are shared across assignments — fetch each unique role once.
     const roleCache = new Map<Id<"eventRoles">, Doc<"eventRoles"> | null>();
     const getRole = async (roleId: Id<"eventRoles">) => {
-      if (!roleCache.has(roleId)) roleCache.set(roleId, await ctx.db.get(roleId));
+      if (!roleCache.has(roleId))
+        roleCache.set(roleId, await ctx.db.get(roleId));
       return roleCache.get(roleId) ?? null;
     };
 
@@ -202,12 +309,18 @@ export const workload = query({
           .filter((r): r is NonNullable<typeof r> => r !== null)
           .sort((a, b) => b.eventDate - a.eventDate);
 
-        return { ...slim(p), depth, isSelf: p._id === person._id, events: ownedEvents, roles };
+        return {
+          ...slim(p),
+          depth,
+          isSelf: p._id === person._id,
+          events: ownedEvents,
+          roles,
+        };
       }),
     );
 
     const manager = person.managerId
-      ? roster.find((p) => p._id === person.managerId) ?? null
+      ? (roster.find((p) => p._id === person.managerId) ?? null)
       : null;
     const reports = (childrenOf.get(person._id) ?? []).sort((a, b) =>
       a.name.localeCompare(b.name),
