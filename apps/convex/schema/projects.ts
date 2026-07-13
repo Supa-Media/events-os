@@ -29,11 +29,9 @@ export const projects = defineTable({
   startDate: v.optional(v.number()),
   deadline: v.optional(v.number()),
   budgetUsd: v.optional(v.number()),
-  // LEGACY: the one-slot status note / next-steps fields, superseded by
-  // `projectComments` (the append-only progression log). Kept so old rows
-  // still validate; the UI no longer writes them.
-  statusNote: v.optional(v.string()),
-  nextSteps: v.optional(v.string()),
+  // The one-slot status note / next-steps fields were superseded by
+  // `projectComments` (the append-only progression log) and dropped in Deploy C
+  // after `foldProjectStatusNotes` migrated them into a comment.
   // What's currently in the way, if anything.
   blocker: v.optional(v.string()),
   createdBy: v.id("users"),
