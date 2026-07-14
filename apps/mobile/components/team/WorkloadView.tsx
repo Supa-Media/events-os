@@ -35,6 +35,7 @@ import {
   statusTone,
 } from "../ui";
 import { ProjectCard, buildProjectTree, type ProjectDoc } from "./ProjectCard";
+import { CourseBadgeChips } from "../academy/CourseBadgeChips";
 import { CheckInModal } from "./CheckInModal";
 import { AddResponsibilityModal } from "./AddResponsibilityModal";
 import { DutyRows } from "../work/DutyRows";
@@ -324,6 +325,9 @@ export function WorkloadView({
             />
           ) : null}
         </View>
+
+        {/* Earned Academy course badges (display-only; hidden when none). */}
+        <CourseBadgeChips personId={person._id} />
 
         {/* Direct reports */}
         {reports.length > 0 ? (
