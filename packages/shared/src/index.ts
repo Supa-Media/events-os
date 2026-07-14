@@ -176,7 +176,7 @@ export const CORE_MODULE_KEYS: ModuleKey[] = CORE_MODULES.map((m) => m.key);
  * routing would hijack its tab (e.g. a custom "Tickets" workstream would
  * always open the ticketing tool instead of its grid).
  */
-export const RESERVED_TAB_KEYS = ["overview", "tickets", "crew"] as const;
+export const RESERVED_TAB_KEYS = ["overview", "tickets", "crew", "budget"] as const;
 
 // ── Derived views of CORE_MODULES (single source of truth above) ─────────────
 export const MODULE_LABELS: Record<ModuleKey, string> = Object.fromEntries(

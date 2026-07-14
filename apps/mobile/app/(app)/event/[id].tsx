@@ -29,6 +29,7 @@ import {
 } from "../../../components/event/EventModuleRollup";
 import { ModuleSection } from "../../../components/event/ModuleSection";
 import TicketingTab from "../../../components/event/ticketing/TicketingTab";
+import BudgetTab from "../../../components/event/budget/BudgetTab";
 import { colors, modulePhase } from "../../../lib/theme";
 import { usePhasePulse } from "../../../lib/usePhasePulse";
 import {
@@ -276,15 +277,15 @@ export default function EventDetailScreen() {
   // With no Overview tab, unknown/missing/legacy (?tab=overview) keys land on
   // the first area tab.
   const fallbackTab = tabs[0]?.key ?? "crew";
-  // Tickets (the public event page: RSVPs, tickets, guest list, check-in,
-  // blasts) is an operational TOOL, not an area — it opens from the
-  // header tools row, not the tab row, but still lives at `?tab=tickets` so
-  // deep links and back/forward keep working. While it's open no tab is
-  // active (activeKey matches nothing). Any other unknown/stale key falls
-  // back to the first area tab.
+  // Tickets (the public event page) and Budget (the per-line budget) are
+  // operational TOOLS, not areas — they open from the header tools row, not the
+  // tab row, but still live at `?tab=tickets` / `?tab=budget` so deep links and
+  // back/forward keep working. While one is open no tab is active (activeKey
+  // matches nothing). Any other unknown/stale key falls back to the first area
+  // tab.
   const activeTab =
-    tab === "tickets"
-      ? "tickets"
+    tab === "tickets" || tab === "budget"
+      ? tab
       : tabs.some((t) => t.key === tab)
         ? (tab as string)
         : fallbackTab;
@@ -584,6 +585,8 @@ export default function EventDetailScreen() {
               onDayOf={() => router.push(`/event/${eventId}/day-of`)}
               onTickets={() => router.setParams({ tab: "tickets" })}
               ticketsActive={activeTab === "tickets"}
+              onBudget={() => router.setParams({ tab: "budget" })}
+              budgetActive={activeTab === "budget"}
               onSongs={() => router.push(`/event/${eventId}/songs`)}
               meView={meView}
               onToggleMeView={() => setMeView((v) => !v)}
@@ -625,6 +628,23 @@ export default function EventDetailScreen() {
               </Text>
             </Pressable>
             <TicketingTab eventId={eventId} />
+          </Narrow>
+        ) : activeTab === "budget" ? (
+
+          /* ── Budget: the per-line budget (planned/actual/receipts) + income
+                reconciliation. Also an operational tool opened from the tools
+                row, so it gets the same "Back to planning" affordance. ─────── */
+          <Narrow>
+            <Pressable
+              onPress={() => router.setParams({ tab: fallbackTab })}
+              className="mb-2 flex-row items-center gap-1.5 self-start active:opacity-70"
+            >
+              <Icon name="arrow-left" size={15} color={colors.muted} />
+              <Text className="text-sm font-medium text-muted">
+                Back to planning
+              </Text>
+            </Pressable>
+            <BudgetTab eventId={eventId} />
           </Narrow>
         ) : activeTab === "crew" ? (
           /* ── Crew & Duties: WHO is on each team (engagements) plus, below,
