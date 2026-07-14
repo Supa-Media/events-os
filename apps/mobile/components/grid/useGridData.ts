@@ -5,12 +5,13 @@
  * Template mode reads/writes `templateColumns` + `templateItems`; event mode
  * reads/writes `eventColumns` + `eventItems`. The grid never sees the difference.
  */
+import { useMemo } from "react";
 import { useQuery, useMutation } from "convex/react";
 import { api } from "@events-os/convex/_generated/api";
 import { type ModuleKey } from "@events-os/shared";
 import { SYSTEM_COLUMN_REGISTRY } from "./columnRegistry";
 
-export type GridMode = "template" | "event";
+export type GridMode = "template" | "event" | "chapter";
 
 export interface GridColumn {
   _id: string;
@@ -124,6 +125,7 @@ export function useGridData(
   module: ModuleKey,
 ): GridData {
   const isTemplate = mode === "template";
+  const isChapter = mode === "chapter";
 
   const tplData = useQuery(
     api.items.listForTemplate,
@@ -131,8 +133,38 @@ export function useGridData(
   );
   const evtData = useQuery(
     api.items.listForEventModule,
-    isTemplate ? "skip" : { eventId: parentId as any, module },
+    mode === "event" ? { eventId: parentId as any, module } : "skip",
   );
+  // Chapter mode: the inventory registry rendered through the same grid. The
+  // chapter comes from auth server-side, so `parentId` is carried for parity
+  // but the query ignores it.
+  const invData = useQuery(
+    api.inventory.listAssetsGrid,
+    isChapter ? {} : "skip",
+  );
+
+  // Inventory columns arrive as fixed `ColumnDef`s (no `_id`/`order`); normalise
+  // them into the `GridColumn` shape the grid renders (id = key, order = index).
+  const chapterColumns = useMemo<GridColumn[]>(
+    () =>
+      (invData?.columns ?? []).map((c: any, i: number) => ({
+        _id: c.key,
+        module: "inventory",
+        key: c.key,
+        label: c.label,
+        kind: c.kind,
+        type: c.type,
+        options: c.options,
+        config: c.config,
+        isVisible: c.isVisible !== false,
+        order: i,
+      })),
+    [invData?.columns],
+  );
+
+  const updateAssetCell = useMutation(api.inventory.updateAssetCell);
+  const addAssetRow = useMutation(api.inventory.addAssetRow);
+  const removeAsset = useMutation(api.inventory.removeAsset);
 
   const updateTpl = useMutation(api.items.updateTemplateItem);
   const updateEvt = useMutation(api.items.updateEventItem);
@@ -153,6 +185,48 @@ export function useGridData(
   const reorderColEvt = useMutation(api.columns.reorderEventColumns);
   const setColVisEvt = useMutation(api.columns.setEventColumnVisibility);
   const updateColEvt = useMutation(api.columns.updateEventColumn);
+
+  // ── Chapter mode (inventory registry) ──────────────────────────────────────
+  // The grid speaks one uniform vocabulary; here each op maps onto the typed
+  // asset adapters. Cell patches from `buildPatch` are either `{title}` (system)
+  // or `{fields: {key: value}}` (everything else) → `updateAssetCell`. Inventory
+  // columns are fixed, so every column op (and pre-plan) is a no-op.
+  if (isChapter) {
+    return {
+      loading: invData === undefined,
+      columns: chapterColumns,
+      items: invData?.items ?? [],
+      summary: invData?.summary,
+      updateItem: (itemId, patch) => {
+        if ("title" in patch) {
+          return updateAssetCell({
+            assetId: itemId as any,
+            key: "title",
+            value: patch.title,
+          });
+        }
+        if (patch.fields) {
+          return Promise.all(
+            Object.entries(patch.fields).map(([key, value]) =>
+              updateAssetCell({ assetId: itemId as any, key, value }),
+            ),
+          );
+        }
+        // Non-cell patches (row height, offsets) aren't persisted on assets.
+        return Promise.resolve();
+      },
+      addItem: () => addAssetRow({}),
+      removeItem: (itemId) => removeAsset({ assetId: itemId as any }),
+      reorder: () => Promise.resolve(),
+      addColumn: () => Promise.resolve(),
+      updateColumn: () => Promise.resolve(),
+      removeColumn: () => Promise.resolve(),
+      reorderColumns: () => Promise.resolve(),
+      setColumnVisible: () => Promise.resolve(),
+      toggleTemplatePrePlan: () => Promise.resolve(),
+      togglePrePlanChecked: () => Promise.resolve(),
+    };
+  }
 
   const data: any = isTemplate ? tplData : evtData;
 

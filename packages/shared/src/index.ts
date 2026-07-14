@@ -185,11 +185,13 @@ export const RESERVED_TAB_KEYS = [
 ] as const;
 
 // ── Inventory (chapter asset registry) ───────────────────────────────────────
-// The chapter's gear registry categories, in display order. Mirrors the
-// `BUDGET_CATEGORIES` pattern: a readonly tuple the Convex schema builds its
-// `v.union(...map(v.literal))` from, plus a display-label record. Assets are
-// chapter-owned; events RESERVE from them (see docs/plans/inventory.md).
-export const INVENTORY_CATEGORIES = [
+// Assets are chapter-owned durable/consumable gear; events RESERVE from them
+// (see docs/plans/inventory.md, docs/plans/inventory-supplies-unification.md).
+//
+// Assets are classified by FREE-FORM TAGS (an asset can be both "audio" and
+// "cable"), not a fixed category enum. These are the suggested starter tags the
+// quick-add chips and the filter pill bar seed from; any string is allowed.
+export const INVENTORY_TAG_SUGGESTIONS = [
   "audio",
   "power",
   "lighting",
@@ -197,20 +199,8 @@ export const INVENTORY_CATEGORIES = [
   "cabling",
   "signage",
   "transport",
-  "other",
 ] as const;
-export type InventoryCategory = (typeof INVENTORY_CATEGORIES)[number];
-
-export const INVENTORY_CATEGORY_LABELS: Record<InventoryCategory, string> = {
-  audio: "Audio",
-  power: "Power",
-  lighting: "Lighting",
-  staging: "Staging",
-  cabling: "Cabling",
-  signage: "Signage",
-  transport: "Transport",
-  other: "Other",
-};
+export type InventoryTagSuggestion = (typeof INVENTORY_TAG_SUGGESTIONS)[number];
 
 /** An asset's physical condition. Optional — unset reads as "no note". */
 export const ASSET_CONDITIONS = ["ok", "needs_attention", "broken"] as const;
@@ -221,6 +211,25 @@ export const ASSET_CONDITION_LABELS: Record<AssetCondition, string> = {
   needs_attention: "Needs attention",
   broken: "Broken",
 };
+
+/** Condition as grid select options (colored chips in the inventory grid). */
+export const ASSET_CONDITION_OPTIONS: SelectOption[] = [
+  { value: "ok", label: "OK", color: "green" },
+  { value: "needs_attention", label: "Needs attention", color: "amber" },
+  { value: "broken", label: "Broken", color: "red" },
+];
+
+/** Owned vs. still-on-the-list (Chapter-Kit target), as grid select options. */
+export const ASSET_ACQUIRED_OPTIONS: SelectOption[] = [
+  { value: "yes", label: "Owned", color: "green" },
+  { value: "no", label: "On list", color: "amber" },
+];
+
+/** Reusable (durable, returned) vs. consumable (used up), as grid select options. */
+export const ASSET_CONSUMABLE_OPTIONS: SelectOption[] = [
+  { value: "no", label: "Reusable", color: "blue" },
+  { value: "yes", label: "Consumable", color: "orange" },
+];
 
 // ── Derived views of CORE_MODULES (single source of truth above) ─────────────
 export const MODULE_LABELS: Record<ModuleKey, string> = Object.fromEntries(
@@ -423,7 +432,14 @@ export const SUPPLY_STATUS_OPTIONS: SelectOption[] = [
   { value: "pull_from_storage", label: "Pull from storage", color: "blue" },
   { value: "need_to_order", label: "Need to order", color: "red" },
   { value: "need_to_buy", label: "Need to buy", color: "red" },
+  // Borrowed gear you still have to collect; rented gear you still have to book.
+  { value: "need_to_pick_up", label: "Need to pick up", color: "red" },
+  { value: "need_to_rent", label: "Need to rent", color: "red" },
   { value: "ordered", label: "Ordered", color: "amber" },
+  // A shared Chapter-Storage asset that another live event currently holds. The
+  // human-readable "Event X · Container" detail is computed per row (see
+  // deriveSupplyStatus); this option carries the color/label fallback.
+  { value: "reserved_elsewhere", label: "Reserved elsewhere", color: "purple" },
   { value: "have_it", label: "Have it", color: "green", isComplete: true },
 ];
 
@@ -435,12 +451,24 @@ export const COMMS_STATUS_OPTIONS: SelectOption[] = [
 ];
 
 // ── Select option sets (seed defaults; editable per template) ────────────────
+// Source is a PROVENANCE model: it answers "where did this come from, and where
+// does it return", which decides whether the row is inventory-backed and drives
+// the derived Status (see deriveSupplyStatus + docs/plans/inventory-supplies-
+// unification.md). `chapter_storage` is the ONLY source that links an inventory
+// asset; borrowed/rented are external (never inventory) and carry loan fields
+// (lentBy/returnBy/cost); buy/order are acquired (consumable unless promoted).
 export const SUPPLY_SOURCE_OPTIONS: SelectOption[] = [
-  { value: "storage", label: "Storage", color: "blue" },
-  { value: "order_online", label: "Order online", color: "amber" },
+  { value: "chapter_storage", label: "Chapter Storage", color: "blue" },
+  { value: "borrowed", label: "Borrowed", color: "teal" },
+  { value: "rented", label: "Rented", color: "purple" },
   { value: "buy_in_store", label: "Buy in-store", color: "orange" },
-  { value: "misc", label: "Misc", color: "gray" },
+  { value: "order_online", label: "Order online", color: "amber" },
 ];
+
+/** Sources that link a Chapter inventory asset (reserve + return to storage). */
+export const INVENTORY_BACKED_SOURCES = ["chapter_storage"] as const;
+/** Sources that are external loans and carry lentBy / returnBy / fee fields. */
+export const LOAN_SOURCES = ["borrowed", "rented"] as const;
 
 export const CONTAINER_OPTIONS: SelectOption[] = [
   { value: "black_luggage", label: "Black luggage", color: "purple" },
@@ -450,6 +478,111 @@ export const CONTAINER_OPTIONS: SelectOption[] = [
   { value: "on_its_own", label: "On its own", color: "amber" },
   { value: "tbd", label: "TBD", color: "gray" },
 ];
+
+/** Human label for a select value; falls back to the raw value if unknown. */
+export function optionLabel(options: SelectOption[], value?: string | null): string {
+  if (!value) return "";
+  return options.find((o) => o.value === value)?.label ?? value;
+}
+
+// ── Derived Supply Status (Inventory ⇄ Supplies intelligence) ────────────────
+// Status is COMPUTED from Packed-in + Source + live cross-event state, with a
+// manual override escape hatch. One pure helper so the grid, calendar, and
+// packing screen agree. See docs/plans/inventory-supplies-unification.md §4.
+
+/** Live inventory state of the asset a supply row links to (Chapter Storage). */
+export interface LinkedAssetState {
+  /** Owned/on-hand count (a consumable at 0 is out of stock). */
+  onHand: number;
+  /** Chapter-wide available after OTHER live events' reservations. */
+  available: number;
+  consumable: boolean;
+  /** Another live event currently holding this asset (real-time location). */
+  committedElsewhere?: { eventName: string; container?: string | null } | null;
+}
+
+export interface SupplyStatusInput {
+  /** fields.container ("Packed in"). */
+  container?: string | null;
+  /** fields.source (provenance). */
+  source?: string | null;
+  /** This row's qty (default 1). */
+  needed?: number;
+  /** order_online rows: has it been ordered yet? */
+  ordered?: boolean;
+  /** fields.statusOverride — a hard manual status that wins until cleared. */
+  override?: string | null;
+  /** The linked asset's live state, when Source = chapter_storage. */
+  asset?: LinkedAssetState | null;
+}
+
+export interface DerivedSupplyStatus {
+  /** A SUPPLY_STATUS_OPTIONS value. */
+  value: string;
+  /** Human detail for the dynamic cross-event case ("Event · Container"). */
+  detail?: string;
+  /** True when `value` came from a manual override (not the rules). */
+  isOverride: boolean;
+}
+
+/**
+ * Resolve a supply row's status. Precedence (first match wins):
+ *   1. manual override            → use it
+ *   2. packed in a real container → Have it
+ *   3. storage asset held by another live event → Reserved elsewhere (+detail)
+ *   4. otherwise derive from Source + linked-asset/stock state
+ */
+export function deriveSupplyStatus(input: SupplyStatusInput): DerivedSupplyStatus {
+  const { container, override } = input;
+  // Legacy alias: the retired "storage"/"misc" source values map onto the new
+  // provenance set, so pre-cutover event rows still derive sensibly.
+  const source =
+    input.source === "storage"
+      ? "chapter_storage"
+      : input.source === "misc"
+        ? "buy_in_store"
+        : input.source;
+
+  if (override) return { value: override, isOverride: true };
+
+  const packed = !!container && container !== "tbd";
+  if (packed) return { value: "have_it", isOverride: false };
+
+  const asset = input.asset ?? null;
+  if (source === "chapter_storage" && asset?.committedElsewhere) {
+    const loc = asset.committedElsewhere;
+    const detail = loc.container
+      ? `${loc.eventName} · ${optionLabel(CONTAINER_OPTIONS, loc.container)}`
+      : loc.eventName;
+    return { value: "reserved_elsewhere", detail, isOverride: false };
+  }
+
+  const needed = input.needed ?? 1;
+  switch (source) {
+    case "chapter_storage": {
+      if (!asset) return { value: "pull_from_storage", isOverride: false };
+      if (asset.consumable && asset.onHand <= 0)
+        return { value: "need_to_buy", isOverride: false };
+      if (asset.available < needed)
+        return { value: "need_to_order", isOverride: false };
+      return { value: "pull_from_storage", isOverride: false };
+    }
+    case "borrowed":
+      return { value: "need_to_pick_up", isOverride: false };
+    case "rented":
+      return { value: "need_to_rent", isOverride: false };
+    case "buy_in_store":
+      return { value: "need_to_buy", isOverride: false };
+    case "order_online":
+      return {
+        value: input.ordered ? "ordered" : "need_to_order",
+        isOverride: false,
+      };
+    default:
+      // No source yet → nothing acquired.
+      return { value: "need_to_buy", isOverride: false };
+  }
+}
 
 export const COMMS_CHANNEL_OPTIONS: SelectOption[] = [
   { value: "team_slack", label: "Team Slack", color: "red" },
@@ -664,6 +797,34 @@ export const DEFAULT_CUSTOM_COLUMNS: ColumnDef[] = [
   { key: "owner", label: "Owner", kind: "system", type: "person", isVisible: true },
   { key: "notes", label: "Notes", kind: "custom", type: "longtext", isVisible: true },
 ];
+
+/** Suggested tags as grid multiselect options (free-form; any string allowed). */
+export const INVENTORY_TAG_OPTIONS: SelectOption[] = INVENTORY_TAG_SUGGESTIONS.map(
+  (t) => ({ value: t, label: t.charAt(0).toUpperCase() + t.slice(1) }),
+);
+
+/**
+ * Inventory (chapter asset registry) grid columns. The registry is rendered
+ * through the SAME EditableGrid as Supplies, in a dedicated "chapter" mode
+ * backed by the `assets` table. `title` is the asset name; every other column is
+ * a fields-bag key the chapter-mode adapter maps to/from asset mutations.
+ * `available` is READ-ONLY (computed reservation load) — the adapter ignores
+ * writes to it.
+ */
+export const INVENTORY_COLUMNS: ColumnDef[] = [
+  { key: "title", label: "Item", kind: "system", type: "text", isVisible: true },
+  { key: "tags", label: "Tags", kind: "custom", type: "multiselect", options: INVENTORY_TAG_OPTIONS, isVisible: true },
+  { key: "quantity", label: "Qty owned", kind: "custom", type: "number", isVisible: true },
+  { key: "available", label: "Available", kind: "custom", type: "text", isVisible: true },
+  { key: "consumable", label: "Type", kind: "custom", type: "select", options: ASSET_CONSUMABLE_OPTIONS, isVisible: true },
+  { key: "condition", label: "Condition", kind: "custom", type: "select", options: ASSET_CONDITION_OPTIONS, isVisible: true },
+  { key: "acquired", label: "Acquired", kind: "custom", type: "select", options: ASSET_ACQUIRED_OPTIONS, isVisible: true },
+  { key: "photo", label: "Photo", kind: "custom", type: "photo", isVisible: true },
+  { key: "notes", label: "Notes", kind: "custom", type: "longtext", isVisible: true },
+];
+
+/** Column keys in the inventory grid the chapter-mode adapter treats read-only. */
+export const INVENTORY_READONLY_COLUMN_KEYS = ["available"] as const;
 
 /** The default status option set for a module (or undefined if no status). */
 export function defaultStatusOptions(module: ModuleKey): SelectOption[] | undefined {

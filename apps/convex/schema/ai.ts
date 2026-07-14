@@ -43,7 +43,9 @@ export const aiChanges = defineTable({
   runId: v.id("aiRuns"),
   chapterId: v.id("chapters"),
   eventId: v.optional(v.id("events")),
-  itemId: v.id("eventItems"),
+  // The row this change edited — an event item (event/doc assistants) OR a
+  // chapter inventory asset (the inventory assistant). Undo restores `before`.
+  itemId: v.union(v.id("eventItems"), v.id("assets")),
   key: v.string(),
   before: v.optional(v.any()),
   after: v.optional(v.any()),
@@ -61,6 +63,9 @@ export const aiThreads = defineTable({
   chapterId: v.id("chapters"),
   eventId: v.optional(v.id("events")),
   docId: v.optional(v.id("docs")),
+  // Chapter-level scope for threads bound to neither an event nor a doc. The
+  // inventory assistant sets scope: "inventory" (keyed only off chapterId).
+  scope: v.optional(v.literal("inventory")),
   userId: v.id("users"),
   title: v.string(),
   // Per-chat AI overrides (all optional; unset → deployment default).
@@ -76,7 +81,8 @@ export const aiThreads = defineTable({
 })
   .index("by_event", ["eventId"])
   .index("by_doc", ["docId"])
-  .index("by_chapter", ["chapterId"]);
+  .index("by_chapter", ["chapterId"])
+  .index("by_chapter_scope", ["chapterId", "scope"]);
 
 /**
  * AI assistant message — one entry in a thread. `kind` distinguishes the

@@ -8,11 +8,11 @@ import { useState } from "react";
 import { Pressable, Text, TextInput, View } from "react-native";
 import { useMutation } from "convex/react";
 import { api } from "@events-os/convex/_generated/api";
-import { Badge, Icon } from "../../ui";
+import { Badge, Icon, OptionTag } from "../../ui";
 import { colors } from "../../../lib/theme";
 import type { ActionRunner } from "../../../lib/useActionToast";
 import { confirmAction } from "../ticketing/helpers";
-import { INVENTORY_CATEGORY_LABELS, type EventReservation } from "./helpers";
+import { type EventReservation } from "./helpers";
 
 /** Parse a positive integer (≥1) from a string, or null if invalid. */
 function parsePosInt(input: string): number | null {
@@ -78,12 +78,9 @@ export function GearRow({ reservation, run }: Props) {
           {asset?.name ?? "Unknown asset"}
         </Text>
         <View className="mt-1 flex-row flex-wrap items-center gap-2">
-          {asset ? (
-            <Badge
-              label={INVENTORY_CATEGORY_LABELS[asset.category]}
-              tone="neutral"
-            />
-          ) : null}
+          {asset?.tags.map((tag) => (
+            <OptionTag key={tag} label={tag} />
+          ))}
           {asset ? (
             <Text className="text-sm text-muted">
               {asset.available} of {asset.quantity} free

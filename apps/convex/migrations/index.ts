@@ -33,6 +33,7 @@ import { purgeGuestAllowlist } from "./0017_purge_guest_allowlist";
 import { backfillCourseCompletions } from "./0018_backfill_course_completions";
 import { backfillRunOfShowDuration } from "./0019_backfill_run_of_show_duration";
 import { permitsStatesAndFallback } from "./0020_permits_states_and_fallback";
+import { inventoryCategoryToTags } from "./0021_inventory_category_to_tags";
 
 /** One registered migration: a stable `name` (the ledger key) + its effect. */
 export type Migration = {
@@ -63,4 +64,6 @@ export const MIGRATIONS: Migration[] = [
   backfillRunOfShowDuration,
   // Permits v1 — merge denied/waived status options + add jurisdiction/fallback.
   permitsStatesAndFallback,
+  // Inventory ⇄ Supplies — fold the retired `category` enum into free-form tags.
+  inventoryCategoryToTags,
 ];

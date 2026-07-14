@@ -302,6 +302,7 @@ const REGISTRY_NAMES = [
   "0018_backfill_course_completions",
   "0019_backfill_run_of_show_duration",
   "0020_permits_states_and_fallback",
+  "0021_inventory_category_to_tags",
 ];
 const SEEDED_HISTORICAL = [
   "backfillMissingDefaultColumns",
