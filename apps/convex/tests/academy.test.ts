@@ -29,10 +29,17 @@ import { newT, run, setupChapter, type ChapterSetup } from "./setup.helpers";
 
 const SECTION_1 = ACADEMY_SECTIONS[0];
 const SECTION_2 = ACADEMY_SECTIONS[1];
-// Curriculum order: join-an-event, birthday party, then the optional worship
-// bonus. The suite leans on that order — the assertion below pins it.
-const [CAPSTONE_JOIN, CAPSTONE_PARTY, CAPSTONE_BONUS] =
-  ACADEMY_CAPSTONE_SECTIONS;
+// Curriculum order: join-an-event, birthday party, the optional worship
+// bonus, then the three role capstones (comms / event / logistics lead).
+// The suite leans on that order — the assertion below pins it.
+const [
+  CAPSTONE_JOIN,
+  CAPSTONE_PARTY,
+  CAPSTONE_BONUS,
+  CAPSTONE_COMMS,
+  CAPSTONE_EVENT_LEAD,
+  CAPSTONE_LOGISTICS,
+] = ACADEMY_CAPSTONE_SECTIONS;
 const DAY = 24 * 60 * 60 * 1000;
 
 /** A module's terminal status, from the SAME source production's quest-done
@@ -129,6 +136,18 @@ async function setupTrainee(): Promise<LearnerSetup & { eventId: Id<"events"> }>
   return { ...s, eventId };
 }
 
+/** Start one capstone's sandbox and terminalize every quest row. */
+async function completeCapstone(s: LearnerSetup, capstoneSlug: string) {
+  const { eventId } = await s.as.mutation(api.academy.startTraining, {
+    capstoneSlug,
+  });
+  await completeAllQuests(s, eventId);
+  return eventId;
+}
+
+/** The three role capstones (each gated only on its course's quizzes). */
+const ROLE_CAPSTONES = [CAPSTONE_COMMS, CAPSTONE_EVENT_LEAD, CAPSTONE_LOGISTICS];
+
 /** The person's stored progress row for a capstone, or null. */
 async function capstoneRow(s: LearnerSetup, slug: string) {
   return await run(s.t, async (ctx) => {
@@ -155,23 +174,25 @@ async function platformTemplates(s: ChapterSetup) {
 }
 
 describe("curriculum content", () => {
-  test("seventeen ordered sections; three capstones; one optional bonus", () => {
-    expect(ACADEMY_SECTION_COUNT).toBe(17);
+  test("thirty ordered sections; six capstones; one optional bonus", () => {
+    expect(ACADEMY_SECTION_COUNT).toBe(30);
     expect(ACADEMY_SECTIONS.map((s) => s.order)).toEqual(
-      Array.from({ length: 17 }, (_v, i) => i + 1),
+      Array.from({ length: 30 }, (_v, i) => i + 1),
     );
     // The optional bonus is excluded from the trained denominator.
-    expect(ACADEMY_REQUIRED_SECTION_COUNT).toBe(16);
-    expect(ACADEMY_CAPSTONE_SECTIONS).toHaveLength(3);
+    expect(ACADEMY_REQUIRED_SECTION_COUNT).toBe(29);
+    expect(ACADEMY_CAPSTONE_SECTIONS).toHaveLength(6);
     // The suite leans on this order — pin it.
     expect(CAPSTONE_JOIN.capstone!.kind).toBe("join_event");
     expect(CAPSTONE_PARTY.capstone!.kind).toBe("birthday_party");
     expect(CAPSTONE_BONUS.capstone!.kind).toBe("worship_event");
-    // Only the bonus is optional, and it's last.
+    expect(CAPSTONE_COMMS.capstone!.kind).toBe("comms_lead");
+    expect(CAPSTONE_EVENT_LEAD.capstone!.kind).toBe("event_lead");
+    expect(CAPSTONE_LOGISTICS.capstone!.kind).toBe("logistics_lead");
+    // Only the worship bonus is optional.
     expect(ACADEMY_SECTIONS.filter((s) => s.optional === true)).toEqual([
       CAPSTONE_BONUS,
     ]);
-    expect(ACADEMY_SECTIONS[ACADEMY_SECTIONS.length - 1]).toBe(CAPSTONE_BONUS);
     // Every capstone kind has a training-template key.
     for (const c of ACADEMY_CAPSTONE_SECTIONS) {
       expect(
@@ -883,7 +904,8 @@ describe("the training-event capstones", () => {
     expect(
       progress.sections.find((x) => x.slug === CAPSTONE_PARTY.slug)!.unlocked,
     ).toBe(true);
-    expect(progress.completed).toBe(ACADEMY_REQUIRED_SECTION_COUNT - 1);
+    // Still open: the party capstone + the three role capstones.
+    expect(progress.completed).toBe(ACADEMY_REQUIRED_SECTION_COUNT - 4);
 
     const party = await s.as.mutation(api.academy.startTraining, {
       capstoneSlug: CAPSTONE_PARTY.slug,
@@ -894,6 +916,11 @@ describe("the training-event capstones", () => {
     expect(
       progress.sections.find((x) => x.slug === CAPSTONE_PARTY.slug)!.passed,
     ).toBe(true);
+    expect(progress.completed).toBe(ACADEMY_REQUIRED_SECTION_COUNT - 3);
+
+    // The role capstones close out the trained state.
+    for (const c of ROLE_CAPSTONES) await completeCapstone(s, c.slug);
+    progress = await s.as.query(api.academy.myProgress, {});
     expect(progress.completed).toBe(ACADEMY_REQUIRED_SECTION_COUNT); // trained
 
     // …and the manager view derives the same completion.
@@ -922,7 +949,8 @@ describe("the training-event capstones", () => {
 
     await completeAllQuests(s, party.eventId);
     let progress = await s.as.query(api.academy.myProgress, {});
-    expect(progress.completed).toBe(ACADEMY_REQUIRED_SECTION_COUNT);
+    // Everything but the three (required) role capstones is passed here.
+    expect(progress.completed).toBe(ACADEMY_REQUIRED_SECTION_COUNT - 3);
     expect(
       progress.sections.find((x) => x.slug === CAPSTONE_BONUS.slug)!.unlocked,
     ).toBe(true);
@@ -939,12 +967,12 @@ describe("the training-event capstones", () => {
     expect(
       progress.sections.find((x) => x.slug === CAPSTONE_BONUS.slug)!.passed,
     ).toBe(true);
-    expect(progress.completed).toBe(ACADEMY_REQUIRED_SECTION_COUNT);
+    expect(progress.completed).toBe(ACADEMY_REQUIRED_SECTION_COUNT - 3);
     expect(progress.total).toBe(ACADEMY_REQUIRED_SECTION_COUNT);
     // chapterProgress ignores it too.
     const view = await s.as.query(api.academy.chapterProgress, {});
     const me = view!.people.find((p) => p.personId === s.personId)!;
-    expect(me.completed).toBe(ACADEMY_REQUIRED_SECTION_COUNT);
+    expect(me.completed).toBe(ACADEMY_REQUIRED_SECTION_COUNT - 3);
   });
 
   test("the party capstone seeds sample teammates + crew, exactly once", async () => {
@@ -1088,6 +1116,125 @@ describe("the training-event capstones", () => {
   });
 });
 
+describe("the role capstones (comms / event / logistics lead)", () => {
+  test("each is the last module of its role course, gated on that course's quizzes", async () => {
+    expect(previousModuleInCourse(CAPSTONE_COMMS.slug)).toBe("tab-comms");
+    expect(previousModuleInCourse(CAPSTONE_EVENT_LEAD.slug)).toBe(
+      "tab-permits",
+    );
+    expect(previousModuleInCourse(CAPSTONE_LOGISTICS.slug)).toBe(
+      "tab-supplies",
+    );
+    // A fresh learner (no quizzes) can't start one.
+    const s = await setupLearner(newT());
+    const err = await s.as
+      .mutation(api.academy.startTraining, {
+        capstoneSlug: CAPSTONE_COMMS.slug,
+      })
+      .then(() => null)
+      .catch((e) => e);
+    expect(String(err)).toMatch(/CAPSTONE_LOCKED/);
+  });
+
+  test("each runs end-to-end: sandbox, quests, live pass, course badge", async () => {
+    const s = await setupLearner(newT());
+    await passAllQuizzes(s);
+    // Quiz passes alone no longer earn the role courses — the capstone gates.
+    const badgesBefore = await run(s.t, async (ctx) =>
+      (
+        await ctx.db
+          .query("courseCompletions")
+          .withIndex("by_chapter_and_person", (q) =>
+            q.eq("chapterId", s.chapterId).eq("personId", s.personId),
+          )
+          .collect()
+      ).map((r) => r.courseSlug),
+    );
+    expect(badgesBefore).not.toContain("comms-lead");
+    expect(badgesBefore).not.toContain("event-lead");
+    expect(badgesBefore).not.toContain("logistics-lead");
+
+    const expected: Array<
+      [section: (typeof ROLE_CAPSTONES)[number], quests: number, course: string]
+    > = [
+      [CAPSTONE_COMMS, 9, "comms-lead"],
+      [CAPSTONE_EVENT_LEAD, 9, "event-lead"],
+      [CAPSTONE_LOGISTICS, 8, "logistics-lead"],
+    ];
+    for (const [section, questCount, courseSlug] of expected) {
+      const { eventId } = await s.as.mutation(api.academy.startTraining, {
+        capstoneSlug: section.slug,
+      });
+      const status = await s.as.query(api.academy.trainingStatus, {
+        capstoneSlug: section.slug,
+      });
+      expect(status!.eventId).toBe(eventId);
+      expect(status!.total).toBe(questCount);
+      expect(status!.doneCount).toBe(0);
+
+      await completeAllQuests(s, eventId);
+      const progress = await s.as.query(api.academy.myProgress, {});
+      expect(
+        progress.sections.find((x) => x.slug === section.slug)!.passed,
+      ).toBe(true);
+      // syncCapstone stamps the pass and awards the role course's badge.
+      await s.as.mutation(api.academy.syncCapstone, {
+        capstoneSlug: section.slug,
+      });
+      const rows = await run(s.t, (ctx) =>
+        ctx.db
+          .query("courseCompletions")
+          .withIndex("by_chapter_and_person", (q) =>
+            q.eq("chapterId", s.chapterId).eq("personId", s.personId),
+          )
+          .collect(),
+      );
+      expect(rows.map((r) => r.courseSlug)).toContain(courseSlug);
+    }
+  });
+
+  test("the comms capstone seeds a four-person bench and open crew slots", async () => {
+    const s = await setupLearner(newT());
+    await passAllQuizzes(s);
+    const { eventId } = await s.as.mutation(api.academy.startTraining, {
+      capstoneSlug: CAPSTONE_COMMS.slug,
+    });
+
+    const { samples, engagements, expectations } = await run(
+      s.t,
+      async (ctx) => ({
+        samples: (
+          await ctx.db
+            .query("people")
+            .withIndex("by_chapter", (q) => q.eq("chapterId", s.chapterId))
+            .collect()
+        ).filter((p) => p.isSamplePerson === true),
+        engagements: await ctx.db
+          .query("engagements")
+          .withIndex("by_event", (q) => q.eq("eventId", eventId))
+          .collect(),
+        expectations: (
+          await ctx.db
+            .query("eventItems")
+            .withIndex("by_event_module", (q) =>
+              q.eq("eventId", eventId).eq("module", "volunteer_expectations"),
+            )
+            .collect()
+        ),
+      }),
+    );
+    // The simulated people list the learner recruits from.
+    const names = samples.map((p) => p.name);
+    for (const n of ["Maya", "Jordan", "Sam", "Priya"]) {
+      expect(names).toContain(`${n} (sample teammate)`);
+    }
+    // Three role-shaped placeholder slots to fill.
+    expect(engagements.length).toBeGreaterThanOrEqual(3);
+    // Crew expectations start EMPTY — writing the duties IS the capstone.
+    expect(expectations).toHaveLength(0);
+  });
+});
+
 describe("training template spec-version refresh", () => {
   test("a stale platform template is rebuilt in place on next start", async () => {
     const s = await setupTrainee();
@@ -1173,11 +1320,12 @@ describe("syncCapstone persists a capstone", () => {
     expect(join.passed).toBe(true);
     expect(join.passedAt).toBe(row!.passedAt);
 
-    // chapterProgress reads the stored stamp too (13 quizzes + 1 capstone).
+    // chapterProgress reads the stored stamp too (every quiz + 1 of the 5
+    // required capstones — party + the three role capstones still open).
     const view = await s.as.query(api.academy.chapterProgress, {});
     expect(
       view!.people.find((p) => p.personId === s.personId)!.completed,
-    ).toBe(ACADEMY_REQUIRED_SECTION_COUNT - 1);
+    ).toBe(ACADEMY_REQUIRED_SECTION_COUNT - 4);
   });
 });
 

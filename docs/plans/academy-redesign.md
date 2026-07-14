@@ -198,3 +198,46 @@ Small, independently-reviewable PRs, in order:
    existing write paths + `chapterProgress`/course-completer queries.
 3. Hub + module-screen UI (theme→course→module nav, course page, badges).
 4. Profile badge chips (both person surfaces).
+
+## 8. Streams update (founder, 2026-07-14)
+
+Supersedes the theme list in §2/§3 and extends the catalog. Shipped in one
+change alongside this note:
+
+- **Themes are now the three STREAMS: `events`, `works`, `management`**
+  (`leadership` retired before ever holding a course). The hub stacks the
+  streams vertically; each stream renders a horizontal rail of compact course
+  tiles. Every course carries an `icon` (a Feather glyph name) shown on its
+  tile and course page.
+- **Every role course now ends in a role-specific CAPSTONE** — the badge means
+  demonstrated ability in a sandbox, not just passed quizzes:
+  - `capstone-comms-lead` (kind `comms_lead`) — Crew expectations seed EMPTY;
+    the learner writes each team's duties first, then recruits from a
+    four-person sample bench (Maya/Jordan/Sam/Priya) into open placeholder
+    slots, and runs announcement → crew ask → T-1 reminder to Sent.
+  - `capstone-event-lead` (kind `event_lead`) — a drifting plan to rescue:
+    a row seeded already-overdue, a missing task, a stub run of show, a
+    permit walked to Approved, the owner's test via the assistant, a debrief
+    row dispatched.
+  - `capstone-logistics-lead` (kind `logistics_lead`) — real acquisition walks
+    on two clocks (order/storage/buy → Have it), plus packing checklist, site
+    map, and mark-ready quests.
+- **Works stream courses** (all quiz modules): `projects`
+  (works-projects, works-driving-a-project) and `duties`
+  (works-duties, works-owning-a-duty) — authored from the shipped
+  projects/responsibilities features (statuses+blockers, progression log,
+  cadences, role fan-out, runbooks).
+- **Management stream courses** (level `leader`): `the-one-on-one`
+  (mgmt-one-on-one, mgmt-reviewing-the-work), `care-and-accountability`
+  (mgmt-caring-for-people, mgmt-holding-the-line), `directing`
+  (mgmt-the-org-tree, mgmt-director-philosophy) — authored from the check-in
+  form/doctrine (person first, two pulses, chain-above reads), the
+  CHECKIN_ACTIONS ladder, playbook Philosophy 8, and the manager-subtree
+  authority model.
+- Curriculum grows 17 → 30 sections (29 required; the worship bonus stays the
+  only optional). New sections append after the existing ones so no stored
+  progress re-keys; role capstones sit after their course-predecessor quizzes
+  in curriculum order, which the myProgress single-pass resolution requires.
+- Consequence: passing every quiz no longer earns `comms-lead` / `event-lead`
+  / `logistics-lead` — their capstone gates the badge (existing badge holders
+  keep theirs; `courseCompletions` is stored, never recomputed).

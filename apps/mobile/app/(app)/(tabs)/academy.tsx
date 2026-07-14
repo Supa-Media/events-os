@@ -1,4 +1,4 @@
-import { View, Text } from "react-native";
+import { View, Text, ScrollView } from "react-native";
 import { useRouter } from "expo-router";
 import { useQuery } from "convex/react";
 import { api } from "@events-os/convex/_generated/api";
@@ -8,6 +8,7 @@ import {
   Card,
   Badge,
   Icon,
+  type IconName,
   SectionHeader,
   ProgressBar,
 } from "../../../components/ui";
@@ -21,11 +22,12 @@ import {
 } from "@events-os/shared";
 
 /**
- * THE ACADEMY HUB — themes → courses. The flat curriculum is now organised into
- * courses (each with a level + a badge you earn); the hub lists every theme that
- * has courses, a card per course showing the caller's progress + earned state,
- * and drills into a course page for its module path. Reading is never gated;
- * only the quiz-passed "complete" state unlocks sequentially inside a course.
+ * THE ACADEMY HUB — streams → courses. The catalog is organised into three
+ * STREAMS (Events, Works, Management), stacked vertically; each stream shows a
+ * horizontal rail of compact course tiles with the caller's progress + earned
+ * state, and drills into a course page for its module path. Reading is never
+ * gated; only the quiz-passed "complete" state unlocks sequentially inside a
+ * course.
  */
 export default function AcademyScreen() {
   const router = useRouter();
@@ -76,25 +78,42 @@ export default function AcademyScreen() {
         </View>
       </Card>
 
-      {/* Themes → courses. Only themes that HAVE courses render (Management /
-          Leadership are seeded empty and fill as content is written). */}
+      {/* Streams, stacked vertically. Each stream is a horizontal rail of
+          compact course tiles — every stream renders, even before its first
+          course ships, so the shape of the Academy is visible up front. */}
       {ACADEMY_THEMES.map((theme) => {
         const courses = academyCoursesForTheme(theme.key);
-        if (courses.length === 0) return null;
         return (
           <View key={theme.key}>
             <SectionHeader title={theme.title} count={courses.length} />
-            <View className="gap-3">
-              {courses.map((course) => (
-                <CourseCard
-                  key={course.slug}
-                  course={course}
-                  passedSlugs={passedSlugs}
-                  earned={earnedSlugs.has(course.slug)}
-                  onPress={() => router.push(`/academy/course/${course.slug}`)}
-                />
-              ))}
-            </View>
+            <Text className="-mt-1 mb-2.5 text-sm text-muted">
+              {theme.subtitle}
+            </Text>
+            {courses.length === 0 ? (
+              <Card padding="md">
+                <Text className="text-sm text-muted">
+                  First courses in this stream are on the way.
+                </Text>
+              </Card>
+            ) : (
+              <ScrollView
+                horizontal
+                showsHorizontalScrollIndicator={false}
+                contentContainerStyle={{ gap: 12, paddingVertical: 2 }}
+              >
+                {courses.map((course) => (
+                  <CourseTile
+                    key={course.slug}
+                    course={course}
+                    passedSlugs={passedSlugs}
+                    earned={earnedSlugs.has(course.slug)}
+                    onPress={() =>
+                      router.push(`/academy/course/${course.slug}`)
+                    }
+                  />
+                ))}
+              </ScrollView>
+            )}
           </View>
         );
       })}
@@ -137,11 +156,12 @@ export default function AcademyScreen() {
 }
 
 /**
- * One course card: title, level chip, the caller's REQUIRED-module progress
- * (passed-flags ∩ the course's required set), and an earned indicator once the
- * badge is held. Taps through to the course page.
+ * One compact course tile on a stream's horizontal rail: level chip + earned
+ * mark up top, title, description, then the caller's REQUIRED-module progress
+ * (passed-flags ∩ the course's required set). Fixed width so rails scan as a
+ * row of uniform rectangles. Taps through to the course page.
  */
-function CourseCard({
+function CourseTile({
   course,
   passedSlugs,
   earned,
@@ -157,35 +177,39 @@ function CourseCard({
   const total = required.length;
 
   return (
-    <Card padding="md" onPress={onPress}>
-      <View className="flex-row items-start gap-3">
-        <View className="flex-1">
-          <View className="flex-row items-center gap-2">
-            <Text
-              className="shrink text-base font-semibold text-ink"
-              numberOfLines={1}
-            >
-              {course.title}
-            </Text>
-            <LevelChip level={course.level} />
-          </View>
-          <Text className="mt-1 text-sm text-muted" numberOfLines={2}>
-            {course.description}
-          </Text>
-          <Text className="mt-2 text-xs font-semibold text-muted">
-            {passed} of {total} required modules passed
-          </Text>
-          <View className="mt-1.5">
-            <ProgressBar fraction={total === 0 ? 0 : passed / total} />
-          </View>
+    <Card padding="md" onPress={onPress} className="h-52 w-60">
+      <View className="flex-row items-center justify-between gap-2">
+        {/* The course's glyph — a plain string in the shared catalog (that
+            package can't see the icon font's types), narrowed here. */}
+        <View
+          className={`h-10 w-10 items-center justify-center rounded-lg ${
+            earned ? "bg-success-bg" : "bg-accent-soft"
+          }`}
+        >
+          <Icon
+            name={course.icon as IconName}
+            size={19}
+            color={earned ? colors.success : colors.accent}
+          />
         </View>
-        <View className="items-end">
-          {earned ? (
-            <Badge label="Earned" tone="success" icon="award" />
-          ) : (
-            <Icon name="chevron-right" size={18} color={colors.faint} />
-          )}
-        </View>
+        <LevelChip level={course.level} />
+      </View>
+      <Text className="mt-2.5 text-base font-semibold text-ink" numberOfLines={2}>
+        {course.title}
+      </Text>
+      <Text className="mt-1 flex-1 text-xs text-muted" numberOfLines={3}>
+        {course.description}
+      </Text>
+      <View className="mt-2.5 flex-row items-center justify-between gap-2">
+        <Text className="text-xs font-semibold text-muted">
+          {passed} of {total} modules
+        </Text>
+        {earned ? (
+          <Icon name="award" size={14} color={colors.success} />
+        ) : null}
+      </View>
+      <View className="mt-1.5">
+        <ProgressBar fraction={total === 0 ? 0 : passed / total} />
       </View>
     </Card>
   );

@@ -9,6 +9,7 @@ import {
   Badge,
   Avatar,
   Icon,
+  type IconName,
   EmptyState,
   SectionHeader,
   ProgressBar,
@@ -96,6 +97,13 @@ export default function AcademyCourseScreen() {
       </View>
 
       <View className="flex-row items-center gap-2.5">
+        <View className="h-11 w-11 items-center justify-center rounded-lg bg-accent-soft">
+          <Icon
+            name={course.icon as IconName}
+            size={22}
+            color={colors.accent}
+          />
+        </View>
         <Text className="shrink font-display text-3xl text-ink">
           {course.title}
         </Text>

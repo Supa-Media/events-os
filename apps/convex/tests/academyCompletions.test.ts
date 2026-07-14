@@ -105,17 +105,29 @@ async function badges(s: LearnerSetup): Promise<string[]> {
 }
 
 describe("academy course completions", () => {
-  test("passing every quiz awards the quiz-only courses, not Owning", async () => {
+  test("passing every quiz awards the quiz-only courses, not the capstone-gated ones", async () => {
     const s = await setupLearner();
     await passAllQuizzes(s);
-    // Fundamentals + the three role courses are all quiz modules → earned.
-    // Owning-an-event needs its capstones, so a quiz pass alone can't earn it.
+    // Fundamentals + the Works and Management courses are all quiz modules →
+    // earned. The three role courses end in a role capstone and
+    // Owning-an-event needs its capstones, so a quiz pass alone can't earn
+    // any of them.
     expect(await badges(s)).toEqual([
+      "care-and-accountability",
       "chapter-os-fundamentals",
-      "comms-lead",
-      "event-lead",
-      "logistics-lead",
+      "directing",
+      "duties",
+      "projects",
+      "the-one-on-one",
     ]);
+  });
+
+  test("a role course is earned only once its capstone passes", async () => {
+    const s = await setupLearner();
+    await passAllQuizzes(s);
+    expect(await badges(s)).not.toContain("comms-lead");
+    await passCapstone(s, "capstone-comms-lead");
+    expect(await badges(s)).toContain("comms-lead");
   });
 
   test("Owning-an-event is earned once its required capstones pass (bonus excluded)", async () => {
@@ -156,7 +168,8 @@ describe("academy course completions", () => {
 
   test("backfill awards existing progress; earnedAt = max(passedAt); idempotent", async () => {
     const s = await setupLearner();
-    const [m1, m2] = requiredModuleSlugsForCourse("comms-lead");
+    // "projects" is a two-quiz-module course, so two stored passes earn it.
+    const [m1, m2] = requiredModuleSlugsForCourse("projects");
     await run(s.t, async (ctx) => {
       await ctx.db.insert("academyProgress", {
         chapterId: s.chapterId,
@@ -183,7 +196,7 @@ describe("academy course completions", () => {
         .collect(),
     );
     expect(rows).toHaveLength(1);
-    expect(rows[0].courseSlug).toBe("comms-lead");
+    expect(rows[0].courseSlug).toBe("projects");
     expect(rows[0].earnedAt).toBe(2000); // max of the two passedAt values
 
     // Second run inserts nothing (ledger-independent idempotency).
@@ -196,7 +209,7 @@ describe("academy course completions", () => {
     await passAllQuizzes(s);
 
     const completers = await s.as.query(api.academy.courseCompleters, {
-      courseSlug: "comms-lead",
+      courseSlug: "projects",
     });
     expect(completers).not.toBeNull();
     expect(completers!.map((c) => c.personId)).toContain(s.personId);
@@ -222,6 +235,11 @@ describe("academy course completions", () => {
       "event-lead",
       "logistics-lead",
       "owning-an-event",
+      "projects",
+      "duties",
+      "the-one-on-one",
+      "care-and-accountability",
+      "directing",
     ]) {
       expect(getAcademyCourse(slug)).toBeDefined();
     }
