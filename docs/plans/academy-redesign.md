@@ -75,10 +75,18 @@ The Comms Lead's remit at Public Worship: crew coordination + comms.
 `tab-crew-duties` · `tab-comms`
 
 **Course `event-lead`** — level **intermediate**, audience **role**
-The Event Lead's remit: tasks, run of show, permitting, and logistics —
-`tab-supplies` (Supplies & Logistics) lands here as the logistics piece
-(founder-confirmed 2026-07-13).
-`tab-tasks` · `tab-run-of-show` · `tab-permits` · `tab-supplies`
+The Event Lead's remit: tasks, run of show, and permitting.
+`tab-tasks` · `tab-run-of-show` · `tab-permits`
+
+**Course `logistics-lead`** — level **intermediate**, audience **role**
+The Logistics Lead's remit: supplies & logistics. Public Worship runs a
+distinct Logistics Lead role, so it's its own course (founder-confirmed
+2026-07-13). `tab-supplies` today; **planned: a "keeping inventory" module**
+that authors alongside the typed Inventory feature (rebrand §7a / M5.5, the
+Chapter Kit) — the course is where the Logistics Lead learns to run the
+chapter's asset registry. Can't reference the slug until that content exists
+(the integrity check requires every module to resolve to a real section).
+`tab-supplies`
 
 **Course `owning-an-event`** — level **advanced**, audience **ownership**
 Accountability doctrine + the hands-on capstones (§5a: "the existing
@@ -144,17 +152,19 @@ Awarded going forward the moment a course's last required module passes
    re-keys progress regardless, so the unlock-position shift is harmless.
 2. **Intermediate granularity → split into role courses now** (not one
    "Running an event" course), keyed to PW's real roles: **Comms Lead**
-   (crew-duties, comms) and **Event Lead** (tasks, run-of-show, permits,
-   supplies). The two cross-cutting product-literacy tabs (debrief, assistant)
-   move into the beginner Fundamentals course. See §3.
+   (crew-duties, comms), **Event Lead** (tasks, run-of-show, permits), and
+   **Logistics Lead** (supplies; + a planned inventory module). The two
+   cross-cutting product-literacy tabs (debrief, assistant) move into the
+   beginner Fundamentals course. See §3.
 3. **Unlock semantics → per course, level-ordered.** Modules unlock
    sequentially within a course; courses gate by level order within a theme.
 4. **Completer visibility → chapter-visible.** Anyone in the chapter sees who
    earned a course badge; aggregate partial-progress stays admin/manager-gated
    as today.
-5. **`tab-supplies` → Event Lead (confirmed).** Supplies & Logistics is the
-   logistics piece of the Event Lead's remit. No separate Logistics role course
-   for now (would fill later like Management/Leadership if PW splits it out).
+5. **`tab-supplies` → Logistics Lead (its own course).** PW runs a distinct
+   Logistics Lead role, so supplies lives in a dedicated `logistics-lead`
+   course rather than under Event Lead. It gains a "keeping inventory" module
+   when the typed Inventory feature (M5.5) ships.
 
 ### Section → course map (for migration `0018`)
 
@@ -171,7 +181,7 @@ tab-comms             → comms-lead
 tab-tasks             → event-lead
 tab-run-of-show       → event-lead
 tab-permits           → event-lead
-tab-supplies          → event-lead        (provisional — see §6.4)
+tab-supplies          → logistics-lead
 being-an-owner        → owning-an-event
 capstone-join-an-event  → owning-an-event
 capstone-birthday-party → owning-an-event
