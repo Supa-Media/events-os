@@ -14,12 +14,11 @@ type NavEntry = { label: string; icon: IconName; path: string };
 
 // Fixed order — tabs appear/disappear by tier but NEVER reorder. Briefing sits
 // right after Events so a volunteer (who sees Briefing, not Events) still gets
-// a stable leading tab. Duties is gone from the nav (folded into Work); its
-// route survives for deep links.
+// a stable leading tab. Duties and Templates are gone from the nav (folded into
+// Work and Events respectively); their routes survive for deep links.
 const NAV: NavEntry[] = [
   { label: "Events", icon: "layout", path: "/" },
   { label: "Briefing", icon: "clipboard", path: "/briefing" },
-  { label: "Templates", icon: "grid", path: "/templates" },
   { label: "People", icon: "users", path: "/people" },
   { label: "Work", icon: "git-branch", path: "/team" },
   { label: "Songs", icon: "music", path: "/song-library" },
@@ -32,7 +31,7 @@ const NAV: NavEntry[] = [
  * `org.nav.tier` (admin | lead | member | volunteer). The server states the
  * policy once; this and every scoped screen's own guard just render it:
  *   Events   everyone except volunteer      Briefing  volunteer only
- *   Templates / People  admin or lead       Work      everyone except volunteer
+ *   People   admin or lead                  Work      everyone except volunteer
  *   Songs / Academy     everyone
  * Nav hiding is NOT access control — each screen keeps its in-screen guard.
  */
@@ -45,7 +44,6 @@ function useNav(): NavEntry[] {
         return tier != null && tier !== "volunteer";
       case "/briefing":
         return tier === "volunteer";
-      case "/templates":
       case "/people":
         return tier === "admin" || tier === "lead";
       case "/team":

@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { View, Text, useWindowDimensions } from "react-native";
+import { View, Text, useWindowDimensions, Pressable } from "react-native";
 import { useRouter, Redirect } from "expo-router";
 import { useQuery, useMutation } from "convex/react";
 import type { FunctionReturnType } from "convex/server";
@@ -22,9 +22,10 @@ import {
   statusTone,
   ToastView,
 } from "../../../components/ui";
-import { colors } from "../../../lib/theme";
+import { colors, spacing } from "../../../lib/theme";
 import { formatDate } from "../../../lib/format";
 import { useActionRunner } from "../../../lib/useActionToast";
+import { TemplatesView } from "../../../components/template/TemplatesView";
 import {
   EVENT_STATUS_LABELS,
   PHASE_LABELS,
@@ -34,8 +35,9 @@ import {
 
 /** A single enriched row from `api.events.pipeline`. */
 type PipelineEvent = FunctionReturnType<typeof api.events.pipeline>[number];
-/** The `api.dashboard.summary` shape (non-null once loaded). */
-type Summary = NonNullable<FunctionReturnType<typeof api.dashboard.summary>>;
+
+/** Events has two modes for admins/leads: the pipeline and its templates. */
+type Mode = "pipeline" | "templates";
 
 /**
  * Wide-viewport breakpoint. Mirrors AppShell's `DESKTOP` (760) — at/above it we
@@ -44,18 +46,20 @@ type Summary = NonNullable<FunctionReturnType<typeof api.dashboard.summary>>;
  */
 const WIDE = 760;
 
-/** PIPELINE — the landing screen. Stat strip + a sortable table of events. */
+/** PIPELINE — the landing screen. A sortable table of events, or its templates. */
 export default function PipelineScreen() {
   const router = useRouter();
   const { width } = useWindowDimensions();
   const wide = width >= WIDE;
   const org = useQuery(api.org.nav);
-  const summary = useQuery(api.dashboard.summary);
   const pipeline = useQuery(api.events.pipeline);
   const templates = useQuery(api.templates.list);
 
   const seed = useMutation(api.seed.seedDemoData);
   const [seeding, setSeeding] = useState(false);
+  // Admins/leads can flip Events into its Templates mode (folded in from the
+  // old Templates tab); everyone else only ever sees the pipeline.
+  const [mode, setMode] = useState<Mode>("pipeline");
   const { run, toast, dismiss } = useActionRunner();
 
   // The derived landing: a volunteer has no Events screen — their lobby is the
@@ -63,9 +67,12 @@ export default function PipelineScreen() {
   if (org === undefined) return <Screen loading />;
   if (org.tier === "volunteer") return <Redirect href="/briefing" />;
 
-  const loading =
-    summary === undefined || pipeline === undefined || templates === undefined;
+  const loading = pipeline === undefined || templates === undefined;
   if (loading) return <Screen loading />;
+
+  // Same gate the old Templates nav entry used — only admins/leads get the
+  // segment; members drop straight to the pipeline.
+  const canManageTemplates = org.tier === "admin" || org.tier === "lead";
 
   const isEmpty = pipeline.length === 0;
   const noTemplates = templates.length === 0;
@@ -95,13 +102,25 @@ export default function PipelineScreen() {
         }
       />
 
-      <StatStrip
-        summary={summary}
-        onOpenCalendar={() => router.push("/calendar")}
-        onOpenPeople={() => router.push("/people")}
-      />
+      {/* Pipeline ⇄ Templates — admins/leads only (members never see it). */}
+      {canManageTemplates ? (
+        <View className="mt-1 flex-row">
+          <Segmented
+            options={[
+              { key: "pipeline", icon: "layout", label: "Pipeline" },
+              { key: "templates", icon: "grid", label: "Templates" },
+            ]}
+            value={mode}
+            onChange={setMode}
+          />
+        </View>
+      ) : null}
 
-      {isEmpty ? (
+      {mode === "templates" ? (
+        <View className="mt-6">
+          <TemplatesView />
+        </View>
+      ) : isEmpty ? (
         <View className="mt-6">
           {noTemplates ? (
             <EmptyState
@@ -267,92 +286,51 @@ function PipelineCard({
   );
 }
 
-function StatStrip({
-  summary,
-  onOpenCalendar,
-  onOpenPeople,
-}: {
-  summary: Summary;
-  onOpenCalendar: () => void;
-  onOpenPeople: () => void;
-}) {
-  return (
-    <View className="flex-row flex-wrap gap-4">
-      <StatCard
-        icon="calendar"
-        tint={colors.accent}
-        tintBg="bg-accent-soft"
-        label="Upcoming events"
-        value={String(summary.upcomingCount)}
-        sub={
-          summary.nextEvent
-            ? `Next: ${summary.nextEvent.name}`
-            : "Nothing scheduled"
-        }
-        cta="Calendar"
-        onPress={onOpenCalendar}
-      />
-      <StatCard
-        icon="users"
-        tint="#4B2A66"
-        tintBg="bg-lavender/40"
-        label="People"
-        value={String(summary.peopleCount)}
-        sub={`${summary.eventsLast90Days} events · 90 days`}
-        cta="People"
-        onPress={onOpenPeople}
-      />
-    </View>
-  );
-}
-
-function StatCard({
-  icon,
-  tint,
-  tintBg,
-  label,
+/**
+ * The compact segmented toggle for the Pipeline ⇄ Templates modes. Mirrors the
+ * Work tab's local `Segmented` (kept per-screen — the two never share state).
+ */
+function Segmented<T extends string>({
+  options,
   value,
-  valueNode,
-  sub,
-  onPress,
-  cta,
+  onChange,
 }: {
-  icon: IconName;
-  tint: string;
-  tintBg: string;
-  label: string;
-  value?: string;
-  valueNode?: React.ReactNode;
-  sub: string;
-  /** Makes the whole card tappable. */
-  onPress?: () => void;
-  /** Footer affordance shown when the card navigates (e.g. "View calendar"). */
-  cta?: string;
+  options: { key: T; icon: IconName; label: string }[];
+  value: T;
+  onChange: (key: T) => void;
 }) {
   return (
-    <Card className="min-w-[220px] flex-1" padding="md" onPress={onPress}>
-      <View className="flex-row items-center gap-2.5">
-        <View className={`h-9 w-9 items-center justify-center rounded-md ${tintBg}`}>
-          <Icon name={icon} size={17} color={tint} />
-        </View>
-        <Text className="text-sm font-medium text-muted">{label}</Text>
-      </View>
-      <View className="mt-3">
-        {valueNode ?? (
-          <Text className="font-display text-3xl text-ink">{value}</Text>
-        )}
-      </View>
-      <View className="mt-1 flex-row items-center justify-between gap-2">
-        <Text className="flex-1 text-sm text-muted" numberOfLines={1}>
-          {sub}
-        </Text>
-        {cta ? (
-          <View className="flex-row items-center gap-1">
-            <Text className="text-xs font-semibold text-accent">{cta}</Text>
-            <Icon name="chevron-right" size={13} color={colors.accent} />
-          </View>
-        ) : null}
-      </View>
-    </Card>
+    <View
+      className="flex-row rounded-lg bg-sunken"
+      style={{ padding: 3, gap: spacing.xs }}
+    >
+      {options.map((v) => {
+        const active = value === v.key;
+        return (
+          <Pressable
+            key={v.key}
+            onPress={() => onChange(v.key)}
+            accessibilityRole="tab"
+            accessibilityState={{ selected: active }}
+            className={`flex-row items-center gap-1.5 rounded-md px-2.5 py-1 active:opacity-80 ${
+              active ? "bg-raised shadow-sm" : ""
+            }`}
+          >
+            <Icon
+              name={v.icon}
+              size={13}
+              color={active ? colors.ink : colors.muted}
+            />
+            <Text
+              className={`text-xs font-semibold ${
+                active ? "text-ink" : "text-muted"
+              }`}
+            >
+              {v.label}
+            </Text>
+          </Pressable>
+        );
+      })}
+    </View>
   );
 }
