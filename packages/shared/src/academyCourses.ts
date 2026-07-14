@@ -114,11 +114,19 @@ export const ACADEMY_COURSES: Course[] = [
     title: "Event Lead",
     level: "intermediate",
     audience: "role",
+    description: "The Event Lead's remit: tasks, run of show, and permitting.",
+    moduleSlugs: ["tab-tasks", "tab-run-of-show", "tab-permits"],
+  },
+  {
+    slug: "logistics-lead",
+    themeKey: "events",
+    title: "Logistics Lead",
+    level: "intermediate",
+    audience: "role",
     description:
-      "The Event Lead's remit: tasks, run of show, permitting, and logistics.",
-    // `tab-supplies` (Supplies & Logistics) is the logistics piece of the
-    // Event Lead's remit (founder-confirmed 2026-07-13).
-    moduleSlugs: ["tab-tasks", "tab-run-of-show", "tab-permits", "tab-supplies"],
+      "The Logistics Lead's remit: supplies & logistics. One module today; " +
+      "gains a keeping-inventory module when the typed Inventory feature ships.",
+    moduleSlugs: ["tab-supplies"],
   },
   {
     slug: "owning-an-event",
