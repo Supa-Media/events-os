@@ -1,9 +1,11 @@
 /**
  * The Academy — the ordered training curriculum.
  *
- * Seventeen short sections: six concept pages, one page per native area
- * tab, an assistant page, and three hands-on capstones (two required, one
- * optional bonus). Content is authored FROM the playbook (docs/agent.md) and
+ * Thirty short sections across the three streams (Events, Works, Management):
+ * concept pages, one page per native area tab, an assistant page, hands-on
+ * capstones (per-role and ownership; one optional bonus), and the Works
+ * (projects & duties) and Management (1:1s, care + accountability, directing)
+ * modules. Content is authored FROM the playbook (docs/agent.md) and
  * the enablement guides (docs/guides/*) — this file is the single source both
  * the mobile Academy screens and the Convex grading backend read, so the quiz
  * is always graded server-side against exactly what the reader saw.
@@ -102,7 +104,10 @@ export const ACADEMY_INTERACTIVE_KINDS = [
 export type AcademyTrainingKind =
   | "join_event"
   | "birthday_party"
-  | "worship_event";
+  | "worship_event"
+  | "comms_lead"
+  | "event_lead"
+  | "logistics_lead";
 
 /** Capstone metadata carried by a capstone section. */
 export interface AcademyCapstoneMeta {
@@ -143,6 +148,9 @@ export const ACADEMY_TRAINING_TEMPLATES: Record<
   join_event: { templateKey: "academy-join-event" },
   birthday_party: { templateKey: "academy-birthday-party" },
   worship_event: { templateKey: "academy-worship-event" },
+  comms_lead: { templateKey: "academy-comms-lead" },
+  event_lead: { templateKey: "academy-event-lead" },
+  logistics_lead: { templateKey: "academy-logistics-lead" },
 };
 
 /**
@@ -1754,6 +1762,990 @@ const SECTIONS_IN_ORDER: Omit<AcademySection, "order">[] = [
       },
     ],
     quiz: [],
+  },
+
+  // ── 18 · Capstone: run the comms (Comms Lead) ──────────────────────────────
+  {
+    slug: "capstone-comms-lead",
+    title: "Capstone: run the comms",
+    subtitle: "Duties first, then recruit — build a crew from a real bench",
+    minutes: 12,
+    capstone: { kind: "comms_lead" },
+    blocks: [
+      {
+        kind: "p",
+        text: "You've read the Comms Lead's two tabs. Now do the job. **Start training** spins up a worship gathering three weeks out where the comms area is *yours from zero*: no duties written, open crew slots, and an announcement that hasn't gone anywhere. This is the exact situation a real Comms Lead walks into.",
+      },
+      {
+        kind: "rule",
+        title: "Duties before people, messages on a schedule",
+        text: "The whole remit in one line: write what each team does BEFORE you recruit anyone into it, then make sure every audience hears from you in every phase. The quests walk that arc in order — the same order you'll use on a real event.",
+      },
+      { kind: "heading", text: "Your quests" },
+      {
+        kind: "table",
+        headers: ["Quest", "The move it drills"],
+        rows: [
+          ["**Take the Comms Lead role**", "Put yourself in the hat — the tab's unowned rows become yours"],
+          ["**Write the Welcome team's duties**", "The job description someone says yes to — written first"],
+          ["**Write duties for Prayer and Content**", "Every team someone will join has its expectations in writing"],
+          ["**Post the crew ask**", "Now you can recruit — against real, written jobs"],
+          ["**Fill every open crew slot from your bench**", "Reach out and invite people in — placeholders become named humans"],
+          ["**Chase every invite to Confirmed, with call times**", "Invited is a maybe; confirmed people with call times run events"],
+          ["**Send the announcement**", "The public moment — gated on the venue being locked"],
+          ["**Send the T-1 call-time reminder**", "Your copy quotes the Run of Show — areas depend on each other"],
+          ["**Mark the Comms Schedule ready**", "Sign your name to the area, honestly"],
+        ],
+      },
+      {
+        kind: "p",
+        text: "Your recruiting bench is the sandbox's **sample people** — Maya, Jordan, Sam, and Priya are on the roster waiting to be asked. Person pickers inside a sandbox only ever offer you and sample people, so practice the outreach moves freely: in real life this is the text you send a friend; here, filling the slot IS the simulated yes.",
+      },
+      {
+        kind: "tip",
+        text: "Stuck on copy? Ask the event's assistant to draft the crew ask or the reminder — reviewing and sending its draft is exactly how the job works outside the sandbox too.",
+      },
+    ],
+    quiz: [],
+  },
+
+  // ── 19 · Capstone: run the plan (Event Lead) ───────────────────────────────
+  {
+    slug: "capstone-event-lead",
+    title: "Capstone: run the plan",
+    subtitle: "Overdue rows, missing tasks, a permit, and the owner's test",
+    minutes: 12,
+    capstone: { kind: "event_lead" },
+    blocks: [
+      {
+        kind: "p",
+        text: "The Event Lead's job isn't doing every row — it's making sure the *whole plan* happens. **Start training** hands you a worship gathering three weeks out that's drifting: something's overdue, something's missing, the run of show is a stub, and a permit is sitting unapplied-for. Exactly the mid-flight mess a real Event Lead inherits.",
+      },
+      {
+        kind: "rule",
+        title: "The red band is where your problems live",
+        text: "An Event Lead reads the plan top-down every day: overdue first, unowned second, missing third. Fix the plan, not the moment — every gap you close here is a fire that never starts.",
+      },
+      { kind: "heading", text: "Your quests" },
+      {
+        kind: "table",
+        headers: ["Quest", "The move it drills"],
+        rows: [
+          ["**Take the Event Lead role**", "The chain now ends at you — unowned rows are yours"],
+          ["**Clear the overdue venue walkthrough**", "Triage the red band first, every time"],
+          ["**Add the missing task, written for a stranger**", "Details carry the how and the why past the person who knew"],
+          ["**Give Maya and Jordan each an area**", "Delegation is the job — hand off whole slices, not errands"],
+          ["**Build the run of show, one named owner per segment**", "Day-of needs zero improvisation about who"],
+          ["**Walk the sound permit to Approved**", "Lead-time work on someone else's clock"],
+          ["**Write the rain plan + permit fallback**", "Contingencies are structure, written while you're calm"],
+          ["**Ask the assistant for the owner's test**", '"If I disappeared today, what breaks?"'],
+          ["**Log one learning and dispatch it**", "The debrief habit — close the loop you'll rely on later"],
+        ],
+      },
+      {
+        kind: "p",
+        text: "Maya and Jordan are sample teammates on your roster — put them in the Comms and Logistics hats and let the plan resolve work to them. The test at the end is the one that matters: read the plan as if you won't be there, and make every wobble a row.",
+      },
+      {
+        kind: "tip",
+        text: "The rings on the event header are your dashboard for this whole capstone — watch the Planning ring's pace check flip from amber to \"✓ on pace\" as you clear the overdue rows.",
+      },
+    ],
+    quiz: [],
+  },
+
+  // ── 20 · Capstone: run the supplies (Logistics Lead) ───────────────────────
+  {
+    slug: "capstone-logistics-lead",
+    title: "Capstone: run the supplies",
+    subtitle: "Get it, know where it lives, pack it — for real",
+    minutes: 10,
+    capstone: { kind: "logistics_lead" },
+    blocks: [
+      {
+        kind: "p",
+        text: "Every physical thing the event needs, in hand, in a known container, on time. **Start training** creates a worship gathering two weeks out whose supply list has every classic problem: an order that needs to go out *now*, a battery in storage with no charger, ice nobody's bought, and gaps in the list itself.",
+      },
+      {
+        kind: "rule",
+        title: "Every item is two jobs on two clocks",
+        text: "Getting it is planning work with real-world lead times; packing it is the day-of ritual tracked on the Packing checklist. The quests make you work both clocks — and record WHERE things live, so pack day is a checklist run, not a scavenger hunt.",
+      },
+      { kind: "heading", text: "Your quests" },
+      {
+        kind: "table",
+        headers: ["Quest", "The move it drills"],
+        rows: [
+          ["**Take the Logistics Lead role**", "Unowned items default to you — own the tab"],
+          ["**Order the connect cards before shipping closes**", "Order-online rows carry a lead time — walk it to Have it"],
+          ["**Get the battery out, charged**", "The VERY IMPORTANT row: no charger in storage"],
+          ["**Buy the ice + record where it lives**", "Have it answers 'do we?'; Source answers 'where?'"],
+          ["**Add two missing items with have-it-by timing**", "The list is yours to complete, not just execute"],
+          ["**Run the packing checklist**", "Packed is a checklist, never a status"],
+          ["**Draw the site map**", "The spatial view — supplies and crew placed where they go"],
+          ["**Mark Supplies & Logistics ready**", "Sign your name: everything in hand, packed, and placed"],
+        ],
+      },
+      {
+        kind: "tip",
+        text: "The two-clock rule shows up in the rings: watch acquisitions move the Planning ring while packing moves Day-of — same rows, two jobs.",
+      },
+    ],
+    quiz: [],
+  },
+
+  // ── 21 · Works: what a project is ──────────────────────────────────────────
+  {
+    slug: "works-projects",
+    title: "Projects",
+    subtitle: "Finite work with one owner and a finish line",
+    minutes: 3,
+    blocks: [
+      {
+        kind: "p",
+        text: "Not everything the chapter does is an event. Redesign the welcome cards, stand up the giving page, find a winter venue — that's a **project**: a unit of work the team is driving, beyond (or wrapping) events. Projects live on the **Work** tab, next to Duties.",
+      },
+      {
+        kind: "table",
+        headers: ["A project carries", "Why it's there"],
+        rows: [
+          ["**Purpose**", "What done looks like, so scope arguments end early"],
+          ["**One owner**", "The single human accountable for the outcome"],
+          ["**Status**", "Not started → In progress → **Blocked** → Done"],
+          ["**Deadline**", "A project without a date is a wish"],
+          ["**Blocker**", "When it's stuck: what's stuck, in writing, where the manager can see it"],
+        ],
+      },
+      {
+        kind: "try_status",
+        title: "Find a winter venue",
+        options: [
+          { value: "not_started", label: "Not started", color: "gray" },
+          { value: "in_progress", label: "In progress", color: "amber" },
+          { value: "blocked", label: "Blocked", color: "red" },
+          { value: "done", label: "Done", color: "green" },
+        ],
+        terminal: "done",
+        caption:
+          "Blocked is a loud state on purpose — it's a hand up, not a confession. A project quietly stuck at In progress is the one that dies.",
+      },
+      {
+        kind: "rule",
+        title: "Legible without a meeting",
+        text: "Projects exist so anyone — especially your manager — can see the state of everything in flight without booking a call: status, deadline, blocker, next step. If reading the project answers those, you're doing it right.",
+      },
+      {
+        kind: "p",
+        text: "Big project? Split it into **sub-projects**, each with its own owner and deadline, rolling up to the parent. And a project that's really an event's prep belongs *in the event* — projects wrap events, they don't duplicate them.",
+      },
+      {
+        kind: "reveal",
+        prompt:
+          'Someone says "I\'m working on the merch thing." Where should that sentence live?',
+        answer:
+          "As a project: name it, give it a purpose line, an owner (them), a status, and a deadline. \"Working on a thing\" is a vibe; a project row is a commitment someone can see, help with, and hold to.",
+      },
+    ],
+    quiz: [
+      {
+        prompt: "What makes something a project rather than an event or a task?",
+        options: [
+          "It costs money",
+          "It's finite team work with an owner and a finish line, driven outside (or wrapping) an event",
+          "It takes more than a week",
+          "Only admins can create projects",
+        ],
+        answerIndex: 1,
+        explanation:
+          "Projects are the chapter's finite non-event work: they finish. Recurring work is a duty; dated gatherings are events; single to-dos inside an event are that event's rows.",
+      },
+      {
+        prompt: "Why is Blocked its own status instead of a note somewhere?",
+        options: [
+          "To punish the owner",
+          "Because a blocked project needs to be LOUD — the blocker is written where the manager can see it and act without a meeting",
+          "Because the app can't store notes",
+          "Blocked projects are deleted after a week",
+        ],
+        answerIndex: 1,
+        explanation:
+          "Blocked is a hand up. The quiet failure mode is a project sitting at In progress while nothing moves — naming the blocker in the open is how it gets cleared.",
+      },
+      {
+        prompt: "What's wrong with a project that has no deadline?",
+        options: [
+          "Nothing — some work is open-ended",
+          "It can't have sub-projects",
+          "A project without a date is a wish: nothing surfaces it, nothing makes it urgent, and it will lose to everything that has one",
+          "The app rejects it",
+        ],
+        answerIndex: 2,
+        explanation:
+          "Finite work needs a finish line. If the work genuinely never finishes, it isn't a project — it's a duty, which is built for exactly that.",
+      },
+      {
+        prompt: "Your manager wants to know how the giving-page project is going. What should already be true?",
+        options: [
+          "You have a meeting scheduled to walk them through it",
+          "The project row already answers it: current status, deadline, blocker if stuck — legible without a meeting",
+          "They should ask the assistant to email you",
+          "Projects are private to their owner",
+        ],
+        answerIndex: 1,
+        explanation:
+          "The whole point: a manager can see the state of everything their team is driving without meeting the owner. Keeping the row true IS the report.",
+      },
+    ],
+  },
+
+  // ── 22 · Works: driving a project ───────────────────────────────────────────
+  {
+    slug: "works-driving-a-project",
+    title: "Driving a project to done",
+    subtitle: "The progression log, blockers, and escalating early",
+    minutes: 3,
+    blocks: [
+      {
+        kind: "p",
+        text: "Owning a project is a rhythm, not a status: move it, log it, flag what's stuck. The project's **comment thread is the progression record** — each update says what moved and what's next, so the history reads like a story anyone can pick up.",
+      },
+      {
+        kind: "bullets",
+        items: [
+          "**Update on motion, not on schedule.** When something real happens — a decision, a delivery, a dead end — it goes in the thread that day.",
+          '**Write for the next owner.** "Called the print shop, 3-day turnaround, files due Friday" survives you; "made progress" doesn\'t.',
+          "**Blocked means saying WHO unblocks it.** A blocker without a name attached is a complaint, not an escalation.",
+        ],
+      },
+      {
+        kind: "rule",
+        title: "Escalate early",
+        text: "Blocked early is a conversation; blocked at the deadline is a crisis. The moment you know you're stuck — or that the date will slip — the status flips, the blocker gets written, and your manager finds out from the app, not from the deadline passing.",
+      },
+      {
+        kind: "p",
+        text: "The app meets you where you are: project reminder emails carry **action links** — mark it done or flag it blocked straight from the email, no login required. There is no excuse for a stale project status.",
+      },
+      {
+        kind: "reveal",
+        prompt:
+          "Your project's deadline is Friday and the vendor just went quiet. It's Tuesday. What do you do?",
+        answer:
+          "Flip it to Blocked today, name the blocker (\"vendor unresponsive since Mon — need a decision: wait or switch\"), and put what you need in the thread. Tuesday-you created options; Friday-you would have delivered an apology.",
+      },
+      {
+        kind: "tip",
+        text: "Finished? Mark it Done and write the last comment as a handoff: what shipped, where it lives, anything the next person needs. Done with no trail is done only for you.",
+      },
+    ],
+    quiz: [
+      {
+        prompt: "What is the project comment thread for?",
+        options: [
+          "Congratulating the owner",
+          "It's the progression record — what moved, what's next, written so anyone could pick the project up",
+          "Legal compliance",
+          "It's where the deadline is stored",
+        ],
+        answerIndex: 1,
+        explanation:
+          "The thread IS the project's story. Updates written for the next owner make the work legible, handoffable, and reviewable without a meeting.",
+      },
+      {
+        prompt: "You realize on Tuesday the Friday deadline will slip. What's the right move?",
+        options: [
+          "Work harder and hope",
+          "Wait until Friday to be sure, then explain",
+          "Flip to Blocked / flag the slip now, name what's stuck and who can unblock it",
+          "Quietly move the deadline",
+        ],
+        answerIndex: 2,
+        explanation:
+          "Escalate early: blocked early is a conversation, blocked at the deadline is a crisis. Early warnings create options — wait, switch, re-scope — that vanish at the deadline.",
+      },
+      {
+        prompt: "What makes a blocker entry useful?",
+        options: [
+          "It's long and detailed about how frustrating things are",
+          "It names what's stuck AND who or what unblocks it",
+          "It's marked urgent",
+          "It tags the whole team",
+        ],
+        answerIndex: 1,
+        explanation:
+          "A blocker without a name attached is a complaint. \"Waiting on venue contract — need Jordan's signature\" is an escalation someone can act on.",
+      },
+    ],
+  },
+
+  // ── 23 · Works: duties ──────────────────────────────────────────────────────
+  {
+    slug: "works-duties",
+    title: "Duties",
+    subtitle: "The work that never finishes — on a cadence, on a role",
+    minutes: 3,
+    blocks: [
+      {
+        kind: "p",
+        text: "Some work has no finish line: create the event flyers, meet with your directs, reconcile giving. That's a **duty** — ongoing, recurring org work. Projects finish; duties *recur*. They're siblings on the Work tab, split by exactly that difference.",
+      },
+      {
+        kind: "table",
+        headers: ["A duty carries", "What it means"],
+        rows: [
+          ["**Cadence**", "Daily, weekly, biweekly, monthly, quarterly, yearly — or ad hoc"],
+          ["**Who it fans out to**", "Roles (\"every Director\"), specific people, or both"],
+          ["**A runbook**", "The how-to doc: how this duty is actually done"],
+        ],
+      },
+      {
+        kind: "p",
+        text: "The fan-out is the clever part: assign a duty to a **role** and it lands on everyone holding that role — \"Meet with directs, weekly\" hits every manager automatically, including ones who join next year. Assign to a person only when the duty is genuinely theirs alone.",
+      },
+      {
+        kind: "rule",
+        title: "If it recurs, it's a duty — not a memory",
+        text: "Recurring work kept in someone's head gets done exactly as long as that person remembers, cares, and stays. Written as a duty with a cadence, it survives vacations, handoffs, and growth.",
+      },
+      {
+        kind: "reveal",
+        prompt:
+          '"Every month someone should check the storage unit and restock." Project, duty, or task?',
+        answer:
+          "A duty: it recurs (monthly cadence) and it's role-shaped work, not a one-off. Write it, set the cadence, point it at the Logistics role — and it outlives whoever thought of it.",
+      },
+    ],
+    quiz: [
+      {
+        prompt: "What's the fundamental difference between a project and a duty?",
+        options: [
+          "Projects are bigger",
+          "Projects finish; duties recur on a cadence",
+          "Duties are optional",
+          "Only leads can own duties",
+        ],
+        answerIndex: 1,
+        explanation:
+          "Finite vs. recurring is the whole split. A finish line makes it a project; a cadence makes it a duty.",
+      },
+      {
+        prompt: 'A duty is assigned to the "Director" role. A new director joins next month. What happens?',
+        options: [
+          "Someone must remember to assign them the duty",
+          "The duty automatically applies to them — role fan-out lands on everyone holding the role",
+          "The duty resets its cadence",
+          "New people can't hold duties for 90 days",
+        ],
+        answerIndex: 1,
+        explanation:
+          "That's why duties fan out to roles: the work follows the hat. Assign to a specific person only when the duty is genuinely theirs alone.",
+      },
+      {
+        prompt: "Why does cadence matter on a duty?",
+        options: [
+          "It sets how often the duty appears in reviews and reminders — a quarterly duty shouldn't nag weekly, and a weekly one shouldn't hide for a month",
+          "It changes who owns the duty",
+          "It's just a label",
+          "Cadence controls the budget",
+        ],
+        answerIndex: 0,
+        explanation:
+          "The cadence drives when the duty is due for attention — in reminders and in 1:1 reviews — so recurring work surfaces at its own rhythm instead of all the time or never.",
+      },
+    ],
+  },
+
+  // ── 24 · Works: owning a duty ───────────────────────────────────────────────
+  {
+    slug: "works-owning-a-duty",
+    title: "Owning a duty",
+    subtitle: "Runbooks, keeping cadence, and handing off without a meeting",
+    minutes: 3,
+    blocks: [
+      {
+        kind: "p",
+        text: "Holding a duty means two promises: the work happens *on its cadence*, and the way it's done is *written down*. The second promise is the one people skip — and it's the one that makes the first survivable.",
+      },
+      {
+        kind: "rule",
+        title: "The runbook is the duty's real owner",
+        text: "Every duty carries a how-to doc: the steps, the accounts, the gotchas. Written well, a handoff doesn't need a meeting — the next person reads the runbook and does the duty. If only you can do it, you don't own a duty; the duty owns you.",
+      },
+      {
+        kind: "bullets",
+        items: [
+          "**Keep the runbook true.** The moment you find a better way, the doc changes — same reflex as fixing the template after a debrief.",
+          "**Keep the cadence honestly.** Fulfilled means it actually happened this cycle — your 1:1 will ask, and the honest answer is the useful one.",
+          "**Flag overload early.** If the duty no longer fits your plate, say so at the 1:1 — reducing or transferring a duty on purpose beats dropping it quietly.",
+        ],
+      },
+      {
+        kind: "p",
+        text: "Duties are also how your manager helps you: at each 1:1 the duties due for review come up — going well? still the right amount of work? still the right person? A duty conversation is workload care wearing its work clothes.",
+      },
+      {
+        kind: "reveal",
+        prompt:
+          "You're handing your flyer duty to a new volunteer. What does a good handoff look like?",
+        answer:
+          "Point them at the runbook — templates, brand assets, where files live, lead times — and update the duty's assignment. If they need a meeting to start, the runbook wasn't done. (A quick hello still helps; needing it shouldn't.)",
+      },
+    ],
+    quiz: [
+      {
+        prompt: "What makes a duty handoff work without a meeting?",
+        options: [
+          "A long email",
+          "The runbook — the duty's how-to doc carries the steps, accounts, and gotchas",
+          "The new person's experience",
+          "Handoffs always need meetings",
+        ],
+        answerIndex: 1,
+        explanation:
+          "The runbook is the institutional memory. Write it so the next person can do the duty cold — that's what makes the duty the chapter's, not yours.",
+      },
+      {
+        prompt: "A duty stopped fitting your workload. What's the right move?",
+        options: [
+          "Keep it and let it quietly slip",
+          "Raise it at your 1:1 so it's reduced or transferred on purpose",
+          "Delete the duty",
+          "Do it badly until someone notices",
+        ],
+        answerIndex: 1,
+        explanation:
+          "Dropping work quietly is how trust erodes. The 1:1 exists to rebalance load deliberately — a transferred duty with a runbook loses nothing.",
+      },
+      {
+        prompt: "When should a duty's runbook change?",
+        options: [
+          "Once a year, at review time",
+          "The moment you find a better way to do the duty",
+          "Only when the owner changes",
+          "Never — runbooks are frozen",
+        ],
+        answerIndex: 1,
+        explanation:
+          "Same reflex as template improvements after a debrief: learnings go in the written source immediately, so the next execution inherits them.",
+      },
+    ],
+  },
+
+  // ── 25 · Management: the 1:1 ────────────────────────────────────────────────
+  {
+    slug: "mgmt-one-on-one",
+    title: "The 1:1: person first, then work",
+    subtitle: "The conversation order, the two pulses, and who reads what",
+    minutes: 4,
+    blocks: [
+      {
+        kind: "p",
+        text: "The 1:1 is management's basic unit: a recurring conversation with each direct report, logged in the app as a **check-in**. The form walks the order the conversation should actually go — and the order is the philosophy.",
+      },
+      {
+        kind: "table",
+        headers: ["In order", "What you're asking"],
+        rows: [
+          ["**Did it happen?**", "A skipped 1:1 gets logged as skipped — silence isn't neutral, it's data"],
+          ["**The person**", "Personal and prayer updates — how are they, before what have they done"],
+          ["**The two pulses**", "Workload 1–10 (5–6 is right; 10 is drowning) and interest 1–10 (is this the right work?)"],
+          ["**Their duties**", "Each duty due for review: being fulfilled? If not — choose a course of action"],
+          ["**Their projects**", "On track or not, per project"],
+          ["**Feedback**", "What went well, what to improve, and above-and-beyond moments worth naming up the chain"],
+        ],
+      },
+      {
+        kind: "rule",
+        title: "Person first, then work",
+        text: "You cannot hold someone accountable for work while ignoring the human doing it. The order is deliberate: care isn't the warm-up to the real conversation — it's the context that makes the work conversation true.",
+      },
+      {
+        kind: "p",
+        text: "The two pulses are trend instruments, not one-off scores. A workload sliding 6 → 8 → 9 across three check-ins is a burnout siren *before* the burnout; an interest score stuck at 3 says re-scope this person's work before they re-scope themselves out of the chapter.",
+      },
+      {
+        kind: "p",
+        text: "And the cadence does the filtering for you: a **quarterly** duty doesn't clutter every **weekly** 1:1 — each duty surfaces when it's actually due for a look.",
+      },
+      { kind: "heading", text: "Who reads a check-in" },
+      {
+        kind: "p",
+        text: "Check-ins are read by the **chain above** — a manager, their manager, and up. A report never reads the managerial record about themselves, and you never log a check-in on yourself. That privacy is what makes the notes honest; honest notes are what make the care real.",
+      },
+      {
+        kind: "reveal",
+        prompt:
+          "Your direct cancelled the last two 1:1s. Busy season — skip logging them?",
+        answer:
+          "Log them as skipped. Two skips is a pattern the chain above should see, and a conversation you should open: is the load too high, is the 1:1 badly timed, or are they avoiding something? The skip record is the start of care, not bureaucracy.",
+      },
+    ],
+    quiz: [
+      {
+        prompt: "Why does the check-in ask about the person before the work?",
+        options: [
+          "Small talk warms up the meeting",
+          "Because accountability without knowing how the human is doing isn't accountability — the personal context makes the work conversation true",
+          "The work questions are optional",
+          "It's alphabetical",
+        ],
+        answerIndex: 1,
+        explanation:
+          "Person first, then work — the form's order is the philosophy. Care is the context for accountability, not a preamble to it.",
+      },
+      {
+        prompt: "What does a workload pulse of 9–10 mean?",
+        options: [
+          "They're a top performer",
+          "Far too much on their plate — rebalance before it breaks them; 5–6 is the healthy zone",
+          "They should be promoted",
+          "Nothing without the interest score",
+        ],
+        answerIndex: 1,
+        explanation:
+          "The scale reads 1 = far too little, 10 = far too much, 5–6 ≈ right. High scores trending up are the burnout siren the 1:1 exists to catch early.",
+      },
+      {
+        prompt: "Who can read the check-in you logged about your direct report?",
+        options: [
+          "Everyone in the chapter",
+          "The report themselves, always",
+          "The chain above — you and the managers over you; the report never reads the record about themselves",
+          "Only admins",
+        ],
+        answerIndex: 2,
+        explanation:
+          "Chain-above visibility keeps the notes honest. It's a managerial record, not a shared doc — and you can't log one on yourself for the same reason.",
+      },
+      {
+        prompt: "Why doesn't every duty come up at every 1:1?",
+        options: [
+          "Duties are reviewed yearly",
+          "Review follows the duty's own cadence — a quarterly duty surfaces quarterly, so weekly 1:1s stay focused",
+          "Managers pick favorites",
+          "Duties never come up at 1:1s",
+        ],
+        answerIndex: 1,
+        explanation:
+          "Cadence-aware review keeps the conversation honest and short: each duty gets attention on its own rhythm, not as a recurring wall of checkboxes.",
+      },
+    ],
+  },
+
+  // ── 26 · Management: reviewing the work ─────────────────────────────────────
+  {
+    slug: "mgmt-reviewing-the-work",
+    title: "Reviewing the work",
+    subtitle: "Fulfilled or not, on track or not — and feedback that travels",
+    minutes: 3,
+    blocks: [
+      {
+        kind: "p",
+        text: "After the person, the work — and the check-in makes it binary on purpose. Each duty due for review: **being fulfilled, yes or no?** Each project: **on track, yes or no?** Not \"how's it going\" — that question invites the answer \"fine\", and \"fine\" is where problems hide.",
+      },
+      {
+        kind: "rule",
+        title: "A 'no' is a decision point, not a verdict",
+        text: "\"Not fulfilled\" doesn't end the conversation — it starts one: why, and what happens next? You'll pick an explicit course of action, and the smallest action that actually fixes the problem is the right one.",
+      },
+      {
+        kind: "p",
+        text: "Feedback closes the loop, in three registers: what went **well** (said out loud, every time), what to **improve** (specific, or skip it), and **above-and-beyond** moments — which get *named up the chain*, because the chain above reads the check-in. Praise that reaches your manager's manager is retention no thank-you card matches.",
+      },
+      {
+        kind: "reveal",
+        prompt:
+          'Their project is "mostly on track — the vendor bit is a little behind." On track: yes or no?',
+        answer:
+          "No. \"Mostly on track\" is the polite spelling of \"behind at the vendor.\" Mark it off-track, get the blocker written on the project, and decide together what unsticks it. The binary exists to make exactly this call honest.",
+      },
+      {
+        kind: "tip",
+        text: "Before the 1:1, open their workload page — events, roles, duties, projects in one view. Two minutes of reading turns \"so, what are you up to?\" into \"let's talk about the two things that look stuck.\"",
+      },
+    ],
+    quiz: [
+      {
+        prompt: "Why are the work questions binary (fulfilled / on track — yes or no)?",
+        options: [
+          "To make the form faster to fill in",
+          "Because \"how's it going\" invites \"fine\", and \"fine\" is where problems hide — the binary forces the honest call",
+          "Because managers can't handle nuance",
+          "The database only stores booleans",
+        ],
+        answerIndex: 1,
+        explanation:
+          "The binary is a truth-forcing device. Nuance belongs in the conversation and the notes; the yes/no makes sure the conversation happens.",
+      },
+      {
+        prompt: "What makes an above-and-beyond note different from saying thanks in the moment?",
+        options: [
+          "It's longer",
+          "It travels: the chain above reads the check-in, so the praise reaches leadership with the person's name on it",
+          "It comes with a bonus",
+          "Nothing — it's the same thing",
+        ],
+        answerIndex: 1,
+        explanation:
+          "Naming great work up the chain is a retention strategy: people stay where their work is seen beyond their own manager.",
+      },
+      {
+        prompt: "What should you do BEFORE a 1:1 to make it useful?",
+        options: [
+          "Nothing — spontaneity is best",
+          "Read their workload page: events, roles, duties, projects — then open with the things that look stuck",
+          "Prepare a lecture on accountability",
+          "Reassign their duties as a surprise",
+        ],
+        answerIndex: 1,
+        explanation:
+          "The app gives you the whole picture without a status meeting — spend the 1:1 on the two things that matter, not on collecting a verbal status report.",
+      },
+    ],
+  },
+
+  // ── 27 · Management: caring for people ──────────────────────────────────────
+  {
+    slug: "mgmt-caring-for-people",
+    title: "People are a renewable resource",
+    subtitle: "— if you tend them. Load, rotation, and feeling thanked",
+    minutes: 3,
+    blocks: [
+      {
+        kind: "p",
+        text: "A chapter runs on volunteers and leads who *come back*. They come back when the experience was organized, they knew what to do, and they felt thanked. They quit when they were **confused, idle, or overloaded** — three failures of management, not of commitment.",
+      },
+      {
+        kind: "table",
+        headers: ["They quit when…", "The tending that prevents it"],
+        rows: [
+          ["**Confused**", "Written duties, real runbooks, clear owners — nobody guesses what their job is"],
+          ["**Idle**", "Right-sized assignments; an interest pulse that's actually read"],
+          ["**Overloaded**", "Workload pulses watched as trends; load rebalanced before it breaks someone"],
+        ],
+      },
+      {
+        kind: "rule",
+        title: "Rotation is structure, not sentiment",
+        text: "Rotate people through roles before they burn out — and before the institution starts depending on one person. Rotation is simultaneously how you keep humans healthy and how the chapter stops being one resignation away from collapse.",
+      },
+      {
+        kind: "p",
+        text: "Gratitude is part of the system, not a personality trait: thank-you messages are planned comms rows, above-and-beyond moments get named up the chain, and completed work is visible on the person's record. Felt appreciation is engineered, and that's not cynical — it's reliable.",
+      },
+      {
+        kind: "reveal",
+        prompt:
+          "Your best organizer has run comms for six events straight and keeps saying yes. Leave them in the seat?",
+        answer:
+          "No — that's the trap. Six straight yeses with a rising workload pulse is how your best person burns out AND how the chapter becomes unable to run comms without them. Rotate someone in beside them, have the runbooks written, and give your veteran a different challenge. Keeping them isn't kindness; it's deferred collapse.",
+      },
+    ],
+    quiz: [
+      {
+        prompt: "What are the three conditions that make volunteers quit?",
+        options: [
+          "Low pay, long hours, bad weather",
+          "Confused, idle, or overloaded",
+          "Too much training, too many tools, too many meetings",
+          "There's no pattern to it",
+        ],
+        answerIndex: 1,
+        explanation:
+          "All three are management failures with management fixes: written expectations cure confusion, right-sizing cures idleness, watched workload cures overload.",
+      },
+      {
+        prompt: "Why is rotation about more than preventing burnout?",
+        options: [
+          "It isn't — burnout is the only reason",
+          "Rotation also stops the institution from depending on one person — no role should be one resignation from collapse",
+          "It keeps things fair on paper",
+          "It reduces training costs",
+        ],
+        answerIndex: 1,
+        explanation:
+          "Rotation is redundancy for humans: healthy people AND a chapter that survives any single departure. The runbooks and templates are what make it cheap.",
+      },
+      {
+        prompt: "\"Gratitude is engineered\" means…",
+        options: [
+          "Thank-yous are insincere",
+          "Appreciation is built into the system — planned thank-you comms, above-and-beyond notes up the chain — so it happens reliably, not just when someone remembers",
+          "Only the app is allowed to thank people",
+          "Gratitude requires a budget line",
+        ],
+        answerIndex: 1,
+        explanation:
+          "Feeling thanked is one of the three reasons people come back. Anything that important gets a system, because memory and mood don't scale.",
+      },
+    ],
+  },
+
+  // ── 28 · Management: holding the line ───────────────────────────────────────
+  {
+    slug: "mgmt-holding-the-line",
+    title: "Holding the line",
+    subtitle: "Care without accountability is abandonment with a smile",
+    minutes: 4,
+    blocks: [
+      {
+        kind: "p",
+        text: "The other half of care: **the work has to happen.** Letting a duty quietly go unfulfilled isn't kindness — it dumps the load on whoever picks up the slack, teaches the team that commitments are optional, and robs the person of the honest feedback they'd need to grow. Caring managers hold the line *because* they care.",
+      },
+      {
+        kind: "p",
+        text: "When a duty comes up \"not fulfilled\" at a check-in, you pick an explicit course of action — a ladder, from lightest to heaviest:",
+      },
+      {
+        kind: "table",
+        headers: ["Action", "When it's right"],
+        rows: [
+          ["**Warning**", "First slip, capable person — name it, note it, move on"],
+          ["**Reduce responsibilities**", "The load is the problem — shrink it to what they can carry"],
+          ["**Transfer the responsibility**", "Wrong person-duty fit — move it, with its runbook"],
+          ["**Manager took it over**", "Emergency stopgap ONLY — flag that the system failed and fix it"],
+          ["**Reassigned**", "A different seat fits better than a smaller load"],
+          ["**Remove from team**", "The pattern held through every lighter rung — end it honestly"],
+        ],
+      },
+      {
+        kind: "rule",
+        title: "The smallest action that fixes it — chosen out loud",
+        text: "Escalate the ladder one honest rung at a time, and SAY which rung you're on. \"Consider this a warning\" is respect; unspoken disappointment is a trap you set for someone you claim to care about.",
+      },
+      {
+        kind: "p",
+        text: "Watch the fourth rung. Taking the work over yourself feels noble and solves this week — but as a habit it teaches the plan to lie, trains the person to lean, and buries you. The same doctrine as event ownership: accountability flows *through* people, not around them.",
+      },
+      {
+        kind: "reveal",
+        prompt:
+          "A sweet, chronically overloaded volunteer hasn't made flyers in two months. You keep covering it yourself. What's actually happening?",
+        answer:
+          "Three failures wearing a kindness costume: the volunteer is overloaded and nobody's fixing THAT (reduce or transfer!), the duty's record says fulfilled when it isn't, and you're now doing two jobs. The caring move is the honest one: name it at the 1:1, then reduce or transfer the duty — with its runbook — on purpose.",
+      },
+    ],
+    quiz: [
+      {
+        prompt: "Why is quietly tolerating an unfulfilled duty NOT the caring move?",
+        options: [
+          "It is the caring move — pressure is harmful",
+          "It dumps the load on others, teaches the team commitments are optional, and denies the person honest feedback",
+          "Because the app sends automatic warnings anyway",
+          "Because duties expire",
+        ],
+        answerIndex: 1,
+        explanation:
+          "Care without accountability abandons everyone involved — the team carrying the slack most of all. Holding the line IS the care.",
+      },
+      {
+        prompt: "How do you choose an action when a duty isn't being fulfilled?",
+        options: [
+          "Always start with removal to show seriousness",
+          "The smallest action that actually fixes the problem, stated out loud — warning, reduce, transfer, up the ladder as needed",
+          "Never act — wait for them to self-correct",
+          "Take the duty over yourself immediately",
+        ],
+        answerIndex: 1,
+        explanation:
+          "The ladder runs lightest to heaviest, one honest rung at a time — and the person always knows which rung they're on.",
+      },
+      {
+        prompt: "Why is \"the manager took it over\" flagged as a warning sign rather than a solution?",
+        options: [
+          "Managers aren't allowed to do work",
+          "As a habit it teaches the plan to lie, trains the person to lean, and buries the manager — it's an emergency stopgap that must trigger a real fix",
+          "It's fine — it's the recommended default",
+          "Because it looks bad in reports",
+        ],
+        answerIndex: 1,
+        explanation:
+          "Same doctrine as event ownership: don't silently do it yourself. Accountability flows through people; taking over is the rung you step on only while arranging a real one.",
+      },
+      {
+        prompt: "What makes a warning respectful rather than harsh?",
+        options: [
+          "Softening it until it's not really a warning",
+          "Saying it plainly and naming it as a warning — the person knows exactly where they stand",
+          "Delivering it publicly for transparency",
+          "Skipping it and going straight to reassignment",
+        ],
+        answerIndex: 1,
+        explanation:
+          "Unspoken disappointment is a trap. Clear is kind: a named warning gives the person a real chance to fix the pattern.",
+      },
+    ],
+  },
+
+  // ── 29 · Management: the org tree ───────────────────────────────────────────
+  {
+    slug: "mgmt-the-org-tree",
+    title: "The manager tree",
+    subtitle: "Your subtree is your reach — and your responsibility",
+    minutes: 3,
+    blocks: [
+      {
+        kind: "p",
+        text: "Every person in the chapter has (at most) one manager, and the manager links form a tree. That tree isn't an org-chart decoration — it's the **authority model**: a manager may see and manage the workload of their *subtree* — themselves and everyone below them — and nothing beyond it.",
+      },
+      {
+        kind: "bullets",
+        items: [
+          "**Your directs** are your 1:1s, your check-ins, your calls on the action ladder.",
+          "**Your subtree** is your visibility: a director sees the whole structure under them, level by level.",
+          "**Beyond your subtree** is genuinely out of reach — the server enforces it; the UI hiding things is just good manners.",
+          "**Admins** stand outside the tree: they can see everything and rewire the tree itself.",
+        ],
+      },
+      {
+        kind: "rule",
+        title: "Reach and responsibility are the same edge",
+        text: "The subtree you can see is exactly the subtree you answer for. If someone's workload is drifting and they're under you — anywhere under you — the tree says whose job it is to notice: yours.",
+      },
+      {
+        kind: "p",
+        text: "The **workload view** is the tree made useful: pick anyone under you and see everything on their plate — events and roles, projects, duties, recent check-ins — without calling a status meeting. It's how a director stays honest about what the team is actually carrying.",
+      },
+      {
+        kind: "reveal",
+        prompt:
+          "You manage Sam. Sam manages four event leads. One of them is visibly drowning. Whose problem is it?",
+        answer:
+          "Sam's first — the drowning lead is Sam's direct, and the 1:1 and rebalancing are Sam's to run. But it's also yours, because your subtree includes them both: if Sam isn't noticing, THAT's the gap your next 1:1 with Sam is about. Trees delegate action, never awareness.",
+      },
+    ],
+    quiz: [
+      {
+        prompt: "What does the manager tree actually control?",
+        options: [
+          "Seating at chapter dinners",
+          "Authority and visibility: you may see and manage the workload of your subtree, and nothing beyond it",
+          "Only who gets CC'd on emails",
+          "Nothing — it's decorative",
+        ],
+        answerIndex: 1,
+        explanation:
+          "The tree IS the authority model, enforced server-side. Your subtree is your reach; beyond it is genuinely out of bounds, not just hidden.",
+      },
+      {
+        prompt: "A lead two levels below you is quietly overloaded and their manager hasn't noticed. What's true?",
+        options: [
+          "Not your problem — you only answer for directs",
+          "It's in your subtree, so noticing is your job too — and the manager's miss is what your next 1:1 with THAT manager is about",
+          "You should take over their duties yourself",
+          "Only an admin can act",
+        ],
+        answerIndex: 1,
+        explanation:
+          "Reach and responsibility are the same edge. Action stays delegated (their manager runs the 1:1), but awareness never is.",
+      },
+      {
+        prompt: "What is the workload view for?",
+        options: [
+          "Ranking people by output",
+          "Seeing everything on one person's plate — events, projects, duties, check-ins — without a status meeting",
+          "Tracking hours for payroll",
+          "It's the same as the org chart",
+        ],
+        answerIndex: 1,
+        explanation:
+          "It answers \"what is this person actually carrying?\" from live data — the question every load-rebalancing and every good 1:1 starts with.",
+      },
+    ],
+  },
+
+  // ── 30 · Management: directing ──────────────────────────────────────────────
+  {
+    slug: "mgmt-director-philosophy",
+    title: "Directing",
+    subtitle: "The dial, the absence test, and multiplying instead of doing",
+    minutes: 4,
+    blocks: [
+      {
+        kind: "p",
+        text: "Everything you learned about owning an event scales up one level and becomes directing: you're no longer accountable for one plan happening — you're accountable for a *team of owners* whose plans all happen. The doctrine survives the promotion; only the altitude changes.",
+      },
+      {
+        kind: "table",
+        headers: ["Owner's doctrine", "Director's version"],
+        rows: [
+          ["Delegate work, never accountability", "Delegate AREAS — events, duties, projects — and hold owners to outcomes"],
+          ["Oversight is a dial", "A dial PER PERSON: light on proven owners, closer on new ones — and say which setting they're on"],
+          ["Build for your own absence", "Build a team that runs without you: runbooks, rotation, a bench"],
+          ["Fix the plan, not the moment", "Fix the SYSTEM, not the person — most repeated failures are structure wearing a name"],
+        ],
+      },
+      {
+        kind: "rule",
+        title: "If most of it resolves to you, you're failing at the actual job",
+        text: "The core skill at every level is delegation. A director whose name is on everything isn't heroic — they're a bottleneck with good intentions. Your output is what your people can own without you, not what you personally hold.",
+      },
+      {
+        kind: "p",
+        text: "The dial deserves its own sentence: how closely you manage each person is a *setting you choose per person*, based on evidence — check-in history, statuses that stay true, escalations that come early. Turning it down as trust grows is how leaders are made; never turning it down is how they leave.",
+      },
+      {
+        kind: "reveal",
+        prompt:
+          "Two event leads: one's statuses are always true and blockers arrive early; the other's plan says 'fine' until things are on fire. Same oversight for both?",
+        answer:
+          "No — and telling them so is the point. The first earns a light dial: read the rings, handle exceptions, stay out of the way. The second gets a closer one — walk the tabs together, verify statuses against reality — WITH the path back stated out loud: \"keep the plan true for two events and I'm gone.\" The dial is feedback, not favoritism.",
+      },
+      {
+        kind: "p",
+        text: "And the absence test scales too. Read your team as if you're leaving for a quarter: every duty with a runbook and a healthy owner, every event with a trained lead, every project legible without a meeting — that's the goal state. Every place the answer wobbles is your actual to-do list.",
+      },
+    ],
+    quiz: [
+      {
+        prompt: "What changes when you go from owning an event to directing?",
+        options: [
+          "You do more of the tasks yourself",
+          "The altitude: you're accountable for a team of owners whose plans all happen — same doctrine, one level up",
+          "Accountability ends — your reports carry it all now",
+          "You stop using the app",
+        ],
+        answerIndex: 1,
+        explanation:
+          "The doctrine survives the promotion. Delegation still creates accountability at each layer, and the outcome still ends with you — the unit is now a team, not a plan.",
+      },
+      {
+        prompt: "How should the oversight dial be set across your team?",
+        options: [
+          "The same for everyone — fairness means uniformity",
+          "Per person, on evidence: light on proven owners, closer on new or struggling ones — with the setting (and the path to lighter) said out loud",
+          "Always at maximum — trust is naive",
+          "Always at minimum — micromanagement is always wrong",
+        ],
+        answerIndex: 1,
+        explanation:
+          "The dial is per-person feedback, not a personality trait. Earned autonomy, stated honestly, is how you grow leaders instead of dependents.",
+      },
+      {
+        prompt: "A director's name is on half the chapter's duties and most of its projects. What does the doctrine say?",
+        options: [
+          "They're the most valuable person in the chapter",
+          "They're failing at the core skill — delegation — and the chapter is one person away from collapse",
+          "Nothing, as long as the work gets done",
+          "They should get an assistant",
+        ],
+        answerIndex: 1,
+        explanation:
+          "A director's output is what their people can own without them. Everything resolving to one person is a bottleneck AND a bus-factor of one — the absence test fails on every line.",
+      },
+      {
+        prompt: "\"Fix the system, not the person\" means…",
+        options: [
+          "Never hold individuals accountable",
+          "When a failure repeats across people, look for the structural cause — a missing runbook, an unclear duty, a bad handoff — before concluding it's a character flaw",
+          "Buy better software",
+          "Reorganize the team every quarter",
+        ],
+        answerIndex: 1,
+        explanation:
+          "Individuals still answer for their commitments (that's the ladder). But a director watches for failures that repeat with different names attached — that pattern is structure, and structure is the director's row to fix.",
+      },
+    ],
   },
 ];
 

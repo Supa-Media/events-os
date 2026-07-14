@@ -35,13 +35,19 @@ export type AcademyLevel = "beginner" | "intermediate" | "advanced" | "leader";
  */
 export type AcademyAudience = "role" | "ownership" | "team";
 
-/** Code-defined grouping of courses. Management/Leadership start empty. */
-export type AcademyThemeKey = "events" | "management" | "leadership";
+/**
+ * Code-defined grouping of courses — the Academy's three STREAMS (the
+ * founder's 2026-07-14 structure): running events, ongoing works (projects &
+ * duties), and management (leading the people who do both).
+ */
+export type AcademyThemeKey = "events" | "works" | "management";
 
-/** One theme: a titled grouping courses belong to via `themeKey`. */
+/** One stream: a titled grouping courses belong to via `themeKey`. */
 export interface Theme {
   key: AcademyThemeKey;
   title: string;
+  /** One-line promise of what the stream trains. */
+  subtitle: string;
 }
 
 /**
@@ -57,26 +63,46 @@ export interface Course {
   level: AcademyLevel;
   audience: AcademyAudience;
   description: string;
+  /**
+   * The course's glyph — a Feather icon name (the set the mobile `Icon`
+   * component draws from). Kept as a plain string here because this package
+   * can't depend on the icon font's types; the UI narrows it at the callsite.
+   */
+  icon: string;
   /** Existing section slugs, in this course's intended order. */
   moduleSlugs: string[];
 }
 
 /**
- * The themes, in display order. `events` is populated below; `management` and
- * `leadership` are defined with zero courses for now and fill as content is
- * written (redesign §3).
+ * The streams, in display order. Every stream renders on the Academy hub —
+ * vertically stacked, each with a horizontal rail of course tiles.
  */
 export const ACADEMY_THEMES: Theme[] = [
-  { key: "events", title: "Events" },
-  { key: "management", title: "Management" },
-  { key: "leadership", title: "Leadership" },
+  {
+    key: "events",
+    title: "Events",
+    subtitle: "Plan and run events nobody has to rescue.",
+  },
+  {
+    key: "works",
+    title: "Works",
+    subtitle: "Projects & duties — the chapter's ongoing work between events.",
+  },
+  {
+    key: "management",
+    title: "Management",
+    subtitle:
+      "Lead the people: 1:1s, delegation, and care that still holds the line.",
+  },
 ];
 
 /**
- * The courses, in catalog order. Exactly the four Events-theme courses the
- * founder decided on 2026-07-13 (redesign §3). Every module slug below is an
- * existing section slug; the union of all four covers all 17 sections exactly
- * once (asserted by `assertCourseCatalogIntegrity` at module load).
+ * The courses, in catalog order, grouped by stream. Every role course ends in
+ * a hands-on CAPSTONE particular to that role (founder 2026-07-14) — the badge
+ * means demonstrated ability in a sandbox, not just passed quizzes. Every
+ * module slug below is an existing section slug; the union of all courses
+ * covers every section exactly once (asserted by
+ * `assertCourseCatalogIntegrity` at module load).
  */
 export const ACADEMY_COURSES: Course[] = [
   {
@@ -88,6 +114,7 @@ export const ACADEMY_COURSES: Course[] = [
     description:
       "The conceptual intro everyone needs, plus the two cross-cutting " +
       "product-literacy tabs (Debrief and the assistant) every role uses.",
+    icon: "compass",
     moduleSlugs: [
       "what-is-events-os",
       "organizers-and-crew",
@@ -105,8 +132,10 @@ export const ACADEMY_COURSES: Course[] = [
     level: "intermediate",
     audience: "role",
     description:
-      "The Comms Lead's remit at Public Worship: crew coordination + comms.",
-    moduleSlugs: ["tab-crew-duties", "tab-comms"],
+      "The Comms Lead's remit at Public Worship: crew coordination + comms, " +
+      "capped by a hands-on capstone — write the duties, recruit the crew.",
+    icon: "message-circle",
+    moduleSlugs: ["tab-crew-duties", "tab-comms", "capstone-comms-lead"],
   },
   {
     slug: "event-lead",
@@ -114,8 +143,16 @@ export const ACADEMY_COURSES: Course[] = [
     title: "Event Lead",
     level: "intermediate",
     audience: "role",
-    description: "The Event Lead's remit: tasks, run of show, and permitting.",
-    moduleSlugs: ["tab-tasks", "tab-run-of-show", "tab-permits"],
+    description:
+      "The Event Lead's remit: tasks, run of show, and permitting — then a " +
+      "capstone where you rescue a drifting plan for real.",
+    icon: "clipboard",
+    moduleSlugs: [
+      "tab-tasks",
+      "tab-run-of-show",
+      "tab-permits",
+      "capstone-event-lead",
+    ],
   },
   {
     slug: "logistics-lead",
@@ -124,9 +161,11 @@ export const ACADEMY_COURSES: Course[] = [
     level: "intermediate",
     audience: "role",
     description:
-      "The Logistics Lead's remit: supplies & logistics. One module today; " +
-      "gains a keeping-inventory module when the typed Inventory feature ships.",
-    moduleSlugs: ["tab-supplies"],
+      "The Logistics Lead's remit: supplies & logistics, capped by a " +
+      "hands-on capstone. Gains a keeping-inventory module when the typed " +
+      "Inventory feature ships.",
+    icon: "package",
+    moduleSlugs: ["tab-supplies", "capstone-logistics-lead"],
   },
   {
     slug: "owning-an-event",
@@ -137,12 +176,77 @@ export const ACADEMY_COURSES: Course[] = [
     description:
       "Accountability doctrine + the hands-on capstones. The worship capstone " +
       "is an optional bonus and does not gate the course badge.",
+    icon: "key",
     moduleSlugs: [
       "being-an-owner",
       "capstone-join-an-event",
       "capstone-birthday-party",
       "capstone-worship-event",
     ],
+  },
+
+  // ── Works stream — projects & duties ────────────────────────────────────────
+  {
+    slug: "projects",
+    themeKey: "works",
+    title: "Projects",
+    level: "beginner",
+    audience: "team",
+    description:
+      "Finite work with one owner and a finish line: purpose, status, " +
+      "deadline, blockers, and driving it to done.",
+    icon: "briefcase",
+    moduleSlugs: ["works-projects", "works-driving-a-project"],
+  },
+  {
+    slug: "duties",
+    themeKey: "works",
+    title: "Duties",
+    level: "beginner",
+    audience: "team",
+    description:
+      "The work that never finishes: cadences, fan-out to roles, runbooks, " +
+      "and handoffs that don't need a meeting.",
+    icon: "repeat",
+    moduleSlugs: ["works-duties", "works-owning-a-duty"],
+  },
+
+  // ── Management stream — leading the people ─────────────────────────────────
+  {
+    slug: "the-one-on-one",
+    themeKey: "management",
+    title: "The one-on-one",
+    level: "leader",
+    audience: "team",
+    description:
+      "The manager's basic unit: person first, the two pulses, then the " +
+      "work — and feedback that travels up the chain.",
+    icon: "coffee",
+    moduleSlugs: ["mgmt-one-on-one", "mgmt-reviewing-the-work"],
+  },
+  {
+    slug: "care-and-accountability",
+    themeKey: "management",
+    title: "Care & accountability",
+    level: "leader",
+    audience: "team",
+    description:
+      "Caring for people while holding the line: load, rotation, gratitude — " +
+      "and the action ladder for when work isn't happening.",
+    icon: "heart",
+    moduleSlugs: ["mgmt-caring-for-people", "mgmt-holding-the-line"],
+  },
+  {
+    slug: "directing",
+    themeKey: "management",
+    title: "Directing",
+    level: "leader",
+    audience: "team",
+    description:
+      "The director's philosophy: the manager tree, the oversight dial per " +
+      "person, and building a team that runs without you.",
+    icon: "users",
+    moduleSlugs: ["mgmt-the-org-tree", "mgmt-director-philosophy"],
   },
 ];
 
