@@ -16,6 +16,8 @@ import {
   permitDeniedWithoutFallback,
   isCompleteStatus,
   isOperationalEvent,
+  isPastEvent,
+  PAST_EVENT_GRACE_MS,
   itemScore,
   itemPhase,
   currentPhase,
@@ -72,7 +74,7 @@ async function eventReadiness(ctx: QueryCtx, eventId: Id<"events">) {
 
 /**
  * The current phase's score as a 0–100 integer (or null when that phase has no
- * items to measure), for pipeline cards. "Current" is by date — see
+ * items to measure), for the events cards. "Current" is by date — see
  * `currentPhase`. Returns the label too so the card can show "Planning · 60%".
  */
 function currentPhasePct(
@@ -1125,8 +1127,56 @@ export const remove = mutation({
   },
 });
 
-/** Upcoming events with readiness + blocker count, for the pipeline dashboard. */
-export const pipeline = query({
+/**
+ * Enrich one event into the events-card shape: readiness, phase progress, and
+ * the blocker tally. Shared by `current` (active events) and `past` (the
+ * collapsed history) so both render with identical cards.
+ */
+async function enrichEvent(
+  ctx: QueryCtx,
+  event: Doc<"events">,
+  now: number,
+) {
+  const eventType = await ctx.db.get(event.eventTypeId as Id<"eventTypes">);
+  const { items, options, total, done } = await statusCountsFor(
+    ctx,
+    event._id,
+    "planning_doc",
+  );
+  const overdueTaskBlockers = items.filter(
+    (it) =>
+      !isCompleteStatus(options, it.status) &&
+      it.dueDate !== undefined &&
+      it.dueDate < now,
+  ).length;
+  // Permit blockers: a denied permit with no fallback plan. One extra indexed
+  // read per event (same shape/cost as the planning_doc read above); the
+  // denied-without-fallback tally is ADDED to blockerCount.
+  const { items: permitItems } = await statusCountsFor(ctx, event._id, "permits");
+  const blockerCount = overdueTaskBlockers + countPermitBlockers(permitItems);
+  // Phase readiness → the card's current-phase label + number.
+  const phases = await phaseReadiness(ctx, event);
+  const current = currentPhasePct(phases, event.eventDate, now);
+  return {
+    ...event,
+    eventTypeName: eventType?.name ?? "Unknown",
+    readiness: computeReadiness(total, done),
+    phases,
+    currentPhase: current.phase,
+    currentPhasePct: current.pct,
+    taskTotal: total,
+    taskDone: done,
+    blockerCount,
+  };
+}
+
+/**
+ * Current events with readiness + blocker count, for the Events landing screen.
+ * "Current" includes the 2-week wrap-up grace after an event's date (so a
+ * just-finished event with retro tasks still shows) — only truly PAST events
+ * (`isPastEvent`) drop out, into `past`.
+ */
+export const current = query({
   args: {},
   handler: async (ctx) => {
     const chapterId = await getChapterIdOrNull(ctx);
@@ -1139,54 +1189,52 @@ export const pipeline = query({
       )
       .collect();
     // Training sandboxes never appear on the operations landing screen.
-    const upcoming = all.filter(
+    const active = all.filter(
       (e) =>
-        e.eventDate >= now && e.status !== "cancelled" && isOperationalEvent(e),
+        !isPastEvent(e.eventDate, now) &&
+        e.status !== "cancelled" &&
+        isOperationalEvent(e),
     );
 
     const enriched = await Promise.all(
-      upcoming.map(async (event) => {
-        const eventType = await ctx.db.get(
-          event.eventTypeId as Id<"eventTypes">,
-        );
-        const { items, options, total, done } = await statusCountsFor(
-          ctx,
-          event._id,
-          "planning_doc",
-        );
-        const overdueTaskBlockers = items.filter(
-          (it) =>
-            !isCompleteStatus(options, it.status) &&
-            it.dueDate !== undefined &&
-            it.dueDate < now,
-        ).length;
-        // Permit blockers: a denied permit with no fallback plan. One extra
-        // indexed read per event (same shape/cost as the planning_doc read
-        // above); the denied-without-fallback tally is ADDED to blockerCount.
-        const { items: permitItems } = await statusCountsFor(
-          ctx,
-          event._id,
-          "permits",
-        );
-        const blockerCount =
-          overdueTaskBlockers + countPermitBlockers(permitItems);
-        // Phase readiness → the card's current-phase label + number.
-        const phases = await phaseReadiness(ctx, event);
-        const current = currentPhasePct(phases, event.eventDate, now);
-        return {
-          ...event,
-          eventTypeName: eventType?.name ?? "Unknown",
-          readiness: computeReadiness(total, done),
-          phases,
-          currentPhase: current.phase,
-          currentPhasePct: current.pct,
-          taskTotal: total,
-          taskDone: done,
-          blockerCount,
-        };
-      }),
+      active.map((event) => enrichEvent(ctx, event, now)),
     );
     return enriched.sort((a, b) => a.eventDate - b.eventDate);
+  },
+});
+
+/**
+ * Past events (date + 2-week grace behind us), newest first — the collapsed
+ * "Past events" section on the Events tab. Bounded to the most recent 60 so an
+ * old chapter's whole history never streams to the client. Same enriched card
+ * shape as `current`.
+ */
+export const past = query({
+  args: {},
+  handler: async (ctx) => {
+    const chapterId = await getChapterIdOrNull(ctx);
+    if (!chapterId) return [];
+    const now = Date.now();
+    // Range-scan the index straight to past dates (eventDate < now - grace),
+    // newest-first — so future/current events are never read. `isPastEvent`'s
+    // cutoff is `eventDate + grace < now`, i.e. `eventDate < now - grace`. Read
+    // a little extra (cancelled/training are filtered out) then cap at 60.
+    const cutoff = now - PAST_EVENT_GRACE_MS;
+    const rows = await ctx.db
+      .query("events")
+      .withIndex("by_chapter_date", (q) =>
+        q.eq("chapterId", chapterId as Id<"chapters">).lt("eventDate", cutoff),
+      )
+      .order("desc")
+      .take(120);
+    const past = rows
+      .filter((e) => e.status !== "cancelled" && isOperationalEvent(e))
+      .slice(0, 60);
+
+    const enriched = await Promise.all(
+      past.map((event) => enrichEvent(ctx, event, now)),
+    );
+    return enriched; // already newest-first from the index range
   },
 });
 

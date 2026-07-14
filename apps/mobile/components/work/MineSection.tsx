@@ -6,7 +6,11 @@ import { api } from "@events-os/convex/_generated/api";
 import { Card, Icon, Badge, statusTone } from "../ui";
 import { colors } from "../../lib/theme";
 import { formatDate } from "../../lib/format";
-import { EVENT_STATUS_LABELS, type EventStatus } from "@events-os/shared";
+import {
+  EVENT_STATUS_LABELS,
+  isPastEvent,
+  type EventStatus,
+} from "@events-os/shared";
 
 type MyWork = NonNullable<FunctionReturnType<typeof api.work.myOpenWork>>;
 type WorkEntry = MyWork["overdue"][number];
@@ -73,7 +77,11 @@ export function MineSection() {
   const router = useRouter();
   const mine = useQuery(api.work.myOpenWork);
   if (mine == null) return null;
-  const { overdue, dueThisWeek, myEvents } = mine;
+  const { overdue, dueThisWeek } = mine;
+  // The personal digest leads with what's live — past events (date + 2-week
+  // grace) drop off; they live in the Events tab's "Past events" section.
+  const now = Date.now();
+  const myEvents = mine.myEvents.filter((e) => !isPastEvent(e.eventDate, now));
   if (overdue.length === 0 && dueThisWeek.length === 0 && myEvents.length === 0) {
     return null;
   }

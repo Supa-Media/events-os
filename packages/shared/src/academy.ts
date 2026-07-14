@@ -156,7 +156,7 @@ export const ACADEMY_TRAINING_TEMPLATES: Record<
 /**
  * Whether an event counts toward chapter OPERATIONS. Academy training
  * sandboxes (`isTraining`) are real events, but they must never surface in
- * operational views: event lists, the pipeline, dashboards, Team workload
+ * operational views: event lists, the Events tab, dashboards, Team workload
  * views, or reminder emails. Every exclusion site shares this one predicate.
  */
 export function isOperationalEvent(e: {
@@ -1649,7 +1649,7 @@ const SECTIONS_IN_ORDER: Omit<AcademySection, "order">[] = [
       {
         kind: "rule",
         title: "Nothing here is a mock-up",
-        text: "The sandbox is the real product behind a training flag — real tabs, real status chips, the real assistant. It never appears in the chapter's pipeline, dashboards, or reminder emails. Everything you do here transfers one-to-one.",
+        text: "The sandbox is the real product behind a training flag — real tabs, real status chips, the real assistant. It never appears in the chapter's Events tab, dashboards, or reminder emails. Everything you do here transfers one-to-one.",
       },
       { kind: "heading", text: "Your quests" },
       {

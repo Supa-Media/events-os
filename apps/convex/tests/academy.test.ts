@@ -6,7 +6,7 @@
  * the per-capstone 5-run cap, quest self-heal, persisted passes via
  * syncCapstone, the optional bonus never counting), the platform training
  * templates' protections (hidden from list, no direct events, no edits,
- * squatter slugs), and the operational exclusions (events.list / pipeline /
+ * squatter slugs), and the operational exclusions (events.list / current /
  * dashboard.summary / org.workload / reminder collection must never see
  * training events).
  */
@@ -1433,9 +1433,9 @@ describe("training events never pollute operations", () => {
     expect(withFlag[0]._id).toBe(s.eventId);
   });
 
-  test("events.pipeline and dashboard.summary exclude training events", async () => {
+  test("events.current and dashboard.summary exclude training events", async () => {
     const s = await withTraining();
-    expect(await s.as.query(api.events.pipeline, {})).toHaveLength(0);
+    expect(await s.as.query(api.events.current, {})).toHaveLength(0);
     const summary = await s.as.query(api.dashboard.summary, {});
     expect(summary.upcomingCount).toBe(0);
     expect(summary.nextEvent).toBeNull();

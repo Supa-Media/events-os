@@ -33,11 +33,11 @@ import {
   type PhaseKey,
 } from "@events-os/shared";
 
-/** A single enriched row from `api.events.pipeline`. */
-type PipelineEvent = FunctionReturnType<typeof api.events.pipeline>[number];
+/** A single enriched row from `api.events.current`. */
+type EventRow = FunctionReturnType<typeof api.events.current>[number];
 
-/** Events has two modes for admins/leads: the pipeline and its templates. */
-type Mode = "pipeline" | "templates";
+/** Events has two modes for admins/leads: the events list and its templates. */
+type Mode = "events" | "templates";
 
 /**
  * Wide-viewport breakpoint. Mirrors AppShell's `DESKTOP` (760) — at/above it we
@@ -46,20 +46,21 @@ type Mode = "pipeline" | "templates";
  */
 const WIDE = 760;
 
-/** PIPELINE — the landing screen. A sortable table of events, or its templates. */
-export default function PipelineScreen() {
+/** EVENTS — the landing screen. A sortable table of events, or its templates. */
+export default function EventsScreen() {
   const router = useRouter();
   const { width } = useWindowDimensions();
   const wide = width >= WIDE;
   const org = useQuery(api.org.nav);
-  const pipeline = useQuery(api.events.pipeline);
+  const currentEvents = useQuery(api.events.current);
+  const pastEvents = useQuery(api.events.past);
   const templates = useQuery(api.templates.list);
 
   const seed = useMutation(api.seed.seedDemoData);
   const [seeding, setSeeding] = useState(false);
   // Admins/leads can flip Events into its Templates mode (folded in from the
-  // old Templates tab); everyone else only ever sees the pipeline.
-  const [mode, setMode] = useState<Mode>("pipeline");
+  // old Templates tab); everyone else only ever sees the events list.
+  const [mode, setMode] = useState<Mode>("events");
   const { run, toast, dismiss } = useActionRunner();
 
   // The derived landing: a volunteer has no Events screen — their lobby is the
@@ -67,14 +68,17 @@ export default function PipelineScreen() {
   if (org === undefined) return <Screen loading />;
   if (org.tier === "volunteer") return <Redirect href="/briefing" />;
 
-  const loading = pipeline === undefined || templates === undefined;
+  const loading =
+    currentEvents === undefined ||
+    pastEvents === undefined ||
+    templates === undefined;
   if (loading) return <Screen loading />;
 
   // Same gate the old Templates nav entry used — only admins/leads get the
-  // segment; members drop straight to the pipeline.
+  // segment; members drop straight to the events list.
   const canManageTemplates = org.tier === "admin" || org.tier === "lead";
 
-  const isEmpty = pipeline.length === 0;
+  const isEmpty = currentEvents.length === 0;
   const noTemplates = templates.length === 0;
 
   async function handleSeed() {
@@ -102,12 +106,12 @@ export default function PipelineScreen() {
         }
       />
 
-      {/* Pipeline ⇄ Templates — admins/leads only (members never see it). */}
+      {/* Events ⇄ Templates — admins/leads only (members never see it). */}
       {canManageTemplates ? (
         <View className="mt-1 flex-row">
           <Segmented
             options={[
-              { key: "pipeline", icon: "layout", label: "Pipeline" },
+              { key: "events", icon: "layout", label: "Events" },
               { key: "templates", icon: "grid", label: "Templates" },
             ]}
             value={mode}
@@ -120,124 +124,177 @@ export default function PipelineScreen() {
         <View className="mt-6">
           <TemplatesView />
         </View>
-      ) : isEmpty ? (
-        <View className="mt-6">
-          {noTemplates ? (
-            <EmptyState
-              icon="inbox"
-              title="Nothing here yet"
-              message="Seed some demo data to explore events, templates, and people."
-              action={
-                <Button
-                  title="Seed demo data"
-                  icon="download"
-                  variant="secondary"
-                  loading={seeding}
-                  onPress={handleSeed}
-                />
-              }
-            />
-          ) : (
-            <EmptyState
-              icon="calendar"
-              title="No upcoming events"
-              message="Start an event from one of your templates."
-              action={
-                <Button
-                  title="New event"
-                  icon="plus"
-                  onPress={() => router.push("/event/new")}
-                />
-              }
-            />
-          )}
-        </View>
-      ) : wide ? (
-        <View className="mt-6">
-          <Table>
-            <TableHeader>
-              <HeaderCell flex={3}>Event</HeaderCell>
-              <HeaderCell flex={2}>Type</HeaderCell>
-              <HeaderCell flex={2}>Date</HeaderCell>
-              <HeaderCell flex={2}>Phase readiness</HeaderCell>
-              <HeaderCell width={96}>Blockers</HeaderCell>
-              <HeaderCell width={108}>Status</HeaderCell>
-            </TableHeader>
-            {pipeline.map((e, i) => (
-              <Row
-                key={e._id}
-                last={i === pipeline.length - 1}
-                onPress={() => router.push(`/event/${e._id}`)}
-              >
-                <Cell flex={3}>
-                  <Text className="text-base font-semibold text-ink" numberOfLines={1}>
-                    {e.name}
-                  </Text>
-                  <Text className="mt-0.5 text-sm text-muted">
-                    {e.taskDone}/{e.taskTotal} tasks done
-                  </Text>
-                </Cell>
-                <Cell flex={2}>
-                  <Text className="text-base text-muted" numberOfLines={1}>
-                    {e.eventTypeName}
-                  </Text>
-                </Cell>
-                <Cell flex={2}>
-                  <Text className="text-base text-ink">{formatDate(e.eventDate)}</Text>
-                </Cell>
-                <Cell flex={2}>
-                  <Text className="text-2xs font-bold uppercase tracking-wider text-muted">
-                    {PHASE_LABELS[e.currentPhase as PhaseKey] ?? "Planning"}
-                  </Text>
-                  {e.currentPhasePct == null ? (
-                    <Text className="mt-0.5 text-sm text-faint">—</Text>
-                  ) : (
-                    <View className="mt-0.5">
-                      <ReadinessBar value={e.currentPhasePct} />
-                    </View>
-                  )}
-                </Cell>
-                <Cell width={96}>
-                  {e.blockerCount > 0 ? (
-                    <Badge label={String(e.blockerCount)} tone="danger" icon="alert-triangle" />
-                  ) : (
-                    <Text className="text-sm text-faint">—</Text>
-                  )}
-                </Cell>
-                <Cell width={108}>
-                  <Badge
-                    label={EVENT_STATUS_LABELS[e.status as EventStatus]}
-                    tone={statusTone(e.status as EventStatus)}
-                  />
-                </Cell>
-              </Row>
-            ))}
-          </Table>
-        </View>
       ) : (
-        <View className="mt-6 gap-3">
-          {pipeline.map((e) => (
-            <PipelineCard
-              key={e._id}
-              event={e}
-              onPress={() => router.push(`/event/${e._id}`)}
-            />
-          ))}
-        </View>
+        <>
+          {isEmpty ? (
+            <View className="mt-6">
+              {noTemplates ? (
+                <EmptyState
+                  icon="inbox"
+                  title="Nothing here yet"
+                  message="Seed some demo data to explore events, templates, and people."
+                  action={
+                    <Button
+                      title="Seed demo data"
+                      icon="download"
+                      variant="secondary"
+                      loading={seeding}
+                      onPress={handleSeed}
+                    />
+                  }
+                />
+              ) : (
+                <EmptyState
+                  icon="calendar"
+                  title="No upcoming events"
+                  message="Start an event from one of your templates."
+                  action={
+                    <Button
+                      title="New event"
+                      icon="plus"
+                      onPress={() => router.push("/event/new")}
+                    />
+                  }
+                />
+              )}
+            </View>
+          ) : wide ? (
+            <View className="mt-6">
+              <Table>
+                <TableHeader>
+                  <HeaderCell flex={3}>Event</HeaderCell>
+                  <HeaderCell flex={2}>Type</HeaderCell>
+                  <HeaderCell flex={2}>Date</HeaderCell>
+                  <HeaderCell flex={2}>Phase readiness</HeaderCell>
+                  <HeaderCell width={96}>Blockers</HeaderCell>
+                  <HeaderCell width={108}>Status</HeaderCell>
+                </TableHeader>
+                {currentEvents.map((e, i) => (
+                  <Row
+                    key={e._id}
+                    last={i === currentEvents.length - 1}
+                    onPress={() => router.push(`/event/${e._id}`)}
+                  >
+                    <Cell flex={3}>
+                      <Text className="text-base font-semibold text-ink" numberOfLines={1}>
+                        {e.name}
+                      </Text>
+                      <Text className="mt-0.5 text-sm text-muted">
+                        {e.taskDone}/{e.taskTotal} tasks done
+                      </Text>
+                    </Cell>
+                    <Cell flex={2}>
+                      <Text className="text-base text-muted" numberOfLines={1}>
+                        {e.eventTypeName}
+                      </Text>
+                    </Cell>
+                    <Cell flex={2}>
+                      <Text className="text-base text-ink">{formatDate(e.eventDate)}</Text>
+                    </Cell>
+                    <Cell flex={2}>
+                      <Text className="text-2xs font-bold uppercase tracking-wider text-muted">
+                        {PHASE_LABELS[e.currentPhase as PhaseKey] ?? "Planning"}
+                      </Text>
+                      {e.currentPhasePct == null ? (
+                        <Text className="mt-0.5 text-sm text-faint">—</Text>
+                      ) : (
+                        <View className="mt-0.5">
+                          <ReadinessBar value={e.currentPhasePct} />
+                        </View>
+                      )}
+                    </Cell>
+                    <Cell width={96}>
+                      {e.blockerCount > 0 ? (
+                        <Badge label={String(e.blockerCount)} tone="danger" icon="alert-triangle" />
+                      ) : (
+                        <Text className="text-sm text-faint">—</Text>
+                      )}
+                    </Cell>
+                    <Cell width={108}>
+                      <Badge
+                        label={EVENT_STATUS_LABELS[e.status as EventStatus]}
+                        tone={statusTone(e.status as EventStatus)}
+                      />
+                    </Cell>
+                  </Row>
+                ))}
+              </Table>
+            </View>
+          ) : (
+            <View className="mt-6 gap-3">
+              {currentEvents.map((e) => (
+                <EventCard
+                  key={e._id}
+                  event={e}
+                  onPress={() => router.push(`/event/${e._id}`)}
+                />
+              ))}
+            </View>
+          )}
+
+          {/* Past events (date + 2-week grace behind us): hidden by default,
+              expand to review. They no longer send task reminders. */}
+          <PastEventsSection
+            events={pastEvents}
+            onOpen={(id) => router.push(`/event/${id}`)}
+          />
+        </>
       )}
     </Screen>
   );
 }
 
 /**
- * Narrow-viewport pipeline row. Renders the same data as a table row but stacked
+ * The collapsed "Past events" section under the current events list. Renders the
+ * same cards, but folded away by default so the screen leads with live work.
+ */
+function PastEventsSection({
+  events,
+  onOpen,
+}: {
+  events: EventRow[];
+  onOpen: (id: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  if (events.length === 0) return null;
+  return (
+    <View className="mt-8">
+      <Pressable
+        onPress={() => setOpen((o) => !o)}
+        accessibilityRole="button"
+        accessibilityState={{ expanded: open }}
+        className="flex-row items-center gap-2 rounded-md px-1 py-1.5 active:bg-sunken web:hover:bg-sunken"
+      >
+        <Icon
+          name={open ? "chevron-down" : "chevron-right"}
+          size={16}
+          color={colors.muted}
+        />
+        <Text className="text-2xs font-bold uppercase tracking-wider text-muted">
+          Past events
+        </Text>
+        <Text className="text-2xs font-bold text-faint">{events.length}</Text>
+      </Pressable>
+      {open ? (
+        <View className="mt-3 gap-3">
+          {events.map((e) => (
+            <EventCard key={e._id} event={e} onPress={() => onOpen(e._id)} />
+          ))}
+        </View>
+      ) : null}
+    </View>
+  );
+}
+
+/**
+ * Narrow-viewport event row. Renders the same data as a table row but stacked
  * into a tappable card so nothing overlaps or truncates on phones.
  */
-function PipelineCard({
+function EventCard({
   event,
   onPress,
 }: {
-  event: PipelineEvent;
+  event: EventRow;
   onPress: () => void;
 }) {
   return (
@@ -287,7 +344,7 @@ function PipelineCard({
 }
 
 /**
- * The compact segmented toggle for the Pipeline ⇄ Templates modes. Mirrors the
+ * The compact segmented toggle for the Events ⇄ Templates modes. Mirrors the
  * Work tab's local `Segmented` (kept per-screen — the two never share state).
  */
 function Segmented<T extends string>({

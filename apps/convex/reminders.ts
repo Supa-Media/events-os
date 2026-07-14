@@ -35,6 +35,7 @@ import {
   DAY_MS,
   isCompleteStatus,
   isOperationalEvent,
+  isPastEvent,
   MODULE_LABELS,
   PROJECT_STATUS_LABELS,
   type ModuleKey,
@@ -269,6 +270,9 @@ export async function collectOpenWorkForChapter(
         (e) =>
           e.status !== "completed" &&
           e.status !== "cancelled" &&
+          // Past events (date + 2-week grace) stop nagging: their wrap-up
+          // window has closed, so their task rows never enter either email.
+          !isPastEvent(e.eventDate, now) &&
           // Academy training sandboxes never email anyone about quest rows.
           isOperationalEvent(e),
       )

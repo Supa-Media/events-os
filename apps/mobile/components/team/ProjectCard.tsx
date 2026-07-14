@@ -73,6 +73,8 @@ export function ProjectCard({
   depth = 0,
   showOwner = false,
   defaultExpanded = false,
+  canManage = false,
+  showOpenPage = false,
   partOf,
 }: {
   project: ProjectDoc;
@@ -84,6 +86,13 @@ export function ProjectCard({
   showOwner?: boolean;
   /** Open pre-expanded (the full-project modal's root). */
   defaultExpanded?: boolean;
+  /** Show an "Open page ↗" link to the project's own shareable route — the
+   *  detail page you can send someone when talking about a project. */
+  showOpenPage?: boolean;
+  /** Whether the caller may DELETE this project. Everyone can edit fields, add
+   *  updates, and comment (the update log keeps it accountable) — deletion is
+   *  the one destructive action, kept to the owner's chain + admins. */
+  canManage?: boolean;
   /** Set when this card is a sub-project shown OUTSIDE its parent (e.g. under
    *  its assignee) — a chip back to the full project it belongs to. */
   partOf?: { name: string; onPress: () => void };
@@ -204,24 +213,26 @@ export function ProjectCard({
             onChange={(status) => update({ projectId: id, status })}
           />
         </View>
-        <Pressable
-          onPress={() =>
-            confirmAction({
-              title: "Delete project?",
-              message: `${project.name || "This project"} will be deleted. Sub-projects are kept.`,
-              confirmLabel: "Delete",
-              destructive: true,
-              onConfirm: () => {
-                void removeMutation({ projectId: id }).catch(alertError);
-              },
-            })
-          }
-          hitSlop={4}
-          accessibilityLabel="Delete project"
-          className="rounded p-1 active:bg-sunken web:hover:bg-sunken"
-        >
-          <Icon name="trash-2" size={13} color={colors.faint} />
-        </Pressable>
+        {canManage ? (
+          <Pressable
+            onPress={() =>
+              confirmAction({
+                title: "Delete project?",
+                message: `${project.name || "This project"} will be deleted. Sub-projects are kept.`,
+                confirmLabel: "Delete",
+                destructive: true,
+                onConfirm: () => {
+                  void removeMutation({ projectId: id }).catch(alertError);
+                },
+              })
+            }
+            hitSlop={4}
+            accessibilityLabel="Delete project"
+            className="rounded p-1 active:bg-sunken web:hover:bg-sunken"
+          >
+            <Icon name="trash-2" size={13} color={colors.faint} />
+          </Pressable>
+        ) : null}
       </View>
 
       {/* Quick preview: the latest comment IS the state of the project. */}
@@ -287,6 +298,15 @@ export function ProjectCard({
             <Text className="text-sm font-medium text-accent">Open event</Text>
           </Pressable>
         ) : null}
+        {showOpenPage && depth === 0 ? (
+          <Pressable
+            onPress={() => router.push(`/project/${id}` as any)}
+            className="flex-row items-center gap-1.5 py-1 active:opacity-70 web:hover:opacity-90"
+          >
+            <Icon name="external-link" size={13} color={colors.muted} />
+            <Text className="text-sm font-medium text-muted">Open page</Text>
+          </Pressable>
+        ) : null}
       </View>
 
       {/* Purpose + blocker stay as fields; progression lives in the thread. */}
@@ -320,6 +340,7 @@ export function ProjectCard({
             peopleById={peopleById}
             depth={depth + 1}
             showOwner={showOwner}
+            canManage={canManage}
           />
         ))}
       </View>

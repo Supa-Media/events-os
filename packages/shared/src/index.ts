@@ -80,6 +80,22 @@ export const EVENT_STATUS_LABELS: Record<EventStatus, string> = {
   cancelled: "Cancelled",
 };
 
+// ── Past events ────────────────────────────────────────────────────────────
+// An event stays "current" for a grace window after its date (wrap-up, retro,
+// thank-yous still have live tasks). Once that window passes it's PAST: it drops
+// into the collapsed "Past events" section and stops generating task reminders.
+export const PAST_EVENT_GRACE_DAYS = 14;
+export const PAST_EVENT_GRACE_MS = PAST_EVENT_GRACE_DAYS * DAY_MS;
+
+/**
+ * Whether an event is in the past — its date is more than the grace window
+ * (2 weeks) behind `now`. The single source of truth shared by the reminder
+ * suppression, the Events pipeline split, and the workload "Past events" group.
+ */
+export function isPastEvent(eventDate: number, now: number): boolean {
+  return now > eventDate + PAST_EVENT_GRACE_MS;
+}
+
 // ── Modules ──────────────────────────────────────────────────────────────────
 // The built-in planning surfaces (keys + type). A template/event toggles which
 // modules are active; see CORE_MODULES for the full registry.

@@ -61,6 +61,28 @@ export const projectComments = defineTable({
   .index("by_chapter", ["chapterId"]);
 
 /**
+ * Project update log — the audit trail behind the project page's "Update log".
+ * Anyone on the roster may edit a project now; each meaningful change writes one
+ * row here (who, when, and a human summary like "Status → In progress") so the
+ * team keeps accountability without locking editing down. Created-project and
+ * field-change entries both land here. `authorPersonId` is optional — an admin
+ * acting without a roster row still edits, just without a named author.
+ */
+export const projectUpdates = defineTable({
+  chapterId: v.id("chapters"),
+  projectId: v.id("projects"),
+  // The roster person who made the change (absent for an unlinked admin).
+  authorPersonId: v.optional(v.id("people")),
+  // Which field changed ("status", "deadline", "owner", …) or "created".
+  field: v.string(),
+  // Human-readable one-liner rendered in the log.
+  summary: v.string(),
+  createdAt: v.number(),
+})
+  .index("by_project", ["projectId"])
+  .index("by_chapter", ["chapterId"]);
+
+/**
  * Project email-action token — the capability behind the "mark this done /
  * blocked / in progress" links in reminder emails. Each token authenticates
  * ONE person acting on ONE project, without a login, until it expires
