@@ -17,11 +17,7 @@ import { ToastView } from "../../ui/Toast";
 import { useActionRunner } from "../../../lib/useActionToast";
 import { colors } from "../../../lib/theme";
 import { GearRow } from "./GearRow";
-import {
-  INVENTORY_CATEGORY_LABELS,
-  type AssetRowData,
-  type EventReservation,
-} from "./helpers";
+import { type AssetRowData, type EventReservation } from "./helpers";
 
 export default function GearTab({ eventId }: { eventId: Id<"events"> }) {
   const { run, toast, dismiss } = useActionRunner();
@@ -83,7 +79,7 @@ function AddGearForm({
     () =>
       assets.map((a) => ({
         value: a._id as string,
-        label: `${a.name} · ${INVENTORY_CATEGORY_LABELS[a.category]} (${a.available}/${a.quantity} free)`,
+        label: `${a.name}${a.tags.length ? ` · ${a.tags.join(", ")}` : ""} (${a.available}/${a.quantity} free)`,
       })),
     [assets],
   );

@@ -20,6 +20,7 @@ import { Id } from "./_generated/dataModel";
 import { v, ConvexError } from "convex/values";
 import {
   aiCostUsd,
+  ASSET_CONDITIONS,
   MODULE_KEYS,
   MODULE_LABELS,
   CORE_MODULE_KEYS,
@@ -2835,6 +2836,618 @@ export const runDocAssistant = action({
         itemsTouched: edited ? 1 : 0,
         costUsd: totalCost,
         summary: "Doc assistant errored",
+      });
+      return { ok: false };
+    }
+  },
+});
+
+// ── Inventory assistant (chapter-scoped gear registry agent) ─────────────────
+/**
+ * The tools the inventory agent can call — all chapter-scoped to the `assets`
+ * registry, all revertible. No event/reservation editing: the agent keeps the
+ * chapter's owned gear list accurate; reservations are an event-side concern.
+ */
+const INVENTORY_TOOLS = [
+  {
+    type: "function",
+    function: {
+      name: "list_assets",
+      description:
+        "READ the chapter's full inventory: every asset with its id, name, " +
+        "tags, quantity, consumable flag, condition, acquired flag, and live " +
+        "reservation load (reserved / available / overbooked). The current " +
+        "inventory is already in your system prompt; call this only to re-check " +
+        "state after edits.",
+      parameters: {
+        type: "object",
+        properties: {},
+        additionalProperties: false,
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "add_asset",
+      description:
+        "Add a NEW asset to the chapter inventory. name is required. tags is a " +
+        "list of short labels (e.g. 'audio', 'cables'); quantity is how many " +
+        "the chapter owns (default 0); consumable marks stock that gets used up " +
+        "(batteries, gaffer tape) rather than durable gear.",
+      parameters: {
+        type: "object",
+        properties: {
+          name: { type: "string" },
+          tags: { type: "array", items: { type: "string" } },
+          quantity: { type: "number" },
+          consumable: { type: "boolean" },
+        },
+        required: ["name"],
+        additionalProperties: false,
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "update_asset",
+      description:
+        "Edit fields of ONE existing asset by asset_id. Pass ONLY the fields to " +
+        "change. condition is one of ok|needs_attention|broken. acquired marks " +
+        "whether the chapter physically has it yet. To change tags you may pass " +
+        "tags here or use set_asset_tags. Pass note: null to clear the note.",
+      parameters: {
+        type: "object",
+        properties: {
+          asset_id: { type: "string" },
+          name: { type: "string" },
+          tags: { type: "array", items: { type: "string" } },
+          quantity: { type: "number" },
+          consumable: { type: "boolean" },
+          condition: {
+            type: "string",
+            enum: ["ok", "needs_attention", "broken"],
+          },
+          acquired: { type: "boolean" },
+          note: { type: ["string", "null"] },
+        },
+        required: ["asset_id"],
+        additionalProperties: false,
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "set_asset_tags",
+      description:
+        "Replace an asset's tags with a new list (the whole set, not a delta).",
+      parameters: {
+        type: "object",
+        properties: {
+          asset_id: { type: "string" },
+          tags: { type: "array", items: { type: "string" } },
+        },
+        required: ["asset_id", "tags"],
+        additionalProperties: false,
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "remove_asset",
+      description:
+        "DELETE an asset by id. Destructive — only call when the user " +
+        "explicitly asked for a deletion in this conversation. Revertible from " +
+        "the run's Undo.",
+      parameters: {
+        type: "object",
+        properties: { asset_id: { type: "string" } },
+        required: ["asset_id"],
+        additionalProperties: false,
+      },
+    },
+  },
+];
+
+/** One asset in the inventory agent's working snapshot (from `listAssets`). */
+interface InventoryAsset {
+  id: Id<"assets">;
+  name: string;
+  tags: string[];
+  quantity: number;
+  consumable: boolean;
+  condition: string | null;
+  acquired: boolean;
+  note: string | null;
+  reservedLive: number;
+  available: number;
+  overbooked: boolean;
+  lowStock: boolean;
+  outOfStock: boolean;
+}
+interface InventoryCtx {
+  assets: InventoryAsset[];
+}
+
+/** Run one inventory tool call; apply the edit(s) (revertibly) + return a short
+ * result. The asset-registry sibling of `dispatchTool`. Exported for tests. */
+export async function dispatchInventoryTool(
+  ctx: any,
+  runId: Id<"aiRuns">,
+  chapterId: Id<"chapters">,
+  userId: Id<"users">,
+  context: InventoryCtx,
+  name: string,
+  args: any,
+): Promise<{ ok: boolean; summary: string; edits?: number }> {
+  const findAsset = (id: unknown): InventoryAsset | undefined =>
+    context.assets.find((a) => String(a.id) === String(id));
+
+  if (name === "list_assets") {
+    return { ok: true, summary: JSON.stringify(context.assets), edits: 0 };
+  }
+
+  if (name === "add_asset") {
+    const nm = String(args.name ?? "").trim();
+    if (!nm) return { ok: false, summary: "An asset needs a name.", edits: 0 };
+    const tags = Array.isArray(args.tags) ? args.tags.map(String) : undefined;
+    let quantity: number | undefined;
+    if (args.quantity !== undefined) {
+      if (
+        typeof args.quantity !== "number" ||
+        args.quantity < 0 ||
+        !Number.isInteger(args.quantity)
+      )
+        return {
+          ok: false,
+          summary: "quantity must be a whole number (zero or more).",
+          edits: 0,
+        };
+      quantity = args.quantity;
+    }
+    const consumable =
+      typeof args.consumable === "boolean" ? args.consumable : undefined;
+    const assetId = await ctx.runMutation(internal.ai.createAssetFromAgent, {
+      runId,
+      chapterId,
+      userId,
+      name: nm,
+      tags,
+      quantity,
+      consumable,
+    });
+    // Keep the turn's snapshot current so follow-up tools resolve the new id.
+    context.assets.push({
+      id: assetId,
+      name: nm,
+      tags: tags ?? [],
+      quantity: quantity ?? 0,
+      consumable: consumable ?? false,
+      condition: null,
+      acquired: true,
+      note: null,
+      reservedLive: 0,
+      available: quantity ?? 0,
+      overbooked: false,
+      lowStock: false,
+      outOfStock: false,
+    });
+    return { ok: true, summary: `Added "${nm}".`, edits: 1 };
+  }
+
+  if (name === "update_asset") {
+    const asset = findAsset(args.asset_id);
+    if (!asset)
+      return { ok: false, summary: `No asset with id ${args.asset_id}.`, edits: 0 };
+    const patch: Record<string, any> = {};
+    if (args.name !== undefined) {
+      const nm = String(args.name).trim();
+      if (!nm) return { ok: false, summary: "An asset needs a name.", edits: 0 };
+      patch.name = nm;
+    }
+    if (args.tags !== undefined)
+      patch.tags = Array.isArray(args.tags) ? args.tags.map(String) : [];
+    if (args.quantity !== undefined) {
+      if (
+        typeof args.quantity !== "number" ||
+        args.quantity < 0 ||
+        !Number.isInteger(args.quantity)
+      )
+        return {
+          ok: false,
+          summary: "quantity must be a whole number (zero or more).",
+          edits: 0,
+        };
+      patch.quantity = args.quantity;
+    }
+    if (args.consumable !== undefined) patch.consumable = args.consumable === true;
+    if (args.acquired !== undefined) patch.acquired = args.acquired === true;
+    if (args.condition !== undefined) {
+      const c = String(args.condition);
+      if (!(ASSET_CONDITIONS as readonly string[]).includes(c))
+        return {
+          ok: false,
+          summary: `"${c}" isn't a valid condition — options: ${ASSET_CONDITIONS.join(", ")}.`,
+          edits: 0,
+        };
+      patch.condition = c;
+    }
+    // note: explicit null CLEARS it (applyAssetPatch maps null → undefined).
+    if (args.note !== undefined)
+      patch.note = args.note === null ? null : String(args.note);
+    if (Object.keys(patch).length === 0)
+      return { ok: false, summary: "No asset fields to change.", edits: 0 };
+    await ctx.runMutation(internal.ai.applyAssetPatch, {
+      runId,
+      assetId: asset.id,
+      chapterId,
+      patch,
+    });
+    // Keep the snapshot current for follow-up tools this turn.
+    if (patch.name !== undefined) asset.name = patch.name;
+    if (patch.tags !== undefined) asset.tags = patch.tags;
+    if (patch.quantity !== undefined) {
+      asset.quantity = patch.quantity;
+      asset.available = Math.max(0, patch.quantity - asset.reservedLive);
+      asset.overbooked = asset.reservedLive > patch.quantity;
+    }
+    if (patch.consumable !== undefined) asset.consumable = patch.consumable;
+    if (patch.acquired !== undefined) asset.acquired = patch.acquired;
+    if (patch.condition !== undefined) asset.condition = patch.condition;
+    if (patch.note !== undefined) asset.note = patch.note ?? null;
+    return { ok: true, summary: `Updated "${asset.name}".`, edits: 1 };
+  }
+
+  if (name === "set_asset_tags") {
+    const asset = findAsset(args.asset_id);
+    if (!asset)
+      return { ok: false, summary: `No asset with id ${args.asset_id}.`, edits: 0 };
+    const tags = Array.isArray(args.tags) ? args.tags.map(String) : [];
+    await ctx.runMutation(internal.ai.applyAssetPatch, {
+      runId,
+      assetId: asset.id,
+      chapterId,
+      patch: { tags },
+    });
+    asset.tags = tags;
+    return { ok: true, summary: `Set tags on "${asset.name}".`, edits: 1 };
+  }
+
+  if (name === "remove_asset") {
+    const idx = context.assets.findIndex(
+      (a) => String(a.id) === String(args.asset_id),
+    );
+    if (idx < 0)
+      return { ok: false, summary: `No asset with id ${args.asset_id}.`, edits: 0 };
+    const nm = context.assets[idx].name;
+    await ctx.runMutation(internal.ai.removeAssetFromAgent, {
+      runId,
+      assetId: context.assets[idx].id,
+      chapterId,
+    });
+    context.assets.splice(idx, 1);
+    return { ok: true, summary: `Deleted "${nm}".`, edits: 1 };
+  }
+
+  return { ok: false, summary: `Unknown tool "${name}".` };
+}
+
+/** Build the inventory agent's system prompt with a live snapshot of the assets. */
+function inventorySystemPrompt(context: InventoryCtx): string {
+  const lines = context.assets.map(
+    (a) =>
+      `- [${a.id}] "${a.name}" qty=${a.quantity} acquired=${a.acquired ? "yes" : "no"}` +
+      (a.consumable ? " consumable=yes" : "") +
+      (a.condition ? ` condition=${a.condition}` : "") +
+      ` reserved=${a.reservedLive} available=${a.available}` +
+      (a.overbooked ? " OVERBOOKED" : "") +
+      (a.tags.length ? ` tags=[${a.tags.join(", ")}]` : "") +
+      (a.note ? ` note=${JSON.stringify(a.note)}` : ""),
+  );
+  return [
+    "You are the Inventory assistant for a church events team's shared gear",
+    "registry. You keep the chapter's INVENTORY accurate by calling tools. Assets",
+    "are chapter-owned durable gear (speakers, tables, cables) or consumable stock",
+    "(batteries, gaffer tape). Each asset has a quantity the chapter owns; events",
+    "RESERVE assets, so `reserved`/`available` show the live load across events —",
+    "you edit the registry itself, never the reservations.",
+    "",
+    "Rules:",
+    "- Make every requested change with tool calls. Target an asset by its [id];",
+    "  never invent ids or values.",
+    "- add_asset for new gear; update_asset to change name / quantity / condition",
+    "  / acquired / consumable / note; set_asset_tags to re-tag; remove_asset to",
+    "  delete.",
+    "- condition is one of ok|needs_attention|broken.",
+    "- FREE HAND (no confirmation needed): adding assets, editing fields, tagging.",
+    "  Everything is logged and revertible.",
+    "- ASK FIRST — only when the user explicitly asked in this conversation:",
+    "  remove_asset (deleting gear).",
+    "- When done, reply with a SHORT summary of what changed. If the request is",
+    "  just a question, answer it without calling tools. Be concise.",
+    "",
+    "CURRENT INVENTORY:",
+    lines.length ? lines.join("\n") : "(no assets yet)",
+  ].join("\n");
+}
+
+/**
+ * Run one inventory-assistant turn on a chapter's inventory thread. The
+ * chapter-scoped sibling of `runAssistant`: same budget / per-chat spend gates,
+ * same resilient model loop, same live streaming into `aiMessages` and
+ * revertible `aiChanges` — but it edits the chapter's `assets` registry (no
+ * event context). Errors are streamed and the run marked errored; the action
+ * resolves rather than throwing so the panel never crashes.
+ */
+export const runInventoryAssistant = action({
+  args: {
+    threadId: v.id("aiThreads"),
+    userText: v.string(),
+  },
+  handler: async (
+    ctx,
+    { threadId, userText },
+  ): Promise<{ ok: boolean; runId?: Id<"aiRuns">; edits?: number }> => {
+    const { userId, chapterId } = await ctx.runQuery(internal.ai.myContext, {});
+
+    // Always record the user's message first so it shows immediately.
+    await ctx.runMutation(internal.ai.appendMessage, {
+      threadId,
+      kind: "user",
+      text: userText,
+    });
+
+    const budget = await ctx.runQuery(api.ai.budgetStatus, {});
+    if (budget.over) {
+      await ctx.runMutation(internal.ai.appendMessage, {
+        threadId,
+        kind: "error",
+        text: `AI budget reached (${budget.over}).`,
+      });
+      return { ok: false };
+    }
+    if (!process.env.OPENROUTER_API_KEY) {
+      await ctx.runMutation(internal.ai.appendMessage, {
+        threadId,
+        kind: "error",
+        text: "OPENROUTER_API_KEY is not configured.",
+      });
+      return { ok: false };
+    }
+
+    // TENANT BOUNDARY: threadRunContext returns null unless the thread is in the
+    // caller's chapter (chapterId from myContext, never the client). A null
+    // result means missing OR cross-chapter — refuse to run so a cross-tenant
+    // threadId can't drive the LLM. It also carries the per-chat model + spend.
+    const chat = await ctx.runQuery(internal.ai.threadRunContext, {
+      threadId,
+      chapterId,
+    });
+    if (!chat) {
+      await ctx.runMutation(internal.ai.appendMessage, {
+        threadId,
+        kind: "error",
+        text: "Chat not found.",
+      });
+      return { ok: false };
+    }
+    if (isOverChatBudget(chat.spentUsd, chat.spendLimitUsd)) {
+      await ctx.runMutation(internal.ai.appendMessage, {
+        threadId,
+        kind: "error",
+        text: `This chat's spend limit ($${chat.spendLimitUsd?.toFixed(2)}) is reached.`,
+      });
+      return { ok: false };
+    }
+    const slug = chat.model ?? DEFAULT_AI_MODEL;
+    const spendLimitUsd = chat.spendLimitUsd ?? null;
+    let chatSpent = chat.spentUsd ?? 0;
+
+    // Live inventory snapshot for the caller's chapter (reuses the enriched
+    // listAssets rows: reservation load, stock flags, resolved photo url).
+    const rows = await ctx.runQuery(api.inventory.listAssets, {});
+    const context: InventoryCtx = {
+      assets: rows.map((a: any) => ({
+        id: a._id as Id<"assets">,
+        name: a.name,
+        tags: a.tags,
+        quantity: a.quantity,
+        consumable: a.consumable,
+        condition: a.condition ?? null,
+        acquired: a.acquired,
+        note: a.note ?? null,
+        reservedLive: a.reservedLive,
+        available: a.available,
+        overbooked: a.overbooked,
+        lowStock: a.lowStock,
+        outOfStock: a.outOfStock,
+      })),
+    };
+
+    // Conversation context = system (live snapshot) + prior user/assistant turns.
+    const history = await ctx.runQuery(api.ai.listMessages, { threadId });
+    const priorTurns = history
+      .filter((m: any) => m.kind === "user" || m.kind === "assistant")
+      .map((m: any) => ({
+        role: m.kind === "user" ? ("user" as const) : ("assistant" as const),
+        content: m.text ?? "",
+      }));
+    const messages: ChatMessage[] = [
+      { role: "system", content: inventorySystemPrompt(context) },
+      ...priorTurns,
+    ];
+
+    const runId = await ctx.runMutation(internal.ai.startRun, {
+      chapterId,
+      userId,
+      feature: "inventory_assistant",
+      threadId,
+      model: slug,
+    });
+
+    let edits = 0;
+    let totalCost = 0;
+    let finished = false;
+
+    try {
+      for (let step = 0; step < MAX_STEPS; step++) {
+        const {
+          message,
+          usage,
+          slug: usedSlug,
+        } = await resilientCall(slug, messages, { tools: INVENTORY_TOOLS });
+
+        const cost = callCost(usedSlug, usage);
+        totalCost += cost;
+        chatSpent += cost;
+        await ctx.runMutation(internal.ai.logUsage, {
+          chapterId,
+          userId,
+          runId,
+          threadId,
+          feature: "inventory_assistant",
+          model: usedSlug,
+          inputTokens: usage.prompt_tokens ?? 0,
+          outputTokens: usage.completion_tokens ?? 0,
+          cachedTokens: usage.prompt_tokens_details?.cached_tokens,
+          costUsd: cost,
+        });
+
+        // Surface the reasoning trace, if the model returned one.
+        const reasoning =
+          (typeof message.reasoning === "string" && message.reasoning) || "";
+        if (reasoning.trim()) {
+          await ctx.runMutation(internal.ai.appendMessage, {
+            threadId,
+            runId,
+            kind: "reasoning",
+            text: reasoning.trim(),
+          });
+        }
+
+        const toolCalls: ToolCall[] = message.tool_calls ?? [];
+        if (toolCalls.length === 0) {
+          // Final answer.
+          const text =
+            (typeof message.content === "string" && message.content.trim()) ||
+            "Done.";
+          await ctx.runMutation(internal.ai.appendMessage, {
+            threadId,
+            runId,
+            kind: "assistant",
+            text,
+          });
+          finished = true;
+          break;
+        }
+
+        // Record the assistant turn (with tool_calls) for the next round.
+        messages.push(message as ChatMessage);
+
+        for (const tc of toolCalls) {
+          const parsed = parseToolArgs(tc);
+          if (parsed === null) {
+            // Malformed tool-arg JSON: surface it instead of silently no-op'ing.
+            const summary = "Couldn't parse the tool arguments (invalid JSON).";
+            await ctx.runMutation(internal.ai.appendMessage, {
+              threadId,
+              runId,
+              kind: "tool_result",
+              toolName: tc.function?.name,
+              toolOk: false,
+              text: summary,
+            });
+            messages.push({
+              role: "tool",
+              tool_call_id: tc.id,
+              content: JSON.stringify({ ok: false, summary }),
+            });
+            continue;
+          }
+          await ctx.runMutation(internal.ai.appendMessage, {
+            threadId,
+            runId,
+            kind: "tool_call",
+            toolName: tc.function?.name,
+            toolArgs: parsed,
+          });
+
+          const result = await dispatchInventoryTool(
+            ctx,
+            runId,
+            chapterId,
+            userId,
+            context,
+            tc.function?.name ?? "",
+            parsed,
+          );
+          edits += result.edits ?? (result.ok ? 1 : 0);
+          await ctx.runMutation(internal.ai.appendMessage, {
+            threadId,
+            runId,
+            kind: "tool_result",
+            toolName: tc.function?.name,
+            toolOk: result.ok,
+            text: result.summary,
+          });
+          messages.push({
+            role: "tool",
+            tool_call_id: tc.id,
+            content: JSON.stringify(result),
+          });
+        }
+
+        // Per-chat spend cap: stop before spending on another round.
+        if (isOverChatBudget(chatSpent, spendLimitUsd)) {
+          await ctx.runMutation(internal.ai.appendMessage, {
+            threadId,
+            runId,
+            kind: "assistant",
+            text: `Made ${edits} edit(s), then stopped — this chat hit its spend limit ($${spendLimitUsd?.toFixed(2)}).`,
+          });
+          finished = true;
+          break;
+        }
+      }
+
+      // Step cap hit mid-work → still leave a closing summary in the thread.
+      if (!finished) {
+        await ctx.runMutation(internal.ai.appendMessage, {
+          threadId,
+          runId,
+          kind: "assistant",
+          text: `Made ${edits} edit(s). Ask me to continue if there's more.`,
+        });
+      }
+
+      await ctx.runMutation(internal.ai.finishRun, {
+        runId,
+        status: "done",
+        itemsTouched: edits,
+        costUsd: totalCost,
+        summary: `${edits} edit(s)`,
+      });
+      return { ok: true, runId, edits };
+    } catch (err) {
+      const message =
+        err instanceof ConvexError
+          ? ((err.data as any)?.message ?? "Agent error.")
+          : "Agent error.";
+      await ctx.runMutation(internal.ai.appendMessage, {
+        threadId,
+        runId,
+        kind: "error",
+        text: message,
+      });
+      await ctx.runMutation(internal.ai.finishRun, {
+        runId,
+        status: "error",
+        itemsTouched: edits,
+        costUsd: totalCost,
+        summary: `Errored after ${edits} edit(s)`,
       });
       return { ok: false };
     }

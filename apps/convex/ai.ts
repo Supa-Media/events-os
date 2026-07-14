@@ -539,6 +539,147 @@ export const setItemPhoto = internalMutation({
   },
 });
 
+// ── Internal: revertible ASSET edits (the inventory agent's write tools) ─────
+/**
+ * The promoted asset fields the inventory agent may set. Assets have NO `fields`
+ * bag — every editable field is top-level — so each change is logged by its own
+ * field name (no "fields." prefix), which `revertAiRun`'s promoted-field branch
+ * restores. "__created" / "__deleted" markers behave exactly as on event items.
+ */
+const ASSET_PROMOTED_KEYS = [
+  "name",
+  "tags",
+  "quantity",
+  "consumable",
+  "condition",
+  "acquired",
+  "note",
+  "photoStorageId",
+] as const;
+
+/**
+ * Apply a multi-field patch to a chapter inventory asset and log every change
+ * for revert. The asset sibling of `applyItemPatch`: no `fields` bag, so keys
+ * are promoted field names. `updatedAt` is bumped on any write.
+ */
+export const applyAssetPatch = internalMutation({
+  args: {
+    runId: v.id("aiRuns"),
+    assetId: v.id("assets"),
+    chapterId: v.id("chapters"),
+    patch: v.record(v.string(), v.any()),
+  },
+  handler: async (ctx, { runId, assetId, chapterId, patch }) => {
+    const asset = await ctx.db.get(assetId);
+    // TENANT BOUNDARY: mirror applyItemPatch — missing → no-op, cross-chapter → throw.
+    if (!asset) return;
+    if (asset.chapterId !== chapterId) {
+      throw new ConvexError({
+        code: "FORBIDDEN",
+        message: "Asset is not in your chapter.",
+      });
+    }
+    const dbPatch: Record<string, any> = {};
+    for (const [key, after] of Object.entries(patch)) {
+      if (!(ASSET_PROMOTED_KEYS as readonly string[]).includes(key)) continue;
+      const before = (asset as any)[key] ?? undefined;
+      const value = after ?? undefined;
+      dbPatch[key] = value;
+      await ctx.db.insert("aiChanges", {
+        runId,
+        chapterId: asset.chapterId,
+        itemId: assetId,
+        key,
+        before,
+        after: value,
+      });
+    }
+    if (Object.keys(dbPatch).length) {
+      dbPatch.updatedAt = Date.now();
+      await ctx.db.patch(assetId, dbPatch);
+    }
+  },
+});
+
+/**
+ * Create a new inventory asset (the agent's `add_asset`) and log it as a
+ * revertible creation (Undo deletes it). The asset sibling of `createItem`;
+ * defaults mirror `inventory.addAsset` (acquired = true, order = append).
+ */
+export const createAssetFromAgent = internalMutation({
+  args: {
+    runId: v.id("aiRuns"),
+    chapterId: v.id("chapters"),
+    userId: v.id("users"),
+    name: v.string(),
+    tags: v.optional(v.array(v.string())),
+    quantity: v.optional(v.number()),
+    consumable: v.optional(v.boolean()),
+  },
+  handler: async (ctx, args) => {
+    const existing = await ctx.db
+      .query("assets")
+      .withIndex("by_chapter", (q: any) => q.eq("chapterId", args.chapterId))
+      .collect();
+    const now = Date.now();
+    const assetId = await ctx.db.insert("assets", {
+      chapterId: args.chapterId,
+      name: args.name,
+      tags: args.tags ?? [],
+      quantity: args.quantity ?? 0,
+      acquired: true,
+      consumable: args.consumable,
+      order: existing.length,
+      createdBy: args.userId,
+      createdAt: now,
+      updatedAt: now,
+    });
+    await ctx.db.insert("aiChanges", {
+      runId: args.runId,
+      chapterId: args.chapterId,
+      itemId: assetId,
+      key: "__created",
+      before: undefined,
+      after: null,
+    });
+    return assetId;
+  },
+});
+
+/**
+ * Delete an inventory asset (the agent's `remove_asset`), revertibly: the full
+ * asset snapshot is logged as a `__deleted` change whose `before` holds the row,
+ * and `revertAiRun` re-inserts it on Undo. The asset sibling of `removeItem`.
+ */
+export const removeAssetFromAgent = internalMutation({
+  args: {
+    runId: v.id("aiRuns"),
+    assetId: v.id("assets"),
+    chapterId: v.id("chapters"),
+  },
+  handler: async (ctx, { runId, assetId, chapterId }) => {
+    const asset = await ctx.db.get(assetId);
+    if (!asset) return null;
+    if (asset.chapterId !== chapterId) {
+      throw new ConvexError({
+        code: "FORBIDDEN",
+        message: "Asset is not in your chapter.",
+      });
+    }
+    const { _id, _creationTime, ...snapshot } = asset as any;
+    await ctx.db.insert("aiChanges", {
+      runId,
+      chapterId: asset.chapterId,
+      itemId: assetId,
+      key: "__deleted",
+      before: snapshot,
+      after: undefined,
+    });
+    await ctx.db.delete(assetId);
+    return assetId;
+  },
+});
+
 // ── Internal: planning-agent tools (readiness, roles, crew, workstreams) ─────
 // Every function below is reachable from the assistant action with arbitrary
 // ids, so each one re-checks the tenant boundary exactly like applyItemPatch:
@@ -1330,6 +1471,54 @@ export const newDocThread = mutation({
   },
 });
 
+// ── Public: inventory assistant threads (chapter-scoped, no event/doc) ────────
+/**
+ * The single inventory-scoped thread for the caller's chapter, creating one if
+ * none exists. Mirrors `ensureDocThread`, but keyed only off the chapter via the
+ * `by_chapter_scope` index (scope = "inventory") — the inventory assistant is
+ * one chat per chapter, bound to neither an event nor a doc.
+ */
+export const ensureInventoryThread = mutation({
+  args: {},
+  handler: async (ctx) => {
+    const chapterId = await requireChapterId(ctx);
+    const existing = await ctx.db
+      .query("aiThreads")
+      .withIndex("by_chapter_scope", (q: any) =>
+        q.eq("chapterId", chapterId as Id<"chapters">).eq("scope", "inventory"),
+      )
+      .order("desc")
+      .first();
+    if (existing) return existing._id;
+    const userId = (await requireUserId(ctx)) as Id<"users">;
+    return await ctx.db.insert("aiThreads", {
+      chapterId: chapterId as Id<"chapters">,
+      scope: "inventory",
+      userId,
+      title: "New chat",
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    });
+  },
+});
+
+/** Start a fresh inventory thread for the chapter (the "New chat" button). */
+export const newInventoryThread = mutation({
+  args: {},
+  handler: async (ctx) => {
+    const chapterId = await requireChapterId(ctx);
+    const userId = (await requireUserId(ctx)) as Id<"users">;
+    return await ctx.db.insert("aiThreads", {
+      chapterId: chapterId as Id<"chapters">,
+      scope: "inventory",
+      userId,
+      title: "New chat",
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    });
+  },
+});
+
 /** Messages in a thread, oldest-first — the panel's reactive feed. */
 export const listMessages = query({
   args: { threadId: v.optional(v.id("aiThreads")) },
@@ -1686,10 +1875,13 @@ export const revertAiRun = mutation({
     // otherwise those rows would find nothing and be skipped, leaving the
     // re-inserted item with the AI's edits (or resurrecting a created-then-
     // deleted item).
-    const remap = new Map<string, Id<"eventItems">>();
+    const remap = new Map<string, Id<"eventItems"> | Id<"assets">>();
     for (const change of changes) {
       const itemId = remap.get(String(change.itemId)) ?? change.itemId;
-      const item = await ctx.db.get(itemId);
+      // A change targets an event item (event/doc assistant) OR a chapter
+      // inventory asset (inventory assistant); the table decides re-insert etc.
+      const isAsset = ctx.db.normalizeId("assets", change.itemId) != null;
+      const item: any = await ctx.db.get(itemId);
 
       if (change.key === "__created") {
         // Created by the run → undo means delete (if still present).
@@ -1704,7 +1896,9 @@ export const revertAiRun = mutation({
         // old id to the fresh one so this run's earlier change rows (processed
         // next, since we walk newest-first) still find the row.
         if (change.before && typeof change.before === "object") {
-          const newId = await ctx.db.insert("eventItems", change.before);
+          const newId = isAsset
+            ? await ctx.db.insert("assets", change.before as any)
+            : await ctx.db.insert("eventItems", change.before as any);
           remap.set(String(change.itemId), newId);
           reverted++;
         } else {
@@ -1739,7 +1933,7 @@ export const revertAiRun = mutation({
         }
         const patch: Record<string, any> = { [change.key]: change.before };
         if (change.key === "offsetDays") {
-          const event = await ctx.db.get(item.eventId);
+          const event: any = await ctx.db.get(item.eventId);
           patch.dueDate =
             event && isDayOffsetModule(item.module) && change.before != null
               ? computeDueDate(event.eventDate, change.before)

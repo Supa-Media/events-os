@@ -9,7 +9,7 @@
  * `offsetMinutes`. Editing the event date re-derives every due date (see
  * events.reschedule).
  */
-import { query, mutation, QueryCtx } from "./_generated/server";
+import { query, mutation, QueryCtx, MutationCtx } from "./_generated/server";
 import { Doc, Id } from "./_generated/dataModel";
 import { v, ConvexError } from "convex/values";
 import {
@@ -20,14 +20,17 @@ import {
   computeDueDate,
   computeReadiness,
   isCompleteStatus,
+  deriveSupplyStatus,
   DAY_OFFSET_MODULES,
   type ModuleKey,
+  type LinkedAssetState,
 } from "@events-os/shared";
 import {
   requireChapterId,
   requireEvent,
   requireEventType,
   requireOwned,
+  requireUserId,
 } from "./lib/context";
 import {
   bumpVersion,
@@ -94,6 +97,129 @@ function mergeFields(
 function statusOptions(columns: Array<any>): Array<any> | undefined {
   return columns.find((c) => c.key === "status" && c.type === "status")
     ?.options;
+}
+
+// ── Supplies ⇄ Inventory bridge ───────────────────────────────────────────────
+// A supply row with Source = Chapter Storage links a chapter asset
+// (fields.linkedAssetId). The link keeps an assetReservation in sync (so the
+// registry and other events see the claim + its container), and the row's Status
+// is DERIVED from Packed-in + Source + the linked asset's live state. See
+// docs/plans/inventory-supplies-unification.md.
+
+/** Event statuses that hold a live reservation on gear. */
+const LIVE_EVENT_STATUSES = new Set(["planning", "ready"]);
+
+/** Read `fields.qty` as a ≥1 integer (default 1). */
+function supplyQty(fields: Record<string, any> | undefined): number {
+  return Math.max(1, Math.trunc(Number(fields?.qty) || 1));
+}
+
+/** Delete this event's reservation on an asset, if any. */
+async function releaseReservation(
+  ctx: MutationCtx,
+  assetId: Id<"assets">,
+  eventId: Id<"events">,
+): Promise<void> {
+  const r = await ctx.db
+    .query("assetReservations")
+    .withIndex("by_asset_event", (q) =>
+      q.eq("assetId", assetId).eq("eventId", eventId),
+    )
+    .unique();
+  if (r) await ctx.db.delete(r._id);
+}
+
+/**
+ * Reconcile the assetReservation a supplies row owns after an add/update.
+ * `prevLinkedAssetId` is the link BEFORE this write (so a re-link or unlink can
+ * release the stale claim). A row reserves only when Source = Chapter Storage
+ * with a link; the reserved quantity is the row's qty, and its container is
+ * denormalized onto the reservation so other events read its location.
+ */
+async function reconcileSupplyReservation(
+  ctx: MutationCtx,
+  event: Doc<"events">,
+  item: Doc<"eventItems">,
+  prevLinkedAssetId?: Id<"assets">,
+): Promise<void> {
+  if (item.module !== "supplies") return;
+  const fields = item.fields ?? {};
+  const linked =
+    fields.source === "chapter_storage"
+      ? (fields.linkedAssetId as Id<"assets"> | undefined)
+      : undefined;
+
+  if (prevLinkedAssetId && prevLinkedAssetId !== linked) {
+    await releaseReservation(ctx, prevLinkedAssetId, event._id);
+  }
+  if (!linked) return;
+
+  const asset = await ctx.db.get(linked);
+  if (!asset || asset.chapterId !== event.chapterId) return;
+
+  const quantity = supplyQty(fields);
+  const container = (fields.container as string | undefined) || undefined;
+  const existing = await ctx.db
+    .query("assetReservations")
+    .withIndex("by_asset_event", (q) =>
+      q.eq("assetId", linked).eq("eventId", event._id),
+    )
+    .unique();
+  if (existing) {
+    await ctx.db.patch(existing._id, { quantity, container });
+  } else {
+    const userId = await requireUserId(ctx);
+    await ctx.db.insert("assetReservations", {
+      assetId: linked,
+      eventId: event._id,
+      chapterId: asset.chapterId,
+      quantity,
+      container,
+      createdBy: userId as Id<"users">,
+      createdAt: Date.now(),
+    });
+  }
+}
+
+/**
+ * Resolve the live inventory state of the asset a supply row links to, from the
+ * VIEWING event's perspective: on-hand, available after OTHER live events, and
+ * whether another live event currently holds it (real-time location). Returns
+ * null when the row isn't storage-linked.
+ */
+async function linkedAssetStateFor(
+  ctx: QueryCtx,
+  item: Doc<"eventItems">,
+  liveEventIds: Set<string>,
+  eventName: Map<string, string>,
+): Promise<LinkedAssetState | null> {
+  const fields = item.fields ?? {};
+  if (fields.source !== "chapter_storage") return null;
+  const linkedId = fields.linkedAssetId as Id<"assets"> | undefined;
+  if (!linkedId) return null;
+  const asset = await ctx.db.get(linkedId);
+  if (!asset) return null;
+
+  const reservations = await ctx.db
+    .query("assetReservations")
+    .withIndex("by_asset", (q) => q.eq("assetId", linkedId))
+    .collect();
+  const others = reservations.filter(
+    (r) => r.eventId !== item.eventId && liveEventIds.has(String(r.eventId)),
+  );
+  const reservedElsewhere = others.reduce((s, r) => s + r.quantity, 0);
+  const holder = others.sort((a, b) => a.createdAt - b.createdAt)[0];
+  return {
+    onHand: asset.quantity,
+    available: Math.max(0, asset.quantity - reservedElsewhere),
+    consumable: asset.consumable ?? false,
+    committedElsewhere: holder
+      ? {
+          eventName: eventName.get(String(holder.eventId)) ?? "Another event",
+          container: holder.container ?? null,
+        }
+      : null,
+  };
 }
 
 // ── Template items ────────────────────────────────────────────────────────────
@@ -317,15 +443,62 @@ export const listForEventModule = query({
       }),
     );
 
+    // Supplies: DERIVE each row's status from Packed-in + Source + the linked
+    // asset's live state (with fields.statusOverride as the manual escape hatch),
+    // and surface the "Event · Container" detail for cross-event holds. Only the
+    // supplies module pays this cost.
+    let displayItems: typeof items = items;
+    if (module === "supplies") {
+      const chapterEvents = await ctx.db
+        .query("events")
+        .withIndex("by_chapter", (q) =>
+          q.eq("chapterId", chapterId as Id<"chapters">),
+        )
+        .collect();
+      const liveEventIds = new Set(
+        chapterEvents
+          .filter((e) => LIVE_EVENT_STATUSES.has(e.status))
+          .map((e) => String(e._id)),
+      );
+      const eventName = new Map(
+        chapterEvents.map((e) => [String(e._id), e.name] as const),
+      );
+      displayItems = await Promise.all(
+        items.map(async (it) => {
+          const fields = it.fields ?? {};
+          const asset = await linkedAssetStateFor(
+            ctx,
+            it as Doc<"eventItems">,
+            liveEventIds,
+            eventName,
+          );
+          const derived = deriveSupplyStatus({
+            container: fields.container,
+            source: fields.source,
+            needed: supplyQty(fields),
+            ordered: fields.ordered,
+            override: fields.statusOverride,
+            asset,
+          });
+          return {
+            ...it,
+            status: derived.value,
+            statusDetail: derived.detail ?? null,
+            statusIsDerived: !derived.isOverride,
+          };
+        }),
+      );
+    }
+
     const opts = statusOptions(columns);
     const total = rawItems.length;
     const complete = opts
-      ? rawItems.filter((it) => isCompleteStatus(opts, it.status)).length
+      ? displayItems.filter((it) => isCompleteStatus(opts, it.status)).length
       : 0;
 
     return {
       columns,
-      items,
+      items: displayItems,
       summary: { total, complete, readiness: computeReadiness(total, complete) },
     };
   },
@@ -356,7 +529,7 @@ export const addEventItem = mutation({
       isDayOffsetModule(args.module) && args.offsetDays !== undefined
         ? computeDueDate(event.eventDate, args.offsetDays)
         : undefined;
-    return await ctx.db.insert("eventItems", {
+    const itemId = await ctx.db.insert("eventItems", {
       eventId: args.eventId,
       chapterId: event.chapterId,
       module: args.module,
@@ -370,6 +543,12 @@ export const addEventItem = mutation({
       status: args.status,
       fields: args.fields,
     });
+    // Keep the inventory reservation in sync if the new row links an asset.
+    if (args.module === "supplies") {
+      const created = await ctx.db.get(itemId);
+      if (created) await reconcileSupplyReservation(ctx, event, created);
+    }
+    return itemId;
   },
 });
 
@@ -391,6 +570,10 @@ export const updateEventItem = mutation({
     const item = await ctx.db.get(itemId);
     if (!item) return itemId;
     const event = await requireEvent(ctx, item.eventId);
+    const isSupply = item.module === "supplies";
+    const prevLinkedAssetId = isSupply
+      ? (item.fields?.linkedAssetId as Id<"assets"> | undefined)
+      : undefined;
     const fields: Record<string, unknown> = {};
     if (patch.title !== undefined) fields.title = patch.title;
     if (patch.offsetMinutes !== undefined)
@@ -401,8 +584,14 @@ export const updateEventItem = mutation({
     if (patch.status !== undefined) fields.status = patch.status ?? undefined;
     if (patch.rowHeight !== undefined)
       fields.rowHeight = patch.rowHeight ?? undefined;
-    if (patch.fields !== undefined)
-      fields.fields = mergeFields(item.fields, patch.fields);
+    // Supplies: a manual status pick from the grid becomes the derived-status
+    // OVERRIDE (fields.statusOverride); clearing it (null) reverts to auto.
+    let bagPatch = patch.fields;
+    if (isSupply && patch.status !== undefined) {
+      bagPatch = { ...(bagPatch ?? {}), statusOverride: patch.status ?? null };
+    }
+    if (bagPatch !== undefined)
+      fields.fields = mergeFields(item.fields, bagPatch);
     if (patch.offsetDays !== undefined) {
       fields.offsetDays = patch.offsetDays ?? undefined;
       if (isDayOffsetModule(item.module)) {
@@ -413,6 +602,13 @@ export const updateEventItem = mutation({
       }
     }
     await ctx.db.patch(itemId, fields);
+    // Re-sync the inventory reservation when a supply row's link/qty/container
+    // changed (or was cleared).
+    if (isSupply) {
+      const updated = await ctx.db.get(itemId);
+      if (updated)
+        await reconcileSupplyReservation(ctx, event, updated, prevLinkedAssetId);
+    }
     return itemId;
   },
 });
@@ -424,6 +620,13 @@ export const setStatus = mutation({
     const item = await ctx.db.get(itemId);
     if (!item) return itemId;
     await requireEvent(ctx, item.eventId);
+    // Supplies status is derived; a one-tap pick is a manual override (cleared
+    // with null → back to auto).
+    if (item.module === "supplies") {
+      const fields = mergeFields(item.fields, { statusOverride: status ?? null });
+      await ctx.db.patch(itemId, { status: status ?? undefined, fields });
+      return itemId;
+    }
     await ctx.db.patch(itemId, { status: status ?? undefined });
     return itemId;
   },
@@ -478,7 +681,8 @@ export const removeEventItem = mutation({
     const item = await ctx.db.get(itemId);
     if (!item) return itemId;
     await requireEvent(ctx, item.eventId);
-    // Cascade: drop any site-map chips pointing at this supply item.
+    // Cascade: drop any site-map chips pointing at this supply item, and release
+    // the inventory reservation the row held (if it linked a Chapter-Storage asset).
     if (item.module === "supplies") {
       await deleteEventPlacementsForRef(
         ctx,
@@ -486,6 +690,8 @@ export const removeEventItem = mutation({
         "supply",
         String(itemId),
       );
+      const linked = item.fields?.linkedAssetId as Id<"assets"> | undefined;
+      if (linked) await releaseReservation(ctx, linked, item.eventId);
     }
     await ctx.db.delete(itemId);
     return itemId;

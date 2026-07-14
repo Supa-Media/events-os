@@ -72,12 +72,12 @@ describe("assets", () => {
 
     const battery = (await s.as.mutation(api.inventory.addAsset, {
       name: "200W battery",
-      category: "power",
+      tags: ["power"],
       quantity: 2,
     })) as Id<"assets">;
     await s.as.mutation(api.inventory.addAsset, {
       name: "SM58 mic",
-      category: "audio",
+      tags: ["audio"],
       quantity: 4,
       acquired: true,
     });
@@ -130,21 +130,21 @@ describe("assets", () => {
     await expect(
       s.as.mutation(api.inventory.addAsset, {
         name: "Bad",
-        category: "other",
+        tags: [],
         quantity: -1,
       }),
     ).rejects.toThrow();
     await expect(
       s.as.mutation(api.inventory.addAsset, {
         name: "Bad",
-        category: "other",
+        tags: [],
         quantity: 2.5,
       }),
     ).rejects.toThrow();
     await expect(
       s.as.mutation(api.inventory.addAsset, {
         name: "   ",
-        category: "other",
+        tags: [],
         quantity: 1,
       }),
     ).rejects.toThrow();
@@ -152,7 +152,7 @@ describe("assets", () => {
     // Zero IS allowed — a Chapter-Kit item targeted but not yet acquired.
     await s.as.mutation(api.inventory.addAsset, {
       name: "A-frame sign",
-      category: "signage",
+      tags: ["signage"],
       quantity: 0,
       acquired: false,
     });
@@ -168,7 +168,7 @@ describe("assets", () => {
     const s = await setupChapter(t);
     const assetId = (await s.as.mutation(api.inventory.addAsset, {
       name: "Mixer",
-      category: "audio",
+      tags: ["audio"],
       quantity: 1,
     })) as Id<"assets">;
 
@@ -188,7 +188,7 @@ describe("assets", () => {
     const s = await setupChapter(t);
     const assetId = (await s.as.mutation(api.inventory.addAsset, {
       name: "Green luggage",
-      category: "transport",
+      tags: ["transport"],
       quantity: 1,
     })) as Id<"assets">;
 
@@ -219,7 +219,7 @@ describe("reservations", () => {
     const eventB = await seedEvent(s);
     const assetId = (await s.as.mutation(api.inventory.addAsset, {
       name: "SM58 mic",
-      category: "audio",
+      tags: ["audio"],
       quantity: 5,
     })) as Id<"assets">;
 
@@ -252,7 +252,7 @@ describe("reservations", () => {
     const eventId = await seedEvent(s);
     const assetId = (await s.as.mutation(api.inventory.addAsset, {
       name: "Cable",
-      category: "cabling",
+      tags: ["cabling"],
       quantity: 10,
     })) as Id<"assets">;
 
@@ -289,7 +289,7 @@ describe("reservations", () => {
     const eventB = await seedEvent(s, "planning");
     const assetId = (await s.as.mutation(api.inventory.addAsset, {
       name: "200W battery",
-      category: "power",
+      tags: ["power"],
       quantity: 1,
     })) as Id<"assets">;
 
@@ -330,7 +330,7 @@ describe("reservations", () => {
     const eventB = await seedEvent(s);
     const assetId = (await s.as.mutation(api.inventory.addAsset, {
       name: "200W battery",
-      category: "power",
+      tags: ["power"],
       quantity: 1,
     })) as Id<"assets">;
     await s.as.mutation(api.inventory.reserveAsset, {
@@ -350,7 +350,7 @@ describe("reservations", () => {
     expect(rows).toHaveLength(1);
     expect(rows[0].asset).not.toBeNull();
     expect(rows[0].asset!.name).toBe("200W battery");
-    expect(rows[0].asset!.category).toBe("power");
+    expect(rows[0].asset!.tags).toEqual(["power"]);
     // Chapter-wide: two events want the one battery → overbooked flagged here too.
     expect(rows[0].asset!.overbooked).toBe(true);
     expect(rows[0].asset!.available).toBe(0);
@@ -362,7 +362,7 @@ describe("reservations", () => {
     const eventId = await seedEvent(s);
     const assetId = (await s.as.mutation(api.inventory.addAsset, {
       name: "Cable",
-      category: "cabling",
+      tags: ["cabling"],
       quantity: 10,
     })) as Id<"assets">;
     const reservationId = (await s.as.mutation(api.inventory.reserveAsset, {
@@ -393,7 +393,7 @@ describe("reservations", () => {
     const eventId = await seedEvent(s);
     const assetId = (await s.as.mutation(api.inventory.addAsset, {
       name: "Mixer",
-      category: "audio",
+      tags: ["audio"],
       quantity: 5,
     })) as Id<"assets">;
 
@@ -426,7 +426,7 @@ describe("reservations", () => {
     const eventId = await seedEvent(s);
     const assetId = (await s.as.mutation(api.inventory.addAsset, {
       name: "200W battery",
-      category: "power",
+      tags: ["power"],
       quantity: 2,
     })) as Id<"assets">;
     await s.as.mutation(api.inventory.reserveAsset, {
@@ -455,7 +455,7 @@ describe("cross-chapter + access gating", () => {
     const s = await setupChapter(t);
     const assetId = (await s.as.mutation(api.inventory.addAsset, {
       name: "200W battery",
-      category: "power",
+      tags: ["power"],
       quantity: 2,
     })) as Id<"assets">;
 
@@ -480,7 +480,7 @@ describe("cross-chapter + access gating", () => {
     const eventId = await seedEvent(s);
     const assetId = (await s.as.mutation(api.inventory.addAsset, {
       name: "Mixer",
-      category: "audio",
+      tags: ["audio"],
       quantity: 3,
     })) as Id<"assets">;
     const reservationId = (await s.as.mutation(api.inventory.reserveAsset, {
@@ -539,7 +539,7 @@ describe("cross-chapter + access gating", () => {
     await expect(
       t.mutation(api.inventory.addAsset, {
         name: "Anon",
-        category: "other",
+        tags: [],
         quantity: 1,
       }),
     ).rejects.toThrow();

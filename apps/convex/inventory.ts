@@ -31,19 +31,34 @@ import {
   requireOwned,
   requireUserId,
 } from "./lib/context";
-import { ASSET_CONDITIONS, INVENTORY_CATEGORIES } from "@events-os/shared";
+import {
+  ASSET_CONDITIONS,
+  INVENTORY_COLUMNS,
+  CONTAINER_OPTIONS,
+  optionLabel,
+} from "@events-os/shared";
 
 // ── Validators / guards ───────────────────────────────────────────────────────
-
-/** Category validator, derived from the single source of truth in `shared`. */
-const categoryValidator = v.union(
-  ...INVENTORY_CATEGORIES.map((c) => v.literal(c)),
-);
 
 /** Condition validator, derived from the single source of truth in `shared`. */
 const conditionValidator = v.union(
   ...ASSET_CONDITIONS.map((c) => v.literal(c)),
 );
+
+/** Normalize a tags array: trim, drop empties, de-dupe, cap length. */
+function cleanTags(tags: string[] | undefined): string[] {
+  if (!tags) return [];
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const raw of tags) {
+    const t = raw.trim();
+    if (t && !seen.has(t.toLowerCase())) {
+      seen.add(t.toLowerCase());
+      out.push(t);
+    }
+  }
+  return out.slice(0, 24);
+}
 
 /**
  * Guard: an asset's owned quantity is a whole number that is NOT negative. 0 IS
@@ -79,9 +94,11 @@ function assertPosInt(quantity: number): void {
 export const addAsset = mutation({
   args: {
     name: v.string(),
-    category: categoryValidator,
+    tags: v.optional(v.array(v.string())),
     quantity: v.number(),
     acquired: v.optional(v.boolean()),
+    consumable: v.optional(v.boolean()),
+    lowStockThreshold: v.optional(v.number()),
     condition: v.optional(conditionValidator),
     stateNote: v.optional(v.string()),
     note: v.optional(v.string()),
@@ -111,9 +128,11 @@ export const addAsset = mutation({
     return await ctx.db.insert("assets", {
       chapterId: chapterId as Id<"chapters">,
       name,
-      category: args.category,
+      tags: cleanTags(args.tags),
       quantity: args.quantity,
       acquired: args.acquired ?? true,
+      consumable: args.consumable,
+      lowStockThreshold: args.lowStockThreshold,
       condition: args.condition,
       stateNote: args.stateNote?.trim() || undefined,
       note: args.note?.trim() || undefined,
@@ -135,9 +154,11 @@ export const updateAsset = mutation({
   args: {
     assetId: v.id("assets"),
     name: v.optional(v.string()),
-    category: v.optional(categoryValidator),
+    tags: v.optional(v.array(v.string())),
     quantity: v.optional(v.number()),
     acquired: v.optional(v.boolean()),
+    consumable: v.optional(v.boolean()),
+    lowStockThreshold: v.optional(v.union(v.number(), v.null())),
     condition: v.optional(v.union(conditionValidator, v.null())),
     stateNote: v.optional(v.union(v.string(), v.null())),
     note: v.optional(v.union(v.string(), v.null())),
@@ -156,12 +177,16 @@ export const updateAsset = mutation({
       }
       patch.name = name;
     }
-    if (args.category !== undefined) patch.category = args.category;
+    if (args.tags !== undefined) patch.tags = cleanTags(args.tags);
     if (args.quantity !== undefined) {
       assertNonNegInt(args.quantity);
       patch.quantity = args.quantity;
     }
     if (args.acquired !== undefined) patch.acquired = args.acquired;
+    if (args.consumable !== undefined) patch.consumable = args.consumable;
+    if (args.lowStockThreshold !== undefined) {
+      patch.lowStockThreshold = args.lowStockThreshold ?? undefined;
+    }
     if (args.condition !== undefined) {
       patch.condition = args.condition ?? undefined;
     }
@@ -227,6 +252,9 @@ export const reserveAsset = mutation({
     eventId: v.id("events"),
     assetId: v.id("assets"),
     quantity: v.number(),
+    // The reserving event's "Packed in" container, denormalized so other events
+    // can read this asset's live location. `null` clears it.
+    container: v.optional(v.union(v.string(), v.null())),
     note: v.optional(v.string()),
   },
   handler: async (ctx, args) => {
@@ -242,6 +270,8 @@ export const reserveAsset = mutation({
     }
     assertPosInt(args.quantity);
     const note = args.note?.trim() || undefined;
+    const container =
+      args.container === null ? undefined : args.container || undefined;
 
     const existing = await ctx.db
       .query("assetReservations")
@@ -251,7 +281,10 @@ export const reserveAsset = mutation({
       .unique();
 
     if (existing) {
-      await ctx.db.patch(existing._id, { quantity: args.quantity, note });
+      // Only overwrite container when the caller supplied the arg at all.
+      const patch: Record<string, unknown> = { quantity: args.quantity, note };
+      if (args.container !== undefined) patch.container = container;
+      await ctx.db.patch(existing._id, patch);
       return existing._id;
     }
 
@@ -260,6 +293,7 @@ export const reserveAsset = mutation({
       eventId: args.eventId,
       chapterId: asset.chapterId,
       quantity: args.quantity,
+      container,
       note,
       createdBy: userId as Id<"users">,
       createdAt: Date.now(),
@@ -324,54 +358,231 @@ const LIVE_EVENT_STATUSES = new Set(["planning", "ready"]);
  * Chapter-gated via `getChapterIdOrNull` (a pre-onboarding user gets [] instead
  * of a thrown error), mirroring `songs.list`.
  */
+/** Shape of one enriched asset row (asset doc + computed reservation load). */
+export type EnrichedAsset = Awaited<ReturnType<typeof loadAssetRows>>[number];
+
+/**
+ * Load the chapter's assets, each enriched with its live reservation load and
+ * physical location. Shared by `listAssets` (the registry) and `listAssetsGrid`
+ * (the database view) so they never drift. Reads the chapter's live events ONCE
+ * into a Set + name map, then classifies each asset's reservations — no N+1.
+ */
+async function loadAssetRows(ctx: QueryCtx, chapterId: Id<"chapters">) {
+  const assets = await ctx.db
+    .query("assets")
+    .withIndex("by_chapter", (q) => q.eq("chapterId", chapterId))
+    .collect();
+  assets.sort((a, b) => a.order - b.order);
+
+  const events = await ctx.db
+    .query("events")
+    .withIndex("by_chapter", (q) => q.eq("chapterId", chapterId))
+    .collect();
+  const liveEventIds = new Set(
+    events
+      .filter((e) => LIVE_EVENT_STATUSES.has(e.status))
+      .map((e) => e._id as Id<"events">),
+  );
+  const eventName = new Map(events.map((e) => [e._id, e.name] as const));
+
+  return await Promise.all(
+    assets.map(async (asset) => {
+      const reservations = await ctx.db
+        .query("assetReservations")
+        .withIndex("by_asset", (q) => q.eq("assetId", asset._id))
+        .collect();
+      const live = reservations.filter((r) => liveEventIds.has(r.eventId));
+      const reservedLive = live.reduce((sum, r) => sum + r.quantity, 0);
+      const consumable = asset.consumable ?? false;
+      const heldBy = live
+        .sort((a, b) => a.createdAt - b.createdAt)
+        .map((r) => ({
+          eventId: r.eventId,
+          eventName: eventName.get(r.eventId) ?? "An event",
+          container: r.container ?? null,
+          quantity: r.quantity,
+        }));
+      return {
+        ...asset,
+        consumable,
+        reservedLive,
+        available: Math.max(0, asset.quantity - reservedLive),
+        overbooked: reservedLive > asset.quantity,
+        lowStock:
+          consumable &&
+          asset.lowStockThreshold !== undefined &&
+          asset.quantity <= asset.lowStockThreshold,
+        outOfStock: consumable && asset.quantity <= 0,
+        heldBy,
+        photoUrl: asset.photoStorageId
+          ? await ctx.storage.getUrl(asset.photoStorageId)
+          : null,
+      };
+    }),
+  );
+}
+
 export const listAssets = query({
   args: {},
   handler: async (ctx: QueryCtx) => {
     const chapterId = await getChapterIdOrNull(ctx);
     if (!chapterId) return [];
+    return await loadAssetRows(ctx, chapterId as Id<"chapters">);
+  },
+});
 
-    const assets = await ctx.db
+/**
+ * The inventory registry as a GRID payload — the same `{ columns, items }` shape
+ * the EditableGrid consumes for events/templates, so the chapter-mode grid
+ * renders identically to Supplies. `title` is the asset name; every other cell
+ * lives in the item's `fields` bag keyed by the INVENTORY_COLUMNS keys. The
+ * `available` cell is a human-readable read-only summary (e.g. "3 of 5 · Green
+ * luggage"); the adapter refuses writes to it.
+ */
+export const listAssetsGrid = query({
+  args: {},
+  handler: async (ctx: QueryCtx) => {
+    const chapterId = await getChapterIdOrNull(ctx);
+    if (!chapterId) return { columns: INVENTORY_COLUMNS, items: [], summary: undefined };
+
+    const rows = await loadAssetRows(ctx, chapterId as Id<"chapters">);
+    let complete = 0;
+    const items = rows.map((a, i) => {
+      if (a.acquired) complete += 1;
+      // Available cell: reservation load + where it is, or a stock warning.
+      let available: string;
+      if (a.consumable) {
+        available = a.outOfStock
+          ? "Out of stock"
+          : a.lowStock
+            ? `${a.quantity} left · low`
+            : `${a.quantity} in stock`;
+      } else if (a.heldBy.length > 0) {
+        const where = a.heldBy
+          .map((h) =>
+            h.container
+              ? `${h.eventName} · ${optionLabel(CONTAINER_OPTIONS, h.container)}`
+              : h.eventName,
+          )
+          .join(", ");
+        available = `${a.available} of ${a.quantity} · ${a.overbooked ? "OVER — " : ""}${where}`;
+      } else {
+        available = `${a.available} of ${a.quantity}`;
+      }
+      return {
+        _id: a._id as string,
+        module: "inventory",
+        title: a.name,
+        order: a.order ?? i,
+        status: null as string | null,
+        fields: {
+          tags: a.tags,
+          quantity: a.quantity,
+          available,
+          consumable: a.consumable ? "yes" : "no",
+          condition: a.condition ?? null,
+          acquired: a.acquired ? "yes" : "no",
+          photo: a.photoStorageId ?? null,
+          photoUrl: a.photoUrl ?? null,
+          notes: a.note ?? null,
+        } as Record<string, any>,
+      };
+    });
+    return {
+      columns: INVENTORY_COLUMNS,
+      items,
+      summary: {
+        total: rows.length,
+        complete,
+        readiness: rows.length ? complete / rows.length : 0,
+      },
+    };
+  },
+});
+
+// ── Grid adapter mutations (chapter-mode EditableGrid) ────────────────────────
+// The grid speaks one interface — add a row, patch a cell, remove a row — over a
+// `fields` bag. These translate that vocabulary onto the typed `assets`
+// mutations, so the frontend adapter stays thin. Chapter-gated like the rest.
+
+/** Add a blank asset row (grid "Add row"); the user then edits cells. */
+export const addAssetRow = mutation({
+  args: {},
+  handler: async (ctx): Promise<Id<"assets">> => {
+    const chapterId = await requireChapterId(ctx);
+    const userId = await requireUserId(ctx);
+    const existing = await ctx.db
       .query("assets")
       .withIndex("by_chapter", (q) =>
         q.eq("chapterId", chapterId as Id<"chapters">),
       )
       .collect();
-    assets.sort((a, b) => a.order - b.order);
+    const now = Date.now();
+    return await ctx.db.insert("assets", {
+      chapterId: chapterId as Id<"chapters">,
+      name: "New item",
+      tags: [],
+      quantity: 1,
+      acquired: true,
+      order: existing.length,
+      createdBy: userId as Id<"users">,
+      createdAt: now,
+      updatedAt: now,
+    });
+  },
+});
 
-    // Live events for the chapter, read ONCE → a Set of live event ids.
-    const events = await ctx.db
-      .query("events")
-      .withIndex("by_chapter", (q) =>
-        q.eq("chapterId", chapterId as Id<"chapters">),
-      )
-      .collect();
-    const liveEventIds = new Set(
-      events
-        .filter((e) => LIVE_EVENT_STATUSES.has(e.status))
-        .map((e) => e._id as Id<"events">),
-    );
-
-    return await Promise.all(
-      assets.map(async (asset) => {
-        const reservations = await ctx.db
-          .query("assetReservations")
-          .withIndex("by_asset", (q) => q.eq("assetId", asset._id))
-          .collect();
-        const reservedLive = reservations.reduce(
-          (sum, r) => (liveEventIds.has(r.eventId) ? sum + r.quantity : sum),
-          0,
-        );
-        return {
-          ...asset,
-          reservedLive,
-          available: Math.max(0, asset.quantity - reservedLive),
-          overbooked: reservedLive > asset.quantity,
-          photoUrl: asset.photoStorageId
-            ? await ctx.storage.getUrl(asset.photoStorageId)
-            : null,
-        };
-      }),
-    );
+/**
+ * Patch one grid cell on an asset. `key` is an INVENTORY_COLUMNS key (or
+ * "title"); the value shape follows the cell type. Read-only computed columns
+ * (available) are ignored. `photo` maps to the storage id.
+ */
+export const updateAssetCell = mutation({
+  args: {
+    assetId: v.id("assets"),
+    key: v.string(),
+    value: v.any(),
+  },
+  handler: async (ctx, { assetId, key, value }) => {
+    await requireOwned(ctx, "assets", assetId, "Asset");
+    const patch: Record<string, unknown> = { updatedAt: Date.now() };
+    switch (key) {
+      case "title":
+        patch.name = (typeof value === "string" && value.trim()) || "Untitled item";
+        break;
+      case "tags":
+        patch.tags = cleanTags(Array.isArray(value) ? value : value ? [value] : []);
+        break;
+      case "quantity": {
+        const q = Math.max(0, Math.trunc(Number(value) || 0));
+        patch.quantity = q;
+        break;
+      }
+      case "consumable":
+        patch.consumable = value === "yes" || value === true;
+        break;
+      case "acquired":
+        patch.acquired = value === "yes" || value === true;
+        break;
+      case "condition":
+        patch.condition =
+          value && (ASSET_CONDITIONS as readonly string[]).includes(value)
+            ? value
+            : undefined;
+        break;
+      case "notes":
+        patch.note =
+          typeof value === "string" && value.trim() ? value.trim() : undefined;
+        break;
+      case "photo":
+        patch.photoStorageId = value ? (value as Id<"_storage">) : undefined;
+        break;
+      // "available" and any unknown key are read-only / no-ops.
+      default:
+        return null;
+    }
+    await ctx.db.patch(assetId, patch);
+    return null;
   },
 });
 
@@ -420,7 +631,7 @@ export const listEventReservations = query({
           );
           assetInfo = {
             name: asset.name,
-            category: asset.category,
+            tags: asset.tags,
             quantity: asset.quantity,
             available: Math.max(0, asset.quantity - reservedLive),
             overbooked: reservedLive > asset.quantity,
