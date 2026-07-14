@@ -119,6 +119,19 @@ export const removeDonation = mutation({
   args: { donationId: v.id("donations") },
   handler: async (ctx, { donationId }) => {
     const donation = await requireOwned(ctx, "donations", donationId, "Donation");
+    // A `pending` row is an IN-FLIGHT card checkout: the donor may still be on
+    // Stripe. Deleting it now would orphan a real payment — the completion
+    // webhook would find no row (no receipt, no rollup credit). Refuse; an
+    // abandoned pending row is cleaned up by the expiry webhook
+    // (`cancelPendingDonation`) instead. Manual donations are inserted `paid`,
+    // so this never blocks removing a recorded cash/other gift.
+    if (donation.status === "pending") {
+      throw new ConvexError({
+        code: "DONATION_IN_FLIGHT",
+        message:
+          "This card donation is still being processed — it can't be removed until it settles or expires.",
+      });
+    }
     if (donation.status === "paid") {
       await bumpGivingRollup(ctx, donation.eventId, -donation.amountCents, -1);
     }

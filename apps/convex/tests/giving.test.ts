@@ -312,6 +312,31 @@ describe("card donations (Stripe flow)", () => {
     expect((await pageRow(s, eventId)).donationsCents ?? 0).toBe(0);
   });
 
+  test("removeDonation refuses an in-flight pending card donation", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const eventId = await seedEvent(s);
+    const { slug } = await givingSetup(s, eventId);
+
+    const prepared = await t.mutation(internal.giving.prepareDonation, {
+      slug,
+      name: "Cara",
+      email: "cara@example.com",
+      amountCents: 1500,
+    });
+    // Deleting a pending row while the donor is on Stripe would orphan the
+    // payment — refuse it. (Expiry cleans up abandoned pending rows instead.)
+    await expect(
+      s.as.mutation(api.giving.removeDonation, {
+        donationId: prepared.donationId,
+      }),
+    ).rejects.toThrow(/still being processed/);
+    // Still present, still pending, rollup untouched.
+    const list = await s.as.query(api.giving.listDonationsAdmin, { eventId });
+    expect(list[0].status).toBe("pending");
+    expect((await pageRow(s, eventId)).donationsCents ?? 0).toBe(0);
+  });
+
   test("a manual and a card-fulfilled donation both appear in the ledger", async () => {
     const t = newT();
     const s = await setupChapter(t);
