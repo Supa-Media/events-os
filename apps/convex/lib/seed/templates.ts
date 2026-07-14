@@ -237,14 +237,14 @@ const JOIN_EVENT_SPEC: TrainingTemplateSpec = {
       },
     ],
     run_of_show: [
-      { title: "Load-in / Setup", offsetMinutes: -120, role: "logistics_lead" },
-      { title: "Soundcheck", offsetMinutes: -75, role: "production_lead" },
-      { title: "Crew huddle + prayer", offsetMinutes: -30, role: "event_lead" },
-      { title: "Doors / guest arrival", offsetMinutes: 0, role: "event_lead" },
-      { title: "Worship set", offsetMinutes: 15, role: "production_lead" },
-      { title: "Message + response", offsetMinutes: 45, role: "event_lead" },
-      { title: "Closing / next steps", offsetMinutes: 90, role: "event_lead" },
-      { title: "Strike / leave-no-trace", offsetMinutes: 110, role: "logistics_lead" },
+      { title: "Load-in / Setup", offsetMinutes: -120, role: "logistics_lead", fields: { duration: 45 } },
+      { title: "Soundcheck", offsetMinutes: -75, role: "production_lead", fields: { duration: 45 } },
+      { title: "Crew huddle + prayer", offsetMinutes: -30, role: "event_lead", fields: { duration: 30 } },
+      { title: "Doors / guest arrival", offsetMinutes: 0, role: "event_lead", fields: { duration: 15 } },
+      { title: "Worship set", offsetMinutes: 15, role: "production_lead", fields: { duration: 30 } },
+      { title: "Message + response", offsetMinutes: 45, role: "event_lead", fields: { duration: 45 } },
+      { title: "Closing / next steps", offsetMinutes: 90, role: "event_lead", fields: { duration: 20 } },
+      { title: "Strike / leave-no-trace", offsetMinutes: 110, role: "logistics_lead", fields: { duration: 20 } },
     ],
     supplies: [
       // "Timing" is the HAVE-IT-BY deadline: storage pulls resolve by T-1;
@@ -764,16 +764,16 @@ export async function buildChapterRolesAndTemplates(
   ], edenRoleByKey);
 
   await addTemplateItems(ctx, edenId, "run_of_show", [
-    { title: "Load-in / Setup", offsetMinutes: -120, role: "logistics_lead" },
-    { title: "Soundcheck", offsetMinutes: -75, role: "production_lead" },
-    { title: "Volunteer huddle + prayer", offsetMinutes: -30, role: "event_lead" },
-    { title: "Doors / soft start", offsetMinutes: 0, role: "event_lead" },
-    { title: "Worship set", offsetMinutes: 15, role: "production_lead" },
-    { title: "Message / Scripture", offsetMinutes: 45, role: "event_lead" },
-    { title: "Prayer / Ministry", offsetMinutes: 70, role: "event_lead" },
-    { title: "Community activity", offsetMinutes: 90, role: "comms_lead" },
-    { title: "Closing / Gospel + next steps", offsetMinutes: 115, role: "event_lead", fields: { notes: "Give the Gospel: we're all sinners; Jesus came and died for us so all who believe in Him are saved. Invite to connect + follow socials." } },
-    { title: "Strike / Load-out", offsetMinutes: 130, role: "logistics_lead" },
+    { title: "Load-in / Setup", offsetMinutes: -120, role: "logistics_lead", fields: { duration: 45 } },
+    { title: "Soundcheck", offsetMinutes: -75, role: "production_lead", fields: { duration: 45 } },
+    { title: "Volunteer huddle + prayer", offsetMinutes: -30, role: "event_lead", fields: { duration: 30 } },
+    { title: "Doors / soft start", offsetMinutes: 0, role: "event_lead", fields: { duration: 15 } },
+    { title: "Worship set", offsetMinutes: 15, role: "production_lead", fields: { duration: 30 } },
+    { title: "Message / Scripture", offsetMinutes: 45, role: "event_lead", fields: { duration: 25 } },
+    { title: "Prayer / Ministry", offsetMinutes: 70, role: "event_lead", fields: { duration: 20 } },
+    { title: "Community activity", offsetMinutes: 90, role: "comms_lead", fields: { duration: 25 } },
+    { title: "Closing / Gospel + next steps", offsetMinutes: 115, role: "event_lead", fields: { duration: 15, notes: "Give the Gospel: we're all sinners; Jesus came and died for us so all who believe in Him are saved. Invite to connect + follow socials." } },
+    { title: "Strike / Load-out", offsetMinutes: 130, role: "logistics_lead", fields: { duration: 15 } },
   ], edenRoleByKey);
 
   await addTemplateItems(ctx, edenId, "permits", PERMIT_ROWS, edenRoleByKey);
@@ -899,12 +899,12 @@ export async function buildChapterRolesAndTemplates(
   ], wwsRoleByKey);
 
   await addTemplateItems(ctx, wwsId, "run_of_show", [
-    { title: "Load-in / Setup", offsetMinutes: -60, role: "logistics_lead", fields: { notes: "Connect keyboard + recorder, then mics. Busking setup." } },
-    { title: "Soundcheck", offsetMinutes: -30, role: "event_lead", fields: { notes: "Track playback, mic check levels." } },
-    { title: "Team huddle + prayer", offsetMinutes: -10, role: "event_lead", fields: { notes: "Encouragement, have fun, worship boldly." } },
-    { title: "Worship set", offsetMinutes: 0, role: "event_lead", fields: { notes: "Spontaneous worship — no set list." } },
-    { title: "Closing / Gospel + next steps", offsetMinutes: 40, role: "event_lead", fields: { notes: "Give the Gospel: we're all sinners; Jesus came and died for us so all who believe in Him are saved. Invite to connect + follow socials." } },
-    { title: "Strike / Load-out", offsetMinutes: 55, role: "logistics_lead" },
+    { title: "Load-in / Setup", offsetMinutes: -60, role: "logistics_lead", fields: { duration: 30, notes: "Connect keyboard + recorder, then mics. Busking setup." } },
+    { title: "Soundcheck", offsetMinutes: -30, role: "event_lead", fields: { duration: 20, notes: "Track playback, mic check levels." } },
+    { title: "Team huddle + prayer", offsetMinutes: -10, role: "event_lead", fields: { duration: 10, notes: "Encouragement, have fun, worship boldly." } },
+    { title: "Worship set", offsetMinutes: 0, role: "event_lead", fields: { duration: 40, notes: "Spontaneous worship — no set list." } },
+    { title: "Closing / Gospel + next steps", offsetMinutes: 40, role: "event_lead", fields: { duration: 15, notes: "Give the Gospel: we're all sinners; Jesus came and died for us so all who believe in Him are saved. Invite to connect + follow socials." } },
+    { title: "Strike / Load-out", offsetMinutes: 55, role: "logistics_lead", fields: { duration: 15 } },
   ], wwsRoleByKey);
 
   await addTemplateItems(ctx, wwsId, "permits", [

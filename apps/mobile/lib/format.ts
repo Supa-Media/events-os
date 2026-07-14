@@ -57,6 +57,29 @@ export function parseDateInput(str: string): number | null {
   return date.getTime();
 }
 
+/**
+ * Combine a `YYYY-MM-DD` date string with a `HH:mm` (24-hour) time string into a
+ * single LOCAL epoch-ms timestamp, or null if either part is malformed. Unlike
+ * {@link parseDateInput} (which lands on local midnight), this carries the chosen
+ * time-of-day — the event start anchor the whole run-of-show timeline derives
+ * from. Both parts are required by callers so a start never silently defaults to
+ * midnight again.
+ */
+export function parseDateTimeInput(
+  dateStr: string,
+  timeStr: string,
+): number | null {
+  const d = dateStr.trim();
+  const t = timeStr.trim();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(d)) return null;
+  if (!/^\d{1,2}:\d{2}$/.test(t)) return null;
+  const [y, mo, da] = d.split("-").map(Number);
+  const [h, mi] = t.split(":").map(Number);
+  if (h > 23 || mi > 59) return null;
+  const date = new Date(y, mo - 1, da, h, mi);
+  return Number.isNaN(date.getTime()) ? null : date.getTime();
+}
+
 /** Render an epoch-ms timestamp as a YYYY-MM-DD string for date inputs. */
 export function toDateInput(ts: number): string {
   const d = new Date(ts);
