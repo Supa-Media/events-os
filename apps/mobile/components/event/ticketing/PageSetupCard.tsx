@@ -27,6 +27,7 @@ export function PageSetupCard({ page, coverUrl, run }: Props) {
   const [description, setDescription] = useState(page.description ?? "");
   const [venueName, setVenueName] = useState(page.venueName ?? "");
   const [address, setAddress] = useState(page.address ?? "");
+  const [givingPrompt, setGivingPrompt] = useState(page.givingPrompt ?? "");
   const [capacity, setCapacity] = useState(
     page.capacity != null ? String(page.capacity) : "",
   );
@@ -47,6 +48,7 @@ export function PageSetupCard({ page, coverUrl, run }: Props) {
       description: description.trim(),
       venueName: venueName.trim(),
       address: address.trim(),
+      givingPrompt: givingPrompt.trim() || null,
       ...(capParsed === null || !Number.isNaN(capParsed)
         ? { capacity: capParsed }
         : {}),
@@ -128,6 +130,24 @@ export function PageSetupCard({ page, coverUrl, run }: Props) {
         value={page.activityRestricted !== false}
         onToggle={(next) => void patchPage({ activityRestricted: next })}
       />
+      <ToggleRow
+        label="Accept donations"
+        hint="Show a 'Support this event' card on the public page."
+        value={page.givingEnabled === true}
+        onToggle={(next) => void patchPage({ givingEnabled: next })}
+      />
+      {page.givingEnabled === true ? (
+        <TextField
+          label="Giving prompt"
+          value={givingPrompt}
+          onChangeText={setGivingPrompt}
+          placeholder="Help us keep worship free for everyone."
+          hint="Shown above the donation buttons. Saved with the button below."
+          multiline
+          numberOfLines={2}
+          style={{ minHeight: 60, textAlignVertical: "top" }}
+        />
+      ) : null}
 
       <View className="mt-3 flex-row justify-end">
         <Button

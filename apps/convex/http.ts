@@ -189,15 +189,30 @@ http.route({
       type: string;
       data: { object: { id: string; payment_intent?: string | null } };
     };
+    const sessionId = event.data.object.id;
     if (event.type === "checkout.session.completed") {
-      await ctx.runMutation(internal.ticketing.markSessionPaid, {
-        sessionId: event.data.object.id,
-        paymentIntentId: event.data.object.payment_intent ?? undefined,
+      const paymentIntentId = event.data.object.payment_intent ?? undefined;
+      // One shared session id is either a ticket order OR a donation. Try the
+      // order first; only if it wasn't an order do we try the donation. Each
+      // path is idempotent (safe on webhook redelivery) and no-ops when the
+      // session isn't theirs, so neither can touch the other's rows.
+      const wasOrder = await ctx.runMutation(internal.ticketing.markSessionPaid, {
+        sessionId,
+        paymentIntentId,
       });
+      if (!wasOrder) {
+        const wasDonation = await ctx.runMutation(
+          internal.giving.markDonationPaid,
+          { sessionId, paymentIntentId },
+        );
+        if (!wasDonation) {
+          console.error(`[stripe] webhook for unknown session ${sessionId}`);
+        }
+      }
     } else if (event.type === "checkout.session.expired") {
-      await ctx.runMutation(internal.ticketing.cancelPendingOrder, {
-        sessionId: event.data.object.id,
-      });
+      // Same fan-out for the abandoned-checkout case — each no-ops if not theirs.
+      await ctx.runMutation(internal.ticketing.cancelPendingOrder, { sessionId });
+      await ctx.runMutation(internal.giving.cancelPendingDonation, { sessionId });
     }
     return new Response("ok", { status: 200 });
   }),

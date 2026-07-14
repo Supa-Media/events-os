@@ -22,6 +22,7 @@ import type * as docs from "../docs.js";
 import type * as engagements from "../engagements.js";
 import type * as eventTypes from "../eventTypes.js";
 import type * as events from "../events.js";
+import type * as giving from "../giving.js";
 import type * as guests from "../guests.js";
 import type * as http from "../http.js";
 import type * as items from "../items.js";
@@ -108,6 +109,7 @@ declare const fullApi: ApiFromModules<{
   engagements: typeof engagements;
   eventTypes: typeof eventTypes;
   events: typeof events;
+  giving: typeof giving;
   guests: typeof guests;
   http: typeof http;
   items: typeof items;

@@ -43,8 +43,8 @@ function randomFrom(chars: string, length: number): string {
   return out;
 }
 
-/** Secret guest token (URL-safe, 32 chars). */
-function newGuestToken(): string {
+/** Secret guest token (URL-safe, 32 chars). Shared with the giving flow. */
+export function newGuestToken(): string {
   return randomFrom(
     "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789",
     32,
@@ -97,7 +97,7 @@ export async function getViewerRsvp(
 }
 
 /** Shift the page's per-status RSVP counters when a status changes. */
-async function bumpRsvpCounters(
+export async function bumpRsvpCounters(
   ctx: MutationCtx,
   page: Doc<"eventPages">,
   from: (typeof RSVP_STATUSES)[number] | null,
@@ -241,6 +241,9 @@ export const updatePage = mutation({
       ),
       rsvpEnabled: v.optional(v.boolean()),
       ticketsEnabled: v.optional(v.boolean()),
+      givingEnabled: v.optional(v.boolean()),
+      givingPrompt: v.optional(v.union(v.string(), v.null())),
+      suggestedAmountsCents: v.optional(v.union(v.array(v.number()), v.null())),
       showGuestList: v.optional(v.boolean()),
       activityRestricted: v.optional(v.boolean()),
       capacity: v.optional(v.union(v.number(), v.null())),
@@ -268,13 +271,33 @@ export const updatePage = mutation({
       patch.slug = slug;
     }
 
+    // Suggested amounts are integer cents ≥ 0 (mirror the ticket INVALID_PRICE guard).
+    if (
+      patch.suggestedAmountsCents != null &&
+      patch.suggestedAmountsCents.some(
+        (c) => c < 0 || !Number.isInteger(c),
+      )
+    ) {
+      throw new ConvexError({
+        code: "INVALID_PRICE",
+        message: "Suggested amounts must be whole numbers of cents ≥ 0.",
+      });
+    }
+
     // v.null() sentinels → unset the optional field.
-    const { coverImage, endDate, capacity, ...rest } = patch;
+    const { coverImage, endDate, capacity, givingPrompt, suggestedAmountsCents, ...rest } =
+      patch;
     await ctx.db.patch(pageId, {
       ...rest,
       ...(coverImage !== undefined ? { coverImage: coverImage ?? undefined } : {}),
       ...(endDate !== undefined ? { endDate: endDate ?? undefined } : {}),
       ...(capacity !== undefined ? { capacity: capacity ?? undefined } : {}),
+      ...(givingPrompt !== undefined
+        ? { givingPrompt: givingPrompt ?? undefined }
+        : {}),
+      ...(suggestedAmountsCents !== undefined
+        ? { suggestedAmountsCents: suggestedAmountsCents ?? undefined }
+        : {}),
       updatedAt: Date.now(),
     });
     return null;
@@ -536,6 +559,11 @@ export const getPublicPage = query({
       hasCover: !!page.coverImage,
       rsvpEnabled: page.rsvpEnabled !== false,
       ticketsEnabled: page.ticketsEnabled === true && ticketTypes.length > 0,
+      givingEnabled: page.givingEnabled === true,
+      givingPrompt: page.givingPrompt ?? null,
+      suggestedAmountsCents: page.suggestedAmountsCents ?? [],
+      donationsCents: page.donationsCents ?? 0,
+      donationsCount: page.donationsCount ?? 0,
       capacity: page.capacity ?? null,
       counts: {
         going: page.goingCount,
@@ -1178,7 +1206,12 @@ export const fulfillOrder = internalMutation({
     fulfill(ctx, orderId, stripePaymentIntentId),
 });
 
-/** Mark a pending order paid from the Stripe webhook (by session id). */
+/**
+ * Mark a pending order paid from the Stripe webhook (by session id). Returns
+ * whether an order matched — the shared `/stripe/webhook` uses this to know the
+ * session was an order (and to no-op silently when it wasn't, since the same
+ * session may instead be a donation settled by `giving.markDonationPaid`).
+ */
 export const markSessionPaid = internalMutation({
   args: {
     sessionId: v.string(),
@@ -1191,11 +1224,9 @@ export const markSessionPaid = internalMutation({
         q.eq("stripeCheckoutSessionId", sessionId),
       )
       .unique();
-    if (!order) {
-      console.error(`[ticketing] webhook for unknown session ${sessionId}`);
-      return null;
-    }
-    return await fulfill(ctx, order._id, paymentIntentId);
+    if (!order) return false; // not an order session — safe no-op
+    await fulfill(ctx, order._id, paymentIntentId);
+    return true;
   },
 });
 

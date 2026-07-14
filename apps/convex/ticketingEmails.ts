@@ -148,3 +148,29 @@ export const sendTicketsEmail = internalAction({
     return null;
   },
 });
+
+/** Thank-you receipt after a paid card donation is fulfilled. */
+export const sendDonationReceiptEmail = internalAction({
+  args: { donationId: v.id("donations") },
+  handler: async (ctx, { donationId }) => {
+    const payload = await ctx.runQuery(
+      internal.giving.getDonationEmailPayload,
+      { donationId },
+    );
+    if (!payload) return null;
+    const { email, name, amountCents, eventName, slug } = payload;
+    const base = siteUrl();
+    const firstName = name.split(/\s+/)[0] || "friend";
+    const amount = `$${(amountCents / 100).toFixed(amountCents % 100 === 0 ? 0 : 2)}`;
+    await sendEmail(
+      email,
+      `Thank you for your gift to ${eventName}`,
+      emailShell(`
+      <h1 style="margin:0 0 12px;font-size:26px;line-height:1.2">Thank you, ${firstName} 🙏</h1>
+      <p style="margin:0 0 20px;font-family:-apple-system,'Segoe UI',Roboto,sans-serif;font-size:14px;line-height:1.6;color:${MUTED}">Your gift of <b>${amount}</b> to <b>${eventName}</b> came through. It means the world — thank you for supporting the work.</p>
+      <div style="background:#fff;border:1px dashed #E4CFCB;border-radius:14px;padding:18px;text-align:center;font-family:'SF Mono',Menlo,Consolas,monospace;font-size:28px;font-weight:700;color:${ACCENT}">${amount}</div>
+      ${slug ? `<p style="margin:16px 0 0;font-family:-apple-system,'Segoe UI',Roboto,sans-serif;font-size:12px;line-height:1.6;color:${MUTED}">Event details: <a href="${base}/e/${slug}" style="color:${ACCENT}">${base}/e/${slug}</a></p>` : ""}`),
+    );
+    return null;
+  },
+});

@@ -15,6 +15,7 @@ var KEY='pwguest:'+SLUG;
 var TOKEN=null;
 try{TOKEN=localStorage.getItem(KEY);}catch(e){}
 var cart={};
+var giveAmount=0; // selected suggested donation amount (cents)
 var pending=null; // action waiting on the identity sheet
 var openPicker=null,openReply=null;
 var EMOJIS=['🔥','❤️','🙌','😂','👀','🎉'];
@@ -158,6 +159,64 @@ function startCheckout(){
   };
   if(TOKEN&&D.viewer){run(D.viewer.name,D.viewer.email).catch(function(e){toast(e.message);});}
   else openSheet('Almost there 🎟️','Your tickets and receipt land in your inbox.','Continue',run);
+}
+
+/* ── giving ── */
+function parseGiveInput(s){var t=(''+s).trim().replace(/^\\$/,'');if(!t)return 0;var n=Number(t);if(!isFinite(n)||n<=0)return 0;return Math.round(n*100);}
+function currentGiveCents(){var inp=$('gcustom');if(inp&&inp.value.trim())return parseGiveInput(inp.value);return giveAmount;}
+function updateGiveBtn(){var b=$('givebtn');if(!b)return;var c=currentGiveCents();b.textContent=c>0?('Give '+money(c)):'Give';b.disabled=c<=0;}
+function renderGiving(){
+  var card=$('givingcard');
+  card.innerHTML='';
+  if(!D.givingEnabled){card.style.display='none';return;}
+  card.style.display='block';
+  card.appendChild(el('div','cardtitle serif','Support this event'));
+  if(D.givingPrompt)card.appendChild(el('div','giveprompt',D.givingPrompt));
+  if(D.donationsCents>0){
+    var raised=el('div','raised');
+    raised.appendChild(el('b',null,money(D.donationsCents)));
+    var suffix=' raised'+(D.donationsCount?(' · '+D.donationsCount+' gift'+(D.donationsCount===1?'':'s')):'');
+    raised.appendChild(document.createTextNode(suffix));
+    card.appendChild(raised);
+  }
+  var amts=D.suggestedAmountsCents||[];
+  if(amts.length){
+    var grid=el('div','amtgrid');
+    amts.forEach(function(c){
+      var b=el('button','amtbtn'+(giveAmount===c?' sel':''),money(c));
+      b.onclick=function(){giveAmount=c;renderGiving();};
+      grid.appendChild(b);
+    });
+    card.appendChild(grid);
+  }
+  var fld=el('div','amtcustom');
+  fld.appendChild(el('span','cur','$'));
+  var inp=el('input');inp.id='gcustom';inp.type='text';inp.inputMode='decimal';inp.placeholder='Other amount';
+  inp.oninput=function(){
+    giveAmount=0;
+    var sibs=card.querySelectorAll('.amtbtn');
+    for(var i=0;i<sibs.length;i++)sibs[i].classList.remove('sel');
+    updateGiveBtn();
+  };
+  fld.appendChild(inp);
+  card.appendChild(fld);
+  var give=el('button','buybtn');give.id='givebtn';
+  give.onclick=function(){startDonation(currentGiveCents());};
+  card.appendChild(give);
+  updateGiveBtn();
+}
+function startDonation(amountCents){
+  if(!amountCents||amountCents<=0)return;
+  var run=function(name,email){
+    return api('/api/tickets/donate',{slug:SLUG,token:TOKEN||undefined,name:name,email:email,amountCents:amountCents})
+      .then(function(res){
+        saveToken(res.token);
+        if(res.kind==='stripe'){window.location.href=res.url;return;}
+        return null;
+      });
+  };
+  if(TOKEN&&D.viewer){run(D.viewer.name,D.viewer.email).catch(function(e){toast(e.message);});}
+  else openSheet('Make it count 🙏','Your receipt lands in your inbox.','Continue to payment',run);
 }
 
 /* ── rsvp card ── */
@@ -355,6 +414,7 @@ function renderActivity(){
 
 function renderAll(){
   renderTickets();
+  renderGiving();
   renderRsvp();
   renderGuests();
   renderActivity();
@@ -370,7 +430,8 @@ document.addEventListener('click',function(){
   var c=q.get('checkout');
   if(c==='success')toast('🎟️ Payment received — your tickets are in your inbox!');
   if(c==='canceled')toast('Checkout canceled — your spot is still open.');
-  if(c)history.replaceState(null,'',window.location.pathname);
+  if(q.get('donated')==='1')toast('🙏 Thank you for your gift — a receipt is on its way!');
+  if(c||q.get('donated'))history.replaceState(null,'',window.location.pathname);
 })();
 
 renderAll();

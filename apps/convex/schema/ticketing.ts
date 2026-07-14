@@ -46,6 +46,10 @@ export const eventPages = defineTable({
   // Feature toggles.
   rsvpEnabled: v.optional(v.boolean()), // default true
   ticketsEnabled: v.optional(v.boolean()), // default false until types exist
+  // Giving (donations) — the "support this event" surface on the page.
+  givingEnabled: v.optional(v.boolean()), // default false
+  givingPrompt: v.optional(v.string()), // custom "support this event" copy
+  suggestedAmountsCents: v.optional(v.array(v.number())), // preset buttons (ints)
   showGuestList: v.optional(v.boolean()), // default true
   // Partiful-style gate: activity feed visible only after you RSVP.
   activityRestricted: v.optional(v.boolean()), // default true
@@ -56,6 +60,9 @@ export const eventPages = defineTable({
   notGoingCount: v.number(),
   ticketsSoldCount: v.number(),
   revenueCents: v.number(),
+  // Giving rollup (siblings of revenueCents; default 0 when unset).
+  donationsCents: v.optional(v.number()),
+  donationsCount: v.optional(v.number()),
   createdBy: v.id("users"),
   createdAt: v.number(),
   updatedAt: v.number(),
@@ -154,6 +161,38 @@ export const ticketOrders = defineTable({
   stripePaymentIntentId: v.optional(v.string()),
   createdAt: v.number(),
   updatedAt: v.number(),
+})
+  .index("by_event", ["eventId"])
+  .index("by_stripe_session", ["stripeCheckoutSessionId"]);
+
+/**
+ * A donation to an event — the money flow the schema couldn't record before
+ * (a donations QR + a cash merch table). Shaped like `ticketOrders` minus
+ * line-items. Card donations arrive `pending` via Stripe and settle on the
+ * webhook (mirrors orders); manual cash/other entries are inserted `paid`.
+ */
+export const donations = defineTable({
+  chapterId: v.id("chapters"),
+  eventId: v.id("events"),
+  name: v.string(),
+  email: v.optional(v.string()), // normalized lowercase
+  amountCents: v.number(), // int > 0
+  currency: v.string(), // "usd"
+  method: v.union(v.literal("card"), v.literal("cash"), v.literal("other")),
+  status: v.union(
+    v.literal("pending"),
+    v.literal("paid"),
+    v.literal("refunded"),
+    v.literal("canceled"),
+    v.literal("expired"),
+  ),
+  note: v.optional(v.string()),
+  rsvpId: v.optional(v.id("rsvps")),
+  stripeCheckoutSessionId: v.optional(v.string()),
+  stripePaymentIntentId: v.optional(v.string()),
+  // Set for manual entries (the admin who recorded it).
+  recordedBy: v.optional(v.id("users")),
+  createdAt: v.number(),
 })
   .index("by_event", ["eventId"])
   .index("by_stripe_session", ["stripeCheckoutSessionId"]);

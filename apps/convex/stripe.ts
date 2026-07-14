@@ -115,6 +115,83 @@ export const createCheckout = action({
   },
 });
 
+/** Result of createDonationCheckout: always a Stripe redirect (amount > 0). */
+type DonationResult = { kind: "stripe"; url: string; token: string };
+
+/**
+ * PUBLIC entry point for the landing page's "Give" flow. No auth — the
+ * published page + `givingEnabled` are the access control (validated inside
+ * `prepareDonation`). Always a Stripe redirect: donations are always > 0, so
+ * there is no free path. Mirrors `createCheckout`.
+ */
+export const createDonationCheckout = action({
+  args: {
+    slug: v.string(),
+    name: v.string(),
+    email: v.string(),
+    amountCents: v.number(),
+    token: v.optional(v.string()),
+  },
+  handler: async (ctx, args): Promise<DonationResult> => {
+    const prepared = await ctx.runMutation(internal.giving.prepareDonation, {
+      slug: args.slug,
+      name: args.name,
+      email: args.email,
+      amountCents: args.amountCents,
+      token: args.token,
+    });
+
+    const secretKey = process.env.STRIPE_SECRET_KEY;
+    if (!secretKey) {
+      throw new ConvexError({
+        code: "PAYMENTS_NOT_CONFIGURED",
+        message:
+          "Giving isn't available yet — payments are still being set up.",
+      });
+    }
+
+    // One line item: the donation itself.
+    const body = new URLSearchParams();
+    body.set("mode", "payment");
+    body.set("customer_email", args.email.trim().toLowerCase());
+    body.set("success_url", `${siteUrl()}/e/${args.slug}?donated=1`);
+    body.set("cancel_url", `${siteUrl()}/e/${args.slug}`);
+    body.set("metadata[donationId]", String(prepared.donationId));
+    body.set("line_items[0][quantity]", "1");
+    body.set("line_items[0][price_data][currency]", "usd");
+    body.set(
+      "line_items[0][price_data][unit_amount]",
+      String(prepared.amountCents),
+    );
+    body.set(
+      "line_items[0][price_data][product_data][name]",
+      `Donation — ${prepared.eventName}`,
+    );
+
+    const response = await fetch(`${STRIPE_API}/checkout/sessions`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${secretKey}`,
+        "Content-Type": "application/x-www-form-urlencoded",
+      },
+      body: body.toString(),
+    });
+    if (!response.ok) {
+      console.error("[stripe] donation session failed:", await response.text());
+      throw new ConvexError({
+        code: "STRIPE_ERROR",
+        message: "Couldn't start your donation. Please try again.",
+      });
+    }
+    const session = (await response.json()) as { id: string; url: string };
+    await ctx.runMutation(internal.giving.attachDonationSession, {
+      donationId: prepared.donationId,
+      sessionId: session.id,
+    });
+    return { kind: "stripe", url: session.url, token: prepared.guestToken };
+  },
+});
+
 // ── Webhook signature verification (used by http.ts) ────────────────────────
 
 function hexToBytes(hex: string): Uint8Array {
