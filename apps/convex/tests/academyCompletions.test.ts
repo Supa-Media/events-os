@@ -12,6 +12,7 @@ import { api } from "../_generated/api";
 import type { Id } from "../_generated/dataModel";
 import {
   ACADEMY_CAPSTONE_SECTIONS,
+  ACADEMY_COURSES,
   ACADEMY_SECTIONS,
   defaultStatusOptions,
   getAcademyCourse,
@@ -52,14 +53,23 @@ function terminalStatusFor(module: string): string {
   return terminal.value;
 }
 
-/** Pass every quiz section in curriculum order. */
+/**
+ * Pass every quiz section, submitting in PER-COURSE order. A module's quiz
+ * unlocks off its course predecessor, and comms-lead's order (tab-crew-duties →
+ * tab-comms) is inverted relative to curriculum order, so a global-order walk
+ * would trip QUIZ_LOCKED on tab-comms. Iterating courses in moduleSlugs order
+ * can't.
+ */
 async function passAllQuizzes(s: LearnerSetup) {
-  for (const section of ACADEMY_SECTIONS) {
-    if (section.quiz.length === 0) continue;
-    await s.as.mutation(api.academy.submitQuiz, {
-      sectionSlug: section.slug,
-      answers: correctAnswers(section.slug),
-    });
+  for (const course of ACADEMY_COURSES) {
+    for (const slug of course.moduleSlugs) {
+      const section = ACADEMY_SECTIONS.find((x) => x.slug === slug)!;
+      if (section.quiz.length === 0) continue;
+      await s.as.mutation(api.academy.submitQuiz, {
+        sectionSlug: slug,
+        answers: correctAnswers(slug),
+      });
+    }
   }
 }
 

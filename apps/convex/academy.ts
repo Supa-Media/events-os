@@ -35,7 +35,7 @@ import {
   defaultStatusValue,
   getAcademySection,
   isCompleteStatus,
-  previousAcademySection,
+  previousModuleInCourse,
   requiredModuleSlugsForCourse,
   type AcademySection,
   type AcademyTrainingKind,
@@ -476,8 +476,10 @@ type CapstoneTraining = {
  * path renders. `passed` is the canonical per-section flag: quiz sections pass
  * via a perfect quiz (persisted `passedAt`); capstones via their training
  * event's quests (stored `passedAt` stamped by syncCapstone, OR live-derived
- * as a fallback). `unlocked` mirrors the sequential rule the mutations
- * enforce (reading is never locked). Capstone entries additionally carry
+ * as a fallback). `unlocked` mirrors the PER-COURSE sequential rule the
+ * mutations enforce — a module opens once the module before it IN ITS COURSE
+ * is passed, and every course's first module opens from the start; there is no
+ * hard gate across courses (reading is never locked). Capstone entries carry
  * `training` — their sandbox's live quest tally — so the hub renders capstone
  * rows from this query alone. `completed`/`total` count REQUIRED sections
  * only; optional bonus sections are listed but never counted.
@@ -493,7 +495,9 @@ export const myProgress = query({
         quizTotal: null as number | null,
         passedAt: null as number | null,
         passed: false,
-        unlocked: s.order === 1,
+        // Per-course unlock: with zero progress, every course's first module is
+        // open (first-in-course → no predecessor). No global order-1 gate.
+        unlocked: previousModuleInCourse(s.slug) == null,
         training: null as CapstoneTraining,
       })),
       completed: 0,
@@ -539,7 +543,9 @@ export const myProgress = query({
     };
 
     // Resolve passed per section IN CURRICULUM ORDER — a capstone's unlock
-    // depends on the section before it, which may itself be a capstone.
+    // depends on the module before it IN ITS COURSE, which for the capstones
+    // (owning-an-event) is being-an-owner then the prior capstone; both sit
+    // earlier in curriculum order, so they're already resolved when we get here.
     const passedBySlug = new Map<string, boolean>();
     const trainingBySlug = new Map<string, CapstoneTraining>();
     for (const s of ACADEMY_SECTIONS) {
@@ -548,9 +554,9 @@ export const myProgress = query({
         continue;
       }
       const storedPass = bySlug.get(s.slug)?.passedAt != null;
-      const previous = previousAcademySection(s.slug);
+      const previousSlug = previousModuleInCourse(s.slug);
       const unlockedNow =
-        previous == null || passedBySlug.get(previous.slug) === true;
+        previousSlug == null || passedBySlug.get(previousSlug) === true;
 
       // Short-circuits: a still-locked (and unpassed) capstone can't have a
       // sandbox, so no quest reads at all; a stored pass settles `passed`
@@ -589,7 +595,7 @@ export const myProgress = query({
 
     const sections = ACADEMY_SECTIONS.map((s) => {
       const row = bySlug.get(s.slug);
-      const previous = previousAcademySection(s.slug);
+      const previousSlug = previousModuleInCourse(s.slug);
       return {
         slug: s.slug,
         readAt: row?.readAt ?? null,
@@ -597,13 +603,15 @@ export const myProgress = query({
         quizTotal: row?.quizTotal ?? null,
         passedAt: row?.passedAt ?? null,
         passed: passedBySlug.get(s.slug) === true,
-        // A section you already passed is always unlocked — a mid-curriculum
-        // INSERT (a new, unpassed section) must never re-lock the passed
-        // sections after it. Mirrors submitQuiz's `storedPass || unlockedNow`.
+        // Per-course: unlocked once the module before it IN ITS COURSE is
+        // passed, or when it's first-in-course. A module you already passed is
+        // always unlocked — a mid-course INSERT (a new, unpassed predecessor)
+        // must never re-lock a module people already finished. Mirrors
+        // submitQuiz's `storedPass || unlockedNow`.
         unlocked:
           passedBySlug.get(s.slug) === true ||
-          previous == null ||
-          passedBySlug.get(previous.slug) === true,
+          previousSlug == null ||
+          passedBySlug.get(previousSlug) === true,
         training: trainingBySlug.get(s.slug) ?? null,
       };
     });
@@ -669,12 +677,14 @@ export const submitQuiz = mutation({
     const me = await requirePerson(ctx, chapterId, userId);
     const bySlug = await progressBySlug(ctx, chapterId, me);
 
-    // Sequential unlock: the previous section's quiz must be passed first.
-    // (Reading is never gated — only completing out of order is. Every quiz
-    // section's predecessor is itself a quiz section, so the stored stamp is
-    // the whole answer here.) A section the caller ALREADY passed stays open
-    // for retakes even when a newly-inserted earlier section is unpassed.
-    const previous = previousAcademySection(sectionSlug);
+    // Per-course sequential unlock: the previous module IN THIS COURSE must be
+    // passed first; a module that's first-in-its-course opens immediately (no
+    // hard gate across courses). Reading is never gated — only completing out
+    // of order is. Every quiz module's course-predecessor is itself a quiz
+    // module, so the stored stamp is the whole answer here. A module the caller
+    // ALREADY passed stays open for retakes even when its predecessor is unpassed.
+    const previousSlug = previousModuleInCourse(sectionSlug);
+    const previous = previousSlug ? getAcademySection(previousSlug) : undefined;
     const alreadyPassed = bySlug.get(sectionSlug)?.passedAt != null;
     if (
       !alreadyPassed &&
@@ -1119,9 +1129,15 @@ export const startTraining = mutation({
     // path where resolve-or-create is the right person lookup.
     const me = await getOrCreateOwnerPerson(ctx, chapterId, userId, now);
 
-    // The capstone unlocks like every other section: previous section passed.
+    // The capstone unlocks per-course: the previous module IN ITS COURSE must
+    // be passed (owning-an-event order: being-an-owner → capstone-join →
+    // capstone-birthday → capstone-worship). A quiz predecessor (being-an-owner)
+    // passes via its stored stamp; a preceding capstone via stamp OR live quest
+    // completion. First-in-course would open immediately, but every capstone has
+    // a predecessor within owning-an-event, so `previous` is always set here.
     const bySlug = await progressBySlug(ctx, chapterId, me);
-    const previous = previousAcademySection(section.slug);
+    const previousSlug = previousModuleInCourse(section.slug);
+    const previous = previousSlug ? getAcademySection(previousSlug) : undefined;
     if (previous) {
       const previousPassed = previous.capstone
         ? await capstonePassedFor(ctx, chapterId, me, previous, bySlug)

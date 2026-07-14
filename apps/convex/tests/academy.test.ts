@@ -15,12 +15,14 @@ import { api, internal } from "../_generated/api";
 import type { Id } from "../_generated/dataModel";
 import {
   ACADEMY_CAPSTONE_SECTIONS,
+  ACADEMY_COURSES,
   ACADEMY_INTERACTIVE_KINDS,
   ACADEMY_REQUIRED_SECTION_COUNT,
   ACADEMY_SECTIONS,
   ACADEMY_SECTION_COUNT,
   ACADEMY_TRAINING_TEMPLATES,
   defaultStatusOptions,
+  previousModuleInCourse,
   type ModuleKey,
 } from "@events-os/shared";
 import { newT, run, setupChapter, type ChapterSetup } from "./setup.helpers";
@@ -80,14 +82,24 @@ async function setupLearner(
   return { ...s, personId };
 }
 
-/** Pass every quiz section in order (unlocks the first capstone). */
+/**
+ * Pass every quiz section (unlocks being-an-owner → the first capstone).
+ * Submits in PER-COURSE order: a module's quiz unlocks off its course
+ * predecessor, and comms-lead's teaching order (tab-crew-duties → tab-comms)
+ * is INVERTED relative to curriculum order (tab-comms sits earlier globally),
+ * so iterating ACADEMY_SECTIONS would hit tab-comms before its predecessor is
+ * passed and trip QUIZ_LOCKED. Walking courses in moduleSlugs order can't.
+ */
 async function passAllQuizzes(s: LearnerSetup) {
-  for (const section of ACADEMY_SECTIONS) {
-    if (section.quiz.length === 0) continue;
-    await s.as.mutation(api.academy.submitQuiz, {
-      sectionSlug: section.slug,
-      answers: correctAnswers(section.slug),
-    });
+  for (const course of ACADEMY_COURSES) {
+    for (const slug of course.moduleSlugs) {
+      const section = ACADEMY_SECTIONS.find((x) => x.slug === slug)!;
+      if (section.quiz.length === 0) continue;
+      await s.as.mutation(api.academy.submitQuiz, {
+        sectionSlug: slug,
+        answers: correctAnswers(slug),
+      });
+    }
   }
 }
 
@@ -329,8 +341,12 @@ describe("quiz grading", () => {
     ).rejects.toThrow(/not a capstone/);
   });
 
-  test("quizzes unlock sequentially: section 2 is locked until section 1 passes", async () => {
+  test("within a course, module 2 is locked until module 1 passes (fundamentals)", async () => {
+    // SECTION_1 (what-is-events-os) and SECTION_2 (organizers-and-crew) are
+    // modules 1 and 2 of the fundamentals course — within-course ordering is
+    // still enforced under per-course unlock.
     const s = await setupLearner(newT());
+    expect(previousModuleInCourse(SECTION_2.slug)).toBe(SECTION_1.slug);
     await expect(
       s.as.mutation(api.academy.submitQuiz, {
         sectionSlug: SECTION_2.slug,
@@ -350,8 +366,19 @@ describe("quiz grading", () => {
 
     const progress = await s.as.query(api.academy.myProgress, {});
     const bySlug = new Map(progress.sections.map((x) => [x.slug, x]));
+    // anatomy-of-an-event is module 3 of fundamentals, right after the just-
+    // passed organizers-and-crew → unlocked.
     expect(bySlug.get(ACADEMY_SECTIONS[2].slug)!.unlocked).toBe(true);
-    expect(bySlug.get(ACADEMY_SECTIONS[3].slug)!.unlocked).toBe(false);
+    // being-an-owner is the FIRST module of a DIFFERENT course (owning-an-event)
+    // → open from the start under per-course unlock, even though nothing in that
+    // course is passed. Under the old global order it locked behind anatomy.
+    expect(ACADEMY_SECTIONS[3].slug).toBe("being-an-owner");
+    expect(previousModuleInCourse(ACADEMY_SECTIONS[3].slug)).toBeNull();
+    expect(bySlug.get(ACADEMY_SECTIONS[3].slug)!.unlocked).toBe(true);
+    // timing-and-offsets is module 4 of fundamentals; its course-predecessor
+    // (anatomy) isn't passed yet → still locked.
+    expect(ACADEMY_SECTIONS[4].slug).toBe("timing-and-offsets");
+    expect(bySlug.get(ACADEMY_SECTIONS[4].slug)!.unlocked).toBe(false);
   });
 
   test("a passed section stays unlocked (and retakeable) across a curriculum insert", async () => {
@@ -441,6 +468,100 @@ describe("quiz grading", () => {
   });
 });
 
+describe("per-course unlock (not global sequential)", () => {
+  test("with zero progress, exactly the course-first modules are unlocked", async () => {
+    const s = await setupLearner(newT());
+    const progress = await s.as.query(api.academy.myProgress, {});
+    const unlocked = new Set(
+      progress.sections.filter((x) => x.unlocked).map((x) => x.slug),
+    );
+    // Every course's first module opens from the start; nothing else does.
+    const firstInCourse = new Set(
+      ACADEMY_SECTIONS.filter(
+        (x) => previousModuleInCourse(x.slug) === null,
+      ).map((x) => x.slug),
+    );
+    expect(unlocked).toEqual(firstInCourse);
+    // One open door per course — five courses, five first modules.
+    expect(unlocked.size).toBe(ACADEMY_COURSES.length);
+  });
+
+  test("a course's FIRST module is submittable without passing any other course", async () => {
+    const s = await setupLearner(newT());
+    // Module 1 of event-lead, owning-an-event, and comms-lead respectively —
+    // each opens immediately. Global sequential order would have gated every
+    // one of these behind the sections that precede it in the curriculum.
+    for (const slug of ["tab-tasks", "being-an-owner", "tab-crew-duties"]) {
+      expect(previousModuleInCourse(slug)).toBeNull();
+      const res = await s.as.mutation(api.academy.submitQuiz, {
+        sectionSlug: slug,
+        answers: correctAnswers(slug),
+      });
+      expect(res.passed).toBe(true);
+    }
+  });
+
+  test("module 2 of a course is locked until module 1 of THAT course passes (comms-lead)", async () => {
+    const s = await setupLearner(newT());
+    // comms-lead order: tab-crew-duties (1) → tab-comms (2). tab-comms sits
+    // EARLIER in the global curriculum, so ONLY per-course unlock gates it —
+    // this is the case that would silently pass under the old global rule.
+    expect(previousModuleInCourse("tab-comms")).toBe("tab-crew-duties");
+    await expect(
+      s.as.mutation(api.academy.submitQuiz, {
+        sectionSlug: "tab-comms",
+        answers: correctAnswers("tab-comms"),
+      }),
+    ).rejects.toThrow(/first — sections complete in order/);
+    // Pass module 1; module 2 opens — no other course touched.
+    await s.as.mutation(api.academy.submitQuiz, {
+      sectionSlug: "tab-crew-duties",
+      answers: correctAnswers("tab-crew-duties"),
+    });
+    const res = await s.as.mutation(api.academy.submitQuiz, {
+      sectionSlug: "tab-comms",
+      answers: correctAnswers("tab-comms"),
+    });
+    expect(res.passed).toBe(true);
+  });
+
+  test("a one-module course (logistics-lead / tab-supplies) is unlocked from the start", async () => {
+    const s = await setupLearner(newT());
+    expect(previousModuleInCourse("tab-supplies")).toBeNull();
+    // Read layer agrees with enforcement: unlocked with zero progress…
+    const before = await s.as.query(api.academy.myProgress, {});
+    expect(
+      before.sections.find((x) => x.slug === "tab-supplies")!.unlocked,
+    ).toBe(true);
+    // …and submittable immediately, with nothing else passed.
+    const res = await s.as.mutation(api.academy.submitQuiz, {
+      sectionSlug: "tab-supplies",
+      answers: correctAnswers("tab-supplies"),
+    });
+    expect(res.passed).toBe(true);
+  });
+
+  test("capstone-join unlocks once being-an-owner passes, independent of other courses", async () => {
+    const s = await setupLearner(newT());
+    // Pass ONLY being-an-owner (first-in-course → submittable immediately) —
+    // no fundamentals, comms, event, or logistics module passed at all.
+    await s.as.mutation(api.academy.submitQuiz, {
+      sectionSlug: "being-an-owner",
+      answers: correctAnswers("being-an-owner"),
+    });
+    const progress = await s.as.query(api.academy.myProgress, {});
+    expect(
+      progress.sections.find((x) => x.slug === CAPSTONE_JOIN.slug)!.unlocked,
+    ).toBe(true);
+    // …and startTraining is allowed — the capstone gates ONLY on its course
+    // predecessor (being-an-owner), never on the global-previous section.
+    const { eventId } = await s.as.mutation(api.academy.startTraining, {
+      capstoneSlug: CAPSTONE_JOIN.slug,
+    });
+    expect(eventId).toBeDefined();
+  });
+});
+
 describe("tenant isolation + chapterProgress gating", () => {
   test("progress lives per chapter — another chapter starts from zero", async () => {
     const t = newT();
@@ -525,8 +646,12 @@ describe("tenant isolation + chapterProgress gating", () => {
 });
 
 describe("the training-event capstones", () => {
-  test("startTraining is gated on the last quiz section (CAPSTONE_LOCKED)", async () => {
+  test("startTraining is gated on being-an-owner, its course-predecessor (CAPSTONE_LOCKED)", async () => {
+    // Per-course: capstone-join's predecessor in owning-an-event is
+    // being-an-owner (a quiz module), NOT the last global quiz section. A fresh
+    // learner hasn't passed it → locked.
     const s = await setupLearner(newT());
+    expect(previousModuleInCourse(CAPSTONE_JOIN.slug)).toBe("being-an-owner");
     const err = await s.as
       .mutation(api.academy.startTraining, { capstoneSlug: CAPSTONE_JOIN.slug })
       .then(() => null)

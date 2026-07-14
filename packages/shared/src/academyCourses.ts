@@ -161,6 +161,44 @@ export function courseForModuleSlug(sectionSlug: string): Course | undefined {
 }
 
 /**
+ * The course a section slug belongs to plus its 0-based position in that
+ * course's `moduleSlugs`, or null if the slug maps to no course. This is the
+ * anchor for PER-COURSE sequential unlock: a module unlocks off the module
+ * before it IN ITS OWN COURSE, not off the global curriculum order.
+ */
+export function moduleCourseIndex(
+  sectionSlug: string,
+): { course: Course; index: number } | null {
+  const course = courseForModuleSlug(sectionSlug);
+  if (!course) return null;
+  const index = course.moduleSlugs.indexOf(sectionSlug);
+  if (index < 0) return null;
+  return { course, index };
+}
+
+/**
+ * The module slug immediately before this one IN THE SAME COURSE, or null when
+ * the slug is first-in-course (no predecessor) or unmapped. This is the unlock
+ * predecessor the Academy gates on: a module opens once ITS course-predecessor
+ * is passed, and every course's first module opens immediately.
+ */
+export function previousModuleInCourse(sectionSlug: string): string | null {
+  const hit = moduleCourseIndex(sectionSlug);
+  if (!hit || hit.index === 0) return null;
+  return hit.course.moduleSlugs[hit.index - 1];
+}
+
+/**
+ * The module slug immediately after this one IN THE SAME COURSE, or null when
+ * the slug is last-in-course or unmapped.
+ */
+export function nextModuleInCourse(sectionSlug: string): string | null {
+  const hit = moduleCourseIndex(sectionSlug);
+  if (!hit) return null;
+  return hit.course.moduleSlugs[hit.index + 1] ?? null;
+}
+
+/**
  * The ordered `AcademySection` objects for a course's `moduleSlugs`. Unknown
  * course → empty array. Every mapped slug resolves (integrity check), so the
  * result has one entry per module.
