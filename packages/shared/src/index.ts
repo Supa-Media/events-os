@@ -176,7 +176,51 @@ export const CORE_MODULE_KEYS: ModuleKey[] = CORE_MODULES.map((m) => m.key);
  * routing would hijack its tab (e.g. a custom "Tickets" workstream would
  * always open the ticketing tool instead of its grid).
  */
-export const RESERVED_TAB_KEYS = ["overview", "tickets", "crew", "budget"] as const;
+export const RESERVED_TAB_KEYS = [
+  "overview",
+  "tickets",
+  "crew",
+  "budget",
+  "gear",
+] as const;
+
+// ── Inventory (chapter asset registry) ───────────────────────────────────────
+// The chapter's gear registry categories, in display order. Mirrors the
+// `BUDGET_CATEGORIES` pattern: a readonly tuple the Convex schema builds its
+// `v.union(...map(v.literal))` from, plus a display-label record. Assets are
+// chapter-owned; events RESERVE from them (see docs/plans/inventory.md).
+export const INVENTORY_CATEGORIES = [
+  "audio",
+  "power",
+  "lighting",
+  "staging",
+  "cabling",
+  "signage",
+  "transport",
+  "other",
+] as const;
+export type InventoryCategory = (typeof INVENTORY_CATEGORIES)[number];
+
+export const INVENTORY_CATEGORY_LABELS: Record<InventoryCategory, string> = {
+  audio: "Audio",
+  power: "Power",
+  lighting: "Lighting",
+  staging: "Staging",
+  cabling: "Cabling",
+  signage: "Signage",
+  transport: "Transport",
+  other: "Other",
+};
+
+/** An asset's physical condition. Optional — unset reads as "no note". */
+export const ASSET_CONDITIONS = ["ok", "needs_attention", "broken"] as const;
+export type AssetCondition = (typeof ASSET_CONDITIONS)[number];
+
+export const ASSET_CONDITION_LABELS: Record<AssetCondition, string> = {
+  ok: "OK",
+  needs_attention: "Needs attention",
+  broken: "Broken",
+};
 
 // ── Derived views of CORE_MODULES (single source of truth above) ─────────────
 export const MODULE_LABELS: Record<ModuleKey, string> = Object.fromEntries(

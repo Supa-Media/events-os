@@ -33,6 +33,7 @@ import {
   blasts,
 } from "./schema/ticketing";
 import { budgetLineItems } from "./schema/budget";
+import { assets, assetReservations } from "./schema/inventory";
 import { docs } from "./schema/docs";
 import { siteMarkers, siteShapes, siteMapPlacements } from "./schema/siteMap";
 import {
@@ -148,6 +149,12 @@ const schema = defineSchema({
   // Budget (per-line budget for an event — planned/actual/receipt per line).
   // Coexists with the coarse `events.budget` headline (see docs/plans/budget.md).
   budgetLineItems,
+
+  // Inventory (M5.5) — chapter-owned asset registry + per-event reservations.
+  // The first chapter-level typed entity; events RESERVE from the registry and
+  // overbooking is computed from live reservations (see docs/plans/inventory.md).
+  assets,
+  assetReservations,
 
   // Docs (the standalone targets behind How-To cells).
   docs,

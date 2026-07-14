@@ -30,6 +30,7 @@ import {
 import { ModuleSection } from "../../../components/event/ModuleSection";
 import TicketingTab from "../../../components/event/ticketing/TicketingTab";
 import BudgetTab from "../../../components/event/budget/BudgetTab";
+import GearTab from "../../../components/event/gear/GearTab";
 import { colors, modulePhase } from "../../../lib/theme";
 import { usePhasePulse } from "../../../lib/usePhasePulse";
 import {
@@ -284,7 +285,7 @@ export default function EventDetailScreen() {
   // matches nothing). Any other unknown/stale key falls back to the first area
   // tab.
   const activeTab =
-    tab === "tickets" || tab === "budget"
+    tab === "tickets" || tab === "budget" || tab === "gear"
       ? tab
       : tabs.some((t) => t.key === tab)
         ? (tab as string)
@@ -587,6 +588,8 @@ export default function EventDetailScreen() {
               ticketsActive={activeTab === "tickets"}
               onBudget={() => router.setParams({ tab: "budget" })}
               budgetActive={activeTab === "budget"}
+              onGear={() => router.setParams({ tab: "gear" })}
+              gearActive={activeTab === "gear"}
               onSongs={() => router.push(`/event/${eventId}/songs`)}
               meView={meView}
               onToggleMeView={() => setMeView((v) => !v)}
@@ -645,6 +648,23 @@ export default function EventDetailScreen() {
               </Text>
             </Pressable>
             <BudgetTab eventId={eventId} />
+          </Narrow>
+        ) : activeTab === "gear" ? (
+
+          /* ── Gear: this event's reservations against the chapter inventory.
+                An operational tool opened from the tools row, so it gets the
+                same "Back to planning" affordance. ────────────────────────── */
+          <Narrow>
+            <Pressable
+              onPress={() => router.setParams({ tab: fallbackTab })}
+              className="mb-2 flex-row items-center gap-1.5 self-start active:opacity-70"
+            >
+              <Icon name="arrow-left" size={15} color={colors.muted} />
+              <Text className="text-sm font-medium text-muted">
+                Back to planning
+              </Text>
+            </Pressable>
+            <GearTab eventId={eventId} />
           </Narrow>
         ) : activeTab === "crew" ? (
           /* ── Crew & Duties: WHO is on each team (engagements) plus, below,

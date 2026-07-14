@@ -26,6 +26,7 @@ import type * as events from "../events.js";
 import type * as giving from "../giving.js";
 import type * as guests from "../guests.js";
 import type * as http from "../http.js";
+import type * as inventory from "../inventory.js";
 import type * as items from "../items.js";
 import type * as lib_access from "../lib/access.js";
 import type * as lib_context from "../lib/context.js";
@@ -114,6 +115,7 @@ declare const fullApi: ApiFromModules<{
   giving: typeof giving;
   guests: typeof guests;
   http: typeof http;
+  inventory: typeof inventory;
   items: typeof items;
   "lib/access": typeof lib_access;
   "lib/context": typeof lib_context;

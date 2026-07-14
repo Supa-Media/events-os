@@ -22,6 +22,9 @@ const NAV: NavEntry[] = [
   { label: "People", icon: "users", path: "/people" },
   { label: "Work", icon: "git-branch", path: "/team" },
   { label: "Songs", icon: "music", path: "/song-library" },
+  // Inventory — the chapter gear registry (logistics-lead domain). Gated
+  // admin-or-lead in useNav, right after Songs.
+  { label: "Inventory", icon: "package", path: "/inventory" },
   // The Academy is for everyone — never permission-gated (see useNav).
   { label: "Academy", icon: "award", path: "/academy" },
 ];
@@ -45,6 +48,7 @@ function useNav(): NavEntry[] {
       case "/briefing":
         return tier === "volunteer";
       case "/people":
+      case "/inventory":
         return tier === "admin" || tier === "lead";
       case "/team":
         // Work: everyone except volunteer — but keep the teamView nuance so a
