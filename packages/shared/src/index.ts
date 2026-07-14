@@ -1602,3 +1602,6 @@ export * from "./playbook";
 
 // ── The Academy curriculum (sections + quizzes + capstone constants) ──────────
 export * from "./academy";
+
+// ── The Academy course/theme layer (themes → courses → module slugs) ──────────
+export * from "./academyCourses";
