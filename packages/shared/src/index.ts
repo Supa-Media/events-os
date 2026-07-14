@@ -1907,3 +1907,6 @@ export * from "./academy";
 
 // ── The Academy course/theme layer (themes → courses → module slugs) ──────────
 export * from "./academyCourses";
+
+// ── Finance (funds, budgets, transactions, reimbursements, cards, roles) ──────
+export * from "./finance";

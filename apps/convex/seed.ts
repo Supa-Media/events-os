@@ -33,6 +33,7 @@ import { requireUserId } from "./lib/context";
 import { isSuperuser } from "./lib/superuser";
 import { instantiateEvent, toSlug, seedTemplateRoles } from "./lib/templates";
 import { seedPlatformGuidesForChapter } from "./lib/platformGuides";
+import { seedChapterFinance } from "./lib/seed/finance";
 import {
   type ItemRow,
   phoneKey,
@@ -596,6 +597,9 @@ export const seedDemoData = mutation({
 
     // ── Platform enablement guides (docs/guides/*.md → markdown docs) ────────
     await seedPlatformGuidesForChapter(ctx, chapterId);
+
+    // ── Finance: default funds, teams, + the admin's manager finance role ────
+    await seedChapterFinance(ctx, chapterId, userId as Id<"users">, now);
 
     // ── Sample upcoming WwS event (~21 days out) ─────────────────────────────
     const eventDate = now + 21 * DAY_MS;
