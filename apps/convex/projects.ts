@@ -283,7 +283,13 @@ export const comments = query({
 export const updateLog = query({
   args: { projectId: v.id("projects") },
   handler: async (ctx, { projectId }) => {
-    const project = await requireOwned(ctx, "projects", projectId, "Project");
+    // Resolve gracefully (like `get`): a shared link to a deleted or foreign
+    // project must return null, never throw — otherwise this query (mounted
+    // unconditionally on the project page) trips the app's error screen.
+    const chapterId = await getChapterIdOrNull(ctx);
+    if (!chapterId) return null;
+    const project = await ctx.db.get(projectId);
+    if (!project || project.chapterId !== chapterId) return null;
     if (!(await canViewChapterWork(ctx, project.chapterId))) return null;
     const rows = await ctx.db
       .query("projectUpdates")

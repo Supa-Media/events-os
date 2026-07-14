@@ -804,5 +804,12 @@ describe("project update log", () => {
     expect(
       await asVisitor.query(api.projects.updateLog, { projectId: p }),
     ).toBeNull();
+
+    // A deleted project resolves to null, NOT a throw — a shared link to a
+    // gone project must degrade gracefully, never trip the app's error screen.
+    await s.as.mutation(api.projects.remove, { projectId: p });
+    expect(
+      await asCara.query(api.projects.updateLog, { projectId: p }),
+    ).toBeNull();
   });
 });

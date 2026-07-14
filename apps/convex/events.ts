@@ -17,6 +17,7 @@ import {
   isCompleteStatus,
   isOperationalEvent,
   isPastEvent,
+  PAST_EVENT_GRACE_MS,
   itemScore,
   itemPhase,
   currentPhase,
@@ -1214,26 +1215,26 @@ export const past = query({
     const chapterId = await getChapterIdOrNull(ctx);
     if (!chapterId) return [];
     const now = Date.now();
-    // Walk the chapter's events newest-first by date and take the first 60 that
-    // are actually past + operational + not cancelled — the index keeps this
-    // bounded without scanning the whole table.
-    const past: Doc<"events">[] = [];
-    for await (const e of ctx.db
+    // Range-scan the index straight to past dates (eventDate < now - grace),
+    // newest-first — so future/current events are never read. `isPastEvent`'s
+    // cutoff is `eventDate + grace < now`, i.e. `eventDate < now - grace`. Read
+    // a little extra (cancelled/training are filtered out) then cap at 60.
+    const cutoff = now - PAST_EVENT_GRACE_MS;
+    const rows = await ctx.db
       .query("events")
       .withIndex("by_chapter_date", (q) =>
-        q.eq("chapterId", chapterId as Id<"chapters">),
+        q.eq("chapterId", chapterId as Id<"chapters">).lt("eventDate", cutoff),
       )
-      .order("desc")) {
-      if (e.status === "cancelled" || !isOperationalEvent(e)) continue;
-      if (!isPastEvent(e.eventDate, now)) continue;
-      past.push(e);
-      if (past.length >= 60) break;
-    }
+      .order("desc")
+      .take(120);
+    const past = rows
+      .filter((e) => e.status !== "cancelled" && isOperationalEvent(e))
+      .slice(0, 60);
 
     const enriched = await Promise.all(
       past.map((event) => enrichEvent(ctx, event, now)),
     );
-    return enriched; // already newest-first from the index walk
+    return enriched; // already newest-first from the index range
   },
 });
 
