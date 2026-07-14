@@ -264,9 +264,9 @@ export function WorkloadView({
   const ownRoots = rootsByOwner.get(person._id) ?? [];
   const ownResponsibilities = respFor(person._id);
   const ownCheckIns = checkInsByPerson.get(person._id) ?? [];
-  // Can the caller manage THIS person's work (owner reassignment, editable
-  // cards, quick-add)? Their own work, their subtree, or anyone as an admin —
-  // but NOT a peer or someone up-chain they can only see through transparency.
+  // Anyone can EDIT project fields now (the update log keeps it accountable),
+  // so cards are editable everywhere. `canManageThis` gates the two things that
+  // stay scoped: deleting a project and reassigning its owner (shown chip).
   const canManageThis = canManagePerson(person._id);
   const showOwner = canManageThis;
   // Duty editing is a manager/admin capability (server: requireManagerOrAdmin),
@@ -373,27 +373,24 @@ export function WorkloadView({
           title="Projects"
           count={ownRoots.length}
           right={
-            canManageThis ? (
-              <Button
-                title="Add project"
-                icon="plus"
-                size="sm"
-                variant="secondary"
-                onPress={() =>
-                  void createProject({
-                    name: "New project",
-                    ownerPersonId: person._id,
-                  }).catch(alertError)
-                }
-              />
-            ) : undefined
+            <Button
+              title="Add project"
+              icon="plus"
+              size="sm"
+              variant="secondary"
+              onPress={() =>
+                void createProject({
+                  name: "New project",
+                  ownerPersonId: person._id,
+                }).catch(alertError)
+              }
+            />
           }
         />
         {ownRoots.length === 0 ? (
           <Text className="text-sm text-faint">
-            {canManageThis
-              ? "No projects tracked yet — add one to start following this person's work."
-              : "No projects tracked yet."}
+            No projects tracked yet — add one to start following this person's
+            work.
           </Text>
         ) : (
           <View style={{ gap: spacing.sm }}>
@@ -404,7 +401,7 @@ export function WorkloadView({
                 childrenOf={projectTree}
                 peopleById={peopleById}
                 showOwner={showOwner}
-                readOnly={!canManageThis}
+                canManage={canManageThis}
                 showOpenPage
                 partOf={partOfFor(p)}
               />
@@ -490,20 +487,17 @@ export function WorkloadView({
                     projectTree={projectTree}
                     peopleById={peopleById}
                     showOwner={canManageMember}
-                    readOnly={!canManageMember}
+                    canManage={canManageMember}
                     partOfFor={partOfFor}
                     callerPersonId={checkIns?.callerPersonId ?? null}
                     canLog={canLogFor(m._id)}
                     onLog={() => setCheckInFor({ _id: m._id, name: m.name })}
                     onOpen={() => router.push(`/team/${m._id}` as any)}
-                    onAddProject={
-                      canManageMember
-                        ? () =>
-                            void createProject({
-                              name: "New project",
-                              ownerPersonId: m._id,
-                            }).catch(alertError)
-                        : undefined
+                    onAddProject={() =>
+                      void createProject({
+                        name: "New project",
+                        ownerPersonId: m._id,
+                      }).catch(alertError)
                     }
                     onAddDuty={
                       caller.canManage && canManageMember
@@ -575,7 +569,7 @@ export function WorkloadView({
           childrenOf={projectTree}
           peopleById={peopleById}
           showOwner={showOwner}
-          readOnly={!canManageThis}
+          canManage={canManageThis}
           onClose={() => setFullProjectId(null)}
         />
       ) : null}
@@ -593,14 +587,14 @@ function FullProjectModal({
   childrenOf,
   peopleById,
   showOwner,
-  readOnly,
+  canManage,
   onClose,
 }: {
   project: ProjectDoc | null;
   childrenOf: Map<Id<"projects">, ProjectDoc[]>;
   peopleById: Map<Id<"people">, string>;
   showOwner: boolean;
-  readOnly: boolean;
+  canManage: boolean;
   onClose: () => void;
 }) {
   return (
@@ -632,7 +626,7 @@ function FullProjectModal({
                 childrenOf={childrenOf}
                 peopleById={peopleById}
                 showOwner={showOwner}
-                readOnly={readOnly}
+                canManage={canManage}
                 defaultExpanded
               />
             ) : (
@@ -656,7 +650,7 @@ function TeamMemberBlock({
   projectTree,
   peopleById,
   showOwner,
-  readOnly,
+  canManage,
   partOfFor,
   callerPersonId,
   canLog,
@@ -672,8 +666,8 @@ function TeamMemberBlock({
   projectTree: Map<Id<"projects">, ProjectDoc[]>;
   peopleById: Map<Id<"people">, string>;
   showOwner: boolean;
-  /** The caller can't manage this member — cards render read-only. */
-  readOnly: boolean;
+  /** Whether the caller may delete this member's projects (edits are open). */
+  canManage: boolean;
   /** "Part of {parent}" chip data for cross-assigned sub-project roots. */
   partOfFor: (
     p: ProjectDoc,
@@ -751,7 +745,7 @@ function TeamMemberBlock({
               childrenOf={projectTree}
               peopleById={peopleById}
               showOwner={showOwner}
-              readOnly={readOnly}
+              canManage={canManage}
               showOpenPage
               partOf={partOfFor(p)}
             />

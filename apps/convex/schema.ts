@@ -16,6 +16,7 @@ import { people, engagements, templatePeople } from "./schema/people";
 import {
   projects,
   projectComments,
+  projectUpdates,
   projectEmailTokens,
 } from "./schema/projects";
 import { responsibilities, checkIns } from "./schema/responsibilities";
@@ -123,6 +124,7 @@ const schema = defineSchema({
   // + their running comment history + email-action capability tokens.
   projects,
   projectComments,
+  projectUpdates,
   projectEmailTokens,
 
   // Responsibilities (recurring duties, fanned out by role) + 1:1 check-ins.

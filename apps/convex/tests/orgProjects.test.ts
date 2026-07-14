@@ -412,58 +412,42 @@ describe("access control", () => {
     expect(await names(asBob)).toHaveLength(5);
     expect(await names(asCara)).toHaveLength(5);
 
-    // Bob manages his subtree's work (incl. the unowned sub under his project)…
+    // EDITING is open now: Bob (and even Cara, a plain member) can update any
+    // project in the chapter, including up-chain work and owner reassignment.
     await asBob.mutation(api.projects.update, {
       projectId: pSub,
       statusNote: "On track",
     });
-    // …but not work outside it, and he can't hand work out of his subtree.
-    await expect(
-      asBob.mutation(api.projects.update, {
-        projectId: pAlice,
-        statusNote: "Nope",
-      }),
-    ).rejects.toThrow(ConvexError);
-    await expect(
-      asBob.mutation(api.projects.create, {
-        name: "For Alice",
-        ownerPersonId: alice,
-      }),
-    ).rejects.toThrow(ConvexError);
-    await expect(
-      asBob.mutation(api.projects.update, {
-        projectId: pBob,
-        ownerPersonId: alice,
-      }),
-    ).rejects.toThrow(ConvexError);
-    await expect(
-      asBob.mutation(api.projects.remove, { projectId: pAlice }),
-    ).rejects.toThrow(ConvexError);
-
-    // Cara (no reports) still manages her OWN work — even though the
-    // transparent list now shows her the whole chapter's projects.
-    const caraProjects = await asCara.query(api.projects.list);
-    const carasOwn = caraProjects.find((p) => p.name === "Cara's project")!;
-    await asCara.mutation(api.projects.update, {
-      projectId: carasOwn._id,
+    await asBob.mutation(api.projects.update, {
+      projectId: pAlice,
       status: "in_progress",
     });
-    // …but not a peer's: Alice's project stays off-limits to her.
+    await asBob.mutation(api.projects.create, {
+      name: "For Alice",
+      ownerPersonId: alice,
+    });
+    await asBob.mutation(api.projects.update, {
+      projectId: pBob,
+      ownerPersonId: alice,
+    });
+    await asCara.mutation(api.projects.update, {
+      projectId: pAlice,
+      status: "blocked",
+    });
+
+    // DELETING stays scoped — it wipes the project + its log. Bob can't delete
+    // Alice's project (she's up-chain, outside his subtree).
     await expect(
-      asCara.mutation(api.projects.update, {
-        projectId: pAlice,
-        status: "in_progress",
-      }),
+      asBob.mutation(api.projects.remove, { projectId: pAlice }),
     ).rejects.toThrow(ConvexError);
   });
 });
 
 describe("review-cycle regressions", () => {
-  test("non-admins can't graft projects into another team's tree", async () => {
+  test("editing across teams is open, but the cycle guard still holds", async () => {
     const s = await setupChapter(newT());
     const { alice, bob, cara } = await seedChain(s);
     const asBob = await addUser(s, "bob@publicworship.life", { personId: bob });
-    // Alice is Bob's MANAGER, i.e. above him — outside his manageable subtree.
     const pAlice = (await s.as.mutation(api.projects.create, {
       name: "Alice's project",
       ownerPersonId: alice,
@@ -473,24 +457,27 @@ describe("review-cycle regressions", () => {
       ownerPersonId: bob,
     })) as Id<"projects">;
 
-    // create: in-scope owner but foreign parent → rejected.
-    await expect(
-      asBob.mutation(api.projects.create, {
-        name: "Injected",
-        ownerPersonId: cara,
-        parentProjectId: pAlice,
-      }),
-    ).rejects.toThrow(ConvexError);
-    // update: re-parenting own project under a foreign tree → rejected.
+    // Grafting across teams is allowed now (open editing) — Bob can nest work
+    // under Alice's project and re-parent his own under it.
+    await asBob.mutation(api.projects.create, {
+      name: "Injected",
+      ownerPersonId: cara,
+      parentProjectId: pAlice,
+    });
+    await asBob.mutation(api.projects.update, {
+      projectId: pBob,
+      parentProjectId: pAlice,
+    });
+    // But the STRUCTURAL guard remains: a project still can't nest in itself.
     await expect(
       asBob.mutation(api.projects.update, {
-        projectId: pBob,
+        projectId: pAlice,
         parentProjectId: pAlice,
       }),
     ).rejects.toThrow(ConvexError);
   });
 
-  test("non-admins can't strand a root project by clearing its owner", async () => {
+  test("anyone can clear a project's owner now (no strand guard)", async () => {
     const s = await setupChapter(newT());
     const { bob, cara } = await seedChain(s);
     const asBob = await addUser(s, "bob@publicworship.life", { personId: bob });
@@ -504,20 +491,20 @@ describe("review-cycle regressions", () => {
       parentProjectId: root,
     })) as Id<"projects">;
 
-    // Clearing a ROOT's owner would push it into admin-only unowned land.
-    await expect(
-      asBob.mutation(api.projects.update, { projectId: root, ownerPersonId: null }),
-    ).rejects.toThrow(ConvexError);
-    // Clearing a SUB's owner is fine — it inherits Bob's scope via the parent.
+    // Editing is open, so clearing a root's owner just works — the update log
+    // records who did it rather than the server blocking it.
+    await asBob.mutation(api.projects.update, {
+      projectId: root,
+      ownerPersonId: null,
+    });
     await asBob.mutation(api.projects.update, {
       projectId: sub,
       ownerPersonId: null,
     });
-    // Admins can still make anything unowned.
-    await s.as.mutation(api.projects.update, {
-      projectId: root,
-      ownerPersonId: null,
-    });
+    const rootDoc = (await asBob.query(api.projects.list)).find(
+      (p) => p._id === root,
+    )!;
+    expect(rootDoc.ownerPersonId).toBeUndefined();
   });
 
   test("deleting a project gives its unowned children an explicit owner", async () => {
@@ -705,7 +692,7 @@ describe("project comments", () => {
     ).rejects.toThrow(ConvexError);
   });
 
-  test("commenting follows project scope; the thread dies with the project", async () => {
+  test("anyone on the roster can comment; the thread dies with the project", async () => {
     const s = await setupChapter(newT());
     const { alice, bob, cara } = await seedChain(s);
     const asCara = await addUser(s, "carac@publicworship.life", {
@@ -716,18 +703,16 @@ describe("project comments", () => {
       ownerPersonId: alice,
     })) as Id<"projects">;
 
-    // Cara can READ the thread (transparency — it's just empty here), but she
-    // still can't POST to work outside her subtree. A visible-but-empty thread
-    // is [] ; only a caller who can't view chapter work at all gets null.
-    await expect(
-      asCara.mutation(api.projects.addComment, {
-        projectId: alicesProject,
-        body: "drive-by",
-      }),
-    ).rejects.toThrow(ConvexError);
+    // Commenting is open now — Cara can post on Alice's project (up-chain).
+    await asCara.mutation(api.projects.addComment, {
+      projectId: alicesProject,
+      body: "drive-by",
+    });
     expect(
-      await asCara.query(api.projects.comments, { projectId: alicesProject }),
-    ).toEqual([]);
+      (
+        await asCara.query(api.projects.comments, { projectId: alicesProject })
+      )?.map((c) => c.body),
+    ).toEqual(["drive-by"]);
 
     // Deleting a project deletes its thread (no orphaned comments).
     const doomed = (await s.as.mutation(api.projects.create, {
@@ -751,5 +736,73 @@ describe("project comments", () => {
         .collect(),
     );
     expect(orphans).toHaveLength(0);
+  });
+});
+
+describe("project update log", () => {
+  test("records created + field changes, attributed; no-ops write nothing", async () => {
+    const s = await setupChapter(newT());
+    const { bob } = await seedChain(s);
+    const asBob = await addUser(s, "bobu@publicworship.life", { personId: bob });
+
+    const p = (await asBob.mutation(api.projects.create, {
+      name: "Donor campaign",
+      ownerPersonId: bob,
+    })) as Id<"projects">;
+    await asBob.mutation(api.projects.update, {
+      projectId: p,
+      status: "in_progress",
+      blocker: "Waiting on copy",
+    });
+
+    const log = await asBob.query(api.projects.updateLog, { projectId: p });
+    expect(log).not.toBeNull();
+    const summaries = log!.map((e) => e.summary);
+    expect(summaries).toContain("Status → In progress");
+    expect(summaries.some((x) => x.startsWith("Flagged a blocker"))).toBe(true);
+    expect(summaries).toContain("Created the project");
+    // Every entry is attributed to the editor.
+    expect(log!.every((e) => e.authorName === "Bob")).toBe(true);
+
+    // A no-op update (same status) records nothing new.
+    const before = log!.length;
+    await asBob.mutation(api.projects.update, {
+      projectId: p,
+      status: "in_progress",
+    });
+    const after = await asBob.query(api.projects.updateLog, { projectId: p });
+    expect(after!.length).toBe(before);
+
+    // Deleting the project purges its log too.
+    await asBob.mutation(api.projects.remove, { projectId: p });
+    const orphans = await run(s.t, (ctx) =>
+      ctx.db
+        .query("projectUpdates")
+        .withIndex("by_project", (q) => q.eq("projectId", p))
+        .collect(),
+    );
+    expect(orphans).toHaveLength(0);
+  });
+
+  test("read is transparent but requires viewing chapter work", async () => {
+    const s = await setupChapter(newT());
+    const { bob, cara } = await seedChain(s);
+    const asCara = await addUser(s, "carau@publicworship.life", {
+      personId: cara,
+    });
+    const asVisitor = await addUser(s, "visitoru@publicworship.life");
+    const p = (await s.as.mutation(api.projects.create, {
+      name: "Bob's project",
+      ownerPersonId: bob,
+    })) as Id<"projects">;
+
+    // Cara (a roster member, not the owner) can read the log — transparency.
+    expect(
+      await asCara.query(api.projects.updateLog, { projectId: p }),
+    ).not.toBeNull();
+    // A signed-in account with no roster row cannot.
+    expect(
+      await asVisitor.query(api.projects.updateLog, { projectId: p }),
+    ).toBeNull();
   });
 });

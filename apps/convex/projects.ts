@@ -6,11 +6,11 @@
  * deadline, blocker, next steps), can nest sub-projects, and can point at an
  * event when the project IS an event. Chapter-scoped like everything else.
  */
-import { query, mutation, QueryCtx } from "./_generated/server";
+import { query, mutation, QueryCtx, MutationCtx } from "./_generated/server";
 import { internal } from "./_generated/api";
 import { Doc, Id } from "./_generated/dataModel";
 import { v, ConvexError } from "convex/values";
-import { PROJECT_STATUSES } from "@events-os/shared";
+import { PROJECT_STATUSES, PROJECT_STATUS_LABELS } from "@events-os/shared";
 import {
   requireUserId,
   requireChapterId,
@@ -100,6 +100,54 @@ async function assertNoParentCycle(
     const doc: Doc<"projects"> | null = await ctx.db.get(cur);
     cur = doc?.parentProjectId;
   }
+}
+
+/**
+ * Who may EDIT projects: anyone on the roster, or a chapter admin. Editing is
+ * open now (accountability comes from the update log, not from locking it down)
+ * — this just requires the caller be part of the chapter. Returns their roster
+ * person, the audit-log author, when they have one; an unlinked admin still
+ * edits, just without a named author. Throws for everyone else.
+ */
+async function requireProjectEditor(
+  ctx: MutationCtx,
+  chapterId: Id<"chapters">,
+): Promise<Doc<"people"> | null> {
+  const author = await viewerPerson(ctx, chapterId);
+  if (author) return author;
+  if (await isChapterAdmin(ctx, chapterId)) return null;
+  throw new ConvexError({
+    code: "FORBIDDEN",
+    message: "You need a roster profile to edit projects.",
+  });
+}
+
+/** A short date for the update log, in the team's timezone. */
+function fmtLogDate(ts: number): string {
+  return new Date(ts).toLocaleDateString("en-US", {
+    timeZone: "America/New_York",
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+  });
+}
+
+/** Append one entry to a project's update log (the audit trail). */
+async function logProjectUpdate(
+  ctx: MutationCtx,
+  project: { _id: Id<"projects">; chapterId: Id<"chapters"> },
+  author: Doc<"people"> | null,
+  field: string,
+  summary: string,
+): Promise<void> {
+  await ctx.db.insert("projectUpdates", {
+    chapterId: project.chapterId,
+    projectId: project._id,
+    authorPersonId: author?._id,
+    field,
+    summary,
+    createdAt: Date.now(),
+  });
 }
 
 /**
@@ -226,17 +274,47 @@ export const comments = query({
   },
 });
 
+/**
+ * A project's update log (audit trail), newest first — every field change and
+ * the "created" entry, attributed. Transparent read (admins + any roster
+ * member), matching `get`/`comments`; null when the caller can't view chapter
+ * work. Bounded to the latest 100 entries.
+ */
+export const updateLog = query({
+  args: { projectId: v.id("projects") },
+  handler: async (ctx, { projectId }) => {
+    const project = await requireOwned(ctx, "projects", projectId, "Project");
+    if (!(await canViewChapterWork(ctx, project.chapterId))) return null;
+    const rows = await ctx.db
+      .query("projectUpdates")
+      .withIndex("by_project", (q) => q.eq("projectId", projectId))
+      .order("desc")
+      .take(100);
+    const authorName = new Map<Id<"people">, string | null>();
+    for (const r of rows) {
+      if (r.authorPersonId == null || authorName.has(r.authorPersonId)) continue;
+      const author = await ctx.db.get(r.authorPersonId);
+      authorName.set(r.authorPersonId, author?.name ?? null);
+    }
+    return rows.map((r) => ({
+      _id: r._id,
+      field: r.field,
+      summary: r.summary,
+      createdAt: r.createdAt,
+      authorName:
+        r.authorPersonId != null
+          ? authorName.get(r.authorPersonId) ?? null
+          : null,
+    }));
+  },
+});
+
 /** Post a comment on a project — the unit of its history. */
 export const addComment = mutation({
   args: { projectId: v.id("projects"), body: v.string() },
   handler: async (ctx, { projectId, body }) => {
     const project = await requireOwned(ctx, "projects", projectId, "Project");
-    const manageable = await manageablePersonIds(ctx, project.chapterId);
-    assertInScope(
-      manageable,
-      await effectiveOwnerId(ctx, project),
-      "You can only comment on your team's projects.",
-    );
+    // Anyone on the roster may comment now — same open policy as editing.
     const author = await viewerPerson(ctx, project.chapterId);
     if (!author) {
       throw new ConvexError({
@@ -327,24 +405,20 @@ export const create = mutation({
   handler: async (ctx, args) => {
     const chapterId = await requireChapterId(ctx);
     const userId = await requireUserId(ctx);
+    // Open to anyone on the roster (or an admin) — the update log keeps it
+    // accountable. Structural checks (owner/parent/event in this chapter) stay.
+    const author = await requireProjectEditor(ctx, chapterId as Id<"chapters">);
     if (args.ownerPersonId) {
       await requireOwned(ctx, "people", args.ownerPersonId, "Owner");
     }
-    let parent: Doc<"projects"> | undefined;
     if (args.parentProjectId) {
-      parent = await requireOwned(ctx, "projects", args.parentProjectId, "Parent project");
+      await requireOwned(ctx, "projects", args.parentProjectId, "Parent project");
     }
     if (args.eventId) {
       await requireOwned(ctx, "events", args.eventId, "Event");
     }
-    const manageable = await manageablePersonIds(ctx, chapterId as Id<"chapters">);
-    const parentOwner = parent ? await effectiveOwnerId(ctx, parent) : undefined;
-    assertInScope(manageable, args.ownerPersonId ?? parentOwner);
-    // Nesting under someone else's project would surface this row in THEIR
-    // tree — the destination parent must be in scope too, not just the owner.
-    if (parent) assertInScope(manageable, parentOwner);
     const now = Date.now();
-    return await ctx.db.insert("projects", {
+    const projectId = await ctx.db.insert("projects", {
       chapterId: chapterId as Id<"chapters">,
       name: args.name,
       purpose: args.purpose,
@@ -360,6 +434,14 @@ export const create = mutation({
       createdAt: now,
       updatedAt: now,
     });
+    await logProjectUpdate(
+      ctx,
+      { _id: projectId, chapterId: chapterId as Id<"chapters"> },
+      author,
+      "created",
+      "Created the project",
+    );
+    return projectId;
   },
 });
 
@@ -382,45 +464,120 @@ export const update = mutation({
   },
   handler: async (ctx, { projectId, ...patch }) => {
     const project = await requireOwned(ctx, "projects", projectId, "Project");
-    const manageable = await manageablePersonIds(ctx, project.chapterId);
-    assertInScope(manageable, await effectiveOwnerId(ctx, project));
+    // Anyone on the roster (or an admin) may edit — accountability comes from
+    // the update log below, not from a subtree lock.
+    const author = await requireProjectEditor(ctx, project.chapterId);
+
+    // Structural safety still holds: referenced owner/parent/event must be in
+    // this chapter, and re-parenting must not create a cycle.
+    let newOwner: Doc<"people"> | null = null;
     if (patch.ownerPersonId != null) {
-      await requireOwned(ctx, "people", patch.ownerPersonId, "Owner");
-      // Non-admins may only hand work to people still inside their subtree.
-      assertInScope(manageable, patch.ownerPersonId);
+      newOwner = await requireOwned(ctx, "people", patch.ownerPersonId, "Owner");
     }
+    let newParent: Doc<"projects"> | null = null;
     if (patch.parentProjectId != null) {
-      const parent = await requireOwned(
+      newParent = await requireOwned(
         ctx,
         "projects",
         patch.parentProjectId,
         "Parent project",
       );
       await assertNoParentCycle(ctx, projectId, patch.parentProjectId);
-      // Re-parenting surfaces this row in the destination tree — the new
-      // parent's effective owner must be in scope too.
-      assertInScope(manageable, await effectiveOwnerId(ctx, parent));
-    }
-    if (patch.ownerPersonId === null) {
-      // Clearing the owner: the project must still resolve to an in-scope
-      // owner through its (possibly new) parent chain, or the caller would
-      // push it into admin-only unowned territory and lose it themselves.
-      const parentId =
-        patch.parentProjectId !== undefined
-          ? patch.parentProjectId
-          : project.parentProjectId;
-      const chainOwner = parentId
-        ? await effectiveOwnerId(ctx, { parentProjectId: parentId })
-        : undefined;
-      assertInScope(
-        manageable,
-        chainOwner,
-        "Assign a different owner instead of leaving the project unowned.",
-      );
     }
     if (patch.eventId != null) {
       await requireOwned(ctx, "events", patch.eventId, "Event");
     }
+
+    // Diff the incoming patch against the current row → one audit summary per
+    // real change. Computed BEFORE the write so we compare against old values.
+    const normText = (v: string | null | undefined): string | undefined => {
+      if (v == null) return undefined;
+      const t = v.trim();
+      return t ? t : undefined;
+    };
+    const logs: { field: string; summary: string }[] = [];
+    if (patch.name !== undefined && patch.name.trim() && patch.name !== project.name) {
+      logs.push({ field: "name", summary: `Renamed to "${patch.name.trim()}"` });
+    }
+    if (patch.status !== undefined && patch.status !== project.status) {
+      logs.push({
+        field: "status",
+        summary: `Status → ${PROJECT_STATUS_LABELS[patch.status]}`,
+      });
+    }
+    if (patch.deadline !== undefined) {
+      const next = patch.deadline ?? undefined;
+      if (next !== project.deadline) {
+        logs.push({
+          field: "deadline",
+          summary: next != null ? `Deadline set to ${fmtLogDate(next)}` : "Cleared the deadline",
+        });
+      }
+    }
+    if (patch.startDate !== undefined) {
+      const next = patch.startDate ?? undefined;
+      if (next !== project.startDate) {
+        logs.push({
+          field: "startDate",
+          summary: next != null ? `Start date set to ${fmtLogDate(next)}` : "Cleared the start date",
+        });
+      }
+    }
+    if (patch.budgetUsd !== undefined) {
+      const next = patch.budgetUsd ?? undefined;
+      if (next !== project.budgetUsd) {
+        logs.push({
+          field: "budget",
+          summary: next != null ? `Budget set to $${next}` : "Cleared the budget",
+        });
+      }
+    }
+    if (patch.purpose !== undefined) {
+      const next = normText(patch.purpose);
+      if (next !== project.purpose) {
+        logs.push({
+          field: "purpose",
+          summary: next != null ? "Updated the purpose" : "Cleared the purpose",
+        });
+      }
+    }
+    if (patch.blocker !== undefined) {
+      const next = normText(patch.blocker);
+      if (next !== project.blocker) {
+        logs.push({
+          field: "blocker",
+          summary: next != null ? `Flagged a blocker: "${next}"` : "Cleared the blocker",
+        });
+      }
+    }
+    if (patch.ownerPersonId !== undefined) {
+      const next = patch.ownerPersonId ?? undefined;
+      if (next !== project.ownerPersonId) {
+        logs.push({
+          field: "owner",
+          summary: newOwner ? `Owner → ${newOwner.name}` : "Cleared the owner",
+        });
+      }
+    }
+    if (patch.parentProjectId !== undefined) {
+      const next = patch.parentProjectId ?? undefined;
+      if (next !== project.parentProjectId) {
+        logs.push({
+          field: "parent",
+          summary: newParent ? `Moved under "${newParent.name}"` : "Moved to the top level",
+        });
+      }
+    }
+    if (patch.eventId !== undefined) {
+      const next = patch.eventId ?? undefined;
+      if (next !== project.eventId) {
+        logs.push({
+          field: "event",
+          summary: next != null ? "Linked to an event" : "Unlinked the event",
+        });
+      }
+    }
+
     const fields: Record<string, unknown> = {};
     for (const [key, value] of Object.entries(patch)) {
       // null = explicit clear (store undefined); undefined = leave unchanged.
@@ -433,22 +590,23 @@ export const update = mutation({
     delete fields.statusNote;
     delete fields.nextSteps;
     const noteBody = composeStatusBody(patch.statusNote, patch.nextSteps);
-    if (noteBody) {
-      const author = await viewerPerson(ctx, project.chapterId);
-      if (author) {
-        const userId = await requireUserId(ctx);
-        await ctx.db.insert("projectComments", {
-          chapterId: project.chapterId,
-          projectId,
-          authorPersonId: author._id,
-          body: noteBody,
-          createdBy: userId as Id<"users">,
-          createdAt: Date.now(),
-        });
-      }
+    if (noteBody && author) {
+      const userId = await requireUserId(ctx);
+      await ctx.db.insert("projectComments", {
+        chapterId: project.chapterId,
+        projectId,
+        authorPersonId: author._id,
+        body: noteBody,
+        createdBy: userId as Id<"users">,
+        createdAt: Date.now(),
+      });
     }
     fields.updatedAt = Date.now();
     await ctx.db.patch(projectId, fields);
+    // Record the audit trail last, so a rejected patch never leaves a log.
+    for (const entry of logs) {
+      await logProjectUpdate(ctx, project, author, entry.field, entry.summary);
+    }
     return projectId;
   },
 });
@@ -461,9 +619,15 @@ export const remove = mutation({
   args: { projectId: v.id("projects") },
   handler: async (ctx, { projectId }) => {
     const project = await requireOwned(ctx, "projects", projectId, "Project");
+    // Deleting stays scoped to the owner's chain + admins — it wipes the
+    // project AND its update log, so it isn't part of the open-editing policy.
     const manageable = await manageablePersonIds(ctx, project.chapterId);
     const effOwner = await effectiveOwnerId(ctx, project);
-    assertInScope(manageable, effOwner);
+    assertInScope(
+      manageable,
+      effOwner,
+      "Only the owner's manager chain (or an admin) can delete a project.",
+    );
     const children = await ctx.db
       .query("projects")
       .withIndex("by_parent", (q) => q.eq("parentProjectId", projectId))
@@ -478,15 +642,17 @@ export const remove = mutation({
         updatedAt: Date.now(),
       });
     }
-    // The thread belongs to the project — it goes with it. Batched reads so
-    // a years-long thread can't blow the mutation's document limits.
-    for (;;) {
-      const batch = await ctx.db
-        .query("projectComments")
-        .withIndex("by_project", (q) => q.eq("projectId", projectId))
-        .take(200);
-      for (const c of batch) await ctx.db.delete(c._id);
-      if (batch.length < 200) break;
+    // The thread and the update log belong to the project — they go with it.
+    // Batched reads so a years-long history can't blow the mutation's limits.
+    for (const table of ["projectComments", "projectUpdates"] as const) {
+      for (;;) {
+        const batch = await ctx.db
+          .query(table)
+          .withIndex("by_project", (q) => q.eq("projectId", projectId))
+          .take(200);
+        for (const row of batch) await ctx.db.delete(row._id);
+        if (batch.length < 200) break;
+      }
     }
     await ctx.db.delete(projectId);
     return projectId;
