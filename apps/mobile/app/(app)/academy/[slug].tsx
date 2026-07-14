@@ -19,11 +19,11 @@ import { colors } from "../../../lib/theme";
 import { useActionRunner } from "../../../lib/useActionToast";
 import { errorMessage } from "../../../lib/errors";
 import {
-  ACADEMY_SECTION_COUNT,
   MODULE_LABELS,
   getAcademySection,
-  nextAcademySection,
-  previousAcademySection,
+  moduleCourseIndex,
+  nextModuleInCourse,
+  previousModuleInCourse,
   type AcademySection,
   type ModuleKey,
 } from "@events-os/shared";
@@ -79,7 +79,14 @@ export default function AcademySectionScreen() {
   if (progress === undefined) return <Screen loading />;
 
   const state = progress.sections.find((s) => s.slug === section.slug);
-  const next = nextAcademySection(section.slug);
+  // Course-aware position + navigation. `moduleCourseIndex` locates the module
+  // within its own course (N of M); `nextModuleInCourse` walks the course order,
+  // returning null at the course's end (where "next" returns to the course page
+  // rather than dead-ending). The catalog invariant guarantees every section
+  // maps to a course, so `here` is only null for an off-catalog slug.
+  const here = moduleCourseIndex(section.slug);
+  const nextSlug = nextModuleInCourse(section.slug);
+  const next = nextSlug ? getAcademySection(nextSlug) : undefined;
   const isCapstone = section.capstone != null;
 
   return (
@@ -102,7 +109,9 @@ export default function AcademySectionScreen() {
           <Icon name="arrow-left" size={18} color={colors.muted} />
         </Pressable>
         <Text className="text-xs font-bold uppercase tracking-wider text-accent">
-          Academy · Section {section.order} of {ACADEMY_SECTION_COUNT}
+          {here
+            ? `Module ${here.index + 1} of ${here.course.moduleSlugs.length} · ${here.course.title}`
+            : "Academy"}
         </Text>
         <View className="flex-1" />
         {state?.passed ? (
@@ -142,7 +151,8 @@ export default function AcademySectionScreen() {
         />
       )}
 
-      {/* Next section */}
+      {/* Next module in the course, or — at the course's end — back to the
+          course page rather than a dead end. */}
       <View className="mb-4 mt-8 flex-row justify-end">
         {next ? (
           <Button
@@ -150,6 +160,13 @@ export default function AcademySectionScreen() {
             variant="secondary"
             icon="arrow-right"
             onPress={() => router.push(`/academy/${next.slug}`)}
+          />
+        ) : here ? (
+          <Button
+            title={`Back to ${here.course.title}`}
+            variant="secondary"
+            icon="award"
+            onPress={() => router.replace(`/academy/course/${here.course.slug}`)}
           />
         ) : (
           <Button
@@ -200,7 +217,9 @@ function Quiz({
 
   const total = section.quiz.length;
   const answered = Object.keys(answers).length;
-  const previous = previousAcademySection(section.slug);
+  // The unlock predecessor is the module before this one IN ITS COURSE.
+  const previousSlug = previousModuleInCourse(section.slug);
+  const previous = previousSlug ? getAcademySection(previousSlug) : undefined;
 
   if (!unlocked) {
     return (

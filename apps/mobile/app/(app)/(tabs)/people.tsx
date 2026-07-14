@@ -41,6 +41,7 @@ import {
 } from "@events-os/shared";
 import { DutyRows } from "../../../components/work/DutyRows";
 import { AddResponsibilityModal } from "../../../components/team/AddResponsibilityModal";
+import { CourseBadgeChips } from "../../../components/academy/CourseBadgeChips";
 
 // Vetting select options (gray / amber / green) — fed to the shared SelectCell.
 const VETTING_OPTIONS: SelectOption<VettingStatus>[] = [
@@ -870,6 +871,9 @@ function PersonDetailBody({
             ) : null}
           </View>
         ) : null}
+
+        {/* Earned Academy course badges (display-only; hidden when none). */}
+        <CourseBadgeChips personId={person._id} />
 
         {/* Duties (managers/admins): the per-person assignment surface the
             founder's review asked for — see, add, and unassign right here. */}

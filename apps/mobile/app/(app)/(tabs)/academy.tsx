@@ -1,29 +1,31 @@
 import { View, Text } from "react-native";
 import { useRouter } from "expo-router";
 import { useQuery } from "convex/react";
-import type { FunctionReturnType } from "convex/server";
 import { api } from "@events-os/convex/_generated/api";
 import {
   Screen,
   PageHeader,
   Card,
-  Button,
   Badge,
   Icon,
   SectionHeader,
   ProgressBar,
 } from "../../../components/ui";
+import { LevelChip } from "../../../components/academy/CurriculumRows";
 import { colors } from "../../../lib/theme";
-import { ACADEMY_SECTIONS, type AcademySection } from "@events-os/shared";
-
-type MyProgress = FunctionReturnType<typeof api.academy.myProgress>;
-type SectionProgress = MyProgress["sections"][number];
+import {
+  ACADEMY_THEMES,
+  academyCoursesForTheme,
+  requiredModuleSlugsForCourse,
+  type Course,
+} from "@events-os/shared";
 
 /**
- * THE ACADEMY HUB — the ordered curriculum as a completion path. Every section
- * is always readable (adults skim); only the quiz-passed "complete" state
- * unlocks sequentially, and the server enforces that gate. The capstone row
- * routes to the capstone section screen, which owns the Start-training flow.
+ * THE ACADEMY HUB — themes → courses. The flat curriculum is now organised into
+ * courses (each with a level + a badge you earn); the hub lists every theme that
+ * has courses, a card per course showing the caller's progress + earned state,
+ * and drills into a course page for its module path. Reading is never gated;
+ * only the quiz-passed "complete" state unlocks sequentially inside a course.
  */
 export default function AcademyScreen() {
   const router = useRouter();
@@ -41,7 +43,11 @@ export default function AcademyScreen() {
     return <Screen loading />;
   }
 
-  const bySlug = new Map(progress.sections.map((s) => [s.slug, s]));
+  // Passed module slugs + earned course slugs drive every course card below.
+  const passedSlugs = new Set(
+    progress.sections.filter((s) => s.passed).map((s) => s.slug),
+  );
+  const earnedSlugs = new Set(progress.earnedCourseSlugs);
 
   return (
     <Screen maxWidth={860}>
@@ -55,7 +61,7 @@ export default function AcademyScreen() {
       <Card padding="md">
         <View className="flex-row items-center justify-between gap-3">
           <Text className="text-sm font-semibold text-ink">
-            {progress.completed} of {progress.total} sections complete
+            {progress.completed} of {progress.total} modules complete
           </Text>
           {progress.completed === progress.total ? (
             <Badge label="Fully trained 🎉" tone="success" icon="award" />
@@ -70,31 +76,28 @@ export default function AcademyScreen() {
         </View>
       </Card>
 
-      {/* The curriculum path */}
-      <SectionHeader title="The curriculum" count={ACADEMY_SECTIONS.length} />
-      <View className="gap-3">
-        {ACADEMY_SECTIONS.map((section) => {
-          const state = bySlug.get(section.slug);
-          // Each capstone entry of myProgress carries its own live quest
-          // counts — the hub needs no training-event subscription of its own.
-          return section.capstone ? (
-            <CapstoneRow
-              key={section.slug}
-              section={section}
-              state={state}
-              training={state?.training ?? null}
-              onOpen={() => router.push(`/academy/${section.slug}`)}
-            />
-          ) : (
-            <SectionRow
-              key={section.slug}
-              section={section}
-              state={state}
-              onPress={() => router.push(`/academy/${section.slug}`)}
-            />
-          );
-        })}
-      </View>
+      {/* Themes → courses. Only themes that HAVE courses render (Management /
+          Leadership are seeded empty and fill as content is written). */}
+      {ACADEMY_THEMES.map((theme) => {
+        const courses = academyCoursesForTheme(theme.key);
+        if (courses.length === 0) return null;
+        return (
+          <View key={theme.key}>
+            <SectionHeader title={theme.title} count={courses.length} />
+            <View className="gap-3">
+              {courses.map((course) => (
+                <CourseCard
+                  key={course.slug}
+                  course={course}
+                  passedSlugs={passedSlugs}
+                  earned={earnedSlugs.has(course.slug)}
+                  onPress={() => router.push(`/academy/course/${course.slug}`)}
+                />
+              ))}
+            </View>
+          </View>
+        );
+      })}
 
       {/* Who's trained — managers/admins only (the server returns null
           otherwise, mirroring how the Team/Duties nav gates; the query is
@@ -133,159 +136,55 @@ export default function AcademyScreen() {
   );
 }
 
-/** The numbered circle at the head of each curriculum row. */
-function OrderMark({
-  order,
-  passed,
-  locked,
-}: {
-  order: number;
-  passed: boolean;
-  locked: boolean;
-}) {
-  if (passed) {
-    return (
-      <View className="h-9 w-9 items-center justify-center rounded-pill bg-success-bg">
-        <Icon name="check" size={16} color={colors.success} />
-      </View>
-    );
-  }
-  return (
-    <View
-      className={`h-9 w-9 items-center justify-center rounded-pill ${
-        locked ? "bg-sunken" : "bg-accent-soft"
-      }`}
-    >
-      <Text
-        className={`text-sm font-bold ${locked ? "text-faint" : "text-accent"}`}
-      >
-        {order}
-      </Text>
-    </View>
-  );
-}
-
-/** State badge: quiz passed ✓ · read · not started. */
-function StateBadge({ state }: { state: SectionProgress | undefined }) {
-  if (state?.passed) return <Badge label="Quiz passed ✓" tone="success" />;
-  if (state?.readAt != null) return <Badge label="Read" tone="info" />;
-  return <Badge label="Not started" tone="neutral" />;
-}
-
-function SectionRow({
-  section,
-  state,
+/**
+ * One course card: title, level chip, the caller's REQUIRED-module progress
+ * (passed-flags ∩ the course's required set), and an earned indicator once the
+ * badge is held. Taps through to the course page.
+ */
+function CourseCard({
+  course,
+  passedSlugs,
+  earned,
   onPress,
 }: {
-  section: AcademySection;
-  state: SectionProgress | undefined;
+  course: Course;
+  passedSlugs: Set<string>;
+  earned: boolean;
   onPress: () => void;
 }) {
-  const locked = state ? !state.unlocked : section.order > 1;
+  const required = requiredModuleSlugsForCourse(course.slug);
+  const passed = required.filter((slug) => passedSlugs.has(slug)).length;
+  const total = required.length;
+
   return (
     <Card padding="md" onPress={onPress}>
-      <View className="flex-row items-center gap-3.5">
-        <OrderMark
-          order={section.order}
-          passed={state?.passed === true}
-          locked={locked}
-        />
-        <View className="flex-1">
-          <Text className="text-base font-semibold text-ink" numberOfLines={1}>
-            {section.title}
-          </Text>
-          <Text className="mt-0.5 text-sm text-muted" numberOfLines={2}>
-            {section.subtitle} · {section.minutes} min read
-          </Text>
-          {state?.quizBestScore != null && !state.passed ? (
-            <Text className="mt-0.5 text-xs text-faint">
-              Best quiz score {state.quizBestScore}/{state.quizTotal}
-            </Text>
-          ) : null}
-        </View>
-        <View className="items-end gap-1.5">
-          <StateBadge state={state} />
-          {locked && !state?.passed ? (
-            <View className="flex-row items-center gap-1">
-              <Icon name="lock" size={11} color={colors.faint} />
-              <Text className="text-2xs text-faint">Quiz locked · readable</Text>
-            </View>
-          ) : null}
-        </View>
-      </View>
-    </Card>
-  );
-}
-
-/**
- * The capstone row. Locked until the previous section is passed (the server
- * gates too — the UI just shouldn't offer it). All interaction routes to the
- * capstone section screen, which owns the single Start-training flow.
- */
-function CapstoneRow({
-  section,
-  state,
-  training,
-  onOpen,
-}: {
-  section: AcademySection;
-  state: SectionProgress | undefined;
-  training: { questsDone: number; questsTotal: number } | null;
-  onOpen: () => void;
-}) {
-  const complete = state?.passed === true;
-  const locked = !complete && (state ? !state.unlocked : true);
-  return (
-    <Card padding="md" onPress={locked ? undefined : onOpen}>
-      <View className="flex-row items-center gap-3.5">
-        <OrderMark order={section.order} passed={complete} locked={locked} />
+      <View className="flex-row items-start gap-3">
         <View className="flex-1">
           <View className="flex-row items-center gap-2">
             <Text
               className="shrink text-base font-semibold text-ink"
               numberOfLines={1}
             >
-              {section.title}
+              {course.title}
             </Text>
-            {section.optional ? (
-              <Badge label="Bonus" tone="info" />
-            ) : null}
+            <LevelChip level={course.level} />
           </View>
-          <Text className="mt-0.5 text-sm text-muted" numberOfLines={2}>
-            {section.subtitle}
+          <Text className="mt-1 text-sm text-muted" numberOfLines={2}>
+            {course.description}
           </Text>
-          {training && !complete ? (
-            <Text className="mt-0.5 text-xs font-semibold text-accent">
-              {training.questsDone}/{training.questsTotal} quests done
-            </Text>
-          ) : null}
+          <Text className="mt-2 text-xs font-semibold text-muted">
+            {passed} of {total} required modules passed
+          </Text>
+          <View className="mt-1.5">
+            <ProgressBar fraction={total === 0 ? 0 : passed / total} />
+          </View>
         </View>
-        <View className="items-end gap-1.5">
-          {complete ? (
-            <Badge label="Complete 🎉" tone="success" />
-          ) : locked ? (
-            <Badge label="Locked" tone="neutral" icon="lock" />
-          ) : training ? (
-            <Badge label="In progress" tone="accent" icon="play" />
+        <View className="items-end">
+          {earned ? (
+            <Badge label="Earned" tone="success" icon="award" />
           ) : (
-            <Badge label="Not started" tone="neutral" />
+            <Icon name="chevron-right" size={18} color={colors.faint} />
           )}
-          {locked ? (
-            <View className="flex-row items-center gap-1">
-              <Icon name="lock" size={11} color={colors.faint} />
-              <Text className="text-2xs text-faint">
-                Pass the previous section to unlock
-              </Text>
-            </View>
-          ) : !complete ? (
-            <Button
-              title={training ? "Resume" : "Start training"}
-              size="sm"
-              variant={training ? "secondary" : "primary"}
-              icon={training ? undefined : "play"}
-              onPress={onOpen}
-            />
-          ) : null}
         </View>
       </View>
     </Card>

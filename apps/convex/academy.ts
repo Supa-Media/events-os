@@ -483,6 +483,10 @@ type CapstoneTraining = {
  * `training` — their sandbox's live quest tally — so the hub renders capstone
  * rows from this query alone. `completed`/`total` count REQUIRED sections
  * only; optional bonus sections are listed but never counted.
+ *
+ * `earnedCourseSlugs` is the caller's OWN course-badge slugs (one indexed read
+ * of `courseCompletions` by_chapter_and_person) — the hub's earned indicator
+ * reads it here rather than firing a second query per course.
  */
 export const myProgress = query({
   args: {},
@@ -502,6 +506,7 @@ export const myProgress = query({
       })),
       completed: 0,
       total: ACADEMY_REQUIRED_SECTION_COUNT,
+      earnedCourseSlugs: [] as string[],
     };
     const chapterId = await getChapterIdOrNull(ctx);
     if (!chapterId) return empty;
@@ -618,10 +623,16 @@ export const myProgress = query({
     const completed = ACADEMY_SECTIONS.filter(
       (s) => s.optional !== true && passedBySlug.get(s.slug) === true,
     ).length;
+    // The caller's own earned course badges — one indexed read, so the hub's
+    // per-course "earned" indicator needs no second query.
+    const earnedCourseSlugs = [
+      ...(await completedCourseSlugs(ctx, chapterId as Id<"chapters">, me)),
+    ];
     return {
       sections,
       completed,
       total: ACADEMY_REQUIRED_SECTION_COUNT,
+      earnedCourseSlugs,
     };
   },
 });
