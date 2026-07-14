@@ -162,4 +162,18 @@ export function registerTicketApiRoutes(http: HttpRouter): void {
       }),
     ),
   });
+
+  http.route({
+    path: "/api/tickets/donate",
+    method: "POST",
+    handler: jsonPost((ctx, body) =>
+      ctx.runAction(api.stripe.createDonationCheckout, {
+        slug: String(body.slug ?? ""),
+        name: String(body.name ?? ""),
+        email: String(body.email ?? ""),
+        amountCents: Math.floor(Number(body.amountCents)),
+        token: optStr(body.token),
+      }),
+    ),
+  });
 }

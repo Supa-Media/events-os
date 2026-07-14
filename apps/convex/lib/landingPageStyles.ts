@@ -187,6 +187,21 @@ section{margin-top:36px}
   font-size:15.5px;border-radius:999px;padding:14px;transition:background .15s;box-shadow:0 6px 18px rgba(210,59,58,.35)}
 .buybtn:hover{background:var(--accent-hover)}
 .buybtn:disabled{background:var(--border-strong);box-shadow:none;pointer-events:none}
+/* giving */
+.giveprompt{font-size:13.5px;color:var(--muted);line-height:1.5;margin-bottom:12px}
+.raised{background:var(--sunken);border-radius:14px;padding:10px 14px;font-size:14px;
+  color:var(--muted);margin-bottom:14px}
+.raised b{color:var(--accent);font-weight:700;font-size:16px}
+.amtgrid{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:10px}
+.amtbtn{border:1.5px solid var(--border-strong);border-radius:14px;padding:11px 4px;
+  font-weight:700;font-size:15px;color:var(--ink);transition:all .12s}
+.amtbtn:hover{border-color:var(--accent);color:var(--accent)}
+.amtbtn.sel{background:var(--accent-soft);border-color:var(--accent);color:var(--accent);
+  box-shadow:0 0 0 3px rgba(210,59,58,.14)}
+.amtcustom{display:flex;align-items:center;gap:8px;background:var(--raised);
+  border:1.5px solid var(--border);border-radius:14px;padding:0 14px}
+.amtcustom .cur{color:var(--muted);font-weight:700;font-size:15px}
+.amtcustom input{flex:1;background:none;border:0;outline:none;padding:12px 0;font-size:15px;color:var(--ink)}
 /* sheet */
 .overlay{position:fixed;inset:0;background:rgba(33,9,9,.42);backdrop-filter:blur(5px);
   z-index:50;display:none;align-items:flex-end;justify-content:center}

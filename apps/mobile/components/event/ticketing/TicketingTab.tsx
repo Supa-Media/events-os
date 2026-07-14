@@ -21,6 +21,7 @@ import { ToastView } from "../../ui/Toast";
 import { useActionRunner, type ActionRunner } from "../../../lib/useActionToast";
 import { PageSetupCard } from "./PageSetupCard";
 import { TicketTypesCard } from "./TicketTypesCard";
+import { GivingCard } from "./GivingCard";
 import { GuestListCard } from "./GuestListCard";
 import { CheckInCard } from "./CheckInCard";
 import { BlastComposerCard } from "./BlastComposerCard";
@@ -91,7 +92,11 @@ export default function TicketingTab({ eventId }: { eventId: Id<"events"> }) {
         <StatCard label="Maybe" value={String(page.maybeCount)} />
         <StatCard label="Tickets sold" value={String(page.ticketsSoldCount)} />
         <StatCard label="Revenue" value={formatMoney(page.revenueCents)} />
+        <StatCard label="Given" value={formatMoney(page.donationsCents ?? 0)} />
       </View>
+
+      <SectionHeader title="Giving" />
+      <GivingCard eventId={eventId} page={page} run={run} />
 
       <SectionHeader title="Guest list" />
       <GuestListCard eventId={eventId} />

@@ -31,6 +31,11 @@ type PublicPage = {
   hasCover: boolean;
   rsvpEnabled: boolean;
   ticketsEnabled: boolean;
+  givingEnabled: boolean;
+  givingPrompt: string | null;
+  suggestedAmountsCents: number[];
+  donationsCents: number;
+  donationsCount: number;
   capacity: number | null;
   counts: { going: number; maybe: number; ticketsSold: number };
   guests: Array<{ name: string; status: string }>;
@@ -197,6 +202,7 @@ ${coverUrl ? `<div class="backdrop" style="background-image:url('${coverUrl}')">
         }
       </div>
       <div class="card" id="ticketscard" style="display:none"></div>
+      <div class="card" id="givingcard" style="display:none"></div>
       <div class="card" id="rsvpcard" style="display:none"></div>
     </aside>
   </div>
