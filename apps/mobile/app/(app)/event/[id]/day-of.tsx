@@ -116,6 +116,47 @@ function StartTimePrompt({
   );
 }
 
+/**
+ * Non-blocking guardrail shown on Day-of when one or more permits are DENIED
+ * with no fallback plan written. Denied-with-fallback permits don't appear here
+ * (the contingency exists). Dismissible; the actual fix — writing the fallback —
+ * happens in the Permits grid's editable `fallback` cell.
+ */
+function PermitFallbackPrompt({
+  permits,
+}: {
+  permits: { _id: Id<"eventItems">; title: string }[];
+}) {
+  const [dismissed, setDismissed] = useState(false);
+  if (dismissed || permits.length === 0) return null;
+  return (
+    <Card style={styles.promptCard}>
+      <View style={styles.promptRow}>
+        <Icon name="alert-triangle" size={18} color={colors.warn} />
+        <View style={{ flex: 1 }}>
+          <Text style={styles.promptTitle}>
+            {permits.length === 1
+              ? "Permit denied — write a fallback plan"
+              : `${permits.length} permits denied — write fallback plans`}
+          </Text>
+          <Text style={styles.promptBody}>
+            {permits.map((p) => p.title).join(", ")}. Add an "If denied
+            (fallback)" plan in the Permits grid so this stops blocking the event.
+          </Text>
+        </View>
+        <Pressable
+          onPress={() => setDismissed(true)}
+          hitSlop={8}
+          accessibilityRole="button"
+          accessibilityLabel="Dismiss permit fallback prompt"
+        >
+          <Icon name="x" size={16} color={colors.faint} />
+        </Pressable>
+      </View>
+    </Card>
+  );
+}
+
 /** A live wall clock — re-renders every 30s. Anchors the now/next highlight. */
 function useNow(intervalMs = 30_000): number {
   const [now, setNow] = useState(() => Date.now());
@@ -157,6 +198,7 @@ export default function DayOfScreen() {
   }
 
   const { event, eventTypeName, runOfShow, roles, tasks } = data;
+  const permitsNeedingFallback = data.permitsNeedingFallback ?? [];
 
   // Each segment resolved to its wall-clock START and END. END = start +
   // duration when a positive `duration` (minutes, in the fields bag) is set,
@@ -234,6 +276,9 @@ export default function DayOfScreen() {
             }
           />
         ) : null}
+
+        {/* Denied permit with no fallback plan — a guardrail nudge. */}
+        <PermitFallbackPrompt permits={permitsNeedingFallback} />
 
         {/* Run of show */}
         <SectionHeader title="Run of Show" />

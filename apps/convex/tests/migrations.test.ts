@@ -301,6 +301,7 @@ const REGISTRY_NAMES = [
   "0017_purge_guest_allowlist",
   "0018_backfill_course_completions",
   "0019_backfill_run_of_show_duration",
+  "0020_permits_states_and_fallback",
 ];
 const SEEDED_HISTORICAL = [
   "backfillMissingDefaultColumns",
