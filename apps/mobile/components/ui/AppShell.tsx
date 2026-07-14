@@ -25,6 +25,10 @@ const NAV: NavEntry[] = [
   // Inventory — the chapter gear registry (logistics-lead domain). Gated
   // admin-or-lead in useNav, right after Songs.
   { label: "Inventory", icon: "package", path: "/inventory" },
+  // Finances — the native money layer. Gated admin-or-lead for now (kept behind
+  // the nav-tier gate while the feature is under construction); the in-screen
+  // guards enforce the real `financeRoles` capability.
+  { label: "Finances", icon: "dollar-sign", path: "/finances" },
   // The Academy is for everyone — never permission-gated (see useNav).
   { label: "Academy", icon: "award", path: "/academy" },
 ];
@@ -34,7 +38,7 @@ const NAV: NavEntry[] = [
  * `org.nav.tier` (admin | lead | member | volunteer). The server states the
  * policy once; this and every scoped screen's own guard just render it:
  *   Events   everyone except volunteer      Briefing  volunteer only
- *   People   admin or lead                  Work      everyone except volunteer
+ *   People / Inventory / Finances  admin or lead    Work  everyone except volunteer
  *   Songs / Academy     everyone
  * Nav hiding is NOT access control — each screen keeps its in-screen guard.
  */
@@ -49,6 +53,7 @@ function useNav(): NavEntry[] {
         return tier === "volunteer";
       case "/people":
       case "/inventory":
+      case "/finances":
         return tier === "admin" || tier === "lead";
       case "/team":
         // Work: everyone except volunteer — but keep the teamView nuance so a

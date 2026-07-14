@@ -1,0 +1,290 @@
+/**
+ * Shared finance domain model for Chapter OS.
+ *
+ * Pure constants + helpers used by BOTH the Convex backend and the Expo app so
+ * the finance enums, role grading, and money formatting never drift between the
+ * two. Every status/enum below is a readonly tuple; the Convex schema turns each
+ * into a validator with `v.union(...TUPLE.map((s) => v.literal(s)))` (the
+ * `EVENT_STATUSES` pattern), so the schema and app stay in lock-step without
+ * pulling `convex/values` in here.
+ *
+ * MONEY IS ALWAYS INTEGER CENTS (USD) — never floats. Mirrors ticketing's
+ * `priceCents`. `formatCents` is the single place cents become a display string.
+ */
+
+// ── Funds ────────────────────────────────────────────────────────────────────
+// A fund is the top bucket money lives in. "unrestricted" is general operating
+// money; "designated" money is earmarked for a purpose (a grant, a designated
+// gift) and may only be spent against that purpose.
+export const FUND_RESTRICTIONS = ["unrestricted", "designated"] as const;
+export type FundRestriction = (typeof FUND_RESTRICTIONS)[number];
+
+export const FUND_RESTRICTION_LABELS: Record<FundRestriction, string> = {
+  unrestricted: "Unrestricted",
+  designated: "Designated",
+};
+
+// ── Budget categories ────────────────────────────────────────────────────────
+// Categories nest under a fund (self-nesting via parentCategoryId, kept
+// acyclic). A "category" groups line items; a "lineItem" is a leaf you budget /
+// spend against (Food, Ad spend, Software…).
+export const BUDGET_CATEGORY_KINDS = ["category", "lineItem"] as const;
+export type BudgetCategoryKind = (typeof BUDGET_CATEGORY_KINDS)[number];
+
+// ── Budgets: scope × cadence × categories ────────────────────────────────────
+// A budget is a flexible allocation. Its SCOPE says what it's attached to, its
+// CADENCE says how often it recurs, and it optionally narrows to a fund +
+// category. Any scope can take any cadence ("Development team = $2,000/mo",
+// "Equipment = $4,000/yr", "Worship w/ Strangers = $500/instance").
+export const BUDGET_SCOPES = [
+  "event", // one specific event instance
+  "project", // one specific project
+  "template", // every instance of an event template
+  "team", // a finance team / department (Development, Marketing…)
+  "bucket", // a general recurring bucket (a category over time)
+  "chapter", // the whole chapter / org
+] as const;
+export type BudgetScope = (typeof BUDGET_SCOPES)[number];
+
+export const BUDGET_SCOPE_LABELS: Record<BudgetScope, string> = {
+  event: "Event",
+  project: "Project",
+  template: "Template",
+  team: "Team",
+  bucket: "Bucket",
+  chapter: "Chapter",
+};
+
+export const BUDGET_CADENCES = [
+  "per_instance",
+  "monthly",
+  "quarterly",
+  "yearly",
+  "one_off",
+] as const;
+export type BudgetCadence = (typeof BUDGET_CADENCES)[number];
+
+export const BUDGET_CADENCE_LABELS: Record<BudgetCadence, string> = {
+  per_instance: "Per instance",
+  monthly: "Monthly",
+  quarterly: "Quarterly",
+  yearly: "Yearly",
+  one_off: "One-off",
+};
+
+// Rollover policy is DEFERRED for v1 (spent-vs-allocated per period only, no
+// rollover math). The tuple exists so the schema can carry an optional per-budget
+// toggle now and the behavior can be built later without a migration.
+export const BUDGET_ROLLOVER_POLICIES = ["none", "accumulate"] as const;
+export type BudgetRolloverPolicy = (typeof BUDGET_ROLLOVER_POLICIES)[number];
+
+// ── Transactions ─────────────────────────────────────────────────────────────
+// The unified ACTUAL spend/inflow record — the ONLY table summed for "actual".
+// Estimated money (budgets, projects.budgetUsd, events.budget, item costs,
+// engagement amounts) is never summed with this (anti-double-count).
+export const TRANSACTION_SOURCES = [
+  "increase_card", // a charge on an Increase-issued member card
+  "increase_ach", // an ACH in/out on the chapter's Increase account
+  "stripe_fc", // synced from a legacy external account via Stripe FC
+  "manual", // hand-entered
+  "reimbursement", // the payout leg of an approved reimbursement (a transfer)
+  "repayment", // an offsetting credit from a personal-charge repayment
+] as const;
+export type TransactionSource = (typeof TRANSACTION_SOURCES)[number];
+
+// Direction of money. `transfer` is money moving without being category spend
+// (e.g. a reimbursement payout) — excluded from category/budget spend totals.
+export const TRANSACTION_FLOWS = ["outflow", "inflow", "transfer"] as const;
+export type TransactionFlow = (typeof TRANSACTION_FLOWS)[number];
+
+export const TRANSACTION_STATUSES = [
+  "unreviewed", // just synced/created, needs a human
+  "categorized", // fund/category assigned
+  "reconciled", // matched to a receipt + confirmed
+  "excluded", // intentionally left out of totals (personal, duplicate…)
+] as const;
+export type TransactionStatus = (typeof TRANSACTION_STATUSES)[number];
+
+// Flows that DON'T count toward category / budget spend. A reimbursement payout
+// is money leaving the account but the underlying expense was already booked
+// against its category on the line item, so counting the transfer too would
+// double-count.
+export const NON_SPEND_FLOWS: readonly TransactionFlow[] = ["transfer"];
+
+/** True iff a transaction's flow counts toward category/budget spend. */
+export function countsAsSpend(flow: TransactionFlow): boolean {
+  return !NON_SPEND_FLOWS.includes(flow);
+}
+
+// ── Reimbursements ───────────────────────────────────────────────────────────
+// Public-form submissions (accountless, secret token). Optional pre-approval
+// gate, then the approval → payout lifecycle. Terminal: paid / rejected /
+// failed / canceled.
+export const REIMBURSEMENT_STATUSES = [
+  "pending_preapproval",
+  "preapproved",
+  "submitted",
+  "approved",
+  "paying",
+  "paid",
+  "rejected",
+  "failed",
+  "canceled",
+] as const;
+export type ReimbursementStatus = (typeof REIMBURSEMENT_STATUSES)[number];
+
+export const REIMBURSEMENT_STATUS_LABELS: Record<ReimbursementStatus, string> = {
+  pending_preapproval: "Pending pre-approval",
+  preapproved: "Pre-approved",
+  submitted: "Submitted",
+  approved: "Approved",
+  paying: "Paying",
+  paid: "Paid",
+  rejected: "Rejected",
+  failed: "Failed",
+  canceled: "Canceled",
+};
+
+/** Statuses at which a reimbursement is finished (no further transitions). */
+export const REIMBURSEMENT_TERMINAL_STATUSES: readonly ReimbursementStatus[] = [
+  "paid",
+  "rejected",
+  "canceled",
+];
+
+// ── Cards (person-owned) ─────────────────────────────────────────────────────
+export const CARD_TYPES = ["virtual", "physical"] as const;
+export type CardType = (typeof CARD_TYPES)[number];
+
+export const CARD_STATUSES = ["active", "locked", "canceled"] as const;
+export type CardStatus = (typeof CARD_STATUSES)[number];
+
+/** Late-receipt auto-lock window: a card locks if a receipt is >7 days late. */
+export const RECEIPT_GRACE_DAYS = 7;
+
+// ── Personal-charge repayment ────────────────────────────────────────────────
+export const REPAYMENT_METHODS = ["card", "ach"] as const;
+export type RepaymentMethod = (typeof REPAYMENT_METHODS)[number];
+
+export const REPAYMENT_STATUSES = ["pending", "paid", "failed"] as const;
+export type RepaymentStatus = (typeof REPAYMENT_STATUSES)[number];
+
+// ── Payouts (ACH from the chapter's Increase account) ────────────────────────
+export const PAYOUT_PROVIDERS = ["increase", "manual"] as const;
+export type PayoutProvider = (typeof PAYOUT_PROVIDERS)[number];
+
+export const PAYOUT_STATUSES = [
+  "pending",
+  "processing",
+  "paid",
+  "failed",
+  "returned",
+  "canceled",
+] as const;
+export type PayoutStatus = (typeof PAYOUT_STATUSES)[number];
+
+// ── Increase account onboarding (one Entity + Account per chapter) ───────────
+export const INCREASE_ONBOARDING_STATUSES = [
+  "not_started",
+  "pending",
+  "active",
+  "disabled",
+] as const;
+export type IncreaseOnboardingStatus =
+  (typeof INCREASE_ONBOARDING_STATUSES)[number];
+
+// ── Legacy external accounts (Stripe Financial Connections read-sync) ────────
+export const LEGACY_ACCOUNT_STATUSES = [
+  "active",
+  "disconnected",
+  "error",
+] as const;
+export type LegacyAccountStatus = (typeof LEGACY_ACCOUNT_STATUSES)[number];
+
+// ── Finance roles (graded) ───────────────────────────────────────────────────
+// A graded capability ladder, evaluated by RANK. Superusers + chapter admins
+// are implicitly `manager`. A separate central/org tier (financeRoles.scope
+// === "central") layers org-wide roll-up access on top.
+export const FINANCE_ROLES = ["viewer", "bookkeeper", "manager"] as const;
+export type FinanceRole = (typeof FINANCE_ROLES)[number];
+
+export const FINANCE_ROLE_LABELS: Record<FinanceRole, string> = {
+  viewer: "Viewer",
+  bookkeeper: "Bookkeeper",
+  manager: "Manager",
+};
+
+/** Numeric rank for the graded ladder (higher = more capable). */
+export const FINANCE_ROLE_RANK: Record<FinanceRole, number> = {
+  viewer: 1,
+  bookkeeper: 2,
+  manager: 3,
+};
+
+/** True iff `role` is at least as capable as `min` on the graded ladder. */
+export function financeRoleAtLeast(
+  role: FinanceRole | null | undefined,
+  min: FinanceRole,
+): boolean {
+  if (!role) return false;
+  return FINANCE_ROLE_RANK[role] >= FINANCE_ROLE_RANK[min];
+}
+
+/** Whether a finance role grants org-wide (central) reach. */
+export const FINANCE_ROLE_SCOPES = ["chapter", "central"] as const;
+export type FinanceRoleScope = (typeof FINANCE_ROLE_SCOPES)[number];
+
+// The dashboard perspective a viewer sees, from their tier + finance role.
+export const FINANCE_PERSPECTIVES = ["central", "chapter", "member"] as const;
+export type FinancePerspective = (typeof FINANCE_PERSPECTIVES)[number];
+
+// ── Money formatting (single source of truth) ────────────────────────────────
+/**
+ * Format integer cents as a USD string. `cents` is always an integer amount in
+ * cents (never a float dollar value). Defaults to no decimal places when the
+ * amount is a whole number of dollars and `compact` is set, else 2 dp.
+ */
+export function formatCents(
+  cents: number,
+  opts: { showCents?: boolean } = {},
+): string {
+  const showCents = opts.showCents ?? true;
+  const dollars = cents / 100;
+  return dollars.toLocaleString("en-US", {
+    style: "currency",
+    currency: "USD",
+    minimumFractionDigits: showCents ? 2 : 0,
+    maximumFractionDigits: showCents ? 2 : 0,
+  });
+}
+
+/** Sum a list of integer-cent amounts (guards against float drift). */
+export function sumCents(amounts: readonly number[]): number {
+  return amounts.reduce((total, c) => total + Math.round(c), 0);
+}
+
+// ── Period bucketing (America/New_York) ──────────────────────────────────────
+// Budgets bucket by month / quarter / year in the chapter's home timezone
+// (America/New_York), then convert to UTC ms for range indexes on transactions.
+// These helpers derive the (year, month, quarter) a timestamp falls in when
+// read in Eastern time, so a late-night charge doesn't slip into the wrong month.
+export const FINANCE_TIMEZONE = "America/New_York";
+
+/** The Eastern-time calendar parts (year, 1-based month, day) of a timestamp. */
+export function easternParts(ts: number): {
+  year: number;
+  month: number;
+  day: number;
+} {
+  // `en-CA` yields ISO-ish `YYYY-MM-DD`, which is trivial to split.
+  const s = new Date(ts).toLocaleDateString("en-CA", {
+    timeZone: FINANCE_TIMEZONE,
+  });
+  const [year, month, day] = s.split("-").map((n) => parseInt(n, 10));
+  return { year, month, day };
+}
+
+/** The 1-based quarter (1–4) a month (1-based) falls in. */
+export function quarterOfMonth(month: number): number {
+  return Math.floor((month - 1) / 3) + 1;
+}

@@ -34,6 +34,25 @@ import {
   blasts,
 } from "./schema/ticketing";
 import { budgetLineItems } from "./schema/budget";
+import {
+  funds,
+  budgetCategories,
+  financeTeams,
+  budgets,
+  transactions,
+  reimbursementRequests,
+  reimbursementLineItems,
+  cards,
+  personalRepayments,
+  payouts,
+  increaseAccounts,
+  legacyAccounts,
+  cardAuthorizations,
+  approvalPolicy,
+  approvals,
+  financeRoles,
+  webhookEvents,
+} from "./schema/finances";
 import { assets, assetReservations } from "./schema/inventory";
 import { docs } from "./schema/docs";
 import { siteMarkers, siteShapes, siteMapPlacements } from "./schema/siteMap";
@@ -151,6 +170,29 @@ const schema = defineSchema({
   // Budget (per-line budget for an event — planned/actual/receipt per line).
   // Coexists with the coarse `events.budget` headline (see docs/plans/budget.md).
   budgetLineItems,
+
+  // Finance — the native money layer (Increase + Stripe FC) that replaces
+  // KleerCard / Bill.com. Funds/categories/teams organize money; `budgets`
+  // allocate it (scope × cadence); `transactions` is the ONLY actual-spend
+  // record; reimbursements/cards/payouts move it; roles gate it. All money is
+  // integer cents, chapter-scoped (see docs/plans/finance.md + schema/finances.ts).
+  funds,
+  budgetCategories,
+  financeTeams,
+  budgets,
+  transactions,
+  reimbursementRequests,
+  reimbursementLineItems,
+  cards,
+  personalRepayments,
+  payouts,
+  increaseAccounts,
+  legacyAccounts,
+  cardAuthorizations,
+  approvalPolicy,
+  approvals,
+  financeRoles,
+  webhookEvents,
 
   // Inventory (M5.5) — chapter-owned asset registry + per-event reservations.
   // The first chapter-level typed entity; events RESERVE from the registry and
