@@ -9,6 +9,7 @@ import {
   assertSeparationOfDuties,
 } from "../lib/finance";
 import { newT, run, setupChapter, type ChapterSetup } from "./setup.helpers";
+import { api } from "../_generated/api";
 import type { Id } from "../_generated/dataModel";
 import type { MutationCtx } from "../_generated/server";
 
@@ -219,6 +220,73 @@ describe("assertSeparationOfDuties", () => {
     const a = "person_1" as unknown as Id<"people">;
     const b = "person_2" as unknown as Id<"people">;
     expect(() => assertSeparationOfDuties(a, b)).not.toThrow();
+  });
+});
+
+describe("grantFinanceRole (upsert + central-escalation guard)", () => {
+  test("re-granting a weaker role downgrades in place (max stays correct)", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const personId = await seedSelfPerson(s);
+    // Bootstrap: the caller is a chapter manager.
+    await grantRole(s, personId, "manager");
+
+    // Downgrade self to viewer through the real mutation (upsert).
+    await s.as.mutation(api.financeRoles.grantFinanceRole, {
+      personId,
+      role: "viewer",
+      scope: "chapter",
+    });
+
+    // Effective role reflects the downgrade, and only one grant row remains.
+    const access = await asRun(s, (ctx) => getFinanceRole(ctx, s.chapterId));
+    expect(access.role).toBe("viewer");
+    expect(access.isManager).toBe(false);
+    const rows = await run(s.t, (ctx) =>
+      ctx.db
+        .query("financeRoles")
+        .withIndex("by_chapter_and_person", (q) =>
+          q.eq("chapterId", s.chapterId).eq("personId", personId),
+        )
+        .collect(),
+    );
+    expect(rows.length).toBe(1);
+  });
+
+  test("a chapter-only manager cannot grant central reach (no self-escalation)", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const personId = await seedSelfPerson(s);
+    await grantRole(s, personId, "manager", "chapter");
+
+    // Attempt to confer central scope without holding it → rejected.
+    await expect(
+      s.as.mutation(api.financeRoles.grantFinanceRole, {
+        personId,
+        role: "manager",
+        scope: "central",
+      }),
+    ).rejects.toBeInstanceOf(ConvexError);
+  });
+
+  test("a central manager CAN grant central reach", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const granter = await seedSelfPerson(s);
+    await grantRole(s, granter, "manager", "central");
+    const grantee = await run(s.t, (ctx) =>
+      ctx.db.insert("people", {
+        chapterId: s.chapterId,
+        name: "Grantee",
+        createdAt: Date.now(),
+      }),
+    );
+    const roleId = await s.as.mutation(api.financeRoles.grantFinanceRole, {
+      personId: grantee,
+      role: "manager",
+      scope: "central",
+    });
+    expect(roleId).toBeDefined();
   });
 });
 

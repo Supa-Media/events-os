@@ -99,26 +99,30 @@ export async function getFinanceRole(
     .query("financeRoles")
     .withIndex("by_person", (q) => q.eq("personId", person._id))
     .collect();
-  const chapterGrant = grants.find((g) => g.chapterId === chapterId) ?? null;
-  const centralGrant = grants.find((g) => g.scope === "central") ?? null;
 
-  // Effective role = the strongest of the applicable grants.
-  const candidates = [chapterGrant?.role, centralGrant?.role].filter(
-    (r): r is FinanceRole => r != null,
+  // Applicable grants = this chapter's grants + any central (org-wide) grant.
+  // Effective role is the STRONGEST across all of them, not the first-created —
+  // otherwise an apparent downgrade (a later, weaker re-grant) would silently
+  // leave the earlier, stronger role in force. `grantFinanceRole` upserts, so in
+  // practice there's one row per (chapter, person); this stays correct even if a
+  // stray duplicate exists.
+  const applicable = grants.filter(
+    (g) => g.chapterId === chapterId || g.scope === "central",
   );
-  const role =
-    candidates.length > 0
-      ? candidates.reduce((best, r) =>
-          FINANCE_ROLE_RANK[r] > FINANCE_ROLE_RANK[best] ? r : best,
-        )
-      : null;
+  const isCentral = applicable.some((g) => g.scope === "central");
+  let role: FinanceRole | null = null;
+  for (const g of applicable) {
+    if (role == null || FINANCE_ROLE_RANK[g.role] > FINANCE_ROLE_RANK[role]) {
+      role = g.role;
+    }
+  }
 
   return {
     personId: person._id,
     role,
-    scope: centralGrant ? "central" : (chapterGrant?.scope ?? null),
+    scope: isCentral ? "central" : role != null ? "chapter" : null,
     isManager: role === "manager",
-    isCentral: centralGrant != null,
+    isCentral,
   };
 }
 

@@ -12,7 +12,7 @@ import { ConvexError, v } from "convex/values";
 import { FINANCE_ROLES, FINANCE_ROLE_SCOPES } from "@events-os/shared";
 import { Id } from "./_generated/dataModel";
 import { getChapterIdOrNull, requireChapterId } from "./lib/context";
-import { requireFinanceManager } from "./lib/finance";
+import { requireFinanceManager, requireFinanceCentral } from "./lib/finance";
 
 const roleValidator = v.union(...FINANCE_ROLES.map((r) => v.literal(r)));
 const scopeValidator = v.union(...FINANCE_ROLE_SCOPES.map((s) => v.literal(s)));
@@ -33,7 +33,17 @@ export const listFinanceRoles = query({
     const chapterId = (await getChapterIdOrNull(ctx)) as Id<"chapters"> | null;
     if (!chapterId) return [];
     await requireFinanceManager(ctx, chapterId);
-    return []; // Phase 0 stub
+    const grants = await ctx.db
+      .query("financeRoles")
+      .withIndex("by_chapter", (q) => q.eq("chapterId", chapterId))
+      .collect();
+    return grants.map((g) => ({
+      id: g._id,
+      personId: g.personId,
+      role: g.role,
+      scope: g.scope,
+      createdAt: g.createdAt,
+    }));
   },
 });
 
@@ -47,7 +57,13 @@ export const grantFinanceRole = mutation({
   returns: v.id("financeRoles"),
   handler: async (ctx, { personId, role, scope }) => {
     const chapterId = (await requireChapterId(ctx)) as Id<"chapters">;
+    // Any finance manager may grant chapter-scoped roles, but conferring
+    // CENTRAL (org-wide) reach requires the granter to already hold it — else a
+    // plain chapter manager could self-escalate to the org roll-up.
     const access = await requireFinanceManager(ctx, chapterId);
+    if (scope === "central") {
+      await requireFinanceCentral(ctx, chapterId);
+    }
 
     const person = await ctx.db.get(personId);
     if (!person || person.chapterId !== chapterId) {
@@ -55,6 +71,24 @@ export const grantFinanceRole = mutation({
         code: "NOT_FOUND",
         message: "That person isn't on your chapter's roster.",
       });
+    }
+
+    // Upsert: one grant per (chapter, person) so a re-grant CHANGES the role in
+    // place instead of stacking rows (which the effective-role resolver would
+    // otherwise have to reconcile).
+    const existing = await ctx.db
+      .query("financeRoles")
+      .withIndex("by_chapter_and_person", (q) =>
+        q.eq("chapterId", chapterId).eq("personId", personId),
+      )
+      .first();
+    if (existing) {
+      await ctx.db.patch(existing._id, {
+        role,
+        scope,
+        grantedByPersonId: access.personId ?? undefined,
+      });
+      return existing._id;
     }
 
     return await ctx.db.insert("financeRoles", {

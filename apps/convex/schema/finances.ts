@@ -124,7 +124,9 @@ export const budgets = defineTable({
 })
   .index("by_chapter", ["chapterId"])
   .index("by_chapter_and_period", ["chapterId", "year"])
-  .index("by_scope", ["scope", "scopeRefId"])
+  // Chapter-led so "budgets for scope X" never matches another chapter's
+  // chapter/bucket budgets (whose `scopeRefId` is absent).
+  .index("by_chapter_and_scope", ["chapterId", "scope", "scopeRefId"])
   .index("by_category", ["categoryId", "year"]);
 
 // ── Transactions (the unified ACTUAL record) ─────────────────────────────────
@@ -452,7 +454,9 @@ export const approvals = defineTable({
 // ── Finance roles (graded, per-person) ───────────────────────────────────────
 /** A caller's graded finance capability in a chapter (viewer < bookkeeper <
  *  manager). `scope: "central"` layers org-wide roll-up reach on top.
- *  Superusers + chapter admins are implicitly manager (not stored here). */
+ *  SUPERUSERS are implicitly central managers (the bootstrap path — they seed
+ *  the first grants); everyone else, chapter admins included, needs an explicit
+ *  grant here. Conferring `scope:"central"` itself requires central reach. */
 export const financeRoles = defineTable({
   chapterId: v.id("chapters"),
   personId: v.id("people"),
