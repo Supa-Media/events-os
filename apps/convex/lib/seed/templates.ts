@@ -26,8 +26,8 @@ import {
 
 /** Seed item rows for the new modules, shared between seedDemoData and backfillNewModules. */
 export const PERMIT_ROWS: ItemRow[] = [
-  { title: "Maria Hernandez Park Permit", offsetDays: -3, status: "approved", fields: { notes: "Park permit — holder must attend." } },
-  { title: "Sound Permit", offsetDays: -3, status: "submitted", fields: { notes: "Amplified-sound permit via precinct officer ~3 days prior." } },
+  { title: "Maria Hernandez Park Permit", offsetDays: -3, status: "approved", fields: { jurisdiction: "NYC Parks Dept", notes: "Park permit — holder must attend." } },
+  { title: "Sound Permit", offsetDays: -3, status: "submitted", fields: { jurisdiction: "NYPD Precinct (amplified sound)", notes: "Amplified-sound permit via precinct officer ~3 days prior." } },
 ];
 
 // Granular EXPECTATIONS — multiple per team, each tagged to a team value from
@@ -908,7 +908,7 @@ export async function buildChapterRolesAndTemplates(
   ], wwsRoleByKey);
 
   await addTemplateItems(ctx, wwsId, "permits", [
-    { title: "Public-space / sound permit", offsetDays: -3, status: "to_apply", fields: { notes: "Check the park's amplified-sound rules; apply if required." } },
+    { title: "Public-space / sound permit", offsetDays: -3, status: "to_apply", fields: { jurisdiction: "City Parks / local precinct", notes: "Check the park's amplified-sound rules; apply if required." } },
   ], wwsRoleByKey);
 
   // ── Academy training templates (the capstones' sandboxes) ──────────────────

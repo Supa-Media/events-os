@@ -32,6 +32,7 @@ import { clearLegacyFields } from "./0016_clear_legacy_fields";
 import { purgeGuestAllowlist } from "./0017_purge_guest_allowlist";
 import { backfillCourseCompletions } from "./0018_backfill_course_completions";
 import { backfillRunOfShowDuration } from "./0019_backfill_run_of_show_duration";
+import { permitsStatesAndFallback } from "./0020_permits_states_and_fallback";
 
 /** One registered migration: a stable `name` (the ledger key) + its effect. */
 export type Migration = {
@@ -60,4 +61,6 @@ export const MIGRATIONS: Migration[] = [
   backfillCourseCompletions,
   // Run of Show v1 — add the `duration` (segment length) column to existing grids.
   backfillRunOfShowDuration,
+  // Permits v1 — merge denied/waived status options + add jurisdiction/fallback.
+  permitsStatesAndFallback,
 ];

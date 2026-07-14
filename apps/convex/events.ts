@@ -12,6 +12,8 @@ import { ConvexError, v, type Infer } from "convex/values";
 import {
   computeDueDate,
   computeReadiness,
+  countPermitBlockers,
+  permitDeniedWithoutFallback,
   isCompleteStatus,
   isOperationalEvent,
   itemScore,
@@ -1152,12 +1154,22 @@ export const pipeline = query({
           event._id,
           "planning_doc",
         );
-        const blockerCount = items.filter(
+        const overdueTaskBlockers = items.filter(
           (it) =>
             !isCompleteStatus(options, it.status) &&
             it.dueDate !== undefined &&
             it.dueDate < now,
         ).length;
+        // Permit blockers: a denied permit with no fallback plan. One extra
+        // indexed read per event (same shape/cost as the planning_doc read
+        // above); the denied-without-fallback tally is ADDED to blockerCount.
+        const { items: permitItems } = await statusCountsFor(
+          ctx,
+          event._id,
+          "permits",
+        );
+        const blockerCount =
+          overdueTaskBlockers + countPermitBlockers(permitItems);
         // Phase readiness → the card's current-phase label + number.
         const phases = await phaseReadiness(ctx, event);
         const current = currentPhasePct(phases, event.eventDate, now);
@@ -1237,12 +1249,26 @@ export const dayOf = query({
       .filter((t) => t.offsetDays == null || t.offsetDays >= -2)
       .sort((a, b) => (a.dueDate ?? 0) - (b.dueDate ?? 0));
 
+    // Denied permits with no fallback plan — the Day-of guardrail. One indexed
+    // read; the screen renders a dismissible prompt to write a plan B (the grid
+    // holds the editable `fallback` cell).
+    const permitItems = await ctx.db
+      .query("eventItems")
+      .withIndex("by_event_module", (q) =>
+        q.eq("eventId", eventId).eq("module", "permits"),
+      )
+      .collect();
+    const permitsNeedingFallback = permitItems
+      .filter((p) => permitDeniedWithoutFallback(p))
+      .map((p) => ({ _id: p._id as Id<"eventItems">, title: p.title }));
+
     return {
       event,
       eventTypeName: eventType?.name ?? "Unknown",
       runOfShow,
       roles,
       tasks,
+      permitsNeedingFallback,
     };
   },
 });

@@ -431,6 +431,12 @@ export const PERMIT_STATUS_OPTIONS: SelectOption[] = [
   { value: "to_apply", label: "To apply", color: "red", isComplete: false },
   { value: "submitted", label: "Submitted", color: "amber" },
   { value: "approved", label: "Approved", color: "green", isComplete: true },
+  // A denied permit is NOT complete — it's the trigger for the readiness
+  // guardrail (`permitDeniedWithoutFallback`): a denied permit with no fallback
+  // plan is an event blocker.
+  { value: "denied", label: "Denied", color: "red", isComplete: false },
+  // The requirement was waived (no permit needed after all) → genuinely done.
+  { value: "waived", label: "Waived", color: "green", isComplete: true },
 ];
 
 export const RETRO_STATUS_OPTIONS: SelectOption[] = [
@@ -576,6 +582,11 @@ export const DEFAULT_COLUMNS: Partial<Record<ModuleKey, ColumnDef[]>> = {
     { key: "due_date", label: "Due", kind: "system", type: "due_date", isVisible: true },
     { key: "document", label: "Document", kind: "custom", type: "photo", isVisible: true },
     { key: "owner", label: "Owner", kind: "system", type: "person", isVisible: true },
+    // Issuing authority + the "if denied" contingency plan. Typed custom cells
+    // in the fields bag (like Run-of-Show `duration`). `fallback` is the plan-B
+    // the denied-without-fallback guardrail checks for.
+    { key: "jurisdiction", label: "Jurisdiction", kind: "custom", type: "text", isVisible: true },
+    { key: "fallback", label: "If denied (fallback)", kind: "custom", type: "longtext", isVisible: true },
     { key: "notes", label: "Notes", kind: "custom", type: "longtext", isVisible: true },
   ],
   retro: [
@@ -867,6 +878,32 @@ export function isCompleteStatus(
 ): boolean {
   if (!options || value == null) return false;
   return options.some((o) => o.value === value && o.isComplete === true);
+}
+
+// ── Permit readiness guardrail ───────────────────────────────────────────────
+// A denied permit is only a real event BLOCKER when there's no contingency: a
+// denied permit WITH a written `fallback` (plan B in the fields bag) is handled,
+// not blocking. This keys the pipeline's blocker count and the Day-of prompt.
+
+/**
+ * True when a permit item is denied AND has no fallback plan written — the
+ * blocker condition. Reads `status` (promoted) + `fields.fallback` (bag); a
+ * whitespace-only fallback counts as empty.
+ */
+export function permitDeniedWithoutFallback(item: {
+  status?: string | null;
+  fields?: Record<string, unknown> | null;
+}): boolean {
+  if (item.status !== "denied") return false;
+  const fallback = item.fields?.fallback;
+  return typeof fallback !== "string" || fallback.trim() === "";
+}
+
+/** How many permit items are denied-without-fallback (the blocker rollup). */
+export function countPermitBlockers(
+  items: { status?: string | null; fields?: Record<string, unknown> | null }[],
+): number {
+  return items.filter(permitDeniedWithoutFallback).length;
 }
 
 // ── Phase-based readiness ────────────────────────────────────────────────────
