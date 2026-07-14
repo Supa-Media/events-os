@@ -513,10 +513,420 @@ const WORSHIP_EVENT_SPEC: TrainingTemplateSpec = {
   },
 };
 
+/**
+ * ROLE CAPSTONE — "Run the comms" (Comms Lead course). A worship gathering
+ * three weeks out where the comms AREA starts from zero: Crew expectations is
+ * deliberately EMPTY (the learner writes the duties before recruiting), the
+ * crew list has open placeholder slots, and the announcement hasn't moved.
+ * The recruiting bench is four sample teammates — reaching out and filling a
+ * slot IS the simulated yes.
+ */
+const COMMS_LEAD_SPEC: TrainingTemplateSpec = {
+  name: "Academy: Run the Comms",
+  version: 1,
+  eventName: (firstName) => `Training: ${firstName} runs the comms`,
+  eventDaysOut: 21,
+  description:
+    "Comms Lead capstone sandbox — duties first, then recruit: the learner writes each team's expectations, fills open crew slots from a sample bench, and runs the message schedule. Instantiated per person by \"Start training\"; training events never appear in the pipeline or reminder emails.",
+  disabledCoreModules: [],
+  roleKeys: DEFAULT_ROLES.map((r) => r.key),
+  rows: {
+    planning_doc: [
+      // Scenery — the rest of the event is on track; only comms is at zero.
+      { title: "Lock the venue + rain plan", offsetDays: -21, role: "event_lead", status: "done", fields: { details: "Locked — which is what gates your announcement." } },
+      { title: "Confirm worship leader + band", offsetDays: -18, role: "production_lead", status: "done" },
+      { title: "Pack gear + charge batteries", offsetDays: -1, role: "logistics_lead", status: "not_started" },
+      // Quests.
+      {
+        title: "Quest: Take the Comms Lead role",
+        offsetDays: -20,
+        role: "comms_lead",
+        fields: {
+          details:
+            "Roles before people. Details (event header) → Roles → put yourself in Comms Lead. Every unowned comms and crew row now resolves to you. Then mark this Done.",
+        },
+      },
+      {
+        title: "Quest: Write the Welcome team's duties",
+        offsetDays: -18,
+        role: "comms_lead",
+        fields: {
+          details:
+            "The Crew tab's expectations are EMPTY — that's the job. Add at least two expectation rows tagged Welcome (greet + direct arrivals; hand out connect cards), each with details of what done looks like. This is the job description someone says yes to. Then mark this Done.",
+        },
+      },
+      {
+        title: "Quest: Write duties for Prayer and Content",
+        offsetDays: -17,
+        role: "comms_lead",
+        fields: {
+          details:
+            "Same move, two more teams: one expectation row for Prayer (hold the prayer station), one for Content (capture photos + clips for the recap). Never recruit against unwritten duties. Then mark this Done.",
+        },
+      },
+      {
+        title: "Quest: Fill every open crew slot from your bench",
+        offsetDays: -12,
+        role: "comms_lead",
+        fields: {
+          details:
+            "The crew list has three placeholder slots — Welcome table, Prayer lead, Content capture. Your bench is the sample people on your roster: Maya, Jordan, Sam, and Priya. In real life this is the text you send a friend; here, replace each placeholder with a person (sandbox pickers only ever offer you and sample people). Then mark this Done.",
+        },
+      },
+      {
+        title: "Quest: Chase every invite to Confirmed, with call times",
+        offsetDays: -10,
+        role: "comms_lead",
+        fields: {
+          details:
+            "Invited is a maybe. On the Crew tab, walk each filled slot to Confirmed and give everyone a call time — confirmed people with call times are what run events. Then mark this Done.",
+        },
+      },
+      {
+        title: "Quest: Mark the Comms Schedule ready",
+        offsetDays: -2,
+        role: "comms_lead",
+        fields: {
+          details:
+            "Once your three comms rows read Sent and your crew is confirmed, hit \"Mark ready\" on the Comms Schedule tab — that's you signing your name to the area, honestly. Then mark this Done.",
+        },
+      },
+    ],
+    comms: [
+      // Scenery.
+      { title: "Flyer request to marketing", offsetDays: -19, role: "comms_lead", status: "sent", fields: { channel: ["team_slack"], audience: ["leaders"] } },
+      { title: "Recap post", offsetDays: 3, role: "comms_lead", status: "not_started", fields: { channel: ["ig_post"], audience: ["general_public"] } },
+      // Quests — rows the learner walks to Sent.
+      {
+        title: "Quest: Post the crew ask",
+        offsetDays: -15,
+        role: "comms_lead",
+        status: "not_started",
+        fields: {
+          channel: ["ig_stories"],
+          audience: ["general_public"],
+          notes:
+            "Gate check: are the team duties written (your two duty quests)? Recruiting against unwritten expectations gets you warm bodies with no idea what to do. Once they're written, walk this to Sent.",
+        },
+      },
+      {
+        title: "Quest: Send the announcement",
+        offsetDays: -14,
+        role: "comms_lead",
+        status: "not_started",
+        fields: {
+          channel: ["ig_post", "ig_stories"],
+          audience: ["general_public"],
+          notes:
+            "The venue row on Tasks reads Done — locked venue, so this can go out. Draft the copy in these notes, then walk the status to Sent. Nothing actually posts in a sandbox; statuses are claims you keep true.",
+        },
+      },
+      {
+        title: "Quest: Send the T-1 call-time reminder",
+        offsetDays: -1,
+        role: "comms_lead",
+        status: "not_started",
+        fields: {
+          channel: ["imessage_group"],
+          audience: ["volunteers"],
+          notes:
+            "Your copy quotes call times — read them off the Run of Show tab (that dependency is why templates lock it days out). Walk this to Sent.",
+        },
+      },
+    ],
+    run_of_show: [
+      { title: "Load-in / Setup", offsetMinutes: -120, role: "logistics_lead" },
+      { title: "Soundcheck", offsetMinutes: -75, role: "production_lead" },
+      { title: "Crew huddle + prayer", offsetMinutes: -30, role: "event_lead" },
+      { title: "Doors / guest arrival", offsetMinutes: 0, role: "event_lead" },
+      { title: "Worship set", offsetMinutes: 15, role: "production_lead" },
+      { title: "Strike / leave-no-trace", offsetMinutes: 110, role: "logistics_lead" },
+    ],
+    supplies: [
+      { title: "PA + mics", status: "have_it", offsetDays: -1, fields: { source: "storage", container: "green_luggage", notes: "With the audio kit." } },
+      { title: "Connect cards", status: "ordered", offsetDays: -7, fields: { source: "order_online", qty: 100 } },
+    ],
+    permits: [
+      { title: "Park permit", offsetDays: -14, status: "approved", fields: { notes: "Approved. Holder must attend." } },
+      { title: "Amplified sound permit", offsetDays: -3, status: "submitted", fields: { notes: "Via the precinct officer, ~3 days prior." } },
+    ],
+    // volunteer_expectations intentionally seeds NO rows — writing the duties
+    // is the capstone. The tab still gets its columns, empty-but-usable.
+  },
+  // Open, role-shaped slots the learner fills from the sample bench.
+  people: [
+    { name: "Welcome table (placeholder)", team: "welcome", role: "Welcome table" },
+    { name: "Prayer lead (placeholder)", team: "prayer", role: "Prayer lead" },
+    { name: "Content capture (placeholder)", team: "content", role: "Content capture" },
+  ],
+  // A four-person bench so "reach out and invite people in" has real choices.
+  sampleTeammates: [
+    { name: "Maya (sample teammate)", role: "Trained organizer — sample" },
+    { name: "Jordan (sample teammate)", role: "Trained organizer — sample" },
+    { name: "Sam (sample teammate)", role: "Trained organizer — sample" },
+    { name: "Priya (sample teammate)", role: "Trained organizer — sample" },
+  ],
+};
+
+/**
+ * ROLE CAPSTONE — "Run the plan" (Event Lead course). A worship gathering
+ * three weeks out that's drifting: an overdue task in the red band, a gap in
+ * the plan, a stub run of show, and a permit nobody's applied for. The
+ * learner triages it the way a real Event Lead inherits a mid-flight mess.
+ */
+const EVENT_LEAD_SPEC: TrainingTemplateSpec = {
+  name: "Academy: Run the Plan",
+  version: 1,
+  eventName: (firstName) => `Training: ${firstName} runs the plan`,
+  eventDaysOut: 21,
+  description:
+    "Event Lead capstone sandbox — a drifting plan to rescue: overdue rows, a missing task, an unbuilt run of show, and a permit on someone else's clock. Instantiated per person by \"Start training\"; training events never appear in the pipeline or reminder emails.",
+  disabledCoreModules: [],
+  roleKeys: DEFAULT_ROLES.map((r) => r.key),
+  rows: {
+    planning_doc: [
+      // Scenery — the early work happened, then the plan started drifting.
+      { title: "Secure the park", offsetDays: -30, role: "event_lead", status: "done" },
+      { title: "Confirm worship leader + band", offsetDays: -24, role: "production_lead", status: "done" },
+      // Quests.
+      {
+        title: "Quest: Take the Event Lead role",
+        offsetDays: -20,
+        role: "event_lead",
+        fields: {
+          details:
+            "Details (event header) → Roles → put yourself in Event Lead. The accountability chain now ends at you: every unowned row on this event is yours until you place it. Then mark this Done.",
+        },
+      },
+      {
+        // Seeded ALREADY OVERDUE (due before the sandbox was created) so the
+        // learner meets the red band and the amber pace check on day one.
+        title: "Quest: Clear the overdue venue walkthrough",
+        offsetDays: -25,
+        role: "event_lead",
+        status: "not_started",
+        fields: {
+          details:
+            "This row is overdue — it's flagged red, it's in What's-next, and it's why the Planning ring reads amber. Overdue first, every time. Do the (pretend) walkthrough, note one thing you'd check in real life, and walk this to Done.",
+        },
+      },
+      {
+        title: "Quest: Add the missing task, written for a stranger",
+        offsetDays: -14,
+        role: "event_lead",
+        fields: {
+          details:
+            "Nobody planned the food & water run. + Add row: give it a title, an offset (~T-2), an owner, and details rich enough that a stranger could run it cold — the how and the why, not just the what. Then mark this Done.",
+        },
+      },
+      {
+        title: "Quest: Give Maya and Jordan each an area",
+        offsetDays: -13,
+        role: "event_lead",
+        fields: {
+          details:
+            "Delegation is the job. Details → Roles: put Maya and Jordan (sample teammates) into Comms Lead and Logistics Lead. Whole areas, not errands — if everything resolves to you, you're failing at the core skill. Then mark this Done.",
+        },
+      },
+      {
+        title: "Quest: Write the rain plan + permit fallback",
+        offsetDays: -12,
+        role: "event_lead",
+        fields: {
+          details:
+            "Two contingencies, written while you're calm: what happens if it rains, and what happens if the sound permit is denied. Put both in this row's notes. Contingencies are structure, not vibes. Then mark this Done.",
+        },
+      },
+      {
+        title: "Quest: Build the run of show, one named owner per segment",
+        offsetDays: -3,
+        role: "event_lead",
+        fields: {
+          details:
+            "The Run of Show tab has only Load-in. Add the day: Soundcheck (−75), Huddle + prayer (−30), Doors (0), Worship set (15), Message + response (45), Strike (110) — one named owner each. \"All\" is only acceptable for arrival, setup, and strike. Then mark this Done.",
+        },
+      },
+      {
+        title: "Quest: Ask the assistant for the owner's test",
+        offsetDays: -2,
+        role: "event_lead",
+        fields: {
+          details:
+            'Ask the assistant: "If I disappeared today, what breaks? What\'s unowned, undated, or only in my head?" Fix what it finds — that\'s the plan passing the owner\'s test. Then mark this Done.',
+        },
+      },
+    ],
+    comms: [
+      { title: "Announcement", offsetDays: -14, role: "comms_lead", status: "sent", fields: { channel: ["ig_post"], audience: ["general_public"] } },
+      { title: "T-1 call-time reminder", offsetDays: -1, role: "comms_lead", status: "not_started", fields: { channel: ["imessage_group"], audience: ["volunteers"] } },
+    ],
+    run_of_show: [
+      // A stub on purpose — building the rest IS a quest.
+      { title: "Load-in / Setup", offsetMinutes: -120, role: "logistics_lead" },
+    ],
+    supplies: [
+      { title: "PA + mics", status: "have_it", offsetDays: -1, fields: { source: "storage", container: "green_luggage" } },
+      { title: "200W battery", status: "pull_from_storage", offsetDays: -2, fields: { source: "storage", notes: "Charge at home — no charger in storage." } },
+    ],
+    permits: [
+      // Scenery.
+      { title: "Park permit", offsetDays: -14, status: "approved", fields: { notes: "Approved. Holder must attend." } },
+      // Quest — a real permit walked across someone else's clock.
+      {
+        title: "Quest: Walk the sound permit to Approved",
+        offsetDays: -3,
+        status: "to_apply",
+        fields: {
+          notes:
+            "Amplified sound in public space needs a permit — via the precinct, ~3 days out, holder must attend. Walk it To apply → Submitted → Approved (the sandbox precinct says yes). In real life this starts at kickoff, because approval is never in your hands.",
+        },
+      },
+    ],
+    volunteer_expectations: [
+      { title: "Greet and direct guests on arrival", fields: { team: "welcome", details: "Welcome people in, point them to seating, keep the entrance flowing." } },
+      { title: "Capture photos + clips", fields: { team: "content", details: "Candid moments, worship, and setup for the recap." } },
+    ],
+    retro: [
+      {
+        title: "Quest: Log one learning and dispatch it",
+        status: "open",
+        fields: {
+          notes:
+            "Pretend the event ran. Write one concrete, counted learning, pick a dispatch — promoted / context / dropped — then mark it Actioned. The debrief is finished when the template is better, and the Event Lead owns that loop.",
+        },
+      },
+    ],
+  },
+  sampleTeammates: [
+    { name: "Maya (sample teammate)", role: "Trained organizer — sample" },
+    { name: "Jordan (sample teammate)", role: "Trained organizer — sample" },
+  ],
+};
+
+/**
+ * ROLE CAPSTONE — "Run the supplies" (Logistics Lead course). A worship
+ * gathering two weeks out whose supply list has every classic acquisition
+ * problem on two clocks: an order whose shipping window is closing, a battery
+ * in storage with no charger, ice nobody's bought, and gaps in the list.
+ */
+const LOGISTICS_LEAD_SPEC: TrainingTemplateSpec = {
+  name: "Academy: Run the Supplies",
+  version: 1,
+  eventName: (firstName) => `Training: ${firstName} runs the supplies`,
+  eventDaysOut: 14,
+  description:
+    "Logistics Lead capstone sandbox — get it, know where it lives, pack it: real acquisition walks across order/storage/buy, plus the packing checklist and the site map. Instantiated per person by \"Start training\"; training events never appear in the pipeline or reminder emails.",
+  disabledCoreModules: ["permits", "volunteer_expectations"],
+  roleKeys: LIGHTWEIGHT_ROLE_KEYS,
+  rows: {
+    planning_doc: [
+      // Scenery.
+      { title: "Lock the venue + rain plan", offsetDays: -14, role: "event_lead", status: "done" },
+      // Quests.
+      {
+        title: "Quest: Take the Logistics Lead role",
+        offsetDays: -13,
+        role: "logistics_lead",
+        fields: {
+          details:
+            "Details (event header) → Roles → put yourself in Logistics Lead. Every supply row with no owner is now yours to bring — blank isn't neutral. Then mark this Done.",
+        },
+      },
+      {
+        title: "Quest: Add two missing items with have-it-by timing",
+        offsetDays: -10,
+        role: "logistics_lead",
+        fields: {
+          details:
+            "The list is yours to COMPLETE, not just execute: nobody added water or trash bags (the debrief classic). + Add row on Supplies for both, each with a source and a have-it-by offset — orders early, store runs later. Then mark this Done.",
+        },
+      },
+      {
+        title: "Quest: Draw the site map",
+        offsetDays: -2,
+        role: "logistics_lead",
+        fields: {
+          details:
+            "On the Supplies & Logistics tab, open the site map and place the day: stage, welcome table, prayer station, arrival flow. The map is the spatial view of everything your grid tracks. Then mark this Done.",
+        },
+      },
+      {
+        title: "Quest: Run the packing checklist",
+        offsetDays: -1,
+        role: "logistics_lead",
+        fields: {
+          details:
+            "Everything in hand by T-1, checked into its container on the Packing checklist — packed is a checklist, never a status. Check every Have-it item into a container. Then mark this Done.",
+        },
+      },
+      {
+        title: "Quest: Mark Supplies & Logistics ready",
+        offsetDays: -1,
+        role: "logistics_lead",
+        fields: {
+          details:
+            "Everything in hand, packed, and placed on the map? Hit \"Mark ready\" on the Supplies & Logistics tab — your name on the claim, honestly. Then mark this Done.",
+        },
+      },
+    ],
+    comms: [
+      { title: "Announcement", offsetDays: -10, role: "comms_lead", status: "sent", fields: { channel: ["ig_post"], audience: ["general_public"] } },
+    ],
+    run_of_show: [
+      { title: "Load-in / Setup", offsetMinutes: -120, role: "logistics_lead" },
+      { title: "Worship set", offsetMinutes: 15, role: "event_lead" },
+      { title: "Strike / leave-no-trace", offsetMinutes: 110, role: "logistics_lead" },
+    ],
+    supplies: [
+      // Scenery — some of the list is already handled.
+      { title: "PA + mics", status: "have_it", offsetDays: -1, fields: { source: "storage", container: "green_luggage", notes: "With the audio kit at Sam's place." } },
+      { title: "Folding tables ×2", status: "have_it", offsetDays: -1, fields: { source: "storage", container: "car", qty: 2 } },
+      // Quests — real acquisition walks, one per clock.
+      {
+        title: "Quest: Order the connect cards before shipping closes",
+        status: "need_to_order",
+        offsetDays: -8,
+        fields: {
+          source: "order_online",
+          qty: 100,
+          notes:
+            "Shipping takes ~a week, so the order goes out NOW — that's what the have-it-by Timing column is for. Walk it Need to order → Ordered → Have it, and keep the Link current so the next event re-orders without the archaeology.",
+        },
+      },
+      {
+        title: "Quest: Get the battery out, charged",
+        status: "pull_from_storage",
+        offsetDays: -2,
+        fields: {
+          source: "storage",
+          container: "green_luggage",
+          qty: 1,
+          notes:
+            "The VERY IMPORTANT row: the battery leaves storage early enough to charge at home, because there's no charger in storage. Walk it to Have it once it's charged and with you.",
+        },
+      },
+      {
+        title: "Quest: Buy the ice + record where it lives",
+        status: "need_to_buy",
+        offsetDays: -1,
+        fields: {
+          source: "buy_in_store",
+          qty: 4,
+          notes:
+            "Store run near the end — ice doesn't keep. Walk it to Have it, then update Source/notes with where it lives (\"cooler in my trunk\") so pack day is a checklist run, not a scavenger hunt.",
+        },
+      },
+    ],
+  },
+};
+
 const TRAINING_TEMPLATE_SPECS: Record<AcademyTrainingKind, TrainingTemplateSpec> = {
   join_event: JOIN_EVENT_SPEC,
   birthday_party: BIRTHDAY_PARTY_SPEC,
   worship_event: WORSHIP_EVENT_SPEC,
+  comms_lead: COMMS_LEAD_SPEC,
+  event_lead: EVENT_LEAD_SPEC,
+  logistics_lead: LOGISTICS_LEAD_SPEC,
 };
 
 /** The spec for one capstone kind (startTraining reads eventName/teammates). */
