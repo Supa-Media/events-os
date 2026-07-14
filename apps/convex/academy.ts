@@ -23,6 +23,7 @@ import { query, mutation, MutationCtx, QueryCtx } from "./_generated/server";
 import { Doc, Id } from "./_generated/dataModel";
 import { ConvexError, v } from "convex/values";
 import {
+  ACADEMY_COURSES,
   ACADEMY_REQUIRED_SECTION_COUNT,
   ACADEMY_SECTIONS,
   ACADEMY_TRAINING_TEMPLATES,
@@ -30,10 +31,12 @@ import {
   DAY_MS,
   DAY_OFFSET_MODULES,
   computeDueDate,
+  courseForModuleSlug,
   defaultStatusValue,
   getAcademySection,
   isCompleteStatus,
   previousAcademySection,
+  requiredModuleSlugsForCourse,
   type AcademySection,
   type AcademyTrainingKind,
   type ModuleKey,
@@ -338,6 +341,125 @@ async function capstonePassedFor(
   return questsComplete(await questsFor(ctx, event));
 }
 
+// ── Course completion (the earned badge) ──────────────────────────────────────
+
+/**
+ * When a person has completed a course, or null if not. Complete = every
+ * REQUIRED module passed (`requiredModuleSlugsForCourse` excludes the optional
+ * bonus). Quiz modules pass via stored `passedAt`; capstone modules via
+ * `capstonePassedFor` (stored stamp OR live derivation). Returns the badge's
+ * `earnedAt`: the max `passedAt` across the required modules. Every course has
+ * at least one quiz module, so a complete course always has a real timestamp;
+ * the `0` fallback (all modules live-derived, no stamp) is only a theoretical
+ * guard the caller resolves with `|| Date.now()`.
+ */
+async function courseEarnedAt(
+  ctx: QueryCtx,
+  chapterId: Id<"chapters">,
+  personId: Id<"people">,
+  course: (typeof ACADEMY_COURSES)[number],
+  bySlug: Map<string, Doc<"academyProgress">>,
+): Promise<number | null> {
+  const required = requiredModuleSlugsForCourse(course.slug);
+  if (required.length === 0) return null; // an empty course is never "earned"
+  let earnedAt = 0;
+  for (const slug of required) {
+    const section = getAcademySection(slug);
+    if (!section) return null; // catalog invariant guarantees this can't happen
+    const stamped = bySlug.get(slug)?.passedAt;
+    if (stamped != null) {
+      earnedAt = Math.max(earnedAt, stamped);
+      continue;
+    }
+    if (
+      section.capstone &&
+      (await capstonePassedFor(ctx, chapterId, personId, section, bySlug))
+    ) {
+      continue; // passed (live-derived) but unstamped — contributes no timestamp
+    }
+    return null; // a required module isn't passed → course incomplete
+  }
+  return earnedAt;
+}
+
+/** The person's existing course-badge slugs (dedupe before awarding). */
+async function completedCourseSlugs(
+  ctx: QueryCtx,
+  chapterId: Id<"chapters">,
+  personId: Id<"people">,
+): Promise<Set<string>> {
+  const rows = await ctx.db
+    .query("courseCompletions")
+    .withIndex("by_chapter_and_person", (q) =>
+      q.eq("chapterId", chapterId).eq("personId", personId),
+    )
+    .collect();
+  return new Set(rows.map((r) => r.courseSlug));
+}
+
+/**
+ * Award ONE course's badge if it's now complete and not already held — the
+ * real-time path called from submitQuiz / syncCapstone after a module passes.
+ * Idempotent: a no-op when the course is incomplete or the badge already
+ * exists. Returns whether a row was inserted.
+ */
+async function maybeAwardCourse(
+  ctx: MutationCtx,
+  chapterId: Id<"chapters">,
+  personId: Id<"people">,
+  courseSlug: string,
+): Promise<boolean> {
+  const course = ACADEMY_COURSES.find((c) => c.slug === courseSlug);
+  if (!course) return false;
+  if ((await completedCourseSlugs(ctx, chapterId, personId)).has(courseSlug)) {
+    return false;
+  }
+  const bySlug = await progressBySlug(ctx, chapterId, personId);
+  const earnedAt = await courseEarnedAt(ctx, chapterId, personId, course, bySlug);
+  if (earnedAt === null) return false;
+  await ctx.db.insert("courseCompletions", {
+    chapterId,
+    personId,
+    courseSlug,
+    earnedAt: earnedAt || Date.now(),
+  });
+  return true;
+}
+
+/**
+ * Award every course the person has completed but doesn't yet hold a badge for
+ * — the batch path for migration 0018's backfill. Reads the person's progress
+ * once, then checks all courses. Idempotent. Returns the number awarded.
+ */
+export async function awardAllCourses(
+  ctx: MutationCtx,
+  chapterId: Id<"chapters">,
+  personId: Id<"people">,
+): Promise<number> {
+  const have = await completedCourseSlugs(ctx, chapterId, personId);
+  const bySlug = await progressBySlug(ctx, chapterId, personId);
+  let awarded = 0;
+  for (const course of ACADEMY_COURSES) {
+    if (have.has(course.slug)) continue;
+    const earnedAt = await courseEarnedAt(
+      ctx,
+      chapterId,
+      personId,
+      course,
+      bySlug,
+    );
+    if (earnedAt === null) continue;
+    await ctx.db.insert("courseCompletions", {
+      chapterId,
+      personId,
+      courseSlug: course.slug,
+      earnedAt: earnedAt || Date.now(),
+    });
+    awarded++;
+  }
+  return awarded;
+}
+
 // ── Progress ──────────────────────────────────────────────────────────────────
 
 /** A capstone's training sub-state myProgress returns (fed to the hub). */
@@ -575,11 +697,19 @@ export const submitQuiz = mutation({
     const passed = score === total;
 
     const existing = bySlug.get(sectionSlug);
+    const newlyPassed = passed && existing?.passedAt == null;
     await upsertProgress(ctx, chapterId, me, sectionSlug, existing, {
       quizBestScore: Math.max(existing?.quizBestScore ?? 0, score),
       quizTotal: total,
       passedAt: existing?.passedAt ?? (passed ? now : undefined),
     });
+
+    // A newly-passed module may be the last one its course needed → award the
+    // badge. Only the module's own course can complete from this pass.
+    if (newlyPassed) {
+      const course = courseForModuleSlug(sectionSlug);
+      if (course) await maybeAwardCourse(ctx, chapterId, me, course.slug);
+    }
 
     return { score, total, passed, results };
   },
@@ -620,6 +750,11 @@ export const syncCapstone = mutation({
     await upsertProgress(ctx, chapterId, me, section.slug, existing, {
       passedAt: Date.now(),
     });
+
+    // The capstone that just passed may complete its course (Owning an event).
+    const course = courseForModuleSlug(section.slug);
+    if (course) await maybeAwardCourse(ctx, chapterId, me, course.slug);
+
     return { passed: true };
   },
 });
@@ -748,6 +883,68 @@ export const chapterProgress = query({
       ),
       total: ACADEMY_REQUIRED_SECTION_COUNT,
     };
+  },
+});
+
+/**
+ * Everyone in the chapter who has earned a given course's badge — the course
+ * page's completer list. Chapter-visible (decision D4): any chapter member can
+ * see who completed a course, unlike the manager-gated aggregate panel
+ * (`chapterProgress`). Returns null when the caller has no chapter; oldest
+ * completion first.
+ */
+export const courseCompleters = query({
+  args: { courseSlug: v.string() },
+  handler: async (ctx, { courseSlug }) => {
+    const chapterId = await getChapterIdOrNull(ctx);
+    if (!chapterId) return null;
+    const rows = await ctx.db
+      .query("courseCompletions")
+      .withIndex("by_chapter_and_course", (q) =>
+        q
+          .eq("chapterId", chapterId as Id<"chapters">)
+          .eq("courseSlug", courseSlug),
+      )
+      .collect();
+    const people = await Promise.all(
+      rows.map(async (r) => {
+        const p = await ctx.db.get(r.personId);
+        return p
+          ? {
+              personId: p._id,
+              name: p.name,
+              imageUrl: p.image ? await ctx.storage.getUrl(p.image) : null,
+              earnedAt: r.earnedAt,
+            }
+          : null;
+      }),
+    );
+    return people
+      .filter((x): x is NonNullable<typeof x> => x !== null)
+      .sort((a, b) => a.earnedAt - b.earnedAt || a.name.localeCompare(b.name));
+  },
+});
+
+/**
+ * A person's earned course badges (slug + earnedAt), newest first — the chips
+ * on their profile. Scoped to the caller's chapter, so it only returns badges
+ * for someone on the caller's roster. Course titles/levels live in the shared
+ * catalog (ACADEMY_COURSES); the client resolves them from the slug.
+ */
+export const personBadges = query({
+  args: { personId: v.id("people") },
+  handler: async (ctx, { personId }) => {
+    const chapterId = await getChapterIdOrNull(ctx);
+    if (!chapterId) return [];
+    const rows = await ctx.db
+      .query("courseCompletions")
+      .withIndex("by_chapter_and_person", (q) =>
+        q.eq("chapterId", chapterId as Id<"chapters">).eq("personId", personId),
+      )
+      .collect();
+    return rows
+      .map((r) => ({ courseSlug: r.courseSlug, earnedAt: r.earnedAt }))
+      .sort((a, b) => b.earnedAt - a.earnedAt);
   },
 });
 
