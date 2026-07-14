@@ -177,7 +177,7 @@ function CourseTile({
   const total = required.length;
 
   return (
-    <Card padding="md" onPress={onPress} className="w-60">
+    <Card padding="md" onPress={onPress} className="h-52 w-60">
       <View className="flex-row items-center justify-between gap-2">
         {/* The course's glyph — a plain string in the shared catalog (that
             package can't see the icon font's types), narrowed here. */}
