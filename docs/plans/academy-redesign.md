@@ -75,9 +75,10 @@ The Comms Lead's remit at Public Worship: crew coordination + comms.
 `tab-crew-duties` · `tab-comms`
 
 **Course `event-lead`** — level **intermediate**, audience **role**
-The Event Lead's remit: tasks, run of show, permitting, and logistics.
+The Event Lead's remit: tasks, run of show, permitting, and logistics —
+`tab-supplies` (Supplies & Logistics) lands here as the logistics piece
+(founder-confirmed 2026-07-13).
 `tab-tasks` · `tab-run-of-show` · `tab-permits` · `tab-supplies`
-*(`tab-supplies` placement is provisional — see §6.4.)*
 
 **Course `owning-an-event`** — level **advanced**, audience **ownership**
 Accountability doctrine + the hands-on capstones (§5a: "the existing
@@ -151,10 +152,9 @@ Awarded going forward the moment a course's last required module passes
 4. **Completer visibility → chapter-visible.** Anyone in the chapter sees who
    earned a course badge; aggregate partial-progress stays admin/manager-gated
    as today.
-   - **Open sub-item:** `tab-supplies` is placed under **Event Lead**
-     provisionally (logistics pairs with permits). Confirm or move to Comms
-     Lead / Fundamentals before the catalog reshape lands — it's a one-line
-     change in the section→course map.
+5. **`tab-supplies` → Event Lead (confirmed).** Supplies & Logistics is the
+   logistics piece of the Event Lead's remit. No separate Logistics role course
+   for now (would fill later like Management/Leadership if PW splits it out).
 
 ### Section → course map (for migration `0018`)
 
