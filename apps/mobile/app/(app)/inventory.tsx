@@ -197,7 +197,11 @@ function AssetRow({ asset, run }: { asset: AssetRowData; run: ActionRunner["run"
           weight="medium"
           onCommit={(t) => {
             const name = t.trim();
-            if (name && name !== asset.name) update({ assetId: id, name });
+            if (name && name !== asset.name) {
+              void run(() => update({ assetId: id, name }), {
+                errorTitle: "Couldn't rename asset",
+              });
+            }
           }}
         />
 
@@ -205,7 +209,11 @@ function AssetRow({ asset, run }: { asset: AssetRowData; run: ActionRunner["run"
         <View className="mt-1 flex-row flex-wrap items-center gap-2">
           <CategoryPicker
             value={asset.category}
-            onChange={(category) => update({ assetId: id, category })}
+            onChange={(category) =>
+              void run(() => update({ assetId: id, category }), {
+                errorTitle: "Couldn't set category",
+              })
+            }
           />
           <Text className="text-sm font-semibold text-ink">
             {asset.available} / {asset.quantity}
@@ -265,7 +273,9 @@ function AssetRow({ asset, run }: { asset: AssetRowData; run: ActionRunner["run"
             value={asset.stateNote ?? ""}
             placeholder="Prep note (e.g. charge the battery)…"
             onCommit={(t) =>
-              update({ assetId: id, stateNote: t.trim() || null })
+              void run(() => update({ assetId: id, stateNote: t.trim() || null }), {
+                errorTitle: "Couldn't save prep note",
+              })
             }
           />
         </View>
