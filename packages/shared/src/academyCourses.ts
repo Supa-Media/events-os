@@ -116,8 +116,8 @@ export const ACADEMY_COURSES: Course[] = [
     audience: "role",
     description:
       "The Event Lead's remit: tasks, run of show, permitting, and logistics.",
-    // `tab-supplies` placement is provisional (redesign §6.4) — implemented as
-    // specified until the section→course map is confirmed.
+    // `tab-supplies` (Supplies & Logistics) is the logistics piece of the
+    // Event Lead's remit (founder-confirmed 2026-07-13).
     moduleSlugs: ["tab-tasks", "tab-run-of-show", "tab-permits", "tab-supplies"],
   },
   {
