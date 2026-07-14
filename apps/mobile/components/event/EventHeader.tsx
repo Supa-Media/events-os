@@ -1014,6 +1014,8 @@ export function EventTools({
   ticketsActive,
   onBudget,
   budgetActive,
+  onGear,
+  gearActive,
   onSongs,
   meView,
   onToggleMeView,
@@ -1027,6 +1029,9 @@ export function EventTools({
   onBudget: () => void;
   /** True while the Budget surface is showing — flags ⋯ and its menu row. */
   budgetActive: boolean;
+  onGear: () => void;
+  /** True while the Gear surface is showing — flags ⋯ and its menu row. */
+  gearActive: boolean;
   onSongs: () => void;
   meView: boolean;
   onToggleMeView: () => void;
@@ -1105,10 +1110,12 @@ export function EventTools({
             ? "More tools (Event page open)"
             : budgetActive
               ? "More tools (Budget open)"
-              : "More tools"
+              : gearActive
+                ? "More tools (Gear open)"
+                : "More tools"
         }
         className={`rounded-md border px-2.5 py-2 active:opacity-80 web:hover:bg-sunken ${
-          ticketsActive || budgetActive
+          ticketsActive || budgetActive || gearActive
             ? "border-accent bg-accent-soft"
             : "border-border-strong bg-raised"
         }`}
@@ -1116,7 +1123,11 @@ export function EventTools({
         <Icon
           name="more-horizontal"
           size={15}
-          color={ticketsActive || budgetActive ? colors.accent : colors.ink}
+          color={
+            ticketsActive || budgetActive || gearActive
+              ? colors.accent
+              : colors.ink
+          }
         />
       </Pressable>
       <Popover visible={visible} anchor={anchor} width={210} onClose={closeMenu}>
@@ -1136,6 +1147,15 @@ export function EventTools({
           onPress={() => {
             closeMenu();
             onBudget();
+          }}
+        />
+        <ToolsMenuRow
+          icon="package"
+          label="Gear"
+          active={gearActive}
+          onPress={() => {
+            closeMenu();
+            onGear();
           }}
         />
         <ToolsMenuRow
