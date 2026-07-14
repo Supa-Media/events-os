@@ -132,7 +132,7 @@ describe("fresh permits grid columns", () => {
 });
 
 // ── Pipeline blocker wiring ──────────────────────────────────────────────────
-describe("events.pipeline permit blockers", () => {
+describe("events.current permit blockers", () => {
   /** Create an operational, upcoming event and return its id + chapter. */
   async function makeEvent(t: ReturnType<typeof newT>) {
     const { as, chapterId } = await setupChapter(t);
@@ -178,30 +178,30 @@ describe("events.pipeline permit blockers", () => {
     const { as, chapterId, eventId } = await makeEvent(t);
 
     // Baseline: no permit blockers.
-    let pipeline = await as.query(api.events.pipeline, {});
+    let pipeline = await as.query(api.events.current, {});
     const base = blockerFor(pipeline, eventId);
 
     // Denied with no fallback → +1.
     const deniedId = await addPermit(t, chapterId, eventId, "denied");
-    pipeline = await as.query(api.events.pipeline, {});
+    pipeline = await as.query(api.events.current, {});
     expect(blockerFor(pipeline, eventId)).toBe(base + 1);
 
     // Write a fallback → back to baseline.
     await run(t, (ctx) =>
       ctx.db.patch(deniedId, { fields: { fallback: "Use the indoor hall" } }),
     );
-    pipeline = await as.query(api.events.pipeline, {});
+    pipeline = await as.query(api.events.current, {});
     expect(blockerFor(pipeline, eventId)).toBe(base);
   });
 
   test("approved / to_apply permits never add a blocker", async () => {
     const t = newT();
     const { as, chapterId, eventId } = await makeEvent(t);
-    const base = blockerFor(await as.query(api.events.pipeline, {}), eventId);
+    const base = blockerFor(await as.query(api.events.current, {}), eventId);
 
     await addPermit(t, chapterId, eventId, "approved");
     await addPermit(t, chapterId, eventId, "to_apply");
-    expect(blockerFor(await as.query(api.events.pipeline, {}), eventId)).toBe(
+    expect(blockerFor(await as.query(api.events.current, {}), eventId)).toBe(
       base,
     );
   });
@@ -362,5 +362,60 @@ describe("0020 permits states + fallback backfill", () => {
       "denied",
       "waived",
     ]);
+  });
+});
+
+/**
+ * The events current/past split (`isPastEvent`): an event stays in `current`
+ * through a 2-week wrap-up grace, then drops into `past` — the collapsed
+ * "Past events" section.
+ */
+describe("events current vs past split", () => {
+  const DAY = 24 * 60 * 60 * 1000;
+
+  async function seedEvent(
+    t: ReturnType<typeof newT>,
+    chapterId: Id<"chapters">,
+    userId: Id<"users">,
+    name: string,
+    eventDate: number,
+  ) {
+    return run(t, async (ctx) => {
+      const eventTypeId = await ctx.db.insert("eventTypes", {
+        chapterId,
+        name: "Fest",
+        slug: "fest",
+        version: 1,
+        createdBy: userId,
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      });
+      return ctx.db.insert("events", {
+        chapterId,
+        eventTypeId,
+        templateVersion: 1,
+        name,
+        eventDate,
+        status: "planning",
+        createdBy: userId,
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      });
+    });
+  }
+
+  test("recently-finished events stay current; only 2-weeks-past drop to events.past", async () => {
+    const t = newT();
+    const { as, chapterId, userId } = await setupChapter(t);
+    const now = Date.now();
+    await seedEvent(t, chapterId, userId, "Upcoming", now + 5 * DAY);
+    await seedEvent(t, chapterId, userId, "Just finished", now - 3 * DAY);
+    await seedEvent(t, chapterId, userId, "Long over", now - 30 * DAY);
+
+    const active = (await as.query(api.events.current, {})).map((e) => e.name);
+    expect(active.sort()).toEqual(["Just finished", "Upcoming"]);
+
+    const past = (await as.query(api.events.past, {})).map((e) => e.name);
+    expect(past).toEqual(["Long over"]);
   });
 });

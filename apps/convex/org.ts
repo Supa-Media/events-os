@@ -154,14 +154,14 @@ export const nav = query({
         .first();
       canManage = firstReport !== null;
     }
-    // The three-way Team-surface policy, stated ONCE for every client: the
-    // org view for managers/admins, your own workload with a roster row,
-    // nothing otherwise. AppShell and the Team tab both switch on this.
-    const teamView: "org" | "self" | null = canManage
-      ? "org"
-      : self
-        ? "self"
-        : null;
+    // Team-surface policy, stated ONCE for every client. Read is transparent:
+    // the whole org view for admins, managers, AND every roster member (so
+    // everyone can see the reporting chain they're in and the team's workload).
+    // Only a caller with no roster row (and not an admin) gets nothing. The
+    // legacy "self" value is retired — the org view leads with the caller's own
+    // work either way. AppShell and the Team tab both switch on this.
+    const teamView: "org" | "self" | null =
+      canManage || self ? "org" : null;
     const { tier, tierReasons } = await deriveTier(
       ctx,
       chapterId as Id<"chapters">,
@@ -205,13 +205,11 @@ export const overview = query({
       viewer != null && (childrenOf.get(viewer._id) ?? []).length > 0;
     const canManage = isAdmin || hasReports;
 
-    let visible: Doc<"people">[] = [];
-    if (isAdmin) {
-      visible = roster;
-    } else if (viewer && hasReports) {
-      const ids = subtreeIds(childrenOf, viewer);
-      visible = roster.filter((p) => ids.has(p._id));
-    }
+    // Read-transparency: the whole team may see the whole org — admins and
+    // every roster member get the full chapter roster (managing still gates on
+    // `canManage`). Only a caller with no roster row (and not an admin) sees
+    // nothing to show.
+    const visible: Doc<"people">[] = isAdmin || viewer ? roster : [];
 
     return {
       isAdmin,
@@ -244,20 +242,28 @@ export const workload = query({
     ]);
     const childrenOf = buildChildrenOf(roster);
 
-    // Scope: admins may inspect anyone; others only their own subtree. The
-    // caller's reach also decides whether the manager link is tappable and
-    // whether owner-editing affordances render (canManage).
+    // READ scope (transparency): admins and every roster member may inspect
+    // anyone in the chapter — the whole team sees the whole workload. A caller
+    // with no roster row (and not an admin) gets null.
     const viewer = await viewerFromRoster(ctx, roster);
-    let callerReach: Set<Id<"people">> | null = null; // null = unrestricted
-    if (!isAdmin) {
-      if (!viewer) return null;
-      callerReach = subtreeIds(childrenOf, viewer);
-      if (!callerReach.has(personId)) return null;
-    }
+    if (!isAdmin && !viewer) return null;
+
+    // MANAGE scope stays tight: admins may manage anyone (`manageReach` null =
+    // unrestricted); everyone else only their own manager subtree (themselves
+    // included). This drives owner-editing, quick-add and 1:1 affordances.
+    const manageReach: Set<Id<"people">> | null = isAdmin
+      ? null
+      : subtreeIds(childrenOf, viewer!);
     const caller = {
       personId: viewer?._id ?? null,
-      // Admins, or anyone whose subtree extends beyond themselves.
-      canManage: isAdmin || (callerReach !== null && callerReach.size > 1),
+      // Whether the caller is a manager or admin — the capability that gates
+      // duty editing (chapter-wide) and owner reassignment. A report-less
+      // member's subtree is just themselves (size 1), so they're not a manager.
+      canManage: manageReach === null || manageReach.size > 1,
+      // The people the caller may MANAGE (null = admin/all): their own subtree,
+      // themselves included. The client gates per-person project affordances
+      // (add project, editable vs read-only cards) on membership here.
+      manageableIds: manageReach === null ? null : [...manageReach],
     };
 
     // Events owned by anyone in the subtree (one chapter-wide read, then
@@ -337,9 +343,9 @@ export const workload = query({
       manager: manager
         ? {
             ...slim(manager),
-            // Whether the CALLER may open the manager's own workload page —
-            // false for a non-admin viewing their own boss.
-            viewable: callerReach === null || callerReach.has(manager._id),
+            // Read is transparent now — anyone on the roster may open the
+            // manager's own workload page, so the link is always live.
+            viewable: true,
           }
         : null,
       reports: reports.map((r) => ({

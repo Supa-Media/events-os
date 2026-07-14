@@ -394,6 +394,53 @@ describe("openWorkForChapter", () => {
     ).toEqual(["Post announcement"]);
   });
 
+  test("past events (date + 2-week grace) stop emailing their task rows", async () => {
+    const s = await setupChapter(newT());
+    const now = Date.now();
+    const owner = await addPerson(s, "Bithja", { email: "bithja@pw.life" });
+    await run(s.t, async (ctx) => {
+      const eventTypeId = await ctx.db.insert("eventTypes", {
+        chapterId: s.chapterId,
+        name: "Eden",
+        slug: "eden",
+        version: 1,
+        createdBy: s.userId,
+        createdAt: now,
+        updatedAt: now,
+      });
+      // Event date is 20 days behind us — past the 2-week wrap-up grace.
+      const eventId = await ctx.db.insert("events", {
+        chapterId: s.chapterId,
+        eventTypeId,
+        templateVersion: 1,
+        name: "Eden June",
+        eventDate: now - 20 * DAY,
+        status: "planning",
+        ownerPersonId: owner,
+        createdBy: s.userId,
+        createdAt: now,
+        updatedAt: now,
+      });
+      // An overdue, still-open item — it WOULD surface (within the 60-day
+      // lookback) if its event weren't past.
+      await ctx.db.insert("eventItems", {
+        eventId,
+        chapterId: s.chapterId,
+        module: "comms",
+        title: "Post recap",
+        order: 0,
+        ownerPersonId: owner,
+        dueDate: now - 1 * DAY,
+      });
+    });
+    const recipients: RecipientWork[] = await s.t.query(
+      internal.reminders.openWorkForChapter,
+      { chapterId: s.chapterId, now },
+    );
+    // The past event's task never enters anyone's digest or nudge.
+    expect(recipients).toHaveLength(0);
+  });
+
   test("undated event items are never collected", async () => {
     const s = await setupChapter(newT());
     const now = Date.now();

@@ -84,7 +84,7 @@ describe("responsibilities", () => {
     expect(responsibilityAppliesTo(flyers, person(bob, "Director"))).toBe(false);
   });
 
-  test("the list is the managers' catalog — members only receive their own duties", async () => {
+  test("the catalog is transparent — every roster member reads it, but not visitors", async () => {
     const s = await setupChapter(newT());
     const { bob, cara } = await seedChain(s);
     const asBob = await addUser(s, "bob@publicworship.life", { personId: bob });
@@ -106,14 +106,13 @@ describe("responsibilities", () => {
       assigneeRoles: ["treasurer"],
     });
 
-    // Admins and managers (Bob has a report) read the whole catalog…
+    // Read is transparent: admins, managers, AND plain members (Cara, no
+    // reports) all read the whole catalog — a person's workload page shows the
+    // duties they carry, part of seeing the work everyone has…
     expect((await s.as.query(api.responsibilities.list)).length).toBe(3);
     expect((await asBob.query(api.responsibilities.list)).length).toBe(3);
-    // …Cara (no reports) receives ONLY what lands on her — not the org's
-    // whole duty database…
-    const caras = await asCara.query(api.responsibilities.list);
-    expect(caras.map((r) => r.title)).toEqual(["Create event flyers"]);
-    // …and a signed-in member with no roster row receives nothing.
+    expect((await asCara.query(api.responsibilities.list)).length).toBe(3);
+    // …but a signed-in account with no roster row still receives nothing.
     expect(await asVisitor.query(api.responsibilities.list)).toEqual([]);
   });
 

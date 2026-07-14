@@ -73,6 +73,8 @@ export function ProjectCard({
   depth = 0,
   showOwner = false,
   defaultExpanded = false,
+  readOnly = false,
+  showOpenPage = false,
   partOf,
 }: {
   project: ProjectDoc;
@@ -84,6 +86,13 @@ export function ProjectCard({
   showOwner?: boolean;
   /** Open pre-expanded (the full-project modal's root). */
   defaultExpanded?: boolean;
+  /** Show an "Open page ↗" link to the project's own shareable route — the
+   *  detail page you can send someone when talking about a project. */
+  showOpenPage?: boolean;
+  /** Transparency read-only: the caller can SEE this work but not manage it
+   *  (it's outside their subtree). Every editing affordance is hidden and the
+   *  fields render as static text — the server would reject edits anyway. */
+  readOnly?: boolean;
   /** Set when this card is a sub-project shown OUTSIDE its parent (e.g. under
    *  its assignee) — a chip back to the full project it belongs to. */
   partOf?: { name: string; onPress: () => void };
@@ -139,14 +148,23 @@ export function ProjectCard({
             color={colors.muted}
           />
         </Pressable>
-        <InlineText
-          value={project.name}
-          placeholder="Project name"
-          weight="medium"
-          onCommit={(t) => {
-            if (t.trim()) update({ projectId: id, name: t.trim() });
-          }}
-        />
+        {readOnly ? (
+          <Text
+            className="flex-1 text-sm font-medium text-ink"
+            numberOfLines={1}
+          >
+            {project.name || "Untitled project"}
+          </Text>
+        ) : (
+          <InlineText
+            value={project.name}
+            placeholder="Project name"
+            weight="medium"
+            onCommit={(t) => {
+              if (t.trim()) update({ projectId: id, name: t.trim() });
+            }}
+          />
+        )}
         {partOf ? (
           <Pressable
             onPress={partOf.onPress}
@@ -198,30 +216,36 @@ export function ProjectCard({
           </>
         ) : null}
         <View style={{ width: 112 }}>
-          <SelectCell
-            value={project.status}
-            options={PROJECT_STATUS_OPTIONS}
-            onChange={(status) => update({ projectId: id, status })}
-          />
+          {readOnly ? (
+            <StatusPill status={project.status} />
+          ) : (
+            <SelectCell
+              value={project.status}
+              options={PROJECT_STATUS_OPTIONS}
+              onChange={(status) => update({ projectId: id, status })}
+            />
+          )}
         </View>
-        <Pressable
-          onPress={() =>
-            confirmAction({
-              title: "Delete project?",
-              message: `${project.name || "This project"} will be deleted. Sub-projects are kept.`,
-              confirmLabel: "Delete",
-              destructive: true,
-              onConfirm: () => {
-                void removeMutation({ projectId: id }).catch(alertError);
-              },
-            })
-          }
-          hitSlop={4}
-          accessibilityLabel="Delete project"
-          className="rounded p-1 active:bg-sunken web:hover:bg-sunken"
-        >
-          <Icon name="trash-2" size={13} color={colors.faint} />
-        </Pressable>
+        {readOnly ? null : (
+          <Pressable
+            onPress={() =>
+              confirmAction({
+                title: "Delete project?",
+                message: `${project.name || "This project"} will be deleted. Sub-projects are kept.`,
+                confirmLabel: "Delete",
+                destructive: true,
+                onConfirm: () => {
+                  void removeMutation({ projectId: id }).catch(alertError);
+                },
+              })
+            }
+            hitSlop={4}
+            accessibilityLabel="Delete project"
+            className="rounded p-1 active:bg-sunken web:hover:bg-sunken"
+          >
+            <Icon name="trash-2" size={13} color={colors.faint} />
+          </Pressable>
+        )}
       </View>
 
       {/* Quick preview: the latest comment IS the state of the project. */}
@@ -236,32 +260,64 @@ export function ProjectCard({
         <>
       {/* Meta: deadline · budget · owner · linked event */}
       <View className="flex-row flex-wrap items-center gap-x-4 gap-y-1 border-b border-border/60 px-2 py-1">
-        <DeadlineCell
-          value={project.deadline}
-          overdue={overdue}
-          onChange={(v) => update({ projectId: id, deadline: v })}
-        />
-        <MetaField icon="dollar-sign" width={84}>
-          <InlineText<number | null | undefined>
-            value={project.budgetUsd}
-            numeric
-            placeholder="Budget"
-            format={(v) => (v != null ? `$${v}` : "")}
-            parse={(t) => {
-              if (t.trim() === "") return null;
-              const cleaned = t.replace(/[^0-9.]/g, "");
-              // Digit-free input ("tbd") must NOT become $0 — leave unchanged.
-              if (cleaned === "") return undefined;
-              const n = Number(cleaned);
-              return Number.isFinite(n) ? n : undefined;
-            }}
-            onCommit={(v) => {
-              if (v === undefined) return;
-              update({ projectId: id, budgetUsd: v });
-            }}
+        {readOnly ? (
+          project.deadline != null ? (
+            <View className="flex-row items-center gap-1.5 py-1">
+              <Icon
+                name="flag"
+                size={13}
+                color={overdue ? colors.danger : colors.muted}
+              />
+              <Text
+                className={`text-sm ${overdue ? "font-medium text-danger" : "text-ink"}`}
+              >
+                Due {formatDate(project.deadline)}
+              </Text>
+            </View>
+          ) : null
+        ) : (
+          <DeadlineCell
+            value={project.deadline}
+            overdue={overdue}
+            onChange={(v) => update({ projectId: id, deadline: v })}
           />
-        </MetaField>
-        {showOwner ? (
+        )}
+        {readOnly ? (
+          project.budgetUsd != null ? (
+            <MetaField icon="dollar-sign" width={84}>
+              <Text className="text-sm text-ink">${project.budgetUsd}</Text>
+            </MetaField>
+          ) : null
+        ) : (
+          <MetaField icon="dollar-sign" width={84}>
+            <InlineText<number | null | undefined>
+              value={project.budgetUsd}
+              numeric
+              placeholder="Budget"
+              format={(v) => (v != null ? `$${v}` : "")}
+              parse={(t) => {
+                if (t.trim() === "") return null;
+                const cleaned = t.replace(/[^0-9.]/g, "");
+                // Digit-free input ("tbd") must NOT become $0 — leave unchanged.
+                if (cleaned === "") return undefined;
+                const n = Number(cleaned);
+                return Number.isFinite(n) ? n : undefined;
+              }}
+              onCommit={(v) => {
+                if (v === undefined) return;
+                update({ projectId: id, budgetUsd: v });
+              }}
+            />
+          </MetaField>
+        )}
+        {readOnly && showOwner && ownerName ? (
+          <View className="flex-row items-center gap-1.5 py-1">
+            <Icon name="user" size={13} color={colors.muted} />
+            <Text className="text-sm text-ink" numberOfLines={1}>
+              {ownerName}
+            </Text>
+          </View>
+        ) : !readOnly && showOwner ? (
           <Pressable
             onPress={() => setOwnerPickerOpen(true)}
             className="flex-row items-center gap-1.5 py-1 active:opacity-70 web:hover:opacity-90"
@@ -287,28 +343,55 @@ export function ProjectCard({
             <Text className="text-sm font-medium text-accent">Open event</Text>
           </Pressable>
         ) : null}
+        {showOpenPage && depth === 0 ? (
+          <Pressable
+            onPress={() => router.push(`/project/${id}` as any)}
+            className="flex-row items-center gap-1.5 py-1 active:opacity-70 web:hover:opacity-90"
+          >
+            <Icon name="external-link" size={13} color={colors.muted} />
+            <Text className="text-sm font-medium text-muted">Open page</Text>
+          </Pressable>
+        ) : null}
       </View>
 
-      {/* Purpose + blocker stay as fields; progression lives in the thread. */}
-      <View className="px-1 py-1">
-        <FieldRow label="Purpose">
-          <InlineText
-            value={project.purpose ?? ""}
-            placeholder="—"
-            onCommit={(t) => update({ projectId: id, purpose: t.trim() || null })}
-          />
-        </FieldRow>
-        <FieldRow label="Blocker" alert={!!project.blocker}>
-          <InlineText
-            value={project.blocker ?? ""}
-            placeholder="—"
-            onCommit={(t) => update({ projectId: id, blocker: t.trim() || null })}
-          />
-        </FieldRow>
-      </View>
+      {/* Purpose + blocker stay as fields; progression lives in the thread.
+          Read-only viewers see them only when set (an empty "—" row is noise). */}
+      {readOnly ? (
+        project.purpose || project.blocker ? (
+          <View className="px-1 py-1">
+            {project.purpose ? (
+              <FieldRow label="Purpose">
+                <Text className="text-sm text-ink">{project.purpose}</Text>
+              </FieldRow>
+            ) : null}
+            {project.blocker ? (
+              <FieldRow label="Blocker" alert>
+                <Text className="text-sm text-ink">{project.blocker}</Text>
+              </FieldRow>
+            ) : null}
+          </View>
+        ) : null
+      ) : (
+        <View className="px-1 py-1">
+          <FieldRow label="Purpose">
+            <InlineText
+              value={project.purpose ?? ""}
+              placeholder="—"
+              onCommit={(t) => update({ projectId: id, purpose: t.trim() || null })}
+            />
+          </FieldRow>
+          <FieldRow label="Blocker" alert={!!project.blocker}>
+            <InlineText
+              value={project.blocker ?? ""}
+              placeholder="—"
+              onCommit={(t) => update({ projectId: id, blocker: t.trim() || null })}
+            />
+          </FieldRow>
+        </View>
+      )}
 
       {/* The running history: every comment is one step of the progression. */}
-      <ProjectComments projectId={id} />
+      <ProjectComments projectId={id} readOnly={readOnly} />
 
       {/* Sub-projects */}
       <View className={children.length > 0 ? "px-2 pb-2" : ""}>
@@ -320,22 +403,25 @@ export function ProjectCard({
             peopleById={peopleById}
             depth={depth + 1}
             showOwner={showOwner}
+            readOnly={readOnly}
           />
         ))}
       </View>
-      <Pressable
-        onPress={() =>
-          create({
-            name: "New sub-project",
-            parentProjectId: id,
-            ownerPersonId: project.ownerPersonId,
-          })
-        }
-        className="flex-row items-center gap-1.5 border-t border-border/60 px-2.5 py-1.5 active:bg-sunken web:hover:bg-sunken"
-      >
-        <Icon name="corner-down-right" size={12} color={colors.faint} />
-        <Text className="text-xs font-medium text-faint">Add sub-project</Text>
-      </Pressable>
+      {readOnly ? null : (
+        <Pressable
+          onPress={() =>
+            create({
+              name: "New sub-project",
+              parentProjectId: id,
+              ownerPersonId: project.ownerPersonId,
+            })
+          }
+          className="flex-row items-center gap-1.5 border-t border-border/60 px-2.5 py-1.5 active:bg-sunken web:hover:bg-sunken"
+        >
+          <Icon name="corner-down-right" size={12} color={colors.faint} />
+          <Text className="text-xs font-medium text-faint">Add sub-project</Text>
+        </Pressable>
+      )}
         </>
       ) : null}
 
@@ -362,7 +448,13 @@ export function ProjectCard({
  * with a composer anyone who can see the project may post to. Mounted only
  * while the card is expanded, so collapsed cards cost no extra subscription.
  */
-function ProjectComments({ projectId }: { projectId: Id<"projects"> }) {
+function ProjectComments({
+  projectId,
+  readOnly = false,
+}: {
+  projectId: Id<"projects">;
+  readOnly?: boolean;
+}) {
   const comments = useQuery(api.projects.comments, { projectId });
   const addComment = useMutation(api.projects.addComment);
   const removeComment = useMutation(api.projects.removeComment);
@@ -397,46 +489,70 @@ function ProjectComments({ projectId }: { projectId: Id<"projects"> }) {
               <Text className="text-faint"> · {formatDate(c.createdAt)}  </Text>
               {c.body}
             </Text>
-            <Pressable
-              onPress={() =>
-                confirmAction({
-                  title: "Delete comment?",
-                  message: "Only the author or an admin can do this.",
-                  confirmLabel: "Delete",
-                  destructive: true,
-                  onConfirm: () => {
-                    void removeComment({ commentId: c._id }).catch(alertError);
-                  },
-                })
-              }
-              hitSlop={6}
-              accessibilityLabel="Delete comment"
-              className="rounded p-0.5 active:bg-sunken web:hover:bg-sunken"
-            >
-              <Icon name="x" size={11} color={colors.faint} />
-            </Pressable>
+            {readOnly ? null : (
+              <Pressable
+                onPress={() =>
+                  confirmAction({
+                    title: "Delete comment?",
+                    message: "Only the author or an admin can do this.",
+                    confirmLabel: "Delete",
+                    destructive: true,
+                    onConfirm: () => {
+                      void removeComment({ commentId: c._id }).catch(alertError);
+                    },
+                  })
+                }
+                hitSlop={6}
+                accessibilityLabel="Delete comment"
+                className="rounded p-0.5 active:bg-sunken web:hover:bg-sunken"
+              >
+                <Icon name="x" size={11} color={colors.faint} />
+              </Pressable>
+            )}
           </View>
         ))
       )}
-      <View className="flex-row items-center gap-1.5">
-        <TextInput
-          value={draft}
-          onChangeText={setDraft}
-          placeholder="Add an update…"
-          placeholderTextColor={colors.faint}
-          onSubmitEditing={post}
-          className="flex-1 rounded-md border border-border bg-raised px-2 py-1 text-xs text-ink"
-        />
-        <Pressable
-          onPress={post}
-          hitSlop={6}
-          accessibilityLabel="Post update"
-          className="rounded p-1 active:bg-sunken web:hover:bg-sunken"
-        >
-          <Icon name="send" size={14} color={colors.accent} />
-        </Pressable>
-      </View>
+      {readOnly ? null : (
+        <View className="flex-row items-center gap-1.5">
+          <TextInput
+            value={draft}
+            onChangeText={setDraft}
+            placeholder="Add an update…"
+            placeholderTextColor={colors.faint}
+            onSubmitEditing={post}
+            className="flex-1 rounded-md border border-border bg-raised px-2 py-1 text-xs text-ink"
+          />
+          <Pressable
+            onPress={post}
+            hitSlop={6}
+            accessibilityLabel="Post update"
+            className="rounded p-1 active:bg-sunken web:hover:bg-sunken"
+          >
+            <Icon name="send" size={14} color={colors.accent} />
+          </Pressable>
+        </View>
+      )}
     </View>
+  );
+}
+
+/** A static status label for read-only cards (mirrors the SelectCell's colors). */
+function StatusPill({ status }: { status: ProjectStatus }) {
+  const opt = PROJECT_STATUS_OPTIONS.find((o) => o.value === status);
+  const tone: Record<string, string> = {
+    gray: "text-muted",
+    blue: "text-accent",
+    red: "text-danger",
+    amber: "text-warn",
+    green: "text-success",
+  };
+  return (
+    <Text
+      className={`text-xs font-semibold ${tone[opt?.color ?? "gray"] ?? "text-muted"}`}
+      numberOfLines={1}
+    >
+      {opt?.label ?? PROJECT_STATUS_LABELS[status]}
+    </Text>
   );
 }
 

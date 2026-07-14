@@ -257,7 +257,7 @@ describe("org.workload", () => {
     expect(bobView!.members.map((m) => m.name).sort()).toEqual(["Bob", "Cara"]);
   });
 
-  test("is scoped to the caller's subtree (admins see anyone)", async () => {
+  test("read is transparent to every roster member; managing stays scoped", async () => {
     const s = await setupChapter(newT());
     const { alice, bob, cara } = await seedChain(s);
     const asBob = await addUser(s, "bob@publicworship.life", { personId: bob });
@@ -265,22 +265,44 @@ describe("org.workload", () => {
       personId: cara,
     });
 
-    // Bob (manager, not admin): his subtree yes, his own manager no.
-    expect(
-      await asBob.query(api.org.workload, { personId: cara }),
-    ).not.toBeNull();
-    expect(await asBob.query(api.org.workload, { personId: alice })).toBeNull();
+    // `canManage` = is the caller a manager/admin; `manageableIds` = the exact
+    // people they may manage (null = admin/all, includes themselves).
+    const manages = (
+      v: { caller: { manageableIds: Id<"people">[] | null } },
+      id: Id<"people">,
+    ) => v.caller.manageableIds === null || v.caller.manageableIds.includes(id);
 
-    // Cara (no reports): herself only.
-    expect(
-      await asCara.query(api.org.workload, { personId: cara }),
-    ).not.toBeNull();
-    expect(await asCara.query(api.org.workload, { personId: bob })).toBeNull();
+    // Everyone on the roster may READ anyone's workload now — including up the
+    // chain — so the whole team can see the reporting structure and the work
+    // everyone carries.
+    const bobViewsAlice = await asBob.query(api.org.workload, {
+      personId: alice,
+    });
+    expect(bobViewsAlice).not.toBeNull();
+    expect(bobViewsAlice!.caller.canManage).toBe(true); // Bob manages a report
+    expect(manages(bobViewsAlice!, alice)).toBe(false); // …but not up-chain
+    const bobViewsCara = await asBob.query(api.org.workload, { personId: cara });
+    expect(bobViewsCara).not.toBeNull();
+    expect(manages(bobViewsCara!, cara)).toBe(true); // Cara is Bob's report
 
-    // The admin session sees anyone.
-    expect(
-      await s.as.query(api.org.workload, { personId: alice }),
-    ).not.toBeNull();
+    // Cara (no reports) can read anyone too, but isn't a manager and can only
+    // manage herself.
+    const caraViewsBob = await asCara.query(api.org.workload, { personId: bob });
+    expect(caraViewsBob).not.toBeNull();
+    expect(caraViewsBob!.caller.canManage).toBe(false);
+    expect(manages(caraViewsBob!, bob)).toBe(false);
+    const caraViewsCara = await asCara.query(api.org.workload, {
+      personId: cara,
+    });
+    expect(manages(caraViewsCara!, cara)).toBe(true); // herself only
+
+    // The admin session sees — and manages — anyone.
+    const adminViewsAlice = await s.as.query(api.org.workload, {
+      personId: alice,
+    });
+    expect(adminViewsAlice).not.toBeNull();
+    expect(adminViewsAlice!.caller.canManage).toBe(true);
+    expect(adminViewsAlice!.caller.manageableIds).toBeNull();
   });
 
   test("returns null for people outside the caller's chapter", async () => {
@@ -324,7 +346,7 @@ describe("access control", () => {
     expect(caraDoc.managerId).toBe(bob);
   });
 
-  test("overview: admins see the chapter, managers their subtree, others nothing", async () => {
+  test("overview: read is transparent (whole roster) but canManage stays scoped", async () => {
     const s = await setupChapter(newT());
     const { bob, cara } = await seedChain(s);
     const asBob = await addUser(s, "bob@publicworship.life", { personId: bob });
@@ -337,16 +359,22 @@ describe("access control", () => {
     expect(adminView.canManage).toBe(true);
     expect(adminView.people).toHaveLength(3);
 
+    // Bob (manager) sees the whole org now — transparency — and can manage.
     const bobView = await asBob.query(api.org.overview);
     expect(bobView.isAdmin).toBe(false);
     expect(bobView.canManage).toBe(true);
     expect(bobView.selfPersonId).toBe(bob);
-    expect(bobView.people.map((p) => p.name).sort()).toEqual(["Bob", "Cara"]);
+    expect(bobView.people.map((p) => p.name).sort()).toEqual([
+      "Alice",
+      "Bob",
+      "Cara",
+    ]);
 
+    // Cara (no reports) also sees the whole roster, but can't manage anyone.
     const caraView = await asCara.query(api.org.overview);
     expect(caraView.isAdmin).toBe(false);
     expect(caraView.canManage).toBe(false);
-    expect(caraView.people).toHaveLength(0);
+    expect(caraView.people).toHaveLength(3);
   });
 
   test("projects: visibility and mutations follow the subtree", async () => {
@@ -378,13 +406,11 @@ describe("access control", () => {
 
     const names = async (client: typeof asBob) =>
       (await client.query(api.projects.list)).map((p) => p.name).sort();
-    expect(await names(s.as as never)).toHaveLength(5); // admin: everything
-    expect(await names(asBob)).toEqual([
-      "Bob's project",
-      "Bob's sub",
-      "Cara's project",
-    ]);
-    expect(await names(asCara)).toEqual(["Cara's project"]);
+    // Read is transparent: admin, manager (Bob), and plain member (Cara) all
+    // see every project in the chapter — the whole team's workload.
+    expect(await names(s.as as never)).toHaveLength(5);
+    expect(await names(asBob)).toHaveLength(5);
+    expect(await names(asCara)).toHaveLength(5);
 
     // Bob manages his subtree's work (incl. the unowned sub under his project)…
     await asBob.mutation(api.projects.update, {
@@ -414,12 +440,21 @@ describe("access control", () => {
       asBob.mutation(api.projects.remove, { projectId: pAlice }),
     ).rejects.toThrow(ConvexError);
 
-    // Cara (no reports) still manages her own work.
+    // Cara (no reports) still manages her OWN work — even though the
+    // transparent list now shows her the whole chapter's projects.
     const caraProjects = await asCara.query(api.projects.list);
+    const carasOwn = caraProjects.find((p) => p.name === "Cara's project")!;
     await asCara.mutation(api.projects.update, {
-      projectId: caraProjects[0]._id,
+      projectId: carasOwn._id,
       status: "in_progress",
     });
+    // …but not a peer's: Alice's project stays off-limits to her.
+    await expect(
+      asCara.mutation(api.projects.update, {
+        projectId: pAlice,
+        status: "in_progress",
+      }),
+    ).rejects.toThrow(ConvexError);
   });
 });
 
@@ -563,18 +598,64 @@ describe("review-cycle regressions", () => {
     });
   });
 
-  test("workload flags whether the caller may open the manager's page", async () => {
+  test("the manager link is always openable now that read is transparent", async () => {
     const s = await setupChapter(newT());
     const { bob } = await seedChain(s);
     const asBob = await addUser(s, "bob@publicworship.life", { personId: bob });
 
-    // Bob viewing himself: his boss exists but is out of his reach.
+    // Bob viewing himself: he can now open his own boss's page too (read is
+    // transparent), even though he can't manage her.
     const bobView = await asBob.query(api.org.workload, { personId: bob });
     expect(bobView!.manager!.name).toBe("Alice");
-    expect(bobView!.manager!.viewable).toBe(false);
-    // The admin can hop anywhere.
+    expect(bobView!.manager!.viewable).toBe(true);
     const adminView = await s.as.query(api.org.workload, { personId: bob });
     expect(adminView!.manager!.viewable).toBe(true);
+  });
+});
+
+describe("projects.get (standalone page)", () => {
+  test("transparent read with a scoped canManage flag", async () => {
+    const s = await setupChapter(newT());
+    const { alice, bob, cara } = await seedChain(s);
+    const asBob = await addUser(s, "bobg@publicworship.life", { personId: bob });
+    const asCara = await addUser(s, "carag@publicworship.life", {
+      personId: cara,
+    });
+    const pAlice = (await s.as.mutation(api.projects.create, {
+      name: "Alice's project",
+      ownerPersonId: alice,
+    })) as Id<"projects">;
+
+    // Cara can OPEN Alice's project page (transparency) but not manage it.
+    const caraView = await asCara.query(api.projects.get, { projectId: pAlice });
+    expect(caraView).not.toBeNull();
+    expect(caraView!.name).toBe("Alice's project");
+    expect(caraView!.ownerName).toBe("Alice");
+    expect(caraView!.canManage).toBe(false);
+
+    // Bob manages his own report Cara's work…
+    const pCara = (await s.as.mutation(api.projects.create, {
+      name: "Cara's project",
+      ownerPersonId: cara,
+    })) as Id<"projects">;
+    const bobViewsCara = await asBob.query(api.projects.get, {
+      projectId: pCara,
+    });
+    expect(bobViewsCara!.canManage).toBe(true);
+    // …but not his manager Alice's.
+    const bobViewsAlice = await asBob.query(api.projects.get, {
+      projectId: pAlice,
+    });
+    expect(bobViewsAlice!.canManage).toBe(false);
+
+    // A different chapter's caller can't see it at all.
+    const other = await setupChapter(s.t, {
+      email: "elsewhere@publicworship.life",
+      chapterName: "Austin",
+    });
+    expect(
+      await other.as.query(api.projects.get, { projectId: pAlice }),
+    ).toBeNull();
   });
 });
 
@@ -635,8 +716,9 @@ describe("project comments", () => {
       ownerPersonId: alice,
     })) as Id<"projects">;
 
-    // Cara can't comment on (or read) work outside her subtree — denial is
-    // null, never mistakable for an empty thread.
+    // Cara can READ the thread (transparency — it's just empty here), but she
+    // still can't POST to work outside her subtree. A visible-but-empty thread
+    // is [] ; only a caller who can't view chapter work at all gets null.
     await expect(
       asCara.mutation(api.projects.addComment, {
         projectId: alicesProject,
@@ -645,7 +727,7 @@ describe("project comments", () => {
     ).rejects.toThrow(ConvexError);
     expect(
       await asCara.query(api.projects.comments, { projectId: alicesProject }),
-    ).toBeNull();
+    ).toEqual([]);
 
     // Deleting a project deletes its thread (no orphaned comments).
     const doomed = (await s.as.mutation(api.projects.create, {

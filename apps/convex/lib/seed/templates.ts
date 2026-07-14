@@ -135,7 +135,7 @@ const JOIN_EVENT_SPEC: TrainingTemplateSpec = {
   eventName: (firstName) => `Training: ${firstName} joins the gathering`,
   eventDaysOut: 30,
   description:
-    "Capstone 1 sandbox — a large worship gathering already built from a template. The learner joins as Comms Lead. Instantiated per person by \"Start training\"; training events never appear in the pipeline or reminder emails.",
+    "Capstone 1 sandbox — a large worship gathering already built from a template. The learner joins as Comms Lead. Instantiated per person by \"Start training\"; training events never appear in the Events tab or reminder emails.",
   disabledCoreModules: [],
   roleKeys: DEFAULT_ROLES.map((r) => r.key),
   rows: {
@@ -292,7 +292,7 @@ const BIRTHDAY_PARTY_SPEC: TrainingTemplateSpec = {
   eventName: (firstName) => `Training: ${firstName}'s birthday party`,
   eventDaysOut: 14,
   description:
-    "Capstone 2 sandbox — a from-scratch birthday party with sample teammates and crew. Instantiated per person by \"Start training\"; training events never appear in the pipeline or reminder emails.",
+    "Capstone 2 sandbox — a from-scratch birthday party with sample teammates and crew. Instantiated per person by \"Start training\"; training events never appear in the Events tab or reminder emails.",
   disabledCoreModules: ["permits"],
   roleKeys: LIGHTWEIGHT_ROLE_KEYS,
   rows: {
@@ -410,7 +410,7 @@ const WORSHIP_EVENT_SPEC: TrainingTemplateSpec = {
   eventName: (firstName) => `Training: ${firstName}'s worship event`,
   eventDaysOut: 14,
   description:
-    "Bonus capstone sandbox — a from-scratch pop-up worship event. Instantiated per person by \"Start training\"; training events never appear in the pipeline or reminder emails.",
+    "Bonus capstone sandbox — a from-scratch pop-up worship event. Instantiated per person by \"Start training\"; training events never appear in the Events tab or reminder emails.",
   disabledCoreModules: ["volunteer_expectations"],
   roleKeys: LIGHTWEIGHT_ROLE_KEYS,
   rows: {
@@ -527,7 +527,7 @@ const COMMS_LEAD_SPEC: TrainingTemplateSpec = {
   eventName: (firstName) => `Training: ${firstName} runs the comms`,
   eventDaysOut: 21,
   description:
-    "Comms Lead capstone sandbox — duties first, then recruit: the learner writes each team's expectations, fills open crew slots from a sample bench, and runs the message schedule. Instantiated per person by \"Start training\"; training events never appear in the pipeline or reminder emails.",
+    "Comms Lead capstone sandbox — duties first, then recruit: the learner writes each team's expectations, fills open crew slots from a sample bench, and runs the message schedule. Instantiated per person by \"Start training\"; training events never appear in the Events tab or reminder emails.",
   disabledCoreModules: [],
   roleKeys: DEFAULT_ROLES.map((r) => r.key),
   rows: {
@@ -680,7 +680,7 @@ const EVENT_LEAD_SPEC: TrainingTemplateSpec = {
   eventName: (firstName) => `Training: ${firstName} runs the plan`,
   eventDaysOut: 21,
   description:
-    "Event Lead capstone sandbox — a drifting plan to rescue: overdue rows, a missing task, an unbuilt run of show, and a permit on someone else's clock. Instantiated per person by \"Start training\"; training events never appear in the pipeline or reminder emails.",
+    "Event Lead capstone sandbox — a drifting plan to rescue: overdue rows, a missing task, an unbuilt run of show, and a permit on someone else's clock. Instantiated per person by \"Start training\"; training events never appear in the Events tab or reminder emails.",
   disabledCoreModules: [],
   roleKeys: DEFAULT_ROLES.map((r) => r.key),
   rows: {
@@ -815,7 +815,7 @@ const LOGISTICS_LEAD_SPEC: TrainingTemplateSpec = {
   eventName: (firstName) => `Training: ${firstName} runs the supplies`,
   eventDaysOut: 14,
   description:
-    "Logistics Lead capstone sandbox — get it, know where it lives, pack it: real acquisition walks across order/storage/buy, plus the packing checklist and the site map. Instantiated per person by \"Start training\"; training events never appear in the pipeline or reminder emails.",
+    "Logistics Lead capstone sandbox — get it, know where it lives, pack it: real acquisition walks across order/storage/buy, plus the packing checklist and the site map. Instantiated per person by \"Start training\"; training events never appear in the Events tab or reminder emails.",
   disabledCoreModules: ["permits", "volunteer_expectations"],
   roleKeys: LIGHTWEIGHT_ROLE_KEYS,
   rows: {

@@ -1,14 +1,14 @@
 /**
- * PROJECT — a project's own page, the detail route the reminder emails point
- * at. Thin composition over the same pieces the Work tab uses: `projects.list`
- * (the canonical scoped read — reusing it keeps this page's visibility exactly
- * the manager-subtree rule, with no second implementation to drift) and the
- * fully-editable ProjectCard (status, fields, sub-projects, comment thread).
- * Out-of-scope and deleted projects land on the same not-found state so a
- * denial never confirms existence.
+ * PROJECT — a project's own standalone page: the detail view you can send
+ * someone when talking about a project. `projects.get` is the transparent read
+ * (any roster member can open it, with `canManage` deciding whether the page is
+ * editable or read-only) plus the header meta; `projects.list` supplies the
+ * sub-project tree the ProjectCard recurses through. Out-of-chapter and deleted
+ * projects land on the same not-found state so a shared link never confirms
+ * existence to someone outside the chapter.
  */
 import { useMemo } from "react";
-import { View, Text, Pressable } from "react-native";
+import { View, Text, Pressable, Platform } from "react-native";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { useQuery } from "convex/react";
 import { api } from "@events-os/convex/_generated/api";
@@ -19,16 +19,25 @@ import {
   EmptyState,
   Button,
   Icon,
+  Badge,
+  CopyButton,
 } from "../../../components/ui";
 import {
   ProjectCard,
   buildProjectTree,
+  type ProjectDoc,
 } from "../../../components/team/ProjectCard";
 import { colors } from "../../../lib/theme";
+import { formatDate } from "../../../lib/format";
 
 export default function ProjectScreen() {
   const router = useRouter();
   const { id } = useLocalSearchParams<{ id: string }>();
+  const projectId = id ? (id as Id<"projects">) : undefined;
+  const detail = useQuery(
+    api.projects.get,
+    projectId ? { projectId } : "skip",
+  );
   const projects = useQuery(api.projects.list);
   const people = useQuery(api.people.list, {});
 
@@ -41,18 +50,22 @@ export default function ProjectScreen() {
     [projects],
   );
 
-  if (!id || projects === undefined || people === undefined) {
+  if (
+    !projectId ||
+    detail === undefined ||
+    projects === undefined ||
+    people === undefined
+  ) {
     return <Screen loading />;
   }
 
-  const project = projects.find((p) => p._id === (id as Id<"projects">));
-  if (!project) {
+  if (detail === null) {
     return (
       <Screen>
         <Narrow>
           <EmptyState
             title="Project not found"
-            message="It may have been deleted, or it belongs to someone outside your team."
+            message="It may have been deleted, or it belongs to another chapter."
           />
           <View className="mt-4 items-start">
             <Button
@@ -67,9 +80,16 @@ export default function ProjectScreen() {
     );
   }
 
-  const parent = project.parentProjectId
-    ? projects.find((p) => p._id === project.parentProjectId)
-    : undefined;
+  // The list copy carries the joined `lastComment`; fall back to the get
+  // payload (already a superset of the project doc) if the list hasn't it.
+  const project =
+    projects.find((p) => p._id === projectId) ?? (detail as ProjectDoc);
+  const readOnly = !detail.canManage;
+  // On web the current URL IS the shareable link; native falls back gracefully.
+  const shareUrl =
+    Platform.OS === "web" && typeof window !== "undefined"
+      ? window.location.href
+      : undefined;
 
   return (
     <Screen>
@@ -81,21 +101,55 @@ export default function ProjectScreen() {
           <Icon name="arrow-left" size={15} color={colors.muted} />
           <Text className="text-sm text-muted">Work</Text>
         </Pressable>
+
+        {/* Page header — the title/owner/date you'd read out when sharing. */}
+        <View className="mb-4">
+          <View className="flex-row items-start justify-between gap-3">
+            <Text className="flex-1 font-display text-2xl text-ink">
+              {project.name || "Untitled project"}
+            </Text>
+            {shareUrl ? <CopyButton text={shareUrl} label /> : null}
+          </View>
+          <View className="mt-1 flex-row flex-wrap items-center gap-x-3 gap-y-1">
+            {detail.ownerName ? (
+              <Text className="text-sm text-muted">
+                Owned by{" "}
+                <Text className="font-semibold text-ink">
+                  {detail.ownerName}
+                </Text>
+              </Text>
+            ) : null}
+            {project.deadline != null ? (
+              <Text className="text-sm text-muted">
+                Due {formatDate(project.deadline)}
+              </Text>
+            ) : null}
+            {detail.parentName && project.parentProjectId ? (
+              <Pressable
+                onPress={() =>
+                  router.push(`/project/${project.parentProjectId}` as any)
+                }
+                className="flex-row items-center gap-1 active:opacity-70"
+              >
+                <Icon name="corner-left-up" size={12} color={colors.accent} />
+                <Text className="text-sm font-medium text-accent">
+                  {detail.parentName}
+                </Text>
+              </Pressable>
+            ) : null}
+            {readOnly ? (
+              <Badge label="View only" tone="neutral" icon="eye" />
+            ) : null}
+          </View>
+        </View>
+
         <ProjectCard
           project={project}
           childrenOf={childrenOf}
           peopleById={peopleById}
           showOwner
           defaultExpanded
-          partOf={
-            parent
-              ? {
-                  name: parent.name || "Untitled project",
-                  onPress: () =>
-                    router.push(`/project/${parent._id}` as any),
-                }
-              : undefined
-          }
+          readOnly={readOnly}
         />
       </Narrow>
     </Screen>

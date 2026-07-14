@@ -20,6 +20,7 @@ import {
   CHECKIN_ACTION_LABELS,
   responsibilityAppliesTo,
   responsibilityDueForReview,
+  isPastEvent,
   type EventStatus,
 } from "@events-os/shared";
 import {
@@ -206,10 +207,21 @@ export function WorkloadView({
     checkInFor ? { personId: checkInFor._id } : "skip",
   );
 
-  // Managers log 1:1s about others — never about themselves.
+  // Read is transparent (anyone can SEE anyone's work), but managing stays
+  // scoped: `manageableIds` is the caller's manager subtree (null = admin/all).
+  // Everything editable — owner chips, quick-add, 1:1 logging — gates on this.
+  const canManagePerson = (memberId: Id<"people">) => {
+    const ids = workload?.caller.manageableIds;
+    if (ids === undefined) return false; // not loaded yet
+    if (ids === null) return true; // admin — manages everyone
+    return ids.includes(memberId);
+  };
+
+  // Managers log 1:1s about people they manage — never about themselves.
   const canLogFor = (memberId: Id<"people">) =>
     workload?.caller.personId != null &&
-    memberId !== workload.caller.personId;
+    memberId !== workload.caller.personId &&
+    canManagePerson(memberId);
 
   // Responsibilities gate the check-in modal's seed list — wait for them.
   // (The 1:1 history and cadence review-times load async and don't block
@@ -252,9 +264,14 @@ export function WorkloadView({
   const ownRoots = rootsByOwner.get(person._id) ?? [];
   const ownResponsibilities = respFor(person._id);
   const ownCheckIns = checkInsByPerson.get(person._id) ?? [];
-  // Owner reassignment is a manager/admin capability — plain members get
-  // read-only chips (the server rejects their reassignments anyway).
-  const showOwner = caller.canManage;
+  // Can the caller manage THIS person's work (owner reassignment, editable
+  // cards, quick-add)? Their own work, their subtree, or anyone as an admin —
+  // but NOT a peer or someone up-chain they can only see through transparency.
+  const canManageThis = canManagePerson(person._id);
+  const showOwner = canManageThis;
+  // Duty editing is a manager/admin capability (server: requireManagerOrAdmin),
+  // scoped in the UI to people the caller actually manages.
+  const canEditDuties = caller.canManage && canManageThis;
 
   return (
     <Screen>
@@ -356,24 +373,27 @@ export function WorkloadView({
           title="Projects"
           count={ownRoots.length}
           right={
-            <Button
-              title="Add project"
-              icon="plus"
-              size="sm"
-              variant="secondary"
-              onPress={() =>
-                void createProject({
-                  name: "New project",
-                  ownerPersonId: person._id,
-                }).catch(alertError)
-              }
-            />
+            canManageThis ? (
+              <Button
+                title="Add project"
+                icon="plus"
+                size="sm"
+                variant="secondary"
+                onPress={() =>
+                  void createProject({
+                    name: "New project",
+                    ownerPersonId: person._id,
+                  }).catch(alertError)
+                }
+              />
+            ) : undefined
           }
         />
         {ownRoots.length === 0 ? (
           <Text className="text-sm text-faint">
-            No projects tracked yet — add one to start following this person's
-            work.
+            {canManageThis
+              ? "No projects tracked yet — add one to start following this person's work."
+              : "No projects tracked yet."}
           </Text>
         ) : (
           <View style={{ gap: spacing.sm }}>
@@ -384,6 +404,8 @@ export function WorkloadView({
                 childrenOf={projectTree}
                 peopleById={peopleById}
                 showOwner={showOwner}
+                readOnly={!canManageThis}
+                showOpenPage
                 partOf={partOfFor(p)}
               />
             ))}
@@ -393,13 +415,13 @@ export function WorkloadView({
         {/* Their responsibilities (recurring duties). Managers always get the
             section — it carries the quick-add — while plain members only see
             it once something applies (the server rejects their edits anyway). */}
-        {ownResponsibilities.length > 0 || caller.canManage ? (
+        {ownResponsibilities.length > 0 || canEditDuties ? (
           <>
             <SectionHeader
               title="Duties"
               count={ownResponsibilities.length}
               right={
-                caller.canManage ? (
+                canEditDuties ? (
                   <Button
                     title="Add duty"
                     icon="plus"
@@ -424,7 +446,7 @@ export function WorkloadView({
               <DutyRows
                 items={ownResponsibilities}
                 person={{ _id: person._id, role: person.role }}
-                canUnassign={caller.canManage}
+                canUnassign={canEditDuties}
               />
             )}
           </>
@@ -438,29 +460,17 @@ export function WorkloadView({
           </>
         ) : null}
 
-        {/* Their 1:1 history (visible to the chain above them) */}
+        {/* Their 1:1 log (visible only to the chain above them). Collapsed by
+            default — 1:1 notes stay private-feeling and never sit inline. */}
         {ownCheckIns.length > 0 ? (
-          <>
-            <SectionHeader
-              title="1:1 log"
-              count={ownCheckIns.length}
-              right={
-                <Pressable
-                  onPress={() => setHistoryOpen(true)}
-                  className="active:opacity-70"
-                >
-                  <Text className="text-xs font-semibold text-accent">
-                    See full history
-                  </Text>
-                </Pressable>
-              }
-            />
-            <CheckInList
+          <View style={{ marginTop: spacing.md }}>
+            <CollapsibleCheckIns
               items={ownCheckIns}
               limit={5}
               callerPersonId={checkIns?.callerPersonId ?? null}
+              onSeeFullHistory={() => setHistoryOpen(true)}
             />
-          </>
+          </View>
         ) : null}
 
         {/* The rollup: every report's work, deepest levels included. */}
@@ -468,39 +478,46 @@ export function WorkloadView({
           <>
             <SectionHeader title="Their team's work" count={team.length} />
             <View style={{ gap: spacing.lg }}>
-              {team.map((m) => (
-                <TeamMemberBlock
-                  key={m._id}
-                  member={m}
-                  roots={rootsByOwner.get(m._id) ?? []}
-                  responsibilities={respFor(m._id)}
-                  checkIns={checkInsByPerson.get(m._id) ?? []}
-                  projectTree={projectTree}
-                  peopleById={peopleById}
-                  showOwner={showOwner}
-                  partOfFor={partOfFor}
-                  callerPersonId={checkIns?.callerPersonId ?? null}
-                  canLog={canLogFor(m._id)}
-                  onLog={() => setCheckInFor({ _id: m._id, name: m.name })}
-                  onOpen={() => router.push(`/team/${m._id}` as any)}
-                  onAddProject={() =>
-                    void createProject({
-                      name: "New project",
-                      ownerPersonId: m._id,
-                    }).catch(alertError)
-                  }
-                  onAddDuty={
-                    caller.canManage
-                      ? () =>
-                          setAddDutyFor({
-                            _id: m._id,
-                            name: m.name,
-                            role: m.role,
-                          })
-                      : undefined
-                  }
-                />
-              ))}
+              {team.map((m) => {
+                const canManageMember = canManagePerson(m._id);
+                return (
+                  <TeamMemberBlock
+                    key={m._id}
+                    member={m}
+                    roots={rootsByOwner.get(m._id) ?? []}
+                    responsibilities={respFor(m._id)}
+                    checkIns={checkInsByPerson.get(m._id) ?? []}
+                    projectTree={projectTree}
+                    peopleById={peopleById}
+                    showOwner={canManageMember}
+                    readOnly={!canManageMember}
+                    partOfFor={partOfFor}
+                    callerPersonId={checkIns?.callerPersonId ?? null}
+                    canLog={canLogFor(m._id)}
+                    onLog={() => setCheckInFor({ _id: m._id, name: m.name })}
+                    onOpen={() => router.push(`/team/${m._id}` as any)}
+                    onAddProject={
+                      canManageMember
+                        ? () =>
+                            void createProject({
+                              name: "New project",
+                              ownerPersonId: m._id,
+                            }).catch(alertError)
+                        : undefined
+                    }
+                    onAddDuty={
+                      caller.canManage && canManageMember
+                        ? () =>
+                            setAddDutyFor({
+                              _id: m._id,
+                              name: m.name,
+                              role: m.role,
+                            })
+                        : undefined
+                    }
+                  />
+                );
+              })}
             </View>
           </>
         ) : null}
@@ -558,6 +575,7 @@ export function WorkloadView({
           childrenOf={projectTree}
           peopleById={peopleById}
           showOwner={showOwner}
+          readOnly={!canManageThis}
           onClose={() => setFullProjectId(null)}
         />
       ) : null}
@@ -575,12 +593,14 @@ function FullProjectModal({
   childrenOf,
   peopleById,
   showOwner,
+  readOnly,
   onClose,
 }: {
   project: ProjectDoc | null;
   childrenOf: Map<Id<"projects">, ProjectDoc[]>;
   peopleById: Map<Id<"people">, string>;
   showOwner: boolean;
+  readOnly: boolean;
   onClose: () => void;
 }) {
   return (
@@ -612,6 +632,7 @@ function FullProjectModal({
                 childrenOf={childrenOf}
                 peopleById={peopleById}
                 showOwner={showOwner}
+                readOnly={readOnly}
                 defaultExpanded
               />
             ) : (
@@ -635,6 +656,7 @@ function TeamMemberBlock({
   projectTree,
   peopleById,
   showOwner,
+  readOnly,
   partOfFor,
   callerPersonId,
   canLog,
@@ -650,6 +672,8 @@ function TeamMemberBlock({
   projectTree: Map<Id<"projects">, ProjectDoc[]>;
   peopleById: Map<Id<"people">, string>;
   showOwner: boolean;
+  /** The caller can't manage this member — cards render read-only. */
+  readOnly: boolean;
   /** "Part of {parent}" chip data for cross-assigned sub-project roots. */
   partOfFor: (
     p: ProjectDoc,
@@ -658,7 +682,8 @@ function TeamMemberBlock({
   canLog: boolean;
   onLog: () => void;
   onOpen: () => void;
-  onAddProject: () => void;
+  /** Present only when the caller may add projects for this member. */
+  onAddProject?: () => void;
   /** Present only when the caller may edit duty assignments. */
   onAddDuty?: () => void;
 }) {
@@ -692,15 +717,17 @@ function TeamMemberBlock({
             <Text className="text-xs font-medium text-accent">1:1</Text>
           </Pressable>
         ) : null}
-        <Pressable
-          onPress={onAddProject}
-          hitSlop={6}
-          accessibilityLabel={`Add project for ${member.name}`}
-          className="flex-row items-center gap-1 rounded p-1 active:bg-sunken web:hover:bg-sunken"
-        >
-          <Icon name="plus" size={13} color={colors.muted} />
-          <Text className="text-xs font-medium text-muted">Project</Text>
-        </Pressable>
+        {onAddProject ? (
+          <Pressable
+            onPress={onAddProject}
+            hitSlop={6}
+            accessibilityLabel={`Add project for ${member.name}`}
+            className="flex-row items-center gap-1 rounded p-1 active:bg-sunken web:hover:bg-sunken"
+          >
+            <Icon name="plus" size={13} color={colors.muted} />
+            <Text className="text-xs font-medium text-muted">Project</Text>
+          </Pressable>
+        ) : null}
         {onAddDuty ? (
           <Pressable
             onPress={onAddDuty}
@@ -724,6 +751,8 @@ function TeamMemberBlock({
               childrenOf={projectTree}
               peopleById={peopleById}
               showOwner={showOwner}
+              readOnly={readOnly}
+              showOpenPage
               partOf={partOfFor(p)}
             />
           ))}
@@ -738,7 +767,7 @@ function TeamMemberBlock({
             <EventsAndRoles member={member} />
           ) : null}
           {checkIns.length > 0 ? (
-            <CheckInList
+            <CollapsibleCheckIns
               items={checkIns}
               limit={2}
               callerPersonId={callerPersonId}
@@ -750,6 +779,69 @@ function TeamMemberBlock({
   );
 }
 
+
+/**
+ * 1:1 log, collapsed by default. The reporting chain can still read the record,
+ * but it never sits inline on the page — you expand it deliberately, so a
+ * candid 1:1 note isn't the first thing anyone scanning the workload sees.
+ */
+function CollapsibleCheckIns({
+  items,
+  limit,
+  callerPersonId,
+  onSeeFullHistory,
+}: {
+  items: CheckInRow[];
+  limit?: number;
+  callerPersonId: Id<"people"> | null;
+  /** Optional link to the full-history modal (person section only). */
+  onSeeFullHistory?: () => void;
+}) {
+  const [open, setOpen] = useState(false);
+  return (
+    <View>
+      <View className="flex-row items-center gap-1.5">
+        <Pressable
+          onPress={() => setOpen((o) => !o)}
+          accessibilityRole="button"
+          accessibilityState={{ expanded: open }}
+          accessibilityLabel={`${open ? "Hide" : "Show"} 1:1 log`}
+          className="flex-1 flex-row items-center gap-1.5 rounded-md px-1 py-1 active:bg-sunken web:hover:bg-sunken"
+        >
+          <Icon
+            name={open ? "chevron-down" : "chevron-right"}
+            size={14}
+            color={colors.muted}
+          />
+          <Icon name="message-circle" size={13} color={colors.accent} />
+          <Text className="text-2xs font-bold uppercase tracking-wider text-muted">
+            1:1 log
+          </Text>
+          <Text className="text-2xs font-bold text-faint">{items.length}</Text>
+        </Pressable>
+        {onSeeFullHistory ? (
+          <Pressable
+            onPress={onSeeFullHistory}
+            className="active:opacity-70"
+          >
+            <Text className="text-xs font-semibold text-accent">
+              See full history
+            </Text>
+          </Pressable>
+        ) : null}
+      </View>
+      {open ? (
+        <View className="mt-1">
+          <CheckInList
+            items={items}
+            limit={limit}
+            callerPersonId={callerPersonId}
+          />
+        </View>
+      ) : null}
+    </View>
+  );
+}
 
 /** 1:1 history rows: newest first, scores + flags + updates at a glance. */
 function CheckInList({
@@ -960,42 +1052,86 @@ function CheckInHistoryModal({
   );
 }
 
-/** Compact rows for the event data we already have: owned events + roles. */
+/** Compact rows for the event data we already have: owned events + roles.
+ *  Past events (date + 2-week grace behind us) fold into a collapsed section
+ *  so the list leads with what's still live. */
 function EventsAndRoles({ member }: { member: Member }) {
   const router = useRouter();
+  const [showPast, setShowPast] = useState(false);
+  const now = Date.now();
+
+  const eventRow = (e: Member["events"][number]) => (
+    <Pressable
+      key={e._id}
+      onPress={() => router.push(`/event/${e._id}` as any)}
+      className="flex-row items-center gap-2 rounded-md border border-border bg-raised px-3 py-2 active:bg-sunken web:hover:bg-sunken"
+    >
+      <Icon name="calendar" size={14} color={colors.muted} />
+      <Text className="flex-1 text-sm font-medium text-ink" numberOfLines={1}>
+        {e.name}
+      </Text>
+      <Text className="text-xs text-muted">{formatDate(e.eventDate)}</Text>
+      <Badge
+        label={EVENT_STATUS_LABELS[e.status as EventStatus]}
+        tone={statusTone(e.status as EventStatus)}
+      />
+    </Pressable>
+  );
+  const roleRow = (r: Member["roles"][number], i: number) => (
+    <Pressable
+      key={`${r.eventId}-${i}`}
+      onPress={() => router.push(`/event/${r.eventId}` as any)}
+      className="flex-row items-center gap-2 rounded-md border border-border bg-raised px-3 py-2 active:bg-sunken web:hover:bg-sunken"
+    >
+      <Icon name="tag" size={14} color={colors.muted} />
+      <Text className="flex-1 text-sm text-ink" numberOfLines={1}>
+        <Text className="font-medium">{r.roleLabel}</Text>
+        <Text className="text-muted"> · {r.eventName}</Text>
+      </Text>
+      <Text className="text-xs text-muted">{formatDate(r.eventDate)}</Text>
+    </Pressable>
+  );
+
+  const currentEvents = member.events.filter(
+    (e) => !isPastEvent(e.eventDate, now),
+  );
+  const pastEvents = member.events.filter((e) => isPastEvent(e.eventDate, now));
+  const currentRoles = member.roles.filter(
+    (r) => !isPastEvent(r.eventDate, now),
+  );
+  const pastRoles = member.roles.filter((r) => isPastEvent(r.eventDate, now));
+  const pastCount = pastEvents.length + pastRoles.length;
+
   return (
     <View style={{ gap: spacing.xs }}>
-      {member.events.map((e) => (
-        <Pressable
-          key={e._id}
-          onPress={() => router.push(`/event/${e._id}` as any)}
-          className="flex-row items-center gap-2 rounded-md border border-border bg-raised px-3 py-2 active:bg-sunken web:hover:bg-sunken"
-        >
-          <Icon name="calendar" size={14} color={colors.muted} />
-          <Text className="flex-1 text-sm font-medium text-ink" numberOfLines={1}>
-            {e.name}
-          </Text>
-          <Text className="text-xs text-muted">{formatDate(e.eventDate)}</Text>
-          <Badge
-            label={EVENT_STATUS_LABELS[e.status as EventStatus]}
-            tone={statusTone(e.status as EventStatus)}
-          />
-        </Pressable>
-      ))}
-      {member.roles.map((r, i) => (
-        <Pressable
-          key={`${r.eventId}-${i}`}
-          onPress={() => router.push(`/event/${r.eventId}` as any)}
-          className="flex-row items-center gap-2 rounded-md border border-border bg-raised px-3 py-2 active:bg-sunken web:hover:bg-sunken"
-        >
-          <Icon name="tag" size={14} color={colors.muted} />
-          <Text className="flex-1 text-sm text-ink" numberOfLines={1}>
-            <Text className="font-medium">{r.roleLabel}</Text>
-            <Text className="text-muted"> · {r.eventName}</Text>
-          </Text>
-          <Text className="text-xs text-muted">{formatDate(r.eventDate)}</Text>
-        </Pressable>
-      ))}
+      {currentEvents.map((e) => eventRow(e))}
+      {currentRoles.map((r, i) => roleRow(r, i))}
+      {pastCount > 0 ? (
+        <View style={{ gap: spacing.xs }}>
+          <Pressable
+            onPress={() => setShowPast((v) => !v)}
+            accessibilityRole="button"
+            accessibilityState={{ expanded: showPast }}
+            className="flex-row items-center gap-1.5 rounded-md px-1 py-1 active:bg-sunken web:hover:bg-sunken"
+          >
+            <Icon
+              name={showPast ? "chevron-down" : "chevron-right"}
+              size={14}
+              color={colors.muted}
+            />
+            <Text className="text-2xs font-bold uppercase tracking-wider text-muted">
+              Past events
+            </Text>
+            <Text className="text-2xs font-bold text-faint">{pastCount}</Text>
+          </Pressable>
+          {showPast ? (
+            <View style={{ gap: spacing.xs }}>
+              {pastEvents.map((e) => eventRow(e))}
+              {pastRoles.map((r, i) => roleRow(r, i))}
+            </View>
+          ) : null}
+        </View>
+      ) : null}
     </View>
   );
 }

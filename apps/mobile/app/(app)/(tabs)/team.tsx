@@ -196,15 +196,19 @@ export default function TeamScreen() {
           }}
         >
           <Text className="font-display text-2xl text-ink">Work</Text>
-          {/* Top-level Projects ⇄ Duties segments (reuses the toggle pattern). */}
-          <Segmented
-            options={[
-              { key: "projects", icon: "git-branch", label: "Projects" },
-              { key: "duties", icon: "check-square", label: "Duties" },
-            ]}
-            value={section}
-            onChange={setSection}
-          />
+          {/* Top-level Projects ⇄ Duties segments — the Duties catalog is a
+              management tool, so only managers/admins get the toggle. Everyone
+              else sees the transparent org tree (Projects view). */}
+          {nav.canManage ? (
+            <Segmented
+              options={[
+                { key: "projects", icon: "git-branch", label: "Projects" },
+                { key: "duties", icon: "check-square", label: "Duties" },
+              ]}
+              value={section}
+              onChange={setSection}
+            />
+          ) : null}
         </View>
         {/* Every pillar leads with your slice — the caller's own due work and
             events, above the org-wide sections. */}

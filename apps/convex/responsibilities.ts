@@ -11,10 +11,7 @@ import { query, mutation } from "./_generated/server";
 import type { MutationCtx } from "./_generated/server";
 import { Id } from "./_generated/dataModel";
 import { v } from "convex/values";
-import {
-  RESPONSIBILITY_CADENCES,
-  responsibilityAppliesTo,
-} from "@events-os/shared";
+import { RESPONSIBILITY_CADENCES } from "@events-os/shared";
 import {
   requireUserId,
   requireChapterId,
@@ -23,8 +20,7 @@ import {
 } from "./lib/context";
 import {
   requireManagerOrAdmin,
-  isChapterAdmin,
-  viewerPerson,
+  canViewChapterWork,
 } from "./lib/org";
 import { makeShareId } from "./lib/platformGuides";
 
@@ -80,39 +76,29 @@ const cadence = v.union(...RESPONSIBILITY_CADENCES.map((c) => v.literal(c)));
 // to a duty must not be able to quietly delete or unassign it before their 1:1.
 
 /**
- * The caller's readable slice of the chapter's responsibility definitions,
- * oldest first, each with a summary of its How-To doc (kind/title/url) joined
- * in so list surfaces can render the affordance without a doc query per row.
+ * The chapter's responsibility definitions, oldest first, each with a summary
+ * of its How-To doc (kind/title/url) joined in so list surfaces can render the
+ * affordance without a doc query per row.
  *
- * Managers and admins get the whole catalog — the Duties tab, subtree
- * rollups, and quick-assign all need it. Everyone else gets ONLY the duties
- * that land on them (direct assignment or role match): enough to render
- * their own My-work view without exposing the org-wide duty database.
+ * Read is transparent: admins and every roster member get the whole catalog, so
+ * any person's workload page can show the duties they carry — part of seeing the
+ * work everyone has. (Editing still gates on manager/admin in the mutations.) A
+ * caller with no roster row and no admin rights gets nothing.
  */
 export const list = query({
   args: {},
   handler: async (ctx) => {
     const chapterId = await getChapterIdOrNull(ctx);
     if (!chapterId) return [];
-    let rows = await ctx.db
+    if (!(await canViewChapterWork(ctx, chapterId as Id<"chapters">))) {
+      return [];
+    }
+    const rows = await ctx.db
       .query("responsibilities")
       .withIndex("by_chapter", (q) =>
         q.eq("chapterId", chapterId as Id<"chapters">),
       )
       .collect();
-    if (!(await isChapterAdmin(ctx, chapterId as Id<"chapters">))) {
-      const self = await viewerPerson(ctx, chapterId as Id<"chapters">);
-      if (!self) return [];
-      const firstReport = await ctx.db
-        .query("people")
-        .withIndex("by_manager", (q) => q.eq("managerId", self._id))
-        .first();
-      if (firstReport === null) {
-        rows = rows.filter((r) =>
-          responsibilityAppliesTo(r, { _id: self._id, role: self.role }),
-        );
-      }
-    }
     return await Promise.all(
       rows.map(async (r) => {
         if (!r.howToDocId) return { ...r, howToDoc: null };

@@ -41,6 +41,25 @@ export async function isChapterAdmin(
   }
 }
 
+/**
+ * Read-transparency gate: may the caller SEE the chapter's shared work — the
+ * org tree, everyone's projects, duties, and workload? True for chapter admins
+ * and for anyone with a real roster row in the chapter. Managing (editing,
+ * reassigning, logging 1:1s) stays scoped separately via `manageablePersonIds`;
+ * this only opens read access so the whole team can see the workload we carry.
+ */
+export async function canViewChapterWork(
+  ctx: QueryCtx,
+  chapterId: Id<"chapters">,
+): Promise<boolean> {
+  if (await isChapterAdmin(ctx, chapterId)) return true;
+  try {
+    return (await viewerPerson(ctx, chapterId)) !== null;
+  } catch {
+    return false;
+  }
+}
+
 /** The caller's own roster row in this chapter (people.userId link), or null.
  *  Placeholder rows never count — they're event-scoped stand-ins, and letting
  *  one act as "self" would disagree with every roster-derived surface. */

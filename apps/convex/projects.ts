@@ -17,7 +17,12 @@ import {
   requireOwned,
   getChapterIdOrNull,
 } from "./lib/context";
-import { isChapterAdmin, manageablePersonIds, viewerPerson } from "./lib/org";
+import {
+  isChapterAdmin,
+  manageablePersonIds,
+  viewerPerson,
+  canViewChapterWork,
+} from "./lib/org";
 
 const projectStatus = v.union(...PROJECT_STATUSES.map((s) => v.literal(s)));
 
@@ -98,40 +103,28 @@ async function assertNoParentCycle(
 }
 
 /**
- * The projects the caller may see, oldest first: the whole chapter for
- * admins, otherwise only projects whose effective owner sits in the caller's
- * manager subtree. The frontend assembles the nesting (parent → children) and
- * per-owner grouping itself so one reactive query serves both the Team
- * overview and the per-person workload page.
+ * The projects the caller may see, oldest first. Read is transparent: admins
+ * and every roster member see the whole chapter's projects, so the org tree and
+ * every person's workload page can show the work everyone carries. (Editing
+ * still gates on the manager subtree in the mutations below.) A caller with no
+ * roster row and no admin rights sees nothing. The frontend assembles the
+ * nesting (parent → children) and per-owner grouping itself so one reactive
+ * query serves both the Team overview and the per-person workload page.
  */
 export const list = query({
   args: {},
   handler: async (ctx) => {
     const chapterId = await getChapterIdOrNull(ctx);
     if (!chapterId) return [];
-    const all = await ctx.db
+    if (!(await canViewChapterWork(ctx, chapterId as Id<"chapters">))) {
+      return [];
+    }
+    const visible = await ctx.db
       .query("projects")
       .withIndex("by_chapter", (q) =>
         q.eq("chapterId", chapterId as Id<"chapters">),
       )
       .collect();
-    const manageable = await manageablePersonIds(
-      ctx,
-      chapterId as Id<"chapters">,
-    );
-    let visible = all;
-    if (manageable !== null) {
-      // Effective-owner walk done in memory — `all` already holds every ancestor.
-      const byId = new Map(all.map((p) => [p._id, p]));
-      visible = all.filter((p) => {
-        let cur: Doc<"projects"> | undefined = p;
-        for (let hops = 0; cur && hops < 100; hops++) {
-          if (cur.ownerPersonId) return manageable.has(cur.ownerPersonId);
-          cur = cur.parentProjectId ? byId.get(cur.parentProjectId) : undefined;
-        }
-        return false; // fully unowned chain — admin territory
-      });
-    }
     // Join each card's collapsed preview: the latest comment, attributed.
     // Author docs are shared across projects (one busy manager comments on
     // many) — fetch each distinct author once, not once per project.
@@ -167,20 +160,53 @@ export const list = query({
 });
 
 /**
+ * A single project for its own standalone page — transparent read (admins and
+ * any roster member), with `canManage` telling the client whether to render the
+ * page editable or read-only, plus the owner + parent names for the header.
+ * Null when out of the chapter or the caller can't view chapter work, so a
+ * shared link degrades to a calm not-found instead of leaking existence.
+ */
+export const get = query({
+  args: { projectId: v.id("projects") },
+  handler: async (ctx, { projectId }) => {
+    const chapterId = await getChapterIdOrNull(ctx);
+    if (!chapterId) return null;
+    const project = await ctx.db.get(projectId);
+    if (!project || project.chapterId !== chapterId) return null;
+    if (!(await canViewChapterWork(ctx, project.chapterId))) return null;
+
+    const manageable = await manageablePersonIds(ctx, project.chapterId);
+    const owner = await effectiveOwnerId(ctx, project);
+    const canManage =
+      manageable === null || (owner != null && manageable.has(owner));
+
+    const ownerPerson = project.ownerPersonId
+      ? await ctx.db.get(project.ownerPersonId)
+      : null;
+    const parent = project.parentProjectId
+      ? await ctx.db.get(project.parentProjectId)
+      : null;
+    return {
+      ...project,
+      canManage,
+      ownerName: ownerPerson?.name ?? null,
+      parentName: parent?.name ?? null,
+    };
+  },
+});
+
+/**
  * A project's comment thread, oldest first — the progression record. Visible
- * to whoever can see the project (same effective-owner scope); returns NULL
- * when out of scope (matching the check-in queries) so denial is never
- * mistaken for an empty thread. Bounded to the latest 200 entries.
+ * to whoever can see the project — transparent to admins and every roster
+ * member, matching `list`. Returns NULL when the caller can't view chapter work
+ * (no roster row) so denial is never mistaken for an empty thread. Bounded to
+ * the latest 200 entries. (Posting still gates on the manager subtree.)
  */
 export const comments = query({
   args: { projectId: v.id("projects") },
   handler: async (ctx, { projectId }) => {
     const project = await requireOwned(ctx, "projects", projectId, "Project");
-    const manageable = await manageablePersonIds(ctx, project.chapterId);
-    if (manageable !== null) {
-      const owner = await effectiveOwnerId(ctx, project);
-      if (!owner || !manageable.has(owner)) return null;
-    }
+    if (!(await canViewChapterWork(ctx, project.chapterId))) return null;
     const rows = await ctx.db
       .query("projectComments")
       .withIndex("by_project", (q) => q.eq("projectId", projectId))
