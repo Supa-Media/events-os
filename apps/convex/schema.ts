@@ -32,6 +32,7 @@ import {
   pageReactions,
   blasts,
 } from "./schema/ticketing";
+import { budgetLineItems } from "./schema/budget";
 import { docs } from "./schema/docs";
 import { siteMarkers, siteShapes, siteMapPlacements } from "./schema/siteMap";
 import {
@@ -143,6 +144,10 @@ const schema = defineSchema({
   eventComments,
   pageReactions,
   blasts,
+
+  // Budget (per-line budget for an event — planned/actual/receipt per line).
+  // Coexists with the coarse `events.budget` headline (see docs/plans/budget.md).
+  budgetLineItems,
 
   // Docs (the standalone targets behind How-To cells).
   docs,

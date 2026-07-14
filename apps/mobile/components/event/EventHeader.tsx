@@ -1012,6 +1012,8 @@ export function EventTools({
   onDayOf,
   onTickets,
   ticketsActive,
+  onBudget,
+  budgetActive,
   onSongs,
   meView,
   onToggleMeView,
@@ -1022,6 +1024,9 @@ export function EventTools({
   onTickets: () => void;
   /** True while the Tickets surface is showing — flags ⋯ and its menu row. */
   ticketsActive: boolean;
+  onBudget: () => void;
+  /** True while the Budget surface is showing — flags ⋯ and its menu row. */
+  budgetActive: boolean;
   onSongs: () => void;
   meView: boolean;
   onToggleMeView: () => void;
@@ -1095,9 +1100,15 @@ export function EventTools({
         ref={ref}
         onPress={openMenu}
         accessibilityRole="button"
-        accessibilityLabel={ticketsActive ? "More tools (Event page open)" : "More tools"}
-        className={`rounded-md border px-2.5 py-2 active:opacity-80 web:hover:bg-sunken ${
+        accessibilityLabel={
           ticketsActive
+            ? "More tools (Event page open)"
+            : budgetActive
+              ? "More tools (Budget open)"
+              : "More tools"
+        }
+        className={`rounded-md border px-2.5 py-2 active:opacity-80 web:hover:bg-sunken ${
+          ticketsActive || budgetActive
             ? "border-accent bg-accent-soft"
             : "border-border-strong bg-raised"
         }`}
@@ -1105,7 +1116,7 @@ export function EventTools({
         <Icon
           name="more-horizontal"
           size={15}
-          color={ticketsActive ? colors.accent : colors.ink}
+          color={ticketsActive || budgetActive ? colors.accent : colors.ink}
         />
       </Pressable>
       <Popover visible={visible} anchor={anchor} width={210} onClose={closeMenu}>
@@ -1116,6 +1127,15 @@ export function EventTools({
           onPress={() => {
             closeMenu();
             onTickets();
+          }}
+        />
+        <ToolsMenuRow
+          icon="dollar-sign"
+          label="Budget"
+          active={budgetActive}
+          onPress={() => {
+            closeMenu();
+            onBudget();
           }}
         />
         <ToolsMenuRow
