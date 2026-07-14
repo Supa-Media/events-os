@@ -561,6 +561,10 @@ export const DEFAULT_COLUMNS: Partial<Record<ModuleKey, ColumnDef[]>> = {
   run_of_show: [
     { key: "title", label: "Segment", kind: "system", type: "text", isVisible: true },
     { key: "offset", label: "Time", kind: "system", type: "offset_minutes", isVisible: true },
+    // Segment LENGTH in minutes (a typed number cell in the fields bag, like
+    // qty/cost). Optional per row: absent/0 falls back to "until the next
+    // segment starts" on the Day-of view. Powers start–end ranges.
+    { key: "duration", label: "Length", kind: "custom", type: "number", isVisible: true },
     { key: "role", label: "Owner / Role", kind: "system", type: "role", isVisible: true },
     { key: "owner", label: "Owner", kind: "system", type: "person", isVisible: false },
     { key: "notes", label: "Notes / Tech", kind: "custom", type: "longtext", isVisible: true },
@@ -690,6 +694,46 @@ export function daysToEventBadge(daysToEvent: number): string {
 /** Wall-clock time of a run-of-show segment (offset minutes from event start). */
 export function computeRunTime(eventStart: number, offsetMinutes: number): number {
   return eventStart + offsetMinutes * MINUTE_MS;
+}
+
+/**
+ * True when a timestamp's LOCAL time-of-day is exactly midnight (00:00). Used to
+ * flag events whose `eventDate` never got a real start time (the old new-event
+ * form defaulted to local midnight) so the Day-of view can prompt to set one —
+ * a migration can't infer the true start, but this reaches those events without
+ * guessing. Uses local hours/minutes to match how every event time is derived.
+ */
+export function isLocalMidnight(ts: number): boolean {
+  const d = new Date(ts);
+  return d.getHours() === 0 && d.getMinutes() === 0;
+}
+
+/**
+ * The final run-of-show segment has no following start to bound its "now"
+ * window, so cap it instead of leaving it open forever (otherwise the last
+ * segment reads "Happening now" hours after the event ends).
+ */
+export const RUN_OF_SHOW_FINAL_WINDOW_MS = 2 * 60 * 60 * 1000;
+
+/**
+ * The END wall-clock time of a run-of-show segment, given its own start, an
+ * optional explicit `durationMinutes`, and the next segment's start (or null for
+ * the last row). A positive duration wins (start + duration); otherwise the
+ * segment runs until the next one starts; the final row with no duration is
+ * capped at {@link RUN_OF_SHOW_FINAL_WINDOW_MS}. This is the single source of
+ * truth for both the Day-of start–end labels and its "now / up-next" window, so
+ * the two can never disagree.
+ */
+export function runOfShowSegmentEnd(
+  start: number,
+  durationMinutes: number | null | undefined,
+  nextStart: number | null,
+): number {
+  if (durationMinutes != null && durationMinutes > 0) {
+    return start + durationMinutes * MINUTE_MS;
+  }
+  if (nextStart != null) return nextStart;
+  return start + RUN_OF_SHOW_FINAL_WINDOW_MS;
 }
 
 /** One cell in a calendar month grid. `ms` is that day at local midnight. */

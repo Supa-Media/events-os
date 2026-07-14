@@ -3,12 +3,26 @@ import { View, Text, StyleSheet, Pressable } from "react-native";
 import { Stack, useLocalSearchParams } from "expo-router";
 import { useQuery, useMutation } from "convex/react";
 import { api } from "@events-os/convex/_generated/api";
-import { Screen, Card, SectionHeader } from "../../../../components/ui";
+import {
+  Screen,
+  Card,
+  SectionHeader,
+  Button,
+  Icon,
+  Popover,
+  useAnchor,
+} from "../../../../components/ui";
 import { ToastView } from "../../../../components/ui/Toast";
+import { DateTimePanel } from "../../../../components/ui/DateTimeField";
 import { colors, radius, spacing } from "../../../../lib/theme";
 import { formatTime } from "../../../../lib/format";
 import { useActionRunner } from "../../../../lib/useActionToast";
-import { TASK_STATUS_OPTIONS, computeRunTime } from "@events-os/shared";
+import {
+  TASK_STATUS_OPTIONS,
+  computeRunTime,
+  isLocalMidnight,
+  runOfShowSegmentEnd,
+} from "@events-os/shared";
 import type { Id } from "@events-os/convex/_generated/dataModel";
 
 /** The ordered planning-doc task status values (not_started → in_progress → done). */
@@ -29,9 +43,77 @@ function nextStatus(s: string | undefined): string {
   return TASK_STATUSES[(i + 1) % TASK_STATUSES.length];
 }
 
-/** Compute the wall-clock time of a run-of-show row from event start. */
-function rowTime(eventDate: number, offsetMinutes: number): string {
-  return formatTime(computeRunTime(eventDate, offsetMinutes));
+/**
+ * Non-blocking nudge shown on Day-of when an event's start sits at local
+ * midnight (it predates start-times, so every segment renders at 12:xx AM).
+ * The "Set start time" button opens the shared calendar + time panel; picking a
+ * time reschedules the event (the SAME path as the header), which re-anchors the
+ * whole run of show. Dismissible and informational — it never blocks the view.
+ */
+function StartTimePrompt({
+  eventDate,
+  onReschedule,
+}: {
+  eventDate: number;
+  onReschedule: (ts: number) => void;
+}) {
+  const { ref, anchor, visible, open, close } = useAnchor();
+  const [dismissed, setDismissed] = useState(false);
+  // A local DRAFT so the whole time can be dialed in (hour AND minute) before
+  // committing — reschedule fires once, on "Set". Seeding the draft off the
+  // midnight anchor keeps the day; the user just picks the time. (Committing on
+  // every pick would unmount this prompt the instant the time left midnight,
+  // dropping them mid-edit.)
+  const [draft, setDraft] = useState(eventDate);
+  if (dismissed) return null;
+  return (
+    <Card style={styles.promptCard}>
+      <View style={styles.promptRow}>
+        <Icon name="clock" size={18} color={colors.warn} />
+        <View style={{ flex: 1 }}>
+          <Text style={styles.promptTitle}>Set a start time</Text>
+          <Text style={styles.promptBody}>
+            This event has no start time, so every segment shows at 12:xx AM.
+          </Text>
+        </View>
+        <Pressable
+          onPress={() => setDismissed(true)}
+          hitSlop={8}
+          accessibilityRole="button"
+          accessibilityLabel="Dismiss start-time prompt"
+        >
+          <Icon name="x" size={16} color={colors.faint} />
+        </Pressable>
+      </View>
+      <View ref={ref} collapsable={false} style={styles.promptAction}>
+        <Button
+          title="Set start time"
+          icon="clock"
+          size="sm"
+          variant="secondary"
+          onPress={() => {
+            setDraft(eventDate);
+            open();
+          }}
+        />
+      </View>
+      <Popover visible={visible} anchor={anchor} width={388} onClose={close}>
+        <DateTimePanel value={draft} onChange={setDraft} />
+        <View style={styles.promptCommit}>
+          <Text style={styles.promptDraft}>{formatTime(draft)}</Text>
+          <Button
+            title="Set"
+            icon="check"
+            size="sm"
+            onPress={() => {
+              close();
+              onReschedule(draft);
+            }}
+          />
+        </View>
+      </Popover>
+    </Card>
+  );
 }
 
 /** A live wall clock — re-renders every 30s. Anchors the now/next highlight. */
@@ -50,6 +132,7 @@ export default function DayOfScreen() {
   const eventId = id as Id<"events">;
   const data = useQuery(api.events.dayOf, { eventId });
   const setTaskStatus = useMutation(api.items.setStatus);
+  const reschedule = useMutation(api.events.reschedule);
   const { run, toast, dismiss } = useActionRunner();
   const now = useNow();
 
@@ -75,36 +158,50 @@ export default function DayOfScreen() {
 
   const { event, eventTypeName, runOfShow, roles, tasks } = data;
 
-  // The "now/next" block: the run-of-show row currently in progress (its start
-  // has passed but the next row's start hasn't), or — before the event — the
-  // first upcoming row. Used to highlight what the team should be doing now.
+  // Each segment resolved to its wall-clock START and END. END = start +
+  // duration when a positive `duration` (minutes, in the fields bag) is set,
+  // else the next segment's start, else a 2h cap on the final row
+  // (runOfShowSegmentEnd). `showEnd` is false only for a final row with no
+  // duration — there we show a single time, not a bogus 2h range.
   const sorted = [...runOfShow].sort(
     (a, b) => (a.offsetMinutes ?? 0) - (b.offsetMinutes ?? 0),
   );
-  // The final row has no following start, so bound its "now" window instead of
-  // leaving it open (Infinity) — otherwise the last segment reads "Happening
-  // now" forever, even hours/days after the event has ended.
-  const FINAL_SEGMENT_WINDOW_MS = 2 * 60 * 60 * 1000;
-  let nowIndex = -1;
-  for (let i = 0; i < sorted.length; i++) {
-    const start = computeRunTime(event.eventDate, sorted[i].offsetMinutes ?? 0);
+  const segments = sorted.map((r, i) => {
+    const start = computeRunTime(event.eventDate, r.offsetMinutes ?? 0);
     const nextStart =
       i + 1 < sorted.length
         ? computeRunTime(event.eventDate, sorted[i + 1].offsetMinutes ?? 0)
-        : start + FINAL_SEGMENT_WINDOW_MS;
-    if (now >= start && now < nextStart) {
+        : null;
+    const duration =
+      typeof r.fields?.duration === "number" && r.fields.duration > 0
+        ? r.fields.duration
+        : null;
+    return {
+      row: r,
+      start,
+      end: runOfShowSegmentEnd(start, duration, nextStart),
+      showEnd: duration != null || nextStart != null,
+    };
+  });
+
+  // The "now/next" block: the segment currently in progress (its start has
+  // passed but its END — the real end, honoring durations — hasn't), or, before
+  // the event, the first upcoming row. Highlights what the team should be doing.
+  let nowIndex = -1;
+  for (let i = 0; i < segments.length; i++) {
+    if (now >= segments[i].start && now < segments[i].end) {
       nowIndex = i;
       break;
     }
   }
   // Before the first row starts, point "next" at the first upcoming row.
-  if (nowIndex === -1 && sorted.length > 0) {
-    const firstStart = computeRunTime(
-      event.eventDate,
-      sorted[0].offsetMinutes ?? 0,
-    );
-    if (now < firstStart) nowIndex = 0;
+  if (nowIndex === -1 && segments.length > 0 && now < segments[0].start) {
+    nowIndex = 0;
   }
+
+  // Old events created before start-times existed sit at local midnight, so
+  // every segment renders at 12:xx AM. Prompt (non-blocking) to set a real one.
+  const needsStartTime = isLocalMidnight(event.eventDate);
 
   return (
     <>
@@ -126,18 +223,32 @@ export default function DayOfScreen() {
           </View>
         </View>
 
+        {/* One-time nudge for events that never got a real start time. */}
+        {needsStartTime ? (
+          <StartTimePrompt
+            eventDate={event.eventDate}
+            onReschedule={(ts) =>
+              run(() => reschedule({ eventId, eventDate: ts }), {
+                errorTitle: "Couldn't set start time",
+              })
+            }
+          />
+        ) : null}
+
         {/* Run of show */}
         <SectionHeader title="Run of Show" />
-        {sorted.length === 0 ? (
+        {segments.length === 0 ? (
           <Text style={styles.muted}>No run-of-show rows.</Text>
         ) : (
           <View style={styles.list}>
-            {sorted.map((r, i) => {
+            {segments.map((seg, i) => {
+              const r = seg.row;
               const isNow = i === nowIndex;
-              const upcoming =
-                isNow &&
-                now <
-                  computeRunTime(event.eventDate, r.offsetMinutes ?? 0);
+              const upcoming = isNow && now < seg.start;
+              const startLabel = formatTime(seg.start);
+              const timeLabel = seg.showEnd
+                ? `${startLabel} – ${formatTime(seg.end)}`
+                : startLabel;
               return (
                 <Card
                   key={r._id}
@@ -146,7 +257,7 @@ export default function DayOfScreen() {
                   {isNow ? (
                     <View
                       style={styles.nowBadge}
-                      accessibilityLabel={`${upcoming ? "Up next" : "Happening now"}: ${r.title} at ${rowTime(event.eventDate, r.offsetMinutes ?? 0)}`}
+                      accessibilityLabel={`${upcoming ? "Up next" : "Happening now"}: ${r.title} at ${timeLabel}`}
                     >
                       <Text style={styles.nowBadgeText}>
                         {upcoming ? "UP NEXT" : "NOW"}
@@ -154,9 +265,14 @@ export default function DayOfScreen() {
                     </View>
                   ) : null}
                   <View style={styles.rosRow}>
-                    <Text style={styles.rosTime}>
-                      {rowTime(event.eventDate, r.offsetMinutes ?? 0)}
-                    </Text>
+                    <View style={styles.rosTimeCol}>
+                      <Text style={styles.rosTime}>{startLabel}</Text>
+                      {seg.showEnd ? (
+                        <Text style={styles.rosEnd}>
+                          –{formatTime(seg.end)}
+                        </Text>
+                      ) : null}
+                    </View>
                     <View style={styles.rosBody}>
                       <Text style={styles.rosSegment}>{r.title}</Text>
                       {typeof r.fields?.notes === "string" &&
@@ -277,6 +393,28 @@ const styles = StyleSheet.create({
   },
   muted: { fontSize: 15, color: colors.muted },
   list: { gap: spacing.sm },
+  promptCard: {
+    borderColor: colors.warn,
+    borderWidth: 1,
+    backgroundColor: colors.warnBg,
+    marginBottom: spacing.sm,
+    gap: spacing.sm,
+  },
+  promptRow: { flexDirection: "row", gap: spacing.sm, alignItems: "flex-start" },
+  promptTitle: { fontSize: 15, fontWeight: "700", color: colors.text },
+  promptBody: { fontSize: 13, color: colors.muted, marginTop: 2 },
+  promptAction: { alignSelf: "flex-start" },
+  promptCommit: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: spacing.md,
+    borderTopWidth: 1,
+    borderTopColor: colors.border,
+    paddingHorizontal: spacing.md,
+    paddingVertical: spacing.sm,
+  },
+  promptDraft: { fontSize: 15, fontWeight: "700", color: colors.text },
   rosCardNow: {
     borderColor: colors.accent,
     borderWidth: 2,
@@ -297,11 +435,17 @@ const styles = StyleSheet.create({
     letterSpacing: 1,
   },
   rosRow: { flexDirection: "row", gap: spacing.md, alignItems: "flex-start" },
+  rosTimeCol: { minWidth: 64 },
   rosTime: {
     fontSize: 18,
     fontWeight: "800",
     color: colors.accent,
-    minWidth: 56,
+  },
+  rosEnd: {
+    fontSize: 12,
+    fontWeight: "600",
+    color: colors.muted,
+    marginTop: 1,
   },
   rosBody: { flex: 1, gap: 2 },
   rosSegment: { fontSize: 17, fontWeight: "700", color: colors.text },

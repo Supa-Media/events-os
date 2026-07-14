@@ -22,7 +22,8 @@ import {
   LocationAutocomplete,
 } from "../../../components/ui";
 import { colors, radius, spacing } from "../../../lib/theme";
-import { parseDateInput, formatDate } from "../../../lib/format";
+import { parseDateInput, parseDateTimeInput, formatDateTime } from "../../../lib/format";
+import { MeridiemButton } from "../../../components/ui/DateTimeField";
 import { errorMessage } from "../../../lib/errors";
 import type { Id } from "@events-os/convex/_generated/dataModel";
 
@@ -120,7 +121,150 @@ function DatePickerField({
   );
 }
 
-/** NEW EVENT: pick a template, name it, set a date, create. */
+const pad2 = (n: number) => String(n).padStart(2, "0");
+
+/** Parse a canonical "HH:mm" (24h) string into 12-hour parts, or null. */
+function parseHHMM(v: string): { h12: number; min: number; pm: boolean } | null {
+  const m = v.match(/^(\d{1,2}):(\d{2})$/);
+  if (!m) return null;
+  const h = Number(m[1]);
+  const min = Number(m[2]);
+  if (h > 23 || min > 59) return null;
+  return { h12: h % 12 === 0 ? 12 : h % 12, min, pm: h >= 12 };
+}
+
+/** Build a canonical "HH:mm" (24h) string from 12-hour parts. */
+function toHHMM(h12: number, min: number, pm: boolean): string {
+  return `${pad2((h12 % 12) + (pm ? 12 : 0))}:${pad2(min)}`;
+}
+
+/**
+ * Start-time picker, paired with {@link DatePickerField}. On web this is the
+ * browser's native `<input type="time">`; on native it's a typed hour : minute
+ * pair plus the app's AM·PM chips (the same aesthetic as the run-of-show time
+ * cell). Both paths emit a canonical `HH:mm` (24h) string — combined with the
+ * date, this is the event start anchor. REQUIRED: emits "" until fully entered
+ * so the form can block submit (the old form defaulted to midnight — the bug).
+ */
+function TimePickerField({
+  value,
+  onChange,
+}: {
+  value: string;
+  onChange: (next: string) => void;
+}) {
+  if (Platform.OS === "web") {
+    return (
+      <Field
+        label="Start time"
+        hint="Every run-of-show time is derived from this start."
+      >
+        {createElement("input", {
+          type: "time",
+          value,
+          "aria-label": "Event start time",
+          onChange: (e: any) => onChange(e.target.value),
+          style: {
+            font: "inherit",
+            fontSize: 15,
+            color: colors.text,
+            border: `1px solid ${colors.border}`,
+            borderRadius: radius.md,
+            padding: "10px 12px",
+            background: colors.surface,
+            outline: "none",
+          },
+        })}
+      </Field>
+    );
+  }
+  return <NativeTimeField value={value} onChange={onChange} />;
+}
+
+/** Native hour : minute + AM·PM entry. Local draft state, seeded once. */
+function NativeTimeField({
+  value,
+  onChange,
+}: {
+  value: string;
+  onChange: (next: string) => void;
+}) {
+  const seed = parseHHMM(value);
+  const [hourText, setHourText] = useState(seed ? pad2(seed.h12) : "");
+  const [minText, setMinText] = useState(seed ? pad2(seed.min) : "");
+  const [isPm, setIsPm] = useState(seed?.pm ?? false);
+
+  // Emit a canonical time only when BOTH fields are filled and valid; otherwise
+  // emit "" so the required-time submit guard stays reachable.
+  const emit = (h: string, m: string, pm: boolean) => {
+    if (h.trim() === "" || m.trim() === "") return onChange("");
+    const hn = parseInt(h, 10);
+    const mn = parseInt(m, 10);
+    if (!Number.isFinite(hn) || !Number.isFinite(mn)) return onChange("");
+    const h12 = Math.min(12, Math.max(1, hn));
+    const min = Math.min(59, Math.max(0, mn));
+    onChange(toHHMM(h12, min, pm));
+  };
+
+  return (
+    <Field
+      label="Start time"
+      hint="Every run-of-show time is derived from this start."
+    >
+      <View style={styles.timeParts}>
+        <TextInput
+          style={styles.datePart}
+          placeholder="HH"
+          placeholderTextColor={colors.faint}
+          value={hourText}
+          onChangeText={(t) => {
+            const digits = t.replace(/[^0-9]/g, "");
+            setHourText(digits);
+            emit(digits, minText, isPm);
+          }}
+          keyboardType="number-pad"
+          maxLength={2}
+          accessibilityLabel="Start hour"
+        />
+        <Text style={styles.dateSep}>:</Text>
+        <TextInput
+          style={styles.datePart}
+          placeholder="MM"
+          placeholderTextColor={colors.faint}
+          value={minText}
+          onChangeText={(t) => {
+            const digits = t.replace(/[^0-9]/g, "");
+            setMinText(digits);
+            emit(hourText, digits, isPm);
+          }}
+          keyboardType="number-pad"
+          maxLength={2}
+          accessibilityLabel="Start minute"
+        />
+        <View style={styles.meridiem}>
+          <MeridiemButton
+            label="AM"
+            active={!isPm}
+            onPress={() => {
+              setIsPm(false);
+              emit(hourText, minText, false);
+            }}
+          />
+          <MeridiemButton
+            label="PM"
+            active={isPm}
+            onPress={() => {
+              setIsPm(true);
+              emit(hourText, minText, true);
+            }}
+          />
+        </View>
+      </View>
+    </Field>
+  );
+}
+
+/** NEW EVENT: pick a template, name it, set a date + start time, create. */
 export default function NewEventScreen() {
   const router = useRouter();
   const { templateId, date: dateParam } = useLocalSearchParams<{
@@ -143,6 +287,9 @@ export default function NewEventScreen() {
       ? dateParam
       : "",
   );
+  // Canonical "HH:mm" (24h) start time — required. Empty until the user sets it
+  // so submit stays blocked (the old form silently defaulted to midnight).
+  const [time, setTime] = useState("");
   const [location, setLocation] = useState("");
   const [creating, setCreating] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -159,7 +306,8 @@ export default function NewEventScreen() {
   const selected = templates.find((t) => t._id === selectedId) ?? null;
   // Default the name to the template name until the user types their own.
   const effectiveName = touchedName ? name : selected?.name ?? "";
-  const parsedDate = date ? parseDateInput(date) : null;
+  const parsedDateTime =
+    date && time ? parseDateTimeInput(date, time) : null;
 
   function pickTemplate(t: TemplateRow) {
     setSelectedId(t._id);
@@ -177,13 +325,21 @@ export default function NewEventScreen() {
       setError("Give the event a name.");
       return;
     }
-    const ts = parseDateInput(date);
-    if (ts === null) {
+    if (parseDateInput(date) === null) {
       setError(
         date.trim()
           ? "That date isn't valid — check the year, month, and day."
           : "Pick an event date.",
       );
+      return;
+    }
+    if (!time.trim()) {
+      setError("Set a start time — the run of show is timed from it.");
+      return;
+    }
+    const ts = parseDateTimeInput(date, time);
+    if (ts === null) {
+      setError("That start time isn't valid — check the hour and minute.");
       return;
     }
     setCreating(true);
@@ -254,8 +410,11 @@ export default function NewEventScreen() {
             }}
           />
           <DatePickerField value={date} onChange={setDate} />
-          {parsedDate !== null ? (
-            <Text style={styles.dateConfirm}>{formatDate(parsedDate)}</Text>
+          <TimePickerField value={time} onChange={setTime} />
+          {parsedDateTime !== null ? (
+            <Text style={styles.dateConfirm}>
+              {formatDateTime(parsedDateTime)}
+            </Text>
           ) : null}
           <LocationAutocomplete
             label="Location (optional)"
@@ -294,6 +453,8 @@ const styles = StyleSheet.create({
   templateMeta: { fontSize: 13, color: colors.muted },
   error: { color: colors.danger, fontSize: 13, marginBottom: spacing.sm },
   dateParts: { flexDirection: "row", alignItems: "center", gap: spacing.xs },
+  timeParts: { flexDirection: "row", alignItems: "center", gap: spacing.xs },
+  meridiem: { flexDirection: "row", gap: spacing.xs, marginLeft: spacing.xs },
   datePart: {
     borderWidth: 1,
     borderColor: colors.borderStrong,
