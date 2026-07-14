@@ -128,7 +128,9 @@ export default function PeopleScreen() {
 
   const [search, setSearch] = useState("");
   const [skillFilter, setSkillFilter] = useState<string | null>(null);
-  const [persona, setPersona] = useState<PersonaFilter>("all");
+  // Default to the core Team — the common case (a lead manages their team, not
+  // the full roster of volunteers/vendors). "All" is one tap away.
+  const [persona, setPersona] = useState<PersonaFilter>("team");
   const [openId, setOpenId] = useState<string | null>(null);
 
   // Manager names by id — one map instead of a per-row roster scan.
@@ -136,6 +138,20 @@ export default function PeopleScreen() {
     () => new Map((people ?? []).map((p) => [p._id, p.name])),
     [people],
   );
+
+  // Per-persona counts for the segmented control, so the filtering model is
+  // legible at a glance (Team 12 · Volunteers 30 · Vendors 5) rather than a
+  // blind default. "all" is the full roster.
+  const personaCounts = useMemo(() => {
+    const counts: Record<PersonaFilter, number> = {
+      all: (people ?? []).length,
+      team: 0,
+      volunteer: 0,
+      vendor: 0,
+    };
+    for (const p of people ?? []) counts[personaOf(p)] += 1;
+    return counts;
+  }, [people]);
 
   // Distinct skills across the roster, for the filter bar.
   const allSkills = useMemo(() => {
@@ -196,6 +212,10 @@ export default function PeopleScreen() {
                 }`}
               >
                 {f.label}
+                <Text className={active ? "text-muted" : "text-faint"}>
+                  {"  "}
+                  {personaCounts[f.key]}
+                </Text>
               </Text>
             </Pressable>
           );
@@ -268,6 +288,16 @@ export default function PeopleScreen() {
                 <Text className="text-sm text-faint">
                   No one matches your filters.
                 </Text>
+                {persona !== "all" && personaCounts.all > 0 ? (
+                  <Pressable
+                    onPress={() => setPersona("all")}
+                    className="mt-2 self-start active:opacity-70"
+                  >
+                    <Text className="text-sm font-semibold text-accent">
+                      View all {personaCounts.all} people
+                    </Text>
+                  </Pressable>
+                ) : null}
               </View>
             ) : (
               filtered.map((p, i) => (
