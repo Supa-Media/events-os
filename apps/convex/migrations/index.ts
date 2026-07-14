@@ -30,6 +30,7 @@ import { copyGuestAllowlist } from "./0014_copy_guest_allowlist";
 import { auditColumnTypes } from "./0015_audit_column_types";
 import { clearLegacyFields } from "./0016_clear_legacy_fields";
 import { purgeGuestAllowlist } from "./0017_purge_guest_allowlist";
+import { backfillCourseCompletions } from "./0018_backfill_course_completions";
 
 /** One registered migration: a stable `name` (the ledger key) + its effect. */
 export type Migration = {
@@ -54,4 +55,6 @@ export const MIGRATIONS: Migration[] = [
   // only) so Deploy C can drop them from the schema. Run AFTER the backfills.
   clearLegacyFields,
   purgeGuestAllowlist,
+  // Academy redesign — award course-completion badges from existing progress.
+  backfillCourseCompletions,
 ];

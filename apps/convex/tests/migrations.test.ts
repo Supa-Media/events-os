@@ -299,6 +299,7 @@ const REGISTRY_NAMES = [
   "0015_audit_column_types",
   "0016_clear_legacy_fields",
   "0017_purge_guest_allowlist",
+  "0018_backfill_course_completions",
 ];
 const SEEDED_HISTORICAL = [
   "backfillMissingDefaultColumns",

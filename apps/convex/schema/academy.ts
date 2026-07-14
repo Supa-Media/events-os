@@ -33,3 +33,31 @@ export const academyProgress = defineTable({
   .index("by_chapter_and_person", ["chapterId", "personId"])
   // The whole chapter's rows (chapterProgress — "who's trained").
   .index("by_chapter", ["chapterId"]);
+
+/**
+ * Course completion — the earned BADGE (one row per person per completed
+ * course). Stored, not computed: a credential should survive the code-defined
+ * catalog (ACADEMY_COURSES in @events-os/shared) being restructured, so the
+ * "who completed this course" and profile-badge surfaces read a durable row
+ * rather than re-deriving from per-module progress each time.
+ *
+ * Awarded the moment a course's last REQUIRED module passes (in submitQuiz /
+ * syncCapstone), and backfilled for existing progress by migration 0018. A
+ * course's required set excludes `optional` modules, so the bonus worship
+ * capstone never gates the Owning-an-event badge. `courseSlug` is a slug from
+ * ACADEMY_COURSES; the course a module belongs to is derived from the catalog,
+ * not stored on the progress row (module slug === section slug already keys it).
+ */
+export const courseCompletions = defineTable({
+  chapterId: v.id("chapters"),
+  personId: v.id("people"),
+  // A slug from ACADEMY_COURSES.
+  courseSlug: v.string(),
+  // When the last required module passed (max of the modules' passedAt).
+  earnedAt: v.number(),
+})
+  // A person's earned badges (profile chips) + the per-(person,course) dedupe
+  // the award/backfill paths check before inserting.
+  .index("by_chapter_and_person", ["chapterId", "personId"])
+  // Everyone who completed a given course (the course page's completer list).
+  .index("by_chapter_and_course", ["chapterId", "courseSlug"]);

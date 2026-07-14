@@ -41,7 +41,7 @@ import {
   aiUsage,
   aiSettings,
 } from "./schema/ai";
-import { academyProgress } from "./schema/academy";
+import { academyProgress, courseCompletions } from "./schema/academy";
 import { schemaMigrations } from "./schema/migrations";
 
 /**
@@ -158,8 +158,9 @@ const schema = defineSchema({
   aiUsage,
   aiSettings,
 
-  // Academy (per-person curriculum progress).
+  // Academy (per-person curriculum progress + earned course badges).
   academyProgress,
+  courseCompletions,
 
   // Migration ledger (which data migrations have run on this deployment).
   schemaMigrations,

@@ -23,6 +23,7 @@ import { query, mutation, MutationCtx, QueryCtx } from "./_generated/server";
 import { Doc, Id } from "./_generated/dataModel";
 import { ConvexError, v } from "convex/values";
 import {
+  ACADEMY_COURSES,
   ACADEMY_REQUIRED_SECTION_COUNT,
   ACADEMY_SECTIONS,
   ACADEMY_TRAINING_TEMPLATES,
@@ -30,10 +31,12 @@ import {
   DAY_MS,
   DAY_OFFSET_MODULES,
   computeDueDate,
+  courseForModuleSlug,
   defaultStatusValue,
   getAcademySection,
   isCompleteStatus,
-  previousAcademySection,
+  previousModuleInCourse,
+  requiredModuleSlugsForCourse,
   type AcademySection,
   type AcademyTrainingKind,
   type ModuleKey,
@@ -338,6 +341,125 @@ async function capstonePassedFor(
   return questsComplete(await questsFor(ctx, event));
 }
 
+// ── Course completion (the earned badge) ──────────────────────────────────────
+
+/**
+ * When a person has completed a course, or null if not. Complete = every
+ * REQUIRED module passed (`requiredModuleSlugsForCourse` excludes the optional
+ * bonus). Quiz modules pass via stored `passedAt`; capstone modules via
+ * `capstonePassedFor` (stored stamp OR live derivation). Returns the badge's
+ * `earnedAt`: the max `passedAt` across the required modules. Every course has
+ * at least one quiz module, so a complete course always has a real timestamp;
+ * the `0` fallback (all modules live-derived, no stamp) is only a theoretical
+ * guard the caller resolves with `|| Date.now()`.
+ */
+async function courseEarnedAt(
+  ctx: QueryCtx,
+  chapterId: Id<"chapters">,
+  personId: Id<"people">,
+  course: (typeof ACADEMY_COURSES)[number],
+  bySlug: Map<string, Doc<"academyProgress">>,
+): Promise<number | null> {
+  const required = requiredModuleSlugsForCourse(course.slug);
+  if (required.length === 0) return null; // an empty course is never "earned"
+  let earnedAt = 0;
+  for (const slug of required) {
+    const section = getAcademySection(slug);
+    if (!section) return null; // catalog invariant guarantees this can't happen
+    const stamped = bySlug.get(slug)?.passedAt;
+    if (stamped != null) {
+      earnedAt = Math.max(earnedAt, stamped);
+      continue;
+    }
+    if (
+      section.capstone &&
+      (await capstonePassedFor(ctx, chapterId, personId, section, bySlug))
+    ) {
+      continue; // passed (live-derived) but unstamped — contributes no timestamp
+    }
+    return null; // a required module isn't passed → course incomplete
+  }
+  return earnedAt;
+}
+
+/** The person's existing course-badge slugs (dedupe before awarding). */
+async function completedCourseSlugs(
+  ctx: QueryCtx,
+  chapterId: Id<"chapters">,
+  personId: Id<"people">,
+): Promise<Set<string>> {
+  const rows = await ctx.db
+    .query("courseCompletions")
+    .withIndex("by_chapter_and_person", (q) =>
+      q.eq("chapterId", chapterId).eq("personId", personId),
+    )
+    .collect();
+  return new Set(rows.map((r) => r.courseSlug));
+}
+
+/**
+ * Award ONE course's badge if it's now complete and not already held — the
+ * real-time path called from submitQuiz / syncCapstone after a module passes.
+ * Idempotent: a no-op when the course is incomplete or the badge already
+ * exists. Returns whether a row was inserted.
+ */
+async function maybeAwardCourse(
+  ctx: MutationCtx,
+  chapterId: Id<"chapters">,
+  personId: Id<"people">,
+  courseSlug: string,
+): Promise<boolean> {
+  const course = ACADEMY_COURSES.find((c) => c.slug === courseSlug);
+  if (!course) return false;
+  if ((await completedCourseSlugs(ctx, chapterId, personId)).has(courseSlug)) {
+    return false;
+  }
+  const bySlug = await progressBySlug(ctx, chapterId, personId);
+  const earnedAt = await courseEarnedAt(ctx, chapterId, personId, course, bySlug);
+  if (earnedAt === null) return false;
+  await ctx.db.insert("courseCompletions", {
+    chapterId,
+    personId,
+    courseSlug,
+    earnedAt: earnedAt || Date.now(),
+  });
+  return true;
+}
+
+/**
+ * Award every course the person has completed but doesn't yet hold a badge for
+ * — the batch path for migration 0018's backfill. Reads the person's progress
+ * once, then checks all courses. Idempotent. Returns the number awarded.
+ */
+export async function awardAllCourses(
+  ctx: MutationCtx,
+  chapterId: Id<"chapters">,
+  personId: Id<"people">,
+): Promise<number> {
+  const have = await completedCourseSlugs(ctx, chapterId, personId);
+  const bySlug = await progressBySlug(ctx, chapterId, personId);
+  let awarded = 0;
+  for (const course of ACADEMY_COURSES) {
+    if (have.has(course.slug)) continue;
+    const earnedAt = await courseEarnedAt(
+      ctx,
+      chapterId,
+      personId,
+      course,
+      bySlug,
+    );
+    if (earnedAt === null) continue;
+    await ctx.db.insert("courseCompletions", {
+      chapterId,
+      personId,
+      courseSlug: course.slug,
+      earnedAt: earnedAt || Date.now(),
+    });
+    awarded++;
+  }
+  return awarded;
+}
+
 // ── Progress ──────────────────────────────────────────────────────────────────
 
 /** A capstone's training sub-state myProgress returns (fed to the hub). */
@@ -354,8 +476,10 @@ type CapstoneTraining = {
  * path renders. `passed` is the canonical per-section flag: quiz sections pass
  * via a perfect quiz (persisted `passedAt`); capstones via their training
  * event's quests (stored `passedAt` stamped by syncCapstone, OR live-derived
- * as a fallback). `unlocked` mirrors the sequential rule the mutations
- * enforce (reading is never locked). Capstone entries additionally carry
+ * as a fallback). `unlocked` mirrors the PER-COURSE sequential rule the
+ * mutations enforce — a module opens once the module before it IN ITS COURSE
+ * is passed, and every course's first module opens from the start; there is no
+ * hard gate across courses (reading is never locked). Capstone entries carry
  * `training` — their sandbox's live quest tally — so the hub renders capstone
  * rows from this query alone. `completed`/`total` count REQUIRED sections
  * only; optional bonus sections are listed but never counted.
@@ -371,7 +495,9 @@ export const myProgress = query({
         quizTotal: null as number | null,
         passedAt: null as number | null,
         passed: false,
-        unlocked: s.order === 1,
+        // Per-course unlock: with zero progress, every course's first module is
+        // open (first-in-course → no predecessor). No global order-1 gate.
+        unlocked: previousModuleInCourse(s.slug) == null,
         training: null as CapstoneTraining,
       })),
       completed: 0,
@@ -417,7 +543,9 @@ export const myProgress = query({
     };
 
     // Resolve passed per section IN CURRICULUM ORDER — a capstone's unlock
-    // depends on the section before it, which may itself be a capstone.
+    // depends on the module before it IN ITS COURSE, which for the capstones
+    // (owning-an-event) is being-an-owner then the prior capstone; both sit
+    // earlier in curriculum order, so they're already resolved when we get here.
     const passedBySlug = new Map<string, boolean>();
     const trainingBySlug = new Map<string, CapstoneTraining>();
     for (const s of ACADEMY_SECTIONS) {
@@ -426,9 +554,9 @@ export const myProgress = query({
         continue;
       }
       const storedPass = bySlug.get(s.slug)?.passedAt != null;
-      const previous = previousAcademySection(s.slug);
+      const previousSlug = previousModuleInCourse(s.slug);
       const unlockedNow =
-        previous == null || passedBySlug.get(previous.slug) === true;
+        previousSlug == null || passedBySlug.get(previousSlug) === true;
 
       // Short-circuits: a still-locked (and unpassed) capstone can't have a
       // sandbox, so no quest reads at all; a stored pass settles `passed`
@@ -467,7 +595,7 @@ export const myProgress = query({
 
     const sections = ACADEMY_SECTIONS.map((s) => {
       const row = bySlug.get(s.slug);
-      const previous = previousAcademySection(s.slug);
+      const previousSlug = previousModuleInCourse(s.slug);
       return {
         slug: s.slug,
         readAt: row?.readAt ?? null,
@@ -475,13 +603,15 @@ export const myProgress = query({
         quizTotal: row?.quizTotal ?? null,
         passedAt: row?.passedAt ?? null,
         passed: passedBySlug.get(s.slug) === true,
-        // A section you already passed is always unlocked — a mid-curriculum
-        // INSERT (a new, unpassed section) must never re-lock the passed
-        // sections after it. Mirrors submitQuiz's `storedPass || unlockedNow`.
+        // Per-course: unlocked once the module before it IN ITS COURSE is
+        // passed, or when it's first-in-course. A module you already passed is
+        // always unlocked — a mid-course INSERT (a new, unpassed predecessor)
+        // must never re-lock a module people already finished. Mirrors
+        // submitQuiz's `storedPass || unlockedNow`.
         unlocked:
           passedBySlug.get(s.slug) === true ||
-          previous == null ||
-          passedBySlug.get(previous.slug) === true,
+          previousSlug == null ||
+          passedBySlug.get(previousSlug) === true,
         training: trainingBySlug.get(s.slug) ?? null,
       };
     });
@@ -547,12 +677,14 @@ export const submitQuiz = mutation({
     const me = await requirePerson(ctx, chapterId, userId);
     const bySlug = await progressBySlug(ctx, chapterId, me);
 
-    // Sequential unlock: the previous section's quiz must be passed first.
-    // (Reading is never gated — only completing out of order is. Every quiz
-    // section's predecessor is itself a quiz section, so the stored stamp is
-    // the whole answer here.) A section the caller ALREADY passed stays open
-    // for retakes even when a newly-inserted earlier section is unpassed.
-    const previous = previousAcademySection(sectionSlug);
+    // Per-course sequential unlock: the previous module IN THIS COURSE must be
+    // passed first; a module that's first-in-its-course opens immediately (no
+    // hard gate across courses). Reading is never gated — only completing out
+    // of order is. Every quiz module's course-predecessor is itself a quiz
+    // module, so the stored stamp is the whole answer here. A module the caller
+    // ALREADY passed stays open for retakes even when its predecessor is unpassed.
+    const previousSlug = previousModuleInCourse(sectionSlug);
+    const previous = previousSlug ? getAcademySection(previousSlug) : undefined;
     const alreadyPassed = bySlug.get(sectionSlug)?.passedAt != null;
     if (
       !alreadyPassed &&
@@ -575,11 +707,19 @@ export const submitQuiz = mutation({
     const passed = score === total;
 
     const existing = bySlug.get(sectionSlug);
+    const newlyPassed = passed && existing?.passedAt == null;
     await upsertProgress(ctx, chapterId, me, sectionSlug, existing, {
       quizBestScore: Math.max(existing?.quizBestScore ?? 0, score),
       quizTotal: total,
       passedAt: existing?.passedAt ?? (passed ? now : undefined),
     });
+
+    // A newly-passed module may be the last one its course needed → award the
+    // badge. Only the module's own course can complete from this pass.
+    if (newlyPassed) {
+      const course = courseForModuleSlug(sectionSlug);
+      if (course) await maybeAwardCourse(ctx, chapterId, me, course.slug);
+    }
 
     return { score, total, passed, results };
   },
@@ -620,6 +760,11 @@ export const syncCapstone = mutation({
     await upsertProgress(ctx, chapterId, me, section.slug, existing, {
       passedAt: Date.now(),
     });
+
+    // The capstone that just passed may complete its course (Owning an event).
+    const course = courseForModuleSlug(section.slug);
+    if (course) await maybeAwardCourse(ctx, chapterId, me, course.slug);
+
     return { passed: true };
   },
 });
@@ -748,6 +893,68 @@ export const chapterProgress = query({
       ),
       total: ACADEMY_REQUIRED_SECTION_COUNT,
     };
+  },
+});
+
+/**
+ * Everyone in the chapter who has earned a given course's badge — the course
+ * page's completer list. Chapter-visible (decision D4): any chapter member can
+ * see who completed a course, unlike the manager-gated aggregate panel
+ * (`chapterProgress`). Returns null when the caller has no chapter; oldest
+ * completion first.
+ */
+export const courseCompleters = query({
+  args: { courseSlug: v.string() },
+  handler: async (ctx, { courseSlug }) => {
+    const chapterId = await getChapterIdOrNull(ctx);
+    if (!chapterId) return null;
+    const rows = await ctx.db
+      .query("courseCompletions")
+      .withIndex("by_chapter_and_course", (q) =>
+        q
+          .eq("chapterId", chapterId as Id<"chapters">)
+          .eq("courseSlug", courseSlug),
+      )
+      .collect();
+    const people = await Promise.all(
+      rows.map(async (r) => {
+        const p = await ctx.db.get(r.personId);
+        return p
+          ? {
+              personId: p._id,
+              name: p.name,
+              imageUrl: p.image ? await ctx.storage.getUrl(p.image) : null,
+              earnedAt: r.earnedAt,
+            }
+          : null;
+      }),
+    );
+    return people
+      .filter((x): x is NonNullable<typeof x> => x !== null)
+      .sort((a, b) => a.earnedAt - b.earnedAt || a.name.localeCompare(b.name));
+  },
+});
+
+/**
+ * A person's earned course badges (slug + earnedAt), newest first — the chips
+ * on their profile. Scoped to the caller's chapter, so it only returns badges
+ * for someone on the caller's roster. Course titles/levels live in the shared
+ * catalog (ACADEMY_COURSES); the client resolves them from the slug.
+ */
+export const personBadges = query({
+  args: { personId: v.id("people") },
+  handler: async (ctx, { personId }) => {
+    const chapterId = await getChapterIdOrNull(ctx);
+    if (!chapterId) return [];
+    const rows = await ctx.db
+      .query("courseCompletions")
+      .withIndex("by_chapter_and_person", (q) =>
+        q.eq("chapterId", chapterId as Id<"chapters">).eq("personId", personId),
+      )
+      .collect();
+    return rows
+      .map((r) => ({ courseSlug: r.courseSlug, earnedAt: r.earnedAt }))
+      .sort((a, b) => b.earnedAt - a.earnedAt);
   },
 });
 
@@ -922,9 +1129,15 @@ export const startTraining = mutation({
     // path where resolve-or-create is the right person lookup.
     const me = await getOrCreateOwnerPerson(ctx, chapterId, userId, now);
 
-    // The capstone unlocks like every other section: previous section passed.
+    // The capstone unlocks per-course: the previous module IN ITS COURSE must
+    // be passed (owning-an-event order: being-an-owner → capstone-join →
+    // capstone-birthday → capstone-worship). A quiz predecessor (being-an-owner)
+    // passes via its stored stamp; a preceding capstone via stamp OR live quest
+    // completion. First-in-course would open immediately, but every capstone has
+    // a predecessor within owning-an-event, so `previous` is always set here.
     const bySlug = await progressBySlug(ctx, chapterId, me);
-    const previous = previousAcademySection(section.slug);
+    const previousSlug = previousModuleInCourse(section.slug);
+    const previous = previousSlug ? getAcademySection(previousSlug) : undefined;
     if (previous) {
       const previousPassed = previous.capstone
         ? await capstonePassedFor(ctx, chapterId, me, previous, bySlug)
