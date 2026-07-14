@@ -20,6 +20,13 @@ import { awardAllCourses } from "../academy";
  *
  * Idempotent: `awardAllCourses` skips any (person, course) badge that already
  * exists, so a second run inserts nothing.
+ *
+ * Scale: runs in the single `runPending` transaction, reading per person their
+ * `courseCompletions` + `academyProgress` (≤17 rows); `courseEarnedAt`
+ * short-circuits before the expensive capstone event scans for anyone who
+ * hasn't passed `being-an-owner`. Comfortable at chapter scale (hundreds of
+ * people). If the network ever grows past a single large chapter, convert this
+ * to the batched self-scheduling pattern (`.take(n)` + `scheduler.runAfter`).
  */
 export async function runBackfillCourseCompletions(ctx: MutationCtx) {
   let awarded = 0;
