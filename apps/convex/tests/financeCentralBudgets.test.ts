@@ -465,6 +465,210 @@ describe("budgets v2: multi-tag rollups", () => {
   });
 });
 
+describe("budgets v2: tag rollups are linked-only", () => {
+  test("an UNLINKED outflow matching two sibling budgets sharing a tag counts 0; an EXPLICITLY-linked one counts once", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await asChapterManager(s);
+    const year = 2026;
+    const month = 3;
+
+    // One custom tag carried by TWO recurring budgets, neither narrowing to a
+    // fund/category — so an unlinked period spend would DERIVE-match both.
+    const tag = await s.as.mutation(api.finances.createBudgetTag, {
+      name: "Shared",
+      kind: "custom",
+    });
+    const budgetA = await s.as.mutation(api.finances.createBudget, {
+      amountCents: 100000,
+      type: "recurring",
+      cadence: "monthly",
+      year,
+      month,
+      tagIds: [tag],
+      label: "A",
+    });
+    await s.as.mutation(api.finances.createBudget, {
+      amountCents: 100000,
+      type: "recurring",
+      cadence: "monthly",
+      year,
+      month,
+      tagIds: [tag],
+      label: "B",
+    });
+
+    // A single UNLINKED $100 outflow — derive-matches BOTH budgets, but tag
+    // totals are linked-only, so it must NOT appear in the tag rollup.
+    await s.as.mutation(api.finances.createManualTransaction, {
+      flow: "outflow",
+      amountCents: 10000,
+      postedAt: tsInMonth(year, month),
+    });
+
+    const dashUnlinked = await s.as.query(api.finances.dashboardChapter, {
+      year,
+      month,
+    });
+    const rollUnlinked = dashUnlinked.tagRollups.find((r) => r.tagId === tag);
+    // Linked-only: unlinked spend does not contribute to the tag total.
+    expect(rollUnlinked?.spentCents).toBe(0);
+    expect(rollUnlinked?.budgetCents).toBe(200000);
+
+    // A $70 outflow EXPLICITLY linked to budget A → counts ONCE toward the tag.
+    const linkedTxn = await s.as.mutation(api.finances.createManualTransaction, {
+      flow: "outflow",
+      amountCents: 7000,
+      postedAt: tsInMonth(year, month),
+    });
+    await s.as.mutation(api.finances.categorizeTransaction, {
+      transactionId: linkedTxn,
+      budgetId: budgetA,
+    });
+
+    const dashLinked = await s.as.query(api.finances.dashboardChapter, {
+      year,
+      month,
+    });
+    const rollLinked = dashLinked.tagRollups.find((r) => r.tagId === tag);
+    // Only the linked $70 — the unlinked $100 is still excluded.
+    expect(rollLinked?.spentCents).toBe(7000);
+  });
+});
+
+describe("dashboardCentral: central-level tags roll up", () => {
+  test("a central budget tagged 'OrgWide' with a linked txn appears in tagRollups", async () => {
+    const t = newT();
+    const s = await setupChapter(t, { email: "seyi@publicworship.life" });
+    const year = 2026;
+    const month = 5;
+    const when = tsInMonth(year, month);
+
+    const orgTag = await s.as.mutation(api.finances.createBudgetTag, {
+      name: "OrgWide",
+      kind: "custom",
+      central: true,
+    });
+    const centralBudget = await s.as.mutation(api.finances.createBudget, {
+      amountCents: 500000,
+      type: "recurring",
+      cadence: "yearly",
+      year,
+      central: true,
+      tagIds: [orgTag],
+      label: "Org",
+    });
+
+    // A $90 spend explicitly linked to the central budget.
+    await run(t, (ctx) =>
+      ctx.db.insert("transactions", {
+        chapterId: s.chapterId,
+        source: "manual",
+        flow: "outflow",
+        amountCents: 9000,
+        postedAt: when,
+        budgetId: centralBudget,
+        status: "categorized",
+        createdAt: Date.now(),
+      }),
+    );
+
+    const dash = await s.as.query(api.finances.dashboardCentral, { year, month });
+    const roll = dash.tagRollups.find((r) => r.tagName === "OrgWide");
+    expect(roll).toBeDefined();
+    expect(roll?.spentCents).toBe(9000);
+    expect(roll?.budgetCents).toBe(500000);
+  });
+});
+
+describe("updateBudget: refKind/scopeRefId consistency + event auto-tag on conversion", () => {
+  test("patching refKind:'project' alone on an event-linked budget is rejected", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await asChapterManager(s);
+    const { eventId } = await seedEvent(s, s.chapterId);
+
+    const budgetId = await s.as.mutation(api.finances.createBudget, {
+      amountCents: 40000,
+      type: "one_time",
+      refKind: "event",
+      cadence: "per_instance",
+      year: 2026,
+      scopeRefId: eventId,
+    });
+
+    // Flipping refKind to "project" without a matching scopeRefId would leave the
+    // stale event id compared as a project id → rejected.
+    await expect(
+      s.as.mutation(api.finances.updateBudget, {
+        budgetId,
+        patch: { refKind: "project" },
+      }),
+    ).rejects.toBeInstanceOf(ConvexError);
+  });
+
+  test("converting a recurring budget to a one_time EVENT budget auto-tags it", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await asChapterManager(s);
+    const { eventId, typeName } = await seedEvent(s, s.chapterId);
+
+    // Starts recurring, no tags.
+    const budgetId = await s.as.mutation(api.finances.createBudget, {
+      amountCents: 40000,
+      type: "recurring",
+      cadence: "monthly",
+      year: 2026,
+      label: "Ops",
+    });
+
+    // Convert to a one_time event budget (supplying the matching event ref).
+    await s.as.mutation(api.finances.updateBudget, {
+      budgetId,
+      patch: { type: "one_time", refKind: "event", scopeRefId: eventId },
+    });
+
+    const budgets = await s.as.query(api.finances.listBudgets, {});
+    const row = budgets.find((b) => b.id === budgetId);
+    expect(row?.type).toBe("one_time");
+    expect(row?.refKind).toBe("event");
+    const kinds = (row?.tags ?? []).map((tg) => tg.kind).sort();
+    expect(kinds).toEqual(["events", "template"]);
+    expect(row?.tags.find((tg) => tg.kind === "template")?.name).toBe(typeName);
+  });
+});
+
+describe("createBudgetTag: refId tenancy", () => {
+  test("a team tag whose refId points at another chapter's financeTeam is rejected", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await asChapterManager(s);
+
+    // A financeTeam in a DIFFERENT chapter.
+    const foreignTeam = await run(t, async (ctx) => {
+      const other = await ctx.db.insert("chapters", {
+        name: "Boston",
+        isActive: true,
+        createdAt: Date.now(),
+      });
+      return ctx.db.insert("financeTeams", {
+        chapterId: other,
+        name: "Development",
+        sortOrder: 0,
+        createdAt: Date.now(),
+      });
+    });
+
+    await expect(
+      s.as.mutation(api.finances.createBudgetTag, {
+        name: "Development",
+        kind: "team",
+        refId: foreignTeam,
+      }),
+    ).rejects.toBeInstanceOf(ConvexError);
+  });
+});
+
 describe("budgets v2: tag CRUD gating + delete-in-use", () => {
   test("a central tag needs central reach; a chapter manager is rejected", async () => {
     const t = newT();

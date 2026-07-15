@@ -1029,19 +1029,26 @@ export const dashboardChapter = query({
         .query("budgetTagLinks")
         .withIndex("by_tag", (q) => q.eq("tagId", tag._id))
         .take(ROLLUP_SCAN_LIMIT);
-      let spentCents = 0;
-      let budgetCents = 0;
-      let any = false;
+      // The DISTINCT budgets of this chapter+year carrying the tag.
+      const tagBudgets = new Map<Id<"budgets">, Doc<"budgets">>();
       for (const link of links) {
         const b = budgetById.get(link.budgetId);
-        if (!b) continue;
-        any = true;
-        spentCents += yearTxns
-          .filter((tr) => txnCountsTowardBudget(tr, b, month))
-          .reduce((s, tr) => s + tr.amountCents, 0);
-        budgetCents += b.amountCents;
+        if (b) tagBudgets.set(b._id, b);
       }
-      if (!any) continue;
+      if (tagBudgets.size === 0) continue;
+      let budgetCents = 0;
+      for (const b of tagBudgets.values()) budgetCents += b.amountCents;
+      // Tag totals are LINKED-ONLY: count only txns EXPLICITLY linked
+      // (`budgetId`) to a budget carrying the tag — NO derived matching. A linked
+      // txn has exactly one `budgetId`, so it's counted once (no dedup needed).
+      // `txnCountsTowardBudget` still applies the `isSpend` gate + the linked
+      // budget's period window.
+      let spentCents = 0;
+      for (const tr of yearTxns) {
+        if (tr.budgetId == null) continue;
+        const b = tagBudgets.get(tr.budgetId);
+        if (b && txnCountsTowardBudget(tr, b, month)) spentCents += tr.amountCents;
+      }
       const pct = pctOf(spentCents, budgetCents);
       tagRollups.push({
         tagId: tag._id,
@@ -1258,19 +1265,23 @@ export const dashboardCentral = query({
           .query("budgetTagLinks")
           .withIndex("by_tag", (q) => q.eq("tagId", tag._id))
           .take(ROLLUP_SCAN_LIMIT);
-        let spent = 0;
-        let budget = 0;
-        let any = false;
+        const tagBudgets = new Map<Id<"budgets">, Doc<"budgets">>();
         for (const link of links) {
           const b = chBudgetById.get(link.budgetId);
-          if (!b) continue;
-          any = true;
-          spent += periodTxns
-            .filter((tr) => txnCountsTowardBudget(tr, b, month))
-            .reduce((s, tr) => s + tr.amountCents, 0);
-          budget += b.amountCents;
+          if (b) tagBudgets.set(b._id, b);
         }
-        if (!any) continue;
+        if (tagBudgets.size === 0) continue;
+        let budget = 0;
+        for (const b of tagBudgets.values()) budget += b.amountCents;
+        // Tag totals are LINKED-ONLY (see dashboardChapter): only txns
+        // explicitly linked to a budget carrying the tag count — no derived
+        // matching. One `budgetId` per txn → counted once, no dedup.
+        let spent = 0;
+        for (const tr of periodTxns) {
+          if (tr.budgetId == null) continue;
+          const b = tagBudgets.get(tr.budgetId);
+          if (b && txnCountsTowardBudget(tr, b, month)) spent += tr.amountCents;
+        }
         const key = `${tag.kind ?? ""}::${tag.name}`;
         const agg =
           tagAgg.get(key) ??
@@ -1312,6 +1323,8 @@ export const dashboardCentral = query({
         q.eq("chapterId", CENTRAL).eq("year", year),
       )
       .take(ROLLUP_SCAN_LIMIT);
+    const centralBudgetById = new Map(centralBudgetDocs.map((b) => [b._id, b] as const));
+    const centralSpentById = new Map<Id<"budgets">, number>();
     const centralBudgets: (typeof centralBudgetCard.type)[] = [];
     for (const cb of centralBudgetDocs) {
       const linked = await ctx.db
@@ -1322,6 +1335,7 @@ export const dashboardCentral = query({
         (s, tr) => (txnCountsTowardBudget(tr, cb, month) ? s + tr.amountCents : s),
         0,
       );
+      centralSpentById.set(cb._id, spentCents);
       const pct = pctOf(spentCents, cb.amountCents);
       centralBudgets.push({
         id: cb._id,
@@ -1334,6 +1348,42 @@ export const dashboardCentral = query({
         pct,
         status: statusFor(pct),
       });
+    }
+
+    // Central-level tags roll up too: aggregate central budgets by their tags
+    // and merge into the same by-(kind,name) agg as the per-chapter tags. A
+    // central budget's actual is its explicitly-linked txns only (already unique
+    // per budget, since a txn carries one `budgetId`), so no cross-budget dedup
+    // is needed here. Per-chapter tags never see central budgets (chBudgetById
+    // is keyed by real chapterId), so there's no double-count.
+    const centralTags = await ctx.db
+      .query("budgetTags")
+      .withIndex("by_chapter", (q) => q.eq("chapterId", CENTRAL))
+      .take(ROLLUP_SCAN_LIMIT);
+    for (const tag of centralTags) {
+      const links = await ctx.db
+        .query("budgetTagLinks")
+        .withIndex("by_tag", (q) => q.eq("tagId", tag._id))
+        .take(ROLLUP_SCAN_LIMIT);
+      const tagBudgets = new Map<Id<"budgets">, Doc<"budgets">>();
+      for (const link of links) {
+        const b = centralBudgetById.get(link.budgetId);
+        if (b) tagBudgets.set(b._id, b);
+      }
+      if (tagBudgets.size === 0) continue;
+      let spent = 0;
+      let budget = 0;
+      for (const b of tagBudgets.values()) {
+        spent += centralSpentById.get(b._id) ?? 0;
+        budget += b.amountCents;
+      }
+      const key = `${tag.kind ?? ""}::${tag.name}`;
+      const agg =
+        tagAgg.get(key) ??
+        { name: tag.name, kind: tag.kind ?? null, spentCents: 0, budgetCents: 0 };
+      agg.spentCents += spent;
+      agg.budgetCents += budget;
+      tagAgg.set(key, agg);
     }
 
     const tagRollups: (typeof tagRollupRow.type)[] = [...tagAgg.values()]
@@ -2031,13 +2081,34 @@ export const updateBudget = mutation({
       if (patch.refKind === undefined) patch.refKind = null;
       if (patch.scopeRefId === undefined) patch.scopeRefId = null;
     }
+    const currentRefKind = effectiveRefKind(budget) ?? undefined;
     const newRefKind =
       newType === "one_time"
         ? (patch.refKind ?? budget.refKind ?? effectiveRefKind(budget) ?? undefined)
         : undefined;
+    // The EFFECTIVE instance ref: a patch value (set OR cleared) wins, else the
+    // budget's stored one. `matchesBudget` compares against `scopeRefId` per
+    // `refKind`, so the two must stay consistent — verify the effective pair, not
+    // just a freshly-patched `scopeRefId`.
+    const scopeRefIdProvided = patch.scopeRefId !== undefined;
+    const effScopeRefId = scopeRefIdProvided ? patch.scopeRefId : budget.scopeRefId ?? null;
+    // Changing `refKind` while keeping a stale `scopeRefId` would silently make
+    // the budget match nothing (an event id compared as a project id, or vice
+    // versa). Reject rather than persist a mismatched ref.
+    if (
+      newType === "one_time" &&
+      newRefKind !== currentRefKind &&
+      !scopeRefIdProvided &&
+      budget.scopeRefId != null
+    ) {
+      throw new ConvexError({
+        code: "REF_KIND_MISMATCH",
+        message: "Changing a budget's link type requires a matching reference.",
+      });
+    }
     await verifyBudgetRefs(ctx, chapterId, {
       refKind: newRefKind,
-      scopeRefId: patch.scopeRefId,
+      scopeRefId: effScopeRefId,
       fundId: patch.fundId,
       categoryId: patch.categoryId,
       month: patch.month,
@@ -2067,6 +2138,30 @@ export const updateBudget = mutation({
           });
         }
       }
+    }
+
+    // Auto-tag on CONVERSION to a one_time EVENT budget (consistent with
+    // `createBudget`): ensure + link the eventType `template` tag + an `events`
+    // tag, only when it wasn't already a one_time event budget. Runs AFTER the
+    // tagIds replacement so its links aren't diffed away; idempotent because the
+    // existing links seed `seen`, so ensureTag/linkBudgetTag never duplicate.
+    const wasEventOneTime =
+      effectiveType(budget) === "one_time" && currentRefKind === "event";
+    if (newType === "one_time" && newRefKind === "event" && !wasEventOneTime) {
+      const userId = (await requireUserId(ctx)) as Id<"users">;
+      const existingLinks = await ctx.db
+        .query("budgetTagLinks")
+        .withIndex("by_budget", (q) => q.eq("budgetId", args.budgetId))
+        .take(ROLLUP_SCAN_LIMIT);
+      const seen = new Set<string>(existingLinks.map((l) => l.tagId as string));
+      await autoTagEventBudget(
+        ctx,
+        args.budgetId,
+        level,
+        effScopeRefId ?? undefined,
+        seen,
+        userId,
+      );
     }
     return null;
   },
@@ -2163,6 +2258,26 @@ export const createBudgetTag = mutation({
       await requireFinanceManager(ctx, chapterId);
     }
     const level: BudgetLevel = args.central ? CENTRAL : chapterId;
+    // Tenancy-check a ref-carrying tag: a `team`/`template` `refId` must point at
+    // a doc in THIS tag's level (the caller's chapter, or central), else a tag
+    // could reference another chapter's financeTeam / eventType.
+    if (args.refId && (args.kind === "team" || args.kind === "template")) {
+      const refDoc = await ctx.db.get(
+        args.refId as Id<"financeTeams"> | Id<"eventTypes">,
+      );
+      const refChapter = (refDoc as { chapterId?: Id<"chapters"> | typeof CENTRAL } | null)
+        ?.chapterId;
+      const inLevel =
+        !!refDoc &&
+        (refChapter === level ||
+          (level === CENTRAL && (refChapter === CENTRAL || refChapter === undefined)));
+      if (!inLevel) {
+        throw new ConvexError({
+          code: "NOT_FOUND",
+          message: `Referenced ${args.kind === "team" ? "team" : "template"} not found at this tag's level.`,
+        });
+      }
+    }
     const userId = (await requireUserId(ctx)) as Id<"users">;
     return await ctx.db.insert("budgetTags", {
       chapterId: level,
