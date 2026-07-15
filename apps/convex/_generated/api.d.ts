@@ -12,6 +12,8 @@ import type * as academy from "../academy.js";
 import type * as accessAllowlist from "../accessAllowlist.js";
 import type * as ai from "../ai.js";
 import type * as aiActions from "../aiActions.js";
+import type * as aiCoding from "../aiCoding.js";
+import type * as aiCodingData from "../aiCodingData.js";
 import type * as auth from "../auth.js";
 import type * as blasts from "../blasts.js";
 import type * as budget from "../budget.js";
@@ -131,6 +133,8 @@ declare const fullApi: ApiFromModules<{
   accessAllowlist: typeof accessAllowlist;
   ai: typeof ai;
   aiActions: typeof aiActions;
+  aiCoding: typeof aiCoding;
+  aiCodingData: typeof aiCodingData;
   auth: typeof auth;
   blasts: typeof blasts;
   budget: typeof budget;
