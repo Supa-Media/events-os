@@ -121,6 +121,7 @@ export const TRANSACTION_SOURCES = [
   "increase_card", // a charge on an Increase-issued member card
   "increase_ach", // an ACH in/out on the chapter's Increase account
   "stripe_fc", // synced from a legacy external account via Stripe FC
+  "relay_csv", // imported from a Relay monthly-statement CSV (full history)
   "manual", // hand-entered
   "reimbursement", // the payout leg of an approved reimbursement (a transfer)
   "repayment", // an offsetting credit from a personal-charge repayment
@@ -233,6 +234,35 @@ export function extractCardLast4(text?: string | null): string | null {
     last = match[1];
   }
   return last;
+}
+
+// ── Relay statement CSV import ────────────────────────────────────────────────
+/**
+ * Parse a Relay monthly-statement `Reference` string into its cardholder
+ * attribution. A CARD charge's reference is
+ * `"<Person Name> - <last4> (<Card Name>)"`
+ * (e.g. `"Oluseyi Olujide - 2702 (Seyi's PW Card)"`) — the last-4 + trailing
+ * `(Card Name)` are the tell. A PAYOUT/transfer reference is
+ * `"<recipient> - <memo> - Sent By <person>"` with NO ` - <digits> (…)` tail, so
+ * it never matches and returns `null` (no card attribution — Relay payouts are
+ * non-card money movements).
+ *
+ * Returns `{ personName, cardLast4, cardName }` for a card charge, or `null` for
+ * a payout-style / unparseable reference. `person` is non-greedy so a hyphenated
+ * name (`"Agujudah Okey-Uche - 2588 (AJ's Card)"`) still splits at the ` - NNNN `
+ * boundary, not the intra-name hyphen (which carries no surrounding spaces).
+ */
+export function parseRelayReference(
+  ref?: string | null,
+): { personName?: string; cardLast4?: string; cardName?: string } | null {
+  if (!ref) return null;
+  const match = ref.trim().match(/^(.+?)\s+-\s+(\d{3,4})\s+\((.+)\)\s*$/);
+  if (!match) return null;
+  return {
+    personName: match[1].trim(),
+    cardLast4: match[2],
+    cardName: match[3].trim(),
+  };
 }
 
 // ── Personal-charge repayment ────────────────────────────────────────────────
