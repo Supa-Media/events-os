@@ -80,9 +80,9 @@ export function ReconcileDetail({
   const [categoryId, setCategoryId] = useState<string | null>(
     row.categoryId ?? null,
   );
-  // `listTransactions` doesn't surface the txn's existing budgetId, so this
-  // starts unselected ("None") and only sends a change when the user picks one.
-  const [budgetId, setBudgetId] = useState<string | null>(null);
+  // Pre-select the txn's existing budget link (null → "None"), mirroring the
+  // fund/category pre-selection above.
+  const [budgetId, setBudgetId] = useState<string | null>(row.budgetId ?? null);
   const [suggestion, setSuggestion] = useState<CodingSuggestion | null>(null);
   const [busy, setBusy] = useState<"accept" | "suggest" | null>(null);
 
@@ -91,10 +91,10 @@ export function ReconcileDetail({
   useEffect(() => {
     setFundId(row.fundId ?? null);
     setCategoryId(row.categoryId ?? null);
-    setBudgetId(null);
+    setBudgetId(row.budgetId ?? null);
     setSuggestion(null);
     setBusy(null);
-  }, [row.id, row.fundId, row.categoryId]);
+  }, [row.id, row.fundId, row.categoryId, row.budgetId]);
 
   const fundOptions = funds.map((f) => ({ value: f.id, label: f.name }));
   const categoryOptions = categories

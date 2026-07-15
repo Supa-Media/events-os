@@ -235,6 +235,45 @@ describe("budget attribution: explicit link wins, unlinked still derives", () =>
   });
 });
 
+describe("budget attribution: an explicit link still buckets by the budget's period", () => {
+  test("a txn linked to a MONTHLY budget counts in its posted month, not another month", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await asChapterManager(s);
+    const year = 2026;
+
+    // A recurring "$1,000/mo" budget carries no stored `month`, so its period is
+    // the dashboard's queried month (`budgetEffectivePeriod`).
+    const monthly = await s.as.mutation(api.finances.createBudget, {
+      amountCents: 100000,
+      scope: "bucket",
+      cadence: "monthly",
+      year,
+      label: "Monthly",
+    });
+
+    // $80 posted in MARCH, explicitly linked to the monthly budget.
+    const txn = await s.as.mutation(api.finances.createManualTransaction, {
+      flow: "outflow",
+      amountCents: 8000,
+      postedAt: tsInMonth(year, 3),
+    });
+    await s.as.mutation(api.finances.categorizeTransaction, {
+      transactionId: txn,
+      budgetId: monthly,
+    });
+
+    // March: the linked txn lands in the budget's March window → counts.
+    const march = await s.as.query(api.finances.budgetVsActual, { year, month: 3 });
+    expect(march.find((r) => r.budgetId === monthly)?.actualCents).toBe(8000);
+
+    // April: the same budget's window is April, where the txn does NOT fall →
+    // the explicit link must not drag March spend into April.
+    const april = await s.as.query(api.finances.budgetVsActual, { year, month: 4 });
+    expect(april.find((r) => r.budgetId === monthly)?.actualCents).toBe(0);
+  });
+});
+
 describe("dashboardCentral: central budgets roll up org-wide", () => {
   test("sums a central budget's actuals across chapters; per-chapter allocation excludes it", async () => {
     const t = newT();

@@ -132,6 +132,7 @@ const txnSummary = v.object({
   merchantName: v.union(v.string(), v.null()),
   fundId: v.union(v.id("funds"), v.null()),
   categoryId: v.union(v.id("budgetCategories"), v.null()),
+  budgetId: v.union(v.id("budgets"), v.null()),
 });
 
 // Per-fund SPEND for the dashboard period (period reads are naturally bounded;
@@ -330,6 +331,7 @@ function toTxnSummary(tr: Doc<"transactions">) {
     merchantName: tr.merchantName ?? null,
     fundId: tr.fundId ?? null,
     categoryId: tr.categoryId ?? null,
+    budgetId: tr.budgetId ?? null,
   };
 }
 
@@ -503,7 +505,14 @@ function matchesBudget(
  * counted the same way everywhere:
  *   - an EXPLICITLY-linked txn (`budgetId` set) counts toward EXACTLY that
  *     budget and no other — it never also derive-matches a different budget
- *     (the anti-double-count guarantee);
+ *     (the anti-double-count guarantee). The link resolves WHICH budget
+ *     (central-vs-chapter disambiguation), but the budget's own cadence still
+ *     determines the period window, exactly like `matchesBudget`: a March
+ *     purchase linked to a MONTHLY budget lands in March (not every month), a
+ *     project / one_off budget counts over its declared period, and an event /
+ *     per_instance budget only within that instance. Without this the central
+ *     roll-up (read across all time via `by_budget`) would sum lifetime spend
+ *     instead of the queried period.
  *   - an UNLINKED txn keeps the existing derived matching (scope/period/fund…).
  *
  * The `isSpend` gate applies to BOTH paths, so `transfer` / `excluded` /
@@ -516,7 +525,11 @@ function txnCountsTowardBudget(
   b: Doc<"budgets">,
   contextMonth?: number,
 ): boolean {
-  if (tr.budgetId != null) return isSpend(tr) && tr.budgetId === b._id;
+  if (tr.budgetId != null) {
+    if (!isSpend(tr) || tr.budgetId !== b._id) return false;
+    const period = budgetEffectivePeriod(b, contextMonth);
+    return inPeriod(tr.postedAt, period.year, period.month, period.quarter);
+  }
   return matchesBudget(tr, b, contextMonth);
 }
 
