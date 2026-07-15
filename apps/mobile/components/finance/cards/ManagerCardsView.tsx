@@ -29,6 +29,7 @@ import { CardPhilosophy } from "./CardPhilosophy";
 import { CardholderRow } from "./CardholderRow";
 import { IssueCardModal } from "./IssueCardModal";
 import { CardControlsModal } from "./CardControlsModal";
+import { RelayCardsSection } from "./RelayCardsSection";
 import { hasReceiptDue, type CardSummary } from "./helpers";
 
 export function ManagerCardsView() {
@@ -142,6 +143,9 @@ export function ManagerCardsView() {
           ))}
         </Table>
       )}
+
+      {/* External (Relay) card linking — bind synced last-4s to a cardholder. */}
+      <RelayCardsSection />
 
       {/* Static philosophy + pay-it-back explainers. */}
       <SectionHeader title="Card philosophy" />

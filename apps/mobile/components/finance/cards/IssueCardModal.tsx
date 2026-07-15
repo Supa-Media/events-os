@@ -35,7 +35,8 @@ const YEAR_MS = 365 * 24 * 60 * 60 * 1000;
 
 export function IssueCardModal({ onClose }: { onClose: () => void }) {
   const issue = useAction(api.cards.issueCard);
-  const people = useQuery(api.people.list, {});
+  // Cards are restricted to Public Worship staff — only card-eligible people.
+  const people = useQuery(api.people.cardEligible, {});
   const { run, toast, dismiss } = useActionRunner();
 
   const [pickerOpen, setPickerOpen] = useState(false);
@@ -115,7 +116,7 @@ export function IssueCardModal({ onClose }: { onClose: () => void }) {
               {/* Cardholder — a person, not a budget. */}
               <Field
                 label="Cardholder"
-                hint="Cards are person-owned — the holder keeps their own receipts."
+                hint="Cards are person-owned, and only for people with a @publicworship.life email — the holder keeps their own receipts."
               >
                 <Pressable
                   onPress={() => setPickerOpen(true)}
@@ -197,6 +198,7 @@ export function IssueCardModal({ onClose }: { onClose: () => void }) {
       <PersonPicker
         visible={pickerOpen}
         title="Choose a cardholder"
+        source="cardEligible"
         selectedId={personId}
         onPick={(id) => {
           setPersonId(id);
