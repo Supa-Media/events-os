@@ -764,6 +764,227 @@ describe("getChapterAccount", () => {
   });
 });
 
+// ── removeChapterAccount ─────────────────────────────────────────────────────
+
+describe("removeChapterAccount", () => {
+  /** Insert an Increase account row for the chapter and return its id. */
+  async function seedIncreaseAccount(
+    s: ChapterSetup,
+    opts: {
+      onboardingStatus: "active" | "pending" | "not_started";
+      increaseAccountId?: string;
+      increaseEntityId?: string;
+    },
+  ): Promise<Id<"increaseAccounts">> {
+    const now = Date.now();
+    return await run(s.t, (ctx) =>
+      ctx.db.insert("increaseAccounts", {
+        chapterId: s.chapterId,
+        onboardingStatus: opts.onboardingStatus,
+        increaseAccountId: opts.increaseAccountId,
+        increaseEntityId: opts.increaseEntityId,
+        createdAt: now,
+        updatedAt: now,
+      }),
+    );
+  }
+
+  async function accountRows(s: ChapterSetup) {
+    return await run(s.t, (ctx) =>
+      ctx.db
+        .query("increaseAccounts")
+        .withIndex("by_chapter", (q) => q.eq("chapterId", s.chapterId))
+        .collect(),
+    );
+  }
+
+  test("removes a stale sandbox test account (active, `sandbox_` id)", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await seedManager(s);
+    await seedIncreaseAccount(s, {
+      onboardingStatus: "active",
+      increaseAccountId: "sandbox_account_x",
+      increaseEntityId: "sandbox_entity",
+    });
+
+    await s.as.mutation(api.increase.removeChapterAccount, {});
+    expect((await accountRows(s)).length).toBe(0);
+    // After removal the chapter reads as unprovisioned again.
+    expect(await s.as.query(api.increase.getChapterAccount, {})).toBeNull();
+  });
+
+  test("cascade: deletes the sandbox account's cards + authorizations + sandbox payouts, keeps a manual payout + a degraded card", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await seedManager(s);
+    await seedIncreaseAccount(s, {
+      onboardingStatus: "active",
+      increaseAccountId: "sandbox_account_x",
+    });
+    const holder = await seedPerson(s, { name: "Holder" });
+    const now = Date.now();
+
+    // A sandbox card (deleted) with an authorization (deleted).
+    const sandboxCard = await run(s.t, (ctx) =>
+      ctx.db.insert("cards", {
+        chapterId: s.chapterId,
+        cardholderPersonId: holder,
+        type: "virtual",
+        status: "active",
+        increaseCardId: "sandbox_card_1",
+        createdAt: now,
+      }),
+    );
+    await run(s.t, (ctx) =>
+      ctx.db.insert("cardAuthorizations", {
+        chapterId: s.chapterId,
+        cardId: sandboxCard,
+        increaseAuthId: "sandbox_auth_1",
+        amountCents: 100,
+        approved: true,
+        createdAt: now,
+      }),
+    );
+    // A degraded (null-id) card — env-neutral, must SURVIVE.
+    const nullCard = await run(s.t, (ctx) =>
+      ctx.db.insert("cards", {
+        chapterId: s.chapterId,
+        cardholderPersonId: holder,
+        type: "virtual",
+        status: "active",
+        createdAt: now,
+      }),
+    );
+
+    // A sandbox payout (deleted) and a manual null-transfer payout (kept).
+    const r1 = await seedReimbursement(s, {
+      status: "approved",
+      payeePersonId: holder,
+    });
+    await run(s.t, (ctx) =>
+      ctx.db.insert("payouts", {
+        chapterId: s.chapterId,
+        reimbursementId: r1,
+        amountCents: 100,
+        provider: "increase",
+        status: "processing",
+        increaseTransferId: "sandbox_transfer_1",
+        createdAt: now,
+        updatedAt: now,
+      }),
+    );
+    const r2 = await seedReimbursement(s, {
+      status: "approved",
+      payeePersonId: holder,
+    });
+    const manualPayout = await run(s.t, (ctx) =>
+      ctx.db.insert("payouts", {
+        chapterId: s.chapterId,
+        reimbursementId: r2,
+        amountCents: 100,
+        provider: "manual",
+        status: "paid",
+        createdAt: now,
+        updatedAt: now,
+      }),
+    );
+
+    await s.as.mutation(api.increase.removeChapterAccount, {});
+
+    // Account gone.
+    expect((await accountRows(s)).length).toBe(0);
+
+    // Only the degraded null-id card survives; the sandbox card + its auth gone.
+    const cards = await run(s.t, (ctx) =>
+      ctx.db
+        .query("cards")
+        .withIndex("by_chapter", (q) => q.eq("chapterId", s.chapterId))
+        .collect(),
+    );
+    expect(cards.map((c) => c._id)).toEqual([nullCard]);
+    const auths = await run(s.t, (ctx) =>
+      ctx.db
+        .query("cardAuthorizations")
+        .withIndex("by_card", (q) => q.eq("cardId", sandboxCard))
+        .collect(),
+    );
+    expect(auths.length).toBe(0);
+
+    // The sandbox payout is gone; the manual (null-transfer) payout survives.
+    const payouts = await run(s.t, (ctx) =>
+      ctx.db
+        .query("payouts")
+        .withIndex("by_chapter", (q) => q.eq("chapterId", s.chapterId))
+        .collect(),
+    );
+    expect(payouts.map((p) => p._id)).toEqual([manualPayout]);
+  });
+
+  test("removes a pending (never fully provisioned) account", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await seedManager(s);
+    await seedIncreaseAccount(s, { onboardingStatus: "pending" });
+
+    await s.as.mutation(api.increase.removeChapterAccount, {});
+    expect((await accountRows(s)).length).toBe(0);
+  });
+
+  test("refuses to remove a LIVE production account (active, non-sandbox id)", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await seedManager(s);
+    await seedIncreaseAccount(s, {
+      onboardingStatus: "active",
+      increaseAccountId: "account_prod_1",
+      increaseEntityId: "entity_prod",
+    });
+
+    await expect(
+      s.as.mutation(api.increase.removeChapterAccount, {}),
+    ).rejects.toBeInstanceOf(ConvexError);
+    // The production row is left intact.
+    expect((await accountRows(s)).length).toBe(1);
+  });
+
+  test("is a no-op when there's no account row (idempotent)", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await seedManager(s);
+
+    await expect(
+      s.as.mutation(api.increase.removeChapterAccount, {}),
+    ).resolves.toBeNull();
+    expect((await accountRows(s)).length).toBe(0);
+  });
+
+  test("a non-manager cannot remove the account", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    // A viewer-only caller.
+    const personId = await seedPerson(s, { name: "Viewer", userId: s.userId });
+    await run(s.t, (ctx) =>
+      ctx.db.insert("financeRoles", {
+        chapterId: s.chapterId,
+        personId,
+        role: "viewer",
+        scope: "chapter",
+        createdAt: Date.now(),
+      }),
+    );
+    await seedIncreaseAccount(s, {
+      onboardingStatus: "active",
+      increaseAccountId: "sandbox_account_x",
+    });
+
+    await expect(
+      s.as.mutation(api.increase.removeChapterAccount, {}),
+    ).rejects.toBeInstanceOf(ConvexError);
+    expect((await accountRows(s)).length).toBe(1);
+  });
+});
+
 // ── verifyIncreaseSignature ──────────────────────────────────────────────────
 
 // Standard Webhooks secrets are `whsec_<base64key>`; the HMAC key is the DECODED

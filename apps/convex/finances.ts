@@ -47,9 +47,11 @@ import {
   easternParts,
   quarterOfMonth,
   formatCents,
+  matchesMode,
   type BudgetType,
   type BudgetRefKind,
 } from "@events-os/shared";
+import { readSandbox } from "./financeSettings";
 import {
   getChapterIdOrNull,
   requireChapterId,
@@ -445,6 +447,7 @@ async function loadPeriodTxns(
   ctx: QueryCtx,
   chapterId: Id<"chapters">,
   year: number,
+  sandboxMode: boolean,
   month?: number,
 ): Promise<Doc<"transactions">[]> {
   const startUtc =
@@ -464,7 +467,22 @@ async function loadPeriodTxns(
       `[finances] period read hit ROLLUP_SCAN_LIMIT (${ROLLUP_SCAN_LIMIT}) for chapter ${chapterId} ${year}${month ? `-${month}` : ""}; aggregate truncated until sync-volume counters land.`,
     );
   }
-  return rows;
+  return rows.filter((tr) => txnMatchesMode(tr, sandboxMode));
+}
+
+/**
+ * Defensive environment filter for transaction reads. Drops `increase_card` /
+ * `increase_ach` txns whose Increase external/source id belongs to the OTHER
+ * environment than the current mode (a `sandbox_` id while in production, or
+ * vice-versa). A null id, or any non-Increase source (manual / reimbursement /
+ * repayment / stripe_fc), is environment-NEUTRAL and always kept.
+ *
+ * NOTE: no code inserts `increase_*` transactions yet, so this is a LATENT-leak
+ * guard — a no-op today, in place before the Increase sync phase lands.
+ */
+function txnMatchesMode(tr: Doc<"transactions">, sandboxMode: boolean): boolean {
+  if (tr.source !== "increase_card" && tr.source !== "increase_ach") return true;
+  return matchesMode(tr.externalId ?? tr.sourceAccountId ?? null, sandboxMode);
 }
 
 /**
@@ -935,7 +953,8 @@ export const dashboardChapter = query({
     await requireFinanceRole(ctx, chapterId, "viewer");
 
     // One period read for the year drives every budget's actual + the month tile.
-    const yearTxns = await loadPeriodTxns(ctx, chapterId, year);
+    const sandboxMode = await readSandbox(ctx);
+    const yearTxns = await loadPeriodTxns(ctx, chapterId, year, sandboxMode);
     const monthTxns = yearTxns.filter((tr) => inPeriod(tr.postedAt, year, month));
     const monthSpendCents = sumSpend(monthTxns);
 
@@ -1239,6 +1258,8 @@ export const dashboardCentral = query({
     await requireFinanceCentral(ctx, chapterId);
 
     const chapters = await ctx.db.query("chapters").take(ROLLUP_SCAN_LIMIT);
+    // Read the env flag once for the whole cross-chapter rollup.
+    const sandboxMode = await readSandbox(ctx);
 
     let totalMonthSpendCents = 0;
     let activeChapters = 0;
@@ -1261,7 +1282,7 @@ export const dashboardCentral = query({
       if (chapter.isActive !== false) activeChapters++;
 
       // Period-bounded read (this year), narrowed to the dashboard month.
-      const periodTxns = await loadPeriodTxns(ctx, chapter._id, year);
+      const periodTxns = await loadPeriodTxns(ctx, chapter._id, year, sandboxMode);
       const monthTxns = periodTxns.filter((tr) => inPeriod(tr.postedAt, year, month));
       const chapterMonthSpend = sumSpend(monthTxns);
       totalMonthSpendCents += chapterMonthSpend;
@@ -1498,7 +1519,13 @@ export const budgetVsActual = query({
 
     // One period read (whole year) feeds every budget's actual — ESTIMATED
     // (budget.amountCents) is reported separately, never summed with ACTUAL.
-    const periodTxns = await loadPeriodTxns(ctx, chapterId, args.year);
+    const sandboxMode = await readSandbox(ctx);
+    const periodTxns = await loadPeriodTxns(
+      ctx,
+      chapterId,
+      args.year,
+      sandboxMode,
+    );
 
     return relevant.map((b) => {
       // `args.month` scopes recurring budgets to that month (a "$/mo" budget
@@ -2639,12 +2666,20 @@ export const listTransactions = query({
     const chapterId = await readChapterId(ctx);
     if (!chapterId) return emptyPage;
     await requireFinanceRole(ctx, chapterId, "viewer");
+    // Defensively drop cross-environment increase_* txns (latent-leak guard —
+    // no code writes them yet). A null-id / non-Increase txn is env-neutral.
+    const sandboxMode = await readSandbox(ctx);
     const result = await ctx.db
       .query("transactions")
       .withIndex("by_chapter_and_postedAt", (q) => q.eq("chapterId", chapterId))
       .order("desc")
       .paginate(args.paginationOpts);
-    return { ...result, page: result.page.map(toTxnSummary) };
+    return {
+      ...result,
+      page: result.page
+        .filter((tr) => txnMatchesMode(tr, sandboxMode))
+        .map(toTxnSummary),
+    };
   },
 });
 

@@ -88,7 +88,7 @@ export function ConnectPanel() {
   }
 
   return (
-    <View className="gap-3">
+    <View className="gap-2">
       <View className="flex-row">
         <Button
           title="Connect a bank (read-only)"
@@ -97,6 +97,11 @@ export function ConnectPanel() {
           onPress={handleConnect}
         />
       </View>
+      <Text className="text-xs text-muted">
+        Links an existing bank or card account through Stripe read-only — we can
+        see its transactions but never move money. New transactions sync into
+        Reconcile.
+      </Text>
       {notice ? <NoticeBanner notice={notice} /> : null}
     </View>
   );

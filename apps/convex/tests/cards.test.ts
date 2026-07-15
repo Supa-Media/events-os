@@ -73,6 +73,24 @@ async function grantRole(
   );
 }
 
+/** Set the deployment-wide finance sandbox flag (upserts the singleton row). */
+async function setSandboxMode(
+  s: ChapterSetup,
+  sandboxMode: boolean,
+): Promise<void> {
+  await run(s.t, async (ctx) => {
+    const existing = await ctx.db.query("financeSettings").first();
+    if (existing) {
+      await ctx.db.patch(existing._id, { sandboxMode, updatedAt: Date.now() });
+    } else {
+      await ctx.db.insert("financeSettings", {
+        sandboxMode,
+        updatedAt: Date.now(),
+      });
+    }
+  });
+}
+
 async function seedCard(
   s: ChapterSetup,
   opts: {
@@ -555,6 +573,38 @@ describe("issueCard", () => {
     void manager;
   });
 
+  test("throws on a sandbox account while in production mode (env mismatch)", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await seedManager(s);
+    await setSandboxMode(s, false); // production
+    const holder = await seedPerson(s, { name: "Holder" });
+    // A leftover sandbox/test account while the deployment is in production.
+    await run(s.t, (ctx) =>
+      ctx.db.insert("increaseAccounts", {
+        chapterId: s.chapterId,
+        onboardingStatus: "active",
+        increaseAccountId: "sandbox_acct_1",
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      }),
+    );
+    await expect(
+      s.as.action(api.cards.issueCard, {
+        cardholderPersonId: holder,
+        type: "virtual",
+      }),
+    ).rejects.toBeInstanceOf(ConvexError);
+    // No card row was minted on the stale account.
+    const rows = await run(s.t, (ctx) =>
+      ctx.db
+        .query("cards")
+        .withIndex("by_chapter", (q) => q.eq("chapterId", s.chapterId))
+        .collect(),
+    );
+    expect(rows.length).toBe(0);
+  });
+
   test("a non-manager cannot issue a card", async () => {
     const t = newT();
     const s = await setupChapter(t);
@@ -634,6 +684,74 @@ describe("listCards / myCard", () => {
     expect(rows.length).toBe(1);
     expect(rows[0].last4).toBe("1111");
     expect(rows[0].cardholderPersonId).toBe(me);
+  });
+
+  test("production mode hides a sandbox_ card, shows a prod card + a null-id degraded card", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await seedManager(s);
+    await setSandboxMode(s, false); // production
+    const holder = await seedPerson(s, { name: "Holder" });
+
+    await seedCard(s, {
+      cardholderPersonId: holder,
+      increaseCardId: "sandbox_card_1",
+      last4: "0001",
+    });
+    await seedCard(s, {
+      cardholderPersonId: holder,
+      increaseCardId: "card_prod_1",
+      last4: "0002",
+    });
+    await seedCard(s, { cardholderPersonId: holder, last4: "0003" }); // null id
+
+    const rows = await s.as.query(api.cards.listCards, {});
+    const last4s = rows.map((r) => r.last4).sort();
+    expect(last4s).toEqual(["0002", "0003"]); // sandbox card hidden
+  });
+
+  test("sandbox mode inverts: shows the sandbox_ card + the degraded card, hides the prod card", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await seedManager(s);
+    await setSandboxMode(s, true); // sandbox
+    const holder = await seedPerson(s, { name: "Holder" });
+
+    await seedCard(s, {
+      cardholderPersonId: holder,
+      increaseCardId: "sandbox_card_1",
+      last4: "0001",
+    });
+    await seedCard(s, {
+      cardholderPersonId: holder,
+      increaseCardId: "card_prod_1",
+      last4: "0002",
+    });
+    await seedCard(s, { cardholderPersonId: holder, last4: "0003" }); // null id
+
+    const rows = await s.as.query(api.cards.listCards, {});
+    const last4s = rows.map((r) => r.last4).sort();
+    expect(last4s).toEqual(["0001", "0003"]); // prod card hidden
+  });
+
+  test("myCard applies the same environment filter", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const me = await seedManager(s);
+    await setSandboxMode(s, false); // production
+    await seedCard(s, {
+      cardholderPersonId: me,
+      increaseCardId: "sandbox_card_1",
+      last4: "0001",
+    });
+    await seedCard(s, {
+      cardholderPersonId: me,
+      increaseCardId: "card_prod_1",
+      last4: "0002",
+    });
+
+    const rows = await s.as.query(api.cards.myCard, {});
+    expect(rows.map((r) => r.last4)).toEqual(["0002"]);
   });
 });
 
@@ -815,6 +933,9 @@ describe("issueCard env routing", () => {
     const s = await setupChapter(t);
     await seedManager(s);
     const holder = await seedPerson(s, { name: "Holder" });
+    // A sandbox account is only legitimate in sandbox mode (else the env-mismatch
+    // guard blocks issuing); match the mode so routing is exercised.
+    await setSandboxMode(s, true);
     await seedIncreaseAccount(s, "sandbox_acct_1");
 
     // Both keys present — the account's `sandbox_` prefix (not presence) routes.

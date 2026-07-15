@@ -218,6 +218,33 @@ export const PAYOUT_STATUSES = [
 ] as const;
 export type PayoutStatus = (typeof PAYOUT_STATUSES)[number];
 
+// ── Sandbox ↔ production environment hygiene ─────────────────────────────────
+// Increase objects created in the SANDBOX come back with ids prefixed
+// `sandbox_` (accounts, cards, transfers, real-time decisions); production ids
+// have no such prefix. The environment lives ENTIRELY in that id prefix —
+// nothing is stored per-record. A record with a NULL/empty Increase id is a
+// manual/degraded record (no vendor object) and is environment-NEUTRAL: it must
+// show in BOTH modes.
+/** True iff an Increase object id is a sandbox object (prefixed `sandbox_`). */
+export function isSandboxObjectId(id?: string | null): boolean {
+  return !!id?.startsWith("sandbox_");
+}
+
+/**
+ * Whether a record carrying `increaseId` should be VISIBLE in the current mode.
+ * A null/empty id is env-neutral (manual/degraded) → ALWAYS visible. Otherwise
+ * it shows only when its sandbox-ness matches the mode: in production
+ * (`sandboxMode === false`) non-sandbox + null ids show and `sandbox_` ids hide;
+ * in sandbox mode the inverse.
+ */
+export function matchesMode(
+  increaseId: string | null | undefined,
+  sandboxMode: boolean,
+): boolean {
+  if (!increaseId) return true; // env-neutral (manual/degraded) — always show
+  return isSandboxObjectId(increaseId) === sandboxMode;
+}
+
 // ── Increase account onboarding (one Entity + Account per chapter) ───────────
 export const INCREASE_ONBOARDING_STATUSES = [
   "not_started",

@@ -24,8 +24,9 @@ import { requireFinanceRole } from "./lib/finance";
 import { requireSuperuser } from "./lib/superuser";
 
 /** Read the deployment-wide sandbox flag (default false). Shared by the public
- *  viewer-gated query + the internal action-facing query. */
-async function readSandbox(ctx: QueryCtx): Promise<boolean> {
+ *  viewer-gated query, the internal action-facing query, and the finance list
+ *  queries that filter Increase records to the current environment. */
+export async function readSandbox(ctx: QueryCtx): Promise<boolean> {
   const settings = await ctx.db.query("financeSettings").first();
   return settings?.sandboxMode ?? false;
 }

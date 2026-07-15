@@ -59,9 +59,12 @@ import {
   PAYOUT_PROVIDERS,
   PAYOUT_STATUSES,
   INCREASE_ONBOARDING_STATUSES,
+  isSandboxObjectId,
+  matchesMode,
   type PayoutProvider,
   type PayoutStatus,
 } from "@events-os/shared";
+import { readSandbox } from "./financeSettings";
 import {
   requireChapterId,
   requireInChapter,
@@ -1316,11 +1319,17 @@ export const listPayouts = query({
     if (!chapterId) return [];
     await requireFinanceRole(ctx, chapterId, "viewer");
 
-    const payouts = await ctx.db
-      .query("payouts")
-      .withIndex("by_chapter", (q) => q.eq("chapterId", chapterId))
-      .order("desc")
-      .take(200);
+    // Filter to the current environment: a `sandbox_`-prefixed transfer id is a
+    // sandbox payout (hidden in production mode, shown in sandbox mode). A NULL
+    // transfer id is a manual/degraded payout (env-neutral) — always shown.
+    const sandboxMode = await readSandbox(ctx);
+    const payouts = (
+      await ctx.db
+        .query("payouts")
+        .withIndex("by_chapter", (q) => q.eq("chapterId", chapterId))
+        .order("desc")
+        .take(200)
+    ).filter((p) => matchesMode(p.increaseTransferId ?? null, sandboxMode));
     return payouts.map(toPayoutSummary);
   },
 });
@@ -1343,5 +1352,103 @@ export const getChapterAccount = query({
       .withIndex("by_chapter", (q) => q.eq("chapterId", chapterId))
       .first();
     return account ? toAccountSummary(account) : null;
+  },
+});
+
+// ── removeChapterAccount (mutation, manager) ─────────────────────────────────
+
+/**
+ * Delete the chapter's `increaseAccounts` row. Manager-only. Used to clear a
+ * STALE TEST account — a `sandbox_`-prefixed account left behind after the
+ * deployment was flipped from sandbox back to production mode — so the manager
+ * can provision the real production account fresh (via `provisionChapterAccount`).
+ *
+ * SAFETY: refuses to remove a LIVE production account (active + a non-`sandbox_`
+ * `increaseAccountId`) — that row maps to a real Increase Account holding the
+ * chapter's money; dropping it would orphan the balance. Removing a pending row
+ * (never fully provisioned) or a sandbox test row is always allowed. Idempotent:
+ * a no-op (returns) when there's no row. Does NOT auto-provision a replacement.
+ *
+ * CASCADE: removing a sandbox/test account also deletes the chapter's leftover
+ * SANDBOX child records so the chapter is clean for a fresh production
+ * provision — `sandbox_`-issued `cards` (+ their `cardAuthorizations`),
+ * `sandbox_` `payouts`, and any `increase_*` `transactions` with a `sandbox_`
+ * external/source id. Environment-NEUTRAL records (a null-id degraded card, a
+ * manual null-transfer payout) are left untouched. Best-effort Increase-side
+ * card cancellation is OUT OF SCOPE — this only cleans our DB (a sandbox object
+ * is disposable at the vendor anyway). Idempotent.
+ */
+export const removeChapterAccount = mutation({
+  args: {},
+  returns: v.null(),
+  handler: async (ctx): Promise<null> => {
+    const chapterId = (await requireChapterId(ctx)) as Id<"chapters">;
+    await requireFinanceManager(ctx, chapterId);
+
+    const account = await ctx.db
+      .query("increaseAccounts")
+      .withIndex("by_chapter", (q) => q.eq("chapterId", chapterId))
+      .first();
+    if (!account) return null; // nothing to remove (idempotent)
+
+    const isLiveProductionAccount =
+      account.onboardingStatus === "active" &&
+      !!account.increaseAccountId &&
+      !account.increaseAccountId.startsWith("sandbox_");
+    if (isLiveProductionAccount) {
+      throw new ConvexError({
+        code: "FORBIDDEN",
+        message:
+          "This is the chapter's live production account — it can't be removed here.",
+      });
+    }
+
+    // Cascade: drop the chapter's leftover SANDBOX child records. Bounded scans
+    // (these per-chapter tables are small); env-neutral null-id records survive.
+    const CASCADE_SCAN_LIMIT = 5000;
+
+    // 1. Sandbox cards + their authorizations.
+    const cards = await ctx.db
+      .query("cards")
+      .withIndex("by_chapter", (q) => q.eq("chapterId", chapterId))
+      .take(CASCADE_SCAN_LIMIT);
+    for (const card of cards) {
+      if (!isSandboxObjectId(card.increaseCardId)) continue; // keep null/prod
+      const auths = await ctx.db
+        .query("cardAuthorizations")
+        .withIndex("by_card", (q) => q.eq("cardId", card._id))
+        .take(CASCADE_SCAN_LIMIT);
+      for (const a of auths) await ctx.db.delete(a._id);
+      await ctx.db.delete(card._id);
+    }
+
+    // 2. Sandbox payouts (a NULL transfer id is a manual payout → NOT deleted).
+    const payouts = await ctx.db
+      .query("payouts")
+      .withIndex("by_chapter", (q) => q.eq("chapterId", chapterId))
+      .take(CASCADE_SCAN_LIMIT);
+    for (const p of payouts) {
+      if (isSandboxObjectId(p.increaseTransferId)) await ctx.db.delete(p._id);
+    }
+
+    // 3. Sandbox increase_* transactions (none written today — defensive). A
+    //    reimbursement/repayment/manual txn is env-neutral and left alone.
+    const txns = await ctx.db
+      .query("transactions")
+      .withIndex("by_chapter", (q) => q.eq("chapterId", chapterId))
+      .take(CASCADE_SCAN_LIMIT);
+    for (const t of txns) {
+      const isIncreaseTxn =
+        t.source === "increase_card" || t.source === "increase_ach";
+      if (
+        isIncreaseTxn &&
+        (isSandboxObjectId(t.externalId) || isSandboxObjectId(t.sourceAccountId))
+      ) {
+        await ctx.db.delete(t._id);
+      }
+    }
+
+    await ctx.db.delete(account._id);
+    return null;
   },
 });
