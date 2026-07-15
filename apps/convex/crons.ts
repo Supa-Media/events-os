@@ -54,4 +54,14 @@ crons.cron(
   {},
 );
 
+// Daily 11:00 UTC = 7am EDT: auto-lock member cards whose receipt grace window
+// (>7 days late) has lapsed with a receipt still missing. Uploading a receipt
+// unlocks the card.
+crons.cron(
+  "card receipt auto-lock",
+  "0 11 * * *",
+  internal.cards.autoLockOverdueCards,
+  {},
+);
+
 export default crons;
