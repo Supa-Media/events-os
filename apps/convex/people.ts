@@ -14,6 +14,7 @@ import {
   getChapterIdOrNull,
 } from "./lib/context";
 import { isChapterAdmin } from "./lib/org";
+import { isCardEligible } from "@events-os/shared";
 
 const vettingStatus = v.union(
   v.literal("unvetted"),
@@ -136,6 +137,39 @@ export const list = query({
       )
       .sort((a, b) => a.name.localeCompare(b.name));
     // Resolve each profile photo storageId to a servable URL for display.
+    return await Promise.all(
+      sorted.map(async (p) => ({
+        ...p,
+        imageUrl: p.image ? await ctx.storage.getUrl(p.image) : null,
+      })),
+    );
+  },
+});
+
+/**
+ * Card-eligible people — the chapter roster filtered to those with a Public
+ * Worship email (`@publicworship.life`, via `isCardEligible`). Feeds the card
+ * pickers (issue a card, link a legacy card), which may only target eligible
+ * people. Same read shape as `people.list` (the person row + a resolved
+ * `imageUrl`); placeholders + sample people are excluded like the roster list.
+ */
+export const cardEligible = query({
+  args: {},
+  handler: async (ctx) => {
+    const chapterId = await getChapterIdOrNull(ctx);
+    if (!chapterId) return [];
+    const people = await ctx.db
+      .query("people")
+      .withIndex("by_chapter", (q) => q.eq("chapterId", chapterId as Id<"chapters">))
+      .collect();
+    const sorted = people
+      .filter(
+        (p) =>
+          p.isPlaceholder !== true &&
+          p.isSamplePerson !== true &&
+          isCardEligible(p.pwEmail),
+      )
+      .sort((a, b) => a.name.localeCompare(b.name));
     return await Promise.all(
       sorted.map(async (p) => ({
         ...p,

@@ -194,8 +194,46 @@ export type CardType = (typeof CARD_TYPES)[number];
 export const CARD_STATUSES = ["active", "locked", "canceled"] as const;
 export type CardStatus = (typeof CARD_STATUSES)[number];
 
+// Where a card came from. A NATIVE card is issued on Increase (`increase`, the
+// default when the marker is absent); a LEGACY card is an external/Relay card
+// linked by its last-4 (no Increase object) so its transactions can be
+// attributed to a person. Legacy cards carry no Increase controls.
+export const CARD_SOURCES = ["increase", "legacy"] as const;
+export type CardSource = (typeof CARD_SOURCES)[number];
+
 /** Late-receipt auto-lock window: a card locks if a receipt is >7 days late. */
 export const RECEIPT_GRACE_DAYS = 7;
+
+// ── Card eligibility + last-4 extraction ─────────────────────────────────────
+// Cards (native + legacy) are restricted to Public Worship staff — people with
+// an `@publicworship.life` email. `isCardEligible` is the single gate the card
+// pickers + issuance/link mutations share so the rule can't drift.
+
+/** True iff a Public Worship email makes a person eligible to hold a card. */
+export function isCardEligible(pwEmail?: string | null): boolean {
+  return (
+    !!pwEmail && pwEmail.trim().toLowerCase().endsWith("@publicworship.life")
+  );
+}
+
+/**
+ * Parse a card's last-4 out of a synced transaction description. FC-synced rows
+ * carry the card only inside the merchant/description string (e.g.
+ * `"POS PURCHASE … | **2702"`) — there's no structured field. Matches the
+ * `**NNNN` masked-card pattern and returns the LAST (trailing) 4-digit group,
+ * which is where the card number sits when a description holds several numbers.
+ * Returns null when no masked last-4 is present.
+ */
+export function extractCardLast4(text?: string | null): string | null {
+  if (!text) return null;
+  const re = /\*{2,}\s*(\d{4})(?!\d)/g;
+  let last: string | null = null;
+  let match: RegExpExecArray | null;
+  while ((match = re.exec(text)) !== null) {
+    last = match[1];
+  }
+  return last;
+}
 
 // ── Personal-charge repayment ────────────────────────────────────────────────
 export const REPAYMENT_METHODS = ["card", "ach"] as const;

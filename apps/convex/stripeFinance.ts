@@ -38,10 +38,11 @@ import {
   internalMutation,
   internalQuery,
 } from "./_generated/server";
+import type { MutationCtx } from "./_generated/server";
 import { ConvexError, v } from "convex/values";
 import { internal } from "./_generated/api";
-import { LEGACY_ACCOUNT_STATUSES } from "@events-os/shared";
-import { Id } from "./_generated/dataModel";
+import { LEGACY_ACCOUNT_STATUSES, extractCardLast4 } from "@events-os/shared";
+import { Doc, Id } from "./_generated/dataModel";
 import {
   getChapterIdOrNull,
   requireChapterId,
@@ -55,6 +56,8 @@ const FC_EXTERNAL_PREFIX = "stripe_fc:";
 
 /** Keep every cross-chapter / all-account scan bounded. */
 const ACCOUNT_SCAN_LIMIT = 1000;
+/** Bound the deployment-wide transaction backfill scan. */
+const BACKFILL_SCAN_LIMIT = 10000;
 /** Defensive page cap so a runaway sync can't loop forever. */
 const MAX_SYNC_PAGES = 50;
 const FC_PAGE_SIZE = 100;
@@ -469,6 +472,26 @@ export const listAccounts = query({
   },
 });
 
+/**
+ * Find the LEGACY card in a chapter that owns a given last-4, or null. Legacy
+ * (external/Relay) cards are matched by `[chapterId, last4]`; a native Increase
+ * card with the same last-4 is ignored here — only a linked legacy card
+ * attributes FC-synced transactions. Shared by the sync apply + the backfill.
+ */
+async function findLegacyCardByLast4(
+  ctx: { db: MutationCtx["db"] },
+  chapterId: Id<"chapters">,
+  last4: string,
+): Promise<Doc<"cards"> | null> {
+  const matches = await ctx.db
+    .query("cards")
+    .withIndex("by_chapter_and_last4", (q) =>
+      q.eq("chapterId", chapterId).eq("last4", last4),
+    )
+    .collect();
+  return matches.find((c) => c.source === "legacy") ?? null;
+}
+
 // ── Internal: the DB apply (dedup / insert / update) ─────────────────────────
 
 /**
@@ -509,6 +532,14 @@ export const applyFcTransactions = internalMutation({
       const amountCents = Math.abs(Math.round(row.amountCents));
       const flow: "outflow" | "inflow" =
         row.amountCents < 0 ? "outflow" : "inflow";
+      // The card last-4 lives ONLY inside the description string (no structured
+      // field), so parse it out for matching + display.
+      const cardLast4 = extractCardLast4(row.description);
+      // A linked legacy (Relay) card for that last-4 makes its charges that
+      // person's responsibility. Attribute unattributed rows to it.
+      const legacyCard = cardLast4
+        ? await findLegacyCardByLast4(ctx, chapterId, cardLast4)
+        : null;
 
       const existing = await ctx.db
         .query("transactions")
@@ -519,14 +550,23 @@ export const applyFcTransactions = internalMutation({
         // Refresh the volatile fields (a pending authorization posting, an
         // amount/date correction) but never touch a human's categorization or
         // status, and never insert a second row.
-        await ctx.db.patch(existing._id, {
+        const patch: Partial<Doc<"transactions">> = {
           amountCents,
           flow,
           postedAt: row.postedAt,
           pending: row.pending,
           // Don't clobber a hand-edited merchant name; only fill it when empty.
           merchantName: existing.merchantName ?? row.description,
-        });
+        };
+        // Backfill the parsed last-4 when the row lacks it (older synced rows).
+        if (existing.cardLast4 == null && cardLast4) patch.cardLast4 = cardLast4;
+        // Attribute to the legacy card only when a human hasn't already
+        // categorized it — never clobber cardId/personId.
+        if (legacyCard && existing.cardId == null && existing.personId == null) {
+          patch.cardId = legacyCard._id;
+          patch.personId = legacyCard.cardholderPersonId;
+        }
+        await ctx.db.patch(existing._id, patch);
         updated++;
         continue;
       }
@@ -539,9 +579,14 @@ export const applyFcTransactions = internalMutation({
         currency: "usd",
         postedAt: row.postedAt,
         merchantName: row.description,
+        cardLast4: cardLast4 ?? undefined,
         status: "unreviewed",
         fundId: account.defaultFundId,
         sourceAccountId: account.stripeFcAccountId,
+        // Attribute to a linked legacy card at insert time (a fresh sync row is
+        // never human-categorized yet).
+        cardId: legacyCard?._id,
+        personId: legacyCard?.cardholderPersonId,
         externalId,
         pending: row.pending,
         createdAt: Date.now(),
@@ -553,6 +598,67 @@ export const applyFcTransactions = internalMutation({
     await ctx.db.patch(args.legacyAccountId, { lastSyncedAt: Date.now() });
 
     return { inserted, updated };
+  },
+});
+
+/**
+ * Backfill legacy-card attribution over already-synced `stripe_fc` transactions
+ * (bounded, idempotent). For each such transaction it:
+ *  - parses `cardLast4` from `merchantName` (where the description was stored)
+ *    when the row lacks it;
+ *  - attributes the row to a linked legacy card (`cardId` + `personId`) when a
+ *    legacy card matches that last-4 in the chapter AND the row isn't already
+ *    human-categorized (both fields unset).
+ * Never clobbers an existing categorization. Re-running changes nothing once
+ * every row is stamped + attributed.
+ *
+ * Ops escape hatch — runnable from `run-convex-function.yml`
+ * (`stripeFinance:backfillLegacyCardAttribution`). Scans up to `BACKFILL_SCAN_LIMIT`
+ * transactions per run; returns what it touched.
+ */
+export const backfillLegacyCardAttribution = internalMutation({
+  args: {},
+  returns: v.object({
+    scanned: v.number(),
+    last4Set: v.number(),
+    attributed: v.number(),
+  }),
+  handler: async (ctx) => {
+    const rows = await ctx.db.query("transactions").take(BACKFILL_SCAN_LIMIT);
+    let scanned = 0;
+    let last4Set = 0;
+    let attributed = 0;
+
+    for (const row of rows) {
+      if (row.source !== "stripe_fc") continue;
+      scanned++;
+
+      const patch: Partial<Doc<"transactions">> = {};
+      // The card last-4 lives in the stored description (merchantName).
+      const cardLast4 = row.cardLast4 ?? extractCardLast4(row.merchantName);
+      if (row.cardLast4 == null && cardLast4) {
+        patch.cardLast4 = cardLast4;
+        last4Set++;
+      }
+
+      // Attribute to a linked legacy card only when unset (never clobber).
+      if (cardLast4 && row.cardId == null && row.personId == null) {
+        const legacyCard = await findLegacyCardByLast4(
+          ctx,
+          row.chapterId,
+          cardLast4,
+        );
+        if (legacyCard) {
+          patch.cardId = legacyCard._id;
+          patch.personId = legacyCard.cardholderPersonId;
+          attributed++;
+        }
+      }
+
+      if (Object.keys(patch).length > 0) await ctx.db.patch(row._id, patch);
+    }
+
+    return { scanned, last4Set, attributed };
   },
 });
 

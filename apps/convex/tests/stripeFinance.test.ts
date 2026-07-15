@@ -213,6 +213,97 @@ describe("applyFcTransactions (dedup / insert / update)", () => {
   });
 });
 
+describe("applyFcTransactions legacy-card last4 + attribution", () => {
+  test("parses cardLast4 from the description on insert", async () => {
+    const s = await setupChapter(newT());
+    const accountId = await seedAccount(s, s.chapterId);
+
+    await s.t.mutation(internal.stripeFinance.applyFcTransactions, {
+      legacyAccountId: accountId,
+      transactions: [
+        { id: "fc_a", amountCents: -1500, postedAt: 1_700_000_000_000, description: "POS PURCHASE FOO | **2702", pending: false },
+        { id: "fc_b", amountCents: -900, postedAt: 1_700_000_000_000, description: "No card here", pending: false },
+      ],
+    });
+
+    const rows = await run(s.t, (ctx) =>
+      ctx.db
+        .query("transactions")
+        .withIndex("by_chapter", (q) => q.eq("chapterId", s.chapterId))
+        .collect(),
+    );
+    const withCard = rows.find((r) => r.externalId === "stripe_fc:fc_a")!;
+    const without = rows.find((r) => r.externalId === "stripe_fc:fc_b")!;
+    expect(withCard.cardLast4).toBe("2702");
+    expect(without.cardLast4).toBeUndefined();
+    // No legacy card linked → no attribution yet.
+    expect(withCard.cardId).toBeUndefined();
+    expect(withCard.personId).toBeUndefined();
+  });
+
+  test("attributes to a linked legacy card (cardId + personId), never clobbering a human's categorization", async () => {
+    const s = await setupChapter(newT());
+    const accountId = await seedAccount(s, s.chapterId);
+    const person = await run(s.t, (ctx) =>
+      ctx.db.insert("people", {
+        chapterId: s.chapterId,
+        name: "Relay Holder",
+        pwEmail: "relay@publicworship.life",
+        createdAt: Date.now(),
+      }),
+    );
+    const cardId = await run(s.t, (ctx) =>
+      ctx.db.insert("cards", {
+        chapterId: s.chapterId,
+        cardholderPersonId: person,
+        type: "physical",
+        source: "legacy",
+        last4: "2702",
+        status: "active",
+        createdAt: Date.now(),
+      }),
+    );
+
+    await s.t.mutation(internal.stripeFinance.applyFcTransactions, {
+      legacyAccountId: accountId,
+      transactions: [
+        { id: "fc_a", amountCents: -1500, postedAt: 1_700_000_000_000, description: "COFFEE | **2702", pending: false },
+      ],
+    });
+
+    const inserted = await run(s.t, (ctx) =>
+      ctx.db
+        .query("transactions")
+        .withIndex("by_external_id", (q) => q.eq("externalId", "stripe_fc:fc_a"))
+        .first(),
+    );
+    expect(inserted?.cardId).toBe(cardId);
+    expect(inserted?.personId).toBe(person);
+
+    // A human re-categorizes: point the txn at a DIFFERENT person + clear card.
+    const other = await run(s.t, (ctx) =>
+      ctx.db.insert("people", {
+        chapterId: s.chapterId,
+        name: "Someone Else",
+        createdAt: Date.now(),
+      }),
+    );
+    await run(s.t, (ctx) =>
+      ctx.db.patch(inserted!._id, { cardId: undefined, personId: other }),
+    );
+    // Re-sync the same row (pending→posted refresh) → must NOT re-attribute.
+    await s.t.mutation(internal.stripeFinance.applyFcTransactions, {
+      legacyAccountId: accountId,
+      transactions: [
+        { id: "fc_a", amountCents: -1500, postedAt: 1_700_000_100_000, description: "COFFEE | **2702", pending: false },
+      ],
+    });
+    const after = await run(s.t, (ctx) => ctx.db.get(inserted!._id));
+    expect(after?.personId).toBe(other);
+    expect(after?.cardId).toBeUndefined();
+  });
+});
+
 describe("listAccounts / setAccountFund tenancy", () => {
   test("listAccounts returns the caller's chapter accounts in the UI shape", async () => {
     const s = await setupChapter(newT());

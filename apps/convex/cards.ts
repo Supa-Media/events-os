@@ -53,13 +53,16 @@ import { Doc, Id } from "./_generated/dataModel";
 import {
   CARD_TYPES,
   CARD_STATUSES,
+  CARD_SOURCES,
   REPAYMENT_METHODS,
   REPAYMENT_STATUSES,
   RECEIPT_GRACE_DAYS,
   easternParts,
   matchesMode,
+  isCardEligible,
   type CardType,
   type CardStatus,
+  type CardSource,
   type RepaymentMethod,
   type RepaymentStatus,
 } from "@events-os/shared";
@@ -100,6 +103,7 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 // ── Enum validators (built from the shared tuples) ───────────────────────────
 const cardTypeValidator = v.union(...CARD_TYPES.map((t) => v.literal(t)));
 const cardStatusValidator = v.union(...CARD_STATUSES.map((s) => v.literal(s)));
+const cardSourceValidator = v.union(...CARD_SOURCES.map((s) => v.literal(s)));
 const repaymentMethodValidator = v.union(
   ...REPAYMENT_METHODS.map((m) => v.literal(m)),
 );
@@ -114,6 +118,8 @@ const cardSummaryValidator = v.object({
   cardholderName: v.union(v.string(), v.null()),
   type: cardTypeValidator,
   last4: v.union(v.string(), v.null()),
+  // Provenance so the UI can badge legacy (Relay) cards + hide Increase controls.
+  source: cardSourceValidator,
   status: cardStatusValidator,
   monthlyCapCents: v.union(v.number(), v.null()),
   validFrom: v.union(v.number(), v.null()),
@@ -144,6 +150,7 @@ interface CardSummary {
   cardholderName: string | null;
   type: CardType;
   last4: string | null;
+  source: CardSource;
   status: CardStatus;
   monthlyCapCents: number | null;
   validFrom: number | null;
@@ -324,6 +331,7 @@ async function buildCardSummary(
     cardholderName: holder?.name ?? null,
     type: card.type,
     last4: card.last4 ?? null,
+    source: card.source ?? "increase",
     status: card.status,
     monthlyCapCents: card.monthlyCapCents ?? null,
     validFrom: card.validFrom ?? null,
@@ -368,6 +376,16 @@ export const beginIssueCard = internalMutation({
 
     const holder = await ctx.db.get(args.cardholderPersonId);
     await requireInChapter(ctx, chapterId, holder, "Cardholder");
+
+    // Cards are restricted to Public Worship staff — reject a cardholder without
+    // an `@publicworship.life` email before minting anything.
+    if (!isCardEligible(holder!.pwEmail)) {
+      throw new ConvexError({
+        code: "NOT_CARD_ELIGIBLE",
+        message:
+          "Cards can only be issued to people with a @publicworship.life email.",
+      });
+    }
 
     // Mode-aware: issue on the chapter's CURRENT-environment account (never
     // `.first()`, which would arbitrarily pick sandbox-or-prod once both exist).
@@ -424,6 +442,7 @@ export const beginIssueCard = internalMutation({
       chapterId,
       cardholderPersonId: args.cardholderPersonId,
       type: args.type,
+      source: "increase",
       status: "active",
       monthlyCapCents: args.monthlyCapCents,
       validFrom: args.validFrom,
