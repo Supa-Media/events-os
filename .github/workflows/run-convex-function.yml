@@ -1,0 +1,77 @@
+# Run Convex Function — manually run ANY Convex function (a migration, seed, or
+# admin mutation; or a read query) on the PRODUCTION deployment
+# (vivid-rhinoceros-688). Uses the SAME deploy key + private-package install as
+# deploy-convex.yml, so `npx convex run` targets prod. Maintainer-only
+# (workflow_dispatch + the `production` environment gate).
+#
+# Usage (Actions tab, or):
+#   gh workflow run run-convex-function.yml -f function=finances:runSeedDefaultExpenseCategories
+#   gh workflow run run-convex-function.yml -f function=finances:runMigrateBudgetScopesToTypes -f args='{}'
+#
+# `function` is the path within convex/ joined with the export name (same form
+# as `npx convex run`). Internal functions are callable (the deploy key is admin).
+# `args` is a JSON object string passed straight to `npx convex run`.
+name: Run Convex Function
+
+on:
+  workflow_dispatch:
+    inputs:
+      function:
+        description: "Function path, e.g. finances:runSeedDefaultExpenseCategories"
+        type: string
+        required: true
+      args:
+        description: "JSON args object (default: {})"
+        type: string
+        required: false
+        default: "{}"
+
+concurrency:
+  # Serialize with itself; do NOT collide with a Convex deploy (a push that
+  # changes env/schema mid-run aborts) — run this when no deploy is in flight.
+  group: run-convex-function
+  cancel-in-progress: false
+
+jobs:
+  run:
+    name: Run function on production
+    runs-on: ubuntu-latest
+    environment: production
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      # Same scoped install as deploy-convex.yml — @events-os/convex + its deps
+      # (incl. the private @supa-media/convex, which needs GITHUB_TOKEN).
+      - name: Install backend dependencies
+        run: pnpm install --filter @events-os/convex... --frozen-lockfile
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Run the function on production
+        run: |
+          set -euo pipefail
+          echo "Running: $FUNCTION   args: $ARGS"
+          npx convex run "$FUNCTION" "$ARGS"
+        env:
+          CONVEX_DEPLOY_KEY: ${{ secrets.CONVEX_DEPLOY_KEY }}
+          FUNCTION: ${{ inputs.function }}
+          ARGS: ${{ inputs.args }}
+
+      - name: Summary
+        if: always()
+        run: |
+          echo "## Run Convex Function" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Function:** \`$FUNCTION\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Args:** \`$ARGS\`" >> "$GITHUB_STEP_SUMMARY"
+        env:
+          FUNCTION: ${{ inputs.function }}
+          ARGS: ${{ inputs.args }}
