@@ -34,8 +34,10 @@ import {
   FUND_RESTRICTIONS,
   BUDGET_CATEGORY_KINDS,
   BUDGET_SCOPES,
+  BUDGET_TYPES,
+  BUDGET_REF_KINDS,
+  BUDGET_TAG_KINDS,
   BUDGET_CADENCES,
-  BUDGET_ROLLOVER_POLICIES,
   TRANSACTION_SOURCES,
   TRANSACTION_FLOWS,
   TRANSACTION_STATUSES,
@@ -45,6 +47,8 @@ import {
   easternParts,
   quarterOfMonth,
   formatCents,
+  type BudgetType,
+  type BudgetRefKind,
 } from "@events-os/shared";
 import {
   getChapterIdOrNull,
@@ -56,6 +60,7 @@ import {
   requireFinanceManager,
   requireFinanceCentral,
 } from "./lib/finance";
+import { requireSuperuser } from "./lib/superuser";
 import { viewerPerson } from "./lib/org";
 
 // ── Enum validators (built from the shared tuples) ───────────────────────────
@@ -66,10 +71,10 @@ const categoryKindValidator = v.union(
   ...BUDGET_CATEGORY_KINDS.map((k) => v.literal(k)),
 );
 const scopeValidator = v.union(...BUDGET_SCOPES.map((s) => v.literal(s)));
+const typeValidator = v.union(...BUDGET_TYPES.map((t) => v.literal(t)));
+const refKindValidator = v.union(...BUDGET_REF_KINDS.map((k) => v.literal(k)));
+const tagKindValidator = v.union(...BUDGET_TAG_KINDS.map((k) => v.literal(k)));
 const cadenceValidator = v.union(...BUDGET_CADENCES.map((c) => v.literal(c)));
-const rolloverValidator = v.union(
-  ...BUDGET_ROLLOVER_POLICIES.map((p) => v.literal(p)),
-);
 const sourceValidator = v.union(...TRANSACTION_SOURCES.map((s) => v.literal(s)));
 const flowValidator = v.union(...TRANSACTION_FLOWS.map((f) => v.literal(f)));
 const statusValidator = v.union(
@@ -104,11 +109,22 @@ const teamSummary = v.object({
   isActive: v.boolean(),
 });
 
+// A tag as attached to a budget row (from its `budgetTagLinks`).
+const budgetTagRef = v.object({
+  id: v.id("budgetTags"),
+  name: v.string(),
+  kind: v.union(tagKindValidator, v.null()),
+});
+
 const budgetSummary = v.object({
   id: v.id("budgets"),
   amountCents: v.number(),
   label: v.union(v.string(), v.null()),
-  scope: scopeValidator,
+  // v2 source of truth. `scope` is a nullable legacy column (absent on v2-native
+  // budgets); prefer `type`.
+  type: v.union(typeValidator, v.null()),
+  refKind: v.union(refKindValidator, v.null()),
+  scope: v.union(scopeValidator, v.null()),
   scopeRefId: v.union(v.string(), v.null()),
   cadence: cadenceValidator,
   year: v.number(),
@@ -117,9 +133,23 @@ const budgetSummary = v.object({
   fundId: v.union(v.id("funds"), v.null()),
   categoryId: v.union(v.id("budgetCategories"), v.null()),
   teamId: v.union(v.id("financeTeams"), v.null()),
+  // The budget's managed tags (many-to-many via `budgetTagLinks`).
+  tags: v.array(budgetTagRef),
   // Whether this is a chapter budget or an org-level (central) budget. Feeds the
   // reconcile Budget picker's Chapter / Central grouping.
   level: v.union(v.literal("chapter"), v.literal("central")),
+});
+
+// A per-tag rollup row (chapter dashboard carries `tagId`; central aggregates
+// same-named tags across chapters and leaves `tagId` null).
+const tagRollupRow = v.object({
+  tagId: v.union(v.id("budgetTags"), v.null()),
+  tagName: v.string(),
+  kind: v.union(tagKindValidator, v.null()),
+  budgetCents: v.number(),
+  spentCents: v.number(),
+  pct: v.number(),
+  status: v.union(v.literal("ok"), v.literal("warn")),
 });
 
 const txnSummary = v.object({
@@ -170,7 +200,8 @@ const centralTile = v.object({
 const centralBudgetCard = v.object({
   id: v.id("budgets"),
   label: v.union(v.string(), v.null()),
-  scope: scopeValidator,
+  // Legacy scope (nullable on v2-native central budgets).
+  scope: v.union(scopeValidator, v.null()),
   cadence: cadenceValidator,
   year: v.number(),
   budgetCents: v.number(),
@@ -239,20 +270,6 @@ const attentionItem = v.object({
   actionLabel: v.string(),
 });
 
-const templateRollupRow = v.object({
-  templateName: v.string(),
-  cadence: v.string(),
-  scopeLabel: v.string(),
-  monthTotalCents: v.number(),
-  perChapter: v.array(
-    v.object({
-      chapterName: v.string(),
-      amountCents: v.number(),
-      barPct: v.number(),
-    }),
-  ),
-});
-
 const chapterRollupRow = v.object({
   chapterId: v.id("chapters"),
   chapterName: v.string(),
@@ -302,12 +319,17 @@ function toTeamSummary(tm: Doc<"financeTeams">) {
   };
 }
 
-function toBudgetSummary(b: Doc<"budgets">) {
+function toBudgetSummary(
+  b: Doc<"budgets">,
+  tags: { id: Id<"budgetTags">; name: string; kind: (typeof BUDGET_TAG_KINDS)[number] | null }[],
+) {
   return {
     id: b._id,
     amountCents: b.amountCents,
     label: b.label ?? null,
-    scope: b.scope,
+    type: effectiveType(b),
+    refKind: effectiveRefKind(b),
+    scope: b.scope ?? null,
     scopeRefId: b.scopeRefId ?? null,
     cadence: b.cadence,
     year: b.year,
@@ -316,6 +338,7 @@ function toBudgetSummary(b: Doc<"budgets">) {
     fundId: b.fundId ?? null,
     categoryId: b.categoryId ?? null,
     teamId: b.teamId ?? null,
+    tags,
     level: b.chapterId === CENTRAL ? ("central" as const) : ("chapter" as const),
   };
 }
@@ -352,7 +375,7 @@ function assertIntegerCents(amountCents: number, label = "Amount"): void {
  * "central"`, the CENTRAL sentinel) or a central finance team (absent
  * `chapterId`, the legacy financeTeams convention, kept until its own PR).
  */
-async function requireInCallerChapter<T extends "funds" | "budgetCategories" | "financeTeams" | "budgets" | "transactions" | "events" | "projects" | "people">(
+async function requireInCallerChapter<T extends "funds" | "budgetCategories" | "financeTeams" | "budgets" | "budgetTags" | "transactions" | "events" | "projects" | "people">(
   ctx: QueryCtx,
   chapterId: Id<"chapters">,
   table: T,
@@ -466,9 +489,29 @@ function budgetEffectivePeriod(
 }
 
 /**
- * Does a spend transaction fall within a budget's scope + period + narrowers?
- * `contextMonth` scopes recurring budgets to the dashboard's month (see
- * `budgetEffectivePeriod`).
+ * A budget's v2 `type`, tolerant of un-migrated legacy rows: a row without a
+ * `type` yet derives one from its legacy `scope` (event/project → one_time,
+ * everything else → recurring), so dashboards keep working before the backfill.
+ */
+function effectiveType(b: Doc<"budgets">): BudgetType {
+  if (b.type) return b.type;
+  return b.scope === "event" || b.scope === "project" ? "one_time" : "recurring";
+}
+
+/** A one_time budget's ref kind, deriving from legacy `scope` when unset. */
+function effectiveRefKind(b: Doc<"budgets">): BudgetRefKind | null {
+  if (b.refKind) return b.refKind;
+  if (b.scope === "event") return "event";
+  if (b.scope === "project") return "project";
+  return null;
+}
+
+/**
+ * Does a spend transaction fall within a budget's period + narrowers, and (for
+ * one_time budgets) its event/project instance? Switches on `type`: a one_time
+ * budget matches only its `scopeRefId` instance; a recurring budget matches on
+ * period + fund/category alone. Tags are NOT a match dimension. `contextMonth`
+ * scopes recurring budgets to the dashboard's month (see `budgetEffectivePeriod`).
  */
 function matchesBudget(
   tr: Doc<"transactions">,
@@ -480,23 +523,18 @@ function matchesBudget(
   if (!inPeriod(tr.postedAt, period.year, period.month, period.quarter)) return false;
   if (b.categoryId && tr.categoryId !== b.categoryId) return false;
   if (b.fundId && tr.fundId !== b.fundId) return false;
+  // Legacy team narrower still honored when present (migrated team budgets keep
+  // `teamId` as a legacy column; new recurring budgets don't set it).
   if (b.teamId && tr.teamId !== b.teamId) return false;
-  switch (b.scope) {
-    case "event":
-      if (b.scopeRefId && tr.eventId !== b.scopeRefId) return false;
-      break;
-    case "project":
-      if (b.scopeRefId && tr.projectId !== b.scopeRefId) return false;
-      break;
-    case "team": {
-      const tid = b.teamId ?? (b.scopeRefId as Id<"financeTeams"> | undefined);
-      if (tid && tr.teamId !== tid) return false;
-      break;
+  if (effectiveType(b) === "one_time" && b.scopeRefId) {
+    if (effectiveRefKind(b) === "project") {
+      if (tr.projectId !== b.scopeRefId) return false;
+    } else {
+      // Default (event) instance link.
+      if (tr.eventId !== b.scopeRefId) return false;
     }
-    // template / bucket / chapter: no extra link filter beyond fund/category.
-    default:
-      break;
   }
+  // recurring: no extra instance link beyond fund/category/team.
   return true;
 }
 
@@ -559,6 +597,152 @@ async function nextSortOrder(
   let max = -1;
   for (const r of rows) if ((r.sortOrder ?? 0) > max) max = r.sortOrder ?? 0;
   return max + 1;
+}
+
+// ── Budget tags (managed, level-scoped) ──────────────────────────────────────
+/** A budget's LEVEL: a real chapter id, or the CENTRAL sentinel. */
+type BudgetLevel = Id<"chapters"> | typeof CENTRAL;
+
+/**
+ * True iff a tag at `tagLevel` may be attached to a budget at `budgetLevel`:
+ * a chapter budget accepts its own chapter's tags OR central tags; a central
+ * budget accepts only central tags.
+ */
+function tagLevelAllowed(tagLevel: BudgetLevel, budgetLevel: BudgetLevel): boolean {
+  if (budgetLevel === CENTRAL) return tagLevel === CENTRAL;
+  return tagLevel === budgetLevel || tagLevel === CENTRAL;
+}
+
+/** Load a tag and assert it's usable at the budget's level, else throw. */
+async function requireTagInLevel(
+  ctx: QueryCtx,
+  budgetLevel: BudgetLevel,
+  tagId: Id<"budgetTags">,
+): Promise<Doc<"budgetTags">> {
+  const tag = await ctx.db.get(tagId);
+  if (!tag || !tagLevelAllowed(tag.chapterId, budgetLevel)) {
+    throw new ConvexError({
+      code: "NOT_FOUND",
+      message: "Tag not found at this budget's level.",
+    });
+  }
+  return tag;
+}
+
+/**
+ * Find-or-create a managed tag at a level. Dedups by (level, kind, refId) via
+ * `by_chapter_and_ref` when a `refId` is given, else by (name, kind) within the
+ * level. Used by the event auto-tag on create + the scope→type migration.
+ */
+export async function ensureTag(
+  ctx: MutationCtx,
+  args: {
+    chapterId: BudgetLevel;
+    name: string;
+    kind: (typeof BUDGET_TAG_KINDS)[number];
+    refId?: string;
+    createdBy?: Id<"users">;
+  },
+): Promise<Id<"budgetTags">> {
+  if (args.refId) {
+    const byRef = await ctx.db
+      .query("budgetTags")
+      .withIndex("by_chapter_and_ref", (q) =>
+        q.eq("chapterId", args.chapterId).eq("kind", args.kind).eq("refId", args.refId),
+      )
+      .first();
+    if (byRef) return byRef._id;
+  }
+  const byName = (
+    await ctx.db
+      .query("budgetTags")
+      .withIndex("by_chapter", (q) => q.eq("chapterId", args.chapterId))
+      .take(ROLLUP_SCAN_LIMIT)
+  ).find((t) => t.name === args.name && t.kind === args.kind);
+  if (byName) return byName._id;
+  return await ctx.db.insert("budgetTags", {
+    chapterId: args.chapterId,
+    name: args.name,
+    kind: args.kind,
+    refId: args.refId,
+    createdBy: args.createdBy,
+    createdAt: Date.now(),
+  });
+}
+
+/** Insert a budget↔tag link unless one already exists in `seen`. */
+async function linkBudgetTag(
+  ctx: MutationCtx,
+  budgetId: Id<"budgets">,
+  budgetLevel: BudgetLevel,
+  tagId: Id<"budgetTags">,
+  seen: Set<string>,
+): Promise<void> {
+  if (seen.has(tagId)) return;
+  seen.add(tagId);
+  await ctx.db.insert("budgetTagLinks", {
+    budgetId,
+    tagId,
+    chapterId: budgetLevel,
+    createdAt: Date.now(),
+  });
+}
+
+/**
+ * Auto-tag a one_time EVENT budget: ensure + link the event's eventType
+ * `template` tag AND a catch-all `events` tag. No-op if `scopeRefId` doesn't
+ * resolve to an event. Shared by `createBudget` and the migration.
+ */
+async function autoTagEventBudget(
+  ctx: MutationCtx,
+  budgetId: Id<"budgets">,
+  budgetLevel: BudgetLevel,
+  scopeRefId: string | undefined,
+  seen: Set<string>,
+  createdBy?: Id<"users">,
+): Promise<void> {
+  const eventsTag = await ensureTag(ctx, {
+    chapterId: budgetLevel,
+    name: "Events",
+    kind: "events",
+    createdBy,
+  });
+  await linkBudgetTag(ctx, budgetId, budgetLevel, eventsTag, seen);
+  if (!scopeRefId) return;
+  const ev = await ctx.db.get(scopeRefId as Id<"events">);
+  if (!ev || !("eventTypeId" in ev)) return;
+  const et = await ctx.db.get((ev as Doc<"events">).eventTypeId);
+  if (!et) return;
+  const templateTag = await ensureTag(ctx, {
+    chapterId: budgetLevel,
+    name: (et as Doc<"eventTypes">).name,
+    kind: "template",
+    refId: (ev as Doc<"events">).eventTypeId,
+    createdBy,
+  });
+  await linkBudgetTag(ctx, budgetId, budgetLevel, templateTag, seen);
+}
+
+/** Load a budget's linked tags as `{ id, name, kind }`, via `by_budget`. */
+async function loadBudgetTags(
+  ctx: QueryCtx,
+  budgetId: Id<"budgets">,
+  tagCache: Map<string, Doc<"budgetTags"> | null>,
+): Promise<{ id: Id<"budgetTags">; name: string; kind: (typeof BUDGET_TAG_KINDS)[number] | null }[]> {
+  const links = await ctx.db
+    .query("budgetTagLinks")
+    .withIndex("by_budget", (q) => q.eq("budgetId", budgetId))
+    .take(ROLLUP_SCAN_LIMIT);
+  const out: { id: Id<"budgetTags">; name: string; kind: (typeof BUDGET_TAG_KINDS)[number] | null }[] = [];
+  for (const link of links) {
+    let tag = tagCache.get(link.tagId);
+    if (tag === undefined) {
+      tag = await ctx.db.get(link.tagId);
+      tagCache.set(link.tagId, tag);
+    }
+    if (tag) out.push({ id: tag._id, name: tag.name, kind: tag.kind ?? null });
+  }
+  return out;
 }
 
 // ── Dashboard math + name resolution ─────────────────────────────────────────
@@ -710,8 +894,9 @@ export const dashboardChapter = query({
   args: { year: v.optional(v.number()), month: v.optional(v.number()) },
   returns: v.object({
     tiles: v.array(chapterTile),
-    projectBudgets: v.array(projectBudgetCard),
+    oneTimeBudgets: v.array(projectBudgetCard),
     recurringBudgets: v.array(recurringBudgetCard),
+    tagRollups: v.array(tagRollupRow),
     recentTransactions: v.array(recentTxnCard),
     attention: v.array(attentionItem),
     funds: v.array(fundPeriodSpend),
@@ -724,8 +909,9 @@ export const dashboardChapter = query({
 
     const empty = {
       tiles: [] as never[],
-      projectBudgets: [] as never[],
+      oneTimeBudgets: [] as never[],
       recurringBudgets: [] as never[],
+      tagRollups: [] as never[],
       recentTransactions: [] as never[],
       attention: [] as never[],
       funds: [] as never[],
@@ -755,20 +941,21 @@ export const dashboardChapter = query({
       )
       .take(ROLLUP_SCAN_LIMIT);
 
-    // Project / event budget cards (per-instance / one-off).
-    const projectBudgets: (typeof projectBudgetCard.type)[] = [];
+    // One-time (event / project) budget cards (per-instance / one-off).
+    const oneTimeBudgets: (typeof projectBudgetCard.type)[] = [];
     for (const b of budgets) {
-      if (b.scope !== "event" && b.scope !== "project") continue;
+      if (effectiveType(b) !== "one_time") continue;
+      const refKind = effectiveRefKind(b);
       const { spentCents, categories } = budgetSpendBreakdown(b, yearTxns, catName);
-      let name = b.label ?? BUDGET_SCOPE_LABELS[b.scope];
+      let name = b.label ?? "One-time";
       let dateLabel: string | null = null;
-      if (b.scope === "event" && b.scopeRefId) {
+      if (refKind === "event" && b.scopeRefId) {
         const ev = await getEvent(b.scopeRefId as Id<"events">);
         if (ev) {
           name = ev.name;
           dateLabel = easternDateStr(ev.eventDate);
         }
-      } else if (b.scope === "project" && b.scopeRefId) {
+      } else if (refKind === "project" && b.scopeRefId) {
         const pr = await getProject(b.scopeRefId as Id<"projects">);
         if (pr) {
           name = pr.name;
@@ -776,7 +963,7 @@ export const dashboardChapter = query({
         }
       }
       const pct = pctOf(spentCents, b.amountCents);
-      projectBudgets.push({
+      oneTimeBudgets.push({
         id: b._id,
         name,
         cadence: b.cadence === "per_instance" ? "per_instance" : "one_off",
@@ -800,11 +987,9 @@ export const dashboardChapter = query({
     const teamName = new Map(teamDocs.map((t) => [t._id, t.name] as const));
     const recurringBudgets: (typeof recurringBudgetCard.type)[] = [];
     for (const b of budgets) {
-      const isRecurring =
+      const isRecurringCadence =
         b.cadence === "monthly" || b.cadence === "quarterly" || b.cadence === "yearly";
-      const isRecurringScope =
-        b.scope === "team" || b.scope === "bucket" || b.scope === "chapter";
-      if (!isRecurring || !isRecurringScope) continue;
+      if (effectiveType(b) !== "recurring" || !isRecurringCadence) continue;
       if (!recurringAppliesToMonth(b, year, month)) continue;
       // Scope recurring spend to THIS month (fixes "$2,000/mo" showing YTD).
       const { spentCents, categories } = budgetSpendBreakdown(
@@ -813,8 +998,8 @@ export const dashboardChapter = query({
         catName,
         month,
       );
-      let name = b.label ?? BUDGET_SCOPE_LABELS[b.scope];
-      if (b.scope === "team" && b.teamId) name = teamName.get(b.teamId) ?? name;
+      // Prefer an author label; fall back to a legacy team name, then a generic.
+      let name = b.label ?? (b.teamId ? teamName.get(b.teamId) : undefined) ?? "Recurring";
       const pct = pctOf(spentCents, b.amountCents);
       recurringBudgets.push({
         id: b._id,
@@ -828,6 +1013,47 @@ export const dashboardChapter = query({
         note: null,
       });
     }
+
+    // Per-tag rollups: for each chapter tag, sum the linked-txn actuals of every
+    // one of THIS year's budgets carrying it (a budget appears in each of its
+    // tags' rollups). Reached via `budgetTagLinks` `by_tag`; `budgetById`
+    // restricts to this chapter+year so a link to another year/level is skipped.
+    const budgetById = new Map(budgets.map((b) => [b._id, b] as const));
+    const chapterTags = await ctx.db
+      .query("budgetTags")
+      .withIndex("by_chapter", (q) => q.eq("chapterId", chapterId))
+      .take(ROLLUP_SCAN_LIMIT);
+    const tagRollups: (typeof tagRollupRow.type)[] = [];
+    for (const tag of chapterTags) {
+      const links = await ctx.db
+        .query("budgetTagLinks")
+        .withIndex("by_tag", (q) => q.eq("tagId", tag._id))
+        .take(ROLLUP_SCAN_LIMIT);
+      let spentCents = 0;
+      let budgetCents = 0;
+      let any = false;
+      for (const link of links) {
+        const b = budgetById.get(link.budgetId);
+        if (!b) continue;
+        any = true;
+        spentCents += yearTxns
+          .filter((tr) => txnCountsTowardBudget(tr, b, month))
+          .reduce((s, tr) => s + tr.amountCents, 0);
+        budgetCents += b.amountCents;
+      }
+      if (!any) continue;
+      const pct = pctOf(spentCents, budgetCents);
+      tagRollups.push({
+        tagId: tag._id,
+        tagName: tag.name,
+        kind: tag.kind ?? null,
+        budgetCents,
+        spentCents,
+        pct,
+        status: statusFor(pct),
+      });
+    }
+    tagRollups.sort((a, b) => b.spentCents - a.spentCents);
 
     // Per-fund SPEND for the month (period-bounded; all-time balance is deferred
     // to the Increase sync — an all-time scan silently truncates and isn't in
@@ -912,7 +1138,7 @@ export const dashboardChapter = query({
         meta: monthLabel,
       },
     ];
-    const topProject = projectBudgets[0];
+    const topProject = oneTimeBudgets[0];
     if (topProject) {
       tiles.push({
         label: topProject.name,
@@ -938,8 +1164,9 @@ export const dashboardChapter = query({
 
     return {
       tiles,
-      projectBudgets,
+      oneTimeBudgets,
       recurringBudgets,
+      tagRollups,
       recentTransactions,
       attention: [],
       funds,
@@ -949,14 +1176,14 @@ export const dashboardChapter = query({
 
 /**
  * The org-wide roll-up (prototype shape, central finance only): global tiles, a
- * by-template rollup across chapters, and a by-chapter rollup — all for the
+ * by-TAG rollup across chapters, and a by-chapter rollup — all for the
  * given `{year, month}` (default current Eastern month). Member data stays out.
  */
 export const dashboardCentral = query({
   args: { year: v.optional(v.number()), month: v.optional(v.number()) },
   returns: v.object({
     tiles: v.array(centralTile),
-    templateRollup: v.array(templateRollupRow),
+    tagRollups: v.array(tagRollupRow),
     chapterRollup: v.array(chapterRollupRow),
     centralBudgets: v.array(centralBudgetCard),
     totalMonthSpendCents: v.number(),
@@ -968,7 +1195,7 @@ export const dashboardCentral = query({
 
     const empty = {
       tiles: [] as never[],
-      templateRollup: [] as never[],
+      tagRollups: [] as never[],
       chapterRollup: [] as never[],
       centralBudgets: [] as never[],
       totalMonthSpendCents: 0,
@@ -978,18 +1205,22 @@ export const dashboardCentral = query({
     await requireFinanceCentral(ctx, chapterId);
 
     const chapters = await ctx.db.query("chapters").take(ROLLUP_SCAN_LIMIT);
-    const getEventType = nameCache(ctx, "eventTypes");
-    const getEvent = nameCache(ctx, "events");
 
     let totalMonthSpendCents = 0;
     let activeChapters = 0;
     let toReviewOrg = 0;
 
     const chapterRollup: (typeof chapterRollupRow.type)[] = [];
-    // templateName → { monthTotal, perChapter: Map<chapterName, cents> }
-    const templateAgg = new Map<
+    // Across-chapter by-tag aggregation, keyed by (kind, name) so same-named
+    // tags in different chapters merge into one org rollup row.
+    const tagAgg = new Map<
       string,
-      { monthTotal: number; perChapter: Map<string, number> }
+      {
+        name: string;
+        kind: (typeof BUDGET_TAG_KINDS)[number] | null;
+        spentCents: number;
+        budgetCents: number;
+      }
     >();
 
     for (const chapter of chapters) {
@@ -1000,23 +1231,6 @@ export const dashboardCentral = query({
       const monthTxns = periodTxns.filter((tr) => inPeriod(tr.postedAt, year, month));
       const chapterMonthSpend = sumSpend(monthTxns);
       totalMonthSpendCents += chapterMonthSpend;
-
-      // Template attribution: month spend grouped by each event's template.
-      for (const tr of monthTxns) {
-        if (!isSpend(tr) || !tr.eventId) continue;
-        const ev = await getEvent(tr.eventId);
-        if (!ev) continue;
-        const et = await getEventType(ev.eventTypeId);
-        const tname = et?.name ?? "Uncategorized template";
-        const agg =
-          templateAgg.get(tname) ?? { monthTotal: 0, perChapter: new Map() };
-        agg.monthTotal += tr.amountCents;
-        agg.perChapter.set(
-          chapter.name,
-          (agg.perChapter.get(chapter.name) ?? 0) + tr.amountCents,
-        );
-        templateAgg.set(tname, agg);
-      }
 
       // Month-equivalent budget allocation (monthly→amount, quarterly→÷3,
       // yearly→÷12, per-instance→in-period only) — comparable to one month of
@@ -1031,6 +1245,40 @@ export const dashboardCentral = query({
         (s, b) => s + monthEquivalentBudgetCents(b, year, month),
         0,
       );
+
+      // Tag attribution: for each of this chapter's tags, sum the linked-txn
+      // actuals of its year budgets, then merge into the org-wide by-tag agg.
+      const chBudgetById = new Map(chBudgets.map((b) => [b._id, b] as const));
+      const chTags = await ctx.db
+        .query("budgetTags")
+        .withIndex("by_chapter", (q) => q.eq("chapterId", chapter._id))
+        .take(ROLLUP_SCAN_LIMIT);
+      for (const tag of chTags) {
+        const links = await ctx.db
+          .query("budgetTagLinks")
+          .withIndex("by_tag", (q) => q.eq("tagId", tag._id))
+          .take(ROLLUP_SCAN_LIMIT);
+        let spent = 0;
+        let budget = 0;
+        let any = false;
+        for (const link of links) {
+          const b = chBudgetById.get(link.budgetId);
+          if (!b) continue;
+          any = true;
+          spent += periodTxns
+            .filter((tr) => txnCountsTowardBudget(tr, b, month))
+            .reduce((s, tr) => s + tr.amountCents, 0);
+          budget += b.amountCents;
+        }
+        if (!any) continue;
+        const key = `${tag.kind ?? ""}::${tag.name}`;
+        const agg =
+          tagAgg.get(key) ??
+          { name: tag.name, kind: tag.kind ?? null, spentCents: 0, budgetCents: 0 };
+        agg.spentCents += spent;
+        agg.budgetCents += budget;
+        tagAgg.set(key, agg);
+      }
 
       // Unreviewed count for the org "to review" tile.
       const unreviewed = await ctx.db
@@ -1078,7 +1326,7 @@ export const dashboardCentral = query({
       centralBudgets.push({
         id: cb._id,
         label: cb.label ?? null,
-        scope: cb.scope,
+        scope: cb.scope ?? null,
         cadence: cb.cadence,
         year: cb.year,
         budgetCents: cb.amountCents,
@@ -1088,19 +1336,20 @@ export const dashboardCentral = query({
       });
     }
 
-    const templateRollup = [...templateAgg.entries()]
-      .sort((a, b) => b[1].monthTotal - a[1].monthTotal)
-      .map(([templateName, agg]) => ({
-        templateName,
-        cadence: "per_instance",
-        scopeLabel: "Template",
-        monthTotalCents: agg.monthTotal,
-        perChapter: [...agg.perChapter.entries()].map(([chapterName, cents]) => ({
-          chapterName,
-          amountCents: cents,
-          barPct: barPctOf(cents, agg.monthTotal),
-        })),
-      }));
+    const tagRollups: (typeof tagRollupRow.type)[] = [...tagAgg.values()]
+      .sort((a, b) => b.spentCents - a.spentCents)
+      .map((agg) => {
+        const pct = pctOf(agg.spentCents, agg.budgetCents);
+        return {
+          tagId: null,
+          tagName: agg.name,
+          kind: agg.kind,
+          budgetCents: agg.budgetCents,
+          spentCents: agg.spentCents,
+          pct,
+          status: statusFor(pct),
+        };
+      });
 
     const tiles: (typeof centralTile.type)[] = [
       {
@@ -1109,12 +1358,12 @@ export const dashboardCentral = query({
         meta: `${activeChapters} chapters`,
       },
     ];
-    const topTemplate = templateRollup[0];
-    if (topTemplate) {
+    const topTag = tagRollups[0];
+    if (topTag) {
       tiles.push({
-        label: topTemplate.templateName,
-        value: formatCents(topTemplate.monthTotalCents),
-        meta: `across ${topTemplate.perChapter.length} chapters`,
+        label: topTag.tagName,
+        value: formatCents(topTag.spentCents),
+        meta: "across chapters",
       });
     }
     tiles.push({
@@ -1130,7 +1379,7 @@ export const dashboardCentral = query({
 
     return {
       tiles,
-      templateRollup,
+      tagRollups,
       chapterRollup,
       centralBudgets,
       totalMonthSpendCents,
@@ -1145,7 +1394,8 @@ export const budgetVsActual = query({
     v.object({
       budgetId: v.union(v.id("budgets"), v.null()),
       label: v.string(),
-      scope: scopeValidator,
+      type: v.union(typeValidator, v.null()),
+      scope: v.union(scopeValidator, v.null()),
       allocatedCents: v.number(),
       actualCents: v.number(),
     }),
@@ -1183,8 +1433,9 @@ export const budgetVsActual = query({
       );
       return {
         budgetId: b._id,
-        label: b.label ?? BUDGET_SCOPE_LABELS[b.scope],
-        scope: b.scope,
+        label: b.label ?? (b.scope ? BUDGET_SCOPE_LABELS[b.scope] : "Budget"),
+        type: effectiveType(b),
+        scope: b.scope ?? null,
         allocatedCents: b.amountCents,
         actualCents,
       };
@@ -1593,7 +1844,8 @@ export const listBudgets = query({
     if (!chapterId) return [];
     await requireFinanceRole(ctx, chapterId, "viewer");
     // The caller's chapter budgets PLUS every org-level (central) budget, each
-    // tagged with its `level` so the reconcile picker can group them.
+    // tagged with its `level` so the reconcile picker can group them, and with
+    // its managed tags resolved from `budgetTagLinks`.
     const chapterBudgets = await ctx.db
       .query("budgets")
       .withIndex("by_chapter", (q) => q.eq("chapterId", chapterId))
@@ -1602,20 +1854,28 @@ export const listBudgets = query({
       .query("budgets")
       .withIndex("by_chapter", (q) => q.eq("chapterId", CENTRAL))
       .take(ROLLUP_SCAN_LIMIT);
-    return [...chapterBudgets, ...centralBudgets].map(toBudgetSummary);
+    const tagCache = new Map<string, Doc<"budgetTags"> | null>();
+    const rows: (typeof budgetSummary.type)[] = [];
+    for (const b of [...chapterBudgets, ...centralBudgets]) {
+      const tags = await loadBudgetTags(ctx, b._id, tagCache);
+      rows.push(toBudgetSummary(b, tags));
+    }
+    return rows;
   },
 });
 
-/** Validate + verify tenancy of the optional narrowers on a budget write. */
+/**
+ * Validate + verify tenancy of the optional narrowers on a budget write. The
+ * one_time instance ref is verified against `events`/`projects` per `refKind`.
+ */
 async function verifyBudgetRefs(
   ctx: MutationCtx,
   chapterId: Id<"chapters">,
   b: {
-    scope?: string;
+    refKind?: BudgetRefKind | null;
     scopeRefId?: string | null;
     fundId?: Id<"funds"> | null;
     categoryId?: Id<"budgetCategories"> | null;
-    teamId?: Id<"financeTeams"> | null;
     month?: number | null;
     quarter?: number | null;
   },
@@ -1629,14 +1889,8 @@ async function verifyBudgetRefs(
   if (b.fundId) await requireInCallerChapter(ctx, chapterId, "funds", b.fundId, "Fund");
   if (b.categoryId)
     await requireInCallerChapter(ctx, chapterId, "budgetCategories", b.categoryId, "Category");
-  if (b.teamId)
-    await requireInCallerChapter(ctx, chapterId, "financeTeams", b.teamId, "Team", {
-      allowCentral: true,
-    });
   if (b.scopeRefId) {
-    if (b.scope === "event") {
-      await requireInCallerChapter(ctx, chapterId, "events", b.scopeRefId as Id<"events">, "Event");
-    } else if (b.scope === "project") {
+    if (b.refKind === "project") {
       await requireInCallerChapter(
         ctx,
         chapterId,
@@ -1644,6 +1898,8 @@ async function verifyBudgetRefs(
         b.scopeRefId as Id<"projects">,
         "Project",
       );
+    } else {
+      await requireInCallerChapter(ctx, chapterId, "events", b.scopeRefId as Id<"events">, "Event");
     }
   }
 }
@@ -1651,17 +1907,20 @@ async function verifyBudgetRefs(
 export const createBudget = mutation({
   args: {
     amountCents: v.number(),
-    scope: scopeValidator,
+    // v2: one_time (a specific event/project) vs recurring.
+    type: typeValidator,
     cadence: cadenceValidator,
     year: v.number(),
     label: v.optional(v.string()),
+    // one_time: which instance table `scopeRefId` points at + the id.
+    refKind: v.optional(refKindValidator),
     scopeRefId: v.optional(v.string()),
     month: v.optional(v.number()),
     quarter: v.optional(v.number()),
     fundId: v.optional(v.id("funds")),
     categoryId: v.optional(v.id("budgetCategories")),
-    teamId: v.optional(v.id("financeTeams")),
-    rolloverPolicy: v.optional(rolloverValidator),
+    // Managed tags to attach (many-to-many); verified in-tenant.
+    tagIds: v.optional(v.array(v.id("budgetTags"))),
     // When true, create an org-level (central) budget instead of a chapter one:
     // it stores `chapterId: "central"` and requires central finance access.
     central: v.optional(v.boolean()),
@@ -1676,25 +1935,49 @@ export const createBudget = mutation({
       await requireFinanceManager(ctx, chapterId);
     }
     assertIntegerCents(args.amountCents, "Budget amount");
-    await verifyBudgetRefs(ctx, chapterId, args);
+    // `refKind`/`scopeRefId` only make sense on a one_time budget.
+    const refKind = args.type === "one_time" ? args.refKind ?? undefined : undefined;
+    const scopeRefId = args.type === "one_time" ? args.scopeRefId : undefined;
+    await verifyBudgetRefs(ctx, chapterId, {
+      refKind,
+      scopeRefId,
+      fundId: args.fundId,
+      categoryId: args.categoryId,
+      month: args.month,
+      quarter: args.quarter,
+    });
+    const level: BudgetLevel = args.central ? CENTRAL : chapterId;
+    // Verify each explicit tag is usable at this budget's level BEFORE inserting.
+    for (const tagId of args.tagIds ?? []) {
+      await requireTagInLevel(ctx, level, tagId);
+    }
     const userId = (await requireUserId(ctx)) as Id<"users">;
-    return await ctx.db.insert("budgets", {
-      chapterId: args.central ? CENTRAL : chapterId,
+    const budgetId = await ctx.db.insert("budgets", {
+      chapterId: level,
       amountCents: args.amountCents,
       label: args.label,
-      scope: args.scope,
-      scopeRefId: args.scopeRefId,
+      type: args.type,
+      refKind,
+      scopeRefId,
       cadence: args.cadence,
       year: args.year,
       month: args.month,
       quarter: args.quarter,
       fundId: args.fundId,
       categoryId: args.categoryId,
-      teamId: args.teamId,
-      rolloverPolicy: args.rolloverPolicy,
       createdBy: userId,
       createdAt: Date.now(),
     });
+    const seen = new Set<string>();
+    for (const tagId of args.tagIds ?? []) {
+      await linkBudgetTag(ctx, budgetId, level, tagId, seen);
+    }
+    // Auto-tag one_time EVENT budgets with the eventType template tag + an
+    // "events" tag (idempotent + deduped against any explicit tags above).
+    if (args.type === "one_time" && refKind === "event") {
+      await autoTagEventBudget(ctx, budgetId, level, scopeRefId ?? undefined, seen, userId);
+    }
+    return budgetId;
   },
 });
 
@@ -1704,7 +1987,8 @@ export const updateBudget = mutation({
     patch: v.object({
       amountCents: v.optional(v.number()),
       label: v.optional(v.union(v.string(), v.null())),
-      scope: v.optional(scopeValidator),
+      type: v.optional(typeValidator),
+      refKind: v.optional(v.union(refKindValidator, v.null())),
       scopeRefId: v.optional(v.union(v.string(), v.null())),
       cadence: v.optional(cadenceValidator),
       year: v.optional(v.number()),
@@ -1712,9 +1996,10 @@ export const updateBudget = mutation({
       quarter: v.optional(v.union(v.number(), v.null())),
       fundId: v.optional(v.union(v.id("funds"), v.null())),
       categoryId: v.optional(v.union(v.id("budgetCategories"), v.null())),
-      teamId: v.optional(v.union(v.id("financeTeams"), v.null())),
-      rolloverPolicy: v.optional(rolloverValidator),
     }),
+    // When provided, REPLACE the budget's whole tag set (diff the links). Omit
+    // to leave the existing tags untouched.
+    tagIds: v.optional(v.array(v.id("budgetTags"))),
   },
   returns: v.null(),
   handler: async (ctx, args) => {
@@ -1730,7 +2015,8 @@ export const updateBudget = mutation({
       "Budget",
       { allowCentral: true },
     );
-    if (budget.chapterId === CENTRAL) {
+    const level = budget.chapterId as BudgetLevel;
+    if (level === CENTRAL) {
       await requireFinanceCentral(ctx, chapterId);
     } else {
       await requireFinanceManager(ctx, chapterId);
@@ -1739,29 +2025,49 @@ export const updateBudget = mutation({
       assertIntegerCents(args.patch.amountCents, "Budget amount");
     }
     const patch = { ...args.patch };
-    const newScope = patch.scope ?? budget.scope;
-    // When the scope CHANGES without a fresh `scopeRefId`, the old ref is stale:
-    // an instance scope (event/project) needs one; a non-instance scope must
-    // clear it (else the budget carries a dangling ref that matches nothing).
-    if (patch.scope && patch.scope !== budget.scope && patch.scopeRefId === undefined) {
-      if (newScope === "event" || newScope === "project") {
-        throw new ConvexError({
-          code: "SCOPE_REF_REQUIRED",
-          message: `Changing scope to ${newScope} requires a scopeRefId.`,
-        });
-      }
-      patch.scopeRefId = null; // clear the stale ref
+    const newType = patch.type ?? effectiveType(budget);
+    // A recurring budget carries no instance ref: clear a stale event/project.
+    if (newType === "recurring") {
+      if (patch.refKind === undefined) patch.refKind = null;
+      if (patch.scopeRefId === undefined) patch.scopeRefId = null;
     }
+    const newRefKind =
+      newType === "one_time"
+        ? (patch.refKind ?? budget.refKind ?? effectiveRefKind(budget) ?? undefined)
+        : undefined;
     await verifyBudgetRefs(ctx, chapterId, {
-      scope: newScope,
+      refKind: newRefKind,
       scopeRefId: patch.scopeRefId,
       fundId: patch.fundId,
       categoryId: patch.categoryId,
-      teamId: patch.teamId,
       month: patch.month,
       quarter: patch.quarter,
     });
     await ctx.db.patch(args.budgetId, cleanPatch(patch));
+
+    // Replace the tag set when `tagIds` was provided (diff the link rows).
+    if (args.tagIds !== undefined) {
+      const want = new Set(args.tagIds);
+      for (const tagId of want) await requireTagInLevel(ctx, level, tagId);
+      const existing = await ctx.db
+        .query("budgetTagLinks")
+        .withIndex("by_budget", (q) => q.eq("budgetId", args.budgetId))
+        .take(ROLLUP_SCAN_LIMIT);
+      const have = new Set(existing.map((l) => l.tagId as string));
+      for (const link of existing) {
+        if (!want.has(link.tagId)) await ctx.db.delete(link._id);
+      }
+      for (const tagId of want) {
+        if (!have.has(tagId)) {
+          await ctx.db.insert("budgetTagLinks", {
+            budgetId: args.budgetId,
+            tagId,
+            chapterId: level,
+            createdAt: Date.now(),
+          });
+        }
+      }
+    }
     return null;
   },
 });
@@ -1784,8 +2090,263 @@ export const deleteBudget = mutation({
     } else {
       await requireFinanceManager(ctx, chapterId);
     }
+    // Remove its tag links, then the budget.
+    const links = await ctx.db
+      .query("budgetTagLinks")
+      .withIndex("by_budget", (q) => q.eq("budgetId", args.budgetId))
+      .take(ROLLUP_SCAN_LIMIT);
+    for (const link of links) await ctx.db.delete(link._id);
     await ctx.db.delete(args.budgetId);
     return null;
+  },
+});
+
+// ── Budget tags (managed CRUD) ───────────────────────────────────────────────
+// Gated: chapter tags need a chapter finance manager; central tags need central
+// reach. TODO(PR3): also allow president/ED once the specialized-roles system
+// lands (do NOT build those role checks here — they don't exist yet).
+
+const budgetTagSummary = v.object({
+  id: v.id("budgetTags"),
+  name: v.string(),
+  kind: v.union(tagKindValidator, v.null()),
+  refId: v.union(v.string(), v.null()),
+  level: v.union(v.literal("chapter"), v.literal("central")),
+});
+
+function toBudgetTagSummary(t: Doc<"budgetTags">) {
+  return {
+    id: t._id,
+    name: t.name,
+    kind: t.kind ?? null,
+    refId: t.refId ?? null,
+    level: t.chapterId === CENTRAL ? ("central" as const) : ("chapter" as const),
+  };
+}
+
+export const listBudgetTags = query({
+  args: {},
+  returns: v.array(budgetTagSummary),
+  handler: async (ctx) => {
+    const chapterId = await readChapterId(ctx);
+    if (!chapterId) return [];
+    await requireFinanceRole(ctx, chapterId, "viewer");
+    const chapterTags = await ctx.db
+      .query("budgetTags")
+      .withIndex("by_chapter", (q) => q.eq("chapterId", chapterId))
+      .take(ROLLUP_SCAN_LIMIT);
+    const centralTags = await ctx.db
+      .query("budgetTags")
+      .withIndex("by_chapter", (q) => q.eq("chapterId", CENTRAL))
+      .take(ROLLUP_SCAN_LIMIT);
+    return [...chapterTags, ...centralTags]
+      .sort((a, b) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0))
+      .map(toBudgetTagSummary);
+  },
+});
+
+export const createBudgetTag = mutation({
+  args: {
+    name: v.string(),
+    kind: v.optional(tagKindValidator),
+    refId: v.optional(v.string()),
+    sortOrder: v.optional(v.number()),
+    // Org-level (central) tag; requires central finance reach.
+    central: v.optional(v.boolean()),
+  },
+  returns: v.id("budgetTags"),
+  handler: async (ctx, args) => {
+    const chapterId = (await requireChapterId(ctx)) as Id<"chapters">;
+    if (args.central) {
+      await requireFinanceCentral(ctx, chapterId);
+    } else {
+      await requireFinanceManager(ctx, chapterId);
+    }
+    const level: BudgetLevel = args.central ? CENTRAL : chapterId;
+    const userId = (await requireUserId(ctx)) as Id<"users">;
+    return await ctx.db.insert("budgetTags", {
+      chapterId: level,
+      name: args.name,
+      kind: args.kind,
+      refId: args.refId,
+      sortOrder: args.sortOrder,
+      createdBy: userId,
+      createdAt: Date.now(),
+    });
+  },
+});
+
+export const updateBudgetTag = mutation({
+  args: {
+    tagId: v.id("budgetTags"),
+    patch: v.object({
+      name: v.optional(v.string()),
+      kind: v.optional(v.union(tagKindValidator, v.null())),
+      refId: v.optional(v.union(v.string(), v.null())),
+      sortOrder: v.optional(v.number()),
+    }),
+  },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    const chapterId = (await requireChapterId(ctx)) as Id<"chapters">;
+    const tag = await requireInCallerChapter(
+      ctx,
+      chapterId,
+      "budgetTags",
+      args.tagId,
+      "Tag",
+      { allowCentral: true },
+    );
+    if (tag.chapterId === CENTRAL) {
+      await requireFinanceCentral(ctx, chapterId);
+    } else {
+      await requireFinanceManager(ctx, chapterId);
+    }
+    await ctx.db.patch(args.tagId, cleanPatch(args.patch));
+    return null;
+  },
+});
+
+export const deleteBudgetTag = mutation({
+  args: { tagId: v.id("budgetTags") },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    const chapterId = (await requireChapterId(ctx)) as Id<"chapters">;
+    const tag = await requireInCallerChapter(
+      ctx,
+      chapterId,
+      "budgetTags",
+      args.tagId,
+      "Tag",
+      { allowCentral: true },
+    );
+    if (tag.chapterId === CENTRAL) {
+      await requireFinanceCentral(ctx, chapterId);
+    } else {
+      await requireFinanceManager(ctx, chapterId);
+    }
+    // Blocked while any budget still carries the tag.
+    const inUse = await ctx.db
+      .query("budgetTagLinks")
+      .withIndex("by_tag", (q) => q.eq("tagId", args.tagId))
+      .first();
+    if (inUse) {
+      throw new ConvexError({
+        code: "TAG_IN_USE",
+        message: "This tag is still used by one or more budgets.",
+      });
+    }
+    await ctx.db.delete(args.tagId);
+    return null;
+  },
+});
+
+// ── Migration: legacy `scope` → v2 `type` + tags ─────────────────────────────
+/**
+ * Backfill every legacy budget onto the v2 `type` + tag model. Superuser-gated
+ * public wrapper (invoke manually — NOT in the auto-run registry). Idempotent:
+ * a budget that already has `type` set is skipped, so re-runs are no-ops.
+ *
+ * Per-scope mapping:
+ *  - event    → one_time, refKind=event; auto-tag the eventType template tag + an "events" tag
+ *  - project  → one_time, refKind=project
+ *  - team     → recurring; ensure/link a `team` tag (refId=teamId, name=financeTeams.name)
+ *  - template → recurring; ensure/link a `template` tag when scopeRefId resolves to an eventType
+ *  - bucket   → recurring (no tags)
+ *  - chapter  → recurring (no tags)
+ *
+ * Run locally:  npx convex run finances:migrateBudgetScopesToTypes
+ * Run on prod:  npx convex run --prod finances:migrateBudgetScopesToTypes
+ */
+export const migrateBudgetScopesToTypes = mutation({
+  args: {},
+  returns: v.object({
+    migrated: v.number(),
+    skipped: v.number(),
+    tagsLinked: v.number(),
+  }),
+  handler: async (ctx) => {
+    await requireSuperuser(ctx);
+    let migrated = 0;
+    let skipped = 0;
+    let tagsLinked = 0;
+
+    const all = await ctx.db.query("budgets").collect();
+    for (const b of all) {
+      // Idempotent: a budget already on the v2 model is left untouched.
+      if (b.type != null) {
+        skipped++;
+        continue;
+      }
+      const level = b.chapterId as BudgetLevel;
+      const seen = new Set<string>();
+      let type: BudgetType = "recurring";
+      let refKind: BudgetRefKind | undefined;
+
+      switch (b.scope) {
+        case "event": {
+          type = "one_time";
+          refKind = "event";
+          break;
+        }
+        case "project": {
+          type = "one_time";
+          refKind = "project";
+          break;
+        }
+        case "team": {
+          type = "recurring";
+          const teamId = (b.teamId ?? b.scopeRefId) as Id<"financeTeams"> | undefined;
+          if (teamId) {
+            const team = await ctx.db.get(teamId);
+            if (team && "name" in team) {
+              const tagId = await ensureTag(ctx, {
+                chapterId: level,
+                name: (team as Doc<"financeTeams">).name,
+                kind: "team",
+                refId: teamId,
+              });
+              await linkBudgetTag(ctx, b._id, level, tagId, seen);
+              tagsLinked++;
+            }
+          }
+          break;
+        }
+        case "template": {
+          type = "recurring";
+          if (b.scopeRefId) {
+            const et = await ctx.db.get(b.scopeRefId as Id<"eventTypes">);
+            if (et && "name" in et) {
+              const tagId = await ensureTag(ctx, {
+                chapterId: level,
+                name: (et as Doc<"eventTypes">).name,
+                kind: "template",
+                refId: b.scopeRefId,
+              });
+              await linkBudgetTag(ctx, b._id, level, tagId, seen);
+              tagsLinked++;
+            }
+          }
+          break;
+        }
+        // bucket / chapter / undefined → recurring, no tags.
+        default:
+          type = "recurring";
+          break;
+      }
+
+      await ctx.db.patch(b._id, { type, refKind });
+
+      // Event budgets also get the auto template + events tags.
+      if (type === "one_time" && refKind === "event") {
+        const before = seen.size;
+        await autoTagEventBudget(ctx, b._id, level, b.scopeRefId ?? undefined, seen);
+        tagsLinked += seen.size - before;
+      }
+      migrated++;
+    }
+
+    return { migrated, skipped, tagsLinked };
   },
 });
 

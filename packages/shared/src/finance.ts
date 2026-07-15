@@ -31,11 +31,45 @@ export const FUND_RESTRICTION_LABELS: Record<FundRestriction, string> = {
 export const BUDGET_CATEGORY_KINDS = ["category", "lineItem"] as const;
 export type BudgetCategoryKind = (typeof BUDGET_CATEGORY_KINDS)[number];
 
-// ── Budgets: scope × cadence × categories ────────────────────────────────────
+// ── Budgets: type × cadence × tags (v2) ──────────────────────────────────────
+// A budget v2 has three axes: its TYPE (one_time vs recurring — the source of
+// truth, replacing the 6-value `scope`), its LEVEL (a real chapter or the
+// `"central"` sentinel, stored in `chapterId`), and MULTIPLE managed TAGS (the
+// flexible filter + rollup dimension). It still carries a CADENCE and optionally
+// narrows to a fund + category.
+export const BUDGET_TYPES = ["one_time", "recurring"] as const;
+export type BudgetType = (typeof BUDGET_TYPES)[number];
+
+export const BUDGET_TYPE_LABELS: Record<BudgetType, string> = {
+  one_time: "One-time",
+  recurring: "Recurring",
+};
+
+// A one_time budget points at a specific event or project (its `scopeRefId` is
+// that instance's id); `refKind` says which table the ref points at.
+export const BUDGET_REF_KINDS = ["event", "project"] as const;
+export type BudgetRefKind = (typeof BUDGET_REF_KINDS)[number];
+
+// Managed budget tags. `team`/`template` tags carry a `refId` (a financeTeams /
+// eventType id) for auto-tag dedup; `events` is the auto-applied catch-all for
+// event budgets; `custom` is a free author-created tag.
+export const BUDGET_TAG_KINDS = [
+  "team",
+  "template",
+  "events",
+  "custom",
+] as const;
+export type BudgetTagKind = (typeof BUDGET_TAG_KINDS)[number];
+
 // A budget is a flexible allocation. Its SCOPE says what it's attached to, its
 // CADENCE says how often it recurs, and it optionally narrows to a fund +
 // category. Any scope can take any cadence ("Development team = $2,000/mo",
 // "Equipment = $4,000/yr", "Worship w/ Strangers = $500/instance").
+/**
+ * @deprecated Budgets v2 uses `BUDGET_TYPES` + multiple `BUDGET_TAG_KINDS` tags.
+ * `scope` survives only as an optional legacy column + the migration mapping;
+ * new code must switch on `type`, never `scope`.
+ */
 export const BUDGET_SCOPES = [
   "event", // one specific event instance
   "project", // one specific project
@@ -46,6 +80,7 @@ export const BUDGET_SCOPES = [
 ] as const;
 export type BudgetScope = (typeof BUDGET_SCOPES)[number];
 
+/** @deprecated Legacy scope labels — kept for the migration + legacy column. */
 export const BUDGET_SCOPE_LABELS: Record<BudgetScope, string> = {
   event: "Event",
   project: "Project",

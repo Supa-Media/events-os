@@ -177,10 +177,10 @@ describe("budgets + budgetVsActual (Estimated ≠ Actual)", () => {
       kind: "lineItem",
     });
 
-    // A monthly bucket budget narrowed to the Food category: $500.00 allocated.
+    // A recurring monthly budget narrowed to the Food category: $500.00 allocated.
     const budgetId = await s.as.mutation(api.finances.createBudget, {
       amountCents: 50000,
-      scope: "bucket",
+      type: "recurring",
       cadence: "monthly",
       year,
       month,
@@ -234,7 +234,7 @@ describe("budgets + budgetVsActual (Estimated ≠ Actual)", () => {
     await asManager(s);
     const budgetId = await s.as.mutation(api.finances.createBudget, {
       amountCents: 200000,
-      scope: "team",
+      type: "recurring",
       cadence: "yearly",
       year: 2026,
     });
@@ -433,7 +433,8 @@ describe("enriched dashboards (prototype shapes)", () => {
 
     const budgetId = await s.as.mutation(api.finances.createBudget, {
       amountCents: 40000,
-      scope: "event",
+      type: "one_time",
+      refKind: "event",
       cadence: "per_instance",
       year,
       scopeRefId: eventId,
@@ -459,7 +460,7 @@ describe("enriched dashboards (prototype shapes)", () => {
     });
 
     const dash = await s.as.query(api.finances.dashboardChapter, { year, month });
-    const card = dash.projectBudgets.find((p) => p.id === budgetId);
+    const card = dash.oneTimeBudgets.find((p) => p.id === budgetId);
     expect(card).toBeDefined();
     expect(card?.name).toBe("May Worship");
     expect(card?.cadence).toBe("per_instance");
@@ -496,7 +497,7 @@ describe("enriched dashboards (prototype shapes)", () => {
     });
     const budgetId = await s.as.mutation(api.finances.createBudget, {
       amountCents: 10000,
-      scope: "bucket",
+      type: "recurring",
       cadence: "monthly",
       year,
       month,
@@ -517,7 +518,7 @@ describe("enriched dashboards (prototype shapes)", () => {
     expect(bucket?.status).toBe("warn");
   });
 
-  test("dashboardCentral: rollups group two chapters + a template", async () => {
+  test("dashboardCentral: chapter rollup + a by-tag rollup across two chapters", async () => {
     const t = newT();
     // Superuser → implicit central manager.
     const s = await setupChapter(t, { email: "seyi@publicworship.life" });
@@ -525,81 +526,81 @@ describe("enriched dashboards (prototype shapes)", () => {
     const month = 5;
     const when = tsInMonth(year, month);
 
-    // Chapter A: a $70 event spend coded under a template.
-    await run(t, async (ctx) => {
-      const eventTypeId = await ctx.db.insert("eventTypes", {
-        chapterId: s.chapterId,
-        name: "Sunday Gathering",
-        slug: "sunday",
-        version: 1,
-        createdBy: s.userId,
-        createdAt: Date.now(),
-        updatedAt: Date.now(),
+    // Set up one chapter with an event, its one_time budget, a same-named
+    // "Growth" tag, and a $spend linked to the budget. Returns nothing.
+    const seedChapterBudget = async (
+      chapterId: Id<"chapters">,
+      eventName: string,
+      amountSpent: number,
+    ) => {
+      await run(t, async (ctx) => {
+        const eventTypeId = await ctx.db.insert("eventTypes", {
+          chapterId,
+          name: "Sunday Gathering",
+          slug: "sunday",
+          version: 1,
+          createdBy: s.userId,
+          createdAt: Date.now(),
+          updatedAt: Date.now(),
+        });
+        const eventId = await ctx.db.insert("events", {
+          chapterId,
+          eventTypeId,
+          templateVersion: 1,
+          name: eventName,
+          eventDate: when,
+          status: "planning",
+          createdBy: s.userId,
+          createdAt: Date.now(),
+          updatedAt: Date.now(),
+        });
+        const budgetId = await ctx.db.insert("budgets", {
+          chapterId,
+          amountCents: 100000,
+          type: "one_time",
+          refKind: "event",
+          scopeRefId: eventId,
+          cadence: "per_instance",
+          year,
+          createdAt: Date.now(),
+        });
+        // A shared-name "Growth" custom tag carried by each chapter's budget.
+        const tagId = await ctx.db.insert("budgetTags", {
+          chapterId,
+          name: "Growth",
+          kind: "custom",
+          createdAt: Date.now(),
+        });
+        await ctx.db.insert("budgetTagLinks", {
+          budgetId,
+          tagId,
+          chapterId,
+          createdAt: Date.now(),
+        });
+        await ctx.db.insert("transactions", {
+          chapterId,
+          source: "manual",
+          flow: "outflow",
+          amountCents: amountSpent,
+          postedAt: when,
+          eventId,
+          budgetId,
+          status: "categorized",
+          createdAt: Date.now(),
+        });
       });
-      const eventId = await ctx.db.insert("events", {
-        chapterId: s.chapterId,
-        eventTypeId,
-        templateVersion: 1,
-        name: "May Gathering",
-        eventDate: when,
-        status: "planning",
-        createdBy: s.userId,
-        createdAt: Date.now(),
-        updatedAt: Date.now(),
-      });
-      await ctx.db.insert("transactions", {
-        chapterId: s.chapterId,
-        source: "manual",
-        flow: "outflow",
-        amountCents: 7000,
-        postedAt: when,
-        eventId,
-        status: "categorized",
-        createdAt: Date.now(),
-      });
-    });
+    };
 
-    // Chapter B: a $30 event spend under a template of the SAME name.
-    await run(t, async (ctx) => {
-      const chapterB = await ctx.db.insert("chapters", {
-        name: "Boston",
-        isActive: true,
-        createdAt: Date.now(),
-      });
-      const eventTypeId = await ctx.db.insert("eventTypes", {
-        chapterId: chapterB,
-        name: "Sunday Gathering",
-        slug: "sunday",
-        version: 1,
-        createdBy: s.userId,
-        createdAt: Date.now(),
-        updatedAt: Date.now(),
-      });
-      const eventId = await ctx.db.insert("events", {
-        chapterId: chapterB,
-        eventTypeId,
-        templateVersion: 1,
-        name: "Boston Gathering",
-        eventDate: when,
-        status: "planning",
-        createdBy: s.userId,
-        createdAt: Date.now(),
-        updatedAt: Date.now(),
-      });
-      await ctx.db.insert("transactions", {
-        chapterId: chapterB,
-        source: "manual",
-        flow: "outflow",
-        amountCents: 3000,
-        postedAt: when,
-        eventId,
-        status: "categorized",
-        createdAt: Date.now(),
-      });
-    });
+    // Chapter A (New York, the caller's chapter): $70 linked to its budget.
+    await seedChapterBudget(s.chapterId, "May Gathering", 7000);
+    // Chapter B (Boston): $30 linked to its own budget carrying the same tag.
+    const chapterB = await run(t, (ctx) =>
+      ctx.db.insert("chapters", { name: "Boston", isActive: true, createdAt: Date.now() }),
+    );
+    await seedChapterBudget(chapterB, "Boston Gathering", 3000);
 
     const dash = await s.as.query(api.finances.dashboardCentral, { year, month });
-    // Two chapters rolled up.
+    // Two chapters rolled up by month spend.
     const names = dash.chapterRollup.map((c) => c.chapterName);
     expect(names).toContain("New York");
     expect(names).toContain("Boston");
@@ -609,12 +610,10 @@ describe("enriched dashboards (prototype shapes)", () => {
     expect(
       dash.chapterRollup.find((c) => c.chapterName === "Boston")?.spentCents,
     ).toBe(3000);
-    // One template row aggregating both chapters' spend.
-    const tpl = dash.templateRollup.find(
-      (x) => x.templateName === "Sunday Gathering",
-    );
-    expect(tpl?.monthTotalCents).toBe(10000);
-    expect(tpl?.perChapter.length).toBe(2);
+    // One by-tag row aggregating both chapters' "Growth" budgets' actuals.
+    const growth = dash.tagRollups.find((x) => x.tagName === "Growth");
+    expect(growth?.spentCents).toBe(10000); // 7000 + 3000
+    expect(growth?.budgetCents).toBe(200000); // 100000 + 100000
     // Global month tile.
     expect(dash.tiles[0].label).toContain("all chapters");
     expect(dash.totalMonthSpendCents).toBe(10000);
@@ -640,7 +639,7 @@ describe("money-math regression fixes", () => {
     // "$2,000 / month" — stored WITHOUT a month (applies to every month).
     const budgetId = await s.as.mutation(api.finances.createBudget, {
       amountCents: 200000,
-      scope: "bucket",
+      type: "recurring",
       cadence: "monthly",
       year,
       categoryId,
@@ -699,7 +698,7 @@ describe("money-math regression fixes", () => {
     // A $1,200/yr chapter budget → $100 month-equivalent.
     await s.as.mutation(api.finances.createBudget, {
       amountCents: 120000,
-      scope: "chapter",
+      type: "recurring",
       cadence: "yearly",
       year,
     });
@@ -716,20 +715,48 @@ describe("money-math regression fixes", () => {
     expect(ny?.status).toBe("ok"); // 50% of the month-equivalent allocation
   });
 
-  test("updateBudget: changing scope to event without a scopeRefId is rejected", async () => {
+  test("updateBudget: pointing a one_time budget at a cross-chapter event is rejected", async () => {
     const t = newT();
     const s = await setupChapter(t);
     await asManager(s);
     const budgetId = await s.as.mutation(api.finances.createBudget, {
       amountCents: 1000,
-      scope: "bucket",
+      type: "recurring",
       cadence: "monthly",
       year: 2026,
+    });
+    // An event living in a DIFFERENT chapter.
+    const foreignEvent = await run(t, async (ctx) => {
+      const otherChapter = await ctx.db.insert("chapters", {
+        name: "Boston",
+        isActive: true,
+        createdAt: Date.now(),
+      });
+      const eventTypeId = await ctx.db.insert("eventTypes", {
+        chapterId: otherChapter,
+        name: "Other",
+        slug: "other",
+        version: 1,
+        createdBy: s.userId,
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      });
+      return ctx.db.insert("events", {
+        chapterId: otherChapter,
+        eventTypeId,
+        templateVersion: 1,
+        name: "Foreign",
+        eventDate: Date.now(),
+        status: "planning",
+        createdBy: s.userId,
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      });
     });
     await expect(
       s.as.mutation(api.finances.updateBudget, {
         budgetId,
-        patch: { scope: "event" },
+        patch: { type: "one_time", refKind: "event", scopeRefId: foreignEvent },
       }),
     ).rejects.toBeInstanceOf(ConvexError);
   });
