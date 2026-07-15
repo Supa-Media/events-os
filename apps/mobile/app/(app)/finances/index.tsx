@@ -25,7 +25,9 @@ import { colors } from "../../../lib/theme";
 import {
   FinanceBoundary,
   MonthStepper,
+  PeriodSwitch,
   PerspectiveSwitch,
+  type DashPeriodMode,
   type Perspective,
 } from "../../../components/finance/dashboard/parts";
 import { ChapterView } from "../../../components/finance/dashboard/ChapterView";
@@ -78,6 +80,7 @@ function NoFinanceAccess() {
 function DashboardBody() {
   const now = new Date();
   const [ym, setYm] = useState({ year: now.getFullYear(), month: now.getMonth() + 1 });
+  const [period, setPeriod] = useState<DashPeriodMode>("month");
   const [perspective, setPerspective] = useState<Perspective>("chapter");
   // null = still probing, true/false = whether the caller is central.
   const [centralAvailable, setCentralAvailable] = useState<boolean | null>(null);
@@ -109,9 +112,12 @@ function DashboardBody() {
   return (
     <Screen>
       <Narrow>
-        {/* Controls: month stepper + "Preview as" perspective switch. */}
+        {/* Controls: month stepper + Month/YTD toggle + "Preview as" switch. */}
         <View className="mb-4 flex-row flex-wrap items-center justify-between gap-3">
-          <MonthStepper year={ym.year} month={ym.month} onChange={setYm} />
+          <View className="flex-row flex-wrap items-center gap-2">
+            <MonthStepper year={ym.year} month={ym.month} period={period} onChange={setYm} />
+            <PeriodSwitch value={period} onChange={setPeriod} />
+          </View>
           <PerspectiveSwitch value={perspective} options={options} onChange={choose} />
         </View>
 
@@ -121,6 +127,7 @@ function DashboardBody() {
           <FinanceBoundary onError={() => setCentralAvailable(false)}>
             <CentralSection
               ym={ym}
+              period={period}
               show={perspective === "central"}
               onAvailable={() => setCentralAvailable(true)}
             />
@@ -131,6 +138,7 @@ function DashboardBody() {
           <FinanceBoundary fallback={<NoFinanceAccess />}>
             <ChapterSection
               ym={ym}
+              period={period}
               onNewBudget={() => setBudgetModal({ open: true, id: null })}
               onEditBudget={(id) =>
                 setBudgetModal({ open: true, id: id as Id<"budgets"> })
@@ -168,14 +176,16 @@ function DashboardBody() {
 
 function CentralSection({
   ym,
+  period,
   show,
   onAvailable,
 }: {
   ym: { year: number; month: number };
+  period: DashPeriodMode;
   show: boolean;
   onAvailable: () => void;
 }) {
-  const data = useQuery(api.finances.dashboardCentral, ym);
+  const data = useQuery(api.finances.dashboardCentral, { ...ym, period });
   useEffect(() => {
     if (data !== undefined) onAvailable();
   }, [data, onAvailable]);
@@ -186,16 +196,18 @@ function CentralSection({
 
 function ChapterSection({
   ym,
+  period,
   onNewBudget,
   onEditBudget,
   onAddTransaction,
 }: {
   ym: { year: number; month: number };
+  period: DashPeriodMode;
   onNewBudget: () => void;
   onEditBudget: (budgetId: string) => void;
   onAddTransaction: () => void;
 }) {
-  const data = useQuery(api.finances.dashboardChapter, ym);
+  const data = useQuery(api.finances.dashboardChapter, { ...ym, period });
   if (data === undefined) return <LoadingBlock />;
   return (
     <ChapterView

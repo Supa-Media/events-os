@@ -722,6 +722,155 @@ describe("enriched dashboards (prototype shapes)", () => {
     expect(bucket?.status).toBe("warn");
   });
 
+  test("dashboardChapter: ytd sums spend across months 1..selectedMonth; month mode unchanged", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await asManager(s);
+    const year = 2026;
+
+    const fundId = await s.as.mutation(api.finances.createFund, {
+      name: "General",
+      restriction: "unrestricted",
+    });
+    // $10 in Jan, $20 in Feb, $40 in March.
+    for (const [m, amt] of [
+      [1, 1000],
+      [2, 2000],
+      [3, 4000],
+    ] as const) {
+      await s.as.mutation(api.finances.createManualTransaction, {
+        flow: "outflow",
+        amountCents: amt,
+        postedAt: tsInMonth(year, m),
+        fundId,
+      });
+    }
+
+    // Month mode (default): February shows only February's $20.
+    const monthFeb = await s.as.query(api.finances.dashboardChapter, {
+      year,
+      month: 2,
+    });
+    expect(monthFeb.tiles[0].subValueCents).toBe(2000);
+    expect(monthFeb.tiles[0].label).toContain("Spent");
+    expect(monthFeb.funds.find((f) => f.id === fundId)?.spentCents).toBe(2000);
+
+    // YTD through February: Jan + Feb ($30), NOT March.
+    const ytdFeb = await s.as.query(api.finances.dashboardChapter, {
+      year,
+      month: 2,
+      period: "ytd",
+    });
+    expect(ytdFeb.tiles[0].subValueCents).toBe(3000); // 1000 + 2000
+    expect(ytdFeb.tiles[0].label).toContain("YTD");
+    expect(ytdFeb.funds.find((f) => f.id === fundId)?.spentCents).toBe(3000);
+
+    // YTD through March: all three ($70).
+    const ytdMar = await s.as.query(api.finances.dashboardChapter, {
+      year,
+      month: 3,
+      period: "ytd",
+    });
+    expect(ytdMar.tiles[0].subValueCents).toBe(7000); // 1000 + 2000 + 4000
+  });
+
+  test("dashboardChapter: ytd recurring bucket sums spend + scales allocation", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await asManager(s);
+    const year = 2026;
+
+    const fundId = await s.as.mutation(api.finances.createFund, {
+      name: "General",
+      restriction: "unrestricted",
+    });
+    const categoryId = await s.as.mutation(api.finances.createCategory, {
+      fundId,
+      name: "Ad spend",
+      kind: "lineItem",
+    });
+    // "$2,000 / month" — stored WITHOUT a month (applies every month).
+    const budgetId = await s.as.mutation(api.finances.createBudget, {
+      amountCents: 200000,
+      type: "recurring",
+      cadence: "monthly",
+      year,
+      categoryId,
+      label: "Ad spend · monthly",
+    });
+    // $30 Jan, $50 Feb, $90 March — all coded to Ad spend.
+    for (const [m, amt] of [
+      [1, 3000],
+      [2, 5000],
+      [3, 9000],
+    ] as const) {
+      await s.as.mutation(api.finances.createManualTransaction, {
+        flow: "outflow",
+        amountCents: amt,
+        postedAt: tsInMonth(year, m),
+        fundId,
+        categoryId,
+      });
+    }
+
+    // Month mode Feb: only Feb spend, one month's allocation.
+    const monthFeb = await s.as.query(api.finances.dashboardChapter, {
+      year,
+      month: 2,
+    });
+    const mCard = monthFeb.recurringBudgets.find((r) => r.id === budgetId);
+    expect(mCard?.spentCents).toBe(5000);
+    expect(mCard?.budgetCents).toBe(200000); // one month, unchanged
+
+    // YTD through Feb: Jan + Feb spend, two months of allocation.
+    const ytdFeb = await s.as.query(api.finances.dashboardChapter, {
+      year,
+      month: 2,
+      period: "ytd",
+    });
+    const yCard = ytdFeb.recurringBudgets.find((r) => r.id === budgetId);
+    expect(yCard?.spentCents).toBe(8000); // 3000 + 5000, NOT March's 9000
+    expect(yCard?.budgetCents).toBe(400000); // 200000 * 2
+  });
+
+  test("dashboardCentral: ytd sums spend across months 1..selectedMonth; month mode unchanged", async () => {
+    const t = newT();
+    // Superuser → implicit central manager.
+    const s = await setupChapter(t, { email: "seyi@publicworship.life" });
+    const year = 2026;
+    // $70 Jan, $30 Feb, $99 March in the caller's (New York) chapter.
+    for (const [m, amt] of [
+      [1, 7000],
+      [2, 3000],
+      [3, 9900],
+    ] as const) {
+      await s.as.mutation(api.finances.createManualTransaction, {
+        flow: "outflow",
+        amountCents: amt,
+        postedAt: tsInMonth(year, m),
+      });
+    }
+
+    const monthFeb = await s.as.query(api.finances.dashboardCentral, {
+      year,
+      month: 2,
+    });
+    expect(monthFeb.totalMonthSpendCents).toBe(3000); // Feb only
+    expect(monthFeb.tiles[0].label).toContain("all chapters");
+
+    const ytdFeb = await s.as.query(api.finances.dashboardCentral, {
+      year,
+      month: 2,
+      period: "ytd",
+    });
+    expect(ytdFeb.totalMonthSpendCents).toBe(10000); // 7000 + 3000, NOT March
+    expect(ytdFeb.tiles[0].label).toContain("YTD");
+    expect(ytdFeb.tiles[0].label).toContain("all chapters");
+    expect(
+      ytdFeb.chapterRollup.find((c) => c.chapterName === "New York")?.spentCents,
+    ).toBe(10000);
+  });
+
   test("dashboardCentral: chapter rollup + a by-tag rollup across two chapters", async () => {
     const t = newT();
     // Superuser → implicit central manager.

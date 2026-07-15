@@ -590,6 +590,16 @@ function matchesBudget(
   if (!isSpend(tr)) return false;
   const period = budgetEffectivePeriod(b, contextMonth);
   if (!inPeriod(tr.postedAt, period.year, period.month, period.quarter)) return false;
+  return matchesBudgetNarrowers(tr, b);
+}
+
+/**
+ * The NON-PERIOD half of derived budget matching: a spend txn's fund / category /
+ * legacy-team narrowers and (for one_time budgets) its event/project instance.
+ * Split out so the YTD path can reuse the exact same narrowers with a widened
+ * period window (see `txnCountsTowardBudgetDash`). Tags are NOT a match dimension.
+ */
+function matchesBudgetNarrowers(tr: Doc<"transactions">, b: Doc<"budgets">): boolean {
   if (b.categoryId && tr.categoryId !== b.categoryId) return false;
   if (b.fundId && tr.fundId !== b.fundId) return false;
   // Legacy team narrower still honored when present (migrated team budgets keep
@@ -638,6 +648,97 @@ function txnCountsTowardBudget(
     return inPeriod(tr.postedAt, period.year, period.month, period.quarter);
   }
   return matchesBudget(tr, b, contextMonth);
+}
+
+// ── Dashboard period (Month ↔ Year-to-date) ──────────────────────────────────
+/**
+ * The dashboard's selected period. `month` is always the THROUGH-month (the one
+ * the stepper selects). In `"month"` mode the dashboard reports only that month;
+ * in `"ytd"` mode it reports the cumulative Jan..throughMonth range of the year.
+ * Every spend/actual aggregation reads this so the two modes stay in lock-step.
+ */
+type PeriodMode = "month" | "ytd";
+type DashPeriod = { year: number; month: number; ytd: boolean };
+
+/** True iff a timestamp falls in the dashboard's period: one month, or Jan..throughMonth (YTD). */
+function inDashRange(postedAt: number, dp: DashPeriod): boolean {
+  const p = easternParts(postedAt);
+  if (p.year !== dp.year) return false;
+  if (!dp.ytd) return p.month === dp.month;
+  return p.month >= 1 && p.month <= dp.month;
+}
+
+/**
+ * The YTD window for a budget's spend: the txn is in the budget's year, on or
+ * before the through-month, and honors the budget's OWN fixed narrowers (a
+ * fixed-month or fixed-quarter budget only matches its month/quarter). This
+ * widens the single-month/quarter window that `budgetEffectivePeriod` +
+ * `inPeriod` apply in month mode to the cumulative 1..throughMonth range for
+ * period-scoped (month-null / quarter-null / yearly) budgets, without ever
+ * double-counting a fixed-period budget.
+ */
+function inYtdBudgetWindow(postedAt: number, b: Doc<"budgets">, throughMonth: number): boolean {
+  const p = easternParts(postedAt);
+  if (p.year !== b.year) return false;
+  if (p.month > throughMonth) return false;
+  if (b.month != null && p.month !== b.month) return false;
+  if (b.quarter != null && quarterOfMonth(p.month) !== b.quarter) return false;
+  return true;
+}
+
+/**
+ * The single budget-attribution rule, period-aware for the dashboard: in
+ * `"month"` mode it defers to `txnCountsTowardBudget` (unchanged); in `"ytd"`
+ * mode it keeps the exact same `isSpend` gate + linked/derived narrowers but
+ * widens the period window to Jan..throughMonth (`inYtdBudgetWindow`).
+ */
+function txnCountsTowardBudgetDash(
+  tr: Doc<"transactions">,
+  b: Doc<"budgets">,
+  dp: DashPeriod,
+): boolean {
+  if (!dp.ytd) return txnCountsTowardBudget(tr, b, dp.month);
+  if (!isSpend(tr)) return false;
+  if (tr.budgetId != null) {
+    if (tr.budgetId !== b._id) return false;
+  } else if (!matchesBudgetNarrowers(tr, b)) {
+    return false;
+  }
+  return inYtdBudgetWindow(tr.postedAt, b, dp.month);
+}
+
+/** Is a recurring budget active anywhere in the dashboard period (any month for YTD)? */
+function recurringAppliesToDash(b: Doc<"budgets">, dp: DashPeriod): boolean {
+  if (!dp.ytd) return recurringAppliesToMonth(b, dp.year, dp.month);
+  for (let m = 1; m <= dp.month; m++) {
+    if (recurringAppliesToMonth(b, dp.year, m)) return true;
+  }
+  return false;
+}
+
+/**
+ * A budget's month-equivalent allocation for the dashboard period: one month in
+ * `"month"` mode (identical to `monthEquivalentBudgetCents`), or the sum across
+ * months 1..throughMonth in `"ytd"` mode — so "spent vs allocated" stays
+ * comparable when spend is accumulated YTD.
+ */
+function monthEquivForDash(b: Doc<"budgets">, dp: DashPeriod): number {
+  if (!dp.ytd) return monthEquivalentBudgetCents(b, dp.year, dp.month);
+  let sum = 0;
+  for (let m = 1; m <= dp.month; m++) sum += monthEquivalentBudgetCents(b, dp.year, m);
+  return sum;
+}
+
+/**
+ * A recurring/tag budget's ALLOCATION for the dashboard period. Month mode keeps
+ * the existing full stored amount; YTD sums the per-month allocation across
+ * months 1..throughMonth (per-period budgets scale, a fixed one_time lump does
+ * not). Feeds the recurring cards' + tag rollups' `budgetCents`.
+ */
+function budgetAllocationForDash(b: Doc<"budgets">, dp: DashPeriod): number {
+  if (!dp.ytd) return b.amountCents;
+  if (effectiveType(b) !== "recurring") return b.amountCents;
+  return monthEquivForDash(b, dp);
 }
 
 /** Translate a client patch: `null` clears the field, `undefined` is untouched. */
@@ -861,20 +962,21 @@ function sumSpend(txns: Doc<"transactions">[]): number {
 
 /**
  * The spent total + per-category breakdown for one budget, from an already-
- * loaded year of transactions. `catName` resolves category ids to names.
- * `contextMonth` scopes recurring (monthly/quarterly) budgets to the dashboard's
- * month so a "$2,000/mo" budget reports one month's spend, not YTD.
+ * loaded year of transactions. `catName` resolves category ids to names. `dp`
+ * scopes recurring (monthly/quarterly) budgets to the dashboard's period: a
+ * single month (so a "$2,000/mo" budget reports one month's spend) in month
+ * mode, or the cumulative Jan..throughMonth range in YTD mode.
  */
 function budgetSpendBreakdown(
   b: Doc<"budgets">,
   yearTxns: Doc<"transactions">[],
   catName: Map<Id<"budgetCategories">, string>,
-  contextMonth?: number,
+  dp: DashPeriod,
 ): {
   spentCents: number;
   categories: { name: string; spentCents: number; barPct: number }[];
 } {
-  const matching = yearTxns.filter((tr) => txnCountsTowardBudget(tr, b, contextMonth));
+  const matching = yearTxns.filter((tr) => txnCountsTowardBudgetDash(tr, b, dp));
   const spentCents = matching.reduce((s, tr) => s + tr.amountCents, 0);
   const byCat = new Map<string, number>();
   for (const tr of matching) {
@@ -957,10 +1059,16 @@ function nameCache<T extends "events" | "projects" | "people" | "cards" | "event
  * an attention queue (empty until Phases 3+5), plus the fund balances.
  *
  * `{year, month}` default to the current Eastern month so the UI's month
- * stepper can page through history.
+ * stepper can page through history. `period` toggles between the selected month
+ * (`"month"`, default) and the cumulative year-to-date range through that month
+ * (`"ytd"`); `month` is always the through-month.
  */
 export const dashboardChapter = query({
-  args: { year: v.optional(v.number()), month: v.optional(v.number()) },
+  args: {
+    year: v.optional(v.number()),
+    month: v.optional(v.number()),
+    period: v.optional(v.union(v.literal("month"), v.literal("ytd"))),
+  },
   returns: v.object({
     tiles: v.array(chapterTile),
     oneTimeBudgets: v.array(projectBudgetCard),
@@ -977,7 +1085,14 @@ export const dashboardChapter = query({
     const now = easternParts(Date.now());
     const year = args.year ?? now.year;
     const month = args.month ?? now.month;
-    const monthLabel = `${MONTH_NAMES[month - 1]} ${year}`;
+    const ytd = (args.period ?? "month") === "ytd";
+    const dp: DashPeriod = { year, month, ytd };
+    // The tile meta: the month name for month mode; a "year-to-date" label for YTD.
+    const periodMeta = ytd
+      ? `Jan–${MONTH_NAMES[month - 1]} ${year} · year-to-date`
+      : `${MONTH_NAMES[month - 1]} ${year}`;
+    // The Spent tile's period label suffix.
+    const spentSuffix = ytd ? "YTD" : MONTH_NAMES[month - 1];
 
     const empty = {
       tiles: [] as never[],
@@ -993,11 +1108,12 @@ export const dashboardChapter = query({
     if (!chapterId) return empty;
     await requireFinanceRole(ctx, chapterId, "viewer");
 
-    // One period read for the year drives every budget's actual + the month tile.
+    // One period read for the year drives every budget's actual + the period tile.
     const sandboxMode = await readSandbox(ctx);
     const yearTxns = await loadPeriodTxns(ctx, chapterId, year, sandboxMode);
-    const monthTxns = yearTxns.filter((tr) => inPeriod(tr.postedAt, year, month));
-    const monthSpendCents = sumSpend(monthTxns);
+    // The dashboard period's txns: the selected month, or Jan..throughMonth (YTD).
+    const periodTxns = yearTxns.filter((tr) => inDashRange(tr.postedAt, dp));
+    const periodSpendCents = sumSpend(periodTxns);
 
     // Category-name map (chapter-wide, bounded) for budget breakdowns.
     const categoryDocs = await ctx.db
@@ -1020,7 +1136,7 @@ export const dashboardChapter = query({
     for (const b of budgets) {
       if (effectiveType(b) !== "one_time") continue;
       const refKind = effectiveRefKind(b);
-      const { spentCents, categories } = budgetSpendBreakdown(b, yearTxns, catName);
+      const { spentCents, categories } = budgetSpendBreakdown(b, yearTxns, catName, dp);
       let name = b.label ?? "One-time";
       let dateLabel: string | null = null;
       if (refKind === "event" && b.scopeRefId) {
@@ -1064,23 +1180,21 @@ export const dashboardChapter = query({
       const isRecurringCadence =
         b.cadence === "monthly" || b.cadence === "quarterly" || b.cadence === "yearly";
       if (effectiveType(b) !== "recurring" || !isRecurringCadence) continue;
-      if (!recurringAppliesToMonth(b, year, month)) continue;
-      // Scope recurring spend to THIS month (fixes "$2,000/mo" showing YTD).
-      const { spentCents, categories } = budgetSpendBreakdown(
-        b,
-        yearTxns,
-        catName,
-        month,
-      );
+      if (!recurringAppliesToDash(b, dp)) continue;
+      // Scope recurring spend to the dashboard period: THIS month (fixes
+      // "$2,000/mo" showing YTD in month mode), or Jan..throughMonth in YTD mode.
+      const { spentCents, categories } = budgetSpendBreakdown(b, yearTxns, catName, dp);
       // Prefer an author label; fall back to a legacy team name, then a generic.
       let name = b.label ?? (b.teamId ? teamName.get(b.teamId) : undefined) ?? "Recurring";
-      const pct = pctOf(spentCents, b.amountCents);
+      // Allocation scales with the period in YTD (sum of month-equivalents).
+      const budgetCents = budgetAllocationForDash(b, dp);
+      const pct = pctOf(spentCents, budgetCents);
       recurringBudgets.push({
         id: b._id,
         name,
         cadence: b.cadence as "monthly" | "quarterly" | "yearly",
         spentCents,
-        budgetCents: b.amountCents,
+        budgetCents,
         pct,
         status: statusFor(pct),
         categories: categories.length ? categories : undefined,
@@ -1111,17 +1225,17 @@ export const dashboardChapter = query({
       }
       if (tagBudgets.size === 0) continue;
       let budgetCents = 0;
-      for (const b of tagBudgets.values()) budgetCents += b.amountCents;
+      for (const b of tagBudgets.values()) budgetCents += budgetAllocationForDash(b, dp);
       // Tag totals are LINKED-ONLY: count only txns EXPLICITLY linked
       // (`budgetId`) to a budget carrying the tag — NO derived matching. A linked
       // txn has exactly one `budgetId`, so it's counted once (no dedup needed).
-      // `txnCountsTowardBudget` still applies the `isSpend` gate + the linked
-      // budget's period window.
+      // `txnCountsTowardBudgetDash` still applies the `isSpend` gate + the linked
+      // budget's period window (widened to Jan..throughMonth in YTD).
       let spentCents = 0;
       for (const tr of yearTxns) {
         if (tr.budgetId == null) continue;
         const b = tagBudgets.get(tr.budgetId);
-        if (b && txnCountsTowardBudget(tr, b, month)) spentCents += tr.amountCents;
+        if (b && txnCountsTowardBudgetDash(tr, b, dp)) spentCents += tr.amountCents;
       }
       const pct = pctOf(spentCents, budgetCents);
       tagRollups.push({
@@ -1140,7 +1254,7 @@ export const dashboardChapter = query({
     // to the Increase sync — an all-time scan silently truncates and isn't in
     // the prototype).
     const fundSpend = new Map<Id<"funds">, number>();
-    for (const tr of monthTxns) {
+    for (const tr of periodTxns) {
       if (!isSpend(tr) || !tr.fundId) continue;
       fundSpend.set(tr.fundId, (fundSpend.get(tr.fundId) ?? 0) + tr.amountCents);
     }
@@ -1210,13 +1324,13 @@ export const dashboardChapter = query({
       )
       .take(ROLLUP_SCAN_LIMIT);
 
-    // Tiles: month spend, a headline project + monthly bucket, and to-review.
+    // Tiles: period spend, a headline project + monthly bucket, and to-review.
     const tiles: (typeof chapterTile.type)[] = [
       {
-        label: `Spent · ${MONTH_NAMES[month - 1]}`,
-        value: formatCents(monthSpendCents),
-        subValueCents: monthSpendCents,
-        meta: monthLabel,
+        label: `Spent · ${spentSuffix}`,
+        value: formatCents(periodSpendCents),
+        subValueCents: periodSpendCents,
+        meta: periodMeta,
       },
     ];
     const topProject = oneTimeBudgets[0];
@@ -1274,18 +1388,27 @@ export const dashboardChapter = query({
  * given `{year, month}` (default current Eastern month). Member data stays out.
  */
 export const dashboardCentral = query({
-  args: { year: v.optional(v.number()), month: v.optional(v.number()) },
+  args: {
+    year: v.optional(v.number()),
+    month: v.optional(v.number()),
+    period: v.optional(v.union(v.literal("month"), v.literal("ytd"))),
+  },
   returns: v.object({
     tiles: v.array(centralTile),
     tagRollups: v.array(tagRollupRow),
     chapterRollup: v.array(chapterRollupRow),
     centralBudgets: v.array(centralBudgetCard),
+    // The org-wide SPEND total for the dashboard period: the selected month, or
+    // the cumulative Jan..throughMonth range in YTD mode.
     totalMonthSpendCents: v.number(),
   }),
   handler: async (ctx, args) => {
     const now = easternParts(Date.now());
     const year = args.year ?? now.year;
     const month = args.month ?? now.month;
+    const ytd = (args.period ?? "month") === "ytd";
+    const dp: DashPeriod = { year, month, ytd };
+    const spentSuffix = ytd ? "YTD" : MONTH_NAMES[month - 1];
 
     const empty = {
       tiles: [] as never[],
@@ -1322,15 +1445,17 @@ export const dashboardCentral = query({
     for (const chapter of chapters) {
       if (chapter.isActive !== false) activeChapters++;
 
-      // Period-bounded read (this year), narrowed to the dashboard month.
+      // Period-bounded read (this year), narrowed to the dashboard period (the
+      // selected month, or Jan..throughMonth in YTD).
       const periodTxns = await loadPeriodTxns(ctx, chapter._id, year, sandboxMode);
-      const monthTxns = periodTxns.filter((tr) => inPeriod(tr.postedAt, year, month));
-      const chapterMonthSpend = sumSpend(monthTxns);
-      totalMonthSpendCents += chapterMonthSpend;
+      const dashTxns = periodTxns.filter((tr) => inDashRange(tr.postedAt, dp));
+      const chapterPeriodSpend = sumSpend(dashTxns);
+      totalMonthSpendCents += chapterPeriodSpend;
 
       // Month-equivalent budget allocation (monthly→amount, quarterly→÷3,
       // yearly→÷12, per-instance→in-period only) — comparable to one month of
-      // actual spend, unlike a raw full-year sum of mixed cadences.
+      // actual spend, unlike a raw full-year sum of mixed cadences. In YTD it's
+      // summed across months 1..throughMonth to match the accumulated spend.
       const chBudgets = await ctx.db
         .query("budgets")
         .withIndex("by_chapter_and_period", (q) =>
@@ -1338,7 +1463,7 @@ export const dashboardCentral = query({
         )
         .take(ROLLUP_SCAN_LIMIT);
       const budgetCents = chBudgets.reduce(
-        (s, b) => s + monthEquivalentBudgetCents(b, year, month),
+        (s, b) => s + monthEquivForDash(b, dp),
         0,
       );
 
@@ -1361,7 +1486,7 @@ export const dashboardCentral = query({
         }
         if (tagBudgets.size === 0) continue;
         let budget = 0;
-        for (const b of tagBudgets.values()) budget += b.amountCents;
+        for (const b of tagBudgets.values()) budget += budgetAllocationForDash(b, dp);
         // Tag totals are LINKED-ONLY (see dashboardChapter): only txns
         // explicitly linked to a budget carrying the tag count — no derived
         // matching. One `budgetId` per txn → counted once, no dedup.
@@ -1369,7 +1494,7 @@ export const dashboardCentral = query({
         for (const tr of periodTxns) {
           if (tr.budgetId == null) continue;
           const b = tagBudgets.get(tr.budgetId);
-          if (b && txnCountsTowardBudget(tr, b, month)) spent += tr.amountCents;
+          if (b && txnCountsTowardBudgetDash(tr, b, dp)) spent += tr.amountCents;
         }
         const key = `${tag.kind ?? ""}::${tag.name}`;
         const agg =
@@ -1389,15 +1514,15 @@ export const dashboardCentral = query({
         .take(ROLLUP_SCAN_LIMIT);
       toReviewOrg += unreviewed.length;
 
-      const barPct = barPctOf(chapterMonthSpend, budgetCents);
+      const barPct = barPctOf(chapterPeriodSpend, budgetCents);
       chapterRollup.push({
         chapterId: chapter._id,
         chapterName: chapter.name,
         subtitle: null,
-        spentCents: chapterMonthSpend,
+        spentCents: chapterPeriodSpend,
         budgetCents,
         barPct,
-        status: statusFor(pctOf(chapterMonthSpend, budgetCents)),
+        status: statusFor(pctOf(chapterPeriodSpend, budgetCents)),
       });
     }
 
@@ -1421,18 +1546,20 @@ export const dashboardCentral = query({
         .withIndex("by_budget", (q) => q.eq("budgetId", cb._id))
         .take(ROLLUP_SCAN_LIMIT);
       const spentCents = linked.reduce(
-        (s, tr) => (txnCountsTowardBudget(tr, cb, month) ? s + tr.amountCents : s),
+        (s, tr) => (txnCountsTowardBudgetDash(tr, cb, dp) ? s + tr.amountCents : s),
         0,
       );
       centralSpentById.set(cb._id, spentCents);
-      const pct = pctOf(spentCents, cb.amountCents);
+      // Allocation scales with the period in YTD so spent-vs-allocated stays comparable.
+      const budgetCents = budgetAllocationForDash(cb, dp);
+      const pct = pctOf(spentCents, budgetCents);
       centralBudgets.push({
         id: cb._id,
         label: cb.label ?? null,
         scope: cb.scope ?? null,
         cadence: cb.cadence,
         year: cb.year,
-        budgetCents: cb.amountCents,
+        budgetCents,
         spentCents,
         pct,
         status: statusFor(pct),
@@ -1464,7 +1591,7 @@ export const dashboardCentral = query({
       let budget = 0;
       for (const b of tagBudgets.values()) {
         spent += centralSpentById.get(b._id) ?? 0;
-        budget += b.amountCents;
+        budget += budgetAllocationForDash(b, dp);
       }
       const key = `${tag.kind ?? ""}::${tag.name}`;
       const agg =
@@ -1492,7 +1619,7 @@ export const dashboardCentral = query({
 
     const tiles: (typeof centralTile.type)[] = [
       {
-        label: `Spent · ${MONTH_NAMES[month - 1]} · all chapters`,
+        label: `Spent · ${spentSuffix} · all chapters`,
         value: formatCents(totalMonthSpendCents),
         meta: `${activeChapters} chapters`,
       },
