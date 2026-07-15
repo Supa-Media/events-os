@@ -15,6 +15,7 @@ import {
   REIMBURSEMENT_STATUSES,
   CARD_TYPES,
   CARD_STATUSES,
+  CARD_SOURCES,
   REPAYMENT_METHODS,
   REPAYMENT_STATUSES,
   PAYOUT_PROVIDERS,
@@ -195,6 +196,9 @@ export const transactions = defineTable({
   description: v.optional(v.string()),
   merchantName: v.optional(v.string()),
   merchantCategory: v.optional(v.string()),
+  // Card last-4 parsed out of the description (FC syncs the card only inside
+  // that string). Powers legacy-card matching (`by_chapter_and_last4`) + display.
+  cardLast4: v.optional(v.string()),
 
   // Categorization (the "where does this money belong" layer).
   fundId: v.optional(v.id("funds")),
@@ -253,6 +257,7 @@ export const transactions = defineTable({
   .index("by_chapter", ["chapterId"])
   .index("by_chapter_and_postedAt", ["chapterId", "postedAt"])
   .index("by_chapter_and_status", ["chapterId", "status"])
+  .index("by_chapter_and_last4", ["chapterId", "cardLast4"])
   .index("by_external_id", ["externalId"])
   .index("by_card", ["cardId"])
   .index("by_fund", ["fundId"])
@@ -346,6 +351,9 @@ export const cards = defineTable({
   increaseCardholderId: v.optional(v.string()),
   type: v.union(...CARD_TYPES.map((t) => v.literal(t))),
   last4: v.optional(v.string()),
+  // Provenance: absent/"increase" = a native Increase card; "legacy" = an
+  // external/Relay card linked by last-4 (no Increase object, no controls).
+  source: v.optional(v.union(...CARD_SOURCES.map((s) => v.literal(s)))),
   status: v.union(...CARD_STATUSES.map((s) => v.literal(s))),
   // The two controls.
   monthlyCapCents: v.optional(v.number()),
@@ -359,7 +367,9 @@ export const cards = defineTable({
 })
   .index("by_chapter", ["chapterId"])
   .index("by_cardholder", ["cardholderPersonId"])
-  .index("by_increase_card", ["increaseCardId"]);
+  .index("by_increase_card", ["increaseCardId"])
+  // Legacy-card matching: find a chapter's linked card by its last-4.
+  .index("by_chapter_and_last4", ["chapterId", "last4"]);
 
 // ── Personal-charge repayment ────────────────────────────────────────────────
 /** A cardholder's repayment of an accidental personal charge. When paid, an

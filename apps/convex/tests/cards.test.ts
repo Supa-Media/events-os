@@ -34,7 +34,9 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 
 async function seedPerson(
   s: ChapterSetup,
-  opts: { name: string; userId?: Id<"users"> } = { name: "Person" },
+  opts: { name: string; userId?: Id<"users">; pwEmail?: string | null } = {
+    name: "Person",
+  },
 ): Promise<Id<"people">> {
   return await run(s.t, (ctx) =>
     ctx.db.insert("people", {
@@ -42,6 +44,12 @@ async function seedPerson(
       name: opts.name,
       userId: opts.userId,
       isTeamMember: true,
+      // Card-eligible by default (a @publicworship.life email) so issueCard's
+      // eligibility gate passes; pass `pwEmail: null` to seed an ineligible person.
+      pwEmail:
+        opts.pwEmail === null
+          ? undefined
+          : (opts.pwEmail ?? "person@publicworship.life"),
       createdAt: Date.now(),
     }),
   );
@@ -548,6 +556,32 @@ describe("issueCard", () => {
     );
     expect(rows.length).toBe(1);
     expect(rows[0].increaseCardId).toBeUndefined();
+  });
+
+  test("rejects a cardholder without a @publicworship.life email (NOT_CARD_ELIGIBLE)", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await seedManager(s);
+    // A person with no pw email is not card-eligible.
+    const ineligible = await seedPerson(s, { name: "Outsider", pwEmail: null });
+
+    await expect(
+      s.as.action(api.cards.issueCard, {
+        cardholderPersonId: ineligible,
+        type: "virtual",
+      }),
+    ).rejects.toBeInstanceOf(ConvexError);
+
+    // No card row was minted for the ineligible holder.
+    const rows = await run(s.t, (ctx) =>
+      ctx.db
+        .query("cards")
+        .withIndex("by_cardholder", (q) =>
+          q.eq("cardholderPersonId", ineligible),
+        )
+        .collect(),
+    );
+    expect(rows.length).toBe(0);
   });
 
   test("does not duplicate an active card for the same person", async () => {

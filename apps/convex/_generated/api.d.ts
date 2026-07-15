@@ -35,6 +35,7 @@ import type * as http from "../http.js";
 import type * as increase from "../increase.js";
 import type * as inventory from "../inventory.js";
 import type * as items from "../items.js";
+import type * as legacyCards from "../legacyCards.js";
 import type * as lib_access from "../lib/access.js";
 import type * as lib_context from "../lib/context.js";
 import type * as lib_emailCodes from "../lib/emailCodes.js";
@@ -165,6 +166,7 @@ declare const fullApi: ApiFromModules<{
   increase: typeof increase;
   inventory: typeof inventory;
   items: typeof items;
+  legacyCards: typeof legacyCards;
   "lib/access": typeof lib_access;
   "lib/context": typeof lib_context;
   "lib/emailCodes": typeof lib_emailCodes;
