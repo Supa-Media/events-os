@@ -39,6 +39,10 @@
  * org Entity) — all required. INCREASE_PROGRAM_ID is an OPTIONAL override; the
  * Program is auto-resolved from `GET /programs` (a nonprofit has exactly one).
  * INCREASE_API_BASE is the sandbox URL for dev/staging (defaults to production).
+ * INCREASE_SANDBOX_API_KEY (OPTIONAL): lets the single prod `/increase/webhook`
+ * endpoint also serve sandbox webhooks — follow-up calls about a `sandbox_`-
+ * prefixed object are routed to the sandbox with this key (see
+ * `increaseEnvForObjectId`).
  */
 import {
   action,
@@ -75,6 +79,28 @@ import {
  *  (`INCREASE_API_BASE=https://sandbox.increase.com`); defaults to production. */
 function increaseApiBase(): string {
   return process.env.INCREASE_API_BASE ?? "https://api.increase.com";
+}
+
+/**
+ * Resolve which Increase environment (API key + base URL) a follow-up call about
+ * a given object should use. ONE `/increase/webhook` endpoint (on the prod
+ * deployment) safely serves BOTH production and sandbox Increase webhooks: a
+ * sandbox object's id is prefixed `sandbox_`, so the follow-up fetch is routed to
+ * the sandbox with `INCREASE_SANDBOX_API_KEY`; a production object uses the
+ * deployment's own `INCREASE_API_KEY` + base. `key` may be undefined (the
+ * environment isn't wired up) — the caller degrades to a logged no-op.
+ */
+export function increaseEnvForObjectId(objectId: string): {
+  key: string | undefined;
+  base: string;
+} {
+  if (objectId.startsWith("sandbox_")) {
+    return {
+      key: process.env.INCREASE_SANDBOX_API_KEY,
+      base: "https://sandbox.increase.com",
+    };
+  }
+  return { key: process.env.INCREASE_API_KEY, base: increaseApiBase() };
 }
 
 /** Payouts that block a re-pay (money is in motion or already out the door).
@@ -235,6 +261,7 @@ function toAccountSummary(a: Doc<"increaseAccounts">): IncreaseAccountSummary {
  *  ConvexError on a non-2xx (the caller logs + degrades). */
 async function increasePost(
   key: string,
+  base: string,
   path: string,
   body: Record<string, unknown>,
   idempotencyKey?: string,
@@ -244,7 +271,7 @@ async function increasePost(
     "Content-Type": "application/json",
   };
   if (idempotencyKey) headers["Idempotency-Key"] = idempotencyKey;
-  const res = await fetch(`${increaseApiBase()}${path}`, {
+  const res = await fetch(`${base}${path}`, {
     method: "POST",
     headers,
     body: JSON.stringify(body),
@@ -264,9 +291,10 @@ async function increasePost(
  *  the object (e.g. GET /ach_transfers/{id}). Throws ConvexError on a non-2xx. */
 async function increaseGet(
   key: string,
+  base: string,
   path: string,
 ): Promise<Record<string, unknown>> {
-  const res = await fetch(`${increaseApiBase()}${path}`, {
+  const res = await fetch(`${base}${path}`, {
     method: "GET",
     headers: { Authorization: `Bearer ${key}` },
   });
@@ -609,7 +637,7 @@ export const provisionChapterAccount = action({
 
     // Open the chapter's Account under the shared org Entity — no KYB, no PII.
     try {
-      const account = await increasePost(key!, "/accounts", {
+      const account = await increasePost(key!, increaseApiBase(), "/accounts", {
         entity_id: entityId!,
         program_id: programId,
         name: prep.chapterName,
@@ -861,6 +889,7 @@ export const payReimbursement = action({
     try {
       const transfer = await increasePost(
         key,
+        increaseApiBase(),
         "/ach_transfers",
         {
           account_id: result.increaseAccountId,
@@ -1055,8 +1084,12 @@ export const onIncreaseWebhookEvent = internalMutation({
  * advances the matching payout via `onIncreaseWebhookEvent`. The orchestrator's
  * `/increase/webhook` route calls this for every non-`real_time_decision.*`
  * event (after de-duping on the event id). Only `ach_transfer.*` categories are
- * acted on; anything else no-ops. DEGRADES to a logged no-op (never throws) when
- * `INCREASE_API_KEY` is unset or the fetch fails.
+ * acted on; anything else no-ops. ONE endpoint serves BOTH environments: the
+ * follow-up fetch is routed by the object id's `sandbox_` prefix
+ * (`increaseEnvForObjectId`) — sandbox objects hit the sandbox with
+ * `INCREASE_SANDBOX_API_KEY`, production objects the deployment's own key.
+ * DEGRADES to a logged no-op (never throws) when that environment's API key is
+ * unset or the fetch fails.
  */
 export const handleIncreaseWebhook = internalAction({
   args: { category: v.string(), associatedObjectId: v.string() },
@@ -1064,10 +1097,10 @@ export const handleIncreaseWebhook = internalAction({
   handler: async (ctx, { category, associatedObjectId }) => {
     if (!category.startsWith("ach_transfer.")) return null;
 
-    const key = process.env.INCREASE_API_KEY;
+    const { key, base } = increaseEnvForObjectId(associatedObjectId);
     if (!key) {
       console.warn(
-        "[increase] webhook skipped: INCREASE_API_KEY not configured",
+        "[increase] webhook skipped: Increase API key not configured for this environment",
       );
       return null;
     }
@@ -1076,6 +1109,7 @@ export const handleIncreaseWebhook = internalAction({
     try {
       const transfer = await increaseGet(
         key,
+        base,
         `/ach_transfers/${associatedObjectId}`,
       );
       status = typeof transfer.status === "string" ? transfer.status : undefined;
@@ -1121,12 +1155,19 @@ export interface IncreaseWebhookHeaders {
  * Verify an Increase webhook signature per the Standard Webhooks spec
  * (https://increase.com/documentation/webhooks). Increase sends three headers:
  * `webhook-id`, `webhook-timestamp`, `webhook-signature`. The signed content is
- * `${webhook-id}.${webhook-timestamp}.${rawBody}`; the HMAC-SHA256 key is the
- * base64-DECODED bytes of the signing secret AFTER its `whsec_` prefix; the MAC
- * is base64-encoded. `webhook-signature` is one or more SPACE-separated
+ * `${webhook-id}.${webhook-timestamp}.${rawBody}`; the MAC is HMAC-SHA256,
+ * base64-encoded. `webhook-signature` is one or more SPACE-separated
  * `v1,<base64sig>` tokens (multiple during key rotation) — we constant-time
  * compare against each. A ~5-minute timestamp tolerance guards replay. The
  * orchestrator calls this in `/increase/webhook`.
+ *
+ * KEY AMBIGUITY: Increase's webhook "Shared Secret" (a user-provided value) may
+ * be used as the HMAC key EITHER raw (the secret's UTF-8 bytes) OR base64-decoded
+ * (the Standard Webhooks `whsec_<base64>` convention). We can't know which, so we
+ * try EVERY candidate key and accept if ANY produces a matching signature:
+ *   - the raw secret bytes (`TextEncoder().encode(secret)`),
+ *   - the raw bytes after stripping a `whsec_` prefix,
+ *   - the base64-DECODED bytes of the secret (sans `whsec_`), when it decodes.
  */
 export async function verifyIncreaseSignature(
   rawBody: string,
@@ -1140,45 +1181,53 @@ export async function verifyIncreaseSignature(
   if (!Number.isFinite(ts)) return false;
   if (Math.abs(Date.now() / 1000 - ts) > 300) return false;
 
-  // The signing secret is `whsec_<base64key>`; the HMAC key is the DECODED bytes.
-  const rawSecret = secret.startsWith("whsec_") ? secret.slice(6) : secret;
-  let keyBytes: Uint8Array<ArrayBuffer>;
+  // Build the candidate HMAC keys (see KEY AMBIGUITY above). Each is a fresh
+  // ArrayBuffer-backed copy so it's a valid `BufferSource` for `importKey`.
+  const withoutPrefix = secret.startsWith("whsec_") ? secret.slice(6) : secret;
+  const candidateKeys: Uint8Array<ArrayBuffer>[] = [
+    new Uint8Array(new TextEncoder().encode(secret)),
+  ];
+  if (withoutPrefix !== secret) {
+    candidateKeys.push(new Uint8Array(new TextEncoder().encode(withoutPrefix)));
+  }
   try {
-    keyBytes = base64ToBytes(rawSecret);
+    candidateKeys.push(base64ToBytes(withoutPrefix));
   } catch {
-    return false;
+    // Not valid base64 — skip the decoded-key candidate.
   }
 
-  const key = await crypto.subtle.importKey(
-    "raw",
-    keyBytes,
-    { name: "HMAC", hash: "SHA-256" },
-    false,
-    ["sign"],
+  const signedContent = new TextEncoder().encode(
+    `${webhookId}.${webhookTimestamp}.${rawBody}`,
   );
-  const signedContent = `${webhookId}.${webhookTimestamp}.${rawBody}`;
-  const mac = new Uint8Array(
-    await crypto.subtle.sign(
-      "HMAC",
-      key,
-      new TextEncoder().encode(signedContent),
-    ),
-  );
-  const expected = bytesToBase64(mac);
+  const tokens = webhookSignature.split(" ");
 
-  // `webhook-signature` = space-separated `v1,<base64sig>` tokens.
-  for (const token of webhookSignature.split(" ")) {
-    const comma = token.indexOf(",");
-    if (comma === -1) continue;
-    const version = token.slice(0, comma);
-    const candidate = token.slice(comma + 1);
-    if (version !== "v1") continue;
-    if (candidate.length !== expected.length) continue;
-    let diff = 0;
-    for (let i = 0; i < expected.length; i++) {
-      diff |= expected.charCodeAt(i) ^ candidate.charCodeAt(i);
+  for (const keyBytes of candidateKeys) {
+    const key = await crypto.subtle.importKey(
+      "raw",
+      keyBytes,
+      { name: "HMAC", hash: "SHA-256" },
+      false,
+      ["sign"],
+    );
+    const mac = new Uint8Array(
+      await crypto.subtle.sign("HMAC", key, signedContent),
+    );
+    const expected = bytesToBase64(mac);
+
+    // `webhook-signature` = space-separated `v1,<base64sig>` tokens.
+    for (const token of tokens) {
+      const comma = token.indexOf(",");
+      if (comma === -1) continue;
+      const version = token.slice(0, comma);
+      const candidate = token.slice(comma + 1);
+      if (version !== "v1") continue;
+      if (candidate.length !== expected.length) continue;
+      let diff = 0;
+      for (let i = 0; i < expected.length; i++) {
+        diff |= expected.charCodeAt(i) ^ candidate.charCodeAt(i);
+      }
+      if (diff === 0) return true;
     }
-    if (diff === 0) return true;
   }
   return false;
 }

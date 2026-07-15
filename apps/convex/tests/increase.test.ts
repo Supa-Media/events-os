@@ -729,7 +729,8 @@ const SECRET = "whsec_" + Buffer.from("increase-webhook-secret").toString("base6
 const WRONG_SECRET =
   "whsec_" + Buffer.from("some-other-secret").toString("base64");
 
-/** Build a valid Standard Webhooks `webhook-signature` value for a payload. */
+/** Build a valid Standard Webhooks `webhook-signature` value for a payload,
+ *  using the secret base64-DECODED as the HMAC key (the `whsec_` convention). */
 function signStandardWebhook(
   payload: string,
   secret: string,
@@ -744,6 +745,20 @@ function signStandardWebhook(
   return `v1,${sig}`;
 }
 
+/** Build a signature using the secret's RAW UTF-8 bytes as the HMAC key (the
+ *  other way Increase may treat a webhook Shared Secret). */
+function signStandardWebhookRaw(
+  payload: string,
+  keyString: string,
+  id: string,
+  tSeconds: number,
+): string {
+  const sig = createHmac("sha256", Buffer.from(keyString, "utf8"))
+    .update(`${id}.${tSeconds}.${payload}`)
+    .digest("base64");
+  return `v1,${sig}`;
+}
+
 const nowSeconds = () => Math.floor(Date.now() / 1000);
 
 describe("verifyIncreaseSignature (Standard Webhooks)", () => {
@@ -751,6 +766,53 @@ describe("verifyIncreaseSignature (Standard Webhooks)", () => {
     const payload = JSON.stringify({ category: "ach_transfer.updated" });
     const id = "msg_123";
     const ts = nowSeconds();
+    const sig = signStandardWebhook(payload, SECRET, id, ts);
+    expect(
+      await verifyIncreaseSignature(
+        payload,
+        { webhookId: id, webhookTimestamp: String(ts), webhookSignature: sig },
+        SECRET,
+      ),
+    ).toBe(true);
+  });
+
+  test("accepts a signature produced with the RAW-string key (no whsec_ prefix)", async () => {
+    // Increase may use the Shared Secret's raw UTF-8 bytes as the HMAC key.
+    const rawSecret = "increase-raw-shared-secret";
+    const payload = JSON.stringify({ category: "ach_transfer.updated" });
+    const id = "msg_raw";
+    const ts = nowSeconds();
+    const sig = signStandardWebhookRaw(payload, rawSecret, id, ts);
+    expect(
+      await verifyIncreaseSignature(
+        payload,
+        { webhookId: id, webhookTimestamp: String(ts), webhookSignature: sig },
+        rawSecret,
+      ),
+    ).toBe(true);
+  });
+
+  test("accepts a RAW-key signature over a whsec_-prefixed secret (prefix stripped)", async () => {
+    // The candidate keys include the raw bytes AFTER stripping `whsec_`.
+    const payload = JSON.stringify({ id: "evt_raw_prefixed" });
+    const id = "msg_raw_prefixed";
+    const ts = nowSeconds();
+    const stripped = SECRET.slice(6); // the raw text after `whsec_`
+    const sig = signStandardWebhookRaw(payload, stripped, id, ts);
+    expect(
+      await verifyIncreaseSignature(
+        payload,
+        { webhookId: id, webhookTimestamp: String(ts), webhookSignature: sig },
+        SECRET,
+      ),
+    ).toBe(true);
+  });
+
+  test("accepts a signature produced with the base64-DECODED key", async () => {
+    const payload = JSON.stringify({ category: "ach_transfer.created" });
+    const id = "msg_b64";
+    const ts = nowSeconds();
+    // `signStandardWebhook` base64-decodes the secret for the key.
     const sig = signStandardWebhook(payload, SECRET, id, ts);
     expect(
       await verifyIncreaseSignature(
@@ -835,5 +897,79 @@ describe("verifyIncreaseSignature (Standard Webhooks)", () => {
         SECRET,
       ),
     ).toBe(false);
+  });
+});
+
+// ── handleIncreaseWebhook env routing (sandbox vs production) ─────────────────
+
+/** A recording `fetch` mock: captures each request's URL + Authorization header
+ *  and returns the given JSON. */
+function mockRecordingFetch(json: Record<string, unknown>) {
+  const calls: Array<{ url: string; method: string; auth: string | null }> = [];
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input);
+    const method = init?.method ?? "GET";
+    const auth = new Headers(init?.headers).get("authorization");
+    calls.push({ url, method, auth });
+    return new Response(JSON.stringify(json), {
+      status: 200,
+      headers: { "Content-Type": "application/json" },
+    });
+  }) as unknown as typeof fetch;
+  return calls;
+}
+
+describe("handleIncreaseWebhook env routing", () => {
+  const ENV = [
+    "INCREASE_API_KEY",
+    "INCREASE_SANDBOX_API_KEY",
+    "INCREASE_API_BASE",
+  ] as const;
+  const originalFetch = globalThis.fetch;
+  const originalEnv: Partial<Record<(typeof ENV)[number], string>> = {};
+  for (const k of ENV) originalEnv[k] = process.env[k];
+
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+    for (const k of ENV) {
+      if (originalEnv[k] === undefined) delete process.env[k];
+      else process.env[k] = originalEnv[k];
+    }
+  });
+
+  test("a sandbox_ object id fetches the sandbox with INCREASE_SANDBOX_API_KEY", async () => {
+    const t = newT();
+    // Both keys present — the `sandbox_` PREFIX (not mere presence) chooses env.
+    process.env.INCREASE_API_KEY = "prod_key";
+    process.env.INCREASE_SANDBOX_API_KEY = "sandbox_key";
+    const calls = mockRecordingFetch({ id: "sandbox_ach_1", status: "submitted" });
+
+    await t.action(internal.increase.handleIncreaseWebhook, {
+      category: "ach_transfer.updated",
+      associatedObjectId: "sandbox_ach_1",
+    });
+
+    const get = calls.find((c) => c.url.includes("/ach_transfers/"));
+    expect(get).toBeTruthy();
+    expect(new URL(get!.url).host).toBe("sandbox.increase.com");
+    expect(get!.auth).toBe("Bearer sandbox_key");
+  });
+
+  test("a non-prefixed object id fetches the prod base with INCREASE_API_KEY", async () => {
+    const t = newT();
+    process.env.INCREASE_API_KEY = "prod_key";
+    process.env.INCREASE_SANDBOX_API_KEY = "sandbox_key";
+    delete process.env.INCREASE_API_BASE; // default → api.increase.com
+    const calls = mockRecordingFetch({ id: "ach_1", status: "submitted" });
+
+    await t.action(internal.increase.handleIncreaseWebhook, {
+      category: "ach_transfer.updated",
+      associatedObjectId: "ach_1",
+    });
+
+    const get = calls.find((c) => c.url.includes("/ach_transfers/"));
+    expect(get).toBeTruthy();
+    expect(new URL(get!.url).host).toBe("api.increase.com");
+    expect(get!.auth).toBe("Bearer prod_key");
   });
 });

@@ -1,4 +1,4 @@
-import { describe, expect, test } from "vitest";
+import { afterEach, describe, expect, test } from "vitest";
 import { ConvexError } from "convex/values";
 import {
   newT,
@@ -683,5 +683,93 @@ describe("setCardControls (gates + tenancy)", () => {
     await expect(
       s.as.mutation(api.cards.lockCard, { cardId }),
     ).rejects.toBeInstanceOf(ConvexError);
+  });
+});
+
+// ── handleIncreaseRealTimeDecision env routing (sandbox vs production) ────────
+
+/** A recording `fetch` mock: captures each request's URL + Authorization header
+ *  and returns the given JSON. */
+function mockRecordingFetch(json: Record<string, unknown>) {
+  const calls: Array<{ url: string; method: string; auth: string | null }> = [];
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input);
+    const method = init?.method ?? "GET";
+    const auth = new Headers(init?.headers).get("authorization");
+    calls.push({ url, method, auth });
+    return new Response(JSON.stringify(json), {
+      status: 200,
+      headers: { "Content-Type": "application/json" },
+    });
+  }) as unknown as typeof fetch;
+  return calls;
+}
+
+describe("handleIncreaseRealTimeDecision env routing", () => {
+  const ENV = [
+    "INCREASE_API_KEY",
+    "INCREASE_SANDBOX_API_KEY",
+    "INCREASE_API_BASE",
+  ] as const;
+  const originalFetch = globalThis.fetch;
+  const originalEnv: Partial<Record<(typeof ENV)[number], string>> = {};
+  for (const k of ENV) originalEnv[k] = process.env[k];
+
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+    for (const k of ENV) {
+      if (originalEnv[k] === undefined) delete process.env[k];
+      else process.env[k] = originalEnv[k];
+    }
+  });
+
+  // The fetched RealTimeDecision object the handler reads (card_id +
+  // settlement_amount). An unknown card just DECLINES — both the GET and the
+  // action POST still fire, which is what we assert routing on.
+  const RTD_JSON = {
+    card_authorization: { card_id: "card_x", settlement_amount: 100 },
+  };
+
+  test("a sandbox_ decision id routes the fetch + action to the sandbox", async () => {
+    const t = newT();
+    // Both keys present — the `sandbox_` PREFIX (not mere presence) chooses env.
+    process.env.INCREASE_API_KEY = "prod_key";
+    process.env.INCREASE_SANDBOX_API_KEY = "sandbox_key";
+    const calls = mockRecordingFetch(RTD_JSON);
+
+    await t.action(internal.cards.handleIncreaseRealTimeDecision, {
+      realTimeDecisionId: "sandbox_rtd_1",
+    });
+
+    const get = calls.find(
+      (c) => c.method === "GET" && c.url.includes("/real_time_decisions/"),
+    );
+    expect(get).toBeTruthy();
+    expect(new URL(get!.url).host).toBe("sandbox.increase.com");
+    expect(get!.auth).toBe("Bearer sandbox_key");
+
+    const post = calls.find((c) => c.method === "POST");
+    expect(post).toBeTruthy();
+    expect(new URL(post!.url).host).toBe("sandbox.increase.com");
+    expect(post!.auth).toBe("Bearer sandbox_key");
+  });
+
+  test("a non-prefixed decision id uses INCREASE_API_KEY + the prod base", async () => {
+    const t = newT();
+    process.env.INCREASE_API_KEY = "prod_key";
+    process.env.INCREASE_SANDBOX_API_KEY = "sandbox_key";
+    delete process.env.INCREASE_API_BASE; // default → api.increase.com
+    const calls = mockRecordingFetch(RTD_JSON);
+
+    await t.action(internal.cards.handleIncreaseRealTimeDecision, {
+      realTimeDecisionId: "rtd_1",
+    });
+
+    const get = calls.find(
+      (c) => c.method === "GET" && c.url.includes("/real_time_decisions/"),
+    );
+    expect(get).toBeTruthy();
+    expect(new URL(get!.url).host).toBe("api.increase.com");
+    expect(get!.auth).toBe("Bearer prod_key");
   });
 });

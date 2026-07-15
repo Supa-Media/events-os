@@ -34,7 +34,10 @@
  *  - All failures throw `ConvexError` (never a plain `Error`).
  *
  * Env: INCREASE_API_KEY, INCREASE_API_BASE (sandbox URL for dev/staging;
- * defaults to production).
+ * defaults to production). INCREASE_SANDBOX_API_KEY (OPTIONAL) lets the single
+ * prod `/increase/webhook` endpoint also serve sandbox real-time decisions —
+ * follow-up calls about a `sandbox_`-prefixed decision are routed to the sandbox
+ * with this key (see `increaseEnvForObjectId`).
  */
 import {
   action,
@@ -70,6 +73,7 @@ import {
   getFinanceRole,
 } from "./lib/finance";
 import { viewerPerson } from "./lib/org";
+import { increaseEnvForObjectId } from "./increase";
 
 /** Increase API base URL. Env-overridable so dev/staging point at the sandbox
  *  (`INCREASE_API_BASE=https://sandbox.increase.com`); defaults to production. */
@@ -197,10 +201,11 @@ function toRepaymentSummary(r: Doc<"personalRepayments">): RepaymentSummary {
  *  can log + degrade. */
 async function increasePost(
   key: string,
+  base: string,
   path: string,
   body: Record<string, unknown>,
 ): Promise<Record<string, unknown>> {
-  const res = await fetch(`${increaseApiBase()}${path}`, {
+  const res = await fetch(`${base}${path}`, {
     method: "POST",
     headers: {
       Authorization: `Bearer ${key}`,
@@ -223,9 +228,10 @@ async function increasePost(
  *  (GET /real_time_decisions/{id}). Throws ConvexError on a non-2xx. */
 async function increaseGet(
   key: string,
+  base: string,
   path: string,
 ): Promise<Record<string, unknown>> {
-  const res = await fetch(`${increaseApiBase()}${path}`, {
+  const res = await fetch(`${base}${path}`, {
     method: "GET",
     headers: { Authorization: `Bearer ${key}` },
   });
@@ -471,7 +477,7 @@ export const issueCard = action({
     }
 
     try {
-      const card = await increasePost(key, "/cards", {
+      const card = await increasePost(key, increaseApiBase(), "/cards", {
         account_id: prep.increaseAccountId,
         description: prep.description,
       });
@@ -728,18 +734,22 @@ interface RtdCardAuthorization {
  * The orchestrator's `/increase/webhook` route awaits this synchronously (the
  * card network is holding the authorization). Uses the decision id as the
  * idempotency key (Increase retries the same id until actioned;
- * `decideCardAuthorization` is idempotent on it). DEGRADES to a logged no-op
- * (never throws) when `INCREASE_API_KEY` is unset or the fetch fails — Increase
- * then applies the account's configured default action on timeout.
+ * `decideCardAuthorization` is idempotent on it). ONE endpoint serves BOTH
+ * environments: the fetch + action POST are routed by the decision id's
+ * `sandbox_` prefix (`increaseEnvForObjectId`) — sandbox decisions hit the
+ * sandbox with `INCREASE_SANDBOX_API_KEY`, production ones the deployment's own
+ * key. DEGRADES to a logged no-op (never throws) when that environment's API key
+ * is unset or the fetch fails — Increase then applies the account's configured
+ * default action on timeout.
  */
 export const handleIncreaseRealTimeDecision = internalAction({
   args: { realTimeDecisionId: v.string() },
   returns: v.null(),
   handler: async (ctx, { realTimeDecisionId }) => {
-    const key = process.env.INCREASE_API_KEY;
+    const { key, base } = increaseEnvForObjectId(realTimeDecisionId);
     if (!key) {
       console.warn(
-        "[cards] real-time decision skipped: INCREASE_API_KEY not configured",
+        "[cards] real-time decision skipped: Increase API key not configured for this environment",
       );
       return null;
     }
@@ -748,6 +758,7 @@ export const handleIncreaseRealTimeDecision = internalAction({
     try {
       rtd = await increaseGet(
         key,
+        base,
         `/real_time_decisions/${realTimeDecisionId}`,
       );
     } catch (err) {
@@ -777,6 +788,7 @@ export const handleIncreaseRealTimeDecision = internalAction({
     try {
       await increasePost(
         key,
+        base,
         `/real_time_decisions/${realTimeDecisionId}/action`,
         {
           card_authorization: {
@@ -1056,7 +1068,7 @@ export const initiateRepayment = action({
 
     const key = process.env.INCREASE_API_KEY!;
     try {
-      const charge = await increasePost(key, "/ach_transfers", {
+      const charge = await increasePost(key, increaseApiBase(), "/ach_transfers", {
         account_id: prep.increaseAccountId,
         // The payer's linked external account is the counterparty; a NEGATIVE
         // amount originates a DEBIT that PULLS the repayment into the chapter's
