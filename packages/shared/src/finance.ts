@@ -333,6 +333,76 @@ export function isCentral(chapterId: string | null | undefined): boolean {
   return chapterId === CENTRAL;
 }
 
+// ── Specialized roles (leadership + finance, at central/chapter scope) ───────
+// Super-admin-managed org roles layered on top of the graded finance ladder.
+// A TITLE has a fixed KIND (leadership vs finance) and a valid SCOPE constraint
+// (central-only, chapter-only, or either). Leadership titles (ED/president) drive
+// oversight + the scope-local separation-of-duties constraint; the finance title
+// (finance_manager) additionally BRIDGES to a `financeRoles` manager grant, so it
+// confers real finance-write capability. Stored on `specializedRoles` with the
+// `"central"` sentinel for org scope (never null), mirroring the finance layer.
+export const SPECIALIZED_ROLE_TITLES = [
+  "executive_director",
+  "president",
+  "finance_manager",
+] as const;
+export type SpecializedRoleTitle = (typeof SPECIALIZED_ROLE_TITLES)[number];
+
+export const SPECIALIZED_ROLE_KINDS = ["leadership", "finance"] as const;
+export type SpecializedRoleKind = (typeof SPECIALIZED_ROLE_KINDS)[number];
+
+// Which scope(s) a title may be assigned at: only the org level, only a chapter,
+// or either. Central is the `"central"` sentinel; a chapter is a real chapter id.
+export type SpecializedRoleScopeConstraint = "central" | "chapter" | "any";
+
+export interface SpecializedRoleMeta {
+  /** The kind this title belongs to (drives SoD + the finance bridge). */
+  kind: SpecializedRoleKind;
+  /** The scope(s) this title may be assigned at. */
+  scope: SpecializedRoleScopeConstraint;
+  /** Human-readable label for governance surfaces. */
+  label: string;
+}
+
+export const SPECIALIZED_ROLE_META: Record<
+  SpecializedRoleTitle,
+  SpecializedRoleMeta
+> = {
+  executive_director: {
+    kind: "leadership",
+    scope: "central",
+    label: "Executive Director",
+  },
+  president: {
+    kind: "leadership",
+    scope: "chapter",
+    label: "President",
+  },
+  finance_manager: {
+    kind: "finance",
+    scope: "any",
+    label: "Finance Manager",
+  },
+};
+
+/** The kind (leadership | finance) a specialized-role title belongs to. */
+export function titleKind(title: SpecializedRoleTitle): SpecializedRoleKind {
+  return SPECIALIZED_ROLE_META[title].kind;
+}
+
+/**
+ * True iff `title` may be assigned at the given scope. `scopeIsCentral` is true
+ * for the org level (`"central"`), false for a chapter. `"any"` titles fit both.
+ */
+export function titleAllowsScope(
+  title: SpecializedRoleTitle,
+  scopeIsCentral: boolean,
+): boolean {
+  const constraint = SPECIALIZED_ROLE_META[title].scope;
+  if (constraint === "any") return true;
+  return scopeIsCentral ? constraint === "central" : constraint === "chapter";
+}
+
 // ── Money formatting (single source of truth) ────────────────────────────────
 /**
  * Format integer cents as a USD string. `cents` is always an integer amount in

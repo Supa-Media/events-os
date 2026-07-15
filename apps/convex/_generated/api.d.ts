@@ -118,6 +118,7 @@ import type * as seedTicketing from "../seedTicketing.js";
 import type * as setlists from "../setlists.js";
 import type * as siteMap from "../siteMap.js";
 import type * as songs from "../songs.js";
+import type * as specializedRoles from "../specializedRoles.js";
 import type * as storage from "../storage.js";
 import type * as stripe from "../stripe.js";
 import type * as stripeFinance from "../stripeFinance.js";
@@ -247,6 +248,7 @@ declare const fullApi: ApiFromModules<{
   setlists: typeof setlists;
   siteMap: typeof siteMap;
   songs: typeof songs;
+  specializedRoles: typeof specializedRoles;
   storage: typeof storage;
   stripe: typeof stripe;
   stripeFinance: typeof stripeFinance;

@@ -54,6 +54,7 @@ import {
   approvalPolicy,
   approvals,
   financeRoles,
+  specializedRoles,
   webhookEvents,
   financeSettings,
 } from "./schema/finances";
@@ -200,6 +201,9 @@ const schema = defineSchema({
   approvalPolicy,
   approvals,
   financeRoles,
+  // Leadership + finance titles at central/chapter scope (super-admin managed,
+  // scope-local separation of duties; finance_manager bridges to a finance role).
+  specializedRoles,
   webhookEvents,
   financeSettings,
 

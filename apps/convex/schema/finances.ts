@@ -23,6 +23,8 @@ import {
   LEGACY_ACCOUNT_STATUSES,
   FINANCE_ROLES,
   FINANCE_ROLE_SCOPES,
+  SPECIALIZED_ROLE_TITLES,
+  SPECIALIZED_ROLE_KINDS,
 } from "@events-os/shared";
 
 /**
@@ -539,7 +541,12 @@ export const approvals = defineTable({
  *  the first grants); everyone else, chapter admins included, needs an explicit
  *  grant here. Conferring `scope:"central"` itself requires central reach. */
 export const financeRoles = defineTable({
-  chapterId: v.id("chapters"),
+  // A real chapter id, OR the `"central"` sentinel for an org-level grant (the
+  // CENTRAL sentinel — never null, not a `chapters` row). Chapter-level grants
+  // hold a real id; a `finance_manager` SPECIALIZED role assigned at central
+  // bridges to a grant keyed on `"central"` (see `specializedRoles`). Mirrors the
+  // `budgets.chapterId` union so the org level is representable without a null.
+  chapterId: v.union(v.id("chapters"), v.literal("central")),
   personId: v.id("people"),
   role: v.union(...FINANCE_ROLES.map((r) => v.literal(r))),
   scope: v.union(...FINANCE_ROLE_SCOPES.map((s) => v.literal(s))),
@@ -549,6 +556,32 @@ export const financeRoles = defineTable({
   .index("by_chapter", ["chapterId"])
   .index("by_person", ["personId"])
   .index("by_chapter_and_person", ["chapterId", "personId"]);
+
+// ── Specialized roles (leadership + finance, super-admin managed) ────────────
+/** Org leadership + finance TITLES at a scope (`"central"` sentinel OR a real
+ *  chapter). A title carries a fixed `roleKind` (leadership | finance), stored
+ *  alongside for indexed SoD queries. One holder per (scope, title) SLOT;
+ *  assigning a filled slot replaces the holder. Scope-local separation of duties:
+ *  a person can't hold both a leadership AND a finance title in the SAME scope
+ *  (checked via `by_scope_and_kind`). A `finance_manager` title additionally
+ *  BRIDGES to a `financeRoles` manager grant (see `specializedRoles.ts`).
+ *  Super-admin managed — NOT gated on the finance ladder. */
+export const specializedRoles = defineTable({
+  personId: v.id("people"),
+  scope: v.union(v.id("chapters"), v.literal("central")),
+  title: v.union(...SPECIALIZED_ROLE_TITLES.map((t) => v.literal(t))),
+  // Derived from `title` (via SPECIALIZED_ROLE_META), stored so the SoD check +
+  // kind rollups can query by index instead of loading + mapping every row.
+  roleKind: v.union(...SPECIALIZED_ROLE_KINDS.map((k) => v.literal(k))),
+  createdBy: v.optional(v.id("users")),
+  createdAt: v.number(),
+})
+  .index("by_person", ["personId"])
+  .index("by_scope", ["scope"])
+  // The SLOT: one holder per (scope, title).
+  .index("by_scope_and_title", ["scope", "title"])
+  // The scope-local separation-of-duties check (the OTHER kind at this scope).
+  .index("by_scope_and_kind", ["scope", "roleKind"]);
 
 // ── Webhook events (deployment-wide inbound dedup) ───────────────────────────
 /** Shared inbound webhook dedup ledger. NOT chapter-scoped on purpose: a
