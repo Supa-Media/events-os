@@ -24,8 +24,12 @@ type Props = {
   onPick: (personId: PersonId) => void;
   onClear?: () => void;
   onClose: () => void;
-  /** "team" lists only team members (for owners/leads); default lists everyone. */
-  source?: "all" | "team";
+  /**
+   * "team" lists only team members (for owners/leads); "cardEligible" lists only
+   * people with a `@publicworship.life` email (card issuance/linking); default
+   * lists everyone.
+   */
+  source?: "all" | "team" | "cardEligible";
   /**
    * Optional predicate to narrow the roster (e.g. exclude placeholder people
    * when replacing a placeholder volunteer). Applied before the search filter.
@@ -62,9 +66,16 @@ export function PersonPicker({
   // the learner + placeholder people — real teammates are never offered from
   // within a drill.
   const sandboxEventId = useSandboxEventId();
+  // The card-eligibility roster takes no args and has no sandbox variant.
   const people = useQuery(
-    source === "team" ? api.people.teamMembers : api.people.list,
-    sandboxEventId ? { eventId: sandboxEventId as Id<"events"> } : {},
+    source === "cardEligible"
+      ? api.people.cardEligible
+      : source === "team"
+        ? api.people.teamMembers
+        : api.people.list,
+    source !== "cardEligible" && sandboxEventId
+      ? { eventId: sandboxEventId as Id<"events"> }
+      : {},
   );
 
   const [search, setSearch] = useState("");

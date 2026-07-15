@@ -41,21 +41,28 @@ export function CardholderRow({
   const status = cardStatusBadge(card.status);
   const receipts = receiptStatus(card);
 
-  const actions: ContextMenuAction[] = [
-    { label: "Edit controls…", icon: "sliders", onPress: onEditControls },
-    ...(card.status === "locked"
-      ? [{ label: "Unlock card", icon: "unlock" as const, onPress: onUnlock }]
-      : card.status === "active"
-        ? [
-            {
-              label: "Lock card",
-              icon: "lock" as const,
-              onPress: onLock,
-              destructive: true,
-            },
-          ]
-        : []),
-  ];
+  // Legacy (Relay) cards are external — Increase-only controls (caps/validity,
+  // lock/unlock) don't apply, so they carry no ⋯ actions. Manage them from the
+  // "Relay cards" section instead.
+  const isLegacy = card.source === "legacy";
+
+  const actions: ContextMenuAction[] = isLegacy
+    ? []
+    : [
+        { label: "Edit controls…", icon: "sliders", onPress: onEditControls },
+        ...(card.status === "locked"
+          ? [{ label: "Unlock card", icon: "unlock" as const, onPress: onUnlock }]
+          : card.status === "active"
+            ? [
+                {
+                  label: "Lock card",
+                  icon: "lock" as const,
+                  onPress: onLock,
+                  destructive: true,
+                },
+              ]
+            : []),
+      ];
 
   return (
     <Row last={last}>
@@ -63,9 +70,12 @@ export function CardholderRow({
         <View className="flex-row items-center gap-2.5">
           <Avatar name={card.cardholderName ?? "?"} size={30} />
           <View className="flex-1">
-            <Text className="text-sm font-semibold text-ink" numberOfLines={1}>
-              {card.cardholderName ?? "Unknown"}
-            </Text>
+            <View className="flex-row items-center gap-1.5">
+              <Text className="text-sm font-semibold text-ink" numberOfLines={1}>
+                {card.cardholderName ?? "Unknown"}
+              </Text>
+              {isLegacy ? <Badge label="Relay" tone="neutral" /> : null}
+            </View>
             <Text className="text-xs text-faint" numberOfLines={1}>
               {cardTypeLabel(card.type)} ···{card.last4 ?? "••••"}
             </Text>
@@ -89,22 +99,26 @@ export function CardholderRow({
       <Cell width={132} align="right">
         <View className="flex-row items-center justify-end gap-1.5">
           <Badge label={status.label} tone={status.tone} icon={status.icon} />
-          <Pressable
-            ref={ref}
-            onPress={open}
-            hitSlop={6}
-            className="rounded-md p-1 active:bg-sunken web:hover:bg-sunken"
-          >
-            <Icon name="more-horizontal" size={16} color={colors.muted} />
-          </Pressable>
+          {actions.length > 0 ? (
+            <Pressable
+              ref={ref}
+              onPress={open}
+              hitSlop={6}
+              className="rounded-md p-1 active:bg-sunken web:hover:bg-sunken"
+            >
+              <Icon name="more-horizontal" size={16} color={colors.muted} />
+            </Pressable>
+          ) : null}
         </View>
       </Cell>
 
-      <ContextMenu
-        anchor={visible ? anchor : undefined}
-        actions={actions}
-        onClose={close}
-      />
+      {actions.length > 0 ? (
+        <ContextMenu
+          anchor={visible ? anchor : undefined}
+          actions={actions}
+          onClose={close}
+        />
+      ) : null}
     </Row>
   );
 }
