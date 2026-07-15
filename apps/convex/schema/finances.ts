@@ -412,6 +412,13 @@ export const payouts = defineTable({
  *  issued on it, and ACH reimbursement payouts originate from it. */
 export const increaseAccounts = defineTable({
   chapterId: v.id("chapters"),
+  // The environment this account was provisioned in (true = Increase sandbox).
+  // Stamped at provision time from the current `financeSettings.sandboxMode`. A
+  // chapter may hold up to TWO rows — one per environment — and each finance
+  // view acts on the row matching the current mode. Optional for legacy rows
+  // predating the field (their environment falls back to the `sandbox_` id
+  // prefix via `accountIsSandbox`; the backfill stamps them).
+  sandbox: v.optional(v.boolean()),
   increaseEntityId: v.optional(v.string()),
   increaseAccountId: v.optional(v.string()),
   onboardingStatus: v.union(

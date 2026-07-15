@@ -24,13 +24,33 @@ import {
   FINANCE_ROLE_RANK,
   FINANCE_ROLE_LABELS,
   financeRoleAtLeast,
+  accountIsSandbox,
   type FinanceRole,
   type FinanceRoleScope,
 } from "@events-os/shared";
-import { Id } from "../_generated/dataModel";
+import { Doc, Id } from "../_generated/dataModel";
 import { QueryCtx } from "../_generated/server";
 import { isSuperuser } from "./superuser";
 import { viewerPerson } from "./org";
+
+/**
+ * The chapter's `increaseAccounts` row for a given environment, or null. A
+ * chapter may now hold up to two rows (one sandbox, one production); every
+ * finance view/action selects the row whose environment matches the current
+ * `sandboxMode` via this helper — NEVER `.first()`, which would pick an
+ * arbitrary row once both exist. The off-mode row is left untouched.
+ */
+export async function getChapterAccountForMode(
+  ctx: QueryCtx,
+  chapterId: Id<"chapters">,
+  sandboxMode: boolean,
+): Promise<Doc<"increaseAccounts"> | null> {
+  const rows = await ctx.db
+    .query("increaseAccounts")
+    .withIndex("by_chapter", (q) => q.eq("chapterId", chapterId))
+    .collect();
+  return rows.find((a) => accountIsSandbox(a) === sandboxMode) ?? null;
+}
 
 /** The caller's resolved finance capability in a chapter. */
 export interface FinanceAccess {

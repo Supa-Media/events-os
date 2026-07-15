@@ -245,7 +245,10 @@ export function matchesMode(
   return isSandboxObjectId(increaseId) === sandboxMode;
 }
 
-// ── Increase account onboarding (one Entity + Account per chapter) ───────────
+// ── Increase account onboarding (one Account per chapter PER ENVIRONMENT) ────
+// A chapter may hold BOTH a sandbox and a production Increase account (up to one
+// per environment). Each finance view acts on the account matching the current
+// `sandboxMode`; the off-mode account is hidden.
 export const INCREASE_ONBOARDING_STATUSES = [
   "not_started",
   "pending",
@@ -254,6 +257,23 @@ export const INCREASE_ONBOARDING_STATUSES = [
 ] as const;
 export type IncreaseOnboardingStatus =
   (typeof INCREASE_ONBOARDING_STATUSES)[number];
+
+/**
+ * Which environment an `increaseAccounts` row belongs to. The explicit
+ * `sandbox` field (stamped at provision time from the mode) is the source of
+ * truth. LEGACY rows provisioned before the field existed have it unset — for
+ * those we fall back to the `sandbox_` id prefix (`isSandboxObjectId`). A
+ * null/pending id with no field defaults to production (`false`). The backfill
+ * (`increase:runBackfillIncreaseAccountEnv`) stamps the field on legacy rows so
+ * the prefix fallback is only ever a transient safety net.
+ */
+export function accountIsSandbox(account: {
+  sandbox?: boolean | null;
+  increaseAccountId?: string | null;
+}): boolean {
+  if (account.sandbox != null) return account.sandbox;
+  return isSandboxObjectId(account.increaseAccountId);
+}
 
 // ── Legacy external accounts (Stripe Financial Connections read-sync) ────────
 export const LEGACY_ACCOUNT_STATUSES = [

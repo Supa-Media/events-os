@@ -73,6 +73,7 @@ import {
   requireFinanceRole,
   requireFinanceManager,
   getFinanceRole,
+  getChapterAccountForMode,
 } from "./lib/finance";
 import { viewerPerson } from "./lib/org";
 import { increaseEnvForObjectId } from "./increase";
@@ -368,17 +369,15 @@ export const beginIssueCard = internalMutation({
     const holder = await ctx.db.get(args.cardholderPersonId);
     await requireInChapter(ctx, chapterId, holder, "Cardholder");
 
-    const account = await ctx.db
-      .query("increaseAccounts")
-      .withIndex("by_chapter", (q) => q.eq("chapterId", chapterId))
-      .first();
-
-    // Env-mismatch guard: refuse to mint a card on an account that belongs to a
-    // different Increase environment than the current mode — e.g. a leftover
-    // `sandbox_` account while the deployment is in production mode. Issuing here
-    // would only pile more stale sandbox cards onto a dead account. A null id is
-    // env-neutral (degraded/no vendor), so this never blocks the dev path.
+    // Mode-aware: issue on the chapter's CURRENT-environment account (never
+    // `.first()`, which would arbitrarily pick sandbox-or-prod once both exist).
     const sandboxMode = await readSandbox(ctx);
+    const account = await getChapterAccountForMode(ctx, chapterId, sandboxMode);
+
+    // Env-mismatch guard (now a safety net): mode-aware selection already picks
+    // the right-environment account, so this only fires on an inconsistent row
+    // (e.g. `sandbox:false` but a `sandbox_` id). A null id is env-neutral
+    // (degraded/no vendor), so this never blocks the dev path.
     if (account && !matchesMode(account.increaseAccountId ?? null, sandboxMode)) {
       throw new ConvexError({
         code: "ACCOUNT_ENV_MISMATCH",
@@ -1028,10 +1027,9 @@ export const beginRepayment = internalMutation({
     }
     const fresh = (await ctx.db.get(args.repaymentId))!;
 
-    const account = await ctx.db
-      .query("increaseAccounts")
-      .withIndex("by_chapter", (q) => q.eq("chapterId", chapterId))
-      .first();
+    // Mode-aware: charge into the chapter's CURRENT-environment account.
+    const sandboxMode = await readSandbox(ctx);
+    const account = await getChapterAccountForMode(ctx, chapterId, sandboxMode);
     const increaseAccountId =
       account && account.onboardingStatus === "active" && account.increaseAccountId
         ? account.increaseAccountId

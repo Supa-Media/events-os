@@ -573,18 +573,56 @@ describe("issueCard", () => {
     void manager;
   });
 
-  test("throws on a sandbox account while in production mode (env mismatch)", async () => {
+  test("hides a leftover sandbox account in production → degrades like no account", async () => {
     const t = newT();
     const s = await setupChapter(t);
     await seedManager(s);
     await setSandboxMode(s, false); // production
     const holder = await seedPerson(s, { name: "Holder" });
-    // A leftover sandbox/test account while the deployment is in production.
+    // A leftover sandbox/test account while the deployment is in production. It's
+    // now INVISIBLE in production mode, so issueCard sees "no current-mode
+    // account" and degrades (a vendorless card) rather than throwing.
     await run(s.t, (ctx) =>
       ctx.db.insert("increaseAccounts", {
         chapterId: s.chapterId,
+        sandbox: true,
         onboardingStatus: "active",
         increaseAccountId: "sandbox_acct_1",
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      }),
+    );
+    const card = await s.as.action(api.cards.issueCard, {
+      cardholderPersonId: holder,
+      type: "virtual",
+    });
+    expect(card.status).toBe("active");
+    // A degraded card was minted (no vendor id); the sandbox account is untouched.
+    const rows = await run(s.t, (ctx) =>
+      ctx.db
+        .query("cards")
+        .withIndex("by_chapter", (q) => q.eq("chapterId", s.chapterId))
+        .collect(),
+    );
+    expect(rows.length).toBe(1);
+    expect(rows[0].increaseCardId).toBeUndefined();
+  });
+
+  test("safety-net guard: throws on an inconsistent row (sandbox:false but sandbox_ id) in production", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await seedManager(s);
+    await setSandboxMode(s, false); // production
+    const holder = await seedPerson(s, { name: "Holder" });
+    // Inconsistent: the field says production, but the id is a sandbox id.
+    // Mode-aware selection picks it (field wins), then the env-mismatch guard
+    // catches the id/mode disagreement.
+    await run(s.t, (ctx) =>
+      ctx.db.insert("increaseAccounts", {
+        chapterId: s.chapterId,
+        sandbox: false,
+        onboardingStatus: "active",
+        increaseAccountId: "sandbox_acct_bad",
         createdAt: Date.now(),
         updatedAt: Date.now(),
       }),
@@ -595,7 +633,6 @@ describe("issueCard", () => {
         type: "virtual",
       }),
     ).rejects.toBeInstanceOf(ConvexError);
-    // No card row was minted on the stale account.
     const rows = await run(s.t, (ctx) =>
       ctx.db
         .query("cards")
@@ -603,6 +640,58 @@ describe("issueCard", () => {
         .collect(),
     );
     expect(rows.length).toBe(0);
+  });
+
+  test("issues on the CURRENT-mode account when both environments exist", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await seedManager(s);
+    const holder = await seedPerson(s, { name: "Holder" });
+    // A chapter with BOTH a sandbox and a production Increase account.
+    const now = Date.now();
+    await run(s.t, (ctx) =>
+      ctx.db.insert("increaseAccounts", {
+        chapterId: s.chapterId,
+        sandbox: true,
+        onboardingStatus: "active",
+        increaseAccountId: "sandbox_acct_1",
+        createdAt: now,
+        updatedAt: now,
+      }),
+    );
+    await run(s.t, (ctx) =>
+      ctx.db.insert("increaseAccounts", {
+        chapterId: s.chapterId,
+        sandbox: false,
+        onboardingStatus: "active",
+        increaseAccountId: "acct_prod_1",
+        createdAt: now,
+        updatedAt: now,
+      }),
+    );
+
+    // Production mode → issues on the PRODUCTION account.
+    await setSandboxMode(s, false);
+    const prod = await s.as.mutation(internal.cards.beginIssueCard, {
+      cardholderPersonId: holder,
+      type: "virtual",
+    });
+    expect(prod.kind).toBe("created");
+    if (prod.kind === "created") {
+      expect(prod.increaseAccountId).toBe("acct_prod_1");
+    }
+
+    // Flip to sandbox mode → the NEXT card issues on the SANDBOX account.
+    const holder2 = await seedPerson(s, { name: "Holder 2" });
+    await setSandboxMode(s, true);
+    const sb = await s.as.mutation(internal.cards.beginIssueCard, {
+      cardholderPersonId: holder2,
+      type: "virtual",
+    });
+    expect(sb.kind).toBe("created");
+    if (sb.kind === "created") {
+      expect(sb.increaseAccountId).toBe("sandbox_acct_1");
+    }
   });
 
   test("a non-manager cannot issue a card", async () => {
