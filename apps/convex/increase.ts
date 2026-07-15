@@ -34,7 +34,8 @@
  * `pending` payout and steers the manager to `markPaidManually` (the working
  * Phase-4 path). See the TODO breadcrumb in `beginPayout`.
  *
- * Env: INCREASE_API_KEY, INCREASE_WEBHOOK_SECRET.
+ * Env: INCREASE_API_KEY, INCREASE_WEBHOOK_SECRET, INCREASE_PROGRAM_ID, and
+ * INCREASE_API_BASE (sandbox URL for dev/staging; defaults to production).
  */
 import {
   action,
@@ -67,7 +68,11 @@ import {
   assertSeparationOfDuties,
 } from "./lib/finance";
 
-const INCREASE_API = "https://api.increase.com";
+/** Increase API base URL. Env-overridable so dev/staging point at the sandbox
+ *  (`INCREASE_API_BASE=https://sandbox.increase.com`); defaults to production. */
+function increaseApiBase(): string {
+  return process.env.INCREASE_API_BASE ?? "https://api.increase.com";
+}
 
 /** Payouts that block a re-pay (money is in motion or already out the door).
  *  `failed` / `returned` / `canceled` are NOT live — a fresh payout may follow. */
@@ -236,7 +241,7 @@ async function increasePost(
     "Content-Type": "application/json",
   };
   if (idempotencyKey) headers["Idempotency-Key"] = idempotencyKey;
-  const res = await fetch(`${INCREASE_API}${path}`, {
+  const res = await fetch(`${increaseApiBase()}${path}`, {
     method: "POST",
     headers,
     body: JSON.stringify(body),
@@ -258,7 +263,7 @@ async function increaseGet(
   key: string,
   path: string,
 ): Promise<Record<string, unknown>> {
-  const res = await fetch(`${INCREASE_API}${path}`, {
+  const res = await fetch(`${increaseApiBase()}${path}`, {
     method: "GET",
     headers: { Authorization: `Bearer ${key}` },
   });

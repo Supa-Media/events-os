@@ -33,7 +33,8 @@
  *    `issueCard` still creates the `cards` row so the app works in dev.
  *  - All failures throw `ConvexError` (never a plain `Error`).
  *
- * Env: INCREASE_API_KEY.
+ * Env: INCREASE_API_KEY, INCREASE_API_BASE (sandbox URL for dev/staging;
+ * defaults to production).
  */
 import {
   action,
@@ -70,7 +71,11 @@ import {
 } from "./lib/finance";
 import { viewerPerson } from "./lib/org";
 
-const INCREASE_API = "https://api.increase.com";
+/** Increase API base URL. Env-overridable so dev/staging point at the sandbox
+ *  (`INCREASE_API_BASE=https://sandbox.increase.com`); defaults to production. */
+function increaseApiBase(): string {
+  return process.env.INCREASE_API_BASE ?? "https://api.increase.com";
+}
 
 // ── Bounds ───────────────────────────────────────────────────────────────────
 const CARD_SCAN_LIMIT = 2000;
@@ -195,7 +200,7 @@ async function increasePost(
   path: string,
   body: Record<string, unknown>,
 ): Promise<Record<string, unknown>> {
-  const res = await fetch(`${INCREASE_API}${path}`, {
+  const res = await fetch(`${increaseApiBase()}${path}`, {
     method: "POST",
     headers: {
       Authorization: `Bearer ${key}`,
@@ -220,7 +225,7 @@ async function increaseGet(
   key: string,
   path: string,
 ): Promise<Record<string, unknown>> {
-  const res = await fetch(`${INCREASE_API}${path}`, {
+  const res = await fetch(`${increaseApiBase()}${path}`, {
     method: "GET",
     headers: { Authorization: `Bearer ${key}` },
   });
