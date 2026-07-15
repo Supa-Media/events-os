@@ -43,12 +43,15 @@ export function BudgetCreateModal({
   budgetId,
   defaultYear,
   defaultMonth,
+  canCentral = false,
   onClose,
 }: {
   /** When set, edit this existing budget instead of creating a new one. */
   budgetId?: Id<"budgets"> | null;
   defaultYear: number;
   defaultMonth: number;
+  /** Whether the caller may create org-level (central) budgets. */
+  canCentral?: boolean;
   onClose: () => void;
 }) {
   const create = useMutation(api.finances.createBudget);
@@ -63,6 +66,8 @@ export function BudgetCreateModal({
 
   const [scope, setScope] = useState<BudgetScope>("bucket");
   const [cadence, setCadence] = useState<BudgetCadence>("monthly");
+  // Chapter budget by default; central = an org-wide budget (central users only).
+  const [central, setCentral] = useState(false);
   const [label, setLabel] = useState("");
   const [amount, setAmount] = useState("");
   const [year, setYear] = useState(String(defaultYear));
@@ -78,6 +83,7 @@ export function BudgetCreateModal({
     if (!editing) return;
     setScope(editing.scope);
     setCadence(editing.cadence);
+    setCentral(editing.level === "central");
     setLabel(editing.label ?? "");
     setAmount((editing.amountCents / 100).toString());
     setYear(String(editing.year));
@@ -152,6 +158,7 @@ export function BudgetCreateModal({
           amountCents,
           scope,
           cadence,
+          ...(central ? { central: true } : {}),
           ...period,
           ...(label.trim() ? { label: label.trim() } : {}),
           ...(fundId ? { fundId: fundId as Id<"funds"> } : {}),
@@ -202,6 +209,26 @@ export function BudgetCreateModal({
               keyboardType="decimal-pad"
               placeholder="0.00"
             />
+
+            {editing ? (
+              editing.level === "central" ? (
+                <Field label="Level">
+                  <View className="rounded-md border border-border-strong bg-sunken px-3 py-2.5">
+                    <Text className="text-base text-muted">Central (org-wide)</Text>
+                  </View>
+                </Field>
+              ) : null
+            ) : canCentral ? (
+              <Select
+                label="Level"
+                value={central ? "central" : "chapter"}
+                options={[
+                  { value: "chapter", label: "Chapter" },
+                  { value: "central", label: "Central (org-wide)" },
+                ]}
+                onChange={(v) => setCentral(v === "central")}
+              />
+            ) : null}
 
             <View className="flex-row gap-3">
               <View className="flex-1">
