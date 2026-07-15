@@ -158,7 +158,8 @@ const tagRollupRow = v.object({
   status: v.union(v.literal("ok"), v.literal("warn")),
 });
 
-const txnSummary = v.object({
+// Shared field map so the reconcile row can extend the summary without drift.
+const txnSummaryFields = {
   id: v.id("transactions"),
   postedAt: v.number(),
   amountCents: v.number(),
@@ -174,6 +175,44 @@ const txnSummary = v.object({
   // personal / inflow are never flagged). Drives the reconcile "needs budget"
   // badge + warning strip — never a hard block.
   needsBudget: v.boolean(),
+  // True iff a receipt is attached (`receiptStorageId != null`) — the truthful
+  // signal behind the reconcile "Missing receipt" filter + Receipt column.
+  hasReceipt: v.boolean(),
+  // The card's last-4 (parsed out of the sync description), for display.
+  cardLast4: v.union(v.string(), v.null()),
+};
+const txnSummary = v.object(txnSummaryFields);
+
+// The resolved cardholder behind a charge: the `personId` on the txn, else the
+// person who owns the `cardId`. Powers the reconcile Cardholder column.
+const cardholderRef = v.object({
+  personId: v.id("people"),
+  name: v.string(),
+  imageUrl: v.union(v.string(), v.null()),
+});
+
+// One reconcile-grid row: the txn summary plus the resolved cardholder.
+const reconcileRow = v.object({
+  ...txnSummaryFields,
+  cardholder: v.union(cardholderRef, v.null()),
+});
+
+// The reconcile filter pills (server-side, correct across ALL rows).
+const reconcileFilterValidator = v.union(
+  v.literal("all"),
+  v.literal("needs_budget"),
+  v.literal("missing_receipt"),
+  v.literal("uncategorized"),
+  v.literal("ready"),
+);
+
+// Per-filter counts returned alongside the rows so each pill shows its number.
+const reconcileCounts = v.object({
+  all: v.number(),
+  needs_budget: v.number(),
+  missing_receipt: v.number(),
+  uncategorized: v.number(),
+  ready: v.number(),
 });
 
 // Per-fund SPEND for the dashboard period (period reads are naturally bounded;
@@ -367,6 +406,8 @@ function toTxnSummary(tr: Doc<"transactions">) {
     categoryId: tr.categoryId ?? null,
     budgetId: tr.budgetId ?? null,
     needsBudget: isSpend(tr) && tr.budgetId == null,
+    hasReceipt: tr.receiptStorageId != null,
+    cardLast4: tr.cardLast4 ?? null,
   };
 }
 
@@ -1825,6 +1866,28 @@ async function findGeneralFundId(
 }
 
 /**
+ * The chapter's default operating fund for auto-coding: the unrestricted "General
+ * Fund" by name, else the lowest-sortOrder UNRESTRICTED fund, else `null`. Unlike
+ * {@link findGeneralFundId} this never falls back to a restricted fund — spend is
+ * never silently defaulted into an earmarked bucket. Lets the reconcile grid hide
+ * the fund selector while still leaving every coded txn attached to a real fund.
+ */
+async function defaultFundId(
+  ctx: QueryCtx,
+  chapterId: Id<"chapters">,
+): Promise<Id<"funds"> | null> {
+  const funds = await ctx.db
+    .query("funds")
+    .withIndex("by_chapter", (q) => q.eq("chapterId", chapterId))
+    .take(ROLLUP_SCAN_LIMIT);
+  const unrestricted = funds
+    .filter((f) => f.restriction === "unrestricted")
+    .sort((a, b) => a.sortOrder - b.sortOrder);
+  if (unrestricted.length === 0) return null;
+  return (unrestricted.find((f) => f.name === "General Fund") ?? unrestricted[0])._id;
+}
+
+/**
  * Shared: seed one chapter's default funds + expense categories. First ensures
  * the chapter's default funds exist (General Fund + Designated) — so a chapter
  * created before the finance seed (zero funds) is fixed in one shot — then seeds
@@ -2683,6 +2746,107 @@ export const listTransactions = query({
   },
 });
 
+/**
+ * RECONCILE LIST — the bookkeeper grid's data source. Unlike the paginated
+ * {@link listTransactions} (50/page, so filters only ever saw one page), this
+ * loads the chapter's transactions bounded (`ROLLUP_SCAN_LIMIT`, a bounded admin
+ * set) and filters SERVER-SIDE across ALL rows, so every filter pill is truthful.
+ * Returns the filtered `rows` (newest-first, cardholder resolved) plus per-filter
+ * `counts` for the pill badges.
+ *
+ * Filters (the `excluded` status is always dropped first — an intentional
+ * exclusion never belongs in the inbox):
+ *   - `all`            every non-excluded row
+ *   - `needs_budget`   a spend row with no budget yet (`isSpend && budgetId == null`)
+ *   - `missing_receipt` a chargeable (spend) row with no receipt attached
+ *   - `uncategorized`  status `unreviewed`
+ *   - `ready`          status `reconciled`
+ *
+ * Kept to a SINGLE bounded scan over `by_chapter_and_postedAt`: that one desc
+ * read yields both the newest-first ordering the grid wants AND every pill's
+ * count in one pass, cheaper than a separate `by_chapter_and_status` query per
+ * pill.
+ */
+export const listReconcile = query({
+  args: { filter: v.optional(reconcileFilterValidator) },
+  returns: v.object({ rows: v.array(reconcileRow), counts: reconcileCounts }),
+  handler: async (ctx, args) => {
+    const filter = args.filter ?? "all";
+    const zero = {
+      all: 0,
+      needs_budget: 0,
+      missing_receipt: 0,
+      uncategorized: 0,
+      ready: 0,
+    };
+    const chapterId = await readChapterId(ctx);
+    if (!chapterId) return { rows: [], counts: zero };
+    await requireFinanceRole(ctx, chapterId, "viewer");
+
+    const sandboxMode = await readSandbox(ctx);
+    const all = (
+      await ctx.db
+        .query("transactions")
+        .withIndex("by_chapter_and_postedAt", (q) => q.eq("chapterId", chapterId))
+        .order("desc")
+        .take(ROLLUP_SCAN_LIMIT)
+    )
+      .filter((tr) => txnMatchesMode(tr, sandboxMode))
+      // An intentionally-excluded charge is never part of the reconcile inbox.
+      .filter((tr) => tr.status !== "excluded");
+
+    // Per-filter counts in the same pass (spend/receipt/status predicates).
+    const counts = { ...zero, all: all.length };
+    for (const tr of all) {
+      if (isSpend(tr) && tr.budgetId == null) counts.needs_budget += 1;
+      if (isSpend(tr) && tr.receiptStorageId == null) counts.missing_receipt += 1;
+      if (tr.status === "unreviewed") counts.uncategorized += 1;
+      if (tr.status === "reconciled") counts.ready += 1;
+    }
+
+    const predicates: Record<string, (tr: Doc<"transactions">) => boolean> = {
+      all: () => true,
+      needs_budget: (tr) => isSpend(tr) && tr.budgetId == null,
+      missing_receipt: (tr) => isSpend(tr) && tr.receiptStorageId == null,
+      uncategorized: (tr) => tr.status === "unreviewed",
+      ready: (tr) => tr.status === "reconciled",
+    };
+    const selected = all.filter(predicates[filter]);
+
+    // Resolve the cardholder only for the rows we actually return (bounded
+    // `storage.getUrl` calls), caching people / cards / image urls across rows.
+    const getPerson = nameCache(ctx, "people");
+    const getCard = nameCache(ctx, "cards");
+    const imageUrlCache = new Map<Id<"_storage">, string | null>();
+    const resolveCardholder = async (tr: Doc<"transactions">) => {
+      let personId = tr.personId ?? null;
+      if (!personId && tr.cardId) {
+        const card = await getCard(tr.cardId);
+        personId = card?.cardholderPersonId ?? null;
+      }
+      if (!personId) return null;
+      const person = await getPerson(personId);
+      if (!person) return null;
+      let imageUrl: string | null = null;
+      if (person.image) {
+        if (imageUrlCache.has(person.image)) {
+          imageUrl = imageUrlCache.get(person.image)!;
+        } else {
+          imageUrl = await ctx.storage.getUrl(person.image);
+          imageUrlCache.set(person.image, imageUrl);
+        }
+      }
+      return { personId, name: person.name, imageUrl };
+    };
+
+    const rows: (typeof reconcileRow.type)[] = [];
+    for (const tr of selected) {
+      rows.push({ ...toTxnSummary(tr), cardholder: await resolveCardholder(tr) });
+    }
+    return { rows, counts };
+  },
+});
+
 /** Verify the optional operational-link ids on a transaction write. */
 async function verifyTxnRefs(
   ctx: MutationCtx,
@@ -2800,6 +2964,14 @@ export const categorizeTransaction = mutation({
       teamId: args.teamId,
       budgetId: args.budgetId,
     });
+    // Default the fund to the chapter's General Fund when the client omits it and
+    // the txn isn't already coded to one. The reconcile grid hides the fund
+    // selector (coding = category + budget only), so this keeps every coded txn
+    // attached to a real fund without the UI having to pass it.
+    if (args.fundId === undefined && txn.fundId == null) {
+      const def = await defaultFundId(ctx, chapterId);
+      if (def) patch.fundId = def;
+    }
     // Advance an unreviewed transaction to categorized once coded.
     const nowCoded = (patch.fundId ?? txn.fundId) || (patch.categoryId ?? txn.categoryId);
     if (nowCoded && txn.status === "unreviewed") patch.status = "categorized";

@@ -344,6 +344,210 @@ describe("transactions: categorize, integer-cents, pagination", () => {
   });
 });
 
+describe("listReconcile (server-side filters + counts + projections)", () => {
+  /** Insert a transaction directly for full control over status/budget/receipt. */
+  async function insertTxn(
+    s: ChapterSetup,
+    fields: Partial<{
+      flow: "inflow" | "outflow" | "transfer";
+      amountCents: number;
+      status: "unreviewed" | "categorized" | "reconciled" | "excluded";
+      budgetId: Id<"budgets">;
+      receiptStorageId: Id<"_storage">;
+      personId: Id<"people">;
+      cardId: Id<"cards">;
+      cardLast4: string;
+    }>,
+  ): Promise<Id<"transactions">> {
+    return await run(s.t, (ctx) =>
+      ctx.db.insert("transactions", {
+        chapterId: s.chapterId,
+        source: "manual",
+        flow: fields.flow ?? "outflow",
+        amountCents: fields.amountCents ?? 100,
+        postedAt: Date.now(),
+        status: fields.status ?? "unreviewed",
+        budgetId: fields.budgetId,
+        receiptStorageId: fields.receiptStorageId,
+        personId: fields.personId,
+        cardId: fields.cardId,
+        cardLast4: fields.cardLast4,
+        createdAt: Date.now(),
+      }),
+    );
+  }
+
+  test("each filter returns the right rows and every pill count is truthful", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await asManager(s);
+
+    const budgetId = await s.as.mutation(api.finances.createBudget, {
+      amountCents: 10000,
+      type: "recurring",
+      cadence: "yearly",
+      year: 2026,
+    });
+    const receiptId = (await run(s.t, (ctx) =>
+      // `store` is a convex-test run-ctx extension not in the StorageWriter type.
+      (ctx.storage as unknown as { store: (b: Blob) => Promise<Id<"_storage">> }).store(
+        new Blob(["receipt"], { type: "text/plain" }),
+      ),
+    )) as Id<"_storage">;
+
+    // t1: spend, unreviewed, no budget, no receipt.
+    const t1 = await insertTxn(s, { status: "unreviewed" });
+    // t2: spend, reconciled, budgeted, has receipt.
+    const t2 = await insertTxn(s, {
+      status: "reconciled",
+      budgetId,
+      receiptStorageId: receiptId,
+      amountCents: 200,
+    });
+    // t3: excluded → never in the inbox.
+    await insertTxn(s, { status: "excluded", amountCents: 300 });
+    // t4: inflow, unreviewed → counted as all + uncategorized only (not spend).
+    const t4 = await insertTxn(s, { flow: "inflow", amountCents: 400 });
+
+    const all = await s.as.query(api.finances.listReconcile, { filter: "all" });
+    expect(all.counts).toEqual({
+      all: 3, // t1, t2, t4 (t3 excluded)
+      needs_budget: 1, // t1
+      missing_receipt: 1, // t1
+      uncategorized: 2, // t1, t4
+      ready: 1, // t2
+    });
+    const allIds = all.rows.map((r) => r.id);
+    expect(allIds).toEqual(expect.arrayContaining([t1, t2, t4]));
+    expect(allIds).not.toContain(
+      await run(s.t, async (ctx) => {
+        const ex = (await ctx.db.query("transactions").collect()).find(
+          (x) => x.status === "excluded",
+        );
+        return ex!._id;
+      }),
+    );
+
+    const needsBudget = await s.as.query(api.finances.listReconcile, {
+      filter: "needs_budget",
+    });
+    expect(needsBudget.rows.map((r) => r.id)).toEqual([t1]);
+
+    const missingReceipt = await s.as.query(api.finances.listReconcile, {
+      filter: "missing_receipt",
+    });
+    expect(missingReceipt.rows.map((r) => r.id)).toEqual([t1]);
+
+    const uncategorized = await s.as.query(api.finances.listReconcile, {
+      filter: "uncategorized",
+    });
+    expect(uncategorized.rows.map((r) => r.id).sort()).toEqual([t1, t4].sort());
+
+    const ready = await s.as.query(api.finances.listReconcile, {
+      filter: "ready",
+    });
+    expect(ready.rows.map((r) => r.id)).toEqual([t2]);
+  });
+
+  test("projects hasReceipt, cardLast4 and resolves the cardholder (personId OR card)", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await asManager(s);
+
+    const personId = await run(s.t, (ctx) =>
+      ctx.db.insert("people", {
+        chapterId: s.chapterId,
+        name: "Dana Cardholder",
+        createdAt: Date.now(),
+      }),
+    );
+    const cardId = await run(s.t, (ctx) =>
+      ctx.db.insert("cards", {
+        chapterId: s.chapterId,
+        cardholderPersonId: personId,
+        type: "virtual",
+        status: "active",
+        createdAt: Date.now(),
+      }),
+    );
+    const receiptId = (await run(s.t, (ctx) =>
+      (ctx.storage as unknown as { store: (b: Blob) => Promise<Id<"_storage">> }).store(
+        new Blob(["r"], { type: "text/plain" }),
+      ),
+    )) as Id<"_storage">;
+
+    // Direct personId link + a receipt + a last-4.
+    const direct = await insertTxn(s, {
+      personId,
+      receiptStorageId: receiptId,
+      cardLast4: "4242",
+    });
+    // Cardholder resolved THROUGH the card (no personId on the txn).
+    const viaCard = await insertTxn(s, { cardId, amountCents: 500 });
+    // Neither → cardholder null, hasReceipt false.
+    const orphan = await insertTxn(s, { amountCents: 600 });
+
+    const { rows } = await s.as.query(api.finances.listReconcile, {
+      filter: "all",
+    });
+    const byId = new Map(rows.map((r) => [r.id, r]));
+
+    const d = byId.get(direct)!;
+    expect(d.hasReceipt).toBe(true);
+    expect(d.cardLast4).toBe("4242");
+    expect(d.cardholder?.personId).toBe(personId);
+    expect(d.cardholder?.name).toBe("Dana Cardholder");
+
+    const c = byId.get(viaCard)!;
+    expect(c.cardholder?.personId).toBe(personId);
+    expect(c.hasReceipt).toBe(false);
+
+    const o = byId.get(orphan)!;
+    expect(o.cardholder).toBeNull();
+    expect(o.cardLast4).toBeNull();
+  });
+});
+
+describe("categorizeTransaction defaults the fund", () => {
+  test("omitting fundId codes the txn to the General Fund; restricted funds are skipped", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await asManager(s);
+
+    // A designated (restricted) fund with a LOWER sortOrder must NOT win the default.
+    await s.as.mutation(api.finances.createFund, {
+      name: "Missions",
+      restriction: "designated",
+      sortOrder: 0,
+    });
+    const generalFundId = await s.as.mutation(api.finances.createFund, {
+      name: "General Fund",
+      restriction: "unrestricted",
+      sortOrder: 1,
+    });
+    const categoryId = await s.as.mutation(api.finances.createCategory, {
+      fundId: generalFundId,
+      name: "Software",
+      kind: "lineItem",
+    });
+    const txnId = await s.as.mutation(api.finances.createManualTransaction, {
+      flow: "outflow",
+      amountCents: 4200,
+      postedAt: Date.now(),
+    });
+
+    // Code with ONLY a category (fund omitted, mirroring the grid's Category cell).
+    await s.as.mutation(api.finances.categorizeTransaction, {
+      transactionId: txnId,
+      categoryId,
+    });
+    const doc = await run(s.t, (ctx) => ctx.db.get(txnId));
+    expect(doc?.fundId).toBe(generalFundId); // defaulted, not the restricted fund
+    expect(doc?.categoryId).toBe(categoryId);
+    expect(doc?.status).toBe("categorized");
+  });
+});
+
 describe("authz + tenancy", () => {
   test("a viewer cannot create a manual transaction (needs bookkeeper)", async () => {
     const t = newT();
