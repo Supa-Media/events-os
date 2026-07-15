@@ -382,7 +382,15 @@ export const legacyAccounts = defineTable({
   type: v.optional(v.string()),
   // Default fund newly-synced transactions from this account land in.
   defaultFundId: v.optional(v.id("funds")),
+  // First-connect full-history backfill state. `backfilledAt` is stamped when
+  // the entire transaction history has been paged in (unset = backfill still
+  // pending / in progress). While a backfill is draining across scheduled
+  // invocations, `syncCursor` holds the last `starting_after` object id reached
+  // so a follow-up run resumes where it left off; it is cleared when the
+  // backfill completes. Once `backfilledAt` is set the sync switches to the
+  // bounded newest-first incremental re-sweep (which keeps no cursor).
   syncCursor: v.optional(v.string()),
+  backfilledAt: v.optional(v.number()),
   status: v.union(...LEGACY_ACCOUNT_STATUSES.map((s) => v.literal(s))),
   lastSyncedAt: v.optional(v.number()),
   createdAt: v.number(),

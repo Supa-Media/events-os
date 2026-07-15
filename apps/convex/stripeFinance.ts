@@ -185,7 +185,7 @@ export const storeFcAccount = mutation({
       return existing._id;
     }
 
-    return await ctx.db.insert("legacyAccounts", {
+    const legacyAccountId = await ctx.db.insert("legacyAccounts", {
       chapterId,
       stripeFcAccountId: args.stripeFcAccountId,
       institutionName: args.institutionName,
@@ -194,6 +194,20 @@ export const storeFcAccount = mutation({
       status: "active",
       createdAt: Date.now(),
     });
+
+    // Kick off the first-connect full-history backfill immediately (a webhook
+    // may also fire, but connecting shouldn't wait on one). No-op degrade when
+    // the vendor isn't wired up — matches the key-gating elsewhere in this file;
+    // `syncTransactions` itself also skips without a key.
+    if (process.env.STRIPE_SECRET_KEY) {
+      await ctx.scheduler.runAfter(
+        0,
+        internal.stripeFinance.syncTransactions,
+        { legacyAccountId },
+      );
+    }
+
+    return legacyAccountId;
   },
 });
 
@@ -305,9 +319,10 @@ export const listAccounts = query({
  *  - otherwise a new `stripe_fc` / `unreviewed` transaction is INSERTED, with
  *    `flow` derived from the sign of the amount and `amountCents` stored as a
  *    non-negative integer (direction lives in `flow`, never a sign).
- * Stamps the account's `lastSyncedAt`. Returns `{inserted, updated}`. (There is
- * no persistent sync cursor — `syncTransactions` re-sweeps newest-first and
- * leans on this dedup; see that action's note.)
+ * Stamps the account's `lastSyncedAt`. Returns `{inserted, updated}`. This apply
+ * step keeps no cursor of its own — both the first-connect backfill and the
+ * ongoing incremental re-sweep drive pagination in `syncTransactions` and lean
+ * on this dedup; see that action's note.
  */
 export const applyFcTransactions = internalMutation({
   args: {
@@ -382,13 +397,18 @@ export const applyFcTransactions = internalMutation({
 
 // ── Internal: the network fetch + drivers ────────────────────────────────────
 
-/** Load a legacy account by id (for the fetch action, which has no `ctx.db`). */
+/** Load a legacy account by id (for the fetch action, which has no `ctx.db`).
+ *  Includes the backfill state (`backfilledAt` / `syncCursor`) so the sync
+ *  action can branch between first-connect full-history backfill and the
+ *  ongoing incremental re-sweep. */
 export const getAccount = internalQuery({
   args: { legacyAccountId: v.id("legacyAccounts") },
   returns: v.union(
     v.object({
       id: v.id("legacyAccounts"),
       stripeFcAccountId: v.string(),
+      backfilledAt: v.union(v.number(), v.null()),
+      syncCursor: v.union(v.string(), v.null()),
     }),
     v.null(),
   ),
@@ -398,7 +418,43 @@ export const getAccount = internalQuery({
     return {
       id: account._id,
       stripeFcAccountId: account.stripeFcAccountId,
+      backfilledAt: account.backfilledAt ?? null,
+      syncCursor: account.syncCursor ?? null,
     };
+  },
+});
+
+/**
+ * Persist first-connect backfill progress (the fetch action has no `ctx.db`).
+ *  - `completed`: the whole history has been paged in — stamp `backfilledAt`,
+ *    CLEAR `syncCursor`, and stamp `lastSyncedAt`. Subsequent syncs go
+ *    incremental.
+ *  - otherwise (more history remains, or a mid-backfill fetch errored): save
+ *    the resume cursor (`syncCursor`) and stamp `lastSyncedAt`, WITHOUT setting
+ *    `backfilledAt`, so a follow-up run continues draining from that point.
+ */
+export const recordBackfillProgress = internalMutation({
+  args: {
+    legacyAccountId: v.id("legacyAccounts"),
+    completed: v.boolean(),
+    syncCursor: v.optional(v.string()),
+  },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    if (args.completed) {
+      // Patching a field to `undefined` removes it — clears the resume cursor.
+      await ctx.db.patch(args.legacyAccountId, {
+        backfilledAt: Date.now(),
+        syncCursor: undefined,
+        lastSyncedAt: Date.now(),
+      });
+    } else {
+      await ctx.db.patch(args.legacyAccountId, {
+        syncCursor: args.syncCursor,
+        lastSyncedAt: Date.now(),
+      });
+    }
+    return null;
   },
 });
 
@@ -444,15 +500,27 @@ function mapFcTransaction(
 /**
  * Fetch a legacy account's transactions from Stripe and apply them.
  *
- * INCREMENTAL STRATEGY: a BOUNDED newest-first re-sweep, NOT a persistent
- * walking cursor. Stripe lists FC transactions newest-first, so each scheduled
- * sync re-reads from the top (up to MAX_SYNC_PAGES, using `starting_after` only
- * for intra-sweep pagination). Genuinely new rows sit at the front and get
- * inserted; already-seen rows (including ones synced while `pending`) are
- * absorbed by `applyFcTransactions`'s idempotent dedup — which is also what
- * fires the pending→posted in-place update. This catches BOTH new activity and
- * pending→posted transitions on every sweep. (A persistent last-id cursor would
- * walk toward OLDER records and miss both.)
+ * TWO PHASES, branched on `account.backfilledAt`:
+ *
+ * 1. FIRST-CONNECT FULL BACKFILL (`backfilledAt` unset): page through the
+ *    ENTIRE history until Stripe reports `has_more:false`. MAX_SYNC_PAGES is a
+ *    per-invocation BATCH size (respecting action time/step limits), NOT a hard
+ *    history limit: when a run hits the cap with more history left, it saves the
+ *    resume cursor (`syncCursor`) and schedules itself again to keep draining;
+ *    when it reaches the end it stamps `backfilledAt` and clears the cursor.
+ *
+ * 2. INCREMENTAL RE-SWEEP (`backfilledAt` set): a BOUNDED newest-first re-sweep,
+ *    NOT a persistent walking cursor. Stripe lists FC transactions newest-first,
+ *    so each scheduled sync re-reads from the top (up to MAX_SYNC_PAGES, using
+ *    `starting_after` only for intra-sweep pagination). Genuinely new rows sit
+ *    at the front and get inserted; already-seen rows (including ones synced
+ *    while `pending`) are absorbed by `applyFcTransactions`'s idempotent dedup —
+ *    which is also what fires the pending→posted in-place update. This catches
+ *    BOTH new activity and pending→posted transitions on every sweep. (A
+ *    persistent last-id cursor would walk toward OLDER records and miss both.)
+ *
+ * Both phases dedup on `transactions.externalId`, so a re-run (a resumed
+ * backfill, an overlapping sweep) never double-counts.
  *
  * Best-effort: a missing key or any network/parse error logs and returns rather
  * than throwing, so a cron sweep of many accounts never aborts on one account.
@@ -486,12 +554,20 @@ export const syncTransactions = internalAction({
       return { skipped: true, inserted: 0, updated: 0 };
     }
 
+    const isBackfill = account.backfilledAt === null;
+
     let inserted = 0;
     let updated = 0;
     try {
       const collected: (typeof fcTxnValidator.type)[] = [];
-      // No seed cursor — start from the newest and page down within this sweep.
-      let startingAfter: string | undefined;
+      // Backfill RESUMES from the saved cursor; the incremental sweep always
+      // starts fresh from the newest row.
+      let startingAfter: string | undefined =
+        isBackfill && account.syncCursor ? account.syncCursor : undefined;
+      let lastObjectId: string | undefined = startingAfter;
+      let hasMore = false;
+      let errored = false;
+
       for (let page = 0; page < MAX_SYNC_PAGES; page++) {
         const params = new URLSearchParams();
         params.set("account", account.stripeFcAccountId);
@@ -509,6 +585,7 @@ export const syncTransactions = internalAction({
             "[stripe-fc] transactions fetch failed:",
             await response.text(),
           );
+          errored = true;
           break;
         }
         const body = (await response.json()) as {
@@ -517,7 +594,9 @@ export const syncTransactions = internalAction({
         };
         const data = body.data ?? [];
         for (const txn of data) collected.push(mapFcTransaction(txn));
-        if (!body.has_more || data.length === 0) break;
+        hasMore = body.has_more ?? false;
+        if (data.length > 0) lastObjectId = data[data.length - 1].id;
+        if (!hasMore || data.length === 0) break;
         startingAfter = data[data.length - 1].id;
       }
 
@@ -528,6 +607,38 @@ export const syncTransactions = internalAction({
         );
         inserted = result.inserted;
         updated = result.updated;
+      }
+
+      if (isBackfill) {
+        if (!errored && !hasMore) {
+          // Reached the end of history — mark the account fully backfilled and
+          // drop the resume cursor. Future syncs run the incremental re-sweep.
+          await ctx.runMutation(
+            internal.stripeFinance.recordBackfillProgress,
+            { legacyAccountId: args.legacyAccountId, completed: true },
+          );
+        } else {
+          // More history remains (hit the per-run page cap) OR a fetch errored
+          // mid-drain: persist the resume cursor so a follow-up run continues.
+          await ctx.runMutation(
+            internal.stripeFinance.recordBackfillProgress,
+            {
+              legacyAccountId: args.legacyAccountId,
+              completed: false,
+              syncCursor: lastObjectId,
+            },
+          );
+          // Only chain another invocation when Stripe still has more to give;
+          // on an error we stop and let the daily cron / a webhook retry, so a
+          // failing account can't spin in a tight reschedule loop.
+          if (!errored && hasMore) {
+            await ctx.scheduler.runAfter(
+              0,
+              internal.stripeFinance.syncTransactions,
+              { legacyAccountId: args.legacyAccountId },
+            );
+          }
+        }
       }
     } catch (err) {
       console.error("[stripe-fc] sync error:", err);
