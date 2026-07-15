@@ -1,5 +1,5 @@
 /// <reference types="vite/client" />
-import { describe, expect, test } from "vitest";
+import { afterEach, describe, expect, test } from "vitest";
 import { ConvexError } from "convex/values";
 import { newT, run, setupChapter, type ChapterSetup } from "./setup.helpers";
 import { api, internal } from "../_generated/api";
@@ -12,9 +12,11 @@ import type { Id } from "../_generated/dataModel";
  * Covers the testable DB-apply core (`applyFcTransactions`) without hitting
  * Stripe: fresh insert (correct flow/amount/status/fund), idempotent re-apply
  * (dedup by `externalId`, zero duplicates), a pending→posted update in place,
- * cursor + lastSyncedAt advance; plus tenancy on `listAccounts` / `setAccountFund`,
- * the NOT_CONFIGURED session degrade, and the webhook fan-out (unknown = no-op,
- * known = schedules a sync).
+ * lastSyncedAt stamp; the fetch/paginate path via a mocked `fetch` (two pages,
+ * `starting_after` advances, pending→posted catches up on re-sweep); plus
+ * tenancy on `listAccounts` / `setAccountFund`, the NOT_CONFIGURED session
+ * degrade, and the webhook fan-out (unknown = no-op, known = schedules a sync,
+ * disconnected event = marks the account disconnected).
  */
 
 async function seedSelfPerson(s: ChapterSetup): Promise<Id<"people">> {
@@ -188,7 +190,7 @@ describe("applyFcTransactions (dedup / insert / update)", () => {
     expect(rows[0].postedAt).toBe(1_700_050_000_000);
   });
 
-  test("advances syncCursor to the last id and stamps lastSyncedAt", async () => {
+  test("stamps lastSyncedAt (no persistent walking cursor)", async () => {
     const s = await setupChapter(newT());
     const accountId = await seedAccount(s, s.chapterId);
 
@@ -197,8 +199,9 @@ describe("applyFcTransactions (dedup / insert / update)", () => {
       transactions: BATCH,
     });
     const account = await run(s.t, (ctx) => ctx.db.get(accountId));
-    expect(account?.syncCursor).toBe("fctxn_2");
     expect(typeof account?.lastSyncedAt).toBe("number");
+    // The incremental mechanism is a newest-first re-sweep, not a stored cursor.
+    expect(account?.syncCursor).toBeUndefined();
   });
 });
 
@@ -304,5 +307,167 @@ describe("onFcWebhookEvent fan-out", () => {
       ctx.db.system.query("_scheduled_functions").collect(),
     );
     expect(scheduled).toHaveLength(1);
+  });
+
+  test("a disconnected event marks the account disconnected (no sync scheduled)", async () => {
+    const s = await setupChapter(newT());
+    const accountId = await seedAccount(s, s.chapterId, {
+      stripeFcAccountId: "fca_disc",
+    });
+
+    await s.t.mutation(internal.stripeFinance.onFcWebhookEvent, {
+      stripeAccountId: "fca_disc",
+      eventType: "financial_connections.account.disconnected",
+    });
+
+    const account = await run(s.t, (ctx) => ctx.db.get(accountId));
+    expect(account?.status).toBe("disconnected");
+    const scheduled = await run(s.t, (ctx) =>
+      ctx.db.system.query("_scheduled_functions").collect(),
+    );
+    expect(scheduled).toHaveLength(0);
+  });
+});
+
+// ── The network fetch / paginate path (mocked global fetch) ──────────────────
+
+/** A Stripe FC transaction object, as the list endpoint returns it. */
+function fcObject(
+  id: string,
+  amount: number,
+  status: "pending" | "posted",
+  postedAt: number,
+): Record<string, unknown> {
+  return {
+    id,
+    amount,
+    description: `merchant ${id}`,
+    status,
+    transacted_at: postedAt - 100,
+    status_transitions: status === "posted" ? { posted_at: postedAt } : {},
+  };
+}
+
+/** A minimal fetch Response stand-in the action consumes (`ok`/`json`/`text`). */
+function jsonResponse(body: unknown): unknown {
+  return {
+    ok: true,
+    status: 200,
+    json: async () => body,
+    text: async () => JSON.stringify(body),
+  };
+}
+
+describe("syncTransactions fetch + paginate (mocked fetch)", () => {
+  const realFetch = globalThis.fetch;
+  const realKey = process.env.STRIPE_SECRET_KEY;
+
+  afterEach(() => {
+    globalThis.fetch = realFetch;
+    if (realKey === undefined) delete process.env.STRIPE_SECRET_KEY;
+    else process.env.STRIPE_SECRET_KEY = realKey;
+  });
+
+  test("ingests BOTH pages, sends starting_after on page 2, then catches a pending→posted row", async () => {
+    process.env.STRIPE_SECRET_KEY = "sk_test_mock";
+    const s = await setupChapter(newT());
+    const accountId = await seedAccount(s, s.chapterId, {
+      stripeFcAccountId: "fca_page",
+    });
+
+    // Page 1 (newest): a pending row + a posted row, has_more:true.
+    // Page 2: one more posted row, has_more:false.
+    const page1 = {
+      data: [
+        fcObject("fctxn_new", -1500, "pending", 1_700_200_000),
+        fcObject("fctxn_mid", -2500, "posted", 1_700_100_000),
+      ],
+      has_more: true,
+    };
+    const page2 = {
+      data: [fcObject("fctxn_old", 9000, "posted", 1_700_000_000)],
+      has_more: false,
+    };
+
+    const urls: string[] = [];
+    let call = 0;
+    globalThis.fetch = (async (url: string) => {
+      urls.push(String(url));
+      return jsonResponse(call++ === 0 ? page1 : page2);
+    }) as unknown as typeof fetch;
+
+    const res = await s.t.action(internal.stripeFinance.syncTransactions, {
+      legacyAccountId: accountId,
+    });
+    expect(res).toEqual({ skipped: false, inserted: 3, updated: 0 });
+
+    // (a) BOTH pages ingested — pagination advanced, not the same page twice.
+    const rows = await run(s.t, (ctx) =>
+      ctx.db
+        .query("transactions")
+        .withIndex("by_chapter", (q) => q.eq("chapterId", s.chapterId))
+        .collect(),
+    );
+    expect(rows.map((r) => r.externalId).sort()).toEqual([
+      "stripe_fc:fctxn_mid",
+      "stripe_fc:fctxn_new",
+      "stripe_fc:fctxn_old",
+    ]);
+    // The pending row landed as pending; the posted rows as posted.
+    const pendingRow = rows.find((r) => r.externalId === "stripe_fc:fctxn_new")!;
+    expect(pendingRow.pending).toBe(true);
+
+    // (b) exactly two requests; the SECOND carried starting_after=<last id of p1>.
+    expect(urls).toHaveLength(2);
+    expect(urls[0]).not.toContain("starting_after");
+    expect(urls[1]).toContain("starting_after=fctxn_mid");
+    // And never the wrong param.
+    expect(urls[0]).not.toContain("after=fctxn");
+
+    // (c) a follow-up sweep where the pending row has now POSTED updates it in
+    //     place — one row, pending:false, still 3 rows total.
+    const posted = {
+      data: [fcObject("fctxn_new", -1500, "posted", 1_700_250_000)],
+      has_more: false,
+    };
+    globalThis.fetch = (async (url: string) => {
+      urls.push(String(url));
+      return jsonResponse(posted);
+    }) as unknown as typeof fetch;
+
+    const res2 = await s.t.action(internal.stripeFinance.syncTransactions, {
+      legacyAccountId: accountId,
+    });
+    expect(res2).toEqual({ skipped: false, inserted: 0, updated: 1 });
+
+    const after = await run(s.t, (ctx) =>
+      ctx.db
+        .query("transactions")
+        .withIndex("by_chapter", (q) => q.eq("chapterId", s.chapterId))
+        .collect(),
+    );
+    expect(after).toHaveLength(3);
+    const nowPosted = after.find((r) => r.externalId === "stripe_fc:fctxn_new")!;
+    expect(nowPosted.pending).toBe(false);
+    expect(nowPosted.postedAt).toBe(1_700_250_000 * 1000);
+  });
+
+  test("skips (no throw) when STRIPE_SECRET_KEY is unset", async () => {
+    delete process.env.STRIPE_SECRET_KEY;
+    const s = await setupChapter(newT());
+    const accountId = await seedAccount(s, s.chapterId, {
+      stripeFcAccountId: "fca_nokey",
+    });
+    let called = false;
+    globalThis.fetch = (async () => {
+      called = true;
+      return jsonResponse({ data: [], has_more: false });
+    }) as unknown as typeof fetch;
+
+    const res = await s.t.action(internal.stripeFinance.syncTransactions, {
+      legacyAccountId: accountId,
+    });
+    expect(res).toEqual({ skipped: true, inserted: 0, updated: 0 });
+    expect(called).toBe(false);
   });
 });

@@ -204,6 +204,7 @@ http.route({
       if (isNew) {
         await ctx.runMutation(internal.stripeFinance.onFcWebhookEvent, {
           stripeAccountId: event.data.object.id,
+          eventType: event.type,
         });
       }
     } else if (event.type === "checkout.session.completed") {

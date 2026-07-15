@@ -305,8 +305,9 @@ export const listAccounts = query({
  *  - otherwise a new `stripe_fc` / `unreviewed` transaction is INSERTED, with
  *    `flow` derived from the sign of the amount and `amountCents` stored as a
  *    non-negative integer (direction lives in `flow`, never a sign).
- * Advances the account's `syncCursor` to the last processed id + stamps
- * `lastSyncedAt`. Returns `{inserted, updated}`.
+ * Stamps the account's `lastSyncedAt`. Returns `{inserted, updated}`. (There is
+ * no persistent sync cursor — `syncTransactions` re-sweeps newest-first and
+ * leans on this dedup; see that action's note.)
  */
 export const applyFcTransactions = internalMutation({
   args: {
@@ -326,10 +327,8 @@ export const applyFcTransactions = internalMutation({
 
     let inserted = 0;
     let updated = 0;
-    let lastId: string | null = null;
 
     for (const row of args.transactions) {
-      lastId = row.id;
       const externalId = FC_EXTERNAL_PREFIX + row.id;
       const amountCents = Math.abs(Math.round(row.amountCents));
       const flow: "outflow" | "inflow" =
@@ -349,7 +348,8 @@ export const applyFcTransactions = internalMutation({
           flow,
           postedAt: row.postedAt,
           pending: row.pending,
-          merchantName: row.description ?? existing.merchantName,
+          // Don't clobber a hand-edited merchant name; only fill it when empty.
+          merchantName: existing.merchantName ?? row.description,
         });
         updated++;
         continue;
@@ -373,12 +373,8 @@ export const applyFcTransactions = internalMutation({
       inserted++;
     }
 
-    // Advance the cursor to the last id we saw so the next sync resumes after
-    // it; always stamp the sync time.
-    await ctx.db.patch(args.legacyAccountId, {
-      ...(lastId != null ? { syncCursor: lastId } : {}),
-      lastSyncedAt: Date.now(),
-    });
+    // Stamp the sync time (no persistent cursor — see the docstring).
+    await ctx.db.patch(args.legacyAccountId, { lastSyncedAt: Date.now() });
 
     return { inserted, updated };
   },
@@ -393,7 +389,6 @@ export const getAccount = internalQuery({
     v.object({
       id: v.id("legacyAccounts"),
       stripeFcAccountId: v.string(),
-      syncCursor: v.union(v.string(), v.null()),
     }),
     v.null(),
   ),
@@ -403,7 +398,6 @@ export const getAccount = internalQuery({
     return {
       id: account._id,
       stripeFcAccountId: account.stripeFcAccountId,
-      syncCursor: account.syncCursor ?? null,
     };
   },
 });
@@ -448,9 +442,20 @@ function mapFcTransaction(
 }
 
 /**
- * Fetch a legacy account's transactions from Stripe and apply them. Best-effort:
- * missing key or any network/parse error logs and returns rather than throwing,
- * so a cron sweep of many accounts never aborts on one bad account.
+ * Fetch a legacy account's transactions from Stripe and apply them.
+ *
+ * INCREMENTAL STRATEGY: a BOUNDED newest-first re-sweep, NOT a persistent
+ * walking cursor. Stripe lists FC transactions newest-first, so each scheduled
+ * sync re-reads from the top (up to MAX_SYNC_PAGES, using `starting_after` only
+ * for intra-sweep pagination). Genuinely new rows sit at the front and get
+ * inserted; already-seen rows (including ones synced while `pending`) are
+ * absorbed by `applyFcTransactions`'s idempotent dedup — which is also what
+ * fires the pending→posted in-place update. This catches BOTH new activity and
+ * pending→posted transitions on every sweep. (A persistent last-id cursor would
+ * walk toward OLDER records and miss both.)
+ *
+ * Best-effort: a missing key or any network/parse error logs and returns rather
+ * than throwing, so a cron sweep of many accounts never aborts on one account.
  */
 export const syncTransactions = internalAction({
   args: { legacyAccountId: v.id("legacyAccounts") },
@@ -485,12 +490,15 @@ export const syncTransactions = internalAction({
     let updated = 0;
     try {
       const collected: (typeof fcTxnValidator.type)[] = [];
-      let after = account.syncCursor ?? undefined;
+      // No seed cursor — start from the newest and page down within this sweep.
+      let startingAfter: string | undefined;
       for (let page = 0; page < MAX_SYNC_PAGES; page++) {
         const params = new URLSearchParams();
         params.set("account", account.stripeFcAccountId);
         params.set("limit", String(FC_PAGE_SIZE));
-        if (after) params.set("after", after);
+        // Stripe's FC transactions list uses `starting_after` (an object id) for
+        // pagination — not `after`, which Stripe silently ignores.
+        if (startingAfter) params.set("starting_after", startingAfter);
 
         const response = await fetch(
           `${STRIPE_API}/financial_connections/transactions?${params.toString()}`,
@@ -510,7 +518,7 @@ export const syncTransactions = internalAction({
         const data = body.data ?? [];
         for (const txn of data) collected.push(mapFcTransaction(txn));
         if (!body.has_more || data.length === 0) break;
-        after = data[data.length - 1].id;
+        startingAfter = data[data.length - 1].id;
       }
 
       if (collected.length > 0) {
@@ -531,12 +539,15 @@ export const syncTransactions = internalAction({
 });
 
 /**
- * React to a Stripe FC webhook event for an account: look the account up and
+ * React to a Stripe FC webhook event for an account. For a
+ * `financial_connections.account.disconnected` event we mark the account
+ * `disconnected` (Stripe cut us off — stop syncing); for any other event we
  * schedule a sync. No-op (never throws) for an account we don't track — the
- * shared `/stripe/webhook` handler fans every FC event through here.
+ * shared `/stripe/webhook` handler fans every FC event through here with its
+ * `eventType`.
  */
 export const onFcWebhookEvent = internalMutation({
-  args: { stripeAccountId: v.string() },
+  args: { stripeAccountId: v.string(), eventType: v.optional(v.string()) },
   returns: v.null(),
   handler: async (ctx, args) => {
     const account = await ctx.db
@@ -546,6 +557,12 @@ export const onFcWebhookEvent = internalMutation({
       )
       .first();
     if (!account) return null;
+
+    if (args.eventType === "financial_connections.account.disconnected") {
+      await ctx.db.patch(account._id, { status: "disconnected" });
+      return null;
+    }
+
     await ctx.scheduler.runAfter(0, internal.stripeFinance.syncTransactions, {
       legacyAccountId: account._id,
     });
