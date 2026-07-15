@@ -1,18 +1,25 @@
 /**
- * FINANCES · ACCOUNTS — legacy external bank/card accounts, connected READ-ONLY
- * via Stripe Financial Connections.
+ * FINANCES · ACCOUNTS — two DISTINCT things live here, kept clearly separate:
  *
- * Stripe FC only *reads* accounts the chapter already has elsewhere; their
- * transactions sync in as `unreviewed` rows that land in the Reconcile queue,
- * pre-coded to each account's default fund. Increase (the card + payout layer)
- * comes later. This screen lists the connected accounts (status, default fund,
- * last-synced, disconnect) and offers a connect action that degrades honestly
- * when the hosted linking / vendor isn't wired up yet (see ConnectPanel).
+ *  1. The chapter's INCREASE ACCOUNT — the native card + ACH-payout layer (issue
+ *     member cards, send reimbursement payouts). This is NOT a linked bank; it's
+ *     the money layer Chapter OS runs on. Provisioned via
+ *     `api.increase.provisionChapterAccount`, removed (stale test rows only) via
+ *     `api.increase.removeChapterAccount`.
+ *  2. CONNECTED ACCOUNTS — external bank/card accounts linked READ-ONLY via
+ *     Stripe Financial Connections. Stripe FC only *reads* them; their
+ *     transactions sync in as `unreviewed` rows that land in the Reconcile queue,
+ *     pre-coded to each account's default fund. Contract:
+ *     `api.stripeFinance.{listAccounts,setAccountFund,disconnect,createFcSession}`.
  *
- * Guarded admin-or-lead in-screen (mirrors the nav gate) so a member who
- * deep-links lands on a friendly restricted state. Contract:
- * `api.stripeFinance.{listAccounts,setAccountFund,disconnect,createFcSession}`
- * + `api.finances.listFunds`.
+ * STALE SANDBOX ACCOUNT: when the deployment is in production mode
+ * (`financeSettings.sandboxMode === false`) but the Increase account id is
+ * `sandbox_`-prefixed, it's leftover TEST state — surfaced as a test account with
+ * a "Remove test account" action so a manager can provision the real one fresh.
+ *
+ * The SANDBOX-MODE toggle (developer/testing, superuser only) points NEW
+ * provisioning at Increase's sandbox. Guarded admin-or-lead in-screen (mirrors
+ * the nav gate). `api.finances.listFunds` supplies the default-fund options.
  */
 import { useMemo } from "react";
 import { Text, View } from "react-native";
@@ -47,6 +54,7 @@ export default function AccountsScreen() {
   const disconnect = useMutation(api.stripeFinance.disconnect);
   const setSandboxMode = useMutation(api.financeSettings.setSandboxMode);
   const provisionAccount = useAction(api.increase.provisionChapterAccount);
+  const removeChapterAccount = useMutation(api.increase.removeChapterAccount);
   const { run, toast, dismiss } = useActionRunner();
 
   const fundOptions = useMemo<FundOption[]>(
@@ -88,31 +96,46 @@ export default function AccountsScreen() {
   const accountIsSandbox =
     chapterAccount?.increaseAccountId?.startsWith("sandbox_") ?? false;
 
+  // A leftover TEST account: the deployment is in production mode but the active
+  // Increase account is `sandbox_`-prefixed → stale test state, not the real
+  // production account. Offer to remove it so the manager can provision fresh.
+  const isStaleTestAccount =
+    chapterAccount !== null &&
+    chapterAccount.onboardingStatus === "active" &&
+    accountIsSandbox &&
+    !sandboxMode;
+
   return (
     <Screen>
       <Narrow>
         <Text className="mb-1 font-display text-2xl text-ink">Accounts</Text>
         <Text className="mb-4 text-sm text-muted">
-          Connect existing bank & card accounts read-only. Their transactions
-          flow into Reconcile. Increase (the card + payout layer) comes later.
+          Two ways money connects here. The chapter's Increase account is the
+          native card &amp; payout layer. Connected banks are external accounts
+          linked read-only so their transactions flow into Reconcile.
         </Text>
 
         <View className="mb-1">
           <ToastView toast={toast} onDismiss={dismiss} />
         </View>
 
-        <SectionHeader title="Chapter bank account" />
+        <SectionHeader title="Card & payout account (Increase)" />
+        <Text className="mb-3 text-sm text-muted">
+          The chapter's native account for issuing member cards and sending ACH
+          reimbursement payouts. This is not a linked bank — it's the money layer
+          Chapter OS runs on.
+        </Text>
         <Card>
           {chapterAccount === null ? (
             // No Increase account yet → offer to provision one in the current mode.
             <View className="flex-row items-start justify-between gap-3">
               <View className="flex-1">
                 <Text className="font-display text-base text-ink">
-                  No Increase account yet
+                  No account yet
                 </Text>
                 <Text className="mt-1 text-sm text-muted">
-                  Provision the chapter's Increase bank account to enable ACH
-                  reimbursement payouts.
+                  Provision the chapter's Increase account to enable member cards
+                  and ACH reimbursement payouts.
                 </Text>
                 <View className="mt-2">
                   <Badge
@@ -128,6 +151,44 @@ export default function AccountsScreen() {
                 onPress={() =>
                   void run(() => provisionAccount({}), {
                     errorTitle: "Couldn't provision the account",
+                  })
+                }
+              />
+            </View>
+          ) : isStaleTestAccount ? (
+            // Production mode but a `sandbox_` account → leftover TEST state. Make
+            // clear it is NOT the real production account and offer to remove it.
+            <View className="flex-row items-start justify-between gap-3">
+              <View className="flex-1">
+                <View className="flex-row flex-wrap items-center gap-2">
+                  <Text className="font-display text-base text-ink">
+                    Test account
+                  </Text>
+                  <Badge
+                    label="SANDBOX — TEST ONLY"
+                    tone="warn"
+                    icon="alert-triangle"
+                  />
+                </View>
+                <Text className="mt-1 text-sm text-muted">
+                  This is a leftover sandbox test account, not the chapter's real
+                  production account — no real money moves through it. Remove it,
+                  then provision the production account.
+                </Text>
+                <Text className="mt-2 text-sm text-muted">
+                  Account:{" "}
+                  <Text className="text-ink">
+                    {chapterAccount.increaseAccountId}
+                  </Text>
+                </Text>
+              </View>
+              <Button
+                title="Remove test account"
+                variant="danger"
+                icon="trash-2"
+                onPress={() =>
+                  void run(() => removeChapterAccount({}), {
+                    errorTitle: "Couldn't remove the test account",
                   })
                 }
               />
@@ -148,7 +209,9 @@ export default function AccountsScreen() {
               </View>
               <Text className="text-sm text-muted">
                 Account:{" "}
-                <Text className="text-ink">{chapterAccount.increaseAccountId}</Text>
+                <Text className="text-ink">
+                  {chapterAccount.increaseAccountId}
+                </Text>
               </Text>
               {chapterAccount.increaseEntityId ? (
                 <Text className="text-sm text-muted">
@@ -195,9 +258,15 @@ export default function AccountsScreen() {
           )}
         </Card>
 
-        <ConnectPanel />
-
         <SectionHeader title="Connected accounts" count={accounts.length} />
+        <Text className="mb-3 text-sm text-muted">
+          External bank &amp; card accounts linked read-only through Stripe. We
+          pull in their transactions for reconciliation — we never move money in
+          or out of them.
+        </Text>
+        <View className="mb-3">
+          <ConnectPanel />
+        </View>
         {accounts.length === 0 ? (
           <EmptyState
             icon="credit-card"
@@ -243,11 +312,12 @@ export default function AccountsScreen() {
                   tone={sandboxMode ? "warn" : "neutral"}
                   icon={sandboxMode ? "alert-triangle" : "check-circle"}
                 />
+                <Badge label="Superuser only" tone="lavender" icon="lock" />
               </View>
               <Text className="mt-1 text-sm text-muted">
-                Points NEWLY provisioned accounts at the Increase sandbox for
-                testing — no real money moves. Existing accounts keep their
-                current environment. Superuser only.
+                Developer / testing only. Points NEWLY provisioned accounts at
+                the Increase sandbox — no real money moves. Existing accounts
+                keep their current environment. Leave this OFF in production.
               </Text>
             </View>
             <Button

@@ -1345,3 +1345,47 @@ export const getChapterAccount = query({
     return account ? toAccountSummary(account) : null;
   },
 });
+
+// ── removeChapterAccount (mutation, manager) ─────────────────────────────────
+
+/**
+ * Delete the chapter's `increaseAccounts` row. Manager-only. Used to clear a
+ * STALE TEST account — a `sandbox_`-prefixed account left behind after the
+ * deployment was flipped from sandbox back to production mode — so the manager
+ * can provision the real production account fresh (via `provisionChapterAccount`).
+ *
+ * SAFETY: refuses to remove a LIVE production account (active + a non-`sandbox_`
+ * `increaseAccountId`) — that row maps to a real Increase Account holding the
+ * chapter's money; dropping it would orphan the balance. Removing a pending row
+ * (never fully provisioned) or a sandbox test row is always allowed. Idempotent:
+ * a no-op (returns) when there's no row. Does NOT auto-provision a replacement.
+ */
+export const removeChapterAccount = mutation({
+  args: {},
+  returns: v.null(),
+  handler: async (ctx): Promise<null> => {
+    const chapterId = (await requireChapterId(ctx)) as Id<"chapters">;
+    await requireFinanceManager(ctx, chapterId);
+
+    const account = await ctx.db
+      .query("increaseAccounts")
+      .withIndex("by_chapter", (q) => q.eq("chapterId", chapterId))
+      .first();
+    if (!account) return null; // nothing to remove (idempotent)
+
+    const isLiveProductionAccount =
+      account.onboardingStatus === "active" &&
+      !!account.increaseAccountId &&
+      !account.increaseAccountId.startsWith("sandbox_");
+    if (isLiveProductionAccount) {
+      throw new ConvexError({
+        code: "FORBIDDEN",
+        message:
+          "This is the chapter's live production account — it can't be removed here.",
+      });
+    }
+
+    await ctx.db.delete(account._id);
+    return null;
+  },
+});

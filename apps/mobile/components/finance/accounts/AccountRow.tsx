@@ -91,24 +91,31 @@ export function AccountRow({
         </View>
 
         {/* Default fund + last-synced */}
-        <View className="flex-row flex-wrap items-end justify-between gap-3">
-          <View className="min-w-[220px] flex-1">
-            <Select
-              label="Default fund"
-              value={account.defaultFundId}
-              options={funds}
-              placeholder={
-                funds.length ? "Choose a fund…" : "No funds yet"
-              }
-              onChange={(value) => onSetFund(value as Id<"funds">)}
-            />
+        <View>
+          <View className="flex-row flex-wrap items-end justify-between gap-3">
+            <View className="min-w-[220px] flex-1">
+              <Select
+                label="Default fund"
+                value={account.defaultFundId}
+                options={funds}
+                placeholder={funds.length ? "Choose a fund…" : "No funds yet"}
+                onChange={(value) => onSetFund(value as Id<"funds">)}
+              />
+            </View>
+            <View className="mb-3 flex-row items-center gap-1.5">
+              <Icon name="clock" size={13} color={colors.faint} />
+              <Text className="text-xs text-faint">
+                {isDisconnected
+                  ? "Sync stopped"
+                  : syncedAgo(account.lastSyncedAt)}
+              </Text>
+            </View>
           </View>
-          <View className="mb-3 flex-row items-center gap-1.5">
-            <Icon name="clock" size={13} color={colors.faint} />
-            <Text className="text-xs text-faint">
-              {isDisconnected ? "Sync stopped" : syncedAgo(account.lastSyncedAt)}
-            </Text>
-          </View>
+          {/* A fund is a pot of money (e.g. Operations, a ministry). */}
+          <Text className="-mt-1 text-xs text-muted">
+            Which fund this account's synced transactions are pre-coded to in
+            Reconcile. A fund is a pot of money — e.g. Operations or a ministry.
+          </Text>
         </View>
 
         {/* Disconnect (two-step confirm) */}

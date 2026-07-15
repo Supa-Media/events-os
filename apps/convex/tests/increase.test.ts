@@ -764,6 +764,120 @@ describe("getChapterAccount", () => {
   });
 });
 
+// ── removeChapterAccount ─────────────────────────────────────────────────────
+
+describe("removeChapterAccount", () => {
+  /** Insert an Increase account row for the chapter and return its id. */
+  async function seedIncreaseAccount(
+    s: ChapterSetup,
+    opts: {
+      onboardingStatus: "active" | "pending" | "not_started";
+      increaseAccountId?: string;
+      increaseEntityId?: string;
+    },
+  ): Promise<Id<"increaseAccounts">> {
+    const now = Date.now();
+    return await run(s.t, (ctx) =>
+      ctx.db.insert("increaseAccounts", {
+        chapterId: s.chapterId,
+        onboardingStatus: opts.onboardingStatus,
+        increaseAccountId: opts.increaseAccountId,
+        increaseEntityId: opts.increaseEntityId,
+        createdAt: now,
+        updatedAt: now,
+      }),
+    );
+  }
+
+  async function accountRows(s: ChapterSetup) {
+    return await run(s.t, (ctx) =>
+      ctx.db
+        .query("increaseAccounts")
+        .withIndex("by_chapter", (q) => q.eq("chapterId", s.chapterId))
+        .collect(),
+    );
+  }
+
+  test("removes a stale sandbox test account (active, `sandbox_` id)", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await seedManager(s);
+    await seedIncreaseAccount(s, {
+      onboardingStatus: "active",
+      increaseAccountId: "sandbox_account_x",
+      increaseEntityId: "sandbox_entity",
+    });
+
+    await s.as.mutation(api.increase.removeChapterAccount, {});
+    expect((await accountRows(s)).length).toBe(0);
+    // After removal the chapter reads as unprovisioned again.
+    expect(await s.as.query(api.increase.getChapterAccount, {})).toBeNull();
+  });
+
+  test("removes a pending (never fully provisioned) account", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await seedManager(s);
+    await seedIncreaseAccount(s, { onboardingStatus: "pending" });
+
+    await s.as.mutation(api.increase.removeChapterAccount, {});
+    expect((await accountRows(s)).length).toBe(0);
+  });
+
+  test("refuses to remove a LIVE production account (active, non-sandbox id)", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await seedManager(s);
+    await seedIncreaseAccount(s, {
+      onboardingStatus: "active",
+      increaseAccountId: "account_prod_1",
+      increaseEntityId: "entity_prod",
+    });
+
+    await expect(
+      s.as.mutation(api.increase.removeChapterAccount, {}),
+    ).rejects.toBeInstanceOf(ConvexError);
+    // The production row is left intact.
+    expect((await accountRows(s)).length).toBe(1);
+  });
+
+  test("is a no-op when there's no account row (idempotent)", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await seedManager(s);
+
+    await expect(
+      s.as.mutation(api.increase.removeChapterAccount, {}),
+    ).resolves.toBeNull();
+    expect((await accountRows(s)).length).toBe(0);
+  });
+
+  test("a non-manager cannot remove the account", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    // A viewer-only caller.
+    const personId = await seedPerson(s, { name: "Viewer", userId: s.userId });
+    await run(s.t, (ctx) =>
+      ctx.db.insert("financeRoles", {
+        chapterId: s.chapterId,
+        personId,
+        role: "viewer",
+        scope: "chapter",
+        createdAt: Date.now(),
+      }),
+    );
+    await seedIncreaseAccount(s, {
+      onboardingStatus: "active",
+      increaseAccountId: "sandbox_account_x",
+    });
+
+    await expect(
+      s.as.mutation(api.increase.removeChapterAccount, {}),
+    ).rejects.toBeInstanceOf(ConvexError);
+    expect((await accountRows(s)).length).toBe(1);
+  });
+});
+
 // ── verifyIncreaseSignature ──────────────────────────────────────────────────
 
 // Standard Webhooks secrets are `whsec_<base64key>`; the HMAC key is the DECODED
