@@ -9,6 +9,12 @@ import {
   renderTicketPage,
 } from "./lib/landingPage";
 import { registerTicketApiRoutes } from "./lib/ticketApiRoutes";
+import { registerReimburseApiRoutes } from "./lib/reimburseApiRoutes";
+import {
+  renderReimburseForm,
+  renderReimburseStatus,
+  renderReimburseNotFound,
+} from "./lib/reimbursePage";
 import {
   renderProjectActionGone,
   renderProjectActionPage,
@@ -25,6 +31,9 @@ auth.addHttpRoutes(http);
 
 // JSON API for the landing page's client script (/api/tickets/*).
 registerTicketApiRoutes(http);
+
+// JSON API for the public reimbursement page's client script (/api/reimburse/*).
+registerReimburseApiRoutes(http);
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -232,6 +241,46 @@ http.route({
       await ctx.runMutation(internal.giving.cancelPendingDonation, { sessionId });
     }
     return new Response("ok", { status: 200 });
+  }),
+});
+
+// ── Public reimbursement page: /reimburse/<chapterSlug>[?token=] ─────────────
+// The accountless claimant surface (matches reimburse.html). No token → the
+// blank submission form for the chapter; with a token → that request's status
+// timeline. The client script POSTs to the /api/reimburse/* routes above.
+
+http.route({
+  pathPrefix: "/reimburse/",
+  method: "GET",
+  handler: httpAction(async (ctx, req) => {
+    const url = new URL(req.url);
+    const segments = url.pathname.split("/").filter(Boolean); // ["reimburse", slug]
+    const rawSlug = segments[1];
+    if (!rawSlug) return html(renderReimburseNotFound(), 404);
+    let slug: string;
+    try {
+      slug = decodeURIComponent(rawSlug);
+    } catch {
+      return html(renderReimburseNotFound(), 404);
+    }
+
+    const chapter = await ctx.runQuery(
+      api.lib.reimburseApiRoutes.chapterForReimburse,
+      { slug },
+    );
+    if (!chapter) return html(renderReimburseNotFound(), 404);
+
+    const token = url.searchParams.get("token");
+    if (token) {
+      const view = await ctx.runQuery(
+        api.reimbursements.getPublicReimbursement,
+        { token },
+      );
+      return view
+        ? html(renderReimburseStatus(view, chapter.name, token, slug))
+        : html(renderReimburseNotFound(), 404);
+    }
+    return html(renderReimburseForm(chapter));
   }),
 });
 
