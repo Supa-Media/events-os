@@ -617,5 +617,120 @@ describe("enriched dashboards (prototype shapes)", () => {
     expect(tpl?.perChapter.length).toBe(2);
     // Global month tile.
     expect(dash.tiles[0].label).toContain("all chapters");
+    expect(dash.totalMonthSpendCents).toBe(10000);
+  });
+});
+
+describe("money-math regression fixes", () => {
+  test("monthly budget with month=null reports only the queried month's spend", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await asManager(s);
+    const year = 2026;
+
+    const fundId = await s.as.mutation(api.finances.createFund, {
+      name: "General",
+      restriction: "unrestricted",
+    });
+    const categoryId = await s.as.mutation(api.finances.createCategory, {
+      fundId,
+      name: "Ad spend",
+      kind: "lineItem",
+    });
+    // "$2,000 / month" — stored WITHOUT a month (applies to every month).
+    const budgetId = await s.as.mutation(api.finances.createBudget, {
+      amountCents: 200000,
+      scope: "bucket",
+      cadence: "monthly",
+      year,
+      categoryId,
+      label: "Ad spend · monthly",
+    });
+    // $30 spent in March, $50 in April.
+    await s.as.mutation(api.finances.createManualTransaction, {
+      flow: "outflow",
+      amountCents: 3000,
+      postedAt: tsInMonth(year, 3),
+      fundId,
+      categoryId,
+    });
+    await s.as.mutation(api.finances.createManualTransaction, {
+      flow: "outflow",
+      amountCents: 5000,
+      postedAt: tsInMonth(year, 4),
+      fundId,
+      categoryId,
+    });
+
+    // dashboardChapter scopes the bucket to the dashboard month (not YTD).
+    const march = await s.as.query(api.finances.dashboardChapter, {
+      year,
+      month: 3,
+    });
+    expect(
+      march.recurringBudgets.find((r) => r.id === budgetId)?.spentCents,
+    ).toBe(3000);
+    const april = await s.as.query(api.finances.dashboardChapter, {
+      year,
+      month: 4,
+    });
+    expect(
+      april.recurringBudgets.find((r) => r.id === budgetId)?.spentCents,
+    ).toBe(5000);
+
+    // budgetVsActual scopes the same way (pre-fix it summed all 12 months → 8000).
+    const bvaMarch = await s.as.query(api.finances.budgetVsActual, {
+      year,
+      month: 3,
+    });
+    expect(bvaMarch.find((r) => r.budgetId === budgetId)?.actualCents).toBe(3000);
+    const bvaApril = await s.as.query(api.finances.budgetVsActual, {
+      year,
+      month: 4,
+    });
+    expect(bvaApril.find((r) => r.budgetId === budgetId)?.actualCents).toBe(5000);
+  });
+
+  test("central chapterRollup normalizes a yearly budget to a month-equivalent", async () => {
+    const t = newT();
+    const s = await setupChapter(t, { email: "seyi@publicworship.life" });
+    const year = 2026;
+    const month = 4;
+    // A $1,200/yr chapter budget → $100 month-equivalent.
+    await s.as.mutation(api.finances.createBudget, {
+      amountCents: 120000,
+      scope: "chapter",
+      cadence: "yearly",
+      year,
+    });
+    // $50 of month spend.
+    await s.as.mutation(api.finances.createManualTransaction, {
+      flow: "outflow",
+      amountCents: 5000,
+      postedAt: tsInMonth(year, month),
+    });
+    const dash = await s.as.query(api.finances.dashboardCentral, { year, month });
+    const ny = dash.chapterRollup.find((c) => c.chapterName === "New York");
+    expect(ny?.budgetCents).toBe(10000); // 120000 / 12, NOT the full 120000
+    expect(ny?.spentCents).toBe(5000);
+    expect(ny?.status).toBe("ok"); // 50% of the month-equivalent allocation
+  });
+
+  test("updateBudget: changing scope to event without a scopeRefId is rejected", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await asManager(s);
+    const budgetId = await s.as.mutation(api.finances.createBudget, {
+      amountCents: 1000,
+      scope: "bucket",
+      cadence: "monthly",
+      year: 2026,
+    });
+    await expect(
+      s.as.mutation(api.finances.updateBudget, {
+        budgetId,
+        patch: { scope: "event" },
+      }),
+    ).rejects.toBeInstanceOf(ConvexError);
   });
 });

@@ -130,10 +130,12 @@ const txnSummary = v.object({
   categoryId: v.union(v.id("budgetCategories"), v.null()),
 });
 
-const fundBalance = v.object({
+// Per-fund SPEND for the dashboard period (period reads are naturally bounded;
+// all-time balance is deferred to the Increase sync in Phase 4).
+const fundPeriodSpend = v.object({
   id: v.id("funds"),
   name: v.string(),
-  balanceCents: v.number(),
+  spentCents: v.number(),
 });
 
 // ── Enriched dashboard projections (prototype shapes) ────────────────────────
@@ -244,7 +246,6 @@ const chapterRollupRow = v.object({
 
 // ── Bounds (keep every read + rollup bounded) ────────────────────────────────
 const ROLLUP_SCAN_LIMIT = 5000;
-const DASHBOARD_SCAN_LIMIT = 1000;
 const RECENT_TXN_COUNT = 10;
 const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -357,19 +358,6 @@ function isSpend(tr: Doc<"transactions">): boolean {
   );
 }
 
-/** True iff a transaction counts toward account balance (excludes `excluded`). */
-function countsForBalance(tr: Doc<"transactions">): boolean {
-  return tr.status !== "excluded";
-}
-
-/** The signed balance contribution of a transaction (inflow +, outflow −). */
-function balanceDelta(tr: Doc<"transactions">): number {
-  if (!countsForBalance(tr)) return 0;
-  if (tr.flow === "inflow") return tr.amountCents;
-  if (tr.flow === "outflow") return -tr.amountCents;
-  return 0; // transfers net internally, ignored for the balance tile
-}
-
 // ── Period helpers (Eastern-time bucketing) ──────────────────────────────────
 /** True iff a timestamp falls in the given Eastern year (+ optional month/quarter). */
 function inPeriod(
@@ -390,6 +378,11 @@ function inPeriod(
  * bounded via the `by_chapter_and_postedAt` range. The UTC window is padded a
  * day on each side to cover the Eastern offset; callers narrow precisely with
  * `inPeriod`.
+ *
+ * NOTE (scale): the read is capped at `ROLLUP_SCAN_LIMIT`. Past that many
+ * transactions in one period the aggregate is truncated (a non-silent
+ * `console.warn` fires). Accurate aggregation at high sync volume lands with the
+ * Increase/Stripe sync phases (denormalized counters), not now.
  */
 async function loadPeriodTxns(
   ctx: QueryCtx,
@@ -403,18 +396,64 @@ async function loadPeriodTxns(
   const endUtc =
     (month != null ? Date.UTC(year, month, 1) : Date.UTC(year + 1, 0, 1)) +
     DAY_MS;
-  return await ctx.db
+  const rows = await ctx.db
     .query("transactions")
     .withIndex("by_chapter_and_postedAt", (q) =>
       q.eq("chapterId", chapterId).gte("postedAt", startUtc).lt("postedAt", endUtc),
     )
     .take(ROLLUP_SCAN_LIMIT);
+  if (rows.length === ROLLUP_SCAN_LIMIT) {
+    console.warn(
+      `[finances] period read hit ROLLUP_SCAN_LIMIT (${ROLLUP_SCAN_LIMIT}) for chapter ${chapterId} ${year}${month ? `-${month}` : ""}; aggregate truncated until sync-volume counters land.`,
+    );
+  }
+  return rows;
 }
 
-/** Does a spend transaction fall within a budget's scope + period + narrowers? */
-function matchesBudget(tr: Doc<"transactions">, b: Doc<"budgets">): boolean {
+/**
+ * The period a budget's spend is measured over, resolved against the dashboard's
+ * `contextMonth`. A MONTHLY budget stored as "$2,000/mo" carries no `month`, so
+ * without this it would (wrongly) match all 12 months — its spend is scoped to
+ * the queried month. Quarterly → the quarter of the queried month; yearly → the
+ * whole year; per-instance / one-off use the budget's OWN declared period.
+ */
+function budgetEffectivePeriod(
+  b: Doc<"budgets">,
+  contextMonth?: number,
+): { year: number; month?: number; quarter?: number } {
+  const year = b.year;
+  switch (b.cadence) {
+    case "monthly": {
+      const month = b.month ?? contextMonth;
+      return month != null ? { year, month } : { year };
+    }
+    case "quarterly": {
+      const quarter =
+        b.quarter ?? (contextMonth != null ? quarterOfMonth(contextMonth) : undefined);
+      return quarter != null ? { year, quarter } : { year };
+    }
+    case "yearly":
+      return { year };
+    case "per_instance":
+    case "one_off":
+    default:
+      return { year, month: b.month ?? undefined, quarter: b.quarter ?? undefined };
+  }
+}
+
+/**
+ * Does a spend transaction fall within a budget's scope + period + narrowers?
+ * `contextMonth` scopes recurring budgets to the dashboard's month (see
+ * `budgetEffectivePeriod`).
+ */
+function matchesBudget(
+  tr: Doc<"transactions">,
+  b: Doc<"budgets">,
+  contextMonth?: number,
+): boolean {
   if (!isSpend(tr)) return false;
-  if (!inPeriod(tr.postedAt, b.year, b.month, b.quarter)) return false;
+  const period = budgetEffectivePeriod(b, contextMonth);
+  if (!inPeriod(tr.postedAt, period.year, period.month, period.quarter)) return false;
   if (b.categoryId && tr.categoryId !== b.categoryId) return false;
   if (b.fundId && tr.fundId !== b.fundId) return false;
   if (b.teamId && tr.teamId !== b.teamId) return false;
@@ -513,16 +552,19 @@ function sumSpend(txns: Doc<"transactions">[]): number {
 /**
  * The spent total + per-category breakdown for one budget, from an already-
  * loaded year of transactions. `catName` resolves category ids to names.
+ * `contextMonth` scopes recurring (monthly/quarterly) budgets to the dashboard's
+ * month so a "$2,000/mo" budget reports one month's spend, not YTD.
  */
 function budgetSpendBreakdown(
   b: Doc<"budgets">,
   yearTxns: Doc<"transactions">[],
   catName: Map<Id<"budgetCategories">, string>,
+  contextMonth?: number,
 ): {
   spentCents: number;
   categories: { name: string; spentCents: number; barPct: number }[];
 } {
-  const matching = yearTxns.filter((tr) => matchesBudget(tr, b));
+  const matching = yearTxns.filter((tr) => matchesBudget(tr, b, contextMonth));
   const spentCents = matching.reduce((s, tr) => s + tr.amountCents, 0);
   const byCat = new Map<string, number>();
   for (const tr of matching) {
@@ -550,6 +592,36 @@ function recurringAppliesToMonth(
   if (b.month != null && b.month !== month) return false;
   if (b.quarter != null && quarterOfMonth(month) !== b.quarter) return false;
   return true;
+}
+
+/**
+ * A budget's allocation NORMALIZED to one month, so a single month of actual
+ * spend compares apples-to-apples: monthly → full amount, quarterly → ÷3,
+ * yearly → ÷12, per-instance / one-off → the full amount only when the budget's
+ * own period includes this month (else 0). Used by the central chapter roll-up
+ * to avoid comparing one month of spend against a full year of mixed budgets.
+ */
+function monthEquivalentBudgetCents(
+  b: Doc<"budgets">,
+  year: number,
+  month: number,
+): number {
+  if (b.year !== year) return 0;
+  if (b.quarter != null && quarterOfMonth(month) !== b.quarter) return 0;
+  switch (b.cadence) {
+    case "monthly":
+      if (b.month != null && b.month !== month) return 0;
+      return b.amountCents;
+    case "quarterly":
+      return Math.round(b.amountCents / 3);
+    case "yearly":
+      return Math.round(b.amountCents / 12);
+    case "per_instance":
+    case "one_off":
+    default:
+      if (b.month != null && b.month !== month) return 0;
+      return b.amountCents;
+  }
 }
 
 /** A tiny read-through name cache for a table's display name. */
@@ -585,8 +657,7 @@ export const dashboardChapter = query({
     recurringBudgets: v.array(recurringBudgetCard),
     recentTransactions: v.array(recentTxnCard),
     attention: v.array(attentionItem),
-    balanceCents: v.number(),
-    funds: v.array(fundBalance),
+    funds: v.array(fundPeriodSpend),
   }),
   handler: async (ctx, args) => {
     const now = easternParts(Date.now());
@@ -600,7 +671,6 @@ export const dashboardChapter = query({
       recurringBudgets: [] as never[],
       recentTransactions: [] as never[],
       attention: [] as never[],
-      balanceCents: 0,
       funds: [] as never[],
     };
     const chapterId = await readChapterId(ctx);
@@ -679,7 +749,13 @@ export const dashboardChapter = query({
         b.scope === "team" || b.scope === "bucket" || b.scope === "chapter";
       if (!isRecurring || !isRecurringScope) continue;
       if (!recurringAppliesToMonth(b, year, month)) continue;
-      const { spentCents, categories } = budgetSpendBreakdown(b, yearTxns, catName);
+      // Scope recurring spend to THIS month (fixes "$2,000/mo" showing YTD).
+      const { spentCents, categories } = budgetSpendBreakdown(
+        b,
+        yearTxns,
+        catName,
+        month,
+      );
       let name = b.label ?? BUDGET_SCOPE_LABELS[b.scope];
       if (b.scope === "team" && b.teamId) name = teamName.get(b.teamId) ?? name;
       const pct = pctOf(spentCents, b.amountCents);
@@ -696,19 +772,13 @@ export const dashboardChapter = query({
       });
     }
 
-    // Balance + fund balances from a bounded all-time newest-first scan.
-    const recent = await ctx.db
-      .query("transactions")
-      .withIndex("by_chapter_and_postedAt", (q) => q.eq("chapterId", chapterId))
-      .order("desc")
-      .take(DASHBOARD_SCAN_LIMIT);
-    let balanceCents = 0;
-    const fundBalances = new Map<Id<"funds">, number>();
-    for (const tr of recent) {
-      balanceCents += balanceDelta(tr);
-      if (tr.fundId) {
-        fundBalances.set(tr.fundId, (fundBalances.get(tr.fundId) ?? 0) + balanceDelta(tr));
-      }
+    // Per-fund SPEND for the month (period-bounded; all-time balance is deferred
+    // to the Increase sync — an all-time scan silently truncates and isn't in
+    // the prototype).
+    const fundSpend = new Map<Id<"funds">, number>();
+    for (const tr of monthTxns) {
+      if (!isSpend(tr) || !tr.fundId) continue;
+      fundSpend.set(tr.fundId, (fundSpend.get(tr.fundId) ?? 0) + tr.amountCents);
     }
     const fundDocs = await ctx.db
       .query("funds")
@@ -720,14 +790,19 @@ export const dashboardChapter = query({
       .map((f) => ({
         id: f._id,
         name: f.name,
-        balanceCents: fundBalances.get(f._id) ?? 0,
+        spentCents: fundSpend.get(f._id) ?? 0,
       }));
 
-    // Enriched recent-transaction cards (name resolution, bounded to the top N).
+    // Enriched recent-transaction cards — a small newest-first read (top N only).
+    const recent = await ctx.db
+      .query("transactions")
+      .withIndex("by_chapter_and_postedAt", (q) => q.eq("chapterId", chapterId))
+      .order("desc")
+      .take(RECENT_TXN_COUNT);
     const fundName = new Map(fundDocs.map((f) => [f._id, f.name] as const));
     const getPerson = nameCache(ctx, "people");
     const recentTransactions: (typeof recentTxnCard.type)[] = [];
-    for (const tr of recent.slice(0, RECENT_TXN_COUNT)) {
+    for (const tr of recent) {
       const projName = tr.projectId ? (await getProject(tr.projectId))?.name : undefined;
       const evName = tr.eventId ? (await getEvent(tr.eventId))?.name : undefined;
       const fundOrProject =
@@ -810,7 +885,6 @@ export const dashboardChapter = query({
       recurringBudgets,
       recentTransactions,
       attention: [],
-      balanceCents,
       funds,
     };
   },
@@ -827,9 +901,7 @@ export const dashboardCentral = query({
     tiles: v.array(centralTile),
     templateRollup: v.array(templateRollupRow),
     chapterRollup: v.array(chapterRollupRow),
-    totalBalanceCents: v.number(),
-    totalInflowCents: v.number(),
-    totalOutflowCents: v.number(),
+    totalMonthSpendCents: v.number(),
   }),
   handler: async (ctx, args) => {
     const now = easternParts(Date.now());
@@ -840,9 +912,7 @@ export const dashboardCentral = query({
       tiles: [] as never[],
       templateRollup: [] as never[],
       chapterRollup: [] as never[],
-      totalBalanceCents: 0,
-      totalInflowCents: 0,
-      totalOutflowCents: 0,
+      totalMonthSpendCents: 0,
     };
     const chapterId = await readChapterId(ctx);
     if (!chapterId) return empty;
@@ -852,8 +922,6 @@ export const dashboardCentral = query({
     const getEventType = nameCache(ctx, "eventTypes");
     const getEvent = nameCache(ctx, "events");
 
-    let totalInflowCents = 0;
-    let totalOutflowCents = 0;
     let totalMonthSpendCents = 0;
     let activeChapters = 0;
     let toReviewOrg = 0;
@@ -868,25 +936,13 @@ export const dashboardCentral = query({
     for (const chapter of chapters) {
       if (chapter.isActive !== false) activeChapters++;
 
-      // All-time balance for this chapter (bounded).
-      const allTxns = await ctx.db
-        .query("transactions")
-        .withIndex("by_chapter", (q) => q.eq("chapterId", chapter._id))
-        .take(ROLLUP_SCAN_LIMIT);
-      let inflow = 0;
-      let outflow = 0;
-      for (const tr of allTxns) {
-        if (!countsForBalance(tr)) continue;
-        if (tr.flow === "inflow") inflow += tr.amountCents;
-        else if (tr.flow === "outflow") outflow += tr.amountCents;
-      }
-      totalInflowCents += inflow;
-      totalOutflowCents += outflow;
-
-      // Month spend + template attribution for this chapter.
-      const monthTxns = allTxns.filter((tr) => inPeriod(tr.postedAt, year, month));
+      // Period-bounded read (this year), narrowed to the dashboard month.
+      const periodTxns = await loadPeriodTxns(ctx, chapter._id, year);
+      const monthTxns = periodTxns.filter((tr) => inPeriod(tr.postedAt, year, month));
       const chapterMonthSpend = sumSpend(monthTxns);
       totalMonthSpendCents += chapterMonthSpend;
+
+      // Template attribution: month spend grouped by each event's template.
       for (const tr of monthTxns) {
         if (!isSpend(tr) || !tr.eventId) continue;
         const ev = await getEvent(tr.eventId);
@@ -903,14 +959,19 @@ export const dashboardCentral = query({
         templateAgg.set(tname, agg);
       }
 
-      // Chapter budget total for the year (bounded).
+      // Month-equivalent budget allocation (monthly→amount, quarterly→÷3,
+      // yearly→÷12, per-instance→in-period only) — comparable to one month of
+      // actual spend, unlike a raw full-year sum of mixed cadences.
       const chBudgets = await ctx.db
         .query("budgets")
         .withIndex("by_chapter_and_period", (q) =>
           q.eq("chapterId", chapter._id).eq("year", year),
         )
         .take(ROLLUP_SCAN_LIMIT);
-      const budgetCents = chBudgets.reduce((s, b) => s + b.amountCents, 0);
+      const budgetCents = chBudgets.reduce(
+        (s, b) => s + monthEquivalentBudgetCents(b, year, month),
+        0,
+      );
 
       // Unreviewed count for the org "to review" tile.
       const unreviewed = await ctx.db
@@ -977,9 +1038,7 @@ export const dashboardCentral = query({
       tiles,
       templateRollup,
       chapterRollup,
-      totalBalanceCents: totalInflowCents - totalOutflowCents,
-      totalInflowCents,
-      totalOutflowCents,
+      totalMonthSpendCents,
     };
   },
 });
@@ -1020,8 +1079,11 @@ export const budgetVsActual = query({
     const periodTxns = await loadPeriodTxns(ctx, chapterId, args.year);
 
     return relevant.map((b) => {
+      // `args.month` scopes recurring budgets to that month (a "$/mo" budget
+      // with no stored month otherwise matches all 12 months → YTD spend).
       const actualCents = periodTxns.reduce(
-        (sum, tr) => (matchesBudget(tr, b) ? sum + tr.amountCents : sum),
+        (sum, tr) =>
+          matchesBudget(tr, b, args.month ?? undefined) ? sum + tr.amountCents : sum,
         0,
       );
       return {
@@ -1040,15 +1102,19 @@ async function actualsByIndex<
   IndexName extends "by_event" | "by_project" | "by_person",
 >(
   ctx: QueryCtx,
+  chapterId: Id<"chapters">,
   indexName: IndexName,
   field: "eventId" | "projectId" | "personId",
   id: Id<"events"> | Id<"projects"> | Id<"people">,
 ): Promise<{ totalCents: number; transactions: ReturnType<typeof toTxnSummary>[] }> {
-  const rows = await ctx.db
+  const raw = await ctx.db
     .query("transactions")
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     .withIndex(indexName, (q: any) => q.eq(field, id))
     .take(ROLLUP_SCAN_LIMIT);
+  // Defense-in-depth: verifyTxnRefs already keeps links same-chapter, but never
+  // sum a row from another chapter even if a future link slipped through.
+  const rows = raw.filter((tr) => tr.chapterId === chapterId);
   const totalCents = rows.reduce((s, tr) => (isSpend(tr) ? s + tr.amountCents : s), 0);
   return { totalCents, transactions: rows.map(toTxnSummary) };
 }
@@ -1065,7 +1131,7 @@ export const eventActuals = query({
     if (!chapterId) return { totalCents: 0, transactions: [] };
     await requireFinanceRole(ctx, chapterId, "viewer");
     await requireInCallerChapter(ctx, chapterId, "events", args.eventId, "Event");
-    return actualsByIndex(ctx, "by_event", "eventId", args.eventId);
+    return actualsByIndex(ctx, chapterId, "by_event", "eventId", args.eventId);
   },
 });
 
@@ -1081,7 +1147,7 @@ export const projectActuals = query({
     if (!chapterId) return { totalCents: 0, transactions: [] };
     await requireFinanceRole(ctx, chapterId, "viewer");
     await requireInCallerChapter(ctx, chapterId, "projects", args.projectId, "Project");
-    return actualsByIndex(ctx, "by_project", "projectId", args.projectId);
+    return actualsByIndex(ctx, chapterId, "by_project", "projectId", args.projectId);
   },
 });
 
@@ -1137,7 +1203,10 @@ export const personTransactions = query({
       .query("transactions")
       .withIndex("by_person", (q) => q.eq("personId", personId!))
       .take(ROLLUP_SCAN_LIMIT);
-    return rows.map(toTxnSummary);
+    // Defense-in-depth: never leak a row linked from another chapter.
+    return rows
+      .filter((tr) => tr.chapterId === chapterId)
+      .map(toTxnSummary);
   },
 });
 
@@ -1552,16 +1621,30 @@ export const updateBudget = mutation({
     if (args.patch.amountCents != null) {
       assertIntegerCents(args.patch.amountCents, "Budget amount");
     }
+    const patch = { ...args.patch };
+    const newScope = patch.scope ?? budget.scope;
+    // When the scope CHANGES without a fresh `scopeRefId`, the old ref is stale:
+    // an instance scope (event/project) needs one; a non-instance scope must
+    // clear it (else the budget carries a dangling ref that matches nothing).
+    if (patch.scope && patch.scope !== budget.scope && patch.scopeRefId === undefined) {
+      if (newScope === "event" || newScope === "project") {
+        throw new ConvexError({
+          code: "SCOPE_REF_REQUIRED",
+          message: `Changing scope to ${newScope} requires a scopeRefId.`,
+        });
+      }
+      patch.scopeRefId = null; // clear the stale ref
+    }
     await verifyBudgetRefs(ctx, chapterId, {
-      scope: args.patch.scope ?? budget.scope,
-      scopeRefId: args.patch.scopeRefId,
-      fundId: args.patch.fundId,
-      categoryId: args.patch.categoryId,
-      teamId: args.patch.teamId,
-      month: args.patch.month,
-      quarter: args.patch.quarter,
+      scope: newScope,
+      scopeRefId: patch.scopeRefId,
+      fundId: patch.fundId,
+      categoryId: patch.categoryId,
+      teamId: patch.teamId,
+      month: patch.month,
+      quarter: patch.quarter,
     });
-    await ctx.db.patch(args.budgetId, cleanPatch(args.patch));
+    await ctx.db.patch(args.budgetId, cleanPatch(patch));
     return null;
   },
 });

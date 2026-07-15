@@ -19,6 +19,8 @@ import type * as blasts from "../blasts.js";
 import type * as budget from "../budget.js";
 import type * as checkIns from "../checkIns.js";
 import type * as columns from "../columns.js";
+import type * as convex__generated_api from "../convex/_generated/api.js";
+import type * as convex__generated_server from "../convex/_generated/server.js";
 import type * as crons from "../crons.js";
 import type * as dashboard from "../dashboard.js";
 import type * as docs from "../docs.js";
@@ -140,6 +142,8 @@ declare const fullApi: ApiFromModules<{
   budget: typeof budget;
   checkIns: typeof checkIns;
   columns: typeof columns;
+  "convex/_generated/api": typeof convex__generated_api;
+  "convex/_generated/server": typeof convex__generated_server;
   crons: typeof crons;
   dashboard: typeof dashboard;
   docs: typeof docs;

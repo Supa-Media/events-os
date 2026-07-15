@@ -138,6 +138,28 @@ describe("acceptSuggestion", () => {
       s.as.mutation(api.aiCodingData.acceptSuggestion, { transactionId: txnId }),
     ).rejects.toBeInstanceOf(ConvexError);
   });
+
+  test("rejects a suggestion with no links and leaves status unchanged", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const personId = await seedSelfPerson(s);
+    await grantRole(s, personId, "bookkeeper");
+    // Suggestion carries only confidence/rationale — no fund/category/etc.
+    const txnId = await seedTxn(s, {
+      confidence: 0.4,
+      rationale: "Not sure how to code this.",
+      model: "test/model",
+      suggestedAt: Date.now(),
+    });
+
+    await expect(
+      s.as.mutation(api.aiCodingData.acceptSuggestion, { transactionId: txnId }),
+    ).rejects.toBeInstanceOf(ConvexError);
+
+    const txn = await run(s.t, (ctx) => ctx.db.get(txnId));
+    expect(txn?.status).toBe("unreviewed"); // unchanged
+    expect(txn?.fundId).toBeUndefined();
+  });
 });
 
 describe("suggestCoding degrade path (no OPENROUTER_API_KEY)", () => {

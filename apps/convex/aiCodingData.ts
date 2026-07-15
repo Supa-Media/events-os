@@ -239,7 +239,9 @@ export const writeSuggestion = internalMutation({
  * Apply a transaction's stored AI suggestion (a human confirming the model's
  * proposal). Bookkeeper+ only. Copies the suggestion's present links onto the
  * transaction and advances it to `categorized`. Throws when there's no
- * suggestion to apply. The model itself never reaches this path.
+ * suggestion at all, or when the suggestion carries no applicable links (so a
+ * confidence/rationale-only suggestion never falsely marks a txn coded). The
+ * model itself never reaches this path.
  */
 export const acceptSuggestion = mutation({
   args: { transactionId: v.id("transactions") },
@@ -272,7 +274,7 @@ export const acceptSuggestion = mutation({
     }
 
     // Copy only the links the suggestion actually carries; leave the rest alone.
-    const patch: Partial<Doc<"transactions">> = { status: "categorized" };
+    const patch: Partial<Doc<"transactions">> = {};
     if (suggestion.fundId !== undefined) patch.fundId = suggestion.fundId;
     if (suggestion.categoryId !== undefined)
       patch.categoryId = suggestion.categoryId;
@@ -280,6 +282,16 @@ export const acceptSuggestion = mutation({
       patch.projectId = suggestion.projectId;
     if (suggestion.eventId !== undefined) patch.eventId = suggestion.eventId;
 
+    // A suggestion of only confidence/rationale (no links) has nothing to apply
+    // — never mark a transaction "categorized" when no coding was actually set.
+    if (Object.keys(patch).length === 0) {
+      throw new ConvexError({
+        code: "EMPTY_SUGGESTION",
+        message: "This suggestion has nothing to apply.",
+      });
+    }
+
+    patch.status = "categorized";
     await ctx.db.patch(args.transactionId, patch);
     return null;
   },
