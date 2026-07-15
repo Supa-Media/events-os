@@ -194,21 +194,31 @@ const MONTHS = [
   "July", "August", "September", "October", "November", "December",
 ];
 
-/** A ‹ Month Year › pill that drives the dashboard's {year, month} args. */
+/**
+ * A ‹ Month Year › pill that drives the dashboard's {year, month} args. In
+ * `"ytd"` mode `month` is the THROUGH-month (the stepper still selects it) and
+ * the label reads "YTD · {Month} {Year}" to signal the cumulative range.
+ */
 export function MonthStepper({
   year,
   month,
   onChange,
+  period = "month",
 }: {
   year: number;
   month: number;
   onChange: (next: { year: number; month: number }) => void;
+  period?: DashPeriodMode;
 }) {
   function step(delta: number) {
     const idx = (month - 1 + delta + 12) % 12;
     const yearDelta = Math.floor((month - 1 + delta) / 12);
     onChange({ year: year + yearDelta, month: idx + 1 });
   }
+  const label =
+    period === "ytd"
+      ? `YTD · ${MONTHS[month - 1]} ${year}`
+      : `${MONTHS[month - 1]} ${year}`;
   return (
     <View className="flex-row items-center self-start rounded-pill border border-border-strong bg-raised">
       <Pressable
@@ -218,8 +228,8 @@ export function MonthStepper({
       >
         <Icon name="chevron-left" size={16} color={colors.muted} />
       </Pressable>
-      <Text className="min-w-[120px] px-1 text-center text-sm font-semibold text-ink">
-        {MONTHS[month - 1]} {year}
+      <Text className="min-w-[140px] px-1 text-center text-sm font-semibold text-ink">
+        {label}
       </Text>
       <Pressable
         onPress={() => step(1)}
@@ -228,6 +238,47 @@ export function MonthStepper({
       >
         <Icon name="chevron-right" size={16} color={colors.muted} />
       </Pressable>
+    </View>
+  );
+}
+
+// ── Month / YTD period toggle ────────────────────────────────────────────────
+export type DashPeriodMode = "month" | "ytd";
+
+/**
+ * A compact Month / YTD segmented toggle (matches the `PerspectiveSwitch`
+ * styling) that flips the dashboard between the selected month and the
+ * cumulative year-to-date range through it. Sits next to the `MonthStepper`.
+ */
+export function PeriodSwitch({
+  value,
+  onChange,
+}: {
+  value: DashPeriodMode;
+  onChange: (p: DashPeriodMode) => void;
+}) {
+  const options: { key: DashPeriodMode; label: string }[] = [
+    { key: "month", label: "Month" },
+    { key: "ytd", label: "YTD" },
+  ];
+  return (
+    <View className="flex-row items-center gap-0.5 self-start rounded-pill border border-border bg-sunken p-0.5">
+      {options.map((o) => {
+        const active = o.key === value;
+        return (
+          <Pressable
+            key={o.key}
+            onPress={() => onChange(o.key)}
+            className={`rounded-pill px-3 py-1 ${active ? "bg-raised shadow-card" : ""}`}
+          >
+            <Text
+              className={`text-sm font-semibold ${active ? "text-accent" : "text-muted"}`}
+            >
+              {o.label}
+            </Text>
+          </Pressable>
+        );
+      })}
     </View>
   );
 }
