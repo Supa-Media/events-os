@@ -16,7 +16,7 @@
  * finance-role check is enforced server-side on every mutation.
  */
 import { useMemo, useState } from "react";
-import { View, Text } from "react-native";
+import { View, Text, TextInput, Pressable } from "react-native";
 import { useQuery, useMutation } from "convex/react";
 import { api } from "@events-os/convex/_generated/api";
 import type { Id } from "@events-os/convex/_generated/dataModel";
@@ -25,11 +25,13 @@ import {
   Button,
   EmptyState,
   FULL_WIDTH,
+  Icon,
   Narrow,
   Pill,
   Screen,
   ToastView,
 } from "../../../components/ui";
+import { colors } from "../../../lib/theme";
 import { useActionRunner } from "../../../lib/useActionToast";
 import {
   ReconcileList,
@@ -37,6 +39,7 @@ import {
 } from "../../../components/finance/reconcile/ReconcileList";
 import {
   FILTERS,
+  filterReconcileRows,
   type FilterKey,
 } from "../../../components/finance/reconcile/helpers";
 import { BulkBar } from "../../../components/finance/reconcile/BulkBar";
@@ -52,6 +55,8 @@ function budgetName(b: {
 export default function ReconcileScreen() {
   const org = useQuery(api.org.nav);
   const [filter, setFilter] = useState<FilterKey>("needs_budget");
+  const [query, setQuery] = useState("");
+  const [searchFocused, setSearchFocused] = useState(false);
   const [selected, setSelected] = useState<Set<string>>(new Set());
 
   const reconcile = useQuery(api.finances.listReconcile, { filter });
@@ -65,6 +70,13 @@ export default function ReconcileScreen() {
 
   const rows = reconcile?.rows ?? [];
   const counts = reconcile?.counts;
+
+  // Search narrows the active pill's already-loaded rows, client-side.
+  const displayed = useMemo(
+    () => filterReconcileRows(rows, query),
+    [rows, query],
+  );
+  const searching = query.trim().length > 0;
 
   // Category picker items — "None" (clears) + every chapter category.
   const categoryItems = useMemo<PickerItem[]>(
@@ -92,10 +104,11 @@ export default function ReconcileScreen() {
     ];
   }, [budgets]);
 
-  // Selection lives in a Set keyed by txn id; prune ids no longer in view.
+  // Selection lives in a Set keyed by txn id; "in view" = the searched set, so
+  // bulk actions only ever touch the rows actually on screen.
   const visibleIds = useMemo(
-    () => new Set<string>(rows.map((r) => r.id)),
-    [rows],
+    () => new Set<string>(displayed.map((r) => r.id)),
+    [displayed],
   );
   const selectedInView = useMemo(
     () => [...selected].filter((id) => visibleIds.has(id)),
@@ -112,10 +125,11 @@ export default function ReconcileScreen() {
   }
   function toggleAll() {
     setSelected((prev) => {
-      const allSelected = rows.length > 0 && rows.every((r) => prev.has(r.id));
+      const allSelected =
+        displayed.length > 0 && displayed.every((r) => prev.has(r.id));
       const next = new Set(prev);
-      if (allSelected) rows.forEach((r) => next.delete(r.id));
-      else rows.forEach((r) => next.add(r.id));
+      if (allSelected) displayed.forEach((r) => next.delete(r.id));
+      else displayed.forEach((r) => next.add(r.id));
       return next;
     });
   }
@@ -181,17 +195,52 @@ export default function ReconcileScreen() {
     <>
       <Screen maxWidth={FULL_WIDTH}>
         <Narrow>
-          {/* Header — title + "N to clear". */}
+          {/* Header — title + "N to clear" (or the searched result count). */}
           <View className="mb-1 flex-row items-baseline gap-2">
             <Text className="font-display text-2xl text-ink">Reconcile</Text>
             <Text className="text-2xs font-bold uppercase tracking-wider text-muted">
-              {toClear} to clear
+              {searching
+                ? `${displayed.length} of ${rows.length}`
+                : `${toClear} to clear`}
             </Text>
           </View>
           <Text className="mb-4 text-sm text-muted">
             Code each charge to a category and budget, confirm the receipt, and
             mark it reconciled. Edit any cell inline.
           </Text>
+
+          {/* Search — narrows the active pill's rows (merchant, cardholder,
+              card last-4, amount) client-side. */}
+          <View
+            className={`mb-3 flex-row items-center rounded-md border bg-raised px-3 ${
+              searchFocused ? "border-accent" : "border-border-strong"
+            }`}
+          >
+            <Icon name="search" size={16} color={colors.faint} />
+            <TextInput
+              value={query}
+              onChangeText={setQuery}
+              onFocus={() => setSearchFocused(true)}
+              onBlur={() => setSearchFocused(false)}
+              placeholder="Search merchant, cardholder, card, amount…"
+              placeholderTextColor={colors.faint}
+              autoCapitalize="none"
+              autoCorrect={false}
+              returnKeyType="search"
+              className="flex-1 px-2 py-2.5 text-base text-ink"
+            />
+            {query.length > 0 ? (
+              <Pressable
+                onPress={() => setQuery("")}
+                hitSlop={8}
+                accessibilityRole="button"
+                accessibilityLabel="Clear search"
+                className="rounded p-1 active:opacity-70"
+              >
+                <Icon name="x" size={16} color={colors.muted} />
+              </Pressable>
+            ) : null}
+          </View>
 
           {/* Server-side filter pills, each with its live count. */}
           <View className="mb-4 flex-row flex-wrap gap-2">
@@ -223,15 +272,23 @@ export default function ReconcileScreen() {
           <View className="py-14">
             <EmptyState title="Loading transactions…" />
           </View>
-        ) : rows.length === 0 ? (
-          <EmptyState
-            icon="check-circle"
-            title="Nothing in this view"
-            message="Try another filter — new charges land here to code and reconcile."
-          />
+        ) : displayed.length === 0 ? (
+          searching ? (
+            <EmptyState
+              icon="search"
+              title="No matches"
+              message={`No charges in this view match “${query.trim()}”.`}
+            />
+          ) : (
+            <EmptyState
+              icon="check-circle"
+              title="Nothing in this view"
+              message="Try another filter — new charges land here to code and reconcile."
+            />
+          )
         ) : (
           <ReconcileList
-            rows={rows}
+            rows={displayed}
             categoryItems={categoryItems}
             budgetItems={budgetItems}
             selected={selected}
