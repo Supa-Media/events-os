@@ -988,6 +988,7 @@ describe("provisionChapterAccount sandbox mode", () => {
     "INCREASE_SANDBOX_API_KEY",
     "INCREASE_SANDBOX_ENTITY_ID",
     "INCREASE_PROGRAM_ID",
+    "INCREASE_SANDBOX_PROGRAM_ID",
     "INCREASE_API_BASE",
   ] as const;
   const originalFetch = globalThis.fetch;
@@ -1050,6 +1051,41 @@ describe("provisionChapterAccount sandbox mode", () => {
     expect(post!.auth).toBe("Bearer sandbox_key");
     expect(post!.body?.entity_id).toBe("entity_sandbox");
     expect(post!.body?.program_id).toBe("sandbox_program");
+  });
+
+  test("sandboxMode:true IGNORES the prod INCREASE_PROGRAM_ID override (no cross-env program leak)", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await seedManager(s);
+    await setSandbox(s, true);
+
+    process.env.INCREASE_API_KEY = "prod_key";
+    process.env.INCREASE_ENTITY_ID = "entity_prod";
+    process.env.INCREASE_SANDBOX_API_KEY = "sandbox_key";
+    process.env.INCREASE_SANDBOX_ENTITY_ID = "entity_sandbox";
+    // The prod program override IS set — it must NOT leak into the sandbox call
+    // (a prod program id is rejected by the sandbox API → the real-world bug).
+    process.env.INCREASE_PROGRAM_ID = "program_prod_only";
+    delete process.env.INCREASE_SANDBOX_PROGRAM_ID;
+    delete process.env.INCREASE_API_BASE;
+
+    const calls = mockProvisionFetch(
+      [{ id: "sandbox_program" }],
+      "sandbox_account_2",
+    );
+
+    const account = await s.as.action(
+      api.increase.provisionChapterAccount,
+      {},
+    );
+    expect(account.onboardingStatus).toBe("active");
+
+    // The sandbox `/programs` was consulted (prod override ignored) and the
+    // account opened under the SANDBOX program, never the prod override.
+    expect(calls.some((c) => c.url.includes("/programs"))).toBe(true);
+    const post = calls.find((c) => c.url.includes("/accounts"));
+    expect(post!.body?.program_id).toBe("sandbox_program");
+    expect(post!.body?.program_id).not.toBe("program_prod_only");
   });
 
   test("sandboxMode:false opens the account against prod with prod creds + entity", async () => {
