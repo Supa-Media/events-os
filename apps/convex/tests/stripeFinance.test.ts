@@ -73,11 +73,18 @@ async function seedFund(
   );
 }
 
-/** Insert a legacy account in a chapter (raw). */
+/** Insert a legacy account in a chapter (raw). By default the account is
+ *  already backfilled (`backfilledAt` set) so tests exercise the incremental
+ *  path unless they explicitly opt into the first-connect backfill. */
 async function seedAccount(
   s: ChapterSetup,
   chapterId: Id<"chapters">,
-  opts: { defaultFundId?: Id<"funds">; stripeFcAccountId?: string } = {},
+  opts: {
+    defaultFundId?: Id<"funds">;
+    stripeFcAccountId?: string;
+    /** Pass `false` to leave `backfilledAt` unset (first-connect backfill). */
+    backfilled?: boolean;
+  } = {},
 ): Promise<Id<"legacyAccounts">> {
   return await run(s.t, (ctx) =>
     ctx.db.insert("legacyAccounts", {
@@ -87,6 +94,7 @@ async function seedAccount(
       last4: "4242",
       type: "depository",
       defaultFundId: opts.defaultFundId,
+      backfilledAt: opts.backfilled === false ? undefined : Date.now(),
       status: "active",
       createdAt: Date.now(),
     }),
@@ -469,5 +477,248 @@ describe("syncTransactions fetch + paginate (mocked fetch)", () => {
     });
     expect(res).toEqual({ skipped: true, inserted: 0, updated: 0 });
     expect(called).toBe(false);
+  });
+});
+
+// ── First-connect FULL-HISTORY backfill (paginate until has_more:false) ───────
+
+describe("syncTransactions first-connect backfill", () => {
+  const realFetch = globalThis.fetch;
+  const realKey = process.env.STRIPE_SECRET_KEY;
+
+  afterEach(() => {
+    globalThis.fetch = realFetch;
+    if (realKey === undefined) delete process.env.STRIPE_SECRET_KEY;
+    else process.env.STRIPE_SECRET_KEY = realKey;
+  });
+
+  /** A history longer than one invocation's page cap (MAX_SYNC_PAGES = 50):
+   *  each fetch returns ONE txn with a unique id and `has_more` true until the
+   *  very last page — so one invocation drains 50 pages (cap) and a second
+   *  drains the remaining 10, mirroring the self-rescheduling drain. */
+  function serveHistory(totalPages: number, seenUrls: string[]): number[] {
+    const callCounter = [0];
+    globalThis.fetch = (async (url: string) => {
+      seenUrls.push(String(url));
+      const n = callCounter[0]++;
+      return jsonResponse({
+        data: [fcObject(`bf_${n}`, -100 * (n + 1), "posted", 1_700_000_000 + n)],
+        has_more: n < totalPages - 1,
+      });
+    }) as unknown as typeof fetch;
+    return callCounter;
+  }
+
+  test("pages the ENTIRE history across multiple invocations, then stamps backfilledAt + clears syncCursor", async () => {
+    process.env.STRIPE_SECRET_KEY = "sk_test_mock";
+    const s = await setupChapter(newT());
+    // backfilled:false → the account starts in first-connect backfill mode.
+    const accountId = await seedAccount(s, s.chapterId, {
+      stripeFcAccountId: "fca_backfill",
+      backfilled: false,
+    });
+
+    const urls: string[] = [];
+    serveHistory(60, urls); // 60 pages of 1 txn each → 50 + 10 across two runs.
+
+    // Invocation 1: drains the per-run page cap (50), sees more remaining, saves
+    // a resume cursor, and schedules itself to continue.
+    const res1 = await s.t.action(internal.stripeFinance.syncTransactions, {
+      legacyAccountId: accountId,
+    });
+    expect(res1).toEqual({ skipped: false, inserted: 50, updated: 0 });
+
+    const mid = await run(s.t, (ctx) => ctx.db.get(accountId));
+    expect(mid?.backfilledAt).toBeUndefined(); // NOT done yet
+    expect(mid?.syncCursor).toBe("bf_49"); // resume point persisted
+
+    // A continuation sync was scheduled to keep draining.
+    const scheduled = await run(s.t, (ctx) =>
+      ctx.db.system.query("_scheduled_functions").collect(),
+    );
+    expect(scheduled).toHaveLength(1);
+    expect(scheduled[0].name).toContain("syncTransactions");
+
+    // Invocation 2 (what the scheduler would run): resumes from the cursor and
+    // reaches the end of history.
+    const res2 = await s.t.action(internal.stripeFinance.syncTransactions, {
+      legacyAccountId: accountId,
+    });
+    expect(res2).toEqual({ skipped: false, inserted: 10, updated: 0 });
+
+    // The whole 60-txn history landed exactly once.
+    const rows = await run(s.t, (ctx) =>
+      ctx.db
+        .query("transactions")
+        .withIndex("by_chapter", (q) => q.eq("chapterId", s.chapterId))
+        .collect(),
+    );
+    expect(rows).toHaveLength(60);
+
+    const done = await run(s.t, (ctx) => ctx.db.get(accountId));
+    expect(typeof done?.backfilledAt).toBe("number"); // backfill complete
+    expect(done?.syncCursor).toBeUndefined(); // cursor cleared
+
+    // The resumed invocation forwarded the cursor as starting_after.
+    expect(urls.some((u) => u.includes("starting_after=bf_49"))).toBe(true);
+  });
+
+  test("re-running the backfill is idempotent — dedup on externalId, no doubles", async () => {
+    process.env.STRIPE_SECRET_KEY = "sk_test_mock";
+    const s = await setupChapter(newT());
+    const accountId = await seedAccount(s, s.chapterId, {
+      stripeFcAccountId: "fca_idem",
+      backfilled: false,
+    });
+
+    // A short history that completes in a single invocation.
+    const urls: string[] = [];
+    serveHistory(3, urls);
+    const first = await s.t.action(internal.stripeFinance.syncTransactions, {
+      legacyAccountId: accountId,
+    });
+    expect(first).toEqual({ skipped: false, inserted: 3, updated: 0 });
+    const afterFirst = await run(s.t, (ctx) => ctx.db.get(accountId));
+    expect(typeof afterFirst?.backfilledAt).toBe("number");
+
+    // Force the backfill to run AGAIN over the same history (clear the flag) —
+    // dedup must absorb every row: zero new inserts, three updates, still 3 rows.
+    await run(s.t, (ctx) =>
+      ctx.db.patch(accountId, { backfilledAt: undefined }),
+    );
+    const urls2: string[] = [];
+    serveHistory(3, urls2);
+    const second = await s.t.action(internal.stripeFinance.syncTransactions, {
+      legacyAccountId: accountId,
+    });
+    expect(second).toEqual({ skipped: false, inserted: 0, updated: 3 });
+
+    const rows = await run(s.t, (ctx) =>
+      ctx.db
+        .query("transactions")
+        .withIndex("by_chapter", (q) => q.eq("chapterId", s.chapterId))
+        .collect(),
+    );
+    expect(rows).toHaveLength(3);
+  });
+
+  test("after backfill completes, a subsequent sync runs the incremental re-sweep (no re-backfill, cursor stays undefined)", async () => {
+    process.env.STRIPE_SECRET_KEY = "sk_test_mock";
+    const s = await setupChapter(newT());
+    // Already backfilled → incremental path.
+    const accountId = await seedAccount(s, s.chapterId, {
+      stripeFcAccountId: "fca_incr",
+    });
+    const before = await run(s.t, (ctx) => ctx.db.get(accountId));
+    const backfilledAtBefore = before?.backfilledAt;
+    expect(typeof backfilledAtBefore).toBe("number");
+
+    // A single-page re-sweep with one new row.
+    globalThis.fetch = (async () =>
+      jsonResponse({
+        data: [fcObject("incr_1", -4200, "posted", 1_700_300_000)],
+        has_more: false,
+      })) as unknown as typeof fetch;
+
+    const res = await s.t.action(internal.stripeFinance.syncTransactions, {
+      legacyAccountId: accountId,
+    });
+    expect(res).toEqual({ skipped: false, inserted: 1, updated: 0 });
+
+    const after = await run(s.t, (ctx) => ctx.db.get(accountId));
+    // Incremental mode keeps no cursor and doesn't re-stamp backfilledAt.
+    expect(after?.syncCursor).toBeUndefined();
+    expect(after?.backfilledAt).toBe(backfilledAtBefore);
+
+    // No continuation was scheduled (incremental never chains).
+    const scheduled = await run(s.t, (ctx) =>
+      ctx.db.system.query("_scheduled_functions").collect(),
+    );
+    expect(scheduled).toHaveLength(0);
+  });
+
+  test("an empty-history account completes backfill in one run (backfilledAt set)", async () => {
+    process.env.STRIPE_SECRET_KEY = "sk_test_mock";
+    const s = await setupChapter(newT());
+    const accountId = await seedAccount(s, s.chapterId, {
+      stripeFcAccountId: "fca_empty",
+      backfilled: false,
+    });
+    globalThis.fetch = (async () =>
+      jsonResponse({ data: [], has_more: false })) as unknown as typeof fetch;
+
+    const res = await s.t.action(internal.stripeFinance.syncTransactions, {
+      legacyAccountId: accountId,
+    });
+    expect(res).toEqual({ skipped: false, inserted: 0, updated: 0 });
+
+    const done = await run(s.t, (ctx) => ctx.db.get(accountId));
+    expect(typeof done?.backfilledAt).toBe("number");
+    expect(done?.syncCursor).toBeUndefined();
+  });
+});
+
+// ── storeFcAccount kicks off the initial backfill on connect ──────────────────
+
+describe("storeFcAccount initial sync scheduling", () => {
+  const realKey = process.env.STRIPE_SECRET_KEY;
+
+  afterEach(() => {
+    if (realKey === undefined) delete process.env.STRIPE_SECRET_KEY;
+    else process.env.STRIPE_SECRET_KEY = realKey;
+  });
+
+  test("a fresh account schedules the first-connect sync when a key is set", async () => {
+    process.env.STRIPE_SECRET_KEY = "sk_test_mock";
+    const s = await setupChapter(newT());
+    await asManager(s);
+
+    const accountId = await s.as.mutation(api.stripeFinance.storeFcAccount, {
+      stripeFcAccountId: "fca_connect",
+      institutionName: "Chase",
+      last4: "1111",
+      type: "depository",
+    });
+    // The new account starts un-backfilled and a sync is queued.
+    const account = await run(s.t, (ctx) => ctx.db.get(accountId));
+    expect(account?.backfilledAt).toBeUndefined();
+
+    const scheduled = await run(s.t, (ctx) =>
+      ctx.db.system.query("_scheduled_functions").collect(),
+    );
+    expect(scheduled).toHaveLength(1);
+    expect(scheduled[0].name).toContain("syncTransactions");
+  });
+
+  test("no key → connect is a no-op sync-wise (nothing scheduled)", async () => {
+    delete process.env.STRIPE_SECRET_KEY;
+    const s = await setupChapter(newT());
+    await asManager(s);
+
+    await s.as.mutation(api.stripeFinance.storeFcAccount, {
+      stripeFcAccountId: "fca_nokey_connect",
+    });
+    const scheduled = await run(s.t, (ctx) =>
+      ctx.db.system.query("_scheduled_functions").collect(),
+    );
+    expect(scheduled).toHaveLength(0);
+  });
+
+  test("re-connecting an existing account does NOT schedule another sync", async () => {
+    process.env.STRIPE_SECRET_KEY = "sk_test_mock";
+    const s = await setupChapter(newT());
+    await asManager(s);
+    // Pre-existing (already-backfilled) account with the same Stripe id.
+    await seedAccount(s, s.chapterId, { stripeFcAccountId: "fca_reconnect" });
+
+    await s.as.mutation(api.stripeFinance.storeFcAccount, {
+      stripeFcAccountId: "fca_reconnect",
+      last4: "9999",
+    });
+    const scheduled = await run(s.t, (ctx) =>
+      ctx.db.system.query("_scheduled_functions").collect(),
+    );
+    // Re-connect refreshes metadata via the incremental path; no initial sync.
+    expect(scheduled).toHaveLength(0);
   });
 });
