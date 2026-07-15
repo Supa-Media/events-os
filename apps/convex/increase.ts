@@ -2,10 +2,11 @@
  * Increase — the native money layer for Chapter OS (Phase 4: ACH reimbursement
  * payouts + the chapter's bank Account).
  *
- * Increase is the source of truth for a chapter's balance: one Entity + Account
- * per chapter (`increaseAccounts`), member cards issued on it (Phase 5), and ACH
- * reimbursement payouts (`payouts`) originating from it. NO Stripe Issuing /
- * Connect — Stripe FC (`stripeFinance.ts`) only *reads* legacy accounts.
+ * Increase is the source of truth for a chapter's balance: one shared org Entity
+ * (`INCREASE_ENTITY_ID`); one Account per chapter (`increaseAccounts`), member
+ * cards issued on it (Phase 5), and ACH reimbursement payouts (`payouts`)
+ * originating from it. NO Stripe Issuing / Connect — Stripe FC
+ * (`stripeFinance.ts`) only *reads* legacy accounts.
  *
  * DESIGN (mirrors `stripeFinance.ts`): the network fetch is separated from the
  * DB apply so the payout state machine is testable WITHOUT hitting Increase.
@@ -34,8 +35,9 @@
  * `pending` payout and steers the manager to `markPaidManually` (the working
  * Phase-4 path). See the TODO breadcrumb in `beginPayout`.
  *
- * Env: INCREASE_API_KEY, INCREASE_WEBHOOK_SECRET, INCREASE_PROGRAM_ID, and
- * INCREASE_API_BASE (sandbox URL for dev/staging; defaults to production).
+ * Env: INCREASE_API_KEY, INCREASE_WEBHOOK_SECRET, INCREASE_ENTITY_ID (the shared
+ * org Entity), INCREASE_PROGRAM_ID, and INCREASE_API_BASE (sandbox URL for
+ * dev/staging; defaults to production).
  */
 import {
   action,
@@ -438,7 +440,7 @@ async function applyPayoutOutcome(
 
 /** Gate + find-or-create the chapter's `increaseAccounts` row. Manager-only.
  *  Returns the existing account when it's already active (idempotent), else the
- *  row to provision + the chapter name for the Increase Entity. */
+ *  row to provision + the chapter name (used to name the Increase Account). */
 export const beginProvision = internalMutation({
   args: {},
   returns: v.union(
@@ -512,10 +514,19 @@ export const finishProvision = internalMutation({
 });
 
 /**
- * Provision the chapter's single Increase Entity + Account (one per chapter).
+ * Provision a chapter's Increase Account under the org's single shared Entity.
  * Manager-only. Idempotent: an already-active account is returned untouched.
- * DEGRADES (logs + returns, never throws) to `onboardingStatus:"pending"` when
- * `INCREASE_API_KEY` is unset — the finance vendor isn't wired up yet.
+ *
+ * SHARED-ENTITY MODEL: the org has ONE legal Increase Entity (the nonprofit),
+ * KYB-verified ONCE in the Increase dashboard and referenced by
+ * `INCREASE_ENTITY_ID`. This app NEVER creates entities and NEVER collects
+ * KYB/PII — provisioning a chapter is just opening an Account under that shared
+ * entity (`POST /accounts` with `entity_id` + `program_id` + a `name`).
+ *
+ * DEGRADES (logs which env is missing + returns, never throws) to
+ * `onboardingStatus:"pending"` when any of `INCREASE_API_KEY`,
+ * `INCREASE_ENTITY_ID`, or `INCREASE_PROGRAM_ID` is unset — the finance vendor
+ * isn't wired up yet.
  */
 export const provisionChapterAccount = action({
   args: {},
@@ -527,57 +538,38 @@ export const provisionChapterAccount = action({
     );
     if (prep.kind === "existing") return prep.account;
 
+    // Opening an Account needs the API key, the shared org Entity id, and the
+    // Program id (compliance + commercial terms). If any is unset we can't
+    // provision → degrade to `pending` (log which one is missing).
     const key = process.env.INCREASE_API_KEY;
-    if (!key) {
-      console.warn(
-        "[increase] provision skipped: INCREASE_API_KEY not configured",
-      );
-      return await ctx.runMutation(internal.increase.finishProvision, {
-        accountId: prep.accountId,
-        onboardingStatus: "pending",
-      });
-    }
-
-    // Creating an Increase Account requires a `program_id` (the Program that
-    // sets the compliance + commercial terms). Without it configured we can't
-    // provision → degrade to `pending`.
+    const entityId = process.env.INCREASE_ENTITY_ID;
     const programId = process.env.INCREASE_PROGRAM_ID;
-    if (!programId) {
-      console.warn(
-        "[increase] provision skipped: INCREASE_PROGRAM_ID not configured",
-      );
+    const missing = !key
+      ? "INCREASE_API_KEY"
+      : !entityId
+        ? "INCREASE_ENTITY_ID"
+        : !programId
+          ? "INCREASE_PROGRAM_ID"
+          : null;
+    if (missing) {
+      console.warn(`[increase] provision skipped: ${missing} not configured`);
       return await ctx.runMutation(internal.increase.finishProvision, {
         accountId: prep.accountId,
         onboardingStatus: "pending",
       });
     }
 
-    // NOTE: creating an Increase Entity is full KYB. For a `corporation` Increase
-    // requires — beyond the legal `name` — the `address`, the `tax_identifier`
-    // (EIN), and the `beneficial_owners` (each with name, date_of_birth, address,
-    // and a government identification). This app collects NONE of that PII, so a
-    // real chapter Entity must be onboarded through Increase's HOSTED ONBOARDING
-    // flow (or a dedicated KYB form) — it can't be minted from a chapter name.
-    // The call below sends the correct field SHAPE but will 422 without the KYB
-    // data, so we DEGRADE to `pending`. Wire hosted onboarding before go-live.
+    // Open the chapter's Account under the shared org Entity — no KYB, no PII.
     try {
-      const entity = await increasePost(key, "/entities", {
-        structure: "corporation",
-        corporation: {
-          name: prep.chapterName,
-          // address, tax_identifier, beneficial_owners are REQUIRED by Increase
-          // (KYB) and supplied by hosted onboarding — not available here.
-        },
-      });
-      const account = await increasePost(key, "/accounts", {
-        entity_id: entity.id,
-        program_id: programId,
-        name: `${prep.chapterName} operating`,
+      const account = await increasePost(key!, "/accounts", {
+        entity_id: entityId!,
+        program_id: programId!,
+        name: prep.chapterName,
       });
       return await ctx.runMutation(internal.increase.finishProvision, {
         accountId: prep.accountId,
         onboardingStatus: "active",
-        increaseEntityId: String(entity.id),
+        increaseEntityId: entityId!,
         increaseAccountId: String(account.id),
       });
     } catch (err) {

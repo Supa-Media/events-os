@@ -1,4 +1,4 @@
-import { describe, expect, test } from "vitest";
+import { afterEach, describe, expect, test } from "vitest";
 import { createHmac } from "node:crypto";
 import { ConvexError } from "convex/values";
 import { newT, run, setupChapter, type ChapterSetup } from "./setup.helpers";
@@ -15,7 +15,8 @@ import { verifyIncreaseSignature } from "../increase";
  *    `flow:"transfer"` ledger row (excluded from spend), idempotently,
  *  - `onIncreaseWebhookEvent` paid→paid + transfer, failed/returned→not paid,
  *    unknown transfer no-ops, and a `paid` payout ignores a later `failed`,
- *  - `provisionChapterAccount` degrades without `INCREASE_API_KEY`,
+ *  - `provisionChapterAccount` degrades when provisioning env is unset, and
+ *    opens an Account under the shared org Entity when it's all set (active),
  *  - `verifyIncreaseSignature` accepts a valid signature, rejects forgeries.
  *
  * All money is integer cents; the network side never runs (no `INCREASE_API_KEY`
@@ -488,10 +489,39 @@ describe("onIncreaseWebhookEvent", () => {
 // ── provisionChapterAccount ──────────────────────────────────────────────────
 
 describe("provisionChapterAccount", () => {
-  test("degrades without INCREASE_API_KEY (onboardingStatus pending, no throw)", async () => {
+  // The three env vars provisioning reads + the runtime `fetch` — snapshot and
+  // restore around every test so a mocked call never leaks into another test.
+  const PROVISION_ENV = [
+    "INCREASE_API_KEY",
+    "INCREASE_ENTITY_ID",
+    "INCREASE_PROGRAM_ID",
+  ] as const;
+  const originalFetch = globalThis.fetch;
+  const originalEnv: Partial<Record<(typeof PROVISION_ENV)[number], string>> =
+    {};
+  for (const k of PROVISION_ENV) originalEnv[k] = process.env[k];
+
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+    for (const k of PROVISION_ENV) {
+      if (originalEnv[k] === undefined) delete process.env[k];
+      else process.env[k] = originalEnv[k];
+    }
+  });
+
+  test("degrades when INCREASE_ENTITY_ID is unset (onboardingStatus pending, no throw)", async () => {
     const t = newT();
     const s = await setupChapter(t);
     await seedManager(s);
+
+    // Key + program present but the shared org Entity id is missing → degrade.
+    process.env.INCREASE_API_KEY = "test_key";
+    process.env.INCREASE_PROGRAM_ID = "program_test";
+    delete process.env.INCREASE_ENTITY_ID;
+    // Provisioning must never touch the network on the degrade path.
+    globalThis.fetch = (() => {
+      throw new Error("fetch must not be called when env is unset");
+    }) as unknown as typeof fetch;
 
     const account = await s.as.action(
       api.increase.provisionChapterAccount,
@@ -509,6 +539,61 @@ describe("provisionChapterAccount", () => {
     );
     expect(rows.length).toBe(1);
     expect(rows[0].onboardingStatus).toBe("pending");
+  });
+
+  test("opens an Account under the shared Entity when all env is set (active)", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await seedManager(s);
+
+    const ENTITY_ID = "entity_shared_org";
+    process.env.INCREASE_API_KEY = "test_key";
+    process.env.INCREASE_ENTITY_ID = ENTITY_ID;
+    process.env.INCREASE_PROGRAM_ID = "program_test";
+
+    // Mock the Increase sandbox: `POST /accounts` returns an open account.
+    let calledPath: string | null = null;
+    let calledBody: Record<string, unknown> | null = null;
+    globalThis.fetch = (async (
+      input: RequestInfo | URL,
+      init?: RequestInit,
+    ) => {
+      calledPath = String(input);
+      calledBody = init?.body ? JSON.parse(String(init.body)) : null;
+      return new Response(
+        JSON.stringify({ id: "sandbox_account_x", status: "open" }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      );
+    }) as unknown as typeof fetch;
+
+    const account = await s.as.action(
+      api.increase.provisionChapterAccount,
+      {},
+    );
+
+    // Provisioned active under the SHARED entity — account id from the response,
+    // entity id from the env (never minted).
+    expect(account.onboardingStatus).toBe("active");
+    expect(account.increaseAccountId).toBe("sandbox_account_x");
+    expect(account.increaseEntityId).toBe(ENTITY_ID);
+
+    // Hit `/accounts` (NOT `/entities`) with `entity_id` = the shared env value.
+    const body = calledBody as Record<string, unknown> | null;
+    expect(String(calledPath)).toContain("/accounts");
+    expect(String(calledPath)).not.toContain("/entities");
+    expect(body?.entity_id).toBe(ENTITY_ID);
+    expect(body?.program_id).toBe("program_test");
+
+    const rows = await run(s.t, (ctx) =>
+      ctx.db
+        .query("increaseAccounts")
+        .withIndex("by_chapter", (q) => q.eq("chapterId", s.chapterId))
+        .collect(),
+    );
+    expect(rows.length).toBe(1);
+    expect(rows[0].onboardingStatus).toBe("active");
+    expect(rows[0].increaseEntityId).toBe(ENTITY_ID);
+    expect(rows[0].increaseAccountId).toBe("sandbox_account_x");
   });
 
   test("a non-manager cannot provision", async () => {
