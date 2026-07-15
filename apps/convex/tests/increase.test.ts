@@ -244,6 +244,102 @@ describe("markPaidManually", () => {
   });
 });
 
+// ── disbursement guards ($0 amount, SoD, in-flight ACH) ──────────────────────
+
+describe("disbursement guards", () => {
+  test("a $0 approved reimbursement can't be paid (markPaidManually + payReimbursement)", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await seedManager(s);
+    const payee = await seedPerson(s, { name: "Vera" });
+    const reimbursementId = await seedReimbursement(s, {
+      status: "approved",
+      payeePersonId: payee,
+      totalCents: 0,
+      approvedCents: 0,
+    });
+    await expect(
+      s.as.mutation(api.increase.markPaidManually, { reimbursementId }),
+    ).rejects.toBeInstanceOf(ConvexError);
+    await expect(
+      s.as.action(api.increase.payReimbursement, { reimbursementId }),
+    ).rejects.toBeInstanceOf(ConvexError);
+    // No payout + no transfer was minted.
+    expect((await payoutsFor(s, reimbursementId)).length).toBe(0);
+    expect((await transferTxns(s, reimbursementId)).length).toBe(0);
+  });
+
+  test("the payee (as a manager) is blocked from releasing their own payout", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    // The caller is a manager AND the payee (roster-linked to the request).
+    const managerId = await seedManager(s);
+    const reimbursementId = await seedReimbursement(s, {
+      status: "approved",
+      payeePersonId: managerId,
+      approvedCents: 1800,
+    });
+    await expect(
+      s.as.mutation(api.increase.markPaidManually, { reimbursementId }),
+    ).rejects.toBeInstanceOf(ConvexError);
+    await expect(
+      s.as.action(api.increase.payReimbursement, { reimbursementId }),
+    ).rejects.toBeInstanceOf(ConvexError);
+    expect((await payoutsFor(s, reimbursementId)).length).toBe(0);
+  });
+
+  test("a different manager (not the payee) can release the payout", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await seedManager(s); // caller = a manager, not the payee
+    const payee = await seedPerson(s, { name: "Vera" });
+    const reimbursementId = await seedReimbursement(s, {
+      status: "approved",
+      payeePersonId: payee,
+      approvedCents: 1800,
+    });
+    const payout = await s.as.mutation(api.increase.markPaidManually, {
+      reimbursementId,
+    });
+    expect(payout.status).toBe("paid");
+  });
+
+  test("markPaidManually refuses when a live increase-provider payout is in flight", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await seedManager(s);
+    const payee = await seedPerson(s, { name: "Vera" });
+    const reimbursementId = await seedReimbursement(s, {
+      status: "paying",
+      payeePersonId: payee,
+      approvedCents: 1800,
+    });
+    // A real ACH payout is already moving money at Increase.
+    const now = Date.now();
+    await run(s.t, (ctx) =>
+      ctx.db.insert("payouts", {
+        chapterId: s.chapterId,
+        reimbursementId,
+        payeePersonId: payee,
+        amountCents: 1800,
+        provider: "increase",
+        status: "processing",
+        increaseTransferId: "ach_in_flight",
+        createdAt: now,
+        updatedAt: now,
+      }),
+    );
+    await expect(
+      s.as.mutation(api.increase.markPaidManually, { reimbursementId }),
+    ).rejects.toBeInstanceOf(ConvexError);
+    // The in-flight payout wasn't clobbered + no transfer was posted.
+    const payouts = await payoutsFor(s, reimbursementId);
+    expect(payouts.length).toBe(1);
+    expect(payouts[0].status).toBe("processing");
+    expect((await transferTxns(s, reimbursementId)).length).toBe(0);
+  });
+});
+
 // ── onIncreaseWebhookEvent (the state machine) ───────────────────────────────
 
 /** Seed a `processing` Increase payout + its `paying` reimbursement. */

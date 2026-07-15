@@ -58,10 +58,12 @@ import {
   requireInChapter,
   getChapterIdOrNull,
 } from "./lib/context";
+import { normalizeEmail, getUserEmail } from "./lib/access";
 import {
   requireFinanceRole,
   requireFinanceManager,
   resolveCallerPersonId,
+  assertSeparationOfDuties,
 } from "./lib/finance";
 
 const INCREASE_API = "https://api.increase.com";
@@ -73,6 +75,44 @@ const LIVE_PAYOUT_STATUSES: readonly PayoutStatus[] = [
   "processing",
   "paid",
 ];
+
+/** Reject a non-positive payout amount. Guards the `0 ?? x === 0` trap: a
+ *  reimbursement approved with zero lines has `approvedCents === 0`, which would
+ *  otherwise mint a $0 payout + $0 `transfer` marked paid. */
+function assertPositivePayout(amountCents: number): void {
+  if (!Number.isInteger(amountCents) || amountCents <= 0) {
+    throw new ConvexError({
+      code: "INVALID_AMOUNT",
+      message:
+        "A reimbursement payout must be a positive whole number of cents.",
+    });
+  }
+}
+
+/**
+ * Disbursement separation of duties: the person RELEASING a payout must not be
+ * the payee. Mirrors the approval-side SoD (`reimbursements.ts`) with two
+ * independent signals so it can't be sidestepped:
+ *   - the roster link: the caller's person is the request's linked payee, OR
+ *   - the email: the caller's auth email equals the request's `payeeEmail`
+ *     (case-insensitive) — catches an unlinked self-submission.
+ */
+function assertDisbursementSoD(
+  callerPersonId: Id<"people">,
+  callerEmail: string | null,
+  req: Doc<"reimbursementRequests">,
+): void {
+  assertSeparationOfDuties(callerPersonId, req.personId);
+  const payer = normalizeEmail(callerEmail);
+  const payee = normalizeEmail(req.payeeEmail);
+  if (payer && payee && payer === payee) {
+    throw new ConvexError({
+      code: "SOD_VIOLATION",
+      message:
+        "The person releasing a payout must be different from the payee.",
+    });
+  }
+}
 
 // ── Validators ────────────────────────────────────────────────────────────────
 
@@ -509,6 +549,15 @@ export const beginPayout = internalMutation({
       });
     }
 
+    // Disbursement SoD: the caller releasing the payout must not be the payee.
+    const callerPersonId = await resolveCallerPersonId(ctx, chapterId);
+    const callerEmail = await getUserEmail(ctx);
+    assertDisbursementSoD(callerPersonId, callerEmail, reimbursement);
+
+    // Reject a non-positive amount before any payout row is minted.
+    const amountCents = reimbursement.approvedCents ?? reimbursement.totalCents;
+    assertPositivePayout(amountCents);
+
     // IDEMPOTENT: at most one live payout per reimbursement — never double-pay.
     const existingPayouts = await ctx.db
       .query("payouts")
@@ -521,14 +570,25 @@ export const beginPayout = internalMutation({
     );
     if (live) return { kind: "existing", payout: toPayoutSummary(live) };
 
-    const amountCents = reimbursement.approvedCents ?? reimbursement.totalCents;
     const now = Date.now();
 
     // Is a real ACH addressable? Needs the vendor wired, an active account, AND
     // full destination bank details. We only captured `bankAccountLast4`, so a
     // real ACH can't be fully addressed yet → we always DEGRADE to manual.
-    // TODO: capture full destination bank details via Increase external-account
-    // linking, then flip `hasFullDestination` true and route ACH transfers.
+    //
+    // TODO(ACH go-live) before flipping `hasFullDestination` true:
+    //  (a) capture full destination routing+account via Increase external-account
+    //      linking (last4 alone can't address an ACH credit);
+    //  (b) VERIFY the real Increase webhook shape — the lifecycle event is
+    //      `ach_transfer.updated` and settlement status is NOT inline on the
+    //      event; you must fetch the transfer to derive it. The `settled`/`paid`
+    //      + trusted-`data.status` mapping in `payoutTargetFor` is a PLACEHOLDER;
+    //  (c) handle post-settlement RETURNS — an `ach_transfer.returned` can arrive
+    //      DAYS after `paid`; today `applyPayoutOutcome` treats a `paid` payout as
+    //      terminal and would leave a bounced reimbursement marked paid. Add a
+    //      paid→returned reversal (re-open the reimbursement, reverse the txn);
+    //  (d) confirm the `Increase-Webhook-Signature` header format matches the
+    //      Stripe-style HMAC assumed in `verifyIncreaseSignature`.
     const hasFullDestination = false;
     const account = await ctx.db
       .query("increaseAccounts")
@@ -702,6 +762,10 @@ export const markPaidManually = mutation({
     await requireInChapter(ctx, chapterId, req, "Reimbursement");
     const reimbursement = req!;
 
+    // Disbursement SoD: the caller releasing the payout must not be the payee.
+    const callerEmail = await getUserEmail(ctx);
+    assertDisbursementSoD(callerPersonId, callerEmail, reimbursement);
+
     // Find (or create) the live payout keyed on the reimbursement.
     const existingPayouts = await ctx.db
       .query("payouts")
@@ -712,6 +776,18 @@ export const markPaidManually = mutation({
     let payout =
       existingPayouts.find((p) => LIVE_PAYOUT_STATUSES.includes(p.status)) ??
       null;
+
+    // NEVER manual-clobber an in-flight real ACH payout. Once ACH is enabled a
+    // `provider:"increase"` payout with an `increaseTransferId` is (or may be)
+    // moving money at Increase; marking it paid by hand here would double-pay
+    // (the ACH still settles). Only the true manual/degraded case is completable.
+    if (payout && payout.provider === "increase" && payout.increaseTransferId) {
+      throw new ConvexError({
+        code: "PAYOUT_IN_FLIGHT",
+        message:
+          "This reimbursement has an ACH payout in progress — it can't be marked paid manually.",
+      });
+    }
 
     // IDEMPOTENT: already paid (payout paid + transfer posted) → return as-is.
     if (payout && payout.status === "paid" && reimbursement.status === "paid") {
@@ -729,8 +805,10 @@ export const markPaidManually = mutation({
       });
     }
 
+    // Reject a non-positive amount (guards the `0 ?? x === 0` $0-payout trap).
     const amountCents =
       reimbursement.approvedCents ?? reimbursement.totalCents;
+    assertPositivePayout(amountCents);
     const now = Date.now();
 
     if (!payout) {
