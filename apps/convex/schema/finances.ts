@@ -96,7 +96,10 @@ export const financeTeams = defineTable({
  *  cadence; optionally narrows to a fund + category + team. v1 tracks
  *  spent-vs-allocated per period — rollover is deferred (`rolloverPolicy`). */
 export const budgets = defineTable({
-  chapterId: v.id("chapters"),
+  // A real chapter id, OR the string literal "central" for an org-level budget
+  // (the CENTRAL sentinel — never null, not a `chapters` row). Existing rows
+  // hold real ids and stay valid; the shared indexes work on the union.
+  chapterId: v.union(v.id("chapters"), v.literal("central")),
   // Non-negative integer cents allocated for this scope × period.
   amountCents: v.number(),
   label: v.optional(v.string()),
@@ -147,6 +150,9 @@ export const transactions = defineTable({
   // Categorization (the "where does this money belong" layer).
   fundId: v.optional(v.id("funds")),
   categoryId: v.optional(v.id("budgetCategories")),
+  // Explicit budget attribution. When set, this txn counts toward EXACTLY this
+  // budget (chapter or central) and is never derive-matched to any other.
+  budgetId: v.optional(v.id("budgets")),
 
   // Operational links (the "what was it for" layer — the whole point of a
   // native finance system: a dollar attaches to the exact thing it was spent on).
@@ -202,6 +208,7 @@ export const transactions = defineTable({
   .index("by_card", ["cardId"])
   .index("by_fund", ["fundId"])
   .index("by_category", ["categoryId"])
+  .index("by_budget", ["budgetId"])
   .index("by_project", ["projectId"])
   .index("by_event", ["eventId"])
   .index("by_person", ["personId"])

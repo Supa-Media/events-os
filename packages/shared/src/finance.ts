@@ -238,6 +238,19 @@ export type FinanceRoleScope = (typeof FINANCE_ROLE_SCOPES)[number];
 export const FINANCE_PERSPECTIVES = ["central", "chapter", "member"] as const;
 export type FinancePerspective = (typeof FINANCE_PERSPECTIVES)[number];
 
+// ── Central (org-level) sentinel ─────────────────────────────────────────────
+// The org level ("central") is represented by the string literal `"central"`
+// stored in a `chapterId` field — NEVER null/absent, and NOT a real `chapters`
+// row. The value is self-describing. On the Convex side a chapter-or-central
+// scope is `Id<"chapters"> | typeof CENTRAL`; we never import Convex `Id` here.
+/** The org level ("central") as a chapterId sentinel — see finance-handoff. */
+export const CENTRAL = "central" as const;
+export type Central = typeof CENTRAL;
+/** True iff a chapterId field points at the org (central) level. */
+export function isCentral(chapterId: string | null | undefined): boolean {
+  return chapterId === CENTRAL;
+}
+
 // ── Money formatting (single source of truth) ────────────────────────────────
 /**
  * Format integer cents as a USD string. `cents` is always an integer amount in

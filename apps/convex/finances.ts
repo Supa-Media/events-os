@@ -40,6 +40,7 @@ import {
   TRANSACTION_FLOWS,
   TRANSACTION_STATUSES,
   BUDGET_SCOPE_LABELS,
+  CENTRAL,
   countsAsSpend,
   easternParts,
   quarterOfMonth,
@@ -116,6 +117,9 @@ const budgetSummary = v.object({
   fundId: v.union(v.id("funds"), v.null()),
   categoryId: v.union(v.id("budgetCategories"), v.null()),
   teamId: v.union(v.id("financeTeams"), v.null()),
+  // Whether this is a chapter budget or an org-level (central) budget. Feeds the
+  // reconcile Budget picker's Chapter / Central grouping.
+  level: v.union(v.literal("chapter"), v.literal("central")),
 });
 
 const txnSummary = v.object({
@@ -158,6 +162,20 @@ const centralTile = v.object({
   label: v.string(),
   value: v.string(),
   meta: v.string(),
+});
+
+// An org-level (central) budget rolled up org-wide: its allocation + its actual
+// spend summed from EVERY chapter's transactions explicitly linked to it.
+const centralBudgetCard = v.object({
+  id: v.id("budgets"),
+  label: v.union(v.string(), v.null()),
+  scope: scopeValidator,
+  cadence: cadenceValidator,
+  year: v.number(),
+  budgetCents: v.number(),
+  spentCents: v.number(),
+  pct: v.number(),
+  status: okWarnValidator,
 });
 
 const projectBudgetCard = v.object({
@@ -297,6 +315,7 @@ function toBudgetSummary(b: Doc<"budgets">) {
     fundId: b.fundId ?? null,
     categoryId: b.categoryId ?? null,
     teamId: b.teamId ?? null,
+    level: b.chapterId === CENTRAL ? ("central" as const) : ("chapter" as const),
   };
 }
 
@@ -326,8 +345,10 @@ function assertIntegerCents(amountCents: number, label = "Amount"): void {
 }
 
 /**
- * Load a document by id and assert it belongs to the caller's chapter. Central
- * finance teams (no `chapterId`) are allowed through when `allowCentral`.
+ * Load a document by id and assert it belongs to the caller's chapter. When
+ * `allowCentral`, an org-level doc passes too: a central budget (`chapterId ===
+ * "central"`, the CENTRAL sentinel) or a central finance team (absent
+ * `chapterId`, the legacy financeTeams convention, kept until its own PR).
  */
 async function requireInCallerChapter<T extends "funds" | "budgetCategories" | "financeTeams" | "budgets" | "transactions" | "events" | "projects" | "people">(
   ctx: QueryCtx,
@@ -338,8 +359,9 @@ async function requireInCallerChapter<T extends "funds" | "budgetCategories" | "
   opts: { allowCentral?: boolean } = {},
 ): Promise<Doc<T>> {
   const doc = await ctx.db.get(id);
-  const docChapter = (doc as { chapterId?: Id<"chapters"> } | null)?.chapterId;
-  if (!doc || (docChapter !== chapterId && !(opts.allowCentral && docChapter === undefined))) {
+  const docChapter = (doc as { chapterId?: Id<"chapters"> | typeof CENTRAL } | null)?.chapterId;
+  const isCentralDoc = docChapter === CENTRAL || docChapter === undefined;
+  if (!doc || (docChapter !== chapterId && !(opts.allowCentral && isCentralDoc))) {
     throw new ConvexError({
       code: "NOT_FOUND",
       message: `${label} not found in your chapter.`,
@@ -476,6 +498,28 @@ function matchesBudget(
   return true;
 }
 
+/**
+ * The single budget-attribution rule, used by EVERY actuals sum so a dollar is
+ * counted the same way everywhere:
+ *   - an EXPLICITLY-linked txn (`budgetId` set) counts toward EXACTLY that
+ *     budget and no other — it never also derive-matches a different budget
+ *     (the anti-double-count guarantee);
+ *   - an UNLINKED txn keeps the existing derived matching (scope/period/fund…).
+ *
+ * The `isSpend` gate applies to BOTH paths, so `transfer` / `excluded` /
+ * personal rows stay out of every budget total even when explicitly linked
+ * (the flow-carries-direction + transfer-excluded invariants hold regardless of
+ * an explicit link).
+ */
+function txnCountsTowardBudget(
+  tr: Doc<"transactions">,
+  b: Doc<"budgets">,
+  contextMonth?: number,
+): boolean {
+  if (tr.budgetId != null) return isSpend(tr) && tr.budgetId === b._id;
+  return matchesBudget(tr, b, contextMonth);
+}
+
 /** Translate a client patch: `null` clears the field, `undefined` is untouched. */
 function cleanPatch(patch: Record<string, unknown>): Record<string, unknown> {
   const out: Record<string, unknown> = {};
@@ -564,7 +608,7 @@ function budgetSpendBreakdown(
   spentCents: number;
   categories: { name: string; spentCents: number; barPct: number }[];
 } {
-  const matching = yearTxns.filter((tr) => matchesBudget(tr, b, contextMonth));
+  const matching = yearTxns.filter((tr) => txnCountsTowardBudget(tr, b, contextMonth));
   const spentCents = matching.reduce((s, tr) => s + tr.amountCents, 0);
   const byCat = new Map<string, number>();
   for (const tr of matching) {
@@ -901,6 +945,7 @@ export const dashboardCentral = query({
     tiles: v.array(centralTile),
     templateRollup: v.array(templateRollupRow),
     chapterRollup: v.array(chapterRollupRow),
+    centralBudgets: v.array(centralBudgetCard),
     totalMonthSpendCents: v.number(),
   }),
   handler: async (ctx, args) => {
@@ -912,6 +957,7 @@ export const dashboardCentral = query({
       tiles: [] as never[],
       templateRollup: [] as never[],
       chapterRollup: [] as never[],
+      centralBudgets: [] as never[],
       totalMonthSpendCents: 0,
     };
     const chapterId = await readChapterId(ctx);
@@ -994,6 +1040,41 @@ export const dashboardCentral = query({
       });
     }
 
+    // Org-level (central) budgets roll up across EVERY chapter: their actual is
+    // the sum of all chapters' transactions explicitly linked to them (by
+    // `budgetId`). Read via the `by_chapter_and_period` index at the CENTRAL
+    // sentinel for this year. Per-chapter rollups above never see these budgets
+    // (they query by real chapterId), so their allocation isn't double-counted.
+    const centralBudgetDocs = await ctx.db
+      .query("budgets")
+      .withIndex("by_chapter_and_period", (q) =>
+        q.eq("chapterId", CENTRAL).eq("year", year),
+      )
+      .take(ROLLUP_SCAN_LIMIT);
+    const centralBudgets: (typeof centralBudgetCard.type)[] = [];
+    for (const cb of centralBudgetDocs) {
+      const linked = await ctx.db
+        .query("transactions")
+        .withIndex("by_budget", (q) => q.eq("budgetId", cb._id))
+        .take(ROLLUP_SCAN_LIMIT);
+      const spentCents = linked.reduce(
+        (s, tr) => (txnCountsTowardBudget(tr, cb, month) ? s + tr.amountCents : s),
+        0,
+      );
+      const pct = pctOf(spentCents, cb.amountCents);
+      centralBudgets.push({
+        id: cb._id,
+        label: cb.label ?? null,
+        scope: cb.scope,
+        cadence: cb.cadence,
+        year: cb.year,
+        budgetCents: cb.amountCents,
+        spentCents,
+        pct,
+        status: statusFor(pct),
+      });
+    }
+
     const templateRollup = [...templateAgg.entries()]
       .sort((a, b) => b[1].monthTotal - a[1].monthTotal)
       .map(([templateName, agg]) => ({
@@ -1038,6 +1119,7 @@ export const dashboardCentral = query({
       tiles,
       templateRollup,
       chapterRollup,
+      centralBudgets,
       totalMonthSpendCents,
     };
   },
@@ -1083,7 +1165,7 @@ export const budgetVsActual = query({
       // with no stored month otherwise matches all 12 months → YTD spend).
       const actualCents = periodTxns.reduce(
         (sum, tr) =>
-          matchesBudget(tr, b, args.month ?? undefined) ? sum + tr.amountCents : sum,
+          txnCountsTowardBudget(tr, b, args.month ?? undefined) ? sum + tr.amountCents : sum,
         0,
       );
       return {
@@ -1497,11 +1579,17 @@ export const listBudgets = query({
     const chapterId = await readChapterId(ctx);
     if (!chapterId) return [];
     await requireFinanceRole(ctx, chapterId, "viewer");
-    const budgets = await ctx.db
+    // The caller's chapter budgets PLUS every org-level (central) budget, each
+    // tagged with its `level` so the reconcile picker can group them.
+    const chapterBudgets = await ctx.db
       .query("budgets")
       .withIndex("by_chapter", (q) => q.eq("chapterId", chapterId))
       .take(ROLLUP_SCAN_LIMIT);
-    return budgets.map(toBudgetSummary);
+    const centralBudgets = await ctx.db
+      .query("budgets")
+      .withIndex("by_chapter", (q) => q.eq("chapterId", CENTRAL))
+      .take(ROLLUP_SCAN_LIMIT);
+    return [...chapterBudgets, ...centralBudgets].map(toBudgetSummary);
   },
 });
 
@@ -1561,16 +1649,24 @@ export const createBudget = mutation({
     categoryId: v.optional(v.id("budgetCategories")),
     teamId: v.optional(v.id("financeTeams")),
     rolloverPolicy: v.optional(rolloverValidator),
+    // When true, create an org-level (central) budget instead of a chapter one:
+    // it stores `chapterId: "central"` and requires central finance access.
+    central: v.optional(v.boolean()),
   },
   returns: v.id("budgets"),
   handler: async (ctx, args) => {
     const chapterId = (await requireChapterId(ctx)) as Id<"chapters">;
-    await requireFinanceManager(ctx, chapterId);
+    // Central budgets are gated on org-wide reach; chapter budgets on manager.
+    if (args.central) {
+      await requireFinanceCentral(ctx, chapterId);
+    } else {
+      await requireFinanceManager(ctx, chapterId);
+    }
     assertIntegerCents(args.amountCents, "Budget amount");
     await verifyBudgetRefs(ctx, chapterId, args);
     const userId = (await requireUserId(ctx)) as Id<"users">;
     return await ctx.db.insert("budgets", {
-      chapterId,
+      chapterId: args.central ? CENTRAL : chapterId,
       amountCents: args.amountCents,
       label: args.label,
       scope: args.scope,
@@ -1610,14 +1706,22 @@ export const updateBudget = mutation({
   returns: v.null(),
   handler: async (ctx, args) => {
     const chapterId = (await requireChapterId(ctx)) as Id<"chapters">;
-    await requireFinanceManager(ctx, chapterId);
+    // Load first (central budgets are visible to the caller's chapter), then gate
+    // the WRITE: central budgets are mutated only by central users, chapter
+    // budgets by a manager.
     const budget = await requireInCallerChapter(
       ctx,
       chapterId,
       "budgets",
       args.budgetId,
       "Budget",
+      { allowCentral: true },
     );
+    if (budget.chapterId === CENTRAL) {
+      await requireFinanceCentral(ctx, chapterId);
+    } else {
+      await requireFinanceManager(ctx, chapterId);
+    }
     if (args.patch.amountCents != null) {
       assertIntegerCents(args.patch.amountCents, "Budget amount");
     }
@@ -1654,8 +1758,19 @@ export const deleteBudget = mutation({
   returns: v.null(),
   handler: async (ctx, args) => {
     const chapterId = (await requireChapterId(ctx)) as Id<"chapters">;
-    await requireFinanceManager(ctx, chapterId);
-    await requireInCallerChapter(ctx, chapterId, "budgets", args.budgetId, "Budget");
+    const budget = await requireInCallerChapter(
+      ctx,
+      chapterId,
+      "budgets",
+      args.budgetId,
+      "Budget",
+      { allowCentral: true },
+    );
+    if (budget.chapterId === CENTRAL) {
+      await requireFinanceCentral(ctx, chapterId);
+    } else {
+      await requireFinanceManager(ctx, chapterId);
+    }
     await ctx.db.delete(args.budgetId);
     return null;
   },
@@ -1774,6 +1889,9 @@ export const categorizeTransaction = mutation({
     projectId: v.optional(v.union(v.id("projects"), v.null())),
     eventId: v.optional(v.union(v.id("events"), v.null())),
     teamId: v.optional(v.union(v.id("financeTeams"), v.null())),
+    // Explicit budget attribution. A chapter txn may point at its OWN chapter
+    // budget or a central budget (never another chapter's). `null` clears it.
+    budgetId: v.optional(v.union(v.id("budgets"), v.null())),
   },
   returns: v.null(),
   handler: async (ctx, args) => {
@@ -1793,12 +1911,18 @@ export const categorizeTransaction = mutation({
       eventId: args.eventId ?? undefined,
       teamId: args.teamId ?? undefined,
     });
+    if (args.budgetId) {
+      await requireInCallerChapter(ctx, chapterId, "budgets", args.budgetId, "Budget", {
+        allowCentral: true,
+      });
+    }
     const patch = cleanPatch({
       fundId: args.fundId,
       categoryId: args.categoryId,
       projectId: args.projectId,
       eventId: args.eventId,
       teamId: args.teamId,
+      budgetId: args.budgetId,
     });
     // Advance an unreviewed transaction to categorized once coded.
     const nowCoded = (patch.fundId ?? txn.fundId) || (patch.categoryId ?? txn.categoryId);
@@ -1813,6 +1937,8 @@ export const bulkCategorize = mutation({
     transactionIds: v.array(v.id("transactions")),
     fundId: v.optional(v.union(v.id("funds"), v.null())),
     categoryId: v.optional(v.union(v.id("budgetCategories"), v.null())),
+    // Explicit budget attribution (chapter or central); `null` clears it.
+    budgetId: v.optional(v.union(v.id("budgets"), v.null())),
   },
   returns: v.object({ updated: v.number() }),
   handler: async (ctx, args) => {
@@ -1822,6 +1948,11 @@ export const bulkCategorize = mutation({
       fundId: args.fundId ?? undefined,
       categoryId: args.categoryId ?? undefined,
     });
+    if (args.budgetId) {
+      await requireInCallerChapter(ctx, chapterId, "budgets", args.budgetId, "Budget", {
+        allowCentral: true,
+      });
+    }
     let updated = 0;
     for (const id of args.transactionIds) {
       const txn = await requireInCallerChapter(
@@ -1831,7 +1962,11 @@ export const bulkCategorize = mutation({
         id,
         "Transaction",
       );
-      const patch = cleanPatch({ fundId: args.fundId, categoryId: args.categoryId });
+      const patch = cleanPatch({
+        fundId: args.fundId,
+        categoryId: args.categoryId,
+        budgetId: args.budgetId,
+      });
       const nowCoded =
         (patch.fundId ?? txn.fundId) || (patch.categoryId ?? txn.categoryId);
       if (nowCoded && txn.status === "unreviewed") patch.status = "categorized";
