@@ -52,6 +52,7 @@ import {
   approvals,
   financeRoles,
   webhookEvents,
+  financeSettings,
 } from "./schema/finances";
 import { assets, assetReservations } from "./schema/inventory";
 import { docs } from "./schema/docs";
@@ -193,6 +194,7 @@ const schema = defineSchema({
   approvals,
   financeRoles,
   webhookEvents,
+  financeSettings,
 
   // Inventory (M5.5) — chapter-owned asset registry + per-event reservations.
   // The first chapter-level typed entity; events RESERVE from the registry and

@@ -103,6 +103,33 @@ export function increaseEnvForObjectId(objectId: string): {
   return { key: process.env.INCREASE_API_KEY, base: increaseApiBase() };
 }
 
+/**
+ * Resolve which Increase environment (API key + base URL + shared org Entity) to
+ * open a NEW account in, given the runtime sandbox toggle (`financeSettings`).
+ * The mirror of `increaseEnvForObjectId` for the provisioning side: a
+ * sandbox-provisioned account's id comes back prefixed `sandbox_`, so it later
+ * self-identifies via `increaseEnvForObjectId`. `key`/`entityId` may be undefined
+ * (that environment isn't wired up) — the caller degrades to `pending`.
+ */
+export function increaseEnvForMode(sandbox: boolean): {
+  key: string | undefined;
+  base: string;
+  entityId: string | undefined;
+} {
+  if (sandbox) {
+    return {
+      key: process.env.INCREASE_SANDBOX_API_KEY,
+      base: "https://sandbox.increase.com",
+      entityId: process.env.INCREASE_SANDBOX_ENTITY_ID,
+    };
+  }
+  return {
+    key: process.env.INCREASE_API_KEY,
+    base: increaseApiBase(),
+    entityId: process.env.INCREASE_ENTITY_ID,
+  };
+}
+
 /** Payouts that block a re-pay (money is in motion or already out the door).
  *  `failed` / `returned` / `canceled` are NOT live — a fresh payout may follow. */
 const LIVE_PAYOUT_STATUSES: readonly PayoutStatus[] = [
@@ -314,12 +341,16 @@ async function increaseGet(
  *  nonprofit has exactly ONE Increase Program (confirmed against both the live
  *  sandbox and production). Returns null (never throws) when there is no override
  *  AND `/programs` doesn't return exactly one program (0 or >1 → a clear warning),
- *  or on any fetch/parse error — the caller degrades to `pending`. */
-async function resolveProgramId(key: string): Promise<string | null> {
+ *  or on any fetch/parse error — the caller degrades to `pending`. The `base`
+ *  is threaded through so a SANDBOX key hits the sandbox `/programs`. */
+async function resolveProgramId(
+  key: string,
+  base: string,
+): Promise<string | null> {
   const override = process.env.INCREASE_PROGRAM_ID;
   if (override) return override;
   try {
-    const res = await fetch(`${increaseApiBase()}/programs`, {
+    const res = await fetch(`${base}/programs`, {
       method: "GET",
       headers: { Authorization: `Bearer ${key}` },
     });
@@ -590,9 +621,15 @@ export const finishProvision = internalMutation({
  * `INCREASE_PROGRAM_ID` is an OPTIONAL explicit override — when unset the Program
  * is resolved from `GET /programs` (`resolveProgramId`).
  *
+ * MODE-AWARE: the runtime `financeSettings.sandboxMode` toggle chooses which
+ * Increase environment a NEW account is opened in (`increaseEnvForMode`) — sandbox
+ * (`INCREASE_SANDBOX_API_KEY`/`INCREASE_SANDBOX_ENTITY_ID`, sandbox base) or prod.
+ * The account id comes back `sandbox_`-prefixed in sandbox, so it self-identifies
+ * for every later operation via `increaseEnvForObjectId`.
+ *
  * DEGRADES (logs the reason + returns, never throws) to
- * `onboardingStatus:"pending"` when `INCREASE_API_KEY` or `INCREASE_ENTITY_ID`
- * is unset (the finance vendor isn't wired up yet), or when no Program resolves
+ * `onboardingStatus:"pending"` when the chosen mode's API key or Entity id is
+ * unset (that environment isn't wired up yet), or when no Program resolves
  * (`/programs` returned 0 or >1 without an override, or the fetch failed).
  */
 export const provisionChapterAccount = action({
@@ -605,15 +642,27 @@ export const provisionChapterAccount = action({
     );
     if (prep.kind === "existing") return prep.account;
 
-    // Opening an Account needs the API key + the shared org Entity id. If either
-    // is unset we can't provision → degrade to `pending` (log which one is
+    // Mode-aware: the runtime sandbox toggle (`financeSettings`) chooses which
+    // Increase environment a NEW account is opened in. A sandbox-provisioned
+    // account's id comes back `sandbox_`-prefixed, so all its later operations
+    // self-select the sandbox regardless of the toggle's future state.
+    const sandbox = await ctx.runQuery(
+      internal.financeSettings.readSandboxMode,
+      {},
+    );
+    const { key, base, entityId } = increaseEnvForMode(sandbox);
+
+    // Opening an Account needs the (mode's) API key + shared org Entity id. If
+    // either is unset we can't provision → degrade to `pending` (log which one is
     // missing). The Program id is auto-resolved below (env override optional).
-    const key = process.env.INCREASE_API_KEY;
-    const entityId = process.env.INCREASE_ENTITY_ID;
     const missing = !key
-      ? "INCREASE_API_KEY"
+      ? sandbox
+        ? "INCREASE_SANDBOX_API_KEY"
+        : "INCREASE_API_KEY"
       : !entityId
-        ? "INCREASE_ENTITY_ID"
+        ? sandbox
+          ? "INCREASE_SANDBOX_ENTITY_ID"
+          : "INCREASE_ENTITY_ID"
         : null;
     if (missing) {
       console.warn(`[increase] provision skipped: ${missing} not configured`);
@@ -624,9 +673,9 @@ export const provisionChapterAccount = action({
     }
 
     // Resolve the Program: explicit `INCREASE_PROGRAM_ID` override, else the sole
-    // program from `GET /programs`. Null (0/>1 programs, or a fetch error) →
-    // degrade to `pending` rather than open an Account under a guessed program.
-    const programId = await resolveProgramId(key!);
+    // program from the mode's `GET /programs`. Null (0/>1 programs, or a fetch
+    // error) → degrade to `pending` rather than open under a guessed program.
+    const programId = await resolveProgramId(key!, base);
     if (!programId) {
       console.warn("[increase] provision skipped: no Increase Program resolved");
       return await ctx.runMutation(internal.increase.finishProvision, {
@@ -637,7 +686,7 @@ export const provisionChapterAccount = action({
 
     // Open the chapter's Account under the shared org Entity — no KYB, no PII.
     try {
-      const account = await increasePost(key!, increaseApiBase(), "/accounts", {
+      const account = await increasePost(key!, base, "/accounts", {
         entity_id: entityId!,
         program_id: programId,
         name: prep.chapterName,
@@ -859,8 +908,22 @@ export const payReimbursement = action({
       return result.payout;
     }
 
-    // ACH path (enabled once full destination details are captured).
-    const key = process.env.INCREASE_API_KEY!;
+    // ACH path (enabled once full destination details are captured). Self-select
+    // the Increase env from the chapter account's id prefix: a sandbox-
+    // provisioned account (`sandbox_...`) routes to the sandbox with its key, a
+    // prod account to prod — regardless of the current sandbox toggle. Env not
+    // wired for that account's environment → degrade (fail the payout, throw).
+    const { key, base } = increaseEnvForObjectId(result.increaseAccountId);
+    if (!key) {
+      await ctx.runMutation(internal.increase.failPayout, {
+        payoutId: result.payoutId,
+        reason: "increase_key_unset",
+      });
+      throw new ConvexError({
+        code: "INCREASE_ERROR",
+        message: "Couldn't start the ACH payout. Please try again.",
+      });
+    }
 
     // Address the ACH credit. Increase requires EITHER `external_account_id` OR
     // `account_number` + `routing_number` (+ `funding`) — never both. Gated by
@@ -889,7 +952,7 @@ export const payReimbursement = action({
     try {
       const transfer = await increasePost(
         key,
-        increaseApiBase(),
+        base,
         "/ach_transfers",
         {
           account_id: result.increaseAccountId,
