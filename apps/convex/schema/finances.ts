@@ -452,6 +452,18 @@ export const legacyAccounts = defineTable({
   .index("by_chapter", ["chapterId"])
   .index("by_stripe_fc_account", ["stripeFcAccountId"]);
 
+// ── Stripe customers (FC session account_holder cache) ───────────────────────
+/** The Stripe Customer provisioned for a connecting LEVEL (a real chapter, or
+ *  `"central"` once external-account connect moves org-wide). Stripe's Create
+ *  Financial Connections Session REQUIRES an `account_holder`; we scope every
+ *  session to this cached customer so the same holder is reused across reconnects
+ *  instead of minting a new customer each time. One row per level. */
+export const financeStripeCustomers = defineTable({
+  chapterId: v.union(v.id("chapters"), v.literal("central")),
+  stripeCustomerId: v.string(),
+  createdAt: v.number(),
+}).index("by_chapter", ["chapterId"]);
+
 // ── Card authorizations (real-time-decision log) ─────────────────────────────
 /** The log of Increase `card_authorization` real-time decisions (approve /
  *  decline from the monthly cap + validity + receipt-lock rules). Kept for
