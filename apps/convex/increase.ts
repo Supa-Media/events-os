@@ -36,8 +36,9 @@
  * Phase-4 path). See the TODO breadcrumb in `beginPayout`.
  *
  * Env: INCREASE_API_KEY, INCREASE_WEBHOOK_SECRET, INCREASE_ENTITY_ID (the shared
- * org Entity), INCREASE_PROGRAM_ID, and INCREASE_API_BASE (sandbox URL for
- * dev/staging; defaults to production).
+ * org Entity) — all required. INCREASE_PROGRAM_ID is an OPTIONAL override; the
+ * Program is auto-resolved from `GET /programs` (a nonprofit has exactly one).
+ * INCREASE_API_BASE is the sandbox URL for dev/staging (defaults to production).
  */
 import {
   action,
@@ -277,6 +278,40 @@ async function increaseGet(
     });
   }
   return (await res.json()) as Record<string, unknown>;
+}
+
+/** Resolve the Increase Program id to open a chapter Account under.
+ *  `INCREASE_PROGRAM_ID` is an OPTIONAL explicit override — set it and it wins.
+ *  Otherwise we fetch `GET /programs` and use the SOLE program, because a
+ *  nonprofit has exactly ONE Increase Program (confirmed against both the live
+ *  sandbox and production). Returns null (never throws) when there is no override
+ *  AND `/programs` doesn't return exactly one program (0 or >1 → a clear warning),
+ *  or on any fetch/parse error — the caller degrades to `pending`. */
+async function resolveProgramId(key: string): Promise<string | null> {
+  const override = process.env.INCREASE_PROGRAM_ID;
+  if (override) return override;
+  try {
+    const res = await fetch(`${increaseApiBase()}/programs`, {
+      method: "GET",
+      headers: { Authorization: `Bearer ${key}` },
+    });
+    if (!res.ok) {
+      console.error("[increase] GET /programs failed:", await res.text());
+      return null;
+    }
+    const body = (await res.json()) as { data?: Array<{ id?: string }> };
+    const programs = body.data ?? [];
+    if (programs.length !== 1 || !programs[0]?.id) {
+      console.warn(
+        `[increase] expected exactly one Increase Program; set INCREASE_PROGRAM_ID (found ${programs.length})`,
+      );
+      return null;
+    }
+    return programs[0].id;
+  } catch (err) {
+    console.error("[increase] failed to resolve Increase Program:", err);
+    return null;
+  }
 }
 
 // ── Payout state-machine helpers (pure DB, the testable core) ────────────────
@@ -523,10 +558,14 @@ export const finishProvision = internalMutation({
  * KYB/PII — provisioning a chapter is just opening an Account under that shared
  * entity (`POST /accounts` with `entity_id` + `program_id` + a `name`).
  *
- * DEGRADES (logs which env is missing + returns, never throws) to
- * `onboardingStatus:"pending"` when any of `INCREASE_API_KEY`,
- * `INCREASE_ENTITY_ID`, or `INCREASE_PROGRAM_ID` is unset — the finance vendor
- * isn't wired up yet.
+ * PROGRAM AUTO-RESOLUTION: a nonprofit has exactly ONE Increase Program, so
+ * `INCREASE_PROGRAM_ID` is an OPTIONAL explicit override — when unset the Program
+ * is resolved from `GET /programs` (`resolveProgramId`).
+ *
+ * DEGRADES (logs the reason + returns, never throws) to
+ * `onboardingStatus:"pending"` when `INCREASE_API_KEY` or `INCREASE_ENTITY_ID`
+ * is unset (the finance vendor isn't wired up yet), or when no Program resolves
+ * (`/programs` returned 0 or >1 without an override, or the fetch failed).
  */
 export const provisionChapterAccount = action({
   args: {},
@@ -538,21 +577,30 @@ export const provisionChapterAccount = action({
     );
     if (prep.kind === "existing") return prep.account;
 
-    // Opening an Account needs the API key, the shared org Entity id, and the
-    // Program id (compliance + commercial terms). If any is unset we can't
-    // provision → degrade to `pending` (log which one is missing).
+    // Opening an Account needs the API key + the shared org Entity id. If either
+    // is unset we can't provision → degrade to `pending` (log which one is
+    // missing). The Program id is auto-resolved below (env override optional).
     const key = process.env.INCREASE_API_KEY;
     const entityId = process.env.INCREASE_ENTITY_ID;
-    const programId = process.env.INCREASE_PROGRAM_ID;
     const missing = !key
       ? "INCREASE_API_KEY"
       : !entityId
         ? "INCREASE_ENTITY_ID"
-        : !programId
-          ? "INCREASE_PROGRAM_ID"
-          : null;
+        : null;
     if (missing) {
       console.warn(`[increase] provision skipped: ${missing} not configured`);
+      return await ctx.runMutation(internal.increase.finishProvision, {
+        accountId: prep.accountId,
+        onboardingStatus: "pending",
+      });
+    }
+
+    // Resolve the Program: explicit `INCREASE_PROGRAM_ID` override, else the sole
+    // program from `GET /programs`. Null (0/>1 programs, or a fetch error) →
+    // degrade to `pending` rather than open an Account under a guessed program.
+    const programId = await resolveProgramId(key!);
+    if (!programId) {
+      console.warn("[increase] provision skipped: no Increase Program resolved");
       return await ctx.runMutation(internal.increase.finishProvision, {
         accountId: prep.accountId,
         onboardingStatus: "pending",
@@ -563,7 +611,7 @@ export const provisionChapterAccount = action({
     try {
       const account = await increasePost(key!, "/accounts", {
         entity_id: entityId!,
-        program_id: programId!,
+        program_id: programId,
         name: prep.chapterName,
       });
       return await ctx.runMutation(internal.increase.finishProvision, {
