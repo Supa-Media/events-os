@@ -15,8 +15,9 @@ import { verifyIncreaseSignature } from "../increase";
  *    `flow:"transfer"` ledger row (excluded from spend), idempotently,
  *  - `onIncreaseWebhookEvent` paid→paid + transfer, failed/returned→not paid,
  *    unknown transfer no-ops, and a `paid` payout ignores a later `failed`,
- *  - `provisionChapterAccount` degrades when provisioning env is unset, and
- *    opens an Account under the shared org Entity when it's all set (active),
+ *  - `provisionChapterAccount` degrades when a required env is unset, opens an
+ *    Account under the shared org Entity auto-resolving the sole Program (active),
+ *    degrades on an ambiguous (>1) Program, and honors an explicit Program override,
  *  - `verifyIncreaseSignature` accepts a valid signature, rejects forgeries.
  *
  * All money is integer cents; the network side never runs (no `INCREASE_API_KEY`
@@ -514,13 +515,16 @@ describe("provisionChapterAccount", () => {
     const s = await setupChapter(t);
     await seedManager(s);
 
-    // Key + program present but the shared org Entity id is missing → degrade.
+    // Key present but the shared org Entity id is missing → degrade. The missing
+    // required env short-circuits BEFORE program resolution, so `/programs` is
+    // never fetched (PROGRAM_ID is also unset here to prove the short-circuit, not
+    // an override, is what keeps us off the network).
     process.env.INCREASE_API_KEY = "test_key";
-    process.env.INCREASE_PROGRAM_ID = "program_test";
     delete process.env.INCREASE_ENTITY_ID;
+    delete process.env.INCREASE_PROGRAM_ID;
     // Provisioning must never touch the network on the degrade path.
     globalThis.fetch = (() => {
-      throw new Error("fetch must not be called when env is unset");
+      throw new Error("fetch must not be called when a required env is unset");
     }) as unknown as typeof fetch;
 
     const account = await s.as.action(
@@ -541,7 +545,40 @@ describe("provisionChapterAccount", () => {
     expect(rows[0].onboardingStatus).toBe("pending");
   });
 
-  test("opens an Account under the shared Entity when all env is set (active)", async () => {
+  /** A `fetch` mock dispatching by URL path, recording each call. `programs`
+   *  seeds the `GET /programs` list; `/accounts` always returns an open account. */
+  function mockIncreaseFetch(programs: Array<{ id: string }>) {
+    const calls: Array<{
+      path: string;
+      method: string;
+      body: Record<string, unknown> | null;
+    }> = [];
+    globalThis.fetch = (async (
+      input: RequestInfo | URL,
+      init?: RequestInit,
+    ) => {
+      const path = String(input);
+      const method = init?.method ?? "GET";
+      const body = init?.body ? JSON.parse(String(init.body)) : null;
+      calls.push({ path, method, body });
+      if (path.includes("/programs")) {
+        return new Response(JSON.stringify({ data: programs }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+      if (path.includes("/accounts")) {
+        return new Response(
+          JSON.stringify({ id: "sandbox_account_x", status: "open" }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        );
+      }
+      throw new Error(`unexpected fetch: ${method} ${path}`);
+    }) as unknown as typeof fetch;
+    return calls;
+  }
+
+  test("opens an Account under the shared Entity, auto-resolving the sole Program", async () => {
     const t = newT();
     const s = await setupChapter(t);
     await seedManager(s);
@@ -549,22 +586,10 @@ describe("provisionChapterAccount", () => {
     const ENTITY_ID = "entity_shared_org";
     process.env.INCREASE_API_KEY = "test_key";
     process.env.INCREASE_ENTITY_ID = ENTITY_ID;
-    process.env.INCREASE_PROGRAM_ID = "program_test";
+    // No override — the Program is auto-resolved from the sole `GET /programs`.
+    delete process.env.INCREASE_PROGRAM_ID;
 
-    // Mock the Increase sandbox: `POST /accounts` returns an open account.
-    let calledPath: string | null = null;
-    let calledBody: Record<string, unknown> | null = null;
-    globalThis.fetch = (async (
-      input: RequestInfo | URL,
-      init?: RequestInit,
-    ) => {
-      calledPath = String(input);
-      calledBody = init?.body ? JSON.parse(String(init.body)) : null;
-      return new Response(
-        JSON.stringify({ id: "sandbox_account_x", status: "open" }),
-        { status: 200, headers: { "Content-Type": "application/json" } },
-      );
-    }) as unknown as typeof fetch;
+    const calls = mockIncreaseFetch([{ id: "program_auto" }]);
 
     const account = await s.as.action(
       api.increase.provisionChapterAccount,
@@ -577,12 +602,15 @@ describe("provisionChapterAccount", () => {
     expect(account.increaseAccountId).toBe("sandbox_account_x");
     expect(account.increaseEntityId).toBe(ENTITY_ID);
 
-    // Hit `/accounts` (NOT `/entities`) with `entity_id` = the shared env value.
-    const body = calledBody as Record<string, unknown> | null;
-    expect(String(calledPath)).toContain("/accounts");
-    expect(String(calledPath)).not.toContain("/entities");
-    expect(body?.entity_id).toBe(ENTITY_ID);
-    expect(body?.program_id).toBe("program_test");
+    // `GET /programs` was consulted, then `POST /accounts` (NOT `/entities`) with
+    // `entity_id` from env + the auto-resolved `program_id`.
+    expect(calls.some((c) => c.path.includes("/programs"))).toBe(true);
+    const post = calls.find((c) => c.path.includes("/accounts"));
+    expect(post).toBeTruthy();
+    expect(post!.method).toBe("POST");
+    expect(post!.path).not.toContain("/entities");
+    expect(post!.body?.entity_id).toBe(ENTITY_ID);
+    expect(post!.body?.program_id).toBe("program_auto");
 
     const rows = await run(s.t, (ctx) =>
       ctx.db
@@ -594,6 +622,60 @@ describe("provisionChapterAccount", () => {
     expect(rows[0].onboardingStatus).toBe("active");
     expect(rows[0].increaseEntityId).toBe(ENTITY_ID);
     expect(rows[0].increaseAccountId).toBe("sandbox_account_x");
+  });
+
+  test("degrades to pending when `GET /programs` returns more than one Program", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await seedManager(s);
+
+    process.env.INCREASE_API_KEY = "test_key";
+    process.env.INCREASE_ENTITY_ID = "entity_shared_org";
+    delete process.env.INCREASE_PROGRAM_ID;
+
+    // Two programs → ambiguous, can't auto-resolve → degrade, no `/accounts` POST.
+    const calls = mockIncreaseFetch([
+      { id: "program_a" },
+      { id: "program_b" },
+    ]);
+
+    const account = await s.as.action(
+      api.increase.provisionChapterAccount,
+      {},
+    );
+    expect(account.onboardingStatus).toBe("pending");
+    expect(account.increaseAccountId).toBeNull();
+
+    expect(calls.some((c) => c.path.includes("/programs"))).toBe(true);
+    expect(calls.some((c) => c.path.includes("/accounts"))).toBe(false);
+  });
+
+  test("`INCREASE_PROGRAM_ID` override skips the `/programs` fetch", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await seedManager(s);
+
+    const ENTITY_ID = "entity_shared_org";
+    process.env.INCREASE_API_KEY = "test_key";
+    process.env.INCREASE_ENTITY_ID = ENTITY_ID;
+    process.env.INCREASE_PROGRAM_ID = "program_override";
+
+    // If `/programs` were ever fetched the mock would record it — assert it isn't.
+    const calls = mockIncreaseFetch([{ id: "program_should_not_be_used" }]);
+
+    const account = await s.as.action(
+      api.increase.provisionChapterAccount,
+      {},
+    );
+    expect(account.onboardingStatus).toBe("active");
+    expect(account.increaseAccountId).toBe("sandbox_account_x");
+
+    // Only `/accounts` is hit, carrying the explicit override program id.
+    expect(calls.some((c) => c.path.includes("/programs"))).toBe(false);
+    const post = calls.find((c) => c.path.includes("/accounts"));
+    expect(post).toBeTruthy();
+    expect(post!.body?.program_id).toBe("program_override");
+    expect(post!.body?.entity_id).toBe(ENTITY_ID);
   });
 
   test("a non-manager cannot provision", async () => {
