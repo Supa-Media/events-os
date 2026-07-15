@@ -386,6 +386,64 @@ async function resolveProgramId(
   }
 }
 
+/** Normalize an Increase account / chapter name for comparison: trimmed +
+ *  lowercased. Whitespace-insensitive on the ends, case-insensitive throughout. */
+function normalizeAccountName(name: string): string {
+  return name.trim().toLowerCase();
+}
+
+/** The subset of an Increase Account object we read when matching by name. */
+interface IncreaseAccountLite {
+  id?: string;
+  name?: string;
+  status?: string;
+}
+
+/**
+ * Decide whether the org Entity already holds an Account that should be LINKED to
+ * this chapter instead of creating a duplicate. Increase accounts are listed via
+ * `GET /accounts?entity_id=...`; if one is already named for the chapter (the
+ * nonprofit opened it by hand in the Increase dashboard), we adopt it rather than
+ * open a second account under the same name.
+ *
+ * Matching is case-insensitive + end-trimmed, and deliberately fuzzy: an EXACT
+ * normalized-equality OR either name CONTAINING the other counts (so an Increase
+ * account named "New York" matches a chapter "The New York Chapter", and vice
+ * versa). When several accounts loosely match, an exact normalized-name match
+ * wins; if that's still ambiguous we return null (the caller warns + creates a
+ * fresh account rather than guess the wrong existing one).
+ */
+function pickMatchingAccount(
+  accounts: IncreaseAccountLite[],
+  chapterName: string,
+): { id: string; name: string } | null {
+  const target = normalizeAccountName(chapterName);
+  if (!target) return null;
+
+  const named = accounts.filter(
+    (a): a is { id: string; name: string; status?: string } =>
+      typeof a.id === "string" && typeof a.name === "string",
+  );
+  const matches = named.filter((a) => {
+    const n = normalizeAccountName(a.name);
+    if (!n) return false;
+    return n === target || n.includes(target) || target.includes(n);
+  });
+
+  if (matches.length === 0) return null;
+  if (matches.length === 1) return { id: matches[0].id, name: matches[0].name };
+
+  // Several loosely match → prefer a single EXACT normalized-name match.
+  const exact = matches.filter((a) => normalizeAccountName(a.name) === target);
+  if (exact.length === 1) return { id: exact[0].id, name: exact[0].name };
+
+  // Still ambiguous → don't guess wrong; the caller creates a new account.
+  console.warn(
+    `[increase] provision: ${matches.length} accounts loosely match chapter "${chapterName}" with no single exact match — creating a new account rather than linking the wrong one`,
+  );
+  return null;
+}
+
 // ── Payout state-machine helpers (pure DB, the testable core) ────────────────
 
 /** The single `transfer`-flow transaction recording a reimbursement payout
@@ -631,9 +689,15 @@ export const finishProvision = internalMutation({
  * KYB/PII — provisioning a chapter is just opening an Account under that shared
  * entity (`POST /accounts` with `entity_id` + `program_id` + a `name`).
  *
+ * MATCH-BEFORE-CREATE: the org Entity may ALREADY hold an Account named for the
+ * chapter (opened by hand in the Increase dashboard). Before creating, we list
+ * the entity's accounts (`GET /accounts?entity_id=...`) and, if one matches the
+ * chapter name (`pickMatchingAccount` — case-insensitive, fuzzy), LINK it instead
+ * of opening a duplicate. Only a no-match path POSTs a new account.
+ *
  * PROGRAM AUTO-RESOLUTION: a nonprofit has exactly ONE Increase Program, so
  * `INCREASE_PROGRAM_ID` is an OPTIONAL explicit override — when unset the Program
- * is resolved from `GET /programs` (`resolveProgramId`).
+ * is resolved from `GET /programs` (`resolveProgramId`). A LINK needs no Program.
  *
  * MODE-AWARE: the runtime `financeSettings.sandboxMode` toggle chooses which
  * Increase environment a NEW account is opened in (`increaseEnvForMode`) — sandbox
@@ -685,6 +749,48 @@ export const provisionChapterAccount = action({
         onboardingStatus: "pending",
       });
     }
+
+    // MATCH-BEFORE-CREATE: the org Entity may already hold an Account named for
+    // this chapter (opened by hand in the Increase dashboard). List the entity's
+    // accounts and, if one matches the chapter name, LINK it instead of opening a
+    // duplicate. Mode-aware: this lists under the CURRENT-mode Entity with the
+    // mode's key/base, so a matched account is persisted with the row's `sandbox`
+    // value (set at row creation in `beginProvision`). A link needs no Program.
+    let existingMatch: { id: string; name: string } | null = null;
+    try {
+      const list = (await increaseGet(
+        key!,
+        base,
+        `/accounts?entity_id=${encodeURIComponent(entityId!)}`,
+      )) as { data?: IncreaseAccountLite[] };
+      existingMatch = pickMatchingAccount(list.data ?? [], prep.chapterName);
+    } catch (err) {
+      // Couldn't list the entity's accounts — we can't tell whether creating
+      // would duplicate an existing one, so degrade rather than risk a duplicate.
+      console.error(
+        "[increase] provision: failed to list existing accounts:",
+        err,
+      );
+      return await ctx.runMutation(internal.increase.finishProvision, {
+        accountId: prep.accountId,
+        onboardingStatus: "pending",
+      });
+    }
+
+    if (existingMatch) {
+      console.log(
+        `[increase] provision: LINKED existing account ${existingMatch.id} ("${existingMatch.name}") to chapter "${prep.chapterName}" — no new account created`,
+      );
+      return await ctx.runMutation(internal.increase.finishProvision, {
+        accountId: prep.accountId,
+        onboardingStatus: "active",
+        increaseEntityId: entityId!,
+        increaseAccountId: existingMatch.id,
+      });
+    }
+    console.log(
+      `[increase] provision: no existing account matched chapter "${prep.chapterName}" — creating a new one`,
+    );
 
     // Resolve the Program: explicit `INCREASE_PROGRAM_ID` override, else the sole
     // program from the mode's `GET /programs`. Null (0/>1 programs, or a fetch
