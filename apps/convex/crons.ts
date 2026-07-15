@@ -44,4 +44,14 @@ crons.cron(
   {},
 );
 
+// Daily 13:00 UTC = 9am EDT: nudge on stale reimbursement requests (still
+// awaiting approval, or lines missing receipts). No-ops when RESEND_API_KEY
+// is unset (local/dev).
+crons.cron(
+  "reimbursement reminders",
+  "0 13 * * *",
+  internal.reimbursements.sendReimbursementReminders,
+  {},
+);
+
 export default crons;

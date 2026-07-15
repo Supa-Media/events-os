@@ -1,0 +1,827 @@
+/**
+ * Reimbursements — the accountless public submission path + the in-app manager
+ * approval queue (Phase 3 of the Chapter OS finance build).
+ *
+ * Two surfaces, mirroring `ticketing.ts`:
+ *   - PUBLIC, no auth: everything the public /reimburse page needs. A claimant
+ *     has NO account — they're identified by their request's secret `token`
+ *     (the `rsvps.token` precedent), returned once to their browser, looked up
+ *     via `by_token`, and NEVER returned by any in-app list query.
+ *   - IN-APP (auth, finance-role gated): the manager approval queue with
+ *     separation-of-duties (approver ≠ requester), partial approval, and the
+ *     status state machine validated against the shared `REIMBURSEMENT_STATUSES`
+ *     tuple.
+ *   - INTERNAL: a stale-request reminder sweep for a cron (best-effort Resend,
+ *     no-op without RESEND_API_KEY — same degrade pattern as `reminders.ts`).
+ *
+ * INVARIANTS:
+ *  - Money is ALWAYS a non-negative INTEGER number of cents (validated here;
+ *    the arg validator can't).
+ *  - Every table is chapter-scoped; every client-supplied id is verified to
+ *    belong to the resolved chapter before use.
+ *  - `token` is secret: looked up by `by_token`, never leaked in in-app lists.
+ *  - Status transitions are guarded against the current status; terminal
+ *    requests (`REIMBURSEMENT_TERMINAL_STATUSES`) can't be edited further.
+ *  - ANTI-DOUBLE-COUNT: the reimbursement PAYOUT (a `transfer` transaction) is
+ *    Phase 4 — this file NEVER creates transactions. A line's
+ *    `matchedTransactionId` (set elsewhere) links it to an already-synced txn.
+ *  - All failures throw `ConvexError` (never a plain `Error`).
+ */
+import {
+  query,
+  mutation,
+  internalQuery,
+  internalAction,
+} from "./_generated/server";
+import type { MutationCtx, QueryCtx } from "./_generated/server";
+import { ConvexError, v } from "convex/values";
+import { internal } from "./_generated/api";
+import { Doc, Id } from "./_generated/dataModel";
+import {
+  REIMBURSEMENT_STATUSES,
+  REIMBURSEMENT_STATUS_LABELS,
+  REIMBURSEMENT_TERMINAL_STATUSES,
+  type ReimbursementStatus,
+} from "@events-os/shared";
+import { normalizeEmail } from "./lib/access";
+import { requireChapterId, requireInChapter } from "./lib/context";
+import {
+  requireFinanceRole,
+  requireFinanceManager,
+  resolveCallerPersonId,
+  assertSeparationOfDuties,
+} from "./lib/finance";
+import { sendEmail, emailShell } from "./ticketingEmails";
+import { escapeHtml } from "./lib/html";
+
+// ── Enum validators (built from the shared tuple) ────────────────────────────
+const reimbursementStatusValidator = v.union(
+  ...REIMBURSEMENT_STATUSES.map((s) => v.literal(s)),
+);
+
+// ── Status machine ───────────────────────────────────────────────────────────
+/** Statuses a claimant / manager may still edit (add receipts, approve, etc.).
+ *  Once past these the request is under final review or finished. */
+const EDITABLE_STATUSES: readonly ReimbursementStatus[] = [
+  "pending_preapproval",
+  "preapproved",
+  "submitted",
+];
+
+const TERMINAL = new Set<ReimbursementStatus>(REIMBURSEMENT_TERMINAL_STATUSES);
+
+function isTerminal(status: ReimbursementStatus): boolean {
+  return TERMINAL.has(status);
+}
+
+/** Guard a transition: `current` must be one of `allowedFrom`, else throw. */
+function assertTransition(
+  current: ReimbursementStatus,
+  allowedFrom: readonly ReimbursementStatus[],
+  action: string,
+): void {
+  if (!allowedFrom.includes(current)) {
+    throw new ConvexError({
+      code: "ILLEGAL_TRANSITION",
+      message: `Can't ${action} a reimbursement that's ${REIMBURSEMENT_STATUS_LABELS[current]}.`,
+    });
+  }
+}
+
+// ── Small helpers ────────────────────────────────────────────────────────────
+
+/** A short, human-facing reference derived from the request id (no schema
+ *  column needed — the id is stable and unguessable enough for a label). */
+function referenceFor(id: Id<"reimbursementRequests">): string {
+  return `RB-${String(id).slice(-6).toUpperCase()}`;
+}
+
+/** Two-letter avatar initials from a display name. */
+function initials(name: string): string {
+  const parts = name.trim().split(/\s+/).filter(Boolean);
+  if (parts.length === 0) return "?";
+  const first = parts[0][0] ?? "";
+  const last = parts.length > 1 ? parts[parts.length - 1][0] : "";
+  return (first + last).toUpperCase() || "?";
+}
+
+/** Validate a money amount is a non-negative integer number of cents. */
+function assertCents(amountCents: number, label = "Amount"): void {
+  if (!Number.isInteger(amountCents) || amountCents < 0) {
+    throw new ConvexError({
+      code: "INVALID_AMOUNT",
+      message: `${label} must be a whole number of cents ≥ 0.`,
+    });
+  }
+}
+
+/** The claimant status-timeline for the public page:
+ *  Submitted → Under review → Approved → Paid by ACH. */
+const TIMELINE_STEPS = [
+  { step: "submitted", label: "Submitted" },
+  { step: "under_review", label: "Under review" },
+  { step: "approved", label: "Approved" },
+  { step: "paid", label: "Paid by ACH" },
+] as const;
+
+function timelineFor(
+  status: ReimbursementStatus,
+): Array<{ step: string; label: string; state: "done" | "now" | "todo" }> {
+  // `doneThrough` = last step index that's complete; `nowIndex` = the step
+  // currently in progress (-1 = none, i.e. finished or terminal-negative).
+  let doneThrough = 0;
+  let nowIndex = 1;
+  switch (status) {
+    case "pending_preapproval":
+    case "preapproved":
+    case "submitted":
+      doneThrough = 0;
+      nowIndex = 1;
+      break;
+    case "approved":
+    case "paying":
+      doneThrough = 2;
+      nowIndex = 3;
+      break;
+    case "paid":
+      doneThrough = 3;
+      nowIndex = -1;
+      break;
+    case "rejected":
+    case "failed":
+    case "canceled":
+      doneThrough = 1;
+      nowIndex = -1;
+      break;
+  }
+  return TIMELINE_STEPS.map(({ step, label }, i) => ({
+    step,
+    label,
+    state: i <= doneThrough ? "done" : i === nowIndex ? "now" : "todo",
+  }));
+}
+
+/** Load a request by its secret token (or null). */
+async function byToken(
+  ctx: QueryCtx,
+  token: string,
+): Promise<Doc<"reimbursementRequests"> | null> {
+  return await ctx.db
+    .query("reimbursementRequests")
+    .withIndex("by_token", (q) => q.eq("token", token))
+    .unique();
+}
+
+/** A request's line items, order-sorted. */
+async function linesFor(
+  ctx: QueryCtx,
+  reimbursementId: Id<"reimbursementRequests">,
+): Promise<Doc<"reimbursementLineItems">[]> {
+  const lines = await ctx.db
+    .query("reimbursementLineItems")
+    .withIndex("by_reimbursement", (q) =>
+      q.eq("reimbursementId", reimbursementId),
+    )
+    .take(200);
+  return lines.sort((a, b) => a.order - b.order);
+}
+
+/** Receipts coverage for a set of lines. */
+function receiptsState(
+  lines: Doc<"reimbursementLineItems">[],
+): "complete" | "partial" | "none" {
+  if (lines.length === 0) return "none";
+  const withReceipt = lines.filter((l) => l.receiptStorageId).length;
+  if (withReceipt === 0) return "none";
+  if (withReceipt === lines.length) return "complete";
+  return "partial";
+}
+
+/** Whether the requester reads as core team or a volunteer (for the queue). */
+async function requesterType(
+  ctx: QueryCtx,
+  personId: Id<"people"> | undefined,
+): Promise<"team" | "volunteer"> {
+  if (!personId) return "volunteer";
+  const person = await ctx.db.get(personId);
+  return person?.isTeamMember ? "team" : "volunteer";
+}
+
+/** A category's display name (or null). */
+async function categoryName(
+  ctx: QueryCtx,
+  categoryId: Id<"budgetCategories"> | undefined,
+): Promise<string | null> {
+  if (!categoryId) return null;
+  const cat = await ctx.db.get(categoryId);
+  return cat?.name ?? null;
+}
+
+/** A fund's display name (or null). */
+async function fundName(
+  ctx: QueryCtx,
+  fundId: Id<"funds"> | undefined,
+): Promise<string | null> {
+  if (!fundId) return null;
+  const fund = await ctx.db.get(fundId);
+  return fund?.name ?? null;
+}
+
+/** Best-effort match of a public claimant to a chapter roster person, so the
+ *  approval flow can enforce separation of duties. Phone first, then email
+ *  (the PCO-matching convention). Bounded read of the (small) roster. */
+async function matchPerson(
+  ctx: MutationCtx,
+  chapterId: Id<"chapters">,
+  email: string | undefined,
+  phone: string | undefined,
+): Promise<Id<"people"> | null> {
+  if (!email && !phone) return null;
+  const nemail = email ? normalizeEmail(email) : null;
+  const people = await ctx.db
+    .query("people")
+    .withIndex("by_chapter", (q) => q.eq("chapterId", chapterId))
+    .take(2000);
+  const found = people.find(
+    (p) =>
+      p.isPlaceholder !== true &&
+      ((phone && p.phone && p.phone === phone) ||
+        (nemail && p.email && normalizeEmail(p.email) === nemail)),
+  );
+  return found?._id ?? null;
+}
+
+// ── PUBLIC: accountless submission + status (back the /reimburse page) ────────
+
+/**
+ * Submit a reimbursement from the public form. No auth — the chapter is
+ * resolved by its `slug`. Generates a secret `token` (returned once) and a
+ * short human reference. Inserts the request + its order-indexed line items.
+ * Status is `pending_preapproval` when pre-approval is requested, else
+ * `submitted`. `totalCents` is the integer-cents sum of the lines.
+ */
+export const submitPublicReimbursement = mutation({
+  args: {
+    chapterSlug: v.string(),
+    payeeName: v.string(),
+    payeeEmail: v.optional(v.string()),
+    payeePhone: v.optional(v.string()),
+    purpose: v.optional(v.string()),
+    bankAccountLast4: v.optional(v.string()),
+    requestPreApproval: v.optional(v.boolean()),
+    lines: v.array(
+      v.object({
+        description: v.string(),
+        amountCents: v.number(),
+        categoryId: v.optional(v.id("budgetCategories")),
+        fundId: v.optional(v.id("funds")),
+        receiptStorageId: v.optional(v.id("_storage")),
+      }),
+    ),
+  },
+  handler: async (ctx, args) => {
+    const chapter = await ctx.db
+      .query("chapters")
+      .withIndex("by_slug", (q) => q.eq("slug", args.chapterSlug))
+      .unique();
+    if (!chapter) {
+      throw new ConvexError({
+        code: "NOT_FOUND",
+        message: "We couldn't find that chapter.",
+      });
+    }
+    const chapterId = chapter._id;
+
+    const payeeName = args.payeeName.trim();
+    if (!payeeName) {
+      throw new ConvexError({
+        code: "INVALID_INPUT",
+        message: "A name is required.",
+      });
+    }
+    if (args.lines.length === 0 || args.lines.length > 100) {
+      throw new ConvexError({
+        code: "INVALID_INPUT",
+        message: "Add at least one line item.",
+      });
+    }
+
+    // Validate every line's money + verify any fund/category belongs to this
+    // chapter (untrusted public input must never reference another chapter).
+    for (const line of args.lines) {
+      assertCents(line.amountCents, "Line amount");
+      if (line.fundId) {
+        const fund = await ctx.db.get(line.fundId);
+        if (!fund || fund.chapterId !== chapterId) {
+          throw new ConvexError({
+            code: "INVALID_INPUT",
+            message: "That fund isn't part of this chapter.",
+          });
+        }
+      }
+      if (line.categoryId) {
+        const cat = await ctx.db.get(line.categoryId);
+        if (!cat || cat.chapterId !== chapterId) {
+          throw new ConvexError({
+            code: "INVALID_INPUT",
+            message: "That category isn't part of this chapter.",
+          });
+        }
+      }
+    }
+
+    const totalCents = args.lines.reduce((sum, l) => sum + l.amountCents, 0);
+    const now = Date.now();
+    const token = crypto.randomUUID();
+    const status: ReimbursementStatus = args.requestPreApproval
+      ? "pending_preapproval"
+      : "submitted";
+
+    const personId = await matchPerson(
+      ctx,
+      chapterId,
+      args.payeeEmail,
+      args.payeePhone,
+    );
+
+    const reimbursementId = await ctx.db.insert("reimbursementRequests", {
+      chapterId,
+      token,
+      status,
+      payeeName,
+      payeeEmail: args.payeeEmail ? (normalizeEmail(args.payeeEmail) ?? undefined) : undefined,
+      payeePhone: args.payeePhone,
+      personId: personId ?? undefined,
+      purpose: args.purpose,
+      totalCents,
+      bankAccountLast4: args.bankAccountLast4,
+      submittedAt: now,
+      createdAt: now,
+      updatedAt: now,
+    });
+
+    for (let i = 0; i < args.lines.length; i++) {
+      const line = args.lines[i];
+      await ctx.db.insert("reimbursementLineItems", {
+        chapterId,
+        reimbursementId,
+        description: line.description,
+        amountCents: line.amountCents,
+        fundId: line.fundId,
+        categoryId: line.categoryId,
+        receiptStorageId: line.receiptStorageId,
+        order: i,
+        createdAt: now,
+      });
+    }
+
+    return { token, reference: referenceFor(reimbursementId) };
+  },
+});
+
+/**
+ * The claimant's status view for the public page — keyed by the secret token,
+ * NO secrets returned (never the token). Null when the token is unknown.
+ */
+export const getPublicReimbursement = query({
+  args: { token: v.string() },
+  handler: async (ctx, { token }) => {
+    const req = await byToken(ctx, token);
+    if (!req) return null;
+    const lines = await linesFor(ctx, req._id);
+    return {
+      reference: referenceFor(req._id),
+      status: req.status,
+      statusLabel: REIMBURSEMENT_STATUS_LABELS[req.status],
+      payeeName: req.payeeName,
+      totalCents: req.totalCents,
+      approvedCents: req.approvedCents,
+      lines: await Promise.all(
+        lines.map(async (l) => ({
+          description: l.description,
+          amountCents: l.amountCents,
+          category: await categoryName(ctx, l.categoryId),
+          hasReceipt: !!l.receiptStorageId,
+        })),
+      ),
+      submittedAt: req.submittedAt ?? req.createdAt,
+      timeline: timelineFor(req.status),
+    };
+  },
+});
+
+/**
+ * Generate a receipt-upload URL for an accountless claimant. Valid only while
+ * the request is still editable (pre-approval / submitted); rejected once it's
+ * under final review, paid, or otherwise terminal.
+ */
+export const publicUploadUrl = mutation({
+  args: { token: v.string() },
+  handler: async (ctx, { token }) => {
+    const req = await byToken(ctx, token);
+    if (!req) {
+      throw new ConvexError({
+        code: "NOT_FOUND",
+        message: "We couldn't find that reimbursement.",
+      });
+    }
+    if (!EDITABLE_STATUSES.includes(req.status)) {
+      throw new ConvexError({
+        code: "NOT_EDITABLE",
+        message: "This reimbursement can no longer be edited.",
+      });
+    }
+    return await ctx.storage.generateUploadUrl();
+  },
+});
+
+/**
+ * Attach an uploaded receipt to one of the claimant's own lines (token-scoped).
+ * Valid only while the request is still editable.
+ */
+export const attachPublicReceipt = mutation({
+  args: {
+    token: v.string(),
+    lineId: v.id("reimbursementLineItems"),
+    receiptStorageId: v.id("_storage"),
+  },
+  handler: async (ctx, { token, lineId, receiptStorageId }) => {
+    const req = await byToken(ctx, token);
+    if (!req) {
+      throw new ConvexError({
+        code: "NOT_FOUND",
+        message: "We couldn't find that reimbursement.",
+      });
+    }
+    if (!EDITABLE_STATUSES.includes(req.status)) {
+      throw new ConvexError({
+        code: "NOT_EDITABLE",
+        message: "This reimbursement can no longer be edited.",
+      });
+    }
+    const line = await ctx.db.get(lineId);
+    if (!line || line.reimbursementId !== req._id) {
+      throw new ConvexError({
+        code: "NOT_FOUND",
+        message: "That line item isn't part of this reimbursement.",
+      });
+    }
+    await ctx.db.patch(lineId, { receiptStorageId });
+    await ctx.db.patch(req._id, { updatedAt: Date.now() });
+    return null;
+  },
+});
+
+// ── IN-APP: the manager approval queue (auth, chapter-scoped) ─────────────────
+
+/**
+ * The approval queue for the caller's chapter. Optional `status` filter uses
+ * the `by_chapter_and_status` index. NEVER returns the secret token.
+ */
+export const list = query({
+  args: { status: v.optional(reimbursementStatusValidator) },
+  handler: async (ctx, { status }) => {
+    const chapterId = (await requireChapterId(ctx)) as Id<"chapters">;
+    await requireFinanceRole(ctx, chapterId, "viewer");
+
+    const requests = status
+      ? await ctx.db
+          .query("reimbursementRequests")
+          .withIndex("by_chapter_and_status", (q) =>
+            q.eq("chapterId", chapterId).eq("status", status),
+          )
+          .order("desc")
+          .take(200)
+      : await ctx.db
+          .query("reimbursementRequests")
+          .withIndex("by_chapter", (q) => q.eq("chapterId", chapterId))
+          .order("desc")
+          .take(200);
+
+    return await Promise.all(
+      requests.map(async (req) => {
+        const lines = await linesFor(ctx, req._id);
+        return {
+          _id: req._id,
+          reference: referenceFor(req._id),
+          requesterName: req.payeeName,
+          requesterType: await requesterType(ctx, req.personId),
+          avatarInitials: initials(req.payeeName),
+          submittedDate: req.submittedAt ?? req.createdAt,
+          lineItemCount: lines.length,
+          receiptsState: receiptsState(lines),
+          status: req.status,
+          statusBadge: REIMBURSEMENT_STATUS_LABELS[req.status],
+          totalCents: req.totalCents,
+          approvedCents: req.approvedCents,
+        };
+      }),
+    );
+  },
+});
+
+/** One reimbursement + its lines for the detail panel. NO token returned. */
+export const get = query({
+  args: { reimbursementId: v.id("reimbursementRequests") },
+  handler: async (ctx, { reimbursementId }) => {
+    const chapterId = (await requireChapterId(ctx)) as Id<"chapters">;
+    const req = await ctx.db.get(reimbursementId);
+    await requireInChapter(ctx, chapterId, req, "Reimbursement");
+    await requireFinanceRole(ctx, chapterId, "viewer");
+    const request = req!;
+    const lines = await linesFor(ctx, request._id);
+    return {
+      _id: request._id,
+      reference: referenceFor(request._id),
+      status: request.status,
+      statusLabel: REIMBURSEMENT_STATUS_LABELS[request.status],
+      payeeName: request.payeeName,
+      payeeEmail: request.payeeEmail ?? null,
+      payeePhone: request.payeePhone ?? null,
+      purpose: request.purpose ?? null,
+      requesterType: await requesterType(ctx, request.personId),
+      totalCents: request.totalCents,
+      approvedCents: request.approvedCents,
+      bankAccountLast4: request.bankAccountLast4 ?? null,
+      submittedAt: request.submittedAt ?? request.createdAt,
+      approvedAt: request.approvedAt ?? null,
+      paidAt: request.paidAt ?? null,
+      preApprovedByPersonId: request.preApprovedByPersonId ?? null,
+      reviewedByPersonId: request.reviewedByPersonId ?? null,
+      rejectedReason: request.rejectedReason ?? null,
+      lines: await Promise.all(
+        lines.map(async (l) => ({
+          _id: l._id,
+          description: l.description,
+          amountCents: l.amountCents,
+          category: await categoryName(ctx, l.categoryId),
+          fund: await fundName(ctx, l.fundId),
+          hasReceipt: !!l.receiptStorageId,
+          approved: l.approved ?? null,
+          order: l.order,
+        })),
+      ),
+    };
+  },
+});
+
+/**
+ * Load a reimbursement for a manager write: assert it's in the caller's
+ * chapter, the caller is a finance manager, and resolve the caller's roster
+ * person (the approver identity SoD compares against the requester).
+ */
+async function loadForManage(
+  ctx: MutationCtx,
+  reimbursementId: Id<"reimbursementRequests">,
+): Promise<{
+  chapterId: Id<"chapters">;
+  req: Doc<"reimbursementRequests">;
+  callerPersonId: Id<"people">;
+}> {
+  const chapterId = (await requireChapterId(ctx)) as Id<"chapters">;
+  const req = await ctx.db.get(reimbursementId);
+  await requireInChapter(ctx, chapterId, req, "Reimbursement");
+  await requireFinanceManager(ctx, chapterId);
+  const callerPersonId = await resolveCallerPersonId(ctx, chapterId);
+  return { chapterId, req: req!, callerPersonId };
+}
+
+/** Record an entry in the append-only approval/audit trail. */
+async function recordApproval(
+  ctx: MutationCtx,
+  chapterId: Id<"chapters">,
+  reimbursementId: Id<"reimbursementRequests">,
+  action: "preapprove" | "approve" | "reject" | "cancel",
+  actorPersonId: Id<"people">,
+  note?: string,
+): Promise<void> {
+  await ctx.db.insert("approvals", {
+    chapterId,
+    subjectType: "reimbursement",
+    subjectId: String(reimbursementId),
+    action,
+    actorPersonId,
+    note,
+    createdAt: Date.now(),
+  });
+}
+
+/** Pre-approve a pending request (separation of duties enforced). */
+export const preApprove = mutation({
+  args: { reimbursementId: v.id("reimbursementRequests") },
+  handler: async (ctx, { reimbursementId }) => {
+    const { chapterId, req, callerPersonId } = await loadForManage(
+      ctx,
+      reimbursementId,
+    );
+    assertTransition(req.status, ["pending_preapproval"], "pre-approve");
+    assertSeparationOfDuties(callerPersonId, req.personId);
+    await ctx.db.patch(req._id, {
+      status: "preapproved",
+      preApprovedByPersonId: callerPersonId,
+      updatedAt: Date.now(),
+    });
+    await recordApproval(ctx, chapterId, req._id, "preapprove", callerPersonId);
+    return null;
+  },
+});
+
+/**
+ * Approve a submitted / pre-approved request. Supports PARTIAL approval:
+ * `approvedLineIds` (default = all lines) flags exactly those lines approved,
+ * the rest not, and `approvedCents` becomes the sum of the approved lines.
+ * Records the reviewer + approval time. The actual ACH payout is Phase 4.
+ */
+export const approve = mutation({
+  args: {
+    reimbursementId: v.id("reimbursementRequests"),
+    approvedLineIds: v.optional(v.array(v.id("reimbursementLineItems"))),
+  },
+  handler: async (ctx, { reimbursementId, approvedLineIds }) => {
+    const { chapterId, req, callerPersonId } = await loadForManage(
+      ctx,
+      reimbursementId,
+    );
+    assertTransition(req.status, ["submitted", "preapproved"], "approve");
+    assertSeparationOfDuties(callerPersonId, req.personId);
+
+    const lines = await linesFor(ctx, req._id);
+    let approvedSet: Set<string>;
+    if (approvedLineIds === undefined) {
+      approvedSet = new Set(lines.map((l) => String(l._id)));
+    } else {
+      // Every id must belong to this reimbursement.
+      const lineIds = new Set(lines.map((l) => String(l._id)));
+      for (const id of approvedLineIds) {
+        if (!lineIds.has(String(id))) {
+          throw new ConvexError({
+            code: "INVALID_INPUT",
+            message: "A line to approve isn't part of this reimbursement.",
+          });
+        }
+      }
+      approvedSet = new Set(approvedLineIds.map((id) => String(id)));
+    }
+
+    let approvedCents = 0;
+    const now = Date.now();
+    for (const line of lines) {
+      const approved = approvedSet.has(String(line._id));
+      await ctx.db.patch(line._id, { approved });
+      if (approved) approvedCents += line.amountCents;
+    }
+
+    await ctx.db.patch(req._id, {
+      status: "approved",
+      approvedCents,
+      reviewedByPersonId: callerPersonId,
+      approvedAt: now,
+      updatedAt: now,
+    });
+    await recordApproval(ctx, chapterId, req._id, "approve", callerPersonId);
+    return { approvedCents };
+  },
+});
+
+/** Reject a non-terminal request with a reason (separation of duties enforced). */
+export const reject = mutation({
+  args: {
+    reimbursementId: v.id("reimbursementRequests"),
+    reason: v.optional(v.string()),
+  },
+  handler: async (ctx, { reimbursementId, reason }) => {
+    const { chapterId, req, callerPersonId } = await loadForManage(
+      ctx,
+      reimbursementId,
+    );
+    if (isTerminal(req.status)) {
+      assertTransition(req.status, [], "reject");
+    }
+    assertSeparationOfDuties(callerPersonId, req.personId);
+    await ctx.db.patch(req._id, {
+      status: "rejected",
+      rejectedReason: reason,
+      updatedAt: Date.now(),
+    });
+    await recordApproval(
+      ctx,
+      chapterId,
+      req._id,
+      "reject",
+      callerPersonId,
+      reason,
+    );
+    return null;
+  },
+});
+
+/** Cancel a non-terminal request (an admin walking it back). */
+export const cancel = mutation({
+  args: { reimbursementId: v.id("reimbursementRequests") },
+  handler: async (ctx, { reimbursementId }) => {
+    const { chapterId, req, callerPersonId } = await loadForManage(
+      ctx,
+      reimbursementId,
+    );
+    if (isTerminal(req.status)) {
+      assertTransition(req.status, [], "cancel");
+    }
+    await ctx.db.patch(req._id, {
+      status: "canceled",
+      updatedAt: Date.now(),
+    });
+    await recordApproval(ctx, chapterId, req._id, "cancel", callerPersonId);
+    return null;
+  },
+});
+
+// ── INTERNAL: stale-request reminder sweep (for a cron) ──────────────────────
+
+/** Nudge a request this many days after it lands and still hasn't moved. */
+const STALE_DAYS = 5;
+const STALE_MS = STALE_DAYS * 24 * 60 * 60 * 1000;
+
+/**
+ * Requests in one chapter worth a nudge: still awaiting a manager
+ * (`submitted` / `preapproved`) and either older than `olderThanMs` or missing
+ * a receipt on a line. Bounded reads, scoped to the chapter + status index.
+ */
+export const listStaleReimbursements = internalQuery({
+  args: {
+    chapterId: v.id("chapters"),
+    now: v.number(),
+    olderThanMs: v.number(),
+  },
+  handler: async (ctx, { chapterId, now, olderThanMs }) => {
+    const candidates: Doc<"reimbursementRequests">[] = [];
+    for (const status of ["submitted", "preapproved"] as const) {
+      const rows = await ctx.db
+        .query("reimbursementRequests")
+        .withIndex("by_chapter_and_status", (q) =>
+          q.eq("chapterId", chapterId).eq("status", status),
+        )
+        .take(200);
+      candidates.push(...rows);
+    }
+    const stale: Array<{
+      reference: string;
+      payeeName: string;
+      payeeEmail: string | null;
+      totalCents: number;
+      status: ReimbursementStatus;
+      missingReceipts: boolean;
+    }> = [];
+    for (const req of candidates) {
+      const lines = await linesFor(ctx, req._id);
+      const missingReceipts = lines.some((l) => !l.receiptStorageId);
+      const isOld = (req.submittedAt ?? req.createdAt) < now - olderThanMs;
+      if (!isOld && !missingReceipts) continue;
+      stale.push({
+        reference: referenceFor(req._id),
+        payeeName: req.payeeName,
+        payeeEmail: req.payeeEmail ?? null,
+        totalCents: req.totalCents,
+        status: req.status,
+        missingReceipts,
+      });
+    }
+    return stale;
+  },
+});
+
+/**
+ * Sweep every chapter's stale reimbursements and email the claimant a nudge.
+ * Best-effort Resend — a no-op that only logs when RESEND_API_KEY is unset
+ * (mirrors `reminders.ts` / the ticketing emails), so dev + CI never send.
+ */
+export const sendReimbursementReminders = internalAction({
+  args: {},
+  handler: async (ctx) => {
+    const now = Date.now();
+    const chapterIds: Id<"chapters">[] = await ctx.runQuery(
+      internal.reminders.listChapterIds,
+      {},
+    );
+    for (const chapterId of chapterIds) {
+      const stale = await ctx.runQuery(
+        internal.reimbursements.listStaleReimbursements,
+        { chapterId, now, olderThanMs: STALE_MS },
+      );
+      for (const r of stale) {
+        if (!r.payeeEmail) continue;
+        const dollars = `$${(r.totalCents / 100).toFixed(2)}`;
+        const reason = r.missingReceipts
+          ? "We're still waiting on a receipt for one or more line items."
+          : "It's still waiting on a manager to review it.";
+        await sendEmail(
+          r.payeeEmail,
+          `Your reimbursement ${r.reference} is still pending`,
+          emailShell(`
+          <h1 style="margin:0 0 12px;font-size:24px;line-height:1.2">Reimbursement ${escapeHtml(r.reference)}</h1>
+          <p style="margin:0 0 16px;font-family:-apple-system,'Segoe UI',Roboto,sans-serif;font-size:14px;line-height:1.6;color:#7A5A5A">Hi ${escapeHtml(r.payeeName)} — your ${escapeHtml(dollars)} reimbursement is still open. ${reason}</p>`),
+        );
+      }
+    }
+    return null;
+  },
+});

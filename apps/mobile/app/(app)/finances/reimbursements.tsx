@@ -1,46 +1,67 @@
 /**
- * FINANCES · REIMBURSEMENTS — Phase-1 SHELL.
+ * FINANCES · REIMBURSEMENTS — the in-app manager approval queue (Phase 3).
  *
- * The public request form (accountless submission via a secret link) + the
- * receipts/approval/ACH-payout backend land in Phase 3, so there is no
- * `api.finances.reimbursements` yet and no mutations are wired here. This screen
- * renders the prototype's manager approval-queue layout as an empty shell: the
- * queue header + filter pills (derived from the shared REIMBURSEMENT_STATUSES),
- * an empty state, the separation-of-duties note, and the "How it works" 3-step
- * explainer (Submit with receipts → Finance manager approves → ACH payout).
+ * Replaces the Phase-1 shell now that `api.reimbursements` is live. Managers see
+ * every request submitted through the public /reimburse form: filter by state
+ * (All / Pre-approval / Submitted / Paying), expand a request to its line items,
+ * and act on it — Reject, Pre-approve, Approve all (`approve({})`), or Approve a
+ * subset of lines (`approve({ approvedLineIds })`, partial approval). The
+ * backend enforces separation of duties (an approver can't approve their own
+ * request); that `SOD_VIOLATION` ConvexError is surfaced via the action runner.
  *
- * Guarded admin-or-lead in-screen (mirrors the nav gate). Matches
- * `finances.html` (§ Reimbursements approval queue) and `docs/plans/finance.md`
- * (§ Reimbursements).
+ * Guarded admin-or-lead in-screen (mirrors the finances nav gate); the finer
+ * finance-role check runs server-side on every query/mutation. Built to
+ * `finances.html` (§ Reimbursements) and `docs/plans/finance.md`.
  */
-import { Text, View } from "react-native";
-import { useQuery } from "convex/react";
+import { useMemo, useState } from "react";
+import { View, Text, Platform, Alert } from "react-native";
+import { useQuery, useMutation } from "convex/react";
 import { api } from "@events-os/convex/_generated/api";
-import {
-  REIMBURSEMENT_STATUS_LABELS,
-  type ReimbursementStatus,
-} from "@events-os/shared";
+import type { Id } from "@events-os/convex/_generated/dataModel";
+import { formatCents } from "@events-os/shared";
 import {
   EmptyState,
-  Icon,
   Narrow,
   Pill,
   Screen,
   SectionHeader,
+  ToastView,
 } from "../../../components/ui";
-import { colors } from "../../../lib/theme";
+import { useActionRunner } from "../../../lib/useActionToast";
 import { HowItWorks } from "../../../components/finance/reimbursements/HowItWorks";
+import { RequestCard } from "../../../components/finance/reimbursements/RequestCard";
+import {
+  FILTERS,
+  isOpen,
+  type FilterKey,
+} from "../../../components/finance/reimbursements/helpers";
 
-// The queue filters shown in the prototype (All + the live-transition states).
-// Labels come from the shared enum so the shell can't drift from the backend.
-const QUEUE_FILTER_STATUSES: ReimbursementStatus[] = [
-  "pending_preapproval",
-  "submitted",
-  "paying",
-];
+/** Cross-platform, non-blocking notice for the info-only payout edge. */
+function notify(title: string, message: string) {
+  if (Platform.OS === "web") window.alert(`${title}\n\n${message}`);
+  else Alert.alert(title, message);
+}
 
 export default function ReimbursementsScreen() {
   const org = useQuery(api.org.nav);
+  const [activeFilter, setActiveFilter] = useState<FilterKey>("all");
+
+  const filter = FILTERS.find((f) => f.key === activeFilter)!;
+  const rows = useQuery(api.reimbursements.list, { status: filter.status });
+
+  const approve = useMutation(api.reimbursements.approve);
+  const preApprove = useMutation(api.reimbursements.preApprove);
+  const reject = useMutation(api.reimbursements.reject);
+  const { run, toast, dismiss } = useActionRunner();
+
+  // Header "N open · $X" — non-terminal requests in the current view.
+  const openStats = useMemo(() => {
+    const open = (rows ?? []).filter((r) => isOpen(r.status));
+    return {
+      count: open.length,
+      totalCents: open.reduce((sum, r) => sum + r.totalCents, 0),
+    };
+  }, [rows]);
 
   // In-screen guard: approving reimbursements is a finance-manager action
   // (admin or lead for now, mirroring the nav gate).
@@ -60,49 +81,94 @@ export default function ReimbursementsScreen() {
 
   if (org === undefined) return <Screen loading />;
 
+  const handleApprove = (
+    id: Id<"reimbursementRequests">,
+    approvedLineIds?: Id<"reimbursementLineItems">[],
+  ) =>
+    run(() => approve({ reimbursementId: id, approvedLineIds }), {
+      errorTitle: "Couldn't approve",
+    }).then((res) => {
+      if (res !== undefined) {
+        notify(
+          "Approved",
+          "The ACH payout runs in a later phase — nothing has moved yet.",
+        );
+      }
+    });
+
+  const handlePreApprove = (id: Id<"reimbursementRequests">) =>
+    run(() => preApprove({ reimbursementId: id }), {
+      errorTitle: "Couldn't pre-approve",
+    }).then(() => {});
+
+  const handleReject = (id: Id<"reimbursementRequests">) =>
+    run(() => reject({ reimbursementId: id }), {
+      errorTitle: "Couldn't reject",
+    }).then(() => {});
+
+  const loading = rows === undefined;
+
   return (
-    <Screen>
-      <Narrow>
-        <View className="mb-1 flex-row items-center gap-2">
-          <Text className="font-display text-2xl text-ink">Reimbursements</Text>
-          <Text className="text-2xs font-bold uppercase tracking-wider text-muted">
-            Coming soon
+    <>
+      <Screen maxWidth={1080}>
+        <Narrow>
+          {/* Header — queue title + "N open · $X". */}
+          <View className="mb-1 flex-row items-baseline gap-2">
+            <Text className="font-display text-2xl text-ink">Reimbursements</Text>
+            <Text className="text-2xs font-bold uppercase tracking-wider text-muted">
+              {openStats.count} open · {formatCents(openStats.totalCents)}
+            </Text>
+          </View>
+          <Text className="mb-4 text-sm text-muted">
+            Approve what volunteers and card-less team members spent, then pay
+            them by ACH from the chapter's Increase account.
           </Text>
-        </View>
-        <Text className="mb-4 text-sm text-muted">
-          Approve what volunteers and card-less team members spent, then pay them
-          by ACH from the chapter's Increase account.
-        </Text>
 
-        {/* Approval queue — header + illustrative filter pills. */}
-        <SectionHeader title="Approval queue" count="0 open" />
-        <View className="mb-4 flex-row flex-wrap gap-2">
-          <Pill label="All" />
-          {QUEUE_FILTER_STATUSES.map((s) => (
-            <Pill key={s} label={REIMBURSEMENT_STATUS_LABELS[s]} />
-          ))}
-        </View>
+          {/* Filter pills → list({status}). */}
+          <View className="mb-4 flex-row flex-wrap gap-2">
+            {FILTERS.map((f) => (
+              <Pill
+                key={f.key}
+                label={f.label}
+                selected={activeFilter === f.key}
+                onPress={() => setActiveFilter(f.key)}
+              />
+            ))}
+          </View>
 
-        <EmptyState
-          icon="inbox"
-          title="No reimbursement requests yet"
-          message="The public request form ships in Phase 3. Submitted requests will appear here for a finance manager to approve and pay by ACH."
-        />
+          {/* Queue. */}
+          {loading ? (
+            <EmptyState title="Loading requests…" />
+          ) : rows.length === 0 ? (
+            <EmptyState
+              icon="inbox"
+              title="No requests in this view"
+              message={
+                activeFilter === "all"
+                  ? "Submitted reimbursements appear here for a finance manager to approve and pay by ACH."
+                  : "Nothing matches this filter right now. Try another."
+              }
+            />
+          ) : (
+            <View>
+              {rows.map((row) => (
+                <RequestCard
+                  key={row._id}
+                  row={row}
+                  onApprove={handleApprove}
+                  onPreApprove={handlePreApprove}
+                  onReject={handleReject}
+                />
+              ))}
+            </View>
+          )}
 
-        {/* Separation-of-duties note (prototype's warn strip). */}
-        <View className="mt-4 flex-row gap-3 rounded-lg border border-warn bg-warn-bg px-4 py-3">
-          <Icon name="alert-triangle" size={16} color={colors.warn} />
-          <Text className="flex-1 text-sm text-ink">
-            <Text className="font-bold">Separation of duties.</Text> Nobody can
-            approve their own request, and large payouts can require a second
-            approver.
-          </Text>
-        </View>
-
-        {/* How it works — the 3-step submit → approve → payout explainer. */}
-        <SectionHeader title="How reimbursements work" />
-        <HowItWorks />
-      </Narrow>
-    </Screen>
+          {/* How it works — the submit → approve → payout explainer. */}
+          <SectionHeader title="How reimbursements work" />
+          <HowItWorks />
+        </Narrow>
+      </Screen>
+      <ToastView toast={toast} onDismiss={dismiss} />
+    </>
   );
 }
