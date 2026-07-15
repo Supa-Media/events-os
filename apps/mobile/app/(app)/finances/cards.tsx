@@ -1,141 +1,60 @@
 /**
- * FINANCES · CARDS — Phase-1 SHELL.
+ * FINANCES · CARDS — the real Cards tab (Phase 5).
  *
- * Card issuance (Increase-issued, person-owned cards + real-time auth + the
- * personal-repayment flow) lands in Phase 5, so there is no `api.finances.cards`
- * yet. This screen renders the prototype's Cards tab as a faithful "here's how
- * it will work" surface: the later-phase info callout, illustrative manager
- * tiles (labels + meta, NO fabricated numbers), a "no cards yet" empty state,
- * the red virtual-card art (a plain gradient-styled View — no native dep), and
- * the static "Card philosophy" + "pay it back" explainers.
+ * Person-owned Increase cards + the personal-repayment flow, now that
+ * `api.cards.*` is live. Rendered in one of two perspectives, mirroring the
+ * `finances.html` prototype's manager-only / member-only split:
  *
- * Guarded admin-or-lead in-screen (mirrors the nav gate) so a member who
- * deep-links lands on a friendly restricted state. Matches `finances.html`
- * (§ Cards) and `docs/plans/finance.md` (§ Cards, § Money model).
+ *  - **Manager** (admin/lead, the finance-manager surface): the cardholders view
+ *    — KPI tiles, the cardholders table with lock / unlock / edit-controls, an
+ *    "Issue card" flow, and the card-philosophy explainer. Reads gate on the
+ *    `financeRoles` ladder server-side; a lead without a finance grant degrades
+ *    to a friendly "access needed" state via the shared FinanceBoundary.
+ *  - **Member** (everyone else): their OWN card — the red virtual-card art, a
+ *    status/spend summary with a receipt warning, the two hard controls shown
+ *    read-only, and the flag-a-charge → pay-it-back personal-repayment flow.
+ *
+ * Perspective resolves from the caller's `api.org.nav` tier (the same probe the
+ * finances nav gate uses), so a member who deep-links here lands on their card
+ * rather than a restricted wall.
  */
-import { Text, View } from "react-native";
 import { useQuery } from "convex/react";
 import { api } from "@events-os/convex/_generated/api";
-import { RECEIPT_GRACE_DAYS } from "@events-os/shared";
-import {
-  Badge,
-  Button,
-  Card,
-  EmptyState,
-  Icon,
-  Narrow,
-  Screen,
-  SectionHeader,
-} from "../../../components/ui";
-import { colors } from "../../../lib/theme";
-import { CardTile } from "../../../components/finance/cards/CardTile";
-import { CardPhilosophy } from "../../../components/finance/cards/CardPhilosophy";
-import { VirtualCardArt } from "../../../components/finance/cards/VirtualCardArt";
+import { EmptyState, Narrow, Screen } from "../../../components/ui";
+import { FinanceBoundary } from "../../../components/finance/dashboard/parts";
+import { ManagerCardsView } from "../../../components/finance/cards/ManagerCardsView";
+import { MemberCardsView } from "../../../components/finance/cards/MemberCardsView";
+
+function NoFinanceAccess() {
+  return (
+    <EmptyState
+      icon="lock"
+      title="Finance access needed"
+      message="Ask a finance manager to grant you access to the cardholders view."
+    />
+  );
+}
 
 export default function CardsScreen() {
   const org = useQuery(api.org.nav);
 
-  // In-screen guard: cards are a finance-manager surface (admin or lead for now,
-  // mirroring the nav gate).
-  const tier = org?.tier;
-  if (org !== undefined && tier !== "admin" && tier !== "lead") {
-    return (
-      <Screen>
-        <Narrow>
-          <EmptyState
-            title="Cards are restricted"
-            message="Only chapter admins and finance managers can manage cards."
-          />
-        </Narrow>
-      </Screen>
-    );
-  }
-
   if (org === undefined) return <Screen loading />;
 
+  const tier = org.tier;
+  const isManager = tier === "admin" || tier === "lead";
+
   return (
-    <Screen>
+    <Screen maxWidth={1080}>
       <Narrow>
-        <View className="mb-1 flex-row items-center gap-2">
-          <Text className="font-display text-2xl text-ink">Cards</Text>
-          <Text className="text-2xs font-bold uppercase tracking-wider text-muted">
-            Coming soon
-          </Text>
-        </View>
-        <Text className="mb-4 text-sm text-muted">
-          Person-owned spending cards on the chapter's Increase account. Here's
-          how they'll work.
-        </Text>
-
-        {/* Later-phase info callout (prototype's blue "Later phase" banner). */}
-        <View className="mb-5 flex-row gap-3 rounded-lg border border-info bg-info-bg px-4 py-3">
-          <Icon name="info" size={16} color={colors.info} />
-          <Text className="flex-1 text-sm text-ink">
-            <Text className="font-bold">Later phase.</Text> Cards are shown here
-            to make the model concrete. They ship after budgets, reconciliation,
-            and reimbursements are live — issued on the chapter's Increase
-            account.
-          </Text>
-        </View>
-
-        {/* Illustrative manager tiles — labels + meta only, never fake numbers. */}
-        <View className="flex-row flex-wrap gap-3">
-          <CardTile label="Team cards" meta="one per team member" />
-          <CardTile label="Spent · month" meta="across all cards" />
-          <CardTile label="Receipts due" meta="cardholders on the hook" />
-          <CardTile label="Personal to repay" meta="charges flagged" />
-        </View>
-
-        {/* Cardholders — empty until issuance ships. */}
-        <SectionHeader
-          title="Cardholders"
-          count="everyone gets one"
-          right={
-            <Button
-              title="Issue card"
-              icon="plus"
-              size="sm"
-              disabled
-              onPress={() => {}}
-            />
-          }
-        />
-        <EmptyState
-          icon="credit-card"
-          title="No cards issued yet"
-          message="Card issuance ships in a later phase. Every team member will get one card on the chapter's Increase account."
-        />
-
-        {/* The virtual-card art, as an illustrative preview of the member view. */}
-        <SectionHeader title="What a card looks like" />
-        <View className="flex-row flex-wrap gap-4">
-          <View className="min-w-[260px] flex-1">
-            <VirtualCardArt />
-          </View>
-          <View className="min-w-[260px] flex-1">
-            <Card>
-              <View className="gap-3">
-                <View className="flex-row items-center justify-between">
-                  <Text className="font-semibold text-ink">Your card</Text>
-                  <Badge label="Active" tone="success" icon="check" />
-                </View>
-                <Text className="text-xs text-muted">
-                  <Text className="font-semibold text-ink">
-                    This card is yours.
-                  </Text>{" "}
-                  No budget limit — but every charge is yours to receipt &
-                  reconcile. It locks if a receipt is more than{" "}
-                  {RECEIPT_GRACE_DAYS} days late, and unlocks the moment you add
-                  it.
-                </Text>
-              </View>
-            </Card>
-          </View>
-        </View>
-
-        {/* Static philosophy + pay-it-back explainers. */}
-        <SectionHeader title="Card philosophy" />
-        <CardPhilosophy />
+        {isManager ? (
+          // The cardholders view still gates on the finance-role ladder server
+          // side; catch a role throw locally instead of blanking the screen.
+          <FinanceBoundary fallback={<NoFinanceAccess />}>
+            <ManagerCardsView />
+          </FinanceBoundary>
+        ) : (
+          <MemberCardsView />
+        )}
       </Narrow>
     </Screen>
   );
