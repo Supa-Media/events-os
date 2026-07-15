@@ -264,15 +264,73 @@ http.route({
     );
     if (!valid) return new Response("Invalid signature", { status: 400 });
 
-    // Increase events: `{ id, type: "ach_transfer.updated", associated_object_id }`
-    // — the associated object is the ACH transfer. Dedup on the event id, then
-    // advance the matching payout's state machine.
+    // Increase events, two shapes:
+    //  - real_time_decision.card_authorization_requested → a SYNCHRONOUS card
+    //    decision; NOT deduped (Increase retries until it gets an action, and
+    //    decideCardAuthorization is idempotent per auth id).
+    //  - everything else (ach_transfer.* …) → async: dedup on the event id, then
+    //    advance the matching payout's state machine.
     const event = JSON.parse(payload) as {
       id: string;
       type: string;
       associated_object_id?: string;
-      data?: { status?: string };
+      data?: {
+        status?: string;
+        card_authorization?: {
+          id?: string;
+          card_id?: string;
+          amount?: number;
+          merchant_descriptor?: string;
+          merchant_category_code?: string;
+        };
+      };
     };
+
+    if (event.type === "real_time_decision.card_authorization_requested") {
+      // TODO(card go-live): verify Increase's real RTD payload — the card-auth
+      // details may require fetching the real_time_decision object; the inline
+      // shape below is assumed. The decision is submitted via the Increase API
+      // within its timeout; decideCardAuthorization never throws (defaults to
+      // decline on any internal error).
+      const auth = event.data?.card_authorization;
+      const rtdId = event.associated_object_id;
+      if (auth?.card_id && rtdId) {
+        const decision = await ctx.runMutation(
+          internal.cards.decideCardAuthorization,
+          {
+            increaseCardId: auth.card_id,
+            increaseAuthId: auth.id ?? rtdId,
+            amountCents: Math.abs(Math.round(auth.amount ?? 0)),
+            merchantName: auth.merchant_descriptor,
+            merchantCategory: auth.merchant_category_code,
+          },
+        );
+        const apiKey = process.env.INCREASE_API_KEY;
+        if (apiKey) {
+          try {
+            await fetch(
+              `https://api.increase.com/real_time_decisions/${rtdId}/action`,
+              {
+                method: "POST",
+                headers: {
+                  Authorization: `Bearer ${apiKey}`,
+                  "Content-Type": "application/json",
+                },
+                body: JSON.stringify({
+                  card_authorization: {
+                    decision: decision.approved ? "approve" : "decline",
+                  },
+                }),
+              },
+            );
+          } catch (e) {
+            console.error("[increase] real-time-decision action failed", e);
+          }
+        }
+      }
+      return new Response("ok", { status: 200 });
+    }
+
     const { isNew } = await ctx.runMutation(
       internal.webhooks.recordWebhookEvent,
       { provider: "increase", eventId: event.id, summary: event.type },

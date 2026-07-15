@@ -17,6 +17,7 @@ import type * as aiCodingData from "../aiCodingData.js";
 import type * as auth from "../auth.js";
 import type * as blasts from "../blasts.js";
 import type * as budget from "../budget.js";
+import type * as cards from "../cards.js";
 import type * as checkIns from "../checkIns.js";
 import type * as columns from "../columns.js";
 import type * as crons from "../crons.js";
@@ -144,6 +145,7 @@ declare const fullApi: ApiFromModules<{
   auth: typeof auth;
   blasts: typeof blasts;
   budget: typeof budget;
+  cards: typeof cards;
   checkIns: typeof checkIns;
   columns: typeof columns;
   crons: typeof crons;
