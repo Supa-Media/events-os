@@ -1025,6 +1025,44 @@ describe("linkIncreaseAccount", () => {
     expect((await accountRows(s)).length).toBe(0);
   });
 
+  test("surfaces the real Increase error (status + title/detail) on a non-404 failure", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await seedManager(s);
+
+    process.env.INCREASE_API_KEY = "test_key";
+    process.env.INCREASE_ENTITY_ID = "entity_shared_org";
+    // A 401 with Increase's JSON error shape (`{type, title, detail}`) — the real
+    // cause of a prod link failure the old generic message swallowed.
+    mockLinkFetch(401, {
+      type: "authentication_error",
+      title: "API key is invalid",
+      detail: "The provided API key is not valid for this environment.",
+    });
+
+    let caught: unknown;
+    try {
+      await s.as.action(api.increase.linkIncreaseAccount, {
+        increaseAccountId: "account_ny",
+      });
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(ConvexError);
+    const message = (caught as ConvexError<{ message: string }>).data.message;
+    // The status + Increase's title/detail are all surfaced for diagnosis.
+    expect(message).toContain("401");
+    expect(message).toContain("API key is invalid");
+    expect(message).toContain(
+      "The provided API key is not valid for this environment.",
+    );
+    // NEVER leak the API key.
+    expect(message).not.toContain("test_key");
+
+    // A failed verify writes no row.
+    expect((await accountRows(s)).length).toBe(0);
+  });
+
   test("no-ops (returns null, no network) when the API key is unset", async () => {
     const t = newT();
     const s = await setupChapter(t);
