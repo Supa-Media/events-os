@@ -19,8 +19,6 @@ import type * as blasts from "../blasts.js";
 import type * as budget from "../budget.js";
 import type * as checkIns from "../checkIns.js";
 import type * as columns from "../columns.js";
-import type * as convex__generated_api from "../convex/_generated/api.js";
-import type * as convex__generated_server from "../convex/_generated/server.js";
 import type * as crons from "../crons.js";
 import type * as dashboard from "../dashboard.js";
 import type * as docs from "../docs.js";
@@ -116,12 +114,14 @@ import type * as siteMap from "../siteMap.js";
 import type * as songs from "../songs.js";
 import type * as storage from "../storage.js";
 import type * as stripe from "../stripe.js";
+import type * as stripeFinance from "../stripeFinance.js";
 import type * as templatePeople from "../templatePeople.js";
 import type * as templateSync from "../templateSync.js";
 import type * as templates from "../templates.js";
 import type * as ticketing from "../ticketing.js";
 import type * as ticketingEmails from "../ticketingEmails.js";
 import type * as ticketingVerification from "../ticketingVerification.js";
+import type * as webhooks from "../webhooks.js";
 import type * as work from "../work.js";
 
 import type {
@@ -142,8 +142,6 @@ declare const fullApi: ApiFromModules<{
   budget: typeof budget;
   checkIns: typeof checkIns;
   columns: typeof columns;
-  "convex/_generated/api": typeof convex__generated_api;
-  "convex/_generated/server": typeof convex__generated_server;
   crons: typeof crons;
   dashboard: typeof dashboard;
   docs: typeof docs;
@@ -239,12 +237,14 @@ declare const fullApi: ApiFromModules<{
   songs: typeof songs;
   storage: typeof storage;
   stripe: typeof stripe;
+  stripeFinance: typeof stripeFinance;
   templatePeople: typeof templatePeople;
   templateSync: typeof templateSync;
   templates: typeof templates;
   ticketing: typeof ticketing;
   ticketingEmails: typeof ticketingEmails;
   ticketingVerification: typeof ticketingVerification;
+  webhooks: typeof webhooks;
   work: typeof work;
 }>;
 

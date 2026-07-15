@@ -34,4 +34,14 @@ crons.cron(
   {},
 );
 
+// Daily 07:00 UTC: backstop pull of Stripe Financial Connections transactions
+// for every connected legacy account, in case a refresh webhook was missed.
+// No-ops per account when STRIPE_SECRET_KEY is unset (local/dev).
+crons.cron(
+  "stripe FC transaction sync backstop",
+  "0 7 * * *",
+  internal.stripeFinance.syncAllAccounts,
+  {},
+);
+
 export default crons;
