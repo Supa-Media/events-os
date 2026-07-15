@@ -293,6 +293,32 @@ function toAccountSummary(a: Doc<"increaseAccounts">): IncreaseAccountSummary {
 
 // ── Raw Increase fetch helpers (default runtime `fetch`, no SDK) ──────────────
 
+/**
+ * Build a diagnostic suffix from an Increase error HTTP response: the status
+ * code plus, when the body is Increase's JSON error shape
+ * (`{type, title, detail}`), its `title`/`detail`. Parsed DEFENSIVELY — the body
+ * may not be JSON (proxy/HTML error pages), in which case the status stands
+ * alone. NEVER includes the API key or Authorization header — only the status
+ * and the server-provided error text. Example: `HTTP 401: API key is invalid`.
+ */
+function describeIncreaseError(status: number, bodyText: string): string {
+  let title: string | undefined;
+  let detail: string | undefined;
+  try {
+    const parsed = JSON.parse(bodyText) as {
+      title?: unknown;
+      detail?: unknown;
+    };
+    if (typeof parsed.title === "string" && parsed.title) title = parsed.title;
+    if (typeof parsed.detail === "string" && parsed.detail)
+      detail = parsed.detail;
+  } catch {
+    // Non-JSON body (e.g. an HTML error page) — the status alone is the signal.
+  }
+  const suffix = [title, detail].filter(Boolean).join(": ");
+  return suffix ? `HTTP ${status}: ${suffix}` : `HTTP ${status}`;
+}
+
 /** POST JSON to the Increase API. `idempotencyKey` sets the `Idempotency-Key`
  *  header so a retried request never creates a second transfer. Throws
  *  ConvexError on a non-2xx (the caller logs + degrades). */
@@ -314,10 +340,11 @@ async function increasePost(
     body: JSON.stringify(body),
   });
   if (!res.ok) {
-    console.error(`[increase] POST ${path} failed:`, await res.text());
+    const bodyText = await res.text();
+    console.error(`[increase] POST ${path} failed:`, bodyText);
     throw new ConvexError({
       code: "INCREASE_ERROR",
-      message: "The Increase request failed. Please try again.",
+      message: `The Increase request failed (${describeIncreaseError(res.status, bodyText)}).`,
     });
   }
   return (await res.json()) as Record<string, unknown>;
@@ -336,10 +363,11 @@ async function increaseGet(
     headers: { Authorization: `Bearer ${key}` },
   });
   if (!res.ok) {
-    console.error(`[increase] GET ${path} failed:`, await res.text());
+    const bodyText = await res.text();
+    console.error(`[increase] GET ${path} failed:`, bodyText);
     throw new ConvexError({
       code: "INCREASE_ERROR",
-      message: "The Increase request failed. Please try again.",
+      message: `The Increase request failed (${describeIncreaseError(res.status, bodyText)}).`,
     });
   }
   return (await res.json()) as Record<string, unknown>;
@@ -1007,22 +1035,32 @@ export const linkIncreaseAccount = action({
         });
       }
       if (!res.ok) {
+        const bodyText = await res.text();
         console.error(
           `[increase] link: GET /accounts/${targetId} failed:`,
-          await res.text(),
+          bodyText,
         );
+        // Surface the REAL cause (status + Increase's title/detail) so a prod
+        // link failure — most often a 401/403 bad-key or a config problem — is
+        // diagnosable instead of a generic "please try again". Never leaks the
+        // API key (describeIncreaseError only echoes status + server error text).
+        const env = sandbox ? "sandbox" : "production";
         throw new ConvexError({
           code: "INCREASE_ERROR",
-          message: "Couldn't verify that Increase account. Please try again.",
+          message: `Increase couldn't verify that account (${describeIncreaseError(res.status, bodyText)}). Check the ${env} Increase API key and that the account belongs to your org's entity.`,
         });
       }
       account = (await res.json()) as Record<string, unknown>;
     } catch (err) {
       if (err instanceof ConvexError) throw err;
+      // A network/parse failure (no HTTP response to read a status from) — echo
+      // the underlying error message (never contains the key) rather than a
+      // generic string, so a DNS/TLS/timeout is distinguishable from a bad key.
       console.error("[increase] link: failed to fetch account:", err);
+      const reason = err instanceof Error ? err.message : String(err);
       throw new ConvexError({
         code: "INCREASE_ERROR",
-        message: "Couldn't verify that Increase account. Please try again.",
+        message: `Couldn't reach Increase to verify that account (${reason}). Check network access and the production Increase configuration.`,
       });
     }
 
