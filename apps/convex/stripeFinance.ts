@@ -23,10 +23,12 @@
  * unset — session creation throws NOT_CONFIGURED; sync logs + skips.
  *
  * Gating (finance-role ladder viewer < bookkeeper < manager):
- *  - createFcSession / storeFcAccount / setAccountFund / disconnect → manager
+ *  - createFcSession / storeFcAccount / setAccountFund / disconnect /
+ *    refreshFcAccount                                               → manager
  *  - listAccounts                                                   → viewer
  *  - applyFcTransactions / syncTransactions / syncAllAccounts /
- *    refreshFcTransactions / onFcWebhookEvent                       → internal
+ *    refreshFcTransactions / refreshAllActiveFcAccounts /
+ *    onFcWebhookEvent                                               → internal
  */
 import {
   action,
@@ -273,12 +275,32 @@ export const storeFcAccount = mutation({
           message: "That account is already connected to another chapter.",
         });
       }
+      // Was this row NOT already active (i.e. `disconnected`/`error`)? Then this
+      // upsert REACTIVATES it. A reconnect after a disconnect must re-pull the
+      // history — Stripe stops syncing while disconnected, so any activity since
+      // then is missing. Re-connecting an already-active account is a pure
+      // metadata refresh and needs no fetch (its ongoing sync never stopped).
+      const wasActive = existing.status === "active";
       await ctx.db.patch(existing._id, {
         institutionName: args.institutionName ?? existing.institutionName,
         last4: args.last4 ?? existing.last4,
         type: args.type ?? existing.type,
         status: "active",
       });
+
+      // Reactivation → ask Stripe to (re)fetch transactions, exactly like the
+      // new-insert path below. Key-gated + idempotent (dedup on `externalId`), so
+      // it's a safe no-op without the vendor and never double-counts.
+      if (!wasActive && process.env.STRIPE_SECRET_KEY) {
+        await ctx.scheduler.runAfter(
+          0,
+          internal.stripeFinance.refreshFcTransactions,
+          {
+            legacyAccountId: existing._id,
+            stripeFcAccountId: existing.stripeFcAccountId,
+          },
+        );
+      }
       return existing._id;
     }
 
@@ -337,6 +359,46 @@ export const setAccountFund = mutation({
       });
     }
     await ctx.db.patch(args.legacyAccountId, { defaultFundId: args.fundId });
+    return null;
+  },
+});
+
+/**
+ * Manually re-pull an account's transactions on demand ("Refresh now" / "Sync"
+ * in the UI). Manager-only; the account must be in the caller's chapter. Kicks
+ * off the SAME best-effort Stripe fetch + bounded fallback re-syncs the connect
+ * path uses (`refreshFcTransactions`), so the freshest transactions land in
+ * Reconcile without waiting for the daily cron. Degrades to a no-op without
+ * STRIPE_SECRET_KEY (the vendor isn't wired up); throws `ConvexError` on an
+ * authz/tenancy failure.
+ */
+export const refreshFcAccount = mutation({
+  args: { legacyAccountId: v.id("legacyAccounts") },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    const chapterId = (await requireChapterId(ctx)) as Id<"chapters">;
+    await requireFinanceManager(ctx, chapterId);
+
+    const account = await ctx.db.get(args.legacyAccountId);
+    if (!account || account.chapterId !== chapterId) {
+      throw new ConvexError({
+        code: "NOT_FOUND",
+        message: "That account isn't in your chapter.",
+      });
+    }
+
+    // Same key-gated, idempotent refresh the connect/reactivation paths use. The
+    // action itself POSTs the Stripe refresh and schedules the bounded re-syncs.
+    if (process.env.STRIPE_SECRET_KEY) {
+      await ctx.scheduler.runAfter(
+        0,
+        internal.stripeFinance.refreshFcTransactions,
+        {
+          legacyAccountId: account._id,
+          stripeFcAccountId: account.stripeFcAccountId,
+        },
+      );
+    }
     return null;
   },
 });
@@ -568,6 +630,27 @@ export const listActiveAccounts = internalQuery({
     return accounts
       .filter((a) => a.status === "active")
       .map((a) => a._id);
+  },
+});
+
+/** All active legacy accounts (bounded) as `{id, stripeFcAccountId}` — the feed
+ *  for a forced transaction re-fetch (`refreshAllActiveFcAccounts`), which needs
+ *  the Stripe id `refreshFcTransactions` POSTs against. */
+export const listActiveAccountsForRefresh = internalQuery({
+  args: {},
+  returns: v.array(
+    v.object({
+      id: v.id("legacyAccounts"),
+      stripeFcAccountId: v.string(),
+    }),
+  ),
+  handler: async (ctx) => {
+    const accounts = await ctx.db
+      .query("legacyAccounts")
+      .take(ACCOUNT_SCAN_LIMIT);
+    return accounts
+      .filter((a) => a.status === "active")
+      .map((a) => ({ id: a._id, stripeFcAccountId: a.stripeFcAccountId }));
   },
 });
 
@@ -866,6 +949,38 @@ export const syncAllAccounts = internalAction({
         0,
         internal.stripeFinance.syncTransactions,
         { legacyAccountId },
+      );
+    }
+    return null;
+  },
+});
+
+/**
+ * Force a transaction re-fetch for EVERY active legacy account across all
+ * chapters (bounded). Ops escape hatch — runnable from `run-convex-function.yml`
+ * (`stripeFinance:refreshAllActiveFcAccounts`) to pull the latest history for a
+ * chapter without touching the UI. Schedules `refreshFcTransactions` (Stripe
+ * fetch + bounded fallback re-syncs) per account; key-gated + idempotent (dedup
+ * on `externalId`), so it's a safe no-op without the vendor and never
+ * double-counts. Mirrors `syncAllAccounts`, but asks Stripe to REFETCH first
+ * rather than only re-sweeping what's already landed.
+ */
+export const refreshAllActiveFcAccounts = internalAction({
+  args: {},
+  returns: v.null(),
+  handler: async (ctx) => {
+    const accounts = await ctx.runQuery(
+      internal.stripeFinance.listActiveAccountsForRefresh,
+      {},
+    );
+    for (const account of accounts) {
+      await ctx.scheduler.runAfter(
+        0,
+        internal.stripeFinance.refreshFcTransactions,
+        {
+          legacyAccountId: account.id,
+          stripeFcAccountId: account.stripeFcAccountId,
+        },
       );
     }
     return null;

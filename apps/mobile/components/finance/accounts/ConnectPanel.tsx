@@ -4,7 +4,8 @@
  * WEB: creates an FC session (`createFcSession`), loads Stripe.js, runs Stripe's
  * hosted Financial Connections collection (see `fcClient.web.ts`), and stores
  * each linked account (`storeFcAccount`, which kicks off the read-only backfill/
- * sync). Notices:
+ * sync). The connect flow lives in `useFcConnect` (shared with the per-row
+ * "Reconnect" on a disconnected account). Notices:
  *  - success        → accounts linked; they appear in the list below.
  *  - none           → the linking UI closed without linking an account.
  *  - not_configured → the finance vendor / publishable key isn't wired up yet.
@@ -13,79 +14,13 @@
  * NATIVE: Stripe.js is browser-only (and we don't ship `@stripe/stripe-react-
  * native`), so this shows a "connect from the web dashboard" notice instead.
  */
-import { useState } from "react";
-import { Platform, Text, View } from "react-native";
-import { ConvexError } from "convex/values";
-import { useAction, useMutation } from "convex/react";
-import { api } from "@events-os/convex/_generated/api";
+import { Text, View } from "react-native";
 import { Button, Icon } from "../../ui";
 import { colors } from "../../../lib/theme";
-import { errorMessage } from "../../../lib/errors";
-import { collectBankAccounts } from "./fcClient";
-
-type Notice =
-  | { kind: "success"; count: number }
-  | { kind: "none" }
-  | { kind: "native" }
-  | { kind: "not_configured" }
-  | { kind: "error"; message: string };
-
-/** Pull a ConvexError `code` (the app throws `{ code, message }`). */
-function errorCode(err: unknown): string | undefined {
-  if (err instanceof ConvexError) {
-    return (err.data as { code?: string } | undefined)?.code;
-  }
-  return undefined;
-}
+import { useFcConnect, type FcConnectNotice } from "./useFcConnect";
 
 export function ConnectPanel() {
-  const createFcSession = useAction(api.stripeFinance.createFcSession);
-  const storeFcAccount = useMutation(api.stripeFinance.storeFcAccount);
-  const [busy, setBusy] = useState(false);
-  const [notice, setNotice] = useState<Notice | null>(null);
-
-  async function handleConnect() {
-    // Stripe.js is browser-only; hosted linking runs on the web dashboard.
-    if (Platform.OS !== "web") {
-      setNotice({ kind: "native" });
-      return;
-    }
-
-    setBusy(true);
-    setNotice(null);
-    try {
-      const { clientSecret, publishableKey } = await createFcSession({});
-      if (!publishableKey) {
-        // Session created, but no publishable key to init Stripe.js with.
-        setNotice({ kind: "not_configured" });
-        return;
-      }
-
-      const accounts = await collectBankAccounts(publishableKey, clientSecret);
-      if (accounts.length === 0) {
-        setNotice({ kind: "none" });
-        return;
-      }
-
-      for (const account of accounts) {
-        await storeFcAccount({
-          stripeFcAccountId: account.stripeFcAccountId,
-          institutionName: account.institutionName,
-          last4: account.last4,
-          type: account.type,
-        });
-      }
-      setNotice({ kind: "success", count: accounts.length });
-    } catch (err) {
-      if (errorCode(err) === "NOT_CONFIGURED") {
-        setNotice({ kind: "not_configured" });
-      } else {
-        setNotice({ kind: "error", message: errorMessage(err) });
-      }
-    } finally {
-      setBusy(false);
-    }
-  }
+  const { connect, busy, notice } = useFcConnect();
 
   return (
     <View className="gap-2">
@@ -94,7 +29,7 @@ export function ConnectPanel() {
           title="Connect a bank (read-only)"
           icon="link"
           loading={busy}
-          onPress={handleConnect}
+          onPress={() => void connect()}
         />
       </View>
       <Text className="text-xs text-muted">
@@ -107,7 +42,9 @@ export function ConnectPanel() {
   );
 }
 
-function NoticeBanner({ notice }: { notice: Notice }) {
+/** Inline result banner for a connect/reconnect attempt. Exported so the
+ *  per-row "Reconnect" (AccountRow) renders the identical outcome states. */
+export function NoticeBanner({ notice }: { notice: FcConnectNotice }) {
   if (notice.kind === "success") {
     return (
       <View className="flex-row gap-3 rounded-lg border border-success bg-success-bg px-4 py-3">

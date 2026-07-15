@@ -55,6 +55,7 @@ export default function AccountsScreen() {
 
   const setAccountFund = useMutation(api.stripeFinance.setAccountFund);
   const disconnect = useMutation(api.stripeFinance.disconnect);
+  const refreshFcAccount = useMutation(api.stripeFinance.refreshFcAccount);
   const setSandboxMode = useMutation(api.financeSettings.setSandboxMode);
   const provisionAccount = useAction(api.increase.provisionChapterAccount);
   const removeChapterAccount = useMutation(api.increase.removeChapterAccount);
@@ -285,6 +286,12 @@ export default function AccountsScreen() {
                 void run(
                   () => disconnect({ legacyAccountId: account.id }),
                   { errorTitle: "Couldn't disconnect the account" },
+                )
+              }
+              onRefresh={() =>
+                run(
+                  () => refreshFcAccount({ legacyAccountId: account.id }),
+                  { errorTitle: "Couldn't refresh the account" },
                 )
               }
             />

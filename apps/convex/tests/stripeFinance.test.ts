@@ -906,4 +906,118 @@ describe("storeFcAccount initial sync scheduling", () => {
     // Re-connect refreshes metadata via the incremental path; no initial sync.
     expect(scheduled).toHaveLength(0);
   });
+
+  test("RECONNECTING a disconnected account reactivates it AND schedules a refresh", async () => {
+    process.env.STRIPE_SECRET_KEY = "sk_test_mock";
+    const s = await setupChapter(newT());
+    await asManager(s);
+    // A previously-connected account the user had disconnected.
+    const accountId = await seedAccount(s, s.chapterId, {
+      stripeFcAccountId: "fca_recon_disc",
+    });
+    await run(s.t, (ctx) =>
+      ctx.db.patch(accountId, { status: "disconnected" }),
+    );
+
+    await s.as.mutation(api.stripeFinance.storeFcAccount, {
+      stripeFcAccountId: "fca_recon_disc",
+      last4: "9999",
+    });
+
+    // Reactivated…
+    const account = await run(s.t, (ctx) => ctx.db.get(accountId));
+    expect(account?.status).toBe("active");
+    // …and a transaction refresh was queued so the history since disconnect lands.
+    const scheduled = await run(s.t, (ctx) =>
+      ctx.db.system.query("_scheduled_functions").collect(),
+    );
+    expect(scheduled).toHaveLength(1);
+    expect(scheduled[0].name).toContain("refreshFcTransactions");
+  });
+
+  test("reconnecting a disconnected account with NO key reactivates but schedules nothing", async () => {
+    delete process.env.STRIPE_SECRET_KEY;
+    const s = await setupChapter(newT());
+    await asManager(s);
+    const accountId = await seedAccount(s, s.chapterId, {
+      stripeFcAccountId: "fca_recon_disc_nokey",
+    });
+    await run(s.t, (ctx) =>
+      ctx.db.patch(accountId, { status: "disconnected" }),
+    );
+
+    await s.as.mutation(api.stripeFinance.storeFcAccount, {
+      stripeFcAccountId: "fca_recon_disc_nokey",
+    });
+
+    const account = await run(s.t, (ctx) => ctx.db.get(accountId));
+    expect(account?.status).toBe("active");
+    const scheduled = await run(s.t, (ctx) =>
+      ctx.db.system.query("_scheduled_functions").collect(),
+    );
+    expect(scheduled).toHaveLength(0);
+  });
+});
+
+describe("refreshFcAccount (manual refresh)", () => {
+  const realKey = process.env.STRIPE_SECRET_KEY;
+
+  afterEach(() => {
+    if (realKey === undefined) delete process.env.STRIPE_SECRET_KEY;
+    else process.env.STRIPE_SECRET_KEY = realKey;
+  });
+
+  test("schedules a Stripe transaction refresh for an in-chapter account", async () => {
+    process.env.STRIPE_SECRET_KEY = "sk_test_mock";
+    const s = await setupChapter(newT());
+    await asManager(s);
+    const accountId = await seedAccount(s, s.chapterId, {
+      stripeFcAccountId: "fca_manual",
+    });
+
+    await s.as.mutation(api.stripeFinance.refreshFcAccount, {
+      legacyAccountId: accountId,
+    });
+
+    const scheduled = await run(s.t, (ctx) =>
+      ctx.db.system.query("_scheduled_functions").collect(),
+    );
+    expect(scheduled).toHaveLength(1);
+    expect(scheduled[0].name).toContain("refreshFcTransactions");
+  });
+
+  test("rejects an account from another chapter", async () => {
+    process.env.STRIPE_SECRET_KEY = "sk_test_mock";
+    const t = newT();
+    const s = await setupChapter(t);
+    await asManager(s);
+
+    const other = await setupChapter(t, { email: "other@publicworship.life" });
+    const foreignAccount = await seedAccount(other, other.chapterId, {
+      stripeFcAccountId: "fca_foreign_refresh",
+    });
+
+    await expect(
+      s.as.mutation(api.stripeFinance.refreshFcAccount, {
+        legacyAccountId: foreignAccount,
+      }),
+    ).rejects.toBeInstanceOf(ConvexError);
+  });
+
+  test("no key → no-op (nothing scheduled, no throw)", async () => {
+    delete process.env.STRIPE_SECRET_KEY;
+    const s = await setupChapter(newT());
+    await asManager(s);
+    const accountId = await seedAccount(s, s.chapterId, {
+      stripeFcAccountId: "fca_manual_nokey",
+    });
+
+    await s.as.mutation(api.stripeFinance.refreshFcAccount, {
+      legacyAccountId: accountId,
+    });
+    const scheduled = await run(s.t, (ctx) =>
+      ctx.db.system.query("_scheduled_functions").collect(),
+    );
+    expect(scheduled).toHaveLength(0);
+  });
 });

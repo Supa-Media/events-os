@@ -14,6 +14,8 @@ import { Text, View } from "react-native";
 import type { Id } from "@events-os/convex/_generated/dataModel";
 import { Badge, Button, Card, Icon, Select, type BadgeTone } from "../../ui";
 import { colors } from "../../../lib/theme";
+import { useFcConnect } from "./useFcConnect";
+import { NoticeBanner } from "./ConnectPanel";
 
 /** The row shape from `api.stripeFinance.listAccounts`. */
 export type LegacyAccount = {
@@ -56,15 +58,31 @@ export function AccountRow({
   funds,
   onSetFund,
   onDisconnect,
+  onRefresh,
 }: {
   account: LegacyAccount;
   funds: FundOption[];
   onSetFund: (fundId: Id<"funds">) => void;
   onDisconnect: () => void;
+  /** Manually re-pull this account's transactions ("Refresh"). Awaited so the
+   *  button can show a "Syncing…" state until the schedule call resolves. */
+  onRefresh: () => Promise<unknown>;
 }) {
   const [confirming, setConfirming] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
+  // A disconnected row's "Reconnect" reuses the exact hosted connect flow.
+  const reconnect = useFcConnect();
   const status = STATUS[account.status];
   const isDisconnected = account.status === "disconnected";
+
+  async function handleRefresh() {
+    setRefreshing(true);
+    try {
+      await onRefresh();
+    } finally {
+      setRefreshing(false);
+    }
+  }
   const title = account.institutionName ?? "Bank account";
   const typeLabel = account.type
     ? account.type.charAt(0).toUpperCase() + account.type.slice(1)
@@ -118,8 +136,30 @@ export function AccountRow({
           </Text>
         </View>
 
-        {/* Disconnect (two-step confirm) */}
-        {isDisconnected ? null : confirming ? (
+        {isDisconnected ? (
+          /* Disconnected → offer a per-row Reconnect (reruns the hosted connect
+             flow; the reconnect reactivates the row AND re-pulls transactions). */
+          <View className="gap-2">
+            <Text className="text-xs text-muted">
+              Syncing is stopped. Reconnect to resume — we&apos;ll re-pull any
+              transactions from while it was disconnected into Reconcile.
+            </Text>
+            <View className="flex-row justify-end">
+              <Button
+                title="Reconnect"
+                variant="secondary"
+                size="sm"
+                icon="link"
+                loading={reconnect.busy}
+                onPress={() => void reconnect.connect()}
+              />
+            </View>
+            {reconnect.notice ? (
+              <NoticeBanner notice={reconnect.notice} />
+            ) : null}
+          </View>
+        ) : confirming ? (
+          /* Disconnect (two-step confirm). */
           <View className="flex-row items-center justify-end gap-2">
             <Text className="flex-1 text-xs text-muted">
               Stop syncing this account? Already-synced transactions stay.
@@ -142,13 +182,27 @@ export function AccountRow({
             />
           </View>
         ) : (
-          <View className="flex-row justify-end">
-            <Button
-              title="Disconnect"
-              variant="secondary"
-              size="sm"
-              onPress={() => setConfirming(true)}
-            />
+          /* Active → Refresh now (manual transaction re-pull) + Disconnect. */
+          <View className="gap-1.5">
+            <View className="flex-row justify-end gap-2">
+              <Button
+                title={refreshing ? "Syncing…" : "Refresh"}
+                variant="secondary"
+                size="sm"
+                icon="refresh-cw"
+                disabled={refreshing}
+                onPress={() => void handleRefresh()}
+              />
+              <Button
+                title="Disconnect"
+                variant="secondary"
+                size="sm"
+                onPress={() => setConfirming(true)}
+              />
+            </View>
+            <Text className="text-right text-xs text-muted">
+              Refresh pulls the latest transactions from your bank into Reconcile.
+            </Text>
           </View>
         )}
       </View>
