@@ -25,7 +25,7 @@
  *  - Reads are bounded (`.take()` / paginate); rollups scope the index read to
  *    the period + chapter.
  */
-import { query, mutation } from "./_generated/server";
+import { query, mutation, internalMutation } from "./_generated/server";
 import type { MutationCtx, QueryCtx } from "./_generated/server";
 import { ConvexError, v } from "convex/values";
 import { paginationOptsValidator } from "convex/server";
@@ -62,6 +62,7 @@ import {
 } from "./lib/finance";
 import { requireSuperuser } from "./lib/superuser";
 import { viewerPerson } from "./lib/org";
+import { insertDefaultExpenseCategories } from "./lib/seed/finance";
 
 // ── Enum validators (built from the shared tuples) ───────────────────────────
 const restrictionValidator = v.union(
@@ -163,6 +164,11 @@ const txnSummary = v.object({
   fundId: v.union(v.id("funds"), v.null()),
   categoryId: v.union(v.id("budgetCategories"), v.null()),
   budgetId: v.union(v.id("budgets"), v.null()),
+  // SOFT attribution warning: a spend txn with no budget still needs to be
+  // rolled up. True iff `isSpend(tr) && budgetId == null` (transfers / excluded /
+  // personal / inflow are never flagged). Drives the reconcile "needs budget"
+  // badge + warning strip — never a hard block.
+  needsBudget: v.boolean(),
 });
 
 // Per-fund SPEND for the dashboard period (period reads are naturally bounded;
@@ -355,6 +361,7 @@ function toTxnSummary(tr: Doc<"transactions">) {
     fundId: tr.fundId ?? null,
     categoryId: tr.categoryId ?? null,
     budgetId: tr.budgetId ?? null,
+    needsBudget: isSpend(tr) && tr.budgetId == null,
   };
 }
 
@@ -900,6 +907,9 @@ export const dashboardChapter = query({
     recentTransactions: v.array(recentTxnCard),
     attention: v.array(attentionItem),
     funds: v.array(fundPeriodSpend),
+    // Count of spend txns with no budget attributed (bounded scan). Drives the
+    // "N transactions need a budget" attention item — a SOFT warning, never a block.
+    toBudgetCount: v.number(),
   }),
   handler: async (ctx, args) => {
     const now = easternParts(Date.now());
@@ -915,6 +925,7 @@ export const dashboardChapter = query({
       recentTransactions: [] as never[],
       attention: [] as never[],
       funds: [] as never[],
+      toBudgetCount: 0,
     };
     const chapterId = await readChapterId(ctx);
     if (!chapterId) return empty;
@@ -1169,6 +1180,18 @@ export const dashboardChapter = query({
       meta: "transactions",
     });
 
+    // SOFT attribution attention: count the chapter's spend txns with no budget
+    // attributed (a bounded, all-time-capped scan — a txn from any period still
+    // needs a budget). Powers the "N transactions need a budget" attention row.
+    const chapterTxns = await ctx.db
+      .query("transactions")
+      .withIndex("by_chapter_and_postedAt", (q) => q.eq("chapterId", chapterId))
+      .take(ROLLUP_SCAN_LIMIT);
+    const toBudgetCount = chapterTxns.reduce(
+      (n, tr) => (isSpend(tr) && tr.budgetId == null ? n + 1 : n),
+      0,
+    );
+
     return {
       tiles,
       oneTimeBudgets,
@@ -1177,6 +1200,7 @@ export const dashboardChapter = query({
       recentTransactions,
       attention: [],
       funds,
+      toBudgetCount,
     };
   },
 });
@@ -1746,6 +1770,100 @@ export const createCategory = mutation({
       isActive: true,
       createdAt: Date.now(),
     });
+  },
+});
+
+/**
+ * Resolve a chapter's General Fund to hang the default categories off of: prefer
+ * the "General Fund" by name, else the lowest-sortOrder unrestricted fund, else
+ * the lowest-sortOrder fund. Returns `null` for a fund-less chapter.
+ */
+async function findGeneralFundId(
+  ctx: MutationCtx,
+  chapterId: Id<"chapters">,
+): Promise<Id<"funds"> | null> {
+  const funds = await ctx.db
+    .query("funds")
+    .withIndex("by_chapter", (q) => q.eq("chapterId", chapterId))
+    .take(ROLLUP_SCAN_LIMIT);
+  if (funds.length === 0) return null;
+  const byName = funds.find((f) => f.name === "General Fund");
+  if (byName) return byName._id;
+  const byOrder = [...funds].sort((a, b) => a.sortOrder - b.sortOrder);
+  const unrestricted = byOrder.find((f) => f.restriction === "unrestricted");
+  return (unrestricted ?? byOrder[0])._id;
+}
+
+/**
+ * Shared: seed one chapter's default expense categories under its General Fund.
+ * Idempotent (skips names that already exist). Returns the count inserted (0 if
+ * the chapter has no fund to attach them to).
+ */
+async function seedDefaultCategoriesForChapter(
+  ctx: MutationCtx,
+  chapterId: Id<"chapters">,
+  now: number,
+): Promise<number> {
+  const fundId = await findGeneralFundId(ctx, chapterId);
+  if (!fundId) return 0;
+  return await insertDefaultExpenseCategories(ctx, chapterId, fundId, now);
+}
+
+/**
+ * Superuser-gated backfill: seed the default expense categories for ONE chapter
+ * (the caller's, or an explicit `chapterId` — lets central admins fix existing /
+ * prod chapters). Idempotent: names that already exist are skipped, so a chapter
+ * that already has the set is a no-op. Reuses {@link seedDefaultCategoriesForChapter}.
+ */
+export const seedDefaultExpenseCategories = mutation({
+  args: { chapterId: v.optional(v.id("chapters")) },
+  returns: v.object({ inserted: v.number() }),
+  handler: async (ctx, args) => {
+    await requireSuperuser(ctx);
+    const chapterId =
+      args.chapterId ?? ((await requireChapterId(ctx)) as Id<"chapters">);
+    const chapter = await ctx.db.get(chapterId);
+    if (!chapter) {
+      throw new ConvexError({ code: "NOT_FOUND", message: "Chapter not found." });
+    }
+    const inserted = await seedDefaultCategoriesForChapter(
+      ctx,
+      chapterId,
+      Date.now(),
+    );
+    return { inserted };
+  },
+});
+
+/**
+ * CLI-runnable (no auth) sibling of {@link seedDefaultExpenseCategories}: seed
+ * the defaults for EVERY chapter that currently has no categories. Bounded +
+ * idempotent — re-runs skip already-seeded chapters.
+ *
+ * Run locally:  npx convex run finances:runSeedDefaultExpenseCategories
+ * Run on prod:  npx convex run --prod finances:runSeedDefaultExpenseCategories
+ */
+export const runSeedDefaultExpenseCategories = internalMutation({
+  args: {},
+  returns: v.object({ chaptersSeeded: v.number(), inserted: v.number() }),
+  handler: async (ctx) => {
+    const now = Date.now();
+    const chapters = await ctx.db.query("chapters").take(ROLLUP_SCAN_LIMIT);
+    let chaptersSeeded = 0;
+    let inserted = 0;
+    for (const c of chapters) {
+      const existing = await ctx.db
+        .query("budgetCategories")
+        .withIndex("by_chapter", (q) => q.eq("chapterId", c._id))
+        .take(1);
+      if (existing.length > 0) continue;
+      const n = await seedDefaultCategoriesForChapter(ctx, c._id, now);
+      if (n > 0) {
+        chaptersSeeded++;
+        inserted += n;
+      }
+    }
+    return { chaptersSeeded, inserted };
   },
 });
 
@@ -2357,10 +2475,17 @@ export const deleteBudgetTag = mutation({
 });
 
 // ── Migration: legacy `scope` → v2 `type` + tags ─────────────────────────────
+const budgetScopeMigrationResult = v.object({
+  migrated: v.number(),
+  skipped: v.number(),
+  tagsLinked: v.number(),
+});
+
 /**
- * Backfill every legacy budget onto the v2 `type` + tag model. Superuser-gated
- * public wrapper (invoke manually — NOT in the auto-run registry). Idempotent:
- * a budget that already has `type` set is skipped, so re-runs are no-ops.
+ * Backfill every legacy budget onto the v2 `type` + tag model. Shared body for
+ * the superuser-gated public mutation and the no-auth CLI internal wrapper.
+ * Idempotent: a budget that already has `type` set is skipped, so re-runs are
+ * no-ops.
  *
  * Per-scope mapping:
  *  - event    → one_time, refKind=event; auto-tag the eventType template tag + an "events" tag
@@ -2369,19 +2494,10 @@ export const deleteBudgetTag = mutation({
  *  - template → recurring; ensure/link a `template` tag when scopeRefId resolves to an eventType
  *  - bucket   → recurring (no tags)
  *  - chapter  → recurring (no tags)
- *
- * Run locally:  npx convex run finances:migrateBudgetScopesToTypes
- * Run on prod:  npx convex run --prod finances:migrateBudgetScopesToTypes
  */
-export const migrateBudgetScopesToTypes = mutation({
-  args: {},
-  returns: v.object({
-    migrated: v.number(),
-    skipped: v.number(),
-    tagsLinked: v.number(),
-  }),
-  handler: async (ctx) => {
-    await requireSuperuser(ctx);
+async function runBudgetScopeMigration(
+  ctx: MutationCtx,
+): Promise<{ migrated: number; skipped: number; tagsLinked: number }> {
     let migrated = 0;
     let skipped = 0;
     let tagsLinked = 0;
@@ -2462,7 +2578,36 @@ export const migrateBudgetScopesToTypes = mutation({
     }
 
     return { migrated, skipped, tagsLinked };
+}
+
+/**
+ * Superuser-gated public wrapper (invoke manually — NOT in the auto-run
+ * registry). Idempotent.
+ *
+ * Run locally:  npx convex run finances:migrateBudgetScopesToTypes
+ * Run on prod:  npx convex run --prod finances:migrateBudgetScopesToTypes
+ */
+export const migrateBudgetScopesToTypes = mutation({
+  args: {},
+  returns: budgetScopeMigrationResult,
+  handler: async (ctx) => {
+    await requireSuperuser(ctx);
+    return await runBudgetScopeMigration(ctx);
   },
+});
+
+/**
+ * CLI-runnable (no auth) sibling of {@link migrateBudgetScopesToTypes} — an
+ * internalMutation is safe to run without the superuser gate. Same idempotent
+ * backfill.
+ *
+ * Run locally:  npx convex run finances:runMigrateBudgetScopesToTypes
+ * Run on prod:  npx convex run --prod finances:runMigrateBudgetScopesToTypes
+ */
+export const runMigrateBudgetScopesToTypes = internalMutation({
+  args: {},
+  returns: budgetScopeMigrationResult,
+  handler: async (ctx) => await runBudgetScopeMigration(ctx),
 });
 
 // ── Transactions ───────────────────────────────────────────────────────────────
