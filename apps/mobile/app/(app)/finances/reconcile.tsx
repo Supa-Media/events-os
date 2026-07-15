@@ -108,7 +108,7 @@ export default function ReconcileScreen() {
   const budgetOpts = budgets.map((b) => ({
     id: b.id,
     label: b.label,
-    scope: b.scope,
+    type: b.type,
     level: b.level,
   }));
 

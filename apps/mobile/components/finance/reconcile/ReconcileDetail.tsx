@@ -11,7 +11,7 @@
  */
 import { useEffect, useState } from "react";
 import { View, Text } from "react-native";
-import { BUDGET_SCOPE_LABELS, type BudgetScope } from "@events-os/shared";
+import { BUDGET_TYPE_LABELS, type BudgetType } from "@events-os/shared";
 import { Button, Card, Field, Icon, Select, type IconName } from "../../ui";
 import { colors } from "../../../lib/theme";
 import { ReceiptTimeline } from "./ReceiptTimeline";
@@ -32,13 +32,13 @@ type CatOpt = { id: string; name: string; fundId: string };
 type BudgetOpt = {
   id: string;
   label: string | null;
-  scope: BudgetScope;
+  type: BudgetType | null;
   level: "chapter" | "central";
 };
 
-/** Human name for a budget in the picker (its label, else its scope word). */
+/** Human name for a budget in the picker (its label, else its type word). */
 function budgetName(b: BudgetOpt): string {
-  return b.label?.trim() || BUDGET_SCOPE_LABELS[b.scope];
+  return b.label?.trim() || (b.type ? BUDGET_TYPE_LABELS[b.type] : "Budget");
 }
 
 const RECEIPT_ICON: Record<string, IconName> = {

@@ -7,6 +7,7 @@
  * All figures come straight from `api.finances.dashboardChapter` — this view is
  * pure presentation over that contract.
  */
+import { useMemo } from "react";
 import { Text, View } from "react-native";
 import type { FunctionReturnType } from "convex/server";
 import { api } from "@events-os/convex/_generated/api";
@@ -33,9 +34,10 @@ import {
   TileRow,
   txnStatusTone,
 } from "./parts";
+import { TagRollupSection, type BudgetSpend } from "./TagRollup";
 
 type ChapterDash = FunctionReturnType<typeof api.finances.dashboardChapter>;
-type ProjectBudget = ChapterDash["projectBudgets"][number];
+type ProjectBudget = ChapterDash["oneTimeBudgets"][number];
 type RecurringBudget = ChapterDash["recurringBudgets"][number];
 type RecentTxn = ChapterDash["recentTransactions"][number];
 // The backend always returns `attention: []` today (populated in Phases 3+5),
@@ -63,6 +65,16 @@ export function ChapterView({
     (t) => txnStatusTone(t.status).label === "Needs review",
   ).length;
 
+  // Per-budget actuals for the tag-detail sheet, keyed by budget id.
+  const spentByBudgetId = useMemo(() => {
+    const m = new Map<string, BudgetSpend>();
+    for (const b of data.oneTimeBudgets)
+      m.set(b.id, { spentCents: b.spentCents, budgetCents: b.budgetCents });
+    for (const b of data.recurringBudgets)
+      m.set(b.id, { spentCents: b.spentCents, budgetCents: b.budgetCents });
+    return m;
+  }, [data.oneTimeBudgets, data.recurringBudgets]);
+
   return (
     <View>
       {/* KPI tiles */}
@@ -77,15 +89,15 @@ export function ChapterView({
       </View>
 
       {/* Events & projects */}
-      <SectionHeader title="Events & projects" count={data.projectBudgets.length} />
-      {data.projectBudgets.length === 0 ? (
+      <SectionHeader title="Events & projects" count={data.oneTimeBudgets.length} />
+      {data.oneTimeBudgets.length === 0 ? (
         <EmptyState
           title="No event or project budgets yet"
           message="Budget an event or project to track its spend against a plan."
         />
       ) : (
         <View className="gap-3">
-          {data.projectBudgets.map((b) => (
+          {data.oneTimeBudgets.map((b) => (
             <ProjectBudgetCard key={b.id} b={b} onPress={() => onEditBudget(b.id)} />
           ))}
         </View>
@@ -112,6 +124,9 @@ export function ChapterView({
           ))}
         </View>
       )}
+
+      {/* By tag — interactive rollup ("spent on Fundraisers") */}
+      <TagRollupSection rollups={data.tagRollups} spentByBudgetId={spentByBudgetId} />
 
       {/* Recent transactions */}
       <SectionHeader
