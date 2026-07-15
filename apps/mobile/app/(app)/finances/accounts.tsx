@@ -16,7 +16,7 @@
  */
 import { useMemo } from "react";
 import { Text, View } from "react-native";
-import { useMutation, useQuery } from "convex/react";
+import { useAction, useMutation, useQuery } from "convex/react";
 import { api } from "@events-os/convex/_generated/api";
 import type { Id } from "@events-os/convex/_generated/dataModel";
 import {
@@ -41,10 +41,12 @@ export default function AccountsScreen() {
   const accounts = useQuery(api.stripeFinance.listAccounts, {});
   const funds = useQuery(api.finances.listFunds, {});
   const financeSettings = useQuery(api.financeSettings.getFinanceSettings);
+  const chapterAccount = useQuery(api.increase.getChapterAccount);
 
   const setAccountFund = useMutation(api.stripeFinance.setAccountFund);
   const disconnect = useMutation(api.stripeFinance.disconnect);
   const setSandboxMode = useMutation(api.financeSettings.setSandboxMode);
+  const provisionAccount = useAction(api.increase.provisionChapterAccount);
   const { run, toast, dismiss } = useActionRunner();
 
   const fundOptions = useMemo<FundOption[]>(
@@ -72,12 +74,19 @@ export default function AccountsScreen() {
     org === undefined ||
     accounts === undefined ||
     funds === undefined ||
-    financeSettings === undefined
+    financeSettings === undefined ||
+    chapterAccount === undefined
   ) {
     return <Screen loading />;
   }
 
   const sandboxMode = financeSettings.sandboxMode;
+
+  // The chapter's Increase account is provisioned in whichever environment the
+  // account id is prefixed for (`sandbox_…` = sandbox), independent of the
+  // current sandbox toggle.
+  const accountIsSandbox =
+    chapterAccount?.increaseAccountId?.startsWith("sandbox_") ?? false;
 
   return (
     <Screen>
@@ -91,6 +100,100 @@ export default function AccountsScreen() {
         <View className="mb-1">
           <ToastView toast={toast} onDismiss={dismiss} />
         </View>
+
+        <SectionHeader title="Chapter bank account" />
+        <Card>
+          {chapterAccount === null ? (
+            // No Increase account yet → offer to provision one in the current mode.
+            <View className="flex-row items-start justify-between gap-3">
+              <View className="flex-1">
+                <Text className="font-display text-base text-ink">
+                  No Increase account yet
+                </Text>
+                <Text className="mt-1 text-sm text-muted">
+                  Provision the chapter's Increase bank account to enable ACH
+                  reimbursement payouts.
+                </Text>
+                <View className="mt-2">
+                  <Badge
+                    label={`Will provision in ${sandboxMode ? "SANDBOX" : "PRODUCTION"} mode`}
+                    tone={sandboxMode ? "warn" : "neutral"}
+                    icon={sandboxMode ? "alert-triangle" : "check-circle"}
+                  />
+                </View>
+              </View>
+              <Button
+                title="Provision account"
+                icon="plus"
+                onPress={() =>
+                  void run(() => provisionAccount({}), {
+                    errorTitle: "Couldn't provision the account",
+                  })
+                }
+              />
+            </View>
+          ) : chapterAccount.onboardingStatus === "active" ? (
+            // Active → show the account + entity ids and which environment it lives in.
+            <View className="gap-2">
+              <View className="flex-row flex-wrap items-center gap-2">
+                <Text className="font-display text-base text-ink">
+                  Increase account
+                </Text>
+                <Badge label="Active" tone="success" icon="check-circle" />
+                <Badge
+                  label={accountIsSandbox ? "SANDBOX" : "PRODUCTION"}
+                  tone={accountIsSandbox ? "warn" : "neutral"}
+                  icon={accountIsSandbox ? "alert-triangle" : "check-circle"}
+                />
+              </View>
+              <Text className="text-sm text-muted">
+                Account:{" "}
+                <Text className="text-ink">{chapterAccount.increaseAccountId}</Text>
+              </Text>
+              {chapterAccount.increaseEntityId ? (
+                <Text className="text-sm text-muted">
+                  Entity:{" "}
+                  <Text className="text-ink">
+                    {chapterAccount.increaseEntityId}
+                  </Text>
+                </Text>
+              ) : null}
+            </View>
+          ) : (
+            // Pending (or not fully provisioned) → explain + let the manager retry.
+            <View className="flex-row items-start justify-between gap-3">
+              <View className="flex-1">
+                <View className="flex-row flex-wrap items-center gap-2">
+                  <Text className="font-display text-base text-ink">
+                    Increase account
+                  </Text>
+                  <Badge label="Pending" tone="warn" icon="alert-triangle" />
+                </View>
+                <Text className="mt-1 text-sm text-muted">
+                  Provisioning didn't complete — the Increase environment may not
+                  be fully configured, or the call failed. Retry to open the
+                  account.
+                </Text>
+                <View className="mt-2">
+                  <Badge
+                    label={`Will provision in ${sandboxMode ? "SANDBOX" : "PRODUCTION"} mode`}
+                    tone={sandboxMode ? "warn" : "neutral"}
+                    icon={sandboxMode ? "alert-triangle" : "check-circle"}
+                  />
+                </View>
+              </View>
+              <Button
+                title="Retry"
+                icon="refresh-cw"
+                onPress={() =>
+                  void run(() => provisionAccount({}), {
+                    errorTitle: "Couldn't provision the account",
+                  })
+                }
+              />
+            </View>
+          )}
+        </Card>
 
         <ConnectPanel />
 

@@ -721,6 +721,49 @@ describe("listPayouts", () => {
   });
 });
 
+// ── getChapterAccount ────────────────────────────────────────────────────────
+
+describe("getChapterAccount", () => {
+  test("returns null before provisioning, then the row after one is inserted", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await seedManager(s);
+
+    // Unprovisioned → null.
+    expect(await s.as.query(api.increase.getChapterAccount, {})).toBeNull();
+
+    // Insert an Increase account row for the chapter.
+    const now = Date.now();
+    const accountId = await run(s.t, (ctx) =>
+      ctx.db.insert("increaseAccounts", {
+        chapterId: s.chapterId,
+        onboardingStatus: "active",
+        increaseEntityId: "entity_shared_org",
+        increaseAccountId: "sandbox_account_x",
+        createdAt: now,
+        updatedAt: now,
+      }),
+    );
+
+    const account = await s.as.query(api.increase.getChapterAccount, {});
+    expect(account).not.toBeNull();
+    expect(account!.id).toBe(accountId);
+    expect(account!.chapterId).toBe(s.chapterId);
+    expect(account!.onboardingStatus).toBe("active");
+    expect(account!.increaseEntityId).toBe("entity_shared_org");
+    expect(account!.increaseAccountId).toBe("sandbox_account_x");
+  });
+
+  test("a caller without a finance role is rejected (viewer-gated)", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    // The caller has NO financeRoles row → below viewer.
+    await expect(
+      s.as.query(api.increase.getChapterAccount, {}),
+    ).rejects.toBeInstanceOf(ConvexError);
+  });
+});
+
 // ── verifyIncreaseSignature ──────────────────────────────────────────────────
 
 // Standard Webhooks secrets are `whsec_<base64key>`; the HMAC key is the DECODED
