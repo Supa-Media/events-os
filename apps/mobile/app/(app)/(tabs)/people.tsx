@@ -862,6 +862,19 @@ function PersonDetailBody({
   const nav = useQuery(api.org.nav);
   const canManage = nav?.canManage === true;
   const duties = useQuery(api.responsibilities.list, canManage ? {} : "skip");
+  // Read-only mirror of this person's specialized (leadership/finance) roles.
+  // Super-admin gated on the backend — skip the query for anyone else, and mirror
+  // the same gate on the chapter-name lookup used to label chapter-scoped roles.
+  const me = useQuery(api.profiles.me);
+  const isSuperuser = me?.isSuperuser === true;
+  const specializedRoles = useQuery(
+    api.specializedRoles.personSpecializedRoles,
+    isSuperuser ? { personId: person._id as Id<"people"> } : "skip",
+  );
+  const chaptersForRoles = useQuery(
+    api.profiles.listChapters,
+    isSuperuser ? {} : "skip",
+  );
   const [addDutyOpen, setAddDutyOpen] = useState(false);
   const personDuties = (duties ?? []).filter((r) =>
     responsibilityAppliesTo(r, { _id: person._id, role: person.role ?? null }),
@@ -990,6 +1003,43 @@ function PersonDetailBody({
             </View>
           </>
         )}
+
+        {/* Governance roles (super-admin only): a read-only mirror of this
+            person's specialized leadership/finance roles. Assignment happens on
+            the Governance page — this section only reflects the current state. */}
+        {isSuperuser &&
+        specializedRoles !== undefined &&
+        specializedRoles.length > 0 ? (
+          <View className="mt-4">
+            <Text className="mb-2 text-2xs font-bold uppercase tracking-wider text-muted">
+              Roles
+            </Text>
+            <View className="gap-2">
+              {specializedRoles.map((r) => {
+                const scopeName =
+                  r.scope === "central"
+                    ? "Central (org)"
+                    : (chaptersForRoles ?? []).find((c) => c._id === r.scope)
+                        ?.name ?? "Chapter";
+                return (
+                  <View
+                    key={r.id}
+                    className="flex-row items-center gap-2"
+                  >
+                    <Badge
+                      label={r.label}
+                      tone={r.roleKind === "finance" ? "accent" : "lavender"}
+                    />
+                    <Text className="text-sm text-muted">{scopeName}</Text>
+                  </View>
+                );
+              })}
+            </View>
+            <Text className="mt-2 text-xs text-faint">
+              Manage these on the Governance page.
+            </Text>
+          </View>
+        ) : null}
       </ScrollView>
 
       {addDutyOpen ? (

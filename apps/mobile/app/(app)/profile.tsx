@@ -179,12 +179,18 @@ export default function ProfileScreen() {
 
       {/* Super-admin tools */}
       {me?.isSuperuser ? (
-        <View className="mt-4">
+        <View className="mt-4 gap-2">
           <Button
             title="Manage guest access"
             icon="user-plus"
             variant="secondary"
             onPress={() => router.push("/guest-access")}
+          />
+          <Button
+            title="Governance roles"
+            icon="shield"
+            variant="secondary"
+            onPress={() => router.push("/governance")}
           />
         </View>
       ) : null}
