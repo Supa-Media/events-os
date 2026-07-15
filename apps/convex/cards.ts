@@ -50,6 +50,7 @@ import {
   CARD_STATUSES,
   REPAYMENT_METHODS,
   REPAYMENT_STATUSES,
+  RECEIPT_GRACE_DAYS,
   easternParts,
   type CardType,
   type CardStatus,
@@ -74,8 +75,14 @@ const INCREASE_API = "https://api.increase.com";
 const CARD_SCAN_LIMIT = 2000;
 // Per-card, per-month charge count is naturally small; bound the read anyway.
 const CARD_TXN_LIMIT = 2000;
+// Bound the newest-first authorization read for the cap check. A month of
+// authorizations on one card is small; reading the most recent N and filtering
+// to the current month avoids the ascending-`take` under-count on long-lived
+// cards.
+const AUTH_SCAN_LIMIT = 5000;
 // Bound the auto-lock cron sweep (cards is a small table).
 const AUTOLOCK_LIMIT = 1000;
+const DAY_MS = 24 * 60 * 60 * 1000;
 
 // ── Enum validators (built from the shared tuples) ───────────────────────────
 const cardTypeValidator = v.union(...CARD_TYPES.map((t) => v.literal(t)));
@@ -234,6 +241,34 @@ async function cardMonthSpendCents(
   return total;
 }
 
+/**
+ * This-Eastern-month AUTHORIZED spend on a card, summed from its APPROVED
+ * `cardAuthorizations`. This is the figure the cap decision uses (NOT settled
+ * `transactions`): it counts in-flight authorizations, so a cardholder can't
+ * fire ten $400 charges the same afternoon against a $500 cap before any of them
+ * settle. Reads newest-first + filters to the current month by `createdAt`,
+ * avoiding the ascending-`take` under-count on a long-lived card.
+ */
+async function cardMonthAuthorizedCents(
+  ctx: QueryCtx,
+  card: Doc<"cards">,
+  now: number,
+): Promise<number> {
+  const { year, month } = easternParts(now);
+  const rows = await ctx.db
+    .query("cardAuthorizations")
+    .withIndex("by_card", (q) => q.eq("cardId", card._id))
+    .order("desc")
+    .take(AUTH_SCAN_LIMIT);
+  let total = 0;
+  for (const a of rows) {
+    if (!a.approved) continue;
+    const p = easternParts(a.createdAt);
+    if (p.year === year && p.month === month) total += a.amountCents;
+  }
+  return total;
+}
+
 /** The read projection the card UIs render (member + manager). Resolves the
  *  cardholder's name + this-month spend. */
 async function buildCardSummary(
@@ -293,6 +328,16 @@ export const beginIssueCard = internalMutation({
     const holder = await ctx.db.get(args.cardholderPersonId);
     await requireInChapter(ctx, chapterId, holder, "Cardholder");
 
+    const account = await ctx.db
+      .query("increaseAccounts")
+      .withIndex("by_chapter", (q) => q.eq("chapterId", chapterId))
+      .first();
+    const increaseAccountId =
+      account && account.onboardingStatus === "active" && account.increaseAccountId
+        ? account.increaseAccountId
+        : null;
+    const hasKey = !!process.env.INCREASE_API_KEY;
+
     // Idempotent-ish: don't mint a second ACTIVE card for the same person.
     const existing = await ctx.db
       .query("cards")
@@ -304,6 +349,19 @@ export const beginIssueCard = internalMutation({
       (c) => c.chapterId === chapterId && c.status === "active",
     );
     if (activeSame) {
+      // A previously-degraded row (no `increaseCardId`) is NOT permanently
+      // stranded: if the vendor is now reachable (key + active account), RETRY
+      // the Increase card creation on the SAME row instead of returning it
+      // vendorless forever (it could never authorize otherwise).
+      if (!activeSame.increaseCardId && hasKey && increaseAccountId) {
+        return {
+          kind: "created",
+          card: await buildCardSummary(ctx, activeSame),
+          cardId: activeSame._id,
+          increaseAccountId,
+          description: holder!.name,
+        };
+      }
       return { kind: "existing", card: await buildCardSummary(ctx, activeSame) };
     }
 
@@ -318,15 +376,6 @@ export const beginIssueCard = internalMutation({
       validUntil: args.validUntil,
       createdAt: now,
     });
-
-    const account = await ctx.db
-      .query("increaseAccounts")
-      .withIndex("by_chapter", (q) => q.eq("chapterId", chapterId))
-      .first();
-    const increaseAccountId =
-      account && account.onboardingStatus === "active" && account.increaseAccountId
-        ? account.increaseAccountId
-        : null;
 
     const card = (await ctx.db.get(cardId))!;
     return {
@@ -596,11 +645,14 @@ export const decideCardAuthorization = internalMutation({
       }
 
       const now = Date.now();
-      const monthSpendCents = await cardMonthSpendCents(ctx, card, now);
+      // Cap check counts APPROVED authorizations this month (in-flight +
+      // settled), NOT just settled transactions — otherwise a burst of
+      // unsettled charges blows through the cap before any transaction posts.
+      const monthAuthorizedCents = await cardMonthAuthorizedCents(ctx, card, now);
       const decision = decideAgainstCard(
         card,
         args.amountCents,
-        monthSpendCents,
+        monthAuthorizedCents,
         now,
       );
 
@@ -742,28 +794,22 @@ async function settleRepayment(
 }
 
 /**
- * Mark a personal repayment paid by hand (the working / degraded path, mirroring
- * `increase.markPaidManually`). The payer or a finance manager may complete it.
- * Posts the offsetting `flow:"transfer"` credit. IDEMPOTENT: a re-call posts no
- * second credit.
+ * Confirm a personal repayment was RECEIVED and post the offsetting
+ * `flow:"transfer"` credit (the working / degraded path, mirroring
+ * `increase.markPaidManually`). MANAGER-ONLY on purpose: this is the manual
+ * "the money arrived" confirmation, NOT self-serve — a member must not be able
+ * to flag their own charge personal and then zero it out here without actually
+ * paying. The member's own path is `initiateRepayment` (a real card/ACH charge).
+ * IDEMPOTENT: a re-call posts no second credit.
  */
 export const markRepaymentPaid = mutation({
   args: { repaymentId: v.id("personalRepayments") },
   returns: repaymentSummaryValidator,
   handler: async (ctx, { repaymentId }): Promise<RepaymentSummary> => {
     const chapterId = (await requireChapterId(ctx)) as Id<"chapters">;
-    const access = await getFinanceRole(ctx, chapterId);
+    await requireFinanceManager(ctx, chapterId);
     const repayment = await ctx.db.get(repaymentId);
     await requireInChapter(ctx, chapterId, repayment, "Repayment");
-
-    const isPayer =
-      access.personId != null && access.personId === repayment!.payerPersonId;
-    if (!isPayer && !access.isManager) {
-      throw new ConvexError({
-        code: "FORBIDDEN",
-        message: "Only the payer or a finance manager can settle this repayment.",
-      });
-    }
     return toRepaymentSummary(await settleRepayment(ctx, repayment!));
   },
 });
@@ -868,8 +914,8 @@ export const applyRepaymentPaid = internalMutation({
  * Initiate a personal-charge repayment via the payer's chosen method. The payer
  * pays the org back; on success the offsetting `flow:"transfer"` credit is
  * posted. DEGRADES to a `pending` repayment (never throws) when `INCREASE_API_KEY`
- * is unset / the payer's funding source isn't linked — the payer/manager then
- * completes it via `markRepaymentPaid`. IDEMPOTENT: never posts a double credit.
+ * is unset / the payer's funding source isn't linked — a manager then confirms
+ * receipt via `markRepaymentPaid`. IDEMPOTENT: never posts a double credit.
  */
 export const initiateRepayment = action({
   args: {
@@ -905,30 +951,82 @@ export const initiateRepayment = action({
 
 // ── autoLockOverdueCards (INTERNAL — the 7-day receipt auto-lock cron) ────────
 
+/** A card charge whose receipt is overdue: an outflow older than the grace
+ *  window, with no attached receipt, not intentionally excluded/reconciled. */
+function isOverdueReceiptCharge(
+  tr: Doc<"transactions">,
+  card: Doc<"cards">,
+  cutoff: number,
+): boolean {
+  return (
+    tr.chapterId === card.chapterId &&
+    tr.flow === "outflow" &&
+    tr.status !== "excluded" &&
+    tr.status !== "reconciled" &&
+    !tr.receiptStorageId &&
+    tr.postedAt < cutoff
+  );
+}
+
 /**
- * Lock every ACTIVE card whose receipt grace window has passed while the receipt
- * is still missing (`receiptGraceEndsAt` set + in the past — uploading a receipt
- * / unlocking clears it). The deployment-wide 7-day receipt auto-lock sweep the
- * cron calls. Bounded; returns the count locked.
+ * The deployment-wide 7-day receipt auto-lock sweep the cron calls. Derives
+ * overdue-ness ITSELF from each card's charges (no field elsewhere writes
+ * `receiptGraceEndsAt`, so it can't be read as the source of truth):
+ *
+ *  - an ACTIVE card with a charge older than `RECEIPT_GRACE_DAYS` days that
+ *    still has NO receipt → LOCK it + stamp `receiptGraceEndsAt` (for display);
+ *  - a previously AUTO-locked card (locked WITH a `receiptGraceEndsAt` stamp)
+ *    whose overdue missing-receipt charges are all resolved → UNLOCK it + clear
+ *    the stamp. Self-healing: uploading a receipt unlocks within a day.
+ *
+ * A MANUAL lock (`lockCard`, no `receiptGraceEndsAt`) is never auto-unlocked.
+ * Bounded; returns how many cards it locked / unlocked.
+ *
+ * TODO: immediate unlock-on-receipt-upload via attachReceipt (finances.ts).
  */
 export const autoLockOverdueCards = internalMutation({
   args: {},
-  returns: v.object({ lockedCount: v.number() }),
-  handler: async (ctx): Promise<{ lockedCount: number }> => {
+  returns: v.object({ lockedCount: v.number(), unlockedCount: v.number() }),
+  handler: async (
+    ctx,
+  ): Promise<{ lockedCount: number; unlockedCount: number }> => {
     const now = Date.now();
+    const cutoff = now - RECEIPT_GRACE_DAYS * DAY_MS;
     const cards = await ctx.db.query("cards").take(AUTOLOCK_LIMIT);
     let lockedCount = 0;
+    let unlockedCount = 0;
     for (const card of cards) {
-      if (
-        card.status === "active" &&
-        card.receiptGraceEndsAt != null &&
-        card.receiptGraceEndsAt <= now
-      ) {
-        await ctx.db.patch(card._id, { status: "locked" });
+      if (card.status === "canceled") continue;
+      // A manual lock (no grace stamp) is left untouched.
+      const isAutoLocked =
+        card.status === "locked" && card.receiptGraceEndsAt != null;
+      if (card.status !== "active" && !isAutoLocked) continue;
+
+      const txns = await ctx.db
+        .query("transactions")
+        .withIndex("by_card", (q) => q.eq("cardId", card._id))
+        .order("desc")
+        .take(CARD_TXN_LIMIT);
+      const overdue = txns.filter((tr) =>
+        isOverdueReceiptCharge(tr, card, cutoff),
+      );
+
+      if (card.status === "active" && overdue.length > 0) {
+        const earliest = Math.min(...overdue.map((tr) => tr.postedAt));
+        await ctx.db.patch(card._id, {
+          status: "locked",
+          receiptGraceEndsAt: earliest + RECEIPT_GRACE_DAYS * DAY_MS,
+        });
         lockedCount++;
+      } else if (isAutoLocked && overdue.length === 0) {
+        await ctx.db.patch(card._id, {
+          status: "active",
+          receiptGraceEndsAt: undefined,
+        });
+        unlockedCount++;
       }
     }
-    return { lockedCount };
+    return { lockedCount, unlockedCount };
   },
 });
 

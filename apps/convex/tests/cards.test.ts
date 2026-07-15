@@ -1,8 +1,16 @@
 import { describe, expect, test } from "vitest";
 import { ConvexError } from "convex/values";
-import { newT, run, setupChapter, type ChapterSetup } from "./setup.helpers";
+import {
+  newT,
+  run,
+  setupChapter,
+  storeBlob,
+  type ChapterSetup,
+} from "./setup.helpers";
 import { api, internal } from "../_generated/api";
 import type { Id } from "../_generated/dataModel";
+
+const DAY_MS = 24 * 60 * 60 * 1000;
 
 /**
  * Phase 5 card tests (person-owned Increase cards + the real-time authorization
@@ -96,25 +104,63 @@ async function seedCard(
   );
 }
 
-/** Seed a card charge (outflow) posted now (this Eastern month). */
+/** Seed a card charge (outflow). Defaults to posted now (this Eastern month);
+ *  `ageDays` back-dates it; `receiptStorageId` marks it receipted. */
 async function seedCardTxn(
   s: ChapterSetup,
-  opts: { cardId: Id<"cards">; amountCents: number; personId?: Id<"people"> },
+  opts: {
+    cardId: Id<"cards">;
+    amountCents: number;
+    personId?: Id<"people">;
+    ageDays?: number;
+    receiptStorageId?: Id<"_storage">;
+  },
 ): Promise<Id<"transactions">> {
   const now = Date.now();
+  const postedAt = now - (opts.ageDays ?? 0) * DAY_MS;
   return await run(s.t, (ctx) =>
     ctx.db.insert("transactions", {
       chapterId: s.chapterId,
       source: "increase_card",
       flow: "outflow",
       amountCents: opts.amountCents,
-      postedAt: now,
+      postedAt,
       cardId: opts.cardId,
       personId: opts.personId,
+      receiptStorageId: opts.receiptStorageId,
       status: "unreviewed",
       createdAt: now,
     }),
   );
+}
+
+/** Seed an APPROVED authorization on a card this month (no settled txn). */
+async function seedApprovedAuth(
+  s: ChapterSetup,
+  cardId: Id<"cards">,
+  amountCents: number,
+  increaseAuthId: string,
+): Promise<void> {
+  await run(s.t, (ctx) =>
+    ctx.db.insert("cardAuthorizations", {
+      chapterId: s.chapterId,
+      cardId,
+      increaseAuthId,
+      amountCents,
+      approved: true,
+      createdAt: Date.now(),
+    }),
+  );
+}
+
+/** Count `source:"repayment"` offsetting credits in the chapter. */
+async function repaymentCredits(s: ChapterSetup) {
+  return await run(s.t, (ctx) =>
+    ctx.db
+      .query("transactions")
+      .withIndex("by_chapter", (q) => q.eq("chapterId", s.chapterId))
+      .collect(),
+  ).then((rows) => rows.filter((r) => r.source === "repayment"));
 }
 
 async function authLogFor(s: ChapterSetup, increaseAuthId: string) {
@@ -197,7 +243,7 @@ describe("decideCardAuthorization", () => {
     expect(d.approved).toBe(false);
   });
 
-  test("DECLINES when the charge would exceed the monthly cap", async () => {
+  test("DECLINES over the cap from in-flight authorizations (no txn settled)", async () => {
     const t = newT();
     const s = await setupChapter(t);
     const holder = await seedPerson(s, { name: "Holder" });
@@ -206,22 +252,32 @@ describe("decideCardAuthorization", () => {
       monthlyCapCents: 10000,
       increaseCardId: "card_cap",
     });
-    // $80 already spent on the card this month.
-    await seedCardTxn(s, { cardId, amountCents: 8000 });
+    // $90 of APPROVED authorizations this month — NOTHING settled to a txn.
+    await seedApprovedAuth(s, cardId, 5000, "auth_a");
+    await seedApprovedAuth(s, cardId, 4000, "auth_b");
+    // Guard: no transaction exists on the card, so a txn-based cap would let
+    // these through — the auth-based cap must not.
+    const cardTxns = await run(s.t, (ctx) =>
+      ctx.db
+        .query("transactions")
+        .withIndex("by_card", (q) => q.eq("cardId", cardId))
+        .collect(),
+    );
+    expect(cardTxns.length).toBe(0);
 
-    // $50 more → $130 > $100 cap → DECLINE.
+    // $20 more → $110 > $100 cap → DECLINE.
     const over = await s.t.mutation(internal.cards.decideCardAuthorization, {
       increaseCardId: "card_cap",
       increaseAuthId: "auth_over",
-      amountCents: 5000,
+      amountCents: 2000,
     });
     expect(over.approved).toBe(false);
 
-    // $10 more → $90 ≤ $100 cap → APPROVE.
+    // $5 more → $95 ≤ $100 cap → APPROVE (the declined auth doesn't count).
     const under = await s.t.mutation(internal.cards.decideCardAuthorization, {
       increaseCardId: "card_cap",
       increaseAuthId: "auth_under",
-      amountCents: 1000,
+      amountCents: 500,
     });
     expect(under.approved).toBe(true);
   });
@@ -356,6 +412,27 @@ describe("markRepaymentPaid", () => {
     ).then((rows) => rows.filter((r) => r.source === "repayment"));
     expect(creditsAfter.length).toBe(1);
   });
+
+  test("the payer (cardholder) cannot self-settle — manager-only", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    // Caller = the cardholder, viewer only (NOT a manager).
+    const me = await seedPerson(s, { name: "Me", userId: s.userId });
+    await grantRole(s, me, "viewer");
+    const cardId = await seedCard(s, { cardholderPersonId: me });
+    const txnId = await seedCardTxn(s, { cardId, amountCents: 1000 });
+    // The cardholder may flag their own charge…
+    const rep = await s.as.mutation(api.cards.flagPersonalCharge, {
+      transactionId: txnId,
+    });
+    // …but may NOT self-confirm the money as received (would zero their spend
+    // without paying).
+    await expect(
+      s.as.mutation(api.cards.markRepaymentPaid, { repaymentId: rep.id }),
+    ).rejects.toBeInstanceOf(ConvexError);
+    // No offsetting credit was posted.
+    expect((await repaymentCredits(s)).length).toBe(0);
+  });
 });
 
 describe("initiateRepayment (degrade path)", () => {
@@ -383,29 +460,47 @@ describe("initiateRepayment (degrade path)", () => {
 // ── autoLockOverdueCards ─────────────────────────────────────────────────────
 
 describe("autoLockOverdueCards", () => {
-  test("locks an overdue card, leaves a current one active", async () => {
+  test("locks an overdue receiptless charge; unlocks after a receipt; current stays active", async () => {
     const t = newT();
     const s = await setupChapter(t);
     const holder = await seedPerson(s, { name: "Holder" });
-    const overdue = await seedCard(s, {
-      cardholderPersonId: holder,
-      receiptGraceEndsAt: Date.now() - 1000, // grace passed, receipt missing
-    });
-    const current = await seedCard(s, {
-      cardholderPersonId: holder,
-      receiptGraceEndsAt: Date.now() + 1_000_000, // still within grace
-    });
-    const noGrace = await seedCard(s, { cardholderPersonId: holder });
 
-    const { lockedCount } = await s.t.mutation(
-      internal.cards.autoLockOverdueCards,
-      {},
+    // Card A: an 8-day-old charge with no receipt → should auto-lock.
+    const cardA = await seedCard(s, { cardholderPersonId: holder });
+    const oldTxn = await seedCardTxn(s, {
+      cardId: cardA,
+      amountCents: 5000,
+      ageDays: 8,
+    });
+    // Card B: a recent receiptless charge → within grace, stays active.
+    const cardB = await seedCard(s, { cardholderPersonId: holder });
+    await seedCardTxn(s, { cardId: cardB, amountCents: 2000 });
+    // Card C: a MANUAL lock (no grace stamp) → never auto-unlocked.
+    const cardC = await seedCard(s, {
+      cardholderPersonId: holder,
+      status: "locked",
+    });
+
+    const r1 = await s.t.mutation(internal.cards.autoLockOverdueCards, {});
+    expect(r1.lockedCount).toBe(1);
+    const a1 = await run(s.t, (ctx) => ctx.db.get(cardA));
+    expect(a1?.status).toBe("locked");
+    expect(a1?.receiptGraceEndsAt).toBeTruthy();
+    expect((await run(s.t, (ctx) => ctx.db.get(cardB)))?.status).toBe("active");
+    expect((await run(s.t, (ctx) => ctx.db.get(cardC)))?.status).toBe("locked");
+
+    // Attach a receipt to the overdue charge → the next sweep self-heals.
+    const receiptId = await storeBlob(s.t);
+    await run(s.t, (ctx) =>
+      ctx.db.patch(oldTxn, { receiptStorageId: receiptId }),
     );
-    expect(lockedCount).toBe(1);
-
-    expect((await run(s.t, (ctx) => ctx.db.get(overdue)))?.status).toBe("locked");
-    expect((await run(s.t, (ctx) => ctx.db.get(current)))?.status).toBe("active");
-    expect((await run(s.t, (ctx) => ctx.db.get(noGrace)))?.status).toBe("active");
+    const r2 = await s.t.mutation(internal.cards.autoLockOverdueCards, {});
+    expect(r2.unlockedCount).toBe(1);
+    const a2 = await run(s.t, (ctx) => ctx.db.get(cardA));
+    expect(a2?.status).toBe("active");
+    expect(a2?.receiptGraceEndsAt).toBeUndefined();
+    // The manual lock is untouched.
+    expect((await run(s.t, (ctx) => ctx.db.get(cardC)))?.status).toBe("locked");
   });
 });
 
@@ -471,6 +566,42 @@ describe("issueCard", () => {
         type: "virtual",
       }),
     ).rejects.toBeInstanceOf(ConvexError);
+  });
+
+  test("retries a stranded vendorless card once the vendor is reachable", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await seedManager(s);
+    const holder = await seedPerson(s, { name: "Holder" });
+    // A previously-degraded active card with NO increaseCardId.
+    const cardId = await seedCard(s, { cardholderPersonId: holder });
+    // Vendor now reachable: an active Increase account + a key.
+    await run(s.t, (ctx) =>
+      ctx.db.insert("increaseAccounts", {
+        chapterId: s.chapterId,
+        onboardingStatus: "active",
+        increaseAccountId: "acct_1",
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      }),
+    );
+    const prev = process.env.INCREASE_API_KEY;
+    process.env.INCREASE_API_KEY = "test_key";
+    try {
+      const res = await s.as.mutation(internal.cards.beginIssueCard, {
+        cardholderPersonId: holder,
+        type: "virtual",
+      });
+      // It chose to RETRY on the SAME row, not return it vendorless forever.
+      expect(res.kind).toBe("created");
+      if (res.kind === "created") {
+        expect(res.cardId).toBe(cardId);
+        expect(res.increaseAccountId).toBe("acct_1");
+      }
+    } finally {
+      if (prev === undefined) delete process.env.INCREASE_API_KEY;
+      else process.env.INCREASE_API_KEY = prev;
+    }
   });
 });
 
