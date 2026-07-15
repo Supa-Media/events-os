@@ -409,9 +409,12 @@ interface IncreaseAccountLite {
  * Matching is case-insensitive + end-trimmed, and deliberately fuzzy: an EXACT
  * normalized-equality OR either name CONTAINING the other counts (so an Increase
  * account named "New York" matches a chapter "The New York Chapter", and vice
- * versa). When several accounts loosely match, an exact normalized-name match
- * wins; if that's still ambiguous we return null (the caller warns + creates a
- * fresh account rather than guess the wrong existing one).
+ * versa). When several accounts match, an EXACT normalized-name match always
+ * wins — and if several accounts share the exact chapter name (e.g. earlier
+ * duplicate "The New York Chapter" rows a buggy retry created), we link the
+ * FIRST exact one rather than open yet another duplicate. We only return null
+ * (caller creates fresh) when there's NO exact match and several names merely
+ * loosely overlap — there we won't guess the wrong existing account.
  */
 function pickMatchingAccount(
   accounts: IncreaseAccountLite[],
@@ -433,13 +436,15 @@ function pickMatchingAccount(
   if (matches.length === 0) return null;
   if (matches.length === 1) return { id: matches[0].id, name: matches[0].name };
 
-  // Several loosely match → prefer a single EXACT normalized-name match.
+  // Several match → an EXACT normalized-name match always wins. Multiple exact
+  // matches are duplicate accounts under the same name (what the prod retry bug
+  // produced) — link the FIRST rather than mint another duplicate.
   const exact = matches.filter((a) => normalizeAccountName(a.name) === target);
-  if (exact.length === 1) return { id: exact[0].id, name: exact[0].name };
+  if (exact.length >= 1) return { id: exact[0].id, name: exact[0].name };
 
-  // Still ambiguous → don't guess wrong; the caller creates a new account.
+  // No exact match, only loose overlaps → don't guess wrong; caller creates one.
   console.warn(
-    `[increase] provision: ${matches.length} accounts loosely match chapter "${chapterName}" with no single exact match — creating a new account rather than linking the wrong one`,
+    `[increase] provision: ${matches.length} accounts loosely match chapter "${chapterName}" with no exact match — creating a new account rather than linking the wrong one`,
   );
   return null;
 }
@@ -763,7 +768,17 @@ export const provisionChapterAccount = action({
         base,
         `/accounts?entity_id=${encodeURIComponent(entityId!)}`,
       )) as { data?: IncreaseAccountLite[] };
-      existingMatch = pickMatchingAccount(list.data ?? [], prep.chapterName);
+      const fetched = list.data ?? [];
+      existingMatch = pickMatchingAccount(fetched, prep.chapterName);
+      // Diagnostic: how many accounts the entity holds + whether we matched one.
+      // The prod duplicate-cascade was a silent no-match — this makes it visible.
+      console.log(
+        `[increase] provision: match-before-create fetched ${fetched.length} account(s) under entity ${entityId}; ${
+          existingMatch
+            ? `matched "${existingMatch.name}" (${existingMatch.id})`
+            : `no match for chapter "${prep.chapterName}"`
+        }`,
+      );
     } catch (err) {
       // Couldn't list the entity's accounts — we can't tell whether creating
       // would duplicate an existing one, so degrade rather than risk a duplicate.
@@ -805,25 +820,233 @@ export const provisionChapterAccount = action({
     }
 
     // Open the chapter's Account under the shared org Entity — no KYB, no PII.
+    // IDEMPOTENT create: the `increaseAccounts` row id is stable per chapter+mode,
+    // so we send it as the `Idempotency-Key`. A retry after a network blip that
+    // ACTUALLY created the account then RETURNS the same account instead of
+    // opening a duplicate — the root fix for the prod duplicate-cascade (each
+    // Retry minting a fresh "The New York Chapter"). See `increasePost`.
     try {
-      const account = await increasePost(key!, base, "/accounts", {
-        entity_id: entityId!,
-        program_id: programId,
-        name: prep.chapterName,
-      });
+      const account = await increasePost(
+        key!,
+        base,
+        "/accounts",
+        {
+          entity_id: entityId!,
+          program_id: programId,
+          name: prep.chapterName,
+        },
+        String(prep.accountId),
+      );
+      // Capture the created account id ROBUSTLY: only mark `active` when the
+      // response carried a usable id. A 2xx with no id (or a non-string id) is a
+      // parse failure — log the raw body so it's diagnosable, and leave a clear
+      // pending state rather than persisting a bogus `"undefined"` id.
+      const newAccountId =
+        typeof account.id === "string" && account.id ? account.id : null;
+      if (!newAccountId) {
+        console.error(
+          `[increase] provision: /accounts create returned no usable account id for chapter "${prep.chapterName}"; raw response:`,
+          JSON.stringify(account),
+        );
+        return await ctx.runMutation(internal.increase.finishProvision, {
+          accountId: prep.accountId,
+          onboardingStatus: "pending",
+        });
+      }
+      console.log(
+        `[increase] provision: CREATED account ${newAccountId} for chapter "${prep.chapterName}"`,
+      );
       return await ctx.runMutation(internal.increase.finishProvision, {
         accountId: prep.accountId,
         onboardingStatus: "active",
         increaseEntityId: entityId!,
-        increaseAccountId: String(account.id),
+        increaseAccountId: newAccountId,
       });
     } catch (err) {
-      console.error("[increase] provision failed:", err);
+      // `increasePost` already logged the raw non-2xx body before throwing.
+      console.error("[increase] provision: create failed:", err);
       return await ctx.runMutation(internal.increase.finishProvision, {
         accountId: prep.accountId,
         onboardingStatus: "pending",
       });
     }
+  },
+});
+
+// ── linkIncreaseAccount (action, manager) — adopt an account by id ───────────
+
+/** Gate a manual link + resolve the current environment. Manager-only, no
+ *  writes — the action then GETs the account (mutations can't fetch) and
+ *  `finishLink` upserts. Returns the mode so the action selects the right env. */
+export const beginLink = internalMutation({
+  args: {},
+  returns: v.object({ sandbox: v.boolean() }),
+  handler: async (ctx): Promise<{ sandbox: boolean }> => {
+    const chapterId = (await requireChapterId(ctx)) as Id<"chapters">;
+    await requireFinanceManager(ctx, chapterId);
+    return { sandbox: await readSandbox(ctx) };
+  },
+});
+
+/** Upsert the chapter's CURRENT-mode `increaseAccounts` row to a verified,
+ *  linked account. Manager-only. REPLACES a stuck pending row (patches it in
+ *  place — never a second row), else inserts. Marks it `active`. */
+export const finishLink = internalMutation({
+  args: {
+    increaseAccountId: v.string(),
+    increaseEntityId: v.string(),
+    sandbox: v.boolean(),
+  },
+  returns: increaseAccountSummaryValidator,
+  handler: async (
+    ctx,
+    { increaseAccountId, increaseEntityId, sandbox },
+  ): Promise<IncreaseAccountSummary> => {
+    const chapterId = (await requireChapterId(ctx)) as Id<"chapters">;
+    await requireFinanceManager(ctx, chapterId);
+
+    const now = Date.now();
+    // Mode-aware upsert: only ever touch the row for the CURRENT environment, so
+    // a stuck pending PRODUCTION row is replaced (not duplicated) and any
+    // off-mode row is left untouched.
+    const existing = await getChapterAccountForMode(ctx, chapterId, sandbox);
+    let accountId: Id<"increaseAccounts">;
+    if (existing) {
+      await ctx.db.patch(existing._id, {
+        increaseAccountId,
+        increaseEntityId,
+        onboardingStatus: "active",
+        sandbox,
+        updatedAt: now,
+      });
+      accountId = existing._id;
+    } else {
+      accountId = await ctx.db.insert("increaseAccounts", {
+        chapterId,
+        sandbox,
+        increaseEntityId,
+        increaseAccountId,
+        onboardingStatus: "active",
+        createdAt: now,
+        updatedAt: now,
+      });
+    }
+    const row = await ctx.db.get(accountId);
+    if (!row) {
+      throw new ConvexError({
+        code: "NOT_FOUND",
+        message: "Increase account row vanished.",
+      });
+    }
+    return toAccountSummary(row);
+  },
+});
+
+/**
+ * Link an EXISTING Increase Account to this chapter by its id. Manager-only.
+ * The reliable manual counterpart to auto-provision: when the owner already
+ * opened (or already has) the chapter's Account in the Increase dashboard, they
+ * paste its id here instead of relying on the fuzzy name-match — the fix for a
+ * chapter left stuck `pending` after a failed provision.
+ *
+ * Operates in the CURRENT mode (`financeSettings.sandboxMode` → `increaseEnvForMode`):
+ * it VERIFIES the account exists via `GET /accounts/{id}` under that mode's
+ * key/base AND that it belongs to the mode's shared org Entity, then upserts the
+ * chapter's current-mode row `{ increaseAccountId, increaseEntityId, active }`,
+ * REPLACING a stuck pending row rather than creating a duplicate.
+ *
+ * DEGRADES to a logged no-op (returns null, never throws) when the mode's API
+ * key or Entity id is unset. Throws `ConvexError` when the id doesn't exist in
+ * this environment or belongs to a different entity.
+ */
+export const linkIncreaseAccount = action({
+  args: { increaseAccountId: v.string() },
+  returns: v.union(increaseAccountSummaryValidator, v.null()),
+  handler: async (
+    ctx,
+    { increaseAccountId },
+  ): Promise<IncreaseAccountSummary | null> => {
+    const targetId = increaseAccountId.trim();
+    if (!targetId) {
+      throw new ConvexError({
+        code: "INVALID_INPUT",
+        message: "Enter an Increase account id to link.",
+      });
+    }
+
+    // Manager gate FIRST (before any network probe of account existence).
+    const { sandbox } = await ctx.runMutation(internal.increase.beginLink, {});
+    const { key, base, entityId } = increaseEnvForMode(sandbox);
+
+    // Verifying + linking needs the (mode's) API key + shared org Entity id. If
+    // either is unset that environment isn't wired up → degrade to a no-op.
+    if (!key || !entityId) {
+      const missing = !key
+        ? sandbox
+          ? "INCREASE_SANDBOX_API_KEY"
+          : "INCREASE_API_KEY"
+        : sandbox
+          ? "INCREASE_SANDBOX_ENTITY_ID"
+          : "INCREASE_ENTITY_ID";
+      console.warn(`[increase] link skipped: ${missing} not configured`);
+      return null;
+    }
+
+    // VERIFY the account exists in this environment AND belongs to our entity.
+    let account: Record<string, unknown>;
+    try {
+      const res = await fetch(
+        `${base}/accounts/${encodeURIComponent(targetId)}`,
+        { method: "GET", headers: { Authorization: `Bearer ${key}` } },
+      );
+      if (res.status === 404) {
+        throw new ConvexError({
+          code: "NOT_FOUND",
+          message:
+            "No Increase account with that id exists in this environment. Double-check the id in your Increase dashboard.",
+        });
+      }
+      if (!res.ok) {
+        console.error(
+          `[increase] link: GET /accounts/${targetId} failed:`,
+          await res.text(),
+        );
+        throw new ConvexError({
+          code: "INCREASE_ERROR",
+          message: "Couldn't verify that Increase account. Please try again.",
+        });
+      }
+      account = (await res.json()) as Record<string, unknown>;
+    } catch (err) {
+      if (err instanceof ConvexError) throw err;
+      console.error("[increase] link: failed to fetch account:", err);
+      throw new ConvexError({
+        code: "INCREASE_ERROR",
+        message: "Couldn't verify that Increase account. Please try again.",
+      });
+    }
+
+    // The account MUST belong to the org's shared Entity for this mode — never
+    // link an account from a different entity to this chapter.
+    const accountEntityId =
+      typeof account.entity_id === "string" ? account.entity_id : null;
+    if (accountEntityId !== entityId) {
+      throw new ConvexError({
+        code: "FORBIDDEN",
+        message:
+          "That Increase account belongs to a different entity, so it can't be linked to this chapter.",
+      });
+    }
+
+    // Persist the canonical id from Increase (correct casing / `sandbox_`
+    // prefix), replacing a stuck pending row rather than minting a duplicate.
+    const canonicalId =
+      typeof account.id === "string" && account.id ? account.id : targetId;
+    return await ctx.runMutation(internal.increase.finishLink, {
+      increaseAccountId: canonicalId,
+      increaseEntityId: entityId,
+      sandbox,
+    });
   },
 });
 

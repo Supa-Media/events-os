@@ -24,7 +24,7 @@
  * this page shows. Guarded admin-or-lead in-screen (mirrors the nav gate).
  * `api.finances.listFunds` supplies the default-fund options.
  */
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import { Text, View } from "react-native";
 import { useAction, useMutation, useQuery } from "convex/react";
 import { api } from "@events-os/convex/_generated/api";
@@ -37,6 +37,7 @@ import {
   Narrow,
   Screen,
   SectionHeader,
+  TextField,
   ToastView,
 } from "../../../components/ui";
 import { useActionRunner } from "../../../lib/useActionToast";
@@ -58,8 +59,14 @@ export default function AccountsScreen() {
   const refreshFcAccount = useMutation(api.stripeFinance.refreshFcAccount);
   const setSandboxMode = useMutation(api.financeSettings.setSandboxMode);
   const provisionAccount = useAction(api.increase.provisionChapterAccount);
+  const linkAccount = useAction(api.increase.linkIncreaseAccount);
   const removeChapterAccount = useMutation(api.increase.removeChapterAccount);
   const { run, toast, dismiss } = useActionRunner();
+
+  const handleLink = (increaseAccountId: string) =>
+    void run(() => linkAccount({ increaseAccountId }), {
+      errorTitle: "Couldn't link the account",
+    });
 
   const fundOptions = useMemo<FundOption[]>(
     () => (funds ?? []).map((f) => ({ value: f.id, label: f.name })),
@@ -127,33 +134,39 @@ export default function AccountsScreen() {
         </Text>
         <Card>
           {chapterAccount === null ? (
-            // No Increase account yet → offer to provision one in the current mode.
-            <View className="flex-row items-start justify-between gap-3">
-              <View className="flex-1">
-                <Text className="font-display text-base text-ink">
-                  No account yet
-                </Text>
-                <Text className="mt-1 text-sm text-muted">
-                  Provision the chapter's Increase account to enable member cards
-                  and ACH reimbursement payouts.
-                </Text>
-                <View className="mt-2">
-                  <Badge
-                    label={`Will provision in ${sandboxMode ? "SANDBOX" : "PRODUCTION"} mode`}
-                    tone={sandboxMode ? "warn" : "neutral"}
-                    icon={sandboxMode ? "alert-triangle" : "check-circle"}
-                  />
+            // No Increase account yet → offer to provision one in the current
+            // mode, OR link an existing account by id (avoids a duplicate).
+            <View className="gap-3">
+              <View className="flex-row items-start justify-between gap-3">
+                <View className="flex-1">
+                  <Text className="font-display text-base text-ink">
+                    No account yet
+                  </Text>
+                  <Text className="mt-1 text-sm text-muted">
+                    Provision the chapter's Increase account to enable member
+                    cards and ACH reimbursement payouts.
+                  </Text>
+                  <View className="mt-2">
+                    <Badge
+                      label={`Will provision in ${sandboxMode ? "SANDBOX" : "PRODUCTION"} mode`}
+                      tone={sandboxMode ? "warn" : "neutral"}
+                      icon={sandboxMode ? "alert-triangle" : "check-circle"}
+                    />
+                  </View>
                 </View>
+                <Button
+                  title="Provision account"
+                  icon="plus"
+                  onPress={() =>
+                    void run(() => provisionAccount({}), {
+                      errorTitle: "Couldn't provision the account",
+                    })
+                  }
+                />
               </View>
-              <Button
-                title="Provision account"
-                icon="plus"
-                onPress={() =>
-                  void run(() => provisionAccount({}), {
-                    errorTitle: "Couldn't provision the account",
-                  })
-                }
-              />
+              <View className="border-t border-border-strong pt-3">
+                <LinkExistingAccount onLink={handleLink} />
+              </View>
             </View>
           ) : chapterAccount.onboardingStatus === "active" ? (
             // Active → show the account + entity ids for the CURRENT environment.
@@ -204,48 +217,54 @@ export default function AccountsScreen() {
               ) : null}
             </View>
           ) : (
-            // Pending (or not fully provisioned) → explain + let the manager retry.
-            <View className="flex-row items-start justify-between gap-3">
-              <View className="flex-1">
-                <View className="flex-row flex-wrap items-center gap-2">
-                  <Text className="font-display text-base text-ink">
-                    Increase account
+            // Pending (or not fully provisioned) → explain + let the manager
+            // retry auto-provision, link an existing account by id, or remove.
+            <View className="gap-3">
+              <View className="flex-row items-start justify-between gap-3">
+                <View className="flex-1">
+                  <View className="flex-row flex-wrap items-center gap-2">
+                    <Text className="font-display text-base text-ink">
+                      Increase account
+                    </Text>
+                    <Badge label="Pending" tone="warn" icon="alert-triangle" />
+                  </View>
+                  <Text className="mt-1 text-sm text-muted">
+                    Provisioning didn't complete — the Increase environment may
+                    not be fully configured, or the call failed. Retry to open
+                    the account, or link an existing one by id.
                   </Text>
-                  <Badge label="Pending" tone="warn" icon="alert-triangle" />
+                  <View className="mt-2">
+                    <Badge
+                      label={`Will provision in ${sandboxMode ? "SANDBOX" : "PRODUCTION"} mode`}
+                      tone={sandboxMode ? "warn" : "neutral"}
+                      icon={sandboxMode ? "alert-triangle" : "check-circle"}
+                    />
+                  </View>
                 </View>
-                <Text className="mt-1 text-sm text-muted">
-                  Provisioning didn't complete — the Increase environment may not
-                  be fully configured, or the call failed. Retry to open the
-                  account.
-                </Text>
-                <View className="mt-2">
-                  <Badge
-                    label={`Will provision in ${sandboxMode ? "SANDBOX" : "PRODUCTION"} mode`}
-                    tone={sandboxMode ? "warn" : "neutral"}
-                    icon={sandboxMode ? "alert-triangle" : "check-circle"}
+                <View className="gap-2">
+                  <Button
+                    title="Retry"
+                    icon="refresh-cw"
+                    onPress={() =>
+                      void run(() => provisionAccount({}), {
+                        errorTitle: "Couldn't provision the account",
+                      })
+                    }
+                  />
+                  <Button
+                    title="Remove"
+                    variant="danger"
+                    icon="trash-2"
+                    onPress={() =>
+                      void run(() => removeChapterAccount({}), {
+                        errorTitle: "Couldn't remove the account",
+                      })
+                    }
                   />
                 </View>
               </View>
-              <View className="gap-2">
-                <Button
-                  title="Retry"
-                  icon="refresh-cw"
-                  onPress={() =>
-                    void run(() => provisionAccount({}), {
-                      errorTitle: "Couldn't provision the account",
-                    })
-                  }
-                />
-                <Button
-                  title="Remove"
-                  variant="danger"
-                  icon="trash-2"
-                  onPress={() =>
-                    void run(() => removeChapterAccount({}), {
-                      errorTitle: "Couldn't remove the account",
-                    })
-                  }
-                />
+              <View className="border-t border-border-strong pt-3">
+                <LinkExistingAccount onLink={handleLink} />
               </View>
             </View>
           )}
@@ -334,5 +353,67 @@ export default function AccountsScreen() {
         </Card>
       </Narrow>
     </Screen>
+  );
+}
+
+/**
+ * Link an EXISTING Increase account by pasting its id — the reliable
+ * counterpart to auto-provision when the owner already opened the chapter's
+ * account in the Increase dashboard (or a provision got stuck). Collapsed to a
+ * single button until tapped; on link it calls `api.increase.linkIncreaseAccount`
+ * for the current mode via `onLink`.
+ */
+function LinkExistingAccount({
+  onLink,
+}: {
+  onLink: (increaseAccountId: string) => void;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const [accountId, setAccountId] = useState("");
+
+  if (!expanded) {
+    return (
+      <Button
+        title="Link existing account"
+        variant="secondary"
+        icon="link"
+        onPress={() => setExpanded(true)}
+      />
+    );
+  }
+
+  const trimmed = accountId.trim();
+  return (
+    <View className="gap-2">
+      <Text className="text-sm text-muted">
+        Already have an Increase account? Paste its id to link it instead of
+        creating a new one.
+      </Text>
+      <TextField
+        label="Increase account id"
+        hint="Copy the account id from your Increase dashboard."
+        placeholder="account_…"
+        autoCapitalize="none"
+        autoCorrect={false}
+        value={accountId}
+        onChangeText={setAccountId}
+      />
+      <View className="flex-row gap-2">
+        <Button
+          title="Link account"
+          icon="link"
+          disabled={trimmed.length === 0}
+          onPress={() => onLink(trimmed)}
+        />
+        <Button
+          title="Cancel"
+          variant="secondary"
+          onPress={() => {
+            setExpanded(false);
+            setAccountId("");
+          }}
+        />
+      </View>
+    </View>
   );
 }

@@ -805,6 +805,58 @@ describe("provisionChapterAccount", () => {
     expect(post!.body?.program_id).toBe("program_auto");
   });
 
+  test("sends an Idempotency-Key on the account-create POST (duplicate-cascade guard)", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await seedManager(s);
+
+    process.env.INCREASE_API_KEY = "test_key";
+    process.env.INCREASE_ENTITY_ID = "entity_shared_org";
+    process.env.INCREASE_PROGRAM_ID = "program_override";
+
+    // Capture the Idempotency-Key header on the POST /accounts create call.
+    let postIdemKey: string | null = null;
+    globalThis.fetch = (async (
+      input: RequestInfo | URL,
+      init?: RequestInit,
+    ) => {
+      const path = String(input);
+      const method = init?.method ?? "GET";
+      if (path.includes("/accounts") && method === "GET") {
+        return new Response(JSON.stringify({ data: [] }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+      if (path.includes("/accounts") && method === "POST") {
+        const headers = new Headers(init?.headers);
+        postIdemKey = headers.get("Idempotency-Key");
+        return new Response(JSON.stringify({ id: "account_new" }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+      throw new Error(`unexpected fetch: ${method} ${path}`);
+    }) as unknown as typeof fetch;
+
+    const account = await s.as.action(api.increase.provisionChapterAccount, {});
+    expect(account.onboardingStatus).toBe("active");
+    expect(account.increaseAccountId).toBe("account_new");
+
+    // A retry after a network blip that already created the account replays the
+    // same idempotent request → no duplicate. Lock that the key is sent.
+    expect(postIdemKey).toBeTruthy();
+    // It's the stable `increaseAccounts` row id (per chapter + mode).
+    const rows = await run(s.t, (ctx) =>
+      ctx.db
+        .query("increaseAccounts")
+        .withIndex("by_chapter", (q) => q.eq("chapterId", s.chapterId))
+        .collect(),
+    );
+    expect(rows.length).toBe(1);
+    expect(postIdemKey).toBe(rows[0]._id);
+  });
+
   test("a non-manager cannot provision", async () => {
     const t = newT();
     const s = await setupChapter(t);
@@ -821,6 +873,200 @@ describe("provisionChapterAccount", () => {
     );
     await expect(
       s.as.action(api.increase.provisionChapterAccount, {}),
+    ).rejects.toBeInstanceOf(ConvexError);
+  });
+});
+
+// ── linkIncreaseAccount ──────────────────────────────────────────────────────
+
+describe("linkIncreaseAccount", () => {
+  const LINK_ENV = ["INCREASE_API_KEY", "INCREASE_ENTITY_ID"] as const;
+  const originalFetch = globalThis.fetch;
+  const originalEnv: Partial<Record<(typeof LINK_ENV)[number], string>> = {};
+  for (const k of LINK_ENV) originalEnv[k] = process.env[k];
+
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+    for (const k of LINK_ENV) {
+      if (originalEnv[k] === undefined) delete process.env[k];
+      else process.env[k] = originalEnv[k];
+    }
+  });
+
+  /** A `fetch` mock for the `GET /accounts/{id}` verify call — returns `body`
+   *  with `status`, recording each requested path + method. */
+  function mockLinkFetch(status: number, body?: Record<string, unknown>) {
+    const calls: Array<{ path: string; method: string }> = [];
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      calls.push({ path: String(input), method: init?.method ?? "GET" });
+      return new Response(body ? JSON.stringify(body) : "not found", {
+        status,
+        headers: { "Content-Type": "application/json" },
+      });
+    }) as unknown as typeof fetch;
+    return calls;
+  }
+
+  async function accountRows(s: ChapterSetup) {
+    return await run(s.t, (ctx) =>
+      ctx.db
+        .query("increaseAccounts")
+        .withIndex("by_chapter", (q) => q.eq("chapterId", s.chapterId))
+        .collect(),
+    );
+  }
+
+  test("verifies via GET then links the account (active, id + entity), replacing a stuck pending row", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await seedManager(s);
+
+    const ENTITY_ID = "entity_shared_org";
+    process.env.INCREASE_API_KEY = "test_key";
+    process.env.INCREASE_ENTITY_ID = ENTITY_ID;
+
+    // A stuck pending production row (the prod symptom) must be REPLACED, not
+    // duplicated, by the link.
+    const now = Date.now();
+    await run(s.t, (ctx) =>
+      ctx.db.insert("increaseAccounts", {
+        chapterId: s.chapterId,
+        sandbox: false,
+        onboardingStatus: "pending",
+        createdAt: now,
+        updatedAt: now,
+      }),
+    );
+
+    const calls = mockLinkFetch(200, {
+      id: "account_ny",
+      entity_id: ENTITY_ID,
+      name: "New York",
+    });
+
+    const account = await s.as.action(api.increase.linkIncreaseAccount, {
+      increaseAccountId: "account_ny",
+    });
+
+    expect(account).not.toBeNull();
+    expect(account!.onboardingStatus).toBe("active");
+    expect(account!.increaseAccountId).toBe("account_ny");
+    expect(account!.increaseEntityId).toBe(ENTITY_ID);
+
+    // The account was VERIFIED via `GET /accounts/{id}`.
+    expect(
+      calls.some(
+        (c) => c.method === "GET" && c.path.includes("/accounts/account_ny"),
+      ),
+    ).toBe(true);
+
+    // Still exactly ONE row — the pending row was patched in place.
+    const rows = await accountRows(s);
+    expect(rows.length).toBe(1);
+    expect(rows[0].onboardingStatus).toBe("active");
+    expect(rows[0].increaseAccountId).toBe("account_ny");
+    expect(rows[0].sandbox).toBe(false);
+  });
+
+  test("creates the row when the chapter has none yet", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await seedManager(s);
+
+    const ENTITY_ID = "entity_shared_org";
+    process.env.INCREASE_API_KEY = "test_key";
+    process.env.INCREASE_ENTITY_ID = ENTITY_ID;
+    mockLinkFetch(200, { id: "account_ny", entity_id: ENTITY_ID });
+
+    const account = await s.as.action(api.increase.linkIncreaseAccount, {
+      increaseAccountId: "account_ny",
+    });
+    expect(account!.increaseAccountId).toBe("account_ny");
+
+    const rows = await accountRows(s);
+    expect(rows.length).toBe(1);
+    expect(rows[0].onboardingStatus).toBe("active");
+  });
+
+  test("rejects a missing account id (404 → ConvexError), leaves no row", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await seedManager(s);
+
+    process.env.INCREASE_API_KEY = "test_key";
+    process.env.INCREASE_ENTITY_ID = "entity_shared_org";
+    mockLinkFetch(404);
+
+    await expect(
+      s.as.action(api.increase.linkIncreaseAccount, {
+        increaseAccountId: "account_missing",
+      }),
+    ).rejects.toBeInstanceOf(ConvexError);
+
+    expect((await accountRows(s)).length).toBe(0);
+  });
+
+  test("rejects an account belonging to a different entity (ConvexError)", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await seedManager(s);
+
+    process.env.INCREASE_API_KEY = "test_key";
+    process.env.INCREASE_ENTITY_ID = "entity_shared_org";
+    // The account exists but under a DIFFERENT entity → refuse to link it.
+    mockLinkFetch(200, { id: "account_foreign", entity_id: "entity_other" });
+
+    await expect(
+      s.as.action(api.increase.linkIncreaseAccount, {
+        increaseAccountId: "account_foreign",
+      }),
+    ).rejects.toBeInstanceOf(ConvexError);
+
+    expect((await accountRows(s)).length).toBe(0);
+  });
+
+  test("no-ops (returns null, no network) when the API key is unset", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await seedManager(s);
+
+    delete process.env.INCREASE_API_KEY;
+    process.env.INCREASE_ENTITY_ID = "entity_shared_org";
+    // The verify fetch must never run on the degrade path.
+    globalThis.fetch = (() => {
+      throw new Error("fetch must not be called when the API key is unset");
+    }) as unknown as typeof fetch;
+
+    const account = await s.as.action(api.increase.linkIncreaseAccount, {
+      increaseAccountId: "account_ny",
+    });
+    expect(account).toBeNull();
+    expect((await accountRows(s)).length).toBe(0);
+  });
+
+  test("a non-manager cannot link (gated before any network probe)", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const personId = await seedPerson(s, { name: "Viewer", userId: s.userId });
+    await run(s.t, (ctx) =>
+      ctx.db.insert("financeRoles", {
+        chapterId: s.chapterId,
+        personId,
+        role: "viewer",
+        scope: "chapter",
+        createdAt: Date.now(),
+      }),
+    );
+    process.env.INCREASE_API_KEY = "test_key";
+    process.env.INCREASE_ENTITY_ID = "entity_shared_org";
+    globalThis.fetch = (() => {
+      throw new Error("fetch must not be called for a non-manager");
+    }) as unknown as typeof fetch;
+
+    await expect(
+      s.as.action(api.increase.linkIncreaseAccount, {
+        increaseAccountId: "account_ny",
+      }),
     ).rejects.toBeInstanceOf(ConvexError);
   });
 });
