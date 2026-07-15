@@ -28,7 +28,8 @@
  *  - listAccounts                                                   → viewer
  *  - applyFcTransactions / syncTransactions / syncAllAccounts /
  *    refreshFcTransactions / refreshAllActiveFcAccounts /
- *    reBackfillAllFcAccounts / onFcWebhookEvent                     → internal
+ *    reBackfillAllFcAccounts / onFcWebhookEvent /
+ *    financeDiag / dedupeLegacyAccounts                             → internal
  */
 import {
   action,
@@ -251,7 +252,11 @@ export const requireManagerForFc = internalQuery({
  * Upsert a legacy account for the caller's chapter after a successful connect.
  * Manager-only. Dedups on `stripeFcAccountId` (a Stripe account id is globally
  * unique) so re-connecting the same account refreshes its metadata instead of
- * creating a duplicate. Returns the account id.
+ * creating a duplicate. A reconnect can make Stripe FC mint a NEW
+ * `stripeFcAccountId` for the SAME bank, which slips past the id dedup — so
+ * before inserting we also match on the chapter's existing `last4` (+
+ * `institutionName` when both are present) and REACTIVATE that row instead of
+ * creating a second one. Returns the account id.
  */
 export const storeFcAccount = mutation({
   args: {
@@ -305,6 +310,65 @@ export const storeFcAccount = mutation({
         );
       }
       return existing._id;
+    }
+
+    // RECONNECT-DUPLICATION GUARD. A reconnect after a disconnect can make Stripe
+    // FC mint a NEW `stripeFcAccountId` for the SAME underlying bank, so the
+    // exact-id dedup above misses and we'd insert a second row for one account
+    // (observed on prod: one `disconnected` + one `active` row, same last-4). If
+    // this chapter already has a row for the same `last4` (and matching
+    // `institutionName` when both are present), REACTIVATE it — re-point it at the
+    // new Stripe id, mark it active, refresh metadata — instead of inserting a
+    // duplicate. Prefer an already-active row, else the most-recently-synced one.
+    if (args.last4) {
+      const sameChapter = await ctx.db
+        .query("legacyAccounts")
+        .withIndex("by_chapter", (q) => q.eq("chapterId", chapterId))
+        .take(ACCOUNT_SCAN_LIMIT);
+      const candidates = sameChapter
+        .filter((a) => a.last4 === args.last4)
+        .filter(
+          (a) =>
+            // Match institution only when BOTH sides name one (older rows may
+            // lack it); a missing name on either side falls back to last-4 alone.
+            !a.institutionName ||
+            !args.institutionName ||
+            a.institutionName === args.institutionName,
+        );
+      // Deterministic keeper: active first, then most-recent lastSyncedAt, then
+      // most-recent creation.
+      candidates.sort(
+        (a, b) =>
+          Number(b.status === "active") - Number(a.status === "active") ||
+          (b.lastSyncedAt ?? 0) - (a.lastSyncedAt ?? 0) ||
+          b._creationTime - a._creationTime,
+      );
+      const match = candidates[0];
+      if (match) {
+        const wasActive = match.status === "active";
+        await ctx.db.patch(match._id, {
+          stripeFcAccountId: args.stripeFcAccountId,
+          institutionName: args.institutionName ?? match.institutionName,
+          last4: args.last4 ?? match.last4,
+          type: args.type ?? match.type,
+          status: "active",
+        });
+        // Reactivation → (re)fetch transactions under the NEW Stripe id, exactly
+        // like the disconnect-reactivation path above. Key-gated + idempotent
+        // (dedup on `externalId`), so it's a safe no-op without the vendor and
+        // never double-counts.
+        if (!wasActive && process.env.STRIPE_SECRET_KEY) {
+          await ctx.scheduler.runAfter(
+            0,
+            internal.stripeFinance.refreshFcTransactions,
+            {
+              legacyAccountId: match._id,
+              stripeFcAccountId: args.stripeFcAccountId,
+            },
+          );
+        }
+        return match._id;
+      }
     }
 
     const legacyAccountId = await ctx.db.insert("legacyAccounts", {
@@ -717,6 +781,227 @@ export const backfillLegacyCardAttribution = internalMutation({
     }
 
     return { scanned, last4Set, attributed };
+  },
+});
+
+// ── Internal: finance diagnostics + duplicate-account cleanup (ops) ───────────
+
+/**
+ * Read-only finance diagnostics for the FC/legacy plumbing. Ops escape hatch —
+ * runnable from `run-convex-function.yml` (`stripeFinance:financeDiag`), no auth.
+ * Bounded: scans up to `ACCOUNT_SCAN_LIMIT` chapters, and per chapter up to
+ * `BACKFILL_SCAN_LIMIT` transactions.
+ *
+ * Per chapter it reports every `legacyAccount` (id + Stripe id + last-4 +
+ * institution + status + backfill state), every `increaseAccount` (id + Increase
+ * id + onboarding + env), and a `stripe_fc` transactions summary: the total count
+ * plus, per `sourceAccountId`, `{ count, minPostedAt, maxPostedAt }`. The
+ * min/max posted dates reveal the real synced history depth (e.g. whether older
+ * months are missing because of Relay's ~90-day FC window) and whether one bank's
+ * transactions are split across two `legacyAccounts` rows (the reconnect-dup bug).
+ *
+ * Pass `chapterId` to focus on a single chapter; omit it to scan all (bounded).
+ */
+export const financeDiag = internalQuery({
+  args: { chapterId: v.optional(v.id("chapters")) },
+  returns: v.array(
+    v.object({
+      chapterId: v.id("chapters"),
+      legacyAccounts: v.array(
+        v.object({
+          id: v.id("legacyAccounts"),
+          stripeFcAccountId: v.string(),
+          last4: v.union(v.string(), v.null()),
+          institutionName: v.union(v.string(), v.null()),
+          status: legacyStatusValidator,
+          backfilledAt: v.union(v.number(), v.null()),
+          syncCursor: v.union(v.string(), v.null()),
+          lastSyncedAt: v.union(v.number(), v.null()),
+        }),
+      ),
+      increaseAccounts: v.array(
+        v.object({
+          id: v.id("increaseAccounts"),
+          increaseAccountId: v.union(v.string(), v.null()),
+          onboardingStatus: v.string(),
+          sandbox: v.union(v.boolean(), v.null()),
+        }),
+      ),
+      transactions: v.object({
+        total: v.number(),
+        byStripeFcSource: v.record(
+          v.string(),
+          v.object({
+            count: v.number(),
+            minPostedAt: v.number(),
+            maxPostedAt: v.number(),
+          }),
+        ),
+      }),
+    }),
+  ),
+  handler: async (ctx, args) => {
+    const chapters = args.chapterId
+      ? [await ctx.db.get(args.chapterId)].filter(
+          (c): c is Doc<"chapters"> => c !== null,
+        )
+      : await ctx.db.query("chapters").take(ACCOUNT_SCAN_LIMIT);
+
+    const out = [];
+    for (const chapter of chapters) {
+      const legacyAccounts = await ctx.db
+        .query("legacyAccounts")
+        .withIndex("by_chapter", (q) => q.eq("chapterId", chapter._id))
+        .take(ACCOUNT_SCAN_LIMIT);
+
+      const increaseAccounts = await ctx.db
+        .query("increaseAccounts")
+        .withIndex("by_chapter", (q) => q.eq("chapterId", chapter._id))
+        .take(ACCOUNT_SCAN_LIMIT);
+
+      const txns = await ctx.db
+        .query("transactions")
+        .withIndex("by_chapter", (q) => q.eq("chapterId", chapter._id))
+        .take(BACKFILL_SCAN_LIMIT);
+
+      const byStripeFcSource: Record<
+        string,
+        { count: number; minPostedAt: number; maxPostedAt: number }
+      > = {};
+      let total = 0;
+      for (const t of txns) {
+        if (t.source !== "stripe_fc") continue;
+        total++;
+        const key = t.sourceAccountId ?? "(none)";
+        const bucket = byStripeFcSource[key];
+        if (!bucket) {
+          byStripeFcSource[key] = {
+            count: 1,
+            minPostedAt: t.postedAt,
+            maxPostedAt: t.postedAt,
+          };
+        } else {
+          bucket.count++;
+          bucket.minPostedAt = Math.min(bucket.minPostedAt, t.postedAt);
+          bucket.maxPostedAt = Math.max(bucket.maxPostedAt, t.postedAt);
+        }
+      }
+
+      out.push({
+        chapterId: chapter._id,
+        legacyAccounts: legacyAccounts.map((a) => ({
+          id: a._id,
+          stripeFcAccountId: a.stripeFcAccountId,
+          last4: a.last4 ?? null,
+          institutionName: a.institutionName ?? null,
+          status: a.status,
+          backfilledAt: a.backfilledAt ?? null,
+          syncCursor: a.syncCursor ?? null,
+          lastSyncedAt: a.lastSyncedAt ?? null,
+        })),
+        increaseAccounts: increaseAccounts.map((a) => ({
+          id: a._id,
+          increaseAccountId: a.increaseAccountId ?? null,
+          onboardingStatus: a.onboardingStatus,
+          sandbox: a.sandbox ?? null,
+        })),
+        transactions: { total, byStripeFcSource },
+      });
+    }
+    return out;
+  },
+});
+
+/**
+ * Merge duplicate `legacyAccounts` rows created by the reconnect-duplication bug
+ * (Stripe FC minting a new `stripeFcAccountId` for the same bank — see the guard
+ * in `storeFcAccount`). Ops escape hatch — runnable from `run-convex-function.yml`
+ * (`stripeFinance:dedupeLegacyAccounts`), idempotent, bounded.
+ *
+ * Per chapter it groups legacy accounts by `last4` + `institutionName`; for any
+ * group with >1 row it KEEPS one (an `active` row if present, else the
+ * most-recently-synced / most-recently-created) and, for every other (duplicate)
+ * row: RE-POINTS that row's `stripe_fc` transactions' `sourceAccountId` to the
+ * keeper's `stripeFcAccountId` (so no transaction is orphaned), then DELETES the
+ * duplicate `legacyAccounts` row. Transactions are NEVER deleted.
+ *
+ * NOTE: if the two rows separately synced the SAME real charges under DIFFERENT
+ * `externalId`s (each Stripe FC account id namespaces the dedup key), there may be
+ * duplicate transaction ROWS after the re-point. This does NOT dedup those — it
+ * logs the per-account counts so an operator can decide.
+ *
+ * Returns `{ merged, txnsRepointed }` — duplicate rows removed + transactions
+ * re-pointed. Re-running after everything is merged is a no-op.
+ */
+export const dedupeLegacyAccounts = internalMutation({
+  args: {},
+  returns: v.object({ merged: v.number(), txnsRepointed: v.number() }),
+  handler: async (ctx) => {
+    const accounts = await ctx.db
+      .query("legacyAccounts")
+      .take(ACCOUNT_SCAN_LIMIT);
+
+    // Group by chapter + last-4 + institution. Rows without a last-4 can't be
+    // safely matched to a bank, so they're never merged.
+    const groups = new Map<string, Doc<"legacyAccounts">[]>();
+    for (const a of accounts) {
+      if (!a.last4) continue;
+      const key = `${a.chapterId}|${a.last4}|${a.institutionName ?? ""}`;
+      const bucket = groups.get(key);
+      if (bucket) bucket.push(a);
+      else groups.set(key, [a]);
+    }
+
+    let merged = 0;
+    let txnsRepointed = 0;
+
+    for (const [key, rows] of groups) {
+      if (rows.length < 2) continue;
+
+      // Keeper: active first, then most-recent lastSyncedAt, then most-recent
+      // creation.
+      rows.sort(
+        (a, b) =>
+          Number(b.status === "active") - Number(a.status === "active") ||
+          (b.lastSyncedAt ?? 0) - (a.lastSyncedAt ?? 0) ||
+          b._creationTime - a._creationTime,
+      );
+      const keeper = rows[0];
+      const dupes = rows.slice(1);
+
+      for (const dup of dupes) {
+        // Re-point the duplicate's synced transactions onto the keeper so none
+        // are orphaned. Bounded scan on the chapter's transactions.
+        const chapterTxns = await ctx.db
+          .query("transactions")
+          .withIndex("by_chapter", (q) => q.eq("chapterId", dup.chapterId))
+          .take(BACKFILL_SCAN_LIMIT);
+        let dupTxnCount = 0;
+        for (const t of chapterTxns) {
+          if (
+            t.source !== "stripe_fc" ||
+            t.sourceAccountId !== dup.stripeFcAccountId
+          )
+            continue;
+          dupTxnCount++;
+          await ctx.db.patch(t._id, {
+            sourceAccountId: keeper.stripeFcAccountId,
+          });
+          txnsRepointed++;
+        }
+        // TODO(finance): the keeper + duplicate may have synced the SAME real
+        // charges under different `externalId`s, so re-pointing can leave
+        // duplicate transaction ROWS. Charge-level dedup is intentionally NOT done
+        // here — decide from the per-account counts logged below.
+        console.warn(
+          `[stripe-fc] dedupeLegacyAccounts: group ${key} — re-pointing ${dupTxnCount} txns from dup ${dup.stripeFcAccountId} onto keeper ${keeper.stripeFcAccountId}, then deleting the dup row`,
+        );
+        await ctx.db.delete(dup._id);
+        merged++;
+      }
+    }
+
+    return { merged, txnsRepointed };
   },
 });
 
