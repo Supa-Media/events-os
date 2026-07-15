@@ -1112,3 +1112,188 @@ describe("refreshFcAccount (manual refresh)", () => {
     expect(scheduled).toHaveLength(0);
   });
 });
+
+// ── Re-backfill: reset backfill state + re-pull the FULL history ──────────────
+
+describe("reBackfillFcAccount (reset + full re-pull)", () => {
+  const realFetch = globalThis.fetch;
+  const realKey = process.env.STRIPE_SECRET_KEY;
+
+  afterEach(() => {
+    globalThis.fetch = realFetch;
+    if (realKey === undefined) delete process.env.STRIPE_SECRET_KEY;
+    else process.env.STRIPE_SECRET_KEY = realKey;
+  });
+
+  test("resets backfilledAt + syncCursor and schedules a refresh (drops back into full-backfill mode)", async () => {
+    process.env.STRIPE_SECRET_KEY = "sk_test_mock";
+    const s = await setupChapter(newT());
+    await asManager(s);
+    // An already-backfilled account with a stale cursor left over.
+    const accountId = await seedAccount(s, s.chapterId, {
+      stripeFcAccountId: "fca_rebackfill",
+    });
+    await run(s.t, (ctx) =>
+      ctx.db.patch(accountId, { syncCursor: "leftover_cursor" }),
+    );
+
+    await s.as.mutation(api.stripeFinance.reBackfillFcAccount, {
+      legacyAccountId: accountId,
+    });
+
+    // Backfill state is cleared → the next sync runs the full-history backfill.
+    const account = await run(s.t, (ctx) => ctx.db.get(accountId));
+    expect(account?.backfilledAt).toBeUndefined();
+    expect(account?.syncCursor).toBeUndefined();
+
+    // Stripe re-fetch + sync driver was scheduled.
+    const scheduled = await run(s.t, (ctx) =>
+      ctx.db.system.query("_scheduled_functions").collect(),
+    );
+    expect(scheduled).toHaveLength(1);
+    expect(scheduled[0].name).toContain("refreshFcTransactions");
+  });
+
+  test("rejects an account from another chapter (no reset, no schedule)", async () => {
+    process.env.STRIPE_SECRET_KEY = "sk_test_mock";
+    const t = newT();
+    const s = await setupChapter(t);
+    await asManager(s);
+
+    const other = await setupChapter(t, { email: "other@publicworship.life" });
+    const foreignAccount = await seedAccount(other, other.chapterId, {
+      stripeFcAccountId: "fca_foreign_rebackfill",
+    });
+
+    await expect(
+      s.as.mutation(api.stripeFinance.reBackfillFcAccount, {
+        legacyAccountId: foreignAccount,
+      }),
+    ).rejects.toBeInstanceOf(ConvexError);
+
+    // The foreign account's backfill state is untouched.
+    const account = await run(s.t, (ctx) => ctx.db.get(foreignAccount));
+    expect(typeof account?.backfilledAt).toBe("number");
+    const scheduled = await run(s.t, (ctx) =>
+      ctx.db.system.query("_scheduled_functions").collect(),
+    );
+    expect(scheduled).toHaveLength(0);
+  });
+
+  test("no key → no-op: backfill state kept, nothing scheduled", async () => {
+    delete process.env.STRIPE_SECRET_KEY;
+    const s = await setupChapter(newT());
+    await asManager(s);
+    const accountId = await seedAccount(s, s.chapterId, {
+      stripeFcAccountId: "fca_rebackfill_nokey",
+    });
+
+    await s.as.mutation(api.stripeFinance.reBackfillFcAccount, {
+      legacyAccountId: accountId,
+    });
+
+    const account = await run(s.t, (ctx) => ctx.db.get(accountId));
+    // Not reset — there's no vendor to re-pull from.
+    expect(typeof account?.backfilledAt).toBe("number");
+    const scheduled = await run(s.t, (ctx) =>
+      ctx.db.system.query("_scheduled_functions").collect(),
+    );
+    expect(scheduled).toHaveLength(0);
+  });
+
+  test("after reset, a sync re-pulls the full history to has_more:false without double-counting (dedup)", async () => {
+    process.env.STRIPE_SECRET_KEY = "sk_test_mock";
+    const s = await setupChapter(newT());
+    await asManager(s);
+    // Already-backfilled account that ALREADY holds two synced rows (the history
+    // Stripe only fetched after the empty first backfill).
+    const accountId = await seedAccount(s, s.chapterId, {
+      stripeFcAccountId: "fca_rebackfill_dedup",
+    });
+    await s.t.mutation(internal.stripeFinance.applyFcTransactions, {
+      legacyAccountId: accountId,
+      transactions: BATCH,
+    });
+
+    // Reset the backfill state (the fix).
+    await s.as.mutation(api.stripeFinance.reBackfillFcAccount, {
+      legacyAccountId: accountId,
+    });
+    const afterReset = await run(s.t, (ctx) => ctx.db.get(accountId));
+    expect(afterReset?.backfilledAt).toBeUndefined();
+
+    // Stripe now serves the FULL history (the same two txns) in one page.
+    globalThis.fetch = (async () =>
+      jsonResponse({
+        data: [
+          fcObject("fctxn_1", -6420, "posted", 1_700_000_000),
+          fcObject("fctxn_2", 25000, "posted", 1_700_100_000),
+        ],
+        has_more: false,
+      })) as unknown as typeof fetch;
+
+    const res = await s.t.action(internal.stripeFinance.syncTransactions, {
+      legacyAccountId: accountId,
+    });
+    // Every row already existed → all updates, zero new inserts (no doubles).
+    expect(res).toEqual({ skipped: false, inserted: 0, updated: 2 });
+
+    const rows = await run(s.t, (ctx) =>
+      ctx.db
+        .query("transactions")
+        .withIndex("by_chapter", (q) => q.eq("chapterId", s.chapterId))
+        .collect(),
+    );
+    expect(rows).toHaveLength(2);
+
+    // Full backfill reached the end → backfilledAt re-stamped, cursor cleared.
+    const done = await run(s.t, (ctx) => ctx.db.get(accountId));
+    expect(typeof done?.backfilledAt).toBe("number");
+    expect(done?.syncCursor).toBeUndefined();
+  });
+});
+
+describe("reBackfillAllFcAccounts (bulk reset)", () => {
+  const realKey = process.env.STRIPE_SECRET_KEY;
+
+  afterEach(() => {
+    if (realKey === undefined) delete process.env.STRIPE_SECRET_KEY;
+    else process.env.STRIPE_SECRET_KEY = realKey;
+  });
+
+  test("resets every ACTIVE account (leaving disconnected ones untouched) and returns the count", async () => {
+    process.env.STRIPE_SECRET_KEY = "sk_test_mock";
+    const s = await setupChapter(newT());
+    // Two active accounts (backfilled) + one disconnected.
+    const a1 = await seedAccount(s, s.chapterId, { stripeFcAccountId: "fca_all_1" });
+    const a2 = await seedAccount(s, s.chapterId, { stripeFcAccountId: "fca_all_2" });
+    const disc = await seedAccount(s, s.chapterId, { stripeFcAccountId: "fca_all_disc" });
+    await run(s.t, (ctx) => ctx.db.patch(a1, { syncCursor: "c1" }));
+    await run(s.t, (ctx) => ctx.db.patch(disc, { status: "disconnected" }));
+
+    const res = await s.t.mutation(
+      internal.stripeFinance.reBackfillAllFcAccounts,
+      {},
+    );
+    expect(res).toEqual({ reset: 2 });
+
+    // Both active accounts were reset to full-backfill mode.
+    for (const id of [a1, a2]) {
+      const account = await run(s.t, (ctx) => ctx.db.get(id));
+      expect(account?.backfilledAt).toBeUndefined();
+      expect(account?.syncCursor).toBeUndefined();
+    }
+    // The disconnected account is untouched.
+    const discAccount = await run(s.t, (ctx) => ctx.db.get(disc));
+    expect(typeof discAccount?.backfilledAt).toBe("number");
+
+    // One refresh scheduled per active account.
+    const scheduled = await run(s.t, (ctx) =>
+      ctx.db.system.query("_scheduled_functions").collect(),
+    );
+    expect(scheduled).toHaveLength(2);
+    expect(
+      scheduled.every((f) => f.name.includes("refreshFcTransactions")),
+    ).toBe(true);
+  });
+});
