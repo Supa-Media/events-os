@@ -20,8 +20,9 @@
  *  - Every table is chapter-scoped; every client-supplied id is verified to
  *    belong to the resolved chapter before use.
  *  - `token` is secret: looked up by `by_token`, never leaked in in-app lists.
- *  - Status transitions are guarded against the current status; terminal
- *    requests (`REIMBURSEMENT_TERMINAL_STATUSES`) can't be edited further.
+ *  - Status transitions are guarded against the current status via explicit
+ *    allowed-from sets; reject/cancel are legal only before a payout is in
+ *    motion, and approved/paying/terminal requests can't be walked back here.
  *  - ANTI-DOUBLE-COUNT: the reimbursement PAYOUT (a `transfer` transaction) is
  *    Phase 4 — this file NEVER creates transactions. A line's
  *    `matchedTransactionId` (set elsewhere) links it to an already-synced txn.
@@ -40,10 +41,9 @@ import { Doc, Id } from "./_generated/dataModel";
 import {
   REIMBURSEMENT_STATUSES,
   REIMBURSEMENT_STATUS_LABELS,
-  REIMBURSEMENT_TERMINAL_STATUSES,
   type ReimbursementStatus,
 } from "@events-os/shared";
-import { normalizeEmail } from "./lib/access";
+import { normalizeEmail, getUserEmail } from "./lib/access";
 import { requireChapterId, requireInChapter } from "./lib/context";
 import {
   requireFinanceRole,
@@ -68,11 +68,14 @@ const EDITABLE_STATUSES: readonly ReimbursementStatus[] = [
   "submitted",
 ];
 
-const TERMINAL = new Set<ReimbursementStatus>(REIMBURSEMENT_TERMINAL_STATUSES);
-
-function isTerminal(status: ReimbursementStatus): boolean {
-  return TERMINAL.has(status);
-}
+/** The pre-approval / pre-payout states. `reject` and `cancel` are only legal
+ *  from here — never from `approved`/`paying`/terminal, so an in-flight payout
+ *  (Phase 4) can't be desynced by a late reject/cancel. */
+const PRE_PAYOUT_STATUSES: readonly ReimbursementStatus[] = [
+  "pending_preapproval",
+  "preapproved",
+  "submitted",
+];
 
 /** Guard a transition: `current` must be one of `allowedFrom`, else throw. */
 function assertTransition(
@@ -105,14 +108,55 @@ function initials(name: string): string {
   return (first + last).toUpperCase() || "?";
 }
 
-/** Validate a money amount is a non-negative integer number of cents. */
-function assertCents(amountCents: number, label = "Amount"): void {
-  if (!Number.isInteger(amountCents) || amountCents < 0) {
+/** A single line — and the whole request — can't exceed this (integer cents).
+ *  A guard against a fat-fingered / abusive amount, not a policy limit. */
+const MAX_CENTS = 100_000_000; // $1,000,000
+
+/** Validate a line money amount: a positive integer number of cents, capped. */
+function assertLineCents(amountCents: number, label = "Line amount"): void {
+  if (!Number.isInteger(amountCents) || amountCents <= 0) {
     throw new ConvexError({
       code: "INVALID_AMOUNT",
-      message: `${label} must be a whole number of cents ≥ 0.`,
+      message: `${label} must be a whole number of cents greater than 0.`,
     });
   }
+  if (amountCents > MAX_CENTS) {
+    throw new ConvexError({
+      code: "INVALID_AMOUNT",
+      message: `${label} is too large.`,
+    });
+  }
+}
+
+/** Trim + hard-cap an untrusted string (anonymous input is unbounded otherwise). */
+function cap(value: string, max: number): string {
+  return value.trim().slice(0, max);
+}
+
+/** Optional trimmed + capped string, or undefined when blank. */
+function capOptional(
+  value: string | undefined,
+  max: number,
+): string | undefined {
+  if (value === undefined) return undefined;
+  const out = cap(value, max);
+  return out.length > 0 ? out : undefined;
+}
+
+/** Reduce an untrusted "bank last 4" to its digits, keeping only the last 4 —
+ *  so a full account number pasted here is never stored. Undefined when blank;
+ *  throws when it contains no digits. */
+function sanitizeLast4(value: string | undefined): string | undefined {
+  if (value === undefined) return undefined;
+  const digits = value.replace(/\D/g, "");
+  if (digits.length === 0) {
+    if (value.trim().length === 0) return undefined;
+    throw new ConvexError({
+      code: "INVALID_INPUT",
+      message: "Bank account last 4 must be digits.",
+    });
+  }
+  return digits.slice(-4);
 }
 
 /** The claimant status-timeline for the public page:
@@ -259,12 +303,23 @@ async function matchPerson(
  * short human reference. Inserts the request + its order-indexed line items.
  * Status is `pending_preapproval` when pre-approval is requested, else
  * `submitted`. `totalCents` is the integer-cents sum of the lines.
+ *
+ * `payeeEmail` is REQUIRED + format-validated: it's the claimant's contact for
+ * the reminder cron, and (normalized) one half of the separation-of-duties
+ * check the approval flow enforces (a manager can't approve a request bearing
+ * their own email). All untrusted strings are trimmed + hard-capped, and
+ * `bankAccountLast4` is reduced to its last 4 digits so a full account number
+ * is never stored.
+ *
+ * TODO: rate-limit the anonymous submit endpoint (per IP / per email) — this
+ * is an unauthenticated write, so absent a limiter it's spammable. Out of
+ * scope for Phase 3; the caps + required-email here blunt the worst abuse.
  */
 export const submitPublicReimbursement = mutation({
   args: {
     chapterSlug: v.string(),
     payeeName: v.string(),
-    payeeEmail: v.optional(v.string()),
+    payeeEmail: v.string(),
     payeePhone: v.optional(v.string()),
     purpose: v.optional(v.string()),
     bankAccountLast4: v.optional(v.string()),
@@ -292,24 +347,36 @@ export const submitPublicReimbursement = mutation({
     }
     const chapterId = chapter._id;
 
-    const payeeName = args.payeeName.trim();
+    const payeeName = cap(args.payeeName, 120);
     if (!payeeName) {
       throw new ConvexError({
         code: "INVALID_INPUT",
         message: "A name is required.",
       });
     }
+    // Required + format-validated email (mirrors ticketing's check).
+    const payeeEmail = normalizeEmail(cap(args.payeeEmail, 254));
+    if (!payeeEmail || !payeeEmail.includes("@")) {
+      throw new ConvexError({
+        code: "INVALID_INPUT",
+        message: "A valid email is required.",
+      });
+    }
+    const payeePhone = capOptional(args.payeePhone, 40);
+    const purpose = capOptional(args.purpose, 2000);
+    const bankAccountLast4 = sanitizeLast4(args.bankAccountLast4);
+
     if (args.lines.length === 0 || args.lines.length > 100) {
       throw new ConvexError({
         code: "INVALID_INPUT",
-        message: "Add at least one line item.",
+        message: "Add between 1 and 100 line items.",
       });
     }
 
     // Validate every line's money + verify any fund/category belongs to this
     // chapter (untrusted public input must never reference another chapter).
     for (const line of args.lines) {
-      assertCents(line.amountCents, "Line amount");
+      assertLineCents(line.amountCents);
       if (line.fundId) {
         const fund = await ctx.db.get(line.fundId);
         if (!fund || fund.chapterId !== chapterId) {
@@ -331,6 +398,12 @@ export const submitPublicReimbursement = mutation({
     }
 
     const totalCents = args.lines.reduce((sum, l) => sum + l.amountCents, 0);
+    if (totalCents > MAX_CENTS) {
+      throw new ConvexError({
+        code: "INVALID_AMOUNT",
+        message: "That total is too large.",
+      });
+    }
     const now = Date.now();
     const token = crypto.randomUUID();
     const status: ReimbursementStatus = args.requestPreApproval
@@ -340,8 +413,8 @@ export const submitPublicReimbursement = mutation({
     const personId = await matchPerson(
       ctx,
       chapterId,
-      args.payeeEmail,
-      args.payeePhone,
+      payeeEmail,
+      payeePhone,
     );
 
     const reimbursementId = await ctx.db.insert("reimbursementRequests", {
@@ -349,12 +422,12 @@ export const submitPublicReimbursement = mutation({
       token,
       status,
       payeeName,
-      payeeEmail: args.payeeEmail ? (normalizeEmail(args.payeeEmail) ?? undefined) : undefined,
-      payeePhone: args.payeePhone,
+      payeeEmail,
+      payeePhone,
       personId: personId ?? undefined,
-      purpose: args.purpose,
+      purpose,
       totalCents,
-      bankAccountLast4: args.bankAccountLast4,
+      bankAccountLast4,
       submittedAt: now,
       createdAt: now,
       updatedAt: now,
@@ -365,7 +438,7 @@ export const submitPublicReimbursement = mutation({
       await ctx.db.insert("reimbursementLineItems", {
         chapterId,
         reimbursementId,
-        description: line.description,
+        description: cap(line.description, 500),
         amountCents: line.amountCents,
         fundId: line.fundId,
         categoryId: line.categoryId,
@@ -568,7 +641,8 @@ export const get = query({
 /**
  * Load a reimbursement for a manager write: assert it's in the caller's
  * chapter, the caller is a finance manager, and resolve the caller's roster
- * person (the approver identity SoD compares against the requester).
+ * person + auth email (the approver identity SoD compares against the
+ * requester, by both).
  */
 async function loadForManage(
   ctx: MutationCtx,
@@ -577,13 +651,47 @@ async function loadForManage(
   chapterId: Id<"chapters">;
   req: Doc<"reimbursementRequests">;
   callerPersonId: Id<"people">;
+  callerEmail: string | null;
 }> {
   const chapterId = (await requireChapterId(ctx)) as Id<"chapters">;
   const req = await ctx.db.get(reimbursementId);
   await requireInChapter(ctx, chapterId, req, "Reimbursement");
   await requireFinanceManager(ctx, chapterId);
   const callerPersonId = await resolveCallerPersonId(ctx, chapterId);
-  return { chapterId, req: req!, callerPersonId };
+  const callerEmail = await getUserEmail(ctx);
+  return { chapterId, req: req!, callerPersonId, callerEmail };
+}
+
+/**
+ * Separation of duties for an approval, enforced by TWO independent signals so
+ * the check can't be sidestepped:
+ *   - the roster link: the approving person is the linked requester, AND
+ *   - the email: the approver's own auth email equals the request's payeeEmail
+ *     (case-insensitive), which catches "I submitted the public form under my
+ *     own email but the roster match didn't link me".
+ *
+ * RESIDUAL LIMITATION (accepted, not fixed here): a determined insider who
+ * submits under a THIRD party's email with their own bank details still passes
+ * both checks. That's mitigated by the append-only `approvals` audit trail and
+ * the existing `approvalPolicy.requireSecondApproverOverCents` threshold — a
+ * second, distinct approver over a dollar amount. Enforcing that second
+ * approver is deliberately NOT built now (a later phase); this note is the
+ * breadcrumb for it.
+ */
+function assertApprovalSoD(
+  callerPersonId: Id<"people">,
+  callerEmail: string | null,
+  req: Doc<"reimbursementRequests">,
+): void {
+  assertSeparationOfDuties(callerPersonId, req.personId);
+  const approver = normalizeEmail(callerEmail);
+  const payee = normalizeEmail(req.payeeEmail);
+  if (approver && payee && approver === payee) {
+    throw new ConvexError({
+      code: "SOD_VIOLATION",
+      message: "The approver must be different from the requester.",
+    });
+  }
 }
 
 /** Record an entry in the append-only approval/audit trail. */
@@ -610,12 +718,10 @@ async function recordApproval(
 export const preApprove = mutation({
   args: { reimbursementId: v.id("reimbursementRequests") },
   handler: async (ctx, { reimbursementId }) => {
-    const { chapterId, req, callerPersonId } = await loadForManage(
-      ctx,
-      reimbursementId,
-    );
+    const { chapterId, req, callerPersonId, callerEmail } =
+      await loadForManage(ctx, reimbursementId);
     assertTransition(req.status, ["pending_preapproval"], "pre-approve");
-    assertSeparationOfDuties(callerPersonId, req.personId);
+    assertApprovalSoD(callerPersonId, callerEmail, req);
     await ctx.db.patch(req._id, {
       status: "preapproved",
       preApprovedByPersonId: callerPersonId,
@@ -638,12 +744,10 @@ export const approve = mutation({
     approvedLineIds: v.optional(v.array(v.id("reimbursementLineItems"))),
   },
   handler: async (ctx, { reimbursementId, approvedLineIds }) => {
-    const { chapterId, req, callerPersonId } = await loadForManage(
-      ctx,
-      reimbursementId,
-    );
+    const { chapterId, req, callerPersonId, callerEmail } =
+      await loadForManage(ctx, reimbursementId);
     assertTransition(req.status, ["submitted", "preapproved"], "approve");
-    assertSeparationOfDuties(callerPersonId, req.personId);
+    assertApprovalSoD(callerPersonId, callerEmail, req);
 
     const lines = await linesFor(ctx, req._id);
     let approvedSet: Set<string>;
@@ -690,14 +794,12 @@ export const reject = mutation({
     reason: v.optional(v.string()),
   },
   handler: async (ctx, { reimbursementId, reason }) => {
-    const { chapterId, req, callerPersonId } = await loadForManage(
-      ctx,
-      reimbursementId,
-    );
-    if (isTerminal(req.status)) {
-      assertTransition(req.status, [], "reject");
-    }
-    assertSeparationOfDuties(callerPersonId, req.personId);
+    const { chapterId, req, callerPersonId, callerEmail } =
+      await loadForManage(ctx, reimbursementId);
+    // Only legal before a payout is in motion — never from approved/paying/
+    // terminal, so a Phase-4 ACH payout can't be desynced by a late reject.
+    assertTransition(req.status, PRE_PAYOUT_STATUSES, "reject");
+    assertApprovalSoD(callerPersonId, callerEmail, req);
     await ctx.db.patch(req._id, {
       status: "rejected",
       rejectedReason: reason,
@@ -723,9 +825,8 @@ export const cancel = mutation({
       ctx,
       reimbursementId,
     );
-    if (isTerminal(req.status)) {
-      assertTransition(req.status, [], "cancel");
-    }
+    // Same pre-payout window as reject (see above).
+    assertTransition(req.status, PRE_PAYOUT_STATUSES, "cancel");
     await ctx.db.patch(req._id, {
       status: "canceled",
       updatedAt: Date.now(),

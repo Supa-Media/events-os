@@ -73,6 +73,7 @@ async function submitTwoLine(
   return await s.t.mutation(api.reimbursements.submitPublicReimbursement, {
     chapterSlug: slug,
     payeeName: "Dana Rivers",
+    payeeEmail: "dana@example.com",
     ...extra,
     lines: [
       { description: "Gaffer tape", amountCents: 1200 },
@@ -138,9 +139,97 @@ describe("public submission + status view", () => {
       s.t.mutation(api.reimbursements.submitPublicReimbursement, {
         chapterSlug: "nyc",
         payeeName: "Dana",
+        payeeEmail: "dana@example.com",
         lines: [{ description: "x", amountCents: 12.5 }],
       }),
     ).rejects.toBeInstanceOf(ConvexError);
+  });
+
+  test("zero / negative and oversized line amounts are rejected", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await setSlug(s, "nyc");
+    for (const bad of [0, -100, 100_000_001]) {
+      await expect(
+        s.t.mutation(api.reimbursements.submitPublicReimbursement, {
+          chapterSlug: "nyc",
+          payeeName: "Dana",
+          payeeEmail: "dana@example.com",
+          lines: [{ description: "x", amountCents: bad }],
+        }),
+      ).rejects.toBeInstanceOf(ConvexError);
+    }
+  });
+
+  test("a missing / malformed email is rejected", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await setSlug(s, "nyc");
+    for (const bad of ["", "   ", "not-an-email"]) {
+      await expect(
+        s.t.mutation(api.reimbursements.submitPublicReimbursement, {
+          chapterSlug: "nyc",
+          payeeName: "Dana",
+          payeeEmail: bad,
+          lines: [{ description: "x", amountCents: 1200 }],
+        }),
+      ).rejects.toBeInstanceOf(ConvexError);
+    }
+  });
+
+  test("bankAccountLast4 keeps only the last 4 digits (never a full number)", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await setSlug(s, "nyc");
+    const { token } = await s.t.mutation(
+      api.reimbursements.submitPublicReimbursement,
+      {
+        chapterSlug: "nyc",
+        payeeName: "Dana Rivers",
+        payeeEmail: "dana@example.com",
+        bankAccountLast4: "4111 1111 1111 1234",
+        lines: [{ description: "x", amountCents: 1200 }],
+      },
+    );
+    const req = await run(s.t, (ctx) =>
+      ctx.db
+        .query("reimbursementRequests")
+        .withIndex("by_token", (q) => q.eq("token", token))
+        .unique(),
+    );
+    expect(req?.bankAccountLast4).toBe("1234");
+  });
+
+  test("long free-text fields are capped server-side", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await setSlug(s, "nyc");
+    const { token } = await s.t.mutation(
+      api.reimbursements.submitPublicReimbursement,
+      {
+        chapterSlug: "nyc",
+        payeeName: "N".repeat(500),
+        payeeEmail: "dana@example.com",
+        purpose: "P".repeat(5000),
+        lines: [{ description: "D".repeat(2000), amountCents: 1200 }],
+      },
+    );
+    const { req, line } = await run(s.t, async (ctx) => {
+      const req = await ctx.db
+        .query("reimbursementRequests")
+        .withIndex("by_token", (q) => q.eq("token", token))
+        .unique();
+      const line = await ctx.db
+        .query("reimbursementLineItems")
+        .withIndex("by_reimbursement", (q) =>
+          q.eq("reimbursementId", req!._id),
+        )
+        .first();
+      return { req, line };
+    });
+    expect(req!.payeeName.length).toBeLessThanOrEqual(120);
+    expect((req!.purpose ?? "").length).toBeLessThanOrEqual(2000);
+    expect((line!.description ?? "").length).toBeLessThanOrEqual(500);
   });
 
   test("getPublicReimbursement returns the status view + timeline, no token", async () => {
@@ -271,6 +360,58 @@ describe("separation of duties", () => {
     await expect(
       s.as.mutation(api.reimbursements.approve, {
         reimbursementId: req!._id,
+      }),
+    ).rejects.toBeInstanceOf(ConvexError);
+  });
+
+  test("email SoD blocks approve AND preApprove when the caller's own email is the payee (no roster link)", async () => {
+    const t = newT();
+    // The caller's AUTH email is boss@publicworship.life.
+    const s = await setupChapter(t, { email: "boss@publicworship.life" });
+    await setSlug(s, "nyc");
+    // Manager person for the caller, deliberately WITHOUT an email so the
+    // public submit's roster match can't link it — only the email check catches
+    // the self-approval.
+    const manager = await seedPerson(s, {
+      name: "Boss",
+      userId: s.userId,
+      isTeamMember: true,
+    });
+    await grantRole(s, manager, "manager");
+
+    // A pre-approval request submitted under the caller's own email.
+    const pre = await submitTwoLine(s, "nyc", {
+      payeeEmail: "boss@publicworship.life",
+      requestPreApproval: true,
+    });
+    const preReq = await run(s.t, (ctx) =>
+      ctx.db
+        .query("reimbursementRequests")
+        .withIndex("by_token", (q) => q.eq("token", pre.token))
+        .unique(),
+    );
+    // No roster person carries that email → the link is null; only email SoD.
+    expect(preReq?.personId ?? null).toBeNull();
+    await expect(
+      s.as.mutation(api.reimbursements.preApprove, {
+        reimbursementId: preReq!._id,
+      }),
+    ).rejects.toBeInstanceOf(ConvexError);
+
+    // And a plain submitted request under the caller's email can't be approved.
+    const sub = await submitTwoLine(s, "nyc", {
+      payeeEmail: "boss@publicworship.life",
+    });
+    const subReq = await run(s.t, (ctx) =>
+      ctx.db
+        .query("reimbursementRequests")
+        .withIndex("by_token", (q) => q.eq("token", sub.token))
+        .unique(),
+    );
+    expect(subReq?.personId ?? null).toBeNull();
+    await expect(
+      s.as.mutation(api.reimbursements.approve, {
+        reimbursementId: subReq!._id,
       }),
     ).rejects.toBeInstanceOf(ConvexError);
   });
@@ -414,6 +555,45 @@ describe("illegal transitions", () => {
     );
     await expect(
       s.as.mutation(api.reimbursements.preApprove, {
+        reimbursementId: req!._id,
+      }),
+    ).rejects.toBeInstanceOf(ConvexError);
+  });
+
+  test("rejecting / canceling an already-approved request is illegal", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await setSlug(s, "nyc");
+    await seedPerson(s, { name: "Vera", email: "vera@example.com" });
+    const { token } = await submitTwoLine(s, "nyc", {
+      payeeEmail: "vera@example.com",
+    });
+    const manager = await seedPerson(s, {
+      name: "Manny",
+      userId: s.userId,
+      isTeamMember: true,
+    });
+    await grantRole(s, manager, "manager");
+    const req = await run(s.t, (ctx) =>
+      ctx.db
+        .query("reimbursementRequests")
+        .withIndex("by_token", (q) => q.eq("token", token))
+        .unique(),
+    );
+
+    await s.as.mutation(api.reimbursements.approve, {
+      reimbursementId: req!._id,
+    });
+    // Approved is past the pre-payout window — reject/cancel can't desync a
+    // (Phase-4) payout.
+    await expect(
+      s.as.mutation(api.reimbursements.reject, {
+        reimbursementId: req!._id,
+        reason: "too late",
+      }),
+    ).rejects.toBeInstanceOf(ConvexError);
+    await expect(
+      s.as.mutation(api.reimbursements.cancel, {
         reimbursementId: req!._id,
       }),
     ).rejects.toBeInstanceOf(ConvexError);

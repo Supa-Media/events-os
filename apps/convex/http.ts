@@ -255,8 +255,14 @@ http.route({
   handler: httpAction(async (ctx, req) => {
     const url = new URL(req.url);
     const segments = url.pathname.split("/").filter(Boolean); // ["reimburse", slug]
-    const slug = segments[1];
-    if (!slug) return html(renderReimburseNotFound(), 404);
+    const rawSlug = segments[1];
+    if (!rawSlug) return html(renderReimburseNotFound(), 404);
+    let slug: string;
+    try {
+      slug = decodeURIComponent(rawSlug);
+    } catch {
+      return html(renderReimburseNotFound(), 404);
+    }
 
     const chapter = await ctx.runQuery(
       api.lib.reimburseApiRoutes.chapterForReimburse,

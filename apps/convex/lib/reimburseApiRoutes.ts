@@ -108,7 +108,8 @@ export function registerReimburseApiRoutes(http: HttpRouter): void {
       ctx.runMutation(api.reimbursements.submitPublicReimbursement, {
         chapterSlug: String(body.chapterSlug ?? ""),
         payeeName: String(body.payeeName ?? ""),
-        payeeEmail: optStr(body.payeeEmail),
+        // Required now (SoD + reminder contact) — the mutation rejects a blank.
+        payeeEmail: String(body.payeeEmail ?? ""),
         payeePhone: optStr(body.payeePhone),
         purpose: optStr(body.purpose),
         bankAccountLast4: optStr(body.bankAccountLast4),
