@@ -57,11 +57,13 @@ import {
   REPAYMENT_STATUSES,
   RECEIPT_GRACE_DAYS,
   easternParts,
+  matchesMode,
   type CardType,
   type CardStatus,
   type RepaymentMethod,
   type RepaymentStatus,
 } from "@events-os/shared";
+import { readSandbox } from "./financeSettings";
 import {
   requireChapterId,
   requireInChapter,
@@ -370,6 +372,21 @@ export const beginIssueCard = internalMutation({
       .query("increaseAccounts")
       .withIndex("by_chapter", (q) => q.eq("chapterId", chapterId))
       .first();
+
+    // Env-mismatch guard: refuse to mint a card on an account that belongs to a
+    // different Increase environment than the current mode — e.g. a leftover
+    // `sandbox_` account while the deployment is in production mode. Issuing here
+    // would only pile more stale sandbox cards onto a dead account. A null id is
+    // env-neutral (degraded/no vendor), so this never blocks the dev path.
+    const sandboxMode = await readSandbox(ctx);
+    if (account && !matchesMode(account.increaseAccountId ?? null, sandboxMode)) {
+      throw new ConvexError({
+        code: "ACCOUNT_ENV_MISMATCH",
+        message:
+          "This chapter's Increase account is a sandbox/test account; remove it and provision a production account before issuing cards.",
+      });
+    }
+
     const increaseAccountId =
       account && account.onboardingStatus === "active" && account.increaseAccountId
         ? account.increaseAccountId
@@ -510,10 +527,17 @@ export const listCards = query({
     const chapterId = (await getChapterIdOrNull(ctx)) as Id<"chapters"> | null;
     if (!chapterId) return [];
     await requireFinanceRole(ctx, chapterId, "viewer");
-    const cards = await ctx.db
-      .query("cards")
-      .withIndex("by_chapter", (q) => q.eq("chapterId", chapterId))
-      .take(CARD_SCAN_LIMIT);
+    // Filter to the current environment: hide `sandbox_`-issued cards in
+    // production mode (and vice-versa); a null-id degraded card is env-neutral
+    // and always shows. This is also what keeps card-spend KPI tiles — summed
+    // from this filtered list — from counting cross-environment spend.
+    const sandboxMode = await readSandbox(ctx);
+    const cards = (
+      await ctx.db
+        .query("cards")
+        .withIndex("by_chapter", (q) => q.eq("chapterId", chapterId))
+        .take(CARD_SCAN_LIMIT)
+    ).filter((c) => matchesMode(c.increaseCardId ?? null, sandboxMode));
     return Promise.all(cards.map((c) => buildCardSummary(ctx, c)));
   },
 });
@@ -528,13 +552,19 @@ export const myCard = query({
     if (!chapterId) return [];
     const self = await viewerPerson(ctx, chapterId);
     if (!self) return [];
+    const sandboxMode = await readSandbox(ctx);
     const cards = await ctx.db
       .query("cards")
       .withIndex("by_cardholder", (q) => q.eq("cardholderPersonId", self._id))
       .take(CARD_SCAN_LIMIT);
     return Promise.all(
       cards
-        .filter((c) => c.chapterId === chapterId)
+        .filter(
+          (c) =>
+            c.chapterId === chapterId &&
+            // Same environment filter as listCards: hide cross-env cards.
+            matchesMode(c.increaseCardId ?? null, sandboxMode),
+        )
         .map((c) => buildCardSummary(ctx, c)),
     );
   },
