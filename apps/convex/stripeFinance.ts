@@ -24,11 +24,11 @@
  *
  * Gating (finance-role ladder viewer < bookkeeper < manager):
  *  - createFcSession / storeFcAccount / setAccountFund / disconnect /
- *    refreshFcAccount                                               → manager
+ *    refreshFcAccount / reBackfillFcAccount                         → manager
  *  - listAccounts                                                   → viewer
  *  - applyFcTransactions / syncTransactions / syncAllAccounts /
  *    refreshFcTransactions / refreshAllActiveFcAccounts /
- *    onFcWebhookEvent                                               → internal
+ *    reBackfillAllFcAccounts / onFcWebhookEvent                     → internal
  */
 import {
   action,
@@ -402,6 +402,64 @@ export const refreshFcAccount = mutation({
         },
       );
     }
+    return null;
+  },
+});
+
+/**
+ * Reset an account's backfill state and re-pull its ENTIRE transaction history
+ * ("Re-pull full history" in the UI). Manager-only; the account must be in the
+ * caller's chapter.
+ *
+ * WHY: an account that connected BEFORE Stripe finished its ASYNC transaction
+ * fetch ran its first-connect backfill against an EMPTY set — Stripe reported
+ * `has_more:false` immediately, so the row got stamped `backfilledAt` and every
+ * later sync ran the INCREMENTAL (recent-only) re-sweep, never pulling the older
+ * history Stripe fetched afterwards. Clearing `backfilledAt` + `syncCursor` drops
+ * the account back into first-connect full-backfill mode; the scheduled
+ * `refreshFcTransactions` then asks Stripe to (re)fetch AND drives
+ * `syncTransactions`, which now pages until `has_more:false`. Idempotent — dedup
+ * on `transactions.externalId` means the re-pull never double-counts.
+ *
+ * Degrades to a no-op without STRIPE_SECRET_KEY (the vendor isn't wired up — no
+ * history to re-pull, so the backfill state is left intact); throws `ConvexError`
+ * on an authz/tenancy failure.
+ */
+export const reBackfillFcAccount = mutation({
+  args: { legacyAccountId: v.id("legacyAccounts") },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    const chapterId = (await requireChapterId(ctx)) as Id<"chapters">;
+    await requireFinanceManager(ctx, chapterId);
+
+    const account = await ctx.db.get(args.legacyAccountId);
+    if (!account || account.chapterId !== chapterId) {
+      throw new ConvexError({
+        code: "NOT_FOUND",
+        message: "That account isn't in your chapter.",
+      });
+    }
+
+    // No vendor wired up → nothing to re-pull; leave the backfill state intact.
+    if (!process.env.STRIPE_SECRET_KEY) return null;
+
+    // Reset the backfill state so the next sync runs the FULL-history backfill
+    // (patching a field to `undefined` removes it).
+    await ctx.db.patch(account._id, {
+      backfilledAt: undefined,
+      syncCursor: undefined,
+    });
+
+    // Ask Stripe to (re)fetch, then drive syncTransactions — now in full-backfill
+    // mode, paging until `has_more:false`. Idempotent (dedup on `externalId`).
+    await ctx.scheduler.runAfter(
+      0,
+      internal.stripeFinance.refreshFcTransactions,
+      {
+        legacyAccountId: account._id,
+        stripeFcAccountId: account.stripeFcAccountId,
+      },
+    );
     return null;
   },
 });
@@ -1090,6 +1148,48 @@ export const refreshAllActiveFcAccounts = internalAction({
       );
     }
     return null;
+  },
+});
+
+/**
+ * Reset backfill state + force a full-history re-pull for EVERY active legacy
+ * account across all chapters (bounded). Ops escape hatch — runnable from
+ * `run-convex-function.yml` (`stripeFinance:reBackfillAllFcAccounts`) to recover
+ * accounts whose first-connect backfill ran against an empty set (see
+ * `reBackfillFcAccount` for the why). For each active account it clears
+ * `backfilledAt` + `syncCursor` (dropping it back into first-connect
+ * full-backfill mode) and schedules `refreshFcTransactions` (Stripe re-fetch +
+ * `syncTransactions` drive, which pages until `has_more:false`). Key-gated +
+ * idempotent downstream (dedup on `externalId`), so it never double-counts.
+ * Returns the number of accounts reset. Reuses the same bounded active-account
+ * scan as `listActiveAccounts` / `refreshAllActiveFcAccounts`.
+ */
+export const reBackfillAllFcAccounts = internalMutation({
+  args: {},
+  returns: v.object({ reset: v.number() }),
+  handler: async (ctx) => {
+    const accounts = await ctx.db
+      .query("legacyAccounts")
+      .take(ACCOUNT_SCAN_LIMIT);
+    let reset = 0;
+    for (const account of accounts) {
+      if (account.status !== "active") continue;
+      // Reset to full-backfill mode (patching to `undefined` removes the field).
+      await ctx.db.patch(account._id, {
+        backfilledAt: undefined,
+        syncCursor: undefined,
+      });
+      await ctx.scheduler.runAfter(
+        0,
+        internal.stripeFinance.refreshFcTransactions,
+        {
+          legacyAccountId: account._id,
+          stripeFcAccountId: account.stripeFcAccountId,
+        },
+      );
+      reset++;
+    }
+    return { reset };
   },
 });
 
