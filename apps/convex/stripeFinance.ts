@@ -26,7 +26,7 @@
  *  - createFcSession / storeFcAccount / setAccountFund / disconnect → manager
  *  - listAccounts                                                   → viewer
  *  - applyFcTransactions / syncTransactions / syncAllAccounts /
- *    onFcWebhookEvent                                               → internal
+ *    refreshFcTransactions / onFcWebhookEvent                       → internal
  */
 import {
   action,
@@ -56,6 +56,15 @@ const ACCOUNT_SCAN_LIMIT = 1000;
 /** Defensive page cap so a runaway sync can't loop forever. */
 const MAX_SYNC_PAGES = 50;
 const FC_PAGE_SIZE = 100;
+
+/**
+ * Fallback re-sync delays (ms) after kicking off a Stripe transaction refresh.
+ * Stripe pulls FC transaction history ASYNCHRONOUSLY, so these give it time to
+ * land even when the FC webhook isn't configured in this environment. Bounded —
+ * two retries, never an unbounded loop; repeated syncs are idempotent (dedup on
+ * `transactions.externalId`).
+ */
+const FC_REFRESH_RETRY_DELAYS_MS = [45_000, 180_000];
 
 const legacyStatusValidator = v.union(
   ...LEGACY_ACCOUNT_STATUSES.map((s) => v.literal(s)),
@@ -283,15 +292,17 @@ export const storeFcAccount = mutation({
       createdAt: Date.now(),
     });
 
-    // Kick off the first-connect full-history backfill immediately (a webhook
-    // may also fire, but connecting shouldn't wait on one). No-op degrade when
-    // the vendor isn't wired up — matches the key-gating elsewhere in this file;
-    // `syncTransactions` itself also skips without a key.
+    // Stripe pulls FC transaction history ASYNCHRONOUSLY after linking, so an
+    // immediate sync would see an empty set. Instead ask Stripe to fetch the
+    // transactions (POST .../refresh) and let the resulting
+    // `refreshed_transactions` webhook — plus bounded fallback retries — drive
+    // the actual sync once the data lands. No-op degrade when the vendor isn't
+    // wired up — matches the key-gating elsewhere in this file.
     if (process.env.STRIPE_SECRET_KEY) {
       await ctx.scheduler.runAfter(
         0,
-        internal.stripeFinance.syncTransactions,
-        { legacyAccountId },
+        internal.stripeFinance.refreshFcTransactions,
+        { legacyAccountId, stripeFcAccountId: args.stripeFcAccountId },
       );
     }
 
@@ -734,6 +745,78 @@ export const syncTransactions = internalAction({
     }
 
     return { skipped: false, inserted, updated };
+  },
+});
+
+/**
+ * Ask Stripe to (asynchronously) fetch a freshly-connected account's
+ * transaction history, then schedule bounded fallback re-syncs.
+ *
+ * WHY: Stripe populates FC transactions ASYNCHRONOUSLY after linking, so a sync
+ * fired the instant an account connects reads an empty set (and would stamp
+ * `lastSyncedAt` with nothing). This POSTs
+ * `/financial_connections/accounts/{id}/refresh` with `features[]=transactions`
+ * to kick that fetch off. When it completes Stripe sends a
+ * `financial_connections.account.refreshed_transactions` webhook, which
+ * `onFcWebhookEvent` turns into a `syncTransactions` — but the webhook may not
+ * be configured for FC events in every environment, so we ALSO schedule a
+ * couple of delayed `syncTransactions` retries as a belt-and-suspenders
+ * fallback. Bounded (two retries) and idempotent (dedup on `externalId`), so
+ * overlapping with a webhook-driven sync never double-counts.
+ *
+ * Best-effort + key-gated like the rest of this file: no key → no-op; any
+ * network/parse error logs and returns (never throws).
+ */
+export const refreshFcTransactions = internalAction({
+  args: {
+    legacyAccountId: v.id("legacyAccounts"),
+    stripeFcAccountId: v.string(),
+  },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    const secretKey = process.env.STRIPE_SECRET_KEY;
+    if (!secretKey) {
+      console.warn(
+        "[stripe-fc] refresh skipped: STRIPE_SECRET_KEY not configured",
+      );
+      return null;
+    }
+
+    try {
+      const body = new URLSearchParams();
+      body.set("features[]", "transactions");
+      const response = await fetch(
+        `${STRIPE_API}/financial_connections/accounts/${args.stripeFcAccountId}/refresh`,
+        {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${secretKey}`,
+            "Content-Type": "application/x-www-form-urlencoded",
+          },
+          body: body.toString(),
+        },
+      );
+      if (!response.ok) {
+        console.error(
+          "[stripe-fc] transaction refresh failed:",
+          await response.text(),
+        );
+      }
+    } catch (err) {
+      console.error("[stripe-fc] transaction refresh error:", err);
+    }
+
+    // Fallback for environments without the FC webhook: re-sync a couple of
+    // times after Stripe has had a moment to pull the history. Idempotent, so
+    // this is harmless whether or not the webhook also fires.
+    for (const delayMs of FC_REFRESH_RETRY_DELAYS_MS) {
+      await ctx.scheduler.runAfter(
+        delayMs,
+        internal.stripeFinance.syncTransactions,
+        { legacyAccountId: args.legacyAccountId },
+      );
+    }
+    return null;
   },
 });
 

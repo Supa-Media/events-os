@@ -402,6 +402,23 @@ describe("onFcWebhookEvent fan-out", () => {
     expect(scheduled).toHaveLength(1);
   });
 
+  test("a refreshed_transactions event re-syncs the account", async () => {
+    // When Stripe finishes its async transaction fetch it fires this event; the
+    // fan-out must schedule a sync so the freshly-pulled rows land.
+    const s = await setupChapter(newT());
+    await seedAccount(s, s.chapterId, { stripeFcAccountId: "fca_refreshed" });
+
+    await s.t.mutation(internal.stripeFinance.onFcWebhookEvent, {
+      stripeAccountId: "fca_refreshed",
+      eventType: "financial_connections.account.refreshed_transactions",
+    });
+    const scheduled = await run(s.t, (ctx) =>
+      ctx.db.system.query("_scheduled_functions").collect(),
+    );
+    expect(scheduled).toHaveLength(1);
+    expect(scheduled[0].name).toContain("syncTransactions");
+  });
+
   test("a disconnected event marks the account disconnected (no sync scheduled)", async () => {
     const s = await setupChapter(newT());
     const accountId = await seedAccount(s, s.chapterId, {
@@ -743,6 +760,87 @@ describe("syncTransactions first-connect backfill", () => {
   });
 });
 
+// ── refreshFcTransactions asks Stripe to fetch history, then re-syncs ─────────
+
+describe("refreshFcTransactions", () => {
+  const realFetch = globalThis.fetch;
+  const realKey = process.env.STRIPE_SECRET_KEY;
+
+  afterEach(() => {
+    globalThis.fetch = realFetch;
+    if (realKey === undefined) delete process.env.STRIPE_SECRET_KEY;
+    else process.env.STRIPE_SECRET_KEY = realKey;
+  });
+
+  test("POSTs /accounts/{id}/refresh with features[]=transactions, then schedules two fallback re-syncs", async () => {
+    process.env.STRIPE_SECRET_KEY = "sk_test_mock";
+    const s = await setupChapter(newT());
+    const accountId = await seedAccount(s, s.chapterId, {
+      stripeFcAccountId: "fca_refresh",
+      backfilled: false,
+    });
+
+    const urls: string[] = [];
+    const bodies: string[] = [];
+    const methods: (string | undefined)[] = [];
+    globalThis.fetch = (async (
+      url: string,
+      init?: { method?: string; body?: string },
+    ) => {
+      urls.push(String(url));
+      bodies.push(String(init?.body ?? ""));
+      methods.push(init?.method);
+      return jsonResponse({ id: "fca_refresh", status: "active" });
+    }) as unknown as typeof fetch;
+
+    await s.t.action(internal.stripeFinance.refreshFcTransactions, {
+      legacyAccountId: accountId,
+      stripeFcAccountId: "fca_refresh",
+    });
+
+    // (a) exactly one POST, to the account's refresh endpoint, asking for the
+    //     transactions feature.
+    expect(urls).toHaveLength(1);
+    expect(urls[0]).toContain(
+      "/financial_connections/accounts/fca_refresh/refresh",
+    );
+    expect(methods[0]).toBe("POST");
+    expect(decodeURIComponent(bodies[0])).toContain("features[]=transactions");
+
+    // (b) two bounded, webhook-independent fallback re-syncs were scheduled.
+    const scheduled = await run(s.t, (ctx) =>
+      ctx.db.system.query("_scheduled_functions").collect(),
+    );
+    expect(scheduled).toHaveLength(2);
+    expect(scheduled.every((f) => f.name.includes("syncTransactions"))).toBe(
+      true,
+    );
+  });
+
+  test("no key → no fetch, nothing scheduled (graceful degrade)", async () => {
+    delete process.env.STRIPE_SECRET_KEY;
+    const s = await setupChapter(newT());
+    const accountId = await seedAccount(s, s.chapterId, {
+      stripeFcAccountId: "fca_refresh_nokey",
+    });
+    let called = false;
+    globalThis.fetch = (async () => {
+      called = true;
+      return jsonResponse({});
+    }) as unknown as typeof fetch;
+
+    await s.t.action(internal.stripeFinance.refreshFcTransactions, {
+      legacyAccountId: accountId,
+      stripeFcAccountId: "fca_refresh_nokey",
+    });
+    expect(called).toBe(false);
+    const scheduled = await run(s.t, (ctx) =>
+      ctx.db.system.query("_scheduled_functions").collect(),
+    );
+    expect(scheduled).toHaveLength(0);
+  });
+});
+
 // ── storeFcAccount kicks off the initial backfill on connect ──────────────────
 
 describe("storeFcAccount initial sync scheduling", () => {
@@ -753,7 +851,7 @@ describe("storeFcAccount initial sync scheduling", () => {
     else process.env.STRIPE_SECRET_KEY = realKey;
   });
 
-  test("a fresh account schedules the first-connect sync when a key is set", async () => {
+  test("a fresh account schedules a Stripe transaction refresh when a key is set", async () => {
     process.env.STRIPE_SECRET_KEY = "sk_test_mock";
     const s = await setupChapter(newT());
     await asManager(s);
@@ -764,7 +862,9 @@ describe("storeFcAccount initial sync scheduling", () => {
       last4: "1111",
       type: "depository",
     });
-    // The new account starts un-backfilled and a sync is queued.
+    // The new account starts un-backfilled and a transaction refresh is queued.
+    // (Stripe fetches history asynchronously, so an immediate sync would be
+    // empty — we ask Stripe to fetch first, then sync when it's ready.)
     const account = await run(s.t, (ctx) => ctx.db.get(accountId));
     expect(account?.backfilledAt).toBeUndefined();
 
@@ -772,7 +872,7 @@ describe("storeFcAccount initial sync scheduling", () => {
       ctx.db.system.query("_scheduled_functions").collect(),
     );
     expect(scheduled).toHaveLength(1);
-    expect(scheduled[0].name).toContain("syncTransactions");
+    expect(scheduled[0].name).toContain("refreshFcTransactions");
   });
 
   test("no key → connect is a no-op sync-wise (nothing scheduled)", async () => {
