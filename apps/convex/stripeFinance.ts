@@ -75,17 +75,32 @@ const fcTxnValidator = v.object({
 
 /**
  * Create a Stripe Financial Connections Session so the client can launch the
- * connect flow. Manager-only. Returns the `client_secret` the front-end SDK
- * needs. Degrades to a ConvexError NOT_CONFIGURED when STRIPE_SECRET_KEY is
+ * connect flow. Manager-only. Returns the `client_secret` the browser Stripe.js
+ * SDK consumes to run the hosted linking, plus the `publishableKey` it inits
+ * with. Degrades to a ConvexError NOT_CONFIGURED when STRIPE_SECRET_KEY is
  * unset (payments/finance vendor not wired yet).
+ *
+ * Stripe REQUIRES an `account_holder` on every FC session. We provision (once)
+ * and cache a Stripe Customer per connecting chapter (`financeStripeCustomers`)
+ * and scope every session to it, so a reconnect reuses the same holder instead
+ * of minting a fresh customer each time.
  */
 export const createFcSession = action({
-  args: { customerId: v.optional(v.string()) },
-  returns: v.object({ clientSecret: v.string() }),
-  handler: async (ctx, args): Promise<{ clientSecret: string }> => {
+  args: {},
+  returns: v.object({
+    clientSecret: v.string(),
+    publishableKey: v.union(v.string(), v.null()),
+  }),
+  handler: async (
+    ctx,
+  ): Promise<{ clientSecret: string; publishableKey: string | null }> => {
     // Gate FIRST (identity propagates through runQuery) so only a finance
-    // manager can even reach the vendor check.
-    await ctx.runQuery(internal.stripeFinance.requireManagerForFc, {});
+    // manager can even reach the vendor check. The gate resolves the chapter
+    // the customer + session are scoped to.
+    const { chapterId } = await ctx.runQuery(
+      internal.stripeFinance.requireManagerForFc,
+      {},
+    );
 
     const secretKey = process.env.STRIPE_SECRET_KEY;
     if (!secretKey) {
@@ -96,25 +111,57 @@ export const createFcSession = action({
       });
     }
 
+    const authHeaders = {
+      Authorization: `Bearer ${secretKey}`,
+      "Content-Type": "application/x-www-form-urlencoded",
+    };
+
+    // Ensure a Stripe Customer exists for this chapter (the FC session's
+    // required account_holder). Reuse the cached one when present.
+    let customerId = await ctx.runQuery(
+      internal.stripeFinance.getStripeCustomerId,
+      { chapterId },
+    );
+    if (!customerId) {
+      const customerBody = new URLSearchParams();
+      customerBody.set("metadata[chapterId]", chapterId);
+      const customerResponse = await fetch(`${STRIPE_API}/customers`, {
+        method: "POST",
+        headers: authHeaders,
+        body: customerBody.toString(),
+      });
+      if (!customerResponse.ok) {
+        console.error(
+          "[stripe-fc] customer create failed:",
+          await customerResponse.text(),
+        );
+        throw new ConvexError({
+          code: "STRIPE_ERROR",
+          message: "Couldn't start the bank connection. Please try again.",
+        });
+      }
+      const customer = (await customerResponse.json()) as { id: string };
+      // saveStripeCustomerId is race-safe: if a concurrent create beat us it
+      // returns the already-cached id (the extra Stripe customer is harmless).
+      customerId = await ctx.runMutation(
+        internal.stripeFinance.saveStripeCustomerId,
+        { chapterId, stripeCustomerId: customer.id },
+      );
+    }
+
     const body = new URLSearchParams();
     // Read-only: we only ever pull transactions + balances.
     body.set("permissions[0]", "transactions");
     body.set("permissions[1]", "balances");
-    // An account holder is required by Stripe; when a customer is known we
-    // scope the session to them.
-    if (args.customerId) {
-      body.set("account_holder[type]", "customer");
-      body.set("account_holder[customer]", args.customerId);
-    }
+    // Required by Stripe — scope the session to the chapter's cached customer.
+    body.set("account_holder[type]", "customer");
+    body.set("account_holder[customer]", customerId);
 
     const response = await fetch(
       `${STRIPE_API}/financial_connections/sessions`,
       {
         method: "POST",
-        headers: {
-          Authorization: `Bearer ${secretKey}`,
-          "Content-Type": "application/x-www-form-urlencoded",
-        },
+        headers: authHeaders,
         body: body.toString(),
       },
     );
@@ -129,7 +176,48 @@ export const createFcSession = action({
       });
     }
     const session = (await response.json()) as { client_secret: string };
-    return { clientSecret: session.client_secret };
+    return {
+      clientSecret: session.client_secret,
+      publishableKey: process.env.EXPO_PUBLIC_STRIPE_PUBLISHABLE_KEY ?? null,
+    };
+  },
+});
+
+/** The cached Stripe Customer id for a chapter (the FC session account_holder),
+ *  or null when none has been provisioned yet. Internal — used from the action. */
+export const getStripeCustomerId = internalQuery({
+  args: { chapterId: v.union(v.id("chapters"), v.literal("central")) },
+  returns: v.union(v.string(), v.null()),
+  handler: async (ctx, args) => {
+    const row = await ctx.db
+      .query("financeStripeCustomers")
+      .withIndex("by_chapter", (q) => q.eq("chapterId", args.chapterId))
+      .first();
+    return row?.stripeCustomerId ?? null;
+  },
+});
+
+/** Cache the Stripe Customer id for a chapter. Race-safe: if a row already
+ *  exists (a concurrent create won), keep it and return the cached id so we
+ *  never double-store — the caller uses the returned id, not its own. */
+export const saveStripeCustomerId = internalMutation({
+  args: {
+    chapterId: v.union(v.id("chapters"), v.literal("central")),
+    stripeCustomerId: v.string(),
+  },
+  returns: v.string(),
+  handler: async (ctx, args): Promise<string> => {
+    const existing = await ctx.db
+      .query("financeStripeCustomers")
+      .withIndex("by_chapter", (q) => q.eq("chapterId", args.chapterId))
+      .first();
+    if (existing) return existing.stripeCustomerId;
+    await ctx.db.insert("financeStripeCustomers", {
+      chapterId: args.chapterId,
+      stripeCustomerId: args.stripeCustomerId,
+      createdAt: Date.now(),
+    });
+    return args.stripeCustomerId;
   },
 });
 

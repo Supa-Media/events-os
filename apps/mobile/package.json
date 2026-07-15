@@ -30,6 +30,7 @@
     "@expo-google-fonts/dm-sans": "^0.4.2",
     "@expo/metro-runtime": "~6.1.2",
     "@react-native-community/netinfo": "11.4.1",
+    "@stripe/stripe-js": "^9.10.0",
     "@supa-media/core": "^0.2.0",
     "@supa-media/notifications": "^0.2.0",
     "clsx": "^2.1.1",

@@ -93,6 +93,9 @@ importers:
       '@react-native-community/netinfo':
         specifier: 11.4.1
         version: 11.4.1(react-native@0.81.5(@babel/core@7.29.7)(@react-native/metro-config@0.86.0(@babel/core@7.29.7))(@types/react@19.1.17)(react@19.1.0))
+      '@stripe/stripe-js':
+        specifier: ^9.10.0
+        version: 9.10.0
       '@supa-media/core':
         specifier: ^0.2.0
         version: 0.2.0(pizlfow7sddrs4ozsqpvuxkhya)
@@ -1814,6 +1817,10 @@ packages:
 
   '@standard-schema/spec@1.1.0':
     resolution: {integrity: sha512-l2aFy5jALhniG5HgqrD6jXLi/rUWrKvqN/qJx6yoJsgKhblVd+iqqU4RCXavm/jPityDo5TCvKMnpjKnOriy0w==}
+
+  '@stripe/stripe-js@9.10.0':
+    resolution: {integrity: sha512-rxkKgWLAWtjvJhqEynPJ5zPXoKx5cK4eIUunnMGxwUJDRHKv3MlpA1mCCXdeiXzui5YZNWJKUJBTpe7m30jhOA==}
+    engines: {node: '>=12.16'}
 
   '@supa-media/convex@0.2.0':
     resolution: {integrity: sha512-1x/7DefNpxMiCtOwyQyBujMQBxg6kng6RYcJJHP79BSq3CnJenKMjj+biMWQPXVms4Gja5OVAknYo8G8dCYW7A==, tarball: https://npm.pkg.github.com/download/@supa-media/convex/0.2.0/75b1303cb4db00cc4d163f5bedac5e5d62c7b22b}
@@ -7255,6 +7262,8 @@ snapshots:
       '@sinonjs/commons': 3.0.1
 
   '@standard-schema/spec@1.1.0': {}
+
+  '@stripe/stripe-js@9.10.0': {}
 
   '@supa-media/convex@0.2.0(@convex-dev/auth@0.0.90(@auth/core@0.37.4)(convex@1.41.0(react@19.1.0))(react@19.1.0))(convex@1.41.0(react@19.1.0))':
     dependencies:

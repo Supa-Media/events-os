@@ -49,6 +49,7 @@ import {
   payouts,
   increaseAccounts,
   legacyAccounts,
+  financeStripeCustomers,
   cardAuthorizations,
   approvalPolicy,
   approvals,
@@ -193,6 +194,8 @@ const schema = defineSchema({
   payouts,
   increaseAccounts,
   legacyAccounts,
+  // Stripe Customer cache — the required `account_holder` for FC sessions.
+  financeStripeCustomers,
   cardAuthorizations,
   approvalPolicy,
   approvals,

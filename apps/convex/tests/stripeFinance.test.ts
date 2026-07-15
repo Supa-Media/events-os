@@ -292,6 +292,91 @@ describe("createFcSession degrade", () => {
   });
 });
 
+describe("createFcSession provisions + caches a Stripe customer", () => {
+  const realFetch = globalThis.fetch;
+  const realKey = process.env.STRIPE_SECRET_KEY;
+  const realPub = process.env.EXPO_PUBLIC_STRIPE_PUBLISHABLE_KEY;
+
+  afterEach(() => {
+    globalThis.fetch = realFetch;
+    if (realKey === undefined) delete process.env.STRIPE_SECRET_KEY;
+    else process.env.STRIPE_SECRET_KEY = realKey;
+    if (realPub === undefined) delete process.env.EXPO_PUBLIC_STRIPE_PUBLISHABLE_KEY;
+    else process.env.EXPO_PUBLIC_STRIPE_PUBLISHABLE_KEY = realPub;
+  });
+
+  test("sends account_holder[customer] + read-only permissions, returns publishableKey, and reuses the cached customer on the 2nd call", async () => {
+    process.env.STRIPE_SECRET_KEY = "sk_test_mock";
+    process.env.EXPO_PUBLIC_STRIPE_PUBLISHABLE_KEY = "pk_test_mock";
+    const s = await setupChapter(newT());
+    await asManager(s);
+
+    const bodies: string[] = [];
+    let customerCalls = 0;
+    globalThis.fetch = (async (url: string, init?: { body?: string }) => {
+      const u = String(url);
+      bodies.push(String(init?.body ?? ""));
+      if (u.includes("/customers")) {
+        customerCalls++;
+        return jsonResponse({ id: "cus_test_1" });
+      }
+      // financial_connections/sessions
+      return jsonResponse({ client_secret: "fcsess_secret_123" });
+    }) as unknown as typeof fetch;
+
+    const first = await s.as.action(api.stripeFinance.createFcSession, {});
+    expect(first).toEqual({
+      clientSecret: "fcsess_secret_123",
+      publishableKey: "pk_test_mock",
+    });
+
+    // The FC session POST carried a `customer` account_holder + read-only perms.
+    const sessionBody = decodeURIComponent(bodies[bodies.length - 1]);
+    expect(sessionBody).toContain("account_holder[type]=customer");
+    expect(sessionBody).toContain("account_holder[customer]=cus_test_1");
+    expect(sessionBody).toContain("permissions[0]=transactions");
+    expect(sessionBody).toContain("permissions[1]=balances");
+
+    // Exactly one Stripe customer was created + cached.
+    expect(customerCalls).toBe(1);
+    const cached = await run(s.t, (ctx) =>
+      ctx.db.query("financeStripeCustomers").collect(),
+    );
+    expect(cached).toHaveLength(1);
+    expect(cached[0].stripeCustomerId).toBe("cus_test_1");
+
+    // Second call reuses the cached customer — no second POST /customers, still
+    // one cached row.
+    const second = await s.as.action(api.stripeFinance.createFcSession, {});
+    expect(second.clientSecret).toBe("fcsess_secret_123");
+    expect(customerCalls).toBe(1);
+    const cached2 = await run(s.t, (ctx) =>
+      ctx.db.query("financeStripeCustomers").collect(),
+    );
+    expect(cached2).toHaveLength(1);
+  });
+
+  test("returns publishableKey:null when EXPO_PUBLIC_STRIPE_PUBLISHABLE_KEY is unset", async () => {
+    process.env.STRIPE_SECRET_KEY = "sk_test_mock";
+    delete process.env.EXPO_PUBLIC_STRIPE_PUBLISHABLE_KEY;
+    const s = await setupChapter(newT());
+    await asManager(s);
+
+    globalThis.fetch = (async (url: string) =>
+      String(url).includes("/customers")
+        ? jsonResponse({ id: "cus_test_2" })
+        : jsonResponse({
+            client_secret: "fcsess_secret_456",
+          })) as unknown as typeof fetch;
+
+    const res = await s.as.action(api.stripeFinance.createFcSession, {});
+    expect(res).toEqual({
+      clientSecret: "fcsess_secret_456",
+      publishableKey: null,
+    });
+  });
+});
+
 describe("onFcWebhookEvent fan-out", () => {
   test("an unknown stripe account is a no-op (no throw, nothing scheduled)", async () => {
     const s = await setupChapter(newT());
