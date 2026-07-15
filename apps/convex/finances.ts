@@ -1999,7 +1999,7 @@ async function findGeneralFundId(
  * never silently defaulted into an earmarked bucket. Lets the reconcile grid hide
  * the fund selector while still leaving every coded txn attached to a real fund.
  */
-async function defaultFundId(
+export async function defaultFundId(
   ctx: QueryCtx,
   chapterId: Id<"chapters">,
 ): Promise<Id<"funds"> | null> {

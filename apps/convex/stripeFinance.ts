@@ -29,7 +29,8 @@
  *  - applyFcTransactions / syncTransactions / syncAllAccounts /
  *    refreshFcTransactions / refreshAllActiveFcAccounts /
  *    reBackfillAllFcAccounts / onFcWebhookEvent /
- *    financeDiag / dedupeLegacyAccounts                             → internal
+ *    financeDiag / dedupeLegacyAccounts /
+ *    runImportRelayTransactions                                     → internal
  */
 import {
   action,
@@ -41,14 +42,21 @@ import {
 } from "./_generated/server";
 import type { MutationCtx } from "./_generated/server";
 import { ConvexError, v } from "convex/values";
+import type { Infer } from "convex/values";
 import { internal } from "./_generated/api";
-import { LEGACY_ACCOUNT_STATUSES, extractCardLast4 } from "@events-os/shared";
+import {
+  LEGACY_ACCOUNT_STATUSES,
+  extractCardLast4,
+  parseRelayReference,
+  easternParts,
+} from "@events-os/shared";
 import { Doc, Id } from "./_generated/dataModel";
 import {
   getChapterIdOrNull,
   requireChapterId,
 } from "./lib/context";
 import { requireFinanceRole, requireFinanceManager } from "./lib/finance";
+import { defaultFundId } from "./finances";
 
 const STRIPE_API = "https://api.stripe.com/v1";
 
@@ -781,6 +789,397 @@ export const backfillLegacyCardAttribution = internalMutation({
     }
 
     return { scanned, last4Set, attributed };
+  },
+});
+
+// ── Public: Relay monthly-statement CSV import (full history) ────────────────
+//
+// Stripe FC only exposes ~90 days of a legacy account's history. A Relay CSV
+// statement export carries the WHOLE history with per-charge cardholder
+// attribution in its `Reference` column, so importing the CSVs backfills the
+// months FC can't reach — WITHOUT double-counting the ~90 days FC already
+// synced. The mutation below is the DB apply; the web UI does the quote-aware
+// CSV parse and maps each row to the `{ postedAt, merchant, amountCents,
+// reference, status }` shape this consumes.
+
+/** The dedup-key prefix that namespaces a Relay CSV row in `externalId`. */
+const RELAY_EXTERNAL_PREFIX = "relay_csv:";
+/** Keep the per-chapter people scan (name matching) bounded. */
+const PEOPLE_SCAN_LIMIT = 5000;
+
+/**
+ * A stable, dependency-free short hash of a string (FNV-1a → base36). Used to
+ * make a Relay row's `externalId` deterministic from its `merchant+reference`
+ * so a re-import of the SAME statement dedups instead of double-counting. Not
+ * cryptographic — only needs to be stable + collision-resistant enough to
+ * distinguish two same-day/same-amount charges by their merchant/reference.
+ */
+function relayShortHash(input: string): string {
+  let hash = 0x811c9dc5;
+  for (let i = 0; i < input.length; i++) {
+    hash ^= input.charCodeAt(i);
+    // FNV prime multiply, kept in 32-bit unsigned space.
+    hash = Math.imul(hash, 0x01000193) >>> 0;
+  }
+  return hash.toString(36);
+}
+
+/** The deterministic dedup key for a Relay CSV row. */
+function relayExternalId(
+  postedAt: number,
+  absAmountCents: number,
+  merchant: string,
+  reference: string | undefined,
+): string {
+  return (
+    RELAY_EXTERNAL_PREFIX +
+    postedAt +
+    ":" +
+    absAmountCents +
+    ":" +
+    relayShortHash(merchant + "|" + (reference ?? ""))
+  );
+}
+
+/** Find a chapter person by (case-insensitive, trimmed) name, or null. Bounded. */
+async function findPersonByNameInChapter(
+  ctx: { db: MutationCtx["db"] },
+  chapterId: Id<"chapters">,
+  name: string,
+): Promise<Doc<"people"> | null> {
+  const target = name.trim().toLowerCase();
+  if (!target) return null;
+  const people = await ctx.db
+    .query("people")
+    .withIndex("by_chapter", (q) => q.eq("chapterId", chapterId))
+    .take(PEOPLE_SCAN_LIMIT);
+  return people.find((p) => p.name.trim().toLowerCase() === target) ?? null;
+}
+
+/**
+ * Resolve the legacy card + cardholder a Relay charge attributes to, find-or-
+ * creating a `source:"legacy"` card for the last-4:
+ *  - an existing legacy card for `[chapter, last4]` is reused (its cardholder);
+ *  - otherwise, when `personName` matches a chapter person by name, a new legacy
+ *    card is created linked to them (mirrors `legacyCards.linkRelayCard`, minus
+ *    the manual-link pw-email gate — this is a bookkeeper importing historical
+ *    attribution the statement already asserts);
+ *  - when no person matches, NO card is created (the `cards` schema requires a
+ *    cardholder), so the charge is left carrying only its `cardLast4` — which is
+ *    exactly what surfaces it as a Relay-card candidate to link later
+ *    (`legacyCards.listRelayCardCandidates` derives candidates from txn last-4s).
+ * Returns the card/person to stamp (both undefined when unresolved) plus whether
+ * a new card was minted.
+ */
+async function resolveRelayCard(
+  ctx: { db: MutationCtx["db"] },
+  chapterId: Id<"chapters">,
+  last4: string,
+  personName: string | undefined,
+): Promise<{
+  cardId?: Id<"cards">;
+  personId?: Id<"people">;
+  createdCard: boolean;
+}> {
+  const existing = await findLegacyCardByLast4(ctx, chapterId, last4);
+  if (existing) {
+    return {
+      cardId: existing._id,
+      personId: existing.cardholderPersonId,
+      createdCard: false,
+    };
+  }
+  if (personName) {
+    const person = await findPersonByNameInChapter(ctx, chapterId, personName);
+    if (person) {
+      const cardId = await ctx.db.insert("cards", {
+        chapterId,
+        cardholderPersonId: person._id,
+        type: "physical",
+        source: "legacy",
+        last4,
+        status: "active",
+        createdAt: Date.now(),
+      });
+      return { cardId, personId: person._id, createdCard: true };
+    }
+  }
+  return { createdCard: false };
+}
+
+/**
+ * Find an already-synced `stripe_fc` transaction in the chapter that OVERLAPS a
+ * Relay CSV row — same absolute amount AND same Eastern calendar day AND the FC
+ * row carries the same card last-4 (either in its parsed `cardLast4` or inside
+ * its `merchantName` string). This is the anti-double-count guard: the ~90 days
+ * FC already synced also appear in the CSV, so an overlapping CSV row ENRICHES
+ * the FC row rather than inserting a second copy. Bounded to a ±1-day `postedAt`
+ * window (Eastern day boundaries fall inside it) via `by_chapter_and_postedAt`.
+ */
+async function findOverlapFcTxn(
+  ctx: { db: MutationCtx["db"] },
+  chapterId: Id<"chapters">,
+  absAmountCents: number,
+  postedAt: number,
+  last4: string,
+): Promise<Doc<"transactions"> | null> {
+  const day = easternParts(postedAt);
+  const DAY_MS = 24 * 60 * 60 * 1000;
+  const candidates = await ctx.db
+    .query("transactions")
+    .withIndex("by_chapter_and_postedAt", (q) =>
+      q
+        .eq("chapterId", chapterId)
+        .gte("postedAt", postedAt - DAY_MS)
+        .lte("postedAt", postedAt + DAY_MS),
+    )
+    .collect();
+  return (
+    candidates.find((t) => {
+      if (t.source !== "stripe_fc") return false;
+      if (t.amountCents !== absAmountCents) return false;
+      const tDay = easternParts(t.postedAt);
+      if (tDay.year !== day.year || tDay.month !== day.month || tDay.day !== day.day)
+        return false;
+      return (
+        t.cardLast4 === last4 ||
+        (t.merchantName != null && t.merchantName.includes(last4))
+      );
+    }) ?? null
+  );
+}
+
+/** The Relay CSV row shape both import entrypoints (public + internal) consume. */
+const relayRowValidator = v.object({
+  postedAt: v.number(),
+  merchant: v.string(),
+  amountCents: v.number(),
+  reference: v.optional(v.string()),
+  status: v.optional(v.string()),
+});
+type RelayRow = Infer<typeof relayRowValidator>;
+
+/** The per-run counts every Relay import returns. */
+const relayImportCounts = v.object({
+  created: v.number(),
+  enriched: v.number(),
+  skipped: v.number(),
+  cardsCreated: v.number(),
+  cardsLinked: v.number(),
+});
+type RelayImportCounts = Infer<typeof relayImportCounts>;
+
+/**
+ * The reusable Relay-import core: apply a batch of Relay monthly-statement rows
+ * to the ledger for one already-resolved legacy `account`. NO auth/tenancy check
+ * — callers gate + resolve the account (public `importRelayTransactions` gates on
+ * the finance role; internal `runImportRelayTransactions` resolves the FC account
+ * for ops). Money is SIGNED cents in (`amountCents < 0` = outflow) and stored as
+ * non-negative cents with direction in `flow`. Per row:
+ *  - build a deterministic `externalId` (`relay_csv:<postedAt>:<absCents>:<hash
+ *    of merchant+reference>`) and SKIP if a txn already carries it (idempotent
+ *    re-import);
+ *  - parse the `Reference` (`parseRelayReference`) → card last-4 + cardholder
+ *    name (payout-style references parse to `null` → no card);
+ *  - if the last-4 OVERLAPS an already-synced `stripe_fc` charge (same abs
+ *    amount + Eastern day + last-4), ENRICH that row (fill its `cardLast4` +
+ *    attribution where unset) instead of inserting — never double-counting the
+ *    ~90 days FC already has;
+ *  - otherwise INSERT a `relay_csv` / `unreviewed` transaction, attributed to a
+ *    find-or-created legacy card when a cardholder resolves.
+ * Returns `{ created, enriched, skipped, cardsCreated, cardsLinked }` where
+ * `cardsCreated` = new legacy cards minted and `cardsLinked` = charges (inserted
+ * or enriched) attributed to a person this run.
+ */
+async function applyRelayImport(
+  ctx: MutationCtx,
+  chapterId: Id<"chapters">,
+  account: Doc<"legacyAccounts">,
+  rows: RelayRow[],
+): Promise<RelayImportCounts> {
+  // The fund newly-inserted rows pre-code to: the account's chosen default,
+  // else the chapter's default operating fund (never a restricted bucket).
+  const fallbackFundId =
+    account.defaultFundId ??
+    (await defaultFundId(ctx, chapterId)) ??
+    undefined;
+
+  let created = 0;
+  let enriched = 0;
+  let skipped = 0;
+  let cardsCreated = 0;
+  let cardsLinked = 0;
+
+  for (const row of rows) {
+    const absAmountCents = Math.abs(Math.round(row.amountCents));
+    const flow: "outflow" | "inflow" =
+      row.amountCents < 0 ? "outflow" : "inflow";
+    const parsed = parseRelayReference(row.reference);
+    const cardLast4 = parsed?.cardLast4;
+
+    const externalId = relayExternalId(
+      row.postedAt,
+      absAmountCents,
+      row.merchant,
+      row.reference,
+    );
+    const dup = await ctx.db
+      .query("transactions")
+      .withIndex("by_external_id", (q) => q.eq("externalId", externalId))
+      .first();
+    if (dup) {
+      skipped++;
+      continue;
+    }
+
+    // Resolve the cardholder attribution (find-or-create a legacy card) once,
+    // reused by both the enrich + insert paths.
+    let cardId: Id<"cards"> | undefined;
+    let personId: Id<"people"> | undefined;
+    if (cardLast4) {
+      const resolved = await resolveRelayCard(
+        ctx,
+        chapterId,
+        cardLast4,
+        parsed?.personName,
+      );
+      cardId = resolved.cardId;
+      personId = resolved.personId;
+      if (resolved.createdCard) cardsCreated++;
+    }
+
+    // Overlap-enrich: fold this row into an already-synced FC charge instead
+    // of inserting a duplicate (only card rows can overlap — FC needs a last-4).
+    if (cardLast4) {
+      const fcRow = await findOverlapFcTxn(
+        ctx,
+        chapterId,
+        absAmountCents,
+        row.postedAt,
+        cardLast4,
+      );
+      if (fcRow) {
+        const patch: Partial<Doc<"transactions">> = {};
+        if (fcRow.cardLast4 == null) patch.cardLast4 = cardLast4;
+        if (fcRow.cardId == null && fcRow.personId == null && cardId) {
+          patch.cardId = cardId;
+          patch.personId = personId;
+          cardsLinked++;
+        }
+        if (Object.keys(patch).length > 0) {
+          await ctx.db.patch(fcRow._id, patch);
+        }
+        enriched++;
+        continue;
+      }
+    }
+
+    await ctx.db.insert("transactions", {
+      chapterId,
+      source: "relay_csv",
+      flow,
+      amountCents: absAmountCents,
+      currency: "usd",
+      postedAt: row.postedAt,
+      merchantName: row.merchant,
+      description: row.reference,
+      cardLast4: cardLast4 ?? undefined,
+      status: "unreviewed",
+      fundId: fallbackFundId,
+      sourceAccountId: account.stripeFcAccountId,
+      cardId,
+      personId,
+      externalId,
+      createdAt: Date.now(),
+    });
+    if (cardId) cardsLinked++;
+    created++;
+  }
+
+  return { created, enriched, skipped, cardsCreated, cardsLinked };
+}
+
+/**
+ * Import a batch of Relay monthly-statement rows into the ledger for one legacy
+ * account. Bookkeeper+; the account must be in the caller's chapter. Delegates
+ * the per-row dedup / overlap-enrich / insert work to `applyRelayImport` (see
+ * there for the full behavior). Throws `ConvexError` on auth/tenancy failure.
+ */
+export const importRelayTransactions = mutation({
+  args: {
+    legacyAccountId: v.id("legacyAccounts"),
+    rows: v.array(relayRowValidator),
+  },
+  returns: relayImportCounts,
+  handler: async (ctx, args) => {
+    const chapterId = (await requireChapterId(ctx)) as Id<"chapters">;
+    await requireFinanceRole(ctx, chapterId, "bookkeeper");
+
+    const account = await ctx.db.get(args.legacyAccountId);
+    if (!account || account.chapterId !== chapterId) {
+      throw new ConvexError({
+        code: "NOT_FOUND",
+        message: "That account isn't in your chapter.",
+      });
+    }
+
+    return applyRelayImport(ctx, chapterId, account, args.rows);
+  },
+});
+
+/**
+ * DIRECT-DB (no UI) Relay CSV import — the ops escape hatch runnable from
+ * `run-convex-function.yml` (`stripeFinance:runImportRelayTransactions`), NO
+ * auth. Resolves the target legacy account itself, then delegates to
+ * `applyRelayImport` (same dedup / overlap-enrich / attribution behavior as the
+ * public mutation).
+ *
+ * Account resolution: the target is the single `status:"active"` legacy account
+ * that is FC-connected (has a `stripeFcAccountId`). Pass `chapterId` to restrict
+ * the (bounded) scan to that chapter; omit it to scan deployment-wide. Either way
+ * EXACTLY ONE such account must resolve — 0 (nothing to import into) or >1
+ * (ambiguous which account owns the statement) throws a `ConvexError` with a
+ * clear message. Rows import into `account.chapterId`.
+ */
+export const runImportRelayTransactions = internalMutation({
+  args: {
+    rows: v.array(relayRowValidator),
+    chapterId: v.optional(v.id("chapters")),
+  },
+  returns: relayImportCounts,
+  handler: async (ctx, args): Promise<RelayImportCounts> => {
+    // Bounded scan of candidate accounts: a single chapter when scoped, else
+    // deployment-wide. Filter to FC-connected + active rows.
+    const candidates = args.chapterId
+      ? await ctx.db
+          .query("legacyAccounts")
+          .withIndex("by_chapter", (q) =>
+            q.eq("chapterId", args.chapterId as Id<"chapters">),
+          )
+          .take(ACCOUNT_SCAN_LIMIT)
+      : await ctx.db.query("legacyAccounts").take(ACCOUNT_SCAN_LIMIT);
+    const active = candidates.filter(
+      (a) => a.status === "active" && a.stripeFcAccountId,
+    );
+
+    const scope = args.chapterId
+      ? "in that chapter"
+      : "in this deployment";
+    if (active.length === 0) {
+      throw new ConvexError({
+        code: "NOT_FOUND",
+        message: `No active FC-connected legacy account found ${scope}.`,
+      });
+    }
+    if (active.length > 1) {
+      throw new ConvexError({
+        code: "AMBIGUOUS",
+        message: `Found ${active.length} active FC-connected legacy accounts ${scope}; pass \`chapterId\` to disambiguate (need exactly one).`,
+      });
+    }
+
+    const account = active[0];
+    return applyRelayImport(ctx, account.chapterId, account, args.rows);
   },
 });
 
