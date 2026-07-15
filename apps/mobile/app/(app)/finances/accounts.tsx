@@ -12,14 +12,17 @@
  *     pre-coded to each account's default fund. Contract:
  *     `api.stripeFinance.{listAccounts,setAccountFund,disconnect,createFcSession}`.
  *
- * STALE SANDBOX ACCOUNT: when the deployment is in production mode
- * (`financeSettings.sandboxMode === false`) but the Increase account id is
- * `sandbox_`-prefixed, it's leftover TEST state — surfaced as a test account with
- * a "Remove test account" action so a manager can provision the real one fresh.
+ * MODE-AWARE ACCOUNT: a chapter may hold BOTH a sandbox and a production Increase
+ * account (up to one per environment). `api.increase.getChapterAccount` returns
+ * ONLY the account matching the current `financeSettings.sandboxMode`, so the
+ * off-mode account is simply hidden — in production you never see the sandbox
+ * account and vice-versa. The shown account can be removed via
+ * `api.increase.removeChapterAccount` (a live production account is protected).
  *
  * The SANDBOX-MODE toggle (developer/testing, superuser only) points NEW
- * provisioning at Increase's sandbox. Guarded admin-or-lead in-screen (mirrors
- * the nav gate). `api.finances.listFunds` supplies the default-fund options.
+ * provisioning at Increase's sandbox AND switches which environment's account
+ * this page shows. Guarded admin-or-lead in-screen (mirrors the nav gate).
+ * `api.finances.listFunds` supplies the default-fund options.
  */
 import { useMemo } from "react";
 import { Text, View } from "react-native";
@@ -90,20 +93,14 @@ export default function AccountsScreen() {
 
   const sandboxMode = financeSettings.sandboxMode;
 
-  // The chapter's Increase account is provisioned in whichever environment the
-  // account id is prefixed for (`sandbox_…` = sandbox), independent of the
-  // current sandbox toggle.
-  const accountIsSandbox =
-    chapterAccount?.increaseAccountId?.startsWith("sandbox_") ?? false;
-
-  // A leftover TEST account: the deployment is in production mode but the active
-  // Increase account is `sandbox_`-prefixed → stale test state, not the real
-  // production account. Offer to remove it so the manager can provision fresh.
-  const isStaleTestAccount =
+  // `getChapterAccount` only ever returns the account for the CURRENT mode, so
+  // the shown account's environment is always the current one — no per-row
+  // prefix check needed. A live PRODUCTION account is protected from removal
+  // backend-side; while in sandbox mode the shown (sandbox/test) account is
+  // freely removable.
+  const canRemoveAccount =
     chapterAccount !== null &&
-    chapterAccount.onboardingStatus === "active" &&
-    accountIsSandbox &&
-    !sandboxMode;
+    (sandboxMode || chapterAccount.onboardingStatus !== "active");
 
   return (
     <Screen>
@@ -123,7 +120,9 @@ export default function AccountsScreen() {
         <Text className="mb-3 text-sm text-muted">
           The chapter's native account for issuing member cards and sending ACH
           reimbursement payouts. This is not a linked bank — it's the money layer
-          Chapter OS runs on.
+          Chapter OS runs on. You're viewing the{" "}
+          {sandboxMode ? "SANDBOX" : "PRODUCTION"} account; switch modes below to
+          manage the other environment.
         </Text>
         <Card>
           {chapterAccount === null ? (
@@ -155,57 +154,38 @@ export default function AccountsScreen() {
                 }
               />
             </View>
-          ) : isStaleTestAccount ? (
-            // Production mode but a `sandbox_` account → leftover TEST state. Make
-            // clear it is NOT the real production account and offer to remove it.
-            <View className="flex-row items-start justify-between gap-3">
-              <View className="flex-1">
+          ) : chapterAccount.onboardingStatus === "active" ? (
+            // Active → show the account + entity ids for the CURRENT environment.
+            // The shown account always matches the current mode (the off-mode
+            // account is hidden), so the environment badge reflects `sandboxMode`.
+            <View className="gap-2">
+              <View className="flex-row flex-wrap items-center justify-between gap-2">
                 <View className="flex-row flex-wrap items-center gap-2">
                   <Text className="font-display text-base text-ink">
-                    Test account
+                    Increase account
                   </Text>
+                  <Badge label="Active" tone="success" icon="check-circle" />
                   <Badge
-                    label="SANDBOX — TEST ONLY"
-                    tone="warn"
-                    icon="alert-triangle"
+                    label={sandboxMode ? "SANDBOX" : "PRODUCTION"}
+                    tone={sandboxMode ? "warn" : "neutral"}
+                    icon={sandboxMode ? "alert-triangle" : "check-circle"}
                   />
                 </View>
-                <Text className="mt-1 text-sm text-muted">
-                  This is a leftover sandbox test account, not the chapter's real
-                  production account — no real money moves through it. Remove it,
-                  then provision the production account.
-                </Text>
-                <Text className="mt-2 text-sm text-muted">
-                  Account:{" "}
-                  <Text className="text-ink">
-                    {chapterAccount.increaseAccountId}
-                  </Text>
-                </Text>
-              </View>
-              <Button
-                title="Remove test account"
-                variant="danger"
-                icon="trash-2"
-                onPress={() =>
-                  void run(() => removeChapterAccount({}), {
-                    errorTitle: "Couldn't remove the test account",
-                  })
-                }
-              />
-            </View>
-          ) : chapterAccount.onboardingStatus === "active" ? (
-            // Active → show the account + entity ids and which environment it lives in.
-            <View className="gap-2">
-              <View className="flex-row flex-wrap items-center gap-2">
-                <Text className="font-display text-base text-ink">
-                  Increase account
-                </Text>
-                <Badge label="Active" tone="success" icon="check-circle" />
-                <Badge
-                  label={accountIsSandbox ? "SANDBOX" : "PRODUCTION"}
-                  tone={accountIsSandbox ? "warn" : "neutral"}
-                  icon={accountIsSandbox ? "alert-triangle" : "check-circle"}
-                />
+                {canRemoveAccount ? (
+                  // Sandbox/test account → freely removable (cascades its sandbox
+                  // cards/payouts/txns). A live production account is hidden here
+                  // (backend also refuses to remove it).
+                  <Button
+                    title="Remove account"
+                    variant="danger"
+                    icon="trash-2"
+                    onPress={() =>
+                      void run(() => removeChapterAccount({}), {
+                        errorTitle: "Couldn't remove the account",
+                      })
+                    }
+                  />
+                ) : null}
               </View>
               <Text className="text-sm text-muted">
                 Account:{" "}
@@ -245,15 +225,27 @@ export default function AccountsScreen() {
                   />
                 </View>
               </View>
-              <Button
-                title="Retry"
-                icon="refresh-cw"
-                onPress={() =>
-                  void run(() => provisionAccount({}), {
-                    errorTitle: "Couldn't provision the account",
-                  })
-                }
-              />
+              <View className="gap-2">
+                <Button
+                  title="Retry"
+                  icon="refresh-cw"
+                  onPress={() =>
+                    void run(() => provisionAccount({}), {
+                      errorTitle: "Couldn't provision the account",
+                    })
+                  }
+                />
+                <Button
+                  title="Remove"
+                  variant="danger"
+                  icon="trash-2"
+                  onPress={() =>
+                    void run(() => removeChapterAccount({}), {
+                      errorTitle: "Couldn't remove the account",
+                    })
+                  }
+                />
+              </View>
             </View>
           )}
         </Card>

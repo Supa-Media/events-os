@@ -76,6 +76,7 @@ import {
   requireFinanceManager,
   resolveCallerPersonId,
   assertSeparationOfDuties,
+  getChapterAccountForMode,
 } from "./lib/finance";
 
 /** Increase API base URL. Env-overridable so dev/staging point at the sandbox
@@ -562,10 +563,10 @@ export const beginProvision = internalMutation({
     const chapterId = (await requireChapterId(ctx)) as Id<"chapters">;
     await requireFinanceManager(ctx, chapterId);
 
-    const existing = await ctx.db
-      .query("increaseAccounts")
-      .withIndex("by_chapter", (q) => q.eq("chapterId", chapterId))
-      .first();
+    // Mode-aware find-or-create: only ever look at / create the account for the
+    // CURRENT environment. The other environment's row (if any) is untouched.
+    const sandboxMode = await readSandbox(ctx);
+    const existing = await getChapterAccountForMode(ctx, chapterId, sandboxMode);
     if (
       existing &&
       existing.onboardingStatus === "active" &&
@@ -583,6 +584,7 @@ export const beginProvision = internalMutation({
     const now = Date.now();
     const accountId = await ctx.db.insert("increaseAccounts", {
       chapterId,
+      sandbox: sandboxMode,
       onboardingStatus: "not_started",
       createdAt: now,
       updatedAt: now,
@@ -795,10 +797,10 @@ export const beginPayout = internalMutation({
     // (Webhook signature + the fetch-the-object status derivation are now REAL:
     //  see `verifyIncreaseSignature` (Standard Webhooks) + `handleIncreaseWebhook`.)
     const hasFullDestination = false;
-    const account = await ctx.db
-      .query("increaseAccounts")
-      .withIndex("by_chapter", (q) => q.eq("chapterId", chapterId))
-      .first();
+    // Mode-aware: pay from the chapter's CURRENT-environment account (never
+    // `.first()`, which would arbitrarily pick sandbox-or-prod once both exist).
+    const sandboxMode = await readSandbox(ctx);
+    const account = await getChapterAccountForMode(ctx, chapterId, sandboxMode);
     const canAch =
       !!process.env.INCREASE_API_KEY &&
       !!account &&
@@ -1336,9 +1338,10 @@ export const listPayouts = query({
 
 // ── getChapterAccount (query, viewer) ────────────────────────────────────────
 
-/** The caller's chapter's Increase Account summary (viewer+), or null if none
- *  has been provisioned yet. The read shape the accounts UI renders to show
- *  provisioning status + the "Provision account" trigger. */
+/** The caller's chapter's Increase Account summary for the CURRENT mode
+ *  (viewer+), or null if none has been provisioned in this environment yet. The
+ *  off-mode account (e.g. a leftover sandbox account while in production) is
+ *  hidden — a null return drives the "Provision account" trigger. */
 export const getChapterAccount = query({
   args: {},
   returns: v.union(increaseAccountSummaryValidator, v.null()),
@@ -1347,10 +1350,8 @@ export const getChapterAccount = query({
     if (!chapterId) return null;
     await requireFinanceRole(ctx, chapterId, "viewer");
 
-    const account = await ctx.db
-      .query("increaseAccounts")
-      .withIndex("by_chapter", (q) => q.eq("chapterId", chapterId))
-      .first();
+    const sandboxMode = await readSandbox(ctx);
+    const account = await getChapterAccountForMode(ctx, chapterId, sandboxMode);
     return account ? toAccountSummary(account) : null;
   },
 });
@@ -1385,10 +1386,10 @@ export const removeChapterAccount = mutation({
     const chapterId = (await requireChapterId(ctx)) as Id<"chapters">;
     await requireFinanceManager(ctx, chapterId);
 
-    const account = await ctx.db
-      .query("increaseAccounts")
-      .withIndex("by_chapter", (q) => q.eq("chapterId", chapterId))
-      .first();
+    // Remove the account for the CURRENT mode — the one the UI shows. The
+    // off-mode account (if any) is left untouched.
+    const sandboxMode = await readSandbox(ctx);
+    const account = await getChapterAccountForMode(ctx, chapterId, sandboxMode);
     if (!account) return null; // nothing to remove (idempotent)
 
     const isLiveProductionAccount =
@@ -1450,5 +1451,38 @@ export const removeChapterAccount = mutation({
 
     await ctx.db.delete(account._id);
     return null;
+  },
+});
+
+// ── runBackfillIncreaseAccountEnv (internalMutation, CLI/CI) ──────────────────
+
+/**
+ * Backfill the `sandbox` environment field on existing `increaseAccounts` rows
+ * from their `increaseAccountId` prefix (`isSandboxObjectId`) — a `sandbox_` id
+ * is a sandbox account, everything else (incl. a null/pending id) is production.
+ *
+ * ONLY stamps LEGACY rows that predate the field (`sandbox === undefined`); rows
+ * already carrying an explicit value are the source of truth and left untouched,
+ * which makes this idempotent (a second run stamps nothing).
+ *
+ * CLI-runnable (no auth gate — an internalMutation isn't publicly callable):
+ *   npx convex run increase:runBackfillIncreaseAccountEnv
+ * On prod via the workflow:
+ *   gh workflow run run-convex-function.yml -f function=increase:runBackfillIncreaseAccountEnv
+ */
+export const runBackfillIncreaseAccountEnv = internalMutation({
+  args: {},
+  returns: v.object({ scanned: v.number(), updated: v.number() }),
+  handler: async (ctx): Promise<{ scanned: number; updated: number }> => {
+    const rows = await ctx.db.query("increaseAccounts").collect();
+    let updated = 0;
+    for (const row of rows) {
+      if (row.sandbox !== undefined) continue; // already stamped (source of truth)
+      await ctx.db.patch(row._id, {
+        sandbox: isSandboxObjectId(row.increaseAccountId),
+      });
+      updated += 1;
+    }
+    return { scanned: rows.length, updated };
   },
 });

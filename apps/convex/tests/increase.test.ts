@@ -63,6 +63,24 @@ async function seedManager(s: ChapterSetup): Promise<Id<"people">> {
   return personId;
 }
 
+/** Set the deployment-wide finance sandbox flag (upserts the singleton row). */
+async function setSandboxMode(
+  s: ChapterSetup,
+  sandboxMode: boolean,
+): Promise<void> {
+  await run(s.t, async (ctx) => {
+    const existing = await ctx.db.query("financeSettings").first();
+    if (existing) {
+      await ctx.db.patch(existing._id, { sandboxMode, updatedAt: Date.now() });
+    } else {
+      await ctx.db.insert("financeSettings", {
+        sandboxMode,
+        updatedAt: Date.now(),
+      });
+    }
+  });
+}
+
 /** Insert a reimbursement request in a given status. Payee is a distinct person. */
 async function seedReimbursement(
   s: ChapterSetup,
@@ -732,14 +750,16 @@ describe("getChapterAccount", () => {
     // Unprovisioned → null.
     expect(await s.as.query(api.increase.getChapterAccount, {})).toBeNull();
 
-    // Insert an Increase account row for the chapter.
+    // Insert a PRODUCTION Increase account row for the chapter (default mode is
+    // production, so the production account is the one that shows).
     const now = Date.now();
     const accountId = await run(s.t, (ctx) =>
       ctx.db.insert("increaseAccounts", {
         chapterId: s.chapterId,
+        sandbox: false,
         onboardingStatus: "active",
         increaseEntityId: "entity_shared_org",
-        increaseAccountId: "sandbox_account_x",
+        increaseAccountId: "account_x",
         createdAt: now,
         updatedAt: now,
       }),
@@ -751,7 +771,66 @@ describe("getChapterAccount", () => {
     expect(account!.chapterId).toBe(s.chapterId);
     expect(account!.onboardingStatus).toBe("active");
     expect(account!.increaseEntityId).toBe("entity_shared_org");
-    expect(account!.increaseAccountId).toBe("sandbox_account_x");
+    expect(account!.increaseAccountId).toBe("account_x");
+  });
+
+  test("is mode-aware: returns the sandbox account in sandbox mode, the production account in production mode", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await seedManager(s);
+
+    // A chapter that holds BOTH a sandbox and a production account.
+    const now = Date.now();
+    await run(s.t, (ctx) =>
+      ctx.db.insert("increaseAccounts", {
+        chapterId: s.chapterId,
+        sandbox: true,
+        onboardingStatus: "active",
+        increaseAccountId: "sandbox_account_x",
+        createdAt: now,
+        updatedAt: now,
+      }),
+    );
+    await run(s.t, (ctx) =>
+      ctx.db.insert("increaseAccounts", {
+        chapterId: s.chapterId,
+        sandbox: false,
+        onboardingStatus: "active",
+        increaseAccountId: "account_prod_x",
+        createdAt: now,
+        updatedAt: now,
+      }),
+    );
+
+    // Production mode → the production account only.
+    await setSandboxMode(s, false);
+    const prod = await s.as.query(api.increase.getChapterAccount, {});
+    expect(prod!.increaseAccountId).toBe("account_prod_x");
+
+    // Sandbox mode → the sandbox account only.
+    await setSandboxMode(s, true);
+    const sb = await s.as.query(api.increase.getChapterAccount, {});
+    expect(sb!.increaseAccountId).toBe("sandbox_account_x");
+  });
+
+  test("hides the off-mode account (a lone sandbox account is null in production)", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await seedManager(s);
+    await setSandboxMode(s, false); // production
+    const now = Date.now();
+    await run(s.t, (ctx) =>
+      ctx.db.insert("increaseAccounts", {
+        chapterId: s.chapterId,
+        sandbox: true,
+        onboardingStatus: "active",
+        increaseAccountId: "sandbox_account_x",
+        createdAt: now,
+        updatedAt: now,
+      }),
+    );
+    // The sandbox account is hidden in production → UI shows "provision".
+    expect(await s.as.query(api.increase.getChapterAccount, {})).toBeNull();
   });
 
   test("a caller without a finance role is rejected (viewer-gated)", async () => {
@@ -774,12 +853,14 @@ describe("removeChapterAccount", () => {
       onboardingStatus: "active" | "pending" | "not_started";
       increaseAccountId?: string;
       increaseEntityId?: string;
+      sandbox?: boolean;
     },
   ): Promise<Id<"increaseAccounts">> {
     const now = Date.now();
     return await run(s.t, (ctx) =>
       ctx.db.insert("increaseAccounts", {
         chapterId: s.chapterId,
+        sandbox: opts.sandbox,
         onboardingStatus: opts.onboardingStatus,
         increaseAccountId: opts.increaseAccountId,
         increaseEntityId: opts.increaseEntityId,
@@ -802,10 +883,12 @@ describe("removeChapterAccount", () => {
     const t = newT();
     const s = await setupChapter(t);
     await seedManager(s);
+    await setSandboxMode(s, true); // the sandbox account shows in sandbox mode
     await seedIncreaseAccount(s, {
       onboardingStatus: "active",
       increaseAccountId: "sandbox_account_x",
       increaseEntityId: "sandbox_entity",
+      sandbox: true,
     });
 
     await s.as.mutation(api.increase.removeChapterAccount, {});
@@ -818,9 +901,11 @@ describe("removeChapterAccount", () => {
     const t = newT();
     const s = await setupChapter(t);
     await seedManager(s);
+    await setSandboxMode(s, true); // the sandbox account shows in sandbox mode
     await seedIncreaseAccount(s, {
       onboardingStatus: "active",
       increaseAccountId: "sandbox_account_x",
+      sandbox: true,
     });
     const holder = await seedPerson(s, { name: "Holder" });
     const now = Date.now();
@@ -1363,6 +1448,146 @@ describe("provisionChapterAccount sandbox mode", () => {
     );
     expect(account.onboardingStatus).toBe("pending");
     expect(account.increaseAccountId).toBeNull();
+  });
+
+  test("production mode with only a sandbox account CREATES a new production row (both coexist), never touches the sandbox row", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await seedManager(s);
+    await setSandboxMode(s, false); // production
+
+    // The chapter already holds a live SANDBOX account and nothing else.
+    const now = Date.now();
+    const sandboxRowId = await run(s.t, (ctx) =>
+      ctx.db.insert("increaseAccounts", {
+        chapterId: s.chapterId,
+        sandbox: true,
+        onboardingStatus: "active",
+        increaseAccountId: "sandbox_account_x",
+        increaseEntityId: "entity_sandbox",
+        createdAt: now,
+        updatedAt: now,
+      }),
+    );
+
+    // Prod env unset → provisioning degrades to `pending`, but a NEW production
+    // row is still created; the sandbox row must be left completely untouched.
+    delete process.env.INCREASE_API_KEY;
+    delete process.env.INCREASE_ENTITY_ID;
+    globalThis.fetch = (() => {
+      throw new Error("fetch must not be called on the degrade path");
+    }) as unknown as typeof fetch;
+
+    const result = await s.as.action(api.increase.provisionChapterAccount, {});
+    expect(result.onboardingStatus).toBe("pending");
+    expect(result.increaseAccountId).toBeNull();
+
+    const rows = await run(s.t, (ctx) =>
+      ctx.db
+        .query("increaseAccounts")
+        .withIndex("by_chapter", (q) => q.eq("chapterId", s.chapterId))
+        .collect(),
+    );
+    expect(rows.length).toBe(2); // both environments coexist
+
+    // The sandbox row is byte-for-byte unchanged.
+    const sandboxRow = rows.find((r) => r._id === sandboxRowId)!;
+    expect(sandboxRow.sandbox).toBe(true);
+    expect(sandboxRow.onboardingStatus).toBe("active");
+    expect(sandboxRow.increaseAccountId).toBe("sandbox_account_x");
+
+    // The brand-new row is the production one (sandbox:false), still pending.
+    const prodRow = rows.find((r) => r._id !== sandboxRowId)!;
+    expect(prodRow.sandbox).toBe(false);
+    expect(prodRow.onboardingStatus).toBe("pending");
+    expect(prodRow.increaseAccountId).toBeUndefined();
+  });
+});
+
+// ── runBackfillIncreaseAccountEnv ────────────────────────────────────────────
+
+describe("runBackfillIncreaseAccountEnv", () => {
+  test("stamps `sandbox` from the id prefix and is idempotent", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const now = Date.now();
+
+    // LEGACY rows (no `sandbox` field): one sandbox_ id, one prod id, one null id.
+    const sandboxRow = await run(s.t, (ctx) =>
+      ctx.db.insert("increaseAccounts", {
+        chapterId: s.chapterId,
+        onboardingStatus: "active",
+        increaseAccountId: "sandbox_legacy",
+        createdAt: now,
+        updatedAt: now,
+      }),
+    );
+    const prodRow = await run(s.t, (ctx) =>
+      ctx.db.insert("increaseAccounts", {
+        chapterId: s.chapterId,
+        onboardingStatus: "active",
+        increaseAccountId: "account_legacy",
+        createdAt: now,
+        updatedAt: now,
+      }),
+    );
+    const pendingRow = await run(s.t, (ctx) =>
+      ctx.db.insert("increaseAccounts", {
+        chapterId: s.chapterId,
+        onboardingStatus: "pending",
+        createdAt: now,
+        updatedAt: now,
+      }),
+    );
+
+    const first = await t.mutation(
+      internal.increase.runBackfillIncreaseAccountEnv,
+      {},
+    );
+    expect(first.scanned).toBe(3);
+    expect(first.updated).toBe(3);
+
+    const readSandboxField = async (id: Id<"increaseAccounts">) =>
+      (await run(s.t, (ctx) => ctx.db.get(id)))!.sandbox;
+    expect(await readSandboxField(sandboxRow)).toBe(true);
+    expect(await readSandboxField(prodRow)).toBe(false); // prod id
+    expect(await readSandboxField(pendingRow)).toBe(false); // null id → production
+
+    // Idempotent: a second run stamps nothing (fields already the source of truth).
+    const second = await t.mutation(
+      internal.increase.runBackfillIncreaseAccountEnv,
+      {},
+    );
+    expect(second.scanned).toBe(3);
+    expect(second.updated).toBe(0);
+    expect(await readSandboxField(sandboxRow)).toBe(true);
+    expect(await readSandboxField(prodRow)).toBe(false);
+    expect(await readSandboxField(pendingRow)).toBe(false);
+  });
+
+  test("leaves an explicitly-set `sandbox` value untouched", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const now = Date.now();
+    // An explicit sandbox:true row whose id is null — the field is the source of
+    // truth and must NOT be overwritten to false by the prefix fallback.
+    const explicitRow = await run(s.t, (ctx) =>
+      ctx.db.insert("increaseAccounts", {
+        chapterId: s.chapterId,
+        sandbox: true,
+        onboardingStatus: "pending",
+        createdAt: now,
+        updatedAt: now,
+      }),
+    );
+
+    const res = await t.mutation(
+      internal.increase.runBackfillIncreaseAccountEnv,
+      {},
+    );
+    expect(res.updated).toBe(0);
+    const row = (await run(s.t, (ctx) => ctx.db.get(explicitRow)))!;
+    expect(row.sandbox).toBe(true);
   });
 });
 
