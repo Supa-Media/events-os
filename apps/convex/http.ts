@@ -186,11 +186,28 @@ http.route({
     if (!valid) return new Response("Invalid signature", { status: 400 });
 
     const event = JSON.parse(payload) as {
+      id: string;
       type: string;
       data: { object: { id: string; payment_intent?: string | null } };
     };
     const sessionId = event.data.object.id;
-    if (event.type === "checkout.session.completed") {
+    if (event.type.startsWith("financial_connections.")) {
+      // Financial Connections (legacy read-sync). Dedup on the provider event id
+      // — FC refreshes can redeliver — then hand off to stripeFinance, which
+      // schedules a per-account transaction sync. `data.object` here is the FC
+      // Account, so its id is the account id. The ticketing/donation paths below
+      // are already idempotent and stay untouched (no behavior change for them).
+      const { isNew } = await ctx.runMutation(
+        internal.webhooks.recordWebhookEvent,
+        { provider: "stripe", eventId: event.id, summary: event.type },
+      );
+      if (isNew) {
+        await ctx.runMutation(internal.stripeFinance.onFcWebhookEvent, {
+          stripeAccountId: event.data.object.id,
+          eventType: event.type,
+        });
+      }
+    } else if (event.type === "checkout.session.completed") {
       const paymentIntentId = event.data.object.payment_intent ?? undefined;
       // One shared session id is either a ticket order OR a donation. Try the
       // order first; only if it wasn't an order do we try the donation. Each

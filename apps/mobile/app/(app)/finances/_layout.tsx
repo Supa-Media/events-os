@@ -18,6 +18,7 @@ const TABS: { label: string; path: string }[] = [
   { label: "Reconcile", path: "/finances/reconcile" },
   { label: "Cards", path: "/finances/cards" },
   { label: "Reimbursements", path: "/finances/reimbursements" },
+  { label: "Accounts", path: "/finances/accounts" },
 ];
 
 /** Active when the pathname is the tab's route (exact for the index, prefix for
