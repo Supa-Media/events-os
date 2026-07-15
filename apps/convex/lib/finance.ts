@@ -29,7 +29,7 @@ import {
   type FinanceRoleScope,
 } from "@events-os/shared";
 import { Doc, Id } from "../_generated/dataModel";
-import { QueryCtx } from "../_generated/server";
+import { MutationCtx, QueryCtx } from "../_generated/server";
 import { isSuperuser } from "./superuser";
 import { viewerPerson } from "./org";
 
@@ -186,6 +186,68 @@ export async function requireFinanceCentral(
     });
   }
   return access;
+}
+
+/**
+ * A finance scope: a real chapter, or the org level (`"central"` sentinel). The
+ * specialized-role layer assigns `finance_manager` at either; the bridge below
+ * keys a `financeRoles` grant on this value directly (the schema union allows it).
+ */
+export type FinanceScope = Id<"chapters"> | "central";
+
+/**
+ * Bridge a `finance_manager` SPECIALIZED role to a real `financeRoles` `manager`
+ * grant — so holding the title confers finance-write capability. Upserts the one
+ * grant per (scope, person): a chapter scope → `scope:"chapter"` keyed on the
+ * chapter id, the org level → `scope:"central"` keyed on `"central"`. Mirrors
+ * `grantFinanceRole`'s upsert, but is caller-agnostic (invoked by the superuser-
+ * gated specialized-role assignment, which grants ON BEHALF OF the holder).
+ */
+export async function bridgeFinanceManagerGrant(
+  ctx: MutationCtx,
+  scope: FinanceScope,
+  personId: Id<"people">,
+): Promise<void> {
+  const financeScope: FinanceRoleScope =
+    scope === "central" ? "central" : "chapter";
+  const existing = await ctx.db
+    .query("financeRoles")
+    .withIndex("by_chapter_and_person", (q) =>
+      q.eq("chapterId", scope).eq("personId", personId),
+    )
+    .first();
+  if (existing) {
+    // Re-title / re-assign: ensure the grant is at least manager at this scope.
+    await ctx.db.patch(existing._id, { role: "manager", scope: financeScope });
+    return;
+  }
+  await ctx.db.insert("financeRoles", {
+    chapterId: scope,
+    personId,
+    role: "manager",
+    scope: financeScope,
+    createdAt: Date.now(),
+  });
+}
+
+/**
+ * Revoke the `financeRoles` grant bridged by a `finance_manager` specialized
+ * role. Deletes the one (scope, person) grant. The caller only invokes this once
+ * it has confirmed the person holds no OTHER finance specialized role at the
+ * scope that should keep the capability alive.
+ */
+export async function revokeBridgedFinanceManagerGrant(
+  ctx: MutationCtx,
+  scope: FinanceScope,
+  personId: Id<"people">,
+): Promise<void> {
+  const existing = await ctx.db
+    .query("financeRoles")
+    .withIndex("by_chapter_and_person", (q) =>
+      q.eq("chapterId", scope).eq("personId", personId),
+    )
+    .first();
+  if (existing) await ctx.db.delete(existing._id);
 }
 
 /**
