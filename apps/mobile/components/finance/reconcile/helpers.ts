@@ -7,7 +7,7 @@
  *
  * DATA NOTE: `listTransactions` (its `txnSummary` projection) returns only
  * `{id, postedAt, amountCents, flow, status, description, merchantName, fundId,
- * categoryId}` — there is no receipt/card/spender field yet. So the reconcile
+ * categoryId, budgetId}` — there is no receipt/card/spender field yet. So the reconcile
  * "state", the receipt line, and the reminder timeline are all *derived from
  * `status` + `postedAt`* until real receipt tracking lands (finance Phase 3).
  */

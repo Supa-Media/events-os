@@ -54,6 +54,7 @@ export default function ReconcileScreen() {
   );
   const funds = useQuery(api.finances.listFunds) ?? [];
   const categories = useQuery(api.finances.listCategories, {}) ?? [];
+  const budgets = useQuery(api.finances.listBudgets) ?? [];
 
   const categorize = useMutation(api.finances.categorizeTransaction);
   const acceptSuggestion = useMutation(api.aiCodingData.acceptSuggestion);
@@ -104,6 +105,12 @@ export default function ReconcileScreen() {
     name: c.name,
     fundId: c.fundId,
   }));
+  const budgetOpts = budgets.map((b) => ({
+    id: b.id,
+    label: b.label,
+    type: b.type,
+    level: b.level,
+  }));
 
   // In-screen guard: reconcile is admin-or-lead (finance-manager/bookkeeper).
   const tier = org?.tier;
@@ -138,13 +145,19 @@ export default function ReconcileScreen() {
         row={selected}
         funds={fundOpts}
         categories={catOpts}
-        onSaveCoding={(fundId, categoryId) =>
+        budgets={budgetOpts}
+        onSaveCoding={(fundId, categoryId, budgetId) =>
           run(
             () =>
               categorize({
                 transactionId: selected.id,
                 fundId: fundId as Id<"funds"> | null,
                 categoryId: categoryId as Id<"budgetCategories"> | null,
+                // Only send budgetId when the picker actually changed it
+                // (undefined leaves the existing link untouched).
+                ...(budgetId !== undefined
+                  ? { budgetId: budgetId as Id<"budgets"> | null }
+                  : {}),
               }),
             { errorTitle: "Couldn't save coding" },
           ).then(() => {})

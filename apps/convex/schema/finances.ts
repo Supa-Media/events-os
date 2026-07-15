@@ -4,6 +4,9 @@ import {
   FUND_RESTRICTIONS,
   BUDGET_CATEGORY_KINDS,
   BUDGET_SCOPES,
+  BUDGET_TYPES,
+  BUDGET_REF_KINDS,
+  BUDGET_TAG_KINDS,
   BUDGET_CADENCES,
   BUDGET_ROLLOVER_POLICIES,
   TRANSACTION_SOURCES,
@@ -91,20 +94,33 @@ export const financeTeams = defineTable({
   createdAt: v.number(),
 }).index("by_chapter", ["chapterId"]);
 
-// ── Budgets: scope × cadence × categories ────────────────────────────────────
-/** A flexible allocation of the account's balance. Any scope can take any
- *  cadence; optionally narrows to a fund + category + team. v1 tracks
- *  spent-vs-allocated per period — rollover is deferred (`rolloverPolicy`). */
+// ── Budgets: type × cadence × tags (v2) ──────────────────────────────────────
+/** A flexible allocation of the account's balance. v2 keys off `type`
+ *  (one_time / recurring) + a real-or-`"central"` chapter LEVEL + MULTIPLE
+ *  managed tags (`budgetTags` via `budgetTagLinks`); optionally narrows to a
+ *  fund + category. Tracks spent-vs-allocated per period. `scope`/`teamId` are
+ *  legacy columns (ignored by v2 logic, backfilled into `type`/tags by
+ *  `migrateBudgetScopesToTypes`; dropped in a later follow-up). */
 export const budgets = defineTable({
-  chapterId: v.id("chapters"),
-  // Non-negative integer cents allocated for this scope × period.
+  // A real chapter id, OR the string literal "central" for an org-level budget
+  // (the CENTRAL sentinel — never null, not a `chapters` row). Existing rows
+  // hold real ids and stay valid; the shared indexes work on the union.
+  chapterId: v.union(v.id("chapters"), v.literal("central")),
+  // Non-negative integer cents allocated for this type × period.
   amountCents: v.number(),
   label: v.optional(v.string()),
-  scope: v.union(...BUDGET_SCOPES.map((s) => v.literal(s))),
-  // The id (as a string) of the event/project/template/team the budget is
-  // attached to, when the scope points at a specific instance. Absent for
-  // `chapter`/`bucket` scopes. Stored as a string because it references
-  // several different tables depending on `scope`.
+  // v2 SOURCE OF TRUTH: one_time (a specific event/project) vs recurring
+  // (monthly/quarterly/yearly). Optional only so live legacy rows validate
+  // before the backfill runs; new budgets always set it.
+  type: v.optional(v.union(...BUDGET_TYPES.map((t) => v.literal(t)))),
+  // For a one_time budget: whether `scopeRefId` points at an event or a project.
+  refKind: v.optional(v.union(...BUDGET_REF_KINDS.map((k) => v.literal(k)))),
+  // LEGACY (was required → optional): the pre-v2 6-value scope. Ignored by v2
+  // logic; retained for the migration + a later drop.
+  scope: v.optional(v.union(...BUDGET_SCOPES.map((s) => v.literal(s)))),
+  // The id (as a string) of the event/project the one_time budget is attached
+  // to (paired with `refKind`). Stored as a string because it references
+  // different tables depending on `refKind`.
   scopeRefId: v.optional(v.string()),
   cadence: v.union(...BUDGET_CADENCES.map((c) => v.literal(c))),
   // The period this allocation covers, bucketed in America/New_York. `month`
@@ -114,6 +130,7 @@ export const budgets = defineTable({
   quarter: v.optional(v.number()),
   fundId: v.optional(v.id("funds")),
   categoryId: v.optional(v.id("budgetCategories")),
+  // LEGACY: pre-v2 team scope link (migrated to a `team` budget tag).
   teamId: v.optional(v.id("financeTeams")),
   // Deferred: v1 does no rollover math; this reserves the per-budget toggle.
   rolloverPolicy: v.optional(
@@ -124,10 +141,43 @@ export const budgets = defineTable({
 })
   .index("by_chapter", ["chapterId"])
   .index("by_chapter_and_period", ["chapterId", "year"])
-  // Chapter-led so "budgets for scope X" never matches another chapter's
-  // chapter/bucket budgets (whose `scopeRefId` is absent).
-  .index("by_chapter_and_scope", ["chapterId", "scope", "scopeRefId"])
+  // Chapter-led so "budgets of type X" never matches another chapter's budgets.
+  .index("by_chapter_and_type", ["chapterId", "type"])
   .index("by_category", ["categoryId", "year"]);
+
+// ── Budget tags (managed, level-scoped) ──────────────────────────────────────
+/** A managed tag definition on a budget LEVEL (a real chapter or `"central"`).
+ *  The flexible filter + rollup dimension: `team`/`template` tags carry a
+ *  `refId` (financeTeams / eventType id) so auto-tag can dedup; `events` is the
+ *  auto-applied catch-all for event budgets; `custom` is author-created. Budgets
+ *  link to tags many-to-many via `budgetTagLinks`. */
+export const budgetTags = defineTable({
+  chapterId: v.union(v.id("chapters"), v.literal("central")),
+  name: v.string(),
+  kind: v.optional(v.union(...BUDGET_TAG_KINDS.map((k) => v.literal(k)))),
+  // team → financeTeams id, template → eventType id (used by ensureTag dedup).
+  refId: v.optional(v.string()),
+  sortOrder: v.optional(v.number()),
+  createdBy: v.optional(v.id("users")),
+  createdAt: v.number(),
+})
+  .index("by_chapter", ["chapterId"])
+  .index("by_chapter_and_kind", ["chapterId", "kind"])
+  // ensureTag dedup: find an existing managed tag by (level, kind, refId).
+  .index("by_chapter_and_ref", ["chapterId", "kind", "refId"]);
+
+// ── Budget ⇄ tag links (many-to-many) ────────────────────────────────────────
+/** One budget↔tag link. A budget carries several tags and a tag rolls up
+ *  several budgets. `chapterId` is denormalized (the budget's LEVEL) for
+ *  tenancy checks without loading the budget. */
+export const budgetTagLinks = defineTable({
+  budgetId: v.id("budgets"),
+  tagId: v.id("budgetTags"),
+  chapterId: v.union(v.id("chapters"), v.literal("central")),
+  createdAt: v.number(),
+})
+  .index("by_budget", ["budgetId"])
+  .index("by_tag", ["tagId"]);
 
 // ── Transactions (the unified ACTUAL record) ─────────────────────────────────
 /** The one table summed for actuals. Positive integer cents; `flow` carries
@@ -147,6 +197,9 @@ export const transactions = defineTable({
   // Categorization (the "where does this money belong" layer).
   fundId: v.optional(v.id("funds")),
   categoryId: v.optional(v.id("budgetCategories")),
+  // Explicit budget attribution. When set, this txn counts toward EXACTLY this
+  // budget (chapter or central) and is never derive-matched to any other.
+  budgetId: v.optional(v.id("budgets")),
 
   // Operational links (the "what was it for" layer — the whole point of a
   // native finance system: a dollar attaches to the exact thing it was spent on).
@@ -202,6 +255,7 @@ export const transactions = defineTable({
   .index("by_card", ["cardId"])
   .index("by_fund", ["fundId"])
   .index("by_category", ["categoryId"])
+  .index("by_budget", ["budgetId"])
   .index("by_project", ["projectId"])
   .index("by_event", ["eventId"])
   .index("by_person", ["personId"])

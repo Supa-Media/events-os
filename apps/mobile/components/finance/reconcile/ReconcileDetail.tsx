@@ -11,6 +11,7 @@
  */
 import { useEffect, useState } from "react";
 import { View, Text } from "react-native";
+import { BUDGET_TYPE_LABELS, type BudgetType } from "@events-os/shared";
 import { Button, Card, Field, Icon, Select, type IconName } from "../../ui";
 import { colors } from "../../../lib/theme";
 import { ReceiptTimeline } from "./ReceiptTimeline";
@@ -28,6 +29,17 @@ const NUM = { fontVariant: ["tabular-nums" as const] };
 
 type FundOpt = { id: string; name: string };
 type CatOpt = { id: string; name: string; fundId: string };
+type BudgetOpt = {
+  id: string;
+  label: string | null;
+  type: BudgetType | null;
+  level: "chapter" | "central";
+};
+
+/** Human name for a budget in the picker (its label, else its type word). */
+function budgetName(b: BudgetOpt): string {
+  return b.label?.trim() || (b.type ? BUDGET_TYPE_LABELS[b.type] : "Budget");
+}
 
 const RECEIPT_ICON: Record<string, IconName> = {
   none: "file-text",
@@ -44,6 +56,7 @@ export function ReconcileDetail({
   row,
   funds,
   categories,
+  budgets,
   onSaveCoding,
   onAccept,
   onRequestSuggestion,
@@ -52,9 +65,12 @@ export function ReconcileDetail({
   row: TxnRow;
   funds: FundOpt[];
   categories: CatOpt[];
+  budgets: BudgetOpt[];
   onSaveCoding: (
     fundId: string | null,
     categoryId: string | null,
+    // undefined → leave the budget link untouched; null → clear it.
+    budgetId?: string | null,
   ) => Promise<void>;
   onAccept: () => Promise<void>;
   onRequestSuggestion: () => Promise<CodingSuggestion | null>;
@@ -64,6 +80,9 @@ export function ReconcileDetail({
   const [categoryId, setCategoryId] = useState<string | null>(
     row.categoryId ?? null,
   );
+  // Pre-select the txn's existing budget link (null → "None"), mirroring the
+  // fund/category pre-selection above.
+  const [budgetId, setBudgetId] = useState<string | null>(row.budgetId ?? null);
   const [suggestion, setSuggestion] = useState<CodingSuggestion | null>(null);
   const [busy, setBusy] = useState<"accept" | "suggest" | null>(null);
 
@@ -72,14 +91,36 @@ export function ReconcileDetail({
   useEffect(() => {
     setFundId(row.fundId ?? null);
     setCategoryId(row.categoryId ?? null);
+    setBudgetId(row.budgetId ?? null);
     setSuggestion(null);
     setBusy(null);
-  }, [row.id, row.fundId, row.categoryId]);
+  }, [row.id, row.fundId, row.categoryId, row.budgetId]);
 
   const fundOptions = funds.map((f) => ({ value: f.id, label: f.name }));
   const categoryOptions = categories
     .filter((c) => !fundId || c.fundId === fundId)
     .map((c) => ({ value: c.id, label: c.name }));
+
+  // Budget picker: "None" (clears) + budgets grouped under Chapter / Central.
+  const chapterBudgets = budgets.filter((b) => b.level === "chapter");
+  const centralBudgets = budgets.filter((b) => b.level === "central");
+  const budgetOptions = [
+    { value: "", label: "None" },
+    ...(chapterBudgets.length > 0
+      ? [{ value: "__grp_chapter", label: "Chapter", header: true }]
+      : []),
+    ...chapterBudgets.map((b) => ({ value: b.id, label: budgetName(b) })),
+    ...(centralBudgets.length > 0
+      ? [{ value: "__grp_central", label: "Central", header: true }]
+      : []),
+    ...centralBudgets.map((b) => ({ value: b.id, label: budgetName(b) })),
+  ];
+
+  async function handleBudget(value: string) {
+    const next = value === "" ? null : value;
+    setBudgetId(next);
+    await onSaveCoding(fundId, categoryId, next);
+  }
 
   async function handleFund(value: string) {
     // Clear the category if it no longer belongs to the chosen fund.
@@ -207,6 +248,13 @@ export function ReconcileDetail({
           />
         </View>
       </View>
+      <Select
+        label="Budget"
+        value={budgetId ?? ""}
+        options={budgetOptions}
+        onChange={handleBudget}
+        placeholder="None"
+      />
       <Field
         label="Link to event / instance"
         hint="Event linking arrives with calendar sync."

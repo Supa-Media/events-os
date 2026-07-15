@@ -152,6 +152,7 @@ function DashboardBody() {
           budgetId={budgetModal.id}
           defaultYear={ym.year}
           defaultMonth={ym.month}
+          canCentral={centralAvailable === true}
           onClose={() => setBudgetModal({ open: false, id: null })}
         />
       ) : null}

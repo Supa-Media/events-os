@@ -1,21 +1,36 @@
 /**
  * Central perspective of the finance dashboard — the org-wide roll-up: global
- * KPI tiles, a "By template" breakdown (each event template's month total split
- * per chapter), and a "By chapter" list (each chapter's month spend against its
- * budget). Pure presentation over `api.finances.dashboardCentral`.
+ * KPI tiles, central budgets, an interactive "By tag" breakdown (each tag's
+ * org-wide spend, tappable to the contributing budgets), and a "By chapter"
+ * list (each chapter's month spend against its budget). Pure presentation over
+ * `api.finances.dashboardCentral`.
  */
+import { useMemo } from "react";
 import { Text, View } from "react-native";
 import type { FunctionReturnType } from "convex/server";
 import { api } from "@events-os/convex/_generated/api";
-import { formatCents } from "@events-os/shared";
+import {
+  BUDGET_CADENCE_LABELS,
+  BUDGET_SCOPE_LABELS,
+  formatCents,
+} from "@events-os/shared";
 import { EmptyState, SectionHeader } from "../../ui";
-import { BudgetBar, MiniBar, Money, Tile, TileRow } from "./parts";
+import { BudgetBar, Chip, Tile, TileRow } from "./parts";
+import { TagRollupSection, type BudgetSpend } from "./TagRollup";
 
 type CentralDash = FunctionReturnType<typeof api.finances.dashboardCentral>;
-type TemplateRollup = CentralDash["templateRollup"][number];
 type ChapterRollup = CentralDash["chapterRollup"][number];
+type CentralBudget = CentralDash["centralBudgets"][number];
 
 export function CentralView({ data }: { data: CentralDash }) {
+  // Per-central-budget actuals for the tag-detail sheet, keyed by budget id.
+  const spentByBudgetId = useMemo(() => {
+    const m = new Map<string, BudgetSpend>();
+    for (const b of data.centralBudgets)
+      m.set(b.id, { spentCents: b.spentCents, budgetCents: b.budgetCents });
+    return m;
+  }, [data.centralBudgets]);
+
   return (
     <View>
       <TileRow>
@@ -24,20 +39,24 @@ export function CentralView({ data }: { data: CentralDash }) {
         ))}
       </TileRow>
 
-      {/* By template, across chapters */}
-      <SectionHeader title="By template" count="across all chapters" />
-      {data.templateRollup.length === 0 ? (
-        <EmptyState
-          title="No template spend this month"
-          message="Charges linked to an event roll up here by the event's template."
-        />
-      ) : (
-        <View className="gap-3">
-          {data.templateRollup.map((r, i) => (
-            <TemplateCard key={i} r={r} />
-          ))}
-        </View>
-      )}
+      {/* Org-wide (central) budgets — spend across every chapter. */}
+      {data.centralBudgets.length > 0 ? (
+        <>
+          <SectionHeader title="Central budgets" count="org-wide" />
+          <View className="flex-row flex-wrap gap-3">
+            {data.centralBudgets.map((b) => (
+              <CentralBudgetCard key={b.id} b={b} />
+            ))}
+          </View>
+        </>
+      ) : null}
+
+      {/* By tag, across chapters — interactive rollup */}
+      <TagRollupSection
+        rollups={data.tagRollups}
+        spentByBudgetId={spentByBudgetId}
+        matchMode="name"
+      />
 
       {/* By chapter */}
       <SectionHeader title="By chapter" count={data.chapterRollup.length} />
@@ -54,33 +73,30 @@ export function CentralView({ data }: { data: CentralDash }) {
   );
 }
 
-function TemplateCard({ r }: { r: TemplateRollup }) {
+function CentralBudgetCard({ b }: { b: CentralBudget }) {
+  // `scope` is a nullable legacy column on v2 budgets — fall back when absent.
+  const name =
+    b.label?.trim() || (b.scope ? BUDGET_SCOPE_LABELS[b.scope] : "Central budget");
   return (
-    <View className="rounded-lg border border-border bg-raised p-4 shadow-card">
-      <View className="mb-3 flex-row items-center justify-between gap-3">
+    <View className="min-w-[260px] flex-1 rounded-lg border border-border bg-raised p-4 shadow-card">
+      <View className="mb-2 flex-row items-start justify-between gap-2">
         <View className="flex-1">
           <Text className="font-display text-base text-ink" numberOfLines={1}>
-            {r.templateName}
+            {name}
           </Text>
-          <Text className="text-xs text-muted">
-            {r.scopeLabel} · {r.perChapter.length} chapters
-          </Text>
-        </View>
-        <Money cents={r.monthTotalCents} className="text-base font-semibold text-ink" />
-      </View>
-      <View className="gap-2">
-        {r.perChapter.map((pc, i) => (
-          <View key={i} className="gap-1">
-            <View className="flex-row items-center justify-between">
-              <Text className="text-xs text-ink" numberOfLines={1}>
-                {pc.chapterName}
-              </Text>
-              <Money cents={pc.amountCents} className="text-xs text-muted" />
-            </View>
-            <MiniBar barPct={pc.barPct} />
+          <View className="mt-1">
+            <Chip label={BUDGET_CADENCE_LABELS[b.cadence]} />
           </View>
-        ))}
+        </View>
+        <Text
+          className="text-sm text-muted"
+          style={{ fontVariant: ["tabular-nums"] }}
+        >
+          {formatCents(b.spentCents)} / {formatCents(b.budgetCents)}
+        </Text>
       </View>
+      <BudgetBar pct={b.pct} status={b.status} />
+      <Text className="mt-1.5 text-xs text-muted">{b.pct}% spent</Text>
     </View>
   );
 }

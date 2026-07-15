@@ -66,12 +66,18 @@ export function TextField({ label, hint, suffix, ...inputProps }: TextFieldProps
   );
 }
 
-type Option = { value: string; label: string };
+type Option = {
+  value: string;
+  label: string;
+  /** Renders as a non-selectable section heading (for grouping options). */
+  header?: boolean;
+};
 
 /**
  * A lightweight select. RN-web has no native `<select>`, so this is a labelled
  * trigger that expands an inline option list. Class-driven hover/selected
- * states keep it web-safe.
+ * states keep it web-safe. Options flagged `header` render as inert group
+ * headings rather than pickable rows.
  */
 export function Select({
   label,
@@ -88,7 +94,7 @@ export function Select({
 }) {
   const [open, setOpen] = useState(false);
   const [hovered, setHovered] = useState(false);
-  const current = options.find((o) => o.value === value);
+  const current = options.find((o) => !o.header && o.value === value);
 
   return (
     <Field label={label}>
@@ -107,17 +113,25 @@ export function Select({
       </Pressable>
       {open ? (
         <View className="mt-1 overflow-hidden rounded-md border border-border bg-raised shadow-raised">
-          {options.map((o) => (
-            <SelectRow
-              key={o.value}
-              label={o.label}
-              selected={o.value === value}
-              onPress={() => {
-                onChange(o.value);
-                setOpen(false);
-              }}
-            />
-          ))}
+          {options.map((o) =>
+            o.header ? (
+              <View key={`h:${o.label}`} className="bg-sunken px-3 py-1.5">
+                <Text className="text-2xs font-bold uppercase tracking-wider text-muted">
+                  {o.label}
+                </Text>
+              </View>
+            ) : (
+              <SelectRow
+                key={o.value}
+                label={o.label}
+                selected={o.value === value}
+                onPress={() => {
+                  onChange(o.value);
+                  setOpen(false);
+                }}
+              />
+            ),
+          )}
         </View>
       ) : null}
     </Field>
