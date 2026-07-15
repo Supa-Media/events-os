@@ -115,18 +115,24 @@ export function increaseEnvForMode(sandbox: boolean): {
   key: string | undefined;
   base: string;
   entityId: string | undefined;
+  // Per-mode Program override. MUST be mode-scoped: the prod
+  // `INCREASE_PROGRAM_ID` is a PROD program id and would be rejected by the
+  // sandbox API, so sandbox uses its own (usually-unset) override → auto-resolve.
+  programOverride: string | undefined;
 } {
   if (sandbox) {
     return {
       key: process.env.INCREASE_SANDBOX_API_KEY,
       base: "https://sandbox.increase.com",
       entityId: process.env.INCREASE_SANDBOX_ENTITY_ID,
+      programOverride: process.env.INCREASE_SANDBOX_PROGRAM_ID,
     };
   }
   return {
     key: process.env.INCREASE_API_KEY,
     base: increaseApiBase(),
     entityId: process.env.INCREASE_ENTITY_ID,
+    programOverride: process.env.INCREASE_PROGRAM_ID,
   };
 }
 
@@ -346,8 +352,11 @@ async function increaseGet(
 async function resolveProgramId(
   key: string,
   base: string,
+  override: string | undefined,
 ): Promise<string | null> {
-  const override = process.env.INCREASE_PROGRAM_ID;
+  // The override MUST be the one for THIS environment (see increaseEnvForMode) —
+  // reading a global INCREASE_PROGRAM_ID here would leak the prod program into a
+  // sandbox account creation and be rejected.
   if (override) return override;
   try {
     const res = await fetch(`${base}/programs`, {
@@ -650,7 +659,7 @@ export const provisionChapterAccount = action({
       internal.financeSettings.readSandboxMode,
       {},
     );
-    const { key, base, entityId } = increaseEnvForMode(sandbox);
+    const { key, base, entityId, programOverride } = increaseEnvForMode(sandbox);
 
     // Opening an Account needs the (mode's) API key + shared org Entity id. If
     // either is unset we can't provision → degrade to `pending` (log which one is
@@ -675,7 +684,7 @@ export const provisionChapterAccount = action({
     // Resolve the Program: explicit `INCREASE_PROGRAM_ID` override, else the sole
     // program from the mode's `GET /programs`. Null (0/>1 programs, or a fetch
     // error) → degrade to `pending` rather than open under a guessed program.
-    const programId = await resolveProgramId(key!, base);
+    const programId = await resolveProgramId(key!, base, programOverride);
     if (!programId) {
       console.warn("[increase] provision skipped: no Increase Program resolved");
       return await ctx.runMutation(internal.increase.finishProvision, {
