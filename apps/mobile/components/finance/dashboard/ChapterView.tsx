@@ -155,20 +155,34 @@ export function ChapterView({
       )}
 
       {/* Needs your attention */}
-      <SectionHeader title="Needs your attention" count={data.attention.length || undefined} />
-      {data.attention.length === 0 ? (
-        <EmptyState
-          icon="check-circle"
-          title="All clear"
-          message="No reimbursements to approve or cards nearing a receipt lock."
-        />
-      ) : (
-        <View className="gap-3">
-          {(data.attention as Attention[]).map((a, i) => (
-            <AttentionCard key={i} a={a} />
-          ))}
-        </View>
-      )}
+      {(() => {
+        const needsBudget = data.toBudgetCount;
+        const attentionCount = data.attention.length + (needsBudget > 0 ? 1 : 0);
+        return (
+          <>
+            <SectionHeader
+              title="Needs your attention"
+              count={attentionCount || undefined}
+            />
+            {attentionCount === 0 ? (
+              <EmptyState
+                icon="check-circle"
+                title="All clear"
+                message="No reimbursements to approve or cards nearing a receipt lock."
+              />
+            ) : (
+              <View className="gap-3">
+                {needsBudget > 0 ? (
+                  <NeedsBudgetCard count={needsBudget} />
+                ) : null}
+                {(data.attention as Attention[]).map((a, i) => (
+                  <AttentionCard key={i} a={a} />
+                ))}
+              </View>
+            )}
+          </>
+        );
+      })()}
     </View>
   );
 }
@@ -345,6 +359,35 @@ function TransactionsTable({ rows }: { rows: RecentTxn[] }) {
         );
       })}
     </Table>
+  );
+}
+
+// ── Needs-a-budget attention row ─────────────────────────────────────────────
+// Un-budgeted spend (`dashboardChapter.toBudgetCount`) nudged to Reconcile so
+// each charge gets tagged to a budget. Hidden when the count is 0 (caller-gated).
+function NeedsBudgetCard({ count }: { count: number }) {
+  return (
+    <View className="flex-row items-center gap-3 rounded-lg border border-warn bg-warn-bg p-4 shadow-card">
+      <View className="h-9 min-w-[36px] items-center justify-center rounded-pill bg-warn-soft px-2">
+        <Text
+          className="text-sm font-bold text-warn"
+          style={{ fontVariant: ["tabular-nums"] }}
+        >
+          {count}
+        </Text>
+      </View>
+      <View className="flex-1">
+        <Text className="text-sm font-semibold text-ink">
+          {count === 1
+            ? "1 transaction needs a budget"
+            : `${count} transactions need a budget`}
+        </Text>
+        <Text className="text-xs text-muted">
+          Tag each charge to a budget so it counts against a plan.
+        </Text>
+      </View>
+      <Badge label="Reconcile" tone="warn" icon="tag" />
+    </View>
   );
 }
 
