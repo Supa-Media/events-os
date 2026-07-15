@@ -5,6 +5,8 @@
  * manager actions:
  *   - submitted / preapproved → Reject · Approve lines… · Approve & pay
  *   - pending_preapproval      → Decline · Pre-approve
+ *   - approved                 → Mark paid (`markPaidManually`), with a note
+ *                                that ACH auto-payout via Increase is coming
  *   - everything else          → read-only (a status note)
  *
  * "Approve lines…" opens an inline per-line checkbox selector that submits
@@ -15,6 +17,7 @@
 import { useMemo, useState } from "react";
 import { View, Text, Pressable } from "react-native";
 import { useQuery } from "convex/react";
+import type { FunctionReturnType } from "convex/server";
 import { api } from "@events-os/convex/_generated/api";
 import type { Id } from "@events-os/convex/_generated/dataModel";
 import { formatCents } from "@events-os/shared";
@@ -25,14 +28,20 @@ import {
   RECEIPTS_BADGE,
   canApprove,
   canPreApprove,
+  canMarkPaid,
   isActionable,
   shortDate,
   type ReimbursementRow,
   type ReimbursementDetail,
 } from "./helpers";
 
+/** A payout summary as returned by `api.increase.listPayouts` (optional hint). */
+type Payout = FunctionReturnType<typeof api.increase.listPayouts>[number];
+
 type Props = {
   row: ReimbursementRow;
+  /** The live payout for this request, if any (drives the read-only hint). */
+  payout?: Payout;
   /** Approve all lines (omit ids) or a subset. Returns once the run settles. */
   onApprove: (
     id: Id<"reimbursementRequests">,
@@ -40,9 +49,18 @@ type Props = {
   ) => Promise<void>;
   onPreApprove: (id: Id<"reimbursementRequests">) => Promise<void>;
   onReject: (id: Id<"reimbursementRequests">) => Promise<void>;
+  /** Mark an approved request paid (`markPaidManually`). */
+  onMarkPaid: (id: Id<"reimbursementRequests">) => Promise<void>;
 };
 
-export function RequestCard({ row, onApprove, onPreApprove, onReject }: Props) {
+export function RequestCard({
+  row,
+  payout,
+  onApprove,
+  onPreApprove,
+  onReject,
+  onMarkPaid,
+}: Props) {
   // `expanded` shows the read-only line table; `selecting` swaps it for the
   // per-line checkbox approve selector. Either mode needs the request's lines.
   const [expanded, setExpanded] = useState(false);
@@ -154,6 +172,18 @@ export function RequestCard({ row, onApprove, onPreApprove, onReject }: Props) {
         </View>
       ) : null}
 
+      {/* Pay note — approved requests are paid manually for now; ACH is next. */}
+      {canMarkPaid(row.status) ? (
+        <View className="mt-3 flex-row items-center gap-2 rounded-md bg-info-bg px-3 py-2">
+          <Icon name="info" size={14} color={colors.info} />
+          <Text className="flex-1 text-xs text-info">
+            Send the ACH transfer from the chapter's Increase account, then mark
+            it paid here. Auto-payout via Increase is coming — destination bank
+            capture is a follow-up.
+          </Text>
+        </View>
+      ) : null}
+
       {/* Actions. */}
       {!selecting ? (
         <View className="mt-3 flex-row flex-wrap justify-end gap-2">
@@ -205,8 +235,17 @@ export function RequestCard({ row, onApprove, onPreApprove, onReject }: Props) {
                 onPress={() => runBusy(() => onApprove(row._id))}
               />
             </>
+          ) : canMarkPaid(row.status) ? (
+            <Button
+              title={`Mark paid ${formatCents(row.approvedCents ?? row.totalCents)}`}
+              variant="primary"
+              size="sm"
+              icon="check-circle"
+              loading={busy}
+              onPress={() => runBusy(() => onMarkPaid(row._id))}
+            />
           ) : (
-            <ReadOnlyNote status={row.status} />
+            <ReadOnlyNote status={row.status} payout={payout} />
           )}
         </View>
       ) : null}
@@ -214,16 +253,23 @@ export function RequestCard({ row, onApprove, onPreApprove, onReject }: Props) {
   );
 }
 
-/** The status-appropriate read-only footnote for non-actionable requests. */
-function ReadOnlyNote({ status }: { status: ReimbursementRow["status"] }) {
+/** The status-appropriate read-only footnote for non-actionable requests.
+ *  When a payout exists, its provider ("Increase ACH" vs a manual transfer) is
+ *  reflected so a manager can tell how a paid/paying request was settled. */
+function ReadOnlyNote({
+  status,
+  payout,
+}: {
+  status: ReimbursementRow["status"];
+  payout?: Payout;
+}) {
+  const via = payout?.provider === "increase" ? "Increase ACH" : "a bank transfer";
   const text =
     status === "paying"
       ? "ACH transfer initiated from the chapter's Increase account."
       : status === "paid"
-        ? "Paid out via Increase ACH."
-        : status === "approved"
-          ? "Approved — payout runs in a later phase."
-          : "No further action needed.";
+        ? `Paid out via ${via}.`
+        : "No further action needed.";
   return <Text className="text-xs text-muted">{text}</Text>;
 }
 
