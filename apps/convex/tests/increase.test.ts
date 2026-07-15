@@ -17,7 +17,9 @@ import { verifyIncreaseSignature } from "../increase";
  *    unknown transfer no-ops, and a `paid` payout ignores a later `failed`,
  *  - `provisionChapterAccount` degrades when a required env is unset, opens an
  *    Account under the shared org Entity auto-resolving the sole Program (active),
- *    degrades on an ambiguous (>1) Program, and honors an explicit Program override,
+ *    degrades on an ambiguous (>1) Program, honors an explicit Program override,
+ *    and LINKS an existing entity account whose name matches the chapter instead
+ *    of creating a duplicate (match-before-create),
  *  - `verifyIncreaseSignature` accepts a valid signature, rejects forgeries.
  *
  * All money is integer cents; the network side never runs (no `INCREASE_API_KEY`
@@ -564,8 +566,12 @@ describe("provisionChapterAccount", () => {
   });
 
   /** A `fetch` mock dispatching by URL path, recording each call. `programs`
-   *  seeds the `GET /programs` list; `/accounts` always returns an open account. */
-  function mockIncreaseFetch(programs: Array<{ id: string }>) {
+   *  seeds the `GET /programs` list; `accounts` seeds the `GET /accounts` list
+   *  (the match-before-create step); `POST /accounts` returns an open account. */
+  function mockIncreaseFetch(
+    programs: Array<{ id: string }>,
+    accounts: Array<{ id: string; name: string }> = [],
+  ) {
     const calls: Array<{
       path: string;
       method: string;
@@ -586,6 +592,13 @@ describe("provisionChapterAccount", () => {
         });
       }
       if (path.includes("/accounts")) {
+        // GET = the match-before-create list; POST = open a new account.
+        if (method === "GET") {
+          return new Response(JSON.stringify({ data: accounts }), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          });
+        }
         return new Response(
           JSON.stringify({ id: "sandbox_account_x", status: "open" }),
           { status: 200, headers: { "Content-Type": "application/json" } },
@@ -621,9 +634,12 @@ describe("provisionChapterAccount", () => {
     expect(account.increaseEntityId).toBe(ENTITY_ID);
 
     // `GET /programs` was consulted, then `POST /accounts` (NOT `/entities`) with
-    // `entity_id` from env + the auto-resolved `program_id`.
+    // `entity_id` from env + the auto-resolved `program_id`. The match-before-
+    // create `GET /accounts` returned an empty list, so a new account is opened.
     expect(calls.some((c) => c.path.includes("/programs"))).toBe(true);
-    const post = calls.find((c) => c.path.includes("/accounts"));
+    const post = calls.find(
+      (c) => c.method === "POST" && c.path.includes("/accounts"),
+    );
     expect(post).toBeTruthy();
     expect(post!.method).toBe("POST");
     expect(post!.path).not.toContain("/entities");
@@ -665,7 +681,11 @@ describe("provisionChapterAccount", () => {
     expect(account.increaseAccountId).toBeNull();
 
     expect(calls.some((c) => c.path.includes("/programs"))).toBe(true);
-    expect(calls.some((c) => c.path.includes("/accounts"))).toBe(false);
+    // The match-before-create `GET /accounts` (empty list → no match) may run,
+    // but no new account is ever POSTed on the ambiguous-program degrade path.
+    expect(
+      calls.some((c) => c.method === "POST" && c.path.includes("/accounts")),
+    ).toBe(false);
   });
 
   test("`INCREASE_PROGRAM_ID` override skips the `/programs` fetch", async () => {
@@ -688,12 +708,101 @@ describe("provisionChapterAccount", () => {
     expect(account.onboardingStatus).toBe("active");
     expect(account.increaseAccountId).toBe("sandbox_account_x");
 
-    // Only `/accounts` is hit, carrying the explicit override program id.
+    // `/programs` is never hit (override wins); the account is created via
+    // `POST /accounts` (after the match-before-create GET found no match).
     expect(calls.some((c) => c.path.includes("/programs"))).toBe(false);
-    const post = calls.find((c) => c.path.includes("/accounts"));
+    const post = calls.find(
+      (c) => c.method === "POST" && c.path.includes("/accounts"),
+    );
     expect(post).toBeTruthy();
     expect(post!.body?.program_id).toBe("program_override");
     expect(post!.body?.entity_id).toBe(ENTITY_ID);
+  });
+
+  test("LINKS an existing entity account named for the chapter instead of duplicating it", async () => {
+    const t = newT();
+    // Chapter "The New York Chapter"; the entity already holds a "New York"
+    // account (opened by hand in the Increase dashboard) — a fuzzy name match.
+    const s = await setupChapter(t, { chapterName: "The New York Chapter" });
+    await seedManager(s);
+
+    const ENTITY_ID = "entity_shared_org";
+    process.env.INCREASE_API_KEY = "test_key";
+    process.env.INCREASE_ENTITY_ID = ENTITY_ID;
+    delete process.env.INCREASE_PROGRAM_ID;
+
+    const calls = mockIncreaseFetch(
+      [{ id: "program_auto" }],
+      [
+        { id: "account_la", name: "Los Angeles" },
+        { id: "account_ny", name: "New York" },
+      ],
+    );
+
+    const account = await s.as.action(
+      api.increase.provisionChapterAccount,
+      {},
+    );
+
+    // Linked the existing "New York" account — active, its id + the shared entity.
+    expect(account.onboardingStatus).toBe("active");
+    expect(account.increaseAccountId).toBe("account_ny");
+    expect(account.increaseEntityId).toBe(ENTITY_ID);
+
+    // The match-before-create GET ran; NO new account was POSTed, and a link
+    // needs no Program so `/programs` is never fetched.
+    expect(
+      calls.some((c) => c.method === "GET" && c.path.includes("/accounts")),
+    ).toBe(true);
+    expect(
+      calls.some((c) => c.method === "POST" && c.path.includes("/accounts")),
+    ).toBe(false);
+    expect(calls.some((c) => c.path.includes("/programs"))).toBe(false);
+
+    // Exactly one row, persisting the linked id + the current (production) mode.
+    const rows = await run(s.t, (ctx) =>
+      ctx.db
+        .query("increaseAccounts")
+        .withIndex("by_chapter", (q) => q.eq("chapterId", s.chapterId))
+        .collect(),
+    );
+    expect(rows.length).toBe(1);
+    expect(rows[0].increaseAccountId).toBe("account_ny");
+    expect(rows[0].increaseEntityId).toBe(ENTITY_ID);
+    expect(rows[0].onboardingStatus).toBe("active");
+    expect(rows[0].sandbox).toBe(false); // default mode is production
+  });
+
+  test("with NO name match among the entity's accounts, creates a new account (POST)", async () => {
+    const t = newT();
+    // Default chapter "New York"; the entity holds only unrelated accounts.
+    const s = await setupChapter(t);
+    await seedManager(s);
+
+    const ENTITY_ID = "entity_shared_org";
+    process.env.INCREASE_API_KEY = "test_key";
+    process.env.INCREASE_ENTITY_ID = ENTITY_ID;
+    delete process.env.INCREASE_PROGRAM_ID;
+
+    const calls = mockIncreaseFetch(
+      [{ id: "program_auto" }],
+      [{ id: "account_la", name: "Los Angeles" }],
+    );
+
+    const account = await s.as.action(
+      api.increase.provisionChapterAccount,
+      {},
+    );
+
+    // No match → a fresh account is opened via POST (id from the response).
+    expect(account.onboardingStatus).toBe("active");
+    expect(account.increaseAccountId).toBe("sandbox_account_x");
+    const post = calls.find(
+      (c) => c.method === "POST" && c.path.includes("/accounts"),
+    );
+    expect(post).toBeTruthy();
+    expect(post!.body?.entity_id).toBe(ENTITY_ID);
+    expect(post!.body?.program_id).toBe("program_auto");
   });
 
   test("a non-manager cannot provision", async () => {
@@ -1257,6 +1366,7 @@ describe("verifyIncreaseSignature (Standard Webhooks)", () => {
 function mockProvisionFetch(
   programs: Array<{ id: string }>,
   accountId: string,
+  accounts: Array<{ id: string; name: string }> = [],
 ) {
   const calls: Array<{
     url: string;
@@ -1277,6 +1387,13 @@ function mockProvisionFetch(
       });
     }
     if (url.includes("/accounts")) {
+      // GET = the match-before-create list; POST = open a new account.
+      if (method === "GET") {
+        return new Response(JSON.stringify({ data: accounts }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
       return new Response(JSON.stringify({ id: accountId, status: "open" }), {
         status: 200,
         headers: { "Content-Type": "application/json" },
@@ -1350,7 +1467,9 @@ describe("provisionChapterAccount sandbox mode", () => {
     expect(new URL(programsGet!.url).host).toBe("sandbox.increase.com");
     expect(programsGet!.auth).toBe("Bearer sandbox_key");
 
-    const post = calls.find((c) => c.url.includes("/accounts"));
+    const post = calls.find(
+      (c) => c.method === "POST" && c.url.includes("/accounts"),
+    );
     expect(post).toBeTruthy();
     expect(post!.method).toBe("POST");
     expect(new URL(post!.url).host).toBe("sandbox.increase.com");
@@ -1389,7 +1508,9 @@ describe("provisionChapterAccount sandbox mode", () => {
     // The sandbox `/programs` was consulted (prod override ignored) and the
     // account opened under the SANDBOX program, never the prod override.
     expect(calls.some((c) => c.url.includes("/programs"))).toBe(true);
-    const post = calls.find((c) => c.url.includes("/accounts"));
+    const post = calls.find(
+      (c) => c.method === "POST" && c.url.includes("/accounts"),
+    );
     expect(post!.body?.program_id).toBe("sandbox_program");
     expect(post!.body?.program_id).not.toBe("program_prod_only");
   });
@@ -1417,7 +1538,9 @@ describe("provisionChapterAccount sandbox mode", () => {
     expect(account.increaseAccountId).toBe("account_1");
     expect(account.increaseEntityId).toBe("entity_prod");
 
-    const post = calls.find((c) => c.url.includes("/accounts"));
+    const post = calls.find(
+      (c) => c.method === "POST" && c.url.includes("/accounts"),
+    );
     expect(post).toBeTruthy();
     expect(new URL(post!.url).host).toBe("api.increase.com");
     expect(post!.auth).toBe("Bearer prod_key");
