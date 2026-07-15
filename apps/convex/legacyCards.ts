@@ -68,8 +68,12 @@ async function legacyCardForLast4(
 }
 
 /**
- * The distinct card last-4s seen on this chapter's `stripe_fc` transactions —
- * the "Relay cards to link" list. Each entry carries how many charges it has,
+ * The distinct card last-4s seen on ANY of this chapter's spend transactions
+ * that carry a parsed last-4 — both the ~90-day FC-synced (`stripe_fc`) window
+ * AND the full CSV-imported (`relay_csv`) history (plus any other source that
+ * stamps a `cardLast4`). This is the "Relay cards to link" list. Aggregating
+ * across sources is what surfaces cards used only BEFORE the FC window, which
+ * live solely on `relay_csv` rows. Each entry carries how many charges it has,
  * total spend (outflow cents), and the linked legacy card when one exists.
  * Viewer+.
  */
@@ -86,10 +90,12 @@ export const listRelayCardCandidates = query({
       .withIndex("by_chapter", (q) => q.eq("chapterId", chapterId))
       .take(CANDIDATE_SCAN_LIMIT);
 
-    // Aggregate FC-synced rows that carry a parsed last-4.
+    // Aggregate every row that carries a parsed last-4, regardless of source
+    // (`stripe_fc`, `relay_csv`, …) — so a card seen only in CSV-imported
+    // history (before the FC window) is still surfaced as a candidate.
     const byLast4 = new Map<string, { txnCount: number; spentCents: number }>();
     for (const r of rows) {
-      if (r.source !== "stripe_fc" || !r.cardLast4) continue;
+      if (!r.cardLast4) continue;
       const agg = byLast4.get(r.cardLast4) ?? { txnCount: 0, spentCents: 0 };
       agg.txnCount++;
       // Spend = outflow cents (inflows/refunds don't count as card spend).

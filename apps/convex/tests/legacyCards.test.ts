@@ -12,7 +12,8 @@ import type { Id } from "../_generated/dataModel";
  *    absent) + `isCardEligible` (@publicworship.life, case-insensitive),
  *  - `linkRelayCard` creates a legacy card + attributes matching txns, is
  *    idempotent, and rejects a non-pw-email person,
- *  - `listRelayCardCandidates` aggregates distinct last-4s from stripe_fc txns,
+ *  - `listRelayCardCandidates` aggregates distinct last-4s across BOTH stripe_fc
+ *    and relay_csv txns (a card seen only in CSV history is still surfaced),
  *  - `unlinkRelayCard` deletes the card + clears its attribution,
  *  - `people.cardEligible` returns only pw-email people,
  *  - `backfillLegacyCardAttribution` is idempotent.
@@ -88,6 +89,32 @@ async function seedFcTxn(
       postedAt: Date.now(),
       cardLast4: opts.cardLast4,
       merchantName: opts.cardLast4 ? `PURCHASE | **${opts.cardLast4}` : "Misc",
+      status: "unreviewed",
+      externalId: opts.externalId,
+      createdAt: Date.now(),
+    }),
+  );
+}
+
+/** Seed a relay_csv transaction carrying a parsed last-4. */
+async function seedCsvTxn(
+  s: ChapterSetup,
+  opts: {
+    externalId: string;
+    cardLast4?: string;
+    amountCents: number;
+    flow?: "outflow" | "inflow";
+  },
+): Promise<Id<"transactions">> {
+  return await run(s.t, (ctx) =>
+    ctx.db.insert("transactions", {
+      chapterId: s.chapterId,
+      source: "relay_csv",
+      flow: opts.flow ?? "outflow",
+      amountCents: opts.amountCents,
+      postedAt: Date.now(),
+      cardLast4: opts.cardLast4,
+      merchantName: opts.cardLast4 ? `RELAY | **${opts.cardLast4}` : "Misc",
       status: "unreviewed",
       externalId: opts.externalId,
       createdAt: Date.now(),
@@ -300,6 +327,65 @@ describe("listRelayCardCandidates", () => {
     expect(c2702.linkedCard?.personId).toBe(holder);
     const c9999 = candidates.find((c) => c.last4 === "9999")!;
     expect(c9999.linkedCard).toBeNull();
+  });
+
+  test("surfaces a last-4 seen ONLY in relay_csv history (no stripe_fc)", async () => {
+    const s = await setupChapter(newT());
+    await asManager(s);
+    // A card used only before the FC window: it appears solely on CSV rows.
+    await seedCsvTxn(s, { externalId: "csv:a", cardLast4: "4040", amountCents: 1200 });
+    await seedCsvTxn(s, { externalId: "csv:b", cardLast4: "4040", amountCents: 800 });
+    // An inflow (refund) on the same last-4 counts toward the txn count but not spend.
+    await seedCsvTxn(s, {
+      externalId: "csv:c",
+      cardLast4: "4040",
+      amountCents: 300,
+      flow: "inflow",
+    });
+
+    const candidates = await s.as.query(api.legacyCards.listRelayCardCandidates, {});
+    expect(candidates.length).toBe(1);
+    const c = candidates[0];
+    expect(c.last4).toBe("4040");
+    expect(c.txnCount).toBe(3);
+    expect(c.spentCents).toBe(2000); // only the two outflows
+    expect(c.linkedCard).toBeNull(); // unlinked → UI shows "Link to person"
+  });
+
+  test("a linked CSV-only last-4 shows its person", async () => {
+    const s = await setupChapter(newT());
+    await asManager(s);
+    const holder = await seedPerson(s, {
+      name: "CSV Holder",
+      pwEmail: "csv@publicworship.life",
+    });
+    await seedCsvTxn(s, { externalId: "csv:a", cardLast4: "4040", amountCents: 1200 });
+
+    await s.as.mutation(api.legacyCards.linkRelayCard, {
+      last4: "4040",
+      personId: holder,
+    });
+
+    const candidates = await s.as.query(api.legacyCards.listRelayCardCandidates, {});
+    const c = candidates.find((x) => x.last4 === "4040")!;
+    expect(c.linkedCard?.personId).toBe(holder);
+    expect(c.linkedCard?.personName).toBe("CSV Holder");
+  });
+
+  test("sums count + spend across BOTH sources for a shared last-4", async () => {
+    const s = await setupChapter(newT());
+    await asManager(s);
+    // Same card seen in the FC window and in CSV history — one candidate, summed.
+    await seedFcTxn(s, { externalId: "fc:a", cardLast4: "2702", amountCents: 1500 });
+    await seedCsvTxn(s, { externalId: "csv:a", cardLast4: "2702", amountCents: 500 });
+    await seedCsvTxn(s, { externalId: "csv:b", cardLast4: "2702", amountCents: 250 });
+
+    const candidates = await s.as.query(api.legacyCards.listRelayCardCandidates, {});
+    expect(candidates.length).toBe(1);
+    const c = candidates[0];
+    expect(c.last4).toBe("2702");
+    expect(c.txnCount).toBe(3); // 1 fc + 2 csv
+    expect(c.spentCents).toBe(2250); // 1500 + 500 + 250
   });
 });
 
