@@ -40,6 +40,7 @@ import {
   mutation,
   query,
   internalMutation,
+  internalAction,
 } from "./_generated/server";
 import type { MutationCtx, QueryCtx } from "./_generated/server";
 import { ConvexError, v } from "convex/values";
@@ -167,6 +168,11 @@ type BeginRepaymentResult =
       canCharge: boolean;
       increaseAccountId: string | null;
       amountCents: number;
+      // The payer's linked Increase external account (their funding source) the
+      // repayment debit pulls from. Null today — the app hasn't collected the
+      // payer's routing+account, so `canCharge` is gated off and this stays
+      // unreachable. Plumbed so the debit `initiateRepayment` sends is addressed.
+      payerExternalAccountId: string | null;
     };
 
 function toRepaymentSummary(r: Doc<"personalRepayments">): RepaymentSummary {
@@ -199,6 +205,27 @@ async function increasePost(
   });
   if (!res.ok) {
     console.error(`[cards] POST ${path} failed:`, await res.text());
+    throw new ConvexError({
+      code: "INCREASE_ERROR",
+      message: "The Increase request failed. Please try again.",
+    });
+  }
+  return (await res.json()) as Record<string, unknown>;
+}
+
+/** GET JSON from the Increase API. A real-time-decision webhook carries only the
+ *  decision id, so its card-authorization details are read by FETCHING the object
+ *  (GET /real_time_decisions/{id}). Throws ConvexError on a non-2xx. */
+async function increaseGet(
+  key: string,
+  path: string,
+): Promise<Record<string, unknown>> {
+  const res = await fetch(`${INCREASE_API}${path}`, {
+    method: "GET",
+    headers: { Authorization: `Bearer ${key}` },
+  });
+  if (!res.ok) {
+    console.error(`[cards] GET ${path} failed:`, await res.text());
     throw new ConvexError({
       code: "INCREASE_ERROR",
       message: "The Increase request failed. Please try again.",
@@ -676,6 +703,91 @@ export const decideCardAuthorization = internalMutation({
   },
 });
 
+/** The `card_authorization` shape on a fetched Increase RealTimeDecision object
+ *  (GET /real_time_decisions/{id}). `settlement_amount` is the cents to check
+ *  against the card's cap. */
+interface RtdCardAuthorization {
+  card_id?: string;
+  settlement_amount?: number;
+  merchant_descriptor?: string;
+  merchant_category_code?: string;
+}
+
+/**
+ * Handle a `real_time_decision.card_authorization_requested` webhook END-TO-END.
+ * The Standard-Webhooks event carries only the decision id, so this FETCHES the
+ * RealTimeDecision object (GET /real_time_decisions/{id}), runs the pure
+ * `decideCardAuthorization` against its `card_authorization` (card_id +
+ * settlement_amount), then SUBMITS the verdict (POST
+ * /real_time_decisions/{id}/action with `{ card_authorization: { decision } }`).
+ * The orchestrator's `/increase/webhook` route awaits this synchronously (the
+ * card network is holding the authorization). Uses the decision id as the
+ * idempotency key (Increase retries the same id until actioned;
+ * `decideCardAuthorization` is idempotent on it). DEGRADES to a logged no-op
+ * (never throws) when `INCREASE_API_KEY` is unset or the fetch fails — Increase
+ * then applies the account's configured default action on timeout.
+ */
+export const handleIncreaseRealTimeDecision = internalAction({
+  args: { realTimeDecisionId: v.string() },
+  returns: v.null(),
+  handler: async (ctx, { realTimeDecisionId }) => {
+    const key = process.env.INCREASE_API_KEY;
+    if (!key) {
+      console.warn(
+        "[cards] real-time decision skipped: INCREASE_API_KEY not configured",
+      );
+      return null;
+    }
+
+    let rtd: Record<string, unknown>;
+    try {
+      rtd = await increaseGet(
+        key,
+        `/real_time_decisions/${realTimeDecisionId}`,
+      );
+    } catch (err) {
+      console.error("[cards] RTD: failed to fetch real_time_decision", err);
+      return null;
+    }
+
+    const auth = rtd.card_authorization as RtdCardAuthorization | undefined;
+    if (!auth?.card_id) {
+      // Not a card authorization (or malformed) — nothing to decide.
+      return null;
+    }
+
+    const decision = await ctx.runMutation(
+      internal.cards.decideCardAuthorization,
+      {
+        increaseCardId: auth.card_id,
+        // The decision id is the idempotency key: Increase retries the same id.
+        increaseAuthId: realTimeDecisionId,
+        // `settlement_amount` is the cents to check against the monthly cap.
+        amountCents: Math.abs(Math.round(auth.settlement_amount ?? 0)),
+        merchantName: auth.merchant_descriptor,
+        merchantCategory: auth.merchant_category_code,
+      },
+    );
+
+    try {
+      await increasePost(
+        key,
+        `/real_time_decisions/${realTimeDecisionId}/action`,
+        {
+          card_authorization: {
+            decision: decision.approved ? "approve" : "decline",
+          },
+        },
+      );
+    } catch (err) {
+      // The decision is already recorded; a failed submit is logged (Increase
+      // retries the webhook, and the idempotent decision replays).
+      console.error("[cards] RTD: failed to submit decision action", err);
+    }
+    return null;
+  },
+});
+
 // ── flagPersonalCharge (cardholder or manager) ───────────────────────────────
 
 /**
@@ -831,6 +943,7 @@ export const beginRepayment = internalMutation({
       canCharge: v.boolean(),
       increaseAccountId: v.union(v.string(), v.null()),
       amountCents: v.number(),
+      payerExternalAccountId: v.union(v.string(), v.null()),
     }),
   ),
   handler: async (ctx, args): Promise<BeginRepaymentResult> => {
@@ -874,8 +987,10 @@ export const beginRepayment = internalMutation({
     // TODO(repayment go-live): charging the payer's OWN debit/ACH needs their
     // external-account details (routing+account) linked at Increase — the app
     // hasn't collected them, so a real charge can't be addressed yet. Until then
-    // `canCharge` stays false and repayments settle via `markRepaymentPaid`.
-    const hasPayerFundingSource = false;
+    // `canCharge` stays false and repayments settle via `markRepaymentPaid`;
+    // once linked, set `payerExternalAccountId` to the payer's external account.
+    const payerExternalAccountId: string | null = null;
+    const hasPayerFundingSource = !!payerExternalAccountId;
     const canCharge =
       !!process.env.INCREASE_API_KEY && !!increaseAccountId && hasPayerFundingSource;
 
@@ -885,6 +1000,7 @@ export const beginRepayment = internalMutation({
       canCharge,
       increaseAccountId,
       amountCents: fresh.amountCents,
+      payerExternalAccountId,
     };
   },
 });
@@ -929,14 +1045,21 @@ export const initiateRepayment = action({
       args,
     );
     if (prep.kind === "paid") return prep.repayment;
-    if (!prep.canCharge) return prep.repayment; // degrade: leave pending
+    if (!prep.canCharge || !prep.payerExternalAccountId) {
+      return prep.repayment; // degrade: leave pending (no funding source linked)
+    }
 
     const key = process.env.INCREASE_API_KEY!;
     try {
       const charge = await increasePost(key, "/ach_transfers", {
         account_id: prep.increaseAccountId,
-        amount: prep.amountCents,
-        statement_descriptor: "Card repayment",
+        // The payer's linked external account is the counterparty; a NEGATIVE
+        // amount originates a DEBIT that PULLS the repayment into the chapter's
+        // account.
+        external_account_id: prep.payerExternalAccountId,
+        amount: -prep.amountCents,
+        // Increase requires a statement descriptor, max 10 characters.
+        statement_descriptor: "Repayment",
       });
       return await ctx.runMutation(internal.cards.applyRepaymentPaid, {
         repaymentId: args.repaymentId,

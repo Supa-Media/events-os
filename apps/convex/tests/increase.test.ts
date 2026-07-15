@@ -375,7 +375,7 @@ async function seedProcessingPayout(
 }
 
 describe("onIncreaseWebhookEvent", () => {
-  test("paid → reimbursement paid + one transfer txn", async () => {
+  test("submitted (Increase's terminal success) → reimbursement paid + one transfer txn", async () => {
     const t = newT();
     const s = await setupChapter(t);
     const { reimbursementId, payoutId } = await seedProcessingPayout(
@@ -383,10 +383,12 @@ describe("onIncreaseWebhookEvent", () => {
       "ach_paid_1",
     );
 
+    // Real Increase: an ACH credit is irrevocably sent at `status:"submitted"`
+    // (there is NO later "settled" event), carried on an `ach_transfer.updated`.
     await s.t.mutation(internal.increase.onIncreaseWebhookEvent, {
-      eventType: "ach_transfer.settled",
+      eventType: "ach_transfer.updated",
       transferId: "ach_paid_1",
-      status: "settled",
+      status: "submitted",
     });
 
     const payout = await run(s.t, (ctx) => ctx.db.get(payoutId));
@@ -448,9 +450,9 @@ describe("onIncreaseWebhookEvent", () => {
     await seedProcessingPayout(s, "ach_known");
     await expect(
       s.t.mutation(internal.increase.onIncreaseWebhookEvent, {
-        eventType: "ach_transfer.settled",
+        eventType: "ach_transfer.updated",
         transferId: "ach_does_not_exist",
-        status: "settled",
+        status: "submitted",
       }),
     ).resolves.toBeNull();
   });
@@ -462,17 +464,17 @@ describe("onIncreaseWebhookEvent", () => {
       s,
       "ach_race",
     );
-    // Settle it.
-    await s.t.mutation(internal.increase.onIncreaseWebhookEvent, {
-      eventType: "ach_transfer.settled",
-      transferId: "ach_race",
-      status: "settled",
-    });
-    // A late failure event must be ignored.
+    // Settle it (submitted = Increase's terminal success for an ACH credit).
     await s.t.mutation(internal.increase.onIncreaseWebhookEvent, {
       eventType: "ach_transfer.updated",
       transferId: "ach_race",
-      status: "failed",
+      status: "submitted",
+    });
+    // A late failure event (a real `rejected` status) must be ignored.
+    await s.t.mutation(internal.increase.onIncreaseWebhookEvent, {
+      eventType: "ach_transfer.updated",
+      transferId: "ach_race",
+      status: "rejected",
     });
 
     const payout = await run(s.t, (ctx) => ctx.db.get(payoutId));
@@ -554,47 +556,117 @@ describe("listPayouts", () => {
 
 // ── verifyIncreaseSignature ──────────────────────────────────────────────────
 
-const SECRET = "whsec_increase_test";
+// Standard Webhooks secrets are `whsec_<base64key>`; the HMAC key is the DECODED
+// bytes. Use a real base64 body so the decode step exercises the true path.
+const SECRET = "whsec_" + Buffer.from("increase-webhook-secret").toString("base64");
+const WRONG_SECRET =
+  "whsec_" + Buffer.from("some-other-secret").toString("base64");
 
-function signedHeader(payload: string, secret: string, tSeconds: number): string {
-  const v1 = createHmac("sha256", secret)
-    .update(`${tSeconds}.${payload}`)
-    .digest("hex");
-  return `t=${tSeconds},v1=${v1}`;
+/** Build a valid Standard Webhooks `webhook-signature` value for a payload. */
+function signStandardWebhook(
+  payload: string,
+  secret: string,
+  id: string,
+  tSeconds: number,
+): string {
+  const raw = secret.startsWith("whsec_") ? secret.slice(6) : secret;
+  const keyBytes = Buffer.from(raw, "base64");
+  const sig = createHmac("sha256", keyBytes)
+    .update(`${id}.${tSeconds}.${payload}`)
+    .digest("base64");
+  return `v1,${sig}`;
 }
 
 const nowSeconds = () => Math.floor(Date.now() / 1000);
 
-describe("verifyIncreaseSignature", () => {
+describe("verifyIncreaseSignature (Standard Webhooks)", () => {
   test("accepts a correctly signed, recent payload", async () => {
-    const payload = JSON.stringify({ type: "ach_transfer.settled" });
-    const header = signedHeader(payload, SECRET, nowSeconds());
-    expect(await verifyIncreaseSignature(payload, header, SECRET)).toBe(true);
+    const payload = JSON.stringify({ category: "ach_transfer.updated" });
+    const id = "msg_123";
+    const ts = nowSeconds();
+    const sig = signStandardWebhook(payload, SECRET, id, ts);
+    expect(
+      await verifyIncreaseSignature(
+        payload,
+        { webhookId: id, webhookTimestamp: String(ts), webhookSignature: sig },
+        SECRET,
+      ),
+    ).toBe(true);
+  });
+
+  test("accepts one of several space-separated v1 tokens (key rotation)", async () => {
+    const payload = JSON.stringify({ id: "evt_rot" });
+    const id = "msg_rot";
+    const ts = nowSeconds();
+    const bogus = `v1,${Buffer.alloc(32).toString("base64")}`;
+    const good = signStandardWebhook(payload, SECRET, id, ts);
+    expect(
+      await verifyIncreaseSignature(
+        payload,
+        {
+          webhookId: id,
+          webhookTimestamp: String(ts),
+          webhookSignature: `${bogus} ${good}`,
+        },
+        SECRET,
+      ),
+    ).toBe(true);
   });
 
   test("rejects a tampered payload", async () => {
     const original = JSON.stringify({ id: "at_real" });
-    const header = signedHeader(original, SECRET, nowSeconds());
+    const id = "msg_tamper";
+    const ts = nowSeconds();
+    const sig = signStandardWebhook(original, SECRET, id, ts);
     const forged = JSON.stringify({ id: "at_attacker" });
-    expect(await verifyIncreaseSignature(forged, header, SECRET)).toBe(false);
+    expect(
+      await verifyIncreaseSignature(
+        forged,
+        { webhookId: id, webhookTimestamp: String(ts), webhookSignature: sig },
+        SECRET,
+      ),
+    ).toBe(false);
   });
 
-  test("rejects the wrong secret + a stale timestamp + a missing header", async () => {
+  test("rejects the wrong secret + a stale timestamp + missing headers", async () => {
     const payload = JSON.stringify({ id: "at_real" });
+    const id = "msg_neg";
+    const ts = nowSeconds();
+
+    // Signed with a different secret.
     expect(
       await verifyIncreaseSignature(
         payload,
-        signedHeader(payload, "whsec_wrong", nowSeconds()),
+        {
+          webhookId: id,
+          webhookTimestamp: String(ts),
+          webhookSignature: signStandardWebhook(payload, WRONG_SECRET, id, ts),
+        },
         SECRET,
       ),
     ).toBe(false);
+
+    // A stale timestamp (outside the 5-minute tolerance).
+    const stale = ts - 600;
     expect(
       await verifyIncreaseSignature(
         payload,
-        signedHeader(payload, SECRET, nowSeconds() - 600),
+        {
+          webhookId: id,
+          webhookTimestamp: String(stale),
+          webhookSignature: signStandardWebhook(payload, SECRET, id, stale),
+        },
         SECRET,
       ),
     ).toBe(false);
-    expect(await verifyIncreaseSignature(payload, null, SECRET)).toBe(false);
+
+    // Missing any of the three headers.
+    expect(
+      await verifyIncreaseSignature(
+        payload,
+        { webhookId: null, webhookTimestamp: String(ts), webhookSignature: "v1,x" },
+        SECRET,
+      ),
+    ).toBe(false);
   });
 });

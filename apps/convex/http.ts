@@ -257,89 +257,49 @@ http.route({
       return new Response("Not configured", { status: 500 });
     }
     const payload = await req.text();
-    const valid = await verifyIncreaseSignature(
-      payload,
-      req.headers.get("Increase-Webhook-Signature"),
-      secret,
-    );
+    // Standard Webhooks (https://increase.com/documentation/webhooks): three
+    // headers — verify the raw body against them.
+    const valid = await verifyIncreaseSignature(payload, {
+      webhookId: req.headers.get("webhook-id"),
+      webhookTimestamp: req.headers.get("webhook-timestamp"),
+      webhookSignature: req.headers.get("webhook-signature"),
+    }, secret);
     if (!valid) return new Response("Invalid signature", { status: 400 });
 
-    // Increase events, two shapes:
-    //  - real_time_decision.card_authorization_requested → a SYNCHRONOUS card
-    //    decision; NOT deduped (Increase retries until it gets an action, and
-    //    decideCardAuthorization is idempotent per auth id).
-    //  - everything else (ach_transfer.* …) → async: dedup on the event id, then
-    //    advance the matching payout's state machine.
+    // Increase Event: { id, created_at, category, associated_object_type,
+    // associated_object_id, type:"event" } — NO inline object, dispatch by
+    // `category` and fetch details by `associated_object_id`.
     const event = JSON.parse(payload) as {
       id: string;
-      type: string;
+      category: string;
       associated_object_id?: string;
-      data?: {
-        status?: string;
-        card_authorization?: {
-          id?: string;
-          card_id?: string;
-          amount?: number;
-          merchant_descriptor?: string;
-          merchant_category_code?: string;
-        };
-      };
+      type: string;
     };
+    const objectId = event.associated_object_id;
 
-    if (event.type === "real_time_decision.card_authorization_requested") {
-      // TODO(card go-live): verify Increase's real RTD payload — the card-auth
-      // details may require fetching the real_time_decision object; the inline
-      // shape below is assumed. The decision is submitted via the Increase API
-      // within its timeout; decideCardAuthorization never throws (defaults to
-      // decline on any internal error).
-      const auth = event.data?.card_authorization;
-      const rtdId = event.associated_object_id;
-      if (auth?.card_id && rtdId) {
-        const decision = await ctx.runMutation(
-          internal.cards.decideCardAuthorization,
-          {
-            increaseCardId: auth.card_id,
-            increaseAuthId: auth.id ?? rtdId,
-            amountCents: Math.abs(Math.round(auth.amount ?? 0)),
-            merchantName: auth.merchant_descriptor,
-            merchantCategory: auth.merchant_category_code,
-          },
-        );
-        const apiKey = process.env.INCREASE_API_KEY;
-        if (apiKey) {
-          try {
-            await fetch(
-              `https://api.increase.com/real_time_decisions/${rtdId}/action`,
-              {
-                method: "POST",
-                headers: {
-                  Authorization: `Bearer ${apiKey}`,
-                  "Content-Type": "application/json",
-                },
-                body: JSON.stringify({
-                  card_authorization: {
-                    decision: decision.approved ? "approve" : "decline",
-                  },
-                }),
-              },
-            );
-          } catch (e) {
-            console.error("[increase] real-time-decision action failed", e);
-          }
-        }
+    if (event.category === "real_time_decision.card_authorization_requested") {
+      // SYNCHRONOUS card decision (the network holds the auth). NOT deduped —
+      // Increase retries until it gets an action, and the decision is idempotent
+      // on the RTD id. handleIncreaseRealTimeDecision fetches the RTD object,
+      // decides, and POSTs the verdict; we await it before responding 200.
+      if (objectId) {
+        await ctx.runAction(internal.cards.handleIncreaseRealTimeDecision, {
+          realTimeDecisionId: objectId,
+        });
       }
       return new Response("ok", { status: 200 });
     }
 
+    // Everything else (ach_transfer.* …) → async: dedup on the event id, then
+    // fetch-the-object + advance the matching payout's state machine.
     const { isNew } = await ctx.runMutation(
       internal.webhooks.recordWebhookEvent,
-      { provider: "increase", eventId: event.id, summary: event.type },
+      { provider: "increase", eventId: event.id, summary: event.category },
     );
-    if (isNew && event.associated_object_id) {
-      await ctx.runMutation(internal.increase.onIncreaseWebhookEvent, {
-        eventType: event.type,
-        transferId: event.associated_object_id,
-        status: event.data?.status,
+    if (isNew && objectId) {
+      await ctx.runAction(internal.increase.handleIncreaseWebhook, {
+        category: event.category,
+        associatedObjectId: objectId,
       });
     }
     return new Response("ok", { status: 200 });

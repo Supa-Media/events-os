@@ -41,6 +41,7 @@ import {
   mutation,
   query,
   internalMutation,
+  internalAction,
 } from "./_generated/server";
 import type { MutationCtx } from "./_generated/server";
 import { ConvexError, v } from "convex/values";
@@ -176,6 +177,15 @@ type BeginPayoutResult =
       increaseAccountId: string;
       amountCents: number;
       reimbursementId: Id<"reimbursementRequests">;
+      // ACH destination (whichever exists): a pre-linked external account, OR
+      // raw routing + account (+ funding). Null today — the reimburse form only
+      // captured `bankAccountLast4`, so `beginPayout` gates the ACH branch off
+      // (`hasFullDestination`) and this stays unreachable. Plumbed so the request
+      // `payReimbursement` sends is correctly ADDRESSED once linking exists.
+      externalAccountId: string | null;
+      accountNumber: string | null;
+      routingNumber: string | null;
+      funding: "checking" | "savings" | null;
     };
 
 type BeginProvisionResult =
@@ -233,6 +243,27 @@ async function increasePost(
   });
   if (!res.ok) {
     console.error(`[increase] POST ${path} failed:`, await res.text());
+    throw new ConvexError({
+      code: "INCREASE_ERROR",
+      message: "The Increase request failed. Please try again.",
+    });
+  }
+  return (await res.json()) as Record<string, unknown>;
+}
+
+/** GET JSON from the Increase API. Increase webhook events carry NO inline
+ *  object — only `associated_object_id` — so status/details are read by FETCHING
+ *  the object (e.g. GET /ach_transfers/{id}). Throws ConvexError on a non-2xx. */
+async function increaseGet(
+  key: string,
+  path: string,
+): Promise<Record<string, unknown>> {
+  const res = await fetch(`${INCREASE_API}${path}`, {
+    method: "GET",
+    headers: { Authorization: `Bearer ${key}` },
+  });
+  if (!res.ok) {
+    console.error(`[increase] GET ${path} failed:`, await res.text());
     throw new ConvexError({
       code: "INCREASE_ERROR",
       message: "The Increase request failed. Please try again.",
@@ -302,14 +333,24 @@ async function settleReimbursementPaid(
   await postReimbursementTransfer(ctx, req.chapterId, req, payout);
 }
 
-/** The payout status an inbound webhook event maps to (or null = ignore).
+/** The payout status an inbound Increase ACH-transfer maps to (or null = ignore).
  *
- * ASSUMPTION: Increase's ACH-transfer lifecycle is read from `eventType`
- * (`ach_transfer.*`) plus the object's `status`. There's no single "settled"
- * status on an ACH transfer, so the orchestrator translates a settlement signal
- * into a `paid`/`settled` status (or an `ach_transfer.settled` eventType); both
- * are accepted here. `returned` / `failed` / `rejected` map to the matching
- * non-live terminal; created/submitted/pending map to `processing`. */
+ * Increase webhook events carry no inline status — `handleIncreaseWebhook`
+ * FETCHES the ACH transfer (GET /ach_transfers/{id}) and passes its real
+ * `status` here alongside the event `category` (`ach_transfer.created` /
+ * `.updated`). Real Increase ACH-transfer statuses (there is NO post-settlement
+ * "settled"/"paid" status — an outbound CREDIT is irrevocably sent at
+ * `submitted`, so that IS our terminal "paid"; a `returned` may arrive days
+ * later):
+ *   - `returned`                                              → returned
+ *   - `rejected` / `canceled`                                 → failed
+ *   - `submitted`                                             → paid
+ *   - `pending_approval` / `pending_submission` /
+ *     `pending_reviewing` / `pending_transfer_session_confirmation`
+ *                                                             → processing
+ *   - `requires_attention` (and anything unrecognized)        → null (no change;
+ *     a human investigates — never auto-fail or auto-pay it).
+ * `settled`/`paid` stay accepted (harmless) for forward-compat. */
 type PayoutTarget = "processing" | "paid" | "failed" | "returned";
 function payoutTargetFor(
   eventType: string,
@@ -319,29 +360,33 @@ function payoutTargetFor(
   const e = eventType.toLowerCase();
   if (s === "returned" || e.includes("returned")) return "returned";
   if (
-    ["failed", "rejected", "declined"].includes(s) ||
+    ["failed", "rejected", "canceled", "declined"].includes(s) ||
     e.includes("failed") ||
-    e.includes("rejected")
+    e.includes("rejected") ||
+    e.includes("canceled")
   ) {
     return "failed";
   }
+  // `submitted` = the CREDIT has been sent to the network (Increase's terminal
+  // success for an ACH credit — there is no later "settled" event).
   if (
-    ["paid", "settled", "complete", "completed"].includes(s) ||
+    ["submitted", "settled", "complete", "completed", "paid"].includes(s) ||
     e.includes("settled") ||
+    e.includes("submitted") ||
     e.includes("paid")
   ) {
     return "paid";
   }
-  if (
-    ["submitted", "pending_submission", "pending_approval", "created", "processing"].includes(
-      s,
-    ) ||
-    e.includes("created") ||
-    e.includes("submitted") ||
-    e.includes("updated")
-  ) {
+  // `requires_attention` means a human must act in the Increase dashboard — do
+  // NOT auto-advance the payout (leave it where it is), even though the carrier
+  // event is `ach_transfer.updated`.
+  if (s === "requires_attention") return null;
+  if (s.startsWith("pending") || ["created", "processing"].includes(s)) {
     return "processing";
   }
+  // No fetched status (or an `ach_transfer.created`/`.updated` we can't classify
+  // yet): treat a bare lifecycle event as still in-flight.
+  if (e.includes("created") || e.includes("updated")) return "processing";
   return null;
 }
 
@@ -488,17 +533,40 @@ export const provisionChapterAccount = action({
       });
     }
 
-    // NOTE: a real Increase Entity requires KYC/KYB details this app hasn't
-    // collected yet — full onboarding is a hosted flow beyond Phase 4. This
-    // call shape is provisional; on any failure we degrade to `pending`.
-    // TODO: drive Increase Entity onboarding (KYB) before going live.
+    // Creating an Increase Account requires a `program_id` (the Program that
+    // sets the compliance + commercial terms). Without it configured we can't
+    // provision → degrade to `pending`.
+    const programId = process.env.INCREASE_PROGRAM_ID;
+    if (!programId) {
+      console.warn(
+        "[increase] provision skipped: INCREASE_PROGRAM_ID not configured",
+      );
+      return await ctx.runMutation(internal.increase.finishProvision, {
+        accountId: prep.accountId,
+        onboardingStatus: "pending",
+      });
+    }
+
+    // NOTE: creating an Increase Entity is full KYB. For a `corporation` Increase
+    // requires — beyond the legal `name` — the `address`, the `tax_identifier`
+    // (EIN), and the `beneficial_owners` (each with name, date_of_birth, address,
+    // and a government identification). This app collects NONE of that PII, so a
+    // real chapter Entity must be onboarded through Increase's HOSTED ONBOARDING
+    // flow (or a dedicated KYB form) — it can't be minted from a chapter name.
+    // The call below sends the correct field SHAPE but will 422 without the KYB
+    // data, so we DEGRADE to `pending`. Wire hosted onboarding before go-live.
     try {
       const entity = await increasePost(key, "/entities", {
         structure: "corporation",
-        corporation: { name: prep.chapterName },
+        corporation: {
+          name: prep.chapterName,
+          // address, tax_identifier, beneficial_owners are REQUIRED by Increase
+          // (KYB) and supplied by hosted onboarding — not available here.
+        },
       });
       const account = await increasePost(key, "/accounts", {
         entity_id: entity.id,
+        program_id: programId,
         name: `${prep.chapterName} operating`,
       });
       return await ctx.runMutation(internal.increase.finishProvision, {
@@ -533,6 +601,10 @@ export const beginPayout = internalMutation({
       increaseAccountId: v.string(),
       amountCents: v.number(),
       reimbursementId: v.id("reimbursementRequests"),
+      externalAccountId: v.union(v.string(), v.null()),
+      accountNumber: v.union(v.string(), v.null()),
+      routingNumber: v.union(v.string(), v.null()),
+      funding: v.union(v.literal("checking"), v.literal("savings"), v.null()),
     }),
   ),
   handler: async (ctx, { reimbursementId }): Promise<BeginPayoutResult> => {
@@ -577,18 +649,17 @@ export const beginPayout = internalMutation({
     // real ACH can't be fully addressed yet → we always DEGRADE to manual.
     //
     // TODO(ACH go-live) before flipping `hasFullDestination` true:
-    //  (a) capture full destination routing+account via Increase external-account
-    //      linking (last4 alone can't address an ACH credit);
-    //  (b) VERIFY the real Increase webhook shape — the lifecycle event is
-    //      `ach_transfer.updated` and settlement status is NOT inline on the
-    //      event; you must fetch the transfer to derive it. The `settled`/`paid`
-    //      + trusted-`data.status` mapping in `payoutTargetFor` is a PLACEHOLDER;
-    //  (c) handle post-settlement RETURNS — an `ach_transfer.returned` can arrive
-    //      DAYS after `paid`; today `applyPayoutOutcome` treats a `paid` payout as
-    //      terminal and would leave a bounced reimbursement marked paid. Add a
-    //      paid→returned reversal (re-open the reimbursement, reverse the txn);
-    //  (d) confirm the `Increase-Webhook-Signature` header format matches the
-    //      Stripe-style HMAC assumed in `verifyIncreaseSignature`.
+    //  (a) capture the full destination — either a linked Increase external
+    //      account (`external_account_id`) or the raw routing+account (+funding)
+    //      (last4 alone can't address an ACH credit); populate the destination
+    //      fields on the `increase` result below.
+    //  (b) handle post-settlement RETURNS — a `returned` can arrive DAYS after a
+    //      credit is `submitted` (which we map to `paid`); today
+    //      `applyPayoutOutcome` treats a `paid` payout as terminal and would
+    //      leave a bounced reimbursement marked paid. Add a paid→returned
+    //      reversal (re-open the reimbursement, reverse the `transfer` txn).
+    // (Webhook signature + the fetch-the-object status derivation are now REAL:
+    //  see `verifyIncreaseSignature` (Standard Webhooks) + `handleIncreaseWebhook`.)
     const hasFullDestination = false;
     const account = await ctx.db
       .query("increaseAccounts")
@@ -619,6 +690,13 @@ export const beginPayout = internalMutation({
         increaseAccountId: account!.increaseAccountId!,
         amountCents,
         reimbursementId,
+        // Destination is null until external-account linking captures it; the
+        // branch is gated by `hasFullDestination` above, so this is unreachable
+        // with a null destination (see the `payReimbursement` guard).
+        externalAccountId: null,
+        accountNumber: null,
+        routingNumber: null,
+        funding: null,
       };
     }
 
@@ -710,14 +788,42 @@ export const payReimbursement = action({
 
     // ACH path (enabled once full destination details are captured).
     const key = process.env.INCREASE_API_KEY!;
+
+    // Address the ACH credit. Increase requires EITHER `external_account_id` OR
+    // `account_number` + `routing_number` (+ `funding`) — never both. Gated by
+    // `hasFullDestination` in `beginPayout`, so `destination` is never null here
+    // in practice; the guard keeps us from ever sending an unaddressed credit.
+    const destination: Record<string, unknown> | null = result.externalAccountId
+      ? { external_account_id: result.externalAccountId }
+      : result.accountNumber && result.routingNumber
+        ? {
+            account_number: result.accountNumber,
+            routing_number: result.routingNumber,
+            funding: result.funding ?? "checking",
+          }
+        : null;
+    if (!destination) {
+      await ctx.runMutation(internal.increase.failPayout, {
+        payoutId: result.payoutId,
+        reason: "missing_destination",
+      });
+      throw new ConvexError({
+        code: "INCREASE_ERROR",
+        message: "Missing ACH destination details for this payout.",
+      });
+    }
+
     try {
       const transfer = await increasePost(
         key,
         "/ach_transfers",
         {
           account_id: result.increaseAccountId,
+          // POSITIVE cents originates a CREDIT that pushes funds to the payee.
           amount: result.amountCents,
-          statement_descriptor: "Reimbursement",
+          // Increase requires a statement descriptor, max 10 characters.
+          statement_descriptor: "Reimburse",
+          ...destination,
         },
         // Idempotency-Key = reimbursementId (the schema's idempotency key).
         String(reimbursementId),
@@ -858,12 +964,15 @@ export const markPaidManually = mutation({
 // ── onIncreaseWebhookEvent (internal mutation) — the payout state machine ─────
 
 /**
- * Advance a payout from an inbound Increase `ach_transfer.*` webhook event.
- * Matches by `increaseTransferId` (the `by_increase_transfer` index); no
- * matching payout → no-op (never throws). Guards transitions: a `paid` payout
- * ignores a later `failed`/`returned`. On `paid` the reimbursement is settled
- * (`paid` + the offsetting `transfer` txn, idempotent); on `failed`/`returned`
- * the reimbursement walks back to `approved`.
+ * Advance a payout from an Increase ACH-transfer signal. Fed by
+ * `handleIncreaseWebhook` (which fetches the transfer to get `status`, since the
+ * webhook event carries none); also called directly by tests. `eventType` is the
+ * event `category` (`ach_transfer.created`/`.updated`), `status` the FETCHED
+ * transfer status. Matches by `increaseTransferId` (the `by_increase_transfer`
+ * index); no matching payout → no-op (never throws). Guards transitions: a `paid`
+ * payout ignores a later `failed`/`returned`. On `paid` the reimbursement is
+ * settled (`paid` + the offsetting `transfer` txn, idempotent); on
+ * `failed`/`returned` the reimbursement walks back to `approved`.
  */
 export const onIncreaseWebhookEvent = internalMutation({
   args: {
@@ -894,66 +1003,136 @@ export const onIncreaseWebhookEvent = internalMutation({
   },
 });
 
+/**
+ * Process an async Increase ACH-transfer webhook. The Standard-Webhooks event
+ * carries only a `category` + `associated_object_id` (no inline status), so this
+ * FETCHES the transfer (GET /ach_transfers/{id}) to read its real status, then
+ * advances the matching payout via `onIncreaseWebhookEvent`. The orchestrator's
+ * `/increase/webhook` route calls this for every non-`real_time_decision.*`
+ * event (after de-duping on the event id). Only `ach_transfer.*` categories are
+ * acted on; anything else no-ops. DEGRADES to a logged no-op (never throws) when
+ * `INCREASE_API_KEY` is unset or the fetch fails.
+ */
+export const handleIncreaseWebhook = internalAction({
+  args: { category: v.string(), associatedObjectId: v.string() },
+  returns: v.null(),
+  handler: async (ctx, { category, associatedObjectId }) => {
+    if (!category.startsWith("ach_transfer.")) return null;
+
+    const key = process.env.INCREASE_API_KEY;
+    if (!key) {
+      console.warn(
+        "[increase] webhook skipped: INCREASE_API_KEY not configured",
+      );
+      return null;
+    }
+
+    let status: string | undefined;
+    try {
+      const transfer = await increaseGet(
+        key,
+        `/ach_transfers/${associatedObjectId}`,
+      );
+      status = typeof transfer.status === "string" ? transfer.status : undefined;
+    } catch (err) {
+      console.error("[increase] webhook: failed to fetch ach_transfer", err);
+      return null;
+    }
+
+    await ctx.runMutation(internal.increase.onIncreaseWebhookEvent, {
+      eventType: category,
+      transferId: associatedObjectId,
+      status,
+    });
+    return null;
+  },
+});
+
 // ── verifyIncreaseSignature (webhook signature verify) ───────────────────────
 
-function hexToBytes(hex: string): Uint8Array {
-  const out = new Uint8Array(hex.length / 2);
-  for (let i = 0; i < out.length; i++) {
-    out[i] = parseInt(hex.slice(i * 2, i * 2 + 2), 16);
-  }
+function base64ToBytes(b64: string): Uint8Array<ArrayBuffer> {
+  const bin = atob(b64);
+  const out = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
   return out;
 }
 
+function bytesToBase64(bytes: Uint8Array): string {
+  let bin = "";
+  for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
+  return btoa(bin);
+}
+
+/** The three Standard Webhooks headers Increase sends (`webhook-id`,
+ *  `webhook-timestamp`, `webhook-signature`). The orchestrator reads them off
+ *  the request and passes them here. */
+export interface IncreaseWebhookHeaders {
+  webhookId: string | null;
+  webhookTimestamp: string | null;
+  webhookSignature: string | null;
+}
+
 /**
- * Verify an Increase webhook signature against the raw payload — HMAC-SHA256 of
- * `${t}.${payload}` with the webhook signing secret, constant-time compared
- * against every `v1` candidate, 5-minute timestamp tolerance. The orchestrator
- * calls this in `/increase/webhook`.
- *
- * ASSUMPTION: Increase signs webhooks with a scheme mirroring Stripe's
- * `t=...,v1=...` header (see `verifyStripeSignature`). If Increase's real header
- * format differs, only this parser changes — the HMAC construction is identical.
+ * Verify an Increase webhook signature per the Standard Webhooks spec
+ * (https://increase.com/documentation/webhooks). Increase sends three headers:
+ * `webhook-id`, `webhook-timestamp`, `webhook-signature`. The signed content is
+ * `${webhook-id}.${webhook-timestamp}.${rawBody}`; the HMAC-SHA256 key is the
+ * base64-DECODED bytes of the signing secret AFTER its `whsec_` prefix; the MAC
+ * is base64-encoded. `webhook-signature` is one or more SPACE-separated
+ * `v1,<base64sig>` tokens (multiple during key rotation) — we constant-time
+ * compare against each. A ~5-minute timestamp tolerance guards replay. The
+ * orchestrator calls this in `/increase/webhook`.
  */
 export async function verifyIncreaseSignature(
-  payload: string,
-  signatureHeader: string | null,
+  rawBody: string,
+  headers: IncreaseWebhookHeaders,
   secret: string,
 ): Promise<boolean> {
-  if (!signatureHeader) return false;
-  const parts = new Map<string, string[]>();
-  for (const kv of signatureHeader.split(",")) {
-    const [k, val] = kv.split("=", 2);
-    if (!k || !val) continue;
-    const list = parts.get(k.trim()) ?? [];
-    list.push(val.trim());
-    parts.set(k.trim(), list);
-  }
-  const timestamp = Number(parts.get("t")?.[0]);
-  const candidates = parts.get("v1") ?? [];
-  if (!Number.isFinite(timestamp) || candidates.length === 0) return false;
-  if (Math.abs(Date.now() / 1000 - timestamp) > 300) return false;
+  const { webhookId, webhookTimestamp, webhookSignature } = headers;
+  if (!webhookId || !webhookTimestamp || !webhookSignature) return false;
 
-  const encoder = new TextEncoder();
+  const ts = Number(webhookTimestamp);
+  if (!Number.isFinite(ts)) return false;
+  if (Math.abs(Date.now() / 1000 - ts) > 300) return false;
+
+  // The signing secret is `whsec_<base64key>`; the HMAC key is the DECODED bytes.
+  const rawSecret = secret.startsWith("whsec_") ? secret.slice(6) : secret;
+  let keyBytes: Uint8Array<ArrayBuffer>;
+  try {
+    keyBytes = base64ToBytes(rawSecret);
+  } catch {
+    return false;
+  }
+
   const key = await crypto.subtle.importKey(
     "raw",
-    encoder.encode(secret),
+    keyBytes,
     { name: "HMAC", hash: "SHA-256" },
     false,
     ["sign"],
   );
+  const signedContent = `${webhookId}.${webhookTimestamp}.${rawBody}`;
   const mac = new Uint8Array(
     await crypto.subtle.sign(
       "HMAC",
       key,
-      encoder.encode(`${timestamp}.${payload}`),
+      new TextEncoder().encode(signedContent),
     ),
   );
+  const expected = bytesToBase64(mac);
 
-  for (const candidate of candidates) {
-    if (candidate.length !== mac.length * 2) continue;
-    const candidateBytes = hexToBytes(candidate);
+  // `webhook-signature` = space-separated `v1,<base64sig>` tokens.
+  for (const token of webhookSignature.split(" ")) {
+    const comma = token.indexOf(",");
+    if (comma === -1) continue;
+    const version = token.slice(0, comma);
+    const candidate = token.slice(comma + 1);
+    if (version !== "v1") continue;
+    if (candidate.length !== expected.length) continue;
     let diff = 0;
-    for (let i = 0; i < mac.length; i++) diff |= mac[i] ^ candidateBytes[i];
+    for (let i = 0; i < expected.length; i++) {
+      diff |= expected.charCodeAt(i) ^ candidate.charCodeAt(i);
+    }
     if (diff === 0) return true;
   }
   return false;
