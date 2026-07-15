@@ -900,6 +900,172 @@ describe("verifyIncreaseSignature (Standard Webhooks)", () => {
   });
 });
 
+// ── provisionChapterAccount sandbox mode ─────────────────────────────────────
+
+/** A recording `fetch` mock dispatching by URL path — captures each call's host,
+ *  auth header, and body. `/programs` returns the seeded list; `/accounts`
+ *  returns an account whose id echoes the requested host's environment. */
+function mockProvisionFetch(
+  programs: Array<{ id: string }>,
+  accountId: string,
+) {
+  const calls: Array<{
+    url: string;
+    method: string;
+    auth: string | null;
+    body: Record<string, unknown> | null;
+  }> = [];
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input);
+    const method = init?.method ?? "GET";
+    const auth = new Headers(init?.headers).get("authorization");
+    const body = init?.body ? JSON.parse(String(init.body)) : null;
+    calls.push({ url, method, auth, body });
+    if (url.includes("/programs")) {
+      return new Response(JSON.stringify({ data: programs }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    }
+    if (url.includes("/accounts")) {
+      return new Response(JSON.stringify({ id: accountId, status: "open" }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    }
+    throw new Error(`unexpected fetch: ${method} ${url}`);
+  }) as unknown as typeof fetch;
+  return calls;
+}
+
+describe("provisionChapterAccount sandbox mode", () => {
+  const ENV = [
+    "INCREASE_API_KEY",
+    "INCREASE_ENTITY_ID",
+    "INCREASE_SANDBOX_API_KEY",
+    "INCREASE_SANDBOX_ENTITY_ID",
+    "INCREASE_PROGRAM_ID",
+    "INCREASE_API_BASE",
+  ] as const;
+  const originalFetch = globalThis.fetch;
+  const originalEnv: Partial<Record<(typeof ENV)[number], string>> = {};
+  for (const k of ENV) originalEnv[k] = process.env[k];
+
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+    for (const k of ENV) {
+      if (originalEnv[k] === undefined) delete process.env[k];
+      else process.env[k] = originalEnv[k];
+    }
+  });
+
+  /** Turn the deployment-wide sandbox toggle on by inserting the singleton. */
+  async function setSandbox(s: ChapterSetup, sandboxMode: boolean) {
+    await run(s.t, (ctx) =>
+      ctx.db.insert("financeSettings", { sandboxMode, updatedAt: Date.now() }),
+    );
+  }
+
+  test("sandboxMode:true opens the account against the sandbox with sandbox creds + entity", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await seedManager(s);
+    await setSandbox(s, true);
+
+    // BOTH environments wired — the toggle (not mere presence) must pick sandbox.
+    process.env.INCREASE_API_KEY = "prod_key";
+    process.env.INCREASE_ENTITY_ID = "entity_prod";
+    process.env.INCREASE_SANDBOX_API_KEY = "sandbox_key";
+    process.env.INCREASE_SANDBOX_ENTITY_ID = "entity_sandbox";
+    delete process.env.INCREASE_PROGRAM_ID;
+    delete process.env.INCREASE_API_BASE;
+
+    const calls = mockProvisionFetch(
+      [{ id: "sandbox_program" }],
+      "sandbox_account_1",
+    );
+
+    const account = await s.as.action(
+      api.increase.provisionChapterAccount,
+      {},
+    );
+    expect(account.onboardingStatus).toBe("active");
+    expect(account.increaseAccountId).toBe("sandbox_account_1");
+    expect(account.increaseEntityId).toBe("entity_sandbox");
+
+    // Both the `/programs` GET and the `/accounts` POST hit the SANDBOX host with
+    // the SANDBOX key; the account is opened under the sandbox entity + program.
+    const programsGet = calls.find((c) => c.url.includes("/programs"));
+    expect(programsGet).toBeTruthy();
+    expect(new URL(programsGet!.url).host).toBe("sandbox.increase.com");
+    expect(programsGet!.auth).toBe("Bearer sandbox_key");
+
+    const post = calls.find((c) => c.url.includes("/accounts"));
+    expect(post).toBeTruthy();
+    expect(post!.method).toBe("POST");
+    expect(new URL(post!.url).host).toBe("sandbox.increase.com");
+    expect(post!.auth).toBe("Bearer sandbox_key");
+    expect(post!.body?.entity_id).toBe("entity_sandbox");
+    expect(post!.body?.program_id).toBe("sandbox_program");
+  });
+
+  test("sandboxMode:false opens the account against prod with prod creds + entity", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await seedManager(s);
+    await setSandbox(s, false);
+
+    process.env.INCREASE_API_KEY = "prod_key";
+    process.env.INCREASE_ENTITY_ID = "entity_prod";
+    process.env.INCREASE_SANDBOX_API_KEY = "sandbox_key";
+    process.env.INCREASE_SANDBOX_ENTITY_ID = "entity_sandbox";
+    delete process.env.INCREASE_PROGRAM_ID;
+    delete process.env.INCREASE_API_BASE; // default → api.increase.com
+
+    const calls = mockProvisionFetch([{ id: "prod_program" }], "account_1");
+
+    const account = await s.as.action(
+      api.increase.provisionChapterAccount,
+      {},
+    );
+    expect(account.onboardingStatus).toBe("active");
+    expect(account.increaseAccountId).toBe("account_1");
+    expect(account.increaseEntityId).toBe("entity_prod");
+
+    const post = calls.find((c) => c.url.includes("/accounts"));
+    expect(post).toBeTruthy();
+    expect(new URL(post!.url).host).toBe("api.increase.com");
+    expect(post!.auth).toBe("Bearer prod_key");
+    expect(post!.body?.entity_id).toBe("entity_prod");
+    expect(post!.body?.program_id).toBe("prod_program");
+  });
+
+  test("sandboxMode:true degrades to pending when the sandbox entity id is unset", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await seedManager(s);
+    await setSandbox(s, true);
+
+    // Sandbox key present but no sandbox entity → degrade (never falls back to
+    // prod creds). Prod is fully wired to prove the toggle isolates envs.
+    process.env.INCREASE_API_KEY = "prod_key";
+    process.env.INCREASE_ENTITY_ID = "entity_prod";
+    process.env.INCREASE_SANDBOX_API_KEY = "sandbox_key";
+    delete process.env.INCREASE_SANDBOX_ENTITY_ID;
+    delete process.env.INCREASE_PROGRAM_ID;
+    globalThis.fetch = (() => {
+      throw new Error("fetch must not be called on the degrade path");
+    }) as unknown as typeof fetch;
+
+    const account = await s.as.action(
+      api.increase.provisionChapterAccount,
+      {},
+    );
+    expect(account.onboardingStatus).toBe("pending");
+    expect(account.increaseAccountId).toBeNull();
+  });
+});
+
 // ── handleIncreaseWebhook env routing (sandbox vs production) ─────────────────
 
 /** A recording `fetch` mock: captures each request's URL + Authorization header

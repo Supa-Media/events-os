@@ -468,16 +468,22 @@ export const issueCard = action({
     );
     if (prep.kind === "existing") return prep.card;
 
-    const key = process.env.INCREASE_API_KEY;
+    // Self-select the Increase env from the chapter account's id prefix: a
+    // sandbox-provisioned account (`sandbox_...`) uses the sandbox key + base, a
+    // prod account the prod ones — so a card is always issued in the same
+    // environment its account lives in.
+    const { key, base } = prep.increaseAccountId
+      ? increaseEnvForObjectId(prep.increaseAccountId)
+      : { key: undefined as string | undefined, base: increaseApiBase() };
     if (!key || !prep.increaseAccountId) {
       console.warn(
-        "[cards] issueCard degraded: INCREASE_API_KEY / active account not configured — card created without an Increase card id",
+        "[cards] issueCard degraded: Increase key for this account's environment / active account not configured — card created without an Increase card id",
       );
       return prep.card;
     }
 
     try {
-      const card = await increasePost(key, increaseApiBase(), "/cards", {
+      const card = await increasePost(key, base, "/cards", {
         account_id: prep.increaseAccountId,
         description: prep.description,
       });
@@ -1062,13 +1068,21 @@ export const initiateRepayment = action({
       args,
     );
     if (prep.kind === "paid") return prep.repayment;
-    if (!prep.canCharge || !prep.payerExternalAccountId) {
+    if (
+      !prep.canCharge ||
+      !prep.payerExternalAccountId ||
+      !prep.increaseAccountId
+    ) {
       return prep.repayment; // degrade: leave pending (no funding source linked)
     }
 
-    const key = process.env.INCREASE_API_KEY!;
+    // Self-select the Increase env from the chapter account's id prefix (sandbox
+    // account → sandbox creds, prod account → prod). Env not wired for that
+    // environment → degrade (leave pending; recoverable via markRepaymentPaid).
+    const { key, base } = increaseEnvForObjectId(prep.increaseAccountId);
+    if (!key) return prep.repayment;
     try {
-      const charge = await increasePost(key, increaseApiBase(), "/ach_transfers", {
+      const charge = await increasePost(key, base, "/ach_transfers", {
         account_id: prep.increaseAccountId,
         // The payer's linked external account is the counterparty; a NEGATIVE
         // amount originates a DEBIT that PULLS the repayment into the chapter's

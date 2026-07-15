@@ -27,6 +27,7 @@ import type * as engagements from "../engagements.js";
 import type * as eventTypes from "../eventTypes.js";
 import type * as events from "../events.js";
 import type * as financeRoles from "../financeRoles.js";
+import type * as financeSettings from "../financeSettings.js";
 import type * as finances from "../finances.js";
 import type * as giving from "../giving.js";
 import type * as guests from "../guests.js";
@@ -155,6 +156,7 @@ declare const fullApi: ApiFromModules<{
   eventTypes: typeof eventTypes;
   events: typeof events;
   financeRoles: typeof financeRoles;
+  financeSettings: typeof financeSettings;
   finances: typeof finances;
   giving: typeof giving;
   guests: typeof guests;

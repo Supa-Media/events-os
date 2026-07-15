@@ -1,6 +1,7 @@
 import { Slot, usePathname, useRouter } from "expo-router";
 import { ScrollView, View } from "react-native";
 import { Pill } from "../../../components/ui";
+import { SandboxModeBanner } from "../../../components/finance/SandboxModeBanner";
 
 /**
  * Finance sub-navigation. The outer AppShell provides the app chrome; this
@@ -35,6 +36,8 @@ export default function FinancesLayout() {
   const router = useRouter();
   return (
     <View className="flex-1">
+      {/* Deployment-wide sandbox-mode banner (shows on every finance tab when on). */}
+      <SandboxModeBanner />
       <View className="border-b border-border bg-raised px-4 py-2.5">
         <ScrollView
           horizontal

@@ -20,6 +20,9 @@ import { useMutation, useQuery } from "convex/react";
 import { api } from "@events-os/convex/_generated/api";
 import type { Id } from "@events-os/convex/_generated/dataModel";
 import {
+  Badge,
+  Button,
+  Card,
   EmptyState,
   Narrow,
   Screen,
@@ -37,9 +40,11 @@ export default function AccountsScreen() {
   const org = useQuery(api.org.nav);
   const accounts = useQuery(api.stripeFinance.listAccounts, {});
   const funds = useQuery(api.finances.listFunds, {});
+  const financeSettings = useQuery(api.financeSettings.getFinanceSettings);
 
   const setAccountFund = useMutation(api.stripeFinance.setAccountFund);
   const disconnect = useMutation(api.stripeFinance.disconnect);
+  const setSandboxMode = useMutation(api.financeSettings.setSandboxMode);
   const { run, toast, dismiss } = useActionRunner();
 
   const fundOptions = useMemo<FundOption[]>(
@@ -63,9 +68,16 @@ export default function AccountsScreen() {
     );
   }
 
-  if (org === undefined || accounts === undefined || funds === undefined) {
+  if (
+    org === undefined ||
+    accounts === undefined ||
+    funds === undefined ||
+    financeSettings === undefined
+  ) {
     return <Screen loading />;
   }
+
+  const sandboxMode = financeSettings.sandboxMode;
 
   return (
     <Screen>
@@ -114,6 +126,40 @@ export default function AccountsScreen() {
             />
           ))
         )}
+
+        <SectionHeader title="Developer / testing" />
+        <Card>
+          <View className="flex-row items-start justify-between gap-3">
+            <View className="flex-1">
+              <View className="flex-row flex-wrap items-center gap-2">
+                <Text className="font-display text-base text-ink">
+                  Sandbox mode
+                </Text>
+                <Badge
+                  label={sandboxMode ? "SANDBOX" : "PRODUCTION"}
+                  tone={sandboxMode ? "warn" : "neutral"}
+                  icon={sandboxMode ? "alert-triangle" : "check-circle"}
+                />
+              </View>
+              <Text className="mt-1 text-sm text-muted">
+                Points NEWLY provisioned accounts at the Increase sandbox for
+                testing — no real money moves. Existing accounts keep their
+                current environment. Superuser only.
+              </Text>
+            </View>
+            <Button
+              title={sandboxMode ? "Turn off" : "Turn on"}
+              variant={sandboxMode ? "secondary" : "primary"}
+              icon={sandboxMode ? "toggle-right" : "toggle-left"}
+              onPress={() =>
+                void run(
+                  () => setSandboxMode({ sandboxMode: !sandboxMode }),
+                  { errorTitle: "Couldn't change sandbox mode" },
+                )
+              }
+            />
+          </View>
+        </Card>
       </Narrow>
     </Screen>
   );

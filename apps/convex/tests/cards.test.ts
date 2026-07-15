@@ -773,3 +773,92 @@ describe("handleIncreaseRealTimeDecision env routing", () => {
     expect(get!.auth).toBe("Bearer prod_key");
   });
 });
+
+// ── issueCard env routing (outbound self-selects by account id prefix) ────────
+
+/** Seed the chapter's Increase account with a given (prefix-carrying) id. */
+async function seedIncreaseAccount(
+  s: ChapterSetup,
+  increaseAccountId: string,
+): Promise<void> {
+  await run(s.t, (ctx) =>
+    ctx.db.insert("increaseAccounts", {
+      chapterId: s.chapterId,
+      onboardingStatus: "active",
+      increaseAccountId,
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    }),
+  );
+}
+
+describe("issueCard env routing", () => {
+  const ENV = [
+    "INCREASE_API_KEY",
+    "INCREASE_SANDBOX_API_KEY",
+    "INCREASE_API_BASE",
+  ] as const;
+  const originalFetch = globalThis.fetch;
+  const originalEnv: Partial<Record<(typeof ENV)[number], string>> = {};
+  for (const k of ENV) originalEnv[k] = process.env[k];
+
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+    for (const k of ENV) {
+      if (originalEnv[k] === undefined) delete process.env[k];
+      else process.env[k] = originalEnv[k];
+    }
+  });
+
+  test("a sandbox_ account issues the card against the sandbox with sandbox creds", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await seedManager(s);
+    const holder = await seedPerson(s, { name: "Holder" });
+    await seedIncreaseAccount(s, "sandbox_acct_1");
+
+    // Both keys present — the account's `sandbox_` prefix (not presence) routes.
+    process.env.INCREASE_API_KEY = "prod_key";
+    process.env.INCREASE_SANDBOX_API_KEY = "sandbox_key";
+    const calls = mockRecordingFetch({ id: "sandbox_card_1", last4: "4242" });
+
+    const card = await s.as.action(api.cards.issueCard, {
+      cardholderPersonId: holder,
+      type: "virtual",
+    });
+    expect(card.last4).toBe("4242");
+
+    const post = calls.find(
+      (c) => c.method === "POST" && c.url.includes("/cards"),
+    );
+    expect(post).toBeTruthy();
+    expect(new URL(post!.url).host).toBe("sandbox.increase.com");
+    expect(post!.auth).toBe("Bearer sandbox_key");
+  });
+
+  test("a prod account issues the card against prod with the prod key", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await seedManager(s);
+    const holder = await seedPerson(s, { name: "Holder" });
+    await seedIncreaseAccount(s, "acct_1");
+
+    process.env.INCREASE_API_KEY = "prod_key";
+    process.env.INCREASE_SANDBOX_API_KEY = "sandbox_key";
+    delete process.env.INCREASE_API_BASE; // default → api.increase.com
+    const calls = mockRecordingFetch({ id: "card_1", last4: "1111" });
+
+    const card = await s.as.action(api.cards.issueCard, {
+      cardholderPersonId: holder,
+      type: "virtual",
+    });
+    expect(card.last4).toBe("1111");
+
+    const post = calls.find(
+      (c) => c.method === "POST" && c.url.includes("/cards"),
+    );
+    expect(post).toBeTruthy();
+    expect(new URL(post!.url).host).toBe("api.increase.com");
+    expect(post!.auth).toBe("Bearer prod_key");
+  });
+});

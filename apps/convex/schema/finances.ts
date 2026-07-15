@@ -481,3 +481,16 @@ export const webhookEvents = defineTable({
   processedAt: v.optional(v.number()),
   summary: v.optional(v.string()),
 }).index("by_provider_and_event", ["provider", "eventId"]);
+
+// ── Finance settings (deployment-wide singleton) ─────────────────────────────
+/** Deployment-wide finance settings (one row, the `aiSettings` pattern).
+ *  `sandboxMode` is the runtime testing toggle: when true, NEW Increase account
+ *  provisioning targets the Increase SANDBOX (sandbox entity + key + base) so the
+ *  whole finance layer can be exercised without touching real money. Existing
+ *  accounts always self-select their environment from their `sandbox_` id prefix,
+ *  so flipping this can never misroute already-provisioned money. Superuser-only. */
+export const financeSettings = defineTable({
+  sandboxMode: v.boolean(),
+  updatedBy: v.optional(v.id("users")),
+  updatedAt: v.number(),
+});
