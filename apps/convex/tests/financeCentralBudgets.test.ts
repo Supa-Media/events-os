@@ -511,9 +511,9 @@ describe("budgets v2: tag rollups are linked-only", () => {
       month,
     });
     const rollUnlinked = dashUnlinked.tagRollups.find((r) => r.tagId === tag);
-    // Linked-only: unlinked spend does not contribute to the tag total.
-    expect(rollUnlinked?.spentCents).toBe(0);
-    expect(rollUnlinked?.budgetCents).toBe(200000);
+    // Linked-only AND zero-spend hidden: the unlinked spend doesn't contribute,
+    // so with $0 linked to the tag it has no rollup on the dashboard at all.
+    expect(rollUnlinked).toBeUndefined();
 
     // A $70 outflow EXPLICITLY linked to budget A → counts ONCE toward the tag.
     const linkedTxn = await s.as.mutation(api.finances.createManualTransaction, {

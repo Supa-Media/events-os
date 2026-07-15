@@ -14,6 +14,11 @@ function tsInMonth(year: number, month: number): number {
   return Date.UTC(year, month - 1, 15, 17, 0, 0);
 }
 
+/** A timestamp on a specific Eastern calendar day (17:00 UTC = early PM ET). */
+function tsOnDay(year: number, month: number, day: number): number {
+  return Date.UTC(year, month - 1, day, 17, 0, 0);
+}
+
 /** Seed an eventType + event; returns ids + the type name. */
 async function seedEvent(
   s: ChapterSetup,
@@ -213,5 +218,221 @@ describe("backfillEventBudgets (internal)", () => {
     });
     expect(result.created).toBe(1);
     expect((await eventBudgetsFor(s, eventId)).length).toBe(1);
+  });
+
+  test("names a created event budget after its event (unique name → bare name, not 'One-time')", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const { eventId } = await seedEvent(s, {
+      name: "Summer Retreat",
+      budget: 100,
+    });
+
+    const result = await t.mutation(internal.finances.backfillEventBudgets, {});
+    expect(result.created).toBe(1);
+    expect(result.relabeled).toBe(0);
+
+    const [row] = await eventBudgetsFor(s, eventId);
+    expect(row.budget.label).toBe("Summer Retreat");
+  });
+
+  test("same name in DIFFERENT months → each budget's label is suffixed with month + year", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const { eventId: marId } = await seedEvent(s, {
+      name: "Field Day",
+      eventDate: tsInMonth(2026, 3),
+      budget: 100,
+    });
+    const { eventId: aprId } = await seedEvent(s, {
+      name: "Field Day",
+      eventDate: tsInMonth(2026, 4),
+      budget: 100,
+    });
+
+    const result = await t.mutation(internal.finances.backfillEventBudgets, {});
+    expect(result.created).toBe(2);
+
+    const [marRow] = await eventBudgetsFor(s, marId);
+    const [aprRow] = await eventBudgetsFor(s, aprId);
+    expect(marRow.budget.label).toBe("Field Day · March 2026");
+    expect(aprRow.budget.label).toBe("Field Day · April 2026");
+  });
+
+  test("same name in the SAME month → each budget's label is suffixed with the full date", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const { eventId: firstId } = await seedEvent(s, {
+      name: "Field Day",
+      eventDate: tsOnDay(2026, 3, 15),
+      budget: 100,
+    });
+    const { eventId: secondId } = await seedEvent(s, {
+      name: "Field Day",
+      eventDate: tsOnDay(2026, 3, 22),
+      budget: 100,
+    });
+
+    const result = await t.mutation(internal.finances.backfillEventBudgets, {});
+    expect(result.created).toBe(2);
+
+    const [firstRow] = await eventBudgetsFor(s, firstId);
+    const [secondRow] = await eventBudgetsFor(s, secondId);
+    expect(firstRow.budget.label).toBe("Field Day · Mar 15, 2026");
+    expect(secondRow.budget.label).toBe("Field Day · Mar 22, 2026");
+  });
+
+  test("re-run relabels an existing UNLABELED event budget; a labeled one is untouched", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const { eventId: unlabeledEventId } = await seedEvent(s, {
+      name: "Fall Gathering",
+      budget: 100,
+    });
+    const { eventId: labeledEventId } = await seedEvent(s, {
+      name: "Winter Gala",
+      typeName: "Gala",
+      budget: 200,
+    });
+
+    // Simulate the pre-fix budgets: an event budget created WITHOUT a label,
+    // and one already carrying a custom label.
+    const { unlabeledBudgetId, labeledBudgetId } = await run(s.t, async (ctx) => {
+      const unlabeledBudgetId = await ctx.db.insert("budgets", {
+        chapterId: s.chapterId,
+        amountCents: 10000,
+        type: "one_time",
+        refKind: "event",
+        scopeRefId: unlabeledEventId,
+        cadence: "per_instance",
+        year: 2026,
+        month: 5,
+        createdAt: Date.now(),
+      });
+      const labeledBudgetId = await ctx.db.insert("budgets", {
+        chapterId: s.chapterId,
+        amountCents: 20000,
+        label: "Hand-picked name",
+        type: "one_time",
+        refKind: "event",
+        scopeRefId: labeledEventId,
+        cadence: "per_instance",
+        year: 2026,
+        month: 5,
+        createdAt: Date.now(),
+      });
+      return { unlabeledBudgetId, labeledBudgetId };
+    });
+
+    const result = await t.mutation(internal.finances.backfillEventBudgets, {});
+    // Both events already have a budget → nothing created; both skipped; only
+    // the unlabeled one is relabeled.
+    expect(result.created).toBe(0);
+    expect(result.skipped).toBe(2);
+    expect(result.relabeled).toBe(1);
+
+    const { unlabeled, labeled } = await run(s.t, async (ctx) => ({
+      unlabeled: await ctx.db.get(unlabeledBudgetId),
+      labeled: await ctx.db.get(labeledBudgetId),
+    }));
+    expect(unlabeled?.label).toBe("Fall Gathering");
+    expect(labeled?.label).toBe("Hand-picked name");
+
+    // A settled re-run relabels nothing.
+    const second = await t.mutation(internal.finances.backfillEventBudgets, {});
+    expect(second.relabeled).toBe(0);
+  });
+});
+
+describe("createBudget: event budgets default their label to the event name", () => {
+  test("no explicit label, unique name → label defaults to the bare event name", async () => {
+    const t = newT();
+    const s = await setupChapter(t, { email: "seyi@publicworship.life" });
+    const { eventId } = await seedEvent(s, { name: "Launch Night", budget: 300 });
+
+    const budgetId = await s.as.mutation(api.finances.createBudget, {
+      amountCents: 30000,
+      type: "one_time",
+      refKind: "event",
+      cadence: "per_instance",
+      year: 2026,
+      scopeRefId: eventId,
+    });
+
+    const budget = await run(s.t, (ctx) => ctx.db.get(budgetId));
+    expect(budget?.label).toBe("Launch Night");
+  });
+
+  test("same name in DIFFERENT months → label is suffixed with month + year", async () => {
+    const t = newT();
+    const s = await setupChapter(t, { email: "seyi@publicworship.life" });
+    const { eventId: marId } = await seedEvent(s, {
+      name: "Field Day",
+      eventDate: tsInMonth(2026, 3),
+      budget: 100,
+    });
+    await seedEvent(s, {
+      name: "Field Day",
+      eventDate: tsInMonth(2026, 4),
+      budget: 100,
+    });
+
+    const budgetId = await s.as.mutation(api.finances.createBudget, {
+      amountCents: 10000,
+      type: "one_time",
+      refKind: "event",
+      cadence: "per_instance",
+      year: 2026,
+      scopeRefId: marId,
+    });
+
+    const budget = await run(s.t, (ctx) => ctx.db.get(budgetId));
+    expect(budget?.label).toBe("Field Day · March 2026");
+  });
+
+  test("same name in the SAME month → label is suffixed with the full date", async () => {
+    const t = newT();
+    const s = await setupChapter(t, { email: "seyi@publicworship.life" });
+    const { eventId: firstId } = await seedEvent(s, {
+      name: "Field Day",
+      eventDate: tsOnDay(2026, 3, 15),
+      budget: 100,
+    });
+    await seedEvent(s, {
+      name: "Field Day",
+      eventDate: tsOnDay(2026, 3, 22),
+      budget: 100,
+    });
+
+    const budgetId = await s.as.mutation(api.finances.createBudget, {
+      amountCents: 10000,
+      type: "one_time",
+      refKind: "event",
+      cadence: "per_instance",
+      year: 2026,
+      scopeRefId: firstId,
+    });
+
+    const budget = await run(s.t, (ctx) => ctx.db.get(budgetId));
+    expect(budget?.label).toBe("Field Day · Mar 15, 2026");
+  });
+
+  test("an explicit label is preserved (not overridden by the event name)", async () => {
+    const t = newT();
+    const s = await setupChapter(t, { email: "seyi@publicworship.life" });
+    const { eventId } = await seedEvent(s, { name: "Launch Night", budget: 300 });
+
+    const budgetId = await s.as.mutation(api.finances.createBudget, {
+      amountCents: 30000,
+      type: "one_time",
+      refKind: "event",
+      cadence: "per_instance",
+      year: 2026,
+      scopeRefId: eventId,
+      label: "VIP night",
+    });
+
+    const budget = await run(s.t, (ctx) => ctx.db.get(budgetId));
+    expect(budget?.label).toBe("VIP night");
   });
 });

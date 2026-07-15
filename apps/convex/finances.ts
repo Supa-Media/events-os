@@ -931,6 +931,33 @@ const MONTH_NAMES = [
   "December",
 ] as const;
 
+/**
+ * The display label for an EVENT budget, disambiguating repeated event names so
+ * two events called the same thing don't both read as "Field Day" in the picker:
+ *  - unique name in the chapter        → just the name          (`Field Day`)
+ *  - same name in DIFFERENT months     → name + month + year    (`Field Day · March 2026`)
+ *  - same name in the SAME month       → name + full date       (`Field Day · Mar 15, 2026`)
+ *
+ * `nameCount` = how many of the chapter's (non-training) events share this exact
+ * name (INCLUDING this one); `sameMonthCount` = how many of those also fall in
+ * this event's Eastern year+month (INCLUDING this one). `parts` is the event's
+ * `easternParts(eventDate)`. Shared by `createBudget` and the backfill.
+ */
+function eventBudgetLabel(
+  name: string,
+  parts: { year: number; month: number; day: number },
+  nameCount: number,
+  sameMonthCount: number,
+): string {
+  if (nameCount <= 1) return name;
+  const monthName = MONTH_NAMES[parts.month - 1];
+  if (sameMonthCount > 1) {
+    // Same name, same month → the full date pins down which occurrence.
+    return `${name} · ${monthName.slice(0, 3)} ${parts.day}, ${parts.year}`;
+  }
+  return `${name} · ${monthName} ${parts.year}`;
+}
+
 /** `YYYY-MM-DD` in America/New_York (the finance timezone). */
 function easternDateStr(ts: number): string {
   return new Date(ts).toLocaleDateString("en-CA", {
@@ -1237,6 +1264,10 @@ export const dashboardChapter = query({
         const b = tagBudgets.get(tr.budgetId);
         if (b && txnCountsTowardBudgetDash(tr, b, dp)) spentCents += tr.amountCents;
       }
+      // Only surface a tag rollup once it has an actual charge in the shown
+      // period (month or YTD): a budgeted-but-unspent tag is noise on the
+      // dashboard, so drop zero-spend entries before returning.
+      if (spentCents <= 0) continue;
       const pct = pctOf(spentCents, budgetCents);
       tagRollups.push({
         tagId: tag._id,
@@ -1603,6 +1634,9 @@ export const dashboardCentral = query({
     }
 
     const tagRollups: (typeof tagRollupRow.type)[] = [...tagAgg.values()]
+      // Only surface a tag rollup once it has an actual charge in the shown
+      // period: drop zero-spend (budgeted-but-unspent) tags before returning.
+      .filter((agg) => agg.spentCents > 0)
       .sort((a, b) => b.spentCents - a.spentCents)
       .map((agg) => {
         const pct = pctOf(agg.spentCents, agg.budgetCents);
@@ -2344,10 +2378,35 @@ export const createBudget = mutation({
       await requireTagInLevel(ctx, level, tagId);
     }
     const userId = (await requireUserId(ctx)) as Id<"users">;
+    // Default an event budget's label to the linked event's name when none was
+    // given, so the picker/tag-detail shows the event name instead of the
+    // "One-time" type word. Disambiguate repeated event names (see
+    // `eventBudgetLabel`). Non-event or explicitly-labeled budgets are untouched.
+    let label = args.label;
+    if (label == null && args.type === "one_time" && refKind === "event" && scopeRefId) {
+      const ev = await ctx.db.get(scopeRefId as Id<"events">);
+      if (ev && "name" in ev) {
+        const event = ev as Doc<"events">;
+        const parts = easternParts(event.eventDate);
+        // Sibling events sharing this name in the SAME chapter decide whether the
+        // bare name is ambiguous (bounded scan; training events don't get budgets).
+        const siblings = (
+          await ctx.db
+            .query("events")
+            .withIndex("by_chapter", (q) => q.eq("chapterId", event.chapterId))
+            .take(ROLLUP_SCAN_LIMIT)
+        ).filter((e) => !e.isTraining && e.name === event.name);
+        const sameMonthCount = siblings.filter((e) => {
+          const ep = easternParts(e.eventDate);
+          return ep.year === parts.year && ep.month === parts.month;
+        }).length;
+        label = eventBudgetLabel(event.name, parts, siblings.length, sameMonthCount);
+      }
+    }
     const budgetId = await ctx.db.insert("budgets", {
       chapterId: level,
       amountCents: args.amountCents,
-      label: args.label,
+      label,
       type: args.type,
       refKind,
       scopeRefId,
@@ -2838,6 +2897,9 @@ export const runMigrateBudgetScopesToTypes = internalMutation({
 const eventBudgetBackfillResult = v.object({
   created: v.number(),
   skipped: v.number(),
+  // How many already-existing event budgets had a null/empty label patched to
+  // the event's name on this run (a subset of `skipped`; 0 on a settled re-run).
+  relabeled: v.number(),
   tagsLinked: v.number(),
 });
 
@@ -2864,9 +2926,10 @@ const eventBudgetBackfillResult = v.object({
 async function runBackfillEventBudgets(
   ctx: MutationCtx,
   chapterId?: Id<"chapters">,
-): Promise<{ created: number; skipped: number; tagsLinked: number }> {
+): Promise<{ created: number; skipped: number; relabeled: number; tagsLinked: number }> {
   let created = 0;
   let skipped = 0;
+  let relabeled = 0;
   let tagsLinked = 0;
 
   // Guard: a passed chapter must exist (ConvexError, not a silent no-op).
@@ -2885,26 +2948,45 @@ async function runBackfillEventBudgets(
         .take(ROLLUP_SCAN_LIMIT)
     : await ctx.db.query("events").take(ROLLUP_SCAN_LIMIT);
 
-  // Per-chapter cache of `scopeRefId`s that already carry an event budget, so
-  // dedup costs one bounded read per chapter instead of one per event.
-  const eventBudgetRefsByChapter = new Map<string, Set<string>>();
-  const eventBudgetRefs = async (cid: Id<"chapters">): Promise<Set<string>> => {
+  // Disambiguation counts over the scanned (non-training) events, keyed by
+  // chapter so a name is only "repeated" within its own chapter: how many events
+  // share a name, and how many share a name AND an Eastern year+month. Drives
+  // `eventBudgetLabel` on both the create and the relabel path.
+  const nameCounts = new Map<string, number>();
+  const nameMonthCounts = new Map<string, number>();
+  const NUL = " ";
+  for (const ev of events) {
+    if (ev.isTraining) continue; // training events never get a budget
+    const p = easternParts(ev.eventDate);
+    const nk = `${ev.chapterId}${NUL}${ev.name}`;
+    const mk = `${nk}${NUL}${p.year}-${p.month}`;
+    nameCounts.set(nk, (nameCounts.get(nk) ?? 0) + 1);
+    nameMonthCounts.set(mk, (nameMonthCounts.get(mk) ?? 0) + 1);
+  }
+
+  // Per-chapter cache of the existing event budget keyed by `scopeRefId`, so
+  // dedup costs one bounded read per chapter instead of one per event. Holding
+  // the doc (not just the id) lets the dedup path relabel an unlabeled budget.
+  const eventBudgetByRefByChapter = new Map<string, Map<string, Doc<"budgets">>>();
+  const eventBudgetsByRef = async (
+    cid: Id<"chapters">,
+  ): Promise<Map<string, Doc<"budgets">>> => {
     const key = cid as string;
-    const cached = eventBudgetRefsByChapter.get(key);
+    const cached = eventBudgetByRefByChapter.get(key);
     if (cached) return cached;
-    const set = new Set<string>();
+    const map = new Map<string, Doc<"budgets">>();
     const rows = await ctx.db
       .query("budgets")
       .withIndex("by_chapter", (q) => q.eq("chapterId", cid))
       .take(ROLLUP_SCAN_LIMIT);
     for (const b of rows) {
       // Already attached to an event: v2 one_time OR legacy scope:"event".
-      if ((b.type === "one_time" || b.scope === "event") && b.scopeRefId) {
-        set.add(b.scopeRefId);
+      if ((b.type === "one_time" || b.scope === "event") && b.scopeRefId && !map.has(b.scopeRefId)) {
+        map.set(b.scopeRefId, b);
       }
     }
-    eventBudgetRefsByChapter.set(key, set);
-    return set;
+    eventBudgetByRefByChapter.set(key, map);
+    return map;
   };
 
   for (const ev of events) {
@@ -2914,30 +2996,50 @@ async function runBackfillEventBudgets(
       continue;
     }
     const cid = ev.chapterId;
-    const existing = await eventBudgetRefs(cid);
-    // Dedup: skip if this event already has a budget.
-    if (existing.has(ev._id as string)) {
+    const existing = await eventBudgetsByRef(cid);
+    // The disambiguated label for this event (name, name+month, or name+date).
+    const parts = easternParts(ev.eventDate);
+    const nk = `${cid}${NUL}${ev.name}`;
+    const mk = `${nk}${NUL}${parts.year}-${parts.month}`;
+    const label = eventBudgetLabel(
+      ev.name,
+      parts,
+      nameCounts.get(nk) ?? 1,
+      nameMonthCounts.get(mk) ?? 1,
+    );
+    // Dedup: skip if this event already has a budget. Backfill re-run: if that
+    // existing budget has no label, name it after the event so the budgets
+    // created before this fix get labeled (idempotent — a settled re-run finds
+    // labels already set and relabels nothing).
+    const existingBudget = existing.get(ev._id as string);
+    if (existingBudget) {
+      if (!existingBudget.label) {
+        await ctx.db.patch(existingBudget._id, { label });
+        relabeled++;
+      }
       skipped++;
       continue;
     }
 
-    const { year, month } = easternParts(ev.eventDate);
     // events.budget is ESTIMATED dollars; finance money is integer cents.
     const amountCents = ev.budget != null ? Math.round(ev.budget * 100) : 0;
 
     const budgetId = await ctx.db.insert("budgets", {
       chapterId: cid,
       amountCents,
+      // Name the budget after its event (disambiguated) so the picker/tag-detail
+      // shows the event name rather than falling back to the "One-time" type word.
+      label,
       type: "one_time",
       refKind: "event",
       scopeRefId: ev._id,
       cadence: "per_instance",
-      year,
-      month,
+      year: parts.year,
+      month: parts.month,
       createdAt: Date.now(),
     });
     // Guard against a duplicate event id within the same run re-creating.
-    existing.add(ev._id as string);
+    existing.set(ev._id as string, (await ctx.db.get(budgetId))!);
 
     // Auto-tag: the eventType `template` tag + the catch-all "events" tag.
     const seen = new Set<string>();
@@ -2946,7 +3048,7 @@ async function runBackfillEventBudgets(
     created++;
   }
 
-  return { created, skipped, tagsLinked };
+  return { created, skipped, relabeled, tagsLinked };
 }
 
 /**
