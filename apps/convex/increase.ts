@@ -377,6 +377,10 @@ function payoutTargetFor(
   ) {
     return "paid";
   }
+  // `requires_attention` means a human must act in the Increase dashboard — do
+  // NOT auto-advance the payout (leave it where it is), even though the carrier
+  // event is `ach_transfer.updated`.
+  if (s === "requires_attention") return null;
   if (s.startsWith("pending") || ["created", "processing"].includes(s)) {
     return "processing";
   }
