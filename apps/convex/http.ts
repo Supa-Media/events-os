@@ -23,6 +23,7 @@ import {
 import { EMAIL_ACTION_STATUSES, type EmailActionStatus } from "./projectActions";
 import { appUrl, siteUrl } from "./lib/siteUrl";
 import { verifyStripeSignature } from "./stripe";
+import { verifyIncreaseSignature } from "./increase";
 
 const http = httpRouter();
 
@@ -239,6 +240,49 @@ http.route({
       // Same fan-out for the abandoned-checkout case — each no-ops if not theirs.
       await ctx.runMutation(internal.ticketing.cancelPendingOrder, { sessionId });
       await ctx.runMutation(internal.giving.cancelPendingDonation, { sessionId });
+    }
+    return new Response("ok", { status: 200 });
+  }),
+});
+
+// ── Increase webhook ─────────────────────────────────────────────────────────
+
+http.route({
+  path: "/increase/webhook",
+  method: "POST",
+  handler: httpAction(async (ctx, req) => {
+    const secret = process.env.INCREASE_WEBHOOK_SECRET;
+    if (!secret) {
+      console.error("[increase] INCREASE_WEBHOOK_SECRET not set");
+      return new Response("Not configured", { status: 500 });
+    }
+    const payload = await req.text();
+    const valid = await verifyIncreaseSignature(
+      payload,
+      req.headers.get("Increase-Webhook-Signature"),
+      secret,
+    );
+    if (!valid) return new Response("Invalid signature", { status: 400 });
+
+    // Increase events: `{ id, type: "ach_transfer.updated", associated_object_id }`
+    // — the associated object is the ACH transfer. Dedup on the event id, then
+    // advance the matching payout's state machine.
+    const event = JSON.parse(payload) as {
+      id: string;
+      type: string;
+      associated_object_id?: string;
+      data?: { status?: string };
+    };
+    const { isNew } = await ctx.runMutation(
+      internal.webhooks.recordWebhookEvent,
+      { provider: "increase", eventId: event.id, summary: event.type },
+    );
+    if (isNew && event.associated_object_id) {
+      await ctx.runMutation(internal.increase.onIncreaseWebhookEvent, {
+        eventType: event.type,
+        transferId: event.associated_object_id,
+        status: event.data?.status,
+      });
     }
     return new Response("ok", { status: 200 });
   }),

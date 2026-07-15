@@ -80,6 +80,12 @@ export function canPreApprove(status: ReimbursementStatus): boolean {
   return status === "pending_preapproval";
 }
 
+/** The single state where a manager can pay — matches `markPaidManually`
+ *  (only an `approved` request can be marked paid / paid out). */
+export function canMarkPaid(status: ReimbursementStatus): boolean {
+  return status === "approved";
+}
+
 /** Whether the request still awaits a manager decision (Reject/Decline shown). */
 export function isActionable(status: ReimbursementStatus): boolean {
   return canApprove(status) || canPreApprove(status);

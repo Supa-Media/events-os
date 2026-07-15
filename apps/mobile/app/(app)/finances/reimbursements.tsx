@@ -18,6 +18,7 @@ import { View, Text, Platform, Alert } from "react-native";
 import { useQuery, useMutation } from "convex/react";
 import { api } from "@events-os/convex/_generated/api";
 import type { Id } from "@events-os/convex/_generated/dataModel";
+import type { FunctionReturnType } from "convex/server";
 import { formatCents } from "@events-os/shared";
 import {
   EmptyState,
@@ -49,9 +50,25 @@ export default function ReimbursementsScreen() {
   const filter = FILTERS.find((f) => f.key === activeFilter)!;
   const rows = useQuery(api.reimbursements.list, { status: filter.status });
 
+  // Payouts (viewer read) — used only to show a payout provider/status hint on
+  // requests that have already been paid or are paying. Keyed by reimbursement.
+  const payouts = useQuery(api.increase.listPayouts, {});
+  const payoutByReimbursement = useMemo(() => {
+    const map = new Map<
+      Id<"reimbursementRequests">,
+      FunctionReturnType<typeof api.increase.listPayouts>[number]
+    >();
+    // `listPayouts` is newest-first, so the first seen per reimbursement wins.
+    for (const p of payouts ?? []) {
+      if (!map.has(p.reimbursementId)) map.set(p.reimbursementId, p);
+    }
+    return map;
+  }, [payouts]);
+
   const approve = useMutation(api.reimbursements.approve);
   const preApprove = useMutation(api.reimbursements.preApprove);
   const reject = useMutation(api.reimbursements.reject);
+  const markPaid = useMutation(api.increase.markPaidManually);
   const { run, toast, dismiss } = useActionRunner();
 
   // Header "N open · $X" — non-terminal requests in the current view.
@@ -106,6 +123,15 @@ export default function ReimbursementsScreen() {
       errorTitle: "Couldn't reject",
     }).then(() => {});
 
+  // Pay an approved request. The working Phase-4 path is a manual payout
+  // (`markPaidManually`): it marks the request `paid` and posts the ledger
+  // transfer, so the list re-queries the card into a read-only paid state.
+  // ACH auto-payout via Increase is a follow-up (destination-bank capture).
+  const handleMarkPaid = (id: Id<"reimbursementRequests">) =>
+    run(() => markPaid({ reimbursementId: id }), {
+      errorTitle: "Couldn't mark paid",
+    }).then(() => {});
+
   const loading = rows === undefined;
 
   return (
@@ -155,9 +181,11 @@ export default function ReimbursementsScreen() {
                 <RequestCard
                   key={row._id}
                   row={row}
+                  payout={payoutByReimbursement.get(row._id)}
                   onApprove={handleApprove}
                   onPreApprove={handlePreApprove}
                   onReject={handleReject}
+                  onMarkPaid={handleMarkPaid}
                 />
               ))}
             </View>
