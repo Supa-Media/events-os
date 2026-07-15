@@ -62,7 +62,10 @@ import {
 } from "./lib/finance";
 import { requireSuperuser } from "./lib/superuser";
 import { viewerPerson } from "./lib/org";
-import { insertDefaultExpenseCategories } from "./lib/seed/finance";
+import {
+  ensureDefaultFunds,
+  insertDefaultExpenseCategories,
+} from "./lib/seed/finance";
 
 // ── Enum validators (built from the shared tuples) ───────────────────────────
 const restrictionValidator = v.union(
@@ -1795,15 +1798,19 @@ async function findGeneralFundId(
 }
 
 /**
- * Shared: seed one chapter's default expense categories under its General Fund.
- * Idempotent (skips names that already exist). Returns the count inserted (0 if
- * the chapter has no fund to attach them to).
+ * Shared: seed one chapter's default funds + expense categories. First ensures
+ * the chapter's default funds exist (General Fund + Designated) — so a chapter
+ * created before the finance seed (zero funds) is fixed in one shot — then seeds
+ * the default categories under its General Fund. Idempotent (skips funds /
+ * categories whose names already exist). Returns the count of categories
+ * inserted (0 if, unexpectedly, no General Fund can be resolved).
  */
 async function seedDefaultCategoriesForChapter(
   ctx: MutationCtx,
   chapterId: Id<"chapters">,
   now: number,
 ): Promise<number> {
+  await ensureDefaultFunds(ctx, chapterId, now);
   const fundId = await findGeneralFundId(ctx, chapterId);
   if (!fundId) return 0;
   return await insertDefaultExpenseCategories(ctx, chapterId, fundId, now);

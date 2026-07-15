@@ -3,7 +3,7 @@ import { describe, expect, test } from "vitest";
 import { newT, run, setupChapter, type ChapterSetup } from "./setup.helpers";
 import { api, internal } from "../_generated/api";
 import type { Id } from "../_generated/dataModel";
-import { DEFAULT_EXPENSE_CATEGORIES } from "../lib/seed/finance";
+import { DEFAULT_EXPENSE_CATEGORIES, DEFAULT_FUNDS } from "../lib/seed/finance";
 
 /**
  * "Every-dollar-attributed" finance follow-up tests:
@@ -54,6 +54,19 @@ async function insertGeneralFund(
       isActive: true,
       createdAt: Date.now(),
     }),
+  );
+}
+
+/** Read a chapter's `funds` rows (raw read — bypasses role/active-chapter). */
+async function fundsFor(
+  s: ChapterSetup,
+  chapterId: Id<"chapters">,
+) {
+  return await run(s.t, (ctx) =>
+    ctx.db
+      .query("funds")
+      .withIndex("by_chapter", (q) => q.eq("chapterId", chapterId))
+      .collect(),
   );
 }
 
@@ -122,6 +135,53 @@ describe("Part A — seedDefaultExpenseCategories", () => {
     // Idempotent: a re-run inserts nothing and leaves the count unchanged.
     const second = await s.as.mutation(api.finances.seedDefaultExpenseCategories, {});
     expect(second.inserted).toBe(0);
+    expect(await categoryCount(s, s.chapterId)).toBe(
+      DEFAULT_EXPENSE_CATEGORIES.length,
+    );
+  });
+
+  test("seeds default funds first for a fund-less chapter, then categories; idempotent", async () => {
+    const t = newT();
+    // A real chapter created before the finance seed → ZERO funds.
+    const s = await setupChapter(t, { email: "seyi@publicworship.life" });
+    expect(await fundsFor(s, s.chapterId)).toHaveLength(0);
+
+    // One shot: creates the default funds, then the categories under the
+    // General Fund.
+    const first = await s.as.mutation(
+      api.finances.seedDefaultExpenseCategories,
+      {},
+    );
+    expect(first.inserted).toBe(DEFAULT_EXPENSE_CATEGORIES.length);
+
+    const funds = await fundsFor(s, s.chapterId);
+    expect(new Set(funds.map((f) => f.name))).toEqual(
+      new Set(DEFAULT_FUNDS.map((f) => f.name)),
+    );
+    const general = funds.find((f) => f.name === "General Fund");
+    const designated = funds.find((f) => f.name === "Designated");
+    expect(general?.restriction).toBe("unrestricted");
+    expect(designated?.restriction).toBe("designated");
+    expect(await categoryCount(s, s.chapterId)).toBe(
+      DEFAULT_EXPENSE_CATEGORIES.length,
+    );
+
+    // Categories hang off the newly-created General Fund.
+    const rows = await run(t, (ctx) =>
+      ctx.db
+        .query("budgetCategories")
+        .withIndex("by_chapter", (q) => q.eq("chapterId", s.chapterId))
+        .collect(),
+    );
+    expect(rows.every((r) => r.fundId === general?._id)).toBe(true);
+
+    // Idempotent: a re-run adds neither funds nor categories.
+    const second = await s.as.mutation(
+      api.finances.seedDefaultExpenseCategories,
+      {},
+    );
+    expect(second.inserted).toBe(0);
+    expect(await fundsFor(s, s.chapterId)).toHaveLength(DEFAULT_FUNDS.length);
     expect(await categoryCount(s, s.chapterId)).toBe(
       DEFAULT_EXPENSE_CATEGORIES.length,
     );

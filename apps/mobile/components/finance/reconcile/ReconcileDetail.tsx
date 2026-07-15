@@ -178,6 +178,17 @@ export function ReconcileDetail({
       </View>
       {meta ? <Text className="mt-1 text-xs text-faint">{meta}</Text> : null}
 
+      {/* Needs-a-budget warning — an un-budgeted spend nudged to a budget. */}
+      {row.needsBudget ? (
+        <View className="mt-3 flex-row items-center gap-2 rounded-md border border-warn bg-warn-bg px-3 py-2.5">
+          <Icon name="tag" size={15} color={colors.warn} />
+          <Text className="flex-1 text-sm font-medium text-warn">
+            Needs a budget — tag this charge to a budget below so it counts
+            against a plan.
+          </Text>
+        </View>
+      ) : null}
+
       {/* Receipt state box. */}
       <View className="mt-3 items-center justify-center gap-2 rounded-md border border-dashed border-border-strong bg-sunken px-4 py-6">
         <Icon name={RECEIPT_ICON[receipt]} size={20} color={receiptTone.color} />

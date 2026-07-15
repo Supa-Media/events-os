@@ -87,8 +87,11 @@ function ReconcileRow({
           </Text>
         ) : null}
       </View>
-      <View className="flex-[1.4]">
+      <View className="flex-[1.4] gap-1">
         <Badge label={badge.label} tone={badge.tone} />
+        {row.needsBudget ? (
+          <Badge label="Needs a budget" tone="warn" icon="tag" />
+        ) : null}
       </View>
       <Text
         className="w-20 text-right text-sm font-semibold text-ink"

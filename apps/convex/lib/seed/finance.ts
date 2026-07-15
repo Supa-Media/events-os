@@ -79,6 +79,56 @@ export async function insertDefaultExpenseCategories(
   return inserted;
 }
 
+/**
+ * The default funds every chapter gets: a "General Fund" (unrestricted, general
+ * operating) that budgets/categories nest under, and a "Designated" fund
+ * (earmarked money). Kept in insertion order; `sortOrder` follows the array.
+ */
+export const DEFAULT_FUNDS: ReadonlyArray<{
+  name: string;
+  restriction: "unrestricted" | "designated";
+}> = [
+  { name: "General Fund", restriction: "unrestricted" },
+  { name: "Designated", restriction: "designated" },
+] as const;
+
+/**
+ * Ensure the chapter's {@link DEFAULT_FUNDS} exist. Idempotent + chapter-scoped:
+ * a fund whose name already exists is skipped, so this is safe to call on a
+ * partially-seeded chapter or to re-run. Newly-created funds are appended after
+ * any existing ones by `sortOrder`. Returns the number of funds inserted.
+ *
+ * Runs BEFORE category seeding so a chapter created before the finance seed
+ * (zero funds — blocks category seeding, which needs a General Fund) gets its
+ * funds + categories in one shot.
+ */
+export async function ensureDefaultFunds(
+  ctx: any,
+  chapterId: Id<"chapters">,
+  now: number,
+): Promise<number> {
+  const existing = await ctx.db
+    .query("funds")
+    .withIndex("by_chapter", (q: any) => q.eq("chapterId", chapterId))
+    .take(CATEGORY_SCAN_LIMIT);
+  const existingNames = new Set<string>(existing.map((f: any) => f.name));
+  let sortOrder = existing.length;
+  let inserted = 0;
+  for (const fund of DEFAULT_FUNDS) {
+    if (existingNames.has(fund.name)) continue;
+    await ctx.db.insert("funds", {
+      chapterId,
+      name: fund.name,
+      restriction: fund.restriction,
+      sortOrder: sortOrder++,
+      isActive: true,
+      createdAt: now,
+    });
+    inserted++;
+  }
+  return inserted;
+}
+
 export interface SeededChapterFinance {
   generalFundId: Id<"funds">;
   designatedFundId: Id<"funds">;
