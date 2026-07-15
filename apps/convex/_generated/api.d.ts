@@ -30,6 +30,7 @@ import type * as finances from "../finances.js";
 import type * as giving from "../giving.js";
 import type * as guests from "../guests.js";
 import type * as http from "../http.js";
+import type * as increase from "../increase.js";
 import type * as inventory from "../inventory.js";
 import type * as items from "../items.js";
 import type * as lib_access from "../lib/access.js";
@@ -156,6 +157,7 @@ declare const fullApi: ApiFromModules<{
   giving: typeof giving;
   guests: typeof guests;
   http: typeof http;
+  increase: typeof increase;
   inventory: typeof inventory;
   items: typeof items;
   "lib/access": typeof lib_access;
