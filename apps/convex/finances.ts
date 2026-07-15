@@ -1,26 +1,35 @@
 /**
- * Finance public API — Phase 0 CONTRACT STUBS.
+ * Finance public API — Phase 1A (no-vendor core).
  *
- * Every function below has REAL `args` + `returns` validators and REAL auth
- * gating (via `lib/finance.ts`), but a PLACEHOLDER handler body that returns a
- * typed empty/zero result. This is the API contract the Expo app compiles
- * against (`api.finances.*`) before Phase 1A fills in the business logic — the
- * handlers here are intentionally hollow and will be REPLACED wholesale.
+ * The real backend behind `api.finances.*`: funds / categories / teams CRUD,
+ * budgets (scope × cadence × category), the unified `transactions` record
+ * (create / categorize / reconcile / receipt / flag-personal), and the read
+ * rollups (chapter + central dashboards, budget-vs-actual, event / project /
+ * team / person actuals).
  *
- * Gating (per the finance-role ladder viewer < bookkeeper < manager):
+ * Gating (finance-role ladder viewer < bookkeeper < manager):
  *  - reads                          → requireFinanceRole(..., "viewer")
  *  - transaction writes             → requireFinanceRole(..., "bookkeeper")
  *  - fund/category/team/budget CRUD → requireFinanceManager
  *  - central roll-up                → requireFinanceCentral
  *
- * Money is ALWAYS integer cents. All functions are chapter-scoped. Reads use
- * `getChapterIdOrNull` so a pre-onboarding user gets empty results instead of a
- * thrown error; writes use `requireChapterId`.
+ * INVARIANTS:
+ *  - Money is ALWAYS a non-negative INTEGER number of cents. Direction is carried
+ *    by `flow` (outflow/inflow/transfer), never a sign. `createManualTransaction`
+ *    throws on floats/negatives (the arg validator can't).
+ *  - Every function is chapter-scoped; every client-supplied id is verified to
+ *    belong to the caller's chapter before use.
+ *  - ANTI-DOUBLE-COUNT: `transfer`-flow rows (and `excluded`/personal rows) are
+ *    excluded from all category/budget/actual SPEND totals (`countsAsSpend`).
+ *    ESTIMATED money (budgets) is never summed with ACTUAL money (transactions).
+ *  - Reads are bounded (`.take()` / paginate); rollups scope the index read to
+ *    the period + chapter.
  */
 import { query, mutation } from "./_generated/server";
-import { v } from "convex/values";
+import type { MutationCtx, QueryCtx } from "./_generated/server";
+import { ConvexError, v } from "convex/values";
 import { paginationOptsValidator } from "convex/server";
-import { Id } from "./_generated/dataModel";
+import { Doc, Id } from "./_generated/dataModel";
 import {
   FUND_RESTRICTIONS,
   BUDGET_CATEGORY_KINDS,
@@ -30,13 +39,23 @@ import {
   TRANSACTION_SOURCES,
   TRANSACTION_FLOWS,
   TRANSACTION_STATUSES,
+  BUDGET_SCOPE_LABELS,
+  countsAsSpend,
+  easternParts,
+  quarterOfMonth,
+  formatCents,
 } from "@events-os/shared";
-import { getChapterIdOrNull, requireChapterId } from "./lib/context";
+import {
+  getChapterIdOrNull,
+  requireChapterId,
+  requireUserId,
+} from "./lib/context";
 import {
   requireFinanceRole,
   requireFinanceManager,
   requireFinanceCentral,
 } from "./lib/finance";
+import { viewerPerson } from "./lib/org";
 
 // ── Enum validators (built from the shared tuples) ───────────────────────────
 const restrictionValidator = v.union(
@@ -117,73 +136,851 @@ const fundBalance = v.object({
   balanceCents: v.number(),
 });
 
-/** Resolve the caller's chapter for a READ, typed for the finance helpers. */
+// ── Enriched dashboard projections (prototype shapes) ────────────────────────
+const okWarnValidator = v.union(v.literal("ok"), v.literal("warn"));
+
+const categoryBreakdown = v.object({
+  name: v.string(),
+  spentCents: v.number(),
+  barPct: v.number(),
+});
+
+const chapterTile = v.object({
+  label: v.string(),
+  value: v.string(),
+  subValueCents: v.optional(v.number()),
+  meta: v.string(),
+});
+
+const centralTile = v.object({
+  label: v.string(),
+  value: v.string(),
+  meta: v.string(),
+});
+
+const projectBudgetCard = v.object({
+  id: v.id("budgets"),
+  name: v.string(),
+  cadence: v.union(v.literal("per_instance"), v.literal("one_off")),
+  sourceBadge: v.optional(v.union(v.string(), v.null())),
+  dateLabel: v.optional(v.union(v.string(), v.null())),
+  subtitle: v.optional(v.union(v.string(), v.null())),
+  spentCents: v.number(),
+  budgetCents: v.number(),
+  pct: v.number(),
+  remainingCents: v.number(),
+  status: okWarnValidator,
+  categories: v.array(categoryBreakdown),
+});
+
+const recurringBudgetCard = v.object({
+  id: v.id("budgets"),
+  name: v.string(),
+  cadence: v.union(
+    v.literal("monthly"),
+    v.literal("quarterly"),
+    v.literal("yearly"),
+  ),
+  spentCents: v.number(),
+  budgetCents: v.number(),
+  pct: v.number(),
+  status: okWarnValidator,
+  categories: v.optional(v.array(categoryBreakdown)),
+  note: v.optional(v.union(v.string(), v.null())),
+});
+
+const recentTxnCard = v.object({
+  id: v.id("transactions"),
+  date: v.string(),
+  merchant: v.union(v.string(), v.null()),
+  cardLast4: v.optional(v.union(v.string(), v.null())),
+  spenderName: v.optional(v.union(v.string(), v.null())),
+  timeOrNote: v.optional(v.union(v.string(), v.null())),
+  codedTo: v.optional(
+    v.union(
+      v.object({ fundOrProject: v.string(), category: v.string() }),
+      v.null(),
+    ),
+  ),
+  aiSuggestion: v.optional(
+    v.union(v.object({ fund: v.string(), category: v.string() }), v.null()),
+  ),
+  amountCents: v.number(),
+  flow: flowValidator,
+  status: statusValidator,
+});
+
+const attentionItem = v.object({
+  kind: v.string(),
+  title: v.string(),
+  badgeCount: v.number(),
+  detail: v.string(),
+  actionLabel: v.string(),
+});
+
+const templateRollupRow = v.object({
+  templateName: v.string(),
+  cadence: v.string(),
+  scopeLabel: v.string(),
+  monthTotalCents: v.number(),
+  perChapter: v.array(
+    v.object({
+      chapterName: v.string(),
+      amountCents: v.number(),
+      barPct: v.number(),
+    }),
+  ),
+});
+
+const chapterRollupRow = v.object({
+  chapterId: v.id("chapters"),
+  chapterName: v.string(),
+  subtitle: v.optional(v.union(v.string(), v.null())),
+  spentCents: v.number(),
+  budgetCents: v.number(),
+  barPct: v.number(),
+  status: okWarnValidator,
+});
+
+// ── Bounds (keep every read + rollup bounded) ────────────────────────────────
+const ROLLUP_SCAN_LIMIT = 5000;
+const DASHBOARD_SCAN_LIMIT = 1000;
+const RECENT_TXN_COUNT = 10;
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+// ── Projection helpers ───────────────────────────────────────────────────────
+function toFundSummary(f: Doc<"funds">) {
+  return {
+    id: f._id,
+    name: f.name,
+    restriction: f.restriction,
+    code: f.code ?? null,
+    color: f.color ?? null,
+    sortOrder: f.sortOrder,
+    isActive: f.isActive ?? true,
+  };
+}
+
+function toCategorySummary(c: Doc<"budgetCategories">) {
+  return {
+    id: c._id,
+    fundId: c.fundId,
+    parentCategoryId: c.parentCategoryId ?? null,
+    name: c.name,
+    kind: c.kind,
+    sortOrder: c.sortOrder ?? 0,
+    isActive: c.isActive ?? true,
+  };
+}
+
+function toTeamSummary(tm: Doc<"financeTeams">) {
+  return {
+    id: tm._id,
+    name: tm.name,
+    sortOrder: tm.sortOrder,
+    isActive: tm.isActive ?? true,
+  };
+}
+
+function toBudgetSummary(b: Doc<"budgets">) {
+  return {
+    id: b._id,
+    amountCents: b.amountCents,
+    label: b.label ?? null,
+    scope: b.scope,
+    scopeRefId: b.scopeRefId ?? null,
+    cadence: b.cadence,
+    year: b.year,
+    month: b.month ?? null,
+    quarter: b.quarter ?? null,
+    fundId: b.fundId ?? null,
+    categoryId: b.categoryId ?? null,
+    teamId: b.teamId ?? null,
+  };
+}
+
+function toTxnSummary(tr: Doc<"transactions">) {
+  return {
+    id: tr._id,
+    postedAt: tr.postedAt,
+    amountCents: tr.amountCents,
+    flow: tr.flow,
+    status: tr.status,
+    description: tr.description ?? null,
+    merchantName: tr.merchantName ?? null,
+    fundId: tr.fundId ?? null,
+    categoryId: tr.categoryId ?? null,
+  };
+}
+
+// ── Money / tenancy guards ───────────────────────────────────────────────────
+/** Enforce the non-negative-integer-cents invariant the validator can't. */
+function assertIntegerCents(amountCents: number, label = "Amount"): void {
+  if (!Number.isInteger(amountCents) || amountCents < 0) {
+    throw new ConvexError({
+      code: "INVALID_AMOUNT",
+      message: `${label} must be a non-negative whole number of cents.`,
+    });
+  }
+}
+
+/**
+ * Load a document by id and assert it belongs to the caller's chapter. Central
+ * finance teams (no `chapterId`) are allowed through when `allowCentral`.
+ */
+async function requireInCallerChapter<T extends "funds" | "budgetCategories" | "financeTeams" | "budgets" | "transactions" | "events" | "projects" | "people">(
+  ctx: QueryCtx,
+  chapterId: Id<"chapters">,
+  table: T,
+  id: Id<T>,
+  label: string,
+  opts: { allowCentral?: boolean } = {},
+): Promise<Doc<T>> {
+  const doc = await ctx.db.get(id);
+  const docChapter = (doc as { chapterId?: Id<"chapters"> } | null)?.chapterId;
+  if (!doc || (docChapter !== chapterId && !(opts.allowCentral && docChapter === undefined))) {
+    throw new ConvexError({
+      code: "NOT_FOUND",
+      message: `${label} not found in your chapter.`,
+    });
+  }
+  return doc as Doc<T>;
+}
+
+/** True iff a transaction contributes to category / budget / actual SPEND. */
+function isSpend(tr: Doc<"transactions">): boolean {
+  return (
+    tr.flow === "outflow" &&
+    countsAsSpend(tr.flow) &&
+    tr.status !== "excluded" &&
+    tr.isPersonal !== true
+  );
+}
+
+/** True iff a transaction counts toward account balance (excludes `excluded`). */
+function countsForBalance(tr: Doc<"transactions">): boolean {
+  return tr.status !== "excluded";
+}
+
+/** The signed balance contribution of a transaction (inflow +, outflow −). */
+function balanceDelta(tr: Doc<"transactions">): number {
+  if (!countsForBalance(tr)) return 0;
+  if (tr.flow === "inflow") return tr.amountCents;
+  if (tr.flow === "outflow") return -tr.amountCents;
+  return 0; // transfers net internally, ignored for the balance tile
+}
+
+// ── Period helpers (Eastern-time bucketing) ──────────────────────────────────
+/** True iff a timestamp falls in the given Eastern year (+ optional month/quarter). */
+function inPeriod(
+  postedAt: number,
+  year: number,
+  month?: number,
+  quarter?: number,
+): boolean {
+  const p = easternParts(postedAt);
+  if (p.year !== year) return false;
+  if (month != null && p.month !== month) return false;
+  if (quarter != null && quarterOfMonth(p.month) !== quarter) return false;
+  return true;
+}
+
+/**
+ * Read the chapter's transactions for a year (optionally a single month),
+ * bounded via the `by_chapter_and_postedAt` range. The UTC window is padded a
+ * day on each side to cover the Eastern offset; callers narrow precisely with
+ * `inPeriod`.
+ */
+async function loadPeriodTxns(
+  ctx: QueryCtx,
+  chapterId: Id<"chapters">,
+  year: number,
+  month?: number,
+): Promise<Doc<"transactions">[]> {
+  const startUtc =
+    (month != null ? Date.UTC(year, month - 1, 1) : Date.UTC(year, 0, 1)) -
+    DAY_MS;
+  const endUtc =
+    (month != null ? Date.UTC(year, month, 1) : Date.UTC(year + 1, 0, 1)) +
+    DAY_MS;
+  return await ctx.db
+    .query("transactions")
+    .withIndex("by_chapter_and_postedAt", (q) =>
+      q.eq("chapterId", chapterId).gte("postedAt", startUtc).lt("postedAt", endUtc),
+    )
+    .take(ROLLUP_SCAN_LIMIT);
+}
+
+/** Does a spend transaction fall within a budget's scope + period + narrowers? */
+function matchesBudget(tr: Doc<"transactions">, b: Doc<"budgets">): boolean {
+  if (!isSpend(tr)) return false;
+  if (!inPeriod(tr.postedAt, b.year, b.month, b.quarter)) return false;
+  if (b.categoryId && tr.categoryId !== b.categoryId) return false;
+  if (b.fundId && tr.fundId !== b.fundId) return false;
+  if (b.teamId && tr.teamId !== b.teamId) return false;
+  switch (b.scope) {
+    case "event":
+      if (b.scopeRefId && tr.eventId !== b.scopeRefId) return false;
+      break;
+    case "project":
+      if (b.scopeRefId && tr.projectId !== b.scopeRefId) return false;
+      break;
+    case "team": {
+      const tid = b.teamId ?? (b.scopeRefId as Id<"financeTeams"> | undefined);
+      if (tid && tr.teamId !== tid) return false;
+      break;
+    }
+    // template / bucket / chapter: no extra link filter beyond fund/category.
+    default:
+      break;
+  }
+  return true;
+}
+
+/** Translate a client patch: `null` clears the field, `undefined` is untouched. */
+function cleanPatch(patch: Record<string, unknown>): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  for (const [k, val] of Object.entries(patch)) {
+    if (val === undefined) continue;
+    out[k] = val === null ? undefined : val;
+  }
+  return out;
+}
+
+/** Resolve the caller's chapter for a READ (null → empty result, no throw). */
 async function readChapterId(
-  ctx: Parameters<typeof getChapterIdOrNull>[0],
+  ctx: QueryCtx,
 ): Promise<Id<"chapters"> | null> {
   const id = await getChapterIdOrNull(ctx);
   return (id as Id<"chapters"> | null) ?? null;
 }
 
-// A Phase-0 placeholder id. Never actually returned in practice — Phase 1A
-// implements these handlers before the create paths are exercised for real.
-const STUB_ID = null as unknown;
+/** The next sort order for a chapter-scoped list (max existing + 1). */
+async function nextSortOrder(
+  ctx: MutationCtx,
+  rows: { sortOrder?: number }[],
+): Promise<number> {
+  let max = -1;
+  for (const r of rows) if ((r.sortOrder ?? 0) > max) max = r.sortOrder ?? 0;
+  return max + 1;
+}
+
+// ── Dashboard math + name resolution ─────────────────────────────────────────
+const MONTH_NAMES = [
+  "January",
+  "February",
+  "March",
+  "April",
+  "May",
+  "June",
+  "July",
+  "August",
+  "September",
+  "October",
+  "November",
+  "December",
+] as const;
+
+/** `YYYY-MM-DD` in America/New_York (the finance timezone). */
+function easternDateStr(ts: number): string {
+  return new Date(ts).toLocaleDateString("en-CA", {
+    timeZone: "America/New_York",
+  });
+}
+
+/** Integer percent spent-of-budget (0 when the budget is 0). */
+function pctOf(spent: number, budget: number): number {
+  if (budget <= 0) return 0;
+  return Math.round((spent / budget) * 100);
+}
+
+/** A budget is "warn" once ≥80% spent, else "ok". */
+function statusFor(pct: number): "ok" | "warn" {
+  return pct >= 80 ? "warn" : "ok";
+}
+
+/** A capped 0–100 bar percentage for a part of a whole. */
+function barPctOf(part: number, whole: number): number {
+  if (whole <= 0) return 0;
+  return Math.min(100, Math.round((part / whole) * 100));
+}
+
+/** Sum the SPEND amount of a list of transactions. */
+function sumSpend(txns: Doc<"transactions">[]): number {
+  return txns.reduce((s, tr) => (isSpend(tr) ? s + tr.amountCents : s), 0);
+}
+
+/**
+ * The spent total + per-category breakdown for one budget, from an already-
+ * loaded year of transactions. `catName` resolves category ids to names.
+ */
+function budgetSpendBreakdown(
+  b: Doc<"budgets">,
+  yearTxns: Doc<"transactions">[],
+  catName: Map<Id<"budgetCategories">, string>,
+): {
+  spentCents: number;
+  categories: { name: string; spentCents: number; barPct: number }[];
+} {
+  const matching = yearTxns.filter((tr) => matchesBudget(tr, b));
+  const spentCents = matching.reduce((s, tr) => s + tr.amountCents, 0);
+  const byCat = new Map<string, number>();
+  for (const tr of matching) {
+    const key = tr.categoryId ? catName.get(tr.categoryId) ?? "Uncategorized" : "Uncategorized";
+    byCat.set(key, (byCat.get(key) ?? 0) + tr.amountCents);
+  }
+  const denom = b.amountCents > 0 ? b.amountCents : spentCents;
+  const categories = [...byCat.entries()]
+    .sort((a, c) => c[1] - a[1])
+    .map(([name, cents]) => ({
+      name,
+      spentCents: cents,
+      barPct: barPctOf(cents, denom),
+    }));
+  return { spentCents, categories };
+}
+
+/** Is a recurring budget active for the dashboard's {year, month}? */
+function recurringAppliesToMonth(
+  b: Doc<"budgets">,
+  year: number,
+  month: number,
+): boolean {
+  if (b.year !== year) return false;
+  if (b.month != null && b.month !== month) return false;
+  if (b.quarter != null && quarterOfMonth(month) !== b.quarter) return false;
+  return true;
+}
+
+/** A tiny read-through name cache for a table's display name. */
+function nameCache<T extends "events" | "projects" | "people" | "cards" | "eventTypes">(
+  ctx: QueryCtx,
+  table: T,
+) {
+  const cache = new Map<string, Doc<T> | null>();
+  return async (id: Id<T>): Promise<Doc<T> | null> => {
+    const hit = cache.get(id);
+    if (hit !== undefined) return hit;
+    const doc = (await ctx.db.get(id)) as Doc<T> | null;
+    cache.set(id, doc);
+    return doc;
+  };
+}
 
 // ── Dashboards ───────────────────────────────────────────────────────────────
 
-/** The chapter finance dashboard: balance, flows, unreviewed count, rollups. */
+/**
+ * The chapter finance dashboard (prototype shape): month tiles, project /
+ * recurring budget cards joined to actual spend, enriched recent transactions,
+ * an attention queue (empty until Phases 3+5), plus the fund balances.
+ *
+ * `{year, month}` default to the current Eastern month so the UI's month
+ * stepper can page through history.
+ */
 export const dashboardChapter = query({
-  args: {},
+  args: { year: v.optional(v.number()), month: v.optional(v.number()) },
   returns: v.object({
+    tiles: v.array(chapterTile),
+    projectBudgets: v.array(projectBudgetCard),
+    recurringBudgets: v.array(recurringBudgetCard),
+    recentTransactions: v.array(recentTxnCard),
+    attention: v.array(attentionItem),
     balanceCents: v.number(),
-    inflowCents: v.number(),
-    outflowCents: v.number(),
-    unreviewedCount: v.number(),
     funds: v.array(fundBalance),
-    recentTransactions: v.array(txnSummary),
   }),
-  handler: async (ctx) => {
+  handler: async (ctx, args) => {
+    const now = easternParts(Date.now());
+    const year = args.year ?? now.year;
+    const month = args.month ?? now.month;
+    const monthLabel = `${MONTH_NAMES[month - 1]} ${year}`;
+
     const empty = {
+      tiles: [] as never[],
+      projectBudgets: [] as never[],
+      recurringBudgets: [] as never[],
+      recentTransactions: [] as never[],
+      attention: [] as never[],
       balanceCents: 0,
-      inflowCents: 0,
-      outflowCents: 0,
-      unreviewedCount: 0,
-      funds: [],
-      recentTransactions: [],
+      funds: [] as never[],
     };
     const chapterId = await readChapterId(ctx);
     if (!chapterId) return empty;
     await requireFinanceRole(ctx, chapterId, "viewer");
-    return empty; // Phase 0 stub
+
+    // One period read for the year drives every budget's actual + the month tile.
+    const yearTxns = await loadPeriodTxns(ctx, chapterId, year);
+    const monthTxns = yearTxns.filter((tr) => inPeriod(tr.postedAt, year, month));
+    const monthSpendCents = sumSpend(monthTxns);
+
+    // Category-name map (chapter-wide, bounded) for budget breakdowns.
+    const categoryDocs = await ctx.db
+      .query("budgetCategories")
+      .withIndex("by_chapter", (q) => q.eq("chapterId", chapterId))
+      .take(ROLLUP_SCAN_LIMIT);
+    const catName = new Map(categoryDocs.map((c) => [c._id, c.name] as const));
+    const getEvent = nameCache(ctx, "events");
+    const getProject = nameCache(ctx, "projects");
+
+    const budgets = await ctx.db
+      .query("budgets")
+      .withIndex("by_chapter_and_period", (q) =>
+        q.eq("chapterId", chapterId).eq("year", year),
+      )
+      .take(ROLLUP_SCAN_LIMIT);
+
+    // Project / event budget cards (per-instance / one-off).
+    const projectBudgets: (typeof projectBudgetCard.type)[] = [];
+    for (const b of budgets) {
+      if (b.scope !== "event" && b.scope !== "project") continue;
+      const { spentCents, categories } = budgetSpendBreakdown(b, yearTxns, catName);
+      let name = b.label ?? BUDGET_SCOPE_LABELS[b.scope];
+      let dateLabel: string | null = null;
+      if (b.scope === "event" && b.scopeRefId) {
+        const ev = await getEvent(b.scopeRefId as Id<"events">);
+        if (ev) {
+          name = ev.name;
+          dateLabel = easternDateStr(ev.eventDate);
+        }
+      } else if (b.scope === "project" && b.scopeRefId) {
+        const pr = await getProject(b.scopeRefId as Id<"projects">);
+        if (pr) {
+          name = pr.name;
+          dateLabel = pr.deadline ? easternDateStr(pr.deadline) : null;
+        }
+      }
+      const pct = pctOf(spentCents, b.amountCents);
+      projectBudgets.push({
+        id: b._id,
+        name,
+        cadence: b.cadence === "per_instance" ? "per_instance" : "one_off",
+        sourceBadge: null,
+        dateLabel,
+        subtitle: null,
+        spentCents,
+        budgetCents: b.amountCents,
+        pct,
+        remainingCents: b.amountCents - spentCents,
+        status: statusFor(pct),
+        categories,
+      });
+    }
+
+    // Recurring bucket / team / chapter budget cards active this month.
+    const teamDocs = await ctx.db
+      .query("financeTeams")
+      .withIndex("by_chapter", (q) => q.eq("chapterId", chapterId))
+      .take(ROLLUP_SCAN_LIMIT);
+    const teamName = new Map(teamDocs.map((t) => [t._id, t.name] as const));
+    const recurringBudgets: (typeof recurringBudgetCard.type)[] = [];
+    for (const b of budgets) {
+      const isRecurring =
+        b.cadence === "monthly" || b.cadence === "quarterly" || b.cadence === "yearly";
+      const isRecurringScope =
+        b.scope === "team" || b.scope === "bucket" || b.scope === "chapter";
+      if (!isRecurring || !isRecurringScope) continue;
+      if (!recurringAppliesToMonth(b, year, month)) continue;
+      const { spentCents, categories } = budgetSpendBreakdown(b, yearTxns, catName);
+      let name = b.label ?? BUDGET_SCOPE_LABELS[b.scope];
+      if (b.scope === "team" && b.teamId) name = teamName.get(b.teamId) ?? name;
+      const pct = pctOf(spentCents, b.amountCents);
+      recurringBudgets.push({
+        id: b._id,
+        name,
+        cadence: b.cadence as "monthly" | "quarterly" | "yearly",
+        spentCents,
+        budgetCents: b.amountCents,
+        pct,
+        status: statusFor(pct),
+        categories: categories.length ? categories : undefined,
+        note: null,
+      });
+    }
+
+    // Balance + fund balances from a bounded all-time newest-first scan.
+    const recent = await ctx.db
+      .query("transactions")
+      .withIndex("by_chapter_and_postedAt", (q) => q.eq("chapterId", chapterId))
+      .order("desc")
+      .take(DASHBOARD_SCAN_LIMIT);
+    let balanceCents = 0;
+    const fundBalances = new Map<Id<"funds">, number>();
+    for (const tr of recent) {
+      balanceCents += balanceDelta(tr);
+      if (tr.fundId) {
+        fundBalances.set(tr.fundId, (fundBalances.get(tr.fundId) ?? 0) + balanceDelta(tr));
+      }
+    }
+    const fundDocs = await ctx.db
+      .query("funds")
+      .withIndex("by_chapter", (q) => q.eq("chapterId", chapterId))
+      .take(ROLLUP_SCAN_LIMIT);
+    const funds = fundDocs
+      .filter((f) => f.isActive !== false)
+      .sort((a, b) => a.sortOrder - b.sortOrder)
+      .map((f) => ({
+        id: f._id,
+        name: f.name,
+        balanceCents: fundBalances.get(f._id) ?? 0,
+      }));
+
+    // Enriched recent-transaction cards (name resolution, bounded to the top N).
+    const fundName = new Map(fundDocs.map((f) => [f._id, f.name] as const));
+    const getPerson = nameCache(ctx, "people");
+    const recentTransactions: (typeof recentTxnCard.type)[] = [];
+    for (const tr of recent.slice(0, RECENT_TXN_COUNT)) {
+      const projName = tr.projectId ? (await getProject(tr.projectId))?.name : undefined;
+      const evName = tr.eventId ? (await getEvent(tr.eventId))?.name : undefined;
+      const fundOrProject =
+        projName ?? evName ?? (tr.fundId ? fundName.get(tr.fundId) : undefined);
+      const categoryName = tr.categoryId ? catName.get(tr.categoryId) : undefined;
+      const codedTo =
+        fundOrProject || categoryName
+          ? { fundOrProject: fundOrProject ?? "", category: categoryName ?? "" }
+          : null;
+      const ai =
+        tr.aiSuggestion && (tr.aiSuggestion.fundId || tr.aiSuggestion.categoryId)
+          ? {
+              fund: tr.aiSuggestion.fundId
+                ? fundName.get(tr.aiSuggestion.fundId) ?? ""
+                : "",
+              category: tr.aiSuggestion.categoryId
+                ? catName.get(tr.aiSuggestion.categoryId) ?? ""
+                : "",
+            }
+          : null;
+      const spenderName = tr.personId ? (await getPerson(tr.personId))?.name ?? null : null;
+      recentTransactions.push({
+        id: tr._id,
+        date: easternDateStr(tr.postedAt),
+        merchant: tr.merchantName ?? null,
+        cardLast4: null,
+        spenderName,
+        timeOrNote: tr.description ?? null,
+        codedTo,
+        aiSuggestion: ai,
+        amountCents: tr.amountCents,
+        flow: tr.flow,
+        status: tr.status,
+      });
+    }
+
+    const unreviewed = await ctx.db
+      .query("transactions")
+      .withIndex("by_chapter_and_status", (q) =>
+        q.eq("chapterId", chapterId).eq("status", "unreviewed"),
+      )
+      .take(ROLLUP_SCAN_LIMIT);
+
+    // Tiles: month spend, a headline project + monthly bucket, and to-review.
+    const tiles: (typeof chapterTile.type)[] = [
+      {
+        label: `Spent · ${MONTH_NAMES[month - 1]}`,
+        value: formatCents(monthSpendCents),
+        subValueCents: monthSpendCents,
+        meta: monthLabel,
+      },
+    ];
+    const topProject = projectBudgets[0];
+    if (topProject) {
+      tiles.push({
+        label: topProject.name,
+        value: `${formatCents(topProject.spentCents)} / ${formatCents(topProject.budgetCents)}`,
+        subValueCents: topProject.spentCents,
+        meta: `per instance · ${topProject.pct}%`,
+      });
+    }
+    const topBucket = recurringBudgets.find((r) => r.cadence === "monthly");
+    if (topBucket) {
+      tiles.push({
+        label: topBucket.name,
+        value: `${formatCents(topBucket.spentCents)} / ${formatCents(topBucket.budgetCents)}`,
+        subValueCents: topBucket.spentCents,
+        meta: `monthly · ${topBucket.pct}%`,
+      });
+    }
+    tiles.push({
+      label: "To review",
+      value: String(unreviewed.length),
+      meta: "transactions",
+    });
+
+    return {
+      tiles,
+      projectBudgets,
+      recurringBudgets,
+      recentTransactions,
+      attention: [],
+      balanceCents,
+      funds,
+    };
   },
 });
 
-/** The org-wide roll-up across every chapter (central finance only). */
+/**
+ * The org-wide roll-up (prototype shape, central finance only): global tiles, a
+ * by-template rollup across chapters, and a by-chapter rollup — all for the
+ * given `{year, month}` (default current Eastern month). Member data stays out.
+ */
 export const dashboardCentral = query({
-  args: {},
+  args: { year: v.optional(v.number()), month: v.optional(v.number()) },
   returns: v.object({
+    tiles: v.array(centralTile),
+    templateRollup: v.array(templateRollupRow),
+    chapterRollup: v.array(chapterRollupRow),
     totalBalanceCents: v.number(),
     totalInflowCents: v.number(),
     totalOutflowCents: v.number(),
-    chapters: v.array(
-      v.object({
-        chapterId: v.id("chapters"),
-        name: v.string(),
-        balanceCents: v.number(),
-      }),
-    ),
   }),
-  handler: async (ctx) => {
+  handler: async (ctx, args) => {
+    const now = easternParts(Date.now());
+    const year = args.year ?? now.year;
+    const month = args.month ?? now.month;
+
     const empty = {
+      tiles: [] as never[],
+      templateRollup: [] as never[],
+      chapterRollup: [] as never[],
       totalBalanceCents: 0,
       totalInflowCents: 0,
       totalOutflowCents: 0,
-      chapters: [],
     };
     const chapterId = await readChapterId(ctx);
     if (!chapterId) return empty;
     await requireFinanceCentral(ctx, chapterId);
-    return empty; // Phase 0 stub
+
+    const chapters = await ctx.db.query("chapters").take(ROLLUP_SCAN_LIMIT);
+    const getEventType = nameCache(ctx, "eventTypes");
+    const getEvent = nameCache(ctx, "events");
+
+    let totalInflowCents = 0;
+    let totalOutflowCents = 0;
+    let totalMonthSpendCents = 0;
+    let activeChapters = 0;
+    let toReviewOrg = 0;
+
+    const chapterRollup: (typeof chapterRollupRow.type)[] = [];
+    // templateName → { monthTotal, perChapter: Map<chapterName, cents> }
+    const templateAgg = new Map<
+      string,
+      { monthTotal: number; perChapter: Map<string, number> }
+    >();
+
+    for (const chapter of chapters) {
+      if (chapter.isActive !== false) activeChapters++;
+
+      // All-time balance for this chapter (bounded).
+      const allTxns = await ctx.db
+        .query("transactions")
+        .withIndex("by_chapter", (q) => q.eq("chapterId", chapter._id))
+        .take(ROLLUP_SCAN_LIMIT);
+      let inflow = 0;
+      let outflow = 0;
+      for (const tr of allTxns) {
+        if (!countsForBalance(tr)) continue;
+        if (tr.flow === "inflow") inflow += tr.amountCents;
+        else if (tr.flow === "outflow") outflow += tr.amountCents;
+      }
+      totalInflowCents += inflow;
+      totalOutflowCents += outflow;
+
+      // Month spend + template attribution for this chapter.
+      const monthTxns = allTxns.filter((tr) => inPeriod(tr.postedAt, year, month));
+      const chapterMonthSpend = sumSpend(monthTxns);
+      totalMonthSpendCents += chapterMonthSpend;
+      for (const tr of monthTxns) {
+        if (!isSpend(tr) || !tr.eventId) continue;
+        const ev = await getEvent(tr.eventId);
+        if (!ev) continue;
+        const et = await getEventType(ev.eventTypeId);
+        const tname = et?.name ?? "Uncategorized template";
+        const agg =
+          templateAgg.get(tname) ?? { monthTotal: 0, perChapter: new Map() };
+        agg.monthTotal += tr.amountCents;
+        agg.perChapter.set(
+          chapter.name,
+          (agg.perChapter.get(chapter.name) ?? 0) + tr.amountCents,
+        );
+        templateAgg.set(tname, agg);
+      }
+
+      // Chapter budget total for the year (bounded).
+      const chBudgets = await ctx.db
+        .query("budgets")
+        .withIndex("by_chapter_and_period", (q) =>
+          q.eq("chapterId", chapter._id).eq("year", year),
+        )
+        .take(ROLLUP_SCAN_LIMIT);
+      const budgetCents = chBudgets.reduce((s, b) => s + b.amountCents, 0);
+
+      // Unreviewed count for the org "to review" tile.
+      const unreviewed = await ctx.db
+        .query("transactions")
+        .withIndex("by_chapter_and_status", (q) =>
+          q.eq("chapterId", chapter._id).eq("status", "unreviewed"),
+        )
+        .take(ROLLUP_SCAN_LIMIT);
+      toReviewOrg += unreviewed.length;
+
+      const barPct = barPctOf(chapterMonthSpend, budgetCents);
+      chapterRollup.push({
+        chapterId: chapter._id,
+        chapterName: chapter.name,
+        subtitle: null,
+        spentCents: chapterMonthSpend,
+        budgetCents,
+        barPct,
+        status: statusFor(pctOf(chapterMonthSpend, budgetCents)),
+      });
+    }
+
+    const templateRollup = [...templateAgg.entries()]
+      .sort((a, b) => b[1].monthTotal - a[1].monthTotal)
+      .map(([templateName, agg]) => ({
+        templateName,
+        cadence: "per_instance",
+        scopeLabel: "Template",
+        monthTotalCents: agg.monthTotal,
+        perChapter: [...agg.perChapter.entries()].map(([chapterName, cents]) => ({
+          chapterName,
+          amountCents: cents,
+          barPct: barPctOf(cents, agg.monthTotal),
+        })),
+      }));
+
+    const tiles: (typeof centralTile.type)[] = [
+      {
+        label: `Spent · ${MONTH_NAMES[month - 1]} · all chapters`,
+        value: formatCents(totalMonthSpendCents),
+        meta: `${activeChapters} chapters`,
+      },
+    ];
+    const topTemplate = templateRollup[0];
+    if (topTemplate) {
+      tiles.push({
+        label: topTemplate.templateName,
+        value: formatCents(topTemplate.monthTotalCents),
+        meta: `across ${topTemplate.perChapter.length} chapters`,
+      });
+    }
+    tiles.push({
+      label: "Active chapters",
+      value: String(activeChapters),
+      meta: "org-wide",
+    });
+    tiles.push({
+      label: "To review · org",
+      value: String(toReviewOrg),
+      meta: "transactions",
+    });
+
+    return {
+      tiles,
+      templateRollup,
+      chapterRollup,
+      totalBalanceCents: totalInflowCents - totalOutflowCents,
+      totalInflowCents,
+      totalOutflowCents,
+    };
   },
 });
 
@@ -199,13 +996,62 @@ export const budgetVsActual = query({
       actualCents: v.number(),
     }),
   ),
-  handler: async (ctx) => {
+  handler: async (ctx, args) => {
     const chapterId = await readChapterId(ctx);
     if (!chapterId) return [];
     await requireFinanceRole(ctx, chapterId, "viewer");
-    return []; // Phase 0 stub
+
+    const budgets = await ctx.db
+      .query("budgets")
+      .withIndex("by_chapter_and_period", (q) =>
+        q.eq("chapterId", chapterId).eq("year", args.year),
+      )
+      .take(ROLLUP_SCAN_LIMIT);
+
+    // When a month is given, keep month-specific budgets for that month plus
+    // year/quarter-level budgets (which have no `month`).
+    const relevant =
+      args.month == null
+        ? budgets
+        : budgets.filter((b) => b.month == null || b.month === args.month);
+
+    // One period read (whole year) feeds every budget's actual — ESTIMATED
+    // (budget.amountCents) is reported separately, never summed with ACTUAL.
+    const periodTxns = await loadPeriodTxns(ctx, chapterId, args.year);
+
+    return relevant.map((b) => {
+      const actualCents = periodTxns.reduce(
+        (sum, tr) => (matchesBudget(tr, b) ? sum + tr.amountCents : sum),
+        0,
+      );
+      return {
+        budgetId: b._id,
+        label: b.label ?? BUDGET_SCOPE_LABELS[b.scope],
+        scope: b.scope,
+        allocatedCents: b.amountCents,
+        actualCents,
+      };
+    });
   },
 });
+
+/** Sum SPEND transactions reachable through a single-column index. */
+async function actualsByIndex<
+  IndexName extends "by_event" | "by_project" | "by_person",
+>(
+  ctx: QueryCtx,
+  indexName: IndexName,
+  field: "eventId" | "projectId" | "personId",
+  id: Id<"events"> | Id<"projects"> | Id<"people">,
+): Promise<{ totalCents: number; transactions: ReturnType<typeof toTxnSummary>[] }> {
+  const rows = await ctx.db
+    .query("transactions")
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    .withIndex(indexName, (q: any) => q.eq(field, id))
+    .take(ROLLUP_SCAN_LIMIT);
+  const totalCents = rows.reduce((s, tr) => (isSpend(tr) ? s + tr.amountCents : s), 0);
+  return { totalCents, transactions: rows.map(toTxnSummary) };
+}
 
 /** Actual spend attached to a single event. */
 export const eventActuals = query({
@@ -214,11 +1060,12 @@ export const eventActuals = query({
     totalCents: v.number(),
     transactions: v.array(txnSummary),
   }),
-  handler: async (ctx) => {
+  handler: async (ctx, args) => {
     const chapterId = await readChapterId(ctx);
     if (!chapterId) return { totalCents: 0, transactions: [] };
     await requireFinanceRole(ctx, chapterId, "viewer");
-    return { totalCents: 0, transactions: [] }; // Phase 0 stub
+    await requireInCallerChapter(ctx, chapterId, "events", args.eventId, "Event");
+    return actualsByIndex(ctx, "by_event", "eventId", args.eventId);
   },
 });
 
@@ -229,11 +1076,12 @@ export const projectActuals = query({
     totalCents: v.number(),
     transactions: v.array(txnSummary),
   }),
-  handler: async (ctx) => {
+  handler: async (ctx, args) => {
     const chapterId = await readChapterId(ctx);
     if (!chapterId) return { totalCents: 0, transactions: [] };
     await requireFinanceRole(ctx, chapterId, "viewer");
-    return { totalCents: 0, transactions: [] }; // Phase 0 stub
+    await requireInCallerChapter(ctx, chapterId, "projects", args.projectId, "Project");
+    return actualsByIndex(ctx, "by_project", "projectId", args.projectId);
   },
 });
 
@@ -244,11 +1092,27 @@ export const teamActuals = query({
     totalCents: v.number(),
     transactions: v.array(txnSummary),
   }),
-  handler: async (ctx) => {
+  handler: async (ctx, args) => {
     const chapterId = await readChapterId(ctx);
     if (!chapterId) return { totalCents: 0, transactions: [] };
     await requireFinanceRole(ctx, chapterId, "viewer");
-    return { totalCents: 0, transactions: [] }; // Phase 0 stub
+    // Chapter or central team.
+    await requireInCallerChapter(ctx, chapterId, "financeTeams", args.teamId, "Team", {
+      allowCentral: true,
+    });
+    // No dedicated team index on transactions — scan the chapter (bounded) and
+    // filter by team.
+    const rows = await ctx.db
+      .query("transactions")
+      .withIndex("by_chapter_and_postedAt", (q) => q.eq("chapterId", chapterId))
+      .order("desc")
+      .take(ROLLUP_SCAN_LIMIT);
+    const forTeam = rows.filter((tr) => tr.teamId === args.teamId);
+    const totalCents = forTeam.reduce(
+      (s, tr) => (isSpend(tr) ? s + tr.amountCents : s),
+      0,
+    );
+    return { totalCents, transactions: forTeam.map(toTxnSummary) };
   },
 });
 
@@ -256,11 +1120,24 @@ export const teamActuals = query({
 export const personTransactions = query({
   args: { personId: v.optional(v.id("people")) },
   returns: v.array(txnSummary),
-  handler: async (ctx) => {
+  handler: async (ctx, args) => {
     const chapterId = await readChapterId(ctx);
     if (!chapterId) return [];
     await requireFinanceRole(ctx, chapterId, "viewer");
-    return []; // Phase 0 stub
+
+    let personId = args.personId ?? null;
+    if (personId) {
+      await requireInCallerChapter(ctx, chapterId, "people", personId, "Person");
+    } else {
+      const self = await viewerPerson(ctx, chapterId);
+      personId = self?._id ?? null;
+    }
+    if (!personId) return [];
+    const rows = await ctx.db
+      .query("transactions")
+      .withIndex("by_person", (q) => q.eq("personId", personId!))
+      .take(ROLLUP_SCAN_LIMIT);
+    return rows.map(toTxnSummary);
   },
 });
 
@@ -273,7 +1150,13 @@ export const listFunds = query({
     const chapterId = await readChapterId(ctx);
     if (!chapterId) return [];
     await requireFinanceRole(ctx, chapterId, "viewer");
-    return []; // Phase 0 stub
+    const funds = await ctx.db
+      .query("funds")
+      .withIndex("by_chapter", (q) => q.eq("chapterId", chapterId))
+      .take(ROLLUP_SCAN_LIMIT);
+    return funds
+      .sort((a, b) => a.sortOrder - b.sortOrder)
+      .map(toFundSummary);
   },
 });
 
@@ -286,10 +1169,23 @@ export const createFund = mutation({
     sortOrder: v.optional(v.number()),
   },
   returns: v.id("funds"),
-  handler: async (ctx) => {
+  handler: async (ctx, args) => {
     const chapterId = (await requireChapterId(ctx)) as Id<"chapters">;
     await requireFinanceManager(ctx, chapterId);
-    return STUB_ID as Id<"funds">; // Phase 0 stub
+    const existing = await ctx.db
+      .query("funds")
+      .withIndex("by_chapter", (q) => q.eq("chapterId", chapterId))
+      .take(ROLLUP_SCAN_LIMIT);
+    return await ctx.db.insert("funds", {
+      chapterId,
+      name: args.name,
+      restriction: args.restriction,
+      code: args.code,
+      color: args.color,
+      sortOrder: args.sortOrder ?? (await nextSortOrder(ctx, existing)),
+      isActive: true,
+      createdAt: Date.now(),
+    });
   },
 });
 
@@ -306,10 +1202,12 @@ export const updateFund = mutation({
     }),
   },
   returns: v.null(),
-  handler: async (ctx) => {
+  handler: async (ctx, args) => {
     const chapterId = (await requireChapterId(ctx)) as Id<"chapters">;
     await requireFinanceManager(ctx, chapterId);
-    return null; // Phase 0 stub
+    await requireInCallerChapter(ctx, chapterId, "funds", args.fundId, "Fund");
+    await ctx.db.patch(args.fundId, cleanPatch(args.patch));
+    return null;
   },
 });
 
@@ -318,11 +1216,26 @@ export const updateFund = mutation({
 export const listCategories = query({
   args: { fundId: v.optional(v.id("funds")) },
   returns: v.array(categorySummary),
-  handler: async (ctx) => {
+  handler: async (ctx, args) => {
     const chapterId = await readChapterId(ctx);
     if (!chapterId) return [];
     await requireFinanceRole(ctx, chapterId, "viewer");
-    return []; // Phase 0 stub
+    let categories: Doc<"budgetCategories">[];
+    if (args.fundId) {
+      await requireInCallerChapter(ctx, chapterId, "funds", args.fundId, "Fund");
+      categories = await ctx.db
+        .query("budgetCategories")
+        .withIndex("by_fund", (q) => q.eq("fundId", args.fundId!))
+        .take(ROLLUP_SCAN_LIMIT);
+    } else {
+      categories = await ctx.db
+        .query("budgetCategories")
+        .withIndex("by_chapter", (q) => q.eq("chapterId", chapterId))
+        .take(ROLLUP_SCAN_LIMIT);
+    }
+    return categories
+      .sort((a, b) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0))
+      .map(toCategorySummary);
   },
 });
 
@@ -335,12 +1248,58 @@ export const createCategory = mutation({
     sortOrder: v.optional(v.number()),
   },
   returns: v.id("budgetCategories"),
-  handler: async (ctx) => {
+  handler: async (ctx, args) => {
     const chapterId = (await requireChapterId(ctx)) as Id<"chapters">;
     await requireFinanceManager(ctx, chapterId);
-    return STUB_ID as Id<"budgetCategories">; // Phase 0 stub
+    await requireInCallerChapter(ctx, chapterId, "funds", args.fundId, "Fund");
+    if (args.parentCategoryId) {
+      const parent = await requireInCallerChapter(
+        ctx,
+        chapterId,
+        "budgetCategories",
+        args.parentCategoryId,
+        "Parent category",
+      );
+      if (parent.fundId !== args.fundId) {
+        throw new ConvexError({
+          code: "INVALID_PARENT",
+          message: "A category's parent must be in the same fund.",
+        });
+      }
+    }
+    const existing = await ctx.db
+      .query("budgetCategories")
+      .withIndex("by_fund", (q) => q.eq("fundId", args.fundId))
+      .take(ROLLUP_SCAN_LIMIT);
+    return await ctx.db.insert("budgetCategories", {
+      chapterId,
+      fundId: args.fundId,
+      parentCategoryId: args.parentCategoryId,
+      name: args.name,
+      kind: args.kind,
+      sortOrder: args.sortOrder ?? (await nextSortOrder(ctx, existing)),
+      isActive: true,
+      createdAt: Date.now(),
+    });
   },
 });
+
+/** Walk up from `startId`; true iff `targetId` is reachable (would form a cycle). */
+async function categoryAncestorHits(
+  ctx: QueryCtx,
+  startId: Id<"budgetCategories"> | undefined,
+  targetId: Id<"budgetCategories">,
+): Promise<boolean> {
+  let cursor = startId;
+  let guard = 0;
+  while (cursor && guard < 1000) {
+    if (cursor === targetId) return true;
+    const node: Doc<"budgetCategories"> | null = await ctx.db.get(cursor);
+    cursor = node?.parentCategoryId;
+    guard++;
+  }
+  return false;
+}
 
 export const updateCategory = mutation({
   args: {
@@ -354,10 +1313,47 @@ export const updateCategory = mutation({
     }),
   },
   returns: v.null(),
-  handler: async (ctx) => {
+  handler: async (ctx, args) => {
     const chapterId = (await requireChapterId(ctx)) as Id<"chapters">;
     await requireFinanceManager(ctx, chapterId);
-    return null; // Phase 0 stub
+    const category = await requireInCallerChapter(
+      ctx,
+      chapterId,
+      "budgetCategories",
+      args.categoryId,
+      "Category",
+    );
+    const newParent = args.patch.parentCategoryId;
+    if (newParent) {
+      if (newParent === args.categoryId) {
+        throw new ConvexError({
+          code: "INVALID_PARENT",
+          message: "A category cannot be its own parent.",
+        });
+      }
+      const parent = await requireInCallerChapter(
+        ctx,
+        chapterId,
+        "budgetCategories",
+        newParent,
+        "Parent category",
+      );
+      if (parent.fundId !== category.fundId) {
+        throw new ConvexError({
+          code: "INVALID_PARENT",
+          message: "A category's parent must be in the same fund.",
+        });
+      }
+      // Reject a parent that is itself a descendant of this category (a cycle).
+      if (await categoryAncestorHits(ctx, newParent, args.categoryId)) {
+        throw new ConvexError({
+          code: "CYCLE",
+          message: "That parent would create a category cycle.",
+        });
+      }
+    }
+    await ctx.db.patch(args.categoryId, cleanPatch(args.patch));
+    return null;
   },
 });
 
@@ -370,17 +1366,37 @@ export const listTeams = query({
     const chapterId = await readChapterId(ctx);
     if (!chapterId) return [];
     await requireFinanceRole(ctx, chapterId, "viewer");
-    return []; // Phase 0 stub
+    const chapterTeams = await ctx.db
+      .query("financeTeams")
+      .withIndex("by_chapter", (q) => q.eq("chapterId", chapterId))
+      .take(ROLLUP_SCAN_LIMIT);
+    const centralTeams = await ctx.db
+      .query("financeTeams")
+      .withIndex("by_chapter", (q) => q.eq("chapterId", undefined))
+      .take(ROLLUP_SCAN_LIMIT);
+    return [...chapterTeams, ...centralTeams]
+      .sort((a, b) => a.sortOrder - b.sortOrder)
+      .map(toTeamSummary);
   },
 });
 
 export const createTeam = mutation({
   args: { name: v.string(), sortOrder: v.optional(v.number()) },
   returns: v.id("financeTeams"),
-  handler: async (ctx) => {
+  handler: async (ctx, args) => {
     const chapterId = (await requireChapterId(ctx)) as Id<"chapters">;
     await requireFinanceManager(ctx, chapterId);
-    return STUB_ID as Id<"financeTeams">; // Phase 0 stub
+    const existing = await ctx.db
+      .query("financeTeams")
+      .withIndex("by_chapter", (q) => q.eq("chapterId", chapterId))
+      .take(ROLLUP_SCAN_LIMIT);
+    return await ctx.db.insert("financeTeams", {
+      chapterId,
+      name: args.name,
+      sortOrder: args.sortOrder ?? (await nextSortOrder(ctx, existing)),
+      isActive: true,
+      createdAt: Date.now(),
+    });
   },
 });
 
@@ -394,10 +1410,12 @@ export const updateTeam = mutation({
     }),
   },
   returns: v.null(),
-  handler: async (ctx) => {
+  handler: async (ctx, args) => {
     const chapterId = (await requireChapterId(ctx)) as Id<"chapters">;
     await requireFinanceManager(ctx, chapterId);
-    return null; // Phase 0 stub
+    await requireInCallerChapter(ctx, chapterId, "financeTeams", args.teamId, "Team");
+    await ctx.db.patch(args.teamId, cleanPatch(args.patch));
+    return null;
   },
 });
 
@@ -410,9 +1428,55 @@ export const listBudgets = query({
     const chapterId = await readChapterId(ctx);
     if (!chapterId) return [];
     await requireFinanceRole(ctx, chapterId, "viewer");
-    return []; // Phase 0 stub
+    const budgets = await ctx.db
+      .query("budgets")
+      .withIndex("by_chapter", (q) => q.eq("chapterId", chapterId))
+      .take(ROLLUP_SCAN_LIMIT);
+    return budgets.map(toBudgetSummary);
   },
 });
+
+/** Validate + verify tenancy of the optional narrowers on a budget write. */
+async function verifyBudgetRefs(
+  ctx: MutationCtx,
+  chapterId: Id<"chapters">,
+  b: {
+    scope?: string;
+    scopeRefId?: string | null;
+    fundId?: Id<"funds"> | null;
+    categoryId?: Id<"budgetCategories"> | null;
+    teamId?: Id<"financeTeams"> | null;
+    month?: number | null;
+    quarter?: number | null;
+  },
+): Promise<void> {
+  if (b.month != null && (b.month < 1 || b.month > 12)) {
+    throw new ConvexError({ code: "INVALID_PERIOD", message: "Month must be 1–12." });
+  }
+  if (b.quarter != null && (b.quarter < 1 || b.quarter > 4)) {
+    throw new ConvexError({ code: "INVALID_PERIOD", message: "Quarter must be 1–4." });
+  }
+  if (b.fundId) await requireInCallerChapter(ctx, chapterId, "funds", b.fundId, "Fund");
+  if (b.categoryId)
+    await requireInCallerChapter(ctx, chapterId, "budgetCategories", b.categoryId, "Category");
+  if (b.teamId)
+    await requireInCallerChapter(ctx, chapterId, "financeTeams", b.teamId, "Team", {
+      allowCentral: true,
+    });
+  if (b.scopeRefId) {
+    if (b.scope === "event") {
+      await requireInCallerChapter(ctx, chapterId, "events", b.scopeRefId as Id<"events">, "Event");
+    } else if (b.scope === "project") {
+      await requireInCallerChapter(
+        ctx,
+        chapterId,
+        "projects",
+        b.scopeRefId as Id<"projects">,
+        "Project",
+      );
+    }
+  }
+}
 
 export const createBudget = mutation({
   args: {
@@ -430,10 +1494,29 @@ export const createBudget = mutation({
     rolloverPolicy: v.optional(rolloverValidator),
   },
   returns: v.id("budgets"),
-  handler: async (ctx) => {
+  handler: async (ctx, args) => {
     const chapterId = (await requireChapterId(ctx)) as Id<"chapters">;
     await requireFinanceManager(ctx, chapterId);
-    return STUB_ID as Id<"budgets">; // Phase 0 stub
+    assertIntegerCents(args.amountCents, "Budget amount");
+    await verifyBudgetRefs(ctx, chapterId, args);
+    const userId = (await requireUserId(ctx)) as Id<"users">;
+    return await ctx.db.insert("budgets", {
+      chapterId,
+      amountCents: args.amountCents,
+      label: args.label,
+      scope: args.scope,
+      scopeRefId: args.scopeRefId,
+      cadence: args.cadence,
+      year: args.year,
+      month: args.month,
+      quarter: args.quarter,
+      fundId: args.fundId,
+      categoryId: args.categoryId,
+      teamId: args.teamId,
+      rolloverPolicy: args.rolloverPolicy,
+      createdBy: userId,
+      createdAt: Date.now(),
+    });
   },
 });
 
@@ -456,20 +1539,42 @@ export const updateBudget = mutation({
     }),
   },
   returns: v.null(),
-  handler: async (ctx) => {
+  handler: async (ctx, args) => {
     const chapterId = (await requireChapterId(ctx)) as Id<"chapters">;
     await requireFinanceManager(ctx, chapterId);
-    return null; // Phase 0 stub
+    const budget = await requireInCallerChapter(
+      ctx,
+      chapterId,
+      "budgets",
+      args.budgetId,
+      "Budget",
+    );
+    if (args.patch.amountCents != null) {
+      assertIntegerCents(args.patch.amountCents, "Budget amount");
+    }
+    await verifyBudgetRefs(ctx, chapterId, {
+      scope: args.patch.scope ?? budget.scope,
+      scopeRefId: args.patch.scopeRefId,
+      fundId: args.patch.fundId,
+      categoryId: args.patch.categoryId,
+      teamId: args.patch.teamId,
+      month: args.patch.month,
+      quarter: args.patch.quarter,
+    });
+    await ctx.db.patch(args.budgetId, cleanPatch(args.patch));
+    return null;
   },
 });
 
 export const deleteBudget = mutation({
   args: { budgetId: v.id("budgets") },
   returns: v.null(),
-  handler: async (ctx) => {
+  handler: async (ctx, args) => {
     const chapterId = (await requireChapterId(ctx)) as Id<"chapters">;
     await requireFinanceManager(ctx, chapterId);
-    return null; // Phase 0 stub
+    await requireInCallerChapter(ctx, chapterId, "budgets", args.budgetId, "Budget");
+    await ctx.db.delete(args.budgetId);
+    return null;
   },
 });
 
@@ -490,14 +1595,47 @@ export const listTransactions = query({
       ),
     ),
   }),
-  handler: async (ctx) => {
+  handler: async (ctx, args) => {
     const emptyPage = { page: [], isDone: true, continueCursor: "" };
     const chapterId = await readChapterId(ctx);
     if (!chapterId) return emptyPage;
     await requireFinanceRole(ctx, chapterId, "viewer");
-    return emptyPage; // Phase 0 stub
+    const result = await ctx.db
+      .query("transactions")
+      .withIndex("by_chapter_and_postedAt", (q) => q.eq("chapterId", chapterId))
+      .order("desc")
+      .paginate(args.paginationOpts);
+    return { ...result, page: result.page.map(toTxnSummary) };
   },
 });
+
+/** Verify the optional operational-link ids on a transaction write. */
+async function verifyTxnRefs(
+  ctx: MutationCtx,
+  chapterId: Id<"chapters">,
+  refs: {
+    fundId?: Id<"funds"> | null;
+    categoryId?: Id<"budgetCategories"> | null;
+    projectId?: Id<"projects"> | null;
+    eventId?: Id<"events"> | null;
+    teamId?: Id<"financeTeams"> | null;
+    personId?: Id<"people"> | null;
+  },
+): Promise<void> {
+  if (refs.fundId) await requireInCallerChapter(ctx, chapterId, "funds", refs.fundId, "Fund");
+  if (refs.categoryId)
+    await requireInCallerChapter(ctx, chapterId, "budgetCategories", refs.categoryId, "Category");
+  if (refs.projectId)
+    await requireInCallerChapter(ctx, chapterId, "projects", refs.projectId, "Project");
+  if (refs.eventId)
+    await requireInCallerChapter(ctx, chapterId, "events", refs.eventId, "Event");
+  if (refs.teamId)
+    await requireInCallerChapter(ctx, chapterId, "financeTeams", refs.teamId, "Team", {
+      allowCentral: true,
+    });
+  if (refs.personId)
+    await requireInCallerChapter(ctx, chapterId, "people", refs.personId, "Person");
+}
 
 export const createManualTransaction = mutation({
   args: {
@@ -515,10 +1653,33 @@ export const createManualTransaction = mutation({
     personId: v.optional(v.id("people")),
   },
   returns: v.id("transactions"),
-  handler: async (ctx) => {
+  handler: async (ctx, args) => {
     const chapterId = (await requireChapterId(ctx)) as Id<"chapters">;
     await requireFinanceRole(ctx, chapterId, "bookkeeper");
-    return STUB_ID as Id<"transactions">; // Phase 0 stub
+    assertIntegerCents(args.amountCents);
+    await verifyTxnRefs(ctx, chapterId, args);
+    const userId = (await requireUserId(ctx)) as Id<"users">;
+    // Categorized on entry when a fund/category was supplied, else unreviewed.
+    const status = args.fundId || args.categoryId ? "categorized" : "unreviewed";
+    return await ctx.db.insert("transactions", {
+      chapterId,
+      source: args.source ?? "manual",
+      flow: args.flow,
+      amountCents: args.amountCents,
+      currency: "usd",
+      postedAt: args.postedAt,
+      description: args.description,
+      merchantName: args.merchantName,
+      fundId: args.fundId,
+      categoryId: args.categoryId,
+      projectId: args.projectId,
+      eventId: args.eventId,
+      teamId: args.teamId,
+      personId: args.personId,
+      status,
+      createdBy: userId,
+      createdAt: Date.now(),
+    });
   },
 });
 
@@ -532,10 +1693,35 @@ export const categorizeTransaction = mutation({
     teamId: v.optional(v.union(v.id("financeTeams"), v.null())),
   },
   returns: v.null(),
-  handler: async (ctx) => {
+  handler: async (ctx, args) => {
     const chapterId = (await requireChapterId(ctx)) as Id<"chapters">;
     await requireFinanceRole(ctx, chapterId, "bookkeeper");
-    return null; // Phase 0 stub
+    const txn = await requireInCallerChapter(
+      ctx,
+      chapterId,
+      "transactions",
+      args.transactionId,
+      "Transaction",
+    );
+    await verifyTxnRefs(ctx, chapterId, {
+      fundId: args.fundId ?? undefined,
+      categoryId: args.categoryId ?? undefined,
+      projectId: args.projectId ?? undefined,
+      eventId: args.eventId ?? undefined,
+      teamId: args.teamId ?? undefined,
+    });
+    const patch = cleanPatch({
+      fundId: args.fundId,
+      categoryId: args.categoryId,
+      projectId: args.projectId,
+      eventId: args.eventId,
+      teamId: args.teamId,
+    });
+    // Advance an unreviewed transaction to categorized once coded.
+    const nowCoded = (patch.fundId ?? txn.fundId) || (patch.categoryId ?? txn.categoryId);
+    if (nowCoded && txn.status === "unreviewed") patch.status = "categorized";
+    await ctx.db.patch(args.transactionId, patch);
+    return null;
   },
 });
 
@@ -546,20 +1732,48 @@ export const bulkCategorize = mutation({
     categoryId: v.optional(v.union(v.id("budgetCategories"), v.null())),
   },
   returns: v.object({ updated: v.number() }),
-  handler: async (ctx) => {
+  handler: async (ctx, args) => {
     const chapterId = (await requireChapterId(ctx)) as Id<"chapters">;
     await requireFinanceRole(ctx, chapterId, "bookkeeper");
-    return { updated: 0 }; // Phase 0 stub
+    await verifyTxnRefs(ctx, chapterId, {
+      fundId: args.fundId ?? undefined,
+      categoryId: args.categoryId ?? undefined,
+    });
+    let updated = 0;
+    for (const id of args.transactionIds) {
+      const txn = await requireInCallerChapter(
+        ctx,
+        chapterId,
+        "transactions",
+        id,
+        "Transaction",
+      );
+      const patch = cleanPatch({ fundId: args.fundId, categoryId: args.categoryId });
+      const nowCoded =
+        (patch.fundId ?? txn.fundId) || (patch.categoryId ?? txn.categoryId);
+      if (nowCoded && txn.status === "unreviewed") patch.status = "categorized";
+      await ctx.db.patch(id, patch);
+      updated++;
+    }
+    return { updated };
   },
 });
 
 export const setTransactionStatus = mutation({
   args: { transactionId: v.id("transactions"), status: statusValidator },
   returns: v.null(),
-  handler: async (ctx) => {
+  handler: async (ctx, args) => {
     const chapterId = (await requireChapterId(ctx)) as Id<"chapters">;
     await requireFinanceRole(ctx, chapterId, "bookkeeper");
-    return null; // Phase 0 stub
+    await requireInCallerChapter(
+      ctx,
+      chapterId,
+      "transactions",
+      args.transactionId,
+      "Transaction",
+    );
+    await ctx.db.patch(args.transactionId, { status: args.status });
+    return null;
   },
 });
 
@@ -569,19 +1783,37 @@ export const attachReceipt = mutation({
     storageId: v.id("_storage"),
   },
   returns: v.null(),
-  handler: async (ctx) => {
+  handler: async (ctx, args) => {
     const chapterId = (await requireChapterId(ctx)) as Id<"chapters">;
     await requireFinanceRole(ctx, chapterId, "bookkeeper");
-    return null; // Phase 0 stub
+    await requireInCallerChapter(
+      ctx,
+      chapterId,
+      "transactions",
+      args.transactionId,
+      "Transaction",
+    );
+    await ctx.db.patch(args.transactionId, { receiptStorageId: args.storageId });
+    return null;
   },
 });
 
 export const flagPersonal = mutation({
   args: { transactionId: v.id("transactions"), isPersonal: v.boolean() },
   returns: v.null(),
-  handler: async (ctx) => {
+  handler: async (ctx, args) => {
     const chapterId = (await requireChapterId(ctx)) as Id<"chapters">;
     await requireFinanceRole(ctx, chapterId, "bookkeeper");
-    return null; // Phase 0 stub
+    await requireInCallerChapter(
+      ctx,
+      chapterId,
+      "transactions",
+      args.transactionId,
+      "Transaction",
+    );
+    // A personal charge is excluded from spend until repaid (`isPersonal`
+    // already drops it from SPEND totals; no status change needed).
+    await ctx.db.patch(args.transactionId, { isPersonal: args.isPersonal });
+    return null;
   },
 });
