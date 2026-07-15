@@ -1315,3 +1315,24 @@ export const listPayouts = query({
     return payouts.map(toPayoutSummary);
   },
 });
+
+// ── getChapterAccount (query, viewer) ────────────────────────────────────────
+
+/** The caller's chapter's Increase Account summary (viewer+), or null if none
+ *  has been provisioned yet. The read shape the accounts UI renders to show
+ *  provisioning status + the "Provision account" trigger. */
+export const getChapterAccount = query({
+  args: {},
+  returns: v.union(increaseAccountSummaryValidator, v.null()),
+  handler: async (ctx): Promise<IncreaseAccountSummary | null> => {
+    const chapterId = (await getChapterIdOrNull(ctx)) as Id<"chapters"> | null;
+    if (!chapterId) return null;
+    await requireFinanceRole(ctx, chapterId, "viewer");
+
+    const account = await ctx.db
+      .query("increaseAccounts")
+      .withIndex("by_chapter", (q) => q.eq("chapterId", chapterId))
+      .first();
+    return account ? toAccountSummary(account) : null;
+  },
+});
