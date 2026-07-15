@@ -1050,6 +1050,273 @@ describe("storeFcAccount initial sync scheduling", () => {
   });
 });
 
+describe("storeFcAccount reconnect-duplication guard (same bank, new Stripe id)", () => {
+  const realKey = process.env.STRIPE_SECRET_KEY;
+
+  afterEach(() => {
+    if (realKey === undefined) delete process.env.STRIPE_SECRET_KEY;
+    else process.env.STRIPE_SECRET_KEY = realKey;
+  });
+
+  test("reconnect with a NEW stripeFcAccountId but same chapter+last4 REACTIVATES the existing row (no 2nd row) + updates its id", async () => {
+    process.env.STRIPE_SECRET_KEY = "sk_test_mock";
+    const s = await setupChapter(newT());
+    await asManager(s);
+
+    // A previously-connected, now DISCONNECTED account for the "4242" bank.
+    // (seedAccount defaults last4:"4242", institutionName:"Test Bank".)
+    const existingId = await seedAccount(s, s.chapterId, {
+      stripeFcAccountId: "fca_old_id",
+    });
+    await run(s.t, (ctx) =>
+      ctx.db.patch(existingId, { status: "disconnected" }),
+    );
+
+    // Reconnect: Stripe FC hands back a BRAND-NEW account id for the SAME bank.
+    const returnedId = await s.as.mutation(api.stripeFinance.storeFcAccount, {
+      stripeFcAccountId: "fca_new_id",
+      institutionName: "Test Bank",
+      last4: "4242",
+      type: "depository",
+    });
+
+    // No duplicate row — the existing row was reactivated + re-pointed.
+    expect(returnedId).toBe(existingId);
+    const rows = await run(s.t, (ctx) =>
+      ctx.db
+        .query("legacyAccounts")
+        .withIndex("by_chapter", (q) => q.eq("chapterId", s.chapterId))
+        .collect(),
+    );
+    expect(rows).toHaveLength(1);
+    expect(rows[0]._id).toBe(existingId);
+    expect(rows[0].stripeFcAccountId).toBe("fca_new_id");
+    expect(rows[0].status).toBe("active");
+
+    // The row is now findable by the NEW id, and the old id resolves to nothing.
+    const byNew = await run(s.t, (ctx) =>
+      ctx.db
+        .query("legacyAccounts")
+        .withIndex("by_stripe_fc_account", (q) =>
+          q.eq("stripeFcAccountId", "fca_new_id"),
+        )
+        .first(),
+    );
+    expect(byNew?._id).toBe(existingId);
+    const byOld = await run(s.t, (ctx) =>
+      ctx.db
+        .query("legacyAccounts")
+        .withIndex("by_stripe_fc_account", (q) =>
+          q.eq("stripeFcAccountId", "fca_old_id"),
+        )
+        .first(),
+    );
+    expect(byOld).toBeNull();
+
+    // Reactivation re-fetches history under the new id.
+    const scheduled = await run(s.t, (ctx) =>
+      ctx.db.system.query("_scheduled_functions").collect(),
+    );
+    expect(scheduled).toHaveLength(1);
+    expect(scheduled[0].name).toContain("refreshFcTransactions");
+  });
+
+  test("a genuinely different bank (different last4) still INSERTS a new row", async () => {
+    process.env.STRIPE_SECRET_KEY = "sk_test_mock";
+    const s = await setupChapter(newT());
+    await asManager(s);
+    await seedAccount(s, s.chapterId, { stripeFcAccountId: "fca_bank_a" });
+
+    await s.as.mutation(api.stripeFinance.storeFcAccount, {
+      stripeFcAccountId: "fca_bank_b",
+      institutionName: "Other Bank",
+      last4: "9999",
+      type: "depository",
+    });
+
+    const rows = await run(s.t, (ctx) =>
+      ctx.db
+        .query("legacyAccounts")
+        .withIndex("by_chapter", (q) => q.eq("chapterId", s.chapterId))
+        .collect(),
+    );
+    expect(rows).toHaveLength(2);
+  });
+});
+
+describe("dedupeLegacyAccounts (merge reconnect duplicates)", () => {
+  test("keeps the active row, re-points the duplicate's txns' sourceAccountId, deletes the duplicate", async () => {
+    const s = await setupChapter(newT());
+
+    // Two rows for the SAME bank (last4 "4242", "Test Bank"): one active (keeper),
+    // one disconnected (duplicate created by the reconnect bug).
+    const keeper = await seedAccount(s, s.chapterId, {
+      stripeFcAccountId: "fca_keeper",
+    });
+    const dup = await seedAccount(s, s.chapterId, {
+      stripeFcAccountId: "fca_dup",
+    });
+    await run(s.t, (ctx) => ctx.db.patch(dup, { status: "disconnected" }));
+
+    // A transaction that had synced under the duplicate account.
+    const txnId = await run(s.t, (ctx) =>
+      ctx.db.insert("transactions", {
+        chapterId: s.chapterId,
+        source: "stripe_fc",
+        flow: "outflow",
+        amountCents: 1234,
+        currency: "usd",
+        postedAt: 1_700_000_000_000,
+        status: "unreviewed",
+        sourceAccountId: "fca_dup",
+        externalId: "stripe_fc:dup_txn",
+        createdAt: Date.now(),
+      }),
+    );
+
+    const res = await s.t.mutation(
+      internal.stripeFinance.dedupeLegacyAccounts,
+      {},
+    );
+    expect(res).toEqual({ merged: 1, txnsRepointed: 1 });
+
+    // Only the keeper row survives.
+    const rows = await run(s.t, (ctx) =>
+      ctx.db
+        .query("legacyAccounts")
+        .withIndex("by_chapter", (q) => q.eq("chapterId", s.chapterId))
+        .collect(),
+    );
+    expect(rows).toHaveLength(1);
+    expect(rows[0]._id).toBe(keeper);
+
+    // The transaction is re-pointed onto the keeper (never deleted).
+    const txn = await run(s.t, (ctx) => ctx.db.get(txnId));
+    expect(txn?.sourceAccountId).toBe("fca_keeper");
+
+    // Idempotent: a second run changes nothing.
+    const res2 = await s.t.mutation(
+      internal.stripeFinance.dedupeLegacyAccounts,
+      {},
+    );
+    expect(res2).toEqual({ merged: 0, txnsRepointed: 0 });
+  });
+
+  test("does not merge rows with different last4", async () => {
+    const s = await setupChapter(newT());
+    await seedAccount(s, s.chapterId, { stripeFcAccountId: "fca_x" });
+    const other = await run(s.t, (ctx) =>
+      ctx.db.insert("legacyAccounts", {
+        chapterId: s.chapterId,
+        stripeFcAccountId: "fca_y",
+        institutionName: "Test Bank",
+        last4: "0000",
+        status: "active",
+        createdAt: Date.now(),
+      }),
+    );
+    const res = await s.t.mutation(
+      internal.stripeFinance.dedupeLegacyAccounts,
+      {},
+    );
+    expect(res).toEqual({ merged: 0, txnsRepointed: 0 });
+    expect(await run(s.t, (ctx) => ctx.db.get(other))).not.toBeNull();
+  });
+});
+
+describe("financeDiag (read-only diagnostics)", () => {
+  test("returns per-chapter legacyAccounts / increaseAccounts / stripe_fc txn summary shapes", async () => {
+    const s = await setupChapter(newT());
+    const accountId = await seedAccount(s, s.chapterId, {
+      stripeFcAccountId: "fca_diag",
+    });
+    const increaseId = await run(s.t, (ctx) =>
+      ctx.db.insert("increaseAccounts", {
+        chapterId: s.chapterId,
+        increaseAccountId: "acct_diag",
+        onboardingStatus: "active",
+        sandbox: true,
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      }),
+    );
+
+    // Two stripe_fc txns under the account (spanning a date range) + one non-FC
+    // txn that must be excluded from the summary.
+    await run(s.t, async (ctx) => {
+      await ctx.db.insert("transactions", {
+        chapterId: s.chapterId,
+        source: "stripe_fc",
+        flow: "outflow",
+        amountCents: 100,
+        currency: "usd",
+        postedAt: 1_700_000_000_000,
+        status: "unreviewed",
+        sourceAccountId: "fca_diag",
+        externalId: "stripe_fc:d1",
+        createdAt: Date.now(),
+      });
+      await ctx.db.insert("transactions", {
+        chapterId: s.chapterId,
+        source: "stripe_fc",
+        flow: "inflow",
+        amountCents: 200,
+        currency: "usd",
+        postedAt: 1_700_500_000_000,
+        status: "unreviewed",
+        sourceAccountId: "fca_diag",
+        externalId: "stripe_fc:d2",
+        createdAt: Date.now(),
+      });
+      await ctx.db.insert("transactions", {
+        chapterId: s.chapterId,
+        source: "manual",
+        flow: "outflow",
+        amountCents: 999,
+        currency: "usd",
+        postedAt: 1_700_900_000_000,
+        status: "unreviewed",
+        externalId: "manual:i1",
+        createdAt: Date.now(),
+      });
+    });
+
+    const diag = await s.t.query(internal.stripeFinance.financeDiag, {
+      chapterId: s.chapterId,
+    });
+    expect(diag).toHaveLength(1);
+    const chapter = diag[0];
+    expect(chapter.chapterId).toBe(s.chapterId);
+
+    expect(chapter.legacyAccounts).toHaveLength(1);
+    expect(chapter.legacyAccounts[0]).toMatchObject({
+      id: accountId,
+      stripeFcAccountId: "fca_diag",
+      last4: "4242",
+      institutionName: "Test Bank",
+      status: "active",
+    });
+
+    expect(chapter.increaseAccounts).toHaveLength(1);
+    expect(chapter.increaseAccounts[0]).toMatchObject({
+      id: increaseId,
+      increaseAccountId: "acct_diag",
+      onboardingStatus: "active",
+      sandbox: true,
+    });
+
+    // Only the two stripe_fc rows count; the summary carries the real date range.
+    expect(chapter.transactions.total).toBe(2);
+    expect(chapter.transactions.byStripeFcSource).toEqual({
+      fca_diag: {
+        count: 2,
+        minPostedAt: 1_700_000_000_000,
+        maxPostedAt: 1_700_500_000_000,
+      },
+    });
+  });
+});
+
 describe("refreshFcAccount (manual refresh)", () => {
   const realKey = process.env.STRIPE_SECRET_KEY;
 
