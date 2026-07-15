@@ -2834,6 +2834,136 @@ export const runMigrateBudgetScopesToTypes = internalMutation({
   handler: async (ctx) => await runBudgetScopeMigration(ctx),
 });
 
+// ── Event-budget backfill (populate the dashboard's Events & Projects) ───────
+const eventBudgetBackfillResult = v.object({
+  created: v.number(),
+  skipped: v.number(),
+  tagsLinked: v.number(),
+});
+
+/**
+ * Backfill body: give every existing EVENT a one_time budget so it appears in
+ * the finance dashboard's "Events & Projects" section and charges can roll up
+ * per event. Mirrors what `createBudget` writes for a one_time event budget
+ * (`type:"one_time"`, `refKind:"event"`, `scopeRefId:<eventId>`,
+ * `cadence:"per_instance"`) and reuses `autoTagEventBudget` for the eventType
+ * `template` tag + the catch-all "events" tag.
+ *
+ * Bounded + idempotent:
+ *  - Scans one chapter's events (via `by_chapter`) or a bounded slice of all
+ *    events when `chapterId` is omitted.
+ *  - SKIPS an event that already has an attached budget — v2 (`type:"one_time"`)
+ *    OR legacy (`scope:"event"`) — with a matching `scopeRefId`, so re-runs are
+ *    no-ops.
+ *  - SKIPS `isTraining` events: training events must never pollute finance
+ *    rollups (same invariant that excludes them from dashboard rollups).
+ *  - `amountCents` = the event's `budget` (dollars) × 100 as an integer when set,
+ *    else 0. `year`/`month` come from the event's `eventDate` in Eastern time so
+ *    the budget lands in the event's month on the dashboard.
+ */
+async function runBackfillEventBudgets(
+  ctx: MutationCtx,
+  chapterId?: Id<"chapters">,
+): Promise<{ created: number; skipped: number; tagsLinked: number }> {
+  let created = 0;
+  let skipped = 0;
+  let tagsLinked = 0;
+
+  // Guard: a passed chapter must exist (ConvexError, not a silent no-op).
+  if (chapterId) {
+    const chapter = await ctx.db.get(chapterId);
+    if (!chapter) {
+      throw new ConvexError({ code: "NOT_FOUND", message: "Chapter not found." });
+    }
+  }
+
+  // Bounded event scan: one chapter via index, else a bounded full slice.
+  const events = chapterId
+    ? await ctx.db
+        .query("events")
+        .withIndex("by_chapter", (q) => q.eq("chapterId", chapterId))
+        .take(ROLLUP_SCAN_LIMIT)
+    : await ctx.db.query("events").take(ROLLUP_SCAN_LIMIT);
+
+  // Per-chapter cache of `scopeRefId`s that already carry an event budget, so
+  // dedup costs one bounded read per chapter instead of one per event.
+  const eventBudgetRefsByChapter = new Map<string, Set<string>>();
+  const eventBudgetRefs = async (cid: Id<"chapters">): Promise<Set<string>> => {
+    const key = cid as string;
+    const cached = eventBudgetRefsByChapter.get(key);
+    if (cached) return cached;
+    const set = new Set<string>();
+    const rows = await ctx.db
+      .query("budgets")
+      .withIndex("by_chapter", (q) => q.eq("chapterId", cid))
+      .take(ROLLUP_SCAN_LIMIT);
+    for (const b of rows) {
+      // Already attached to an event: v2 one_time OR legacy scope:"event".
+      if ((b.type === "one_time" || b.scope === "event") && b.scopeRefId) {
+        set.add(b.scopeRefId);
+      }
+    }
+    eventBudgetRefsByChapter.set(key, set);
+    return set;
+  };
+
+  for (const ev of events) {
+    // Training events never pollute finance rollups (schema invariant).
+    if (ev.isTraining) {
+      skipped++;
+      continue;
+    }
+    const cid = ev.chapterId;
+    const existing = await eventBudgetRefs(cid);
+    // Dedup: skip if this event already has a budget.
+    if (existing.has(ev._id as string)) {
+      skipped++;
+      continue;
+    }
+
+    const { year, month } = easternParts(ev.eventDate);
+    // events.budget is ESTIMATED dollars; finance money is integer cents.
+    const amountCents = ev.budget != null ? Math.round(ev.budget * 100) : 0;
+
+    const budgetId = await ctx.db.insert("budgets", {
+      chapterId: cid,
+      amountCents,
+      type: "one_time",
+      refKind: "event",
+      scopeRefId: ev._id,
+      cadence: "per_instance",
+      year,
+      month,
+      createdAt: Date.now(),
+    });
+    // Guard against a duplicate event id within the same run re-creating.
+    existing.add(ev._id as string);
+
+    // Auto-tag: the eventType `template` tag + the catch-all "events" tag.
+    const seen = new Set<string>();
+    await autoTagEventBudget(ctx, budgetId, cid, ev._id as string, seen);
+    tagsLinked += seen.size;
+    created++;
+  }
+
+  return { created, skipped, tagsLinked };
+}
+
+/**
+ * CLI-runnable (no auth) event-budget backfill — an internalMutation is safe to
+ * run without an auth gate, and runnable via `run-convex-function.yml`. Bounded
+ * + idempotent (see {@link runBackfillEventBudgets}).
+ *
+ * Run locally:  npx convex run finances:backfillEventBudgets
+ * Run on prod:  npx convex run --prod finances:backfillEventBudgets '{"chapterId":"..."}'
+ */
+export const backfillEventBudgets = internalMutation({
+  args: { chapterId: v.optional(v.id("chapters")) },
+  returns: eventBudgetBackfillResult,
+  handler: async (ctx, args) =>
+    await runBackfillEventBudgets(ctx, args.chapterId),
+});
+
 // ── Transactions ───────────────────────────────────────────────────────────────
 
 export const listTransactions = query({
