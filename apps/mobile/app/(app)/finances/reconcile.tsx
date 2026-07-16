@@ -108,6 +108,11 @@ function ReconcileGrid() {
   const hasCentralSeat = seats.some((s) => s.scope === "central");
   const [scope, setScope] = useState<"chapter" | "central">("chapter");
   const centralScope = scope === "central" && hasCentralSeat;
+  // R1b: "Mark personal" (cards.flagPersonalCharge's manager path) is a
+  // manager-only action — a bookkeeper has full Reconcile access but not this.
+  // A caller has at most one chapter seat (their home chapter, MVP — see
+  // `requireChapterId`), so this is unambiguous.
+  const isManager = seats.some((s) => s.scope === "chapter" && s.role === "manager");
 
   const reconcile = useQuery(
     api.finances.listReconcile,
@@ -417,6 +422,7 @@ function ReconcileGrid() {
             onToggle={toggle}
             onToggleAll={toggleAll}
             centralScope={centralScope}
+            isManager={isManager}
           />
         )}
       </Screen>

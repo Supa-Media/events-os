@@ -44,6 +44,7 @@ import {
   BUDGET_SCOPE_LABELS,
   CENTRAL,
   RECEIPT_GRACE_DAYS,
+  MAX_NOTE_LENGTH,
   countsAsSpend,
   easternParts,
   quarterOfMonth,
@@ -169,6 +170,9 @@ const txnSummaryFields = {
   status: statusValidator,
   description: v.union(v.string(), v.null()),
   merchantName: v.union(v.string(), v.null()),
+  // R1a: the bookkeeper's own freeform note ("who was this for and why") —
+  // distinct from `description` (provider-sourced). Null until set.
+  note: v.union(v.string(), v.null()),
   fundId: v.union(v.id("funds"), v.null()),
   categoryId: v.union(v.id("budgetCategories"), v.null()),
   budgetId: v.union(v.id("budgets"), v.null()),
@@ -192,6 +196,16 @@ const txnSummaryFields = {
   ),
 };
 const txnSummary = v.object(txnSummaryFields);
+
+// `personTransactions`'s projection (the member's own "My transactions" view):
+// same shape as `txnSummary`, minus `note`. DELIBERATE privacy default — `note`
+// is the bookkeeper's internal finance annotation ("who was this for and why"),
+// not something written for the cardholder to read. `listReconcile` (the
+// bookkeeper surface) still carries it in full; only the member-facing
+// projection strips it. Flip consciously (i.e. re-add `note` here) if member
+// transparency into bookkeeper notes is ever wanted.
+const { note: _personTxnOmittedNote, ...personTxnSummaryFields } = txnSummaryFields;
+const personTxnSummary = v.object(personTxnSummaryFields);
 
 // The resolved cardholder behind a charge: the `personId` on the txn, else the
 // person who owns the `cardId`. Powers the reconcile Cardholder column.
@@ -367,6 +381,9 @@ const chapterRollupRow = v.object({
 // ── Bounds (keep every read + rollup bounded) ────────────────────────────────
 export const ROLLUP_SCAN_LIMIT = 5000;
 const RECENT_TXN_COUNT = 10;
+// R1a: `MAX_NOTE_LENGTH` (a transaction note is a short "who/why"
+// justification, not a document) is shared from `@events-os/shared` — the
+// mobile `TransactionNoteModal` imports the same constant for its `maxLength`.
 const DAY_MS = 24 * 60 * 60 * 1000;
 
 // ── Projection helpers ───────────────────────────────────────────────────────
@@ -424,6 +441,7 @@ function toTxnSummary(tr: Doc<"transactions">) {
     status: tr.status,
     description: tr.description ?? null,
     merchantName: tr.merchantName ?? null,
+    note: tr.note ?? null,
     fundId: tr.fundId ?? null,
     categoryId: tr.categoryId ?? null,
     budgetId: tr.budgetId ?? null,
@@ -432,6 +450,17 @@ function toTxnSummary(tr: Doc<"transactions">) {
     cardLast4: tr.cardLast4 ?? null,
     reminderStage: tr.receiptReminderStage ?? ("none" as const),
   };
+}
+
+/**
+ * `personTransactions`'s projection — `toTxnSummary` minus `note`. Destructures
+ * the key off entirely (not `note: null`) so a member's own-transactions
+ * response never carries a `note` field at all, even when the bookkeeper has
+ * set one. See `personTxnSummary`'s doc comment for why this is deliberate.
+ */
+function toPersonTxnSummary(tr: Doc<"transactions">) {
+  const { note: _omittedNote, ...rest } = toTxnSummary(tr);
+  return rest;
 }
 
 // ── Money / tenancy guards ───────────────────────────────────────────────────
@@ -2447,10 +2476,14 @@ export const teamActuals = query({
  * their OWN transactions here — this is their "My transactions" surface, not a
  * finance-role read. Looking up a DIFFERENT person's transactions (the
  * manager/bookkeeper audit path) still requires at least the viewer role.
+ *
+ * Privacy default: the projection omits `note` entirely (see
+ * `personTxnSummary`) — a member's own transactions never surface the
+ * bookkeeper's internal annotation.
  */
 export const personTransactions = query({
   args: { personId: v.optional(v.id("people")) },
-  returns: v.array(txnSummary),
+  returns: v.array(personTxnSummary),
   handler: async (ctx, args) => {
     const chapterId = await readChapterId(ctx);
     if (!chapterId) return [];
@@ -2473,7 +2506,7 @@ export const personTransactions = query({
     // Defense-in-depth: never leak a row linked from another chapter.
     return rows
       .filter((tr) => tr.chapterId === chapterId)
-      .map(toTxnSummary);
+      .map(toPersonTxnSummary);
   },
 });
 
@@ -4863,6 +4896,31 @@ export const flagPersonal = mutation({
     // A personal charge is excluded from spend until repaid (`isPersonal`
     // already drops it from SPEND totals; no status change needed).
     await ctx.db.patch(args.transactionId, { isPersonal: args.isPersonal });
+    return null;
+  },
+});
+
+/**
+ * R1a — set (or clear) a transaction's freeform note: "who was this for and
+ * why" (the business/mission justification budget + category alone don't
+ * capture). Same authz as `categorizeTransaction` (scope-aware
+ * `requireReconcileTxn`, bookkeeper rank) — coding a charge and annotating it
+ * are the same reconcile-grid privilege. `null` (or an all-whitespace string)
+ * clears the note; anything else is trimmed and capped at `MAX_NOTE_LENGTH`.
+ */
+export const setTransactionNote = mutation({
+  args: { transactionId: v.id("transactions"), note: v.union(v.string(), v.null()) },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    await requireReconcileTxn(ctx, args.transactionId, "bookkeeper");
+    const trimmed = args.note?.trim() || null;
+    if (trimmed && trimmed.length > MAX_NOTE_LENGTH) {
+      throw new ConvexError({
+        code: "NOTE_TOO_LONG",
+        message: `A note can't be longer than ${MAX_NOTE_LENGTH} characters.`,
+      });
+    }
+    await ctx.db.patch(args.transactionId, { note: trimmed ?? undefined });
     return null;
   },
 });

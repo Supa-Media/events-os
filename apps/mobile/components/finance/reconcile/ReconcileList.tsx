@@ -5,11 +5,17 @@
  * cells that each commit ONE field via its own mutation.
  *
  * Columns: [☐] Merchant · Date · Amount · Cardholder · Category▾ · Budget▾ ·
- * Link▾ · Suggested · Receipt · Status▾. Category / Budget / Link / Status edit
- * inline (dropdowns, commit per row); Suggested shows the AI auto-coding
- * proposal (when present + unreviewed) with an Accept action; Receipt shows ✓
- * or an inline upload; Amount is read-only (signed). The fund is hidden — the
- * backend defaults it to the General Fund on categorize.
+ * Link▾ · Suggested · Receipt · Status▾ · Actions. Category / Budget / Link /
+ * Status edit inline (dropdowns, commit per row); Suggested shows the AI
+ * auto-coding proposal (when present + unreviewed) with an Accept action;
+ * Receipt shows ✓ or an inline upload; Amount is read-only (signed). The fund
+ * is hidden — the backend defaults it to the General Fund on categorize.
+ *
+ * Actions (R1): a note icon (filled when set, tap → `TransactionNoteModal`)
+ * and, for a finance MANAGER on a card charge that isn't already personal, a
+ * "Mark personal" flag — the manager path of `cards.flagPersonalCharge` (#147)
+ * had no Reconcile entry point before this; the member's own "My transactions"
+ * flag flow is untouched.
  */
 import { useState } from "react";
 import { View, Text, Pressable, Platform, ScrollView } from "react-native";
@@ -29,6 +35,7 @@ import {
 } from "../../ui";
 import { colors } from "../../../lib/theme";
 import { alertError } from "../../../lib/errors";
+import { TransactionNoteModal } from "../modals/TransactionNoteModal";
 import { STATUS_OPTIONS, signedMoney, shortDate, type TxnRow } from "./helpers";
 
 const NUM = { fontVariant: ["tabular-nums" as const] };
@@ -51,6 +58,10 @@ const COLS = {
   suggested: 220,
   receipt: 96,
   status: 148,
+  // Wide enough for the note icon PLUS the "Personal" badge (its widest
+  // combination — the note icon + the manager-only flag icon is narrower).
+  // 76px clipped/overlapped the badge's text.
+  actions: 112,
 } as const;
 const TABLE_WIDTH = Object.values(COLS).reduce((sum, w) => sum + w, 0);
 
@@ -63,6 +74,7 @@ export function ReconcileList({
   onToggle,
   onToggleAll,
   centralScope = false,
+  isManager = false,
 }: {
   rows: TxnRow[];
   categoryItems: PickerItem[];
@@ -75,6 +87,10 @@ export function ReconcileList({
   // chapter-scoped links (funds/categories/projects/events are chapter-only), so
   // the Category + Link columns are hidden — central coding is Budget + Status.
   centralScope?: boolean;
+  // R1b: the caller's finance-MANAGER rank (not just any finance seat) — gates
+  // the "Mark personal" row action, which mirrors `cards.flagPersonalCharge`'s
+  // own server-side manager-or-cardholder authz.
+  isManager?: boolean;
 }) {
   const allSelected = rows.length > 0 && rows.every((r) => selected.has(r.id));
   // Drop the chapter-only columns' width in central scope so the grid doesn't
@@ -109,6 +125,7 @@ export function ReconcileList({
             <GridHeaderCell label="Suggested" width={COLS.suggested} />
             <GridHeaderCell label="Receipt" width={COLS.receipt} />
             <GridHeaderCell label="Status" width={COLS.status} />
+            <View style={{ width: COLS.actions }} />
           </View>
 
           {/* Body */}
@@ -123,6 +140,7 @@ export function ReconcileList({
               onToggle={() => onToggle(row.id)}
               isLast={i === rows.length - 1}
               centralScope={centralScope}
+              isManager={isManager}
             />
           ))}
         </View>
@@ -140,6 +158,7 @@ function ReconcileRow({
   onToggle,
   isLast,
   centralScope,
+  isManager,
 }: {
   row: TxnRow;
   categoryItems: PickerItem[];
@@ -149,16 +168,35 @@ function ReconcileRow({
   onToggle: () => void;
   isLast: boolean;
   centralScope: boolean;
+  isManager: boolean;
 }) {
   const categorize = useMutation(api.finances.categorizeTransaction);
   const setStatus = useMutation(api.finances.setTransactionStatus);
   const attachReceipt = useMutation(api.finances.attachReceipt);
   const generateUploadUrl = useMutation(api.storage.generateUploadUrl);
   const acceptSuggestion = useMutation(api.aiCodingData.acceptSuggestion);
+  const flagPersonalCharge = useMutation(api.cards.flagPersonalCharge);
   const id = row.id as Id<"transactions">;
 
   // Fire-and-surface: run a cell mutation, alerting the server's reason on error.
   const guard = (p: Promise<unknown>) => p.catch((err) => alertError(err));
+
+  const [noteModalOpen, setNoteModalOpen] = useState(false);
+  // R1b: charges flagged personal THIS SESSION. `listReconcile`'s row doesn't
+  // carry `isPersonal` (mirrors `my-transactions.tsx`'s same limitation — see
+  // its comment) — we track what the caller just flagged locally rather than
+  // re-deriving it, so the row instantly reflects the flag without a refetch.
+  const [flaggedPersonal, setFlaggedPersonal] = useState(false);
+  const isPersonal = flaggedPersonal;
+
+  async function handleMarkPersonal() {
+    try {
+      await flagPersonalCharge({ transactionId: id });
+      setFlaggedPersonal(true);
+    } catch (err) {
+      alertError(err);
+    }
+  }
 
   // The Link picker's current composite value ("event:<id>" / "project:<id>").
   const linkValue = row.projectId
@@ -350,6 +388,47 @@ function ReconcileRow({
           onChange={(v) => guard(setStatus({ transactionId: id, status: v }))}
         />
       </Cell>
+
+      {/* Actions (R1): note (icon fills in when set) + manager-only "Mark
+          personal" on a card charge that isn't already personal. */}
+      <Cell width={COLS.actions}>
+        <View className="flex-1 flex-row items-center justify-center gap-2 px-1">
+          <Pressable
+            onPress={() => setNoteModalOpen(true)}
+            hitSlop={6}
+            accessibilityRole="button"
+            accessibilityLabel={row.note ? "Edit note" : "Add note"}
+            className="rounded p-1 active:opacity-70 web:hover:opacity-90"
+          >
+            <Icon
+              name="message-square"
+              size={15}
+              color={row.note ? colors.accent : colors.faint}
+            />
+          </Pressable>
+          {isPersonal ? (
+            <Badge label="Personal" tone="accent" />
+          ) : isManager && row.cardLast4 != null ? (
+            <Pressable
+              onPress={handleMarkPersonal}
+              hitSlop={6}
+              accessibilityRole="button"
+              accessibilityLabel="Mark personal"
+              className="rounded p-1 active:opacity-70 web:hover:opacity-90"
+            >
+              <Icon name="flag" size={15} color={colors.muted} />
+            </Pressable>
+          ) : null}
+        </View>
+      </Cell>
+
+      {noteModalOpen ? (
+        <TransactionNoteModal
+          transactionId={id}
+          currentNote={row.note}
+          onClose={() => setNoteModalOpen(false)}
+        />
+      ) : null}
     </View>
   );
 }

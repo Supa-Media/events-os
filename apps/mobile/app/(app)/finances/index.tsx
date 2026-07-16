@@ -269,6 +269,7 @@ function CentralSection({
   return (
     <CentralView
       data={data}
+      year={ym.year}
       onViewChapter={onViewChapter}
       onNewBudget={onNewBudget}
       onRecordTransfer={() => onRecordTransfer(realChapters)}
@@ -308,6 +309,7 @@ function ChapterSection({
       <ChapterView
         data={data}
         affordability={affordability}
+        year={ym.year}
         onNewBudget={onNewBudget}
         onEditBudget={onEditBudget}
         onAddTransaction={onAddTransaction}
