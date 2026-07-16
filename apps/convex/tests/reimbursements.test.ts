@@ -106,6 +106,7 @@ async function submitTwoLine(
     payeeEmail?: string;
     payeePhone?: string;
     requestPreApproval?: boolean;
+    clientIp?: string;
   } = {},
 ): Promise<{ token: string; reference: string }> {
   return await s.t.mutation(api.reimbursements.submitPublicReimbursement, {
@@ -303,6 +304,120 @@ describe("public submission + status view", () => {
       token: "nope",
     });
     expect(view).toBeNull();
+  });
+});
+
+describe("submitPublicReimbursement rate limiting", () => {
+  test("blocks the 6th submission within the window from the SAME ip, allows a different ip", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await setSlug(s, "nyc");
+
+    // 5 submissions from the same ip + email succeed (the cap).
+    for (let i = 0; i < 5; i++) {
+      await submitTwoLine(s, "nyc", {
+        payeeEmail: `dana+${i}@example.com`,
+        clientIp: "203.0.113.1",
+      });
+    }
+    // The 6th from the SAME ip (even with a fresh email) is rate-limited.
+    await expect(
+      submitTwoLine(s, "nyc", {
+        payeeEmail: "dana+6@example.com",
+        clientIp: "203.0.113.1",
+      }),
+    ).rejects.toBeInstanceOf(ConvexError);
+
+    // A DIFFERENT ip is unaffected.
+    await expect(
+      submitTwoLine(s, "nyc", {
+        payeeEmail: "dana+other@example.com",
+        clientIp: "198.51.100.9",
+      }),
+    ).resolves.toMatchObject({ token: expect.any(String) });
+  });
+
+  test("blocks the 6th submission within the window from the SAME email, allows a different email", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await setSlug(s, "nyc");
+
+    // 5 submissions from the same email (rotating ip) succeed.
+    for (let i = 0; i < 5; i++) {
+      await submitTwoLine(s, "nyc", {
+        payeeEmail: "repeat@example.com",
+        clientIp: `203.0.113.${i}`,
+      });
+    }
+    // The 6th with the SAME (case/whitespace-insensitive) email is blocked,
+    // even from a brand-new ip.
+    await expect(
+      submitTwoLine(s, "nyc", {
+        payeeEmail: "  Repeat@Example.com  ",
+        clientIp: "203.0.113.99",
+      }),
+    ).rejects.toBeInstanceOf(ConvexError);
+
+    // A DIFFERENT email is unaffected.
+    await expect(
+      submitTwoLine(s, "nyc", {
+        payeeEmail: "someone-else@example.com",
+        clientIp: "203.0.113.99",
+      }),
+    ).resolves.toMatchObject({ token: expect.any(String) });
+  });
+
+  test("submissions older than the window don't count against the cap", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await setSlug(s, "nyc");
+
+    // 5 submissions, then manually age their rate-limit rows past the window.
+    for (let i = 0; i < 5; i++) {
+      await submitTwoLine(s, "nyc", {
+        payeeEmail: `stale+${i}@example.com`,
+        clientIp: "203.0.113.50",
+      });
+    }
+    await run(s.t, async (ctx) => {
+      const rows = await ctx.db.query("reimbursementSubmitAttempts").collect();
+      for (const row of rows) {
+        await ctx.db.patch(row._id, {
+          createdAt: Date.now() - 2 * 60 * 60 * 1000, // 2h ago (window is 1h)
+        });
+      }
+    });
+
+    // A 6th submission from the same ip now succeeds — the prior 5 are stale.
+    await expect(
+      submitTwoLine(s, "nyc", {
+        payeeEmail: "fresh@example.com",
+        clientIp: "203.0.113.50",
+      }),
+    ).resolves.toMatchObject({ token: expect.any(String) });
+  });
+
+  test("with no clientIp, only the email key is enforced", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await setSlug(s, "nyc");
+
+    for (let i = 0; i < 5; i++) {
+      await s.t.mutation(api.reimbursements.submitPublicReimbursement, {
+        chapterSlug: "nyc",
+        payeeName: "No IP",
+        payeeEmail: "no-ip@example.com",
+        lines: [{ description: "x", amountCents: 500 }],
+      });
+    }
+    await expect(
+      s.t.mutation(api.reimbursements.submitPublicReimbursement, {
+        chapterSlug: "nyc",
+        payeeName: "No IP",
+        payeeEmail: "no-ip@example.com",
+        lines: [{ description: "x", amountCents: 500 }],
+      }),
+    ).rejects.toBeInstanceOf(ConvexError);
   });
 });
 

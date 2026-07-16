@@ -487,6 +487,57 @@ async function createReimbursement(
 // ── PUBLIC: accountless submission + status (back the /reimburse page) ────────
 
 /**
+ * Rate limit for the anonymous `submitPublicReimbursement` write. It's an
+ * unauthenticated, no-CAPTCHA endpoint (only reachable indirectly, via the
+ * `/api/reimburse/submit` httpAction in `lib/reimburseApiRoutes.ts`, which
+ * forwards the caller's IP), so absent a limiter it's spammable. Keyed
+ * independently by IP (`"ip:<address>"`) and by the normalized payee email
+ * (`"email:<address>"`) — either signal alone trips the limiter, so a script
+ * rotating one but not the other still gets caught.
+ *
+ * THRESHOLD: 5 submissions / rolling hour / key. Chosen to comfortably cover a
+ * legitimate claimant filing a few separate requests in one sitting (e.g.
+ * splitting receipts across trips) while making a spam run economically
+ * pointless — a bot would need to rotate BOTH a fresh IP and a fresh email
+ * every 5 requests to keep writing. Tune here if real usage disagrees.
+ */
+const SUBMIT_RATE_LIMIT_WINDOW_MS = 60 * 60 * 1000; // 1 hour
+const SUBMIT_RATE_LIMIT_MAX = 5;
+
+/** Throw `RATE_LIMITED` if `key` already hit the cap within the window. Cheap:
+ *  one indexed range query, bounded to `SUBMIT_RATE_LIMIT_MAX` rows. */
+async function assertSubmitNotRateLimited(
+  ctx: MutationCtx,
+  key: string,
+): Promise<void> {
+  const windowStart = Date.now() - SUBMIT_RATE_LIMIT_WINDOW_MS;
+  const recent = await ctx.db
+    .query("reimbursementSubmitAttempts")
+    .withIndex("by_key_and_time", (q) =>
+      q.eq("key", key).gte("createdAt", windowStart),
+    )
+    .take(SUBMIT_RATE_LIMIT_MAX);
+  if (recent.length >= SUBMIT_RATE_LIMIT_MAX) {
+    throw new ConvexError({
+      code: "RATE_LIMITED",
+      message:
+        "Too many reimbursement requests submitted recently. Please try again in a bit.",
+    });
+  }
+}
+
+/** Record one successful submission against a rate-limit key. */
+async function recordSubmitAttempt(
+  ctx: MutationCtx,
+  key: string,
+): Promise<void> {
+  await ctx.db.insert("reimbursementSubmitAttempts", {
+    key,
+    createdAt: Date.now(),
+  });
+}
+
+/**
  * Submit a reimbursement from the public form. No auth — the chapter is
  * resolved by its `slug`. Generates a secret `token` (returned once) and a
  * short human reference. Inserts the request + its order-indexed line items.
@@ -500,9 +551,11 @@ async function createReimbursement(
  * `bankAccountLast4` is reduced to its last 4 digits so a full account number
  * is never stored.
  *
- * TODO: rate-limit the anonymous submit endpoint (per IP / per email) — this
- * is an unauthenticated write, so absent a limiter it's spammable. Out of
- * scope for Phase 3; the caps + required-email here blunt the worst abuse.
+ * RATE-LIMITED (see `assertSubmitNotRateLimited` above): checked by IP
+ * (`clientIp`, forwarded from the public httpAction — undefined for the
+ * authenticated in-app `submitReimbursement` twin, which never calls this
+ * limiter) and by normalized email, BEFORE any write. A successful submission
+ * records one attempt per key that was checked.
  */
 export const submitPublicReimbursement = mutation({
   args: {
@@ -514,6 +567,12 @@ export const submitPublicReimbursement = mutation({
     bankAccountLast4: v.optional(v.string()),
     requestPreApproval: v.optional(v.boolean()),
     lines: v.array(submitLineValidator),
+    /** The caller's IP, forwarded by the `/api/reimburse/submit` httpAction
+     *  (read from the `x-forwarded-for` request header there — a plain
+     *  mutation has no access to request headers itself). Undefined when
+     *  called some other way (e.g. directly in tests); the email-keyed check
+     *  still applies. */
+    clientIp: v.optional(v.string()),
   },
   handler: async (ctx, args) => {
     const chapter = await ctx.db
@@ -528,13 +587,23 @@ export const submitPublicReimbursement = mutation({
     }
     const chapterId = chapter._id;
 
+    // Rate-limit BEFORE any write. `ipKey` is absent when the caller (or a
+    // caller bypassing the httpAction) supplied no IP — the email-keyed check
+    // still applies then.
+    const ipKey = capOptional(args.clientIp, 100);
+    const normalizedEmail = normalizeEmail(cap(args.payeeEmail, 254));
+    if (ipKey) await assertSubmitNotRateLimited(ctx, `ip:${ipKey}`);
+    if (normalizedEmail) {
+      await assertSubmitNotRateLimited(ctx, `email:${normalizedEmail}`);
+    }
+
     // Best-effort roster match anchors separation of duties later. Match on the
     // NORMALIZED email (the same value stored), so an approver whose roster row
     // carries the payee's email is caught.
     const personId = await matchPerson(
       ctx,
       chapterId,
-      normalizeEmail(cap(args.payeeEmail, 254)) ?? undefined,
+      normalizedEmail ?? undefined,
       capOptional(args.payeePhone, 40),
     );
 
@@ -549,6 +618,13 @@ export const submitPublicReimbursement = mutation({
       personId,
       lines: args.lines,
     });
+
+    // Only record a key that was actually checked above.
+    if (ipKey) await recordSubmitAttempt(ctx, `ip:${ipKey}`);
+    if (normalizedEmail) {
+      await recordSubmitAttempt(ctx, `email:${normalizedEmail}`);
+    }
+
     return { token, reference };
   },
 });
