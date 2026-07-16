@@ -83,6 +83,7 @@ import {
   EXTERNAL_ACCOUNT_FUNDINGS,
   easternParts,
   matchesMode,
+  isSandboxObjectId,
   isCardEligible,
   type CardType,
   type CardStatus,
@@ -699,10 +700,24 @@ export const issueCard = action({
       return prep.card;
     }
 
+    // WP-C.2: attach the Digital Card Profile (PW card art) for THIS account's
+    // environment, if one has been minted (`increase.ts`'s
+    // `createDigitalCardProfile`) — omitted entirely when unconfigured, which
+    // is the common case until the pipeline has been run at least once.
+    // Increase nests this under `digital_wallet` (grounded against the Cards
+    // resource's create body), not at the top level.
+    const cardArtProfileId: string | null = await ctx.runQuery(
+      internal.increase.getCardArtProfileId,
+      { sandbox: isSandboxObjectId(prep.increaseAccountId) },
+    );
+
     try {
       const card = await increasePost(key, base, "/cards", {
         account_id: prep.increaseAccountId,
         description: prep.description,
+        ...(cardArtProfileId
+          ? { digital_wallet: { digital_card_profile_id: cardArtProfileId } }
+          : {}),
       });
       return await ctx.runMutation(internal.cards.finishIssueCard, {
         cardId: prep.cardId,
