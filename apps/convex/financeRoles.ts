@@ -128,11 +128,21 @@ export const mySeats = query({
  * central-scope finance-manager grant (`stripeFinance.canConnectAccount`'s
  * gate): a chapter-scope manager, or even a central `financeRoles` grant with
  * no ED/FM title, gets `false` — see `lib/finance.ts#isCentralEdOrFm`.
+ *
+ * A signed-out caller gets `false` too, not a thrown error: `isCentralEdOrFm`
+ * bottoms out in `requireUserId` (throws `NOT_AUTHENTICATED`), but this is a
+ * visibility check the client polls to decide whether to render the Accounts
+ * tab at all — it should degrade quietly like every other "can I see this"
+ * query, not surface an auth error before the caller has even loaded.
  */
 export const canViewAccounts = query({
   args: {},
   returns: v.boolean(),
-  handler: async (ctx) => isCentralEdOrFm(ctx),
+  handler: async (ctx) => {
+    const identity = await ctx.auth.getUserIdentity();
+    if (!identity) return false;
+    return isCentralEdOrFm(ctx);
+  },
 });
 
 /** List every finance-role grant in the caller's chapter (manager only). */

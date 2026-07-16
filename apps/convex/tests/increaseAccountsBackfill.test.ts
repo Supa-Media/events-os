@@ -197,3 +197,111 @@ describe("backfillChapterAccounts", () => {
     );
   });
 });
+
+// ── central-scope match-before-create: EXACT match only (I1) ────────────────
+
+describe("provisionAccountForScope — central adoption is exact-match only", () => {
+  const PROVISION_ENV = [
+    "INCREASE_API_KEY",
+    "INCREASE_ENTITY_ID",
+    "INCREASE_PROGRAM_ID",
+  ] as const;
+  const originalFetch = globalThis.fetch;
+  const originalEnv: Partial<Record<(typeof PROVISION_ENV)[number], string>> =
+    {};
+  for (const k of PROVISION_ENV) originalEnv[k] = process.env[k];
+
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+    for (const k of PROVISION_ENV) {
+      if (originalEnv[k] === undefined) delete process.env[k];
+      else process.env[k] = originalEnv[k];
+    }
+  });
+
+  /** Dispatches `GET /programs` (one auto-resolved program), `GET /accounts`
+   *  (returns the given entity accounts — the match-before-create list), and
+   *  `POST /accounts` (opens a new account, recorded so tests can assert
+   *  whether a create happened at all). */
+  function mockIncreaseFetch(entityAccounts: Array<{ id: string; name: string }>) {
+    const calls: Array<{ path: string; method: string }> = [];
+    globalThis.fetch = (async (
+      input: RequestInfo | URL,
+      init?: RequestInit,
+    ) => {
+      const path = String(input);
+      const method = init?.method ?? "GET";
+      calls.push({ path, method });
+      if (path.includes("/programs")) {
+        return new Response(JSON.stringify({ data: [{ id: "program_auto" }] }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+      if (path.includes("/accounts")) {
+        if (method === "GET") {
+          return new Response(JSON.stringify({ data: entityAccounts }), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          });
+        }
+        return new Response(
+          JSON.stringify({ id: "account_new_central", status: "open" }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        );
+      }
+      throw new Error(`unexpected fetch: ${method} ${path}`);
+    }) as unknown as typeof fetch;
+    return calls;
+  }
+
+  test("a bare 'Public Worship' account (fuzzy-substring of the central name) is NOT adopted — a fresh central account is created", async () => {
+    const t = newT();
+    process.env.INCREASE_API_KEY = "test_key";
+    process.env.INCREASE_ENTITY_ID = "entity_shared_org";
+    delete process.env.INCREASE_PROGRAM_ID;
+
+    // The org's real pre-existing prod account, named for the nonprofit itself
+    // — a SUBSTRING of `CENTRAL_ACCOUNT_NAME` ("Public Worship — Central").
+    // Fuzzy matching (chapter behavior) would wrongly adopt this as the City
+    // Launch Fund's home; exact-match-only central provisioning must not.
+    const calls = mockIncreaseFetch([{ id: "account_org", name: "Public Worship" }]);
+
+    const account = await t.action(internal.increase.provisionAccountForScope, {
+      scope: "central",
+    });
+
+    expect(account.onboardingStatus).toBe("active");
+    // A NEW account was minted, not the pre-existing "Public Worship" one.
+    expect(account.increaseAccountId).toBe("account_new_central");
+    expect(account.increaseAccountId).not.toBe("account_org");
+    const post = calls.find(
+      (c) => c.method === "POST" && c.path.includes("/accounts"),
+    );
+    expect(post).toBeTruthy();
+  });
+
+  test("an exact 'Public Worship — Central' account IS adopted (linked, no create)", async () => {
+    const t = newT();
+    process.env.INCREASE_API_KEY = "test_key";
+    process.env.INCREASE_ENTITY_ID = "entity_shared_org";
+    delete process.env.INCREASE_PROGRAM_ID;
+
+    const calls = mockIncreaseFetch([
+      { id: "account_org", name: "Public Worship" },
+      { id: "account_central_exact", name: "Public Worship — Central" },
+    ]);
+
+    const account = await t.action(internal.increase.provisionAccountForScope, {
+      scope: "central",
+    });
+
+    expect(account.onboardingStatus).toBe("active");
+    expect(account.increaseAccountId).toBe("account_central_exact");
+    // No POST /accounts — the exact match was linked, not duplicated.
+    const post = calls.find(
+      (c) => c.method === "POST" && c.path.includes("/accounts"),
+    );
+    expect(post).toBeUndefined();
+  });
+});

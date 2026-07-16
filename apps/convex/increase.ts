@@ -461,19 +461,30 @@ interface IncreaseAccountLite {
  * nonprofit opened it by hand in the Increase dashboard), we adopt it rather than
  * open a second account under the same name.
  *
- * Matching is case-insensitive + end-trimmed, and deliberately fuzzy: an EXACT
- * normalized-equality OR either name CONTAINING the other counts (so an Increase
- * account named "New York" matches a chapter "The New York Chapter", and vice
- * versa). When several accounts match, an EXACT normalized-name match always
- * wins — and if several accounts share the exact chapter name (e.g. earlier
- * duplicate "The New York Chapter" rows a buggy retry created), we link the
- * FIRST exact one rather than open yet another duplicate. We only return null
- * (caller creates fresh) when there's NO exact match and several names merely
- * loosely overlap — there we won't guess the wrong existing account.
+ * Matching is case-insensitive + end-trimmed. For a CHAPTER it's deliberately
+ * fuzzy: an EXACT normalized-equality OR either name CONTAINING the other
+ * counts (so an Increase account named "New York" matches a chapter "The New
+ * York Chapter", and vice versa) — adopting a hand-named account is the whole
+ * point there. When several accounts match, an EXACT normalized-name match
+ * always wins — and if several accounts share the exact chapter name (e.g.
+ * earlier duplicate "The New York Chapter" rows a buggy retry created), we
+ * link the FIRST exact one rather than open yet another duplicate. We only
+ * return null (caller creates fresh) when there's NO exact match and several
+ * names merely loosely overlap — there we won't guess the wrong existing
+ * account.
+ *
+ * For CENTRAL, fuzzy substring matching is unsafe: the org's pre-existing prod
+ * Increase account is very likely to be named something plain like the
+ * nonprofit's own name (e.g. "Public Worship"), which is a SUBSTRING of
+ * `CENTRAL_ACCOUNT_NAME` ("Public Worship — Central") and would otherwise get
+ * silently adopted as the City Launch Fund's home — the wrong account. So
+ * `exactOnly` restricts central to normalized-equality only; a bare "Public
+ * Worship" account is ignored and a fresh central account is created instead.
  */
 function pickMatchingAccount(
   accounts: IncreaseAccountLite[],
   chapterName: string,
+  exactOnly: boolean,
 ): { id: string; name: string } | null {
   const target = normalizeAccountName(chapterName);
   if (!target) return null;
@@ -485,6 +496,7 @@ function pickMatchingAccount(
   const matches = named.filter((a) => {
     const n = normalizeAccountName(a.name);
     if (!n) return false;
+    if (exactOnly) return n === target;
     return n === target || n.includes(target) || target.includes(n);
   });
 
@@ -853,7 +865,7 @@ async function applyPayoutOutcome(
   }
 }
 
-// ── provisionChapterAccount (action, manager) ────────────────────────────────
+// ── provisionChapterAccount (internalAction, ops-only) ───────────────────────
 
 const beginProvisionReturns = v.union(
   v.object({
@@ -1063,7 +1075,14 @@ async function runProvisionFlow(
       `/accounts?entity_id=${encodeURIComponent(entityId!)}`,
     )) as { data?: IncreaseAccountLite[] };
     const fetched = list.data ?? [];
-    existingMatch = pickMatchingAccount(fetched, prep.chapterName);
+    // CENTRAL must never fuzzy-adopt a pre-existing prod account whose name
+    // merely overlaps `CENTRAL_ACCOUNT_NAME` (e.g. a bare "Public Worship")
+    // — exact match only there. Chapters keep the fuzzy match.
+    existingMatch = pickMatchingAccount(
+      fetched,
+      prep.chapterName,
+      prep.chapterId === "central",
+    );
     // Diagnostic: how many accounts the entity holds + whether we matched one.
     // The prod duplicate-cascade was a silent no-match — this makes it visible.
     console.log(
@@ -1181,8 +1200,16 @@ async function runProvisionFlow(
  * `runProvisionFlow` above, which implements the shared body (identical for a
  * real chapter or `"central"` — the ops-only `provisionAccountForScope` below
  * reuses it verbatim).
+ *
+ * OPS-ONLY (WP-1.2): provisioning is now a fully automatic backend sweep
+ * (`backfillChapterAccounts` / scheduled at chapter creation) — the UI screen
+ * that used to call this as a manager escape hatch was deleted in this PR.
+ * `internalAction` rather than a public `action`: the `run-convex-function`
+ * workflow's deploy key can invoke internal functions directly (see that
+ * workflow's own comment — "Internal functions are callable, the deploy key
+ * is admin"), so there's no need for a public surface here anymore.
  */
-export const provisionChapterAccount = action({
+export const provisionChapterAccount = internalAction({
   args: {},
   returns: increaseAccountSummaryValidator,
   handler: async (ctx): Promise<IncreaseAccountSummary> => {
@@ -1290,7 +1317,7 @@ export const backfillChapterAccounts = internalAction({
   },
 });
 
-// ── linkIncreaseAccount (action, manager) — adopt an account by id ───────────
+// ── linkIncreaseAccount (internalAction, ops-only) — adopt an account by id ──
 
 /** Gate a manual link + resolve the current environment. Manager-only, no
  *  writes — the action then GETs the account (mutations can't fetch) and
@@ -1375,8 +1402,14 @@ export const finishLink = internalMutation({
  * DEGRADES to a logged no-op (returns null, never throws) when the mode's API
  * key or Entity id is unset. Throws `ConvexError` when the id doesn't exist in
  * this environment or belongs to a different entity.
+ *
+ * OPS-ONLY (WP-1.2): the manual-link UI was deleted in this PR along with
+ * `provisionChapterAccount`'s — see that function's docstring for why
+ * `internalAction` (rather than a public `action`) is safe here: the
+ * `run-convex-function` workflow's admin deploy key calls internal functions
+ * directly.
  */
-export const linkIncreaseAccount = action({
+export const linkIncreaseAccount = internalAction({
   args: { increaseAccountId: v.string() },
   returns: v.union(increaseAccountSummaryValidator, v.null()),
   handler: async (
@@ -2287,14 +2320,22 @@ async function ingestIncreaseCardTransaction(
 
 // ── Backfill: page GET /transactions?account_id=… into the ledger ────────────
 
-/** Active Increase accounts (id + owning chapter) for the backfill to page. */
+/** Active Increase accounts (id + owning chapter) for the backfill to page.
+ *  Excludes `"central"` (the City Launch Fund's own account): central never
+ *  issues member cards (see `applyIncreaseCardTransaction`'s defensive skip),
+ *  so paging its transactions would just be a pointless prod API sweep. */
 export const listProvisionedIncreaseAccounts = internalQuery({
   args: {},
   returns: v.array(v.object({ increaseAccountId: v.string() })),
   handler: async (ctx) => {
     const rows = await ctx.db.query("increaseAccounts").collect();
     return rows
-      .filter((a) => a.onboardingStatus === "active" && !!a.increaseAccountId)
+      .filter(
+        (a) =>
+          a.chapterId !== "central" &&
+          a.onboardingStatus === "active" &&
+          !!a.increaseAccountId,
+      )
       .map((a) => ({ increaseAccountId: a.increaseAccountId! }));
   },
 });

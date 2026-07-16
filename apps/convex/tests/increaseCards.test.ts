@@ -15,6 +15,8 @@ import type { Id } from "../_generated/dataModel";
  *  - a card whose `card_id` matches no local card still records the txn with a
  *    null card/person (never throws),
  *  - a transaction for an account we don't own is skipped,
+ *  - a transaction resolving to a CENTRAL-owned account is skipped defensively
+ *    (central never issues member cards — WP-1.2),
  *  - a non-card transaction (e.g. an inbound ACH) is skipped,
  *  - a $0 settlement is skipped without error,
  *  - a card belonging to a DIFFERENT chapter never leaks its person/attribution
@@ -402,6 +404,46 @@ describe("Increase card ingestion — transaction.created webhook", () => {
     expect((await increaseTxns(s)).length).toBe(0);
   });
 
+  test("a card charge resolving to a CENTRAL-owned account is skipped defensively (central never issues cards)", async () => {
+    const t = newT();
+    // Central (WP-1.2) holds its own Increase account (the City Launch Fund)
+    // but never issues member cards — a card charge can never legitimately
+    // land there. Seed the increaseAccounts row directly on the "central"
+    // sentinel rather than a real chapter.
+    const now = Date.now();
+    await run(t, (ctx) =>
+      ctx.db.insert("increaseAccounts", {
+        chapterId: "central",
+        sandbox: false,
+        onboardingStatus: "active",
+        increaseEntityId: "entity_shared_org",
+        increaseAccountId: "account_central",
+        createdAt: now,
+        updatedAt: now,
+      }),
+    );
+
+    const result = await t.mutation(internal.increase.applyIncreaseCardTransaction, {
+      externalId: "transaction_central",
+      accountId: "account_central",
+      flow: "outflow",
+      amountCents: 1500,
+      postedAt: now,
+      merchantName: "Should Never Post",
+    });
+
+    expect(result).toEqual({ inserted: false, skipped: true });
+    const rows = await run(t, (ctx) =>
+      ctx.db
+        .query("transactions")
+        .withIndex("by_external_id", (q) =>
+          q.eq("externalId", "transaction_central"),
+        )
+        .collect(),
+    );
+    expect(rows.length).toBe(0);
+  });
+
   test("a non-card transaction (inbound ACH) is skipped", async () => {
     const t = newT();
     const s = await setupChapter(t);
@@ -603,5 +645,29 @@ describe("backfillIncreaseCardTransactions", () => {
     );
     expect(again.inserted).toBe(0);
     expect((await increaseTxns(s)).length).toBe(2);
+  });
+});
+
+describe("listProvisionedIncreaseAccounts", () => {
+  test("excludes the CENTRAL account (no cards there — avoids a pointless prod API sweep)", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await seedIncreaseAccount(s, "account_chapter");
+    const now = Date.now();
+    await run(t, (ctx) =>
+      ctx.db.insert("increaseAccounts", {
+        chapterId: "central",
+        sandbox: false,
+        onboardingStatus: "active",
+        increaseEntityId: "entity_shared_org",
+        increaseAccountId: "account_central",
+        createdAt: now,
+        updatedAt: now,
+      }),
+    );
+
+    const rows = await t.query(internal.increase.listProvisionedIncreaseAccounts, {});
+
+    expect(rows.map((r) => r.increaseAccountId)).toEqual(["account_chapter"]);
   });
 });

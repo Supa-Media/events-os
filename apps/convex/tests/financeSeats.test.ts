@@ -281,4 +281,12 @@ describe("financeRoles.canViewAccounts", () => {
 
     expect(await s.as.query(api.financeRoles.canViewAccounts, {})).toBe(false);
   });
+
+  test("an unauthenticated caller sees false, not a thrown NOT_AUTHENTICATED error", async () => {
+    const t = newT();
+    await setupChapter(t); // seed a chapter so the deployment is non-empty
+
+    // No `.withIdentity(...)` — a signed-out client calling the query directly.
+    expect(await t.query(api.financeRoles.canViewAccounts, {})).toBe(false);
+  });
 });
