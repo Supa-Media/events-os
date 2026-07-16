@@ -8,6 +8,9 @@ importers:
 
   .:
     devDependencies:
+      '@supa-media/dev':
+        specifier: ^1.0.0
+        version: 1.0.0
       convex:
         specifier: ^1.31.3
         version: 1.41.0(react@19.1.0)
@@ -27,8 +30,8 @@ importers:
         specifier: workspace:*
         version: link:../../packages/shared
       '@supa-media/convex':
-        specifier: ^0.2.0
-        version: 0.2.0(@convex-dev/auth@0.0.90(@auth/core@0.37.4)(convex@1.41.0(react@19.1.0))(react@19.1.0))(convex@1.41.0(react@19.1.0))
+        specifier: ^1.0.0
+        version: 1.0.0(@convex-dev/auth@0.0.90(@auth/core@0.37.4)(convex@1.41.0(react@19.1.0))(react@19.1.0))(convex@1.41.0(react@19.1.0))
       convex:
         specifier: ^1.31.3
         version: 1.41.0(react@19.1.0)
@@ -97,11 +100,11 @@ importers:
         specifier: ^9.10.0
         version: 9.10.0
       '@supa-media/core':
-        specifier: ^0.2.0
-        version: 0.2.0(pizlfow7sddrs4ozsqpvuxkhya)
+        specifier: ^1.0.0
+        version: 1.0.0(pizlfow7sddrs4ozsqpvuxkhya)
       '@supa-media/notifications':
-        specifier: ^0.2.0
-        version: 0.2.0(expo-constants@18.0.13)(expo-device@8.0.10(expo@54.0.35))(expo-notifications@0.32.17(expo@54.0.35)(react-native@0.81.5(@babel/core@7.29.7)(@react-native/metro-config@0.86.0(@babel/core@7.29.7))(@types/react@19.1.17)(react@19.1.0))(react@19.1.0)(typescript@5.9.3))(expo-router@6.0.24)(react-native@0.81.5(@babel/core@7.29.7)(@react-native/metro-config@0.86.0(@babel/core@7.29.7))(@types/react@19.1.17)(react@19.1.0))(react@19.1.0)
+        specifier: ^1.0.0
+        version: 1.0.0(expo-constants@18.0.13)(expo-device@8.0.10(expo@54.0.35))(expo-notifications@0.32.17(expo@54.0.35)(react-native@0.81.5(@babel/core@7.29.7)(@react-native/metro-config@0.86.0(@babel/core@7.29.7))(@types/react@19.1.17)(react@19.1.0))(react@19.1.0)(typescript@5.9.3))(expo-router@6.0.24)(react-native@0.81.5(@babel/core@7.29.7)(@react-native/metro-config@0.86.0(@babel/core@7.29.7))(@types/react@19.1.17)(react@19.1.0))(react@19.1.0)
       clsx:
         specifier: ^2.1.1
         version: 2.1.1
@@ -206,14 +209,14 @@ importers:
         version: 3.4.19(yaml@2.9.0)
     devDependencies:
       '@supa-media/linter':
-        specifier: ^0.2.0
-        version: 0.2.0(eslint@8.57.1)
+        specifier: ^1.0.0
+        version: 1.0.0(eslint@8.57.1)
       '@supa-media/metro':
-        specifier: ^0.2.0
-        version: 0.2.0(@expo/metro-config@54.0.16(expo@54.0.35))
+        specifier: ^1.0.0
+        version: 1.0.0(@expo/metro-config@54.0.16(expo@54.0.35))
       '@supa-media/testing':
-        specifier: ^0.2.0
-        version: 0.2.0
+        specifier: ^1.0.0
+        version: 1.0.0
       '@types/node':
         specifier: ^22.0.0
         version: 22.19.21
@@ -1822,14 +1825,14 @@ packages:
     resolution: {integrity: sha512-rxkKgWLAWtjvJhqEynPJ5zPXoKx5cK4eIUunnMGxwUJDRHKv3MlpA1mCCXdeiXzui5YZNWJKUJBTpe7m30jhOA==}
     engines: {node: '>=12.16'}
 
-  '@supa-media/convex@0.2.0':
-    resolution: {integrity: sha512-1x/7DefNpxMiCtOwyQyBujMQBxg6kng6RYcJJHP79BSq3CnJenKMjj+biMWQPXVms4Gja5OVAknYo8G8dCYW7A==, tarball: https://npm.pkg.github.com/download/@supa-media/convex/0.2.0/75b1303cb4db00cc4d163f5bedac5e5d62c7b22b}
+  '@supa-media/convex@1.0.0':
+    resolution: {integrity: sha512-3X7hIbc0Cqui14kdn1PKPuhQQUyIthN8aI6l/KvojAFQ9JXxATCF+08whBgZ+g8khpMPTEOM/j5PqIuZRf5iZw==, tarball: https://npm.pkg.github.com/download/@supa-media/convex/1.0.0/6abb5be1d4f696189b2e137bae2b25bbcfddf691}
     peerDependencies:
       '@convex-dev/auth': '>=0.0.90'
       convex: '>=1.31.0'
 
-  '@supa-media/core@0.2.0':
-    resolution: {integrity: sha512-fje0HI1C7vXqYukTAIneVJ60HAbJFj6MJwNnCqT3cP52YII1Q8RV4ruACzP4C56D8LkR95w/FTf9ds3BIhIQKA==, tarball: https://npm.pkg.github.com/download/@supa-media/core/0.2.0/e258548c9798a59d2c90f4a001f60129afd0ff54}
+  '@supa-media/core@1.0.0':
+    resolution: {integrity: sha512-U23c6tdeS9wjFdN/zhP1uJNujPr5dPNhe27D6KhrENAewwEGRYrCiyayrCYG4Pr7dtTgoRAAmkZmL0KGEZl5cA==, tarball: https://npm.pkg.github.com/download/@supa-media/core/1.0.0/8cbe2b814d9d069984bc35c100db0c730154ff56}
     peerDependencies:
       '@convex-dev/auth': '>=0.0.90'
       '@react-native-community/netinfo': '>=11.4.0'
@@ -1843,18 +1846,22 @@ packages:
       react-native-keyboard-controller: '>=1.20.0'
       react-native-safe-area-context: '>=5.6.0'
 
-  '@supa-media/linter@0.2.0':
-    resolution: {integrity: sha512-0nKpUPkNs7TrC5UWWqV4t/mailVodUPMXgEREY9wAvKTdJ1OZn19K/gbrzVkprlMkQFlnORORPLhdzIF6kvJ5g==, tarball: https://npm.pkg.github.com/download/@supa-media/linter/0.2.0/2972f77440f924be0871184698b545340686d943}
+  '@supa-media/dev@1.0.0':
+    resolution: {integrity: sha512-UJtV3V/EDKjvP39smKbRPe25q1nxGlrfzmeBOnH4Ig+2e5SX3V1+dFAYkRNibE+vDIWnUUS82Er22Zvt4yrnJw==, tarball: https://npm.pkg.github.com/download/@supa-media/dev/1.0.0/d25fa3d58b52b115240fad8c195c2eb88ebf6afd}
+    hasBin: true
+
+  '@supa-media/linter@1.0.0':
+    resolution: {integrity: sha512-bpn5Q8SiR43Et4gZzg8Ig2Xu72EMOEhoJj8H35PLr00eNH5HrbrOTiwrna90TXAG+N+RMUoXTiur3cS7DxF+8Q==, tarball: https://npm.pkg.github.com/download/@supa-media/linter/1.0.0/9a3a7cbb575c2ff8aca27d2468b7d381906158d8}
     peerDependencies:
       eslint: '>=8.0.0'
 
-  '@supa-media/metro@0.2.0':
-    resolution: {integrity: sha512-dZHHjq8L71wm3P0vNj6vAr/v8B1Zf9x36G+7LMMw9vz2a6wMjgOn98e9C6BnmBEbVOeocncddqfxEJFmQ3OOxA==, tarball: https://npm.pkg.github.com/download/@supa-media/metro/0.2.0/7379e93b0f857c8e3b063323bbaecb5ed600e0fc}
+  '@supa-media/metro@1.0.0':
+    resolution: {integrity: sha512-V1uk+8gH7/5pW0RGbJwEGRL6Jv8/9e05PKqCUTn2d2OgMIMOjmHJ0byUGHzwwozAMIzvq2JMnQnB5bsNfZAYzg==, tarball: https://npm.pkg.github.com/download/@supa-media/metro/1.0.0/70863f7199c0eb7bbcee5ba4397d257ba0e088db}
     peerDependencies:
       '@expo/metro-config': '*'
 
-  '@supa-media/notifications@0.2.0':
-    resolution: {integrity: sha512-J3Xm1SB+BipS7wYpmKnwDeisDcuYu/n7qEcLRnAC2o2rclPMa9w6hPTyJIBYtwrg/9M9uNnLX7j6P8NkOzmiOw==, tarball: https://npm.pkg.github.com/download/@supa-media/notifications/0.2.0/8a7e71e0147023d9d649664003e5f252c338a4ee}
+  '@supa-media/notifications@1.0.0':
+    resolution: {integrity: sha512-0fUjKy0smrvnw13R8SI8lfUGoewzIwkYIGft/0yw35ljec2PaS1rJvyuK3dBRtoNunMXRORX2iBhywy6/OrqCw==, tarball: https://npm.pkg.github.com/download/@supa-media/notifications/1.0.0/c7e934edd8c94824aefe232839c662edf11b8657}
     peerDependencies:
       expo-constants: '>=18.0.0'
       expo-device: '>=8.0.0'
@@ -1863,8 +1870,8 @@ packages:
       react: '>=19.0.0'
       react-native: '>=0.81.0'
 
-  '@supa-media/testing@0.2.0':
-    resolution: {integrity: sha512-pOC0DdIX7Tpk2aZhWzMUqlzHoIZwSyE1FHB0ZEzHbQ7EAm7L3xGIqG3nkTiobXLvnMPJYNWQTWgNhN3oPBnfrw==, tarball: https://npm.pkg.github.com/download/@supa-media/testing/0.2.0/e91d172afe91d0eb0470c00d5359ca961fa06673}
+  '@supa-media/testing@1.0.0':
+    resolution: {integrity: sha512-MHc934qn/8FccRgGgWUu3lAXfqFqK55YUXs6g3+RjAaf4Hc40iDy4bhf8tuiDaZGKTya4omL3XhHKegB7HdNzg==, tarball: https://npm.pkg.github.com/download/@supa-media/testing/1.0.0/3020d824b2d0ca88961b48a2bad6126573639a4e}
 
   '@turbo/darwin-64@2.9.18':
     resolution: {integrity: sha512-9f27peFu16ur8c0v9nUFUEyBnbKuuFsUTjHFWfmwGfzySBXbHwzU44QhZon6Mznz0cHsIr3984NQj/bVrnGSRw==}
@@ -7265,12 +7272,12 @@ snapshots:
 
   '@stripe/stripe-js@9.10.0': {}
 
-  '@supa-media/convex@0.2.0(@convex-dev/auth@0.0.90(@auth/core@0.37.4)(convex@1.41.0(react@19.1.0))(react@19.1.0))(convex@1.41.0(react@19.1.0))':
+  '@supa-media/convex@1.0.0(@convex-dev/auth@0.0.90(@auth/core@0.37.4)(convex@1.41.0(react@19.1.0))(react@19.1.0))(convex@1.41.0(react@19.1.0))':
     dependencies:
       '@convex-dev/auth': 0.0.90(@auth/core@0.37.4)(convex@1.41.0(react@19.1.0))(react@19.1.0)
       convex: 1.41.0(react@19.1.0)
 
-  '@supa-media/core@0.2.0(pizlfow7sddrs4ozsqpvuxkhya)':
+  '@supa-media/core@1.0.0(pizlfow7sddrs4ozsqpvuxkhya)':
     dependencies:
       '@convex-dev/auth': 0.0.90(@auth/core@0.37.4)(convex@1.41.0(react@19.1.0))(react@19.1.0)
       '@react-native-community/netinfo': 11.4.1(react-native@0.81.5(@babel/core@7.29.7)(@react-native/metro-config@0.86.0(@babel/core@7.29.7))(@types/react@19.1.17)(react@19.1.0))
@@ -7284,15 +7291,19 @@ snapshots:
       react-native-keyboard-controller: 1.21.11(react-native-reanimated@4.1.7(react-native-worklets@0.5.1(@babel/core@7.29.7)(react-native@0.81.5(@babel/core@7.29.7)(@react-native/metro-config@0.86.0(@babel/core@7.29.7))(@types/react@19.1.17)(react@19.1.0))(react@19.1.0))(react-native@0.81.5(@babel/core@7.29.7)(@react-native/metro-config@0.86.0(@babel/core@7.29.7))(@types/react@19.1.17)(react@19.1.0))(react@19.1.0))(react-native@0.81.5(@babel/core@7.29.7)(@react-native/metro-config@0.86.0(@babel/core@7.29.7))(@types/react@19.1.17)(react@19.1.0))(react@19.1.0)
       react-native-safe-area-context: 5.6.2(react-native@0.81.5(@babel/core@7.29.7)(@react-native/metro-config@0.86.0(@babel/core@7.29.7))(@types/react@19.1.17)(react@19.1.0))(react@19.1.0)
 
-  '@supa-media/linter@0.2.0(eslint@8.57.1)':
+  '@supa-media/dev@1.0.0':
+    dependencies:
+      chalk: 4.1.2
+
+  '@supa-media/linter@1.0.0(eslint@8.57.1)':
     dependencies:
       eslint: 8.57.1
 
-  '@supa-media/metro@0.2.0(@expo/metro-config@54.0.16(expo@54.0.35))':
+  '@supa-media/metro@1.0.0(@expo/metro-config@54.0.16(expo@54.0.35))':
     dependencies:
       '@expo/metro-config': 54.0.16(expo@54.0.35)
 
-  '@supa-media/notifications@0.2.0(expo-constants@18.0.13)(expo-device@8.0.10(expo@54.0.35))(expo-notifications@0.32.17(expo@54.0.35)(react-native@0.81.5(@babel/core@7.29.7)(@react-native/metro-config@0.86.0(@babel/core@7.29.7))(@types/react@19.1.17)(react@19.1.0))(react@19.1.0)(typescript@5.9.3))(expo-router@6.0.24)(react-native@0.81.5(@babel/core@7.29.7)(@react-native/metro-config@0.86.0(@babel/core@7.29.7))(@types/react@19.1.17)(react@19.1.0))(react@19.1.0)':
+  '@supa-media/notifications@1.0.0(expo-constants@18.0.13)(expo-device@8.0.10(expo@54.0.35))(expo-notifications@0.32.17(expo@54.0.35)(react-native@0.81.5(@babel/core@7.29.7)(@react-native/metro-config@0.86.0(@babel/core@7.29.7))(@types/react@19.1.17)(react@19.1.0))(react@19.1.0)(typescript@5.9.3))(expo-router@6.0.24)(react-native@0.81.5(@babel/core@7.29.7)(@react-native/metro-config@0.86.0(@babel/core@7.29.7))(@types/react@19.1.17)(react@19.1.0))(react@19.1.0)':
     dependencies:
       expo-constants: 18.0.13(expo@54.0.35)(react-native@0.81.5(@babel/core@7.29.7)(@react-native/metro-config@0.86.0(@babel/core@7.29.7))(@types/react@19.1.17)(react@19.1.0))
       expo-device: 8.0.10(expo@54.0.35)
@@ -7301,7 +7312,7 @@ snapshots:
       react: 19.1.0
       react-native: 0.81.5(@babel/core@7.29.7)(@react-native/metro-config@0.86.0(@babel/core@7.29.7))(@types/react@19.1.17)(react@19.1.0)
 
-  '@supa-media/testing@0.2.0': {}
+  '@supa-media/testing@1.0.0': {}
 
   '@turbo/darwin-64@2.9.18':
     optional: true
