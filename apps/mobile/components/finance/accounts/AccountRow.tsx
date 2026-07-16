@@ -1,18 +1,19 @@
 /**
  * One connected legacy account (Stripe Financial Connections, READ-ONLY sync).
  * Renders the institution + masked number + type, a live status Badge, the
- * "default fund" the account's synced transactions land in (editable —
- * `setAccountFund`), the last-synced relative time, and a two-step Disconnect
- * (`disconnect`). Matches the finance visual system (see `cards.tsx`).
+ * last-synced relative time, and a two-step Disconnect (`disconnect`). Matches
+ * the finance visual system (see `cards.tsx`).
  *
  * Synced transactions from this account flow into the Reconcile queue as
- * `unreviewed` rows; the default fund pre-codes their fund so reconciliation is
- * a lighter lift. Increase (the card + payout layer) is a later phase.
+ * `unreviewed` rows, silently pre-coded to the chapter's General Fund
+ * server-side — funds are backend-only (WP-1.4, "defund the UI"), so there's
+ * no default-fund control here. Increase (the card + payout layer) is a later
+ * phase.
  */
 import { useState } from "react";
 import { Text, View } from "react-native";
 import type { Id } from "@events-os/convex/_generated/dataModel";
-import { Badge, Button, Card, Icon, Select, type BadgeTone } from "../../ui";
+import { Badge, Button, Card, Icon, type BadgeTone } from "../../ui";
 import { colors } from "../../../lib/theme";
 import { useFcConnect } from "./useFcConnect";
 import { NoticeBanner } from "./ConnectPanel";
@@ -27,9 +28,6 @@ export type LegacyAccount = {
   defaultFundId: Id<"funds"> | null;
   lastSyncedAt: number | null;
 };
-
-/** A fund option for the default-fund Select. */
-export type FundOption = { value: string; label: string };
 
 const STATUS: Record<
   LegacyAccount["status"],
@@ -55,20 +53,16 @@ function syncedAgo(ts: number | null): string {
 
 export function AccountRow({
   account,
-  funds,
   canConnect,
-  onSetFund,
   onDisconnect,
   onRefresh,
 }: {
   account: LegacyAccount;
-  funds: FundOption[];
   /** Central/superuser only (mirrors `stripeFinance.canConnectAccount`) —
    *  reconnecting a disconnected row calls `storeFcAccount`, the SAME
    *  central-gated write as a fresh connect, so the per-row "Reconnect" is
    *  hidden for a regular chapter manager too. */
   canConnect: boolean;
-  onSetFund: (fundId: Id<"funds">) => void;
   onDisconnect: () => void;
   /** Manually re-pull this account's transactions ("Refresh"). Awaited so the
    *  button can show a "Syncing…" state until the schedule call resolves. */
@@ -114,31 +108,11 @@ export function AccountRow({
           <Badge label={status.label} tone={status.tone} />
         </View>
 
-        {/* Default fund + last-synced */}
-        <View>
-          <View className="flex-row flex-wrap items-end justify-between gap-3">
-            <View className="min-w-[220px] flex-1">
-              <Select
-                label="Default fund"
-                value={account.defaultFundId}
-                options={funds}
-                placeholder={funds.length ? "Choose a fund…" : "No funds yet"}
-                onChange={(value) => onSetFund(value as Id<"funds">)}
-              />
-            </View>
-            <View className="mb-3 flex-row items-center gap-1.5">
-              <Icon name="clock" size={13} color={colors.faint} />
-              <Text className="text-xs text-faint">
-                {isDisconnected
-                  ? "Sync stopped"
-                  : syncedAgo(account.lastSyncedAt)}
-              </Text>
-            </View>
-          </View>
-          {/* A fund is a pot of money (e.g. Operations, a ministry). */}
-          <Text className="-mt-1 text-xs text-muted">
-            Which fund this account's synced transactions are pre-coded to in
-            Reconcile. A fund is a pot of money — e.g. Operations or a ministry.
+        {/* Last-synced */}
+        <View className="flex-row items-center gap-1.5">
+          <Icon name="clock" size={13} color={colors.faint} />
+          <Text className="text-xs text-faint">
+            {isDisconnected ? "Sync stopped" : syncedAgo(account.lastSyncedAt)}
           </Text>
         </View>
 

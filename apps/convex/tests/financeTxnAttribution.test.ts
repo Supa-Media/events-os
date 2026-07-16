@@ -140,14 +140,13 @@ describe("Part A — seedDefaultExpenseCategories", () => {
     );
   });
 
-  test("seeds default funds first for a fund-less chapter, then categories; idempotent", async () => {
+  test("seeds the one default fund first for a fund-less chapter, then categories; idempotent", async () => {
     const t = newT();
     // A real chapter created before the finance seed → ZERO funds.
     const s = await setupChapter(t, { email: "seyi@publicworship.life" });
     expect(await fundsFor(s, s.chapterId)).toHaveLength(0);
 
-    // One shot: creates the default funds, then the categories under the
-    // General Fund.
+    // One shot: creates the default fund, then the categories under it.
     const first = await s.as.mutation(
       api.finances.seedDefaultExpenseCategories,
       {},
@@ -158,10 +157,10 @@ describe("Part A — seedDefaultExpenseCategories", () => {
     expect(new Set(funds.map((f) => f.name))).toEqual(
       new Set(DEFAULT_FUNDS.map((f) => f.name)),
     );
+    // Funds go backend-only in WP-1.4 — exactly one, unrestricted.
+    expect(funds).toHaveLength(1);
     const general = funds.find((f) => f.name === "General Fund");
-    const designated = funds.find((f) => f.name === "Designated");
     expect(general?.restriction).toBe("unrestricted");
-    expect(designated?.restriction).toBe("designated");
     expect(await categoryCount(s, s.chapterId)).toBe(
       DEFAULT_EXPENSE_CATEGORIES.length,
     );

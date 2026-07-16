@@ -150,6 +150,26 @@ describe("applyFcTransactions (dedup / insert / update)", () => {
     expect(credit.amountCents).toBe(25000);
   });
 
+  test("an account with NO default fund set falls back to the chapter's General Fund (WP-1.4)", async () => {
+    const s = await setupChapter(newT());
+    const generalFundId = await seedFund(s, s.chapterId, "General Fund");
+    // No `defaultFundId` on the account — the common case now that the
+    // "Default fund" picker is gone from the Accounts screen.
+    const accountId = await seedAccount(s, s.chapterId);
+
+    await s.t.mutation(internal.stripeFinance.applyFcTransactions, {
+      legacyAccountId: accountId,
+      transactions: [BATCH[0]],
+    });
+    const row = await run(s.t, (ctx) =>
+      ctx.db
+        .query("transactions")
+        .withIndex("by_external_id", (q) => q.eq("externalId", "stripe_fc:fctxn_1"))
+        .first(),
+    );
+    expect(row?.fundId).toBe(generalFundId);
+  });
+
   test("re-applying the SAME batch creates zero duplicates (dedup by externalId)", async () => {
     const s = await setupChapter(newT());
     const fundId = await seedFund(s, s.chapterId);

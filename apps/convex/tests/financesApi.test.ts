@@ -605,6 +605,125 @@ describe("categorizeTransaction defaults the fund", () => {
   });
 });
 
+// ── WP-1.4 "defund the UI" — server-side fund defaults ───────────────────────
+// No UI ever sends a fundId anymore; every creation path must silently land on
+// the chapter's General Fund instead of requiring one.
+
+describe("createManualTransaction defaults the fund", () => {
+  test("omitting fundId lands the txn on the General Fund without faking categorization", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await asManager(s);
+    const generalFundId = await s.as.mutation(api.finances.createFund, {
+      name: "General Fund",
+      restriction: "unrestricted",
+    });
+
+    const txnId = await s.as.mutation(api.finances.createManualTransaction, {
+      flow: "outflow",
+      amountCents: 1000,
+      postedAt: Date.now(),
+    });
+    const doc = await run(s.t, (ctx) => ctx.db.get(txnId));
+    expect(doc?.fundId).toBe(generalFundId);
+    // No category/fund was EXPLICITLY supplied — the silent fund default must
+    // never fake a real categorization.
+    expect(doc?.status).toBe("unreviewed");
+  });
+
+  test("a chapter with only restricted funds degrades to no fund, without crashing", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await asManager(s);
+    // Only a restricted fund exists — `defaultFundId` never falls back to it,
+    // so it resolves to `null` and the creation path must coalesce that to
+    // `undefined` rather than throwing.
+    await s.as.mutation(api.finances.createFund, {
+      name: "Missions",
+      restriction: "designated",
+    });
+
+    const txnId = await s.as.mutation(api.finances.createManualTransaction, {
+      flow: "outflow",
+      amountCents: 1000,
+      postedAt: Date.now(),
+    });
+    const doc = await run(s.t, (ctx) => ctx.db.get(txnId));
+    expect(doc?.fundId).toBeUndefined();
+    expect(doc?.status).toBe("unreviewed");
+  });
+});
+
+describe("createBudget defaults the fund", () => {
+  test("a chapter budget with no fundId lands on the General Fund", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await asManager(s);
+    const generalFundId = await s.as.mutation(api.finances.createFund, {
+      name: "General Fund",
+      restriction: "unrestricted",
+    });
+
+    const budgetId = await s.as.mutation(api.finances.createBudget, {
+      amountCents: 50000,
+      type: "recurring",
+      cadence: "monthly",
+      year: 2026,
+      month: 7,
+    });
+    const doc = await run(s.t, (ctx) => ctx.db.get(budgetId));
+    expect(doc?.fundId).toBe(generalFundId);
+  });
+
+  test("a central budget with no fundId stays fund-less (no chapter to resolve one from)", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const personId = await seedSelfPerson(s);
+    await grantRole(s, personId, "manager", "central");
+
+    const budgetId = await s.as.mutation(api.finances.createBudget, {
+      amountCents: 50000,
+      type: "recurring",
+      cadence: "monthly",
+      year: 2026,
+      month: 7,
+      central: true,
+    });
+    const doc = await run(s.t, (ctx) => ctx.db.get(budgetId));
+    expect(doc?.fundId).toBeUndefined();
+  });
+});
+
+describe("bulkCategorize defaults the fund", () => {
+  test("omitting fundId in a bulk categorize lands the touched txn on the General Fund", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await asManager(s);
+    const generalFundId = await s.as.mutation(api.finances.createFund, {
+      name: "General Fund",
+      restriction: "unrestricted",
+    });
+    const categoryId = await s.as.mutation(api.finances.createCategory, {
+      fundId: generalFundId,
+      name: "Supplies",
+      kind: "lineItem",
+    });
+    const txnId = await s.as.mutation(api.finances.createManualTransaction, {
+      flow: "outflow",
+      amountCents: 2500,
+      postedAt: Date.now(),
+    });
+
+    await s.as.mutation(api.finances.bulkCategorize, {
+      transactionIds: [txnId],
+      categoryId,
+    });
+    const doc = await run(s.t, (ctx) => ctx.db.get(txnId));
+    expect(doc?.fundId).toBe(generalFundId);
+    expect(doc?.categoryId).toBe(categoryId);
+  });
+});
+
 describe("authz + tenancy", () => {
   test("a viewer cannot create a manual transaction (needs bookkeeper)", async () => {
     const t = newT();

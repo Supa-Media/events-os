@@ -11,15 +11,16 @@
  * (mirrors `ReceiptButton`'s generate-url → POST → storageId flow) so the
  * `receiptStorageId` travels with the line on submit.
  *
- * Fund + name/email/phone prefill come from `api.reimbursements.newRequestOptions`
- * — a member-safe read with NO finance-role gate (unlike `finances.listFunds`),
- * since any chapter member needs it to submit, whether or not they hold a
- * finance grant.
+ * Name/email/phone prefill come from `api.reimbursements.newRequestOptions` —
+ * a member-safe read with NO finance-role gate, since any chapter member needs
+ * it to submit, whether or not they hold a finance grant. There's no fund
+ * picker (funds are backend-only, WP-1.4): every line silently lands on the
+ * chapter's General Fund server-side.
  *
  * Built to `docs/plans/finance.md` (Reimbursements) + the public reimburse.html
  * visual spec, restyled onto the in-app finance theme (NativeWind + lib/theme).
  */
-import { useMemo, useState } from "react";
+import { useState } from "react";
 import { Platform, Pressable, Text, TextInput, View } from "react-native";
 import { useRouter } from "expo-router";
 import { useAction, useMutation, useQuery } from "convex/react";
@@ -92,7 +93,6 @@ export default function NewReimbursementScreen() {
   const [routingNumber, setRoutingNumber] = useState("");
   const [accountNumber, setAccountNumber] = useState("");
   const [funding, setFunding] = useState<"checking" | "savings">("checking");
-  const [fundId, setFundId] = useState<string | null>(null);
   const [notes, setNotes] = useState("");
   const [lines, setLines] = useState<DraftLine[]>([emptyLine()]);
   const [error, setError] = useState<string | null>(null);
@@ -103,14 +103,6 @@ export default function NewReimbursementScreen() {
   // stomp on something they already typed.
   const nameValue = payeeName ?? options?.defaultPayeeName ?? "";
   const emailValue = payeeEmail ?? options?.defaultPayeeEmail ?? "";
-
-  const fundOptions = useMemo(
-    () => [
-      { value: "", label: "— No fund —" },
-      ...(options?.funds ?? []).map((f) => ({ value: f.id, label: f.name })),
-    ],
-    [options?.funds],
-  );
 
   const totalCents = lines.reduce((sum, l) => sum + lineAmountCents(l), 0);
 
@@ -226,7 +218,6 @@ export default function NewReimbursementScreen() {
           lines: usable.map((l) => ({
             description: l.description.trim(),
             amountCents: lineAmountCents(l),
-            fundId: fundId ? (fundId as Id<"funds">) : undefined,
             receiptStorageId: l.receiptStorageId ?? undefined,
           })),
         }),
@@ -285,18 +276,6 @@ export default function NewReimbursementScreen() {
                 keyboardType="email-address"
                 autoCapitalize="none"
                 placeholder="you@example.com"
-              />
-            </View>
-          </View>
-
-          <View className="flex-row gap-3">
-            <View className="flex-1">
-              <Select
-                label="Fund"
-                value={fundId}
-                options={fundOptions}
-                onChange={(v) => setFundId(v || null)}
-                placeholder="— No fund —"
               />
             </View>
           </View>

@@ -65,8 +65,8 @@ import {
   requireFinanceManager,
   requireFinanceCentral,
   getFinanceRole,
+  defaultFundId,
 } from "./lib/finance";
-import { defaultFundId } from "./finances";
 
 const STRIPE_API = "https://api.stripe.com/v1";
 
@@ -689,6 +689,14 @@ export const applyFcTransactions = internalMutation({
     }
     const chapterId = account.chapterId;
 
+    // The fund newly-inserted rows pre-code to: the account's chosen default,
+    // else the chapter's default operating fund (never a restricted bucket) —
+    // same fallback `applyRelayImport` uses, so an account with no default
+    // fund set (the common case now that the picker is gone) never lands
+    // fund-less transactions.
+    const fallbackFundId =
+      account.defaultFundId ?? (await defaultFundId(ctx, chapterId)) ?? undefined;
+
     let inserted = 0;
     let updated = 0;
 
@@ -746,7 +754,7 @@ export const applyFcTransactions = internalMutation({
         merchantName: row.description,
         cardLast4: cardLast4 ?? undefined,
         status: "unreviewed",
-        fundId: account.defaultFundId,
+        fundId: fallbackFundId,
         sourceAccountId: account.stripeFcAccountId,
         // Attribute to a linked legacy card at insert time (a fresh sync row is
         // never human-categorized yet).

@@ -84,6 +84,7 @@ import {
   resolveCallerPersonId,
   assertSeparationOfDuties,
   getChapterAccountForMode,
+  defaultFundId,
 } from "./lib/finance";
 
 /** Increase API base URL. Env-overridable so dev/staging point at the sandbox
@@ -1937,6 +1938,11 @@ export const applyIncreaseCardTransaction = internalMutation({
       card = cards.find((c) => c.chapterId === chapterId) ?? null;
     }
 
+    // Silently pre-code to the chapter's General Fund — funds are
+    // backend-only (see WP-1.4), so a native Increase card charge never
+    // lands fund-less waiting on a UI that no longer exists.
+    const fundId = (await defaultFundId(ctx, chapterId)) ?? undefined;
+
     await ctx.db.insert("transactions", {
       chapterId,
       source: "increase_card",
@@ -1949,6 +1955,7 @@ export const applyIncreaseCardTransaction = internalMutation({
       cardLast4: card?.last4,
       cardId: card?._id,
       personId: card?.cardholderPersonId,
+      fundId,
       externalId: args.externalId,
       sourceAccountId: args.accountId,
       pending: false,

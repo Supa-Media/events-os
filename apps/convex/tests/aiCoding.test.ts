@@ -261,6 +261,36 @@ describe("acceptSuggestion", () => {
     ).rejects.toBeInstanceOf(ConvexError);
   });
 
+  test("skips a dangling suggestion.fundId (fund since deleted) but applies the rest", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const personId = await seedSelfPerson(s);
+    await grantRole(s, personId, "bookkeeper");
+    const { fundId: staleFundId, categoryId } = await seedFundAndCategory(s);
+    // Simulate the fund vanishing out from under the stored suggestion (e.g.
+    // the WP-1.4 fund-merge migration deleting an extra fund) after the
+    // suggestion was written but before it's accepted.
+    await run(s.t, (ctx) => ctx.db.delete(staleFundId));
+    const txnId = await seedTxn(s, {
+      fundId: staleFundId,
+      categoryId,
+      confidence: 0.9,
+      suggestedAt: Date.now(),
+    });
+
+    const result = await s.as.mutation(api.aiCodingData.acceptSuggestion, {
+      transactionId: txnId,
+    });
+    expect(result).toBeNull();
+
+    const txn = await run(s.t, (ctx) => ctx.db.get(txnId));
+    // The dangling id is skipped, never copied onto the transaction...
+    expect(txn?.fundId).toBeUndefined();
+    // ...but the rest of the suggestion still applies.
+    expect(txn?.categoryId).toEqual(categoryId);
+    expect(txn?.status).toBe("categorized");
+  });
+
   test("accept, then a manual re-edit, then a stale late-arriving suggestion can't clobber it", async () => {
     const t = newT();
     const s = await setupChapter(t);

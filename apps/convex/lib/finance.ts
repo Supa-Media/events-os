@@ -33,6 +33,35 @@ import { MutationCtx, QueryCtx } from "../_generated/server";
 import { isSuperuser } from "./superuser";
 import { viewerPerson } from "./org";
 
+// A generous bound on a single chapter's funds (they number in the single
+// digits post-WP-1.4; this mirrors the scan limits used elsewhere in finance).
+const FUND_SCAN_LIMIT = 5000;
+
+/**
+ * The chapter's default operating fund for auto-coding: the unrestricted
+ * "General Fund" by name, else the lowest-sortOrder UNRESTRICTED fund, else
+ * `null`. Never falls back to a restricted fund — spend is never silently
+ * defaulted into an earmarked bucket. Lives here (rather than in `finances.ts`)
+ * so both `finances.ts` and `increase.ts`/`stripeFinance.ts` can silently
+ * default a transaction/budget's fund without a cross-file import cycle
+ * (funds are backend-only post-WP-1.4 — every creation path resolves this
+ * instead of requiring a client-supplied fundId).
+ */
+export async function defaultFundId(
+  ctx: QueryCtx,
+  chapterId: Id<"chapters">,
+): Promise<Id<"funds"> | null> {
+  const funds = await ctx.db
+    .query("funds")
+    .withIndex("by_chapter", (q) => q.eq("chapterId", chapterId))
+    .take(FUND_SCAN_LIMIT);
+  const unrestricted = funds
+    .filter((f) => f.restriction === "unrestricted")
+    .sort((a, b) => a.sortOrder - b.sortOrder);
+  if (unrestricted.length === 0) return null;
+  return (unrestricted.find((f) => f.name === "General Fund") ?? unrestricted[0])._id;
+}
+
 /**
  * The chapter's `increaseAccounts` row for a given environment, or null. A
  * chapter may now hold up to two rows (one sandbox, one production); every

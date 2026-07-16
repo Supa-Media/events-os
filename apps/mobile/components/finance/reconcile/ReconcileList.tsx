@@ -286,7 +286,6 @@ function ReconcileRow({
           <View className="flex-1 gap-1 px-2 py-1.5">
             <Badge
               label={`AI: ${[
-                row.aiSuggestion.fundName,
                 row.aiSuggestion.categoryName,
                 row.aiSuggestion.projectName ?? row.aiSuggestion.eventName,
               ]

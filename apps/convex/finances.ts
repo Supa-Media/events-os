@@ -63,6 +63,7 @@ import {
   requireFinanceRole,
   requireFinanceManager,
   requireFinanceCentral,
+  defaultFundId,
 } from "./lib/finance";
 import { requireSuperuser } from "./lib/superuser";
 import { viewerPerson } from "./lib/org";
@@ -332,12 +333,12 @@ const recentTxnCard = v.object({
   timeOrNote: v.optional(v.union(v.string(), v.null())),
   codedTo: v.optional(
     v.union(
-      v.object({ fundOrProject: v.string(), category: v.string() }),
+      v.object({ projectOrEvent: v.string(), category: v.string() }),
       v.null(),
     ),
   ),
   aiSuggestion: v.optional(
-    v.union(v.object({ fund: v.string(), category: v.string() }), v.null()),
+    v.union(v.object({ category: v.string() }), v.null()),
   ),
   amountCents: v.number(),
   flow: flowValidator,
@@ -1494,28 +1495,24 @@ export const dashboardChapter = query({
       .withIndex("by_chapter_and_postedAt", (q) => q.eq("chapterId", chapterId))
       .order("desc")
       .take(RECENT_TXN_COUNT);
-    const fundName = new Map(fundDocs.map((f) => [f._id, f.name] as const));
     const getPerson = nameCache(ctx, "people");
     const recentTransactions: (typeof recentTxnCard.type)[] = [];
     for (const tr of recent) {
       const projName = tr.projectId ? (await getProject(tr.projectId))?.name : undefined;
       const evName = tr.eventId ? (await getEvent(tr.eventId))?.name : undefined;
-      const fundOrProject =
-        projName ?? evName ?? (tr.fundId ? fundName.get(tr.fundId) : undefined);
+      // Funds are backend-only (WP-1.4) — every chapter has exactly one, so a
+      // fund-name fallback here would just repeat "General Fund" on every
+      // uncoded-to-project/event row. Project/event only; else uncoded.
+      const projectOrEvent = projName ?? evName;
       const categoryName = tr.categoryId ? catName.get(tr.categoryId) : undefined;
       const codedTo =
-        fundOrProject || categoryName
-          ? { fundOrProject: fundOrProject ?? "", category: categoryName ?? "" }
+        projectOrEvent || categoryName
+          ? { projectOrEvent: projectOrEvent ?? "", category: categoryName ?? "" }
           : null;
       const ai =
-        tr.aiSuggestion && (tr.aiSuggestion.fundId || tr.aiSuggestion.categoryId)
+        tr.aiSuggestion && tr.aiSuggestion.categoryId
           ? {
-              fund: tr.aiSuggestion.fundId
-                ? fundName.get(tr.aiSuggestion.fundId) ?? ""
-                : "",
-              category: tr.aiSuggestion.categoryId
-                ? catName.get(tr.aiSuggestion.categoryId) ?? ""
-                : "",
+              category: catName.get(tr.aiSuggestion.categoryId) ?? "",
             }
           : null;
       const spenderName = tr.personId ? (await getPerson(tr.personId))?.name ?? null : null;
@@ -2275,34 +2272,13 @@ async function findGeneralFundId(
 }
 
 /**
- * The chapter's default operating fund for auto-coding: the unrestricted "General
- * Fund" by name, else the lowest-sortOrder UNRESTRICTED fund, else `null`. Unlike
- * {@link findGeneralFundId} this never falls back to a restricted fund — spend is
- * never silently defaulted into an earmarked bucket. Lets the reconcile grid hide
- * the fund selector while still leaving every coded txn attached to a real fund.
- */
-export async function defaultFundId(
-  ctx: QueryCtx,
-  chapterId: Id<"chapters">,
-): Promise<Id<"funds"> | null> {
-  const funds = await ctx.db
-    .query("funds")
-    .withIndex("by_chapter", (q) => q.eq("chapterId", chapterId))
-    .take(ROLLUP_SCAN_LIMIT);
-  const unrestricted = funds
-    .filter((f) => f.restriction === "unrestricted")
-    .sort((a, b) => a.sortOrder - b.sortOrder);
-  if (unrestricted.length === 0) return null;
-  return (unrestricted.find((f) => f.name === "General Fund") ?? unrestricted[0])._id;
-}
-
-/**
- * Shared: seed one chapter's default funds + expense categories. First ensures
- * the chapter's default funds exist (General Fund + Designated) — so a chapter
- * created before the finance seed (zero funds) is fixed in one shot — then seeds
- * the default categories under its General Fund. Idempotent (skips funds /
- * categories whose names already exist). Returns the count of categories
- * inserted (0 if, unexpectedly, no General Fund can be resolved).
+ * Shared: seed one chapter's default fund + expense categories. First ensures
+ * the chapter's default fund exists (General Fund — the only fund, see
+ * WP-1.4) — so a chapter created before the finance seed (zero funds) is fixed
+ * in one shot — then seeds the default categories under its General Fund.
+ * Idempotent (skips funds / categories whose names already exist). Returns the
+ * count of categories inserted (0 if, unexpectedly, no General Fund can be
+ * resolved).
  */
 async function seedDefaultCategoriesForChapter(
   ctx: MutationCtx,
@@ -2651,6 +2627,14 @@ export const createBudget = mutation({
         label = eventBudgetLabel(event.name, parts, siblings.length, sameMonthCount);
       }
     }
+    // Silently default a CHAPTER budget to its General Fund when the client
+    // omits a fund (no UI ever sends one — funds are backend-only, see
+    // WP-1.4). Central budgets have no chapter to resolve a fund from — the
+    // "central" sentinel isn't a `funds`-scoping chapter — so they stay
+    // fund-less, same as today.
+    const fundId =
+      args.fundId ??
+      (args.central ? undefined : (await defaultFundId(ctx, chapterId)) ?? undefined);
     const budgetId = await ctx.db.insert("budgets", {
       chapterId: level,
       amountCents: args.amountCents,
@@ -2662,7 +2646,7 @@ export const createBudget = mutation({
       year: args.year,
       month: args.month,
       quarter: args.quarter,
-      fundId: args.fundId,
+      fundId,
       categoryId: args.categoryId,
       createdBy: userId,
       createdAt: Date.now(),
@@ -3332,6 +3316,241 @@ export const backfillEventBudgets = internalMutation({
     await runBackfillEventBudgets(ctx, args.chapterId),
 });
 
+// ── Fund merge (WP-1.4 "defund the UI" — one General Fund, zero fund UI) ────
+const fundMergeResult = v.object({
+  chaptersScanned: v.number(),
+  // Chapters that actually had >1 fund and got merged this run (0 on a
+  // settled re-run — the whole migration is a no-op once every chapter is
+  // down to its General Fund).
+  chaptersMerged: v.number(),
+  fundsDeleted: v.number(),
+  categoriesRepointed: v.number(),
+  budgetsRepointed: v.number(),
+  transactionsRepointed: v.number(),
+  reimbursementLineItemsRepointed: v.number(),
+  legacyAccountsRepointed: v.number(),
+});
+
+/**
+ * Merge every extra fund in ONE chapter into its General Fund (resolved via
+ * {@link findGeneralFundId} — by name, else lowest-sortOrder unrestricted,
+ * else lowest-sortOrder). Repoints every `fundId`/`defaultFundId` reference
+ * (`budgetCategories` — required field, so a dangling extra-fund reference
+ * would otherwise break category display; `budgets`; `transactions`;
+ * `reimbursementLineItems`; `legacyAccounts.defaultFundId`), then deletes the
+ * now-empty extra fund docs.
+ *
+ * Also fixes a stale `transactions.aiSuggestion.fundId` pointing at the extra
+ * fund, via TWO passes: the `by_fund`-indexed transactions scan above repoints
+ * a suggestion in the same patch as a coded txn's top-level `fundId`; a
+ * second, cached chapter-wide scan (reusing the same pattern as `budgets`/
+ * `reimbursementLineItems`) catches an UNCODED txn — top-level `fundId` unset
+ * — whose stored suggestion still points at the extra fund, which the
+ * `by_fund` index alone would miss. Left uncaught, that dangling suggestion
+ * id would survive the fund's deletion below and could later be copied onto
+ * the transaction by `acceptSuggestion`.
+ *
+ * A chapter with 0 or 1 funds is a no-op (nothing to merge) — this is what
+ * makes a re-run of the whole migration idempotent.
+ */
+async function runMergeFundsIntoGeneralForChapter(
+  ctx: MutationCtx,
+  chapterId: Id<"chapters">,
+): Promise<{
+  merged: boolean;
+  fundsDeleted: number;
+  categoriesRepointed: number;
+  budgetsRepointed: number;
+  transactionsRepointed: number;
+  reimbursementLineItemsRepointed: number;
+  legacyAccountsRepointed: number;
+}> {
+  const zero = {
+    merged: false,
+    fundsDeleted: 0,
+    categoriesRepointed: 0,
+    budgetsRepointed: 0,
+    transactionsRepointed: 0,
+    reimbursementLineItemsRepointed: 0,
+    legacyAccountsRepointed: 0,
+  };
+  const keeperId = await findGeneralFundId(ctx, chapterId);
+  if (!keeperId) return zero; // fund-less chapter — nothing to merge
+
+  const funds = await ctx.db
+    .query("funds")
+    .withIndex("by_chapter", (q) => q.eq("chapterId", chapterId))
+    .take(ROLLUP_SCAN_LIMIT);
+  const extras = funds.filter((f) => f._id !== keeperId);
+  if (extras.length === 0) return zero; // already down to one fund
+
+  let categoriesRepointed = 0;
+  let budgetsRepointed = 0;
+  let transactionsRepointed = 0;
+  let reimbursementLineItemsRepointed = 0;
+  let legacyAccountsRepointed = 0;
+
+  // Cache the chapter-wide scans that lack a `by_fund` index — one bounded
+  // read per table, reused across every extra fund instead of per-fund.
+  const chapterBudgets = await ctx.db
+    .query("budgets")
+    .withIndex("by_chapter", (q) => q.eq("chapterId", chapterId))
+    .take(ROLLUP_SCAN_LIMIT);
+  const chapterLines = await ctx.db
+    .query("reimbursementLineItems")
+    .withIndex("by_chapter", (q) => q.eq("chapterId", chapterId))
+    .take(ROLLUP_SCAN_LIMIT);
+  const chapterAccounts = await ctx.db
+    .query("legacyAccounts")
+    .withIndex("by_chapter", (q) => q.eq("chapterId", chapterId))
+    .take(ROLLUP_SCAN_LIMIT);
+  // Chapter-wide, so it also catches a dangling `aiSuggestion.fundId` on an
+  // uncoded txn (top-level `fundId` unset) — see the docstring above.
+  const chapterTransactions = await ctx.db
+    .query("transactions")
+    .withIndex("by_chapter", (q) => q.eq("chapterId", chapterId))
+    .take(ROLLUP_SCAN_LIMIT);
+
+  for (const extra of extras) {
+    // budgetCategories.fundId is REQUIRED — a dangling reference here would
+    // break category display/grouping the instant the fund doc is deleted.
+    const categories = await ctx.db
+      .query("budgetCategories")
+      .withIndex("by_fund", (q) => q.eq("fundId", extra._id))
+      .take(ROLLUP_SCAN_LIMIT);
+    for (const c of categories) {
+      await ctx.db.patch(c._id, { fundId: keeperId });
+      categoriesRepointed++;
+    }
+
+    for (const b of chapterBudgets) {
+      if (b.fundId === extra._id) {
+        await ctx.db.patch(b._id, { fundId: keeperId });
+        budgetsRepointed++;
+      }
+    }
+
+    const transactions = await ctx.db
+      .query("transactions")
+      .withIndex("by_fund", (q) => q.eq("fundId", extra._id))
+      .take(ROLLUP_SCAN_LIMIT);
+    for (const tr of transactions) {
+      await ctx.db.patch(tr._id, {
+        fundId: keeperId,
+        // Fix a stale AI suggestion on the SAME row while we're already here.
+        ...(tr.aiSuggestion?.fundId === extra._id
+          ? { aiSuggestion: { ...tr.aiSuggestion, fundId: keeperId } }
+          : {}),
+      });
+      transactionsRepointed++;
+    }
+
+    // The `by_fund` scan above only finds txns whose TOP-LEVEL fundId is the
+    // extra fund. An uncoded txn (no top-level fundId) whose stored AI
+    // suggestion picked the extra fund would otherwise escape — repoint its
+    // suggestion too, from the cached chapter-wide scan. Skip rows already
+    // handled above (top-level fundId === extra) to avoid a double count.
+    for (const tr of chapterTransactions) {
+      if (tr.fundId === extra._id) continue;
+      if (tr.aiSuggestion?.fundId === extra._id) {
+        await ctx.db.patch(tr._id, {
+          aiSuggestion: { ...tr.aiSuggestion, fundId: keeperId },
+        });
+        transactionsRepointed++;
+      }
+    }
+
+    for (const l of chapterLines) {
+      if (l.fundId === extra._id) {
+        await ctx.db.patch(l._id, { fundId: keeperId });
+        reimbursementLineItemsRepointed++;
+      }
+    }
+
+    for (const a of chapterAccounts) {
+      if (a.defaultFundId === extra._id) {
+        await ctx.db.patch(a._id, { defaultFundId: keeperId });
+        legacyAccountsRepointed++;
+      }
+    }
+
+    await ctx.db.delete(extra._id);
+  }
+
+  return {
+    merged: true,
+    fundsDeleted: extras.length,
+    categoriesRepointed,
+    budgetsRepointed,
+    transactionsRepointed,
+    reimbursementLineItemsRepointed,
+    legacyAccountsRepointed,
+  };
+}
+
+/**
+ * CLI-runnable (no auth) fund-merge migration for WP-1.4 ("defund the UI"):
+ * every chapter with more than one fund gets its extras merged into its
+ * General Fund (see {@link runMergeFundsIntoGeneralForChapter}). Bounded +
+ * idempotent — a settled re-run finds every chapter already at one fund and
+ * reports `chaptersMerged: 0`. Pass `chapterId` to merge just one chapter;
+ * omit to sweep every chapter.
+ *
+ * Run locally:  npx convex run finances:runMergeFundsIntoGeneral
+ * Run on prod:  npx convex run --prod finances:runMergeFundsIntoGeneral
+ */
+export const runMergeFundsIntoGeneral = internalMutation({
+  args: { chapterId: v.optional(v.id("chapters")) },
+  returns: fundMergeResult,
+  handler: async (ctx, args) => {
+    const chapters = args.chapterId
+      ? [await ctx.db.get(args.chapterId)].filter(
+          (c): c is Doc<"chapters"> => c !== null,
+        )
+      : await ctx.db.query("chapters").take(ROLLUP_SCAN_LIMIT);
+
+    let chaptersMerged = 0;
+    let fundsDeleted = 0;
+    let categoriesRepointed = 0;
+    let budgetsRepointed = 0;
+    let transactionsRepointed = 0;
+    let reimbursementLineItemsRepointed = 0;
+    let legacyAccountsRepointed = 0;
+
+    for (const chapter of chapters) {
+      const result = await runMergeFundsIntoGeneralForChapter(ctx, chapter._id);
+      if (result.merged) {
+        chaptersMerged++;
+        fundsDeleted += result.fundsDeleted;
+        categoriesRepointed += result.categoriesRepointed;
+        budgetsRepointed += result.budgetsRepointed;
+        transactionsRepointed += result.transactionsRepointed;
+        reimbursementLineItemsRepointed += result.reimbursementLineItemsRepointed;
+        legacyAccountsRepointed += result.legacyAccountsRepointed;
+        console.log(
+          `[runMergeFundsIntoGeneral] chapter ${chapter._id}: deleted ${result.fundsDeleted} fund(s); ` +
+            `repointed ${result.categoriesRepointed} categories, ${result.budgetsRepointed} budgets, ` +
+            `${result.transactionsRepointed} transactions, ${result.reimbursementLineItemsRepointed} reimbursement lines, ` +
+            `${result.legacyAccountsRepointed} legacy accounts.`,
+        );
+      }
+    }
+
+    const summary = {
+      chaptersScanned: chapters.length,
+      chaptersMerged,
+      fundsDeleted,
+      categoriesRepointed,
+      budgetsRepointed,
+      transactionsRepointed,
+      reimbursementLineItemsRepointed,
+      legacyAccountsRepointed,
+    };
+    console.log(`[runMergeFundsIntoGeneral] done: ${JSON.stringify(summary)}`);
+    return summary;
+  },
+});
+
 // ── Transactions ───────────────────────────────────────────────────────────────
 
 export const listTransactions = query({
@@ -3470,7 +3689,7 @@ export const listReconcile = query({
     };
 
     // The Link column's current-value label: the project if linked, else the
-    // event (mirrors the dashboard's `codedTo.fundOrProject` precedence).
+    // event (mirrors the dashboard's `codedTo.projectOrEvent` precedence).
     const resolveLinkLabel = async (tr: Doc<"transactions">) => {
       if (tr.projectId) {
         const project = await getProject(tr.projectId);
@@ -3575,8 +3794,13 @@ export const createManualTransaction = mutation({
     assertIntegerCents(args.amountCents);
     await verifyTxnRefs(ctx, chapterId, args);
     const userId = (await requireUserId(ctx)) as Id<"users">;
-    // Categorized on entry when a fund/category was supplied, else unreviewed.
+    // Categorized on entry when a fund/category was EXPLICITLY supplied, else
+    // unreviewed — computed before the silent fund default below so the fund
+    // auto-fill (no UI ever sends one) never fakes a real categorization.
     const status = args.fundId || args.categoryId ? "categorized" : "unreviewed";
+    // Silently default to the chapter's General Fund when the client omits a
+    // fund (every UI now does — funds are backend-only, see WP-1.4).
+    const fundId = args.fundId ?? (await defaultFundId(ctx, chapterId)) ?? undefined;
     return await ctx.db.insert("transactions", {
       chapterId,
       source: args.source ?? "manual",
@@ -3586,7 +3810,7 @@ export const createManualTransaction = mutation({
       postedAt: args.postedAt,
       description: args.description,
       merchantName: args.merchantName,
-      fundId: args.fundId,
+      fundId,
       categoryId: args.categoryId,
       projectId: args.projectId,
       eventId: args.eventId,
@@ -3682,6 +3906,10 @@ export const bulkCategorize = mutation({
         allowCentral: true,
       });
     }
+    // Same silent-default-to-General-Fund rule as `categorizeTransaction`
+    // (computed once — every row in the batch shares the same chapter).
+    const fallbackFundId =
+      args.fundId === undefined ? await defaultFundId(ctx, chapterId) : null;
     let updated = 0;
     for (const id of args.transactionIds) {
       const txn = await requireInCallerChapter(
@@ -3696,6 +3924,9 @@ export const bulkCategorize = mutation({
         categoryId: args.categoryId,
         budgetId: args.budgetId,
       });
+      if (args.fundId === undefined && txn.fundId == null && fallbackFundId) {
+        patch.fundId = fallbackFundId;
+      }
       const nowCoded =
         (patch.fundId ?? txn.fundId) || (patch.categoryId ?? txn.categoryId);
       if (nowCoded && txn.status === "unreviewed") patch.status = "categorized";
