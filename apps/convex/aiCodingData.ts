@@ -6,9 +6,12 @@
  * runtime boundary:
  *
  *  - `loadForSuggestion` (internalQuery) — gather the coding context for one
- *    transaction: the transaction itself plus its chapter's funds/categories and
- *    the events around the charge's date (the "week's calendar" the model reasons
- *    over). No auth — internal, called only by the action.
+ *    transaction: the transaction itself plus its chapter's funds/categories,
+ *    the events and projects RANKED by proximity to the charge's date (R2 —
+ *    nearest-first, not a flat list), and — when the txn has a cardholder
+ *    (`personId` directly, or via `cardId` → `cards.cardholderPersonId`) —
+ *    that person's own roster info plus the events/projects THEY'RE
+ *    associated with. No auth — internal, called only by the action.
  *  - `writeSuggestion` (internalMutation) — persist the model's PROPOSAL onto
  *    `transactions.aiSuggestion`. Every proposed id is re-validated to belong to
  *    the transaction's chapter before it's written. The model NEVER moves money.
@@ -29,13 +32,22 @@ import { requireChapterId, requireInChapter } from "./lib/context";
 import { requireFinanceRole } from "./lib/finance";
 import { CENTRAL } from "@events-os/shared";
 
-/** ± window (7 days) around a charge used to pull the "week's calendar" events. */
-const WEEK_MS = 7 * 24 * 60 * 60 * 1000;
-
 /** Cap on how many of each context list we hand the model — keeps reads bounded. */
 const CONTEXT_LIMIT = 100;
-/** Cap on calendar events in the window. */
+/**
+ * Cap on calendar events considered: this many are scanned on EACH side
+ * (before, after) of the charge's `postedAt` via the `by_chapter_date` index,
+ * then the merged set is ranked by proximity and cut back down to this same
+ * count (R2 — see `sortByProximity`). No hard day-window: a plausible match
+ * 200 days out still surfaces, just ranked behind anything closer in time.
+ */
 const EVENT_LIMIT = 50;
+/**
+ * Cap on a cardholder's OWN associated events/projects (R2). Kept small —
+ * this is color that helps the model weigh a match to the person, not a
+ * primary candidate list, so it doesn't need `CONTEXT_LIMIT`'s headroom.
+ */
+const PERSON_LINK_LIMIT = 20;
 
 /**
  * Sweep sizing (the hourly cron). `SWEEP_SCAN` newest transactions are examined;
@@ -96,16 +108,185 @@ const suggestionContextValidator = v.object({
       status: v.string(),
     }),
   ),
+  // The cardholder (R2): resolved from `transaction.personId`, else via
+  // `transaction.cardId` → `cards.cardholderPersonId`. Absent when the txn
+  // carries neither (e.g. a synced feed txn nobody's claimed yet).
+  person: v.optional(
+    v.object({
+      _id: v.id("people"),
+      name: v.string(),
+      role: v.optional(v.string()),
+      isTeamMember: v.optional(v.boolean()),
+      // This person's OWN events/projects — from `engagements` (volunteer/paid),
+      // `roleAssignments`, and events/projects they OWN (`ownerPersonId`).
+      // Ranked nearest-`postedAt`-first, same as the chapter-wide lists.
+      events: v.array(
+        v.object({
+          _id: v.id("events"),
+          name: v.string(),
+          eventDate: v.number(),
+        }),
+      ),
+      projects: v.array(
+        v.object({
+          _id: v.id("projects"),
+          name: v.string(),
+          status: v.string(),
+        }),
+      ),
+    }),
+  ),
 });
 
 /** The resolved context type both loaders return (matches the validator). */
 type SuggestionContext = typeof suggestionContextValidator.type;
 
 /**
- * Gather the coding context for one transaction: the chapter's funds and budget
- * categories, the projects it can attach to, and the events within a week of the
- * charge. Pure reads — the auth gate lives in the caller so the same body serves
- * both the human-triggered (`loadForSuggestion`) and system/cron-triggered
+ * Sort candidates NEAREST-`postedAt`-FIRST (R2), so a flat chapter-wide list
+ * becomes one the model can trust to read top-down. `getTimestamp` may return
+ * `undefined` (e.g. a project with no date fields at all) — those sort last,
+ * after every dated candidate, in their original relative order.
+ */
+function sortByProximity<T>(
+  items: T[],
+  postedAt: number,
+  getTimestamp: (item: T) => number | undefined,
+): T[] {
+  return [...items].sort((a, b) => {
+    const da = getTimestamp(a);
+    const db = getTimestamp(b);
+    if (da === undefined && db === undefined) return 0;
+    if (da === undefined) return 1;
+    if (db === undefined) return -1;
+    return Math.abs(da - postedAt) - Math.abs(db - postedAt);
+  });
+}
+
+/** A project's own closest date to weigh proximity by: the nearer of its
+ *  `startDate`/`deadline` to `postedAt`, or `undefined` if it has neither. */
+function projectProximityTimestamp(
+  project: Doc<"projects">,
+  postedAt: number,
+): number | undefined {
+  const candidates = [project.startDate, project.deadline].filter(
+    (d): d is number => d !== undefined,
+  );
+  if (candidates.length === 0) return undefined;
+  return candidates.reduce((closest, d) =>
+    Math.abs(d - postedAt) < Math.abs(closest - postedAt) ? d : closest,
+  );
+}
+
+/** Dedup a list of docs by `_id`, keeping the first occurrence. */
+function dedupeById<T extends { _id: string }>(items: T[]): T[] {
+  const seen = new Set<string>();
+  const out: T[] = [];
+  for (const item of items) {
+    const key = String(item._id);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(item);
+  }
+  return out;
+}
+
+/**
+ * Resolve the transaction's cardholder: `personId` directly when set, else
+ * (R2) the card's own `cardholderPersonId` via `transaction.cardId`. Returns
+ * `undefined` when neither is set, or the referenced card is missing/foreign
+ * (defense in depth — never trust a cross-chapter card).
+ */
+async function resolveCardholderPersonId(
+  ctx: QueryCtx,
+  chapterId: Id<"chapters">,
+  txn: Doc<"transactions">,
+): Promise<Id<"people"> | undefined> {
+  if (txn.personId) return txn.personId;
+  if (!txn.cardId) return undefined;
+  const card = await ctx.db.get(txn.cardId);
+  if (!card || card.chapterId !== chapterId) return undefined;
+  return card.cardholderPersonId;
+}
+
+/**
+ * The cardholder's OWN associated events/projects (R2) — grounded in the
+ * linking tables that actually exist:
+ *  - `engagements` (volunteer/paid involvement in an event) and
+ *    `roleAssignments` (a rostered role on an event), both indexed `by_person`.
+ *  - Events/projects this person OWNS (`events`/`projects.ownerPersonId`).
+ * NOT included (no cheap/real link exists): `eventItems.ownerPersonId` (item-
+ * level ownership has no `by_person` index — a chapter-wide scan to find it
+ * would blow past `CONTEXT_LIMIT` for a "nice to have"), and `people.projects`
+ * (a free-text label array — "Eden", "Love Thy Neighbor" — not `Id<"projects">`
+ * references, so it can't be resolved to real project docs).
+ */
+async function resolvePersonContext(
+  ctx: QueryCtx,
+  chapterId: Id<"chapters">,
+  personId: Id<"people">,
+  postedAt: number,
+): Promise<SuggestionContext["person"]> {
+  const person = await ctx.db.get(personId);
+  if (!person || person.chapterId !== chapterId) return undefined;
+
+  const [engagements, roleAssignments, ownedEvents, ownedProjects] =
+    await Promise.all([
+      ctx.db
+        .query("engagements")
+        .withIndex("by_person", (q) => q.eq("personId", personId))
+        .take(PERSON_LINK_LIMIT),
+      ctx.db
+        .query("roleAssignments")
+        .withIndex("by_person", (q) => q.eq("personId", personId))
+        .take(PERSON_LINK_LIMIT),
+      ctx.db
+        .query("events")
+        .withIndex("by_chapter_and_ownerPersonId", (q) =>
+          q.eq("chapterId", chapterId).eq("ownerPersonId", personId),
+        )
+        .take(PERSON_LINK_LIMIT),
+      ctx.db
+        .query("projects")
+        .withIndex("by_owner", (q) => q.eq("ownerPersonId", personId))
+        .take(PERSON_LINK_LIMIT),
+    ]);
+
+  const linkedEventIds = dedupeById(
+    [...engagements, ...roleAssignments].map((r) => ({ _id: r.eventId })),
+  ).map((r) => r._id);
+  const linkedEvents = (
+    await Promise.all(linkedEventIds.map((id) => ctx.db.get(id)))
+  ).filter((e): e is Doc<"events"> => e !== null && e.chapterId === chapterId);
+
+  const events = sortByProximity(
+    dedupeById([...ownedEvents, ...linkedEvents]),
+    postedAt,
+    (e) => e.eventDate,
+  ).slice(0, PERSON_LINK_LIMIT);
+
+  const projects = sortByProximity(
+    dedupeById(ownedProjects.filter((p) => p.chapterId === chapterId)),
+    postedAt,
+    (p) => projectProximityTimestamp(p, postedAt),
+  ).slice(0, PERSON_LINK_LIMIT);
+
+  return {
+    _id: person._id,
+    name: person.name,
+    role: person.role,
+    isTeamMember: person.isTeamMember,
+    events: events.map((e) => ({ _id: e._id, name: e.name, eventDate: e.eventDate })),
+    projects: projects.map((p) => ({ _id: p._id, name: p.name, status: p.status })),
+  };
+}
+
+/**
+ * Gather the coding context for one transaction: the chapter's funds and
+ * budget categories, the events/projects it can attach to (R2 — ranked
+ * nearest-`postedAt`-first, not a flat list), and — when there's a resolvable
+ * cardholder — their own roster info + associated events/projects. Pure
+ * reads — the auth gate lives in the caller so the same body serves both the
+ * human-triggered (`loadForSuggestion`) and system/cron-triggered
  * (`loadForSuggestionSystem`) paths.
  */
 async function gatherSuggestionContext(
@@ -133,15 +314,46 @@ async function gatherSuggestionContext(
     .withIndex("by_chapter", (q) => q.eq("chapterId", chapterId))
     .take(CONTEXT_LIMIT);
 
-  const events = await ctx.db
-    .query("events")
-    .withIndex("by_chapter_date", (q) =>
-      q
-        .eq("chapterId", chapterId)
-        .gte("eventDate", txn.postedAt - WEEK_MS)
-        .lte("eventDate", txn.postedAt + WEEK_MS),
-    )
-    .take(EVENT_LIMIT);
+  // R2: rank chapter events by proximity to the charge instead of a flat,
+  // fixed-window list. Scan `EVENT_LIMIT` on each side of `postedAt` via the
+  // date index (bounded reads, same spirit as `CONTEXT_LIMIT`), merge, then
+  // sort by |eventDate - postedAt| and cut back to `EVENT_LIMIT` — so an
+  // event 3 days out always outranks one 200 days out, without a hard cutoff
+  // that would hide it entirely.
+  const [eventsOnOrAfter, eventsBefore] = await Promise.all([
+    ctx.db
+      .query("events")
+      .withIndex("by_chapter_date", (q) =>
+        q.eq("chapterId", chapterId).gte("eventDate", txn.postedAt),
+      )
+      .order("asc")
+      .take(EVENT_LIMIT),
+    ctx.db
+      .query("events")
+      .withIndex("by_chapter_date", (q) =>
+        q.eq("chapterId", chapterId).lt("eventDate", txn.postedAt),
+      )
+      .order("desc")
+      .take(EVENT_LIMIT),
+  ]);
+  const events = sortByProximity(
+    [...eventsOnOrAfter, ...eventsBefore],
+    txn.postedAt,
+    (e) => e.eventDate,
+  ).slice(0, EVENT_LIMIT);
+
+  // Same ranking for projects, off whichever of `startDate`/`deadline` is
+  // closer; projects with neither date sort last (no query-level date index
+  // exists for projects, so this ranks the already-bounded `CONTEXT_LIMIT`
+  // chapter-wide fetch above rather than requiring a second read).
+  const rankedProjects = sortByProximity(projects, txn.postedAt, (p) =>
+    projectProximityTimestamp(p, txn.postedAt),
+  );
+
+  const personId = await resolveCardholderPersonId(ctx, chapterId, txn);
+  const person = personId
+    ? await resolvePersonContext(ctx, chapterId, personId, txn.postedAt)
+    : undefined;
 
   return {
     transaction: {
@@ -170,18 +382,20 @@ async function gatherSuggestionContext(
       name: e.name,
       eventDate: e.eventDate,
     })),
-    projects: projects.map((p) => ({
+    projects: rankedProjects.map((p) => ({
       _id: p._id,
       name: p.name,
       status: p.status,
     })),
+    person,
   };
 }
 
 /**
- * Load one transaction plus the coding context for it: the chapter's funds and
- * budget categories, and the events within a week of the charge. Throws if the
- * transaction doesn't exist.
+ * Load one transaction plus the coding context for it: the chapter's funds,
+ * budget categories, and events/projects ranked by proximity to the charge's
+ * date, plus the cardholder's own roster info + associations (R2 — see
+ * `gatherSuggestionContext`). Throws if the transaction doesn't exist.
  *
  * This is ALSO the auth gate for the manual `suggestCoding` action: the caller
  * must hold at least the `bookkeeper` finance role in the transaction's chapter.

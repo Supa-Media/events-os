@@ -48,8 +48,21 @@ interface SuggestionContext {
     fundId: Id<"funds">;
     kind: string;
   }[];
+  // Ranked nearest-`transaction.postedAt`-first (R2) — the model should weigh
+  // earlier entries more heavily, not treat this as a flat/unordered list.
   events: { _id: Id<"events">; name: string; eventDate: number }[];
   projects: { _id: Id<"projects">; name: string; status: string }[];
+  // The cardholder (R2), when `transaction.personId`/`cardId` resolves to one
+  // — their own roster info plus the events/projects THEY'RE associated with
+  // (also ranked nearest-first). Absent when neither resolves to a person.
+  person?: {
+    _id: Id<"people">;
+    name: string;
+    role?: string;
+    isTeamMember?: boolean;
+    events: { _id: Id<"events">; name: string; eventDate: number }[];
+    projects: { _id: Id<"projects">; name: string; status: string }[];
+  };
 }
 
 const OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions";
@@ -96,6 +109,19 @@ async function recordFailedAttempt(
 function cleanConfidence(raw: unknown): number | undefined {
   if (typeof raw !== "number" || Number.isNaN(raw)) return undefined;
   return Math.max(0, Math.min(1, raw));
+}
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * A short "+3d"/"-12d"/"same day" label for how far `ts` sits from the
+ * charge's `postedAt` (R2) — makes the nearest-first ranking legible to the
+ * model in the prompt itself, not just implicit in list order.
+ */
+function relativeDayLabel(postedAt: number, ts: number): string {
+  const days = Math.round((ts - postedAt) / DAY_MS);
+  if (days === 0) return "same day";
+  return days > 0 ? `+${days}d` : `${days}d`;
 }
 
 /**
@@ -148,7 +174,7 @@ async function codeTransaction(
     return null;
   }
 
-  const { transaction, funds, categories, events, projects } = context;
+  const { transaction, funds, categories, events, projects, person } = context;
 
   // Compact, id-labelled context so the model can only echo REAL ids back.
   const fundLines = funds
@@ -165,22 +191,55 @@ async function codeTransaction(
       (e) =>
         `- eventId=${e._id} name="${e.name}" date=${new Date(
           e.eventDate,
-        ).toISOString()}`,
+        ).toISOString()} (${relativeDayLabel(transaction.postedAt, e.eventDate)})`,
     )
     .join("\n");
   const projectLines = projects
     .map((p) => `- projectId=${p._id} name="${p.name}" (${p.status})`)
     .join("\n");
 
+  // The cardholder (R2) — resolved from `transaction.personId`/`cardId`. Their
+  // OWN associated events/projects are a strong signal (a videographer's card
+  // charge during THEIR shoot is likelier coded to that event than a same-
+  // week event they have nothing to do with), so surface it as its own
+  // section rather than folding it into the general lists above.
+  const personSection = person
+    ? [
+        `name: ${person.name}`,
+        `role: ${person.role ?? "(none)"}`,
+        `on core team: ${person.isTeamMember ? "yes" : "no"}`,
+        `associated events:\n${
+          person.events
+            .map(
+              (e) =>
+                `  - eventId=${e._id} name="${e.name}" date=${new Date(
+                  e.eventDate,
+                ).toISOString()} (${relativeDayLabel(transaction.postedAt, e.eventDate)})`,
+            )
+            .join("\n") || "  (none)"
+        }`,
+        `associated projects:\n${
+          person.projects
+            .map((p) => `  - projectId=${p._id} name="${p.name}" (${p.status})`)
+            .join("\n") || "  (none)"
+        }`,
+      ].join("\n")
+    : "(no cardholder on file for this transaction)";
+
   const systemPrompt =
-    "You are a nonprofit bookkeeper's assistant. Given ONE card transaction " +
-    "and the chapter's funds, budget categories, projects, and the events " +
-    "happening that week, propose how to CODE the charge. Only ever reference " +
-    "ids that appear in the provided lists — never invent an id. Reply with a " +
-    'SINGLE JSON object and nothing else: {"fundId"?, "categoryId"?, ' +
-    '"projectId"?, "eventId"?, "confidence" (0-1), "rationale"}. Omit a field ' +
-    "when you have no good match. You never move money — a human confirms " +
-    "your proposal.";
+    "You are a nonprofit bookkeeper's assistant. Given ONE card transaction, " +
+    "the chapter's funds/budget categories, and its events/projects (each " +
+    "ranked NEAREST the charge's posted date first — weigh an earlier entry " +
+    "more than a later one, they are not a flat unordered list), plus the " +
+    "CARDHOLDER's own roster info and the events/projects THEY'RE personally " +
+    "associated with (when known), propose how to CODE the charge. A match " +
+    "to the cardholder's own event/project, or a candidate close in time to " +
+    "the charge, is a strong signal — weigh both over a same-name-only guess " +
+    "that is neither. Only ever reference ids that appear in the provided " +
+    'lists — never invent an id. Reply with a SINGLE JSON object and nothing ' +
+    'else: {"fundId"?, "categoryId"?, "projectId"?, "eventId"?, "confidence" ' +
+    '(0-1), "rationale"}. Omit a field when you have no good match. You ' +
+    "never move money — a human confirms your proposal.";
 
   const userPrompt = [
     "TRANSACTION",
@@ -190,13 +249,15 @@ async function codeTransaction(
     `amount: ${(transaction.amountCents / 100).toFixed(2)} (${transaction.flow})`,
     `postedAt: ${new Date(transaction.postedAt).toISOString()}`,
     "",
+    `CARDHOLDER\n${personSection}`,
+    "",
     `FUNDS\n${fundLines || "(none)"}`,
     "",
     `CATEGORIES\n${categoryLines || "(none)"}`,
     "",
-    `PROJECTS\n${projectLines || "(none)"}`,
+    `PROJECTS (ranked, most relevant first)\n${projectLines || "(none)"}`,
     "",
-    `EVENTS THAT WEEK\n${eventLines || "(none)"}`,
+    `EVENTS (ranked nearest the charge date first)\n${eventLines || "(none)"}`,
   ].join("\n");
 
   // Raw OpenRouter fetch (mirrors aiActions.ts). Best-effort: ANY network /
