@@ -96,10 +96,16 @@ async function seedFundAndCategory(
   });
 }
 
-/** Insert an unreviewed outflow transaction, optionally with a stored suggestion. */
+/** Insert an unreviewed outflow transaction, optionally with a stored
+ *  suggestion and/or a cardholder link (R2 — `personId`/`cardId`/`postedAt`). */
 async function seedTxn(
   s: ChapterSetup,
   suggestion?: Record<string, unknown>,
+  extra: Partial<{
+    personId: Id<"people">;
+    cardId: Id<"cards">;
+    postedAt: number;
+  }> = {},
 ): Promise<Id<"transactions">> {
   return await run(s.t, (ctx) =>
     ctx.db.insert("transactions", {
@@ -107,10 +113,12 @@ async function seedTxn(
       source: "manual",
       flow: "outflow",
       amountCents: 4200,
-      postedAt: Date.now(),
+      postedAt: extra.postedAt ?? Date.now(),
       merchantName: "Office Depot",
       status: "unreviewed",
       createdAt: Date.now(),
+      personId: extra.personId,
+      cardId: extra.cardId,
       ...(suggestion ? { aiSuggestion: suggestion } : {}),
     }),
   );
@@ -135,6 +143,7 @@ async function seedProject(s: ChapterSetup): Promise<Id<"projects">> {
 async function seedEvent(
   s: ChapterSetup,
   eventDate: number = Date.now(),
+  opts: { name?: string; ownerPersonId?: Id<"people"> } = {},
 ): Promise<Id<"events">> {
   return await run(s.t, async (ctx) => {
     const now = Date.now();
@@ -152,14 +161,118 @@ async function seedEvent(
       chapterId: s.chapterId,
       eventTypeId,
       templateVersion: 1,
-      name: "Sunday Gathering",
+      name: opts.name ?? "Sunday Gathering",
       eventDate,
+      ownerPersonId: opts.ownerPersonId,
       status: "planning",
       createdBy: s.userId,
       createdAt: now,
       updatedAt: now,
     });
   });
+}
+
+/** Seed a roster `people` row (R2 context tests — the cardholder + their
+ *  associated events/projects). Distinct from `seedSelfPerson`, which links a
+ *  person to the AUTHENTICATED CALLER; this one is a bare roster row. */
+async function seedPerson(
+  s: ChapterSetup,
+  overrides: Partial<{
+    name: string;
+    role: string;
+    isTeamMember: boolean;
+  }> = {},
+): Promise<Id<"people">> {
+  return await run(s.t, (ctx) =>
+    ctx.db.insert("people", {
+      chapterId: s.chapterId,
+      name: overrides.name ?? "Jordan Rivera",
+      role: overrides.role,
+      isTeamMember: overrides.isTeamMember,
+      createdAt: Date.now(),
+    }),
+  );
+}
+
+/** Seed a card whose cardholder is `personId` (R2 — `personId`-less txns
+ *  resolve the cardholder via `transaction.cardId` → this row). */
+async function seedCard(
+  s: ChapterSetup,
+  cardholderPersonId: Id<"people">,
+): Promise<Id<"cards">> {
+  return await run(s.t, (ctx) =>
+    ctx.db.insert("cards", {
+      chapterId: s.chapterId,
+      cardholderPersonId,
+      type: "virtual",
+      status: "active",
+      createdAt: Date.now(),
+    }),
+  );
+}
+
+/** Seed a volunteer engagement linking `personId` to `eventId` (one of the
+ *  R2 person↔event association paths, alongside `roleAssignments` and
+ *  `events.ownerPersonId`). */
+async function seedEngagement(
+  s: ChapterSetup,
+  personId: Id<"people">,
+  eventId: Id<"events">,
+): Promise<void> {
+  await run(s.t, (ctx) =>
+    ctx.db.insert("engagements", {
+      chapterId: s.chapterId,
+      eventId,
+      personId,
+      type: "volunteer",
+      status: "confirmed",
+      createdAt: Date.now(),
+    }),
+  );
+}
+
+/** Seed a project in the caller's chapter, owned by `ownerPersonId` when
+ *  given (R2 — a person's owned projects are one association path). */
+async function seedProjectOwnedBy(
+  s: ChapterSetup,
+  overrides: Partial<{
+    name: string;
+    ownerPersonId: Id<"people">;
+    startDate: number;
+    deadline: number;
+  }> = {},
+): Promise<Id<"projects">> {
+  return await run(s.t, (ctx) =>
+    ctx.db.insert("projects", {
+      chapterId: s.chapterId,
+      name: overrides.name ?? "Fall Retreat",
+      status: "in_progress",
+      ownerPersonId: overrides.ownerPersonId,
+      startDate: overrides.startDate,
+      deadline: overrides.deadline,
+      createdBy: s.userId,
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    }),
+  );
+}
+
+/** Stub OpenRouter's HTTP response as a successful chat completion, AND
+ *  capture the request body so a test can inspect the prompt it was sent. */
+function stubOpenRouterCapture(content: string): { body: () => any } {
+  let captured: any;
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async (_url: string, init: RequestInit) => {
+      captured = JSON.parse(init.body as string);
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({ choices: [{ message: { content } }] }),
+      };
+    }),
+  );
+  return { body: () => captured };
 }
 
 describe("acceptSuggestion", () => {
@@ -617,6 +730,78 @@ describe("suggestCoding sanitizes a dual project+event proposal to one", () => {
   });
 });
 
+// Review fix: the write-time sanitization allow-lists in `codeTransaction`
+// were built ONLY from `context.events`/`context.projects` — the chapter-wide,
+// 50-nearest (`EVENT_LIMIT`) lists — excluding `context.person.events`/
+// `person.projects` entirely. The prompt explicitly tells the model that a
+// match to the CARDHOLDER's own event/project is a strong signal, but a model
+// that followed that instruction and proposed exactly such an event got it
+// silently dropped as "hallucinated" whenever that event fell outside the
+// general window. Fixed by unioning `person.events`/`person.projects` ids
+// into the allow-lists before filtering.
+describe("suggestCoding survives sanitization for a cardholder-associated id outside the general window", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    delete process.env.OPENROUTER_API_KEY;
+  });
+
+  test("a proposal for the cardholder's own event that ISN'T in the general events list still gets written", async () => {
+    process.env.OPENROUTER_API_KEY = "test-key";
+    const t = newT();
+    const s = await setupChapter(t);
+    const callerPersonId = await seedSelfPerson(s);
+    await grantRole(s, callerPersonId, "bookkeeper");
+    const cardholderId = await seedPerson(s, { name: "Jordan Rivera" });
+    const postedAt = Date.now();
+
+    // The cardholder's own event, associated via an `engagements` row, dated
+    // far enough back that it will NOT be among the chapter-wide 50-nearest
+    // events (`EVENT_LIMIT`) once the 50 filler events below crowd it out.
+    const farEventId = await seedEvent(s, postedAt - 1000 * DAY_MS, {
+      name: "Cardholder's Far Event",
+    });
+    await seedEngagement(s, cardholderId, farEventId);
+
+    // 50 unrelated events, each closer to `postedAt` than the far event, so
+    // the chapter-wide query's nearest-50-before scan is fully occupied by
+    // these and never even fetches the far event.
+    for (let i = 1; i <= 50; i++) {
+      await seedEvent(s, postedAt - i * DAY_MS, { name: `Filler ${i}` });
+    }
+
+    const txnId = await seedTxn(s, undefined, {
+      personId: cardholderId,
+      postedAt,
+    });
+
+    // Sanity check: confirm the far event really is excluded from the
+    // general list but present in the cardholder's own associated list —
+    // otherwise this test wouldn't actually exercise the fix.
+    const context = await s.t.query(
+      internal.aiCodingData.loadForSuggestionSystem,
+      { transactionId: txnId },
+    );
+    expect(context.events.map((e) => e._id)).not.toContain(farEventId);
+    expect(context.person?.events.map((e) => e._id)).toContain(farEventId);
+
+    stubOpenRouterOk(
+      JSON.stringify({
+        eventId: farEventId,
+        confidence: 0.8,
+        rationale: "Matches the cardholder's own event.",
+      }),
+    );
+
+    const result = await s.as.action(api.aiCoding.suggestCoding, {
+      transactionId: txnId,
+    });
+
+    expect(result?.eventId).toEqual(farEventId);
+    const txn = await run(s.t, (ctx) => ctx.db.get(txnId));
+    expect(txn?.aiSuggestion?.eventId).toEqual(farEventId);
+  });
+});
+
 describe("a failed suggestCoding attempt doesn't get immediately re-swept", () => {
   afterEach(() => {
     vi.unstubAllGlobals();
@@ -767,5 +952,223 @@ describe("suggestCoding round-trip via mocked OpenRouter fetch", () => {
     expect(txn?.aiSuggestion?.fundId).toEqual(fundId);
     expect(txn?.aiSuggestion?.categoryId).toEqual(categoryId);
     expect(txn?.aiSuggestion?.failed).toBeFalsy();
+  });
+});
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+// R2: enrich the coding context with the CARDHOLDER (person + their own
+// associated events/projects) and rank candidate events/projects by
+// proximity to the charge's `postedAt` instead of a flat list. These tests
+// exercise `gatherSuggestionContext` through `loadForSuggestionSystem` (the
+// no-auth loader) directly — no OpenRouter call is needed to verify the
+// context it hands the model.
+describe("R2: cardholder context (gatherSuggestionContext)", () => {
+  test("includes the cardholder's associated events/projects when transaction.personId is set (name omitted — PII minimization)", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const personId = await seedPerson(s, {
+      name: "Jordan Rivera",
+      role: "Videographer",
+      isTeamMember: true,
+    });
+    // Associated via `events.ownerPersonId` (owns the event outright).
+    const ownedEventId = await seedEvent(s, Date.now(), {
+      name: "Owned Event",
+      ownerPersonId: personId,
+    });
+    // Associated via `engagements` (a volunteer engagement, not ownership).
+    const engagedEventId = await seedEvent(s, Date.now() + DAY_MS, {
+      name: "Engaged Event",
+    });
+    await seedEngagement(s, personId, engagedEventId);
+    // Associated via `projects.ownerPersonId`.
+    const projectId = await seedProjectOwnedBy(s, {
+      name: "Owned Project",
+      ownerPersonId: personId,
+    });
+    const txnId = await seedTxn(s, undefined, { personId });
+
+    const context = await s.t.query(
+      internal.aiCodingData.loadForSuggestionSystem,
+      { transactionId: txnId },
+    );
+
+    expect(context.person?._id).toEqual(personId);
+    // `name` is deliberately NOT part of the context shape — see aiCoding.ts.
+    expect(context.person).not.toHaveProperty("name");
+    expect(context.person?.role).toBe("Videographer");
+    expect(context.person?.isTeamMember).toBe(true);
+    const personEventIds = context.person?.events.map((e) => e._id);
+    expect(personEventIds).toContain(ownedEventId);
+    expect(personEventIds).toContain(engagedEventId);
+    expect(context.person?.projects.map((p) => p._id)).toContain(projectId);
+  });
+
+  test("resolves the cardholder via cardId when personId is unset", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const personId = await seedPerson(s, { name: "Sam Okafor" });
+    const cardId = await seedCard(s, personId);
+    const txnId = await seedTxn(s, undefined, { cardId });
+
+    const context = await s.t.query(
+      internal.aiCodingData.loadForSuggestionSystem,
+      { transactionId: txnId },
+    );
+
+    expect(context.person?._id).toEqual(personId);
+  });
+
+  test("omits person context gracefully when the txn has neither personId nor cardId", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const txnId = await seedTxn(s); // no personId, no cardId
+
+    const context = await s.t.query(
+      internal.aiCodingData.loadForSuggestionSystem,
+      { transactionId: txnId },
+    );
+
+    expect(context.person).toBeUndefined();
+  });
+});
+
+describe("R2: date-window ranking (gatherSuggestionContext)", () => {
+  test("an event 3 days from postedAt outranks one 200 days away", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const postedAt = Date.now();
+    const nearEventId = await seedEvent(s, postedAt + 3 * DAY_MS, {
+      name: "Near Event",
+    });
+    const farEventId = await seedEvent(s, postedAt + 200 * DAY_MS, {
+      name: "Far Event",
+    });
+    const txnId = await seedTxn(s, undefined, { postedAt });
+
+    const context = await s.t.query(
+      internal.aiCodingData.loadForSuggestionSystem,
+      { transactionId: txnId },
+    );
+
+    const eventIds = context.events.map((e) => e._id);
+    const nearIndex = eventIds.indexOf(nearEventId);
+    const farIndex = eventIds.indexOf(farEventId);
+    expect(nearIndex).toBeGreaterThanOrEqual(0);
+    expect(farIndex).toBeGreaterThanOrEqual(0);
+    expect(nearIndex).toBeLessThan(farIndex);
+  });
+
+  test("projects are ranked by proximity to postedAt via startDate/deadline; undated projects sort last", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const postedAt = Date.now();
+    const nearProjectId = await seedProjectOwnedBy(s, {
+      name: "Near Project",
+      startDate: postedAt + 5 * DAY_MS,
+    });
+    const farProjectId = await seedProjectOwnedBy(s, {
+      name: "Far Project",
+      deadline: postedAt + 300 * DAY_MS,
+    });
+    const undatedProjectId = await seedProjectOwnedBy(s, {
+      name: "Undated Project",
+    });
+    const txnId = await seedTxn(s, undefined, { postedAt });
+
+    const context = await s.t.query(
+      internal.aiCodingData.loadForSuggestionSystem,
+      { transactionId: txnId },
+    );
+
+    const projectIds = context.projects.map((p) => p._id);
+    const nearIndex = projectIds.indexOf(nearProjectId);
+    const farIndex = projectIds.indexOf(farProjectId);
+    const undatedIndex = projectIds.indexOf(undatedProjectId);
+    expect(nearIndex).toBeLessThan(farIndex);
+    expect(farIndex).toBeLessThan(undatedIndex);
+  });
+});
+
+describe("R2: prompt shape includes cardholder + ranked date-proximity sections", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    delete process.env.OPENROUTER_API_KEY;
+  });
+
+  test("the prompt sent to OpenRouter carries a CARDHOLDER section and ranked EVENTS/PROJECTS headers", async () => {
+    process.env.OPENROUTER_API_KEY = "test-key";
+    const t = newT();
+    const s = await setupChapter(t);
+    const callerPersonId = await seedSelfPerson(s);
+    await grantRole(s, callerPersonId, "bookkeeper");
+    const cardholderId = await seedPerson(s, {
+      name: "Jordan Rivera",
+      role: "Videographer",
+    });
+    const postedAt = Date.now();
+    const nearEventId = await seedEvent(s, postedAt + 3 * DAY_MS, {
+      name: "Near Event",
+      ownerPersonId: cardholderId,
+    });
+    const txnId = await seedTxn(
+      s,
+      undefined,
+      { personId: cardholderId, postedAt },
+    );
+
+    const capture = stubOpenRouterCapture(
+      JSON.stringify({ confidence: 0.5, rationale: "no strong match" }),
+    );
+
+    await s.as.action(api.aiCoding.suggestCoding, { transactionId: txnId });
+
+    const body = capture.body();
+    const systemMsg: string = body.messages[0].content;
+    const userMsg: string = body.messages[1].content;
+
+    // The system prompt instructs the model to weigh cardholder association
+    // and date proximity, not just treat every list as flat/unordered.
+    expect(systemMsg).toContain("CARDHOLDER");
+    expect(systemMsg.toLowerCase()).toContain("ranked nearest");
+
+    // The user prompt carries the actual cardholder section + ranked headers.
+    expect(userMsg).toContain("CARDHOLDER");
+    expect(userMsg).toContain("role: Videographer");
+    expect(userMsg).toContain("EVENTS (ranked nearest the charge date first)");
+    expect(userMsg).toContain("PROJECTS (ranked, most relevant first)");
+    // Merchant/description/amount (#3) were already in the prompt pre-R2 —
+    // confirm they're still there alongside the new sections.
+    expect(userMsg).toContain("merchant: Office Depot");
+    expect(userMsg).toContain("amount: 42.00 (outflow)");
+    // The cardholder's own associated event is listed, with its day-offset label.
+    expect(userMsg).toContain(`eventId=${nearEventId}`);
+    expect(userMsg).toContain("(+3d)");
+    // PII minimization: the cardholder's NAME never leaves for OpenRouter —
+    // neither message references it, even though it's on the roster record.
+    expect(systemMsg).not.toContain("Jordan Rivera");
+    expect(userMsg).not.toContain("Jordan Rivera");
+    expect(userMsg).not.toContain("name:");
+  });
+
+  test("the prompt shows '(no cardholder on file...)' when the txn has no resolvable person", async () => {
+    process.env.OPENROUTER_API_KEY = "test-key";
+    const t = newT();
+    const s = await setupChapter(t);
+    const callerPersonId = await seedSelfPerson(s);
+    await grantRole(s, callerPersonId, "bookkeeper");
+    const txnId = await seedTxn(s); // no personId, no cardId
+
+    const capture = stubOpenRouterCapture(
+      JSON.stringify({ confidence: 0.3, rationale: "no match" }),
+    );
+
+    await s.as.action(api.aiCoding.suggestCoding, { transactionId: txnId });
+
+    const userMsg: string = capture.body().messages[1].content;
+    expect(userMsg).toContain(
+      "CARDHOLDER\n(no cardholder on file for this transaction)",
+    );
   });
 });
