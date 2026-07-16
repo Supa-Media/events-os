@@ -3655,8 +3655,8 @@ const SECTIONS_IN_ORDER: Omit<AcademySection, "order">[] = [
         kind: "bullets",
         items: [
           "**Accounts tab:** a quiet status/audit view — account health, not a place chapters configure anything.",
-          "**Card lifecycle you administer:** cancel/close a card (FM + Treasurer only), and approve card requests members submit (a member requests, you or the Treasurer approve, then it issues).",
-          "**Self-serve freeze is everyone's own, not yours to grant:** any cardholder can freeze their OWN card instantly if they suspect foul play — deliberately outside your queue so nobody waits on you to protect themselves.",
+          "**Card lifecycle you administer today:** you (or the Treasurer) issue a card directly to a cardholder, and you lock or unlock any card in your scope whenever it needs to go dark or come back — the same `lockCard`/`unlockCard` mechanism the day-7 receipt auto-lock itself runs on.",
+          "**A compromised card is a phone call, not a click:** a cardholder who suspects fraud contacts their Treasurer (chapter) or you (central) right away — there's no self-serve freeze yet, so a manager lock is what protects them, the moment they reach out.",
         ],
       },
       {
@@ -3665,11 +3665,15 @@ const SECTIONS_IN_ORDER: Omit<AcademySection, "order">[] = [
         text: "The accounts layer became fully automatic and opaque on purpose — no one pastes in an Increase account ID anymore, no chapter picks a bank account from a dropdown. Your visibility into it is a deliberate exception for exactly two seats: ED and FM.",
       },
       {
+        kind: "tip",
+        text: "**Coming soon:** self-serve freeze, cancel/close, and request-a-card are WP-C.1 — designed, not yet built. Until they ship: a compromised card gets locked by whichever manager the cardholder reaches (not the cardholder themselves), cards are issued directly by a manager rather than approved from a member's request, and there's no way to close a card out — only lock it.",
+      },
+      {
         kind: "reveal",
         prompt:
           "A member emails asking you to freeze their card because their phone was stolen. What do you tell them?",
         answer:
-          "They don't need you — self-serve freeze is instant and theirs alone to trigger, right from their own Cards tab. Point them there first; it's faster than waiting on you, and it's built that way on purpose.",
+          "Don't send them anywhere — lock it yourself right now (or ask their Treasurer to), the same way the day-7 receipt auto-lock does it. Self-serve freeze isn't built yet, so a manager lock is the fastest real protection they have today.",
       },
     ],
     quiz: [
@@ -3698,28 +3702,28 @@ const SECTIONS_IN_ORDER: Omit<AcademySection, "order">[] = [
           "Central is provisioned its own real account (WP-1.2), and that account is the City Launch Fund's actual home.",
       },
       {
-        prompt: "A cardholder suspects their card was compromised. Who freezes it?",
+        prompt: "A cardholder suspects their card was compromised. What's the shipped response today?",
         options: [
-          "Only the Financial Manager can freeze any card",
-          "The cardholder themselves, instantly, via self-serve freeze — no need to wait on the FM",
-          "Only the Treasurer",
-          "It requires an Increase support ticket",
+          "They freeze it themselves instantly, self-serve",
+          "They contact their Treasurer or Financial Manager immediately, who locks it with the manager lock/unlock mechanism",
+          "They wait for the day-7 receipt auto-lock to catch it",
+          "They open an Increase support ticket",
         ],
         answerIndex: 1,
         explanation:
-          "Self-serve freeze is distinct from the receipt auto-lock and exists specifically so nobody waits on a manager to protect themselves.",
+          "Self-serve freeze is WP-C.1, not shipped yet — today a compromised card gets locked by whichever manager (Treasurer or FM) the cardholder reaches, via the same lockCard mutation the receipt auto-lock itself runs on.",
       },
       {
-        prompt: "Who can cancel/close a card outright?",
+        prompt: "Are self-serve freeze, card cancel/close, and a member request-a-card flow live today?",
         options: [
-          "Any cardholder, self-serve",
-          "FM and Treasurer seats only",
-          "Only the Executive Director",
-          "It can never be canceled, only frozen",
+          "Yes, all three are live",
+          "Not yet — they're near-term (WP-C.1) additions; the only shipped control today is a manager's lock/unlock",
+          "Only cancel/close is live",
+          "Only self-serve freeze is live",
         ],
         answerIndex: 1,
         explanation:
-          "Cancel/close is a heavier action than freeze and is restricted to FM and Treasurer seats, not the cardholder themselves.",
+          "The only shipped card-lifecycle control today is manager lock/unlock (lockCard/unlockCard) — self-serve freeze, cancel/close, and request-a-card are WP-C.1, still ahead.",
       },
     ],
   },
