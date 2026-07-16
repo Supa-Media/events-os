@@ -99,6 +99,11 @@ const suggestionContextValidator = v.object({
       _id: v.id("events"),
       name: v.string(),
       eventDate: v.number(),
+      // WP-U (one home per dollar): the event's one_time budget, when it has
+      // one — `null` marks a budget-less event the model must NOT propose (it
+      // has nowhere to attach yet; only a human picking it in the "For"
+      // picker summons its budget).
+      budgetId: v.union(v.id("budgets"), v.null()),
     }),
   ),
   projects: v.array(
@@ -106,6 +111,7 @@ const suggestionContextValidator = v.object({
       _id: v.id("projects"),
       name: v.string(),
       status: v.string(),
+      budgetId: v.union(v.id("budgets"), v.null()),
     }),
   ),
   // The cardholder (R2): resolved from `transaction.personId`, else via
@@ -126,6 +132,7 @@ const suggestionContextValidator = v.object({
           _id: v.id("events"),
           name: v.string(),
           eventDate: v.number(),
+          budgetId: v.union(v.id("budgets"), v.null()),
         }),
       ),
       projects: v.array(
@@ -133,6 +140,7 @@ const suggestionContextValidator = v.object({
           _id: v.id("projects"),
           name: v.string(),
           status: v.string(),
+          budgetId: v.union(v.id("budgets"), v.null()),
         }),
       ),
     }),
@@ -221,11 +229,43 @@ async function resolveCardholderPersonId(
  * (a free-text label array — "Eden", "Love Thy Neighbor" — not `Id<"projects">`
  * references, so it can't be resolved to real project docs).
  */
+/**
+ * The chapter's one_time event/project budgets, keyed by `scopeRefId` (WP-U:
+ * one home per dollar) — a SINGLE bounded scan (mirrors `finances.
+ * forPickerOptions`'s approach) so every event/project in the context can be
+ * annotated with its `budgetId` without an N+1 `by_ref` lookup per row. Scoped
+ * to the chapter's OWN budgets only — a project whose budget has since moved
+ * to central (`transferProjectScope`) is out of scope for AI auto-coding, same
+ * as central funds/categories are (auto-coding is chapter-only).
+ */
+async function loadRefBudgetMaps(
+  ctx: QueryCtx,
+  chapterId: Id<"chapters">,
+): Promise<{
+  eventBudgetByRef: Map<string, Id<"budgets">>;
+  projectBudgetByRef: Map<string, Id<"budgets">>;
+}> {
+  const budgets = await ctx.db
+    .query("budgets")
+    .withIndex("by_chapter", (q) => q.eq("chapterId", chapterId))
+    .take(CONTEXT_LIMIT);
+  const eventBudgetByRef = new Map<string, Id<"budgets">>();
+  const projectBudgetByRef = new Map<string, Id<"budgets">>();
+  for (const b of budgets) {
+    if (b.type !== "one_time" || !b.scopeRefId) continue;
+    if (b.refKind === "event") eventBudgetByRef.set(b.scopeRefId, b._id);
+    else if (b.refKind === "project") projectBudgetByRef.set(b.scopeRefId, b._id);
+  }
+  return { eventBudgetByRef, projectBudgetByRef };
+}
+
 async function resolvePersonContext(
   ctx: QueryCtx,
   chapterId: Id<"chapters">,
   personId: Id<"people">,
   postedAt: number,
+  eventBudgetByRef: Map<string, Id<"budgets">>,
+  projectBudgetByRef: Map<string, Id<"budgets">>,
 ): Promise<SuggestionContext["person"]> {
   const person = await ctx.db.get(personId);
   if (!person || person.chapterId !== chapterId) return undefined;
@@ -275,8 +315,18 @@ async function resolvePersonContext(
     _id: person._id,
     role: person.role,
     isTeamMember: person.isTeamMember,
-    events: events.map((e) => ({ _id: e._id, name: e.name, eventDate: e.eventDate })),
-    projects: projects.map((p) => ({ _id: p._id, name: p.name, status: p.status })),
+    events: events.map((e) => ({
+      _id: e._id,
+      name: e.name,
+      eventDate: e.eventDate,
+      budgetId: eventBudgetByRef.get(e._id as string) ?? null,
+    })),
+    projects: projects.map((p) => ({
+      _id: p._id,
+      name: p.name,
+      status: p.status,
+      budgetId: projectBudgetByRef.get(p._id as string) ?? null,
+    })),
   };
 }
 
@@ -350,9 +400,18 @@ async function gatherSuggestionContext(
     projectProximityTimestamp(p, txn.postedAt),
   );
 
+  const { eventBudgetByRef, projectBudgetByRef } = await loadRefBudgetMaps(ctx, chapterId);
+
   const personId = await resolveCardholderPersonId(ctx, chapterId, txn);
   const person = personId
-    ? await resolvePersonContext(ctx, chapterId, personId, txn.postedAt)
+    ? await resolvePersonContext(
+        ctx,
+        chapterId,
+        personId,
+        txn.postedAt,
+        eventBudgetByRef,
+        projectBudgetByRef,
+      )
     : undefined;
 
   return {
@@ -381,11 +440,13 @@ async function gatherSuggestionContext(
       _id: e._id,
       name: e.name,
       eventDate: e.eventDate,
+      budgetId: eventBudgetByRef.get(e._id as string) ?? null,
     })),
     projects: rankedProjects.map((p) => ({
       _id: p._id,
       name: p.name,
       status: p.status,
+      budgetId: projectBudgetByRef.get(p._id as string) ?? null,
     })),
     person,
   };
@@ -525,7 +586,7 @@ export const sweepUnsuggestedTransactions = internalMutation({
  * that — an id from another chapter is a hard error, not a silent write.
  */
 async function assertLinkInChapter<
-  T extends "funds" | "budgetCategories" | "projects" | "events",
+  T extends "funds" | "budgetCategories" | "budgets",
 >(
   ctx: MutationCtx | QueryCtx,
   chapterId: Id<"chapters">,
@@ -552,8 +613,12 @@ export const writeSuggestion = internalMutation({
     transactionId: v.id("transactions"),
     fundId: v.optional(v.id("funds")),
     categoryId: v.optional(v.id("budgetCategories")),
-    projectId: v.optional(v.id("projects")),
-    eventId: v.optional(v.id("events")),
+    // WP-U (one home per dollar): the model proposes a BUDGET directly — the
+    // old separate `projectId`/`eventId` args are gone. `writeSuggestion`
+    // never invents a budget; it only ever echoes back a `budgetId` the
+    // context already exposed (an event/project WITH a budget — see
+    // `aiCoding.ts`'s sanitize step), so this never summons one.
+    budgetId: v.optional(v.id("budgets")),
     confidence: v.optional(v.number()),
     rationale: v.optional(v.string()),
     model: v.optional(v.string()),
@@ -591,22 +656,13 @@ export const writeSuggestion = internalMutation({
         args.categoryId,
         "Category",
       );
-    if (args.projectId)
-      await assertLinkInChapter(
-        ctx,
-        chapterId,
-        "projects",
-        args.projectId,
-        "Project",
-      );
-    if (args.eventId)
-      await assertLinkInChapter(ctx, chapterId, "events", args.eventId, "Event");
+    if (args.budgetId)
+      await assertLinkInChapter(ctx, chapterId, "budgets", args.budgetId, "Budget");
 
     const aiSuggestion: Doc<"transactions">["aiSuggestion"] = {
       fundId: args.fundId,
       categoryId: args.categoryId,
-      projectId: args.projectId,
-      eventId: args.eventId,
+      budgetId: args.budgetId,
       confidence: args.confidence,
       rationale: args.rationale,
       model: args.model,
@@ -678,7 +734,8 @@ export const acceptSuggestion = mutation({
     // `writeSuggestion`), but the referenced doc can vanish between then and
     // now (e.g. the WP-1.4 fund-merge migration deleting an extra fund) —
     // re-check existence here and skip a now-dangling id rather than writing
-    // it onto the transaction.
+    // it onto the transaction. WP-U: `budgetId` is the ONLY link the
+    // suggestion carries now (subsumes the old separate project/event link).
     const patch: Partial<Doc<"transactions">> = {};
     if (suggestion.fundId !== undefined && (await ctx.db.get(suggestion.fundId)))
       patch.fundId = suggestion.fundId;
@@ -688,15 +745,10 @@ export const acceptSuggestion = mutation({
     )
       patch.categoryId = suggestion.categoryId;
     if (
-      suggestion.projectId !== undefined &&
-      (await ctx.db.get(suggestion.projectId))
+      suggestion.budgetId !== undefined &&
+      (await ctx.db.get(suggestion.budgetId))
     )
-      patch.projectId = suggestion.projectId;
-    if (
-      suggestion.eventId !== undefined &&
-      (await ctx.db.get(suggestion.eventId))
-    )
-      patch.eventId = suggestion.eventId;
+      patch.budgetId = suggestion.budgetId;
 
     // A suggestion of only confidence/rationale (no links) has nothing to apply
     // — never mark a transaction "categorized" when no coding was actually set.

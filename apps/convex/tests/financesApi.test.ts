@@ -868,12 +868,12 @@ describe("enriched dashboards (prototype shapes)", () => {
     });
 
     // $100 real spend on the event, coded to Food, EXPLICITLY linked to the
-    // budget (carrying `eventId` alone is no longer an attribution link).
+    // budget (WP-U: `createManualTransaction` no longer accepts a separate
+    // `eventId` — a budget is the ONLY link).
     const spendTxnId = await s.as.mutation(api.finances.createManualTransaction, {
       flow: "outflow",
       amountCents: 10000,
       postedAt: tsInMonth(year, month),
-      eventId,
       fundId,
       categoryId,
     });
@@ -886,7 +886,6 @@ describe("enriched dashboards (prototype shapes)", () => {
       flow: "transfer",
       amountCents: 5000,
       postedAt: tsInMonth(year, month),
-      eventId,
       fundId,
       categoryId,
     });

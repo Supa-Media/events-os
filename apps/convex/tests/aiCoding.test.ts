@@ -23,10 +23,10 @@ import type { Id } from "../_generated/dataModel";
  *    `aiCoding.suggestCodingSystem` only for unreviewed txns with no
  *    `aiSuggestion` yet (or a cooled-down failed attempt), and degrades like
  *    the action when the key is unset.
- *  - `writeSuggestion` persists a `projectId` proposal (chapter-validated),
- *    the piece `suggestCoding`/`suggestCodingSystem` now also propose — and a
- *    model proposing BOTH `projectId` and `eventId` is sanitized down to just
- *    the project (never both, which would double-count into both rollups).
+ *  - `writeSuggestion` persists a `budgetId` proposal (chapter-validated) —
+ *    WP-U (one home per dollar): the model proposes a BUDGET directly instead
+ *    of a separate project/event link, so there's no more dual-proposal
+ *    sanitization to worry about (a `budgetId` is a single scalar).
  */
 
 /** Stub OpenRouter's HTTP response as a successful chat completion whose
@@ -170,6 +170,45 @@ async function seedEvent(
       updatedAt: now,
     });
   });
+}
+
+/** Raw-insert a one_time budget for an event or project ref (WP-U: the AI now
+ *  proposes a `budgetId` directly, so a test exercising that path needs the
+ *  ref's budget to already exist — mirrors what `createEventBudget`/
+ *  `createProjectBudget` would have written). */
+async function seedRefBudget(
+  s: ChapterSetup,
+  refKind: "event" | "project",
+  scopeRefId: string,
+  amountCents = 50000,
+): Promise<Id<"budgets">> {
+  return await run(s.t, (ctx) =>
+    ctx.db.insert("budgets", {
+      chapterId: s.chapterId,
+      amountCents,
+      type: "one_time",
+      refKind,
+      scopeRefId,
+      cadence: "per_instance",
+      year: 2026,
+      createdAt: Date.now(),
+    }),
+  );
+}
+
+/** Whether an event has a one_time budget yet (via `by_ref`) — confirms the
+ *  AI never summons one on a rejected/hallucinated proposal. */
+async function hasBudgetForEvent(
+  s: ChapterSetup,
+  eventId: Id<"events">,
+): Promise<boolean> {
+  const existing = await run(s.t, (ctx) =>
+    ctx.db
+      .query("budgets")
+      .withIndex("by_ref", (q) => q.eq("refKind", "event").eq("scopeRefId", eventId))
+      .first(),
+  );
+  return existing != null;
 }
 
 /** Seed a roster `people` row (R2 context tests — the cardholder + their
@@ -605,87 +644,89 @@ describe("sweepUnsuggestedTransactions (the hourly cron trigger)", () => {
   });
 });
 
-describe("projectId proposal (writeSuggestion)", () => {
-  test("persists a projectId proposal alongside fund/category", async () => {
+describe("budgetId proposal (writeSuggestion) — WP-U: one home per dollar", () => {
+  test("persists a budgetId proposal alongside fund/category", async () => {
     const t = newT();
     const s = await setupChapter(t);
     const { fundId, categoryId } = await seedFundAndCategory(s);
     const projectId = await seedProject(s);
+    const budgetId = await seedRefBudget(s, "project", projectId);
     const txnId = await seedTxn(s);
 
     await s.t.mutation(internal.aiCodingData.writeSuggestion, {
       transactionId: txnId,
       fundId,
       categoryId,
-      projectId,
+      budgetId,
       confidence: 0.8,
       rationale: "Matches the Fall Retreat project's usual vendor.",
       model: "test/model",
     });
 
     const txn = await run(s.t, (ctx) => ctx.db.get(txnId));
-    expect(txn?.aiSuggestion?.projectId).toEqual(projectId);
+    expect(txn?.aiSuggestion?.budgetId).toEqual(budgetId);
     expect(txn?.aiSuggestion?.fundId).toEqual(fundId);
     expect(txn?.aiSuggestion?.categoryId).toEqual(categoryId);
     // The model never moves money or advances status on its own.
     expect(txn?.status).toBe("unreviewed");
-    expect(txn?.projectId).toBeUndefined();
+    expect(txn?.budgetId).toBeUndefined();
   });
 
-  test("rejects a projectId from another chapter", async () => {
+  test("rejects a budgetId from another chapter", async () => {
     const t = newT();
     const s = await setupChapter(t);
     const other = await setupChapter(t, { email: "other@publicworship.life" });
     const foreignProjectId = await seedProject(other);
+    const foreignBudgetId = await seedRefBudget(other, "project", foreignProjectId);
     const txnId = await seedTxn(s);
 
     await expect(
       s.t.mutation(internal.aiCodingData.writeSuggestion, {
         transactionId: txnId,
-        projectId: foreignProjectId,
+        budgetId: foreignBudgetId,
       }),
     ).rejects.toBeInstanceOf(ConvexError);
   });
 
-  test("acceptSuggestion applies a projectId proposal", async () => {
+  test("acceptSuggestion applies a budgetId proposal", async () => {
     const t = newT();
     const s = await setupChapter(t);
     const personId = await seedSelfPerson(s);
     await grantRole(s, personId, "bookkeeper");
     const projectId = await seedProject(s);
-    const txnId = await seedTxn(s, { projectId, suggestedAt: Date.now() });
+    const budgetId = await seedRefBudget(s, "project", projectId);
+    const txnId = await seedTxn(s, { budgetId, suggestedAt: Date.now() });
 
     await s.as.mutation(api.aiCodingData.acceptSuggestion, {
       transactionId: txnId,
     });
 
     const txn = await run(s.t, (ctx) => ctx.db.get(txnId));
-    expect(txn?.projectId).toEqual(projectId);
+    expect(txn?.budgetId).toEqual(budgetId);
     expect(txn?.status).toBe("categorized");
   });
 });
 
-describe("suggestCoding sanitizes a dual project+event proposal to one", () => {
+describe("suggestCoding budgetId sanitization (WP-U: one home per dollar)", () => {
   afterEach(() => {
     vi.unstubAllGlobals();
   });
 
-  test("keeps projectId and drops eventId when the model proposes both", async () => {
+  test("keeps a proposed budgetId that matches a PROJECT's budget in context", async () => {
     process.env.OPENROUTER_API_KEY = "test-key";
     const t = newT();
     const s = await setupChapter(t);
     const personId = await seedSelfPerson(s);
     await grantRole(s, personId, "bookkeeper");
     const projectId = await seedProject(s);
-    const eventId = await seedEvent(s);
+    const budgetId = await seedRefBudget(s, "project", projectId);
     const txnId = await seedTxn(s);
 
     stubOpenRouterOk(
       JSON.stringify({
-        projectId,
-        eventId,
+        budgetId,
         confidence: 0.7,
-        rationale: "Matches both the Fall Retreat project and Sunday Gathering.",
+        rationale: "Matches the Fall Retreat project's usual vendor.",
       }),
     );
 
@@ -693,28 +734,26 @@ describe("suggestCoding sanitizes a dual project+event proposal to one", () => {
       transactionId: txnId,
     });
 
-    expect(result?.projectId).toEqual(projectId);
-    expect(result?.eventId).toBeUndefined();
-
+    expect(result?.budgetId).toEqual(budgetId);
     const txn = await run(s.t, (ctx) => ctx.db.get(txnId));
-    expect(txn?.aiSuggestion?.projectId).toEqual(projectId);
-    expect(txn?.aiSuggestion?.eventId).toBeUndefined();
+    expect(txn?.aiSuggestion?.budgetId).toEqual(budgetId);
 
     delete process.env.OPENROUTER_API_KEY;
   });
 
-  test("keeps eventId when the model proposes only an event (no project involved)", async () => {
+  test("keeps a proposed budgetId that matches an EVENT's budget in context", async () => {
     process.env.OPENROUTER_API_KEY = "test-key";
     const t = newT();
     const s = await setupChapter(t);
     const personId = await seedSelfPerson(s);
     await grantRole(s, personId, "bookkeeper");
     const eventId = await seedEvent(s);
+    const budgetId = await seedRefBudget(s, "event", eventId);
     const txnId = await seedTxn(s);
 
     stubOpenRouterOk(
       JSON.stringify({
-        eventId,
+        budgetId,
         confidence: 0.6,
         rationale: "Matches Sunday Gathering's usual caterer.",
       }),
@@ -724,9 +763,47 @@ describe("suggestCoding sanitizes a dual project+event proposal to one", () => {
       transactionId: txnId,
     });
 
-    expect(result?.eventId).toEqual(eventId);
-
+    expect(result?.budgetId).toEqual(budgetId);
     delete process.env.OPENROUTER_API_KEY;
+  });
+
+  test("drops a budgetId proposed for a budget-less event — the model must never invent one", async () => {
+    process.env.OPENROUTER_API_KEY = "test-key";
+    const t = newT();
+    const s = await setupChapter(t);
+    const personId = await seedSelfPerson(s);
+    await grantRole(s, personId, "bookkeeper");
+    // An event with NO budget yet — its context line reads
+    // `budgetId=(none — do not select)`.
+    const eventId = await seedEvent(s);
+    const txnId = await seedTxn(s);
+    // A budget from a totally unrelated chapter — stands in for a
+    // hallucinated/out-of-context id (never in this chapter's allow-list).
+    const other = await setupChapter(t, { email: "other@publicworship.life" });
+    const foreignProjectId = await seedProject(other);
+    const hallucinatedBudgetId = await seedRefBudget(
+      other,
+      "project",
+      foreignProjectId,
+    );
+
+    stubOpenRouterOk(
+      JSON.stringify({
+        budgetId: hallucinatedBudgetId,
+        confidence: 0.5,
+        rationale: "Guessed at Sunday Gathering even though it has no budget.",
+      }),
+    );
+
+    const result = await s.as.action(api.aiCoding.suggestCoding, {
+      transactionId: txnId,
+    });
+
+    expect(result?.budgetId).toBeUndefined();
+    const txn = await run(s.t, (ctx) => ctx.db.get(txnId));
+    expect(txn?.aiSuggestion?.budgetId).toBeUndefined();
+    // The budget-less event itself is untouched — no budget was summoned.
+    expect(await hasBudgetForEvent(s, eventId)).toBe(false);
   });
 });
 
@@ -745,7 +822,7 @@ describe("suggestCoding survives sanitization for a cardholder-associated id out
     delete process.env.OPENROUTER_API_KEY;
   });
 
-  test("a proposal for the cardholder's own event that ISN'T in the general events list still gets written", async () => {
+  test("a proposal for the cardholder's own event's budget that ISN'T in the general events list still gets written", async () => {
     process.env.OPENROUTER_API_KEY = "test-key";
     const t = newT();
     const s = await setupChapter(t);
@@ -761,6 +838,7 @@ describe("suggestCoding survives sanitization for a cardholder-associated id out
       name: "Cardholder's Far Event",
     });
     await seedEngagement(s, cardholderId, farEventId);
+    const farBudgetId = await seedRefBudget(s, "event", farEventId);
 
     // 50 unrelated events, each closer to `postedAt` than the far event, so
     // the chapter-wide query's nearest-50-before scan is fully occupied by
@@ -775,18 +853,20 @@ describe("suggestCoding survives sanitization for a cardholder-associated id out
     });
 
     // Sanity check: confirm the far event really is excluded from the
-    // general list but present in the cardholder's own associated list —
-    // otherwise this test wouldn't actually exercise the fix.
+    // general list but present (WITH its budgetId) in the cardholder's own
+    // associated list — otherwise this test wouldn't actually exercise the fix.
     const context = await s.t.query(
       internal.aiCodingData.loadForSuggestionSystem,
       { transactionId: txnId },
     );
     expect(context.events.map((e) => e._id)).not.toContain(farEventId);
-    expect(context.person?.events.map((e) => e._id)).toContain(farEventId);
+    const personFarEvent = context.person?.events.find((e) => e._id === farEventId);
+    expect(personFarEvent).toBeDefined();
+    expect(personFarEvent?.budgetId).toEqual(farBudgetId);
 
     stubOpenRouterOk(
       JSON.stringify({
-        eventId: farEventId,
+        budgetId: farBudgetId,
         confidence: 0.8,
         rationale: "Matches the cardholder's own event.",
       }),
@@ -796,9 +876,9 @@ describe("suggestCoding survives sanitization for a cardholder-associated id out
       transactionId: txnId,
     });
 
-    expect(result?.eventId).toEqual(farEventId);
+    expect(result?.budgetId).toEqual(farBudgetId);
     const txn = await run(s.t, (ctx) => ctx.db.get(txnId));
-    expect(txn?.aiSuggestion?.eventId).toEqual(farEventId);
+    expect(txn?.aiSuggestion?.budgetId).toEqual(farBudgetId);
   });
 });
 
@@ -831,7 +911,7 @@ describe("a failed suggestCoding attempt doesn't get immediately re-swept", () =
     expect(txn?.aiSuggestion?.suggestedAt).toBeTypeOf("number");
     // No links were (or could be) proposed on a failed attempt.
     expect(txn?.aiSuggestion?.fundId).toBeUndefined();
-    expect(txn?.aiSuggestion?.projectId).toBeUndefined();
+    expect(txn?.aiSuggestion?.budgetId).toBeUndefined();
   });
 
   test("the hourly sweep skips a transaction whose failed attempt is still within cooldown", async () => {
@@ -920,7 +1000,7 @@ describe("suggestCoding round-trip via mocked OpenRouter fetch", () => {
     const txn = await run(s.t, (ctx) => ctx.db.get(txnId));
     expect(txn?.aiSuggestion?.failed).toBe(true);
     expect(txn?.aiSuggestion?.fundId).toBeUndefined();
-    expect(txn?.aiSuggestion?.projectId).toBeUndefined();
+    expect(txn?.aiSuggestion?.budgetId).toBeUndefined();
   });
 
   test("a full mocked-fetch run proposing fundId + categoryId writes both through to the transaction", async () => {
@@ -1142,8 +1222,11 @@ describe("R2: prompt shape includes cardholder + ranked date-proximity sections"
     // confirm they're still there alongside the new sections.
     expect(userMsg).toContain("merchant: Office Depot");
     expect(userMsg).toContain("amount: 42.00 (outflow)");
-    // The cardholder's own associated event is listed, with its day-offset label.
-    expect(userMsg).toContain(`eventId=${nearEventId}`);
+    // The cardholder's own associated event is listed (by name — it has no
+    // budget yet, so its line reads `budgetId=(none — do not select)`, WP-U),
+    // with its day-offset label.
+    expect(userMsg).toContain('name="Near Event"');
+    expect(userMsg).toContain("(none — do not select)");
     expect(userMsg).toContain("(+3d)");
     // PII minimization: the cardholder's NAME never leaves for OpenRouter —
     // neither message references it, even though it's on the roster record.

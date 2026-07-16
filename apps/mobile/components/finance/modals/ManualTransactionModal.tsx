@@ -4,11 +4,14 @@
  * The unified `transactions` record is the ONLY source of "actual" money, so
  * this is how a bookkeeper records a charge or deposit that didn't sync from a
  * card/bank. Amount is collected in dollars and sent as a non-negative integer
- * of cents; direction is the `flow` (outflow/inflow), never a sign. Optional
- * category / event / project links attribute the spend for the rollups —
- * there's no fund picker (funds are backend-only, WP-1.4); the transaction
- * silently lands on the chapter's General Fund server-side. Backed by
- * `createManualTransaction`.
+ * of cents; direction is the `flow` (outflow/inflow), never a sign. An
+ * optional category + the "For" picker (WP-U: one home per dollar — an event,
+ * project, or recurring budget) attribute the spend for the rollups — there's
+ * no fund picker (funds are backend-only, WP-1.4); the transaction silently
+ * lands on the chapter's General Fund server-side. Backed by
+ * `createManualTransaction`, which now accepts a single `budgetId` (picking a
+ * budget-less event/project first summons its $0 budget via
+ * `finances.summonBudgetForRef`).
  */
 import { useMemo, useState } from "react";
 import { Modal, Pressable, ScrollView, Text, View } from "react-native";
@@ -18,6 +21,7 @@ import type { Id } from "@events-os/convex/_generated/dataModel";
 import { Button, DateTimeField, Field, Icon, Select, TextField } from "../../ui";
 import { colors } from "../../../lib/theme";
 import { alertError } from "../../../lib/errors";
+import { buildForPickerItems, resolveForPickerValue } from "../reconcile/forPicker";
 
 const FLOW_OPTIONS = [
   { value: "outflow", label: "Outflow (charge)" },
@@ -26,8 +30,8 @@ const FLOW_OPTIONS = [
 
 export function ManualTransactionModal({ onClose }: { onClose: () => void }) {
   const create = useMutation(api.finances.createManualTransaction);
-  const events = useQuery(api.events.list, { scope: "all" }) ?? [];
-  const projects = useQuery(api.projects.list, {}) ?? [];
+  const summonBudgetForRef = useMutation(api.finances.summonBudgetForRef);
+  const forOptions = useQuery(api.finances.forPickerOptions, {});
 
   const [merchant, setMerchant] = useState("");
   const [description, setDescription] = useState("");
@@ -35,8 +39,7 @@ export function ManualTransactionModal({ onClose }: { onClose: () => void }) {
   const [flow, setFlow] = useState<"outflow" | "inflow">("outflow");
   const [postedAt, setPostedAt] = useState(Date.now());
   const [categoryId, setCategoryId] = useState<string | null>(null);
-  const [eventId, setEventId] = useState<string | null>(null);
-  const [projectId, setProjectId] = useState<string | null>(null);
+  const [forValue, setForValue] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
 
   const categories = useQuery(api.finances.listCategories, {}) ?? [];
@@ -48,19 +51,9 @@ export function ManualTransactionModal({ onClose }: { onClose: () => void }) {
     ],
     [categories],
   );
-  const eventOptions = useMemo(
-    () => [
-      { value: "", label: "— No event —" },
-      ...events.map((e) => ({ value: e._id, label: e.name })),
-    ],
-    [events],
-  );
-  const projectOptions = useMemo(
-    () => [
-      { value: "", label: "— No project —" },
-      ...projects.map((p) => ({ value: p._id, label: p.name })),
-    ],
-    [projects],
+  const forItems = useMemo(
+    () => (forOptions ? buildForPickerItems(forOptions) : [{ value: "", label: "None" }]),
+    [forOptions],
   );
 
   async function submit() {
@@ -76,6 +69,9 @@ export function ManualTransactionModal({ onClose }: { onClose: () => void }) {
     }
     setSaving(true);
     try {
+      const budgetId = forValue
+        ? await resolveForPickerValue(forValue, (args) => summonBudgetForRef(args))
+        : null;
       await create({
         flow,
         amountCents,
@@ -83,8 +79,7 @@ export function ManualTransactionModal({ onClose }: { onClose: () => void }) {
         ...(merchant.trim() ? { merchantName: merchant.trim() } : {}),
         ...(description.trim() ? { description: description.trim() } : {}),
         ...(categoryId ? { categoryId: categoryId as Id<"budgetCategories"> } : {}),
-        ...(eventId ? { eventId: eventId as Id<"events"> } : {}),
-        ...(projectId ? { projectId: projectId as Id<"projects"> } : {}),
+        ...(budgetId ? { budgetId } : {}),
       });
       onClose();
     } catch (err) {
@@ -156,26 +151,13 @@ export function ManualTransactionModal({ onClose }: { onClose: () => void }) {
               onChange={(v) => setCategoryId(v || null)}
               placeholder="— No category —"
             />
-            <View className="flex-row gap-3">
-              <View className="flex-1">
-                <Select
-                  label="Event (optional)"
-                  value={eventId}
-                  options={eventOptions}
-                  onChange={(v) => setEventId(v || null)}
-                  placeholder="— No event —"
-                />
-              </View>
-              <View className="flex-1">
-                <Select
-                  label="Project (optional)"
-                  value={projectId}
-                  options={projectOptions}
-                  onChange={(v) => setProjectId(v || null)}
-                  placeholder="— No project —"
-                />
-              </View>
-            </View>
+            <Select
+              label="For (optional)"
+              value={forValue}
+              options={forItems}
+              onChange={(v) => setForValue(v || null)}
+              placeholder="— None —"
+            />
           </ScrollView>
 
           <View className="flex-row justify-end gap-2 border-t border-border px-5 py-4">

@@ -280,6 +280,12 @@ export const transactions = defineTable({
     v.object({
       fundId: v.optional(v.id("funds")),
       categoryId: v.optional(v.id("budgetCategories")),
+      // WP-U (one home per dollar): the model now proposes a BUDGET directly
+      // instead of a separate event/project link — budgetId subsumes both.
+      // `projectId`/`eventId` are kept below only so an OLD stored suggestion
+      // (written before this PR) still validates; nothing writes them anymore
+      // (see `aiCodingData.writeSuggestion`) — phase B drops them.
+      budgetId: v.optional(v.id("budgets")),
       projectId: v.optional(v.id("projects")),
       eventId: v.optional(v.id("events")),
       confidence: v.optional(v.number()),
