@@ -89,9 +89,16 @@ describe("personTransactions — no-seat member reads their own", () => {
     const other = await seedPerson(s, { name: "Someone else" });
     await seedTxn(s, { personId: other });
 
-    await expect(
-      s.as.query(api.finances.personTransactions, { personId: other }),
-    ).rejects.toBeInstanceOf(ConvexError);
+    let caught: unknown;
+    try {
+      await s.as.query(api.finances.personTransactions, { personId: other });
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(ConvexError);
+    expect((caught as ConvexError<{ code: string }>).data.code).toBe(
+      "FORBIDDEN",
+    );
   });
 
   test("a viewer (or above) CAN read a different person's transactions", async () => {
@@ -141,12 +148,19 @@ describe("attachReceipt — own-txn allowance for no-seat members", () => {
     const txnId = await seedTxn(s, { personId: other });
     const storageId = await storeBlob(t);
 
-    await expect(
-      s.as.mutation(api.finances.attachReceipt, {
+    let caught: unknown;
+    try {
+      await s.as.mutation(api.finances.attachReceipt, {
         transactionId: txnId,
         storageId,
-      }),
-    ).rejects.toBeInstanceOf(ConvexError);
+      });
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(ConvexError);
+    expect((caught as ConvexError<{ code: string }>).data.code).toBe(
+      "FORBIDDEN",
+    );
   });
 
   test("a bookkeeper attaches a receipt to ANY chapter transaction", async () => {

@@ -48,11 +48,13 @@ function isActive(pathname: string, path: string): boolean {
 export default function FinancesLayout() {
   const pathname = usePathname();
   const router = useRouter();
-  // [] (no grants at all) = a no-seat member; undefined while loading, in
-  // which case default to the full seat-holder tab set rather than flashing
-  // the reduced bar for every caller on first paint.
+  // [] (no grants at all) = a no-seat member; undefined while loading. Render
+  // NO tabs while loading rather than guessing — defaulting to the full
+  // seat-holder set would flash Dashboard/Reconcile/Cards/Accounts at every
+  // no-seat member for a paint before `seats` resolves to `[]`.
   const seats = useQuery(api.financeRoles.mySeats, {});
-  const tabs = seats !== undefined && seats.length === 0 ? MEMBER_TABS : SEAT_TABS;
+  const tabs =
+    seats === undefined ? [] : seats.length === 0 ? MEMBER_TABS : SEAT_TABS;
 
   return (
     <View className="flex-1">

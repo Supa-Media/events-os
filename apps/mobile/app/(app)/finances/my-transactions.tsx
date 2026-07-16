@@ -146,7 +146,14 @@ export default function MyTransactionsScreen() {
                   <Cell width={150} align="right">
                     {isPersonal ? (
                       <Badge label="Personal" tone="accent" />
-                    ) : (
+                    ) : t.cardLast4 != null ? (
+                      // `flagPersonalCharge` (cards.ts) throws NOT_A_CARD_CHARGE
+                      // for any txn without a `cardId`. `txnSummary` doesn't
+                      // expose `cardId` directly, but a person-attributed txn
+                      // only ever gets `cardId` and `cardLast4` set together
+                      // (native Increase card sync + legacy Relay/FC linking
+                      // both write them in the same step) — so `cardLast4` is
+                      // the reliable stand-in for "this is a card charge".
                       <Button
                         title="Flag personal"
                         variant="ghost"
@@ -154,7 +161,7 @@ export default function MyTransactionsScreen() {
                         icon="flag"
                         onPress={() => handleFlag(t.id)}
                       />
-                    )}
+                    ) : null}
                   </Cell>
                 </Row>
               );
