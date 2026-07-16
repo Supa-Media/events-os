@@ -353,7 +353,9 @@ const attentionItem = v.object({
 });
 
 const chapterRollupRow = v.object({
-  chapterId: v.id("chapters"),
+  // A real chapter, or the CENTRAL sentinel for the "Central" row (WP-0.3) —
+  // central-scoped spend rolled up alongside the chapter rows.
+  chapterId: v.union(v.id("chapters"), v.literal(CENTRAL)),
   chapterName: v.string(),
   subtitle: v.optional(v.union(v.string(), v.null())),
   spentCents: v.number(),
@@ -1651,6 +1653,20 @@ export const dashboardCentral = query({
     // Read the env flag once for the whole cross-chapter rollup.
     const sandboxMode = await readSandbox(ctx);
 
+    // Central budgets, loaded once up front (not just for the "Central" row
+    // built below, but also to PARTITION each chapter row's spend): a txn
+    // whose `budgetId` resolves to one of these belongs to the Central row,
+    // not its posting chapter's row — otherwise the same dollar is counted in
+    // both (mirrors `dashboardChapter`'s `centralLinkedCents` split, WP-0.1).
+    const centralBudgetDocs = await ctx.db
+      .query("budgets")
+      .withIndex("by_chapter_and_period", (q) =>
+        q.eq("chapterId", CENTRAL).eq("year", year),
+      )
+      .take(ROLLUP_SCAN_LIMIT);
+    const centralBudgetById = new Map(centralBudgetDocs.map((b) => [b._id, b] as const));
+    const centralBudgetIds = new Set(centralBudgetDocs.map((b) => b._id));
+
     let totalMonthSpendCents = 0;
     let orgUnattributedCents = 0;
     let activeChapters = 0;
@@ -1676,12 +1692,28 @@ export const dashboardCentral = query({
       // selected month, or Jan..throughMonth in YTD).
       const periodTxns = await loadPeriodTxns(ctx, chapter._id, year, sandboxMode);
       const dashTxns = periodTxns.filter((tr) => inDashRange(tr.postedAt, dp));
+      // Full chapter spend (drives the org-wide "Spent" tile below, where
+      // each real dollar — central-linked or not — is counted exactly once
+      // under whichever chapter it was posted in).
       const chapterPeriodSpend = sumSpend(dashTxns);
       totalMonthSpendCents += chapterPeriodSpend;
       orgUnattributedCents += dashTxns.reduce(
         (s, tr) => (isSpend(tr) && tr.budgetId == null ? s + tr.amountCents : s),
         0,
       );
+      // This chapter ROW's spend excludes central-linked txns — those are
+      // surfaced only in the "Central" row below (see the partition comment
+      // where `centralBudgetIds` is built). Without this exclusion the same
+      // txn is double-counted: once here, once in the Central row.
+      const chapterOwnSpendCents =
+        chapterPeriodSpend -
+        dashTxns.reduce(
+          (s, tr) =>
+            isSpend(tr) && tr.budgetId != null && centralBudgetIds.has(tr.budgetId)
+              ? s + tr.amountCents
+              : s,
+          0,
+        );
 
       // Month-equivalent budget allocation (monthly→amount, quarterly→÷3,
       // yearly→÷12, per-instance→in-period only) — comparable to one month of
@@ -1745,30 +1777,26 @@ export const dashboardCentral = query({
         .take(ROLLUP_SCAN_LIMIT);
       toReviewOrg += unreviewed.length;
 
-      const barPct = barPctOf(chapterPeriodSpend, budgetCents);
+      const barPct = barPctOf(chapterOwnSpendCents, budgetCents);
       chapterRollup.push({
         chapterId: chapter._id,
         chapterName: chapter.name,
         subtitle: null,
-        spentCents: chapterPeriodSpend,
+        spentCents: chapterOwnSpendCents,
         budgetCents,
         barPct,
-        status: statusFor(pctOf(chapterPeriodSpend, budgetCents)),
+        status: statusFor(pctOf(chapterOwnSpendCents, budgetCents)),
       });
     }
 
     // Org-level (central) budgets roll up across EVERY chapter: their actual is
     // the sum of all chapters' transactions explicitly linked to them (by
-    // `budgetId`). Read via the `by_chapter_and_period` index at the CENTRAL
-    // sentinel for this year. Per-chapter rollups above never see these budgets
-    // (they query by real chapterId), so their allocation isn't double-counted.
-    const centralBudgetDocs = await ctx.db
-      .query("budgets")
-      .withIndex("by_chapter_and_period", (q) =>
-        q.eq("chapterId", CENTRAL).eq("year", year),
-      )
-      .take(ROLLUP_SCAN_LIMIT);
-    const centralBudgetById = new Map(centralBudgetDocs.map((b) => [b._id, b] as const));
+    // `budgetId`). `centralBudgetDocs`/`centralBudgetById` were already loaded
+    // above (before the chapter loop, to build `centralBudgetIds` for the
+    // per-row partition) — reused here, no second scan. Per-chapter rollups
+    // above never see these budgets in their OWN allocation (they query
+    // budgets by real chapterId) and now exclude their linked spend too, so
+    // nothing here is double-counted.
     const centralSpentById = new Map<Id<"budgets">, number>();
     const centralBudgets: (typeof centralBudgetCard.type)[] = [];
     for (const cb of centralBudgetDocs) {
@@ -1796,6 +1824,25 @@ export const dashboardCentral = query({
         status: statusFor(pct),
       });
     }
+
+    // "Central" row (WP-0.3): central-scoped spend, alongside the chapter
+    // rows. Today central has no transactions of its own (Phase 2) — its
+    // spend IS the sum of every central budget's linked actuals above, which
+    // is already aggregated across every chapter's txns via the `by_budget`
+    // index (each chapter's own `centralLinkedCents`, summed org-wide). No
+    // separate scan needed: reuse the `centralBudgets` totals just computed.
+    const centralRowSpentCents = centralBudgets.reduce((s, b) => s + b.spentCents, 0);
+    const centralRowBudgetCents = centralBudgets.reduce((s, b) => s + b.budgetCents, 0);
+    const centralRow: (typeof chapterRollupRow.type) = {
+      chapterId: CENTRAL,
+      chapterName: "Central",
+      subtitle: null,
+      spentCents: centralRowSpentCents,
+      budgetCents: centralRowBudgetCents,
+      barPct: barPctOf(centralRowSpentCents, centralRowBudgetCents),
+      status: statusFor(pctOf(centralRowSpentCents, centralRowBudgetCents)),
+    };
+    chapterRollup.unshift(centralRow);
 
     // Central-level tags roll up too: aggregate central budgets by their tags
     // and merge into the same by-(kind,name) agg as the per-chapter tags. A
