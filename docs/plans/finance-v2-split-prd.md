@@ -168,6 +168,21 @@ A2+A3 (ACH destinations + paid→returned reversal — finish, review, merge).
   as personal-expense-needing-repayment → triggers the owe flow for that cardholder.
 - De-church copy sweep: "church card" → "Public Worship card", etc. (grep-driven, copy-only).
 
+**WP-1.4 · "Defund" the UI — funds go backend-only (owner-directed 2026-07-16)**
+- Everything is unrestricted today; fund pickers are pure noise for treasurers/FMs (and the
+  owner). Funds stay in the schema (donor-restricted giving may resurrect them via the future
+  Giving page) but disappear from the product surface.
+- (a) **One General Fund per chapter**: migration merges the second seeded fund into General
+  Fund (reassign all fundId references), and the seed stops creating two. (b) Server-side
+  default: every creation path (budgets, transactions, synced accounts) silently assigns the
+  chapter's General Fund — no picker required anywhere. (c) **Hide every fund UI control**:
+  budget create/edit fund+designation pickers, the Accounts "Default fund" selector, fund
+  labels/filters wherever rendered. The existing "hide when ≤1 fund" rule becomes true
+  everywhere once (a) lands — extend it to the surfaces that ignore it rather than adding a
+  parallel mechanism.
+- Sonnet-tier; dispatch after WP-0.1 merges (dashboard-file overlap). Migration runs via
+  `run-convex-function.yml`.
+
 ### Phase 2 — The split (the headline event)
 
 **WP-2.1 · Let money belong to central**
