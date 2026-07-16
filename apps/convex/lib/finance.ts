@@ -47,11 +47,16 @@ const FUND_SCAN_LIMIT = 5000;
  * default a transaction/budget's fund without a cross-file import cycle
  * (funds are backend-only post-WP-1.4 — every creation path resolves this
  * instead of requiring a client-supplied fundId).
+ *
+ * Accepts a `FinanceScope`: the org level (`"central"`) has NO funds (funds are
+ * chapter-scoped), so it short-circuits to `null` — a central-owned txn/budget
+ * stays fund-less (WP-2.1), never inheriting a chapter's General Fund.
  */
 export async function defaultFundId(
   ctx: QueryCtx,
-  chapterId: Id<"chapters">,
+  chapterId: FinanceScope,
 ): Promise<Id<"funds"> | null> {
+  if (chapterId === "central") return null;
   const funds = await ctx.db
     .query("funds")
     .withIndex("by_chapter", (q) => q.eq("chapterId", chapterId))

@@ -2136,15 +2136,17 @@ export const applyIncreaseCardTransaction = internalMutation({
       )
       .first();
     if (!account) return { inserted: false, skipped: true };
-    // Central (WP-1.2) holds its OWN Increase account (the City Launch Fund),
-    // but never issues member cards — `transactions.chapterId` stays a real
-    // chapter id (that widening is WP-2.1's, not this one's). A card charge
-    // can never legitimately land on the central account; skip defensively.
-    if (account.chapterId === "central") return { inserted: false, skipped: true };
-    const chapterId = account.chapterId;
+    // Central (WP-1.2) holds its OWN Increase account (the City Launch Fund).
+    // WP-2.1 lets money belong to central, so a charge landing on the central
+    // account is INGESTED as a central-owned txn (`chapterId:"central"`) rather
+    // than dropped. Central issues no member cards, so card attribution never
+    // resolves and the fund default is null (central has no funds) — the row
+    // records with null card/person/fund, for the central desk to reconcile.
+    const chapterId: FinanceScope = account.chapterId;
 
-    // Attribute to a native card in THIS chapter (never cross-chapter). An
-    // unmatched card id leaves attribution null — the row is still recorded.
+    // Attribute to a native card in THIS scope (never cross-chapter). Central
+    // has no cards, so this is always null there. An unmatched card id leaves
+    // attribution null — the row is still recorded.
     let card: Doc<"cards"> | null = null;
     if (args.increaseCardId) {
       const cards = await ctx.db
@@ -2158,7 +2160,9 @@ export const applyIncreaseCardTransaction = internalMutation({
 
     // Silently pre-code to the chapter's General Fund — funds are
     // backend-only (see WP-1.4), so a native Increase card charge never
-    // lands fund-less waiting on a UI that no longer exists.
+    // lands fund-less waiting on a UI that no longer exists. Central has no
+    // funds (`defaultFundId` returns null for it), so a central-owned charge
+    // stays fund-less.
     const fundId = (await defaultFundId(ctx, chapterId)) ?? undefined;
 
     await ctx.db.insert("transactions", {

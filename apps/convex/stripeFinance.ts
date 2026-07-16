@@ -54,6 +54,7 @@ import {
   extractCardLast4,
   parseRelayReference,
   easternParts,
+  CENTRAL,
 } from "@events-os/shared";
 import { Doc, Id } from "./_generated/dataModel";
 import {
@@ -804,6 +805,11 @@ export const backfillLegacyCardAttribution = internalMutation({
 
     for (const row of rows) {
       if (row.source !== "stripe_fc") continue;
+      // `stripe_fc` rows always come from a `legacyAccounts` row, which is
+      // chapter-scoped (never central) — so this is a no-op guard, but it keeps
+      // `row.chapterId` a real chapter id for `findLegacyCardByLast4` below
+      // now that the column admits the `"central"` sentinel (WP-2.1).
+      if (row.chapterId === CENTRAL) continue;
       scanned++;
 
       const patch: Partial<Doc<"transactions">> = {};

@@ -404,12 +404,13 @@ describe("Increase card ingestion — transaction.created webhook", () => {
     expect((await increaseTxns(s)).length).toBe(0);
   });
 
-  test("a card charge resolving to a CENTRAL-owned account is skipped defensively (central never issues cards)", async () => {
+  test("a charge resolving to a CENTRAL-owned account is INGESTED as a central-owned txn (WP-2.1)", async () => {
     const t = newT();
-    // Central (WP-1.2) holds its own Increase account (the City Launch Fund)
-    // but never issues member cards — a card charge can never legitimately
-    // land there. Seed the increaseAccounts row directly on the "central"
-    // sentinel rather than a real chapter.
+    // Central (WP-1.2) holds its own Increase account (the City Launch Fund).
+    // WP-2.1 lets money belong to central, so a charge on the central account is
+    // recorded as a central-owned txn (`chapterId:"central"`) — no longer
+    // dropped. Central issues no cards, so card/person attribution stays null,
+    // and central has no funds so the row is fund-less.
     const now = Date.now();
     await run(t, (ctx) =>
       ctx.db.insert("increaseAccounts", {
@@ -429,10 +430,10 @@ describe("Increase card ingestion — transaction.created webhook", () => {
       flow: "outflow",
       amountCents: 1500,
       postedAt: now,
-      merchantName: "Should Never Post",
+      merchantName: "Central Merchant",
     });
 
-    expect(result).toEqual({ inserted: false, skipped: true });
+    expect(result).toEqual({ inserted: true, skipped: false });
     const rows = await run(t, (ctx) =>
       ctx.db
         .query("transactions")
@@ -441,7 +442,14 @@ describe("Increase card ingestion — transaction.created webhook", () => {
         )
         .collect(),
     );
-    expect(rows.length).toBe(0);
+    expect(rows.length).toBe(1);
+    expect(rows[0].chapterId).toBe("central");
+    expect(rows[0].amountCents).toBe(1500);
+    // No card/person attribution (central issues no cards) and no fund.
+    expect(rows[0].cardId).toBeUndefined();
+    expect(rows[0].personId).toBeUndefined();
+    expect(rows[0].fundId).toBeUndefined();
+    expect(rows[0].status).toBe("unreviewed");
   });
 
   test("a non-card transaction (inbound ACH) is skipped", async () => {

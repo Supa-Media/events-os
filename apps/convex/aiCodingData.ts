@@ -27,6 +27,7 @@ import { Doc, Id } from "./_generated/dataModel";
 import { internal } from "./_generated/api";
 import { requireChapterId, requireInChapter } from "./lib/context";
 import { requireFinanceRole } from "./lib/finance";
+import { CENTRAL } from "@events-os/shared";
 
 /** ± window (7 days) around a charge used to pull the "week's calendar" events. */
 const WEEK_MS = 7 * 24 * 60 * 60 * 1000;
@@ -110,9 +111,13 @@ type SuggestionContext = typeof suggestionContextValidator.type;
 async function gatherSuggestionContext(
   ctx: QueryCtx,
   txn: Doc<"transactions">,
+  // The txn's REAL chapter (WP-2.1): the loaders reject central-owned txns
+  // before calling this — auto-coding is chapter-only (no central funds/
+  // categories/projects/events), so a `Id<"chapters">` is passed after that
+  // guard has narrowed the sentinel out. The context reads + the returned
+  // `transaction.chapterId` (validated as `v.id("chapters")`) use it.
+  chapterId: Id<"chapters">,
 ): Promise<SuggestionContext> {
-  const chapterId = txn.chapterId;
-
   const funds = await ctx.db
     .query("funds")
     .withIndex("by_chapter", (q) => q.eq("chapterId", chapterId))
@@ -141,7 +146,7 @@ async function gatherSuggestionContext(
   return {
     transaction: {
       _id: txn._id,
-      chapterId: txn.chapterId,
+      chapterId,
       amountCents: txn.amountCents,
       flow: txn.flow,
       postedAt: txn.postedAt,
@@ -196,9 +201,18 @@ export const loadForSuggestion = internalQuery({
         message: "Transaction not found.",
       });
     }
+    // Central-owned txns (WP-2.1) aren't auto-coded: central has no funds/
+    // categories/projects/events for the model to reason over. Reject before
+    // the chapter gate (this also narrows the sentinel out of `chapterId`).
+    if (txn.chapterId === CENTRAL) {
+      throw new ConvexError({
+        code: "UNSUPPORTED",
+        message: "Central transactions aren't auto-coded.",
+      });
+    }
     // Manual invocation is bookkeeper+ only (in the txn's chapter).
     await requireFinanceRole(ctx, txn.chapterId, "bookkeeper");
-    return await gatherSuggestionContext(ctx, txn);
+    return await gatherSuggestionContext(ctx, txn, txn.chapterId);
   },
 });
 
@@ -220,7 +234,15 @@ export const loadForSuggestionSystem = internalQuery({
         message: "Transaction not found.",
       });
     }
-    return await gatherSuggestionContext(ctx, txn);
+    // Central-owned txns aren't auto-coded (see `loadForSuggestion`); the sweep
+    // already skips them, this is the defense-in-depth guard + type narrowing.
+    if (txn.chapterId === CENTRAL) {
+      throw new ConvexError({
+        code: "UNSUPPORTED",
+        message: "Central transactions aren't auto-coded.",
+      });
+    }
+    return await gatherSuggestionContext(ctx, txn, txn.chapterId);
   },
 });
 
@@ -260,6 +282,10 @@ export const sweepUnsuggestedTransactions = internalMutation({
     // real proposal, or a failure still within cooldown) is skipped.
     const isEligible = (tr: Doc<"transactions">): boolean => {
       if (tr.status !== "unreviewed") return false;
+      // Central-owned txns (WP-2.1) aren't auto-coded — central has no funds/
+      // categories/projects/events context. Skip them (the loaders reject them
+      // too, this avoids scheduling a doomed suggestion action).
+      if (tr.chapterId === CENTRAL) return false;
       const ai = tr.aiSuggestion;
       if (ai === undefined) return true;
       if (!ai.failed) return false;
@@ -329,6 +355,14 @@ export const writeSuggestion = internalMutation({
       throw new ConvexError({
         code: "NOT_FOUND",
         message: "Transaction not found.",
+      });
+    }
+    // Central-owned txns are never auto-coded (the loaders + sweep skip them),
+    // so a suggestion should never target one — reject + narrow the sentinel out.
+    if (txn.chapterId === CENTRAL) {
+      throw new ConvexError({
+        code: "UNSUPPORTED",
+        message: "Central transactions aren't auto-coded.",
       });
     }
     const chapterId = txn.chapterId;

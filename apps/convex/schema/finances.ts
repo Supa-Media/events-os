@@ -184,9 +184,19 @@ export const budgetTagLinks = defineTable({
 
 // ── Transactions (the unified ACTUAL record) ─────────────────────────────────
 /** The one table summed for actuals. Positive integer cents; `flow` carries
- *  direction. `externalId` is the unique dedup key for synced sources. */
+ *  direction. `externalId` is the unique dedup key for synced sources.
+ *
+ *  WP-2.1 (the split keystone): `chapterId` accepts the `"central"` sentinel so
+ *  money can belong to CENTRAL itself, not just a chapter — mirroring
+ *  `budgets`/`budgetTags`/`increaseAccounts`. Central-owned txns are created by
+ *  the central desk (`createManualTransaction({ central: true })`, FC/manual
+ *  ingestion onto the central account) and reconciled at central scope
+ *  (`requireFinanceCentral`); they NEVER appear in a chapter dashboard/reconcile
+ *  (the `by_chapter*` reads scope to a real chapter id) and carry no
+ *  chapter-scoped links (funds/categories/projects/events are chapter-only).
+ *  Every `by_chapter*` index keeps working — the key is just a string. */
 export const transactions = defineTable({
-  chapterId: v.id("chapters"),
+  chapterId: v.union(v.id("chapters"), v.literal("central")),
   source: v.union(...TRANSACTION_SOURCES.map((s) => v.literal(s))),
   flow: v.union(...TRANSACTION_FLOWS.map((f) => v.literal(f))),
   // Always a non-negative integer number of cents.
