@@ -5,7 +5,6 @@
   "main": "expo-router/entry",
   "scripts": {
     "start": "expo start",
-    "postinstall": "node scripts/ensure-local-react.mjs",
     "dev": "expo start --dev-client",
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
@@ -31,8 +30,8 @@
     "@expo/metro-runtime": "~6.1.2",
     "@react-native-community/netinfo": "11.4.1",
     "@stripe/stripe-js": "^9.10.0",
-    "@supa-media/core": "^0.2.0",
-    "@supa-media/notifications": "^0.2.0",
+    "@supa-media/core": "^1.0.0",
+    "@supa-media/notifications": "^1.0.0",
     "clsx": "^2.1.1",
     "codemirror": "^6.0.2",
     "convex": "^1.31.3",
@@ -69,9 +68,9 @@
     "tailwindcss": "^3"
   },
   "devDependencies": {
-    "@supa-media/linter": "^0.2.0",
-    "@supa-media/metro": "^0.2.0",
-    "@supa-media/testing": "^0.2.0",
+    "@supa-media/linter": "^1.0.0",
+    "@supa-media/metro": "^1.0.0",
+    "@supa-media/testing": "^1.0.0",
     "@types/node": "^22.0.0",
     "@types/react": "~19.1.0",
     "@typescript-eslint/parser": "^8",

@@ -31,8 +31,8 @@ export default defineConfig({
   },
 
   infrastructure: {
-    vault: "EventsOS",
-    easProjectId: "YOUR_EAS_PROJECT_ID",
+    vault: "Events",
+    easProjectId: "4d2f4932-3e26-433f-a8db-6da4571dff18",
     expoOwner: "supa-media",
   },
 });
