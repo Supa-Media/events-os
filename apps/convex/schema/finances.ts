@@ -623,6 +623,19 @@ export const webhookEvents = defineTable({
   summary: v.optional(v.string()),
 }).index("by_provider_and_event", ["provider", "eventId"]);
 
+// ── Public reimbursement submit rate limit (deployment-wide) ─────────────────
+/** A single timestamped hit against the anonymous `submitPublicReimbursement`
+ *  rate limiter. NOT chapter-scoped — the same abuse (a bot hammering the
+ *  public form) can target any chapter's slug, so the limiter keys on the
+ *  caller's IP and/or submitted email, not a chapter. `key` is
+ *  `"ip:<address>"` or `"email:<normalized address>"`; one row is inserted per
+ *  key per successful submission, and the check reads the window via
+ *  `by_key_and_time`. See `reimbursements.ts` for the threshold + rationale. */
+export const reimbursementSubmitAttempts = defineTable({
+  key: v.string(),
+  createdAt: v.number(),
+}).index("by_key_and_time", ["key", "createdAt"]);
+
 // ── Finance settings (deployment-wide singleton) ─────────────────────────────
 /** Deployment-wide finance settings (one row, the `aiSettings` pattern).
  *  `sandboxMode` is the runtime testing toggle: when true, NEW Increase account

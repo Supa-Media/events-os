@@ -156,8 +156,11 @@ NativeWind (`className`) + tokens in `apps/mobile/lib/theme.ts`. The clickable s
    **central as the org level (`chapterId: null`), NOT a chapter** — reusing the existing
    `financeTeams` null-chapter precedent + the `financeRoles` `central` scope + superuser.
    Three deliverables:
-   - **Gate Stripe FC "Connect a bank" + `legacyAccounts` to central/superuser.** Regular
-     chapters get Increase accounts + cards ONLY; only central connects external accounts.
+   - **Gate Stripe FC "Connect a bank" + `legacyAccounts` to central/superuser.** ✅ Done
+     (`feat/finance-authz-hardening`): `createFcSession`/`storeFcAccount` now require
+     `requireFinanceCentral`; the Accounts screen hides the connect/reconnect controls for a
+     non-central caller via `stripeFinance.canConnectAccount`. Regular chapters still get
+     Increase accounts + cards; only central connects external accounts.
    - **Full-history Stripe FC sync.** On connect, backfill the ENTIRE transaction history
      (not just recent) and keep receiving new transactions ongoing. Current sync is a
      bounded newest-first re-sweep — add a first-connect full backfill (paginate to

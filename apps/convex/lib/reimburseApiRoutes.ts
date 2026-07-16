@@ -34,16 +34,42 @@ function errorJson(err: unknown): Response {
 type JsonBody = Record<string, unknown>;
 
 /** Wrap a public JSON POST endpoint: parse body, run handler, return its result
- *  as JSON (or `{ ok: true }`), map a thrown ConvexError to a 400. */
-function jsonPost(run: (ctx: ActionCtx, body: JsonBody) => Promise<unknown>) {
+ *  as JSON (or `{ ok: true }`), map a thrown ConvexError to a 400. `run` also
+ *  receives the raw `Request` (most routes ignore it) — the `submit` route
+ *  uses it to forward the caller's IP for rate-limiting, which a Convex
+ *  mutation can't read for itself. */
+function jsonPost(
+  run: (ctx: ActionCtx, body: JsonBody, req: Request) => Promise<unknown>,
+) {
   return httpAction(async (ctx, req) => {
     try {
       const body = (await req.json()) as JsonBody;
-      return json((await run(ctx, body)) ?? { ok: true });
+      return json((await run(ctx, body, req)) ?? { ok: true });
     } catch (err) {
       return errorJson(err);
     }
   });
+}
+
+/** The caller's IP from standard proxy headers (Convex's `httpAction` `req`
+ *  has no `.ip` of its own). `x-forwarded-for` is a comma-separated hop chain
+ *  that proxies APPEND to as a request passes through them, so the LAST entry
+ *  is the address the platform's own edge proxy observed for its peer — the
+ *  one entry the client cannot spoof. The FIRST entry (and everything before
+ *  the last hop) is client-claimable: a client can send its own
+ *  `x-forwarded-for` header with an arbitrary value prepended. Falls back to
+ *  `x-real-ip`. Neither is guaranteed present (e.g. a direct, non-proxied
+ *  request in a test), so the caller must treat this as best-effort. */
+function clientIpFromRequest(req: Request): string | undefined {
+  const forwarded = req.headers.get("x-forwarded-for");
+  const last = forwarded
+    ?.split(",")
+    .map((s) => s.trim())
+    .filter(Boolean)
+    .pop();
+  if (last) return last;
+  const real = req.headers.get("x-real-ip")?.trim();
+  return real || undefined;
 }
 
 /** Optional string field from an untrusted JSON body. */
@@ -104,7 +130,7 @@ export function registerReimburseApiRoutes(http: HttpRouter): void {
   http.route({
     path: "/api/reimburse/submit",
     method: "POST",
-    handler: jsonPost((ctx, body) =>
+    handler: jsonPost((ctx, body, req) =>
       ctx.runMutation(api.reimbursements.submitPublicReimbursement, {
         chapterSlug: String(body.chapterSlug ?? ""),
         payeeName: String(body.payeeName ?? ""),
@@ -115,6 +141,8 @@ export function registerReimburseApiRoutes(http: HttpRouter): void {
         bankAccountLast4: optStr(body.bankAccountLast4),
         requestPreApproval: body.requestPreApproval === true,
         lines: toLines(body.lines),
+        // Forwarded so the mutation can rate-limit per IP (see reimbursements.ts).
+        clientIp: clientIpFromRequest(req),
       }),
     ),
   });

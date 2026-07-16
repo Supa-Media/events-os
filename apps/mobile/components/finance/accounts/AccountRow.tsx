@@ -56,12 +56,18 @@ function syncedAgo(ts: number | null): string {
 export function AccountRow({
   account,
   funds,
+  canConnect,
   onSetFund,
   onDisconnect,
   onRefresh,
 }: {
   account: LegacyAccount;
   funds: FundOption[];
+  /** Central/superuser only (mirrors `stripeFinance.canConnectAccount`) —
+   *  reconnecting a disconnected row calls `storeFcAccount`, the SAME
+   *  central-gated write as a fresh connect, so the per-row "Reconnect" is
+   *  hidden for a regular chapter manager too. */
+  canConnect: boolean;
   onSetFund: (fundId: Id<"funds">) => void;
   onDisconnect: () => void;
   /** Manually re-pull this account's transactions ("Refresh"). Awaited so the
@@ -138,22 +144,27 @@ export function AccountRow({
 
         {isDisconnected ? (
           /* Disconnected → offer a per-row Reconnect (reruns the hosted connect
-             flow; the reconnect reactivates the row AND re-pulls transactions). */
+             flow; the reconnect reactivates the row AND re-pulls transactions).
+             Central-only — reconnecting calls `storeFcAccount`, the same
+             central-gated write as a fresh connect (see `canConnect` above). */
           <View className="gap-2">
             <Text className="text-xs text-muted">
-              Syncing is stopped. Reconnect to resume — we&apos;ll re-pull any
-              transactions from while it was disconnected into Reconcile.
+              {canConnect
+                ? "Syncing is stopped. Reconnect to resume — we'll re-pull any transactions from while it was disconnected into Reconcile."
+                : "Syncing is stopped. Reconnecting is managed centrally — ask a central finance admin to reconnect this account."}
             </Text>
-            <View className="flex-row justify-end">
-              <Button
-                title="Reconnect"
-                variant="secondary"
-                size="sm"
-                icon="link"
-                loading={reconnect.busy}
-                onPress={() => void reconnect.connect()}
-              />
-            </View>
+            {canConnect ? (
+              <View className="flex-row justify-end">
+                <Button
+                  title="Reconnect"
+                  variant="secondary"
+                  size="sm"
+                  icon="link"
+                  loading={reconnect.busy}
+                  onPress={() => void reconnect.connect()}
+                />
+              </View>
+            ) : null}
             {reconnect.notice ? (
               <NoticeBanner notice={reconnect.notice} />
             ) : null}

@@ -56,6 +56,7 @@ import {
   financeRoles,
   specializedRoles,
   webhookEvents,
+  reimbursementSubmitAttempts,
   financeSettings,
 } from "./schema/finances";
 import { assets, assetReservations } from "./schema/inventory";
@@ -205,6 +206,8 @@ const schema = defineSchema({
   // scope-local separation of duties; finance_manager bridges to a finance role).
   specializedRoles,
   webhookEvents,
+  // Anonymous public reimbursement submit rate limiter (deployment-wide).
+  reimbursementSubmitAttempts,
   financeSettings,
 
   // Inventory (M5.5) — chapter-owned asset registry + per-event reservations.

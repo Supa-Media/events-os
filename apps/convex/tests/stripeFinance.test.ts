@@ -48,10 +48,18 @@ async function grantRole(
   );
 }
 
-/** A manager-graded caller (person + manager grant). */
+/** A manager-graded caller (person + manager grant), CHAPTER-scoped. */
 async function asManager(s: ChapterSetup): Promise<Id<"people">> {
   const personId = await seedSelfPerson(s);
   await grantRole(s, personId, "manager");
+  return personId;
+}
+
+/** A manager-graded caller with a CENTRAL (org-wide) grant — the only tier
+ *  that may connect a new external Stripe FC bank account. */
+async function asCentralManager(s: ChapterSetup): Promise<Id<"people">> {
+  const personId = await seedSelfPerson(s);
+  await grantRole(s, personId, "manager", "central");
   return personId;
 }
 
@@ -374,12 +382,102 @@ describe("listAccounts / setAccountFund tenancy", () => {
 describe("createFcSession degrade", () => {
   test("throws NOT_CONFIGURED when STRIPE_SECRET_KEY is unset", async () => {
     const s = await setupChapter(newT());
-    await asManager(s);
-    // No STRIPE_SECRET_KEY in the test env → NOT_CONFIGURED (after the manager
-    // gate passes).
+    await asCentralManager(s);
+    // No STRIPE_SECRET_KEY in the test env → NOT_CONFIGURED (after the
+    // central gate passes).
     await expect(
       s.as.action(api.stripeFinance.createFcSession, {}),
     ).rejects.toBeInstanceOf(ConvexError);
+  });
+});
+
+describe("createFcSession / storeFcAccount central gating", () => {
+  test("createFcSession REJECTS a chapter-scoped (non-central) finance manager", async () => {
+    const s = await setupChapter(newT());
+    await asManager(s); // chapter-scoped manager, NOT central
+    let caught: unknown;
+    try {
+      await s.as.action(api.stripeFinance.createFcSession, {});
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(ConvexError);
+    // Must be the central-gate FORBIDDEN, not e.g. NOT_CONFIGURED (which the
+    // action would also throw as a ConvexError if the gate regressed and let
+    // the chapter-scoped manager through to the Stripe-key check).
+    expect((caught as ConvexError<{ code: string }>).data.code).toBe(
+      "FORBIDDEN",
+    );
+  });
+
+  test("createFcSession succeeds (past the gate) for a genuine central-scope caller", async () => {
+    process.env.STRIPE_SECRET_KEY = "sk_test_mock";
+    const realFetch = globalThis.fetch;
+    try {
+      const s = await setupChapter(newT());
+      await asCentralManager(s);
+      globalThis.fetch = (async (url: string) =>
+        String(url).includes("/customers")
+          ? jsonResponse({ id: "cus_central" })
+          : jsonResponse({ client_secret: "fcsess_central" })) as unknown as typeof fetch;
+
+      const res = await s.as.action(api.stripeFinance.createFcSession, {});
+      expect(res.clientSecret).toBe("fcsess_central");
+    } finally {
+      globalThis.fetch = realFetch;
+      delete process.env.STRIPE_SECRET_KEY;
+    }
+  });
+
+  test("storeFcAccount REJECTS a chapter-scoped (non-central) finance manager", async () => {
+    const s = await setupChapter(newT());
+    await asManager(s); // chapter-scoped manager, NOT central
+    await expect(
+      s.as.mutation(api.stripeFinance.storeFcAccount, {
+        stripeFcAccountId: "fca_not_central",
+      }),
+    ).rejects.toBeInstanceOf(ConvexError);
+  });
+
+  test("storeFcAccount succeeds for a genuine central-scope caller", async () => {
+    const s = await setupChapter(newT());
+    await asCentralManager(s);
+    const accountId = await s.as.mutation(api.stripeFinance.storeFcAccount, {
+      stripeFcAccountId: "fca_is_central",
+    });
+    const account = await run(s.t, (ctx) => ctx.db.get(accountId));
+    expect(account?.chapterId).toBe(s.chapterId);
+  });
+
+  test("a superuser (implicit central manager) also passes the gate", async () => {
+    // Superusers short-circuit to central manager in `getFinanceRole` — no
+    // explicit `financeRoles` grant needed (see lib/finance.ts).
+    const s = await setupChapter(newT(), {
+      email: "seyi@publicworship.life",
+    });
+    const accountId = await s.as.mutation(api.stripeFinance.storeFcAccount, {
+      stripeFcAccountId: "fca_superuser",
+    });
+    expect(accountId).toBeDefined();
+  });
+
+  test("canConnectAccount reflects central vs chapter scope", async () => {
+    const s = await setupChapter(newT());
+    expect(await s.as.query(api.stripeFinance.canConnectAccount, {})).toBe(
+      false,
+    );
+    await asManager(s);
+    expect(await s.as.query(api.stripeFinance.canConnectAccount, {})).toBe(
+      false,
+    );
+
+    const central = await setupChapter(newT(), {
+      email: "central@publicworship.life",
+    });
+    await asCentralManager(central);
+    expect(
+      await central.as.query(api.stripeFinance.canConnectAccount, {}),
+    ).toBe(true);
   });
 });
 
@@ -400,7 +498,7 @@ describe("createFcSession provisions + caches a Stripe customer", () => {
     process.env.STRIPE_SECRET_KEY = "sk_test_mock";
     process.env.EXPO_PUBLIC_STRIPE_PUBLISHABLE_KEY = "pk_test_mock";
     const s = await setupChapter(newT());
-    await asManager(s);
+    await asCentralManager(s);
 
     const bodies: string[] = [];
     let customerCalls = 0;
@@ -451,7 +549,7 @@ describe("createFcSession provisions + caches a Stripe customer", () => {
     process.env.STRIPE_SECRET_KEY = "sk_test_mock";
     delete process.env.EXPO_PUBLIC_STRIPE_PUBLISHABLE_KEY;
     const s = await setupChapter(newT());
-    await asManager(s);
+    await asCentralManager(s);
 
     globalThis.fetch = (async (url: string) =>
       String(url).includes("/customers")
@@ -945,7 +1043,7 @@ describe("storeFcAccount initial sync scheduling", () => {
   test("a fresh account schedules a Stripe transaction refresh when a key is set", async () => {
     process.env.STRIPE_SECRET_KEY = "sk_test_mock";
     const s = await setupChapter(newT());
-    await asManager(s);
+    await asCentralManager(s);
 
     const accountId = await s.as.mutation(api.stripeFinance.storeFcAccount, {
       stripeFcAccountId: "fca_connect",
@@ -969,7 +1067,7 @@ describe("storeFcAccount initial sync scheduling", () => {
   test("no key → connect is a no-op sync-wise (nothing scheduled)", async () => {
     delete process.env.STRIPE_SECRET_KEY;
     const s = await setupChapter(newT());
-    await asManager(s);
+    await asCentralManager(s);
 
     await s.as.mutation(api.stripeFinance.storeFcAccount, {
       stripeFcAccountId: "fca_nokey_connect",
@@ -983,7 +1081,7 @@ describe("storeFcAccount initial sync scheduling", () => {
   test("re-connecting an existing account does NOT schedule another sync", async () => {
     process.env.STRIPE_SECRET_KEY = "sk_test_mock";
     const s = await setupChapter(newT());
-    await asManager(s);
+    await asCentralManager(s);
     // Pre-existing (already-backfilled) account with the same Stripe id.
     await seedAccount(s, s.chapterId, { stripeFcAccountId: "fca_reconnect" });
 
@@ -1001,7 +1099,7 @@ describe("storeFcAccount initial sync scheduling", () => {
   test("RECONNECTING a disconnected account reactivates it AND schedules a refresh", async () => {
     process.env.STRIPE_SECRET_KEY = "sk_test_mock";
     const s = await setupChapter(newT());
-    await asManager(s);
+    await asCentralManager(s);
     // A previously-connected account the user had disconnected.
     const accountId = await seedAccount(s, s.chapterId, {
       stripeFcAccountId: "fca_recon_disc",
@@ -1029,7 +1127,7 @@ describe("storeFcAccount initial sync scheduling", () => {
   test("reconnecting a disconnected account with NO key reactivates but schedules nothing", async () => {
     delete process.env.STRIPE_SECRET_KEY;
     const s = await setupChapter(newT());
-    await asManager(s);
+    await asCentralManager(s);
     const accountId = await seedAccount(s, s.chapterId, {
       stripeFcAccountId: "fca_recon_disc_nokey",
     });
@@ -1061,7 +1159,7 @@ describe("storeFcAccount reconnect-duplication guard (same bank, new Stripe id)"
   test("reconnect with a NEW stripeFcAccountId but same chapter+last4 REACTIVATES the existing row (no 2nd row) + updates its id", async () => {
     process.env.STRIPE_SECRET_KEY = "sk_test_mock";
     const s = await setupChapter(newT());
-    await asManager(s);
+    await asCentralManager(s);
 
     // A previously-connected, now DISCONNECTED account for the "4242" bank.
     // (seedAccount defaults last4:"4242", institutionName:"Test Bank".)
@@ -1124,7 +1222,7 @@ describe("storeFcAccount reconnect-duplication guard (same bank, new Stripe id)"
   test("a genuinely different bank (different last4) still INSERTS a new row", async () => {
     process.env.STRIPE_SECRET_KEY = "sk_test_mock";
     const s = await setupChapter(newT());
-    await asManager(s);
+    await asCentralManager(s);
     await seedAccount(s, s.chapterId, { stripeFcAccountId: "fca_bank_a" });
 
     await s.as.mutation(api.stripeFinance.storeFcAccount, {

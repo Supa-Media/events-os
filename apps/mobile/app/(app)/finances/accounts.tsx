@@ -53,6 +53,11 @@ export default function AccountsScreen() {
   const funds = useQuery(api.finances.listFunds, {});
   const financeSettings = useQuery(api.financeSettings.getFinanceSettings);
   const chapterAccount = useQuery(api.increase.getChapterAccount);
+  // Central/superuser only — regular chapters get Increase accounts + cards
+  // ONLY, never a NEW external Stripe FC connection (server-enforced in
+  // `stripeFinance.createFcSession`/`storeFcAccount`; this mirrors it so the
+  // control simply isn't offered instead of erroring after the hosted flow).
+  const canConnectAccount = useQuery(api.stripeFinance.canConnectAccount, {});
 
   const setAccountFund = useMutation(api.stripeFinance.setAccountFund);
   const disconnect = useMutation(api.stripeFinance.disconnect);
@@ -94,7 +99,8 @@ export default function AccountsScreen() {
     accounts === undefined ||
     funds === undefined ||
     financeSettings === undefined ||
-    chapterAccount === undefined
+    chapterAccount === undefined ||
+    canConnectAccount === undefined
   ) {
     return <Screen loading />;
   }
@@ -277,7 +283,7 @@ export default function AccountsScreen() {
           or out of them.
         </Text>
         <View className="mb-3">
-          <ConnectPanel />
+          <ConnectPanel canConnect={canConnectAccount} />
         </View>
         {accounts.length === 0 ? (
           <EmptyState
@@ -291,6 +297,7 @@ export default function AccountsScreen() {
               key={account.id}
               account={account}
               funds={fundOptions}
+              canConnect={canConnectAccount}
               onSetFund={(fundId: Id<"funds">) =>
                 void run(
                   () =>

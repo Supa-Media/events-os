@@ -22,9 +22,14 @@
  * Env: STRIPE_SECRET_KEY (shared with `stripe.ts`). Degrades gracefully when
  * unset — session creation throws NOT_CONFIGURED; sync logs + skips.
  *
- * Gating (finance-role ladder viewer < bookkeeper < manager):
- *  - createFcSession / storeFcAccount / setAccountFund / disconnect /
- *    refreshFcAccount / reBackfillFcAccount                         → manager
+ * Gating (finance-role ladder viewer < bookkeeper < manager, plus the
+ * central/org-wide scope):
+ *  - createFcSession / storeFcAccount                               → CENTRAL
+ *    (regular chapters get Increase accounts + cards ONLY; only central/
+ *    superuser may connect a NEW external Stripe FC account — see the
+ *    "central vs chapter" model in docs/plans/finance-handoff.md)
+ *  - setAccountFund / disconnect / refreshFcAccount / reBackfillFcAccount
+ *                                                                    → manager
  *  - listAccounts                                                   → viewer
  *  - applyFcTransactions / syncTransactions / syncAllAccounts /
  *    refreshFcTransactions / refreshAllActiveFcAccounts /
@@ -55,7 +60,12 @@ import {
   getChapterIdOrNull,
   requireChapterId,
 } from "./lib/context";
-import { requireFinanceRole, requireFinanceManager } from "./lib/finance";
+import {
+  requireFinanceRole,
+  requireFinanceManager,
+  requireFinanceCentral,
+  getFinanceRole,
+} from "./lib/finance";
 import { defaultFundId } from "./finances";
 
 const STRIPE_API = "https://api.stripe.com/v1";
@@ -117,11 +127,13 @@ export const createFcSession = action({
   handler: async (
     ctx,
   ): Promise<{ clientSecret: string; publishableKey: string | null }> => {
-    // Gate FIRST (identity propagates through runQuery) so only a finance
-    // manager can even reach the vendor check. The gate resolves the chapter
-    // the customer + session are scoped to.
+    // Gate FIRST (identity propagates through runQuery) so only a CENTRAL
+    // finance caller can even reach the vendor check — regular chapters get
+    // Increase accounts + cards only; connecting an external Stripe FC bank is
+    // central/superuser-only. The gate resolves the chapter the customer +
+    // session are scoped to.
     const { chapterId } = await ctx.runQuery(
-      internal.stripeFinance.requireManagerForFc,
+      internal.stripeFinance.requireCentralForFc,
       {},
     );
 
@@ -244,27 +256,30 @@ export const saveStripeCustomerId = internalMutation({
   },
 });
 
-/** Internal gate for `createFcSession`: assert the caller is a finance manager
- *  in their chapter (used from the action, which has no `ctx.db`). */
-export const requireManagerForFc = internalQuery({
+/** Internal gate for `createFcSession`: assert the caller has CENTRAL
+ *  (org-wide) finance reach — only central/superuser may connect an external
+ *  Stripe FC account (used from the action, which has no `ctx.db`). */
+export const requireCentralForFc = internalQuery({
   args: {},
   returns: v.object({ chapterId: v.id("chapters") }),
   handler: async (ctx) => {
     const chapterId = (await requireChapterId(ctx)) as Id<"chapters">;
-    await requireFinanceManager(ctx, chapterId);
+    await requireFinanceCentral(ctx, chapterId);
     return { chapterId };
   },
 });
 
 /**
  * Upsert a legacy account for the caller's chapter after a successful connect.
- * Manager-only. Dedups on `stripeFcAccountId` (a Stripe account id is globally
- * unique) so re-connecting the same account refreshes its metadata instead of
- * creating a duplicate. A reconnect can make Stripe FC mint a NEW
- * `stripeFcAccountId` for the SAME bank, which slips past the id dedup — so
- * before inserting we also match on the chapter's existing `last4` (+
- * `institutionName` when both are present) and REACTIVATE that row instead of
- * creating a second one. Returns the account id.
+ * CENTRAL-only (regular chapters get Increase accounts + cards only — see the
+ * "central vs chapter" model in docs/plans/finance-handoff.md). Dedups on
+ * `stripeFcAccountId` (a Stripe account id is globally unique) so re-connecting
+ * the same account refreshes its metadata instead of creating a duplicate. A
+ * reconnect can make Stripe FC mint a NEW `stripeFcAccountId` for the SAME
+ * bank, which slips past the id dedup — so before inserting we also match on
+ * the chapter's existing `last4` (+ `institutionName` when both are present)
+ * and REACTIVATE that row instead of creating a second one. Returns the
+ * account id.
  */
 export const storeFcAccount = mutation({
   args: {
@@ -276,7 +291,7 @@ export const storeFcAccount = mutation({
   returns: v.id("legacyAccounts"),
   handler: async (ctx, args): Promise<Id<"legacyAccounts">> => {
     const chapterId = (await requireChapterId(ctx)) as Id<"chapters">;
-    await requireFinanceManager(ctx, chapterId);
+    await requireFinanceCentral(ctx, chapterId);
 
     const existing = await ctx.db
       .query("legacyAccounts")
@@ -564,6 +579,26 @@ export const disconnect = mutation({
       );
     }
     return null;
+  },
+});
+
+/**
+ * Whether the caller can connect a NEW external Stripe FC bank account
+ * (central/superuser only — see `storeFcAccount`/`createFcSession`). Backs the
+ * client-side gate on the Accounts screen's "Connect a bank" control: a
+ * regular chapter manager still sees + manages already-connected accounts
+ * (viewer+/manager gates elsewhere are unchanged), but the connect affordance
+ * itself is hidden for them. Degrades to `false` (never throws) when the
+ * caller has no chapter yet, so it's safe to call from a passive UI check.
+ */
+export const canConnectAccount = query({
+  args: {},
+  returns: v.boolean(),
+  handler: async (ctx) => {
+    const chapterId = (await getChapterIdOrNull(ctx)) as Id<"chapters"> | null;
+    if (!chapterId) return false;
+    const access = await getFinanceRole(ctx, chapterId);
+    return access.isCentral;
   },
 });
 

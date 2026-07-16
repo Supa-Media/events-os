@@ -13,14 +13,34 @@
  *
  * NATIVE: Stripe.js is browser-only (and we don't ship `@stripe/stripe-react-
  * native`), so this shows a "connect from the web dashboard" notice instead.
+ *
+ * CENTRAL-ONLY: connecting a NEW external account is gated server-side to
+ * central/superuser finance access (`stripeFinance.createFcSession` /
+ * `storeFcAccount` — see the "central vs chapter" model in
+ * docs/plans/finance-handoff.md). `canConnect` mirrors that gate client-side
+ * so a regular chapter manager sees why the control is unavailable instead of
+ * hitting a server error after running the hosted Stripe flow.
  */
 import { Text, View } from "react-native";
 import { Button, Icon } from "../../ui";
 import { colors } from "../../../lib/theme";
 import { useFcConnect, type FcConnectNotice } from "./useFcConnect";
 
-export function ConnectPanel() {
+export function ConnectPanel({ canConnect }: { canConnect: boolean }) {
   const { connect, busy, notice } = useFcConnect();
+
+  if (!canConnect) {
+    return (
+      <View className="flex-row gap-3 rounded-lg border border-border-strong bg-sunken px-4 py-3">
+        <Icon name="lock" size={16} color={colors.muted} />
+        <Text className="flex-1 text-xs text-muted">
+          Connecting a bank is managed centrally. Ask a central finance admin to
+          link a new account — you can still manage &amp; reconcile any accounts
+          already connected below.
+        </Text>
+      </View>
+    );
+  }
 
   return (
     <View className="gap-2">
