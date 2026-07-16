@@ -3161,6 +3161,32 @@ export const updateBudget = mutation({
   },
 });
 
+/**
+ * Cascade-delete a budget's own dependent rows — its `budgetTagLinks` and its
+ * WP-3.1 `budgetLines` plan breakdown — then the budget itself. Shared by
+ * `deleteBudget` and `removeEmptyAutoBudgets` so the ops cleanup can't drift
+ * from the user-facing delete and orphan `budgetLines` rows behind a budget
+ * that no longer exists (a bug this fixed: the cleanup used to delete budgets
+ * inline without this cascade). Does NOT touch `transactions` — callers that
+ * need to unlink spend do that themselves first (only `deleteBudget` does;
+ * `removeEmptyAutoBudgets` only ever reaches a budget with zero linked txns).
+ */
+async function cascadeDeleteBudget(ctx: MutationCtx, budgetId: Id<"budgets">): Promise<void> {
+  const links = await ctx.db
+    .query("budgetTagLinks")
+    .withIndex("by_budget", (q) => q.eq("budgetId", budgetId))
+    .take(ROLLUP_SCAN_LIMIT);
+  for (const link of links) await ctx.db.delete(link._id);
+
+  const lines = await ctx.db
+    .query("budgetLines")
+    .withIndex("by_budget", (q) => q.eq("budgetId", budgetId))
+    .take(ROLLUP_SCAN_LIMIT);
+  for (const line of lines) await ctx.db.delete(line._id);
+
+  await ctx.db.delete(budgetId);
+}
+
 export const deleteBudget = mutation({
   args: { budgetId: v.id("budgets") },
   returns: v.null(),
@@ -3197,13 +3223,8 @@ export const deleteBudget = mutation({
     }
     for (const tr of linkedTxns) await ctx.db.patch(tr._id, { budgetId: undefined });
 
-    // Remove its tag links, then the budget.
-    const links = await ctx.db
-      .query("budgetTagLinks")
-      .withIndex("by_budget", (q) => q.eq("budgetId", args.budgetId))
-      .take(ROLLUP_SCAN_LIMIT);
-    for (const link of links) await ctx.db.delete(link._id);
-    await ctx.db.delete(args.budgetId);
+    // Remove its tag links + WP-3.1 `budgetLines` plan, then the budget.
+    await cascadeDeleteBudget(ctx, args.budgetId);
     return null;
   },
 });
@@ -3878,9 +3899,13 @@ const removeEmptyAutoBudgetsResult = v.object({
   keptWithSpend: v.number(),
   // Kept because `amountCents` isn't 0 (a real, filled-in budget).
   keptNonzero: v.number(),
-  // Kept (event budgets only) because the event still carries legacy
-  // `budgetLineItems` rows — someone's already using the old per-line feature
-  // on it, so its budget object shouldn't quietly disappear.
+  // Kept because there's already line-item planning content on it: EITHER the
+  // event still carries legacy `budgetLineItems` rows (event refKind only —
+  // that pre-v2 feature has no direct link to a `budgets` row), OR the budget
+  // itself has WP-3.1 `budgetLines` rows (event OR project refKind — a v2
+  // plan breakdown). Either way, someone's already using budgeting on it, so
+  // its budget object — and, for `budgetLines`, the planning work IN it —
+  // shouldn't quietly disappear.
   keptWithLineItems: v.number(),
 });
 
@@ -3904,9 +3929,15 @@ const removeEmptyAutoBudgetsResult = v.object({
  *    (`by_event`) — that pre-v2 feature has no direct link to a `budgets` row,
  *    so this is a conservative "someone's already using budgeting on this
  *    event" signal that blocks the delete.
+ *  - For EITHER ref kind: the budget has no WP-3.1 `budgetLines` rows
+ *    (`by_budget`) — a $0 budget can still carry a real v2 plan breakdown (the
+ *    amount just hasn't been filled in yet), so deleting it would silently
+ *    destroy someone's planning work.
  *
- * Its own `budgetTagLinks` are removed first so no orphan link survives the
- * budget. Bounded + idempotent — a settled re-run deletes nothing.
+ * Deletes via the shared {@link cascadeDeleteBudget} helper (also used by
+ * `deleteBudget`) so its `budgetTagLinks` AND any `budgetLines` rows are
+ * removed too — no orphan survives the budget. Bounded + idempotent — a
+ * settled re-run deletes nothing.
  *
  * Run locally:  npx convex run finances:removeEmptyAutoBudgets
  * Run on prod:  npx convex run --prod finances:removeEmptyAutoBudgets '{"chapterId":"..."}'
@@ -3966,12 +3997,18 @@ export const removeEmptyAutoBudgets = internalMutation({
         }
       }
 
-      const links = await ctx.db
-        .query("budgetTagLinks")
+      // v2 plan guard — covers BOTH event and project refKinds: a $0 budget
+      // that already has `budgetLines` planning is real work, not clutter.
+      const planLine = await ctx.db
+        .query("budgetLines")
         .withIndex("by_budget", (q) => q.eq("budgetId", b._id))
-        .take(ROLLUP_SCAN_LIMIT);
-      for (const link of links) await ctx.db.delete(link._id);
-      await ctx.db.delete(b._id);
+        .first();
+      if (planLine) {
+        keptWithLineItems++;
+        continue;
+      }
+
+      await cascadeDeleteBudget(ctx, b._id);
       deleted++;
     }
 
@@ -5112,6 +5149,12 @@ export const reassignTransactions = mutation({
  * rebases the fund default and drops the source category/team. The budget↔tag
  * links get their denormalized `chapterId` updated, and a link whose tag is
  * invalid at the new level (a chapter tag on a central budget) is dropped.
+ *
+ * A WP-3.1 `budgetLines` row's own `categoryId` is chapter-scoped the same way
+ * the budget's is (`budgetLines.ts#verifyCategory`) — a category from the
+ * source chapter's tree is meaningless (or invalid) at the new scope, so it's
+ * cleared on every line too. `description`/`plannedCents` are untouched — the
+ * PLAN survives the move, only the stale chapter-scoped ref does not.
  */
 async function moveBudgetScope(
   ctx: MutationCtx,
@@ -5137,6 +5180,14 @@ async function moveBudgetScope(
       continue;
     }
     if (link.chapterId !== target) await ctx.db.patch(link._id, { chapterId: target });
+  }
+
+  const lines = await ctx.db
+    .query("budgetLines")
+    .withIndex("by_budget", (q) => q.eq("budgetId", budget._id))
+    .take(ROLLUP_SCAN_LIMIT);
+  for (const line of lines) {
+    if (line.categoryId !== undefined) await ctx.db.patch(line._id, { categoryId: undefined });
   }
 }
 

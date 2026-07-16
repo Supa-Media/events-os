@@ -30,6 +30,7 @@ import {
 import { Badge, Button, Field, Icon, Select, TextField } from "../../ui";
 import { colors } from "../../../lib/theme";
 import { alertError } from "../../../lib/errors";
+import { BudgetLineItemsEditor } from "./BudgetLineItemsEditor";
 
 const MONTHS = [
   "January", "February", "March", "April", "May", "June",
@@ -116,6 +117,13 @@ export function BudgetCreateModal({
   const [categoryId, setCategoryId] = useState<string | null>(null);
   const [tagIds, setTagIds] = useState<Id<"budgetTags">[]>([]);
   const [saving, setSaving] = useState(false);
+  // WP-3.1: once a BRAND-NEW budget is created, keep the modal open on it
+  // (instead of closing) so "Plan this budget" is the very next thing the
+  // user sees — the "when a dollar amount is entered, a budget panel comes
+  // up" trigger. Editing an existing budget already has an id (`editing.id`)
+  // so it shows the planner immediately; this state is only for a fresh create.
+  const [createdBudgetId, setCreatedBudgetId] = useState<Id<"budgets"> | null>(null);
+  const activeBudgetId = editing?.id ?? createdBudgetId;
 
   // Preload state once the budget being edited resolves.
   useEffect(() => {
@@ -251,8 +259,9 @@ export function BudgetCreateModal({
           // Send the full current set so backend replaces links (auto tags kept).
           tagIds,
         });
+        onClose();
       } else {
-        await create({
+        const newBudgetId = await create({
           amountCents,
           type,
           cadence,
@@ -264,14 +273,25 @@ export function BudgetCreateModal({
           ...(categoryId ? { categoryId: categoryId as Id<"budgetCategories"> } : {}),
           ...(tagIds.length ? { tagIds } : {}),
         });
+        // WP-3.1: don't close — stay open on the new budget so "Plan this
+        // budget" is the next thing the user sees.
+        setCreatedBudgetId(newBudgetId);
       }
-      onClose();
     } catch (err) {
       alertError(err);
     } finally {
       setSaving(false);
     }
   }
+
+  // WP-3.1: right after a FRESH create (not editing), swap the whole body for
+  // the planning step — the top fields are now stale local state pointing at
+  // nothing (`editing` stays null since the caller never passed this budget's
+  // id in), so re-showing them risks a second, duplicate `create` on "Save".
+  const justCreated = !editing && createdBudgetId != null;
+  const createdBudget = justCreated
+    ? budgets.find((b) => b.id === createdBudgetId) ?? null
+    : null;
 
   return (
     <Modal visible transparent animationType="fade" onRequestClose={onClose}>
@@ -285,13 +305,27 @@ export function BudgetCreateModal({
         >
           <View className="flex-row items-center justify-between border-b border-border px-5 py-4">
             <Text className="font-display text-lg text-ink">
-              {editing ? "Edit budget" : "New budget"}
+              {editing ? "Edit budget" : justCreated ? "Plan this budget" : "New budget"}
             </Text>
             <Pressable onPress={onClose} hitSlop={8} className="rounded-md p-1">
               <Icon name="x" size={18} color={colors.muted} />
             </Pressable>
           </View>
 
+          {justCreated && createdBudgetId ? (
+            <>
+              <ScrollView className="max-h-[560px] px-5 py-4">
+                <Text className="mb-1 text-base text-ink">
+                  {createdBudget?.label ?? "Budget"} created
+                  {createdBudget ? ` — ${(createdBudget.amountCents / 100).toLocaleString(undefined, { style: "currency", currency: "USD" })}` : ""}
+                </Text>
+                <BudgetLineItemsEditor budgetId={createdBudgetId} />
+              </ScrollView>
+              <View className="flex-row justify-end border-t border-border px-5 py-4">
+                <Button title="Done" onPress={onClose} />
+              </View>
+            </>
+          ) : (
           <ScrollView className="max-h-[560px] px-5 py-4">
             <TextField
               label="Name"
@@ -413,16 +447,23 @@ export function BudgetCreateModal({
               onChange={(v) => setCategoryId(v || null)}
               placeholder="— No category —"
             />
-          </ScrollView>
 
-          <View className="flex-row justify-end gap-2 border-t border-border px-5 py-4">
-            <Button title="Cancel" variant="secondary" onPress={onClose} />
-            <Button
-              title={editing ? "Save budget" : "Create budget"}
-              onPress={submit}
-              loading={saving}
-            />
-          </View>
+            {/* WP-3.1: editing an existing budget already has a real id, so
+                the "plan this budget" breakdown shows inline right here. */}
+            {editing ? <BudgetLineItemsEditor budgetId={editing.id} /> : null}
+          </ScrollView>
+          )}
+
+          {!justCreated ? (
+            <View className="flex-row justify-end gap-2 border-t border-border px-5 py-4">
+              <Button title="Cancel" variant="secondary" onPress={onClose} />
+              <Button
+                title={editing ? "Save budget" : "Create budget"}
+                onPress={submit}
+                loading={saving}
+              />
+            </View>
+          ) : null}
         </Pressable>
       </Pressable>
     </Modal>

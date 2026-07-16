@@ -739,6 +739,60 @@ describe("transferProjectScope", () => {
     expect((caught as ConvexError<{ code: string }>).data.code).toBe("FORBIDDEN");
   });
 
+  test("clears categoryId on the transferred budget's WP-3.1 budgetLines, keeps description/plannedCents", async () => {
+    const t = newT();
+    const s = await setupChapter(t, { email: SUPER });
+    await seedSelfPerson(s);
+
+    const project = await seedProject(s, s.chapterId, "Music Recording");
+    const fundId = await seedFund(s, s.chapterId);
+    const categoryId = await seedCategory(s, s.chapterId, fundId);
+    const projectBudget = await seedBudget(s, s.chapterId, {
+      type: "one_time",
+      refKind: "project",
+      scopeRefId: project,
+      fundId,
+      categoryId,
+    });
+    const lineWithCategory = await run(t, (ctx) =>
+      ctx.db.insert("budgetLines", {
+        budgetId: projectBudget,
+        description: "Studio time",
+        categoryId,
+        plannedCents: 40000,
+        sortOrder: 0,
+        createdBy: s.userId,
+        createdAt: Date.now(),
+      }),
+    );
+    const lineWithoutCategory = await run(t, (ctx) =>
+      ctx.db.insert("budgetLines", {
+        budgetId: projectBudget,
+        description: "Mastering",
+        plannedCents: 10000,
+        sortOrder: 1,
+        createdBy: s.userId,
+        createdAt: Date.now(),
+      }),
+    );
+
+    const res = await s.as.mutation(api.finances.transferProjectScope, {
+      projectId: project,
+      target: "central",
+    });
+    expect(res.budgetsMoved).toBe(1);
+
+    const line1 = await run(t, (ctx) => ctx.db.get(lineWithCategory));
+    expect(line1?.categoryId).toBeUndefined(); // stale chapter-scoped ref cleared
+    expect(line1?.description).toBe("Studio time"); // plan content survives
+    expect(line1?.plannedCents).toBe(40000);
+
+    const line2 = await run(t, (ctx) => ctx.db.get(lineWithoutCategory));
+    expect(line2?.categoryId).toBeUndefined(); // already uncategorized, still fine
+    expect(line2?.description).toBe("Mastering");
+    expect(line2?.plannedCents).toBe(10000);
+  });
+
   test("reverse round-trip: forward to central then back to the chapter — budgets AND txns both come home, nothing stranded", async () => {
     const t = newT();
     const s = await setupChapter(t, { email: SUPER });
