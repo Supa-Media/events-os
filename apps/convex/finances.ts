@@ -51,6 +51,10 @@ import {
   matchesMode,
   financeRoleAtLeast,
   FINANCE_ROLE_LABELS,
+  CENTRAL_MERCHANT_KEYWORDS,
+  CENTRAL_PROJECT_KEYWORDS,
+  matchesAnyKeyword,
+  REASSIGN_BATCH_CAP,
   type BudgetType,
   type BudgetRefKind,
 } from "@events-os/shared";
@@ -4214,5 +4218,571 @@ export const flagPersonal = mutation({
     // already drops it from SPEND totals; no status change needed).
     await ctx.db.patch(args.transactionId, { isPersonal: args.isPersonal });
     return null;
+  },
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// WP-2.2 — Bulk reattribution + audit trail (the split's execution tool)
+//
+// The retroactive split (Phase 2) moves ~239 historical transactions — and the
+// music/recording project's whole money loop — across the central boundary. The
+// tools below EXECUTE that division: `reassignTransactions` moves a human-
+// confirmed batch of txns; `transferProjectScope` moves a project's budgets +
+// txns as one unit; `suggestSplitAssignments` buckets a chapter's history per
+// the playbook boundary rules (SUGGESTIONS ONLY — a human confirms the ids);
+// every bulk write appends one `reattributionAudit` row.
+//
+// INVARIANTS held here: reassignment never touches `amountCents`/`flow` (money
+// is unchanged — only WHERE it belongs); attribution is explicit-only (we clear
+// links, never derive new ones); central power is gated (central reach + the
+// bookkeeper WRITE rank — a central viewer is blocked like a chapter viewer);
+// every bulk write is audited; failures are `ConvexError`.
+// ═══════════════════════════════════════════════════════════════════════════
+
+/**
+ * Gate a CENTRAL bulk-write operation: central reach AND at least the `min`
+ * write rank. `requireFinanceCentral` alone only checks REACH (any central
+ * grant, including a viewer-only one), so — exactly like `requireReconcileTxn`
+ * (#151) — we additionally clear the role rank so a central VIEWER can't perform
+ * a write that a chapter viewer is correctly blocked from. Returns the caller's
+ * roster person (may be null for a superuser without a `people` row) + userId.
+ */
+async function requireCentralWrite(
+  ctx: MutationCtx,
+  min: "viewer" | "bookkeeper" | "manager",
+): Promise<{ personId: Id<"people"> | null; userId: Id<"users"> }> {
+  const homeChapterId = (await requireChapterId(ctx)) as Id<"chapters">;
+  const userId = (await requireUserId(ctx)) as Id<"users">;
+  const access = await requireFinanceCentral(ctx, homeChapterId);
+  if (!financeRoleAtLeast(access.role, min)) {
+    throw new ConvexError({
+      code: "FORBIDDEN",
+      message: `This action needs at least the ${FINANCE_ROLE_LABELS[min]} finance role.`,
+    });
+  }
+  return { personId: access.personId, userId };
+}
+
+/**
+ * A chapter-only link (project / event / person) survives a cross-boundary move
+ * ONLY when it belongs to the TARGET chapter. Moving to central always clears it
+ * (these tables have no central scope — WP-2.2 finding), and moving to a chapter
+ * keeps it only if the linked row is in that chapter. Returns the id to keep, or
+ * `undefined` to clear the field (a `patch` with an `undefined` value unsets it).
+ */
+async function keepTargetOwnedLink<T extends "projects" | "events" | "people">(
+  ctx: QueryCtx,
+  table: T,
+  id: Id<T> | undefined,
+  target: FinanceScope,
+): Promise<Id<T> | undefined> {
+  if (id == null) return undefined;
+  if (target === CENTRAL) return undefined;
+  const doc = (await ctx.db.get(id)) as { chapterId?: Id<"chapters"> } | null;
+  return doc && doc.chapterId === target ? id : undefined;
+}
+
+/**
+ * The field patch that moves ONE transaction to `target`, clearing every
+ * chapter-scoped attribution that no longer makes sense across the boundary.
+ * A same-scope "move" (`target` already owns the txn) is a no-op — attributions
+ * are left untouched. Per-field rules (documented so the split is auditable):
+ *
+ *  - `chapterId`  → always set to `target` (the whole point).
+ *  - `budgetId`   → KEEP only if the linked budget is owned by `target` (budgets
+ *                   carry the same chapter|central union); a source-scope budget
+ *                   no longer applies → clear.
+ *  - `fundId`     → funds are chapter-scoped (NO central funds): → central clears
+ *                   it; → chapter reassigns the TARGET chapter's General Fund
+ *                   (never inherit the source chapter's fund).
+ *  - `categoryId` → categories are chapter-scoped (source chapter's fund tree) →
+ *                   ALWAYS clear (the receiving treasurer recodes).
+ *  - `projectId`/`eventId`/`eventItemId` → projects & events are CHAPTER-ONLY
+ *                   today → clear on → central; on → chapter keep only if the
+ *                   linked row belongs to `target`. (`transferProjectScope`
+ *                   passes `preserveProjectId` so a whole-project move keeps its
+ *                   own project link — the project's money follows the project.)
+ *  - `teamId`     → financeTeams MAY be central (absent chapterId): keep a
+ *                   central team or a target-owned team; clear a source-chapter
+ *                   team (a central txn carries no chapter-scoped link — the same
+ *                   invariant `createManualTransaction` enforces at creation).
+ *  - `personId`   → a roster person is chapter-scoped and a central txn carries
+ *                   none (`createManualTransaction` rejects it): → central clears;
+ *                   → chapter keeps only a target-roster person.
+ *
+ *  Deliberately UNTOUCHED (provenance/reality of where the money physically
+ *  moved — reassignment must never rewrite it): `externalId`, `sourceAccountId`,
+ *  `cardId`, `cardLast4`, `reimbursementId`, `engagementId`, `repaymentId`,
+ *  receipt, amount/flow/status.
+ */
+async function computeReassignmentPatch(
+  ctx: MutationCtx,
+  txn: Doc<"transactions">,
+  target: FinanceScope,
+  opts: { preserveProjectId?: boolean } = {},
+): Promise<Record<string, unknown>> {
+  const patch: Record<string, unknown> = { chapterId: target };
+  // Same-scope "move": nothing crossed the boundary — leave attributions as-is.
+  if (txn.chapterId === target) return patch;
+
+  if (txn.budgetId != null) {
+    const budget = await ctx.db.get(txn.budgetId);
+    patch.budgetId = budget && budget.chapterId === target ? txn.budgetId : undefined;
+  }
+
+  patch.fundId =
+    target === CENTRAL ? undefined : ((await defaultFundId(ctx, target)) ?? undefined);
+
+  patch.categoryId = undefined;
+
+  if (!opts.preserveProjectId) {
+    patch.projectId = await keepTargetOwnedLink(ctx, "projects", txn.projectId, target);
+  }
+  const keptEvent = await keepTargetOwnedLink(ctx, "events", txn.eventId, target);
+  patch.eventId = keptEvent;
+  // eventItemId is a child of the event — only meaningful while the event link
+  // survives; drop it whenever the event link is cleared.
+  patch.eventItemId = keptEvent ? txn.eventItemId : undefined;
+
+  if (txn.teamId != null) {
+    const team = (await ctx.db.get(txn.teamId)) as { chapterId?: Id<"chapters"> } | null;
+    const teamChapter = team?.chapterId; // undefined = a central/org team
+    const keep = team != null && (teamChapter === undefined || teamChapter === target);
+    patch.teamId = keep ? txn.teamId : undefined;
+  }
+
+  patch.personId = await keepTargetOwnedLink(ctx, "people", txn.personId, target);
+
+  return patch;
+}
+
+/** A finance scope's display name ("Central" for the sentinel, else the
+ *  chapter's name) — used to build the human-readable audit summary. */
+async function financeScopeName(ctx: QueryCtx, scope: FinanceScope): Promise<string> {
+  if (scope === CENTRAL) return "Central";
+  const chapter = await ctx.db.get(scope);
+  return chapter?.name ?? "Unknown chapter";
+}
+
+/** A `"New York (12), Central (1) → Central"` from→to summary for the audit. */
+async function buildReassignSummary(
+  ctx: QueryCtx,
+  sourceCounts: Map<FinanceScope, number>,
+  target: FinanceScope,
+): Promise<string> {
+  const parts: string[] = [];
+  for (const [scope, count] of sourceCounts) {
+    parts.push(`${await financeScopeName(ctx, scope)} (${count})`);
+  }
+  parts.sort();
+  return `${parts.join(", ")} → ${await financeScopeName(ctx, target)}`;
+}
+
+const reattributionTargetValidator = v.union(v.id("chapters"), v.literal(CENTRAL));
+
+export const reassignTransactions = mutation({
+  args: {
+    transactionIds: v.array(v.id("transactions")),
+    // The destination scope: a real chapter, or the central sentinel.
+    target: reattributionTargetValidator,
+    note: v.optional(v.string()),
+  },
+  returns: v.object({ updated: v.number(), auditId: v.id("reattributionAudit") }),
+  handler: async (ctx, args) => {
+    // Reassignment across the central boundary is a CENTRAL power.
+    const { personId, userId } = await requireCentralWrite(ctx, "bookkeeper");
+
+    if (args.transactionIds.length === 0) {
+      throw new ConvexError({
+        code: "INVALID_ARGUMENT",
+        message: "Select at least one transaction to reassign.",
+      });
+    }
+    if (args.transactionIds.length > REASSIGN_BATCH_CAP) {
+      throw new ConvexError({
+        code: "BATCH_TOO_LARGE",
+        message: `Reassign at most ${REASSIGN_BATCH_CAP} transactions per call — the grid paginates larger runs.`,
+      });
+    }
+    // De-dup so a doubled selection can't be counted or patched twice.
+    const ids = [...new Set(args.transactionIds)];
+
+    if (args.target !== CENTRAL) {
+      const chapter = await ctx.db.get(args.target);
+      if (!chapter) {
+        throw new ConvexError({ code: "NOT_FOUND", message: "Target chapter not found." });
+      }
+    }
+
+    const sourceCounts = new Map<FinanceScope, number>();
+    let updated = 0;
+    for (const id of ids) {
+      const txn = (await ctx.db.get(id)) as Doc<"transactions"> | null;
+      if (!txn) {
+        throw new ConvexError({
+          code: "NOT_FOUND",
+          message: "One of the selected transactions no longer exists.",
+        });
+      }
+      const from = txn.chapterId as FinanceScope;
+      sourceCounts.set(from, (sourceCounts.get(from) ?? 0) + 1);
+      const patch = await computeReassignmentPatch(ctx, txn, args.target);
+      await ctx.db.patch(id, patch);
+      updated++;
+    }
+
+    const summary = await buildReassignSummary(ctx, sourceCounts, args.target);
+    const auditId = await ctx.db.insert("reattributionAudit", {
+      kind: "bulk_reassign",
+      actorUserId: userId,
+      ...(personId ? { actorPersonId: personId } : {}),
+      transactionIds: ids,
+      target: args.target,
+      summary,
+      ...(args.note ? { note: args.note } : {}),
+      createdAt: Date.now(),
+    });
+    return { updated, auditId };
+  },
+});
+
+/**
+ * Move a budget's scope as part of a project transfer. Central budgets carry no
+ * chapter-scoped narrowers, so → central clears fund/category/team; → chapter
+ * rebases the fund default and drops the source category/team. The budget↔tag
+ * links get their denormalized `chapterId` updated, and a link whose tag is
+ * invalid at the new level (a chapter tag on a central budget) is dropped.
+ */
+async function moveBudgetScope(
+  ctx: MutationCtx,
+  budget: Doc<"budgets">,
+  target: FinanceScope,
+): Promise<void> {
+  await ctx.db.patch(budget._id, {
+    chapterId: target,
+    fundId: target === CENTRAL ? undefined : ((await defaultFundId(ctx, target)) ?? undefined),
+    // Category + team belong to the source chapter's tree — clear on any move.
+    categoryId: undefined,
+    teamId: undefined,
+  });
+  const links = await ctx.db
+    .query("budgetTagLinks")
+    .withIndex("by_budget", (q) => q.eq("budgetId", budget._id))
+    .collect();
+  for (const link of links) {
+    const tag = await ctx.db.get(link.tagId);
+    const valid = tag != null && tagLevelAllowed(tag.chapterId, target);
+    if (!valid) {
+      await ctx.db.delete(link._id);
+      continue;
+    }
+    if (link.chapterId !== target) await ctx.db.patch(link._id, { chapterId: target });
+  }
+}
+
+export const transferProjectScope = mutation({
+  args: {
+    projectId: v.id("projects"),
+    target: reattributionTargetValidator,
+    note: v.optional(v.string()),
+  },
+  returns: v.object({
+    budgetsMoved: v.number(),
+    txnsMoved: v.number(),
+    auditId: v.id("reattributionAudit"),
+    // The projects table has no central scope / chapterId union yet (WP-2.2
+    // finding): the project ROW stays chapter-scoped — only its money moved.
+    projectScopeDeferred: v.boolean(),
+  }),
+  handler: async (ctx, args) => {
+    const { personId, userId } = await requireCentralWrite(ctx, "bookkeeper");
+    const project = await ctx.db.get(args.projectId);
+    if (!project) {
+      throw new ConvexError({ code: "NOT_FOUND", message: "Project not found." });
+    }
+    if (args.target !== CENTRAL) {
+      const chapter = await ctx.db.get(args.target);
+      if (!chapter) {
+        throw new ConvexError({ code: "NOT_FOUND", message: "Target chapter not found." });
+      }
+    }
+    const sourceScope = project.chapterId as FinanceScope;
+
+    // 1. Move the project's BUDGETS (one_time budgets whose refKind:"project"
+    //    scopeRefId points at this project). Bounded — few budgets per chapter.
+    const chapterBudgets = await ctx.db
+      .query("budgets")
+      .withIndex("by_chapter", (q) => q.eq("chapterId", sourceScope))
+      .take(ROLLUP_SCAN_LIMIT);
+    const projectBudgets = chapterBudgets.filter(
+      (b) => b.refKind === "project" && b.scopeRefId === args.projectId,
+    );
+    let budgetsMoved = 0;
+    for (const b of projectBudgets) {
+      if (b.chapterId === args.target) continue;
+      await moveBudgetScope(ctx, b, args.target);
+      budgetsMoved++;
+    }
+
+    // 2. Move the project's linked TRANSACTIONS. Preserve the projectId link (the
+    //    whole project is moving — project-table scoping is DEFERRED, but the
+    //    money follows the project) while clearing the OTHER now-invalid
+    //    chapter-scoped attributions.
+    const linked = await ctx.db
+      .query("transactions")
+      .withIndex("by_project", (q) => q.eq("projectId", args.projectId))
+      .take(ROLLUP_SCAN_LIMIT);
+    const movedTxnIds: Id<"transactions">[] = [];
+    for (const txn of linked) {
+      if (txn.chapterId === args.target) continue;
+      const patch = await computeReassignmentPatch(ctx, txn, args.target, {
+        preserveProjectId: true,
+      });
+      await ctx.db.patch(txn._id, patch);
+      movedTxnIds.push(txn._id);
+    }
+
+    const summary = `Project "${project.name}": ${await financeScopeName(
+      ctx,
+      sourceScope,
+    )} → ${await financeScopeName(ctx, args.target)} (${budgetsMoved} budget(s), ${
+      movedTxnIds.length
+    } txn(s))`;
+    const auditId = await ctx.db.insert("reattributionAudit", {
+      kind: "project_transfer",
+      actorUserId: userId,
+      ...(personId ? { actorPersonId: personId } : {}),
+      transactionIds: movedTxnIds,
+      target: args.target,
+      summary,
+      projectId: args.projectId,
+      budgetsMoved,
+      ...(args.note ? { note: args.note } : {}),
+      createdAt: Date.now(),
+    });
+    return {
+      budgetsMoved,
+      txnsMoved: movedTxnIds.length,
+      auditId,
+      projectScopeDeferred: true,
+    };
+  },
+});
+
+// ── Rule-assisted split suggestions (central-gated; SUGGESTIONS ONLY) ─────────
+const splitSuggestionRow = v.object({
+  id: v.id("transactions"),
+  amountCents: v.number(),
+  flow: flowValidator,
+  postedAt: v.number(),
+  description: v.union(v.string(), v.null()),
+  merchantName: v.union(v.string(), v.null()),
+  // Why the rules bucketed this txn where they did (shown to the human).
+  reason: v.string(),
+});
+
+export const suggestSplitAssignments = query({
+  args: { chapterId: v.id("chapters") },
+  returns: v.object({
+    central: v.array(splitSuggestionRow),
+    chapter: v.array(splitSuggestionRow),
+    unassigned: v.array(splitSuggestionRow),
+    // The chapter's projects with a per-project scope suggestion, so the UI can
+    // let a human override the music-project-is-central heuristic per project.
+    projects: v.array(
+      v.object({
+        id: v.id("projects"),
+        name: v.string(),
+        suggested: v.union(v.literal("central"), v.literal("chapter")),
+        txnCount: v.number(),
+      }),
+    ),
+    counts: v.object({
+      central: v.number(),
+      chapter: v.number(),
+      unassigned: v.number(),
+    }),
+  }),
+  handler: async (ctx, args) => {
+    const empty = {
+      central: [] as (typeof splitSuggestionRow.type)[],
+      chapter: [] as (typeof splitSuggestionRow.type)[],
+      unassigned: [] as (typeof splitSuggestionRow.type)[],
+      projects: [] as {
+        id: Id<"projects">;
+        name: string;
+        suggested: "central" | "chapter";
+        txnCount: number;
+      }[],
+      counts: { central: 0, chapter: 0, unassigned: 0 },
+    };
+    const homeChapterId = await readChapterId(ctx);
+    if (!homeChapterId) return empty;
+    // Bucketing the chapter's money for the split is a central power.
+    await requireFinanceCentral(ctx, homeChapterId);
+
+    const sandboxMode = await readSandbox(ctx);
+    const txns = (
+      await ctx.db
+        .query("transactions")
+        .withIndex("by_chapter", (q) => q.eq("chapterId", args.chapterId))
+        .take(ROLLUP_SCAN_LIMIT)
+    ).filter((tr) => txnMatchesMode(tr, sandboxMode));
+
+    const projectCache = new Map<Id<"projects">, Doc<"projects"> | null>();
+    const getProject = async (id: Id<"projects">) => {
+      if (projectCache.has(id)) return projectCache.get(id)!;
+      const p = await ctx.db.get(id);
+      projectCache.set(id, p);
+      return p;
+    };
+
+    const central: (typeof splitSuggestionRow.type)[] = [];
+    const chapter: (typeof splitSuggestionRow.type)[] = [];
+    const unassigned: (typeof splitSuggestionRow.type)[] = [];
+    const projectTxnCounts = new Map<Id<"projects">, number>();
+
+    const toRow = (tr: Doc<"transactions">, reason: string) => ({
+      id: tr._id,
+      amountCents: tr.amountCents,
+      flow: tr.flow,
+      postedAt: tr.postedAt,
+      description: tr.description ?? null,
+      merchantName: tr.merchantName ?? null,
+      reason,
+    });
+
+    for (const tr of txns) {
+      if (tr.eventId) {
+        // Event-linked → chapter: canon events are local (playbook boundary).
+        chapter.push(toRow(tr, "Event-linked — canon events stay with the chapter"));
+      } else if (tr.projectId) {
+        projectTxnCounts.set(tr.projectId, (projectTxnCounts.get(tr.projectId) ?? 0) + 1);
+        const project = await getProject(tr.projectId);
+        const isCentralProject = matchesAnyKeyword(project?.name, CENTRAL_PROJECT_KEYWORDS);
+        if (isCentralProject) {
+          central.push(
+            toRow(tr, `Project "${project?.name ?? "?"}" is central-owned (music/recording)`),
+          );
+        } else {
+          chapter.push(toRow(tr, `Project "${project?.name ?? "?"}" stays with the chapter`));
+        }
+      } else if (
+        matchesAnyKeyword(tr.merchantName, CENTRAL_MERCHANT_KEYWORDS) ||
+        matchesAnyKeyword(tr.description, CENTRAL_MERCHANT_KEYWORDS)
+      ) {
+        central.push(toRow(tr, "Merchant looks central (expansion / conference / brand)"));
+      } else {
+        unassigned.push(toRow(tr, "No rule matched — a human decides"));
+      }
+    }
+
+    const projects: {
+      id: Id<"projects">;
+      name: string;
+      suggested: "central" | "chapter";
+      txnCount: number;
+    }[] = [];
+    for (const [pid, count] of projectTxnCounts) {
+      const project = await getProject(pid);
+      if (!project) continue;
+      projects.push({
+        id: pid,
+        name: project.name,
+        suggested: matchesAnyKeyword(project.name, CENTRAL_PROJECT_KEYWORDS)
+          ? "central"
+          : "chapter",
+        txnCount: count,
+      });
+    }
+    projects.sort((a, b) => a.name.localeCompare(b.name));
+
+    return {
+      central,
+      chapter,
+      unassigned,
+      projects,
+      counts: {
+        central: central.length,
+        chapter: chapter.length,
+        unassigned: unassigned.length,
+      },
+    };
+  },
+});
+
+// ── Audit read (central-gated) + reassign target list (for the bulk bar) ─────
+export const listReattributionAudit = query({
+  args: { limit: v.optional(v.number()) },
+  returns: v.array(
+    v.object({
+      id: v.id("reattributionAudit"),
+      kind: v.union(v.literal("bulk_reassign"), v.literal("project_transfer")),
+      actorName: v.union(v.string(), v.null()),
+      txnCount: v.number(),
+      target: reattributionTargetValidator,
+      summary: v.string(),
+      note: v.union(v.string(), v.null()),
+      budgetsMoved: v.union(v.number(), v.null()),
+      createdAt: v.number(),
+    }),
+  ),
+  handler: async (ctx, args) => {
+    const homeChapterId = await readChapterId(ctx);
+    if (!homeChapterId) return [];
+    await requireFinanceCentral(ctx, homeChapterId);
+    const limit = Math.min(Math.max(args.limit ?? 50, 1), 200);
+    const rows = await ctx.db
+      .query("reattributionAudit")
+      .withIndex("by_created")
+      .order("desc")
+      .take(limit);
+    const out: {
+      id: Id<"reattributionAudit">;
+      kind: "bulk_reassign" | "project_transfer";
+      actorName: string | null;
+      txnCount: number;
+      target: FinanceScope;
+      summary: string;
+      note: string | null;
+      budgetsMoved: number | null;
+      createdAt: number;
+    }[] = [];
+    for (const r of rows) {
+      let actorName: string | null = null;
+      if (r.actorPersonId) {
+        const person = await ctx.db.get(r.actorPersonId);
+        actorName = person?.name ?? null;
+      }
+      out.push({
+        id: r._id,
+        kind: r.kind,
+        actorName,
+        txnCount: r.transactionIds.length,
+        target: r.target,
+        summary: r.summary,
+        note: r.note ?? null,
+        budgetsMoved: r.budgetsMoved ?? null,
+        createdAt: r.createdAt,
+      });
+    }
+    return out;
+  },
+});
+
+/** The chapters a central caller may reassign money to/from — powers the
+ *  Reconcile bulk bar's "Reassign to" picker (the UI prepends "Central"). */
+export const reassignTargets = query({
+  args: {},
+  returns: v.array(v.object({ id: v.id("chapters"), name: v.string() })),
+  handler: async (ctx) => {
+    const homeChapterId = await readChapterId(ctx);
+    if (!homeChapterId) return [];
+    await requireFinanceCentral(ctx, homeChapterId);
+    const chapters = await ctx.db.query("chapters").take(ROLLUP_SCAN_LIMIT);
+    return chapters
+      .filter((c) => c.isActive !== false)
+      .map((c) => ({ id: c._id, name: c.name }))
+      .sort((a, b) => a.name.localeCompare(b.name));
   },
 });

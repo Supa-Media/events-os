@@ -600,6 +600,42 @@ export const approvals = defineTable({
   .index("by_chapter", ["chapterId"])
   .index("by_subject", ["subjectType", "subjectId"]);
 
+// ── Reattribution audit (the split's ledger) ─────────────────────────────────
+/** WP-2.2: one append-only row per BULK reattribution operation — the audit
+ *  trail behind the retroactive split. A bulk `reassignTransactions` (many txns
+ *  cross the central boundary) or a `transferProjectScope` (a project's budgets
+ *  + txns move scope) writes exactly ONE row here, capturing who, when, the txn
+ *  ids touched (count = `transactionIds.length`), and a from→to summary.
+ *
+ *  ORG-LEVEL by nature: reattribution is a CENTRAL power that crosses the
+ *  chapter boundary, so this table is NOT chapter-scoped like the rest of
+ *  finance — it keys on the destination `target` (a real chapter, or the
+ *  `"central"` sentinel) instead. The read query is central-gated. */
+export const reattributionAudit = defineTable({
+  // The kind of bulk operation this row records.
+  kind: v.union(v.literal("bulk_reassign"), v.literal("project_transfer")),
+  // Who did it: the auth user always; the roster person when the caller has one
+  // (a superuser acting without a `people` row leaves `actorPersonId` unset).
+  actorUserId: v.id("users"),
+  actorPersonId: v.optional(v.id("people")),
+  // The transactions moved by this operation (bounded per call; the count is the
+  // array length). For a project transfer these are the project's linked txns.
+  transactionIds: v.array(v.id("transactions")),
+  // The destination scope the whole operation moved money TO.
+  target: v.union(v.id("chapters"), v.literal("central")),
+  // A human-readable from→to summary, e.g. "New York (12), Central (1) → Central".
+  summary: v.string(),
+  // `project_transfer` only: the project whose scope moved + how many of its
+  // budgets moved with it (txn count is `transactionIds.length`).
+  projectId: v.optional(v.id("projects")),
+  budgetsMoved: v.optional(v.number()),
+  // Optional operator note (why this split move was made).
+  note: v.optional(v.string()),
+  createdAt: v.number(),
+})
+  .index("by_created", ["createdAt"])
+  .index("by_target", ["target"]);
+
 // ── Finance roles (graded, per-person) ───────────────────────────────────────
 /** A caller's graded finance capability in a chapter (viewer < bookkeeper <
  *  manager). `scope: "central"` layers org-wide roll-up reach on top.

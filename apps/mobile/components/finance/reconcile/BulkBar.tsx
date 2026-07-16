@@ -19,6 +19,8 @@ export function BulkBar({
   onMarkReconciled,
   onClear,
   hideCategory = false,
+  reassignItems,
+  onReassign,
 }: {
   count: number;
   categoryItems: PickerItem[];
@@ -30,6 +32,10 @@ export function BulkBar({
   // WP-2.1: hide "Set category" in central scope — central txns have no
   // categories (chapter-only), so only Budget + Mark Reconciled apply.
   hideCategory?: boolean;
+  // WP-2.2: central-seat holders can reassign the selection across the central
+  // boundary (→ Central or a chapter). Absent for chapter-only reconcilers.
+  reassignItems?: PickerItem[];
+  onReassign?: (target: string | null) => void;
 }) {
   return (
     <View className="mb-3 flex-row flex-wrap items-center gap-3 rounded-lg border border-accent bg-accent-soft px-4 py-2.5">
@@ -56,6 +62,13 @@ export function BulkBar({
           icon="check"
           onPress={onMarkReconciled}
         />
+        {reassignItems && onReassign ? (
+          <BulkPicker
+            label="Reassign to"
+            items={reassignItems}
+            onPick={onReassign}
+          />
+        ) : null}
       </View>
       <Pressable
         onPress={onClear}
