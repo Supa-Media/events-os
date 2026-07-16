@@ -607,3 +607,106 @@ export function matchesAnyKeyword(
  *  UI paginates larger split runs; a hard cap keeps a single mutation bounded
  *  (invariant: reads/writes stay bounded). */
 export const REASSIGN_BATCH_CAP = 200;
+
+// ── Affordability (WP-4.3: "can we afford this event?") ─────────────────────
+// The City Launch Playbook's chapter-affordability model (PRD §0.1): a manual
+// backer HEADCOUNT (never dollars — the future Giving page, F-6, is the real
+// backer platform) drives monthly revenue → a tier label → the monthly
+// operating floor → the central skim → what's left over (discretionary).
+// Every constant below is a playbook fact, kept here (not inline in a query or
+// component) so the owner can tune it in one place.
+
+/** One backer's monthly pledge, in cents ($50/mo). Headcount × this = revenue.
+ *  Mirrors the playbook's "$50/mo" backer unit — never a floating dollar. */
+export const BACKER_UNIT_CENTS = 5000;
+
+/** The chapter → central "City Launch Fund" skim, as a fraction of a chapter's
+ *  monthly backer revenue. Playbook: flat 15%, owner-confirmed 2026-07-16 (§3.3
+ *  — "Skim: flat 15% confirmed"). Modeled as a `flow:"transfer"` pair once
+ *  accounts are live (WP-4.1); this constant is the one place both the
+ *  affordability header and the transfer automation read the rate from. */
+export const CENTRAL_SKIM_PCT = 0.15;
+
+/** Monthly operating floor's FIXED component, in cents ($520). Covers the
+ *  playbook's headcount-independent line items (WWS film $200 · WWS food $160
+ *  · transport $100 · meeting food $100 · storage $60 · software $150 —
+ *  actually $770 total at 5 teammates once the per-teammate component below is
+ *  added; see the module doc comment for the full breakdown). */
+export const OPERATING_FLOOR_FIXED_CENTS = 52_000;
+
+/** Monthly operating floor's PER-TEAMMATE component, in cents ($50/teammate).
+ *  Sanity check against the playbook's stated $770 floor for a 5-person team:
+ *  `OPERATING_FLOOR_FIXED_CENTS + 5 * OPERATING_FLOOR_PER_TEAMMATE_CENTS`
+ *  = $520 + 5×$50 = $770. ✓ */
+export const OPERATING_FLOOR_PER_TEAMMATE_CENTS = 5000;
+
+/**
+ * Backer-count tier thresholds (the playbook's deep-dive numbers, owner-
+ * confirmed 2026-07-16 — supersedes the stale one-pager's 25/50/75). Ordered
+ * HIGHEST THRESHOLD FIRST — `affordabilityTierLabel` walks it top-down and
+ * returns the first threshold met.
+ */
+export const AFFORDABILITY_TIERS: readonly {
+  minBackers: number;
+  label: string;
+}[] = [
+  { minBackers: 50, label: "+LTN" },
+  { minBackers: 30, label: "+Eden" },
+  { minBackers: 20, label: "WWS" },
+];
+
+/** Tier label shown below the lowest threshold in `AFFORDABILITY_TIERS`. */
+export const PRE_TIER_LABEL = "Pre-tier";
+
+/** The tier label for a given backer count: the highest threshold met in
+ *  `AFFORDABILITY_TIERS`, else `PRE_TIER_LABEL`. */
+export function affordabilityTierLabel(backerCount: number): string {
+  for (const tier of AFFORDABILITY_TIERS) {
+    if (backerCount >= tier.minBackers) return tier.label;
+  }
+  return PRE_TIER_LABEL;
+}
+
+/** The full WP-4.3 computation's shape — see `chapterAffordability`. */
+export interface ChapterAffordability {
+  monthlyRevenueCents: number;
+  tierLabel: string;
+  floorCents: number;
+  skimCents: number;
+  /** `monthlyRevenueCents - floorCents - skimCents`. May be NEGATIVE (spend
+   *  commitments exceed what backer revenue covers after the floor + skim) —
+   *  callers clamp the DISPLAY ("under water by $X"), never this raw value. */
+  discretionaryCents: number;
+}
+
+/**
+ * The WP-4.3 "can we afford this?" computation: backers → revenue → tier →
+ * operating floor → central skim → discretionary. Pure (no ctx, no rounding
+ * surprises beyond the skim's cent rounding) so it's testable without
+ * convex-test and reusable by both the `chapterAffordability` query and any
+ * future consumer (e.g. an event's "can we afford this?" check).
+ *
+ * `backerCount` is the chapter's MANUAL entry (§0.1 — no Giving page yet).
+ * `teammateCount` is the chapter's active team-member headcount; see
+ * `finances.chapterAffordability` in the Convex backend for exactly which
+ * roster rows count (documented there since it queries `people`, which this
+ * pure module can't reach).
+ */
+export function chapterAffordability(
+  backerCount: number,
+  teammateCount: number,
+): ChapterAffordability {
+  const monthlyRevenueCents = backerCount * BACKER_UNIT_CENTS;
+  const floorCents =
+    OPERATING_FLOOR_FIXED_CENTS +
+    teammateCount * OPERATING_FLOOR_PER_TEAMMATE_CENTS;
+  const skimCents = Math.round(monthlyRevenueCents * CENTRAL_SKIM_PCT);
+  const discretionaryCents = monthlyRevenueCents - floorCents - skimCents;
+  return {
+    monthlyRevenueCents,
+    tierLabel: affordabilityTierLabel(backerCount),
+    floorCents,
+    skimCents,
+    discretionaryCents,
+  };
+}

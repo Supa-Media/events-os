@@ -55,6 +55,7 @@ import {
   CENTRAL_PROJECT_KEYWORDS,
   matchesAnyKeyword,
   REASSIGN_BATCH_CAP,
+  chapterAffordability as chapterAffordabilityCalc,
   type BudgetType,
   type BudgetRefKind,
 } from "@events-os/shared";
@@ -1751,6 +1752,123 @@ export const dashboardChapter = query({
       unattributedCount,
       centralLinkedCents,
     };
+  },
+});
+
+/**
+ * WP-4.3 "can we afford this?" — the chapter dashboard's affordability header.
+ * Backers (manual entry, §0.1) → monthly revenue → tier → operating floor →
+ * central skim → discretionary. All arithmetic lives in
+ * `chapterAffordability` (`@events-os/shared`) — this query only resolves the
+ * two inputs (backer count, teammate count) and the caller's edit capability.
+ *
+ * Supports the same central drill-down as `dashboardChapter` (viewing a
+ * DIFFERENT chapter's header, read-only) so the two stay consistent on the
+ * same dashboard render — an FM drilled into a chapter must see THAT
+ * chapter's affordability, not their own.
+ */
+export const chapterAffordability = query({
+  args: {
+    chapterId: v.optional(v.id("chapters")),
+  },
+  returns: v.object({
+    backerCount: v.number(),
+    // The chapter's active team-member headcount — the honest queryable
+    // stand-in for the playbook's "teammate" (there's no separate roster of
+    // "funded seats" yet). Counts `people` rows in this chapter where
+    // `isSamplePerson !== true` (Academy sandbox bench, never real) and EITHER
+    // `isTeamMember === true` OR the row is linked to a real user account —
+    // the exact predicate `people.teamMembers` already uses as this app's one
+    // definition of "team member", so this doesn't invent a second one.
+    // Placeholder crew (`isPlaceholder`) are excluded: they're a stand-in
+    // slot, not a funded seat drawing the $50/mo operating-floor add-on.
+    teammateCount: v.number(),
+    monthlyRevenueCents: v.number(),
+    tierLabel: v.string(),
+    floorCents: v.number(),
+    skimCents: v.number(),
+    discretionaryCents: v.number(),
+    // True iff the caller may edit THIS chapter's backer count (chapter
+    // finance-manager rank at the chapter being viewed — false during
+    // central drill-down, mirroring every other write action `ChapterView`
+    // hides in that state).
+    canEdit: v.boolean(),
+  }),
+  handler: async (ctx, args) => {
+    const ownChapterId = await readChapterId(ctx);
+    const chapterId = args.chapterId ?? ownChapterId;
+    if (!chapterId) {
+      throw new ConvexError({
+        code: "NO_CHAPTER",
+        message: "You don't belong to a chapter yet.",
+      });
+    }
+
+    let access;
+    if (args.chapterId != null && args.chapterId !== ownChapterId) {
+      // Drilling into a different chapter than the caller's own needs central
+      // reach, checked through the caller's OWN chapter — mirrors
+      // `dashboardChapter`'s identical drill-down gate.
+      if (!ownChapterId) {
+        throw new ConvexError({
+          code: "NO_CHAPTER",
+          message: "You don't belong to a chapter yet.",
+        });
+      }
+      access = await requireFinanceCentral(ctx, ownChapterId);
+    } else {
+      access = await requireFinanceRole(ctx, chapterId, "viewer");
+    }
+
+    const chapter = await ctx.db.get(chapterId);
+    const backerCount = chapter?.backerCount ?? 0;
+
+    const roster = await ctx.db
+      .query("people")
+      .withIndex("by_chapter", (q) => q.eq("chapterId", chapterId))
+      .collect();
+    const teammateCount = roster.filter(
+      (p) =>
+        p.isSamplePerson !== true &&
+        p.isPlaceholder !== true &&
+        (p.isTeamMember === true || p.userId != null),
+    ).length;
+
+    const computed = chapterAffordabilityCalc(backerCount, teammateCount);
+    const canEdit = chapterId === ownChapterId && access.isManager;
+
+    return { backerCount, teammateCount, ...computed, canEdit };
+  },
+});
+
+/**
+ * Set the chapter's manual backer count (WP-4.3). Chapter finance-manager
+ * rank only (Chapter Director/Treasurer — the seats the PRD names for this;
+ * `requireFinanceManager` is the graded ladder's manager gate, which the
+ * `finance_manager`-title bridge and superusers already satisfy). Always the
+ * CALLER's own chapter (`requireChapterId`) — there is no chapterId arg,
+ * mirroring every other write in this file (a central drill-down viewer never
+ * gets a write path here; the UI hides the edit affordance via `canEdit`).
+ */
+export const setBackerCount = mutation({
+  args: { backerCount: v.number() },
+  returns: v.object({ backerCount: v.number() }),
+  handler: async (ctx, { backerCount }) => {
+    if (!Number.isInteger(backerCount) || backerCount < 0) {
+      throw new ConvexError({
+        code: "INVALID_BACKER_COUNT",
+        message: "Backer count must be a non-negative whole number.",
+      });
+    }
+    const chapterId = (await requireChapterId(ctx)) as Id<"chapters">;
+    await requireFinanceManager(ctx, chapterId);
+    const updatedBy = (await requireUserId(ctx)) as Id<"users">;
+    await ctx.db.patch(chapterId, {
+      backerCount,
+      backerCountUpdatedAt: Date.now(),
+      backerCountUpdatedBy: updatedBy,
+    });
+    return { backerCount };
   },
 });
 
