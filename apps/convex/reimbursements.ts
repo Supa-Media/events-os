@@ -110,6 +110,19 @@ const EDITABLE_STATUSES: readonly ReimbursementStatus[] = [
   "submitted",
 ];
 
+/** Statuses in which a bank DESTINATION may still be (re)linked. The editable
+ *  set PLUS `approved`: after a paid→returned ACH bounce, `reverseSettledPayout`
+ *  re-opens the reimbursement to `approved`, and most returns (R03/R04) are
+ *  wrong-account — the claimant MUST be able to fix the bad bank details that
+ *  caused the bounce. The destination is NOT part of what approval reviews
+ *  (managers only ever see the last-4), so relinking here changes nothing a
+ *  manager approved. Deliberately separate from `EDITABLE_STATUSES` so line-item
+ *  edits stay locked once approved. */
+const LINKABLE_STATUSES: readonly ReimbursementStatus[] = [
+  ...EDITABLE_STATUSES,
+  "approved",
+];
+
 /** The pre-approval / pre-payout states. `reject` and `cancel` are only legal
  *  from here — never from `approved`/`paying`/terminal, so an in-flight payout
  *  (Phase 4) can't be desynced by a late reject/cancel. */
@@ -883,8 +896,9 @@ const linkBankAccountArgs = {
   funding: v.optional(externalAccountFundingValidator),
 };
 
-/** A request must still be editable (pre-payout) to (re)link its destination —
- *  mirrors the receipt-attach gate above. Throws when missing/not editable. */
+/** A request must still be in a LINKABLE status (editable OR `approved`) to
+ *  (re)link its destination — `approved` is included so a claimant can fix bad
+ *  bank details after a bounce re-opens it. Throws when missing/not linkable. */
 function assertLinkable(
   req: Doc<"reimbursementRequests"> | null,
 ): Doc<"reimbursementRequests"> {
@@ -894,7 +908,7 @@ function assertLinkable(
       message: "We couldn't find that reimbursement.",
     });
   }
-  if (!EDITABLE_STATUSES.includes(req.status)) {
+  if (!LINKABLE_STATUSES.includes(req.status)) {
     throw new ConvexError({
       code: "NOT_EDITABLE",
       message: "This reimbursement can no longer be edited.",
@@ -913,6 +927,14 @@ export const attachExternalAccount = internalMutation({
     last4: v.string(),
   },
   handler: async (ctx, { reimbursementId, externalAccountId, last4 }) => {
+    // TOCTOU re-check: `begin*` verified the request was linkable, then a slow
+    // `createExternalAccount` ran. Re-verify the request is STILL linkable before
+    // stamping a destination — a concurrent pay could have advanced it to
+    // `paying`/`paid`, where a late destination change must NOT take. No-op cleanly.
+    const req = await ctx.db.get(reimbursementId);
+    if (!req || !LINKABLE_STATUSES.includes(req.status)) {
+      return null;
+    }
     await ctx.db.patch(reimbursementId, {
       externalAccountId,
       bankAccountLast4: last4,

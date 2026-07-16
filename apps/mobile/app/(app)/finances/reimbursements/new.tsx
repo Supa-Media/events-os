@@ -214,9 +214,13 @@ export default function NewReimbursementScreen() {
         submit({
           payeeName: nameValue.trim(),
           payeeEmail: emailValue.trim() || undefined,
-          // A full destination below supersedes last-4 — that gets set from
-          // the real account number once `linkBankAccount` completes.
-          bankAccountLast4: hasFullDestination ? undefined : bankLast4.trim() || undefined,
+          // With a full destination, compute the last-4 client-side as a
+          // FALLBACK so the request always shows a last-4 even if the post-submit
+          // `linkBankAccount` degrades (linked:false). A successful link
+          // overwrites this with the same last-4 (`attachExternalAccount`).
+          bankAccountLast4: hasFullDestination
+            ? accountNumber.trim().replace(/\D/g, "").slice(-4) || undefined
+            : bankLast4.trim() || undefined,
           purpose: notes.trim() || undefined,
           requestPreApproval,
           lines: usable.map((l) => ({

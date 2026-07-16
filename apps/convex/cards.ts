@@ -1038,9 +1038,11 @@ export const markRepaymentPaid = mutation({
 
 // ── linkRepaymentBankAccount (action, the payer) — ACH destination capture ───
 
-/** Gate a bank-account link: only the payer (or a manager acting for them,
- *  mirroring `beginRepayment`'s access check) may link a funding source, and
- *  only before the repayment has already settled. */
+/** Gate a bank-account link: PAYER-ONLY (never a manager). Linking supplies raw
+ *  routing + account numbers that originate an ACH DEBIT against that account — a
+ *  manager must never be able to enter SOMEONE ELSE's bank numbers and pull from
+ *  an arbitrary account the victim never touched. Managers keep the manual
+ *  `markRepaymentPaid` confirmation instead. Only before the repayment settles. */
 export const beginLinkRepaymentBankAccount = internalMutation({
   args: { repaymentId: v.id("personalRepayments") },
   handler: async (ctx, { repaymentId }) => {
@@ -1051,7 +1053,7 @@ export const beginLinkRepaymentBankAccount = internalMutation({
 
     const isPayer =
       access.personId != null && access.personId === repayment!.payerPersonId;
-    if (!isPayer && !access.isManager) {
+    if (!isPayer) {
       throw new ConvexError({
         code: "FORBIDDEN",
         message: "Only the payer can link a bank account for this repayment.",
@@ -1077,6 +1079,18 @@ export const attachRepaymentExternalAccount = internalMutation({
     last4: v.string(),
   },
   handler: async (ctx, { repaymentId, externalAccountId, last4 }) => {
+    // TOCTOU re-check: the link gate verified the repayment wasn't settled, then
+    // a slow Increase `createExternalAccount` ran. Re-verify before patching, so
+    // a repayment settled in the meantime (e.g. a manager's `markRepaymentPaid`)
+    // never has a funding source stamped onto it after the fact. No-op cleanly.
+    const repayment = await ctx.db.get(repaymentId);
+    if (
+      !repayment ||
+      repayment.status === "paid" ||
+      repayment.creditTransactionId
+    ) {
+      return null;
+    }
     await ctx.db.patch(repaymentId, {
       payerExternalAccountId: externalAccountId,
       payerAccountLast4: last4,
@@ -1137,6 +1151,44 @@ export const linkRepaymentBankAccount = action({
 });
 
 // ── initiateRepayment (action, the payer) ────────────────────────────────────
+
+/**
+ * KILL-SWITCH for the real ACH DEBIT pull. Deliberately `false`.
+ *
+ * `initiateRepayment` originates an ACH DEBIT (a `-amount` pull from the payer's
+ * linked account). Unlike an outbound CREDIT — irrevocably sent at `submitted` —
+ * an ACH debit routinely BOUNCES days later (R01 NSF, etc.), and this PR ships NO
+ * state machine for the debit's `ach_transfer.*` webhooks: a 201 from
+ * `POST /ach_transfers` is treated as settled and the debt-clearing credit is
+ * posted IMMEDIATELY, so a later bounce would silently forgive the member's debt
+ * forever. Until that state machine exists, keep the debit OFF: `canCharge` stays
+ * false, so `initiateRepayment` degrades to the manual `markRepaymentPaid` path
+ * exactly as before this PR. All the bank-linking / external-account plumbing is
+ * KEPT and becomes reachable the moment this flips true.
+ *
+ * TODO(repayment-debit): the follow-up WP that flips this true MUST:
+ *   1. Track the debit's Increase transfer id on `personalRepayments` (a new
+ *      `debitTransferId` field) at origination — do NOT settle on the 201.
+ *   2. Settle (post the offsetting credit) only when the debit reaches
+ *      `submitted` via an `ach_transfer.*` webhook — NOT at creation.
+ *   3. On a later `returned` webhook, REVERSE the settlement (delete/void the
+ *      offsetting credit and re-open the repayment to `pending`), mirroring
+ *      `reverseSettledPayout` on the payout side.
+ *   4. See the adversarial review on PR #137 (BLOCKER 2).
+ */
+const REPAYMENT_DEBIT_ENABLED = false;
+
+/** Reject a non-positive ACH debit amount before origination — mirrors
+ *  `increase.assertPositivePayout`. Defense in depth even while the debit is
+ *  gated off: a $0 (or non-integer) pull must never be sent. */
+function assertPositiveRepayment(amountCents: number): void {
+  if (!Number.isInteger(amountCents) || amountCents <= 0) {
+    throw new ConvexError({
+      code: "INVALID_AMOUNT",
+      message: "A repayment must be a positive whole number of cents.",
+    });
+  }
+}
 
 /** Gate the payer + set the chosen method + decide if a real Increase charge is
  *  addressable. Returns the paid summary if already settled (idempotent). */
@@ -1208,8 +1260,14 @@ export const beginRepayment = internalMutation({
     const accountEnvKey = increaseAccountId
       ? increaseEnvForObjectId(increaseAccountId).key
       : undefined;
+    // REPAYMENT_DEBIT_ENABLED gates the real ACH debit off until a debit-bounce
+    // state machine ships (see the constant's doc). While false, `canCharge` is
+    // always false → degrade to the manual `markRepaymentPaid` confirmation.
     const canCharge =
-      !!accountEnvKey && !!increaseAccountId && hasPayerFundingSource;
+      REPAYMENT_DEBIT_ENABLED &&
+      !!accountEnvKey &&
+      !!increaseAccountId &&
+      hasPayerFundingSource;
 
     return {
       kind: "pending",
@@ -1236,6 +1294,19 @@ export const applyRepaymentPaid = internalMutation({
         code: "NOT_FOUND",
         message: "Repayment not found.",
       });
+    }
+    // TOCTOU / double-collection guard: a manager may have confirmed receipt via
+    // `markRepaymentPaid` between `beginRepayment` and this settle. If the
+    // offsetting credit is already posted, DO NOT post a second one — but the real
+    // Increase debit DID pull funds, so the member was effectively charged twice;
+    // flag the transfer for MANUAL REVIEW / REFUND rather than silently settling.
+    if (repayment.creditTransactionId) {
+      console.error(
+        `[cards] applyRepaymentPaid: repayment ${args.repaymentId} already settled ` +
+          `(credit ${repayment.creditTransactionId}); the Increase debit ${args.increaseRef} ` +
+          `needs MANUAL REVIEW / REFUND (possible double collection).`,
+      );
+      return toRepaymentSummary(repayment);
     }
     return toRepaymentSummary(
       await settleRepayment(ctx, repayment, args.increaseRef),
@@ -1275,6 +1346,8 @@ export const initiateRepayment = action({
     // environment → degrade (leave pending; recoverable via markRepaymentPaid).
     const { key, base } = increaseEnvForObjectId(prep.increaseAccountId);
     if (!key) return prep.repayment;
+    // Defense in depth: never originate a $0 / non-integer ACH debit pull.
+    assertPositiveRepayment(prep.amountCents);
     try {
       const charge = await increasePost(
         key,

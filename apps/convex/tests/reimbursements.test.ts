@@ -967,7 +967,10 @@ describe("in-app member self-service submission", () => {
       ).rejects.toBeInstanceOf(ConvexError);
     });
 
-    test("rejects once the request is no longer editable (e.g. already approved)", async () => {
+    test("ALLOWS relinking while `approved` (fix the bad bank details a bounce re-opened)", async () => {
+      // IMPORTANT 4: `reverseSettledPayout` re-opens a bounced reimbursement to
+      // `approved`; most returns are wrong-account (R03/R04), so the claimant must
+      // be able to fix the destination. `approved` is a LINKABLE status.
       const t = newT();
       const s = await setupChapter(t);
       await seedPerson(s, {
@@ -988,8 +991,40 @@ describe("in-app member self-service submission", () => {
       await manager.as.mutation(api.reimbursements.approve, { reimbursementId });
 
       process.env.INCREASE_API_KEY = "test_key";
+      mockExternalAccountFetch("extacct_relink_1");
+
+      const result = await s.as.action(api.reimbursements.linkBankAccount, {
+        reimbursementId,
+        routingNumber: "011000015",
+        accountNumber: "0987654321",
+      });
+      expect(result.linked).toBe(true);
+      const req = await run(s.t, (ctx) => ctx.db.get(reimbursementId));
+      expect(req?.status).toBe("approved"); // relinked without leaving approved
+      expect(req?.externalAccountId).toBe("extacct_relink_1");
+      expect(req?.bankAccountLast4).toBe("4321");
+    });
+
+    test("rejects once the request is past linkable (e.g. already `paying`)", async () => {
+      const t = newT();
+      const s = await setupChapter(t);
+      await seedPerson(s, {
+        name: "Dana Rivers",
+        email: "dana@example.com",
+        userId: s.userId,
+      });
+      const { reimbursementId } = await s.as.mutation(
+        api.reimbursements.submitReimbursement,
+        { lines: [{ description: "x", amountCents: 1200 }] },
+      );
+      // Force a past-linkable status directly (an in-flight payout).
+      await run(s.t, (ctx) =>
+        ctx.db.patch(reimbursementId, { status: "paying" }),
+      );
+
+      process.env.INCREASE_API_KEY = "test_key";
       globalThis.fetch = (() => {
-        throw new Error("fetch must not be called once not editable");
+        throw new Error("fetch must not be called once past linkable");
       }) as unknown as typeof fetch;
 
       await expect(
@@ -999,6 +1034,49 @@ describe("in-app member self-service submission", () => {
           accountNumber: "0987654321",
         }),
       ).rejects.toBeInstanceOf(ConvexError);
+    });
+
+    test("TOCTOU: attachExternalAccount no-ops if the request advanced past linkable mid-link", async () => {
+      // IMPORTANT 5: begin* saw a linkable request, then the slow Increase call
+      // ran; if a concurrent pay advanced it to `paying`, the destination must NOT
+      // be stamped. We simulate the race by flipping the status DURING the fetch.
+      const t = newT();
+      const s = await setupChapter(t);
+      await seedPerson(s, {
+        name: "Dana Rivers",
+        email: "dana@example.com",
+        userId: s.userId,
+      });
+      const { reimbursementId } = await s.as.mutation(
+        api.reimbursements.submitReimbursement,
+        { lines: [{ description: "x", amountCents: 1200 }] },
+      );
+      process.env.INCREASE_API_KEY = "test_key";
+      globalThis.fetch = (async (input: RequestInfo | URL) => {
+        const path = String(input);
+        if (path.includes("/external_accounts")) {
+          // The concurrent pay lands while the External Account is being created.
+          await run(s.t, (ctx) =>
+            ctx.db.patch(reimbursementId, { status: "paying" }),
+          );
+          return new Response(JSON.stringify({ id: "extacct_race_1" }), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          });
+        }
+        throw new Error(`unexpected fetch: ${path}`);
+      }) as unknown as typeof fetch;
+
+      const result = await s.as.action(api.reimbursements.linkBankAccount, {
+        reimbursementId,
+        routingNumber: "011000015",
+        accountNumber: "0987654321",
+      });
+      // The action still returns linked (Increase created the account), but the
+      // destination was NOT stamped onto the now-`paying` request.
+      expect(result.linked).toBe(true);
+      const req = await run(s.t, (ctx) => ctx.db.get(reimbursementId));
+      expect(req?.externalAccountId).toBeUndefined();
     });
   });
 

@@ -302,6 +302,90 @@ describe("payReimbursement (real ACH once a destination is linked)", () => {
     expect(payout.status).toBe("pending");
   });
 
+  test("re-paying after a bounce (idempotency REPLAYS the dead transfer) fails cleanly — not wedged in `paying`, still markable paid", async () => {
+    // BLOCKER 1: Increase idempotency keys never expire. After paid→returned, the
+    // re-pay replays the ORIGINAL, now-returned transfer. Stamping it onto the
+    // fresh payout would wedge the reimbursement forever. It must fail with
+    // IDEMPOTENT_REPLAY, leave the reimbursement `approved`, and stay hand-payable.
+    const t = newT();
+    const s = await setupChapter(t);
+    await seedManager(s);
+    await seedActiveAccount(s);
+    const payee = await seedPerson(s, { name: "Vera" });
+    const reimbursementId = await seedReimbursement(s, {
+      status: "approved",
+      payeePersonId: payee,
+      approvedCents: 1800,
+    });
+    await run(s.t, (ctx) =>
+      ctx.db.patch(reimbursementId, { externalAccountId: "extacct_bounce" }),
+    );
+
+    process.env.INCREASE_API_KEY = "test_key";
+    let achCalls = 0;
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      const path = String(input);
+      if (path.includes("/ach_transfers")) {
+        achCalls += 1;
+        // First origination: a live transfer. Every LATER call replays the SAME
+        // (now-returned) transfer with `Idempotent-Replayed: true`.
+        const replay = achCalls > 1;
+        return new Response(
+          JSON.stringify({
+            id: "ach_bounce_replay",
+            status: replay ? "returned" : "submitted",
+          }),
+          {
+            status: 200,
+            headers: {
+              "Content-Type": "application/json",
+              ...(replay ? { "Idempotent-Replayed": "true" } : {}),
+            },
+          },
+        );
+      }
+      throw new Error(`unexpected fetch: ${path}`);
+    }) as unknown as typeof fetch;
+
+    // First pay → processing; webhook submitted → paid; webhook returned → bounce.
+    await s.as.action(api.increase.payReimbursement, { reimbursementId });
+    await s.t.mutation(internal.increase.onIncreaseWebhookEvent, {
+      eventType: "ach_transfer.updated",
+      transferId: "ach_bounce_replay",
+      status: "submitted",
+    });
+    await s.t.mutation(internal.increase.onIncreaseWebhookEvent, {
+      eventType: "ach_transfer.returned",
+      transferId: "ach_bounce_replay",
+      status: "returned",
+    });
+    const reopened = await run(s.t, (ctx) => ctx.db.get(reimbursementId));
+    expect(reopened?.status).toBe("approved");
+
+    // Re-pay → the idempotency key replays the dead transfer → clean failure.
+    await expect(
+      s.as.action(api.increase.payReimbursement, { reimbursementId }),
+    ).rejects.toBeInstanceOf(ConvexError);
+
+    // NOT wedged: the reimbursement is still `approved` (never stuck in `paying`),
+    // and the fresh payout is `failed:idempotent_replay` (not a live increase one).
+    const afterReplay = await run(s.t, (ctx) => ctx.db.get(reimbursementId));
+    expect(afterReplay?.status).toBe("approved");
+    const payouts = await payoutsFor(s, reimbursementId);
+    const replayFail = payouts.find(
+      (p) => p.failureReason === "idempotent_replay",
+    );
+    expect(replayFail?.status).toBe("failed");
+
+    // The manager can still pay it by hand → settles cleanly.
+    const settled = await s.as.mutation(api.increase.markPaidManually, {
+      reimbursementId,
+    });
+    expect(settled.status).toBe("paid");
+    const finalReq = await run(s.t, (ctx) => ctx.db.get(reimbursementId));
+    expect(finalReq?.status).toBe("paid");
+  });
+
   test("degrades to manual when the account is a SANDBOX id but only the prod key is set", async () => {
     const t = newT();
     const s = await setupChapter(t);

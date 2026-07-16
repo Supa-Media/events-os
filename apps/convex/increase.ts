@@ -350,7 +350,14 @@ async function increasePost(
   });
   if (!res.ok) {
     const bodyText = await res.text();
-    console.error(`[increase] POST ${path} failed:`, bodyText);
+    // `/external_accounts` error bodies can ECHO the submitted account/routing
+    // digits — never log that raw. Log only the status + Increase's error text
+    // (`describeIncreaseError` parses `title`/`detail`, never the raw body).
+    const sensitive = path.includes("/external_accounts");
+    console.error(
+      `[increase] POST ${path} failed:`,
+      sensitive ? describeIncreaseError(res.status, bodyText) : bodyText,
+    );
     throw new ConvexError({
       code: "INCREASE_ERROR",
       message: `The Increase request failed (${describeIncreaseError(res.status, bodyText)}).`,
@@ -1416,16 +1423,79 @@ export const beginPayout = internalMutation({
   },
 });
 
-/** Apply a created Increase ACH transfer to the payout: `processing` +
- *  `increaseTransferId`, and move the reimbursement to `paying`. */
+/** Terminal ACH-transfer statuses. A transfer in one of these can never move
+ *  money — if Increase returns one on our CREATE call, it's a REPLAY of a dead
+ *  prior transfer, not a fresh origination (see `applyAchTransfer`). */
+const TERMINAL_TRANSFER_STATUSES = [
+  "returned",
+  "canceled",
+  "cancelled",
+  "rejected",
+  "failed",
+];
+
+/**
+ * Apply a created Increase ACH transfer to the payout: `processing` +
+ * `increaseTransferId`, and move the reimbursement to `paying`.
+ *
+ * REPLAY-OF-TERMINAL GUARD: Increase idempotency keys (we key on
+ * `reimbursementId`) NEVER expire — one object per key, forever. After a
+ * paid→returned reversal (`reverseSettledPayout`), RE-paying the same
+ * reimbursement replays the ORIGINAL, now-BOUNCED transfer instead of
+ * originating a new one. Stamping that dead transfer onto the fresh payout would
+ * wedge it forever: no webhook ever arrives, `markPaidManually` throws
+ * PAYOUT_IN_FLIGHT, and reject/cancel are illegal from `paying`. We detect the
+ * DEAD replay two robust ways: (1) the replayed transfer's own status is TERMINAL
+ * (`returned`/`canceled`/`rejected`/`failed`), and (2) ANOTHER payout already
+ * carries this `increaseTransferId` — which only happens when a prior, now-dead
+ * payout minted it (a still-LIVE prior payout would have blocked the re-pay at
+ * `beginPayout`, so a match here is always a dead prior). On either, FAIL this
+ * payout with `idempotent_replay` WITHOUT advancing the reimbursement (it stays
+ * `approved`, so `markPaidManually` still works); the action throws a clear error.
+ *
+ * We deliberately do NOT trigger on the `Idempotent-Replayed` header alone: a
+ * legitimate network-timeout retry also replays — but of a STILL-LIVE transfer,
+ * which must be ADOPTED (marked `processing`), not failed. The two signals above
+ * fire only for a DEAD replay, so timeout-retry adoption is preserved.
+ */
 export const applyAchTransfer = internalMutation({
   args: {
     payoutId: v.id("payouts"),
     increaseTransferId: v.string(),
+    transferStatus: v.optional(v.string()),
   },
-  returns: payoutSummaryValidator,
-  handler: async (ctx, args): Promise<PayoutSummary> => {
+  returns: v.union(
+    v.object({ kind: v.literal("applied"), payout: payoutSummaryValidator }),
+    v.object({ kind: v.literal("replay") }),
+  ),
+  handler: async (
+    ctx,
+    args,
+  ): Promise<{ kind: "applied"; payout: PayoutSummary } | { kind: "replay" }> => {
     const now = Date.now();
+
+    // Dead-replay detection (see the doc comment above).
+    const statusTerminal =
+      !!args.transferStatus &&
+      TERMINAL_TRANSFER_STATUSES.includes(args.transferStatus.toLowerCase());
+    const othersWithSameTransfer = await ctx.db
+      .query("payouts")
+      .withIndex("by_increase_transfer", (q) =>
+        q.eq("increaseTransferId", args.increaseTransferId),
+      )
+      .collect();
+    const replayedOntoOtherPayout = othersWithSameTransfer.some(
+      (p) => p._id !== args.payoutId,
+    );
+    if (statusTerminal || replayedOntoOtherPayout) {
+      await ctx.db.patch(args.payoutId, {
+        status: "failed",
+        failureReason: "idempotent_replay",
+        updatedAt: now,
+      });
+      return { kind: "replay" };
+    }
+
     await ctx.db.patch(args.payoutId, {
       provider: "increase",
       status: "processing",
@@ -1444,7 +1514,7 @@ export const applyAchTransfer = internalMutation({
         updatedAt: now,
       });
     }
-    return toPayoutSummary(payout);
+    return { kind: "applied", payout: toPayoutSummary(payout) };
   },
 });
 
@@ -1540,13 +1610,37 @@ export const payReimbursement = action({
           ...destination,
         },
         // Idempotency-Key = reimbursementId (the schema's idempotency key).
+        // KEEP this key (never switch to payoutId): a network-timeout retry must
+        // replay THE SAME transfer, not originate a second one (double-pay). The
+        // trade-off — a replay of a BOUNCED transfer after a reversal — is caught
+        // by `applyAchTransfer`'s dead-replay guard (via the replayed transfer's
+        // terminal status + the prior payout still holding the id).
         String(reimbursementId),
       );
-      return await ctx.runMutation(internal.increase.applyAchTransfer, {
+      const applied = await ctx.runMutation(internal.increase.applyAchTransfer, {
         payoutId: result.payoutId,
         increaseTransferId: String(transfer.id),
+        transferStatus:
+          typeof transfer.status === "string" ? transfer.status : undefined,
       });
+      if (applied.kind === "replay") {
+        // Increase replayed a dead (already-returned/failed) transfer for this
+        // reimbursement's idempotency key — it can no longer be paid over ACH.
+        // The payout is marked `failed:idempotent_replay`; the reimbursement is
+        // left `approved` so a manager can still `markPaidManually`.
+        throw new ConvexError({
+          code: "IDEMPOTENT_REPLAY",
+          message:
+            "This request can no longer be paid by ACH — pay manually and mark paid.",
+        });
+      }
+      return applied.payout;
     } catch (err) {
+      // A deliberate replay-of-terminal rejection must propagate as-is (it's not
+      // a transient ACH failure — do NOT re-fail the payout or mask the message).
+      if (err instanceof ConvexError && err.data?.code === "IDEMPOTENT_REPLAY") {
+        throw err;
+      }
       console.error("[increase] ach transfer failed:", err);
       await ctx.runMutation(internal.increase.failPayout, {
         payoutId: result.payoutId,
