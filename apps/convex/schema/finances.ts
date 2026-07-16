@@ -771,15 +771,40 @@ export const reimbursementSubmitAttempts = defineTable({
   createdAt: v.number(),
 }).index("by_key_and_time", ["key", "createdAt"]);
 
+/** One environment's worth of Digital Card Profile config (WP-C.2 — the PW
+ *  card art pipeline): the two uploaded `POST /files` ids (card art `1536x969`
+ *  + the `100x100` app icon) and, once minted, the Digital Card Profile id
+ *  built from them. `profileId` is deliberately separate from the file ids —
+ *  Digital Card Profiles are immutable, so re-uploading new art only refreshes
+ *  the file ids; a NEW profile referencing them is a distinct, explicit step
+ *  (`createDigitalCardProfile`) that leaves the old (now-stale) `profileId` in
+ *  place until it's re-run. */
+const cardArtConfigValidator = v.object({
+  fileId: v.string(),
+  iconFileId: v.string(),
+  profileId: v.optional(v.string()),
+});
+
 // ── Finance settings (deployment-wide singleton) ─────────────────────────────
 /** Deployment-wide finance settings (one row, the `aiSettings` pattern).
  *  `sandboxMode` is the runtime testing toggle: when true, NEW Increase account
  *  provisioning targets the Increase SANDBOX (sandbox entity + key + base) so the
  *  whole finance layer can be exercised without touching real money. Existing
  *  accounts always self-select their environment from their `sandbox_` id prefix,
- *  so flipping this can never misroute already-provisioned money. Superuser-only. */
+ *  so flipping this can never misroute already-provisioned money. Superuser-only.
+ *
+ *  `cardArt`/`cardArtSandbox` (WP-C.2): mirrors `increaseAccounts.sandbox` — up
+ *  to ONE config per Increase environment, so a sandbox test upload and the
+ *  real production art can coexist without clobbering each other. Uploading
+ *  and profile creation (no card exists yet) target whichever environment the
+ *  live `sandboxMode` toggle points at, same as `runProvisionFlow`; attaching
+ *  to a card (issuance or the backfill) instead reads the CARD's own
+ *  `increaseCardId` prefix (see `increase.ts`'s `getCardArtProfileId`) — the
+ *  same self-identifying-id convention as every other Increase object here. */
 export const financeSettings = defineTable({
   sandboxMode: v.boolean(),
   updatedBy: v.optional(v.id("users")),
   updatedAt: v.number(),
+  cardArt: v.optional(cardArtConfigValidator),
+  cardArtSandbox: v.optional(cardArtConfigValidator),
 });

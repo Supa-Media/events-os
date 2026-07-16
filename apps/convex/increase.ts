@@ -57,7 +57,7 @@ import {
   internalMutation,
   internalAction,
 } from "./_generated/server";
-import type { MutationCtx, ActionCtx } from "./_generated/server";
+import type { MutationCtx, QueryCtx, ActionCtx } from "./_generated/server";
 import { ConvexError, v } from "convex/values";
 import { internal } from "./_generated/api";
 import { Doc, Id } from "./_generated/dataModel";
@@ -398,6 +398,84 @@ async function increaseGet(
     });
   }
   return (await res.json()) as Record<string, unknown>;
+}
+
+/** PATCH JSON to the Increase API (e.g. `PATCH /cards/{id}` to attach a
+ *  Digital Card Profile — WP-C.2's `backfillCardProfiles`). A private mirror of
+ *  `cards.ts`'s own `increasePatch` — this file already duplicates `increaseGet`
+ *  rather than share across files, so this follows the same precedent. Throws
+ *  ConvexError on a non-2xx (the caller logs + degrades). */
+async function increasePatch(
+  key: string,
+  base: string,
+  path: string,
+  body: Record<string, unknown>,
+): Promise<Record<string, unknown>> {
+  const res = await fetch(`${base}${path}`, {
+    method: "PATCH",
+    headers: {
+      Authorization: `Bearer ${key}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) {
+    const bodyText = await res.text();
+    console.error(`[increase] PATCH ${path} failed:`, bodyText);
+    throw new ConvexError({
+      code: "INCREASE_ERROR",
+      message: `The Increase request failed (${describeIncreaseError(res.status, bodyText)}).`,
+    });
+  }
+  return (await res.json()) as Record<string, unknown>;
+}
+
+/** The two `POST /files` `purpose` values WP-C.2 uses — grounded against
+ *  `increase-typescript`'s `Files` resource (the full `purpose` enum also
+ *  covers check images, statements, etc.; these are the only two relevant to
+ *  Digital Wallet card art). */
+type CardArtFilePurpose = "digital_wallet_artwork" | "digital_wallet_app_icon";
+
+/**
+ * Upload one base64-encoded PNG to Increase's Files API (WP-C.2 card art).
+ * `POST /files` is the one Increase endpoint that ISN'T JSON — it requires
+ * `multipart/form-data` (confirmed against the Increase docs), so this can't
+ * reuse `increasePost`. No `Content-Type` header is set explicitly: `fetch`
+ * computes the multipart boundary itself when the body is a `FormData`
+ * (setting it by hand would omit the boundary and the upload would 415).
+ * Throws ConvexError on a non-2xx or a response with no usable file id.
+ */
+async function increasePostFile(
+  key: string,
+  base: string,
+  base64Png: string,
+  filename: string,
+  purpose: CardArtFilePurpose,
+): Promise<string> {
+  const form = new FormData();
+  form.append("file", new Blob([base64ToBytes(base64Png)], { type: "image/png" }), filename);
+  form.append("purpose", purpose);
+  const res = await fetch(`${base}/files`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${key}` },
+    body: form,
+  });
+  if (!res.ok) {
+    const bodyText = await res.text();
+    console.error(`[increase] POST /files (${purpose}) failed:`, bodyText);
+    throw new ConvexError({
+      code: "INCREASE_ERROR",
+      message: `The Increase file upload failed (${describeIncreaseError(res.status, bodyText)}).`,
+    });
+  }
+  const body = (await res.json()) as { id?: unknown };
+  if (typeof body.id !== "string" || !body.id) {
+    throw new ConvexError({
+      code: "INCREASE_ERROR",
+      message: `The Increase file upload (${purpose}) returned no usable file id.`,
+    });
+  }
+  return body.id;
 }
 
 /** Resolve the Increase Program id to open a chapter Account under.
@@ -2904,5 +2982,360 @@ export const runBackfillIncreaseAccountEnv = internalMutation({
       updated += 1;
     }
     return { scanned: rows.length, updated };
+  },
+});
+
+// ── Digital Card Profile — PW card art pipeline (WP-C.2) ─────────────────────
+//
+// Three ops steps, run in order once real card art exists (the final PNG with
+// the Visa logo placed is an owner/designer step — this pipeline just takes
+// any conforming PNG):
+//   1. `uploadCardArtAssets`   — POST /files (card art 1536x969 + a 100x100
+//                                icon), stores the returned file ids.
+//   2. `createDigitalCardProfile` — POST /digital_card_profiles from those
+//                                file ids, stores the returned profile id.
+//   3. `backfillCardProfiles` — PATCH /cards/{id} on every existing
+//                                non-canceled card to attach the profile;
+//                                new cards get it automatically at issuance
+//                                (`cards.ts`'s `issueCard`, via
+//                                `getCardArtProfileId`).
+// All three are MODE-AWARE and DEGRADE (log + return, never throw) when the
+// relevant environment's Increase key isn't configured — same discipline as
+// `runProvisionFlow`. A Digital Card Profile starts `status:"pending"` and
+// needs Increase (and/or the card network) to review it before it can be
+// assigned to cards — see the PR description for that process.
+
+/** Read the current mode's card-art config (file ids + profile id, if minted)
+ *  off the `financeSettings` singleton. Shared by `getCardArtFileIds` and
+ *  `getCardArtProfileId` below (the two action-facing reads). */
+async function readCardArtConfig(
+  ctx: { db: QueryCtx["db"] },
+  sandbox: boolean,
+): Promise<{ fileId: string; iconFileId: string; profileId?: string } | null> {
+  const settings = await ctx.db.query("financeSettings").first();
+  const config = sandbox ? settings?.cardArtSandbox : settings?.cardArt;
+  return config ?? null;
+}
+
+/**
+ * Store the given environment's freshly-uploaded file ids on the
+ * `financeSettings` singleton. Upserts the row (mirrors `financeSettings.ts`'s
+ * own `setSandboxMode`) — a fresh deployment may not have run that mutation
+ * yet. Deliberately does NOT touch `profileId`: a re-upload only refreshes the
+ * file ids, leaving any previously-minted profile in place (now stale, but a
+ * profile is immutable — `createDigitalCardProfile` mints a fresh one from the
+ * new ids when explicitly re-run).
+ */
+export const finishUploadCardArtAssets = internalMutation({
+  args: { sandbox: v.boolean(), fileId: v.string(), iconFileId: v.string() },
+  returns: v.null(),
+  handler: async (ctx, { sandbox, fileId, iconFileId }): Promise<null> => {
+    const existing = await ctx.db.query("financeSettings").first();
+    const key: "cardArt" | "cardArtSandbox" = sandbox ? "cardArtSandbox" : "cardArt";
+    const prior = existing
+      ? sandbox
+        ? existing.cardArtSandbox
+        : existing.cardArt
+      : undefined;
+    const patch = { [key]: { fileId, iconFileId, profileId: prior?.profileId } };
+    if (existing) {
+      await ctx.db.patch(existing._id, patch);
+    } else {
+      await ctx.db.insert("financeSettings", {
+        sandboxMode: false,
+        updatedAt: Date.now(),
+        ...patch,
+      });
+    }
+    return null;
+  },
+});
+
+/**
+ * Upload the two Digital Wallet card-art assets (WP-C.2) to Increase's Files
+ * API and store the returned file ids. Args are base64-encoded PNG bytes (no
+ * `data:` prefix) so this is workflow-passable (`run-convex-function.yml` can
+ * pass string args) without ever putting the image bytes in the repo.
+ * `cardArtBase64` must be the 1536x969 landscape card image; `iconBase64` the
+ * 100x100 app icon (both PNG, both grounded against increase.com/documentation
+ * /card-art). MODE-AWARE: targets whichever environment the live
+ * `financeSettings.sandboxMode` toggle points at (same as `runProvisionFlow`)
+ * — flip it before running to target sandbox vs. production. DEGRADES (logs +
+ * returns null ids) when that environment's Increase key is unset.
+ *
+ * CLI/CI-runnable:
+ *   npx convex run increase:uploadCardArtAssets -- '{"cardArtBase64":"...","iconBase64":"..."}'
+ */
+export const uploadCardArtAssets = internalAction({
+  args: { cardArtBase64: v.string(), iconBase64: v.string() },
+  returns: v.object({
+    sandbox: v.boolean(),
+    fileId: v.union(v.string(), v.null()),
+    iconFileId: v.union(v.string(), v.null()),
+  }),
+  handler: async (
+    ctx,
+    { cardArtBase64, iconBase64 },
+  ): Promise<{
+    sandbox: boolean;
+    fileId: string | null;
+    iconFileId: string | null;
+  }> => {
+    const sandbox = await ctx.runQuery(
+      internal.financeSettings.readSandboxMode,
+      {},
+    );
+    const { key, base } = increaseEnvForMode(sandbox);
+    if (!key) {
+      console.warn(
+        `[increase] uploadCardArtAssets skipped: Increase API key not configured for ${sandbox ? "sandbox" : "production"}`,
+      );
+      return { sandbox, fileId: null, iconFileId: null };
+    }
+
+    const fileId = await increasePostFile(
+      key,
+      base,
+      cardArtBase64,
+      "card-art.png",
+      "digital_wallet_artwork",
+    );
+    const iconFileId = await increasePostFile(
+      key,
+      base,
+      iconBase64,
+      "card-icon.png",
+      "digital_wallet_app_icon",
+    );
+    await ctx.runMutation(internal.increase.finishUploadCardArtAssets, {
+      sandbox,
+      fileId,
+      iconFileId,
+    });
+    console.log(
+      `[increase] uploadCardArtAssets: stored ${sandbox ? "sandbox" : "production"} file ids (art=${fileId}, icon=${iconFileId})`,
+    );
+    return { sandbox, fileId, iconFileId };
+  },
+});
+
+/** Patch the minted Digital Card Profile id onto the current mode's config —
+ *  the `profileId` field of the schema's card-art config shape; the file ids
+ *  are already set by `finishUploadCardArtAssets` and untouched here. */
+export const finishCreateDigitalCardProfile = internalMutation({
+  args: { sandbox: v.boolean(), profileId: v.string() },
+  returns: v.null(),
+  handler: async (ctx, { sandbox, profileId }): Promise<null> => {
+    const existing = await ctx.db.query("financeSettings").first();
+    const prior = sandbox ? existing?.cardArtSandbox : existing?.cardArt;
+    if (!existing || !prior) {
+      // Shouldn't happen (createDigitalCardProfile only reaches here once
+      // uploadCardArtAssets already stored file ids) — log and no-op rather
+      // than insert a config row with no file ids.
+      console.error(
+        "[increase] finishCreateDigitalCardProfile: no card-art file ids on record — skipping",
+      );
+      return null;
+    }
+    const key: "cardArt" | "cardArtSandbox" = sandbox ? "cardArtSandbox" : "cardArt";
+    await ctx.db.patch(existing._id, { [key]: { ...prior, profileId } });
+    return null;
+  },
+});
+
+/**
+ * Create the Digital Card Profile (WP-C.2) from the current mode's uploaded
+ * file ids — `POST /digital_card_profiles`, grounded against
+ * `increase-typescript`'s `DigitalCardProfileCreateParams`: required
+ * `background_image_file_id` (the card art), `app_icon_file_id`,
+ * `card_description` + `issuer_name` (both "Public Worship" — the app-facing
+ * name shown in the wallet) and an internal `description`; `text_color`
+ * defaults to white but is set explicitly per the PRD ({red,green,blue}:255).
+ *
+ * The profile comes back `status:"pending"` — Increase (and/or the card
+ * network) reviews it before it can be assigned to cards; see the PR
+ * description for that process. MODE-AWARE / DEGRADES like
+ * `uploadCardArtAssets`; additionally degrades (logs + returns null) when
+ * this mode has no uploaded file ids yet.
+ *
+ * CLI/CI-runnable: npx convex run increase:createDigitalCardProfile
+ */
+export const createDigitalCardProfile = internalAction({
+  args: {},
+  returns: v.union(v.string(), v.null()),
+  handler: async (ctx): Promise<string | null> => {
+    const sandbox = await ctx.runQuery(
+      internal.financeSettings.readSandboxMode,
+      {},
+    );
+    const { key, base } = increaseEnvForMode(sandbox);
+    if (!key) {
+      console.warn(
+        `[increase] createDigitalCardProfile skipped: Increase API key not configured for ${sandbox ? "sandbox" : "production"}`,
+      );
+      return null;
+    }
+    const config = await ctx.runQuery(internal.increase.getCardArtFileIds, {
+      sandbox,
+    });
+    if (!config) {
+      console.warn(
+        `[increase] createDigitalCardProfile skipped: no card-art file ids uploaded yet for ${sandbox ? "sandbox" : "production"} — run uploadCardArtAssets first`,
+      );
+      return null;
+    }
+
+    const profile = await increasePost(key, base, "/digital_card_profiles", {
+      background_image_file_id: config.fileId,
+      app_icon_file_id: config.iconFileId,
+      card_description: "Public Worship",
+      issuer_name: "Public Worship",
+      description: "Public Worship — card art (WP-C.2)",
+      text_color: { red: 255, green: 255, blue: 255 },
+    });
+    const profileId =
+      typeof profile.id === "string" && profile.id ? profile.id : null;
+    if (!profileId) {
+      console.error(
+        "[increase] createDigitalCardProfile: response carried no usable id; raw response:",
+        JSON.stringify(profile),
+      );
+      return null;
+    }
+    await ctx.runMutation(internal.increase.finishCreateDigitalCardProfile, {
+      sandbox,
+      profileId,
+    });
+    console.log(
+      `[increase] createDigitalCardProfile: created ${profileId} (status=${String(profile.status ?? "unknown")}) for ${sandbox ? "sandbox" : "production"}`,
+    );
+    return profileId;
+  },
+});
+
+/** The current mode's uploaded card-art file ids (action-facing — actions have
+ *  no `ctx.db`). Null when nothing's been uploaded yet for that mode. */
+export const getCardArtFileIds = internalQuery({
+  args: { sandbox: v.boolean() },
+  returns: v.union(
+    v.object({ fileId: v.string(), iconFileId: v.string() }),
+    v.null(),
+  ),
+  handler: async (ctx, { sandbox }) => {
+    const config = await readCardArtConfig(ctx, sandbox);
+    return config ? { fileId: config.fileId, iconFileId: config.iconFileId } : null;
+  },
+});
+
+/**
+ * The current mode's Digital Card Profile id, if one has been minted — read by
+ * `cards.ts`'s `issueCard` (mode from the account it's issuing on) and
+ * `backfillCardProfiles` below (mode from each existing card's own id prefix).
+ * Null when no profile exists yet for that mode (issuance/backfill then omit
+ * `digital_wallet` entirely rather than send a bogus id).
+ */
+export const getCardArtProfileId = internalQuery({
+  args: { sandbox: v.boolean() },
+  returns: v.union(v.string(), v.null()),
+  handler: async (ctx, { sandbox }) => {
+    const config = await readCardArtConfig(ctx, sandbox);
+    return config?.profileId ?? null;
+  },
+});
+
+/** Every card (any chapter) eligible for the Digital Card Profile backfill: a
+ *  real Increase card (`increaseCardId` set — a "legacy" Relay card has none
+ *  and no vendor object to PATCH) that isn't canceled (a canceled card will
+ *  never authorize again; attaching art to it is pointless). */
+export const listCardsForArtBackfill = internalQuery({
+  args: {},
+  returns: v.array(
+    v.object({ cardId: v.id("cards"), increaseCardId: v.string() }),
+  ),
+  handler: async (ctx) => {
+    const rows = await ctx.db.query("cards").collect();
+    return rows
+      .filter((c) => c.status !== "canceled" && !!c.increaseCardId)
+      .map((c) => ({ cardId: c._id, increaseCardId: c.increaseCardId! }));
+  },
+});
+
+/**
+ * Ops backfill (WP-C.2): attach the Digital Card Profile to every existing
+ * non-canceled card (new cards get it at issuance instead — see
+ * `cards.ts`'s `issueCard`). `PATCH /cards/{id}` with `digital_wallet:
+ * {digital_card_profile_id}`, grounded against the Increase Cards resource's
+ * update endpoint (confirmed digital_wallet IS patchable, not create-only).
+ *
+ * Each card is routed to ITS OWN environment by its `increaseCardId` prefix
+ * (`increaseEnvForObjectId`) and reads THAT environment's profile id — a
+ * sandbox card never gets the production profile id or vice versa. A card
+ * whose environment has no minted profile yet, or no configured key, is
+ * SKIPPED (not an error) — re-running the backfill after `uploadCardArtAssets`
+ * + `createDigitalCardProfile` for that environment picks it up. Idempotent:
+ * PATCHing the same `digital_card_profile_id` twice is a no-op on Increase's
+ * side, so a re-run is always safe.
+ *
+ * CLI/CI-runnable:
+ *   npx convex run increase:backfillCardProfiles
+ *   gh workflow run run-convex-function.yml -f function=increase:backfillCardProfiles
+ */
+export const backfillCardProfiles = internalAction({
+  args: {},
+  returns: v.object({
+    scanned: v.number(),
+    patched: v.number(),
+    skipped: v.number(),
+  }),
+  handler: async (
+    ctx,
+  ): Promise<{ scanned: number; patched: number; skipped: number }> => {
+    const cards = await ctx.runQuery(
+      internal.increase.listCardsForArtBackfill,
+      {},
+    );
+    let patched = 0;
+    let skipped = 0;
+    // One profile-id lookup per environment for the whole run — every card in
+    // the same environment shares the same config.
+    const profileIdByMode = new Map<boolean, string | null>();
+
+    for (const c of cards) {
+      const sandbox = isSandboxObjectId(c.increaseCardId);
+      if (!profileIdByMode.has(sandbox)) {
+        profileIdByMode.set(
+          sandbox,
+          await ctx.runQuery(internal.increase.getCardArtProfileId, {
+            sandbox,
+          }),
+        );
+      }
+      const profileId = profileIdByMode.get(sandbox) ?? null;
+      if (!profileId) {
+        skipped += 1;
+        continue;
+      }
+      const { key, base } = increaseEnvForObjectId(c.increaseCardId);
+      if (!key) {
+        console.warn(
+          `[increase] backfillCardProfiles: skipped card ${c.increaseCardId} — no Increase key for its environment`,
+        );
+        skipped += 1;
+        continue;
+      }
+      try {
+        await increasePatch(key, base, `/cards/${c.increaseCardId}`, {
+          digital_wallet: { digital_card_profile_id: profileId },
+        });
+        patched += 1;
+      } catch (err) {
+        console.error(
+          `[increase] backfillCardProfiles: PATCH failed for card ${c.increaseCardId}:`,
+          err,
+        );
+        skipped += 1;
+      }
+    }
+    return { scanned: cards.length, patched, skipped };
   },
 });

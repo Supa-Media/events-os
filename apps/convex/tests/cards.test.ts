@@ -2790,3 +2790,142 @@ describe("issueCard env routing", () => {
     expect(post!.auth).toBe("Bearer prod_key");
   });
 });
+
+// ── issueCard × Digital Card Profile attach (WP-C.2) ─────────────────────────
+
+/** Like `mockRecordingFetch`, but also parses the JSON request body so tests
+ *  can assert on the `digital_wallet` field of the `POST /cards` body. */
+function mockRecordingFetchWithBody(json: Record<string, unknown>) {
+  const calls: Array<{
+    url: string;
+    method: string;
+    body: Record<string, unknown> | null;
+  }> = [];
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input);
+    const method = init?.method ?? "GET";
+    let body: Record<string, unknown> | null = null;
+    if (typeof init?.body === "string") {
+      try {
+        body = JSON.parse(init.body) as Record<string, unknown>;
+      } catch {
+        // not JSON — leave null
+      }
+    }
+    calls.push({ url, method, body });
+    return new Response(JSON.stringify(json), {
+      status: 200,
+      headers: { "Content-Type": "application/json" },
+    });
+  }) as unknown as typeof fetch;
+  return calls;
+}
+
+describe("issueCard × Digital Card Profile attach (WP-C.2)", () => {
+  const ENV = ["INCREASE_API_KEY", "INCREASE_SANDBOX_API_KEY"] as const;
+  const originalFetch = globalThis.fetch;
+  const originalEnv: Partial<Record<(typeof ENV)[number], string>> = {};
+  for (const k of ENV) originalEnv[k] = process.env[k];
+
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+    for (const k of ENV) {
+      if (originalEnv[k] === undefined) delete process.env[k];
+      else process.env[k] = originalEnv[k];
+    }
+  });
+
+  test("includes digital_wallet.digital_card_profile_id when a profile is configured for the account's mode", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await seedManager(s);
+    const holder = await seedPerson(s, { name: "Holder" });
+    await seedIncreaseAccount(s, "acct_1");
+    process.env.INCREASE_API_KEY = "prod_key";
+    await run(s.t, (ctx) =>
+      ctx.db.insert("financeSettings", {
+        sandboxMode: false,
+        updatedAt: Date.now(),
+        cardArt: {
+          fileId: "file_art",
+          iconFileId: "file_icon",
+          profileId: "digital_card_profile_prod",
+        },
+      }),
+    );
+    const calls = mockRecordingFetchWithBody({ id: "card_1", last4: "1111" });
+
+    await s.as.action(api.cards.issueCard, {
+      cardholderPersonId: holder,
+      type: "virtual",
+    });
+
+    const post = calls.find(
+      (c) => c.method === "POST" && c.url.includes("/cards"),
+    );
+    expect(post).toBeTruthy();
+    expect(post!.body?.digital_wallet).toEqual({
+      digital_card_profile_id: "digital_card_profile_prod",
+    });
+  });
+
+  test("omits digital_wallet entirely when no profile is configured", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await seedManager(s);
+    const holder = await seedPerson(s, { name: "Holder" });
+    await seedIncreaseAccount(s, "acct_1");
+    process.env.INCREASE_API_KEY = "prod_key";
+    // No financeSettings row at all — no profile configured.
+    const calls = mockRecordingFetchWithBody({ id: "card_1", last4: "1111" });
+
+    await s.as.action(api.cards.issueCard, {
+      cardholderPersonId: holder,
+      type: "virtual",
+    });
+
+    const post = calls.find(
+      (c) => c.method === "POST" && c.url.includes("/cards"),
+    );
+    expect(post).toBeTruthy();
+    expect(post!.body).not.toHaveProperty("digital_wallet");
+  });
+
+  test("a sandbox account gets the SANDBOX profile id, never the production one", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await seedManager(s);
+    const holder = await seedPerson(s, { name: "Holder" });
+    await setSandboxMode(s, true); // upserts the singleton row
+    await seedIncreaseAccount(s, "sandbox_acct_1");
+    process.env.INCREASE_API_KEY = "prod_key";
+    process.env.INCREASE_SANDBOX_API_KEY = "sandbox_key";
+    // PATCH the existing singleton (not a second insert) — financeSettings is
+    // a one-row table; `setSandboxMode` above already created it.
+    await run(s.t, async (ctx) => {
+      const existing = await ctx.db.query("financeSettings").first();
+      await ctx.db.patch(existing!._id, {
+        cardArt: { fileId: "f", iconFileId: "i", profileId: "digital_card_profile_prod" },
+        cardArtSandbox: {
+          fileId: "sf",
+          iconFileId: "si",
+          profileId: "sandbox_digital_card_profile",
+        },
+      });
+    });
+    const calls = mockRecordingFetchWithBody({ id: "sandbox_card_1", last4: "4242" });
+
+    await s.as.action(api.cards.issueCard, {
+      cardholderPersonId: holder,
+      type: "virtual",
+    });
+
+    const post = calls.find(
+      (c) => c.method === "POST" && c.url.includes("/cards"),
+    );
+    expect(post).toBeTruthy();
+    expect(post!.body?.digital_wallet).toEqual({
+      digital_card_profile_id: "sandbox_digital_card_profile",
+    });
+  });
+});
