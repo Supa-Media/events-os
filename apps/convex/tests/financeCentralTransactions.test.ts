@@ -1,8 +1,8 @@
 /// <reference types="vite/client" />
 import { describe, expect, test } from "vitest";
 import { ConvexError } from "convex/values";
-import { newT, run, setupChapter, type ChapterSetup } from "./setup.helpers";
-import { api } from "../_generated/api";
+import { newT, run, setupChapter, storeBlob, type ChapterSetup } from "./setup.helpers";
+import { api, internal } from "../_generated/api";
 import type { Id } from "../_generated/dataModel";
 
 /**
@@ -63,6 +63,21 @@ async function asCentralManager(s: ChapterSetup): Promise<Id<"people">> {
       chapterId: s.chapterId,
       personId,
       role: "manager",
+      scope: "central",
+      createdAt: Date.now(),
+    }),
+  );
+  return personId;
+}
+
+/** A central-scope finance VIEWER — central reach, but the weakest role rank. */
+async function asCentralViewer(s: ChapterSetup): Promise<Id<"people">> {
+  const personId = await seedSelfPerson(s);
+  await run(s.t, (ctx) =>
+    ctx.db.insert("financeRoles", {
+      chapterId: s.chapterId,
+      personId,
+      role: "viewer",
       scope: "central",
       createdAt: Date.now(),
     }),
@@ -347,9 +362,14 @@ describe("listReconcile: central scope", () => {
     const s = await setupChapter(t);
     await asChapterManager(s);
 
-    await expect(
-      s.as.query(api.finances.listReconcile, { filter: "all", scope: "central" }),
-    ).rejects.toBeInstanceOf(ConvexError);
+    let caught: unknown;
+    try {
+      await s.as.query(api.finances.listReconcile, { filter: "all", scope: "central" });
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(ConvexError);
+    expect((caught as ConvexError<{ code: string }>).data.code).toBe("FORBIDDEN");
   });
 
   test("a genuine central manager (non-superuser) can open it", async () => {
@@ -403,13 +423,18 @@ describe("reconcile writes: central-owned txns", () => {
     const now = Date.now();
     const centralTxn = await seedCentralTxn(s, { amountCents: 4200, postedAt: now });
 
-    await expect(
-      s.as.mutation(api.finances.categorizeTransaction, {
+    let caught: unknown;
+    try {
+      await s.as.mutation(api.finances.categorizeTransaction, {
         transactionId: centralTxn,
         // A bare status-less categorize with no refs still resolves scope first.
         budgetId: null,
-      }),
-    ).rejects.toBeInstanceOf(ConvexError);
+      });
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(ConvexError);
+    expect((caught as ConvexError<{ code: string }>).data.code).toBe("FORBIDDEN");
   });
 
   test("categorizing a central txn with a chapter-scoped link is rejected", async () => {
@@ -464,12 +489,17 @@ describe("reconcile writes: central-owned txns", () => {
     const now = Date.now();
     const centralTxn = await seedCentralTxn(s, { amountCents: 4200, postedAt: now });
 
-    await expect(
-      s.as.mutation(api.finances.setTransactionStatus, {
+    let caught: unknown;
+    try {
+      await s.as.mutation(api.finances.setTransactionStatus, {
         transactionId: centralTxn,
         status: "reconciled",
-      }),
-    ).rejects.toBeInstanceOf(ConvexError);
+      });
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(ConvexError);
+    expect((caught as ConvexError<{ code: string }>).data.code).toBe("FORBIDDEN");
   });
 
   test("bulkCategorize sets a central budget across central txns (central reach)", async () => {
@@ -494,6 +524,91 @@ describe("reconcile writes: central-owned txns", () => {
     expect(res.updated).toBe(2);
     const txnA = await run(t, (ctx) => ctx.db.get(a));
     expect(txnA?.budgetId).toBe(centralBudget);
+  });
+});
+
+// ── Central VIEWER: reach ≠ rank ─────────────────────────────────────────────
+//
+// `requireFinanceCentral` only checks central REACH (any central-scoped grant,
+// including a bare viewer). Reads stay viewer-min (unchanged), but reconcile
+// WRITES must additionally clear the caller's `min` role rank — a central
+// viewer must be blocked exactly like a chapter viewer, not silently upgraded
+// to a writer just because their grant happens to be central-scoped.
+
+describe("central VIEWER: reach lets them read, but NOT reconcile-write", () => {
+  test("a central-scoped VIEWER CAN open the central reconcile surface (reads stay viewer-min)", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await asCentralViewer(s);
+    const now = Date.now();
+    const centralTxn = await seedCentralTxn(s, { amountCents: 700, postedAt: now });
+
+    const res = await s.as.query(api.finances.listReconcile, {
+      filter: "all",
+      scope: "central",
+    });
+    expect(res.rows.map((r) => r.id)).toContain(centralTxn);
+  });
+
+  test("a central-scoped VIEWER CANNOT categorize a central txn", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await asCentralViewer(s);
+    const now = Date.now();
+    const centralTxn = await seedCentralTxn(s, { amountCents: 4200, postedAt: now });
+
+    let caught: unknown;
+    try {
+      await s.as.mutation(api.finances.categorizeTransaction, {
+        transactionId: centralTxn,
+        budgetId: null,
+      });
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(ConvexError);
+    expect((caught as ConvexError<{ code: string }>).data.code).toBe("FORBIDDEN");
+  });
+
+  test("a central-scoped VIEWER CANNOT setTransactionStatus on a central txn", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await asCentralViewer(s);
+    const now = Date.now();
+    const centralTxn = await seedCentralTxn(s, { amountCents: 4200, postedAt: now });
+
+    let caught: unknown;
+    try {
+      await s.as.mutation(api.finances.setTransactionStatus, {
+        transactionId: centralTxn,
+        status: "reconciled",
+      });
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(ConvexError);
+    expect((caught as ConvexError<{ code: string }>).data.code).toBe("FORBIDDEN");
+  });
+
+  test("a central-scoped VIEWER CANNOT attachReceipt on a central txn", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await asCentralViewer(s);
+    const now = Date.now();
+    const centralTxn = await seedCentralTxn(s, { amountCents: 4200, postedAt: now });
+    const storageId = await storeBlob(t);
+
+    let caught: unknown;
+    try {
+      await s.as.mutation(api.finances.attachReceipt, {
+        transactionId: centralTxn,
+        storageId,
+      });
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(ConvexError);
+    expect((caught as ConvexError<{ code: string }>).data.code).toBe("FORBIDDEN");
   });
 });
 
@@ -524,5 +639,82 @@ describe("the 'central' sentinel never crashes a row/chapter-doc join", () => {
     // Drilling into Boston must not choke on the sentinel rows existing.
     const dash = await s.as.query(api.finances.dashboardChapter, { chapterId: boston });
     expect(Array.isArray(dash.tiles)).toBe(true);
+  });
+});
+
+// ── Central-loop e2e: ingest → reconcile → dashboard ─────────────────────────
+
+describe("central-loop e2e: a real ingestion path chains through to the dashboard", () => {
+  test("a central-account card charge appears in listReconcile, gets categorized to a central budget, and lands in dashboardCentral's Central row exactly once", async () => {
+    const t = newT();
+    const s = await setupChapter(t, { email: "seyi@publicworship.life" });
+    const year = 2026;
+    const month = 5;
+    const when = tsInMonth(year, month);
+
+    // 1. Ingest: a settled card charge on CENTRAL's own Increase account
+    // (WP-1.2's City Launch Fund) — the real path a webhook drives in prod.
+    await run(t, (ctx) =>
+      ctx.db.insert("increaseAccounts", {
+        chapterId: "central",
+        sandbox: false,
+        onboardingStatus: "active",
+        increaseEntityId: "entity_shared_org",
+        increaseAccountId: "account_central_e2e",
+        createdAt: when,
+        updatedAt: when,
+      }),
+    );
+    const ingest = await t.mutation(internal.increase.applyIncreaseCardTransaction, {
+      externalId: "transaction_central_e2e",
+      accountId: "account_central_e2e",
+      flow: "outflow",
+      amountCents: 6600,
+      postedAt: when,
+      merchantName: "Central Merchant",
+    });
+    expect(ingest).toEqual({ inserted: true, skipped: false });
+
+    const ingested = await run(t, (ctx) =>
+      ctx.db
+        .query("transactions")
+        .withIndex("by_external_id", (q) => q.eq("externalId", "transaction_central_e2e"))
+        .first(),
+    );
+    expect(ingested?.chapterId).toBe("central");
+    const txnId = ingested!._id;
+
+    // 2. Appears in the central reconcile inbox.
+    const reconcile = await s.as.query(api.finances.listReconcile, {
+      filter: "all",
+      scope: "central",
+    });
+    expect(reconcile.rows.map((r) => r.id)).toContain(txnId);
+
+    // 3. Categorize: link it to a central budget.
+    const centralBudget = await s.as.mutation(api.finances.createBudget, {
+      amountCents: 100000,
+      type: "recurring",
+      cadence: "yearly",
+      year,
+      central: true,
+      label: "Org Ads",
+    });
+    await s.as.mutation(api.finances.categorizeTransaction, {
+      transactionId: txnId,
+      budgetId: centralBudget,
+    });
+    const categorized = await run(t, (ctx) => ctx.db.get(txnId));
+    expect(categorized?.budgetId).toBe(centralBudget);
+    expect(categorized?.status).toBe("categorized");
+
+    // 4. dashboardCentral's Central row includes it EXACTLY once — not double
+    // counted against the budget card or the org total.
+    const dash = await s.as.query(api.finances.dashboardCentral, { year, month });
+    const central = dash.chapterRollup.find((c) => c.chapterName === "Central");
+    expect(central?.spentCents).toBe(6600);
+    expect(dash.totalMonthSpendCents).toBe(6600);
+    const cb = dash.centralBudgets.find((b) => b.id === centralBudget);
+    expect(cb?.spentCents).toBe(6600);
   });
 });

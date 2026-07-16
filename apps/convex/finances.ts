@@ -50,6 +50,7 @@ import {
   formatCents,
   matchesMode,
   financeRoleAtLeast,
+  FINANCE_ROLE_LABELS,
   type BudgetType,
   type BudgetRefKind,
 } from "@events-os/shared";
@@ -3848,11 +3849,13 @@ async function verifyTxnRefs(
  * txn's own scope (WP-2.1). A chapter-owned txn requires the caller's `min`
  * finance role in that chapter (unchanged from `requireInCallerChapter`); a
  * CENTRAL-owned txn (`chapterId:"central"`) requires central reach
- * (`requireFinanceCentral`) — so the central desk can reconcile central-owned
- * money while a mere chapter manager can't touch it, and vice-versa. Returns
- * the txn, the caller's home chapter (for fund defaults etc.), and the txn's
- * `FinanceScope`. Mirrors how `dashboardChapter`'s optional-chapterId drill-down
- * re-checks central reach (#131).
+ * (`requireFinanceCentral`) AND the same `min` role rank — `requireFinanceCentral`
+ * only checks central REACH (any central grant, including a viewer-only one),
+ * so without the extra rank check a central-scoped VIEWER could perform
+ * reconcile writes on central txns while a chapter viewer is correctly
+ * blocked. Returns the txn, the caller's home chapter (for fund defaults
+ * etc.), and the txn's `FinanceScope`. Mirrors how `dashboardChapter`'s
+ * optional-chapterId drill-down re-checks central reach (#131).
  */
 async function requireReconcileTxn(
   ctx: MutationCtx,
@@ -3865,7 +3868,13 @@ async function requireReconcileTxn(
     new ConvexError({ code: "NOT_FOUND", message: "Transaction not found in your chapter." });
   if (!txn) throw notFound();
   if (txn.chapterId === CENTRAL) {
-    await requireFinanceCentral(ctx, homeChapterId);
+    const access = await requireFinanceCentral(ctx, homeChapterId);
+    if (!financeRoleAtLeast(access.role, min)) {
+      throw new ConvexError({
+        code: "FORBIDDEN",
+        message: `This action needs at least the ${FINANCE_ROLE_LABELS[min]} finance role.`,
+      });
+    }
     return { txn, homeChapterId, scope: CENTRAL };
   }
   await requireFinanceRole(ctx, homeChapterId, min);
@@ -4150,8 +4159,16 @@ export const attachReceipt = mutation({
     }
     if (txn.chapterId === CENTRAL) {
       // A central-owned txn's receipt is central-desk territory (no cardholder
-      // "own txn" path — central issues no cards). Gate on central reach.
-      await requireFinanceCentral(ctx, chapterId);
+      // "own txn" path — central issues no cards). Gate on central reach AND
+      // the bookkeeper rank (requireFinanceCentral alone only checks reach,
+      // not role — see requireReconcileTxn for the same fix).
+      const access = await requireFinanceCentral(ctx, chapterId);
+      if (!financeRoleAtLeast(access.role, "bookkeeper")) {
+        throw new ConvexError({
+          code: "FORBIDDEN",
+          message: `This action needs at least the ${FINANCE_ROLE_LABELS.bookkeeper} finance role.`,
+        });
+      }
     } else {
       if (txn.chapterId !== chapterId) {
         throw new ConvexError({
