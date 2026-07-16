@@ -771,6 +771,19 @@ export const reimbursementSubmitAttempts = defineTable({
   createdAt: v.number(),
 }).index("by_key_and_time", ["key", "createdAt"]);
 
+// ── Card details reveal rate limit (WP-C.3) ──────────────────────────────────
+/** A single timestamped hit against the HOLDER-ONLY `cards.revealCardDetails`
+ *  action — the most sensitive read in the app (a card's PAN + expiry + CVC).
+ *  Same shape/index as `reimbursementSubmitAttempts` (#134): `key` is
+ *  `"card:<cardId>"`, one row inserted per successful reveal, checked+recorded
+ *  atomically via `by_key_and_time` inside `cards.beginRevealCardDetails`. This
+ *  table NEVER stores the card details themselves — only a timestamp. See
+ *  `cards.ts` for the threshold + rationale. */
+export const cardDetailsRevealAttempts = defineTable({
+  key: v.string(),
+  createdAt: v.number(),
+}).index("by_key_and_time", ["key", "createdAt"]);
+
 /** Increase REVIEWS a Digital Card Profile before it can be attached to a
  *  card — it's minted `"pending"` and Increase (and/or the card network)
  *  resolves it to `"active"` (safe to attach) or `"rejected"` (re-upload art

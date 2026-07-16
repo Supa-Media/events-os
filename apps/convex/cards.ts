@@ -31,6 +31,14 @@
  *    (`cardRequests`, one open request at a time); an FM/Treasurer
  *    approves (→ the existing `issueCard` action) or denies.
  *
+ * WP-C.3 (digital wallet — Apple/Google/Samsung Pay) adds two more real-time
+ * decisions (`handleIncreaseDigitalWalletTokenRequested` /
+ * `...AuthenticationRequested`, see their section doc comment for the full
+ * two-step flow) plus a HOLDER-ONLY, rate-limited `revealCardDetails` for
+ * manual add-to-wallet (PAN/CVC never persisted or logged — see its own doc
+ * comment; native push provisioning is explicitly deferred, needs the Apple
+ * PassKit entitlement).
+ *
  * DESIGN (mirrors `increase.ts`): the network fetch is separated from the DB
  * apply so the authorization decision + repayment state machine are testable
  * WITHOUT hitting Increase. Actions FETCH (raw `fetch`, no SDK); internal
@@ -1528,6 +1536,408 @@ export const handleIncreaseRealTimeDecision = internalAction({
       console.error("[cards] RTD: failed to submit decision action", err);
     }
     return null;
+  },
+});
+
+// ── Digital wallet tokenization (WP-C.3) ─────────────────────────────────────
+//
+// Apple/Google/Samsung Pay "add card to wallet" is TWO real-time decisions, in
+// order:
+//  1. `digital_wallet_token_requested` — "should this card be allowed into a
+//     wallet at all, and if so, which contact method(s) can verify the
+//     cardholder?" We approve/decline based on the SAME card-status source of
+//     truth `decideAgainstCard` uses (`"active"` only — covers a manager lock
+//     AND a holder's own freeze) and supply a contact for step 2.
+//  2. `digital_wallet_authentication_requested` — Increase already generated a
+//     one-time passcode and picked one of the contacts we offered in step 1;
+//     OUR job is to actually deliver it (over that channel) and report back
+//     whether delivery succeeded.
+//
+// EMAIL ONLY: this deployment has no SMS provider wired up (`blasts.ts`'s
+// `sendBlast` refuses `channel:"sms"` with `SMS_NOT_CONNECTED` until Twilio is
+// connected — see its doc comment). Offering the cardholder's phone as a
+// step-1 contact would let the wallet pick SMS for step 2, which we could
+// never deliver — so step 1 below NEVER offers `phone`, only `email`. Step 2
+// declines defensively (never throws) if a `"sms"` channel somehow comes back
+// anyway. Revisit both once Twilio lands.
+
+const walletCardContactValidator = v.union(
+  v.object({
+    status: v.union(...CARD_STATUSES.map((s) => v.literal(s))),
+    cardholderEmail: v.union(v.string(), v.null()),
+  }),
+  v.null(),
+);
+
+/**
+ * Fetch a card's status + its cardholder's contact email by Increase card id,
+ * for both digital-wallet real-time decisions below. Returns `null` when the
+ * card (or its cardholder `people` row) doesn't exist — `decideDigitalWalletToken`
+ * treats that as a decline. `cardholderEmail` prefers `pwEmail` (the org
+ * address) over the personal `email`, same ordering as
+ * `getPersonalChargeFlagContact`. Deliberately does NOT read `phone` — see the
+ * EMAIL ONLY note above.
+ */
+export const getCardWalletContact = internalQuery({
+  args: { increaseCardId: v.string() },
+  returns: walletCardContactValidator,
+  handler: async (ctx, { increaseCardId }) => {
+    const card = await ctx.db
+      .query("cards")
+      .withIndex("by_increase_card", (q) =>
+        q.eq("increaseCardId", increaseCardId),
+      )
+      .first();
+    if (!card) return null;
+    const person = await ctx.db.get(card.cardholderPersonId);
+    if (!person) return null;
+    return {
+      status: card.status,
+      cardholderEmail: person.pwEmail ?? person.email ?? null,
+    };
+  },
+});
+
+/** Pure: APPROVE digital-wallet tokenization iff the card is `"active"`
+ *  (declines a manager lock, a holder's own freeze, AND a cancellation — all
+ *  represented by `status`, same single source of truth `decideAgainstCard`
+ *  checks) and its cardholder has an email on file to verify with. DECLINE
+ *  otherwise, always with a `reason` (Increase logs it; never shown to the
+ *  end-user). */
+function decideDigitalWalletToken(
+  contact: { status: CardStatus; cardholderEmail: string | null } | null,
+): { approved: boolean; reason?: string; email?: string } {
+  if (!contact) return { approved: false, reason: "unknown card or cardholder" };
+  if (contact.status !== "active") {
+    return { approved: false, reason: `card ${contact.status}` };
+  }
+  if (!contact.cardholderEmail) {
+    return { approved: false, reason: "no contact method on file" };
+  }
+  return { approved: true, email: contact.cardholderEmail };
+}
+
+/** The `digital_wallet_token` shape on a fetched Increase RealTimeDecision
+ *  object (GET /real_time_decisions/{id}) that this handler needs — just the
+ *  card id to decide against (grounded against the `increase` npm SDK's
+ *  `RealTimeDecision.DigitalWalletToken`: `card_id`, `decision`, `device`,
+ *  `digital_wallet`). */
+interface RtdDigitalWalletToken {
+  card_id?: string;
+}
+
+/**
+ * Handle a `real_time_decision.digital_wallet_token_requested` webhook
+ * END-TO-END (WP-C.3, step 1 of 2 — see the section doc comment above).
+ * Fetches the RealTimeDecision, decides via `decideDigitalWalletToken`, then
+ * submits the verdict to `/real_time_decisions/{id}/action`:
+ *   `{ digital_wallet_token: { approval: { email } } }` to approve (grounded:
+ *   `RealTimeDecisionActionParams.DigitalWalletToken.Approval` — `email?` /
+ *   `phone?`, we only ever send `email`), or
+ *   `{ digital_wallet_token: { decline: { reason } } }` to decline (grounded:
+ *   `...DigitalWalletToken.Decline` — `reason?`, logging-only per Increase's
+ *   docs, never shown to the end-user).
+ * Mirrors `handleIncreaseRealTimeDecision`'s shape exactly: sandbox/production
+ * routing via `increaseEnvForObjectId`, NEVER throws (a thrown decision would
+ * wrongly hang the wallet-add flow — any internal error is caught and
+ * defaults to a logged no-op), degrades to a logged no-op without that
+ * environment's API key.
+ */
+export const handleIncreaseDigitalWalletTokenRequested = internalAction({
+  args: { realTimeDecisionId: v.string() },
+  returns: v.null(),
+  handler: async (ctx, { realTimeDecisionId }) => {
+    try {
+      const { key, base } = increaseEnvForObjectId(realTimeDecisionId);
+      if (!key) {
+        console.warn(
+          "[cards] wallet-token RTD skipped: Increase API key not configured for this environment",
+        );
+        return null;
+      }
+
+      let rtd: Record<string, unknown>;
+      try {
+        rtd = await increaseGet(
+          key,
+          base,
+          `/real_time_decisions/${realTimeDecisionId}`,
+        );
+      } catch (err) {
+        console.error("[cards] wallet-token RTD: failed to fetch real_time_decision", err);
+        return null;
+      }
+
+      const tokenReq = rtd.digital_wallet_token as
+        | RtdDigitalWalletToken
+        | undefined;
+      const decision = tokenReq?.card_id
+        ? decideDigitalWalletToken(
+            await ctx.runQuery(internal.cards.getCardWalletContact, {
+              increaseCardId: tokenReq.card_id,
+            }),
+          )
+        : { approved: false, reason: "malformed payload" };
+
+      try {
+        await increasePost(
+          key,
+          base,
+          `/real_time_decisions/${realTimeDecisionId}/action`,
+          {
+            digital_wallet_token: decision.approved
+              ? { approval: { email: decision.email } }
+              : { decline: { reason: decision.reason } },
+          },
+        );
+      } catch (err) {
+        console.error(
+          "[cards] wallet-token RTD: failed to submit decision action",
+          err,
+        );
+      }
+    } catch (err) {
+      // Belt-and-suspenders: NEVER throw out of a webhook handler.
+      console.error("[cards] wallet-token RTD: unexpected error", err);
+    }
+    return null;
+  },
+});
+
+/** The `digital_wallet_authentication` shape on a fetched RealTimeDecision
+ *  object that this handler needs (grounded against the `increase` npm SDK's
+ *  `RealTimeDecision.DigitalWalletAuthentication`): Increase has ALREADY
+ *  generated the one-time passcode and picked a `channel` (+ matching
+ *  `email`/`phone`) from what step 1 offered — our job is only to deliver it
+ *  and report back. */
+interface RtdDigitalWalletAuthentication {
+  card_id?: string;
+  channel?: "sms" | "email";
+  email?: string | null;
+  phone?: string | null;
+  one_time_passcode?: string;
+}
+
+/**
+ * Handle a `real_time_decision.digital_wallet_authentication_requested`
+ * webhook END-TO-END (WP-C.3, step 2 of 2). Delivers the ALREADY-GENERATED
+ * `one_time_passcode` to the cardholder over email (Resend, via the shared
+ * `sendEmail`/`emailShell` helpers already used elsewhere in this codebase),
+ * then submits the delivery result to `/real_time_decisions/{id}/action`:
+ * `{ digital_wallet_authentication: { result: "success", success: { email } } }`
+ * or `{ result: "failure" }` (grounded:
+ * `RealTimeDecisionActionParams.DigitalWalletAuthentication` —
+ * `result: "success"|"failure"`, `success?: { email?, phone? }`, exactly one of
+ * `phone`/`email` on `success`).
+ *
+ * `channel` should always be `"email"` here (see the section doc comment —
+ * step 1 never offers a `phone` contact), but a `"sms"` channel or a missing
+ * `email` reports `failure` defensively rather than silently dropping the
+ * code. The passcode is NEVER logged — only delivery success/failure and the
+ * (non-secret) address it was sent to ever reach `console.error`. Like every
+ * other RTD handler in this file, this NEVER throws.
+ */
+export const handleIncreaseDigitalWalletAuthenticationRequested = internalAction(
+  {
+    args: { realTimeDecisionId: v.string() },
+    returns: v.null(),
+    handler: async (ctx, { realTimeDecisionId }) => {
+      try {
+        const { key, base } = increaseEnvForObjectId(realTimeDecisionId);
+        if (!key) {
+          console.warn(
+            "[cards] wallet-auth RTD skipped: Increase API key not configured for this environment",
+          );
+          return null;
+        }
+
+        let rtd: Record<string, unknown>;
+        try {
+          rtd = await increaseGet(
+            key,
+            base,
+            `/real_time_decisions/${realTimeDecisionId}`,
+          );
+        } catch (err) {
+          console.error("[cards] wallet-auth RTD: failed to fetch real_time_decision", err);
+          return null;
+        }
+
+        const auth = rtd.digital_wallet_authentication as
+          | RtdDigitalWalletAuthentication
+          | undefined;
+
+        let actionBody: Record<string, unknown>;
+        if (!auth?.one_time_passcode || auth.channel !== "email" || !auth.email) {
+          actionBody = { digital_wallet_authentication: { result: "failure" } };
+        } else {
+          try {
+            await sendEmail(
+              auth.email,
+              "Your Public Worship wallet verification code",
+              emailShell(`
+                <h1 style="margin:0 0 12px;font-size:24px;line-height:1.2">Your wallet verification code</h1>
+                <p style="margin:0 0 16px;font-family:-apple-system,'Segoe UI',Roboto,sans-serif;font-size:14px;line-height:1.6;color:#7A5A5A">Enter this code to finish adding your card to your digital wallet:</p>
+                <p style="margin:0;font-family:-apple-system,'Segoe UI',Roboto,sans-serif;font-size:32px;font-weight:700;letter-spacing:0.08em;color:#210909">${escapeHtml(auth.one_time_passcode)}</p>`),
+            );
+            actionBody = {
+              digital_wallet_authentication: {
+                result: "success",
+                success: { email: auth.email },
+              },
+            };
+          } catch (err) {
+            console.error(
+              "[cards] wallet-auth RTD: failed to deliver one-time passcode",
+              err,
+            );
+            actionBody = { digital_wallet_authentication: { result: "failure" } };
+          }
+        }
+
+        try {
+          await increasePost(
+            key,
+            base,
+            `/real_time_decisions/${realTimeDecisionId}/action`,
+            actionBody,
+          );
+        } catch (err) {
+          console.error(
+            "[cards] wallet-auth RTD: failed to submit decision action",
+            err,
+          );
+        }
+      } catch (err) {
+        // Belt-and-suspenders: NEVER throw out of a webhook handler.
+        console.error("[cards] wallet-auth RTD: unexpected error", err);
+      }
+      return null;
+    },
+  },
+);
+
+// ── revealCardDetails (HOLDER-ONLY, rate-limited add-to-wallet) ──────────────
+
+// Threshold: 5 reveals / rolling hour / card. Mirrors the anonymous-submit
+// rate limit (#134) — generous enough for a holder legitimately retrying
+// "Add to wallet" across a couple of devices in one sitting, while making a
+// compromised session's attempt to repeatedly pull the PAN/CVC from Increase
+// meaningfully throttled. Tune here if real usage disagrees.
+const CARD_DETAILS_REVEAL_WINDOW_MS = 60 * 60 * 1000; // 1 hour
+const CARD_DETAILS_REVEAL_MAX = 5;
+
+/**
+ * Gate + rate-limit `revealCardDetails`. HOLDER-ONLY: the SAME check as
+ * `beginFreezeCard`/`beginUnfreezeCard` — a manager, FM, or superuser who
+ * ISN'T the card's own cardholder is FORBIDDEN, full stop (there is no
+ * manager override for viewing someone else's PAN/CVC). Checks-and-records
+ * the rate limit atomically in ONE mutation (query + insert in the same
+ * transaction) so two concurrent reveal attempts can't both slip through
+ * under the cap. Returns ONLY the vendor card id — nothing sensitive is ever
+ * written to `cardDetailsRevealAttempts` or returned from this mutation.
+ */
+export const beginRevealCardDetails = internalMutation({
+  args: { cardId: v.id("cards") },
+  returns: v.object({ increaseCardId: v.string() }),
+  handler: async (ctx, { cardId }) => {
+    const chapterId = (await requireChapterId(ctx)) as Id<"chapters">;
+    const access = await getFinanceRole(ctx, chapterId);
+    const card = await requireOwnedCard(ctx, chapterId, cardId);
+    const isHolder =
+      access.personId != null && access.personId === card.cardholderPersonId;
+    if (!isHolder) {
+      throw new ConvexError({
+        code: "FORBIDDEN",
+        message: "Only the cardholder can view their own card details.",
+      });
+    }
+    if (!card.increaseCardId) {
+      throw new ConvexError({
+        code: "NOT_CONFIGURED",
+        message: "This card isn't linked to Increase yet.",
+      });
+    }
+    if (card.status !== "active") {
+      throw new ConvexError({
+        code: "ILLEGAL_STATE",
+        message: "Card details aren't available while the card isn't active.",
+      });
+    }
+
+    const key = `card:${cardId}`;
+    const windowStart = Date.now() - CARD_DETAILS_REVEAL_WINDOW_MS;
+    const recent = await ctx.db
+      .query("cardDetailsRevealAttempts")
+      .withIndex("by_key_and_time", (q) =>
+        q.eq("key", key).gte("createdAt", windowStart),
+      )
+      .take(CARD_DETAILS_REVEAL_MAX);
+    if (recent.length >= CARD_DETAILS_REVEAL_MAX) {
+      throw new ConvexError({
+        code: "RATE_LIMITED",
+        message: "Too many attempts to view card details — try again in a bit.",
+      });
+    }
+    await ctx.db.insert("cardDetailsRevealAttempts", {
+      key,
+      createdAt: Date.now(),
+    });
+
+    return { increaseCardId: card.increaseCardId };
+  },
+});
+
+/**
+ * Reveal a card's sensitive details (PAN + expiry + CVC) for manual add-to-
+ * wallet. THE MOST SENSITIVE READ IN THE APP — three layers of defense:
+ *  1. HOLDER-ONLY (`beginRevealCardDetails` above — never a manager/FM/
+ *     superuser who isn't the cardholder themselves; code-asserted, not just
+ *     UI-hidden).
+ *  2. RATE-LIMITED to 5/hour/card (checked + recorded atomically in the same
+ *     mutation, before any network call).
+ *  3. NEVER PERSISTED OR LOGGED: the Increase response is mapped straight into
+ *     this action's return value and discarded — no `ctx.db.insert`/`.patch`
+ *     ever touches it, and neither this action nor `increaseGet` logs the
+ *     response body (a failed fetch logs Increase's error text, which by
+ *     definition never contains card data). The client renders it in an
+ *     auto-hiding modal; this action holds no session state to expire.
+ *
+ * Push provisioning (a one-tap "Add to Apple Wallet" button) is EXPLICITLY
+ * DEFERRED — it needs the Apple PassKit entitlement, out of scope for WP-C.3.
+ * This manual reveal ("type it into Wallet yourself") is the day-one path.
+ */
+export const revealCardDetails = action({
+  args: { cardId: v.id("cards") },
+  returns: v.object({
+    primaryAccountNumber: v.string(),
+    expirationMonth: v.number(),
+    expirationYear: v.number(),
+    verificationCode: v.string(),
+  }),
+  handler: async (ctx, { cardId }) => {
+    const { increaseCardId } = await ctx.runMutation(
+      internal.cards.beginRevealCardDetails,
+      { cardId },
+    );
+    const { key, base } = increaseEnvForObjectId(increaseCardId);
+    if (!key) {
+      throw new ConvexError({
+        code: "NOT_CONFIGURED",
+        message: "Card details aren't available in this environment.",
+      });
+    }
+    const details = await increaseGet(
+      key,
+      base,
+      `/cards/${increaseCardId}/details`,
+    );
+    return {
+      primaryAccountNumber: String(details.primary_account_number ?? ""),
+      expirationMonth: Number(details.expiration_month ?? 0),
+      expirationYear: Number(details.expiration_year ?? 0),
+      verificationCode: String(details.verification_code ?? ""),
+    };
   },
 });
 

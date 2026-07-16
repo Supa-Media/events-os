@@ -9,6 +9,7 @@ import {
 } from "./setup.helpers";
 import { api, internal } from "../_generated/api";
 import type { Id } from "../_generated/dataModel";
+import schema from "../schema";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -2968,5 +2969,493 @@ describe("issueCard × Digital Card Profile attach (WP-C.2)", () => {
     expect(post!.body?.digital_wallet).toEqual({
       digital_card_profile_id: "sandbox_digital_card_profile",
     });
+  });
+});
+
+// ── WP-C.3: digital wallet tokenization (RTD approve/decline matrix) ─────────
+
+describe("handleIncreaseDigitalWalletTokenRequested", () => {
+  const ENV = ["INCREASE_API_KEY", "INCREASE_SANDBOX_API_KEY"] as const;
+  const originalFetch = globalThis.fetch;
+  const originalEnv: Partial<Record<(typeof ENV)[number], string>> = {};
+  for (const k of ENV) originalEnv[k] = process.env[k];
+
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+    for (const k of ENV) {
+      if (originalEnv[k] === undefined) delete process.env[k];
+      else process.env[k] = originalEnv[k];
+    }
+  });
+
+  test("APPROVES with the cardholder's email when the card is active", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    process.env.INCREASE_API_KEY = "prod_key";
+    const holder = await seedPerson(s, {
+      name: "Holder",
+      pwEmail: "holder@publicworship.life",
+    });
+    await seedCard(s, {
+      cardholderPersonId: holder,
+      increaseCardId: "card_wallet_1",
+      status: "active",
+    });
+    const calls = mockRecordingFetchWithBody({
+      digital_wallet_token: { card_id: "card_wallet_1" },
+    });
+
+    await t.action(internal.cards.handleIncreaseDigitalWalletTokenRequested, {
+      realTimeDecisionId: "rtd_wallet_1",
+    });
+
+    const post = calls.find((c) => c.method === "POST");
+    expect(post?.body).toEqual({
+      digital_wallet_token: {
+        approval: { email: "holder@publicworship.life" },
+      },
+    });
+  });
+
+  test.each(["locked", "canceled"] as const)(
+    "DECLINES when the card is %s",
+    async (status) => {
+      const t = newT();
+      const s = await setupChapter(t);
+      process.env.INCREASE_API_KEY = "prod_key";
+      const holder = await seedPerson(s, { name: "Holder" });
+      await seedCard(s, {
+        cardholderPersonId: holder,
+        increaseCardId: `card_wallet_status_${status}`,
+        status,
+      });
+      const calls = mockRecordingFetchWithBody({
+        digital_wallet_token: { card_id: `card_wallet_status_${status}` },
+      });
+
+      await t.action(
+        internal.cards.handleIncreaseDigitalWalletTokenRequested,
+        { realTimeDecisionId: `rtd_wallet_${status}` },
+      );
+
+      const post = calls.find((c) => c.method === "POST");
+      const body = post?.body?.digital_wallet_token as
+        | { decline: { reason: string } }
+        | undefined;
+      expect(body).toBeTruthy();
+      expect(body!.decline.reason).toBe(`card ${status}`);
+    },
+  );
+
+  test("DECLINES a holder-frozen card (locked + frozenByHolder) — same as any other locked card", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    process.env.INCREASE_API_KEY = "prod_key";
+    const holder = await seedPerson(s, { name: "Holder" });
+    const cardId = await seedCard(s, {
+      cardholderPersonId: holder,
+      increaseCardId: "card_wallet_frozen",
+      status: "locked",
+    });
+    await run(s.t, (ctx) => ctx.db.patch(cardId, { frozenByHolder: true }));
+    const calls = mockRecordingFetchWithBody({
+      digital_wallet_token: { card_id: "card_wallet_frozen" },
+    });
+
+    await t.action(internal.cards.handleIncreaseDigitalWalletTokenRequested, {
+      realTimeDecisionId: "rtd_wallet_frozen",
+    });
+
+    const post = calls.find((c) => c.method === "POST");
+    expect(post?.body?.digital_wallet_token).toHaveProperty("decline");
+  });
+
+  test("DECLINES when the cardholder has no email on file", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    process.env.INCREASE_API_KEY = "prod_key";
+    const holder = await seedPerson(s, { name: "Holder", pwEmail: null });
+    await seedCard(s, {
+      cardholderPersonId: holder,
+      increaseCardId: "card_wallet_noemail",
+      status: "active",
+    });
+    const calls = mockRecordingFetchWithBody({
+      digital_wallet_token: { card_id: "card_wallet_noemail" },
+    });
+
+    await t.action(internal.cards.handleIncreaseDigitalWalletTokenRequested, {
+      realTimeDecisionId: "rtd_wallet_noemail",
+    });
+
+    const post = calls.find((c) => c.method === "POST");
+    const body = post?.body?.digital_wallet_token as
+      | { decline: { reason: string } }
+      | undefined;
+    expect(body!.decline.reason).toBe("no contact method on file");
+  });
+
+  test("DECLINES an unknown card id — never throws", async () => {
+    const t = newT();
+    process.env.INCREASE_API_KEY = "prod_key";
+    const calls = mockRecordingFetchWithBody({
+      digital_wallet_token: { card_id: "card_does_not_exist" },
+    });
+
+    await expect(
+      t.action(internal.cards.handleIncreaseDigitalWalletTokenRequested, {
+        realTimeDecisionId: "rtd_wallet_unknown",
+      }),
+    ).resolves.toBeNull();
+
+    const post = calls.find((c) => c.method === "POST");
+    expect(post?.body?.digital_wallet_token).toHaveProperty("decline");
+  });
+
+  test("never throws on a malformed RTD payload (no digital_wallet_token object)", async () => {
+    const t = newT();
+    process.env.INCREASE_API_KEY = "prod_key";
+    mockRecordingFetchWithBody({ card_authorization: { card_id: "unrelated" } });
+
+    await expect(
+      t.action(internal.cards.handleIncreaseDigitalWalletTokenRequested, {
+        realTimeDecisionId: "rtd_wallet_malformed",
+      }),
+    ).resolves.toBeNull();
+  });
+
+  test("never throws when the GET itself fails", async () => {
+    const t = newT();
+    process.env.INCREASE_API_KEY = "prod_key";
+    globalThis.fetch = (async () =>
+      new Response("boom", { status: 500 })) as unknown as typeof fetch;
+
+    await expect(
+      t.action(internal.cards.handleIncreaseDigitalWalletTokenRequested, {
+        realTimeDecisionId: "rtd_wallet_get_fails",
+      }),
+    ).resolves.toBeNull();
+  });
+});
+
+// ── WP-C.3: digital wallet 2FA (one-time-code delivery) ──────────────────────
+
+describe("handleIncreaseDigitalWalletAuthenticationRequested", () => {
+  const ENV = [
+    "INCREASE_API_KEY",
+    "INCREASE_SANDBOX_API_KEY",
+    "RESEND_API_KEY",
+  ] as const;
+  const originalFetch = globalThis.fetch;
+  const originalEnv: Partial<Record<(typeof ENV)[number], string>> = {};
+  for (const k of ENV) originalEnv[k] = process.env[k];
+
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+    for (const k of ENV) {
+      if (originalEnv[k] === undefined) delete process.env[k];
+      else process.env[k] = originalEnv[k];
+    }
+  });
+
+  test("delivers the one-time passcode by email and reports success with that contact", async () => {
+    process.env.INCREASE_API_KEY = "prod_key";
+    delete process.env.RESEND_API_KEY; // sendEmail degrades to a logged no-op, still resolves
+    const calls = mockRecordingFetchWithBody({
+      digital_wallet_authentication: {
+        card_id: "card_auth_1",
+        channel: "email",
+        email: "holder@publicworship.life",
+        phone: null,
+        one_time_passcode: "123456",
+      },
+    });
+    const t = newT();
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    await t.action(
+      internal.cards.handleIncreaseDigitalWalletAuthenticationRequested,
+      { realTimeDecisionId: "rtd_auth_1" },
+    );
+
+    const post = calls.find((c) => c.method === "POST");
+    expect(post?.body).toEqual({
+      digital_wallet_authentication: {
+        result: "success",
+        success: { email: "holder@publicworship.life" },
+      },
+    });
+    // The one-time passcode itself must NEVER be logged.
+    const allLogged = [...logSpy.mock.calls, ...errorSpy.mock.calls]
+      .flat()
+      .map(String)
+      .join(" ");
+    logSpy.mockRestore();
+    errorSpy.mockRestore();
+    expect(allLogged).not.toContain("123456");
+  });
+
+  test("reports failure (never throws) when the channel is sms — no SMS provider wired up", async () => {
+    process.env.INCREASE_API_KEY = "prod_key";
+    const calls = mockRecordingFetchWithBody({
+      digital_wallet_authentication: {
+        card_id: "card_auth_2",
+        channel: "sms",
+        phone: "+15555550123",
+        email: null,
+        one_time_passcode: "654321",
+      },
+    });
+    const t = newT();
+
+    await expect(
+      t.action(
+        internal.cards.handleIncreaseDigitalWalletAuthenticationRequested,
+        { realTimeDecisionId: "rtd_auth_2" },
+      ),
+    ).resolves.toBeNull();
+
+    const post = calls.find((c) => c.method === "POST");
+    expect(post?.body).toEqual({
+      digital_wallet_authentication: { result: "failure" },
+    });
+  });
+
+  test("never throws on a malformed RTD payload (no digital_wallet_authentication object)", async () => {
+    process.env.INCREASE_API_KEY = "prod_key";
+    const calls = mockRecordingFetchWithBody({
+      card_authorization: { card_id: "unrelated" },
+    });
+    const t = newT();
+
+    await expect(
+      t.action(
+        internal.cards.handleIncreaseDigitalWalletAuthenticationRequested,
+        { realTimeDecisionId: "rtd_auth_3" },
+      ),
+    ).resolves.toBeNull();
+
+    const post = calls.find((c) => c.method === "POST");
+    expect(post?.body).toEqual({
+      digital_wallet_authentication: { result: "failure" },
+    });
+  });
+
+  test("never throws when the GET itself fails", async () => {
+    process.env.INCREASE_API_KEY = "prod_key";
+    globalThis.fetch = (async () =>
+      new Response("boom", { status: 500 })) as unknown as typeof fetch;
+    const t = newT();
+
+    await expect(
+      t.action(
+        internal.cards.handleIncreaseDigitalWalletAuthenticationRequested,
+        { realTimeDecisionId: "rtd_auth_4" },
+      ),
+    ).resolves.toBeNull();
+  });
+});
+
+// ── WP-C.3: revealCardDetails (HOLDER-ONLY, rate-limited, never persisted) ───
+
+describe("revealCardDetails", () => {
+  const ENV = ["INCREASE_API_KEY", "INCREASE_SANDBOX_API_KEY"] as const;
+  const originalFetch = globalThis.fetch;
+  const originalEnv: Partial<Record<(typeof ENV)[number], string>> = {};
+  for (const k of ENV) originalEnv[k] = process.env[k];
+
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+    for (const k of ENV) {
+      if (originalEnv[k] === undefined) delete process.env[k];
+      else process.env[k] = originalEnv[k];
+    }
+  });
+
+  const FAKE_PAN = "4242424242424242";
+  const FAKE_CVC = "999";
+
+  /** Only the GET /cards/{id}/details endpoint is ever hit by this flow. */
+  function mockCardDetailsFetch() {
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes("/details")) {
+        return new Response(
+          JSON.stringify({
+            card_id: "increase_card",
+            primary_account_number: FAKE_PAN,
+            expiration_month: 8,
+            expiration_year: 2029,
+            verification_code: FAKE_CVC,
+            type: "card_details",
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        );
+      }
+      return new Response("not found", { status: 404 });
+    }) as unknown as typeof fetch;
+  }
+
+  test("the holder can reveal their own card's details", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    process.env.INCREASE_API_KEY = "prod_key";
+    const holder = await seedPerson(s, { name: "Holder", userId: s.userId });
+    const cardId = await seedCard(s, {
+      cardholderPersonId: holder,
+      increaseCardId: "card_reveal_1",
+      status: "active",
+    });
+    mockCardDetailsFetch();
+
+    const details = await s.as.action(api.cards.revealCardDetails, { cardId });
+    expect(details.primaryAccountNumber).toBe(FAKE_PAN);
+    expect(details.expirationMonth).toBe(8);
+    expect(details.expirationYear).toBe(2029);
+    expect(details.verificationCode).toBe(FAKE_CVC);
+  });
+
+  test("a manager (not the holder) is FORBIDDEN — code-asserted, no manager override", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    process.env.INCREASE_API_KEY = "prod_key";
+    await seedManager(s); // caller IS a manager, but not THIS card's holder
+    const holder = await seedPerson(s, { name: "Holder" });
+    const cardId = await seedCard(s, {
+      cardholderPersonId: holder,
+      increaseCardId: "card_reveal_2",
+      status: "active",
+    });
+    mockCardDetailsFetch();
+
+    let caught: unknown;
+    try {
+      await s.as.action(api.cards.revealCardDetails, { cardId });
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(ConvexError);
+    expect((caught as ConvexError<{ code: string }>).data.code).toBe(
+      "FORBIDDEN",
+    );
+  });
+
+  test("a non-holder, non-manager caller is FORBIDDEN", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    process.env.INCREASE_API_KEY = "prod_key";
+    await seedPerson(s, { name: "Someone Else", userId: s.userId });
+    const holder = await seedPerson(s, { name: "Holder" });
+    const cardId = await seedCard(s, {
+      cardholderPersonId: holder,
+      increaseCardId: "card_reveal_3",
+      status: "active",
+    });
+    mockCardDetailsFetch();
+
+    await expect(
+      s.as.action(api.cards.revealCardDetails, { cardId }),
+    ).rejects.toBeInstanceOf(ConvexError);
+  });
+
+  test("rate-limits to 5 reveals / hour / card — the 6th throws RATE_LIMITED", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    process.env.INCREASE_API_KEY = "prod_key";
+    const holder = await seedPerson(s, { name: "Holder", userId: s.userId });
+    const cardId = await seedCard(s, {
+      cardholderPersonId: holder,
+      increaseCardId: "card_reveal_4",
+      status: "active",
+    });
+    mockCardDetailsFetch();
+
+    for (let i = 0; i < 5; i++) {
+      await s.as.action(api.cards.revealCardDetails, { cardId });
+    }
+
+    let caught: unknown;
+    try {
+      await s.as.action(api.cards.revealCardDetails, { cardId });
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(ConvexError);
+    expect((caught as ConvexError<{ code: string }>).data.code).toBe(
+      "RATE_LIMITED",
+    );
+  });
+
+  test("the response is NEVER persisted — no document in ANY table contains the PAN", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    process.env.INCREASE_API_KEY = "prod_key";
+    const holder = await seedPerson(s, { name: "Holder", userId: s.userId });
+    const cardId = await seedCard(s, {
+      cardholderPersonId: holder,
+      increaseCardId: "card_reveal_5",
+      status: "active",
+    });
+    mockCardDetailsFetch();
+
+    await s.as.action(api.cards.revealCardDetails, { cardId });
+
+    const allDocs: unknown[] = [];
+    await run(t, async (ctx) => {
+      for (const tableName of Object.keys(schema.tables)) {
+        const rows = await (
+          ctx.db.query as unknown as (name: string) => {
+            collect: () => Promise<unknown[]>;
+          }
+        )(tableName).collect();
+        allDocs.push(...rows);
+      }
+    });
+    const dump = JSON.stringify(allDocs);
+    expect(dump).not.toContain(FAKE_PAN);
+    expect(dump).not.toContain(FAKE_CVC);
+  });
+
+  test("the PAN/CVC are never logged, even on failure", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    process.env.INCREASE_API_KEY = "prod_key";
+    const holder = await seedPerson(s, { name: "Holder", userId: s.userId });
+    const cardId = await seedCard(s, {
+      cardholderPersonId: holder,
+      increaseCardId: "card_reveal_6",
+      status: "active",
+    });
+    mockCardDetailsFetch();
+
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    await s.as.action(api.cards.revealCardDetails, { cardId });
+    const allLogged = [...logSpy.mock.calls, ...errorSpy.mock.calls]
+      .flat()
+      .map(String)
+      .join(" ");
+    logSpy.mockRestore();
+    errorSpy.mockRestore();
+    expect(allLogged).not.toContain(FAKE_PAN);
+    expect(allLogged).not.toContain(FAKE_CVC);
+  });
+
+  test("refuses a locked/frozen or canceled card", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    process.env.INCREASE_API_KEY = "prod_key";
+    const holder = await seedPerson(s, { name: "Holder", userId: s.userId });
+    const cardId = await seedCard(s, {
+      cardholderPersonId: holder,
+      increaseCardId: "card_reveal_7",
+      status: "locked",
+    });
+    mockCardDetailsFetch();
+
+    await expect(
+      s.as.action(api.cards.revealCardDetails, { cardId }),
+    ).rejects.toBeInstanceOf(ConvexError);
   });
 });

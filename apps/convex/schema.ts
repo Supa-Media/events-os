@@ -59,6 +59,7 @@ import {
   specializedRoles,
   webhookEvents,
   reimbursementSubmitAttempts,
+  cardDetailsRevealAttempts,
   financeSettings,
 } from "./schema/finances";
 import { assets, assetReservations } from "./schema/inventory";
@@ -215,6 +216,8 @@ const schema = defineSchema({
   webhookEvents,
   // Anonymous public reimbursement submit rate limiter (deployment-wide).
   reimbursementSubmitAttempts,
+  // WP-C.3: rate limiter for the HOLDER-ONLY card-details reveal (add-to-wallet).
+  cardDetailsRevealAttempts,
   financeSettings,
 
   // Inventory (M5.5) — chapter-owned asset registry + per-event reservations.
