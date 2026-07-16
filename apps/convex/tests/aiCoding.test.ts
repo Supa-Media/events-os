@@ -730,6 +730,78 @@ describe("suggestCoding sanitizes a dual project+event proposal to one", () => {
   });
 });
 
+// Review fix: the write-time sanitization allow-lists in `codeTransaction`
+// were built ONLY from `context.events`/`context.projects` — the chapter-wide,
+// 50-nearest (`EVENT_LIMIT`) lists — excluding `context.person.events`/
+// `person.projects` entirely. The prompt explicitly tells the model that a
+// match to the CARDHOLDER's own event/project is a strong signal, but a model
+// that followed that instruction and proposed exactly such an event got it
+// silently dropped as "hallucinated" whenever that event fell outside the
+// general window. Fixed by unioning `person.events`/`person.projects` ids
+// into the allow-lists before filtering.
+describe("suggestCoding survives sanitization for a cardholder-associated id outside the general window", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    delete process.env.OPENROUTER_API_KEY;
+  });
+
+  test("a proposal for the cardholder's own event that ISN'T in the general events list still gets written", async () => {
+    process.env.OPENROUTER_API_KEY = "test-key";
+    const t = newT();
+    const s = await setupChapter(t);
+    const callerPersonId = await seedSelfPerson(s);
+    await grantRole(s, callerPersonId, "bookkeeper");
+    const cardholderId = await seedPerson(s, { name: "Jordan Rivera" });
+    const postedAt = Date.now();
+
+    // The cardholder's own event, associated via an `engagements` row, dated
+    // far enough back that it will NOT be among the chapter-wide 50-nearest
+    // events (`EVENT_LIMIT`) once the 50 filler events below crowd it out.
+    const farEventId = await seedEvent(s, postedAt - 1000 * DAY_MS, {
+      name: "Cardholder's Far Event",
+    });
+    await seedEngagement(s, cardholderId, farEventId);
+
+    // 50 unrelated events, each closer to `postedAt` than the far event, so
+    // the chapter-wide query's nearest-50-before scan is fully occupied by
+    // these and never even fetches the far event.
+    for (let i = 1; i <= 50; i++) {
+      await seedEvent(s, postedAt - i * DAY_MS, { name: `Filler ${i}` });
+    }
+
+    const txnId = await seedTxn(s, undefined, {
+      personId: cardholderId,
+      postedAt,
+    });
+
+    // Sanity check: confirm the far event really is excluded from the
+    // general list but present in the cardholder's own associated list —
+    // otherwise this test wouldn't actually exercise the fix.
+    const context = await s.t.query(
+      internal.aiCodingData.loadForSuggestionSystem,
+      { transactionId: txnId },
+    );
+    expect(context.events.map((e) => e._id)).not.toContain(farEventId);
+    expect(context.person?.events.map((e) => e._id)).toContain(farEventId);
+
+    stubOpenRouterOk(
+      JSON.stringify({
+        eventId: farEventId,
+        confidence: 0.8,
+        rationale: "Matches the cardholder's own event.",
+      }),
+    );
+
+    const result = await s.as.action(api.aiCoding.suggestCoding, {
+      transactionId: txnId,
+    });
+
+    expect(result?.eventId).toEqual(farEventId);
+    const txn = await run(s.t, (ctx) => ctx.db.get(txnId));
+    expect(txn?.aiSuggestion?.eventId).toEqual(farEventId);
+  });
+});
+
 describe("a failed suggestCoding attempt doesn't get immediately re-swept", () => {
   afterEach(() => {
     vi.unstubAllGlobals();
@@ -892,7 +964,7 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 // no-auth loader) directly — no OpenRouter call is needed to verify the
 // context it hands the model.
 describe("R2: cardholder context (gatherSuggestionContext)", () => {
-  test("includes the cardholder's name + associated events/projects when transaction.personId is set", async () => {
+  test("includes the cardholder's associated events/projects when transaction.personId is set (name omitted — PII minimization)", async () => {
     const t = newT();
     const s = await setupChapter(t);
     const personId = await seedPerson(s, {
@@ -923,7 +995,8 @@ describe("R2: cardholder context (gatherSuggestionContext)", () => {
     );
 
     expect(context.person?._id).toEqual(personId);
-    expect(context.person?.name).toBe("Jordan Rivera");
+    // `name` is deliberately NOT part of the context shape — see aiCoding.ts.
+    expect(context.person).not.toHaveProperty("name");
     expect(context.person?.role).toBe("Videographer");
     expect(context.person?.isTeamMember).toBe(true);
     const personEventIds = context.person?.events.map((e) => e._id);
@@ -945,7 +1018,6 @@ describe("R2: cardholder context (gatherSuggestionContext)", () => {
     );
 
     expect(context.person?._id).toEqual(personId);
-    expect(context.person?.name).toBe("Sam Okafor");
   });
 
   test("omits person context gracefully when the txn has neither personId nor cardId", async () => {
@@ -1063,7 +1135,6 @@ describe("R2: prompt shape includes cardholder + ranked date-proximity sections"
 
     // The user prompt carries the actual cardholder section + ranked headers.
     expect(userMsg).toContain("CARDHOLDER");
-    expect(userMsg).toContain("name: Jordan Rivera");
     expect(userMsg).toContain("role: Videographer");
     expect(userMsg).toContain("EVENTS (ranked nearest the charge date first)");
     expect(userMsg).toContain("PROJECTS (ranked, most relevant first)");
@@ -1074,6 +1145,11 @@ describe("R2: prompt shape includes cardholder + ranked date-proximity sections"
     // The cardholder's own associated event is listed, with its day-offset label.
     expect(userMsg).toContain(`eventId=${nearEventId}`);
     expect(userMsg).toContain("(+3d)");
+    // PII minimization: the cardholder's NAME never leaves for OpenRouter —
+    // neither message references it, even though it's on the roster record.
+    expect(systemMsg).not.toContain("Jordan Rivera");
+    expect(userMsg).not.toContain("Jordan Rivera");
+    expect(userMsg).not.toContain("name:");
   });
 
   test("the prompt shows '(no cardholder on file...)' when the txn has no resolvable person", async () => {

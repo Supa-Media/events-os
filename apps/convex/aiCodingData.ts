@@ -114,7 +114,8 @@ const suggestionContextValidator = v.object({
   person: v.optional(
     v.object({
       _id: v.id("people"),
-      name: v.string(),
+      // NOT `name` — deliberately dropped (PII minimization, see aiCoding.ts)
+      // since nothing downstream (prompt or UI) reads it off this context.
       role: v.optional(v.string()),
       isTeamMember: v.optional(v.boolean()),
       // This person's OWN events/projects — from `engagements` (volunteer/paid),
@@ -272,7 +273,6 @@ async function resolvePersonContext(
 
   return {
     _id: person._id,
-    name: person.name,
     role: person.role,
     isTeamMember: person.isTeamMember,
     events: events.map((e) => ({ _id: e._id, name: e.name, eventDate: e.eventDate })),

@@ -57,7 +57,6 @@ interface SuggestionContext {
   // (also ranked nearest-first). Absent when neither resolves to a person.
   person?: {
     _id: Id<"people">;
-    name: string;
     role?: string;
     isTeamMember?: boolean;
     events: { _id: Id<"events">; name: string; eventDate: number }[];
@@ -203,9 +202,14 @@ async function codeTransaction(
   // charge during THEIR shoot is likelier coded to that event than a same-
   // week event they have nothing to do with), so surface it as its own
   // section rather than folding it into the general lists above.
+  // PII minimization: the cardholder's NAME is deliberately withheld from this
+  // external payload — referred to generically as "the cardholder" — since
+  // their role + associations carry the categorization signal, not their
+  // identity. Full minimization scope (what else should be withheld) and the
+  // model-tier/retention question for this OpenRouter call are tracked for
+  // the owner to decide.
   const personSection = person
     ? [
-        `name: ${person.name}`,
         `role: ${person.role ?? "(none)"}`,
         `on core team: ${person.isTeamMember ? "yes" : "no"}`,
         `associated events:\n${
@@ -318,10 +322,23 @@ async function codeTransaction(
 
   // Sanitize: keep only ids that appear in the loaded context (drop any
   // hallucinated / out-of-chapter ids). writeSuggestion re-validates too.
+  // The cardholder's OWN associated events/projects (`person.events`/
+  // `person.projects`) are unioned in here too: the prompt explicitly tells
+  // the model to weigh a match to the cardholder's own event/project as a
+  // strong signal, but that event/project can fall outside the chapter-wide
+  // 50-nearest window (`EVENT_LIMIT`/`CONTEXT_LIMIT`) — without this union, a
+  // correct proposal following that exact instruction gets silently dropped
+  // here as if it were hallucinated.
   const fundIds = new Set(funds.map((f) => String(f._id)));
   const categoryIds = new Set(categories.map((c) => String(c._id)));
-  const eventIds = new Set(events.map((e) => String(e._id)));
-  const projectIds = new Set(projects.map((p) => String(p._id)));
+  const eventIds = new Set([
+    ...events.map((e) => String(e._id)),
+    ...(person?.events.map((e) => String(e._id)) ?? []),
+  ]);
+  const projectIds = new Set([
+    ...projects.map((p) => String(p._id)),
+    ...(person?.projects.map((p) => String(p._id)) ?? []),
+  ]);
 
   const fundId =
     typeof proposal.fundId === "string" && fundIds.has(proposal.fundId)
