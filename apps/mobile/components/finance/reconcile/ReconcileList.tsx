@@ -439,8 +439,11 @@ function PickerCell({
 
 // ── Receipt cell: a green ✓ when attached, else a web file-upload affordance
 // that escalates in color/copy with the receipt-reminder timeline (day-1
-// flag → day-3 escalate; day-7 auto-lock is shown at the card level). ────────
-function ReceiptCell({
+// flag → day-3 escalate; day-7 auto-lock is shown at the card level).
+// Exported so the member "My transactions" mini-reconcile (finances/
+// my-transactions.tsx) can reuse the exact same upload affordance instead of
+// re-implementing the web file-input → R2 upload → attach dance. ────────────
+export function ReceiptCell({
   hasReceipt,
   reminderStage,
   onUpload,

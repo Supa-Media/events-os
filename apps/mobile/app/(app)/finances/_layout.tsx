@@ -1,26 +1,39 @@
 import { Slot, usePathname, useRouter } from "expo-router";
 import { ScrollView, View } from "react-native";
+import { useQuery } from "convex/react";
+import { api } from "@events-os/convex/_generated/api";
 import { Pill } from "../../../components/ui";
 import { SandboxModeBanner } from "../../../components/finance/SandboxModeBanner";
 
 /**
  * Finance sub-navigation. The outer AppShell provides the app chrome; this
- * layout adds the in-app finance tabs (Dashboard · Reconcile · Cards ·
- * Reimbursements) above the active screen, matching the prototype's tabbed
- * finance app. Each tab is its own route so the Phase-1 UI agents own disjoint
- * screen files. The desk each screen renders (central / chapter / member) is
- * resolved INSIDE it from the caller's REAL seats (`financeRoles.mySeats`) —
- * not by hiding tabs here.
+ * layout adds the in-app finance tabs above the active screen, matching the
+ * prototype's tabbed finance app. Each tab is its own route so the Phase-1 UI
+ * agents own disjoint screen files.
+ *
+ * The tab SET itself branches on the caller's REAL finance seats
+ * (`financeRoles.mySeats`, WP-0.2): a seat holder gets the full manager tab
+ * bar (Dashboard · Reconcile · Cards · Reimbursements · Accounts) — the desk
+ * each of those renders (central / chapter) still resolves INSIDE the screen.
+ * A caller with NO finance seat (the member/cardholder case, D3) gets the
+ * reduced member set instead — My Card · My Transactions · Reimbursements —
+ * so they never land on a tab that only ever shows them a permission wall.
  *
  * Orchestrator-owned (shared across the finance screens); screens render their
  * own <Screen>/content into the <Slot/> below.
  */
-const TABS: { label: string; path: string }[] = [
+const SEAT_TABS: { label: string; path: string }[] = [
   { label: "Dashboard", path: "/finances" },
   { label: "Reconcile", path: "/finances/reconcile" },
   { label: "Cards", path: "/finances/cards" },
   { label: "Reimbursements", path: "/finances/reimbursements" },
   { label: "Accounts", path: "/finances/accounts" },
+];
+
+const MEMBER_TABS: { label: string; path: string }[] = [
+  { label: "My Card", path: "/finances/cards" },
+  { label: "My Transactions", path: "/finances/my-transactions" },
+  { label: "Reimbursements", path: "/finances/reimbursements" },
 ];
 
 /** Active when the pathname is the tab's route (exact for the index, prefix for
@@ -35,6 +48,12 @@ function isActive(pathname: string, path: string): boolean {
 export default function FinancesLayout() {
   const pathname = usePathname();
   const router = useRouter();
+  // [] (no grants at all) = a no-seat member; undefined while loading, in
+  // which case default to the full seat-holder tab set rather than flashing
+  // the reduced bar for every caller on first paint.
+  const seats = useQuery(api.financeRoles.mySeats, {});
+  const tabs = seats !== undefined && seats.length === 0 ? MEMBER_TABS : SEAT_TABS;
+
   return (
     <View className="flex-1">
       {/* Deployment-wide sandbox-mode banner (shows on every finance tab when on). */}
@@ -45,7 +64,7 @@ export default function FinancesLayout() {
           showsHorizontalScrollIndicator={false}
           contentContainerStyle={{ gap: 8 }}
         >
-          {TABS.map((t) => (
+          {tabs.map((t) => (
             <Pill
               key={t.path}
               label={t.label}

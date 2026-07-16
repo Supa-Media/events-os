@@ -2,9 +2,14 @@
  * FINANCES · Dashboard — the money home, rendered at the desk the caller
  * ACTUALLY sits at. `api.financeRoles.mySeats` resolves their real seats from
  * `financeRoles` grants (+ the superuser allowlist): a central seat renders the
- * org-wide roll-up, a chapter seat renders that chapter's dashboard, and no
- * seat renders the member view (my card / my transactions). There is no
- * "Preview as" role simulation — nobody sees a desk they don't hold.
+ * org-wide roll-up, a chapter seat renders that chapter's dashboard. There is
+ * no "Preview as" role simulation — nobody sees a desk they don't hold.
+ *
+ * No finance seat: the member tab bar (`_layout.tsx`, D3) doesn't even show
+ * this Dashboard tab — a no-seat caller lands on My Card / My Transactions /
+ * Reimbursements instead. This screen still degrades to a bare "My
+ * reimbursements" `MemberView` for a no-seat caller who deep-links here
+ * directly (e.g. an admin/lead-tier caller with no finance grant).
  *
  * Dual-hat holders (a central seat AND ≥1 chapter seat — a transition-period
  * state, e.g. ED + Chapter Director today) get a seat switcher listing their
@@ -297,7 +302,5 @@ function ChapterSection({
 }
 
 function MemberSection() {
-  const transactions = useQuery(api.finances.personTransactions, {});
-  if (transactions === undefined) return <LoadingBlock />;
-  return <MemberView transactions={transactions} />;
+  return <MemberView />;
 }

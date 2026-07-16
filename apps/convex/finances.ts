@@ -49,6 +49,7 @@ import {
   quarterOfMonth,
   formatCents,
   matchesMode,
+  financeRoleAtLeast,
   type BudgetType,
   type BudgetRefKind,
 } from "@events-os/shared";
@@ -63,6 +64,7 @@ import {
   requireFinanceRole,
   requireFinanceManager,
   requireFinanceCentral,
+  getFinanceRole,
   defaultFundId,
 } from "./lib/finance";
 import { requireSuperuser } from "./lib/superuser";
@@ -2079,20 +2081,29 @@ export const teamActuals = query({
   },
 });
 
-/** Transactions attached to a person (defaults to the caller when omitted). */
+/**
+ * Transactions attached to a person (defaults to the caller when omitted).
+ *
+ * A caller with NO finance seat (the member/cardholder case) may always read
+ * their OWN transactions here — this is their "My transactions" surface, not a
+ * finance-role read. Looking up a DIFFERENT person's transactions (the
+ * manager/bookkeeper audit path) still requires at least the viewer role.
+ */
 export const personTransactions = query({
   args: { personId: v.optional(v.id("people")) },
   returns: v.array(txnSummary),
   handler: async (ctx, args) => {
     const chapterId = await readChapterId(ctx);
     if (!chapterId) return [];
-    await requireFinanceRole(ctx, chapterId, "viewer");
+    const self = await viewerPerson(ctx, chapterId);
 
     let personId = args.personId ?? null;
     if (personId) {
+      if (self == null || personId !== self._id) {
+        await requireFinanceRole(ctx, chapterId, "viewer");
+      }
       await requireInCallerChapter(ctx, chapterId, "people", personId, "Person");
     } else {
-      const self = await viewerPerson(ctx, chapterId);
       personId = self?._id ?? null;
     }
     if (!personId) return [];
@@ -3971,6 +3982,13 @@ export const setTransactionStatus = mutation({
   },
 });
 
+/**
+ * Attach a receipt to a transaction. Bookkeeper-or-above may attach to ANY
+ * transaction in the chapter (the reconcile-grid path); a caller with no
+ * finance seat may still attach to their OWN transaction (the member "My
+ * transactions" path) — a cardholder chasing their own receipt shouldn't need
+ * a finance grant to do it.
+ */
 export const attachReceipt = mutation({
   args: {
     transactionId: v.id("transactions"),
@@ -3979,7 +3997,6 @@ export const attachReceipt = mutation({
   returns: v.null(),
   handler: async (ctx, args) => {
     const chapterId = (await requireChapterId(ctx)) as Id<"chapters">;
-    await requireFinanceRole(ctx, chapterId, "bookkeeper");
     const txn = await requireInCallerChapter(
       ctx,
       chapterId,
@@ -3987,6 +4004,15 @@ export const attachReceipt = mutation({
       args.transactionId,
       "Transaction",
     );
+    const access = await getFinanceRole(ctx, chapterId);
+    const isOwnTxn = access.personId != null && access.personId === txn.personId;
+    if (!isOwnTxn && !financeRoleAtLeast(access.role, "bookkeeper")) {
+      throw new ConvexError({
+        code: "FORBIDDEN",
+        message:
+          "Only the transaction's own person or a bookkeeper can attach a receipt.",
+      });
+    }
     await ctx.db.patch(args.transactionId, {
       receiptStorageId: args.storageId,
       // The reminder timeline is moot once a receipt is attached.

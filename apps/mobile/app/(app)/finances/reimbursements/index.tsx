@@ -1,41 +1,142 @@
 /**
- * FINANCES · REIMBURSEMENTS — the in-app manager approval queue (Phase 3).
+ * FINANCES · REIMBURSEMENTS — the in-app manager approval queue (Phase 3), plus
+ * the no-finance-seat member's OWN reimbursements view (D3).
  *
- * Replaces the Phase-1 shell now that `api.reimbursements` is live. Managers see
- * every request submitted through the public /reimburse form: filter by state
- * (All / Pre-approval / Submitted / Paying), expand a request to its line items,
- * and act on it — Reject, Pre-approve, Approve all (`approve({})`), or Approve a
- * subset of lines (`approve({ approvedLineIds })`, partial approval). The
- * backend enforces separation of duties (an approver can't approve their own
- * request); that `SOD_VIOLATION` ConvexError is surfaced via the action runner.
+ * Perspective resolves from `api.financeRoles.mySeats` (WP-0.2's REAL seats),
+ * not the org-chart tier — same fix as the Cards tab (`cards.tsx`), for the
+ * same reason: a tier=admin/lead caller with no financeRoles grant is exactly
+ * the "member" this tab's D3 strip-down is for, and `api.reimbursements.list`
+ * requires at least the viewer finance role, so routing on tier alone landed
+ * them on a query that throws.
  *
- * Guarded admin-or-lead in-screen (mirrors the finances nav gate); the finer
- * finance-role check runs server-side on every query/mutation. Built to
- * `finances.html` (§ Reimbursements) and `docs/plans/finance.md`.
+ * **Seat holder**: the manager approval queue. Every request submitted through
+ * the public /reimburse form: filter by state (All / Pre-approval / Submitted /
+ * Paying), expand a request to its line items, and act on it — Reject,
+ * Pre-approve, Approve all (`approve({})`), or Approve a subset of lines
+ * (`approve({ approvedLineIds })`, partial approval). The backend enforces
+ * separation of duties (an approver can't approve their own request); that
+ * `SOD_VIOLATION` ConvexError is surfaced via the action runner.
+ *
+ * **No finance seat (member)**: just "submit + their own list" — a "Request a
+ * reimbursement" CTA into the existing in-app submit form (`reimbursements/
+ * new.tsx`, untouched — built in #133) and `api.reimbursements.myReimbursements`
+ * (no finance-role gate — it's the caller's own history), the same content the
+ * old Dashboard `MemberView` used to show.
+ *
+ * Built to `finances.html` (§ Reimbursements) and `docs/plans/finance.md`.
  */
 import { useMemo, useState } from "react";
 import { View, Text, Platform, Alert } from "react-native";
+import { useRouter } from "expo-router";
 import { useQuery, useMutation } from "convex/react";
 import { api } from "@events-os/convex/_generated/api";
 import type { Id } from "@events-os/convex/_generated/dataModel";
 import type { FunctionReturnType } from "convex/server";
 import { formatCents } from "@events-os/shared";
 import {
+  Badge,
+  Button,
+  Cell,
   EmptyState,
+  HeaderCell,
   Narrow,
   Pill,
+  Row,
   Screen,
   SectionHeader,
+  Table,
+  TableHeader,
   ToastView,
 } from "../../../../components/ui";
 import { useActionRunner } from "../../../../lib/useActionToast";
+import { FinanceBoundary } from "../../../../components/finance/dashboard/parts";
 import { HowItWorks } from "../../../../components/finance/reimbursements/HowItWorks";
 import { RequestCard } from "../../../../components/finance/reimbursements/RequestCard";
 import {
   FILTERS,
   isOpen,
+  STATUS_BADGE,
+  shortDate,
   type FilterKey,
 } from "../../../../components/finance/reimbursements/helpers";
+
+/** The no-finance-seat member's own reimbursements: submit + their own list.
+ *  Identical content to the old Dashboard `MemberView`'s reimbursements
+ *  section, just promoted to its own full tab now that members have one. */
+function MemberReimbursementsScreen() {
+  const router = useRouter();
+  const reimbursements = useQuery(api.reimbursements.myReimbursements, {});
+
+  return (
+    <Screen maxWidth={1080}>
+      <Narrow>
+        <View className="mb-1">
+          <Text className="font-display text-2xl text-ink">Reimbursements</Text>
+        </View>
+        <Text className="mb-4 text-sm text-muted">
+          Paid for something out of pocket? Submit a request and a finance
+          manager will review and pay it by ACH.
+        </Text>
+
+        <SectionHeader
+          title="My reimbursements"
+          count={reimbursements?.length || undefined}
+          right={
+            <Button
+              title="Request a reimbursement"
+              size="sm"
+              icon="plus"
+              onPress={() => router.push("/finances/reimbursements/new")}
+            />
+          }
+        />
+        {reimbursements === undefined ? null : reimbursements.length === 0 ? (
+          <EmptyState
+            icon="file-text"
+            title="No reimbursements yet"
+            message="Paid for something out of pocket? Submit a request and a finance manager will review it."
+          />
+        ) : (
+          <Table>
+            <TableHeader>
+              <HeaderCell flex={2}>Reference</HeaderCell>
+              <HeaderCell width={110} align="right">
+                Amount
+              </HeaderCell>
+              <HeaderCell width={130} align="right">
+                Status
+              </HeaderCell>
+            </TableHeader>
+            {reimbursements.map((r, i) => {
+              const status = STATUS_BADGE[r.status];
+              return (
+                <Row key={r._id} last={i === reimbursements.length - 1}>
+                  <Cell flex={2}>
+                    <Text className="text-sm font-semibold text-ink" numberOfLines={1}>
+                      {r.reference}
+                    </Text>
+                    <Text className="text-xs text-muted" numberOfLines={1}>
+                      {shortDate(r.submittedDate)} · {r.lineItemCount}{" "}
+                      {r.lineItemCount === 1 ? "line item" : "line items"}
+                    </Text>
+                  </Cell>
+                  <Cell width={110} align="right">
+                    <Text className="text-sm font-semibold text-ink">
+                      {formatCents(r.totalCents)}
+                    </Text>
+                  </Cell>
+                  <Cell width={130} align="right">
+                    <Badge label={r.statusBadge} tone={status.tone} icon={status.icon} />
+                  </Cell>
+                </Row>
+              );
+            })}
+          </Table>
+        )}
+      </Narrow>
+    </Screen>
+  );
+}
 
 /** Cross-platform, non-blocking notice for the info-only payout edge. */
 function notify(title: string, message: string) {
@@ -43,8 +144,10 @@ function notify(title: string, message: string) {
   else Alert.alert(title, message);
 }
 
-export default function ReimbursementsScreen() {
-  const org = useQuery(api.org.nav);
+/** The seat holder's manager approval queue — all the finance-role-gated
+ *  reads/writes live here, only ever mounted once `mySeats` confirms the
+ *  caller holds a finance seat (see `ReimbursementsScreen` below). */
+function ManagerReimbursementsScreen() {
   const [activeFilter, setActiveFilter] = useState<FilterKey>("all");
 
   const filter = FILTERS.find((f) => f.key === activeFilter)!;
@@ -79,24 +182,6 @@ export default function ReimbursementsScreen() {
       totalCents: open.reduce((sum, r) => sum + r.totalCents, 0),
     };
   }, [rows]);
-
-  // In-screen guard: approving reimbursements is a finance-manager action
-  // (admin or lead for now, mirroring the nav gate).
-  const tier = org?.tier;
-  if (org !== undefined && tier !== "admin" && tier !== "lead") {
-    return (
-      <Screen>
-        <Narrow>
-          <EmptyState
-            title="Reimbursements are restricted"
-            message="Only chapter admins and finance managers can review reimbursement requests."
-          />
-        </Narrow>
-      </Screen>
-    );
-  }
-
-  if (org === undefined) return <Screen loading />;
 
   const handleApprove = (
     id: Id<"reimbursementRequests">,
@@ -198,5 +283,34 @@ export default function ReimbursementsScreen() {
       </Screen>
       <ToastView toast={toast} onDismiss={dismiss} />
     </>
+  );
+}
+
+function NoFinanceAccess() {
+  return (
+    <EmptyState
+      icon="lock"
+      title="Finance access needed"
+      message="Ask a finance manager to grant you access to the reimbursements queue."
+    />
+  );
+}
+
+/** Perspective resolves from the caller's REAL finance seats (D3) — a seat
+ *  holder gets the manager approval queue, no seat gets their own submit +
+ *  history view. See the file-header comment for the tier-vs-seat rationale. */
+export default function ReimbursementsScreen() {
+  const seats = useQuery(api.financeRoles.mySeats, {});
+
+  if (seats === undefined) return <Screen loading />;
+
+  if (seats.length === 0) {
+    return <MemberReimbursementsScreen />;
+  }
+
+  return (
+    <FinanceBoundary fallback={<NoFinanceAccess />}>
+      <ManagerReimbursementsScreen />
+    </FinanceBoundary>
   );
 }
