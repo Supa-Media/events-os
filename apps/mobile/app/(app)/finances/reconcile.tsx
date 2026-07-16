@@ -118,7 +118,7 @@ function ReconcileGrid() {
   const budgets = useQuery(api.finances.listBudgets) ?? [];
   // Link picker sources — "what was it for": an event or a project.
   const events = useQuery(api.events.list, { scope: "all" }) ?? [];
-  const projects = useQuery(api.projects.list) ?? [];
+  const projects = useQuery(api.projects.list, {}) ?? [];
 
   const bulkCategorize = useMutation(api.finances.bulkCategorize);
   const setStatus = useMutation(api.finances.setTransactionStatus);

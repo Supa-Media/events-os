@@ -39,6 +39,7 @@ import {
   requireOwned,
   getChapterIdOrNull,
 } from "./lib/context";
+import { requireCentralReach } from "./lib/centralReach";
 import {
   instantiateEvent,
   eventActiveModules,
@@ -1203,22 +1204,59 @@ async function enrichEvent(
 }
 
 /**
+ * Resolve which chapter a peek-capable Events read should scope to: the
+ * caller's own chapter when `requestedChapterId` is absent (or equals it); a
+ * DIFFERENT chapter requires the caller have central (org-wide) reach through
+ * their OWN chapter — mirrors `finances.dashboardChapter`'s central drill-down
+ * gate exactly (`lib/centralReach.ts` reuses the same underlying check, so
+ * Events doesn't invent a second central-reach concept).
+ *
+ * Returns `null` when there's nothing to scope to (no `requestedChapterId`
+ * and no home chapter) — callers return an empty result, not a throw. Throws
+ * `NO_CHAPTER` when a foreign `requestedChapterId` is passed but the caller
+ * has no home chapter to check central reach through (never falls back to
+ * checking central-ness against the TARGET chapter).
+ */
+async function resolvePeekChapterId(
+  ctx: QueryCtx,
+  requestedChapterId: Id<"chapters"> | undefined,
+): Promise<Id<"chapters"> | null> {
+  const ownChapterId = (await getChapterIdOrNull(ctx)) as Id<"chapters"> | null;
+  const chapterId = requestedChapterId ?? ownChapterId;
+  if (!chapterId) return null;
+  if (requestedChapterId != null && requestedChapterId !== ownChapterId) {
+    if (!ownChapterId) {
+      throw new ConvexError({
+        code: "NO_CHAPTER",
+        message: "You don't belong to a chapter yet.",
+      });
+    }
+    await requireCentralReach(ctx, ownChapterId);
+  }
+  return chapterId;
+}
+
+/**
  * Current events with readiness + blocker count, for the Events landing screen.
  * "Current" includes the 2-week wrap-up grace after an event's date (so a
  * just-finished event with retro tasks still shows) — only truly PAST events
  * (`isPastEvent`) drop out, into `past`.
+ *
+ * `chapterId` optionally peeks into a DIFFERENT chapter than the caller's own
+ * (central reach required — see `resolvePeekChapterId`); absent (or the
+ * caller's own chapter) behaves exactly as before.
  */
 export const current = query({
-  args: {},
-  handler: async (ctx) => {
-    const chapterId = await getChapterIdOrNull(ctx);
+  args: {
+    chapterId: v.optional(v.id("chapters")),
+  },
+  handler: async (ctx, args) => {
+    const chapterId = await resolvePeekChapterId(ctx, args.chapterId);
     if (!chapterId) return [];
     const now = Date.now();
     const all = await ctx.db
       .query("events")
-      .withIndex("by_chapter", (q) =>
-        q.eq("chapterId", chapterId as Id<"chapters">),
-      )
+      .withIndex("by_chapter", (q) => q.eq("chapterId", chapterId))
       .collect();
     // Training sandboxes never appear on the operations landing screen.
     const active = all.filter(
@@ -1240,11 +1278,17 @@ export const current = query({
  * "Past events" section on the Events tab. Bounded to the most recent 60 so an
  * old chapter's whole history never streams to the client. Same enriched card
  * shape as `current`.
+ *
+ * `chapterId` optionally peeks into a DIFFERENT chapter than the caller's own
+ * (central reach required — see `resolvePeekChapterId`); absent (or the
+ * caller's own chapter) behaves exactly as before.
  */
 export const past = query({
-  args: {},
-  handler: async (ctx) => {
-    const chapterId = await getChapterIdOrNull(ctx);
+  args: {
+    chapterId: v.optional(v.id("chapters")),
+  },
+  handler: async (ctx, args) => {
+    const chapterId = await resolvePeekChapterId(ctx, args.chapterId);
     if (!chapterId) return [];
     const now = Date.now();
     // Range-scan the index straight to past dates (eventDate < now - grace),
@@ -1255,7 +1299,7 @@ export const past = query({
     const rows = await ctx.db
       .query("events")
       .withIndex("by_chapter_date", (q) =>
-        q.eq("chapterId", chapterId as Id<"chapters">).lt("eventDate", cutoff),
+        q.eq("chapterId", chapterId).lt("eventDate", cutoff),
       )
       .order("desc")
       .take(120);

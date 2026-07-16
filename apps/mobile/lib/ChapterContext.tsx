@@ -20,20 +20,36 @@
  * (one chapter seat, no central, no peek reach) gets a fixed context and no
  * pill at all — see `showSwitcher`.
  *
- * SCOPE (WP-S, see the PR for the full writeup): only the Finance dashboard
- * actually reads this context to scope a query — `finances.dashboardChapter`'s
- * optional `chapterId` (the existing #131 central drill-down). Events and
- * Projects have NO org-level/central access model at all: `events.current`/
- * `events.past` and `projects.list` are hard-scoped server-side to the
- * caller's OWN chapter with no chapterId argument whatsoever, unlike
- * Finance's central/chapter split (`isChapterAdmin`/`canViewChapterWork` are
- * strictly per-chapter — there's no "central admin" concept to hang a foreign-
- * chapter read on). The global peek banner still renders over those screens
- * (it's shell chrome), but their data does NOT change — they keep showing the
- * caller's home chapter regardless of the picked context. Extending peek to
- * them needs a real product/authz decision (what does "central" even mean for
- * an event?), which is out of scope here — flagged for the owner instead of
- * invented.
+ * SCOPE (WP-S, see the PR for the full writeup; extended by the Events/
+ * Projects peek follow-up):
+ *  - Finance dashboard: `finances.dashboardChapter`'s optional `chapterId`
+ *    (the original #131 central drill-down).
+ *  - Events landing screen: `events.current`/`events.past` now take the same
+ *    kind of optional, central-gated `chapterId` (`lib/centralReach.ts`
+ *    reuses the SAME central-reach check `dashboardChapter` and
+ *    `financeRoles.listChaptersForPeek` use — no new role concept). Write
+ *    affordances ("New event") hide while peeking, and event DETAIL
+ *    navigation is disabled while peeking — an event's other tabs (roles,
+ *    modules, ticketing, budget, gear) are hard-scoped to the caller's OWN
+ *    chapter via `requireOwned` throughout the app; making the full detail
+ *    screen peek-safe would mean adding a central-reach bypass to that one
+ *    foundational, widely shared primitive, well beyond what a read-only
+ *    events peek calls for.
+ *  - Projects: `projects.list`/`projects.get` accept the same optional
+ *    central-gated `chapterId` server-side (so the capability + its authz
+ *    are tested), but NO screen wires it up yet — there is no standalone
+ *    "Projects" tab. Projects render inside the Work tab (`/team`) folded
+ *    into the org-hierarchy view (manager subtrees, chapter-admin-only
+ *    unassigned-work triage via `org.overview`), which has no foreign-
+ *    chapter equivalent for a peeking central caller (they hold no roster
+ *    row, and "admin"/"manager" is itself per-chapter) — extending peek
+ *    there is a real product/UI decision, not a mechanical parameter add,
+ *    so it's flagged for the owner instead of invented. `/team` keeps the
+ *    peek banner's read-only-elsewhere qualifier.
+ *
+ * Every other tab (Briefing, People, Songs, Inventory, Academy) is unchanged:
+ * hard-scoped server-side to the caller's own chapter, no ChapterContext
+ * usage at all.
  */
 import {
   createContext,
