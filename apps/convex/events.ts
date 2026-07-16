@@ -51,6 +51,7 @@ import {
 } from "./lib/readiness";
 import { manageablePersonIds } from "./lib/org";
 import { paidTotalForEvent } from "./engagements";
+import { createEventBudget, hasBudgetForRef } from "./finances";
 
 const statusUnion = v.union(
   v.literal("planning"),
@@ -1050,7 +1051,7 @@ export const updateDetails = mutation({
     ownerPersonId: v.optional(v.union(v.id("people"), v.null())),
   },
   handler: async (ctx, { eventId, ...patch }) => {
-    await requireEvent(ctx, eventId);
+    const event = await requireEvent(ctx, eventId);
     if (patch.ownerPersonId) {
       await requireOwned(ctx, "people", patch.ownerPersonId, "Person");
     }
@@ -1062,6 +1063,37 @@ export const updateDetails = mutation({
     if (patch.ownerPersonId !== undefined)
       fields.ownerPersonId = patch.ownerPersonId ?? undefined;
     await ctx.db.patch(eventId, fields);
+
+    // WP-3.4 edit-path trigger, events parity (owner rule: "budgets summoned
+    // by dollar entry") — entering a POSITIVE budget on a non-training event
+    // that had none (unset, 0, or negative) summons its budget now, same
+    // shape/tag as the create-time hook, unless one already exists (`by_ref`
+    // check — the create hook or a backfill run may have already made one).
+    // Clearing/lowering the budget never deletes an existing budget; see
+    // `removeEmptyAutoBudgets` for the separate ops cleanup of pre-rule
+    // zero-amount budgets.
+    if (
+      !event.isTraining &&
+      patch.budget != null &&
+      patch.budget > 0 &&
+      (event.budget == null || event.budget <= 0)
+    ) {
+      const alreadyHasBudget = await hasBudgetForRef(ctx, "event", eventId);
+      if (!alreadyHasBudget) {
+        const userId = (await requireUserId(ctx)) as Id<"users">;
+        await createEventBudget(
+          ctx,
+          {
+            _id: eventId,
+            chapterId: event.chapterId,
+            name: patch.name !== undefined && patch.name.trim() ? patch.name : event.name,
+            eventDate: event.eventDate,
+            budget: patch.budget,
+          },
+          userId,
+        );
+      }
+    }
     return eventId;
   },
 });

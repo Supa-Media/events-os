@@ -230,6 +230,12 @@ new Chapter Director, empty the dual-hat seats. Lives in `docs/plans/`.
 - Same component, parent = project. Auto-create a one_time budget per project (mirror #125's
   per-event backfill + a create-time hook). Project budgets tag-linkable (e.g. "experimental")
   for rollups — keep tags as-is, no new tag investment (owner: "budgets down pat before tags").
+- **Owner rule: budgets only exist when money does.** Many projects (and events) are
+  work-tracking only — time, $0 — so no budget object is created unless a positive dollar
+  amount is entered, whether at creation or later (entering a number on a previously $0/unset
+  project or event summons its budget then). Zero-budget projects/events stay budget-free; a
+  one-off ops cleanup (`removeEmptyAutoBudgets`) removes the zero-amount budgets the pre-rule
+  backfills created. Events get the identical create-time hook + rule (parity with projects).
 
 **WP-3.5 · Chapter budget template ("one repeatable structure any city can carry")**
 - Stamp a new chapter with the standard recurring budgets from the playbook's operating table
