@@ -27,7 +27,12 @@ import {
   viewerPerson,
   canViewChapterWork,
 } from "./lib/org";
-import { projectBudgetLabel, autoTagProjectBudget } from "./finances";
+import {
+  projectBudgetLabel,
+  autoTagProjectBudget,
+  hasBudgetForRef,
+  ROLLUP_SCAN_LIMIT,
+} from "./finances";
 
 const projectStatus = v.union(...PROJECT_STATUSES.map((s) => v.literal(s)));
 
@@ -401,13 +406,17 @@ export const removeComment = mutation({
 
 /**
  * Create-time hook (WP-3.4): give a brand-new project its own one_time budget
- * immediately, seeded from `budgetUsd` (0 when omitted — editable later;
- * `budgetUsd` itself is left untouched, the Estimated-vs-Actual invariant).
- * Unlike events — which only ever get a budget via
- * `finances.backfillEventBudgets`; `instantiateEvent` never touches the
- * `budgets` table — WP-3.4 explicitly asks for a create-time hook here, so a
- * project never has to wait on a backfill run to show up in the finance
- * dashboard's "Events & Projects" section.
+ * immediately, seeded from `budgetUsd`. Owner rule ("budgets only exist when
+ * money does"): callers only invoke this when `budgetUsd > 0` — many projects
+ * are work-tracking only (time, $0) and get no budget object at all; see the
+ * gate in `create` and the edit-path trigger in `update` below. `budgetUsd`
+ * itself is left untouched (the Estimated-vs-Actual invariant).
+ * Unlike events — which only ever got a budget via
+ * `finances.backfillEventBudgets` before this PR; `instantiateEvent` now has
+ * its own matching create-time hook (events parity, gated the same way) —
+ * WP-3.4 explicitly asks for a create-time hook here, so a project never has
+ * to wait on a backfill run to show up in the finance dashboard's "Events &
+ * Projects" section.
  *
  * Mirrors `runBackfillProjectBudgets`'s shape (`type:"one_time"`,
  * `refKind:"project"`, `cadence:"per_instance"`, the "Projects" catch-all tag
@@ -436,7 +445,7 @@ async function createProjectBudget(
     await ctx.db
       .query("projects")
       .withIndex("by_chapter", (q) => q.eq("chapterId", project.chapterId))
-      .take(1000)
+      .take(ROLLUP_SCAN_LIMIT)
   ).filter((p) => p.name === project.name);
   const sameMonthCount = siblings.filter((p) => {
     const sp = easternParts(p.startDate ?? p.createdAt);
@@ -444,7 +453,9 @@ async function createProjectBudget(
   }).length;
   const label = projectBudgetLabel(project.name, parts, siblings.length, sameMonthCount);
 
-  // budgetUsd is ESTIMATED dollars; finance money is integer cents.
+  // budgetUsd is ESTIMATED dollars; finance money is integer cents. Callers
+  // only reach here when budgetUsd > 0 (the owner rule's gate), so this is
+  // always a positive amount.
   const amountCents =
     project.budgetUsd != null ? Math.round(project.budgetUsd * 100) : 0;
   const budgetId = await ctx.db.insert("budgets", {
@@ -462,6 +473,9 @@ async function createProjectBudget(
   });
   const seen = new Set<string>();
   await autoTagProjectBudget(ctx, budgetId, project.chapterId, seen, userId);
+  // WP-3.1: the "break it down" categorization panel (per-category budget
+  // lines under this budget) hooks in here — this budget object is the
+  // container it fills in.
 }
 
 /** Create a project (optionally owned, nested, and/or event-backed). */
@@ -510,18 +524,24 @@ export const create = mutation({
       createdAt: now,
       updatedAt: now,
     });
-    await createProjectBudget(
-      ctx,
-      {
-        _id: projectId,
-        chapterId: chapterId as Id<"chapters">,
-        name: args.name,
-        startDate: args.startDate,
-        createdAt: now,
-        budgetUsd: args.budgetUsd,
-      },
-      userId as Id<"users">,
-    );
+    // Owner rule ("budgets only exist when money does"): many projects are
+    // work-tracking only (time, $0) — only summon a budget object when a
+    // positive dollar amount was actually entered. A zero/absent/negative
+    // budgetUsd gets no budget at all.
+    if (args.budgetUsd != null && args.budgetUsd > 0) {
+      await createProjectBudget(
+        ctx,
+        {
+          _id: projectId,
+          chapterId: chapterId as Id<"chapters">,
+          name: args.name,
+          startDate: args.startDate,
+          createdAt: now,
+          budgetUsd: args.budgetUsd,
+        },
+        userId as Id<"users">,
+      );
+    }
     await logProjectUpdate(
       ctx,
       { _id: projectId, chapterId: chapterId as Id<"chapters"> },
@@ -691,6 +711,44 @@ export const update = mutation({
     }
     fields.updatedAt = Date.now();
     await ctx.db.patch(projectId, fields);
+
+    // WP-3.4 edit-path trigger (owner rule: "budgets summoned by dollar
+    // entry") — entering a POSITIVE budgetUsd on a project that had none
+    // (unset, 0, or negative) summons its budget now, same shape/tag as the
+    // create-time hook, unless one already exists (`by_ref` check — a create
+    // hook or a backfill run may have already made one; a project that
+    // pre-dates the owner rule can also already carry a zero-amount budget
+    // from before the fix). Clearing/lowering budgetUsd never deletes an
+    // existing budget — money already tracked against it stays; see
+    // `removeEmptyAutoBudgets` for the separate ops cleanup of pre-rule
+    // zero-amount budgets.
+    if (
+      patch.budgetUsd != null &&
+      patch.budgetUsd > 0 &&
+      (project.budgetUsd == null || project.budgetUsd <= 0)
+    ) {
+      const alreadyHasBudget = await hasBudgetForRef(ctx, "project", projectId);
+      if (!alreadyHasBudget) {
+        const budgetUserId = (await requireUserId(ctx)) as Id<"users">;
+        await createProjectBudget(
+          ctx,
+          {
+            _id: projectId,
+            chapterId: project.chapterId,
+            name:
+              patch.name !== undefined && patch.name.trim()
+                ? patch.name.trim()
+                : project.name,
+            startDate:
+              patch.startDate !== undefined ? (patch.startDate ?? undefined) : project.startDate,
+            createdAt: project.createdAt,
+            budgetUsd: patch.budgetUsd,
+          },
+          budgetUserId,
+        );
+      }
+    }
+
     // Record the audit trail last, so a rejected patch never leaves a log.
     for (const entry of logs) {
       await logProjectUpdate(ctx, project, author, entry.field, entry.summary);

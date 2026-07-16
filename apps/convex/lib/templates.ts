@@ -22,6 +22,7 @@ import {
 /** A role seed: a stable key + display label + optional description. */
 type RoleSeedLike = { key: string; label: string; description?: string };
 import { findUnlinkedPersonByLoginEmail, claimFields } from "./people";
+import { createEventBudget } from "../finances";
 
 /** Kebab-case slug from a display name. */
 export function toSlug(name: string): string {
@@ -446,6 +447,27 @@ export async function instantiateEvent(
     createdAt: now,
     updatedAt: now,
   })) as Id<"events">;
+
+  // WP-3.4 events parity (owner rule: "budgets only exist when money does") —
+  // same create-time hook `projects.create` gets: a real event with a
+  // positive starting budget gets its one_time budget immediately instead of
+  // waiting on `finances.backfillEventBudgets`. Academy sandboxes
+  // (`isTraining`) and events with no positive `budget` get no budget object
+  // at all — mirrors the backfill's own skip rules exactly (reuses
+  // `createEventBudget`, which reuses `eventBudgetLabel`/`autoTagEventBudget`).
+  if (!opts.isTraining && opts.budget != null && opts.budget > 0) {
+    await createEventBudget(
+      ctx,
+      {
+        _id: eventId,
+        chapterId: opts.chapterId,
+        name: opts.name,
+        eventDate: opts.eventDate,
+        budget: opts.budget,
+      },
+      opts.userId,
+    );
+  }
 
   // Clone the template's roles onto the event; remap item roleId via this map.
   const roleIdMap = await cloneRolesToEvent(ctx, opts.eventType._id, eventId);

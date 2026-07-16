@@ -3,6 +3,7 @@ import { describe, expect, test } from "vitest";
 import { newT, run, setupChapter, type ChapterSetup } from "./setup.helpers";
 import { api, internal } from "../_generated/api";
 import type { Id } from "../_generated/dataModel";
+import { instantiateEvent } from "../lib/templates";
 
 /**
  * `backfillEventBudgets` (internal, no-auth): create a one_time budget for every
@@ -126,16 +127,30 @@ describe("backfillEventBudgets (internal)", () => {
     expect(templateTag?.name).toBe(typeName);
   });
 
-  test("uses amountCents 0 when the event carries no budget", async () => {
+  test("owner rule: skips an event with no budget — no budget object at all", async () => {
     const t = newT();
     const s = await setupChapter(t);
     const { eventId } = await seedEvent(s, { budget: undefined });
 
     const result = await t.mutation(internal.finances.backfillEventBudgets, {});
-    expect(result.created).toBe(1);
+    expect(result.created).toBe(0);
+    expect(result.skipped).toBe(1);
 
-    const [row] = await eventBudgetsFor(s, eventId);
-    expect(row.budget.amountCents).toBe(0);
+    expect(await eventBudgetsFor(s, eventId)).toEqual([]);
+  });
+
+  test("owner rule: skips an event with budget 0 or negative — no budget object", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const { eventId: zeroId } = await seedEvent(s, { name: "Zero Budget Event", budget: 0 });
+    const { eventId: negId } = await seedEvent(s, { name: "Negative Budget Event", budget: -20 });
+
+    const result = await t.mutation(internal.finances.backfillEventBudgets, {});
+    expect(result.created).toBe(0);
+    expect(result.skipped).toBe(2);
+
+    expect(await eventBudgetsFor(s, zeroId)).toEqual([]);
+    expect(await eventBudgetsFor(s, negId)).toEqual([]);
   });
 
   test("is idempotent — a second run creates nothing and skips the event", async () => {
@@ -434,5 +449,159 @@ describe("createBudget: event budgets default their label to the event name", ()
 
     const budget = await run(s.t, (ctx) => ctx.db.get(budgetId));
     expect(budget?.label).toBe("VIP night");
+  });
+});
+
+describe("instantiateEvent: events-parity create-time hook (WP-3.4)", () => {
+  test("createFromTemplate with a positive budget summons the event's budget immediately", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const eventTypeId = (await s.as.mutation(api.eventTypes.create, {
+      name: "Spring Retreat Template",
+    })) as Id<"eventTypes">;
+
+    const eventId = (await s.as.mutation(api.events.createFromTemplate, {
+      eventTypeId,
+      name: "Spring Retreat",
+      eventDate: tsInMonth(2026, 5),
+      budget: 600,
+    })) as Id<"events">;
+
+    const [row] = await eventBudgetsFor(s, eventId);
+    expect(row).toBeDefined();
+    expect(row.budget.type).toBe("one_time");
+    expect(row.budget.refKind).toBe("event");
+    expect(row.budget.amountCents).toBe(60000);
+    expect(row.budget.label).toBe("Spring Retreat");
+    expect(row.tagKinds).toEqual(["events", "template"]);
+  });
+
+  test("owner rule: no budget, 0, or negative given at creation → no budget object", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const eventTypeId = (await s.as.mutation(api.eventTypes.create, {
+      name: "Casual Meetup Template",
+    })) as Id<"eventTypes">;
+
+    const noBudgetId = (await s.as.mutation(api.events.createFromTemplate, {
+      eventTypeId,
+      name: "No Budget Meetup",
+      eventDate: tsInMonth(2026, 6),
+    })) as Id<"events">;
+    const zeroId = (await s.as.mutation(api.events.createFromTemplate, {
+      eventTypeId,
+      name: "Zero Budget Meetup",
+      eventDate: tsInMonth(2026, 6),
+      budget: 0,
+    })) as Id<"events">;
+
+    expect(await eventBudgetsFor(s, noBudgetId)).toEqual([]);
+    expect(await eventBudgetsFor(s, zeroId)).toEqual([]);
+  });
+
+  test("isTraining events never get a budget, even with a positive budget (Academy sandbox)", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const eventTypeId = (await s.as.mutation(api.eventTypes.create, {
+      name: "Academy Template",
+    })) as Id<"eventTypes">;
+
+    const eventId = await run(s.t, async (ctx) => {
+      const eventType = await ctx.db.get(eventTypeId);
+      return await instantiateEvent(ctx, {
+        eventType,
+        chapterId: s.chapterId,
+        userId: s.userId,
+        name: "Academy Sandbox Event",
+        eventDate: tsInMonth(2026, 5),
+        budget: 500,
+        isTraining: true,
+      });
+    });
+
+    expect(await eventBudgetsFor(s, eventId)).toEqual([]);
+  });
+});
+
+describe("events.updateDetails: edit-path trigger summons a budget on 0 → positive budget", () => {
+  test("editing a budget-less event to a positive budget summons its budget", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const { eventId } = await seedEvent(s, { name: "Starts Free", budget: undefined });
+    expect(await eventBudgetsFor(s, eventId)).toEqual([]);
+
+    await s.as.mutation(api.events.updateDetails, { eventId, budget: 350 });
+
+    const [row] = await eventBudgetsFor(s, eventId);
+    expect(row).toBeDefined();
+    expect(row.budget.amountCents).toBe(35000);
+    expect(row.budget.label).toBe("Starts Free");
+  });
+
+  test("raising budget from 0 to positive also summons the budget", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const { eventId } = await seedEvent(s, { name: "Starts At Zero", budget: 0 });
+    expect(await eventBudgetsFor(s, eventId)).toEqual([]);
+
+    await s.as.mutation(api.events.updateDetails, { eventId, budget: 250 });
+
+    const [row] = await eventBudgetsFor(s, eventId);
+    expect(row.budget.amountCents).toBe(25000);
+  });
+
+  test("training events never summon a budget via updateDetails, even given a positive budget", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const { eventId } = await seedEvent(s, {
+      name: "Academy Practice",
+      isTraining: true,
+      budget: undefined,
+    });
+
+    await s.as.mutation(api.events.updateDetails, { eventId, budget: 999 });
+
+    expect(await eventBudgetsFor(s, eventId)).toEqual([]);
+  });
+
+  test("clearing budget back to null never deletes an existing budget", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const { eventId } = await seedEvent(s, { name: "Funded Then Cleared", budget: 100 });
+    await t.mutation(internal.finances.backfillEventBudgets, {});
+    expect((await eventBudgetsFor(s, eventId)).length).toBe(1);
+
+    await s.as.mutation(api.events.updateDetails, { eventId, budget: null });
+
+    // The budget object stays; only the event's own `budget` estimate clears.
+    expect((await eventBudgetsFor(s, eventId)).length).toBe(1);
+    const ev = await run(s.t, (ctx) => ctx.db.get(eventId));
+    expect(ev?.budget).toBeUndefined();
+  });
+
+  test("does not create a duplicate budget when one already exists (by_ref check)", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const { eventId } = await seedEvent(s, { name: "Pre-existing Event Budget", budget: undefined });
+    // Simulate an event that pre-dates the owner rule: a zero-amount budget
+    // already attached (e.g. from the pre-fix #125 backfill).
+    await run(s.t, (ctx) =>
+      ctx.db.insert("budgets", {
+        chapterId: s.chapterId,
+        amountCents: 0,
+        type: "one_time",
+        refKind: "event",
+        scopeRefId: eventId,
+        cadence: "per_instance",
+        year: 2026,
+        createdAt: Date.now(),
+      }),
+    );
+
+    await s.as.mutation(api.events.updateDetails, { eventId, budget: 700 });
+
+    const rows = await eventBudgetsFor(s, eventId);
+    expect(rows.length).toBe(1);
+    expect(rows[0].budget.amountCents).toBe(0);
   });
 });

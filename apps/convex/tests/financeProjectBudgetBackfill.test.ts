@@ -109,16 +109,30 @@ describe("backfillProjectBudgets (internal)", () => {
     expect(row.tagNames).toEqual(["Projects"]);
   });
 
-  test("uses amountCents 0 when the project carries no budgetUsd", async () => {
+  test("owner rule: skips a project with no budgetUsd — no budget object at all", async () => {
     const t = newT();
     const s = await setupChapter(t);
     const projectId = await seedProject(s, { budgetUsd: undefined });
 
     const result = await t.mutation(internal.finances.backfillProjectBudgets, {});
-    expect(result.created).toBe(1);
+    expect(result.created).toBe(0);
+    expect(result.skipped).toBe(1);
 
-    const [row] = await budgetsFor(s, projectId);
-    expect(row.budget.amountCents).toBe(0);
+    expect(await budgetsFor(s, projectId)).toEqual([]);
+  });
+
+  test("owner rule: skips a project with budgetUsd 0 or negative — no budget object", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const zeroId = await seedProject(s, { name: "Zero Budget", budgetUsd: 0 });
+    const negId = await seedProject(s, { name: "Negative Budget", budgetUsd: -50 });
+
+    const result = await t.mutation(internal.finances.backfillProjectBudgets, {});
+    expect(result.created).toBe(0);
+    expect(result.skipped).toBe(2);
+
+    expect(await budgetsFor(s, zeroId)).toEqual([]);
+    expect(await budgetsFor(s, negId)).toEqual([]);
   });
 
   test("falls back to createdAt for year/month when startDate is unset", async () => {
@@ -129,6 +143,7 @@ describe("backfillProjectBudgets (internal)", () => {
         chapterId: s.chapterId,
         name: "No Start Date",
         status: "not_started",
+        budgetUsd: 150,
         createdBy: s.userId,
         createdAt: tsInMonth(2026, 9),
         updatedAt: tsInMonth(2026, 9),
@@ -349,7 +364,7 @@ describe("projects.create: auto-creates a one_time budget (WP-3.4 create-time ho
     expect(row.tagNames).toEqual(["Projects"]);
   });
 
-  test("no budgetUsd given → amountCents 0, editable later", async () => {
+  test("owner rule: no budgetUsd given → no budget object at all (work-tracking-only project)", async () => {
     const t = newT();
     const s = await setupChapter(t);
 
@@ -357,8 +372,65 @@ describe("projects.create: auto-creates a one_time budget (WP-3.4 create-time ho
       name: "TBD Project",
     })) as Id<"projects">;
 
-    const [row] = await budgetsFor(s, projectId);
-    expect(row.budget.amountCents).toBe(0);
+    expect(await budgetsFor(s, projectId)).toEqual([]);
+  });
+
+  test("owner rule: budgetUsd 0 or negative → no budget object", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+
+    const zeroId = (await s.as.mutation(api.projects.create, {
+      name: "Zero Dollar",
+      budgetUsd: 0,
+    })) as Id<"projects">;
+    const negId = (await s.as.mutation(api.projects.create, {
+      name: "Negative Dollar",
+      budgetUsd: -100,
+    })) as Id<"projects">;
+
+    expect(await budgetsFor(s, zeroId)).toEqual([]);
+    expect(await budgetsFor(s, negId)).toEqual([]);
+  });
+
+  test("a plain member (no admin, no finance role) creates a project: positive budget summons a budget, $0 does not", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    // A non-admin roster member, linked to a `people` row so `requireProjectEditor`
+    // accepts them without falling back to admin rights.
+    const memberUserId = await run(s.t, async (ctx) => {
+      const userId = await ctx.db.insert("users", { email: "member@publicworship.life" });
+      await ctx.db.insert("userChapters", {
+        userId,
+        chapterId: s.chapterId,
+        role: "member",
+        isActive: true,
+        joinedAt: Date.now(),
+      });
+      await ctx.db.insert("people", {
+        chapterId: s.chapterId,
+        userId,
+        name: "Plain Member",
+        status: "active",
+        isTeamMember: true,
+        createdAt: Date.now(),
+      });
+      return userId;
+    });
+    const asMember = s.t.withIdentity({ subject: `${memberUserId}|session`, issuer: "test" });
+
+    const fundedId = (await asMember.mutation(api.projects.create, {
+      name: "Member-Funded Project",
+      budgetUsd: 300,
+    })) as Id<"projects">;
+    const [row] = await budgetsFor(s, fundedId);
+    expect(row).toBeDefined();
+    expect(row.budget.amountCents).toBe(30000);
+
+    const freeId = (await asMember.mutation(api.projects.create, {
+      name: "Member Work-Tracking Project",
+      budgetUsd: 0,
+    })) as Id<"projects">;
+    expect(await budgetsFor(s, freeId)).toEqual([]);
   });
 
   test("rounds a fractional budgetUsd to the nearest integer cent", async () => {
@@ -415,10 +487,11 @@ describe("projects.create: auto-creates a one_time budget (WP-3.4 create-time ho
     expect(aprRow.budget.label).toBe("Recurring Effort · April 2026"); // sees the March sibling
   });
 
-  test("a sub-project (parentProjectId set) also gets its own budget", async () => {
+  test("a sub-project (parentProjectId set) gets its own budget independent of its parent", async () => {
     const t = newT();
     const s = await setupChapter(t);
 
+    // Parent is work-tracking-only (no budgetUsd) — owner rule: no budget.
     const parentId = (await s.as.mutation(api.projects.create, {
       name: "Parent Effort",
     })) as Id<"projects">;
@@ -428,8 +501,108 @@ describe("projects.create: auto-creates a one_time budget (WP-3.4 create-time ho
       budgetUsd: 50,
     })) as Id<"projects">;
 
-    expect((await budgetsFor(s, parentId)).length).toBe(1);
+    expect(await budgetsFor(s, parentId)).toEqual([]);
     const [childRow] = await budgetsFor(s, childId);
     expect(childRow.budget.amountCents).toBe(5000);
+  });
+});
+
+describe("projects.update: edit-path trigger summons a budget on 0 → positive budgetUsd", () => {
+  test("editing a work-tracking-only project to a positive budgetUsd summons its budget", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const projectId = (await s.as.mutation(api.projects.create, {
+      name: "Starts Free",
+    })) as Id<"projects">;
+    expect(await budgetsFor(s, projectId)).toEqual([]);
+
+    await s.as.mutation(api.projects.update, { projectId, budgetUsd: 400 });
+
+    const [row] = await budgetsFor(s, projectId);
+    expect(row).toBeDefined();
+    expect(row.budget.type).toBe("one_time");
+    expect(row.budget.refKind).toBe("project");
+    expect(row.budget.amountCents).toBe(40000);
+    expect(row.budget.label).toBe("Starts Free");
+    expect(row.tagNames).toEqual(["Projects"]);
+  });
+
+  test("raising budgetUsd from 0 to positive also summons the budget", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const projectId = (await s.as.mutation(api.projects.create, {
+      name: "Starts At Zero",
+      budgetUsd: 0,
+    })) as Id<"projects">;
+    expect(await budgetsFor(s, projectId)).toEqual([]);
+
+    await s.as.mutation(api.projects.update, { projectId, budgetUsd: 250 });
+
+    const [row] = await budgetsFor(s, projectId);
+    expect(row.budget.amountCents).toBe(25000);
+  });
+
+  test("clearing budgetUsd back to null never deletes an existing budget", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const projectId = (await s.as.mutation(api.projects.create, {
+      name: "Funded Then Cleared",
+      budgetUsd: 100,
+    })) as Id<"projects">;
+    expect((await budgetsFor(s, projectId)).length).toBe(1);
+
+    await s.as.mutation(api.projects.update, { projectId, budgetUsd: null });
+
+    // The budget object stays (money already tracked against it doesn't
+    // vanish); only the project's own `budgetUsd` estimate is cleared.
+    expect((await budgetsFor(s, projectId)).length).toBe(1);
+    const project = await run(s.t, (ctx) => ctx.db.get(projectId));
+    expect(project?.budgetUsd).toBeUndefined();
+  });
+
+  test("does not create a duplicate budget when one already exists (by_ref check)", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const projectId = (await s.as.mutation(api.projects.create, {
+      name: "Pre-existing Budget",
+    })) as Id<"projects">;
+    // Simulate a project that pre-dates the owner rule: a zero-amount budget
+    // already attached, seeded directly (bypassing the create hook).
+    await run(s.t, (ctx) =>
+      ctx.db.insert("budgets", {
+        chapterId: s.chapterId,
+        amountCents: 0,
+        type: "one_time",
+        refKind: "project",
+        scopeRefId: projectId,
+        cadence: "per_instance",
+        year: 2026,
+        createdAt: Date.now(),
+      }),
+    );
+
+    await s.as.mutation(api.projects.update, { projectId, budgetUsd: 500 });
+
+    const rows = await budgetsFor(s, projectId);
+    expect(rows.length).toBe(1); // no duplicate created
+    expect(rows[0].budget.amountCents).toBe(0); // the pre-existing one, untouched
+  });
+
+  test("editing an already-funded project's amount doesn't re-trigger the hook", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const projectId = (await s.as.mutation(api.projects.create, {
+      name: "Already Funded",
+      budgetUsd: 100,
+    })) as Id<"projects">;
+    expect((await budgetsFor(s, projectId)).length).toBe(1);
+
+    await s.as.mutation(api.projects.update, { projectId, budgetUsd: 200 });
+
+    // Still exactly one budget — the original from the create hook, not
+    // re-summoned or duplicated (the transition guard is old ≤ 0 → new > 0).
+    const rows = await budgetsFor(s, projectId);
+    expect(rows.length).toBe(1);
+    expect(rows[0].budget.amountCents).toBe(10000); // unaffected by the later edit
   });
 });
