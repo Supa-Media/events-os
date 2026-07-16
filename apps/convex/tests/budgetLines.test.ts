@@ -248,6 +248,33 @@ describe("addLine: authz + validation", () => {
     ).rejects.toBeInstanceOf(ConvexError);
   });
 
+  test("a genuine scope:'central' VIEWER is FORBIDDEN from adding a line to a central budget (write rank enforced, not just reach)", async () => {
+    const t = newT();
+    const s = await setupChapter(t, { email: "seyi@publicworship.life" });
+    const centralBudgetId = await s.as.mutation(api.finances.createBudget, {
+      amountCents: 500000,
+      type: "recurring",
+      cadence: "yearly",
+      year: 2026,
+      central: true,
+    });
+
+    const s2 = await setupChapter(t, { email: "unrelated-viewer@publicworship.life" });
+    const asCentralViewer = await addCentralCallerWithRole(
+      t,
+      s2.chapterId,
+      "central-viewer@publicworship.life",
+      "viewer",
+    );
+    await expect(
+      asCentralViewer.mutation(api.budgetLines.addLine, {
+        budgetId: centralBudgetId,
+        description: "Training trip",
+        plannedCents: 350000,
+      }),
+    ).rejects.toBeInstanceOf(ConvexError);
+  });
+
   test("a genuine scope:'central' bookkeeper grant CAN add a line to a central budget", async () => {
     const t = newT();
     const s = await setupChapter(t, { email: "seyi@publicworship.life" });

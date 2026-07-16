@@ -212,6 +212,80 @@ describe("removeEmptyAutoBudgets (internal)", () => {
     expect(budget).not.toBeNull();
   });
 
+  test("keeps a $0 EVENT budget that has WP-3.1 budgetLines planning (v2)", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const eventId = await seedEvent(s);
+    const budgetId = await seedAutoBudget(s, { refKind: "event", scopeRefId: eventId });
+    await run(s.t, (ctx) =>
+      ctx.db.insert("budgetLines", {
+        budgetId,
+        description: "PA rental",
+        plannedCents: 20000,
+        sortOrder: 0,
+        createdBy: s.userId,
+        createdAt: Date.now(),
+      }),
+    );
+
+    const result = await t.mutation(internal.finances.removeEmptyAutoBudgets, {});
+    expect(result.deleted).toBe(0);
+    expect(result.keptWithLineItems).toBe(1);
+
+    const budget = await run(s.t, (ctx) => ctx.db.get(budgetId));
+    expect(budget).not.toBeNull();
+    const lines = await run(s.t, (ctx) =>
+      ctx.db
+        .query("budgetLines")
+        .withIndex("by_budget", (q) => q.eq("budgetId", budgetId))
+        .collect(),
+    );
+    expect(lines).toHaveLength(1);
+  });
+
+  test("keeps a $0 PROJECT budget that has WP-3.1 budgetLines planning (v2)", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const projectId = await seedProject(s);
+    const budgetId = await seedAutoBudget(s, { refKind: "project", scopeRefId: projectId });
+    await run(s.t, (ctx) =>
+      ctx.db.insert("budgetLines", {
+        budgetId,
+        description: "Venue deposit",
+        plannedCents: 50000,
+        sortOrder: 0,
+        createdBy: s.userId,
+        createdAt: Date.now(),
+      }),
+    );
+
+    const result = await t.mutation(internal.finances.removeEmptyAutoBudgets, {});
+    expect(result.deleted).toBe(0);
+    expect(result.keptWithLineItems).toBe(1);
+
+    const budget = await run(s.t, (ctx) => ctx.db.get(budgetId));
+    expect(budget).not.toBeNull();
+  });
+
+  test("deleting an empty budget leaves zero orphaned budgetLines rows", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const projectId = await seedProject(s);
+    const budgetId = await seedAutoBudget(s, { refKind: "project", scopeRefId: projectId });
+    // No budgetLines rows — this budget is genuinely empty and should be
+    // deleted (and cascade, though there's nothing to cascade here).
+    const result = await t.mutation(internal.finances.removeEmptyAutoBudgets, {});
+    expect(result.deleted).toBe(1);
+
+    const remainingLines = await run(s.t, (ctx) =>
+      ctx.db
+        .query("budgetLines")
+        .withIndex("by_budget", (q) => q.eq("budgetId", budgetId))
+        .collect(),
+    );
+    expect(remainingLines).toHaveLength(0);
+  });
+
   test("ignores recurring budgets and legacy-scope-only budgets (never touches them)", async () => {
     const t = newT();
     const s = await setupChapter(t);
