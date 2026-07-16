@@ -205,6 +205,12 @@ export type CardSource = (typeof CARD_SOURCES)[number];
 /** Late-receipt auto-lock window: a card locks if a receipt is >7 days late. */
 export const RECEIPT_GRACE_DAYS = 7;
 
+/** Escalation checkpoint ahead of the day-7 auto-lock: a card charge still
+ *  missing its receipt past this many days gets nudged harder (a "day-3"
+ *  reminder timeline stage + email), before the terminal auto-lock at
+ *  `RECEIPT_GRACE_DAYS`. */
+export const RECEIPT_ESCALATE_DAYS = 3;
+
 // ── Card eligibility + last-4 extraction ─────────────────────────────────────
 // Cards (native + legacy) are restricted to Public Worship staff — people with
 // an `@publicworship.life` email. `isCardEligible` is the single gate the card

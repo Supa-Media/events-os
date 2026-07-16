@@ -53,7 +53,7 @@ import {
   type BudgetRefKind,
 } from "@events-os/shared";
 import { readSandbox } from "./financeSettings";
-import { isMissingReceiptCharge } from "./cards";
+import { isMissingReceiptCharge, unlockCardIfReceiptsResolved } from "./cards";
 import {
   getChapterIdOrNull,
   requireChapterId,
@@ -182,6 +182,14 @@ const txnSummaryFields = {
   hasReceipt: v.boolean(),
   // The card's last-4 (parsed out of the sync description), for display.
   cardLast4: v.union(v.string(), v.null()),
+  // Receipt-reminder timeline stage ("none" until a day-1/day-3 nudge fires;
+  // see `cards.advanceReceiptReminders`). Drives the Reconcile grid's Receipt
+  // column past the plain "missing" state.
+  reminderStage: v.union(
+    v.literal("none"),
+    v.literal("flagged"),
+    v.literal("escalated"),
+  ),
 };
 const txnSummary = v.object(txnSummaryFields);
 
@@ -432,6 +440,7 @@ function toTxnSummary(tr: Doc<"transactions">) {
     needsBudget: isSpend(tr) && tr.budgetId == null,
     hasReceipt: tr.receiptStorageId != null,
     cardLast4: tr.cardLast4 ?? null,
+    reminderStage: tr.receiptReminderStage ?? ("none" as const),
   };
 }
 
@@ -3640,14 +3649,24 @@ export const attachReceipt = mutation({
   handler: async (ctx, args) => {
     const chapterId = (await requireChapterId(ctx)) as Id<"chapters">;
     await requireFinanceRole(ctx, chapterId, "bookkeeper");
-    await requireInCallerChapter(
+    const txn = await requireInCallerChapter(
       ctx,
       chapterId,
       "transactions",
       args.transactionId,
       "Transaction",
     );
-    await ctx.db.patch(args.transactionId, { receiptStorageId: args.storageId });
+    await ctx.db.patch(args.transactionId, {
+      receiptStorageId: args.storageId,
+      // The reminder timeline is moot once a receipt is attached.
+      receiptReminderStage: undefined,
+      lastReminderSentAt: undefined,
+    });
+    // If this charge was the (or a) reason the card auto-locked, re-check
+    // eligibility right away — don't wait for the next daily cron sweep.
+    if (txn.cardId) {
+      await unlockCardIfReceiptsResolved(ctx, txn.cardId);
+    }
     return null;
   },
 });
