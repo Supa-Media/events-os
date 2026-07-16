@@ -146,7 +146,15 @@ export const budgets = defineTable({
   .index("by_chapter_and_period", ["chapterId", "year"])
   // Chapter-led so "budgets of type X" never matches another chapter's budgets.
   .index("by_chapter_and_type", ["chapterId", "type"])
-  .index("by_category", ["categoryId", "year"]);
+  .index("by_category", ["categoryId", "year"])
+  // Finds a one_time budget by what it's ATTACHED TO, independent of which
+  // chapter/central level currently owns it (WP-2.2 finding: `by_chapter`
+  // alone can't discover a project's budgets after they've moved scope — the
+  // project's OWN `chapterId` never changes, so scoping the lookup to it
+  // strands budgets that already transferred to central on a later reverse
+  // transfer). `transferProjectScope` uses this to find ALL of a project's
+  // budgets regardless of where they currently live.
+  .index("by_ref", ["refKind", "scopeRefId"]);
 
 // ── Budget tags (managed, level-scoped) ──────────────────────────────────────
 /** A managed tag definition on a budget LEVEL (a real chapter or `"central"`).
@@ -625,6 +633,29 @@ export const reattributionAudit = defineTable({
   target: v.union(v.id("chapters"), v.literal("central")),
   // A human-readable from→to summary, e.g. "New York (12), Central (1) → Central".
   summary: v.string(),
+  // TRUE UNDO (WP-2.2 fix): one entry per moved txn, snapshotting its EXACT
+  // pre-move attribution (captured in the same mutation, before the
+  // reassignment patch clears anything). Reattribution is lossy — category is
+  // always cleared, fund is reset, project/event/team/person are cleared on a
+  // move to central — so a swapped-target re-run of the forward op only
+  // restores `chapterId`, not the coding it cleared. `restoreReattribution`
+  // reads this array to put every field back exactly as it was. 1:1 with
+  // `transactionIds` (same length, same order); bounded the same way the
+  // forward ops are (`REASSIGN_BATCH_CAP` / `ROLLUP_SCAN_LIMIT`).
+  priorStates: v.array(
+    v.object({
+      transactionId: v.id("transactions"),
+      chapterId: v.union(v.id("chapters"), v.literal("central")),
+      budgetId: v.optional(v.id("budgets")),
+      fundId: v.optional(v.id("funds")),
+      categoryId: v.optional(v.id("budgetCategories")),
+      projectId: v.optional(v.id("projects")),
+      eventId: v.optional(v.id("events")),
+      eventItemId: v.optional(v.id("eventItems")),
+      teamId: v.optional(v.id("financeTeams")),
+      personId: v.optional(v.id("people")),
+    }),
+  ),
   // `project_transfer` only: the project whose scope moved + how many of its
   // budgets moved with it (txn count is `transactionIds.length`).
   projectId: v.optional(v.id("projects")),

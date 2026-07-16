@@ -2,7 +2,7 @@
 import { describe, expect, test } from "vitest";
 import { ConvexError } from "convex/values";
 import { newT, run, setupChapter, type ChapterSetup } from "./setup.helpers";
-import { api } from "../_generated/api";
+import { api, internal } from "../_generated/api";
 import type { Id } from "../_generated/dataModel";
 
 /**
@@ -188,6 +188,22 @@ async function seedBudget(
   );
 }
 
+async function seedCard(
+  s: ChapterSetup,
+  chapterId: Id<"chapters">,
+  cardholderPersonId: Id<"people">,
+): Promise<Id<"cards">> {
+  return await run(s.t, (ctx) =>
+    ctx.db.insert("cards", {
+      chapterId,
+      cardholderPersonId,
+      type: "virtual",
+      status: "active",
+      createdAt: Date.now(),
+    }),
+  );
+}
+
 async function seedTxn(
   s: ChapterSetup,
   chapterId: Id<"chapters"> | "central",
@@ -310,6 +326,35 @@ describe("reassignTransactions: central → chapter assigns the General Fund", (
   });
 });
 
+// ── Card-charge cardholder fallback survives reassignment ────────────────────
+
+describe("reassignTransactions: card-charge cardholder still resolvable after moving to central", () => {
+  test("cardId is retained, personId is cleared, cardholder still resolves in listReconcile", async () => {
+    const t = newT();
+    const s = await setupChapter(t, { email: SUPER });
+    const holder = await seedPerson(s, s.chapterId);
+    const cardId = await seedCard(s, s.chapterId, holder);
+    // A card charge: no explicit personId — the cardholder is resolved via
+    // the card, exactly like `resolveCardholder` in listReconcile.
+    const txnId = await seedTxn(s, s.chapterId, { cardId });
+
+    await s.as.mutation(api.finances.reassignTransactions, {
+      transactionIds: [txnId],
+      target: "central",
+    });
+
+    const txn = await run(t, (ctx) => ctx.db.get(txnId));
+    expect(txn?.chapterId).toBe("central");
+    expect(txn?.cardId).toBe(cardId); // provenance untouched
+    expect(txn?.personId).toBeUndefined(); // chapter-scoped person link cleared
+
+    const reconcile = await s.as.query(api.finances.listReconcile, { scope: "central" });
+    const row = reconcile.rows.find((r) => r.id === txnId);
+    expect(row?.cardholder?.personId).toBe(holder);
+    expect(row?.cardholder?.name).toBe("Cardholder");
+  });
+});
+
 // ── Audit trail ──────────────────────────────────────────────────────────────
 
 describe("reassignTransactions: audit trail", () => {
@@ -354,6 +399,143 @@ describe("reassignTransactions: audit trail", () => {
     expect(res.updated).toBe(1);
     const rows = await run(t, (ctx) => ctx.db.query("reattributionAudit").collect());
     expect(rows[0].transactionIds.length).toBe(1);
+  });
+
+  test("snapshots each txn's exact pre-move attribution into priorStates", async () => {
+    const t = newT();
+    const s = await setupChapter(t, { email: SUPER });
+    const fundId = await seedFund(s, s.chapterId);
+    const categoryId = await seedCategory(s, s.chapterId, fundId);
+    const projectId = await seedProject(s, s.chapterId, "Outreach");
+    const chapterBudget = await seedBudget(s, s.chapterId);
+
+    const txnId = await seedTxn(s, s.chapterId, {
+      fundId,
+      categoryId,
+      projectId,
+      budgetId: chapterBudget,
+    });
+
+    const res = await s.as.mutation(api.finances.reassignTransactions, {
+      transactionIds: [txnId],
+      target: "central",
+    });
+
+    const rows = await run(t, (ctx) => ctx.db.query("reattributionAudit").collect());
+    expect(rows[0].priorStates.length).toBe(1);
+    const prior = rows[0].priorStates[0];
+    expect(prior.transactionId).toBe(txnId);
+    // The snapshot is what it was BEFORE the move — not what the patch left it as.
+    expect(prior.chapterId).toBe(s.chapterId);
+    expect(prior.fundId).toBe(fundId);
+    expect(prior.categoryId).toBe(categoryId);
+    expect(prior.projectId).toBe(projectId);
+    expect(prior.budgetId).toBe(chapterBudget);
+
+    // Meanwhile the live txn has all of that cleared by the forward move.
+    const txn = await run(t, (ctx) => ctx.db.get(txnId));
+    expect(txn?.fundId).toBeUndefined();
+    expect(txn?.categoryId).toBeUndefined();
+    expect(txn?.projectId).toBeUndefined();
+    expect(txn?.budgetId).toBeUndefined();
+    expect(res.auditId).toBe(rows[0]._id);
+  });
+
+  test("mixed-source-scope batch: a same-scope selection is skipped, not counted as a move", async () => {
+    const t = newT();
+    const s = await setupChapter(t, { email: SUPER });
+    const chapterTxn = await seedTxn(s, s.chapterId, {});
+    const alreadyCentralTxn = await seedTxn(s, "central", {});
+
+    const res = await s.as.mutation(api.finances.reassignTransactions, {
+      transactionIds: [chapterTxn, alreadyCentralTxn],
+      target: "central",
+    });
+    expect(res.updated).toBe(1);
+    expect(res.skippedSameScope).toBe(1);
+
+    const rows = await run(t, (ctx) => ctx.db.query("reattributionAudit").collect());
+    expect(rows.length).toBe(1);
+    // Only the real move is in the audit trail — the no-op never crossed a
+    // boundary, so counting it would misrepresent what actually happened.
+    expect(rows[0].transactionIds).toEqual([chapterTxn]);
+    expect(rows[0].transactionIds).not.toContain(alreadyCentralTxn);
+    expect(rows[0].priorStates.length).toBe(1);
+    expect(rows[0].summary).toBe("New York (1) → Central");
+  });
+});
+
+// ── restoreReattribution (true undo) ─────────────────────────────────────────
+
+describe("restoreReattribution: full round-trip", () => {
+  test("restores chapterId + every cleared attribution back to its exact prior state", async () => {
+    const t = newT();
+    const s = await setupChapter(t, { email: SUPER });
+    const fundId = await seedFund(s, s.chapterId);
+    const categoryId = await seedCategory(s, s.chapterId, fundId);
+    const projectId = await seedProject(s, s.chapterId, "Outreach");
+    const eventId = await seedEvent(s, s.chapterId);
+    const teamId = await seedTeam(s, s.chapterId);
+    const personId = await seedPerson(s, s.chapterId);
+    const chapterBudget = await seedBudget(s, s.chapterId);
+
+    const txnId = await seedTxn(s, s.chapterId, {
+      fundId,
+      categoryId,
+      projectId,
+      eventId,
+      teamId,
+      personId,
+      budgetId: chapterBudget,
+    });
+
+    const { auditId } = await s.as.mutation(api.finances.reassignTransactions, {
+      transactionIds: [txnId],
+      target: "central",
+    });
+
+    // Forward move landed as expected — everything chapter-scoped cleared.
+    const moved = await run(t, (ctx) => ctx.db.get(txnId));
+    expect(moved?.chapterId).toBe("central");
+    expect(moved?.fundId).toBeUndefined();
+    expect(moved?.categoryId).toBeUndefined();
+    expect(moved?.projectId).toBeUndefined();
+    expect(moved?.eventId).toBeUndefined();
+    expect(moved?.teamId).toBeUndefined();
+    expect(moved?.personId).toBeUndefined();
+    expect(moved?.budgetId).toBeUndefined();
+
+    // internalMutation — invoked directly, exactly like the run-convex-function
+    // ops path (no client-facing caller exists for it).
+    const result = await s.t.mutation(internal.finances.restoreReattribution, { auditId });
+    expect(result.restored).toBe(1);
+    expect(result.skipped).toBe(0);
+
+    const restored = await run(t, (ctx) => ctx.db.get(txnId));
+    expect(restored?.chapterId).toBe(s.chapterId);
+    expect(restored?.fundId).toBe(fundId);
+    expect(restored?.categoryId).toBe(categoryId);
+    expect(restored?.projectId).toBe(projectId);
+    expect(restored?.eventId).toBe(eventId);
+    expect(restored?.teamId).toBe(teamId);
+    expect(restored?.personId).toBe(personId);
+    expect(restored?.budgetId).toBe(chapterBudget);
+  });
+
+  test("skips (doesn't error on) a txn deleted since the original move", async () => {
+    const t = newT();
+    const s = await setupChapter(t, { email: SUPER });
+    const txnId = await seedTxn(s, s.chapterId, {});
+
+    const { auditId } = await s.as.mutation(api.finances.reassignTransactions, {
+      transactionIds: [txnId],
+      target: "central",
+    });
+    await run(t, (ctx) => ctx.db.delete(txnId));
+
+    const result = await s.t.mutation(internal.finances.restoreReattribution, { auditId });
+    expect(result.restored).toBe(0);
+    expect(result.skipped).toBe(1);
   });
 });
 
@@ -555,6 +737,57 @@ describe("transferProjectScope", () => {
     }
     expect(caught).toBeInstanceOf(ConvexError);
     expect((caught as ConvexError<{ code: string }>).data.code).toBe("FORBIDDEN");
+  });
+
+  test("reverse round-trip: forward to central then back to the chapter — budgets AND txns both come home, nothing stranded", async () => {
+    const t = newT();
+    const s = await setupChapter(t, { email: SUPER });
+    await seedSelfPerson(s);
+
+    const project = await seedProject(s, s.chapterId, "Music Recording");
+    const fundId = await seedFund(s, s.chapterId);
+    const projectBudget = await seedBudget(s, s.chapterId, {
+      type: "one_time",
+      refKind: "project",
+      scopeRefId: project,
+      fundId,
+    });
+    const t1 = await seedTxn(s, s.chapterId, { projectId: project, fundId });
+    const t2 = await seedTxn(s, s.chapterId, { projectId: project, fundId });
+
+    // Forward: chapter → central.
+    const forward = await s.as.mutation(api.finances.transferProjectScope, {
+      projectId: project,
+      target: "central",
+    });
+    expect(forward.budgetsMoved).toBe(1);
+    expect(forward.txnsMoved).toBe(2);
+    expect((await run(t, (ctx) => ctx.db.get(projectBudget)))?.chapterId).toBe("central");
+
+    // Reverse: central → back to the chapter. Budget discovery is by_ref
+    // (refKind + scopeRefId), NOT by the project's (unchanged) home chapter —
+    // so this finds the budget at central, not at the chapter it never
+    // actually moved away from on the project row.
+    const reverse = await s.as.mutation(api.finances.transferProjectScope, {
+      projectId: project,
+      target: s.chapterId,
+    });
+    expect(reverse.budgetsMoved).toBe(1); // NOT 0 — the budget isn't stranded
+    expect(reverse.txnsMoved).toBe(2);
+
+    const b = await run(t, (ctx) => ctx.db.get(projectBudget));
+    expect(b?.chapterId).toBe(s.chapterId);
+    expect(b?.fundId).toBe(fundId); // the chapter's default fund re-assigned
+
+    for (const id of [t1, t2]) {
+      const txn = await run(t, (ctx) => ctx.db.get(id));
+      expect(txn?.chapterId).toBe(s.chapterId);
+      expect(txn?.projectId).toBe(project);
+    }
+
+    // Two audit rows now — one per leg of the round trip.
+    const rows = await run(t, (ctx) => ctx.db.query("reattributionAudit").collect());
+    expect(rows.length).toBe(2);
   });
 });
 

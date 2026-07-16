@@ -1329,6 +1329,7 @@ export const dashboardChapter = query({
     const catName = new Map(categoryDocs.map((c) => [c._id, c.name] as const));
     const getEvent = nameCache(ctx, "events");
     const getProject = nameCache(ctx, "projects");
+    const getCard = nameCache(ctx, "cards");
 
     const budgets = await ctx.db
       .query("budgets")
@@ -1528,7 +1529,18 @@ export const dashboardChapter = query({
               category: catName.get(tr.aiSuggestion.categoryId) ?? "",
             }
           : null;
-      const spenderName = tr.personId ? (await getPerson(tr.personId))?.name ?? null : null;
+      // Mirrors `resolveCardholder` (Reconcile): a reassigned central card
+      // charge has its `personId` cleared (chapter-scoped link) but keeps its
+      // `cardId` (provenance is never touched by reassignment) — fall back to
+      // the card's cardholder so the spender still shows up here too.
+      let spenderPersonId = tr.personId ?? null;
+      if (!spenderPersonId && tr.cardId) {
+        const card = await getCard(tr.cardId);
+        spenderPersonId = card?.cardholderPersonId ?? null;
+      }
+      const spenderName = spenderPersonId
+        ? (await getPerson(spenderPersonId))?.name ?? null
+        : null;
       recentTransactions.push({
         id: tr._id,
         date: easternDateStr(tr.postedAt),
@@ -4263,6 +4275,39 @@ async function requireCentralWrite(
   return { personId: access.personId, userId };
 }
 
+/** One `reattributionAudit.priorStates` entry — a txn's exact attribution
+ *  right before a bulk move patches it. See the schema doc comment for why
+ *  this exists (true undo vs. a swapped-target re-run). */
+type ReattributionPriorState = {
+  transactionId: Id<"transactions">;
+  chapterId: FinanceScope;
+  budgetId?: Id<"budgets">;
+  fundId?: Id<"funds">;
+  categoryId?: Id<"budgetCategories">;
+  projectId?: Id<"projects">;
+  eventId?: Id<"events">;
+  eventItemId?: Id<"eventItems">;
+  teamId?: Id<"financeTeams">;
+  personId?: Id<"people">;
+};
+
+/** Snapshot a txn's CURRENT attribution — called before its reassignment patch
+ *  is computed/applied, so the audit row remembers exactly what to restore. */
+function snapshotPriorState(txn: Doc<"transactions">): ReattributionPriorState {
+  return {
+    transactionId: txn._id,
+    chapterId: txn.chapterId as FinanceScope,
+    budgetId: txn.budgetId,
+    fundId: txn.fundId,
+    categoryId: txn.categoryId,
+    projectId: txn.projectId,
+    eventId: txn.eventId,
+    eventItemId: txn.eventItemId,
+    teamId: txn.teamId,
+    personId: txn.personId,
+  };
+}
+
 /**
  * A chapter-only link (project / event / person) survives a cross-boundary move
  * ONLY when it belongs to the TARGET chapter. Moving to central always clears it
@@ -4387,7 +4432,13 @@ export const reassignTransactions = mutation({
     target: reattributionTargetValidator,
     note: v.optional(v.string()),
   },
-  returns: v.object({ updated: v.number(), auditId: v.id("reattributionAudit") }),
+  returns: v.object({
+    updated: v.number(),
+    // Selected txns already at `target` — real no-ops, excluded from `updated`
+    // and the audit row so summaries reflect only actual reattributions.
+    skippedSameScope: v.number(),
+    auditId: v.id("reattributionAudit"),
+  }),
   handler: async (ctx, args) => {
     // Reassignment across the central boundary is a CENTRAL power.
     const { personId, userId } = await requireCentralWrite(ctx, "bookkeeper");
@@ -4415,7 +4466,10 @@ export const reassignTransactions = mutation({
     }
 
     const sourceCounts = new Map<FinanceScope, number>();
+    const priorStates: ReattributionPriorState[] = [];
+    const movedIds: Id<"transactions">[] = [];
     let updated = 0;
+    let skippedSameScope = 0;
     for (const id of ids) {
       const txn = (await ctx.db.get(id)) as Doc<"transactions"> | null;
       if (!txn) {
@@ -4424,10 +4478,18 @@ export const reassignTransactions = mutation({
           message: "One of the selected transactions no longer exists.",
         });
       }
+      if (txn.chapterId === args.target) {
+        // Already at the destination — not a real move; keep it out of the
+        // audit trail (it never crossed a boundary, so there's nothing to undo).
+        skippedSameScope++;
+        continue;
+      }
       const from = txn.chapterId as FinanceScope;
       sourceCounts.set(from, (sourceCounts.get(from) ?? 0) + 1);
+      priorStates.push(snapshotPriorState(txn));
       const patch = await computeReassignmentPatch(ctx, txn, args.target);
       await ctx.db.patch(id, patch);
+      movedIds.push(id);
       updated++;
     }
 
@@ -4436,13 +4498,14 @@ export const reassignTransactions = mutation({
       kind: "bulk_reassign",
       actorUserId: userId,
       ...(personId ? { actorPersonId: personId } : {}),
-      transactionIds: ids,
+      transactionIds: movedIds,
       target: args.target,
       summary,
+      priorStates,
       ...(args.note ? { note: args.note } : {}),
       createdAt: Date.now(),
     });
-    return { updated, auditId };
+    return { updated, skippedSameScope, auditId };
   },
 });
 
@@ -4509,14 +4572,19 @@ export const transferProjectScope = mutation({
     const sourceScope = project.chapterId as FinanceScope;
 
     // 1. Move the project's BUDGETS (one_time budgets whose refKind:"project"
-    //    scopeRefId points at this project). Bounded — few budgets per chapter.
-    const chapterBudgets = await ctx.db
+    //    scopeRefId points at this project). Found via `by_ref` — NOT scoped to
+    //    `sourceScope` — because `project.chapterId` never changes (WP-2.2
+    //    finding). Scoping this lookup to the project's home chapter meant a
+    //    REVERSE transfer (chapter → central → back to chapter) couldn't find
+    //    budgets that already moved to central: it queried the chapter, but the
+    //    budgets lived at central by then, so they were silently stranded.
+    //    `by_ref` finds them regardless of which scope currently owns them.
+    const projectBudgets = await ctx.db
       .query("budgets")
-      .withIndex("by_chapter", (q) => q.eq("chapterId", sourceScope))
+      .withIndex("by_ref", (q) =>
+        q.eq("refKind", "project").eq("scopeRefId", args.projectId),
+      )
       .take(ROLLUP_SCAN_LIMIT);
-    const projectBudgets = chapterBudgets.filter(
-      (b) => b.refKind === "project" && b.scopeRefId === args.projectId,
-    );
     let budgetsMoved = 0;
     for (const b of projectBudgets) {
       if (b.chapterId === args.target) continue;
@@ -4532,9 +4600,16 @@ export const transferProjectScope = mutation({
       .query("transactions")
       .withIndex("by_project", (q) => q.eq("projectId", args.projectId))
       .take(ROLLUP_SCAN_LIMIT);
+    if (linked.length === ROLLUP_SCAN_LIMIT) {
+      console.warn(
+        `[finances] transferProjectScope hit ROLLUP_SCAN_LIMIT (${ROLLUP_SCAN_LIMIT}) reading transactions for project ${args.projectId}; some linked transactions may not have moved.`,
+      );
+    }
+    const priorStates: ReattributionPriorState[] = [];
     const movedTxnIds: Id<"transactions">[] = [];
     for (const txn of linked) {
       if (txn.chapterId === args.target) continue;
+      priorStates.push(snapshotPriorState(txn));
       const patch = await computeReassignmentPatch(ctx, txn, args.target, {
         preserveProjectId: true,
       });
@@ -4555,6 +4630,7 @@ export const transferProjectScope = mutation({
       transactionIds: movedTxnIds,
       target: args.target,
       summary,
+      priorStates,
       projectId: args.projectId,
       budgetsMoved,
       ...(args.note ? { note: args.note } : {}),
@@ -4708,6 +4784,61 @@ export const suggestSplitAssignments = query({
         unassigned: unassigned.length,
       },
     };
+  },
+});
+
+// ── Restore (true undo) ───────────────────────────────────────────────────────
+/**
+ * Ops escape hatch — NOT exposed in any UI, callable only via the
+ * `run-convex-function` workflow (same pattern as `linkIncreaseAccount`'s
+ * demotion in WP-1.2) by an operator who has the audit row id in hand (from
+ * `listReattributionAudit` or the dashboard). Restores every txn snapshotted
+ * in `audit.priorStates` to EXACTLY its pre-move attribution — the true undo
+ * that a swapped-target re-run of `reassignTransactions` /
+ * `transferProjectScope` can't provide (that only restores `chapterId`; it
+ * would recompute a FRESH reassignment patch, clearing category/fund/links all
+ * over again instead of putting them back).
+ *
+ * Idempotent-ish: a txn deleted since the original move is skipped (not an
+ * error) rather than failing the whole restore. Safe to re-run — re-patching
+ * the same prior values twice is a no-op the second time.
+ *
+ * Does NOT re-open a `project_transfer`'s budget move — those round-trip
+ * correctly via a second `transferProjectScope` call to the original scope
+ * (the `by_ref`-based discovery fix means budgets are never stranded either
+ * direction); this restores the TRANSACTION side, including whatever coding
+ * the transfer or bulk reassign cleared along the way.
+ */
+export const restoreReattribution = internalMutation({
+  args: { auditId: v.id("reattributionAudit") },
+  returns: v.object({ restored: v.number(), skipped: v.number() }),
+  handler: async (ctx, args) => {
+    const audit = await ctx.db.get(args.auditId);
+    if (!audit) {
+      throw new ConvexError({ code: "NOT_FOUND", message: "Audit row not found." });
+    }
+    let restored = 0;
+    let skipped = 0;
+    for (const prior of audit.priorStates) {
+      const txn = await ctx.db.get(prior.transactionId);
+      if (!txn) {
+        skipped++;
+        continue;
+      }
+      await ctx.db.patch(prior.transactionId, {
+        chapterId: prior.chapterId,
+        budgetId: prior.budgetId,
+        fundId: prior.fundId,
+        categoryId: prior.categoryId,
+        projectId: prior.projectId,
+        eventId: prior.eventId,
+        eventItemId: prior.eventItemId,
+        teamId: prior.teamId,
+        personId: prior.personId,
+      });
+      restored++;
+    }
+    return { restored, skipped };
   },
 });
 
