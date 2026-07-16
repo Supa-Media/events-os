@@ -14,12 +14,22 @@ import type { Id } from "../_generated/dataModel";
  *  - `forPickerOptions` — the "For" picker's option groups (events/projects,
  *    budgeted + summon-candidates, plus recurring budgets by level).
  *  - `summonBudgetForRef` — get-or-create the one_time budget for a ref,
- *    idempotently, at $0.
+ *    idempotently, at $0. Gated at BOOKKEEPER (not manager) — pinned deliberately.
  *  - `migrateLinksToBudgets` — the phase-A backfill migration (absent →
  *    backfilled + summoned; present-and-different → kept, logged as a
- *    conflict; idempotent re-run; chapter-scoped runs; central rows skipped).
+ *    STRUCTURED conflict — not a bare id — with the ref name, both budgets'
+ *    display names, and a sentence-level implication; idempotent re-run;
+ *    chapter-scoped runs; central rows skipped; PAGINATED via native
+ *    `.paginate()` — re-invoke with `continueCursor` until `isDone` proves
+ *    every row was examined; see `docs/plans/link-migration-runbook.md`).
  *  - `eventActuals`/`projectActuals` are budget-first: a legacy eventId-only
- *    txn contributes NOTHING until the migration backfills its budgetId.
+ *    txn contributes NOTHING until the migration backfills its budgetId. A
+ *    conflict-residue txn stays ABSENT from its ref's actuals post-migration
+ *    (present under whatever budget the human explicitly kept it on) — the
+ *    parity claim's deliberate exception, pinned here.
+ *  - `createBudget` rejects a second one_time budget for the same ref (D8:
+ *    one budget per ref); `actualsForRef` sums across ALL `by_ref` budgets so
+ *    a legacy duplicate already in data still counts in full.
  */
 
 const SUPER = "seyi@publicworship.life";
@@ -43,6 +53,24 @@ async function asChapterManager(s: ChapterSetup): Promise<Id<"people">> {
       chapterId: s.chapterId,
       personId,
       role: "manager",
+      scope: "chapter",
+      createdAt: Date.now(),
+    }),
+  );
+  return personId;
+}
+
+/** A bookkeeper-graded caller — one rung below manager on the finance-role
+ *  ladder (viewer < bookkeeper < manager). `summonBudgetForRef` deliberately
+ *  gates at "bookkeeper" (not "manager", unlike full budget CRUD) since
+ *  summoning a ref's budget is part of ordinary reconcile/categorize work. */
+async function asBookkeeper(s: ChapterSetup): Promise<Id<"people">> {
+  const personId = await seedSelfPerson(s);
+  await run(s.t, (ctx) =>
+    ctx.db.insert("financeRoles", {
+      chapterId: s.chapterId,
+      personId,
+      role: "bookkeeper",
       scope: "chapter",
       createdAt: Date.now(),
     }),
@@ -306,6 +334,21 @@ describe("summonBudgetForRef — the 'For' picker's summon-on-pick", () => {
       }),
     ).rejects.toBeInstanceOf(ConvexError);
   });
+
+  test("a BOOKKEEPER (not manager) can summon a budget via the picker", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await asBookkeeper(s);
+    const eventId = await seedEvent(s, s.chapterId, { name: "Bookkeeper-summoned Event" });
+
+    const budgetId = await s.as.mutation(api.finances.summonBudgetForRef, {
+      refKind: "event",
+      scopeRefId: eventId,
+    });
+    const budget = await run(t, (ctx) => ctx.db.get(budgetId));
+    expect(budget?.refKind).toBe("event");
+    expect(budget?.scopeRefId).toBe(eventId);
+  });
 });
 
 // ── migrateLinksToBudgets (phase-A backfill) ─────────────────────────────────
@@ -321,8 +364,11 @@ describe("migrateLinksToBudgets — WP-U phase A backfill", () => {
     expect(result.scanned).toBe(1);
     expect(result.backfilled).toBe(1);
     expect(result.budgetsSummoned).toBe(1);
-    expect(result.conflicts).toBe(0);
+    expect(result.conflictCount).toBe(0);
+    expect(result.conflicts).toEqual([]);
     expect(result.skipped).toBe(0);
+    // A single-row chapter fits in one page — the operator's completeness proof.
+    expect(result.isDone).toBe(true);
 
     const txn = await run(t, (ctx) => ctx.db.get(txnId));
     expect(txn?.budgetId).toBeDefined();
@@ -364,7 +410,7 @@ describe("migrateLinksToBudgets — WP-U phase A backfill", () => {
     expect(txn?.budgetId).toBe(existingBudgetId);
   });
 
-  test("preserves a conflicting explicit budgetId — never overwrites a human's later re-code", async () => {
+  test("preserves a conflicting explicit budgetId — never overwrites a human's later re-code — and reports it as an actionable structured conflict", async () => {
     const t = newT();
     const s = await setupChapter(t);
     const eventId = await seedEvent(s, s.chapterId, { name: "Legacy Event" });
@@ -375,6 +421,7 @@ describe("migrateLinksToBudgets — WP-U phase A backfill", () => {
         type: "recurring",
         cadence: "yearly",
         year: 2026,
+        label: "Ops Fund",
         createdAt: Date.now(),
       }),
     );
@@ -382,12 +429,32 @@ describe("migrateLinksToBudgets — WP-U phase A backfill", () => {
       eventId,
       budgetId: otherBudgetId,
       status: "categorized",
+      merchantName: "Guitar Center",
+      amountCents: 15000,
     });
 
     const result = await t.mutation(internal.finances.migrateLinksToBudgets, {});
-    expect(result.conflicts).toBe(1);
-    expect(result.conflictIds).toEqual([txnId]);
+    expect(result.conflictCount).toBe(1);
     expect(result.backfilled).toBe(0);
+
+    // Structured — not a bare id — so a reviewer can act on the CLI/log
+    // output alone: which txn, which ref, its ref-budget vs. the CURRENT
+    // budget it's attributed to, and the sentence-level implication.
+    expect(result.conflicts).toHaveLength(1);
+    const conflict = result.conflicts[0];
+    expect(conflict.transactionId).toBe(txnId);
+    expect(conflict.merchantName).toBe("Guitar Center");
+    expect(conflict.amountCents).toBe(15000);
+    expect(conflict.refKind).toBe("event");
+    expect(conflict.refId).toBe(eventId);
+    expect(conflict.refName).toBe("Legacy Event");
+    expect(conflict.currentBudgetId).toBe(otherBudgetId);
+    expect(conflict.currentBudgetLabel).toBe("Ops Fund");
+    // The ref's own (summoned) budget — what this txn would have been
+    // attributed to had the migration not deferred to the human's re-code.
+    expect(conflict.refBudgetId).not.toBe(otherBudgetId);
+    expect(conflict.message).toContain("Legacy Event");
+    expect(conflict.message).toContain("Ops Fund");
 
     const txn = await run(t, (ctx) => ctx.db.get(txnId));
     expect(txn?.budgetId).toBe(otherBudgetId); // kept, not clobbered
@@ -436,6 +503,61 @@ describe("migrateLinksToBudgets — WP-U phase A backfill", () => {
     });
     expect(result.scanned).toBe(1);
     expect(result.backfilled).toBe(1);
+  });
+
+  test("paginates across multiple pages and proves completeness via isDone/continueCursor", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const eventId = await seedEvent(s, s.chapterId, { name: "Recurring Legacy Event" });
+    // 5 legacy txns, all pointing at the SAME event — a small `numItems` forces
+    // more than one page, exercising the exact re-invoke-with-cursor path the
+    // runbook documents (`.take(ROLLUP_SCAN_LIMIT)` would have silently read
+    // all 5 in one shot and never surfaced this).
+    const txnIds = await Promise.all(
+      Array.from({ length: 5 }, () => seedLegacyTxn(s, s.chapterId, { eventId })),
+    );
+
+    let cursor: string | null = null;
+    let pages = 0;
+    let totalScanned = 0;
+    let totalBackfilled = 0;
+    let isDone = false;
+    while (!isDone) {
+      const page: {
+        scanned: number;
+        backfilled: number;
+        isDone: boolean;
+        continueCursor: string;
+      } = await t.mutation(internal.finances.migrateLinksToBudgets, {
+        paginationOpts: { numItems: 2, cursor },
+      });
+      pages++;
+      totalScanned += page.scanned;
+      totalBackfilled += page.backfilled;
+      isDone = page.isDone;
+      cursor = page.continueCursor;
+      // Guard against an infinite loop if pagination ever regressed.
+      expect(pages).toBeLessThan(10);
+    }
+
+    // 5 rows at numItems:2 takes at least 3 pages to reach isDone.
+    expect(pages).toBeGreaterThanOrEqual(3);
+    expect(totalScanned).toBe(5);
+    expect(totalBackfilled).toBe(5);
+
+    for (const txnId of txnIds) {
+      const txn = await run(t, (ctx) => ctx.db.get(txnId));
+      expect(txn?.budgetId).toBeDefined();
+    }
+    // Only ONE budget was summoned for the shared ref across every page —
+    // `ensureBudgetForRef`'s get-or-create holds across page boundaries.
+    const budgets = await run(t, (ctx) =>
+      ctx.db
+        .query("budgets")
+        .withIndex("by_ref", (q) => q.eq("refKind", "event").eq("scopeRefId", eventId))
+        .collect(),
+    );
+    expect(budgets).toHaveLength(1);
   });
 });
 
@@ -488,6 +610,173 @@ describe("eventActuals/projectActuals are budget-first and agree post-migration"
     const actuals = await s.as.query(api.finances.eventActuals, { eventId });
     expect(actuals.totalCents).toBe(0);
     expect(actuals.transactions).toEqual([]);
+  });
+
+  test("a conflict-residue txn is ABSENT from eventActuals(E) post-migration and PRESENT under its kept budget — the parity claim's deliberate exception", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await asChapterManager(s);
+    const eventId = await seedEvent(s, s.chapterId, { name: "Conflict Event" });
+    const keptBudgetId = await s.as.mutation(api.finances.createBudget, {
+      amountCents: 100000,
+      type: "recurring",
+      cadence: "monthly",
+      year: 2026,
+      month: new Date().getUTCMonth() + 1,
+      label: "General Ops",
+    });
+    const txnId = await seedLegacyTxn(s, s.chapterId, {
+      eventId,
+      budgetId: keptBudgetId,
+      status: "categorized",
+      amountCents: 6000,
+    });
+
+    const result = await t.mutation(internal.finances.migrateLinksToBudgets, {});
+    expect(result.conflictCount).toBe(1);
+
+    // ABSENT from the event's own actuals — the migration never redirects a
+    // human's explicit re-code, so E's summoned budget has no linked spend.
+    const eventActuals = await s.as.query(api.finances.eventActuals, { eventId });
+    expect(eventActuals.totalCents).toBe(0);
+    expect(eventActuals.transactions.map((tr) => tr.id)).not.toContain(txnId);
+
+    // PRESENT under the budget the human actually kept it on — findable via
+    // the SAME `by_budget` index `actualsForRef`/the dashboard rollups read.
+    const txn = await run(t, (ctx) => ctx.db.get(txnId));
+    expect(txn?.budgetId).toBe(keptBudgetId);
+    const keptBudgetTxns = await run(t, (ctx) =>
+      ctx.db
+        .query("transactions")
+        .withIndex("by_budget", (q) => q.eq("budgetId", keptBudgetId))
+        .collect(),
+    );
+    expect(keptBudgetTxns.map((tr) => tr._id)).toContain(txnId);
+  });
+});
+
+// ── createBudget dedup + actualsForRef summing legacy duplicates ────────────
+// (Important-2: `actualsForRef`'s old `by_ref .first()` undercounted a ref
+// with 2+ one_time budgets. Fixed both ends — creation-time dedup so a NEW
+// duplicate is rejected outright, and a summing fix so any duplicate already
+// in legacy data still counts in full.)
+
+describe("createBudget rejects a second one_time budget for the same ref (D8 invariant)", () => {
+  test("rejects with a ConvexError pointing at the existing budget", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await asChapterManager(s);
+    const eventId = await seedEvent(s, s.chapterId, { name: "Single-budget Event" });
+    await s.as.mutation(api.finances.createBudget, {
+      amountCents: 40000,
+      type: "one_time",
+      refKind: "event",
+      cadence: "per_instance",
+      year: 2026,
+      label: "First Budget",
+      scopeRefId: eventId,
+    });
+
+    await expect(
+      s.as.mutation(api.finances.createBudget, {
+        amountCents: 5000,
+        type: "one_time",
+        refKind: "event",
+        cadence: "per_instance",
+        year: 2026,
+        label: "Second Budget",
+        scopeRefId: eventId,
+      }),
+    ).rejects.toBeInstanceOf(ConvexError);
+
+    const budgets = await run(t, (ctx) =>
+      ctx.db
+        .query("budgets")
+        .withIndex("by_ref", (q) => q.eq("refKind", "event").eq("scopeRefId", eventId))
+        .collect(),
+    );
+    expect(budgets).toHaveLength(1);
+    expect(budgets[0].label).toBe("First Budget");
+  });
+
+  test("also rejects a duplicate PROJECT budget", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await asChapterManager(s);
+    const projectId = await seedProject(s, s.chapterId, "Single-budget Project");
+    await s.as.mutation(api.finances.createBudget, {
+      amountCents: 20000,
+      type: "one_time",
+      refKind: "project",
+      cadence: "per_instance",
+      year: 2026,
+      scopeRefId: projectId,
+    });
+
+    await expect(
+      s.as.mutation(api.finances.createBudget, {
+        amountCents: 1000,
+        type: "one_time",
+        refKind: "project",
+        cadence: "per_instance",
+        year: 2026,
+        scopeRefId: projectId,
+      }),
+    ).rejects.toBeInstanceOf(ConvexError);
+  });
+});
+
+describe("actualsForRef sums across ALL by_ref budgets — legacy duplicates still count in full", () => {
+  test("two one_time budgets for the same event both contribute to eventActuals", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await asChapterManager(s);
+    const eventId = await seedEvent(s, s.chapterId, { name: "Duplicated Event" });
+
+    // Simulate a pre-existing legacy duplicate (raw-inserted — createBudget's
+    // dedup guard only stops NEW duplicates from being created going forward).
+    const firstBudgetId = await run(t, (ctx) =>
+      ctx.db.insert("budgets", {
+        chapterId: s.chapterId,
+        amountCents: 40000,
+        type: "one_time",
+        refKind: "event",
+        scopeRefId: eventId,
+        cadence: "per_instance",
+        year: 2026,
+        createdAt: 1000,
+      }),
+    );
+    const secondBudgetId = await run(t, (ctx) =>
+      ctx.db.insert("budgets", {
+        chapterId: s.chapterId,
+        amountCents: 10000,
+        type: "one_time",
+        refKind: "event",
+        scopeRefId: eventId,
+        cadence: "per_instance",
+        year: 2026,
+        createdAt: 2000,
+      }),
+    );
+    const txn1 = await s.as.mutation(api.finances.createManualTransaction, {
+      flow: "outflow",
+      amountCents: 3000,
+      postedAt: Date.now(),
+      budgetId: firstBudgetId,
+    });
+    const txn2 = await s.as.mutation(api.finances.createManualTransaction, {
+      flow: "outflow",
+      amountCents: 4000,
+      postedAt: Date.now(),
+      budgetId: secondBudgetId,
+    });
+
+    const actuals = await s.as.query(api.finances.eventActuals, { eventId });
+    // BOTH budgets' spend counts — the old `.first()` would have undercounted
+    // by only summing whichever budget the index scan returned first.
+    expect(actuals.totalCents).toBe(7000);
+    expect(actuals.transactions.map((tr) => tr.id).sort()).toEqual([txn1, txn2].sort());
   });
 });
 

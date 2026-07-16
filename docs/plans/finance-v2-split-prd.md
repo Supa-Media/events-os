@@ -373,9 +373,12 @@ tier system. Owned by the Development side, separate surface from finance.
    `budgetId` only) and switches every FK-based READ (`eventActuals`/`projectActuals`,
    `transferProjectScope`'s linked-txn discovery, `suggestSplitAssignments`'s split
    heuristic) to budget-first via `by_ref` → `by_budget` — matching WP-0.1's already
-   budget-first dashboard rollups. A `migrateLinksToBudgets` backfill (idempotent,
-   conflict-preserving — never overwrites a human's later re-code) sets `budgetId` on
-   legacy rows. The Reconcile grid's separate Budget + Link pickers collapse into ONE
+   budget-first dashboard rollups. A `migrateLinksToBudgets` backfill (paginated,
+   idempotent, conflict-preserving — never overwrites a human's later re-code) sets
+   `budgetId` on legacy rows — see `docs/plans/link-migration-runbook.md` for the
+   deploy + run + verify + conflict-review procedure; it MUST run in the same
+   maintenance window as the deploy (legacy rows read $0 in actuals until migrated).
+   The Reconcile grid's separate Budget + Link pickers collapse into ONE
    "For" picker (Events / Projects / Recurring); picking a budget-less event/project
    summons its $0 budget on the spot (reusing the D8 create-time helpers). **Phase B**
    (a follow-up PR, NOT part of WP-U): drop the `transactions.eventId`/`projectId` columns

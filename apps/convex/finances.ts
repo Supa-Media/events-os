@@ -2480,9 +2480,15 @@ export const budgetVsActual = query({
 
 /**
  * Actual spend for an event/project ref, BUDGET-FIRST (WP-U: one home per
- * dollar) — found via `by_ref` (the ref's one_time budget, wherever it
- * currently lives) then summed via `by_budget`, exactly like the dashboard's
- * `txnCountsTowardBudget*` rollups. A ref with no budget yet reports zero
+ * dollar) — found via `by_ref` (EVERY one_time budget for this ref, wherever
+ * each currently lives) then summed via `by_budget` across ALL of them,
+ * exactly like the dashboard's `txnCountsTowardBudget*` rollups. A ref should
+ * only ever have one budget (the D8 invariant, now enforced at creation by
+ * `createBudget`'s dedup guard), but `by_ref` still unions every matching
+ * budget rather than taking the first — legacy data can carry a duplicate
+ * from before that guard existed (see `migrateLinksToBudgets`'s conflict
+ * path), and undercounting a ref's actuals because of a stale duplicate is
+ * worse than the extra bounded read. A ref with no budget yet reports zero
  * spend and no rows — it's never been attributed to (the "For" picker summons
  * a budget the first time a caller attributes a transaction to it).
  */
@@ -2492,15 +2498,20 @@ async function actualsForRef(
   refKind: BudgetRefKind,
   scopeRefId: string,
 ): Promise<{ totalCents: number; transactions: ReturnType<typeof toTxnSummary>[] }> {
-  const budget = await ctx.db
+  const budgets = await ctx.db
     .query("budgets")
     .withIndex("by_ref", (q) => q.eq("refKind", refKind).eq("scopeRefId", scopeRefId))
-    .first();
-  if (!budget) return { totalCents: 0, transactions: [] };
-  const raw = await ctx.db
-    .query("transactions")
-    .withIndex("by_budget", (q) => q.eq("budgetId", budget._id))
     .take(ROLLUP_SCAN_LIMIT);
+  if (budgets.length === 0) return { totalCents: 0, transactions: [] };
+  const rowsByBudget = await Promise.all(
+    budgets.map((b) =>
+      ctx.db
+        .query("transactions")
+        .withIndex("by_budget", (q) => q.eq("budgetId", b._id))
+        .take(ROLLUP_SCAN_LIMIT),
+    ),
+  );
+  const raw = rowsByBudget.flat();
   // Defense-in-depth: never sum a row from another chapter even if a future
   // link slipped through. A chapter caller only ever sees actuals scoped to
   // ITS OWN chapter — once `transferProjectScope` moves a project's budget AND
@@ -3085,11 +3096,28 @@ export const forPickerOptions = query({
     const projectBudgetByRef = new Map<string, Doc<"budgets">>();
     const recurring: { budgetId: Id<"budgets">; label: string; level: "chapter" | "central" }[] = [];
 
+    // A ref should only ever have one budget (the D8 invariant, enforced at
+    // creation by `createBudget`'s dedup guard), but legacy data can still
+    // carry a duplicate one_time budget for the same ref. Rule: keep the
+    // OLDEST (lowest `createdAt`) — the auto-created/backfilled one, not
+    // whichever happened to sort last in the scan — so the picker shows ONE
+    // deterministic entry per ref instead of flapping between duplicates.
+    const setPreferOldest = (
+      map: Map<string, Doc<"budgets">>,
+      key: string,
+      candidate: Doc<"budgets">,
+    ) => {
+      const existing = map.get(key);
+      if (!existing || candidate.createdAt < existing.createdAt) {
+        map.set(key, candidate);
+      }
+    };
+
     for (const b of chapterBudgets) {
       if (b.type === "one_time" && b.refKind === "event" && b.scopeRefId) {
-        eventBudgetByRef.set(b.scopeRefId, b);
+        setPreferOldest(eventBudgetByRef, b.scopeRefId, b);
       } else if (b.type === "one_time" && b.refKind === "project" && b.scopeRefId) {
-        projectBudgetByRef.set(b.scopeRefId, b);
+        setPreferOldest(projectBudgetByRef, b.scopeRefId, b);
       } else {
         recurring.push({ budgetId: b._id, label: budgetDisplayName(b), level: "chapter" });
       }
@@ -3105,7 +3133,7 @@ export const forPickerOptions = query({
         b.scopeRefId &&
         projectIds.has(b.scopeRefId)
       ) {
-        projectBudgetByRef.set(b.scopeRefId, b);
+        setPreferOldest(projectBudgetByRef, b.scopeRefId, b);
       } else {
         recurring.push({ budgetId: b._id, label: budgetDisplayName(b), level: "central" });
       }
@@ -3284,6 +3312,25 @@ export const createBudget = mutation({
       month: args.month,
       quarter: args.quarter,
     });
+    // D8 invariant: every money-carrying event/project has EXACTLY one
+    // budget. `by_ref` finds a match regardless of which scope currently
+    // owns it (a project's budget can live at central post-transfer — same
+    // reasoning as `hasBudgetForRef`/`ensureBudgetForRef`) — reject rather
+    // than silently create a second home for the same ref, which would make
+    // `actualsForRef`'s sum-across-duplicates the norm instead of a legacy
+    // fallback.
+    if (refKind && scopeRefId) {
+      const existingForRef = await ctx.db
+        .query("budgets")
+        .withIndex("by_ref", (q) => q.eq("refKind", refKind).eq("scopeRefId", scopeRefId))
+        .first();
+      if (existingForRef) {
+        throw new ConvexError({
+          code: "REF_ALREADY_BUDGETED",
+          message: `This ${refKind} already has a budget ("${budgetDisplayName(existingForRef)}") — every event/project gets exactly one budget. Edit the existing budget (${existingForRef._id}) instead of creating another.`,
+        });
+      }
+    }
     const level: BudgetLevel = args.central ? CENTRAL : chapterId;
     // Verify each explicit tag is usable at this budget's level BEFORE inserting.
     for (const tagId of args.tagIds ?? []) {
@@ -4350,24 +4397,101 @@ export const removeEmptyAutoBudgets = internalMutation({
 });
 
 // ── Links → budgets migration (WP-U phase A: one home per dollar) ───────────
+// Default page size for the migration's own `.paginate()` call (independent
+// of `ROLLUP_SCAN_LIMIT`, which bounds ONE-SHOT reads elsewhere in this file —
+// a migration needs to PROVE completeness across the whole table, not just
+// read a bounded slice and log a "may be truncated" warning). Small enough
+// that `ensureBudgetForRef`'s per-row lookups (and occasional budget insert)
+// stay comfortably under a mutation's execution budget even on the slowest
+// page.
+const MIGRATION_PAGE_SIZE = 500;
+
+// One flagged conflict: `budgetId` was already set to something OTHER than
+// the ref's budget when the migration examined this row — a human explicitly
+// re-coded it since the FK was written, so the migration keeps their choice
+// and reports it here instead of silently reconciling. Structured (not a bare
+// id) so a reviewer can act on the CLI/log output alone, without a follow-up
+// query per conflict.
+const migrateLinksToBudgetsConflict = v.object({
+  transactionId: v.id("transactions"),
+  merchantName: v.union(v.string(), v.null()),
+  postedAt: v.number(),
+  amountCents: v.number(),
+  refKind: refKindValidator,
+  refId: v.string(),
+  // The event/project's own name (e.g. "Fall Retreat Worship"), so a reviewer
+  // doesn't have to look the ref up separately.
+  refName: v.string(),
+  // The budget the FK points at — what this txn WOULD have been attributed
+  // to had the migration not deferred to the human's later re-code.
+  refBudgetId: v.id("budgets"),
+  refBudgetLabel: v.string(),
+  // The budget the txn is CURRENTLY (and remains) attributed to.
+  currentBudgetId: v.id("budgets"),
+  currentBudgetLabel: v.string(),
+  // Sentence-level implication, ready to paste into a review thread.
+  message: v.string(),
+});
+
 const migrateLinksToBudgetsResult = v.object({
-  // Transactions examined that carry a legacy `eventId`/`projectId`.
+  // Transactions examined THIS PAGE that carry a legacy `eventId`/`projectId`
+  // (i.e. excludes rows with neither FK, which the page may also contain).
   scanned: v.number(),
   // `budgetId` was absent → resolved/summoned the ref's budget and set it.
   backfilled: v.number(),
   // `budgetId` was already exactly the ref's budget — a settled re-run no-op.
   alreadySet: v.number(),
-  // `budgetId` was present and DIFFERENT from the ref's budget — a human
-  // explicitly re-coded this txn since the FK was written. KEPT (never
-  // overwritten); logged here for review.
-  conflicts: v.number(),
-  conflictIds: v.array(v.id("transactions")),
+  // Count of `conflicts` below, kept alongside it for a one-line CLI summary
+  // without having to count the array.
+  conflictCount: v.number(),
+  conflicts: v.array(migrateLinksToBudgetsConflict),
   // How many NEW $0 "plan" budgets this run had to summon along the way.
   budgetsSummoned: v.number(),
   // Carried a legacy FK pointing at a ref that's central-owned, deleted, or
   // otherwise unresolvable — skipped rather than guessed at.
   skipped: v.number(),
+  // Convex's own pagination cursor state — `isDone: false` means there is
+  // MORE of the table left; re-invoke with `{ paginationOpts: { numItems,
+  // cursor: continueCursor } }` (same `chapterId`, if any) until `isDone` is
+  // `true`. This is the operator's proof of completeness — see
+  // `docs/plans/link-migration-runbook.md`.
+  isDone: v.boolean(),
+  continueCursor: v.string(),
 });
+
+/** One flagged conflict row — see {@link migrateLinksToBudgetsConflict}'s doc
+ *  comment for what each field means and why. */
+type MigrationConflict = {
+  transactionId: Id<"transactions">;
+  merchantName: string | null;
+  postedAt: number;
+  amountCents: number;
+  refKind: BudgetRefKind;
+  refId: string;
+  refName: string;
+  refBudgetId: Id<"budgets">;
+  refBudgetLabel: string;
+  currentBudgetId: Id<"budgets">;
+  currentBudgetLabel: string;
+  message: string;
+};
+
+/** The event/project's own display name for a conflict row — falls back to a
+ *  placeholder for the rare case the ref itself was deleted after the FK was
+ *  written (the migration still resolves+reports the conflict; it just can't
+ *  name the ref). */
+async function refDisplayName(
+  ctx: MutationCtx,
+  refKind: BudgetRefKind,
+  scopeRefId: string,
+): Promise<string> {
+  if (refKind === "event") {
+    const ev = await ctx.db.get(scopeRefId as Id<"events">);
+    return ev && "name" in ev ? (ev as Doc<"events">).name : "(deleted event)";
+  }
+  const project = await ctx.db.get(scopeRefId as Id<"projects">);
+  return project && "name" in project ? (project as Doc<"projects">).name : "(deleted project)";
+}
 
 /**
  * Migration body (WP-U phase A): backfill `transactions.budgetId` from the
@@ -4375,22 +4499,28 @@ const migrateLinksToBudgetsResult = v.object({
  * every pre-existing transaction has its budget set, not just new ones. Reuses
  * `ensureBudgetForRef` (the SAME get-or-create the "For" picker's summon-on-
  * pick calls), so a migrated row's budget is indistinguishable from one a
- * human picked. Idempotent + bounded (one chapter via `by_chapter`, or a
- * bounded whole-deployment slice — same shape as `backfillEventBudgets`).
+ * human picked. Idempotent + PAGINATED (native `.paginate()`, one chapter via
+ * `by_chapter` or the whole table) — unlike the other backfills in this file,
+ * a migration can't settle for a bounded `.take()` that silently truncates;
+ * the caller re-invokes with `continueCursor` until `isDone` to prove every
+ * row was examined (see `docs/plans/link-migration-runbook.md`).
  * CLEARS NOTHING — the FKs stay put for the phase-B column drop; this phase
  * only ever ADDS a `budgetId` a transaction didn't already have.
  */
 async function runMigrateLinksToBudgets(
   ctx: MutationCtx,
-  chapterId?: Id<"chapters">,
+  chapterId: Id<"chapters"> | undefined,
+  paginationOpts: { cursor: string | null; numItems: number },
 ): Promise<{
   scanned: number;
   backfilled: number;
   alreadySet: number;
-  conflicts: number;
-  conflictIds: Id<"transactions">[];
+  conflictCount: number;
+  conflicts: MigrationConflict[];
   budgetsSummoned: number;
   skipped: number;
+  isDone: boolean;
+  continueCursor: string;
 }> {
   if (chapterId) {
     const chapter = await ctx.db.get(chapterId);
@@ -4399,22 +4529,19 @@ async function runMigrateLinksToBudgets(
     }
   }
 
-  const txns = chapterId
-    ? await ctx.db
-        .query("transactions")
-        .withIndex("by_chapter", (q) => q.eq("chapterId", chapterId))
-        .take(ROLLUP_SCAN_LIMIT)
-    : await ctx.db.query("transactions").take(ROLLUP_SCAN_LIMIT);
+  const page = await (chapterId
+    ? ctx.db.query("transactions").withIndex("by_chapter", (q) => q.eq("chapterId", chapterId))
+    : ctx.db.query("transactions")
+  ).paginate(paginationOpts);
 
   let scanned = 0;
   let backfilled = 0;
   let alreadySet = 0;
-  let conflicts = 0;
-  const conflictIds: Id<"transactions">[] = [];
+  const conflicts: MigrationConflict[] = [];
   let budgetsSummoned = 0;
   let skipped = 0;
 
-  for (const tr of txns) {
+  for (const tr of page.page) {
     if (!tr.eventId && !tr.projectId) continue;
     scanned++;
     // A central-owned txn never carries these FKs in practice
@@ -4456,31 +4583,84 @@ async function runMigrateLinksToBudgets(
     } else {
       // A human already explicitly attributed this txn to a DIFFERENT budget
       // since the FK was written — keep their explicit choice, never clobber.
-      conflicts++;
-      conflictIds.push(tr._id);
+      // Report everything a reviewer needs to judge the conflict without a
+      // follow-up query.
+      const [refBudget, currentBudget, refName] = await Promise.all([
+        ctx.db.get(refBudgetId),
+        ctx.db.get(tr.budgetId),
+        refDisplayName(ctx, refKind, scopeRefId),
+      ]);
+      const refBudgetLabel = refBudget ? budgetDisplayName(refBudget) : "(deleted budget)";
+      const currentBudgetLabel = currentBudget
+        ? budgetDisplayName(currentBudget)
+        : "(deleted budget)";
+      const dollars = (tr.amountCents / 100).toFixed(2);
+      const merchant = tr.merchantName ? ` at ${tr.merchantName}` : "";
+      const conflict = {
+        transactionId: tr._id,
+        merchantName: tr.merchantName ?? null,
+        postedAt: tr.postedAt,
+        amountCents: tr.amountCents,
+        refKind,
+        refId: scopeRefId,
+        refName,
+        refBudgetId,
+        refBudgetLabel,
+        currentBudgetId: tr.budgetId,
+        currentBudgetLabel,
+        message:
+          `$${dollars}${merchant} (${new Date(tr.postedAt).toISOString().slice(0, 10)}) will ` +
+          `no longer appear in ${refName}'s actuals — it's already attributed to ` +
+          `"${currentBudgetLabel}" instead of "${refBudgetLabel}".`,
+      };
+      conflicts.push(conflict);
+      console.log(`[finances] migrateLinksToBudgets conflict: ${JSON.stringify(conflict)}`);
     }
   }
 
   console.log(
     `[finances] migrateLinksToBudgets: scanned ${scanned}, backfilled ${backfilled}, ` +
-      `already set ${alreadySet}, conflicts ${conflicts} (kept, not overwritten), ` +
-      `budgets summoned ${budgetsSummoned}, skipped ${skipped}.`,
+      `already set ${alreadySet}, conflicts ${conflicts.length} (kept, not overwritten), ` +
+      `budgets summoned ${budgetsSummoned}, skipped ${skipped}, isDone ${page.isDone}.`,
   );
 
-  return { scanned, backfilled, alreadySet, conflicts, conflictIds, budgetsSummoned, skipped };
+  return {
+    scanned,
+    backfilled,
+    alreadySet,
+    conflictCount: conflicts.length,
+    conflicts,
+    budgetsSummoned,
+    skipped,
+    isDone: page.isDone,
+    continueCursor: page.continueCursor,
+  };
 }
 
 /**
- * CLI-runnable (no auth) migration — mirrors `backfillEventBudgets`. Bounded +
- * idempotent (see {@link runMigrateLinksToBudgets}).
+ * CLI-runnable (no auth) migration — mirrors `backfillEventBudgets`. Paginated
+ * + idempotent (see {@link runMigrateLinksToBudgets}); re-invoke with the
+ * returned `continueCursor` until `isDone` to cover the whole table. See
+ * `docs/plans/link-migration-runbook.md` for the full deploy + verify + review
+ * procedure — do NOT run this ad hoc against production.
  *
  * Run locally:  npx convex run finances:migrateLinksToBudgets
- * Run on prod:  npx convex run --prod finances:migrateLinksToBudgets '{"chapterId":"..."}'
+ * Run on prod (first page):     npx convex run --prod finances:migrateLinksToBudgets '{}'
+ * Run on prod (next page):      npx convex run --prod finances:migrateLinksToBudgets '{"paginationOpts":{"numItems":500,"cursor":"<continueCursor>"}}'
+ * Run on prod (one chapter):    npx convex run --prod finances:migrateLinksToBudgets '{"chapterId":"..."}'
  */
 export const migrateLinksToBudgets = internalMutation({
-  args: { chapterId: v.optional(v.id("chapters")) },
+  args: {
+    chapterId: v.optional(v.id("chapters")),
+    paginationOpts: v.optional(paginationOptsValidator),
+  },
   returns: migrateLinksToBudgetsResult,
-  handler: async (ctx, args) => await runMigrateLinksToBudgets(ctx, args.chapterId),
+  handler: async (ctx, args) =>
+    await runMigrateLinksToBudgets(
+      ctx,
+      args.chapterId,
+      args.paginationOpts ?? { cursor: null, numItems: MIGRATION_PAGE_SIZE },
+    ),
 });
 
 // ── Fund merge (WP-1.4 "defund the UI" — one General Fund, zero fund UI) ────
