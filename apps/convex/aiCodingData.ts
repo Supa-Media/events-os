@@ -24,6 +24,7 @@ import { internalQuery, internalMutation, mutation } from "./_generated/server";
 import type { MutationCtx, QueryCtx } from "./_generated/server";
 import { ConvexError, v } from "convex/values";
 import { Doc, Id } from "./_generated/dataModel";
+import { internal } from "./_generated/api";
 import { requireChapterId, requireInChapter } from "./lib/context";
 import { requireFinanceRole } from "./lib/finance";
 
@@ -34,6 +35,24 @@ const WEEK_MS = 7 * 24 * 60 * 60 * 1000;
 const CONTEXT_LIMIT = 100;
 /** Cap on calendar events in the window. */
 const EVENT_LIMIT = 50;
+
+/**
+ * Sweep sizing (the hourly cron). `SWEEP_SCAN` newest transactions are examined;
+ * of those, the unreviewed + unsuggested ones (up to `SWEEP_BATCH`) get a
+ * suggestion scheduled. Both bounds keep the cron cheap and rate-limit how many
+ * OpenRouter calls a single sweep can fan out.
+ */
+const SWEEP_SCAN = 200;
+const SWEEP_BATCH = 25;
+
+/**
+ * Cooldown before the sweep retries a transaction whose last suggestion attempt
+ * failed (OpenRouter errored/non-200'd, or its reply didn't parse). Without this,
+ * a systematic outage would resubmit the same failing transactions every hourly
+ * run forever. `aiSuggestion.failed` + `suggestedAt` (set unconditionally by
+ * `writeSuggestion`) give the sweep a timestamp to cool down against.
+ */
+const FAILED_ATTEMPT_COOLDOWN_MS = 24 * 60 * 60 * 1000;
 
 /** The shape the action reasons over. Ids are strings on the wire. */
 const suggestionContextValidator = v.object({
@@ -69,7 +88,90 @@ const suggestionContextValidator = v.object({
       eventDate: v.number(),
     }),
   ),
+  projects: v.array(
+    v.object({
+      _id: v.id("projects"),
+      name: v.string(),
+      status: v.string(),
+    }),
+  ),
 });
+
+/** The resolved context type both loaders return (matches the validator). */
+type SuggestionContext = typeof suggestionContextValidator.type;
+
+/**
+ * Gather the coding context for one transaction: the chapter's funds and budget
+ * categories, the projects it can attach to, and the events within a week of the
+ * charge. Pure reads — the auth gate lives in the caller so the same body serves
+ * both the human-triggered (`loadForSuggestion`) and system/cron-triggered
+ * (`loadForSuggestionSystem`) paths.
+ */
+async function gatherSuggestionContext(
+  ctx: QueryCtx,
+  txn: Doc<"transactions">,
+): Promise<SuggestionContext> {
+  const chapterId = txn.chapterId;
+
+  const funds = await ctx.db
+    .query("funds")
+    .withIndex("by_chapter", (q) => q.eq("chapterId", chapterId))
+    .take(CONTEXT_LIMIT);
+
+  const categories = await ctx.db
+    .query("budgetCategories")
+    .withIndex("by_chapter", (q) => q.eq("chapterId", chapterId))
+    .take(CONTEXT_LIMIT);
+
+  const projects = await ctx.db
+    .query("projects")
+    .withIndex("by_chapter", (q) => q.eq("chapterId", chapterId))
+    .take(CONTEXT_LIMIT);
+
+  const events = await ctx.db
+    .query("events")
+    .withIndex("by_chapter_date", (q) =>
+      q
+        .eq("chapterId", chapterId)
+        .gte("eventDate", txn.postedAt - WEEK_MS)
+        .lte("eventDate", txn.postedAt + WEEK_MS),
+    )
+    .take(EVENT_LIMIT);
+
+  return {
+    transaction: {
+      _id: txn._id,
+      chapterId: txn.chapterId,
+      amountCents: txn.amountCents,
+      flow: txn.flow,
+      postedAt: txn.postedAt,
+      merchantName: txn.merchantName,
+      merchantCategory: txn.merchantCategory,
+      description: txn.description,
+    },
+    funds: funds.map((f) => ({
+      _id: f._id,
+      name: f.name,
+      restriction: f.restriction,
+    })),
+    categories: categories.map((c) => ({
+      _id: c._id,
+      name: c.name,
+      fundId: c.fundId,
+      kind: c.kind,
+    })),
+    events: events.map((e) => ({
+      _id: e._id,
+      name: e.name,
+      eventDate: e.eventDate,
+    })),
+    projects: projects.map((p) => ({
+      _id: p._id,
+      name: p.name,
+      status: p.status,
+    })),
+  };
+}
 
 /**
  * Load one transaction plus the coding context for it: the chapter's funds and
@@ -94,58 +196,86 @@ export const loadForSuggestion = internalQuery({
         message: "Transaction not found.",
       });
     }
-    const chapterId = txn.chapterId;
     // Manual invocation is bookkeeper+ only (in the txn's chapter).
-    await requireFinanceRole(ctx, chapterId, "bookkeeper");
+    await requireFinanceRole(ctx, txn.chapterId, "bookkeeper");
+    return await gatherSuggestionContext(ctx, txn);
+  },
+});
 
-    const funds = await ctx.db
-      .query("funds")
-      .withIndex("by_chapter", (q) => q.eq("chapterId", chapterId))
-      .take(CONTEXT_LIMIT);
+/**
+ * The SYSTEM (no-auth) coding-context loader for cron/webhook-triggered
+ * suggestions. Identical reads to `loadForSuggestion`, but WITHOUT the bookkeeper
+ * gate — the daily sweep runs with no caller identity. It's internal-only, so the
+ * only way to reach it is the trusted `suggestCodingSystem` action the sweep
+ * schedules; the model still never moves money (it only writes `aiSuggestion`).
+ */
+export const loadForSuggestionSystem = internalQuery({
+  args: { transactionId: v.id("transactions") },
+  returns: suggestionContextValidator,
+  handler: async (ctx, args) => {
+    const txn = await ctx.db.get(args.transactionId);
+    if (!txn) {
+      throw new ConvexError({
+        code: "NOT_FOUND",
+        message: "Transaction not found.",
+      });
+    }
+    return await gatherSuggestionContext(ctx, txn);
+  },
+});
 
-    const categories = await ctx.db
-      .query("budgetCategories")
-      .withIndex("by_chapter", (q) => q.eq("chapterId", chapterId))
-      .take(CONTEXT_LIMIT);
+/**
+ * Hourly sweep (the cron trigger that makes AI auto-coding actually run). Scans
+ * the newest `SWEEP_SCAN` transactions deployment-wide and, for each that is
+ * still `unreviewed` and has NO `aiSuggestion` yet, schedules a system coding
+ * suggestion (up to `SWEEP_BATCH` per run). Idempotent: a txn that already
+ * carries a suggestion is skipped, so re-running never re-suggests or stacks.
+ *
+ * DEGRADE: when `OPENROUTER_API_KEY` is unset the whole feature is off — we log
+ * and schedule nothing rather than fan out a batch of no-op actions. (The action
+ * itself also degrades, so this is purely to avoid pointless scheduling.)
+ */
+export const sweepUnsuggestedTransactions = internalMutation({
+  args: {},
+  returns: v.object({ scheduled: v.number() }),
+  handler: async (ctx) => {
+    if (!process.env.OPENROUTER_API_KEY) {
+      console.log(
+        "[aiCoding] OPENROUTER_API_KEY unset — sweep scheduling nothing.",
+      );
+      return { scheduled: 0 };
+    }
 
-    const events = await ctx.db
-      .query("events")
-      .withIndex("by_chapter_date", (q) =>
-        q
-          .eq("chapterId", chapterId)
-          .gte("eventDate", txn.postedAt - WEEK_MS)
-          .lte("eventDate", txn.postedAt + WEEK_MS),
-      )
-      .take(EVENT_LIMIT);
+    // Newest-first across the deployment (default creation-time index). We only
+    // ever look at the freshest window — old un-coded charges are the bookkeeper's
+    // manual backlog, not something to keep re-scanning forever.
+    const recent = await ctx.db
+      .query("transactions")
+      .order("desc")
+      .take(SWEEP_SCAN);
 
-    return {
-      transaction: {
-        _id: txn._id,
-        chapterId: txn.chapterId,
-        amountCents: txn.amountCents,
-        flow: txn.flow,
-        postedAt: txn.postedAt,
-        merchantName: txn.merchantName,
-        merchantCategory: txn.merchantCategory,
-        description: txn.description,
-      },
-      funds: funds.map((f) => ({
-        _id: f._id,
-        name: f.name,
-        restriction: f.restriction,
-      })),
-      categories: categories.map((c) => ({
-        _id: c._id,
-        name: c.name,
-        fundId: c.fundId,
-        kind: c.kind,
-      })),
-      events: events.map((e) => ({
-        _id: e._id,
-        name: e.name,
-        eventDate: e.eventDate,
-      })),
+    const now = Date.now();
+    // Eligible: never attempted (no `aiSuggestion` at all), OR the last attempt
+    // was a failed-attempt marker that's past the cooldown — anything else (a
+    // real proposal, or a failure still within cooldown) is skipped.
+    const isEligible = (tr: Doc<"transactions">): boolean => {
+      if (tr.status !== "unreviewed") return false;
+      const ai = tr.aiSuggestion;
+      if (ai === undefined) return true;
+      if (!ai.failed) return false;
+      return now - (ai.suggestedAt ?? 0) > FAILED_ATTEMPT_COOLDOWN_MS;
     };
+
+    const pending = recent.filter(isEligible).slice(0, SWEEP_BATCH);
+
+    for (const tr of pending) {
+      await ctx.scheduler.runAfter(
+        0,
+        internal.aiCoding.suggestCodingSystem,
+        { transactionId: tr._id },
+      );
+    }
+    return { scheduled: pending.length };
   },
 });
 
@@ -187,6 +317,10 @@ export const writeSuggestion = internalMutation({
     confidence: v.optional(v.number()),
     rationale: v.optional(v.string()),
     model: v.optional(v.string()),
+    // Set when this write is a failed-attempt marker (the OpenRouter call
+    // errored/non-200'd, or its reply didn't parse) rather than a real
+    // proposal — see `FAILED_ATTEMPT_COOLDOWN_MS` above.
+    failed: v.optional(v.boolean()),
   },
   returns: v.null(),
   handler: async (ctx, args) => {
@@ -229,6 +363,7 @@ export const writeSuggestion = internalMutation({
       rationale: args.rationale,
       model: args.model,
       suggestedAt: Date.now(),
+      failed: args.failed,
     };
     await ctx.db.patch(args.transactionId, { aiSuggestion });
     return null;
@@ -239,9 +374,14 @@ export const writeSuggestion = internalMutation({
  * Apply a transaction's stored AI suggestion (a human confirming the model's
  * proposal). Bookkeeper+ only. Copies the suggestion's present links onto the
  * transaction and advances it to `categorized`. Throws when there's no
- * suggestion at all, or when the suggestion carries no applicable links (so a
- * confidence/rationale-only suggestion never falsely marks a txn coded). The
- * model itself never reaches this path.
+ * suggestion at all, when the suggestion carries no applicable links (so a
+ * confidence/rationale-only suggestion never falsely marks a txn coded), or
+ * when the transaction has already moved past `unreviewed` — a manual edit or
+ * an earlier Accept means the stored suggestion is stale and must never
+ * clobber whatever a human has since done. The suggestion is cleared once
+ * applied, so accepting the same transaction twice is a no-op (the second
+ * call hits `NO_SUGGESTION`, not a second overwrite). The model itself never
+ * reaches this path.
  */
 export const acceptSuggestion = mutation({
   args: { transactionId: v.id("transactions") },
@@ -273,6 +413,18 @@ export const acceptSuggestion = mutation({
       });
     }
 
+    // The suggestion is only safe to apply while the txn is still exactly as
+    // it was when the model looked at it. If a human already categorized it
+    // (or already accepted this same suggestion once), the stored proposal is
+    // stale — applying it now would silently clobber whatever they did.
+    if (txn.status !== "unreviewed") {
+      throw new ConvexError({
+        code: "ALREADY_REVIEWED",
+        message:
+          "This transaction was already reviewed manually; the stored AI suggestion is stale and can no longer be accepted.",
+      });
+    }
+
     // Copy only the links the suggestion actually carries; leave the rest alone.
     const patch: Partial<Doc<"transactions">> = {};
     if (suggestion.fundId !== undefined) patch.fundId = suggestion.fundId;
@@ -292,6 +444,11 @@ export const acceptSuggestion = mutation({
     }
 
     patch.status = "categorized";
+    // Clear the stored suggestion now that it's applied — an explicit
+    // `undefined` unsets the field (mirrors `cleanPatch` in finances.ts).
+    // Without this, accepting the same transaction again (or a later manual
+    // edit racing this one) could re-copy the same stale links.
+    patch.aiSuggestion = undefined;
     await ctx.db.patch(args.transactionId, patch);
     return null;
   },

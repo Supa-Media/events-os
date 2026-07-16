@@ -5,9 +5,11 @@
  * cells that each commit ONE field via its own mutation.
  *
  * Columns: [☐] Merchant · Date · Amount · Cardholder · Category▾ · Budget▾ ·
- * Receipt · Status▾. Category / Budget / Status edit inline (dropdowns, commit
- * per row); Receipt shows ✓ or an inline upload; Amount is read-only (signed).
- * The fund is hidden — the backend defaults it to the General Fund on categorize.
+ * Link▾ · Suggested · Receipt · Status▾. Category / Budget / Link / Status edit
+ * inline (dropdowns, commit per row); Suggested shows the AI auto-coding
+ * proposal (when present + unreviewed) with an Accept action; Receipt shows ✓
+ * or an inline upload; Amount is read-only (signed). The fund is hidden — the
+ * backend defaults it to the General Fund on categorize.
  */
 import { useState } from "react";
 import { View, Text, Pressable, Platform, ScrollView } from "react-native";
@@ -16,6 +18,8 @@ import { api } from "@events-os/convex/_generated/api";
 import type { Id } from "@events-os/convex/_generated/dataModel";
 import {
   Avatar,
+  Badge,
+  Button,
   Icon,
   OptionTag,
   Popover,
@@ -29,7 +33,8 @@ import { STATUS_OPTIONS, signedMoney, shortDate, type TxnRow } from "./helpers";
 
 const NUM = { fontVariant: ["tabular-nums" as const] };
 
-/** An option in the Category / Budget pickers; `header` rows are non-selectable. */
+/** An option in the Category / Budget / Link pickers; `header` rows are
+ *  non-selectable. Link picker values are `"event:<id>"` / `"project:<id>"`. */
 export type PickerItem = { value: string; label: string; header?: boolean };
 
 // Fixed column widths (px) — the grid scrolls horizontally on narrow web while
@@ -42,6 +47,8 @@ const COLS = {
   cardholder: 168,
   category: 168,
   budget: 180,
+  link: 180,
+  suggested: 220,
   receipt: 96,
   status: 148,
 } as const;
@@ -51,6 +58,7 @@ export function ReconcileList({
   rows,
   categoryItems,
   budgetItems,
+  linkItems,
   selected,
   onToggle,
   onToggleAll,
@@ -58,6 +66,7 @@ export function ReconcileList({
   rows: TxnRow[];
   categoryItems: PickerItem[];
   budgetItems: PickerItem[];
+  linkItems: PickerItem[];
   selected: Set<string>;
   onToggle: (id: string) => void;
   onToggleAll: () => void;
@@ -82,6 +91,8 @@ export function ReconcileList({
             <GridHeaderCell label="Cardholder" width={COLS.cardholder} />
             <GridHeaderCell label="Category" width={COLS.category} />
             <GridHeaderCell label="Budget" width={COLS.budget} />
+            <GridHeaderCell label="Link" width={COLS.link} />
+            <GridHeaderCell label="Suggested" width={COLS.suggested} />
             <GridHeaderCell label="Receipt" width={COLS.receipt} />
             <GridHeaderCell label="Status" width={COLS.status} />
           </View>
@@ -93,6 +104,7 @@ export function ReconcileList({
               row={row}
               categoryItems={categoryItems}
               budgetItems={budgetItems}
+              linkItems={linkItems}
               selected={selected.has(row.id)}
               onToggle={() => onToggle(row.id)}
               isLast={i === rows.length - 1}
@@ -108,6 +120,7 @@ function ReconcileRow({
   row,
   categoryItems,
   budgetItems,
+  linkItems,
   selected,
   onToggle,
   isLast,
@@ -115,6 +128,7 @@ function ReconcileRow({
   row: TxnRow;
   categoryItems: PickerItem[];
   budgetItems: PickerItem[];
+  linkItems: PickerItem[];
   selected: boolean;
   onToggle: () => void;
   isLast: boolean;
@@ -123,10 +137,43 @@ function ReconcileRow({
   const setStatus = useMutation(api.finances.setTransactionStatus);
   const attachReceipt = useMutation(api.finances.attachReceipt);
   const generateUploadUrl = useMutation(api.storage.generateUploadUrl);
+  const acceptSuggestion = useMutation(api.aiCodingData.acceptSuggestion);
   const id = row.id as Id<"transactions">;
 
   // Fire-and-surface: run a cell mutation, alerting the server's reason on error.
   const guard = (p: Promise<unknown>) => p.catch((err) => alertError(err));
+
+  // The Link picker's current composite value ("event:<id>" / "project:<id>").
+  const linkValue = row.projectId
+    ? `project:${row.projectId}`
+    : row.eventId
+      ? `event:${row.eventId}`
+      : null;
+
+  function onLinkChange(value: string | null) {
+    if (!value) {
+      guard(categorize({ transactionId: id, projectId: null, eventId: null }));
+      return;
+    }
+    const [kind, refId] = value.split(":");
+    if (kind === "project") {
+      guard(
+        categorize({
+          transactionId: id,
+          projectId: refId as Id<"projects">,
+          eventId: null,
+        }),
+      );
+    } else if (kind === "event") {
+      guard(
+        categorize({
+          transactionId: id,
+          eventId: refId as Id<"events">,
+          projectId: null,
+        }),
+      );
+    }
+  }
 
   return (
     <View
@@ -220,6 +267,44 @@ function ReconcileRow({
             )
           }
         />
+      </Cell>
+
+      {/* Link (inline dropdown; grouped Events / Projects — "what was it for") */}
+      <Cell width={COLS.link}>
+        <PickerCell
+          value={linkValue}
+          items={linkItems}
+          placeholder="Unlinked"
+          onChange={onLinkChange}
+        />
+      </Cell>
+
+      {/* Suggested (AI auto-coding proposal + Accept — only present when the
+          row is still unreviewed and the model proposed at least one link) */}
+      <Cell width={COLS.suggested}>
+        {row.aiSuggestion ? (
+          <View className="flex-1 gap-1 px-2 py-1.5">
+            <Badge
+              label={`AI: ${[
+                row.aiSuggestion.fundName,
+                row.aiSuggestion.categoryName,
+                row.aiSuggestion.projectName ?? row.aiSuggestion.eventName,
+              ]
+                .filter(Boolean)
+                .join(" · ")}`}
+              tone="lavender"
+              icon="sparkles"
+            />
+            <Button
+              title="Accept"
+              size="sm"
+              variant="secondary"
+              onPress={() => guard(acceptSuggestion({ transactionId: id }))}
+            />
+          </View>
+        ) : (
+          <Text className="flex-1 px-2 py-1.5 text-sm text-faint">—</Text>
+        )}
       </Cell>
 
       {/* Receipt (✓ or inline upload) */}

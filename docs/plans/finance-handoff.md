@@ -66,7 +66,12 @@ Increase integration was grounded against the real API and hardened (#95–#103)
 - `financeSettings.ts` — deployment-wide `sandboxMode` singleton
   (`getFinanceSettings` viewer / `setSandboxMode` superuser / `readSandboxMode` internal).
 - `aiCoding.ts` (`"use node"`) + `aiCodingData.ts` — AI auto-coding: `suggestCoding`
-  (OpenRouter, bookkeeper-gated, degrades w/o key) + `acceptSuggestion`.
+  (human-triggered, OpenRouter, bookkeeper-gated, degrades w/o key) /
+  `suggestCodingSystem` (same, cron-triggered, no caller identity) propose
+  fund/category/project/event; `acceptSuggestion` is the human confirm. Triggered
+  hourly by the `ai auto-coding sweep` cron (`crons.ts` →
+  `aiCodingData.sweepUnsuggestedTransactions`, bounded + idempotent). Surfaced in
+  Reconcile's Suggested column (Accept button) + Link column (event/project).
 - `stripeFinance.ts` — Stripe FC: `createFcSession`/`storeFcAccount`/`syncTransactions`
   (cursor + dedup on `by_external_id`)/`listAccounts`/`setAccountFund`/`disconnect`.
 - `reimbursements.ts` — public token-scoped submit/status/upload + in-app queue

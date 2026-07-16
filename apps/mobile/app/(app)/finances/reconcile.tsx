@@ -63,6 +63,9 @@ export default function ReconcileScreen() {
   // All chapter categories (no fund filter — coding is category + budget only).
   const categories = useQuery(api.finances.listCategories, {}) ?? [];
   const budgets = useQuery(api.finances.listBudgets) ?? [];
+  // Link picker sources — "what was it for": an event or a project.
+  const events = useQuery(api.events.list, { scope: "all" }) ?? [];
+  const projects = useQuery(api.projects.list) ?? [];
 
   const bulkCategorize = useMutation(api.finances.bulkCategorize);
   const setStatus = useMutation(api.finances.setTransactionStatus);
@@ -103,6 +106,24 @@ export default function ReconcileScreen() {
       ...central.map((b) => ({ value: b.id, label: budgetName(b) })),
     ];
   }, [budgets]);
+
+  // Link picker items — "None" + events + projects, each under its own header.
+  // Values are composite ("event:<id>" / "project:<id>") so one dropdown can
+  // pick either kind of "what was it for" link.
+  const linkItems = useMemo<PickerItem[]>(
+    () => [
+      { value: "", label: "None" },
+      ...(events.length > 0
+        ? [{ value: "__grp_events", label: "Events", header: true }]
+        : []),
+      ...events.map((e) => ({ value: `event:${e._id}`, label: e.name })),
+      ...(projects.length > 0
+        ? [{ value: "__grp_projects", label: "Projects", header: true }]
+        : []),
+      ...projects.map((p) => ({ value: `project:${p._id}`, label: p.name })),
+    ],
+    [events, projects],
+  );
 
   // Selection lives in a Set keyed by txn id; "in view" = the searched set, so
   // bulk actions only ever touch the rows actually on screen.
@@ -291,6 +312,7 @@ export default function ReconcileScreen() {
             rows={displayed}
             categoryItems={categoryItems}
             budgetItems={budgetItems}
+            linkItems={linkItems}
             selected={selected}
             onToggle={toggle}
             onToggleAll={toggleAll}

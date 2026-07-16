@@ -231,6 +231,12 @@ export const transactions = defineTable({
       rationale: v.optional(v.string()),
       model: v.optional(v.string()),
       suggestedAt: v.optional(v.number()),
+      // Set when this "suggestion" is actually a failed-attempt marker (the
+      // OpenRouter call errored, non-200'd, or returned unparseable JSON) —
+      // never a real proposal. Lets the hourly sweep tell "never attempted"
+      // apart from "attempted and failed", so it can retry after a cooldown
+      // instead of resubmitting every run forever. See aiCodingData.ts.
+      failed: v.optional(v.boolean()),
     }),
   ),
 

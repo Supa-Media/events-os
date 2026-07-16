@@ -193,10 +193,32 @@ const cardholderRef = v.object({
   imageUrl: v.union(v.string(), v.null()),
 });
 
-// One reconcile-grid row: the txn summary plus the resolved cardholder.
+// The AI auto-coding proposal, resolved to display names — only ever populated
+// (non-null) for a row that's still `unreviewed` AND carries at least one
+// proposed link, so the Reconcile grid only ever shows an actionable suggestion.
+const reconcileAiSuggestion = v.object({
+  fundId: v.union(v.id("funds"), v.null()),
+  categoryId: v.union(v.id("budgetCategories"), v.null()),
+  projectId: v.union(v.id("projects"), v.null()),
+  eventId: v.union(v.id("events"), v.null()),
+  fundName: v.union(v.string(), v.null()),
+  categoryName: v.union(v.string(), v.null()),
+  projectName: v.union(v.string(), v.null()),
+  eventName: v.union(v.string(), v.null()),
+  confidence: v.union(v.number(), v.null()),
+  rationale: v.union(v.string(), v.null()),
+});
+
+// One reconcile-grid row: the txn summary plus the resolved cardholder, the
+// current event/project link (+ its display label), and any pending AI proposal.
 const reconcileRow = v.object({
   ...txnSummaryFields,
   cardholder: v.union(cardholderRef, v.null()),
+  projectId: v.union(v.id("projects"), v.null()),
+  eventId: v.union(v.id("events"), v.null()),
+  // "Project: X" / "Event: Y" — the Link column's current-value display.
+  linkLabel: v.union(v.string(), v.null()),
+  aiSuggestion: v.union(reconcileAiSuggestion, v.null()),
 });
 
 // The reconcile filter pills (server-side, correct across ALL rows).
@@ -1066,7 +1088,16 @@ function monthEquivalentBudgetCents(
 }
 
 /** A tiny read-through name cache for a table's display name. */
-function nameCache<T extends "events" | "projects" | "people" | "cards" | "eventTypes">(
+function nameCache<
+  T extends
+    | "events"
+    | "projects"
+    | "people"
+    | "cards"
+    | "eventTypes"
+    | "funds"
+    | "budgetCategories",
+>(
   ctx: QueryCtx,
   table: T,
 ) {
@@ -3309,6 +3340,11 @@ export const listReconcile = query({
     // `storage.getUrl` calls), caching people / cards / image urls across rows.
     const getPerson = nameCache(ctx, "people");
     const getCard = nameCache(ctx, "cards");
+    // Same read-through caching for the Link column + AI suggestion display names.
+    const getEvent = nameCache(ctx, "events");
+    const getProject = nameCache(ctx, "projects");
+    const getFund = nameCache(ctx, "funds");
+    const getCategory = nameCache(ctx, "budgetCategories");
     const imageUrlCache = new Map<Id<"_storage">, string | null>();
     const resolveCardholder = async (tr: Doc<"transactions">) => {
       let personId = tr.personId ?? null;
@@ -3331,9 +3367,57 @@ export const listReconcile = query({
       return { personId, name: person.name, imageUrl };
     };
 
+    // The Link column's current-value label: the project if linked, else the
+    // event (mirrors the dashboard's `codedTo.fundOrProject` precedence).
+    const resolveLinkLabel = async (tr: Doc<"transactions">) => {
+      if (tr.projectId) {
+        const project = await getProject(tr.projectId);
+        return project ? `Project: ${project.name}` : null;
+      }
+      if (tr.eventId) {
+        const event = await getEvent(tr.eventId);
+        return event ? `Event: ${event.name}` : null;
+      }
+      return null;
+    };
+
+    // The AI suggestion, resolved to display names — only for a still-unreviewed
+    // row whose proposal actually carries at least one link (a confidence/
+    // rationale-only proposal has nothing actionable to show or Accept).
+    const resolveAiSuggestion = async (tr: Doc<"transactions">) => {
+      const ai = tr.aiSuggestion;
+      if (tr.status !== "unreviewed" || !ai) return null;
+      if (!ai.fundId && !ai.categoryId && !ai.projectId && !ai.eventId) return null;
+      const [fund, category, project, event] = await Promise.all([
+        ai.fundId ? getFund(ai.fundId) : null,
+        ai.categoryId ? getCategory(ai.categoryId) : null,
+        ai.projectId ? getProject(ai.projectId) : null,
+        ai.eventId ? getEvent(ai.eventId) : null,
+      ]);
+      return {
+        fundId: ai.fundId ?? null,
+        categoryId: ai.categoryId ?? null,
+        projectId: ai.projectId ?? null,
+        eventId: ai.eventId ?? null,
+        fundName: fund?.name ?? null,
+        categoryName: category?.name ?? null,
+        projectName: project?.name ?? null,
+        eventName: event?.name ?? null,
+        confidence: ai.confidence ?? null,
+        rationale: ai.rationale ?? null,
+      };
+    };
+
     const rows: (typeof reconcileRow.type)[] = [];
     for (const tr of selected) {
-      rows.push({ ...toTxnSummary(tr), cardholder: await resolveCardholder(tr) });
+      rows.push({
+        ...toTxnSummary(tr),
+        cardholder: await resolveCardholder(tr),
+        projectId: tr.projectId ?? null,
+        eventId: tr.eventId ?? null,
+        linkLabel: await resolveLinkLabel(tr),
+        aiSuggestion: await resolveAiSuggestion(tr),
+      });
     }
     return { rows, counts };
   },
@@ -3467,6 +3551,9 @@ export const categorizeTransaction = mutation({
     // Advance an unreviewed transaction to categorized once coded.
     const nowCoded = (patch.fundId ?? txn.fundId) || (patch.categoryId ?? txn.categoryId);
     if (nowCoded && txn.status === "unreviewed") patch.status = "categorized";
+    // A human just categorized this manually — clear any stored AI suggestion
+    // so it can never later resurface via `acceptSuggestion` and clobber this.
+    patch.aiSuggestion = undefined;
     await ctx.db.patch(args.transactionId, patch);
     return null;
   },
@@ -3510,6 +3597,9 @@ export const bulkCategorize = mutation({
       const nowCoded =
         (patch.fundId ?? txn.fundId) || (patch.categoryId ?? txn.categoryId);
       if (nowCoded && txn.status === "unreviewed") patch.status = "categorized";
+      // A human just categorized this manually — clear any stored AI suggestion
+      // so it can never later resurface via `acceptSuggestion` and clobber this.
+      patch.aiSuggestion = undefined;
       await ctx.db.patch(id, patch);
       updated++;
     }
@@ -3530,7 +3620,13 @@ export const setTransactionStatus = mutation({
       args.transactionId,
       "Transaction",
     );
-    await ctx.db.patch(args.transactionId, { status: args.status });
+    // A human just acted on this transaction's status manually — clear any
+    // stored AI suggestion so it can never later resurface via
+    // `acceptSuggestion` and clobber whatever state this call put it in.
+    await ctx.db.patch(args.transactionId, {
+      status: args.status,
+      aiSuggestion: undefined,
+    });
     return null;
   },
 });

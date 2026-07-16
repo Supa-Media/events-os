@@ -78,4 +78,16 @@ crons.cron(
   {},
 );
 
+// Hourly: AI auto-coding sweep — for newly-synced, still-`unreviewed`
+// transactions with no `aiSuggestion` yet, schedule `aiCoding.suggestCodingSystem`
+// (bounded batch, idempotent). No-ops when OPENROUTER_API_KEY is unset, matching
+// aiCoding.ts's degrade pattern. The model only ever proposes a coding — a human
+// accepts it in Reconcile.
+crons.interval(
+  "ai auto-coding sweep",
+  { hours: 1 },
+  internal.aiCodingData.sweepUnsuggestedTransactions,
+  {},
+);
+
 export default crons;
