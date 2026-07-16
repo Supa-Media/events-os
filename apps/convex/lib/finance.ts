@@ -225,6 +225,28 @@ export async function requireFinanceCentral(
 }
 
 /**
+ * Assert the caller has central reach AND at least the `min` graded role — the
+ * gate for a central-scoped MONEY WRITE (WP-4.1's skim). `requireFinanceCentral`
+ * alone lets a central *viewer* through (it only checks org reach); recording a
+ * transfer is a write, so it needs bookkeeper+ too, mirroring the
+ * `createManualTransaction` central path's bookkeeper gate (#151).
+ */
+export async function requireCentralFinanceRole(
+  ctx: QueryCtx,
+  chapterId: Id<"chapters">,
+  min: FinanceRole,
+): Promise<FinanceAccess> {
+  const access = await getFinanceRole(ctx, chapterId);
+  if (!access.isCentral || !financeRoleAtLeast(access.role, min)) {
+    throw new ConvexError({
+      code: "FORBIDDEN",
+      message: `This action needs central finance access at the ${FINANCE_ROLE_LABELS[min]} level or higher.`,
+    });
+  }
+  return access;
+}
+
+/**
  * A finance scope: a real chapter, or the org level (`"central"` sentinel). The
  * specialized-role layer assigns `finance_manager` at either; the bridge below
  * keys a `financeRoles` grant on this value directly (the schema union allows it).

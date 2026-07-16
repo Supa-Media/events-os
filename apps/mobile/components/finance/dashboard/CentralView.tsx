@@ -29,6 +29,7 @@ export function CentralView({
   data,
   onViewChapter,
   onNewBudget,
+  onRecordTransfer,
 }: {
   data: CentralDash;
   /** Drill into one chapter's chapter-perspective dashboard (central-only —
@@ -36,6 +37,8 @@ export function CentralView({
   onViewChapter: (chapterId: Id<"chapters">, chapterName: string) => void;
   /** Open `BudgetCreateModal` preset + locked to the central scope. */
   onNewBudget: () => void;
+  /** Open `TransferRecordModal` (record/initiate a skim in or a grant out). */
+  onRecordTransfer: () => void;
 }) {
   // The "By chapter" rollup's Central row (chapterId === CENTRAL, always
   // present — see `dashboardCentral`) vs the real per-chapter rows.
@@ -77,6 +80,11 @@ export function CentralView({
           </View>
         </View>
       ) : null}
+
+      {/* City Launch Fund (WP-4.1/4.2): the chapter→central skim balance minus
+          launch grants paid out, plus the affordance to record/initiate a
+          transfer. Ledger-derived (skim inflow − launch outflow). */}
+      <CityLaunchFundCard fund={data.cityLaunchFund} onRecordTransfer={onRecordTransfer} />
 
       {/* Org-wide (central) budgets — spend across every chapter. */}
       <SectionHeader
@@ -124,6 +132,52 @@ export function CentralView({
           ))
         )}
       </View>
+    </View>
+  );
+}
+
+type CityLaunchFund = CentralDash["cityLaunchFund"];
+
+// The City Launch Fund position + the "Record transfer" affordance (skim in /
+// grant out). The balance is all-time (skims received − launch grants made);
+// the period line reflects the dashboard's selected month/YTD.
+function CityLaunchFundCard({
+  fund,
+  onRecordTransfer,
+}: {
+  fund: CityLaunchFund;
+  onRecordTransfer: () => void;
+}) {
+  return (
+    <View className="mb-3 rounded-lg border border-border bg-raised p-4 shadow-card">
+      <View className="mb-2 flex-row items-start justify-between gap-3">
+        <View className="flex-1">
+          <Text className="font-display text-base text-ink">City Launch Fund</Text>
+          <Text className="text-xs text-muted">
+            Skims received {formatCents(fund.skimsReceivedCents)} − grants made{" "}
+            {formatCents(fund.launchGrantsMadeCents)}
+          </Text>
+        </View>
+        <Button
+          title="Record transfer"
+          icon="plus"
+          size="sm"
+          variant="secondary"
+          onPress={onRecordTransfer}
+        />
+      </View>
+      <Text
+        className="font-display text-2xl text-ink"
+        style={{ fontVariant: ["tabular-nums"] }}
+      >
+        {formatCents(fund.positionCents)}
+      </Text>
+      {fund.periodNetCents !== 0 ? (
+        <Text className="mt-1 text-xs text-muted">
+          {fund.periodNetCents > 0 ? "+" : ""}
+          {formatCents(fund.periodNetCents)} this period
+        </Text>
+      ) : null}
     </View>
   );
 }

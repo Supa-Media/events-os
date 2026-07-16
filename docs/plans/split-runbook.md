@@ -168,6 +168,17 @@ jump ahead.
   ongoing chapter→central monthly skim and any future central→new-chapter launch
   grants. Not part of split day itself; note as post-split work and pick up when
   Phase 4 ships.
+- **Recovering a partial `initiateSkimTransfer`/`initiateLaunchGrant` run.** Both
+  actions POST to Increase, THEN record the ledger pair — if the record step fails
+  after the POST succeeds (a transient error, a network blip), the money moved but
+  nothing got booked. The fix is always the same: **re-run the same `initiate*` call
+  with the same inputs.** The Increase `Idempotency-Key` (the deterministic transfer
+  group id) guarantees the re-POST returns the SAME transfer object rather than
+  moving money twice, so the re-run books the pair safely. The action's error message
+  says this explicitly (`RECORD_FAILED_AFTER_TRANSFER`) — don't manually patch the
+  ledger, just re-run. Separately, if Increase itself returns `pending_approval`
+  (approval required in the Increase dashboard) or `canceled`, the action throws
+  before recording anything — approve the transfer at Increase, then re-run.
 
 ---
 
