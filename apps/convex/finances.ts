@@ -3551,6 +3551,9 @@ export const categorizeTransaction = mutation({
     // Advance an unreviewed transaction to categorized once coded.
     const nowCoded = (patch.fundId ?? txn.fundId) || (patch.categoryId ?? txn.categoryId);
     if (nowCoded && txn.status === "unreviewed") patch.status = "categorized";
+    // A human just categorized this manually — clear any stored AI suggestion
+    // so it can never later resurface via `acceptSuggestion` and clobber this.
+    patch.aiSuggestion = undefined;
     await ctx.db.patch(args.transactionId, patch);
     return null;
   },
@@ -3594,6 +3597,9 @@ export const bulkCategorize = mutation({
       const nowCoded =
         (patch.fundId ?? txn.fundId) || (patch.categoryId ?? txn.categoryId);
       if (nowCoded && txn.status === "unreviewed") patch.status = "categorized";
+      // A human just categorized this manually — clear any stored AI suggestion
+      // so it can never later resurface via `acceptSuggestion` and clobber this.
+      patch.aiSuggestion = undefined;
       await ctx.db.patch(id, patch);
       updated++;
     }
@@ -3614,7 +3620,13 @@ export const setTransactionStatus = mutation({
       args.transactionId,
       "Transaction",
     );
-    await ctx.db.patch(args.transactionId, { status: args.status });
+    // A human just acted on this transaction's status manually — clear any
+    // stored AI suggestion so it can never later resurface via
+    // `acceptSuggestion` and clobber whatever state this call put it in.
+    await ctx.db.patch(args.transactionId, {
+      status: args.status,
+      aiSuggestion: undefined,
+    });
     return null;
   },
 });

@@ -45,6 +45,15 @@ const EVENT_LIMIT = 50;
 const SWEEP_SCAN = 200;
 const SWEEP_BATCH = 25;
 
+/**
+ * Cooldown before the sweep retries a transaction whose last suggestion attempt
+ * failed (OpenRouter errored/non-200'd, or its reply didn't parse). Without this,
+ * a systematic outage would resubmit the same failing transactions every hourly
+ * run forever. `aiSuggestion.failed` + `suggestedAt` (set unconditionally by
+ * `writeSuggestion`) give the sweep a timestamp to cool down against.
+ */
+const FAILED_ATTEMPT_COOLDOWN_MS = 24 * 60 * 60 * 1000;
+
 /** The shape the action reasons over. Ids are strings on the wire. */
 const suggestionContextValidator = v.object({
   transaction: v.object({
@@ -245,9 +254,19 @@ export const sweepUnsuggestedTransactions = internalMutation({
       .order("desc")
       .take(SWEEP_SCAN);
 
-    const pending = recent
-      .filter((tr) => tr.status === "unreviewed" && tr.aiSuggestion === undefined)
-      .slice(0, SWEEP_BATCH);
+    const now = Date.now();
+    // Eligible: never attempted (no `aiSuggestion` at all), OR the last attempt
+    // was a failed-attempt marker that's past the cooldown — anything else (a
+    // real proposal, or a failure still within cooldown) is skipped.
+    const isEligible = (tr: Doc<"transactions">): boolean => {
+      if (tr.status !== "unreviewed") return false;
+      const ai = tr.aiSuggestion;
+      if (ai === undefined) return true;
+      if (!ai.failed) return false;
+      return now - (ai.suggestedAt ?? 0) > FAILED_ATTEMPT_COOLDOWN_MS;
+    };
+
+    const pending = recent.filter(isEligible).slice(0, SWEEP_BATCH);
 
     for (const tr of pending) {
       await ctx.scheduler.runAfter(
@@ -298,6 +317,10 @@ export const writeSuggestion = internalMutation({
     confidence: v.optional(v.number()),
     rationale: v.optional(v.string()),
     model: v.optional(v.string()),
+    // Set when this write is a failed-attempt marker (the OpenRouter call
+    // errored/non-200'd, or its reply didn't parse) rather than a real
+    // proposal — see `FAILED_ATTEMPT_COOLDOWN_MS` above.
+    failed: v.optional(v.boolean()),
   },
   returns: v.null(),
   handler: async (ctx, args) => {
@@ -340,6 +363,7 @@ export const writeSuggestion = internalMutation({
       rationale: args.rationale,
       model: args.model,
       suggestedAt: Date.now(),
+      failed: args.failed,
     };
     await ctx.db.patch(args.transactionId, { aiSuggestion });
     return null;
@@ -350,9 +374,14 @@ export const writeSuggestion = internalMutation({
  * Apply a transaction's stored AI suggestion (a human confirming the model's
  * proposal). Bookkeeper+ only. Copies the suggestion's present links onto the
  * transaction and advances it to `categorized`. Throws when there's no
- * suggestion at all, or when the suggestion carries no applicable links (so a
- * confidence/rationale-only suggestion never falsely marks a txn coded). The
- * model itself never reaches this path.
+ * suggestion at all, when the suggestion carries no applicable links (so a
+ * confidence/rationale-only suggestion never falsely marks a txn coded), or
+ * when the transaction has already moved past `unreviewed` — a manual edit or
+ * an earlier Accept means the stored suggestion is stale and must never
+ * clobber whatever a human has since done. The suggestion is cleared once
+ * applied, so accepting the same transaction twice is a no-op (the second
+ * call hits `NO_SUGGESTION`, not a second overwrite). The model itself never
+ * reaches this path.
  */
 export const acceptSuggestion = mutation({
   args: { transactionId: v.id("transactions") },
@@ -384,6 +413,18 @@ export const acceptSuggestion = mutation({
       });
     }
 
+    // The suggestion is only safe to apply while the txn is still exactly as
+    // it was when the model looked at it. If a human already categorized it
+    // (or already accepted this same suggestion once), the stored proposal is
+    // stale — applying it now would silently clobber whatever they did.
+    if (txn.status !== "unreviewed") {
+      throw new ConvexError({
+        code: "ALREADY_REVIEWED",
+        message:
+          "This transaction was already reviewed manually; the stored AI suggestion is stale and can no longer be accepted.",
+      });
+    }
+
     // Copy only the links the suggestion actually carries; leave the rest alone.
     const patch: Partial<Doc<"transactions">> = {};
     if (suggestion.fundId !== undefined) patch.fundId = suggestion.fundId;
@@ -403,6 +444,11 @@ export const acceptSuggestion = mutation({
     }
 
     patch.status = "categorized";
+    // Clear the stored suggestion now that it's applied — an explicit
+    // `undefined` unsets the field (mirrors `cleanPatch` in finances.ts).
+    // Without this, accepting the same transaction again (or a later manual
+    // edit racing this one) could re-copy the same stale links.
+    patch.aiSuggestion = undefined;
     await ctx.db.patch(args.transactionId, patch);
     return null;
   },

@@ -69,6 +69,29 @@ const suggestionValidator = v.object({
   suggestedAt: v.number(),
 });
 
+/**
+ * A failed-attempt marker persisted to `writeSuggestion` when the OpenRouter
+ * call itself fails (bad response, network error, unparseable JSON) — never
+ * for a legitimate model reply. Carries no links/confidence/rationale beyond
+ * a short note, so it can never surface as an Accept-able suggestion in
+ * Reconcile (every display path there already gates on "has a link"). Its
+ * only job is to give the hourly sweep a timestamp to cool down against
+ * instead of resubmitting the same failing transaction every run forever.
+ */
+async function recordFailedAttempt(
+  ctx: ActionCtx,
+  transactionId: Id<"transactions">,
+  reason: string,
+): Promise<null> {
+  await ctx.runMutation(internal.aiCodingData.writeSuggestion, {
+    transactionId,
+    rationale: reason.slice(0, 200),
+    model: DEFAULT_AI_MODEL,
+    failed: true,
+  });
+  return null;
+}
+
 /** Clamp a model-proposed confidence into [0, 1]; drop anything non-numeric. */
 function cleanConfidence(raw: unknown): number | undefined {
   if (typeof raw !== "number" || Number.isNaN(raw)) return undefined;
@@ -203,13 +226,21 @@ async function codeTransaction(
     });
     if (!res.ok) {
       console.log(`[aiCoding] OpenRouter call failed (${res.status}).`);
-      return null;
+      return await recordFailedAttempt(
+        ctx,
+        transactionId,
+        `OpenRouter call failed (${res.status}).`,
+      );
     }
     const json: any = await res.json();
     content = json?.choices?.[0]?.message?.content ?? "";
   } catch (err) {
     console.log(`[aiCoding] OpenRouter request errored: ${String(err)}`);
-    return null;
+    return await recordFailedAttempt(
+      ctx,
+      transactionId,
+      `OpenRouter request errored: ${String(err)}`,
+    );
   } finally {
     clearTimeout(timer);
   }
@@ -217,7 +248,11 @@ async function codeTransaction(
   const proposal = parseModelJson(content);
   if (!proposal) {
     console.log("[aiCoding] Could not parse a JSON proposal from the model.");
-    return null;
+    return await recordFailedAttempt(
+      ctx,
+      transactionId,
+      "Could not parse a JSON proposal from the model.",
+    );
   }
 
   // Sanitize: keep only ids that appear in the loaded context (drop any
@@ -236,7 +271,7 @@ async function codeTransaction(
     categoryIds.has(proposal.categoryId)
       ? (proposal.categoryId as any)
       : undefined;
-  const eventId =
+  const rawEventId =
     typeof proposal.eventId === "string" && eventIds.has(proposal.eventId)
       ? (proposal.eventId as any)
       : undefined;
@@ -244,6 +279,12 @@ async function codeTransaction(
     typeof proposal.projectId === "string" && projectIds.has(proposal.projectId)
       ? (proposal.projectId as any)
       : undefined;
+  // At most one of project/event: every manual coding path (createManualTransaction,
+  // categorizeTransaction) treats them as alternatives, and proposing both would
+  // double-count the charge into both the event AND project actuals rollups. Prefer
+  // the project — mirrors the Reconcile grid's project-over-event display
+  // precedence (`resolveLinkLabel` in finances.ts).
+  const eventId = projectId ? undefined : rawEventId;
   const confidence = cleanConfidence(proposal.confidence);
   const rationale =
     typeof proposal.rationale === "string"
