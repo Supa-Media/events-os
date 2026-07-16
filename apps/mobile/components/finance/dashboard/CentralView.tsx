@@ -5,7 +5,7 @@
  * list (each chapter's month spend against its budget). Pure presentation over
  * `api.finances.dashboardCentral`.
  */
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import { Pressable, Text, View } from "react-native";
 import { useQuery } from "convex/react";
 import type { FunctionReturnType } from "convex/server";
@@ -20,7 +20,7 @@ import {
 import { Button, EmptyState, Icon, SectionHeader } from "../../ui";
 import { colors } from "../../../lib/theme";
 import { BudgetBar, Chip, Tile, TileRow } from "./parts";
-import { TagRollupSection, type BudgetSpend } from "./TagRollup";
+import { TagRollupSection, type BudgetSpend, type TagRollup } from "./TagRollup";
 
 type CentralDash = FunctionReturnType<typeof api.finances.dashboardCentral>;
 type ChapterRollup = CentralDash["chapterRollup"][number];
@@ -51,6 +51,11 @@ export function CentralView({
     (c): c is ChapterRollup & { chapterId: Id<"chapters"> } => c.chapterId !== CENTRAL,
   );
 
+  // The tag-detail sheet's open/selected tag — CONTROLLED here (not owned by
+  // `TagRollupSection`) so `budgetActuals` below can skip until it's actually
+  // open (see that query's comment).
+  const [selectedTag, setSelectedTag] = useState<TagRollup | null>(null);
+
   // R1d root cause: the tag-detail sheet's "carrying budgets" list
   // (`listBudgets`) includes the CALLER's OWN chapter budgets too (any
   // one_time/recurring budget sharing the tapped tag's name) — but this map
@@ -62,11 +67,18 @@ export function CentralView({
   // absent). Only fetched once the caller actually holds a chapter-scope seat
   // (`mySeats`, itself non-throwing) — `budgetVsActual` requires at least a
   // viewer role in the CALLER's own chapter, which a pure central-only seat
-  // holder doesn't have, and this dashboard must never crash on it.
+  // holder doesn't have, and this dashboard must never crash on it. Also
+  // skipped until the tag-detail sheet is actually open — `spentByBudgetId`
+  // (the only consumer of this query) only matters once a tag is tapped, so
+  // there's no reason to keep an always-on subscription for the rest of the
+  // dashboard's lifetime.
   const seats = useQuery(api.financeRoles.mySeats, {}) ?? [];
   const hasChapterSeat = seats.some((s) => s.scope === "chapter");
   const budgetActuals =
-    useQuery(api.finances.budgetVsActual, hasChapterSeat ? { year } : "skip") ?? [];
+    useQuery(
+      api.finances.budgetVsActual,
+      hasChapterSeat && selectedTag ? { year } : "skip",
+    ) ?? [];
 
   // Per-central-budget actuals for the tag-detail sheet, keyed by budget id.
   const spentByBudgetId = useMemo(() => {
@@ -137,6 +149,8 @@ export function CentralView({
         rollups={data.tagRollups}
         spentByBudgetId={spentByBudgetId}
         matchMode="name"
+        selected={selectedTag}
+        onSelect={setSelectedTag}
       />
 
       {/* By chapter — the Central row (org-wide central-linked spend, from

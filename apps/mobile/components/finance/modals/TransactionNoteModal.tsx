@@ -13,11 +13,10 @@ import { Modal, Pressable, Text, View } from "react-native";
 import { useMutation } from "convex/react";
 import { api } from "@events-os/convex/_generated/api";
 import type { Id } from "@events-os/convex/_generated/dataModel";
+import { MAX_NOTE_LENGTH } from "@events-os/shared";
 import { Button, Icon, TextField } from "../../ui";
 import { colors } from "../../../lib/theme";
 import { alertError } from "../../../lib/errors";
-
-const MAX_NOTE_LENGTH = 2000;
 
 export function TransactionNoteModal({
   transactionId,

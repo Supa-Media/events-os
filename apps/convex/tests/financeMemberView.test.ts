@@ -115,6 +115,18 @@ describe("personTransactions — no-seat member reads their own", () => {
     expect(rows.map((r) => r.id)).toEqual([otherTxn]);
   });
 
+  test("never includes the bookkeeper's internal note, even when set", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const me = await seedPerson(s, { name: "Caller", userId: s.userId });
+    const mine = await seedTxn(s, { personId: me, amountCents: 4200 });
+    await run(s.t, (ctx) => ctx.db.patch(mine, { note: "Reimbursed via Venmo" }));
+
+    const rows = await s.as.query(api.finances.personTransactions, {});
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).not.toHaveProperty("note");
+  });
+
   test("no roster row at all → empty (no throw)", async () => {
     const t = newT();
     const s = await setupChapter(t);

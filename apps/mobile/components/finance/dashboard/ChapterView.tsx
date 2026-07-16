@@ -9,7 +9,7 @@
  * view) and `api.finances.chapterAffordability` (the header strip) — this
  * view is pure presentation over those two contracts.
  */
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import { Pressable, Text, View } from "react-native";
 import { useQuery } from "convex/react";
 import type { FunctionReturnType } from "convex/server";
@@ -39,7 +39,7 @@ import {
   TileRow,
   txnStatusTone,
 } from "./parts";
-import { TagRollupSection, type BudgetSpend } from "./TagRollup";
+import { TagRollupSection, type BudgetSpend, type TagRollup } from "./TagRollup";
 
 type ChapterDash = FunctionReturnType<typeof api.finances.dashboardChapter>;
 type ProjectBudget = ChapterDash["oneTimeBudgets"][number];
@@ -92,6 +92,11 @@ export function ChapterView({
     (t) => txnStatusTone(t.status).label === "Needs review",
   ).length;
 
+  // The tag-detail sheet's open/selected tag — CONTROLLED here (not owned by
+  // `TagRollupSection`) so `budgetActuals` below can skip until it's actually
+  // open (see that query's comment).
+  const [selectedTag, setSelectedTag] = useState<TagRollup | null>(null);
+
   // R1d root cause: `oneTimeBudgets`/`recurringBudgets` are the dashboard's own
   // CARD lists, and `recurringBudgets` additionally drops any budget that
   // doesn't apply to the CURRENTLY VIEWED month/quarter (`recurringAppliesToDash`
@@ -104,9 +109,16 @@ export function ChapterView({
   // real actuals — never absent, so a genuinely zero-spend budget correctly
   // shows "$0.00") so every budget the sheet can show has real numbers. Skipped
   // during a central drill-down: `budgetVsActual` always resolves the CALLER's
-  // own chapter, which isn't the chapter being viewed there.
+  // own chapter, which isn't the chapter being viewed there. Also skipped until
+  // the tag-detail sheet is actually open — `spentByBudgetId` (the only
+  // consumer of this query) only matters once a tag is tapped, so there's no
+  // reason to keep an always-on subscription for the rest of the dashboard's
+  // lifetime.
   const budgetActuals =
-    useQuery(api.finances.budgetVsActual, isDrilldown ? "skip" : { year }) ?? [];
+    useQuery(
+      api.finances.budgetVsActual,
+      isDrilldown || !selectedTag ? "skip" : { year },
+    ) ?? [];
 
   // Per-budget actuals for the tag-detail sheet, keyed by budget id.
   const spentByBudgetId = useMemo(() => {
@@ -183,7 +195,12 @@ export function ChapterView({
       )}
 
       {/* By tag — interactive rollup ("spent on Fundraisers") */}
-      <TagRollupSection rollups={data.tagRollups} spentByBudgetId={spentByBudgetId} />
+      <TagRollupSection
+        rollups={data.tagRollups}
+        spentByBudgetId={spentByBudgetId}
+        selected={selectedTag}
+        onSelect={setSelectedTag}
+      />
 
       {/* Recent transactions */}
       <SectionHeader

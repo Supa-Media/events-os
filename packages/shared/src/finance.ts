@@ -213,6 +213,13 @@ export const RECEIPT_GRACE_DAYS = 7;
  *  `RECEIPT_GRACE_DAYS`. */
 export const RECEIPT_ESCALATE_DAYS = 3;
 
+/** R1a — a transaction note is a short "who/why" justification, not a
+ *  document: capped so a runaway paste can't bloat the row. Shared by
+ *  `finances.setTransactionNote` (server-side enforcement) and
+ *  `TransactionNoteModal` (the `TextField`'s `maxLength`) so the two never
+ *  drift apart. */
+export const MAX_NOTE_LENGTH = 2000;
+
 // ── Card requests (WP-C.1: request-a-card) ──────────────────────────────────
 // A member's request for a card, decided by an FM/Treasurer (never self-serve).
 // "requested" is the only OPEN state — a person may hold at most one at a time

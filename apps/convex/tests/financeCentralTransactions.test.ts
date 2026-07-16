@@ -502,6 +502,40 @@ describe("reconcile writes: central-owned txns", () => {
     expect((caught as ConvexError<{ code: string }>).data.code).toBe("FORBIDDEN");
   });
 
+  test("setTransactionNote sets a note on a central txn at central reach", async () => {
+    const t = newT();
+    const s = await setupChapter(t, { email: "seyi@publicworship.life" });
+    const now = Date.now();
+    const centralTxn = await seedCentralTxn(s, { amountCents: 4200, postedAt: now });
+
+    await s.as.mutation(api.finances.setTransactionNote, {
+      transactionId: centralTxn,
+      note: "Reimbursed via Slack DM",
+    });
+    const txn = await run(t, (ctx) => ctx.db.get(centralTxn));
+    expect(txn?.note).toBe("Reimbursed via Slack DM");
+  });
+
+  test("a chapter-only manager CANNOT setTransactionNote on a central txn", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await asChapterManager(s);
+    const now = Date.now();
+    const centralTxn = await seedCentralTxn(s, { amountCents: 4200, postedAt: now });
+
+    let caught: unknown;
+    try {
+      await s.as.mutation(api.finances.setTransactionNote, {
+        transactionId: centralTxn,
+        note: "trying to sneak a note in",
+      });
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(ConvexError);
+    expect((caught as ConvexError<{ code: string }>).data.code).toBe("FORBIDDEN");
+  });
+
   test("bulkCategorize sets a central budget across central txns (central reach)", async () => {
     const t = newT();
     const s = await setupChapter(t, { email: "seyi@publicworship.life" });
@@ -582,6 +616,26 @@ describe("central VIEWER: reach lets them read, but NOT reconcile-write", () => 
       await s.as.mutation(api.finances.setTransactionStatus, {
         transactionId: centralTxn,
         status: "reconciled",
+      });
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(ConvexError);
+    expect((caught as ConvexError<{ code: string }>).data.code).toBe("FORBIDDEN");
+  });
+
+  test("a central-scoped VIEWER CANNOT setTransactionNote on a central txn", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await asCentralViewer(s);
+    const now = Date.now();
+    const centralTxn = await seedCentralTxn(s, { amountCents: 4200, postedAt: now });
+
+    let caught: unknown;
+    try {
+      await s.as.mutation(api.finances.setTransactionNote, {
+        transactionId: centralTxn,
+        note: "should not be allowed",
       });
     } catch (err) {
       caught = err;

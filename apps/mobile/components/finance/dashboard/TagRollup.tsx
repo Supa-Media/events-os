@@ -11,7 +11,7 @@
  * same-named tags across chapters and leaves `tagId` null, so it matches by name
  * (`matchMode="name"`) over the caller-visible (chapter + central) budgets.
  */
-import { useMemo, useState } from "react";
+import { useMemo } from "react";
 import { Modal, Pressable, ScrollView, Text, View } from "react-native";
 import { useQuery } from "convex/react";
 import type { FunctionReturnType } from "convex/server";
@@ -42,18 +42,27 @@ export function tagKindLabel(kind: string | null): string {
 /**
  * The "By tag" dashboard section: a tappable row per tag rollup, plus the
  * detail sheet that opens on tap.
+ *
+ * `selected`/`onSelect` are CONTROLLED by the parent dashboard (rather than
+ * owned here) so it can gate its `budgetVsActual` backfill query (see
+ * `ChapterView`/`CentralView`'s `spentByBudgetId` comment) on the sheet
+ * actually being open — that query only feeds `spentByBudgetId`, which only
+ * matters once a tag is tapped, so there's no reason to keep it subscribed for
+ * the whole time the dashboard is mounted.
  */
 export function TagRollupSection({
   rollups,
   spentByBudgetId,
   matchMode = "id",
+  selected,
+  onSelect,
 }: {
   rollups: TagRollup[];
   spentByBudgetId: Map<string, BudgetSpend>;
   matchMode?: "id" | "name";
+  selected: TagRollup | null;
+  onSelect: (r: TagRollup | null) => void;
 }) {
-  const [selected, setSelected] = useState<TagRollup | null>(null);
-
   return (
     <>
       <SectionHeader title="By tag" count={rollups.length || undefined} />
@@ -68,7 +77,7 @@ export function TagRollupSection({
             <TagRollupRow
               key={r.tagId ?? `${r.tagName}:${i}`}
               r={r}
-              onPress={() => setSelected(r)}
+              onPress={() => onSelect(r)}
             />
           ))}
         </View>
@@ -79,7 +88,7 @@ export function TagRollupSection({
           rollup={selected}
           matchMode={matchMode}
           spentByBudgetId={spentByBudgetId}
-          onClose={() => setSelected(null)}
+          onClose={() => onSelect(null)}
         />
       ) : null}
     </>

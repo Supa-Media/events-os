@@ -58,7 +58,10 @@ const COLS = {
   suggested: 220,
   receipt: 96,
   status: 148,
-  actions: 76,
+  // Wide enough for the note icon PLUS the "Personal" badge (its widest
+  // combination — the note icon + the manager-only flag icon is narrower).
+  // 76px clipped/overlapped the badge's text.
+  actions: 112,
 } as const;
 const TABLE_WIDTH = Object.values(COLS).reduce((sum, w) => sum + w, 0);
 
