@@ -1,7 +1,7 @@
 /**
  * Finance dashboard shared parts — the small presentational building blocks the
- * three perspective views (central / chapter / member) compose from, plus a
- * local error boundary that lets a finance query that throws (e.g. the caller
+ * three seat views (central / chapter / member) compose from, plus a local
+ * error boundary that lets a finance query that throws (e.g. the caller
  * lacks a finance-role grant, or `dashboardCentral` rejecting a non-central
  * viewer) degrade to a friendly fallback instead of unmounting the screen.
  *
@@ -11,7 +11,12 @@
  */
 import { Component, type ReactNode } from "react";
 import { Text, View, Pressable } from "react-native";
-import { formatCents, type TransactionFlow } from "@events-os/shared";
+import {
+  formatCents,
+  FINANCE_ROLE_LABELS,
+  type FinanceRole,
+  type TransactionFlow,
+} from "@events-os/shared";
 import { colors } from "../../../lib/theme";
 import { Icon, type BadgeTone } from "../../ui";
 
@@ -19,21 +24,17 @@ import { Icon, type BadgeTone } from "../../ui";
 /**
  * Catches a render-time throw from a Convex `useQuery` in its subtree. Finance
  * reads gate on a `financeRoles` grant, so a viewer without one makes the query
- * throw a `ConvexError`; this keeps that from blanking the whole screen. On the
- * first catch it calls `onError` (used by the central probe to learn "not
- * central") and renders `fallback`. It does not auto-retry — finance-role
- * errors aren't transient — but remounting via a `key` resets it.
+ * throw a `ConvexError`; this keeps that from blanking the whole screen and
+ * renders `fallback` instead. It does not auto-retry — finance-role errors
+ * aren't transient — but remounting via a `key` resets it.
  */
 export class FinanceBoundary extends Component<
-  { children: ReactNode; fallback?: ReactNode; onError?: (err: unknown) => void },
+  { children: ReactNode; fallback?: ReactNode },
   { failed: boolean }
 > {
   state = { failed: false };
   static getDerivedStateFromError() {
     return { failed: true };
-  }
-  componentDidCatch(err: unknown) {
-    this.props.onError?.(err);
   }
   render() {
     if (this.state.failed) return this.props.fallback ?? null;
@@ -246,7 +247,7 @@ export function MonthStepper({
 export type DashPeriodMode = "month" | "ytd";
 
 /**
- * A compact Month / YTD segmented toggle (matches the `PerspectiveSwitch`
+ * A compact Month / YTD segmented toggle (matches the `SeatSwitcher`
  * styling) that flips the dashboard between the selected month and the
  * cumulative year-to-date range through it. Sits next to the `MonthStepper`.
  */
@@ -283,38 +284,62 @@ export function PeriodSwitch({
   );
 }
 
-// ── Segmented "Preview as" control ───────────────────────────────────────────
-export type Perspective = "central" | "chapter" | "member";
+// ── Seat switcher ────────────────────────────────────────────────────────────
+/**
+ * One of the caller's REAL finance seats, as returned by
+ * `api.financeRoles.mySeats` (structurally typed here so this presentational
+ * file doesn't import generated backend types).
+ */
+export type Seat =
+  | { scope: "central"; role: FinanceRole }
+  | { scope: "chapter"; chapterId: string; chapterName: string; role: FinanceRole };
 
-/** The prototype's "Preview as" segmented switch. Options are caller-supplied
- *  (the Central segment only appears for central viewers). */
-export function PerspectiveSwitch({
-  value,
-  options,
+/** The stable key identifying a seat ("central" or the chapter id). */
+export function seatKeyOf(seat: Seat): string {
+  return seat.scope === "central" ? "central" : seat.chapterId;
+}
+
+/** "Central · Manager" / "New York · Bookkeeper" — the desk, then the role. */
+export function seatLabelOf(seat: Seat): string {
+  const desk = seat.scope === "central" ? "Central" : seat.chapterName;
+  return `${desk} · ${FINANCE_ROLE_LABELS[seat.role]}`;
+}
+
+/**
+ * The seat switcher: which of the caller's REAL seats is the desk they're at.
+ * Only rendered for dual-hat holders (a central seat AND ≥1 chapter seat — a
+ * transition-period state); single-seat callers never see it. This replaced
+ * the "Preview as" role simulation, which is gone: nobody previews a role
+ * they don't hold.
+ */
+export function SeatSwitcher({
+  seats,
+  activeKey,
   onChange,
 }: {
-  value: Perspective;
-  options: { key: Perspective; label: string }[];
-  onChange: (p: Perspective) => void;
+  seats: Seat[];
+  activeKey: string;
+  onChange: (key: string) => void;
 }) {
   return (
     <View className="flex-row items-center gap-2">
       <Text className="text-2xs font-bold uppercase tracking-wider text-faint">
-        Preview as
+        Seat
       </Text>
       <View className="flex-row items-center gap-0.5 rounded-pill border border-border bg-sunken p-0.5">
-        {options.map((o) => {
-          const active = o.key === value;
+        {seats.map((seat) => {
+          const key = seatKeyOf(seat);
+          const active = key === activeKey;
           return (
             <Pressable
-              key={o.key}
-              onPress={() => onChange(o.key)}
+              key={key}
+              onPress={() => onChange(key)}
               className={`rounded-pill px-3 py-1 ${active ? "bg-raised shadow-card" : ""}`}
             >
               <Text
                 className={`text-sm font-semibold ${active ? "text-accent" : "text-muted"}`}
               >
-                {o.label}
+                {seatLabelOf(seat)}
               </Text>
             </Pressable>
           );

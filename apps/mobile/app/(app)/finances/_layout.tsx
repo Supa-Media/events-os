@@ -8,8 +8,9 @@ import { SandboxModeBanner } from "../../../components/finance/SandboxModeBanner
  * layout adds the in-app finance tabs (Dashboard · Reconcile · Cards ·
  * Reimbursements) above the active screen, matching the prototype's tabbed
  * finance app. Each tab is its own route so the Phase-1 UI agents own disjoint
- * screen files. Perspective (central / chapter / member) is resolved INSIDE
- * each screen from the caller's finance role — not by hiding tabs here.
+ * screen files. The desk each screen renders (central / chapter / member) is
+ * resolved INSIDE it from the caller's REAL seats (`financeRoles.mySeats`) —
+ * not by hiding tabs here.
  *
  * Orchestrator-owned (shared across the finance screens); screens render their
  * own <Screen>/content into the <Slot/> below.

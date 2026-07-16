@@ -9,13 +9,113 @@
  */
 import { query, mutation } from "./_generated/server";
 import { ConvexError, v } from "convex/values";
-import { FINANCE_ROLES, FINANCE_ROLE_SCOPES } from "@events-os/shared";
+import {
+  FINANCE_ROLES,
+  FINANCE_ROLE_SCOPES,
+  FINANCE_ROLE_RANK,
+  type FinanceRole,
+} from "@events-os/shared";
 import { Id } from "./_generated/dataModel";
-import { getChapterIdOrNull, requireChapterId } from "./lib/context";
+import {
+  getChapterIdOrNull,
+  requireChapterId,
+  requireUserId,
+} from "./lib/context";
 import { requireFinanceManager, requireFinanceCentral } from "./lib/finance";
+import { isSuperuser } from "./lib/superuser";
 
 const roleValidator = v.union(...FINANCE_ROLES.map((r) => v.literal(r)));
 const scopeValidator = v.union(...FINANCE_ROLE_SCOPES.map((s) => v.literal(s)));
+
+/**
+ * The caller's REAL finance seats (WP-0.2) — what the dashboard routes by,
+ * replacing the fake "Preview as" role simulation.
+ *
+ * A seat is a desk the caller actually sits at:
+ *  - `{scope:"central"}` — any `scope:"central"` grant (whichever chapterId the
+ *    row is keyed on: `grantFinanceRole` keys it on the granting chapter, the
+ *    specialized-roles bridge on the `"central"` sentinel), or the superuser
+ *    allowlist (implicit central manager — the bootstrap path).
+ *  - `{scope:"chapter"}` — one per chapter with a `scope:"chapter"` grant.
+ *
+ * Central first (the UI's default desk), then chapters by name. Placeholder
+ * roster rows never count (mirrors `viewerPerson`). No grants → `[]` → member.
+ */
+export const mySeats = query({
+  args: {},
+  returns: v.array(
+    v.union(
+      v.object({ scope: v.literal("central"), role: roleValidator }),
+      v.object({
+        scope: v.literal("chapter"),
+        chapterId: v.id("chapters"),
+        chapterName: v.string(),
+        role: roleValidator,
+      }),
+    ),
+  ),
+  handler: async (ctx) => {
+    const userId = (await requireUserId(ctx)) as Id<"users">;
+    const people = await ctx.db
+      .query("people")
+      .withIndex("by_user", (q) => q.eq("userId", userId))
+      .collect();
+    const grants = (
+      await Promise.all(
+        people
+          .filter((p) => p.isPlaceholder !== true)
+          .map((p) =>
+            ctx.db
+              .query("financeRoles")
+              .withIndex("by_person", (q) => q.eq("personId", p._id))
+              .collect(),
+          ),
+      )
+    ).flat();
+
+    const stronger = (a: FinanceRole, b: FinanceRole | null) =>
+      b == null || FINANCE_ROLE_RANK[a] > FINANCE_ROLE_RANK[b];
+
+    // Central seat: superuser short-circuit, else the strongest central grant.
+    let centralRole: FinanceRole | null = (await isSuperuser(ctx))
+      ? "manager"
+      : null;
+    for (const g of grants) {
+      if (g.scope === "central" && stronger(g.role, centralRole)) {
+        centralRole = g.role;
+      }
+    }
+
+    // Chapter seats: the strongest chapter-scoped grant per chapter.
+    const chapterRoles = new Map<Id<"chapters">, FinanceRole>();
+    for (const g of grants) {
+      if (g.scope !== "chapter" || g.chapterId === "central") continue;
+      if (stronger(g.role, chapterRoles.get(g.chapterId) ?? null)) {
+        chapterRoles.set(g.chapterId, g.role);
+      }
+    }
+
+    const chapterSeats = [];
+    for (const [chapterId, role] of chapterRoles) {
+      const chapter = await ctx.db.get(chapterId);
+      if (!chapter) continue; // stale grant on a deleted chapter
+      chapterSeats.push({
+        scope: "chapter" as const,
+        chapterId,
+        chapterName: chapter.name,
+        role,
+      });
+    }
+    chapterSeats.sort((a, b) => a.chapterName.localeCompare(b.chapterName));
+
+    return [
+      ...(centralRole != null
+        ? [{ scope: "central" as const, role: centralRole }]
+        : []),
+      ...chapterSeats,
+    ];
+  },
+});
 
 /** List every finance-role grant in the caller's chapter (manager only). */
 export const listFinanceRoles = query({

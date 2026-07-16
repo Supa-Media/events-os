@@ -398,10 +398,6 @@ export function financeRoleAtLeast(
 export const FINANCE_ROLE_SCOPES = ["chapter", "central"] as const;
 export type FinanceRoleScope = (typeof FINANCE_ROLE_SCOPES)[number];
 
-// The dashboard perspective a viewer sees, from their tier + finance role.
-export const FINANCE_PERSPECTIVES = ["central", "chapter", "member"] as const;
-export type FinancePerspective = (typeof FINANCE_PERSPECTIVES)[number];
-
 // ── Central (org-level) sentinel ─────────────────────────────────────────────
 // The org level ("central") is represented by the string literal `"central"`
 // stored in a `chapterId` field — NEVER null/absent, and NOT a real `chapters`
