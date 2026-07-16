@@ -4,9 +4,10 @@
  * (lock / unlock / edit-controls per row), an "Issue card" flow, and the static
  * card-philosophy explainer. Matches `finances.html` (§ Cards, manager-only).
  *
- * "Personal to repay" has no manager-level aggregate read in the Phase-5 card
- * contract (repayments are surfaced per-cardholder), so that tile shows a dash
- * rather than a fabricated number.
+ * "Personal to repay" is backed by `api.cards.personalRepaymentsOutstanding`
+ * (D4) — the chapter-scope aggregate of not-yet-paid personal-charge
+ * repayments, viewer+ gated. The same query backs the matching tile on the
+ * Reimbursements manager queue.
  */
 import { useMemo, useState } from "react";
 import { Text, View } from "react-native";
@@ -34,6 +35,7 @@ import { hasReceiptDue, type CardSummary } from "./helpers";
 
 export function ManagerCardsView() {
   const cards = useQuery(api.cards.listCards, {});
+  const personalToRepay = useQuery(api.cards.personalRepaymentsOutstanding, {});
   const lockCard = useMutation(api.cards.lockCard);
   const unlockCard = useMutation(api.cards.unlockCard);
   const { run, toast, dismiss } = useActionRunner();
@@ -94,7 +96,19 @@ export function ManagerCardsView() {
         />
         <CardTile
           label="Personal to repay"
-          meta="flagged by cardholders"
+          value={
+            personalToRepay === undefined
+              ? undefined
+              : formatCents(personalToRepay.totalCents)
+          }
+          valueClassName={
+            personalToRepay && personalToRepay.count > 0 ? "text-warn" : "text-ink"
+          }
+          meta={
+            personalToRepay === undefined
+              ? "flagged by cardholders"
+              : `${personalToRepay.count} outstanding`
+          }
         />
       </View>
 

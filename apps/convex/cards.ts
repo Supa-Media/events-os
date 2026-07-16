@@ -905,6 +905,12 @@ export const handleIncreaseRealTimeDecision = internalAction({
  * finance manager may flag it. Marks the transaction `isPersonal` (removing it
  * from category spend) and creates a `pending` `personalRepayments` row owned by
  * the card's cardholder. IDEMPOTENT: one repayment per transaction.
+ *
+ * MANAGER-INITIATED (D4): when a MANAGER flags someone ELSE's charge, the
+ * cardholder is notified by best-effort email (`notifyPersonalChargeFlagged`,
+ * scheduled so the mutation never blocks on Resend) — they otherwise have no
+ * way to learn a charge on THEIR card was just marked personal. A cardholder
+ * flagging their own charge needs no such email (they already know).
  */
 export const flagPersonalCharge = mutation({
   args: { transactionId: v.id("transactions") },
@@ -965,7 +971,175 @@ export const flagPersonalCharge = mutation({
       updatedAt: now,
     });
     await ctx.db.patch(transactionId, { isPersonal: true, repaymentId });
+
+    // Manager flagging SOMEONE ELSE's charge → notify the cardholder. Scheduled
+    // (not awaited) so a slow/failing Resend call never blocks the flag itself;
+    // the action below is best-effort and degrades silently without a key.
+    if (!isCardholder) {
+      await ctx.scheduler.runAfter(0, internal.cards.notifyPersonalChargeFlagged, {
+        repaymentId,
+      });
+    }
+
     return toRepaymentSummary((await ctx.db.get(repaymentId))!);
+  },
+});
+
+/** The cardholder contact + charge details `notifyPersonalChargeFlagged` needs.
+ *  Null when the payer has no reachable email (mirrors
+ *  `getReceiptReminderContact`'s degrade). */
+export const getPersonalChargeFlagContact = internalQuery({
+  args: { repaymentId: v.id("personalRepayments") },
+  returns: v.union(
+    v.object({
+      email: v.string(),
+      cardholderName: v.string(),
+      merchantName: v.union(v.string(), v.null()),
+      amountCents: v.number(),
+    }),
+    v.null(),
+  ),
+  handler: async (ctx, { repaymentId }) => {
+    const rep = await ctx.db.get(repaymentId);
+    if (!rep) return null;
+    const person = await ctx.db.get(rep.payerPersonId);
+    const email = person?.pwEmail ?? person?.email;
+    if (!person || !email) return null;
+    const txn = await ctx.db.get(rep.transactionId);
+    return {
+      email,
+      cardholderName: person.name,
+      merchantName: txn?.merchantName ?? null,
+      amountCents: rep.amountCents,
+    };
+  },
+});
+
+/** Best-effort "a charge on your card was marked personal" email — logs +
+ *  no-ops without `RESEND_API_KEY` (same degrade as `notifyReceiptReminder`).
+ *  Never throws past itself (it's a scheduled fire-and-forget job off the
+ *  flagging mutation, so a Resend failure here must not surface anywhere). */
+export const notifyPersonalChargeFlagged = internalAction({
+  args: { repaymentId: v.id("personalRepayments") },
+  handler: async (ctx, { repaymentId }) => {
+    try {
+      const contact = await ctx.runQuery(
+        internal.cards.getPersonalChargeFlagContact,
+        { repaymentId },
+      );
+      if (!contact) return null;
+      const dollars = `$${(contact.amountCents / 100).toFixed(2)}`;
+      const merchant = contact.merchantName ?? "a charge on your card";
+      const subject = `A charge on your card was marked personal — you owe ${dollars}`;
+      await sendEmail(
+        contact.email,
+        subject,
+        emailShell(`
+          <h1 style="margin:0 0 12px;font-size:24px;line-height:1.2">${escapeHtml(subject)}</h1>
+          <p style="margin:0 0 16px;font-family:-apple-system,'Segoe UI',Roboto,sans-serif;font-size:14px;line-height:1.6;color:#7A5A5A">Hi ${escapeHtml(contact.cardholderName)} — a finance manager marked ${escapeHtml(merchant)} (${escapeHtml(dollars)}) as a personal charge. Pay it back from the Reimbursements tab in the app.</p>`),
+      );
+    } catch (err) {
+      console.error(
+        "notifyPersonalChargeFlagged: email failed",
+        repaymentId,
+        err,
+      );
+    }
+    return null;
+  },
+});
+
+// ── myPersonalRepayments (self-service, no finance-role gate) ────────────────
+
+// Bounds a single person's personal-charge repayments (naturally small —
+// mirrors the other small-table scan limits in this file).
+const MY_REPAYMENTS_LIMIT = 500;
+// Bounds a chapter's outstanding personal-charge repayments for the manager
+// aggregate below.
+const CHAPTER_REPAYMENTS_LIMIT = 5000;
+
+const myRepaymentValidator = v.object({
+  id: v.id("personalRepayments"),
+  transactionId: v.id("transactions"),
+  amountCents: v.number(),
+  status: repaymentStatusValidator,
+  merchantName: v.union(v.string(), v.null()),
+  postedAt: v.number(),
+  // Whether the payer already linked a real Increase External Account (used to
+  // decide whether "Pay by bank" needs the inline ACH-linking form first).
+  hasExternalAccount: v.boolean(),
+});
+
+/**
+ * The caller's OWN personal-charge repayments (every status) — the single
+ * source for the "You owe Public Worship" surface, shared by the Cards-tab owe
+ * banner (`OwedBanner`, used from `MemberCardsView`) and the Reimbursements
+ * screen's owe section (D4). Covers a charge flagged by EITHER the cardholder
+ * themselves OR a finance manager — unlike the old Cards-tab banner
+ * (session-state only, see the PR-94 note it replaces), this is a real query
+ * so a manager-flagged charge shows up even though the member never clicked
+ * "Flag personal" themselves.
+ *
+ * Returns EVERY status (mirrors `reimbursements.myReimbursements` — the caller
+ * groups/filters), not just outstanding ones: a consumer that only reads
+ * "pending" rows would make an already-`paid` charge look never-flagged again
+ * (its row would just vanish), inviting a re-flag. No finance-role gate
+ * (self-service) — scoped to the caller's own roster person via `by_person`.
+ * Degrades to `[]` without a chapter/roster row.
+ */
+export const myPersonalRepayments = query({
+  args: {},
+  returns: v.array(myRepaymentValidator),
+  handler: async (ctx) => {
+    const chapterId = await getChapterIdOrNull(ctx);
+    if (!chapterId) return [];
+    const person = await viewerPerson(ctx, chapterId as Id<"chapters">);
+    if (!person) return [];
+    const reps = await ctx.db
+      .query("personalRepayments")
+      .withIndex("by_person", (q) => q.eq("payerPersonId", person._id))
+      .order("desc")
+      .take(MY_REPAYMENTS_LIMIT);
+    const mine = reps.filter((r) => r.chapterId === chapterId);
+    return await Promise.all(
+      mine.map(async (r) => {
+        const txn = await ctx.db.get(r.transactionId);
+        return {
+          id: r._id,
+          transactionId: r.transactionId,
+          amountCents: r.amountCents,
+          status: r.status,
+          merchantName: txn?.merchantName ?? null,
+          postedAt: txn?.postedAt ?? r.createdAt,
+          hasExternalAccount: !!r.payerExternalAccountId,
+        };
+      }),
+    );
+  },
+});
+
+/**
+ * Chapter-scope aggregate of OUTSTANDING (not yet paid) personal-charge
+ * repayments — backs the "Personal to repay" KPI tile on the manager Cards
+ * view (blank since #94 for lack of exactly this read) and the matching tile
+ * on the Reimbursements manager queue (D4). Viewer+ gated, the same floor as
+ * every other manager-facing finance read.
+ */
+export const personalRepaymentsOutstanding = query({
+  args: {},
+  returns: v.object({ count: v.number(), totalCents: v.number() }),
+  handler: async (ctx) => {
+    const chapterId = (await requireChapterId(ctx)) as Id<"chapters">;
+    await requireFinanceRole(ctx, chapterId, "viewer");
+    const reps = await ctx.db
+      .query("personalRepayments")
+      .withIndex("by_chapter", (q) => q.eq("chapterId", chapterId))
+      .take(CHAPTER_REPAYMENTS_LIMIT);
+    const outstanding = reps.filter((r) => r.status !== "paid");
+    return {
+      count: outstanding.length,
+      totalCents: outstanding.reduce((sum, r) => sum + r.amountCents, 0),
+    };
   },
 });
 

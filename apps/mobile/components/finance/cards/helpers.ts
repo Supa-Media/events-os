@@ -16,6 +16,12 @@ export type CardSummary = FunctionReturnType<typeof api.cards.listCards>[number]
 export type RepaymentSummary = FunctionReturnType<
   typeof api.cards.flagPersonalCharge
 >;
+/** One row of the caller's own outstanding personal-charge repayments — the
+ *  "You owe Public Worship" data source shared by `OwedBanner` + the per-charge
+ *  list in `MemberCardsView` (D4). */
+export type MyRepayment = FunctionReturnType<
+  typeof api.cards.myPersonalRepayments
+>[number];
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 

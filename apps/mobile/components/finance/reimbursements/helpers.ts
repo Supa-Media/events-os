@@ -100,6 +100,25 @@ export function isOpen(status: ReimbursementStatus): boolean {
   return !TERMINAL.has(status);
 }
 
+// ── Member "bidirectional owe" grouping (D4) ─────────────────────────────────
+/** The statuses at which Public Worship owes the member money: reviewed
+ *  enough to be a real commitment (submitted for review, pre-approved to
+ *  spend, approved, or already in flight to pay) — but NOT
+ *  `pending_preapproval`, which is only a request to be cleared to spend, not
+ *  yet a debt. Drives the member Reimbursements screen's "Public Worship owes
+ *  you" section (the counterpart of the Cards-tab "You owe" banner). */
+const OWED_TO_MEMBER_STATUSES = new Set<ReimbursementStatus>([
+  "submitted",
+  "preapproved",
+  "approved",
+  "paying",
+]);
+
+/** True for a reimbursement Public Worship currently owes the member. */
+export function isOwedToMember(status: ReimbursementStatus): boolean {
+  return OWED_TO_MEMBER_STATUSES.has(status);
+}
+
 // ── Date ─────────────────────────────────────────────────────────────────────
 const TZ = "America/New_York";
 

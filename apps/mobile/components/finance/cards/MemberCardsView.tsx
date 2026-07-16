@@ -3,8 +3,8 @@
  * `api.cards.myCard` + `api.finances.personTransactions`: the red virtual-card
  * art, a status/spend summary with a receipt-due warning, the two hard controls
  * shown READ-ONLY (a member can't change their own cap/validity — that's a
- * manager action), a personal-repayment banner, and the ability to flag one of
- * their charges as a personal expense and pay it back.
+ * manager action), the shared "You owe" banner (`OwedBanner`), and the ability
+ * to flag one of their charges as a personal expense and pay it back.
  *
  * Personal-repayment flow (member side): Flag → `flagPersonalCharge` (returns the
  * repayment) → "Pay by card / bank" → `initiateRepayment({ repaymentId, method })`.
@@ -14,9 +14,13 @@
  * DEGRADES to a still-`pending` repayment (no money moves, no credit), so we show
  * "Repayment initiated · pending" rather than "Repaid".
  *
- * Note: the Phase-5 card contract has no query that lists a member's pending
- * repayments, so a flagged charge is tracked in local state for the session it
- * was flagged in.
+ * The aggregate owe banner (amount + "Pay by card"/"Pay by bank") lives in
+ * `OwedBanner` — shared with the Reimbursements screen's "You owe" section
+ * (D4) so the pay-back flow exists in exactly one place. THIS file still owns
+ * the per-charge "My charges" list (flag a charge / pay back ONE charge),
+ * sourced from the SAME `api.cards.myPersonalRepayments` query (a manager can
+ * flag a charge on this member's behalf, so the source of truth can't be
+ * session-local state anymore — see the query's doc comment).
  */
 import { useMemo, useState } from "react";
 import { Text, View } from "react-native";
@@ -29,16 +33,13 @@ import {
   Button,
   Card,
   EmptyState,
-  Icon,
   SectionHeader,
-  Select,
-  TextField,
   ToastView,
 } from "../../ui";
-import { colors } from "../../../lib/theme";
 import { useActionRunner } from "../../../lib/useActionToast";
 import { VirtualCardArt } from "./VirtualCardArt";
 import { CardPhilosophy } from "./CardPhilosophy";
+import { OwedBanner } from "./OwedBanner";
 import {
   cardStatusBadge,
   cardTypeLabel,
@@ -46,115 +47,50 @@ import {
   maskedNumber,
   shortDate,
   type CardSummary,
-  type RepaymentSummary,
+  type MyRepayment,
 } from "./helpers";
 
 export function MemberCardsView() {
   const cards = useQuery(api.cards.myCard, {});
   const txns = useQuery(api.finances.personTransactions, {});
+  const myRepayments = useQuery(api.cards.myPersonalRepayments, {});
   const flag = useMutation(api.cards.flagPersonalCharge);
   // A member may only INITIATE a repayment (choose a method + kick it off) — the
   // offsetting credit is posted by a manager confirming receipt, never here.
   const initiateRepayment = useAction(api.cards.initiateRepayment);
-  const linkRepaymentBankAccount = useAction(api.cards.linkRepaymentBankAccount);
   const { run, toast, dismiss } = useActionRunner();
 
-  // Inline ACH-destination capture, shown once when a "Pay by bank" repayment
-  // hasn't linked a real bank account yet — minimal UI hookup for a tested
-  // backend primitive (`cards.linkRepaymentBankAccount`); a repaid link
-  // persists per repayment, so this only needs to run again for a new charge.
-  const [achFormOpen, setAchFormOpen] = useState(false);
-  const [achRouting, setAchRouting] = useState("");
-  const [achAccount, setAchAccount] = useState("");
-  const [achFunding, setAchFunding] = useState<"checking" | "savings">("checking");
-  const [achBusy, setAchBusy] = useState(false);
-
-  // Repayments flagged this session, keyed by their transaction id.
-  const [repayments, setRepayments] = useState<Record<string, RepaymentSummary>>(
-    {},
-  );
-  // Transaction ids the member has already kicked off a repayment for (so the
-  // row shows the pending state rather than the "Pay back" action again).
+  // Transaction ids the member has already kicked off a SINGLE-row repayment
+  // for (so that row shows the pending state rather than "Pay back" again).
+  // Session-local: the real debit is gated off, so `status` never flips away
+  // from "pending" for us to key off instead.
   const [initiated, setInitiated] = useState<Record<string, boolean>>({});
 
-  // Charges the member still needs to act on: flagged, not yet initiated.
-  const toRepay = useMemo(
-    () =>
-      Object.values(repayments).filter(
-        (r) => r.status !== "paid" && !initiated[r.transactionId],
-      ),
-    [repayments, initiated],
-  );
-  const owedCents = toRepay.reduce((sum, r) => sum + r.amountCents, 0);
+  // Outstanding repayments keyed by their charge's transaction id — drives the
+  // "personal" badge + "Pay back $X" action per row in "My charges" below.
+  const repByTxn = useMemo(() => {
+    const m = new Map<string, MyRepayment>();
+    for (const r of myRepayments ?? []) m.set(r.transactionId, r);
+    return m;
+  }, [myRepayments]);
 
   const card: CardSummary | undefined = cards?.[0];
 
   async function handleFlag(transactionId: string) {
-    const res = await run(
-      () => flag({ transactionId: transactionId as Id<"transactions"> }),
-      { errorTitle: "Couldn't flag charge" },
-    );
-    if (res) setRepayments((m) => ({ ...m, [res.transactionId]: res }));
+    // No local state to update on success — `myPersonalRepayments` is a live
+    // query, so the new row (and this row's badge/button) appear as soon as
+    // the mutation commits.
+    await run(() => flag({ transactionId: transactionId as Id<"transactions"> }), {
+      errorTitle: "Couldn't flag charge",
+    });
   }
 
-  async function handleInitiate(
-    repaymentId: string,
-    transactionId: string,
-    method: "card" | "ach",
-  ) {
+  async function handleInitiate(repaymentId: Id<"personalRepayments">, transactionId: string) {
     const res = await run(
-      () =>
-        initiateRepayment({
-          repaymentId: repaymentId as Id<"personalRepayments">,
-          method,
-        }),
+      () => initiateRepayment({ repaymentId, method: "card" }),
       { errorTitle: "Couldn't start repayment" },
     );
-    if (res) {
-      setRepayments((m) => ({ ...m, [transactionId]: res }));
-      setInitiated((m) => ({ ...m, [transactionId]: true }));
-    }
-  }
-
-  async function payAll(method: "card" | "ach") {
-    for (const r of toRepay) {
-      await handleInitiate(r.id, r.transactionId, method);
-    }
-  }
-
-  /** "Pay by bank (ACH)" — link a bank account first if any charge still
-   *  needs one, else pay straight away. */
-  function handlePayByBank() {
-    const needsLink = toRepay.some((r) => !r.hasExternalAccount);
-    if (needsLink) {
-      setAchFormOpen(true);
-      return;
-    }
-    void payAll("ach");
-  }
-
-  async function handleLinkAndPay() {
-    setAchBusy(true);
-    const toLink = toRepay.filter((r) => !r.hasExternalAccount);
-    for (const r of toLink) {
-      await run(
-        () =>
-          linkRepaymentBankAccount({
-            repaymentId: r.id,
-            routingNumber: achRouting.trim(),
-            accountNumber: achAccount.trim(),
-            funding: achFunding,
-          }),
-        { errorTitle: "Couldn't link bank account" },
-      );
-    }
-    setAchBusy(false);
-    setAchFormOpen(false);
-    setAchRouting("");
-    setAchAccount("");
-    // Best-effort even if a link above failed — `initiateRepayment` just
-    // degrades that one to pending, same as before this feature existed.
-    await payAll("ach");
+    if (res) setInitiated((m) => ({ ...m, [transactionId]: true }));
   }
 
   if (cards === undefined) {
@@ -273,106 +209,13 @@ export function MemberCardsView() {
         </View>
       </View>
 
-      {/* Personal-repayment banner (a charge flagged this session). The member
-          starts the repayment by their own card or bank; a manager confirms the
-          money landed (posts the offsetting credit) — nothing clears here. */}
-      {toRepay.length > 0 ? (
-        <View
-          className="mt-4 rounded-lg border border-border bg-raised p-4 shadow-card"
-          style={{ borderLeftWidth: 3, borderLeftColor: colors.accent }}
-        >
-          <View className="flex-row flex-wrap items-center justify-between gap-3">
-            <View className="flex-1 flex-row items-start gap-3">
-              <View className="mt-0.5 h-8 w-8 items-center justify-center rounded-pill bg-accent-soft">
-                <Icon name="refresh-cw" size={16} color={colors.accent} />
-              </View>
-              <View className="flex-1">
-                <Text className="font-semibold text-ink">
-                  You owe Public Worship {formatCents(owedCents)}
-                </Text>
-                <Text className="text-xs text-muted">
-                  {toRepay.length} charge{toRepay.length === 1 ? "" : "s"} flagged
-                  personal. Pay it back from your own debit card or bank (ACH) — a
-                  manager confirms receipt and it posts an offsetting credit, no
-                  reimbursement paperwork.
-                </Text>
-              </View>
-            </View>
-            <View className="flex-row items-center gap-2">
-              <Button
-                title="Pay by card"
-                variant="secondary"
-                size="sm"
-                icon="credit-card"
-                onPress={() => payAll("card")}
-              />
-              <Button
-                title="Pay by bank (ACH)"
-                size="sm"
-                onPress={handlePayByBank}
-              />
-            </View>
-          </View>
-
-          {/* Inline ACH-destination capture — shown once, the first time a
-              charge in this batch has no linked bank account yet. */}
-          {achFormOpen ? (
-            <View className="mt-3 gap-2 border-t border-border pt-3">
-              <Text className="text-xs text-muted">
-                Link your bank account to pay by ACH — securely, through our
-                banking partner. We never store your full account number.
-              </Text>
-              <View className="flex-row gap-2">
-                <View className="flex-1">
-                  <TextField
-                    label="Routing number"
-                    value={achRouting}
-                    onChangeText={(v) => setAchRouting(v.replace(/[^0-9]/g, "").slice(0, 9))}
-                    keyboardType="number-pad"
-                    maxLength={9}
-                    placeholder="9 digits"
-                  />
-                </View>
-                <View className="flex-1">
-                  <TextField
-                    label="Account number"
-                    value={achAccount}
-                    onChangeText={(v) => setAchAccount(v.replace(/[^0-9]/g, "").slice(0, 17))}
-                    keyboardType="number-pad"
-                    placeholder="e.g. 000123456789"
-                  />
-                </View>
-                <View className="w-28">
-                  <Select
-                    label="Type"
-                    value={achFunding}
-                    options={[
-                      { value: "checking", label: "Checking" },
-                      { value: "savings", label: "Savings" },
-                    ]}
-                    onChange={(v) => setAchFunding((v || "checking") as "checking" | "savings")}
-                  />
-                </View>
-              </View>
-              <View className="flex-row justify-end gap-2">
-                <Button
-                  title="Cancel"
-                  variant="ghost"
-                  size="sm"
-                  onPress={() => setAchFormOpen(false)}
-                />
-                <Button
-                  title="Link & pay"
-                  size="sm"
-                  loading={achBusy}
-                  disabled={achRouting.length !== 9 || achAccount.length < 4}
-                  onPress={handleLinkAndPay}
-                />
-              </View>
-            </View>
-          ) : null}
-        </View>
-      ) : null}
+      {/* Shared "You owe Public Worship" banner — see `OwedBanner`'s doc
+          comment. The member starts the repayment by their own card or bank;
+          a manager confirms the money landed (posts the offsetting credit) —
+          nothing clears here. */}
+      <View className="mt-4">
+        <OwedBanner />
+      </View>
 
       {/* My card charges — flag personal / pay back. */}
       <SectionHeader
@@ -389,7 +232,7 @@ export function MemberCardsView() {
       ) : (
         <View className="overflow-hidden rounded-lg border border-border bg-raised shadow-card">
           {charges.map((t, i) => {
-            const rep = repayments[t.id];
+            const rep = repByTxn.get(t.id);
             const isLast = i === charges.length - 1;
             return (
               <View
@@ -437,7 +280,7 @@ export function MemberCardsView() {
                       variant="secondary"
                       size="sm"
                       icon="refresh-cw"
-                      onPress={() => handleInitiate(rep.id, t.id, "card")}
+                      onPress={() => handleInitiate(rep.id, t.id)}
                     />
                   ) : (
                     <Button
