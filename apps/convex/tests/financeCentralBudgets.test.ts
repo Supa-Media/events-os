@@ -281,6 +281,57 @@ describe("budget attribution: an explicit link still buckets by the budget's per
   });
 });
 
+describe("dashboardChapter: a chapter txn linked to a CENTRAL budget", () => {
+  test("counts toward centralLinkedCents (not unattributedCents) and appears in no chapter budget card", async () => {
+    const t = newT();
+    const s = await setupChapter(t, { email: "seyi@publicworship.life" });
+    const year = 2026;
+    const month = 5;
+
+    const centralBudget = await s.as.mutation(api.finances.createBudget, {
+      amountCents: 500000,
+      type: "recurring",
+      cadence: "monthly",
+      year,
+      month,
+      central: true,
+      label: "Org Marketing",
+    });
+    // A chapter-level budget too, to prove it's NOT vacuumed in there either.
+    const chapterBudget = await s.as.mutation(api.finances.createBudget, {
+      amountCents: 100000,
+      type: "recurring",
+      cadence: "monthly",
+      year,
+      month,
+      label: "Chapter Ops",
+    });
+
+    // Legal: a chapter txn explicitly linked to a central budget.
+    const txnId = await s.as.mutation(api.finances.createManualTransaction, {
+      flow: "outflow",
+      amountCents: 6000,
+      postedAt: tsInMonth(year, month),
+    });
+    await s.as.mutation(api.finances.categorizeTransaction, {
+      transactionId: txnId,
+      budgetId: centralBudget,
+    });
+
+    const dash = await s.as.query(api.finances.dashboardChapter, { year, month });
+    // Surfaced separately...
+    expect(dash.centralLinkedCents).toBe(6000);
+    // ...so the identity `period spend = Σ(cards) + centralLinkedCents +
+    // unattributedCents` holds: it's not double-counted as Unattributed
+    // (the txn HAS a budgetId) purely because no chapter card shows it.
+    expect(dash.unattributedCents).toBe(0);
+    expect(dash.unattributedCount).toBe(0);
+    // No chapter budget card (central or otherwise) counts this spend.
+    const chapterCard = dash.recurringBudgets.find((b) => b.id === chapterBudget);
+    expect(chapterCard?.spentCents).toBe(0);
+  });
+});
+
 describe("dashboardCentral: central budgets roll up org-wide", () => {
   test("sums a central budget's actuals across chapters; per-chapter allocation excludes it", async () => {
     const t = newT();

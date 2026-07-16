@@ -177,7 +177,10 @@ export function ChapterView({
 
       {/* Needs your attention */}
       {(() => {
-        const needsBudget = data.toBudgetCount;
+        // Period-scoped (matches `unattributedCents`'s scope + "this period"
+        // copy) — NOT `toBudgetCount` (all-time), which could show "$0.00"
+        // over "N transactions need a budget this period".
+        const needsBudget = data.unattributedCount;
         const attentionCount = data.attention.length + (needsBudget > 0 ? 1 : 0);
         return (
           <>
@@ -209,6 +212,20 @@ export function ChapterView({
                 ))}
               </View>
             )}
+            {/* Coded-to-central — info-tier (not a warning): spend that's
+                legitimately linked to a central budget, so it's excluded from
+                Unattributed above but wouldn't otherwise appear anywhere on
+                this chapter's dashboard. */}
+            {data.centralLinkedCents > 0 ? (
+              <View className="mt-3 flex-row items-center gap-2 rounded-md bg-info-bg px-3 py-2">
+                <Icon name="info" size={14} color={colors.info} />
+                <Text className="flex-1 text-xs text-info">
+                  Coded to central budgets:{" "}
+                  <Money cents={data.centralLinkedCents} className="text-xs font-semibold text-info" />{" "}
+                  — tracked on the central dashboard, not a chapter card.
+                </Text>
+              </View>
+            ) : null}
           </>
         );
       })()}
@@ -393,11 +410,11 @@ function TransactionsTable({ rows }: { rows: RecentTxn[] }) {
 
 // ── Needs-a-budget / Unattributed attention row ──────────────────────────────
 // Un-budgeted spend nudged to Reconcile so each charge gets tagged to a
-// budget. `count` (`dashboardChapter.toBudgetCount`) is an all-time-capped
-// scan; `unattributedCents` is the THIS-PERIOD dollar figure every budget
-// card on the dashboard is blind to (no derive-matching fallback exists —
-// see WP-0.1). Hidden when the count is 0 (caller-gated). Tappable (unless
-// drilled into another chapter) → Reconcile's `needs_budget` filter.
+// budget. `count` (`dashboardChapter.unattributedCount`) and `unattributedCents`
+// share the same THIS-PERIOD scope + predicate — the dollar figure every
+// budget card on the dashboard is blind to (no derive-matching fallback
+// exists — see WP-0.1). Hidden when the count is 0 (caller-gated). Tappable
+// (unless drilled into another chapter) → Reconcile's `needs_budget` filter.
 function NeedsBudgetCard({
   count,
   unattributedCents,

@@ -255,6 +255,52 @@ describe("budgets + budgetVsActual (Estimated ≠ Actual)", () => {
     budgets = await s.as.query(api.finances.listBudgets, {});
     expect(budgets.map((b) => b.id)).not.toContain(budgetId);
   });
+
+  test("deleteBudget clears budgetId on linked transactions — the spend drops back into Unattributed instead of vanishing", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await asManager(s);
+    const year = 2026;
+    const month = 5;
+
+    const budgetId = await s.as.mutation(api.finances.createBudget, {
+      amountCents: 100000,
+      type: "recurring",
+      cadence: "monthly",
+      year,
+      month,
+      label: "Soon-to-be-deleted",
+    });
+    const txnId = await s.as.mutation(api.finances.createManualTransaction, {
+      flow: "outflow",
+      amountCents: 4200,
+      postedAt: tsInMonth(year, month),
+    });
+    await s.as.mutation(api.finances.categorizeTransaction, {
+      transactionId: txnId,
+      budgetId,
+    });
+
+    // Linked: counts toward the budget, absent from Unattributed + needs_budget.
+    let dash = await s.as.query(api.finances.dashboardChapter, { year, month });
+    expect(dash.unattributedCents).toBe(0);
+    let reconcile = await s.as.query(api.finances.listReconcile, { filter: "needs_budget" });
+    expect(reconcile.rows.map((r) => r.id)).not.toContain(txnId);
+
+    await s.as.mutation(api.finances.deleteBudget, { budgetId });
+
+    // The txn's `budgetId` is cleared, not left dangling at a deleted doc.
+    const txn = await run(t, (ctx) => ctx.db.get(txnId));
+    expect(txn?.budgetId).toBeUndefined();
+
+    // The spend re-surfaces loudly in Unattributed + needs_budget — no budget
+    // (there is none left) counts it, so it must not just vanish.
+    dash = await s.as.query(api.finances.dashboardChapter, { year, month });
+    expect(dash.unattributedCents).toBe(4200);
+    expect(dash.unattributedCount).toBe(1);
+    reconcile = await s.as.query(api.finances.listReconcile, { filter: "needs_budget" });
+    expect(reconcile.rows.map((r) => r.id)).toContain(txnId);
+  });
 });
 
 describe("transactions: categorize, integer-cents, pagination", () => {

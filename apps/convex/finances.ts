@@ -1206,8 +1206,9 @@ export const dashboardChapter = query({
     attention: v.array(attentionItem),
     funds: v.array(fundPeriodSpend),
     // Count of spend txns with no budget attributed (bounded, all-time-capped
-    // scan — a txn from any period still needs a budget). Drives the "N
-    // transactions need a budget" attention item — a SOFT warning, never a block.
+    // scan — a txn from any period still needs a budget). Kept all-time for
+    // whatever else consumes it; the dashboard card uses `unattributedCount`
+    // (below) instead so its "N transactions" copy matches its period scope.
     toBudgetCount: v.number(),
     // Explicit-only attribution gap, scoped to THIS dashboard period: spend
     // (countsAsSpend — outflow, non-transfer, non-excluded/personal) with no
@@ -1215,6 +1216,19 @@ export const dashboardChapter = query({
     // above (no derive-matching fallback) — surfaced loudly so it's never
     // silently missing. Taps through to Reconcile's `needs_budget` filter.
     unattributedCents: v.number(),
+    // Same period scope + predicate as `unattributedCents`, but a transaction
+    // COUNT rather than a dollar figure. Drives the "N transactions need a
+    // budget THIS PERIOD" attention card — a SOFT warning, never a block.
+    // (`toBudgetCount` above is all-time-scoped, so it undercounts/overcounts
+    // relative to this period's copy; don't use it for that card.)
+    unattributedCount: v.number(),
+    // Chapter spend explicitly linked to a CENTRAL budget (legal — central may
+    // fund something a chapter incurred) for THIS dashboard period. Excluded
+    // from `unattributedCents` (it has a `budgetId`) but also absent from every
+    // chapter budget card above (the linked budget isn't a chapter budget) —
+    // without this field the identity `period spend = Σ(cards) + unattributed`
+    // silently breaks. An info-tier row, not a warning.
+    centralLinkedCents: v.number(),
   }),
   handler: async (ctx, args) => {
     const now = easternParts(Date.now());
@@ -1239,6 +1253,8 @@ export const dashboardChapter = query({
       funds: [] as never[],
       toBudgetCount: 0,
       unattributedCents: 0,
+      unattributedCount: 0,
+      centralLinkedCents: 0,
     };
     const ownChapterId = await readChapterId(ctx);
     const chapterId = args.chapterId ?? ownChapterId;
@@ -1277,11 +1293,17 @@ export const dashboardChapter = query({
     // Unattributed: this period's spend with no explicit budget link — the
     // dollar amount every budget card above is BLIND to (no derive-matching
     // fallback exists anymore). `isSpend` already excludes transfers/excluded/
-    // personal rows, matching invariant #3.
-    const unattributedCents = periodTxns.reduce(
-      (s, tr) => (isSpend(tr) && tr.budgetId == null ? s + tr.amountCents : s),
-      0,
-    );
+    // personal rows, matching invariant #3. `unattributedCount` is the same
+    // predicate + period scope as a transaction count (drives the "N
+    // transactions" copy on the attention card — see `unattributedCount` above).
+    let unattributedCents = 0;
+    let unattributedCount = 0;
+    for (const tr of periodTxns) {
+      if (isSpend(tr) && tr.budgetId == null) {
+        unattributedCents += tr.amountCents;
+        unattributedCount += 1;
+      }
+    }
 
     // Category-name map (chapter-wide, bounded) for budget breakdowns.
     const categoryDocs = await ctx.db
@@ -1375,6 +1397,27 @@ export const dashboardChapter = query({
     // tags' rollups). Reached via `budgetTagLinks` `by_tag`; `budgetById`
     // restricts to this chapter+year so a link to another year/level is skipped.
     const budgetById = new Map(budgets.map((b) => [b._id, b] as const));
+
+    // Central-linked: this period's chapter spend explicitly linked to a
+    // budget that ISN'T one of this chapter's own (`budgetById` only holds
+    // this chapter+year's budgets) — i.e. a central budget (the only other
+    // tenancy `categorizeTransaction` allows, see its doc comment). Such a
+    // txn has a `budgetId` (so `unattributedCents` correctly excludes it) but
+    // appears in no card above (the linked budget isn't a chapter budget),
+    // so surface it separately: period spend = Σ(cards) + centralLinkedCents
+    // + unattributedCents must hold.
+    const externalBudgetCache = new Map<Id<"budgets">, Doc<"budgets"> | null>();
+    let centralLinkedCents = 0;
+    for (const tr of periodTxns) {
+      if (!isSpend(tr) || tr.budgetId == null || budgetById.has(tr.budgetId)) continue;
+      let linked = externalBudgetCache.get(tr.budgetId);
+      if (linked === undefined) {
+        linked = await ctx.db.get(tr.budgetId);
+        externalBudgetCache.set(tr.budgetId, linked);
+      }
+      if (linked && linked.chapterId === CENTRAL) centralLinkedCents += tr.amountCents;
+    }
+
     const chapterTags = await ctx.db
       .query("budgetTags")
       .withIndex("by_chapter", (q) => q.eq("chapterId", chapterId))
@@ -1553,6 +1596,8 @@ export const dashboardChapter = query({
       funds,
       toBudgetCount,
       unattributedCents,
+      unattributedCount,
+      centralLinkedCents,
     };
   },
 });
@@ -2644,9 +2689,9 @@ export const updateBudget = mutation({
         ? (patch.refKind ?? budget.refKind ?? effectiveRefKind(budget) ?? undefined)
         : undefined;
     // The EFFECTIVE instance ref: a patch value (set OR cleared) wins, else the
-    // budget's stored one. `matchesBudget` compares against `scopeRefId` per
-    // `refKind`, so the two must stay consistent — verify the effective pair, not
-    // just a freshly-patched `scopeRefId`.
+    // budget's stored one. `refKind` and `scopeRefId` must stay consistent (an
+    // event id compared as a project id, or vice versa, is meaningless) — verify
+    // the effective pair, not just a freshly-patched `scopeRefId`.
     const scopeRefIdProvided = patch.scopeRefId !== undefined;
     const effScopeRefId = scopeRefIdProvided ? patch.scopeRefId : budget.scopeRefId ?? null;
     // Changing `refKind` while keeping a stale `scopeRefId` would silently make
@@ -2742,6 +2787,24 @@ export const deleteBudget = mutation({
     } else {
       await requireFinanceManager(ctx, chapterId);
     }
+    // Clear the explicit link on every txn attributed to this budget FIRST —
+    // otherwise a linked txn's `budgetId` points at a deleted doc: invisible
+    // to every budget card (it's no one's budget anymore), to
+    // `unattributedCents` (its `budgetId` is still non-null), and to
+    // `listReconcile`'s `needs_budget` filter (same reason) — the dollar
+    // vanishes from every surface. Dropping the link sends it loudly back
+    // into Unattributed instead.
+    const linkedTxns = await ctx.db
+      .query("transactions")
+      .withIndex("by_budget", (q) => q.eq("budgetId", args.budgetId))
+      .take(ROLLUP_SCAN_LIMIT);
+    if (linkedTxns.length === ROLLUP_SCAN_LIMIT) {
+      console.warn(
+        `[finances] deleteBudget hit ROLLUP_SCAN_LIMIT (${ROLLUP_SCAN_LIMIT}) unlinking transactions from budget ${args.budgetId}; some linked transactions may still reference the deleted budget.`,
+      );
+    }
+    for (const tr of linkedTxns) await ctx.db.patch(tr._id, { budgetId: undefined });
+
     // Remove its tag links, then the budget.
     const links = await ctx.db
       .query("budgetTagLinks")
