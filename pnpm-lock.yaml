@@ -50,10 +50,10 @@ importers:
         version: 5.9.3
       vite:
         specifier: ^8.0.16
-        version: 8.0.16(@types/node@22.19.21)(esbuild@0.27.0)(jiti@1.21.7)(terser@5.48.0)(yaml@2.9.0)
+        version: 8.0.16(@types/node@22.19.21)(esbuild@0.27.0)(jiti@1.21.7)(terser@5.49.0)(yaml@2.9.0)
       vitest:
         specifier: ^4.1.0
-        version: 4.1.9(@edge-runtime/vm@5.0.0)(@types/node@22.19.21)(vite@8.0.16(@types/node@22.19.21)(esbuild@0.27.0)(jiti@1.21.7)(terser@5.48.0)(yaml@2.9.0))
+        version: 4.1.9(@edge-runtime/vm@5.0.0)(@types/node@22.19.21)(vite@8.0.16(@types/node@22.19.21)(esbuild@0.27.0)(jiti@1.21.7)(terser@5.49.0)(yaml@2.9.0))
 
   apps/mobile:
     dependencies:
@@ -101,10 +101,10 @@ importers:
         version: 9.10.0
       '@supa-media/core':
         specifier: ^1.0.0
-        version: 1.0.0(pizlfow7sddrs4ozsqpvuxkhya)
+        version: 1.0.1(pizlfow7sddrs4ozsqpvuxkhya)
       '@supa-media/notifications':
         specifier: ^1.0.0
-        version: 1.0.0(expo-constants@18.0.13)(expo-device@8.0.10(expo@54.0.35))(expo-notifications@0.32.17(expo@54.0.35)(react-native@0.81.5(@babel/core@7.29.7)(@react-native/metro-config@0.86.0(@babel/core@7.29.7))(@types/react@19.1.17)(react@19.1.0))(react@19.1.0)(typescript@5.9.3))(expo-router@6.0.24)(react-native@0.81.5(@babel/core@7.29.7)(@react-native/metro-config@0.86.0(@babel/core@7.29.7))(@types/react@19.1.17)(react@19.1.0))(react@19.1.0)
+        version: 1.0.1(expo-constants@18.0.13)(expo-device@8.0.10(expo@54.0.35))(expo-notifications@0.32.17(expo@54.0.35)(react-native@0.81.5(@babel/core@7.29.7)(@react-native/metro-config@0.86.0(@babel/core@7.29.7))(@types/react@19.1.17)(react@19.1.0))(react@19.1.0)(typescript@5.9.3))(expo-router@6.0.24)(react-native@0.81.5(@babel/core@7.29.7)(@react-native/metro-config@0.86.0(@babel/core@7.29.7))(@types/react@19.1.17)(react@19.1.0))(react@19.1.0)
       clsx:
         specifier: ^2.1.1
         version: 2.1.1
@@ -1831,8 +1831,8 @@ packages:
       '@convex-dev/auth': '>=0.0.90'
       convex: '>=1.31.0'
 
-  '@supa-media/core@1.0.0':
-    resolution: {integrity: sha512-U23c6tdeS9wjFdN/zhP1uJNujPr5dPNhe27D6KhrENAewwEGRYrCiyayrCYG4Pr7dtTgoRAAmkZmL0KGEZl5cA==, tarball: https://npm.pkg.github.com/download/@supa-media/core/1.0.0/8cbe2b814d9d069984bc35c100db0c730154ff56}
+  '@supa-media/core@1.0.1':
+    resolution: {integrity: sha512-EQ7aBvLLS28CeHS0OwmRPxQkyxCN5LiAslQ8gYUt0uE2Y8edKysEQkoEK0f639TvPkPnJPtHxdwrBBRN2sEHKg==, tarball: https://npm.pkg.github.com/download/@supa-media/core/1.0.1/a70727c3a0b53aca3a087a83eadf4c42dc29ea27}
     peerDependencies:
       '@convex-dev/auth': '>=0.0.90'
       '@react-native-community/netinfo': '>=11.4.0'
@@ -1860,8 +1860,8 @@ packages:
     peerDependencies:
       '@expo/metro-config': '*'
 
-  '@supa-media/notifications@1.0.0':
-    resolution: {integrity: sha512-0fUjKy0smrvnw13R8SI8lfUGoewzIwkYIGft/0yw35ljec2PaS1rJvyuK3dBRtoNunMXRORX2iBhywy6/OrqCw==, tarball: https://npm.pkg.github.com/download/@supa-media/notifications/1.0.0/c7e934edd8c94824aefe232839c662edf11b8657}
+  '@supa-media/notifications@1.0.1':
+    resolution: {integrity: sha512-ve/VzA2+q3Vv7hyz27h3rZztnBmjb96QEGaElmhuBlECp9sqNnQQE6CLl9jKvP+pOAeEhXsFJmkrs+O5v74H2g==, tarball: https://npm.pkg.github.com/download/@supa-media/notifications/1.0.1/1e3e153a4738339abe995627bb6d9ffba1b05712}
     peerDependencies:
       expo-constants: '>=18.0.0'
       expo-device: '>=8.0.0'
@@ -4832,6 +4832,11 @@ packages:
     engines: {node: '>=10'}
     hasBin: true
 
+  terser@5.49.0:
+    resolution: {integrity: sha512-SNiDnXyHSrxVcIOtVbULzcTmniUiwcV7Nwdyj1twVubeTmbjoa8p69KKDpfkdoOavuM4/GRm1+ykI8qqnavHoA==}
+    engines: {node: '>=10'}
+    hasBin: true
+
   test-exclude@6.0.0:
     resolution: {integrity: sha512-cAGWPIyOHU6zlmg88jwm7VRyXnMN7iV68OGAbYDk/Mh/xC/pzVPlQtY6ngoIH/5/tciuhGfvESU8GrHrcxD56w==}
     engines: {node: '>=8'}
@@ -5200,6 +5205,18 @@ packages:
       utf-8-validate:
         optional: true
 
+  ws@7.5.12:
+    resolution: {integrity: sha512-1xGnbYN3zbog9CwuNDQULNRrTCLIn46/WmpR1f0w6PsCYQHkylZr5vkd6kfMZYV6pRnQkcPNRyiA8LsrNKyhpg==}
+    engines: {node: '>=8.3.0'}
+    peerDependencies:
+      bufferutil: ^4.0.1
+      utf-8-validate: ^5.0.2
+    peerDependenciesMeta:
+      bufferutil:
+        optional: true
+      utf-8-validate:
+        optional: true
+
   ws@8.20.1:
     resolution: {integrity: sha512-It4dO0K5v//JtTXuPkfEOaI3uUN87iYPnqo/ZzqCoG3g8uhA66QUMs/SrM0YK7/NAu+r4LMh/9dq2A7k+rHs+w==}
     engines: {node: '>=10.0.0'}
@@ -5262,6 +5279,10 @@ packages:
 
   yargs@17.7.2:
     resolution: {integrity: sha512-7dSzzRQ++CKnNI/krKnYRV7JKKPUXMEh61soaHKg9mrWEhzFWhFnxPxGl+69cD1Ou63C13NUPCnmIcrvqCuM6w==}
+    engines: {node: '>=12'}
+
+  yargs@17.7.3:
+    resolution: {integrity: sha512-GZtjxm/J/4TSxuL3FNYjCmLktBTnIw/rVmKSIyKeYAZpmJB2ig9VauCC5xsa82GNKVKDAqpOn3KVzNt0zmrU0g==}
     engines: {node: '>=12'}
 
   yocto-queue@0.1.0:
@@ -7061,7 +7082,7 @@ snapshots:
       invariant: 2.2.4
       nullthrows: 1.1.1
       tinyglobby: 0.2.17
-      yargs: 17.7.2
+      yargs: 17.7.3
     optional: true
 
   '@react-native/community-cli-plugin@0.81.5(@react-native/metro-config@0.86.0(@babel/core@7.29.7))':
@@ -7277,7 +7298,7 @@ snapshots:
       '@convex-dev/auth': 0.0.90(@auth/core@0.37.4)(convex@1.41.0(react@19.1.0))(react@19.1.0)
       convex: 1.41.0(react@19.1.0)
 
-  '@supa-media/core@1.0.0(pizlfow7sddrs4ozsqpvuxkhya)':
+  '@supa-media/core@1.0.1(pizlfow7sddrs4ozsqpvuxkhya)':
     dependencies:
       '@convex-dev/auth': 0.0.90(@auth/core@0.37.4)(convex@1.41.0(react@19.1.0))(react@19.1.0)
       '@react-native-community/netinfo': 11.4.1(react-native@0.81.5(@babel/core@7.29.7)(@react-native/metro-config@0.86.0(@babel/core@7.29.7))(@types/react@19.1.17)(react@19.1.0))
@@ -7303,7 +7324,7 @@ snapshots:
     dependencies:
       '@expo/metro-config': 54.0.16(expo@54.0.35)
 
-  '@supa-media/notifications@1.0.0(expo-constants@18.0.13)(expo-device@8.0.10(expo@54.0.35))(expo-notifications@0.32.17(expo@54.0.35)(react-native@0.81.5(@babel/core@7.29.7)(@react-native/metro-config@0.86.0(@babel/core@7.29.7))(@types/react@19.1.17)(react@19.1.0))(react@19.1.0)(typescript@5.9.3))(expo-router@6.0.24)(react-native@0.81.5(@babel/core@7.29.7)(@react-native/metro-config@0.86.0(@babel/core@7.29.7))(@types/react@19.1.17)(react@19.1.0))(react@19.1.0)':
+  '@supa-media/notifications@1.0.1(expo-constants@18.0.13)(expo-device@8.0.10(expo@54.0.35))(expo-notifications@0.32.17(expo@54.0.35)(react-native@0.81.5(@babel/core@7.29.7)(@react-native/metro-config@0.86.0(@babel/core@7.29.7))(@types/react@19.1.17)(react@19.1.0))(react@19.1.0)(typescript@5.9.3))(expo-router@6.0.24)(react-native@0.81.5(@babel/core@7.29.7)(@react-native/metro-config@0.86.0(@babel/core@7.29.7))(@types/react@19.1.17)(react@19.1.0))(react@19.1.0)':
     dependencies:
       expo-constants: 18.0.13(expo@54.0.35)(react-native@0.81.5(@babel/core@7.29.7)(@react-native/metro-config@0.86.0(@babel/core@7.29.7))(@types/react@19.1.17)(react@19.1.0))
       expo-device: 8.0.10(expo@54.0.35)
@@ -7474,13 +7495,13 @@ snapshots:
       chai: 6.2.2
       tinyrainbow: 3.1.0
 
-  '@vitest/mocker@4.1.9(vite@8.0.16(@types/node@22.19.21)(esbuild@0.27.0)(jiti@1.21.7)(terser@5.48.0)(yaml@2.9.0))':
+  '@vitest/mocker@4.1.9(vite@8.0.16(@types/node@22.19.21)(esbuild@0.27.0)(jiti@1.21.7)(terser@5.49.0)(yaml@2.9.0))':
     dependencies:
       '@vitest/spy': 4.1.9
       estree-walker: 3.0.3
       magic-string: 0.30.21
     optionalDependencies:
-      vite: 8.0.16(@types/node@22.19.21)(esbuild@0.27.0)(jiti@1.21.7)(terser@5.48.0)(yaml@2.9.0)
+      vite: 8.0.16(@types/node@22.19.21)(esbuild@0.27.0)(jiti@1.21.7)(terser@5.49.0)(yaml@2.9.0)
 
   '@vitest/pretty-format@4.1.9':
     dependencies:
@@ -9622,7 +9643,7 @@ snapshots:
   metro-minify-terser@0.84.4:
     dependencies:
       flow-enums-runtime: 0.0.6
-      terser: 5.48.0
+      terser: 5.49.0
     optional: true
 
   metro-resolver@0.83.3:
@@ -9959,8 +9980,8 @@ snapshots:
       serialize-error: 2.1.0
       source-map: 0.5.7
       throat: 5.0.0
-      ws: 7.5.11
-      yargs: 17.7.2
+      ws: 7.5.12
+      yargs: 17.7.3
     transitivePeerDependencies:
       - bufferutil
       - supports-color
@@ -10922,6 +10943,14 @@ snapshots:
       commander: 2.20.3
       source-map-support: 0.5.21
 
+  terser@5.49.0:
+    dependencies:
+      '@jridgewell/source-map': 0.3.11
+      acorn: 8.17.0
+      commander: 2.20.3
+      source-map-support: 0.5.21
+    optional: true
+
   test-exclude@6.0.0:
     dependencies:
       '@istanbuljs/schema': 0.1.6
@@ -11081,7 +11110,7 @@ snapshots:
       - '@types/react'
       - '@types/react-dom'
 
-  vite@8.0.16(@types/node@22.19.21)(esbuild@0.27.0)(jiti@1.21.7)(terser@5.48.0)(yaml@2.9.0):
+  vite@8.0.16(@types/node@22.19.21)(esbuild@0.27.0)(jiti@1.21.7)(terser@5.49.0)(yaml@2.9.0):
     dependencies:
       lightningcss: 1.32.0
       picomatch: 4.0.4
@@ -11093,13 +11122,13 @@ snapshots:
       esbuild: 0.27.0
       fsevents: 2.3.3
       jiti: 1.21.7
-      terser: 5.48.0
+      terser: 5.49.0
       yaml: 2.9.0
 
-  vitest@4.1.9(@edge-runtime/vm@5.0.0)(@types/node@22.19.21)(vite@8.0.16(@types/node@22.19.21)(esbuild@0.27.0)(jiti@1.21.7)(terser@5.48.0)(yaml@2.9.0)):
+  vitest@4.1.9(@edge-runtime/vm@5.0.0)(@types/node@22.19.21)(vite@8.0.16(@types/node@22.19.21)(esbuild@0.27.0)(jiti@1.21.7)(terser@5.49.0)(yaml@2.9.0)):
     dependencies:
       '@vitest/expect': 4.1.9
-      '@vitest/mocker': 4.1.9(vite@8.0.16(@types/node@22.19.21)(esbuild@0.27.0)(jiti@1.21.7)(terser@5.48.0)(yaml@2.9.0))
+      '@vitest/mocker': 4.1.9(vite@8.0.16(@types/node@22.19.21)(esbuild@0.27.0)(jiti@1.21.7)(terser@5.49.0)(yaml@2.9.0))
       '@vitest/pretty-format': 4.1.9
       '@vitest/runner': 4.1.9
       '@vitest/snapshot': 4.1.9
@@ -11116,7 +11145,7 @@ snapshots:
       tinyexec: 1.2.4
       tinyglobby: 0.2.17
       tinyrainbow: 3.1.0
-      vite: 8.0.16(@types/node@22.19.21)(esbuild@0.27.0)(jiti@1.21.7)(terser@5.48.0)(yaml@2.9.0)
+      vite: 8.0.16(@types/node@22.19.21)(esbuild@0.27.0)(jiti@1.21.7)(terser@5.49.0)(yaml@2.9.0)
       why-is-node-running: 2.3.0
     optionalDependencies:
       '@edge-runtime/vm': 5.0.0
@@ -11197,6 +11226,9 @@ snapshots:
 
   ws@7.5.11: {}
 
+  ws@7.5.12:
+    optional: true
+
   ws@8.20.1: {}
 
   ws@8.21.0: {}
@@ -11234,5 +11266,16 @@ snapshots:
       string-width: 4.2.3
       y18n: 5.0.8
       yargs-parser: 21.1.1
+
+  yargs@17.7.3:
+    dependencies:
+      cliui: 8.0.1
+      escalade: 3.2.0
+      get-caller-file: 2.0.5
+      require-directory: 2.1.1
+      string-width: 4.2.3
+      y18n: 5.0.8
+      yargs-parser: 21.1.1
+    optional: true
 
   yocto-queue@0.1.0: {}
