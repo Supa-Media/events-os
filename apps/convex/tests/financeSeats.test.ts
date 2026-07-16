@@ -465,3 +465,65 @@ describe("financeRoles.canViewAccounts", () => {
     expect(await t.query(api.financeRoles.canViewAccounts, {})).toBe(false);
   });
 });
+
+/**
+ * `financeRoles.listChaptersForPeek` (WP-S) — the "Peek" list on the app-wide
+ * context switcher. CENTRAL-seat holders only (mirrors `dashboardChapter`'s
+ * central drill-down gate exactly); a quiet `[]` for everyone else rather than
+ * a thrown error, since the client uses this to decide whether to render the
+ * Peek section at all.
+ */
+describe("financeRoles.listChaptersForPeek", () => {
+  test("a central-scope finance manager sees every chapter, sorted by name", async () => {
+    const t = newT();
+    const s = await setupChapter(t); // chapter "New York"
+    const personId = await seedSelfPerson(s);
+    await grantCentralOnSentinel(s, personId);
+
+    const atlanta = await run(s.t, (ctx) =>
+      ctx.db.insert("chapters", {
+        name: "Atlanta",
+        isActive: true,
+        createdAt: Date.now(),
+      }),
+    );
+
+    const chapters = await s.as.query(api.financeRoles.listChaptersForPeek, {});
+    expect(chapters).toEqual([
+      { chapterId: atlanta, name: "Atlanta" },
+      { chapterId: s.chapterId, name: "New York" },
+    ]);
+  });
+
+  test("a superuser sees every chapter with no financeRoles grant at all", async () => {
+    const t = newT();
+    const s = await setupChapter(t, { email: "seyi@publicworship.life" });
+
+    const chapters = await s.as.query(api.financeRoles.listChaptersForPeek, {});
+    expect(chapters).toEqual([{ chapterId: s.chapterId, name: "New York" }]);
+  });
+
+  test("a chapter-scoped manager (no central reach) sees []", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const personId = await seedSelfPerson(s);
+    await grantChapter(s, personId, "manager");
+
+    expect(await s.as.query(api.financeRoles.listChaptersForPeek, {})).toEqual([]);
+  });
+
+  test("no finance access at all sees []", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await seedSelfPerson(s);
+
+    expect(await s.as.query(api.financeRoles.listChaptersForPeek, {})).toEqual([]);
+  });
+
+  test("no roster row and no chapter of their own to check central reach through sees []", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+
+    expect(await s.as.query(api.financeRoles.listChaptersForPeek, {})).toEqual([]);
+  });
+});

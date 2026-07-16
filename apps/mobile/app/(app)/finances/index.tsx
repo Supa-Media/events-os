@@ -12,11 +12,14 @@
  * Card) so they always land on a tab the member bar actually highlights,
  * rather than an orphaned `MemberView` with no active tab.
  *
- * Dual-hat holders (a central seat AND ≥1 chapter seat — a transition-period
- * state, e.g. ED + Chapter Director today) get a seat switcher listing their
- * real seats; everyone else gets none. Central seat holders can additionally
- * drill into any chapter's dashboard read-only from the "By chapter" roll-up
- * (#131) — the backend re-checks central reach on every such read.
+ * WP-S: which desk is active — and the central → chapter drill-down (#131) —
+ * is now the APP-WIDE `ChapterContext`, not local state. Dual-hat holders (a
+ * central seat AND ≥1 chapter seat) switch desks from the shell's context
+ * pill, not a switcher on this screen; a central seat holder's drill-down
+ * from the "By chapter" roll-up is the same thing as entering the shell's
+ * read-only Peek mode, so `onViewChapter` sets that global state directly —
+ * the persistent shell banner (with its own Exit) replaces the old inline
+ * "Viewing X's dashboard / Back to Central" box this screen used to render.
  *
  * Kept behind an admin-or-lead nav gate AND this in-screen tier guard; the real
  * capability check is the backend `financeRoles` ladder, so each query is
@@ -27,21 +30,20 @@
  * renders only the Dashboard body.
  */
 import { useState } from "react";
-import { ActivityIndicator, Text, View } from "react-native";
+import { ActivityIndicator, View } from "react-native";
 import { useQuery } from "convex/react";
 import { Redirect, useRouter } from "expo-router";
 import type { FunctionReturnType } from "convex/server";
 import { api } from "@events-os/convex/_generated/api";
 import type { Id } from "@events-os/convex/_generated/dataModel";
 import { CENTRAL } from "@events-os/shared";
-import { Button, EmptyState, Narrow, Screen } from "../../../components/ui";
+import { EmptyState, Narrow, Screen } from "../../../components/ui";
 import { colors } from "../../../lib/theme";
+import { useChapterContext } from "../../../lib/ChapterContext";
 import {
   FinanceBoundary,
   MonthStepper,
   PeriodSwitch,
-  SeatSwitcher,
-  seatKeyOf,
   type DashPeriodMode,
 } from "../../../components/finance/dashboard/parts";
 import { ChapterView } from "../../../components/finance/dashboard/ChapterView";
@@ -112,18 +114,12 @@ function DashboardBody({ seats }: { seats: Seats }) {
   const [ym, setYm] = useState({ year: now.getFullYear(), month: now.getMonth() + 1 });
   const [period, setPeriod] = useState<DashPeriodMode>("month");
 
-  // Which seat the caller is at, keyed by `seatKeyOf`. null = the default
-  // seat (central when held, else their first chapter seat).
-  const [seatKey, setSeatKey] = useState<string | null>(null);
-
-  // Central → chapter drill-down (#131): viewing a DIFFERENT chapter's
-  // dashboard than the caller's own (set via the "By chapter" row's tap in
-  // Central; the backend re-checks central reach on every `dashboardChapter`
-  // call). A central-seat feature — switching seats always clears it.
-  const [drilldown, setDrilldown] = useState<{
-    chapterId: Id<"chapters">;
-    chapterName: string;
-  } | null>(null);
+  // WP-S: the desk the caller is at, app-wide — the shell's context pill sets
+  // this, not a control on this screen. `context` is guaranteed non-null here:
+  // `FinancesScreen` already confirmed `seats.length > 0` before mounting
+  // `DashboardBody`, and `ChapterContext` only returns null for a no-seat
+  // caller (or while `mySeats` is still loading, which resolved above too).
+  const { context, enterPeek } = useChapterContext();
 
   const [budgetModal, setBudgetModal] = useState<{
     open: boolean;
@@ -140,12 +136,14 @@ function DashboardBody({ seats }: { seats: Seats }) {
     chapters: Array<{ chapterId: Id<"chapters">; chapterName: string }>;
   }>({ open: false, chapters: [] });
 
+  const isPeeking = context?.kind === "peek";
+
   // Attention-row actions: all three kinds live on their own finance tab,
-  // hard-scoped to the CALLER's own chapter — never call this while drilled
+  // hard-scoped to the CALLER's own chapter — never call this while peeking
   // into a different chapter (ChapterView already hides the action in that
   // state; this is a defensive no-op, not the primary guard).
   function onAttentionAction(kind: string) {
-    if (drilldown) return;
+    if (isPeeking) return;
     if (kind === "reimbursements") router.navigate("/finances/reimbursements" as never);
     else if (kind === "cards") router.navigate("/finances/cards" as never);
     // Unattributed spend → Reconcile, which already defaults to the
@@ -157,53 +155,38 @@ function DashboardBody({ seats }: { seats: Seats }) {
   // resolved the loading state and redirected a no-seat caller before
   // DashboardBody ever mounts.
   const centralSeat = seats.find((s) => s.scope === "central") ?? null;
-  const chapterSeats = seats.filter((s) => s.scope === "chapter");
-  // mySeats returns central first, so seats[0] is the default desk. `seats` is
-  // non-empty here, so this is never null — unlike the null-fallback chain
-  // this replaced.
-  const activeSeat = seats.find((s) => seatKeyOf(s) === seatKey) ?? seats[0];
-  // Dual-hat only: a central seat AND at least one chapter seat.
-  const showSwitcher = centralSeat != null && chapterSeats.length > 0;
 
-  function chooseSeat(key: string) {
-    setDrilldown(null); // drill-down is central-desk state; a seat pick resets it
-    setSeatKey(key);
-  }
+  // The chapter dashboard's chapterId: the peeked chapter, or the caller's
+  // own chapter seat (undefined when the desk isn't a chapter seat — e.g. a
+  // central-only holder before they've entered Peek — `dashboardChapter`
+  // falls back to the caller's own chapter server-side in that case).
+  const chapterId: Id<"chapters"> | undefined =
+    context?.kind === "peek"
+      ? context.chapterId
+      : context?.kind === "seat" && context.scope !== "central"
+        ? context.scope
+        : undefined;
 
-  function viewChapter(chapterId: Id<"chapters">, chapterName: string) {
-    setDrilldown({ chapterId, chapterName });
-  }
-
-  function backToCentral() {
-    setDrilldown(null);
-  }
-
-  const atCentralDesk = activeSeat?.scope === "central";
+  const atCentralDesk = context?.kind === "seat" && context.scope === "central";
 
   return (
     <Screen>
       <Narrow>
-        {/* Controls: month stepper + Month/YTD toggle + seat switcher (dual-hat only). */}
+        {/* Controls: month stepper + Month/YTD toggle. Which desk you're at is
+            the shell's context pill now, not a control on this screen. */}
         <View className="mb-4 flex-row flex-wrap items-center justify-between gap-3">
           <View className="flex-row flex-wrap items-center gap-2">
             <MonthStepper year={ym.year} month={ym.month} period={period} onChange={setYm} />
             <PeriodSwitch value={period} onChange={setPeriod} />
           </View>
-          {showSwitcher ? (
-            <SeatSwitcher
-              seats={seats}
-              activeKey={activeSeat ? seatKeyOf(activeSeat) : "central"}
-              onChange={chooseSeat}
-            />
-          ) : null}
         </View>
 
-        {atCentralDesk && drilldown === null ? (
+        {atCentralDesk ? (
           <FinanceBoundary fallback={<NoFinanceAccess />}>
             <CentralSection
               ym={ym}
               period={period}
-              onViewChapter={viewChapter}
+              onViewChapter={enterPeek}
               onNewBudget={() => setBudgetModal({ open: true, id: null, central: true })}
               onRecordTransfer={(chapters) =>
                 setTransferModal({ open: true, chapters })
@@ -212,29 +195,14 @@ function DashboardBody({ seats }: { seats: Seats }) {
           </FinanceBoundary>
         ) : (
           // A chapter dashboard: the caller's own chapter seat, or a central
-          // seat drilled into another chapter (read-only).
+          // seat peeking into another chapter (read-only — the shell banner
+          // carries the "Viewing X (read-only)" messaging + Exit now).
           <FinanceBoundary fallback={<NoFinanceAccess />}>
-            {drilldown ? (
-              <View className="mb-3 flex-row items-center justify-between gap-3 rounded-lg border border-border bg-raised px-4 py-2.5">
-                <Text className="flex-1 text-sm text-ink" numberOfLines={1}>
-                  Viewing {drilldown.chapterName}&rsquo;s dashboard
-                </Text>
-                <Button
-                  title="Back to Central"
-                  size="sm"
-                  variant="ghost"
-                  onPress={backToCentral}
-                />
-              </View>
-            ) : null}
             <ChapterSection
-              chapterId={
-                drilldown?.chapterId ??
-                (activeSeat.scope === "chapter" ? activeSeat.chapterId : undefined)
-              }
+              chapterId={chapterId}
               ym={ym}
               period={period}
-              isDrilldown={drilldown != null}
+              isDrilldown={isPeeking}
               onNewBudget={() => setBudgetModal({ open: true, id: null, central: false })}
               onEditBudget={(id) =>
                 setBudgetModal({ open: true, id: id as Id<"budgets">, central: false })

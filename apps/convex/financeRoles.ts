@@ -26,8 +26,10 @@ import {
   requireFinanceManager,
   requireFinanceCentral,
   isCentralEdOrFm,
+  getFinanceRole,
 } from "./lib/finance";
 import { isSuperuser } from "./lib/superuser";
+import { ROLLUP_SCAN_LIMIT } from "./finances";
 
 const roleValidator = v.union(...FINANCE_ROLES.map((r) => v.literal(r)));
 const scopeValidator = v.union(...FINANCE_ROLE_SCOPES.map((s) => v.literal(s)));
@@ -292,5 +294,43 @@ export const revokeFinanceRole = mutation({
     }
     await ctx.db.delete(roleId);
     return null;
+  },
+});
+
+/**
+ * Every chapter in the org — the "Peek" list on the app-wide context switcher
+ * (WP-S). CENTRAL-seat holders only — mirrors `mySeats`' superuser-first
+ * pattern (superuser short-circuits to central reach before ever looking at
+ * a chapter), NOT `dashboardCentral`'s gate (which has no superuser
+ * special-case and returns its early-empty purely off the caller having no
+ * chapter of their own). Here: check `isSuperuser` first; only if that's
+ * false do we fall back to resolving the caller's own chapter and checking
+ * central reach through it. A caller with no central seat (superuser or
+ * otherwise), or no chapter of their own to check reach through, gets `[]` —
+ * a quiet "nothing to peek into", not a thrown error, since the client uses
+ * this to decide whether to render the Peek section at all.
+ *
+ * This is a READ-ONLY listing (id + name); it grants no access by itself —
+ * every screen that actually uses a peeked chapterId re-checks central reach
+ * on its own scoped query (e.g. `finances.dashboardChapter`'s drill-down
+ * gate), same as before this query existed.
+ */
+export const listChaptersForPeek = query({
+  args: {},
+  returns: v.array(v.object({ chapterId: v.id("chapters"), name: v.string() })),
+  handler: async (ctx) => {
+    let isCentral = await isSuperuser(ctx);
+    if (!isCentral) {
+      const chapterId = await getChapterIdOrNull(ctx);
+      if (!chapterId) return [];
+      const access = await getFinanceRole(ctx, chapterId as Id<"chapters">);
+      isCentral = access.isCentral;
+    }
+    if (!isCentral) return [];
+
+    const chapters = await ctx.db.query("chapters").take(ROLLUP_SCAN_LIMIT);
+    return chapters
+      .map((c) => ({ chapterId: c._id, name: c.name }))
+      .sort((a, b) => a.name.localeCompare(b.name));
   },
 });

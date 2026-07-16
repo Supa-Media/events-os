@@ -11,14 +11,7 @@
  */
 import { Component, type ReactNode } from "react";
 import { Text, View, Pressable } from "react-native";
-import {
-  formatCents,
-  FINANCE_ROLE_LABELS,
-  specializedRoleLabel,
-  type FinanceRole,
-  type SpecializedRoleTitle,
-  type TransactionFlow,
-} from "@events-os/shared";
+import { formatCents, type TransactionFlow } from "@events-os/shared";
 import { colors } from "../../../lib/theme";
 import { Icon, type BadgeTone } from "../../ui";
 
@@ -249,7 +242,7 @@ export function MonthStepper({
 export type DashPeriodMode = "month" | "ytd";
 
 /**
- * A compact Month / YTD segmented toggle (matches the `SeatSwitcher`
+ * A compact Month / YTD segmented toggle (matches the shell's context-pill
  * styling) that flips the dashboard between the selected month and the
  * cumulative year-to-date range through it. Sits next to the `MonthStepper`.
  */
@@ -282,86 +275,6 @@ export function PeriodSwitch({
           </Pressable>
         );
       })}
-    </View>
-  );
-}
-
-// ── Seat switcher ────────────────────────────────────────────────────────────
-/**
- * One of the caller's REAL finance seats, as returned by
- * `api.financeRoles.mySeats` (structurally typed here so this presentational
- * file doesn't import generated backend types).
- */
-export type Seat =
-  | { scope: "central"; role: FinanceRole; title?: SpecializedRoleTitle }
-  | {
-      scope: "chapter";
-      chapterId: string;
-      chapterName: string;
-      role: FinanceRole;
-      title?: SpecializedRoleTitle;
-    };
-
-/** The stable key identifying a seat ("central" or the chapter id). */
-export function seatKeyOf(seat: Seat): string {
-  return seat.scope === "central" ? "central" : seat.chapterId;
-}
-
-/**
- * "Central · Executive Director" / "New York · Chapter Director" / "New York
- * · Treasurer" when the caller holds an org-chart specialized title at this
- * seat's scope (WP-1.1, via `specializedRoleLabel` — the single source for
- * that scope-aware mapping); otherwise falls back to the generic finance-role
- * label, e.g. "Central · Manager" / "New York · Bookkeeper".
- */
-export function seatLabelOf(seat: Seat): string {
-  const desk = seat.scope === "central" ? "Central" : seat.chapterName;
-  const roleLabel = seat.title
-    ? specializedRoleLabel(seat.title, seat.scope === "central")
-    : FINANCE_ROLE_LABELS[seat.role];
-  return `${desk} · ${roleLabel}`;
-}
-
-/**
- * The seat switcher: which of the caller's REAL seats is the desk they're at.
- * Only rendered for dual-hat holders (a central seat AND ≥1 chapter seat — a
- * transition-period state); single-seat callers never see it. This replaced
- * the "Preview as" role simulation, which is gone: nobody previews a role
- * they don't hold.
- */
-export function SeatSwitcher({
-  seats,
-  activeKey,
-  onChange,
-}: {
-  seats: Seat[];
-  activeKey: string;
-  onChange: (key: string) => void;
-}) {
-  return (
-    <View className="flex-row items-center gap-2">
-      <Text className="text-2xs font-bold uppercase tracking-wider text-faint">
-        Seat
-      </Text>
-      <View className="flex-row items-center gap-0.5 rounded-pill border border-border bg-sunken p-0.5">
-        {seats.map((seat) => {
-          const key = seatKeyOf(seat);
-          const active = key === activeKey;
-          return (
-            <Pressable
-              key={key}
-              onPress={() => onChange(key)}
-              className={`rounded-pill px-3 py-1 ${active ? "bg-raised shadow-card" : ""}`}
-            >
-              <Text
-                className={`text-sm font-semibold ${active ? "text-accent" : "text-muted"}`}
-              >
-                {seatLabelOf(seat)}
-              </Text>
-            </Pressable>
-          );
-        })}
-      </View>
     </View>
   );
 }
