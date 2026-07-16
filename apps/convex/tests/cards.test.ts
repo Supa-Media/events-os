@@ -412,6 +412,34 @@ describe("flagPersonalCharge", () => {
     );
   });
 
+  // ── R1b: the Reconcile grid's "Mark personal" entry point is manager-only —
+  // a bookkeeper has full Reconcile access (categorize, receipts, status) but
+  // NOT this action, since `flagPersonalCharge`'s authz is cardholder-or-
+  // MANAGER (`access.isManager`), not cardholder-or-bookkeeper+. ────────────
+  test("a bookkeeper (full Reconcile access, but not manager rank) cannot flag another person's charge (FORBIDDEN)", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    // Caller is a BOOKKEEPER — same rank the Reconcile grid's other actions
+    // (categorize, attachReceipt, setTransactionStatus) already accept — and
+    // NOT the cardholder.
+    const caller = await seedPerson(s, { name: "Bookkeeper", userId: s.userId });
+    await grantRole(s, caller, "bookkeeper");
+    const holder = await seedPerson(s, { name: "Holder" });
+    const cardId = await seedCard(s, { cardholderPersonId: holder });
+    const txnId = await seedCardTxn(s, { cardId, amountCents: 500 });
+
+    let caught: unknown;
+    try {
+      await s.as.mutation(api.cards.flagPersonalCharge, { transactionId: txnId });
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(ConvexError);
+    expect((caught as ConvexError<{ code: string }>).data.code).toBe(
+      "FORBIDDEN",
+    );
+  });
+
   // ── D4: manager-initiated flag (a manager flagging SOMEONE ELSE's charge) ──
   test("a finance manager can flag ANOTHER person's card charge — repayment created, owned by the cardholder", async () => {
     // Manager-flagging-someone-else's-charge schedules a best-effort

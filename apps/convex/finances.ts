@@ -169,6 +169,9 @@ const txnSummaryFields = {
   status: statusValidator,
   description: v.union(v.string(), v.null()),
   merchantName: v.union(v.string(), v.null()),
+  // R1a: the bookkeeper's own freeform note ("who was this for and why") —
+  // distinct from `description` (provider-sourced). Null until set.
+  note: v.union(v.string(), v.null()),
   fundId: v.union(v.id("funds"), v.null()),
   categoryId: v.union(v.id("budgetCategories"), v.null()),
   budgetId: v.union(v.id("budgets"), v.null()),
@@ -367,6 +370,9 @@ const chapterRollupRow = v.object({
 // ── Bounds (keep every read + rollup bounded) ────────────────────────────────
 export const ROLLUP_SCAN_LIMIT = 5000;
 const RECENT_TXN_COUNT = 10;
+// R1a: a transaction note is a short "who/why" justification, not a document —
+// capped so a runaway paste can't bloat the row.
+const MAX_NOTE_LENGTH = 2000;
 const DAY_MS = 24 * 60 * 60 * 1000;
 
 // ── Projection helpers ───────────────────────────────────────────────────────
@@ -424,6 +430,7 @@ function toTxnSummary(tr: Doc<"transactions">) {
     status: tr.status,
     description: tr.description ?? null,
     merchantName: tr.merchantName ?? null,
+    note: tr.note ?? null,
     fundId: tr.fundId ?? null,
     categoryId: tr.categoryId ?? null,
     budgetId: tr.budgetId ?? null,
@@ -4826,6 +4833,31 @@ export const flagPersonal = mutation({
     // A personal charge is excluded from spend until repaid (`isPersonal`
     // already drops it from SPEND totals; no status change needed).
     await ctx.db.patch(args.transactionId, { isPersonal: args.isPersonal });
+    return null;
+  },
+});
+
+/**
+ * R1a — set (or clear) a transaction's freeform note: "who was this for and
+ * why" (the business/mission justification budget + category alone don't
+ * capture). Same authz as `categorizeTransaction` (scope-aware
+ * `requireReconcileTxn`, bookkeeper rank) — coding a charge and annotating it
+ * are the same reconcile-grid privilege. `null` (or an all-whitespace string)
+ * clears the note; anything else is trimmed and capped at `MAX_NOTE_LENGTH`.
+ */
+export const setTransactionNote = mutation({
+  args: { transactionId: v.id("transactions"), note: v.union(v.string(), v.null()) },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    await requireReconcileTxn(ctx, args.transactionId, "bookkeeper");
+    const trimmed = args.note?.trim() || null;
+    if (trimmed && trimmed.length > MAX_NOTE_LENGTH) {
+      throw new ConvexError({
+        code: "NOTE_TOO_LONG",
+        message: `A note can't be longer than ${MAX_NOTE_LENGTH} characters.`,
+      });
+    }
+    await ctx.db.patch(args.transactionId, { note: trimmed ?? undefined });
     return null;
   },
 });

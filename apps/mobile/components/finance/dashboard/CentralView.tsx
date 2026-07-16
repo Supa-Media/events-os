@@ -7,6 +7,7 @@
  */
 import { useMemo } from "react";
 import { Pressable, Text, View } from "react-native";
+import { useQuery } from "convex/react";
 import type { FunctionReturnType } from "convex/server";
 import { api } from "@events-os/convex/_generated/api";
 import type { Id } from "@events-os/convex/_generated/dataModel";
@@ -27,11 +28,14 @@ type CentralBudget = CentralDash["centralBudgets"][number];
 
 export function CentralView({
   data,
+  year,
   onViewChapter,
   onNewBudget,
   onRecordTransfer,
 }: {
   data: CentralDash;
+  /** The dashboard's currently-selected year (R1d — see `spentByBudgetId`). */
+  year: number;
   /** Drill into one chapter's chapter-perspective dashboard (central-only —
    *  the backend re-checks central reach via `dashboardChapter({chapterId})`). */
   onViewChapter: (chapterId: Id<"chapters">, chapterName: string) => void;
@@ -46,13 +50,36 @@ export function CentralView({
   const chapterRows = data.chapterRollup.filter(
     (c): c is ChapterRollup & { chapterId: Id<"chapters"> } => c.chapterId !== CENTRAL,
   );
+
+  // R1d root cause: the tag-detail sheet's "carrying budgets" list
+  // (`listBudgets`) includes the CALLER's OWN chapter budgets too (any
+  // one_time/recurring budget sharing the tapped tag's name) — but this map
+  // only ever tracked CENTRAL budgets, so a same-named-tag CHAPTER budget had
+  // NO entry here at all (not conditional on period — always missing) and
+  // `BudgetLine` rendered its spend as a bare "—" next to its real allocation.
+  // Backfill from `budgetVsActual` (the caller's own chapter, this year,
+  // unfiltered — a genuinely zero-spend budget correctly reports `0`, not
+  // absent). Only fetched once the caller actually holds a chapter-scope seat
+  // (`mySeats`, itself non-throwing) — `budgetVsActual` requires at least a
+  // viewer role in the CALLER's own chapter, which a pure central-only seat
+  // holder doesn't have, and this dashboard must never crash on it.
+  const seats = useQuery(api.financeRoles.mySeats, {}) ?? [];
+  const hasChapterSeat = seats.some((s) => s.scope === "chapter");
+  const budgetActuals =
+    useQuery(api.finances.budgetVsActual, hasChapterSeat ? { year } : "skip") ?? [];
+
   // Per-central-budget actuals for the tag-detail sheet, keyed by budget id.
   const spentByBudgetId = useMemo(() => {
     const m = new Map<string, BudgetSpend>();
     for (const b of data.centralBudgets)
       m.set(b.id, { spentCents: b.spentCents, budgetCents: b.budgetCents });
+    for (const b of budgetActuals) {
+      if (b.budgetId && !m.has(b.budgetId)) {
+        m.set(b.budgetId, { spentCents: b.actualCents, budgetCents: b.allocatedCents });
+      }
+    }
     return m;
-  }, [data.centralBudgets]);
+  }, [data.centralBudgets, budgetActuals]);
 
   return (
     <View>

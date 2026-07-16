@@ -11,6 +11,7 @@
  */
 import { useMemo } from "react";
 import { Pressable, Text, View } from "react-native";
+import { useQuery } from "convex/react";
 import type { FunctionReturnType } from "convex/server";
 import { api } from "@events-os/convex/_generated/api";
 import { formatCents } from "@events-os/shared";
@@ -50,6 +51,7 @@ type Affordability = FunctionReturnType<typeof api.finances.chapterAffordability
 export function ChapterView({
   data,
   affordability,
+  year,
   onNewBudget,
   onEditBudget,
   onAddTransaction,
@@ -62,6 +64,8 @@ export function ChapterView({
    *  query is still loading — the header renders nothing until then rather
    *  than blocking the rest of the dashboard on it. */
   affordability: Affordability | undefined;
+  /** The dashboard's currently-selected year (R1d — see `spentByBudgetId`). */
+  year: number;
   onNewBudget: () => void;
   onEditBudget: (budgetId: string) => void;
   onAddTransaction: () => void;
@@ -88,6 +92,22 @@ export function ChapterView({
     (t) => txnStatusTone(t.status).label === "Needs review",
   ).length;
 
+  // R1d root cause: `oneTimeBudgets`/`recurringBudgets` are the dashboard's own
+  // CARD lists, and `recurringBudgets` additionally drops any budget that
+  // doesn't apply to the CURRENTLY VIEWED month/quarter (`recurringAppliesToDash`
+  // — e.g. a March-only bucket while viewing August). The tag-detail sheet
+  // below independently lists EVERY budget carrying a tag (`listBudgets`, not
+  // period-filtered), so a budget excluded from the cards above had no entry in
+  // this map at all — `TagRollup.tsx`'s `BudgetLine` read that as "unknown" and
+  // rendered a bare "—" for spend next to its real (e.g. "$500") allocation.
+  // Backfill every other same-year budget from `budgetVsActual` (unfiltered,
+  // real actuals — never absent, so a genuinely zero-spend budget correctly
+  // shows "$0.00") so every budget the sheet can show has real numbers. Skipped
+  // during a central drill-down: `budgetVsActual` always resolves the CALLER's
+  // own chapter, which isn't the chapter being viewed there.
+  const budgetActuals =
+    useQuery(api.finances.budgetVsActual, isDrilldown ? "skip" : { year }) ?? [];
+
   // Per-budget actuals for the tag-detail sheet, keyed by budget id.
   const spentByBudgetId = useMemo(() => {
     const m = new Map<string, BudgetSpend>();
@@ -95,8 +115,13 @@ export function ChapterView({
       m.set(b.id, { spentCents: b.spentCents, budgetCents: b.budgetCents });
     for (const b of data.recurringBudgets)
       m.set(b.id, { spentCents: b.spentCents, budgetCents: b.budgetCents });
+    for (const b of budgetActuals) {
+      if (b.budgetId && !m.has(b.budgetId)) {
+        m.set(b.budgetId, { spentCents: b.actualCents, budgetCents: b.allocatedCents });
+      }
+    }
     return m;
-  }, [data.oneTimeBudgets, data.recurringBudgets]);
+  }, [data.oneTimeBudgets, data.recurringBudgets, budgetActuals]);
 
   return (
     <View>

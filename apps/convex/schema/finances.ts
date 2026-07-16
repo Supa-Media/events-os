@@ -218,6 +218,11 @@ export const transactions = defineTable({
   // Card last-4 parsed out of the description (FC syncs the card only inside
   // that string). Powers legacy-card matching (`by_chapter_and_last4`) + display.
   cardLast4: v.optional(v.string()),
+  // R1a: a bookkeeper's freeform note — "who was this for and why" (business/
+  // mission justification), distinct from `description` (provider-sourced, the
+  // bank/card network's own merchant string — never author-edited). Set via
+  // `finances.setTransactionNote`; capped at `MAX_NOTE_LENGTH`.
+  note: v.optional(v.string()),
 
   // Categorization (the "where does this money belong" layer).
   fundId: v.optional(v.id("funds")),

@@ -239,6 +239,53 @@ describe("budgets + budgetVsActual (Estimated ≠ Actual)", () => {
     expect(rows2.find((r) => r.budgetId === budgetId)?.actualCents).toBe(0);
   });
 
+  // ── R1d: the tag-rollup detail sheet's "- / $500" display bug ──────────────
+  // Root cause: the dashboard's `spentByBudgetId` map (mobile `ChapterView`/
+  // `CentralView`) only ever covered the budgets shown as dashboard CARDS —
+  // which for a recurring budget excludes any month/quarter it doesn't apply
+  // to (`recurringAppliesToDash`) — while the tag-detail sheet lists EVERY
+  // budget carrying a tag (`listBudgets`, unfiltered). A budget missing from
+  // the map rendered its spend as a bare "—", even when the true spend is a
+  // perfectly normal `0`. The fix backfills from `budgetVsActual` (called with
+  // NO `month` arg, exactly as the dashboard views now do), which this test
+  // pins: a budget that has NEVER had a transaction posted against it still
+  // reports `actualCents: 0` — never `undefined`/missing — so the sheet can
+  // render "$0.00" instead of a dash.
+  test("budgetVsActual reports actualCents:0 (never missing) for a zero-spend tagged budget", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await asManager(s);
+    const year = 2026;
+
+    const tag = await s.as.mutation(api.finances.createBudgetTag, {
+      name: "Fundraisers",
+      kind: "custom",
+    });
+    const budgetId = await s.as.mutation(api.finances.createBudget, {
+      amountCents: 50000,
+      type: "recurring",
+      cadence: "monthly",
+      year,
+      month: 3, // March-only — the exact "doesn't apply to the browsed month" shape.
+      tagIds: [tag],
+      label: "Spring fundraiser",
+    });
+
+    // No month arg — this is how ChapterView/CentralView call it for the
+    // tag-detail backfill (unfiltered by "applies to the current month").
+    const rows = await s.as.query(api.finances.budgetVsActual, { year });
+    const row = rows.find((r) => r.budgetId === budgetId);
+    expect(row).toBeDefined();
+    expect(row?.actualCents).toBe(0); // present, not undefined — renders "$0.00"
+    expect(row?.allocatedCents).toBe(50000);
+
+    // The same budget (+ its tag) is what `listBudgets` (the tag-detail
+    // sheet's "carrying budgets" source) surfaces, so the two combine cleanly.
+    const budgets = await s.as.query(api.finances.listBudgets, {});
+    const listed = budgets.find((b) => b.id === budgetId);
+    expect(listed?.tags.map((tg) => tg.id)).toContain(tag);
+  });
+
   test("listBudgets returns the created budget; deleteBudget removes it", async () => {
     const t = newT();
     const s = await setupChapter(t);
