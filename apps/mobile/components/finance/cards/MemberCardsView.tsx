@@ -42,6 +42,10 @@ import { VirtualCardArt } from "./VirtualCardArt";
 import { CardPhilosophy } from "./CardPhilosophy";
 import { OwedBanner } from "./OwedBanner";
 import {
+  RevealCardDetailsModal,
+  type RevealedCardDetails,
+} from "./RevealCardDetailsModal";
+import {
   cardStatusBadge,
   cardTypeLabel,
   expLabel,
@@ -67,11 +71,17 @@ export function MemberCardsView() {
   const freezeCard = useAction(api.cards.freezeCard);
   const unfreezeCard = useAction(api.cards.unfreezeCard);
   const requestCard = useMutation(api.cards.requestCard);
+  // HOLDER-ONLY, rate-limited (see `cards.ts`) — the manual add-to-wallet
+  // reveal. The response lives ONLY in this component's state; nothing is
+  // ever written back to Convex.
+  const revealCardDetails = useAction(api.cards.revealCardDetails);
   const { run, toast, dismiss } = useActionRunner();
 
   const [freezing, setFreezing] = useState(false);
   const [requestNote, setRequestNote] = useState("");
   const [requesting, setRequesting] = useState(false);
+  const [revealing, setRevealing] = useState(false);
+  const [revealed, setRevealed] = useState<RevealedCardDetails | null>(null);
 
   // Transaction ids the member has already kicked off a SINGLE-row repayment
   // for (so that row shows the pending state rather than "Pay back" again).
@@ -128,6 +138,15 @@ export function MemberCardsView() {
       );
     }
     setFreezing(false);
+  }
+
+  async function handleRevealDetails(cardId: Id<"cards">) {
+    setRevealing(true);
+    const result = await run(() => revealCardDetails({ cardId }), {
+      errorTitle: "Couldn't show card details",
+    });
+    if (result) setRevealed(result);
+    setRevealing(false);
   }
 
   async function handleRequestCard() {
@@ -301,6 +320,20 @@ export function MemberCardsView() {
                 />
               ) : null}
 
+              {/* Manual add-to-wallet — HOLDER-ONLY + rate-limited server-side
+                  (see `cards.ts`'s `revealCardDetails`). Only offered while
+                  the card is usable; native push provisioning ("Add to Apple
+                  Wallet" one-tap) is explicitly deferred. */}
+              {card.status === "active" ? (
+                <Button
+                  title="Show card details / Add to wallet"
+                  variant="ghost"
+                  icon="credit-card"
+                  loading={revealing}
+                  onPress={() => handleRevealDetails(card.id)}
+                />
+              ) : null}
+
               <View className="h-px bg-border" />
 
               {/* The two hard controls — read-only for the cardholder. */}
@@ -409,6 +442,10 @@ export function MemberCardsView() {
       <SectionHeader title="How cards work" />
       <CardPhilosophy />
 
+      <RevealCardDetailsModal
+        details={revealed}
+        onClose={() => setRevealed(null)}
+      />
       <ToastView toast={toast} onDismiss={dismiss} />
     </View>
   );

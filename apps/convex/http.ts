@@ -290,6 +290,33 @@ http.route({
       return new Response("ok", { status: 200 });
     }
 
+    if (event.category === "real_time_decision.digital_wallet_token_requested") {
+      // SYNCHRONOUS wallet-add decision (step 1 of 2 — WP-C.3). Same shape as
+      // card_authorization above: NOT deduped (Increase retries until
+      // actioned), awaited before responding 200.
+      if (objectId) {
+        await ctx.runAction(
+          internal.cards.handleIncreaseDigitalWalletTokenRequested,
+          { realTimeDecisionId: objectId },
+        );
+      }
+      return new Response("ok", { status: 200 });
+    }
+
+    if (
+      event.category === "real_time_decision.digital_wallet_authentication_requested"
+    ) {
+      // SYNCHRONOUS wallet-add 2FA (step 2 of 2 — WP-C.3): deliver the
+      // already-generated one-time passcode and report delivery success.
+      if (objectId) {
+        await ctx.runAction(
+          internal.cards.handleIncreaseDigitalWalletAuthenticationRequested,
+          { realTimeDecisionId: objectId },
+        );
+      }
+      return new Response("ok", { status: 200 });
+    }
+
     // Everything else (ach_transfer.* …) → async: dedup on the event id, then
     // fetch-the-object + advance the matching payout's state machine.
     const { isNew } = await ctx.runMutation(
