@@ -46,6 +46,7 @@ import { ChapterView } from "../../../components/finance/dashboard/ChapterView";
 import { CentralView } from "../../../components/finance/dashboard/CentralView";
 import { BudgetCreateModal } from "../../../components/finance/modals/BudgetCreateModal";
 import { ManualTransactionModal } from "../../../components/finance/modals/ManualTransactionModal";
+import { BackerCountModal } from "../../../components/finance/modals/BackerCountModal";
 
 export default function FinancesScreen() {
   const org = useQuery(api.org.nav);
@@ -291,15 +292,31 @@ function ChapterSection({
   onAttentionAction: (kind: string) => void;
 }) {
   const data = useQuery(api.finances.dashboardChapter, { chapterId, ...ym, period });
+  // Separate query (WP-4.3): its own loading state never blocks the rest of
+  // the dashboard — `ChapterView`/`AffordabilityHeader` renders nothing until
+  // it resolves.
+  const affordability = useQuery(api.finances.chapterAffordability, { chapterId });
+  const [editingBackerCount, setEditingBackerCount] = useState(false);
+
   if (data === undefined) return <LoadingBlock />;
   return (
-    <ChapterView
-      data={data}
-      onNewBudget={onNewBudget}
-      onEditBudget={onEditBudget}
-      onAddTransaction={onAddTransaction}
-      onAttentionAction={onAttentionAction}
-      isDrilldown={isDrilldown}
-    />
+    <>
+      <ChapterView
+        data={data}
+        affordability={affordability}
+        onNewBudget={onNewBudget}
+        onEditBudget={onEditBudget}
+        onAddTransaction={onAddTransaction}
+        onAttentionAction={onAttentionAction}
+        onEditBackerCount={() => setEditingBackerCount(true)}
+        isDrilldown={isDrilldown}
+      />
+      {editingBackerCount ? (
+        <BackerCountModal
+          currentCount={affordability?.backerCount ?? 0}
+          onClose={() => setEditingBackerCount(false)}
+        />
+      ) : null}
+    </>
   );
 }

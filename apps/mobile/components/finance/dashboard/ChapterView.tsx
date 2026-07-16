@@ -1,11 +1,13 @@
 /**
  * Chapter perspective of the finance dashboard — one chapter's money this month:
- * KPI tiles, the AI auto-coding banner, event/project budget cards, recurring
- * buckets (with a "New budget" action), the recent-transactions table (with an
- * "Add transaction" action and AI-suggestion Accept), and the attention queue.
+ * the affordability header (WP-4.3), KPI tiles, the AI auto-coding banner,
+ * event/project budget cards, recurring buckets (with a "New budget" action),
+ * the recent-transactions table (with an "Add transaction" action and
+ * AI-suggestion Accept), and the attention queue.
  *
- * All figures come straight from `api.finances.dashboardChapter` — this view is
- * pure presentation over that contract.
+ * Figures come straight from `api.finances.dashboardChapter` (the bulk of the
+ * view) and `api.finances.chapterAffordability` (the header strip) — this
+ * view is pure presentation over those two contracts.
  */
 import { useMemo } from "react";
 import { Pressable, Text, View } from "react-native";
@@ -43,16 +45,23 @@ type ProjectBudget = ChapterDash["oneTimeBudgets"][number];
 type RecurringBudget = ChapterDash["recurringBudgets"][number];
 type RecentTxn = ChapterDash["recentTransactions"][number];
 type Attention = ChapterDash["attention"][number];
+type Affordability = FunctionReturnType<typeof api.finances.chapterAffordability>;
 
 export function ChapterView({
   data,
+  affordability,
   onNewBudget,
   onEditBudget,
   onAddTransaction,
   onAttentionAction,
+  onEditBackerCount,
   isDrilldown = false,
 }: {
   data: ChapterDash;
+  /** WP-4.3's affordability header data. `undefined` while its (separate)
+   *  query is still loading — the header renders nothing until then rather
+   *  than blocking the rest of the dashboard on it. */
+  affordability: Affordability | undefined;
   onNewBudget: () => void;
   onEditBudget: (budgetId: string) => void;
   onAddTransaction: () => void;
@@ -60,6 +69,9 @@ export function ChapterView({
    *  Reimbursements tab, "cards" → the Cards tab, "needs_budget" → Reconcile
    *  pre-filtered to unattributed spend). */
   onAttentionAction: (kind: string) => void;
+  /** Open the backer-count edit modal. Only ever called when
+   *  `affordability.canEdit` is true (the affordance is hidden otherwise). */
+  onEditBackerCount: () => void;
   /**
    * True while a central viewer is drilled into a chapter that ISN'T their
    * own (see finances/index.tsx). Every write action here — "New budget",
@@ -88,6 +100,9 @@ export function ChapterView({
 
   return (
     <View>
+      {/* Affordability header (WP-4.3): "can we afford this?" in one line. */}
+      <AffordabilityHeader data={affordability} onEdit={onEditBackerCount} />
+
       {/* KPI tiles */}
       <TileRow>
         {data.tiles.map((t, i) => (
@@ -229,6 +244,78 @@ export function ChapterView({
           </>
         );
       })()}
+    </View>
+  );
+}
+
+// ── Affordability header (WP-4.3) ────────────────────────────────────────────
+// "Can we afford this event?" in one line: backers → tier → monthly revenue →
+// floor + skim → discretionary. Zero/unset backers get a gentle prompt instead
+// of a $0-everywhere row (a manager-only "Set backers" action; nothing at all
+// for a plain viewer, so the row disappears rather than reading as broken).
+function AffordabilityHeader({
+  data,
+  onEdit,
+}: {
+  data: Affordability | undefined;
+  onEdit: () => void;
+}) {
+  if (!data) return null; // its own query — never blocks the rest of the dashboard
+
+  if (data.backerCount === 0) {
+    return (
+      <View className="mb-3 flex-row flex-wrap items-center justify-between gap-3 rounded-lg border border-border bg-raised px-4 py-3">
+        <Text className="text-sm text-muted">
+          Set your backer count to see affordability.
+        </Text>
+        {data.canEdit ? (
+          <Button title="Set backers" size="sm" variant="secondary" onPress={onEdit} />
+        ) : null}
+      </View>
+    );
+  }
+
+  const underwater = data.discretionaryCents < 0;
+
+  return (
+    <View className="mb-3 flex-row flex-wrap items-center gap-x-1.5 gap-y-1 rounded-lg border border-border bg-raised px-4 py-3">
+      <Text className="text-sm text-ink">
+        <Text className="font-semibold">{data.backerCount}</Text>{" "}
+        {data.backerCount === 1 ? "backer" : "backers"}
+      </Text>
+      <Text className="text-sm text-muted">·</Text>
+      <Text className="text-sm text-ink">
+        Tier: <Text className="font-semibold">{data.tierLabel}</Text>
+      </Text>
+      <Text className="text-sm text-muted">·</Text>
+      <Money cents={data.monthlyRevenueCents} className="text-sm font-semibold text-ink" />
+      <Text className="text-sm text-muted">/mo revenue →</Text>
+      <Money cents={data.floorCents} className="text-sm text-ink" />
+      <Text className="text-sm text-muted">floor +</Text>
+      <Money cents={data.skimCents} className="text-sm text-ink" />
+      <Text className="text-sm text-muted">skim →</Text>
+      {underwater ? (
+        <Text className="text-sm font-semibold text-danger">
+          under water by{" "}
+          <Money cents={-data.discretionaryCents} className="text-sm font-semibold text-danger" />
+        </Text>
+      ) : (
+        <Text className="text-sm font-semibold text-ink">
+          <Money cents={data.discretionaryCents} className="text-sm font-semibold text-ink" />{" "}
+          discretionary
+        </Text>
+      )}
+      {data.canEdit ? (
+        <Pressable
+          onPress={onEdit}
+          hitSlop={8}
+          accessibilityRole="button"
+          accessibilityLabel="Edit backer count"
+          className="ml-auto flex-row items-center gap-1 rounded-md px-1.5 py-0.5 active:bg-sunken"
+        >
+          <Icon name="edit-2" size={12} color={colors.muted} />
+        </Pressable>
+      ) : null}
     </View>
   );
 }

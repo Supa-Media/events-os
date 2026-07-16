@@ -11,6 +11,15 @@ export const chapters = defineTable({
   image: v.optional(v.string()),
   isActive: v.optional(v.boolean()),
   createdAt: v.optional(v.number()),
+  // WP-4.3 affordability header: the chapter's backer headcount, MANUAL entry
+  // until the Giving page (F-6) exists to report it directly. Absent/0 = not
+  // yet set — the affordability header shows a gentle prompt instead of a
+  // broken row. Least-invasive storage spot: one field on the chapter itself,
+  // editable by the chapter finance-manager rank (Chapter Director/Treasurer),
+  // rather than a new chapter-settings table for a single manual number.
+  backerCount: v.optional(v.number()),
+  backerCountUpdatedAt: v.optional(v.number()),
+  backerCountUpdatedBy: v.optional(v.id("users")),
 })
   .index("by_slug", ["slug"])
   .index("by_name", ["name"]);
