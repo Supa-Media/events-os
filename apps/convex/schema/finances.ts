@@ -191,6 +191,30 @@ export const budgetTagLinks = defineTable({
   .index("by_budget", ["budgetId"])
   .index("by_tag", ["tagId"]);
 
+// ── Budget lines (WP-3.1: the plan — "what are you gonna spend this on?") ───
+/** One line in a v2 budget's planning breakdown: a categorized, described
+ *  chunk of the budget's `amountCents` allocation. ESTIMATED-side only
+ *  (invariant #2) — a budget line's `plannedCents` is NEVER summed with
+ *  `transactions` actuals; it exists purely to answer "what is this budget
+ *  FOR" before a dollar is spent. Distinct from the legacy per-EVENT
+ *  `budgetLineItems` table (`schema/budget.ts`, Budget v1, which also tracks
+ *  an `actualCents` per line) — this is the v2 `budgets` table's (chapter OR
+ *  central) planning breakdown, named `budgetLines` to avoid colliding with
+ *  the v1 table. Tenancy is resolved through the parent `budgets` row (a
+ *  central budget's lines have no chapter to denormalize onto), so every
+ *  read/write goes through the parent budget's scope gate. */
+export const budgetLines = defineTable({
+  budgetId: v.id("budgets"),
+  description: v.string(),
+  categoryId: v.optional(v.id("budgetCategories")),
+  // Planned amount: a positive (non-zero) integer number of cents.
+  plannedCents: v.number(),
+  // Append order for a stable list within the budget.
+  sortOrder: v.number(),
+  createdBy: v.id("users"),
+  createdAt: v.number(),
+}).index("by_budget", ["budgetId"]);
+
 // ── Transactions (the unified ACTUAL record) ─────────────────────────────────
 /** The one table summed for actuals. Positive integer cents; `flow` carries
  *  direction. `externalId` is the unique dedup key for synced sources.

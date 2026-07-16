@@ -3203,6 +3203,16 @@ export const deleteBudget = mutation({
       .withIndex("by_budget", (q) => q.eq("budgetId", args.budgetId))
       .take(ROLLUP_SCAN_LIMIT);
     for (const link of links) await ctx.db.delete(link._id);
+
+    // WP-3.1: a budget's plan (its `budgetLines` breakdown) has no meaning
+    // once the budget itself is gone — cascade the delete rather than orphan
+    // rows that `budgetLines.listLines` would still (uselessly) return.
+    const lines = await ctx.db
+      .query("budgetLines")
+      .withIndex("by_budget", (q) => q.eq("budgetId", args.budgetId))
+      .take(ROLLUP_SCAN_LIMIT);
+    for (const line of lines) await ctx.db.delete(line._id);
+
     await ctx.db.delete(args.budgetId);
     return null;
   },
