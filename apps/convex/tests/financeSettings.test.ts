@@ -10,8 +10,13 @@ import type { Id } from "../_generated/dataModel";
  *  - `setSandboxMode` is SUPERUSER-gated (a non-superuser, even a finance
  *    manager, is rejected),
  *  - it UPSERTS the singleton (at most one row) and stamps `updatedBy`,
- *  - `getFinanceSettings` is finance-VIEWER gated and reads the flag back
- *    (default false when the row doesn't exist).
+ *  - `getFinanceSettings` reads the flag back for a finance-role holder
+ *    (default false when the row doesn't exist), and — [hotfix] — TOLERATES a
+ *    caller with no finance role (returns the safe default instead of
+ *    throwing FORBIDDEN; the flag isn't sensitive, and this query backs the
+ *    `SandboxModeBanner` mounted for every finance-tab visitor including the
+ *    no-seat member persona — see `apps/mobile/components/finance/
+ *    SandboxModeBanner.tsx` and its layout).
  */
 
 const SUPERUSER_EMAIL = "seyi@publicworship.life";
@@ -111,11 +116,35 @@ describe("getFinanceSettings (viewer gate + read)", () => {
     expect(settings.sandboxMode).toBe(true);
   });
 
-  test("a caller with no finance role is rejected", async () => {
+  test("[hotfix] a caller with no finance role gets the safe default, not a throw", async () => {
     const t = newT();
     const s = await setupChapter(t); // leader@, no financeRoles grant
-    await expect(
-      s.as.query(api.financeSettings.getFinanceSettings, {}),
-    ).rejects.toBeInstanceOf(ConvexError);
+    const settings = await s.as.query(api.financeSettings.getFinanceSettings, {});
+    expect(settings.sandboxMode).toBe(false);
+  });
+
+  test("[hotfix] a no-finance-role caller ALWAYS gets the safe default — never the real flag, even once one is set true", async () => {
+    const t = newT();
+    const admin = await setupChapter(t, { email: SUPERUSER_EMAIL });
+    await admin.as.mutation(api.financeSettings.setSandboxMode, {
+      sandboxMode: true,
+    });
+
+    const s = await setupChapter(t, {
+      email: "noseat@publicworship.life",
+      chapterName: "Denver",
+    }); // no financeRoles grant in this chapter
+    const settings = await s.as.query(api.financeSettings.getFinanceSettings, {});
+    expect(settings.sandboxMode).toBe(false);
+  });
+
+  test("[hotfix] a superuser (implicit central manager) still gets the real value", async () => {
+    const t = newT();
+    const admin = await setupChapter(t, { email: SUPERUSER_EMAIL });
+    await admin.as.mutation(api.financeSettings.setSandboxMode, {
+      sandboxMode: true,
+    });
+    const settings = await admin.as.query(api.financeSettings.getFinanceSettings, {});
+    expect(settings.sandboxMode).toBe(true);
   });
 });

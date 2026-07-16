@@ -74,8 +74,11 @@ export default function FinancesLayout() {
 
   return (
     <View className="flex-1">
-      {/* Deployment-wide sandbox-mode banner (shows on every finance tab when on). */}
-      <SandboxModeBanner />
+      {/* Deployment-wide sandbox-mode banner (shows on every finance tab when
+          on) — seat-gated: it's only relevant to finance seat holders, and
+          mounting it for the no-seat member persona is the same crash class
+          this banner itself was the trigger for (see [hotfix]). */}
+      {seats !== undefined && seats.length > 0 && <SandboxModeBanner />}
       <View className="border-b border-border bg-raised px-4 py-2.5">
         <ScrollView
           horizontal
