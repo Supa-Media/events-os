@@ -1,21 +1,26 @@
 /**
- * FINANCES · Dashboard — the money home for a chapter, rendered in one of three
- * perspectives (central / chapter / member) matched to the `finances.html`
- * prototype. Perspective resolves from the caller's finance capability: we probe
- * `api.finances.dashboardCentral` and, if it succeeds, the viewer is central
- * (they get the org-wide roll-up and a "Preview as" switch to peek at the
- * chapter/member views); otherwise they land on the chapter view. A month
- * stepper drives the `{year, month}` args of every read.
+ * FINANCES · Dashboard — the money home, rendered at the desk the caller
+ * ACTUALLY sits at. `api.financeRoles.mySeats` resolves their real seats from
+ * `financeRoles` grants (+ the superuser allowlist): a central seat renders the
+ * org-wide roll-up, a chapter seat renders that chapter's dashboard, and no
+ * seat renders the member view (my card / my transactions). There is no
+ * "Preview as" role simulation — nobody sees a desk they don't hold.
+ *
+ * Dual-hat holders (a central seat AND ≥1 chapter seat — a transition-period
+ * state, e.g. ED + Chapter Director today) get a seat switcher listing their
+ * real seats; everyone else gets none. Central seat holders can additionally
+ * drill into any chapter's dashboard read-only from the "By chapter" roll-up
+ * (#131) — the backend re-checks central reach on every such read.
  *
  * Kept behind an admin-or-lead nav gate AND this in-screen tier guard; the real
  * capability check is the backend `financeRoles` ladder, so each query is
- * wrapped in a boundary that degrades to a friendly "access needed" state if the
- * viewer lacks a finance grant (the read throws a `ConvexError`).
+ * wrapped in a boundary that degrades to a friendly "access needed" state if
+ * the viewer lacks a finance grant (the read throws a `ConvexError`).
  *
  * Sub-nav tabs + the app chrome come from the finances `_layout`; this screen
  * renders only the Dashboard body.
  */
-import { useEffect, useRef, useState } from "react";
+import { useState } from "react";
 import { ActivityIndicator, Text, View } from "react-native";
 import { useQuery } from "convex/react";
 import { useRouter } from "expo-router";
@@ -27,9 +32,9 @@ import {
   FinanceBoundary,
   MonthStepper,
   PeriodSwitch,
-  PerspectiveSwitch,
+  SeatSwitcher,
+  seatKeyOf,
   type DashPeriodMode,
-  type Perspective,
 } from "../../../components/finance/dashboard/parts";
 import { ChapterView } from "../../../components/finance/dashboard/ChapterView";
 import { CentralView } from "../../../components/finance/dashboard/CentralView";
@@ -83,14 +88,18 @@ function DashboardBody() {
   const now = new Date();
   const [ym, setYm] = useState({ year: now.getFullYear(), month: now.getMonth() + 1 });
   const [period, setPeriod] = useState<DashPeriodMode>("month");
-  const [perspective, setPerspective] = useState<Perspective>("chapter");
-  // null = still probing, true/false = whether the caller is central.
-  const [centralAvailable, setCentralAvailable] = useState<boolean | null>(null);
-  const touchedRef = useRef(false);
 
-  // Central → chapter drill-down: viewing a DIFFERENT chapter's dashboard than
-  // the caller's own (set via the "By chapter" row's tap in Central; the
-  // backend re-checks central reach on every `dashboardChapter` call).
+  // The caller's REAL seats, central first. [] = member.
+  const seats = useQuery(api.financeRoles.mySeats, {});
+
+  // Which seat the caller is at, keyed by `seatKeyOf`. null = the default
+  // seat (central when held, else their first chapter seat).
+  const [seatKey, setSeatKey] = useState<string | null>(null);
+
+  // Central → chapter drill-down (#131): viewing a DIFFERENT chapter's
+  // dashboard than the caller's own (set via the "By chapter" row's tap in
+  // Central; the backend re-checks central reach on every `dashboardChapter`
+  // call). A central-seat feature — switching seats always clears it.
   const [drilldown, setDrilldown] = useState<{
     chapterId: Id<"chapters">;
     chapterName: string;
@@ -101,29 +110,6 @@ function DashboardBody() {
     id: Id<"budgets"> | null;
   }>({ open: false, id: null });
   const [txnModalOpen, setTxnModalOpen] = useState(false);
-
-  // Default to the central view the moment we learn the caller is central —
-  // unless they've already picked a perspective from the switch.
-  useEffect(() => {
-    if (centralAvailable === true && !touchedRef.current) setPerspective("central");
-  }, [centralAvailable]);
-
-  function choose(p: Perspective) {
-    touchedRef.current = true;
-    setDrilldown(null); // a manual perspective pick always means "my own chapter"
-    setPerspective(p);
-  }
-
-  function viewChapter(chapterId: Id<"chapters">, chapterName: string) {
-    touchedRef.current = true;
-    setDrilldown({ chapterId, chapterName });
-    setPerspective("chapter");
-  }
-
-  function backToCentral() {
-    setDrilldown(null);
-    setPerspective("central");
-  }
 
   // Attention-row actions: all three kinds live on their own finance tab,
   // hard-scoped to the CALLER's own chapter — never call this while drilled
@@ -138,39 +124,68 @@ function DashboardBody() {
     else if (kind === "needs_budget") router.navigate("/finances/reconcile" as never);
   }
 
-  const options: { key: Perspective; label: string }[] = [
-    ...(centralAvailable ? [{ key: "central" as const, label: "Central" }] : []),
-    { key: "chapter", label: "Chapter" },
-    { key: "member", label: "Member" },
-  ];
+  if (seats === undefined) {
+    return (
+      <Screen>
+        <Narrow>
+          <LoadingBlock />
+        </Narrow>
+      </Screen>
+    );
+  }
+
+  const centralSeat = seats.find((s) => s.scope === "central") ?? null;
+  const chapterSeats = seats.filter((s) => s.scope === "chapter");
+  // mySeats returns central first, so seats[0] is the default desk.
+  const activeSeat = seats.find((s) => seatKeyOf(s) === seatKey) ?? seats[0] ?? null;
+  // Dual-hat only: a central seat AND at least one chapter seat.
+  const showSwitcher = centralSeat != null && chapterSeats.length > 0;
+
+  function chooseSeat(key: string) {
+    setDrilldown(null); // drill-down is central-desk state; a seat pick resets it
+    setSeatKey(key);
+  }
+
+  function viewChapter(chapterId: Id<"chapters">, chapterName: string) {
+    setDrilldown({ chapterId, chapterName });
+  }
+
+  function backToCentral() {
+    setDrilldown(null);
+  }
+
+  const atCentralDesk = activeSeat?.scope === "central";
 
   return (
     <Screen>
       <Narrow>
-        {/* Controls: month stepper + Month/YTD toggle + "Preview as" switch. */}
+        {/* Controls: month stepper + Month/YTD toggle + seat switcher (dual-hat only). */}
         <View className="mb-4 flex-row flex-wrap items-center justify-between gap-3">
           <View className="flex-row flex-wrap items-center gap-2">
             <MonthStepper year={ym.year} month={ym.month} period={period} onChange={setYm} />
             <PeriodSwitch value={period} onChange={setPeriod} />
           </View>
-          <PerspectiveSwitch value={perspective} options={options} onChange={choose} />
+          {showSwitcher ? (
+            <SeatSwitcher
+              seats={seats}
+              activeKey={activeSeat ? seatKeyOf(activeSeat) : "central"}
+              onChange={chooseSeat}
+            />
+          ) : null}
         </View>
 
-        {/* Central probe / view — kept mounted (invisibly) while probing or
-            available so the "Central" option and default stay in sync. */}
-        {centralAvailable !== false ? (
-          <FinanceBoundary onError={() => setCentralAvailable(false)}>
-            <CentralSection
-              ym={ym}
-              period={period}
-              show={perspective === "central"}
-              onAvailable={() => setCentralAvailable(true)}
-              onViewChapter={viewChapter}
-            />
+        {activeSeat === null ? (
+          // No finance seat → the member view (my card / my transactions).
+          <FinanceBoundary fallback={<NoFinanceAccess />}>
+            <MemberSection />
           </FinanceBoundary>
-        ) : null}
-
-        {perspective === "chapter" ? (
+        ) : atCentralDesk && drilldown === null ? (
+          <FinanceBoundary fallback={<NoFinanceAccess />}>
+            <CentralSection ym={ym} period={period} onViewChapter={viewChapter} />
+          </FinanceBoundary>
+        ) : (
+          // A chapter dashboard: the caller's own chapter seat, or a central
+          // seat drilled into another chapter (read-only).
           <FinanceBoundary fallback={<NoFinanceAccess />}>
             {drilldown ? (
               <View className="mb-3 flex-row items-center justify-between gap-3 rounded-lg border border-border bg-raised px-4 py-2.5">
@@ -186,7 +201,10 @@ function DashboardBody() {
               </View>
             ) : null}
             <ChapterSection
-              chapterId={drilldown?.chapterId}
+              chapterId={
+                drilldown?.chapterId ??
+                (activeSeat.scope === "chapter" ? activeSeat.chapterId : undefined)
+              }
               ym={ym}
               period={period}
               isDrilldown={drilldown != null}
@@ -198,13 +216,7 @@ function DashboardBody() {
               onAttentionAction={onAttentionAction}
             />
           </FinanceBoundary>
-        ) : null}
-
-        {perspective === "member" ? (
-          <FinanceBoundary fallback={<NoFinanceAccess />}>
-            <MemberSection />
-          </FinanceBoundary>
-        ) : null}
+        )}
       </Narrow>
 
       {budgetModal.open ? (
@@ -212,7 +224,7 @@ function DashboardBody() {
           budgetId={budgetModal.id}
           defaultYear={ym.year}
           defaultMonth={ym.month}
-          canCentral={centralAvailable === true}
+          canCentral={centralSeat != null}
           onClose={() => setBudgetModal({ open: false, id: null })}
         />
       ) : null}
@@ -229,21 +241,13 @@ function DashboardBody() {
 function CentralSection({
   ym,
   period,
-  show,
-  onAvailable,
   onViewChapter,
 }: {
   ym: { year: number; month: number };
   period: DashPeriodMode;
-  show: boolean;
-  onAvailable: () => void;
   onViewChapter: (chapterId: Id<"chapters">, chapterName: string) => void;
 }) {
   const data = useQuery(api.finances.dashboardCentral, { ...ym, period });
-  useEffect(() => {
-    if (data !== undefined) onAvailable();
-  }, [data, onAvailable]);
-  if (!show) return null;
   if (data === undefined) return <LoadingBlock />;
   return <CentralView data={data} onViewChapter={onViewChapter} />;
 }
