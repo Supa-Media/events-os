@@ -1561,7 +1561,14 @@ export function extractCardCharge(
   if (typeof txn.amount !== "number" || !Number.isFinite(txn.amount)) return null;
 
   const amountCents = Math.abs(Math.round(txn.amount));
-  if (amountCents === 0) return null; // a $0 settlement carries no ledger meaning
+  if (amountCents === 0) {
+    // A $0 settlement carries no ledger meaning — skipped, but logged so it's
+    // traceable during reconciliation (rather than silently vanishing).
+    console.debug(
+      `[increase] card ingestion: skipping $0 settlement for transaction ${txn.id ?? "<unknown>"}`,
+    );
+    return null;
+  }
   const flow: "outflow" | "inflow" = txn.amount < 0 ? "outflow" : "inflow";
 
   const card =
@@ -1698,6 +1705,21 @@ async function resolveIncreaseCardId(
   return cardId;
 }
 
+/** Cheap `by_external_id` existence check, used to short-circuit a redelivered
+ *  webhook BEFORE the network fetch below (avoids a wasted `GET /transactions`
+ *  + `GET /card_payments` round trip for a transaction we've already ingested). */
+export const transactionExistsByExternalId = internalQuery({
+  args: { externalId: v.string() },
+  returns: v.boolean(),
+  handler: async (ctx, { externalId }) => {
+    const existing = await ctx.db
+      .query("transactions")
+      .withIndex("by_external_id", (q) => q.eq("externalId", externalId))
+      .first();
+    return existing !== null;
+  },
+});
+
 /**
  * Fetch a settled card `transaction.created` object and post it to the ledger.
  * Best-effort (never throws): fetches `GET /transactions/{id}`, extracts the card
@@ -1705,6 +1727,17 @@ async function resolveIncreaseCardId(
  * `externalId`). Routed by the object id's `sandbox_` prefix like the rest of the
  * file. Degrades to a logged no-op when the environment's key is unset or a fetch
  * fails.
+ *
+ * IMPORTANT — never throws. This is called from `handleIncreaseWebhook`, which
+ * runs AFTER `recordWebhookEvent` has already committed the event-dedup row in a
+ * separate, already-committed step (see `apps/convex/webhooks.ts`). If this
+ * function threw, Increase's retry would be dead-on-arrival — the event id
+ * already reads as "processed" — and that charge would be silently dropped with
+ * no trace. Every fallible step (the transaction fetch, extraction, and the DB
+ * apply) is therefore individually guarded; on any error we log (with the
+ * transaction id) and return, matching the PR's best-effort design. The daily
+ * `backfillIncreaseCardTransactions` cron (see `crons.ts`) is the reconciliation
+ * backstop for anything a swallowed error here would otherwise lose forever.
  */
 async function ingestIncreaseCardTransaction(
   ctx: ActionCtx,
@@ -1718,6 +1751,14 @@ async function ingestIncreaseCardTransaction(
     return;
   }
 
+  // Dedup BEFORE the network fetch — a redelivered webhook for an
+  // already-ingested transaction short-circuits without a wasted round trip.
+  const alreadyIngested = await ctx.runQuery(
+    internal.increase.transactionExistsByExternalId,
+    { externalId: transactionId },
+  );
+  if (alreadyIngested) return;
+
   let txn: IncreaseTransactionLite;
   try {
     txn = (await increaseGet(
@@ -1730,26 +1771,37 @@ async function ingestIncreaseCardTransaction(
     return;
   }
 
-  const charge = extractCardCharge(txn);
-  if (!charge) return; // not a settled card charge/refund → nothing to ingest
+  try {
+    const charge = extractCardCharge(txn);
+    if (!charge) return; // not a settled card charge/refund → nothing to ingest
 
-  const increaseCardId = await resolveIncreaseCardId(
-    key,
-    base,
-    charge.cardPaymentId,
-  );
+    const increaseCardId = await resolveIncreaseCardId(
+      key,
+      base,
+      charge.cardPaymentId,
+    );
 
-  await ctx.runMutation(internal.increase.applyIncreaseCardTransaction, {
-    externalId: charge.externalId,
-    accountId: charge.accountId,
-    flow: charge.flow,
-    amountCents: charge.amountCents,
-    currency: (txn.currency ?? "usd").toLowerCase(),
-    postedAt: charge.postedAt,
-    merchantName: charge.merchantName,
-    merchantCategory: charge.merchantCategory,
-    increaseCardId: increaseCardId ?? undefined,
-  });
+    await ctx.runMutation(internal.increase.applyIncreaseCardTransaction, {
+      externalId: charge.externalId,
+      accountId: charge.accountId,
+      flow: charge.flow,
+      amountCents: charge.amountCents,
+      currency: (txn.currency ?? "usd").toLowerCase(),
+      postedAt: charge.postedAt,
+      merchantName: charge.merchantName,
+      merchantCategory: charge.merchantCategory,
+      increaseCardId: increaseCardId ?? undefined,
+    });
+  } catch (err) {
+    // Never throw out of the webhook: recordWebhookEvent already committed the
+    // event-dedup row in a separate step, so a throw here would make this
+    // charge unrecoverable (Increase's retry reads the event as "processed").
+    // The daily backfill cron reconciles anything lost here.
+    console.error(
+      `[increase] card ingestion: failed to apply transaction ${transactionId}`,
+      err,
+    );
+  }
 }
 
 // ── Backfill: page GET /transactions?account_id=… into the ledger ────────────

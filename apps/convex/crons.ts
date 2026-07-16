@@ -64,4 +64,18 @@ crons.cron(
   {},
 );
 
+// Daily 08:00 UTC: backstop pull of Increase card charges/refunds for every
+// provisioned account, in case a `transaction.created` webhook was dropped
+// (e.g. a swallowed error in `ingestIncreaseCardTransaction` — that path never
+// throws out of the webhook, so a missed charge leaves no other trace). Mirrors
+// the Stripe FC sync backstop above; safe to run repeatedly since it dedups on
+// `by_external_id`. No-ops per account when its environment's Increase API key
+// is unset (local/dev).
+crons.cron(
+  "increase card-charge reconciliation backstop",
+  "0 8 * * *",
+  internal.increase.backfillIncreaseCardTransactions,
+  {},
+);
+
 export default crons;

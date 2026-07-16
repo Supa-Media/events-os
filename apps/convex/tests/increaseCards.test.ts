@@ -16,6 +16,9 @@ import type { Id } from "../_generated/dataModel";
  *    null card/person (never throws),
  *  - a transaction for an account we don't own is skipped,
  *  - a non-card transaction (e.g. an inbound ACH) is skipped,
+ *  - a $0 settlement is skipped without error,
+ *  - a card belonging to a DIFFERENT chapter never leaks its person/attribution
+ *    onto a txn resolved to another chapter (cross-chapter isolation),
  *  - the ops backfill pages a full history and dedups.
  *
  * The real Increase API is grounded here: the webhook Event carries no inline
@@ -395,6 +398,86 @@ describe("Increase card ingestion — transaction.created webhook", () => {
     });
 
     expect((await increaseTxns(s)).length).toBe(0);
+  });
+
+  test("a $0 settlement is skipped without error", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await seedIncreaseAccount(s, "account_x");
+
+    process.env.INCREASE_API_KEY = "test_key";
+    mockIncreaseFetch({
+      transaction_zero: cardSettlementTxn({
+        id: "transaction_zero",
+        accountId: "account_x",
+        amount: 0,
+      }),
+    });
+
+    await expect(
+      t.action(internal.increase.handleIncreaseWebhook, {
+        category: "transaction.created",
+        associatedObjectId: "transaction_zero",
+      }),
+    ).resolves.toBeNull();
+
+    expect((await increaseTxns(s)).length).toBe(0);
+  });
+
+  test("a card belonging to a DIFFERENT chapter never leaks its person/attribution onto the txn", async () => {
+    const t = newT();
+    // Chapter A owns the Increase account the charge posts against.
+    const chapterA = await setupChapter(t, {
+      email: "leader-a@publicworship.life",
+      chapterName: "Chapter A",
+    });
+    await seedIncreaseAccount(chapterA, "account_x");
+
+    // Chapter B (a different chapter in the SAME deployment) happens to have a
+    // card whose `increaseCardId` matches the resolved Card Payment's `card_id`
+    // — a data-inconsistency scenario (e.g. a stale/misassigned card row). The
+    // account → chapter resolution already fixed chapterId to A before the card
+    // lookup runs, so chapter B's card must NEVER be attributed to this txn.
+    const chapterB = await setupChapter(t, {
+      email: "leader-b@publicworship.life",
+      chapterName: "Chapter B",
+    });
+    const holderB = await seedPerson(chapterB, "Not Chapter A's Person");
+    await seedCard(chapterB, {
+      increaseCardId: "card_shared",
+      last4: "9999",
+      holder: holderB,
+    });
+
+    process.env.INCREASE_API_KEY = "test_key";
+    mockIncreaseFetch(
+      {
+        transaction_cross: cardSettlementTxn({
+          id: "transaction_cross",
+          accountId: "account_x",
+          amount: -4200,
+        }),
+      },
+      { card_payment_1: "card_shared" },
+    );
+
+    await t.action(internal.increase.handleIncreaseWebhook, {
+      category: "transaction.created",
+      associatedObjectId: "transaction_cross",
+    });
+
+    // The txn lands under chapter A (the account's owner), never chapter B.
+    const txnsA = await increaseTxns(chapterA);
+    expect(txnsA.length).toBe(1);
+    expect(txnsA[0].chapterId).toBe(chapterA.chapterId);
+    expect(txnsA[0].amountCents).toBe(4200);
+    // Chapter B's card/person must NOT leak onto it — null attribution instead.
+    expect(txnsA[0].cardId).toBeUndefined();
+    expect(txnsA[0].personId).toBeUndefined();
+    expect(txnsA[0].cardLast4).toBeUndefined();
+
+    // And nothing was ever recorded under chapter B.
+    expect((await increaseTxns(chapterB)).length).toBe(0);
   });
 
   test("degrades to a no-op when the environment's API key is unset", async () => {
