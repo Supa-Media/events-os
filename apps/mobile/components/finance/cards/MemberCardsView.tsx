@@ -288,7 +288,7 @@ export function MemberCardsView() {
               </View>
               <View className="flex-1">
                 <Text className="font-semibold text-ink">
-                  You owe the church {formatCents(owedCents)}
+                  You owe Public Worship {formatCents(owedCents)}
                 </Text>
                 <Text className="text-xs text-muted">
                   {toRepay.length} charge{toRepay.length === 1 ? "" : "s"} flagged
