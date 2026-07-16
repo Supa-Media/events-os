@@ -470,8 +470,14 @@ function toPersonTxnSummary(tr: Doc<"transactions">) {
 }
 
 // ── Money / tenancy guards ───────────────────────────────────────────────────
-/** Enforce the non-negative-integer-cents invariant the validator can't. */
-function assertIntegerCents(amountCents: number, label = "Amount"): void {
+/**
+ * Enforce the non-negative-integer-cents invariant the validator can't.
+ * Exported (review fix) so the entity-side no-row branches
+ * (`events.updateDetails` / `projects.update`) can validate BEFORE writing
+ * straight to the field — the same check the row branch already gets for
+ * free via `setBudgetAmount`.
+ */
+export function assertIntegerCents(amountCents: number, label = "Amount"): void {
   if (!Number.isInteger(amountCents) || amountCents < 0) {
     throw new ConvexError({
       code: "INVALID_AMOUNT",
@@ -3548,6 +3554,27 @@ export const updateBudget = mutation({
       month: patch.month,
       quarter: patch.quarter,
     });
+    // Minor review fix: when this edit CONVERTS the budget's ref (a different
+    // event/project, a different refKind, or off to recurring/central
+    // entirely), the OLD entity is left holding a stale mirrored
+    // `budget`/`budgetUsd` field pointing at money that isn't its budget
+    // anymore — nothing else ever clears it (the OLD entity's own edit path
+    // would only write-through if IT still owned this budget, which it no
+    // longer does). Cheap to clear here, so it doesn't linger as a fake
+    // "field set, no row" display on the old ref.
+    if (
+      currentRefKind &&
+      budget.scopeRefId &&
+      (currentRefKind !== newRefKind || budget.scopeRefId !== effScopeRefId)
+    ) {
+      if (currentRefKind === "event") {
+        const oldEvent = await ctx.db.get(budget.scopeRefId as Id<"events">);
+        if (oldEvent) await ctx.db.patch(oldEvent._id, { budget: undefined });
+      } else {
+        const oldProject = await ctx.db.get(budget.scopeRefId as Id<"projects">);
+        if (oldProject) await ctx.db.patch(oldProject._id, { budgetUsd: undefined });
+      }
+    }
     // WP-U2: amountCents writes through `setBudgetAmount` (the one shared
     // helper `events.updateDetails`/`projects.update` also call), which
     // mirrors the dollar amount back onto the entity's own field in the same
@@ -4927,6 +4954,161 @@ export const reconcileEntityBudgetDrift = internalMutation({
   handler: async (ctx, args) =>
     await runReconcileEntityBudgetDrift(
       ctx,
+      args.chapterId,
+      args.paginationOpts ?? { cursor: null, numItems: MIGRATION_PAGE_SIZE },
+    ),
+});
+
+// ── Row-less entity healing (WP-U2 review — companion to the drift sweep) ───
+const healRowlessEntityBudgetsRow = v.object({
+  refKind: refKindValidator,
+  refId: v.string(),
+  refName: v.string(),
+  budgetId: v.id("budgets"),
+  amountUsd: v.number(),
+});
+
+const healRowlessEntityBudgetsResult = v.object({
+  // Money-carrying (non-training) refs examined this page.
+  scanned: v.number(),
+  // A row was missing and got summoned + mirrored this run.
+  healed: v.number(),
+  isDone: v.boolean(),
+  continueCursor: v.string(),
+  healedRefs: v.array(healRowlessEntityBudgetsRow),
+});
+
+/**
+ * Companion sweep to `reconcileEntityBudgetDrift` (WP-U2 review): that
+ * migration can only fix an entity that ALREADY has a budget row — it
+ * paginates `budgets`, so a ref with NO row is invisible to it. That's
+ * exactly the "field set, no row" dead state the review flagged: a
+ * non-training event/project with a POSITIVE `budget`/`budgetUsd` field and
+ * no matching row (e.g. one summoned before the owner rule existed, or left
+ * behind by the edit-path trigger's old transition-guard bug — see the fixed
+ * guard in `events.updateDetails`/`projects.update`) had nothing that could
+ * ever summon its row: the field-only branch always compared the incoming
+ * amount against the entity's OWN already-positive field, so the "unset/0 ->
+ * positive" transition could never re-fire once the field was already set.
+ *
+ * Paginates `events`/`projects` DIRECTLY (not `budgets` — there's nothing
+ * there to find for a row-less ref), one `refKind` per call so the two entity
+ * tables stay independently pageable. For each money-carrying, non-training
+ * ref with no existing row, summons + mirrors one via the same D8 creation
+ * helpers (`createEventBudget`/`createProjectBudget`) the create-time hook
+ * uses, so a healed row is indistinguishable from one made any other way.
+ * SKIPS `isTraining` events (the same invariant enforced everywhere else in
+ * this file) and any ref with no positive field value (owner rule — nothing
+ * to heal). Idempotent: a settled re-run finds every ref already has a row
+ * and heals nothing.
+ *
+ * Run locally:  npx convex run finances:healRowlessEntityBudgets '{"refKind":"event"}'
+ * Run on prod (first page):  npx convex run --prod finances:healRowlessEntityBudgets '{"refKind":"event"}'
+ * Run on prod (next page):   npx convex run --prod finances:healRowlessEntityBudgets '{"refKind":"event","paginationOpts":{"numItems":500,"cursor":"<continueCursor>"}}'
+ * Run on prod (projects):    npx convex run --prod finances:healRowlessEntityBudgets '{"refKind":"project"}'
+ */
+async function runHealRowlessEntityBudgets(
+  ctx: MutationCtx,
+  refKind: BudgetRefKind,
+  chapterId: Id<"chapters"> | undefined,
+  paginationOpts: { cursor: string | null; numItems: number },
+): Promise<{
+  scanned: number;
+  healed: number;
+  isDone: boolean;
+  continueCursor: string;
+  healedRefs: {
+    refKind: BudgetRefKind;
+    refId: string;
+    refName: string;
+    budgetId: Id<"budgets">;
+    amountUsd: number;
+  }[];
+}> {
+  if (chapterId) {
+    const chapter = await ctx.db.get(chapterId);
+    if (!chapter) {
+      throw new ConvexError({ code: "NOT_FOUND", message: "Chapter not found." });
+    }
+  }
+
+  let scanned = 0;
+  let healed = 0;
+  const healedRefs: {
+    refKind: BudgetRefKind;
+    refId: string;
+    refName: string;
+    budgetId: Id<"budgets">;
+    amountUsd: number;
+  }[] = [];
+
+  if (refKind === "event") {
+    const page = await (chapterId
+      ? ctx.db.query("events").withIndex("by_chapter", (q) => q.eq("chapterId", chapterId))
+      : ctx.db.query("events")
+    ).paginate(paginationOpts);
+
+    for (const ev of page.page) {
+      if (ev.isTraining) continue; // training events never get a budget row
+      if (ev.budget == null || ev.budget <= 0) continue; // owner rule: no money, no row
+      scanned++;
+      if (await hasBudgetForRef(ctx, "event", ev._id)) continue; // already healthy
+      await createEventBudget(ctx, ev, undefined);
+      const created = await getBudgetForRef(ctx, "event", ev._id);
+      healed++;
+      healedRefs.push({
+        refKind,
+        refId: String(ev._id),
+        refName: ev.name,
+        budgetId: created!._id,
+        amountUsd: ev.budget,
+      });
+      console.log(
+        `[finances] healRowlessEntityBudgets: summoned + mirrored a budget for event ` +
+          `"${ev.name}" (${ev._id}) at $${ev.budget} — was field-only, no row.`,
+      );
+    }
+    return { scanned, healed, isDone: page.isDone, continueCursor: page.continueCursor, healedRefs };
+  }
+
+  const page = await (chapterId
+    ? ctx.db.query("projects").withIndex("by_chapter", (q) => q.eq("chapterId", chapterId))
+    : ctx.db.query("projects")
+  ).paginate(paginationOpts);
+
+  for (const project of page.page) {
+    if (project.budgetUsd == null || project.budgetUsd <= 0) continue; // owner rule
+    scanned++;
+    if (await hasBudgetForRef(ctx, "project", project._id)) continue; // already healthy
+    await createProjectBudget(ctx, project, undefined);
+    const created = await getBudgetForRef(ctx, "project", project._id);
+    healed++;
+    healedRefs.push({
+      refKind,
+      refId: String(project._id),
+      refName: project.name,
+      budgetId: created!._id,
+      amountUsd: project.budgetUsd,
+    });
+    console.log(
+      `[finances] healRowlessEntityBudgets: summoned + mirrored a budget for project ` +
+        `"${project.name}" (${project._id}) at $${project.budgetUsd} — was field-only, no row.`,
+    );
+  }
+  return { scanned, healed, isDone: page.isDone, continueCursor: page.continueCursor, healedRefs };
+}
+
+export const healRowlessEntityBudgets = internalMutation({
+  args: {
+    refKind: refKindValidator,
+    chapterId: v.optional(v.id("chapters")),
+    paginationOpts: v.optional(paginationOptsValidator),
+  },
+  returns: healRowlessEntityBudgetsResult,
+  handler: async (ctx, args) =>
+    await runHealRowlessEntityBudgets(
+      ctx,
+      args.refKind,
       args.chapterId,
       args.paginationOpts ?? { cursor: null, numItems: MIGRATION_PAGE_SIZE },
     ),

@@ -24,7 +24,12 @@ import {
   canViewChapterWork,
 } from "./lib/org";
 import { requireCentralReach } from "./lib/centralReach";
-import { createProjectBudget, getBudgetForRef, setBudgetAmount } from "./finances";
+import {
+  assertIntegerCents,
+  createProjectBudget,
+  getBudgetForRef,
+  setBudgetAmount,
+} from "./finances";
 
 const projectStatus = v.union(...PROJECT_STATUSES.map((s) => v.literal(s)));
 
@@ -727,6 +732,13 @@ export const update = mutation({
       if (existingBudget) {
         wroteThroughToBudget = true;
       } else {
+        // Branch consistency (review fix): the row branch below rejects a
+        // negative amount via `setBudgetAmount`'s `assertIntegerCents` —
+        // validate the same way here, BEFORE writing straight to the field,
+        // so an invalid amount can't slip through just because no row exists
+        // yet to catch it.
+        const nextCents = patch.budgetUsd != null ? Math.round(patch.budgetUsd * 100) : 0;
+        assertIntegerCents(nextCents, "Budget amount");
         fields.budgetUsd = patch.budgetUsd ?? undefined;
       }
     }
@@ -739,21 +751,25 @@ export const update = mutation({
     }
 
     // WP-3.4 edit-path trigger (owner rule: "budgets summoned by dollar
-    // entry") — entering a POSITIVE budgetUsd on a project that had none
-    // (unset, 0, or negative) summons its budget now, same shape/tag as the
-    // create-time hook. Never reached when `wroteThroughToBudget` is true — a
+    // entry") — entering a POSITIVE budgetUsd on a project with no row
+    // summons one now, same shape/tag as the create-time hook. Review fix:
+    // this used to ALSO require the entity's OLD field to have been
+    // unset/0/negative (a "transition" guard) — but that compared the
+    // incoming amount against the entity's own (possibly already-positive)
+    // field, not against "does a row exist." A row-less project whose field
+    // was already positive could never re-trigger this once its field was
+    // positive — "field set, no row" was a dead state no further edit could
+    // heal (see `finances.healRowlessEntityBudgets` for the sweep that heals
+    // pre-existing instances). Dropping the old-value condition means ANY
+    // positive incoming amount with no existing row summons one,
+    // unconditionally. Never reached when `wroteThroughToBudget` is true — a
     // row already existed, so the write above already handled it (no
     // `by_ref` re-check needed: the lookup above already answered "does a
     // budget exist"). Clearing/lowering budgetUsd never deletes an existing
     // budget — money already tracked against it stays; see
     // `removeEmptyAutoBudgets` for the separate ops cleanup of pre-rule
     // zero-amount budgets.
-    if (
-      !wroteThroughToBudget &&
-      patch.budgetUsd != null &&
-      patch.budgetUsd > 0 &&
-      (project.budgetUsd == null || project.budgetUsd <= 0)
-    ) {
+    if (!wroteThroughToBudget && patch.budgetUsd != null && patch.budgetUsd > 0) {
       const budgetUserId = (await requireUserId(ctx)) as Id<"users">;
       await createProjectBudget(
         ctx,

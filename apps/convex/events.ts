@@ -52,7 +52,12 @@ import {
 } from "./lib/readiness";
 import { manageablePersonIds } from "./lib/org";
 import { paidTotalForEvent } from "./engagements";
-import { createEventBudget, getBudgetForRef, setBudgetAmount } from "./finances";
+import {
+  assertIntegerCents,
+  createEventBudget,
+  getBudgetForRef,
+  setBudgetAmount,
+} from "./finances";
 
 const statusUnion = v.union(
   v.literal("planning"),
@@ -206,9 +211,26 @@ export const get = query({
     // MIRROR (see `setBudgetAmount`). No row → no planned amount yet, same as
     // the field being unset (the D8 "enter an amount to create a budget"
     // affordance already covers this: the header shows "Add budget").
-    const budgetRow = await getBudgetForRef(ctx, "event", eventId);
-    const budgetAmountUsd =
-      budgetRow && budgetRow.amountCents > 0 ? budgetRow.amountCents / 100 : undefined;
+    //
+    // INVARIANT: training events never get a budget row (finance stays clean
+    // of training noise — see `runBackfillEventBudgets`/`createEventBudget`'s
+    // callers, all gated on `!isTraining`). Reading ONLY the row for a
+    // training event would therefore show blank forever, even after a
+    // coordinator saves an amount — training events have nowhere else for
+    // that money to live. So a training event's display (AND the edit
+    // buffer below, via `eventForClient.budget`) falls back to the entity's
+    // OWN `budget` field instead — zero finance involvement, exactly as
+    // before WP-U2. Non-training events read the row exclusively.
+    const budgetRow = event.isTraining
+      ? null
+      : await getBudgetForRef(ctx, "event", eventId);
+    const budgetAmountUsd = event.isTraining
+      ? event.budget != null && event.budget > 0
+        ? event.budget
+        : undefined
+      : budgetRow && budgetRow.amountCents > 0
+        ? budgetRow.amountCents / 100
+        : undefined;
     const eventForClient = { ...event, budget: budgetAmountUsd };
     const budget = budgetAmountUsd ?? 0;
     const budgetPct = budget > 0 ? Math.round((budgetSpent / budget) * 100) : 0;
@@ -1093,6 +1115,13 @@ export const updateDetails = mutation({
         await setBudgetAmount(ctx, existingBudget._id, nextCents);
         wroteThroughToBudget = true;
       } else {
+        // Branch consistency (review fix): the row branch above rejects a
+        // negative amount via `setBudgetAmount`'s `assertIntegerCents` —
+        // validate the same way here, BEFORE writing straight to the field,
+        // so an invalid amount can't slip through just because no row exists
+        // yet to catch it.
+        const nextCents = patch.budget != null ? Math.round(patch.budget * 100) : 0;
+        assertIntegerCents(nextCents, "Budget amount");
         fields.budget = patch.budget ?? undefined;
       }
     }
@@ -1100,20 +1129,22 @@ export const updateDetails = mutation({
 
     // WP-3.4 edit-path trigger, events parity (owner rule: "budgets summoned
     // by dollar entry") — entering a POSITIVE budget on a non-training event
-    // that had none (unset, 0, or negative) summons its budget now, same
-    // shape/tag as the create-time hook. Never reached when
+    // with no row summons one now, same shape/tag as the create-time hook.
+    // Review fix: this used to ALSO require the entity's OLD field to have
+    // been unset/0 (a "transition" guard) — but that compared the incoming
+    // amount against the entity's own (possibly already-positive) field, not
+    // against "does a row exist." A row-less event whose field was already
+    // positive (e.g. summoned by a pre-fix bug, or healed incompletely) could
+    // never re-trigger this once its field was positive — "field set, no
+    // row" was a dead state no further edit could heal. Dropping the
+    // old-value condition means ANY positive incoming amount with no
+    // existing row summons one, unconditionally. Never reached when
     // `wroteThroughToBudget` is true — a row already existed, so the write
     // above already handled it (no `by_ref` re-check needed: the lookup just
     // above already answered "does a budget exist"). Clearing/lowering the
     // budget never deletes an existing budget; see `removeEmptyAutoBudgets`
     // for the separate ops cleanup of pre-rule zero-amount budgets.
-    if (
-      !wroteThroughToBudget &&
-      !event.isTraining &&
-      patch.budget != null &&
-      patch.budget > 0 &&
-      (event.budget == null || event.budget <= 0)
-    ) {
+    if (!wroteThroughToBudget && !event.isTraining && patch.budget != null && patch.budget > 0) {
       const userId = (await requireUserId(ctx)) as Id<"users">;
       await createEventBudget(
         ctx,

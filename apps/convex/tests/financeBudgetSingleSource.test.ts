@@ -1,5 +1,6 @@
 /// <reference types="vite/client" />
 import { describe, expect, test } from "vitest";
+import { ConvexError } from "convex/values";
 import { newT, run, setupChapter, type ChapterSetup } from "./setup.helpers";
 import { api, internal } from "../_generated/api";
 import type { Doc, Id } from "../_generated/dataModel";
@@ -29,7 +30,7 @@ function tsInMonth(year: number, month: number): number {
 /** Seed an eventType + event directly (same shape as the backfill tests). */
 async function seedEvent(
   s: ChapterSetup,
-  opts: { name?: string; eventDate?: number; budget?: number } = {},
+  opts: { name?: string; eventDate?: number; budget?: number; isTraining?: boolean } = {},
 ): Promise<Id<"events">> {
   return await run(s.t, async (ctx) => {
     const eventTypeId = await ctx.db.insert("eventTypes", {
@@ -48,6 +49,7 @@ async function seedEvent(
       name: opts.name ?? "May Worship",
       eventDate: opts.eventDate ?? tsInMonth(2026, 5),
       budget: opts.budget,
+      isTraining: opts.isTraining,
       status: "planning",
       createdBy: s.userId,
       createdAt: Date.now(),
@@ -529,5 +531,241 @@ describe("reconcileEntityBudgetDrift (internal migration — row wins)", () => {
     expect(result.fixed).toBe(1);
     const project = await run(s.t, (ctx) => ctx.db.get(projectId));
     expect(project?.budgetUsd).toBe(100);
+  });
+});
+
+describe("training events keep field-based budget display (WP-U2 review fix)", () => {
+  test("a training event's budget saves + displays via the entity field, never a row", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const eventId = await seedEvent(s, {
+      name: "New Leader Training",
+      isTraining: true,
+      budget: undefined,
+    });
+
+    await s.as.mutation(api.events.updateDetails, { eventId, budget: 500 });
+
+    // The invariant holds: no budget row was ever created for a training event.
+    expect(await budgetForRef(s, "event", eventId)).toBeNull();
+
+    const data = await s.as.query(api.events.get, { eventId });
+    expect(data?.event.budget).toBe(500); // field-based display, not blank
+    expect(data?.budgetId).toBeNull();
+
+    const ev = await run(s.t, (ctx) => ctx.db.get(eventId));
+    expect(ev?.budget).toBe(500);
+  });
+
+  test("a non-training event is unaffected — it still reads the row", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const eventId = await seedEvent(s, { name: "Real Event", budget: 200 });
+    await t.mutation(internal.finances.backfillEventBudgets, {});
+    // Drift the field to prove the row (not the field) is what's read.
+    await run(s.t, (ctx) => ctx.db.patch(eventId, { budget: 999 }));
+
+    const data = await s.as.query(api.events.get, { eventId });
+    expect(data?.event.budget).toBe(200); // the row's amount
+    expect(data?.budgetId).not.toBeNull();
+  });
+});
+
+describe("row-less refs can be healed by a further edit (WP-U2 review fix)", () => {
+  test("a row-less event's field-only budget edited again summons the row at the NEW amount", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    // Simulate the dead state directly: a non-training event with a positive
+    // `budget` field but no row (the old edit-path guard could never re-fire
+    // once the field was already positive).
+    const eventId = await seedEvent(s, { name: "Stuck Event", budget: 500 });
+    expect(await budgetForRef(s, "event", eventId)).toBeNull();
+
+    await s.as.mutation(api.events.updateDetails, { eventId, budget: 600 });
+
+    const row = await budgetForRef(s, "event", eventId);
+    expect(row).not.toBeNull(); // the row is now summoned
+    expect(row?.amountCents).toBe(60000);
+    const ev = await run(s.t, (ctx) => ctx.db.get(eventId));
+    expect(ev?.budget).toBe(600);
+  });
+
+  test("a row-less project's field-only budget edited again summons the row at the NEW amount", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const projectId = await run(s.t, (ctx) =>
+      ctx.db.insert("projects", {
+        chapterId: s.chapterId,
+        name: "Stuck Project",
+        status: "not_started",
+        budgetUsd: 500,
+        createdBy: s.userId,
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      }),
+    );
+    expect(await budgetForRef(s, "project", projectId)).toBeNull();
+
+    await s.as.mutation(api.projects.update, { projectId, budgetUsd: 600 });
+
+    const row = await budgetForRef(s, "project", projectId);
+    expect(row).not.toBeNull();
+    expect(row?.amountCents).toBe(60000);
+    const project = await run(s.t, (ctx) => ctx.db.get(projectId));
+    expect(project?.budgetUsd).toBe(600);
+  });
+});
+
+describe("healRowlessEntityBudgets (internal migration — WP-U2 review sweep)", () => {
+  test("heals an untouched row-less project: summons + mirrors its row, unchanged field", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const projectId = await run(s.t, (ctx) =>
+      ctx.db.insert("projects", {
+        chapterId: s.chapterId,
+        name: "Untouched Project",
+        status: "not_started",
+        budgetUsd: 250,
+        createdBy: s.userId,
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      }),
+    );
+    expect(await budgetForRef(s, "project", projectId)).toBeNull();
+
+    const result = await t.mutation(internal.finances.healRowlessEntityBudgets, {
+      refKind: "project",
+    });
+
+    expect(result.healed).toBe(1);
+    expect(result.healedRefs[0]).toMatchObject({
+      refKind: "project",
+      refId: projectId,
+      refName: "Untouched Project",
+      amountUsd: 250,
+    });
+    const row = await budgetForRef(s, "project", projectId);
+    expect(row?.amountCents).toBe(25000);
+    // The field itself is untouched — it was already correct; only the row was missing.
+    const project = await run(s.t, (ctx) => ctx.db.get(projectId));
+    expect(project?.budgetUsd).toBe(250);
+  });
+
+  test("heals an untouched row-less event, skips training events", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const eventId = await seedEvent(s, { name: "Untouched Event", budget: 400 });
+    const trainingId = await seedEvent(s, {
+      name: "Training Session",
+      isTraining: true,
+      budget: 400,
+    });
+
+    const result = await t.mutation(internal.finances.healRowlessEntityBudgets, {
+      refKind: "event",
+    });
+
+    expect(result.healed).toBe(1);
+    expect(await budgetForRef(s, "event", eventId)).not.toBeNull();
+    expect(await budgetForRef(s, "event", trainingId)).toBeNull(); // invariant held
+  });
+
+  test("is a no-op for a ref that already has a row (idempotent)", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const projectId = (await s.as.mutation(api.projects.create, {
+      name: "Already Healthy",
+      budgetUsd: 100,
+    })) as Id<"projects">;
+
+    const result = await t.mutation(internal.finances.healRowlessEntityBudgets, {
+      refKind: "project",
+    });
+
+    expect(result.healed).toBe(0);
+    expect(result.scanned).toBe(1);
+  });
+});
+
+describe("Minors (WP-U2 review)", () => {
+  test("updateBudget converting a budget's ref clears the OLD entity's mirror field", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await asChapterManager(s);
+    const eventId = await seedEvent(s, { name: "Old Ref Event", budget: 200 });
+    await t.mutation(internal.finances.backfillEventBudgets, {});
+    const row = await budgetForRef(s, "event", eventId);
+    expect((await run(s.t, (ctx) => ctx.db.get(eventId)))?.budget).toBe(200);
+
+    const projectId = (await s.as.mutation(api.projects.create, {
+      name: "New Ref Project",
+    })) as Id<"projects">;
+
+    await s.as.mutation(api.finances.updateBudget, {
+      budgetId: row!._id,
+      patch: { refKind: "project", scopeRefId: projectId, type: "one_time" },
+    });
+
+    // The OLD event's mirror is cleared — it no longer owns this budget.
+    const ev = await run(s.t, (ctx) => ctx.db.get(eventId));
+    expect(ev?.budget).toBeUndefined();
+    // The budget row now points at the project.
+    const converted = await run(s.t, (ctx) => ctx.db.get(row!._id));
+    expect(converted?.refKind).toBe("project");
+    expect(converted?.scopeRefId).toBe(projectId);
+  });
+
+  test("events.updateDetails rejects a negative budget when no row exists yet", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const eventId = await seedEvent(s, { name: "No Row Yet", budget: undefined });
+    expect(await budgetForRef(s, "event", eventId)).toBeNull();
+
+    await expect(
+      s.as.mutation(api.events.updateDetails, { eventId, budget: -50 }),
+    ).rejects.toThrow(ConvexError);
+
+    const ev = await run(s.t, (ctx) => ctx.db.get(eventId));
+    expect(ev?.budget).toBeUndefined(); // rejected before the field was written
+  });
+
+  test("projects.update rejects a negative budgetUsd when no row exists yet", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const projectId = await run(s.t, (ctx) =>
+      ctx.db.insert("projects", {
+        chapterId: s.chapterId,
+        name: "No Row Yet Project",
+        status: "not_started",
+        createdBy: s.userId,
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      }),
+    );
+    expect(await budgetForRef(s, "project", projectId)).toBeNull();
+
+    await expect(
+      s.as.mutation(api.projects.update, { projectId, budgetUsd: -25 }),
+    ).rejects.toThrow(ConvexError);
+
+    const project = await run(s.t, (ctx) => ctx.db.get(projectId));
+    expect(project?.budgetUsd).toBeUndefined();
+  });
+
+  test("events.updateDetails budget:null zeroes the row and clears the mirror", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const eventId = await seedEvent(s, { name: "Cleared Event", budget: 300 });
+    await t.mutation(internal.finances.backfillEventBudgets, {});
+    const before = await budgetForRef(s, "event", eventId);
+    expect(before?.amountCents).toBe(30000);
+
+    await s.as.mutation(api.events.updateDetails, { eventId, budget: null });
+
+    const row = await budgetForRef(s, "event", eventId);
+    expect(row).not.toBeNull(); // never deleted
+    expect(row?.amountCents).toBe(0); // the row took the clear as $0
+    const ev = await run(s.t, (ctx) => ctx.db.get(eventId));
+    expect(ev?.budget).toBeUndefined(); // mirror rule: $0 → unset
   });
 });
