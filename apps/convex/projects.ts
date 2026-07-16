@@ -23,6 +23,7 @@ import {
   viewerPerson,
   canViewChapterWork,
 } from "./lib/org";
+import { requireCentralReach } from "./lib/centralReach";
 import { createProjectBudget, hasBudgetForRef } from "./finances";
 
 const projectStatus = v.union(...PROJECT_STATUSES.map((s) => v.literal(s)));
@@ -152,6 +153,42 @@ async function logProjectUpdate(
 }
 
 /**
+ * Resolve which chapter a peek-capable Projects read should scope to: the
+ * caller's own chapter when `requestedChapterId` is absent (or equals it); a
+ * DIFFERENT chapter requires the caller have central (org-wide) reach through
+ * their OWN chapter — mirrors `finances.dashboardChapter`'s central drill-down
+ * gate exactly (`lib/centralReach.ts` reuses the same underlying check, so
+ * Projects doesn't invent a second central-reach concept).
+ *
+ * Returns `null` when there's nothing to scope to (no `requestedChapterId`
+ * and no home chapter). Throws `NO_CHAPTER` when a foreign `requestedChapterId`
+ * is passed but the caller has no home chapter to check central reach through
+ * (never falls back to checking central-ness against the TARGET chapter).
+ */
+async function resolvePeekChapterId(
+  ctx: QueryCtx,
+  requestedChapterId: Id<"chapters"> | undefined,
+): Promise<Id<"chapters"> | null> {
+  const ownChapterId = (await getChapterIdOrNull(ctx)) as Id<"chapters"> | null;
+  const chapterId = requestedChapterId ?? ownChapterId;
+  if (!chapterId) return null;
+  if (requestedChapterId != null && requestedChapterId !== ownChapterId) {
+    if (!ownChapterId) {
+      throw new ConvexError({
+        code: "NO_CHAPTER",
+        message: "You don't belong to a chapter yet.",
+      });
+    }
+    await requireCentralReach(ctx, ownChapterId);
+    return chapterId;
+  }
+  // Own chapter (or no explicit chapterId at all): the normal transparent-read
+  // gate, unchanged.
+  if (!(await canViewChapterWork(ctx, chapterId))) return null;
+  return chapterId;
+}
+
+/**
  * The projects the caller may see, oldest first. Read is transparent: admins
  * and every roster member see the whole chapter's projects, so the org tree and
  * every person's workload page can show the work everyone carries. (Editing
@@ -159,20 +196,21 @@ async function logProjectUpdate(
  * roster row and no admin rights sees nothing. The frontend assembles the
  * nesting (parent → children) and per-owner grouping itself so one reactive
  * query serves both the Team overview and the per-person workload page.
+ *
+ * `chapterId` optionally peeks into a DIFFERENT chapter than the caller's own
+ * (central reach required — see `resolvePeekChapterId`); absent (or the
+ * caller's own chapter) behaves exactly as before.
  */
 export const list = query({
-  args: {},
-  handler: async (ctx) => {
-    const chapterId = await getChapterIdOrNull(ctx);
+  args: {
+    chapterId: v.optional(v.id("chapters")),
+  },
+  handler: async (ctx, args) => {
+    const chapterId = await resolvePeekChapterId(ctx, args.chapterId);
     if (!chapterId) return [];
-    if (!(await canViewChapterWork(ctx, chapterId as Id<"chapters">))) {
-      return [];
-    }
     const visible = await ctx.db
       .query("projects")
-      .withIndex("by_chapter", (q) =>
-        q.eq("chapterId", chapterId as Id<"chapters">),
-      )
+      .withIndex("by_chapter", (q) => q.eq("chapterId", chapterId))
       .collect();
     // Join each card's collapsed preview: the latest comment, attributed.
     // Author docs are shared across projects (one busy manager comments on
@@ -214,15 +252,32 @@ export const list = query({
  * page editable or read-only, plus the owner + parent names for the header.
  * Null when out of the chapter or the caller can't view chapter work, so a
  * shared link degrades to a calm not-found instead of leaking existence.
+ *
+ * `chapterId` optionally confirms the caller intends to peek into a project in
+ * a DIFFERENT chapter than their own (central reach required — mirrors
+ * `resolvePeekChapterId`'s gate above). It must match the project's OWN
+ * chapter; passing it for a project that isn't actually in that chapter (or
+ * omitting it for a foreign project) degrades to the existing not-found —
+ * never leaks existence of a project in some THIRD chapter.
  */
 export const get = query({
-  args: { projectId: v.id("projects") },
-  handler: async (ctx, { projectId }) => {
-    const chapterId = await getChapterIdOrNull(ctx);
-    if (!chapterId) return null;
+  args: {
+    projectId: v.id("projects"),
+    chapterId: v.optional(v.id("chapters")),
+  },
+  handler: async (ctx, { projectId, chapterId: requestedChapterId }) => {
+    const ownChapterId = (await getChapterIdOrNull(ctx)) as Id<"chapters"> | null;
     const project = await ctx.db.get(projectId);
-    if (!project || project.chapterId !== chapterId) return null;
-    if (!(await canViewChapterWork(ctx, project.chapterId))) return null;
+    if (!project) return null;
+    const targetChapterId = requestedChapterId ?? ownChapterId;
+    if (!targetChapterId || project.chapterId !== targetChapterId) return null;
+
+    if (requestedChapterId != null && requestedChapterId !== ownChapterId) {
+      if (!ownChapterId) return null;
+      await requireCentralReach(ctx, ownChapterId);
+    } else if (!(await canViewChapterWork(ctx, project.chapterId))) {
+      return null;
+    }
 
     const manageable = await manageablePersonIds(ctx, project.chapterId);
     const owner = await effectiveOwnerId(ctx, project);

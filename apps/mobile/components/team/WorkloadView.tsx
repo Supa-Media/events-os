@@ -67,7 +67,7 @@ export function WorkloadView({
 }) {
   const router = useRouter();
   const workload = useQuery(api.org.workload, { personId });
-  const projects = useQuery(api.projects.list);
+  const projects = useQuery(api.projects.list, {});
   const responsibilities = useQuery(api.responsibilities.list);
   const checkIns = useQuery(api.checkIns.listForSubtree, { personId });
   const createProject = useMutation(api.projects.create);

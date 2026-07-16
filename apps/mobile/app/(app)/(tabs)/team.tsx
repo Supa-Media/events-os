@@ -48,7 +48,9 @@ export default function TeamScreen() {
   const router = useRouter();
   const nav = useQuery(api.org.nav);
   const overview = useQuery(api.org.overview);
-  const projects = useQuery(api.projects.list);
+  // Work's org-hierarchy view isn't peek-scoped (see ChapterContext's file
+  // doc) — always the caller's own chapter, so no chapterId arg is passed.
+  const projects = useQuery(api.projects.list, {});
   const createProject = useMutation(api.projects.create);
   const [view, setView] = useState<"list" | "chart">("list");
   // Top-level Work segments: the org's Projects vs the chapter's Duties catalog

@@ -4,6 +4,7 @@ import { useRouter, Redirect } from "expo-router";
 import { useQuery, useMutation } from "convex/react";
 import type { FunctionReturnType } from "convex/server";
 import { api } from "@events-os/convex/_generated/api";
+import type { Id } from "@events-os/convex/_generated/dataModel";
 import {
   Screen,
   PageHeader,
@@ -25,6 +26,7 @@ import {
 import { colors, spacing } from "../../../lib/theme";
 import { formatDate } from "../../../lib/format";
 import { useActionRunner } from "../../../lib/useActionToast";
+import { useChapterContext } from "../../../lib/ChapterContext";
 import { TemplatesView } from "../../../components/template/TemplatesView";
 import {
   EVENT_STATUS_LABELS,
@@ -52,8 +54,17 @@ export default function EventsScreen() {
   const { width } = useWindowDimensions();
   const wide = width >= WIDE;
   const org = useQuery(api.org.nav);
-  const currentEvents = useQuery(api.events.current);
-  const pastEvents = useQuery(api.events.past);
+  // Read-only peek (WP-S follow-up): a central-seat holder browsing a
+  // different chapter's events. `chapterId` is `undefined` for everyone else
+  // (no finance seat at all, or at their own seat) — `events.current`/
+  // `events.past` fall back to the caller's own chapter server-side in that
+  // case, unchanged from before this feature existed.
+  const { context } = useChapterContext();
+  const isPeeking = context?.kind === "peek";
+  const chapterId: Id<"chapters"> | undefined =
+    context?.kind === "peek" ? context.chapterId : undefined;
+  const currentEvents = useQuery(api.events.current, { chapterId });
+  const pastEvents = useQuery(api.events.past, { chapterId });
   const templates = useQuery(api.templates.list);
 
   const seed = useMutation(api.seed.seedDemoData);
@@ -75,8 +86,11 @@ export default function EventsScreen() {
   if (loading) return <Screen loading />;
 
   // Same gate the old Templates nav entry used — only admins/leads get the
-  // segment; members drop straight to the events list.
-  const canManageTemplates = org.tier === "admin" || org.tier === "lead";
+  // segment; members drop straight to the events list. Hidden while peeking
+  // too — Templates has no chapterId concept and always reads the caller's
+  // own chapter, so it'd be misleading chrome on a foreign chapter's screen.
+  const canManageTemplates =
+    !isPeeking && (org.tier === "admin" || org.tier === "lead");
 
   const isEmpty = currentEvents.length === 0;
   const noTemplates = templates.length === 0;
@@ -90,6 +104,16 @@ export default function EventsScreen() {
     }
   }
 
+  // Tapping an event navigates into its full detail screen — but that
+  // screen's other tabs (roles, modules, ticketing, budget, gear) are
+  // hard-scoped to the caller's OWN chapter via `requireOwned` throughout the
+  // app, so they'd throw for a foreign-chapter event. Every row/card below
+  // guards its `onPress` with `isPeeking` instead of half-rendering (see
+  // `ChapterContext`'s file doc).
+  function openEvent(id: string) {
+    router.push(`/event/${id}`);
+  }
+
   return (
     <Screen maxWidth={1120}>
       <ToastView toast={toast} onDismiss={dismiss} />
@@ -98,11 +122,16 @@ export default function EventsScreen() {
         title="Events"
         subtitle="Every upcoming event and how ready it is to run."
         actions={
-          <Button
-            title="New event"
-            icon="plus"
-            onPress={() => router.push("/event/new")}
-          />
+          // Creating an event always targets the caller's OWN chapter — hidden
+          // while peeking so it's never mistaken for "add to the chapter I'm
+          // viewing".
+          isPeeking ? undefined : (
+            <Button
+              title="New event"
+              icon="plus"
+              onPress={() => router.push("/event/new")}
+            />
+          )
         }
       />
 
@@ -128,7 +157,13 @@ export default function EventsScreen() {
         <>
           {isEmpty ? (
             <View className="mt-6">
-              {noTemplates ? (
+              {isPeeking ? (
+                <EmptyState
+                  icon="calendar"
+                  title="No upcoming events"
+                  message="This chapter has nothing on the calendar right now."
+                />
+              ) : noTemplates ? (
                 <EmptyState
                   icon="inbox"
                   title="Nothing here yet"
@@ -173,7 +208,7 @@ export default function EventsScreen() {
                   <Row
                     key={e._id}
                     last={i === currentEvents.length - 1}
-                    onPress={() => router.push(`/event/${e._id}`)}
+                    onPress={isPeeking ? undefined : () => openEvent(e._id)}
                   >
                     <Cell flex={3}>
                       <Text className="text-base font-semibold text-ink" numberOfLines={1}>
@@ -226,7 +261,7 @@ export default function EventsScreen() {
                 <EventCard
                   key={e._id}
                   event={e}
-                  onPress={() => router.push(`/event/${e._id}`)}
+                  onPress={isPeeking ? undefined : () => openEvent(e._id)}
                 />
               ))}
             </View>
@@ -236,7 +271,7 @@ export default function EventsScreen() {
               expand to review. They no longer send task reminders. */}
           <PastEventsSection
             events={pastEvents}
-            onOpen={(id) => router.push(`/event/${id}`)}
+            onOpen={isPeeking ? undefined : openEvent}
           />
         </>
       )}
@@ -253,7 +288,8 @@ function PastEventsSection({
   onOpen,
 }: {
   events: EventRow[];
-  onOpen: (id: string) => void;
+  /** `undefined` while peeking — an event's detail screen isn't peek-safe. */
+  onOpen?: (id: string) => void;
 }) {
   const [open, setOpen] = useState(false);
   if (events.length === 0) return null;
@@ -278,7 +314,11 @@ function PastEventsSection({
       {open ? (
         <View className="mt-3 gap-3">
           {events.map((e) => (
-            <EventCard key={e._id} event={e} onPress={() => onOpen(e._id)} />
+            <EventCard
+              key={e._id}
+              event={e}
+              onPress={onOpen ? () => onOpen(e._id) : undefined}
+            />
           ))}
         </View>
       ) : null}
@@ -295,7 +335,8 @@ function EventCard({
   onPress,
 }: {
   event: EventRow;
-  onPress: () => void;
+  /** `undefined` while peeking — an event's detail screen isn't peek-safe. */
+  onPress?: () => void;
 }) {
   return (
     <Card onPress={onPress} padding="md">

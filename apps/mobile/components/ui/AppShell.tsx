@@ -98,14 +98,15 @@ export function AppShell({ children }: { children: ReactNode }) {
   const pathname = usePathname();
   // Read-only peek (WP-S): a central-seat holder browsing a chapter they
   // don't hold a seat in. The banner is shell chrome — it renders over every
-  // screen — but only the Finance dashboard actually re-scopes its data to
-  // the peeked chapter; see `ChapterContext`'s file doc for why Events/
-  // Projects don't (yet). Route-aware copy: `financeScoped` tells the banner
-  // whether the CURRENT route is one that actually re-scopes, so it never
-  // implies a read-only peek is in effect somewhere it isn't.
+  // screen — but only SOME surfaces actually re-scope their data to the
+  // peeked chapter (Finance's dashboard, and now the Events landing screen —
+  // see `ChapterContext`'s file doc for what's scoped and what still isn't,
+  // e.g. Work/Projects). Route-aware copy: `scoped` tells the banner whether
+  // the CURRENT route is one that actually re-scopes, so it never implies a
+  // read-only peek is in effect somewhere it isn't.
   const { context, exitPeek } = useChapterContext();
   const peeking = context?.kind === "peek" ? context : null;
-  const financeScoped = isFinanceRoute(pathname);
+  const scoped = isScopedRoute(pathname);
 
   if (desktop) {
     return (
@@ -116,7 +117,7 @@ export function AppShell({ children }: { children: ReactNode }) {
             <PeekBanner
               chapterName={peeking.chapterName}
               onExit={exitPeek}
-              scoped={financeScoped}
+              scoped={scoped}
             />
           ) : null}
           {children}
@@ -133,7 +134,7 @@ export function AppShell({ children }: { children: ReactNode }) {
         <PeekBanner
           chapterName={peeking.chapterName}
           onExit={exitPeek}
-          scoped={financeScoped}
+          scoped={scoped}
         />
       ) : null}
       <View className="flex-1">{children}</View>
@@ -143,13 +144,30 @@ export function AppShell({ children }: { children: ReactNode }) {
 }
 
 /**
- * True when `pathname` is under `/finances` — the one surface peek actually
- * re-scopes today (`finances.dashboardChapter`'s drill-down). Matches on
- * whole path segments, same rule as `isActive` above, so `/finances` and
- * `/finances/123` both count but a sibling like `/financesX` doesn't.
+ * True when `pathname` is a surface that actually re-scopes to the peeked
+ * chapter: `/finances*` (`finances.dashboardChapter`'s original drill-down)
+ * and the Events landing screen (`/`, exact — `events.current`/`events.past`
+ * now take the peeked `chapterId` too). Matches on whole path segments, same
+ * rule as `isActive` above, so `/finances` and `/finances/123` both count but
+ * a sibling like `/financesX` doesn't.
+ *
+ * Event DETAIL routes (`/event/*`) are deliberately NOT included: their tabs
+ * (roles, modules, ticketing, budget, gear) are hard-scoped to the caller's
+ * OWN chapter via `requireOwned` throughout the app — making them peek-safe
+ * would mean adding a central-reach bypass to that one foundational, widely
+ * shared primitive, a much bigger change than a read-only events/projects
+ * peek calls for. `EventsScreen` disables navigation into an event's detail
+ * while peeking instead, so this route is never reached with foreign data.
+ * `/team` (which hosts Projects, folded into the org-hierarchy view) is also
+ * NOT included — see `ChapterContext`'s file doc for why.
  */
-function isFinanceRoute(pathname: string): boolean {
-  return pathname === "/finances" || pathname.startsWith("/finances/");
+function isScopedRoute(pathname: string): boolean {
+  return (
+    pathname === "/finances" ||
+    pathname.startsWith("/finances/") ||
+    pathname === "/" ||
+    pathname === "/index"
+  );
 }
 
 /**
@@ -158,14 +176,11 @@ function isFinanceRoute(pathname: string): boolean {
  * full width on mobile, right under the top chrome. `Exit` always returns to
  * the caller's real seat — peek is only ever entered from a central seat.
  *
- * `scoped` is true only on `/finances` routes — the sole surface that
- * actually re-scopes to the peeked chapter (see `ChapterContext`'s file
- * doc). Everywhere else the banner still renders (it's shell chrome, and
- * `Exit` needs to stay reachable), but the copy adds an honest qualifier
- * instead of implying the whole app re-scoped when it didn't.
- * TODO(peek-events-projects): drop the qualifier once Events/Projects gain
- * their own chapterId scoping and peek support — see ChapterContext's file
- * doc for why they don't yet.
+ * `scoped` is true only on routes that actually re-scope to the peeked
+ * chapter (see `isScopedRoute`). Everywhere else the banner still renders
+ * (it's shell chrome, and `Exit` needs to stay reachable), but the copy adds
+ * an honest qualifier instead of implying the whole app re-scoped when it
+ * didn't.
  */
 function PeekBanner({
   chapterName,
@@ -185,7 +200,7 @@ function PeekBanner({
         {!scoped ? (
           <Text className="text-muted">
             {" "}
-            — finances only for now; other tabs show your own chapter.
+            — this screen still shows your own chapter.
           </Text>
         ) : null}
       </Text>
