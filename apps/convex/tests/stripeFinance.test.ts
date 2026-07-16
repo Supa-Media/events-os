@@ -395,9 +395,19 @@ describe("createFcSession / storeFcAccount central gating", () => {
   test("createFcSession REJECTS a chapter-scoped (non-central) finance manager", async () => {
     const s = await setupChapter(newT());
     await asManager(s); // chapter-scoped manager, NOT central
-    await expect(
-      s.as.action(api.stripeFinance.createFcSession, {}),
-    ).rejects.toBeInstanceOf(ConvexError);
+    let caught: unknown;
+    try {
+      await s.as.action(api.stripeFinance.createFcSession, {});
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(ConvexError);
+    // Must be the central-gate FORBIDDEN, not e.g. NOT_CONFIGURED (which the
+    // action would also throw as a ConvexError if the gate regressed and let
+    // the chapter-scoped manager through to the Stripe-key check).
+    expect((caught as ConvexError<{ code: string }>).data.code).toBe(
+      "FORBIDDEN",
+    );
   });
 
   test("createFcSession succeeds (past the gate) for a genuine central-scope caller", async () => {

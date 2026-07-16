@@ -321,12 +321,19 @@ describe("submitPublicReimbursement rate limiting", () => {
       });
     }
     // The 6th from the SAME ip (even with a fresh email) is rate-limited.
-    await expect(
-      submitTwoLine(s, "nyc", {
+    let caught: unknown;
+    try {
+      await submitTwoLine(s, "nyc", {
         payeeEmail: "dana+6@example.com",
         clientIp: "203.0.113.1",
-      }),
-    ).rejects.toBeInstanceOf(ConvexError);
+      });
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(ConvexError);
+    expect((caught as ConvexError<{ code: string }>).data.code).toBe(
+      "RATE_LIMITED",
+    );
 
     // A DIFFERENT ip is unaffected.
     await expect(
@@ -351,12 +358,19 @@ describe("submitPublicReimbursement rate limiting", () => {
     }
     // The 6th with the SAME (case/whitespace-insensitive) email is blocked,
     // even from a brand-new ip.
-    await expect(
-      submitTwoLine(s, "nyc", {
+    let caught: unknown;
+    try {
+      await submitTwoLine(s, "nyc", {
         payeeEmail: "  Repeat@Example.com  ",
         clientIp: "203.0.113.99",
-      }),
-    ).rejects.toBeInstanceOf(ConvexError);
+      });
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(ConvexError);
+    expect((caught as ConvexError<{ code: string }>).data.code).toBe(
+      "RATE_LIMITED",
+    );
 
     // A DIFFERENT email is unaffected.
     await expect(

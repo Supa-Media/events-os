@@ -52,14 +52,22 @@ function jsonPost(
 }
 
 /** The caller's IP from standard proxy headers (Convex's `httpAction` `req`
- *  has no `.ip` of its own). `x-forwarded-for` is a comma-separated hop chain;
- *  the FIRST entry is the original client. Falls back to `x-real-ip`. Neither
- *  is guaranteed present (e.g. a direct, non-proxied request in a test), so
- *  the caller must treat this as best-effort. */
+ *  has no `.ip` of its own). `x-forwarded-for` is a comma-separated hop chain
+ *  that proxies APPEND to as a request passes through them, so the LAST entry
+ *  is the address the platform's own edge proxy observed for its peer — the
+ *  one entry the client cannot spoof. The FIRST entry (and everything before
+ *  the last hop) is client-claimable: a client can send its own
+ *  `x-forwarded-for` header with an arbitrary value prepended. Falls back to
+ *  `x-real-ip`. Neither is guaranteed present (e.g. a direct, non-proxied
+ *  request in a test), so the caller must treat this as best-effort. */
 function clientIpFromRequest(req: Request): string | undefined {
   const forwarded = req.headers.get("x-forwarded-for");
-  const first = forwarded?.split(",")[0]?.trim();
-  if (first) return first;
+  const last = forwarded
+    ?.split(",")
+    .map((s) => s.trim())
+    .filter(Boolean)
+    .pop();
+  if (last) return last;
   const real = req.headers.get("x-real-ip")?.trim();
   return real || undefined;
 }
