@@ -44,9 +44,10 @@ import {
   mutation,
   query,
   internalMutation,
+  internalQuery,
   internalAction,
 } from "./_generated/server";
-import type { MutationCtx, QueryCtx } from "./_generated/server";
+import type { ActionCtx, MutationCtx, QueryCtx } from "./_generated/server";
 import { ConvexError, v } from "convex/values";
 import { internal } from "./_generated/api";
 import { Doc, Id } from "./_generated/dataModel";
@@ -57,6 +58,7 @@ import {
   REPAYMENT_METHODS,
   REPAYMENT_STATUSES,
   RECEIPT_GRACE_DAYS,
+  RECEIPT_ESCALATE_DAYS,
   easternParts,
   matchesMode,
   isCardEligible,
@@ -80,6 +82,8 @@ import {
 } from "./lib/finance";
 import { viewerPerson } from "./lib/org";
 import { increaseEnvForObjectId } from "./increase";
+import { sendEmail, emailShell } from "./ticketingEmails";
+import { escapeHtml } from "./lib/html";
 
 /** Increase API base URL. Env-overridable so dev/staging point at the sandbox
  *  (`INCREASE_API_BASE=https://sandbox.increase.com`); defaults to production. */
@@ -99,6 +103,20 @@ const AUTH_SCAN_LIMIT = 5000;
 // Bound the auto-lock cron sweep (cards is a small table).
 const AUTOLOCK_LIMIT = 1000;
 const DAY_MS = 24 * 60 * 60 * 1000;
+// Cap how many charges `advanceReceiptReminders` transitions (and therefore
+// how many emails `sendReceiptReminders` sends) in a single run. Without this,
+// the FIRST cron run after deploy would advance — and email — every
+// historical missing-receipt charge at once (a chapter can have months of
+// un-receipted backlog with no reminder feature to have caught it earlier).
+// Oldest-first (see the sort in `advanceReceiptReminders`) so the backlog
+// drains gradually over multiple days instead of bursting on day one.
+const REMINDER_BATCH_LIMIT = 25;
+// Charges posted before this horizon are SEED-ONLY: `advanceReceiptReminders`
+// still sets their stage (so the grid reflects reality), but
+// `sendReceiptReminders` never emails for them. A charge that's been sitting
+// for months predates the reminder feature entirely — a sudden "still
+// missing" nag about it is noise, not a useful reminder.
+const REMINDER_SEED_ONLY_DAYS = 30;
 
 // ── Enum validators (built from the shared tuples) ───────────────────────────
 const cardTypeValidator = v.union(...CARD_TYPES.map((t) => v.literal(t)));
@@ -1173,13 +1191,48 @@ export function isMissingReceiptCharge(
 }
 
 /** A card charge whose receipt is overdue: a missing-receipt charge older than
- *  the grace window (the cutoff). */
-function isOverdueReceiptCharge(
+ *  the grace window (the cutoff). Exported so `attachReceipt` (finances.ts)
+ *  can re-run this same predicate to unlock a card immediately on upload,
+ *  instead of waiting for the next `autoLockOverdueCards` sweep. */
+export function isOverdueReceiptCharge(
   tr: Doc<"transactions">,
   card: Doc<"cards">,
   cutoff: number,
 ): boolean {
   return isMissingReceiptCharge(tr, card) && tr.postedAt < cutoff;
+}
+
+/**
+ * Re-run the receipt lock-eligibility check for ONE card and unlock it right
+ * away if no overdue missing-receipt charge remains — called synchronously by
+ * `attachReceipt` (finances.ts) immediately after a receipt attaches, so the
+ * cardholder doesn't wait for the next daily `autoLockOverdueCards` sweep.
+ *
+ * Only acts on an AUTO-locked card (`status:"locked"` WITH a
+ * `receiptGraceEndsAt` stamp) — a MANUAL lock (`lockCard`, no stamp) is left
+ * untouched, exactly matching the cron's own unlock condition. Returns
+ * whether it unlocked the card.
+ */
+export async function unlockCardIfReceiptsResolved(
+  ctx: MutationCtx,
+  cardId: Id<"cards">,
+): Promise<boolean> {
+  const card = await ctx.db.get(cardId);
+  if (!card || card.status !== "locked" || card.receiptGraceEndsAt == null) {
+    return false;
+  }
+  const cutoff = Date.now() - RECEIPT_GRACE_DAYS * DAY_MS;
+  const txns = await ctx.db
+    .query("transactions")
+    .withIndex("by_card", (q) => q.eq("cardId", cardId))
+    .order("desc")
+    .take(CARD_TXN_LIMIT);
+  const stillOverdue = txns.some((tr) =>
+    isOverdueReceiptCharge(tr, card, cutoff),
+  );
+  if (stillOverdue) return false;
+  await ctx.db.patch(cardId, { status: "active", receiptGraceEndsAt: undefined });
+  return true;
 }
 
 /**
@@ -1191,12 +1244,13 @@ function isOverdueReceiptCharge(
  *    still has NO receipt → LOCK it + stamp `receiptGraceEndsAt` (for display);
  *  - a previously AUTO-locked card (locked WITH a `receiptGraceEndsAt` stamp)
  *    whose overdue missing-receipt charges are all resolved → UNLOCK it + clear
- *    the stamp. Self-healing: uploading a receipt unlocks within a day.
+ *    the stamp. This is the BACKSTOP self-heal (in case the immediate path
+ *    below was missed) — `attachReceipt` (finances.ts) calls
+ *    `unlockCardIfReceiptsResolved` synchronously on upload, so a card usually
+ *    unlocks immediately rather than waiting for this daily sweep.
  *
  * A MANUAL lock (`lockCard`, no `receiptGraceEndsAt`) is never auto-unlocked.
  * Bounded; returns how many cards it locked / unlocked.
- *
- * TODO: immediate unlock-on-receipt-upload via attachReceipt (finances.ts).
  */
 export const autoLockOverdueCards = internalMutation({
   args: {},
@@ -1241,6 +1295,220 @@ export const autoLockOverdueCards = internalMutation({
       }
     }
     return { lockedCount, unlockedCount };
+  },
+});
+
+// ── advanceReceiptReminders (day-1 flag / day-3 escalate) ────────────────────
+
+/**
+ * Advances the receipt-reminder TIMELINE for every card's missing-receipt
+ * charges — the steps ahead of the terminal day-7 auto-lock above:
+ *
+ *  - a charge that's crossed one full day still missing its receipt, with no
+ *    stage yet → `receiptReminderStage: "flagged"` (the "end of purchase day"
+ *    nudge);
+ *  - a charge that's crossed `RECEIPT_ESCALATE_DAYS` (3) still missing its
+ *    receipt, not yet escalated → `receiptReminderStage: "escalated"`.
+ *
+ * Purely a state transition (mirrors `autoLockOverdueCards`'s DB-apply shape,
+ * kept a `mutation` so it's directly testable); it does NOT lock anything and
+ * does NOT send email itself — it returns the transactions that just
+ * transitioned THIS pass so the caller (`sendReceiptReminders`, an action) can
+ * notify their cardholder. Idempotent: a charge already at a stage is never
+ * re-returned until it advances to the next one, so a cardholder isn't
+ * re-emailed on every daily sweep.
+ *
+ * Capped at `REMINDER_BATCH_LIMIT` transitions per run, oldest charge first
+ * (across ALL cards, not per-card) — see the constant's comment. Charges
+ * older than `REMINDER_SEED_ONLY_DAYS` still get their stage set (within that
+ * cap) but are never included in the returned `flagged`/`escalated` arrays,
+ * so `sendReceiptReminders` never emails for them. Personal charges
+ * (`isPersonal`) are skipped entirely — the cardholder already flagged +
+ * is repaying it, so a receipt nag on top is redundant.
+ */
+export const advanceReceiptReminders = internalMutation({
+  args: {},
+  returns: v.object({
+    flagged: v.array(v.id("transactions")),
+    escalated: v.array(v.id("transactions")),
+  }),
+  handler: async (
+    ctx,
+  ): Promise<{
+    flagged: Id<"transactions">[];
+    escalated: Id<"transactions">[];
+  }> => {
+    const now = Date.now();
+    const flagCutoff = now - DAY_MS;
+    const escalateCutoff = now - RECEIPT_ESCALATE_DAYS * DAY_MS;
+    const seedOnlyCutoff = now - REMINDER_SEED_ONLY_DAYS * DAY_MS;
+    const cards = await ctx.db.query("cards").take(AUTOLOCK_LIMIT);
+
+    // Gather every charge due to advance a stage THIS pass, across ALL cards,
+    // before writing anything — so the batch cap below can pick the globally
+    // oldest charges first rather than just the oldest per card.
+    const candidates: {
+      tr: Doc<"transactions">;
+      stage: "flagged" | "escalated";
+    }[] = [];
+    for (const card of cards) {
+      if (card.status === "canceled") continue;
+      const txns = await ctx.db
+        .query("transactions")
+        .withIndex("by_card", (q) => q.eq("cardId", card._id))
+        .order("desc")
+        .take(CARD_TXN_LIMIT);
+      for (const tr of txns) {
+        if (!isMissingReceiptCharge(tr, card)) continue;
+        // Personal charges are already flagged + being repaid by the
+        // cardholder directly — don't pile a receipt-reminder nag on top.
+        if (tr.isPersonal === true) continue;
+        if (
+          tr.postedAt < escalateCutoff &&
+          tr.receiptReminderStage !== "escalated"
+        ) {
+          candidates.push({ tr, stage: "escalated" });
+        } else if (
+          tr.postedAt < flagCutoff &&
+          tr.receiptReminderStage == null
+        ) {
+          candidates.push({ tr, stage: "flagged" });
+        }
+      }
+    }
+
+    // Oldest posted-at first, capped — a historical backlog (e.g. months of
+    // un-receipted charges present the day this feature deploys) drains
+    // REMINDER_BATCH_LIMIT charges per run instead of transitioning (and
+    // emailing) everyone in one burst.
+    candidates.sort((a, b) => a.tr.postedAt - b.tr.postedAt);
+    const batch = candidates.slice(0, REMINDER_BATCH_LIMIT);
+
+    const flagged: Id<"transactions">[] = [];
+    const escalated: Id<"transactions">[] = [];
+    for (const { tr, stage } of batch) {
+      // Ancient charges predate the reminder feature entirely — set the
+      // stage so the grid reflects reality, but skip the email (and the
+      // `lastReminderSentAt` stamp, since none was sent) so a 3-month-old
+      // charge doesn't surface as a fresh nag.
+      const seedOnly = tr.postedAt < seedOnlyCutoff;
+      await ctx.db.patch(tr._id, {
+        receiptReminderStage: stage,
+        ...(seedOnly ? {} : { lastReminderSentAt: now }),
+      });
+      if (seedOnly) continue;
+      if (stage === "escalated") escalated.push(tr._id);
+      else flagged.push(tr._id);
+    }
+    return { flagged, escalated };
+  },
+});
+
+/** The cardholder contact + charge details `sendReceiptReminders` needs to
+ *  compose a reminder email for one transaction. Null when the charge isn't
+ *  card-linked or the cardholder has no reachable email. */
+export const getReceiptReminderContact = internalQuery({
+  args: { transactionId: v.id("transactions") },
+  returns: v.union(
+    v.object({
+      email: v.string(),
+      cardholderName: v.string(),
+      merchantName: v.union(v.string(), v.null()),
+      amountCents: v.number(),
+    }),
+    v.null(),
+  ),
+  handler: async (ctx, args) => {
+    const tr = await ctx.db.get(args.transactionId);
+    if (!tr?.cardId) return null;
+    const card = await ctx.db.get(tr.cardId);
+    if (!card) return null;
+    const person = await ctx.db.get(card.cardholderPersonId);
+    const email = person?.pwEmail ?? person?.email;
+    if (!person || !email) return null;
+    return {
+      email,
+      cardholderName: person.name,
+      merchantName: tr.merchantName ?? null,
+      amountCents: tr.amountCents,
+    };
+  },
+});
+
+/** Best-effort reminder email for one transitioned charge — logs + no-ops
+ *  without `RESEND_API_KEY` (dev), same degrade as `sendReimbursementReminders`. */
+async function notifyReceiptReminder(
+  ctx: ActionCtx,
+  transactionId: Id<"transactions">,
+  isEscalation: boolean,
+): Promise<void> {
+  const contact = await ctx.runQuery(internal.cards.getReceiptReminderContact, {
+    transactionId,
+  });
+  if (!contact) return;
+  const dollars = `$${(contact.amountCents / 100).toFixed(2)}`;
+  const merchant = contact.merchantName ?? "a charge";
+  const subject = isEscalation
+    ? `Still missing: receipt for your ${dollars} charge at ${merchant}`
+    : `Add a receipt for your ${dollars} charge at ${merchant}`;
+  const daysLeft = RECEIPT_GRACE_DAYS - RECEIPT_ESCALATE_DAYS;
+  const message = isEscalation
+    ? `It's been ${RECEIPT_ESCALATE_DAYS} days and your ${dollars} charge at ${merchant} still needs a receipt. Your card locks in ${daysLeft} more day${daysLeft === 1 ? "" : "s"} without one.`
+    : `Don't forget to add a receipt for your ${dollars} charge at ${merchant}.`;
+  await sendEmail(
+    contact.email,
+    subject,
+    emailShell(`
+      <h1 style="margin:0 0 12px;font-size:24px;line-height:1.2">${escapeHtml(subject)}</h1>
+      <p style="margin:0 0 16px;font-family:-apple-system,'Segoe UI',Roboto,sans-serif;font-size:14px;line-height:1.6;color:#7A5A5A">Hi ${escapeHtml(contact.cardholderName)} — ${escapeHtml(message)}</p>`),
+  );
+}
+
+/**
+ * The daily receipt-reminder cron: advances every card's missing-receipt
+ * charges through the day-1/day-3 timeline (`advanceReceiptReminders`), then
+ * emails the cardholder for whichever charges just transitioned. Terminal
+ * day-7 locking stays in `autoLockOverdueCards` — this action never locks a
+ * card. No-ops per email when `RESEND_API_KEY` is unset (local/dev).
+ *
+ * Best-effort per email: a single rejected `notifyReceiptReminder` (e.g. a
+ * Resend fetch failure) is logged and does NOT stop the loop — otherwise one
+ * bad email mid-run would silently drop every remaining cardholder's
+ * reminder for the day.
+ */
+export const sendReceiptReminders = internalAction({
+  args: {},
+  returns: v.object({ flaggedCount: v.number(), escalatedCount: v.number() }),
+  handler: async (
+    ctx,
+  ): Promise<{ flaggedCount: number; escalatedCount: number }> => {
+    const { flagged, escalated } = await ctx.runMutation(
+      internal.cards.advanceReceiptReminders,
+      {},
+    );
+    for (const transactionId of flagged) {
+      try {
+        await notifyReceiptReminder(ctx, transactionId, false);
+      } catch (err) {
+        console.error(
+          "sendReceiptReminders: flag reminder email failed",
+          transactionId,
+          err,
+        );
+      }
+    }
+    for (const transactionId of escalated) {
+      try {
+        await notifyReceiptReminder(ctx, transactionId, true);
+      } catch (err) {
+        console.error(
+          "sendReceiptReminders: escalation reminder email failed",
+          transactionId,
+          err,
+        );
+      }
+    }
+    return { flaggedCount: flagged.length, escalatedCount: escalated.length };
   },
 });
 

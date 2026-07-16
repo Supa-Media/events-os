@@ -307,10 +307,11 @@ function ReconcileRow({
         )}
       </Cell>
 
-      {/* Receipt (✓ or inline upload) */}
+      {/* Receipt (✓ or inline upload, escalating with the reminder timeline) */}
       <Cell width={COLS.receipt}>
         <ReceiptCell
           hasReceipt={row.hasReceipt}
+          reminderStage={row.reminderStage}
           onUpload={async (storageId) => {
             await guard(attachReceipt({ transactionId: id, storageId }));
           }}
@@ -437,13 +438,17 @@ function PickerCell({
   );
 }
 
-// ── Receipt cell: a green ✓ when attached, else a web file-upload affordance ───
+// ── Receipt cell: a green ✓ when attached, else a web file-upload affordance
+// that escalates in color/copy with the receipt-reminder timeline (day-1
+// flag → day-3 escalate; day-7 auto-lock is shown at the card level). ────────
 function ReceiptCell({
   hasReceipt,
+  reminderStage,
   onUpload,
   generateUploadUrl,
 }: {
   hasReceipt: boolean;
+  reminderStage: "none" | "flagged" | "escalated";
   onUpload: (storageId: Id<"_storage">) => Promise<void>;
   generateUploadUrl: () => Promise<string>;
 }) {
@@ -483,14 +488,29 @@ function ReceiptCell({
       </View>
     );
   }
+  const escalated = reminderStage === "escalated";
+  const flagged = reminderStage === "flagged";
+  const tint = escalated ? colors.danger : flagged ? colors.warn : colors.muted;
+  const label = busy
+    ? "Uploading…"
+    : escalated
+      ? "Day 3 overdue"
+      : flagged
+        ? "Reminder sent"
+        : "Upload";
+
   return (
     <Pressable
       onPress={pick}
       disabled={busy}
       className="flex-1 flex-row items-center gap-1 px-2 py-1.5 active:opacity-70 web:hover:opacity-90"
     >
-      <Icon name="upload" size={14} color={colors.muted} />
-      <Text className="text-sm text-muted">{busy ? "Uploading…" : "Upload"}</Text>
+      <Icon name={escalated ? "alert-triangle" : "upload"} size={14} color={tint} />
+      <Text
+        className={`text-sm ${escalated ? "text-danger" : flagged ? "text-warn" : "text-muted"}`}
+      >
+        {label}
+      </Text>
     </Pressable>
   );
 }

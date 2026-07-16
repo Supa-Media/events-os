@@ -64,6 +64,18 @@ crons.cron(
   {},
 );
 
+// Daily 11:30 UTC = 7:30am EDT: advance the receipt-reminder timeline (day-1
+// flag / day-3 escalate) for card charges still missing a receipt, emailing
+// the cardholder when a charge crosses a checkpoint. Terminal day-7 handling
+// stays in the auto-lock cron above; uploading a receipt unlocks/clears the
+// timeline immediately via `attachReceipt`, well ahead of either sweep.
+crons.cron(
+  "card receipt reminder sweep",
+  "30 11 * * *",
+  internal.cards.sendReceiptReminders,
+  {},
+);
+
 // Daily 08:00 UTC: backstop pull of Increase card charges/refunds for every
 // provisioned account, in case a `transaction.created` webhook was dropped
 // (e.g. a swallowed error in `ingestIncreaseCardTransaction` — that path never

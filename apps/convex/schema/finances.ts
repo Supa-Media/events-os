@@ -257,6 +257,15 @@ export const transactions = defineTable({
   // A single attached receipt (line-level receipts live on reimbursement lines).
   receiptStorageId: v.optional(v.id("_storage")),
 
+  // Receipt-reminder timeline (day-1 flag → day-3 escalate, tracked by
+  // `cards.advanceReceiptReminders`). `undefined` = no reminder sent yet.
+  // Cleared when a receipt attaches (`finances.attachReceipt`). Terminal day-7
+  // handling is `cards.autoLockOverdueCards` (a separate field on `cards`).
+  receiptReminderStage: v.optional(
+    v.union(v.literal("flagged"), v.literal("escalated")),
+  ),
+  lastReminderSentAt: v.optional(v.number()),
+
   createdBy: v.optional(v.id("users")),
   createdAt: v.number(),
 })

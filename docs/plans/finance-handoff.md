@@ -82,7 +82,12 @@ Increase integration was grounded against the real API and hardened (#95–#103)
   Helpers: `increaseEnvForObjectId(id)` (route by `sandbox_` prefix) + `increaseEnvForMode(sandbox)`.
 - `cards.ts` — person-owned cards: issue/list/lock/setControls, `decideCardAuthorization`
   (real-time decision: monthly cap + validity + receipt-lock), personal repayment
-  (flag + `initiateRepayment` + manager-only `markRepaymentPaid`), `autoLockOverdueCards`.
+  (flag + `initiateRepayment` + manager-only `markRepaymentPaid`), `autoLockOverdueCards`
+  (day-7 terminal auto-lock), `advanceReceiptReminders`/`sendReceiptReminders` (day-1
+  flag / day-3 escalate timeline + best-effort cardholder email, degrades without
+  `RESEND_API_KEY`), `unlockCardIfReceiptsResolved` (called by `finances.attachReceipt`
+  to unlock a card the moment its overdue receipt is uploaded, instead of waiting for
+  the next `autoLockOverdueCards` sweep).
 - `webhooks.ts` — shared inbound dedup (`recordWebhookEvent`).
 - `http.ts` — routes: `/stripe/webhook` (checkout + `financial_connections.*`),
   `/increase/webhook` (Standard Webhooks; `real_time_decision.card_authorization_requested`
