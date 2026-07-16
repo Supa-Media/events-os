@@ -125,6 +125,8 @@ export const TRANSACTION_SOURCES = [
   "manual", // hand-entered
   "reimbursement", // the payout leg of an approved reimbursement (a transfer)
   "repayment", // an offsetting credit from a personal-charge repayment
+  "skim", // a leg of the monthly chapter→central City Launch Fund skim (WP-4.1)
+  "launch_grant", // a leg of a one-time central→chapter launch grant (WP-4.2)
 ] as const;
 export type TransactionSource = (typeof TRANSACTION_SOURCES)[number];
 
@@ -709,4 +711,86 @@ export function chapterAffordability(
     skimCents,
     discretionaryCents,
   };
+}
+
+// ── The City Launch Fund money flows (WP-4.1 skim · WP-4.2 launch grant) ──────
+// The playbook models money moving BOTH ways between a chapter and central (PRD
+// §0.1): UP is the monthly ~15% skim (chapter → central City Launch Fund); DOWN
+// is a one-time launch grant (central → a new chapter, equipment + training
+// trip). Both are recorded as a PAIR of `flow:"transfer"` transactions — an
+// outflow leg on the source scope + an inflow leg on the destination scope —
+// linked by a shared `transactions.transferGroupId`. Transfers never count as
+// spend (`countsAsSpend`), so they distort no budget/category rollup.
+//
+// NOTE: `BACKER_UNIT_CENTS` and `CENTRAL_SKIM_PCT` are defined once, above, in
+// the Affordability (WP-4.3) section — both the affordability header and this
+// transfer automation read the same two constants.
+
+/**
+ * The integer-cents skim owed on a month's backer revenue. `Math.round` gives
+ * banker-free round-half-up on the exact `revenue × 0.15` product (e.g.
+ * 250_000 → 37_500; 333_333 → 50_000 — 49_999.95 rounds up). Always returns a
+ * whole number of cents so the ledger never carries a fractional amount.
+ */
+export function skimAmountCents(monthlyBackerRevenueCents: number): number {
+  return Math.round(monthlyBackerRevenueCents * CENTRAL_SKIM_PCT);
+}
+
+/** The two directions money flows between a chapter and central. Stored on the
+ *  transfer legs as `transactions.source` (mirroring `reimbursement`), so a leg
+ *  is self-describing and the City Launch Fund position is a simple sum by
+ *  source over central-scope legs — no group-id prefix parsing. */
+export const TRANSFER_KINDS = ["skim", "launch_grant"] as const;
+export type TransferKind = (typeof TRANSFER_KINDS)[number];
+
+/**
+ * The deterministic id shared by both legs of a monthly skim pair — one per
+ * (chapter, year, month). Doubles as the Increase account-transfer
+ * `Idempotency-Key` and the re-record guard, so a given month's skim can be
+ * recorded/initiated exactly once. Month is zero-padded for a stable key.
+ */
+export function skimTransferGroupId(
+  chapterId: string,
+  year: number,
+  month: number,
+): string {
+  return `skim-${chapterId}-${year}-${String(month).padStart(2, "0")}`;
+}
+
+/**
+ * The deterministic id shared by both legs of a launch grant — one per chapter,
+ * FOR ALL TIME (a launch grant is a one-time event). Doubles as the Increase
+ * `Idempotency-Key` and the re-record guard, so a chapter can be launch-granted
+ * exactly once.
+ */
+export function launchTransferGroupId(chapterId: string): string {
+  return `launch-${chapterId}`;
+}
+
+/** One planned line of the launch budget stamped on a newly-granted chapter. */
+export interface LaunchBudgetLine {
+  label: string;
+  amountCents: number;
+}
+
+/**
+ * The City Launch Playbook's one-time launch budget (PRD §0.1: equipment
+ * ~$4,300 + an NYC training trip ~$3,500–4,000, ~$7,800–8,300/city total).
+ * Editable product constant — stamped as `one_time` chapter budgets on the
+ * chapter a launch grant funds (WP-4.2). Only NONZERO lines become budgets
+ * (owner rule), so a line can be zeroed here to skip it without code changes.
+ */
+export const LAUNCH_BUDGET_TEMPLATE: readonly LaunchBudgetLine[] = [
+  { label: "Launch equipment", amountCents: 430_000 },
+  { label: "Training trip — travel", amountCents: 200_000 },
+  { label: "Training trip — lodging", amountCents: 120_000 },
+  { label: "Training trip — meals & local transport", amountCents: 50_000 },
+];
+
+/** The default launch-grant amount: the sum of the template's nonzero lines. */
+export function launchTemplateTotalCents(): number {
+  return LAUNCH_BUDGET_TEMPLATE.reduce(
+    (sum, line) => sum + Math.max(0, line.amountCents),
+    0,
+  );
 }

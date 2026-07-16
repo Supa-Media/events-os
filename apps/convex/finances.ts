@@ -1896,6 +1896,18 @@ export const dashboardCentral = query({
     // of the same name — central has no txns of its own yet, so this is purely
     // the cross-chapter sum).
     orgUnattributedCents: v.number(),
+    // The City Launch Fund position (WP-4.1/4.2), derived from the central legs
+    // of skim (inflow) + launch-grant (outflow) transfer pairs. `positionCents`
+    // = all-time skims received − launch grants made; the `period*` figures are
+    // the same, bounded to the dashboard period.
+    cityLaunchFund: v.object({
+      skimsReceivedCents: v.number(),
+      launchGrantsMadeCents: v.number(),
+      positionCents: v.number(),
+      periodSkimsReceivedCents: v.number(),
+      periodLaunchGrantsMadeCents: v.number(),
+      periodNetCents: v.number(),
+    }),
   }),
   handler: async (ctx, args) => {
     const now = easternParts(Date.now());
@@ -1905,6 +1917,14 @@ export const dashboardCentral = query({
     const dp: DashPeriod = { year, month, ytd };
     const spentSuffix = ytd ? "YTD" : MONTH_NAMES[month - 1];
 
+    const emptyFund = {
+      skimsReceivedCents: 0,
+      launchGrantsMadeCents: 0,
+      positionCents: 0,
+      periodSkimsReceivedCents: 0,
+      periodLaunchGrantsMadeCents: 0,
+      periodNetCents: 0,
+    };
     const empty = {
       tiles: [] as never[],
       tagRollups: [] as never[],
@@ -1912,6 +1932,7 @@ export const dashboardCentral = query({
       centralBudgets: [] as never[],
       totalMonthSpendCents: 0,
       orgUnattributedCents: 0,
+      cityLaunchFund: emptyFund,
     };
     const chapterId = await readChapterId(ctx);
     if (!chapterId) return empty;
@@ -2230,6 +2251,38 @@ export const dashboardCentral = query({
       meta: "transactions",
     });
 
+    // City Launch Fund position (WP-4.1/4.2): the CENTRAL legs of skim (money
+    // into the fund) + launch-grant (money out) transfer pairs. Read all central
+    // rows once (bounded) — transfer legs are low-volume (≤1 skim/chapter/month,
+    // ≤1 launch/chapter ever) — and sum by `source`. All-time drives the fund
+    // balance; the `period*` figures narrow the same legs to the dashboard period.
+    const allCentralTxns = await ctx.db
+      .query("transactions")
+      .withIndex("by_chapter", (q) => q.eq("chapterId", CENTRAL))
+      .take(ROLLUP_SCAN_LIMIT);
+    let skimsReceivedCents = 0;
+    let launchGrantsMadeCents = 0;
+    let periodSkimsReceivedCents = 0;
+    let periodLaunchGrantsMadeCents = 0;
+    for (const tr of allCentralTxns) {
+      const inPeriod = inDashRange(tr.postedAt, dp);
+      if (tr.source === "skim") {
+        skimsReceivedCents += tr.amountCents;
+        if (inPeriod) periodSkimsReceivedCents += tr.amountCents;
+      } else if (tr.source === "launch_grant") {
+        launchGrantsMadeCents += tr.amountCents;
+        if (inPeriod) periodLaunchGrantsMadeCents += tr.amountCents;
+      }
+    }
+    const cityLaunchFund = {
+      skimsReceivedCents,
+      launchGrantsMadeCents,
+      positionCents: skimsReceivedCents - launchGrantsMadeCents,
+      periodSkimsReceivedCents,
+      periodLaunchGrantsMadeCents,
+      periodNetCents: periodSkimsReceivedCents - periodLaunchGrantsMadeCents,
+    };
+
     return {
       tiles,
       tagRollups,
@@ -2237,6 +2290,7 @@ export const dashboardCentral = query({
       centralBudgets,
       totalMonthSpendCents,
       orgUnattributedCents,
+      cityLaunchFund,
     };
   },
 });

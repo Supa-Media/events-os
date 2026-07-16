@@ -126,6 +126,7 @@ import type * as stripeFinance from "../stripeFinance.js";
 import type * as templatePeople from "../templatePeople.js";
 import type * as templateSync from "../templateSync.js";
 import type * as templates from "../templates.js";
+import type * as transfers from "../transfers.js";
 import type * as ticketing from "../ticketing.js";
 import type * as ticketingEmails from "../ticketingEmails.js";
 import type * as ticketingVerification from "../ticketingVerification.js";
@@ -257,6 +258,7 @@ declare const fullApi: ApiFromModules<{
   templatePeople: typeof templatePeople;
   templateSync: typeof templateSync;
   templates: typeof templates;
+  transfers: typeof transfers;
   ticketing: typeof ticketing;
   ticketingEmails: typeof ticketingEmails;
   ticketingVerification: typeof ticketingVerification;

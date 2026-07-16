@@ -32,6 +32,7 @@ import { useQuery } from "convex/react";
 import { Redirect, useRouter } from "expo-router";
 import { api } from "@events-os/convex/_generated/api";
 import type { Id } from "@events-os/convex/_generated/dataModel";
+import { CENTRAL } from "@events-os/shared";
 import { Button, EmptyState, Narrow, Screen } from "../../../components/ui";
 import { colors } from "../../../lib/theme";
 import {
@@ -47,6 +48,7 @@ import { CentralView } from "../../../components/finance/dashboard/CentralView";
 import { BudgetCreateModal } from "../../../components/finance/modals/BudgetCreateModal";
 import { ManualTransactionModal } from "../../../components/finance/modals/ManualTransactionModal";
 import { BackerCountModal } from "../../../components/finance/modals/BackerCountModal";
+import { TransferRecordModal } from "../../../components/finance/modals/TransferRecordModal";
 
 export default function FinancesScreen() {
   const org = useQuery(api.org.nav);
@@ -119,6 +121,12 @@ function DashboardBody() {
     central: boolean;
   }>({ open: false, id: null, central: false });
   const [txnModalOpen, setTxnModalOpen] = useState(false);
+  // City Launch Fund transfer modal (central desk). Carries the real chapters
+  // money can move to/from (from the central dashboard's rollup).
+  const [transferModal, setTransferModal] = useState<{
+    open: boolean;
+    chapters: Array<{ chapterId: Id<"chapters">; chapterName: string }>;
+  }>({ open: false, chapters: [] });
 
   // Attention-row actions: all three kinds live on their own finance tab,
   // hard-scoped to the CALLER's own chapter — never call this while drilled
@@ -198,6 +206,9 @@ function DashboardBody() {
               period={period}
               onViewChapter={viewChapter}
               onNewBudget={() => setBudgetModal({ open: true, id: null, central: true })}
+              onRecordTransfer={(chapters) =>
+                setTransferModal({ open: true, chapters })
+              }
             />
           </FinanceBoundary>
         ) : (
@@ -250,6 +261,13 @@ function DashboardBody() {
       {txnModalOpen ? (
         <ManualTransactionModal onClose={() => setTxnModalOpen(false)} />
       ) : null}
+
+      {transferModal.open ? (
+        <TransferRecordModal
+          chapters={transferModal.chapters}
+          onClose={() => setTransferModal({ open: false, chapters: [] })}
+        />
+      ) : null}
     </Screen>
   );
 }
@@ -261,15 +279,34 @@ function CentralSection({
   period,
   onViewChapter,
   onNewBudget,
+  onRecordTransfer,
 }: {
   ym: { year: number; month: number };
   period: DashPeriodMode;
   onViewChapter: (chapterId: Id<"chapters">, chapterName: string) => void;
   onNewBudget: () => void;
+  onRecordTransfer: (
+    chapters: Array<{ chapterId: Id<"chapters">; chapterName: string }>,
+  ) => void;
 }) {
   const data = useQuery(api.finances.dashboardCentral, { ...ym, period });
   if (data === undefined) return <LoadingBlock />;
-  return <CentralView data={data} onViewChapter={onViewChapter} onNewBudget={onNewBudget} />;
+  // The "By chapter" rollup leads with the Central row (chapterId === CENTRAL);
+  // the transfer picker only wants the real chapters.
+  const realChapters = data.chapterRollup
+    .filter(
+      (c): c is (typeof c) & { chapterId: Id<"chapters"> } =>
+        c.chapterId !== CENTRAL,
+    )
+    .map((c) => ({ chapterId: c.chapterId, chapterName: c.chapterName }));
+  return (
+    <CentralView
+      data={data}
+      onViewChapter={onViewChapter}
+      onNewBudget={onNewBudget}
+      onRecordTransfer={() => onRecordTransfer(realChapters)}
+    />
+  );
 }
 
 function ChapterSection({
