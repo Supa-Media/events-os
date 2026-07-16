@@ -1,6 +1,12 @@
 import { describe, expect, test } from "vitest";
 import { ConvexError } from "convex/values";
-import { newT, run, setupChapter, type ChapterSetup } from "./setup.helpers";
+import {
+  newT,
+  run,
+  setupChapter,
+  type ChapterSetup,
+  type TestConvex,
+} from "./setup.helpers";
 import { api, internal } from "../_generated/api";
 import type { Id } from "../_generated/dataModel";
 
@@ -58,6 +64,38 @@ async function grantRole(
       createdAt: Date.now(),
     }),
   );
+}
+
+/** Add a SECOND authenticated member to the same chapter as `s`, with their
+ *  own `users`/`userChapters`/`people` rows — returns an authenticated client
+ *  scoped to them (mirrors what `setupChapter` does for the first member). */
+async function addMember(
+  s: ChapterSetup,
+  opts: { email: string; name: string },
+): Promise<{
+  as: ReturnType<TestConvex["withIdentity"]>;
+  userId: Id<"users">;
+  personId: Id<"people">;
+}> {
+  const userId = await run(s.t, (ctx) =>
+    ctx.db.insert("users", { email: opts.email }),
+  );
+  await run(s.t, (ctx) =>
+    ctx.db.insert("userChapters", {
+      userId,
+      chapterId: s.chapterId,
+      role: "member",
+      isActive: true,
+      joinedAt: Date.now(),
+    }),
+  );
+  const personId = await seedPerson(s, {
+    name: opts.name,
+    email: opts.email,
+    userId,
+  });
+  const as = s.t.withIdentity({ subject: `${userId}|session`, issuer: "test" });
+  return { as, userId, personId };
 }
 
 /** Submit a two-line public reimbursement; returns { token, reference }. */
@@ -329,6 +367,284 @@ describe("in-app queue never leaks the token", () => {
     await expect(
       s.as.query(api.reimbursements.list, {}),
     ).rejects.toBeInstanceOf(ConvexError);
+  });
+});
+
+describe("verified roster identity alongside a payee override", () => {
+  test("list + get surface the real roster name for an authenticated in-app submission", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const requester = await addMember(s, {
+      email: "dana@publicworship.life",
+      name: "Dana Rivers",
+    });
+    const manager = await seedPerson(s, {
+      name: "Manager",
+      userId: s.userId,
+      isTeamMember: true,
+    });
+    await grantRole(s, manager, "manager");
+
+    // Dana submits under a different display name — the override.
+    await requester.as.mutation(api.reimbursements.submitReimbursement, {
+      payeeName: "D. Rivers Family Fund",
+      lines: [{ description: "Gaffer tape", amountCents: 1200 }],
+    });
+
+    const rows = await s.as.query(api.reimbursements.list, {});
+    expect(rows.length).toBe(1);
+    expect(rows[0].requesterName).toBe("D. Rivers Family Fund");
+    expect(rows[0].verifiedRosterName).toBe("Dana Rivers");
+
+    const detail = await s.as.query(api.reimbursements.get, {
+      reimbursementId: rows[0]._id,
+    });
+    expect(detail.payeeName).toBe("D. Rivers Family Fund");
+    expect(detail.verifiedRosterName).toBe("Dana Rivers");
+  });
+
+  test("the public path never surfaces a verified roster name, even on a roster match", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await setSlug(s, "nyc");
+    // A public claimant whose email happens to match an existing roster row.
+    await seedPerson(s, { name: "Dana Rivers", email: "dana@example.com" });
+    await submitTwoLine(s, "nyc", { payeeEmail: "dana@example.com" });
+    const manager = await seedPerson(s, {
+      name: "Manager",
+      userId: s.userId,
+      isTeamMember: true,
+    });
+    await grantRole(s, manager, "manager");
+
+    const rows = await s.as.query(api.reimbursements.list, {});
+    expect(rows.length).toBe(1);
+    // matchPerson linked personId (best-effort), but it's NOT a verified
+    // identity — the public path never sets `identityVerified`.
+    expect(rows[0].verifiedRosterName).toBeNull();
+
+    const detail = await s.as.query(api.reimbursements.get, {
+      reimbursementId: rows[0]._id,
+    });
+    expect(detail.verifiedRosterName).toBeNull();
+  });
+});
+
+describe("in-app member self-service submission", () => {
+  test("requires auth", async () => {
+    const t = newT();
+    await setupChapter(t);
+    await expect(
+      t.mutation(api.reimbursements.submitReimbursement, {
+        lines: [{ description: "Gaffer tape", amountCents: 1200 }],
+      }),
+    ).rejects.toBeInstanceOf(ConvexError);
+  });
+
+  test("requires a roster person (NO_PERSON) when the caller has no roster row", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await expect(
+      s.as.mutation(api.reimbursements.submitReimbursement, {
+        lines: [{ description: "Gaffer tape", amountCents: 1200 }],
+      }),
+    ).rejects.toBeInstanceOf(ConvexError);
+  });
+
+  test("creates a request anchored to the caller's own roster person, with a fund + correct total", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const person = await seedPerson(s, {
+      name: "Dana Rivers",
+      email: "dana@example.com",
+      userId: s.userId,
+    });
+    const fundId = await run(s.t, (ctx) =>
+      ctx.db.insert("funds", {
+        chapterId: s.chapterId,
+        name: "General",
+        restriction: "unrestricted",
+        sortOrder: 0,
+        createdAt: Date.now(),
+      }),
+    );
+
+    const { reference, reimbursementId } = await s.as.mutation(
+      api.reimbursements.submitReimbursement,
+      {
+        lines: [
+          { description: "Gaffer tape", amountCents: 1200, fundId },
+          { description: "Snacks", amountCents: 800, fundId },
+        ],
+      },
+    );
+    expect(reference).toMatch(/^RB-/);
+    // No secret token is ever handed to an authenticated submitter.
+    expect(reimbursementId).toBeTruthy();
+
+    const { req, lines } = await run(s.t, async (ctx) => {
+      const req = await ctx.db.get(reimbursementId);
+      const lines = await ctx.db
+        .query("reimbursementLineItems")
+        .withIndex("by_reimbursement", (q) =>
+          q.eq("reimbursementId", reimbursementId),
+        )
+        .collect();
+      return { req, lines };
+    });
+    expect(req?.status).toBe("submitted");
+    expect(req?.totalCents).toBe(2000);
+    // Identity is server-derived from the caller's roster row — never trusted
+    // from the client — and prefilled from it (SoD anchors to this personId).
+    expect(req?.personId).toBe(person);
+    expect(req?.payeeName).toBe("Dana Rivers");
+    expect(req?.payeeEmail).toBe("dana@example.com");
+    expect(lines.length).toBe(2);
+    expect(lines.every((l) => l.fundId === fundId)).toBe(true);
+  });
+
+  test("the ask-for-pre-approval flag lands in pending_preapproval", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await seedPerson(s, {
+      name: "Dana Rivers",
+      email: "dana@example.com",
+      userId: s.userId,
+    });
+    const { reimbursementId } = await s.as.mutation(
+      api.reimbursements.submitReimbursement,
+      {
+        requestPreApproval: true,
+        lines: [{ description: "Gaffer tape", amountCents: 1200 }],
+      },
+    );
+    const req = await run(s.t, (ctx) => ctx.db.get(reimbursementId));
+    expect(req?.status).toBe("pending_preapproval");
+  });
+
+  test("rejects non-integer and negative line cents", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await seedPerson(s, { name: "Dana Rivers", userId: s.userId });
+    for (const bad of [12.5, 0, -100]) {
+      await expect(
+        s.as.mutation(api.reimbursements.submitReimbursement, {
+          lines: [{ description: "x", amountCents: bad }],
+        }),
+      ).rejects.toBeInstanceOf(ConvexError);
+    }
+  });
+
+  test("a client-supplied name/email override display only — never the requester's identity", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const person = await seedPerson(s, {
+      name: "Dana Rivers",
+      email: "dana@example.com",
+      userId: s.userId,
+    });
+    const { reimbursementId } = await s.as.mutation(
+      api.reimbursements.submitReimbursement,
+      {
+        payeeName: "D. Rivers",
+        payeeEmail: "dana+work@example.com",
+        lines: [{ description: "Gaffer tape", amountCents: 1200 }],
+      },
+    );
+    const req = await run(s.t, (ctx) => ctx.db.get(reimbursementId));
+    // Display overrides win…
+    expect(req?.payeeName).toBe("D. Rivers");
+    expect(req?.payeeEmail).toBe("dana+work@example.com");
+    // …but the SoD-anchoring personId is always the caller's own roster row.
+    expect(req?.personId).toBe(person);
+  });
+
+  test("myReimbursements returns only the caller's own requests, no token", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await setSlug(s, "nyc");
+    await seedPerson(s, {
+      name: "Dana Rivers",
+      email: "dana@example.com",
+      userId: s.userId,
+    });
+    // Someone else's public submission shouldn't show up in Dana's list.
+    await submitTwoLine(s, "nyc", { payeeEmail: "other@example.com" });
+    await s.as.mutation(api.reimbursements.submitReimbursement, {
+      lines: [{ description: "Gaffer tape", amountCents: 1200 }],
+    });
+
+    const mine = await s.as.query(api.reimbursements.myReimbursements, {});
+    expect(mine.length).toBe(1);
+    expect(mine[0].totalCents).toBe(1200);
+    expect(JSON.stringify(mine)).not.toContain("token");
+  });
+
+  test("myReimbursements isolates two authenticated members in the same chapter", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await seedPerson(s, {
+      name: "Dana Rivers",
+      email: "dana@example.com",
+      userId: s.userId,
+    });
+    const other = await addMember(s, {
+      email: "sam@publicworship.life",
+      name: "Sam Lee",
+    });
+
+    // Dana submits two of her own requests…
+    await s.as.mutation(api.reimbursements.submitReimbursement, {
+      lines: [{ description: "Gaffer tape", amountCents: 1200 }],
+    });
+    await s.as.mutation(api.reimbursements.submitReimbursement, {
+      lines: [{ description: "Snacks", amountCents: 800 }],
+    });
+    // …Sam submits one of his own, in the SAME chapter.
+    await other.as.mutation(api.reimbursements.submitReimbursement, {
+      lines: [{ description: "Parking", amountCents: 500 }],
+    });
+
+    const danas = await s.as.query(api.reimbursements.myReimbursements, {});
+    expect(danas.length).toBe(2);
+    expect(danas.map((r) => r.totalCents).sort((a, b) => a - b)).toEqual([
+      800, 1200,
+    ]);
+    expect(JSON.stringify(danas)).not.toContain("token");
+
+    const sams = await other.as.query(api.reimbursements.myReimbursements, {});
+    expect(sams.length).toBe(1);
+    expect(sams[0].totalCents).toBe(500);
+    expect(JSON.stringify(sams)).not.toContain("token");
+
+    // Neither list leaks into the other's.
+    expect(danas.some((r) => r.totalCents === 500)).toBe(false);
+    expect(sams.some((r) => r.totalCents === 1200 || r.totalCents === 800)).toBe(
+      false,
+    );
+  });
+
+  test("newRequestOptions prefills from the caller's roster row and lists active funds", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await seedPerson(s, {
+      name: "Dana Rivers",
+      email: "dana@example.com",
+      userId: s.userId,
+    });
+    await run(s.t, (ctx) =>
+      ctx.db.insert("funds", {
+        chapterId: s.chapterId,
+        name: "General",
+        restriction: "unrestricted",
+        sortOrder: 0,
+        createdAt: Date.now(),
+      }),
+    );
+    const options = await s.as.query(api.reimbursements.newRequestOptions, {});
+    expect(options.defaultPayeeName).toBe("Dana Rivers");
+    expect(options.defaultPayeeEmail).toBe("dana@example.com");
+    expect(options.funds.map((f) => f.name)).toEqual(["General"]);
   });
 });
 

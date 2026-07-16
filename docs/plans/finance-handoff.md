@@ -90,7 +90,7 @@ Increase integration was grounded against the real API and hardened (#95–#103)
 
 **UI (`apps/mobile/app/(app)/finances/`):** `_layout.tsx` (tab router + SandboxModeBanner),
 `index.tsx` (dashboard: central/chapter/member), `reconcile.tsx`, `cards.tsx`,
-`reimbursements.tsx`, `accounts.tsx` (Stripe FC connect + sandbox toggle + Provision
+`reimbursements/index.tsx`, `accounts.tsx` (Stripe FC connect + sandbox toggle + Provision
 account). Components under `apps/mobile/components/finance/*`. Nav-gated admin/lead
 (`AppShell.tsx`); the real gate is `financeRoles` server-side. This repo uses
 NativeWind (`className`) + tokens in `apps/mobile/lib/theme.ts`. The clickable spec is

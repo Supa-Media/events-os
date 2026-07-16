@@ -1,12 +1,18 @@
 /**
- * Reimbursements — the accountless public submission path + the in-app manager
- * approval queue (Phase 3 of the Chapter OS finance build).
+ * Reimbursements — the accountless public submission path, its in-app member
+ * twin, + the in-app manager approval queue (Phase 3 of the Chapter OS finance
+ * build).
  *
- * Two surfaces, mirroring `ticketing.ts`:
+ * Surfaces, mirroring `ticketing.ts`:
  *   - PUBLIC, no auth: everything the public /reimburse page needs. A claimant
  *     has NO account — they're identified by their request's secret `token`
  *     (the `rsvps.token` precedent), returned once to their browser, looked up
  *     via `by_token`, and NEVER returned by any in-app list query.
+ *   - IN-APP member self-service (auth, NO finance-role gate): a logged-in
+ *     member submitting their OWN reimbursement (`submitReimbursement`) and
+ *     reading their own history (`myReimbursements`, `newRequestOptions`).
+ *     Shares all validation/line-item/receipt/SoD plumbing with the public
+ *     path via `createReimbursement` so the two submit surfaces can't drift.
  *   - IN-APP (auth, finance-role gated): the manager approval queue with
  *     separation-of-duties (approver ≠ requester), partial approval, and the
  *     status state machine validated against the shared `REIMBURSEMENT_STATUSES`
@@ -26,6 +32,11 @@
  *  - ANTI-DOUBLE-COUNT: the reimbursement PAYOUT (a `transfer` transaction) is
  *    Phase 4 — this file NEVER creates transactions. A line's
  *    `matchedTransactionId` (set elsewhere) links it to an already-synced txn.
+ *  - `payeeName`/`payeeEmail` are editable display fields, NOT the SoD anchor
+ *    (`personId` is). On the authenticated in-app path `identityVerified` is
+ *    set, so `list`/`get` also surface the real roster name behind the
+ *    override (`verifiedRosterName`) — an approver always sees who's really
+ *    asking, even if the display name doesn't match the roster.
  *  - All failures throw `ConvexError` (never a plain `Error`).
  */
 import {
@@ -44,7 +55,12 @@ import {
   type ReimbursementStatus,
 } from "@events-os/shared";
 import { normalizeEmail, getUserEmail } from "./lib/access";
-import { requireChapterId, requireInChapter } from "./lib/context";
+import {
+  requireChapterId,
+  requireInChapter,
+  getChapterIdOrNull,
+} from "./lib/context";
+import { viewerPerson } from "./lib/org";
 import {
   requireFinanceRole,
   requireFinanceManager,
@@ -58,6 +74,24 @@ import { escapeHtml } from "./lib/html";
 const reimbursementStatusValidator = v.union(
   ...REIMBURSEMENT_STATUSES.map((s) => v.literal(s)),
 );
+
+/** The submitted line-item shape, shared by the public + in-app submit paths.
+ *  Money is a raw `v.number()` here — the integer-cents check is enforced in
+ *  `assertLineCents` (an arg validator can't reject a non-integer). */
+const submitLineValidator = v.object({
+  description: v.string(),
+  amountCents: v.number(),
+  categoryId: v.optional(v.id("budgetCategories")),
+  fundId: v.optional(v.id("funds")),
+  receiptStorageId: v.optional(v.id("_storage")),
+});
+type SubmitLine = {
+  description: string;
+  amountCents: number;
+  categoryId?: Id<"budgetCategories">;
+  fundId?: Id<"funds">;
+  receiptStorageId?: Id<"_storage">;
+};
 
 // ── Status machine ───────────────────────────────────────────────────────────
 /** Statuses a claimant / manager may still edit (add receipts, approve, etc.).
@@ -271,6 +305,24 @@ async function fundName(
   return fund?.name ?? null;
 }
 
+/**
+ * The real roster identity behind an in-app submission, or null. Only
+ * populated when `identityVerified` is set (the authenticated `submitReimbursement`
+ * path) — the public path's `personId` is a best-effort phone/email match, not
+ * a verified identity, so it's deliberately never surfaced here. Lets the
+ * approval queue show both "submitted as" (the editable `payeeName`) and the
+ * real, server-derived requester, so an override can't misrepresent who's
+ * asking.
+ */
+async function verifiedRosterName(
+  ctx: QueryCtx,
+  req: Doc<"reimbursementRequests">,
+): Promise<string | null> {
+  if (!req.identityVerified || !req.personId) return null;
+  const person = await ctx.db.get(req.personId);
+  return person?.name ?? null;
+}
+
 /** Best-effort match of a public claimant to a chapter roster person, so the
  *  approval flow can enforce separation of duties. Phone first, then email
  *  (the PCO-matching convention). Bounded read of the (small) roster. */
@@ -293,6 +345,143 @@ async function matchPerson(
         (nemail && p.email && normalizeEmail(p.email) === nemail)),
   );
   return found?._id ?? null;
+}
+
+/**
+ * The shared create path behind BOTH submit surfaces (public /reimburse form and
+ * the in-app member twin). The caller resolves the chapter + the claimant's
+ * `personId` its own way (public: slug + best-effort roster match; in-app: the
+ * authenticated caller's own roster person), then hands validated-but-untrusted
+ * field values here. This single helper owns all the invariants — name/email
+ * validation, per-line integer-cents + chapter-ownership checks, the total, the
+ * `bankAccountLast4` reduction, the pre-approval status, and the request+lines
+ * insert — so the two surfaces can never drift.
+ *
+ * `personId` is the SEPARATION-OF-DUTIES anchor: the approval flow compares an
+ * approver against `req.personId`, so it must be the real claimant (server-
+ * derived), never a client-supplied id.
+ */
+async function createReimbursement(
+  ctx: MutationCtx,
+  input: {
+    chapterId: Id<"chapters">;
+    payeeName: string;
+    payeeEmail: string;
+    payeePhone?: string;
+    purpose?: string;
+    bankAccountLast4?: string;
+    requestPreApproval?: boolean;
+    personId: Id<"people"> | null;
+    /** True only when `personId` is a server-verified identity (the
+     *  authenticated in-app path) rather than the public path's best-effort
+     *  phone/email match. Drives `identityVerified` on the row. */
+    identityVerified?: boolean;
+    lines: SubmitLine[];
+  },
+): Promise<{
+  token: string;
+  reference: string;
+  reimbursementId: Id<"reimbursementRequests">;
+}> {
+  const { chapterId } = input;
+
+  const payeeName = cap(input.payeeName, 120);
+  if (!payeeName) {
+    throw new ConvexError({
+      code: "INVALID_INPUT",
+      message: "A name is required.",
+    });
+  }
+  // Required + format-validated email (mirrors ticketing's check).
+  const payeeEmail = normalizeEmail(cap(input.payeeEmail, 254));
+  if (!payeeEmail || !payeeEmail.includes("@")) {
+    throw new ConvexError({
+      code: "INVALID_INPUT",
+      message: "A valid email is required.",
+    });
+  }
+  const payeePhone = capOptional(input.payeePhone, 40);
+  const purpose = capOptional(input.purpose, 2000);
+  const bankAccountLast4 = sanitizeLast4(input.bankAccountLast4);
+
+  if (input.lines.length === 0 || input.lines.length > 100) {
+    throw new ConvexError({
+      code: "INVALID_INPUT",
+      message: "Add between 1 and 100 line items.",
+    });
+  }
+
+  // Validate every line's money + verify any fund/category belongs to this
+  // chapter (untrusted input must never reference another chapter).
+  for (const line of input.lines) {
+    assertLineCents(line.amountCents);
+    if (line.fundId) {
+      const fund = await ctx.db.get(line.fundId);
+      if (!fund || fund.chapterId !== chapterId) {
+        throw new ConvexError({
+          code: "INVALID_INPUT",
+          message: "That fund isn't part of this chapter.",
+        });
+      }
+    }
+    if (line.categoryId) {
+      const cat = await ctx.db.get(line.categoryId);
+      if (!cat || cat.chapterId !== chapterId) {
+        throw new ConvexError({
+          code: "INVALID_INPUT",
+          message: "That category isn't part of this chapter.",
+        });
+      }
+    }
+  }
+
+  const totalCents = input.lines.reduce((sum, l) => sum + l.amountCents, 0);
+  if (totalCents > MAX_CENTS) {
+    throw new ConvexError({
+      code: "INVALID_AMOUNT",
+      message: "That total is too large.",
+    });
+  }
+
+  const now = Date.now();
+  const token = crypto.randomUUID();
+  const status: ReimbursementStatus = input.requestPreApproval
+    ? "pending_preapproval"
+    : "submitted";
+
+  const reimbursementId = await ctx.db.insert("reimbursementRequests", {
+    chapterId,
+    token,
+    status,
+    payeeName,
+    payeeEmail,
+    payeePhone,
+    personId: input.personId ?? undefined,
+    identityVerified: input.identityVerified === true ? true : undefined,
+    purpose,
+    totalCents,
+    bankAccountLast4,
+    submittedAt: now,
+    createdAt: now,
+    updatedAt: now,
+  });
+
+  for (let i = 0; i < input.lines.length; i++) {
+    const line = input.lines[i];
+    await ctx.db.insert("reimbursementLineItems", {
+      chapterId,
+      reimbursementId,
+      description: cap(line.description, 500),
+      amountCents: line.amountCents,
+      fundId: line.fundId,
+      categoryId: line.categoryId,
+      receiptStorageId: line.receiptStorageId,
+      order: i,
+      createdAt: now,
+    });
+  }
+
+  return { token, reference: referenceFor(reimbursementId), reimbursementId };
 }
 
 // ── PUBLIC: accountless submission + status (back the /reimburse page) ────────
@@ -324,15 +513,7 @@ export const submitPublicReimbursement = mutation({
     purpose: v.optional(v.string()),
     bankAccountLast4: v.optional(v.string()),
     requestPreApproval: v.optional(v.boolean()),
-    lines: v.array(
-      v.object({
-        description: v.string(),
-        amountCents: v.number(),
-        categoryId: v.optional(v.id("budgetCategories")),
-        fundId: v.optional(v.id("funds")),
-        receiptStorageId: v.optional(v.id("_storage")),
-      }),
-    ),
+    lines: v.array(submitLineValidator),
   },
   handler: async (ctx, args) => {
     const chapter = await ctx.db
@@ -347,108 +528,166 @@ export const submitPublicReimbursement = mutation({
     }
     const chapterId = chapter._id;
 
-    const payeeName = cap(args.payeeName, 120);
-    if (!payeeName) {
-      throw new ConvexError({
-        code: "INVALID_INPUT",
-        message: "A name is required.",
-      });
-    }
-    // Required + format-validated email (mirrors ticketing's check).
-    const payeeEmail = normalizeEmail(cap(args.payeeEmail, 254));
-    if (!payeeEmail || !payeeEmail.includes("@")) {
-      throw new ConvexError({
-        code: "INVALID_INPUT",
-        message: "A valid email is required.",
-      });
-    }
-    const payeePhone = capOptional(args.payeePhone, 40);
-    const purpose = capOptional(args.purpose, 2000);
-    const bankAccountLast4 = sanitizeLast4(args.bankAccountLast4);
-
-    if (args.lines.length === 0 || args.lines.length > 100) {
-      throw new ConvexError({
-        code: "INVALID_INPUT",
-        message: "Add between 1 and 100 line items.",
-      });
-    }
-
-    // Validate every line's money + verify any fund/category belongs to this
-    // chapter (untrusted public input must never reference another chapter).
-    for (const line of args.lines) {
-      assertLineCents(line.amountCents);
-      if (line.fundId) {
-        const fund = await ctx.db.get(line.fundId);
-        if (!fund || fund.chapterId !== chapterId) {
-          throw new ConvexError({
-            code: "INVALID_INPUT",
-            message: "That fund isn't part of this chapter.",
-          });
-        }
-      }
-      if (line.categoryId) {
-        const cat = await ctx.db.get(line.categoryId);
-        if (!cat || cat.chapterId !== chapterId) {
-          throw new ConvexError({
-            code: "INVALID_INPUT",
-            message: "That category isn't part of this chapter.",
-          });
-        }
-      }
-    }
-
-    const totalCents = args.lines.reduce((sum, l) => sum + l.amountCents, 0);
-    if (totalCents > MAX_CENTS) {
-      throw new ConvexError({
-        code: "INVALID_AMOUNT",
-        message: "That total is too large.",
-      });
-    }
-    const now = Date.now();
-    const token = crypto.randomUUID();
-    const status: ReimbursementStatus = args.requestPreApproval
-      ? "pending_preapproval"
-      : "submitted";
-
+    // Best-effort roster match anchors separation of duties later. Match on the
+    // NORMALIZED email (the same value stored), so an approver whose roster row
+    // carries the payee's email is caught.
     const personId = await matchPerson(
       ctx,
       chapterId,
-      payeeEmail,
-      payeePhone,
+      normalizeEmail(cap(args.payeeEmail, 254)) ?? undefined,
+      capOptional(args.payeePhone, 40),
     );
 
-    const reimbursementId = await ctx.db.insert("reimbursementRequests", {
+    const { token, reference } = await createReimbursement(ctx, {
       chapterId,
-      token,
-      status,
+      payeeName: args.payeeName,
+      payeeEmail: args.payeeEmail,
+      payeePhone: args.payeePhone,
+      purpose: args.purpose,
+      bankAccountLast4: args.bankAccountLast4,
+      requestPreApproval: args.requestPreApproval,
+      personId,
+      lines: args.lines,
+    });
+    return { token, reference };
+  },
+});
+
+/**
+ * The AUTHENTICATED in-app twin of the public submit — a logged-in member
+ * requesting their own reimbursement. Identity is server-derived: the claimant
+ * is ALWAYS the caller's own roster person (`resolveCallerPersonId`), never a
+ * client-supplied id, and name/email default to that person + the auth email.
+ * `payeeName`/`payeeEmail` are accepted only as editable display overrides (the
+ * form pre-fills them); they can't change WHO the request is attributed to, so
+ * separation of duties still binds to the real caller.
+ *
+ * Reuses the exact validation, line-item shape, receipt handling, and
+ * pre-approval wiring as the public path via `createReimbursement` — the
+ * reminder cron then sweeps it like any other request.
+ */
+export const submitReimbursement = mutation({
+  args: {
+    payeeName: v.optional(v.string()),
+    payeeEmail: v.optional(v.string()),
+    payeePhone: v.optional(v.string()),
+    purpose: v.optional(v.string()),
+    bankAccountLast4: v.optional(v.string()),
+    requestPreApproval: v.optional(v.boolean()),
+    lines: v.array(submitLineValidator),
+  },
+  handler: async (ctx, args) => {
+    const chapterId = (await requireChapterId(ctx)) as Id<"chapters">;
+    // The claimant is the authenticated caller's own roster person (throws
+    // NO_PERSON if they have no profile in this chapter yet).
+    const personId = await resolveCallerPersonId(ctx, chapterId);
+    const person = await ctx.db.get(personId);
+    const authEmail = await getUserEmail(ctx);
+
+    // Server-side prefill: a supplied override wins, else the person's own
+    // name/email, else the auth email. Never trust the client for identity.
+    const payeeName =
+      capOptional(args.payeeName, 120) ?? person?.name ?? "";
+    const payeeEmail =
+      capOptional(args.payeeEmail, 254) ??
+      person?.email ??
+      authEmail ??
+      "";
+
+    const { reference, reimbursementId } = await createReimbursement(ctx, {
+      chapterId,
       payeeName,
       payeeEmail,
-      payeePhone,
-      personId: personId ?? undefined,
-      purpose,
-      totalCents,
-      bankAccountLast4,
-      submittedAt: now,
-      createdAt: now,
-      updatedAt: now,
+      payeePhone: args.payeePhone ?? person?.phone,
+      purpose: args.purpose,
+      bankAccountLast4: args.bankAccountLast4,
+      requestPreApproval: args.requestPreApproval,
+      personId,
+      // This IS the authenticated path — `personId` above came from
+      // `resolveCallerPersonId`, the caller's own verified roster row.
+      identityVerified: true,
+      lines: args.lines,
     });
+    // No token returned — an authenticated member tracks status in-app via
+    // `myReimbursements`, so the public secret never needs to leave the server.
+    return { reimbursementId, reference };
+  },
+});
 
-    for (let i = 0; i < args.lines.length; i++) {
-      const line = args.lines[i];
-      await ctx.db.insert("reimbursementLineItems", {
-        chapterId,
-        reimbursementId,
-        description: cap(line.description, 500),
-        amountCents: line.amountCents,
-        fundId: line.fundId,
-        categoryId: line.categoryId,
-        receiptStorageId: line.receiptStorageId,
-        order: i,
-        createdAt: now,
-      });
+/**
+ * Display data for the in-app "Request a reimbursement" form: the caller's own
+ * name/email/phone prefill (the SAME values `submitReimbursement` would default
+ * to, so the form never shows something different from what actually gets
+ * submitted) and the chapter's active funds for the fund picker. Deliberately
+ * has NO finance-role gate (unlike `finances.listFunds`) — any authenticated
+ * chapter member needs this to submit their own reimbursement, whether or not
+ * they hold a finance grant. Degrades to empty/blank rather than throwing when
+ * the caller has no chapter yet — `submitReimbursement` is the real gate.
+ */
+export const newRequestOptions = query({
+  args: {},
+  handler: async (ctx) => {
+    const chapterId = await getChapterIdOrNull(ctx);
+    if (!chapterId) {
+      return { defaultPayeeName: "", defaultPayeeEmail: "", defaultPayeePhone: "", funds: [] };
     }
+    const person = await viewerPerson(ctx, chapterId as Id<"chapters">);
+    const authEmail = await getUserEmail(ctx);
+    const funds = await ctx.db
+      .query("funds")
+      .withIndex("by_chapter", (q) => q.eq("chapterId", chapterId as Id<"chapters">))
+      .take(200);
+    return {
+      defaultPayeeName: person?.name ?? "",
+      defaultPayeeEmail: person?.email ?? authEmail ?? "",
+      defaultPayeePhone: person?.phone ?? "",
+      funds: funds
+        .filter((f) => f.isActive !== false)
+        .sort((a, b) => a.sortOrder - b.sortOrder)
+        .map((f) => ({ id: f._id, name: f.name })),
+    };
+  },
+});
 
-    return { token, reference: referenceFor(reimbursementId) };
+/**
+ * The caller's own reimbursement requests (no finance role required) — backs
+ * the "My reimbursements" list on the member dashboard. Scoped to the caller's
+ * own roster person via `by_person`; NEVER returns another member's requests
+ * or the secret `token`. Degrades to `[]` when the caller has no chapter or no
+ * roster row yet, rather than throwing (this is a passive dashboard read).
+ */
+export const myReimbursements = query({
+  args: {},
+  handler: async (ctx) => {
+    const chapterId = await getChapterIdOrNull(ctx);
+    if (!chapterId) return [];
+    const person = await viewerPerson(ctx, chapterId as Id<"chapters">);
+    if (!person) return [];
+
+    const requests = await ctx.db
+      .query("reimbursementRequests")
+      .withIndex("by_person", (q) => q.eq("personId", person._id))
+      .order("desc")
+      .take(50);
+
+    return await Promise.all(
+      requests
+        .filter((r) => r.chapterId === chapterId)
+        .map(async (req) => {
+          const lines = await linesFor(ctx, req._id);
+          return {
+            _id: req._id,
+            reference: referenceFor(req._id),
+            submittedDate: req.submittedAt ?? req.createdAt,
+            lineItemCount: lines.length,
+            receiptsState: receiptsState(lines),
+            status: req.status,
+            statusBadge: REIMBURSEMENT_STATUS_LABELS[req.status],
+            totalCents: req.totalCents,
+            approvedCents: req.approvedCents,
+          };
+        }),
+    );
   },
 });
 
@@ -578,6 +817,10 @@ export const list = query({
           _id: req._id,
           reference: referenceFor(req._id),
           requesterName: req.payeeName,
+          // The real roster name behind an authenticated submission, when it
+          // differs from an editable `payeeName` override — null on the
+          // public path (no verified identity exists there). See Important #1.
+          verifiedRosterName: await verifiedRosterName(ctx, req),
           requesterType: await requesterType(ctx, req.personId),
           avatarInitials: initials(req.payeeName),
           submittedDate: req.submittedAt ?? req.createdAt,
@@ -611,6 +854,9 @@ export const get = query({
       payeeName: request.payeeName,
       payeeEmail: request.payeeEmail ?? null,
       payeePhone: request.payeePhone ?? null,
+      // See `list` — the verified roster name behind an authenticated
+      // submission, or null (including on the public path).
+      verifiedRosterName: await verifiedRosterName(ctx, request),
       purpose: request.purpose ?? null,
       requesterType: await requesterType(ctx, request.personId),
       totalCents: request.totalCents,
