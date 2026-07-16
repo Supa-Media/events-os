@@ -362,7 +362,7 @@ describe("dashboardChapter: a chapter txn linked to a CENTRAL budget", () => {
 });
 
 describe("dashboardCentral: central budgets roll up org-wide", () => {
-  test("sums a central budget's actuals across chapters; per-chapter allocation excludes it", async () => {
+  test("sums a central budget's actuals across chapters; per-chapter allocation AND spend exclude it (partition)", async () => {
     const t = newT();
     const s = await setupChapter(t, { email: "seyi@publicworship.life" });
     const year = 2026;
@@ -416,10 +416,13 @@ describe("dashboardCentral: central budgets roll up org-wide", () => {
     expect(cb?.budgetCents).toBe(500000);
 
     // NY has no chapter budget of its own, so its allocation must be 0 — the
-    // central budget never leaks into a per-chapter rollup.
+    // central budget never leaks into a per-chapter rollup. Its $7k
+    // central-linked txn is EXCLUDED from its own spentCents too (it's a
+    // partition, not a subset): that dollar belongs solely to the "Central"
+    // row, so it isn't double-counted across both rows.
     const ny = dash.chapterRollup.find((c) => c.chapterName === "New York");
     expect(ny?.budgetCents).toBe(0);
-    expect(ny?.spentCents).toBe(7000);
+    expect(ny?.spentCents).toBe(0);
   });
 
   // WP-0.3: the by-chapter rollup gains a "Central" row (chapterId:"central")
@@ -454,13 +457,28 @@ describe("dashboardCentral: central budgets roll up org-wide", () => {
         createdAt: Date.now(),
       }),
     );
-    await run(t, async (ctx) => {
-      const boston = await ctx.db.insert("chapters", {
+    // NY also has its OWN (non-central) spend this period — must still land
+    // in its own row, undisturbed by the central-linked exclusion.
+    await run(t, (ctx) =>
+      ctx.db.insert("transactions", {
+        chapterId: s.chapterId,
+        source: "manual",
+        flow: "outflow",
+        amountCents: 5000,
+        postedAt: when,
+        status: "categorized",
+        createdAt: Date.now(),
+      }),
+    );
+    const boston = await run(t, (ctx) =>
+      ctx.db.insert("chapters", {
         name: "Boston",
         isActive: true,
         createdAt: Date.now(),
-      });
-      await ctx.db.insert("transactions", {
+      }),
+    );
+    await run(t, (ctx) =>
+      ctx.db.insert("transactions", {
         chapterId: boston,
         source: "manual",
         flow: "outflow",
@@ -469,17 +487,41 @@ describe("dashboardCentral: central budgets roll up org-wide", () => {
         budgetId: centralBudget,
         status: "categorized",
         createdAt: Date.now(),
-      });
-    });
+      }),
+    );
+    // Boston also has its own (non-central) spend this period.
+    await run(t, (ctx) =>
+      ctx.db.insert("transactions", {
+        chapterId: boston,
+        source: "manual",
+        flow: "outflow",
+        amountCents: 2000,
+        postedAt: when,
+        status: "categorized",
+        createdAt: Date.now(),
+      }),
+    );
 
     const dash = await s.as.query(api.finances.dashboardCentral, { year, month });
     const central = dash.chapterRollup.find((c) => c.chapterId === "central");
+    const ny = dash.chapterRollup.find((c) => c.chapterName === "New York");
+    const bos = dash.chapterRollup.find((c) => c.chapterName === "Boston");
     expect(central).toBeDefined();
     expect(central?.chapterName).toBe("Central");
     expect(central?.spentCents).toBe(10000); // 7000 + 3000, org-wide
     expect(central?.budgetCents).toBe(500000);
     // It leads the rollup (index 0), ahead of the real chapter rows.
     expect(dash.chapterRollup[0]?.chapterId).toBe("central");
+
+    // Partition, not a subset: each chapter's row holds only ITS OWN spend
+    // (the central-linked $7k/$3k moved to the Central row above), so the
+    // three rows sum to the real org total with no double count.
+    expect(ny?.spentCents).toBe(5000);
+    expect(bos?.spentCents).toBe(2000);
+    const totalAcrossRows =
+      (ny?.spentCents ?? 0) + (bos?.spentCents ?? 0) + (central?.spentCents ?? 0);
+    expect(totalAcrossRows).toBe(17000); // 5000 + 2000 + 7000 + 3000
+    expect(totalAcrossRows).toBe(dash.totalMonthSpendCents);
   });
 
   test("with no central budgets, the Central row still appears at 0/0 (no chapters yet-style gap)", async () => {

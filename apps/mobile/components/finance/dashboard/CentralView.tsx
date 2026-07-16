@@ -40,7 +40,9 @@ export function CentralView({
   // The "By chapter" rollup's Central row (chapterId === CENTRAL, always
   // present — see `dashboardCentral`) vs the real per-chapter rows.
   const centralRollupRow = data.chapterRollup.find((c) => c.chapterId === CENTRAL);
-  const chapterRows = data.chapterRollup.filter((c) => c.chapterId !== CENTRAL);
+  const chapterRows = data.chapterRollup.filter(
+    (c): c is ChapterRollup & { chapterId: Id<"chapters"> } => c.chapterId !== CENTRAL,
+  );
   // Per-central-budget actuals for the tag-detail sheet, keyed by budget id.
   const spentByBudgetId = useMemo(() => {
     const m = new Map<string, BudgetSpend>();
@@ -86,7 +88,6 @@ export function CentralView({
         <EmptyState
           title="No central budgets yet"
           message="Create an org-wide budget to track spend across every chapter."
-          action={<Button title="New budget" icon="plus" size="sm" onPress={onNewBudget} />}
         />
       ) : (
         <View className="flex-row flex-wrap gap-3">
@@ -118,7 +119,7 @@ export function CentralView({
             <ChapterRollupCard
               key={c.chapterId}
               c={c}
-              onView={() => onViewChapter(c.chapterId as Id<"chapters">, c.chapterName)}
+              onView={() => onViewChapter(c.chapterId, c.chapterName)}
             />
           ))
         )}
