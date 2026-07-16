@@ -454,7 +454,11 @@ export const SPECIALIZED_ROLE_META: Record<
   president: {
     kind: "leadership",
     scope: "chapter",
-    label: "President",
+    // Owner-approved naming (WP-1.1): the org chart calls this seat "Chapter
+    // Director" — the owner says "president" verbally, but that's not what
+    // ships in UI copy. The identifier stays `president` (schema/authz
+    // untouched); only the display label changed.
+    label: "Chapter Director",
   },
   finance_manager: {
     kind: "finance",
@@ -466,6 +470,23 @@ export const SPECIALIZED_ROLE_META: Record<
 /** The kind (leadership | finance) a specialized-role title belongs to. */
 export function titleKind(title: SpecializedRoleTitle): SpecializedRoleKind {
   return SPECIALIZED_ROLE_META[title].kind;
+}
+
+/**
+ * WP-1.1: the single source of truth for a specialized-role title's org-chart
+ * display name — SCOPE-aware, because `finance_manager` is one title/grant
+ * assigned at either level (`scope: "any"`) but reads differently depending
+ * on which: "Finance Manager" at central, "Treasurer" at a chapter (the PRD's
+ * seat-table mapping — treasurer IS the chapter finance_manager seat, not a
+ * parallel title). Every other title's label is scope-invariant, so this
+ * falls back to `SPECIALIZED_ROLE_META[title].label` for those.
+ */
+export function specializedRoleLabel(
+  title: SpecializedRoleTitle,
+  scopeIsCentral: boolean,
+): string {
+  if (title === "finance_manager" && !scopeIsCentral) return "Treasurer";
+  return SPECIALIZED_ROLE_META[title].label;
 }
 
 /**

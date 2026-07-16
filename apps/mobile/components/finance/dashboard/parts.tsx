@@ -14,7 +14,9 @@ import { Text, View, Pressable } from "react-native";
 import {
   formatCents,
   FINANCE_ROLE_LABELS,
+  specializedRoleLabel,
   type FinanceRole,
+  type SpecializedRoleTitle,
   type TransactionFlow,
 } from "@events-os/shared";
 import { colors } from "../../../lib/theme";
@@ -291,18 +293,33 @@ export function PeriodSwitch({
  * file doesn't import generated backend types).
  */
 export type Seat =
-  | { scope: "central"; role: FinanceRole }
-  | { scope: "chapter"; chapterId: string; chapterName: string; role: FinanceRole };
+  | { scope: "central"; role: FinanceRole; title?: SpecializedRoleTitle }
+  | {
+      scope: "chapter";
+      chapterId: string;
+      chapterName: string;
+      role: FinanceRole;
+      title?: SpecializedRoleTitle;
+    };
 
 /** The stable key identifying a seat ("central" or the chapter id). */
 export function seatKeyOf(seat: Seat): string {
   return seat.scope === "central" ? "central" : seat.chapterId;
 }
 
-/** "Central · Manager" / "New York · Bookkeeper" — the desk, then the role. */
+/**
+ * "Central · Executive Director" / "New York · Chapter Director" / "New York
+ * · Treasurer" when the caller holds an org-chart specialized title at this
+ * seat's scope (WP-1.1, via `specializedRoleLabel` — the single source for
+ * that scope-aware mapping); otherwise falls back to the generic finance-role
+ * label, e.g. "Central · Manager" / "New York · Bookkeeper".
+ */
 export function seatLabelOf(seat: Seat): string {
   const desk = seat.scope === "central" ? "Central" : seat.chapterName;
-  return `${desk} · ${FINANCE_ROLE_LABELS[seat.role]}`;
+  const roleLabel = seat.title
+    ? specializedRoleLabel(seat.title, seat.scope === "central")
+    : FINANCE_ROLE_LABELS[seat.role];
+  return `${desk} · ${roleLabel}`;
 }
 
 /**
