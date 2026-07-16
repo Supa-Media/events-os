@@ -13,7 +13,9 @@ import {
   FINANCE_ROLES,
   FINANCE_ROLE_SCOPES,
   FINANCE_ROLE_RANK,
+  SPECIALIZED_ROLE_TITLES,
   type FinanceRole,
+  type SpecializedRoleTitle,
 } from "@events-os/shared";
 import { Id } from "./_generated/dataModel";
 import {
@@ -30,6 +32,9 @@ import { isSuperuser } from "./lib/superuser";
 
 const roleValidator = v.union(...FINANCE_ROLES.map((r) => v.literal(r)));
 const scopeValidator = v.union(...FINANCE_ROLE_SCOPES.map((s) => v.literal(s)));
+const specializedTitleValidator = v.union(
+  ...SPECIALIZED_ROLE_TITLES.map((t) => v.literal(t)),
+);
 
 /**
  * The caller's REAL finance seats (WP-0.2) — what the dashboard routes by,
@@ -44,17 +49,31 @@ const scopeValidator = v.union(...FINANCE_ROLE_SCOPES.map((s) => v.literal(s)));
  *
  * Central first (the UI's default desk), then chapters by name. Placeholder
  * roster rows never count (mirrors `viewerPerson`). No grants → `[]` → member.
+ *
+ * WP-1.1: each seat is additionally enriched with an optional `title` — the
+ * caller's SPECIALIZED role (`executive_director` / `president` /
+ * `finance_manager`) at that same scope, if any. This is display enrichment
+ * ONLY (the client maps it to the org-chart label via `specializedRoleLabel`,
+ * e.g. "Executive Director" / "Chapter Director" / "Treasurer") — it does not
+ * change which seats exist or their `role` ladder value; a seat with no
+ * specialized title just omits the field and the UI falls back to the plain
+ * finance-role label ("Manager"/"Bookkeeper"/"Viewer").
  */
 export const mySeats = query({
   args: {},
   returns: v.array(
     v.union(
-      v.object({ scope: v.literal("central"), role: roleValidator }),
+      v.object({
+        scope: v.literal("central"),
+        role: roleValidator,
+        title: v.optional(specializedTitleValidator),
+      }),
       v.object({
         scope: v.literal("chapter"),
         chapterId: v.id("chapters"),
         chapterName: v.string(),
         role: roleValidator,
+        title: v.optional(specializedTitleValidator),
       }),
     ),
   ),
@@ -64,18 +83,36 @@ export const mySeats = query({
       .query("people")
       .withIndex("by_user", (q) => q.eq("userId", userId))
       .collect();
+    const realPeople = people.filter((p) => p.isPlaceholder !== true);
     const grants = (
       await Promise.all(
-        people
-          .filter((p) => p.isPlaceholder !== true)
-          .map((p) =>
-            ctx.db
-              .query("financeRoles")
-              .withIndex("by_person", (q) => q.eq("personId", p._id))
-              .collect(),
-          ),
+        realPeople.map((p) =>
+          ctx.db
+            .query("financeRoles")
+            .withIndex("by_person", (q) => q.eq("personId", p._id))
+            .collect(),
+        ),
       )
     ).flat();
+
+    // Display-only enrichment: the caller's specialized-role title per scope
+    // (keyed on "central" or a chapter id), so the UI can show "Executive
+    // Director" / "Chapter Director" / "Treasurer" instead of a bare finance
+    // ladder rank. Does not affect seat resolution above.
+    const specializedTitles = (
+      await Promise.all(
+        realPeople.map((p) =>
+          ctx.db
+            .query("specializedRoles")
+            .withIndex("by_person", (q) => q.eq("personId", p._id))
+            .collect(),
+        ),
+      )
+    ).flat();
+    const titleByScopeKey = new Map<string, SpecializedRoleTitle>();
+    for (const t of specializedTitles) {
+      titleByScopeKey.set(String(t.scope), t.title);
+    }
 
     const stronger = (a: FinanceRole, b: FinanceRole | null) =>
       b == null || FINANCE_ROLE_RANK[a] > FINANCE_ROLE_RANK[b];
@@ -103,18 +140,27 @@ export const mySeats = query({
     for (const [chapterId, role] of chapterRoles) {
       const chapter = await ctx.db.get(chapterId);
       if (!chapter) continue; // stale grant on a deleted chapter
+      const title = titleByScopeKey.get(chapterId);
       chapterSeats.push({
         scope: "chapter" as const,
         chapterId,
         chapterName: chapter.name,
         role,
+        ...(title !== undefined ? { title } : {}),
       });
     }
     chapterSeats.sort((a, b) => a.chapterName.localeCompare(b.chapterName));
 
+    const centralTitle = titleByScopeKey.get("central");
     return [
       ...(centralRole != null
-        ? [{ scope: "central" as const, role: centralRole }]
+        ? [
+            {
+              scope: "central" as const,
+              role: centralRole,
+              ...(centralTitle !== undefined ? { title: centralTitle } : {}),
+            },
+          ]
         : []),
       ...chapterSeats,
     ];

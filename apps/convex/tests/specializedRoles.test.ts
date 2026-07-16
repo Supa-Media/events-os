@@ -283,7 +283,9 @@ describe("list + personSpecializedRoles shapes", () => {
     expect(list.length).toBeGreaterThanOrEqual(2);
     const pres = list.find((r) => r.title === "president");
     expect(pres?.personName).toBe("Alice");
-    expect(pres?.label).toBe("President");
+    // WP-1.1: `president` displays as "Chapter Director" per the org chart —
+    // the identifier is unchanged, only the label.
+    expect(pres?.label).toBe("Chapter Director");
     expect(pres?.roleKind).toBe("leadership");
     expect(pres).toHaveProperty("personImageUrl");
 

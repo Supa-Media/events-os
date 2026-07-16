@@ -79,6 +79,26 @@ async function grantCentralOnSentinel(
   );
 }
 
+/** Assign a super-admin-managed specialized-role TITLE at a scope, bypassing
+ *  the `requireSuperuser`-gated mutation (direct row insert — mirrors how the
+ *  `canViewAccounts` tests below seed titles). Used by both describe blocks. */
+async function assignSpecializedRole(
+  s: ChapterSetup,
+  personId: Id<"people">,
+  scope: Id<"chapters"> | "central",
+  title: "executive_director" | "president" | "finance_manager",
+): Promise<void> {
+  await run(s.t, (ctx) =>
+    ctx.db.insert("specializedRoles", {
+      personId,
+      scope,
+      title,
+      roleKind: title === "finance_manager" ? "finance" : "leadership",
+      createdAt: Date.now(),
+    }),
+  );
+}
+
 describe("financeRoles.mySeats", () => {
   test("(a) a central-scope grant yields exactly one central seat — no chapter seat", async () => {
     const t = newT();
@@ -196,6 +216,89 @@ describe("financeRoles.mySeats", () => {
     const seats = await s.as.query(api.financeRoles.mySeats, {});
     expect(seats).toEqual([]);
   });
+
+  // ── WP-1.1: display-only title enrichment ──────────────────────────────────
+  test("a central seat with an executive_director specialized role carries that title", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const personId = await seedSelfPerson(s);
+    await grantCentralOnSentinel(s, personId);
+    await assignSpecializedRole(s, personId, "central", "executive_director");
+
+    const seats = await s.as.query(api.financeRoles.mySeats, {});
+    expect(seats).toEqual([
+      { scope: "central", role: "manager", title: "executive_director" },
+    ]);
+  });
+
+  test("a central seat with a finance_manager specialized role carries that title", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const personId = await seedSelfPerson(s);
+    await grantCentralOnSentinel(s, personId);
+    await assignSpecializedRole(s, personId, "central", "finance_manager");
+
+    const seats = await s.as.query(api.financeRoles.mySeats, {});
+    expect(seats).toEqual([
+      { scope: "central", role: "manager", title: "finance_manager" },
+    ]);
+  });
+
+  test("a chapter seat with a president specialized role carries that title", async () => {
+    const t = newT();
+    const s = await setupChapter(t); // chapter "New York"
+    const personId = await seedSelfPerson(s);
+    await grantChapter(s, personId, "manager");
+    await assignSpecializedRole(s, personId, s.chapterId, "president");
+
+    const seats = await s.as.query(api.financeRoles.mySeats, {});
+    expect(seats).toEqual([
+      {
+        scope: "chapter",
+        chapterId: s.chapterId,
+        chapterName: "New York",
+        role: "manager",
+        title: "president",
+      },
+    ]);
+  });
+
+  test("a chapter seat with a (chapter-scope) finance_manager specialized role carries that title", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const personId = await seedSelfPerson(s);
+    await grantChapter(s, personId, "manager");
+    await assignSpecializedRole(s, personId, s.chapterId, "finance_manager");
+
+    const seats = await s.as.query(api.financeRoles.mySeats, {});
+    expect(seats).toEqual([
+      {
+        scope: "chapter",
+        chapterId: s.chapterId,
+        chapterName: "New York",
+        role: "manager",
+        title: "finance_manager",
+      },
+    ]);
+  });
+
+  test("a seat with a finance grant but no specialized role has no title field", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const personId = await seedSelfPerson(s);
+    await grantChapter(s, personId, "manager");
+
+    const seats = await s.as.query(api.financeRoles.mySeats, {});
+    expect(seats).toEqual([
+      {
+        scope: "chapter",
+        chapterId: s.chapterId,
+        chapterName: "New York",
+        role: "manager",
+      },
+    ]);
+    expect(seats[0]).not.toHaveProperty("title");
+  });
 });
 
 /**
@@ -205,23 +308,6 @@ describe("financeRoles.mySeats", () => {
  * `finance_manager` SPECIALIZED role (or a superuser) sees `true`.
  */
 describe("financeRoles.canViewAccounts", () => {
-  async function assignSpecializedRole(
-    s: ChapterSetup,
-    personId: Id<"people">,
-    scope: Id<"chapters"> | "central",
-    title: "executive_director" | "president" | "finance_manager",
-  ): Promise<void> {
-    await run(s.t, (ctx) =>
-      ctx.db.insert("specializedRoles", {
-        personId,
-        scope,
-        title,
-        roleKind: title === "finance_manager" ? "finance" : "leadership",
-        createdAt: Date.now(),
-      }),
-    );
-  }
-
   test("a central executive_director sees true", async () => {
     const t = newT();
     const s = await setupChapter(t);

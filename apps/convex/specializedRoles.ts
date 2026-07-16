@@ -25,7 +25,7 @@ import { ConvexError, v } from "convex/values";
 import {
   SPECIALIZED_ROLE_TITLES,
   SPECIALIZED_ROLE_KINDS,
-  SPECIALIZED_ROLE_META,
+  specializedRoleLabel,
   titleKind,
   titleAllowsScope,
   type SpecializedRoleKind,
@@ -71,7 +71,7 @@ export const assignSpecializedRole = mutation({
     if (!titleAllowsScope(title, scopeIsCentral)) {
       throw new ConvexError({
         code: "INVALID_SCOPE",
-        message: `The ${SPECIALIZED_ROLE_META[title].label} role can't be assigned at ${
+        message: `The ${specializedRoleLabel(title, scopeIsCentral)} role can't be assigned at ${
           scopeIsCentral ? "the org (central) level" : "a chapter"
         }.`,
       });
@@ -248,7 +248,7 @@ export const listSpecializedRoles = query({
           scope: r.scope,
           title: r.title,
           roleKind: r.roleKind,
-          label: SPECIALIZED_ROLE_META[r.title].label,
+          label: specializedRoleLabel(r.title, r.scope === "central"),
           createdAt: r.createdAt,
         };
       }),
@@ -283,7 +283,7 @@ export const personSpecializedRoles = query({
       scope: r.scope,
       title: r.title,
       roleKind: r.roleKind,
-      label: SPECIALIZED_ROLE_META[r.title].label,
+      label: specializedRoleLabel(r.title, r.scope === "central"),
       createdAt: r.createdAt,
     }));
   },

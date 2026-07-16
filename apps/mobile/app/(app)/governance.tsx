@@ -2,9 +2,13 @@
  * GOVERNANCE — super-admin management of specialized leadership + finance roles.
  *
  * A grid of SCOPES × SLOTS. Each scope (the org "central" level + every chapter)
- * has two slots: a LEADERSHIP slot (Executive Director for central, President for
- * a chapter) and a FINANCE MANAGER slot. One holder per (scope, title) slot; a
- * super-admin assigns the holder via the shared PersonPicker or removes them.
+ * has two slots: a LEADERSHIP slot (`executive_director` for central,
+ * `president` for a chapter — displayed as "Chapter Director" per the org
+ * chart, WP-1.1) and a FINANCE slot (`finance_manager` — same title/grant at
+ * both scopes, displayed as "Finance Manager" at central and "Treasurer" at a
+ * chapter). Display names come from `specializedRoleLabel` (single source);
+ * identifiers are untouched. One holder per (scope, title) slot; a super-admin
+ * assigns the holder via the shared PersonPicker or removes them.
  *
  * Separation of duties is enforced server-side (scope-local: one person can't be
  * both leadership AND finance in the same scope). On any assign failure — most
@@ -22,7 +26,7 @@ import { useMutation, useQuery } from "convex/react";
 import { api } from "@events-os/convex/_generated/api";
 import type { Id } from "@events-os/convex/_generated/dataModel";
 import {
-  SPECIALIZED_ROLE_META,
+  specializedRoleLabel,
   type SpecializedRoleTitle,
 } from "@events-os/shared";
 import {
@@ -112,8 +116,9 @@ export default function GovernanceScreen() {
   };
 
   // Rows: Central first, then every chapter. Central's leadership slot is the
-  // Executive Director; a chapter's is the President. Both carry a Finance
-  // Manager slot.
+  // Executive Director; a chapter's is the `president` title (shown as
+  // "Chapter Director"). Both carry a finance slot ("Finance Manager" at
+  // central, "Treasurer" at a chapter — same `finance_manager` title/grant).
   const rows: { scope: Scope; name: string; leadership: SpecializedRoleTitle }[] =
     [
       { scope: "central", name: "Central (org)", leadership: "executive_director" },
@@ -144,7 +149,10 @@ export default function GovernanceScreen() {
             <Card>
               <View className="gap-3">
                 <SlotRow
-                  slotLabel={SPECIALIZED_ROLE_META[row.leadership].label}
+                  slotLabel={specializedRoleLabel(
+                    row.leadership,
+                    row.scope === "central",
+                  )}
                   kindLabel="Leadership"
                   holder={holderOf(row.scope, row.leadership)}
                   error={errors[slotKey(row.scope, row.leadership)] ?? null}
@@ -157,7 +165,10 @@ export default function GovernanceScreen() {
                 />
                 <View className="h-px bg-border" />
                 <SlotRow
-                  slotLabel={SPECIALIZED_ROLE_META.finance_manager.label}
+                  slotLabel={specializedRoleLabel(
+                    "finance_manager",
+                    row.scope === "central",
+                  )}
                   kindLabel="Finance"
                   holder={holderOf(row.scope, "finance_manager")}
                   error={errors[slotKey(row.scope, "finance_manager")] ?? null}
@@ -187,7 +198,10 @@ export default function GovernanceScreen() {
         visible={pickerSlot !== null}
         title={
           pickerSlot
-            ? `Assign ${SPECIALIZED_ROLE_META[pickerSlot.title].label}`
+            ? `Assign ${specializedRoleLabel(
+                pickerSlot.title,
+                pickerSlot.scope === "central",
+              )}`
             : "Assign role"
         }
         onPick={(personId) => void handlePick(personId)}
