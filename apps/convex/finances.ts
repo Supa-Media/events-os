@@ -896,6 +896,29 @@ async function autoTagEventBudget(
   await linkBudgetTag(ctx, budgetId, budgetLevel, templateTag, seen);
 }
 
+/**
+ * Auto-tag a one_time PROJECT budget with a catch-all "Projects" tag (kind
+ * `"custom"` — projects get no dedicated tag kind; WP-3.4: "keep tags as-is,
+ * no new tag investment"). Mirrors `autoTagEventBudget`'s "Events" catch-all;
+ * unlike an event, a project has no per-instance "template" to also tag.
+ * Shared by `projects.create` (the create-time hook) and `backfillProjectBudgets`.
+ */
+export async function autoTagProjectBudget(
+  ctx: MutationCtx,
+  budgetId: Id<"budgets">,
+  budgetLevel: BudgetLevel,
+  seen: Set<string>,
+  createdBy?: Id<"users">,
+): Promise<void> {
+  const projectsTag = await ensureTag(ctx, {
+    chapterId: budgetLevel,
+    name: "Projects",
+    kind: "custom",
+    createdBy,
+  });
+  await linkBudgetTag(ctx, budgetId, budgetLevel, projectsTag, seen);
+}
+
 /** Load a budget's linked tags as `{ id, name, kind }`, via `by_budget`. */
 async function loadBudgetTags(
   ctx: QueryCtx,
@@ -956,6 +979,32 @@ function eventBudgetLabel(
   const monthName = MONTH_NAMES[parts.month - 1];
   if (sameMonthCount > 1) {
     // Same name, same month → the full date pins down which occurrence.
+    return `${name} · ${monthName.slice(0, 3)} ${parts.day}, ${parts.year}`;
+  }
+  return `${name} · ${monthName} ${parts.year}`;
+}
+
+/**
+ * The display label for a PROJECT budget — same disambiguation shape as
+ * `eventBudgetLabel`, keyed off the project's `startDate` (callers fall back
+ * to `createdAt` when unset, since a project has no required instance date
+ * the way an event has `eventDate`):
+ *  - unique name in the chapter        → just the name        (`Merch Drop`)
+ *  - same name in DIFFERENT months     → name + month + year  (`Merch Drop · March 2026`)
+ *  - same name in the SAME month       → name + full date     (`Merch Drop · Mar 15, 2026`)
+ *
+ * `nameCount`/`sameMonthCount` are INCLUSIVE of this project, like the event
+ * version. Shared by `projects.create` (the create-time hook) and the backfill.
+ */
+export function projectBudgetLabel(
+  name: string,
+  parts: { year: number; month: number; day: number },
+  nameCount: number,
+  sameMonthCount: number,
+): string {
+  if (nameCount <= 1) return name;
+  const monthName = MONTH_NAMES[parts.month - 1];
+  if (sameMonthCount > 1) {
     return `${name} · ${monthName.slice(0, 3)} ${parts.day}, ${parts.year}`;
   }
   return `${name} · ${monthName} ${parts.year}`;
@@ -3386,6 +3435,176 @@ export const backfillEventBudgets = internalMutation({
   returns: eventBudgetBackfillResult,
   handler: async (ctx, args) =>
     await runBackfillEventBudgets(ctx, args.chapterId),
+});
+
+// ── Project budgets (WP-3.4 — mirrors the event budget backfill above) ──────
+const projectBudgetBackfillResult = v.object({
+  created: v.number(),
+  skipped: v.number(),
+  // How many already-existing project budgets had a null/empty label patched
+  // to the project's name on this run (a subset of `skipped`; 0 on a settled
+  // re-run).
+  relabeled: v.number(),
+  tagsLinked: v.number(),
+});
+
+/**
+ * Backfill body: give every existing PROJECT a one_time budget so it appears
+ * in the finance dashboard's "Events & Projects" section and charges can roll
+ * up per project. Mirrors what `runBackfillEventBudgets` writes for an event
+ * (`type:"one_time"`, `cadence:"per_instance"`), swapping `refKind:"project"`
+ * + `scopeRefId:<projectId>` and reusing `autoTagProjectBudget` for the
+ * catch-all "Projects" tag instead of the event's template + "events" tags.
+ *
+ * Bounded + idempotent, same shape as the event backfill:
+ *  - Scans one chapter's projects (via `by_chapter`) or a bounded slice of all
+ *    projects when `chapterId` is omitted.
+ *  - SKIPS a project that already has an attached budget — v2
+ *    (`type:"one_time"`) OR legacy (`scope:"project"`) — with a matching
+ *    `scopeRefId`, so re-runs are no-ops.
+ *  - Projects have no `isTraining` flag (that's event-only), so there's no
+ *    training skip here.
+ *  - `amountCents` = the project's `budgetUsd` (dollars, Estimated) × 100 as an
+ *    integer when set, else 0 — `projects.budgetUsd` itself is left untouched
+ *    (Estimated-vs-Actual invariant; the budgets table is the planning object
+ *    going forward, but the legacy field isn't deleted in this PR). `year`/
+ *    `month` come from the project's `startDate` (falling back to `createdAt`
+ *    when unset — a project has no required instance date the way an event's
+ *    `eventDate` is required) in Eastern time.
+ *  - A project's budget always lands at the project's OWN chapter — projects
+ *    can't be central yet (WP-2.2 finding). If `transferProjectScope` later
+ *    moves the project's money to central, it discovers this budget via the
+ *    `by_ref` index (`refKind:"project"` + `scopeRefId`), independent of which
+ *    chapter currently owns it — see that mutation's comment.
+ */
+async function runBackfillProjectBudgets(
+  ctx: MutationCtx,
+  chapterId?: Id<"chapters">,
+): Promise<{ created: number; skipped: number; relabeled: number; tagsLinked: number }> {
+  let created = 0;
+  let skipped = 0;
+  let relabeled = 0;
+  let tagsLinked = 0;
+
+  // Guard: a passed chapter must exist (ConvexError, not a silent no-op).
+  if (chapterId) {
+    const chapter = await ctx.db.get(chapterId);
+    if (!chapter) {
+      throw new ConvexError({ code: "NOT_FOUND", message: "Chapter not found." });
+    }
+  }
+
+  // Bounded project scan: one chapter via index, else a bounded full slice.
+  const projects = chapterId
+    ? await ctx.db
+        .query("projects")
+        .withIndex("by_chapter", (q) => q.eq("chapterId", chapterId))
+        .take(ROLLUP_SCAN_LIMIT)
+    : await ctx.db.query("projects").take(ROLLUP_SCAN_LIMIT);
+
+  // Disambiguation counts over the scanned projects, keyed by chapter so a
+  // name is only "repeated" within its own chapter — mirrors the event
+  // backfill's `nameCounts`/`nameMonthCounts`.
+  const nameCounts = new Map<string, number>();
+  const nameMonthCounts = new Map<string, number>();
+  const NUL = " ";
+  for (const p of projects) {
+    const parts = easternParts(p.startDate ?? p.createdAt);
+    const nk = `${p.chapterId}${NUL}${p.name}`;
+    const mk = `${nk}${NUL}${parts.year}-${parts.month}`;
+    nameCounts.set(nk, (nameCounts.get(nk) ?? 0) + 1);
+    nameMonthCounts.set(mk, (nameMonthCounts.get(mk) ?? 0) + 1);
+  }
+
+  // Per-chapter cache of the existing project budget keyed by `scopeRefId`,
+  // so dedup costs one bounded read per chapter instead of one per project.
+  const projectBudgetByRefByChapter = new Map<string, Map<string, Doc<"budgets">>>();
+  const projectBudgetsByRef = async (
+    cid: Id<"chapters">,
+  ): Promise<Map<string, Doc<"budgets">>> => {
+    const key = cid as string;
+    const cached = projectBudgetByRefByChapter.get(key);
+    if (cached) return cached;
+    const map = new Map<string, Doc<"budgets">>();
+    const rows = await ctx.db
+      .query("budgets")
+      .withIndex("by_chapter", (q) => q.eq("chapterId", cid))
+      .take(ROLLUP_SCAN_LIMIT);
+    for (const b of rows) {
+      // Already attached to a project: v2 one_time OR legacy scope:"project".
+      if ((b.type === "one_time" || b.scope === "project") && b.scopeRefId && !map.has(b.scopeRefId)) {
+        map.set(b.scopeRefId, b);
+      }
+    }
+    projectBudgetByRefByChapter.set(key, map);
+    return map;
+  };
+
+  for (const p of projects) {
+    const cid = p.chapterId;
+    const existing = await projectBudgetsByRef(cid);
+    const parts = easternParts(p.startDate ?? p.createdAt);
+    const nk = `${cid}${NUL}${p.name}`;
+    const mk = `${nk}${NUL}${parts.year}-${parts.month}`;
+    const label = projectBudgetLabel(
+      p.name,
+      parts,
+      nameCounts.get(nk) ?? 1,
+      nameMonthCounts.get(mk) ?? 1,
+    );
+
+    // Dedup: skip if this project already has a budget. Backfill re-run: if
+    // that existing budget has no label, name it after the project.
+    const existingBudget = existing.get(p._id as string);
+    if (existingBudget) {
+      if (!existingBudget.label) {
+        await ctx.db.patch(existingBudget._id, { label });
+        relabeled++;
+      }
+      skipped++;
+      continue;
+    }
+
+    // projects.budgetUsd is ESTIMATED dollars; finance money is integer cents.
+    const amountCents = p.budgetUsd != null ? Math.round(p.budgetUsd * 100) : 0;
+
+    const budgetId = await ctx.db.insert("budgets", {
+      chapterId: cid,
+      amountCents,
+      label,
+      type: "one_time",
+      refKind: "project",
+      scopeRefId: p._id,
+      cadence: "per_instance",
+      year: parts.year,
+      month: parts.month,
+      createdAt: Date.now(),
+    });
+    // Guard against a duplicate project id within the same run re-creating.
+    existing.set(p._id as string, (await ctx.db.get(budgetId))!);
+
+    const seen = new Set<string>();
+    await autoTagProjectBudget(ctx, budgetId, cid, seen);
+    tagsLinked += seen.size;
+    created++;
+  }
+
+  return { created, skipped, relabeled, tagsLinked };
+}
+
+/**
+ * CLI-runnable (no auth) project-budget backfill — mirrors
+ * `backfillEventBudgets`. Bounded + idempotent (see
+ * {@link runBackfillProjectBudgets}).
+ *
+ * Run locally:  npx convex run finances:backfillProjectBudgets
+ * Run on prod:  npx convex run --prod finances:backfillProjectBudgets '{"chapterId":"..."}'
+ */
+export const backfillProjectBudgets = internalMutation({
+  args: { chapterId: v.optional(v.id("chapters")) },
+  returns: projectBudgetBackfillResult,
+  handler: async (ctx, args) =>
+    await runBackfillProjectBudgets(ctx, args.chapterId),
 });
 
 // ── Fund merge (WP-1.4 "defund the UI" — one General Fund, zero fund UI) ────

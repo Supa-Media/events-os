@@ -10,7 +10,11 @@ import { query, mutation, QueryCtx, MutationCtx } from "./_generated/server";
 import { internal } from "./_generated/api";
 import { Doc, Id } from "./_generated/dataModel";
 import { v, ConvexError } from "convex/values";
-import { PROJECT_STATUSES, PROJECT_STATUS_LABELS } from "@events-os/shared";
+import {
+  PROJECT_STATUSES,
+  PROJECT_STATUS_LABELS,
+  easternParts,
+} from "@events-os/shared";
 import {
   requireUserId,
   requireChapterId,
@@ -23,6 +27,7 @@ import {
   viewerPerson,
   canViewChapterWork,
 } from "./lib/org";
+import { projectBudgetLabel, autoTagProjectBudget } from "./finances";
 
 const projectStatus = v.union(...PROJECT_STATUSES.map((s) => v.literal(s)));
 
@@ -394,6 +399,71 @@ export const removeComment = mutation({
   },
 });
 
+/**
+ * Create-time hook (WP-3.4): give a brand-new project its own one_time budget
+ * immediately, seeded from `budgetUsd` (0 when omitted — editable later;
+ * `budgetUsd` itself is left untouched, the Estimated-vs-Actual invariant).
+ * Unlike events — which only ever get a budget via
+ * `finances.backfillEventBudgets`; `instantiateEvent` never touches the
+ * `budgets` table — WP-3.4 explicitly asks for a create-time hook here, so a
+ * project never has to wait on a backfill run to show up in the finance
+ * dashboard's "Events & Projects" section.
+ *
+ * Mirrors `runBackfillProjectBudgets`'s shape (`type:"one_time"`,
+ * `refKind:"project"`, `cadence:"per_instance"`, the "Projects" catch-all tag
+ * via `autoTagProjectBudget`), but disambiguates the label against LIVE
+ * sibling projects (a single bounded query) instead of the backfill's
+ * batched name-count maps — same split `createBudget`/`runBackfillEventBudgets`
+ * use for events.
+ */
+async function createProjectBudget(
+  ctx: MutationCtx,
+  project: {
+    _id: Id<"projects">;
+    chapterId: Id<"chapters">;
+    name: string;
+    startDate?: number;
+    createdAt: number;
+    budgetUsd?: number;
+  },
+  userId: Id<"users">,
+): Promise<void> {
+  const parts = easternParts(project.startDate ?? project.createdAt);
+  // Sibling projects sharing this exact name in the chapter (includes the
+  // project just inserted, since this runs after that write in the same
+  // transaction) decide whether the bare name is ambiguous.
+  const siblings = (
+    await ctx.db
+      .query("projects")
+      .withIndex("by_chapter", (q) => q.eq("chapterId", project.chapterId))
+      .take(1000)
+  ).filter((p) => p.name === project.name);
+  const sameMonthCount = siblings.filter((p) => {
+    const sp = easternParts(p.startDate ?? p.createdAt);
+    return sp.year === parts.year && sp.month === parts.month;
+  }).length;
+  const label = projectBudgetLabel(project.name, parts, siblings.length, sameMonthCount);
+
+  // budgetUsd is ESTIMATED dollars; finance money is integer cents.
+  const amountCents =
+    project.budgetUsd != null ? Math.round(project.budgetUsd * 100) : 0;
+  const budgetId = await ctx.db.insert("budgets", {
+    chapterId: project.chapterId,
+    amountCents,
+    label,
+    type: "one_time",
+    refKind: "project",
+    scopeRefId: project._id,
+    cadence: "per_instance",
+    year: parts.year,
+    month: parts.month,
+    createdBy: userId,
+    createdAt: Date.now(),
+  });
+  const seen = new Set<string>();
+  await autoTagProjectBudget(ctx, budgetId, project.chapterId, seen, userId);
+}
+
 /** Create a project (optionally owned, nested, and/or event-backed). */
 export const create = mutation({
   args: {
@@ -440,6 +510,18 @@ export const create = mutation({
       createdAt: now,
       updatedAt: now,
     });
+    await createProjectBudget(
+      ctx,
+      {
+        _id: projectId,
+        chapterId: chapterId as Id<"chapters">,
+        name: args.name,
+        startDate: args.startDate,
+        createdAt: now,
+        budgetUsd: args.budgetUsd,
+      },
+      userId as Id<"users">,
+    );
     await logProjectUpdate(
       ctx,
       { _id: projectId, chapterId: chapterId as Id<"chapters"> },
