@@ -20,7 +20,7 @@ import type { QueryCtx } from "./_generated/server";
 import { v } from "convex/values";
 import { Id } from "./_generated/dataModel";
 import { requireUserId, getChapterIdOrNull } from "./lib/context";
-import { requireFinanceRole } from "./lib/finance";
+import { getFinanceRole } from "./lib/finance";
 import { requireSuperuser } from "./lib/superuser";
 
 /** Read the deployment-wide sandbox flag (default false). Shared by the public
@@ -32,9 +32,16 @@ export async function readSandbox(ctx: QueryCtx): Promise<boolean> {
 }
 
 /**
- * The deployment-wide finance settings the finances UI reads. Finance-viewer
- * gated. Defaults `sandboxMode:false` when the singleton row doesn't exist yet
- * (or the caller has no chapter).
+ * The deployment-wide finance settings the finances UI reads. Not gated on a
+ * finance role — the flag is a non-sensitive dev/testing banner state, and the
+ * SandboxModeBanner is mounted for every finance-tab visitor (including the
+ * no-finance-role member persona, D3). A caller with no finance role (and no
+ * chapter, or no superuser/central reach) gets the safe default
+ * `{sandboxMode:false}` instead of a FORBIDDEN throw — throwing here crashed
+ * the whole app for that persona (see the [hotfix] postmortem: an
+ * unconditionally-mounted, role-gated query re-threw into render and hit the
+ * root ErrorBoundary). Superusers/finance-role holders still get the real
+ * value.
  */
 export const getFinanceSettings = query({
   args: {},
@@ -42,7 +49,8 @@ export const getFinanceSettings = query({
   handler: async (ctx): Promise<{ sandboxMode: boolean }> => {
     const chapterId = (await getChapterIdOrNull(ctx)) as Id<"chapters"> | null;
     if (!chapterId) return { sandboxMode: false };
-    await requireFinanceRole(ctx, chapterId, "viewer");
+    const access = await getFinanceRole(ctx, chapterId);
+    if (access.role == null) return { sandboxMode: false };
     return { sandboxMode: await readSandbox(ctx) };
   },
 });

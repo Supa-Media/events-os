@@ -25,6 +25,16 @@
  * (including a chapter finance manager) never lands here — the tab itself is
  * hidden for them too (`_layout.tsx`).
  *
+ * The gate is a real component split (`AccountsScreen` → `AccountsBody`), not
+ * just an in-render early return: `listAccountsStatus` (ED/FM-only) and
+ * `stripeFinance.listAccounts` (finance-viewer) both THROW for anyone without
+ * the role, and a `useQuery` fires as soon as its component mounts regardless
+ * of a later conditional `return` in the same render — the [hotfix] crash
+ * class. A no-seat member who deep-links straight to `/finances/accounts`
+ * (the tab itself is hidden, but the route still exists) used to mount those
+ * throwing queries anyway. `AccountsBody` — and its queries — now only mounts
+ * once `canViewAccounts` (itself non-throwing) has resolved `true`.
+ *
  * The SANDBOX-MODE toggle (developer/testing, superuser only) points NEW
  * provisioning at Increase's sandbox AND switches which environment's accounts
  * this page shows.
@@ -57,8 +67,31 @@ const ONBOARDING_BADGE: Record<
   disabled: { label: "Disabled", tone: "danger" },
 };
 
+/** Real gate: `canViewAccounts` doesn't throw for a non-ED/FM caller, so it's
+ *  safe to resolve here — `AccountsBody` (and its throwing, ED/FM-only reads)
+ *  only mounts once it's confirmed `true`. */
 export default function AccountsScreen() {
   const canViewAccounts = useQuery(api.financeRoles.canViewAccounts, {});
+
+  if (canViewAccounts === undefined) return <Screen loading />;
+
+  if (canViewAccounts === false) {
+    return (
+      <Screen>
+        <Narrow>
+          <EmptyState
+            title="Accounts is restricted"
+            message="Only the Executive Director and Financial Manager can view accounts."
+          />
+        </Narrow>
+      </Screen>
+    );
+  }
+
+  return <AccountsBody />;
+}
+
+function AccountsBody() {
   const accountsStatus = useQuery(api.increase.listAccountsStatus, {});
   const accounts = useQuery(api.stripeFinance.listAccounts, {});
   const financeSettings = useQuery(api.financeSettings.getFinanceSettings);
@@ -73,23 +106,7 @@ export default function AccountsScreen() {
   const setSandboxMode = useMutation(api.financeSettings.setSandboxMode);
   const { run, toast, dismiss } = useActionRunner();
 
-  // In-screen guard: Accounts is now ED/FM-only (WP-1.2), server-resolved —
-  // tighter than the old admin/lead nav gate.
-  if (canViewAccounts === false) {
-    return (
-      <Screen>
-        <Narrow>
-          <EmptyState
-            title="Accounts is restricted"
-            message="Only the Executive Director and Financial Manager can view accounts."
-          />
-        </Narrow>
-      </Screen>
-    );
-  }
-
   if (
-    canViewAccounts === undefined ||
     accountsStatus === undefined ||
     accounts === undefined ||
     financeSettings === undefined ||

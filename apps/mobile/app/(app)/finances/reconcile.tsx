@@ -11,9 +11,18 @@
  * live count. Multi-select drives a bulk bar (set Category / set Budget / mark
  * Reconciled).
  *
- * Reconciliation is finance-manager/bookkeeper territory, so this screen is gated
- * admin-or-lead in-screen (mirroring the finances nav gate); the real, finer
- * finance-role check is enforced server-side on every mutation.
+ * Reconciliation is finance-manager/bookkeeper territory. Gated on the caller's
+ * REAL finance seats (`financeRoles.mySeats`, WP-0.2) — same fix as the Cards
+ * and Reimbursements tabs, and for the same reason: the queries this grid reads
+ * (`listReconcile` / `listCategories` / `listBudgets`) require at least the
+ * viewer finance role and THROW for anyone without one, and Convex queries fire
+ * as soon as a component mounts regardless of any later conditional return in
+ * its render. The former admin-or-lead org-tier gate didn't stop that — a
+ * tier=admin/lead caller with no `financeRoles` grant (or any no-seat member
+ * who deep-links straight to `/finances/reconcile`) still mounted this screen's
+ * hooks and crashed on the throw (the [hotfix] crash class). `ReconcileGrid` is
+ * the FinanceBoundary-wrapped inner component so a role throw degrades to a
+ * friendly empty state instead of the root error boundary.
  */
 import { useMemo, useState } from "react";
 import { View, Text, TextInput, Pressable } from "react-native";
@@ -33,6 +42,7 @@ import {
 } from "../../../components/ui";
 import { colors } from "../../../lib/theme";
 import { useActionRunner } from "../../../lib/useActionToast";
+import { FinanceBoundary } from "../../../components/finance/dashboard/parts";
 import {
   ReconcileList,
   type PickerItem,
@@ -52,8 +62,41 @@ function budgetName(b: {
   return b.label?.trim() || (b.type ? BUDGET_TYPE_LABELS[b.type] : "Budget");
 }
 
+function NoFinanceAccess() {
+  return (
+    <EmptyState
+      icon="lock"
+      title="Reconcile is restricted"
+      message="Only finance managers and bookkeepers can reconcile transactions."
+    />
+  );
+}
+
+/** Real gate: the caller's actual finance seats. No seat → an empty state,
+ *  never `ReconcileGrid` (whose queries throw for a no-role caller). */
 export default function ReconcileScreen() {
-  const org = useQuery(api.org.nav);
+  const seats = useQuery(api.financeRoles.mySeats, {});
+
+  if (seats === undefined) return <Screen loading />;
+
+  if (seats.length === 0) {
+    return (
+      <Screen>
+        <Narrow>
+          <NoFinanceAccess />
+        </Narrow>
+      </Screen>
+    );
+  }
+
+  return (
+    <FinanceBoundary fallback={<NoFinanceAccess />}>
+      <ReconcileGrid />
+    </FinanceBoundary>
+  );
+}
+
+function ReconcileGrid() {
   const [filter, setFilter] = useState<FilterKey>("needs_budget");
   const [query, setQuery] = useState("");
   const [searchFocused, setSearchFocused] = useState(false);
@@ -173,22 +216,6 @@ export default function ReconcileScreen() {
     });
   }
   const clearSelection = () => setSelected(new Set());
-
-  // In-screen guard: reconcile is admin-or-lead (finance-manager/bookkeeper).
-  const tier = org?.tier;
-  if (org !== undefined && tier !== "admin" && tier !== "lead") {
-    return (
-      <Screen>
-        <Narrow>
-          <EmptyState
-            title="Reconcile is restricted"
-            message="Only chapter admins and leads can reconcile transactions."
-          />
-        </Narrow>
-      </Screen>
-    );
-  }
-  if (org === undefined) return <Screen loading />;
 
   const loading = reconcile === undefined;
   // "N to clear" — everything not yet reconciled (the actionable backlog).
