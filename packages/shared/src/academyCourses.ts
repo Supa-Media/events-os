@@ -36,11 +36,13 @@ export type AcademyLevel = "beginner" | "intermediate" | "advanced" | "leader";
 export type AcademyAudience = "role" | "ownership" | "team";
 
 /**
- * Code-defined grouping of courses — the Academy's three STREAMS (the
- * founder's 2026-07-14 structure): running events, ongoing works (projects &
- * duties), and management (leading the people who do both).
+ * Code-defined grouping of courses — the Academy's STREAMS (the founder's
+ * 2026-07-14 structure): running events, ongoing works (projects & duties),
+ * management (leading the people who do both), and finances (WP-5.1 —
+ * enablement for the finance v2 split, `docs/plans/finance-v2-split-prd.md`
+ * §Phase 5).
  */
-export type AcademyThemeKey = "events" | "works" | "management";
+export type AcademyThemeKey = "events" | "works" | "management" | "finances";
 
 /** One stream: a titled grouping courses belong to via `themeKey`. */
 export interface Theme {
@@ -93,6 +95,12 @@ export const ACADEMY_THEMES: Theme[] = [
     title: "Management",
     subtitle:
       "Lead the people: 1:1s, delegation, and care that still holds the line.",
+  },
+  {
+    key: "finances",
+    title: "Finances",
+    subtitle:
+      "Where the money comes from, how it's tracked, and who signs off on it.",
   },
 ];
 
@@ -247,6 +255,95 @@ export const ACADEMY_COURSES: Course[] = [
       "person, and building a team that runs without you.",
     icon: "users",
     moduleSlugs: ["mgmt-the-org-tree", "mgmt-director-philosophy"],
+  },
+
+  // ── Finances stream — WP-5.1 (see finance-v2-split-prd.md §Phase 5) ────────
+  // Five role courses, most-to-least everyone. Every role course ends with a
+  // hands-on capstone in other streams (founder 2026-07-14) — finance
+  // capstones need a dedicated training-sandbox mechanic that doesn't exist
+  // yet, so these are lesson-only for now; a capstone module can be appended
+  // later (module slugs stay stable, so it's a pure addition, not a reshape).
+  {
+    slug: "finances-for-everyone",
+    themeKey: "finances",
+    title: "Finances for Everyone",
+    level: "beginner",
+    audience: "team",
+    description:
+      "What every member needs: where the money comes from, using your " +
+      "card + the 7-day receipt rule, and both directions of reimbursement. " +
+      "Gains a 'getting your budget approved' module once budget approval " +
+      "(Phase 3) ships.",
+    icon: "dollar-sign",
+    moduleSlugs: [
+      "finance-stewardship",
+      "finance-card-and-receipts",
+      "finance-reimbursements-and-flags",
+    ],
+  },
+  {
+    slug: "treasurer",
+    themeKey: "finances",
+    title: "Treasurer",
+    level: "intermediate",
+    audience: "role",
+    description:
+      "The chapter Treasurer's remit: running Reconcile, chasing receipts, " +
+      "and closing the month in under 30 minutes.",
+    icon: "check-square",
+    moduleSlugs: [
+      "finance-reconcile-grid",
+      "finance-chasing-receipts",
+      "finance-monthly-close",
+    ],
+  },
+  {
+    slug: "chapter-director",
+    themeKey: "finances",
+    title: "Chapter Director",
+    level: "leader",
+    audience: "role",
+    description:
+      "Raise-vs-manage separation, approving budgets under the 85% " +
+      "principle, and the tiers + skim that fund the network.",
+    icon: "shield",
+    moduleSlugs: [
+      "finance-raise-vs-manage",
+      "finance-approving-budgets",
+      "finance-tiers-and-skim",
+    ],
+  },
+  {
+    slug: "financial-manager",
+    themeKey: "finances",
+    title: "Financial Manager",
+    level: "leader",
+    audience: "role",
+    description:
+      "The central Financial Manager's remit: auditing every chapter, " +
+      "watching the receipt escalation queue, and administering accounts + cards.",
+    icon: "bar-chart-2",
+    moduleSlugs: [
+      "finance-cross-chapter-audit",
+      "finance-receipt-escalation-queue",
+      "finance-accounts-and-cards-admin",
+    ],
+  },
+  {
+    slug: "executive-director",
+    themeKey: "finances",
+    title: "Executive Director",
+    level: "leader",
+    audience: "role",
+    description:
+      "Central budgets, governance + seat assignment, and the launch " +
+      "grants + skim transfer that grow the network to its next city.",
+    icon: "award",
+    moduleSlugs: [
+      "finance-central-budgets",
+      "finance-governance-and-seats",
+      "finance-launch-grants-and-transfers",
+    ],
   },
 ];
 
