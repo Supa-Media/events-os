@@ -455,12 +455,17 @@ export const payouts = defineTable({
   .index("by_increase_transfer", ["increaseTransferId"])
   .index("by_chapter_and_status", ["chapterId", "status"]);
 
-// ── Increase accounts (one Entity + Account per chapter) ─────────────────────
+// ── Increase accounts (one Entity + Account per chapter — AND central) ───────
 /** The chapter's single Increase Entity + Account — the source of truth for its
  *  balance. Budgets are logical allocations of this balance, member cards are
- *  issued on it, and ACH reimbursement payouts originate from it. */
+ *  issued on it, and ACH reimbursement payouts originate from it.
+ *
+ *  WP-1.2: also holds ONE row for the org level (`"central"` sentinel — never
+ *  null, not a `chapters` row) — the City Launch Fund's own account. Mirrors
+ *  the `financeRoles.chapterId` / `specializedRoles.scope` union so central is
+ *  representable without a null. */
 export const increaseAccounts = defineTable({
-  chapterId: v.id("chapters"),
+  chapterId: v.union(v.id("chapters"), v.literal("central")),
   // The environment this account was provisioned in (true = Increase sandbox).
   // Stamped at provision time from the current `financeSettings.sandboxMode`. A
   // chapter may hold up to TWO rows — one per environment — and each finance

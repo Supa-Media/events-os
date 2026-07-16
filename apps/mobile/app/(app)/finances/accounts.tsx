@@ -1,11 +1,16 @@
 /**
  * FINANCES · ACCOUNTS — two DISTINCT things live here, kept clearly separate:
  *
- *  1. The chapter's INCREASE ACCOUNT — the native card + ACH-payout layer (issue
- *     member cards, send reimbursement payouts). This is NOT a linked bank; it's
- *     the money layer Chapter OS runs on. Provisioned via
- *     `api.increase.provisionChapterAccount`, removed (stale test rows only) via
- *     `api.increase.removeChapterAccount`.
+ *  1. The ORG'S INCREASE ACCOUNTS — the native card + ACH-payout layer (issue
+ *     member cards, send reimbursement payouts), one per chapter PLUS central
+ *     (the City Launch Fund's own account). WP-1.2 makes these fully OPAQUE +
+ *     AUTOMATIC: provisioning is a backend sweep (`increase.
+ *     backfillChapterAccounts` for existing chapters, scheduled at creation for
+ *     new ones) — this screen is now a quiet, READ-ONLY status list
+ *     (`api.increase.listAccountsStatus`), not a control panel. There's
+ *     nothing to link, retry, or remove here anymore; those stay ops-only
+ *     escape hatches (`provisionChapterAccount` / `linkIncreaseAccount`,
+ *     workflow-callable, never exposed in the UI).
  *  2. CONNECTED ACCOUNTS — external bank/card accounts linked READ-ONLY via
  *     Stripe Financial Connections. Stripe FC only *reads* them; their
  *     transactions sync in as `unreviewed` rows that land in the Reconcile
@@ -14,20 +19,18 @@
  *     fund picker here anymore). Contract:
  *     `api.stripeFinance.{listAccounts,disconnect,createFcSession}`.
  *
- * MODE-AWARE ACCOUNT: a chapter may hold BOTH a sandbox and a production Increase
- * account (up to one per environment). `api.increase.getChapterAccount` returns
- * ONLY the account matching the current `financeSettings.sandboxMode`, so the
- * off-mode account is simply hidden — in production you never see the sandbox
- * account and vice-versa. The shown account can be removed via
- * `api.increase.removeChapterAccount` (a live production account is protected).
+ * ED/FM-ONLY (WP-1.2): the whole screen is gated on `api.financeRoles.
+ * canViewAccounts` — the Executive Director + Financial Manager seats named in
+ * the PRD (§0.2), tighter than the old admin/lead nav gate. Everyone else
+ * (including a chapter finance manager) never lands here — the tab itself is
+ * hidden for them too (`_layout.tsx`).
  *
  * The SANDBOX-MODE toggle (developer/testing, superuser only) points NEW
- * provisioning at Increase's sandbox AND switches which environment's account
- * this page shows. Guarded admin-or-lead in-screen (mirrors the nav gate).
+ * provisioning at Increase's sandbox AND switches which environment's accounts
+ * this page shows.
  */
-import { useState } from "react";
 import { Text, View } from "react-native";
-import { useAction, useMutation, useQuery } from "convex/react";
+import { useMutation, useQuery } from "convex/react";
 import { api } from "@events-os/convex/_generated/api";
 import {
   Badge,
@@ -37,18 +40,28 @@ import {
   Narrow,
   Screen,
   SectionHeader,
-  TextField,
   ToastView,
+  type BadgeTone,
 } from "../../../components/ui";
 import { useActionRunner } from "../../../lib/useActionToast";
 import { AccountRow } from "../../../components/finance/accounts/AccountRow";
 import { ConnectPanel } from "../../../components/finance/accounts/ConnectPanel";
 
+const ONBOARDING_BADGE: Record<
+  "not_started" | "pending" | "active" | "disabled",
+  { label: string; tone: BadgeTone }
+> = {
+  not_started: { label: "Not started", tone: "neutral" },
+  pending: { label: "Pending", tone: "warn" },
+  active: { label: "Active", tone: "success" },
+  disabled: { label: "Disabled", tone: "danger" },
+};
+
 export default function AccountsScreen() {
-  const org = useQuery(api.org.nav);
+  const canViewAccounts = useQuery(api.financeRoles.canViewAccounts, {});
+  const accountsStatus = useQuery(api.increase.listAccountsStatus, {});
   const accounts = useQuery(api.stripeFinance.listAccounts, {});
   const financeSettings = useQuery(api.financeSettings.getFinanceSettings);
-  const chapterAccount = useQuery(api.increase.getChapterAccount);
   // Central/superuser only — regular chapters get Increase accounts + cards
   // ONLY, never a NEW external Stripe FC connection (server-enforced in
   // `stripeFinance.createFcSession`/`storeFcAccount`; this mirrors it so the
@@ -58,26 +71,17 @@ export default function AccountsScreen() {
   const disconnect = useMutation(api.stripeFinance.disconnect);
   const refreshFcAccount = useMutation(api.stripeFinance.refreshFcAccount);
   const setSandboxMode = useMutation(api.financeSettings.setSandboxMode);
-  const provisionAccount = useAction(api.increase.provisionChapterAccount);
-  const linkAccount = useAction(api.increase.linkIncreaseAccount);
-  const removeChapterAccount = useMutation(api.increase.removeChapterAccount);
   const { run, toast, dismiss } = useActionRunner();
 
-  const handleLink = (increaseAccountId: string) =>
-    void run(() => linkAccount({ increaseAccountId }), {
-      errorTitle: "Couldn't link the account",
-    });
-
-  // In-screen guard: Accounts is a finance-manager surface (admin or lead for
-  // now, mirroring the nav gate).
-  const tier = org?.tier;
-  if (org !== undefined && tier !== "admin" && tier !== "lead") {
+  // In-screen guard: Accounts is now ED/FM-only (WP-1.2), server-resolved —
+  // tighter than the old admin/lead nav gate.
+  if (canViewAccounts === false) {
     return (
       <Screen>
         <Narrow>
           <EmptyState
-            title="Finances is restricted"
-            message="Only chapter admins and finance managers can manage connected accounts."
+            title="Accounts is restricted"
+            message="Only the Executive Director and Financial Manager can view accounts."
           />
         </Narrow>
       </Screen>
@@ -85,25 +89,16 @@ export default function AccountsScreen() {
   }
 
   if (
-    org === undefined ||
+    canViewAccounts === undefined ||
+    accountsStatus === undefined ||
     accounts === undefined ||
     financeSettings === undefined ||
-    chapterAccount === undefined ||
     canConnectAccount === undefined
   ) {
     return <Screen loading />;
   }
 
   const sandboxMode = financeSettings.sandboxMode;
-
-  // `getChapterAccount` only ever returns the account for the CURRENT mode, so
-  // the shown account's environment is always the current one — no per-row
-  // prefix check needed. A live PRODUCTION account is protected from removal
-  // backend-side; while in sandbox mode the shown (sandbox/test) account is
-  // freely removable.
-  const canRemoveAccount =
-    chapterAccount !== null &&
-    (sandboxMode || chapterAccount.onboardingStatus !== "active");
 
   return (
     <Screen>
@@ -119,150 +114,43 @@ export default function AccountsScreen() {
           <ToastView toast={toast} onDismiss={dismiss} />
         </View>
 
-        <SectionHeader title="Card & payout account (Increase)" />
+        <SectionHeader title="Card & payout accounts (Increase)" />
         <Text className="mb-3 text-sm text-muted">
-          The chapter's native account for issuing member cards and sending ACH
-          reimbursement payouts. This is not a linked bank — it's the money layer
-          Chapter OS runs on. You're viewing the{" "}
-          {sandboxMode ? "SANDBOX" : "PRODUCTION"} account; switch modes below to
-          manage the other environment.
+          One native account per chapter, plus central (the City Launch Fund's
+          own account) — issuing member cards and sending ACH reimbursement
+          payouts. Provisioning is fully automatic; this is a status view, not
+          a control panel. You're viewing the{" "}
+          {sandboxMode ? "SANDBOX" : "PRODUCTION"} environment; switch modes
+          below to see the other one.
         </Text>
         <Card>
-          {chapterAccount === null ? (
-            // No Increase account yet → offer to provision one in the current
-            // mode, OR link an existing account by id (avoids a duplicate).
-            <View className="gap-3">
-              <View className="flex-row items-start justify-between gap-3">
-                <View className="flex-1">
-                  <Text className="font-display text-base text-ink">
-                    No account yet
-                  </Text>
-                  <Text className="mt-1 text-sm text-muted">
-                    Provision the chapter's Increase account to enable member
-                    cards and ACH reimbursement payouts.
-                  </Text>
-                  <View className="mt-2">
-                    <Badge
-                      label={`Will provision in ${sandboxMode ? "SANDBOX" : "PRODUCTION"} mode`}
-                      tone={sandboxMode ? "warn" : "neutral"}
-                      icon={sandboxMode ? "alert-triangle" : "check-circle"}
-                    />
-                  </View>
-                </View>
-                <Button
-                  title="Provision account"
-                  icon="plus"
-                  onPress={() =>
-                    void run(() => provisionAccount({}), {
-                      errorTitle: "Couldn't provision the account",
-                    })
-                  }
-                />
-              </View>
-              <View className="border-t border-border-strong pt-3">
-                <LinkExistingAccount onLink={handleLink} />
-              </View>
-            </View>
-          ) : chapterAccount.onboardingStatus === "active" ? (
-            // Active → show the account + entity ids for the CURRENT environment.
-            // The shown account always matches the current mode (the off-mode
-            // account is hidden), so the environment badge reflects `sandboxMode`.
-            <View className="gap-2">
-              <View className="flex-row flex-wrap items-center justify-between gap-2">
-                <View className="flex-row flex-wrap items-center gap-2">
-                  <Text className="font-display text-base text-ink">
-                    Increase account
-                  </Text>
-                  <Badge label="Active" tone="success" icon="check-circle" />
-                  <Badge
-                    label={sandboxMode ? "SANDBOX" : "PRODUCTION"}
-                    tone={sandboxMode ? "warn" : "neutral"}
-                    icon={sandboxMode ? "alert-triangle" : "check-circle"}
-                  />
-                </View>
-                {canRemoveAccount ? (
-                  // Sandbox/test account → freely removable (cascades its sandbox
-                  // cards/payouts/txns). A live production account is hidden here
-                  // (backend also refuses to remove it).
-                  <Button
-                    title="Remove account"
-                    variant="danger"
-                    icon="trash-2"
-                    onPress={() =>
-                      void run(() => removeChapterAccount({}), {
-                        errorTitle: "Couldn't remove the account",
-                      })
-                    }
-                  />
-                ) : null}
-              </View>
-              <Text className="text-sm text-muted">
-                Account:{" "}
-                <Text className="text-ink">
-                  {chapterAccount.increaseAccountId}
-                </Text>
-              </Text>
-              {chapterAccount.increaseEntityId ? (
-                <Text className="text-sm text-muted">
-                  Entity:{" "}
-                  <Text className="text-ink">
-                    {chapterAccount.increaseEntityId}
-                  </Text>
-                </Text>
-              ) : null}
-            </View>
-          ) : (
-            // Pending (or not fully provisioned) → explain + let the manager
-            // retry auto-provision, link an existing account by id, or remove.
-            <View className="gap-3">
-              <View className="flex-row items-start justify-between gap-3">
-                <View className="flex-1">
-                  <View className="flex-row flex-wrap items-center gap-2">
+          <View className="gap-2">
+            {accountsStatus.map((row, i) => {
+              const badge = row.account
+                ? ONBOARDING_BADGE[row.account.onboardingStatus]
+                : ONBOARDING_BADGE.not_started;
+              return (
+                <View
+                  key={row.scope}
+                  className={`flex-row items-center justify-between gap-3 py-2 ${
+                    i > 0 ? "border-t border-border-strong" : ""
+                  }`}
+                >
+                  <View className="flex-1">
                     <Text className="font-display text-base text-ink">
-                      Increase account
+                      {row.scopeName}
                     </Text>
-                    <Badge label="Pending" tone="warn" icon="alert-triangle" />
+                    {row.account?.increaseAccountId ? (
+                      <Text className="text-xs text-muted">
+                        {row.account.increaseAccountId}
+                      </Text>
+                    ) : null}
                   </View>
-                  <Text className="mt-1 text-sm text-muted">
-                    Provisioning didn't complete — the Increase environment may
-                    not be fully configured, or the call failed. Retry to open
-                    the account, or link an existing one by id.
-                  </Text>
-                  <View className="mt-2">
-                    <Badge
-                      label={`Will provision in ${sandboxMode ? "SANDBOX" : "PRODUCTION"} mode`}
-                      tone={sandboxMode ? "warn" : "neutral"}
-                      icon={sandboxMode ? "alert-triangle" : "check-circle"}
-                    />
-                  </View>
+                  <Badge label={badge.label} tone={badge.tone} />
                 </View>
-                <View className="gap-2">
-                  <Button
-                    title="Retry"
-                    icon="refresh-cw"
-                    onPress={() =>
-                      void run(() => provisionAccount({}), {
-                        errorTitle: "Couldn't provision the account",
-                      })
-                    }
-                  />
-                  <Button
-                    title="Remove"
-                    variant="danger"
-                    icon="trash-2"
-                    onPress={() =>
-                      void run(() => removeChapterAccount({}), {
-                        errorTitle: "Couldn't remove the account",
-                      })
-                    }
-                  />
-                </View>
-              </View>
-              <View className="border-t border-border-strong pt-3">
-                <LinkExistingAccount onLink={handleLink} />
-              </View>
-            </View>
-          )}
+              );
+            })}
+          </View>
         </Card>
 
         <SectionHeader title="Connected accounts" count={accounts.length} />
@@ -338,67 +226,5 @@ export default function AccountsScreen() {
         </Card>
       </Narrow>
     </Screen>
-  );
-}
-
-/**
- * Link an EXISTING Increase account by pasting its id — the reliable
- * counterpart to auto-provision when the owner already opened the chapter's
- * account in the Increase dashboard (or a provision got stuck). Collapsed to a
- * single button until tapped; on link it calls `api.increase.linkIncreaseAccount`
- * for the current mode via `onLink`.
- */
-function LinkExistingAccount({
-  onLink,
-}: {
-  onLink: (increaseAccountId: string) => void;
-}) {
-  const [expanded, setExpanded] = useState(false);
-  const [accountId, setAccountId] = useState("");
-
-  if (!expanded) {
-    return (
-      <Button
-        title="Link existing account"
-        variant="secondary"
-        icon="link"
-        onPress={() => setExpanded(true)}
-      />
-    );
-  }
-
-  const trimmed = accountId.trim();
-  return (
-    <View className="gap-2">
-      <Text className="text-sm text-muted">
-        Already have an Increase account? Paste its id to link it instead of
-        creating a new one.
-      </Text>
-      <TextField
-        label="Increase account id"
-        hint="Copy the account id from your Increase dashboard."
-        placeholder="account_…"
-        autoCapitalize="none"
-        autoCorrect={false}
-        value={accountId}
-        onChangeText={setAccountId}
-      />
-      <View className="flex-row gap-2">
-        <Button
-          title="Link account"
-          icon="link"
-          disabled={trimmed.length === 0}
-          onPress={() => onLink(trimmed)}
-        />
-        <Button
-          title="Cancel"
-          variant="secondary"
-          onPress={() => {
-            setExpanded(false);
-            setAccountId("");
-          }}
-        />
-      </View>
-    </View>
   );
 }

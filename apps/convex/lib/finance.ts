@@ -32,6 +32,7 @@ import { Doc, Id } from "../_generated/dataModel";
 import { MutationCtx, QueryCtx } from "../_generated/server";
 import { isSuperuser } from "./superuser";
 import { viewerPerson } from "./org";
+import { requireUserId } from "./context";
 
 // A generous bound on a single chapter's funds (they number in the single
 // digits post-WP-1.4; this mirrors the scan limits used elsewhere in finance).
@@ -63,15 +64,16 @@ export async function defaultFundId(
 }
 
 /**
- * The chapter's `increaseAccounts` row for a given environment, or null. A
- * chapter may now hold up to two rows (one sandbox, one production); every
- * finance view/action selects the row whose environment matches the current
- * `sandboxMode` via this helper — NEVER `.first()`, which would pick an
- * arbitrary row once both exist. The off-mode row is left untouched.
+ * The account's owning scope for a given environment, or null. A scope (a real
+ * chapter, or `"central"` — WP-1.2) may hold up to two rows (one sandbox, one
+ * production); every finance view/action selects the row whose environment
+ * matches the current `sandboxMode` via this helper — NEVER `.first()`, which
+ * would pick an arbitrary row once both exist. The off-mode row is left
+ * untouched.
  */
 export async function getChapterAccountForMode(
   ctx: QueryCtx,
-  chapterId: Id<"chapters">,
+  chapterId: FinanceScope,
   sandboxMode: boolean,
 ): Promise<Doc<"increaseAccounts"> | null> {
   const rows = await ctx.db
@@ -292,6 +294,61 @@ export function assertSeparationOfDuties(
     throw new ConvexError({
       code: "SOD_VIOLATION",
       message: "The approver must be different from the requester.",
+    });
+  }
+}
+
+/**
+ * WP-1.2: true iff the caller holds a CENTRAL `executive_director` or
+ * `finance_manager` SPECIALIZED role (or is a superuser — the implicit-central
+ * bootstrap path, mirrored everywhere else in finance). TIGHTER than
+ * `getFinanceRole(...).isCentral` (which also passes a plain central
+ * `financeRoles` grant with no ED/FM title): this is the gate for surfaces that
+ * should be invisible to everyone except the two org-level seats named in the
+ * PRD (§0.2) — the Accounts tab + the Cards tab's Relay/legacy section.
+ *
+ * Mirrors `financeRoles.mySeats`' pattern of walking every `people` row the
+ * caller's userId owns (a finance seat isn't chapter-scoped the way a normal
+ * roster lookup is) rather than requiring the caller's own chapter membership.
+ */
+export async function isCentralEdOrFm(ctx: QueryCtx): Promise<boolean> {
+  if (await isSuperuser(ctx)) return true;
+
+  const userId = (await requireUserId(ctx)) as Id<"users">;
+  const people = await ctx.db
+    .query("people")
+    .withIndex("by_user", (q) => q.eq("userId", userId))
+    .collect();
+
+  for (const person of people) {
+    if (person.isPlaceholder === true) continue;
+    const roles = await ctx.db
+      .query("specializedRoles")
+      .withIndex("by_person", (q) => q.eq("personId", person._id))
+      .collect();
+    if (
+      roles.some(
+        (r) =>
+          r.scope === "central" &&
+          (r.title === "executive_director" || r.title === "finance_manager"),
+      )
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/** Assert `isCentralEdOrFm` — the server-side gate behind the Accounts tab /
+ *  Relay-cards section (the client-side `canViewAccounts` query is the same
+ *  check; this is for functions that must ALSO refuse the write/read itself,
+ *  not just hide the affordance). */
+export async function requireCentralEdOrFm(ctx: QueryCtx): Promise<void> {
+  if (!(await isCentralEdOrFm(ctx))) {
+    throw new ConvexError({
+      code: "FORBIDDEN",
+      message:
+        "Accounts is visible only to the Executive Director and Financial Manager.",
     });
   }
 }

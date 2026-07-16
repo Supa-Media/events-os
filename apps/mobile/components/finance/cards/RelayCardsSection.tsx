@@ -7,6 +7,12 @@
  *
  * Card issuance/lifecycle controls (caps, validity, lock) are Increase-only and
  * don't apply here — a Relay card is just a last-4 ↔ person binding.
+ *
+ * ED/FM-ONLY, COLLAPSED BY DEFAULT (WP-1.2): this is Increase/legacy-account
+ * plumbing, not a Cardholders-table concern — same visibility gate as the
+ * Accounts tab (`api.financeRoles.canViewAccounts`). A chapter/central manager
+ * without that title never sees it at all; an ED/FM sees a collapsed toggle
+ * (it's rarely touched once cards are set up) rather than an always-open table.
  */
 import { useState } from "react";
 import { Pressable, Text, View } from "react-native";
@@ -30,6 +36,34 @@ import { colors } from "../../../lib/theme";
 import { useActionRunner } from "../../../lib/useActionToast";
 
 export function RelayCardsSection() {
+  const canViewAccounts = useQuery(api.financeRoles.canViewAccounts, {});
+  const [expanded, setExpanded] = useState(false);
+
+  // Never rendered at all for a caller without the ED/FM title (mirrors the
+  // Accounts tab's gate) — not just visually hidden, so a chapter/central
+  // manager's Cards tab never even fires `listRelayCardCandidates`.
+  if (canViewAccounts !== true) return null;
+
+  return (
+    <View>
+      <SectionHeader
+        title="Relay cards"
+        right={
+          <Button
+            title={expanded ? "Hide" : "Show"}
+            variant="secondary"
+            size="sm"
+            icon={expanded ? "chevron-up" : "chevron-down"}
+            onPress={() => setExpanded((e) => !e)}
+          />
+        }
+      />
+      {expanded ? <RelayCardsTable /> : null}
+    </View>
+  );
+}
+
+function RelayCardsTable() {
   const candidates = useQuery(api.legacyCards.listRelayCardCandidates, {});
   const linkCard = useMutation(api.legacyCards.linkRelayCard);
   const unlinkCard = useMutation(api.legacyCards.unlinkRelayCard);
@@ -52,10 +86,6 @@ export function RelayCardsSection() {
 
   return (
     <View>
-      <SectionHeader
-        title="Relay cards"
-        count={loading ? undefined : `${candidates.length}`}
-      />
       <Text className="mb-3 text-sm text-muted">
         Link each external card's last-4 to its cardholder so their charges
         become their responsibility.

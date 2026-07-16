@@ -85,7 +85,15 @@ import {
   assertSeparationOfDuties,
   getChapterAccountForMode,
   defaultFundId,
+  requireCentralEdOrFm,
+  type FinanceScope,
 } from "./lib/finance";
+
+/** The org level's own Increase account (WP-1.2) — where the City Launch Fund
+ *  lives (feeds the future skim destination). Named for the org, not a
+ *  generic "Central", so it reads clearly next to chapter account names in
+ *  the match-before-create list. */
+const CENTRAL_ACCOUNT_NAME = "Public Worship — Central";
 
 /** Increase API base URL. Env-overridable so dev/staging point at the sandbox
  *  (`INCREASE_API_BASE=https://sandbox.increase.com`); defaults to production. */
@@ -218,9 +226,11 @@ const payoutSummaryValidator = v.object({
   createdAt: v.number(),
 });
 
+const financeScopeValidator = v.union(v.id("chapters"), v.literal("central"));
+
 const increaseAccountSummaryValidator = v.object({
   id: v.id("increaseAccounts"),
-  chapterId: v.id("chapters"),
+  chapterId: financeScopeValidator,
   increaseEntityId: v.union(v.string(), v.null()),
   increaseAccountId: v.union(v.string(), v.null()),
   onboardingStatus: onboardingValidator,
@@ -241,7 +251,7 @@ interface PayoutSummary {
 
 interface IncreaseAccountSummary {
   id: Id<"increaseAccounts">;
-  chapterId: Id<"chapters">;
+  chapterId: FinanceScope;
   increaseEntityId: string | null;
   increaseAccountId: string | null;
   onboardingStatus: (typeof INCREASE_ONBOARDING_STATUSES)[number];
@@ -274,7 +284,7 @@ type BeginProvisionResult =
   | {
       kind: "provision";
       accountId: Id<"increaseAccounts">;
-      chapterId: Id<"chapters">;
+      chapterId: FinanceScope;
       chapterName: string;
     };
 
@@ -845,52 +855,95 @@ async function applyPayoutOutcome(
 
 // ── provisionChapterAccount (action, manager) ────────────────────────────────
 
-/** Gate + find-or-create the chapter's `increaseAccounts` row. Manager-only.
- *  Returns the existing account when it's already active (idempotent), else the
- *  row to provision + the chapter name (used to name the Increase Account). */
+const beginProvisionReturns = v.union(
+  v.object({
+    kind: v.literal("existing"),
+    account: increaseAccountSummaryValidator,
+  }),
+  v.object({
+    kind: v.literal("provision"),
+    accountId: v.id("increaseAccounts"),
+    chapterId: financeScopeValidator,
+    chapterName: v.string(),
+  }),
+);
+
+/**
+ * Find-or-create the `increaseAccounts` row for a SCOPE (a real chapter, or
+ * `"central"` — WP-1.2). Returns the existing account when it's already active
+ * (idempotent), else the row to provision + the name to open the Increase
+ * Account under (a real chapter's name, or `CENTRAL_ACCOUNT_NAME`).
+ *
+ * Pure DB logic shared by BOTH authz paths: the caller-scoped `beginProvision`
+ * (a manager provisioning their OWN chapter) and the ops-only
+ * `beginProvisionForScope` (the WP-1.2 backfill / auto-provision-at-creation,
+ * which may target ANY chapter or central — no caller-chapter membership to
+ * gate on).
+ */
+async function doBeginProvision(
+  ctx: MutationCtx,
+  scope: FinanceScope,
+): Promise<BeginProvisionResult> {
+  // Mode-aware find-or-create: only ever look at / create the account for the
+  // CURRENT environment. The other environment's row (if any) is untouched.
+  const sandboxMode = await readSandbox(ctx);
+  const existing = await getChapterAccountForMode(ctx, scope, sandboxMode);
+  if (
+    existing &&
+    existing.onboardingStatus === "active" &&
+    existing.increaseAccountId
+  ) {
+    return { kind: "existing", account: toAccountSummary(existing) };
+  }
+
+  const scopeName =
+    scope === "central"
+      ? CENTRAL_ACCOUNT_NAME
+      : ((await ctx.db.get(scope))?.name ?? "Chapter");
+
+  if (existing) {
+    return {
+      kind: "provision",
+      accountId: existing._id,
+      chapterId: scope,
+      chapterName: scopeName,
+    };
+  }
+  const now = Date.now();
+  const accountId = await ctx.db.insert("increaseAccounts", {
+    chapterId: scope,
+    sandbox: sandboxMode,
+    onboardingStatus: "not_started",
+    createdAt: now,
+    updatedAt: now,
+  });
+  return { kind: "provision", accountId, chapterId: scope, chapterName: scopeName };
+}
+
+/** Gate + find-or-create the CALLER'S OWN chapter's `increaseAccounts` row.
+ *  Manager-only — the normal (non-ops) provisioning path. */
 export const beginProvision = internalMutation({
   args: {},
-  returns: v.union(
-    v.object({ kind: v.literal("existing"), account: increaseAccountSummaryValidator }),
-    v.object({
-      kind: v.literal("provision"),
-      accountId: v.id("increaseAccounts"),
-      chapterId: v.id("chapters"),
-      chapterName: v.string(),
-    }),
-  ),
+  returns: beginProvisionReturns,
   handler: async (ctx): Promise<BeginProvisionResult> => {
     const chapterId = (await requireChapterId(ctx)) as Id<"chapters">;
     await requireFinanceManager(ctx, chapterId);
-
-    // Mode-aware find-or-create: only ever look at / create the account for the
-    // CURRENT environment. The other environment's row (if any) is untouched.
-    const sandboxMode = await readSandbox(ctx);
-    const existing = await getChapterAccountForMode(ctx, chapterId, sandboxMode);
-    if (
-      existing &&
-      existing.onboardingStatus === "active" &&
-      existing.increaseAccountId
-    ) {
-      return { kind: "existing", account: toAccountSummary(existing) };
-    }
-
-    const chapter = await ctx.db.get(chapterId);
-    const chapterName = chapter?.name ?? "Chapter";
-
-    if (existing) {
-      return { kind: "provision", accountId: existing._id, chapterId, chapterName };
-    }
-    const now = Date.now();
-    const accountId = await ctx.db.insert("increaseAccounts", {
-      chapterId,
-      sandbox: sandboxMode,
-      onboardingStatus: "not_started",
-      createdAt: now,
-      updatedAt: now,
-    });
-    return { kind: "provision", accountId, chapterId, chapterName };
+    return doBeginProvision(ctx, chapterId);
   },
+});
+
+/**
+ * Ops-only counterpart of `beginProvision`: find-or-create the
+ * `increaseAccounts` row for an EXPLICIT scope (any chapter, or `"central"`),
+ * with NO caller-chapter gate — this is only ever invoked by
+ * `backfillChapterAccounts` / `provisionAccountForScope` (internal actions,
+ * never reachable from a client).
+ */
+export const beginProvisionForScope = internalMutation({
+  args: { scope: financeScopeValidator },
+  returns: beginProvisionReturns,
+  handler: async (ctx, { scope }): Promise<BeginProvisionResult> =>
+    doBeginProvision(ctx, scope),
 });
 
 /** Patch the `increaseAccounts` row after provisioning (or the degrade path). */
@@ -952,6 +1005,183 @@ export const finishProvision = internalMutation({
  * unset (that environment isn't wired up yet), or when no Program resolves
  * (`/programs` returned 0 or >1 without an override, or the fetch failed).
  */
+/**
+ * Shared provisioning body once `prep` (existing-or-provision, resolved by
+ * `beginProvision` or the ops-only `beginProvisionForScope`) is known. The SAME
+ * Idempotency-Key + match-before-create discipline applies to every account —
+ * chapter or central — so this is the ONE place that logic lives; reused by
+ * both `provisionChapterAccount` (caller-scoped) and `provisionAccountForScope`
+ * (ops-only, WP-1.2 backfill / auto-provision-at-creation).
+ */
+async function runProvisionFlow(
+  ctx: ActionCtx,
+  prep: BeginProvisionResult,
+): Promise<IncreaseAccountSummary> {
+  if (prep.kind === "existing") return prep.account;
+
+  // Mode-aware: the runtime sandbox toggle (`financeSettings`) chooses which
+  // Increase environment a NEW account is opened in. A sandbox-provisioned
+  // account's id comes back `sandbox_`-prefixed, so all its later operations
+  // self-select the sandbox regardless of the toggle's future state.
+  const sandbox = await ctx.runQuery(
+    internal.financeSettings.readSandboxMode,
+    {},
+  );
+  const { key, base, entityId, programOverride } = increaseEnvForMode(sandbox);
+
+  // Opening an Account needs the (mode's) API key + shared org Entity id. If
+  // either is unset we can't provision → degrade to `pending` (log which one is
+  // missing). The Program id is auto-resolved below (env override optional).
+  const missing = !key
+    ? sandbox
+      ? "INCREASE_SANDBOX_API_KEY"
+      : "INCREASE_API_KEY"
+    : !entityId
+      ? sandbox
+        ? "INCREASE_SANDBOX_ENTITY_ID"
+        : "INCREASE_ENTITY_ID"
+      : null;
+  if (missing) {
+    console.warn(`[increase] provision skipped: ${missing} not configured`);
+    return await ctx.runMutation(internal.increase.finishProvision, {
+      accountId: prep.accountId,
+      onboardingStatus: "pending",
+    });
+  }
+
+  // MATCH-BEFORE-CREATE: the org Entity may already hold an Account named for
+  // this chapter (opened by hand in the Increase dashboard). List the entity's
+  // accounts and, if one matches the chapter name, LINK it instead of opening a
+  // duplicate. Mode-aware: this lists under the CURRENT-mode Entity with the
+  // mode's key/base, so a matched account is persisted with the row's `sandbox`
+  // value (set at row creation in `beginProvision`). A link needs no Program.
+  let existingMatch: { id: string; name: string } | null = null;
+  try {
+    const list = (await increaseGet(
+      key!,
+      base,
+      `/accounts?entity_id=${encodeURIComponent(entityId!)}`,
+    )) as { data?: IncreaseAccountLite[] };
+    const fetched = list.data ?? [];
+    existingMatch = pickMatchingAccount(fetched, prep.chapterName);
+    // Diagnostic: how many accounts the entity holds + whether we matched one.
+    // The prod duplicate-cascade was a silent no-match — this makes it visible.
+    console.log(
+      `[increase] provision: match-before-create fetched ${fetched.length} account(s) under entity ${entityId}; ${
+        existingMatch
+          ? `matched "${existingMatch.name}" (${existingMatch.id})`
+          : `no match for chapter "${prep.chapterName}"`
+      }`,
+    );
+  } catch (err) {
+    // Couldn't list the entity's accounts — we can't tell whether creating
+    // would duplicate an existing one, so degrade rather than risk a duplicate.
+    console.error(
+      "[increase] provision: failed to list existing accounts:",
+      err,
+    );
+    return await ctx.runMutation(internal.increase.finishProvision, {
+      accountId: prep.accountId,
+      onboardingStatus: "pending",
+    });
+  }
+
+  if (existingMatch) {
+    console.log(
+      `[increase] provision: LINKED existing account ${existingMatch.id} ("${existingMatch.name}") to chapter "${prep.chapterName}" — no new account created`,
+    );
+    return await ctx.runMutation(internal.increase.finishProvision, {
+      accountId: prep.accountId,
+      onboardingStatus: "active",
+      increaseEntityId: entityId!,
+      increaseAccountId: existingMatch.id,
+    });
+  }
+  console.log(
+    `[increase] provision: no existing account matched chapter "${prep.chapterName}" — creating a new one`,
+  );
+
+  // Resolve the Program: explicit `INCREASE_PROGRAM_ID` override, else the sole
+  // program from the mode's `GET /programs`. Null (0/>1 programs, or a fetch
+  // error) → degrade to `pending` rather than open under a guessed program.
+  const programId = await resolveProgramId(key!, base, programOverride);
+  if (!programId) {
+    console.warn("[increase] provision skipped: no Increase Program resolved");
+    return await ctx.runMutation(internal.increase.finishProvision, {
+      accountId: prep.accountId,
+      onboardingStatus: "pending",
+    });
+  }
+
+  // Open the chapter's Account under the shared org Entity — no KYB, no PII.
+  // IDEMPOTENT create: the `increaseAccounts` row id is stable per chapter+mode,
+  // so we send it as the `Idempotency-Key`. A retry after a network blip that
+  // ACTUALLY created the account then RETURNS the same account instead of
+  // opening a duplicate — the root fix for the prod duplicate-cascade (each
+  // Retry minting a fresh "The New York Chapter"). See `increasePost`.
+  try {
+    const account = await increasePost(
+      key!,
+      base,
+      "/accounts",
+      {
+        entity_id: entityId!,
+        program_id: programId,
+        name: prep.chapterName,
+      },
+      String(prep.accountId),
+    );
+    // Capture the created account id ROBUSTLY: only mark `active` when the
+    // response carried a usable id. A 2xx with no id (or a non-string id) is a
+    // parse failure — log the raw body so it's diagnosable, and leave a clear
+    // pending state rather than persisting a bogus `"undefined"` id.
+    const newAccountId =
+      typeof account.id === "string" && account.id ? account.id : null;
+    if (!newAccountId) {
+      console.error(
+        `[increase] provision: /accounts create returned no usable account id for chapter "${prep.chapterName}"; raw response:`,
+        JSON.stringify(account),
+      );
+      return await ctx.runMutation(internal.increase.finishProvision, {
+        accountId: prep.accountId,
+        onboardingStatus: "pending",
+      });
+    }
+    console.log(
+      `[increase] provision: CREATED account ${newAccountId} for chapter "${prep.chapterName}"`,
+    );
+    return await ctx.runMutation(internal.increase.finishProvision, {
+      accountId: prep.accountId,
+      onboardingStatus: "active",
+      increaseEntityId: entityId!,
+      increaseAccountId: newAccountId,
+    });
+  } catch (err) {
+    // `increasePost` already logged the raw non-2xx body before throwing.
+    console.error("[increase] provision: create failed:", err);
+    return await ctx.runMutation(internal.increase.finishProvision, {
+      accountId: prep.accountId,
+      onboardingStatus: "pending",
+    });
+  }
+}
+
+/**
+ * Provision the CALLER'S OWN chapter's Increase Account under the org's single
+ * shared Entity. Manager-only. Idempotent: an already-active account is
+ * returned untouched.
+ *
+ * SHARED-ENTITY MODEL: the org has ONE legal Increase Entity (the nonprofit),
+ * KYB-verified ONCE in the Increase dashboard and referenced by
+ * `INCREASE_ENTITY_ID`. This app NEVER creates entities and NEVER collects
+ * KYB/PII — provisioning a chapter is just opening an Account under that shared
+ * entity (`POST /accounts` with `entity_id` + `program_id` + a `name`).
+ *
+ * MATCH-BEFORE-CREATE / PROGRAM AUTO-RESOLUTION / MODE-AWARE / DEGRADES: see
+ * `runProvisionFlow` above, which implements the shared body (identical for a
+ * real chapter or `"central"` — the ops-only `provisionAccountForScope` below
+ * reuses it verbatim).
+ */
 export const provisionChapterAccount = action({
   args: {},
   returns: increaseAccountSummaryValidator,
@@ -960,153 +1190,103 @@ export const provisionChapterAccount = action({
       internal.increase.beginProvision,
       {},
     );
-    if (prep.kind === "existing") return prep.account;
+    return runProvisionFlow(ctx, prep);
+  },
+});
 
-    // Mode-aware: the runtime sandbox toggle (`financeSettings`) chooses which
-    // Increase environment a NEW account is opened in. A sandbox-provisioned
-    // account's id comes back `sandbox_`-prefixed, so all its later operations
-    // self-select the sandbox regardless of the toggle's future state.
-    const sandbox = await ctx.runQuery(
-      internal.financeSettings.readSandboxMode,
+/**
+ * Ops-only counterpart of `provisionChapterAccount` (WP-1.2): provision — or
+ * confirm — the Increase account for an EXPLICIT scope (a chapter, or
+ * `"central"`, the City Launch Fund's home). No caller-chapter gate; only
+ * reachable from other internal functions, never a client.
+ *
+ * Used by `backfillChapterAccounts` (the ops sweep over every chapter +
+ * central) and scheduled best-effort at new-chapter creation
+ * (`seed.ensureChapters`) — see those call sites for the "auto" half of
+ * "opaque + automatic".
+ */
+export const provisionAccountForScope = internalAction({
+  args: { scope: financeScopeValidator },
+  returns: increaseAccountSummaryValidator,
+  handler: async (ctx, { scope }): Promise<IncreaseAccountSummary> => {
+    const prep: BeginProvisionResult = await ctx.runMutation(
+      internal.increase.beginProvisionForScope,
+      { scope },
+    );
+    return runProvisionFlow(ctx, prep);
+  },
+});
+
+// ── backfillChapterAccounts (internalAction, CLI/CI — WP-1.2) ────────────────
+
+/** Every chapter id the backfill should consider (active chapters only — a
+ *  deactivated demo chapter doesn't need a live money account). Central is
+ *  handled separately (it isn't a `chapters` row). */
+export const listChapterIdsForBackfill = internalQuery({
+  args: {},
+  returns: v.array(v.id("chapters")),
+  handler: async (ctx) => {
+    const chapters = await ctx.db.query("chapters").collect();
+    return chapters.filter((c) => c.isActive !== false).map((c) => c._id);
+  },
+});
+
+/**
+ * Ops backfill (WP-1.2): provision an Increase account for every chapter — AND
+ * the org level (`"central"`, the City Launch Fund's home) — that lacks an
+ * ACTIVE account in the CURRENT mode. Reuses `provisionAccountForScope`
+ * (Idempotency-Key + match-before-create discipline from #115/#123) per scope,
+ * so it's the exact same logic a manager's own "Provision account" used to
+ * run — just swept over every scope instead of the caller's one chapter.
+ *
+ * IDEMPOTENT: a scope with an already-active current-mode account is skipped
+ * (`beginProvisionForScope` returns `kind:"existing"`) — safe to re-run.
+ * Best-effort per scope: one scope's failure (network, missing env) degrades
+ * that scope to `pending` (never throws) and the sweep continues.
+ *
+ * CLI/CI-runnable (internal → not publicly callable):
+ *   npx convex run increase:backfillChapterAccounts
+ *   gh workflow run run-convex-function.yml -f function=increase:backfillChapterAccounts
+ */
+export const backfillChapterAccounts = internalAction({
+  args: {},
+  returns: v.object({
+    provisioned: v.array(
+      v.object({ scope: v.string(), status: onboardingValidator }),
+    ),
+    skipped: v.array(v.string()),
+  }),
+  handler: async (
+    ctx,
+  ): Promise<{
+    provisioned: { scope: string; status: IncreaseAccountSummary["onboardingStatus"] }[];
+    skipped: string[];
+  }> => {
+    const chapterIds = await ctx.runQuery(
+      internal.increase.listChapterIdsForBackfill,
       {},
     );
-    const { key, base, entityId, programOverride } = increaseEnvForMode(sandbox);
+    const scopes: FinanceScope[] = ["central", ...chapterIds];
 
-    // Opening an Account needs the (mode's) API key + shared org Entity id. If
-    // either is unset we can't provision → degrade to `pending` (log which one is
-    // missing). The Program id is auto-resolved below (env override optional).
-    const missing = !key
-      ? sandbox
-        ? "INCREASE_SANDBOX_API_KEY"
-        : "INCREASE_API_KEY"
-      : !entityId
-        ? sandbox
-          ? "INCREASE_SANDBOX_ENTITY_ID"
-          : "INCREASE_ENTITY_ID"
-        : null;
-    if (missing) {
-      console.warn(`[increase] provision skipped: ${missing} not configured`);
-      return await ctx.runMutation(internal.increase.finishProvision, {
-        accountId: prep.accountId,
-        onboardingStatus: "pending",
-      });
-    }
-
-    // MATCH-BEFORE-CREATE: the org Entity may already hold an Account named for
-    // this chapter (opened by hand in the Increase dashboard). List the entity's
-    // accounts and, if one matches the chapter name, LINK it instead of opening a
-    // duplicate. Mode-aware: this lists under the CURRENT-mode Entity with the
-    // mode's key/base, so a matched account is persisted with the row's `sandbox`
-    // value (set at row creation in `beginProvision`). A link needs no Program.
-    let existingMatch: { id: string; name: string } | null = null;
-    try {
-      const list = (await increaseGet(
-        key!,
-        base,
-        `/accounts?entity_id=${encodeURIComponent(entityId!)}`,
-      )) as { data?: IncreaseAccountLite[] };
-      const fetched = list.data ?? [];
-      existingMatch = pickMatchingAccount(fetched, prep.chapterName);
-      // Diagnostic: how many accounts the entity holds + whether we matched one.
-      // The prod duplicate-cascade was a silent no-match — this makes it visible.
-      console.log(
-        `[increase] provision: match-before-create fetched ${fetched.length} account(s) under entity ${entityId}; ${
-          existingMatch
-            ? `matched "${existingMatch.name}" (${existingMatch.id})`
-            : `no match for chapter "${prep.chapterName}"`
-        }`,
+    const provisioned: {
+      scope: string;
+      status: IncreaseAccountSummary["onboardingStatus"];
+    }[] = [];
+    const skipped: string[] = [];
+    for (const scope of scopes) {
+      const label = scope === "central" ? "central" : String(scope);
+      const prep = await ctx.runMutation(
+        internal.increase.beginProvisionForScope,
+        { scope },
       );
-    } catch (err) {
-      // Couldn't list the entity's accounts — we can't tell whether creating
-      // would duplicate an existing one, so degrade rather than risk a duplicate.
-      console.error(
-        "[increase] provision: failed to list existing accounts:",
-        err,
-      );
-      return await ctx.runMutation(internal.increase.finishProvision, {
-        accountId: prep.accountId,
-        onboardingStatus: "pending",
-      });
-    }
-
-    if (existingMatch) {
-      console.log(
-        `[increase] provision: LINKED existing account ${existingMatch.id} ("${existingMatch.name}") to chapter "${prep.chapterName}" — no new account created`,
-      );
-      return await ctx.runMutation(internal.increase.finishProvision, {
-        accountId: prep.accountId,
-        onboardingStatus: "active",
-        increaseEntityId: entityId!,
-        increaseAccountId: existingMatch.id,
-      });
-    }
-    console.log(
-      `[increase] provision: no existing account matched chapter "${prep.chapterName}" — creating a new one`,
-    );
-
-    // Resolve the Program: explicit `INCREASE_PROGRAM_ID` override, else the sole
-    // program from the mode's `GET /programs`. Null (0/>1 programs, or a fetch
-    // error) → degrade to `pending` rather than open under a guessed program.
-    const programId = await resolveProgramId(key!, base, programOverride);
-    if (!programId) {
-      console.warn("[increase] provision skipped: no Increase Program resolved");
-      return await ctx.runMutation(internal.increase.finishProvision, {
-        accountId: prep.accountId,
-        onboardingStatus: "pending",
-      });
-    }
-
-    // Open the chapter's Account under the shared org Entity — no KYB, no PII.
-    // IDEMPOTENT create: the `increaseAccounts` row id is stable per chapter+mode,
-    // so we send it as the `Idempotency-Key`. A retry after a network blip that
-    // ACTUALLY created the account then RETURNS the same account instead of
-    // opening a duplicate — the root fix for the prod duplicate-cascade (each
-    // Retry minting a fresh "The New York Chapter"). See `increasePost`.
-    try {
-      const account = await increasePost(
-        key!,
-        base,
-        "/accounts",
-        {
-          entity_id: entityId!,
-          program_id: programId,
-          name: prep.chapterName,
-        },
-        String(prep.accountId),
-      );
-      // Capture the created account id ROBUSTLY: only mark `active` when the
-      // response carried a usable id. A 2xx with no id (or a non-string id) is a
-      // parse failure — log the raw body so it's diagnosable, and leave a clear
-      // pending state rather than persisting a bogus `"undefined"` id.
-      const newAccountId =
-        typeof account.id === "string" && account.id ? account.id : null;
-      if (!newAccountId) {
-        console.error(
-          `[increase] provision: /accounts create returned no usable account id for chapter "${prep.chapterName}"; raw response:`,
-          JSON.stringify(account),
-        );
-        return await ctx.runMutation(internal.increase.finishProvision, {
-          accountId: prep.accountId,
-          onboardingStatus: "pending",
-        });
+      if (prep.kind === "existing") {
+        skipped.push(label);
+        continue;
       }
-      console.log(
-        `[increase] provision: CREATED account ${newAccountId} for chapter "${prep.chapterName}"`,
-      );
-      return await ctx.runMutation(internal.increase.finishProvision, {
-        accountId: prep.accountId,
-        onboardingStatus: "active",
-        increaseEntityId: entityId!,
-        increaseAccountId: newAccountId,
-      });
-    } catch (err) {
-      // `increasePost` already logged the raw non-2xx body before throwing.
-      console.error("[increase] provision: create failed:", err);
-      return await ctx.runMutation(internal.increase.finishProvision, {
-        accountId: prep.accountId,
-        onboardingStatus: "pending",
-      });
+      const account = await runProvisionFlow(ctx, prep);
+      provisioned.push({ scope: label, status: account.onboardingStatus });
     }
+    return { provisioned, skipped };
   },
 });
 
@@ -1923,6 +2103,11 @@ export const applyIncreaseCardTransaction = internalMutation({
       )
       .first();
     if (!account) return { inserted: false, skipped: true };
+    // Central (WP-1.2) holds its OWN Increase account (the City Launch Fund),
+    // but never issues member cards — `transactions.chapterId` stays a real
+    // chapter id (that widening is WP-2.1's, not this one's). A card charge
+    // can never legitimately land on the central account; skip defensively.
+    if (account.chapterId === "central") return { inserted: false, skipped: true };
     const chapterId = account.chapterId;
 
     // Attribute to a native card in THIS chapter (never cross-chapter). An
@@ -2497,6 +2682,52 @@ export const getChapterAccount = query({
     const sandboxMode = await readSandbox(ctx);
     const account = await getChapterAccountForMode(ctx, chapterId, sandboxMode);
     return account ? toAccountSummary(account) : null;
+  },
+});
+
+// ── listAccountsStatus (query, ED/FM only — WP-1.2) ──────────────────────────
+
+/**
+ * The read-only Increase account status list (WP-1.2): one row per scope —
+ * every chapter, plus `"central"` — with its CURRENT-mode account (or `null`
+ * if not yet provisioned). Backs the Accounts tab's "quiet status/audit view"
+ * now that provisioning is fully automatic; there's nothing left to DO here,
+ * only to see. ED/FM-only (`requireCentralEdOrFm` — tighter than the old
+ * central-scope manager gate); everyone else, including chapter finance
+ * managers, gets a `FORBIDDEN` `ConvexError`.
+ */
+export const listAccountsStatus = query({
+  args: {},
+  returns: v.array(
+    v.object({
+      scope: financeScopeValidator,
+      scopeName: v.string(),
+      account: v.union(increaseAccountSummaryValidator, v.null()),
+    }),
+  ),
+  handler: async (ctx) => {
+    await requireCentralEdOrFm(ctx);
+
+    const sandboxMode = await readSandbox(ctx);
+    const chapters = (await ctx.db.query("chapters").collect())
+      .filter((c) => c.isActive !== false)
+      .sort((a, b) => a.name.localeCompare(b.name));
+
+    const scopes: { scope: FinanceScope; scopeName: string }[] = [
+      { scope: "central", scopeName: CENTRAL_ACCOUNT_NAME },
+      ...chapters.map((c) => ({ scope: c._id, scopeName: c.name })),
+    ];
+
+    const rows = [];
+    for (const { scope, scopeName } of scopes) {
+      const account = await getChapterAccountForMode(ctx, scope, sandboxMode);
+      rows.push({
+        scope,
+        scopeName,
+        account: account ? toAccountSummary(account) : null,
+      });
+    }
+    return rows;
   },
 });
 

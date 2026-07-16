@@ -197,3 +197,88 @@ describe("financeRoles.mySeats", () => {
     expect(seats).toEqual([]);
   });
 });
+
+/**
+ * `financeRoles.canViewAccounts` (WP-1.2) — the ED/FM-only gate behind the
+ * Accounts tab + the Cards tab's Relay/legacy section. TIGHTER than a plain
+ * central finance seat: only a CENTRAL `executive_director` or
+ * `finance_manager` SPECIALIZED role (or a superuser) sees `true`.
+ */
+describe("financeRoles.canViewAccounts", () => {
+  async function assignSpecializedRole(
+    s: ChapterSetup,
+    personId: Id<"people">,
+    scope: Id<"chapters"> | "central",
+    title: "executive_director" | "president" | "finance_manager",
+  ): Promise<void> {
+    await run(s.t, (ctx) =>
+      ctx.db.insert("specializedRoles", {
+        personId,
+        scope,
+        title,
+        roleKind: title === "finance_manager" ? "finance" : "leadership",
+        createdAt: Date.now(),
+      }),
+    );
+  }
+
+  test("a central executive_director sees true", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const personId = await seedSelfPerson(s);
+    await assignSpecializedRole(s, personId, "central", "executive_director");
+
+    expect(await s.as.query(api.financeRoles.canViewAccounts, {})).toBe(true);
+  });
+
+  test("a central finance_manager sees true", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const personId = await seedSelfPerson(s);
+    await assignSpecializedRole(s, personId, "central", "finance_manager");
+
+    expect(await s.as.query(api.financeRoles.canViewAccounts, {})).toBe(true);
+  });
+
+  test("a CHAPTER-scope finance manager (plain financeRoles grant, no ED/FM title) sees false", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const personId = await seedSelfPerson(s);
+    await grantChapter(s, personId, "manager");
+
+    expect(await s.as.query(api.financeRoles.canViewAccounts, {})).toBe(false);
+  });
+
+  test("a plain CENTRAL financeRoles grant with no ED/FM specialized role sees false (tighter than isCentral)", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const personId = await seedSelfPerson(s);
+    await grantCentralOnSentinel(s, personId);
+
+    expect(await s.as.query(api.financeRoles.canViewAccounts, {})).toBe(false);
+  });
+
+  test("a chapter-scope finance_manager specialized role (not central) sees false", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const personId = await seedSelfPerson(s);
+    await assignSpecializedRole(s, personId, s.chapterId, "finance_manager");
+
+    expect(await s.as.query(api.financeRoles.canViewAccounts, {})).toBe(false);
+  });
+
+  test("a superuser sees true with no grants at all", async () => {
+    const t = newT();
+    const s = await setupChapter(t, { email: "seyi@publicworship.life" });
+
+    expect(await s.as.query(api.financeRoles.canViewAccounts, {})).toBe(true);
+  });
+
+  test("no finance access at all sees false", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await seedSelfPerson(s);
+
+    expect(await s.as.query(api.financeRoles.canViewAccounts, {})).toBe(false);
+  });
+});

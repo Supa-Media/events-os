@@ -21,7 +21,11 @@ import {
   requireChapterId,
   requireUserId,
 } from "./lib/context";
-import { requireFinanceManager, requireFinanceCentral } from "./lib/finance";
+import {
+  requireFinanceManager,
+  requireFinanceCentral,
+  isCentralEdOrFm,
+} from "./lib/finance";
 import { isSuperuser } from "./lib/superuser";
 
 const roleValidator = v.union(...FINANCE_ROLES.map((r) => v.literal(r)));
@@ -115,6 +119,20 @@ export const mySeats = query({
       ...chapterSeats,
     ];
   },
+});
+
+/**
+ * WP-1.2: whether the caller may see the Accounts tab (+ the Cards tab's
+ * Relay/legacy section) — CENTRAL `executive_director` or `finance_manager`
+ * specialized-role holders only (or a superuser). Tighter than a plain
+ * central-scope finance-manager grant (`stripeFinance.canConnectAccount`'s
+ * gate): a chapter-scope manager, or even a central `financeRoles` grant with
+ * no ED/FM title, gets `false` — see `lib/finance.ts#isCentralEdOrFm`.
+ */
+export const canViewAccounts = query({
+  args: {},
+  returns: v.boolean(),
+  handler: async (ctx) => isCentralEdOrFm(ctx),
 });
 
 /** List every finance-role grant in the caller's chapter (manager only). */

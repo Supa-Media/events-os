@@ -12,22 +12,29 @@ import { SandboxModeBanner } from "../../../components/finance/SandboxModeBanner
  * agents own disjoint screen files.
  *
  * The tab SET itself branches on the caller's REAL finance seats
- * (`financeRoles.mySeats`, WP-0.2): a seat holder gets the full manager tab
- * bar (Dashboard · Reconcile · Cards · Reimbursements · Accounts) — the desk
- * each of those renders (central / chapter) still resolves INSIDE the screen.
- * A caller with NO finance seat (the member/cardholder case, D3) gets the
- * reduced member set instead — My Card · My Transactions · Reimbursements —
- * so they never land on a tab that only ever shows them a permission wall.
+ * (`financeRoles.mySeats`, WP-0.2): a seat holder gets the manager tab bar
+ * (Dashboard · Reconcile · Cards · Reimbursements) — the desk each of those
+ * renders (central / chapter) still resolves INSIDE the screen. A caller with
+ * NO finance seat (the member/cardholder case, D3) gets the reduced member
+ * set instead — My Card · My Transactions · Reimbursements — so they never
+ * land on a tab that only ever shows them a permission wall.
+ *
+ * Accounts is its OWN gate on top of that (WP-1.2): the tab only appears for
+ * the Executive Director / Financial Manager seats (`financeRoles.
+ * canViewAccounts` — tighter than a plain finance seat), now that account
+ * provisioning is fully automatic and there's nothing left for a regular
+ * chapter/central manager to DO there.
  *
  * Orchestrator-owned (shared across the finance screens); screens render their
  * own <Screen>/content into the <Slot/> below.
  */
+const ACCOUNTS_TAB = { label: "Accounts", path: "/finances/accounts" };
+
 const SEAT_TABS: { label: string; path: string }[] = [
   { label: "Dashboard", path: "/finances" },
   { label: "Reconcile", path: "/finances/reconcile" },
   { label: "Cards", path: "/finances/cards" },
   { label: "Reimbursements", path: "/finances/reimbursements" },
-  { label: "Accounts", path: "/finances/accounts" },
 ];
 
 const MEMBER_TABS: { label: string; path: string }[] = [
@@ -53,8 +60,17 @@ export default function FinancesLayout() {
   // seat-holder set would flash Dashboard/Reconcile/Cards/Accounts at every
   // no-seat member for a paint before `seats` resolves to `[]`.
   const seats = useQuery(api.financeRoles.mySeats, {});
+  // Loading (`undefined`) → treated as "no access yet" so Accounts never
+  // flashes in for a seat holder who turns out not to be ED/FM.
+  const canViewAccounts = useQuery(api.financeRoles.canViewAccounts, {});
   const tabs =
-    seats === undefined ? [] : seats.length === 0 ? MEMBER_TABS : SEAT_TABS;
+    seats === undefined
+      ? []
+      : seats.length === 0
+        ? MEMBER_TABS
+        : canViewAccounts === true
+          ? [...SEAT_TABS, ACCOUNTS_TAB]
+          : SEAT_TABS;
 
   return (
     <View className="flex-1">
