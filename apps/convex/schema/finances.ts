@@ -771,6 +771,18 @@ export const reimbursementSubmitAttempts = defineTable({
   createdAt: v.number(),
 }).index("by_key_and_time", ["key", "createdAt"]);
 
+/** Increase REVIEWS a Digital Card Profile before it can be attached to a
+ *  card — it's minted `"pending"` and Increase (and/or the card network)
+ *  resolves it to `"active"` (safe to attach) or `"rejected"` (re-upload art
+ *  per Increase's feedback and re-mint). `increase.ts`'s
+ *  `refreshCardArtProfileStatus` polls `GET /digital_card_profiles/{id}` and
+ *  writes whatever it finds here. */
+const cardArtProfileStatusValidator = v.union(
+  v.literal("pending"),
+  v.literal("active"),
+  v.literal("rejected"),
+);
+
 /** One environment's worth of Digital Card Profile config (WP-C.2 — the PW
  *  card art pipeline): the two uploaded `POST /files` ids (card art `1536x969`
  *  + the `100x100` app icon) and, once minted, the Digital Card Profile id
@@ -778,11 +790,16 @@ export const reimbursementSubmitAttempts = defineTable({
  *  Digital Card Profiles are immutable, so re-uploading new art only refreshes
  *  the file ids; a NEW profile referencing them is a distinct, explicit step
  *  (`createDigitalCardProfile`) that leaves the old (now-stale) `profileId` in
- *  place until it's re-run. */
+ *  place until it's re-run. `profileStatus` tracks Increase's review of THAT
+ *  profile (see `cardArtProfileStatusValidator`) — `increase.ts`'s
+ *  `getCardArtProfileId` only surfaces `profileId` for attach once this reads
+ *  `"active"`, so a pending/rejected profile never silently attaches to
+ *  issued cards. */
 const cardArtConfigValidator = v.object({
   fileId: v.string(),
   iconFileId: v.string(),
   profileId: v.optional(v.string()),
+  profileStatus: v.optional(cardArtProfileStatusValidator),
 });
 
 // ── Finance settings (deployment-wide singleton) ─────────────────────────────

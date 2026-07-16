@@ -2850,6 +2850,7 @@ describe("issueCard × Digital Card Profile attach (WP-C.2)", () => {
           fileId: "file_art",
           iconFileId: "file_icon",
           profileId: "digital_card_profile_prod",
+          profileStatus: "active",
         },
       }),
     );
@@ -2867,6 +2868,40 @@ describe("issueCard × Digital Card Profile attach (WP-C.2)", () => {
     expect(post!.body?.digital_wallet).toEqual({
       digital_card_profile_id: "digital_card_profile_prod",
     });
+  });
+
+  test("omits digital_wallet entirely when the configured profile is still pending review", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await seedManager(s);
+    const holder = await seedPerson(s, { name: "Holder" });
+    await seedIncreaseAccount(s, "acct_1");
+    process.env.INCREASE_API_KEY = "prod_key";
+    // Minted but not yet reviewed by Increase — must NOT attach.
+    await run(s.t, (ctx) =>
+      ctx.db.insert("financeSettings", {
+        sandboxMode: false,
+        updatedAt: Date.now(),
+        cardArt: {
+          fileId: "file_art",
+          iconFileId: "file_icon",
+          profileId: "digital_card_profile_prod",
+          profileStatus: "pending",
+        },
+      }),
+    );
+    const calls = mockRecordingFetchWithBody({ id: "card_1", last4: "1111" });
+
+    await s.as.action(api.cards.issueCard, {
+      cardholderPersonId: holder,
+      type: "virtual",
+    });
+
+    const post = calls.find(
+      (c) => c.method === "POST" && c.url.includes("/cards"),
+    );
+    expect(post).toBeTruthy();
+    expect(post!.body).not.toHaveProperty("digital_wallet");
   });
 
   test("omits digital_wallet entirely when no profile is configured", async () => {
@@ -2905,11 +2940,17 @@ describe("issueCard × Digital Card Profile attach (WP-C.2)", () => {
     await run(s.t, async (ctx) => {
       const existing = await ctx.db.query("financeSettings").first();
       await ctx.db.patch(existing!._id, {
-        cardArt: { fileId: "f", iconFileId: "i", profileId: "digital_card_profile_prod" },
+        cardArt: {
+          fileId: "f",
+          iconFileId: "i",
+          profileId: "digital_card_profile_prod",
+          profileStatus: "active",
+        },
         cardArtSandbox: {
           fileId: "sf",
           iconFileId: "si",
           profileId: "sandbox_digital_card_profile",
+          profileStatus: "active",
         },
       });
     });

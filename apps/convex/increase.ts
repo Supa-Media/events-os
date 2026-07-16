@@ -436,13 +436,79 @@ async function increasePatch(
  *  Digital Wallet card art). */
 type CardArtFilePurpose = "digital_wallet_artwork" | "digital_wallet_app_icon";
 
+/** CRLF is required between every multipart line/part per RFC 7578 — a bare
+ *  `\n` is rejected by strict multipart parsers. Named so every literal below
+ *  reads as "the multipart line ending", not a stray escape sequence. */
+const CRLF = "\r\n";
+
+/**
+ * Hand-build a `multipart/form-data` request body as a `Uint8Array` — one
+ * binary file field plus any number of string fields, RFC 7578-correct
+ * (CRLF between every line, a blank CRLF line ending each part's headers,
+ * `--{boundary}--` + CRLF as the closing delimiter).
+ *
+ * This exists ONLY because `FormData`/`Blob` are DOM constructs that are
+ * unverified in Convex's default (non-Node) action runtime — tests import
+ * Node and would pass even if they silently didn't exist live, the exact
+ * "green CI, breaks live" class of bug ADR-013 documents for mobile native
+ * rendering. Building the body from `TextEncoder` + `Uint8Array` concatenation
+ * uses only primitives the isolate guarantees, so there's nothing left to
+ * verify at runtime — the byte layout is asserted directly by
+ * `tests/cardArtProfile.test.ts`.
+ */
+function buildMultipartFormData(
+  boundary: string,
+  fields: Record<string, string>,
+  file: {
+    fieldName: string;
+    filename: string;
+    contentType: string;
+    bytes: Uint8Array<ArrayBuffer>;
+  },
+): Uint8Array<ArrayBuffer> {
+  const encoder = new TextEncoder();
+  const chunks: Uint8Array<ArrayBuffer>[] = [];
+  const pushText = (s: string) => chunks.push(encoder.encode(s));
+
+  for (const [name, value] of Object.entries(fields)) {
+    pushText(`--${boundary}${CRLF}`);
+    pushText(`Content-Disposition: form-data; name="${name}"${CRLF}${CRLF}`);
+    pushText(`${value}${CRLF}`);
+  }
+
+  pushText(`--${boundary}${CRLF}`);
+  pushText(
+    `Content-Disposition: form-data; name="${file.fieldName}"; filename="${file.filename}"${CRLF}`,
+  );
+  pushText(`Content-Type: ${file.contentType}${CRLF}${CRLF}`);
+  chunks.push(file.bytes);
+  pushText(CRLF);
+
+  pushText(`--${boundary}--${CRLF}`);
+
+  const length = chunks.reduce((sum, c) => sum + c.length, 0);
+  const body = new Uint8Array(length);
+  let offset = 0;
+  for (const c of chunks) {
+    body.set(c, offset);
+    offset += c.length;
+  }
+  return body;
+}
+
 /**
  * Upload one base64-encoded PNG to Increase's Files API (WP-C.2 card art).
  * `POST /files` is the one Increase endpoint that ISN'T JSON — it requires
- * `multipart/form-data` (confirmed against the Increase docs), so this can't
- * reuse `increasePost`. No `Content-Type` header is set explicitly: `fetch`
- * computes the multipart boundary itself when the body is a `FormData`
- * (setting it by hand would omit the boundary and the upload would 415).
+ * `multipart/form-data` (confirmed against the Increase docs). The body is
+ * built BY HAND via `buildMultipartFormData` (no `FormData`/`Blob` — see its
+ * doc comment) with an explicit `Content-Type: multipart/form-data;
+ * boundary=...` header; `fetch` does not compute a boundary for a raw
+ * `Uint8Array` body the way it would for `FormData`, so the header must name
+ * the exact boundary used to build the body.
+ *
+ * Rejects a `data:` URI prefix defensively (`uploadCardArtAssets`'s docstring
+ * requires raw base64, but a caller pasting straight from a browser file
+ * picker easily includes it) rather than silently uploading a corrupt PNG.
  * Throws ConvexError on a non-2xx or a response with no usable file id.
  */
 async function increasePostFile(
@@ -452,13 +518,25 @@ async function increasePostFile(
   filename: string,
   purpose: CardArtFilePurpose,
 ): Promise<string> {
-  const form = new FormData();
-  form.append("file", new Blob([base64ToBytes(base64Png)], { type: "image/png" }), filename);
-  form.append("purpose", purpose);
+  if (base64Png.startsWith("data:")) {
+    throw new ConvexError({
+      code: "INCREASE_ERROR",
+      message: `Card art must be raw base64 (no "data:" URI prefix) — got one for the "${purpose}" upload.`,
+    });
+  }
+  const boundary = `----ConvexFormBoundary${crypto.randomUUID().replace(/-/g, "")}`;
+  const body = buildMultipartFormData(
+    boundary,
+    { purpose },
+    { fieldName: "file", filename, contentType: "image/png", bytes: base64ToBytes(base64Png) },
+  );
   const res = await fetch(`${base}/files`, {
     method: "POST",
-    headers: { Authorization: `Bearer ${key}` },
-    body: form,
+    headers: {
+      Authorization: `Bearer ${key}`,
+      "Content-Type": `multipart/form-data; boundary=${boundary}`,
+    },
+    body,
   });
   if (!res.ok) {
     const bodyText = await res.text();
@@ -468,14 +546,14 @@ async function increasePostFile(
       message: `The Increase file upload failed (${describeIncreaseError(res.status, bodyText)}).`,
     });
   }
-  const body = (await res.json()) as { id?: unknown };
-  if (typeof body.id !== "string" || !body.id) {
+  const responseBody = (await res.json()) as { id?: unknown };
+  if (typeof responseBody.id !== "string" || !responseBody.id) {
     throw new ConvexError({
       code: "INCREASE_ERROR",
       message: `The Increase file upload (${purpose}) returned no usable file id.`,
     });
   }
-  return body.id;
+  return responseBody.id;
 }
 
 /** Resolve the Increase Program id to open a chapter Account under.
@@ -2987,31 +3065,53 @@ export const runBackfillIncreaseAccountEnv = internalMutation({
 
 // ── Digital Card Profile — PW card art pipeline (WP-C.2) ─────────────────────
 //
-// Three ops steps, run in order once real card art exists (the final PNG with
+// Four ops steps, run in order once real card art exists (the final PNG with
 // the Visa logo placed is an owner/designer step — this pipeline just takes
 // any conforming PNG):
 //   1. `uploadCardArtAssets`   — POST /files (card art 1536x969 + a 100x100
 //                                icon), stores the returned file ids.
 //   2. `createDigitalCardProfile` — POST /digital_card_profiles from those
-//                                file ids, stores the returned profile id.
-//   3. `backfillCardProfiles` — PATCH /cards/{id} on every existing
+//                                file ids, stores the returned profile id
+//                                (status starts "pending").
+//   3. `refreshCardArtProfileStatus` — GET /digital_card_profiles/{id},
+//                                stores whatever review status Increase (and/
+//                                or the card network) currently reports. Run
+//                                this repeatedly until it logs "active".
+//   4. `backfillCardProfiles` — PATCH /cards/{id} on every existing
 //                                non-canceled card to attach the profile;
 //                                new cards get it automatically at issuance
 //                                (`cards.ts`'s `issueCard`, via
-//                                `getCardArtProfileId`).
-// All three are MODE-AWARE and DEGRADE (log + return, never throw) when the
+//                                `getCardArtProfileId`). Both this step and
+//                                issuance only ever attach a profile whose
+//                                stored status is "active" — a pending or
+//                                rejected profile attaches to nothing.
+// All four are MODE-AWARE and DEGRADE (log + return, never throw) when the
 // relevant environment's Increase key isn't configured — same discipline as
-// `runProvisionFlow`. A Digital Card Profile starts `status:"pending"` and
-// needs Increase (and/or the card network) to review it before it can be
-// assigned to cards — see the PR description for that process.
+// `runProvisionFlow`.
 
-/** Read the current mode's card-art config (file ids + profile id, if minted)
- *  off the `financeSettings` singleton. Shared by `getCardArtFileIds` and
- *  `getCardArtProfileId` below (the two action-facing reads). */
+/** The review states Increase's Digital Card Profile process moves through —
+ *  `GET /digital_card_profiles/{id}`'s `status` field. Anything Increase
+ *  returns that ISN'T `"active"`/`"rejected"` is treated as still `"pending"`
+ *  (`normalizeCardArtProfileStatus`) — a conservative default, since only
+ *  `"active"` ever unlocks attaching the profile to a card. */
+type CardArtProfileStatus = "pending" | "active" | "rejected";
+
+function normalizeCardArtProfileStatus(raw: unknown): CardArtProfileStatus {
+  return raw === "active" || raw === "rejected" ? raw : "pending";
+}
+
+/** Read the current mode's card-art config (file ids + profile id/status, if
+ *  minted) off the `financeSettings` singleton. Shared by `getCardArtFileIds`,
+ *  `getCardArtProfileId`, and `getCardArtProfileRecord` below. */
 async function readCardArtConfig(
   ctx: { db: QueryCtx["db"] },
   sandbox: boolean,
-): Promise<{ fileId: string; iconFileId: string; profileId?: string } | null> {
+): Promise<{
+  fileId: string;
+  iconFileId: string;
+  profileId?: string;
+  profileStatus?: CardArtProfileStatus;
+} | null> {
   const settings = await ctx.db.query("financeSettings").first();
   const config = sandbox ? settings?.cardArtSandbox : settings?.cardArt;
   return config ?? null;
@@ -3037,7 +3137,14 @@ export const finishUploadCardArtAssets = internalMutation({
         ? existing.cardArtSandbox
         : existing.cardArt
       : undefined;
-    const patch = { [key]: { fileId, iconFileId, profileId: prior?.profileId } };
+    const patch = {
+      [key]: {
+        fileId,
+        iconFileId,
+        profileId: prior?.profileId,
+        profileStatus: prior?.profileStatus,
+      },
+    };
     if (existing) {
       await ctx.db.patch(existing._id, patch);
     } else {
@@ -3119,9 +3226,12 @@ export const uploadCardArtAssets = internalAction({
   },
 });
 
-/** Patch the minted Digital Card Profile id onto the current mode's config —
- *  the `profileId` field of the schema's card-art config shape; the file ids
- *  are already set by `finishUploadCardArtAssets` and untouched here. */
+/** Patch the freshly-minted Digital Card Profile id onto the current mode's
+ *  config — the `profileId` field of the schema's card-art config shape; the
+ *  file ids are already set by `finishUploadCardArtAssets` and untouched
+ *  here. A fresh profile always starts `profileStatus: "pending"` — Increase
+ *  hasn't reviewed it yet; `refreshCardArtProfileStatus` is the only thing
+ *  that ever advances it to `"active"`/`"rejected"`. */
 export const finishCreateDigitalCardProfile = internalMutation({
   args: { sandbox: v.boolean(), profileId: v.string() },
   returns: v.null(),
@@ -3138,7 +3248,9 @@ export const finishCreateDigitalCardProfile = internalMutation({
       return null;
     }
     const key: "cardArt" | "cardArtSandbox" = sandbox ? "cardArtSandbox" : "cardArt";
-    await ctx.db.patch(existing._id, { [key]: { ...prior, profileId } });
+    await ctx.db.patch(existing._id, {
+      [key]: { ...prior, profileId, profileStatus: "pending" },
+    });
     return null;
   },
 });
@@ -3228,18 +3340,143 @@ export const getCardArtFileIds = internalQuery({
 });
 
 /**
- * The current mode's Digital Card Profile id, if one has been minted — read by
- * `cards.ts`'s `issueCard` (mode from the account it's issuing on) and
- * `backfillCardProfiles` below (mode from each existing card's own id prefix).
- * Null when no profile exists yet for that mode (issuance/backfill then omit
- * `digital_wallet` entirely rather than send a bogus id).
+ * The current mode's Digital Card Profile id, if one has been minted AND
+ * Increase has reviewed it as `"active"` — read by `cards.ts`'s `issueCard`
+ * (mode from the account it's issuing on) and `backfillCardProfiles` below
+ * (mode from each existing card's own id prefix). Null both when no profile
+ * exists yet for that mode AND when one exists but is still `"pending"`/was
+ * `"rejected"` — issuance/backfill then omit `digital_wallet` entirely rather
+ * than attach a profile Increase hasn't cleared (which would otherwise
+ * silently attach to every issued card with no signal it isn't really live).
+ * Use `getCardArtProfileRecord` instead when the id is needed regardless of
+ * status (`refreshCardArtProfileStatus` polling).
  */
 export const getCardArtProfileId = internalQuery({
   args: { sandbox: v.boolean() },
   returns: v.union(v.string(), v.null()),
   handler: async (ctx, { sandbox }) => {
     const config = await readCardArtConfig(ctx, sandbox);
-    return config?.profileId ?? null;
+    return config?.profileId && config.profileStatus === "active"
+      ? config.profileId
+      : null;
+  },
+});
+
+/**
+ * The current mode's minted Digital Card Profile id + its last-known review
+ * status, UNGATED (unlike `getCardArtProfileId` above, which only surfaces
+ * the id once `profileStatus === "active"`). Used exclusively by
+ * `refreshCardArtProfileStatus` below, which needs to know WHICH profile to
+ * poll regardless of whether it's cleared review yet. Null when no profile
+ * has been minted for this mode.
+ */
+export const getCardArtProfileRecord = internalQuery({
+  args: { sandbox: v.boolean() },
+  returns: v.union(
+    v.object({
+      profileId: v.string(),
+      profileStatus: v.union(v.literal("pending"), v.literal("active"), v.literal("rejected")),
+    }),
+    v.null(),
+  ),
+  handler: async (ctx, { sandbox }) => {
+    const config = await readCardArtConfig(ctx, sandbox);
+    if (!config?.profileId) return null;
+    return { profileId: config.profileId, profileStatus: config.profileStatus ?? "pending" };
+  },
+});
+
+/** Patch the current mode's stored `profileStatus` — the result of
+ *  `refreshCardArtProfileStatus`'s `GET /digital_card_profiles/{id}` poll. */
+export const finishRefreshCardArtProfileStatus = internalMutation({
+  args: {
+    sandbox: v.boolean(),
+    status: v.union(v.literal("pending"), v.literal("active"), v.literal("rejected")),
+  },
+  returns: v.null(),
+  handler: async (ctx, { sandbox, status }): Promise<null> => {
+    const existing = await ctx.db.query("financeSettings").first();
+    const prior = sandbox ? existing?.cardArtSandbox : existing?.cardArt;
+    if (!existing || !prior) {
+      // Shouldn't happen (refreshCardArtProfileStatus only reaches here once
+      // getCardArtProfileRecord already found a minted profile) — log and
+      // no-op rather than insert a config row with no file ids.
+      console.error(
+        "[increase] finishRefreshCardArtProfileStatus: no card-art config on record — skipping",
+      );
+      return null;
+    }
+    const key: "cardArt" | "cardArtSandbox" = sandbox ? "cardArtSandbox" : "cardArt";
+    await ctx.db.patch(existing._id, { [key]: { ...prior, profileStatus: status } });
+    return null;
+  },
+});
+
+/**
+ * Ops step (WP-C.2, run repeatedly between `createDigitalCardProfile` and
+ * `backfillCardProfiles`): poll Increase's review status for the current
+ * mode's minted Digital Card Profile — `GET /digital_card_profiles/{id}` —
+ * and store whatever status it currently reports. A profile starts
+ * `"pending"`; Increase (and/or the card network) eventually resolves it to
+ * `"active"` (safe to attach — `getCardArtProfileId` then starts returning
+ * it) or `"rejected"` (re-upload art per Increase's feedback and re-mint via
+ * `createDigitalCardProfile`). LOGS LOUDLY on every call, success or
+ * skip/degrade — this is a manual ops poll the operator watches to know when
+ * to move to the next step, not a background job. MODE-AWARE / DEGRADES like
+ * the rest of the pipeline: no key configured, or no profile minted yet for
+ * this mode, logs a warning and returns null rather than throwing.
+ *
+ * CLI/CI-runnable:
+ *   npx convex run increase:refreshCardArtProfileStatus
+ *   gh workflow run run-convex-function.yml -f function=increase:refreshCardArtProfileStatus
+ */
+export const refreshCardArtProfileStatus = internalAction({
+  args: {},
+  returns: v.union(
+    v.object({
+      profileId: v.string(),
+      status: v.union(v.literal("pending"), v.literal("active"), v.literal("rejected")),
+    }),
+    v.null(),
+  ),
+  handler: async (
+    ctx,
+  ): Promise<{ profileId: string; status: CardArtProfileStatus } | null> => {
+    const sandbox = await ctx.runQuery(
+      internal.financeSettings.readSandboxMode,
+      {},
+    );
+    const { key, base } = increaseEnvForMode(sandbox);
+    if (!key) {
+      console.warn(
+        `[increase] refreshCardArtProfileStatus skipped: Increase API key not configured for ${sandbox ? "sandbox" : "production"}`,
+      );
+      return null;
+    }
+    const record = await ctx.runQuery(internal.increase.getCardArtProfileRecord, {
+      sandbox,
+    });
+    if (!record) {
+      console.warn(
+        `[increase] refreshCardArtProfileStatus skipped: no Digital Card Profile minted yet for ${sandbox ? "sandbox" : "production"} — run createDigitalCardProfile first`,
+      );
+      return null;
+    }
+
+    const profile = await increaseGet(
+      key,
+      base,
+      `/digital_card_profiles/${record.profileId}`,
+    );
+    const status = normalizeCardArtProfileStatus(profile.status);
+    await ctx.runMutation(internal.increase.finishRefreshCardArtProfileStatus, {
+      sandbox,
+      status,
+    });
+    console.log(
+      `[increase] refreshCardArtProfileStatus: ${record.profileId} (${sandbox ? "sandbox" : "production"}) is now "${status}" (raw Increase status: ${String(profile.status ?? "unknown")})`,
+    );
+    return { profileId: record.profileId, status };
   },
 });
 
@@ -3283,13 +3520,13 @@ export const listCardsForArtBackfill = internalQuery({
 export const backfillCardProfiles = internalAction({
   args: {},
   returns: v.object({
-    scanned: v.number(),
+    eligible: v.number(),
     patched: v.number(),
     skipped: v.number(),
   }),
   handler: async (
     ctx,
-  ): Promise<{ scanned: number; patched: number; skipped: number }> => {
+  ): Promise<{ eligible: number; patched: number; skipped: number }> => {
     const cards = await ctx.runQuery(
       internal.increase.listCardsForArtBackfill,
       {},
@@ -3336,6 +3573,6 @@ export const backfillCardProfiles = internalAction({
         skipped += 1;
       }
     }
-    return { scanned: cards.length, patched, skipped };
+    return { eligible: cards.length, patched, skipped };
   },
 });
