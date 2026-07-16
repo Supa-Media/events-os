@@ -335,8 +335,9 @@ export function AiCodingBanner() {
       <View className="flex-1">
         <Text className="text-sm font-semibold text-ink">AI auto-coding is on</Text>
         <Text className="mt-0.5 text-sm text-muted">
-          New charges are matched to an event, project & category from the card,
-          the time, and what's on the calendar that week — you just confirm.
+          New charges get a suggested fund, category & event/project from the
+          card, the time, and what's on the calendar that week — review it in
+          Reconcile and hit Accept. Nothing is coded automatically.
         </Text>
       </View>
     </View>
