@@ -562,6 +562,279 @@ describe("initiateSkimTransfer — real movement (mocked Increase)", () => {
   });
 });
 
+describe("initiateSkimTransfer — non-complete Increase status (IMPORTANT 2)", () => {
+  const originalFetch = globalThis.fetch;
+  const originalKey = process.env.INCREASE_API_KEY;
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+    if (originalKey === undefined) delete process.env.INCREASE_API_KEY;
+    else process.env.INCREASE_API_KEY = originalKey;
+  });
+
+  function mockFetchReturning(status: string) {
+    globalThis.fetch = (async () =>
+      new Response(
+        JSON.stringify({ id: "account_transfer_pending", status }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      )) as unknown as typeof fetch;
+  }
+
+  test("pending_approval: throws TRANSFER_PENDING_APPROVAL, books nothing", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await asCentral(s, "bookkeeper");
+    await seedActiveAccount(s, s.chapterId, "account_ch");
+    await seedActiveAccount(s, CENTRAL, "account_central");
+    process.env.INCREASE_API_KEY = "test_key";
+    mockFetchReturning("pending_approval");
+
+    let caught: unknown;
+    try {
+      await s.as.action(api.transfers.initiateSkimTransfer, {
+        chapterId: s.chapterId,
+        year: 2026,
+        month: 3,
+        amountCents: 40_000,
+      });
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(ConvexError);
+    expect((caught as ConvexError<{ code: string }>).data.code).toBe(
+      "TRANSFER_PENDING_APPROVAL",
+    );
+    const legs = await legsFor(s, skimTransferGroupId(s.chapterId, 2026, 3));
+    expect(legs.length).toBe(0);
+  });
+
+  test("canceled: throws TRANSFER_CANCELED, books nothing", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await asCentral(s, "bookkeeper");
+    await seedActiveAccount(s, s.chapterId, "account_ch");
+    await seedActiveAccount(s, CENTRAL, "account_central");
+    process.env.INCREASE_API_KEY = "test_key";
+    mockFetchReturning("canceled");
+
+    let caught: unknown;
+    try {
+      await s.as.action(api.transfers.initiateSkimTransfer, {
+        chapterId: s.chapterId,
+        year: 2026,
+        month: 4,
+        amountCents: 40_000,
+      });
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(ConvexError);
+    expect((caught as ConvexError<{ code: string }>).data.code).toBe(
+      "TRANSFER_CANCELED",
+    );
+    const legs = await legsFor(s, skimTransferGroupId(s.chapterId, 2026, 4));
+    expect(legs.length).toBe(0);
+  });
+});
+
+describe("initiateLaunchGrant — non-complete Increase status (IMPORTANT 2)", () => {
+  const originalFetch = globalThis.fetch;
+  const originalKey = process.env.INCREASE_API_KEY;
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+    if (originalKey === undefined) delete process.env.INCREASE_API_KEY;
+    else process.env.INCREASE_API_KEY = originalKey;
+  });
+
+  function mockFetchReturning(status: string) {
+    globalThis.fetch = (async () =>
+      new Response(JSON.stringify({ id: "account_transfer_grant", status }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      })) as unknown as typeof fetch;
+  }
+
+  test("pending_approval: throws TRANSFER_PENDING_APPROVAL, books nothing (no budget stamped)", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await asCentralEd(s);
+    const newChapter = await makeChapter(s, "Boston");
+    await seedActiveAccount(s, CENTRAL, "account_central");
+    await seedActiveAccount(s, newChapter, "account_boston");
+    process.env.INCREASE_API_KEY = "test_key";
+    mockFetchReturning("pending_approval");
+
+    let caught: unknown;
+    try {
+      await s.as.action(api.transfers.initiateLaunchGrant, {
+        chapterId: newChapter,
+      });
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(ConvexError);
+    expect((caught as ConvexError<{ code: string }>).data.code).toBe(
+      "TRANSFER_PENDING_APPROVAL",
+    );
+    const legs = await legsFor(s, launchTransferGroupId(newChapter));
+    expect(legs.length).toBe(0);
+    const budgets = await run(s.t, (ctx) =>
+      ctx.db
+        .query("budgets")
+        .withIndex("by_chapter_and_period", (q) =>
+          q.eq("chapterId", newChapter).eq("year", new Date().getFullYear()),
+        )
+        .collect(),
+    );
+    expect(budgets.length).toBe(0);
+  });
+
+  test("canceled: throws TRANSFER_CANCELED, books nothing", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await asCentralEd(s);
+    const newChapter = await makeChapter(s, "Boston");
+    await seedActiveAccount(s, CENTRAL, "account_central");
+    await seedActiveAccount(s, newChapter, "account_boston");
+    process.env.INCREASE_API_KEY = "test_key";
+    mockFetchReturning("canceled");
+
+    let caught: unknown;
+    try {
+      await s.as.action(api.transfers.initiateLaunchGrant, {
+        chapterId: newChapter,
+      });
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(ConvexError);
+    expect((caught as ConvexError<{ code: string }>).data.code).toBe(
+      "TRANSFER_CANCELED",
+    );
+    const legs = await legsFor(s, launchTransferGroupId(newChapter));
+    expect(legs.length).toBe(0);
+  });
+});
+
+// ── IMPORTANT 1 · sandbox transfer legs must not pollute the PROD fund position
+
+describe("dashboardCentral.cityLaunchFund — mode-filtered (IMPORTANT 1)", () => {
+  test("a sandbox-externalId skim leg is excluded from prod mode, included in sandbox mode; manual legs count in both", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await asCentral(s, "bookkeeper");
+
+    // Manual leg (no externalId) — env-neutral, must count in BOTH modes.
+    await s.as.mutation(api.transfers.recordSkimTransfer, {
+      chapterId: s.chapterId,
+      year: 2026,
+      month: 1,
+      amountCents: 10_000,
+    });
+    // A "production" real leg (non-sandbox externalId).
+    await s.as.mutation(internal.transfers.recordSkimPairFromIncrease, {
+      chapterId: s.chapterId,
+      year: 2026,
+      month: 2,
+      amountCents: 20_000,
+      increaseTransferId: "account_transfer_prod",
+    });
+    // A sandbox-initiated real leg.
+    await s.as.mutation(internal.transfers.recordSkimPairFromIncrease, {
+      chapterId: s.chapterId,
+      year: 2026,
+      month: 3,
+      amountCents: 40_000,
+      increaseTransferId: "sandbox_account_transfer_9",
+    });
+
+    // Default (no financeSettings row) is production mode.
+    const prod = await s.as.query(api.finances.dashboardCentral, {
+      year: 2026,
+      month: 1,
+    });
+    expect(prod.cityLaunchFund.skimsReceivedCents).toBe(30_000); // manual + prod real
+    expect(prod.cityLaunchFund.positionCents).toBe(30_000);
+
+    // Flip to sandbox mode.
+    await run(s.t, (ctx) =>
+      ctx.db.insert("financeSettings", {
+        sandboxMode: true,
+        updatedAt: Date.now(),
+      }),
+    );
+    const sandbox = await s.as.query(api.finances.dashboardCentral, {
+      year: 2026,
+      month: 1,
+    });
+    expect(sandbox.cityLaunchFund.skimsReceivedCents).toBe(50_000); // manual + sandbox real
+    expect(sandbox.cityLaunchFund.positionCents).toBe(50_000);
+  });
+});
+
+describe("removeChapterAccount — sandbox transfer-leg cascade (IMPORTANT 1)", () => {
+  test("deletes the removed chapter's sandbox skim leg; a manual leg survives", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    // A single central "manager" grant satisfies BOTH `requireFinanceManager`
+    // (removeChapterAccount — rank ≥ manager, any scope) AND
+    // `requireCentralFinanceRole(..., "bookkeeper")` (recordSkimTransfer —
+    // central + rank ≥ bookkeeper). `viewerPerson` resolves the caller to
+    // exactly ONE roster row per chapter, so granting via a single person
+    // (rather than `asChapterManager` + `asCentral`, which each seed a
+    // SEPARATE person) is what actually composes here.
+    await asCentral(s, "manager");
+
+    // Sandbox mode + a sandbox-test increaseAccounts row (removable).
+    await run(s.t, (ctx) =>
+      ctx.db.insert("financeSettings", {
+        sandboxMode: true,
+        updatedAt: Date.now(),
+      }),
+    );
+    await run(s.t, (ctx) =>
+      ctx.db.insert("increaseAccounts", {
+        chapterId: s.chapterId,
+        sandbox: true,
+        increaseAccountId: "sandbox_acct_test",
+        increaseEntityId: "entity_sandbox",
+        onboardingStatus: "active",
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      }),
+    );
+
+    // A sandbox-initiated skim pair (the chapter-side leg carries the id).
+    await s.as.mutation(internal.transfers.recordSkimPairFromIncrease, {
+      chapterId: s.chapterId,
+      year: 2026,
+      month: 3,
+      amountCents: 10_000,
+      increaseTransferId: "sandbox_account_transfer_9",
+    });
+    // A manually-recorded skim pair (no externalId) — env-neutral, must survive.
+    await s.as.mutation(api.transfers.recordSkimTransfer, {
+      chapterId: s.chapterId,
+      year: 2026,
+      month: 4,
+      amountCents: 5_000,
+    });
+
+    await s.as.mutation(api.increase.removeChapterAccount, {});
+
+    const sandboxLegs = await legsFor(
+      s,
+      skimTransferGroupId(s.chapterId, 2026, 3),
+    );
+    expect(sandboxLegs.find((l) => l.chapterId === s.chapterId)).toBeUndefined();
+
+    const manualLegs = await legsFor(
+      s,
+      skimTransferGroupId(s.chapterId, 2026, 4),
+    );
+    expect(manualLegs.length).toBe(2);
+  });
+});
+
 describe("transferReadiness", () => {
   test("false without accounts, true once both are active", async () => {
     const t = newT();

@@ -303,6 +303,69 @@ async function postAccountTransfer(
 }
 
 /**
+ * Assert a freshly-created Increase account transfer is booking-safe.
+ * Grounded against increase.com/documentation/api/account-transfers: a
+ * same-group transfer (no `require_approval`) usually comes back `complete`
+ * immediately, but Increase can also return `pending_approval` (the account
+ * requires manual approval in the Increase dashboard) or `canceled`. Booking
+ * the ledger pair for either would let money that never moved (or hasn't
+ * moved YET) look reconciled, so this throws instead of the caller recording
+ * anything. The deterministic `Idempotency-Key` (the transfer group id) makes
+ * a later re-run of `initiate*` safe either way: the re-POST returns the SAME
+ * Increase transfer object — once it's `complete`, that re-run books the pair.
+ */
+function assertTransferSettled(
+  transfer: { id: string; status: string },
+  label: string,
+): void {
+  if (transfer.status === "complete") return;
+  if (transfer.status === "pending_approval") {
+    throw new ConvexError({
+      code: "TRANSFER_PENDING_APPROVAL",
+      message: `${label} (Increase transfer ${transfer.id}) is awaiting approval at Increase and was NOT recorded. Approve it in the Increase dashboard, then re-run this same initiate call — the idempotency key returns the same transfer, now complete, and books it then.`,
+    });
+  }
+  if (transfer.status === "canceled") {
+    throw new ConvexError({
+      code: "TRANSFER_CANCELED",
+      message: `${label} (Increase transfer ${transfer.id}) was canceled at Increase. Nothing was recorded.`,
+    });
+  }
+  throw new ConvexError({
+    code: "TRANSFER_NOT_SETTLED",
+    message: `${label} (Increase transfer ${transfer.id}) came back with an unexpected status "${transfer.status}" and was NOT recorded. Check the transfer in the Increase dashboard before retrying.`,
+  });
+}
+
+/**
+ * Run the post-POST recording mutation, translating any failure into an
+ * operator-actionable `ConvexError`. The Increase transfer already succeeded
+ * at this point (its id is `transfer.id`) — a failure here (a transient
+ * Convex error, a network blip) means the money moved but the ledger pair
+ * didn't get written. The fix is always the same re-run, and the deterministic
+ * Idempotency-Key makes it safe (the re-POST returns the same, already-
+ * complete transfer and books it on retry) — so the error says exactly that
+ * instead of surfacing a generic/opaque failure.
+ */
+async function recordAfterTransferOrExplain<T>(
+  transfer: { id: string },
+  record: () => Promise<T>,
+): Promise<T> {
+  try {
+    return await record();
+  } catch (err) {
+    console.error(
+      `[transfers] recording failed after Increase transfer ${transfer.id} succeeded:`,
+      err,
+    );
+    throw new ConvexError({
+      code: "RECORD_FAILED_AFTER_TRANSFER",
+      message: `The Increase transfer succeeded (id ${transfer.id}) but recording failed — RE-RUN this transfer with the same inputs to record it; the duplicate-send is prevented by the idempotency key.`,
+    });
+  }
+}
+
+/**
  * Resolve the two live Increase accounts for a real movement, or throw
  * `NOT_CONFIGURED`. Both the source + destination scopes must have an `active`
  * account WITH an `increaseAccountId` in the CURRENT mode; anything less means
@@ -500,16 +563,16 @@ export const initiateSkimTransfer = action({
       },
       prep.transferGroupId,
     );
-    const rec = await ctx.runMutation(
-      internal.transfers.recordSkimPairFromIncrease,
-      {
+    assertTransferSettled(transfer, "This month's skim transfer");
+    const rec = await recordAfterTransferOrExplain(transfer, () =>
+      ctx.runMutation(internal.transfers.recordSkimPairFromIncrease, {
         chapterId: args.chapterId,
         year: args.year,
         month: args.month,
         amountCents: prep.amountCents,
         increaseTransferId: transfer.id,
         note: args.note,
-      },
+      }),
     );
     return { ...rec, increaseTransferId: transfer.id };
   },
@@ -681,15 +744,15 @@ export const initiateLaunchGrant = action({
       },
       prep.transferGroupId,
     );
-    const rec = await ctx.runMutation(
-      internal.transfers.recordLaunchFromIncrease,
-      {
+    assertTransferSettled(transfer, "This launch grant transfer");
+    const rec = await recordAfterTransferOrExplain(transfer, () =>
+      ctx.runMutation(internal.transfers.recordLaunchFromIncrease, {
         chapterId: args.chapterId,
         amountCents: prep.amountCents,
         year: prep.year,
         increaseTransferId: transfer.id,
         note: args.note,
-      },
+      }),
     );
     return { ...rec, increaseTransferId: transfer.id };
   },

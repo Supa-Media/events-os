@@ -2949,11 +2949,15 @@ export const listAccountsStatus = query({
  * CASCADE: removing a sandbox/test account also deletes the chapter's leftover
  * SANDBOX child records so the chapter is clean for a fresh production
  * provision — `sandbox_`-issued `cards` (+ their `cardAuthorizations`),
- * `sandbox_` `payouts`, and any `increase_*` `transactions` with a `sandbox_`
- * external/source id. Environment-NEUTRAL records (a null-id degraded card, a
- * manual null-transfer payout) are left untouched. Best-effort Increase-side
- * card cancellation is OUT OF SCOPE — this only cleans our DB (a sandbox object
- * is disposable at the vendor anyway). Idempotent.
+ * `sandbox_` `payouts`, any `increase_*` `transactions` with a `sandbox_`
+ * external/source id, AND any `skim`/`launch_grant` TRANSFER leg (WP-4.1/4.2)
+ * whose `externalId` is `sandbox_`-prefixed — otherwise a sandbox-initiated
+ * transfer would keep counting toward the PRODUCTION City Launch Fund position
+ * forever (`dashboardCentral`). Environment-NEUTRAL records (a null-id
+ * degraded card, a manual null-transfer payout, a manually-recorded transfer
+ * leg with no `externalId`) are left untouched. Best-effort Increase-side card
+ * cancellation is OUT OF SCOPE — this only cleans our DB (a sandbox object is
+ * disposable at the vendor anyway). Idempotent.
  */
 export const removeChapterAccount = mutation({
   args: {},
@@ -3010,6 +3014,12 @@ export const removeChapterAccount = mutation({
 
     // 3. Sandbox increase_* transactions (none written today — defensive). A
     //    reimbursement/repayment/manual txn is env-neutral and left alone.
+    //    ALSO sandbox skim/launch_grant TRANSFER legs (WP-4.1/4.2) — a
+    //    sandbox-initiated `initiateSkimTransfer`/`initiateLaunchGrant` stamps
+    //    the leg's `externalId` with the real Increase account-transfer id
+    //    (`sandbox_account_transfer_…` in sandbox), so it's matched by prefix
+    //    the same way a card/ACH row is; otherwise it would count toward the
+    //    PRODUCTION City Launch Fund position forever (dashboardCentral).
     const txns = await ctx.db
       .query("transactions")
       .withIndex("by_chapter", (q) => q.eq("chapterId", chapterId))
@@ -3017,9 +3027,12 @@ export const removeChapterAccount = mutation({
     for (const t of txns) {
       const isIncreaseTxn =
         t.source === "increase_card" || t.source === "increase_ach";
+      const isTransferTxn = t.source === "skim" || t.source === "launch_grant";
       if (
-        isIncreaseTxn &&
-        (isSandboxObjectId(t.externalId) || isSandboxObjectId(t.sourceAccountId))
+        (isIncreaseTxn &&
+          (isSandboxObjectId(t.externalId) ||
+            isSandboxObjectId(t.sourceAccountId))) ||
+        (isTransferTxn && isSandboxObjectId(t.externalId))
       ) {
         await ctx.db.delete(t._id);
       }

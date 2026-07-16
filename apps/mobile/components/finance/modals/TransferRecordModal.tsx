@@ -177,7 +177,14 @@ export function TransferRecordModal({
               label="Direction"
               value={direction}
               options={DIRECTION_OPTIONS}
-              onChange={(v) => setDirection(v as Direction)}
+              onChange={(v) => {
+                // `amount` is shared between the skim's "enter directly" basis
+                // and the grant's amount field — reset it on a direction
+                // switch so a skim dollar figure doesn't carry over and get
+                // silently submitted as the grant amount (or vice versa).
+                setDirection(v as Direction);
+                setAmount("");
+              }}
             />
             <Select
               label="Chapter"

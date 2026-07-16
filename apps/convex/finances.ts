@@ -2260,11 +2260,25 @@ export const dashboardCentral = query({
       .query("transactions")
       .withIndex("by_chapter", (q) => q.eq("chapterId", CENTRAL))
       .take(ROLLUP_SCAN_LIMIT);
+    if (allCentralTxns.length === ROLLUP_SCAN_LIMIT) {
+      console.warn(
+        `[finances] City Launch Fund scan hit ROLLUP_SCAN_LIMIT (${ROLLUP_SCAN_LIMIT}) reading central transactions; fund position may be truncated.`,
+      );
+    }
     let skimsReceivedCents = 0;
     let launchGrantsMadeCents = 0;
     let periodSkimsReceivedCents = 0;
     let periodLaunchGrantsMadeCents = 0;
     for (const tr of allCentralTxns) {
+      // NOT `txnMatchesMode` — that helper short-circuits `true` for any
+      // source other than `increase_card`/`increase_ach`, which would let a
+      // sandbox-initiated transfer leg (externalId `sandbox_account_transfer_
+      // …`) count toward the PRODUCTION fund position forever. A transfer leg
+      // carries its own env in `externalId` when it's a real Increase
+      // movement, so check that directly; a manual leg (no externalId) has
+      // none and stays env-neutral (`matchesMode` returns `true` for a
+      // falsy id either way).
+      if (!matchesMode(tr.externalId ?? null, sandboxMode)) continue;
       const inPeriod = inDashRange(tr.postedAt, dp);
       if (tr.source === "skim") {
         skimsReceivedCents += tr.amountCents;
