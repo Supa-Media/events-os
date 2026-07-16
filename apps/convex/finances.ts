@@ -1113,6 +1113,11 @@ async function chapterAttentionQueue(
         q.eq("chapterId", chapterId).eq("status", status),
       )
       .take(ROLLUP_SCAN_LIMIT);
+    if (rows.length === ROLLUP_SCAN_LIMIT) {
+      console.warn(
+        `[finances] attention queue hit ROLLUP_SCAN_LIMIT (${ROLLUP_SCAN_LIMIT}) reading "${status}" reimbursements for chapter ${chapterId}; count/total truncated.`,
+      );
+    }
     for (const r of rows) {
       reimbCount++;
       reimbCents += r.totalCents;
@@ -1135,6 +1140,11 @@ async function chapterAttentionQueue(
     .query("cards")
     .withIndex("by_chapter", (q) => q.eq("chapterId", chapterId))
     .take(ROLLUP_SCAN_LIMIT);
+  if (chapterCards.length === ROLLUP_SCAN_LIMIT) {
+    console.warn(
+      `[finances] attention queue hit ROLLUP_SCAN_LIMIT (${ROLLUP_SCAN_LIMIT}) reading cards for chapter ${chapterId}; nearing-lock scan truncated.`,
+    );
+  }
   const nearingCardholders = new Set<Id<"people">>();
   for (const card of chapterCards) {
     // Only ACTIVE cards can still be "nearing" — a locked card already tipped
@@ -1144,6 +1154,11 @@ async function chapterAttentionQueue(
       .query("transactions")
       .withIndex("by_card", (q) => q.eq("cardId", card._id))
       .take(ROLLUP_SCAN_LIMIT);
+    if (charges.length === ROLLUP_SCAN_LIMIT) {
+      console.warn(
+        `[finances] attention queue hit ROLLUP_SCAN_LIMIT (${ROLLUP_SCAN_LIMIT}) reading charges for card ${card._id}; nearing-lock check truncated.`,
+      );
+    }
     const nearing = charges.some(
       (tr) => isMissingReceiptCharge(tr, card) && tr.postedAt >= cutoff,
     );
@@ -1235,7 +1250,18 @@ export const dashboardChapter = query({
     // target one — mirroring `dashboardCentral` below). Otherwise this is the
     // normal same-chapter viewer gate.
     if (args.chapterId != null && args.chapterId !== ownChapterId) {
-      await requireFinanceCentral(ctx, ownChapterId ?? chapterId);
+      // A caller with no chapter of their own has no home to check central
+      // reach through — never fall back to the TARGET chapter for this (that
+      // would check central-ness against the chapter being drilled into,
+      // not the caller's own standing). Throw the same NO_CHAPTER shape
+      // `requireChapterId` uses elsewhere.
+      if (!ownChapterId) {
+        throw new ConvexError({
+          code: "NO_CHAPTER",
+          message: "You don't belong to a chapter yet.",
+        });
+      }
+      await requireFinanceCentral(ctx, ownChapterId);
     } else {
       await requireFinanceRole(ctx, chapterId, "viewer");
     }

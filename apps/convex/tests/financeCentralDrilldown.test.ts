@@ -48,6 +48,28 @@ async function asChapterManager(s: ChapterSetup): Promise<Id<"people">> {
   return personId;
 }
 
+/**
+ * A genuine central-scope finance manager: a PLAIN person (not the hardcoded
+ * superuser email) holding a real `scope: "central"` financeRoles grant —
+ * the actual mechanism real central admins use. Superuser tests short-circuit
+ * `isSuperuser` before the `financeRoles` scope-matching logic ever runs, so
+ * this is the only path that exercises that logic for the "central CAN drill
+ * down" case.
+ */
+async function asCentralManager(s: ChapterSetup): Promise<Id<"people">> {
+  const personId = await seedSelfPerson(s);
+  await run(s.t, (ctx) =>
+    ctx.db.insert("financeRoles", {
+      chapterId: s.chapterId,
+      personId,
+      role: "manager",
+      scope: "central",
+      createdAt: Date.now(),
+    }),
+  );
+  return personId;
+}
+
 async function makeChapter(s: ChapterSetup, name: string): Promise<Id<"chapters">> {
   return await run(s.t, (ctx) =>
     ctx.db.insert("chapters", { name, isActive: true, createdAt: Date.now() }),
@@ -64,6 +86,19 @@ describe("dashboardChapter: central → chapter drill-down authz", () => {
       chapterId: boston,
     });
     // A well-formed dashboard for the OTHER chapter (not a throw).
+    expect(Array.isArray(dash.tiles)).toBe(true);
+    expect(Array.isArray(dash.attention)).toBe(true);
+  });
+
+  test("a PLAIN person with a genuine scope:\"central\" financeRoles grant CAN read a different chapter's dashboard (not the superuser short-circuit)", async () => {
+    const t = newT();
+    const s = await setupChapter(t); // default non-superuser email
+    await asCentralManager(s);
+    const boston = await makeChapter(s, "Boston");
+
+    const dash = await s.as.query(api.finances.dashboardChapter, {
+      chapterId: boston,
+    });
     expect(Array.isArray(dash.tiles)).toBe(true);
     expect(Array.isArray(dash.attention)).toBe(true);
   });

@@ -125,8 +125,12 @@ function DashboardBody() {
     setPerspective("central");
   }
 
-  // Attention-row actions: both kinds live on their own finance tab.
+  // Attention-row actions: both kinds live on their own finance tab, hard-
+  // scoped to the CALLER's own chapter — never call this while drilled into a
+  // different chapter (ChapterView already hides the action in that state;
+  // this is a defensive no-op, not the primary guard).
   function onAttentionAction(kind: string) {
+    if (drilldown) return;
     if (kind === "reimbursements") router.navigate("/finances/reimbursements" as never);
     else if (kind === "cards") router.navigate("/finances/cards" as never);
   }
@@ -182,6 +186,7 @@ function DashboardBody() {
               chapterId={drilldown?.chapterId}
               ym={ym}
               period={period}
+              isDrilldown={drilldown != null}
               onNewBudget={() => setBudgetModal({ open: true, id: null })}
               onEditBudget={(id) =>
                 setBudgetModal({ open: true, id: id as Id<"budgets"> })
@@ -244,6 +249,7 @@ function ChapterSection({
   chapterId,
   ym,
   period,
+  isDrilldown,
   onNewBudget,
   onEditBudget,
   onAddTransaction,
@@ -252,6 +258,7 @@ function ChapterSection({
   chapterId: Id<"chapters"> | undefined;
   ym: { year: number; month: number };
   period: DashPeriodMode;
+  isDrilldown: boolean;
   onNewBudget: () => void;
   onEditBudget: (budgetId: string) => void;
   onAddTransaction: () => void;
@@ -266,6 +273,7 @@ function ChapterSection({
       onEditBudget={onEditBudget}
       onAddTransaction={onAddTransaction}
       onAttentionAction={onAttentionAction}
+      isDrilldown={isDrilldown}
     />
   );
 }
