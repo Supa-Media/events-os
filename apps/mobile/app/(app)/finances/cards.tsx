@@ -5,18 +5,20 @@
  * `api.cards.*` is live. Rendered in one of two perspectives, mirroring the
  * `finances.html` prototype's manager-only / member-only split:
  *
- *  - **Manager** (admin/lead, the finance-manager surface): the cardholders view
- *    — KPI tiles, the cardholders table with lock / unlock / edit-controls, an
- *    "Issue card" flow, and the card-philosophy explainer. Reads gate on the
- *    `financeRoles` ladder server-side; a lead without a finance grant degrades
- *    to a friendly "access needed" state via the shared FinanceBoundary.
- *  - **Member** (everyone else): their OWN card — the red virtual-card art, a
+ *  - **Manager** (holds a finance seat): the cardholders view — KPI tiles, the
+ *    cardholders table with lock / unlock / edit-controls, an "Issue card"
+ *    flow, and the card-philosophy explainer. Reads gate on the `financeRoles`
+ *    ladder server-side too — the FinanceBoundary fallback is defense-in-depth,
+ *    not the primary gate.
+ *  - **Member** (no finance seat): their OWN card — the red virtual-card art, a
  *    status/spend summary with a receipt warning, the two hard controls shown
  *    read-only, and the flag-a-charge → pay-it-back personal-repayment flow.
  *
- * Perspective resolves from the caller's `api.org.nav` tier (the same probe the
- * finances nav gate uses), so a member who deep-links here lands on their card
- * rather than a restricted wall.
+ * Perspective resolves from `api.financeRoles.mySeats` (WP-0.2's REAL seats),
+ * not the org-chart tier — a tier=admin/lead caller with no financeRoles grant
+ * (e.g. a growth-team lead) is exactly the no-finance-seat "member" this Cards
+ * tab's D3 strip-down targets, and previously landed on the manager view's
+ * permission wall instead of their own card.
  */
 import { useQuery } from "convex/react";
 import { api } from "@events-os/convex/_generated/api";
@@ -36,12 +38,11 @@ function NoFinanceAccess() {
 }
 
 export default function CardsScreen() {
-  const org = useQuery(api.org.nav);
+  const seats = useQuery(api.financeRoles.mySeats, {});
 
-  if (org === undefined) return <Screen loading />;
+  if (seats === undefined) return <Screen loading />;
 
-  const tier = org.tier;
-  const isManager = tier === "admin" || tier === "lead";
+  const isManager = seats.length > 0;
 
   return (
     <Screen maxWidth={1080}>

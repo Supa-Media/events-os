@@ -2,9 +2,15 @@
  * FINANCES · Dashboard — the money home, rendered at the desk the caller
  * ACTUALLY sits at. `api.financeRoles.mySeats` resolves their real seats from
  * `financeRoles` grants (+ the superuser allowlist): a central seat renders the
- * org-wide roll-up, a chapter seat renders that chapter's dashboard, and no
- * seat renders the member view (my card / my transactions). There is no
- * "Preview as" role simulation — nobody sees a desk they don't hold.
+ * org-wide roll-up, a chapter seat renders that chapter's dashboard. There is
+ * no "Preview as" role simulation — nobody sees a desk they don't hold.
+ *
+ * No finance seat: the member tab bar (`_layout.tsx`, D3) doesn't even show
+ * this Dashboard tab — a no-seat caller lands on My Card / My Transactions /
+ * Reimbursements instead. A no-seat caller who deep-links (or double-taps
+ * back) onto this index route anyway is redirected to `/finances/cards` (My
+ * Card) so they always land on a tab the member bar actually highlights,
+ * rather than an orphaned `MemberView` with no active tab.
  *
  * Dual-hat holders (a central seat AND ≥1 chapter seat — a transition-period
  * state, e.g. ED + Chapter Director today) get a seat switcher listing their
@@ -23,7 +29,7 @@
 import { useState } from "react";
 import { ActivityIndicator, Text, View } from "react-native";
 import { useQuery } from "convex/react";
-import { useRouter } from "expo-router";
+import { Redirect, useRouter } from "expo-router";
 import { api } from "@events-os/convex/_generated/api";
 import type { Id } from "@events-os/convex/_generated/dataModel";
 import { Button, EmptyState, Narrow, Screen } from "../../../components/ui";
@@ -38,7 +44,6 @@ import {
 } from "../../../components/finance/dashboard/parts";
 import { ChapterView } from "../../../components/finance/dashboard/ChapterView";
 import { CentralView } from "../../../components/finance/dashboard/CentralView";
-import { MemberView } from "../../../components/finance/dashboard/MemberView";
 import { BudgetCreateModal } from "../../../components/finance/modals/BudgetCreateModal";
 import { ManualTransactionModal } from "../../../components/finance/modals/ManualTransactionModal";
 
@@ -137,10 +142,18 @@ function DashboardBody() {
     );
   }
 
+  // No finance seat → send them to My Card, their actual entry point in the
+  // member tab bar, instead of an orphaned MemberView with no active tab here.
+  if (seats.length === 0) {
+    return <Redirect href="/finances/cards" />;
+  }
+
   const centralSeat = seats.find((s) => s.scope === "central") ?? null;
   const chapterSeats = seats.filter((s) => s.scope === "chapter");
-  // mySeats returns central first, so seats[0] is the default desk.
-  const activeSeat = seats.find((s) => seatKeyOf(s) === seatKey) ?? seats[0] ?? null;
+  // mySeats returns central first, so seats[0] is the default desk. `seats` is
+  // non-empty here (the no-seat/member case returned above), so this is never
+  // null — unlike the null-fallback chain this replaced.
+  const activeSeat = seats.find((s) => seatKeyOf(s) === seatKey) ?? seats[0];
   // Dual-hat only: a central seat AND at least one chapter seat.
   const showSwitcher = centralSeat != null && chapterSeats.length > 0;
 
@@ -177,12 +190,7 @@ function DashboardBody() {
           ) : null}
         </View>
 
-        {activeSeat === null ? (
-          // No finance seat → the member view (my card / my transactions).
-          <FinanceBoundary fallback={<NoFinanceAccess />}>
-            <MemberSection />
-          </FinanceBoundary>
-        ) : atCentralDesk && drilldown === null ? (
+        {atCentralDesk && drilldown === null ? (
           <FinanceBoundary fallback={<NoFinanceAccess />}>
             <CentralSection
               ym={ym}
@@ -294,10 +302,4 @@ function ChapterSection({
       isDrilldown={isDrilldown}
     />
   );
-}
-
-function MemberSection() {
-  const transactions = useQuery(api.finances.personTransactions, {});
-  if (transactions === undefined) return <LoadingBlock />;
-  return <MemberView transactions={transactions} />;
 }
