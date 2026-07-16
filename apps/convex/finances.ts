@@ -3635,6 +3635,13 @@ export const setTransactionStatus = mutation({
     await ctx.db.patch(args.transactionId, {
       status: args.status,
       aiSuggestion: undefined,
+      // A manager just resolved this txn — the receipt-reminder timeline is
+      // moot from here on, so clear it too (mirrors `attachReceipt`'s clear).
+      // Otherwise the "Day 3 overdue" badge keeps rendering forever on a row
+      // the manager already reconciled or intentionally excluded.
+      ...(args.status === "reconciled" || args.status === "excluded"
+        ? { receiptReminderStage: undefined, lastReminderSentAt: undefined }
+        : {}),
     });
     return null;
   },

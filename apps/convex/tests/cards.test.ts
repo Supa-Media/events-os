@@ -659,6 +659,89 @@ describe("attachReceipt (finances.ts) unlocking a card immediately", () => {
     expect(after?.receiptReminderStage).toBeUndefined();
     expect(after?.lastReminderSentAt).toBeUndefined();
   });
+
+  test("attaching a receipt to a non-card txn (no cardId) doesn't throw", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await seedManager(s);
+    const txn = await run(s.t, (ctx) =>
+      ctx.db.insert("transactions", {
+        chapterId: s.chapterId,
+        source: "manual",
+        flow: "outflow",
+        amountCents: 4200,
+        postedAt: Date.now(),
+        status: "unreviewed",
+        createdAt: Date.now(),
+      }),
+    );
+
+    const receiptId = await storeBlob(s.t);
+    await s.as.mutation(api.finances.attachReceipt, {
+      transactionId: txn,
+      storageId: receiptId,
+    });
+
+    const after = await run(s.t, (ctx) => ctx.db.get(txn));
+    expect(after?.receiptStorageId).toBe(receiptId);
+  });
+});
+
+// ── setTransactionStatus (finances.ts): clears the reminder timeline too ────
+
+describe("setTransactionStatus clearing the reminder timeline", () => {
+  test.each(["reconciled", "excluded"] as const)(
+    "transitioning to %s clears receiptReminderStage + lastReminderSentAt",
+    async (status) => {
+      const t = newT();
+      const s = await setupChapter(t);
+      await seedManager(s);
+      const holder = await seedPerson(s, { name: "Holder" });
+      const cardId = await seedCard(s, { cardholderPersonId: holder });
+      const txn = await seedCardTxn(s, {
+        cardId,
+        amountCents: 2000,
+        ageDays: 4,
+      });
+
+      await s.t.mutation(internal.cards.advanceReceiptReminders, {});
+      expect(
+        (await run(s.t, (ctx) => ctx.db.get(txn)))?.receiptReminderStage,
+      ).toBe("escalated");
+
+      await s.as.mutation(api.finances.setTransactionStatus, {
+        transactionId: txn,
+        status,
+      });
+
+      const after = await run(s.t, (ctx) => ctx.db.get(txn));
+      expect(after?.status).toBe(status);
+      expect(after?.receiptReminderStage).toBeUndefined();
+      expect(after?.lastReminderSentAt).toBeUndefined();
+    },
+  );
+
+  test("transitioning to categorized leaves the reminder timeline untouched", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await seedManager(s);
+    const holder = await seedPerson(s, { name: "Holder" });
+    const cardId = await seedCard(s, { cardholderPersonId: holder });
+    const txn = await seedCardTxn(s, { cardId, amountCents: 2000, ageDays: 4 });
+
+    await s.t.mutation(internal.cards.advanceReceiptReminders, {});
+    const before = await run(s.t, (ctx) => ctx.db.get(txn));
+    expect(before?.receiptReminderStage).toBe("escalated");
+
+    await s.as.mutation(api.finances.setTransactionStatus, {
+      transactionId: txn,
+      status: "categorized",
+    });
+
+    const after = await run(s.t, (ctx) => ctx.db.get(txn));
+    expect(after?.receiptReminderStage).toBe("escalated");
+    expect(after?.lastReminderSentAt).toBe(before?.lastReminderSentAt);
+  });
 });
 
 // ── advanceReceiptReminders (day-1 flag / day-3 escalate) ────────────────────
@@ -727,6 +810,87 @@ describe("advanceReceiptReminders", () => {
     ).toBe(firstStamp);
   });
 
+  test("caps stage transitions at REMINDER_BATCH_LIMIT per run, oldest charge first", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const holder = await seedPerson(s, { name: "Holder" });
+    const cardId = await seedCard(s, { cardholderPersonId: holder });
+    const CAP = 25; // mirrors REMINDER_BATCH_LIMIT in cards.ts
+    const total = CAP + 5;
+    // All well past RECEIPT_ESCALATE_DAYS (3) and well under the 30-day
+    // seed-only horizon, so every one of these is normally email-eligible.
+    // Fractional ageDays gives each a distinct postedAt — higher `i` is
+    // posted further in the past (older).
+    const txns: Id<"transactions">[] = [];
+    for (let i = 0; i < total; i++) {
+      txns.push(
+        await seedCardTxn(s, {
+          cardId,
+          amountCents: 1000 + i,
+          ageDays: 4 + i * 0.01,
+        }),
+      );
+    }
+
+    const r = await s.t.mutation(internal.cards.advanceReceiptReminders, {});
+    expect(r.flagged).toEqual([]);
+    expect(r.escalated).toHaveLength(CAP);
+    // The CAP oldest (highest-`i`) charges transition; the 5 newest are left
+    // for a later run — proves the backlog drains gradually, oldest first.
+    const expectedTransitioned = new Set(txns.slice(5));
+    expect(new Set(r.escalated)).toEqual(expectedTransitioned);
+    for (const id of txns.slice(0, 5)) {
+      expect(
+        (await run(s.t, (ctx) => ctx.db.get(id)))?.receiptReminderStage,
+      ).toBeUndefined();
+    }
+  });
+
+  test("charges past the seed-only horizon get their stage set silently — no email, no timestamp", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const holder = await seedPerson(s, { name: "Holder" });
+    const cardId = await seedCard(s, { cardholderPersonId: holder });
+    const ancientTxn = await seedCardTxn(s, {
+      cardId,
+      amountCents: 5000,
+      ageDays: 45, // past the 30-day REMINDER_SEED_ONLY_DAYS horizon
+    });
+
+    const r = await s.t.mutation(internal.cards.advanceReceiptReminders, {});
+    // Not returned for email...
+    expect(r.escalated).not.toContain(ancientTxn);
+    expect(r.flagged).not.toContain(ancientTxn);
+
+    // ...but the stage IS set, so the grid still reflects reality; no
+    // reminder-sent stamp since none was actually sent.
+    const after = await run(s.t, (ctx) => ctx.db.get(ancientTxn));
+    expect(after?.receiptReminderStage).toBe("escalated");
+    expect(after?.lastReminderSentAt).toBeUndefined();
+  });
+
+  test("skips isPersonal charges entirely — never flagged or escalated", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const holder = await seedPerson(s, { name: "Holder" });
+    const cardId = await seedCard(s, { cardholderPersonId: holder });
+    const personalTxn = await seedCardTxn(s, {
+      cardId,
+      amountCents: 3000,
+      ageDays: 4,
+    });
+    await run(s.t, (ctx) =>
+      ctx.db.patch(personalTxn, { isPersonal: true }),
+    );
+
+    const r = await s.t.mutation(internal.cards.advanceReceiptReminders, {});
+    expect(r.flagged).toEqual([]);
+    expect(r.escalated).toEqual([]);
+    expect(
+      (await run(s.t, (ctx) => ctx.db.get(personalTxn)))?.receiptReminderStage,
+    ).toBeUndefined();
+  });
+
   test("a charge that already has a receipt is never flagged or escalated", async () => {
     const t = newT();
     const s = await setupChapter(t);
@@ -759,11 +923,17 @@ describe("sendReceiptReminders", () => {
     const cardId = await seedCard(s, { cardholderPersonId: holder });
     await seedCardTxn(s, { cardId, amountCents: 1500, ageDays: 2 });
     await seedCardTxn(s, { cardId, amountCents: 2500, ageDays: 4 });
+    const prevResendKey = process.env.RESEND_API_KEY;
     delete process.env.RESEND_API_KEY;
 
-    const out = await s.t.action(internal.cards.sendReceiptReminders, {});
-    expect(out.flaggedCount).toBe(1);
-    expect(out.escalatedCount).toBe(1);
+    try {
+      const out = await s.t.action(internal.cards.sendReceiptReminders, {});
+      expect(out.flaggedCount).toBe(1);
+      expect(out.escalatedCount).toBe(1);
+    } finally {
+      if (prevResendKey === undefined) delete process.env.RESEND_API_KEY;
+      else process.env.RESEND_API_KEY = prevResendKey;
+    }
   });
 });
 
