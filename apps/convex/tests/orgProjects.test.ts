@@ -94,7 +94,7 @@ describe("manager hierarchy", () => {
     // stays visible in her Team view instead of vanishing into admin triage.
     const caraDoc = await s.as.query(api.people.get, { personId: cara });
     expect(caraDoc.managerId).toBe(alice);
-    const projects = await s.as.query(api.projects.list);
+    const projects = await s.as.query(api.projects.list, {});
     expect(projects).toHaveLength(1);
     expect(projects[0].ownerPersonId).toBe(alice);
   });
@@ -132,7 +132,7 @@ describe("projects", () => {
       name: "Music recording",
     })) as Id<"projects">;
 
-    let [p] = await s.as.query(api.projects.list);
+    let [p] = await s.as.query(api.projects.list, {});
     expect(p.status).toBe("not_started");
 
     await s.as.mutation(api.projects.update, {
@@ -144,7 +144,7 @@ describe("projects", () => {
       deadline: 1770000000000,
       blocker: "Studio availability",
     });
-    [p] = await s.as.query(api.projects.list);
+    [p] = await s.as.query(api.projects.list, {});
     expect(p.status).toBe("in_progress");
     // `statusNote` was dropped from the schema in Deploy C, so it's no longer a
     // field on the projects return shape; the fold into `lastComment` is the
@@ -156,7 +156,7 @@ describe("projects", () => {
       projectId: id,
       blocker: null,
     });
-    [p] = await s.as.query(api.projects.list);
+    [p] = await s.as.query(api.projects.list, {});
     expect(p.blocker).toBeUndefined();
   });
 
@@ -199,7 +199,7 @@ describe("projects", () => {
     })) as Id<"projects">;
 
     await s.as.mutation(api.projects.remove, { projectId: mid });
-    const projects = await s.as.query(api.projects.list);
+    const projects = await s.as.query(api.projects.list, {});
     const leafDoc = projects.find((p) => p._id === leaf)!;
     expect(leafDoc.parentProjectId).toBe(grand);
     expect(projects).toHaveLength(2);
@@ -405,7 +405,7 @@ describe("access control", () => {
     })) as Id<"projects">;
 
     const names = async (client: typeof asBob) =>
-      (await client.query(api.projects.list)).map((p) => p.name).sort();
+      (await client.query(api.projects.list, {})).map((p) => p.name).sort();
     // Read is transparent: admin, manager (Bob), and plain member (Cara) all
     // see every project in the chapter — the whole team's workload.
     expect(await names(s.as as never)).toHaveLength(5);
@@ -501,7 +501,7 @@ describe("review-cycle regressions", () => {
       projectId: sub,
       ownerPersonId: null,
     });
-    const rootDoc = (await asBob.query(api.projects.list)).find(
+    const rootDoc = (await asBob.query(api.projects.list, {})).find(
       (p) => p._id === root,
     )!;
     expect(rootDoc.ownerPersonId).toBeUndefined();
@@ -520,7 +520,7 @@ describe("review-cycle regressions", () => {
     })) as Id<"projects">;
 
     await s.as.mutation(api.projects.remove, { projectId: root });
-    const projects = await s.as.query(api.projects.list);
+    const projects = await s.as.query(api.projects.list, {});
     const subDoc = projects.find((p) => p._id === sub)!;
     // "Sub-projects are kept" — including their effective owner.
     expect(subDoc.ownerPersonId).toBe(bob);
@@ -557,7 +557,7 @@ describe("review-cycle regressions", () => {
     })) as Id<"projects">;
 
     await s.as.mutation(api.events.remove, { eventId });
-    const projects = await s.as.query(api.projects.list);
+    const projects = await s.as.query(api.projects.list, {});
     const doc = projects.find((p) => p._id === projectId)!;
     expect(doc.eventId).toBeUndefined();
   });
@@ -677,7 +677,7 @@ describe("project comments", () => {
     expect(thread![0].authorName).toBe("Cara");
 
     // The list join surfaces the LATEST comment as the collapsed preview.
-    const projects = await asBob.query(api.projects.list);
+    const projects = await asBob.query(api.projects.list, {});
     const doc = projects.find((p) => p._id === projectId)!;
     expect(doc.lastComment?.body).toBe("Great — booking mixing next");
     expect(doc.lastComment?.authorName).toBe("Bob");

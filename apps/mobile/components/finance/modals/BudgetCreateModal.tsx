@@ -94,7 +94,7 @@ export function BudgetCreateModal({
   const budgets = useQuery(api.finances.listBudgets) ?? [];
   const allTags = (useQuery(api.finances.listBudgetTags) ?? []) as TagOption[];
   const events = useQuery(api.events.list, { scope: "all" }) ?? [];
-  const projects = useQuery(api.projects.list) ?? [];
+  const projects = useQuery(api.projects.list, {}) ?? [];
 
   const editing = budgetId
     ? budgets.find((b) => b.id === budgetId) ?? null

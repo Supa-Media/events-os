@@ -27,7 +27,7 @@ const FLOW_OPTIONS = [
 export function ManualTransactionModal({ onClose }: { onClose: () => void }) {
   const create = useMutation(api.finances.createManualTransaction);
   const events = useQuery(api.events.list, { scope: "all" }) ?? [];
-  const projects = useQuery(api.projects.list) ?? [];
+  const projects = useQuery(api.projects.list, {}) ?? [];
 
   const [merchant, setMerchant] = useState("");
   const [description, setDescription] = useState("");

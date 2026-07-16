@@ -40,7 +40,7 @@ export default function ProjectScreen() {
     api.projects.get,
     projectId ? { projectId } : "skip",
   );
-  const projects = useQuery(api.projects.list);
+  const projects = useQuery(api.projects.list, {});
   const people = useQuery(api.people.list, {});
   const log = useQuery(
     api.projects.updateLog,
