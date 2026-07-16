@@ -69,6 +69,7 @@ import {
   requireFinanceManager,
   resolveCallerPersonId,
   assertSeparationOfDuties,
+  defaultFundId,
 } from "./lib/finance";
 import { assertRoutingNumber, assertAccountNumber } from "./increase";
 import { sendEmail, emailShell } from "./ticketingEmails";
@@ -487,6 +488,16 @@ async function createReimbursement(
     updatedAt: now,
   });
 
+  // Silently default a line's fund to the chapter's General Fund when neither
+  // the client nor the public reimburse page's category auto-fill (see
+  // `reimbursePage.ts`) supplied one — funds are backend-only (see WP-1.4),
+  // so no line should ever land fund-less. Resolved once; every fund-less
+  // line in this request shares the chapter's one fund.
+  const needsFallback = input.lines.some((l) => !l.fundId);
+  const fallbackFundId = needsFallback
+    ? (await defaultFundId(ctx, chapterId)) ?? undefined
+    : undefined;
+
   for (let i = 0; i < input.lines.length; i++) {
     const line = input.lines[i];
     await ctx.db.insert("reimbursementLineItems", {
@@ -494,7 +505,7 @@ async function createReimbursement(
       reimbursementId,
       description: cap(line.description, 500),
       amountCents: line.amountCents,
-      fundId: line.fundId,
+      fundId: line.fundId ?? fallbackFundId,
       categoryId: line.categoryId,
       receiptStorageId: line.receiptStorageId,
       order: i,

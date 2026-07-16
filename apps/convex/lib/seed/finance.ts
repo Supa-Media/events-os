@@ -6,7 +6,8 @@
  * from the registered seed mutations in `seed.ts`.
  *
  * Gives a freshly-seeded chapter a usable finance starting point:
- *  - default funds ("General Fund" unrestricted, "Designated" designated),
+ *  - the one default fund ("General Fund", unrestricted — funds are
+ *    backend-only, see WP-1.4 "defund the UI"),
  *  - a few finance teams (Development, Marketing, Operations),
  *  - and a `manager` finance role (scope "chapter") for the seeding admin, so
  *    local dev has finance access out of the box.
@@ -80,17 +81,17 @@ export async function insertDefaultExpenseCategories(
 }
 
 /**
- * The default funds every chapter gets: a "General Fund" (unrestricted, general
- * operating) that budgets/categories nest under, and a "Designated" fund
- * (earmarked money). Kept in insertion order; `sortOrder` follows the array.
+ * The default fund every chapter gets: a single "General Fund" (unrestricted,
+ * general operating) that budgets/categories nest under. Funds go
+ * backend-only in WP-1.4 ("defund the UI") — everything is unrestricted in
+ * practice today, so a chapter starts with exactly one fund and no fund UI is
+ * ever shown. The schema keeps room for donor-restricted funds later (a future
+ * Giving page); this array staying single-entry is what makes that dormant.
  */
 export const DEFAULT_FUNDS: ReadonlyArray<{
   name: string;
   restriction: "unrestricted" | "designated";
-}> = [
-  { name: "General Fund", restriction: "unrestricted" },
-  { name: "Designated", restriction: "designated" },
-] as const;
+}> = [{ name: "General Fund", restriction: "unrestricted" }] as const;
 
 /**
  * Ensure the chapter's {@link DEFAULT_FUNDS} exist. Idempotent + chapter-scoped:
@@ -131,31 +132,22 @@ export async function ensureDefaultFunds(
 
 export interface SeededChapterFinance {
   generalFundId: Id<"funds">;
-  designatedFundId: Id<"funds">;
   adminPersonId: Id<"people">;
 }
 
-/** Seed default funds, finance teams, and the admin's manager finance role. */
+/** Seed the default fund, finance teams, and the admin's manager finance role. */
 export async function seedChapterFinance(
   ctx: any,
   chapterId: Id<"chapters">,
   adminUserId: Id<"users">,
   now: number,
 ): Promise<SeededChapterFinance> {
-  // ── Default funds ──────────────────────────────────────────────────────────
+  // ── Default fund (the one and only) ─────────────────────────────────────────
   const generalFundId = (await ctx.db.insert("funds", {
     chapterId,
     name: "General Fund",
     restriction: "unrestricted",
     sortOrder: 0,
-    isActive: true,
-    createdAt: now,
-  })) as Id<"funds">;
-  const designatedFundId = (await ctx.db.insert("funds", {
-    chapterId,
-    name: "Designated",
-    restriction: "designated",
-    sortOrder: 1,
     isActive: true,
     createdAt: now,
   })) as Id<"funds">;
@@ -207,5 +199,5 @@ export async function seedChapterFinance(
     createdAt: now,
   });
 
-  return { generalFundId, designatedFundId, adminPersonId };
+  return { generalFundId, adminPersonId };
 }

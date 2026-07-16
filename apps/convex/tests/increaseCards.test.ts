@@ -255,6 +255,35 @@ describe("Increase card ingestion — transaction.created webhook", () => {
     expect(txn.postedAt).toBe(Date.parse("2026-07-15T12:00:00Z"));
   });
 
+  test("a native card charge silently lands on the chapter's General Fund (WP-1.4)", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await seedIncreaseAccount(s, "account_x");
+    const generalFundId = await run(s.t, (ctx) =>
+      ctx.db.insert("funds", {
+        chapterId: s.chapterId,
+        name: "General Fund",
+        restriction: "unrestricted",
+        sortOrder: 0,
+        isActive: true,
+        createdAt: Date.now(),
+      }),
+    );
+
+    await t.mutation(internal.increase.applyIncreaseCardTransaction, {
+      externalId: "transaction_fund_default",
+      accountId: "account_x",
+      flow: "outflow",
+      amountCents: 1500,
+      postedAt: Date.now(),
+      merchantName: "Office Depot",
+    });
+
+    const txns = await increaseTxns(s);
+    expect(txns).toHaveLength(1);
+    expect(txns[0].fundId).toBe(generalFundId);
+  });
+
   test("a card_refund posts as an inflow", async () => {
     const t = newT();
     const s = await setupChapter(t);

@@ -4,9 +4,11 @@
  * A budget is a flexible allocation. Pick its TYPE — one-time (attached to a
  * specific event or project) or recurring (monthly / quarterly / yearly) — the
  * period (year + month/quarter as the cadence needs), an amount in dollars, any
- * number of managed TAGS (the flexible rollup dimension), and optionally a fund
- * + category. Central users can also choose the org-level (central) LEVEL. Money
- * is collected in dollars and sent as integer cents.
+ * number of managed TAGS (the flexible rollup dimension), and optionally a
+ * category. Central users can also choose the org-level (central) LEVEL. Money
+ * is collected in dollars and sent as integer cents. There's no fund picker —
+ * funds are backend-only (WP-1.4, "defund the UI"); every budget silently lands
+ * on the chapter's one General Fund server-side.
  *
  * Backed by `createBudget` / `updateBudget` (v2 args: `type`, `refKind` +
  * `scopeRefId` for one-time, `tagIds`). The tag picker is fed by `listBudgetTags`
@@ -80,7 +82,6 @@ export function BudgetCreateModal({
   const create = useMutation(api.finances.createBudget);
   const update = useMutation(api.finances.updateBudget);
   const createTag = useMutation(api.finances.createBudgetTag);
-  const funds = useQuery(api.finances.listFunds) ?? [];
   const budgets = useQuery(api.finances.listBudgets) ?? [];
   const allTags = (useQuery(api.finances.listBudgetTags) ?? []) as TagOption[];
   const events = useQuery(api.events.list, { scope: "all" }) ?? [];
@@ -103,7 +104,6 @@ export function BudgetCreateModal({
   const [year, setYear] = useState(String(defaultYear));
   const [month, setMonth] = useState<number | null>(null);
   const [quarter, setQuarter] = useState<number | null>(1);
-  const [fundId, setFundId] = useState<string | null>(null);
   const [categoryId, setCategoryId] = useState<string | null>(null);
   const [tagIds, setTagIds] = useState<Id<"budgetTags">[]>([]);
   const [saving, setSaving] = useState(false);
@@ -131,23 +131,13 @@ export function BudgetCreateModal({
     setYear(String(editing.year));
     setMonth(editing.month);
     setQuarter(editing.quarter ?? 1);
-    setFundId(editing.fundId ?? null);
     setCategoryId(editing.categoryId ?? null);
     setTagIds(editing.tags.map((t) => t.id));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [editing?.id]);
 
-  // Categories narrow to the chosen fund (all categories when none selected).
-  const categories =
-    useQuery(
-      api.finances.listCategories,
-      fundId ? { fundId: fundId as Id<"funds"> } : {},
-    ) ?? [];
+  const categories = useQuery(api.finances.listCategories, {}) ?? [];
 
-  const fundOptions = useMemo(
-    () => funds.map((f) => ({ value: f.id, label: f.name })),
-    [funds],
-  );
   const categoryOptions = useMemo(
     () => categories.map((c) => ({ value: c.id, label: c.name })),
     [categories],
@@ -247,7 +237,6 @@ export function BudgetCreateModal({
             year: yr,
             month: showMonth ? month : null,
             quarter: showQuarter ? quarter : null,
-            fundId: (fundId as Id<"funds"> | null) ?? null,
             categoryId: (categoryId as Id<"budgetCategories"> | null) ?? null,
           },
           // Send the full current set so backend replaces links (auto tags kept).
@@ -263,7 +252,6 @@ export function BudgetCreateModal({
           ...(type === "one_time" && scopeRefId ? { scopeRefId } : {}),
           ...period,
           ...(label.trim() ? { label: label.trim() } : {}),
-          ...(fundId ? { fundId: fundId as Id<"funds"> } : {}),
           ...(categoryId ? { categoryId: categoryId as Id<"budgetCategories"> } : {}),
           ...(tagIds.length ? { tagIds } : {}),
         });
@@ -410,16 +398,6 @@ export function BudgetCreateModal({
               autoTagNote={isEventBudget && !editing}
             />
 
-            <Select
-              label="Fund (optional)"
-              value={fundId}
-              options={[{ value: "", label: "— No fund —" }, ...fundOptions]}
-              onChange={(v) => {
-                setFundId(v || null);
-                setCategoryId(null);
-              }}
-              placeholder="— No fund —"
-            />
             <Select
               label="Category (optional)"
               value={categoryId}

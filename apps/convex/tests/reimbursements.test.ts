@@ -703,6 +703,46 @@ describe("in-app member self-service submission", () => {
     expect(lines.every((l) => l.fundId === fundId)).toBe(true);
   });
 
+  test("omitting fundId on every line silently lands them on the chapter's General Fund (WP-1.4)", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await seedPerson(s, {
+      name: "Dana Rivers",
+      email: "dana@example.com",
+      userId: s.userId,
+    });
+    const generalFundId = await run(s.t, (ctx) =>
+      ctx.db.insert("funds", {
+        chapterId: s.chapterId,
+        name: "General Fund",
+        restriction: "unrestricted",
+        sortOrder: 0,
+        createdAt: Date.now(),
+      }),
+    );
+
+    // No fund picker in the in-app form anymore — lines never carry a fundId.
+    const { reimbursementId } = await s.as.mutation(
+      api.reimbursements.submitReimbursement,
+      {
+        lines: [
+          { description: "Gaffer tape", amountCents: 1200 },
+          { description: "Snacks", amountCents: 800 },
+        ],
+      },
+    );
+    const lines = await run(s.t, (ctx) =>
+      ctx.db
+        .query("reimbursementLineItems")
+        .withIndex("by_reimbursement", (q) =>
+          q.eq("reimbursementId", reimbursementId),
+        )
+        .collect(),
+    );
+    expect(lines).toHaveLength(2);
+    expect(lines.every((l) => l.fundId === generalFundId)).toBe(true);
+  });
+
   test("the ask-for-pre-approval flag lands in pending_preapproval", async () => {
     const t = newT();
     const s = await setupChapter(t);

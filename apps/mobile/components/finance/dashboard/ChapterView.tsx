@@ -373,7 +373,7 @@ function TransactionsTable({ rows }: { rows: RecentTxn[] }) {
               {t.codedTo ? (
                 <>
                   <Text className="text-sm text-ink" numberOfLines={1}>
-                    {t.codedTo.fundOrProject || "—"}
+                    {t.codedTo.projectOrEvent || "—"}
                   </Text>
                   {t.codedTo.category ? (
                     <Text className="text-xs text-muted" numberOfLines={1}>
@@ -384,9 +384,7 @@ function TransactionsTable({ rows }: { rows: RecentTxn[] }) {
               ) : t.aiSuggestion ? (
                 <View className="gap-1">
                   <Badge
-                    label={`AI: ${[t.aiSuggestion.fund, t.aiSuggestion.category]
-                      .filter(Boolean)
-                      .join(" · ")}`}
+                    label={`AI: ${t.aiSuggestion.category || "—"}`}
                     tone="lavender"
                     icon="sparkles"
                   />

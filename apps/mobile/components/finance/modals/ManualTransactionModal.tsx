@@ -5,8 +5,10 @@
  * this is how a bookkeeper records a charge or deposit that didn't sync from a
  * card/bank. Amount is collected in dollars and sent as a non-negative integer
  * of cents; direction is the `flow` (outflow/inflow), never a sign. Optional
- * fund / category / event / project links attribute the spend for the rollups.
- * Backed by `createManualTransaction`.
+ * category / event / project links attribute the spend for the rollups —
+ * there's no fund picker (funds are backend-only, WP-1.4); the transaction
+ * silently lands on the chapter's General Fund server-side. Backed by
+ * `createManualTransaction`.
  */
 import { useMemo, useState } from "react";
 import { Modal, Pressable, ScrollView, Text, View } from "react-native";
@@ -24,7 +26,6 @@ const FLOW_OPTIONS = [
 
 export function ManualTransactionModal({ onClose }: { onClose: () => void }) {
   const create = useMutation(api.finances.createManualTransaction);
-  const funds = useQuery(api.finances.listFunds) ?? [];
   const events = useQuery(api.events.list, { scope: "all" }) ?? [];
   const projects = useQuery(api.projects.list) ?? [];
 
@@ -33,22 +34,13 @@ export function ManualTransactionModal({ onClose }: { onClose: () => void }) {
   const [amount, setAmount] = useState("");
   const [flow, setFlow] = useState<"outflow" | "inflow">("outflow");
   const [postedAt, setPostedAt] = useState(Date.now());
-  const [fundId, setFundId] = useState<string | null>(null);
   const [categoryId, setCategoryId] = useState<string | null>(null);
   const [eventId, setEventId] = useState<string | null>(null);
   const [projectId, setProjectId] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
 
-  const categories =
-    useQuery(
-      api.finances.listCategories,
-      fundId ? { fundId: fundId as Id<"funds"> } : {},
-    ) ?? [];
+  const categories = useQuery(api.finances.listCategories, {}) ?? [];
 
-  const fundOptions = useMemo(
-    () => [{ value: "", label: "— No fund —" }, ...funds.map((f) => ({ value: f.id, label: f.name }))],
-    [funds],
-  );
   const categoryOptions = useMemo(
     () => [
       { value: "", label: "— No category —" },
@@ -90,7 +82,6 @@ export function ManualTransactionModal({ onClose }: { onClose: () => void }) {
         postedAt,
         ...(merchant.trim() ? { merchantName: merchant.trim() } : {}),
         ...(description.trim() ? { description: description.trim() } : {}),
-        ...(fundId ? { fundId: fundId as Id<"funds"> } : {}),
         ...(categoryId ? { categoryId: categoryId as Id<"budgetCategories"> } : {}),
         ...(eventId ? { eventId: eventId as Id<"events"> } : {}),
         ...(projectId ? { projectId: projectId as Id<"projects"> } : {}),
@@ -158,16 +149,6 @@ export function ManualTransactionModal({ onClose }: { onClose: () => void }) {
               <DateTimeField value={postedAt} onChange={setPostedAt} />
             </Field>
 
-            <Select
-              label="Fund (optional)"
-              value={fundId}
-              options={fundOptions}
-              onChange={(v) => {
-                setFundId(v || null);
-                setCategoryId(null);
-              }}
-              placeholder="— No fund —"
-            />
             <Select
               label="Category (optional)"
               value={categoryId}

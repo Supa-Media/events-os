@@ -8,9 +8,11 @@
  *     `api.increase.removeChapterAccount`.
  *  2. CONNECTED ACCOUNTS — external bank/card accounts linked READ-ONLY via
  *     Stripe Financial Connections. Stripe FC only *reads* them; their
- *     transactions sync in as `unreviewed` rows that land in the Reconcile queue,
- *     pre-coded to each account's default fund. Contract:
- *     `api.stripeFinance.{listAccounts,setAccountFund,disconnect,createFcSession}`.
+ *     transactions sync in as `unreviewed` rows that land in the Reconcile
+ *     queue, silently pre-coded to the chapter's General Fund server-side
+ *     (funds are backend-only — WP-1.4, "defund the UI"; there's no default-
+ *     fund picker here anymore). Contract:
+ *     `api.stripeFinance.{listAccounts,disconnect,createFcSession}`.
  *
  * MODE-AWARE ACCOUNT: a chapter may hold BOTH a sandbox and a production Increase
  * account (up to one per environment). `api.increase.getChapterAccount` returns
@@ -22,13 +24,11 @@
  * The SANDBOX-MODE toggle (developer/testing, superuser only) points NEW
  * provisioning at Increase's sandbox AND switches which environment's account
  * this page shows. Guarded admin-or-lead in-screen (mirrors the nav gate).
- * `api.finances.listFunds` supplies the default-fund options.
  */
-import { useMemo, useState } from "react";
+import { useState } from "react";
 import { Text, View } from "react-native";
 import { useAction, useMutation, useQuery } from "convex/react";
 import { api } from "@events-os/convex/_generated/api";
-import type { Id } from "@events-os/convex/_generated/dataModel";
 import {
   Badge,
   Button,
@@ -41,16 +41,12 @@ import {
   ToastView,
 } from "../../../components/ui";
 import { useActionRunner } from "../../../lib/useActionToast";
-import {
-  AccountRow,
-  type FundOption,
-} from "../../../components/finance/accounts/AccountRow";
+import { AccountRow } from "../../../components/finance/accounts/AccountRow";
 import { ConnectPanel } from "../../../components/finance/accounts/ConnectPanel";
 
 export default function AccountsScreen() {
   const org = useQuery(api.org.nav);
   const accounts = useQuery(api.stripeFinance.listAccounts, {});
-  const funds = useQuery(api.finances.listFunds, {});
   const financeSettings = useQuery(api.financeSettings.getFinanceSettings);
   const chapterAccount = useQuery(api.increase.getChapterAccount);
   // Central/superuser only — regular chapters get Increase accounts + cards
@@ -59,7 +55,6 @@ export default function AccountsScreen() {
   // control simply isn't offered instead of erroring after the hosted flow).
   const canConnectAccount = useQuery(api.stripeFinance.canConnectAccount, {});
 
-  const setAccountFund = useMutation(api.stripeFinance.setAccountFund);
   const disconnect = useMutation(api.stripeFinance.disconnect);
   const refreshFcAccount = useMutation(api.stripeFinance.refreshFcAccount);
   const setSandboxMode = useMutation(api.financeSettings.setSandboxMode);
@@ -72,11 +67,6 @@ export default function AccountsScreen() {
     void run(() => linkAccount({ increaseAccountId }), {
       errorTitle: "Couldn't link the account",
     });
-
-  const fundOptions = useMemo<FundOption[]>(
-    () => (funds ?? []).map((f) => ({ value: f.id, label: f.name })),
-    [funds],
-  );
 
   // In-screen guard: Accounts is a finance-manager surface (admin or lead for
   // now, mirroring the nav gate).
@@ -97,7 +87,6 @@ export default function AccountsScreen() {
   if (
     org === undefined ||
     accounts === undefined ||
-    funds === undefined ||
     financeSettings === undefined ||
     chapterAccount === undefined ||
     canConnectAccount === undefined
@@ -296,18 +285,7 @@ export default function AccountsScreen() {
             <AccountRow
               key={account.id}
               account={account}
-              funds={fundOptions}
               canConnect={canConnectAccount}
-              onSetFund={(fundId: Id<"funds">) =>
-                void run(
-                  () =>
-                    setAccountFund({
-                      legacyAccountId: account.id,
-                      fundId,
-                    }),
-                  { errorTitle: "Couldn't set the default fund" },
-                )
-              }
               onDisconnect={() =>
                 void run(
                   () => disconnect({ legacyAccountId: account.id }),

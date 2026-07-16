@@ -7,7 +7,7 @@ type Step = { title: string; detail: string };
 const STEPS: Step[] = [
   {
     title: "Submit with receipts",
-    detail: "Line items tagged to a fund & category, with receipts attached.",
+    detail: "Line items tagged to a category, with receipts attached.",
   },
   {
     title: "Finance manager approves",

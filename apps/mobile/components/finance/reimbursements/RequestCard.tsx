@@ -311,10 +311,8 @@ function LineTable({
             <Text className="text-sm font-medium text-ink">
               {line.description}
             </Text>
-            {line.fund || line.category ? (
-              <Text className="text-xs text-muted">
-                {[line.fund, line.category].filter(Boolean).join(" › ")}
-              </Text>
+            {line.category ? (
+              <Text className="text-xs text-muted">{line.category}</Text>
             ) : null}
           </View>
           <View className="w-16 items-center">
@@ -393,9 +391,9 @@ function ApproveSelector({
                 <Text className="text-sm font-medium text-ink">
                   {line.description}
                 </Text>
-                {line.fund || line.category ? (
+                {line.category || line.hasReceipt ? (
                   <Text className="text-xs text-muted">
-                    {[line.fund, line.category].filter(Boolean).join(" › ")}
+                    {line.category ?? ""}
                     {line.hasReceipt ? " · receipt ✓" : ""}
                   </Text>
                 ) : null}
