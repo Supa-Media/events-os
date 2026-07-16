@@ -52,7 +52,7 @@ import {
 } from "./lib/readiness";
 import { manageablePersonIds } from "./lib/org";
 import { paidTotalForEvent } from "./engagements";
-import { createEventBudget, hasBudgetForRef } from "./finances";
+import { createEventBudget, getBudgetForRef, setBudgetAmount } from "./finances";
 
 const statusUnion = v.union(
   v.literal("planning"),
@@ -199,7 +199,18 @@ export const get = query({
     // Paid vendors count against the budget too.
     const paidVendorCost = await paidTotalForEvent(ctx, eventId);
     const budgetSpent = itemCost + paidVendorCost;
-    const budget = event.budget ?? 0;
+
+    // WP-U2 ("the budgets row is the single source of truth"): the header's
+    // planned amount reads the budget ROW (via `by_ref`), not the entity's
+    // own `budget` field — `event.budget` is now only a transition-period
+    // MIRROR (see `setBudgetAmount`). No row → no planned amount yet, same as
+    // the field being unset (the D8 "enter an amount to create a budget"
+    // affordance already covers this: the header shows "Add budget").
+    const budgetRow = await getBudgetForRef(ctx, "event", eventId);
+    const budgetAmountUsd =
+      budgetRow && budgetRow.amountCents > 0 ? budgetRow.amountCents / 100 : undefined;
+    const eventForClient = { ...event, budget: budgetAmountUsd };
+    const budget = budgetAmountUsd ?? 0;
     const budgetPct = budget > 0 ? Math.round((budgetSpent / budget) * 100) : 0;
 
     // Resolve the accountable owner (a person) for display.
@@ -210,7 +221,8 @@ export const get = query({
     }
 
     return {
-      event,
+      event: eventForClient,
+      budgetId: budgetRow?._id ?? null,
       eventTypeName: eventType?.name ?? "Unknown",
       // Resolved active modules (core + custom) from the EVENT's own deltas.
       modules: await eventActiveModules(ctx, event),
@@ -1060,40 +1072,60 @@ export const updateDetails = mutation({
     if (patch.name !== undefined) fields.name = patch.name;
     if (patch.location !== undefined)
       fields.location = patch.location ?? undefined;
-    if (patch.budget !== undefined) fields.budget = patch.budget ?? undefined;
     if (patch.ownerPersonId !== undefined)
       fields.ownerPersonId = patch.ownerPersonId ?? undefined;
+
+    // WP-U2 ("the budgets row is the single source of truth"): once a budget
+    // row already exists for this event, an amount edit here writes THROUGH
+    // to the row via the shared `setBudgetAmount` helper (also used by the
+    // finance-side `updateBudget` edit) — it patches the row's `amountCents`
+    // AND mirrors the dollar amount back onto `events.budget` in the same
+    // call, so the two can never drift apart. `fields.budget` is only set
+    // directly here when there's NO row yet — the D8 trigger below then
+    // decides whether this edit is enough money to summon one.
+    // WP-3.2: an amount INCREASE on an approved budget should retrigger
+    // approval — hook that check in here once budget approval ships.
+    let wroteThroughToBudget = false;
+    if (patch.budget !== undefined) {
+      const existingBudget = await getBudgetForRef(ctx, "event", eventId);
+      if (existingBudget) {
+        const nextCents = patch.budget != null ? Math.round(patch.budget * 100) : 0;
+        await setBudgetAmount(ctx, existingBudget._id, nextCents);
+        wroteThroughToBudget = true;
+      } else {
+        fields.budget = patch.budget ?? undefined;
+      }
+    }
     await ctx.db.patch(eventId, fields);
 
     // WP-3.4 edit-path trigger, events parity (owner rule: "budgets summoned
     // by dollar entry") — entering a POSITIVE budget on a non-training event
     // that had none (unset, 0, or negative) summons its budget now, same
-    // shape/tag as the create-time hook, unless one already exists (`by_ref`
-    // check — the create hook or a backfill run may have already made one).
-    // Clearing/lowering the budget never deletes an existing budget; see
-    // `removeEmptyAutoBudgets` for the separate ops cleanup of pre-rule
-    // zero-amount budgets.
+    // shape/tag as the create-time hook. Never reached when
+    // `wroteThroughToBudget` is true — a row already existed, so the write
+    // above already handled it (no `by_ref` re-check needed: the lookup just
+    // above already answered "does a budget exist"). Clearing/lowering the
+    // budget never deletes an existing budget; see `removeEmptyAutoBudgets`
+    // for the separate ops cleanup of pre-rule zero-amount budgets.
     if (
+      !wroteThroughToBudget &&
       !event.isTraining &&
       patch.budget != null &&
       patch.budget > 0 &&
       (event.budget == null || event.budget <= 0)
     ) {
-      const alreadyHasBudget = await hasBudgetForRef(ctx, "event", eventId);
-      if (!alreadyHasBudget) {
-        const userId = (await requireUserId(ctx)) as Id<"users">;
-        await createEventBudget(
-          ctx,
-          {
-            _id: eventId,
-            chapterId: event.chapterId,
-            name: patch.name !== undefined && patch.name.trim() ? patch.name : event.name,
-            eventDate: event.eventDate,
-            budget: patch.budget,
-          },
-          userId,
-        );
-      }
+      const userId = (await requireUserId(ctx)) as Id<"users">;
+      await createEventBudget(
+        ctx,
+        {
+          _id: eventId,
+          chapterId: event.chapterId,
+          name: patch.name !== undefined && patch.name.trim() ? patch.name : event.name,
+          eventDate: event.eventDate,
+          budget: patch.budget,
+        },
+        userId,
+      );
     }
     return eventId;
   },

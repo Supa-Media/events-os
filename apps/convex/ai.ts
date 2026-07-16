@@ -54,6 +54,7 @@ import {
   type SelectOption,
 } from "@events-os/shared";
 import { eventActiveModules } from "./lib/templates";
+import { getBudgetForRef } from "./finances";
 import { phaseReadiness, statusColumnFor } from "./lib/readiness";
 import { toKey } from "./roles";
 
@@ -203,12 +204,18 @@ export const eventContext = internalQuery({
         hasPhoto: !!it.fields?.photo,
       }));
 
+    // WP-U2: the planned budget reads the budget ROW (single source of
+    // truth), not the entity's mirror field.
+    const budgetRow = await getBudgetForRef(ctx, "event", eventId);
+    const budgetUsd =
+      budgetRow && budgetRow.amountCents > 0 ? budgetRow.amountCents / 100 : null;
+
     return {
       event: {
         id: event._id,
         name: event.name,
         date: event.eventDate,
-        budget: event.budget ?? null,
+        budget: budgetUsd,
         status: event.status as string,
         location: event.location ?? null,
       },

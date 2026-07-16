@@ -560,7 +560,7 @@ describe("projects.update: edit-path trigger summons a budget on 0 → positive 
     expect(project?.budgetUsd).toBeUndefined();
   });
 
-  test("does not create a duplicate budget when one already exists (by_ref check)", async () => {
+  test("does not create a duplicate budget when one already exists (by_ref check) — WP-U2: the edit writes THROUGH to the existing row instead", async () => {
     const t = newT();
     const s = await setupChapter(t);
     const projectId = (await s.as.mutation(api.projects.create, {
@@ -585,10 +585,14 @@ describe("projects.update: edit-path trigger summons a budget on 0 → positive 
 
     const rows = await budgetsFor(s, projectId);
     expect(rows.length).toBe(1); // no duplicate created
-    expect(rows[0].budget.amountCents).toBe(0); // the pre-existing one, untouched
+    // WP-U2: the budgets row is the single source of truth — the edit writes
+    // THROUGH to the pre-existing row instead of leaving it untouched.
+    expect(rows[0].budget.amountCents).toBe(50000);
+    const project = await run(s.t, (ctx) => ctx.db.get(projectId));
+    expect(project?.budgetUsd).toBe(500); // mirrored back onto the entity field
   });
 
-  test("editing an already-funded project's amount doesn't re-trigger the hook", async () => {
+  test("editing an already-funded project's amount writes through to the row (WP-U2) instead of re-triggering the create hook", async () => {
     const t = newT();
     const s = await setupChapter(t);
     const projectId = (await s.as.mutation(api.projects.create, {
@@ -600,9 +604,13 @@ describe("projects.update: edit-path trigger summons a budget on 0 → positive 
     await s.as.mutation(api.projects.update, { projectId, budgetUsd: 200 });
 
     // Still exactly one budget — the original from the create hook, not
-    // re-summoned or duplicated (the transition guard is old ≤ 0 → new > 0).
+    // re-summoned or duplicated (the transition guard is old ≤ 0 → new > 0) —
+    // but WP-U2 now writes the new amount THROUGH to that row (the row is
+    // the single source of truth), and mirrors it back onto the entity field.
     const rows = await budgetsFor(s, projectId);
     expect(rows.length).toBe(1);
-    expect(rows[0].budget.amountCents).toBe(10000); // unaffected by the later edit
+    expect(rows[0].budget.amountCents).toBe(20000);
+    const project = await run(s.t, (ctx) => ctx.db.get(projectId));
+    expect(project?.budgetUsd).toBe(200);
   });
 });
