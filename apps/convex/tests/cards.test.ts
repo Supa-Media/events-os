@@ -3158,18 +3158,64 @@ describe("handleIncreaseDigitalWalletAuthenticationRequested", () => {
     }
   });
 
+  /**
+   * Mocks the GET /real_time_decisions/{id} fetch (always 200, `rtd` body)
+   * separately from the Resend POST /emails fetch (status configurable via
+   * `resendStatus`) so delivery outcome and Increase-reported result can be
+   * asserted independently. Records every call's method/url/body.
+   */
+  function mockRtdAndResendFetch(
+    rtd: Record<string, unknown>,
+    resendStatus: number,
+  ) {
+    const calls: Array<{
+      url: string;
+      method: string;
+      body: Record<string, unknown> | null;
+    }> = [];
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      const method = init?.method ?? "GET";
+      let body: Record<string, unknown> | null = null;
+      if (typeof init?.body === "string") {
+        try {
+          body = JSON.parse(init.body) as Record<string, unknown>;
+        } catch {
+          // not JSON — leave null
+        }
+      }
+      calls.push({ url, method, body });
+      if (url.includes("api.resend.com")) {
+        return new Response(
+          resendStatus >= 200 && resendStatus < 300
+            ? JSON.stringify({ id: "email_1" })
+            : "resend delivery failed",
+          { status: resendStatus },
+        );
+      }
+      return new Response(JSON.stringify(rtd), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    }) as unknown as typeof fetch;
+    return calls;
+  }
+
   test("delivers the one-time passcode by email and reports success with that contact", async () => {
     process.env.INCREASE_API_KEY = "prod_key";
-    delete process.env.RESEND_API_KEY; // sendEmail degrades to a logged no-op, still resolves
-    const calls = mockRecordingFetchWithBody({
-      digital_wallet_authentication: {
-        card_id: "card_auth_1",
-        channel: "email",
-        email: "holder@publicworship.life",
-        phone: null,
-        one_time_passcode: "123456",
+    process.env.RESEND_API_KEY = "resend_key";
+    const calls = mockRtdAndResendFetch(
+      {
+        digital_wallet_authentication: {
+          card_id: "card_auth_1",
+          channel: "email",
+          email: "holder@publicworship.life",
+          phone: null,
+          one_time_passcode: "123456",
+        },
       },
-    });
+      200,
+    );
     const t = newT();
     const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
     const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
@@ -3179,7 +3225,9 @@ describe("handleIncreaseDigitalWalletAuthenticationRequested", () => {
       { realTimeDecisionId: "rtd_auth_1" },
     );
 
-    const post = calls.find((c) => c.method === "POST");
+    const post = calls.find(
+      (c) => c.method === "POST" && c.url.includes("/action"),
+    );
     expect(post?.body).toEqual({
       digital_wallet_authentication: {
         result: "success",
@@ -3194,6 +3242,72 @@ describe("handleIncreaseDigitalWalletAuthenticationRequested", () => {
     logSpy.mockRestore();
     errorSpy.mockRestore();
     expect(allLogged).not.toContain("123456");
+  });
+
+  test("reports failure (never throws) when RESEND_API_KEY is unset — the email never sent", async () => {
+    process.env.INCREASE_API_KEY = "prod_key";
+    delete process.env.RESEND_API_KEY;
+    const calls = mockRtdAndResendFetch(
+      {
+        digital_wallet_authentication: {
+          card_id: "card_auth_1b",
+          channel: "email",
+          email: "holder@publicworship.life",
+          phone: null,
+          one_time_passcode: "123456",
+        },
+      },
+      200,
+    );
+    const t = newT();
+
+    await t.action(
+      internal.cards.handleIncreaseDigitalWalletAuthenticationRequested,
+      { realTimeDecisionId: "rtd_auth_1b" },
+    );
+
+    // No fetch to Resend was even attempted — sendEmailReporting no-ops
+    // without a key.
+    expect(calls.some((c) => c.url.includes("api.resend.com"))).toBe(false);
+    const post = calls.find(
+      (c) => c.method === "POST" && c.url.includes("/action"),
+    );
+    expect(post?.body).toEqual({
+      digital_wallet_authentication: { result: "failure" },
+    });
+  });
+
+  test("reports failure (never throws) when Resend rejects the send with a 500", async () => {
+    process.env.INCREASE_API_KEY = "prod_key";
+    process.env.RESEND_API_KEY = "resend_key";
+    const calls = mockRtdAndResendFetch(
+      {
+        digital_wallet_authentication: {
+          card_id: "card_auth_1c",
+          channel: "email",
+          email: "holder@publicworship.life",
+          phone: null,
+          one_time_passcode: "123456",
+        },
+      },
+      500,
+    );
+    const t = newT();
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    await t.action(
+      internal.cards.handleIncreaseDigitalWalletAuthenticationRequested,
+      { realTimeDecisionId: "rtd_auth_1c" },
+    );
+
+    errorSpy.mockRestore();
+    expect(calls.some((c) => c.url.includes("api.resend.com"))).toBe(true);
+    const post = calls.find(
+      (c) => c.method === "POST" && c.url.includes("/action"),
+    );
+    expect(post?.body).toEqual({
+      digital_wallet_authentication: { result: "failure" },
+    });
   });
 
   test("reports failure (never throws) when the channel is sms — no SMS provider wired up", async () => {

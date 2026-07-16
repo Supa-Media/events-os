@@ -775,7 +775,9 @@ export const reimbursementSubmitAttempts = defineTable({
 /** A single timestamped hit against the HOLDER-ONLY `cards.revealCardDetails`
  *  action — the most sensitive read in the app (a card's PAN + expiry + CVC).
  *  Same shape/index as `reimbursementSubmitAttempts` (#134): `key` is
- *  `"card:<cardId>"`, one row inserted per successful reveal, checked+recorded
+ *  `"card:<cardId>"`, one row inserted per AUTHORIZED ATTEMPT — recorded once
+ *  the holder-only + rate-limit checks pass, before the Increase details fetch
+ *  even runs (not gated on that fetch succeeding) — checked+recorded
  *  atomically via `by_key_and_time` inside `cards.beginRevealCardDetails`. This
  *  table NEVER stores the card details themselves — only a timestamp. See
  *  `cards.ts` for the threshold + rationale. */

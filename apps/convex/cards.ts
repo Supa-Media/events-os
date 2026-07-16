@@ -118,7 +118,7 @@ import {
   assertRoutingNumber,
   assertAccountNumber,
 } from "./increase";
-import { sendEmail, emailShell } from "./ticketingEmails";
+import { sendEmail, sendEmailReporting, emailShell } from "./ticketingEmails";
 import { escapeHtml } from "./lib/html";
 
 const externalAccountFundingValidator = v.union(
@@ -1722,8 +1722,9 @@ interface RtdDigitalWalletAuthentication {
  * Handle a `real_time_decision.digital_wallet_authentication_requested`
  * webhook END-TO-END (WP-C.3, step 2 of 2). Delivers the ALREADY-GENERATED
  * `one_time_passcode` to the cardholder over email (Resend, via the shared
- * `sendEmail`/`emailShell` helpers already used elsewhere in this codebase),
- * then submits the delivery result to `/real_time_decisions/{id}/action`:
+ * `sendEmailReporting`/`emailShell` helpers already used elsewhere in this
+ * codebase), then submits the delivery result to
+ * `/real_time_decisions/{id}/action`:
  * `{ digital_wallet_authentication: { result: "success", success: { email } } }`
  * or `{ result: "failure" }` (grounded:
  * `RealTimeDecisionActionParams.DigitalWalletAuthentication` —
@@ -1733,7 +1734,12 @@ interface RtdDigitalWalletAuthentication {
  * `channel` should always be `"email"` here (see the section doc comment —
  * step 1 never offers a `phone` contact), but a `"sms"` channel or a missing
  * `email` reports `failure` defensively rather than silently dropping the
- * code. The passcode is NEVER logged — only delivery success/failure and the
+ * code. We use `sendEmailReporting` (not the fire-and-forget `sendEmail`)
+ * specifically because it tells us whether Resend actually accepted the
+ * message — `sendEmail` resolves successfully even when `RESEND_API_KEY` is
+ * unset or Resend rejects the request, which would otherwise report a false
+ * `"success"` to Increase and leave the holder stuck with no retry. The
+ * passcode is NEVER logged — only delivery success/failure and the
  * (non-secret) address it was sent to ever reach `console.error`. Like every
  * other RTD handler in this file, this NEVER throws.
  */
@@ -1772,7 +1778,7 @@ export const handleIncreaseDigitalWalletAuthenticationRequested = internalAction
           actionBody = { digital_wallet_authentication: { result: "failure" } };
         } else {
           try {
-            await sendEmail(
+            const delivered = await sendEmailReporting(
               auth.email,
               "Your Public Worship wallet verification code",
               emailShell(`
@@ -1780,12 +1786,20 @@ export const handleIncreaseDigitalWalletAuthenticationRequested = internalAction
                 <p style="margin:0 0 16px;font-family:-apple-system,'Segoe UI',Roboto,sans-serif;font-size:14px;line-height:1.6;color:#7A5A5A">Enter this code to finish adding your card to your digital wallet:</p>
                 <p style="margin:0;font-family:-apple-system,'Segoe UI',Roboto,sans-serif;font-size:32px;font-weight:700;letter-spacing:0.08em;color:#210909">${escapeHtml(auth.one_time_passcode)}</p>`),
             );
-            actionBody = {
-              digital_wallet_authentication: {
-                result: "success",
-                success: { email: auth.email },
-              },
-            };
+            if (delivered) {
+              actionBody = {
+                digital_wallet_authentication: {
+                  result: "success",
+                  success: { email: auth.email },
+                },
+              };
+            } else {
+              console.error(
+                "[cards] wallet-auth RTD: one-time passcode email did not deliver",
+                { email: auth.email },
+              );
+              actionBody = { digital_wallet_authentication: { result: "failure" } };
+            }
           } catch (err) {
             console.error(
               "[cards] wallet-auth RTD: failed to deliver one-time passcode",

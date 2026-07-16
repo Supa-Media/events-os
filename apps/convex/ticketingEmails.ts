@@ -40,12 +40,23 @@ export function emailShell(inner: string): string {
 </div>`;
 }
 
-export async function sendEmail(to: string, subject: string, html: string) {
+/**
+ * Same best-effort send as `sendEmail`, but tells the caller whether delivery
+ * actually landed — `true` only when `RESEND_API_KEY` was configured AND
+ * Resend responded 2xx. Callers that need to report a delivery outcome
+ * upstream (e.g. the Increase digital-wallet-authentication webhook) should
+ * use this instead of `sendEmail`, which always resolves and never throws.
+ */
+export async function sendEmailReporting(
+  to: string,
+  subject: string,
+  html: string,
+): Promise<boolean> {
   const apiKey = process.env.RESEND_API_KEY;
   const from = process.env.AUTH_EMAIL_FROM ?? "auth@events-os.com";
   if (!apiKey) {
     console.log(`[ticketing] email skipped (no RESEND_API_KEY): "${subject}" → ${to}`);
-    return;
+    return false;
   }
   const response = await fetch("https://api.resend.com/emails", {
     method: "POST",
@@ -57,7 +68,13 @@ export async function sendEmail(to: string, subject: string, html: string) {
   });
   if (!response.ok) {
     console.error(`[ticketing] email failed ("${subject}"):`, await response.text());
+    return false;
   }
+  return true;
+}
+
+export async function sendEmail(to: string, subject: string, html: string) {
+  await sendEmailReporting(to, subject, html);
 }
 
 /** The 6-digit email-verification code for an RSVP's email address. */
