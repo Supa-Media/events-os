@@ -9,12 +9,14 @@ import { useMemo } from "react";
 import { Pressable, Text, View } from "react-native";
 import type { FunctionReturnType } from "convex/server";
 import { api } from "@events-os/convex/_generated/api";
+import type { Id } from "@events-os/convex/_generated/dataModel";
 import {
   BUDGET_CADENCE_LABELS,
   BUDGET_SCOPE_LABELS,
+  CENTRAL,
   formatCents,
 } from "@events-os/shared";
-import { EmptyState, Icon, SectionHeader } from "../../ui";
+import { Button, EmptyState, Icon, SectionHeader } from "../../ui";
 import { colors } from "../../../lib/theme";
 import { BudgetBar, Chip, Tile, TileRow } from "./parts";
 import { TagRollupSection, type BudgetSpend } from "./TagRollup";
@@ -26,12 +28,19 @@ type CentralBudget = CentralDash["centralBudgets"][number];
 export function CentralView({
   data,
   onViewChapter,
+  onNewBudget,
 }: {
   data: CentralDash;
   /** Drill into one chapter's chapter-perspective dashboard (central-only —
    *  the backend re-checks central reach via `dashboardChapter({chapterId})`). */
-  onViewChapter: (chapterId: ChapterRollup["chapterId"], chapterName: string) => void;
+  onViewChapter: (chapterId: Id<"chapters">, chapterName: string) => void;
+  /** Open `BudgetCreateModal` preset + locked to the central scope. */
+  onNewBudget: () => void;
 }) {
+  // The "By chapter" rollup's Central row (chapterId === CENTRAL, always
+  // present — see `dashboardCentral`) vs the real per-chapter rows.
+  const centralRollupRow = data.chapterRollup.find((c) => c.chapterId === CENTRAL);
+  const chapterRows = data.chapterRollup.filter((c) => c.chapterId !== CENTRAL);
   // Per-central-budget actuals for the tag-detail sheet, keyed by budget id.
   const spentByBudgetId = useMemo(() => {
     const m = new Map<string, BudgetSpend>();
@@ -68,16 +77,24 @@ export function CentralView({
       ) : null}
 
       {/* Org-wide (central) budgets — spend across every chapter. */}
-      {data.centralBudgets.length > 0 ? (
-        <>
-          <SectionHeader title="Central budgets" count="org-wide" />
-          <View className="flex-row flex-wrap gap-3">
-            {data.centralBudgets.map((b) => (
-              <CentralBudgetCard key={b.id} b={b} />
-            ))}
-          </View>
-        </>
-      ) : null}
+      <SectionHeader
+        title="Central budgets"
+        count="org-wide"
+        right={<Button title="New budget" icon="plus" size="sm" onPress={onNewBudget} />}
+      />
+      {data.centralBudgets.length === 0 ? (
+        <EmptyState
+          title="No central budgets yet"
+          message="Create an org-wide budget to track spend across every chapter."
+          action={<Button title="New budget" icon="plus" size="sm" onPress={onNewBudget} />}
+        />
+      ) : (
+        <View className="flex-row flex-wrap gap-3">
+          {data.centralBudgets.map((b) => (
+            <CentralBudgetCard key={b.id} b={b} />
+          ))}
+        </View>
+      )}
 
       {/* By tag, across chapters — interactive rollup */}
       <TagRollupSection
@@ -86,21 +103,47 @@ export function CentralView({
         matchMode="name"
       />
 
-      {/* By chapter */}
-      <SectionHeader title="By chapter" count={data.chapterRollup.length} />
-      {data.chapterRollup.length === 0 ? (
-        <EmptyState title="No chapters yet" />
-      ) : (
-        <View className="gap-3">
-          {data.chapterRollup.map((c) => (
+      {/* By chapter — the Central row (org-wide central-linked spend, from
+          the central budgets above) always leads, followed by each real
+          chapter. Central isn't drillable yet (no central-scoped detail view
+          exists beyond the central-budget cards already on this screen), so
+          it renders inert while chapter rows stay tappable. */}
+      <SectionHeader title="By chapter" count={chapterRows.length} />
+      <View className="gap-3">
+        {centralRollupRow ? <CentralRollupRow c={centralRollupRow} /> : null}
+        {chapterRows.length === 0 ? (
+          <EmptyState title="No chapters yet" />
+        ) : (
+          chapterRows.map((c) => (
             <ChapterRollupCard
               key={c.chapterId}
               c={c}
-              onView={() => onViewChapter(c.chapterId, c.chapterName)}
+              onView={() => onViewChapter(c.chapterId as Id<"chapters">, c.chapterName)}
             />
-          ))}
+          ))
+        )}
+      </View>
+    </View>
+  );
+}
+
+// Non-navigable summary row for the "Central" row in the by-chapter rollup —
+// see the CentralView doc comment above for why it isn't drillable.
+function CentralRollupRow({ c }: { c: ChapterRollup }) {
+  return (
+    <View className="rounded-lg border border-border bg-raised p-4 shadow-card">
+      <View className="mb-2 flex-row items-start justify-between gap-3">
+        <View className="flex-1">
+          <Text className="font-display text-base text-ink" numberOfLines={1}>
+            {c.chapterName}
+          </Text>
+          <Text className="text-xs text-muted">Org-wide — see central budgets above</Text>
         </View>
-      )}
+        <Text className="text-sm text-muted" style={{ fontVariant: ["tabular-nums"] }}>
+          {formatCents(c.spentCents)} / {formatCents(c.budgetCents)}
+        </Text>
+      </View>
+      <BudgetBar pct={c.barPct} status={c.status} />
     </View>
   );
 }

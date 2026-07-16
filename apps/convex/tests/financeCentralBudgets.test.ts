@@ -81,6 +81,35 @@ describe("central budgets: create gating + storage", () => {
     const doc = await run(s.t, (ctx) => ctx.db.get(budgetId));
     expect(doc?.chapterId).toBe("central");
   });
+
+  // WP-0.3: the central-DESK "New budget" affordance calls `createBudget`
+  // with `central: true`, exactly as here — a genuine `scope:"central"`
+  // financeRoles grant (not the superuser short-circuit) must succeed too,
+  // since that's the actual mechanism a real central officer uses.
+  test("a plain person with a genuine scope:'central' financeRoles grant creates a central budget", async () => {
+    const t = newT();
+    const s = await setupChapter(t); // default non-superuser email
+    const personId = await seedSelfPerson(s);
+    await run(s.t, (ctx) =>
+      ctx.db.insert("financeRoles", {
+        chapterId: s.chapterId,
+        personId,
+        role: "manager",
+        scope: "central",
+        createdAt: Date.now(),
+      }),
+    );
+    const budgetId = await s.as.mutation(api.finances.createBudget, {
+      amountCents: 250000,
+      type: "recurring",
+      cadence: "yearly",
+      year: 2026,
+      central: true,
+      label: "City Launch Fund",
+    });
+    const doc = await run(s.t, (ctx) => ctx.db.get(budgetId));
+    expect(doc?.chapterId).toBe("central");
+  });
 });
 
 describe("listBudgets: chapter + central, level-tagged", () => {
@@ -391,6 +420,85 @@ describe("dashboardCentral: central budgets roll up org-wide", () => {
     const ny = dash.chapterRollup.find((c) => c.chapterName === "New York");
     expect(ny?.budgetCents).toBe(0);
     expect(ny?.spentCents).toBe(7000);
+  });
+
+  // WP-0.3: the by-chapter rollup gains a "Central" row (chapterId:"central")
+  // whose spend is the SAME central-linked total as the budget card above,
+  // aggregated across every chapter — never per-chapter, never double-counted
+  // against a real chapter's own row.
+  test("the chapterRollup's Central row aggregates central-linked spend across both chapters", async () => {
+    const t = newT();
+    const s = await setupChapter(t, { email: "seyi@publicworship.life" });
+    const year = 2026;
+    const month = 5;
+    const when = tsInMonth(year, month);
+
+    const centralBudget = await s.as.mutation(api.finances.createBudget, {
+      amountCents: 500000,
+      type: "recurring",
+      cadence: "yearly",
+      year,
+      central: true,
+      label: "Org Ads",
+    });
+
+    await run(t, (ctx) =>
+      ctx.db.insert("transactions", {
+        chapterId: s.chapterId,
+        source: "manual",
+        flow: "outflow",
+        amountCents: 7000,
+        postedAt: when,
+        budgetId: centralBudget,
+        status: "categorized",
+        createdAt: Date.now(),
+      }),
+    );
+    await run(t, async (ctx) => {
+      const boston = await ctx.db.insert("chapters", {
+        name: "Boston",
+        isActive: true,
+        createdAt: Date.now(),
+      });
+      await ctx.db.insert("transactions", {
+        chapterId: boston,
+        source: "manual",
+        flow: "outflow",
+        amountCents: 3000,
+        postedAt: when,
+        budgetId: centralBudget,
+        status: "categorized",
+        createdAt: Date.now(),
+      });
+    });
+
+    const dash = await s.as.query(api.finances.dashboardCentral, { year, month });
+    const central = dash.chapterRollup.find((c) => c.chapterId === "central");
+    expect(central).toBeDefined();
+    expect(central?.chapterName).toBe("Central");
+    expect(central?.spentCents).toBe(10000); // 7000 + 3000, org-wide
+    expect(central?.budgetCents).toBe(500000);
+    // It leads the rollup (index 0), ahead of the real chapter rows.
+    expect(dash.chapterRollup[0]?.chapterId).toBe("central");
+  });
+
+  test("with no central budgets, the Central row still appears at 0/0 (no chapters yet-style gap)", async () => {
+    const t = newT();
+    const s = await setupChapter(t, { email: "seyi@publicworship.life" });
+    const dash = await s.as.query(api.finances.dashboardCentral, {
+      year: 2026,
+      month: 5,
+    });
+    const central = dash.chapterRollup.find((c) => c.chapterId === "central");
+    expect(central).toEqual({
+      chapterId: "central",
+      chapterName: "Central",
+      subtitle: null,
+      spentCents: 0,
+      budgetCents: 0,
+      barPct: 0,
+      status: "ok",
+    });
   });
 });
 

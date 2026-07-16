@@ -353,7 +353,9 @@ const attentionItem = v.object({
 });
 
 const chapterRollupRow = v.object({
-  chapterId: v.id("chapters"),
+  // A real chapter, or the CENTRAL sentinel for the "Central" row (WP-0.3) —
+  // central-scoped spend rolled up alongside the chapter rows.
+  chapterId: v.union(v.id("chapters"), v.literal(CENTRAL)),
   chapterName: v.string(),
   subtitle: v.optional(v.union(v.string(), v.null())),
   spentCents: v.number(),
@@ -1796,6 +1798,25 @@ export const dashboardCentral = query({
         status: statusFor(pct),
       });
     }
+
+    // "Central" row (WP-0.3): central-scoped spend, alongside the chapter
+    // rows. Today central has no transactions of its own (Phase 2) — its
+    // spend IS the sum of every central budget's linked actuals above, which
+    // is already aggregated across every chapter's txns via the `by_budget`
+    // index (each chapter's own `centralLinkedCents`, summed org-wide). No
+    // separate scan needed: reuse the `centralBudgets` totals just computed.
+    const centralRowSpentCents = centralBudgets.reduce((s, b) => s + b.spentCents, 0);
+    const centralRowBudgetCents = centralBudgets.reduce((s, b) => s + b.budgetCents, 0);
+    const centralRow: (typeof chapterRollupRow.type) = {
+      chapterId: CENTRAL,
+      chapterName: "Central",
+      subtitle: null,
+      spentCents: centralRowSpentCents,
+      budgetCents: centralRowBudgetCents,
+      barPct: barPctOf(centralRowSpentCents, centralRowBudgetCents),
+      status: statusFor(pctOf(centralRowSpentCents, centralRowBudgetCents)),
+    };
+    chapterRollup.unshift(centralRow);
 
     // Central-level tags roll up too: aggregate central budgets by their tags
     // and merge into the same by-(kind,name) agg as the per-chapter tags. A

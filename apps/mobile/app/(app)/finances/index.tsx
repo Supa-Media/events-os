@@ -108,7 +108,10 @@ function DashboardBody() {
   const [budgetModal, setBudgetModal] = useState<{
     open: boolean;
     id: Id<"budgets"> | null;
-  }>({ open: false, id: null });
+    // Opened from the CENTRAL desk's "New budget" action — preset + lock the
+    // modal to the central scope (see `BudgetCreateModal`'s `forceCentral`).
+    central: boolean;
+  }>({ open: false, id: null, central: false });
   const [txnModalOpen, setTxnModalOpen] = useState(false);
 
   // Attention-row actions: all three kinds live on their own finance tab,
@@ -181,7 +184,12 @@ function DashboardBody() {
           </FinanceBoundary>
         ) : atCentralDesk && drilldown === null ? (
           <FinanceBoundary fallback={<NoFinanceAccess />}>
-            <CentralSection ym={ym} period={period} onViewChapter={viewChapter} />
+            <CentralSection
+              ym={ym}
+              period={period}
+              onViewChapter={viewChapter}
+              onNewBudget={() => setBudgetModal({ open: true, id: null, central: true })}
+            />
           </FinanceBoundary>
         ) : (
           // A chapter dashboard: the caller's own chapter seat, or a central
@@ -208,9 +216,9 @@ function DashboardBody() {
               ym={ym}
               period={period}
               isDrilldown={drilldown != null}
-              onNewBudget={() => setBudgetModal({ open: true, id: null })}
+              onNewBudget={() => setBudgetModal({ open: true, id: null, central: false })}
               onEditBudget={(id) =>
-                setBudgetModal({ open: true, id: id as Id<"budgets"> })
+                setBudgetModal({ open: true, id: id as Id<"budgets">, central: false })
               }
               onAddTransaction={() => setTxnModalOpen(true)}
               onAttentionAction={onAttentionAction}
@@ -225,7 +233,8 @@ function DashboardBody() {
           defaultYear={ym.year}
           defaultMonth={ym.month}
           canCentral={centralSeat != null}
-          onClose={() => setBudgetModal({ open: false, id: null })}
+          forceCentral={budgetModal.central}
+          onClose={() => setBudgetModal({ open: false, id: null, central: false })}
         />
       ) : null}
 
@@ -242,14 +251,16 @@ function CentralSection({
   ym,
   period,
   onViewChapter,
+  onNewBudget,
 }: {
   ym: { year: number; month: number };
   period: DashPeriodMode;
   onViewChapter: (chapterId: Id<"chapters">, chapterName: string) => void;
+  onNewBudget: () => void;
 }) {
   const data = useQuery(api.finances.dashboardCentral, { ...ym, period });
   if (data === undefined) return <LoadingBlock />;
-  return <CentralView data={data} onViewChapter={onViewChapter} />;
+  return <CentralView data={data} onViewChapter={onViewChapter} onNewBudget={onNewBudget} />;
 }
 
 function ChapterSection({

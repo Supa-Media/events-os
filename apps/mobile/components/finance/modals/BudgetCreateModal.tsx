@@ -67,6 +67,7 @@ export function BudgetCreateModal({
   defaultYear,
   defaultMonth,
   canCentral = false,
+  forceCentral = false,
   onClose,
 }: {
   /** When set, edit this existing budget instead of creating a new one. */
@@ -75,6 +76,13 @@ export function BudgetCreateModal({
   defaultMonth: number;
   /** Whether the caller may create org-level (central) budgets. */
   canCentral?: boolean;
+  /**
+   * Opened from the CENTRAL desk's "New budget" action: default to central
+   * and lock the Level choice (no chapter-vs-central picker) — a central-desk
+   * budget is always org-wide. Ignored while editing an existing budget
+   * (its own `level` decides). Implies `canCentral`.
+   */
+  forceCentral?: boolean;
   onClose: () => void;
 }) {
   const create = useMutation(api.finances.createBudget);
@@ -96,8 +104,9 @@ export function BudgetCreateModal({
   const [refSel, setRefSel] = useState<string | null>(null);
   // For recurring budgets: the chosen cadence.
   const [recurringCadence, setRecurringCadence] = useState<BudgetCadence>("monthly");
-  // Chapter budget by default; central = an org-wide budget (central users only).
-  const [central, setCentral] = useState(false);
+  // Chapter budget by default; central = an org-wide budget (central users
+  // only). Opened from the central desk (`forceCentral`) defaults it on.
+  const [central, setCentral] = useState(forceCentral);
   const [label, setLabel] = useState("");
   const [amount, setAmount] = useState("");
   const [year, setYear] = useState(String(defaultYear));
@@ -312,12 +321,11 @@ export function BudgetCreateModal({
 
             {editing ? (
               editing.level === "central" ? (
-                <Field label="Level">
-                  <View className="rounded-md border border-border-strong bg-sunken px-3 py-2.5">
-                    <Text className="text-base text-muted">Central (org-wide)</Text>
-                  </View>
-                </Field>
+                <LockedCentralLevelField />
               ) : null
+            ) : forceCentral ? (
+              // Central-desk "New budget": always org-wide, no chapter option.
+              <LockedCentralLevelField />
             ) : canCentral ? (
               <Select
                 label="Level"
@@ -440,6 +448,20 @@ export function BudgetCreateModal({
         </Pressable>
       </Pressable>
     </Modal>
+  );
+}
+
+// ── Read-only "Level: Central (org-wide)" field ──────────────────────────────
+// Shown instead of the Chapter/Central Select whenever the level isn't a
+// choice: editing an existing central budget, or creating one from the
+// central desk (`forceCentral`).
+function LockedCentralLevelField() {
+  return (
+    <Field label="Level">
+      <View className="rounded-md border border-border-strong bg-sunken px-3 py-2.5">
+        <Text className="text-base text-muted">Central (org-wide)</Text>
+      </View>
+    </Field>
   );
 }
 
