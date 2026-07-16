@@ -30,6 +30,7 @@ import { useState } from "react";
 import { ActivityIndicator, Text, View } from "react-native";
 import { useQuery } from "convex/react";
 import { Redirect, useRouter } from "expo-router";
+import type { FunctionReturnType } from "convex/server";
 import { api } from "@events-os/convex/_generated/api";
 import type { Id } from "@events-os/convex/_generated/dataModel";
 import { CENTRAL } from "@events-os/shared";
@@ -50,12 +51,28 @@ import { ManualTransactionModal } from "../../../components/finance/modals/Manua
 import { BackerCountModal } from "../../../components/finance/modals/BackerCountModal";
 import { TransferRecordModal } from "../../../components/finance/modals/TransferRecordModal";
 
+type Seats = FunctionReturnType<typeof api.financeRoles.mySeats>;
+
 export default function FinancesScreen() {
   const org = useQuery(api.org.nav);
+  // The caller's REAL seats, central first. [] = member. Queried here (rather
+  // than in DashboardBody) so the no-seat redirect below can run BEFORE the
+  // tier gate — a plain-member caller with no finance seat must be routed to
+  // My Card, not shown "Finances is restricted" (that message is for staff
+  // below the finance tier, not a no-seat member who deep-links here).
+  const seats = useQuery(api.financeRoles.mySeats, {});
+
+  if (org === undefined || seats === undefined) return <Screen loading />;
+
+  // No finance seat → send them to My Card, their actual entry point in the
+  // member tab bar, instead of an orphaned MemberView with no active tab here.
+  if (seats.length === 0) {
+    return <Redirect href="/finances/cards" />;
+  }
 
   // In-screen guard: finance is admin-or-lead for now (mirrors the nav gate).
-  const tier = org?.tier;
-  if (org !== undefined && tier !== "admin" && tier !== "lead") {
+  const tier = org.tier;
+  if (tier !== "admin" && tier !== "lead") {
     return (
       <Screen>
         <Narrow>
@@ -68,9 +85,7 @@ export default function FinancesScreen() {
     );
   }
 
-  if (org === undefined) return <Screen loading />;
-
-  return <DashboardBody />;
+  return <DashboardBody seats={seats} />;
 }
 
 function LoadingBlock() {
@@ -91,14 +106,11 @@ function NoFinanceAccess() {
   );
 }
 
-function DashboardBody() {
+function DashboardBody({ seats }: { seats: Seats }) {
   const router = useRouter();
   const now = new Date();
   const [ym, setYm] = useState({ year: now.getFullYear(), month: now.getMonth() + 1 });
   const [period, setPeriod] = useState<DashPeriodMode>("month");
-
-  // The caller's REAL seats, central first. [] = member.
-  const seats = useQuery(api.financeRoles.mySeats, {});
 
   // Which seat the caller is at, keyed by `seatKeyOf`. null = the default
   // seat (central when held, else their first chapter seat).
@@ -141,27 +153,14 @@ function DashboardBody() {
     else if (kind === "needs_budget") router.navigate("/finances/reconcile" as never);
   }
 
-  if (seats === undefined) {
-    return (
-      <Screen>
-        <Narrow>
-          <LoadingBlock />
-        </Narrow>
-      </Screen>
-    );
-  }
-
-  // No finance seat → send them to My Card, their actual entry point in the
-  // member tab bar, instead of an orphaned MemberView with no active tab here.
-  if (seats.length === 0) {
-    return <Redirect href="/finances/cards" />;
-  }
-
+  // `seats` is guaranteed defined and non-empty here — FinancesScreen already
+  // resolved the loading state and redirected a no-seat caller before
+  // DashboardBody ever mounts.
   const centralSeat = seats.find((s) => s.scope === "central") ?? null;
   const chapterSeats = seats.filter((s) => s.scope === "chapter");
   // mySeats returns central first, so seats[0] is the default desk. `seats` is
-  // non-empty here (the no-seat/member case returned above), so this is never
-  // null — unlike the null-fallback chain this replaced.
+  // non-empty here, so this is never null — unlike the null-fallback chain
+  // this replaced.
   const activeSeat = seats.find((s) => seatKeyOf(s) === seatKey) ?? seats[0];
   // Dual-hat only: a central seat AND at least one chapter seat.
   const showSwitcher = centralSeat != null && chapterSeats.length > 0;

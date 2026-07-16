@@ -100,16 +100,6 @@ const statusValidator = v.union(
 );
 
 // ── Row-shape validators (the read projections) ──────────────────────────────
-const fundSummary = v.object({
-  id: v.id("funds"),
-  name: v.string(),
-  restriction: restrictionValidator,
-  code: v.union(v.string(), v.null()),
-  color: v.union(v.string(), v.null()),
-  sortOrder: v.number(),
-  isActive: v.boolean(),
-});
-
 const categorySummary = v.object({
   id: v.id("budgetCategories"),
   fundId: v.id("funds"),
@@ -380,18 +370,6 @@ const RECENT_TXN_COUNT = 10;
 const DAY_MS = 24 * 60 * 60 * 1000;
 
 // ── Projection helpers ───────────────────────────────────────────────────────
-function toFundSummary(f: Doc<"funds">) {
-  return {
-    id: f._id,
-    name: f.name,
-    restriction: f.restriction,
-    code: f.code ?? null,
-    color: f.color ?? null,
-    sortOrder: f.sortOrder,
-    isActive: f.isActive ?? true,
-  };
-}
-
 function toCategorySummary(c: Doc<"budgetCategories">) {
   return {
     id: c._id,
@@ -2099,8 +2077,14 @@ export const dashboardCentral = query({
         .query("transactions")
         .withIndex("by_budget", (q) => q.eq("budgetId", cb._id))
         .take(ROLLUP_SCAN_LIMIT);
+      // Unlike yearTxns/periodTxns (already mode-filtered via loadPeriodTxns),
+      // this is a raw by-budget scan — filter sandbox vs prod explicitly so
+      // central budget cards don't mix modes (#151).
       const spentCents = linked.reduce(
-        (s, tr) => (txnCountsTowardBudgetDash(tr, cb, dp) ? s + tr.amountCents : s),
+        (s, tr) =>
+          txnMatchesMode(tr, sandboxMode) && txnCountsTowardBudgetDash(tr, cb, dp)
+            ? s + tr.amountCents
+            : s,
         0,
       );
       centralSpentById.set(cb._id, spentCents);
@@ -2494,23 +2478,8 @@ export const personTransactions = query({
 });
 
 // ── Funds ────────────────────────────────────────────────────────────────────
-
-export const listFunds = query({
-  args: {},
-  returns: v.array(fundSummary),
-  handler: async (ctx) => {
-    const chapterId = await readChapterId(ctx);
-    if (!chapterId) return [];
-    await requireFinanceRole(ctx, chapterId, "viewer");
-    const funds = await ctx.db
-      .query("funds")
-      .withIndex("by_chapter", (q) => q.eq("chapterId", chapterId))
-      .take(ROLLUP_SCAN_LIMIT);
-    return funds
-      .sort((a, b) => a.sortOrder - b.sortOrder)
-      .map(toFundSummary);
-  },
-});
+// No `listFunds` query — the funds UI was removed in WP-1.4/#145 (funds are
+// backend-only; see `lib/finance.ts#defaultFundId`'s doc comment).
 
 export const createFund = mutation({
   args: {
@@ -2640,6 +2609,12 @@ export const createCategory = mutation({
  * Resolve a chapter's General Fund to hang the default categories off of: prefer
  * the "General Fund" by name, else the lowest-sortOrder unrestricted fund, else
  * the lowest-sortOrder fund. Returns `null` for a fund-less chapter.
+ *
+ * NOT the same resolver as `lib/finance.ts#defaultFundId` (#145) — that one
+ * auto-codes NEW spend and must never fall back to a restricted fund, so it
+ * stops at `null` instead of picking one. This one is a migration/merge-target
+ * picker (seeding default categories, merging funds into "General") where any
+ * existing fund is an acceptable keeper, restricted or not.
  */
 async function findGeneralFundId(
   ctx: MutationCtx,

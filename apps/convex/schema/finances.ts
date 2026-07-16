@@ -777,7 +777,11 @@ export const webhookEvents = defineTable({
 export const reimbursementSubmitAttempts = defineTable({
   key: v.string(),
   createdAt: v.number(),
-}).index("by_key_and_time", ["key", "createdAt"]);
+})
+  .index("by_key_and_time", ["key", "createdAt"])
+  // Deployment-wide TTL sweep (maintenance.ts): drop rows older than the rate
+  // window regardless of key.
+  .index("by_time", ["createdAt"]);
 
 // ── Card details reveal rate limit (WP-C.3) ──────────────────────────────────
 /** A single timestamped hit against the HOLDER-ONLY `cards.revealCardDetails`
@@ -792,7 +796,11 @@ export const reimbursementSubmitAttempts = defineTable({
 export const cardDetailsRevealAttempts = defineTable({
   key: v.string(),
   createdAt: v.number(),
-}).index("by_key_and_time", ["key", "createdAt"]);
+})
+  .index("by_key_and_time", ["key", "createdAt"])
+  // Deployment-wide TTL sweep (maintenance.ts): drop rows older than the rate
+  // window regardless of key.
+  .index("by_time", ["createdAt"]);
 
 /** Increase REVIEWS a Digital Card Profile before it can be attached to a
  *  card — it's minted `"pending"` and Increase (and/or the card network)

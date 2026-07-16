@@ -563,9 +563,8 @@ async function recordSubmitAttempt(
   ctx: MutationCtx,
   key: string,
 ): Promise<void> {
-  // TODO(rate-limit): rows are never deleted — this table only grows. A
-  // scheduled TTL sweep (delete rows with createdAt older than
-  // SUBMIT_RATE_LIMIT_WINDOW_MS) is a queued follow-up.
+  // Swept daily by maintenance.sweepRateLimitAttempts (crons.ts) once older
+  // than SUBMIT_RATE_LIMIT_WINDOW_MS.
   await ctx.db.insert("reimbursementSubmitAttempts", {
     key,
     createdAt: Date.now(),

@@ -1,4 +1,4 @@
-import { describe, expect, test } from "vitest";
+import { describe, expect, test, vi } from "vitest";
 import { ConvexError } from "convex/values";
 import { api, internal } from "../_generated/api";
 import { newT, run, setupChapter, type ChapterSetup } from "./setup.helpers";
@@ -159,21 +159,31 @@ describe("sendBlast guardrails", () => {
   });
 
   test("a valid email blast records a 'sending' row", async () => {
-    const t = newT();
-    const s = await setupChapter(t);
-    const eventId = await seedEventWithGuests(s);
-    await s.as.mutation(api.blasts.sendBlast, {
-      eventId,
-      channel: "email",
-      subject: "Doors at 6",
-      body: "See you soon",
-      audience: "going",
-    });
-    const history = await s.as.query(api.blasts.listBlasts, { eventId });
-    expect(history).toHaveLength(1);
-    expect(history[0]).toMatchObject({
-      subject: "Doors at 6",
-      audience: "going",
-    });
+    // sendBlast schedules internal.blasts.deliverBlast — drain it, else it
+    // leaks past this test's torn-down Convex context ("Write outside of
+    // transaction _scheduled_functions", CI-only flake — see the same pattern
+    // used for flagPersonalCharge in cards.test.ts).
+    vi.useFakeTimers();
+    try {
+      const t = newT();
+      const s = await setupChapter(t);
+      const eventId = await seedEventWithGuests(s);
+      await s.as.mutation(api.blasts.sendBlast, {
+        eventId,
+        channel: "email",
+        subject: "Doors at 6",
+        body: "See you soon",
+        audience: "going",
+      });
+      await t.finishAllScheduledFunctions(vi.runAllTimers);
+      const history = await s.as.query(api.blasts.listBlasts, { eventId });
+      expect(history).toHaveLength(1);
+      expect(history[0]).toMatchObject({
+        subject: "Doors at 6",
+        audience: "going",
+      });
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

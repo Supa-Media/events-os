@@ -51,6 +51,12 @@ const FUND_SCAN_LIMIT = 5000;
  * Accepts a `FinanceScope`: the org level (`"central"`) has NO funds (funds are
  * chapter-scoped), so it short-circuits to `null` — a central-owned txn/budget
  * stays fund-less (WP-2.1), never inheriting a chapter's General Fund.
+ *
+ * NOT the same resolver as `finances.ts#findGeneralFundId` (#145) — that one
+ * is a migration/merge-target picker (seeding default categories, merging
+ * funds into "General") where any existing fund is an acceptable keeper,
+ * restricted or not. This one auto-codes new spend, so it never falls back to
+ * a restricted fund.
  */
 export async function defaultFundId(
   ctx: QueryCtx,

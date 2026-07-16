@@ -29,6 +29,17 @@ export async function requireUserId(ctx: any): Promise<string> {
 /**
  * The chapter the caller belongs to (MVP: their first/only membership).
  * Multi-chapter switching is V3; until then a user has exactly one chapter.
+ *
+ * TODO(latent, #143): `financeRoles.mySeats` is genuinely multi-chapter aware
+ * — it scans every `people` row for the caller's userId, so a person with
+ * finance grants in more than one chapter sees a seat for each. But every
+ * home-chapter-derived mutation (via `requireChapterId` here, then
+ * `getFinanceRole`/`viewerPerson` in `lib/finance.ts` / `lib/org.ts`, which
+ * only look up the `people` row matching THAT ONE chapterId) can only ever
+ * act in the FIRST membership's chapter. A genuinely multi-chapter person's
+ * non-home seats would show up in `mySeats` but be functionally unreachable
+ * through those mutations. Today this is latent — one `people` row per user
+ * is the norm — but would silently strand a real multi-roster user.
  */
 export async function requireChapterId(ctx: any): Promise<string> {
   await requireAccess(ctx);

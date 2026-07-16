@@ -425,6 +425,68 @@ describe("dashboardCentral: central budgets roll up org-wide", () => {
     expect(ny?.spentCents).toBe(0);
   });
 
+  // #151: the central-budget rollup raw-queries transactions by `budgetId`
+  // (unlike yearTxns/periodTxns elsewhere in this file, which are already
+  // mode-filtered via loadPeriodTxns) — it must filter sandbox vs prod
+  // itself so a central budget card doesn't mix modes.
+  test("a central budget's rollup only counts transactions matching the current sandbox mode", async () => {
+    const t = newT();
+    const s = await setupChapter(t, { email: "seyi@publicworship.life" });
+    const year = 2026;
+    const month = 5;
+    const when = tsInMonth(year, month);
+
+    const centralBudget = await s.as.mutation(api.finances.createBudget, {
+      amountCents: 500000,
+      type: "recurring",
+      cadence: "yearly",
+      year,
+      central: true,
+      label: "Org Ads",
+    });
+
+    // A prod-mode transaction ($70) and a sandbox-mode transaction ($40),
+    // both linked to the same central budget. txnMatchesMode only applies
+    // its sandbox/prod filter to "increase_card"/"increase_ach" sourced rows
+    // (manual/reimbursement/etc are environment-neutral), so these must be
+    // increase_card-sourced to exercise the filter.
+    await run(t, (ctx) =>
+      ctx.db.insert("transactions", {
+        chapterId: s.chapterId,
+        source: "increase_card",
+        flow: "outflow",
+        amountCents: 7000,
+        postedAt: when,
+        budgetId: centralBudget,
+        status: "categorized",
+        externalId: "transaction_prod_only",
+        createdAt: Date.now(),
+      }),
+    );
+    await run(t, (ctx) =>
+      ctx.db.insert("transactions", {
+        chapterId: s.chapterId,
+        source: "increase_card",
+        flow: "outflow",
+        amountCents: 4000,
+        postedAt: when,
+        budgetId: centralBudget,
+        status: "categorized",
+        externalId: "sandbox_transaction_only",
+        createdAt: Date.now(),
+      }),
+    );
+
+    // Default (prod) mode: only the $70 prod txn counts.
+    const prodDash = await s.as.query(api.finances.dashboardCentral, { year, month });
+    expect(prodDash.centralBudgets.find((b) => b.id === centralBudget)?.spentCents).toBe(7000);
+
+    // Flip to sandbox mode: only the $40 sandbox txn counts.
+    await s.as.mutation(api.financeSettings.setSandboxMode, { sandboxMode: true });
+    const sandboxDash = await s.as.query(api.finances.dashboardCentral, { year, month });
+    expect(sandboxDash.centralBudgets.find((b) => b.id === centralBudget)?.spentCents).toBe(4000);
+  });
+
   // WP-0.3: the by-chapter rollup gains a "Central" row (chapterId:"central")
   // whose spend is the SAME central-linked total as the budget card above,
   // aggregated across every chapter — never per-chapter, never double-counted

@@ -57,7 +57,7 @@ function tsInMonth(year: number, month: number): number {
 }
 
 describe("funds / categories / teams CRUD", () => {
-  test("manager creates + lists a fund; viewer is rejected from creating", async () => {
+  test("manager creates a fund; viewer is rejected from creating", async () => {
     const t = newT();
     const s = await setupChapter(t);
     await asManager(s);
@@ -67,9 +67,9 @@ describe("funds / categories / teams CRUD", () => {
       restriction: "unrestricted",
       code: "1000",
     });
-    const funds = await s.as.query(api.finances.listFunds, {});
-    expect(funds.map((f) => f.id)).toContain(fundId);
-    expect(funds.find((f) => f.id === fundId)?.code).toBe("1000");
+    const fund = await run(t, (ctx) => ctx.db.get(fundId));
+    expect(fund?.name).toBe("General");
+    expect(fund?.code).toBe("1000");
 
     // A viewer cannot create a fund (manager-only write).
     const viewer = await setupChapter(t, { email: "viewer@publicworship.life" });

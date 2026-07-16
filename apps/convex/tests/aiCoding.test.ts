@@ -702,3 +702,70 @@ describe("a failed suggestCoding attempt doesn't get immediately re-swept", () =
     expect(scheduled[0].args[0]).toMatchObject({ transactionId: txnId });
   });
 });
+
+// #132's review flagged that no test exercised the FULL pipeline (mocked
+// OpenRouter fetch -> suggestCoding -> parseModelJson -> sanitize ->
+// writeSuggestion) with a garbled/unparseable reply, or with a fund/category
+// proposal (only projectId/eventId sanitization was covered end-to-end
+// above; fund/category were otherwise only exercised via a direct
+// `writeSuggestion` mutation call in the `acceptSuggestion` tests).
+describe("suggestCoding round-trip via mocked OpenRouter fetch", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    delete process.env.OPENROUTER_API_KEY;
+  });
+
+  test("a 200 response with unparseable JSON content records a failed-attempt marker, same as a non-200", async () => {
+    process.env.OPENROUTER_API_KEY = "test-key";
+    const t = newT();
+    const s = await setupChapter(t);
+    const personId = await seedSelfPerson(s);
+    await grantRole(s, personId, "bookkeeper");
+    const txnId = await seedTxn(s);
+
+    // 200 OK, but the message content isn't JSON at all — parseModelJson
+    // must fail closed here, not throw out of the action.
+    stubOpenRouterOk("Sorry, I can't help with that request.");
+
+    const result = await s.as.action(api.aiCoding.suggestCoding, {
+      transactionId: txnId,
+    });
+    expect(result).toBeNull();
+
+    const txn = await run(s.t, (ctx) => ctx.db.get(txnId));
+    expect(txn?.aiSuggestion?.failed).toBe(true);
+    expect(txn?.aiSuggestion?.fundId).toBeUndefined();
+    expect(txn?.aiSuggestion?.projectId).toBeUndefined();
+  });
+
+  test("a full mocked-fetch run proposing fundId + categoryId writes both through to the transaction", async () => {
+    process.env.OPENROUTER_API_KEY = "test-key";
+    const t = newT();
+    const s = await setupChapter(t);
+    const personId = await seedSelfPerson(s);
+    await grantRole(s, personId, "bookkeeper");
+    const { fundId, categoryId } = await seedFundAndCategory(s);
+    const txnId = await seedTxn(s);
+
+    stubOpenRouterOk(
+      JSON.stringify({
+        fundId,
+        categoryId,
+        confidence: 0.8,
+        rationale: "Matches recent Office Depot supply purchases.",
+      }),
+    );
+
+    const result = await s.as.action(api.aiCoding.suggestCoding, {
+      transactionId: txnId,
+    });
+
+    expect(result?.fundId).toEqual(fundId);
+    expect(result?.categoryId).toEqual(categoryId);
+
+    const txn = await run(s.t, (ctx) => ctx.db.get(txnId));
+    expect(txn?.aiSuggestion?.fundId).toEqual(fundId);
+    expect(txn?.aiSuggestion?.categoryId).toEqual(categoryId);
+    expect(txn?.aiSuggestion?.failed).toBeFalsy();
+  });
+});

@@ -2,10 +2,9 @@
  * Finance role administration — grant / revoke the graded finance capability
  * (viewer < bookkeeper < manager) on a chapter's roster people.
  *
- * `listFinanceRoles` is a Phase-0 stub (empty projection). `grantFinanceRole`
- * and `revokeFinanceRole` are implemented for real — they're trivial row
- * insert/delete and let local dev + the seed wire up finance access now. All
- * three require a finance manager (the finance-admin gate).
+ * `listFinanceRoles`, `grantFinanceRole`, and `revokeFinanceRole` are all
+ * implemented — trivial row list/insert/delete gated by a finance manager
+ * (the finance-admin gate).
  */
 import { query, mutation } from "./_generated/server";
 import { ConvexError, v } from "convex/values";

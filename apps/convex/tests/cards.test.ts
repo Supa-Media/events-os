@@ -347,36 +347,47 @@ describe("decideCardAuthorization", () => {
 
 describe("flagPersonalCharge", () => {
   test("sets isPersonal + creates one pending repayment (idempotent)", async () => {
-    const t = newT();
-    const s = await setupChapter(t);
-    await seedManager(s);
-    const holder = await seedPerson(s, { name: "Holder" });
-    const cardId = await seedCard(s, { cardholderPersonId: holder });
-    const txnId = await seedCardTxn(s, { cardId, amountCents: 6420 });
+    // Manager-flagging-someone-else's-charge schedules a best-effort
+    // notification (`notifyPersonalChargeFlagged`) — drain it, else it leaks
+    // past this test's torn-down Convex context ("Write outside of
+    // transaction _scheduled_functions", CI-only flake).
+    vi.useFakeTimers();
+    try {
+      const t = newT();
+      const s = await setupChapter(t);
+      await seedManager(s);
+      const holder = await seedPerson(s, { name: "Holder" });
+      const cardId = await seedCard(s, { cardholderPersonId: holder });
+      const txnId = await seedCardTxn(s, { cardId, amountCents: 6420 });
 
-    const rep = await s.as.mutation(api.cards.flagPersonalCharge, {
-      transactionId: txnId,
-    });
-    expect(rep.status).toBe("pending");
-    expect(rep.payerPersonId).toBe(holder);
-    expect(rep.amountCents).toBe(6420);
+      const rep = await s.as.mutation(api.cards.flagPersonalCharge, {
+        transactionId: txnId,
+      });
+      await s.t.finishAllScheduledFunctions(vi.runAllTimers);
+      expect(rep.status).toBe("pending");
+      expect(rep.payerPersonId).toBe(holder);
+      expect(rep.amountCents).toBe(6420);
 
-    const txn = await run(s.t, (ctx) => ctx.db.get(txnId));
-    expect(txn?.isPersonal).toBe(true);
-    expect(txn?.repaymentId).toBe(rep.id);
+      const txn = await run(s.t, (ctx) => ctx.db.get(txnId));
+      expect(txn?.isPersonal).toBe(true);
+      expect(txn?.repaymentId).toBe(rep.id);
 
-    // Idempotent: re-flag → same repayment, still one row.
-    const again = await s.as.mutation(api.cards.flagPersonalCharge, {
-      transactionId: txnId,
-    });
-    expect(again.id).toBe(rep.id);
-    const reps = await run(s.t, (ctx) =>
-      ctx.db
-        .query("personalRepayments")
-        .withIndex("by_transaction", (q) => q.eq("transactionId", txnId))
-        .collect(),
-    );
-    expect(reps.length).toBe(1);
+      // Idempotent: re-flag → same repayment, still one row.
+      const again = await s.as.mutation(api.cards.flagPersonalCharge, {
+        transactionId: txnId,
+      });
+      await s.t.finishAllScheduledFunctions(vi.runAllTimers);
+      expect(again.id).toBe(rep.id);
+      const reps = await run(s.t, (ctx) =>
+        ctx.db
+          .query("personalRepayments")
+          .withIndex("by_transaction", (q) => q.eq("transactionId", txnId))
+          .collect(),
+      );
+      expect(reps.length).toBe(1);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   test("a non-cardholder, non-manager cannot flag (FORBIDDEN)", async () => {
@@ -497,47 +508,56 @@ describe("flagPersonalCharge", () => {
 
 describe("markRepaymentPaid", () => {
   test("posts exactly one flow:transfer offsetting credit, idempotently", async () => {
-    const t = newT();
-    const s = await setupChapter(t);
-    await seedManager(s);
-    const holder = await seedPerson(s, { name: "Holder" });
-    const cardId = await seedCard(s, { cardholderPersonId: holder });
-    const txnId = await seedCardTxn(s, { cardId, amountCents: 6420 });
+    // Manager-flagging-someone-else's-charge schedules a best-effort
+    // notification — drain it so it doesn't leak past this test's torn-down
+    // Convex context (same CI-only flake as the flagPersonalCharge tests).
+    vi.useFakeTimers();
+    try {
+      const t = newT();
+      const s = await setupChapter(t);
+      await seedManager(s);
+      const holder = await seedPerson(s, { name: "Holder" });
+      const cardId = await seedCard(s, { cardholderPersonId: holder });
+      const txnId = await seedCardTxn(s, { cardId, amountCents: 6420 });
 
-    const rep = await s.as.mutation(api.cards.flagPersonalCharge, {
-      transactionId: txnId,
-    });
-    const paid = await s.as.mutation(api.cards.markRepaymentPaid, {
-      repaymentId: rep.id,
-    });
-    expect(paid.status).toBe("paid");
-    expect(paid.creditTransactionId).toBeTruthy();
+      const rep = await s.as.mutation(api.cards.flagPersonalCharge, {
+        transactionId: txnId,
+      });
+      await s.t.finishAllScheduledFunctions(vi.runAllTimers);
+      const paid = await s.as.mutation(api.cards.markRepaymentPaid, {
+        repaymentId: rep.id,
+      });
+      expect(paid.status).toBe("paid");
+      expect(paid.creditTransactionId).toBeTruthy();
 
-    // Exactly one offsetting credit, excluded from spend (flow:"transfer").
-    const credits = await run(s.t, (ctx) =>
-      ctx.db
-        .query("transactions")
-        .withIndex("by_chapter", (q) => q.eq("chapterId", s.chapterId))
-        .collect(),
-    ).then((rows) => rows.filter((r) => r.source === "repayment"));
-    expect(credits.length).toBe(1);
-    expect(credits[0].flow).toBe("transfer");
-    expect(credits[0].amountCents).toBe(6420);
-    expect(credits[0].personId).toBe(holder);
-    expect(credits[0].repaymentId).toBe(rep.id);
+      // Exactly one offsetting credit, excluded from spend (flow:"transfer").
+      const credits = await run(s.t, (ctx) =>
+        ctx.db
+          .query("transactions")
+          .withIndex("by_chapter", (q) => q.eq("chapterId", s.chapterId))
+          .collect(),
+      ).then((rows) => rows.filter((r) => r.source === "repayment"));
+      expect(credits.length).toBe(1);
+      expect(credits[0].flow).toBe("transfer");
+      expect(credits[0].amountCents).toBe(6420);
+      expect(credits[0].personId).toBe(holder);
+      expect(credits[0].repaymentId).toBe(rep.id);
 
-    // Idempotent: re-settle → no second credit.
-    const again = await s.as.mutation(api.cards.markRepaymentPaid, {
-      repaymentId: rep.id,
-    });
-    expect(again.creditTransactionId).toBe(paid.creditTransactionId);
-    const creditsAfter = await run(s.t, (ctx) =>
-      ctx.db
-        .query("transactions")
-        .withIndex("by_chapter", (q) => q.eq("chapterId", s.chapterId))
-        .collect(),
-    ).then((rows) => rows.filter((r) => r.source === "repayment"));
-    expect(creditsAfter.length).toBe(1);
+      // Idempotent: re-settle → no second credit.
+      const again = await s.as.mutation(api.cards.markRepaymentPaid, {
+        repaymentId: rep.id,
+      });
+      expect(again.creditTransactionId).toBe(paid.creditTransactionId);
+      const creditsAfter = await run(s.t, (ctx) =>
+        ctx.db
+          .query("transactions")
+          .withIndex("by_chapter", (q) => q.eq("chapterId", s.chapterId))
+          .collect(),
+      ).then((rows) => rows.filter((r) => r.source === "repayment"));
+      expect(creditsAfter.length).toBe(1);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   test("the payer (cardholder) cannot self-settle — manager-only", async () => {
@@ -745,13 +765,23 @@ describe("initiateRepayment (degrade path)", () => {
     const t = newT();
     const s = await setupChapter(t);
     await seedManager(s);
+    // NOTE: `holder` shares the caller's userId, but `seedManager` already
+    // inserted an earlier "Manny Manager" people row for that same userId —
+    // `viewerPerson` resolves to the FIRST by-userId row (insertion order),
+    // so the caller actually resolves as the MANAGER here, not this holder
+    // (despite the comment below this replaced). That makes this a
+    // manager-flags-a-different-cardholder's-charge call — it schedules a
+    // best-effort notification that must be drained, else it leaks past this
+    // test's torn-down Convex context (same CI-only flake).
     const holder = await seedPerson(s, { name: "Holder", userId: s.userId });
-    // The caller IS the payer (holder linked to the caller user).
     const cardId = await seedCard(s, { cardholderPersonId: holder });
     const txnId = await seedCardTxn(s, { cardId, amountCents: 1000 });
+    vi.useFakeTimers();
     const rep = await s.as.mutation(api.cards.flagPersonalCharge, {
       transactionId: txnId,
     });
+    await s.t.finishAllScheduledFunctions(vi.runAllTimers);
+    vi.useRealTimers();
 
     const out = await s.as.action(api.cards.initiateRepayment, {
       repaymentId: rep.id,
@@ -836,9 +866,15 @@ describe("linkRepaymentBankAccount + initiateRepayment (real ACH once linked)", 
     const holder = await seedPerson(s, { name: "Holder" }); // not the caller
     const cardId = await seedCard(s, { cardholderPersonId: holder });
     const txnId = await seedCardTxn(s, { cardId, amountCents: 1000 });
+    // Manager-flagging-someone-else's-charge schedules a best-effort
+    // notification — drain it so it doesn't leak past this test's torn-down
+    // Convex context (same CI-only flake as the flagPersonalCharge tests).
+    vi.useFakeTimers();
     const rep = await s.as.mutation(api.cards.flagPersonalCharge, {
       transactionId: txnId,
     });
+    await s.t.finishAllScheduledFunctions(vi.runAllTimers);
+    vi.useRealTimers();
 
     // A second member of the SAME chapter — a viewer, not the payer.
     const strangerUserId = await run(s.t, (ctx) =>
@@ -957,9 +993,15 @@ describe("linkRepaymentBankAccount + initiateRepayment (real ACH once linked)", 
     const holder = await seedPerson(s, { name: "Holder" }); // NOT the caller
     const cardId = await seedCard(s, { cardholderPersonId: holder });
     const txnId = await seedCardTxn(s, { cardId, amountCents: 1000 });
+    // Manager-flagging-someone-else's-charge schedules a best-effort
+    // notification — drain it so it doesn't leak past this test's torn-down
+    // Convex context (same CI-only flake as the flagPersonalCharge tests).
+    vi.useFakeTimers();
     const rep = await s.as.mutation(api.cards.flagPersonalCharge, {
       transactionId: txnId,
     });
+    await s.t.finishAllScheduledFunctions(vi.runAllTimers);
+    vi.useRealTimers();
 
     process.env.INCREASE_API_KEY = "test_key";
     globalThis.fetch = (() => {
@@ -1051,12 +1093,23 @@ describe("linkRepaymentBankAccount + initiateRepayment (real ACH once linked)", 
     const t = newT();
     const s = await setupChapter(t);
     await seedManager(s);
+    // NOTE: `holder` shares the caller's userId, but `seedManager` already
+    // inserted an earlier "Manny Manager" people row for that same userId —
+    // `viewerPerson` resolves to the FIRST by-userId row (insertion order), so
+    // the caller here actually resolves as the MANAGER, not this holder. That
+    // makes this a manager-flags-a-different-cardholder's-charge call, same
+    // as the dedicated flagPersonalCharge tests — it schedules a best-effort
+    // notification that must be drained, else it leaks past this test's
+    // torn-down Convex context (same CI-only flake).
     const holder = await seedPerson(s, { name: "Holder", userId: s.userId });
     const cardId = await seedCard(s, { cardholderPersonId: holder });
     const txnId = await seedCardTxn(s, { cardId, amountCents: 1000 });
+    vi.useFakeTimers();
     const rep = await s.as.mutation(api.cards.flagPersonalCharge, {
       transactionId: txnId,
     });
+    await s.t.finishAllScheduledFunctions(vi.runAllTimers);
+    vi.useRealTimers();
     // Already settled by the manual path.
     await s.as.mutation(api.cards.markRepaymentPaid, { repaymentId: rep.id });
     const before = await run(s.t, (ctx) => ctx.db.get(rep.id));
