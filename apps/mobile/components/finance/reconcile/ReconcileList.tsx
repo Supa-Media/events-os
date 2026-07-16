@@ -4,12 +4,19 @@
  * fixed `COLS` widths, a `GridHeaderCell` header row, and per-row `Cell`-wrapped
  * cells that each commit ONE field via its own mutation.
  *
- * Columns: [☐] Merchant · Date · Amount · Cardholder · Category▾ · Budget▾ ·
- * Link▾ · Suggested · Receipt · Status▾ · Actions. Category / Budget / Link /
- * Status edit inline (dropdowns, commit per row); Suggested shows the AI
- * auto-coding proposal (when present + unreviewed) with an Accept action;
- * Receipt shows ✓ or an inline upload; Amount is read-only (signed). The fund
- * is hidden — the backend defaults it to the General Fund on categorize.
+ * Columns: [☐] Merchant · Date · Amount · Cardholder · Category▾ · For▾ ·
+ * Suggested · Receipt · Status▾ · Actions. Category / For / Status edit
+ * inline (dropdowns, commit per row); Suggested shows the AI auto-coding
+ * proposal (when present + unreviewed) with an Accept action; Receipt shows
+ * ✓ or an inline upload; Amount is read-only (signed). The fund is hidden —
+ * the backend defaults it to the General Fund on categorize.
+ *
+ * The "For" column (WP-U: one home per dollar) replaces the old separate
+ * Budget + Link columns/pickers with ONE picker, grouped Events / Projects /
+ * Recurring — see `forPicker.ts`. Picking a budget-less event/project first
+ * SUMMONS its $0 budget (`finances.summonBudgetForRef`), then categorizes to
+ * the resulting real `budgetId` — `categorizeTransaction` accepts a
+ * `budgetId` only now, never a separate event/project link.
  *
  * Actions (R1): a note icon (filled when set, tap → `TransactionNoteModal`)
  * and, for a finance MANAGER on a card charge that isn't already personal, a
@@ -37,11 +44,13 @@ import { colors } from "../../../lib/theme";
 import { alertError } from "../../../lib/errors";
 import { TransactionNoteModal } from "../modals/TransactionNoteModal";
 import { STATUS_OPTIONS, signedMoney, shortDate, type TxnRow } from "./helpers";
+import { resolveForPickerValue } from "./forPicker";
 
 const NUM = { fontVariant: ["tabular-nums" as const] };
 
-/** An option in the Category / Budget / Link pickers; `header` rows are
- *  non-selectable. Link picker values are `"event:<id>"` / `"project:<id>"`. */
+/** An option in the Category / For pickers; `header` rows are non-selectable.
+ *  A "For" value is either a real `budgetId`, or a `summon:<refKind>:<id>`
+ *  summon-candidate — see `forPicker.ts`. */
 export type PickerItem = { value: string; label: string; header?: boolean };
 
 // Fixed column widths (px) — the grid scrolls horizontally on narrow web while
@@ -53,8 +62,7 @@ const COLS = {
   amount: 104,
   cardholder: 168,
   category: 168,
-  budget: 180,
-  link: 180,
+  forCol: 200,
   suggested: 220,
   receipt: 96,
   status: 148,
@@ -68,8 +76,7 @@ const TABLE_WIDTH = Object.values(COLS).reduce((sum, w) => sum + w, 0);
 export function ReconcileList({
   rows,
   categoryItems,
-  budgetItems,
-  linkItems,
+  forItems,
   selected,
   onToggle,
   onToggleAll,
@@ -78,14 +85,13 @@ export function ReconcileList({
 }: {
   rows: TxnRow[];
   categoryItems: PickerItem[];
-  budgetItems: PickerItem[];
-  linkItems: PickerItem[];
+  forItems: PickerItem[];
   selected: Set<string>;
   onToggle: (id: string) => void;
   onToggleAll: () => void;
   // WP-2.1: reconciling CENTRAL-owned txns. Central money carries no
   // chapter-scoped links (funds/categories/projects/events are chapter-only), so
-  // the Category + Link columns are hidden — central coding is Budget + Status.
+  // the Category column is hidden — central coding is For + Status.
   centralScope?: boolean;
   // R1b: the caller's finance-MANAGER rank (not just any finance seat) — gates
   // the "Mark personal" row action, which mirrors `cards.flagPersonalCharge`'s
@@ -93,11 +99,9 @@ export function ReconcileList({
   isManager?: boolean;
 }) {
   const allSelected = rows.length > 0 && rows.every((r) => selected.has(r.id));
-  // Drop the chapter-only columns' width in central scope so the grid doesn't
-  // leave dead space where Category / Link used to be.
-  const width = centralScope
-    ? TABLE_WIDTH - COLS.category - COLS.link
-    : TABLE_WIDTH;
+  // Drop the chapter-only Category column's width in central scope so the
+  // grid doesn't leave dead space.
+  const width = centralScope ? TABLE_WIDTH - COLS.category : TABLE_WIDTH;
 
   return (
     <View className="overflow-hidden rounded-lg border border-border bg-raised shadow-card">
@@ -118,10 +122,7 @@ export function ReconcileList({
             {!centralScope ? (
               <GridHeaderCell label="Category" width={COLS.category} />
             ) : null}
-            <GridHeaderCell label="Budget" width={COLS.budget} />
-            {!centralScope ? (
-              <GridHeaderCell label="Link" width={COLS.link} />
-            ) : null}
+            <GridHeaderCell label="For" width={COLS.forCol} />
             <GridHeaderCell label="Suggested" width={COLS.suggested} />
             <GridHeaderCell label="Receipt" width={COLS.receipt} />
             <GridHeaderCell label="Status" width={COLS.status} />
@@ -134,8 +135,7 @@ export function ReconcileList({
               key={row.id}
               row={row}
               categoryItems={categoryItems}
-              budgetItems={budgetItems}
-              linkItems={linkItems}
+              forItems={forItems}
               selected={selected.has(row.id)}
               onToggle={() => onToggle(row.id)}
               isLast={i === rows.length - 1}
@@ -152,8 +152,7 @@ export function ReconcileList({
 function ReconcileRow({
   row,
   categoryItems,
-  budgetItems,
-  linkItems,
+  forItems,
   selected,
   onToggle,
   isLast,
@@ -162,8 +161,7 @@ function ReconcileRow({
 }: {
   row: TxnRow;
   categoryItems: PickerItem[];
-  budgetItems: PickerItem[];
-  linkItems: PickerItem[];
+  forItems: PickerItem[];
   selected: boolean;
   onToggle: () => void;
   isLast: boolean;
@@ -171,6 +169,7 @@ function ReconcileRow({
   isManager: boolean;
 }) {
   const categorize = useMutation(api.finances.categorizeTransaction);
+  const summonBudgetForRef = useMutation(api.finances.summonBudgetForRef);
   const setStatus = useMutation(api.finances.setTransactionStatus);
   const attachReceipt = useMutation(api.finances.attachReceipt);
   const generateUploadUrl = useMutation(api.storage.generateUploadUrl);
@@ -198,36 +197,18 @@ function ReconcileRow({
     }
   }
 
-  // The Link picker's current composite value ("event:<id>" / "project:<id>").
-  const linkValue = row.projectId
-    ? `project:${row.projectId}`
-    : row.eventId
-      ? `event:${row.eventId}`
-      : null;
-
-  function onLinkChange(value: string | null) {
+  // The "For" picker's current value is just `budgetId` (WP-U: one home per
+  // dollar) — no separate link resolution needed.
+  function onForChange(value: string | null) {
     if (!value) {
-      guard(categorize({ transactionId: id, projectId: null, eventId: null }));
+      guard(categorize({ transactionId: id, budgetId: null }));
       return;
     }
-    const [kind, refId] = value.split(":");
-    if (kind === "project") {
-      guard(
-        categorize({
-          transactionId: id,
-          projectId: refId as Id<"projects">,
-          eventId: null,
-        }),
-      );
-    } else if (kind === "event") {
-      guard(
-        categorize({
-          transactionId: id,
-          eventId: refId as Id<"events">,
-          projectId: null,
-        }),
-      );
-    }
+    guard(
+      resolveForPickerValue(value, (args) => summonBudgetForRef(args)).then(
+        (budgetId) => categorize({ transactionId: id, budgetId }),
+      ),
+    );
   }
 
   return (
@@ -308,38 +289,18 @@ function ReconcileRow({
         </Cell>
       ) : null}
 
-      {/* Budget (inline dropdown; grouped Chapter / Central — central-only in
-          central scope) */}
-      <Cell width={COLS.budget}>
+      {/* For (inline dropdown; grouped Events / Projects / Recurring — WP-U:
+          one picker, one home per dollar. In central scope only Recurring ·
+          Central budgets are offered — events/projects are chapter-only). */}
+      <Cell width={COLS.forCol}>
         <PickerCell
           value={row.budgetId}
-          items={budgetItems}
+          items={forItems}
           placeholder={row.needsBudget ? "Needs budget" : "None"}
           warn={row.needsBudget}
-          onChange={(value) =>
-            guard(
-              categorize({
-                transactionId: id,
-                budgetId: value as Id<"budgets"> | null,
-              }),
-            )
-          }
+          onChange={onForChange}
         />
       </Cell>
-
-      {/* Link (inline dropdown; grouped Events / Projects — "what was it for").
-          Chapter-only; a central txn links to a central budget, not an event/
-          project (those are chapter-scoped). */}
-      {!centralScope ? (
-        <Cell width={COLS.link}>
-          <PickerCell
-            value={linkValue}
-            items={linkItems}
-            placeholder="Unlinked"
-            onChange={onLinkChange}
-          />
-        </Cell>
-      ) : null}
 
       {/* Suggested (AI auto-coding proposal + Accept — only present when the
           row is still unreviewed and the model proposed at least one link) */}
@@ -347,10 +308,7 @@ function ReconcileRow({
         {row.aiSuggestion ? (
           <View className="flex-1 gap-1 px-2 py-1.5">
             <Badge
-              label={`AI: ${[
-                row.aiSuggestion.categoryName,
-                row.aiSuggestion.projectName ?? row.aiSuggestion.eventName,
-              ]
+              label={`AI: ${[row.aiSuggestion.categoryName, row.aiSuggestion.budgetName]
                 .filter(Boolean)
                 .join(" · ")}`}
               tone="lavender"

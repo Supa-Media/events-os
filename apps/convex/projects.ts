@@ -10,11 +10,7 @@ import { query, mutation, QueryCtx, MutationCtx } from "./_generated/server";
 import { internal } from "./_generated/api";
 import { Doc, Id } from "./_generated/dataModel";
 import { v, ConvexError } from "convex/values";
-import {
-  PROJECT_STATUSES,
-  PROJECT_STATUS_LABELS,
-  easternParts,
-} from "@events-os/shared";
+import { PROJECT_STATUSES, PROJECT_STATUS_LABELS } from "@events-os/shared";
 import {
   requireUserId,
   requireChapterId,
@@ -27,12 +23,7 @@ import {
   viewerPerson,
   canViewChapterWork,
 } from "./lib/org";
-import {
-  projectBudgetLabel,
-  autoTagProjectBudget,
-  hasBudgetForRef,
-  ROLLUP_SCAN_LIMIT,
-} from "./finances";
+import { createProjectBudget, hasBudgetForRef } from "./finances";
 
 const projectStatus = v.union(...PROJECT_STATUSES.map((s) => v.literal(s)));
 
@@ -404,79 +395,10 @@ export const removeComment = mutation({
   },
 });
 
-/**
- * Create-time hook (WP-3.4): give a brand-new project its own one_time budget
- * immediately, seeded from `budgetUsd`. Owner rule ("budgets only exist when
- * money does"): callers only invoke this when `budgetUsd > 0` — many projects
- * are work-tracking only (time, $0) and get no budget object at all; see the
- * gate in `create` and the edit-path trigger in `update` below. `budgetUsd`
- * itself is left untouched (the Estimated-vs-Actual invariant).
- * Unlike events — which only ever got a budget via
- * `finances.backfillEventBudgets` before this PR; `instantiateEvent` now has
- * its own matching create-time hook (events parity, gated the same way) —
- * WP-3.4 explicitly asks for a create-time hook here, so a project never has
- * to wait on a backfill run to show up in the finance dashboard's "Events &
- * Projects" section.
- *
- * Mirrors `runBackfillProjectBudgets`'s shape (`type:"one_time"`,
- * `refKind:"project"`, `cadence:"per_instance"`, the "Projects" catch-all tag
- * via `autoTagProjectBudget`), but disambiguates the label against LIVE
- * sibling projects (a single bounded query) instead of the backfill's
- * batched name-count maps — same split `createBudget`/`runBackfillEventBudgets`
- * use for events.
- */
-async function createProjectBudget(
-  ctx: MutationCtx,
-  project: {
-    _id: Id<"projects">;
-    chapterId: Id<"chapters">;
-    name: string;
-    startDate?: number;
-    createdAt: number;
-    budgetUsd?: number;
-  },
-  userId: Id<"users">,
-): Promise<void> {
-  const parts = easternParts(project.startDate ?? project.createdAt);
-  // Sibling projects sharing this exact name in the chapter (includes the
-  // project just inserted, since this runs after that write in the same
-  // transaction) decide whether the bare name is ambiguous.
-  const siblings = (
-    await ctx.db
-      .query("projects")
-      .withIndex("by_chapter", (q) => q.eq("chapterId", project.chapterId))
-      .take(ROLLUP_SCAN_LIMIT)
-  ).filter((p) => p.name === project.name);
-  const sameMonthCount = siblings.filter((p) => {
-    const sp = easternParts(p.startDate ?? p.createdAt);
-    return sp.year === parts.year && sp.month === parts.month;
-  }).length;
-  const label = projectBudgetLabel(project.name, parts, siblings.length, sameMonthCount);
-
-  // budgetUsd is ESTIMATED dollars; finance money is integer cents. Callers
-  // only reach here when budgetUsd > 0 (the owner rule's gate), so this is
-  // always a positive amount.
-  const amountCents =
-    project.budgetUsd != null ? Math.round(project.budgetUsd * 100) : 0;
-  const budgetId = await ctx.db.insert("budgets", {
-    chapterId: project.chapterId,
-    amountCents,
-    label,
-    type: "one_time",
-    refKind: "project",
-    scopeRefId: project._id,
-    cadence: "per_instance",
-    year: parts.year,
-    month: parts.month,
-    createdBy: userId,
-    createdAt: Date.now(),
-  });
-  const seen = new Set<string>();
-  await autoTagProjectBudget(ctx, budgetId, project.chapterId, seen, userId);
-  // WP-3.1: the "break it down" categorization panel (per-category budget
-  // lines under this budget) hooks in here — this budget object is the
-  // container it fills in.
-}
+// `createProjectBudget` (the create-time budget hook — WP-3.4) now lives in
+// `finances.ts` (WP-U), alongside `createEventBudget`, so both "D8 creation
+// helpers" are colocated for the "For" picker's summon-on-pick flow. Imported
+// above.
 
 /** Create a project (optionally owned, nested, and/or event-backed). */
 export const create = mutation({

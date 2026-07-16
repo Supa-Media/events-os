@@ -2,19 +2,26 @@
  * RECONCILE — the bookkeeper's inline-editable grid for coding & clearing charges.
  *
  * A single spreadsheet-style table (the `people.tsx` grid pattern): every charge
- * is a row whose Category / Budget / Status edit inline (dropdowns, commit per
- * row) and whose receipt uploads inline. Coding = Category + Budget only — the
+ * is a row whose Category / For / Status edit inline (dropdowns, commit per
+ * row) and whose receipt uploads inline. Coding = Category + For only — the
  * fund is hidden and defaulted to the General Fund server-side.
+ *
+ * The "For" picker (WP-U: one home per dollar) replaces the old separate
+ * Budget + Link pickers with ONE picker, grouped Events / Projects / Recurring
+ * — built from `finances.forPickerOptions` (see `forPicker.ts`). Picking a
+ * budget-less event/project summons its $0 budget first
+ * (`finances.summonBudgetForRef`), then categorizes to the resulting real
+ * `budgetId`.
  *
  * Filtering is SERVER-SIDE via `listReconcile({ filter })`, so each pill is
  * truthful across ALL of the chapter's charges (not just one page) and carries a
- * live count. Multi-select drives a bulk bar (set Category / set Budget / mark
+ * live count. Multi-select drives a bulk bar (set Category / set For / mark
  * Reconciled).
  *
  * Reconciliation is finance-manager/bookkeeper territory. Gated on the caller's
  * REAL finance seats (`financeRoles.mySeats`, WP-0.2) — same fix as the Cards
  * and Reimbursements tabs, and for the same reason: the queries this grid reads
- * (`listReconcile` / `listCategories` / `listBudgets`) require at least the
+ * (`listReconcile` / `listCategories` / `forPickerOptions`) require at least the
  * viewer finance role and THROW for anyone without one, and Convex queries fire
  * as soon as a component mounts regardless of any later conditional return in
  * its render. The former admin-or-lead org-tier gate didn't stop that — a
@@ -29,7 +36,6 @@ import { View, Text, TextInput, Pressable } from "react-native";
 import { useQuery, useMutation } from "convex/react";
 import { api } from "@events-os/convex/_generated/api";
 import type { Id } from "@events-os/convex/_generated/dataModel";
-import { BUDGET_TYPE_LABELS, type BudgetType } from "@events-os/shared";
 import {
   Button,
   EmptyState,
@@ -53,14 +59,7 @@ import {
   type FilterKey,
 } from "../../../components/finance/reconcile/helpers";
 import { BulkBar } from "../../../components/finance/reconcile/BulkBar";
-
-/** Human name for a budget in the picker (its label, else its type word). */
-function budgetName(b: {
-  label: string | null;
-  type: BudgetType | null;
-}): string {
-  return b.label?.trim() || (b.type ? BUDGET_TYPE_LABELS[b.type] : "Budget");
-}
+import { buildForPickerItems, resolveForPickerValue } from "../../../components/finance/reconcile/forPicker";
 
 function NoFinanceAccess() {
   return (
@@ -118,14 +117,14 @@ function ReconcileGrid() {
     api.finances.listReconcile,
     centralScope ? { filter, scope: "central" as const } : { filter },
   );
-  // All chapter categories (no fund filter — coding is category + budget only).
+  // All chapter categories (no fund filter — coding is category + For only).
   const categories = useQuery(api.finances.listCategories, {}) ?? [];
-  const budgets = useQuery(api.finances.listBudgets) ?? [];
-  // Link picker sources — "what was it for": an event or a project.
-  const events = useQuery(api.events.list, { scope: "all" }) ?? [];
-  const projects = useQuery(api.projects.list) ?? [];
+  // The "For" picker's option groups (WP-U) — events/projects (budgeted +
+  // summon-candidates) + recurring budgets by level.
+  const forOptions = useQuery(api.finances.forPickerOptions, {});
 
   const bulkCategorize = useMutation(api.finances.bulkCategorize);
+  const summonBudgetForRef = useMutation(api.finances.summonBudgetForRef);
   const setStatus = useMutation(api.finances.setTransactionStatus);
   const reassignTransactions = useMutation(api.finances.reassignTransactions);
   const { run, toast, dismiss } = useActionRunner();
@@ -157,30 +156,21 @@ function ReconcileGrid() {
     [categories],
   );
 
-  // Budget picker items — "None" + budgets grouped under Chapter / Central. In
-  // central scope (WP-2.1) only central budgets are offered — a central-owned
-  // txn can't be attributed to a chapter budget (the backend rejects it).
-  const budgetItems = useMemo<PickerItem[]>(() => {
-    const central = budgets.filter((b) => b.level === "central");
+  // "For" picker items (WP-U) — grouped Events / Projects / Recurring. In
+  // central scope (WP-2.1) only Recurring · Central budgets are offered — a
+  // central-owned txn can't attribute to an event/project or a chapter budget
+  // (the backend rejects it; those are chapter-only).
+  const forItems = useMemo<PickerItem[]>(() => {
+    if (!forOptions) return [{ value: "", label: "None" }];
     if (centralScope) {
+      const central = forOptions.recurring.filter((r) => r.level === "central");
       return [
         { value: "", label: "None" },
-        ...central.map((b) => ({ value: b.id, label: budgetName(b) })),
+        ...central.map((r) => ({ value: r.budgetId, label: r.label })),
       ];
     }
-    const chapter = budgets.filter((b) => b.level === "chapter");
-    return [
-      { value: "", label: "None" },
-      ...(chapter.length > 0
-        ? [{ value: "__grp_chapter", label: "Chapter", header: true }]
-        : []),
-      ...chapter.map((b) => ({ value: b.id, label: budgetName(b) })),
-      ...(central.length > 0
-        ? [{ value: "__grp_central", label: "Central", header: true }]
-        : []),
-      ...central.map((b) => ({ value: b.id, label: budgetName(b) })),
-    ];
-  }, [budgets, centralScope]);
+    return buildForPickerItems(forOptions);
+  }, [forOptions, centralScope]);
 
   // Reassign targets — "Central" + every active chapter (WP-2.2). Only built for
   // central-seat holders; `undefined` hides the "Reassign to" action entirely.
@@ -191,24 +181,6 @@ function ReconcileGrid() {
       ...(reassignChapters ?? []).map((c) => ({ value: c.id, label: c.name })),
     ];
   }, [hasCentralSeat, reassignChapters]);
-
-  // Link picker items — "None" + events + projects, each under its own header.
-  // Values are composite ("event:<id>" / "project:<id>") so one dropdown can
-  // pick either kind of "what was it for" link.
-  const linkItems = useMemo<PickerItem[]>(
-    () => [
-      { value: "", label: "None" },
-      ...(events.length > 0
-        ? [{ value: "__grp_events", label: "Events", header: true }]
-        : []),
-      ...events.map((e) => ({ value: `event:${e._id}`, label: e.name })),
-      ...(projects.length > 0
-        ? [{ value: "__grp_projects", label: "Projects", header: true }]
-        : []),
-      ...projects.map((p) => ({ value: `project:${p._id}`, label: p.name })),
-    ],
-    [events, projects],
-  );
 
   // Selection lives in a Set keyed by txn id; "in view" = the searched set, so
   // bulk actions only ever touch the rows actually on screen.
@@ -257,13 +229,14 @@ function ReconcileGrid() {
       { errorTitle: "Couldn't set category" },
     );
   }
-  async function bulkSetBudget(budgetId: string | null) {
+  async function bulkSetFor(value: string | null) {
     await run(
-      () =>
-        bulkCategorize({
-          transactionIds: bulkIds,
-          budgetId: budgetId as Id<"budgets"> | null,
-        }),
+      async () => {
+        const budgetId = value
+          ? await resolveForPickerValue(value, (args) => summonBudgetForRef(args))
+          : null;
+        return bulkCategorize({ transactionIds: bulkIds, budgetId });
+      },
       { errorTitle: "Couldn't set budget" },
     );
   }
@@ -328,8 +301,8 @@ function ReconcileGrid() {
             </View>
           ) : null}
           <Text className="mb-4 text-sm text-muted">
-            Code each charge to a category and budget, confirm the receipt, and
-            mark it reconciled. Edit any cell inline.
+            Code each charge to a category and what it was for, confirm the
+            receipt, and mark it reconciled. Edit any cell inline.
           </Text>
 
           {/* Search — narrows the active pill's rows (merchant, cardholder,
@@ -383,9 +356,9 @@ function ReconcileGrid() {
           <BulkBar
             count={selectedInView.length}
             categoryItems={categoryItems}
-            budgetItems={budgetItems}
+            forItems={forItems}
             onSetCategory={bulkSetCategory}
-            onSetBudget={bulkSetBudget}
+            onSetFor={bulkSetFor}
             onMarkReconciled={bulkMarkReconciled}
             onClear={clearSelection}
             hideCategory={centralScope}
@@ -416,8 +389,7 @@ function ReconcileGrid() {
           <ReconcileList
             rows={displayed}
             categoryItems={categoryItems}
-            budgetItems={budgetItems}
-            linkItems={linkItems}
+            forItems={forItems}
             selected={selected}
             onToggle={toggle}
             onToggleAll={toggleAll}

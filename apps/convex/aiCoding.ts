@@ -50,8 +50,22 @@ interface SuggestionContext {
   }[];
   // Ranked nearest-`transaction.postedAt`-first (R2) — the model should weigh
   // earlier entries more heavily, not treat this as a flat/unordered list.
-  events: { _id: Id<"events">; name: string; eventDate: number }[];
-  projects: { _id: Id<"projects">; name: string; status: string }[];
+  // WP-U (one home per dollar): `budgetId` is `null` for a budget-less
+  // event/project — the model must NEVER propose one of those (it has
+  // nowhere to attach yet; only a human picking it in the "For" picker
+  // summons its budget).
+  events: {
+    _id: Id<"events">;
+    name: string;
+    eventDate: number;
+    budgetId: Id<"budgets"> | null;
+  }[];
+  projects: {
+    _id: Id<"projects">;
+    name: string;
+    status: string;
+    budgetId: Id<"budgets"> | null;
+  }[];
   // The cardholder (R2), when `transaction.personId`/`cardId` resolves to one
   // — their own roster info plus the events/projects THEY'RE associated with
   // (also ranked nearest-first). Absent when neither resolves to a person.
@@ -59,8 +73,18 @@ interface SuggestionContext {
     _id: Id<"people">;
     role?: string;
     isTeamMember?: boolean;
-    events: { _id: Id<"events">; name: string; eventDate: number }[];
-    projects: { _id: Id<"projects">; name: string; status: string }[];
+    events: {
+      _id: Id<"events">;
+      name: string;
+      eventDate: number;
+      budgetId: Id<"budgets"> | null;
+    }[];
+    projects: {
+      _id: Id<"projects">;
+      name: string;
+      status: string;
+      budgetId: Id<"budgets"> | null;
+    }[];
   };
 }
 
@@ -69,12 +93,13 @@ const OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions";
 /** Abort a hung completion — a coding suggestion is best-effort, never a stall. */
 const OPENROUTER_TIMEOUT_MS = 30_000;
 
-/** The suggestion `suggestCoding` returns (and persists). */
+/** The suggestion `suggestCoding` returns (and persists). WP-U: the model
+ *  proposes a BUDGET directly (one home per dollar) — no separate
+ *  project/event link. */
 const suggestionValidator = v.object({
   fundId: v.optional(v.id("funds")),
   categoryId: v.optional(v.id("budgetCategories")),
-  projectId: v.optional(v.id("projects")),
-  eventId: v.optional(v.id("events")),
+  budgetId: v.optional(v.id("budgets")),
   confidence: v.optional(v.number()),
   rationale: v.optional(v.string()),
   model: v.optional(v.string()),
@@ -157,8 +182,7 @@ async function codeTransaction(
 ): Promise<null | {
   fundId: Id<"funds"> | undefined;
   categoryId: Id<"budgetCategories"> | undefined;
-  projectId: Id<"projects"> | undefined;
-  eventId: Id<"events"> | undefined;
+  budgetId: Id<"budgets"> | undefined;
   confidence: number | undefined;
   rationale: string | undefined;
   model: string;
@@ -185,16 +209,24 @@ async function codeTransaction(
         `- categoryId=${c._id} name="${c.name}" fundId=${c.fundId} (${c.kind})`,
     )
     .join("\n");
+  // WP-U (one home per dollar): the model proposes a BUDGET id directly. An
+  // event/project WITHOUT one yet shows `budgetId=(none — do not select)` —
+  // still useful context for name/date matching, but never a valid pick (it
+  // has nowhere to attach until a human summons its budget in the "For"
+  // picker).
   const eventLines = events
     .map(
       (e) =>
-        `- eventId=${e._id} name="${e.name}" date=${new Date(
-          e.eventDate,
-        ).toISOString()} (${relativeDayLabel(transaction.postedAt, e.eventDate)})`,
+        `- budgetId=${e.budgetId ?? "(none — do not select)"} name="${e.name}" ` +
+        `date=${new Date(e.eventDate).toISOString()} ` +
+        `(${relativeDayLabel(transaction.postedAt, e.eventDate)})`,
     )
     .join("\n");
   const projectLines = projects
-    .map((p) => `- projectId=${p._id} name="${p.name}" (${p.status})`)
+    .map(
+      (p) =>
+        `- budgetId=${p.budgetId ?? "(none — do not select)"} name="${p.name}" (${p.status})`,
+    )
     .join("\n");
 
   // The cardholder (R2) — resolved from `transaction.personId`/`cardId`. Their
@@ -216,15 +248,18 @@ async function codeTransaction(
           person.events
             .map(
               (e) =>
-                `  - eventId=${e._id} name="${e.name}" date=${new Date(
-                  e.eventDate,
-                ).toISOString()} (${relativeDayLabel(transaction.postedAt, e.eventDate)})`,
+                `  - budgetId=${e.budgetId ?? "(none — do not select)"} name="${e.name}" ` +
+                `date=${new Date(e.eventDate).toISOString()} ` +
+                `(${relativeDayLabel(transaction.postedAt, e.eventDate)})`,
             )
             .join("\n") || "  (none)"
         }`,
         `associated projects:\n${
           person.projects
-            .map((p) => `  - projectId=${p._id} name="${p.name}" (${p.status})`)
+            .map(
+              (p) =>
+                `  - budgetId=${p.budgetId ?? "(none — do not select)"} name="${p.name}" (${p.status})`,
+            )
             .join("\n") || "  (none)"
         }`,
       ].join("\n")
@@ -236,14 +271,20 @@ async function codeTransaction(
     "ranked NEAREST the charge's posted date first — weigh an earlier entry " +
     "more than a later one, they are not a flat unordered list), plus the " +
     "CARDHOLDER's own roster info and the events/projects THEY'RE personally " +
-    "associated with (when known), propose how to CODE the charge. A match " +
-    "to the cardholder's own event/project, or a candidate close in time to " +
-    "the charge, is a strong signal — weigh both over a same-name-only guess " +
-    "that is neither. Only ever reference ids that appear in the provided " +
-    'lists — never invent an id. Reply with a SINGLE JSON object and nothing ' +
-    'else: {"fundId"?, "categoryId"?, "projectId"?, "eventId"?, "confidence" ' +
-    '(0-1), "rationale"}. Omit a field when you have no good match. You ' +
-    "never move money — a human confirms your proposal.";
+    "associated with (when known), propose how to CODE the charge. Attribution " +
+    'is to a BUDGET, not an event/project directly: each event/project line ' +
+    'shows its `budgetId` — copy that exact value into your `budgetId` field. ' +
+    'An event/project whose line says `budgetId=(none — do not select)` has NO ' +
+    "budget yet and must NEVER be proposed — it's still useful context (a " +
+    "close-in-time or cardholder-associated match is a strong signal even " +
+    "without a budget), just not a valid `budgetId` value. A match to the " +
+    "cardholder's own event/project, or a candidate close in time to the " +
+    "charge, is a strong signal — weigh both over a same-name-only guess that " +
+    "is neither. Only ever reference ids that appear in the provided lists — " +
+    'never invent an id. Reply with a SINGLE JSON object and nothing else: ' +
+    '{"fundId"?, "categoryId"?, "budgetId"?, "confidence" (0-1), "rationale"}. ' +
+    "Omit a field when you have no good match. You never move money — a " +
+    "human confirms your proposal.";
 
   const userPrompt = [
     "TRANSACTION",
@@ -328,17 +369,21 @@ async function codeTransaction(
   // strong signal, but that event/project can fall outside the chapter-wide
   // 50-nearest window (`EVENT_LIMIT`/`CONTEXT_LIMIT`) — without this union, a
   // correct proposal following that exact instruction gets silently dropped
-  // here as if it were hallucinated.
+  // here as if it were hallucinated. WP-U (one home per dollar): the valid set
+  // is every event's/project's `budgetId` — a budget-less ref's `null` is
+  // filtered out, so the model can't accidentally "propose" a non-id.
   const fundIds = new Set(funds.map((f) => String(f._id)));
   const categoryIds = new Set(categories.map((c) => String(c._id)));
-  const eventIds = new Set([
-    ...events.map((e) => String(e._id)),
-    ...(person?.events.map((e) => String(e._id)) ?? []),
-  ]);
-  const projectIds = new Set([
-    ...projects.map((p) => String(p._id)),
-    ...(person?.projects.map((p) => String(p._id)) ?? []),
-  ]);
+  const budgetIds = new Set(
+    [
+      ...events.map((e) => e.budgetId),
+      ...projects.map((p) => p.budgetId),
+      ...(person?.events.map((e) => e.budgetId) ?? []),
+      ...(person?.projects.map((p) => p.budgetId) ?? []),
+    ]
+      .filter((id): id is Id<"budgets"> => id != null)
+      .map(String),
+  );
 
   const fundId =
     typeof proposal.fundId === "string" && fundIds.has(proposal.fundId)
@@ -349,20 +394,10 @@ async function codeTransaction(
     categoryIds.has(proposal.categoryId)
       ? (proposal.categoryId as any)
       : undefined;
-  const rawEventId =
-    typeof proposal.eventId === "string" && eventIds.has(proposal.eventId)
-      ? (proposal.eventId as any)
+  const budgetId =
+    typeof proposal.budgetId === "string" && budgetIds.has(proposal.budgetId)
+      ? (proposal.budgetId as any)
       : undefined;
-  const projectId =
-    typeof proposal.projectId === "string" && projectIds.has(proposal.projectId)
-      ? (proposal.projectId as any)
-      : undefined;
-  // At most one of project/event: every manual coding path (createManualTransaction,
-  // categorizeTransaction) treats them as alternatives, and proposing both would
-  // double-count the charge into both the event AND project actuals rollups. Prefer
-  // the project — mirrors the Reconcile grid's project-over-event display
-  // precedence (`resolveLinkLabel` in finances.ts).
-  const eventId = projectId ? undefined : rawEventId;
   const confidence = cleanConfidence(proposal.confidence);
   const rationale =
     typeof proposal.rationale === "string"
@@ -373,8 +408,7 @@ async function codeTransaction(
     transactionId,
     fundId,
     categoryId,
-    projectId,
-    eventId,
+    budgetId,
     confidence,
     rationale,
     model: DEFAULT_AI_MODEL,
@@ -383,8 +417,7 @@ async function codeTransaction(
   return {
     fundId,
     categoryId,
-    projectId,
-    eventId,
+    budgetId,
     confidence,
     rationale,
     model: DEFAULT_AI_MODEL,

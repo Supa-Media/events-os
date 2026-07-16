@@ -1,8 +1,8 @@
 /**
  * The multi-select bulk bar for the Reconcile grid: appears when one or more
- * rows are checked and offers the three batch actions — set Category, set Budget
+ * rows are checked and offers the three batch actions — set Category, set For
  * (both via `bulkCategorize`), and mark Reconciled (a loop over the per-row
- * status setter). Category / Budget open the same `PickerItem` popover the grid
+ * status setter). Category / For open the same `PickerItem` popover the grid
  * cells use, so the option lists never drift.
  */
 import { View, Text, Pressable } from "react-native";
@@ -13,9 +13,9 @@ import type { PickerItem } from "./ReconcileList";
 export function BulkBar({
   count,
   categoryItems,
-  budgetItems,
+  forItems,
   onSetCategory,
-  onSetBudget,
+  onSetFor,
   onMarkReconciled,
   onClear,
   hideCategory = false,
@@ -24,13 +24,13 @@ export function BulkBar({
 }: {
   count: number;
   categoryItems: PickerItem[];
-  budgetItems: PickerItem[];
+  forItems: PickerItem[];
   onSetCategory: (categoryId: string | null) => void;
-  onSetBudget: (budgetId: string | null) => void;
+  onSetFor: (value: string | null) => void;
   onMarkReconciled: () => void;
   onClear: () => void;
   // WP-2.1: hide "Set category" in central scope — central txns have no
-  // categories (chapter-only), so only Budget + Mark Reconciled apply.
+  // categories (chapter-only), so only For + Mark Reconciled apply.
   hideCategory?: boolean;
   // WP-2.2: central-seat holders can reassign the selection across the central
   // boundary (→ Central or a chapter). Absent for chapter-only reconcilers.
@@ -51,9 +51,9 @@ export function BulkBar({
           />
         ) : null}
         <BulkPicker
-          label="Set budget"
-          items={budgetItems}
-          onPick={onSetBudget}
+          label="Set for"
+          items={forItems}
+          onPick={onSetFor}
         />
         <Button
           title="Mark reconciled"

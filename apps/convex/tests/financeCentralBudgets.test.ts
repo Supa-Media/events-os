@@ -978,7 +978,7 @@ describe("budgets v2: tag CRUD gating + delete-in-use", () => {
 });
 
 describe("budgets v2: explicit-only attribution regardless of type", () => {
-  test("neither a one_time event budget nor a recurring budget derive-matches an unlinked txn — only an explicit link counts, and eventActuals (a direct FK sum) is unaffected", async () => {
+  test("neither a one_time event budget nor a recurring budget derive-matches an unlinked txn — only an explicit link counts, and eventActuals is ALSO budget-first now (WP-U: one home per dollar)", async () => {
     const t = newT();
     const s = await setupChapter(t);
     await asChapterManager(s);
@@ -1005,12 +1005,14 @@ describe("budgets v2: explicit-only attribution regardless of type", () => {
       label: "Ops",
     });
 
-    // $80 ON the event, and $20 with no event — NEITHER carries a `budgetId`.
+    // $80 destined for the event's budget, and $20 with no link at all —
+    // NEITHER carries a `budgetId` yet (WP-U: `createManualTransaction` no
+    // longer accepts a separate `eventId`/`projectId` — a budget is the ONLY
+    // link).
     const eventTxn = await s.as.mutation(api.finances.createManualTransaction, {
       flow: "outflow",
       amountCents: 8000,
       postedAt: tsInMonth(year, month),
-      eventId,
     });
     const looseTxn = await s.as.mutation(api.finances.createManualTransaction, {
       flow: "outflow",
@@ -1018,21 +1020,17 @@ describe("budgets v2: explicit-only attribution regardless of type", () => {
       postedAt: tsInMonth(year, month),
     });
 
-    // Pre-link: neither budget has any actual — carrying `eventId` is NOT an
-    // attribution link (only `budgetId` is), so the one_time budget sitting on
-    // the same event sees nothing, and the recurring budget (which used to
-    // vacuum up any unnarrowed period spend) sees nothing either.
+    // Pre-link: neither budget has any actual, and `eventActuals` is ALSO
+    // budget-first now — no more separate FK sum — so it reports zero until
+    // the txn is explicitly attributed to the event's one_time budget.
     let rows = await s.as.query(api.finances.budgetVsActual, { year, month });
     expect(rows.find((r) => r.budgetId === oneTime)?.actualCents).toBe(0);
     expect(rows.find((r) => r.budgetId === recurring)?.actualCents).toBe(0);
     // Both txns are Unattributed until explicitly linked.
     let dash = await s.as.query(api.finances.dashboardChapter, { year, month });
     expect(dash.unattributedCents).toBe(10000);
-
-    // `eventActuals` sums by the `eventId` FK directly — unrelated to budget
-    // attribution — so it already reports the $80 with no link required.
-    const eventActuals = await s.as.query(api.finances.eventActuals, { eventId });
-    expect(eventActuals.totalCents).toBe(8000);
+    let eventActuals = await s.as.query(api.finances.eventActuals, { eventId });
+    expect(eventActuals.totalCents).toBe(0);
 
     // Explicitly link each txn to its budget.
     await s.as.mutation(api.finances.categorizeTransaction, {
@@ -1049,6 +1047,9 @@ describe("budgets v2: explicit-only attribution regardless of type", () => {
     expect(rows.find((r) => r.budgetId === recurring)?.actualCents).toBe(2000);
     dash = await s.as.query(api.finances.dashboardChapter, { year, month });
     expect(dash.unattributedCents).toBe(0);
+    // `eventActuals` now agrees with `budgetVsActual` — same budget-first rule.
+    eventActuals = await s.as.query(api.finances.eventActuals, { eventId });
+    expect(eventActuals.totalCents).toBe(8000);
   });
 });
 

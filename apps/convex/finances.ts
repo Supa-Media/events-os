@@ -42,6 +42,7 @@ import {
   TRANSACTION_FLOWS,
   TRANSACTION_STATUSES,
   BUDGET_SCOPE_LABELS,
+  BUDGET_TYPE_LABELS,
   CENTRAL,
   RECEIPT_GRACE_DAYS,
   MAX_NOTE_LENGTH,
@@ -218,28 +219,25 @@ const cardholderRef = v.object({
 // The AI auto-coding proposal, resolved to display names — only ever populated
 // (non-null) for a row that's still `unreviewed` AND carries at least one
 // proposed link, so the Reconcile grid only ever shows an actionable suggestion.
+// WP-U (one home per dollar): the model proposes a BUDGET directly instead of
+// a separate project/event link — `budgetId` subsumes both.
 const reconcileAiSuggestion = v.object({
   fundId: v.union(v.id("funds"), v.null()),
   categoryId: v.union(v.id("budgetCategories"), v.null()),
-  projectId: v.union(v.id("projects"), v.null()),
-  eventId: v.union(v.id("events"), v.null()),
+  budgetId: v.union(v.id("budgets"), v.null()),
   fundName: v.union(v.string(), v.null()),
   categoryName: v.union(v.string(), v.null()),
-  projectName: v.union(v.string(), v.null()),
-  eventName: v.union(v.string(), v.null()),
+  budgetName: v.union(v.string(), v.null()),
   confidence: v.union(v.number(), v.null()),
   rationale: v.union(v.string(), v.null()),
 });
 
-// One reconcile-grid row: the txn summary plus the resolved cardholder, the
-// current event/project link (+ its display label), and any pending AI proposal.
+// One reconcile-grid row: the txn summary (which already carries `budgetId` —
+// the "For" picker's current value) plus the resolved cardholder and any
+// pending AI proposal. No separate project/event link field (WP-U).
 const reconcileRow = v.object({
   ...txnSummaryFields,
   cardholder: v.union(cardholderRef, v.null()),
-  projectId: v.union(v.id("projects"), v.null()),
-  eventId: v.union(v.id("events"), v.null()),
-  // "Project: X" / "Event: Y" — the Link column's current-value display.
-  linkLabel: v.union(v.string(), v.null()),
   aiSuggestion: v.union(reconcileAiSuggestion, v.null()),
 });
 
@@ -430,6 +428,14 @@ function toBudgetSummary(
     tags,
     level: b.chapterId === CENTRAL ? ("central" as const) : ("chapter" as const),
   };
+}
+
+/** A budget's display name: its own label, else its type word — the same
+ *  fallback the mobile `budgetName()` helper uses (kept as one twinned rule,
+ *  not two). Used by the "For" picker's Recurring group + the AI suggestion's
+ *  resolved budget name. */
+function budgetDisplayName(b: Doc<"budgets">): string {
+  return b.label?.trim() || BUDGET_TYPE_LABELS[effectiveType(b)];
 }
 
 function toTxnSummary(tr: Doc<"transactions">) {
@@ -1014,7 +1020,10 @@ export async function createEventBudget(
     eventDate: number;
     budget?: number;
   },
-  userId: Id<"users">,
+  // Optional — absent for a no-auth caller (the WP-U `migrateLinksToBudgets`
+  // migration summons a budget with no authenticated user; mirrors
+  // `autoTagEventBudget`'s already-optional `createdBy`).
+  userId: Id<"users"> | undefined,
 ): Promise<void> {
   const parts = easternParts(event.eventDate);
   // Sibling (non-training) events sharing this exact name in the chapter
@@ -1095,6 +1104,73 @@ export function projectBudgetLabel(
     return `${name} · ${monthName.slice(0, 3)} ${parts.day}, ${parts.year}`;
   }
   return `${name} · ${monthName} ${parts.year}`;
+}
+
+/**
+ * Create a one_time PROJECT budget for a single project — mirrors
+ * `createEventBudget` (same shape: `type:"one_time"`, `cadence:"per_instance"`,
+ * `autoTagProjectBudget`'s catch-all "Projects" tag), disambiguating the label
+ * against LIVE sibling projects (a single bounded query). Relocated here from
+ * `projects.ts` (WP-U) so BOTH "D8 creation helpers" live together in
+ * `finances.ts` — `events.ts` already imports `createEventBudget` from here;
+ * `projects.ts` now imports this instead of defining it locally, and the new
+ * `ensureBudgetForRef`/`summonBudgetForRef` (WP-U's "For" picker summon-on-pick)
+ * can call both without a circular import between `finances.ts`/`projects.ts`.
+ *
+ * Callers gate the "only when there's money" owner rule THEMSELVES (see
+ * `projects.create`'s create-time hook and `projects.update`'s edit-path
+ * trigger); this function always creates. `budget` is left `undefined` for a
+ * $0 "plan" budget (the WP-U summon flow) — `amountCents` is then 0.
+ */
+export async function createProjectBudget(
+  ctx: MutationCtx,
+  project: {
+    _id: Id<"projects">;
+    chapterId: Id<"chapters">;
+    name: string;
+    startDate?: number;
+    createdAt: number;
+    budgetUsd?: number;
+  },
+  // Optional — see `createEventBudget`'s twin comment.
+  userId: Id<"users"> | undefined,
+): Promise<void> {
+  const parts = easternParts(project.startDate ?? project.createdAt);
+  // Sibling projects sharing this exact name in the chapter (includes the
+  // project just inserted, since this runs after that write in the same
+  // transaction) decide whether the bare name is ambiguous.
+  const siblings = (
+    await ctx.db
+      .query("projects")
+      .withIndex("by_chapter", (q) => q.eq("chapterId", project.chapterId))
+      .take(ROLLUP_SCAN_LIMIT)
+  ).filter((p) => p.name === project.name);
+  const sameMonthCount = siblings.filter((p) => {
+    const sp = easternParts(p.startDate ?? p.createdAt);
+    return sp.year === parts.year && sp.month === parts.month;
+  }).length;
+  const label = projectBudgetLabel(project.name, parts, siblings.length, sameMonthCount);
+
+  // budgetUsd is ESTIMATED dollars; finance money is integer cents. Callers
+  // only reach here when budgetUsd > 0 (the owner rule's gate) — EXCEPT the
+  // WP-U summon flow, which always wants a $0 "plan" budget.
+  const amountCents =
+    project.budgetUsd != null ? Math.round(project.budgetUsd * 100) : 0;
+  const budgetId = await ctx.db.insert("budgets", {
+    chapterId: project.chapterId,
+    amountCents,
+    label,
+    type: "one_time",
+    refKind: "project",
+    scopeRefId: project._id,
+    cadence: "per_instance",
+    year: parts.year,
+    month: parts.month,
+    createdBy: userId,
+    createdAt: Date.now(),
+  });
+  const seen = new Set<string>();
+  await autoTagProjectBudget(ctx, budgetId, project.chapterId, seen, userId);
 }
 
 /** `YYYY-MM-DD` in America/New_York (the finance timezone). */
@@ -1211,7 +1287,8 @@ function nameCache<
     | "cards"
     | "eventTypes"
     | "funds"
-    | "budgetCategories",
+    | "budgetCategories"
+    | "budgets",
 >(
   ctx: QueryCtx,
   table: T,
@@ -1466,6 +1543,7 @@ export const dashboardChapter = query({
     const getEvent = nameCache(ctx, "events");
     const getProject = nameCache(ctx, "projects");
     const getCard = nameCache(ctx, "cards");
+    const getBudget = nameCache(ctx, "budgets");
 
     const budgets = await ctx.db
       .query("budgets")
@@ -1648,12 +1726,28 @@ export const dashboardChapter = query({
     const getPerson = nameCache(ctx, "people");
     const recentTransactions: (typeof recentTxnCard.type)[] = [];
     for (const tr of recent) {
-      const projName = tr.projectId ? (await getProject(tr.projectId))?.name : undefined;
-      const evName = tr.eventId ? (await getEvent(tr.eventId))?.name : undefined;
+      // WP-U (one home per dollar): "what this is coded to" is resolved from
+      // the txn's BUDGET (never the vestigial `projectId`/`eventId` FKs) — a
+      // one_time budget resolves to its event's/project's own name (same
+      // display the old FK-based lookup gave); any OTHER budget (recurring,
+      // or a one_time budget whose ref has since vanished) falls back to the
+      // budget's own display name, so a recurring-budget-coded txn is no
+      // longer silently blank here.
+      let projectOrEvent: string | undefined;
+      if (tr.budgetId) {
+        const budget = await getBudget(tr.budgetId);
+        if (budget) {
+          if (budget.refKind === "event" && budget.scopeRefId) {
+            projectOrEvent = (await getEvent(budget.scopeRefId as Id<"events">))?.name;
+          } else if (budget.refKind === "project" && budget.scopeRefId) {
+            projectOrEvent = (await getProject(budget.scopeRefId as Id<"projects">))?.name;
+          }
+          projectOrEvent ??= budgetDisplayName(budget);
+        }
+      }
       // Funds are backend-only (WP-1.4) — every chapter has exactly one, so a
       // fund-name fallback here would just repeat "General Fund" on every
-      // uncoded-to-project/event row. Project/event only; else uncoded.
-      const projectOrEvent = projName ?? evName;
+      // uncoded-to-budget row.
       const categoryName = tr.categoryId ? catName.get(tr.categoryId) : undefined;
       const codedTo =
         projectOrEvent || categoryName
@@ -2384,23 +2478,34 @@ export const budgetVsActual = query({
   },
 });
 
-/** Sum SPEND transactions reachable through a single-column index. */
-async function actualsByIndex<
-  IndexName extends "by_event" | "by_project" | "by_person",
->(
+/**
+ * Actual spend for an event/project ref, BUDGET-FIRST (WP-U: one home per
+ * dollar) — found via `by_ref` (the ref's one_time budget, wherever it
+ * currently lives) then summed via `by_budget`, exactly like the dashboard's
+ * `txnCountsTowardBudget*` rollups. A ref with no budget yet reports zero
+ * spend and no rows — it's never been attributed to (the "For" picker summons
+ * a budget the first time a caller attributes a transaction to it).
+ */
+async function actualsForRef(
   ctx: QueryCtx,
   chapterId: Id<"chapters">,
-  indexName: IndexName,
-  field: "eventId" | "projectId" | "personId",
-  id: Id<"events"> | Id<"projects"> | Id<"people">,
+  refKind: BudgetRefKind,
+  scopeRefId: string,
 ): Promise<{ totalCents: number; transactions: ReturnType<typeof toTxnSummary>[] }> {
+  const budget = await ctx.db
+    .query("budgets")
+    .withIndex("by_ref", (q) => q.eq("refKind", refKind).eq("scopeRefId", scopeRefId))
+    .first();
+  if (!budget) return { totalCents: 0, transactions: [] };
   const raw = await ctx.db
     .query("transactions")
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    .withIndex(indexName, (q: any) => q.eq(field, id))
+    .withIndex("by_budget", (q) => q.eq("budgetId", budget._id))
     .take(ROLLUP_SCAN_LIMIT);
-  // Defense-in-depth: verifyTxnRefs already keeps links same-chapter, but never
-  // sum a row from another chapter even if a future link slipped through.
+  // Defense-in-depth: never sum a row from another chapter even if a future
+  // link slipped through. A chapter caller only ever sees actuals scoped to
+  // ITS OWN chapter — once `transferProjectScope` moves a project's budget AND
+  // linked transactions to central together, they drop out of the origin
+  // chapter's actuals here exactly as they would have before this PR.
   const rows = raw.filter((tr) => tr.chapterId === chapterId);
   const totalCents = rows.reduce((s, tr) => (isSpend(tr) ? s + tr.amountCents : s), 0);
   return { totalCents, transactions: rows.map(toTxnSummary) };
@@ -2418,7 +2523,7 @@ export const eventActuals = query({
     if (!chapterId) return { totalCents: 0, transactions: [] };
     await requireFinanceRole(ctx, chapterId, "viewer");
     await requireInCallerChapter(ctx, chapterId, "events", args.eventId, "Event");
-    return actualsByIndex(ctx, chapterId, "by_event", "eventId", args.eventId);
+    return actualsForRef(ctx, chapterId, "event", args.eventId);
   },
 });
 
@@ -2434,7 +2539,7 @@ export const projectActuals = query({
     if (!chapterId) return { totalCents: 0, transactions: [] };
     await requireFinanceRole(ctx, chapterId, "viewer");
     await requireInCallerChapter(ctx, chapterId, "projects", args.projectId, "Project");
-    return actualsByIndex(ctx, chapterId, "by_project", "projectId", args.projectId);
+    return actualsForRef(ctx, chapterId, "project", args.projectId);
   },
 });
 
@@ -2905,6 +3010,195 @@ export const listBudgets = query({
       rows.push(toBudgetSummary(b, tags));
     }
     return rows;
+  },
+});
+
+// ── The "For" picker (WP-U: one home per dollar) ─────────────────────────────
+/** `name + date` — the "For" picker's row label, always dated (unlike
+ *  `eventBudgetLabel`/`projectBudgetLabel`'s conditional disambiguation) so a
+ *  budget-less summon-candidate reads exactly like a budgeted one. */
+function pickerRefLabel(name: string, ts: number): string {
+  const p = easternParts(ts);
+  const monthName = MONTH_NAMES[p.month - 1].slice(0, 3);
+  return `${name} · ${monthName} ${p.day}, ${p.year}`;
+}
+
+const forPickerRefRow = v.object({
+  label: v.string(),
+  // Present when a budget already exists for this event/project (the one_time
+  // budget created by the D8 create-time hook or a backfill); `null` marks a
+  // SUMMON-CANDIDATE — the picker still offers it (grouped the same way), and
+  // choosing it calls `summonBudgetForRef` first to create its $0 budget.
+  budgetId: v.union(v.id("budgets"), v.null()),
+});
+
+export const forPickerOptions = query({
+  args: {},
+  returns: v.object({
+    // The chapter's own (non-training) events — always chapter-scoped (events
+    // never transfer to central, unlike project budgets — WP-2.2 finding).
+    events: v.array(v.object({ eventId: v.id("events"), ...forPickerRefRow.fields })),
+    // The chapter's own projects. A project's BUDGET may have moved to central
+    // (`transferProjectScope`) while the project row stays put — `budgetId`
+    // reflects wherever the budget currently lives, found via `by_ref` (same
+    // discovery `transferProjectScope` itself relies on).
+    projects: v.array(v.object({ projectId: v.id("projects"), ...forPickerRefRow.fields })),
+    // Every budget that ISN'T a one_time event/project budget — recurring
+    // budgets (chapter or central) plus any legacy/odd budget shape, so
+    // nothing silently disappears from the picker. Grouped by `level` in the
+    // UI (mirrors the old Budget picker's Chapter/Central split).
+    recurring: v.array(
+      v.object({
+        budgetId: v.id("budgets"),
+        label: v.string(),
+        level: v.union(v.literal("chapter"), v.literal("central")),
+      }),
+    ),
+  }),
+  handler: async (ctx) => {
+    const empty = { events: [], projects: [], recurring: [] };
+    const chapterId = await readChapterId(ctx);
+    if (!chapterId) return empty;
+    await requireFinanceRole(ctx, chapterId, "viewer");
+
+    const [events, projects, chapterBudgets, centralBudgets] = await Promise.all([
+      ctx.db
+        .query("events")
+        .withIndex("by_chapter", (q) => q.eq("chapterId", chapterId))
+        .take(ROLLUP_SCAN_LIMIT),
+      ctx.db
+        .query("projects")
+        .withIndex("by_chapter", (q) => q.eq("chapterId", chapterId))
+        .take(ROLLUP_SCAN_LIMIT),
+      ctx.db
+        .query("budgets")
+        .withIndex("by_chapter", (q) => q.eq("chapterId", chapterId))
+        .take(ROLLUP_SCAN_LIMIT),
+      ctx.db
+        .query("budgets")
+        .withIndex("by_chapter", (q) => q.eq("chapterId", CENTRAL))
+        .take(ROLLUP_SCAN_LIMIT),
+    ]);
+    const projectIds = new Set(projects.map((p) => p._id as string));
+
+    const eventBudgetByRef = new Map<string, Doc<"budgets">>();
+    const projectBudgetByRef = new Map<string, Doc<"budgets">>();
+    const recurring: { budgetId: Id<"budgets">; label: string; level: "chapter" | "central" }[] = [];
+
+    for (const b of chapterBudgets) {
+      if (b.type === "one_time" && b.refKind === "event" && b.scopeRefId) {
+        eventBudgetByRef.set(b.scopeRefId, b);
+      } else if (b.type === "one_time" && b.refKind === "project" && b.scopeRefId) {
+        projectBudgetByRef.set(b.scopeRefId, b);
+      } else {
+        recurring.push({ budgetId: b._id, label: budgetDisplayName(b), level: "chapter" });
+      }
+    }
+    for (const b of centralBudgets) {
+      // A central one_time PROJECT budget only belongs in this chapter's
+      // groups when it's THIS chapter's project (post-`transferProjectScope`)
+      // — a central budget for some other chapter's project stays invisible
+      // here (events never carry a central budget — see the schema doc).
+      if (
+        b.type === "one_time" &&
+        b.refKind === "project" &&
+        b.scopeRefId &&
+        projectIds.has(b.scopeRefId)
+      ) {
+        projectBudgetByRef.set(b.scopeRefId, b);
+      } else {
+        recurring.push({ budgetId: b._id, label: budgetDisplayName(b), level: "central" });
+      }
+    }
+
+    const eventRows = events
+      .filter((e) => !e.isTraining)
+      .map((e) => ({
+        eventId: e._id,
+        label: pickerRefLabel(e.name, e.eventDate),
+        budgetId: eventBudgetByRef.get(e._id as string)?._id ?? null,
+      }));
+    const projectRows = projects.map((p) => ({
+      projectId: p._id,
+      label: pickerRefLabel(p.name, p.startDate ?? p.createdAt),
+      budgetId: projectBudgetByRef.get(p._id as string)?._id ?? null,
+    }));
+
+    return { events: eventRows, projects: projectRows, recurring };
+  },
+});
+
+/**
+ * Get-or-create the one_time budget for an event/project ref — the "For"
+ * picker's summon-on-pick (WP-U): choosing a budget-less event/project
+ * SUMMONS its budget at $0 (a real "plan $0" budget, not clutter — it
+ * immediately has linked spend once the caller attributes a transaction to
+ * it, which keeps `removeEmptyAutoBudgets` from ever touching it). Reuses the
+ * exact D8 creation helpers (`createEventBudget`/`createProjectBudget`) so a
+ * summoned budget is indistinguishable from one the create-time hook or a
+ * backfill made. Idempotent: a second call for the same ref returns the
+ * existing budget instead of creating a duplicate. `userId` is optional so
+ * the no-auth `migrateLinksToBudgets` migration can reuse this too.
+ */
+async function ensureBudgetForRef(
+  ctx: MutationCtx,
+  chapterId: Id<"chapters">,
+  refKind: BudgetRefKind,
+  scopeRefId: string,
+  userId: Id<"users"> | undefined,
+): Promise<Id<"budgets">> {
+  const existing = await ctx.db
+    .query("budgets")
+    .withIndex("by_ref", (q) => q.eq("refKind", refKind).eq("scopeRefId", scopeRefId))
+    .first();
+  if (existing) return existing._id;
+
+  if (refKind === "event") {
+    const event = await requireInCallerChapter(
+      ctx,
+      chapterId,
+      "events",
+      scopeRefId as Id<"events">,
+      "Event",
+    );
+    await createEventBudget(ctx, event, userId);
+  } else {
+    const project = await requireInCallerChapter(
+      ctx,
+      chapterId,
+      "projects",
+      scopeRefId as Id<"projects">,
+      "Project",
+    );
+    // Summon at $0 — never the project's own `budgetUsd` — this path is ONLY
+    // reached when no budget exists yet, i.e. `budgetUsd` was never positive
+    // (the owner rule's create-time hook would have already made one).
+    await createProjectBudget(ctx, { ...project, budgetUsd: undefined }, userId);
+  }
+  const created = await ctx.db
+    .query("budgets")
+    .withIndex("by_ref", (q) => q.eq("refKind", refKind).eq("scopeRefId", scopeRefId))
+    .first();
+  if (!created) {
+    throw new ConvexError({
+      code: "INTERNAL",
+      message: "Failed to summon a budget for this ref.",
+    });
+  }
+  return created._id;
+}
+
+export const summonBudgetForRef = mutation({
+  args: {
+    refKind: refKindValidator,
+    scopeRefId: v.string(),
+  },
+  returns: v.id("budgets"),
+  handler: async (ctx, args) => {
+    const chapterId = (await requireChapterId(ctx)) as Id<"chapters">;
+    const userId = (await requireUserId(ctx)) as Id<"users">;
+    await requireFinanceRole(ctx, chapterId, "bookkeeper");
+    return await ensureBudgetForRef(ctx, chapterId, args.refKind, args.scopeRefId, userId);
   },
 });
 
@@ -4055,6 +4349,140 @@ export const removeEmptyAutoBudgets = internalMutation({
   },
 });
 
+// ── Links → budgets migration (WP-U phase A: one home per dollar) ───────────
+const migrateLinksToBudgetsResult = v.object({
+  // Transactions examined that carry a legacy `eventId`/`projectId`.
+  scanned: v.number(),
+  // `budgetId` was absent → resolved/summoned the ref's budget and set it.
+  backfilled: v.number(),
+  // `budgetId` was already exactly the ref's budget — a settled re-run no-op.
+  alreadySet: v.number(),
+  // `budgetId` was present and DIFFERENT from the ref's budget — a human
+  // explicitly re-coded this txn since the FK was written. KEPT (never
+  // overwritten); logged here for review.
+  conflicts: v.number(),
+  conflictIds: v.array(v.id("transactions")),
+  // How many NEW $0 "plan" budgets this run had to summon along the way.
+  budgetsSummoned: v.number(),
+  // Carried a legacy FK pointing at a ref that's central-owned, deleted, or
+  // otherwise unresolvable — skipped rather than guessed at.
+  skipped: v.number(),
+});
+
+/**
+ * Migration body (WP-U phase A): backfill `transactions.budgetId` from the
+ * vestigial `eventId`/`projectId` FKs — "one home per dollar" only holds once
+ * every pre-existing transaction has its budget set, not just new ones. Reuses
+ * `ensureBudgetForRef` (the SAME get-or-create the "For" picker's summon-on-
+ * pick calls), so a migrated row's budget is indistinguishable from one a
+ * human picked. Idempotent + bounded (one chapter via `by_chapter`, or a
+ * bounded whole-deployment slice — same shape as `backfillEventBudgets`).
+ * CLEARS NOTHING — the FKs stay put for the phase-B column drop; this phase
+ * only ever ADDS a `budgetId` a transaction didn't already have.
+ */
+async function runMigrateLinksToBudgets(
+  ctx: MutationCtx,
+  chapterId?: Id<"chapters">,
+): Promise<{
+  scanned: number;
+  backfilled: number;
+  alreadySet: number;
+  conflicts: number;
+  conflictIds: Id<"transactions">[];
+  budgetsSummoned: number;
+  skipped: number;
+}> {
+  if (chapterId) {
+    const chapter = await ctx.db.get(chapterId);
+    if (!chapter) {
+      throw new ConvexError({ code: "NOT_FOUND", message: "Chapter not found." });
+    }
+  }
+
+  const txns = chapterId
+    ? await ctx.db
+        .query("transactions")
+        .withIndex("by_chapter", (q) => q.eq("chapterId", chapterId))
+        .take(ROLLUP_SCAN_LIMIT)
+    : await ctx.db.query("transactions").take(ROLLUP_SCAN_LIMIT);
+
+  let scanned = 0;
+  let backfilled = 0;
+  let alreadySet = 0;
+  let conflicts = 0;
+  const conflictIds: Id<"transactions">[] = [];
+  let budgetsSummoned = 0;
+  let skipped = 0;
+
+  for (const tr of txns) {
+    if (!tr.eventId && !tr.projectId) continue;
+    scanned++;
+    // A central-owned txn never carries these FKs in practice
+    // (`createManualTransaction`/`categorizeTransaction` always rejected the
+    // combination) — skip defensively rather than assume.
+    if (tr.chapterId === CENTRAL) {
+      skipped++;
+      continue;
+    }
+    const refKind: BudgetRefKind = tr.projectId ? "project" : "event";
+    const scopeRefId = String(tr.projectId ?? tr.eventId);
+
+    const before = await ctx.db
+      .query("budgets")
+      .withIndex("by_ref", (q) => q.eq("refKind", refKind).eq("scopeRefId", scopeRefId))
+      .first();
+    let refBudgetId: Id<"budgets">;
+    try {
+      refBudgetId = await ensureBudgetForRef(
+        ctx,
+        tr.chapterId,
+        refKind,
+        scopeRefId,
+        undefined,
+      );
+    } catch {
+      // The ref no longer exists / doesn't belong to the txn's chapter — the
+      // FK is stale beyond repair. Skip rather than guess.
+      skipped++;
+      continue;
+    }
+    if (!before) budgetsSummoned++;
+
+    if (tr.budgetId == null) {
+      await ctx.db.patch(tr._id, { budgetId: refBudgetId });
+      backfilled++;
+    } else if (tr.budgetId === refBudgetId) {
+      alreadySet++;
+    } else {
+      // A human already explicitly attributed this txn to a DIFFERENT budget
+      // since the FK was written — keep their explicit choice, never clobber.
+      conflicts++;
+      conflictIds.push(tr._id);
+    }
+  }
+
+  console.log(
+    `[finances] migrateLinksToBudgets: scanned ${scanned}, backfilled ${backfilled}, ` +
+      `already set ${alreadySet}, conflicts ${conflicts} (kept, not overwritten), ` +
+      `budgets summoned ${budgetsSummoned}, skipped ${skipped}.`,
+  );
+
+  return { scanned, backfilled, alreadySet, conflicts, conflictIds, budgetsSummoned, skipped };
+}
+
+/**
+ * CLI-runnable (no auth) migration — mirrors `backfillEventBudgets`. Bounded +
+ * idempotent (see {@link runMigrateLinksToBudgets}).
+ *
+ * Run locally:  npx convex run finances:migrateLinksToBudgets
+ * Run on prod:  npx convex run --prod finances:migrateLinksToBudgets '{"chapterId":"..."}'
+ */
+export const migrateLinksToBudgets = internalMutation({
+  args: { chapterId: v.optional(v.id("chapters")) },
+  returns: migrateLinksToBudgetsResult,
+  handler: async (ctx, args) => await runMigrateLinksToBudgets(ctx, args.chapterId),
+});
+
 // ── Fund merge (WP-1.4 "defund the UI" — one General Fund, zero fund UI) ────
 const fundMergeResult = v.object({
   chaptersScanned: v.number(),
@@ -4416,9 +4844,7 @@ export const listReconcile = query({
     // `storage.getUrl` calls), caching people / cards / image urls across rows.
     const getPerson = nameCache(ctx, "people");
     const getCard = nameCache(ctx, "cards");
-    // Same read-through caching for the Link column + AI suggestion display names.
-    const getEvent = nameCache(ctx, "events");
-    const getProject = nameCache(ctx, "projects");
+    // Same read-through caching for the AI suggestion's resolved display names.
     const getFund = nameCache(ctx, "funds");
     const getCategory = nameCache(ctx, "budgetCategories");
     const imageUrlCache = new Map<Id<"_storage">, string | null>();
@@ -4443,42 +4869,29 @@ export const listReconcile = query({
       return { personId, name: person.name, imageUrl };
     };
 
-    // The Link column's current-value label: the project if linked, else the
-    // event (mirrors the dashboard's `codedTo.projectOrEvent` precedence).
-    const resolveLinkLabel = async (tr: Doc<"transactions">) => {
-      if (tr.projectId) {
-        const project = await getProject(tr.projectId);
-        return project ? `Project: ${project.name}` : null;
-      }
-      if (tr.eventId) {
-        const event = await getEvent(tr.eventId);
-        return event ? `Event: ${event.name}` : null;
-      }
-      return null;
-    };
-
     // The AI suggestion, resolved to display names — only for a still-unreviewed
     // row whose proposal actually carries at least one link (a confidence/
     // rationale-only proposal has nothing actionable to show or Accept).
+    // WP-U: the model proposes a BUDGET directly (one home per dollar) —
+    // `ai.projectId`/`ai.eventId` are dead schema-only fields nothing writes
+    // anymore (see `aiCodingData.writeSuggestion`).
+    const getBudget = nameCache(ctx, "budgets");
     const resolveAiSuggestion = async (tr: Doc<"transactions">) => {
       const ai = tr.aiSuggestion;
       if (tr.status !== "unreviewed" || !ai) return null;
-      if (!ai.fundId && !ai.categoryId && !ai.projectId && !ai.eventId) return null;
-      const [fund, category, project, event] = await Promise.all([
+      if (!ai.fundId && !ai.categoryId && !ai.budgetId) return null;
+      const [fund, category, budget] = await Promise.all([
         ai.fundId ? getFund(ai.fundId) : null,
         ai.categoryId ? getCategory(ai.categoryId) : null,
-        ai.projectId ? getProject(ai.projectId) : null,
-        ai.eventId ? getEvent(ai.eventId) : null,
+        ai.budgetId ? getBudget(ai.budgetId) : null,
       ]);
       return {
         fundId: ai.fundId ?? null,
         categoryId: ai.categoryId ?? null,
-        projectId: ai.projectId ?? null,
-        eventId: ai.eventId ?? null,
+        budgetId: ai.budgetId ?? null,
         fundName: fund?.name ?? null,
         categoryName: category?.name ?? null,
-        projectName: project?.name ?? null,
-        eventName: event?.name ?? null,
+        budgetName: budget ? budgetDisplayName(budget) : null,
         confidence: ai.confidence ?? null,
         rationale: ai.rationale ?? null,
       };
@@ -4489,9 +4902,6 @@ export const listReconcile = query({
       rows.push({
         ...toTxnSummary(tr),
         cardholder: await resolveCardholder(tr),
-        projectId: tr.projectId ?? null,
-        eventId: tr.eventId ?? null,
-        linkLabel: await resolveLinkLabel(tr),
         aiSuggestion: await resolveAiSuggestion(tr),
       });
     }
@@ -4506,8 +4916,6 @@ async function verifyTxnRefs(
   refs: {
     fundId?: Id<"funds"> | null;
     categoryId?: Id<"budgetCategories"> | null;
-    projectId?: Id<"projects"> | null;
-    eventId?: Id<"events"> | null;
     teamId?: Id<"financeTeams"> | null;
     personId?: Id<"people"> | null;
   },
@@ -4515,10 +4923,6 @@ async function verifyTxnRefs(
   if (refs.fundId) await requireInCallerChapter(ctx, chapterId, "funds", refs.fundId, "Fund");
   if (refs.categoryId)
     await requireInCallerChapter(ctx, chapterId, "budgetCategories", refs.categoryId, "Category");
-  if (refs.projectId)
-    await requireInCallerChapter(ctx, chapterId, "projects", refs.projectId, "Project");
-  if (refs.eventId)
-    await requireInCallerChapter(ctx, chapterId, "events", refs.eventId, "Event");
   if (refs.teamId)
     await requireInCallerChapter(ctx, chapterId, "financeTeams", refs.teamId, "Team", {
       allowCentral: true,
@@ -4575,14 +4979,16 @@ export const createManualTransaction = mutation({
     merchantName: v.optional(v.string()),
     fundId: v.optional(v.id("funds")),
     categoryId: v.optional(v.id("budgetCategories")),
-    projectId: v.optional(v.id("projects")),
-    eventId: v.optional(v.id("events")),
+    // WP-U: one home per dollar — a manual entry attributes to a BUDGET
+    // directly (the "For" picker), never a separate event/project link.
+    budgetId: v.optional(v.id("budgets")),
     teamId: v.optional(v.id("financeTeams")),
     personId: v.optional(v.id("people")),
     // WP-2.1: create a CENTRAL-owned txn (`chapterId:"central"`) instead of a
     // chapter one — requires central reach. Mirrors `createBudget`'s `central`
     // flag. Central txns carry no chapter-scoped links (funds/categories/
-    // projects/events/teams/person are chapter-only), so those args are rejected.
+    // teams/person are chapter-only; a central budget IS allowed), so those
+    // args are rejected but `budgetId` isn't.
     central: v.optional(v.boolean()),
   },
   returns: v.id("transactions"),
@@ -4592,18 +4998,19 @@ export const createManualTransaction = mutation({
     const userId = (await requireUserId(ctx)) as Id<"users">;
     if (args.central) {
       // Central desk: org-wide reach, and NONE of the chapter-scoped links
-      // apply (central has no funds/categories/projects/events/teams; a person
-      // is a chapter roster row). Reject them loudly rather than silently drop.
+      // apply (central has no funds/categories/teams; a person is a chapter
+      // roster row). Reject them loudly rather than silently drop.
       await requireFinanceCentral(ctx, homeChapterId);
-      if (
-        args.fundId || args.categoryId || args.projectId ||
-        args.eventId || args.teamId || args.personId
-      ) {
+      if (args.fundId || args.categoryId || args.teamId || args.personId) {
         throw new ConvexError({
           code: "UNSUPPORTED",
           message:
-            "A central transaction can't carry chapter-scoped links (fund/category/project/event/team/person).",
+            "A central transaction can't carry chapter-scoped links (fund/category/team/person).",
         });
+      }
+      if (args.budgetId) {
+        // A central txn may only attribute to a CENTRAL budget.
+        await requireInCallerChapter(ctx, CENTRAL, "budgets", args.budgetId, "Budget");
       }
       return await ctx.db.insert("transactions", {
         chapterId: CENTRAL,
@@ -4614,8 +5021,10 @@ export const createManualTransaction = mutation({
         postedAt: args.postedAt,
         description: args.description,
         merchantName: args.merchantName,
-        // Central has no funds (WP-1.4/2.1) — stays fund-less, unreviewed.
-        status: "unreviewed",
+        budgetId: args.budgetId,
+        // Central has no funds (WP-1.4/2.1) — stays fund-less. Coded on entry
+        // when a budget was explicitly given, else unreviewed.
+        status: args.budgetId ? "categorized" : "unreviewed",
         createdBy: userId,
         createdAt: Date.now(),
       });
@@ -4623,10 +5032,18 @@ export const createManualTransaction = mutation({
     const chapterId = homeChapterId;
     await requireFinanceRole(ctx, chapterId, "bookkeeper");
     await verifyTxnRefs(ctx, chapterId, args);
-    // Categorized on entry when a fund/category was EXPLICITLY supplied, else
-    // unreviewed — computed before the silent fund default below so the fund
-    // auto-fill (no UI ever sends one) never fakes a real categorization.
-    const status = args.fundId || args.categoryId ? "categorized" : "unreviewed";
+    if (args.budgetId) {
+      // A chapter txn may point at its OWN chapter budget or a central one.
+      await requireInCallerChapter(ctx, chapterId, "budgets", args.budgetId, "Budget", {
+        allowCentral: true,
+      });
+    }
+    // Categorized on entry when a fund/category/budget was EXPLICITLY
+    // supplied, else unreviewed — computed before the silent fund default
+    // below so the fund auto-fill (no UI ever sends one) never fakes a real
+    // categorization.
+    const status =
+      args.fundId || args.categoryId || args.budgetId ? "categorized" : "unreviewed";
     // Silently default to the chapter's General Fund when the client omits a
     // fund (every UI now does — funds are backend-only, see WP-1.4).
     const fundId = args.fundId ?? (await defaultFundId(ctx, chapterId)) ?? undefined;
@@ -4641,8 +5058,7 @@ export const createManualTransaction = mutation({
       merchantName: args.merchantName,
       fundId,
       categoryId: args.categoryId,
-      projectId: args.projectId,
-      eventId: args.eventId,
+      budgetId: args.budgetId,
       teamId: args.teamId,
       personId: args.personId,
       status,
@@ -4657,11 +5073,12 @@ export const categorizeTransaction = mutation({
     transactionId: v.id("transactions"),
     fundId: v.optional(v.union(v.id("funds"), v.null())),
     categoryId: v.optional(v.union(v.id("budgetCategories"), v.null())),
-    projectId: v.optional(v.union(v.id("projects"), v.null())),
-    eventId: v.optional(v.union(v.id("events"), v.null())),
     teamId: v.optional(v.union(v.id("financeTeams"), v.null())),
-    // Explicit budget attribution. A chapter txn may point at its OWN chapter
-    // budget or a central budget (never another chapter's). `null` clears it.
+    // Explicit budget attribution — the "For" picker's ONLY link (WP-U: one
+    // home per dollar; the old separate eventId/projectId args are gone —
+    // `budgetId` subsumes them both). A chapter txn may point at its OWN
+    // chapter budget or a central budget (never another chapter's). `null`
+    // clears it.
     budgetId: v.optional(v.union(v.id("budgets"), v.null())),
   },
   returns: v.null(),
@@ -4671,7 +5088,7 @@ export const categorizeTransaction = mutation({
     const { txn, scope } = await requireReconcileTxn(ctx, args.transactionId, "bookkeeper");
     if (scope === CENTRAL) {
       // Central txns carry no chapter-scoped links — only a central budget.
-      if (args.fundId || args.categoryId || args.projectId || args.eventId || args.teamId) {
+      if (args.fundId || args.categoryId || args.teamId) {
         throw new ConvexError({
           code: "UNSUPPORTED",
           message:
@@ -4682,8 +5099,6 @@ export const categorizeTransaction = mutation({
       await verifyTxnRefs(ctx, scope, {
         fundId: args.fundId ?? undefined,
         categoryId: args.categoryId ?? undefined,
-        projectId: args.projectId ?? undefined,
-        eventId: args.eventId ?? undefined,
         teamId: args.teamId ?? undefined,
       });
     }
@@ -4697,8 +5112,6 @@ export const categorizeTransaction = mutation({
     const patch = cleanPatch({
       fundId: args.fundId,
       categoryId: args.categoryId,
-      projectId: args.projectId,
-      eventId: args.eventId,
       teamId: args.teamId,
       budgetId: args.budgetId,
     });
@@ -5001,22 +5414,21 @@ function snapshotPriorState(txn: Doc<"transactions">): ReattributionPriorState {
 }
 
 /**
- * A chapter-only link (project / event / person) survives a cross-boundary move
- * ONLY when it belongs to the TARGET chapter. Moving to central always clears it
- * (these tables have no central scope — WP-2.2 finding), and moving to a chapter
- * keeps it only if the linked row is in that chapter. Returns the id to keep, or
+ * A chapter-only PERSON link survives a cross-boundary move ONLY when the
+ * roster row belongs to the TARGET chapter. Moving to central always clears it
+ * (a central txn carries no person link at all — `createManualTransaction`
+ * enforces the same invariant at creation). Returns the id to keep, or
  * `undefined` to clear the field (a `patch` with an `undefined` value unsets it).
  */
-async function keepTargetOwnedLink<T extends "projects" | "events" | "people">(
+async function keepTargetOwnedPerson(
   ctx: QueryCtx,
-  table: T,
-  id: Id<T> | undefined,
+  id: Id<"people"> | undefined,
   target: FinanceScope,
-): Promise<Id<T> | undefined> {
+): Promise<Id<"people"> | undefined> {
   if (id == null) return undefined;
   if (target === CENTRAL) return undefined;
-  const doc = (await ctx.db.get(id)) as { chapterId?: Id<"chapters"> } | null;
-  return doc && doc.chapterId === target ? id : undefined;
+  const person = (await ctx.db.get(id)) as { chapterId?: Id<"chapters"> } | null;
+  return person && person.chapterId === target ? id : undefined;
 }
 
 /**
@@ -5034,11 +5446,6 @@ async function keepTargetOwnedLink<T extends "projects" | "events" | "people">(
  *                   (never inherit the source chapter's fund).
  *  - `categoryId` → categories are chapter-scoped (source chapter's fund tree) →
  *                   ALWAYS clear (the receiving treasurer recodes).
- *  - `projectId`/`eventId`/`eventItemId` → projects & events are CHAPTER-ONLY
- *                   today → clear on → central; on → chapter keep only if the
- *                   linked row belongs to `target`. (`transferProjectScope`
- *                   passes `preserveProjectId` so a whole-project move keeps its
- *                   own project link — the project's money follows the project.)
  *  - `teamId`     → financeTeams MAY be central (absent chapterId): keep a
  *                   central team or a target-owned team; clear a source-chapter
  *                   team (a central txn carries no chapter-scoped link — the same
@@ -5046,6 +5453,14 @@ async function keepTargetOwnedLink<T extends "projects" | "events" | "people">(
  *  - `personId`   → a roster person is chapter-scoped and a central txn carries
  *                   none (`createManualTransaction` rejects it): → central clears;
  *                   → chapter keeps only a target-roster person.
+ *
+ *  WP-U (one home per dollar): `projectId`/`eventId`/`eventItemId` are NEVER
+ *  touched here anymore — those FKs are vestigial (`budgetId` is the only real
+ *  attribution; actuals are budget-first), so a reassignment leaves whatever
+ *  stale value was already on the row alone rather than clearing it. This also
+ *  means `transferProjectScope` no longer needs a `preserveProjectId` escape
+ *  hatch to keep a whole-project move's project link — nothing here ever
+ *  touches `projectId`, so there's nothing to preserve.
  *
  *  Deliberately UNTOUCHED (provenance/reality of where the money physically
  *  moved — reassignment must never rewrite it): `externalId`, `sourceAccountId`,
@@ -5056,7 +5471,6 @@ async function computeReassignmentPatch(
   ctx: MutationCtx,
   txn: Doc<"transactions">,
   target: FinanceScope,
-  opts: { preserveProjectId?: boolean } = {},
 ): Promise<Record<string, unknown>> {
   const patch: Record<string, unknown> = { chapterId: target };
   // Same-scope "move": nothing crossed the boundary — leave attributions as-is.
@@ -5072,15 +5486,6 @@ async function computeReassignmentPatch(
 
   patch.categoryId = undefined;
 
-  if (!opts.preserveProjectId) {
-    patch.projectId = await keepTargetOwnedLink(ctx, "projects", txn.projectId, target);
-  }
-  const keptEvent = await keepTargetOwnedLink(ctx, "events", txn.eventId, target);
-  patch.eventId = keptEvent;
-  // eventItemId is a child of the event — only meaningful while the event link
-  // survives; drop it whenever the event link is cleared.
-  patch.eventItemId = keptEvent ? txn.eventItemId : undefined;
-
   if (txn.teamId != null) {
     const team = (await ctx.db.get(txn.teamId)) as { chapterId?: Id<"chapters"> } | null;
     const teamChapter = team?.chapterId; // undefined = a central/org team
@@ -5088,7 +5493,7 @@ async function computeReassignmentPatch(
     patch.teamId = keep ? txn.teamId : undefined;
   }
 
-  patch.personId = await keepTargetOwnedLink(ctx, "people", txn.personId, target);
+  patch.personId = await keepTargetOwnedPerson(ctx, txn.personId, target);
 
   return patch;
 }
@@ -5298,27 +5703,31 @@ export const transferProjectScope = mutation({
       budgetsMoved++;
     }
 
-    // 2. Move the project's linked TRANSACTIONS. Preserve the projectId link (the
-    //    whole project is moving — project-table scoping is DEFERRED, but the
-    //    money follows the project) while clearing the OTHER now-invalid
-    //    chapter-scoped attributions.
-    const linked = await ctx.db
-      .query("transactions")
-      .withIndex("by_project", (q) => q.eq("projectId", args.projectId))
-      .take(ROLLUP_SCAN_LIMIT);
-    if (linked.length === ROLLUP_SCAN_LIMIT) {
-      console.warn(
-        `[finances] transferProjectScope hit ROLLUP_SCAN_LIMIT (${ROLLUP_SCAN_LIMIT}) reading transactions for project ${args.projectId}; some linked transactions may not have moved.`,
-      );
+    // 2. Move the transactions ATTACHED TO those budgets (WP-U: one home per
+    //    dollar — the money follows the BUDGET, discovered via `by_budget`,
+    //    not the txn's own `projectId` FK, which is now vestigial and untouched
+    //    by `computeReassignmentPatch`). A project can carry more than one
+    //    one_time budget over its life (rare, but possible), so this unions
+    //    every budget's linked transactions.
+    const linked: Doc<"transactions">[] = [];
+    for (const b of projectBudgets) {
+      const rows = await ctx.db
+        .query("transactions")
+        .withIndex("by_budget", (q) => q.eq("budgetId", b._id))
+        .take(ROLLUP_SCAN_LIMIT);
+      if (rows.length === ROLLUP_SCAN_LIMIT) {
+        console.warn(
+          `[finances] transferProjectScope hit ROLLUP_SCAN_LIMIT (${ROLLUP_SCAN_LIMIT}) reading transactions for budget ${b._id}; some linked transactions may not have moved.`,
+        );
+      }
+      linked.push(...rows);
     }
     const priorStates: ReattributionPriorState[] = [];
     const movedTxnIds: Id<"transactions">[] = [];
     for (const txn of linked) {
       if (txn.chapterId === args.target) continue;
       priorStates.push(snapshotPriorState(txn));
-      const patch = await computeReassignmentPatch(ctx, txn, args.target, {
-        preserveProjectId: true,
-      });
+      const patch = await computeReassignmentPatch(ctx, txn, args.target);
       await ctx.db.patch(txn._id, patch);
       movedTxnIds.push(txn._id);
     }
@@ -5418,6 +5827,17 @@ export const suggestSplitAssignments = query({
       projectCache.set(id, p);
       return p;
     };
+    // WP-U (one home per dollar): the split heuristic reads a txn's BUDGET ref
+    // (`refKind`/`scopeRefId`) instead of its own `eventId`/`projectId` FKs —
+    // those are vestigial now (nothing new writes them; only `budgetId` is a
+    // real attribution).
+    const budgetCache = new Map<Id<"budgets">, Doc<"budgets"> | null>();
+    const getBudget = async (id: Id<"budgets">) => {
+      if (budgetCache.has(id)) return budgetCache.get(id)!;
+      const b = await ctx.db.get(id);
+      budgetCache.set(id, b);
+      return b;
+    };
 
     const central: (typeof splitSuggestionRow.type)[] = [];
     const chapter: (typeof splitSuggestionRow.type)[] = [];
@@ -5435,12 +5855,14 @@ export const suggestSplitAssignments = query({
     });
 
     for (const tr of txns) {
-      if (tr.eventId) {
+      const budget = tr.budgetId ? await getBudget(tr.budgetId) : null;
+      if (budget?.refKind === "event") {
         // Event-linked → chapter: canon events are local (playbook boundary).
         chapter.push(toRow(tr, "Event-linked — canon events stay with the chapter"));
-      } else if (tr.projectId) {
-        projectTxnCounts.set(tr.projectId, (projectTxnCounts.get(tr.projectId) ?? 0) + 1);
-        const project = await getProject(tr.projectId);
+      } else if (budget?.refKind === "project" && budget.scopeRefId) {
+        const projectId = budget.scopeRefId as Id<"projects">;
+        projectTxnCounts.set(projectId, (projectTxnCounts.get(projectId) ?? 0) + 1);
+        const project = await getProject(projectId);
         const isCentralProject = matchesAnyKeyword(project?.name, CENTRAL_PROJECT_KEYWORDS);
         if (isCentralProject) {
           central.push(

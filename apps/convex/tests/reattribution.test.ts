@@ -226,7 +226,7 @@ async function seedTxn(
 // ── reassignTransactions: per-field clearing rules ───────────────────────────
 
 describe("reassignTransactions: chapter → central clears chapter-scoped links", () => {
-  test("clears fund/category/project/event/team/person + a source-chapter budget; keeps amount/flow", async () => {
+  test("clears fund/category/team/person + a source-chapter budget; leaves the legacy project/event FK untouched; keeps amount/flow", async () => {
     const t = newT();
     const s = await setupChapter(t, { email: SUPER });
     await seedSelfPerson(s);
@@ -261,12 +261,16 @@ describe("reassignTransactions: chapter → central clears chapter-scoped links"
     expect(txn?.chapterId).toBe("central");
     expect(txn?.fundId).toBeUndefined();
     expect(txn?.categoryId).toBeUndefined();
-    expect(txn?.projectId).toBeUndefined();
-    expect(txn?.eventId).toBeUndefined();
     expect(txn?.teamId).toBeUndefined();
     expect(txn?.personId).toBeUndefined();
     // A source-chapter budget doesn't belong to central → cleared.
     expect(txn?.budgetId).toBeUndefined();
+    // WP-U (one home per dollar): the legacy `projectId`/`eventId` FKs are
+    // vestigial now — `budgetId` is the only real attribution — so a
+    // reassignment NEVER touches them, leaving whatever value was already
+    // there (no more FK clearing).
+    expect(txn?.projectId).toBe(projectId);
+    expect(txn?.eventId).toBe(eventId);
     // Money is UNCHANGED — reassignment only moves WHERE it belongs.
     expect(txn?.amountCents).toBe(7777);
     expect(txn?.flow).toBe("outflow");
@@ -432,11 +436,12 @@ describe("reassignTransactions: audit trail", () => {
     expect(prior.projectId).toBe(projectId);
     expect(prior.budgetId).toBe(chapterBudget);
 
-    // Meanwhile the live txn has all of that cleared by the forward move.
+    // Meanwhile the live txn has fund/category/budget cleared by the forward
+    // move — but `projectId` (vestigial, WP-U) is left untouched.
     const txn = await run(t, (ctx) => ctx.db.get(txnId));
     expect(txn?.fundId).toBeUndefined();
     expect(txn?.categoryId).toBeUndefined();
-    expect(txn?.projectId).toBeUndefined();
+    expect(txn?.projectId).toBe(projectId);
     expect(txn?.budgetId).toBeUndefined();
     expect(res.auditId).toBe(rows[0]._id);
   });
@@ -494,16 +499,18 @@ describe("restoreReattribution: full round-trip", () => {
       target: "central",
     });
 
-    // Forward move landed as expected — everything chapter-scoped cleared.
+    // Forward move landed as expected — every CHAPTER-SCOPED link cleared
+    // (fund/category/team/person/budget); `projectId`/`eventId` (vestigial,
+    // WP-U) are left untouched by the move.
     const moved = await run(t, (ctx) => ctx.db.get(txnId));
     expect(moved?.chapterId).toBe("central");
     expect(moved?.fundId).toBeUndefined();
     expect(moved?.categoryId).toBeUndefined();
-    expect(moved?.projectId).toBeUndefined();
-    expect(moved?.eventId).toBeUndefined();
     expect(moved?.teamId).toBeUndefined();
     expect(moved?.personId).toBeUndefined();
     expect(moved?.budgetId).toBeUndefined();
+    expect(moved?.projectId).toBe(projectId);
+    expect(moved?.eventId).toBe(eventId);
 
     // internalMutation — invoked directly, exactly like the run-convex-function
     // ops path (no client-facing caller exists for it).
@@ -621,9 +628,28 @@ describe("suggestSplitAssignments: playbook buckets", () => {
     const outreach = await seedProject(s, s.chapterId, "Outreach");
     const eventId = await seedEvent(s, s.chapterId);
 
-    const eventTxn = await seedTxn(s, s.chapterId, { eventId });
-    const musicTxn = await seedTxn(s, s.chapterId, { projectId: music });
-    const outreachTxn = await seedTxn(s, s.chapterId, { projectId: outreach });
+    // WP-U (one home per dollar): the split heuristic reads a txn's BUDGET ref
+    // (refKind/scopeRefId) — attribute via `budgetId`, not the legacy
+    // `eventId`/`projectId` FKs directly.
+    const eventBudget = await seedBudget(s, s.chapterId, {
+      type: "one_time",
+      refKind: "event",
+      scopeRefId: eventId,
+    });
+    const musicBudget = await seedBudget(s, s.chapterId, {
+      type: "one_time",
+      refKind: "project",
+      scopeRefId: music,
+    });
+    const outreachBudget = await seedBudget(s, s.chapterId, {
+      type: "one_time",
+      refKind: "project",
+      scopeRefId: outreach,
+    });
+
+    const eventTxn = await seedTxn(s, s.chapterId, { budgetId: eventBudget });
+    const musicTxn = await seedTxn(s, s.chapterId, { budgetId: musicBudget });
+    const outreachTxn = await seedTxn(s, s.chapterId, { budgetId: outreachBudget });
     const merchantTxn = await seedTxn(s, s.chapterId, { merchantName: "Expansion Conference LLC" });
     const plainTxn = await seedTxn(s, s.chapterId, { merchantName: "Corner Deli" });
 
@@ -665,7 +691,7 @@ describe("suggestSplitAssignments: playbook buckets", () => {
 // ── transferProjectScope (budgets + txns atomically, audited) ─────────────────
 
 describe("transferProjectScope", () => {
-  test("moves the project's budgets + linked txns to central, preserving projectId, and audits", async () => {
+  test("moves the project's budgets + the budget's linked txns to central, and audits (WP-U: discovery is budget-first, not by the txn's legacy projectId FK)", async () => {
     const t = newT();
     const s = await setupChapter(t, { email: SUPER });
     await seedSelfPerson(s);
@@ -678,8 +704,19 @@ describe("transferProjectScope", () => {
       scopeRefId: project,
       fundId,
     });
-    const t1 = await seedTxn(s, s.chapterId, { projectId: project, fundId });
-    const t2 = await seedTxn(s, s.chapterId, { projectId: project, fundId });
+    // WP-U: `transferProjectScope` now finds linked transactions via the
+    // BUDGET's `by_budget` index — `budgetId` is what moves them, not the
+    // legacy `projectId` FK (carried here too, to prove it's inert/untouched).
+    const t1 = await seedTxn(s, s.chapterId, {
+      budgetId: projectBudget,
+      projectId: project,
+      fundId,
+    });
+    const t2 = await seedTxn(s, s.chapterId, {
+      budgetId: projectBudget,
+      projectId: project,
+      fundId,
+    });
     // An unrelated chapter budget + txn that must NOT move.
     const otherBudget = await seedBudget(s, s.chapterId);
     const otherTxn = await seedTxn(s, s.chapterId, {});
@@ -699,7 +736,8 @@ describe("transferProjectScope", () => {
     for (const id of [t1, t2]) {
       const txn = await run(t, (ctx) => ctx.db.get(id));
       expect(txn?.chapterId).toBe("central");
-      expect(txn?.projectId).toBe(project); // projectId PRESERVED (project moved)
+      expect(txn?.budgetId).toBe(projectBudget); // the real link — followed the budget
+      expect(txn?.projectId).toBe(project); // legacy FK left untouched (vestigial)
       expect(txn?.fundId).toBeUndefined(); // other chapter-scoped links cleared
     }
 
@@ -806,8 +844,18 @@ describe("transferProjectScope", () => {
       scopeRefId: project,
       fundId,
     });
-    const t1 = await seedTxn(s, s.chapterId, { projectId: project, fundId });
-    const t2 = await seedTxn(s, s.chapterId, { projectId: project, fundId });
+    // WP-U: linked via `budgetId` (the real link) — `projectId` is carried too
+    // to prove it's inert.
+    const t1 = await seedTxn(s, s.chapterId, {
+      budgetId: projectBudget,
+      projectId: project,
+      fundId,
+    });
+    const t2 = await seedTxn(s, s.chapterId, {
+      budgetId: projectBudget,
+      projectId: project,
+      fundId,
+    });
 
     // Forward: chapter → central.
     const forward = await s.as.mutation(api.finances.transferProjectScope, {
@@ -821,7 +869,9 @@ describe("transferProjectScope", () => {
     // Reverse: central → back to the chapter. Budget discovery is by_ref
     // (refKind + scopeRefId), NOT by the project's (unchanged) home chapter —
     // so this finds the budget at central, not at the chapter it never
-    // actually moved away from on the project row.
+    // actually moved away from on the project row. Linked-txn discovery is
+    // budget-first too (`by_budget` on the just-found budget), so the reverse
+    // leg finds these same two txns via the SAME budget, now at central.
     const reverse = await s.as.mutation(api.finances.transferProjectScope, {
       projectId: project,
       target: s.chapterId,
@@ -836,6 +886,7 @@ describe("transferProjectScope", () => {
     for (const id of [t1, t2]) {
       const txn = await run(t, (ctx) => ctx.db.get(id));
       expect(txn?.chapterId).toBe(s.chapterId);
+      expect(txn?.budgetId).toBe(projectBudget);
       expect(txn?.projectId).toBe(project);
     }
 
