@@ -57,7 +57,8 @@ export function ChapterView({
   onEditBudget: (budgetId: string) => void;
   onAddTransaction: () => void;
   /** Navigate for an attention row's action (`a.kind`: "reimbursements" → the
-   *  Reimbursements tab, "cards" → the Cards tab). */
+   *  Reimbursements tab, "cards" → the Cards tab, "needs_budget" → Reconcile
+   *  pre-filtered to unattributed spend). */
   onAttentionAction: (kind: string) => void;
   /**
    * True while a central viewer is drilled into a chapter that ISN'T their
@@ -176,7 +177,10 @@ export function ChapterView({
 
       {/* Needs your attention */}
       {(() => {
-        const needsBudget = data.toBudgetCount;
+        // Period-scoped (matches `unattributedCents`'s scope + "this period"
+        // copy) — NOT `toBudgetCount` (all-time), which could show "$0.00"
+        // over "N transactions need a budget this period".
+        const needsBudget = data.unattributedCount;
         const attentionCount = data.attention.length + (needsBudget > 0 ? 1 : 0);
         return (
           <>
@@ -193,7 +197,11 @@ export function ChapterView({
             ) : (
               <View className="gap-3">
                 {needsBudget > 0 ? (
-                  <NeedsBudgetCard count={needsBudget} />
+                  <NeedsBudgetCard
+                    count={needsBudget}
+                    unattributedCents={data.unattributedCents}
+                    onPress={isDrilldown ? undefined : () => onAttentionAction("needs_budget")}
+                  />
                 ) : null}
                 {data.attention.map((a, i) => (
                   <AttentionCard
@@ -204,6 +212,20 @@ export function ChapterView({
                 ))}
               </View>
             )}
+            {/* Coded-to-central — info-tier (not a warning): spend that's
+                legitimately linked to a central budget, so it's excluded from
+                Unattributed above but wouldn't otherwise appear anywhere on
+                this chapter's dashboard. */}
+            {data.centralLinkedCents > 0 ? (
+              <View className="mt-3 flex-row items-center gap-2 rounded-md bg-info-bg px-3 py-2">
+                <Icon name="info" size={14} color={colors.info} />
+                <Text className="flex-1 text-xs text-info">
+                  Coded to central budgets:{" "}
+                  <Money cents={data.centralLinkedCents} className="text-xs font-semibold text-info" />{" "}
+                  — tracked on the central dashboard, not a chapter card.
+                </Text>
+              </View>
+            ) : null}
           </>
         );
       })()}
@@ -386,12 +408,24 @@ function TransactionsTable({ rows }: { rows: RecentTxn[] }) {
   );
 }
 
-// ── Needs-a-budget attention row ─────────────────────────────────────────────
-// Un-budgeted spend (`dashboardChapter.toBudgetCount`) nudged to Reconcile so
-// each charge gets tagged to a budget. Hidden when the count is 0 (caller-gated).
-function NeedsBudgetCard({ count }: { count: number }) {
-  return (
-    <View className="flex-row items-center gap-3 rounded-lg border border-warn bg-warn-bg p-4 shadow-card">
+// ── Needs-a-budget / Unattributed attention row ──────────────────────────────
+// Un-budgeted spend nudged to Reconcile so each charge gets tagged to a
+// budget. `count` (`dashboardChapter.unattributedCount`) and `unattributedCents`
+// share the same THIS-PERIOD scope + predicate — the dollar figure every
+// budget card on the dashboard is blind to (no derive-matching fallback
+// exists — see WP-0.1). Hidden when the count is 0 (caller-gated). Tappable
+// (unless drilled into another chapter) → Reconcile's `needs_budget` filter.
+function NeedsBudgetCard({
+  count,
+  unattributedCents,
+  onPress,
+}: {
+  count: number;
+  unattributedCents: number;
+  onPress?: () => void;
+}) {
+  const content = (
+    <>
       <View className="h-9 min-w-[36px] items-center justify-center rounded-pill bg-warn-soft px-2">
         <Text
           className="text-sm font-bold text-warn"
@@ -402,16 +436,36 @@ function NeedsBudgetCard({ count }: { count: number }) {
       </View>
       <View className="flex-1">
         <Text className="text-sm font-semibold text-ink">
-          {count === 1
-            ? "1 transaction needs a budget"
-            : `${count} transactions need a budget`}
+          Unattributed: <Money cents={unattributedCents} className="text-sm font-semibold text-ink" />
         </Text>
         <Text className="text-xs text-muted">
-          Tag each charge to a budget so it counts against a plan.
+          {count === 1
+            ? "1 transaction needs a budget this period"
+            : `${count} transactions need a budget this period`}{" "}
+          — tag each charge so it counts against a plan.
         </Text>
       </View>
+      {onPress ? <Icon name="chevron-right" size={16} color={colors.muted} /> : null}
       <Badge label="Reconcile" tone="warn" icon="tag" />
-    </View>
+    </>
+  );
+
+  if (!onPress) {
+    return (
+      <View className="flex-row items-center gap-3 rounded-lg border border-warn bg-warn-bg p-4 shadow-card">
+        {content}
+      </View>
+    );
+  }
+
+  return (
+    <Pressable
+      onPress={onPress}
+      accessibilityRole="button"
+      className="flex-row items-center gap-3 rounded-lg border border-warn bg-warn-bg p-4 shadow-card active:opacity-80"
+    >
+      {content}
+    </Pressable>
   );
 }
 

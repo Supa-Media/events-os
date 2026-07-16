@@ -333,3 +333,212 @@ describe("Part C — runMigrateBudgetScopesToTypes (internal)", () => {
     expect(second.skipped).toBe(1);
   });
 });
+
+/** `Date.UTC` at noon Eastern-safe on the 15th of `month` (1-indexed), `year`. */
+function tsInMonth(year: number, month: number): number {
+  return Date.UTC(year, month - 1, 15, 17, 0, 0);
+}
+
+describe("WP-0.1 — explicit-only budget attribution + Unattributed bucket", () => {
+  test("(a) a narrower-less recurring budget does NOT derive-match an unlinked txn in its period: budget spent = 0, Unattributed = the txn's amount", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await grantManager(s);
+    const year = 2026;
+    const month = 5;
+
+    // A broad recurring budget with NO category/fund/team narrowers — the
+    // exact shape that used to vacuum-match every uncategorized txn in period
+    // (the "Education & Growth eats everything" bug).
+    const budgetId = await run(t, (ctx) =>
+      ctx.db.insert("budgets", {
+        chapterId: s.chapterId,
+        amountCents: 300000,
+        type: "recurring",
+        cadence: "monthly",
+        year,
+        month,
+        label: "Education & Growth",
+        createdAt: Date.now(),
+      }),
+    );
+
+    // An unlinked outflow in the same period, with no fund/category/team.
+    await s.as.mutation(api.finances.createManualTransaction, {
+      flow: "outflow",
+      amountCents: 4200,
+      postedAt: tsInMonth(year, month),
+    });
+
+    const rows = await s.as.query(api.finances.budgetVsActual, { year, month });
+    expect(rows.find((r) => r.budgetId === budgetId)?.actualCents).toBe(0);
+
+    const dash = await s.as.query(api.finances.dashboardChapter, { year, month });
+    expect(dash.unattributedCents).toBe(4200);
+  });
+
+  test("(b) an explicitly-linked txn counts toward exactly its budget and does NOT appear in Unattributed", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await grantManager(s);
+    const year = 2026;
+    const month = 5;
+
+    const budgetId = await run(t, (ctx) =>
+      ctx.db.insert("budgets", {
+        chapterId: s.chapterId,
+        amountCents: 300000,
+        type: "recurring",
+        cadence: "monthly",
+        year,
+        month,
+        label: "Education & Growth",
+        createdAt: Date.now(),
+      }),
+    );
+
+    const txnId = await s.as.mutation(api.finances.createManualTransaction, {
+      flow: "outflow",
+      amountCents: 4200,
+      postedAt: tsInMonth(year, month),
+    });
+    await s.as.mutation(api.finances.categorizeTransaction, {
+      transactionId: txnId,
+      budgetId,
+    });
+
+    const rows = await s.as.query(api.finances.budgetVsActual, { year, month });
+    expect(rows.find((r) => r.budgetId === budgetId)?.actualCents).toBe(4200);
+
+    const dash = await s.as.query(api.finances.dashboardChapter, { year, month });
+    expect(dash.unattributedCents).toBe(0);
+  });
+
+  test("(c) a transfer counts toward NEITHER a budget (even when explicitly linked) NOR Unattributed (even when unlinked)", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await grantManager(s);
+    const year = 2026;
+    const month = 5;
+
+    const budgetId = await run(t, (ctx) =>
+      ctx.db.insert("budgets", {
+        chapterId: s.chapterId,
+        amountCents: 300000,
+        type: "recurring",
+        cadence: "monthly",
+        year,
+        month,
+        label: "Education & Growth",
+        createdAt: Date.now(),
+      }),
+    );
+
+    // A LINKED transfer — still excluded from the budget's actual (isSpend
+    // gate applies regardless of an explicit link).
+    const linkedTransferId = await s.as.mutation(api.finances.createManualTransaction, {
+      flow: "transfer",
+      amountCents: 1000,
+      postedAt: tsInMonth(year, month),
+    });
+    await s.as.mutation(api.finances.categorizeTransaction, {
+      transactionId: linkedTransferId,
+      budgetId,
+    });
+    // An UNLINKED transfer — must not show up as Unattributed either (a
+    // transfer is never "spend needing a budget").
+    await s.as.mutation(api.finances.createManualTransaction, {
+      flow: "transfer",
+      amountCents: 2000,
+      postedAt: tsInMonth(year, month),
+    });
+
+    const rows = await s.as.query(api.finances.budgetVsActual, { year, month });
+    expect(rows.find((r) => r.budgetId === budgetId)?.actualCents).toBe(0);
+
+    const dash = await s.as.query(api.finances.dashboardChapter, { year, month });
+    expect(dash.unattributedCents).toBe(0);
+  });
+
+  test("(d) the Reconcile `needs_budget` filter returns exactly the Unattributed transactions", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await grantManager(s);
+    const now = Date.now();
+
+    // An unlinked outflow → Unattributed + needs_budget.
+    const unattributed = await s.as.mutation(api.finances.createManualTransaction, {
+      flow: "outflow",
+      amountCents: 1500,
+      postedAt: now,
+    });
+    // A linked outflow → NOT in needs_budget.
+    const budgetId = await run(t, (ctx) =>
+      ctx.db.insert("budgets", {
+        chapterId: s.chapterId,
+        amountCents: 100000,
+        type: "recurring",
+        cadence: "monthly",
+        year: 2026,
+        createdAt: now,
+      }),
+    );
+    const linked = await s.as.mutation(api.finances.createManualTransaction, {
+      flow: "outflow",
+      amountCents: 2500,
+      postedAt: now,
+    });
+    await s.as.mutation(api.finances.categorizeTransaction, {
+      transactionId: linked,
+      budgetId,
+    });
+    // A transfer, unlinked → never needs_budget.
+    await s.as.mutation(api.finances.createManualTransaction, {
+      flow: "transfer",
+      amountCents: 500,
+      postedAt: now,
+    });
+
+    const reconcile = await s.as.query(api.finances.listReconcile, {
+      filter: "needs_budget",
+    });
+    expect(reconcile.rows.map((r) => r.id)).toEqual([unattributed]);
+    expect(reconcile.counts.needs_budget).toBe(1);
+    expect(reconcile.rows.map((r) => r.id)).not.toContain(linked);
+  });
+
+  test("dashboardCentral.orgUnattributedCents sums unlinked spend across every chapter in the period", async () => {
+    const t = newT();
+    const s = await setupChapter(t, { email: "seyi@publicworship.life" });
+    const year = 2026;
+    const month = 5;
+    const when = tsInMonth(year, month);
+
+    // New York (caller's chapter): one unlinked $40 outflow.
+    await s.as.mutation(api.finances.createManualTransaction, {
+      flow: "outflow",
+      amountCents: 4000,
+      postedAt: when,
+    });
+    // Boston: one unlinked $15 outflow.
+    await run(t, async (ctx) => {
+      const boston = await ctx.db.insert("chapters", {
+        name: "Boston",
+        isActive: true,
+        createdAt: Date.now(),
+      });
+      await ctx.db.insert("transactions", {
+        chapterId: boston,
+        source: "manual",
+        flow: "outflow",
+        amountCents: 1500,
+        postedAt: when,
+        status: "unreviewed",
+        createdAt: Date.now(),
+      });
+    });
+
+    const dash = await s.as.query(api.finances.dashboardCentral, { year, month });
+    expect(dash.orgUnattributedCents).toBe(5500);
+  });
+});
