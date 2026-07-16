@@ -101,17 +101,27 @@ export function isOpen(status: ReimbursementStatus): boolean {
 }
 
 // ── Member "bidirectional owe" grouping (D4) ─────────────────────────────────
-/** The statuses at which Public Worship owes the member money: reviewed
- *  enough to be a real commitment (submitted for review, pre-approved to
- *  spend, approved, or already in flight to pay) — but NOT
- *  `pending_preapproval`, which is only a request to be cleared to spend, not
- *  yet a debt. Drives the member Reimbursements screen's "Public Worship owes
- *  you" section (the counterpart of the Cards-tab "You owe" banner). */
+/** The statuses at which Public Worship owes the member money — i.e.
+ *  everything that ISN'T terminal ({@link isTerminal} / the shared
+ *  `REIMBURSEMENT_TERMINAL_STATUSES` = paid/rejected/canceled). Drives the
+ *  member Reimbursements screen's "Public Worship owes you" section (the
+ *  counterpart of the Cards-tab "You owe" banner). Notably includes:
+ *  - `pending_preapproval` — a LIVE request awaiting a manager's decision, not
+ *    yet a debt, but still something the member is actively waiting on; it
+ *    does NOT belong in "History" next to paid/rejected requests.
+ *  - `failed` — a payout attempt that failed. The manager queue's `isOpen`
+ *    (same terminal set) already treats `failed` as open, and the Increase
+ *    webhook handler (`onIncreaseWebhookEvent` / `applyPayoutOutcome` in
+ *    `increase.ts`) walks a request back to `approved` on a failed/returned
+ *    ACH transfer so a manager can retry — the debt is still outstanding, so
+ *    it stays in "owes you", not "History". */
 const OWED_TO_MEMBER_STATUSES = new Set<ReimbursementStatus>([
+  "pending_preapproval",
   "submitted",
   "preapproved",
   "approved",
   "paying",
+  "failed",
 ]);
 
 /** True for a reimbursement Public Worship currently owes the member. */

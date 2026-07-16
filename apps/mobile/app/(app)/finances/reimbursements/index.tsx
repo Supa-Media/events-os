@@ -22,13 +22,16 @@
  * **No finance seat (member)**: two clear directions (D4), plus submit:
  *  - "You owe Public Worship" — `OwedBanner` (shared with the Cards-tab owe
  *    banner; see its doc comment), sourced from `api.cards.myPersonalRepayments`.
- *  - "Public Worship owes you" — their OPEN reimbursements (submitted /
- *    preapproved / approved / paying), grouped from the same
+ *  - "Public Worship owes you" — their non-terminal reimbursements (pending
+ *    pre-approval / submitted / preapproved / approved / paying / failed —
+ *    see `OWED_TO_MEMBER_STATUSES`'s doc comment for why `pending_preapproval`
+ *    and `failed` both live here, not in History), grouped from the same
  *    `api.reimbursements.myReimbursements` read the old Dashboard `MemberView`
  *    used (no finance-role gate — it's the caller's own history).
- *  - "History" — their terminal reimbursements (paid / rejected / failed /
- *    canceled), same data, filtered the other way, so nothing that used to be
- *    visible on this screen disappears.
+ *  - "History" — their terminal reimbursements (paid / rejected / canceled —
+ *    `isTerminal`/`REIMBURSEMENT_TERMINAL_STATUSES`, the codebase's one source
+ *    of truth for "finished"), same data, filtered the other way, so nothing
+ *    that used to be visible on this screen disappears.
  *  - "Request a reimbursement" CTA into the existing in-app submit form
  *    (`reimbursements/new.tsx`, untouched — built in #133).
  *
@@ -67,6 +70,7 @@ import {
   FILTERS,
   isOpen,
   isOwedToMember,
+  isTerminal,
   STATUS_BADGE,
   shortDate,
   type FilterKey,
@@ -131,9 +135,22 @@ function MemberReimbursementsScreen() {
   // comment for why the pay-back flow lives there and not here).
   const myRepayments = useQuery(api.cards.myPersonalRepayments, {});
   const owedToMe = myRepayments?.filter((r) => r.status !== "paid");
+  // `OwedBanner` tracks its own "initiated this session" state that this raw
+  // filter can't see — after initiating the LAST repayment, `owedToMe` still
+  // shows a stale count/section while the banner itself renders nothing. This
+  // mirrors the banner's reported emptiness (via `onEmptyChange`) so the
+  // header + section hide together with it instead of drifting out of sync.
+  const [owedBannerEmpty, setOwedBannerEmpty] = useState(false);
+  const owedEmpty =
+    owedToMe === undefined ? undefined : owedToMe.length === 0 || owedBannerEmpty;
 
   const owedToMember = reimbursements?.filter((r) => isOwedToMember(r.status));
-  const history = reimbursements?.filter((r) => !isOwedToMember(r.status));
+  // History = the codebase's terminal source of truth (paid/rejected/canceled
+  // — see `isTerminal`/`REIMBURSEMENT_TERMINAL_STATUSES`), NOT `!isOwedToMember`.
+  // `pending_preapproval` and `failed` are both non-terminal — they belong in
+  // "owes you" (see `OWED_TO_MEMBER_STATUSES`'s doc comment) — so a plain NOT
+  // would have wrongly dropped them into History next to paid/rejected.
+  const history = reimbursements?.filter((r) => isTerminal(r.status));
 
   return (
     <Screen maxWidth={1080}>
@@ -156,17 +173,22 @@ function MemberReimbursementsScreen() {
             banner + pay-back flow with the Cards tab (`OwedBanner`). */}
         <SectionHeader
           title="You owe Public Worship"
-          count={owedToMe?.length || undefined}
+          count={owedEmpty ? undefined : owedToMe?.length}
         />
-        {owedToMe === undefined ? null : owedToMe.length === 0 ? (
+        {owedEmpty === undefined ? null : owedEmpty ? (
           <EmptyState
             icon="check"
             title="Nothing outstanding"
             message="No personal charges are flagged against your card right now."
           />
-        ) : (
-          <OwedBanner />
-        )}
+        ) : null}
+        {/* Stays mounted whenever anything is (raw-)owed, independent of
+            `owedEmpty` — its own effect is what flips `owedEmpty` true/false
+            above as its "initiated this session" state changes, and re-syncs
+            itself the moment a NEW charge is flagged. */}
+        {owedToMe !== undefined && owedToMe.length > 0 ? (
+          <OwedBanner onEmptyChange={setOwedBannerEmpty} />
+        ) : null}
 
         {/* "Public Worship owes you" — open reimbursement requests. */}
         <SectionHeader

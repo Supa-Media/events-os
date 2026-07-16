@@ -402,33 +402,45 @@ describe("flagPersonalCharge", () => {
 
   // ── D4: manager-initiated flag (a manager flagging SOMEONE ELSE's charge) ──
   test("a finance manager can flag ANOTHER person's card charge — repayment created, owned by the cardholder", async () => {
-    const t = newT();
-    const s = await setupChapter(t);
-    await seedManager(s); // the caller (s.as) is a manager, NOT the cardholder
-    const holder = await seedPerson(s, { name: "Holder" });
-    const cardId = await seedCard(s, { cardholderPersonId: holder });
-    const txnId = await seedCardTxn(s, { cardId, amountCents: 3300 });
+    // Manager-flagging-someone-else's-charge schedules a best-effort
+    // notification (`notifyPersonalChargeFlagged`) — drain it, same pattern as
+    // the dedicated notification test below, else it leaks past this test's
+    // torn-down Convex context ("Write outside of transaction
+    // _scheduled_functions", CI-only flake — see docs/architecture note).
+    vi.useFakeTimers();
+    try {
+      const t = newT();
+      const s = await setupChapter(t);
+      await seedManager(s); // the caller (s.as) is a manager, NOT the cardholder
+      const holder = await seedPerson(s, { name: "Holder" });
+      const cardId = await seedCard(s, { cardholderPersonId: holder });
+      const txnId = await seedCardTxn(s, { cardId, amountCents: 3300 });
 
-    const rep = await s.as.mutation(api.cards.flagPersonalCharge, {
-      transactionId: txnId,
-    });
-    expect(rep.status).toBe("pending");
-    // The repayment is owned by the CARDHOLDER, not the manager who flagged it.
-    expect(rep.payerPersonId).toBe(holder);
-    expect(rep.amountCents).toBe(3300);
+      const rep = await s.as.mutation(api.cards.flagPersonalCharge, {
+        transactionId: txnId,
+      });
+      await s.t.finishAllScheduledFunctions(vi.runAllTimers);
 
-    const txn = await run(s.t, (ctx) => ctx.db.get(txnId));
-    expect(txn?.isPersonal).toBe(true);
-    expect(txn?.repaymentId).toBe(rep.id);
+      expect(rep.status).toBe("pending");
+      // The repayment is owned by the CARDHOLDER, not the manager who flagged it.
+      expect(rep.payerPersonId).toBe(holder);
+      expect(rep.amountCents).toBe(3300);
 
-    // Exactly one repayment row exists for this charge.
-    const reps = await run(s.t, (ctx) =>
-      ctx.db
-        .query("personalRepayments")
-        .withIndex("by_transaction", (q) => q.eq("transactionId", txnId))
-        .collect(),
-    );
-    expect(reps.length).toBe(1);
+      const txn = await run(s.t, (ctx) => ctx.db.get(txnId));
+      expect(txn?.isPersonal).toBe(true);
+      expect(txn?.repaymentId).toBe(rep.id);
+
+      // Exactly one repayment row exists for this charge.
+      const reps = await run(s.t, (ctx) =>
+        ctx.db
+          .query("personalRepayments")
+          .withIndex("by_transaction", (q) => q.eq("transactionId", txnId))
+          .collect(),
+      );
+      expect(reps.length).toBe(1);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   test("manager-initiated flag schedules a best-effort notification to the cardholder (degrades without RESEND_API_KEY, never throws)", async () => {
@@ -586,17 +598,26 @@ describe("myPersonalRepayments", () => {
   });
 
   test("never returns another person's repayments", async () => {
-    const t = newT();
-    const s = await setupChapter(t);
-    await seedManager(s);
-    const other = await seedPerson(s, { name: "Someone else" });
-    const cardId = await seedCard(s, { cardholderPersonId: other });
-    const txnId = await seedCardTxn(s, { cardId, amountCents: 900 });
-    await s.as.mutation(api.cards.flagPersonalCharge, { transactionId: txnId });
+    // Manager flagging a DIFFERENT person's charge schedules a best-effort
+    // notification — drain it so it doesn't leak past this test's torn-down
+    // Convex context (same CI-only flake as the dedicated notification test).
+    vi.useFakeTimers();
+    try {
+      const t = newT();
+      const s = await setupChapter(t);
+      await seedManager(s);
+      const other = await seedPerson(s, { name: "Someone else" });
+      const cardId = await seedCard(s, { cardholderPersonId: other });
+      const txnId = await seedCardTxn(s, { cardId, amountCents: 900 });
+      await s.as.mutation(api.cards.flagPersonalCharge, { transactionId: txnId });
+      await s.t.finishAllScheduledFunctions(vi.runAllTimers);
 
-    // The caller (the manager) has no roster-person repayments of their own.
-    const mine = await s.as.query(api.cards.myPersonalRepayments, {});
-    expect(mine).toEqual([]);
+      // The caller (the manager) has no roster-person repayments of their own.
+      const mine = await s.as.query(api.cards.myPersonalRepayments, {});
+      expect(mine).toEqual([]);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   test("degrades to [] with no chapter/roster row", async () => {
@@ -612,45 +633,64 @@ describe("myPersonalRepayments", () => {
 
 describe("personalRepaymentsOutstanding", () => {
   test("counts + sums only NOT-YET-PAID repayments in the caller's chapter", async () => {
-    const t = newT();
-    const s = await setupChapter(t);
-    await seedManager(s);
-    const holderA = await seedPerson(s, { name: "Holder A" });
-    const holderB = await seedPerson(s, { name: "Holder B" });
-    const cardA = await seedCard(s, { cardholderPersonId: holderA });
-    const cardB = await seedCard(s, { cardholderPersonId: holderB });
-    const txnA = await seedCardTxn(s, { cardId: cardA, amountCents: 1000 });
-    const txnB = await seedCardTxn(s, { cardId: cardB, amountCents: 2000 });
-    const txnC = await seedCardTxn(s, { cardId: cardA, amountCents: 4000 });
+    // Each of the three manager-flags-someone-else's-charge calls below
+    // schedules a best-effort notification — drain them all so none leak past
+    // this test's torn-down Convex context (same CI-only flake as the
+    // dedicated notification test).
+    vi.useFakeTimers();
+    try {
+      const t = newT();
+      const s = await setupChapter(t);
+      await seedManager(s);
+      const holderA = await seedPerson(s, { name: "Holder A" });
+      const holderB = await seedPerson(s, { name: "Holder B" });
+      const cardA = await seedCard(s, { cardholderPersonId: holderA });
+      const cardB = await seedCard(s, { cardholderPersonId: holderB });
+      const txnA = await seedCardTxn(s, { cardId: cardA, amountCents: 1000 });
+      const txnB = await seedCardTxn(s, { cardId: cardB, amountCents: 2000 });
+      const txnC = await seedCardTxn(s, { cardId: cardA, amountCents: 4000 });
 
-    await s.as.mutation(api.cards.flagPersonalCharge, { transactionId: txnA });
-    await s.as.mutation(api.cards.flagPersonalCharge, { transactionId: txnB });
-    const repC = await s.as.mutation(api.cards.flagPersonalCharge, {
-      transactionId: txnC,
-    });
-    // Settle one of the three — it must drop out of the aggregate.
-    await s.as.mutation(api.cards.markRepaymentPaid, { repaymentId: repC.id });
+      await s.as.mutation(api.cards.flagPersonalCharge, { transactionId: txnA });
+      await s.as.mutation(api.cards.flagPersonalCharge, { transactionId: txnB });
+      const repC = await s.as.mutation(api.cards.flagPersonalCharge, {
+        transactionId: txnC,
+      });
+      await s.t.finishAllScheduledFunctions(vi.runAllTimers);
+      // Settle one of the three — it must drop out of the aggregate.
+      await s.as.mutation(api.cards.markRepaymentPaid, { repaymentId: repC.id });
 
-    const agg = await s.as.query(api.cards.personalRepaymentsOutstanding, {});
-    expect(agg.count).toBe(2);
-    expect(agg.totalCents).toBe(3000);
+      const agg = await s.as.query(api.cards.personalRepaymentsOutstanding, {});
+      expect(agg.count).toBe(2);
+      expect(agg.totalCents).toBe(3000);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   test("never counts another chapter's repayments", async () => {
-    const t = newT();
-    const s = await setupChapter(t);
-    await seedManager(s);
-    const holder = await seedPerson(s, { name: "Holder" });
-    const cardId = await seedCard(s, { cardholderPersonId: holder });
-    const txnId = await seedCardTxn(s, { cardId, amountCents: 5000 });
-    await s.as.mutation(api.cards.flagPersonalCharge, { transactionId: txnId });
+    // Manager flagging a DIFFERENT person's charge schedules a best-effort
+    // notification — drain it so it doesn't leak past this test's torn-down
+    // Convex context (same CI-only flake as the dedicated notification test).
+    vi.useFakeTimers();
+    try {
+      const t = newT();
+      const s = await setupChapter(t);
+      await seedManager(s);
+      const holder = await seedPerson(s, { name: "Holder" });
+      const cardId = await seedCard(s, { cardholderPersonId: holder });
+      const txnId = await seedCardTxn(s, { cardId, amountCents: 5000 });
+      await s.as.mutation(api.cards.flagPersonalCharge, { transactionId: txnId });
+      await s.t.finishAllScheduledFunctions(vi.runAllTimers);
 
-    // A second, unrelated chapter with its own manager sees nothing.
-    const s2 = await setupChapter(newT(), { email: "other@publicworship.life" });
-    await seedManager(s2);
-    const agg = await s2.as.query(api.cards.personalRepaymentsOutstanding, {});
-    expect(agg.count).toBe(0);
-    expect(agg.totalCents).toBe(0);
+      // A second, unrelated chapter with its own manager sees nothing.
+      const s2 = await setupChapter(newT(), { email: "other@publicworship.life" });
+      await seedManager(s2);
+      const agg = await s2.as.query(api.cards.personalRepaymentsOutstanding, {});
+      expect(agg.count).toBe(0);
+      expect(agg.totalCents).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   test("gated to viewer+ — a caller with no finance role is FORBIDDEN", async () => {

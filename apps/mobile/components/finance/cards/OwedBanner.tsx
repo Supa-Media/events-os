@@ -11,7 +11,13 @@
  * same live query, so this file is the ONE place the pay-back flow lives —
  * don't duplicate it into either screen.
  *
- * Renders nothing while loading or once there's nothing owed.
+ * Renders nothing while loading or once there's nothing owed — including
+ * once every remaining repayment has been INITIATED this session (`initiated`
+ * below), a state the banner tracks locally that no query alone reflects.
+ * `onEmptyChange` reports that effective emptiness (whenever it changes) so a
+ * caller with its own adjacent header/count (the Reimbursements screen's "You
+ * owe Public Worship" section) can hide/collapse in lockstep instead of
+ * showing a stale count over a banner that just went blank.
  *
  * Pay by card / Pay by bank (ACH) pay ALL outstanding repayments at once via
  * `initiateRepayment`. The real ACH debit is feature-gated OFF
@@ -20,7 +26,7 @@
  * That gate is untouched here; this component only ever calls the existing
  * degrade-safe actions.
  */
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Text, View } from "react-native";
 import { useAction, useQuery } from "convex/react";
 import { api } from "@events-os/convex/_generated/api";
@@ -29,7 +35,13 @@ import { Button, Icon, Select, TextField, ToastView } from "../../ui";
 import { colors } from "../../../lib/theme";
 import { useActionRunner } from "../../../lib/useActionToast";
 
-export function OwedBanner() {
+export function OwedBanner({
+  onEmptyChange,
+}: {
+  /** Fires with the banner's effective emptiness (loading counts as NOT
+   *  empty, so a caller doesn't hide its section before data arrives). */
+  onEmptyChange?: (empty: boolean) => void;
+} = {}) {
   const repayments = useQuery(api.cards.myPersonalRepayments, {});
   // A member may only INITIATE a repayment (choose a method + kick it off) —
   // the offsetting credit is posted by a manager confirming receipt, never here.
@@ -51,6 +63,16 @@ export function OwedBanner() {
     (r) => r.status !== "paid" && !initiated[r.id],
   );
   const owedCents = toRepay.reduce((sum, r) => sum + r.amountCents, 0);
+
+  // Report effective emptiness to the caller (see file header). Skipped while
+  // still loading so a caller's section doesn't collapse before data arrives;
+  // recomputes on every `toRepay` change, including one driven purely by
+  // local `initiated` state (no query round-trip), so a caller's header stays
+  // in lockstep even when the underlying repayment rows haven't changed.
+  useEffect(() => {
+    if (repayments === undefined) return;
+    onEmptyChange?.(toRepay.length === 0);
+  }, [repayments, toRepay.length, onEmptyChange]);
 
   async function payAll(method: "card" | "ach") {
     for (const r of toRepay) {

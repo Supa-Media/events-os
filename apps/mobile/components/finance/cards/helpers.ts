@@ -12,10 +12,6 @@ import type { BadgeTone, IconName } from "../../ui";
 
 /** The read projection both card views render. */
 export type CardSummary = FunctionReturnType<typeof api.cards.listCards>[number];
-/** The pending/settled repayment a flag returns. */
-export type RepaymentSummary = FunctionReturnType<
-  typeof api.cards.flagPersonalCharge
->;
 /** One row of the caller's own outstanding personal-charge repayments — the
  *  "You owe Public Worship" data source shared by `OwedBanner` + the per-charge
  *  list in `MemberCardsView` (D4). */
