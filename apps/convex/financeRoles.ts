@@ -26,6 +26,7 @@ import {
   requireFinanceManager,
   requireFinanceCentral,
   isCentralEdOrFm,
+  getFinanceRole,
 } from "./lib/finance";
 import { isSuperuser } from "./lib/superuser";
 
@@ -292,5 +293,39 @@ export const revokeFinanceRole = mutation({
     }
     await ctx.db.delete(roleId);
     return null;
+  },
+});
+
+/**
+ * Every chapter in the org — the "Peek" list on the app-wide context switcher
+ * (WP-S). CENTRAL-seat holders only (mirrors `dashboardCentral`'s gate
+ * exactly: resolve the caller's own chapter, then require central finance
+ * reach through it). A caller with no central seat, or no chapter of their
+ * own to check reach through, gets `[]` — a quiet "nothing to peek into", not
+ * a thrown error, since the client uses this to decide whether to render the
+ * Peek section at all.
+ *
+ * This is a READ-ONLY listing (id + name); it grants no access by itself —
+ * every screen that actually uses a peeked chapterId re-checks central reach
+ * on its own scoped query (e.g. `finances.dashboardChapter`'s drill-down
+ * gate), same as before this query existed.
+ */
+export const listChaptersForPeek = query({
+  args: {},
+  returns: v.array(v.object({ chapterId: v.id("chapters"), name: v.string() })),
+  handler: async (ctx) => {
+    let isCentral = await isSuperuser(ctx);
+    if (!isCentral) {
+      const chapterId = await getChapterIdOrNull(ctx);
+      if (!chapterId) return [];
+      const access = await getFinanceRole(ctx, chapterId as Id<"chapters">);
+      isCentral = access.isCentral;
+    }
+    if (!isCentral) return [];
+
+    const chapters = await ctx.db.query("chapters").collect();
+    return chapters
+      .map((c) => ({ chapterId: c._id, name: c.name }))
+      .sort((a, b) => a.name.localeCompare(b.name));
   },
 });

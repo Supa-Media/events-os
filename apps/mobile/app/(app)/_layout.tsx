@@ -5,6 +5,7 @@ import { api } from "@events-os/convex/_generated/api";
 import { AppShell } from "../../components/ui";
 import { AccessDeniedScreen } from "../../components/onboarding/AccessDeniedScreen";
 import { OnboardingScreen } from "../../components/onboarding/OnboardingScreen";
+import { ChapterContextProvider } from "../../lib/ChapterContext";
 
 /**
  * Authenticated route group. Redirects to login when signed out; otherwise
@@ -13,10 +14,12 @@ import { OnboardingScreen } from "../../components/onboarding/OnboardingScreen";
  *
  *   - not on @publicworship.life  → Access Denied
  *   - allowed but not onboarded   → Onboarding (name + phone + chapter)
- *   - allowed + onboarded         → the app (wrapped in AppShell)
+ *   - allowed + onboarded         → the app (wrapped in ChapterContextProvider + AppShell)
  *
  * The whole authenticated surface is wrapped in the responsive AppShell so the
  * left sidebar (desktop) / bottom nav (mobile) persists across every screen.
+ * `ChapterContextProvider` (WP-S) sits just outside it so the shell's context
+ * pill + peek banner, and every scoped screen, share one "which desk" state.
  */
 export default function AppLayout() {
   const { isAuthenticated, isLoading } = useConvexAuth();
@@ -55,8 +58,10 @@ export default function AppLayout() {
   }
 
   return (
-    <AppShell>
-      <Stack screenOptions={{ headerShown: false }} />
-    </AppShell>
+    <ChapterContextProvider>
+      <AppShell>
+        <Stack screenOptions={{ headerShown: false }} />
+      </AppShell>
+    </ChapterContextProvider>
   );
 }
