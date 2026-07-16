@@ -425,14 +425,30 @@ export const acceptSuggestion = mutation({
       });
     }
 
-    // Copy only the links the suggestion actually carries; leave the rest alone.
+    // Copy only the links the suggestion actually carries; leave the rest
+    // alone. Each id was validated against the chapter at write time (see
+    // `writeSuggestion`), but the referenced doc can vanish between then and
+    // now (e.g. the WP-1.4 fund-merge migration deleting an extra fund) —
+    // re-check existence here and skip a now-dangling id rather than writing
+    // it onto the transaction.
     const patch: Partial<Doc<"transactions">> = {};
-    if (suggestion.fundId !== undefined) patch.fundId = suggestion.fundId;
-    if (suggestion.categoryId !== undefined)
+    if (suggestion.fundId !== undefined && (await ctx.db.get(suggestion.fundId)))
+      patch.fundId = suggestion.fundId;
+    if (
+      suggestion.categoryId !== undefined &&
+      (await ctx.db.get(suggestion.categoryId))
+    )
       patch.categoryId = suggestion.categoryId;
-    if (suggestion.projectId !== undefined)
+    if (
+      suggestion.projectId !== undefined &&
+      (await ctx.db.get(suggestion.projectId))
+    )
       patch.projectId = suggestion.projectId;
-    if (suggestion.eventId !== undefined) patch.eventId = suggestion.eventId;
+    if (
+      suggestion.eventId !== undefined &&
+      (await ctx.db.get(suggestion.eventId))
+    )
+      patch.eventId = suggestion.eventId;
 
     // A suggestion of only confidence/rationale (no links) has nothing to apply
     // — never mark a transaction "categorized" when no coding was actually set.

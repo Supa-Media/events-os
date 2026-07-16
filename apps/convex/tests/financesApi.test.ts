@@ -630,6 +630,28 @@ describe("createManualTransaction defaults the fund", () => {
     // never fake a real categorization.
     expect(doc?.status).toBe("unreviewed");
   });
+
+  test("a chapter with only restricted funds degrades to no fund, without crashing", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await asManager(s);
+    // Only a restricted fund exists — `defaultFundId` never falls back to it,
+    // so it resolves to `null` and the creation path must coalesce that to
+    // `undefined` rather than throwing.
+    await s.as.mutation(api.finances.createFund, {
+      name: "Missions",
+      restriction: "designated",
+    });
+
+    const txnId = await s.as.mutation(api.finances.createManualTransaction, {
+      flow: "outflow",
+      amountCents: 1000,
+      postedAt: Date.now(),
+    });
+    const doc = await run(s.t, (ctx) => ctx.db.get(txnId));
+    expect(doc?.fundId).toBeUndefined();
+    expect(doc?.status).toBe("unreviewed");
+  });
 });
 
 describe("createBudget defaults the fund", () => {
