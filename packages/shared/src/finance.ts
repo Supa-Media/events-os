@@ -211,6 +211,14 @@ export const RECEIPT_GRACE_DAYS = 7;
  *  `RECEIPT_GRACE_DAYS`. */
 export const RECEIPT_ESCALATE_DAYS = 3;
 
+// ── Card requests (WP-C.1: request-a-card) ──────────────────────────────────
+// A member's request for a card, decided by an FM/Treasurer (never self-serve).
+// "requested" is the only OPEN state — a person may hold at most one at a time
+// (`cards.requestCard` enforces it). Terminal: "approved" (issues the card via
+// the existing `issueCard` flow) or "denied".
+export const CARD_REQUEST_STATUSES = ["requested", "approved", "denied"] as const;
+export type CardRequestStatus = (typeof CARD_REQUEST_STATUSES)[number];
+
 // ── Card eligibility + last-4 extraction ─────────────────────────────────────
 // Cards (native + legacy) are restricted to Public Worship staff — people with
 // an `@publicworship.life` email. `isCardEligible` is the single gate the card

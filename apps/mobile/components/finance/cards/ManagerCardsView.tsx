@@ -11,11 +11,12 @@
  */
 import { useMemo, useState } from "react";
 import { Text, View } from "react-native";
-import { useMutation, useQuery } from "convex/react";
+import { useAction, useMutation, useQuery } from "convex/react";
 import { api } from "@events-os/convex/_generated/api";
 import type { Id } from "@events-os/convex/_generated/dataModel";
 import { formatCents } from "@events-os/shared";
 import {
+  Avatar,
   Button,
   EmptyState,
   HeaderCell,
@@ -36,21 +37,33 @@ import { hasReceiptDue, type CardSummary } from "./helpers";
 export function ManagerCardsView() {
   const cards = useQuery(api.cards.listCards, {});
   const personalToRepay = useQuery(api.cards.personalRepaymentsOutstanding, {});
+  const requests = useQuery(api.cards.listCardRequests, {});
   const lockCard = useMutation(api.cards.lockCard);
   const unlockCard = useMutation(api.cards.unlockCard);
+  const cancelCard = useAction(api.cards.cancelCard);
+  const decideCardRequest = useAction(api.cards.decideCardRequest);
   const { run, toast, dismiss } = useActionRunner();
 
   const [issueOpen, setIssueOpen] = useState(false);
   const [controlsFor, setControlsFor] = useState<CardSummary | null>(null);
+  const [decidingId, setDecidingId] = useState<string | null>(null);
+
+  // A canceled card is a terminal, permanently-closed record — WP-C.1 excludes
+  // it from the active cardholders table + KPI aggregates (it can never
+  // authorize again; there's nothing left to manage). It stays in the DB for
+  // audit/spend history, just not in this operational view.
+  const activeCards = useMemo(
+    () => (cards ?? []).filter((c) => c.status !== "canceled"),
+    [cards],
+  );
 
   const stats = useMemo(() => {
-    const list = cards ?? [];
     return {
-      count: list.length,
-      spentCents: list.reduce((sum, c) => sum + c.spentThisMonthCents, 0),
-      receiptsDue: list.filter(hasReceiptDue).length,
+      count: activeCards.length,
+      spentCents: activeCards.reduce((sum, c) => sum + c.spentThisMonthCents, 0),
+      receiptsDue: activeCards.filter(hasReceiptDue).length,
     };
-  }, [cards]);
+  }, [activeCards]);
 
   const loading = cards === undefined;
 
@@ -62,6 +75,21 @@ export function ManagerCardsView() {
     run(() => unlockCard({ cardId: id as Id<"cards"> }), {
       errorTitle: "Couldn't unlock card",
     });
+  const handleCancel = (id: string) =>
+    run(() => cancelCard({ cardId: id as Id<"cards"> }), {
+      errorTitle: "Couldn't cancel card",
+    });
+
+  async function handleDecideRequest(
+    requestId: Id<"cardRequests">,
+    decision: "approve" | "deny",
+  ) {
+    setDecidingId(requestId);
+    await run(() => decideCardRequest({ requestId, decision }), {
+      errorTitle: decision === "approve" ? "Couldn't approve request" : "Couldn't deny request",
+    });
+    setDecidingId(null);
+  }
 
   return (
     <View>
@@ -112,6 +140,52 @@ export function ManagerCardsView() {
         />
       </View>
 
+      {/* Pending card requests — a member's `requestCard` waiting on
+          approve/deny. Approving triggers the same `issueCard` flow as
+          "Issue card" above. */}
+      {requests !== undefined && requests.length > 0 ? (
+        <>
+          <SectionHeader title="Pending requests" count={requests.length} />
+          <View className="mb-1 overflow-hidden rounded-lg border border-border bg-raised shadow-card">
+            {requests.map((req, i) => (
+              <View
+                key={req.id}
+                className={`flex-row items-center gap-3 px-4 py-3 ${
+                  i === requests.length - 1 ? "" : "border-b border-border"
+                }`}
+              >
+                <Avatar name={req.personName ?? "?"} size={30} />
+                <View className="flex-1">
+                  <Text className="text-sm font-semibold text-ink" numberOfLines={1}>
+                    {req.personName ?? "Unknown"}
+                  </Text>
+                  {req.note ? (
+                    <Text className="text-xs text-faint" numberOfLines={1}>
+                      {req.note}
+                    </Text>
+                  ) : null}
+                </View>
+                <Button
+                  title="Deny"
+                  variant="ghost"
+                  size="sm"
+                  loading={decidingId === req.id}
+                  onPress={() => handleDecideRequest(req.id, "deny")}
+                />
+                <Button
+                  title="Approve"
+                  variant="secondary"
+                  size="sm"
+                  icon="check"
+                  loading={decidingId === req.id}
+                  onPress={() => handleDecideRequest(req.id, "approve")}
+                />
+              </View>
+            ))}
+          </View>
+        </>
+      ) : null}
+
       {/* Cardholders table. */}
       <SectionHeader
         title="Cardholders"
@@ -127,7 +201,7 @@ export function ManagerCardsView() {
       />
       {loading ? (
         <EmptyState title="Loading cards…" />
-      ) : cards.length === 0 ? (
+      ) : activeCards.length === 0 ? (
         <EmptyState
           icon="credit-card"
           title="No cards issued yet"
@@ -145,14 +219,15 @@ export function ManagerCardsView() {
               Status
             </HeaderCell>
           </TableHeader>
-          {cards.map((card, i) => (
+          {activeCards.map((card, i) => (
             <CardholderRow
               key={card.id}
               card={card}
-              last={i === cards.length - 1}
+              last={i === activeCards.length - 1}
               onLock={() => handleLock(card.id)}
               onUnlock={() => handleUnlock(card.id)}
               onEditControls={() => setControlsFor(card)}
+              onCancel={() => handleCancel(card.id)}
             />
           ))}
         </Table>

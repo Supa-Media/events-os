@@ -30,39 +30,52 @@ export function CardholderRow({
   onLock,
   onUnlock,
   onEditControls,
+  onCancel,
 }: {
   card: CardSummary;
   last: boolean;
   onLock: () => void;
   onUnlock: () => void;
   onEditControls: () => void;
+  onCancel: () => void;
 }) {
   const { ref, anchor, visible, open, close } = useAnchor();
-  const status = cardStatusBadge(card.status);
+  const status = cardStatusBadge(card.status, card.frozenByHolder);
   const receipts = receiptStatus(card);
 
   // Legacy (Relay) cards are external — Increase-only controls (caps/validity,
   // lock/unlock) don't apply, so they carry no ⋯ actions. Manage them from the
   // "Relay cards" section instead.
   const isLegacy = card.source === "legacy";
+  const isCanceled = card.status === "canceled";
 
-  const actions: ContextMenuAction[] = isLegacy
-    ? []
-    : [
-        { label: "Edit controls…", icon: "sliders", onPress: onEditControls },
-        ...(card.status === "locked"
-          ? [{ label: "Unlock card", icon: "unlock" as const, onPress: onUnlock }]
-          : card.status === "active"
-            ? [
-                {
-                  label: "Lock card",
-                  icon: "lock" as const,
-                  onPress: onLock,
-                  destructive: true,
-                },
-              ]
-            : []),
-      ];
+  const actions: ContextMenuAction[] =
+    isLegacy || isCanceled
+      ? []
+      : [
+          { label: "Edit controls…", icon: "sliders", onPress: onEditControls },
+          ...(card.status === "locked"
+            ? [{ label: "Unlock card", icon: "unlock" as const, onPress: onUnlock }]
+            : card.status === "active"
+              ? [
+                  {
+                    label: "Lock card",
+                    icon: "lock" as const,
+                    onPress: onLock,
+                    destructive: true,
+                  },
+                ]
+              : []),
+          // FM/Treasurer-only server-side (`requireFinanceManager`) — same
+          // convention as Lock/Unlock above: always shown here, the backend
+          // gate is what actually enforces it.
+          {
+            label: "Cancel card…",
+            icon: "x-circle",
+            onPress: onCancel,
+            destructive: true,
+          },
+        ];
 
   return (
     <Row last={last}>

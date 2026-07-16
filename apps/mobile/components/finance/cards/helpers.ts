@@ -18,6 +18,11 @@ export type CardSummary = FunctionReturnType<typeof api.cards.listCards>[number]
 export type MyRepayment = FunctionReturnType<
   typeof api.cards.myPersonalRepayments
 >[number];
+/** A card request (WP-C.1) — the shape `myCardRequest` / `listCardRequests`
+ *  both return. */
+export type CardRequestSummary = FunctionReturnType<
+  typeof api.cards.listCardRequests
+>[number];
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -56,11 +61,19 @@ export function daysUntil(ts: number, now = Date.now()): number {
 
 type StatusChip = { label: string; tone: BadgeTone; icon?: IconName };
 
-/** The lifecycle badge shown in the cardholders table + member header. */
-export function cardStatusBadge(status: CardStatus): StatusChip {
+/** The lifecycle badge shown in the cardholders table + member header. A
+ *  `"locked"` card the CARDHOLDER self-froze (`frozenByHolder`) reads
+ *  "Frozen" (danger tone — suspected foul play) rather than the generic
+ *  manager/receipt "Locked" (warn tone). */
+export function cardStatusBadge(
+  status: CardStatus,
+  frozenByHolder = false,
+): StatusChip {
   switch (status) {
     case "locked":
-      return { label: "Locked", tone: "warn", icon: "lock" };
+      return frozenByHolder
+        ? { label: "Frozen", tone: "danger", icon: "shield-off" }
+        : { label: "Locked", tone: "warn", icon: "lock" };
     case "canceled":
       return { label: "Canceled", tone: "neutral", icon: "slash" };
     default:

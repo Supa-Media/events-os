@@ -34,6 +34,7 @@ import {
   Card,
   EmptyState,
   SectionHeader,
+  TextField,
   ToastView,
 } from "../../ui";
 import { useActionRunner } from "../../../lib/useActionToast";
@@ -54,11 +55,21 @@ export function MemberCardsView() {
   const cards = useQuery(api.cards.myCard, {});
   const txns = useQuery(api.finances.personTransactions, {});
   const myRepayments = useQuery(api.cards.myPersonalRepayments, {});
+  const myRequest = useQuery(api.cards.myCardRequest, {});
   const flag = useMutation(api.cards.flagPersonalCharge);
   // A member may only INITIATE a repayment (choose a method + kick it off) — the
   // offsetting credit is posted by a manager confirming receipt, never here.
   const initiateRepayment = useAction(api.cards.initiateRepayment);
+  // Self-serve freeze/unfreeze — instant, reversible ONLY by this same holder
+  // (distinct from a manager's lock / the receipt auto-lock).
+  const freezeCard = useAction(api.cards.freezeCard);
+  const unfreezeCard = useAction(api.cards.unfreezeCard);
+  const requestCard = useMutation(api.cards.requestCard);
   const { run, toast, dismiss } = useActionRunner();
+
+  const [freezing, setFreezing] = useState(false);
+  const [requestNote, setRequestNote] = useState("");
+  const [requesting, setRequesting] = useState(false);
 
   // Transaction ids the member has already kicked off a SINGLE-row repayment
   // for (so that row shows the pending state rather than "Pay back" again).
@@ -93,6 +104,30 @@ export function MemberCardsView() {
     if (res) setInitiated((m) => ({ ...m, [transactionId]: true }));
   }
 
+  async function handleFreeze(cardId: Id<"cards">) {
+    setFreezing(true);
+    await run(() => freezeCard({ cardId }), { errorTitle: "Couldn't freeze card" });
+    setFreezing(false);
+  }
+
+  async function handleUnfreeze(cardId: Id<"cards">) {
+    setFreezing(true);
+    await run(() => unfreezeCard({ cardId }), {
+      errorTitle: "Couldn't unfreeze card",
+    });
+    setFreezing(false);
+  }
+
+  async function handleRequestCard() {
+    setRequesting(true);
+    await run(
+      () => requestCard({ note: requestNote.trim() || undefined }),
+      { errorTitle: "Couldn't submit request" },
+    );
+    setRequesting(false);
+    setRequestNote("");
+  }
+
   if (cards === undefined) {
     return <EmptyState title="Loading your card…" />;
   }
@@ -103,18 +138,49 @@ export function MemberCardsView() {
         <View className="mb-1">
           <Text className="font-display text-2xl text-ink">Your card</Text>
         </View>
-        <EmptyState
-          icon="credit-card"
-          title="No card yet"
-          message="You don't have a card on this chapter's account. Ask a finance manager to issue you one — every team member gets their own."
-        />
+        {myRequest?.status === "requested" ? (
+          <EmptyState
+            icon="clock"
+            title="Request pending"
+            message="Your card request is waiting on a finance manager to approve it."
+          />
+        ) : (
+          <View className="gap-3">
+            <EmptyState
+              icon="credit-card"
+              title="No card yet"
+              message="You don't have a card on this chapter's account. Every team member gets their own — request one below, or ask a finance manager to issue it directly."
+            />
+            {myRequest?.status === "denied" ? (
+              <View className="rounded-md border border-warn bg-warn-bg px-3 py-2">
+                <Text className="text-xs text-warn">
+                  Your last request was denied. You can request again below.
+                </Text>
+              </View>
+            ) : null}
+            <TextField
+              label="Note (optional)"
+              hint="Why you need a card — helps the finance manager decide."
+              value={requestNote}
+              onChangeText={setRequestNote}
+              placeholder="e.g. New hire, needs supplies budget"
+            />
+            <Button
+              title="Request a card"
+              icon="send"
+              onPress={handleRequestCard}
+              loading={requesting}
+            />
+          </View>
+        )}
         <SectionHeader title="How cards work" />
         <CardPhilosophy />
+        <ToastView toast={toast} onDismiss={dismiss} />
       </View>
     );
   }
 
-  const status = cardStatusBadge(card.status);
+  const status = cardStatusBadge(card.status, card.frozenByHolder);
   const grace = card.receiptGraceEndsAt;
   const receiptOverdue = card.status === "locked" || (grace != null && grace <= Date.now());
   const capLabel =
@@ -192,6 +258,28 @@ export function MemberCardsView() {
                       : `Add a receipt by ${grace != null ? shortDate(grace) : "soon"} to avoid an auto-lock.`}
                   </Text>
                 </View>
+              ) : null}
+
+              {/* Self-serve freeze — suspected foul play, instant + reversible
+                  only by this holder. A card locked for another reason
+                  (manager lock / receipt auto-lock) has no self-serve button
+                  here — the banners above already explain why it's locked. */}
+              {card.status === "active" ? (
+                <Button
+                  title="Freeze card"
+                  variant="secondary"
+                  icon="shield-off"
+                  loading={freezing}
+                  onPress={() => handleFreeze(card.id)}
+                />
+              ) : card.status === "locked" && card.frozenByHolder ? (
+                <Button
+                  title="Unfreeze card"
+                  variant="secondary"
+                  icon="shield"
+                  loading={freezing}
+                  onPress={() => handleUnfreeze(card.id)}
+                />
               ) : null}
 
               <View className="h-px bg-border" />

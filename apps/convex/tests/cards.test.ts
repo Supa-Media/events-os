@@ -1931,6 +1931,588 @@ describe("setCardControls (gates + tenancy)", () => {
   });
 });
 
+// ── WP-C.1: freezeCard / unfreezeCard (self-serve, holder-only) ──────────────
+
+describe("freezeCard / unfreezeCard", () => {
+  const ENV = ["INCREASE_API_KEY", "INCREASE_SANDBOX_API_KEY"] as const;
+  const originalFetch = globalThis.fetch;
+  const originalEnv: Partial<Record<(typeof ENV)[number], string>> = {};
+  for (const k of ENV) originalEnv[k] = process.env[k];
+
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+    for (const k of ENV) {
+      if (originalEnv[k] === undefined) delete process.env[k];
+      else process.env[k] = originalEnv[k];
+    }
+  });
+
+  test("the holder freezes their own active card instantly", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const holder = await seedPerson(s, { name: "Holder", userId: s.userId });
+    const cardId = await seedCard(s, { cardholderPersonId: holder });
+
+    const frozen = await s.as.action(api.cards.freezeCard, { cardId });
+    expect(frozen.status).toBe("locked");
+    expect(frozen.frozenByHolder).toBe(true);
+  });
+
+  test("a non-holder (no relation to the card) cannot freeze it", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await seedPerson(s, { name: "Someone Else", userId: s.userId });
+    const holder = await seedPerson(s, { name: "Holder" });
+    const cardId = await seedCard(s, { cardholderPersonId: holder });
+
+    await expect(
+      s.as.action(api.cards.freezeCard, { cardId }),
+    ).rejects.toBeInstanceOf(ConvexError);
+  });
+
+  test("a manager (not the holder) cannot use freezeCard — that's lockCard's job", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await seedManager(s);
+    const holder = await seedPerson(s, { name: "Holder" });
+    const cardId = await seedCard(s, { cardholderPersonId: holder });
+
+    await expect(
+      s.as.action(api.cards.freezeCard, { cardId }),
+    ).rejects.toBeInstanceOf(ConvexError);
+  });
+
+  test("freezing a card already LOCKED for another reason (manager lock) is a no-op — never claims frozenByHolder", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const holder = await seedPerson(s, { name: "Holder", userId: s.userId });
+    const cardId = await seedCard(s, {
+      cardholderPersonId: holder,
+      status: "locked", // a manager already locked this card
+    });
+
+    const result = await s.as.action(api.cards.freezeCard, { cardId });
+    expect(result.status).toBe("locked");
+    expect(result.frozenByHolder).toBe(false);
+
+    // Because it was never claimed, the holder's `unfreezeCard` must NOT be
+    // able to lift the manager's lock.
+    await expect(
+      s.as.action(api.cards.unfreezeCard, { cardId }),
+    ).rejects.toBeInstanceOf(ConvexError);
+  });
+
+  test("freezing an already-frozen card is idempotent", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const holder = await seedPerson(s, { name: "Holder", userId: s.userId });
+    const cardId = await seedCard(s, { cardholderPersonId: holder });
+
+    await s.as.action(api.cards.freezeCard, { cardId });
+    const second = await s.as.action(api.cards.freezeCard, { cardId });
+    expect(second.status).toBe("locked");
+    expect(second.frozenByHolder).toBe(true);
+  });
+
+  test("a canceled card can't be frozen", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const holder = await seedPerson(s, { name: "Holder", userId: s.userId });
+    const cardId = await seedCard(s, {
+      cardholderPersonId: holder,
+      status: "canceled",
+    });
+
+    await expect(
+      s.as.action(api.cards.freezeCard, { cardId }),
+    ).rejects.toBeInstanceOf(ConvexError);
+  });
+
+  test("the SAME holder unfreezes their own frozen card", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const holder = await seedPerson(s, { name: "Holder", userId: s.userId });
+    const cardId = await seedCard(s, { cardholderPersonId: holder });
+
+    await s.as.action(api.cards.freezeCard, { cardId });
+    const unfrozen = await s.as.action(api.cards.unfreezeCard, { cardId });
+    expect(unfrozen.status).toBe("active");
+    expect(unfrozen.frozenByHolder).toBe(false);
+  });
+
+  test("unfreezeCard cannot lift the receipt auto-lock (not the holder's own freeze)", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const holder = await seedPerson(s, { name: "Holder", userId: s.userId });
+    const cardId = await seedCard(s, {
+      cardholderPersonId: holder,
+      status: "locked",
+      receiptGraceEndsAt: Date.now() + DAY_MS, // auto-locked, not holder-frozen
+    });
+
+    await expect(
+      s.as.action(api.cards.unfreezeCard, { cardId }),
+    ).rejects.toBeInstanceOf(ConvexError);
+  });
+
+  test("a non-holder cannot unfreeze someone else's frozen card", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const holder = await seedPerson(s, { name: "Holder", userId: s.userId });
+    const cardId = await seedCard(s, { cardholderPersonId: holder });
+    await s.as.action(api.cards.freezeCard, { cardId });
+
+    // A second member of the SAME chapter (not the holder) tries to unfreeze.
+    const strangerUserId = await run(s.t, (ctx) =>
+      ctx.db.insert("users", { email: "stranger@publicworship.life" }),
+    );
+    await run(s.t, (ctx) =>
+      ctx.db.insert("userChapters", {
+        userId: strangerUserId,
+        chapterId: s.chapterId,
+        role: "member",
+        isActive: true,
+        joinedAt: Date.now(),
+      }),
+    );
+    await seedPerson(s, { name: "Stranger", userId: strangerUserId });
+    const strangerClient = s.t.withIdentity({
+      subject: `${strangerUserId}|session`,
+      issuer: "test",
+    });
+
+    await expect(
+      strangerClient.action(api.cards.unfreezeCard, { cardId }),
+    ).rejects.toBeInstanceOf(ConvexError);
+  });
+
+  test("a manager's unlockCard clears a holder's freeze too", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await seedManager(s);
+    const holder = await seedPerson(s, { name: "Holder" });
+    const cardId = await seedCard(s, { cardholderPersonId: holder });
+
+    // Freeze as the holder — reuse a second caller identity for the holder.
+    await run(s.t, (ctx) => ctx.db.patch(cardId, { status: "locked", frozenByHolder: true }));
+
+    const unlocked = await s.as.mutation(api.cards.unlockCard, { cardId });
+    expect(unlocked.status).toBe("active");
+    expect(unlocked.frozenByHolder).toBe(false);
+  });
+
+  test("freeze PATCHes Increase's card status to disabled when a vendor id + key are present", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const holder = await seedPerson(s, { name: "Holder", userId: s.userId });
+    const cardId = await seedCard(s, {
+      cardholderPersonId: holder,
+      increaseCardId: "card_1",
+    });
+    process.env.INCREASE_API_KEY = "prod_key";
+    const calls = mockRecordingFetch({});
+
+    await s.as.action(api.cards.freezeCard, { cardId });
+
+    const patch = calls.find((c) => c.method === "PATCH");
+    expect(patch).toBeTruthy();
+    expect(patch!.url).toContain("/cards/card_1");
+    expect(patch!.auth).toBe("Bearer prod_key");
+  });
+
+  test("unfreeze PATCHes Increase's card status to active", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const holder = await seedPerson(s, { name: "Holder", userId: s.userId });
+    const cardId = await seedCard(s, {
+      cardholderPersonId: holder,
+      increaseCardId: "card_1",
+    });
+    process.env.INCREASE_API_KEY = "prod_key";
+    await s.as.action(api.cards.freezeCard, { cardId });
+
+    const calls = mockRecordingFetch({});
+    await s.as.action(api.cards.unfreezeCard, { cardId });
+
+    const patch = calls.find((c) => c.method === "PATCH");
+    expect(patch).toBeTruthy();
+    expect(patch!.url).toContain("/cards/card_1");
+  });
+
+  test("freeze degrades to a logged no-op without INCREASE_API_KEY (local state still flips)", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const holder = await seedPerson(s, { name: "Holder", userId: s.userId });
+    const cardId = await seedCard(s, {
+      cardholderPersonId: holder,
+      increaseCardId: "card_1",
+    });
+    delete process.env.INCREASE_API_KEY;
+    delete process.env.INCREASE_SANDBOX_API_KEY;
+
+    const frozen = await s.as.action(api.cards.freezeCard, { cardId });
+    expect(frozen.status).toBe("locked");
+    expect(frozen.frozenByHolder).toBe(true);
+  });
+});
+
+// ── WP-C.1: cancelCard (FM + Treasurer only — never self-serve) ─────────────
+
+describe("cancelCard", () => {
+  const ENV = ["INCREASE_API_KEY"] as const;
+  const originalFetch = globalThis.fetch;
+  const originalEnv: Partial<Record<(typeof ENV)[number], string>> = {};
+  for (const k of ENV) originalEnv[k] = process.env[k];
+
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+    for (const k of ENV) {
+      if (originalEnv[k] === undefined) delete process.env[k];
+      else process.env[k] = originalEnv[k];
+    }
+  });
+
+  test("a finance manager cancels a card permanently", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await seedManager(s);
+    const holder = await seedPerson(s, { name: "Holder" });
+    const cardId = await seedCard(s, { cardholderPersonId: holder });
+
+    const canceled = await s.as.action(api.cards.cancelCard, { cardId });
+    expect(canceled.status).toBe("canceled");
+  });
+
+  test("the cardholder themselves cannot cancel their own card — not self-serve", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const holder = await seedPerson(s, { name: "Holder", userId: s.userId });
+    const cardId = await seedCard(s, { cardholderPersonId: holder });
+
+    await expect(
+      s.as.action(api.cards.cancelCard, { cardId }),
+    ).rejects.toBeInstanceOf(ConvexError);
+  });
+
+  test("a plain viewer cannot cancel a card", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const caller = await seedPerson(s, { name: "Viewer", userId: s.userId });
+    await grantRole(s, caller, "viewer");
+    const holder = await seedPerson(s, { name: "Holder" });
+    const cardId = await seedCard(s, { cardholderPersonId: holder });
+
+    await expect(
+      s.as.action(api.cards.cancelCard, { cardId }),
+    ).rejects.toBeInstanceOf(ConvexError);
+  });
+
+  test("canceling is idempotent", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await seedManager(s);
+    const holder = await seedPerson(s, { name: "Holder" });
+    const cardId = await seedCard(s, { cardholderPersonId: holder });
+
+    await s.as.action(api.cards.cancelCard, { cardId });
+    const second = await s.as.action(api.cards.cancelCard, { cardId });
+    expect(second.status).toBe("canceled");
+  });
+
+  test("a canceled card DECLINES a real-time authorization", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await seedManager(s);
+    const holder = await seedPerson(s, { name: "Holder" });
+    const cardId = await seedCard(s, {
+      cardholderPersonId: holder,
+      increaseCardId: "card_x",
+    });
+    await s.as.action(api.cards.cancelCard, { cardId });
+
+    const decision = await t.mutation(internal.cards.decideCardAuthorization, {
+      increaseCardId: "card_x",
+      increaseAuthId: "auth_1",
+      amountCents: 500,
+    });
+    expect(decision.approved).toBe(false);
+  });
+
+  test("cancel PATCHes Increase's card status to canceled when a vendor id + key are present", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await seedManager(s);
+    const holder = await seedPerson(s, { name: "Holder" });
+    const cardId = await seedCard(s, {
+      cardholderPersonId: holder,
+      increaseCardId: "card_1",
+    });
+    process.env.INCREASE_API_KEY = "prod_key";
+    const calls = mockRecordingFetch({});
+
+    await s.as.action(api.cards.cancelCard, { cardId });
+
+    const patch = calls.find((c) => c.method === "PATCH");
+    expect(patch).toBeTruthy();
+    expect(patch!.url).toContain("/cards/card_1");
+  });
+});
+
+// ── WP-C.1: request-a-card ────────────────────────────────────────────────────
+
+describe("requestCard / myCardRequest / listCardRequests / decideCardRequest", () => {
+  test("a card-eligible person submits a request", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await seedPerson(s, { name: "Me", userId: s.userId });
+
+    const req = await s.as.mutation(api.cards.requestCard, { note: "New hire" });
+    expect(req.status).toBe("requested");
+    expect(req.note).toBe("New hire");
+  });
+
+  test("an ineligible person (no @publicworship.life email) cannot request", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await seedPerson(s, { name: "Me", userId: s.userId, pwEmail: null });
+
+    await expect(
+      s.as.mutation(api.cards.requestCard, {}),
+    ).rejects.toBeInstanceOf(ConvexError);
+  });
+
+  test("only one open request at a time", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await seedPerson(s, { name: "Me", userId: s.userId });
+
+    await s.as.mutation(api.cards.requestCard, {});
+    await expect(
+      s.as.mutation(api.cards.requestCard, {}),
+    ).rejects.toBeInstanceOf(ConvexError);
+  });
+
+  test("cannot request a card while already holding a live one", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const me = await seedPerson(s, { name: "Me", userId: s.userId });
+    await seedCard(s, { cardholderPersonId: me });
+
+    await expect(
+      s.as.mutation(api.cards.requestCard, {}),
+    ).rejects.toBeInstanceOf(ConvexError);
+  });
+
+  test("myCardRequest returns the caller's own pending request; null once approved", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const requesterPersonId = await seedPerson(s, { name: "Me", userId: s.userId });
+
+    const req = await s.as.mutation(api.cards.requestCard, {});
+    expect(req.status).toBe("requested");
+
+    const mine = await s.as.query(api.cards.myCardRequest, {});
+    expect(mine?.status).toBe("requested");
+
+    // A second member of the SAME chapter, a finance manager, approves it.
+    const managerUserId = await run(s.t, (ctx) =>
+      ctx.db.insert("users", { email: "manager@publicworship.life" }),
+    );
+    await run(s.t, (ctx) =>
+      ctx.db.insert("userChapters", {
+        userId: managerUserId,
+        chapterId: s.chapterId,
+        role: "admin",
+        isActive: true,
+        joinedAt: Date.now(),
+      }),
+    );
+    const managerPersonId = await seedPerson(s, {
+      name: "Manager",
+      userId: managerUserId,
+    });
+    await grantRole(s, managerPersonId, "manager");
+    const managerClient = s.t.withIdentity({
+      subject: `${managerUserId}|session`,
+      issuer: "test",
+    });
+
+    const decided = await managerClient.action(api.cards.decideCardRequest, {
+      requestId: req.id,
+      decision: "approve",
+    });
+    expect(decided.status).toBe("approved");
+    expect(decided.personId).toBe(requesterPersonId);
+
+    // Once approved, the caller's `myCard` reflects the new card; the request
+    // banner goes away (avoids a stale "approved" banner sticking around).
+    const mineAfter = await s.as.query(api.cards.myCardRequest, {});
+    expect(mineAfter).toBeNull();
+  });
+
+  test("listCardRequests returns only pending requests in the caller's chapter", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await seedManager(s);
+    const requester = await seedPerson(s, { name: "Requester" });
+
+    await run(s.t, (ctx) =>
+      ctx.db.insert("cardRequests", {
+        chapterId: s.chapterId,
+        personId: requester,
+        status: "requested",
+        requestedAt: Date.now(),
+      }),
+    );
+    await run(s.t, (ctx) =>
+      ctx.db.insert("cardRequests", {
+        chapterId: s.chapterId,
+        personId: requester,
+        status: "denied",
+        requestedAt: Date.now(),
+        decidedAt: Date.now(),
+      }),
+    );
+
+    const rows = await s.as.query(api.cards.listCardRequests, {});
+    expect(rows.length).toBe(1);
+    expect(rows[0].status).toBe("requested");
+  });
+
+  test("a finance manager approves a request — triggers issueCard", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await seedManager(s);
+    const requester = await seedPerson(s, {
+      name: "Requester",
+      pwEmail: "requester@publicworship.life",
+    });
+    const requestId = await run(s.t, (ctx) =>
+      ctx.db.insert("cardRequests", {
+        chapterId: s.chapterId,
+        personId: requester,
+        status: "requested",
+        requestedAt: Date.now(),
+      }),
+    );
+
+    const decided = await s.as.action(api.cards.decideCardRequest, {
+      requestId,
+      decision: "approve",
+    });
+    expect(decided.status).toBe("approved");
+    expect(decided.cardId).not.toBeNull();
+
+    const cards = await run(s.t, (ctx) =>
+      ctx.db
+        .query("cards")
+        .withIndex("by_cardholder", (q) => q.eq("cardholderPersonId", requester))
+        .collect(),
+    );
+    expect(cards.length).toBe(1);
+    expect(cards[0].status).toBe("active");
+  });
+
+  test("a finance manager denies a request — no card created", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await seedManager(s);
+    const requester = await seedPerson(s, { name: "Requester" });
+    const requestId = await run(s.t, (ctx) =>
+      ctx.db.insert("cardRequests", {
+        chapterId: s.chapterId,
+        personId: requester,
+        status: "requested",
+        requestedAt: Date.now(),
+      }),
+    );
+
+    const decided = await s.as.action(api.cards.decideCardRequest, {
+      requestId,
+      decision: "deny",
+    });
+    expect(decided.status).toBe("denied");
+    expect(decided.cardId).toBeNull();
+
+    const cards = await run(s.t, (ctx) =>
+      ctx.db
+        .query("cards")
+        .withIndex("by_cardholder", (q) => q.eq("cardholderPersonId", requester))
+        .collect(),
+    );
+    expect(cards.length).toBe(0);
+  });
+
+  test("a non-manager cannot decide a request", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const caller = await seedPerson(s, { name: "Viewer", userId: s.userId });
+    await grantRole(s, caller, "viewer");
+    const requester = await seedPerson(s, { name: "Requester" });
+    const requestId = await run(s.t, (ctx) =>
+      ctx.db.insert("cardRequests", {
+        chapterId: s.chapterId,
+        personId: requester,
+        status: "requested",
+        requestedAt: Date.now(),
+      }),
+    );
+
+    await expect(
+      s.as.action(api.cards.decideCardRequest, { requestId, decision: "approve" }),
+    ).rejects.toBeInstanceOf(ConvexError);
+  });
+
+  test("deciding an already-decided request throws", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await seedManager(s);
+    const requester = await seedPerson(s, { name: "Requester" });
+    const requestId = await run(s.t, (ctx) =>
+      ctx.db.insert("cardRequests", {
+        chapterId: s.chapterId,
+        personId: requester,
+        status: "denied",
+        requestedAt: Date.now(),
+        decidedAt: Date.now(),
+      }),
+    );
+
+    await expect(
+      s.as.action(api.cards.decideCardRequest, { requestId, decision: "approve" }),
+    ).rejects.toBeInstanceOf(ConvexError);
+  });
+
+  test("a request in another chapter is not visible/decidable", async () => {
+    const t = newT();
+    const sA = await setupChapter(t, { email: "a@publicworship.life" });
+    await seedManager(sA);
+    const sB = await setupChapter(t, {
+      email: "b@publicworship.life",
+      chapterName: "Boston",
+    });
+    const requesterB = await seedPerson(sB, { name: "RequesterB" });
+    const requestIdB = await run(sB.t, (ctx) =>
+      ctx.db.insert("cardRequests", {
+        chapterId: sB.chapterId,
+        personId: requesterB,
+        status: "requested",
+        requestedAt: Date.now(),
+      }),
+    );
+
+    const rowsA = await sA.as.query(api.cards.listCardRequests, {});
+    expect(rowsA.length).toBe(0);
+
+    await expect(
+      sA.as.action(api.cards.decideCardRequest, {
+        requestId: requestIdB,
+        decision: "approve",
+      }),
+    ).rejects.toBeInstanceOf(ConvexError);
+  });
+});
+
 // ── handleIncreaseRealTimeDecision env routing (sandbox vs production) ────────
 
 /** A recording `fetch` mock: captures each request's URL + Authorization header
