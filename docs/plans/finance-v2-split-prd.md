@@ -237,6 +237,32 @@ new Chapter Director, empty the dual-hat seats. Lives in `docs/plans/`.
   lives in shared constants (see §0.1). This is how central launches a city with its finances
   pre-modeled.
 
+### Phase 3.5 — Cards v2 (owner-directed 2026-07-16)
+
+Card management grows from manager-issued-only into a full lifecycle, plus brand + wallet.
+Digital only — no physical cards.
+
+**WP-C.1 · Card lifecycle** — (a) **self-serve freeze/unfreeze**: every cardholder can freeze
+their OWN card instantly (suspected foul play), distinct from the receipt auto-lock; (b)
+**cancel/close**: FM + Treasurer seats only; (c) **request-a-card**: members request → FM/
+Treasurer approves → card issues (keep direct-issue for managers). Card carries the holder's
+name (verify name flows to Increase at issuance). Builds on cards.ts issue/lock/setControls.
+
+**WP-C.2 · Card art + Digital Card Profile** — 1536×969 PNG (white PW kneeling logo on brand
+red `#D23B3A`; draft generated 2026-07-16, needs the Visa logo placed per Visa's Figma/
+Illustrator template — owner/designer step) + 100×100 notification icon. Upload via the
+Increase Files API → create a Digital Card Profile → attach to new cards + backfill existing;
+last-4 text color white. Spec: increase.com/documentation/card-art.
+
+**WP-C.3 · Digital wallet (Apple/Google Pay)** — wallet tokenization flows through the SAME
+real-time decisions system as card auth: handle `real_time_decision.digital_wallet_token_requested`
+(approve active+unlocked cards, decline locked/canceled) and `digital_wallet_authentication_requested`
+(2FA one-time-code contact methods from the cardholder's person record) in the existing
+webhook. In-app secure card-details reveal enables manual add-to-wallet on day one; native
+push-provisioning ("Add to Apple Wallet" button, requires Apple PassKit entitlement) is
+explicitly DEFERRED. **Dependency: the RTD-enablement support request covers this too — the
+message to Increase should mention digital wallet tokenization alongside card authorizations.**
+
 ### Phase 4 — The model's money flows
 
 **WP-4.1 · The skim**: monthly chapter → central transfer (~15% of backer revenue). Modeled as
