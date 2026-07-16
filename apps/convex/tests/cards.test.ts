@@ -1807,10 +1807,11 @@ describe("listCards / myCard", () => {
     const me = await seedManager(s); // person linked to the caller user
     await seedCard(s, { cardholderPersonId: me, last4: "1111" });
 
-    const rows = await s.as.query(api.cards.myCard, {});
-    expect(rows.length).toBe(1);
-    expect(rows[0].last4).toBe("1111");
-    expect(rows[0].cardholderPersonId).toBe(me);
+    const result = await s.as.query(api.cards.myCard, {});
+    expect(result.cards.length).toBe(1);
+    expect(result.cards[0].last4).toBe("1111");
+    expect(result.cards[0].cardholderPersonId).toBe(me);
+    expect(result.lastCanceled).toBeNull();
   });
 
   test("production mode hides a sandbox_ card, shows a prod card + a null-id degraded card", async () => {
@@ -1877,8 +1878,67 @@ describe("listCards / myCard", () => {
       last4: "0002",
     });
 
-    const rows = await s.as.query(api.cards.myCard, {});
-    expect(rows.map((r) => r.last4)).toEqual(["0002"]);
+    const result = await s.as.query(api.cards.myCard, {});
+    expect(result.cards.map((r) => r.last4)).toEqual(["0002"]);
+  });
+
+  // ── IMPORTANT 1: canceled-only holder → request flow, not a dead card ──────
+
+  test("myCard excludes a canceled card from the primary pick, surfaces it as lastCanceled", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const me = await seedManager(s);
+    await seedCard(s, {
+      cardholderPersonId: me,
+      status: "canceled",
+      last4: "9999",
+    });
+
+    const result = await s.as.query(api.cards.myCard, {});
+    expect(result.cards).toEqual([]);
+    expect(result.lastCanceled).not.toBeNull();
+    expect(result.lastCanceled?.last4).toBe("9999");
+    expect(result.lastCanceled?.status).toBe("canceled");
+  });
+
+  test("myCard: a re-issued (live) card wins over an older canceled one — no lastCanceled banner", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const me = await seedManager(s);
+    // The OLD canceled card, seeded first (would be `cards[0]` under the old
+    // ascending-order/no-filter behavior).
+    await seedCard(s, {
+      cardholderPersonId: me,
+      status: "canceled",
+      last4: "1111",
+    });
+    // The re-issued, currently-live card.
+    await seedCard(s, {
+      cardholderPersonId: me,
+      status: "active",
+      last4: "2222",
+    });
+
+    const result = await s.as.query(api.cards.myCard, {});
+    expect(result.cards.length).toBe(1);
+    expect(result.cards[0].last4).toBe("2222");
+    expect(result.lastCanceled).toBeNull();
+  });
+
+  test("myCard: a locked (not canceled) card still counts as the live primary pick", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const me = await seedManager(s);
+    await seedCard(s, {
+      cardholderPersonId: me,
+      status: "locked",
+      last4: "3333",
+    });
+
+    const result = await s.as.query(api.cards.myCard, {});
+    expect(result.cards.length).toBe(1);
+    expect(result.cards[0].status).toBe("locked");
+    expect(result.lastCanceled).toBeNull();
   });
 });
 
@@ -2035,9 +2095,47 @@ describe("freezeCard / unfreezeCard", () => {
     const cardId = await seedCard(s, { cardholderPersonId: holder });
 
     await s.as.action(api.cards.freezeCard, { cardId });
-    const unfrozen = await s.as.action(api.cards.unfreezeCard, { cardId });
-    expect(unfrozen.status).toBe("active");
-    expect(unfrozen.frozenByHolder).toBe(false);
+    const result = await s.as.action(api.cards.unfreezeCard, { cardId });
+    expect(result.kind).toBe("active");
+    expect(result.card.status).toBe("active");
+    expect(result.card.frozenByHolder).toBe(false);
+  });
+
+  // ── MINOR 2: unfreeze re-checks the receipt lock before reactivating ───────
+
+  test("unfreeze lands receipt-locked (not active) when an overdue missing-receipt charge accrued while frozen", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const holder = await seedPerson(s, { name: "Holder", userId: s.userId });
+    const cardId = await seedCard(s, { cardholderPersonId: holder });
+    await s.as.action(api.cards.freezeCard, { cardId });
+    // A charge posted well past the grace window, still missing its receipt —
+    // accrued while the card sat frozen.
+    await seedCardTxn(s, {
+      cardId,
+      amountCents: 1500,
+      ageDays: 10,
+    });
+
+    const result = await s.as.action(api.cards.unfreezeCard, { cardId });
+    expect(result.kind).toBe("receipt_locked");
+    expect(result.card.status).toBe("locked");
+    expect(result.card.frozenByHolder).toBe(false);
+    expect(result.card.receiptGraceEndsAt).not.toBeNull();
+  });
+
+  test("unfreeze reactivates normally when no overdue receipt charge exists", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const holder = await seedPerson(s, { name: "Holder", userId: s.userId });
+    const cardId = await seedCard(s, { cardholderPersonId: holder });
+    await s.as.action(api.cards.freezeCard, { cardId });
+    // A charge within the grace window — not yet overdue.
+    await seedCardTxn(s, { cardId, amountCents: 1500, ageDays: 1 });
+
+    const result = await s.as.action(api.cards.unfreezeCard, { cardId });
+    expect(result.kind).toBe("active");
+    expect(result.card.status).toBe("active");
   });
 
   test("unfreezeCard cannot lift the receipt auto-lock (not the holder's own freeze)", async () => {

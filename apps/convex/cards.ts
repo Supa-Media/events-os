@@ -20,7 +20,11 @@
  *    which lifts every lock reason). `beginFreezeCard` only ever transitions
  *    an ACTIVE card, so a card already locked for another reason is never
  *    mis-marked `frozenByHolder` — see its doc comment for why that keeps
- *    `unfreezeCard` safe to reactivate unconditionally.
+ *    `unfreezeCard` safe to act on. `unfreezeCard` itself re-runs the receipt
+ *    auto-lock's eligibility check before reactivating — an overdue charge
+ *    accrued while frozen lands the card `"locked"` for the receipt instead
+ *    of `"active"`, so the holder can't dodge it for a day waiting on the
+ *    cron.
  *  - `cancelCard` — FM/Treasurer ONLY (`requireFinanceManager`), permanently
  *    terminal; never self-serve.
  *  - `requestCard`/`decideCardRequest` — a member requests a card
@@ -251,6 +255,11 @@ interface RepaymentSummary {
   payerAccountLast4: string | null;
 }
 
+interface UnfreezeCardResult {
+  card: CardSummary;
+  kind: "active" | "receipt_locked";
+}
+
 type IssueCardResult =
   | { kind: "existing"; card: CardSummary }
   | {
@@ -396,7 +405,15 @@ async function setIncreaseCardStatus(
   try {
     await increasePatch(key, base, `/cards/${increaseCardId}`, { status });
   } catch (err) {
-    console.error(`[cards] setIncreaseCardStatus(${status}) failed:`, err);
+    // Distinctive, greppable prefix — this is the freeze/unfreeze/cancel sync
+    // to Increase's OWN Card object failing (the LOCAL state change already
+    // took effect either way; RTD declines non-active anyway, defense in
+    // depth). Includes the card id + intended status so a future alert on
+    // this string can page without re-deriving context from a stack trace.
+    console.error(
+      `[increase][ALERT] card status sync FAILED — cardId=${increaseCardId} intendedStatus=${status}:`,
+      err,
+    );
   }
 }
 
@@ -725,31 +742,60 @@ export const listCards = query({
   },
 });
 
+const myCardValidator = v.object({
+  cards: v.array(cardSummaryValidator),
+  // The caller's most recently issued CANCELED card, when they hold no live
+  // (non-canceled) one — surfaced so the member view can explain WHY they're
+  // looking at the request-a-card flow instead of just a bare "No card yet"
+  // as if they'd never had one. Null the moment a live card exists again
+  // (re-issued or otherwise) — see `myCard`'s doc comment.
+  lastCanceled: v.union(cardSummaryValidator, v.null()),
+});
+
 /** The caller's own card(s) — the member card view. Any authed user; empty when
- *  they have no chapter / roster row yet. */
+ *  they have no chapter / roster row yet.
+ *
+ *  A CANCELED card is never returned in `cards` (the primary pick) — a
+ *  cardholder whose only card is canceled must reach the request-a-card
+ *  flow, not stare at a dead card with no explanation. Its replacement is
+ *  `lastCanceled`: set ONLY when there's no live card to show instead, so a
+ *  canceled-then-reissued holder just sees their active card as normal. */
 export const myCard = query({
   args: {},
-  returns: v.array(cardSummaryValidator),
-  handler: async (ctx): Promise<CardSummary[]> => {
+  returns: myCardValidator,
+  handler: async (ctx) => {
     const chapterId = (await getChapterIdOrNull(ctx)) as Id<"chapters"> | null;
-    if (!chapterId) return [];
+    if (!chapterId) return { cards: [], lastCanceled: null };
     const self = await viewerPerson(ctx, chapterId);
-    if (!self) return [];
+    if (!self) return { cards: [], lastCanceled: null };
     const sandboxMode = await readSandbox(ctx);
     const cards = await ctx.db
       .query("cards")
       .withIndex("by_cardholder", (q) => q.eq("cardholderPersonId", self._id))
       .take(CARD_SCAN_LIMIT);
-    return Promise.all(
-      cards
-        .filter(
-          (c) =>
-            c.chapterId === chapterId &&
-            // Same environment filter as listCards: hide cross-env cards.
-            matchesMode(c.increaseCardId ?? null, sandboxMode),
-        )
-        .map((c) => buildCardSummary(ctx, c)),
+    const inScope = cards.filter(
+      (c) =>
+        c.chapterId === chapterId &&
+        // Same environment filter as listCards: hide cross-env cards.
+        matchesMode(c.increaseCardId ?? null, sandboxMode),
     );
+
+    const live = inScope.filter((c) => c.status !== "canceled");
+    if (live.length > 0) {
+      return {
+        cards: await Promise.all(live.map((c) => buildCardSummary(ctx, c))),
+        lastCanceled: null,
+      };
+    }
+
+    const canceled = inScope.filter((c) => c.status === "canceled");
+    if (canceled.length === 0) return { cards: [], lastCanceled: null };
+    // No `canceledAt` timestamp exists on the row; `createdAt` is the closest
+    // proxy for "most recent" across repeated issue/cancel cycles.
+    const mostRecent = canceled.reduce((a, b) =>
+      b.createdAt > a.createdAt ? b : a,
+    );
+    return { cards: [], lastCanceled: await buildCardSummary(ctx, mostRecent) };
   },
 });
 
@@ -903,13 +949,26 @@ export const freezeCard = action({
  * fresh receipt respectively). Because `beginFreezeCard` never sets
  * `frozenByHolder` on a card that's locked for another reason, a card that
  * reaches here with `frozenByHolder:true` is GUARANTEED to have no
- * independent lock reason underneath — reactivating it outright is safe.
+ * independent lock reason underneath.
+ *
+ * Reactivating isn't unconditional, though: an overdue missing-receipt charge
+ * could have accrued WHILE the card sat frozen, and the daily
+ * `autoLockOverdueCards` sweep won't see it again until it next runs — up to
+ * ~24h during which the card would authorize despite the overdue receipt.
+ * So before reactivating, this re-runs the EXACT SAME eligibility check the
+ * cron uses (`isOverdueReceiptCharge`, same `RECEIPT_GRACE_DAYS` cutoff): if
+ * an overdue charge remains, land on `"locked"` + a freshly stamped
+ * `receiptGraceEndsAt` (identical shape to the cron's own stamp) instead of
+ * `"active"` — never `frozenByHolder`, since the lock reason is now the
+ * receipt, not the holder's freeze. The caller gets back which branch it took
+ * (`kind`) so the UI can explain the outcome.
  */
 export const beginUnfreezeCard = internalMutation({
   args: { cardId: v.id("cards") },
   returns: v.object({
     summary: cardSummaryValidator,
     increaseCardId: v.union(v.string(), v.null()),
+    kind: v.union(v.literal("active"), v.literal("receipt_locked")),
   }),
   handler: async (ctx, { cardId }) => {
     const chapterId = (await requireChapterId(ctx)) as Id<"chapters">;
@@ -930,6 +989,32 @@ export const beginUnfreezeCard = internalMutation({
           "This card isn't frozen by you — ask a finance manager to unlock it.",
       });
     }
+
+    // Same predicate + cutoff as `autoLockOverdueCards` — reuse, don't
+    // duplicate the grace-window threshold.
+    const cutoff = Date.now() - RECEIPT_GRACE_DAYS * DAY_MS;
+    const txns = await ctx.db
+      .query("transactions")
+      .withIndex("by_card", (q) => q.eq("cardId", cardId))
+      .order("desc")
+      .take(CARD_TXN_LIMIT);
+    const overdue = txns.filter((tr) => isOverdueReceiptCharge(tr, card, cutoff));
+
+    if (overdue.length > 0) {
+      const earliest = Math.min(...overdue.map((tr) => tr.postedAt));
+      await ctx.db.patch(card._id, {
+        status: "locked",
+        frozenByHolder: undefined,
+        receiptGraceEndsAt: earliest + RECEIPT_GRACE_DAYS * DAY_MS,
+      });
+      const fresh = (await ctx.db.get(card._id))!;
+      return {
+        summary: await buildCardSummary(ctx, fresh),
+        increaseCardId: fresh.increaseCardId ?? null,
+        kind: "receipt_locked" as const,
+      };
+    }
+
     await ctx.db.patch(card._id, {
       status: "active",
       frozenByHolder: undefined,
@@ -938,21 +1023,32 @@ export const beginUnfreezeCard = internalMutation({
     return {
       summary: await buildCardSummary(ctx, fresh),
       increaseCardId: fresh.increaseCardId ?? null,
+      kind: "active" as const,
     };
   },
 });
 
-/** Self-serve unfreeze: reverses the holder's OWN `freezeCard`. Best-effort
- *  syncs to Increase's `status:"active"` (same degrade as `freezeCard`). */
+/** Self-serve unfreeze: reverses the holder's OWN `freezeCard` — UNLESS an
+ *  overdue missing-receipt charge accrued while frozen, in which case the
+ *  card lands `"locked"` for the receipt instead (see `beginUnfreezeCard`).
+ *  Best-effort syncs to Increase's own `status`: `"active"` on a full
+ *  reactivation, `"disabled"` when it lands receipt-locked instead (same
+ *  degrade as `freezeCard` either way). */
 export const unfreezeCard = action({
   args: { cardId: v.id("cards") },
-  returns: cardSummaryValidator,
-  handler: async (ctx, { cardId }): Promise<CardSummary> => {
+  returns: v.object({
+    card: cardSummaryValidator,
+    kind: v.union(v.literal("active"), v.literal("receipt_locked")),
+  }),
+  handler: async (ctx, { cardId }): Promise<UnfreezeCardResult> => {
     const prep = await ctx.runMutation(internal.cards.beginUnfreezeCard, {
       cardId,
     });
-    await setIncreaseCardStatus(prep.increaseCardId, "active");
-    return prep.summary;
+    await setIncreaseCardStatus(
+      prep.increaseCardId,
+      prep.kind === "active" ? "active" : "disabled",
+    );
+    return { card: prep.summary, kind: prep.kind };
   },
 });
 

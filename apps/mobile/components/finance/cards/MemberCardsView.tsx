@@ -23,7 +23,7 @@
  * session-local state anymore — see the query's doc comment).
  */
 import { useMemo, useState } from "react";
-import { Text, View } from "react-native";
+import { Alert, Text, View } from "react-native";
 import { useAction, useMutation, useQuery } from "convex/react";
 import { api } from "@events-os/convex/_generated/api";
 import type { Id } from "@events-os/convex/_generated/dataModel";
@@ -52,7 +52,9 @@ import {
 } from "./helpers";
 
 export function MemberCardsView() {
-  const cards = useQuery(api.cards.myCard, {});
+  const myCard = useQuery(api.cards.myCard, {});
+  const cards = myCard?.cards;
+  const lastCanceled = myCard?.lastCanceled;
   const txns = useQuery(api.finances.personTransactions, {});
   const myRepayments = useQuery(api.cards.myPersonalRepayments, {});
   const myRequest = useQuery(api.cards.myCardRequest, {});
@@ -112,9 +114,19 @@ export function MemberCardsView() {
 
   async function handleUnfreeze(cardId: Id<"cards">) {
     setFreezing(true);
-    await run(() => unfreezeCard({ cardId }), {
+    const result = await run(() => unfreezeCard({ cardId }), {
       errorTitle: "Couldn't unfreeze card",
     });
+    // The receipt lock-eligibility re-check landed the card locked again
+    // instead of active — the "receipt-due" banner below already explains
+    // the lock, but a one-time heads-up avoids the freeze button silently
+    // doing "nothing" from the holder's perspective.
+    if (result?.kind === "receipt_locked") {
+      Alert.alert(
+        "Card unfrozen but locked",
+        "Card unfrozen but locked for overdue receipts — upload to unlock.",
+      );
+    }
     setFreezing(false);
   }
 
@@ -128,7 +140,7 @@ export function MemberCardsView() {
     setRequestNote("");
   }
 
-  if (cards === undefined) {
+  if (myCard === undefined) {
     return <EmptyState title="Loading your card…" />;
   }
 
@@ -138,6 +150,13 @@ export function MemberCardsView() {
         <View className="mb-1">
           <Text className="font-display text-2xl text-ink">Your card</Text>
         </View>
+        {lastCanceled ? (
+          <View className="mb-3 rounded-md border border-border bg-sunken px-3 py-2">
+            <Text className="text-xs text-muted">
+              Your previous card was canceled — request a replacement below.
+            </Text>
+          </View>
+        ) : null}
         {myRequest?.status === "requested" ? (
           <EmptyState
             icon="clock"
