@@ -423,37 +423,6 @@ export const storeFcAccount = mutation({
   },
 });
 
-/** Set the default fund newly-synced transactions from an account land in.
- *  Manager-only; both the account and the fund must be in the caller's chapter. */
-export const setAccountFund = mutation({
-  args: {
-    legacyAccountId: v.id("legacyAccounts"),
-    fundId: v.id("funds"),
-  },
-  returns: v.null(),
-  handler: async (ctx, args) => {
-    const chapterId = (await requireChapterId(ctx)) as Id<"chapters">;
-    await requireFinanceManager(ctx, chapterId);
-
-    const account = await ctx.db.get(args.legacyAccountId);
-    if (!account || account.chapterId !== chapterId) {
-      throw new ConvexError({
-        code: "NOT_FOUND",
-        message: "That account isn't in your chapter.",
-      });
-    }
-    const fund = await ctx.db.get(args.fundId);
-    if (!fund || fund.chapterId !== chapterId) {
-      throw new ConvexError({
-        code: "NOT_FOUND",
-        message: "That fund isn't in your chapter.",
-      });
-    }
-    await ctx.db.patch(args.legacyAccountId, { defaultFundId: args.fundId });
-    return null;
-  },
-});
-
 /**
  * Manually re-pull an account's transactions on demand ("Refresh now" / "Sync"
  * in the UI). Manager-only; the account must be in the caller's chapter. Kicks

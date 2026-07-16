@@ -14,7 +14,7 @@ import type { Id } from "../_generated/dataModel";
  * (dedup by `externalId`, zero duplicates), a pending→posted update in place,
  * lastSyncedAt stamp; the fetch/paginate path via a mocked `fetch` (two pages,
  * `starting_after` advances, pending→posted catches up on re-sweep); plus
- * tenancy on `listAccounts` / `setAccountFund`, the NOT_CONFIGURED session
+ * tenancy on `listAccounts`, the NOT_CONFIGURED session
  * degrade, and the webhook fan-out (unknown = no-op, known = schedules a sync,
  * disconnected event = marks the account disconnected).
  */
@@ -332,7 +332,7 @@ describe("applyFcTransactions legacy-card last4 + attribution", () => {
   });
 });
 
-describe("listAccounts / setAccountFund tenancy", () => {
+describe("listAccounts tenancy", () => {
   test("listAccounts returns the caller's chapter accounts in the UI shape", async () => {
     const s = await setupChapter(newT());
     await asManager(s);
@@ -350,52 +350,6 @@ describe("listAccounts / setAccountFund tenancy", () => {
       defaultFundId: fundId,
     });
     expect(accounts[0].lastSyncedAt).toBeNull();
-  });
-
-  test("setAccountFund rejects a fund from another chapter", async () => {
-    const t = newT();
-    const s = await setupChapter(t);
-    await asManager(s);
-    const accountId = await seedAccount(s, s.chapterId);
-
-    // A fund living in a DIFFERENT chapter.
-    const other = await setupChapter(t, { email: "other@publicworship.life" });
-    const foreignFund = await seedFund(other, other.chapterId, "Foreign");
-
-    await expect(
-      s.as.mutation(api.stripeFinance.setAccountFund, {
-        legacyAccountId: accountId,
-        fundId: foreignFund,
-      }),
-    ).rejects.toBeInstanceOf(ConvexError);
-
-    // A same-chapter fund is accepted.
-    const ownFund = await seedFund(s, s.chapterId);
-    await s.as.mutation(api.stripeFinance.setAccountFund, {
-      legacyAccountId: accountId,
-      fundId: ownFund,
-    });
-    const account = await run(s.t, (ctx) => ctx.db.get(accountId));
-    expect(account?.defaultFundId).toBe(ownFund);
-  });
-
-  test("setAccountFund rejects an account from another chapter", async () => {
-    const t = newT();
-    const s = await setupChapter(t);
-    await asManager(s);
-    const ownFund = await seedFund(s, s.chapterId);
-
-    const other = await setupChapter(t, { email: "other@publicworship.life" });
-    const foreignAccount = await seedAccount(other, other.chapterId, {
-      stripeFcAccountId: "fca_other",
-    });
-
-    await expect(
-      s.as.mutation(api.stripeFinance.setAccountFund, {
-        legacyAccountId: foreignAccount,
-        fundId: ownFund,
-      }),
-    ).rejects.toBeInstanceOf(ConvexError);
   });
 });
 

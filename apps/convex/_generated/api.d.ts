@@ -64,6 +64,7 @@ import type * as lib_siteUrl from "../lib/siteUrl.js";
 import type * as lib_superuser from "../lib/superuser.js";
 import type * as lib_templates from "../lib/templates.js";
 import type * as lib_ticketApiRoutes from "../lib/ticketApiRoutes.js";
+import type * as maintenance from "../maintenance.js";
 import type * as migrations from "../migrations.js";
 import type * as migrations_0000_seed_ledger from "../migrations/0000_seed_ledger.js";
 import type * as migrations_0007_cleanup_renamed_guide_slugs from "../migrations/0007_cleanup_renamed_guide_slugs.js";
@@ -196,6 +197,7 @@ declare const fullApi: ApiFromModules<{
   "lib/superuser": typeof lib_superuser;
   "lib/templates": typeof lib_templates;
   "lib/ticketApiRoutes": typeof lib_ticketApiRoutes;
+  maintenance: typeof maintenance;
   migrations: typeof migrations;
   "migrations/0000_seed_ledger": typeof migrations_0000_seed_ledger;
   "migrations/0007_cleanup_renamed_guide_slugs": typeof migrations_0007_cleanup_renamed_guide_slugs;

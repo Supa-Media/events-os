@@ -1893,6 +1893,8 @@ export const beginRevealCardDetails = internalMutation({
         message: "Too many attempts to view card details — try again in a bit.",
       });
     }
+    // Swept daily by maintenance.sweepRateLimitAttempts (crons.ts) once older
+    // than CARD_DETAILS_REVEAL_WINDOW_MS.
     await ctx.db.insert("cardDetailsRevealAttempts", {
       key,
       createdAt: Date.now(),

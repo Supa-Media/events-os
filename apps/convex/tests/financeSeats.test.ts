@@ -299,6 +299,95 @@ describe("financeRoles.mySeats", () => {
     ]);
     expect(seats[0]).not.toHaveProperty("title");
   });
+
+  // #143 leftover: a person holding TWO grants at the same scope (e.g. a
+  // stale "viewer" row left behind after being promoted to "manager") must
+  // collapse to ONE seat at the STRONGER role — never two seats, never the
+  // weaker one winning.
+  test("(f) two chapter grants at the same scope for one person dedup to a single seat at the stronger role", async () => {
+    const t = newT();
+    const s = await setupChapter(t); // chapter "New York"
+    const personId = await seedSelfPerson(s);
+    await grantChapter(s, personId, "viewer");
+    await grantChapter(s, personId, "manager");
+
+    const seats = await s.as.query(api.financeRoles.mySeats, {});
+    expect(seats).toEqual([
+      {
+        scope: "chapter",
+        chapterId: s.chapterId,
+        chapterName: "New York",
+        role: "manager",
+      },
+    ]);
+  });
+
+  test("(f2) two CENTRAL grants for one person dedup to a single central seat at the stronger role", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const personId = await seedSelfPerson(s);
+    await grantCentralOnSentinel(s, personId); // manager
+    await run(s.t, (ctx) =>
+      ctx.db.insert("financeRoles", {
+        chapterId: "central",
+        personId,
+        role: "viewer",
+        scope: "central",
+        createdAt: Date.now(),
+      }),
+    );
+
+    const seats = await s.as.query(api.financeRoles.mySeats, {});
+    expect(seats).toEqual([{ scope: "central", role: "manager" }]);
+  });
+
+  // #143 leftover: a person with seats in MULTIPLE chapters (one `people` row
+  // per chapter, same userId) gets a chapter seat for EACH, sorted by
+  // chapter name — not just the first/home chapter.
+  test("(g) a person with grants in two different chapters gets both seats, sorted by chapter name", async () => {
+    const t = newT();
+    const s = await setupChapter(t); // chapter "New York"
+    const personId = await seedSelfPerson(s);
+    await grantChapter(s, personId, "bookkeeper");
+
+    const atlanta = await run(s.t, (ctx) =>
+      ctx.db.insert("chapters", {
+        name: "Atlanta",
+        isActive: true,
+        createdAt: Date.now(),
+      }),
+    );
+    const atlantaPersonId = await run(s.t, (ctx) =>
+      ctx.db.insert("people", {
+        chapterId: atlanta,
+        name: "Caller",
+        userId: s.userId,
+        isTeamMember: true,
+        createdAt: Date.now(),
+      }),
+    );
+    await run(s.t, (ctx) =>
+      ctx.db.insert("financeRoles", {
+        chapterId: atlanta,
+        personId: atlantaPersonId,
+        role: "manager",
+        scope: "chapter",
+        createdAt: Date.now(),
+      }),
+    );
+
+    const seats = await s.as.query(api.financeRoles.mySeats, {});
+    // "Atlanta" sorts before "New York".
+    expect(seats).toEqual([
+      { scope: "chapter", chapterId: atlanta, chapterName: "Atlanta", role: "manager" },
+      {
+        scope: "chapter",
+        chapterId: s.chapterId,
+        chapterName: "New York",
+        role: "bookkeeper",
+      },
+    ]);
+  });
 });
 
 /**

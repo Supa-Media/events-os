@@ -90,6 +90,16 @@ crons.cron(
   {},
 );
 
+// Daily 05:00 UTC: sweep rate-limit "attempt" rows older than their 1-hour
+// window from reimbursementSubmitAttempts (#134) and cardDetailsRevealAttempts
+// (#161) — both tables only ever grow otherwise.
+crons.cron(
+  "sweep rate-limit attempt tables",
+  "0 5 * * *",
+  internal.maintenance.sweepRateLimitAttempts,
+  {},
+);
+
 // Hourly: AI auto-coding sweep — for newly-synced, still-`unreviewed`
 // transactions with no `aiSuggestion` yet, schedule `aiCoding.suggestCodingSystem`
 // (bounded batch, idempotent). No-ops when OPENROUTER_API_KEY is unset, matching
