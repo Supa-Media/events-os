@@ -143,12 +143,23 @@ A2+A3 (ACH destinations + paid→returned reversal — finish, review, merge).
 - ⚠️ naming: owner says "president" verbally, chart says "Chapter Director" — use **Chapter
   Director** in UI copy, keep identifiers generic.
 
-**WP-1.2 · Accounts lockdown + invisible provisioning (owner-approved: specialized roles, not scope)**
-- Accounts tab visible ONLY to ED + FM seats (tighter than #134's central-scope gate — build on it).
-- Chapters never see provisioning UI. Central provisions a chapter's Increase account from the
-  central Accounts view (or automatically at chapter creation); the chapter just has a working
-  card program. Relay/legacy sections: same ED/FM-only visibility, collapsible section in Cards.
-- Files: `accounts.tsx`, `_layout.tsx` gating, `increase.ts` gate tightening, tests.
+**WP-1.2 · Accounts go fully opaque + automatic (owner-refined 2026-07-16)**
+- **One Increase account per chapter INCLUDING CENTRAL** — central's own account is where the
+  City Launch Fund lives (feeds WP-4.1's skim destination). Account creation is fully
+  automatic: (a) a backfill ops function provisions an account for every chapter (and central)
+  that lacks one; (b) new chapters get an account auto-provisioned at creation. Idempotency-Key
+  discipline from #123 applies (no duplicate-account cascades).
+- **No manual linking in the normal path** — `linkIncreaseAccount` demotes to an ops escape
+  hatch (run-convex-function workflow only); the paste-an-id UI is removed. Owner deletes the
+  stray manually-created accounts on the Increase dashboard; the backfill creates fresh ones.
+- Accounts tab becomes a quiet **status/audit view** visible ONLY to ED + FM seats (tighter
+  than #134's central-scope gate — build on it). Chapters never see any of it — they just have
+  a working card program. Relay/legacy sections: same ED/FM-only visibility, collapsible in Cards.
+- Files: `accounts.tsx`, `_layout.tsx` gating, `increase.ts` (backfill fn + auto-provision
+  hook + gate tightening), tests.
+- Context: the 2026-07-16 prod link/provision failures were a corrupted `INCREASE_API_BASE`
+  (trailing comma in the 1Password fields, faithfully synced to Convex) — fixed at source and
+  re-synced. #128's error diagnostics found it; keep error surfaces that specific.
 
 **WP-1.3 · Member view strip-down + bidirectional owe surface + copy sweep**
 - Members (no finance seat): tabs reduce to My Card · My Transactions (mini-reconcile: attach
