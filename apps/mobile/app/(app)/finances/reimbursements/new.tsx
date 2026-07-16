@@ -22,7 +22,7 @@
 import { useMemo, useState } from "react";
 import { Platform, Pressable, Text, TextInput, View } from "react-native";
 import { useRouter } from "expo-router";
-import { useMutation, useQuery } from "convex/react";
+import { useAction, useMutation, useQuery } from "convex/react";
 import { api } from "@events-os/convex/_generated/api";
 import type { Id } from "@events-os/convex/_generated/dataModel";
 // expo-image-picker is Expo Go-safe (classified `core`); only used on native.
@@ -78,12 +78,20 @@ export default function NewReimbursementScreen() {
   const router = useRouter();
   const options = useQuery(api.reimbursements.newRequestOptions, {});
   const submit = useMutation(api.reimbursements.submitReimbursement);
+  const linkBankAccount = useAction(api.reimbursements.linkBankAccount);
   const generateUploadUrl = useMutation(api.storage.generateUploadUrl);
   const { run, toast, dismiss } = useActionRunner();
 
   const [payeeName, setPayeeName] = useState<string | null>(null);
   const [payeeEmail, setPayeeEmail] = useState<string | null>(null);
   const [bankLast4, setBankLast4] = useState("");
+  // Full ACH destination (optional): when both are filled, we link a REAL
+  // Increase External Account after submit so the payout can go out by actual
+  // ACH instead of degrading to a manual one. Leaving these blank still works
+  // exactly as before (last-4 only, manager pays by hand).
+  const [routingNumber, setRoutingNumber] = useState("");
+  const [accountNumber, setAccountNumber] = useState("");
+  const [funding, setFunding] = useState<"checking" | "savings">("checking");
   const [fundId, setFundId] = useState<string | null>(null);
   const [notes, setNotes] = useState("");
   const [lines, setLines] = useState<DraftLine[]>([emptyLine()]);
@@ -190,6 +198,15 @@ export default function NewReimbursementScreen() {
       setError(problem);
       return;
     }
+    const hasFullDestination = routingNumber.trim().length > 0 && accountNumber.trim().length > 0;
+    if (routingNumber.trim() && !accountNumber.trim()) {
+      setError("Add your account number too, or clear the routing number.");
+      return;
+    }
+    if (accountNumber.trim() && !routingNumber.trim()) {
+      setError("Add your routing number too, or clear the account number.");
+      return;
+    }
     const usable = lines.filter((l) => l.description.trim() || lineAmountCents(l) > 0);
     setSubmitting(true);
     const result = await run(
@@ -197,7 +214,9 @@ export default function NewReimbursementScreen() {
         submit({
           payeeName: nameValue.trim(),
           payeeEmail: emailValue.trim() || undefined,
-          bankAccountLast4: bankLast4.trim() || undefined,
+          // A full destination below supersedes last-4 — that gets set from
+          // the real account number once `linkBankAccount` completes.
+          bankAccountLast4: hasFullDestination ? undefined : bankLast4.trim() || undefined,
           purpose: notes.trim() || undefined,
           requestPreApproval,
           lines: usable.map((l) => ({
@@ -209,6 +228,21 @@ export default function NewReimbursementScreen() {
         }),
       { errorTitle: requestPreApproval ? "Couldn't request pre-approval" : "Couldn't submit" },
     );
+    if (result !== undefined && hasFullDestination) {
+      // Best-effort: a failure here never blocks the submission that already
+      // succeeded — it just means a manager pays this one by hand instead.
+      await run(
+        () =>
+          linkBankAccount({
+            reimbursementId: result.reimbursementId,
+            routingNumber: routingNumber.trim(),
+            accountNumber: accountNumber.trim(),
+            accountHolderName: nameValue.trim(),
+            funding,
+          }),
+        { errorTitle: "Submitted, but couldn't link your bank account" },
+      );
+    }
     setSubmitting(false);
     if (result !== undefined) router.back();
   }
@@ -253,17 +287,6 @@ export default function NewReimbursementScreen() {
 
           <View className="flex-row gap-3">
             <View className="flex-1">
-              <TextField
-                label="Pay to — bank last 4"
-                value={bankLast4}
-                onChangeText={(v) => setBankLast4(v.replace(/[^0-9]/g, "").slice(0, 4))}
-                keyboardType="number-pad"
-                maxLength={4}
-                placeholder="e.g. 3391"
-                hint="We only store the last four digits."
-              />
-            </View>
-            <View className="flex-1">
               <Select
                 label="Fund"
                 value={fundId}
@@ -273,6 +296,58 @@ export default function NewReimbursementScreen() {
               />
             </View>
           </View>
+
+          <Field label="Direct deposit — where we pay you">
+            <View className="flex-row gap-3">
+              <View className="flex-1">
+                <TextField
+                  label="Routing number"
+                  value={routingNumber}
+                  onChangeText={(v) => setRoutingNumber(v.replace(/[^0-9]/g, "").slice(0, 9))}
+                  keyboardType="number-pad"
+                  maxLength={9}
+                  placeholder="9 digits"
+                />
+              </View>
+              <View className="flex-1">
+                <TextField
+                  label="Account number"
+                  value={accountNumber}
+                  onChangeText={(v) => setAccountNumber(v.replace(/[^0-9]/g, "").slice(0, 17))}
+                  keyboardType="number-pad"
+                  maxLength={17}
+                  placeholder="e.g. 000123456789"
+                />
+              </View>
+              <View className="w-32">
+                <Select
+                  label="Type"
+                  value={funding}
+                  options={[
+                    { value: "checking", label: "Checking" },
+                    { value: "savings", label: "Savings" },
+                  ]}
+                  onChange={(v) => setFunding((v || "checking") as "checking" | "savings")}
+                />
+              </View>
+            </View>
+            <Text className="mt-1 text-2xs text-faint">
+              Securely linked through our banking partner (Increase) — we never
+              store your full account number. Prefer to just tell us the last 4
+              digits? Leave these blank and a finance manager will pay you
+              manually.
+            </Text>
+            {!routingNumber && !accountNumber ? (
+              <TextField
+                label="Pay to — bank last 4 (optional)"
+                value={bankLast4}
+                onChangeText={(v) => setBankLast4(v.replace(/[^0-9]/g, "").slice(0, 4))}
+                keyboardType="number-pad"
+                maxLength={4}
+                placeholder="e.g. 3391"
+              />
+            ) : null}
+          </Field>
 
           <Field label="Line items">
             <View className="mb-2 flex-row gap-2 px-1">

@@ -59,6 +59,7 @@ import {
   REPAYMENT_STATUSES,
   RECEIPT_GRACE_DAYS,
   RECEIPT_ESCALATE_DAYS,
+  EXTERNAL_ACCOUNT_FUNDINGS,
   easternParts,
   matchesMode,
   isCardEligible,
@@ -81,9 +82,17 @@ import {
   getChapterAccountForMode,
 } from "./lib/finance";
 import { viewerPerson } from "./lib/org";
-import { increaseEnvForObjectId } from "./increase";
+import {
+  increaseEnvForObjectId,
+  assertRoutingNumber,
+  assertAccountNumber,
+} from "./increase";
 import { sendEmail, emailShell } from "./ticketingEmails";
 import { escapeHtml } from "./lib/html";
+
+const externalAccountFundingValidator = v.union(
+  ...EXTERNAL_ACCOUNT_FUNDINGS.map((f) => v.literal(f)),
+);
 
 /** Increase API base URL. Env-overridable so dev/staging point at the sandbox
  *  (`INCREASE_API_BASE=https://sandbox.increase.com`); defaults to production. */
@@ -154,6 +163,10 @@ const repaymentSummaryValidator = v.object({
   method: repaymentMethodValidator,
   status: repaymentStatusValidator,
   creditTransactionId: v.union(v.id("transactions"), v.null()),
+  // Whether the payer has a linked Increase External Account (a real ACH
+  // charge is addressable) — never the raw id itself.
+  hasExternalAccount: v.boolean(),
+  payerAccountLast4: v.union(v.string(), v.null()),
 });
 
 const authDecisionValidator = v.object({
@@ -185,6 +198,8 @@ interface RepaymentSummary {
   method: RepaymentMethod;
   status: RepaymentStatus;
   creditTransactionId: Id<"transactions"> | null;
+  hasExternalAccount: boolean;
+  payerAccountLast4: string | null;
 }
 
 type IssueCardResult =
@@ -205,10 +220,9 @@ type BeginRepaymentResult =
       canCharge: boolean;
       increaseAccountId: string | null;
       amountCents: number;
-      // The payer's linked Increase external account (their funding source) the
-      // repayment debit pulls from. Null today — the app hasn't collected the
-      // payer's routing+account, so `canCharge` is gated off and this stays
-      // unreachable. Plumbed so the debit `initiateRepayment` sends is addressed.
+      // The payer's linked Increase External Account (their funding source) the
+      // repayment debit pulls from, captured via `linkRepaymentBankAccount`.
+      // Null until linked — `canCharge` gates the ACH branch off until then.
       payerExternalAccountId: string | null;
     };
 
@@ -221,24 +235,31 @@ function toRepaymentSummary(r: Doc<"personalRepayments">): RepaymentSummary {
     method: r.method,
     status: r.status,
     creditTransactionId: r.creditTransactionId ?? null,
+    hasExternalAccount: !!r.payerExternalAccountId,
+    payerAccountLast4: r.payerAccountLast4 ?? null,
   };
 }
 
 // ── Raw Increase fetch helper (default runtime `fetch`, no SDK) ───────────────
-/** POST JSON to the Increase API. Throws ConvexError on a non-2xx so the caller
- *  can log + degrade. */
+/** POST JSON to the Increase API. `idempotencyKey` sets the `Idempotency-Key`
+ *  header so a retried request never creates a second transfer (same contract
+ *  as `increase.ts`'s twin). Throws ConvexError on a non-2xx so the caller can
+ *  log + degrade. */
 async function increasePost(
   key: string,
   base: string,
   path: string,
   body: Record<string, unknown>,
+  idempotencyKey?: string,
 ): Promise<Record<string, unknown>> {
+  const headers: Record<string, string> = {
+    Authorization: `Bearer ${key}`,
+    "Content-Type": "application/json",
+  };
+  if (idempotencyKey) headers["Idempotency-Key"] = idempotencyKey;
   const res = await fetch(`${base}${path}`, {
     method: "POST",
-    headers: {
-      Authorization: `Bearer ${key}`,
-      "Content-Type": "application/json",
-    },
+    headers,
     body: JSON.stringify(body),
   });
   if (!res.ok) {
@@ -1015,6 +1036,106 @@ export const markRepaymentPaid = mutation({
   },
 });
 
+// ── linkRepaymentBankAccount (action, the payer) — ACH destination capture ───
+
+/** Gate a bank-account link: only the payer (or a manager acting for them,
+ *  mirroring `beginRepayment`'s access check) may link a funding source, and
+ *  only before the repayment has already settled. */
+export const beginLinkRepaymentBankAccount = internalMutation({
+  args: { repaymentId: v.id("personalRepayments") },
+  handler: async (ctx, { repaymentId }) => {
+    const chapterId = (await requireChapterId(ctx)) as Id<"chapters">;
+    const access = await getFinanceRole(ctx, chapterId);
+    const repayment = await ctx.db.get(repaymentId);
+    await requireInChapter(ctx, chapterId, repayment, "Repayment");
+
+    const isPayer =
+      access.personId != null && access.personId === repayment!.payerPersonId;
+    if (!isPayer && !access.isManager) {
+      throw new ConvexError({
+        code: "FORBIDDEN",
+        message: "Only the payer can link a bank account for this repayment.",
+      });
+    }
+    if (repayment!.status === "paid" || repayment!.creditTransactionId) {
+      throw new ConvexError({
+        code: "ILLEGAL_TRANSITION",
+        message: "This repayment has already been settled.",
+      });
+    }
+    const payer = await ctx.db.get(repayment!.payerPersonId);
+    return { repaymentId: repayment!._id, payerName: payer?.name ?? "Repayment payer" };
+  },
+});
+
+/** Patch a repayment's linked funding source once the Increase External
+ *  Account exists. A re-link replaces the prior one. */
+export const attachRepaymentExternalAccount = internalMutation({
+  args: {
+    repaymentId: v.id("personalRepayments"),
+    externalAccountId: v.string(),
+    last4: v.string(),
+  },
+  handler: async (ctx, { repaymentId, externalAccountId, last4 }) => {
+    await ctx.db.patch(repaymentId, {
+      payerExternalAccountId: externalAccountId,
+      payerAccountLast4: last4,
+      updatedAt: Date.now(),
+    });
+    return null;
+  },
+});
+
+/**
+ * Link the PAYER's own bank account (routing + account number) to a personal-
+ * charge repayment, so `initiateRepayment` can pull a real ACH debit instead of
+ * degrading to a manager's manual `markRepaymentPaid` confirmation. Creates an
+ * Increase External Account (`increase.createExternalAccount`) — the raw
+ * account number is NEVER persisted, only the returned reference id + a
+ * last-4 for display. Only the payer (or a manager acting for them) may link
+ * it, and only before the repayment has settled.
+ *
+ * BEST-EFFORT: if the Increase call fails or isn't configured, the repayment
+ * is left exactly as it was — `linked:false` tells the UI the link didn't take
+ * (the member can retry, or a manager confirms receipt by hand instead).
+ */
+export const linkRepaymentBankAccount = action({
+  args: {
+    repaymentId: v.id("personalRepayments"),
+    routingNumber: v.string(),
+    accountNumber: v.string(),
+    accountHolderName: v.optional(v.string()),
+    funding: v.optional(externalAccountFundingValidator),
+  },
+  handler: async (ctx, args): Promise<{ linked: boolean }> => {
+    const routingNumber = assertRoutingNumber(args.routingNumber);
+    const accountNumber = assertAccountNumber(args.accountNumber);
+
+    const prep = await ctx.runMutation(
+      internal.cards.beginLinkRepaymentBankAccount,
+      { repaymentId: args.repaymentId },
+    );
+
+    const created = await ctx.runAction(internal.increase.createExternalAccount, {
+      routingNumber,
+      accountNumber,
+      accountHolderName: (args.accountHolderName?.trim() || prep.payerName).slice(
+        0,
+        200,
+      ),
+      funding: args.funding ?? "checking",
+    });
+    if (!created) return { linked: false };
+
+    await ctx.runMutation(internal.cards.attachRepaymentExternalAccount, {
+      repaymentId: prep.repaymentId,
+      externalAccountId: created.externalAccountId,
+      last4: created.last4,
+    });
+    return { linked: true };
+  },
+});
+
 // ── initiateRepayment (action, the payer) ────────────────────────────────────
 
 /** Gate the payer + set the chosen method + decide if a real Increase charge is
@@ -1072,15 +1193,23 @@ export const beginRepayment = internalMutation({
         ? account.increaseAccountId
         : null;
 
-    // TODO(repayment go-live): charging the payer's OWN debit/ACH needs their
-    // external-account details (routing+account) linked at Increase — the app
-    // hasn't collected them, so a real charge can't be addressed yet. Until then
-    // `canCharge` stays false and repayments settle via `markRepaymentPaid`;
-    // once linked, set `payerExternalAccountId` to the payer's external account.
-    const payerExternalAccountId: string | null = null;
+    // Charging the payer's OWN debit/ACH needs their Increase External Account
+    // (routing+account), linked via `linkRepaymentBankAccount`. Until that's
+    // done `canCharge` stays false and the repayment settles via the manager's
+    // `markRepaymentPaid` confirmation instead.
+    const payerExternalAccountId = fresh.payerExternalAccountId ?? null;
     const hasPayerFundingSource = !!payerExternalAccountId;
+    // The key that will ACTUALLY charge the debit is resolved from the
+    // ACCOUNT's own id prefix (`increaseEnvForObjectId`), not the plain
+    // `INCREASE_API_KEY` — a sandbox-provisioned account needs
+    // `INCREASE_SANDBOX_API_KEY` even while the deployment is in production
+    // mode. Checking the wrong env var here would silently degrade every
+    // sandbox repayment charge to pending.
+    const accountEnvKey = increaseAccountId
+      ? increaseEnvForObjectId(increaseAccountId).key
+      : undefined;
     const canCharge =
-      !!process.env.INCREASE_API_KEY && !!increaseAccountId && hasPayerFundingSource;
+      !!accountEnvKey && !!increaseAccountId && hasPayerFundingSource;
 
     return {
       kind: "pending",
@@ -1147,16 +1276,26 @@ export const initiateRepayment = action({
     const { key, base } = increaseEnvForObjectId(prep.increaseAccountId);
     if (!key) return prep.repayment;
     try {
-      const charge = await increasePost(key, base, "/ach_transfers", {
-        account_id: prep.increaseAccountId,
-        // The payer's linked external account is the counterparty; a NEGATIVE
-        // amount originates a DEBIT that PULLS the repayment into the chapter's
-        // account.
-        external_account_id: prep.payerExternalAccountId,
-        amount: -prep.amountCents,
-        // Increase requires a statement descriptor, max 10 characters.
-        statement_descriptor: "Repayment",
-      });
+      const charge = await increasePost(
+        key,
+        base,
+        "/ach_transfers",
+        {
+          account_id: prep.increaseAccountId,
+          // The payer's linked external account is the counterparty; a NEGATIVE
+          // amount originates a DEBIT that PULLS the repayment into the chapter's
+          // account.
+          external_account_id: prep.payerExternalAccountId,
+          amount: -prep.amountCents,
+          // Increase requires a statement descriptor, max 10 characters.
+          statement_descriptor: "Repayment",
+        },
+        // Idempotency-Key = repaymentId (mirrors `payReimbursement`'s
+        // reimbursementId key): a retry after a network blip whose first charge
+        // actually landed must get THAT transfer back, never debit the payer a
+        // second time.
+        String(args.repaymentId),
+      );
       return await ctx.runMutation(internal.cards.applyRepaymentPaid, {
         repaymentId: args.repaymentId,
         increaseRef: String(charge.id),

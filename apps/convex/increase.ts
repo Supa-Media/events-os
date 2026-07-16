@@ -28,12 +28,17 @@
  *  - Degrade to a logged no-op (never throw) when `INCREASE_API_KEY` is unset.
  *  - All failures throw `ConvexError` (never a plain `Error`).
  *
- * DESTINATION-DETAILS GAP (documented, deliberate): the public reimbursement
- * form only captured `bankAccountLast4` — NOT the full routing + account number
- * an ACH credit must be addressed to. So a real Increase ACH transfer cannot yet
- * be fully addressed; `payReimbursement` DEGRADES to a `provider:"manual"`,
- * `pending` payout and steers the manager to `markPaidManually` (the working
- * Phase-4 path). See the TODO breadcrumb in `beginPayout`.
+ * ACH DESTINATION CAPTURE: the reimbursement form (public + in-app) links a
+ * REAL bank account via `linkPublicBankAccount` / `linkBankAccount`
+ * (`reimbursements.ts`), which create an Increase External Account (`POST
+ * /external_accounts` — `createExternalAccount` below) and store only its
+ * reusable reference id (`reimbursementRequests.externalAccountId`) + a
+ * last-4 for display — the raw routing + account number are NEVER persisted.
+ * `beginPayout` only takes the real ACH branch once that id is present
+ * (`hasFullDestination`); absent it, `payReimbursement` DEGRADES to a
+ * `provider:"manual"`, `pending` payout and steers the manager to
+ * `markPaidManually` (the working Phase-4 fallback) — so an unlinked
+ * reimbursement is never blocked, just paid by hand.
  *
  * Env: INCREASE_API_KEY, INCREASE_WEBHOOK_SECRET, INCREASE_ENTITY_ID (the shared
  * org Entity) — all required. INCREASE_PROGRAM_ID is an OPTIONAL override; the
@@ -60,6 +65,7 @@ import {
   PAYOUT_PROVIDERS,
   PAYOUT_STATUSES,
   INCREASE_ONBOARDING_STATUSES,
+  EXTERNAL_ACCOUNT_FUNDINGS,
   isSandboxObjectId,
   matchesMode,
   type PayoutProvider,
@@ -249,11 +255,13 @@ type BeginPayoutResult =
       increaseAccountId: string;
       amountCents: number;
       reimbursementId: Id<"reimbursementRequests">;
-      // ACH destination (whichever exists): a pre-linked external account, OR
-      // raw routing + account (+ funding). Null today — the reimburse form only
-      // captured `bankAccountLast4`, so `beginPayout` gates the ACH branch off
-      // (`hasFullDestination`) and this stays unreachable. Plumbed so the request
-      // `payReimbursement` sends is correctly ADDRESSED once linking exists.
+      // ACH destination (whichever exists): the reimbursement's linked Increase
+      // External Account (`reimbursementRequests.externalAccountId`, captured
+      // via `linkPublicBankAccount` / `linkBankAccount`), OR raw routing +
+      // account (+ funding) — currently always null; kept for forward-compat
+      // with a future raw-details capture path. `beginPayout` only takes this
+      // branch when `hasFullDestination` is true, so `payReimbursement` always
+      // has something here to address the transfer with.
       externalAccountId: string | null;
       accountNumber: string | null;
       routingNumber: string | null;
@@ -478,6 +486,130 @@ function pickMatchingAccount(
   return null;
 }
 
+// ── ACH destination capture (Increase External Accounts) ─────────────────────
+
+const externalAccountFundingValidator = v.union(
+  ...EXTERNAL_ACCOUNT_FUNDINGS.map((f) => v.literal(f)),
+);
+
+/** Normalize + validate a routing number: exactly 9 digits (the ABA RTN
+ *  length Increase's `POST /external_accounts.routing_number` expects). Throws
+ *  `ConvexError` — never persists / logs the value itself. */
+export function assertRoutingNumber(value: string): string {
+  const digits = value.replace(/\D/g, "");
+  if (digits.length !== 9) {
+    throw new ConvexError({
+      code: "INVALID_INPUT",
+      message: "Routing number must be exactly 9 digits.",
+    });
+  }
+  return digits;
+}
+
+/** Normalize + validate a bank account number: digits only, 4–17 characters
+ *  (Increase's own bound on `account_number` is 1–17; we require at least 4 so
+ *  a last-4 is always meaningful). Throws `ConvexError`. */
+export function assertAccountNumber(value: string): string {
+  const digits = value.replace(/\D/g, "");
+  if (digits.length < 4 || digits.length > 17) {
+    throw new ConvexError({
+      code: "INVALID_INPUT",
+      message: "Account number must be between 4 and 17 digits.",
+    });
+  }
+  return digits;
+}
+
+/**
+ * Create an Increase External Account (`POST /external_accounts`) — the
+ * reusable destination-bank primitive Increase's own API models, rather than
+ * ever sending a raw routing+account pair inline on every transfer. Grounded
+ * against the real Increase docs (increase.com/documentation/api/external-accounts):
+ * required `account_number` + `routing_number` + `description`; optional
+ * `account_holder` (business/individual/unknown) + `funding` (defaults
+ * `checking`). External Accounts are NOT associated with an `entity_id` or
+ * `account_id` — they're a standalone, reusable bank-details object referenced
+ * later by id (`external_account_id`) on an ACH transfer.
+ *
+ * MODE-AWARE like the rest of this file: uses the CURRENT
+ * `financeSettings.sandboxMode` toggle (`increaseEnvForMode`) — the same
+ * environment a chapter's own Increase Account is provisioned in — so a
+ * destination captured now lines up with whichever environment
+ * `payReimbursement` / `initiateRepayment` will later address (both self-select
+ * their env from the CHAPTER's account id prefix, itself stamped from this same
+ * toggle at provision time). An External Account created in sandbox comes back
+ * `sandbox_`-prefixed, same as every other Increase object here.
+ *
+ * DEGRADES to `null` (never throws) when the mode's API key is unset or the
+ * Increase call fails — the caller leaves the reimbursement/repayment
+ * unlinked, so its payout just falls back to the manual/degraded path. The raw
+ * account number is used only for this one request; nothing here persists it —
+ * the caller stores just the returned id + a last-4 for display.
+ */
+export const createExternalAccount = internalAction({
+  args: {
+    routingNumber: v.string(),
+    accountNumber: v.string(),
+    accountHolderName: v.string(),
+    funding: externalAccountFundingValidator,
+  },
+  returns: v.union(
+    v.object({ externalAccountId: v.string(), last4: v.string() }),
+    v.null(),
+  ),
+  handler: async (
+    ctx,
+    args,
+  ): Promise<{ externalAccountId: string; last4: string } | null> => {
+    const sandboxMode = await ctx.runQuery(
+      internal.financeSettings.readSandboxMode,
+      {},
+    );
+    const { key, base } = increaseEnvForMode(sandboxMode);
+    if (!key) {
+      console.warn(
+        "[increase] external account link skipped: Increase API key not configured for this environment",
+      );
+      return null;
+    }
+    try {
+      // Deliberately NO `Idempotency-Key` here (unlike `/accounts` and
+      // `/ach_transfers` elsewhere in this file): the natural key would be the
+      // reimbursement/repayment id, but a person legitimately changing their
+      // bank details mid-request must get a FRESH External Account for the
+      // NEW numbers — reusing a stable key would make Increase silently
+      // return the FIRST (now-stale) object instead, addressing money to the
+      // wrong account. This call only ever runs once per user click (no
+      // scheduler retry sits behind it), so the duplicate-on-retry risk an
+      // idempotency key guards against elsewhere doesn't apply the same way.
+      const account = await increasePost(key, base, "/external_accounts", {
+        routing_number: args.routingNumber,
+        account_number: args.accountNumber,
+        description: args.accountHolderName.slice(0, 200) || "Reimbursement payee",
+        account_holder: "individual",
+        funding: args.funding,
+      });
+      const externalAccountId =
+        typeof account.id === "string" && account.id ? account.id : null;
+      if (!externalAccountId) {
+        // Deliberately NOT logging the response body: Increase's External
+        // Account object echoes back the full `account_number` /
+        // `routing_number`, which must never land in logs.
+        console.error(
+          "[increase] external account create returned no usable id (response keys:",
+          Object.keys(account ?? {}).join(","),
+          ")",
+        );
+        return null;
+      }
+      return { externalAccountId, last4: args.accountNumber.slice(-4) };
+    } catch (err) {
+      console.error("[increase] failed to create external account:", err);
+      return null;
+    }
+  },
+});
+
 // ── Payout state-machine helpers (pure DB, the testable core) ────────────────
 
 /** The single `transfer`-flow transaction recording a reimbursement payout
@@ -596,8 +728,68 @@ function payoutTargetFor(
   return null;
 }
 
-/** Advance a payout toward `target`, guarding illegal transitions. A `paid`
- *  (or `canceled`) payout is terminal — it ignores a later `failed`/`returned`. */
+/**
+ * Reverse an already-`paid` payout whose ACH credit bounced (`returned`) DAYS
+ * after Increase reported `submitted` (there is no post-settlement "settled"
+ * event for an ACH credit — `submitted` IS our terminal `paid`, so a return is
+ * the only signal that can still arrive after the fact). Re-opens the
+ * reimbursement to `approved` so a manager can retry or investigate, and
+ * REMOVES the offsetting `transfer` ledger row this payout posted.
+ *
+ * Deleting (rather than merely re-flagging) the transaction is deliberate and
+ * safe: `transfer`-flow rows are ALREADY excluded from category/budget spend
+ * (anti-double-count), so removing it changes no totals. It also MUST be
+ * removed — `postReimbursementTransfer` finds an existing transfer for this
+ * reimbursement via `by_reimbursement` UNCONDITIONALLY (no status filter), so
+ * leaving the bounced row in place would make a future successful re-payout
+ * mistake it for "already posted" and silently skip crediting the real
+ * transfer. The full bounce history survives on the `payouts` row itself
+ * (`status:"returned"` + `failureReason`) — this repo has no existing
+ * transaction-level void/reversal convention to mirror, so the payout doc is
+ * the audit trail here, same as the pre-paid `failed`/`returned` branch below
+ * (which also doesn't touch `approvals`).
+ */
+async function reverseSettledPayout(
+  ctx: MutationCtx,
+  req: Doc<"reimbursementRequests"> | null,
+  payout: Doc<"payouts">,
+  failureReason?: string,
+): Promise<void> {
+  const now = Date.now();
+  const transactionId = payout.transactionId;
+  await ctx.db.patch(payout._id, {
+    status: "returned",
+    failureReason,
+    transactionId: undefined,
+    updatedAt: now,
+  });
+  // Only walk back a reimbursement THIS payout actually settled — defense
+  // against a manager having already reconciled it some other way in between.
+  if (req && req.status === "paid") {
+    await ctx.db.patch(req._id, {
+      status: "approved",
+      paidAt: undefined,
+      updatedAt: now,
+    });
+  }
+  if (transactionId) {
+    const txn = await ctx.db.get(transactionId);
+    if (txn && req && txn.reimbursementId === req._id) {
+      await ctx.db.delete(transactionId);
+    }
+  }
+}
+
+/**
+ * Advance a payout toward `target`, guarding illegal transitions.
+ *
+ * `canceled` is fully terminal. `failed`/`returned` are terminal too EXCEPT
+ * they idempotently no-op a REPEATED delivery of the same signal (a retried
+ * webhook must not re-run the reversal below twice). A `paid` payout is
+ * otherwise terminal — it ignores a later `processing`/`failed` — but a late
+ * `returned` still reverses it (see `reverseSettledPayout`): a bounced ACH
+ * credit can arrive days after Increase reports `submitted`.
+ */
 async function applyPayoutOutcome(
   ctx: MutationCtx,
   payout: Doc<"payouts">,
@@ -605,10 +797,18 @@ async function applyPayoutOutcome(
   failureReason?: string,
 ): Promise<void> {
   const now = Date.now();
-  // Terminal states ignore any later signal (a paid payout can't "un-pay").
-  if (payout.status === "paid" || payout.status === "canceled") return;
+  if (payout.status === "canceled") return;
+  // Already resolved terminal — a repeated `failed`/`returned` webhook delivery
+  // is an idempotent no-op (this ALSO catches a returned payout post-reversal).
+  if (payout.status === "returned" || payout.status === "failed") return;
 
   const req = await ctx.db.get(payout.reimbursementId);
+
+  if (payout.status === "paid") {
+    if (target !== "returned") return; // otherwise paid is terminal
+    await reverseSettledPayout(ctx, req, payout, failureReason);
+    return;
+  }
 
   switch (target) {
     case "processing":
@@ -1149,28 +1349,26 @@ export const beginPayout = internalMutation({
     const now = Date.now();
 
     // Is a real ACH addressable? Needs the vendor wired, an active account, AND
-    // full destination bank details. We only captured `bankAccountLast4`, so a
-    // real ACH can't be fully addressed yet → we always DEGRADE to manual.
-    //
-    // TODO(ACH go-live) before flipping `hasFullDestination` true:
-    //  (a) capture the full destination — either a linked Increase external
-    //      account (`external_account_id`) or the raw routing+account (+funding)
-    //      (last4 alone can't address an ACH credit); populate the destination
-    //      fields on the `increase` result below.
-    //  (b) handle post-settlement RETURNS — a `returned` can arrive DAYS after a
-    //      credit is `submitted` (which we map to `paid`); today
-    //      `applyPayoutOutcome` treats a `paid` payout as terminal and would
-    //      leave a bounced reimbursement marked paid. Add a paid→returned
-    //      reversal (re-open the reimbursement, reverse the `transfer` txn).
-    // (Webhook signature + the fetch-the-object status derivation are now REAL:
-    //  see `verifyIncreaseSignature` (Standard Webhooks) + `handleIncreaseWebhook`.)
-    const hasFullDestination = false;
+    // a full destination — a linked Increase External Account, captured at
+    // submission time via `linkPublicBankAccount` / `linkBankAccount`
+    // (`reimbursements.ts`). Absent that link (the member never provided full
+    // bank details, or the Increase call degraded), we fall back to manual.
+    const hasFullDestination = !!reimbursement.externalAccountId;
     // Mode-aware: pay from the chapter's CURRENT-environment account (never
     // `.first()`, which would arbitrarily pick sandbox-or-prod once both exist).
     const sandboxMode = await readSandbox(ctx);
     const account = await getChapterAccountForMode(ctx, chapterId, sandboxMode);
+    // The key that will ACTUALLY be used to originate the transfer is resolved
+    // from the ACCOUNT's own id prefix (`increaseEnvForObjectId`), NOT the
+    // deployment's plain `INCREASE_API_KEY` — a sandbox-provisioned account
+    // must be paid with `INCREASE_SANDBOX_API_KEY` even in production mode.
+    // Checking the wrong env var here would silently degrade every sandbox
+    // payout to manual even once fully wired.
+    const accountEnvKey = account?.increaseAccountId
+      ? increaseEnvForObjectId(account.increaseAccountId).key
+      : undefined;
     const canAch =
-      !!process.env.INCREASE_API_KEY &&
+      !!accountEnvKey &&
       !!account &&
       account.onboardingStatus === "active" &&
       !!account.increaseAccountId &&
@@ -1194,10 +1392,7 @@ export const beginPayout = internalMutation({
         increaseAccountId: account!.increaseAccountId!,
         amountCents,
         reimbursementId,
-        // Destination is null until external-account linking captures it; the
-        // branch is gated by `hasFullDestination` above, so this is unreachable
-        // with a null destination (see the `payReimbursement` guard).
-        externalAccountId: null,
+        externalAccountId: reimbursement.externalAccountId ?? null,
         accountNumber: null,
         routingNumber: null,
         funding: null,

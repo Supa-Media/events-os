@@ -326,6 +326,14 @@ export const reimbursementRequests = defineTable({
 
   // Payout details captured on the form (where the money should go).
   bankAccountLast4: v.optional(v.string()),
+  // The Increase External Account this request's payout is addressed to
+  // (`POST /external_accounts`, created via `linkPublicBankAccount` /
+  // `linkBankAccount`). The RAW routing + account number are never persisted —
+  // only Increase's own reusable reference id + the last-4 above (recomputed
+  // from the full account number at link time). Its presence is what flips
+  // `hasFullDestination` in `increase.beginPayout` from a degraded manual
+  // payout to a real ACH transfer.
+  externalAccountId: v.optional(v.string()),
   payoutId: v.optional(v.id("payouts")),
 
   submittedAt: v.optional(v.number()),
@@ -406,6 +414,13 @@ export const personalRepayments = defineTable({
   method: v.union(...REPAYMENT_METHODS.map((m) => v.literal(m))),
   status: v.union(...REPAYMENT_STATUSES.map((s) => v.literal(s))),
   increaseRef: v.optional(v.string()),
+  // The payer's own Increase External Account (`POST /external_accounts`) the
+  // ACH debit pulls from — created via `linkRepaymentBankAccount`. The raw
+  // routing + account number are never persisted, only Increase's reference id
+  // + a last-4 for display. Its presence is what flips `canCharge` in
+  // `cards.beginRepayment` from a degraded/manual repayment to a real charge.
+  payerExternalAccountId: v.optional(v.string()),
+  payerAccountLast4: v.optional(v.string()),
   // The offsetting credit transaction posted once the repayment settles.
   creditTransactionId: v.optional(v.id("transactions")),
   createdAt: v.number(),

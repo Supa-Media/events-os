@@ -1,4 +1,4 @@
-import { describe, expect, test } from "vitest";
+import { afterEach, describe, expect, test } from "vitest";
 import { ConvexError } from "convex/values";
 import {
   newT,
@@ -304,6 +304,77 @@ describe("public submission + status view", () => {
       token: "nope",
     });
     expect(view).toBeNull();
+  });
+
+  describe("linkPublicBankAccount (public ACH destination capture)", () => {
+    const originalFetch = globalThis.fetch;
+    const originalKey = process.env.INCREASE_API_KEY;
+
+    afterEach(() => {
+      globalThis.fetch = originalFetch;
+      if (originalKey === undefined) delete process.env.INCREASE_API_KEY;
+      else process.env.INCREASE_API_KEY = originalKey;
+    });
+
+    test("links a real bank account by the secret token, never persisting the raw account number", async () => {
+      const t = newT();
+      const s = await setupChapter(t);
+      await setSlug(s, "nyc");
+      const { token } = await submitTwoLine(s, "nyc");
+
+      process.env.INCREASE_API_KEY = "test_key";
+      const calls: Array<Record<string, unknown>> = [];
+      globalThis.fetch = (async (
+        input: RequestInfo | URL,
+        init?: RequestInit,
+      ) => {
+        const path = String(input);
+        if (path.includes("/external_accounts")) {
+          calls.push(init?.body ? JSON.parse(String(init.body)) : {});
+          return new Response(JSON.stringify({ id: "extacct_public_1" }), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          });
+        }
+        throw new Error(`unexpected fetch: ${path}`);
+      }) as unknown as typeof fetch;
+
+      const result = await t.action(api.reimbursements.linkPublicBankAccount, {
+        token,
+        routingNumber: "011000015",
+        accountNumber: "555000111",
+        funding: "savings",
+      });
+      expect(result.linked).toBe(true);
+      expect(calls[0].funding).toBe("savings");
+
+      const req = await run(s.t, (ctx) =>
+        ctx.db
+          .query("reimbursementRequests")
+          .withIndex("by_token", (q) => q.eq("token", token))
+          .unique(),
+      );
+      expect(req?.externalAccountId).toBe("extacct_public_1");
+      expect(req?.bankAccountLast4).toBe("0111");
+      expect(JSON.stringify(req)).not.toContain("555000111");
+    });
+
+    test("an unknown token is rejected (never a silent no-op)", async () => {
+      const t = newT();
+      await setupChapter(t);
+      process.env.INCREASE_API_KEY = "test_key";
+      globalThis.fetch = (() => {
+        throw new Error("fetch must not be called for an unknown token");
+      }) as unknown as typeof fetch;
+
+      await expect(
+        t.action(api.reimbursements.linkPublicBankAccount, {
+          token: "does-not-exist",
+          routingNumber: "011000015",
+          accountNumber: "555000111",
+        }),
+      ).rejects.toBeInstanceOf(ConvexError);
+    });
   });
 });
 
@@ -751,6 +822,184 @@ describe("in-app member self-service submission", () => {
     expect(sams.some((r) => r.totalCents === 1200 || r.totalCents === 800)).toBe(
       false,
     );
+  });
+
+  describe("linkBankAccount (in-app ACH destination capture)", () => {
+    const originalFetch = globalThis.fetch;
+    const originalKey = process.env.INCREASE_API_KEY;
+
+    afterEach(() => {
+      globalThis.fetch = originalFetch;
+      if (originalKey === undefined) delete process.env.INCREASE_API_KEY;
+      else process.env.INCREASE_API_KEY = originalKey;
+    });
+
+    /** Mock `POST /external_accounts`, recording the request body. */
+    function mockExternalAccountFetch(id = "extacct_new_1") {
+      const calls: Array<Record<string, unknown>> = [];
+      globalThis.fetch = (async (
+        input: RequestInfo | URL,
+        init?: RequestInit,
+      ) => {
+        const path = String(input);
+        if (path.includes("/external_accounts")) {
+          const body = init?.body ? JSON.parse(String(init.body)) : {};
+          calls.push(body);
+          return new Response(JSON.stringify({ id }), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          });
+        }
+        throw new Error(`unexpected fetch: ${path}`);
+      }) as unknown as typeof fetch;
+      return calls;
+    }
+
+    test("creates an Increase External Account and links it, never persisting the raw account number", async () => {
+      const t = newT();
+      const s = await setupChapter(t);
+      await seedPerson(s, {
+        name: "Dana Rivers",
+        email: "dana@example.com",
+        userId: s.userId,
+      });
+      const { reimbursementId } = await s.as.mutation(
+        api.reimbursements.submitReimbursement,
+        { lines: [{ description: "Gaffer tape", amountCents: 1200 }] },
+      );
+      process.env.INCREASE_API_KEY = "test_key";
+      const calls = mockExternalAccountFetch("extacct_dana_1");
+
+      const result = await s.as.action(api.reimbursements.linkBankAccount, {
+        reimbursementId,
+        routingNumber: "011000015",
+        accountNumber: "0987654321",
+        funding: "checking",
+      });
+      expect(result.linked).toBe(true);
+
+      // The Increase call carried the routing + account number…
+      expect(calls[0].routing_number).toBe("011000015");
+      expect(calls[0].account_number).toBe("0987654321");
+      expect(calls[0].funding).toBe("checking");
+
+      // …but Convex stores only the returned reference id + a last-4, never
+      // the full account number.
+      const req = await run(s.t, (ctx) => ctx.db.get(reimbursementId));
+      expect(req?.externalAccountId).toBe("extacct_dana_1");
+      expect(req?.bankAccountLast4).toBe("4321");
+      expect(JSON.stringify(req)).not.toContain("0987654321");
+    });
+
+    test("rejects a malformed routing number before any network call", async () => {
+      const t = newT();
+      const s = await setupChapter(t);
+      await seedPerson(s, {
+        name: "Dana Rivers",
+        userId: s.userId,
+      });
+      const { reimbursementId } = await s.as.mutation(
+        api.reimbursements.submitReimbursement,
+        { lines: [{ description: "x", amountCents: 1200 }] },
+      );
+      process.env.INCREASE_API_KEY = "test_key";
+      globalThis.fetch = (() => {
+        throw new Error("fetch must not be called on invalid input");
+      }) as unknown as typeof fetch;
+
+      await expect(
+        s.as.action(api.reimbursements.linkBankAccount, {
+          reimbursementId,
+          routingNumber: "123", // not 9 digits
+          accountNumber: "0987654321",
+        }),
+      ).rejects.toBeInstanceOf(ConvexError);
+    });
+
+    test("degrades to linked:false (never throws) when the Increase key is unset", async () => {
+      const t = newT();
+      const s = await setupChapter(t);
+      await seedPerson(s, { name: "Dana Rivers", userId: s.userId });
+      const { reimbursementId } = await s.as.mutation(
+        api.reimbursements.submitReimbursement,
+        { lines: [{ description: "x", amountCents: 1200 }] },
+      );
+      delete process.env.INCREASE_API_KEY;
+      globalThis.fetch = (() => {
+        throw new Error("fetch must not be called when the key is unset");
+      }) as unknown as typeof fetch;
+
+      const result = await s.as.action(api.reimbursements.linkBankAccount, {
+        reimbursementId,
+        routingNumber: "011000015",
+        accountNumber: "0987654321",
+      });
+      expect(result.linked).toBe(false);
+      const req = await run(s.t, (ctx) => ctx.db.get(reimbursementId));
+      expect(req?.externalAccountId).toBeUndefined();
+    });
+
+    test("self-only: a different member cannot link a bank account to someone else's request", async () => {
+      const t = newT();
+      const s = await setupChapter(t);
+      await seedPerson(s, {
+        name: "Dana Rivers",
+        email: "dana@example.com",
+        userId: s.userId,
+      });
+      const { reimbursementId } = await s.as.mutation(
+        api.reimbursements.submitReimbursement,
+        { lines: [{ description: "x", amountCents: 1200 }] },
+      );
+      const other = await addMember(s, {
+        email: "sam@publicworship.life",
+        name: "Sam Lee",
+      });
+      process.env.INCREASE_API_KEY = "test_key";
+      mockExternalAccountFetch();
+
+      await expect(
+        other.as.action(api.reimbursements.linkBankAccount, {
+          reimbursementId,
+          routingNumber: "011000015",
+          accountNumber: "0987654321",
+        }),
+      ).rejects.toBeInstanceOf(ConvexError);
+    });
+
+    test("rejects once the request is no longer editable (e.g. already approved)", async () => {
+      const t = newT();
+      const s = await setupChapter(t);
+      await seedPerson(s, {
+        name: "Dana Rivers",
+        email: "dana@example.com",
+        userId: s.userId,
+      });
+      const { reimbursementId } = await s.as.mutation(
+        api.reimbursements.submitReimbursement,
+        { lines: [{ description: "x", amountCents: 1200 }] },
+      );
+      // A distinct manager approves it (can't approve their own request).
+      const manager = await addMember(s, {
+        email: "manny@publicworship.life",
+        name: "Manny Manager",
+      });
+      await grantRole(s, manager.personId, "manager");
+      await manager.as.mutation(api.reimbursements.approve, { reimbursementId });
+
+      process.env.INCREASE_API_KEY = "test_key";
+      globalThis.fetch = (() => {
+        throw new Error("fetch must not be called once not editable");
+      }) as unknown as typeof fetch;
+
+      await expect(
+        s.as.action(api.reimbursements.linkBankAccount, {
+          reimbursementId,
+          routingNumber: "011000015",
+          accountNumber: "0987654321",
+        }),
+      ).rejects.toBeInstanceOf(ConvexError);
+    });
   });
 
   test("newRequestOptions prefills from the caller's roster row and lists active funds", async () => {

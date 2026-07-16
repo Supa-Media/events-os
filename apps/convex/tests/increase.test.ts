@@ -189,6 +189,168 @@ describe("payReimbursement", () => {
   });
 });
 
+// ── payReimbursement — the REAL ACH branch, once a destination is linked ─────
+
+describe("payReimbursement (real ACH once a destination is linked)", () => {
+  const originalFetch = globalThis.fetch;
+  const originalKey = process.env.INCREASE_API_KEY;
+
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+    if (originalKey === undefined) delete process.env.INCREASE_API_KEY;
+    else process.env.INCREASE_API_KEY = originalKey;
+  });
+
+  /** An active PRODUCTION Increase account for the chapter (default mode). */
+  async function seedActiveAccount(s: ChapterSetup): Promise<void> {
+    const now = Date.now();
+    await run(s.t, (ctx) =>
+      ctx.db.insert("increaseAccounts", {
+        chapterId: s.chapterId,
+        sandbox: false,
+        onboardingStatus: "active",
+        increaseEntityId: "entity_prod",
+        increaseAccountId: "account_prod_1",
+        createdAt: now,
+        updatedAt: now,
+      }),
+    );
+  }
+
+  test("takes the real ACH branch once externalAccountId + an active account + the key exist", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await seedManager(s);
+    await seedActiveAccount(s);
+    const payee = await seedPerson(s, { name: "Vera" });
+    const reimbursementId = await seedReimbursement(s, {
+      status: "approved",
+      payeePersonId: payee,
+      approvedCents: 1800,
+    });
+    // The reimbursement has a REAL linked Increase External Account.
+    await run(s.t, (ctx) =>
+      ctx.db.patch(reimbursementId, { externalAccountId: "extacct_1" }),
+    );
+
+    process.env.INCREASE_API_KEY = "test_key";
+    const calls: Array<{ path: string; body: Record<string, unknown> | null }> =
+      [];
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const path = String(input);
+      const body = init?.body ? JSON.parse(String(init.body)) : null;
+      calls.push({ path, body });
+      if (path.includes("/ach_transfers")) {
+        return new Response(JSON.stringify({ id: "ach_transfer_new_1" }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+      throw new Error(`unexpected fetch: ${path}`);
+    }) as unknown as typeof fetch;
+
+    const payout = await s.as.action(api.increase.payReimbursement, {
+      reimbursementId,
+    });
+    expect(payout.provider).toBe("increase");
+    expect(payout.status).toBe("processing");
+    expect(payout.increaseTransferId).toBe("ach_transfer_new_1");
+
+    // Addressed via the linked external account + a positive (credit) amount.
+    const post = calls.find((c) => c.path.includes("/ach_transfers"));
+    expect(post!.body?.external_account_id).toBe("extacct_1");
+    expect(post!.body?.amount).toBe(1800);
+    expect(post!.body?.account_id).toBe("account_prod_1");
+
+    // The reimbursement moved to "paying".
+    const req = await run(s.t, (ctx) => ctx.db.get(reimbursementId));
+    expect(req?.status).toBe("paying");
+
+    // The webhook reporting `submitted` (Increase's terminal success) settles it.
+    await s.t.mutation(internal.increase.onIncreaseWebhookEvent, {
+      eventType: "ach_transfer.updated",
+      transferId: "ach_transfer_new_1",
+      status: "submitted",
+    });
+    const settled = await run(s.t, (ctx) => ctx.db.get(reimbursementId));
+    expect(settled?.status).toBe("paid");
+    const txns = await transferTxns(s, reimbursementId);
+    expect(txns.length).toBe(1);
+    expect(txns[0].amountCents).toBe(1800);
+  });
+
+  test("still degrades to manual when a destination ISN'T linked (unchanged default)", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await seedManager(s);
+    await seedActiveAccount(s);
+    const payee = await seedPerson(s, { name: "Vera" });
+    const reimbursementId = await seedReimbursement(s, {
+      status: "approved",
+      payeePersonId: payee,
+      approvedCents: 1800,
+    });
+    process.env.INCREASE_API_KEY = "test_key";
+    globalThis.fetch = (() => {
+      throw new Error("fetch must not be called with no linked destination");
+    }) as unknown as typeof fetch;
+
+    const payout = await s.as.action(api.increase.payReimbursement, {
+      reimbursementId,
+    });
+    expect(payout.provider).toBe("manual");
+    expect(payout.status).toBe("pending");
+  });
+
+  test("degrades to manual when the account is a SANDBOX id but only the prod key is set", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await seedManager(s);
+    // A sandbox-provisioned account — its own env needs INCREASE_SANDBOX_API_KEY.
+    const now = Date.now();
+    await run(s.t, (ctx) =>
+      ctx.db.insert("increaseAccounts", {
+        chapterId: s.chapterId,
+        sandbox: true,
+        onboardingStatus: "active",
+        increaseAccountId: "sandbox_account_1",
+        createdAt: now,
+        updatedAt: now,
+      }),
+    );
+    await run(s.t, (ctx) =>
+      (async () => {
+        const existing = await ctx.db.query("financeSettings").first();
+        if (existing) await ctx.db.patch(existing._id, { sandboxMode: true, updatedAt: now });
+        else await ctx.db.insert("financeSettings", { sandboxMode: true, updatedAt: now });
+      })(),
+    );
+    const payee = await seedPerson(s, { name: "Vera" });
+    const reimbursementId = await seedReimbursement(s, {
+      status: "approved",
+      payeePersonId: payee,
+      approvedCents: 1800,
+    });
+    await run(s.t, (ctx) =>
+      ctx.db.patch(reimbursementId, { externalAccountId: "extacct_1" }),
+    );
+
+    // Only the PRODUCTION key is set — the sandbox account's own env key
+    // (INCREASE_SANDBOX_API_KEY) is unset, so it must NOT take the ACH branch.
+    process.env.INCREASE_API_KEY = "test_key";
+    delete process.env.INCREASE_SANDBOX_API_KEY;
+    globalThis.fetch = (() => {
+      throw new Error("fetch must not be called when the account's own env key is unset");
+    }) as unknown as typeof fetch;
+
+    const payout = await s.as.action(api.increase.payReimbursement, {
+      reimbursementId,
+    });
+    expect(payout.provider).toBe("manual");
+    expect(payout.status).toBe("pending");
+  });
+});
+
 // ── markPaidManually ─────────────────────────────────────────────────────────
 
 describe("markPaidManually", () => {
@@ -504,6 +666,82 @@ describe("onIncreaseWebhookEvent", () => {
     const req = await run(s.t, (ctx) => ctx.db.get(reimbursementId));
     expect(req?.status).toBe("paid");
     expect((await transferTxns(s, reimbursementId)).length).toBe(1);
+  });
+
+  test("a paid payout REVERSES on a late `returned` (re-opens the reimbursement, removes the transfer)", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const { reimbursementId, payoutId } = await seedProcessingPayout(
+      s,
+      "ach_bounce",
+    );
+    // Settle it first (submitted = Increase's terminal success for a credit).
+    await s.t.mutation(internal.increase.onIncreaseWebhookEvent, {
+      eventType: "ach_transfer.updated",
+      transferId: "ach_bounce",
+      status: "submitted",
+    });
+    expect((await transferTxns(s, reimbursementId)).length).toBe(1);
+    const paidReq = await run(s.t, (ctx) => ctx.db.get(reimbursementId));
+    expect(paidReq?.status).toBe("paid");
+    expect(paidReq?.paidAt).toBeTruthy();
+
+    // DAYS later, Increase reports the credit bounced.
+    await s.t.mutation(internal.increase.onIncreaseWebhookEvent, {
+      eventType: "ach_transfer.returned",
+      transferId: "ach_bounce",
+      status: "returned",
+    });
+
+    const payout = await run(s.t, (ctx) => ctx.db.get(payoutId));
+    expect(payout?.status).toBe("returned");
+    expect(payout?.transactionId).toBeUndefined();
+
+    const req = await run(s.t, (ctx) => ctx.db.get(reimbursementId));
+    expect(req?.status).toBe("approved"); // re-opened, not left "paid"
+    expect(req?.paidAt).toBeUndefined();
+
+    // The offsetting transfer was REMOVED (not merely re-flagged) — a future
+    // successful payout must post a fresh one, not mistake this bounced row
+    // for an already-posted transfer.
+    expect((await transferTxns(s, reimbursementId)).length).toBe(0);
+  });
+
+  test("a duplicate `returned` webhook after reversal is idempotent (no double re-open)", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const { reimbursementId, payoutId } = await seedProcessingPayout(
+      s,
+      "ach_bounce_dup",
+    );
+    await s.t.mutation(internal.increase.onIncreaseWebhookEvent, {
+      eventType: "ach_transfer.updated",
+      transferId: "ach_bounce_dup",
+      status: "submitted",
+    });
+    await s.t.mutation(internal.increase.onIncreaseWebhookEvent, {
+      eventType: "ach_transfer.returned",
+      transferId: "ach_bounce_dup",
+      status: "returned",
+    });
+    // A manager re-approves and re-pays manually in between the two webhook
+    // deliveries (a real-world race) — the duplicate delivery must not stomp it.
+    await run(s.t, (ctx) =>
+      ctx.db.patch(reimbursementId, { status: "paid", paidAt: Date.now() }),
+    );
+
+    // Redelivered `returned` for the SAME (already-returned) payout.
+    await s.t.mutation(internal.increase.onIncreaseWebhookEvent, {
+      eventType: "ach_transfer.returned",
+      transferId: "ach_bounce_dup",
+      status: "returned",
+    });
+
+    const payout = await run(s.t, (ctx) => ctx.db.get(payoutId));
+    expect(payout?.status).toBe("returned"); // unchanged, not re-processed
+    const req = await run(s.t, (ctx) => ctx.db.get(reimbursementId));
+    // The manager's manual re-pay status is left untouched by the replay.
+    expect(req?.status).toBe("paid");
   });
 });
 

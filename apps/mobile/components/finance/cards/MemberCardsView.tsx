@@ -31,6 +31,8 @@ import {
   EmptyState,
   Icon,
   SectionHeader,
+  Select,
+  TextField,
   ToastView,
 } from "../../ui";
 import { colors } from "../../../lib/theme";
@@ -54,7 +56,18 @@ export function MemberCardsView() {
   // A member may only INITIATE a repayment (choose a method + kick it off) — the
   // offsetting credit is posted by a manager confirming receipt, never here.
   const initiateRepayment = useAction(api.cards.initiateRepayment);
+  const linkRepaymentBankAccount = useAction(api.cards.linkRepaymentBankAccount);
   const { run, toast, dismiss } = useActionRunner();
+
+  // Inline ACH-destination capture, shown once when a "Pay by bank" repayment
+  // hasn't linked a real bank account yet — minimal UI hookup for a tested
+  // backend primitive (`cards.linkRepaymentBankAccount`); a repaid link
+  // persists per repayment, so this only needs to run again for a new charge.
+  const [achFormOpen, setAchFormOpen] = useState(false);
+  const [achRouting, setAchRouting] = useState("");
+  const [achAccount, setAchAccount] = useState("");
+  const [achFunding, setAchFunding] = useState<"checking" | "savings">("checking");
+  const [achBusy, setAchBusy] = useState(false);
 
   // Repayments flagged this session, keyed by their transaction id.
   const [repayments, setRepayments] = useState<Record<string, RepaymentSummary>>(
@@ -107,6 +120,41 @@ export function MemberCardsView() {
     for (const r of toRepay) {
       await handleInitiate(r.id, r.transactionId, method);
     }
+  }
+
+  /** "Pay by bank (ACH)" — link a bank account first if any charge still
+   *  needs one, else pay straight away. */
+  function handlePayByBank() {
+    const needsLink = toRepay.some((r) => !r.hasExternalAccount);
+    if (needsLink) {
+      setAchFormOpen(true);
+      return;
+    }
+    void payAll("ach");
+  }
+
+  async function handleLinkAndPay() {
+    setAchBusy(true);
+    const toLink = toRepay.filter((r) => !r.hasExternalAccount);
+    for (const r of toLink) {
+      await run(
+        () =>
+          linkRepaymentBankAccount({
+            repaymentId: r.id,
+            routingNumber: achRouting.trim(),
+            accountNumber: achAccount.trim(),
+            funding: achFunding,
+          }),
+        { errorTitle: "Couldn't link bank account" },
+      );
+    }
+    setAchBusy(false);
+    setAchFormOpen(false);
+    setAchRouting("");
+    setAchAccount("");
+    // Best-effort even if a link above failed — `initiateRepayment` just
+    // degrades that one to pending, same as before this feature existed.
+    await payAll("ach");
   }
 
   if (cards === undefined) {
@@ -261,10 +309,68 @@ export function MemberCardsView() {
               <Button
                 title="Pay by bank (ACH)"
                 size="sm"
-                onPress={() => payAll("ach")}
+                onPress={handlePayByBank}
               />
             </View>
           </View>
+
+          {/* Inline ACH-destination capture — shown once, the first time a
+              charge in this batch has no linked bank account yet. */}
+          {achFormOpen ? (
+            <View className="mt-3 gap-2 border-t border-border pt-3">
+              <Text className="text-xs text-muted">
+                Link your bank account to pay by ACH — securely, through our
+                banking partner. We never store your full account number.
+              </Text>
+              <View className="flex-row gap-2">
+                <View className="flex-1">
+                  <TextField
+                    label="Routing number"
+                    value={achRouting}
+                    onChangeText={(v) => setAchRouting(v.replace(/[^0-9]/g, "").slice(0, 9))}
+                    keyboardType="number-pad"
+                    maxLength={9}
+                    placeholder="9 digits"
+                  />
+                </View>
+                <View className="flex-1">
+                  <TextField
+                    label="Account number"
+                    value={achAccount}
+                    onChangeText={(v) => setAchAccount(v.replace(/[^0-9]/g, "").slice(0, 17))}
+                    keyboardType="number-pad"
+                    placeholder="e.g. 000123456789"
+                  />
+                </View>
+                <View className="w-28">
+                  <Select
+                    label="Type"
+                    value={achFunding}
+                    options={[
+                      { value: "checking", label: "Checking" },
+                      { value: "savings", label: "Savings" },
+                    ]}
+                    onChange={(v) => setAchFunding((v || "checking") as "checking" | "savings")}
+                  />
+                </View>
+              </View>
+              <View className="flex-row justify-end gap-2">
+                <Button
+                  title="Cancel"
+                  variant="ghost"
+                  size="sm"
+                  onPress={() => setAchFormOpen(false)}
+                />
+                <Button
+                  title="Link & pay"
+                  size="sm"
+                  loading={achBusy}
+                  disabled={achRouting.length !== 9 || achAccount.length < 4}
+                  onPress={handleLinkAndPay}
+                />
+              </View>
+            </View>
+          ) : null}
         </View>
       ) : null}
 
