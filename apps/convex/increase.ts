@@ -48,10 +48,11 @@ import {
   action,
   mutation,
   query,
+  internalQuery,
   internalMutation,
   internalAction,
 } from "./_generated/server";
-import type { MutationCtx } from "./_generated/server";
+import type { MutationCtx, ActionCtx } from "./_generated/server";
 import { ConvexError, v } from "convex/values";
 import { internal } from "./_generated/api";
 import { Doc, Id } from "./_generated/dataModel";
@@ -1479,6 +1480,476 @@ export const markPaidManually = mutation({
   },
 });
 
+// ── Increase CARD-charge ingestion → the `transactions` ledger ───────────────
+
+/**
+ * Ground truth (verified against the real Increase API — increase.com/documentation
+ * + the increase-node SDK types):
+ *  - A settled card charge/refund arrives as a `transaction.created` Event whose
+ *    `associated_object_id` is a `transaction_…` id; the Event carries NO inline
+ *    object, so we FETCH `GET /transactions/{id}`.
+ *  - `Transaction.amount` is a SIGNED integer in the currency's minor unit (cents):
+ *    NEGATIVE for a charge (money leaving) → `outflow`, POSITIVE for a refund/credit
+ *    → `inflow`. Direction lives in `transactions.flow`; `amountCents` is the abs.
+ *  - The card is identified via `source.card_settlement` / `source.card_refund`.
+ *    IMPORTANT: those objects do NOT carry `card_id` — they carry `card_payment_id`.
+ *    The `card_id` lives on the Card Payment (`GET /card_payments/{id}` → `card_id`),
+ *    which we then match to our `cards.increaseCardId` (`by_increase_card`).
+ *  - PENDING authorizations (`pending_transaction.created`, `card_authorization`)
+ *    are NOT ingested: the real-time decision path (`decideCardAuthorization`)
+ *    already governs holds, and the settled `transactions` row is the ledger truth.
+ */
+
+/** The card-charge source categories we ingest. Everything else on a
+ *  `transaction.created` (ACH, fees, interest, …) is NOT a card charge → skipped. */
+const CARD_SOURCE_CATEGORIES = ["card_settlement", "card_refund"] as const;
+
+/** The subset of a fetched Increase `Transaction` object we read. */
+interface IncreaseTransactionLite {
+  id?: string;
+  account_id?: string;
+  amount?: number; // signed minor units (negative = a charge)
+  created_at?: string;
+  currency?: string;
+  description?: string;
+  source?: {
+    category?: string;
+    card_settlement?: IncreaseCardSourceLite | null;
+    card_refund?: IncreaseCardSourceLite | null;
+  };
+}
+
+/** The card_settlement / card_refund sub-object (merchant + the card-payment link). */
+interface IncreaseCardSourceLite {
+  card_payment_id?: string;
+  merchant_name?: string;
+  merchant_category_code?: string;
+}
+
+/** The extracted, provider-agnostic card charge we hand to the DB apply. */
+interface ExtractedCardCharge {
+  externalId: string;
+  accountId: string;
+  flow: "outflow" | "inflow";
+  amountCents: number;
+  postedAt: number;
+  merchantName?: string;
+  merchantCategory?: string;
+  cardPaymentId?: string;
+}
+
+/**
+ * Pull the card-charge fields out of a fetched Increase `Transaction`, or null if
+ * it isn't a settled card charge/refund we should ingest (wrong source category,
+ * missing id/account, or a $0 settlement). Flow + amount come from the SIGNED
+ * top-level `amount` (negative = outflow); the merchant + card-payment link come
+ * from the matching `card_settlement` / `card_refund` sub-object.
+ */
+export function extractCardCharge(
+  txn: IncreaseTransactionLite,
+): ExtractedCardCharge | null {
+  const category = txn.source?.category;
+  if (
+    !category ||
+    !(CARD_SOURCE_CATEGORIES as readonly string[]).includes(category)
+  ) {
+    return null;
+  }
+  const externalId = txn.id;
+  const accountId = txn.account_id;
+  if (!externalId || !accountId) return null;
+  if (typeof txn.amount !== "number" || !Number.isFinite(txn.amount)) return null;
+
+  const amountCents = Math.abs(Math.round(txn.amount));
+  if (amountCents === 0) {
+    // A $0 settlement carries no ledger meaning — skipped, but logged so it's
+    // traceable during reconciliation (rather than silently vanishing).
+    console.debug(
+      `[increase] card ingestion: skipping $0 settlement for transaction ${txn.id ?? "<unknown>"}`,
+    );
+    return null;
+  }
+  const flow: "outflow" | "inflow" = txn.amount < 0 ? "outflow" : "inflow";
+
+  const card =
+    category === "card_settlement"
+      ? txn.source?.card_settlement
+      : txn.source?.card_refund;
+  const postedAt = txn.created_at ? Date.parse(txn.created_at) : NaN;
+
+  return {
+    externalId,
+    accountId,
+    flow,
+    amountCents,
+    postedAt: Number.isFinite(postedAt) ? postedAt : Date.now(),
+    merchantName: card?.merchant_name ?? undefined,
+    merchantCategory: card?.merchant_category_code ?? undefined,
+    cardPaymentId: card?.card_payment_id ?? undefined,
+  };
+}
+
+/**
+ * Insert a settled Increase card charge into the `transactions` ledger — the pure
+ * DB apply (no network), so the ingestion is testable without hitting Increase.
+ *
+ * IDEMPOTENT: dedups on `externalId` (the Increase transaction id) via
+ * `by_external_id` — a redelivered webhook or an overlapping backfill never
+ * double-inserts. Resolves the owning chapter from `accountId` → `increaseAccounts`
+ * (`by_increase_account`); a transaction for an account we don't hold is SKIPPED.
+ * Attribution: `increaseCardId` → our `cards` (`by_increase_card`, verified in the
+ * resolved chapter) fills `cardId` / `personId` / `cardLast4`; an unmatched card
+ * still records the txn with null attribution (a human reconciles it). New rows
+ * land `status:"unreviewed"`, `pending:false` (settled).
+ */
+export const applyIncreaseCardTransaction = internalMutation({
+  args: {
+    externalId: v.string(),
+    accountId: v.string(),
+    flow: v.union(v.literal("outflow"), v.literal("inflow")),
+    amountCents: v.number(),
+    currency: v.optional(v.string()),
+    postedAt: v.number(),
+    merchantName: v.optional(v.string()),
+    merchantCategory: v.optional(v.string()),
+    // The resolved Increase card id (from the Card Payment), or absent when
+    // attribution couldn't be resolved — the txn is still recorded.
+    increaseCardId: v.optional(v.string()),
+  },
+  returns: v.object({ inserted: v.boolean(), skipped: v.boolean() }),
+  handler: async (ctx, args): Promise<{ inserted: boolean; skipped: boolean }> => {
+    // Dedup: one ledger row per Increase transaction id.
+    const existing = await ctx.db
+      .query("transactions")
+      .withIndex("by_external_id", (q) => q.eq("externalId", args.externalId))
+      .first();
+    if (existing) return { inserted: false, skipped: false };
+
+    // Resolve the owning chapter from the Increase account id. Not ours → skip.
+    const account = await ctx.db
+      .query("increaseAccounts")
+      .withIndex("by_increase_account", (q) =>
+        q.eq("increaseAccountId", args.accountId),
+      )
+      .first();
+    if (!account) return { inserted: false, skipped: true };
+    const chapterId = account.chapterId;
+
+    // Attribute to a native card in THIS chapter (never cross-chapter). An
+    // unmatched card id leaves attribution null — the row is still recorded.
+    let card: Doc<"cards"> | null = null;
+    if (args.increaseCardId) {
+      const cards = await ctx.db
+        .query("cards")
+        .withIndex("by_increase_card", (q) =>
+          q.eq("increaseCardId", args.increaseCardId),
+        )
+        .collect();
+      card = cards.find((c) => c.chapterId === chapterId) ?? null;
+    }
+
+    await ctx.db.insert("transactions", {
+      chapterId,
+      source: "increase_card",
+      flow: args.flow,
+      amountCents: args.amountCents,
+      currency: args.currency ?? "usd",
+      postedAt: args.postedAt,
+      merchantName: args.merchantName,
+      merchantCategory: args.merchantCategory,
+      cardLast4: card?.last4,
+      cardId: card?._id,
+      personId: card?.cardholderPersonId,
+      externalId: args.externalId,
+      sourceAccountId: args.accountId,
+      pending: false,
+      status: "unreviewed",
+      createdAt: Date.now(),
+    });
+    return { inserted: true, skipped: false };
+  },
+});
+
+/**
+ * Resolve a settled card charge's `card_id` by fetching its Card Payment
+ * (`GET /card_payments/{id}`), since neither `card_settlement` nor `card_refund`
+ * carries `card_id` inline. Best-effort: returns null (never throws) on a missing
+ * id, a 404, or any fetch/parse error — attribution then falls back to null and
+ * the charge is still recorded. `cache` memoizes within a backfill run so many
+ * charges on one card cost one fetch.
+ */
+async function resolveIncreaseCardId(
+  key: string,
+  base: string,
+  cardPaymentId: string | undefined,
+  cache?: Map<string, string | null>,
+): Promise<string | null> {
+  if (!cardPaymentId) return null;
+  if (cache?.has(cardPaymentId)) return cache.get(cardPaymentId) ?? null;
+  let cardId: string | null = null;
+  try {
+    const payment = await increaseGet(
+      key,
+      base,
+      `/card_payments/${encodeURIComponent(cardPaymentId)}`,
+    );
+    cardId = typeof payment.card_id === "string" ? payment.card_id : null;
+  } catch (err) {
+    console.error(
+      `[increase] card ingestion: failed to fetch card_payment ${cardPaymentId}`,
+      err,
+    );
+    cardId = null;
+  }
+  cache?.set(cardPaymentId, cardId);
+  return cardId;
+}
+
+/** Cheap `by_external_id` existence check, used to short-circuit a redelivered
+ *  webhook BEFORE the network fetch below (avoids a wasted `GET /transactions`
+ *  + `GET /card_payments` round trip for a transaction we've already ingested). */
+export const transactionExistsByExternalId = internalQuery({
+  args: { externalId: v.string() },
+  returns: v.boolean(),
+  handler: async (ctx, { externalId }) => {
+    const existing = await ctx.db
+      .query("transactions")
+      .withIndex("by_external_id", (q) => q.eq("externalId", externalId))
+      .first();
+    return existing !== null;
+  },
+});
+
+/**
+ * Fetch a settled card `transaction.created` object and post it to the ledger.
+ * Best-effort (never throws): fetches `GET /transactions/{id}`, extracts the card
+ * charge, resolves `card_id` via the Card Payment, and applies it (idempotent on
+ * `externalId`). Routed by the object id's `sandbox_` prefix like the rest of the
+ * file. Degrades to a logged no-op when the environment's key is unset or a fetch
+ * fails.
+ *
+ * IMPORTANT — never throws. This is called from `handleIncreaseWebhook`, which
+ * runs AFTER `recordWebhookEvent` has already committed the event-dedup row in a
+ * separate, already-committed step (see `apps/convex/webhooks.ts`). If this
+ * function threw, Increase's retry would be dead-on-arrival — the event id
+ * already reads as "processed" — and that charge would be silently dropped with
+ * no trace. Every fallible step (the transaction fetch, extraction, and the DB
+ * apply) is therefore individually guarded; on any error we log (with the
+ * transaction id) and return, matching the PR's best-effort design. The daily
+ * `backfillIncreaseCardTransactions` cron (see `crons.ts`) is the reconciliation
+ * backstop for anything a swallowed error here would otherwise lose forever.
+ */
+async function ingestIncreaseCardTransaction(
+  ctx: ActionCtx,
+  transactionId: string,
+): Promise<void> {
+  const { key, base } = increaseEnvForObjectId(transactionId);
+  if (!key) {
+    console.warn(
+      "[increase] card ingestion skipped: Increase API key not configured for this environment",
+    );
+    return;
+  }
+
+  // Dedup BEFORE the network fetch — a redelivered webhook for an
+  // already-ingested transaction short-circuits without a wasted round trip.
+  const alreadyIngested = await ctx.runQuery(
+    internal.increase.transactionExistsByExternalId,
+    { externalId: transactionId },
+  );
+  if (alreadyIngested) return;
+
+  let txn: IncreaseTransactionLite;
+  try {
+    txn = (await increaseGet(
+      key,
+      base,
+      `/transactions/${encodeURIComponent(transactionId)}`,
+    )) as IncreaseTransactionLite;
+  } catch (err) {
+    console.error("[increase] card ingestion: failed to fetch transaction", err);
+    return;
+  }
+
+  try {
+    const charge = extractCardCharge(txn);
+    if (!charge) return; // not a settled card charge/refund → nothing to ingest
+
+    const increaseCardId = await resolveIncreaseCardId(
+      key,
+      base,
+      charge.cardPaymentId,
+    );
+
+    await ctx.runMutation(internal.increase.applyIncreaseCardTransaction, {
+      externalId: charge.externalId,
+      accountId: charge.accountId,
+      flow: charge.flow,
+      amountCents: charge.amountCents,
+      currency: (txn.currency ?? "usd").toLowerCase(),
+      postedAt: charge.postedAt,
+      merchantName: charge.merchantName,
+      merchantCategory: charge.merchantCategory,
+      increaseCardId: increaseCardId ?? undefined,
+    });
+  } catch (err) {
+    // Never throw out of the webhook: recordWebhookEvent already committed the
+    // event-dedup row in a separate step, so a throw here would make this
+    // charge unrecoverable (Increase's retry reads the event as "processed").
+    // The daily backfill cron reconciles anything lost here.
+    console.error(
+      `[increase] card ingestion: failed to apply transaction ${transactionId}`,
+      err,
+    );
+  }
+}
+
+// ── Backfill: page GET /transactions?account_id=… into the ledger ────────────
+
+/** Active Increase accounts (id + owning chapter) for the backfill to page. */
+export const listProvisionedIncreaseAccounts = internalQuery({
+  args: {},
+  returns: v.array(v.object({ increaseAccountId: v.string() })),
+  handler: async (ctx) => {
+    const rows = await ctx.db.query("increaseAccounts").collect();
+    return rows
+      .filter((a) => a.onboardingStatus === "active" && !!a.increaseAccountId)
+      .map((a) => ({ increaseAccountId: a.increaseAccountId! }));
+  },
+});
+
+/** A per-account page cap (each page is up to INCREASE_PAGE_SIZE rows). Bounds a
+ *  single ops run; a genuinely huge account can be re-run to continue (dedup). */
+const INCREASE_BACKFILL_MAX_PAGES = 200;
+const INCREASE_PAGE_SIZE = 100;
+
+/**
+ * Ops backfill: page `GET /transactions?account_id=…` to completion for each
+ * provisioned Increase account and post every settled card charge/refund into the
+ * `transactions` ledger (dedup on `externalId`). Mirrors the Stripe FC backfill
+ * (`stripeFinance.syncTransactions`) — Increase lists are cursor-paginated
+ * (`{ data, next_cursor }`, `cursor` query param). Attribution reuses the Card
+ * Payment lookup with a per-run cache. Environment is routed per account by its
+ * `sandbox_` id prefix. Logs the inserted count. Best-effort: an account whose
+ * environment key is unset, or a fetch error, logs + moves on (never throws).
+ *
+ * CLI/CI-runnable (internal → not publicly callable):
+ *   npx convex run increase:backfillIncreaseCardTransactions
+ *   gh workflow run run-convex-function.yml -f function=increase:backfillIncreaseCardTransactions
+ * Optionally scope to one account: `-f args='{"increaseAccountId":"account_…"}'`.
+ */
+export const backfillIncreaseCardTransactions = internalAction({
+  args: { increaseAccountId: v.optional(v.string()) },
+  returns: v.object({
+    accounts: v.number(),
+    scanned: v.number(),
+    inserted: v.number(),
+  }),
+  handler: async (
+    ctx,
+    args,
+  ): Promise<{ accounts: number; scanned: number; inserted: number }> => {
+    const accountIds = args.increaseAccountId
+      ? [args.increaseAccountId]
+      : (
+          await ctx.runQuery(
+            internal.increase.listProvisionedIncreaseAccounts,
+            {},
+          )
+        ).map((a) => a.increaseAccountId);
+
+    let scanned = 0;
+    let inserted = 0;
+    let accountsProcessed = 0;
+    // Memoize card_payment_id → card_id across the whole run (many charges share
+    // a card / card payment).
+    const cardIdCache = new Map<string, string | null>();
+
+    for (const accountId of accountIds) {
+      const { key, base } = increaseEnvForObjectId(accountId);
+      if (!key) {
+        console.warn(
+          `[increase] backfill skipped account ${accountId}: no API key for its environment`,
+        );
+        continue;
+      }
+      accountsProcessed += 1;
+
+      let cursor: string | undefined = undefined;
+      for (let page = 0; page < INCREASE_BACKFILL_MAX_PAGES; page++) {
+        const params = new URLSearchParams();
+        params.set("account_id", accountId);
+        params.set("limit", String(INCREASE_PAGE_SIZE));
+        if (cursor) params.set("cursor", cursor);
+
+        let body: {
+          data?: IncreaseTransactionLite[];
+          next_cursor?: string | null;
+        };
+        try {
+          const res = await fetch(`${base}/transactions?${params.toString()}`, {
+            method: "GET",
+            headers: { Authorization: `Bearer ${key}` },
+          });
+          if (!res.ok) {
+            console.error(
+              `[increase] backfill: list failed for ${accountId}:`,
+              await res.text(),
+            );
+            break;
+          }
+          body = (await res.json()) as {
+            data?: IncreaseTransactionLite[];
+            next_cursor?: string | null;
+          };
+        } catch (err) {
+          console.error(
+            `[increase] backfill: list error for ${accountId}:`,
+            err,
+          );
+          break;
+        }
+
+        const rows = body.data ?? [];
+        for (const row of rows) {
+          scanned += 1;
+          const charge = extractCardCharge(row);
+          if (!charge) continue; // non-card row → skip
+          const increaseCardId = await resolveIncreaseCardId(
+            key,
+            base,
+            charge.cardPaymentId,
+            cardIdCache,
+          );
+          const result = await ctx.runMutation(
+            internal.increase.applyIncreaseCardTransaction,
+            {
+              externalId: charge.externalId,
+              accountId: charge.accountId,
+              flow: charge.flow,
+              amountCents: charge.amountCents,
+              currency: (row.currency ?? "usd").toLowerCase(),
+              postedAt: charge.postedAt,
+              merchantName: charge.merchantName,
+              merchantCategory: charge.merchantCategory,
+              increaseCardId: increaseCardId ?? undefined,
+            },
+          );
+          if (result.inserted) inserted += 1;
+        }
+
+        cursor = body.next_cursor ?? undefined;
+        if (!cursor || rows.length === 0) break;
+      }
+    }
+
+    console.log(
+      `[increase] card backfill complete: ${accountsProcessed} account(s), scanned ${scanned}, inserted ${inserted}`,
+    );
+    return { accounts: accountsProcessed, scanned, inserted };
+  },
+});
+
 // ── onIncreaseWebhookEvent (internal mutation) — the payout state machine ─────
 
 /**
@@ -1527,8 +1998,10 @@ export const onIncreaseWebhookEvent = internalMutation({
  * FETCHES the transfer (GET /ach_transfers/{id}) to read its real status, then
  * advances the matching payout via `onIncreaseWebhookEvent`. The orchestrator's
  * `/increase/webhook` route calls this for every non-`real_time_decision.*`
- * event (after de-duping on the event id). Only `ach_transfer.*` categories are
- * acted on; anything else no-ops. ONE endpoint serves BOTH environments: the
+ * event (after de-duping on the event id). `ach_transfer.*` categories drive the
+ * payout state machine; `transaction.created` ingests a settled card charge into
+ * the ledger (`ingestIncreaseCardTransaction`); anything else no-ops. ONE endpoint
+ * serves BOTH environments: the
  * follow-up fetch is routed by the object id's `sandbox_` prefix
  * (`increaseEnvForObjectId`) — sandbox objects hit the sandbox with
  * `INCREASE_SANDBOX_API_KEY`, production objects the deployment's own key.
@@ -1539,6 +2012,14 @@ export const handleIncreaseWebhook = internalAction({
   args: { category: v.string(), associatedObjectId: v.string() },
   returns: v.null(),
   handler: async (ctx, { category, associatedObjectId }) => {
+    // A settled card charge/refund → the `transactions` ledger. The Event carries
+    // no inline object, so `ingestIncreaseCardTransaction` fetches the Transaction
+    // (+ its Card Payment for attribution) and posts it (idempotent, best-effort).
+    if (category === "transaction.created") {
+      await ingestIncreaseCardTransaction(ctx, associatedObjectId);
+      return null;
+    }
+
     if (!category.startsWith("ach_transfer.")) return null;
 
     const { key, base } = increaseEnvForObjectId(associatedObjectId);

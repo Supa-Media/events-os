@@ -441,7 +441,11 @@ export const increaseAccounts = defineTable({
   accountLast4: v.optional(v.string()),
   createdAt: v.number(),
   updatedAt: v.number(),
-}).index("by_chapter", ["chapterId"]);
+})
+  .index("by_chapter", ["chapterId"])
+  // Resolve the owning chapter from an inbound Increase object's `account_id`
+  // (card-charge ingestion, GET /transactions webhook) without scanning.
+  .index("by_increase_account", ["increaseAccountId"]);
 
 // ── Legacy external accounts (Stripe Financial Connections read-sync) ────────
 /** A legacy/external bank or card account, connected read-only via Stripe
