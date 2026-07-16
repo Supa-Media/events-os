@@ -95,13 +95,17 @@ export function AppShell({ children }: { children: ReactNode }) {
   const { width } = useWindowDimensions();
   const desktop = width >= DESKTOP;
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const pathname = usePathname();
   // Read-only peek (WP-S): a central-seat holder browsing a chapter they
   // don't hold a seat in. The banner is shell chrome — it renders over every
   // screen — but only the Finance dashboard actually re-scopes its data to
   // the peeked chapter; see `ChapterContext`'s file doc for why Events/
-  // Projects don't (yet).
+  // Projects don't (yet). Route-aware copy: `financeScoped` tells the banner
+  // whether the CURRENT route is one that actually re-scopes, so it never
+  // implies a read-only peek is in effect somewhere it isn't.
   const { context, exitPeek } = useChapterContext();
   const peeking = context?.kind === "peek" ? context : null;
+  const financeScoped = isFinanceRoute(pathname);
 
   if (desktop) {
     return (
@@ -109,7 +113,11 @@ export function AppShell({ children }: { children: ReactNode }) {
         {!sidebarCollapsed && <Sidebar onCollapse={() => setSidebarCollapsed(true)} />}
         <View className="flex-1">
           {peeking ? (
-            <PeekBanner chapterName={peeking.chapterName} onExit={exitPeek} />
+            <PeekBanner
+              chapterName={peeking.chapterName}
+              onExit={exitPeek}
+              scoped={financeScoped}
+            />
           ) : null}
           {children}
           {sidebarCollapsed && <SidebarOpenButton onPress={() => setSidebarCollapsed(false)} />}
@@ -122,7 +130,11 @@ export function AppShell({ children }: { children: ReactNode }) {
     <SafeAreaView className="flex-1 bg-surface" edges={["top"]}>
       <MobileTopBar />
       {peeking ? (
-        <PeekBanner chapterName={peeking.chapterName} onExit={exitPeek} />
+        <PeekBanner
+          chapterName={peeking.chapterName}
+          onExit={exitPeek}
+          scoped={financeScoped}
+        />
       ) : null}
       <View className="flex-1">{children}</View>
       <BottomNav />
@@ -131,24 +143,51 @@ export function AppShell({ children }: { children: ReactNode }) {
 }
 
 /**
+ * True when `pathname` is under `/finances` — the one surface peek actually
+ * re-scopes today (`finances.dashboardChapter`'s drill-down). Matches on
+ * whole path segments, same rule as `isActive` above, so `/finances` and
+ * `/finances/123` both count but a sibling like `/financesX` doesn't.
+ */
+function isFinanceRoute(pathname: string): boolean {
+  return pathname === "/finances" || pathname.startsWith("/finances/");
+}
+
+/**
  * The persistent "you're peeking, not at your own desk" banner (WP-S). Spans
  * the content area on desktop (the sidebar keeps its own identity) and the
  * full width on mobile, right under the top chrome. `Exit` always returns to
  * the caller's real seat — peek is only ever entered from a central seat.
+ *
+ * `scoped` is true only on `/finances` routes — the sole surface that
+ * actually re-scopes to the peeked chapter (see `ChapterContext`'s file
+ * doc). Everywhere else the banner still renders (it's shell chrome, and
+ * `Exit` needs to stay reachable), but the copy adds an honest qualifier
+ * instead of implying the whole app re-scoped when it didn't.
+ * TODO(peek-events-projects): drop the qualifier once Events/Projects gain
+ * their own chapterId scoping and peek support — see ChapterContext's file
+ * doc for why they don't yet.
  */
 function PeekBanner({
   chapterName,
   onExit,
+  scoped,
 }: {
   chapterName: string;
   onExit: () => void;
+  scoped: boolean;
 }) {
   return (
     <View className="flex-row items-center gap-3 border-b border-border bg-warn-bg px-4 py-2">
       <Icon name="eye" size={15} color={colors.warn} />
-      <Text className="flex-1 text-sm text-ink" numberOfLines={1}>
+      <Text className="flex-1 text-sm text-ink" numberOfLines={scoped ? 1 : 2}>
         <Text className="font-semibold">Viewing {chapterName}</Text>
         <Text className="text-muted"> (read-only)</Text>
+        {!scoped ? (
+          <Text className="text-muted">
+            {" "}
+            — finances only for now; other tabs show your own chapter.
+          </Text>
+        ) : null}
       </Text>
       <Pressable
         accessibilityRole="button"
