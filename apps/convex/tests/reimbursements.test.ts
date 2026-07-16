@@ -332,6 +332,180 @@ describe("in-app queue never leaks the token", () => {
   });
 });
 
+describe("in-app member self-service submission", () => {
+  test("requires auth", async () => {
+    const t = newT();
+    await setupChapter(t);
+    await expect(
+      t.mutation(api.reimbursements.submitReimbursement, {
+        lines: [{ description: "Gaffer tape", amountCents: 1200 }],
+      }),
+    ).rejects.toBeInstanceOf(ConvexError);
+  });
+
+  test("requires a roster person (NO_PERSON) when the caller has no roster row", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await expect(
+      s.as.mutation(api.reimbursements.submitReimbursement, {
+        lines: [{ description: "Gaffer tape", amountCents: 1200 }],
+      }),
+    ).rejects.toBeInstanceOf(ConvexError);
+  });
+
+  test("creates a request anchored to the caller's own roster person, with a fund + correct total", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const person = await seedPerson(s, {
+      name: "Dana Rivers",
+      email: "dana@example.com",
+      userId: s.userId,
+    });
+    const fundId = await run(s.t, (ctx) =>
+      ctx.db.insert("funds", {
+        chapterId: s.chapterId,
+        name: "General",
+        restriction: "unrestricted",
+        sortOrder: 0,
+        createdAt: Date.now(),
+      }),
+    );
+
+    const { reference, reimbursementId } = await s.as.mutation(
+      api.reimbursements.submitReimbursement,
+      {
+        lines: [
+          { description: "Gaffer tape", amountCents: 1200, fundId },
+          { description: "Snacks", amountCents: 800, fundId },
+        ],
+      },
+    );
+    expect(reference).toMatch(/^RB-/);
+    // No secret token is ever handed to an authenticated submitter.
+    expect(reimbursementId).toBeTruthy();
+
+    const { req, lines } = await run(s.t, async (ctx) => {
+      const req = await ctx.db.get(reimbursementId);
+      const lines = await ctx.db
+        .query("reimbursementLineItems")
+        .withIndex("by_reimbursement", (q) =>
+          q.eq("reimbursementId", reimbursementId),
+        )
+        .collect();
+      return { req, lines };
+    });
+    expect(req?.status).toBe("submitted");
+    expect(req?.totalCents).toBe(2000);
+    // Identity is server-derived from the caller's roster row — never trusted
+    // from the client — and prefilled from it (SoD anchors to this personId).
+    expect(req?.personId).toBe(person);
+    expect(req?.payeeName).toBe("Dana Rivers");
+    expect(req?.payeeEmail).toBe("dana@example.com");
+    expect(lines.length).toBe(2);
+    expect(lines.every((l) => l.fundId === fundId)).toBe(true);
+  });
+
+  test("the ask-for-pre-approval flag lands in pending_preapproval", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await seedPerson(s, {
+      name: "Dana Rivers",
+      email: "dana@example.com",
+      userId: s.userId,
+    });
+    const { reimbursementId } = await s.as.mutation(
+      api.reimbursements.submitReimbursement,
+      {
+        requestPreApproval: true,
+        lines: [{ description: "Gaffer tape", amountCents: 1200 }],
+      },
+    );
+    const req = await run(s.t, (ctx) => ctx.db.get(reimbursementId));
+    expect(req?.status).toBe("pending_preapproval");
+  });
+
+  test("rejects non-integer and negative line cents", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await seedPerson(s, { name: "Dana Rivers", userId: s.userId });
+    for (const bad of [12.5, 0, -100]) {
+      await expect(
+        s.as.mutation(api.reimbursements.submitReimbursement, {
+          lines: [{ description: "x", amountCents: bad }],
+        }),
+      ).rejects.toBeInstanceOf(ConvexError);
+    }
+  });
+
+  test("a client-supplied name/email override display only — never the requester's identity", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const person = await seedPerson(s, {
+      name: "Dana Rivers",
+      email: "dana@example.com",
+      userId: s.userId,
+    });
+    const { reimbursementId } = await s.as.mutation(
+      api.reimbursements.submitReimbursement,
+      {
+        payeeName: "D. Rivers",
+        payeeEmail: "dana+work@example.com",
+        lines: [{ description: "Gaffer tape", amountCents: 1200 }],
+      },
+    );
+    const req = await run(s.t, (ctx) => ctx.db.get(reimbursementId));
+    // Display overrides win…
+    expect(req?.payeeName).toBe("D. Rivers");
+    expect(req?.payeeEmail).toBe("dana+work@example.com");
+    // …but the SoD-anchoring personId is always the caller's own roster row.
+    expect(req?.personId).toBe(person);
+  });
+
+  test("myReimbursements returns only the caller's own requests, no token", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await setSlug(s, "nyc");
+    await seedPerson(s, {
+      name: "Dana Rivers",
+      email: "dana@example.com",
+      userId: s.userId,
+    });
+    // Someone else's public submission shouldn't show up in Dana's list.
+    await submitTwoLine(s, "nyc", { payeeEmail: "other@example.com" });
+    await s.as.mutation(api.reimbursements.submitReimbursement, {
+      lines: [{ description: "Gaffer tape", amountCents: 1200 }],
+    });
+
+    const mine = await s.as.query(api.reimbursements.myReimbursements, {});
+    expect(mine.length).toBe(1);
+    expect(mine[0].totalCents).toBe(1200);
+    expect(JSON.stringify(mine)).not.toContain("token");
+  });
+
+  test("newRequestOptions prefills from the caller's roster row and lists active funds", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await seedPerson(s, {
+      name: "Dana Rivers",
+      email: "dana@example.com",
+      userId: s.userId,
+    });
+    await run(s.t, (ctx) =>
+      ctx.db.insert("funds", {
+        chapterId: s.chapterId,
+        name: "General",
+        restriction: "unrestricted",
+        sortOrder: 0,
+        createdAt: Date.now(),
+      }),
+    );
+    const options = await s.as.query(api.reimbursements.newRequestOptions, {});
+    expect(options.defaultPayeeName).toBe("Dana Rivers");
+    expect(options.defaultPayeeEmail).toBe("dana@example.com");
+    expect(options.funds.map((f) => f.name)).toEqual(["General"]);
+  });
+});
+
 describe("separation of duties", () => {
   test("the requester cannot approve their own request", async () => {
     const t = newT();
