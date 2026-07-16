@@ -8,7 +8,7 @@
  * pure presentation over that contract.
  */
 import { useMemo } from "react";
-import { Text, View } from "react-native";
+import { Pressable, Text, View } from "react-native";
 import type { FunctionReturnType } from "convex/server";
 import { api } from "@events-os/convex/_generated/api";
 import { formatCents } from "@events-os/shared";
@@ -18,11 +18,13 @@ import {
   Cell,
   EmptyState,
   HeaderCell,
+  Icon,
   Row,
   SectionHeader,
   Table,
   TableHeader,
 } from "../../ui";
+import { colors } from "../../../lib/theme";
 import {
   AiCodingBanner,
   BudgetBar,
@@ -40,26 +42,34 @@ type ChapterDash = FunctionReturnType<typeof api.finances.dashboardChapter>;
 type ProjectBudget = ChapterDash["oneTimeBudgets"][number];
 type RecurringBudget = ChapterDash["recurringBudgets"][number];
 type RecentTxn = ChapterDash["recentTransactions"][number];
-// The backend always returns `attention: []` today (populated in Phases 3+5),
-// so its inferred element type collapses to `never` — pin it to the contract.
-type Attention = {
-  kind: string;
-  title: string;
-  badgeCount: number;
-  detail: string;
-  actionLabel: string;
-};
+type Attention = ChapterDash["attention"][number];
 
 export function ChapterView({
   data,
   onNewBudget,
   onEditBudget,
   onAddTransaction,
+  onAttentionAction,
+  isDrilldown = false,
 }: {
   data: ChapterDash;
   onNewBudget: () => void;
   onEditBudget: (budgetId: string) => void;
   onAddTransaction: () => void;
+  /** Navigate for an attention row's action (`a.kind`: "reimbursements" → the
+   *  Reimbursements tab, "cards" → the Cards tab). */
+  onAttentionAction: (kind: string) => void;
+  /**
+   * True while a central viewer is drilled into a chapter that ISN'T their
+   * own (see finances/index.tsx). Every write action here — "New budget",
+   * "Add transaction" — resolves to the CALLER's own chapter server-side
+   * (`requireChapterId`, no chapterId arg), so offering them while viewing a
+   * different chapter would silently write to the wrong place. Drill-down is
+   * read-only: hide the write actions, and the attention queue's "Review"
+   * action (it navigates to the caller's OWN reimbursements/cards tab, not
+   * this chapter's).
+   */
+  isDrilldown?: boolean;
 }) {
   const needsReview = data.recentTransactions.filter(
     (t) => txnStatusTone(t.status).label === "Needs review",
@@ -108,14 +118,20 @@ export function ChapterView({
         title="Recurring buckets"
         count="monthly · quarterly · yearly"
         right={
-          <Button title="New budget" icon="plus" size="sm" onPress={onNewBudget} />
+          isDrilldown ? undefined : (
+            <Button title="New budget" icon="plus" size="sm" onPress={onNewBudget} />
+          )
         }
       />
       {data.recurringBudgets.length === 0 ? (
         <EmptyState
           title="No recurring buckets"
           message="Create a monthly, quarterly, or yearly budget for a team or category."
-          action={<Button title="New budget" icon="plus" size="sm" onPress={onNewBudget} />}
+          action={
+            isDrilldown ? undefined : (
+              <Button title="New budget" icon="plus" size="sm" onPress={onNewBudget} />
+            )
+          }
         />
       ) : (
         <View className="flex-row flex-wrap gap-3">
@@ -133,13 +149,15 @@ export function ChapterView({
         title="Recent transactions"
         count={needsReview > 0 ? `${needsReview} need review` : undefined}
         right={
-          <Button
-            title="Add transaction"
-            icon="plus"
-            size="sm"
-            variant="secondary"
-            onPress={onAddTransaction}
-          />
+          isDrilldown ? undefined : (
+            <Button
+              title="Add transaction"
+              icon="plus"
+              size="sm"
+              variant="secondary"
+              onPress={onAddTransaction}
+            />
+          )
         }
       />
       {data.recentTransactions.length === 0 ? (
@@ -147,7 +165,9 @@ export function ChapterView({
           title="No transactions yet"
           message="Charges and manual entries show up here as they land."
           action={
-            <Button title="Add transaction" icon="plus" size="sm" onPress={onAddTransaction} />
+            isDrilldown ? undefined : (
+              <Button title="Add transaction" icon="plus" size="sm" onPress={onAddTransaction} />
+            )
           }
         />
       ) : (
@@ -175,8 +195,12 @@ export function ChapterView({
                 {needsBudget > 0 ? (
                   <NeedsBudgetCard count={needsBudget} />
                 ) : null}
-                {(data.attention as Attention[]).map((a, i) => (
-                  <AttentionCard key={i} a={a} />
+                {data.attention.map((a, i) => (
+                  <AttentionCard
+                    key={i}
+                    a={a}
+                    onPress={isDrilldown ? undefined : () => onAttentionAction(a.kind)}
+                  />
                 ))}
               </View>
             )}
@@ -392,9 +416,13 @@ function NeedsBudgetCard({ count }: { count: number }) {
 }
 
 // ── Attention card ───────────────────────────────────────────────────────────
-function AttentionCard({ a }: { a: Attention }) {
-  return (
-    <View className="flex-row items-center gap-3 rounded-lg border border-border bg-raised p-4 shadow-card">
+// `onPress` is omitted while drilled into another chapter — the target tabs
+// (Reimbursements / Cards) are hard-scoped to the CALLER's own chapter, so
+// "Review" would silently act on the wrong chapter's queue. Renders as an
+// inert row with a note instead of a live nav action.
+function AttentionCard({ a, onPress }: { a: Attention; onPress?: () => void }) {
+  const content = (
+    <>
       <View className="h-9 min-w-[36px] items-center justify-center rounded-pill bg-accent-soft px-2">
         <Text className="text-sm font-bold text-accent" style={{ fontVariant: ["tabular-nums"] }}>
           {a.badgeCount}
@@ -402,9 +430,34 @@ function AttentionCard({ a }: { a: Attention }) {
       </View>
       <View className="flex-1">
         <Text className="text-sm font-semibold text-ink">{a.title}</Text>
-        <Text className="text-xs text-muted">{a.detail}</Text>
+        <Text className="text-xs text-muted">
+          {onPress ? a.detail : `${a.detail} · switch chapters to act on this`}
+        </Text>
       </View>
-      <Badge label={a.actionLabel} tone="accent" />
-    </View>
+      {onPress ? (
+        <>
+          <Badge label={a.actionLabel} tone="accent" />
+          <Icon name="chevron-right" size={16} color={colors.muted} />
+        </>
+      ) : null}
+    </>
+  );
+
+  if (!onPress) {
+    return (
+      <View className="flex-row items-center gap-3 rounded-lg border border-border bg-raised p-4 shadow-card opacity-70">
+        {content}
+      </View>
+    );
+  }
+
+  return (
+    <Pressable
+      onPress={onPress}
+      accessibilityRole="button"
+      className="flex-row items-center gap-3 rounded-lg border border-border bg-raised p-4 shadow-card active:bg-sunken web:hover:border-border-strong"
+    >
+      {content}
+    </Pressable>
   );
 }

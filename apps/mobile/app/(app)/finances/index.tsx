@@ -16,11 +16,12 @@
  * renders only the Dashboard body.
  */
 import { useEffect, useRef, useState } from "react";
-import { ActivityIndicator, View } from "react-native";
+import { ActivityIndicator, Text, View } from "react-native";
 import { useQuery } from "convex/react";
+import { useRouter } from "expo-router";
 import { api } from "@events-os/convex/_generated/api";
 import type { Id } from "@events-os/convex/_generated/dataModel";
-import { EmptyState, Narrow, Screen } from "../../../components/ui";
+import { Button, EmptyState, Narrow, Screen } from "../../../components/ui";
 import { colors } from "../../../lib/theme";
 import {
   FinanceBoundary,
@@ -78,6 +79,7 @@ function NoFinanceAccess() {
 }
 
 function DashboardBody() {
+  const router = useRouter();
   const now = new Date();
   const [ym, setYm] = useState({ year: now.getFullYear(), month: now.getMonth() + 1 });
   const [period, setPeriod] = useState<DashPeriodMode>("month");
@@ -85,6 +87,14 @@ function DashboardBody() {
   // null = still probing, true/false = whether the caller is central.
   const [centralAvailable, setCentralAvailable] = useState<boolean | null>(null);
   const touchedRef = useRef(false);
+
+  // Central → chapter drill-down: viewing a DIFFERENT chapter's dashboard than
+  // the caller's own (set via the "By chapter" row's tap in Central; the
+  // backend re-checks central reach on every `dashboardChapter` call).
+  const [drilldown, setDrilldown] = useState<{
+    chapterId: Id<"chapters">;
+    chapterName: string;
+  } | null>(null);
 
   const [budgetModal, setBudgetModal] = useState<{
     open: boolean;
@@ -100,7 +110,29 @@ function DashboardBody() {
 
   function choose(p: Perspective) {
     touchedRef.current = true;
+    setDrilldown(null); // a manual perspective pick always means "my own chapter"
     setPerspective(p);
+  }
+
+  function viewChapter(chapterId: Id<"chapters">, chapterName: string) {
+    touchedRef.current = true;
+    setDrilldown({ chapterId, chapterName });
+    setPerspective("chapter");
+  }
+
+  function backToCentral() {
+    setDrilldown(null);
+    setPerspective("central");
+  }
+
+  // Attention-row actions: both kinds live on their own finance tab, hard-
+  // scoped to the CALLER's own chapter — never call this while drilled into a
+  // different chapter (ChapterView already hides the action in that state;
+  // this is a defensive no-op, not the primary guard).
+  function onAttentionAction(kind: string) {
+    if (drilldown) return;
+    if (kind === "reimbursements") router.navigate("/finances/reimbursements" as never);
+    else if (kind === "cards") router.navigate("/finances/cards" as never);
   }
 
   const options: { key: Perspective; label: string }[] = [
@@ -130,20 +162,37 @@ function DashboardBody() {
               period={period}
               show={perspective === "central"}
               onAvailable={() => setCentralAvailable(true)}
+              onViewChapter={viewChapter}
             />
           </FinanceBoundary>
         ) : null}
 
         {perspective === "chapter" ? (
           <FinanceBoundary fallback={<NoFinanceAccess />}>
+            {drilldown ? (
+              <View className="mb-3 flex-row items-center justify-between gap-3 rounded-lg border border-border bg-raised px-4 py-2.5">
+                <Text className="flex-1 text-sm text-ink" numberOfLines={1}>
+                  Viewing {drilldown.chapterName}&rsquo;s dashboard
+                </Text>
+                <Button
+                  title="Back to Central"
+                  size="sm"
+                  variant="ghost"
+                  onPress={backToCentral}
+                />
+              </View>
+            ) : null}
             <ChapterSection
+              chapterId={drilldown?.chapterId}
               ym={ym}
               period={period}
+              isDrilldown={drilldown != null}
               onNewBudget={() => setBudgetModal({ open: true, id: null })}
               onEditBudget={(id) =>
                 setBudgetModal({ open: true, id: id as Id<"budgets"> })
               }
               onAddTransaction={() => setTxnModalOpen(true)}
+              onAttentionAction={onAttentionAction}
             />
           </FinanceBoundary>
         ) : null}
@@ -179,11 +228,13 @@ function CentralSection({
   period,
   show,
   onAvailable,
+  onViewChapter,
 }: {
   ym: { year: number; month: number };
   period: DashPeriodMode;
   show: boolean;
   onAvailable: () => void;
+  onViewChapter: (chapterId: Id<"chapters">, chapterName: string) => void;
 }) {
   const data = useQuery(api.finances.dashboardCentral, { ...ym, period });
   useEffect(() => {
@@ -191,23 +242,29 @@ function CentralSection({
   }, [data, onAvailable]);
   if (!show) return null;
   if (data === undefined) return <LoadingBlock />;
-  return <CentralView data={data} />;
+  return <CentralView data={data} onViewChapter={onViewChapter} />;
 }
 
 function ChapterSection({
+  chapterId,
   ym,
   period,
+  isDrilldown,
   onNewBudget,
   onEditBudget,
   onAddTransaction,
+  onAttentionAction,
 }: {
+  chapterId: Id<"chapters"> | undefined;
   ym: { year: number; month: number };
   period: DashPeriodMode;
+  isDrilldown: boolean;
   onNewBudget: () => void;
   onEditBudget: (budgetId: string) => void;
   onAddTransaction: () => void;
+  onAttentionAction: (kind: string) => void;
 }) {
-  const data = useQuery(api.finances.dashboardChapter, { ...ym, period });
+  const data = useQuery(api.finances.dashboardChapter, { chapterId, ...ym, period });
   if (data === undefined) return <LoadingBlock />;
   return (
     <ChapterView
@@ -215,6 +272,8 @@ function ChapterSection({
       onNewBudget={onNewBudget}
       onEditBudget={onEditBudget}
       onAddTransaction={onAddTransaction}
+      onAttentionAction={onAttentionAction}
+      isDrilldown={isDrilldown}
     />
   );
 }
