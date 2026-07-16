@@ -68,7 +68,7 @@ export function CardPhilosophy() {
                 </Text>
               </View>
               <Text className="text-xs text-muted">
-                Used the church card for a personal expense by mistake? Flag it
+                Used the Public Worship card for a personal expense by mistake? Flag it
                 and repay in one tap — from your own{" "}
                 <Text className="font-semibold text-ink">debit card</Text> or{" "}
                 <Text className="font-semibold text-ink">bank (ACH)</Text>. The
