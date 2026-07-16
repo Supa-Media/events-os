@@ -21,6 +21,7 @@ import {
   PROJECT_STATUS_LABELS,
   type ProjectStatus,
 } from "@events-os/shared";
+import { getBudgetForRef } from "./finances";
 
 export const TOKEN_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 /** Reuse an existing token only while it still has this long to live — a
@@ -139,6 +140,11 @@ export const pageData = internalQuery({
         };
       }),
     );
+    // WP-U2: the planned budget reads the budget ROW (single source of
+    // truth), not the entity's mirror field.
+    const budgetRow = await getBudgetForRef(ctx, "project", project._id);
+    const budgetUsd =
+      budgetRow && budgetRow.amountCents > 0 ? budgetRow.amountCents / 100 : null;
     return {
       personId: row.personId,
       personName: person?.name ?? null,
@@ -149,7 +155,7 @@ export const pageData = internalQuery({
         status: project.status,
         deadline: project.deadline ?? null,
         startDate: project.startDate ?? null,
-        budgetUsd: project.budgetUsd ?? null,
+        budgetUsd,
         blocker: project.blocker ?? null,
         ownerName: owner?.name ?? null,
         parentName: parent?.name ?? null,

@@ -24,7 +24,12 @@ import {
   canViewChapterWork,
 } from "./lib/org";
 import { requireCentralReach } from "./lib/centralReach";
-import { createProjectBudget, hasBudgetForRef } from "./finances";
+import {
+  assertIntegerCents,
+  createProjectBudget,
+  getBudgetForRef,
+  setBudgetAmount,
+} from "./finances";
 
 const projectStatus = v.union(...PROJECT_STATUSES.map((s) => v.literal(s)));
 
@@ -230,10 +235,22 @@ export const list = query({
       const author = await ctx.db.get(last.authorPersonId);
       authorName.set(last.authorPersonId, author?.name ?? null);
     }
+    // WP-U2 ("the budgets row is the single source of truth"): the card's
+    // budget figure reads the budget ROW (via `by_ref`), not the project's
+    // own `budgetUsd` field — that field is now only a transition-period
+    // MIRROR (see `setBudgetAmount`). No row → no budget entered yet, same as
+    // the field being unset.
+    const budgetRows = await Promise.all(
+      visible.map((p) => getBudgetForRef(ctx, "project", p._id)),
+    );
     return visible.map((p, i) => {
       const last = lasts[i];
+      const budgetRow = budgetRows[i];
+      const budgetUsd =
+        budgetRow && budgetRow.amountCents > 0 ? budgetRow.amountCents / 100 : undefined;
       return {
         ...p,
+        budgetUsd,
         lastComment: last
           ? {
               body: last.body,
@@ -290,8 +307,15 @@ export const get = query({
     const parent = project.parentProjectId
       ? await ctx.db.get(project.parentProjectId)
       : null;
+    // WP-U2 ("the budgets row is the single source of truth"): read the
+    // budget ROW rather than trusting `project.budgetUsd`, which is now only
+    // a transition-period MIRROR (see `setBudgetAmount`).
+    const budgetRow = await getBudgetForRef(ctx, "project", projectId);
+    const budgetUsd =
+      budgetRow && budgetRow.amountCents > 0 ? budgetRow.amountCents / 100 : undefined;
     return {
       ...project,
+      budgetUsd,
       canManage,
       ownerName: ownerPerson?.name ?? null,
       parentName: parent?.name ?? null,
@@ -665,6 +689,9 @@ export const update = mutation({
 
     const fields: Record<string, unknown> = {};
     for (const [key, value] of Object.entries(patch)) {
+      // `budgetUsd` is handled separately below (WP-U2 routes it through the
+      // budget row when one exists) — never written here directly.
+      if (key === "budgetUsd") continue;
       // null = explicit clear (store undefined); undefined = leave unchanged.
       if (value !== undefined) fields[key] = value === null ? undefined : value;
     }
@@ -686,44 +713,80 @@ export const update = mutation({
         createdAt: Date.now(),
       });
     }
+
+    // WP-U2 ("the budgets row is the single source of truth"): once a budget
+    // row already exists for this project, an amount edit here writes
+    // THROUGH to the row via the shared `setBudgetAmount` helper (also used
+    // by the finance-side `updateBudget` edit) — it patches the row's
+    // `amountCents` AND mirrors the dollar amount back onto
+    // `projects.budgetUsd` in the same call, so the two can never drift
+    // apart. `fields.budgetUsd` is only set directly here when there's NO row
+    // yet — the D8 trigger below then decides whether this edit is enough
+    // money to summon one.
+    // WP-3.2: an amount INCREASE on an approved budget should retrigger
+    // approval — hook that check in here once budget approval ships.
+    let wroteThroughToBudget = false;
+    let existingBudget: Awaited<ReturnType<typeof getBudgetForRef>> = null;
+    if (patch.budgetUsd !== undefined) {
+      existingBudget = await getBudgetForRef(ctx, "project", projectId);
+      if (existingBudget) {
+        wroteThroughToBudget = true;
+      } else {
+        // Branch consistency (review fix): the row branch below rejects a
+        // negative amount via `setBudgetAmount`'s `assertIntegerCents` —
+        // validate the same way here, BEFORE writing straight to the field,
+        // so an invalid amount can't slip through just because no row exists
+        // yet to catch it.
+        const nextCents = patch.budgetUsd != null ? Math.round(patch.budgetUsd * 100) : 0;
+        assertIntegerCents(nextCents, "Budget amount");
+        fields.budgetUsd = patch.budgetUsd ?? undefined;
+      }
+    }
+
     fields.updatedAt = Date.now();
     await ctx.db.patch(projectId, fields);
+    if (wroteThroughToBudget && existingBudget) {
+      const nextCents = patch.budgetUsd != null ? Math.round(patch.budgetUsd * 100) : 0;
+      await setBudgetAmount(ctx, existingBudget._id, nextCents);
+    }
 
     // WP-3.4 edit-path trigger (owner rule: "budgets summoned by dollar
-    // entry") — entering a POSITIVE budgetUsd on a project that had none
-    // (unset, 0, or negative) summons its budget now, same shape/tag as the
-    // create-time hook, unless one already exists (`by_ref` check — a create
-    // hook or a backfill run may have already made one; a project that
-    // pre-dates the owner rule can also already carry a zero-amount budget
-    // from before the fix). Clearing/lowering budgetUsd never deletes an
-    // existing budget — money already tracked against it stays; see
+    // entry") — entering a POSITIVE budgetUsd on a project with no row
+    // summons one now, same shape/tag as the create-time hook. Review fix:
+    // this used to ALSO require the entity's OLD field to have been
+    // unset/0/negative (a "transition" guard) — but that compared the
+    // incoming amount against the entity's own (possibly already-positive)
+    // field, not against "does a row exist." A row-less project whose field
+    // was already positive could never re-trigger this once its field was
+    // positive — "field set, no row" was a dead state no further edit could
+    // heal (see `finances.healRowlessEntityBudgets` for the sweep that heals
+    // pre-existing instances). Dropping the old-value condition means ANY
+    // positive incoming amount with no existing row summons one,
+    // unconditionally. Never reached when `wroteThroughToBudget` is true — a
+    // row already existed, so the write above already handled it (no
+    // `by_ref` re-check needed: the lookup above already answered "does a
+    // budget exist"). Clearing/lowering budgetUsd never deletes an existing
+    // budget — money already tracked against it stays; see
     // `removeEmptyAutoBudgets` for the separate ops cleanup of pre-rule
     // zero-amount budgets.
-    if (
-      patch.budgetUsd != null &&
-      patch.budgetUsd > 0 &&
-      (project.budgetUsd == null || project.budgetUsd <= 0)
-    ) {
-      const alreadyHasBudget = await hasBudgetForRef(ctx, "project", projectId);
-      if (!alreadyHasBudget) {
-        const budgetUserId = (await requireUserId(ctx)) as Id<"users">;
-        await createProjectBudget(
-          ctx,
-          {
-            _id: projectId,
-            chapterId: project.chapterId,
-            name:
-              patch.name !== undefined && patch.name.trim()
-                ? patch.name.trim()
-                : project.name,
-            startDate:
-              patch.startDate !== undefined ? (patch.startDate ?? undefined) : project.startDate,
-            createdAt: project.createdAt,
-            budgetUsd: patch.budgetUsd,
-          },
-          budgetUserId,
-        );
-      }
+    if (!wroteThroughToBudget && patch.budgetUsd != null && patch.budgetUsd > 0) {
+      const budgetUserId = (await requireUserId(ctx)) as Id<"users">;
+      await createProjectBudget(
+        ctx,
+        {
+          _id: projectId,
+          chapterId: project.chapterId,
+          name:
+            patch.name !== undefined && patch.name.trim()
+              ? patch.name.trim()
+              : project.name,
+          startDate:
+            patch.startDate !== undefined ? (patch.startDate ?? undefined) : project.startDate,
+          createdAt: project.createdAt,
+          budgetUsd: patch.budgetUsd,
+        },
+        budgetUserId,
+      );
     }
 
     // Record the audit trail last, so a rejected patch never leaves a log.

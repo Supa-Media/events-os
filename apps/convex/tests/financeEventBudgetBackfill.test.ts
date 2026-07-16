@@ -579,7 +579,7 @@ describe("events.updateDetails: edit-path trigger summons a budget on 0 → posi
     expect(ev?.budget).toBeUndefined();
   });
 
-  test("does not create a duplicate budget when one already exists (by_ref check)", async () => {
+  test("does not create a duplicate budget when one already exists (by_ref check) — WP-U2: the edit writes THROUGH to the existing row instead", async () => {
     const t = newT();
     const s = await setupChapter(t);
     const { eventId } = await seedEvent(s, { name: "Pre-existing Event Budget", budget: undefined });
@@ -601,7 +601,11 @@ describe("events.updateDetails: edit-path trigger summons a budget on 0 → posi
     await s.as.mutation(api.events.updateDetails, { eventId, budget: 700 });
 
     const rows = await eventBudgetsFor(s, eventId);
-    expect(rows.length).toBe(1);
-    expect(rows[0].budget.amountCents).toBe(0);
+    expect(rows.length).toBe(1); // no duplicate created
+    // WP-U2: the budgets row is the single source of truth — the edit writes
+    // THROUGH to the pre-existing row instead of leaving it untouched.
+    expect(rows[0].budget.amountCents).toBe(70000);
+    const ev = await run(s.t, (ctx) => ctx.db.get(eventId));
+    expect(ev?.budget).toBe(700); // mirrored back onto the entity field
   });
 });
