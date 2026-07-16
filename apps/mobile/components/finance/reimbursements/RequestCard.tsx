@@ -107,6 +107,13 @@ export function RequestCard({
               {row.lineItemCount}{" "}
               {row.lineItemCount === 1 ? "line item" : "line items"}
             </Text>
+            {row.verifiedRosterName ? (
+              <Text className="mt-0.5 text-xs text-muted">
+                {row.verifiedRosterName === row.requesterName
+                  ? "Verified roster identity"
+                  : `Roster: ${row.verifiedRosterName}`}
+              </Text>
+            ) : null}
           </View>
         </View>
         <View className="items-end gap-1.5">

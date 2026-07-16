@@ -285,6 +285,13 @@ export const reimbursementRequests = defineTable({
   payeeEmail: v.optional(v.string()),
   payeePhone: v.optional(v.string()),
   personId: v.optional(v.id("people")),
+  // True ONLY for the authenticated in-app submit path (`submitReimbursement`),
+  // where `personId` is server-derived from the caller's OWN roster row — not
+  // the public path's best-effort phone/email match. Lets the approval queue
+  // show the verified roster identity alongside a `payeeName`/`payeeEmail`
+  // override, so a member can't quietly submit under a more-trustworthy name
+  // without the approver seeing who's really asking.
+  identityVerified: v.optional(v.boolean()),
 
   purpose: v.optional(v.string()),
   // What the spend was for (categorization is per line item).

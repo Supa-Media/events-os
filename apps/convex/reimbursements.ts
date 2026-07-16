@@ -32,6 +32,11 @@
  *  - ANTI-DOUBLE-COUNT: the reimbursement PAYOUT (a `transfer` transaction) is
  *    Phase 4 — this file NEVER creates transactions. A line's
  *    `matchedTransactionId` (set elsewhere) links it to an already-synced txn.
+ *  - `payeeName`/`payeeEmail` are editable display fields, NOT the SoD anchor
+ *    (`personId` is). On the authenticated in-app path `identityVerified` is
+ *    set, so `list`/`get` also surface the real roster name behind the
+ *    override (`verifiedRosterName`) — an approver always sees who's really
+ *    asking, even if the display name doesn't match the roster.
  *  - All failures throw `ConvexError` (never a plain `Error`).
  */
 import {
@@ -300,6 +305,24 @@ async function fundName(
   return fund?.name ?? null;
 }
 
+/**
+ * The real roster identity behind an in-app submission, or null. Only
+ * populated when `identityVerified` is set (the authenticated `submitReimbursement`
+ * path) — the public path's `personId` is a best-effort phone/email match, not
+ * a verified identity, so it's deliberately never surfaced here. Lets the
+ * approval queue show both "submitted as" (the editable `payeeName`) and the
+ * real, server-derived requester, so an override can't misrepresent who's
+ * asking.
+ */
+async function verifiedRosterName(
+  ctx: QueryCtx,
+  req: Doc<"reimbursementRequests">,
+): Promise<string | null> {
+  if (!req.identityVerified || !req.personId) return null;
+  const person = await ctx.db.get(req.personId);
+  return person?.name ?? null;
+}
+
 /** Best-effort match of a public claimant to a chapter roster person, so the
  *  approval flow can enforce separation of duties. Phone first, then email
  *  (the PCO-matching convention). Bounded read of the (small) roster. */
@@ -349,6 +372,10 @@ async function createReimbursement(
     bankAccountLast4?: string;
     requestPreApproval?: boolean;
     personId: Id<"people"> | null;
+    /** True only when `personId` is a server-verified identity (the
+     *  authenticated in-app path) rather than the public path's best-effort
+     *  phone/email match. Drives `identityVerified` on the row. */
+    identityVerified?: boolean;
     lines: SubmitLine[];
   },
 ): Promise<{
@@ -430,6 +457,7 @@ async function createReimbursement(
     payeeEmail,
     payeePhone,
     personId: input.personId ?? undefined,
+    identityVerified: input.identityVerified === true ? true : undefined,
     purpose,
     totalCents,
     bankAccountLast4,
@@ -575,6 +603,9 @@ export const submitReimbursement = mutation({
       bankAccountLast4: args.bankAccountLast4,
       requestPreApproval: args.requestPreApproval,
       personId,
+      // This IS the authenticated path — `personId` above came from
+      // `resolveCallerPersonId`, the caller's own verified roster row.
+      identityVerified: true,
       lines: args.lines,
     });
     // No token returned — an authenticated member tracks status in-app via
@@ -786,6 +817,10 @@ export const list = query({
           _id: req._id,
           reference: referenceFor(req._id),
           requesterName: req.payeeName,
+          // The real roster name behind an authenticated submission, when it
+          // differs from an editable `payeeName` override — null on the
+          // public path (no verified identity exists there). See Important #1.
+          verifiedRosterName: await verifiedRosterName(ctx, req),
           requesterType: await requesterType(ctx, req.personId),
           avatarInitials: initials(req.payeeName),
           submittedDate: req.submittedAt ?? req.createdAt,
@@ -819,6 +854,9 @@ export const get = query({
       payeeName: request.payeeName,
       payeeEmail: request.payeeEmail ?? null,
       payeePhone: request.payeePhone ?? null,
+      // See `list` — the verified roster name behind an authenticated
+      // submission, or null (including on the public path).
+      verifiedRosterName: await verifiedRosterName(ctx, request),
       purpose: request.purpose ?? null,
       requesterType: await requesterType(ctx, request.personId),
       totalCents: request.totalCents,
