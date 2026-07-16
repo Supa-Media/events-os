@@ -18,6 +18,7 @@ export function BulkBar({
   onSetBudget,
   onMarkReconciled,
   onClear,
+  hideCategory = false,
 }: {
   count: number;
   categoryItems: PickerItem[];
@@ -26,6 +27,9 @@ export function BulkBar({
   onSetBudget: (budgetId: string | null) => void;
   onMarkReconciled: () => void;
   onClear: () => void;
+  // WP-2.1: hide "Set category" in central scope — central txns have no
+  // categories (chapter-only), so only Budget + Mark Reconciled apply.
+  hideCategory?: boolean;
 }) {
   return (
     <View className="mb-3 flex-row flex-wrap items-center gap-3 rounded-lg border border-accent bg-accent-soft px-4 py-2.5">
@@ -33,11 +37,13 @@ export function BulkBar({
         {count} selected
       </Text>
       <View className="flex-row flex-wrap items-center gap-2">
-        <BulkPicker
-          label="Set category"
-          items={categoryItems}
-          onPick={onSetCategory}
-        />
+        {!hideCategory ? (
+          <BulkPicker
+            label="Set category"
+            items={categoryItems}
+            onPick={onSetCategory}
+          />
+        ) : null}
         <BulkPicker
           label="Set budget"
           items={budgetItems}

@@ -50,6 +50,7 @@ import {
   formatCents,
   matchesMode,
   financeRoleAtLeast,
+  FINANCE_ROLE_LABELS,
   type BudgetType,
   type BudgetRefKind,
 } from "@events-os/shared";
@@ -66,6 +67,7 @@ import {
   requireFinanceCentral,
   getFinanceRole,
   defaultFundId,
+  type FinanceScope,
 } from "./lib/finance";
 import { requireSuperuser } from "./lib/superuser";
 import { viewerPerson } from "./lib/org";
@@ -468,7 +470,9 @@ function assertIntegerCents(amountCents: number, label = "Amount"): void {
  */
 async function requireInCallerChapter<T extends "funds" | "budgetCategories" | "financeTeams" | "budgets" | "budgetTags" | "transactions" | "events" | "projects" | "people">(
   ctx: QueryCtx,
-  chapterId: Id<"chapters">,
+  // A real chapter, or the org level (`"central"`) for a central-scoped verify
+  // (e.g. attributing a central-owned txn to a central budget) — WP-2.1.
+  chapterId: FinanceScope,
   table: T,
   id: Id<T>,
   label: string,
@@ -524,7 +528,10 @@ function inPeriod(
  */
 async function loadPeriodTxns(
   ctx: QueryCtx,
-  chapterId: Id<"chapters">,
+  // A real chapter, or `"central"` to read CENTRAL-owned txns (WP-2.1). The
+  // `by_chapter_and_postedAt` index keys on the string, so the sentinel reads
+  // back exactly the central-owned rows and nothing else.
+  chapterId: FinanceScope,
   year: number,
   sandboxMode: boolean,
   month?: number,
@@ -1670,6 +1677,12 @@ export const dashboardCentral = query({
     let orgUnattributedCents = 0;
     let activeChapters = 0;
     let toReviewOrg = 0;
+    // Running sum of CHAPTER spend explicitly linked to a central budget — the
+    // amount partitioned OUT of each chapter's own row (below) and INTO the
+    // Central row. Kept disjoint from central-OWNED spend (a real chapter's
+    // txns can never be `chapterId:"central"`), so the Central row never
+    // double-counts (WP-2.1).
+    let chapterLinkedToCentralCents = 0;
 
     const chapterRollup: (typeof chapterRollupRow.type)[] = [];
     // Across-chapter by-tag aggregation, keyed by (kind, name) so same-named
@@ -1704,15 +1717,15 @@ export const dashboardCentral = query({
       // surfaced only in the "Central" row below (see the partition comment
       // where `centralBudgetIds` is built). Without this exclusion the same
       // txn is double-counted: once here, once in the Central row.
-      const chapterOwnSpendCents =
-        chapterPeriodSpend -
-        dashTxns.reduce(
-          (s, tr) =>
-            isSpend(tr) && tr.budgetId != null && centralBudgetIds.has(tr.budgetId)
-              ? s + tr.amountCents
-              : s,
-          0,
-        );
+      const linkedToCentralThisChapter = dashTxns.reduce(
+        (s, tr) =>
+          isSpend(tr) && tr.budgetId != null && centralBudgetIds.has(tr.budgetId)
+            ? s + tr.amountCents
+            : s,
+        0,
+      );
+      chapterLinkedToCentralCents += linkedToCentralThisChapter;
+      const chapterOwnSpendCents = chapterPeriodSpend - linkedToCentralThisChapter;
 
       // Month-equivalent budget allocation (monthly→amount, quarterly→÷3,
       // yearly→÷12, per-instance→in-period only) — comparable to one month of
@@ -1824,13 +1837,45 @@ export const dashboardCentral = query({
       });
     }
 
-    // "Central" row (WP-0.3): central-scoped spend, alongside the chapter
-    // rows. Today central has no transactions of its own (Phase 2) — its
-    // spend IS the sum of every central budget's linked actuals above, which
-    // is already aggregated across every chapter's txns via the `by_budget`
-    // index (each chapter's own `centralLinkedCents`, summed org-wide). No
-    // separate scan needed: reuse the `centralBudgets` totals just computed.
-    const centralRowSpentCents = centralBudgets.reduce((s, b) => s + b.spentCents, 0);
+    // CENTRAL-OWNED transactions (WP-2.1): txns whose `chapterId` IS the
+    // `"central"` sentinel — money that belongs to central directly, not to any
+    // chapter. Read once via the same period index (keyed on the string), then
+    // narrowed to the dashboard period. These are DISJOINT from every chapter's
+    // txns (a real chapter's rows can never carry `chapterId:"central"`), so
+    // adding them double-counts nothing.
+    const centralOwnedPeriodTxns = await loadPeriodTxns(ctx, CENTRAL, year, sandboxMode);
+    const centralOwnedDashTxns = centralOwnedPeriodTxns.filter((tr) =>
+      inDashRange(tr.postedAt, dp),
+    );
+    const centralOwnedSpendCents = sumSpend(centralOwnedDashTxns);
+    // Central-owned spend is real money — it belongs in the org-wide "Spent"
+    // tile and the org Unattributed sum, exactly like a chapter's spend does.
+    totalMonthSpendCents += centralOwnedSpendCents;
+    orgUnattributedCents += centralOwnedDashTxns.reduce(
+      (s, tr) => (isSpend(tr) && tr.budgetId == null ? s + tr.amountCents : s),
+      0,
+    );
+    // Central-owned unreviewed txns count toward the org "to review" tile too —
+    // they are reconcilable at the central desk (see `listReconcile`).
+    const centralUnreviewed = await ctx.db
+      .query("transactions")
+      .withIndex("by_chapter_and_status", (q) =>
+        q.eq("chapterId", CENTRAL).eq("status", "unreviewed"),
+      )
+      .take(ROLLUP_SCAN_LIMIT);
+    toReviewOrg += centralUnreviewed.length;
+
+    // "Central" row (WP-0.3 + WP-2.1): the spend that BELONGS to central. Two
+    // disjoint parts, summed with no double-count:
+    //   (1) central-OWNED spend — every `chapterId:"central"` txn's spend,
+    //       whether or not it's linked to a central budget; PLUS
+    //   (2) chapter spend LINKED to a central budget — the amount partitioned
+    //       out of each chapter row above (`chapterLinkedToCentralCents`).
+    // (1) and (2) can never overlap: (1) is central-owned rows, (2) is
+    // real-chapter rows. NOTE: this is NOT `Σ centralBudgets[].spentCents` —
+    // that sum omits central-owned txns with no budget link and would drop a
+    // central-owned txn that IS linked (already inside (1)), so it's replaced.
+    const centralRowSpentCents = centralOwnedSpendCents + chapterLinkedToCentralCents;
     const centralRowBudgetCents = centralBudgets.reduce((s, b) => s + b.budgetCents, 0);
     const centralRow: (typeof chapterRollupRow.type) = {
       chapterId: CENTRAL,
@@ -3623,7 +3668,14 @@ export const listTransactions = query({
  * pill.
  */
 export const listReconcile = query({
-  args: { filter: v.optional(reconcileFilterValidator) },
+  args: {
+    filter: v.optional(reconcileFilterValidator),
+    // WP-2.1: `scope:"central"` reconciles CENTRAL-owned txns instead of the
+    // caller's chapter — the central desk's Reconcile. Requires central reach
+    // (mirrors `dashboardChapter`'s optional-chapterId central drill-down).
+    // Absent → the caller's own chapter, exactly as before.
+    scope: v.optional(v.literal("central")),
+  },
   returns: v.object({ rows: v.array(reconcileRow), counts: reconcileCounts }),
   handler: async (ctx, args) => {
     const filter = args.filter ?? "all";
@@ -3634,15 +3686,24 @@ export const listReconcile = query({
       uncategorized: 0,
       ready: 0,
     };
-    const chapterId = await readChapterId(ctx);
-    if (!chapterId) return { rows: [], counts: zero };
-    await requireFinanceRole(ctx, chapterId, "viewer");
+    const homeChapterId = await readChapterId(ctx);
+    if (!homeChapterId) return { rows: [], counts: zero };
+    // Resolve the reconcile scope: central (org-wide reach) or the caller's
+    // own chapter (viewer). Central-owned txns key on the `"central"` sentinel.
+    let scope: FinanceScope;
+    if (args.scope === "central") {
+      await requireFinanceCentral(ctx, homeChapterId);
+      scope = CENTRAL;
+    } else {
+      await requireFinanceRole(ctx, homeChapterId, "viewer");
+      scope = homeChapterId;
+    }
 
     const sandboxMode = await readSandbox(ctx);
     const all = (
       await ctx.db
         .query("transactions")
-        .withIndex("by_chapter_and_postedAt", (q) => q.eq("chapterId", chapterId))
+        .withIndex("by_chapter_and_postedAt", (q) => q.eq("chapterId", scope))
         .order("desc")
         .take(ROLLUP_SCAN_LIMIT)
     )
@@ -3783,6 +3844,44 @@ async function verifyTxnRefs(
     await requireInCallerChapter(ctx, chapterId, "people", refs.personId, "Person");
 }
 
+/**
+ * Load a transaction for a RECONCILE WRITE and authorize the caller at the
+ * txn's own scope (WP-2.1). A chapter-owned txn requires the caller's `min`
+ * finance role in that chapter (unchanged from `requireInCallerChapter`); a
+ * CENTRAL-owned txn (`chapterId:"central"`) requires central reach
+ * (`requireFinanceCentral`) AND the same `min` role rank — `requireFinanceCentral`
+ * only checks central REACH (any central grant, including a viewer-only one),
+ * so without the extra rank check a central-scoped VIEWER could perform
+ * reconcile writes on central txns while a chapter viewer is correctly
+ * blocked. Returns the txn, the caller's home chapter (for fund defaults
+ * etc.), and the txn's `FinanceScope`. Mirrors how `dashboardChapter`'s
+ * optional-chapterId drill-down re-checks central reach (#131).
+ */
+async function requireReconcileTxn(
+  ctx: MutationCtx,
+  transactionId: Id<"transactions">,
+  min: "viewer" | "bookkeeper" | "manager",
+): Promise<{ txn: Doc<"transactions">; homeChapterId: Id<"chapters">; scope: FinanceScope }> {
+  const homeChapterId = (await requireChapterId(ctx)) as Id<"chapters">;
+  const txn = (await ctx.db.get(transactionId)) as Doc<"transactions"> | null;
+  const notFound = () =>
+    new ConvexError({ code: "NOT_FOUND", message: "Transaction not found in your chapter." });
+  if (!txn) throw notFound();
+  if (txn.chapterId === CENTRAL) {
+    const access = await requireFinanceCentral(ctx, homeChapterId);
+    if (!financeRoleAtLeast(access.role, min)) {
+      throw new ConvexError({
+        code: "FORBIDDEN",
+        message: `This action needs at least the ${FINANCE_ROLE_LABELS[min]} finance role.`,
+      });
+    }
+    return { txn, homeChapterId, scope: CENTRAL };
+  }
+  await requireFinanceRole(ctx, homeChapterId, min);
+  if (txn.chapterId !== homeChapterId) throw notFound();
+  return { txn, homeChapterId, scope: txn.chapterId };
+}
+
 export const createManualTransaction = mutation({
   args: {
     flow: flowValidator,
@@ -3797,14 +3896,50 @@ export const createManualTransaction = mutation({
     eventId: v.optional(v.id("events")),
     teamId: v.optional(v.id("financeTeams")),
     personId: v.optional(v.id("people")),
+    // WP-2.1: create a CENTRAL-owned txn (`chapterId:"central"`) instead of a
+    // chapter one — requires central reach. Mirrors `createBudget`'s `central`
+    // flag. Central txns carry no chapter-scoped links (funds/categories/
+    // projects/events/teams/person are chapter-only), so those args are rejected.
+    central: v.optional(v.boolean()),
   },
   returns: v.id("transactions"),
   handler: async (ctx, args) => {
-    const chapterId = (await requireChapterId(ctx)) as Id<"chapters">;
-    await requireFinanceRole(ctx, chapterId, "bookkeeper");
+    const homeChapterId = (await requireChapterId(ctx)) as Id<"chapters">;
     assertIntegerCents(args.amountCents);
-    await verifyTxnRefs(ctx, chapterId, args);
     const userId = (await requireUserId(ctx)) as Id<"users">;
+    if (args.central) {
+      // Central desk: org-wide reach, and NONE of the chapter-scoped links
+      // apply (central has no funds/categories/projects/events/teams; a person
+      // is a chapter roster row). Reject them loudly rather than silently drop.
+      await requireFinanceCentral(ctx, homeChapterId);
+      if (
+        args.fundId || args.categoryId || args.projectId ||
+        args.eventId || args.teamId || args.personId
+      ) {
+        throw new ConvexError({
+          code: "UNSUPPORTED",
+          message:
+            "A central transaction can't carry chapter-scoped links (fund/category/project/event/team/person).",
+        });
+      }
+      return await ctx.db.insert("transactions", {
+        chapterId: CENTRAL,
+        source: args.source ?? "manual",
+        flow: args.flow,
+        amountCents: args.amountCents,
+        currency: "usd",
+        postedAt: args.postedAt,
+        description: args.description,
+        merchantName: args.merchantName,
+        // Central has no funds (WP-1.4/2.1) — stays fund-less, unreviewed.
+        status: "unreviewed",
+        createdBy: userId,
+        createdAt: Date.now(),
+      });
+    }
+    const chapterId = homeChapterId;
+    await requireFinanceRole(ctx, chapterId, "bookkeeper");
+    await verifyTxnRefs(ctx, chapterId, args);
     // Categorized on entry when a fund/category was EXPLICITLY supplied, else
     // unreviewed — computed before the silent fund default below so the fund
     // auto-fill (no UI ever sends one) never fakes a real categorization.
@@ -3848,24 +3983,31 @@ export const categorizeTransaction = mutation({
   },
   returns: v.null(),
   handler: async (ctx, args) => {
-    const chapterId = (await requireChapterId(ctx)) as Id<"chapters">;
-    await requireFinanceRole(ctx, chapterId, "bookkeeper");
-    const txn = await requireInCallerChapter(
-      ctx,
-      chapterId,
-      "transactions",
-      args.transactionId,
-      "Transaction",
-    );
-    await verifyTxnRefs(ctx, chapterId, {
-      fundId: args.fundId ?? undefined,
-      categoryId: args.categoryId ?? undefined,
-      projectId: args.projectId ?? undefined,
-      eventId: args.eventId ?? undefined,
-      teamId: args.teamId ?? undefined,
-    });
+    // Scope-aware (WP-2.1): a central-owned txn is authorized at central reach,
+    // a chapter txn at the caller's bookkeeper role in its chapter.
+    const { txn, scope } = await requireReconcileTxn(ctx, args.transactionId, "bookkeeper");
+    if (scope === CENTRAL) {
+      // Central txns carry no chapter-scoped links — only a central budget.
+      if (args.fundId || args.categoryId || args.projectId || args.eventId || args.teamId) {
+        throw new ConvexError({
+          code: "UNSUPPORTED",
+          message:
+            "A central transaction can only be attributed to a central budget, not chapter-scoped links.",
+        });
+      }
+    } else {
+      await verifyTxnRefs(ctx, scope, {
+        fundId: args.fundId ?? undefined,
+        categoryId: args.categoryId ?? undefined,
+        projectId: args.projectId ?? undefined,
+        eventId: args.eventId ?? undefined,
+        teamId: args.teamId ?? undefined,
+      });
+    }
     if (args.budgetId) {
-      await requireInCallerChapter(ctx, chapterId, "budgets", args.budgetId, "Budget", {
+      // Verify against the txn's OWN scope: a central budget for a central txn;
+      // the chapter's own or a central budget for a chapter txn (allowCentral).
+      await requireInCallerChapter(ctx, scope, "budgets", args.budgetId, "Budget", {
         allowCentral: true,
       });
     }
@@ -3880,13 +4022,19 @@ export const categorizeTransaction = mutation({
     // Default the fund to the chapter's General Fund when the client omits it and
     // the txn isn't already coded to one. The reconcile grid hides the fund
     // selector (coding = category + budget only), so this keeps every coded txn
-    // attached to a real fund without the UI having to pass it.
-    if (args.fundId === undefined && txn.fundId == null) {
-      const def = await defaultFundId(ctx, chapterId);
+    // attached to a real fund without the UI having to pass it. Central txns have
+    // no fund (WP-2.1) — skip the default for them.
+    if (scope !== CENTRAL && args.fundId === undefined && txn.fundId == null) {
+      const def = await defaultFundId(ctx, scope);
       if (def) patch.fundId = def;
     }
-    // Advance an unreviewed transaction to categorized once coded.
-    const nowCoded = (patch.fundId ?? txn.fundId) || (patch.categoryId ?? txn.categoryId);
+    // Advance an unreviewed transaction to categorized once coded. For a chapter
+    // txn "coded" = fund/category; a central txn is coded by its central budget
+    // link (its only attribution).
+    const nowCoded =
+      (patch.fundId ?? txn.fundId) ||
+      (patch.categoryId ?? txn.categoryId) ||
+      (scope === CENTRAL && args.budgetId != null);
     if (nowCoded && txn.status === "unreviewed") patch.status = "categorized";
     // A human just categorized this manually — clear any stored AI suggestion
     // so it can never later resurface via `acceptSuggestion` and clobber this.
@@ -3906,40 +4054,52 @@ export const bulkCategorize = mutation({
   },
   returns: v.object({ updated: v.number() }),
   handler: async (ctx, args) => {
-    const chapterId = (await requireChapterId(ctx)) as Id<"chapters">;
-    await requireFinanceRole(ctx, chapterId, "bookkeeper");
-    await verifyTxnRefs(ctx, chapterId, {
-      fundId: args.fundId ?? undefined,
-      categoryId: args.categoryId ?? undefined,
-    });
-    if (args.budgetId) {
-      await requireInCallerChapter(ctx, chapterId, "budgets", args.budgetId, "Budget", {
-        allowCentral: true,
-      });
-    }
-    // Same silent-default-to-General-Fund rule as `categorizeTransaction`
-    // (computed once — every row in the batch shares the same chapter).
-    const fallbackFundId =
-      args.fundId === undefined ? await defaultFundId(ctx, chapterId) : null;
+    // Per-row scope resolution (WP-2.1): a bulk selection is normally all one
+    // scope, but resolving each row's scope keeps mixed selections correct — a
+    // central row authorizes at central reach, a chapter row at bookkeeper.
+    // Fund defaults are memoized per scope (central → none).
+    const fundDefaultByScope = new Map<FinanceScope, Id<"funds"> | null>();
+    const resolveFundDefault = async (scope: FinanceScope) => {
+      if (fundDefaultByScope.has(scope)) return fundDefaultByScope.get(scope)!;
+      const def = await defaultFundId(ctx, scope);
+      fundDefaultByScope.set(scope, def);
+      return def;
+    };
     let updated = 0;
     for (const id of args.transactionIds) {
-      const txn = await requireInCallerChapter(
-        ctx,
-        chapterId,
-        "transactions",
-        id,
-        "Transaction",
-      );
+      const { txn, scope } = await requireReconcileTxn(ctx, id, "bookkeeper");
+      if (scope === CENTRAL && (args.fundId || args.categoryId)) {
+        throw new ConvexError({
+          code: "UNSUPPORTED",
+          message:
+            "A central transaction can't take a chapter fund/category — only a central budget.",
+        });
+      } else if (scope !== CENTRAL) {
+        await verifyTxnRefs(ctx, scope, {
+          fundId: args.fundId ?? undefined,
+          categoryId: args.categoryId ?? undefined,
+        });
+      }
+      if (args.budgetId) {
+        // Verify against the row's OWN scope (a central budget for a central
+        // row; the chapter's own or a central budget for a chapter row).
+        await requireInCallerChapter(ctx, scope, "budgets", args.budgetId, "Budget", {
+          allowCentral: true,
+        });
+      }
       const patch = cleanPatch({
         fundId: args.fundId,
         categoryId: args.categoryId,
         budgetId: args.budgetId,
       });
-      if (args.fundId === undefined && txn.fundId == null && fallbackFundId) {
-        patch.fundId = fallbackFundId;
+      if (scope !== CENTRAL && args.fundId === undefined && txn.fundId == null) {
+        const fallbackFundId = await resolveFundDefault(scope);
+        if (fallbackFundId) patch.fundId = fallbackFundId;
       }
       const nowCoded =
-        (patch.fundId ?? txn.fundId) || (patch.categoryId ?? txn.categoryId);
+        (patch.fundId ?? txn.fundId) ||
+        (patch.categoryId ?? txn.categoryId) ||
+        (scope === CENTRAL && args.budgetId != null);
       if (nowCoded && txn.status === "unreviewed") patch.status = "categorized";
       // A human just categorized this manually — clear any stored AI suggestion
       // so it can never later resurface via `acceptSuggestion` and clobber this.
@@ -3955,15 +4115,8 @@ export const setTransactionStatus = mutation({
   args: { transactionId: v.id("transactions"), status: statusValidator },
   returns: v.null(),
   handler: async (ctx, args) => {
-    const chapterId = (await requireChapterId(ctx)) as Id<"chapters">;
-    await requireFinanceRole(ctx, chapterId, "bookkeeper");
-    await requireInCallerChapter(
-      ctx,
-      chapterId,
-      "transactions",
-      args.transactionId,
-      "Transaction",
-    );
+    // Scope-aware (WP-2.1): central-owned txns are reconcilable at central reach.
+    await requireReconcileTxn(ctx, args.transactionId, "bookkeeper");
     // A human just acted on this transaction's status manually — clear any
     // stored AI suggestion so it can never later resurface via
     // `acceptSuggestion` and clobber whatever state this call put it in.
@@ -3997,21 +4150,41 @@ export const attachReceipt = mutation({
   returns: v.null(),
   handler: async (ctx, args) => {
     const chapterId = (await requireChapterId(ctx)) as Id<"chapters">;
-    const txn = await requireInCallerChapter(
-      ctx,
-      chapterId,
-      "transactions",
-      args.transactionId,
-      "Transaction",
-    );
-    const access = await getFinanceRole(ctx, chapterId);
-    const isOwnTxn = access.personId != null && access.personId === txn.personId;
-    if (!isOwnTxn && !financeRoleAtLeast(access.role, "bookkeeper")) {
+    const txn = (await ctx.db.get(args.transactionId)) as Doc<"transactions"> | null;
+    if (!txn) {
       throw new ConvexError({
-        code: "FORBIDDEN",
-        message:
-          "Only the transaction's own person or a bookkeeper can attach a receipt.",
+        code: "NOT_FOUND",
+        message: "Transaction not found in your chapter.",
       });
+    }
+    if (txn.chapterId === CENTRAL) {
+      // A central-owned txn's receipt is central-desk territory (no cardholder
+      // "own txn" path — central issues no cards). Gate on central reach AND
+      // the bookkeeper rank (requireFinanceCentral alone only checks reach,
+      // not role — see requireReconcileTxn for the same fix).
+      const access = await requireFinanceCentral(ctx, chapterId);
+      if (!financeRoleAtLeast(access.role, "bookkeeper")) {
+        throw new ConvexError({
+          code: "FORBIDDEN",
+          message: `This action needs at least the ${FINANCE_ROLE_LABELS.bookkeeper} finance role.`,
+        });
+      }
+    } else {
+      if (txn.chapterId !== chapterId) {
+        throw new ConvexError({
+          code: "NOT_FOUND",
+          message: "Transaction not found in your chapter.",
+        });
+      }
+      const access = await getFinanceRole(ctx, chapterId);
+      const isOwnTxn = access.personId != null && access.personId === txn.personId;
+      if (!isOwnTxn && !financeRoleAtLeast(access.role, "bookkeeper")) {
+        throw new ConvexError({
+          code: "FORBIDDEN",
+          message:
+            "Only the transaction's own person or a bookkeeper can attach a receipt.",
+        });
+      }
     }
     await ctx.db.patch(args.transactionId, {
       receiptStorageId: args.storageId,
@@ -4032,15 +4205,11 @@ export const flagPersonal = mutation({
   args: { transactionId: v.id("transactions"), isPersonal: v.boolean() },
   returns: v.null(),
   handler: async (ctx, args) => {
-    const chapterId = (await requireChapterId(ctx)) as Id<"chapters">;
-    await requireFinanceRole(ctx, chapterId, "bookkeeper");
-    await requireInCallerChapter(
-      ctx,
-      chapterId,
-      "transactions",
-      args.transactionId,
-      "Transaction",
-    );
+    // Scope-aware (WP-2.1): keeps central-owned txns writable at central reach
+    // rather than dead-ending; personal-charge flagging is really a chapter/
+    // cardholder concern, but the scope gate must not leave central txns
+    // untouchable by the central desk.
+    await requireReconcileTxn(ctx, args.transactionId, "bookkeeper");
     // A personal charge is excluded from spend until repaid (`isPersonal`
     // already drops it from SPEND totals; no status change needed).
     await ctx.db.patch(args.transactionId, { isPersonal: args.isPersonal });

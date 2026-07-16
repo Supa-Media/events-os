@@ -62,6 +62,7 @@ export function ReconcileList({
   selected,
   onToggle,
   onToggleAll,
+  centralScope = false,
 }: {
   rows: TxnRow[];
   categoryItems: PickerItem[];
@@ -70,13 +71,22 @@ export function ReconcileList({
   selected: Set<string>;
   onToggle: (id: string) => void;
   onToggleAll: () => void;
+  // WP-2.1: reconciling CENTRAL-owned txns. Central money carries no
+  // chapter-scoped links (funds/categories/projects/events are chapter-only), so
+  // the Category + Link columns are hidden — central coding is Budget + Status.
+  centralScope?: boolean;
 }) {
   const allSelected = rows.length > 0 && rows.every((r) => selected.has(r.id));
+  // Drop the chapter-only columns' width in central scope so the grid doesn't
+  // leave dead space where Category / Link used to be.
+  const width = centralScope
+    ? TABLE_WIDTH - COLS.category - COLS.link
+    : TABLE_WIDTH;
 
   return (
     <View className="overflow-hidden rounded-lg border border-border bg-raised shadow-card">
       <ScrollView horizontal showsHorizontalScrollIndicator={false}>
-        <View style={{ width: Math.max(TABLE_WIDTH, 320) }}>
+        <View style={{ width: Math.max(width, 320) }}>
           {/* Column header */}
           <View className="flex-row items-center border-b border-border bg-sunken">
             <View
@@ -89,9 +99,13 @@ export function ReconcileList({
             <GridHeaderCell label="Date" width={COLS.date} />
             <GridHeaderCell label="Amount" width={COLS.amount} />
             <GridHeaderCell label="Cardholder" width={COLS.cardholder} />
-            <GridHeaderCell label="Category" width={COLS.category} />
+            {!centralScope ? (
+              <GridHeaderCell label="Category" width={COLS.category} />
+            ) : null}
             <GridHeaderCell label="Budget" width={COLS.budget} />
-            <GridHeaderCell label="Link" width={COLS.link} />
+            {!centralScope ? (
+              <GridHeaderCell label="Link" width={COLS.link} />
+            ) : null}
             <GridHeaderCell label="Suggested" width={COLS.suggested} />
             <GridHeaderCell label="Receipt" width={COLS.receipt} />
             <GridHeaderCell label="Status" width={COLS.status} />
@@ -108,6 +122,7 @@ export function ReconcileList({
               selected={selected.has(row.id)}
               onToggle={() => onToggle(row.id)}
               isLast={i === rows.length - 1}
+              centralScope={centralScope}
             />
           ))}
         </View>
@@ -124,6 +139,7 @@ function ReconcileRow({
   selected,
   onToggle,
   isLast,
+  centralScope,
 }: {
   row: TxnRow;
   categoryItems: PickerItem[];
@@ -132,6 +148,7 @@ function ReconcileRow({
   selected: boolean;
   onToggle: () => void;
   isLast: boolean;
+  centralScope: boolean;
 }) {
   const categorize = useMutation(api.finances.categorizeTransaction);
   const setStatus = useMutation(api.finances.setTransactionStatus);
@@ -234,24 +251,27 @@ function ReconcileRow({
         )}
       </Cell>
 
-      {/* Category (inline dropdown) */}
-      <Cell width={COLS.category}>
-        <PickerCell
-          value={row.categoryId}
-          items={categoryItems}
-          placeholder="Uncategorized"
-          onChange={(value) =>
-            guard(
-              categorize({
-                transactionId: id,
-                categoryId: value as Id<"budgetCategories"> | null,
-              }),
-            )
-          }
-        />
-      </Cell>
+      {/* Category (inline dropdown) — chapter-only; central txns have none. */}
+      {!centralScope ? (
+        <Cell width={COLS.category}>
+          <PickerCell
+            value={row.categoryId}
+            items={categoryItems}
+            placeholder="Uncategorized"
+            onChange={(value) =>
+              guard(
+                categorize({
+                  transactionId: id,
+                  categoryId: value as Id<"budgetCategories"> | null,
+                }),
+              )
+            }
+          />
+        </Cell>
+      ) : null}
 
-      {/* Budget (inline dropdown; grouped Chapter / Central) */}
+      {/* Budget (inline dropdown; grouped Chapter / Central — central-only in
+          central scope) */}
       <Cell width={COLS.budget}>
         <PickerCell
           value={row.budgetId}
@@ -269,15 +289,19 @@ function ReconcileRow({
         />
       </Cell>
 
-      {/* Link (inline dropdown; grouped Events / Projects — "what was it for") */}
-      <Cell width={COLS.link}>
-        <PickerCell
-          value={linkValue}
-          items={linkItems}
-          placeholder="Unlinked"
-          onChange={onLinkChange}
-        />
-      </Cell>
+      {/* Link (inline dropdown; grouped Events / Projects — "what was it for").
+          Chapter-only; a central txn links to a central budget, not an event/
+          project (those are chapter-scoped). */}
+      {!centralScope ? (
+        <Cell width={COLS.link}>
+          <PickerCell
+            value={linkValue}
+            items={linkItems}
+            placeholder="Unlinked"
+            onChange={onLinkChange}
+          />
+        </Cell>
+      ) : null}
 
       {/* Suggested (AI auto-coding proposal + Accept — only present when the
           row is still unreviewed and the model proposed at least one link) */}

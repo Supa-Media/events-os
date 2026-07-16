@@ -59,7 +59,17 @@ export default function ReconcileScreen() {
   const [searchFocused, setSearchFocused] = useState(false);
   const [selected, setSelected] = useState<Set<string>>(new Set());
 
-  const reconcile = useQuery(api.finances.listReconcile, { filter });
+  // WP-2.1: central-seat holders can switch this grid to reconcile CENTRAL-owned
+  // txns. `mySeats` resolves their real seats; a central seat unlocks the toggle.
+  const seats = useQuery(api.financeRoles.mySeats, {}) ?? [];
+  const hasCentralSeat = seats.some((s) => s.scope === "central");
+  const [scope, setScope] = useState<"chapter" | "central">("chapter");
+  const centralScope = scope === "central" && hasCentralSeat;
+
+  const reconcile = useQuery(
+    api.finances.listReconcile,
+    centralScope ? { filter, scope: "central" as const } : { filter },
+  );
   // All chapter categories (no fund filter — coding is category + budget only).
   const categories = useQuery(api.finances.listCategories, {}) ?? [];
   const budgets = useQuery(api.finances.listBudgets) ?? [];
@@ -90,10 +100,18 @@ export default function ReconcileScreen() {
     [categories],
   );
 
-  // Budget picker items — "None" + budgets grouped under Chapter / Central.
+  // Budget picker items — "None" + budgets grouped under Chapter / Central. In
+  // central scope (WP-2.1) only central budgets are offered — a central-owned
+  // txn can't be attributed to a chapter budget (the backend rejects it).
   const budgetItems = useMemo<PickerItem[]>(() => {
-    const chapter = budgets.filter((b) => b.level === "chapter");
     const central = budgets.filter((b) => b.level === "central");
+    if (centralScope) {
+      return [
+        { value: "", label: "None" },
+        ...central.map((b) => ({ value: b.id, label: budgetName(b) })),
+      ];
+    }
+    const chapter = budgets.filter((b) => b.level === "chapter");
     return [
       { value: "", label: "None" },
       ...(chapter.length > 0
@@ -105,7 +123,7 @@ export default function ReconcileScreen() {
         : []),
       ...central.map((b) => ({ value: b.id, label: budgetName(b) })),
     ];
-  }, [budgets]);
+  }, [budgets, centralScope]);
 
   // Link picker items — "None" + events + projects, each under its own header.
   // Values are composite ("event:<id>" / "project:<id>") so one dropdown can
@@ -225,6 +243,24 @@ export default function ReconcileScreen() {
                 : `${toClear} to clear`}
             </Text>
           </View>
+
+          {/* Scope toggle — central-seat holders switch between reconciling
+              their chapter's money and CENTRAL-owned money (WP-2.1). */}
+          {hasCentralSeat ? (
+            <View className="mb-3 flex-row items-center gap-2">
+              {(["chapter", "central"] as const).map((s) => (
+                <Pill
+                  key={s}
+                  label={s === "chapter" ? "My chapter" : "Central"}
+                  selected={scope === s}
+                  onPress={() => {
+                    setScope(s);
+                    clearSelection();
+                  }}
+                />
+              ))}
+            </View>
+          ) : null}
           <Text className="mb-4 text-sm text-muted">
             Code each charge to a category and budget, confirm the receipt, and
             mark it reconciled. Edit any cell inline.
@@ -286,6 +322,7 @@ export default function ReconcileScreen() {
             onSetBudget={bulkSetBudget}
             onMarkReconciled={bulkMarkReconciled}
             onClear={clearSelection}
+            hideCategory={centralScope}
           />
         ) : null}
 
@@ -316,6 +353,7 @@ export default function ReconcileScreen() {
             selected={selected}
             onToggle={toggle}
             onToggleAll={toggleAll}
+            centralScope={centralScope}
           />
         )}
       </Screen>
