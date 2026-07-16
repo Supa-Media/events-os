@@ -53,6 +53,7 @@ import {
   cardAuthorizations,
   approvalPolicy,
   approvals,
+  reattributionAudit,
   financeRoles,
   specializedRoles,
   webhookEvents,
@@ -201,6 +202,9 @@ const schema = defineSchema({
   cardAuthorizations,
   approvalPolicy,
   approvals,
+  // Append-only ledger of bulk reattribution / project-transfer operations (the
+  // retroactive-split audit trail, WP-2.2). Org-level: keyed on the destination.
+  reattributionAudit,
   financeRoles,
   // Leadership + finance titles at central/chapter scope (super-admin managed,
   // scope-local separation of duties; finance_manager bridges to a finance role).

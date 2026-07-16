@@ -173,12 +173,24 @@ jump ahead.
 
 ## 4. Rollback / safety
 
-- **Every bulk op writes an audit row** — `who`, `when`, `from → to`, and the exact
-  txn ids touched. Nothing in this runbook is a silent mutation.
-- **Reassignment is reversible.** If a batch from §3(b) or §3(c) turns out wrong,
-  re-run the same operation with the `from`/`to` targets swapped, scoped to the same
-  txn ids from the audit row. This is a normal, expected recovery path — don't treat
-  a bad batch as a crisis, just reverse it and re-bucket.
+- **Every bulk op writes an audit row** — `who`, `when`, `from → to`, the exact txn
+  ids touched, and a `priorStates` snapshot of each txn's EXACT pre-move attribution
+  (fund/category/project/event/team/person, captured in the same mutation before the
+  move clears anything). Nothing in this runbook is a silent mutation.
+- **Reassignment is undoable via `restoreReattribution`, not via a swapped-target
+  re-run.** Reattribution is lossy by design — category is always cleared, fund is
+  reset, project/event/team/person are cleared on a move to central — so re-running
+  `reassignTransactions`/`transferProjectScope` with `from`/`to` swapped only puts
+  `chapterId` back; it does **not** restore the coding that got cleared along the
+  way. To actually undo a batch: find its audit row (`listReattributionAudit` or the
+  Accounts/Reconcile audit view), then run the `restoreReattribution` ops function
+  (`run-convex-function` workflow) with that audit row's id — it patches every
+  snapshotted txn back to its exact prior state. This is a normal, expected recovery
+  path — don't treat a bad batch as a crisis, just restore it and re-bucket.
+- **Project transfers round-trip safely.** `transferProjectScope` discovers a
+  project's budgets independent of which scope currently owns them, so a reverse
+  transfer (e.g. chapter → central → back to chapter) moves both the budgets and
+  the linked transactions back — nothing gets stranded at the intermediate scope.
 - **Nothing here deletes money data.** Reassignment moves `chapterId`/scope
   pointers; it never deletes a `transactions`, `budgets`, or `projects` row. If
   something looks wrong, the ground truth is still there to re-derive from.

@@ -552,3 +552,50 @@ export function easternParts(ts: number): {
 export function quarterOfMonth(month: number): number {
   return Math.floor((month - 1) / 3) + 1;
 }
+
+// ── Split reattribution heuristics (WP-2.2) ──────────────────────────────────
+// The playbook's boundary rules for the retroactive split (Phase 2). These are
+// SUGGESTION heuristics only — `suggestSplitAssignments` uses them to bucket a
+// chapter's history into "likely central" vs "likely chapter"; a human always
+// confirms before `reassignTransactions` moves anything. Kept here (not inline)
+// so the boundary list is one editable constant the owner can tune per the
+// City Launch Playbook, never a magic string buried in a query.
+
+/**
+ * Merchant-name keywords that suggest a CENTRAL charge (org-wide spend the
+ * playbook keeps at central: expansion, conference, brand). A case-insensitive
+ * substring match on `transactions.merchantName` (or `description`) proposes
+ * "central". Editable — add the org's real recurring central merchants here.
+ */
+export const CENTRAL_MERCHANT_KEYWORDS: readonly string[] = [
+  "expansion",
+  "conference",
+  "brand",
+  "city launch",
+  "training",
+];
+
+/**
+ * Project-name keywords that mark a project as CENTRAL-owned (owner decision #2,
+ * 2026-07-16): the Music/recording project is organized ACROSS chapters, so it's
+ * central — the one explicit exception to "all NY projects transfer to the
+ * chapter". A case-insensitive substring match on the project name proposes
+ * "central" for that project's txns; every other project defaults to "chapter".
+ * The UI exposes the full project list so a human can override per-project.
+ */
+export const CENTRAL_PROJECT_KEYWORDS: readonly string[] = ["music", "record"];
+
+/** Case-insensitive: does `text` contain ANY of `keywords`? (Empty → false.) */
+export function matchesAnyKeyword(
+  text: string | null | undefined,
+  keywords: readonly string[],
+): boolean {
+  if (!text) return false;
+  const haystack = text.toLowerCase();
+  return keywords.some((k) => haystack.includes(k.toLowerCase()));
+}
+
+/** The max number of transaction ids one bulk-reattribution call accepts. The
+ *  UI paginates larger split runs; a hard cap keeps a single mutation bounded
+ *  (invariant: reads/writes stay bounded). */
+export const REASSIGN_BATCH_CAP = 200;

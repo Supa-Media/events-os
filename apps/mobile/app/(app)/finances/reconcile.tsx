@@ -122,7 +122,16 @@ function ReconcileGrid() {
 
   const bulkCategorize = useMutation(api.finances.bulkCategorize);
   const setStatus = useMutation(api.finances.setTransactionStatus);
+  const reassignTransactions = useMutation(api.finances.reassignTransactions);
   const { run, toast, dismiss } = useActionRunner();
+
+  // WP-2.2: the chapters a central caller may reassign money to/from. Only
+  // mounted for central-seat holders (the query is central-gated and throws
+  // otherwise) — chapter-only reconcilers skip it.
+  const reassignChapters = useQuery(
+    api.finances.reassignTargets,
+    hasCentralSeat ? {} : "skip",
+  );
 
   const rows = reconcile?.rows ?? [];
   const counts = reconcile?.counts;
@@ -167,6 +176,16 @@ function ReconcileGrid() {
       ...central.map((b) => ({ value: b.id, label: budgetName(b) })),
     ];
   }, [budgets, centralScope]);
+
+  // Reassign targets — "Central" + every active chapter (WP-2.2). Only built for
+  // central-seat holders; `undefined` hides the "Reassign to" action entirely.
+  const reassignItems = useMemo<PickerItem[] | undefined>(() => {
+    if (!hasCentralSeat) return undefined;
+    return [
+      { value: "central", label: "Central" },
+      ...(reassignChapters ?? []).map((c) => ({ value: c.id, label: c.name })),
+    ];
+  }, [hasCentralSeat, reassignChapters]);
 
   // Link picker items — "None" + events + projects, each under its own header.
   // Values are composite ("event:<id>" / "project:<id>") so one dropdown can
@@ -242,6 +261,21 @@ function ReconcileGrid() {
         }),
       { errorTitle: "Couldn't set budget" },
     );
+  }
+  async function bulkReassign(target: string | null) {
+    if (!target) return;
+    await run(
+      () =>
+        reassignTransactions({
+          transactionIds: bulkIds,
+          target:
+            target === "central"
+              ? ("central" as const)
+              : (target as Id<"chapters">),
+        }),
+      { errorTitle: "Couldn't reassign" },
+    );
+    clearSelection();
   }
   async function bulkMarkReconciled() {
     await run(
@@ -350,6 +384,8 @@ function ReconcileGrid() {
             onMarkReconciled={bulkMarkReconciled}
             onClear={clearSelection}
             hideCategory={centralScope}
+            reassignItems={reassignItems}
+            onReassign={hasCentralSeat ? bulkReassign : undefined}
           />
         ) : null}
 

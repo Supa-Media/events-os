@@ -146,7 +146,15 @@ export const budgets = defineTable({
   .index("by_chapter_and_period", ["chapterId", "year"])
   // Chapter-led so "budgets of type X" never matches another chapter's budgets.
   .index("by_chapter_and_type", ["chapterId", "type"])
-  .index("by_category", ["categoryId", "year"]);
+  .index("by_category", ["categoryId", "year"])
+  // Finds a one_time budget by what it's ATTACHED TO, independent of which
+  // chapter/central level currently owns it (WP-2.2 finding: `by_chapter`
+  // alone can't discover a project's budgets after they've moved scope — the
+  // project's OWN `chapterId` never changes, so scoping the lookup to it
+  // strands budgets that already transferred to central on a later reverse
+  // transfer). `transferProjectScope` uses this to find ALL of a project's
+  // budgets regardless of where they currently live.
+  .index("by_ref", ["refKind", "scopeRefId"]);
 
 // ── Budget tags (managed, level-scoped) ──────────────────────────────────────
 /** A managed tag definition on a budget LEVEL (a real chapter or `"central"`).
@@ -599,6 +607,65 @@ export const approvals = defineTable({
 })
   .index("by_chapter", ["chapterId"])
   .index("by_subject", ["subjectType", "subjectId"]);
+
+// ── Reattribution audit (the split's ledger) ─────────────────────────────────
+/** WP-2.2: one append-only row per BULK reattribution operation — the audit
+ *  trail behind the retroactive split. A bulk `reassignTransactions` (many txns
+ *  cross the central boundary) or a `transferProjectScope` (a project's budgets
+ *  + txns move scope) writes exactly ONE row here, capturing who, when, the txn
+ *  ids touched (count = `transactionIds.length`), and a from→to summary.
+ *
+ *  ORG-LEVEL by nature: reattribution is a CENTRAL power that crosses the
+ *  chapter boundary, so this table is NOT chapter-scoped like the rest of
+ *  finance — it keys on the destination `target` (a real chapter, or the
+ *  `"central"` sentinel) instead. The read query is central-gated. */
+export const reattributionAudit = defineTable({
+  // The kind of bulk operation this row records.
+  kind: v.union(v.literal("bulk_reassign"), v.literal("project_transfer")),
+  // Who did it: the auth user always; the roster person when the caller has one
+  // (a superuser acting without a `people` row leaves `actorPersonId` unset).
+  actorUserId: v.id("users"),
+  actorPersonId: v.optional(v.id("people")),
+  // The transactions moved by this operation (bounded per call; the count is the
+  // array length). For a project transfer these are the project's linked txns.
+  transactionIds: v.array(v.id("transactions")),
+  // The destination scope the whole operation moved money TO.
+  target: v.union(v.id("chapters"), v.literal("central")),
+  // A human-readable from→to summary, e.g. "New York (12), Central (1) → Central".
+  summary: v.string(),
+  // TRUE UNDO (WP-2.2 fix): one entry per moved txn, snapshotting its EXACT
+  // pre-move attribution (captured in the same mutation, before the
+  // reassignment patch clears anything). Reattribution is lossy — category is
+  // always cleared, fund is reset, project/event/team/person are cleared on a
+  // move to central — so a swapped-target re-run of the forward op only
+  // restores `chapterId`, not the coding it cleared. `restoreReattribution`
+  // reads this array to put every field back exactly as it was. 1:1 with
+  // `transactionIds` (same length, same order); bounded the same way the
+  // forward ops are (`REASSIGN_BATCH_CAP` / `ROLLUP_SCAN_LIMIT`).
+  priorStates: v.array(
+    v.object({
+      transactionId: v.id("transactions"),
+      chapterId: v.union(v.id("chapters"), v.literal("central")),
+      budgetId: v.optional(v.id("budgets")),
+      fundId: v.optional(v.id("funds")),
+      categoryId: v.optional(v.id("budgetCategories")),
+      projectId: v.optional(v.id("projects")),
+      eventId: v.optional(v.id("events")),
+      eventItemId: v.optional(v.id("eventItems")),
+      teamId: v.optional(v.id("financeTeams")),
+      personId: v.optional(v.id("people")),
+    }),
+  ),
+  // `project_transfer` only: the project whose scope moved + how many of its
+  // budgets moved with it (txn count is `transactionIds.length`).
+  projectId: v.optional(v.id("projects")),
+  budgetsMoved: v.optional(v.number()),
+  // Optional operator note (why this split move was made).
+  note: v.optional(v.string()),
+  createdAt: v.number(),
+})
+  .index("by_created", ["createdAt"])
+  .index("by_target", ["target"]);
 
 // ── Finance roles (graded, per-person) ───────────────────────────────────────
 /** A caller's graded finance capability in a chapter (viewer < bookkeeper <
