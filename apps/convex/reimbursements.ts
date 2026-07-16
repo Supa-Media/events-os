@@ -42,7 +42,9 @@
 import {
   query,
   mutation,
+  action,
   internalQuery,
+  internalMutation,
   internalAction,
 } from "./_generated/server";
 import type { MutationCtx, QueryCtx } from "./_generated/server";
@@ -52,6 +54,7 @@ import { Doc, Id } from "./_generated/dataModel";
 import {
   REIMBURSEMENT_STATUSES,
   REIMBURSEMENT_STATUS_LABELS,
+  EXTERNAL_ACCOUNT_FUNDINGS,
   type ReimbursementStatus,
 } from "@events-os/shared";
 import { normalizeEmail, getUserEmail } from "./lib/access";
@@ -67,8 +70,13 @@ import {
   resolveCallerPersonId,
   assertSeparationOfDuties,
 } from "./lib/finance";
+import { assertRoutingNumber, assertAccountNumber } from "./increase";
 import { sendEmail, emailShell } from "./ticketingEmails";
 import { escapeHtml } from "./lib/html";
+
+const externalAccountFundingValidator = v.union(
+  ...EXTERNAL_ACCOUNT_FUNDINGS.map((f) => v.literal(f)),
+);
 
 // ── Enum validators (built from the shared tuple) ────────────────────────────
 const reimbursementStatusValidator = v.union(
@@ -100,6 +108,19 @@ const EDITABLE_STATUSES: readonly ReimbursementStatus[] = [
   "pending_preapproval",
   "preapproved",
   "submitted",
+];
+
+/** Statuses in which a bank DESTINATION may still be (re)linked. The editable
+ *  set PLUS `approved`: after a paid→returned ACH bounce, `reverseSettledPayout`
+ *  re-opens the reimbursement to `approved`, and most returns (R03/R04) are
+ *  wrong-account — the claimant MUST be able to fix the bad bank details that
+ *  caused the bounce. The destination is NOT part of what approval reviews
+ *  (managers only ever see the last-4), so relinking here changes nothing a
+ *  manager approved. Deliberately separate from `EDITABLE_STATUSES` so line-item
+ *  edits stay locked once approved. */
+const LINKABLE_STATUSES: readonly ReimbursementStatus[] = [
+  ...EDITABLE_STATUSES,
+  "approved",
 ];
 
 /** The pre-approval / pre-payout states. `reject` and `cancel` are only legal
@@ -863,6 +884,180 @@ export const attachPublicReceipt = mutation({
   },
 });
 
+// ── ACH destination capture (link a REAL bank account for payout) ────────────
+
+/** Shared arg shape for linking a real bank account — full routing + account
+ *  number (validated, never persisted raw) + an optional display name/funding
+ *  type override. */
+const linkBankAccountArgs = {
+  routingNumber: v.string(),
+  accountNumber: v.string(),
+  accountHolderName: v.optional(v.string()),
+  funding: v.optional(externalAccountFundingValidator),
+};
+
+/** A request must still be in a LINKABLE status (editable OR `approved`) to
+ *  (re)link its destination — `approved` is included so a claimant can fix bad
+ *  bank details after a bounce re-opens it. Throws when missing/not linkable. */
+function assertLinkable(
+  req: Doc<"reimbursementRequests"> | null,
+): Doc<"reimbursementRequests"> {
+  if (!req) {
+    throw new ConvexError({
+      code: "NOT_FOUND",
+      message: "We couldn't find that reimbursement.",
+    });
+  }
+  if (!LINKABLE_STATUSES.includes(req.status)) {
+    throw new ConvexError({
+      code: "NOT_EDITABLE",
+      message: "This reimbursement can no longer be edited.",
+    });
+  }
+  return req;
+}
+
+/** Patch a reimbursement's captured ACH destination once the Increase External
+ *  Account exists. A re-link replaces the prior destination (the latest one
+ *  wins) — e.g. a claimant fixing a typo'd account before it's paid. */
+export const attachExternalAccount = internalMutation({
+  args: {
+    reimbursementId: v.id("reimbursementRequests"),
+    externalAccountId: v.string(),
+    last4: v.string(),
+  },
+  handler: async (ctx, { reimbursementId, externalAccountId, last4 }) => {
+    // TOCTOU re-check: `begin*` verified the request was linkable, then a slow
+    // `createExternalAccount` ran. Re-verify the request is STILL linkable before
+    // stamping a destination — a concurrent pay could have advanced it to
+    // `paying`/`paid`, where a late destination change must NOT take. No-op cleanly.
+    const req = await ctx.db.get(reimbursementId);
+    if (!req || !LINKABLE_STATUSES.includes(req.status)) {
+      return null;
+    }
+    await ctx.db.patch(reimbursementId, {
+      externalAccountId,
+      bankAccountLast4: last4,
+      updatedAt: Date.now(),
+    });
+    return null;
+  },
+});
+
+/** Gate + resolve a PUBLIC (token-scoped) link target: must exist + still be
+ *  editable. Returns the fields the action needs (id + a display-name default). */
+export const beginLinkPublicBankAccount = internalQuery({
+  args: { token: v.string() },
+  handler: async (ctx, { token }) => {
+    const request = assertLinkable(await byToken(ctx, token));
+    return { reimbursementId: request._id, payeeName: request.payeeName };
+  },
+});
+
+/**
+ * Link a REAL bank account (routing + account number) to a PUBLIC, token-
+ * scoped reimbursement so its payout can be addressed by an actual Increase
+ * ACH transfer instead of degrading to a manual one. Creates an Increase
+ * External Account (`increase.createExternalAccount`) — the raw account
+ * number is NEVER persisted in Convex, only the returned reference id + a
+ * last-4 (`attachExternalAccount`). Ownership is proven by the secret `token`
+ * (the same precedent as `attachPublicReceipt`), never a client-supplied id.
+ *
+ * BEST-EFFORT: if the Increase call fails or isn't configured, the request is
+ * left exactly as it was (still fully submitted) — `linked:false` tells the
+ * form to show "we couldn't verify your bank details; a finance manager will
+ * follow up" rather than blocking submission. Valid only while the request is
+ * still editable (pre-payout).
+ */
+export const linkPublicBankAccount = action({
+  args: { token: v.string(), ...linkBankAccountArgs },
+  handler: async (ctx, args): Promise<{ linked: boolean }> => {
+    const routingNumber = assertRoutingNumber(args.routingNumber);
+    const accountNumber = assertAccountNumber(args.accountNumber);
+
+    const prep = await ctx.runQuery(
+      internal.reimbursements.beginLinkPublicBankAccount,
+      { token: args.token },
+    );
+
+    const created = await ctx.runAction(internal.increase.createExternalAccount, {
+      routingNumber,
+      accountNumber,
+      accountHolderName: (args.accountHolderName?.trim() || prep.payeeName).slice(
+        0,
+        200,
+      ),
+      funding: args.funding ?? "checking",
+    });
+    if (!created) return { linked: false };
+
+    await ctx.runMutation(internal.reimbursements.attachExternalAccount, {
+      reimbursementId: prep.reimbursementId,
+      externalAccountId: created.externalAccountId,
+      last4: created.last4,
+    });
+    return { linked: true };
+  },
+});
+
+/** Gate + resolve an AUTHENTICATED in-app link target: the request must exist,
+ *  still be editable, AND belong to the CALLER's own verified roster identity
+ *  — never someone else's. Identity is server-derived, never client-supplied
+ *  (mirrors `submitReimbursement`). */
+export const beginLinkBankAccount = internalMutation({
+  args: { reimbursementId: v.id("reimbursementRequests") },
+  handler: async (ctx, { reimbursementId }) => {
+    const chapterId = (await requireChapterId(ctx)) as Id<"chapters">;
+    const req = await ctx.db.get(reimbursementId);
+    await requireInChapter(ctx, chapterId, req, "Reimbursement");
+    const request = assertLinkable(req);
+    const callerPersonId = await resolveCallerPersonId(ctx, chapterId);
+    if (!request.identityVerified || request.personId !== callerPersonId) {
+      throw new ConvexError({
+        code: "FORBIDDEN",
+        message: "You can only link a bank account to your own reimbursement.",
+      });
+    }
+    return { reimbursementId: request._id, payeeName: request.payeeName };
+  },
+});
+
+/**
+ * Link a REAL bank account to the CALLER'S OWN in-app reimbursement — the
+ * authenticated twin of `linkPublicBankAccount`. Same Increase External
+ * Account creation, same "never persist the raw account number" contract, and
+ * the same best-effort `{linked}` degrade.
+ */
+export const linkBankAccount = action({
+  args: { reimbursementId: v.id("reimbursementRequests"), ...linkBankAccountArgs },
+  handler: async (ctx, args): Promise<{ linked: boolean }> => {
+    const routingNumber = assertRoutingNumber(args.routingNumber);
+    const accountNumber = assertAccountNumber(args.accountNumber);
+
+    const prep = await ctx.runMutation(internal.reimbursements.beginLinkBankAccount, {
+      reimbursementId: args.reimbursementId,
+    });
+
+    const created = await ctx.runAction(internal.increase.createExternalAccount, {
+      routingNumber,
+      accountNumber,
+      accountHolderName: (args.accountHolderName?.trim() || prep.payeeName).slice(
+        0,
+        200,
+      ),
+      funding: args.funding ?? "checking",
+    });
+    if (!created) return { linked: false };
+
+    await ctx.runMutation(internal.reimbursements.attachExternalAccount, {
+      reimbursementId: args.reimbursementId,
+      externalAccountId: created.externalAccountId,
+      last4: created.last4,
+    });
+    return { linked: true };
+  },
+});
+
 // ── IN-APP: the manager approval queue (auth, chapter-scoped) ─────────────────
 
 /**
@@ -941,6 +1136,9 @@ export const get = query({
       totalCents: request.totalCents,
       approvedCents: request.approvedCents,
       bankAccountLast4: request.bankAccountLast4 ?? null,
+      // Whether a real bank account is linked (a real ACH payout is
+      // addressable) vs only a bare last-4 (payout degrades to manual).
+      hasExternalAccount: !!request.externalAccountId,
       submittedAt: request.submittedAt ?? request.createdAt,
       approvedAt: request.approvedAt ?? null,
       paidAt: request.paidAt ?? null,

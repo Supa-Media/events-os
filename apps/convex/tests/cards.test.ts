@@ -483,6 +483,325 @@ describe("initiateRepayment (degrade path)", () => {
   });
 });
 
+// ── linkRepaymentBankAccount + the real ACH repayment charge ────────────────
+
+describe("linkRepaymentBankAccount + initiateRepayment (real ACH once linked)", () => {
+  const originalFetch = globalThis.fetch;
+  const originalKey = process.env.INCREASE_API_KEY;
+
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+    if (originalKey === undefined) delete process.env.INCREASE_API_KEY;
+    else process.env.INCREASE_API_KEY = originalKey;
+  });
+
+  /** An active PRODUCTION Increase account for the chapter (default mode). */
+  async function seedActiveAccount(s: ChapterSetup): Promise<void> {
+    const now = Date.now();
+    await run(s.t, (ctx) =>
+      ctx.db.insert("increaseAccounts", {
+        chapterId: s.chapterId,
+        sandbox: false,
+        onboardingStatus: "active",
+        increaseAccountId: "account_prod_1",
+        createdAt: now,
+        updatedAt: now,
+      }),
+    );
+  }
+
+  test("the payer links their own bank account, never persisting the raw account number", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    // The caller IS the payer (the cardholder) — a single person row, so the
+    // payer-only link gate resolves the caller to the payer.
+    const holder = await seedPerson(s, { name: "Holder", userId: s.userId });
+    const cardId = await seedCard(s, { cardholderPersonId: holder });
+    const txnId = await seedCardTxn(s, { cardId, amountCents: 1000 });
+    const rep = await s.as.mutation(api.cards.flagPersonalCharge, {
+      transactionId: txnId,
+    });
+
+    process.env.INCREASE_API_KEY = "test_key";
+    const calls: Array<Record<string, unknown>> = [];
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const path = String(input);
+      if (path.includes("/external_accounts")) {
+        calls.push(init?.body ? JSON.parse(String(init.body)) : {});
+        return new Response(JSON.stringify({ id: "extacct_holder_1" }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+      throw new Error(`unexpected fetch: ${path}`);
+    }) as unknown as typeof fetch;
+
+    const result = await s.as.action(api.cards.linkRepaymentBankAccount, {
+      repaymentId: rep.id,
+      routingNumber: "011000015",
+      accountNumber: "444555666",
+    });
+    expect(result.linked).toBe(true);
+    expect(calls[0].routing_number).toBe("011000015");
+
+    const stored = await run(s.t, (ctx) => ctx.db.get(rep.id));
+    expect(stored?.payerExternalAccountId).toBe("extacct_holder_1");
+    expect(stored?.payerAccountLast4).toBe("5666");
+    expect(JSON.stringify(stored)).not.toContain("444555666");
+  });
+
+  test("a caller who is neither the payer nor a manager cannot link", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await seedManager(s);
+    const holder = await seedPerson(s, { name: "Holder" }); // not the caller
+    const cardId = await seedCard(s, { cardholderPersonId: holder });
+    const txnId = await seedCardTxn(s, { cardId, amountCents: 1000 });
+    const rep = await s.as.mutation(api.cards.flagPersonalCharge, {
+      transactionId: txnId,
+    });
+
+    // A second member of the SAME chapter — a viewer, not the payer.
+    const strangerUserId = await run(s.t, (ctx) =>
+      ctx.db.insert("users", { email: "stranger@publicworship.life" }),
+    );
+    await run(s.t, (ctx) =>
+      ctx.db.insert("userChapters", {
+        userId: strangerUserId,
+        chapterId: s.chapterId,
+        role: "member",
+        isActive: true,
+        joinedAt: Date.now(),
+      }),
+    );
+    await seedPerson(s, { name: "Stranger", userId: strangerUserId });
+    await grantRole(
+      s,
+      (await run(s.t, (ctx) =>
+        ctx.db
+          .query("people")
+          .withIndex("by_chapter", (q) => q.eq("chapterId", s.chapterId))
+          .collect(),
+      )).find((p) => p.name === "Stranger")!._id,
+      "viewer",
+    );
+    const strangerClient = s.t.withIdentity({
+      subject: `${strangerUserId}|session`,
+      issuer: "test",
+    });
+
+    process.env.INCREASE_API_KEY = "test_key";
+    globalThis.fetch = (() => {
+      throw new Error("fetch must not be called for an unauthorized linker");
+    }) as unknown as typeof fetch;
+
+    await expect(
+      strangerClient.action(api.cards.linkRepaymentBankAccount, {
+        repaymentId: rep.id,
+        routingNumber: "011000015",
+        accountNumber: "444555666",
+      }),
+    ).rejects.toBeInstanceOf(ConvexError);
+  });
+
+  test("even fully linked, the real ACH DEBIT is GATED OFF — degrades to pending (no /ach_transfers), settles via markRepaymentPaid", async () => {
+    // BLOCKER 2: the debit is disabled (REPAYMENT_DEBIT_ENABLED=false) because
+    // this PR ships no debit-bounce state machine. Linking still works, but
+    // `initiateRepayment` must NOT fire a debit — it degrades to the manual path.
+    const t = newT();
+    const s = await setupChapter(t);
+    await seedActiveAccount(s);
+    // The caller is the payer AND a manager (one person row) — the payer links,
+    // the same person later confirms receipt via the manager-only markRepaymentPaid.
+    const holder = await seedPerson(s, { name: "Holder", userId: s.userId });
+    await grantRole(s, holder, "manager");
+    const cardId = await seedCard(s, { cardholderPersonId: holder });
+    const txnId = await seedCardTxn(s, { cardId, amountCents: 4200 });
+    const rep = await s.as.mutation(api.cards.flagPersonalCharge, {
+      transactionId: txnId,
+    });
+
+    process.env.INCREASE_API_KEY = "test_key";
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      const path = String(input);
+      if (path.includes("/external_accounts")) {
+        return new Response(JSON.stringify({ id: "extacct_holder_2" }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+      // A DEBIT must NEVER be originated while the kill-switch is off.
+      if (path.includes("/ach_transfers")) {
+        throw new Error("the ACH debit must not fire while gated off");
+      }
+      throw new Error(`unexpected fetch: ${path}`);
+    }) as unknown as typeof fetch;
+
+    await s.as.action(api.cards.linkRepaymentBankAccount, {
+      repaymentId: rep.id,
+      routingNumber: "011000015",
+      accountNumber: "444555666",
+    });
+
+    // Degrades: stays pending, no offsetting credit posted yet.
+    const out = await s.as.action(api.cards.initiateRepayment, {
+      repaymentId: rep.id,
+      method: "ach",
+    });
+    expect(out.status).toBe("pending");
+    expect(out.creditTransactionId).toBeNull();
+
+    // The manual confirmation still settles it, exactly as before this PR.
+    const settled = await s.as.mutation(api.cards.markRepaymentPaid, {
+      repaymentId: rep.id,
+    });
+    expect(settled.status).toBe("paid");
+    expect(settled.creditTransactionId).toBeTruthy();
+
+    const credits = await run(s.t, (ctx) =>
+      ctx.db
+        .query("transactions")
+        .withIndex("by_chapter", (q) => q.eq("chapterId", s.chapterId))
+        .collect(),
+    ).then((rows) => rows.filter((r) => r.source === "repayment"));
+    expect(credits.length).toBe(1);
+    expect(credits[0].amountCents).toBe(4200);
+  });
+
+  test("a manager (not the payer) cannot link a repayment bank account — payer-only", async () => {
+    // IMPORTANT 3: linking supplies raw bank numbers that originate an ACH debit;
+    // a manager must never enter someone else's account. The payer is a DIFFERENT
+    // person than the manager caller here, so the manager's link attempt fails.
+    const t = newT();
+    const s = await setupChapter(t);
+    await seedManager(s); // the caller (s.as) is a finance manager
+    const holder = await seedPerson(s, { name: "Holder" }); // NOT the caller
+    const cardId = await seedCard(s, { cardholderPersonId: holder });
+    const txnId = await seedCardTxn(s, { cardId, amountCents: 1000 });
+    const rep = await s.as.mutation(api.cards.flagPersonalCharge, {
+      transactionId: txnId,
+    });
+
+    process.env.INCREASE_API_KEY = "test_key";
+    globalThis.fetch = (() => {
+      throw new Error("fetch must not be called for a manager link attempt");
+    }) as unknown as typeof fetch;
+
+    await expect(
+      s.as.action(api.cards.linkRepaymentBankAccount, {
+        repaymentId: rep.id,
+        routingNumber: "011000015",
+        accountNumber: "444555666",
+      }),
+    ).rejects.toBeInstanceOf(ConvexError);
+  });
+
+  test("cannot link once the repayment is already paid", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    // The caller is the payer AND a manager (one person row) — so the rejection
+    // is the "already settled" guard, not the payer-only gate.
+    const holder = await seedPerson(s, { name: "Holder", userId: s.userId });
+    await grantRole(s, holder, "manager");
+    const cardId = await seedCard(s, { cardholderPersonId: holder });
+    const txnId = await seedCardTxn(s, { cardId, amountCents: 1000 });
+    const rep = await s.as.mutation(api.cards.flagPersonalCharge, {
+      transactionId: txnId,
+    });
+    await s.as.mutation(api.cards.markRepaymentPaid, { repaymentId: rep.id });
+
+    process.env.INCREASE_API_KEY = "test_key";
+    globalThis.fetch = (() => {
+      throw new Error("fetch must not be called once already settled");
+    }) as unknown as typeof fetch;
+
+    await expect(
+      s.as.action(api.cards.linkRepaymentBankAccount, {
+        repaymentId: rep.id,
+        routingNumber: "011000015",
+        accountNumber: "444555666",
+      }),
+    ).rejects.toBeInstanceOf(ConvexError);
+  });
+
+  test("TOCTOU: attachRepaymentExternalAccount no-ops if the repayment settled mid-link", async () => {
+    // IMPORTANT 5: the link gate saw an unsettled repayment, then the slow
+    // Increase call ran; if a manager confirmed receipt (markRepaymentPaid) in
+    // the meantime, a funding source must NOT be stamped onto the settled row.
+    const t = newT();
+    const s = await setupChapter(t);
+    // The caller is the payer AND a manager (one person row).
+    const holder = await seedPerson(s, { name: "Holder", userId: s.userId });
+    await grantRole(s, holder, "manager");
+    const cardId = await seedCard(s, { cardholderPersonId: holder });
+    const txnId = await seedCardTxn(s, { cardId, amountCents: 1000 });
+    const rep = await s.as.mutation(api.cards.flagPersonalCharge, {
+      transactionId: txnId,
+    });
+
+    process.env.INCREASE_API_KEY = "test_key";
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      const path = String(input);
+      if (path.includes("/external_accounts")) {
+        // A manager settles the repayment while the External Account is created.
+        await s.as.mutation(api.cards.markRepaymentPaid, { repaymentId: rep.id });
+        return new Response(JSON.stringify({ id: "extacct_race_rep" }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+      throw new Error(`unexpected fetch: ${path}`);
+    }) as unknown as typeof fetch;
+
+    const result = await s.as.action(api.cards.linkRepaymentBankAccount, {
+      repaymentId: rep.id,
+      routingNumber: "011000015",
+      accountNumber: "444555666",
+    });
+    expect(result.linked).toBe(true); // Increase created the account…
+    const stored = await run(s.t, (ctx) => ctx.db.get(rep.id));
+    // …but the funding source was NOT stamped onto the already-settled repayment.
+    expect(stored?.payerExternalAccountId).toBeUndefined();
+    expect(stored?.status).toBe("paid");
+  });
+
+  test("TOCTOU: applyRepaymentPaid does NOT double-post if already settled (flags for manual refund)", async () => {
+    // IMPORTANT 5: if markRepaymentPaid settled the repayment between beginRepayment
+    // and the debit landing, applyRepaymentPaid must not post a SECOND credit — the
+    // real debit is flagged for manual review/refund instead.
+    const t = newT();
+    const s = await setupChapter(t);
+    await seedManager(s);
+    const holder = await seedPerson(s, { name: "Holder", userId: s.userId });
+    const cardId = await seedCard(s, { cardholderPersonId: holder });
+    const txnId = await seedCardTxn(s, { cardId, amountCents: 1000 });
+    const rep = await s.as.mutation(api.cards.flagPersonalCharge, {
+      transactionId: txnId,
+    });
+    // Already settled by the manual path.
+    await s.as.mutation(api.cards.markRepaymentPaid, { repaymentId: rep.id });
+    const before = await run(s.t, (ctx) => ctx.db.get(rep.id));
+
+    // A late debit-settle arrives — must NOT post a second offsetting credit.
+    const out = await s.t.mutation(internal.cards.applyRepaymentPaid, {
+      repaymentId: rep.id,
+      increaseRef: "ach_late_debit",
+    });
+    expect(out.status).toBe("paid");
+    const after = await run(s.t, (ctx) => ctx.db.get(rep.id));
+    // The original credit is untouched — no second credit, ref not overwritten.
+    expect(after?.creditTransactionId).toBe(before?.creditTransactionId);
+
+    const credits = await run(s.t, (ctx) =>
+      ctx.db
+        .query("transactions")
+        .withIndex("by_chapter", (q) => q.eq("chapterId", s.chapterId))
+        .collect(),
+    ).then((rows) => rows.filter((r) => r.source === "repayment"));
+    expect(credits.length).toBe(1);
+  });
+});
+
 // ── autoLockOverdueCards ─────────────────────────────────────────────────────
 
 describe("autoLockOverdueCards", () => {

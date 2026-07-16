@@ -278,6 +278,14 @@ export type RepaymentMethod = (typeof REPAYMENT_METHODS)[number];
 export const REPAYMENT_STATUSES = ["pending", "paid", "failed"] as const;
 export type RepaymentStatus = (typeof REPAYMENT_STATUSES)[number];
 
+// ── ACH destination capture (Increase External Accounts) ─────────────────────
+// The funding-type Increase records on an External Account (`POST
+// /external_accounts`). Increase itself also allows `general_ledger`/`other`,
+// but those never apply to a person's personal bank account, so capture is
+// restricted to the two a human actually has.
+export const EXTERNAL_ACCOUNT_FUNDINGS = ["checking", "savings"] as const;
+export type ExternalAccountFunding = (typeof EXTERNAL_ACCOUNT_FUNDINGS)[number];
+
 // ── Payouts (ACH from the chapter's Increase account) ────────────────────────
 export const PAYOUT_PROVIDERS = ["increase", "manual"] as const;
 export type PayoutProvider = (typeof PAYOUT_PROVIDERS)[number];
