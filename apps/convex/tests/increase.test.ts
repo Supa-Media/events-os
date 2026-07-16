@@ -870,7 +870,7 @@ describe("provisionChapterAccount", () => {
     }) as unknown as typeof fetch;
 
     const account = await s.as.action(
-      api.increase.provisionChapterAccount,
+      internal.increase.provisionChapterAccount,
       {},
     );
     expect(account.onboardingStatus).toBe("pending");
@@ -945,7 +945,7 @@ describe("provisionChapterAccount", () => {
     const calls = mockIncreaseFetch([{ id: "program_auto" }]);
 
     const account = await s.as.action(
-      api.increase.provisionChapterAccount,
+      internal.increase.provisionChapterAccount,
       {},
     );
 
@@ -996,7 +996,7 @@ describe("provisionChapterAccount", () => {
     ]);
 
     const account = await s.as.action(
-      api.increase.provisionChapterAccount,
+      internal.increase.provisionChapterAccount,
       {},
     );
     expect(account.onboardingStatus).toBe("pending");
@@ -1024,7 +1024,7 @@ describe("provisionChapterAccount", () => {
     const calls = mockIncreaseFetch([{ id: "program_should_not_be_used" }]);
 
     const account = await s.as.action(
-      api.increase.provisionChapterAccount,
+      internal.increase.provisionChapterAccount,
       {},
     );
     expect(account.onboardingStatus).toBe("active");
@@ -1062,7 +1062,7 @@ describe("provisionChapterAccount", () => {
     );
 
     const account = await s.as.action(
-      api.increase.provisionChapterAccount,
+      internal.increase.provisionChapterAccount,
       {},
     );
 
@@ -1112,7 +1112,7 @@ describe("provisionChapterAccount", () => {
     );
 
     const account = await s.as.action(
-      api.increase.provisionChapterAccount,
+      internal.increase.provisionChapterAccount,
       {},
     );
 
@@ -1161,7 +1161,7 @@ describe("provisionChapterAccount", () => {
       throw new Error(`unexpected fetch: ${method} ${path}`);
     }) as unknown as typeof fetch;
 
-    const account = await s.as.action(api.increase.provisionChapterAccount, {});
+    const account = await s.as.action(internal.increase.provisionChapterAccount, {});
     expect(account.onboardingStatus).toBe("active");
     expect(account.increaseAccountId).toBe("account_new");
 
@@ -1194,7 +1194,7 @@ describe("provisionChapterAccount", () => {
       }),
     );
     await expect(
-      s.as.action(api.increase.provisionChapterAccount, {}),
+      s.as.action(internal.increase.provisionChapterAccount, {}),
     ).rejects.toBeInstanceOf(ConvexError);
   });
 });
@@ -1266,7 +1266,7 @@ describe("linkIncreaseAccount", () => {
       name: "New York",
     });
 
-    const account = await s.as.action(api.increase.linkIncreaseAccount, {
+    const account = await s.as.action(internal.increase.linkIncreaseAccount, {
       increaseAccountId: "account_ny",
     });
 
@@ -1300,7 +1300,7 @@ describe("linkIncreaseAccount", () => {
     process.env.INCREASE_ENTITY_ID = ENTITY_ID;
     mockLinkFetch(200, { id: "account_ny", entity_id: ENTITY_ID });
 
-    const account = await s.as.action(api.increase.linkIncreaseAccount, {
+    const account = await s.as.action(internal.increase.linkIncreaseAccount, {
       increaseAccountId: "account_ny",
     });
     expect(account!.increaseAccountId).toBe("account_ny");
@@ -1320,7 +1320,7 @@ describe("linkIncreaseAccount", () => {
     mockLinkFetch(404);
 
     await expect(
-      s.as.action(api.increase.linkIncreaseAccount, {
+      s.as.action(internal.increase.linkIncreaseAccount, {
         increaseAccountId: "account_missing",
       }),
     ).rejects.toBeInstanceOf(ConvexError);
@@ -1339,7 +1339,7 @@ describe("linkIncreaseAccount", () => {
     mockLinkFetch(200, { id: "account_foreign", entity_id: "entity_other" });
 
     await expect(
-      s.as.action(api.increase.linkIncreaseAccount, {
+      s.as.action(internal.increase.linkIncreaseAccount, {
         increaseAccountId: "account_foreign",
       }),
     ).rejects.toBeInstanceOf(ConvexError);
@@ -1364,7 +1364,7 @@ describe("linkIncreaseAccount", () => {
 
     let caught: unknown;
     try {
-      await s.as.action(api.increase.linkIncreaseAccount, {
+      await s.as.action(internal.increase.linkIncreaseAccount, {
         increaseAccountId: "account_ny",
       });
     } catch (err) {
@@ -1397,7 +1397,7 @@ describe("linkIncreaseAccount", () => {
       throw new Error("fetch must not be called when the API key is unset");
     }) as unknown as typeof fetch;
 
-    const account = await s.as.action(api.increase.linkIncreaseAccount, {
+    const account = await s.as.action(internal.increase.linkIncreaseAccount, {
       increaseAccountId: "account_ny",
     });
     expect(account).toBeNull();
@@ -1424,7 +1424,7 @@ describe("linkIncreaseAccount", () => {
     }) as unknown as typeof fetch;
 
     await expect(
-      s.as.action(api.increase.linkIncreaseAccount, {
+      s.as.action(internal.increase.linkIncreaseAccount, {
         increaseAccountId: "account_ny",
       }),
     ).rejects.toBeInstanceOf(ConvexError);
@@ -2059,7 +2059,7 @@ describe("provisionChapterAccount sandbox mode", () => {
     );
 
     const account = await s.as.action(
-      api.increase.provisionChapterAccount,
+      internal.increase.provisionChapterAccount,
       {},
     );
     expect(account.onboardingStatus).toBe("active");
@@ -2106,7 +2106,7 @@ describe("provisionChapterAccount sandbox mode", () => {
     );
 
     const account = await s.as.action(
-      api.increase.provisionChapterAccount,
+      internal.increase.provisionChapterAccount,
       {},
     );
     expect(account.onboardingStatus).toBe("active");
@@ -2137,7 +2137,7 @@ describe("provisionChapterAccount sandbox mode", () => {
     const calls = mockProvisionFetch([{ id: "prod_program" }], "account_1");
 
     const account = await s.as.action(
-      api.increase.provisionChapterAccount,
+      internal.increase.provisionChapterAccount,
       {},
     );
     expect(account.onboardingStatus).toBe("active");
@@ -2172,7 +2172,7 @@ describe("provisionChapterAccount sandbox mode", () => {
     }) as unknown as typeof fetch;
 
     const account = await s.as.action(
-      api.increase.provisionChapterAccount,
+      internal.increase.provisionChapterAccount,
       {},
     );
     expect(account.onboardingStatus).toBe("pending");
@@ -2207,7 +2207,7 @@ describe("provisionChapterAccount sandbox mode", () => {
       throw new Error("fetch must not be called on the degrade path");
     }) as unknown as typeof fetch;
 
-    const result = await s.as.action(api.increase.provisionChapterAccount, {});
+    const result = await s.as.action(internal.increase.provisionChapterAccount, {});
     expect(result.onboardingStatus).toBe("pending");
     expect(result.increaseAccountId).toBeNull();
 

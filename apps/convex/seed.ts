@@ -18,6 +18,7 @@ import { mutation, internalMutation, query } from "./_generated/server";
 import type { MutationCtx, QueryCtx } from "./_generated/server";
 import { Id, TableNames } from "./_generated/dataModel";
 import { ConvexError, v } from "convex/values";
+import { internal } from "./_generated/api";
 import {
   DEFAULT_COLUMNS,
   DEFAULT_ROLES,
@@ -783,6 +784,18 @@ export const ensureChapters = internalMutation({
       isActive: true,
       createdAt: now,
     })) as Id<"chapters">;
+
+    // WP-1.2 (accounts fully opaque + automatic): best-effort auto-provision
+    // the new chapter's Increase account — degrades to `pending` (never
+    // throws) if the Increase environment isn't wired up. NOTE: this is the
+    // only place a chapter is actually created outside tests (multi-city
+    // creation is V3 — see `schema/chapters.ts`); when a real product
+    // chapter-creation flow ships, it should schedule the same action.
+    await ctx.scheduler.runAfter(
+      0,
+      internal.increase.provisionAccountForScope,
+      { scope: chapterId },
+    );
 
     // Templates require a createdBy user; use any existing user.
     const firstUser = await ctx.db.query("users").first();

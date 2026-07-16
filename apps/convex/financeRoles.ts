@@ -21,7 +21,11 @@ import {
   requireChapterId,
   requireUserId,
 } from "./lib/context";
-import { requireFinanceManager, requireFinanceCentral } from "./lib/finance";
+import {
+  requireFinanceManager,
+  requireFinanceCentral,
+  isCentralEdOrFm,
+} from "./lib/finance";
 import { isSuperuser } from "./lib/superuser";
 
 const roleValidator = v.union(...FINANCE_ROLES.map((r) => v.literal(r)));
@@ -114,6 +118,30 @@ export const mySeats = query({
         : []),
       ...chapterSeats,
     ];
+  },
+});
+
+/**
+ * WP-1.2: whether the caller may see the Accounts tab (+ the Cards tab's
+ * Relay/legacy section) — CENTRAL `executive_director` or `finance_manager`
+ * specialized-role holders only (or a superuser). Tighter than a plain
+ * central-scope finance-manager grant (`stripeFinance.canConnectAccount`'s
+ * gate): a chapter-scope manager, or even a central `financeRoles` grant with
+ * no ED/FM title, gets `false` — see `lib/finance.ts#isCentralEdOrFm`.
+ *
+ * A signed-out caller gets `false` too, not a thrown error: `isCentralEdOrFm`
+ * bottoms out in `requireUserId` (throws `NOT_AUTHENTICATED`), but this is a
+ * visibility check the client polls to decide whether to render the Accounts
+ * tab at all — it should degrade quietly like every other "can I see this"
+ * query, not surface an auth error before the caller has even loaded.
+ */
+export const canViewAccounts = query({
+  args: {},
+  returns: v.boolean(),
+  handler: async (ctx) => {
+    const identity = await ctx.auth.getUserIdentity();
+    if (!identity) return false;
+    return isCentralEdOrFm(ctx);
   },
 });
 
