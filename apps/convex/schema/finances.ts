@@ -16,6 +16,7 @@ import {
   CARD_TYPES,
   CARD_STATUSES,
   CARD_SOURCES,
+  CARD_REQUEST_STATUSES,
   REPAYMENT_METHODS,
   REPAYMENT_STATUSES,
   PAYOUT_PROVIDERS,
@@ -410,6 +411,13 @@ export const cards = defineTable({
   // When the receipt grace window ends; past it with a missing receipt the
   // card auto-locks (a cron sweeps this).
   receiptGraceEndsAt: v.optional(v.number()),
+  // WP-C.1: true iff the card is `status:"locked"` because the CARDHOLDER
+  // self-serve froze it (suspected foul play) — distinct from a manager's
+  // `lockCard` and the receipt auto-lock (neither of which set this). Only the
+  // SAME holder's `unfreezeCard` (or a manager's `unlockCard`, which clears
+  // every lock reason at once) may reverse it. Absent/false for every other
+  // "locked" reason.
+  frozenByHolder: v.optional(v.boolean()),
   createdBy: v.optional(v.id("users")),
   createdAt: v.number(),
 })
@@ -418,6 +426,27 @@ export const cards = defineTable({
   .index("by_increase_card", ["increaseCardId"])
   // Legacy-card matching: find a chapter's linked card by its last-4.
   .index("by_chapter_and_last4", ["chapterId", "last4"]);
+
+// ── Card requests (WP-C.1: request-a-card) ───────────────────────────────────
+/** A member's request for a card, decided by an FM/Treasurer — approving
+ *  triggers the existing `issueCard` flow for `personId` (never self-serve
+ *  issuance). At most one `"requested"` (open) row per person at a time
+ *  (`cards.requestCard` enforces it). */
+export const cardRequests = defineTable({
+  chapterId: v.id("chapters"),
+  personId: v.id("people"),
+  status: v.union(...CARD_REQUEST_STATUSES.map((s) => v.literal(s))),
+  note: v.optional(v.string()),
+  requestedAt: v.number(),
+  decidedBy: v.optional(v.id("people")),
+  decidedAt: v.optional(v.number()),
+  // The card `issueCard` created once approved.
+  cardId: v.optional(v.id("cards")),
+})
+  .index("by_chapter", ["chapterId"])
+  .index("by_person", ["personId"])
+  // The manager Cards view's pending-requests list: one chapter's open requests.
+  .index("by_chapter_and_status", ["chapterId", "status"]);
 
 // ── Personal-charge repayment ────────────────────────────────────────────────
 /** A cardholder's repayment of an accidental personal charge. When paid, an

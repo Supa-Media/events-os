@@ -45,6 +45,7 @@ import {
   reimbursementRequests,
   reimbursementLineItems,
   cards,
+  cardRequests,
   personalRepayments,
   payouts,
   increaseAccounts,
@@ -193,6 +194,8 @@ const schema = defineSchema({
   reimbursementRequests,
   reimbursementLineItems,
   cards,
+  // WP-C.1: card requests (member request → FM/Treasurer approve/deny).
+  cardRequests,
   personalRepayments,
   payouts,
   increaseAccounts,

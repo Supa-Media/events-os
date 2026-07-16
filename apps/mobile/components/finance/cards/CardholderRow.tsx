@@ -4,7 +4,7 @@
  * the manager actions (lock / unlock / edit controls). Pure presentation — the
  * mutations live in the parent so a single toast surfaces every failure.
  */
-import { Pressable, Text, View } from "react-native";
+import { Alert, Pressable, Text, View } from "react-native";
 import { formatCents } from "@events-os/shared";
 import {
   Avatar,
@@ -30,39 +30,78 @@ export function CardholderRow({
   onLock,
   onUnlock,
   onEditControls,
+  onCancel,
 }: {
   card: CardSummary;
   last: boolean;
   onLock: () => void;
   onUnlock: () => void;
   onEditControls: () => void;
+  onCancel: () => void;
 }) {
   const { ref, anchor, visible, open, close } = useAnchor();
-  const status = cardStatusBadge(card.status);
+  const status = cardStatusBadge(card.status, card.frozenByHolder);
   const receipts = receiptStatus(card);
 
   // Legacy (Relay) cards are external — Increase-only controls (caps/validity,
   // lock/unlock) don't apply, so they carry no ⋯ actions. Manage them from the
   // "Relay cards" section instead.
   const isLegacy = card.source === "legacy";
+  const isCanceled = card.status === "canceled";
 
-  const actions: ContextMenuAction[] = isLegacy
-    ? []
-    : [
-        { label: "Edit controls…", icon: "sliders", onPress: onEditControls },
-        ...(card.status === "locked"
-          ? [{ label: "Unlock card", icon: "unlock" as const, onPress: onUnlock }]
-          : card.status === "active"
+  // A card the HOLDER froze themselves (suspected foul play) — a manager's
+  // unlock is the superset power that can still lift it (server behavior
+  // unchanged), but silently clearing someone else's foul-play freeze is
+  // surprising. Confirm before doing it; every other unlock reason (a plain
+  // manager lock, the receipt auto-lock) unlocks immediately as before.
+  function handleUnlockPress() {
+    if (card.frozenByHolder) {
+      Alert.alert(
+        "Unlock this card?",
+        "This card was frozen by its holder (suspected foul play). Unlock anyway?",
+        [
+          { text: "Cancel", style: "cancel" },
+          { text: "Unlock", style: "destructive", onPress: onUnlock },
+        ],
+      );
+    } else {
+      onUnlock();
+    }
+  }
+
+  const actions: ContextMenuAction[] =
+    isLegacy || isCanceled
+      ? []
+      : [
+          { label: "Edit controls…", icon: "sliders", onPress: onEditControls },
+          ...(card.status === "locked"
             ? [
                 {
-                  label: "Lock card",
-                  icon: "lock" as const,
-                  onPress: onLock,
-                  destructive: true,
+                  label: "Unlock card",
+                  icon: "unlock" as const,
+                  onPress: handleUnlockPress,
                 },
               ]
-            : []),
-      ];
+            : card.status === "active"
+              ? [
+                  {
+                    label: "Lock card",
+                    icon: "lock" as const,
+                    onPress: onLock,
+                    destructive: true,
+                  },
+                ]
+              : []),
+          // FM/Treasurer-only server-side (`requireFinanceManager`) — same
+          // convention as Lock/Unlock above: always shown here, the backend
+          // gate is what actually enforces it.
+          {
+            label: "Cancel card…",
+            icon: "x-circle",
+            onPress: onCancel,
+            destructive: true,
+          },
+        ];
 
   return (
     <Row last={last}>
