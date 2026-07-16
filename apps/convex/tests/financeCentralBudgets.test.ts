@@ -168,8 +168,8 @@ describe("categorize: budget attribution tenancy", () => {
   });
 });
 
-describe("budget attribution: explicit link wins, unlinked still derives", () => {
-  test("an explicit budgetId counts toward that budget only; unlinked txns derive-match both", async () => {
+describe("budget attribution: explicit link only — no derive-matching", () => {
+  test("an explicit budgetId counts toward that budget only; an unlinked txn counts toward NEITHER and shows as Unattributed", async () => {
     const t = newT();
     const s = await setupChapter(t);
     await asChapterManager(s);
@@ -185,7 +185,8 @@ describe("budget attribution: explicit link wins, unlinked still derives", () =>
       name: "Food",
       kind: "lineItem",
     });
-    // Two budgets that BOTH derive-match a Food/March spend.
+    // Two budgets sharing the same fund/category narrowers — pre-fix, both
+    // would have derive-matched any Food/March spend.
     const budgetA = await s.as.mutation(api.finances.createBudget, {
       amountCents: 100000,
       type: "recurring",
@@ -219,7 +220,8 @@ describe("budget attribution: explicit link wins, unlinked still derives", () =>
       transactionId: txn1,
       budgetId: budgetA,
     });
-    // txn2 ($50): unlinked → derive-matches both A and B.
+    // txn2 ($50): unlinked — shares A/B's fund+category but carries no
+    // `budgetId`, so under the explicit-only rule it counts toward NEITHER.
     await s.as.mutation(api.finances.createManualTransaction, {
       flow: "outflow",
       amountCents: 5000,
@@ -229,9 +231,14 @@ describe("budget attribution: explicit link wins, unlinked still derives", () =>
     });
 
     const rows = await s.as.query(api.finances.budgetVsActual, { year, month });
-    // A: linked $100 + derived $50; B: only the unlinked $50 (never the linked one).
-    expect(rows.find((r) => r.budgetId === budgetA)?.actualCents).toBe(15000);
-    expect(rows.find((r) => r.budgetId === budgetB)?.actualCents).toBe(5000);
+    // A: only the linked $100. B: the unlinked $50 never derive-matches it.
+    expect(rows.find((r) => r.budgetId === budgetA)?.actualCents).toBe(10000);
+    expect(rows.find((r) => r.budgetId === budgetB)?.actualCents).toBe(0);
+
+    // The unlinked $50 is loudly Unattributed on the chapter dashboard instead
+    // of silently vacuumed into A or B.
+    const dash = await s.as.query(api.finances.dashboardChapter, { year, month });
+    expect(dash.unattributedCents).toBe(5000);
   });
 });
 
@@ -707,8 +714,8 @@ describe("budgets v2: tag CRUD gating + delete-in-use", () => {
   });
 });
 
-describe("budgets v2: matchesBudget by type", () => {
-  test("a one_time event budget matches only its event's spend; a recurring matches by period", async () => {
+describe("budgets v2: explicit-only attribution regardless of type", () => {
+  test("neither a one_time event budget nor a recurring budget derive-matches an unlinked txn — only an explicit link counts, and eventActuals (a direct FK sum) is unaffected", async () => {
     const t = newT();
     const s = await setupChapter(t);
     await asChapterManager(s);
@@ -735,24 +742,50 @@ describe("budgets v2: matchesBudget by type", () => {
       label: "Ops",
     });
 
-    // $80 ON the event, and $20 with no event.
-    await s.as.mutation(api.finances.createManualTransaction, {
+    // $80 ON the event, and $20 with no event — NEITHER carries a `budgetId`.
+    const eventTxn = await s.as.mutation(api.finances.createManualTransaction, {
       flow: "outflow",
       amountCents: 8000,
       postedAt: tsInMonth(year, month),
       eventId,
     });
-    await s.as.mutation(api.finances.createManualTransaction, {
+    const looseTxn = await s.as.mutation(api.finances.createManualTransaction, {
       flow: "outflow",
       amountCents: 2000,
       postedAt: tsInMonth(year, month),
     });
 
-    const rows = await s.as.query(api.finances.budgetVsActual, { year, month });
-    // one_time: only the $80 on its event (never the $20 unattached spend).
+    // Pre-link: neither budget has any actual — carrying `eventId` is NOT an
+    // attribution link (only `budgetId` is), so the one_time budget sitting on
+    // the same event sees nothing, and the recurring budget (which used to
+    // vacuum up any unnarrowed period spend) sees nothing either.
+    let rows = await s.as.query(api.finances.budgetVsActual, { year, month });
+    expect(rows.find((r) => r.budgetId === oneTime)?.actualCents).toBe(0);
+    expect(rows.find((r) => r.budgetId === recurring)?.actualCents).toBe(0);
+    // Both txns are Unattributed until explicitly linked.
+    let dash = await s.as.query(api.finances.dashboardChapter, { year, month });
+    expect(dash.unattributedCents).toBe(10000);
+
+    // `eventActuals` sums by the `eventId` FK directly — unrelated to budget
+    // attribution — so it already reports the $80 with no link required.
+    const eventActuals = await s.as.query(api.finances.eventActuals, { eventId });
+    expect(eventActuals.totalCents).toBe(8000);
+
+    // Explicitly link each txn to its budget.
+    await s.as.mutation(api.finances.categorizeTransaction, {
+      transactionId: eventTxn,
+      budgetId: oneTime,
+    });
+    await s.as.mutation(api.finances.categorizeTransaction, {
+      transactionId: looseTxn,
+      budgetId: recurring,
+    });
+
+    rows = await s.as.query(api.finances.budgetVsActual, { year, month });
     expect(rows.find((r) => r.budgetId === oneTime)?.actualCents).toBe(8000);
-    // recurring: both period spends ($80 + $20) — no instance filter.
-    expect(rows.find((r) => r.budgetId === recurring)?.actualCents).toBe(10000);
+    expect(rows.find((r) => r.budgetId === recurring)?.actualCents).toBe(2000);
+    dash = await s.as.query(api.finances.dashboardChapter, { year, month });
+    expect(dash.unattributedCents).toBe(0);
   });
 });
 

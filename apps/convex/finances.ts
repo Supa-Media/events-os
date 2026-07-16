@@ -609,78 +609,37 @@ function effectiveRefKind(b: Doc<"budgets">): BudgetRefKind | null {
 }
 
 /**
- * Does a spend transaction fall within a budget's period + narrowers, and (for
- * one_time budgets) its event/project instance? Switches on `type`: a one_time
- * budget matches only its `scopeRefId` instance; a recurring budget matches on
- * period + fund/category alone. Tags are NOT a match dimension. `contextMonth`
- * scopes recurring budgets to the dashboard's month (see `budgetEffectivePeriod`).
- */
-function matchesBudget(
-  tr: Doc<"transactions">,
-  b: Doc<"budgets">,
-  contextMonth?: number,
-): boolean {
-  if (!isSpend(tr)) return false;
-  const period = budgetEffectivePeriod(b, contextMonth);
-  if (!inPeriod(tr.postedAt, period.year, period.month, period.quarter)) return false;
-  return matchesBudgetNarrowers(tr, b);
-}
-
-/**
- * The NON-PERIOD half of derived budget matching: a spend txn's fund / category /
- * legacy-team narrowers and (for one_time budgets) its event/project instance.
- * Split out so the YTD path can reuse the exact same narrowers with a widened
- * period window (see `txnCountsTowardBudgetDash`). Tags are NOT a match dimension.
- */
-function matchesBudgetNarrowers(tr: Doc<"transactions">, b: Doc<"budgets">): boolean {
-  if (b.categoryId && tr.categoryId !== b.categoryId) return false;
-  if (b.fundId && tr.fundId !== b.fundId) return false;
-  // Legacy team narrower still honored when present (migrated team budgets keep
-  // `teamId` as a legacy column; new recurring budgets don't set it).
-  if (b.teamId && tr.teamId !== b.teamId) return false;
-  if (effectiveType(b) === "one_time" && b.scopeRefId) {
-    if (effectiveRefKind(b) === "project") {
-      if (tr.projectId !== b.scopeRefId) return false;
-    } else {
-      // Default (event) instance link.
-      if (tr.eventId !== b.scopeRefId) return false;
-    }
-  }
-  // recurring: no extra instance link beyond fund/category/team.
-  return true;
-}
-
-/**
  * The single budget-attribution rule, used by EVERY actuals sum so a dollar is
- * counted the same way everywhere:
- *   - an EXPLICITLY-linked txn (`budgetId` set) counts toward EXACTLY that
- *     budget and no other — it never also derive-matches a different budget
- *     (the anti-double-count guarantee). The link resolves WHICH budget
- *     (central-vs-chapter disambiguation), but the budget's own cadence still
- *     determines the period window, exactly like `matchesBudget`: a March
- *     purchase linked to a MONTHLY budget lands in March (not every month), a
- *     project / one_off budget counts over its declared period, and an event /
- *     per_instance budget only within that instance. Without this the central
- *     roll-up (read across all time via `by_budget`) would sum lifetime spend
- *     instead of the queried period.
- *   - an UNLINKED txn keeps the existing derived matching (scope/period/fund…).
+ * counted the same way everywhere: a txn counts toward a budget IFF it is
+ * EXPLICITLY linked to it (`budgetId === b._id`) — no derived (fund/category/
+ * team/event/project) matching. An unlinked txn counts toward NO budget; it
+ * shows up as "Unattributed" instead (see `dashboardChapter.unattributedCents`).
  *
- * The `isSpend` gate applies to BOTH paths, so `transfer` / `excluded` /
- * personal rows stay out of every budget total even when explicitly linked
- * (the flow-carries-direction + transfer-excluded invariants hold regardless of
- * an explicit link).
+ * This is a straight port of the linked-only rule tag rollups already used —
+ * made universal so a broad recurring budget with no narrowers can no longer
+ * vacuum up every uncategorized txn in its period (the "Education & Growth
+ * eats everything" bug).
+ *
+ * The budget's own cadence still determines the period window: a March
+ * purchase linked to a MONTHLY budget lands in March (not every month), a
+ * project/one-off budget counts over its declared period, and an event/
+ * per_instance budget only within that instance. Without this the central
+ * roll-up (read across all time via `by_budget`) would sum lifetime spend
+ * instead of the queried period.
+ *
+ * The `isSpend` gate applies here too, so `transfer` / `excluded` / personal
+ * rows stay out of every budget total even when explicitly linked (the
+ * flow-carries-direction + transfer-excluded invariants hold regardless of an
+ * explicit link).
  */
 function txnCountsTowardBudget(
   tr: Doc<"transactions">,
   b: Doc<"budgets">,
   contextMonth?: number,
 ): boolean {
-  if (tr.budgetId != null) {
-    if (!isSpend(tr) || tr.budgetId !== b._id) return false;
-    const period = budgetEffectivePeriod(b, contextMonth);
-    return inPeriod(tr.postedAt, period.year, period.month, period.quarter);
-  }
-  return matchesBudget(tr, b, contextMonth);
+  if (!isSpend(tr) || tr.budgetId !== b._id) return false;
+  const period = budgetEffectivePeriod(b, contextMonth);
+  return inPeriod(tr.postedAt, period.year, period.month, period.quarter);
 }
 
 // ── Dashboard period (Month ↔ Year-to-date) ──────────────────────────────────
@@ -722,7 +681,7 @@ function inYtdBudgetWindow(postedAt: number, b: Doc<"budgets">, throughMonth: nu
 /**
  * The single budget-attribution rule, period-aware for the dashboard: in
  * `"month"` mode it defers to `txnCountsTowardBudget` (unchanged); in `"ytd"`
- * mode it keeps the exact same `isSpend` gate + linked/derived narrowers but
+ * mode it keeps the exact same `isSpend` gate + explicit `budgetId` link but
  * widens the period window to Jan..throughMonth (`inYtdBudgetWindow`).
  */
 function txnCountsTowardBudgetDash(
@@ -731,12 +690,7 @@ function txnCountsTowardBudgetDash(
   dp: DashPeriod,
 ): boolean {
   if (!dp.ytd) return txnCountsTowardBudget(tr, b, dp.month);
-  if (!isSpend(tr)) return false;
-  if (tr.budgetId != null) {
-    if (tr.budgetId !== b._id) return false;
-  } else if (!matchesBudgetNarrowers(tr, b)) {
-    return false;
-  }
+  if (!isSpend(tr) || tr.budgetId !== b._id) return false;
   return inYtdBudgetWindow(tr.postedAt, b, dp.month);
 }
 
@@ -1251,9 +1205,16 @@ export const dashboardChapter = query({
     recentTransactions: v.array(recentTxnCard),
     attention: v.array(attentionItem),
     funds: v.array(fundPeriodSpend),
-    // Count of spend txns with no budget attributed (bounded scan). Drives the
-    // "N transactions need a budget" attention item — a SOFT warning, never a block.
+    // Count of spend txns with no budget attributed (bounded, all-time-capped
+    // scan — a txn from any period still needs a budget). Drives the "N
+    // transactions need a budget" attention item — a SOFT warning, never a block.
     toBudgetCount: v.number(),
+    // Explicit-only attribution gap, scoped to THIS dashboard period: spend
+    // (countsAsSpend — outflow, non-transfer, non-excluded/personal) with no
+    // `budgetId` link. Every dollar here is invisible to every budget card
+    // above (no derive-matching fallback) — surfaced loudly so it's never
+    // silently missing. Taps through to Reconcile's `needs_budget` filter.
+    unattributedCents: v.number(),
   }),
   handler: async (ctx, args) => {
     const now = easternParts(Date.now());
@@ -1277,6 +1238,7 @@ export const dashboardChapter = query({
       attention: [] as never[],
       funds: [] as never[],
       toBudgetCount: 0,
+      unattributedCents: 0,
     };
     const ownChapterId = await readChapterId(ctx);
     const chapterId = args.chapterId ?? ownChapterId;
@@ -1312,6 +1274,14 @@ export const dashboardChapter = query({
     // The dashboard period's txns: the selected month, or Jan..throughMonth (YTD).
     const periodTxns = yearTxns.filter((tr) => inDashRange(tr.postedAt, dp));
     const periodSpendCents = sumSpend(periodTxns);
+    // Unattributed: this period's spend with no explicit budget link — the
+    // dollar amount every budget card above is BLIND to (no derive-matching
+    // fallback exists anymore). `isSpend` already excludes transfers/excluded/
+    // personal rows, matching invariant #3.
+    const unattributedCents = periodTxns.reduce(
+      (s, tr) => (isSpend(tr) && tr.budgetId == null ? s + tr.amountCents : s),
+      0,
+    );
 
     // Category-name map (chapter-wide, bounded) for budget breakdowns.
     const categoryDocs = await ctx.db
@@ -1582,6 +1552,7 @@ export const dashboardChapter = query({
       attention,
       funds,
       toBudgetCount,
+      unattributedCents,
     };
   },
 });
@@ -1605,6 +1576,11 @@ export const dashboardCentral = query({
     // The org-wide SPEND total for the dashboard period: the selected month, or
     // the cumulative Jan..throughMonth range in YTD mode.
     totalMonthSpendCents: v.number(),
+    // Org-wide Unattributed: the sum, across every chapter, of this period's
+    // spend with no explicit `budgetId` link (see `dashboardChapter`'s field
+    // of the same name — central has no txns of its own yet, so this is purely
+    // the cross-chapter sum).
+    orgUnattributedCents: v.number(),
   }),
   handler: async (ctx, args) => {
     const now = easternParts(Date.now());
@@ -1620,6 +1596,7 @@ export const dashboardCentral = query({
       chapterRollup: [] as never[],
       centralBudgets: [] as never[],
       totalMonthSpendCents: 0,
+      orgUnattributedCents: 0,
     };
     const chapterId = await readChapterId(ctx);
     if (!chapterId) return empty;
@@ -1630,6 +1607,7 @@ export const dashboardCentral = query({
     const sandboxMode = await readSandbox(ctx);
 
     let totalMonthSpendCents = 0;
+    let orgUnattributedCents = 0;
     let activeChapters = 0;
     let toReviewOrg = 0;
 
@@ -1655,6 +1633,10 @@ export const dashboardCentral = query({
       const dashTxns = periodTxns.filter((tr) => inDashRange(tr.postedAt, dp));
       const chapterPeriodSpend = sumSpend(dashTxns);
       totalMonthSpendCents += chapterPeriodSpend;
+      orgUnattributedCents += dashTxns.reduce(
+        (s, tr) => (isSpend(tr) && tr.budgetId == null ? s + tr.amountCents : s),
+        0,
+      );
 
       // Month-equivalent budget allocation (monthly→amount, quarterly→÷3,
       // yearly→÷12, per-instance→in-period only) — comparable to one month of
@@ -1856,6 +1838,7 @@ export const dashboardCentral = query({
       chapterRollup,
       centralBudgets,
       totalMonthSpendCents,
+      orgUnattributedCents,
     };
   },
 });

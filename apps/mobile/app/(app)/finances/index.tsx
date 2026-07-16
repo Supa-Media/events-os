@@ -125,14 +125,17 @@ function DashboardBody() {
     setPerspective("central");
   }
 
-  // Attention-row actions: both kinds live on their own finance tab, hard-
-  // scoped to the CALLER's own chapter — never call this while drilled into a
-  // different chapter (ChapterView already hides the action in that state;
-  // this is a defensive no-op, not the primary guard).
+  // Attention-row actions: all three kinds live on their own finance tab,
+  // hard-scoped to the CALLER's own chapter — never call this while drilled
+  // into a different chapter (ChapterView already hides the action in that
+  // state; this is a defensive no-op, not the primary guard).
   function onAttentionAction(kind: string) {
     if (drilldown) return;
     if (kind === "reimbursements") router.navigate("/finances/reimbursements" as never);
     else if (kind === "cards") router.navigate("/finances/cards" as never);
+    // Unattributed spend → Reconcile, which already defaults to the
+    // `needs_budget` filter.
+    else if (kind === "needs_budget") router.navigate("/finances/reconcile" as never);
   }
 
   const options: { key: Perspective; label: string }[] = [

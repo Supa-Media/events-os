@@ -189,21 +189,32 @@ describe("budgets + budgetVsActual (Estimated ≠ Actual)", () => {
       label: "Food · March",
     });
 
-    // A real $120.00 outflow coded to Food in March → counts as actual.
-    await s.as.mutation(api.finances.createManualTransaction, {
+    // A real $120.00 outflow coded to Food in March, EXPLICITLY linked to the
+    // budget → counts as actual (fund/category alone is no longer enough).
+    const outflowTxnId = await s.as.mutation(api.finances.createManualTransaction, {
       flow: "outflow",
       amountCents: 12000,
       postedAt: tsInMonth(year, month),
       fundId,
       categoryId,
     });
-    // A $99.99 TRANSFER coded to Food in March → excluded from spend.
-    await s.as.mutation(api.finances.createManualTransaction, {
+    await s.as.mutation(api.finances.categorizeTransaction, {
+      transactionId: outflowTxnId,
+      budgetId,
+    });
+    // A $99.99 TRANSFER, ALSO explicitly linked to the same budget → still
+    // excluded from spend (the `isSpend`/transfer-excluded invariant holds
+    // even for an explicitly-linked row).
+    const transferTxnId = await s.as.mutation(api.finances.createManualTransaction, {
       flow: "transfer",
       amountCents: 9999,
       postedAt: tsInMonth(year, month),
       fundId,
       categoryId,
+    });
+    await s.as.mutation(api.finances.categorizeTransaction, {
+      transactionId: transferTxnId,
+      budgetId,
     });
 
     const rows = await s.as.query(api.finances.budgetVsActual, { year, month });
@@ -211,7 +222,7 @@ describe("budgets + budgetVsActual (Estimated ≠ Actual)", () => {
     expect(row).toBeDefined();
     // Estimated (allocated) and Actual are reported separately, never summed.
     expect(row?.allocatedCents).toBe(50000);
-    expect(row?.actualCents).toBe(12000); // transfer excluded
+    expect(row?.actualCents).toBe(12000); // transfer excluded even though linked
     expect(row?.label).toBe("Food · March");
 
     // Flag the outflow personal → it drops out of actual spend.
@@ -644,8 +655,9 @@ describe("enriched dashboards (prototype shapes)", () => {
       scopeRefId: eventId,
     });
 
-    // $100 real spend on the event, coded to Food.
-    await s.as.mutation(api.finances.createManualTransaction, {
+    // $100 real spend on the event, coded to Food, EXPLICITLY linked to the
+    // budget (carrying `eventId` alone is no longer an attribution link).
+    const spendTxnId = await s.as.mutation(api.finances.createManualTransaction, {
       flow: "outflow",
       amountCents: 10000,
       postedAt: tsInMonth(year, month),
@@ -653,14 +665,22 @@ describe("enriched dashboards (prototype shapes)", () => {
       fundId,
       categoryId,
     });
-    // A $50 transfer on the same event → excluded from spend.
-    await s.as.mutation(api.finances.createManualTransaction, {
+    await s.as.mutation(api.finances.categorizeTransaction, {
+      transactionId: spendTxnId,
+      budgetId,
+    });
+    // A $50 transfer on the same event, also linked → excluded from spend.
+    const transferTxnId = await s.as.mutation(api.finances.createManualTransaction, {
       flow: "transfer",
       amountCents: 5000,
       postedAt: tsInMonth(year, month),
       eventId,
       fundId,
       categoryId,
+    });
+    await s.as.mutation(api.finances.categorizeTransaction, {
+      transactionId: transferTxnId,
+      budgetId,
     });
 
     const dash = await s.as.query(api.finances.dashboardChapter, { year, month });
@@ -708,12 +728,16 @@ describe("enriched dashboards (prototype shapes)", () => {
       categoryId,
       label: "Software · June",
     });
-    await s.as.mutation(api.finances.createManualTransaction, {
+    const txnId = await s.as.mutation(api.finances.createManualTransaction, {
       flow: "outflow",
       amountCents: 9000, // 90% → warn
       postedAt: tsInMonth(year, month),
       fundId,
       categoryId,
+    });
+    await s.as.mutation(api.finances.categorizeTransaction, {
+      transactionId: txnId,
+      budgetId,
     });
     const dash = await s.as.query(api.finances.dashboardChapter, { year, month });
     const bucket = dash.recurringBudgets.find((r) => r.id === budgetId);
@@ -798,18 +822,24 @@ describe("enriched dashboards (prototype shapes)", () => {
       categoryId,
       label: "Ad spend · monthly",
     });
-    // $30 Jan, $50 Feb, $90 March — all coded to Ad spend.
+    // $30 Jan, $50 Feb, $90 March — all coded to Ad spend AND explicitly
+    // linked to the budget (fund/category alone is no longer an attribution
+    // link under the explicit-only rule).
     for (const [m, amt] of [
       [1, 3000],
       [2, 5000],
       [3, 9000],
     ] as const) {
-      await s.as.mutation(api.finances.createManualTransaction, {
+      const txnId = await s.as.mutation(api.finances.createManualTransaction, {
         flow: "outflow",
         amountCents: amt,
         postedAt: tsInMonth(year, m),
         fundId,
         categoryId,
+      });
+      await s.as.mutation(api.finances.categorizeTransaction, {
+        transactionId: txnId,
+        budgetId,
       });
     }
 
@@ -998,20 +1028,28 @@ describe("money-math regression fixes", () => {
       categoryId,
       label: "Ad spend · monthly",
     });
-    // $30 spent in March, $50 in April.
-    await s.as.mutation(api.finances.createManualTransaction, {
+    // $30 spent in March, $50 in April — both explicitly linked to the budget.
+    const marchTxnId = await s.as.mutation(api.finances.createManualTransaction, {
       flow: "outflow",
       amountCents: 3000,
       postedAt: tsInMonth(year, 3),
       fundId,
       categoryId,
     });
-    await s.as.mutation(api.finances.createManualTransaction, {
+    await s.as.mutation(api.finances.categorizeTransaction, {
+      transactionId: marchTxnId,
+      budgetId,
+    });
+    const aprilTxnId = await s.as.mutation(api.finances.createManualTransaction, {
       flow: "outflow",
       amountCents: 5000,
       postedAt: tsInMonth(year, 4),
       fundId,
       categoryId,
+    });
+    await s.as.mutation(api.finances.categorizeTransaction, {
+      transactionId: aprilTxnId,
+      budgetId,
     });
 
     // dashboardChapter scopes the bucket to the dashboard month (not YTD).

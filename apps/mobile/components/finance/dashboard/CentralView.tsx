@@ -48,6 +48,25 @@ export function CentralView({
         ))}
       </TileRow>
 
+      {/* Org-wide Unattributed: this period's spend across every chapter with
+          no explicit budget link — every central budget card below is BLIND
+          to it (no derive-matching fallback exists — see WP-0.1). Read-only
+          (no tap-through: Reconcile is chapter-scoped, and this sum spans
+          every chapter, so there's no single destination to jump to). */}
+      {data.orgUnattributedCents > 0 ? (
+        <View className="mb-3 flex-row items-center gap-3 rounded-lg border border-warn bg-warn-bg p-4 shadow-card">
+          <View className="flex-1">
+            <Text className="text-sm font-semibold text-ink">
+              Unattributed: {formatCents(data.orgUnattributedCents)}
+            </Text>
+            <Text className="text-xs text-muted">
+              Org-wide spend this period with no budget attached — chase each
+              chapter's Treasurer to code it in Reconcile.
+            </Text>
+          </View>
+        </View>
+      ) : null}
+
       {/* Org-wide (central) budgets — spend across every chapter. */}
       {data.centralBudgets.length > 0 ? (
         <>
