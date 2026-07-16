@@ -1152,21 +1152,34 @@ export const initiateRepayment = action({
 
 // ── autoLockOverdueCards (INTERNAL — the 7-day receipt auto-lock cron) ────────
 
-/** A card charge whose receipt is overdue: an outflow older than the grace
- *  window, with no attached receipt, not intentionally excluded/reconciled. */
-function isOverdueReceiptCharge(
+/**
+ * A card charge still MISSING its receipt: an outflow with no attached receipt,
+ * not intentionally excluded/reconciled, belonging to the card's chapter.
+ * Exported so the chapter dashboard's "cards nearing auto-lock" queue reuses the
+ * exact same predicate as this auto-lock sweep — only the grace-window
+ * comparison differs (nearing = still within grace, overdue = past it).
+ */
+export function isMissingReceiptCharge(
   tr: Doc<"transactions">,
   card: Doc<"cards">,
-  cutoff: number,
 ): boolean {
   return (
     tr.chapterId === card.chapterId &&
     tr.flow === "outflow" &&
     tr.status !== "excluded" &&
     tr.status !== "reconciled" &&
-    !tr.receiptStorageId &&
-    tr.postedAt < cutoff
+    !tr.receiptStorageId
   );
+}
+
+/** A card charge whose receipt is overdue: a missing-receipt charge older than
+ *  the grace window (the cutoff). */
+function isOverdueReceiptCharge(
+  tr: Doc<"transactions">,
+  card: Doc<"cards">,
+  cutoff: number,
+): boolean {
+  return isMissingReceiptCharge(tr, card) && tr.postedAt < cutoff;
 }
 
 /**

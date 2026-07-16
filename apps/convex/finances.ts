@@ -43,6 +43,7 @@ import {
   TRANSACTION_STATUSES,
   BUDGET_SCOPE_LABELS,
   CENTRAL,
+  RECEIPT_GRACE_DAYS,
   countsAsSpend,
   easternParts,
   quarterOfMonth,
@@ -52,6 +53,7 @@ import {
   type BudgetRefKind,
 } from "@events-os/shared";
 import { readSandbox } from "./financeSettings";
+import { isMissingReceiptCharge } from "./cards";
 import {
   getChapterIdOrNull,
   requireChapterId,
@@ -1080,18 +1082,108 @@ function nameCache<T extends "events" | "projects" | "people" | "cards" | "event
 
 // ── Dashboards ───────────────────────────────────────────────────────────────
 
+/** Reimbursement statuses awaiting a manager decision — mirrors the exact set
+ *  `listStaleReimbursements` (reimbursements.ts) treats as "awaiting a
+ *  manager", so the two queues never drift on what counts as approvable. */
+const APPROVABLE_REIMBURSEMENT_STATUSES = ["submitted", "preapproved"] as const;
+
+/**
+ * The chapter "Needs attention" queue: (a) reimbursements awaiting a manager
+ * decision (submitted / preapproved — NOT pre-approval-pending, approved, or
+ * terminal), and (b) cards with a missing-receipt charge still inside the
+ * `RECEIPT_GRACE_DAYS` grace window (nearing the auto-lock sweep, not yet past
+ * it — those are already locked by the cron). Each active card is checked
+ * against its own recent charges via `isMissingReceiptCharge`, the exact same
+ * predicate `autoLockOverdueCards` (cards.ts) uses, so "nearing" and "overdue"
+ * can never disagree on what counts as a missing receipt.
+ */
+async function chapterAttentionQueue(
+  ctx: QueryCtx,
+  chapterId: Id<"chapters">,
+): Promise<(typeof attentionItem.type)[]> {
+  const items: (typeof attentionItem.type)[] = [];
+
+  // (a) Reimbursements to approve.
+  let reimbCount = 0;
+  let reimbCents = 0;
+  for (const status of APPROVABLE_REIMBURSEMENT_STATUSES) {
+    const rows = await ctx.db
+      .query("reimbursementRequests")
+      .withIndex("by_chapter_and_status", (q) =>
+        q.eq("chapterId", chapterId).eq("status", status),
+      )
+      .take(ROLLUP_SCAN_LIMIT);
+    for (const r of rows) {
+      reimbCount++;
+      reimbCents += r.totalCents;
+    }
+  }
+  if (reimbCount > 0) {
+    items.push({
+      kind: "reimbursements",
+      title: "Reimbursements to approve",
+      badgeCount: reimbCount,
+      detail: `${formatCents(reimbCents)} awaiting approval`,
+      actionLabel: "Review",
+    });
+  }
+
+  // (b) Cards nearing the receipt auto-lock — count distinct CARDHOLDERS (a
+  // person with two nearing charges is one attention row, not two).
+  const cutoff = Date.now() - RECEIPT_GRACE_DAYS * DAY_MS;
+  const chapterCards = await ctx.db
+    .query("cards")
+    .withIndex("by_chapter", (q) => q.eq("chapterId", chapterId))
+    .take(ROLLUP_SCAN_LIMIT);
+  const nearingCardholders = new Set<Id<"people">>();
+  for (const card of chapterCards) {
+    // Only ACTIVE cards can still be "nearing" — a locked card already tipped
+    // over (the auto-lock cron caught it) or was manually locked/canceled.
+    if (card.status !== "active") continue;
+    const charges = await ctx.db
+      .query("transactions")
+      .withIndex("by_card", (q) => q.eq("cardId", card._id))
+      .take(ROLLUP_SCAN_LIMIT);
+    const nearing = charges.some(
+      (tr) => isMissingReceiptCharge(tr, card) && tr.postedAt >= cutoff,
+    );
+    if (nearing) nearingCardholders.add(card.cardholderPersonId);
+  }
+  if (nearingCardholders.size > 0) {
+    items.push({
+      kind: "cards",
+      title: "Cards nearing receipt lock",
+      badgeCount: nearingCardholders.size,
+      detail:
+        nearingCardholders.size === 1
+          ? "1 cardholder has a receipt due before the auto-lock"
+          : `${nearingCardholders.size} cardholders have a receipt due before the auto-lock`,
+      actionLabel: "Review",
+    });
+  }
+
+  return items;
+}
+
 /**
  * The chapter finance dashboard (prototype shape): month tiles, project /
  * recurring budget cards joined to actual spend, enriched recent transactions,
- * an attention queue (empty until Phases 3+5), plus the fund balances.
+ * an attention queue, plus the fund balances.
  *
  * `{year, month}` default to the current Eastern month so the UI's month
  * stepper can page through history. `period` toggles between the selected month
  * (`"month"`, default) and the cumulative year-to-date range through that month
  * (`"ytd"`); `month` is always the through-month.
+ *
+ * `chapterId` optionally drills into a DIFFERENT chapter than the caller's own
+ * (central-only — see the authz check in the handler); absent (or the
+ * caller's own chapter) behaves exactly as before.
  */
 export const dashboardChapter = query({
   args: {
+    // Central drill-down: view a DIFFERENT chapter's dashboard (see the authz
+    // note below). Absent (or the caller's own chapter) is unchanged.
+    chapterId: v.optional(v.id("chapters")),
     year: v.optional(v.number()),
     month: v.optional(v.number()),
     period: v.optional(v.union(v.literal("month"), v.literal("ytd"))),
@@ -1131,9 +1223,22 @@ export const dashboardChapter = query({
       funds: [] as never[],
       toBudgetCount: 0,
     };
-    const chapterId = await readChapterId(ctx);
+    const ownChapterId = await readChapterId(ctx);
+    const chapterId = args.chapterId ?? ownChapterId;
     if (!chapterId) return empty;
-    await requireFinanceRole(ctx, chapterId, "viewer");
+    // Drilling into a DIFFERENT chapter than the caller's own needs central
+    // (org-wide) reach — the same gate `dashboardCentral` uses. The central
+    // check resolves the caller's finance capability through their OWN
+    // chapter (a central grant is scope-wide regardless of which chapterId
+    // it's checked against, but `viewerPerson` only finds a roster row in the
+    // chapter passed in, so we must pass the caller's home chapter, not the
+    // target one — mirroring `dashboardCentral` below). Otherwise this is the
+    // normal same-chapter viewer gate.
+    if (args.chapterId != null && args.chapterId !== ownChapterId) {
+      await requireFinanceCentral(ctx, ownChapterId ?? chapterId);
+    } else {
+      await requireFinanceRole(ctx, chapterId, "viewer");
+    }
 
     // One period read for the year drives every budget's actual + the period tile.
     const sandboxMode = await readSandbox(ctx);
@@ -1400,13 +1505,15 @@ export const dashboardChapter = query({
       0,
     );
 
+    const attention = await chapterAttentionQueue(ctx, chapterId);
+
     return {
       tiles,
       oneTimeBudgets,
       recurringBudgets,
       tagRollups,
       recentTransactions,
-      attention: [],
+      attention,
       funds,
       toBudgetCount,
     };

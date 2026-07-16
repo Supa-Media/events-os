@@ -6,7 +6,7 @@
  * `api.finances.dashboardCentral`.
  */
 import { useMemo } from "react";
-import { Text, View } from "react-native";
+import { Pressable, Text, View } from "react-native";
 import type { FunctionReturnType } from "convex/server";
 import { api } from "@events-os/convex/_generated/api";
 import {
@@ -14,7 +14,8 @@ import {
   BUDGET_SCOPE_LABELS,
   formatCents,
 } from "@events-os/shared";
-import { EmptyState, SectionHeader } from "../../ui";
+import { EmptyState, Icon, SectionHeader } from "../../ui";
+import { colors } from "../../../lib/theme";
 import { BudgetBar, Chip, Tile, TileRow } from "./parts";
 import { TagRollupSection, type BudgetSpend } from "./TagRollup";
 
@@ -22,7 +23,15 @@ type CentralDash = FunctionReturnType<typeof api.finances.dashboardCentral>;
 type ChapterRollup = CentralDash["chapterRollup"][number];
 type CentralBudget = CentralDash["centralBudgets"][number];
 
-export function CentralView({ data }: { data: CentralDash }) {
+export function CentralView({
+  data,
+  onViewChapter,
+}: {
+  data: CentralDash;
+  /** Drill into one chapter's chapter-perspective dashboard (central-only —
+   *  the backend re-checks central reach via `dashboardChapter({chapterId})`). */
+  onViewChapter: (chapterId: ChapterRollup["chapterId"], chapterName: string) => void;
+}) {
   // Per-central-budget actuals for the tag-detail sheet, keyed by budget id.
   const spentByBudgetId = useMemo(() => {
     const m = new Map<string, BudgetSpend>();
@@ -65,7 +74,11 @@ export function CentralView({ data }: { data: CentralDash }) {
       ) : (
         <View className="gap-3">
           {data.chapterRollup.map((c) => (
-            <ChapterRollupCard key={c.chapterId} c={c} />
+            <ChapterRollupCard
+              key={c.chapterId}
+              c={c}
+              onView={() => onViewChapter(c.chapterId, c.chapterName)}
+            />
           ))}
         </View>
       )}
@@ -101,9 +114,13 @@ function CentralBudgetCard({ b }: { b: CentralBudget }) {
   );
 }
 
-function ChapterRollupCard({ c }: { c: ChapterRollup }) {
+function ChapterRollupCard({ c, onView }: { c: ChapterRollup; onView: () => void }) {
   return (
-    <View className="rounded-lg border border-border bg-raised p-4 shadow-card">
+    <Pressable
+      onPress={onView}
+      accessibilityRole="button"
+      className="rounded-lg border border-border bg-raised p-4 shadow-card active:bg-sunken web:hover:border-border-strong"
+    >
       <View className="mb-2 flex-row items-start justify-between gap-3">
         <View className="flex-1">
           <Text className="font-display text-base text-ink" numberOfLines={1}>
@@ -111,11 +128,14 @@ function ChapterRollupCard({ c }: { c: ChapterRollup }) {
           </Text>
           {c.subtitle ? <Text className="text-xs text-muted">{c.subtitle}</Text> : null}
         </View>
-        <Text className="text-sm text-muted" style={{ fontVariant: ["tabular-nums"] }}>
-          {formatCents(c.spentCents)} / {formatCents(c.budgetCents)}
-        </Text>
+        <View className="flex-row items-center gap-2">
+          <Text className="text-sm text-muted" style={{ fontVariant: ["tabular-nums"] }}>
+            {formatCents(c.spentCents)} / {formatCents(c.budgetCents)}
+          </Text>
+          <Icon name="chevron-right" size={16} color={colors.muted} />
+        </View>
       </View>
       <BudgetBar pct={c.barPct} status={c.status} />
-    </View>
+    </Pressable>
   );
 }

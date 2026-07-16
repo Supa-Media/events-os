@@ -8,7 +8,7 @@
  * pure presentation over that contract.
  */
 import { useMemo } from "react";
-import { Text, View } from "react-native";
+import { Pressable, Text, View } from "react-native";
 import type { FunctionReturnType } from "convex/server";
 import { api } from "@events-os/convex/_generated/api";
 import { formatCents } from "@events-os/shared";
@@ -18,11 +18,13 @@ import {
   Cell,
   EmptyState,
   HeaderCell,
+  Icon,
   Row,
   SectionHeader,
   Table,
   TableHeader,
 } from "../../ui";
+import { colors } from "../../../lib/theme";
 import {
   AiCodingBanner,
   BudgetBar,
@@ -40,26 +42,22 @@ type ChapterDash = FunctionReturnType<typeof api.finances.dashboardChapter>;
 type ProjectBudget = ChapterDash["oneTimeBudgets"][number];
 type RecurringBudget = ChapterDash["recurringBudgets"][number];
 type RecentTxn = ChapterDash["recentTransactions"][number];
-// The backend always returns `attention: []` today (populated in Phases 3+5),
-// so its inferred element type collapses to `never` — pin it to the contract.
-type Attention = {
-  kind: string;
-  title: string;
-  badgeCount: number;
-  detail: string;
-  actionLabel: string;
-};
+type Attention = ChapterDash["attention"][number];
 
 export function ChapterView({
   data,
   onNewBudget,
   onEditBudget,
   onAddTransaction,
+  onAttentionAction,
 }: {
   data: ChapterDash;
   onNewBudget: () => void;
   onEditBudget: (budgetId: string) => void;
   onAddTransaction: () => void;
+  /** Navigate for an attention row's action (`a.kind`: "reimbursements" → the
+   *  Reimbursements tab, "cards" → the Cards tab). */
+  onAttentionAction: (kind: string) => void;
 }) {
   const needsReview = data.recentTransactions.filter(
     (t) => txnStatusTone(t.status).label === "Needs review",
@@ -175,8 +173,8 @@ export function ChapterView({
                 {needsBudget > 0 ? (
                   <NeedsBudgetCard count={needsBudget} />
                 ) : null}
-                {(data.attention as Attention[]).map((a, i) => (
-                  <AttentionCard key={i} a={a} />
+                {data.attention.map((a, i) => (
+                  <AttentionCard key={i} a={a} onPress={() => onAttentionAction(a.kind)} />
                 ))}
               </View>
             )}
@@ -392,9 +390,13 @@ function NeedsBudgetCard({ count }: { count: number }) {
 }
 
 // ── Attention card ───────────────────────────────────────────────────────────
-function AttentionCard({ a }: { a: Attention }) {
+function AttentionCard({ a, onPress }: { a: Attention; onPress: () => void }) {
   return (
-    <View className="flex-row items-center gap-3 rounded-lg border border-border bg-raised p-4 shadow-card">
+    <Pressable
+      onPress={onPress}
+      accessibilityRole="button"
+      className="flex-row items-center gap-3 rounded-lg border border-border bg-raised p-4 shadow-card active:bg-sunken web:hover:border-border-strong"
+    >
       <View className="h-9 min-w-[36px] items-center justify-center rounded-pill bg-accent-soft px-2">
         <Text className="text-sm font-bold text-accent" style={{ fontVariant: ["tabular-nums"] }}>
           {a.badgeCount}
@@ -405,6 +407,7 @@ function AttentionCard({ a }: { a: Attention }) {
         <Text className="text-xs text-muted">{a.detail}</Text>
       </View>
       <Badge label={a.actionLabel} tone="accent" />
-    </View>
+      <Icon name="chevron-right" size={16} color={colors.muted} />
+    </Pressable>
   );
 }
