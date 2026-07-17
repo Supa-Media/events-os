@@ -36,6 +36,37 @@
  * deliberately do NOT auto-decline on a validation failure — the underlying
  * seat state may become valid again (e.g. the conflicting holder is removed),
  * and the proposal should still be actionable rather than silently dead.
+ *
+ * ## Chain-top auto-execute
+ *
+ * Two-party approval requires someone ABOVE THE PROPOSER to exist. That's
+ * structurally impossible for whoever sits at the very top of the org chart
+ * (today, the ED at the central root) — `resolveEligibleDeciders` would climb
+ * the proposer's own ancestor chain and find nothing, ever, and the proposal
+ * would sit `"pending"` forever. `propose` special-cases exactly this: when
+ * the proposer's qualifying seat (the nearest ancestor-of-target seat they
+ * hold) has NO ancestor seat DEF above it at all — they hold the true top of
+ * the walked chain, "chain-top" — the proposal EXECUTES IMMEDIATELY instead
+ * of going pending, through the SAME `executeProposalChange` path `approve`
+ * uses (so maxHolders, SoD, derived-seat rejection, and the legacy
+ * write-through all still apply — a chain-top proposal gets ZERO less
+ * validation than a two-party one). The row is still written, as `"approved"`
+ * with `decidedByPersonId === proposedByPersonId` and `decidedAt ===
+ * createdAt`, plus a machine-set note marking the auto-execution — the audit
+ * trail is preserved even though nobody else decided it.
+ *
+ * This is deliberately NARROW: it is NOT "a decider-less proposer may act
+ * unilaterally" as a general rule. It only fires when NO ancestor seat DEF
+ * exists above the proposer's qualifying seat anywhere in the walk. A
+ * MID-CHAIN proposer whose immediate ancestor seat merely happens to be
+ * VACANT right now is a completely different case — that ancestor structurally
+ * EXISTS, so the proposal stays `"pending"` exactly as it does today, waiting
+ * for someone to occupy it (see `resolveEligibleDeciders`'s `"chain-top"` vs
+ * `"none"` distinction). And because chain-top is recomputed live off the
+ * actual `seatDefs` tree every time (never cached on the proposal row), the
+ * day a Board (or any other) seat is added above the ED, the ED's own
+ * proposals stop being chain-top automatically and fall back to normal
+ * two-party approval — no migration, no flag, nothing to remember to flip.
  */
 import { query, mutation } from "./_generated/server";
 import { ConvexError, v } from "convex/values";
@@ -72,6 +103,13 @@ const PENDING_SCAN_LIMIT = 500;
  *  `@events-os/shared`'s `seatAncestors` cycle guard, applied here to the
  *  LIVE DB rows instead of the static template). */
 const MAX_CHAIN_DEPTH = 64;
+
+/** Machine-set note `propose` records on a proposal it auto-executes because
+ *  the proposer sits at the top of the approval chain (see the file doc
+ *  comment's "Chain-top auto-execute" section) — appended to any caller-
+ *  supplied note rather than overwriting it. */
+const CHAIN_TOP_AUTO_NOTE =
+  "Auto-executed: no seat exists above the proposer's in the org chart to approve this change (chain top).";
 
 const proposalView = v.object({
   proposalId: v.id("seatProposals"),
@@ -231,29 +269,55 @@ async function personHoldingLink(
   return match.personId;
 }
 
+/** The minimal shape `resolveEligibleDeciders` needs — a subset of
+ *  `Doc<"seatProposals">`'s fields, satisfied structurally by an actual
+ *  proposal row (`approve`/`decline`/`pendingProposals`) OR by a synthetic
+ *  object built from `propose`'s not-yet-inserted args (letting `propose`
+ *  reuse this exact resolver instead of forking its walk logic). */
+interface DeciderResolutionInput {
+  scope: Scope;
+  seatDefId: Id<"seatDefs">;
+  proposedByPersonId: Id<"people">;
+}
+
+type DeciderResolution =
+  | { kind: "decider"; deciderSeat: ScopedSeat; eligiblePersonIds: Id<"people">[] }
+  /** The proposer's qualifying seat has NO ancestor seat DEF above it at all
+   *  — they hold the true top of the walked chain (e.g. the ED at the
+   *  central root). Structurally nobody could ever two-party-decide this;
+   *  `propose` auto-executes instead. */
+  | { kind: "chain-top" }
+  /** Either the proposer no longer holds any qualifying seat, or a
+   *  qualifying ancestor structurally EXISTS above them but every one of
+   *  them is currently vacant — NOT chain-top, stays pending. */
+  | { kind: "none" };
+
 /**
- * Resolve who may DECIDE (approve/decline) a pending proposal: climb the
- * target's ancestor chain starting just ABOVE the proposer's own qualifying
- * seat (the nearest ancestor-of-target seat they currently hold — recomputed
- * fresh here, not stored, since occupancy can change between propose and
- * decide), skipping vacant seats and any holder who IS the proposer, until
- * the first ancestor with at least one OTHER holder. Any holder of THAT seat
- * is eligible; ties (a multi-holder seat) all qualify.
+ * Resolve who may DECIDE (approve/decline) a proposal — real or not-yet-
+ * inserted (see `DeciderResolutionInput`): climb the target's ancestor chain
+ * starting just ABOVE the proposer's own qualifying seat (the nearest
+ * ancestor-of-target seat they currently hold — recomputed fresh here, not
+ * stored, since occupancy can change between propose and decide), skipping
+ * vacant seats and any holder who IS the proposer, until the first ancestor
+ * with at least one OTHER holder. Any holder of THAT seat is eligible; ties
+ * (a multi-holder seat) all qualify.
  *
- * Returns `null` if the proposer no longer holds any qualifying seat, or if
- * no eligible decider exists anywhere above them (e.g. they proposed using
- * the ED seat itself — nobody is above the top of the tree).
+ * See `DeciderResolution`'s cases — critically, `"chain-top"` (no ancestor
+ * seat DEF exists above the proposer at all) is distinct from `"none"`'s
+ * merely-vacant-ancestor case: only the former means nobody could EVER decide
+ * this proposal.
  */
 async function resolveEligibleDeciders(
   ctx: QueryCtx | MutationCtx,
-  proposal: Doc<"seatProposals">,
-): Promise<{ deciderSeat: ScopedSeat; eligiblePersonIds: Id<"people">[] } | null> {
+  proposal: DeciderResolutionInput,
+): Promise<DeciderResolution> {
   const targetChain = await ancestorChainOf(ctx, proposal.scope, proposal.seatDefId);
   const heldByProposer = await heldSeatKeys(ctx, [proposal.proposedByPersonId]);
   const qualifyingIndex = targetChain.findIndex((link) =>
     heldByProposer.has(linkKey(link.scope, link.def._id)),
   );
-  if (qualifyingIndex === -1) return null;
+  if (qualifyingIndex === -1) return { kind: "none" };
+  if (qualifyingIndex === targetChain.length - 1) return { kind: "chain-top" };
 
   for (let i = qualifyingIndex + 1; i < targetChain.length; i++) {
     const link = targetChain[i]!;
@@ -267,10 +331,10 @@ async function resolveEligibleDeciders(
       .map((h) => h.personId)
       .filter((personId) => personId !== proposal.proposedByPersonId);
     if (eligiblePersonIds.length > 0) {
-      return { deciderSeat: link, eligiblePersonIds };
+      return { kind: "decider", deciderSeat: link, eligiblePersonIds };
     }
   }
-  return null;
+  return { kind: "none" };
 }
 
 // ── Display resolution ───────────────────────────────────────────────────────
@@ -468,18 +532,93 @@ export const propose = mutation({
       });
     }
 
+    const createdAt = Date.now();
+    const resolved = await resolveEligibleDeciders(ctx, { scope, seatDefId, proposedByPersonId });
+
+    if (resolved.kind !== "chain-top") {
+      // Normal two-party path: goes pending regardless of whether an
+      // eligible decider exists RIGHT NOW (`"none"` covers a merely-vacant
+      // ancestor — see `resolveEligibleDeciders`'s doc comment) — someone
+      // occupying that ancestor later makes it decidable.
+      return await ctx.db.insert("seatProposals", {
+        seatDefId,
+        scope,
+        action,
+        subjectPersonId,
+        proposedByPersonId,
+        status: "pending",
+        note,
+        createdAt,
+      });
+    }
+
+    // Chain-top: nobody is structurally above the proposer's qualifying seat
+    // (see the file doc comment's "Chain-top auto-execute" section) — execute
+    // the change immediately through the SAME validated path `approve` uses.
+    // If this throws (SoD, maxHolders, derived-seat, stale vacate subject),
+    // the whole mutation rolls back — no proposal row is written either.
+    const callerUserId = (await requireUserId(ctx)) as Id<"users">;
+    await executeProposalChange(ctx, callerUserId, { action, seatDefId, scope, subjectPersonId });
+
     return await ctx.db.insert("seatProposals", {
       seatDefId,
       scope,
       action,
       subjectPersonId,
       proposedByPersonId,
-      status: "pending",
-      note,
-      createdAt: Date.now(),
+      status: "approved",
+      note: note ? `${note}\n\n${CHAIN_TOP_AUTO_NOTE}` : CHAIN_TOP_AUTO_NOTE,
+      createdAt,
+      decidedByPersonId: proposedByPersonId,
+      decidedAt: createdAt,
     });
   },
 });
+
+/**
+ * Execute a proposal's underlying seat change through the SAME validated
+ * path `assignSeat`/`unassignSeat` enforce (`assignSeatImpl`/
+ * `unassignSeatImpl` — see the file doc comment). Shared by `approve`
+ * (two-party decision) and `propose`'s chain-top auto-execute path — the
+ * ONLY two places a proposal's seat change is ever actually applied, and
+ * both go through this one function so neither can drift from the other's
+ * validation. Throws (aborting the whole calling mutation) exactly as a
+ * direct `assignSeat`/`unassignSeat` call would.
+ */
+async function executeProposalChange(
+  ctx: MutationCtx,
+  callerUserId: Id<"users">,
+  proposal: {
+    action: "fill" | "vacate";
+    seatDefId: Id<"seatDefs">;
+    scope: Scope;
+    subjectPersonId: Id<"people">;
+  },
+): Promise<void> {
+  if (proposal.action === "fill") {
+    await assignSeatImpl(ctx, callerUserId, {
+      seatDefId: proposal.seatDefId,
+      scope: proposal.scope,
+      personId: proposal.subjectPersonId,
+    });
+    return;
+  }
+
+  const holders = await ctx.db
+    .query("seatAssignments")
+    .withIndex("by_scope_and_seat", (q) =>
+      q.eq("scope", proposal.scope).eq("seatDefId", proposal.seatDefId),
+    )
+    .take(MAX_SLOT_READ);
+  const current = holders.find((h) => h.personId === proposal.subjectPersonId);
+  if (!current) {
+    throw new ConvexError({
+      code: "NOT_HOLDER",
+      message: "That person no longer holds this seat — nothing to vacate.",
+    });
+  }
+  await unassignSeatImpl(ctx, current._id);
+}
 
 /**
  * Approve a pending proposal — EXECUTES the seat change atomically (see the
@@ -518,9 +657,10 @@ export const approve = mutation({
     }
 
     const resolved = await resolveEligibleDeciders(ctx, proposal);
-    const deciderPersonId = resolved?.eligiblePersonIds.find((id) =>
-      callerPersonIds.includes(id),
-    );
+    const deciderPersonId =
+      resolved.kind === "decider"
+        ? resolved.eligiblePersonIds.find((id) => callerPersonIds.includes(id))
+        : undefined;
     if (!deciderPersonId) {
       throw new ConvexError({
         code: "FORBIDDEN",
@@ -528,32 +668,17 @@ export const approve = mutation({
       });
     }
 
-    // Execute — the exact validated path `assignSeat`/`unassignSeat` enforce.
-    // A thrown ConvexError here aborts the WHOLE transaction (nothing below
-    // runs, and nothing above persists either), so the proposal is left
-    // exactly as it was: still "pending".
-    if (proposal.action === "fill") {
-      await assignSeatImpl(ctx, callerUserId, {
-        seatDefId: proposal.seatDefId,
-        scope: proposal.scope,
-        personId: proposal.subjectPersonId,
-      });
-    } else {
-      const holders = await ctx.db
-        .query("seatAssignments")
-        .withIndex("by_scope_and_seat", (q) =>
-          q.eq("scope", proposal.scope).eq("seatDefId", proposal.seatDefId),
-        )
-        .take(MAX_SLOT_READ);
-      const current = holders.find((h) => h.personId === proposal.subjectPersonId);
-      if (!current) {
-        throw new ConvexError({
-          code: "NOT_HOLDER",
-          message: "That person no longer holds this seat — nothing to vacate.",
-        });
-      }
-      await unassignSeatImpl(ctx, current._id);
-    }
+    // Execute — the exact validated path `assignSeat`/`unassignSeat` enforce
+    // (same helper `propose`'s chain-top auto-execute path calls). A thrown
+    // ConvexError here aborts the WHOLE transaction (nothing below runs, and
+    // nothing above persists either), so the proposal is left exactly as it
+    // was: still "pending".
+    await executeProposalChange(ctx, callerUserId, {
+      action: proposal.action,
+      seatDefId: proposal.seatDefId,
+      scope: proposal.scope,
+      subjectPersonId: proposal.subjectPersonId,
+    });
 
     await ctx.db.patch(proposalId, {
       status: "approved",
@@ -594,9 +719,10 @@ export const decline = mutation({
     }
 
     const resolved = await resolveEligibleDeciders(ctx, proposal);
-    const deciderPersonId = resolved?.eligiblePersonIds.find((id) =>
-      callerPersonIds.includes(id),
-    );
+    const deciderPersonId =
+      resolved.kind === "decider"
+        ? resolved.eligiblePersonIds.find((id) => callerPersonIds.includes(id))
+        : undefined;
     if (!deciderPersonId) {
       throw new ConvexError({
         code: "FORBIDDEN",
@@ -670,7 +796,10 @@ export const pendingProposals = query({
         continue;
       }
       const resolved = await resolveEligibleDeciders(ctx, row);
-      if (resolved && resolved.eligiblePersonIds.some((id) => callerPersonIds.includes(id))) {
+      if (
+        resolved.kind === "decider" &&
+        resolved.eligiblePersonIds.some((id) => callerPersonIds.includes(id))
+      ) {
         visible.push(row);
       }
     }

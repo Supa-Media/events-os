@@ -1157,3 +1157,284 @@ describe("seatProposals.approve", () => {
     ).rejects.toBeInstanceOf(ConvexError);
   });
 });
+
+// ── propose — chain-top auto-execute ────────────────────────────────────────
+//
+// The ED sits at the central chart's TRUE ROOT — `resolveEligibleDeciders`
+// can never find anyone above them, so a normal two-party ED proposal would
+// sit "pending" forever (the reported deadlock). `propose` special-cases
+// exactly this "chain-top" case: no ancestor seat DEF exists above the
+// proposer's own qualifying seat anywhere in the walk (NOT merely "no one
+// currently occupies" one — see the file doc comment's "Chain-top
+// auto-execute" section). See `seatProposals.ts`'s `resolveEligibleDeciders`
+// for the `"chain-top"` vs `"none"` distinction this suite exercises.
+
+describe("seatProposals.propose — chain-top auto-execute", () => {
+  test("the ED (root holder) proposes filling a vacant seat below them: executes immediately, approved + self-decided + auto-note", async () => {
+    const s = await baseSetup();
+    const edDef = await defBySlug(s, "executive_director");
+    const ddDef = await defBySlug(s, "development_director"); // vacant, direct child of executive_director
+    const { as, personId: edPersonId } = await personActor(s, s.chapterId, "ED", "ed-fill@publicworship.life");
+    await seat(s, edDef._id, "central", edPersonId);
+    const subject = await makePerson(s, s.chapterId, "NewDevDirector");
+
+    const proposalId = await as.mutation(api.seatProposals.propose, {
+      seatDefId: ddDef._id,
+      scope: "central",
+      action: "fill",
+      subjectPersonId: subject,
+      note: "Filling this while we're pre-Board.",
+    });
+    expect(proposalId).toBeDefined();
+
+    // Executed immediately — the assignment exists right away, no approval
+    // step needed.
+    const rows = await run(s.t, (ctx) =>
+      ctx.db
+        .query("seatAssignments")
+        .withIndex("by_scope_and_seat", (q) => q.eq("scope", "central").eq("seatDefId", ddDef._id))
+        .collect(),
+    );
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.personId).toBe(subject);
+
+    const mine = await as.query(api.seatProposals.myProposals, {});
+    const decided = mine.find((p) => p.proposalId === proposalId)!;
+    expect(decided.status).toBe("approved");
+    expect(decided.decidedByPersonId).toBe(edPersonId);
+    expect(decided.decidedAt).toBe(decided.createdAt);
+    expect(decided.note).toContain("Filling this while we're pre-Board.");
+    expect(decided.note).toContain("Auto-executed");
+    expect(decided.note?.toLowerCase()).toContain("chain top");
+  });
+
+  test("the ED proposes vacating a held seat below them: executes immediately, approved + self-decided + auto-note", async () => {
+    const s = await baseSetup();
+    const edDef = await defBySlug(s, "executive_director");
+    const ddDef = await defBySlug(s, "development_director");
+    const { as, personId: edPersonId } = await personActor(s, s.chapterId, "ED2", "ed-vacate@publicworship.life");
+    await seat(s, edDef._id, "central", edPersonId);
+    const holder = await makePerson(s, s.chapterId, "OutgoingDevDirector");
+    await seat(s, ddDef._id, "central", holder);
+
+    const proposalId = await as.mutation(api.seatProposals.propose, {
+      seatDefId: ddDef._id,
+      scope: "central",
+      action: "vacate",
+      subjectPersonId: holder,
+    });
+
+    const rows = await run(s.t, (ctx) =>
+      ctx.db
+        .query("seatAssignments")
+        .withIndex("by_scope_and_seat", (q) => q.eq("scope", "central").eq("seatDefId", ddDef._id))
+        .collect(),
+    );
+    expect(rows).toHaveLength(0);
+
+    const mine = await as.query(api.seatProposals.myProposals, {});
+    const decided = mine.find((p) => p.proposalId === proposalId)!;
+    expect(decided.status).toBe("approved");
+    expect(decided.decidedByPersonId).toBe(edPersonId);
+    expect(decided.decidedAt).toBe(decided.createdAt);
+    expect(decided.note).toContain("Auto-executed");
+  });
+
+  test("a mid-chain proposer with a VACANT (but existing) ancestor stays pending — NOT chain-top", async () => {
+    const s = await baseSetup();
+    // A 3-level runtime chain hanging off chapter_director, with EVERY
+    // ancestor above the proposer left vacant (regional_lead, chapter_director,
+    // and the central expansion_director/executive_director roots) — the
+    // ancestor seat DEFS structurally exist all the way to the true root, but
+    // nobody occupies any of them. This must NOT auto-execute: it's
+    // indistinguishable from "waiting for someone to fill in above me", not
+    // "nobody could ever be above me".
+    const regionalLead = await insertSeatDef(s, {
+      slug: "regional_lead_chaintop_test",
+      chart: "chapter",
+      parentSlug: "chapter_director",
+      maxHolders: 5,
+    });
+    const regionalScout = await insertSeatDef(s, {
+      slug: "regional_scout_chaintop_test",
+      chart: "chapter",
+      parentSlug: "regional_lead_chaintop_test",
+      maxHolders: 1,
+    });
+    const regionalVolunteer = await insertSeatDef(s, {
+      slug: "regional_volunteer_chaintop_test",
+      chart: "chapter",
+      parentSlug: "regional_scout_chaintop_test",
+      maxHolders: 1,
+    });
+    void regionalLead;
+    const { as: scoutAs, personId: scoutPersonId } = await personActor(
+      s,
+      s.chapterId,
+      "ScoutChainTop",
+      "scout-chaintop@publicworship.life",
+    );
+    await seat(s, regionalScout, s.chapterId, scoutPersonId);
+    const subject = await makePerson(s, s.chapterId, "Subject");
+
+    const proposalId = await scoutAs.mutation(api.seatProposals.propose, {
+      seatDefId: regionalVolunteer,
+      scope: s.chapterId,
+      action: "fill",
+      subjectPersonId: subject,
+    });
+    expect(proposalId).toBeDefined();
+
+    // NOT auto-executed: no assignment was created, and the proposal is
+    // still pending, self-decided fields unset.
+    const rows = await run(s.t, (ctx) =>
+      ctx.db
+        .query("seatAssignments")
+        .withIndex("by_scope_and_seat", (q) =>
+          q.eq("scope", s.chapterId).eq("seatDefId", regionalVolunteer),
+        )
+        .collect(),
+    );
+    expect(rows).toHaveLength(0);
+
+    const mine = await scoutAs.query(api.seatProposals.myProposals, {});
+    const pending = mine.find((p) => p.proposalId === proposalId)!;
+    expect(pending.status).toBe("pending");
+    expect(pending.decidedByPersonId).toBeUndefined();
+    expect(pending.decidedAt).toBeUndefined();
+  });
+
+  test("ordinary two-party flow is unchanged: a mid-chain proposer with an occupied ancestor still goes pending, not auto-executed", async () => {
+    const s = await baseSetup();
+    const cdDef = await defBySlug(s, "chapter_director");
+    const musicLeadDef = await defBySlug(s, "music_lead");
+    const { personId: cdPersonId } = await personActor(s, s.chapterId, "CDRegression", "cd-regression@publicworship.life");
+    await seat(s, cdDef._id, s.chapterId, cdPersonId);
+    const { as: leaderAs, personId: leaderPersonId } = await personActor(
+      s,
+      s.chapterId,
+      "LeaderRegression",
+      "leader-regression@publicworship.life",
+    );
+    await seat(s, musicLeadDef._id, s.chapterId, leaderPersonId);
+    const subject = await makePerson(s, s.chapterId, "Subject");
+
+    const proposalId = await leaderAs.mutation(api.seatProposals.propose, {
+      seatDefId: (await defBySlug(s, "vocal_lead"))._id,
+      scope: s.chapterId,
+      action: "fill",
+      subjectPersonId: subject,
+    });
+
+    const mine = await leaderAs.query(api.seatProposals.myProposals, {});
+    const decided = mine.find((p) => p.proposalId === proposalId)!;
+    expect(decided.status).toBe("pending");
+  });
+
+  test("a validation failure during chain-top auto-execute (SoD conflict) throws and persists nothing — no assignment, no proposal row", async () => {
+    const s = await baseSetup();
+    const cdDef = await defBySlug(s, "chapter_director"); // approve-side (legacyTitle "president")
+    const treasurerDef = await defBySlug(s, "treasurer"); // record-side (legacyTitle "finance_manager")
+    const edDef = await defBySlug(s, "executive_director");
+
+    const { as, personId: edPersonId } = await personActor(s, s.chapterId, "ED-Sod-Chaintop", "ed-sod-chaintop@publicworship.life");
+    await seat(s, edDef._id, "central", edPersonId);
+    void edPersonId;
+
+    // The subject already holds treasurer (record-side) at this chapter —
+    // the ED (chain-top) proposing to ALSO fill chapter_director
+    // (approve-side) for them at the SAME scope is a SoD conflict `propose`
+    // never checks up front (only `assignSeatImpl` does), so it must surface
+    // while auto-executing, not be silently swallowed.
+    const subject = await makePerson(s, s.chapterId, "AlreadyTreasurer");
+    await seat(s, treasurerDef._id, s.chapterId, subject);
+
+    await expect(
+      as.mutation(api.seatProposals.propose, {
+        seatDefId: cdDef._id,
+        scope: s.chapterId,
+        action: "fill",
+        subjectPersonId: subject,
+      }),
+    ).rejects.toBeInstanceOf(ConvexError);
+
+    // Whole mutation rolled back: no chapter_director assignment, and no
+    // proposal row was ever written (not even a "pending" one) — chain-top
+    // execution happens BEFORE the insert.
+    const cdRows = await run(s.t, (ctx) =>
+      ctx.db
+        .query("seatAssignments")
+        .withIndex("by_scope_and_seat", (q) => q.eq("scope", s.chapterId).eq("seatDefId", cdDef._id))
+        .collect(),
+    );
+    expect(cdRows).toHaveLength(0);
+    const mine = await as.query(api.seatProposals.myProposals, {});
+    expect(mine).toHaveLength(0);
+  });
+
+  test("a future ancestor seat re-enables two-party for the ED: no longer chain-top once someone sits above them", async () => {
+    const s = await baseSetup();
+    const edDef = await defBySlug(s, "executive_director");
+    const ddDef = await defBySlug(s, "development_director");
+    const { as: edAs, personId: edPersonId } = await personActor(s, s.chapterId, "ED3", "ed-board@publicworship.life");
+    await seat(s, edDef._id, "central", edPersonId);
+
+    // Insert a runtime "board" seat ABOVE the ED (re-pointing executive_director's
+    // parentSlug at it) — mirrors a future Board seat landing above the ED.
+    const boardDefId = await insertSeatDef(s, {
+      slug: "board_chaintop_test",
+      chart: "central",
+      parentSlug: "root",
+      maxHolders: 5,
+    });
+    await run(s.t, (ctx) => ctx.db.patch(edDef._id, { parentSlug: "board_chaintop_test" }));
+    const { as: boardAs, personId: boardPersonId } = await personActor(
+      s,
+      s.chapterId,
+      "BoardMember",
+      "board-member@publicworship.life",
+    );
+    await seat(s, boardDefId, "central", boardPersonId);
+
+    const subject = await makePerson(s, s.chapterId, "NewDevDirector2");
+    const proposalId = await edAs.mutation(api.seatProposals.propose, {
+      seatDefId: ddDef._id,
+      scope: "central",
+      action: "fill",
+      subjectPersonId: subject,
+    });
+
+    // No longer auto-executed — a decider (the Board member) now exists
+    // above the ED, so it goes through the normal two-party flow.
+    const mine = await edAs.query(api.seatProposals.myProposals, {});
+    expect(mine.find((p) => p.proposalId === proposalId)?.status).toBe("pending");
+
+    await boardAs.mutation(api.seatProposals.approve, { proposalId });
+    const decided = (await edAs.query(api.seatProposals.myProposals, {})).find(
+      (p) => p.proposalId === proposalId,
+    );
+    expect(decided?.status).toBe("approved");
+    expect(decided?.decidedByPersonId).toBe(boardPersonId);
+  });
+});
+
+// ── seats.assignSeat — untouched by this file's changes ────────────────────
+
+describe("seats.assignSeat — superuser direct assignment (regression, untouched by seatProposals changes)", () => {
+  test("a superuser can still assign a seat directly, unaffected by propose's chain-top branch", async () => {
+    const s = await baseSetup();
+    const musicLeadDef = await defBySlug(s, "music_lead");
+    const person = await makePerson(s, s.chapterId, "DirectAssign");
+    const { as: suAs } = await signInAs(s.t, "seyi@publicworship.life");
+
+    const assignmentId = await suAs.mutation(api.seats.assignSeat, {
+      seatDefId: musicLeadDef._id,
+      scope: s.chapterId,
+      personId: person,
+    });
+    expect(assignmentId).toBeDefined();
+
+    const row = await run(s.t, (ctx) => ctx.db.get(assignmentId));
+    expect(row?.personId).toBe(person);
+  });
+});
