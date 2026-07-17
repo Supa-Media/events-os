@@ -1,18 +1,23 @@
 /**
  * TransferRecordModal — record (or initiate for real) a City Launch Fund
- * transfer from the central dashboard (WP-4.1 skim in · WP-4.2 grant out).
+ * transfer from the central dashboard (WP-4.1 skim in · WP-4.2 grant out ·
+ * WP-4.5 inter-scope settlement).
  *
  * Minimal + honest, mirroring how the reimbursement queue surfaces a manual vs a
  * real ACH payout:
  *  - "Record" ALWAYS writes the ledger truth for money that moved outside the app
- *    (`recordSkimTransfer` / `recordLaunchGrant`).
+ *    (`recordSkimTransfer` / `recordLaunchGrant` / `recordSettlementTransfer`).
  *  - "Initiate real transfer" appears ONLY when both accounts are live in this
  *    mode (`transferReadiness.canMoveReal`) and performs the actual Increase
- *    account-to-account transfer (`initiateSkimTransfer` / `initiateLaunchGrant`).
+ *    account-to-account transfer (`initiateSkimTransfer` / `initiateLaunchGrant`
+ *    / `initiateSettlementTransfer`).
  *
  * A skim (chapter → central) can be computed from the month's backer revenue
  * (15%) or entered directly. A grant (central → chapter) defaults to the
  * playbook launch total and stamps the launch budget on the receiving chapter.
+ * A settlement (either direction) true-ups the WP-4.5 inter-scope balance —
+ * the "Settle" affordance on the "Inter-chapter balances" section opens this
+ * modal PRESET to the settlement kind/amount/direction it computed.
  */
 import { useMemo, useState } from "react";
 import { Modal, Pressable, ScrollView, Text, View } from "react-native";
@@ -29,16 +34,22 @@ import { Button, Field, Icon, Select, TextField } from "../../ui";
 import { colors } from "../../../lib/theme";
 import { alertError } from "../../../lib/errors";
 
-type Direction = "skim" | "grant";
+type Direction = "skim" | "grant" | "settlement";
 type SkimBasis = "revenue" | "amount";
+type SettlementDirection = "central_to_chapter" | "chapter_to_central";
 
 const DIRECTION_OPTIONS = [
   { value: "skim", label: "Skim in (chapter → central)" },
   { value: "grant", label: "Grant out (central → chapter)" },
+  { value: "settlement", label: "Settlement (central ↔ chapter)" },
 ];
 const BASIS_OPTIONS = [
   { value: "revenue", label: "Compute 15% of backer revenue" },
   { value: "amount", label: "Enter the amount directly" },
+];
+const SETTLEMENT_DIRECTION_OPTIONS = [
+  { value: "central_to_chapter", label: "Central pays the chapter" },
+  { value: "chapter_to_central", label: "Chapter pays central" },
 ];
 
 function dollarsToCents(text: string): number | null {
@@ -50,26 +61,47 @@ function dollarsToCents(text: string): number | null {
 export function TransferRecordModal({
   chapters,
   onClose,
+  preset,
 }: {
   /** The real chapters money can move to/from (from `dashboardCentral`). */
   chapters: Array<{ chapterId: Id<"chapters">; chapterName: string }>;
   onClose: () => void;
+  /** WP-4.5: opened from the "Inter-chapter balances" section's "Settle"
+   *  affordance — presets the modal straight to the settlement kind/amount/
+   *  direction that section computed, so the treasurer doesn't re-enter it. */
+  preset?: {
+    chapterId: Id<"chapters">;
+    year: number;
+    month: number;
+    amountCents: number;
+    settlementDirection: SettlementDirection;
+  };
 }) {
   const recordSkim = useMutation(api.transfers.recordSkimTransfer);
   const recordGrant = useMutation(api.transfers.recordLaunchGrant);
+  const recordSettlement = useMutation(api.transfers.recordSettlementTransfer);
   const initiateSkim = useAction(api.transfers.initiateSkimTransfer);
   const initiateGrant = useAction(api.transfers.initiateLaunchGrant);
+  const initiateSettlement = useAction(api.transfers.initiateSettlementTransfer);
 
   const now = new Date();
-  const [direction, setDirection] = useState<Direction>("skim");
-  const [chapterId, setChapterId] = useState<string | null>(
-    chapters[0]?.chapterId ?? null,
+  const [direction, setDirection] = useState<Direction>(
+    preset ? "settlement" : "skim",
   );
-  const [year, setYear] = useState(String(now.getFullYear()));
-  const [month, setMonth] = useState(String(now.getMonth() + 1));
+  const [chapterId, setChapterId] = useState<string | null>(
+    preset?.chapterId ?? chapters[0]?.chapterId ?? null,
+  );
+  const [year, setYear] = useState(String(preset?.year ?? now.getFullYear()));
+  const [month, setMonth] = useState(
+    String(preset?.month ?? now.getMonth() + 1),
+  );
   const [basis, setBasis] = useState<SkimBasis>("revenue");
   const [revenue, setRevenue] = useState("");
-  const [amount, setAmount] = useState("");
+  const [amount, setAmount] = useState(
+    preset ? String(preset.amountCents / 100) : "",
+  );
+  const [settlementDirection, setSettlementDirection] =
+    useState<SettlementDirection>(preset?.settlementDirection ?? "central_to_chapter");
   const [note, setNote] = useState("");
   const [saving, setSaving] = useState(false);
 
@@ -135,6 +167,22 @@ export function TransferRecordModal({
         };
         if (real) await initiateSkim(args);
         else await recordSkim(args);
+      } else if (direction === "settlement") {
+        const cents = dollarsToCents(amount);
+        if (cents == null || cents <= 0) {
+          alertError(new Error("Enter a valid settlement amount."));
+          return;
+        }
+        const args = {
+          chapterId: chId,
+          year: parseInt(year, 10),
+          month: parseInt(month, 10),
+          amountCents: cents,
+          direction: settlementDirection,
+          ...(note.trim() ? { note: note.trim() } : {}),
+        };
+        if (real) await initiateSettlement(args);
+        else await recordSettlement(args);
       } else {
         const cents = dollarsToCents(amount);
         const args = {
@@ -246,6 +294,40 @@ export function TransferRecordModal({
                   />
                 )}
               </>
+            ) : direction === "settlement" ? (
+              <>
+                <View className="flex-row gap-3">
+                  <View className="flex-1">
+                    <TextField
+                      label="Year"
+                      value={year}
+                      onChangeText={setYear}
+                      keyboardType="number-pad"
+                    />
+                  </View>
+                  <View className="flex-1">
+                    <TextField
+                      label="Month"
+                      value={month}
+                      onChangeText={setMonth}
+                      keyboardType="number-pad"
+                    />
+                  </View>
+                </View>
+                <Select
+                  label="Who pays"
+                  value={settlementDirection}
+                  options={SETTLEMENT_DIRECTION_OPTIONS}
+                  onChange={(v) => setSettlementDirection(v as SettlementDirection)}
+                />
+                <TextField
+                  label="Settlement amount (USD)"
+                  value={amount}
+                  onChangeText={setAmount}
+                  keyboardType="decimal-pad"
+                  placeholder="0.00"
+                />
+              </>
             ) : (
               <TextField
                 label={`Grant amount (USD) — defaults to ${grantDefault}`}
@@ -269,6 +351,14 @@ export function TransferRecordModal({
               <Text className="text-xs text-muted">
                 Stamps the playbook launch budget (equipment + training trip) on
                 the receiving chapter.
+              </Text>
+            ) : null}
+            {direction === "settlement" ? (
+              <Text className="text-xs text-muted">
+                Settle alongside the monthly skim — this true-ups the cash
+                imbalance created when a chapter's card paid for a central
+                budget line (or vice versa), it does NOT change any budget's
+                spend.
               </Text>
             ) : null}
           </ScrollView>

@@ -130,10 +130,19 @@ function DashboardBody({ seats }: { seats: Seats }) {
   }>({ open: false, id: null, central: false });
   const [txnModalOpen, setTxnModalOpen] = useState(false);
   // City Launch Fund transfer modal (central desk). Carries the real chapters
-  // money can move to/from (from the central dashboard's rollup).
+  // money can move to/from (from the central dashboard's rollup). `preset`
+  // (WP-4.5) is set when opened from the "Inter-chapter balances" section's
+  // "Settle" affordance — presets the modal straight to that settlement.
   const [transferModal, setTransferModal] = useState<{
     open: boolean;
     chapters: Array<{ chapterId: Id<"chapters">; chapterName: string }>;
+    preset?: {
+      chapterId: Id<"chapters">;
+      year: number;
+      month: number;
+      amountCents: number;
+      settlementDirection: "central_to_chapter" | "chapter_to_central";
+    };
   }>({ open: false, chapters: [] });
 
   const isPeeking = context?.kind === "peek";
@@ -191,6 +200,20 @@ function DashboardBody({ seats }: { seats: Seats }) {
               onRecordTransfer={(chapters) =>
                 setTransferModal({ open: true, chapters })
               }
+              onSettle={(chapters, chapterId, netCents) =>
+                setTransferModal({
+                  open: true,
+                  chapters,
+                  preset: {
+                    chapterId,
+                    year: ym.year,
+                    month: ym.month,
+                    amountCents: Math.abs(netCents),
+                    settlementDirection:
+                      netCents > 0 ? "central_to_chapter" : "chapter_to_central",
+                  },
+                })
+              }
             />
           </FinanceBoundary>
         ) : (
@@ -232,6 +255,7 @@ function DashboardBody({ seats }: { seats: Seats }) {
       {transferModal.open ? (
         <TransferRecordModal
           chapters={transferModal.chapters}
+          preset={transferModal.preset}
           onClose={() => setTransferModal({ open: false, chapters: [] })}
         />
       ) : null}
@@ -247,6 +271,7 @@ function CentralSection({
   onViewChapter,
   onNewBudget,
   onRecordTransfer,
+  onSettle,
 }: {
   ym: { year: number; month: number };
   period: DashPeriodMode;
@@ -254,6 +279,11 @@ function CentralSection({
   onNewBudget: () => void;
   onRecordTransfer: (
     chapters: Array<{ chapterId: Id<"chapters">; chapterName: string }>,
+  ) => void;
+  onSettle: (
+    chapters: Array<{ chapterId: Id<"chapters">; chapterName: string }>,
+    chapterId: Id<"chapters">,
+    netCents: number,
   ) => void;
 }) {
   const data = useQuery(api.finances.dashboardCentral, { ...ym, period });
@@ -270,9 +300,13 @@ function CentralSection({
     <CentralView
       data={data}
       year={ym.year}
+      month={ym.month}
       onViewChapter={onViewChapter}
       onNewBudget={onNewBudget}
       onRecordTransfer={() => onRecordTransfer(realChapters)}
+      onSettle={(chapterId, _chapterName, netCents) =>
+        onSettle(realChapters, chapterId, netCents)
+      }
     />
   );
 }

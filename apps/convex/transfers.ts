@@ -1,10 +1,23 @@
 /**
- * The City Launch Fund money flows — WP-4.1 (the skim) + WP-4.2 (launch grants).
+ * The City Launch Fund money flows — WP-4.1 (the skim) + WP-4.2 (launch grants)
+ * + WP-4.5 (inter-scope settlement).
  *
  * The playbook moves money BOTH ways between a chapter and central (PRD §0.1):
  *  - UP:   the monthly ~15% SKIM, chapter → central City Launch Fund.
  *  - DOWN: a one-time LAUNCH GRANT, central → a new chapter (equipment +
  *          training trip), which ALSO stamps a launch budget on that chapter.
+ *
+ * WP-4.5 adds a THIRD kind, SETTLEMENT, for a different problem: cards stay
+ * account-scoped (cash physics — a chapter's card always draws on the
+ * chapter's own account), but Reconcile's `budgetId` attribution crosses
+ * scopes freely (a chapter's card can pay for a central budget line, or vice
+ * versa). That creates a net CASH imbalance separate from the skim — the
+ * account that PAID isn't always the scope whose BUDGET absorbed it. Owner
+ * policy: "Your card determines whose account paid; reconcile determines
+ * whose budget it was; Central settles the difference monthly alongside the
+ * skim." `interScopeBalances` computes that ledger-derived imbalance (see its
+ * doc comment); `recordSettlementTransfer`/`initiateSettlementTransfer` true
+ * it up, mirroring the skim/launch-grant machinery exactly.
  *
  * LEDGER MODEL. Every transfer is a PAIR of `flow:"transfer"` transactions — an
  * outflow leg on the source scope + an inflow leg on the destination scope —
@@ -54,8 +67,10 @@ import {
   skimAmountCents,
   skimTransferGroupId,
   launchTransferGroupId,
+  settlementTransferGroupId,
   easternParts,
   formatCents,
+  matchesMode,
   type TransactionSource,
 } from "@events-os/shared";
 import { requireChapterId, requireUserId } from "./lib/context";
@@ -68,6 +83,7 @@ import {
 } from "./lib/finance";
 import { readSandbox } from "./financeSettings";
 import { increaseEnvForObjectId } from "./increase";
+import { ROLLUP_SCAN_LIMIT, isSpend, inPeriod, txnMatchesMode } from "./finances";
 
 // ── Shared amount validation ─────────────────────────────────────────────────
 
@@ -166,13 +182,16 @@ interface RecordPairArgs {
   sourceScope: FinanceScope;
   destScope: FinanceScope;
   amountCents: number;
-  source: Extract<TransactionSource, "skim" | "launch_grant">;
+  source: Extract<TransactionSource, "skim" | "launch_grant" | "settlement">;
   transferGroupId: string;
   postedAt: number;
   note?: string;
   /** The Increase account-transfer id when this pair records a REAL movement;
    *  absent for a manually-recorded (money-moved-outside) pair. */
   increaseTransferId?: string;
+  /** WP-4.5 ONLY: which way a `settlement` pair moved — see the schema field's
+   *  doc comment. Absent for skim/launch_grant (direction is fixed by kind). */
+  transferDirection?: SettlementDirection;
   userId: Id<"users">;
 }
 
@@ -211,6 +230,7 @@ async function recordTransferPair(
     postedAt: a.postedAt,
     description: a.note,
     transferGroupId: a.transferGroupId,
+    transferDirection: a.transferDirection,
     externalId: a.increaseTransferId,
     status: "reconciled" as const,
     createdBy: a.userId,
@@ -755,6 +775,421 @@ export const initiateLaunchGrant = action({
       }),
     );
     return { ...rec, increaseTransferId: transfer.id };
+  },
+});
+
+// ── WP-4.5 · Settlements (central ↔ chapter, monthly, either direction) ──────
+
+/** Which way a settlement moves money. Unlike the skim (always chapter→central)
+ *  or a launch grant (always central→chapter), a settlement can run EITHER
+ *  way — it true-ups whichever net imbalance `interScopeBalances` computes for
+ *  that chapter that month. */
+const SETTLEMENT_DIRECTIONS = ["central_to_chapter", "chapter_to_central"] as const;
+type SettlementDirection = (typeof SETTLEMENT_DIRECTIONS)[number];
+const settlementDirectionValidator = v.union(
+  ...SETTLEMENT_DIRECTIONS.map((d) => v.literal(d)),
+);
+
+const settlementArgs = {
+  chapterId: v.id("chapters"),
+  year: v.number(),
+  month: v.number(),
+  amountCents: v.number(),
+  direction: settlementDirectionValidator,
+  note: v.optional(v.string()),
+};
+
+/** The source/dest scopes for a settlement pair, by direction — mirrors the
+ *  skim (`chapterId → CENTRAL`) and launch grant (`CENTRAL → chapterId`)
+ *  shapes, just with the direction as an explicit arg instead of fixed. */
+function settlementScopes(
+  chapterId: Id<"chapters">,
+  direction: SettlementDirection,
+): { sourceScope: FinanceScope; destScope: FinanceScope } {
+  return direction === "central_to_chapter"
+    ? { sourceScope: CENTRAL, destScope: chapterId }
+    : { sourceScope: chapterId, destScope: CENTRAL };
+}
+
+/**
+ * Record a settlement that moved OUTSIDE the app (central bookkeeper+) — the
+ * monthly true-up of the net cash imbalance `interScopeBalances` computes.
+ * Books the ledger pair for the given (chapter, year, month); idempotent on
+ * the deterministic group id (one settlement per chapter per month, either
+ * direction — a second call for the same month is REJECTED, matching the
+ * skim/launch-grant convention).
+ */
+export const recordSettlementTransfer = mutation({
+  args: settlementArgs,
+  returns: recordResult,
+  handler: async (ctx, args) => {
+    const home = (await requireChapterId(ctx)) as Id<"chapters">;
+    await requireCentralFinanceRole(ctx, home, "bookkeeper");
+    const userId = (await requireUserId(ctx)) as Id<"users">;
+    assertValidMonth(args.month);
+    assertPositiveCents(args.amountCents, "Settlement amount");
+    await loadRealChapter(ctx, args.chapterId);
+    const transferGroupId = settlementTransferGroupId(
+      args.chapterId,
+      args.year,
+      args.month,
+    );
+    const { sourceScope, destScope } = settlementScopes(
+      args.chapterId,
+      args.direction,
+    );
+    const pair = await recordTransferPair(ctx, {
+      sourceScope,
+      destScope,
+      amountCents: args.amountCents,
+      source: "settlement",
+      transferGroupId,
+      postedAt: skimPostedAt(args.year, args.month),
+      note: args.note,
+      transferDirection: args.direction,
+      userId,
+    });
+    return { ...pair, amountCents: args.amountCents, transferGroupId };
+  },
+});
+
+/** Internal: gate + resolve the two live accounts for a settlement, or throw
+ *  (NOT_CONFIGURED / ALREADY_RECORDED). Runs BEFORE any network call. */
+export const prepareSettlementMovement = internalMutation({
+  args: settlementArgs,
+  returns: v.object({
+    sourceAccountId: v.string(),
+    destAccountId: v.string(),
+    amountCents: v.number(),
+    transferGroupId: v.string(),
+  }),
+  handler: async (ctx, args) => {
+    const home = (await requireChapterId(ctx)) as Id<"chapters">;
+    await requireCentralFinanceRole(ctx, home, "bookkeeper");
+    assertValidMonth(args.month);
+    assertPositiveCents(args.amountCents, "Settlement amount");
+    await loadRealChapter(ctx, args.chapterId);
+    const transferGroupId = settlementTransferGroupId(
+      args.chapterId,
+      args.year,
+      args.month,
+    );
+    const existing = await transferPairLegs(ctx, transferGroupId);
+    if (existing.length > 0) {
+      throw new ConvexError({
+        code: "ALREADY_RECORDED",
+        message: "This chapter's settlement for this month has already been recorded.",
+      });
+    }
+    const { sourceScope, destScope } = settlementScopes(
+      args.chapterId,
+      args.direction,
+    );
+    const { sourceAccountId, destAccountId } = await resolveLiveAccounts(
+      ctx,
+      sourceScope,
+      destScope,
+    );
+    return {
+      sourceAccountId,
+      destAccountId,
+      amountCents: args.amountCents,
+      transferGroupId,
+    };
+  },
+});
+
+/** Internal: record the settlement pair once Increase confirms the real transfer. */
+export const recordSettlementPairFromIncrease = internalMutation({
+  args: {
+    chapterId: v.id("chapters"),
+    year: v.number(),
+    month: v.number(),
+    amountCents: v.number(),
+    direction: settlementDirectionValidator,
+    increaseTransferId: v.string(),
+    note: v.optional(v.string()),
+  },
+  returns: recordResult,
+  handler: async (ctx, args) => {
+    const userId = (await requireUserId(ctx)) as Id<"users">;
+    const transferGroupId = settlementTransferGroupId(
+      args.chapterId,
+      args.year,
+      args.month,
+    );
+    const { sourceScope, destScope } = settlementScopes(
+      args.chapterId,
+      args.direction,
+    );
+    const pair = await recordTransferPair(ctx, {
+      sourceScope,
+      destScope,
+      amountCents: args.amountCents,
+      source: "settlement",
+      transferGroupId,
+      postedAt: skimPostedAt(args.year, args.month),
+      note: args.note,
+      increaseTransferId: args.increaseTransferId,
+      transferDirection: args.direction,
+      userId,
+    });
+    return { ...pair, amountCents: args.amountCents, transferGroupId };
+  },
+});
+
+/**
+ * Initiate a REAL settlement over Increase (central bookkeeper+) — human-run
+ * only, gated identically to `initiateSkimTransfer`/`initiateLaunchGrant`:
+ * degrades to `NOT_CONFIGURED` (use `recordSettlementTransfer`) without
+ * touching the network when the two accounts aren't both live in this mode or
+ * the API key is unset.
+ */
+export const initiateSettlementTransfer = action({
+  args: settlementArgs,
+  returns: initiateResult,
+  handler: async (ctx, args): Promise<typeof initiateResult.type> => {
+    const prep = await ctx.runMutation(
+      internal.transfers.prepareSettlementMovement,
+      args,
+    );
+    const { key, base } = increaseEnvForObjectId(prep.sourceAccountId);
+    if (!key) {
+      throw new ConvexError({
+        code: "NOT_CONFIGURED",
+        message:
+          "The Increase API key for this environment isn't set — record the settlement manually instead.",
+      });
+    }
+    const transfer = await postAccountTransfer(
+      key,
+      base,
+      {
+        account_id: prep.sourceAccountId,
+        destination_account_id: prep.destAccountId,
+        amount: prep.amountCents,
+        description: `Inter-scope settlement ${args.year}-${String(args.month).padStart(2, "0")}`,
+      },
+      prep.transferGroupId,
+    );
+    assertTransferSettled(transfer, "This settlement transfer");
+    const rec = await recordAfterTransferOrExplain(transfer, () =>
+      ctx.runMutation(internal.transfers.recordSettlementPairFromIncrease, {
+        chapterId: args.chapterId,
+        year: args.year,
+        month: args.month,
+        amountCents: prep.amountCents,
+        direction: args.direction,
+        increaseTransferId: transfer.id,
+        note: args.note,
+      }),
+    );
+    return { ...rec, increaseTransferId: transfer.id };
+  },
+});
+
+// ── WP-4.5 · Inter-scope balances (the settlement's input) ────────────────────
+
+const interScopeBalanceRow = v.object({
+  chapterId: v.id("chapters"),
+  chapterName: v.string(),
+  // Ledger-derived, ALL-TIME net owed between central and this chapter, net
+  // of every settlement already recorded. Positive = CENTRAL owes the
+  // chapter; negative = the CHAPTER owes central (display `Math.abs`).
+  netCents: v.number(),
+  // Same computation, narrowed to the given {year, month} only (not
+  // cumulative) — "how much moved this month," for the "settle alongside the
+  // skim" monthly workflow.
+  periodNetCents: v.number(),
+});
+
+/**
+ * WP-4.5: the net cash imbalance between central and each chapter, created by
+ * cross-scope BUDGET attribution on account-scoped CARDS. Owner policy: "Your
+ * card determines whose account paid; reconcile determines whose budget it
+ * was; Central settles the difference monthly alongside the skim."
+ *
+ * Two directions, summed all-time then netted against recorded settlements:
+ *
+ *  (a) CENTRAL OWES CHAPTER: a txn OWNED by a real chapter (its card/account
+ *      paid) whose `budgetId` resolves to a CENTRAL budget — the chapter
+ *      fronted money for a central line item. This is the common case and
+ *      mirrors `dashboardChapter`'s existing `centralLinkedCents` split
+ *      (WP-0.1) — same rule, summed all-time instead of one dashboard period.
+ *
+ *  (b) CHAPTER OWES CENTRAL: a txn OWNED by central whose `budgetId` resolves
+ *      to a CHAPTER budget — central fronted money for a chapter's line item.
+ *      VERIFIED NOT ATTRIBUTABLE TODAY: `categorizeTransaction` and
+ *      `createManualTransaction`'s central path both call
+ *      `requireInCallerChapter(ctx, CENTRAL, "budgets", budgetId, ..., {
+ *      allowCentral: true })`, which for a central-scope caller only ever
+ *      admits a budget whose OWN `chapterId` is also `CENTRAL` — a chapter
+ *      budget is rejected `NOT_FOUND` (#151's rule; see
+ *      `transfers.test.ts`'s "central txn cannot attribute to a chapter
+ *      budget" case). So this term is ALWAYS 0 through every write path in
+ *      the app today. It's still computed generically here (not hardcoded)
+ *      rather than assumed, so the balance stays correct — and this comment
+ *      stays honest — if that restriction is ever relaxed, and so a stray
+ *      legacy/migration row is still caught rather than silently dropped.
+ *
+ * SETTLEMENTS ALREADY RECORDED (`source:"settlement"` transfer legs) are
+ * netted out. Both legs of a settlement pair share `flow:"transfer"` (like
+ * every transfer leg — excluded from spend), so the pair's `transferDirection`
+ * field is what distinguishes it: `"central_to_chapter"` means central paid
+ * THIS chapter (pays down (a)); `"chapter_to_central"` means this chapter
+ * paid central (pays down (b)). `netCents = (a - settled_a) - (b - settled_b)`.
+ *
+ * CONSENT SEMANTICS (owner-decided): upward attribution — a chapter fronting
+ * money for central — stays VISIBLE-BUT-UNSETTLED here until central actually
+ * records a settlement. There is no auto-settle, no accrual write, no
+ * separate balances table: this query is a pure ledger read, recomputed live
+ * from `transactions` + recorded `settlement` legs every call.
+ *
+ * Mode-filtered like the City Launch Fund position (#163's IMPORTANT-1 fix):
+ * the underlying card/ACH spend is filtered via `txnMatchesMode`, and a
+ * settlement leg's REAL-movement `externalId` via `matchesMode` — a manual
+ * leg (no `externalId`) is env-neutral and counts in both modes.
+ *
+ * Gate: central VIEWER+ reach (a read, not a write) — a chapter manager with
+ * no central grant is FORBIDDEN.
+ */
+export const interScopeBalances = query({
+  args: { year: v.optional(v.number()), month: v.optional(v.number()) },
+  returns: v.array(interScopeBalanceRow),
+  handler: async (ctx, args) => {
+    const home = (await requireChapterId(ctx)) as Id<"chapters">;
+    await requireCentralFinanceRole(ctx, home, "viewer");
+    const now = easternParts(Date.now());
+    const year = args.year ?? now.year;
+    const month = args.month ?? now.month;
+    const sandboxMode = await readSandbox(ctx);
+
+    // Direction (a)'s target set: every CENTRAL budget, any year — a chapter
+    // txn linked to one of these is money the CHAPTER's account paid for a
+    // CENTRAL budget line (mirrors `dashboardChapter`'s `centralLinkedCents`).
+    const centralBudgetDocs = await ctx.db
+      .query("budgets")
+      .withIndex("by_chapter", (q) => q.eq("chapterId", CENTRAL))
+      .take(ROLLUP_SCAN_LIMIT);
+    if (centralBudgetDocs.length === ROLLUP_SCAN_LIMIT) {
+      console.warn(
+        `[transfers] interScopeBalances hit ROLLUP_SCAN_LIMIT (${ROLLUP_SCAN_LIMIT}) reading central budgets; direction (a) target set truncated.`,
+      );
+    }
+    const centralBudgetIds = new Set(centralBudgetDocs.map((b) => b._id));
+
+    const chapters = await ctx.db.query("chapters").take(ROLLUP_SCAN_LIMIT);
+    if (chapters.length === ROLLUP_SCAN_LIMIT) {
+      console.warn(
+        `[transfers] interScopeBalances hit ROLLUP_SCAN_LIMIT (${ROLLUP_SCAN_LIMIT}) reading chapters; result rows truncated.`,
+      );
+    }
+
+    // Direction (b) — see the doc comment above: verified unattributable
+    // through every write path today, computed generically anyway. Read once
+    // (central-owned txns are low-volume, like the City Launch Fund scan).
+    const centralTxns = await ctx.db
+      .query("transactions")
+      .withIndex("by_chapter", (q) => q.eq("chapterId", CENTRAL))
+      .take(ROLLUP_SCAN_LIMIT);
+    if (centralTxns.length === ROLLUP_SCAN_LIMIT) {
+      console.warn(
+        `[transfers] interScopeBalances hit ROLLUP_SCAN_LIMIT (${ROLLUP_SCAN_LIMIT}) reading central-owned transactions; direction (b) truncated.`,
+      );
+    }
+    const budgetCache = new Map<Id<"budgets">, Doc<"budgets"> | null>();
+    async function resolveBudget(id: Id<"budgets">): Promise<Doc<"budgets"> | null> {
+      if (!budgetCache.has(id)) budgetCache.set(id, await ctx.db.get(id));
+      return budgetCache.get(id) ?? null;
+    }
+    const chapterOwesCentralAll = new Map<Id<"chapters">, number>();
+    const chapterOwesCentralPeriod = new Map<Id<"chapters">, number>();
+    for (const tr of centralTxns) {
+      if (!isSpend(tr) || tr.budgetId == null || centralBudgetIds.has(tr.budgetId)) {
+        continue;
+      }
+      if (!txnMatchesMode(tr, sandboxMode)) continue;
+      const linked = await resolveBudget(tr.budgetId);
+      if (!linked || linked.chapterId === CENTRAL) continue; // dangling, or (shouldn't happen) central
+      const chId = linked.chapterId as Id<"chapters">;
+      chapterOwesCentralAll.set(chId, (chapterOwesCentralAll.get(chId) ?? 0) + tr.amountCents);
+      if (inPeriod(tr.postedAt, year, month)) {
+        chapterOwesCentralPeriod.set(
+          chId,
+          (chapterOwesCentralPeriod.get(chId) ?? 0) + tr.amountCents,
+        );
+      }
+    }
+
+    const rows: (typeof interScopeBalanceRow.type)[] = [];
+    for (const chapter of chapters) {
+      const txns = await ctx.db
+        .query("transactions")
+        .withIndex("by_chapter", (q) => q.eq("chapterId", chapter._id))
+        .take(ROLLUP_SCAN_LIMIT);
+      if (txns.length === ROLLUP_SCAN_LIMIT) {
+        console.warn(
+          `[transfers] interScopeBalances hit ROLLUP_SCAN_LIMIT (${ROLLUP_SCAN_LIMIT}) reading transactions for chapter ${chapter._id}; balance truncated.`,
+        );
+      }
+      const modeFiltered = txns.filter((tr) => txnMatchesMode(tr, sandboxMode));
+
+      // Direction (a): this chapter's spend explicitly linked to a CENTRAL budget.
+      let centralOwesChapterAll = 0;
+      let centralOwesChapterPeriod = 0;
+      for (const tr of modeFiltered) {
+        if (!isSpend(tr) || tr.budgetId == null || !centralBudgetIds.has(tr.budgetId)) {
+          continue;
+        }
+        centralOwesChapterAll += tr.amountCents;
+        if (inPeriod(tr.postedAt, year, month)) centralOwesChapterPeriod += tr.amountCents;
+      }
+
+      // Settlements already recorded — this chapter's own leg of every
+      // `source:"settlement"` pair so far. BOTH legs of a pair share
+      // `flow:"transfer"` (excluded from spend, like every transfer leg) —
+      // the pair's `transferDirection` (identical on both legs) is what
+      // distinguishes which way it moved: `"central_to_chapter"` = central
+      // paid THIS chapter (settles (a)); `"chapter_to_central"` = this
+      // chapter paid central (settles (b)).
+      let settledCentralToChapterAll = 0;
+      let settledCentralToChapterPeriod = 0;
+      let settledChapterToCentralAll = 0;
+      let settledChapterToCentralPeriod = 0;
+      for (const tr of modeFiltered) {
+        if (tr.source !== "settlement") continue;
+        if (!matchesMode(tr.externalId ?? null, sandboxMode)) continue;
+        const isThisPeriod = inPeriod(tr.postedAt, year, month);
+        if (tr.transferDirection === "central_to_chapter") {
+          settledCentralToChapterAll += tr.amountCents;
+          if (isThisPeriod) settledCentralToChapterPeriod += tr.amountCents;
+        } else if (tr.transferDirection === "chapter_to_central") {
+          settledChapterToCentralAll += tr.amountCents;
+          if (isThisPeriod) settledChapterToCentralPeriod += tr.amountCents;
+        }
+      }
+
+      const chapterOwesCentralAllCents = chapterOwesCentralAll.get(chapter._id) ?? 0;
+      const chapterOwesCentralPeriodCents =
+        chapterOwesCentralPeriod.get(chapter._id) ?? 0;
+
+      const netCents =
+        centralOwesChapterAll -
+        settledCentralToChapterAll -
+        (chapterOwesCentralAllCents - settledChapterToCentralAll);
+      const periodNetCents =
+        centralOwesChapterPeriod -
+        settledCentralToChapterPeriod -
+        (chapterOwesCentralPeriodCents - settledChapterToCentralPeriod);
+
+      rows.push({
+        chapterId: chapter._id,
+        chapterName: chapter.name,
+        netCents,
+        periodNetCents,
+      });
+    }
+    return rows;
   },
 });
 

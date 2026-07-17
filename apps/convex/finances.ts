@@ -587,8 +587,10 @@ async function requireInCallerChapter<T extends "funds" | "budgetCategories" | "
   return doc as Doc<T>;
 }
 
-/** True iff a transaction contributes to category / budget / actual SPEND. */
-function isSpend(tr: Doc<"transactions">): boolean {
+/** True iff a transaction contributes to category / budget / actual SPEND.
+ *  Exported for `transfers.ts#interScopeBalances` (WP-4.5), which reuses this
+ *  exact gate when summing cross-scope-attributed spend. */
+export function isSpend(tr: Doc<"transactions">): boolean {
   return (
     tr.flow === "outflow" &&
     countsAsSpend(tr.flow) &&
@@ -598,8 +600,9 @@ function isSpend(tr: Doc<"transactions">): boolean {
 }
 
 // ── Period helpers (Eastern-time bucketing) ──────────────────────────────────
-/** True iff a timestamp falls in the given Eastern year (+ optional month/quarter). */
-function inPeriod(
+/** True iff a timestamp falls in the given Eastern year (+ optional month/quarter).
+ *  Exported for `transfers.ts#interScopeBalances` (WP-4.5). */
+export function inPeriod(
   postedAt: number,
   year: number,
   month?: number,
@@ -662,8 +665,11 @@ async function loadPeriodTxns(
  *
  * NOTE: no code inserts `increase_*` transactions yet, so this is a LATENT-leak
  * guard — a no-op today, in place before the Increase sync phase lands.
+ *
+ * Exported for `transfers.ts#interScopeBalances` (WP-4.5), which applies this
+ * same gate to the underlying card/ACH spend it cross-attributes.
  */
-function txnMatchesMode(tr: Doc<"transactions">, sandboxMode: boolean): boolean {
+export function txnMatchesMode(tr: Doc<"transactions">, sandboxMode: boolean): boolean {
   if (tr.source !== "increase_card" && tr.source !== "increase_ach") return true;
   return matchesMode(tr.externalId ?? tr.sourceAccountId ?? null, sandboxMode);
 }

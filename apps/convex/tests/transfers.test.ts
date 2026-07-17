@@ -10,6 +10,7 @@ import {
   launchTemplateTotalCents,
   skimTransferGroupId,
   launchTransferGroupId,
+  settlementTransferGroupId,
   countsAsSpend,
 } from "@events-os/shared";
 
@@ -833,6 +834,67 @@ describe("removeChapterAccount — sandbox transfer-leg cascade (IMPORTANT 1)", 
     );
     expect(manualLegs.length).toBe(2);
   });
+
+  test("deletes the removed chapter's sandbox settlement leg; a manual leg survives", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    // Same single central "manager" grant as the skim case above — it
+    // satisfies both `requireFinanceManager` (removeChapterAccount) and
+    // `requireCentralFinanceRole(..., "bookkeeper")` (recordSettlementTransfer).
+    await asCentral(s, "manager");
+
+    // Sandbox mode + a sandbox-test increaseAccounts row (removable).
+    await run(s.t, (ctx) =>
+      ctx.db.insert("financeSettings", {
+        sandboxMode: true,
+        updatedAt: Date.now(),
+      }),
+    );
+    await run(s.t, (ctx) =>
+      ctx.db.insert("increaseAccounts", {
+        chapterId: s.chapterId,
+        sandbox: true,
+        increaseAccountId: "sandbox_acct_test",
+        increaseEntityId: "entity_sandbox",
+        onboardingStatus: "active",
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      }),
+    );
+
+    // A sandbox-initiated settlement pair (the chapter-side leg carries the id).
+    await s.as.mutation(internal.transfers.recordSettlementPairFromIncrease, {
+      chapterId: s.chapterId,
+      year: 2026,
+      month: 3,
+      amountCents: 10_000,
+      direction: "chapter_to_central",
+      increaseTransferId: "sandbox_account_transfer_9",
+    });
+    // A manually-recorded settlement pair (no externalId) — env-neutral, must
+    // survive.
+    await s.as.mutation(api.transfers.recordSettlementTransfer, {
+      chapterId: s.chapterId,
+      year: 2026,
+      month: 4,
+      amountCents: 5_000,
+      direction: "chapter_to_central",
+    });
+
+    await s.as.mutation(api.increase.removeChapterAccount, {});
+
+    const sandboxLegs = await legsFor(
+      s,
+      settlementTransferGroupId(s.chapterId, 2026, 3),
+    );
+    expect(sandboxLegs.find((l) => l.chapterId === s.chapterId)).toBeUndefined();
+
+    const manualLegs = await legsFor(
+      s,
+      settlementTransferGroupId(s.chapterId, 2026, 4),
+    );
+    expect(manualLegs.length).toBe(2);
+  });
 });
 
 describe("transferReadiness", () => {
@@ -851,5 +913,394 @@ describe("transferReadiness", () => {
       chapterId: s.chapterId,
     });
     expect(after.canMoveReal).toBe(true);
+  });
+});
+
+// ── WP-4.5 · Inter-scope settlement balances ──────────────────────────────────
+//
+// "Your card determines whose account paid; reconcile determines whose budget
+// it was; Central settles the difference monthly alongside the skim." A
+// chapter's card can pay for a CENTRAL budget line (direction a — the common
+// case); a `settlement` transfer pair true-ups the resulting cash imbalance,
+// mirroring the skim/launch-grant ledger machinery exactly.
+
+/** A chapter (non-central) budget, minimal fields. */
+async function makeChapterBudget(
+  s: ChapterSetup,
+  amountCents: number,
+  year = 2026,
+): Promise<Id<"budgets">> {
+  return s.as.mutation(api.finances.createBudget, {
+    amountCents,
+    type: "recurring",
+    cadence: "monthly",
+    year,
+  });
+}
+
+/** A central budget, minimal fields (caller needs central reach). */
+async function makeCentralBudget(
+  s: ChapterSetup,
+  amountCents: number,
+  year = 2026,
+): Promise<Id<"budgets">> {
+  return s.as.mutation(api.finances.createBudget, {
+    amountCents,
+    type: "recurring",
+    cadence: "monthly",
+    year,
+    central: true,
+  });
+}
+
+/** A chapter-owned outflow txn (a card charge) explicitly linked to a budget. */
+async function chapterSpendLinkedTo(
+  s: ChapterSetup,
+  budgetId: Id<"budgets">,
+  amountCents: number,
+  postedAt: number,
+): Promise<void> {
+  await s.as.mutation(api.finances.createManualTransaction, {
+    flow: "outflow",
+    amountCents,
+    postedAt,
+    budgetId,
+  });
+}
+
+const MARCH_2026 = Date.UTC(2026, 2, 10, 16); // noon-ish ET, March 10 2026
+
+describe("interScopeBalances — direction (a): chapter spend linked to a CENTRAL budget", () => {
+  test("nets as 'central owes the chapter', all-time + this period", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await asCentral(s, "bookkeeper");
+    const centralBudgetId = await makeCentralBudget(s, 100_000);
+    await chapterSpendLinkedTo(s, centralBudgetId, 12_000, MARCH_2026);
+
+    const march = await s.as.query(api.transfers.interScopeBalances, {
+      year: 2026,
+      month: 3,
+    });
+    const row = march.find((b) => b.chapterId === s.chapterId);
+    expect(row?.netCents).toBe(12_000); // positive = central owes the chapter
+    expect(row?.periodNetCents).toBe(12_000);
+
+    // A different month: the all-time balance holds, but nothing landed THIS
+    // period.
+    const april = await s.as.query(api.transfers.interScopeBalances, {
+      year: 2026,
+      month: 4,
+    });
+    const rowApril = april.find((b) => b.chapterId === s.chapterId);
+    expect(rowApril?.netCents).toBe(12_000);
+    expect(rowApril?.periodNetCents).toBe(0);
+  });
+
+  test("a chapter's own-budget spend never contributes (only central-linked spend does)", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    // "manager" (not "bookkeeper"): creating a CHAPTER budget needs
+    // `requireFinanceManager` — a central grant is applicable to any chapter,
+    // but the RANK still has to clear manager (see `createBudget`'s
+    // non-central path).
+    await asCentral(s, "manager");
+    const chapterBudgetId = await makeChapterBudget(s, 50_000);
+    await chapterSpendLinkedTo(s, chapterBudgetId, 9_000, MARCH_2026);
+
+    const balances = await s.as.query(api.transfers.interScopeBalances, {
+      year: 2026,
+      month: 3,
+    });
+    const row = balances.find((b) => b.chapterId === s.chapterId);
+    expect(row?.netCents).toBe(0);
+    expect(row?.periodNetCents).toBe(0);
+  });
+});
+
+describe("interScopeBalances — direction (b): verified NOT attributable today", () => {
+  test("a central txn cannot attribute to a chapter budget (write-time rejection)", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await asCentral(s, "manager"); // manager rank to create the chapter budget below
+    const chapterBudgetId = await makeChapterBudget(s, 10_000);
+    await expect(
+      s.as.mutation(api.finances.createManualTransaction, {
+        flow: "outflow",
+        amountCents: 500,
+        postedAt: MARCH_2026,
+        budgetId: chapterBudgetId,
+        central: true,
+      }),
+    ).rejects.toThrow(ConvexError);
+  });
+
+  test("query math IS correct for direction (b) if the link existed anyway (future-proofing)", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await asCentral(s, "bookkeeper");
+    // Bypass the write-time gate directly (proving the case above is a WRITE
+    // restriction, not a query-side blind spot) — insert a central-owned txn
+    // linked to a chapter budget the way `createManualTransaction` never
+    // will, and confirm `interScopeBalances` still nets it correctly.
+    const chapterBudgetId = await run(s.t, (ctx) =>
+      ctx.db.insert("budgets", {
+        chapterId: s.chapterId,
+        amountCents: 10_000,
+        type: "recurring",
+        cadence: "monthly",
+        year: 2026,
+        createdAt: Date.now(),
+      }),
+    );
+    await run(s.t, (ctx) =>
+      ctx.db.insert("transactions", {
+        chapterId: CENTRAL,
+        source: "manual",
+        flow: "outflow",
+        amountCents: 8_000,
+        currency: "usd",
+        postedAt: MARCH_2026,
+        budgetId: chapterBudgetId,
+        status: "categorized",
+        createdAt: Date.now(),
+      }),
+    );
+
+    const balances = await s.as.query(api.transfers.interScopeBalances, {
+      year: 2026,
+      month: 3,
+    });
+    const row = balances.find((b) => b.chapterId === s.chapterId);
+    expect(row?.netCents).toBe(-8_000); // negative = the chapter owes central
+    expect(row?.periodNetCents).toBe(-8_000);
+  });
+});
+
+describe("interScopeBalances — authz", () => {
+  test("chapter manager (no central reach) is FORBIDDEN", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await asChapterManager(s);
+    await expect(
+      s.as.query(api.transfers.interScopeBalances, {}),
+    ).rejects.toThrow(/central/i);
+  });
+
+  test("central VIEWER can read (query is viewer+, not a write)", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await asCentral(s, "viewer");
+    const balances = await s.as.query(api.transfers.interScopeBalances, {});
+    expect(Array.isArray(balances)).toBe(true);
+  });
+});
+
+describe("recordSettlementTransfer — nets out interScopeBalances", () => {
+  test("a central_to_chapter settlement books central outflow → chapter inflow and fully nets the balance", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await asCentral(s, "bookkeeper");
+    const centralBudgetId = await makeCentralBudget(s, 100_000);
+    await chapterSpendLinkedTo(s, centralBudgetId, 20_000, MARCH_2026);
+
+    let balances = await s.as.query(api.transfers.interScopeBalances, {
+      year: 2026,
+      month: 3,
+    });
+    expect(balances.find((b) => b.chapterId === s.chapterId)?.netCents).toBe(
+      20_000,
+    );
+
+    const res = await s.as.mutation(api.transfers.recordSettlementTransfer, {
+      chapterId: s.chapterId,
+      year: 2026,
+      month: 3,
+      amountCents: 20_000,
+      direction: "central_to_chapter",
+    });
+    expect(res.amountCents).toBe(20_000);
+    expect(res.transferGroupId).toBe(
+      settlementTransferGroupId(s.chapterId, 2026, 3),
+    );
+
+    const legs = await legsFor(s, res.transferGroupId);
+    expect(legs.length).toBe(2);
+    const chapterLeg = legs.find((l) => l.chapterId === s.chapterId);
+    const centralLeg = legs.find((l) => l.chapterId === CENTRAL);
+    // Central pays out (sourceScope); the chapter receives (destScope) — same
+    // shape as a launch grant. Both legs share `flow:"transfer"` (excluded
+    // from spend, like every transfer leg) — `outflowId`/`inflowId` and the
+    // shared `transferDirection` are what distinguish the pair's shape.
+    expect(centralLeg?._id).toBe(res.outflowId);
+    expect(chapterLeg?._id).toBe(res.inflowId);
+    for (const leg of legs) {
+      expect(leg.source).toBe("settlement");
+      expect(leg.flow).toBe("transfer");
+      expect(leg.transferDirection).toBe("central_to_chapter");
+      expect(leg.amountCents).toBe(20_000);
+      expect(countsAsSpend(leg.flow)).toBe(false);
+    }
+
+    balances = await s.as.query(api.transfers.interScopeBalances, {
+      year: 2026,
+      month: 3,
+    });
+    expect(balances.find((b) => b.chapterId === s.chapterId)?.netCents).toBe(
+      0,
+    );
+  });
+
+  test("a chapter_to_central settlement books chapter outflow → central inflow (same shape as the skim)", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await asCentral(s, "bookkeeper");
+    const res = await s.as.mutation(api.transfers.recordSettlementTransfer, {
+      chapterId: s.chapterId,
+      year: 2026,
+      month: 5,
+      amountCents: 7_000,
+      direction: "chapter_to_central",
+    });
+    const legs = await legsFor(s, res.transferGroupId);
+    const chapterLeg = legs.find((l) => l.chapterId === s.chapterId);
+    const centralLeg = legs.find((l) => l.chapterId === CENTRAL);
+    // The chapter pays out (sourceScope); central receives (destScope).
+    expect(chapterLeg?._id).toBe(res.outflowId);
+    expect(centralLeg?._id).toBe(res.inflowId);
+    for (const leg of legs) {
+      expect(leg.flow).toBe("transfer");
+      expect(leg.transferDirection).toBe("chapter_to_central");
+    }
+  });
+
+  test("idempotency: re-recording the same chapter/month settlement is REJECTED", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await asCentral(s, "bookkeeper");
+    const args = {
+      chapterId: s.chapterId,
+      year: 2026,
+      month: 6,
+      amountCents: 5_000,
+      direction: "central_to_chapter" as const,
+    };
+    await s.as.mutation(api.transfers.recordSettlementTransfer, args);
+    // Re-recording the SAME month is rejected even with the OPPOSITE
+    // direction — the group id is keyed on (chapter, year, month) only.
+    await expect(
+      s.as.mutation(api.transfers.recordSettlementTransfer, {
+        ...args,
+        direction: "chapter_to_central",
+        amountCents: 1_000,
+      }),
+    ).rejects.toThrow(/already been recorded/i);
+    const legs = await legsFor(
+      s,
+      settlementTransferGroupId(s.chapterId, 2026, 6),
+    );
+    expect(legs.length).toBe(2);
+  });
+});
+
+describe("recordSettlementTransfer — authz", () => {
+  test("chapter manager is FORBIDDEN", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await asChapterManager(s);
+    await expect(
+      s.as.mutation(api.transfers.recordSettlementTransfer, {
+        chapterId: s.chapterId,
+        year: 2026,
+        month: 3,
+        amountCents: 1_000,
+        direction: "central_to_chapter",
+      }),
+    ).rejects.toThrow(ConvexError);
+  });
+
+  test("central VIEWER is FORBIDDEN on the write (needs bookkeeper+)", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await asCentral(s, "viewer");
+    await expect(
+      s.as.mutation(api.transfers.recordSettlementTransfer, {
+        chapterId: s.chapterId,
+        year: 2026,
+        month: 3,
+        amountCents: 1_000,
+        direction: "central_to_chapter",
+      }),
+    ).rejects.toThrow(ConvexError);
+    const legs = await legsFor(
+      s,
+      settlementTransferGroupId(s.chapterId, 2026, 3),
+    );
+    expect(legs.length).toBe(0);
+  });
+});
+
+describe("interScopeBalances — mode-filtered settlements (IMPORTANT 1 parity, #163)", () => {
+  test("a sandbox-externalId settlement leg is excluded from prod mode, included in sandbox; manual legs count in both", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await asCentral(s, "bookkeeper");
+    // Gross balance: 50_000 owed to the chapter (a manual, source:"manual"
+    // card txn — environment-neutral, shows in both modes).
+    const centralBudgetId = await makeCentralBudget(s, 100_000);
+    await chapterSpendLinkedTo(s, centralBudgetId, 50_000, MARCH_2026);
+
+    // Manual settlement leg (no externalId) — env-neutral, counts in BOTH.
+    await s.as.mutation(api.transfers.recordSettlementTransfer, {
+      chapterId: s.chapterId,
+      year: 2026,
+      month: 1,
+      amountCents: 10_000,
+      direction: "central_to_chapter",
+    });
+    // A "production" real settlement leg (non-sandbox externalId).
+    await s.as.mutation(internal.transfers.recordSettlementPairFromIncrease, {
+      chapterId: s.chapterId,
+      year: 2026,
+      month: 2,
+      amountCents: 15_000,
+      direction: "central_to_chapter",
+      increaseTransferId: "account_transfer_prod",
+    });
+    // A sandbox-initiated real settlement leg.
+    await s.as.mutation(internal.transfers.recordSettlementPairFromIncrease, {
+      chapterId: s.chapterId,
+      year: 2026,
+      month: 4,
+      amountCents: 5_000,
+      direction: "central_to_chapter",
+      increaseTransferId: "sandbox_account_transfer_9",
+    });
+
+    // Default (no financeSettings row) is production mode: 50_000 gross −
+    // (10_000 manual + 15_000 prod) settled = 25_000.
+    const prod = await s.as.query(api.transfers.interScopeBalances, {
+      year: 2026,
+      month: 1,
+    });
+    expect(prod.find((b) => b.chapterId === s.chapterId)?.netCents).toBe(
+      25_000,
+    );
+
+    // Flip to sandbox mode: 50_000 gross − (10_000 manual + 5_000 sandbox)
+    // settled = 35_000. The prod real leg drops out; the sandbox one counts.
+    await run(s.t, (ctx) =>
+      ctx.db.insert("financeSettings", {
+        sandboxMode: true,
+        updatedAt: Date.now(),
+      }),
+    );
+    const sandbox = await s.as.query(api.transfers.interScopeBalances, {
+      year: 2026,
+      month: 1,
+    });
+    expect(sandbox.find((b) => b.chapterId === s.chapterId)?.netCents).toBe(
+      35_000,
+    );
   });
 });
