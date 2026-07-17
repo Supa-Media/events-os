@@ -105,7 +105,10 @@ async function seedPerson(s: ChapterSetup, name = "Alex"): Promise<Id<"people">>
   );
 }
 
-async function seedCategory(s: ChapterSetup): Promise<Id<"budgetCategories">> {
+async function seedCategory(
+  s: ChapterSetup,
+  opts: { isActive?: boolean } = {},
+): Promise<Id<"budgetCategories">> {
   const fundId = await run(s.t, (ctx) =>
     ctx.db.insert("funds", {
       chapterId: s.chapterId,
@@ -121,7 +124,7 @@ async function seedCategory(s: ChapterSetup): Promise<Id<"budgetCategories">> {
       fundId,
       name: "Ops",
       kind: "lineItem",
-      isActive: true,
+      isActive: opts.isActive ?? true,
       createdAt: Date.now(),
     }),
   );
@@ -333,6 +336,46 @@ describe("convertItemToVendor", () => {
     );
     expect(engagement?.amountUsd).toBeUndefined();
     expect(engagement?.type).toBe("paid");
+    expect(await getItem(s, itemId)).toBeNull();
+  });
+
+  test("an explicit $0-cost item converts with amountUsd 0 (not undefined)", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const eventId = await seedEvent(s);
+    await seedColumns(s, eventId, "planning_doc", [
+      { key: "cost", type: "currency", order: 0 },
+    ]);
+    const person = await seedPerson(s);
+    const itemId = await seedItem(s, eventId, {
+      module: "planning_doc",
+      title: "Free venue",
+      fields: { cost: 0 },
+    });
+
+    const result = await convert(s, itemId, person);
+    const engagement = await run(t, (ctx) =>
+      ctx.db.get(result.engagementId as Id<"engagements">),
+    );
+    expect(engagement?.amountUsd).toBe(0);
+  });
+
+  test("a deactivated category on the item is dropped, not carried (and doesn't fail the conversion)", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const eventId = await seedEvent(s);
+    const person = await seedPerson(s);
+    const categoryId = await seedCategory(s, { isActive: false });
+    const itemId = await seedItem(s, eventId, {
+      module: "planning_doc",
+      budgetCategoryId: categoryId,
+    });
+
+    const result = await convert(s, itemId, person);
+    const engagement = await run(t, (ctx) =>
+      ctx.db.get(result.engagementId as Id<"engagements">),
+    );
+    expect(engagement?.budgetCategoryId).toBeUndefined();
     expect(await getItem(s, itemId)).toBeNull();
   });
 
