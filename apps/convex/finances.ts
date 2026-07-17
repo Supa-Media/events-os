@@ -3896,11 +3896,26 @@ export const forPickerOptions = query({
         label: pickerRefLabel(e.name, e.eventDate),
         budgetId: eventBudgetByRef.get(e._id as string)?._id ?? null,
       }));
-    const projectRows = projects.map((p) => ({
-      projectId: p._id,
-      label: pickerRefLabel(p.name, p.startDate ?? p.createdAt),
-      budgetId: projectBudgetByRef.get(p._id as string)?._id ?? null,
-    }));
+    // NO FABRICATED DATES (identical fix to #219's `reconcileSuggest.ts` —
+    // that PR's own commit judged this static list's `startDate ?? createdAt`
+    // fallback "fine" since nothing here cross-checks it against a second,
+    // independently-computed date the way `reconcileSuggest`'s tier-3 ranking
+    // does; on reflection the SAME defect is still live here on its own
+    // terms — a project's row can show its ROW-CREATION timestamp dressed up
+    // as a meaningful date, which is misleading regardless of whether a
+    // second date is present to visibly contradict it). `projects.deadline`
+    // is the one real, directly-editable date field
+    // (`ProjectCard.tsx`'s "Due {date}"/"Set deadline", `projects.ts#update`)
+    // — never derived from `startDate`/`createdAt`. A project with no
+    // `deadline` now shows its bare name, no date claim.
+    const projectRows = projects.map((p) => {
+      const dateTs = p.deadline ?? null;
+      return {
+        projectId: p._id,
+        label: dateTs != null ? pickerRefLabel(p.name, dateTs) : p.name,
+        budgetId: projectBudgetByRef.get(p._id as string)?._id ?? null,
+      };
+    });
 
     return { events: eventRows, projects: projectRows, recurring };
   },
