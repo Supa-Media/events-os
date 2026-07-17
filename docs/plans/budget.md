@@ -1,9 +1,18 @@
 # Budget (M5.4) — a typed line-item budget for an event
 
-**Status: building (autonomous, 2026-07-14).** Follows the Giving precedent
+**Status: RETIRED (2026-07-17).** Superseded by the ONE-money-surface-per-event
+work: `budgetLineItems` (this doc's schema) was migrated onto the v2 finance
+plan (`budgetLines`, WP-3.1) by `0026_migrate_budget_v1_lines` and the table +
+`budget.ts` + the bespoke Budget tab were deleted. The event/project Money
+surface is now `apps/convex/moneyViews.ts#refMoney` +
+`apps/mobile/components/money/MoneyView.tsx` (an "Edit plan" affordance onto
+`BudgetLineItemsEditor`, the same planner Finances uses). This doc is kept for
+the ORIGINAL design rationale below — not current source of truth.
+
+~~**Status: building (autonomous, 2026-07-14).** Follows the Giving precedent
 (typed table + bespoke tab, integer cents throughout). **Non-disruptive**: the
 existing coarse header budget is left completely untouched — v1 coexists beside
-it as a separate, richer surface.
+it as a separate, richer surface.~~
 
 ## Problem
 

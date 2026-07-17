@@ -33,7 +33,6 @@ import {
   pageReactions,
   blasts,
 } from "./schema/ticketing";
-import { budgetLineItems } from "./schema/budget";
 import {
   funds,
   budgetCategories,
@@ -180,10 +179,6 @@ const schema = defineSchema({
   eventComments,
   pageReactions,
   blasts,
-
-  // Budget (per-line budget for an event — planned/actual/receipt per line).
-  // Coexists with the coarse `events.budget` headline (see docs/plans/budget.md).
-  budgetLineItems,
 
   // Finance — the native money layer (Increase + Stripe FC) that replaces
   // KleerCard / Bill.com. Funds/categories/teams organize money; `budgets`

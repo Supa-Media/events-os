@@ -466,7 +466,7 @@ function budgetApprovalCardFields(b: Doc<"budgets">) {
  * deliberately: the effective mapping only ever renames "absent" to
  * `"approved"`, so it can never itself equal `"submitted"`/`"changes_requested"`.
  */
-function effectiveCapCents(b: Doc<"budgets">): number {
+export function effectiveCapCents(b: Doc<"budgets">): number {
   if (
     (b.approvalStatus === "submitted" || b.approvalStatus === "changes_requested") &&
     b.approvedCents != null
@@ -3917,8 +3917,15 @@ export const forPickerOptions = query({
  * backfill made. Idempotent: a second call for the same ref returns the
  * existing budget instead of creating a duplicate. `userId` is optional so
  * the no-auth `migrateLinksToBudgets` migration can reuse this too.
+ *
+ * Exported so the `0026_migrate_budget_v1_lines` migration can reuse the exact
+ * same get-or-create (rather than re-deriving it) when it needs to ensure a
+ * legacy Budget v1 event's finance budget row exists before inserting its
+ * migrated `budgetLines`. Mobile still summons through the public
+ * `summonBudgetForRef` mutation below — this export is for other MUTATION-side
+ * callers with a `MutationCtx` already in hand.
  */
-async function ensureBudgetForRef(
+export async function ensureBudgetForRef(
   ctx: MutationCtx,
   chapterId: Id<"chapters">,
   refKind: BudgetRefKind,
@@ -5317,13 +5324,11 @@ const removeEmptyAutoBudgetsResult = v.object({
   keptWithSpend: v.number(),
   // Kept because `amountCents` isn't 0 (a real, filled-in budget).
   keptNonzero: v.number(),
-  // Kept because there's already line-item planning content on it: EITHER the
-  // event still carries legacy `budgetLineItems` rows (event refKind only —
-  // that pre-v2 feature has no direct link to a `budgets` row), OR the budget
-  // itself has WP-3.1 `budgetLines` rows (event OR project refKind — a v2
-  // plan breakdown). Either way, someone's already using budgeting on it, so
-  // its budget object — and, for `budgetLines`, the planning work IN it —
-  // shouldn't quietly disappear.
+  // Kept because the budget already has WP-3.1 `budgetLines` planning rows
+  // (event OR project refKind — a v2 plan breakdown): someone's already
+  // using budgeting on it, so the planning work in it shouldn't quietly
+  // disappear. (Budget v1's legacy `budgetLineItems` guard was retired along
+  // with that table — see `0026_migrate_budget_v1_lines`.)
   keptWithLineItems: v.number(),
 });
 
@@ -5343,10 +5348,6 @@ const removeEmptyAutoBudgetsResult = v.object({
  *    if it's otherwise unused.
  *  - Zero linked transactions (`transactions.by_budget`) — NEVER deletes a
  *    budget with linked spend; its actuals still need somewhere to roll up.
- *  - For an EVENT ref only: the event has no legacy `budgetLineItems` rows
- *    (`by_event`) — that pre-v2 feature has no direct link to a `budgets` row,
- *    so this is a conservative "someone's already using budgeting on this
- *    event" signal that blocks the delete.
  *  - For EITHER ref kind: the budget has no WP-3.1 `budgetLines` rows
  *    (`by_budget`) — a $0 budget can still carry a real v2 plan breakdown (the
  *    amount just hasn't been filled in yet), so deleting it would silently
@@ -5404,17 +5405,6 @@ export const removeEmptyAutoBudgets = internalMutation({
         continue;
       }
 
-      if (b.refKind === "event") {
-        const lineItem = await ctx.db
-          .query("budgetLineItems")
-          .withIndex("by_event", (q) => q.eq("eventId", b.scopeRefId as Id<"events">))
-          .first();
-        if (lineItem) {
-          keptWithLineItems++;
-          continue;
-        }
-      }
-
       // v2 plan guard — covers BOTH event and project refKinds: a $0 budget
       // that already has `budgetLines` planning is real work, not clutter.
       const planLine = await ctx.db
@@ -5433,7 +5423,7 @@ export const removeEmptyAutoBudgets = internalMutation({
     console.log(
       `[finances] removeEmptyAutoBudgets: scanned ${scanned}, deleted ${deleted}, ` +
         `kept ${keptWithSpend} (linked spend), ${keptNonzero} (nonzero), ` +
-        `${keptWithLineItems} (event has budget line items).`,
+        `${keptWithLineItems} (budget has plan lines).`,
     );
 
     return { scanned, deleted, keptWithSpend, keptNonzero, keptWithLineItems };

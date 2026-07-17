@@ -196,7 +196,9 @@ export const RESERVED_TAB_KEYS = [
   "overview",
   "tickets",
   "crew",
-  "budget",
+  // "budget" (Budget v1's per-line budget tab) retired — the ONE money
+  // surface for an event is now "money" (`moneyViews.ts` / `MoneyView.tsx`).
+  "money",
   "gear",
 ] as const;
 

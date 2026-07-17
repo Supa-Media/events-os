@@ -391,10 +391,15 @@ describe("moneyViews.refMoney: empty states", () => {
       id: budgetId,
       amountCents: 50000,
       label: "Sunday Gathering",
-      // No `budgets.approvalStatus` field exists yet on this branch's schema
-      // (WP-3.2 lands it in a parallel WP) — read dynamically/optionally, so
-      // it's `null` until that merges.
-      approvalStatus: null,
+      // No `approvalStatus` was ever stamped on this budget → grandfathered,
+      // reads as the EFFECTIVE `"approved"` (`effectiveBudgetApprovalStatus`).
+      approvalStatus: "approved",
+      approvedCents: null,
+      requestedCents: 50000,
+      reviewNote: null,
+      // A plain chapter VIEWER (not bookkeeper+) — can read the plan, can't
+      // write it.
+      canEditPlan: false,
     });
     expect(result.categories).toEqual([]);
     expect(result.lineCount).toBe(0);
@@ -643,8 +648,137 @@ describe("moneyViews.refMoney: training events", () => {
 // `approvalState`. Nothing in the codebase actually writes an approvals row
 // with that subjectType (verified codebase-wide) — the derivation was dead
 // code exercised only by its own fake-seeded tests. Deleted along with the
-// derivation itself: `refMoney` now reads `budgets.approvalStatus` directly
-// (dynamically/optionally, since that field lands with the parallel WP-3.2
-// and isn't in this branch's schema yet — see `moneyViews.ts`'s own doc
-// comments). See the "no lines and no spend" empty-state test above for the
-// `approvalStatus: null` assertion on THIS branch's schema.
+// derivation itself: `refMoney` now reads the REAL `budgets.approvalStatus`
+// (WP-3.2, merged) through `effectiveBudgetApprovalStatus`/`effectiveCapCents`
+// — see the "approval-aware cap + canEditPlan" block below for live coverage.
+
+// ── Approval-aware cap + "Edit plan" write gate ──────────────────────────────
+
+describe("moneyViews.refMoney: approval-aware cap + canEditPlan", () => {
+  test("a budget with a pending, not-yet-approved increase reports the OLD approved cap, not the raw amountCents", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await asChapterManager(s);
+    const eventId = await seedEvent(s, s.chapterId, { name: "Retreat" });
+    const budgetId = await seedOneTimeBudget(s, s.chapterId, "event", eventId, {
+      amountCents: 80000, // the pending, not-yet-approved increase
+    });
+    await run(s.t, (ctx) =>
+      ctx.db.patch(budgetId, {
+        approvalStatus: "submitted",
+        approvedCents: 50000, // the still-in-force cap
+      }),
+    );
+
+    const result = await s.as.query(api.moneyViews.refMoney, {
+      refKind: "event",
+      refId: eventId,
+    });
+    expect(result.budget?.amountCents).toBe(50000); // effective cap, not 80000
+    expect(result.budget?.approvalStatus).toBe("submitted");
+    expect(result.budget?.approvedCents).toBe(50000);
+    expect(result.budget?.requestedCents).toBe(80000); // raw amountCents
+    expect(result.totalPlannedCents).toBe(50000); // sums the effective cap too
+    expect(result.totalRemainingCents).toBe(50000);
+  });
+
+  test("canEditPlan: a chapter BOOKKEEPER on their own chapter's event CAN edit; a VIEWER cannot", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const personId = await seedSelfPerson(s);
+    await run(s.t, (ctx) =>
+      ctx.db.insert("financeRoles", {
+        chapterId: s.chapterId,
+        personId,
+        role: "bookkeeper",
+        scope: "chapter",
+        createdAt: Date.now(),
+      }),
+    );
+    const eventId = await seedEvent(s, s.chapterId, { name: "Retreat" });
+    await seedOneTimeBudget(s, s.chapterId, "event", eventId, { amountCents: 10000 });
+
+    const result = await s.as.query(api.moneyViews.refMoney, {
+      refKind: "event",
+      refId: eventId,
+    });
+    expect(result.budget?.canEditPlan).toBe(true);
+  });
+
+  test("canEditPlan: a central-reach caller peeking a FOREIGN chapter's chapter-owned (not central) budget CANNOT edit — loadOwningBudget would 404", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await asCentralManager(s);
+    const boston = await makeChapter(s, "Boston");
+    const eventId = await seedEvent(s, boston, { name: "Boston Event" });
+    // Chapter-owned by Boston, NEVER moved to central — the caller's central
+    // reach doesn't help here; only Boston's own bookkeeper+ can write it.
+    await seedOneTimeBudget(s, boston, "event", eventId, { amountCents: 10000 });
+
+    const result = await s.as.query(api.moneyViews.refMoney, {
+      refKind: "event",
+      refId: eventId,
+    });
+    expect(result.budget).not.toBeNull();
+    expect(result.budget?.canEditPlan).toBe(false);
+  });
+
+  test("canEditPlan: a central bookkeeper+ CAN edit a CENTRAL-owned budget on a foreign ref", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await asCentralManager(s); // central + manager (>= bookkeeper)
+    const boston = await makeChapter(s, "Boston");
+    const eventId = await seedEvent(s, boston, { name: "Boston Event" });
+    await seedOneTimeBudget(s, "central", "event", eventId, { amountCents: 10000 });
+
+    const result = await s.as.query(api.moneyViews.refMoney, {
+      refKind: "event",
+      refId: eventId,
+    });
+    expect(result.budget?.canEditPlan).toBe(true);
+  });
+
+  test("canSummonBudget: true for a bookkeeper+ on their own budget-less event, false for a viewer", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await asChapterManager(s); // manager >= bookkeeper
+    const eventId = await seedEvent(s, s.chapterId, { name: "Bare Event" });
+
+    const result = await s.as.query(api.moneyViews.refMoney, {
+      refKind: "event",
+      refId: eventId,
+    });
+    expect(result.budget).toBeNull();
+    expect(result.canSummonBudget).toBe(true);
+  });
+
+  test("incomeCents: sums eventPages revenueCents + donationsCents for the event", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await asChapterViewer(s);
+    const eventId = await seedEvent(s, s.chapterId, { name: "Ticketed Night" });
+    await run(s.t, (ctx) =>
+      ctx.db.insert("eventPages", {
+        eventId,
+        chapterId: s.chapterId,
+        slug: `ticketed-night-${Date.now()}`,
+        published: true,
+        goingCount: 0,
+        maybeCount: 0,
+        notGoingCount: 0,
+        ticketsSoldCount: 0,
+        revenueCents: 12000,
+        donationsCents: 3000,
+        createdBy: s.userId,
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      }),
+    );
+
+    const result = await s.as.query(api.moneyViews.refMoney, {
+      refKind: "event",
+      refId: eventId,
+    });
+    expect(result.incomeCents).toBe(15000);
+  });
+});

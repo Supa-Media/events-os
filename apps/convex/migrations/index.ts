@@ -38,6 +38,7 @@ import { seedSeatDefs } from "./0022_seed_seat_defs";
 import { seedSeatAssignments } from "./0023_seed_seat_assignments";
 import { repointDerivedSeatDuties } from "./0024_repoint_derived_seat_duties";
 import { addCdFinanceViewer } from "./0025_add_cd_finance_viewer";
+import { migrateBudgetV1Lines } from "./0026_migrate_budget_v1_lines";
 
 /** One registered migration: a stable `name` (the ledger key) + its effect. */
 export type Migration = {
@@ -81,4 +82,8 @@ export const MIGRATIONS: Migration[] = [
   // Chapter Director finance visibility (owner decision, 2026-07-16) — patch
   // the live chapter_director seatDefs row to add finance.viewer.
   addCdFinanceViewer,
+  // One money surface per event: drain Budget v1's `budgetLineItems` into v2
+  // `budgetLines` (get-or-create the event's finance budget row, migrate each
+  // line, delete the drained v1 rows) so `schema/budget.ts` can be removed.
+  migrateBudgetV1Lines,
 ];

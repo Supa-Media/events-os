@@ -186,32 +186,6 @@ describe("removeEmptyAutoBudgets (internal)", () => {
     expect(budget).not.toBeNull();
   });
 
-  test("keeps a zero-amount EVENT budget whose event still carries legacy budgetLineItems", async () => {
-    const t = newT();
-    const s = await setupChapter(t);
-    const eventId = await seedEvent(s);
-    const budgetId = await seedAutoBudget(s, { refKind: "event", scopeRefId: eventId });
-    await run(s.t, (ctx) =>
-      ctx.db.insert("budgetLineItems", {
-        eventId,
-        chapterId: s.chapterId,
-        label: "PA rental",
-        category: "production",
-        plannedCents: 20000,
-        order: 0,
-        createdBy: s.userId,
-        createdAt: Date.now(),
-      }),
-    );
-
-    const result = await t.mutation(internal.finances.removeEmptyAutoBudgets, {});
-    expect(result.deleted).toBe(0);
-    expect(result.keptWithLineItems).toBe(1);
-
-    const budget = await run(s.t, (ctx) => ctx.db.get(budgetId));
-    expect(budget).not.toBeNull();
-  });
-
   test("keeps a $0 EVENT budget that has WP-3.1 budgetLines planning (v2)", async () => {
     const t = newT();
     const s = await setupChapter(t);
