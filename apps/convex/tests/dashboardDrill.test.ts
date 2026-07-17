@@ -4,6 +4,7 @@ import { newT, run, setupChapter, type ChapterSetup } from "./setup.helpers";
 import { api } from "../_generated/api";
 import type { Id } from "../_generated/dataModel";
 import { CENTRAL } from "@events-os/shared";
+import { runSeedSeatDefs } from "../migrations/0022_seed_seat_defs";
 
 /**
  * `dashboardDrill.ts` — the three central-dashboard drilldowns (queries a + b
@@ -58,6 +59,57 @@ async function asChapterManager(s: ChapterSetup): Promise<Id<"people">> {
 async function makeChapter(s: ChapterSetup, name: string): Promise<Id<"chapters">> {
   return run(s.t, (ctx) =>
     ctx.db.insert("chapters", { name, isActive: true, createdAt: Date.now() }),
+  );
+}
+
+/** `setupChapter`, but with the `seatDefs` table seeded first (mirrors
+ *  `financeGatesSeatUnion.test.ts#seatSetup`) — needed for `assignSeatDirect`
+ *  below to resolve a def by slug. */
+async function seatSetup(
+  opts: { email?: string; chapterName?: string } = {},
+): Promise<ChapterSetup> {
+  const t = newT();
+  await run(t, (ctx) => runSeedSeatDefs(ctx));
+  return setupChapter(t, opts);
+}
+
+/** The seatDef row seeded for a template `slug` (mirrors
+ *  `financeGatesSeatUnion.test.ts#defBySlug`). */
+async function defBySlug(s: ChapterSetup, slug: string) {
+  const def = await run(s.t, (ctx) =>
+    ctx.db
+      .query("seatDefs")
+      .withIndex("by_slug", (q) => q.eq("slug", slug))
+      .unique(),
+  );
+  if (!def) throw new Error(`${slug} not seeded`);
+  return def;
+}
+
+/** Insert a `seatAssignments` row directly, bypassing `assignSeat`'s
+ *  write-through — isolates "what the org chart alone implies" (mirrors
+ *  `financeGatesSeatUnion.test.ts#assignSeatDirect`). Used here to construct
+ *  the review-fix persona: an `executive_director` seat carries
+ *  `finance.central` but NOT `finance.manager` (see `SEAT_DEFS` in
+ *  `@events-os/shared`), so `getFinanceRole` derives `isCentral: true` with
+ *  `role: null` for this caller — `requireFinanceCentral` (central reach
+ *  only) passes; the stricter `requireCentralFinanceRole(..., "viewer")`
+ *  this file's queries used to gate on would NOT (a null role never clears
+ *  `financeRoleAtLeast`), which is exactly the gap PR #231's review caught. */
+async function assignSeatDirect(
+  s: ChapterSetup,
+  personId: Id<"people">,
+  slug: string,
+  scope: Id<"chapters"> | "central",
+): Promise<void> {
+  const def = await defBySlug(s, slug);
+  await run(s.t, (ctx) =>
+    ctx.db.insert("seatAssignments", {
+      seatDefId: def._id,
+      scope,
+      personId,
+      createdAt: Date.now(),
+    }),
   );
 }
 
@@ -281,6 +333,15 @@ describe("pendingBudgetApprovals", () => {
     const rows = await s2.as.query(api.dashboardDrill.pendingBudgetApprovals, {});
     expect(Array.isArray(rows)).toBe(true);
   });
+
+  test("review fix: an executive_director seat with NO stored central role (isCentral true, role null) succeeds — matches dashboardCentral's own gate", async () => {
+    const s = await seatSetup();
+    const personId = await seedSelfPerson(s);
+    await assignSeatDirect(s, personId, "executive_director", "central");
+
+    const rows = await s.as.query(api.dashboardDrill.pendingBudgetApprovals, {});
+    expect(Array.isArray(rows)).toBe(true);
+  });
 });
 
 // ── orgUnattributedTransactions ──────────────────────────────────────────────
@@ -432,5 +493,60 @@ describe("orgUnattributedTransactions", () => {
     await asCentral(s2, "viewer");
     const result = await s2.as.query(api.dashboardDrill.orgUnattributedTransactions, {});
     expect(Array.isArray(result.rows)).toBe(true);
+  });
+
+  test("review fix: an executive_director seat with NO stored central role (isCentral true, role null) succeeds — matches dashboardCentral's own gate", async () => {
+    const s = await seatSetup();
+    const personId = await seedSelfPerson(s);
+    await assignSeatDirect(s, personId, "executive_director", "central");
+
+    const result = await s.as.query(api.dashboardDrill.orgUnattributedTransactions, {});
+    expect(Array.isArray(result.rows)).toBe(true);
+  });
+
+  test("parity: the sum of rows' amountCents (uncapped fixture) equals dashboardCentral.orgUnattributedCents", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await asCentral(s, "viewer");
+    const otherChapter = await makeChapter(s, "Austin");
+
+    await insertTxn(s, { chapterId: s.chapterId, amountCents: 4_000, postedAt: MARCH_2026 });
+    await insertTxn(s, { chapterId: CENTRAL, amountCents: 9_000, postedAt: MARCH_2026 });
+    await insertTxn(s, { chapterId: otherChapter, amountCents: 1_500, postedAt: MARCH_2026 });
+    await insertTxn(s, { chapterId: s.chapterId, amountCents: 750, postedAt: MARCH_2026 });
+    // A linked txn and an excluded one, so the parity check isn't trivially
+    // "every row counts" — both must stay OUT of both sides equally.
+    const linkedBudgetId = await insertBudget(s, {
+      chapterId: s.chapterId,
+      amountCents: 100_000,
+      approvalStatus: "approved",
+    });
+    await insertTxn(s, {
+      chapterId: s.chapterId,
+      amountCents: 2_000,
+      postedAt: MARCH_2026,
+      budgetId: linkedBudgetId,
+    });
+    await insertTxn(s, {
+      chapterId: s.chapterId,
+      amountCents: 2_000,
+      postedAt: MARCH_2026,
+      status: "excluded",
+    });
+
+    const result = await s.as.query(api.dashboardDrill.orgUnattributedTransactions, {
+      year: 2026,
+      month: 3,
+      period: "month",
+    });
+    const dash = await s.as.query(api.finances.dashboardCentral, {
+      year: 2026,
+      month: 3,
+      period: "month",
+    });
+    expect(result.rows.length).toBeLessThan(200); // uncapped — the cap isn't masking anything
+    const sum = result.rows.reduce((s2, r) => s2 + r.amountCents, 0);
+    expect(sum).toBe(dash.orgUnattributedCents);
+    expect(sum).toBe(4_000 + 9_000 + 1_500 + 750);
   });
 });

@@ -17,13 +17,20 @@
  * should be deleted in favor of the shared versions — keep them in lockstep
  * with their originals until then.
  *
- * Gate: `requireCentralFinanceRole(ctx, home, "viewer")` on all three queries
- * here — central reach AND at least the viewer graded role. This mirrors
- * `transfers.ts#interScopeBalances` exactly (one of the two "same gate" reads
- * named by the task this file implements). Note `dashboardCentral` itself
- * gates on the slightly weaker `requireFinanceCentral` (central reach only,
- * no graded-role floor) — the two aren't quite identical; "central-viewer+"
- * points at this file's (and `interScopeBalances`') stricter gate.
+ * Gate: `requireFinanceCentral(ctx, home)` on both queries here — the EXACT
+ * same gate `dashboardCentral` itself uses (central reach only, no graded-role
+ * floor). Review fix (PR #231): this file originally gated on the stricter
+ * `requireCentralFinanceRole(ctx, home, "viewer")` (central reach AND at
+ * least the viewer graded role, matching `transfers.ts#interScopeBalances`
+ * instead) — reasonable-looking since both were named as "the same gate" by
+ * the task that wrote this file, but they're NOT identical: a caller with
+ * central reach via a seat-derived capability alone (`isCentral: true`) and
+ * no stored graded role (`role: null`) — e.g. a post-B10-flip
+ * `executive_director` seat holder, see `lib/finance.ts`'s module doc — would
+ * pass `dashboardCentral`'s banner but 403 out of these drilldowns, collapsing
+ * the whole dashboard via `FinanceBoundary`. Matching `dashboardCentral`'s
+ * actual gate closes that gap; see `dashboardDrill.test.ts`'s
+ * "executive_director seat, no stored role" case.
  */
 import { v } from "convex/values";
 import { query } from "./_generated/server";
@@ -37,7 +44,7 @@ import {
   type BudgetRefKind,
 } from "@events-os/shared";
 import { requireChapterId } from "./lib/context";
-import { requireCentralFinanceRole } from "./lib/finance";
+import { requireFinanceCentral } from "./lib/finance";
 import { readSandbox } from "./financeSettings";
 import { isSpend, txnMatchesMode, ROLLUP_SCAN_LIMIT } from "./finances";
 
@@ -136,7 +143,7 @@ export const pendingBudgetApprovals = query({
   returns: v.array(pendingBudgetApprovalRow),
   handler: async (ctx) => {
     const home = (await requireChapterId(ctx)) as Id<"chapters">;
-    await requireCentralFinanceRole(ctx, home, "viewer");
+    await requireFinanceCentral(ctx, home);
 
     const chapters = await ctx.db.query("chapters").take(ROLLUP_SCAN_LIMIT);
     const chapterNameById = new Map(chapters.map((c) => [c._id, c.name] as const));
@@ -214,7 +221,7 @@ export const orgUnattributedTransactions = query({
   }),
   handler: async (ctx, args) => {
     const home = (await requireChapterId(ctx)) as Id<"chapters">;
-    await requireCentralFinanceRole(ctx, home, "viewer");
+    await requireFinanceCentral(ctx, home);
 
     const now = easternParts(Date.now());
     const year = args.year ?? now.year;
