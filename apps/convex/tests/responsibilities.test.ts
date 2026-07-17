@@ -334,6 +334,7 @@ async function insertSeat(
     chart: "central" | "chapter";
     parentSlug?: string;
     maxHolders?: number;
+    derived?: boolean;
   },
 ): Promise<Id<"seatDefs">> {
   return run(s.t, (ctx) =>
@@ -346,6 +347,7 @@ async function insertSeat(
       duties: [],
       capabilities: [],
       sortOrder: 0,
+      ...(opts.derived !== undefined ? { derived: opts.derived } : {}),
       createdAt: Date.now(),
       updatedAt: Date.now(),
     }),
@@ -735,6 +737,148 @@ describe("responsibilities × seats", () => {
     expect(await asVisitor.query(api.responsibilities.seatOptions)).toEqual(
       [],
     );
+  });
+
+  test("seatOptions excludes DERIVED seats — a computed mirror can never be a duty target", async () => {
+    const s = await setupChapter(newT());
+    const realId = await insertSeat(s, {
+      slug: "chapter_director",
+      title: "Chapter Director",
+      chart: "chapter",
+    });
+    const derivedId = await insertSeat(s, {
+      slug: "chapter_directors",
+      title: "Chapter Directors",
+      chart: "central",
+      derived: true,
+    });
+
+    const options = await s.as.query(api.responsibilities.seatOptions);
+    expect(options.map((o) => o.seatDefId)).toContain(realId);
+    expect(options.map((o) => o.seatDefId)).not.toContain(derivedId);
+
+    // dutiesForSeat is guarded the same way — even a stale mapping to the
+    // derived seat's id (pre-migration data) never surfaces there.
+    await run(s.t, (ctx) =>
+      ctx.db.insert("responsibilities", {
+        chapterId: s.chapterId,
+        title: "Stale derived-seat duty",
+        cadence: "ad_hoc",
+        assigneeSeatIds: [derivedId],
+        createdBy: s.userId,
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      }),
+    );
+    expect(
+      await s.as.query(api.responsibilities.dutiesForSeat, {
+        seatDefId: derivedId,
+      }),
+    ).toEqual([]);
+  });
+
+  test("create/update/addSeat reject a DERIVED seat with a clear ConvexError", async () => {
+    const s = await setupChapter(newT());
+    const derivedId = await insertSeat(s, {
+      slug: "chapter_directors",
+      title: "Chapter Directors",
+      chart: "central",
+      derived: true,
+    });
+
+    await expect(
+      s.as.mutation(api.responsibilities.create, {
+        title: "Meet with directors",
+        assigneeSeatIds: [derivedId],
+      }),
+    ).rejects.toThrow(ConvexError);
+
+    const id = (await s.as.mutation(api.responsibilities.create, {
+      title: "Meet with directors",
+    })) as Id<"responsibilities">;
+    await expect(
+      s.as.mutation(api.responsibilities.update, {
+        responsibilityId: id,
+        assigneeSeatIds: [derivedId],
+      }),
+    ).rejects.toThrow(ConvexError);
+    await expect(
+      s.as.mutation(api.responsibilities.addSeat, {
+        responsibilityId: id,
+        seatDefId: derivedId,
+      }),
+    ).rejects.toThrow(ConvexError);
+
+    // The row is untouched by the rejected attempts.
+    const [row] = await s.as.query(api.responsibilities.list);
+    expect(row.assigneeSeatIds).toBeUndefined();
+  });
+
+  test("appliesTo: a duty mapped to the REAL chapter_director seat resolves every chapter's director — the shared def, not the derived mirror", async () => {
+    const s = await setupChapter(newT(), { chapterName: "New York" });
+    const s2 = await setupChapter(s.t, {
+      email: "leader2@publicworship.life",
+      chapterName: "Austin",
+    });
+
+    // One GLOBAL seatDefs row for "chapter_director" — same shape shared by
+    // every chapter's chart, exactly like production seeding (0022).
+    const chapterDirectorId = await insertSeat(s, {
+      slug: "chapter_director",
+      title: "Chapter Director",
+      chart: "chapter",
+    });
+
+    const nyDirector = (await s.as.mutation(api.people.create, {
+      name: "NY Director",
+    })) as Id<"people">;
+    const austinDirector = (await s2.as.mutation(api.people.create, {
+      name: "Austin Director",
+    })) as Id<"people">;
+
+    await insertSeatAssignment(s, chapterDirectorId, s.chapterId, nyDirector);
+    await insertSeatAssignment(
+      s,
+      chapterDirectorId,
+      s2.chapterId,
+      austinDirector,
+    );
+
+    // NY authors ONE duty mapped to the real (shared) seat def.
+    const dutyId = (await s.as.mutation(api.responsibilities.create, {
+      title: "Run the chapter day-to-day",
+      assigneeSeatIds: [chapterDirectorId],
+    })) as Id<"responsibilities">;
+    const [row] = await s.as.query(api.responsibilities.list);
+    expect(row._id).toBe(dutyId);
+
+    // Each chapter's OWN holdings resolve its OWN director to the same seat
+    // def id — per-chapter scope resolution on a chapter-chart seat.
+    const nyHoldings = await s.as.query(api.responsibilities.chapterSeatHoldings);
+    const nySeatIds = nyHoldings
+      .filter((h) => h.personId === nyDirector)
+      .map((h) => h.seatDefId);
+    expect(nySeatIds).toEqual([chapterDirectorId]);
+
+    const austinHoldings = await s2.as.query(
+      api.responsibilities.chapterSeatHoldings,
+    );
+    const austinSeatIds = austinHoldings
+      .filter((h) => h.personId === austinDirector)
+      .map((h) => h.seatDefId);
+    expect(austinSeatIds).toEqual([chapterDirectorId]);
+
+    // The pure matching rule fans the SAME duty def out to BOTH directors —
+    // one role, identical expectations, resolved per-chapter.
+    expect(
+      responsibilityAppliesTo(row, { _id: nyDirector, seatIds: nySeatIds }),
+    ).toBe(true);
+    expect(
+      responsibilityAppliesTo(row, {
+        _id: austinDirector,
+        seatIds: austinSeatIds,
+      }),
+    ).toBe(true);
   });
 });
 

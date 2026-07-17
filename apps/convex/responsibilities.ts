@@ -72,10 +72,19 @@ async function materializeHowToDoc(
 const cadence = v.union(...RESPONSIBILITY_CADENCES.map((c) => v.literal(c)));
 const seatChart = v.union(...SEAT_CHARTS.map((c) => v.literal(c)));
 
-/** Assert every id in `seatDefIds` names a real `seatDefs` row. Seat defs are a
- *  single GLOBAL table (the chart's shape is shared across every chapter — see
- *  `schema/seats.ts`), so this is an existence check, not a chapter-ownership
- *  check like `requireOwned`. */
+/** Assert every id in `seatDefIds` names a real, non-DERIVED `seatDefs` row.
+ *  Seat defs are a single GLOBAL table (the chart's shape is shared across
+ *  every chapter — see `schema/seats.ts`), so the existence half of this is
+ *  not a chapter-ownership check like `requireOwned`.
+ *
+ *  A `derived` seat (e.g. the central chart's `chapter_directors` mirror —
+ *  its holders are COMPUTED, rolled up from every chapter's real
+ *  `chapter_director` seat, never assigned) can never carry a duty: mapping
+ *  one there would silently split "Chapter Director" into two duty targets
+ *  for what the owner has decided is ONE role with identical expectations
+ *  everywhere. This is the belt to `seatOptions`/`dutiesForSeat` never
+ *  OFFERING a derived seat as a target — a defense-in-depth guard against any
+ *  future picker that hands this mutation a derived seat's id directly. */
 async function requireSeatDefs(
   ctx: MutationCtx,
   seatDefIds: readonly Id<"seatDefs">[],
@@ -86,6 +95,12 @@ async function requireSeatDefs(
       throw new ConvexError({
         code: "NOT_FOUND",
         message: "One of those seats no longer exists.",
+      });
+    }
+    if (seat.derived === true) {
+      throw new ConvexError({
+        code: "INVALID_ARGUMENT",
+        message: `"${seat.title}" is a computed seat and can't carry duties directly — map the duty to the real seat instead.`,
       });
     }
   }
@@ -448,7 +463,16 @@ const MAX_SEAT_SCAN = 500;
 
 /** Every seat def, flattened for the Duties grid's seat picker (grouped
  *  Central/Chapter by the caller). Org-transparent like the chart itself —
- *  any roster member who can see the duty catalog can see the seat list. */
+ *  any roster member who can see the duty catalog can see the seat list.
+ *
+ *  DERIVED seats (holders computed/rolled-up, never assigned — e.g. the
+ *  central chart's `chapter_directors` mirror of every chapter's real
+ *  `chapter_director`) are excluded: they can never carry a duty of their
+ *  own, so offering one here would let an owner map "the same duty" onto two
+ *  separate targets (the mirror AND the real seat) for what is ONE role with
+ *  identical expectations across every chapter. See `requireSeatDefs` for the
+ *  mutation-side guard and the `0024_repoint_derived_seat_duties` migration
+ *  for the historical cleanup. */
 export const seatOptions = query({
   args: {},
   returns: v.array(
@@ -466,6 +490,7 @@ export const seatOptions = query({
     }
     const defs = await ctx.db.query("seatDefs").take(MAX_SEAT_SCAN);
     return defs
+      .filter((d) => d.derived !== true)
       .sort((a, b) => a.sortOrder - b.sortOrder)
       .map((d) => ({ seatDefId: d._id, title: d.title, chart: d.chart }));
   },
@@ -576,6 +601,10 @@ export const dutiesForSeat = query({
     }
     const seat = await ctx.db.get(seatDefId);
     if (!seat) return [];
+    // A derived seat's holders are computed, never assigned, so it can never
+    // carry a duty of its own (see `seatOptions`/`requireSeatDefs`) — return
+    // empty here too rather than surfacing stale pre-migration mappings.
+    if (seat.derived === true) return [];
 
     const rows =
       seat.chart === "central"
