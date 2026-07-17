@@ -20,10 +20,18 @@ import type { Migration } from "./index";
  *      training event — the #172 invariant ("training events NEVER get a
  *      budget row") is enforced by every v2 creation path, and Budget v1 had
  *      no such gate (`budget.ts#addLineItem` never checked `isTraining`), so a
- *      training event with leftover v1 lines is possible. Counted separately
- *      (`trainingEventsSkipped`) rather than silently dropped so it's visible
- *      in the migration's own report — see the module doc's "nothing silently
- *      vanishes" rule.
+ *      training event with leftover v1 lines is possible. Its rows are NOT
+ *      migrated (no budget is ever summoned for a training event — the #172
+ *      invariant is never violated) but ARE still DELETED (Opus review,
+ *      PR #214, 2026-07-17): leaving them in place would mean the table
+ *      doesn't always end up empty, and this same PR drops `budgetLineItems`
+ *      from the schema right after this migration runs — Convex requires a
+ *      table be empty before its definition is dropped, so a training
+ *      event's leftover rows would silently break that precondition on any
+ *      deployment that happens to have one. Counted (`trainingEventsSkipped`
+ *      for the event, `trainingRowsDropped` for the rows) and
+ *      `console.warn`-ed per event, so the drop is loud, not silent — see
+ *      the module doc's "nothing silently vanishes" rule.
  *   2. Insert each v1 line as a `budgetLines` row, in `order`:
  *        label        -> description
  *        plannedCents -> plannedCents
@@ -54,6 +62,8 @@ import type { Migration } from "./index";
  * Idempotent + ledgered: `schemaMigrations` is belt-and-suspenders (this run
  * body is also independently safe to re-run) — once an event's
  * `budgetLineItems` rows are deleted, a second pass finds nothing left for it.
+ * This ALWAYS drains the table to empty in one pass (training events
+ * included) — the schema-drop precondition in the same PR always holds.
  * `(ctx.db as any).query("budgetLineItems")` — the table is undeclared in
  * THIS PR's schema (deleted alongside `schema/budget.ts`), so this mirrors the
  * exact `guestAllowlist`/`cleanupLegacyRoles` precedent (`0017_purge_guest_
@@ -112,6 +122,7 @@ export async function runMigrateBudgetV1Lines(ctx: MutationCtx) {
   let actualsSkipped = 0;
   let receiptsSkipped = 0;
   let trainingEventsSkipped = 0;
+  let trainingRowsDropped = 0;
   let budgetLineItemsDeleted = 0;
 
   // Group v1 lines by event — `budgetLineItems` has no `by_event`-then-all
@@ -150,8 +161,19 @@ export async function runMigrateBudgetV1Lines(ctx: MutationCtx) {
       continue;
     }
     if (event.isTraining === true) {
+      // NOT migrated (no budget summoned — #172 stays inviolate) but ALWAYS
+      // deleted so the table still ends up fully drained — see the module
+      // doc's Opus-review note. Loud, not silent: a console.warn per event.
       trainingEventsSkipped++;
-      continue; // Leave these rows for a human to look at — see doc comment.
+      for (const line of lines) {
+        await ctx.db.delete(line._id);
+        trainingRowsDropped++;
+        budgetLineItemsDeleted++;
+      }
+      console.warn(
+        `[0026_migrate_budget_v1_lines] dropped ${lines.length} budgetLineItems row(s) for training event ${eventId} (never migrated — training events never get a budget, #172).`,
+      );
+      continue;
     }
 
     const budgetId = await ensureBudgetForRef(
@@ -211,6 +233,7 @@ export async function runMigrateBudgetV1Lines(ctx: MutationCtx) {
     receiptsSkipped,
     zeroPlannedSkipped,
     trainingEventsSkipped,
+    trainingRowsDropped,
     budgetLineItemsDeleted,
   };
 }

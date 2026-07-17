@@ -3,7 +3,9 @@
  * legacy per-event line-item budget) onto the v2 finance plan (`budgetLines`)
  * so `schema/budget.ts` can be removed — see the migration's own doc comment
  * for the full mapping rules (category-name best-effort match, $0 lines
- * skipped, actuals/receipts counted-not-migrated, training events left alone).
+ * skipped, actuals/receipts counted-not-migrated, training-event rows
+ * DROPPED — never migrated, but always deleted so the table always ends up
+ * fully empty, satisfying the same-PR schema-drop precondition).
  *
  * `budgetLineItems` is undeclared in THIS branch's schema (deleted alongside
  * `schema/budget.ts` in the same PR) — seeded here via `(ctx.db as any)`,
@@ -142,6 +144,7 @@ describe("0026_migrate_budget_v1_lines", () => {
       receiptsSkipped: 0,
       zeroPlannedSkipped: 0,
       trainingEventsSkipped: 0,
+      trainingRowsDropped: 0,
       budgetLineItemsDeleted: 1,
     });
 
@@ -275,20 +278,27 @@ describe("0026_migrate_budget_v1_lines", () => {
     expect(lines[1].sortOrder).toBe(1);
   });
 
-  test("a training event's v1 lines are left ALONE (never gets a v2 budget — #172), counted not silently dropped", async () => {
+  test("a training event's v1 lines are DROPPED (never migrated — never gets a v2 budget, #172 — but always deleted), counted not silently dropped", async () => {
     const t = newT();
     const s = await setupChapter(t);
     const eventId = await seedEvent(s, { name: "Training Sandbox", isTraining: true });
-    await seedV1Line(s, eventId);
+    await seedV1Line(s, eventId, { label: "First", order: 0 });
+    await seedV1Line(s, eventId, { label: "Second", order: 1 });
 
     const result = await run(t, (ctx) => runMigrateBudgetV1Lines(ctx));
     expect(result.trainingEventsSkipped).toBe(1);
+    expect(result.trainingRowsDropped).toBe(2);
     expect(result.events).toBe(0);
-    expect(result.budgetLineItemsDeleted).toBe(0); // left in place for a human to look at
+    expect(result.linesMigrated).toBe(0);
+    // Opus review (PR #214): training rows are now ALWAYS deleted too, so the
+    // table always ends up fully drained — the same-PR schema drop's
+    // "table must be empty" precondition holds on every deployment, not just
+    // ones with zero training-event v1 rows.
+    expect(result.budgetLineItemsDeleted).toBe(2);
 
     const { budget } = await budgetLinesForEvent(s, eventId);
-    expect(budget).toBeNull(); // #172 invariant never violated
-    expect(await countV1Lines(t)).toBe(1);
+    expect(budget).toBeNull(); // #172 invariant never violated — no budget summoned
+    expect(await countV1Lines(t)).toBe(0); // drained, not left in place
   });
 
   test("an orphaned line (event since deleted) is drained with no budget summoned", async () => {
@@ -339,6 +349,7 @@ describe("0026_migrate_budget_v1_lines", () => {
       receiptsSkipped: 0,
       zeroPlannedSkipped: 0,
       trainingEventsSkipped: 0,
+      trainingRowsDropped: 0,
       budgetLineItemsDeleted: 0,
     });
 
@@ -356,7 +367,23 @@ describe("0026_migrate_budget_v1_lines", () => {
       receiptsSkipped: 0,
       zeroPlannedSkipped: 0,
       trainingEventsSkipped: 0,
+      trainingRowsDropped: 0,
       budgetLineItemsDeleted: 0,
     });
+  });
+
+  test("idempotent: a second run after a training event's rows were already dropped finds nothing left (table stays empty)", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const eventId = await seedEvent(s, { name: "Training Sandbox", isTraining: true });
+    await seedV1Line(s, eventId);
+
+    await run(t, (ctx) => runMigrateBudgetV1Lines(ctx));
+    expect(await countV1Lines(t)).toBe(0);
+
+    const second = await run(t, (ctx) => runMigrateBudgetV1Lines(ctx));
+    expect(second.trainingEventsSkipped).toBe(0); // no rows left to find
+    expect(second.trainingRowsDropped).toBe(0);
+    expect(second.budgetLineItemsDeleted).toBe(0);
   });
 });
