@@ -310,6 +310,7 @@ function CentralSection({
       data={data}
       year={ym.year}
       month={ym.month}
+      period={period}
       onViewChapter={onViewChapter}
       onNewBudget={onNewBudget}
       onRecordTransfer={() => onRecordTransfer(realChapters)}
@@ -353,6 +354,9 @@ function ChapterSection({
         data={data}
         affordability={affordability}
         year={ym.year}
+        month={ym.month}
+        period={period}
+        chapterId={chapterId}
         onNewBudget={onNewBudget}
         onEditBudget={onEditBudget}
         onAddTransaction={onAddTransaction}

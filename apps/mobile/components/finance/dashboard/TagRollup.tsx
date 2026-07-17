@@ -3,19 +3,30 @@
  * central dashboards (the "spent on Fundraisers" flow). Each tag row shows its
  * rolled-up spent-of-allocated (from `dashboardChapter`/`dashboardCentral`'s
  * `tagRollups`) and is tappable → a detail sheet that names the total spend on
- * that tag and lists the budgets carrying it (one-time vs recurring), derived by
- * filtering `listBudgets` client-side.
+ * that tag and lists the budgets carrying it, sourced from
+ * `api.finances.tagDrilldown` — a dedicated, period-scoped, authz-aware query
+ * (see its doc comment in `finances.ts` for the full "why").
  *
- * The chapter dashboard's rollup rows carry a real `tagId`, so the detail sheet
- * matches budgets on tag id (`matchMode="id"`). The central rollup aggregates
- * same-named tags across chapters and leaves `tagId` null, so it matches by name
- * (`matchMode="name"`) over the caller-visible (chapter + central) budgets.
+ * Replaces the old `listBudgets` (client-filtered, un-period-scoped) +
+ * `budgetVsActual` (whole-year, caller's-own-chapter-only) backfill — that path
+ * disagreed with the rollup header it sat under (numbers didn't reconcile) and,
+ * for a central drill-down, went entirely blank ("—" on every row) for any
+ * caller without a personal chapter-level finance grant. `tagDrilldown` fixes
+ * both: its rows always sum exactly to the rollup row's own `spentCents`/
+ * `budgetCents`, and its `scope: "central"` branch uses the caller's
+ * already-verified central reach to read every chapter's contributing budgets
+ * directly.
+ *
+ * The chapter dashboard's rollup rows carry a real `tagId` (`scope="chapter"`,
+ * matched by id). The central rollup aggregates same-named + same-kind tags
+ * across chapters and leaves `tagId` null (`scope="central"`, matched by
+ * `tagName` + `kind`, mirroring `dashboardCentral`'s own `tagAgg` key).
  */
-import { useMemo } from "react";
 import { Modal, Pressable, ScrollView, Text, View } from "react-native";
 import { useQuery } from "convex/react";
 import type { FunctionReturnType } from "convex/server";
 import { api } from "@events-os/convex/_generated/api";
+import type { Id } from "@events-os/convex/_generated/dataModel";
 import { formatCents } from "@events-os/shared";
 import { Badge, EmptyState, Icon, SectionHeader } from "../../ui";
 import { colors } from "../../../lib/theme";
@@ -23,8 +34,6 @@ import { BudgetBar } from "./parts";
 
 type ChapterDash = FunctionReturnType<typeof api.finances.dashboardChapter>;
 export type TagRollup = ChapterDash["tagRollups"][number];
-/** Per-budget actuals keyed by budget id, sourced from the dashboard cards. */
-export type BudgetSpend = { spentCents: number; budgetCents: number };
 
 const TABULAR = { fontVariant: ["tabular-nums" as const] };
 
@@ -44,22 +53,31 @@ export function tagKindLabel(kind: string | null): string {
  * detail sheet that opens on tap.
  *
  * `selected`/`onSelect` are CONTROLLED by the parent dashboard (rather than
- * owned here) so it can gate its `budgetVsActual` backfill query (see
- * `ChapterView`/`CentralView`'s `spentByBudgetId` comment) on the sheet
- * actually being open — that query only feeds `spentByBudgetId`, which only
- * matters once a tag is tapped, so there's no reason to keep it subscribed for
- * the whole time the dashboard is mounted.
+ * owned here) so the detail sheet's `tagDrilldown` query only ever runs while
+ * it's actually open — see `TagDetailModal`.
  */
 export function TagRollupSection({
   rollups,
-  spentByBudgetId,
-  matchMode = "id",
+  scope,
+  year,
+  month,
+  period,
+  chapterId,
   selected,
   onSelect,
 }: {
   rollups: TagRollup[];
-  spentByBudgetId: Map<string, BudgetSpend>;
-  matchMode?: "id" | "name";
+  /** Which `tagDrilldown` branch to call — the chapter dashboard's own tag
+   *  rollup (real `tagId`) or the central org-wide rollup (name + kind). */
+  scope: "chapter" | "central";
+  year: number;
+  /** The dashboard's currently-viewed (through-)month. */
+  month: number;
+  period: "month" | "ytd";
+  /** `scope: "chapter"` only — a central viewer peeking into a DIFFERENT
+   *  chapter's dashboard (mirrors `dashboardChapter`'s own `chapterId` arg).
+   *  Absent (or the caller's own chapter) is the normal same-chapter case. */
+  chapterId?: Id<"chapters">;
   selected: TagRollup | null;
   onSelect: (r: TagRollup | null) => void;
 }) {
@@ -86,8 +104,11 @@ export function TagRollupSection({
       {selected ? (
         <TagDetailModal
           rollup={selected}
-          matchMode={matchMode}
-          spentByBudgetId={spentByBudgetId}
+          scope={scope}
+          year={year}
+          month={month}
+          period={period}
+          chapterId={chapterId}
           onClose={() => onSelect(null)}
         />
       ) : null}
@@ -122,32 +143,35 @@ function TagRollupRow({ r, onPress }: { r: TagRollup; onPress: () => void }) {
 }
 
 // ── Tag detail sheet ─────────────────────────────────────────────────────────
-type BudgetRow = FunctionReturnType<typeof api.finances.listBudgets>[number];
+type DrilldownBudget = FunctionReturnType<typeof api.finances.tagDrilldown>["budgets"][number];
 
 function TagDetailModal({
   rollup,
-  matchMode,
-  spentByBudgetId,
+  scope,
+  year,
+  month,
+  period,
+  chapterId,
   onClose,
 }: {
   rollup: TagRollup;
-  matchMode: "id" | "name";
-  spentByBudgetId: Map<string, BudgetSpend>;
+  scope: "chapter" | "central";
+  year: number;
+  month: number;
+  period: "month" | "ytd";
+  chapterId?: Id<"chapters">;
   onClose: () => void;
 }) {
-  const budgets = useQuery(api.finances.listBudgets) ?? [];
+  const budgets =
+    useQuery(
+      api.finances.tagDrilldown,
+      scope === "chapter"
+        ? { year, month, period, scope, chapterId, tagId: rollup.tagId ?? undefined }
+        : { year, month, period, scope, tagName: rollup.tagName, tagKind: rollup.kind },
+    )?.budgets ?? [];
 
-  const { oneTime, recurring } = useMemo(() => {
-    const carrying = budgets.filter((b) =>
-      b.tags.some((t) =>
-        matchMode === "id" ? t.id === rollup.tagId : t.name === rollup.tagName,
-      ),
-    );
-    return {
-      oneTime: carrying.filter((b) => b.type === "one_time"),
-      recurring: carrying.filter((b) => b.type !== "one_time"),
-    };
-  }, [budgets, rollup.tagId, rollup.tagName, matchMode]);
+  const oneTime = budgets.filter((b) => b.type === "one_time");
+  const recurring = budgets.filter((b) => b.type !== "one_time");
 
   return (
     <Modal visible transparent animationType="fade" onRequestClose={onClose}>
@@ -184,16 +208,8 @@ function TagDetailModal({
             <BudgetBar pct={rollup.pct} status={rollup.status} />
             <Text className="mb-2 mt-1.5 text-xs text-muted">{rollup.pct}% spent</Text>
 
-            <BudgetGroup
-              title="One-time"
-              budgets={oneTime}
-              spentByBudgetId={spentByBudgetId}
-            />
-            <BudgetGroup
-              title="Recurring"
-              budgets={recurring}
-              spentByBudgetId={spentByBudgetId}
-            />
+            <BudgetGroup title="One-time" budgets={oneTime} />
+            <BudgetGroup title="Recurring" budgets={recurring} />
 
             {oneTime.length === 0 && recurring.length === 0 ? (
               <Text className="py-4 text-sm text-muted">
@@ -207,15 +223,7 @@ function TagDetailModal({
   );
 }
 
-function BudgetGroup({
-  title,
-  budgets,
-  spentByBudgetId,
-}: {
-  title: string;
-  budgets: BudgetRow[];
-  spentByBudgetId: Map<string, BudgetSpend>;
-}) {
+function BudgetGroup({ title, budgets }: { title: string; budgets: DrilldownBudget[] }) {
   if (budgets.length === 0) return null;
   return (
     <View className="mt-3">
@@ -223,44 +231,32 @@ function BudgetGroup({
         {title}
       </Text>
       {budgets.map((b) => (
-        <BudgetLine key={b.id} b={b} spend={spentByBudgetId.get(b.id)} />
+        <BudgetLine key={b.id} b={b} />
       ))}
     </View>
   );
 }
 
-function BudgetLine({ b, spend }: { b: BudgetRow; spend: BudgetSpend | undefined }) {
-  const name =
-    b.label?.trim() ||
-    (b.type === "one_time" ? "One-time budget" : "Recurring budget");
-  // B1 (review): the CAP is `spend.budgetCents` — the EFFECTIVE cap fed by the
-  // dashboard cards ∪ the `budgetVsActual` backfill (`ChapterView`/
-  // `CentralView`'s `spentByBudgetId`) — never `b.amountCents` (the raw
-  // `listBudgets` allocation), which would silently advertise an unapproved
-  // increase in this sheet even though the cards above already resist it.
-  // Falls back to the raw amount only if a budget is somehow missing from
-  // `spend` entirely (shouldn't happen — every budget here is either a
-  // dashboard card or backfilled).
-  const allocatedCents = spend?.budgetCents ?? b.amountCents;
-  const spentCents = spend?.spentCents;
-  const pct =
-    spentCents != null && allocatedCents > 0
-      ? Math.round((spentCents / allocatedCents) * 100)
-      : 0;
+function BudgetLine({ b }: { b: DrilldownBudget }) {
+  const name = b.label.trim() || (b.type === "one_time" ? "One-time budget" : "Recurring budget");
+  const pct = b.budgetCents > 0 ? Math.round((b.spentCents / b.budgetCents) * 100) : 0;
   return (
     <View className="gap-1 border-t border-border py-2.5">
       <View className="flex-row items-center justify-between gap-3">
         <Text className="flex-1 text-sm text-ink" numberOfLines={1}>
           {name}
+          {/* A central drill-down spans chapters — disambiguate which one. */}
+          {b.chapterName ? (
+            <Text className="text-xs text-muted"> · {b.chapterName}</Text>
+          ) : b.level === "central" ? (
+            <Text className="text-xs text-muted"> · Central</Text>
+          ) : null}
         </Text>
         <Text className="text-sm text-muted" style={TABULAR}>
-          {spentCents != null ? formatCents(spentCents) : "—"} /{" "}
-          {formatCents(allocatedCents)}
+          {formatCents(b.spentCents)} / {formatCents(b.budgetCents)}
         </Text>
       </View>
-      {spentCents != null ? (
-        <BudgetBar pct={pct} status={pct >= 80 ? "warn" : "ok"} />
-      ) : null}
+      <BudgetBar pct={pct} status={pct >= 80 ? "warn" : "ok"} />
     </View>
   );
 }
