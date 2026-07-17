@@ -21,6 +21,20 @@ export type Point = { x: number; y: number };
 export const MIN_SCALE = 0.4;
 export const MAX_SCALE = 2;
 
+/** Absolute floor for "Fit to screen" specifically — deliberately looser than
+ *  the interactive `MIN_SCALE`. Fit's whole job is to show the ENTIRE tree; a
+ *  wide Full-tree scope (every chapter grafted under one root — see
+ *  `OrgTree.tsx`'s own doc comment) can genuinely need a scale below 0.4 to
+ *  fit. Silently clamping Fit to the interactive floor would cut content off
+ *  on both edges with no visual indicator anything is missing, AND leave the
+ *  user unable to zoom out any further to see the rest (0.4 is also the
+ *  interactive floor). Kept just above 0 only to avoid a truly degenerate
+ *  (invisible / non-finite) transform — the next interactive zoom
+ *  (pinch/wheel/+/-) re-clamps to `[MIN_SCALE, MAX_SCALE]` as normal on its
+ *  own first update, so a sub-`MIN_SCALE` Fit result never "sticks" once the
+ *  user actually starts zooming themselves. */
+export const FIT_MIN_SCALE = 0.02;
+
 /** Default identity transform — origin, 100%. */
 export const IDENTITY_TRANSFORM: Transform = { x: 0, y: 0, scale: 1 };
 
@@ -87,9 +101,12 @@ function clampAxis(pos: number, containerSize: number, scaledContentSize: number
 /**
  * The transform that fits `content` inside `container` with `padding` px of
  * breathing room on every side, centered — what the "Fit" control (and the
- * canvas's own auto-fit on load / scope change) computes. Scale is clamped to
- * the same [MIN_SCALE, MAX_SCALE] range as interactive zoom, and never
- * exceeds 1 (fitting a small chart shouldn't blow it up past 100%).
+ * canvas's own auto-fit on load / scope change) computes. Scale never exceeds
+ * 1 (fitting a small chart shouldn't blow it up past 100%), but — UNLIKE
+ * interactive zoom — is only floored at `FIT_MIN_SCALE`, not the tighter
+ * interactive `MIN_SCALE`. See `FIT_MIN_SCALE`'s doc comment for why: Fit
+ * must actually fit, even below what a user could reach by pinching/
+ * scrolling themselves.
  */
 export function computeFitTransform(container: Size, content: Size, padding = 48): Transform {
   if (content.width <= 0 || content.height <= 0 || container.width <= 0 || container.height <= 0) {
@@ -97,7 +114,7 @@ export function computeFitTransform(container: Size, content: Size, padding = 48
   }
   const availW = Math.max(1, container.width - padding * 2);
   const availH = Math.max(1, container.height - padding * 2);
-  const scale = clampScale(Math.min(availW / content.width, availH / content.height, 1));
+  const scale = Math.max(FIT_MIN_SCALE, Math.min(availW / content.width, availH / content.height, 1));
   return {
     scale,
     x: (container.width - content.width * scale) / 2,

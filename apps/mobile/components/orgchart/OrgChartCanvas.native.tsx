@@ -10,9 +10,40 @@
  *     (same idiom as `dragToReschedule.tsx`'s `.activateAfterLongPress`) is
  *     what lets a plain tap on a seat box resolve as a normal `Pressable`
  *     press instead of being claimed by this gesture.
- *   - A background `Pressable`, layered BEHIND the pannable content, catches
- *     a tap that lands on truly empty canvas (nothing else claimed it) and
- *     fires `onBackgroundPress`.
+ *   - A background `Pressable`, layered BEHIND the pannable content but
+ *     INSIDE the `GestureDetector`'s own view tree, catches a tap that lands
+ *     on truly empty canvas (nothing else claimed it) and fires
+ *     `onBackgroundPress`.
+ *
+ * HIT-TESTING NOTE (this used to be a bug — see PR #206 review): the
+ * background press-catcher and the Pan/Pinch recognizers must live in the
+ * SAME view subtree. Native gesture recognizers (UIGestureRecognizer on iOS,
+ * the analogous Android mechanism RNGH attaches) only ever receive a touch
+ * whose hit-tested view is the recognizer's own view OR a DESCENDANT of it —
+ * never an unrelated sibling. `GestureDetector` here wraps a view that spans
+ * the FULL canvas at all times (not just the transformed content's own
+ * footprint), with the background `Pressable` and the transformed content
+ * BOTH nested inside it. That's deliberate on two counts:
+ *   1. A drag starting in genuine empty space — the flex `gap` between
+ *      sibling seat boxes, or anywhere outside the tree's bounding box once
+ *      zoomed out — is still a touch on a DESCENDANT of the gesture-detected
+ *      view, so Pan/Pinch see it and can activate.
+ *   2. The background `Pressable`'s own tap-to-close is a descendant too
+ *      (not a sibling the recognizers can never see), so it keeps working
+ *      via the same "quick tap resolves before `minDistance(10)` claims it"
+ *      idiom already used for seat-box taps.
+ * (The earlier layout attached `GestureDetector` only to the transformed
+ * content `Animated.View` — sized to the tree's own natural bbox — with the
+ * background `Pressable` as a SEPARATE SIBLING behind it. A touch in an empty
+ * gap or outside the tree's bbox hit-tested into that sibling subtree, which
+ * the recognizers structurally could never observe: drag-to-pan starting in
+ * empty canvas space was dead.)
+ *
+ * NEEDS DEVICE VERIFICATION — RNGH gestures can't be driven by simulator
+ * automation (no `idb`/Playwright equivalent for pinch/pan recognizers).
+ * Confirm on a real device: drag-to-pan starting (a) in the gap between two
+ * sibling seat boxes, and (b) well outside the tree's bounding box when
+ * zoomed out — both should now pan instead of only firing a background tap.
  *
  * NOTE on `canvasMath.ts`: the pinch/pan `.onUpdate` callbacks below run on
  * the UI thread as Reanimated worklets, which can only call functions that
@@ -41,7 +72,12 @@ import {
 
 const ZOOM_BUTTON_FACTOR = 1.25;
 
-export function OrgChartCanvas({ children, onBackgroundPress, fitToken }: OrgChartCanvasProps) {
+export function OrgChartCanvas({
+  children,
+  onBackgroundPress,
+  fitToken,
+  controlsRightInset,
+}: OrgChartCanvasProps) {
   const translateX = useSharedValue(0);
   const translateY = useSharedValue(0);
   const scale = useSharedValue(1);
@@ -162,32 +198,40 @@ export function OrgChartCanvas({ children, onBackgroundPress, fitToken }: OrgCha
 
   return (
     <View style={{ flex: 1 }} onLayout={onContainerLayout}>
-      {/* Background layer, BEHIND the pannable content — catches a tap that
-          lands on truly empty canvas. The content wrapper below is
-          `pointerEvents="box-none"` so a tap in a gap between seat boxes
-          (nothing there to claim it) falls through to this. */}
-      <Pressable
-        accessibilityLabel="Canvas background"
-        onPress={onBackgroundPress}
-        style={{ position: "absolute", top: 0, left: 0, right: 0, bottom: 0 }}
-      />
       <GestureDetector gesture={composed}>
-        <Animated.View
-          onLayout={onContentLayout}
-          pointerEvents="box-none"
-          style={[
-            { position: "absolute", top: 0, left: 0, transformOrigin: [0, 0] },
-            contentStyle,
-          ]}
-        >
-          {children}
-        </Animated.View>
+        {/* Full-canvas surface the Pan/Pinch recognizers attach to — spans the
+            whole container regardless of the transformed content's own
+            (smaller, zoom/pan-dependent) footprint. See the file header's
+            HIT-TESTING NOTE for why both children below must be nested HERE
+            rather than the background Pressable living as a sibling. */}
+        <View style={{ position: "absolute", top: 0, left: 0, right: 0, bottom: 0 }}>
+          {/* Background layer, BEHIND the pannable content — catches a tap
+              that lands on truly empty canvas. The content wrapper below is
+              `pointerEvents="box-none"` so a tap in a gap between seat boxes
+              (nothing there to claim it) falls through to this. */}
+          <Pressable
+            accessibilityLabel="Canvas background"
+            onPress={onBackgroundPress}
+            style={{ position: "absolute", top: 0, left: 0, right: 0, bottom: 0 }}
+          />
+          <Animated.View
+            onLayout={onContentLayout}
+            pointerEvents="box-none"
+            style={[
+              { position: "absolute", top: 0, left: 0, transformOrigin: [0, 0] },
+              contentStyle,
+            ]}
+          >
+            {children}
+          </Animated.View>
+        </View>
       </GestureDetector>
       <CanvasControls
         scale={scaleLabel}
         onZoomIn={() => zoomAtCenter(ZOOM_BUTTON_FACTOR)}
         onZoomOut={() => zoomAtCenter(1 / ZOOM_BUTTON_FACTOR)}
         onFit={fit}
+        rightInset={controlsRightInset}
       />
     </View>
   );

@@ -44,7 +44,12 @@ const DRAG_CLICK_THRESHOLD = 4;
  *  (→ role="button" on web) or is a native form control. */
 const INTERACTIVE_SELECTOR = '[role="button"], input, textarea, select, [contenteditable="true"]';
 
-export function OrgChartCanvas({ children, onBackgroundPress, fitToken }: OrgChartCanvasProps) {
+export function OrgChartCanvas({
+  children,
+  onBackgroundPress,
+  fitToken,
+  controlsRightInset,
+}: OrgChartCanvasProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const contentRef = useRef<HTMLDivElement | null>(null);
   const contentSizeRef = useRef<Size>({ width: 0, height: 0 });
@@ -216,6 +221,7 @@ export function OrgChartCanvas({ children, onBackgroundPress, fitToken }: OrgCha
         onZoomIn={() => zoomAtCenter(ZOOM_BUTTON_FACTOR)}
         onZoomOut={() => zoomAtCenter(1 / ZOOM_BUTTON_FACTOR)}
         onFit={fit}
+        rightInset={controlsRightInset}
       />
     </div>
   );

@@ -31,6 +31,12 @@ export type OrgChartCanvasProps = {
    *  first loads) re-runs the "Fit to screen" auto-layout, since a different
    *  scope means a differently-shaped, differently-sized tree. */
   fitToken: string | number;
+  /** Extra right-edge inset (px) for the corner `CanvasControls` cluster —
+   *  the caller passes the open `SeatOverlayPanel`'s width here while it's
+   *  open (0 otherwise) so the zoom/Fit controls shift clear of the panel's
+   *  strip instead of being covered by (and unclickable under) it. See
+   *  `org-chart.tsx`. */
+  controlsRightInset?: number;
 };
 
 export { OrgChartCanvas as default, OrgChartCanvas } from "./OrgChartCanvas.native";

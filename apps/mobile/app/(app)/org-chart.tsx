@@ -15,6 +15,18 @@
  * `StructureEditor`) are UNCHANGED from the shipped tab — only the container
  * they sit in was rebuilt.
  *
+ * PANEL-VS-CHROME OVERLAP (PR #206 review point 1): `SeatOverlayPanel` is a
+ * full-height strip pinned to the right edge, and both the toolbar's
+ * right-aligned controls ("Edit structure", the proposals indicator) and the
+ * canvas's corner `CanvasControls` (zoom/Fit) would otherwise land underneath
+ * it whenever a seat is selected — plain DOM/RN stacking order (not z-index
+ * alone) put the panel, rendered last, on top of and covering both. Rather
+ * than fight that with z-index, both are geometrically kept OUT of the
+ * panel's strip while it's open: the toolbar wrapper's `right` is inset by
+ * `panelWidth` (see below) so the whole card sits to the panel's left with no
+ * overlap, and `OrgChartCanvas`'s `controlsRightInset` prop shifts
+ * `CanvasControls` the same amount so it clears the panel too.
+ *
  * Org-transparent: any signed-in member may view it (mirrors the backend's
  * own "the whole team may see the whole org" stance — see `seats.ts`'s file
  * doc), so the nav entry is ungated, same as Academy.
@@ -202,7 +214,11 @@ export default function OrgChartScreen() {
     <View className="flex-1 bg-surface">
       <View style={{ position: "absolute", top: 0, left: 0, right: 0, bottom: 0 }}>
         {root ? (
-          <OrgChartCanvas onBackgroundPress={closePanel} fitToken={fitToken}>
+          <OrgChartCanvas
+            onBackgroundPress={closePanel}
+            fitToken={fitToken}
+            controlsRightInset={panelOpen ? panelWidth : 0}
+          >
             <OrgTree
               root={root}
               orphans={orphans}
@@ -220,10 +236,16 @@ export default function OrgChartScreen() {
 
       {/* Floating chrome — toolbar + (in edit mode) the structure-edit
           banner — docked over the top of the canvas. `box-none` lets clicks
-          on the empty space around them reach the canvas underneath. */}
+          on the empty space around them reach the canvas underneath.
+          While the seat panel is open, its right edge is inset by
+          `panelWidth` so the WHOLE toolbar card (title, scope pills, and
+          crucially the "Edit structure"/proposals buttons on its right edge)
+          sits entirely to the left of the panel's strip — no overlap at all,
+          rather than relying on z-index to win a fight over the same pixels.
+          See PR #206 review point 1. */}
       <View
         pointerEvents="box-none"
-        style={{ position: "absolute", top: 0, left: 0, right: 0 }}
+        style={{ position: "absolute", top: 0, left: 0, right: panelOpen ? panelWidth : 0 }}
       >
         <OrgChartToolbar
           chart={chart}

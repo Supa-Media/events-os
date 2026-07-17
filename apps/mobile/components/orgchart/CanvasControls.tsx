@@ -14,17 +14,24 @@ export function CanvasControls({
   onZoomIn,
   onZoomOut,
   onFit,
+  rightInset = 0,
 }: {
   /** Current scale, shown as a percentage (e.g. "100%"). */
   scale: number;
   onZoomIn: () => void;
   onZoomOut: () => void;
   onFit: () => void;
+  /** Extra right-edge offset (px), added on top of the base 16px inset —
+   *  pushes this cluster clear of the `SeatOverlayPanel` while it's open, so
+   *  it isn't geometrically covered by (and thus unclickable under) the
+   *  panel's own strip. See `org-chart.tsx`'s `controlsRightInset`. */
+  rightInset?: number;
 }) {
   return (
     <View
       pointerEvents="box-none"
-      className="absolute bottom-4 right-4 z-40 flex-row items-center gap-1 rounded-md border border-border bg-raised px-1 py-1 shadow-card"
+      className="absolute bottom-4 z-40 flex-row items-center gap-1 rounded-md border border-border bg-raised px-1 py-1 shadow-card"
+      style={{ right: 16 + rightInset }}
     >
       <ControlButton icon="zoom-out" label="Zoom out" onPress={onZoomOut} />
       <Text className="min-w-[38px] text-center text-xs font-semibold text-muted">

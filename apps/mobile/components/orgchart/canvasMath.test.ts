@@ -1,5 +1,6 @@
 import { describe, expect, test } from "@jest/globals";
 import {
+  FIT_MIN_SCALE,
   IDENTITY_TRANSFORM,
   MAX_SCALE,
   MIN_SCALE,
@@ -141,11 +142,23 @@ describe("computeFitTransform", () => {
     expect(fit.scale).toBeLessThanOrEqual(1);
   });
 
-  test("clamps scale to MIN_SCALE for enormous content instead of vanishing", () => {
+  test("clamps scale to FIT_MIN_SCALE (not the tighter interactive MIN_SCALE) for enormous content instead of vanishing", () => {
     const container = { width: 1000, height: 800 };
     const content = { width: 100000, height: 100000 };
     const fit = computeFitTransform(container, content, 40);
-    expect(fit.scale).toBe(MIN_SCALE);
+    expect(fit.scale).toBe(FIT_MIN_SCALE);
+  });
+
+  test("Fit is allowed to go BELOW the interactive MIN_SCALE floor for a wide Full-tree — it isn't clamped up to 0.4", () => {
+    const container = { width: 1000, height: 800 };
+    // Width-bound: (1000 - 2*40) / 9200 = 0.1 — below the interactive
+    // MIN_SCALE (0.4) but above FIT_MIN_SCALE, so it must come through
+    // unclamped. A regression back to reusing MIN_SCALE as Fit's floor would
+    // wrongly clamp this up to 0.4, silently cutting the tree off.
+    const content = { width: 9200, height: 400 };
+    const fit = computeFitTransform(container, content, 40);
+    expect(fit.scale).toBeCloseTo(0.1, 6);
+    expect(fit.scale).toBeLessThan(MIN_SCALE);
   });
 
   test("falls back to identity for degenerate (zero-size) inputs", () => {
