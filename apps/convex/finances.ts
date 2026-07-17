@@ -816,13 +816,16 @@ function budgetEffectivePeriod(
  * `type` yet derives one from its legacy `scope` (event/project → one_time,
  * everything else → recurring), so dashboards keep working before the backfill.
  */
-function effectiveType(b: Doc<"budgets">): BudgetType {
+export function effectiveType(b: Doc<"budgets">): BudgetType {
   if (b.type) return b.type;
   return b.scope === "event" || b.scope === "project" ? "one_time" : "recurring";
 }
 
-/** A one_time budget's ref kind, deriving from legacy `scope` when unset. */
-function effectiveRefKind(b: Doc<"budgets">): BudgetRefKind | null {
+/** A one_time budget's ref kind, deriving from legacy `scope` when unset.
+ *  Exported for the `0027_sync_linked_budget_identity` migration, which
+ *  needs to find every effectively-linked budget, tolerant of un-migrated
+ *  legacy rows the same way every other v2 reader is. */
+export function effectiveRefKind(b: Doc<"budgets">): BudgetRefKind | null {
   if (b.refKind) return b.refKind;
   if (b.scope === "event") return "event";
   if (b.scope === "project") return "project";
