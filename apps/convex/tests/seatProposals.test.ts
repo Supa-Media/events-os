@@ -1,4 +1,4 @@
-import { describe, expect, test } from "vitest";
+import { describe, expect, test, vi } from "vitest";
 import { ConvexError } from "convex/values";
 import { api } from "../_generated/api";
 import type { Id } from "../_generated/dataModel";
@@ -1203,6 +1203,7 @@ describe("seatProposals.propose — chain-top auto-execute", () => {
     expect(decided.status).toBe("approved");
     expect(decided.decidedByPersonId).toBe(edPersonId);
     expect(decided.decidedAt).toBe(decided.createdAt);
+    expect(decided.autoExecuted).toBe(true);
     expect(decided.note).toContain("Filling this while we're pre-Board.");
     expect(decided.note).toContain("Auto-executed");
     expect(decided.note?.toLowerCase()).toContain("chain top");
@@ -1237,6 +1238,7 @@ describe("seatProposals.propose — chain-top auto-execute", () => {
     expect(decided.status).toBe("approved");
     expect(decided.decidedByPersonId).toBe(edPersonId);
     expect(decided.decidedAt).toBe(decided.createdAt);
+    expect(decided.autoExecuted).toBe(true);
     expect(decided.note).toContain("Auto-executed");
   });
 
@@ -1302,6 +1304,7 @@ describe("seatProposals.propose — chain-top auto-execute", () => {
     expect(pending.status).toBe("pending");
     expect(pending.decidedByPersonId).toBeUndefined();
     expect(pending.decidedAt).toBeUndefined();
+    expect(pending.autoExecuted).toBeFalsy();
   });
 
   test("ordinary two-party flow is unchanged: a mid-chain proposer with an occupied ancestor still goes pending, not auto-executed", async () => {
@@ -1329,6 +1332,7 @@ describe("seatProposals.propose — chain-top auto-execute", () => {
     const mine = await leaderAs.query(api.seatProposals.myProposals, {});
     const decided = mine.find((p) => p.proposalId === proposalId)!;
     expect(decided.status).toBe("pending");
+    expect(decided.autoExecuted).toBeFalsy();
   });
 
   test("a validation failure during chain-top auto-execute (SoD conflict) throws and persists nothing — no assignment, no proposal row", async () => {
@@ -1415,6 +1419,165 @@ describe("seatProposals.propose — chain-top auto-execute", () => {
     );
     expect(decided?.status).toBe("approved");
     expect(decided?.decidedByPersonId).toBe(boardPersonId);
+  });
+});
+
+// ── propose — chain-top fails CLOSED on a broken/truncated ancestor chain ──
+//
+// `ancestorChain` must never let "the walk gave up" read as "reached the
+// top" — a dangling `parentSlug` or a missing `CHAPTER_ROLLUP_PARENT` bridge
+// target truncates the chain the SAME shape a genuine root does (nothing
+// left in the array), so `resolveEligibleDeciders` must trust ONLY the
+// explicit `reachedRoot` flag, never chain-array-emptiness, to decide
+// chain-top. See `AncestorWalkResult`'s doc comment in `seatProposals.ts`.
+
+describe("seatProposals.propose — chain-top fails closed on a broken ancestor chain", () => {
+  test("a dangling parentSlug mid-chain: stays pending, not auto-executed, and warns", async () => {
+    const s = await baseSetup();
+    // A malformed runtime seat whose OWN parentSlug points at a slug that was
+    // never seeded — simulates partial/anomalous seeding or an out-of-band
+    // DB write, not reachable through the (#190) structure editor's own
+    // validated mutations.
+    const danglingMid = await insertSeatDef(s, {
+      slug: "dangling_mid_test",
+      chart: "chapter",
+      parentSlug: "ghost_seat_never_seeded",
+      maxHolders: 1,
+    });
+    const danglingChild = await insertSeatDef(s, {
+      slug: "dangling_child_test",
+      chart: "chapter",
+      parentSlug: "dangling_mid_test",
+      maxHolders: 1,
+    });
+    const { as, personId } = await personActor(s, s.chapterId, "DanglingMid", "dangling-mid@publicworship.life");
+    await seat(s, danglingMid, s.chapterId, personId);
+    const subject = await makePerson(s, s.chapterId, "Subject");
+
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const proposalId = await as.mutation(api.seatProposals.propose, {
+        seatDefId: danglingChild,
+        scope: s.chapterId,
+        action: "fill",
+        subjectPersonId: subject,
+      });
+      expect(proposalId).toBeDefined();
+
+      // NOT auto-executed — the walk gave up on the dangling parentSlug, it
+      // never actually reached the true chart root.
+      const rows = await run(s.t, (ctx) =>
+        ctx.db
+          .query("seatAssignments")
+          .withIndex("by_scope_and_seat", (q) =>
+            q.eq("scope", s.chapterId).eq("seatDefId", danglingChild),
+          )
+          .collect(),
+      );
+      expect(rows).toHaveLength(0);
+
+      const mine = await as.query(api.seatProposals.myProposals, {});
+      const pending = mine.find((p) => p.proposalId === proposalId)!;
+      expect(pending.status).toBe("pending");
+      expect(pending.autoExecuted).toBeFalsy();
+      expect(pending.decidedByPersonId).toBeUndefined();
+
+      expect(warnSpy).toHaveBeenCalled();
+      const warned = warnSpy.mock.calls.some((call) =>
+        String(call[0]).includes("ghost_seat_never_seeded"),
+      );
+      expect(warned).toBe(true);
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
+  test("a missing CHAPTER_ROLLUP_PARENT bridge target: stays pending, not auto-executed, and warns", async () => {
+    const s = await baseSetup();
+    // Delete the seeded `expansion_director` row — the rollup bridge target
+    // every chapter root (`chapter_director`) needs to climb into central.
+    await run(s.t, async (ctx) => {
+      const bridgeDef = await ctx.db
+        .query("seatDefs")
+        .withIndex("by_slug", (q) => q.eq("slug", "expansion_director"))
+        .unique();
+      if (bridgeDef) await ctx.db.delete(bridgeDef._id);
+    });
+
+    const cdDef = await defBySlug(s, "chapter_director");
+    const musicLeadDef = await defBySlug(s, "music_lead");
+    const { as, personId } = await personActor(s, s.chapterId, "BridgeGone", "bridge-gone@publicworship.life");
+    await seat(s, cdDef._id, s.chapterId, personId);
+    const subject = await makePerson(s, s.chapterId, "Subject");
+
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const proposalId = await as.mutation(api.seatProposals.propose, {
+        seatDefId: musicLeadDef._id,
+        scope: s.chapterId,
+        action: "fill",
+        subjectPersonId: subject,
+      });
+      expect(proposalId).toBeDefined();
+
+      const rows = await run(s.t, (ctx) =>
+        ctx.db
+          .query("seatAssignments")
+          .withIndex("by_scope_and_seat", (q) =>
+            q.eq("scope", s.chapterId).eq("seatDefId", musicLeadDef._id),
+          )
+          .collect(),
+      );
+      expect(rows).toHaveLength(0);
+
+      const mine = await as.query(api.seatProposals.myProposals, {});
+      const pending = mine.find((p) => p.proposalId === proposalId)!;
+      expect(pending.status).toBe("pending");
+      expect(pending.autoExecuted).toBeFalsy();
+      expect(pending.decidedByPersonId).toBeUndefined();
+
+      expect(warnSpy).toHaveBeenCalled();
+      const warned = warnSpy.mock.calls.some((call) =>
+        String(call[0]).includes("expansion_director"),
+      );
+      expect(warned).toBe(true);
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+});
+
+// ── autoExecuted is the AUTHORITATIVE marker, never inferred from `note` ───
+
+describe("seatProposals.propose — autoExecuted is structured, not inferred from note text", () => {
+  test("an ordinary (non-chain-top) proposal whose caller-note contains the auto-execute marker text still has autoExecuted unset", async () => {
+    const s = await baseSetup();
+    const cdDef = await defBySlug(s, "chapter_director");
+    const musicLeadDef = await defBySlug(s, "music_lead");
+    const { as, personId } = await personActor(s, s.chapterId, "NoteInjector", "note-injector@publicworship.life");
+    await seat(s, cdDef._id, s.chapterId, personId);
+    const subject = await makePerson(s, s.chapterId, "Subject");
+
+    // A caller pastes the human-readable auto-execute marker text into their
+    // OWN note on an ordinary two-party proposal — this must not be
+    // mistaken for a genuine chain-top auto-execution by any consumer.
+    const impersonatingNote =
+      "Auto-executed: no seat exists above the proposer's in the org chart to approve this change (chain top).";
+
+    const proposalId = await as.mutation(api.seatProposals.propose, {
+      seatDefId: musicLeadDef._id,
+      scope: s.chapterId,
+      action: "fill",
+      subjectPersonId: subject,
+      note: impersonatingNote,
+    });
+
+    const mine = await as.query(api.seatProposals.myProposals, {});
+    const pending = mine.find((p) => p.proposalId === proposalId)!;
+    expect(pending.status).toBe("pending");
+    expect(pending.note).toBe(impersonatingNote);
+    expect(pending.autoExecuted).toBeFalsy();
+    expect(pending.decidedByPersonId).toBeUndefined();
   });
 });
 
