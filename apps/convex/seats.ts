@@ -2,8 +2,15 @@
  * Org chart (seats) — read queries.
  *
  * The chart is deliberately ORG-TRANSPARENT: any signed-in member may read
- * it (mirrors `org.overview`'s "the whole team may see the whole org"
- * stance), same as the finance-role ladder gates WRITES, not reads, here.
+ * it, including the FULL cross-chapter tree (every chapter's seat occupancy
+ * at once) — this is an explicit OWNER PRODUCT DECISION (2026-07-16): the Org
+ * Chart is a tab visible to everybody, org-transparent by design, unlike the
+ * finance surfaces (which DO scope reads to the caller's own
+ * chapter/central reach). All three reads below (`chart`, `seatDetail`,
+ * `mySeatAssignments`) are gated only by `requireAccess` — no chapter- or
+ * central-scoping check beyond that. (A follow-up nuance — guest-allowlisted
+ * accounts sitting at the same trust tier as domain members for this read —
+ * has been raised with the owner separately; no code change pending that.)
  * This PR is schema + seed + reads only — no assignment mutations (a later
  * PR) and no capability enforcement changes.
  *
@@ -122,28 +129,56 @@ async function detailedHoldersForScope(
   return out;
 }
 
+/** The SHARED chapter-chart `seatDefs`, sorted by `sortOrder`. Callers that
+ *  need this for more than one chapter (a full-tree read, or deriving the
+ *  chapter-chart root) should fetch it ONCE and reuse the result — the whole
+ *  point of hoisting this out is that the 9 rows are IDENTICAL across every
+ *  chapter, so re-querying per chapter is pure waste. */
+async function fetchChapterChartDefs(ctx: QueryCtx): Promise<Doc<"seatDefs">[]> {
+  return (
+    await ctx.db
+      .query("seatDefs")
+      .withIndex("by_chart", (q) => q.eq("chart", "chapter"))
+      .take(MAX_CHART_SEATS)
+  ).sort((a, b) => a.sortOrder - b.sortOrder);
+}
+
 /** The chapter chart's ROOT seat def (`parentSlug === SEAT_ROOT`) — the seat
  *  whose per-chapter holder (the chapter director) rolls up into the central
  *  `chapter_directors` derived seat. `null` only if the chapter chart hasn't
  *  been seeded yet. */
-async function getChapterRootDef(
+function findChapterRootDef(
+  chapterChartDefs: Doc<"seatDefs">[],
+): Doc<"seatDefs"> | null {
+  return chapterChartDefs.find((d) => d.parentSlug === SEAT_ROOT) ?? null;
+}
+
+/** Every chapter, bounded the same way `org.listChaptersForPeek` bounds its
+ *  scan. `context` names the caller for the truncation warning, mirroring
+ *  the `[finances]`-prefixed `ROLLUP_SCAN_LIMIT` logging convention used
+ *  throughout `finances.ts`/`transfers.ts`/`financeRoles.ts`. */
+async function boundedChapters(
   ctx: QueryCtx,
-): Promise<Doc<"seatDefs"> | null> {
-  const chapterDefs = await ctx.db
-    .query("seatDefs")
-    .withIndex("by_chart", (q) => q.eq("chart", "chapter"))
-    .take(MAX_CHART_SEATS);
-  return chapterDefs.find((d) => d.parentSlug === SEAT_ROOT) ?? null;
+  context: string,
+): Promise<Doc<"chapters">[]> {
+  const chapters = await ctx.db.query("chapters").take(ROLLUP_SCAN_LIMIT);
+  if (chapters.length === ROLLUP_SCAN_LIMIT) {
+    console.warn(
+      `[seats] ${context} hit ROLLUP_SCAN_LIMIT (${ROLLUP_SCAN_LIMIT}) chapters; results truncated until paginated chapter enumeration lands.`,
+    );
+  }
+  return chapters;
 }
 
 /** A derived seat's computed holders: every chapter's holder(s) of the
- *  chapter chart's root seat, each labeled with its chapter's name. Chapter
- *  enumeration is bounded the same way `org.listChaptersForPeek` bounds it. */
+ *  chapter chart's root seat, each labeled with its chapter's name. Takes
+ *  the chapter list as a parameter so callers that already have it (a
+ *  full-tree read) don't re-scan the `chapters` table. */
 async function detailedDerivedHolders(
   ctx: QueryCtx,
   chapterRootDefId: Id<"seatDefs">,
+  chapters: Doc<"chapters">[],
 ): Promise<DetailedHolder[]> {
-  const chapters = await ctx.db.query("chapters").take(ROLLUP_SCAN_LIMIT);
   const out: DetailedHolder[] = [];
   for (const chapter of chapters) {
     out.push(
@@ -181,8 +216,16 @@ function buildNode(
 
 /** Every central-chart seat, sorted by `sortOrder`, with holders resolved —
  *  the derived `chapter_directors` seat via rollup, every other seat via its
- *  own `"central"`-scoped assignments. */
-async function centralSeats(ctx: QueryCtx) {
+ *  own `"central"`-scoped assignments.
+ *
+ *  `opts` lets a caller that ALREADY has the chapter-chart defs and/or the
+ *  chapters list (a full-tree read) pass them in, so this never re-scans
+ *  either table on top of the caller's own reads. Standalone callers
+ *  (`scope: "central"`) omit `opts` and this fetches what it needs itself. */
+async function centralSeats(
+  ctx: QueryCtx,
+  opts?: { chapterChartDefs?: Doc<"seatDefs">[]; chapters?: Doc<"chapters">[] },
+) {
   const defs = (
     await ctx.db
       .query("seatDefs")
@@ -190,13 +233,18 @@ async function centralSeats(ctx: QueryCtx) {
       .take(MAX_CHART_SEATS)
   ).sort((a, b) => a.sortOrder - b.sortOrder);
 
-  const chapterRootDef = await getChapterRootDef(ctx);
+  const chapterChartDefs = opts?.chapterChartDefs ?? (await fetchChapterChartDefs(ctx));
+  const chapterRootDef = findChapterRootDef(chapterChartDefs);
+  const chapters = chapterRootDef
+    ? (opts?.chapters ?? (await boundedChapters(ctx, "central chart derived-seat rollup")))
+    : [];
+
   const nodes = [];
   for (const def of defs) {
     const holders =
       def.derived === true
         ? chapterRootDef
-          ? await detailedDerivedHolders(ctx, chapterRootDef._id)
+          ? await detailedDerivedHolders(ctx, chapterRootDef._id, chapters)
           : []
         : await detailedHoldersForScope(ctx, "central", def._id);
     nodes.push(buildNode(def, holders.map(toChartHolder)));
@@ -204,18 +252,16 @@ async function centralSeats(ctx: QueryCtx) {
   return nodes;
 }
 
-/** One chapter's chart: the SHARED chapter-chart seat defs, each resolved
+/** One chapter's chart: the SHARED chapter-chart seat defs (fetched ONCE by
+ *  the caller and passed in — never re-queried per chapter), each resolved
  *  against THIS chapter's own occupancy. */
-async function chapterSeats(ctx: QueryCtx, chapterId: Id<"chapters">) {
-  const defs = (
-    await ctx.db
-      .query("seatDefs")
-      .withIndex("by_chart", (q) => q.eq("chart", "chapter"))
-      .take(MAX_CHART_SEATS)
-  ).sort((a, b) => a.sortOrder - b.sortOrder);
-
+async function chapterSeats(
+  ctx: QueryCtx,
+  chapterId: Id<"chapters">,
+  chapterChartDefs: Doc<"seatDefs">[],
+) {
   const nodes = [];
-  for (const def of defs) {
+  for (const def of chapterChartDefs) {
     const holders = await detailedHoldersForScope(ctx, chapterId, def._id);
     nodes.push(buildNode(def, holders.map(toChartHolder)));
   }
@@ -265,23 +311,30 @@ export const chart = query({
           message: "That chapter doesn't exist.",
         });
       }
+      const chapterChartDefs = await fetchChapterChartDefs(ctx);
       return {
         kind: "chapter" as const,
         chapterId: chapter._id,
         chapterName: chapter.name,
-        seats: await chapterSeats(ctx, chapter._id),
+        seats: await chapterSeats(ctx, chapter._id, chapterChartDefs),
       };
     }
 
-    const central = await centralSeats(ctx);
-    const chapters = await ctx.db.query("chapters").take(ROLLUP_SCAN_LIMIT);
+    // Full tree: hoist the chapter-chart defs (shared, identical across every
+    // chapter) and the chapters list to a SINGLE fetch each, reused by every
+    // chapter's subtree below AND by `centralSeats`' derived-seat rollup —
+    // avoids the N+1 fan-out / duplicate table scan a naive per-chapter call
+    // to `chapterSeats`/`centralSeats` would otherwise do.
+    const chapterChartDefs = await fetchChapterChartDefs(ctx);
+    const chapters = await boundedChapters(ctx, "full-tree chart read");
+    const central = await centralSeats(ctx, { chapterChartDefs, chapters });
     const chapterNodes = await Promise.all(
       [...chapters]
         .sort((a, b) => a.name.localeCompare(b.name))
         .map(async (c) => ({
           chapterId: c._id,
           chapterName: c.name,
-          seats: await chapterSeats(ctx, c._id),
+          seats: await chapterSeats(ctx, c._id, chapterChartDefs),
         })),
     );
     return { kind: "full" as const, central, chapters: chapterNodes };
@@ -347,10 +400,15 @@ export const seatDetail = query({
 
     const holders = isDerived
       ? (async () => {
-          const chapterRootDef = await getChapterRootDef(ctx);
-          return chapterRootDef
-            ? await detailedDerivedHolders(ctx, chapterRootDef._id)
-            : [];
+          const chapterRootDef = findChapterRootDef(
+            await fetchChapterChartDefs(ctx),
+          );
+          if (!chapterRootDef) return [];
+          const chapters = await boundedChapters(
+            ctx,
+            "seat detail derived-seat rollup",
+          );
+          return await detailedDerivedHolders(ctx, chapterRootDef._id, chapters);
         })()
       : detailedHoldersForScope(ctx, scope, defId);
 
@@ -392,6 +450,11 @@ export const mySeatAssignments = query({
     }),
   ),
   handler: async (ctx) => {
+    // Aligns with `chart`/`seatDetail`: every read here is gated ONLY by
+    // `requireAccess` (org-transparent), never a bare `requireUserId` — a
+    // signed-in-but-unapproved caller (Convex auth has no framework-level
+    // domain restriction; see `lib/access.ts`) must not slip through.
+    await requireAccess(ctx);
     const userId = (await requireUserId(ctx)) as Id<"users">;
     const peopleRows = await ctx.db
       .query("people")
@@ -475,6 +538,24 @@ const RECORD_SEAT_SLUGS: ReadonlySet<string> = new Set(
     return legacy !== undefined && titleKind(legacy) === "finance";
   }),
 );
+
+// Fail LOUDLY at module load, not silently at runtime, if a future edit to
+// the shared seat template changes this shape (e.g. drops a `legacyTitle`, or
+// `titleKind` stops mapping one of them to leadership/finance). Today there
+// are exactly 2 seats per group (executive_director/chapter_director;
+// financial_manager/treasurer) — if that ever isn't true, `seatSodGroup()`
+// would silently return `null` more (or differently) than intended and SoD
+// enforcement would quietly weaken. Throwing here instead trips on deploy.
+if (APPROVE_SEAT_SLUGS.size !== 2) {
+  throw new Error(
+    `seats.ts: expected exactly 2 approve-side SoD seats, found ${APPROVE_SEAT_SLUGS.size} (${[...APPROVE_SEAT_SLUGS].join(", ")}). The shared seat template's legacyTitle/titleKind shape changed — update the SoD grouping deliberately.`,
+  );
+}
+if (RECORD_SEAT_SLUGS.size !== 2) {
+  throw new Error(
+    `seats.ts: expected exactly 2 record-side SoD seats, found ${RECORD_SEAT_SLUGS.size} (${[...RECORD_SEAT_SLUGS].join(", ")}). The shared seat template's legacyTitle/titleKind shape changed — update the SoD grouping deliberately.`,
+  );
+}
 
 /** Which SoD group (if any) a seat def belongs to. Only the 4 seats bridging
  *  to a leadership/finance `specializedRoles` title participate — every other
@@ -560,6 +641,23 @@ async function deleteSeatAssignment(
  *  - Write-through: a seat with a `legacyTitle` upserts the matching
  *    `specializedRoles` row (+ finance bridge) via the shared helper. Seats
  *    without a `legacyTitle` write nothing to legacy tables.
+ *
+ * CAVEAT — the "idempotent no-op" re-affirm can still mutate legacy tables
+ * under DIVERGENCE. "Idempotent" describes `seatAssignments`: no new row, same
+ * assignment id returned. But the re-affirm still calls
+ * `assignSpecializedRoleImpl` for the seat's own holder, and that helper
+ * enforces "one holder per (scope, legacyTitle) slot" — so if the legacy slot
+ * has drifted to a DIFFERENT person B (e.g. reassigned directly through
+ * `specializedRoles.assignSpecializedRole` after this seat was assigned to A),
+ * re-affirming A's seat EVICTS B from the legacy slot and revokes B's finance
+ * bridge, even though nothing changed in `seatAssignments`. This is
+ * intentional "seat wins" write-through semantics (the seat is the source of
+ * truth once assigned) and it preserves read-parity between the two tables —
+ * but it means a caller relying on the no-op label to mean "no legacy-table
+ * side effects" would be wrong under divergence. Divergence itself should be
+ * rare/transient (both paths write through the same helper), but it IS
+ * reachable, e.g. by another actor calling `specializedRoles.
+ * assignSpecializedRole` directly on a slot this seat already occupies.
  */
 export const assignSeat = mutation({
   args: {
@@ -640,8 +738,12 @@ export const assignSeat = mutation({
     }
 
     if (sameHolder) {
-      // Idempotent no-op — but re-affirm the write-through, mirroring
-      // `assignSpecializedRoleImpl`'s own idempotent re-affirm.
+      // Idempotent no-op for `seatAssignments` — but re-affirm the
+      // write-through, mirroring `assignSpecializedRoleImpl`'s own idempotent
+      // re-affirm. NOTE: if the legacy (scope, legacyTitle) slot has diverged
+      // to a DIFFERENT person, this re-affirm call evicts them and revokes
+      // their finance bridge (one-holder-per-slot) — see the CAVEAT on this
+      // mutation's doc comment. Legacy tables are NOT guaranteed no-op here.
       if (def.legacyTitle) {
         await assignSpecializedRoleImpl(ctx, userId, {
           personId,
