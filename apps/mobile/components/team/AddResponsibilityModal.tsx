@@ -33,6 +33,7 @@ import {
 import { Icon, OptionTag } from "../ui";
 import { colors } from "../../lib/theme";
 import { alertError } from "../../lib/errors";
+import { confirmAction } from "../event/ticketing/helpers";
 
 type ResponsibilityRow = Doc<"responsibilities">;
 type SeatOption = { seatDefId: Id<"seatDefs">; title: string; chart: SeatChart };
@@ -52,6 +53,10 @@ export function AddResponsibilityModal({
   const addSeat = useMutation(api.responsibilities.addSeat);
   const seatOptions = useQuery(api.responsibilities.seatOptions);
   const seatHoldings = useQuery(api.responsibilities.chapterSeatHoldings);
+  // Only needed for the vacancy guard below (how many people a duty's legacy
+  // role currently reaches) — mirrors what DutiesGrid's `people` query feeds
+  // its own `holderCount`/`roleHolders` maps.
+  const people = useQuery(api.people.list, {});
   const [query, setQuery] = useState("");
   const [target, setTarget] = useState<"person" | "seat">("person");
   const [selectedSeatIds, setSelectedSeatIds] = useState<Id<"seatDefs">[]>([]);
@@ -72,6 +77,17 @@ export function AddResponsibilityModal({
     () => new Map((seatOptions ?? []).map((s) => [s.seatDefId, s])),
     [seatOptions],
   );
+  // Reverse seat→holders index — every holding, not just this modal's
+  // `person` — for the vacancy guard below (is a seat about to be mapped
+  // actually vacant?). Same shape as DutiesGrid's `holdersBySeat`.
+  const holdersBySeat = useMemo(() => {
+    const map = new Map<Id<"seatDefs">, Set<Id<"people">>>();
+    for (const h of seatHoldings ?? []) {
+      if (!map.has(h.seatDefId)) map.set(h.seatDefId, new Set());
+      map.get(h.seatDefId)!.add(h.personId);
+    }
+    return map;
+  }, [seatHoldings]);
 
   const q = query.trim().toLowerCase();
   // Only duties that DON'T already reach this person are offered.
@@ -95,41 +111,103 @@ export function AddResponsibilityModal({
   const canCreate = query.trim().length > 0 && !exactMatch;
   const seatTarget = target === "seat" && selectedSeatIds.length > 0;
 
+  // How many people this duty currently reaches — role match or direct
+  // assignment (seats are irrelevant here: this is only ever called when
+  // `r.assigneeSeatIds` is still empty, so `responsibilityAppliesTo` falls
+  // straight to the role/direct checks). Mirrors DutiesGrid's `holderCount`,
+  // computed on demand for one row instead of memoized for the whole grid.
+  function currentHolderCount(r: ResponsibilityRow): number {
+    return (people ?? []).filter((p) =>
+      responsibilityAppliesTo(r, { _id: p._id, role: p.role, seatIds: [] }),
+    ).length;
+  }
+
+  // Union of everyone who already holds any of the given seats — used to
+  // decide whether a seat mapping would leave a duty (or brand-new duty)
+  // reaching nobody.
+  function holdersOf(seatDefIds: Id<"seatDefs">[]): Set<Id<"people">> {
+    const holders = new Set<Id<"people">>();
+    for (const seatDefId of seatDefIds) {
+      for (const personId of holdersBySeat.get(seatDefId) ?? []) {
+        holders.add(personId);
+      }
+    }
+    return holders;
+  }
+
   async function assignExisting(r: ResponsibilityRow) {
-    try {
-      if (seatTarget) {
-        // Targeted, one seat at a time — mirrors DutiesGrid's addSeat usage,
-        // safe against a concurrent edit of the same definition's seats.
-        const current = r.assigneeSeatIds ?? [];
-        await Promise.all(
-          selectedSeatIds
-            .filter((seatDefId) => !current.includes(seatDefId))
-            .map((seatDefId) => addSeat({ responsibilityId: r._id, seatDefId })),
-        );
-      } else {
+    if (!seatTarget) {
+      try {
         // Targeted, not a whole-array patch — safe against a concurrent edit
         // of the same definition's assignments.
         await addAssignee({ responsibilityId: r._id, personId: person._id });
+        onClose();
+      } catch (err) {
+        alertError(err);
       }
-      onClose();
-    } catch (err) {
-      alertError(err);
+      return;
     }
+
+    const current = r.assigneeSeatIds ?? [];
+    const newSeatIds = selectedSeatIds.filter((id) => !current.includes(id));
+    if (newSeatIds.length === 0) {
+      onClose();
+      return;
+    }
+    const commitSeats = async () => {
+      try {
+        // Targeted, one seat at a time — mirrors DutiesGrid's addSeat usage,
+        // safe against a concurrent edit of the same definition's seats.
+        await Promise.all(
+          newSeatIds.map((seatDefId) => addSeat({ responsibilityId: r._id, seatDefId })),
+        );
+        onClose();
+      } catch (err) {
+        alertError(err);
+      }
+    };
+    // Same vacancy guard DutiesGrid's seat picker runs before a duty's FIRST
+    // seat mapping (`guardedSeatChange`) — see `guardVacantSeatMapping` below.
+    guardVacantSeatMapping({
+      currentSeatCount: current.length,
+      legacyRoles: r.assigneeRoles ?? [],
+      legacyMatchCount: currentHolderCount(r),
+      seatHolderCount: holdersOf(newSeatIds).size,
+      commit: () => void commitSeats(),
+    });
   }
 
   async function createNew() {
-    try {
-      await create({
-        title: query.trim(),
-        cadence: "ad_hoc",
-        ...(seatTarget
-          ? { assigneeSeatIds: selectedSeatIds }
-          : { assigneePersonIds: [person._id] }),
+    const commitCreate = async () => {
+      try {
+        await create({
+          title: query.trim(),
+          cadence: "ad_hoc",
+          ...(seatTarget
+            ? { assigneeSeatIds: selectedSeatIds }
+            : { assigneePersonIds: [person._id] }),
+        });
+        onClose();
+      } catch (err) {
+        alertError(err);
+      }
+    };
+
+    if (seatTarget && holdersOf(selectedSeatIds).size === 0) {
+      // Brand-new duty, so there's no legacy role to lose — just warn that
+      // it won't reach anyone until the seat(s) are filled.
+      confirmAction({
+        title: "This seat is vacant",
+        message: `No one currently holds ${
+          selectedSeatIds.length === 1 ? "this seat" : "these seats"
+        } — the duty won't reach anyone until someone fills it.`,
+        confirmLabel: "Create anyway",
+        destructive: true,
+        onConfirm: () => void commitCreate(),
       });
-      onClose();
-    } catch (err) {
-      alertError(err);
+      return;
     }
+    await commitCreate();
   }
 
   const seatTagLabel =
@@ -273,6 +351,45 @@ export function AddResponsibilityModal({
       />
     </>
   );
+}
+
+/**
+ * Mirrors `DutiesGrid`'s `guardedSeatChange` ADD/vacancy check — duplicated
+ * locally (like `DutySeatPicker` below) since the grid's version is private
+ * to `DutiesGrid.tsx` and this PR doesn't touch that file. Same warning
+ * copy, same confirm flow (`confirmAction`) as the grid's seat picker.
+ *
+ * This modal only ever ADDS seats to a duty (never removes any), so only
+ * the grid's ADD half is ported: mapping a duty's FIRST seat(s)
+ * (`currentSeatCount === 0`, i.e. this add IS the mapping) onto seats
+ * NOBODY currently holds (`seatHolderCount === 0`), while people still
+ * reach the duty via a legacy role (`legacyMatchCount > 0`), would silently
+ * drop it for them until someone fills the seat — warn first.
+ */
+function guardVacantSeatMapping({
+  currentSeatCount,
+  legacyRoles,
+  legacyMatchCount,
+  seatHolderCount,
+  commit,
+}: {
+  currentSeatCount: number;
+  legacyRoles: string[];
+  legacyMatchCount: number;
+  seatHolderCount: number;
+  commit: () => void;
+}) {
+  if (currentSeatCount === 0 && seatHolderCount === 0 && legacyMatchCount > 0) {
+    confirmAction({
+      title: "This seat is vacant",
+      message: `${legacyMatchCount} ${legacyMatchCount === 1 ? "person" : "people"} currently matched by "${legacyRoles.join(", ")}" will lose this duty until the seat is filled.`,
+      confirmLabel: "Map anyway",
+      destructive: true,
+      onConfirm: commit,
+    });
+    return;
+  }
+  commit();
 }
 
 /**
