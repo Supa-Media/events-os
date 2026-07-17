@@ -18,10 +18,12 @@ import type { FunctionReturnType } from "convex/server";
 import { api } from "@events-os/convex/_generated/api";
 import type { Id } from "@events-os/convex/_generated/dataModel";
 import { formatCents } from "@events-os/shared";
-import { Badge, Button, Card, EmptyState, Icon, SectionHeader } from "../ui";
+import { Badge, Button, Card, EmptyState, Icon, SectionHeader, Select } from "../ui";
 import { Money, BudgetBar, txnStatusTone } from "../finance/dashboard/parts";
 import { BudgetApprovalChip } from "../finance/dashboard/BudgetApprovalActions";
 import { BudgetLineItemsEditor } from "../finance/modals/BudgetLineItemsEditor";
+import { TransactionNoteModal } from "../finance/modals/TransactionNoteModal";
+import { ReceiptCell } from "../finance/reconcile/ReconcileList";
 import { colors } from "../../lib/theme";
 import { formatDate } from "../../lib/format";
 import { alertError } from "../../lib/errors";
@@ -41,6 +43,7 @@ export function MoneyView({
   const data = useQuery(api.moneyViews.refMoney, { refKind, refId });
   const summonBudget = useMutation(api.finances.summonBudgetForRef);
   const [editingPlanId, setEditingPlanId] = useState<Id<"budgets"> | null>(null);
+  const [editingTxn, setEditingTxn] = useState<TxnRowData | null>(null);
   const [summoning, setSummoning] = useState(false);
 
   function openFinances() {
@@ -79,6 +82,7 @@ export function MoneyView({
     lineCount,
     incomeCents,
     canSummonBudget,
+    canEditTransactions,
   } = data;
 
   if (!budget) {
@@ -294,7 +298,12 @@ export function MoneyView({
           />
           <Card padding="none">
             {shownTransactions.map((tr, i) => (
-              <TxnRow key={tr.id} tr={tr} first={i === 0} />
+              <TxnRow
+                key={tr.id}
+                tr={tr}
+                first={i === 0}
+                onPress={canEditTransactions ? () => setEditingTxn(tr) : undefined}
+              />
             ))}
           </Card>
         </>
@@ -306,6 +315,9 @@ export function MoneyView({
 
       {editingPlanId ? (
         <EditPlanModal budgetId={editingPlanId} onClose={() => setEditingPlanId(null)} />
+      ) : null}
+      {editingTxn ? (
+        <TxnEditModal tr={editingTxn} onClose={() => setEditingTxn(null)} />
       ) : null}
     </View>
   );
@@ -373,19 +385,35 @@ function CategoryRow({ row }: { row: CategoryRowData }) {
   );
 }
 
-function TxnRow({ tr, first }: { tr: TxnRowData; first: boolean }) {
+function TxnRow({
+  tr,
+  first,
+  onPress,
+}: {
+  tr: TxnRowData;
+  first: boolean;
+  /** Present only when `canEditTransactions` — opens `TxnEditModal`. Reconciled
+   *  status (shown via the badge below) stays DISPLAY-ONLY either way — this
+   *  never lets a tap change it, only note/receipt/category inside the modal. */
+  onPress?: () => void;
+}) {
   const { tone, label } = txnStatusTone(tr.status);
+  const Wrapper = onPress ? Pressable : View;
   return (
-    <View
+    <Wrapper
+      onPress={onPress}
       className={`flex-row items-center justify-between gap-3 px-4 py-3 ${
         first ? "" : "border-t border-border"
-      }`}
+      } ${onPress ? "active:opacity-70 web:hover:bg-sunken" : ""}`}
     >
       <View className="flex-1">
         <Text className="text-sm text-ink" numberOfLines={1}>
           {tr.merchantName ?? tr.description ?? "Transaction"}
         </Text>
-        <Text className="text-xs text-muted">{formatDate(tr.postedAt)}</Text>
+        <Text className="text-xs text-muted">
+          {formatDate(tr.postedAt)}
+          {tr.note ? " · has a note" : ""}
+        </Text>
       </View>
       <View className="items-end gap-1">
         <Text className="text-sm font-semibold text-ink" style={{ fontVariant: ["tabular-nums"] }}>
@@ -393,6 +421,139 @@ function TxnRow({ tr, first }: { tr: TxnRowData; first: boolean }) {
         </Text>
         <Badge label={label} tone={tone} />
       </View>
-    </View>
+    </Wrapper>
+  );
+}
+
+/**
+ * Reconcile-lite (owner decision, 2026-07-17): note/receipt/category for a
+ * transaction attributed to THIS event's budget, WITHOUT the finance-role
+ * gate — for whoever has `canEditTransactions` (bookkeeper+, or the event's
+ * own owner/lead). The "For" bucket is a LOCKED display-only chip (never a
+ * picker) — reattribution stays Finances/Reconcile's bookkeeper+ power, never
+ * reachable from here. Reconciled status is likewise display-only (the
+ * Treasurer's job) — this modal has no status control at all.
+ */
+function TxnEditModal({ tr, onClose }: { tr: TxnRowData; onClose: () => void }) {
+  const setCategory = useMutation(api.finances.setTransactionCategory);
+  const generateUploadUrl = useMutation(api.storage.generateUploadUrl);
+  const attachReceipt = useMutation(api.finances.attachReceipt);
+  const categories = useQuery(api.finances.listCategories, {}) ?? [];
+  const [noteModalOpen, setNoteModalOpen] = useState(false);
+  const [savingCategory, setSavingCategory] = useState(false);
+  const { tone, label } = txnStatusTone(tr.status);
+
+  const categoryOptions = [
+    { value: "", label: "— No category —" },
+    ...categories.map((c) => ({ value: c.id, label: c.name })),
+  ];
+
+  async function handleCategoryChange(value: string) {
+    setSavingCategory(true);
+    try {
+      await setCategory({
+        transactionId: tr.id,
+        categoryId: (value || null) as Id<"budgetCategories"> | null,
+      });
+    } catch (err) {
+      alertError(err);
+    } finally {
+      setSavingCategory(false);
+    }
+  }
+
+  return (
+    <Modal visible transparent animationType="fade" onRequestClose={onClose}>
+      <Pressable
+        onPress={onClose}
+        className="flex-1 items-center justify-center bg-ink/30 p-6"
+      >
+        <Pressable
+          onPress={() => {}}
+          className="w-full max-w-md overflow-hidden rounded-xl border border-border bg-raised shadow-pop"
+        >
+          <View className="flex-row items-center justify-between border-b border-border px-5 py-4">
+            <Text className="font-display text-lg text-ink">Transaction</Text>
+            <Pressable onPress={onClose} hitSlop={8} className="rounded-md p-1">
+              <Icon name="x" size={18} color={colors.muted} />
+            </Pressable>
+          </View>
+
+          <View className="gap-4 px-5 py-4">
+            <View className="flex-row items-center justify-between">
+              <View className="flex-1">
+                <Text className="text-sm font-medium text-ink" numberOfLines={1}>
+                  {tr.merchantName ?? tr.description ?? "Transaction"}
+                </Text>
+                <Text className="text-xs text-muted">{formatDate(tr.postedAt)}</Text>
+              </View>
+              <Text className="text-base font-semibold text-ink" style={{ fontVariant: ["tabular-nums"] }}>
+                {formatCents(tr.amountCents)}
+              </Text>
+            </View>
+
+            <View className="flex-row items-center gap-2">
+              <Badge label={label} tone={tone} />
+              {/* LOCKED bucket chip — never a picker here; reattribution stays
+                  a Finances/Reconcile bookkeeper+ power. */}
+              <Badge label="This event" tone="neutral" />
+            </View>
+
+            <Select
+              label="Category"
+              value={tr.categoryId ?? ""}
+              options={categoryOptions}
+              onChange={(v) => void handleCategoryChange(v)}
+              placeholder="— No category —"
+            />
+            {savingCategory ? <Text className="text-xs text-muted">Saving…</Text> : null}
+
+            <Pressable
+              onPress={() => setNoteModalOpen(true)}
+              className="rounded-md border border-border-strong bg-sunken px-3 py-2.5 active:opacity-70"
+            >
+              <Text className="text-2xs font-bold uppercase tracking-wider text-muted">
+                Note
+              </Text>
+              <Text className="mt-0.5 text-sm text-ink" numberOfLines={2}>
+                {tr.note || "Who was this for, and why? Tap to add a note."}
+              </Text>
+            </Pressable>
+
+            <View>
+              <Text className="mb-1 text-2xs font-bold uppercase tracking-wider text-muted">
+                Receipt
+              </Text>
+              <View className="rounded-md border border-border-strong bg-sunken">
+                <ReceiptCell
+                  hasReceipt={tr.hasReceipt}
+                  reminderStage={tr.reminderStage}
+                  onUpload={async (storageId) => {
+                    try {
+                      await attachReceipt({ transactionId: tr.id, storageId });
+                    } catch (err) {
+                      alertError(err);
+                    }
+                  }}
+                  generateUploadUrl={generateUploadUrl}
+                />
+              </View>
+            </View>
+          </View>
+
+          <View className="flex-row justify-end border-t border-border px-5 py-4">
+            <Button title="Done" onPress={onClose} />
+          </View>
+        </Pressable>
+      </Pressable>
+
+      {noteModalOpen ? (
+        <TransactionNoteModal
+          transactionId={tr.id}
+          currentNote={tr.note}
+          onClose={() => setNoteModalOpen(false)}
+        />
+      ) : null}
+    </Modal>
   );
 }
