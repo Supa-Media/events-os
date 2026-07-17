@@ -183,6 +183,55 @@ describe("0027_sync_linked_budget_identity", () => {
     expect(second).toMatchObject({ scanned: 1, linked: 1, synced: 0, unchanged: 1, refNotFound: 0 });
   });
 
+  test("review fix: leaves the approval fields byte-identical — the identity sync must never touch approval state", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const projectId = await seedProject(s, "Old Name", { deadline: tsOnDay(2026, 3, 1) });
+    const approverPersonId = await run(s.t, (ctx) =>
+      ctx.db.insert("people", {
+        chapterId: s.chapterId,
+        name: "Approver",
+        createdAt: Date.now(),
+      }),
+    );
+    const approvedAt = Date.now() - 1000;
+    const budgetId = await run(s.t, (ctx) =>
+      ctx.db.insert("budgets", {
+        chapterId: s.chapterId,
+        amountCents: 10000,
+        label: "Stale Label",
+        type: "one_time",
+        refKind: "project",
+        scopeRefId: projectId,
+        cadence: "per_instance",
+        year: 2025,
+        month: 7,
+        createdAt: Date.now(),
+        approvalStatus: "approved",
+        approvedCents: 10000,
+        approvedByPersonId: approverPersonId,
+        approvedAt,
+        approvalParty: "two_party",
+      }),
+    );
+    await run(s.t, (ctx) => ctx.db.patch(projectId, { name: "New Name" }));
+
+    const result = await run(t, (ctx) => runSyncLinkedBudgetIdentity(ctx));
+    expect(result).toMatchObject({ synced: 1 });
+
+    const budget = await getBudget(s, budgetId);
+    // The identity fields DID change (proves the sync actually ran)...
+    expect(budget?.label).toBe("New Name");
+    expect(budget?.year).toBe(2026);
+    expect(budget?.month).toBe(3);
+    // ...but every approval field is byte-identical to what was seeded.
+    expect(budget?.approvalStatus).toBe("approved");
+    expect(budget?.approvedCents).toBe(10000);
+    expect(budget?.approvedByPersonId).toBe(approverPersonId);
+    expect(budget?.approvedAt).toBe(approvedAt);
+    expect(budget?.approvalParty).toBe("two_party");
+  });
+
   test("skips recurring/unlinked budgets entirely — never touched", async () => {
     const t = newT();
     const s = await setupChapter(t);

@@ -311,6 +311,28 @@ describe("updateBudget rejects label/year/month edits on a linked (one_time + re
     ).rejects.toThrow(ConvexError);
   });
 
+  test("patching quarter on an already-linked budget throws ConvexError (review nit: completeness with label/year/month)", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await seedManager(s);
+    const eventId = await seedEvent(s, { name: "Linked Event" });
+    const budgetId = await s.as.mutation(api.finances.createBudget, {
+      amountCents: 10000,
+      type: "one_time",
+      refKind: "event",
+      cadence: "per_instance",
+      year: 2026,
+      scopeRefId: eventId,
+    });
+
+    await expect(
+      s.as.mutation(api.finances.updateBudget, {
+        budgetId,
+        patch: { quarter: 2 },
+      }),
+    ).rejects.toThrow(ConvexError);
+  });
+
   test("converting an unlinked budget onto a ref in the SAME patch call also rejects a simultaneous label (effective post-patch state)", async () => {
     const t = newT();
     const s = await setupChapter(t);

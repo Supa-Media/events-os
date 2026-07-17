@@ -54,7 +54,7 @@ import {
   type SelectOption,
 } from "@events-os/shared";
 import { eventActiveModules } from "./lib/templates";
-import { getBudgetForRef } from "./finances";
+import { getBudgetForRef, syncBudgetIdentityForRef } from "./finances";
 import { phaseReadiness, statusColumnFor } from "./lib/readiness";
 import { toKey } from "./roles";
 
@@ -1320,8 +1320,13 @@ export const createCustomModule = internalMutation({
 /**
  * Move the event date (the `reschedule_event` tool). Mirrors
  * events.reschedule — patch the date, re-derive every day-offset item's due
- * date — then runs the playbook's feasibility check: how many still-incomplete
+ * date, write-through the sync onto a linked budget's stored year/month —
+ * then runs the playbook's feasibility check: how many still-incomplete
  * items now have a due date in the past.
+ *
+ * This is a SECOND `eventDate`-changing mutation, not a call into
+ * `events.reschedule` — so it carries its own `syncBudgetIdentityForRef`
+ * call rather than inheriting one; keep both in sync if either changes.
  */
 export const rescheduleEvent = internalMutation({
   args: {
@@ -1333,6 +1338,11 @@ export const rescheduleEvent = internalMutation({
     const event = await eventInChapter(ctx, eventId, chapterId);
     if (!event) return null;
     await ctx.db.patch(eventId, { eventDate, updatedAt: Date.now() });
+    // Budget identity & dates (review fix): this is a SECOND mutation that
+    // changes `eventDate` — `events.reschedule` isn't the only one — so it
+    // needs its own write-through onto a linked budget's stored year/month,
+    // same as that mutation's own call. No-op when nothing is linked.
+    await syncBudgetIdentityForRef(ctx, "event", eventId, event.name, eventDate);
 
     const items = await ctx.db
       .query("eventItems")

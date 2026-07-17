@@ -1215,10 +1215,12 @@ export const reschedule = mutation({
         });
       }
     }
-    // Budget identity & dates (item 2): the ONLY mutation that changes
-    // `eventDate` — `updateDetails` doesn't touch it — so this is the sole
-    // hook point for a linked budget's stored year/month to follow a
-    // reschedule. No-op when nothing is linked.
+    // Budget identity & dates (item 2): `updateDetails` doesn't touch
+    // `eventDate`, so this is a hook point for a linked budget's stored
+    // year/month to follow a reschedule. NOT the only one — `ai.ts`'s
+    // `rescheduleEvent` (the `reschedule_event` AI tool) also patches
+    // `eventDate` directly and carries its own identical call; keep both in
+    // sync if either changes. No-op here when nothing is linked.
     await syncBudgetIdentityForRef(ctx, "event", eventId, event.name, eventDate);
     return eventId;
   },

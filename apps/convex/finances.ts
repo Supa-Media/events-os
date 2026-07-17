@@ -1474,12 +1474,14 @@ export async function getBudgetForRef(
  * logic stays create-time-only, unchanged.
  *
  * Called from `events.updateDetails` (name changes) + `events.reschedule`
- * (date changes) — two separate mutations, since `updateDetails` doesn't
- * touch `eventDate` — and from `projects.update` (name/startDate/deadline
- * changes, one mutation). NOT called from `updateBudget`'s own ref
- * conversion path (owner decision: keep it simple, no auto-derivation on
- * conversion — see that function's rejection check for the paired half of
- * this decision).
+ * AND `ai.rescheduleEvent` (both change `eventDate` — `updateDetails`
+ * doesn't touch it, and the AI `reschedule_event` tool patches the date via
+ * its own separate mutation rather than calling `events.reschedule`, so it
+ * carries its own identical call; keep both in sync if either changes) —
+ * and from `projects.update` (name/startDate/deadline changes, one
+ * mutation). NOT called from `updateBudget`'s own ref conversion path
+ * (owner decision: keep it simple, no auto-derivation on conversion — see
+ * that function's rejection check for the paired half of this decision).
  */
 export async function syncBudgetIdentityForRef(
   ctx: MutationCtx,
@@ -4537,11 +4539,17 @@ export const updateBudget = mutation({
     // as before. Deliberately NOT auto-deriving the correct identity here on
     // conversion (owner decision, keep it simple) — a budget newly linked via
     // this mutation keeps its prior label/year/month until the entity's own
-    // next edit triggers `syncBudgetIdentityForRef`.
+    // next edit triggers `syncBudgetIdentityForRef`. `quarter` is included
+    // for completeness (review nit) — a one_time budget's cadence never
+    // actually surfaces it, but the patch validator structurally allows it,
+    // so it's blocked the same as year/month rather than silently accepted.
     const isLinkedAfterPatch = newType === "one_time" && !!newRefKind && effScopeRefId != null;
     if (
       isLinkedAfterPatch &&
-      (patch.label !== undefined || patch.year !== undefined || patch.month !== undefined)
+      (patch.label !== undefined ||
+        patch.year !== undefined ||
+        patch.month !== undefined ||
+        patch.quarter !== undefined)
     ) {
       throw new ConvexError({
         code: "LINKED_BUDGET_IDENTITY",

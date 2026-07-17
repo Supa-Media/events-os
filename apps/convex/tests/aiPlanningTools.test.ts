@@ -15,6 +15,7 @@ import { internal, api } from "../_generated/api";
 import {
   computeDueDate,
   DAY_MS,
+  easternParts,
   TASK_STATUS_OPTIONS,
 } from "@events-os/shared";
 import { newT, run, setupChapter, type TestConvex } from "./setup.helpers";
@@ -461,5 +462,43 @@ describe("ai.rescheduleEvent (reschedule_event)", () => {
     for (const it of items) {
       expect(it.dueDate).toBe(computeDueDate(newDate, it.offsetDays!));
     }
+  });
+
+  test("budget identity & dates (review fix): syncs a linked budget's STORED year/month — this mutation changes eventDate independently of events.reschedule", async () => {
+    const t = newT();
+    const { chapterId, userId } = await setupChapter(t);
+    const seeded = await seedPlanningEvent(t, chapterId, userId);
+
+    // Seeded deliberately stale — simulates a budget whose stored period
+    // predates this reschedule.
+    const budgetId = await run(t, (ctx) =>
+      ctx.db.insert("budgets", {
+        chapterId,
+        amountCents: 20000,
+        label: "Old Name",
+        type: "one_time",
+        refKind: "event",
+        scopeRefId: seeded.eventId,
+        cadence: "per_instance",
+        year: 2020,
+        month: 1,
+        createdAt: Date.now(),
+      }),
+    );
+
+    const newDate = Date.now() + 5 * DAY_MS;
+    await t.mutation(internal.ai.rescheduleEvent, {
+      eventId: seeded.eventId,
+      chapterId,
+      eventDate: newDate,
+    });
+
+    const budget = await run(t, (ctx) => ctx.db.get(budgetId));
+    const expected = easternParts(newDate);
+    expect(budget?.year).toBe(expected.year);
+    expect(budget?.month).toBe(expected.month);
+    // The event's real name ("Park Worship", seeded above) — not the stale
+    // stored label.
+    expect(budget?.label).toBe("Park Worship");
   });
 });

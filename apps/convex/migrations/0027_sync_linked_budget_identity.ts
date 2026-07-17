@@ -38,6 +38,13 @@ import type { Migration } from "./index";
  * Run on prod:   npx convex run --prod migrations:runPending
  */
 
+// Honestly bounded, NOT paginated: `.take()` with no cursor always returns
+// the SAME first BUDGET_SCAN_LIMIT rows in `_creationTime` order, so a
+// re-run can NEVER reach further rows if this limit is ever hit — re-running
+// would just reprocess this same page (harmless, since the sync is
+// idempotent, but it makes zero additional progress). Prod is well under 1k
+// budgets today, so this bound is not expected to ever bind; if it does, the
+// warn below says so loudly rather than implying "run it again."
 const BUDGET_SCAN_LIMIT = 20000;
 
 export async function runSyncLinkedBudgetIdentity(ctx: MutationCtx) {
@@ -50,7 +57,7 @@ export async function runSyncLinkedBudgetIdentity(ctx: MutationCtx) {
   const budgets = (await ctx.db.query("budgets").take(BUDGET_SCAN_LIMIT)) as Doc<"budgets">[];
   if (budgets.length === BUDGET_SCAN_LIMIT) {
     console.warn(
-      `[0027_sync_linked_budget_identity] hit BUDGET_SCAN_LIMIT (${BUDGET_SCAN_LIMIT}); a later run is needed to finish the sweep.`,
+      `[0027_sync_linked_budget_identity] hit BUDGET_SCAN_LIMIT (${BUDGET_SCAN_LIMIT}) — this run did NOT cover the whole budgets table. Re-running will NOT reach the remaining rows (no cursor/pagination — .take() with no cursor always returns this same first page). This migration needs a paginated rewrite before it can be trusted at this scale.`,
     );
   }
 
