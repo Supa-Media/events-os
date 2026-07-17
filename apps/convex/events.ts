@@ -7,6 +7,7 @@
  * the single event date; moving the date shifts the whole timeline.
  */
 import { query, mutation, QueryCtx } from "./_generated/server";
+import { api } from "./_generated/api";
 import { Doc, Id } from "./_generated/dataModel";
 import { ConvexError, v, type Infer } from "convex/values";
 import {
@@ -26,6 +27,7 @@ import {
   DAY_OFFSET_MODULES,
   MODULE_LABELS,
   MODULE_READY_PHASE,
+  financeRoleAtLeast,
   type ModuleKey,
   type PhaseKey,
   type PhaseScores,
@@ -58,6 +60,29 @@ import {
   getBudgetForRef,
   setBudgetAmount,
 } from "./finances";
+import { getFinanceRole, type FinanceAccess, type FinanceScope } from "./lib/finance";
+
+/**
+ * An event's money-attribution scope: "central" or "chapter" — an event's ROW
+ * has no central union yet (mirrors `finances.transferProjectScope`'s WP-2.2
+ * finding, reconfirmed for events — `schema/events.ts#chapterId` is a strict
+ * `v.id("chapters")`), so this is always about where the event's BUDGET
+ * currently lives, never `events.chapterId` itself.
+ */
+const eventScopeChoice = v.union(v.literal("central"), v.literal("chapter"));
+
+/**
+ * True iff `access` can actually EXECUTE a central money move — central reach
+ * AND at least the bookkeeper write rank. Mirrors `finances.
+ * transferEventScope`'s own gate (`requireCentralWrite(ctx, "bookkeeper")`)
+ * exactly, so nothing here ever offers/defaults-to/claims-permission-for a
+ * scope the mutation would then refuse. A plain `getFinanceRole(...).isCentral`
+ * is NOT enough — that's reach only, and a central VIEWER has reach but no
+ * write rank (mirrors `projects.ts#hasCentralWriteReach` exactly).
+ */
+function hasCentralWriteReach(access: FinanceAccess): boolean {
+  return access.isCentral && financeRoleAtLeast(access.role, "bookkeeper");
+}
 
 const statusUnion = v.union(
   v.literal("planning"),
@@ -95,6 +120,36 @@ function currentPhasePct(
 }
 
 /**
+ * The creation-time scope picker's options for the caller's own chapter: their
+ * chapter's name, whether they hold central (org-wide) finance reach, and the
+ * resulting default ("creator's highest hat" — owner spec, same as
+ * `projects.scopeOptions`). Uses the SAME `getFinanceRole` primitive
+ * `finances.transferEventScope`'s gate checks, so the default this offers is
+ * never a scope the caller would then be refused when `createFromTemplate`
+ * re-checks it server-side.
+ */
+export const scopeOptions = query({
+  args: {},
+  handler: async (ctx) => {
+    const chapterId = (await getChapterIdOrNull(ctx)) as Id<"chapters"> | null;
+    if (!chapterId) return null;
+    const chapter = await ctx.db.get(chapterId);
+    if (!chapter) return null;
+    const access = await getFinanceRole(ctx, chapterId);
+    const canCentral = hasCentralWriteReach(access);
+    return {
+      chapterId,
+      chapterName: chapter.name,
+      // Whether the picker should even be offered — a central VIEWER has
+      // reach but no write rank, so they get no picker (same as a chapter-only
+      // caller): the mutation would refuse "central" from them anyway.
+      isCentral: canCentral,
+      defaultScope: (canCentral ? "central" : "chapter") as "central" | "chapter",
+    };
+  },
+});
+
+/**
  * THE TEMPLATING ENGINE. Snapshot a template into a live event: clone its
  * columns onto the event, then clone its items (back-calculating due dates for
  * day-offset modules). Supplies items keep their template's acquisition status,
@@ -108,28 +163,71 @@ export const createFromTemplate = mutation({
     eventDate: v.number(),
     location: v.optional(v.string()),
     budget: v.optional(v.number()),
+    // Money-attribution override for the creation-time scope picker. Omitted
+    // by callers that don't show the picker — the default below still
+    // applies, so every creation path gets the "creator's highest hat"
+    // behavior for free (mirrors `projects.create`'s `scope` arg).
+    scope: v.optional(eventScopeChoice),
   },
   handler: async (ctx, args) => {
     const userId = await requireUserId(ctx);
     const eventType = await requireEventType(ctx, args.eventTypeId);
     // The Academy training template only instantiates through startTraining
-    // (which flags the event isTraining and scopes it to the learner).
+    // (which flags the event isTraining and scopes it to the learner) — never
+    // reaches here, so training events never see a `scope` arg and never get
+    // a budget row (the #172 invariant), consistent with "no attribution to
+    // move" rather than a special case.
     if (eventType.isPlatform === true) {
       throw new ConvexError({
         code: "PLATFORM_TEMPLATE",
         message: "Training runs start from the Academy.",
       });
     }
+    const chapterId = eventType.chapterId as Id<"chapters">;
 
-    return await instantiateEvent(ctx, {
+    const eventId = await instantiateEvent(ctx, {
       eventType,
-      chapterId: eventType.chapterId as Id<"chapters">,
+      chapterId,
       userId: userId as Id<"users">,
       name: args.name,
       eventDate: args.eventDate,
       location: args.location,
       budget: args.budget,
     });
+
+    // Money attribution ("creator's highest hat" default, owner spec): a
+    // caller with central (org-wide) finance reach gets Central by default;
+    // re-resolved SERVER-SIDE (never trusts a client-supplied `scope` alone)
+    // so an unspecified `scope` still lands correctly for every creation path.
+    // The event ROW stays chapter-scoped either way; "central" here moves its
+    // BUDGET, through the SAME `transferEventScope` retroactive changes use
+    // (no second scope-move path) — mirrors `projects.create` exactly.
+    // `summonBudgetForRef` first guarantees a (possibly $0) budget row exists
+    // — idempotent, so it's a no-op when `instantiateEvent`'s own
+    // `createEventBudget` hook already made one from a positive `budget` — so
+    // a LATER dollar entry writes through to the already-central row instead
+    // of silently landing back at the chapter.
+    const access = await getFinanceRole(ctx, chapterId);
+    const canCentral = hasCentralWriteReach(access);
+    const effectiveScope = args.scope ?? (canCentral ? "central" : "chapter");
+    if (effectiveScope === "central") {
+      if (!canCentral) {
+        throw new ConvexError({
+          code: "FORBIDDEN",
+          message: "Only central finance roles can attribute an event to Central.",
+        });
+      }
+      await ctx.runMutation(api.finances.summonBudgetForRef, {
+        refKind: "event",
+        scopeRefId: eventId,
+      });
+      await ctx.runMutation(api.finances.transferEventScope, {
+        eventId,
+        target: "central",
+        note: "Set at creation",
+      });
+    }
+    return eventId;
   },
 });
 
@@ -242,10 +340,41 @@ export const get = query({
       if (person) owner = { _id: person._id, name: person.name };
     }
 
+    // Money attribution ("Belongs to"): the event ROW never moves off its
+    // home chapter (mirrors `projects.get`'s WP-2.2 finding — see
+    // `finances.transferEventScope`'s doc comment), so the real attribution
+    // is wherever its BUDGET currently lives — central, once
+    // `transferEventScope` has moved it, else the event's own home chapter
+    // (no budget yet, including every Training event by invariant, reads the
+    // same as "still home"). Central reach to CHANGE it is the caller's own
+    // chapter (already resolved above as `chapterId`, since a foreign event
+    // already returned `null` before reaching here) — mirrors
+    // `transferEventScope`'s `requireCentralWrite` gate exactly, so this flag
+    // never promises an affordance the mutation refuses.
+    const homeChapterId = chapterId as Id<"chapters">;
+    const scope: FinanceScope = budgetRow
+      ? (budgetRow.chapterId as FinanceScope)
+      : homeChapterId;
+    const scopeChapterName =
+      scope === "central" ? null : ((await ctx.db.get(scope))?.name ?? null);
+    // The event's HOME chapter's name, ALWAYS resolved regardless of the
+    // current scope — needed for a client toggling "back to my chapter" while
+    // the event currently sits at Central (mirrors `projects.get`'s
+    // `homeChapterName`, added post-#194 review).
+    const homeChapterName =
+      scope !== "central" && scope === homeChapterId
+        ? scopeChapterName
+        : ((await ctx.db.get(homeChapterId))?.name ?? null);
+    const canChangeScope = hasCentralWriteReach(await getFinanceRole(ctx, homeChapterId));
+
     return {
       event: eventForClient,
       budgetId: budgetRow?._id ?? null,
       eventTypeName: eventType?.name ?? "Unknown",
+      scope,
+      scopeChapterName,
+      homeChapterName,
+      canChangeScope,
       // Resolved active modules (core + custom) from the EVENT's own deltas.
       modules: await eventActiveModules(ctx, event),
       moduleReadiness: event.moduleReadiness ?? [],

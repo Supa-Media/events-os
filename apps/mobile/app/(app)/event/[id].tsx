@@ -32,8 +32,11 @@ import TicketingTab from "../../../components/event/ticketing/TicketingTab";
 import BudgetTab from "../../../components/event/budget/BudgetTab";
 import GearTab from "../../../components/event/gear/GearTab";
 import { MoneyView } from "../../../components/money/MoneyView";
+import { ScopeToggle } from "../../../components/team/ScopeToggle";
 import { colors, modulePhase } from "../../../lib/theme";
 import { usePhasePulse } from "../../../lib/usePhasePulse";
+import { alertError } from "../../../lib/errors";
+import { confirmAction } from "../../../components/event/ticketing/helpers";
 import {
   firstUnassignedRole,
   firstModuleMissingOwner,
@@ -103,6 +106,7 @@ export default function EventDetailScreen() {
   const toggleCoreModule = useMutation(api.modules.toggleCoreForEvent);
   const createCustomModule = useMutation(api.modules.createCustomForEvent);
   const deleteCustomModule = useMutation(api.modules.deleteCustomForEvent);
+  const transferScope = useMutation(api.finances.transferEventScope);
 
   // Local edit buffers (null = mirror server value).
   const [nameInput, setNameInput] = useState<string | null>(null);
@@ -168,7 +172,30 @@ export default function EventDetailScreen() {
     pacePhases,
     budgetSpent,
     budgetPct,
+    scope,
+    scopeChapterName,
+    homeChapterName,
+    canChangeScope,
   } = data;
+
+  // Move the event's money attribution — the SAME `transferEventScope`
+  // retroactive/creation flows both use (no second scope-move path). "chapter"
+  // always means the event's own home chapter; `homeChapterName` (always
+  // concrete), NOT `scopeChapterName` (null while the event currently sits at
+  // Central), labels that destination so moving BACK from Central doesn't
+  // confirm/label it as a generic "the chapter" (mirrors the project page).
+  function handleScopeChange(next: "central" | "chapter") {
+    const target = next === "central" ? "central" : event.chapterId;
+    const destLabel = next === "central" ? "Central" : homeChapterName ?? "the chapter";
+    confirmAction({
+      title: `Move to ${destLabel}?`,
+      message: `Moves the event and its budget/spend attribution to ${destLabel}.`,
+      confirmLabel: "Move",
+      onConfirm: () => {
+        void transferScope({ eventId, target }).catch(alertError);
+      },
+    });
+  }
 
   const nameValue = nameInput !== null ? nameInput : event.name;
   const budgetValue =
@@ -693,6 +720,27 @@ export default function EventDetailScreen() {
                 Back to planning
               </Text>
             </Pressable>
+            <SectionHeader
+              title="Money"
+              right={
+                <View className="flex-row items-center gap-2">
+                  <Text className="text-xs font-semibold uppercase tracking-wider text-faint">
+                    Belongs to
+                  </Text>
+                  {canChangeScope ? (
+                    <ScopeToggle
+                      value={scope === "central" ? "central" : "chapter"}
+                      chapterName={homeChapterName ?? "This chapter"}
+                      onChange={handleScopeChange}
+                    />
+                  ) : (
+                    <Text className="text-xs font-semibold text-ink">
+                      {scope === "central" ? "Central" : (scopeChapterName ?? "This chapter")}
+                    </Text>
+                  )}
+                </View>
+              }
+            />
             <MoneyView refKind="event" refId={eventId} />
           </Narrow>
         ) : activeTab === "crew" ? (

@@ -1,13 +1,18 @@
 /**
- * ScopeToggle — the money-attribution picker for a project: Central, or the
- * project's home chapter. Exactly two options always — a project's one_time
- * budget can only ever sit at one of those two levels (see `finances.
- * transferProjectScope`, the tool this drives both at creation and
- * retroactively from the project page's "Belongs to" row).
+ * ScopeToggle — the money-attribution picker for a project OR event: Central,
+ * or the ref's home chapter. Exactly two options always — a project/event's
+ * one_time budget can only ever sit at one of those two levels (see
+ * `finances.transferProjectScope`/`transferEventScope`, the tools this drives
+ * both at creation and retroactively from the project/event page's "Belongs
+ * to" row). Shared verbatim between the two — no project/event-specific logic
+ * lives in this component.
  */
 import { Text, View, Pressable } from "react-native";
 
-export type ProjectScopeChoice = "central" | "chapter";
+export type ScopeChoice = "central" | "chapter";
+/** @deprecated Kept as an alias for existing project call sites — use
+ *  `ScopeChoice` in new code (this component is shared with events too). */
+export type ProjectScopeChoice = ScopeChoice;
 
 export function ScopeToggle({
   value,
@@ -15,13 +20,13 @@ export function ScopeToggle({
   onChange,
   disabled = false,
 }: {
-  value: ProjectScopeChoice;
-  /** The project's home chapter's display name (the non-central option). */
+  value: ScopeChoice;
+  /** The ref's home chapter's display name (the non-central option). */
   chapterName: string;
-  onChange: (next: ProjectScopeChoice) => void;
+  onChange: (next: ScopeChoice) => void;
   disabled?: boolean;
 }) {
-  const options: { key: ProjectScopeChoice; label: string }[] = [
+  const options: { key: ScopeChoice; label: string }[] = [
     { key: "central", label: "Central" },
     { key: "chapter", label: chapterName },
   ];

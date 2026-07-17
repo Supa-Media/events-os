@@ -1,4 +1,4 @@
-import { createElement, useState } from "react";
+import { createElement, useEffect, useState } from "react";
 import {
   View,
   Text,
@@ -21,6 +21,7 @@ import {
   Field,
   LocationAutocomplete,
 } from "../../../components/ui";
+import { ScopeToggle, type ScopeChoice } from "../../../components/team/ScopeToggle";
 import { colors, radius, spacing } from "../../../lib/theme";
 import { parseDateInput, parseDateTimeInput, formatDateTime } from "../../../lib/format";
 import { MeridiemButton } from "../../../components/ui/DateTimeField";
@@ -274,6 +275,20 @@ export default function NewEventScreen() {
   const templates = useQuery(api.templates.list);
   type TemplateRow = NonNullable<typeof templates>[number];
   const create = useMutation(api.events.createFromTemplate);
+  // Creation-time money-attribution picker (owner spec: "creator's highest
+  // hat" default, editable) — mirrors `projects.create`'s picker exactly.
+  // `isCentral` is false for every caller without central WRITE reach, so a
+  // chapter-only creator never sees this field; `createFromTemplate` still
+  // resolves the same default server-side for them.
+  const scopeOptions = useQuery(api.events.scopeOptions);
+  const [scope, setScope] = useState<ScopeChoice>("chapter");
+  // Re-sync to the resolved default whenever it changes (e.g. once the query
+  // loads) — never overwrites an explicit user pick mid-form, only the
+  // initial unset state.
+  const [scopeTouched, setScopeTouched] = useState(false);
+  useEffect(() => {
+    if (!scopeTouched && scopeOptions?.defaultScope) setScope(scopeOptions.defaultScope);
+  }, [scopeTouched, scopeOptions?.defaultScope]);
 
   const [selectedId, setSelectedId] = useState<Id<"eventTypes"> | null>(
     (templateId as Id<"eventTypes"> | undefined) ?? null,
@@ -349,6 +364,10 @@ export default function NewEventScreen() {
         name: finalName,
         eventDate: ts,
         location: location.trim() || undefined,
+        // Only override the server's own default when the picker is actually
+        // shown (central-capable caller) — everyone else's create call omits
+        // `scope` entirely, so `createFromTemplate` resolves its own default.
+        ...(scopeOptions?.isCentral ? { scope } : {}),
       });
       router.replace(`/event/${id}`);
     } catch (e) {
@@ -422,6 +441,21 @@ export default function NewEventScreen() {
             value={location}
             onChangeText={setLocation}
           />
+          {scopeOptions?.isCentral ? (
+            <Field
+              label="Belongs to"
+              hint="Money attribution — editable later from the event's Money tab."
+            >
+              <ScopeToggle
+                value={scope}
+                chapterName={scopeOptions.chapterName}
+                onChange={(next) => {
+                  setScopeTouched(true);
+                  setScope(next);
+                }}
+              />
+            </Field>
+          ) : null}
           {error ? <Text style={styles.error}>{error}</Text> : null}
           <Button
             title="Create event"

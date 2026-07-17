@@ -729,9 +729,10 @@ export const approvals = defineTable({
 // ── Reattribution audit (the split's ledger) ─────────────────────────────────
 /** WP-2.2: one append-only row per BULK reattribution operation — the audit
  *  trail behind the retroactive split. A bulk `reassignTransactions` (many txns
- *  cross the central boundary) or a `transferProjectScope` (a project's budgets
- *  + txns move scope) writes exactly ONE row here, capturing who, when, the txn
- *  ids touched (count = `transactionIds.length`), and a from→to summary.
+ *  cross the central boundary), `transferProjectScope` (a project's budgets
+ *  + txns move scope), or `transferEventScope` (the event twin) writes exactly
+ *  ONE row here, capturing who, when, the txn ids touched (count =
+ *  `transactionIds.length`), and a from→to summary.
  *
  *  ORG-LEVEL by nature: reattribution is a CENTRAL power that crosses the
  *  chapter boundary, so this table is NOT chapter-scoped like the rest of
@@ -739,7 +740,11 @@ export const approvals = defineTable({
  *  `"central"` sentinel) instead. The read query is central-gated. */
 export const reattributionAudit = defineTable({
   // The kind of bulk operation this row records.
-  kind: v.union(v.literal("bulk_reassign"), v.literal("project_transfer")),
+  kind: v.union(
+    v.literal("bulk_reassign"),
+    v.literal("project_transfer"),
+    v.literal("event_transfer"),
+  ),
   // Who did it: the auth user always; the roster person when the caller has one
   // (a superuser acting without a `people` row leaves `actorPersonId` unset).
   actorUserId: v.id("users"),
@@ -777,6 +782,8 @@ export const reattributionAudit = defineTable({
   // `project_transfer` only: the project whose scope moved + how many of its
   // budgets moved with it (txn count is `transactionIds.length`).
   projectId: v.optional(v.id("projects")),
+  // `event_transfer` only: the event twin of `projectId` above.
+  eventId: v.optional(v.id("events")),
   budgetsMoved: v.optional(v.number()),
   // Optional operator note (why this split move was made).
   note: v.optional(v.string()),
