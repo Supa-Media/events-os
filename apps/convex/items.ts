@@ -875,25 +875,125 @@ export const convertEventItemModule = mutation({
   },
 });
 
+/**
+ * Convert an eventItem into a paid vendor engagement — the backend half of the
+ * Money-page grid's guided "change Type → Vendor" flow (the UI prompt that
+ * lets the caller pick/create the person lands with the PlanGrid follow-up;
+ * this mutation only takes an already-resolved `personId`).
+ *
+ * Cost carry mirrors `convertEventItemModule`'s contract: the item's cost
+ * lives in `fields`, keyed by whichever `type:"currency"` eventColumn the
+ * item's module declares (same dynamic sweep). Unlike a module→module
+ * conversion there's no target column to remap onto — the destination is a
+ * single `amountUsd` — so ANY item carrying more than one cost value is
+ * refused with the same `MULTI_COST_CONVERSION` code rather than silently
+ * picking one. A zero/no-cost item still converts, with `amountUsd` left
+ * undefined.
+ *
+ * Deletion reuses `removeEventItem`'s full side effects (supplies reservation
+ * release + site-map placement cascade) via the shared
+ * `deleteEventItemWithCascade` helper, in the SAME transaction as the
+ * engagement insert — so a thrown refusal leaves the item untouched and
+ * creates no engagement.
+ */
+export const convertItemToVendor = mutation({
+  args: { itemId: v.id("eventItems"), personId: v.id("people") },
+  returns: v.object({ engagementId: v.union(v.id("engagements"), v.null()) }),
+  handler: async (ctx, { itemId, personId }) => {
+    const item = await ctx.db.get(itemId);
+    // Mirrors convertEventItemModule's choice for a missing item: no-op
+    // rather than throw, echoing back an empty result instead of an id that
+    // was never created.
+    if (!item) return { engagementId: null };
+    const event = await requireEvent(ctx, item.eventId);
+    await requireOwned(ctx, "people", personId, "Person");
+
+    const fields = item.fields ?? {};
+    const currencyCols = (
+      await ctx.db
+        .query("eventColumns")
+        .withIndex("by_event_module", (q) =>
+          q.eq("eventId", event._id).eq("module", item.module),
+        )
+        .collect()
+    ).filter((c) => c.type === "currency");
+    const presentCostKeys = currencyCols
+      .map((c) => c.key)
+      .filter((k) => fields[k] !== undefined && fields[k] !== null);
+
+    if (presentCostKeys.length > 1) {
+      throw new ConvexError({
+        code: "MULTI_COST_CONVERSION",
+        message: `"${item.title || "This item"}" has multiple cost values — clear the extra costs before converting it to a vendor.`,
+      });
+    }
+    const amountUsd: number | undefined =
+      presentCostKeys.length === 1
+        ? (fields[presentCostKeys[0]] as number)
+        : undefined;
+
+    // Carry the item's category override only if it's still valid — a
+    // category can be retired after being set on the item, and a retired
+    // category shouldn't block the conversion; just drop it silently.
+    let budgetCategoryId = item.budgetCategoryId;
+    if (budgetCategoryId) {
+      try {
+        await verifyCategory(ctx, event.chapterId, budgetCategoryId);
+      } catch {
+        budgetCategoryId = undefined;
+      }
+    }
+
+    const engagementId = await ctx.db.insert("engagements", {
+      chapterId: event.chapterId,
+      eventId: event._id,
+      personId,
+      type: "paid",
+      service: item.title || undefined,
+      status: "invited",
+      amountUsd,
+      paymentStatus: "unpaid",
+      budgetCategoryId,
+      createdAt: Date.now(),
+    });
+
+    await deleteEventItemWithCascade(ctx, item);
+
+    return { engagementId };
+  },
+});
+
+/**
+ * Full cascade of deleting an eventItem: drop any site-map chips pointing at
+ * it, release the inventory reservation it held (if it linked a
+ * Chapter-Storage asset), then delete the row itself. Shared by
+ * `removeEventItem` and `convertItemToVendor` so both stay byte-for-byte in
+ * sync with the same cleanup instead of drifting apart as two copies.
+ */
+async function deleteEventItemWithCascade(
+  ctx: MutationCtx,
+  item: Doc<"eventItems">,
+): Promise<void> {
+  if (item.module === "supplies") {
+    await deleteEventPlacementsForRef(
+      ctx,
+      String(item.eventId),
+      "supply",
+      String(item._id),
+    );
+    const linked = item.fields?.linkedAssetId as Id<"assets"> | undefined;
+    if (linked) await releaseReservation(ctx, linked, item.eventId);
+  }
+  await ctx.db.delete(item._id);
+}
+
 export const removeEventItem = mutation({
   args: { itemId: v.id("eventItems") },
   handler: async (ctx, { itemId }) => {
     const item = await ctx.db.get(itemId);
     if (!item) return itemId;
     await requireEvent(ctx, item.eventId);
-    // Cascade: drop any site-map chips pointing at this supply item, and release
-    // the inventory reservation the row held (if it linked a Chapter-Storage asset).
-    if (item.module === "supplies") {
-      await deleteEventPlacementsForRef(
-        ctx,
-        String(item.eventId),
-        "supply",
-        String(itemId),
-      );
-      const linked = item.fields?.linkedAssetId as Id<"assets"> | undefined;
-      if (linked) await releaseReservation(ctx, linked, item.eventId);
-    }
-    await ctx.db.delete(itemId);
+    await deleteEventItemWithCascade(ctx, item);
     return itemId;
   },
 });
