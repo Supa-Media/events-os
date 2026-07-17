@@ -1,7 +1,14 @@
 /**
- * Admin "Tickets" tab — the whole shareable-event-page control panel: page
- * setup, publish + share link, ticket tiers, live stats, guest list, door
- * check-in, and blasts. Rendered by event/[id].tsx when the tab is active.
+ * Admin "Event page" tab — the whole shareable-event-page control panel, framed
+ * as a four-phase LAUNCH FLOW instead of one long scroll of equal cards:
+ *
+ *   Design → Publish → Grow → Run
+ *
+ * A stepper tracks progress; one phase is open at a time. Each phase folds in the
+ * work you'd do at that stage — Design (page setup + tickets + giving), Publish
+ * (go-live + link), Grow (blasts + guest list), Run (door check-in + giving
+ * ledger). The live "pulse" strip appears once the page is published, when its
+ * numbers start to mean something. Rendered by event/[id].tsx when active.
  */
 import { useState } from "react";
 import { Text, View } from "react-native";
@@ -14,17 +21,24 @@ import {
   Card,
   CopyButton,
   EmptyState,
-  SectionHeader,
   TextField,
 } from "../../ui";
 import { ToastView } from "../../ui/Toast";
 import { useActionRunner, type ActionRunner } from "../../../lib/useActionToast";
-import { PageSetupCard } from "./PageSetupCard";
-import { TicketTypesCard } from "./TicketTypesCard";
+import { formatDateTime } from "../../../lib/format";
+import { DesignPhase } from "./DesignPhase";
 import { GivingCard } from "./GivingCard";
 import { GuestListCard } from "./GuestListCard";
 import { CheckInCard } from "./CheckInCard";
 import { BlastComposerCard } from "./BlastComposerCard";
+import { LaunchStepper } from "./LaunchStepper";
+import { PhaseSection } from "./PhaseSection";
+import {
+  LAUNCH_PHASES,
+  launchPhaseState,
+  defaultOpenPhase,
+  type LaunchPhaseKey,
+} from "./launchPhases";
 import { formatMoney, publicSiteUrl } from "./helpers";
 
 export default function TicketingTab({ eventId }: { eventId: Id<"events"> }) {
@@ -32,6 +46,11 @@ export default function TicketingTab({ eventId }: { eventId: Id<"events"> }) {
   const data = useQuery(api.ticketing.getAdminPage, { eventId });
   const createPage = useMutation(api.ticketing.createPage);
   const [creating, setCreating] = useState(false);
+  // `undefined` = untouched (fall back to the computed default phase);
+  // `null` = the user collapsed everything; a key = that phase is open.
+  const [openPhase, setOpenPhase] = useState<
+    LaunchPhaseKey | null | undefined
+  >(undefined);
 
   if (data === undefined) {
     return (
@@ -68,52 +87,125 @@ export default function TicketingTab({ eventId }: { eventId: Id<"events"> }) {
     );
   }
 
+  // Narrowed non-null captures — TS drops the `page === null` narrowing inside
+  // the nested phaseBody closure below, so re-bind here.
+  const pageRow = page;
+  const ev = data.event;
+
+  // Per-phase completion + status chips — pure derivation (see launchPhases).
+  const { doneKeys, status } = launchPhaseState(page);
+  // Default open phase = the first thing left to do, until the user taps around.
+  const activePhase: LaunchPhaseKey | null =
+    openPhase === undefined ? defaultOpenPhase(doneKeys) : openPhase;
+
+  const togglePhase = (key: LaunchPhaseKey) =>
+    setOpenPhase(key === activePhase ? null : key);
+
+  const dateLabel = ev?.eventDate ? formatDateTime(ev.eventDate) : null;
+
+  function phaseBody(key: LaunchPhaseKey) {
+    switch (key) {
+      case "design":
+        return (
+          <DesignPhase
+            eventId={eventId}
+            page={pageRow}
+            coverUrl={coverUrl}
+            ticketTypes={ticketTypes}
+            run={run}
+            eventName={ev?.name ?? "Your event"}
+            dateLabel={dateLabel}
+          />
+        );
+      case "publish":
+        return <PublishShareCard page={pageRow} run={run} />;
+      case "grow":
+        return (
+          <View className="gap-5">
+            <PhaseBlock label="Send a blast">
+              <BlastComposerCard eventId={eventId} run={run} />
+            </PhaseBlock>
+            <PhaseBlock label="Guest list">
+              <GuestListCard eventId={eventId} />
+            </PhaseBlock>
+          </View>
+        );
+      case "run":
+        return (
+          <View className="gap-5">
+            <PhaseBlock label="Door check-in">
+              <CheckInCard eventId={eventId} run={run} />
+            </PhaseBlock>
+            <PhaseBlock label="Giving">
+              <GivingCard eventId={eventId} page={pageRow} run={run} />
+            </PhaseBlock>
+          </View>
+        );
+    }
+  }
+
   return (
     <View>
       <ToastView toast={toast} onDismiss={dismiss} />
 
-      <SectionHeader title="Page setup" />
-      <PageSetupCard page={page} coverUrl={coverUrl} run={run} />
+      {/* Live pulse — meaningful only once the page is live. */}
+      {page.published ? (
+        <View className="mb-3 flex-row flex-wrap gap-2">
+          <StatCard label="Going" value={String(page.goingCount)} />
+          <StatCard label="Maybe" value={String(page.maybeCount)} />
+          <StatCard label="Tickets" value={String(page.ticketsSoldCount)} />
+          <StatCard label="Revenue" value={formatMoney(page.revenueCents)} />
+          <StatCard label="Given" value={formatMoney(page.donationsCents ?? 0)} />
+        </View>
+      ) : null}
 
-      <SectionHeader title="Publish & share" />
-      <PublishShareCard page={page} run={run} />
-
-      <SectionHeader title="Tickets" count={ticketTypes.length} />
-      <TicketTypesCard
-        eventId={eventId}
-        page={page}
-        ticketTypes={ticketTypes}
-        run={run}
+      {/* The spine */}
+      <LaunchStepper
+        activeKey={activePhase}
+        doneKeys={doneKeys}
+        onSelect={(key) => setOpenPhase(key)}
       />
 
-      <SectionHeader title="At a glance" />
-      <View className="flex-row flex-wrap gap-2">
-        <StatCard label="Going" value={String(page.goingCount)} />
-        <StatCard label="Maybe" value={String(page.maybeCount)} />
-        <StatCard label="Tickets sold" value={String(page.ticketsSoldCount)} />
-        <StatCard label="Revenue" value={formatMoney(page.revenueCents)} />
-        <StatCard label="Given" value={formatMoney(page.donationsCents ?? 0)} />
+      {/* The phases */}
+      <View className="gap-3">
+        {LAUNCH_PHASES.map((phase) => (
+          <PhaseSection
+            key={phase.key}
+            phase={phase}
+            status={status[phase.key]}
+            open={activePhase === phase.key}
+            onToggleOpen={() => togglePhase(phase.key)}
+          >
+            {phaseBody(phase.key)}
+          </PhaseSection>
+        ))}
       </View>
-
-      <SectionHeader title="Giving" />
-      <GivingCard eventId={eventId} page={page} run={run} />
-
-      <SectionHeader title="Guest list" />
-      <GuestListCard eventId={eventId} />
-
-      <SectionHeader title="Check-in" />
-      <CheckInCard eventId={eventId} run={run} />
-
-      <SectionHeader title="Blasts" />
-      <BlastComposerCard eventId={eventId} run={run} />
     </View>
   );
 }
 
-/** One small stat tile in the "At a glance" strip. */
+/** A small labelled block grouping one card inside a phase body. */
+function PhaseBlock({
+  label,
+  children,
+}: {
+  label: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <View>
+      <Text className="mb-2 text-xs font-bold uppercase tracking-wider text-muted">
+        {label}
+      </Text>
+      {children}
+    </View>
+  );
+}
+
+/** One small stat tile in the live "pulse" strip. */
 function StatCard({ label, value }: { label: string; value: string }) {
   return (
-    <Card padding="sm" className="min-w-[110px] flex-1">
+    <Card padding="sm" className="min-w-[104px] flex-1">
       <Text className="text-2xs font-bold uppercase tracking-wider text-muted">
         {label}
       </Text>
@@ -148,7 +240,7 @@ function PublishShareCard({
   }
 
   return (
-    <Card>
+    <View>
       <View className="flex-row items-center gap-3">
         <Badge
           label={page.published ? "Live" : "Draft"}
@@ -179,11 +271,11 @@ function PublishShareCard({
         </Text>
         <CopyButton text={link} label />
       </View>
-      {!page.published ? (
-        <Text className="mt-1.5 text-xs text-muted">
-          Publish to make the link live.
-        </Text>
-      ) : null}
+      <Text className="mt-1.5 text-xs text-muted">
+        {page.published
+          ? "Your page is live — share the link far and wide."
+          : "Publish to make the link live."}
+      </Text>
 
       <View className="mt-3">
         <TextField
@@ -197,6 +289,6 @@ function PublishShareCard({
           hint="Lowercase letters, numbers and dashes."
         />
       </View>
-    </Card>
+    </View>
   );
 }

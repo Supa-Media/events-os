@@ -22,9 +22,22 @@ type Props = {
   page: Doc<"eventPages">;
   ticketTypes: TicketType[];
   run: ActionRunner["run"];
+  /** Hide the "Sell tickets" master toggle — used when the enclosing card
+   *  (the Design phase setup checklist) already carries that switch in its
+   *  header. Tier rows and the add form still render. */
+  hideMasterToggle?: boolean;
+  /** Render bare (no Card wrapper) — for embedding inside another surface. */
+  bare?: boolean;
 };
 
-export function TicketTypesCard({ eventId, page, ticketTypes, run }: Props) {
+export function TicketTypesCard({
+  eventId,
+  page,
+  ticketTypes,
+  run,
+  hideMasterToggle = false,
+  bare = false,
+}: Props) {
   const updatePage = useMutation(api.ticketing.updatePage);
   const createTicketType = useMutation(api.ticketing.createTicketType);
   const updateTicketType = useMutation(api.ticketing.updateTicketType);
@@ -49,19 +62,21 @@ export function TicketTypesCard({ eventId, page, ticketTypes, run }: Props) {
     });
   }
 
-  return (
-    <Card>
-      <ToggleRow
-        label="Sell tickets on the page"
-        hint="Show the ticket tiers below on the public page."
-        value={page.ticketsEnabled === true}
-        onToggle={(next) =>
-          void run(
-            () => updatePage({ pageId: page._id, patch: { ticketsEnabled: next } }),
-            { errorTitle: "Couldn't update page" },
-          )
-        }
-      />
+  const body = (
+    <>
+      {hideMasterToggle ? null : (
+        <ToggleRow
+          label="Sell tickets on the page"
+          hint="Show the ticket tiers below on the public page."
+          value={page.ticketsEnabled === true}
+          onToggle={(next) =>
+            void run(
+              () => updatePage({ pageId: page._id, patch: { ticketsEnabled: next } }),
+              { errorTitle: "Couldn't update page" },
+            )
+          }
+        />
+      )}
 
       {ticketTypes.length === 0 && !adding ? (
         <Text className="py-3 text-base text-muted">
@@ -167,6 +182,8 @@ export function TicketTypesCard({ eventId, page, ticketTypes, run }: Props) {
           />
         </View>
       )}
-    </Card>
+    </>
   );
+
+  return bare ? body : <Card>{body}</Card>;
 }
