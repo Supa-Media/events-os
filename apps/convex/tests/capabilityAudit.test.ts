@@ -1,6 +1,6 @@
 import { describe, expect, test } from "vitest";
 import { ConvexError } from "convex/values";
-import { api } from "../_generated/api";
+import { api, internal } from "../_generated/api";
 import type { Id } from "../_generated/dataModel";
 import { newT, run, setupChapter, type ChapterSetup } from "./setup.helpers";
 import { runSeedSeatDefs } from "../migrations/0022_seed_seat_defs";
@@ -340,6 +340,51 @@ describe("seats.capabilityAudit — orphan stored grants: legacy-mirror gap yes,
 
     const result = await audit(s);
     expect(result.mismatches.filter((m) => m.personId === person)).toEqual([]);
+  });
+});
+
+describe("seats.capabilityAudit — internal ops twin (capabilityAuditSystem)", () => {
+  test("capabilityAuditSystem (internalQuery, no caller identity) returns results identical to capabilityAudit for the same data", async () => {
+    const s = await superuserSetup();
+    const treasurerDef = await defBySlug(s, "treasurer");
+    const person = await makePerson(s, s.chapterId, "Tara Treasurer");
+
+    // Same drift setup as the "flip-simulation drift" describe block above —
+    // proves parity on a non-trivial (mismatches-bearing) run, not just an
+    // empty "clean" one.
+    await run(s.t, (ctx) =>
+      ctx.db.insert("seatAssignments", {
+        seatDefId: treasurerDef._id,
+        scope: s.chapterId,
+        personId: person,
+        createdAt: Date.now(),
+      }),
+    );
+
+    const viaPublicQuery = await audit(s);
+    // `capabilityAuditSystem` is an `internalQuery` — called directly via
+    // `t.query(internal...)` (mirroring `npx convex run`'s admin access),
+    // with NO superuser-authenticated `s.as` caller and no auth setup at
+    // all. This is the whole point: ops can run it against prod where there
+    // is no user identity for `requireSuperuser` to check.
+    const viaInternalQuery = await s.t.query(
+      internal.seats.capabilityAuditSystem,
+      {},
+    );
+
+    expect(viaInternalQuery).toEqual(viaPublicQuery);
+    expect(viaInternalQuery.status).toBe("mismatches");
+    expect(viaInternalQuery.mismatches.length).toBeGreaterThan(0);
+  });
+
+  test("capabilityAuditSystem runs with no authenticated caller at all, unlike capabilityAudit which throws without superuser", async () => {
+    const t = newT();
+    await run(t, (ctx) => runSeedSeatDefs(ctx));
+
+    // No `setupChapter`/`s.as` caller — nothing is signed in.
+    const result = await t.query(internal.seats.capabilityAuditSystem, {});
+    expect(result.status).toBe("clean");
+    expect(result.checkedPeople).toBe(0);
   });
 });
 

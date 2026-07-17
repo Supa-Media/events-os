@@ -20,7 +20,7 @@
  * its "holders" are computed by rolling up every chapter's `chapter_director`
  * (the chapter chart's root seat), never assigned directly.
  */
-import { query, mutation } from "./_generated/server";
+import { query, mutation, internalQuery } from "./_generated/server";
 import { ConvexError, v } from "convex/values";
 import { Doc, Id } from "./_generated/dataModel";
 import type { QueryCtx, MutationCtx } from "./_generated/server";
@@ -1035,6 +1035,238 @@ function maxRole(
   return FINANCE_ROLE_RANK[a] >= FINANCE_ROLE_RANK[b] ? a : b;
 }
 
+/** Shared response shape for `capabilityAudit` and its ops-only twin
+ *  `capabilityAuditSystem` — see the doc comment above `capabilityAudit` for
+ *  the full framing of what's returned. */
+const capabilityAuditReturns = v.object({
+  checkedPeople: v.number(),
+  mismatches: v.array(
+    v.object({
+      personId: v.id("people"),
+      scope: v.union(v.id("chapters"), v.literal("central")),
+      kind: capabilityAuditMismatchKindValidator,
+      // Heterogeneous by `kind` (a role name / "central-reach" /
+      // "accounts" / a legacyTitle) — see the per-kind comments below for
+      // exactly what each side means. `null` means "no value on this
+      // side" (not the `"central"` scope sentinel — that's a `scope`
+      // value, never a `seatSide`/`storedSide` value).
+      seatSide: v.union(v.string(), v.null()),
+      storedSide: v.union(v.string(), v.null()),
+    }),
+  ),
+  status: v.union(
+    v.literal("clean"),
+    v.literal("mismatches"),
+    v.literal("truncated"),
+  ),
+});
+
+/**
+ * The actual flip-simulation audit — extracted out of `capabilityAudit` so
+ * `capabilityAuditSystem` (the ops-only `internalQuery` twin below) can reuse
+ * the EXACT same logic instead of a hand-copied fork that could drift. Takes
+ * NO auth dependency and performs NO auth check itself — every caller of this
+ * function is responsible for its own gate (see the two exports below for
+ * what each one uses).
+ */
+async function capabilityAuditImpl(ctx: QueryCtx) {
+  const seatAssignmentRows = await ctx.db
+    .query("seatAssignments")
+    .take(AUDIT_TABLE_SCAN_LIMIT);
+  const financeRoleRows = await ctx.db
+    .query("financeRoles")
+    .take(AUDIT_TABLE_SCAN_LIMIT);
+  const specializedRoleRows = await ctx.db
+    .query("specializedRoles")
+    .take(AUDIT_TABLE_SCAN_LIMIT);
+
+  let truncated = false;
+  if (seatAssignmentRows.length === AUDIT_TABLE_SCAN_LIMIT) {
+    truncated = true;
+    console.warn(
+      `[seats.capabilityAudit] hit AUDIT_TABLE_SCAN_LIMIT (${AUDIT_TABLE_SCAN_LIMIT}) reading seatAssignments; audit may be incomplete.`,
+    );
+  }
+  if (financeRoleRows.length === AUDIT_TABLE_SCAN_LIMIT) {
+    truncated = true;
+    console.warn(
+      `[seats.capabilityAudit] hit AUDIT_TABLE_SCAN_LIMIT (${AUDIT_TABLE_SCAN_LIMIT}) reading financeRoles; audit may be incomplete.`,
+    );
+  }
+  if (specializedRoleRows.length === AUDIT_TABLE_SCAN_LIMIT) {
+    truncated = true;
+    console.warn(
+      `[seats.capabilityAudit] hit AUDIT_TABLE_SCAN_LIMIT (${AUDIT_TABLE_SCAN_LIMIT}) reading specializedRoles; audit may be incomplete.`,
+    );
+  }
+
+  // Group every already-loaded row by personId (avoids re-querying per
+  // person — the three tables above are the FULL bounded universe already).
+  const assignmentsByPerson = new Map<Id<"people">, Doc<"seatAssignments">[]>();
+  for (const r of seatAssignmentRows) {
+    const arr = assignmentsByPerson.get(r.personId) ?? [];
+    arr.push(r);
+    assignmentsByPerson.set(r.personId, arr);
+  }
+  const financeByPerson = new Map<Id<"people">, Doc<"financeRoles">[]>();
+  for (const r of financeRoleRows) {
+    const arr = financeByPerson.get(r.personId) ?? [];
+    arr.push(r);
+    financeByPerson.set(r.personId, arr);
+  }
+  const specializedByPerson = new Map<Id<"people">, Doc<"specializedRoles">[]>();
+  for (const r of specializedRoleRows) {
+    const arr = specializedByPerson.get(r.personId) ?? [];
+    arr.push(r);
+    specializedByPerson.set(r.personId, arr);
+  }
+
+  // The union: every person with SOME grant, from ANY of the three tables.
+  const personIds = new Set<Id<"people">>([
+    ...assignmentsByPerson.keys(),
+    ...financeByPerson.keys(),
+    ...specializedByPerson.keys(),
+  ]);
+
+  const mismatches: {
+    personId: Id<"people">;
+    scope: Id<"chapters"> | "central";
+    kind:
+      | "flip_changes_finance_role"
+      | "flip_changes_central_reach"
+      | "flip_changes_accounts_access"
+      | "seat_legacy_title_missing_specializedRoles_mirror"
+      | "specializedRoles_row_missing_seat_mirror";
+    seatSide: string | null;
+    storedSide: string | null;
+  }[] = [];
+  const recordMismatch = (entry: (typeof mismatches)[number]) => {
+    if (mismatches.length >= AUDIT_MISMATCH_CAP) {
+      truncated = true;
+      return;
+    }
+    mismatches.push(entry);
+  };
+
+  for (const personId of personIds) {
+    // Seat-derived side: the SAME helper the future enforcement flip would
+    // call — dogfooded here rather than re-implemented.
+    const seatDerived = await getSeatDerivedCapabilities(ctx, personId);
+    const personAssignments = assignmentsByPerson.get(personId) ?? [];
+    const personFinance = financeByPerson.get(personId) ?? [];
+    const personSpecialized = specializedByPerson.get(personId) ?? [];
+    const person = await ctx.db.get(personId);
+
+    // ── (a)+(b) financeRole flip simulation, per scope. Scope universe =
+    // every scope the person has EITHER a seat-derived entry OR a stored
+    // financeRoles row for.
+    const scopeKeys = new Set<string>([
+      ...Object.keys(seatDerived),
+      ...personFinance.map((r) => String(r.chapterId)),
+    ]);
+    for (const key of scopeKeys) {
+      const scope = scopeFromKey(key);
+      const todayRole = todaysRoleAtScope(personFinance, scope);
+      const postFlipRole = maxRole(seatDerived[key]?.financeRole ?? null, todayRole);
+      if (todayRole !== postFlipRole) {
+        recordMismatch({
+          personId,
+          scope,
+          kind: "flip_changes_finance_role",
+          seatSide: postFlipRole,
+          storedSide: todayRole,
+        });
+      }
+    }
+
+    // ── isCentral flip simulation — whole-person, role-agnostic. Can only
+    // ever flip false→true (the union formula never drops a stored grant),
+    // but compared as a genuine equality check rather than assumed, so a
+    // future non-monotonic flip formula wouldn't silently go unaudited.
+    const seatAnyCentralReach = Object.values(seatDerived).some(
+      (caps) => caps.centralReach,
+    );
+    const todayCentral = todaysIsCentral(personFinance);
+    const postFlipCentral = todayCentral || seatAnyCentralReach;
+    if (todayCentral !== postFlipCentral) {
+      recordMismatch({
+        personId,
+        scope: "central",
+        kind: "flip_changes_central_reach",
+        seatSide: postFlipCentral ? "central-reach" : null,
+        storedSide: todayCentral ? "central-reach" : null,
+      });
+    }
+
+    // ── accountsAccess flip simulation — central only (see doc comment).
+    const seatAccounts = seatDerived["central"]?.accountsAccess ?? false;
+    const todayAccounts = await todaysAccountsAccessForPerson(
+      ctx,
+      person,
+      specializedByPerson,
+    );
+    const postFlipAccounts = todayAccounts || seatAccounts;
+    if (todayAccounts !== postFlipAccounts) {
+      recordMismatch({
+        personId,
+        scope: "central",
+        kind: "flip_changes_accounts_access",
+        seatSide: postFlipAccounts ? "accounts" : null,
+        storedSide: todayAccounts ? "accounts" : null,
+      });
+    }
+
+    // ── (c) legacyTitle seat <-> specializedRoles mirror, both directions
+    // — data-integrity, NOT a capability-outcome comparison (see the
+    // section doc above).
+    const legacyPairs: { scope: Id<"chapters"> | "central"; legacyTitle: string }[] = [];
+    for (const a of personAssignments) {
+      const def = await ctx.db.get(a.seatDefId);
+      if (!def || !def.legacyTitle) continue;
+      legacyPairs.push({ scope: a.scope, legacyTitle: def.legacyTitle });
+
+      const hasMirror = personSpecialized.some(
+        (r) => r.scope === a.scope && r.title === def.legacyTitle,
+      );
+      if (!hasMirror) {
+        recordMismatch({
+          personId,
+          scope: a.scope,
+          kind: "seat_legacy_title_missing_specializedRoles_mirror",
+          seatSide: def.legacyTitle,
+          storedSide: null,
+        });
+      }
+    }
+    for (const r of personSpecialized) {
+      const hasMirror = legacyPairs.some(
+        (p) => p.scope === r.scope && p.legacyTitle === r.title,
+      );
+      if (!hasMirror) {
+        recordMismatch({
+          personId,
+          scope: r.scope,
+          kind: "specializedRoles_row_missing_seat_mirror",
+          seatSide: null,
+          storedSide: r.title,
+        });
+      }
+    }
+  }
+
+  const status: "clean" | "mismatches" | "truncated" = truncated
+    ? "truncated"
+    : mismatches.length > 0
+      ? "mismatches"
+      : "clean";
+
+  return {
+    checkedPeople: personIds.size,
+    mismatches,
+    status,
+  };
+}
+
 /**
  * Capability shadow audit — superuser-gated (same check `assignSeat`/
  * `unassignSeat` use), 100% READ-ONLY. A FLIP SIMULATION: for every person
@@ -1078,225 +1310,39 @@ function maxRole(
  */
 export const capabilityAudit = query({
   args: {},
-  returns: v.object({
-    checkedPeople: v.number(),
-    mismatches: v.array(
-      v.object({
-        personId: v.id("people"),
-        scope: v.union(v.id("chapters"), v.literal("central")),
-        kind: capabilityAuditMismatchKindValidator,
-        // Heterogeneous by `kind` (a role name / "central-reach" /
-        // "accounts" / a legacyTitle) — see the per-kind comments below for
-        // exactly what each side means. `null` means "no value on this
-        // side" (not the `"central"` scope sentinel — that's a `scope`
-        // value, never a `seatSide`/`storedSide` value).
-        seatSide: v.union(v.string(), v.null()),
-        storedSide: v.union(v.string(), v.null()),
-      }),
-    ),
-    status: v.union(
-      v.literal("clean"),
-      v.literal("mismatches"),
-      v.literal("truncated"),
-    ),
-  }),
+  returns: capabilityAuditReturns,
   handler: async (ctx) => {
     await requireSuperuser(ctx);
+    return await capabilityAuditImpl(ctx);
+  },
+});
 
-    const seatAssignmentRows = await ctx.db
-      .query("seatAssignments")
-      .take(AUDIT_TABLE_SCAN_LIMIT);
-    const financeRoleRows = await ctx.db
-      .query("financeRoles")
-      .take(AUDIT_TABLE_SCAN_LIMIT);
-    const specializedRoleRows = await ctx.db
-      .query("specializedRoles")
-      .take(AUDIT_TABLE_SCAN_LIMIT);
-
-    let truncated = false;
-    if (seatAssignmentRows.length === AUDIT_TABLE_SCAN_LIMIT) {
-      truncated = true;
-      console.warn(
-        `[seats.capabilityAudit] hit AUDIT_TABLE_SCAN_LIMIT (${AUDIT_TABLE_SCAN_LIMIT}) reading seatAssignments; audit may be incomplete.`,
-      );
-    }
-    if (financeRoleRows.length === AUDIT_TABLE_SCAN_LIMIT) {
-      truncated = true;
-      console.warn(
-        `[seats.capabilityAudit] hit AUDIT_TABLE_SCAN_LIMIT (${AUDIT_TABLE_SCAN_LIMIT}) reading financeRoles; audit may be incomplete.`,
-      );
-    }
-    if (specializedRoleRows.length === AUDIT_TABLE_SCAN_LIMIT) {
-      truncated = true;
-      console.warn(
-        `[seats.capabilityAudit] hit AUDIT_TABLE_SCAN_LIMIT (${AUDIT_TABLE_SCAN_LIMIT}) reading specializedRoles; audit may be incomplete.`,
-      );
-    }
-
-    // Group every already-loaded row by personId (avoids re-querying per
-    // person — the three tables above are the FULL bounded universe already).
-    const assignmentsByPerson = new Map<Id<"people">, Doc<"seatAssignments">[]>();
-    for (const r of seatAssignmentRows) {
-      const arr = assignmentsByPerson.get(r.personId) ?? [];
-      arr.push(r);
-      assignmentsByPerson.set(r.personId, arr);
-    }
-    const financeByPerson = new Map<Id<"people">, Doc<"financeRoles">[]>();
-    for (const r of financeRoleRows) {
-      const arr = financeByPerson.get(r.personId) ?? [];
-      arr.push(r);
-      financeByPerson.set(r.personId, arr);
-    }
-    const specializedByPerson = new Map<Id<"people">, Doc<"specializedRoles">[]>();
-    for (const r of specializedRoleRows) {
-      const arr = specializedByPerson.get(r.personId) ?? [];
-      arr.push(r);
-      specializedByPerson.set(r.personId, arr);
-    }
-
-    // The union: every person with SOME grant, from ANY of the three tables.
-    const personIds = new Set<Id<"people">>([
-      ...assignmentsByPerson.keys(),
-      ...financeByPerson.keys(),
-      ...specializedByPerson.keys(),
-    ]);
-
-    const mismatches: {
-      personId: Id<"people">;
-      scope: Id<"chapters"> | "central";
-      kind:
-        | "flip_changes_finance_role"
-        | "flip_changes_central_reach"
-        | "flip_changes_accounts_access"
-        | "seat_legacy_title_missing_specializedRoles_mirror"
-        | "specializedRoles_row_missing_seat_mirror";
-      seatSide: string | null;
-      storedSide: string | null;
-    }[] = [];
-    const recordMismatch = (entry: (typeof mismatches)[number]) => {
-      if (mismatches.length >= AUDIT_MISMATCH_CAP) {
-        truncated = true;
-        return;
-      }
-      mismatches.push(entry);
-    };
-
-    for (const personId of personIds) {
-      // Seat-derived side: the SAME helper the future enforcement flip would
-      // call — dogfooded here rather than re-implemented.
-      const seatDerived = await getSeatDerivedCapabilities(ctx, personId);
-      const personAssignments = assignmentsByPerson.get(personId) ?? [];
-      const personFinance = financeByPerson.get(personId) ?? [];
-      const personSpecialized = specializedByPerson.get(personId) ?? [];
-      const person = await ctx.db.get(personId);
-
-      // ── (a)+(b) financeRole flip simulation, per scope. Scope universe =
-      // every scope the person has EITHER a seat-derived entry OR a stored
-      // financeRoles row for.
-      const scopeKeys = new Set<string>([
-        ...Object.keys(seatDerived),
-        ...personFinance.map((r) => String(r.chapterId)),
-      ]);
-      for (const key of scopeKeys) {
-        const scope = scopeFromKey(key);
-        const todayRole = todaysRoleAtScope(personFinance, scope);
-        const postFlipRole = maxRole(seatDerived[key]?.financeRole ?? null, todayRole);
-        if (todayRole !== postFlipRole) {
-          recordMismatch({
-            personId,
-            scope,
-            kind: "flip_changes_finance_role",
-            seatSide: postFlipRole,
-            storedSide: todayRole,
-          });
-        }
-      }
-
-      // ── isCentral flip simulation — whole-person, role-agnostic. Can only
-      // ever flip false→true (the union formula never drops a stored grant),
-      // but compared as a genuine equality check rather than assumed, so a
-      // future non-monotonic flip formula wouldn't silently go unaudited.
-      const seatAnyCentralReach = Object.values(seatDerived).some(
-        (caps) => caps.centralReach,
-      );
-      const todayCentral = todaysIsCentral(personFinance);
-      const postFlipCentral = todayCentral || seatAnyCentralReach;
-      if (todayCentral !== postFlipCentral) {
-        recordMismatch({
-          personId,
-          scope: "central",
-          kind: "flip_changes_central_reach",
-          seatSide: postFlipCentral ? "central-reach" : null,
-          storedSide: todayCentral ? "central-reach" : null,
-        });
-      }
-
-      // ── accountsAccess flip simulation — central only (see doc comment).
-      const seatAccounts = seatDerived["central"]?.accountsAccess ?? false;
-      const todayAccounts = await todaysAccountsAccessForPerson(
-        ctx,
-        person,
-        specializedByPerson,
-      );
-      const postFlipAccounts = todayAccounts || seatAccounts;
-      if (todayAccounts !== postFlipAccounts) {
-        recordMismatch({
-          personId,
-          scope: "central",
-          kind: "flip_changes_accounts_access",
-          seatSide: postFlipAccounts ? "accounts" : null,
-          storedSide: todayAccounts ? "accounts" : null,
-        });
-      }
-
-      // ── (c) legacyTitle seat <-> specializedRoles mirror, both directions
-      // — data-integrity, NOT a capability-outcome comparison (see the
-      // section doc above).
-      const legacyPairs: { scope: Id<"chapters"> | "central"; legacyTitle: string }[] = [];
-      for (const a of personAssignments) {
-        const def = await ctx.db.get(a.seatDefId);
-        if (!def || !def.legacyTitle) continue;
-        legacyPairs.push({ scope: a.scope, legacyTitle: def.legacyTitle });
-
-        const hasMirror = personSpecialized.some(
-          (r) => r.scope === a.scope && r.title === def.legacyTitle,
-        );
-        if (!hasMirror) {
-          recordMismatch({
-            personId,
-            scope: a.scope,
-            kind: "seat_legacy_title_missing_specializedRoles_mirror",
-            seatSide: def.legacyTitle,
-            storedSide: null,
-          });
-        }
-      }
-      for (const r of personSpecialized) {
-        const hasMirror = legacyPairs.some(
-          (p) => p.scope === r.scope && p.legacyTitle === r.title,
-        );
-        if (!hasMirror) {
-          recordMismatch({
-            personId,
-            scope: r.scope,
-            kind: "specializedRoles_row_missing_seat_mirror",
-            seatSide: null,
-            storedSide: r.title,
-          });
-        }
-      }
-    }
-
-    const status: "clean" | "mismatches" | "truncated" = truncated
-      ? "truncated"
-      : mismatches.length > 0
-        ? "mismatches"
-        : "clean";
-
-    return {
-      checkedPeople: personIds.size,
-      mismatches,
-      status,
-    };
+/**
+ * Ops-only twin of `capabilityAudit` — an `internalQuery`, not a `query`.
+ * Internal functions carry no client-reachable HTTP/API surface at all: only
+ * `query`/`mutation`/`action` exports are exposed to the public API Convex
+ * generates, so `internalQuery` exports are unreachable from the mobile/web
+ * app or any outside caller by construction, regardless of auth state. The
+ * only ways to reach one are other server-side Convex functions (via
+ * `ctx.runQuery(internal...)`) or `npx convex run`/the dashboard, both of
+ * which already require a deploy key / admin access to the deployment
+ * itself. That's why this has NO `requireSuperuser` call — there is no
+ * end-user identity to gate here (`npx convex run --prod` has none, which is
+ * exactly why `capabilityAudit` can't be run that way); the access control
+ * for this surface is deployment access, not an in-app role check.
+ *
+ * Exists so ops can run the flip-simulation audit against prod
+ * (`npx convex run --prod seats:capabilityAuditSystem`) ahead of the
+ * enforcement flip, without a superuser-authenticated user session. Calls
+ * the identical `capabilityAuditImpl` `capabilityAudit` does — same reads,
+ * same formulas, same output shape — so the two are guaranteed to agree;
+ * pinned by a test in `capabilityAudit.test.ts` asserting byte-identical
+ * results for the same data.
+ */
+export const capabilityAuditSystem = internalQuery({
+  args: {},
+  returns: capabilityAuditReturns,
+  handler: async (ctx) => {
+    return await capabilityAuditImpl(ctx);
   },
 });
