@@ -34,6 +34,7 @@ import { backfillCourseCompletions } from "./0018_backfill_course_completions";
 import { backfillRunOfShowDuration } from "./0019_backfill_run_of_show_duration";
 import { permitsStatesAndFallback } from "./0020_permits_states_and_fallback";
 import { inventoryCategoryToTags } from "./0021_inventory_category_to_tags";
+import { seedSeatDefs } from "./0022_seed_seat_defs";
 
 /** One registered migration: a stable `name` (the ledger key) + its effect. */
 export type Migration = {
@@ -66,4 +67,6 @@ export const MIGRATIONS: Migration[] = [
   permitsStatesAndFallback,
   // Inventory ⇄ Supplies — fold the retired `category` enum into free-form tags.
   inventoryCategoryToTags,
+  // Org chart v1 — seed seatDefs from the shared SEAT_DEFS template.
+  seedSeatDefs,
 ];

@@ -63,6 +63,7 @@ import {
   cardDetailsRevealAttempts,
   financeSettings,
 } from "./schema/finances";
+import { seatDefs, seatAssignments } from "./schema/seats";
 import { assets, assetReservations } from "./schema/inventory";
 import { docs } from "./schema/docs";
 import { siteMarkers, siteShapes, siteMapPlacements } from "./schema/siteMap";
@@ -221,6 +222,13 @@ const schema = defineSchema({
   // WP-C.3: rate limiter for the HOLDER-ONLY card-details reveal (add-to-wallet).
   cardDetailsRevealAttempts,
   financeSettings,
+
+  // Org chart (seats) — a tree of seats shared by the central chart + every
+  // chapter's identical chapter chart; occupancy is per-scope (see
+  // schema/seats.ts). Seed-only for now: assignment mutations land in a
+  // later PR.
+  seatDefs,
+  seatAssignments,
 
   // Inventory (M5.5) — chapter-owned asset registry + per-event reservations.
   // The first chapter-level typed entity; events RESERVE from the registry and
