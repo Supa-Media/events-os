@@ -17,6 +17,19 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 // A fixed "today" so ±10/±45-day windows are deterministic across runs.
 const NOW = Date.UTC(2026, 5, 15, 17, 0, 0); // June 15, 2026
 
+/** Mirrors `reconcileSuggest.ts#shortDateLabel` exactly (not exported —
+ *  re-derived here so tests can assert the EXACT label text a row shows,
+ *  which is how the "no fabricated date" regression tests catch a wrong
+ *  source field). */
+function shortDateLabel(ts: number): string {
+  return new Date(ts).toLocaleDateString("en-US", {
+    timeZone: "America/New_York",
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+  });
+}
+
 async function seedSelfPerson(s: ChapterSetup): Promise<Id<"people">> {
   return await run(s.t, (ctx) =>
     ctx.db.insert("people", {
@@ -379,25 +392,34 @@ describe("reconcileSuggest.rankForPicker: tier 3 (event/deadline proximity)", ()
     expect(row?.reason).toContain("10 days away");
   });
 
-  test("a project's DEADLINE (not startDate) drives tier 3", async () => {
+  test("a project's DEADLINE (not startDate) drives tier 3 AND the displayed label/dateLabel", async () => {
     const t = newT();
     const s = await setupChapter(t);
     await asChapterViewer(s);
     // startDate is far away; deadline is close — tier 3 must use the deadline.
+    const deadlineTs = NOW + 3 * DAY_MS;
+    const startDateTs = NOW + 500 * DAY_MS;
     const projectId = await seedProject(s, "Pitch Deck for EP", {
-      startDate: NOW + 500 * DAY_MS,
-      deadline: NOW + 3 * DAY_MS,
+      startDate: startDateTs,
+      deadline: deadlineTs,
     });
     const txnId = await seedSubjectTxn(s, s.chapterId);
 
     const result = await s.as.query(api.reconcileSuggest.rankForPicker, {
       transactionId: txnId,
     });
-    const row = result.rows.find((r) => r.refId === (projectId as string));
-    expect(row?.tier).toBe(3);
+    const row = result.rows.find((r) => r.refId === (projectId as string))!;
+    expect(row.tier).toBe(3);
+    // The row's label AND dateLabel must come from `deadline` — never
+    // `startDate` — so the displayed date always agrees with the reason.
+    const deadlineLabel = shortDateLabel(deadlineTs);
+    const startDateLabel = shortDateLabel(startDateTs);
+    expect(row.label).toBe(`Pitch Deck for EP · ${deadlineLabel}`);
+    expect(row.dateLabel).toBe(deadlineLabel);
+    expect(row.label).not.toContain(startDateLabel);
   });
 
-  test("a project with NO deadline never gets tier 3 (falls to tier 4)", async () => {
+  test("a project with NO deadline never gets tier 3 (falls to tier 4) and shows NO date claim — bare name only, even though startDate/createdAt exist", async () => {
     const t = newT();
     const s = await setupChapter(t);
     await asChapterViewer(s);
@@ -409,8 +431,55 @@ describe("reconcileSuggest.rankForPicker: tier 3 (event/deadline proximity)", ()
     const result = await s.as.query(api.reconcileSuggest.rankForPicker, {
       transactionId: txnId,
     });
-    const row = result.rows.find((r) => r.refId === (projectId as string));
-    expect(row?.tier).toBe(4);
+    const row = result.rows.find((r) => r.refId === (projectId as string))!;
+    expect(row.tier).toBe(4);
+    // NO FABRICATED DATE: bare name, no "· <date>" suffix borrowed from
+    // startDate/createdAt, and no dateLabel at all.
+    expect(row.label).toBe("Deadline-less Project");
+    expect(row.dateLabel).toBeNull();
+  });
+
+  test("a project's label shows its REAL deadline, never createdAt — even when the deadline itself falls outside both tier windows (tier 4)", async () => {
+    // Regression for the live bug: "Love Wins · Jul 17, 2026 — Project
+    // deadline 5 days away" where Jul 17 was TODAY (the row's `createdAt`,
+    // via a `startDate ?? createdAt` label fallback), not the real March 28
+    // deadline. `createdAt` here is the REAL wall-clock "now" (unrelated to
+    // the `NOW` test fixture used for `deadlineTs`) — exactly reproducing
+    // the shape of the bug: a fixed, meaningful deadline vs. today's date.
+    const t = newT();
+    const s = await setupChapter(t);
+    await asChapterViewer(s);
+    const deadlineTs = NOW + 200 * DAY_MS; // outside tier 3's ±45-day window
+    const projectId = await seedProject(s, "Love Wins", { deadline: deadlineTs });
+    const txnId = await seedSubjectTxn(s, s.chapterId);
+
+    const result = await s.as.query(api.reconcileSuggest.rankForPicker, {
+      transactionId: txnId,
+    });
+    const row = result.rows.find((r) => r.refId === (projectId as string))!;
+    expect(row.tier).toBe(4);
+    const deadlineLabel = shortDateLabel(deadlineTs);
+    const todayLabel = shortDateLabel(Date.now());
+    expect(row.label).toBe(`Love Wins · ${deadlineLabel}`);
+    expect(row.dateLabel).toBe(deadlineLabel);
+    expect(row.label).not.toContain(todayLabel);
+  });
+
+  test("an event's label/dateLabel always come from the real eventDate (required field — no fallback to audit)", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await asChapterViewer(s);
+    const eventDateTs = NOW + 200 * DAY_MS; // outside tier 3's window → tier 4
+    const eventId = await seedEvent(s, { name: "Choir Gala", eventDate: eventDateTs });
+    const txnId = await seedSubjectTxn(s, s.chapterId);
+
+    const result = await s.as.query(api.reconcileSuggest.rankForPicker, {
+      transactionId: txnId,
+    });
+    const row = result.rows.find((r) => r.refId === (eventId as string))!;
+    const expectedLabel = shortDateLabel(eventDateTs);
+    expect(row.label).toBe(`Choir Gala · ${expectedLabel}`);
+    expect(row.dateLabel).toBe(expectedLabel);
   });
 
   test("a date more than 45 days away does not rank tier 3", async () => {

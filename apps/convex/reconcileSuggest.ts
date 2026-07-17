@@ -202,6 +202,9 @@ async function gatherCandidates(
   const candidates: Candidate[] = [];
   for (const e of events) {
     if (e.isTraining) continue;
+    // `events.eventDate` is a REQUIRED field (`v.number()`, not optional) —
+    // every event row always has a real date, so there is no fallback to
+    // audit here (unlike a project's `deadline`, which is optional).
     candidates.push({
       refKind: "event",
       refId: e._id,
@@ -212,11 +215,25 @@ async function gatherCandidates(
     });
   }
   for (const p of projects) {
+    // NO FABRICATED DATES: the label's date must come from the exact same
+    // field tier 3 ranks on (`projects.deadline` — the real, directly-
+    // editable field the app's own Project screen reads/writes, see
+    // `apps/mobile/components/team/ProjectCard.tsx`'s "Due {date}" /
+    // "Set deadline" UI; it is NOT derived from linked tasks). Previously
+    // this fell back to `startDate ?? createdAt` when `deadline` was unset
+    // — silently substituting the project's ROW-CREATION timestamp as if it
+    // were a meaningful date. That produced a self-contradicting row (owner
+    // report: "Love Wins · Jul 17, 2026" — Jul 17 was TODAY, i.e.
+    // `createdAt` — right next to a CORRECTLY-computed "Project deadline 5
+    // days away" reason sourced from the real March 28 `deadline`). A
+    // project with no `deadline` now shows its bare name — no date claim —
+    // and (via `tier3Ts: null` below) never qualifies for tier 3.
+    const dateTs = p.deadline ?? null;
     candidates.push({
       refKind: "project",
       refId: p._id,
-      label: pickerRefLabel(p.name, p.startDate ?? p.createdAt),
-      tier3Ts: p.deadline ?? null,
+      label: dateTs != null ? pickerRefLabel(p.name, dateTs) : p.name,
+      tier3Ts: dateTs,
       budget: projectBudgetByRef.get(p._id as string) ?? null,
       level: null,
     });
