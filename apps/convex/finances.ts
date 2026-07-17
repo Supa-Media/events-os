@@ -893,6 +893,67 @@ function budgetAllocationForDash(b: Doc<"budgets">, dp: DashPeriod): number {
   return monthEquivForDash(b, dp);
 }
 
+/**
+ * A budget's ALLOCATION for a By-tag AGGREGATE (tag rollups + the tag
+ * drill-down) — `budgetAllocationForDash` (above) is CARD-shaped: in month
+ * mode it hands back a one-time budget's full effective cap unconditionally,
+ * with no check that the budget is even relevant to the viewed month. That's
+ * fine for the one-time CARD itself (its OWN visibility is separately
+ * month-gated by `oneTimeCardAppliesToDash`, and once visible its bar is
+ * deliberately lifetime-cumulative — see `oneTimeCardBreakdown`'s doc
+ * comment), but an AGGREGATE has no per-budget visibility gate of its own: it
+ * just sums `budgetAllocationForDash` over every budget carrying the tag, so
+ * an irrelevant month's one-time cap silently inflated the denominator (a
+ * June $500 + July $1,000 same-tag pair made BOTH months' tag row report
+ * against $1,500). This reuses `oneTimeCardAppliesToDash`'s existing
+ * relevance rule (own month matches / linked ref date in month / spend
+ * posted that month) as a GATE on the allocation itself, rather than forking
+ * a third relevance rule: a one-time budget's allocation counts toward a
+ * tag's month-mode denominator only when it's relevant to that month, exactly
+ * mirroring when its own card would be visible. YTD/year mode is unchanged
+ * (matches `oneTimeCardAppliesToDash`'s `dp.ytd` early return — every
+ * one-time budget counts, full stop). A recurring budget's
+ * `budgetAllocationForDash` is already period-correct via `monthEquivForDash`
+ * — this passes it through unconditionally, so this function is a strict
+ * narrowing of `budgetAllocationForDash`, never a wider figure.
+ */
+function tagAllocationForDash(
+  b: Doc<"budgets">,
+  dp: DashPeriod,
+  refDate: number | null,
+  relevantTxns: Doc<"transactions">[],
+): number {
+  if (effectiveType(b) === "one_time" && !oneTimeCardAppliesToDash(b, dp, refDate, relevantTxns)) {
+    return 0;
+  }
+  return budgetAllocationForDash(b, dp);
+}
+
+/**
+ * Resolve a one-time budget's linked event/project ref date, for relevance
+ * checks OUTSIDE the one-time CARD loop (which already resolves this inline
+ * for its own visibility gate) — the tag rollups and tag drill-down need the
+ * exact same signal to feed `tagAllocationForDash`/`oneTimeCardAppliesToDash`.
+ * `getEvent`/`getProject` are the caller's own `nameCache`s, so repeat lookups
+ * of the same ref (a budget can carry more than one tag) cost no extra reads.
+ */
+async function refDateForBudget(
+  b: Doc<"budgets">,
+  getEvent: (id: Id<"events">) => Promise<Doc<"events"> | null>,
+  getProject: (id: Id<"projects">) => Promise<Doc<"projects"> | null>,
+): Promise<number | null> {
+  const refKind = effectiveRefKind(b);
+  if (refKind === "event" && b.scopeRefId) {
+    const ev = await getEvent(b.scopeRefId as Id<"events">);
+    return ev?.eventDate ?? null;
+  }
+  if (refKind === "project" && b.scopeRefId) {
+    const pr = await getProject(b.scopeRefId as Id<"projects">);
+    return pr ? (pr.deadline ?? pr.startDate ?? null) : null;
+  }
+  return null;
+}
+
 /** Translate a client patch: `null` clears the field, `undefined` is untouched. */
 function cleanPatch(patch: Record<string, unknown>): Record<string, unknown> {
   const out: Record<string, unknown> = {};
@@ -1958,8 +2019,15 @@ export const dashboardChapter = query({
         if (b) tagBudgets.set(b._id, b);
       }
       if (tagBudgets.size === 0) continue;
+      // Denominator: `tagAllocationForDash` (NOT `budgetAllocationForDash`
+      // directly — see its doc comment) so a one-time budget's cap only
+      // counts here when it's actually relevant to the viewed month, the
+      // same relevance rule the one-time CARD's own visibility uses.
       let budgetCents = 0;
-      for (const b of tagBudgets.values()) budgetCents += budgetAllocationForDash(b, dp);
+      for (const b of tagBudgets.values()) {
+        const refDate = await refDateForBudget(b, getEvent, getProject);
+        budgetCents += tagAllocationForDash(b, dp, refDate, yearTxns);
+      }
       // Tag totals are LINKED-ONLY: count only txns EXPLICITLY linked
       // (`budgetId`) to a budget carrying the tag — NO derived matching. A linked
       // txn has exactly one `budgetId`, so it's counted once (no dedup needed).
@@ -2343,6 +2411,13 @@ export const dashboardCentral = query({
     const chapters = await ctx.db.query("chapters").take(ROLLUP_SCAN_LIMIT);
     // Read the env flag once for the whole cross-chapter rollup.
     const sandboxMode = await readSandbox(ctx);
+    // Shared read-through ref caches: a one-time budget's linked event/project
+    // date is needed both by the central budget CARD loop below (its own
+    // visibility gate) and by BOTH tag loops (chapter + central) for
+    // `tagAllocationForDash`'s relevance check — one cache per table, reused
+    // everywhere in this handler so no ref is fetched twice.
+    const getEvent = nameCache(ctx, "events");
+    const getProject = nameCache(ctx, "projects");
 
     // Central budgets, loaded once up front (not just for the "Central" row
     // built below, but also to PARTITION each chapter row's spend): a txn
@@ -2471,8 +2546,14 @@ export const dashboardCentral = query({
           if (b) tagBudgets.set(b._id, b);
         }
         if (tagBudgets.size === 0) continue;
+        // Denominator: `tagAllocationForDash` (see its doc comment) — a
+        // one-time budget's cap only counts here when relevant to the viewed
+        // month, mirroring dashboardChapter's own tag rollup fix.
         let budget = 0;
-        for (const b of tagBudgets.values()) budget += budgetAllocationForDash(b, dp);
+        for (const b of tagBudgets.values()) {
+          const refDate = await refDateForBudget(b, getEvent, getProject);
+          budget += tagAllocationForDash(b, dp, refDate, periodTxns);
+        }
         // Tag totals are LINKED-ONLY (see dashboardChapter): only txns
         // explicitly linked to a budget carrying the tag count — no derived
         // matching. One `budgetId` per txn → counted once, no dedup.
@@ -2522,7 +2603,7 @@ export const dashboardCentral = query({
     // per-row partition) — reused here, no second scan. Per-chapter rollups
     // above never see these budgets in their OWN allocation (they query
     // budgets by real chapterId) and now exclude their linked spend too, so
-    // nothing here is double-counted. `getCentralEvent`/`getCentralProject`
+    // nothing here is double-counted. `getEvent`/`getProject` (declared above)
     // resolve a one-time central budget's linked ref for the SAME visibility
     // gate `dashboardChapter` uses (F1) — a central one_time budget is
     // creatable (`createBudget` allows `type:"one_time" && central:true`) and
@@ -2539,9 +2620,13 @@ export const dashboardCentral = query({
     // which month the org dashboard is viewing. Read by the central tag loop
     // below instead of `centralSpentById`.
     const centralTagAggSpentById = new Map<Id<"budgets">, number>();
+    // Per-budget ref date + mode-matched txns, captured here so the central
+    // tag loop (below, a SEPARATE loop over `centralBudgetById`) can feed
+    // `tagAllocationForDash` the same relevance signal this loop's one-time
+    // CARD visibility gate uses, without re-querying each ref/txn set again.
+    const centralRefDateById = new Map<Id<"budgets">, number | null>();
+    const centralModeMatchedById = new Map<Id<"budgets">, Doc<"transactions">[]>();
     const centralBudgets: (typeof centralBudgetCard.type)[] = [];
-    const getCentralEvent = nameCache(ctx, "events");
-    const getCentralProject = nameCache(ctx, "projects");
     for (const cb of centralBudgetDocs) {
       const linked = await ctx.db
         .query("transactions")
@@ -2575,22 +2660,18 @@ export const dashboardCentral = query({
           0,
         ),
       );
+      // Captured for the central tag loop below, regardless of `type` — a
+      // recurring budget's entries here are simply unused (`tagAllocationForDash`
+      // only consults them for a `one_time` budget).
+      const refDate = await refDateForBudget(cb, getEvent, getProject);
+      centralRefDateById.set(cb._id, refDate);
+      centralModeMatchedById.set(cb._id, modeMatched);
 
       if (effectiveType(cb) === "one_time") {
         // Bug 1 (F1): the exact same treatment as `dashboardChapter`'s
         // one-time loop — month-gated CARD visibility, and a CUMULATIVE (never
         // month-sliced) card bar — so the same budget object behaves
-        // identically on the chapter and org dashboards. `refDate` needs the
-        // linked event/project even though `centralBudgetCard` (unlike
-        // `projectBudgetCard`) has no name/dateLabel field to display it in.
-        const refKind = effectiveRefKind(cb);
-        let refDate: number | null = null;
-        if (refKind === "event" && cb.scopeRefId) {
-          refDate = (await getCentralEvent(cb.scopeRefId as Id<"events">))?.eventDate ?? null;
-        } else if (refKind === "project" && cb.scopeRefId) {
-          const pr = await getCentralProject(cb.scopeRefId as Id<"projects">);
-          refDate = pr ? pr.deadline ?? pr.startDate ?? null : null;
-        }
+        // identically on the chapter and org dashboards.
         if (!oneTimeCardAppliesToDash(cb, dp, refDate, modeMatched)) continue;
         // Genuinely lifetime (see `oneTimeCardBreakdown`'s doc comment) —
         // `modeMatched` is already `budgetId === cb._id`-scoped (the `by_budget`
@@ -2708,7 +2789,16 @@ export const dashboardCentral = query({
         // `centralTagAggSpentById`, NOT `centralSpentById` (the CARD's own
         // number) — see its declaration above.
         spent += centralTagAggSpentById.get(b._id) ?? 0;
-        budget += budgetAllocationForDash(b, dp);
+        // `tagAllocationForDash` (see its doc comment), fed the ref date +
+        // mode-matched txns the central budget CARD loop above already
+        // captured per budget (`centralRefDateById`/`centralModeMatchedById`)
+        // — the same relevance signal, no re-fetch.
+        budget += tagAllocationForDash(
+          b,
+          dp,
+          centralRefDateById.get(b._id) ?? null,
+          centralModeMatchedById.get(b._id) ?? [],
+        );
       }
       const key = `${tag.kind ?? ""}::${tag.name}`;
       const agg =
@@ -2971,22 +3061,35 @@ export const tagDrilldown = query({
     const dp: DashPeriod = { year, month, ytd };
     const sandboxMode = await readSandbox(ctx);
     const rows: (typeof tagDrilldownBudgetRow.type)[] = [];
+    // Shared read-through ref caches, so a budget's linked event/project date
+    // (needed for `tagAllocationForDash`'s relevance check) is fetched once
+    // even if the same budget appears under more than one matching tag.
+    const getEvent = nameCache(ctx, "events");
+    const getProject = nameCache(ctx, "projects");
 
-    const rowFor = (
+    // `budgetCents` uses `tagAllocationForDash` (NOT `budgetAllocationForDash`
+    // directly — see its doc comment): a one-time budget's cap only counts
+    // here when relevant to the viewed month, the SAME gate the rollup header
+    // above this sheet now applies, so rows keep summing to the header.
+    const rowFor = async (
       b: Doc<"budgets">,
       spentCents: number,
       level: "chapter" | "central",
       chapterName: string | null,
-    ): typeof tagDrilldownBudgetRow.type => ({
-      id: b._id,
-      label: b.label ?? (b.scope ? BUDGET_SCOPE_LABELS[b.scope] : "Budget"),
-      type: effectiveType(b),
-      cadence: b.cadence,
-      level,
-      chapterName,
-      spentCents,
-      budgetCents: budgetAllocationForDash(b, dp),
-    });
+      relevantTxns: Doc<"transactions">[],
+    ): Promise<typeof tagDrilldownBudgetRow.type> => {
+      const refDate = await refDateForBudget(b, getEvent, getProject);
+      return {
+        id: b._id,
+        label: b.label ?? (b.scope ? BUDGET_SCOPE_LABELS[b.scope] : "Budget"),
+        type: effectiveType(b),
+        cadence: b.cadence,
+        level,
+        chapterName,
+        spentCents,
+        budgetCents: tagAllocationForDash(b, dp, refDate, relevantTxns),
+      };
+    };
 
     if (args.scope === "chapter") {
       if (args.tagId == null) return empty;
@@ -3027,7 +3130,7 @@ export const tagDrilldown = query({
           (s, tr) => (txnCountsTowardTagAgg(tr, b, dp) ? s + tr.amountCents : s),
           0,
         );
-        rows.push(rowFor(b, spentCents, "chapter", null));
+        rows.push(await rowFor(b, spentCents, "chapter", null, yearTxns));
       }
     } else {
       if (args.tagName == null || args.tagKind === undefined) return empty;
@@ -3065,7 +3168,7 @@ export const tagDrilldown = query({
               (s, tr) => (txnCountsTowardTagAgg(tr, b, dp) ? s + tr.amountCents : s),
               0,
             );
-            rows.push(rowFor(b, spentCents, "chapter", chapter.name));
+            rows.push(await rowFor(b, spentCents, "chapter", chapter.name, yearTxns));
           }
         }
       }
@@ -3103,14 +3206,12 @@ export const tagDrilldown = query({
               .query("transactions")
               .withIndex("by_budget", (q) => q.eq("budgetId", b._id))
               .take(ROLLUP_SCAN_LIMIT);
-            const spentCents = linked.reduce(
-              (s, tr) =>
-                txnMatchesMode(tr, sandboxMode) && txnCountsTowardTagAgg(tr, b, dp)
-                  ? s + tr.amountCents
-                  : s,
+            const modeMatched = linked.filter((tr) => txnMatchesMode(tr, sandboxMode));
+            const spentCents = modeMatched.reduce(
+              (s, tr) => (txnCountsTowardTagAgg(tr, b, dp) ? s + tr.amountCents : s),
               0,
             );
-            rows.push(rowFor(b, spentCents, "central", null));
+            rows.push(await rowFor(b, spentCents, "central", null, modeMatched));
           }
         }
       }

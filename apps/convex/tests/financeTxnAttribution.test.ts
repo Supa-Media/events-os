@@ -1326,3 +1326,387 @@ describe("By-tag rollup month-scoping + drill-down reconciliation (fix/tag-rollu
     ).rejects.toThrow();
   });
 });
+
+describe("Residual tag-allocation-denominator bug — the by-tag ALLOCATION (not the spend numerator, already fixed above) must be month-scoped too", () => {
+  test("smoke repro (dashboardChapter): a June $500 one-time budget + a July $1,000 one-time budget, same tag — July's row reads spend/$1,000, June's reads spend/$500, never the pooled $1,500", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await grantManager(s);
+    const year = 2026;
+
+    const tagId = await s.as.mutation(api.finances.createBudgetTag, {
+      name: "Events",
+      kind: "custom",
+    });
+
+    const juneBudgetId = await s.as.mutation(api.finances.createBudget, {
+      amountCents: 50000, // $500
+      type: "one_time",
+      cadence: "per_instance",
+      year,
+      month: 6,
+      label: "June mixer",
+      tagIds: [tagId],
+    });
+    const juneTxn = await s.as.mutation(api.finances.createManualTransaction, {
+      flow: "outflow",
+      amountCents: 30000, // $300
+      postedAt: tsInMonth(year, 6),
+    });
+    await s.as.mutation(api.finances.categorizeTransaction, {
+      transactionId: juneTxn,
+      budgetId: juneBudgetId,
+    });
+
+    const julyBudgetId = await s.as.mutation(api.finances.createBudget, {
+      amountCents: 100000, // $1,000
+      type: "one_time",
+      cadence: "per_instance",
+      year,
+      month: 7,
+      label: "July gala",
+      tagIds: [tagId],
+    });
+    const julyTxn = await s.as.mutation(api.finances.createManualTransaction, {
+      flow: "outflow",
+      amountCents: 40000, // $400
+      postedAt: tsInMonth(year, 7),
+    });
+    await s.as.mutation(api.finances.categorizeTransaction, {
+      transactionId: julyTxn,
+      budgetId: julyBudgetId,
+    });
+
+    const june = await s.as.query(api.finances.dashboardChapter, { year, month: 6 });
+    const juneRow = june.tagRollups.find((r) => r.tagId === tagId);
+    expect(juneRow?.spentCents).toBe(30000);
+    // Before the fix this read 150000 — both budgets' caps pooled into every
+    // month regardless of relevance (the live smoke's exact $1,500 finding).
+    expect(juneRow?.budgetCents).toBe(50000);
+
+    const july = await s.as.query(api.finances.dashboardChapter, { year, month: 7 });
+    const julyRow = july.tagRollups.find((r) => r.tagId === tagId);
+    expect(julyRow?.spentCents).toBe(40000);
+    expect(julyRow?.budgetCents).toBe(100000);
+  });
+
+  test("12-month tag ALLOCATION sum matches the YTD view: a one-time budget's cap counts once (its own month), a co-tagged recurring budget's cap counts every month unchanged", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await grantManager(s);
+    const year = 2026;
+
+    const tagId = await s.as.mutation(api.finances.createBudgetTag, {
+      name: "Events",
+      kind: "custom",
+    });
+
+    // Recurring monthly budget, active every month (no fixed `month`) — its
+    // allocation is already period-correct (`monthEquivForDash`), untouched by
+    // this fix; included so this test also proves the fix left it alone.
+    const recurringBudgetId = await s.as.mutation(api.finances.createBudget, {
+      amountCents: 10000, // $100/mo
+      type: "recurring",
+      cadence: "monthly",
+      year,
+      label: "Recurring events fund",
+      tagIds: [tagId],
+    });
+
+    // One-time budget fixed to June — the smoke's mis-scoping case.
+    const juneBudgetId = await s.as.mutation(api.finances.createBudget, {
+      amountCents: 50000, // $500
+      type: "one_time",
+      cadence: "per_instance",
+      year,
+      month: 6,
+      label: "June mixer",
+      tagIds: [tagId],
+    });
+
+    // A token $1 spend every month, linked to the RECURRING budget, keeps the
+    // tag row visible (non-zero spend) across all 12 months even though the
+    // one-time budget only has spend in June.
+    for (let m = 1; m <= 12; m++) {
+      const txnId = await s.as.mutation(api.finances.createManualTransaction, {
+        flow: "outflow",
+        amountCents: 100,
+        postedAt: tsInMonth(year, m),
+      });
+      await s.as.mutation(api.finances.categorizeTransaction, {
+        transactionId: txnId,
+        budgetId: recurringBudgetId,
+      });
+    }
+
+    let summedAllocation = 0;
+    for (let m = 1; m <= 12; m++) {
+      const dash = await s.as.query(api.finances.dashboardChapter, { year, month: m });
+      const row = dash.tagRollups.find((r) => r.tagId === tagId);
+      expect(row).toBeDefined();
+      // The recurring budget's $100/mo cap is always present; the one-time
+      // budget's $500 cap is present ONLY in June.
+      expect(row?.budgetCents).toBe(m === 6 ? 10000 + 50000 : 10000);
+      summedAllocation += row!.budgetCents;
+    }
+    expect(summedAllocation).toBe(12 * 10000 + 50000);
+
+    const ytd = await s.as.query(api.finances.dashboardChapter, {
+      year,
+      month: 12,
+      period: "ytd",
+    });
+    const ytdRow = ytd.tagRollups.find((r) => r.tagId === tagId);
+    // YTD sums the recurring budget's monthly cap across all 12 months
+    // (unchanged) plus the one-time budget's cap ONCE (never scaled by month
+    // count) — exactly the same total the 12 individual month views summed to.
+    expect(ytdRow?.budgetCents).toBe(12 * 10000 + 50000);
+    expect(summedAllocation).toBe(ytdRow?.budgetCents);
+  });
+
+  test("chapter tag drill-down still reconciles when the gate actually excludes a budget (June/July split, July view)", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await grantManager(s);
+    const year = 2026;
+    const month = 7;
+
+    const tagId = await s.as.mutation(api.finances.createBudgetTag, {
+      name: "Events",
+      kind: "custom",
+    });
+
+    const juneBudgetId = await s.as.mutation(api.finances.createBudget, {
+      amountCents: 50000,
+      type: "one_time",
+      cadence: "per_instance",
+      year,
+      month: 6,
+      label: "June mixer",
+      tagIds: [tagId],
+    });
+    const juneTxn = await s.as.mutation(api.finances.createManualTransaction, {
+      flow: "outflow",
+      amountCents: 30000,
+      postedAt: tsInMonth(year, 6),
+    });
+    await s.as.mutation(api.finances.categorizeTransaction, {
+      transactionId: juneTxn,
+      budgetId: juneBudgetId,
+    });
+
+    const julyBudgetId = await s.as.mutation(api.finances.createBudget, {
+      amountCents: 100000,
+      type: "one_time",
+      cadence: "per_instance",
+      year,
+      month: 7,
+      label: "July gala",
+      tagIds: [tagId],
+    });
+    const julyTxn = await s.as.mutation(api.finances.createManualTransaction, {
+      flow: "outflow",
+      amountCents: 40000,
+      postedAt: tsInMonth(year, month),
+    });
+    await s.as.mutation(api.finances.categorizeTransaction, {
+      transactionId: julyTxn,
+      budgetId: julyBudgetId,
+    });
+
+    const dash = await s.as.query(api.finances.dashboardChapter, { year, month });
+    const header = dash.tagRollups.find((r) => r.tagId === tagId);
+    expect(header?.spentCents).toBe(40000);
+    expect(header?.budgetCents).toBe(100000);
+
+    const drilldown = await s.as.query(api.finances.tagDrilldown, {
+      year,
+      month,
+      scope: "chapter",
+      tagId,
+    });
+    // Both budgets still appear as rows (the drill-down lists every budget
+    // carrying the tag, relevant or not) — but the June budget's row now
+    // reports $0 allocation in a July view, matching the header's gate.
+    expect(drilldown.budgets.map((b) => b.id).sort()).toEqual(
+      [juneBudgetId, julyBudgetId].sort(),
+    );
+    const juneRow = drilldown.budgets.find((b) => b.id === juneBudgetId);
+    expect(juneRow?.budgetCents).toBe(0);
+    expect(juneRow?.spentCents).toBe(0);
+    const julyRow = drilldown.budgets.find((b) => b.id === julyBudgetId);
+    expect(julyRow?.budgetCents).toBe(100000);
+    expect(julyRow?.spentCents).toBe(40000);
+
+    const rowsSpent = drilldown.budgets.reduce((sum, b) => sum + b.spentCents, 0);
+    const rowsBudget = drilldown.budgets.reduce((sum, b) => sum + b.budgetCents, 0);
+    expect(rowsSpent).toBe(header!.spentCents);
+    expect(rowsBudget).toBe(header!.budgetCents);
+  });
+
+  test("dashboardCentral CHAPTER-level tag loop applies the same gate across real chapters — June budget in one chapter + July budget in another, same tag name", async () => {
+    const t = newT();
+    const s = await setupChapter(t, { chapterName: "New York" });
+    await grantCentralOnly(s);
+    const year = 2026;
+
+    // New York: June one-time budget + June spend.
+    const nyTagId = await run(t, (ctx) =>
+      ctx.db.insert("budgetTags", {
+        chapterId: s.chapterId,
+        name: "Events",
+        kind: "custom",
+        createdAt: Date.now(),
+      }),
+    );
+    const nyBudgetId = await run(t, (ctx) =>
+      ctx.db.insert("budgets", {
+        chapterId: s.chapterId,
+        amountCents: 50000,
+        type: "one_time",
+        cadence: "per_instance",
+        year,
+        month: 6,
+        label: "NY June mixer",
+        createdAt: Date.now(),
+      }),
+    );
+    await run(t, (ctx) =>
+      ctx.db.insert("budgetTagLinks", {
+        budgetId: nyBudgetId,
+        tagId: nyTagId,
+        chapterId: s.chapterId,
+        createdAt: Date.now(),
+      }),
+    );
+    await run(t, (ctx) =>
+      ctx.db.insert("transactions", {
+        chapterId: s.chapterId,
+        source: "manual",
+        flow: "outflow",
+        amountCents: 30000,
+        postedAt: tsInMonth(year, 6),
+        status: "unreviewed",
+        budgetId: nyBudgetId,
+        createdAt: Date.now(),
+      }),
+    );
+
+    // Boston: July one-time budget + July spend, same tag NAME — a distinct
+    // `budgetTags` row (`dashboardCentral` merges same-(kind,name) tags across
+    // chapters into one org rollup row).
+    const bostonId = await run(t, (ctx) =>
+      ctx.db.insert("chapters", { name: "Boston", isActive: true, createdAt: Date.now() }),
+    );
+    const bostonTagId = await run(t, (ctx) =>
+      ctx.db.insert("budgetTags", {
+        chapterId: bostonId,
+        name: "Events",
+        kind: "custom",
+        createdAt: Date.now(),
+      }),
+    );
+    const bostonBudgetId = await run(t, (ctx) =>
+      ctx.db.insert("budgets", {
+        chapterId: bostonId,
+        amountCents: 100000,
+        type: "one_time",
+        cadence: "per_instance",
+        year,
+        month: 7,
+        label: "Boston July gala",
+        createdAt: Date.now(),
+      }),
+    );
+    await run(t, (ctx) =>
+      ctx.db.insert("budgetTagLinks", {
+        budgetId: bostonBudgetId,
+        tagId: bostonTagId,
+        chapterId: bostonId,
+        createdAt: Date.now(),
+      }),
+    );
+    await run(t, (ctx) =>
+      ctx.db.insert("transactions", {
+        chapterId: bostonId,
+        source: "manual",
+        flow: "outflow",
+        amountCents: 40000,
+        postedAt: tsInMonth(year, 7),
+        status: "unreviewed",
+        budgetId: bostonBudgetId,
+        createdAt: Date.now(),
+      }),
+    );
+
+    const june = await s.as.query(api.finances.dashboardCentral, { year, month: 6 });
+    const juneRow = june.tagRollups.find((r) => r.tagName === "Events" && r.kind === "custom");
+    expect(juneRow?.spentCents).toBe(30000);
+    // Before the fix this pooled BOTH caps ($1,500) into every month.
+    expect(juneRow?.budgetCents).toBe(50000);
+
+    const july = await s.as.query(api.finances.dashboardCentral, { year, month: 7 });
+    const julyRow = july.tagRollups.find((r) => r.tagName === "Events" && r.kind === "custom");
+    expect(julyRow?.spentCents).toBe(40000);
+    expect(julyRow?.budgetCents).toBe(100000);
+  });
+
+  test("dashboardCentral CENTRAL-level tag loop applies the same gate — two central one-time budgets, June + July, same central tag", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await grantCentralOnly(s);
+    const year = 2026;
+
+    const tagId = await s.as.mutation(api.finances.createBudgetTag, {
+      name: "Events",
+      kind: "custom",
+      central: true,
+    });
+
+    const juneBudgetId = await s.as.mutation(api.finances.createBudget, {
+      amountCents: 50000,
+      type: "one_time",
+      cadence: "per_instance",
+      year,
+      month: 6,
+      label: "Central June mixer",
+      tagIds: [tagId],
+      central: true,
+    });
+    await s.as.mutation(api.finances.createManualTransaction, {
+      flow: "outflow",
+      amountCents: 30000,
+      postedAt: tsInMonth(year, 6),
+      budgetId: juneBudgetId,
+      central: true,
+    });
+
+    const julyBudgetId = await s.as.mutation(api.finances.createBudget, {
+      amountCents: 100000,
+      type: "one_time",
+      cadence: "per_instance",
+      year,
+      month: 7,
+      label: "Central July gala",
+      tagIds: [tagId],
+      central: true,
+    });
+    await s.as.mutation(api.finances.createManualTransaction, {
+      flow: "outflow",
+      amountCents: 40000,
+      postedAt: tsInMonth(year, 7),
+      budgetId: julyBudgetId,
+      central: true,
+    });
+
+    const june = await s.as.query(api.finances.dashboardCentral, { year, month: 6 });
+    const juneRow = june.tagRollups.find((r) => r.tagName === "Events" && r.kind === "custom");
+    expect(juneRow?.spentCents).toBe(30000);
+    expect(juneRow?.budgetCents).toBe(50000);
+
+    const july = await s.as.query(api.finances.dashboardCentral, { year, month: 7 });
+    const julyRow = july.tagRollups.find((r) => r.tagName === "Events" && r.kind === "custom");
+    expect(julyRow?.spentCents).toBe(40000);
+    expect(julyRow?.budgetCents).toBe(100000);
+  });
+});
