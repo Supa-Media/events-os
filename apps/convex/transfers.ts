@@ -1071,9 +1071,19 @@ export const interScopeBalances = query({
       .query("budgets")
       .withIndex("by_chapter", (q) => q.eq("chapterId", CENTRAL))
       .take(ROLLUP_SCAN_LIMIT);
+    if (centralBudgetDocs.length === ROLLUP_SCAN_LIMIT) {
+      console.warn(
+        `[transfers] interScopeBalances hit ROLLUP_SCAN_LIMIT (${ROLLUP_SCAN_LIMIT}) reading central budgets; direction (a) target set truncated.`,
+      );
+    }
     const centralBudgetIds = new Set(centralBudgetDocs.map((b) => b._id));
 
     const chapters = await ctx.db.query("chapters").take(ROLLUP_SCAN_LIMIT);
+    if (chapters.length === ROLLUP_SCAN_LIMIT) {
+      console.warn(
+        `[transfers] interScopeBalances hit ROLLUP_SCAN_LIMIT (${ROLLUP_SCAN_LIMIT}) reading chapters; result rows truncated.`,
+      );
+    }
 
     // Direction (b) — see the doc comment above: verified unattributable
     // through every write path today, computed generically anyway. Read once
@@ -1082,6 +1092,11 @@ export const interScopeBalances = query({
       .query("transactions")
       .withIndex("by_chapter", (q) => q.eq("chapterId", CENTRAL))
       .take(ROLLUP_SCAN_LIMIT);
+    if (centralTxns.length === ROLLUP_SCAN_LIMIT) {
+      console.warn(
+        `[transfers] interScopeBalances hit ROLLUP_SCAN_LIMIT (${ROLLUP_SCAN_LIMIT}) reading central-owned transactions; direction (b) truncated.`,
+      );
+    }
     const budgetCache = new Map<Id<"budgets">, Doc<"budgets"> | null>();
     async function resolveBudget(id: Id<"budgets">): Promise<Doc<"budgets"> | null> {
       if (!budgetCache.has(id)) budgetCache.set(id, await ctx.db.get(id));
@@ -1112,6 +1127,11 @@ export const interScopeBalances = query({
         .query("transactions")
         .withIndex("by_chapter", (q) => q.eq("chapterId", chapter._id))
         .take(ROLLUP_SCAN_LIMIT);
+      if (txns.length === ROLLUP_SCAN_LIMIT) {
+        console.warn(
+          `[transfers] interScopeBalances hit ROLLUP_SCAN_LIMIT (${ROLLUP_SCAN_LIMIT}) reading transactions for chapter ${chapter._id}; balance truncated.`,
+        );
+      }
       const modeFiltered = txns.filter((tr) => txnMatchesMode(tr, sandboxMode));
 
       // Direction (a): this chapter's spend explicitly linked to a CENTRAL budget.

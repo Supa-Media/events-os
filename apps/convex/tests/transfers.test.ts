@@ -834,6 +834,67 @@ describe("removeChapterAccount — sandbox transfer-leg cascade (IMPORTANT 1)", 
     );
     expect(manualLegs.length).toBe(2);
   });
+
+  test("deletes the removed chapter's sandbox settlement leg; a manual leg survives", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    // Same single central "manager" grant as the skim case above — it
+    // satisfies both `requireFinanceManager` (removeChapterAccount) and
+    // `requireCentralFinanceRole(..., "bookkeeper")` (recordSettlementTransfer).
+    await asCentral(s, "manager");
+
+    // Sandbox mode + a sandbox-test increaseAccounts row (removable).
+    await run(s.t, (ctx) =>
+      ctx.db.insert("financeSettings", {
+        sandboxMode: true,
+        updatedAt: Date.now(),
+      }),
+    );
+    await run(s.t, (ctx) =>
+      ctx.db.insert("increaseAccounts", {
+        chapterId: s.chapterId,
+        sandbox: true,
+        increaseAccountId: "sandbox_acct_test",
+        increaseEntityId: "entity_sandbox",
+        onboardingStatus: "active",
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      }),
+    );
+
+    // A sandbox-initiated settlement pair (the chapter-side leg carries the id).
+    await s.as.mutation(internal.transfers.recordSettlementPairFromIncrease, {
+      chapterId: s.chapterId,
+      year: 2026,
+      month: 3,
+      amountCents: 10_000,
+      direction: "chapter_to_central",
+      increaseTransferId: "sandbox_account_transfer_9",
+    });
+    // A manually-recorded settlement pair (no externalId) — env-neutral, must
+    // survive.
+    await s.as.mutation(api.transfers.recordSettlementTransfer, {
+      chapterId: s.chapterId,
+      year: 2026,
+      month: 4,
+      amountCents: 5_000,
+      direction: "chapter_to_central",
+    });
+
+    await s.as.mutation(api.increase.removeChapterAccount, {});
+
+    const sandboxLegs = await legsFor(
+      s,
+      settlementTransferGroupId(s.chapterId, 2026, 3),
+    );
+    expect(sandboxLegs.find((l) => l.chapterId === s.chapterId)).toBeUndefined();
+
+    const manualLegs = await legsFor(
+      s,
+      settlementTransferGroupId(s.chapterId, 2026, 4),
+    );
+    expect(manualLegs.length).toBe(2);
+  });
 });
 
 describe("transferReadiness", () => {

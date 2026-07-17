@@ -200,7 +200,7 @@ function DashboardBody({ seats }: { seats: Seats }) {
               onRecordTransfer={(chapters) =>
                 setTransferModal({ open: true, chapters })
               }
-              onSettle={(chapters, chapterId, chapterName, netCents) =>
+              onSettle={(chapters, chapterId, netCents) =>
                 setTransferModal({
                   open: true,
                   chapters,
@@ -283,7 +283,6 @@ function CentralSection({
   onSettle: (
     chapters: Array<{ chapterId: Id<"chapters">; chapterName: string }>,
     chapterId: Id<"chapters">,
-    chapterName: string,
     netCents: number,
   ) => void;
 }) {
@@ -305,8 +304,8 @@ function CentralSection({
       onViewChapter={onViewChapter}
       onNewBudget={onNewBudget}
       onRecordTransfer={() => onRecordTransfer(realChapters)}
-      onSettle={(chapterId, chapterName, netCents) =>
-        onSettle(realChapters, chapterId, chapterName, netCents)
+      onSettle={(chapterId, _chapterName, netCents) =>
+        onSettle(realChapters, chapterId, netCents)
       }
     />
   );

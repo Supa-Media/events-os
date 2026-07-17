@@ -2950,8 +2950,8 @@ export const listAccountsStatus = query({
  * SANDBOX child records so the chapter is clean for a fresh production
  * provision — `sandbox_`-issued `cards` (+ their `cardAuthorizations`),
  * `sandbox_` `payouts`, any `increase_*` `transactions` with a `sandbox_`
- * external/source id, AND any `skim`/`launch_grant` TRANSFER leg (WP-4.1/4.2)
- * whose `externalId` is `sandbox_`-prefixed — otherwise a sandbox-initiated
+ * external/source id, AND any `skim`/`launch_grant`/`settlement` TRANSFER leg
+ * (WP-4.1/4.2/4.5) whose `externalId` is `sandbox_`-prefixed — otherwise a sandbox-initiated
  * transfer would keep counting toward the PRODUCTION City Launch Fund position
  * forever (`dashboardCentral`). Environment-NEUTRAL records (a null-id
  * degraded card, a manual null-transfer payout, a manually-recorded transfer
@@ -3014,12 +3014,13 @@ export const removeChapterAccount = mutation({
 
     // 3. Sandbox increase_* transactions (none written today — defensive). A
     //    reimbursement/repayment/manual txn is env-neutral and left alone.
-    //    ALSO sandbox skim/launch_grant TRANSFER legs (WP-4.1/4.2) — a
-    //    sandbox-initiated `initiateSkimTransfer`/`initiateLaunchGrant` stamps
-    //    the leg's `externalId` with the real Increase account-transfer id
-    //    (`sandbox_account_transfer_…` in sandbox), so it's matched by prefix
-    //    the same way a card/ACH row is; otherwise it would count toward the
-    //    PRODUCTION City Launch Fund position forever (dashboardCentral).
+    //    ALSO sandbox skim/launch_grant/settlement TRANSFER legs (WP-4.1/4.2/4.5)
+    //    — a sandbox-initiated `initiateSkimTransfer`/`initiateLaunchGrant`/
+    //    `initiateSettlementTransfer` stamps the leg's `externalId` with the
+    //    real Increase account-transfer id (`sandbox_account_transfer_…` in
+    //    sandbox), so it's matched by prefix the same way a card/ACH row is;
+    //    otherwise it would count toward the PRODUCTION City Launch Fund
+    //    position forever (dashboardCentral).
     const txns = await ctx.db
       .query("transactions")
       .withIndex("by_chapter", (q) => q.eq("chapterId", chapterId))
@@ -3027,7 +3028,10 @@ export const removeChapterAccount = mutation({
     for (const t of txns) {
       const isIncreaseTxn =
         t.source === "increase_card" || t.source === "increase_ach";
-      const isTransferTxn = t.source === "skim" || t.source === "launch_grant";
+      const isTransferTxn =
+        t.source === "skim" ||
+        t.source === "launch_grant" ||
+        t.source === "settlement";
       if (
         (isIncreaseTxn &&
           (isSandboxObjectId(t.externalId) ||
