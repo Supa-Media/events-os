@@ -22,6 +22,7 @@ import { Badge, Button, Card, EmptyState, Icon, SectionHeader } from "../ui";
 import { Money, BudgetBar, txnStatusTone } from "../finance/dashboard/parts";
 import { BudgetApprovalChip } from "../finance/dashboard/BudgetApprovalActions";
 import { BudgetLineItemsEditor } from "../finance/modals/BudgetLineItemsEditor";
+import { EventCostGrid } from "./EventCostGrid";
 import { colors } from "../../lib/theme";
 import { formatDate } from "../../lib/format";
 import { alertError } from "../../lib/errors";
@@ -104,6 +105,7 @@ export function MoneyView({
             ) : undefined
           }
         />
+        {refKind === "event" ? <EventCostGrid eventId={refId as Id<"events">} /> : null}
         {editingPlanId ? (
           <EditPlanModal budgetId={editingPlanId} onClose={() => setEditingPlanId(null)} />
         ) : null}
@@ -205,6 +207,10 @@ export function MoneyView({
           </View>
         </Card>
       ) : null}
+
+      {/* ── Cost inventory: every cost-bearing item on the event, not just
+            the finance plan below (phase 2, "one money surface"). ────────── */}
+      {refKind === "event" ? <EventCostGrid eventId={refId as Id<"events">} /> : null}
 
       {/* ── Plan: planned-vs-actual by category ──────────────────────────── */}
       {lineCount === 0 ? (
