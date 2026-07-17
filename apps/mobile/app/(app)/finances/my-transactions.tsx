@@ -7,6 +7,12 @@
  * as personal. NO category / budget / link editing here — that's the bookkeeper's
  * Reconcile grid, which this tab intentionally doesn't expose.
  *
+ * Owner decision: a member sees the bookkeeper's freeform `note` (set via the
+ * Reconcile grid's `TransactionNoteModal`) on their OWN transactions, shown
+ * read-only under the row — no editing affordance here. `personTransactions`
+ * enforces this server-side (nulls `note` on any row that isn't the caller's
+ * own), so this screen just renders whatever it's handed.
+ *
  * Relocated from the old MemberView-inside-Dashboard (the "My transactions"
  * table) now that it has its own tab in the member tab bar (`_layout.tsx`).
  * The receipt-upload affordance is the exact same `ReceiptCell` the Reconcile
@@ -115,6 +121,11 @@ export default function MyTransactionsScreen() {
                         .filter(Boolean)
                         .join(" · ")}
                     </Text>
+                    {t.note ? (
+                      <Text className="mt-0.5 text-xs italic text-muted" numberOfLines={2}>
+                        {t.note}
+                      </Text>
+                    ) : null}
                   </Cell>
                   <Cell width={110} align="right">
                     <SignedMoney
