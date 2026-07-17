@@ -286,23 +286,26 @@ function UnattributedTxnRowView({
           <Text className="text-2xs font-semibold text-accent">Reconcile centrally →</Text>
         </Pressable>
       ) : (
-        // Real-chapter rows: PEEK ONLY for now (Phase 1) — `listReconcile`
-        // has no `chapterId` arg yet (unlike `dashboardChapter`), so
-        // navigating straight to Reconcile after peeking into a chapter that
-        // isn't the caller's own home chapter would show the WRONG chapter's
-        // queue, mislabeled. Upgrade to "Reconcile in {chapter} →" once
-        // WP-A/`fix/budget-identity-dates` ships that arg and this branch is
-        // rebased onto it — see the PR description for the tracked follow-up.
+        // Real-chapter rows: PEEK, then navigate straight to Reconcile —
+        // Phase 2 (WP-A/#228 shipped `listReconcile`'s central-gated
+        // `chapterId` arg, mirroring `dashboardChapter`'s own drill-down).
+        // `reconcile.tsx` reads the SAME `useChapterContext()` peek state
+        // this `enterPeek` call sets and threads it into `listReconcile`, so
+        // the screen that mounts after this navigation shows THIS chapter's
+        // queue, not the caller's own home chapter's.
         <Pressable
           // Safe cast: this branch only renders when `row.chapterId !== CENTRAL`
           // above, but that narrowing doesn't persist into this closure (a TS
           // limitation, not a runtime one).
-          onPress={() => onViewChapter(row.chapterId as Id<"chapters">, row.chapterName)}
+          onPress={() => {
+            onViewChapter(row.chapterId as Id<"chapters">, row.chapterName);
+            router.navigate("/finances/reconcile?filter=needs_budget" as never);
+          }}
           hitSlop={8}
           accessibilityRole="button"
         >
           <Text className="text-2xs font-semibold text-accent">
-            View {row.chapterName}'s dashboard →
+            Reconcile in {row.chapterName} →
           </Text>
         </Pressable>
       )}

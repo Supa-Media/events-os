@@ -50,6 +50,7 @@ import {
 } from "../../../components/ui";
 import { colors } from "../../../lib/theme";
 import { useActionRunner } from "../../../lib/useActionToast";
+import { useChapterContext } from "../../../lib/ChapterContext";
 import { FinanceBoundary } from "../../../components/finance/dashboard/parts";
 import {
   ReconcileList,
@@ -138,9 +139,31 @@ function ReconcileGrid() {
   // `requireChapterId`), so this is unambiguous.
   const isManager = seats.some((s) => s.scope === "chapter" && s.role === "manager");
 
+  // WP-dashboard-drill Phase 2: a central caller PEEKING into a chapter that
+  // isn't their own home chapter — `listReconcile`'s `chapterId` arg (added
+  // by #228) reads THAT chapter's queue, server-side re-verified against
+  // central reach exactly like `dashboardChapter`'s own drill-down. Peek is
+  // READ-ONLY everywhere else in the app (see `ChapterContext`'s module doc),
+  // and the reconcile WRITE mutations `ReconcileList` calls
+  // (`categorizeTransaction`/`setStatus`/etc.) are NOT peek-aware —
+  // `requireReconcileTxn` still scopes every write to the caller's own home
+  // chapter, so it safely rejects (`NOT_FOUND`, never silently misattributes)
+  // an attempt to edit a peeked chapter's row. The bulk bar below is hidden
+  // in that state to avoid a confusing failed-write toast; single-row inline
+  // edits in `ReconcileList` aren't (that file is unmodified here) — a
+  // deliberate, minimal read-only affordance rather than a full write-through
+  // peek mode, which is its own product decision.
+  const { context } = useChapterContext();
+  const peekedChapterId = context?.kind === "peek" ? context.chapterId : undefined;
+  const viewingPeekedChapter = peekedChapterId != null && !centralScope;
+
   const reconcile = useQuery(
     api.finances.listReconcile,
-    centralScope ? { filter, scope: "central" as const } : { filter },
+    centralScope
+      ? { filter, scope: "central" as const }
+      : peekedChapterId
+        ? { filter, chapterId: peekedChapterId }
+        : { filter },
   );
   // All chapter categories (no fund filter — coding is category + For only).
   const categories = useQuery(api.finances.listCategories, {}) ?? [];
@@ -374,8 +397,11 @@ function ReconcileGrid() {
           </View>
         </Narrow>
 
-        {/* Bulk action bar (multi-select). */}
-        {selectedInView.length > 0 ? (
+        {/* Bulk action bar (multi-select) — hidden while viewing a peeked
+            chapter's queue (see the `viewingPeekedChapter` doc comment
+            above): the bulk mutations would safely reject every row anyway,
+            so surfacing the bar here would just invite a failed-write toast. */}
+        {selectedInView.length > 0 && !viewingPeekedChapter ? (
           <BulkBar
             count={selectedInView.length}
             categoryItems={categoryItems}
