@@ -334,6 +334,7 @@ async function insertSeat(
     chart: "central" | "chapter";
     parentSlug?: string;
     maxHolders?: number;
+    derived?: boolean;
   },
 ): Promise<Id<"seatDefs">> {
   return run(s.t, (ctx) =>
@@ -346,6 +347,7 @@ async function insertSeat(
       duties: [],
       capabilities: [],
       sortOrder: 0,
+      ...(opts.derived !== undefined ? { derived: opts.derived } : {}),
       createdAt: Date.now(),
       updatedAt: Date.now(),
     }),
@@ -559,7 +561,7 @@ describe("responsibilities × seats", () => {
     expect(row2.assigneeSeatIds).toEqual([seatId]);
   });
 
-  test("dutiesForSeat returns duties mapped to that seat, scoped to the caller's own chapter", async () => {
+  test("dutiesForSeat reaches ACROSS chapters for a CHAPTER-chart seat too — org-wide expectations, not scoped to the authoring chapter", async () => {
     const s = await setupChapter(newT());
     const s2 = await setupChapter(s.t, {
       email: "leader2@publicworship.life",
@@ -571,6 +573,8 @@ describe("responsibilities × seats", () => {
       chart: "chapter",
     });
 
+    // NY authors a duty mapped to a CHAPTER-chart seat def (Austin never
+    // touches this duty at all — same shared seatDefId, different chapter).
     const dutyId = (await s.as.mutation(api.responsibilities.create, {
       title: "Do the thing",
       cadence: "weekly",
@@ -587,13 +591,16 @@ describe("responsibilities × seats", () => {
       { id: dutyId, title: "Do the thing", cadence: "weekly" },
     ]);
 
-    // Austin hasn't mapped anything to this (shared-shape) seat def yet — the
-    // query is scoped to the caller's own chapter's duties, like `list`.
+    // Owner decision: "the expectation... at one place is gonna be the same
+    // for the expectation somewhere else." Austin never mapped anything to
+    // this seat itself, but browsing the SAME (shared, global) seat def from
+    // Austin's own chart still surfaces NY's duty — a seat-mapped duty is an
+    // ORG-WIDE expectation, not scoped to whichever chapter authored it.
     expect(
       await s2.as.query(api.responsibilities.dutiesForSeat, {
         seatDefId: seatId,
       }),
-    ).toEqual([]);
+    ).toEqual(result);
   });
 
   test("dutiesForSeat reaches ACROSS chapters for a CENTRAL seat — a chapter-A duty is visible browsing from chapter B", async () => {
@@ -630,9 +637,9 @@ describe("responsibilities × seats", () => {
     });
     expect(fromNY).toEqual(fromAustin);
 
-    // A CHAPTER-chart seat, by contrast, stays chapter-scoped (asserted in
-    // the test above this one) — only central seats get the cross-chapter
-    // reach, since only central occupancy is actually chapter-independent.
+    // This behavior is unchanged by the org-wide fix (central occupancy was
+    // always chapter-independent) — a CHAPTER-chart seat now behaves the SAME
+    // way, per the test above this one, rather than staying chapter-scoped.
   });
 
   test("addSeat / removeSeat edit one seat membership, race-safely — mirrors addAssignee/removeAssignee", async () => {
@@ -735,6 +742,181 @@ describe("responsibilities × seats", () => {
     expect(await asVisitor.query(api.responsibilities.seatOptions)).toEqual(
       [],
     );
+  });
+
+  test("seatOptions excludes DERIVED seats — a computed mirror can never be a duty target", async () => {
+    const s = await setupChapter(newT());
+    const realId = await insertSeat(s, {
+      slug: "chapter_director",
+      title: "Chapter Director",
+      chart: "chapter",
+    });
+    const derivedId = await insertSeat(s, {
+      slug: "chapter_directors",
+      title: "Chapter Directors",
+      chart: "central",
+      derived: true,
+    });
+
+    const options = await s.as.query(api.responsibilities.seatOptions);
+    expect(options.map((o) => o.seatDefId)).toContain(realId);
+    expect(options.map((o) => o.seatDefId)).not.toContain(derivedId);
+
+    // dutiesForSeat is guarded the same way — even a stale mapping to the
+    // derived seat's id (pre-migration data) never surfaces there.
+    await run(s.t, (ctx) =>
+      ctx.db.insert("responsibilities", {
+        chapterId: s.chapterId,
+        title: "Stale derived-seat duty",
+        cadence: "ad_hoc",
+        assigneeSeatIds: [derivedId],
+        createdBy: s.userId,
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      }),
+    );
+    expect(
+      await s.as.query(api.responsibilities.dutiesForSeat, {
+        seatDefId: derivedId,
+      }),
+    ).toEqual([]);
+  });
+
+  test("create/update/addSeat reject a DERIVED seat with a clear ConvexError", async () => {
+    const s = await setupChapter(newT());
+    const derivedId = await insertSeat(s, {
+      slug: "chapter_directors",
+      title: "Chapter Directors",
+      chart: "central",
+      derived: true,
+    });
+
+    await expect(
+      s.as.mutation(api.responsibilities.create, {
+        title: "Meet with directors",
+        assigneeSeatIds: [derivedId],
+      }),
+    ).rejects.toThrow(ConvexError);
+
+    const id = (await s.as.mutation(api.responsibilities.create, {
+      title: "Meet with directors",
+    })) as Id<"responsibilities">;
+    await expect(
+      s.as.mutation(api.responsibilities.update, {
+        responsibilityId: id,
+        assigneeSeatIds: [derivedId],
+      }),
+    ).rejects.toThrow(ConvexError);
+    await expect(
+      s.as.mutation(api.responsibilities.addSeat, {
+        responsibilityId: id,
+        seatDefId: derivedId,
+      }),
+    ).rejects.toThrow(ConvexError);
+
+    // The row is untouched by the rejected attempts.
+    const [row] = await s.as.query(api.responsibilities.list);
+    expect(row.assigneeSeatIds).toBeUndefined();
+  });
+
+  test("a duty authored in chapter A mapped to chapter_director is visible via list/dutiesForSeat from chapter B AND applies to chapter B's director in their real workload data", async () => {
+    const s = await setupChapter(newT(), { chapterName: "New York" });
+    const s2 = await setupChapter(s.t, {
+      email: "leader2@publicworship.life",
+      chapterName: "Austin",
+    });
+
+    // One GLOBAL seatDefs row for "chapter_director" — same shape shared by
+    // every chapter's chart, exactly like production seeding (0022).
+    const chapterDirectorId = await insertSeat(s, {
+      slug: "chapter_director",
+      title: "Chapter Director",
+      chart: "chapter",
+    });
+
+    const nyDirector = (await s.as.mutation(api.people.create, {
+      name: "NY Director",
+    })) as Id<"people">;
+    const austinDirector = (await s2.as.mutation(api.people.create, {
+      name: "Austin Director",
+    })) as Id<"people">;
+    const austinOther = (await s2.as.mutation(api.people.create, {
+      name: "Austin Someone Else",
+    })) as Id<"people">;
+
+    await insertSeatAssignment(s, chapterDirectorId, s.chapterId, nyDirector);
+    await insertSeatAssignment(
+      s,
+      chapterDirectorId,
+      s2.chapterId,
+      austinDirector,
+    );
+
+    // NY (chapter A) authors ONE duty mapped to the real (shared) seat def —
+    // Austin (chapter B) never touches it.
+    const dutyId = (await s.as.mutation(api.responsibilities.create, {
+      title: "Run the chapter day-to-day",
+      assigneeSeatIds: [chapterDirectorId],
+    })) as Id<"responsibilities">;
+
+    // REAL PATH #1 — dutiesForSeat: browsing the seat from EITHER chapter
+    // surfaces NY's duty (two-chapter matrix, both directions).
+    const nyDutiesForSeat = await s.as.query(api.responsibilities.dutiesForSeat, {
+      seatDefId: chapterDirectorId,
+    });
+    const austinDutiesForSeat = await s2.as.query(
+      api.responsibilities.dutiesForSeat,
+      { seatDefId: chapterDirectorId },
+    );
+    expect(nyDutiesForSeat).toEqual([
+      { id: dutyId, title: "Run the chapter day-to-day", cadence: "ad_hoc" },
+    ]);
+    expect(austinDutiesForSeat).toEqual(nyDutiesForSeat);
+
+    // REAL PATH #2 — list: Austin's OWN duty catalog includes NY's
+    // seat-mapped duty (owner decision: one role, same expectations
+    // everywhere — the row's chapterId is authorship metadata, not a filter).
+    const austinList = await s2.as.query(api.responsibilities.list);
+    const austinRow = austinList.find((r) => r._id === dutyId)!;
+    expect(austinRow).toBeDefined();
+    expect(austinRow.chapterId).toBe(s.chapterId); // authorship stays NY's
+    // `authoredByChapterName` is the Duties grid's read-only signal — set
+    // (to the authoring chapter's name) from Austin's view, null from NY's.
+    expect(austinRow.authoredByChapterName).toBe("New York");
+    // …and it's still in NY's own list too (the matrix's other direction),
+    // where it's the caller's OWN row — no provenance label needed.
+    const nyList = await s.as.query(api.responsibilities.list);
+    const nyRow = nyList.find((r) => r._id === dutyId);
+    expect(nyRow).toBeDefined();
+    expect(nyRow!.authoredByChapterName).toBeNull();
+
+    // REAL PATH #3 — "applies in their workload data": the EXACT combination
+    // WorkloadView does client-side (list + chapterSeatHoldings, fed through
+    // the shared pure `responsibilityAppliesTo`), read from AUSTIN's own
+    // queries only — no manually-constructed seat maps.
+    const austinHoldings = await s2.as.query(
+      api.responsibilities.chapterSeatHoldings,
+    );
+    const seatIdsFor = (personId: Id<"people">) =>
+      austinHoldings.filter((h) => h.personId === personId).map((h) => h.seatDefId);
+    expect(
+      responsibilityAppliesTo(austinRow, {
+        _id: austinDirector,
+        seatIds: seatIdsFor(austinDirector),
+      }),
+    ).toBe(true);
+    // Someone else in Austin who does NOT hold the seat is correctly excluded.
+    expect(
+      responsibilityAppliesTo(austinRow, {
+        _id: austinOther,
+        seatIds: seatIdsFor(austinOther),
+      }),
+    ).toBe(false);
+
+    // Central-def behavior is UNCHANGED by this fix — already pinned by
+    // "dutiesForSeat reaches ACROSS chapters for a CENTRAL seat" above,
+    // which continues to pass unmodified (central occupancy was already
+    // chapter-independent; only the chapter-chart case changed here).
   });
 });
 
@@ -967,7 +1149,8 @@ describe("check-ins", () => {
       ).rejects.toThrow(ConvexError);
     }
 
-    // A responsibility id from ANOTHER chapter must not be storable.
+    // A PERSON/ROLE-scoped responsibility id from ANOTHER chapter (no seats
+    // — never travels) must not be storable.
     const s2 = await setupChapter(s.t, {
       email: "other@publicworship.life",
       chapterName: "Austin",
@@ -981,6 +1164,56 @@ describe("check-ins", () => {
         type: "checkin",
         responsibilities: [
           { responsibilityId: foreign, title: "Foreign duty", fulfilling: true },
+        ],
+      }),
+    ).rejects.toThrow(ConvexError);
+  });
+
+  test("a SEAT-MAPPED responsibility from ANOTHER chapter IS storable in a 1:1 — org-wide duties travel", async () => {
+    const s = await setupChapter(newT());
+    const { bob, cara } = await seedChain(s);
+    const asBob = await addUser(s, "bob-orgwide@publicworship.life", {
+      personId: bob,
+    });
+    const s2 = await setupChapter(s.t, {
+      email: "other-orgwide@publicworship.life",
+      chapterName: "Austin",
+    });
+    const seatId = await insertSeat(s, {
+      slug: "z",
+      title: "Z Seat",
+      chart: "chapter",
+    });
+    // Austin authors a duty mapped to a seat — this is the exact case
+    // `responsibilities.list` now surfaces to Bob's chapter too.
+    const orgWideDuty = (await s2.as.mutation(api.responsibilities.create, {
+      title: "Org-wide duty",
+      assigneeSeatIds: [seatId],
+    })) as Id<"responsibilities">;
+
+    const checkInId = await asBob.mutation(api.checkIns.log, {
+      personId: cara,
+      type: "checkin",
+      responsibilities: [
+        { responsibilityId: orgWideDuty, title: "Org-wide duty", fulfilling: true },
+      ],
+    });
+    expect(checkInId).toBeDefined();
+
+    // A responsibility id that doesn't exist at all is still rejected.
+    await s2.as.mutation(api.responsibilities.remove, {
+      responsibilityId: orgWideDuty,
+    });
+    await expect(
+      asBob.mutation(api.checkIns.log, {
+        personId: cara,
+        type: "checkin",
+        responsibilities: [
+          {
+            responsibilityId: orgWideDuty,
+            title: "Org-wide duty",
+            fulfilling: true,
+          },
         ],
       }),
     ).rejects.toThrow(ConvexError);

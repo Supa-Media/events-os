@@ -95,7 +95,20 @@ export const log = mutation({
     for (const entry of args.responsibilities ?? []) {
       if (!entry.responsibilityId) continue;
       const doc = await ctx.db.get(entry.responsibilityId);
-      await requireInChapter(ctx, person.chapterId, doc, "Responsibility");
+      // A SEAT-MAPPED duty is an ORG-WIDE expectation (owner decision — see
+      // `responsibilities.ts`'s `orgWideCatalog`): it can show up on a
+      // report's workload even though its `chapterId` is some OTHER
+      // chapter's (whichever chapter happened to author it), so a 1:1
+      // referencing it must not be rejected as "not in your chapter." A
+      // PERSON/ROLE-scoped duty (no seats) keeps the strict same-chapter
+      // check — those never travel. `doc` is guaranteed non-null in the
+      // `if` branch (optional chaining short-circuits a null doc's
+      // `assigneeSeatIds` to `undefined`, so `?? 0 > 0` is only ever true
+      // for a real row) — a missing/foreign PERSON/ROLE-scoped id still
+      // gets the existence check via `requireInChapter` below.
+      if ((doc?.assigneeSeatIds?.length ?? 0) === 0) {
+        await requireInChapter(ctx, person.chapterId, doc, "Responsibility");
+      }
     }
     for (const entry of args.projects ?? []) {
       if (!entry.projectId) continue;

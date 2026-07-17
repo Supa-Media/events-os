@@ -13,6 +13,7 @@ import { describe, expect, test } from "vitest";
 import { internal } from "../_generated/api";
 import type { Id } from "../_generated/dataModel";
 import { newT, run, setupChapter } from "./setup.helpers";
+import { runRepointDerivedSeatDuties } from "../migrations/0024_repoint_derived_seat_duties";
 
 const LEGACY_OPTIONS = [
   { value: "pull_from_storage", label: "Pull from storage", color: "blue" },
@@ -305,6 +306,7 @@ const REGISTRY_NAMES = [
   "0021_inventory_category_to_tags",
   "0022_seed_seat_defs",
   "0023_seed_seat_assignments",
+  "0024_repoint_derived_seat_duties",
   "0025_add_cd_finance_viewer",
 ];
 const SEEDED_HISTORICAL = [
@@ -406,5 +408,185 @@ describe("cleanupOrphanedPlacements", () => {
     }));
     expect(orphan).toBeNull();
     expect(live).not.toBeNull();
+  });
+});
+
+/**
+ * 0024_repoint_derived_seat_duties — owner decision (verbatim): "the
+ * expectation for Chapter Director at one place is gonna be the same for the
+ * expectation somewhere else." Chapter Director is ONE role with identical
+ * expectations across every chapter, so the central chart's DERIVED
+ * `chapter_directors` mirror (holders computed, never assigned) must never
+ * carry a duty of its own. This backfill repoints any pre-fix
+ * `responsibilities.assigneeSeatIds` entry naming the derived seat onto the
+ * real chapter-chart `chapter_director` seat, deduping if a row already had
+ * both.
+ *
+ * These tests only pin the repoint MECHANICS (id-swap + dedupe + idempotency)
+ * — the real-world EFFECT of the repoint (an org-wide expectation reaching
+ * every chapter's director, not just the authoring chapter's) is pinned by
+ * `responsibilities.ts`'s `orgWideCatalog` resolution and exercised end-to-end
+ * in `tests/responsibilities.test.ts`'s "a duty authored in chapter A mapped
+ * to chapter_director is visible via list/dutiesForSeat from chapter B…"
+ * test — this file just proves the migration correctly gets a row OFF the
+ * dead derived id (which can never resolve, having no `seatAssignments`) and
+ * ONTO the real one, which `orgWideCatalog` then fans out org-wide.
+ */
+describe("repointDerivedSeatDuties", () => {
+  async function seedSeats(t: ReturnType<typeof newT>) {
+    return run(t, async (ctx) => {
+      const now = Date.now();
+      const derivedId = await ctx.db.insert("seatDefs", {
+        slug: "chapter_directors",
+        title: "Chapter Directors",
+        chart: "central",
+        parentSlug: "expansion_director",
+        maxHolders: 50,
+        duties: [],
+        capabilities: [],
+        sortOrder: 0,
+        derived: true,
+        createdAt: now,
+        updatedAt: now,
+      });
+      const realId = await ctx.db.insert("seatDefs", {
+        slug: "chapter_director",
+        title: "Chapter Director",
+        chart: "chapter",
+        parentSlug: "root",
+        maxHolders: 1,
+        duties: [],
+        capabilities: [],
+        sortOrder: 1,
+        createdAt: now,
+        updatedAt: now,
+      });
+      // An unrelated seat, present so the migration's dedupe/repoint logic
+      // must not disturb entries that aren't the derived seat.
+      const otherId = await ctx.db.insert("seatDefs", {
+        slug: "treasurer",
+        title: "Treasurer",
+        chart: "chapter",
+        parentSlug: "chapter_director",
+        maxHolders: 1,
+        duties: [],
+        capabilities: [],
+        sortOrder: 2,
+        createdAt: now,
+        updatedAt: now,
+      });
+      return { derivedId, realId, otherId };
+    });
+  }
+
+  async function insertDuty(
+    t: ReturnType<typeof newT>,
+    chapterId: Id<"chapters">,
+    userId: Id<"users">,
+    title: string,
+    assigneeSeatIds: Id<"seatDefs">[] | undefined,
+  ) {
+    return run(t, (ctx) =>
+      ctx.db.insert("responsibilities", {
+        chapterId,
+        title,
+        cadence: "ad_hoc",
+        assigneeSeatIds,
+        createdBy: userId,
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      }),
+    );
+  }
+
+  test("repoints the derived seat id to the real seat id", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const { derivedId, realId } = await seedSeats(t);
+    const dutyId = await insertDuty(t, s.chapterId, s.userId, "Meet with directors", [
+      derivedId,
+    ]);
+
+    const res = await run(t, (ctx) => runRepointDerivedSeatDuties(ctx));
+    expect(res).toEqual({ repointed: 1, deduped: 0 });
+
+    const row = await run(t, (ctx) => ctx.db.get(dutyId));
+    expect(row!.assigneeSeatIds).toEqual([realId]);
+  });
+
+  test("dedupes when a row already has both the derived and the real seat", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const { derivedId, realId, otherId } = await seedSeats(t);
+    const dutyId = await insertDuty(t, s.chapterId, s.userId, "Dual-mapped duty", [
+      realId,
+      derivedId,
+      otherId,
+    ]);
+
+    const res = await run(t, (ctx) => runRepointDerivedSeatDuties(ctx));
+    expect(res).toEqual({ repointed: 1, deduped: 1 });
+
+    const row = await run(t, (ctx) => ctx.db.get(dutyId));
+    // The derived id collapses into the already-present real id; the
+    // unrelated seat and ordering of the surviving entries are preserved.
+    expect(row!.assigneeSeatIds).toEqual([realId, otherId]);
+  });
+
+  test("leaves untouched rows alone: no seats, seats without the derived id", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const { realId, otherId } = await seedSeats(t);
+    const noSeatsId = await insertDuty(
+      t,
+      s.chapterId,
+      s.userId,
+      "No seats",
+      undefined,
+    );
+    const realOnlyId = await insertDuty(t, s.chapterId, s.userId, "Real only", [
+      realId,
+    ]);
+    const otherOnlyId = await insertDuty(
+      t,
+      s.chapterId,
+      s.userId,
+      "Other only",
+      [otherId],
+    );
+
+    const res = await run(t, (ctx) => runRepointDerivedSeatDuties(ctx));
+    expect(res).toEqual({ repointed: 0, deduped: 0 });
+
+    const [noSeats, realOnly, otherOnly] = await run(t, async (ctx) => [
+      await ctx.db.get(noSeatsId),
+      await ctx.db.get(realOnlyId),
+      await ctx.db.get(otherOnlyId),
+    ]);
+    expect(noSeats!.assigneeSeatIds).toBeUndefined();
+    expect(realOnly!.assigneeSeatIds).toEqual([realId]);
+    expect(otherOnly!.assigneeSeatIds).toEqual([otherId]);
+  });
+
+  test("idempotent: a second run repoints and dedupes nothing", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const { derivedId, realId } = await seedSeats(t);
+    await insertDuty(t, s.chapterId, s.userId, "Meet with directors", [
+      derivedId,
+    ]);
+
+    const first = await run(t, (ctx) => runRepointDerivedSeatDuties(ctx));
+    expect(first).toEqual({ repointed: 1, deduped: 0 });
+
+    const second = await run(t, (ctx) => runRepointDerivedSeatDuties(ctx));
+    expect(second).toEqual({ repointed: 0, deduped: 0 });
+  });
+
+  test("safe no-op when seatDefs hasn't been seeded yet", async () => {
+    const t = newT();
+    await setupChapter(t);
+    const res = await run(t, (ctx) => runRepointDerivedSeatDuties(ctx));
+    expect(res).toEqual({ repointed: 0, deduped: 0 });
   });
 });

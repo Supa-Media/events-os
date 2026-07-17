@@ -31,6 +31,7 @@ import { Doc, Id } from "./_generated/dataModel";
 import { v } from "convex/values";
 import { isOperationalEvent, responsibilityAppliesTo } from "@events-os/shared";
 import { getChapterIdOrNull } from "./lib/context";
+import { orgWideCatalog } from "./responsibilities";
 import {
   isChapterAdmin,
   viewerPerson,
@@ -172,16 +173,18 @@ async function deriveTier(
     return { tier: "lead", tierReasons: ["You manage direct reports"] };
 
   if (self) {
-    // Owns a duty? Chapter-scoped, small — a bounded read, tested against the
-    // caller's roster row exactly as the Duties grid fans them out. `seatIds`
-    // is CRITICAL here: a seat-mapped duty ignores its legacy `assigneeRoles`
-    // entirely (see `responsibilityAppliesTo`), so without it a caller who
-    // owns a duty purely via a held seat would silently fall through to
-    // "member" tier instead of "lead".
-    const duties = await ctx.db
-      .query("responsibilities")
-      .withIndex("by_chapter", (q) => q.eq("chapterId", chapterId))
-      .take(500);
+    // Owns a duty? Tested against the caller's roster row exactly as the
+    // Duties grid fans them out — reads through `orgWideCatalog`, the SAME
+    // resolution `responsibilities.list` uses, not a locally re-derived
+    // chapter-only scan: a seat-mapped duty is an org-wide expectation (one
+    // role, same expectations everywhere — see that function's doc), so a
+    // duty authored in a DIFFERENT chapter but mapped to a seat `self` holds
+    // must count here too, exactly as it would show up in their own Duties
+    // catalog. `seatIds` is CRITICAL here: a seat-mapped duty ignores its
+    // legacy `assigneeRoles` entirely (see `responsibilityAppliesTo`), so
+    // without it a caller who owns a duty purely via a held seat would
+    // silently fall through to "member" tier instead of "lead".
+    const duties = await orgWideCatalog(ctx, chapterId, "org.deriveTier");
     const seatIds = await selfSeatIds(ctx, chapterId, self._id);
     const owned = duties.find((r) =>
       responsibilityAppliesTo(r, { ...self, seatIds }),

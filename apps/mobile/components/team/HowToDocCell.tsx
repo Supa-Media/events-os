@@ -4,6 +4,15 @@
  * an external link, a video, a short inline note, or a full markdown page
  * with its own route and share URL. No copy-on-write here — responsibility
  * docs are shared masters, edited in place.
+ *
+ * `editable={false}` (an org-wide duty AUTHORED BY ANOTHER CHAPTER — see
+ * `DutiesGrid`) fully disables writes, not just the kind menu: the note/
+ * link/video inline text fields render as plain `<Text>` instead of
+ * `InlineText`, since the backing `docs.update` mutation rejects a doc
+ * outside the caller's own chapter (`requireWritableDoc`) — an editable-
+ * looking field that throws on blur is worse than no field. Viewing a
+ * markdown doc (navigating to `/doc/[id]`) stays available either way —
+ * that's a read, not a write.
  */
 import { View, Text, Pressable, Linking } from "react-native";
 import { useRouter, usePathname } from "expo-router";
@@ -111,12 +120,19 @@ export function HowToDocCell({
     </>
   );
 
-  // No doc yet → the plain "+ How-To" affordance.
+  // No doc yet → the plain "+ How-To" affordance (read-only: just "—").
   if (!doc) {
+    if (!editable) {
+      return (
+        <View className="flex-1 flex-row items-center px-1">
+          <Text className="px-1 py-1.5 text-sm text-faint">—</Text>
+        </View>
+      );
+    }
     return (
       <View className="flex-1 flex-row items-center px-1">
         <Pressable
-          onPress={editable ? open : undefined}
+          onPress={open}
           className="flex-1 flex-row items-center gap-1 px-1 py-1.5 active:opacity-70"
         >
           <Icon name="plus" size={13} color={colors.faint} />
@@ -127,24 +143,33 @@ export function HowToDocCell({
     );
   }
 
-  // Note → inline editable short text (writes to docs.body).
+  // Note → inline editable short text (writes to docs.body); plain text when
+  // not editable (see the doc comment above — an org-wide duty from another
+  // chapter can't write this chapter's own `docs.update`).
   if (doc.kind === "note") {
     return (
       <View className="flex-1 flex-row items-center gap-1 px-1">
         <Icon name="file-text" size={13} color={colors.faint} />
-        <InlineText
-          value={doc.body ?? ""}
-          placeholder="Note…"
-          onCommit={(t) =>
-            void updateDoc({ docId: doc._id, body: t }).catch(alertError)
-          }
-        />
-        {kindMenu}
+        {editable ? (
+          <InlineText
+            value={doc.body ?? ""}
+            placeholder="Note…"
+            onCommit={(t) =>
+              void updateDoc({ docId: doc._id, body: t }).catch(alertError)
+            }
+          />
+        ) : (
+          <Text className="flex-1 px-2 py-1.5 text-sm text-ink" numberOfLines={1}>
+            {doc.body || "—"}
+          </Text>
+        )}
+        {editable ? kindMenu : null}
       </View>
     );
   }
 
-  // Link / Video → inline editable URL + open-out.
+  // Link / Video → inline editable URL + open-out; plain text + open-out
+  // when not editable (opening is a read, editing the URL is a write).
   if (doc.kind === "link" || doc.kind === "video") {
     return (
       <View className="flex-1 flex-row items-center gap-1 px-1">
@@ -153,13 +178,19 @@ export function HowToDocCell({
           size={13}
           color={colors.faint}
         />
-        <InlineText
-          value={doc.url ?? ""}
-          placeholder={doc.kind === "video" ? "Video URL" : "Link URL"}
-          onCommit={(t) =>
-            void updateDoc({ docId: doc._id, url: t.trim() }).catch(alertError)
-          }
-        />
+        {editable ? (
+          <InlineText
+            value={doc.url ?? ""}
+            placeholder={doc.kind === "video" ? "Video URL" : "Link URL"}
+            onCommit={(t) =>
+              void updateDoc({ docId: doc._id, url: t.trim() }).catch(alertError)
+            }
+          />
+        ) : (
+          <Text className="flex-1 px-2 py-1.5 text-sm text-ink" numberOfLines={1}>
+            {doc.url || "—"}
+          </Text>
+        )}
         {doc.url ? (
           <Pressable
             hitSlop={6}
@@ -169,12 +200,13 @@ export function HowToDocCell({
             <Icon name="external-link" size={14} color={colors.accent} />
           </Pressable>
         ) : null}
-        {kindMenu}
+        {editable ? kindMenu : null}
       </View>
     );
   }
 
-  // Markdown → title + open the doc editor page.
+  // Markdown → title + open the doc editor page. Viewing stays available
+  // either way (a read); only the kind menu (a write) is gated.
   return (
     <View className="flex-1 flex-row items-center px-1">
       <Pressable
@@ -193,7 +225,7 @@ export function HowToDocCell({
         </View>
         <Icon name="chevron-right" size={15} color={colors.faint} />
       </Pressable>
-      {kindMenu}
+      {editable ? kindMenu : null}
     </View>
   );
 }

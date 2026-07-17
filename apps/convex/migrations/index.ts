@@ -36,6 +36,7 @@ import { permitsStatesAndFallback } from "./0020_permits_states_and_fallback";
 import { inventoryCategoryToTags } from "./0021_inventory_category_to_tags";
 import { seedSeatDefs } from "./0022_seed_seat_defs";
 import { seedSeatAssignments } from "./0023_seed_seat_assignments";
+import { repointDerivedSeatDuties } from "./0024_repoint_derived_seat_duties";
 import { addCdFinanceViewer } from "./0025_add_cd_finance_viewer";
 
 /** One registered migration: a stable `name` (the ledger key) + its effect. */
@@ -73,6 +74,10 @@ export const MIGRATIONS: Migration[] = [
   seedSeatDefs,
   // Org chart v1 — seed seatAssignments from legacy specializedRoles.
   seedSeatAssignments,
+  // Derived-seat duty fix — repoint duties off the central chart's computed
+  // `chapter_directors` mirror onto the real chapter-chart `chapter_director`
+  // seat (one Chapter Director role everywhere).
+  repointDerivedSeatDuties,
   // Chapter Director finance visibility (owner decision, 2026-07-16) — patch
   // the live chapter_director seatDefs row to add finance.viewer.
   addCdFinanceViewer,
