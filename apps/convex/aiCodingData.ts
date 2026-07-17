@@ -23,13 +23,18 @@
  * Convention (mirrors `finances.ts`): every client-supplied id is verified to
  * live in the caller's chapter; failures throw `ConvexError`; reads are bounded.
  */
-import { internalQuery, internalMutation, mutation } from "./_generated/server";
+import {
+  internalQuery,
+  internalMutation,
+  mutation,
+  query,
+} from "./_generated/server";
 import type { MutationCtx, QueryCtx } from "./_generated/server";
 import { ConvexError, v } from "convex/values";
 import { Doc, Id } from "./_generated/dataModel";
 import { internal } from "./_generated/api";
 import { requireChapterId, requireInChapter } from "./lib/context";
-import { requireFinanceRole } from "./lib/finance";
+import { requireFinanceRole, requireCentralEdOrFm } from "./lib/finance";
 import { CENTRAL } from "@events-os/shared";
 
 /** Cap on how many of each context list we hand the model — keeps reads bounded. */
@@ -766,6 +771,163 @@ export const acceptSuggestion = mutation({
     // edit racing this one) could re-copy the same stale links.
     patch.aiSuggestion = undefined;
     await ctx.db.patch(args.transactionId, patch);
+    // Best-effort audit-trail backfill: mark the latest aiUsageEvents row for
+    // this transaction as accepted, so the "AI usage" section can show an
+    // accept rate. A missing usage event (e.g. a suggestion seeded directly
+    // in a test, or written before this audit trail existed) is fine — the
+    // accept itself still succeeds either way.
+    await backfillUsageEventAccepted(ctx, args.transactionId);
     return null;
+  },
+});
+
+/**
+ * Mark the latest `aiUsageEvents` row for `transactionId` as accepted (see
+ * `acceptSuggestion` above). "Latest" because a transaction can accumulate
+ * more than one attempt (a failed sweep run followed by a later successful
+ * manual one) — only the call that actually produced the accepted suggestion
+ * should get credit.
+ */
+async function backfillUsageEventAccepted(
+  ctx: MutationCtx,
+  transactionId: Id<"transactions">,
+): Promise<void> {
+  const latest = await ctx.db
+    .query("aiUsageEvents")
+    .withIndex("by_transaction", (q) =>
+      q.eq("subjectTransactionId", transactionId),
+    )
+    .order("desc")
+    .first();
+  if (latest) {
+    await ctx.db.patch(latest._id, { suggestionAccepted: true });
+  }
+}
+
+/**
+ * Persist one AI-usage audit-trail row (see `schema/aiUsage.ts`). Called by
+ * `aiCoding.ts`'s `codeTransaction` for EVERY OpenRouter attempt — success or
+ * failure — so paid-model spend is never silently unaccounted for. Internal
+ * only: the action is the sole caller, there's no client-facing write path.
+ */
+export const recordUsageEvent = internalMutation({
+  args: {
+    feature: v.literal("finance_auto_coding"),
+    chapterId: v.union(v.id("chapters"), v.literal(CENTRAL)),
+    triggeredBy: v.union(v.literal("sweep"), v.literal("manual")),
+    subjectTransactionId: v.optional(v.id("transactions")),
+    cardholderPersonId: v.optional(v.id("people")),
+    model: v.string(),
+    promptTokens: v.number(),
+    completionTokens: v.number(),
+    costUsdMicros: v.number(),
+    rawUsage: v.optional(v.any()),
+    outcome: v.union(
+      v.literal("suggested"),
+      v.literal("failed"),
+      v.literal("no_suggestion"),
+    ),
+  },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    await ctx.db.insert("aiUsageEvents", { ...args, createdAt: Date.now() });
+    return null;
+  },
+});
+
+/** Bounded scan for the usage summary below — a low-volume audit surface,
+ *  not a paginated ledger, so a generous newest-first window (same spirit as
+ *  `SWEEP_SCAN`) stands in for a full-table aggregate. */
+const USAGE_SCAN_LIMIT = 2000;
+/** How many individual events the "AI usage" section's recent list shows. */
+const USAGE_RECENT_LIMIT = 25;
+
+/** The UTC calendar-month boundary `ts` falls in. This is an ORG-WIDE
+ *  aggregate across every chapter (no single chapter-local timezone applies),
+ *  so it deliberately uses UTC rather than the chapter-planning-timezone math
+ *  in `@events-os/shared` (`daysBetweenInTz` et al.) — "month to date" here
+ *  only needs to be a stable, roughly-right boundary for a spend dashboard,
+ *  not calendar-exact per viewer. */
+function startOfMonthUtc(ts: number): number {
+  const d = new Date(ts);
+  return Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), 1);
+}
+
+/**
+ * "AI usage" section data for the Accounts tab (`apps/mobile/app/(app)/
+ * finances/accounts.tsx`) — month-to-date call count / estimated cost /
+ * accept rate, plus a compact recent-events list. ED/FM-only, same gate as
+ * the rest of that screen (`requireCentralEdOrFm` — see `increase.
+ * listAccountsStatus` for the identical pattern).
+ */
+export const getUsageSummary = query({
+  args: {},
+  returns: v.object({
+    monthToDate: v.object({
+      calls: v.number(),
+      costUsdMicros: v.number(),
+      // null when no call has produced an acceptable ("suggested") outcome
+      // yet this month — there's no rate to show, not a 0% rate.
+      acceptRate: v.union(v.number(), v.null()),
+    }),
+    recentEvents: v.array(
+      v.object({
+        id: v.id("aiUsageEvents"),
+        createdAt: v.number(),
+        triggeredBy: v.union(v.literal("sweep"), v.literal("manual")),
+        model: v.string(),
+        outcome: v.union(
+          v.literal("suggested"),
+          v.literal("failed"),
+          v.literal("no_suggestion"),
+        ),
+        costUsdMicros: v.number(),
+        cardholderName: v.union(v.string(), v.null()),
+        merchantName: v.union(v.string(), v.null()),
+        suggestionAccepted: v.optional(v.boolean()),
+      }),
+    ),
+  }),
+  handler: async (ctx) => {
+    await requireCentralEdOrFm(ctx);
+
+    const recent = await ctx.db
+      .query("aiUsageEvents")
+      .order("desc")
+      .take(USAGE_SCAN_LIMIT);
+
+    const monthStart = startOfMonthUtc(Date.now());
+    const thisMonth = recent.filter((e) => e.createdAt >= monthStart);
+    const suggested = thisMonth.filter((e) => e.outcome === "suggested");
+    const accepted = thisMonth.filter((e) => e.suggestionAccepted === true);
+
+    const monthToDate = {
+      calls: thisMonth.length,
+      costUsdMicros: thisMonth.reduce((sum, e) => sum + e.costUsdMicros, 0),
+      acceptRate:
+        suggested.length > 0 ? accepted.length / suggested.length : null,
+    };
+
+    const recentEvents = await Promise.all(
+      recent.slice(0, USAGE_RECENT_LIMIT).map(async (e) => {
+        const [cardholder, txn] = await Promise.all([
+          e.cardholderPersonId ? ctx.db.get(e.cardholderPersonId) : null,
+          e.subjectTransactionId ? ctx.db.get(e.subjectTransactionId) : null,
+        ]);
+        return {
+          id: e._id,
+          createdAt: e.createdAt,
+          triggeredBy: e.triggeredBy,
+          model: e.model,
+          outcome: e.outcome,
+          costUsdMicros: e.costUsdMicros,
+          cardholderName: cardholder?.name ?? null,
+          merchantName: txn?.merchantName ?? null,
+          suggestionAccepted: e.suggestionAccepted,
+        };
+      }),
+    );
+
+    return { monthToDate, recentEvents };
   },
 });

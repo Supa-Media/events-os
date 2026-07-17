@@ -9,10 +9,15 @@
  * human accepts it later via `aiCodingData.acceptSuggestion`. The model NEVER
  * moves money, changes links, or advances status on its own.
  *
- * We talk to OpenRouter via RAW fetch on a FREE model (mirroring `aiActions.ts`:
- * same base URL, auth header, and model conventions — no SDK). If
- * `OPENROUTER_API_KEY` is unset we DEGRADE GRACEFULLY: log and return null
- * without writing anything, so the finance flow works with no AI configured.
+ * We talk to OpenRouter via RAW fetch (mirroring `aiActions.ts`: same base
+ * URL, auth header, and model conventions — no SDK), on a PAID model —
+ * `codingModel()` below, config not code — CONDITIONAL on the audit trail
+ * this file also writes: every call (success or failure) is logged to
+ * `aiUsageEvents` via `aiCodingData.recordUsageEvent`, reviewable on the
+ * Accounts tab's "AI usage" section. If `OPENROUTER_API_KEY` is unset we
+ * DEGRADE GRACEFULLY: log and return null without writing anything (and
+ * without an audit-trail row — no call was made), so the finance flow works
+ * with no AI configured.
  *
  * The DB reads/writes live in the non-node `aiCodingData.ts` (an action has no
  * `ctx.db`); this file reaches them via `ctx.runQuery` / `ctx.runMutation`.
@@ -22,7 +27,82 @@ import type { ActionCtx } from "./_generated/server";
 import { internal } from "./_generated/api";
 import { v } from "convex/values";
 import { Id } from "./_generated/dataModel";
-import { DEFAULT_AI_MODEL } from "@events-os/shared";
+import { aiCostUsd } from "@events-os/shared";
+
+/**
+ * The OpenRouter model finance auto-coding calls on. Config, not code:
+ * override via the `OPENROUTER_MODEL` env var (see `docs/secrets.md`'s
+ * Secret Update Flow); defaults to a paid Claude Sonnet model now that the
+ * audit trail (`aiUsageEvents`) makes a paid model an owner-approved choice.
+ * Read per-call (not hoisted to a module-level const) so tests can toggle the
+ * env var between cases without re-importing the module.
+ */
+function codingModel(): string {
+  return process.env.OPENROUTER_MODEL || "anthropic/claude-sonnet-5";
+}
+
+/** The OpenRouter response `usage` shape we read (mirrors `aiActions.ts`'s
+ *  `OpenRouterUsage`) — `cost` and `prompt_tokens_details.cached_tokens` are
+ *  only present when the request asks for exact accounting (`usage: {
+ *  include: true }`, set below). */
+interface OpenRouterUsage {
+  prompt_tokens?: number;
+  completion_tokens?: number;
+  cost?: number;
+  prompt_tokens_details?: { cached_tokens?: number };
+}
+
+/**
+ * Write one `aiUsageEvents` row for this OpenRouter call — the audit trail
+ * that is the owner's CONDITION for allowing a paid model here. Called for
+ * EVERY attempt (success or failure), never just the happy path, so spend is
+ * never silently unaccounted for. Cost prefers the gateway's exact billed
+ * `usage.cost` (via the `usage: { include: true }` request flag); else it's
+ * estimated from the curated `AI_MODELS` price table (which now carries a
+ * real paid-model entry for `codingModel()`'s default); else 0 — the raw
+ * usage payload is kept in `rawUsage` either way so nothing is silently lost.
+ * Best-effort: an audit-log write must never crash the coding attempt itself.
+ */
+async function logUsageEvent(
+  ctx: ActionCtx,
+  p: {
+    chapterId: Id<"chapters">;
+    transactionId: Id<"transactions">;
+    cardholderPersonId: Id<"people"> | undefined;
+    triggeredBy: "sweep" | "manual";
+    model: string;
+    outcome: "suggested" | "failed" | "no_suggestion";
+    usage: OpenRouterUsage | undefined;
+  },
+): Promise<void> {
+  const promptTokens = p.usage?.prompt_tokens ?? 0;
+  const completionTokens = p.usage?.completion_tokens ?? 0;
+  const costUsd =
+    typeof p.usage?.cost === "number"
+      ? p.usage.cost
+      : aiCostUsd(p.model, {
+          inputTokens: promptTokens,
+          outputTokens: completionTokens,
+          cachedTokens: p.usage?.prompt_tokens_details?.cached_tokens,
+        });
+  try {
+    await ctx.runMutation(internal.aiCodingData.recordUsageEvent, {
+      feature: "finance_auto_coding",
+      chapterId: p.chapterId,
+      triggeredBy: p.triggeredBy,
+      subjectTransactionId: p.transactionId,
+      cardholderPersonId: p.cardholderPersonId,
+      model: p.model,
+      promptTokens,
+      completionTokens,
+      costUsdMicros: Math.round(costUsd * 1_000_000),
+      rawUsage: p.usage,
+      outcome: p.outcome,
+    });
+  } catch (err) {
+    console.log(`[aiCoding] Failed to write aiUsageEvents row: ${String(err)}`);
+  }
+}
 
 /**
  * The coding context `loadForSuggestion`/`loadForSuggestionSystem` return.
@@ -119,11 +199,12 @@ async function recordFailedAttempt(
   ctx: ActionCtx,
   transactionId: Id<"transactions">,
   reason: string,
+  model: string,
 ): Promise<null> {
   await ctx.runMutation(internal.aiCodingData.writeSuggestion, {
     transactionId,
     rationale: reason.slice(0, 200),
-    model: DEFAULT_AI_MODEL,
+    model,
     failed: true,
   });
   return null;
@@ -179,6 +260,7 @@ async function codeTransaction(
   ctx: ActionCtx,
   transactionId: Id<"transactions">,
   context: SuggestionContext,
+  triggeredBy: "sweep" | "manual",
 ): Promise<null | {
   fundId: Id<"funds"> | undefined;
   categoryId: Id<"budgetCategories"> | undefined;
@@ -307,9 +389,11 @@ async function codeTransaction(
 
   // Raw OpenRouter fetch (mirrors aiActions.ts). Best-effort: ANY network /
   // parse failure returns null rather than throwing into the caller.
+  const model = codingModel();
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), OPENROUTER_TIMEOUT_MS);
   let content: string;
+  let usage: OpenRouterUsage | undefined;
   try {
     const res = await fetch(OPENROUTER_URL, {
       method: "POST",
@@ -321,31 +405,56 @@ async function codeTransaction(
         "X-OpenRouter-Title": "Chapter OS",
       },
       body: JSON.stringify({
-        model: DEFAULT_AI_MODEL,
+        model,
         messages: [
           { role: "system", content: systemPrompt },
           { role: "user", content: userPrompt },
         ],
         response_format: { type: "json_object" },
         max_tokens: 500,
+        // Ask the gateway to return the exact billed cost + token details, so
+        // the audit trail (`aiUsageEvents`) accounts real numbers, not just
+        // an estimate — same flag `aiActions.ts` uses for the assistant.
+        usage: { include: true },
       }),
     });
     if (!res.ok) {
       console.log(`[aiCoding] OpenRouter call failed (${res.status}).`);
+      await logUsageEvent(ctx, {
+        chapterId: transaction.chapterId,
+        transactionId,
+        cardholderPersonId: person?._id,
+        triggeredBy,
+        model,
+        outcome: "failed",
+        usage: undefined,
+      });
       return await recordFailedAttempt(
         ctx,
         transactionId,
         `OpenRouter call failed (${res.status}).`,
+        model,
       );
     }
     const json: any = await res.json();
     content = json?.choices?.[0]?.message?.content ?? "";
+    usage = json?.usage as OpenRouterUsage | undefined;
   } catch (err) {
     console.log(`[aiCoding] OpenRouter request errored: ${String(err)}`);
+    await logUsageEvent(ctx, {
+      chapterId: transaction.chapterId,
+      transactionId,
+      cardholderPersonId: person?._id,
+      triggeredBy,
+      model,
+      outcome: "failed",
+      usage: undefined,
+    });
     return await recordFailedAttempt(
       ctx,
       transactionId,
       `OpenRouter request errored: ${String(err)}`,
+      model,
     );
   } finally {
     clearTimeout(timer);
@@ -354,10 +463,22 @@ async function codeTransaction(
   const proposal = parseModelJson(content);
   if (!proposal) {
     console.log("[aiCoding] Could not parse a JSON proposal from the model.");
+    // A 200 was returned (real tokens were billed) even though the reply
+    // didn't parse — log the actual usage, not a zeroed-out row.
+    await logUsageEvent(ctx, {
+      chapterId: transaction.chapterId,
+      transactionId,
+      cardholderPersonId: person?._id,
+      triggeredBy,
+      model,
+      outcome: "failed",
+      usage,
+    });
     return await recordFailedAttempt(
       ctx,
       transactionId,
       "Could not parse a JSON proposal from the model.",
+      model,
     );
   }
 
@@ -411,7 +532,17 @@ async function codeTransaction(
     budgetId,
     confidence,
     rationale,
-    model: DEFAULT_AI_MODEL,
+    model,
+  });
+
+  await logUsageEvent(ctx, {
+    chapterId: transaction.chapterId,
+    transactionId,
+    cardholderPersonId: person?._id,
+    triggeredBy,
+    model,
+    outcome: "suggested",
+    usage,
   });
 
   return {
@@ -420,7 +551,7 @@ async function codeTransaction(
     budgetId,
     confidence,
     rationale,
-    model: DEFAULT_AI_MODEL,
+    model,
     suggestedAt: Date.now(),
   };
 }
@@ -435,7 +566,7 @@ export const suggestCoding = action({
       internal.aiCodingData.loadForSuggestion,
       { transactionId: args.transactionId },
     );
-    return await codeTransaction(ctx, args.transactionId, context);
+    return await codeTransaction(ctx, args.transactionId, context, "manual");
   },
 });
 
@@ -453,6 +584,6 @@ export const suggestCodingSystem = internalAction({
       internal.aiCodingData.loadForSuggestionSystem,
       { transactionId: args.transactionId },
     );
-    return await codeTransaction(ctx, args.transactionId, context);
+    return await codeTransaction(ctx, args.transactionId, context, "sweep");
   },
 });
