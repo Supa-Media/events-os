@@ -3,11 +3,23 @@
  *
  * A read-only rollup for a SINGLE event/project ref: its budget (the v2
  * `budgets` row, budget-first world per WP-U/WP-U2 — `budgetId` is the only
- * pointer; the row IS the plan), its planned lines (WP-3.1 `budgetLines`)
- * grouped by category, its actual spend (`transactions`, budget-first via
- * `by_ref` → `by_budget`, mirroring `finances.ts#actualsForRef`), and the
- * planned-vs-actual deltas that answer "what's this event/project costing?"
- * split by people / location / gear / whatever categories the plan uses.
+ * pointer; the row IS the plan), its planned side, and its actual spend
+ * (`transactions`, budget-first via `by_ref` → `by_budget`, mirroring
+ * `finances.ts#actualsForRef`) — the planned-vs-actual deltas that answer
+ * "what's this event/project costing?" split by people / location / gear /
+ * whatever categories the plan uses.
+ *
+ * PLANNED SIDE (WP-money-unify PR2): for an EVENT ref, "planned" is the
+ * READ-TIME VIRTUAL UNION of every cost-bearing row on the event —
+ * `eventItems` currency cells, paid `engagements` (vendors), and `budgetLines`
+ * — via the shared `collectEventPlannedRows` sweep (also used by
+ * `eventCostGrid` below). This is an intentional user-visible fix: an event
+ * whose only "plan" is cost-inventory items (no `budgetLines` at all) used to
+ * report `lineCount: 0` and show "No plan yet" — it now reports the union's
+ * row count and a real category breakdown. A PROJECT ref has no
+ * `eventItems`/`engagements` (schema-level — those tables are `eventId`-only),
+ * so the union degenerates to `budgetLines` alone: byte-identical to the
+ * pre-PR2 behavior.
  *
  * OWNERSHIP: this file is intentionally separate from `finances.ts` (whose
  * budget-mutation region + schema are owned by a parallel WP) — every read
@@ -48,6 +60,8 @@ import {
   countsAsSpend,
   effectiveBudgetApprovalStatus,
   financeRoleAtLeast,
+  MODULE_DEFAULT_CATEGORY_NAMES,
+  VENDOR_DEFAULT_CATEGORY_NAME,
   type BudgetRefKind,
 } from "@events-os/shared";
 import { getChapterIdOrNull } from "./lib/context";
@@ -59,6 +73,13 @@ import { callerHasEventEditRights } from "./lib/org";
 // human-authored plans and a single event/project's spend, never a synced
 // feed. Mirrors the scan limits used throughout `finances.ts`.
 const SCAN_LIMIT = 2000;
+
+// Bound on eventColumns/eventModules/eventItems/engagements/budgets/
+// budgetLines per event swept by `collectEventPlannedRows` (shared by
+// `refMoney`'s planned union and `eventCostGrid`) — same generous human-scale
+// bound as `SCAN_LIMIT` above, kept as its own named constant since it scopes
+// a different (per-EVENT, not per-ref-budget) sweep.
+const GRID_SCAN_LIMIT = 2000;
 
 const refKindValidator = v.union(...BUDGET_REF_KINDS.map((k) => v.literal(k)));
 const approvalStatusValidator = v.union(
@@ -218,6 +239,304 @@ function toMoneyTxnSummary(tr: Doc<"transactions">) {
   };
 }
 
+// ── Shared planned-row union (items ∪ vendors ∪ budgetLines) ────────────────
+/**
+ * `collectEventPlannedRows` (WP-money-unify PR2) sweeps EVERY cost-bearing
+ * row on a single event — `eventItems` currency cells, paid `engagements`
+ * (vendors), and `budgetLines` — into one de-duplicated list, shared by
+ * `refMoney`'s planned side (below) AND `eventCostGrid` (further down): the
+ * exact same "what does this event plan to cost" answer, read-time-merged so
+ * both surfaces agree by construction rather than by two independently
+ * hand-tuned sweeps drifting apart.
+ *
+ * MERGE (not new — lifted verbatim from `eventCostGrid`'s pre-PR2 logic): a
+ * `budgetLines` row with `sourceRef` pointing at an `eventItems`/`engagements`
+ * row ALSO present in this sweep is folded into that row (category only —
+ * the module/vendor row's own cost/status/link wins) and does NOT appear as
+ * its own entry — so summing `plannedCents` across the returned rows never
+ * double-counts a linked pair. A DANGLING `sourceRef` (target not swept, e.g.
+ * deleted or its module lost its currency column) falls back to a normal
+ * unlinked `budget_line` row so its plan data doesn't vanish.
+ *
+ * CATEGORY RESOLUTION per row: an explicit override
+ * (`eventItems`/`engagements.budgetCategoryId`, or `budgetLines.categoryId`
+ * — already explicit, no override concept) wins; otherwise the row's default
+ * category NAME (`MODULE_DEFAULT_CATEGORY_NAMES[module]` for an item,
+ * `VENDOR_DEFAULT_CATEGORY_NAME` for a vendor) is matched EXACTLY against
+ * this event's own chapter's `budgetCategories` (loaded once, up front) —
+ * unresolvable (no override, no name match — e.g. a chapter renamed/deleted
+ * the default category) resolves to `categoryId: null` /
+ * `categoryIsDefault: false` (nothing was actually resolved), which reads as
+ * the existing "Uncategorized" bucket at every consumer. `categoryName` here
+ * is always a real category's name when `categoryId` resolves (an override
+ * can point anywhere — its OWN category's real name, not necessarily the
+ * default), falling back to the caller-supplied label (a module's own
+ * display label for `event_item`/`vendor` rows, "Uncategorized" for a
+ * `budget_line` row) only when nothing resolves — this is UNCHANGED display
+ * behavior for the common (no chapter categories seeded / no default match)
+ * case, matching every pre-PR2 `eventCostGrid` fixture.
+ *
+ * Every read here is `.take(GRID_SCAN_LIMIT)`-bounded, mirroring the rest of
+ * this file's scan limits.
+ */
+type PlannedRowSourceKind = "event_item" | "vendor" | "budget_line";
+
+type PlannedRow = {
+  id: string;
+  sourceKind: PlannedRowSourceKind;
+  // `eventItems.module` for an `event_item` row; `null` for `vendor` /
+  // `budget_line` (neither has real module semantics).
+  module: string | null;
+  typeLabel: string;
+  label: string;
+  plannedCents: number;
+  // Vendor actual-if-paid only (mirrors `eventCostGrid`'s pre-PR2 field) —
+  // NEVER folded into `refMoney`'s `actualByCategory`, which stays
+  // `transactions`-only (money invariant #2: Estimated is never summed with
+  // Actuals).
+  actualCents: number | null;
+  status: string | null;
+  editable: boolean;
+  sourceLink: string | null;
+  // True when this row absorbed a linked `budgetLines` row's category via
+  // `sourceRef` (see the module doc above) — always `false` on a
+  // `budget_line` row itself (a TRULY linked line is folded away, never
+  // returned as its own row).
+  linked: boolean;
+  categoryId: Id<"budgetCategories"> | null;
+  // True only when `categoryId` came from the DEFAULT-name match, never from
+  // an explicit override or a `sourceRef` merge.
+  categoryIsDefault: boolean;
+  categoryName: string;
+  /** The `eventItems`/`engagements` doc id this row was sourced from (as a
+   *  string), for `sourceRef` link matching — `null` for a `budget_line` row
+   *  (never itself a link TARGET). Internal join key; callers that return
+   *  rows to the client strip this field. */
+  refId: string | null;
+};
+
+/** Round a whole-dollar figure (`eventItems.fields[key]` / `engagements.
+ *  amountUsd`) to integer cents — mirrors `events.ts#budgetSpent`'s own
+ *  `Number(...)` + finite guard, then converts to the finance side's unit. */
+function dollarsToCents(value: unknown): number | null {
+  const n = Number(value);
+  if (!Number.isFinite(n) || n <= 0) return null;
+  return Math.round(n * 100);
+}
+
+async function collectEventPlannedRows(
+  ctx: QueryCtx,
+  eventId: Id<"events">,
+  eventChapterId: Id<"chapters">,
+  authz: { ownChapterId: Id<"chapters">; chapterId: Id<"chapters">; access: FinanceAccess },
+): Promise<PlannedRow[]> {
+  // The event's own chapter's categories, loaded ONCE — feeds the
+  // default-name-match table below AND (for ids already in this set) saves a
+  // redundant `ctx.db.get` when resolving an explicit override's name.
+  const chapterCategories = await ctx.db
+    .query("budgetCategories")
+    .withIndex("by_chapter", (q) => q.eq("chapterId", eventChapterId))
+    .take(GRID_SCAN_LIMIT);
+  const categoryNameById = new Map<Id<"budgetCategories">, string>();
+  const categoryIdByDefaultName = new Map<string, Id<"budgetCategories">>();
+  for (const cat of chapterCategories) {
+    categoryNameById.set(cat._id, cat.name);
+    if (!categoryIdByDefaultName.has(cat.name)) categoryIdByDefaultName.set(cat.name, cat._id);
+  }
+
+  /** Resolve an EXPLICIT override id's name via `ctx.db.get` — unrestricted
+   *  by chapter (mirrors the pre-PR2 by-id lookups in both `refMoney` and
+   *  `eventCostGrid`, which never chapter-filtered an explicit category
+   *  link), memoizing into `categoryNameById` so a repeat id is one lookup. */
+  async function nameForExplicitId(id: Id<"budgetCategories">): Promise<string | undefined> {
+    const cached = categoryNameById.get(id);
+    if (cached !== undefined) return cached;
+    const doc = await ctx.db.get(id);
+    if (doc) categoryNameById.set(id, doc.name);
+    return doc?.name;
+  }
+
+  /** Explicit override wins; else match the default NAME against this
+   *  chapter's categories; else unresolved. */
+  async function resolveCategory(
+    explicitId: Id<"budgetCategories"> | undefined,
+    defaultName: string | undefined,
+  ): Promise<{ categoryId: Id<"budgetCategories"> | null; categoryIsDefault: boolean; categoryName: string | undefined }> {
+    if (explicitId) {
+      return {
+        categoryId: explicitId,
+        categoryIsDefault: false,
+        categoryName: await nameForExplicitId(explicitId),
+      };
+    }
+    const byName = defaultName ? categoryIdByDefaultName.get(defaultName) : undefined;
+    if (byName) {
+      return { categoryId: byName, categoryIsDefault: true, categoryName: defaultName };
+    }
+    return { categoryId: null, categoryIsDefault: false, categoryName: undefined };
+  }
+
+  const rows: PlannedRow[] = [];
+
+  // ── eventItems (every module with a currency column) ───────────────────
+  const [eventColumnRows, eventModuleRows] = await Promise.all([
+    ctx.db
+      .query("eventColumns")
+      .withIndex("by_event", (q) => q.eq("eventId", eventId))
+      .take(GRID_SCAN_LIMIT),
+    ctx.db
+      .query("eventModules")
+      .withIndex("by_event", (q) => q.eq("eventId", eventId))
+      .take(GRID_SCAN_LIMIT),
+  ]);
+  const moduleLabel = new Map<string, string>(eventModuleRows.map((m) => [m.key, m.label]));
+  const currencyColumnsByModule = new Map<string, { key: string; label: string }[]>();
+  for (const col of eventColumnRows) {
+    if (col.type !== "currency") continue;
+    const entry = { key: col.key, label: col.label };
+    const bucket = currencyColumnsByModule.get(col.module);
+    if (bucket) bucket.push(entry);
+    else currencyColumnsByModule.set(col.module, [entry]);
+  }
+
+  const items = await ctx.db
+    .query("eventItems")
+    .withIndex("by_event", (q) => q.eq("eventId", eventId))
+    .take(GRID_SCAN_LIMIT);
+  if (items.length === GRID_SCAN_LIMIT) {
+    console.warn(
+      `[moneyViews] collectEventPlannedRows hit GRID_SCAN_LIMIT (${GRID_SCAN_LIMIT}) reading eventItems for event ${eventId}; rows may be truncated.`,
+    );
+  }
+  for (const item of items) {
+    const currencyCols = currencyColumnsByModule.get(item.module);
+    if (!currencyCols || currencyCols.length === 0) continue;
+    const typeLabel = moduleLabel.get(item.module) ?? item.module;
+    const multiCol = currencyCols.length > 1;
+    for (const col of currencyCols) {
+      const cents = dollarsToCents(item.fields?.[col.key]);
+      if (cents === null) continue;
+      const title = item.title || "(untitled)";
+      const resolved = await resolveCategory(
+        item.budgetCategoryId,
+        MODULE_DEFAULT_CATEGORY_NAMES[item.module],
+      );
+      rows.push({
+        id: `event_item:${item._id}:${col.key}`,
+        sourceKind: "event_item",
+        module: item.module,
+        typeLabel,
+        // Disambiguate only when a module genuinely has more than one
+        // currency column (rare) — keeps the common case's label clean.
+        label: multiCol ? `${title} — ${col.label}` : title,
+        plannedCents: cents,
+        actualCents: null,
+        status: item.status ?? null,
+        editable: true, // same native chapter-member gate `items.ts` already enforces
+        sourceLink: `/event/${eventId}?tab=${item.module}`,
+        linked: false,
+        categoryId: resolved.categoryId,
+        categoryIsDefault: resolved.categoryIsDefault,
+        categoryName: resolved.categoryName ?? typeLabel,
+        refId: String(item._id),
+      });
+    }
+  }
+
+  // ── Paid vendors (Crew & Duties) ────────────────────────────────────────
+  const paidEngagements = await ctx.db
+    .query("engagements")
+    .withIndex("by_event_type", (q) => q.eq("eventId", eventId).eq("type", "paid"))
+    .take(GRID_SCAN_LIMIT);
+  const vendorPeople = await Promise.all(paidEngagements.map((e) => ctx.db.get(e.personId)));
+  for (let i = 0; i < paidEngagements.length; i++) {
+    const eng = paidEngagements[i];
+    const cents = dollarsToCents(eng.amountUsd);
+    if (cents === null) continue;
+    const person = vendorPeople[i];
+    const resolved = await resolveCategory(eng.budgetCategoryId, VENDOR_DEFAULT_CATEGORY_NAME);
+    rows.push({
+      id: `vendor:${eng._id}`,
+      sourceKind: "vendor",
+      module: null,
+      typeLabel: "Vendors",
+      label: person?.name ?? "(unknown)",
+      plannedCents: cents,
+      // Vendors: the same figure once `paymentStatus === "paid"`, else null
+      // (not yet actually spent). This is a display/committed figure only —
+      // never summed into `refMoney`'s `transactions`-based actuals.
+      actualCents: eng.paymentStatus === "paid" ? cents : null,
+      status: eng.paymentStatus ?? null,
+      editable: true, // same native chapter-member gate `engagements.ts` already enforces
+      sourceLink: `/event/${eventId}?tab=crew`,
+      linked: false,
+      categoryId: resolved.categoryId,
+      categoryIsDefault: resolved.categoryIsDefault,
+      categoryName: resolved.categoryName ?? "Vendors",
+      refId: String(eng._id),
+    });
+  }
+
+  // ── Budget lines (the finance plan, WP-3.1) — merge linked, else a row ──
+  const budgets = await ctx.db
+    .query("budgets")
+    .withIndex("by_ref", (q) => q.eq("refKind", "event").eq("scopeRefId", eventId))
+    .take(GRID_SCAN_LIMIT);
+  const budgetLineRows: PlannedRow[] = [];
+  for (const budget of budgets) {
+    const lines = await ctx.db
+      .query("budgetLines")
+      .withIndex("by_budget", (q) => q.eq("budgetId", budget._id))
+      .take(GRID_SCAN_LIMIT);
+    const canEdit = canEditBudgetPlan(authz, budget.chapterId);
+    for (const line of lines) {
+      const lineCategoryName = line.categoryId
+        ? ((await nameForExplicitId(line.categoryId)) ?? "Uncategorized")
+        : "Uncategorized";
+
+      // LINKED: fold this line's category into every row sourced from
+      // `sourceRef.id`, and don't give the line its own row at all — "module
+      // row wins for display" (its cost/status/link are untouched; only the
+      // category is upgraded to the line's REAL category).
+      if (line.sourceRef) {
+        const targets = rows.filter((r) => r.refId === line.sourceRef!.id);
+        if (targets.length > 0) {
+          for (const target of targets) {
+            target.linked = true;
+            target.categoryId = line.categoryId ?? null;
+            target.categoryIsDefault = false;
+            target.categoryName = lineCategoryName;
+          }
+          continue; // merged — no separate budget_line row, no double count.
+        }
+        // Dangling sourceRef — fall through and show the line as a normal
+        // unlinked row so its plan data doesn't just vanish.
+      }
+
+      budgetLineRows.push({
+        id: `budget_line:${line._id}`,
+        sourceKind: "budget_line",
+        module: null,
+        typeLabel: "Budget lines",
+        label: line.description,
+        plannedCents: line.plannedCents,
+        actualCents: null,
+        status: null,
+        editable: canEdit,
+        sourceLink: null,
+        linked: false,
+        categoryId: line.categoryId ?? null,
+        categoryIsDefault: false,
+        categoryName: lineCategoryName,
+        refId: null,
+      });
+    }
+  }
+  rows.push(...budgetLineRows);
+
+  return rows;
+}
+
 const moneyCategoryRow = v.object({
   categoryId: v.union(v.id("budgetCategories"), v.null()),
   categoryName: v.string(),
@@ -273,16 +592,24 @@ export const refMoney = query({
     ),
     categories: v.array(moneyCategoryRow),
     unplannedCents: v.number(),
-    // Planned but not broken into any category line yet — `budget.amountCents`
-    // minus the sum of `budgetLines.plannedCents` across every by_ref budget,
-    // floored at 0. Keeps the header total and the category-row sum visibly
-    // reconciling: category rows alone can undercount the header amount when
-    // a budget hasn't been fully allocated to lines.
+    // Planned but not broken into any planned row yet — the effective cap
+    // (`totalPlannedCents`) minus the sum of the planned side (WP-money-unify
+    // PR2: the `eventItems` ∪ `engagements` ∪ `budgetLines` union for an
+    // EVENT ref; `budgetLines` alone for a PROJECT ref, which has no items/
+    // engagements), floored at 0. Keeps the header total and the category-row
+    // sum visibly reconciling: category rows alone can undercount the header
+    // amount when a budget hasn't been fully allocated to a planned row.
     unallocatedPlannedCents: v.number(),
     transactions: v.array(moneyTxnSummary),
     totalPlannedCents: v.number(),
     totalActualCents: v.number(),
     totalRemainingCents: v.number(),
+    // The planned-row count — gates the client's "No plan yet" empty state
+    // (`lineCount === 0`). WP-money-unify PR2: for an EVENT ref this is the
+    // UNION row count (`eventItems` ∪ paid `engagements` ∪ `budgetLines`,
+    // post `sourceRef`-merge dedup), not the raw `budgetLines` count — an
+    // event whose only plan is cost-inventory items now reports a nonzero
+    // count here. Unchanged (raw `budgetLines.length`) for a PROJECT ref.
     lineCount: v.number(),
     // Money IN (tickets + donations, from `eventPages`) — a summary-only
     // read alongside the spend-side view above. See the module doc's income
@@ -431,11 +758,31 @@ export const refMoney = query({
     const spendTxns = refChapterTxns.filter(isSpend);
 
     // ── Plan (ESTIMATED-side, invariant #2 — never mixed with actuals below) ──
+    // WP-money-unify PR2: for an EVENT ref, "planned" is the read-time
+    // virtual UNION of `eventItems` ∪ paid `engagements` ∪ `budgetLines`
+    // (`collectEventPlannedRows`, shared with `eventCostGrid` below) — the
+    // intentional user-visible fix (an event whose only "plan" is cost-
+    // inventory items stops reporting `lineCount: 0`). A PROJECT ref has no
+    // `eventItems`/`engagements` (schema-level), so it keeps reading straight
+    // off `lines` (the by_ref `budgetLines` sweep above) — byte-identical to
+    // pre-PR2 behavior.
     type CatKey = Id<"budgetCategories"> | null;
+    const plannedEntries: { categoryId: CatKey; plannedCents: number }[] =
+      args.refKind === "event"
+        ? (
+            await collectEventPlannedRows(
+              ctx,
+              args.refId as Id<"events">,
+              authz.chapterId,
+              authz,
+            )
+          ).map((row) => ({ categoryId: row.categoryId, plannedCents: row.plannedCents }))
+        : lines.map((line) => ({ categoryId: line.categoryId ?? null, plannedCents: line.plannedCents }));
+
     const plannedByCategory = new Map<CatKey, number>();
-    for (const line of lines) {
-      const key: CatKey = line.categoryId ?? null;
-      plannedByCategory.set(key, (plannedByCategory.get(key) ?? 0) + line.plannedCents);
+    for (const entry of plannedEntries) {
+      const key: CatKey = entry.categoryId;
+      plannedByCategory.set(key, (plannedByCategory.get(key) ?? 0) + entry.plannedCents);
     }
 
     // ── Actual (the ONE table summed for actuals — transfers/excluded/
@@ -483,11 +830,13 @@ export const refMoney = query({
     const totalPlannedCents = budgets.reduce((sum, b) => sum + effectiveCapCents(b), 0);
     const totalActualCents = spendTxns.reduce((sum, tr) => sum + tr.amountCents, 0);
 
-    // Planned but not yet broken into any category line — keeps the header
-    // total and the sum of category rows visibly reconciling (see the
-    // field's own doc comment on the return validator above).
-    const totalLinesCents = lines.reduce((sum, l) => sum + l.plannedCents, 0);
-    const unallocatedPlannedCents = Math.max(0, totalPlannedCents - totalLinesCents);
+    // Planned but not yet broken into any planned row (union, PR2) — keeps
+    // the header total and the sum of category rows visibly reconciling (see
+    // the field's own doc comment on the return validator above). For a
+    // project ref `plannedEntries` IS `lines`, so this is the exact
+    // pre-PR2 `totalLinesCents` computation under a new name.
+    const totalPlannedEntriesCents = plannedEntries.reduce((sum, e) => sum + e.plannedCents, 0);
+    const unallocatedPlannedCents = Math.max(0, totalPlannedCents - totalPlannedEntriesCents);
 
     const approvalStatus = effectiveBudgetApprovalStatus(primary.approvalStatus);
 
@@ -529,7 +878,10 @@ export const refMoney = query({
       totalPlannedCents,
       totalActualCents,
       totalRemainingCents: totalPlannedCents - totalActualCents,
-      lineCount: lines.length,
+      // The unified planned-ROW count (PR2) — gates the client's "No plan
+      // yet" empty state, so it must reflect `plannedEntries` (the union for
+      // an event ref), not the raw `budgetLines` count.
+      lineCount: plannedEntries.length,
       incomeCents,
       canSummonBudget: false,
       canEditTransactions,
@@ -594,21 +946,30 @@ export const refMoney = query({
  * `Math.round(dollars * 100)` before it joins `plannedCents` so the grid's
  * rollup is apples-to-apples with the finance side.
  *
- * TYPE → CATEGORY: an unlinked module row's `categoryName` is its own
- * module's display label (Tasks / Supplies & Logistics / Permits / Vendors —
- * whatever `eventModules.label` says, built-in or chapter-custom), not a
- * real finance category id — none of `eventItems`/`engagements` carry a
- * `budgetCategories` link (no schema field exists on those tables). A
- * LINKED module row instead shows the linked line's REAL category. Giving
- * every module row a genuine `budgetCategories` link unconditionally (so
- * Reconcile/transactions could categorize against the same taxonomy even
- * unlinked) is a further follow-up, not attempted here.
+ * TYPE → CATEGORY (WP-money-unify PR2, updated): an unlinked module row's
+ * `categoryId` is resolved via `collectEventPlannedRows` — an explicit
+ * `eventItems`/`engagements.budgetCategoryId` override (WP-money-unify PR1)
+ * if set, else a DEFAULT category matched by name
+ * (`MODULE_DEFAULT_CATEGORY_NAMES`/`VENDOR_DEFAULT_CATEGORY_NAME`) against
+ * the event's own chapter's `budgetCategories`. `categoryName` shows that
+ * REAL category's name when one resolves; only an unresolved row (no
+ * override, no default-name match) falls back to the module's own display
+ * label (Tasks / Supplies & Logistics / Permits / Vendors — whatever
+ * `eventModules.label` says). A LINKED module row instead always shows the
+ * linked line's REAL category (`sourceRef` merge wins over both).
  *
- * TWO TOTALS, ON PURPOSE: `refMoney` above stays a narrower "plan vs.
- * approved cap" view scoped to `budgetLines` only (unchanged by this
- * addition) — the finance PLAN measured against its approval cap. This
- * grid's total is "everything that costs money, full stop" — a different
- * axis. They are not merged into one number here; see the PR body.
+ * TWO TOTALS — DIFFERENT AXES (WP-money-unify PR2, updated): `refMoney`
+ * above no longer stays scoped to `budgetLines` alone — its planned side is
+ * NOW this SAME `collectEventPlannedRows` union (a caller-side `refMoney`
+ * has no `sourceLink`/`editable`/duplicate-flagging use for, so it only
+ * consumes `categoryId`/`plannedCents`). The two totals can still read
+ * differently for a reason that's unrelated to the union itself:
+ * `refMoney.totalPlannedCents` is the budget's EFFECTIVE APPROVAL CAP
+ * (`effectiveCapCents`, independent of how much has actually been broken
+ * into planned rows — see its own `unallocatedPlannedCents` reconciliation),
+ * while THIS grid's `totalPlannedCents` is "everything that costs money,
+ * full stop," summed straight off the union rows with no cap involved. They
+ * are not merged into one number here; see the PR body.
  *
  * WRITE-BACK gating: each row is editable under its OWN home table's
  * EXISTING rule, never a new one — `eventItems`/`engagements` are editable by
@@ -621,8 +982,6 @@ export const refMoney = query({
  * follows each row's native rule, not a finance role.
  */
 
-const GRID_SCAN_LIMIT = 2000;
-
 const gridSourceKindValidator = v.union(
   v.literal("event_item"),
   v.literal("vendor"),
@@ -632,9 +991,22 @@ const gridSourceKindValidator = v.union(
 const gridRow = v.object({
   id: v.string(),
   sourceKind: gridSourceKindValidator,
+  // `eventItems.module` for an `event_item` row; `null` for `vendor` /
+  // `budget_line` (WP-money-unify PR2, additive — neither has real module
+  // semantics).
+  module: v.union(v.string(), v.null()),
   typeLabel: v.string(),
   label: v.string(),
   categoryName: v.string(),
+  // The row's resolved `budgetCategories` link (WP-money-unify PR2,
+  // additive) — an explicit override or a default-name match (see
+  // `collectEventPlannedRows`'s doc comment); `null` when unresolved, which
+  // is when `categoryName` falls back to `typeLabel` (module rows) or
+  // "Uncategorized" (`budget_line` rows) below.
+  categoryId: v.union(v.id("budgetCategories"), v.null()),
+  // True only when `categoryId` came from the module/vendor DEFAULT-name
+  // match, never an explicit override or a linked budget line's category.
+  categoryIsDefault: v.boolean(),
   plannedCents: v.number(),
   // Vendors: the same figure once `paymentStatus === "paid"`, else null (not
   // yet actually spent). Tasks/Supplies/Comms/BudgetLines have no separate
@@ -661,33 +1033,10 @@ const gridRow = v.object({
   possibleDuplicate: v.boolean(),
 });
 
-type WorkingRow = {
-  id: string;
-  sourceKind: "event_item" | "vendor" | "budget_line";
-  typeLabel: string;
-  label: string;
-  categoryName: string;
-  plannedCents: number;
-  actualCents: number | null;
-  status: string | null;
-  editable: boolean;
-  sourceLink: string | null;
-  linked: boolean;
-  possibleDuplicate: boolean;
-  /** Transient (stripped before return) — the `eventItems`/`engagements` doc
-   *  id this row was sourced from, for `sourceRef` link resolution. `null`
-   *  for a `budget_line` row (which is never itself a link TARGET). */
-  refId: string | null;
-};
-
-/** Round a whole-dollar figure (`eventItems.fields[key]` / `engagements.
- *  amountUsd`) to integer cents — mirrors `events.ts#budgetSpent`'s own
- *  `Number(...)` + finite guard, then converts to the finance side's unit. */
-function dollarsToCents(value: unknown): number | null {
-  const n = Number(value);
-  if (!Number.isFinite(n) || n <= 0) return null;
-  return Math.round(n * 100);
-}
+/** `eventCostGrid`'s own working shape: every `collectEventPlannedRows` field
+ *  plus the grid-only `possibleDuplicate` flag (computed here, AFTER the
+ *  shared sweep — a display-only signal `refMoney`'s union has no use for). */
+type GridWorkingRow = PlannedRow & { possibleDuplicate: boolean };
 
 // A short, generic English stopword list — enough to keep "the AV budget" and
 // "the AV rental" from colliding on "the", without pulling in an NLP library.
@@ -728,163 +1077,13 @@ export const eventCostGrid = query({
     if (!authz) return empty;
     if (authz.isTraining) return { ...empty, isTraining: true }; // #172
 
-    const rows: WorkingRow[] = [];
-
-    // ── Module label + currency-column sweep (dynamic, ALL modules) ────────
-    // `eventColumns` is THIS event's own cloned column snapshot (every
-    // module, built-in or chapter-custom) — see the module doc's "MODULE
-    // COVERAGE" note for why this replaces a hardcoded module allowlist.
-    const [eventColumnRows, eventModuleRows] = await Promise.all([
-      ctx.db
-        .query("eventColumns")
-        .withIndex("by_event", (q) => q.eq("eventId", args.eventId))
-        .take(GRID_SCAN_LIMIT),
-      ctx.db
-        .query("eventModules")
-        .withIndex("by_event", (q) => q.eq("eventId", args.eventId))
-        .take(GRID_SCAN_LIMIT),
-    ]);
-    const moduleLabel = new Map<string, string>(eventModuleRows.map((m) => [m.key, m.label]));
-    const currencyColumnsByModule = new Map<string, { key: string; label: string }[]>();
-    for (const col of eventColumnRows) {
-      if (col.type !== "currency") continue;
-      const entry = { key: col.key, label: col.label };
-      const bucket = currencyColumnsByModule.get(col.module);
-      if (bucket) bucket.push(entry);
-      else currencyColumnsByModule.set(col.module, [entry]);
-    }
-
-    // ── eventItems (every module with a currency column) ───────────────────
-    const items = await ctx.db
-      .query("eventItems")
-      .withIndex("by_event", (q) => q.eq("eventId", args.eventId))
-      .take(GRID_SCAN_LIMIT);
-    if (items.length === GRID_SCAN_LIMIT) {
-      console.warn(
-        `[moneyViews] eventCostGrid hit GRID_SCAN_LIMIT (${GRID_SCAN_LIMIT}) reading eventItems for event ${args.eventId}; rows may be truncated.`,
-      );
-    }
-    for (const item of items) {
-      const currencyCols = currencyColumnsByModule.get(item.module);
-      if (!currencyCols || currencyCols.length === 0) continue;
-      const typeLabel = moduleLabel.get(item.module) ?? item.module;
-      const multiCol = currencyCols.length > 1;
-      for (const col of currencyCols) {
-        const cents = dollarsToCents(item.fields?.[col.key]);
-        if (cents === null) continue;
-        const title = item.title || "(untitled)";
-        rows.push({
-          id: `event_item:${item._id}:${col.key}`,
-          sourceKind: "event_item",
-          typeLabel,
-          // Disambiguate only when a module genuinely has more than one
-          // currency column (rare) — keeps the common case's label clean.
-          label: multiCol ? `${title} — ${col.label}` : title,
-          categoryName: typeLabel,
-          plannedCents: cents,
-          actualCents: null,
-          status: item.status ?? null,
-          editable: true, // same native chapter-member gate `items.ts` already enforces
-          sourceLink: `/event/${args.eventId}?tab=${item.module}`,
-          linked: false,
-          possibleDuplicate: false,
-          refId: String(item._id),
-        });
-      }
-    }
-
-    // ── Paid vendors (Crew & Duties) ────────────────────────────────────────
-    const paidEngagements = await ctx.db
-      .query("engagements")
-      .withIndex("by_event_type", (q) =>
-        q.eq("eventId", args.eventId).eq("type", "paid"),
-      )
-      .take(GRID_SCAN_LIMIT);
-    const vendorPeople = await Promise.all(
-      paidEngagements.map((e) => ctx.db.get(e.personId)),
-    );
-    paidEngagements.forEach((eng, i) => {
-      const cents = dollarsToCents(eng.amountUsd);
-      if (cents === null) return;
-      const person = vendorPeople[i];
-      rows.push({
-        id: `vendor:${eng._id}`,
-        sourceKind: "vendor",
-        typeLabel: "Vendors",
-        label: person?.name ?? "(unknown)",
-        categoryName: "Vendors",
-        plannedCents: cents,
-        actualCents: eng.paymentStatus === "paid" ? cents : null,
-        status: eng.paymentStatus ?? null,
-        editable: true, // same native chapter-member gate `engagements.ts` already enforces
-        sourceLink: `/event/${args.eventId}?tab=crew`,
-        linked: false,
-        possibleDuplicate: false,
-        refId: String(eng._id),
-      });
-    });
-
-    // ── Budget lines (the finance plan, WP-3.1) — merge linked, else a row ──
-    const budgets = await ctx.db
-      .query("budgets")
-      .withIndex("by_ref", (q) => q.eq("refKind", "event").eq("scopeRefId", args.eventId))
-      .take(GRID_SCAN_LIMIT);
-    const budgetLineRows: WorkingRow[] = [];
-    for (const budget of budgets) {
-      const lines = await ctx.db
-        .query("budgetLines")
-        .withIndex("by_budget", (q) => q.eq("budgetId", budget._id))
-        .take(GRID_SCAN_LIMIT);
-      const categoryIds = [...new Set(lines.map((l) => l.categoryId).filter(Boolean))] as Id<"budgetCategories">[];
-      const categoryDocs = await Promise.all(categoryIds.map((id) => ctx.db.get(id)));
-      const categoryName = new Map<string, string>();
-      categoryIds.forEach((id, i) => {
-        const doc = categoryDocs[i];
-        if (doc) categoryName.set(id, doc.name);
-      });
-      const canEdit = canEditBudgetPlan(authz, budget.chapterId);
-      for (const line of lines) {
-        const resolvedCategoryName = line.categoryId
-          ? (categoryName.get(line.categoryId) ?? "Uncategorized")
-          : "Uncategorized";
-
-        // LINKED: fold this line's category into every module row sourced
-        // from `sourceRef.id`, and don't give the line its own row at all —
-        // "module row wins for display" (its cost/status/link are untouched;
-        // only `categoryName` is upgraded to the line's REAL category).
-        if (line.sourceRef) {
-          const targets = rows.filter((r) => r.refId === line.sourceRef!.id);
-          if (targets.length > 0) {
-            for (const target of targets) {
-              target.linked = true;
-              target.categoryName = resolvedCategoryName;
-            }
-            continue; // merged — no separate budget_line row, no double count.
-          }
-          // Dangling sourceRef (the linked item/engagement isn't a grid row —
-          // e.g. it was deleted, or its module lost its currency column) —
-          // fall through and show the line as a normal unlinked row so its
-          // plan data doesn't just vanish.
-        }
-
-        budgetLineRows.push({
-          id: `budget_line:${line._id}`,
-          sourceKind: "budget_line",
-          typeLabel: "Budget lines",
-          label: line.description,
-          categoryName: resolvedCategoryName,
-          plannedCents: line.plannedCents,
-          actualCents: null,
-          status: null,
-          editable: canEdit,
-          sourceLink: null,
-          linked: false,
-          possibleDuplicate: false,
-          refId: null,
-        });
-      }
-    }
-    rows.push(...budgetLineRows);
+    // The full items ∪ vendors ∪ budgetLines sweep — sourceRef-merge already
+    // applied (see `collectEventPlannedRows`'s doc comment). `possibleDuplicate`
+    // (below) is the only thing left for this query to compute itself.
+    const rows: GridWorkingRow[] = (
+      await collectEventPlannedRows(ctx, args.eventId, authz.chapterId, authz)
+    ).map((row) => ({ ...row, possibleDuplicate: false }));
+    const budgetLineRows = rows.filter((r) => r.sourceKind === "budget_line");
 
     // ── Possible-duplicate flagging (unlinked rows only) ────────────────────
     // Conservative + symmetric: only compares a `budget_line` row against a

@@ -4,7 +4,7 @@ import { ConvexError } from "convex/values";
 import { newT, run, setupChapter, type ChapterSetup, type TestConvex } from "./setup.helpers";
 import { api } from "../_generated/api";
 import type { Id } from "../_generated/dataModel";
-import { CORE_MODULES } from "@events-os/shared";
+import { CORE_MODULES, MODULE_DEFAULT_CATEGORY_NAMES, VENDOR_DEFAULT_CATEGORY_NAME } from "@events-os/shared";
 
 /**
  * Money views (WP-3.3) — `moneyViews.refMoney`, the event/project "what's
@@ -825,7 +825,13 @@ async function seedEventItem(
   s: ChapterSetup,
   eventId: Id<"events">,
   module: string,
-  opts: { title?: string; status?: string; cost?: number; fields?: Record<string, unknown> } = {},
+  opts: {
+    title?: string;
+    status?: string;
+    cost?: number;
+    fields?: Record<string, unknown>;
+    budgetCategoryId?: Id<"budgetCategories">;
+  } = {},
 ): Promise<Id<"eventItems">> {
   const fields = {
     ...(opts.cost !== undefined ? { cost: opts.cost } : {}),
@@ -840,6 +846,7 @@ async function seedEventItem(
       order: 0,
       status: opts.status,
       fields: Object.keys(fields).length > 0 ? fields : undefined,
+      budgetCategoryId: opts.budgetCategoryId,
     }),
   );
 }
@@ -918,7 +925,11 @@ async function seedPaidEngagement(
   s: ChapterSetup,
   eventId: Id<"events">,
   personId: Id<"people">,
-  opts: { amountUsd?: number; paymentStatus?: "unpaid" | "invoiced" | "paid" } = {},
+  opts: {
+    amountUsd?: number;
+    paymentStatus?: "unpaid" | "invoiced" | "paid";
+    budgetCategoryId?: Id<"budgetCategories">;
+  } = {},
 ): Promise<Id<"engagements">> {
   return await run(s.t, (ctx) =>
     ctx.db.insert("engagements", {
@@ -930,6 +941,7 @@ async function seedPaidEngagement(
       amountUsd: opts.amountUsd,
       paymentStatus: opts.paymentStatus ?? "unpaid",
       createdAt: Date.now(),
+      budgetCategoryId: opts.budgetCategoryId,
     }),
   );
 }
@@ -1444,5 +1456,395 @@ describe("moneyViews.refMoney: canEditTransactions", () => {
     });
     expect(result.budget).toBeNull();
     expect(result.canEditTransactions).toBe(false);
+  });
+});
+
+// ── WP-money-unify PR2: the planned side is a virtual union ─────────────────
+//
+// `refMoney`'s planned side (an EVENT ref) is now the read-time UNION of
+// `eventItems` ∪ paid `engagements` ∪ `budgetLines`, computed by the shared
+// `collectEventPlannedRows` sweep `eventCostGrid` already exercises above.
+// These tests focus on the UNION'S EFFECT on `refMoney`'s own fields
+// (`categories`, `lineCount`, `unplannedCents`, `unallocatedPlannedCents`,
+// `totalActualCents`) — `eventCostGrid`'s per-row shape (`categoryId`,
+// `categoryIsDefault`, `module`) is covered in its own `describe` block below.
+
+describe("moneyViews.refMoney: planned union (PR2)", () => {
+  test("categories group eventItems + a paid vendor + a budgetLine together — the union, not budgetLines alone", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await asChapterManager(s);
+    const eventId = await seedEvent(s, s.chapterId, { name: "Union Event" });
+    const fundId = await seedFund(s, s.chapterId);
+    const suppliesCat = await seedCategory(s, s.chapterId, fundId, "Supplies");
+    const productionCat = await seedCategory(s, s.chapterId, fundId, "Production");
+
+    // An eventItem whose module DEFAULT category name ("Supplies") matches a
+    // seeded category — resolves without any override.
+    await seedDefaultCostSetup(s, eventId, ["supplies"]);
+    await seedEventItem(s, eventId, "supplies", { title: "Coffee", cost: 40 });
+
+    // A paid vendor with an EXPLICIT override into "Production".
+    const person = await seedPerson(s, "DJ Sam");
+    await seedPaidEngagement(s, eventId, person, {
+      amountUsd: 300,
+      paymentStatus: "paid",
+      budgetCategoryId: productionCat,
+    });
+
+    // A budgetLines row, same as before PR2.
+    const budgetId = await seedOneTimeBudget(s, s.chapterId, "event", eventId, {
+      amountCents: 100000,
+    });
+    await seedLine(s, budgetId, 5000, productionCat, 0);
+
+    const result = await s.as.query(api.moneyViews.refMoney, { refKind: "event", refId: eventId });
+
+    // "No plan yet" (lineCount === 0) no longer fires — items + vendor +
+    // budgetLine ALL counted (1 item row + 1 vendor row + 1 budgetLine row).
+    expect(result.lineCount).toBe(3);
+
+    const byCategory = new Map(result.categories.map((c) => [c.categoryId, c]));
+    expect(byCategory.get(suppliesCat)).toMatchObject({
+      categoryName: "Supplies",
+      plannedCents: 4000, // $40 -> cents, from the eventItem
+      actualCents: 0,
+    });
+    expect(byCategory.get(productionCat)).toMatchObject({
+      categoryName: "Production",
+      plannedCents: 30000 + 5000, // vendor ($300) + budget line, SAME category
+      actualCents: 0,
+    });
+    expect(result.categories).toHaveLength(2);
+  });
+
+  test("default category resolution: MODULE_DEFAULT_CATEGORY_NAMES/VENDOR_DEFAULT_CATEGORY_NAME by exact name; an explicit budgetCategoryId override wins over the default", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await asChapterManager(s);
+    const eventId = await seedEvent(s, s.chapterId, { name: "Default vs Override" });
+    const fundId = await seedFund(s, s.chapterId);
+    const defaultSuppliesCat = await seedCategory(
+      s,
+      s.chapterId,
+      fundId,
+      MODULE_DEFAULT_CATEGORY_NAMES.supplies,
+    );
+    const overrideCat = await seedCategory(s, s.chapterId, fundId, "Special Supplies");
+    const defaultVendorCat = await seedCategory(s, s.chapterId, fundId, VENDOR_DEFAULT_CATEGORY_NAME);
+
+    await seedDefaultCostSetup(s, eventId, ["supplies"]);
+    // No override → resolves to the DEFAULT "Supplies" category.
+    await seedEventItem(s, eventId, "supplies", { title: "Tape", cost: 10 });
+    // Explicit override → resolves to "Special Supplies", NOT the default.
+    await seedEventItem(s, eventId, "supplies", { title: "Custom rig", cost: 20, budgetCategoryId: overrideCat });
+
+    const person = await seedPerson(s, "Sound Co");
+    // No override → resolves to the DEFAULT vendor category.
+    await seedPaidEngagement(s, eventId, person, { amountUsd: 100, paymentStatus: "paid" });
+
+    // A budget row (no lines) — the union only surfaces on `refMoney` once a
+    // budget exists at all (`budget: null` short-circuits before the union
+    // ever runs; that's the OTHER, unrelated "No budget yet" empty state —
+    // see MoneyView.tsx, not in scope for this fix).
+    await seedOneTimeBudget(s, s.chapterId, "event", eventId, { amountCents: 100000 });
+
+    const result = await s.as.query(api.moneyViews.refMoney, { refKind: "event", refId: eventId });
+    const byCategory = new Map(result.categories.map((c) => [c.categoryId, c]));
+
+    expect(byCategory.get(defaultSuppliesCat)?.plannedCents).toBe(1000); // Tape only
+    expect(byCategory.get(overrideCat)?.plannedCents).toBe(2000); // Custom rig only
+    expect(byCategory.get(defaultVendorCat)?.plannedCents).toBe(10000); // vendor, default-resolved
+  });
+
+  test("dollars→cents conversion: eventItems.fields[cost] and engagements.amountUsd (whole USD dollars) round into integer cents in the union", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await asChapterManager(s);
+    const eventId = await seedEvent(s, s.chapterId);
+    await seedDefaultCostSetup(s, eventId, ["supplies"]);
+    await seedEventItem(s, eventId, "supplies", { title: "Odd amount", cost: 12.345 });
+    const person = await seedPerson(s, "Vendor");
+    await seedPaidEngagement(s, eventId, person, { amountUsd: 99.999, paymentStatus: "paid" });
+    await seedOneTimeBudget(s, s.chapterId, "event", eventId, { amountCents: 100000 });
+
+    const result = await s.as.query(api.moneyViews.refMoney, { refKind: "event", refId: eventId });
+    // Math.round(12.345 * 100) = 1235; Math.round(99.999 * 100) = 10000.
+    const totalUnionCents = result.categories.reduce((sum, c) => sum + c.plannedCents, 0);
+    expect(totalUnionCents).toBe(1235 + 10000);
+  });
+
+  test("a paid vendor's actual figure NEVER enters actualByCategory / totalActualCents — Estimated is never summed with Actuals (invariant #2)", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await asChapterManager(s);
+    const eventId = await seedEvent(s, s.chapterId);
+    const person = await seedPerson(s, "Caterer");
+    // Paid, with NO corresponding `transactions` row.
+    await seedPaidEngagement(s, eventId, person, { amountUsd: 500, paymentStatus: "paid" });
+    await seedOneTimeBudget(s, s.chapterId, "event", eventId, { amountCents: 100000 });
+
+    const result = await s.as.query(api.moneyViews.refMoney, { refKind: "event", refId: eventId });
+    expect(result.totalActualCents).toBe(0);
+    for (const c of result.categories) expect(c.actualCents).toBe(0);
+    // The vendor's committed $500 still shows up on the PLANNED side.
+    const totalUnionCents = result.categories.reduce((sum, c) => sum + c.plannedCents, 0);
+    expect(totalUnionCents).toBe(50000);
+  });
+
+  test("unplanned semantics: actual spend in a category planned ONLY via an eventItem (no budgetLines row) is NOT unplanned", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await asChapterManager(s);
+    const eventId = await seedEvent(s, s.chapterId);
+    const fundId = await seedFund(s, s.chapterId);
+    const suppliesCat = await seedCategory(s, s.chapterId, fundId, MODULE_DEFAULT_CATEGORY_NAMES.supplies);
+    await seedDefaultCostSetup(s, eventId, ["supplies"]);
+    await seedEventItem(s, eventId, "supplies", { title: "Coffee", cost: 40 });
+
+    const budgetId = await seedOneTimeBudget(s, s.chapterId, "event", eventId, { amountCents: 50000 });
+    await seedTxn(s, s.chapterId, budgetId, { categoryId: suppliesCat, amountCents: 3500 });
+
+    const result = await s.as.query(api.moneyViews.refMoney, { refKind: "event", refId: eventId });
+    // Pre-PR2 this would have been "unplanned" (no budgetLines row existed
+    // for Supplies) — now the eventItem's planned row covers it.
+    expect(result.unplannedCents).toBe(0);
+    const suppliesRow = result.categories.find((c) => c.categoryId === suppliesCat);
+    expect(suppliesRow).toMatchObject({ plannedCents: 4000, actualCents: 3500 });
+  });
+
+  test("cap fields reflect the UNION sum, not budgetLines alone: unallocatedPlannedCents subtracts items+vendors+lines, totalPlannedCents stays the effective cap", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await asChapterManager(s);
+    const eventId = await seedEvent(s, s.chapterId);
+    await seedDefaultCostSetup(s, eventId, ["supplies"]);
+    await seedEventItem(s, eventId, "supplies", { title: "Tent", cost: 300 }); // 30000 cents
+
+    const budgetId = await seedOneTimeBudget(s, s.chapterId, "event", eventId, { amountCents: 100000 });
+    await seedLine(s, budgetId, 20000, undefined, 0);
+
+    const result = await s.as.query(api.moneyViews.refMoney, { refKind: "event", refId: eventId });
+    // The cap is untouched by the union (still the raw effective cap).
+    expect(result.totalPlannedCents).toBe(100000);
+    // Pre-PR2 this would have been 100000 - 20000 = 80000 (lines only).
+    // Now it accounts for the item's 30000 too: 100000 - (20000 + 30000).
+    expect(result.unallocatedPlannedCents).toBe(50000);
+  });
+
+  test("a LINKED budgetLine (sourceRef -> an eventItem) contributes ONCE to the union, under the line's real category — no double count", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await asChapterManager(s);
+    const eventId = await seedEvent(s, s.chapterId, { name: "Linked union" });
+    await seedDefaultCostSetup(s, eventId, ["planning_doc"]);
+    const itemId = await seedEventItem(s, eventId, "planning_doc", { title: "Sound tech", cost: 150 });
+
+    const fundId = await seedFund(s, s.chapterId);
+    const productionCat = await seedCategory(s, s.chapterId, fundId, "Production");
+    const budgetId = await seedOneTimeBudget(s, s.chapterId, "event", eventId, { amountCents: 100000 });
+    await run(s.t, (ctx) =>
+      ctx.db.insert("budgetLines", {
+        budgetId,
+        description: "Sound tech (finance plan copy)",
+        categoryId: productionCat,
+        plannedCents: 15000,
+        sortOrder: 0,
+        createdBy: s.userId,
+        createdAt: Date.now(),
+        sourceRef: { kind: "eventItem", id: String(itemId) },
+      }),
+    );
+
+    const result = await s.as.query(api.moneyViews.refMoney, { refKind: "event", refId: eventId });
+    expect(result.lineCount).toBe(1); // the item row, merged — not 2
+    expect(result.categories).toEqual([
+      { categoryId: productionCat, categoryName: "Production", plannedCents: 15000, actualCents: 0 },
+    ]);
+  });
+
+  test("duplicate (unlinked) rows both count toward the union total — nothing silently dropped, mirrors eventCostGrid's possibleDuplicate semantics", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await asChapterManager(s);
+    const eventId = await seedEvent(s, s.chapterId, { name: "Duplicate union" });
+    await seedDefaultCostSetup(s, eventId, ["planning_doc"]);
+    await seedEventItem(s, eventId, "planning_doc", { title: "Sound tech", cost: 150 });
+
+    const budgetId = await seedOneTimeBudget(s, s.chapterId, "event", eventId, { amountCents: 100000 });
+    // A realistically-colliding, UNLINKED label — no sourceRef.
+    await run(s.t, (ctx) =>
+      ctx.db.insert("budgetLines", {
+        budgetId,
+        description: "Sound tech deposit",
+        plannedCents: 15000,
+        sortOrder: 0,
+        createdBy: s.userId,
+        createdAt: Date.now(),
+      }),
+    );
+
+    const result = await s.as.query(api.moneyViews.refMoney, { refKind: "event", refId: eventId });
+    expect(result.lineCount).toBe(2); // both rows counted — not merged
+    const totalUnionCents = result.categories.reduce((sum, c) => sum + c.plannedCents, 0);
+    expect(totalUnionCents).toBe(15000 + 15000);
+  });
+
+  test("Uncategorized fallback: a renamed/missing default category resolves to categoryId null, grouped into the Uncategorized bucket", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await asChapterManager(s);
+    const eventId = await seedEvent(s, s.chapterId);
+    const fundId = await seedFund(s, s.chapterId);
+    // The chapter renamed its "Supplies" category — no exact name match for
+    // MODULE_DEFAULT_CATEGORY_NAMES.supplies ("Supplies") exists anymore.
+    await seedCategory(s, s.chapterId, fundId, "Renamed Supplies Bucket");
+    await seedDefaultCostSetup(s, eventId, ["supplies"]);
+    await seedEventItem(s, eventId, "supplies", { title: "Coffee", cost: 40 });
+    await seedOneTimeBudget(s, s.chapterId, "event", eventId, { amountCents: 10000 });
+
+    const result = await s.as.query(api.moneyViews.refMoney, { refKind: "event", refId: eventId });
+    expect(result.categories).toEqual([
+      { categoryId: null, categoryName: "Uncategorized", plannedCents: 4000, actualCents: 0 },
+    ]);
+  });
+
+  test("a project ref's union degenerates to budgetLines alone (no eventItems/engagements exist for a project — schema-level)", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await asChapterManager(s);
+    const projectId = await seedProject(s, s.chapterId, "Music Recording");
+    const fundId = await seedFund(s, s.chapterId);
+    const cat = await seedCategory(s, s.chapterId, fundId, "Studio");
+    const budgetId = await seedOneTimeBudget(s, s.chapterId, "project", projectId, { amountCents: 50000 });
+    await seedLine(s, budgetId, 20000, cat, 0);
+
+    const result = await s.as.query(api.moneyViews.refMoney, { refKind: "project", refId: projectId });
+    expect(result.lineCount).toBe(1);
+    expect(result.categories).toEqual([
+      { categoryId: cat, categoryName: "Studio", plannedCents: 20000, actualCents: 0 },
+    ]);
+    expect(result.unallocatedPlannedCents).toBe(30000); // 50000 - 20000, exactly the pre-PR2 formula
+  });
+
+  test("GRID_SCAN_LIMIT (2000) bounds the budgetLines sweep inside the union — a truncated read never crashes or unbounds the response", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await asChapterManager(s);
+    const eventId = await seedEvent(s, s.chapterId, { name: "Big Plan" });
+    const budgetId = await seedOneTimeBudget(s, s.chapterId, "event", eventId, { amountCents: 100000000 });
+    const GRID_SCAN_LIMIT = 2000;
+    await run(s.t, async (ctx) => {
+      for (let i = 0; i < GRID_SCAN_LIMIT + 5; i++) {
+        await ctx.db.insert("budgetLines", {
+          budgetId,
+          description: `Line ${i}`,
+          plannedCents: 1,
+          sortOrder: i,
+          createdBy: s.userId,
+          createdAt: Date.now(),
+        });
+      }
+    });
+
+    const result = await s.as.query(api.moneyViews.refMoney, { refKind: "event", refId: eventId });
+    // Bounded at GRID_SCAN_LIMIT, not the full 2005 rows inserted.
+    expect(result.lineCount).toBe(GRID_SCAN_LIMIT);
+  }, 30000);
+});
+
+// ── WP-money-unify PR2: eventCostGrid's new categoryId/categoryIsDefault/module fields ──
+
+describe("moneyViews.eventCostGrid: category resolution fields (PR2)", () => {
+  test("an event_item row's `module` field is the item's module key; vendor/budget_line rows have `module: null`", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await asChapterManager(s);
+    const eventId = await seedEvent(s, s.chapterId);
+    await seedDefaultCostSetup(s, eventId, ["supplies"]);
+    await seedEventItem(s, eventId, "supplies", { title: "Coffee", cost: 40 });
+    const person = await seedPerson(s, "Vendor Co");
+    await seedPaidEngagement(s, eventId, person, { amountUsd: 100, paymentStatus: "paid" });
+    const budgetId = await seedOneTimeBudget(s, s.chapterId, "event", eventId, { amountCents: 10000 });
+    await seedLine(s, budgetId, 5000);
+
+    const result = await s.as.query(api.moneyViews.eventCostGrid, { eventId });
+    const byKind = new Map(result.rows.map((r) => [r.sourceKind, r]));
+    expect(byKind.get("event_item")?.module).toBe("supplies");
+    expect(byKind.get("vendor")?.module).toBeNull();
+    expect(byKind.get("budget_line")?.module).toBeNull();
+  });
+
+  test("categoryId + categoryIsDefault: explicit override -> categoryIsDefault false; default-name match -> categoryIsDefault true; unresolved -> both null/false", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await asChapterManager(s);
+    const eventId = await seedEvent(s, s.chapterId);
+    const fundId = await seedFund(s, s.chapterId);
+    const defaultSuppliesCat = await seedCategory(
+      s,
+      s.chapterId,
+      fundId,
+      MODULE_DEFAULT_CATEGORY_NAMES.supplies,
+    );
+    const overrideCat = await seedCategory(s, s.chapterId, fundId, "Custom Cat");
+    await seedDefaultCostSetup(s, eventId, ["supplies", "comms"]); // comms default ("Marketing & Advertising") has no seeded match
+    await seedEventItem(s, eventId, "supplies", { title: "Default match", cost: 10 });
+    await seedEventItem(s, eventId, "supplies", { title: "Override", cost: 20, budgetCategoryId: overrideCat });
+    await seedEventItem(s, eventId, "comms", { title: "Unresolved", cost: 30 });
+
+    const result = await s.as.query(api.moneyViews.eventCostGrid, { eventId });
+    const byLabel = new Map(result.rows.map((r) => [r.label, r]));
+
+    expect(byLabel.get("Default match")).toMatchObject({
+      categoryId: defaultSuppliesCat,
+      categoryIsDefault: true,
+      categoryName: MODULE_DEFAULT_CATEGORY_NAMES.supplies,
+    });
+    expect(byLabel.get("Override")).toMatchObject({
+      categoryId: overrideCat,
+      categoryIsDefault: false,
+      categoryName: "Custom Cat",
+    });
+    expect(byLabel.get("Unresolved")).toMatchObject({
+      categoryId: null,
+      categoryIsDefault: false,
+      categoryName: "Comms Schedule", // falls back to the module's own label
+    });
+  });
+
+  test("a LINKED module row's categoryId/categoryName are upgraded from the linked budgetLine — categoryIsDefault becomes false even if the row started on a default match", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await asChapterManager(s);
+    const eventId = await seedEvent(s, s.chapterId, { name: "Linked category upgrade" });
+    const fundId = await seedFund(s, s.chapterId);
+    await seedCategory(s, s.chapterId, fundId, MODULE_DEFAULT_CATEGORY_NAMES.supplies); // would default-match
+    const realCat = await seedCategory(s, s.chapterId, fundId, "Real Category");
+    await seedDefaultCostSetup(s, eventId, ["supplies"]);
+    const itemId = await seedEventItem(s, eventId, "supplies", { title: "Tent", cost: 100 });
+
+    const budgetId = await seedOneTimeBudget(s, s.chapterId, "event", eventId, { amountCents: 10000 });
+    await run(s.t, (ctx) =>
+      ctx.db.insert("budgetLines", {
+        budgetId,
+        description: "Tent (finance copy)",
+        categoryId: realCat,
+        plannedCents: 10000,
+        sortOrder: 0,
+        createdBy: s.userId,
+        createdAt: Date.now(),
+        sourceRef: { kind: "eventItem", id: String(itemId) },
+      }),
+    );
+
+    const result = await s.as.query(api.moneyViews.eventCostGrid, { eventId });
+    expect(result.rows).toHaveLength(1);
+    expect(result.rows[0]).toMatchObject({
+      linked: true,
+      categoryId: realCat,
+      categoryIsDefault: false,
+      categoryName: "Real Category",
+    });
   });
 });
