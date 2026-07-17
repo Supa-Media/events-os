@@ -11,12 +11,21 @@
  *
  * The Roles column is a TRANSITION surface: a duty created before seats
  * existed still carries legacy `assigneeRoles` strings, shown here as muted
- * read-only chips next to a seat picker ("Map to seats"). Picking seats writes
- * `assigneeSeatIds` and the server clears the legacy strings in the same edit
- * (`responsibilities.update`) — there's no way to add a NEW legacy role string
- * from this grid; the seat picker IS the Roles column once a duty is created.
- * See `responsibilityAppliesTo` (`@events-os/shared`) for the matching rule
- * this UI mirrors: seats win over legacy roles the instant a duty has any.
+ * read-only chips next to a seat picker ("Map to seats"). Picking a seat calls
+ * the targeted `responsibilities.addSeat` mutation (mirrors `addAssignee` —
+ * read-modify-write inside the transaction, not a whole-array patch), which
+ * clears the legacy strings in the same edit the FIRST time a duty gets any
+ * seat — there's no way to add a NEW legacy role string from this grid; the
+ * seat picker IS the Roles column once a duty is created. See
+ * `responsibilityAppliesTo` (`@events-os/shared`) for the matching rule this
+ * UI mirrors: seats win over legacy roles the instant a duty has any.
+ *
+ * Two guardrails sit in front of `addSeat`/`removeSeat` (`guardedSeatChange`):
+ * mapping a duty onto a seat NOBODY currently holds warns that the people it
+ * currently reaches via the legacy role lose it until the seat is filled;
+ * removing a duty's last seat once its legacy strings are already gone warns
+ * that it'll apply to nobody. Both are one-tap-to-proceed confirmations, not
+ * hard blocks — an owner can still map onto a vacant seat on purpose.
  *
  * Self-contained: it owns its own queries + mutations, so both mount points
  * render `<DutiesGrid />` with no wiring. Callers gate visibility (nav.canManage)
@@ -80,6 +89,72 @@ const DELETE_W = 38;
 const TABLE_WIDTH =
   Object.values(COLS).reduce((sum, w) => sum + w, 0) + DELETE_W;
 
+/**
+ * Mapping-flow guardrails, shared by the seat picker's toggle and a seat
+ * chip's ✕ — both are one seat-at-a-time edits, so both need the same two
+ * checks before committing:
+ *
+ *  1. ADDING a seat that's the duty's FIRST seat (`currentSeatCount === 0`,
+ *     i.e. this click IS the mapping) onto a seat nobody currently holds
+ *     (`seatHolderCount === 0`) — when the duty still had people reaching it
+ *     via the (about-to-be-abandoned) legacy role match (`legacyMatchCount >
+ *     0`), warn that they're about to lose it until the seat is filled.
+ *  2. REMOVING the duty's LAST seat (`currentSeatCount === 1`) when its
+ *     legacy roles are already cleared (`legacyRoles.length === 0`, always
+ *     true once a duty has been mapped) — warn that the duty will apply to
+ *     nobody (barring direct assignees).
+ *
+ * Neither check applies to any other add/remove (adding a 2nd+ seat, or
+ * removing down to 1+ remaining) — `commit()` runs immediately for those.
+ */
+function guardedSeatChange({
+  isAdding,
+  currentSeatCount,
+  legacyRoles,
+  legacyMatchCount = 0,
+  seatHolderCount = 0,
+  commit,
+}: {
+  isAdding: boolean;
+  currentSeatCount: number;
+  legacyRoles: string[];
+  /** How many people currently reach this duty via `legacyRoles` — only
+   *  needed for the ADD/vacancy check. */
+  legacyMatchCount?: number;
+  /** How many people hold the seat being added — only needed for the
+   *  ADD/vacancy check. */
+  seatHolderCount?: number;
+  commit: () => void;
+}) {
+  if (
+    isAdding &&
+    currentSeatCount === 0 &&
+    seatHolderCount === 0 &&
+    legacyMatchCount > 0
+  ) {
+    confirmAction({
+      title: "This seat is vacant",
+      message: `${legacyMatchCount} ${legacyMatchCount === 1 ? "person" : "people"} currently matched by "${legacyRoles.join(", ")}" will lose this duty until the seat is filled.`,
+      confirmLabel: "Map anyway",
+      destructive: true,
+      onConfirm: commit,
+    });
+    return;
+  }
+  if (!isAdding && currentSeatCount === 1 && legacyRoles.length === 0) {
+    confirmAction({
+      title: "Remove the last seat?",
+      message:
+        "This duty will apply to nobody (unless someone is directly assigned) — the old role text is gone.",
+      confirmLabel: "Remove",
+      destructive: true,
+      onConfirm: commit,
+    });
+    return;
+  }
+  commit();
+}
+
 export function DutiesGrid({
   header = "full",
 }: {
@@ -98,8 +173,10 @@ export function DutiesGrid({
   const create = useMutation(api.responsibilities.create);
   const addAssignee = useMutation(api.responsibilities.addAssignee);
   // Grid-level (not per-row): the seat picker below lives at the grid, not
-  // inside any one `ResponsibilityRow`.
-  const updateSeats = useMutation(api.responsibilities.update);
+  // inside any one `ResponsibilityRow`. Targeted, like addAssignee/
+  // removeAssignee — never a whole-array `update({ assigneeSeatIds })`.
+  const addSeat = useMutation(api.responsibilities.addSeat);
+  const removeSeat = useMutation(api.responsibilities.removeSeat);
 
   const [search, setSearch] = useState("");
   // ONE picker for the whole grid (a per-row picker would mount a hidden
@@ -129,6 +206,17 @@ export function DutiesGrid({
     const map = new Map<Id<"people">, Id<"seatDefs">[]>();
     for (const h of seatHoldings ?? []) {
       map.set(h.personId, [...(map.get(h.personId) ?? []), h.seatDefId]);
+    }
+    return map;
+  }, [seatHoldings]);
+
+  // The reverse index — who holds THIS seat — for the mapping-flow vacancy
+  // guardrail (is the seat being mapped actually vacant?).
+  const holdersBySeat = useMemo(() => {
+    const map = new Map<Id<"seatDefs">, Set<Id<"people">>>();
+    for (const h of seatHoldings ?? []) {
+      if (!map.has(h.seatDefId)) map.set(h.seatDefId, new Set());
+      map.get(h.seatDefId)!.add(h.personId);
     }
     return map;
   }, [seatHoldings]);
@@ -325,15 +413,21 @@ export function DutiesGrid({
           const row = responsibilities.find((r) => r._id === seatPickerForRow);
           if (!row) return;
           const current = row.assigneeSeatIds ?? [];
-          const next = current.includes(seatDefId)
-            ? current.filter((s) => s !== seatDefId)
-            : [...current, seatDefId];
-          // The server clears legacy `assigneeRoles` in the same edit the
-          // first time this duty gets any seats — the mapping flow.
-          void updateSeats({
-            responsibilityId: row._id,
-            assigneeSeatIds: next.length > 0 ? next : null,
-          }).catch(alertError);
+          const isAdding = !current.includes(seatDefId);
+          guardedSeatChange({
+            isAdding,
+            currentSeatCount: current.length,
+            legacyRoles: row.assigneeRoles ?? [],
+            legacyMatchCount: holderCount.get(row._id) ?? 0,
+            seatHolderCount: holdersBySeat.get(seatDefId)?.size ?? 0,
+            commit: () => {
+              const mutate = isAdding ? addSeat : removeSeat;
+              void mutate({
+                responsibilityId: row._id,
+                seatDefId,
+              }).catch(alertError);
+            },
+          });
         }}
         onClose={() => setSeatPickerForRow(null)}
       />
@@ -363,6 +457,7 @@ function ResponsibilityRow({
   const updateMutation = useMutation(api.responsibilities.update);
   const removeMutation = useMutation(api.responsibilities.remove);
   const removeAssignee = useMutation(api.responsibilities.removeAssignee);
+  const removeSeatMutation = useMutation(api.responsibilities.removeSeat);
   const id = row._id;
 
   const update = (args: Omit<Parameters<typeof updateMutation>[0], "responsibilityId">) => {
@@ -409,10 +504,19 @@ function ResponsibilityRow({
           roleHolders={roleHolders}
           onOpenPicker={onOpenSeatPicker}
           onRemoveSeat={(seatDefId) => {
-            const next = (row.assigneeSeatIds ?? []).filter(
-              (s) => s !== seatDefId,
-            );
-            update({ assigneeSeatIds: next.length > 0 ? next : null });
+            const current =
+              (row.assigneeSeatIds as Id<"seatDefs">[] | undefined) ?? [];
+            guardedSeatChange({
+              isAdding: false,
+              currentSeatCount: current.length,
+              legacyRoles: row.assigneeRoles ?? [],
+              commit: () => {
+                void removeSeatMutation({
+                  responsibilityId: id,
+                  seatDefId,
+                }).catch(alertError);
+              },
+            });
           }}
         />
       </Cell>

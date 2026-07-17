@@ -348,6 +348,74 @@ export const removeAssignee = mutation({
   },
 });
 
+/**
+ * Add one seat to a duty's fan-out. Targeted — read-modify-write inside this
+ * transaction, mirroring `addAssignee` — so two managers picking seats on the
+ * same duty at once can't clobber each other's picks the way a whole-array
+ * `update({ assigneeSeatIds })` computed from stale client state can.
+ * Adding the FIRST seat is THE MAPPING FLOW: legacy `assigneeRoles` is
+ * cleared in the same edit (mirrors `update`'s mapping-flow clearing). No-op
+ * if the seat is already assigned.
+ */
+export const addSeat = mutation({
+  args: {
+    responsibilityId: v.id("responsibilities"),
+    seatDefId: v.id("seatDefs"),
+  },
+  handler: async (ctx, { responsibilityId, seatDefId }) => {
+    const row = await requireOwned(
+      ctx,
+      "responsibilities",
+      responsibilityId,
+      "Responsibility",
+    );
+    await requireManagerOrAdmin(ctx, row.chapterId);
+    await requireSeatDefs(ctx, [seatDefId]);
+    const current = row.assigneeSeatIds ?? [];
+    if (!current.includes(seatDefId)) {
+      await ctx.db.patch(responsibilityId, {
+        assigneeSeatIds: [...current, seatDefId],
+        // Seats become authoritative the instant there's any — same rule
+        // `update` enforces for a whole-array patch.
+        assigneeRoles: undefined,
+        updatedAt: Date.now(),
+      });
+    }
+    return responsibilityId;
+  },
+});
+
+/**
+ * Remove one seat from a duty's fan-out. Targeted, mirrors `removeAssignee`.
+ * Deliberately does NOT restore legacy `assigneeRoles` even when this empties
+ * `assigneeSeatIds` — the mapping flow clears them permanently; there's no UI
+ * to re-add a legacy role string. No-op if the seat isn't assigned.
+ */
+export const removeSeat = mutation({
+  args: {
+    responsibilityId: v.id("responsibilities"),
+    seatDefId: v.id("seatDefs"),
+  },
+  handler: async (ctx, { responsibilityId, seatDefId }) => {
+    const row = await requireOwned(
+      ctx,
+      "responsibilities",
+      responsibilityId,
+      "Responsibility",
+    );
+    await requireManagerOrAdmin(ctx, row.chapterId);
+    const current = row.assigneeSeatIds ?? [];
+    if (current.includes(seatDefId)) {
+      const next = current.filter((id) => id !== seatDefId);
+      await ctx.db.patch(responsibilityId, {
+        assigneeSeatIds: next.length > 0 ? next : undefined,
+        updatedAt: Date.now(),
+      });
+    }
+    return responsibilityId;
+  },
+});
+
 /** Delete a responsibility definition (check-in history keeps its snapshot). */
 export const remove = mutation({
   args: { responsibilityId: v.id("responsibilities") },
@@ -405,12 +473,20 @@ export const seatOptions = query({
 
 /**
  * Every (person, seat) holding relevant to the caller's chapter: this
- * chapter's own chapter-chart occupancy, plus every central-chart occupancy
- * (central seats apply chapter-independently — see the `responsibilities`
- * schema doc comment). This is exactly the resolution
- * `responsibilityAppliesTo` needs for `person.seatIds`: build a
- * `personId -> Set<seatDefId>` map from these rows and pass each person's set
- * through.
+ * chapter's own chapter-chart occupancy, plus EVERY central-chart occupancy
+ * — central rows are fetched unconditionally (not filtered by the assigned
+ * person's home chapter), because central-seat occupancy is
+ * chapter-independent by design (see the `responsibilities` schema doc
+ * comment). So a central seat held by someone homed in a DIFFERENT chapter
+ * than the caller still resolves here — the caller's own chapter only bounds
+ * the CHAPTER-chart half of the result, never the central half.
+ *
+ * This is exactly the resolution `responsibilityAppliesTo` needs for
+ * `person.seatIds`: build a `personId -> Set<seatDefId>` map from these rows
+ * and pass each person's set through. A caller resolving a specific person's
+ * OWN holdings should call this scoped to THAT PERSON'S home chapter (not
+ * necessarily the viewer's) — e.g. a person's own Work page always resolves
+ * their own seats correctly regardless of who's asking.
  */
 export const chapterSeatHoldings = query({
   args: {},
@@ -455,14 +531,32 @@ export const chapterSeatHoldings = query({
   },
 });
 
+/** Bound on the cross-chapter scan `dutiesForSeat` does for a CENTRAL seat
+ *  (every chapter's duty catalog, since a central seat's occupancy is
+ *  chapter-independent). Generous headroom for a mid-size org; matches the
+ *  spirit of `finances.ts`'s `ROLLUP_SCAN_LIMIT`-style bounded full scans. */
+const MAX_CROSS_CHAPTER_DUTY_SCAN = 2000;
+
 /**
- * The duties attached to one seat (`assigneeSeatIds` contains it), scoped to
- * the CALLER'S own chapter — mirrors `list`'s chapter scoping, since a duty
- * row always belongs to one chapter (there's no chapter-independent duty
- * table, even for central-seat-attached duties; see the schema doc comment).
- * The org-chart UI (a later PR) is expected to call this while browsing the
- * viewer's own chapter's chart. Simple summary shape — no How-To doc join,
- * no holder resolution; that's `list`'s job.
+ * The duties attached to one seat (`assigneeSeatIds` contains it).
+ *
+ * A CHAPTER-chart seat's occupancy is per-chapter, so its duties are scoped
+ * to the CALLER'S own chapter — mirrors `list`'s chapter scoping (a duty row
+ * always belongs to one chapter; there's no chapter-independent duty table).
+ *
+ * A CENTRAL-chart seat's occupancy is chapter-INDEPENDENT (the same seat,
+ * held by the same people, "central" scope, regardless of which chapter's
+ * roster they're homed in) — so a duty ANY chapter mapped to that seat is
+ * relevant, not just the caller's own chapter's. Restricting to the caller's
+ * chapter here would mean a chapter-A-authored duty mapped to a central seat
+ * never reaches that seat's panel when browsed from chapter B, even though
+ * the seat (and its holder) are the same either way. Gated the same as every
+ * other seat/duty read — org-transparent to any signed-in roster member, not
+ * just the authoring chapter's.
+ *
+ * The org-chart UI (a later PR) is expected to call this while browsing a
+ * seat's panel, central or chapter. Simple summary shape — no How-To doc
+ * join, no holder resolution; that's `list`'s job.
  */
 export const dutiesForSeat = query({
   args: { seatDefId: v.id("seatDefs") },
@@ -480,12 +574,21 @@ export const dutiesForSeat = query({
     if (!(await canViewChapterWork(ctx, chapterId as Id<"chapters">))) {
       return [];
     }
-    const rows = await ctx.db
-      .query("responsibilities")
-      .withIndex("by_chapter", (q) =>
-        q.eq("chapterId", chapterId as Id<"chapters">),
-      )
-      .collect();
+    const seat = await ctx.db.get(seatDefId);
+    if (!seat) return [];
+
+    const rows =
+      seat.chart === "central"
+        ? await ctx.db
+            .query("responsibilities")
+            .take(MAX_CROSS_CHAPTER_DUTY_SCAN)
+        : await ctx.db
+            .query("responsibilities")
+            .withIndex("by_chapter", (q) =>
+              q.eq("chapterId", chapterId as Id<"chapters">),
+            )
+            .collect();
+
     return rows
       .filter((r) => (r.assigneeSeatIds ?? []).includes(seatDefId))
       .map((r) => ({

@@ -67,6 +67,28 @@ const NAV_RETURNS = v.object({
 });
 
 /**
+ * Seat defs `self` holds that are relevant to duties in `chapterId`: their
+ * own chapter-chart seats (`scope === chapterId`) plus every central-chart
+ * seat they hold (`scope === "central"`, chapter-independent) — same
+ * resolution `responsibilities.chapterSeatHoldings` uses, inlined here via
+ * the `by_person` index since this only needs ONE person's holdings, not the
+ * whole chapter's roster.
+ */
+async function selfSeatIds(
+  ctx: QueryCtx,
+  chapterId: Id<"chapters">,
+  selfId: Id<"people">,
+): Promise<Id<"seatDefs">[]> {
+  const rows = await ctx.db
+    .query("seatAssignments")
+    .withIndex("by_person", (q) => q.eq("personId", selfId))
+    .collect();
+  return rows
+    .filter((r) => r.scope === "central" || r.scope === chapterId)
+    .map((r) => r.seatDefId);
+}
+
+/**
  * Derive the caller's tier by short-circuit — each step a bounded read, the
  * first that matches wins. `tierReasons` collects the short human strings the
  * UI shows in a "why do I see this?" line.
@@ -85,12 +107,19 @@ async function deriveTier(
 
   if (self) {
     // Owns a duty? Chapter-scoped, small — a bounded read, tested against the
-    // caller's roster row exactly as the Duties grid fans them out.
+    // caller's roster row exactly as the Duties grid fans them out. `seatIds`
+    // is CRITICAL here: a seat-mapped duty ignores its legacy `assigneeRoles`
+    // entirely (see `responsibilityAppliesTo`), so without it a caller who
+    // owns a duty purely via a held seat would silently fall through to
+    // "member" tier instead of "lead".
     const duties = await ctx.db
       .query("responsibilities")
       .withIndex("by_chapter", (q) => q.eq("chapterId", chapterId))
       .take(500);
-    const owned = duties.find((r) => responsibilityAppliesTo(r, self));
+    const seatIds = await selfSeatIds(ctx, chapterId, self._id);
+    const owned = duties.find((r) =>
+      responsibilityAppliesTo(r, { ...self, seatIds }),
+    );
     if (owned)
       return {
         tier: "lead",

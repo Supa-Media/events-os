@@ -596,6 +596,119 @@ describe("responsibilities × seats", () => {
     ).toEqual([]);
   });
 
+  test("dutiesForSeat reaches ACROSS chapters for a CENTRAL seat — a chapter-A duty is visible browsing from chapter B", async () => {
+    const s = await setupChapter(newT(), { chapterName: "New York" });
+    const s2 = await setupChapter(s.t, {
+      email: "leader2@publicworship.life",
+      chapterName: "Austin",
+    });
+    const centralSeatId = await insertSeat(s, {
+      slug: "board_chair",
+      title: "Board Chair",
+      chart: "central",
+    });
+
+    // Chapter A (NY) authors a duty mapped to the shared central seat.
+    const dutyId = (await s.as.mutation(api.responsibilities.create, {
+      title: "Chair the board meeting",
+      cadence: "monthly",
+      assigneeSeatIds: [centralSeatId],
+    })) as Id<"responsibilities">;
+
+    // Chapter B (Austin) never authored anything for this seat, but browsing
+    // the SAME central seat from Austin's own chart still surfaces NY's duty
+    // — central occupancy (and its duties) is chapter-independent.
+    const fromAustin = await s2.as.query(api.responsibilities.dutiesForSeat, {
+      seatDefId: centralSeatId,
+    });
+    expect(fromAustin).toEqual([
+      { id: dutyId, title: "Chair the board meeting", cadence: "monthly" },
+    ]);
+    // …and it still resolves from NY's own view too.
+    const fromNY = await s.as.query(api.responsibilities.dutiesForSeat, {
+      seatDefId: centralSeatId,
+    });
+    expect(fromNY).toEqual(fromAustin);
+
+    // A CHAPTER-chart seat, by contrast, stays chapter-scoped (asserted in
+    // the test above this one) — only central seats get the cross-chapter
+    // reach, since only central occupancy is actually chapter-independent.
+  });
+
+  test("addSeat / removeSeat edit one seat membership, race-safely — mirrors addAssignee/removeAssignee", async () => {
+    const s = await setupChapter(newT());
+    const seatA = await insertSeat(s, {
+      slug: "seat-a",
+      title: "Seat A",
+      chart: "chapter",
+    });
+    const seatB = await insertSeat(s, {
+      slug: "seat-b",
+      title: "Seat B",
+      chart: "chapter",
+    });
+
+    const id = (await s.as.mutation(api.responsibilities.create, {
+      title: "Storage upkeep",
+      assigneeRoles: ["director"], // legacy — should be cleared by addSeat
+    })) as Id<"responsibilities">;
+    const row = async () =>
+      (await s.as.query(api.responsibilities.list)).find((r) => r._id === id)!;
+
+    // Adding the FIRST seat is the mapping flow: clears legacy roles.
+    await s.as.mutation(api.responsibilities.addSeat, {
+      responsibilityId: id,
+      seatDefId: seatA,
+    });
+    expect((await row()).assigneeSeatIds).toEqual([seatA]);
+    expect((await row()).assigneeRoles).toBeUndefined();
+
+    // Targeted add appends without rewriting the array; re-adding is a no-op.
+    await s.as.mutation(api.responsibilities.addSeat, {
+      responsibilityId: id,
+      seatDefId: seatB,
+    });
+    await s.as.mutation(api.responsibilities.addSeat, {
+      responsibilityId: id,
+      seatDefId: seatB,
+    });
+    expect((await row()).assigneeSeatIds).toEqual([seatA, seatB]);
+
+    // Targeted remove drops only the named seat.
+    await s.as.mutation(api.responsibilities.removeSeat, {
+      responsibilityId: id,
+      seatDefId: seatA,
+    });
+    expect((await row()).assigneeSeatIds).toEqual([seatB]);
+
+    // Removing the last seat clears the field entirely (not `[]`), and does
+    // NOT resurrect the legacy roles — they're gone for good once mapped.
+    await s.as.mutation(api.responsibilities.removeSeat, {
+      responsibilityId: id,
+      seatDefId: seatB,
+    });
+    expect((await row()).assigneeSeatIds).toBeUndefined();
+    expect((await row()).assigneeRoles).toBeUndefined();
+
+    // Both are manager/admin-gated like addAssignee/removeAssignee.
+    const { cara } = await seedChain(s);
+    const asCara = await addUser(s, "cara-seats@publicworship.life", {
+      personId: cara,
+    });
+    await expect(
+      asCara.mutation(api.responsibilities.addSeat, {
+        responsibilityId: id,
+        seatDefId: seatA,
+      }),
+    ).rejects.toThrow(ConvexError);
+    await expect(
+      asCara.mutation(api.responsibilities.removeSeat, {
+        responsibilityId: id,
+        seatDefId: seatA,
+      }),
+    ).rejects.toThrow(ConvexError);
+  });
+
   test("seatOptions lists every seat def, org-transparently", async () => {
     const s = await setupChapter(newT());
     const asVisitor = await addUser(s, "visitor@publicworship.life");
