@@ -1927,6 +1927,9 @@ export const SONG_REQUEST_LIMITS = {
 // ── AI agent config (model registry, cost, budgets) ──────────────────────────
 export * from "./ai";
 
+// ── Seat-derived manager relationships (pure algorithm) ───────────────────────
+export * from "./seatManagers";
+
 // ── The planning playbook (generated from docs/agent.md) ─────────────────────
 export * from "./playbook";
 

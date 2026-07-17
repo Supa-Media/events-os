@@ -10,11 +10,17 @@
  * managers, nothing otherwise).
  *
  * `workload` answers "what is everyone under this person working on?" in one
- * query: the person's manager + direct reports, plus every member of their
+ * query: the person's manager(s) + direct reports, plus every member of their
  * subtree (themselves included) with the events they own and the event roles
  * they hold. Manual projects ride along via `api.projects.list` on the client
  * so both stay independently reactive. Access is scoped like `overview`:
  * admins can inspect anyone; everyone else only people in their own subtree.
+ *
+ * Manager/report relationships (`nav`'s `canManage`, `overview`'s
+ * `hasReports`/`canManage`, `workload`'s `managers`/`reports`/subtree) are
+ * SEAT-DERIVED FIRST, falling back per-person to the stored `people.managerId`
+ * only for someone who holds no seat at all — see `lib/org.ts`'s "Seat-derived
+ * managers" section for the full algorithm and rationale.
  */
 import { query } from "./_generated/server";
 import type { QueryCtx } from "./_generated/server";
@@ -27,9 +33,11 @@ import {
   viewerPerson,
   viewerFromRoster,
   chapterRoster,
-  buildChildrenOf,
   subtreeNodes,
   subtreeIds,
+  loadSeatManagerIndex,
+  buildEffectiveChildrenOf,
+  resolveEffectiveManagers,
 } from "./lib/org";
 
 /** The slim person shape the org surfaces render (no contact details). */
@@ -177,11 +185,26 @@ export const nav = query({
     const self = await viewerPerson(ctx, chapterId as Id<"chapters">);
     let canManage = isAdmin;
     if (!canManage && self) {
+      // Cheap path first (the common case: a stored-`managerId` report) since
+      // this is polled on every screen. Only fall to the heavier seat-aware
+      // check — which loads the whole roster + org chart — when that finds
+      // nothing, so a caller who's ONLY a manager via a held seat (no
+      // managerId-based reports at all) still gets `canManage: true`.
       const firstReport = await ctx.db
         .query("people")
         .withIndex("by_manager", (q) => q.eq("managerId", self._id))
         .first();
-      canManage = firstReport !== null;
+      if (firstReport !== null) {
+        canManage = true;
+      } else {
+        const [roster, index] = await Promise.all([
+          chapterRoster(ctx, chapterId as Id<"chapters">),
+          loadSeatManagerIndex(ctx, chapterId as Id<"chapters">),
+        ]);
+        canManage =
+          (buildEffectiveChildrenOf(index, roster).get(self._id) ?? [])
+            .length > 0;
+      }
     }
     // Team-surface policy, stated ONCE for every client. Read is transparent:
     // the whole org view for admins, managers, AND every roster member (so
@@ -224,11 +247,16 @@ export const overview = query({
       };
     }
 
-    const [isAdmin, roster] = await Promise.all([
+    const [isAdmin, roster, index] = await Promise.all([
       isChapterAdmin(ctx, chapterId as Id<"chapters">),
       chapterRoster(ctx, chapterId as Id<"chapters">),
+      loadSeatManagerIndex(ctx, chapterId as Id<"chapters">),
     ]);
-    const childrenOf = buildChildrenOf(roster);
+    // Seat truth first, `managerId` fallback per-person — see `lib/org.ts`'s
+    // "Seat-derived managers" section. `people[].managerId` in the response
+    // below stays the raw STORED value (the Team tab's tree still reads it
+    // directly); only `hasReports`/`canManage` here reflect the seat layer.
+    const childrenOf = buildEffectiveChildrenOf(index, roster);
     const viewer = await viewerFromRoster(ctx, roster);
     const hasReports =
       viewer != null && (childrenOf.get(viewer._id) ?? []).length > 0;
@@ -265,11 +293,16 @@ export const workload = query({
     const person = await ctx.db.get(personId);
     if (!person || person.chapterId !== chapterId) return null;
 
-    const [isAdmin, roster] = await Promise.all([
+    const [isAdmin, roster, index] = await Promise.all([
       isChapterAdmin(ctx, chapterId as Id<"chapters">),
       chapterRoster(ctx, chapterId as Id<"chapters">),
+      loadSeatManagerIndex(ctx, chapterId as Id<"chapters">),
     ]);
-    const childrenOf = buildChildrenOf(roster);
+    // Seat truth first, `managerId` fallback per-person — see `lib/org.ts`'s
+    // "Seat-derived managers" section. This can fan a person's reports out
+    // under MULTIPLE managers (a multi-holder parent seat) — `subtreeNodes`/
+    // `subtreeIds` below still terminate correctly over that shape.
+    const childrenOf = buildEffectiveChildrenOf(index, roster);
 
     // READ scope (transparency): admins and every roster member may inspect
     // anyone in the chapter — the whole team sees the whole workload. A caller
@@ -359,24 +392,28 @@ export const workload = query({
       }),
     );
 
-    const manager = person.managerId
-      ? (roster.find((p) => p._id === person.managerId) ?? null)
-      : null;
     const reports = (childrenOf.get(person._id) ?? []).sort((a, b) =>
       a.name.localeCompare(b.name),
     );
+    // Seat-derived manager(s) if `person` holds any seat, `managerId`
+    // fallback otherwise — resolved by id directly (not restricted to
+    // `roster`), since a central-seat manager may live in a different
+    // chapter. Usually one entry; several iff a multi-holder seat is the
+    // nearest ancestor with holders, in which case there's no single
+    // "primary" — every holder is a manager.
+    const managerDocs = await resolveEffectiveManagers(ctx, index, person);
 
     return {
       person: { ...slim(person), email: person.email ?? null },
       caller,
-      manager: manager
-        ? {
-            ...slim(manager),
-            // Read is transparent now — anyone on the roster may open the
-            // manager's own workload page, so the link is always live.
-            viewable: true,
-          }
-        : null,
+      // Read is transparent within a chapter, but a cross-chapter
+      // central-seat manager's OWN workload page isn't openable from here
+      // (this query is scoped to the caller's chapter) — `viewable` reflects
+      // that so the client doesn't render a dead link.
+      managers: managerDocs.map((m) => ({
+        ...slim(m),
+        viewable: m.chapterId === person.chapterId,
+      })),
       reports: reports.map((r) => ({
         ...slim(r),
         reportCount: (childrenOf.get(r._id) ?? []).length,

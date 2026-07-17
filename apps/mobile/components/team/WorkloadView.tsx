@@ -109,7 +109,7 @@ export function WorkloadView({
   const peopleById = useMemo(() => {
     const map = new Map<Id<"people">, string>();
     for (const m of workload?.members ?? []) map.set(m._id, m.name);
-    if (workload?.manager) map.set(workload.manager._id, workload.manager.name);
+    for (const m of workload?.managers ?? []) map.set(m._id, m.name);
     return map;
   }, [workload]);
 
@@ -283,7 +283,7 @@ export function WorkloadView({
     );
   }
 
-  const { person, caller, manager, reports, members } = workload;
+  const { person, caller, managers, reports, members } = workload;
   const self = members.find((m) => m.isSelf);
   const team = members.filter((m) => !m.isSelf);
   const ownRoots = rootsByOwner.get(person._id) ?? [];
@@ -323,27 +323,36 @@ export function WorkloadView({
               {person.role ? (
                 <Text className="text-sm text-muted">{person.role}</Text>
               ) : null}
-              {manager ? (
-                // Only link when the caller may open the manager's page —
-                // a non-admin can't inspect their own boss's workload.
-                manager.viewable ? (
-                  <Pressable
-                    onPress={() => router.push(`/team/${manager._id}` as any)}
-                    className="active:opacity-70"
-                  >
-                    <Text className="text-sm text-muted">
-                      {person.role ? "· " : ""}Reports to{" "}
-                      <Text className="font-semibold text-accent">
-                        {manager.name}
-                      </Text>
+              {managers.length > 0 ? (
+                // Usually one name; several iff the nearest seat-derived
+                // manager is a multi-holder seat (no stored "primary" in that
+                // case — see `org.ts`'s `workload`). Each name links only
+                // when the caller may open ITS page — a non-admin can't
+                // inspect their own boss's workload, and a cross-chapter
+                // central-seat manager's page isn't openable from here.
+                <Text className="text-sm text-muted">
+                  {person.role ? "· " : ""}Reports to{" "}
+                  {managers.map((m, i) => (
+                    <Text key={m._id}>
+                      {i > 0
+                        ? i === managers.length - 1
+                          ? " and "
+                          : ", "
+                        : ""}
+                      {m.viewable ? (
+                        <Text
+                          className="font-semibold text-accent"
+                          onPress={() => router.push(`/team/${m._id}` as any)}
+                          suppressHighlighting
+                        >
+                          {m.name}
+                        </Text>
+                      ) : (
+                        <Text className="font-semibold">{m.name}</Text>
+                      )}
                     </Text>
-                  </Pressable>
-                ) : (
-                  <Text className="text-sm text-muted">
-                    {person.role ? "· " : ""}Reports to{" "}
-                    <Text className="font-semibold">{manager.name}</Text>
-                  </Text>
-                )
+                  ))}
+                </Text>
               ) : null}
             </View>
           </View>
