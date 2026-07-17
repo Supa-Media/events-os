@@ -23,9 +23,11 @@ describe("mergeDesks", () => {
     ]);
   });
 
-  test("a financeRoles-granted seat wins over the org-chart-only desk at the same scope", () => {
-    // The financeRoles side carries a real `role` + its own title enrichment;
-    // the org-chart-derived desk must not clobber it with a role-less entry.
+  test("a financeRoles-granted seat at the same scope keeps ITS role, but the org-chart desk's title still counts", () => {
+    // financeRoles' role/permissions semantics are never touched by the
+    // merge — only the display title can be overridden by the seat side.
+    // Here both sides happen to agree on the title, so this also pins that
+    // the merge doesn't drop the role when a title IS present on both.
     const financeSeats: Seat[] = [
       { scope: "chapter", chapterId: NY, chapterName: "New York", role: "manager", title: "finance_manager" },
     ];
@@ -34,6 +36,37 @@ describe("mergeDesks", () => {
     ];
 
     expect(mergeDesks(financeSeats, deskChapters)).toEqual([
+      { scope: "chapter", chapterId: NY, chapterName: "New York", role: "manager", title: "finance_manager" },
+    ]);
+  });
+
+  test("a chapter_director seat + an unrelated financeRoles grant shows the org-chart title, not the finance-role label", () => {
+    // The exact bug flagged in PR review: a chapter_director holder who ALSO
+    // holds a hand-granted (untitled) financeRoles role in the same chapter
+    // must still see their org-chart title ("Chapter Director") in the pill,
+    // not the bare finance-role rank ("Viewer"/"Manager") — the seat-derived
+    // title WINS for display, while the financeRoles `role` (permissions
+    // semantics) is preserved untouched.
+    const financeSeats: Seat[] = [
+      { scope: "chapter", chapterId: NY, chapterName: "New York", role: "viewer" },
+    ];
+    const deskChapters: DeskChapter[] = [
+      { scope: NY, chapterName: "New York", title: "president" },
+    ];
+
+    expect(mergeDesks(financeSeats, deskChapters)).toEqual([
+      { scope: "chapter", chapterId: NY, chapterName: "New York", role: "viewer", title: "president" },
+    ]);
+  });
+
+  test("a financeRoles seat with NO org-chart title at that scope keeps its own title untouched", () => {
+    // deskChapters has no entry at all for this scope, so the financeRoles
+    // entry's own title enrichment (from `mySeats`) must survive as-is.
+    const financeSeats: Seat[] = [
+      { scope: "chapter", chapterId: NY, chapterName: "New York", role: "manager", title: "finance_manager" },
+    ];
+
+    expect(mergeDesks(financeSeats, [])).toEqual([
       { scope: "chapter", chapterId: NY, chapterName: "New York", role: "manager", title: "finance_manager" },
     ]);
   });

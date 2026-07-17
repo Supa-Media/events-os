@@ -54,11 +54,20 @@ export type DeskChapter =
  * Union `financeRoles.mySeats`-derived seats with `seats.myDeskChapters`-
  * derived org-chart-only desks (WP-S switcher fix — see `ChapterContext`'s
  * "What counts as a desk" doc for the full rationale). A scope `financeSeats`
- * already covers keeps ITS entry (real `role` + its own `title` enrichment,
- * both resolved server-side by `mySeats`); `deskChapters` only ADDS scopes
- * `financeSeats` doesn't have, as a role-less desk. Central first, chapters
- * alphabetical — mirrors `financeRoles.mySeats`' own ordering, so `seats[0]`
- * stays a valid "central-first default desk" pick downstream.
+ * already covers keeps ITS entry's `role` (the real `financeRoles`
+ * role/permissions semantics — never touched here), but the SEAT-derived
+ * `title` wins when `deskChapters` has one for that scope: a person can hold
+ * an unrelated `financeRoles` grant (e.g. a hand-granted viewer/bookkeeper
+ * role with no org-chart title of its own) in a chapter where they ALSO hold
+ * a titled seat like `chapter_director` — without this override the pill
+ * would show the bare finance-role label ("Viewer"/"Manager") instead of
+ * their actual org-chart title ("Chapter Director"), which is exactly the
+ * label the switcher exists to get right. `deskChapters` having no title for
+ * that scope (a seat with no `legacyTitle`) leaves `financeSeats`' own title
+ * untouched. `deskChapters` only ADDS an entry outright for a scope
+ * `financeSeats` doesn't cover at all, as a role-less desk. Central first,
+ * chapters alphabetical — mirrors `financeRoles.mySeats`' own ordering, so
+ * `seats[0]` stays a valid "central-first default desk" pick downstream.
  */
 export function mergeDesks(financeSeats: Seat[], deskChapters: DeskChapter[]): Seat[] {
   const byKey = new Map<string, Seat>();
@@ -71,7 +80,13 @@ export function mergeDesks(financeSeats: Seat[], deskChapters: DeskChapter[]): S
     // eliminate the chapter arm for the compiler. Presence of the
     // chapter-only `chapterName` field is an unambiguous discriminant.
     if ("chapterName" in d) {
-      if (byKey.has(d.scope)) continue; // financeRoles already covers this desk
+      const existing = byKey.get(d.scope);
+      if (existing) {
+        // financeRoles already covers this desk — keep its role/permissions,
+        // but prefer the org-chart seat's title for display (see doc above).
+        if (d.title !== undefined) byKey.set(d.scope, { ...existing, title: d.title });
+        continue;
+      }
       byKey.set(d.scope, {
         scope: "chapter",
         chapterId: d.scope,
@@ -79,7 +94,11 @@ export function mergeDesks(financeSeats: Seat[], deskChapters: DeskChapter[]): S
         title: d.title,
       });
     } else {
-      if (byKey.has("central")) continue; // financeRoles already covers this desk
+      const existing = byKey.get("central");
+      if (existing) {
+        if (d.title !== undefined) byKey.set("central", { ...existing, title: d.title });
+        continue;
+      }
       byKey.set("central", { scope: "central", title: d.title });
     }
   }
