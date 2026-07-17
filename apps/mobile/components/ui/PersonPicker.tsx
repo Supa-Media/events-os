@@ -41,6 +41,16 @@ type Props = {
    * unset (e.g. role assignment), the picker stays a plain roster list.
    */
   onCreate?: (name: string) => void;
+  /**
+   * Pre-fetched roster overriding `source`'s internal query entirely —
+   * `source` is ignored when this is set. For a caller whose roster isn't
+   * "the caller's own chapter" (e.g. a seat-change picker keyed off the
+   * SEAT's scope, via `seats.assignablePeople`, not `people.list`).
+   * `undefined` mirrors the internal query's own "still loading" state;
+   * pass `[]` (not `undefined`) once the caller's own query has resolved to
+   * an empty roster.
+   */
+  people?: { _id: string; name: string }[];
 };
 
 /**
@@ -61,22 +71,28 @@ export function PersonPicker({
   source = "all",
   onCreate,
   filter,
+  people: peopleOverride,
 }: Props) {
   // Inside an Academy training sandbox, both sources collapse SERVER-SIDE to
   // the learner + placeholder people — real teammates are never offered from
   // within a drill.
   const sandboxEventId = useSandboxEventId();
   // The card-eligibility roster takes no args and has no sandbox variant.
-  const people = useQuery(
+  // Skipped entirely (Convex's `"skip"` sentinel) when `peopleOverride` is
+  // set — no point subscribing to a roster the caller isn't using.
+  const queried = useQuery(
     source === "cardEligible"
       ? api.people.cardEligible
       : source === "team"
         ? api.people.teamMembers
         : api.people.list,
-    source !== "cardEligible" && sandboxEventId
-      ? { eventId: sandboxEventId as Id<"events"> }
-      : {},
+    peopleOverride !== undefined
+      ? "skip"
+      : source !== "cardEligible" && sandboxEventId
+        ? { eventId: sandboxEventId as Id<"events"> }
+        : {},
   );
+  const people = peopleOverride !== undefined ? peopleOverride : queried;
 
   const [search, setSearch] = useState("");
   // Reset the query each time the modal is dismissed so it opens fresh.

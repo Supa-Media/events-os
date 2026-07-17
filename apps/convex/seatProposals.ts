@@ -899,6 +899,15 @@ export const pendingProposals = query({
   },
 });
 
+/** Bound on how many of a single proposer's rows `myProposals` reads, PER
+ *  `people` row they own — generous over realistic per-person proposal
+ *  volume (mirrors `PENDING_SCAN_LIMIT`'s convention). Ordered `"desc"` (see
+ *  `myProposals` below) so hitting this bound always drops the OLDEST rows,
+ *  never the newest — a caller re-reading a proposal they just created (e.g.
+ *  `SeatActions.tsx`'s chain-top-status check) must always find it here, no
+ *  matter how much history they have. */
+const MY_PROPOSALS_SCAN_LIMIT = 200;
+
 /** Every proposal (any status) the caller has made, newest first. */
 export const myProposals = query({
   args: {},
@@ -912,7 +921,19 @@ export const myProposals = query({
           ctx.db
             .query("seatProposals")
             .withIndex("by_proposer", (q) => q.eq("proposedByPersonId", personId))
-            .take(200),
+            // `by_proposer` is `["proposedByPersonId"]` — Convex appends
+            // `_creationTime` as the index's own tiebreaker, so `"desc"`
+            // here reads NEWEST-first straight off the index. `createdAt`
+            // (set via `Date.now()` immediately before every insert, one row
+            // per mutation call) is monotonic WITH `_creationTime` in
+            // practice, so taking the newest `MY_PROPOSALS_SCAN_LIMIT` this
+            // way is equivalent to (but far cheaper and, critically,
+            // CORRECT versus) sorting by `createdAt` after an unordered
+            // `.take()` — that used to silently take the OLDEST rows
+            // instead, which could miss a proposal just created by a
+            // prolific proposer entirely.
+            .order("desc")
+            .take(MY_PROPOSALS_SCAN_LIMIT),
         ),
       )
     ).flat();

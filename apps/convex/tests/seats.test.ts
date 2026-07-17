@@ -1141,3 +1141,154 @@ describe("seats.unassignSeat", () => {
     expect((await financeGrant(s, s.chapterId, second))?.role).toBe("manager");
   });
 });
+
+/**
+ * `seatDetail`'s `assignmentId` exposure — gated to a superuser caller only
+ * (mirrors `unassignSeat`'s own gate, the one mutation this id is for). A
+ * non-superuser must never see an id they can't act on.
+ */
+describe("seats.seatDetail — assignmentId exposure", () => {
+  test("a superuser caller sees assignmentId on a holder row", async () => {
+    const s = await superuserSetup();
+    const def = await defBySlug(s, "music_lead");
+    const p = await makePerson(s, s.chapterId, "Holder");
+    const assignmentId = await s.as.mutation(api.seats.assignSeat, {
+      seatDefId: def._id,
+      scope: s.chapterId,
+      personId: p,
+    });
+
+    const detail = await s.as.query(api.seats.seatDetail, {
+      defId: def._id,
+      scope: s.chapterId,
+    });
+    expect(detail?.holders).toHaveLength(1);
+    expect(detail?.holders[0]!.assignmentId).toBe(assignmentId);
+  });
+
+  test("a non-superuser caller never sees assignmentId, even on their own seat", async () => {
+    const s = await superuserSetup();
+    const def = await defBySlug(s, "music_lead");
+    const p = await makePerson(s, s.chapterId, "Holder");
+    await s.as.mutation(api.seats.assignSeat, {
+      seatDefId: def._id,
+      scope: s.chapterId,
+      personId: p,
+    });
+
+    const nonSuper = await setupChapter(s.t, { email: "leader@publicworship.life" });
+    const detail = await nonSuper.as.query(api.seats.seatDetail, {
+      defId: def._id,
+      scope: s.chapterId,
+    });
+    expect(detail?.holders).toHaveLength(1);
+    expect(detail?.holders[0]!.assignmentId).toBeUndefined();
+    expect(Object.prototype.hasOwnProperty.call(detail?.holders[0], "assignmentId")).toBe(
+      false,
+    );
+  });
+
+  test("a superuser caller also sees assignmentId on a DERIVED seat's rolled-up holder", async () => {
+    const s = await superuserSetup();
+    const cdDef = await defBySlug(s, "chapter_director");
+    const p = await makePerson(s, s.chapterId, "CD");
+    const assignmentId = await s.as.mutation(api.seats.assignSeat, {
+      seatDefId: cdDef._id,
+      scope: s.chapterId,
+      personId: p,
+    });
+
+    const derivedDef = await defBySlug(s, "chapter_directors");
+    const detail = await s.as.query(api.seats.seatDetail, {
+      defId: derivedDef._id,
+      scope: "central",
+    });
+    expect(detail?.holders).toHaveLength(1);
+    // The derived rollup holder's assignmentId is the REAL underlying
+    // chapter-level assignment row (there is no separate "derived seat"
+    // assignment) — the id `unassignSeat` would need to remove the chapter's
+    // own chapter_director.
+    expect(detail?.holders[0]!.assignmentId).toBe(assignmentId);
+  });
+});
+
+/**
+ * `seats.assignablePeople` — the scope-aware roster read powering the
+ * propose/direct-assign pickers, replacing the caller-chapter-scoped
+ * `people.list`.
+ */
+describe("seats.assignablePeople", () => {
+  test("a chapter scope returns only that chapter's non-placeholder, non-sample people", async () => {
+    const s = await superuserSetup();
+    const inChapter = await makePerson(s, s.chapterId, "In Chapter");
+    await makePlaceholderPerson(s, s.chapterId, "Placeholder");
+    await run(s.t, (ctx) =>
+      ctx.db.insert("people", {
+        chapterId: s.chapterId,
+        name: "Sample",
+        isSamplePerson: true,
+        createdAt: Date.now(),
+      }),
+    );
+    const otherChapterId = await makeChapter(s, "Boston");
+    await makePerson(s, otherChapterId, "In Other Chapter");
+
+    const people = await s.as.query(api.seats.assignablePeople, {
+      scope: s.chapterId,
+    });
+    expect(people.map((p) => p.personId)).toEqual([inChapter]);
+  });
+
+  test("central scope returns people org-wide, across every chapter", async () => {
+    const s = await superuserSetup({ chapterName: "New York" });
+    const nyPerson = await makePerson(s, s.chapterId, "NY Person");
+    const bostonId = await makeChapter(s, "Boston");
+    const bostonPerson = await makePerson(s, bostonId, "Boston Person");
+    await makePlaceholderPerson(s, bostonId, "Boston Placeholder");
+
+    const people = await s.as.query(api.seats.assignablePeople, {
+      scope: "central",
+    });
+    expect(new Set(people.map((p) => p.personId))).toEqual(
+      new Set([nyPerson, bostonPerson]),
+    );
+  });
+
+  test("throws NOT_FOUND for a chapter that doesn't exist", async () => {
+    const s = await superuserSetup();
+    const staleChapterId = await run(s.t, async (ctx) => {
+      const id = await ctx.db.insert("chapters", {
+        name: "Deleted",
+        isActive: true,
+        createdAt: Date.now(),
+      });
+      await ctx.db.delete(id);
+      return id;
+    });
+
+    await expect(
+      s.as.query(api.seats.assignablePeople, { scope: staleChapterId }),
+    ).rejects.toBeInstanceOf(ConvexError);
+  });
+
+  test("rejects a fully signed-out caller (requireAccess gate, not superuser-only)", async () => {
+    const t = newT();
+    await run(t, (ctx) => runSeedSeatDefs(ctx));
+    const s = await setupChapter(t);
+    await expect(
+      t.query(api.seats.assignablePeople, { scope: s.chapterId }),
+    ).rejects.toBeInstanceOf(ConvexError);
+  });
+
+  test("a non-superuser, signed-in-and-allowed caller can still read it (powers the propose flow anyone can use)", async () => {
+    const t = newT();
+    await run(t, (ctx) => runSeedSeatDefs(ctx));
+    const s = await setupChapter(t, { email: "leader@publicworship.life" });
+    const p = await makePerson(s, s.chapterId, "Someone");
+
+    const people = await s.as.query(api.seats.assignablePeople, {
+      scope: s.chapterId,
+    });
+    expect(people.map((pp) => pp.personId)).toEqual([p]);
+  });
+});

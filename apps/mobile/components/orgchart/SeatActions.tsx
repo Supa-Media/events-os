@@ -1,43 +1,34 @@
 /**
- * Seat panel actions — the two ways a seat's OCCUPANCY can change from the
+ * Seat panel actions — the ways a seat's OCCUPANCY can change from the
  * chart: a two-party PROPOSAL (any seat holder may propose a change to a
  * seat strictly below one of their own — `seatProposals.propose`), and, for
  * a superuser only, a DIRECT assignment that skips the proposal flow
- * entirely (`seats.assignSeat`).
+ * entirely (`seats.assignSeat`/`seats.unassignSeat`).
  *
- * Both surfaces surface `ConvexError` messages VERBATIM (`alertError`) —
- * they're written in plain language for the person seeing them (SoD
+ * Every surface here surfaces `ConvexError` messages VERBATIM (`alertError`)
+ * — they're written in plain language for the person seeing them (SoD
  * violations, seat-full, not-a-holder, etc.), so there's no local
  * re-wording to keep in sync with the backend's copy.
  *
- * KNOWN GAP (reported, not hacked around): "Assign directly" only ever
- * calls `assignSeat` — it has no standalone "unassign a specific holder
- * without replacing them" action for a MULTI-holder seat. `unassignSeat`
- * takes an `assignmentId`, and neither `seats.chart` nor `seats.seatDetail`
- * expose one for an arbitrary holder (only `mySeatAssignments` — the
- * CALLER's own rows — does). A single-holder seat doesn't need this (picking
- * a new person REPLACES the incumbent inside `assignSeatImpl` itself, no
- * `assignmentId` required), but removing one holder from a "*" seat without
- * replacing them currently has no direct-assign path — only the two-party
- * proposal flow (propose a "vacate" for that holder) can do it. Flagged for
- * a follow-up: expose `assignmentId` on `seatDetail`'s holder rows.
+ * Person picker: both modals read `seats.assignablePeople({scope})` — the
+ * seat's SCOPE, not the caller's own chapter (`people.list`'s scoping) — so
+ * proposing/assigning into a different chapter, or into central (org-wide),
+ * offers the right roster instead of the caller's own.
  *
- * SECOND KNOWN GAP: the person picker here is `people.list`, per this PR's
- * spec — but that query is scoped to the CALLER's own chapter
- * (`lib/context.ts#getChapterIdOrNull`), not the seat's `scope`. Proposing
- * or directly assigning into a chapter other than the caller's home chapter
- * (or into central) offers the caller's OWN roster, not the target scope's.
- * A cross-chapter-aware roster read is a backend change outside this PR.
+ * Direct-unassign: for a MULTI-holder seat, `DirectAssignModal` also offers a
+ * standalone "remove" per holder (`seats.unassignSeat`), not just the
+ * replace-on-pick path a single-holder seat gets for free inside
+ * `assignSeatImpl`. This only appears when the holder row carries an
+ * `assignmentId` — `seatDetail` only populates that for a superuser caller
+ * (see `seats.ts`), which is exactly who this modal is already gated to, so
+ * every holder here is expected to have one.
  *
  * CHAIN-TOP AUTO-EXECUTION: when the proposer has no OCCUPIED seat above
  * them in the tree (e.g. the ED — nobody outranks them), `propose` may
- * execute the change immediately instead of leaving it pending (a parallel
- * backend PR). Rather than assume "pending" from the mutation's own return
- * value (whose exact shape either side of that change isn't this PR's to
- * pin down), `submit()` re-reads the CREATED proposal's row via
- * `myProposals` right after the write and branches on its `status` — which
- * has been a stable field on every proposal row since the original merge,
- * true whether or not chain-top auto-execution has landed yet.
+ * execute the change immediately instead of leaving it pending. Rather than
+ * assume "pending" from the mutation's own return value, `submit()`
+ * re-reads the CREATED proposal's row via `myProposals` right after the
+ * write and branches on its `status`.
  */
 import { useEffect, useMemo, useState } from "react";
 import { Alert, Modal, Platform, Pressable, ScrollView, Text, TextInput, View } from "react-native";
@@ -50,7 +41,14 @@ import { alertError } from "../../lib/errors";
 import { confirmAction } from "../event/ticketing/helpers";
 import type { NodeScope } from "./treeUtils";
 
-type HolderLite = { personId: Id<"people">; name: string; imageUrl: string | null };
+type HolderLite = {
+  personId: Id<"people">;
+  name: string;
+  imageUrl: string | null;
+  /** Only present for a superuser caller (see `seats.seatDetail`'s gating) —
+   *  the id `unassignSeat` needs to remove THIS specific holder. */
+  assignmentId?: Id<"seatAssignments">;
+};
 
 /** Cross-platform info alert — mirrors `alertError`'s Platform branch, for
  *  a SUCCESS message rather than a failure (no shared success-toast
@@ -83,14 +81,9 @@ function ProposeChangeModal({
 }) {
   const propose = useMutation(api.seatProposals.propose);
   const convex = useConvex();
-  // NOTE (reported gap, not hacked around): `people.list` is scoped to the
-  // CALLER's own chapter (`lib/context.ts#getChapterIdOrNull`), not the
-  // seat's `scope` — so proposing into a DIFFERENT chapter (or central) than
-  // the caller's home chapter offers the wrong roster here. This is the
-  // exact query the task spec names ("person picker (people.list,
-  // non-placeholder)"); a cross-chapter-aware roster read would need a
-  // backend change out of this PR's scope.
-  const people = useQuery(api.people.list, {});
+  // Scope-aware roster — the seat's `scope`, not the caller's own chapter
+  // (see this file's header doc comment).
+  const people = useQuery(api.seats.assignablePeople, { scope });
   const [action, setAction] = useState<"fill" | "vacate">("fill");
   const [subjectPersonId, setSubjectPersonId] = useState<Id<"people"> | null>(null);
   const [note, setNote] = useState("");
@@ -138,8 +131,14 @@ function ProposeChangeModal({
   }
 
   const chosenFillName = useMemo(
-    () => (people ?? []).find((p) => p._id === subjectPersonId)?.name,
+    () => (people ?? []).find((p) => p.personId === subjectPersonId)?.name,
     [people, subjectPersonId],
+  );
+  // `PersonPicker`'s pre-fetched-roster override shape (`_id`/`name`) — see
+  // its `people` prop doc comment.
+  const pickerPeople = useMemo(
+    () => people?.map((p) => ({ _id: p.personId, name: p.name })),
+    [people],
   );
 
   return (
@@ -249,6 +248,7 @@ function ProposeChangeModal({
         visible={pickerOpen}
         title="Propose filling with…"
         selectedId={subjectPersonId}
+        people={pickerPeople}
         onPick={(personId) => {
           setSubjectPersonId(personId as Id<"people">);
           setPickerOpen(false);
@@ -306,15 +306,20 @@ function DirectAssignModal({
   onClose: () => void;
 }) {
   const assignSeat = useMutation(api.seats.assignSeat);
-  // Same cross-chapter caveat as `ProposeChangeModal` — see this file's
-  // header doc comment.
-  const people = useQuery(api.people.list, {});
+  const unassignSeat = useMutation(api.seats.unassignSeat);
+  // Scope-aware roster — the seat's `scope`, not the caller's own chapter
+  // (see this file's header doc comment).
+  const people = useQuery(api.seats.assignablePeople, { scope });
+  const pickerPeople = useMemo(
+    () => people?.map((p) => ({ _id: p.personId, name: p.name })),
+    [people],
+  );
   const [pickerOpen, setPickerOpen] = useState(false);
   const singleHolderReplace = maxHolders === 1 && holders.length > 0;
   const atCapacity = maxHolders > 1 && holders.length >= maxHolders;
 
   function pick(personId: string) {
-    const personName = (people ?? []).find((p) => p._id === personId)?.name ?? "This person";
+    const personName = (people ?? []).find((p) => p.personId === personId)?.name ?? "This person";
     setPickerOpen(false);
     const commit = async () => {
       try {
@@ -332,6 +337,29 @@ function DirectAssignModal({
       confirmLabel: "Assign",
       destructive: singleHolderReplace,
       onConfirm: () => void commit(),
+    });
+  }
+
+  /** Remove ONE holder from a MULTI-holder seat without replacing them —
+   *  only offered when the holder row carries an `assignmentId` (a
+   *  superuser caller — see `seats.seatDetail`'s gating, which this modal
+   *  is already restricted to). */
+  function removeHolder(h: HolderLite) {
+    if (!h.assignmentId) return;
+    const assignmentId = h.assignmentId;
+    confirmAction({
+      title: "Remove this holder?",
+      message: `${h.name} will be removed from ${seatTitle} immediately — this skips the proposal flow.`,
+      confirmLabel: "Remove",
+      destructive: true,
+      onConfirm: () =>
+        void (async () => {
+          try {
+            await unassignSeat({ assignmentId });
+          } catch (err) {
+            alertError(err);
+          }
+        })(),
     });
   }
 
@@ -363,9 +391,23 @@ function DirectAssignModal({
                     Currently holds this seat
                   </Text>
                   {holders.map((h) => (
-                    <View key={h.personId} className="flex-row items-center gap-2.5">
-                      <Avatar name={h.name} uri={h.imageUrl} size={26} />
-                      <Text className="text-sm text-ink">{h.name}</Text>
+                    <View
+                      key={h.personId}
+                      className="flex-row items-center justify-between gap-2.5"
+                    >
+                      <View className="flex-row items-center gap-2.5">
+                        <Avatar name={h.name} uri={h.imageUrl} size={26} />
+                        <Text className="text-sm text-ink">{h.name}</Text>
+                      </View>
+                      {maxHolders > 1 && h.assignmentId ? (
+                        <Pressable
+                          onPress={() => removeHolder(h)}
+                          hitSlop={8}
+                          className="rounded-md p-1"
+                        >
+                          <Icon name="user-minus" size={16} color={colors.muted} />
+                        </Pressable>
+                      ) : null}
                     </View>
                   ))}
                 </View>
@@ -383,14 +425,6 @@ function DirectAssignModal({
                   onPress={() => setPickerOpen(true)}
                 />
               )}
-
-              {maxHolders > 1 && holders.length > 0 ? (
-                <Text className="text-xs text-faint">
-                  To remove one holder from this seat without replacing them, use
-                  &quot;Propose a change&quot; (vacate) instead — a standalone unassign for a
-                  multi-holder seat isn&apos;t available here yet.
-                </Text>
-              ) : null}
             </View>
 
             <View className="flex-row justify-end gap-2 border-t border-border px-5 py-4">
@@ -403,6 +437,7 @@ function DirectAssignModal({
       <PersonPicker
         visible={pickerOpen}
         title="Assign to…"
+        people={pickerPeople}
         onPick={(personId) => pick(personId)}
         onClose={() => setPickerOpen(false)}
       />
