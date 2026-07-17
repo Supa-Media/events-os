@@ -712,6 +712,169 @@ export const assignOwner = mutation({
   },
 });
 
+/**
+ * Move an item between modules (Task ⇄ Supply ⇄ Comms ⇄ …), preserving
+ * title/cost/owner/timing where they still make sense on the target and
+ * clearing what doesn't (status, template provenance, pre-plan marks). The
+ * backend for the Money-page grid's "change Type" action.
+ *
+ * Cost carry: a cost value lives in `fields`, keyed by whichever
+ * `type:"currency"` eventColumn the SOURCE module declares (same dynamic
+ * sweep `moneyViews.ts#eventCostGrid` uses — NOT a hardcoded "cost" key). A
+ * single cost either keeps its key (target has a currency column with that
+ * same key) or moves onto the target's lowest-`order` currency column. A row
+ * carrying MULTIPLE cost values can only convert if the target has a
+ * same-keyed column for every one of them — this function never merges two
+ * distinct costs into one column. A target with NO currency column at all
+ * can never receive a cost: conversion is refused rather than silently
+ * dropping money (see the two refusal codes below).
+ */
+export const convertEventItemModule = mutation({
+  args: { itemId: v.id("eventItems"), toModule: v.string() },
+  returns: v.object({
+    itemId: v.id("eventItems"),
+    costColKey: v.union(v.string(), v.null()),
+  }),
+  handler: async (ctx, { itemId, toModule }) => {
+    const item = await ctx.db.get(itemId);
+    if (!item) return { itemId, costColKey: null };
+    const event = await requireEvent(ctx, item.eventId);
+
+    const currencyColumnsFor = async (module: string) =>
+      (
+        await ctx.db
+          .query("eventColumns")
+          .withIndex("by_event_module", (q) =>
+            q.eq("eventId", event._id).eq("module", module),
+          )
+          .collect()
+      ).filter((c) => c.type === "currency");
+
+    if (toModule === item.module) {
+      // Already on this module — report the current single cost column (if
+      // unambiguous), without writing anything.
+      const cols = await currencyColumnsFor(item.module);
+      const present = cols
+        .map((c) => c.key)
+        .filter(
+          (k) => item.fields?.[k] !== undefined && item.fields?.[k] !== null,
+        );
+      return { itemId, costColKey: present.length === 1 ? present[0] : null };
+    }
+
+    await requireActiveEventModule(ctx, event, toModule);
+
+    const [sourceCurrencyCols, targetColumns] = await Promise.all([
+      currencyColumnsFor(item.module),
+      ctx.db
+        .query("eventColumns")
+        .withIndex("by_event_module", (q) =>
+          q.eq("eventId", event._id).eq("module", toModule),
+        )
+        .collect(),
+    ]);
+    const targetCurrencyCols = targetColumns
+      .filter((c) => c.type === "currency")
+      .sort((a, b) => a.order - b.order);
+
+    const fields = item.fields ?? {};
+    const presentCostKeys = sourceCurrencyCols
+      .map((c) => c.key)
+      .filter((k) => fields[k] !== undefined && fields[k] !== null);
+
+    const fieldPatch: Record<string, unknown> = {};
+    let costColKey: string | null = null;
+
+    if (presentCostKeys.length > 1) {
+      const targetKeySet = new Set(targetCurrencyCols.map((c) => c.key));
+      const allCarryOver = presentCostKeys.every((k) => targetKeySet.has(k));
+      if (!allCarryOver) {
+        throw new ConvexError({
+          code: "MULTI_COST_CONVERSION",
+          message: `"${item.title || "This item"}" has multiple cost values that "${toModule}" doesn't have matching columns for — clear the extra costs before converting.`,
+        });
+      }
+      // Every value already lands on a same-keyed target column — nothing to
+      // move. Ambiguous which one is "the" cost, so costColKey stays null.
+    } else if (presentCostKeys.length === 1) {
+      const key = presentCostKeys[0];
+      if (targetCurrencyCols.some((c) => c.key === key)) {
+        costColKey = key;
+      } else if (targetCurrencyCols.length > 0) {
+        const newKey = targetCurrencyCols[0].key;
+        fieldPatch[newKey] = fields[key];
+        fieldPatch[key] = null; // delete the old key (mergeFields convention)
+        costColKey = newKey;
+      } else {
+        throw new ConvexError({
+          code: "TARGET_HAS_NO_COST_COLUMN",
+          message: `"${toModule}" has no cost column to hold "${item.title || "this item"}"'s cost — add one first, or clear the cost before converting.`,
+        });
+      }
+    }
+
+    const leavingSupplies = item.module === "supplies";
+    const enteringSupplies = toModule === "supplies";
+
+    if (leavingSupplies) {
+      await deleteEventPlacementsForRef(
+        ctx,
+        String(item.eventId),
+        "supply",
+        String(itemId),
+      );
+      const linked = fields.linkedAssetId as Id<"assets"> | undefined;
+      if (linked) await releaseReservation(ctx, linked, item.eventId);
+      fieldPatch.linkedAssetId = null;
+      fieldPatch.source = null;
+      fieldPatch.statusOverride = null;
+    }
+
+    // Supplies status is derived at read time; entering it clears the
+    // promoted field outright. Otherwise keep the status iff it's still a
+    // valid option on the target module's status column.
+    let status: string | undefined;
+    if (enteringSupplies) {
+      status = undefined;
+    } else {
+      const opts = statusOptions(targetColumns);
+      status = opts?.some((o) => o.value === item.status)
+        ? item.status
+        : undefined;
+    }
+
+    const dueDate =
+      isDayOffsetModule(toModule) && item.offsetDays != null
+        ? computeDueDate(event.eventDate, item.offsetDays)
+        : undefined;
+
+    const targetItems = await ctx.db
+      .query("eventItems")
+      .withIndex("by_event_module", (q) =>
+        q.eq("eventId", item.eventId).eq("module", toModule),
+      )
+      .collect();
+
+    const hasFieldPatch = Object.keys(fieldPatch).length > 0;
+    await ctx.db.patch(itemId, {
+      // roleId / budgetCategoryId / offsetDays / offsetMinutes / ownerPersonId
+      // / title are intentionally untouched — they carry over as-is.
+      ...(hasFieldPatch
+        ? { fields: mergeFields(item.fields, fieldPatch) }
+        : {}),
+      status,
+      dueDate,
+      sourceTemplateItemId: undefined,
+      prePlanColumns: undefined,
+      prePlanChecked: undefined,
+      order: maxOrder(targetItems) + 1,
+      module: toModule,
+    });
+
+    return { itemId, costColKey };
+  },
+});
+
 export const removeEventItem = mutation({
   args: { itemId: v.id("eventItems") },
   handler: async (ctx, { itemId }) => {
