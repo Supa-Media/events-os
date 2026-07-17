@@ -22,6 +22,7 @@ import type * as checkIns from "../checkIns.js";
 import type * as columns from "../columns.js";
 import type * as crons from "../crons.js";
 import type * as dashboard from "../dashboard.js";
+import type * as dashboardDrill from "../dashboardDrill.js";
 import type * as docs from "../docs.js";
 import type * as engagements from "../engagements.js";
 import type * as eventTypes from "../eventTypes.js";
@@ -171,6 +172,7 @@ declare const fullApi: ApiFromModules<{
   columns: typeof columns;
   crons: typeof crons;
   dashboard: typeof dashboard;
+  dashboardDrill: typeof dashboardDrill;
   docs: typeof docs;
   engagements: typeof engagements;
   eventTypes: typeof eventTypes;

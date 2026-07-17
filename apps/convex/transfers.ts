@@ -1052,6 +1052,12 @@ const interScopeBalanceRow = v.object({
  *
  * Gate: central VIEWER+ reach (a read, not a write) — a chapter manager with
  * no central grant is FORBIDDEN.
+ *
+ * The per-chapter row-computing logic below is factored into
+ * `loadInterScopeContext` / `loadChapterOwesCentralRows` / `chapterInterScopeRows`
+ * so `interScopeBalanceContributors` (dashboard-drilldown work) can show the
+ * exact transactions/settlement legs behind a chapter's `netCents` without
+ * re-deriving the same predicates — see those helpers' own doc comments.
  */
 export const interScopeBalances = query({
   args: { year: v.optional(v.number()), month: v.optional(v.number()) },
@@ -1064,123 +1070,41 @@ export const interScopeBalances = query({
     const month = args.month ?? now.month;
     const sandboxMode = await readSandbox(ctx);
 
-    // Direction (a)'s target set: every CENTRAL budget, any year — a chapter
-    // txn linked to one of these is money the CHAPTER's account paid for a
-    // CENTRAL budget line (mirrors `dashboardChapter`'s `centralLinkedCents`).
-    const centralBudgetDocs = await ctx.db
-      .query("budgets")
-      .withIndex("by_chapter", (q) => q.eq("chapterId", CENTRAL))
-      .take(ROLLUP_SCAN_LIMIT);
-    if (centralBudgetDocs.length === ROLLUP_SCAN_LIMIT) {
-      console.warn(
-        `[transfers] interScopeBalances hit ROLLUP_SCAN_LIMIT (${ROLLUP_SCAN_LIMIT}) reading central budgets; direction (a) target set truncated.`,
-      );
-    }
-    const centralBudgetIds = new Set(centralBudgetDocs.map((b) => b._id));
-
-    const chapters = await ctx.db.query("chapters").take(ROLLUP_SCAN_LIMIT);
-    if (chapters.length === ROLLUP_SCAN_LIMIT) {
-      console.warn(
-        `[transfers] interScopeBalances hit ROLLUP_SCAN_LIMIT (${ROLLUP_SCAN_LIMIT}) reading chapters; result rows truncated.`,
-      );
-    }
-
-    // Direction (b) — see the doc comment above: verified unattributable
-    // through every write path today, computed generically anyway. Read once
-    // (central-owned txns are low-volume, like the City Launch Fund scan).
-    const centralTxns = await ctx.db
-      .query("transactions")
-      .withIndex("by_chapter", (q) => q.eq("chapterId", CENTRAL))
-      .take(ROLLUP_SCAN_LIMIT);
-    if (centralTxns.length === ROLLUP_SCAN_LIMIT) {
-      console.warn(
-        `[transfers] interScopeBalances hit ROLLUP_SCAN_LIMIT (${ROLLUP_SCAN_LIMIT}) reading central-owned transactions; direction (b) truncated.`,
-      );
-    }
-    const budgetCache = new Map<Id<"budgets">, Doc<"budgets"> | null>();
-    async function resolveBudget(id: Id<"budgets">): Promise<Doc<"budgets"> | null> {
-      if (!budgetCache.has(id)) budgetCache.set(id, await ctx.db.get(id));
-      return budgetCache.get(id) ?? null;
-    }
-    const chapterOwesCentralAll = new Map<Id<"chapters">, number>();
-    const chapterOwesCentralPeriod = new Map<Id<"chapters">, number>();
-    for (const tr of centralTxns) {
-      if (!isSpend(tr) || tr.budgetId == null || centralBudgetIds.has(tr.budgetId)) {
-        continue;
-      }
-      if (!txnMatchesMode(tr, sandboxMode)) continue;
-      const linked = await resolveBudget(tr.budgetId);
-      if (!linked || linked.chapterId === CENTRAL) continue; // dangling, or (shouldn't happen) central
-      const chId = linked.chapterId as Id<"chapters">;
-      chapterOwesCentralAll.set(chId, (chapterOwesCentralAll.get(chId) ?? 0) + tr.amountCents);
-      if (inPeriod(tr.postedAt, year, month)) {
-        chapterOwesCentralPeriod.set(
-          chId,
-          (chapterOwesCentralPeriod.get(chId) ?? 0) + tr.amountCents,
-        );
-      }
-    }
+    const { centralBudgetIds, chapters } = await loadInterScopeContext(ctx);
+    const chapterOwesCentralRowsByChapter = await loadChapterOwesCentralRows(
+      ctx,
+      centralBudgetIds,
+      sandboxMode,
+    );
 
     const rows: (typeof interScopeBalanceRow.type)[] = [];
     for (const chapter of chapters) {
-      const txns = await ctx.db
+      const chapterTxns = await ctx.db
         .query("transactions")
         .withIndex("by_chapter", (q) => q.eq("chapterId", chapter._id))
         .take(ROLLUP_SCAN_LIMIT);
-      if (txns.length === ROLLUP_SCAN_LIMIT) {
+      if (chapterTxns.length === ROLLUP_SCAN_LIMIT) {
         console.warn(
           `[transfers] interScopeBalances hit ROLLUP_SCAN_LIMIT (${ROLLUP_SCAN_LIMIT}) reading transactions for chapter ${chapter._id}; balance truncated.`,
         );
       }
-      const modeFiltered = txns.filter((tr) => txnMatchesMode(tr, sandboxMode));
-
-      // Direction (a): this chapter's spend explicitly linked to a CENTRAL budget.
-      let centralOwesChapterAll = 0;
-      let centralOwesChapterPeriod = 0;
-      for (const tr of modeFiltered) {
-        if (!isSpend(tr) || tr.budgetId == null || !centralBudgetIds.has(tr.budgetId)) {
-          continue;
-        }
-        centralOwesChapterAll += tr.amountCents;
-        if (inPeriod(tr.postedAt, year, month)) centralOwesChapterPeriod += tr.amountCents;
-      }
-
-      // Settlements already recorded — this chapter's own leg of every
-      // `source:"settlement"` pair so far. BOTH legs of a pair share
-      // `flow:"transfer"` (excluded from spend, like every transfer leg) —
-      // the pair's `transferDirection` (identical on both legs) is what
-      // distinguishes which way it moved: `"central_to_chapter"` = central
-      // paid THIS chapter (settles (a)); `"chapter_to_central"` = this
-      // chapter paid central (settles (b)).
-      let settledCentralToChapterAll = 0;
-      let settledCentralToChapterPeriod = 0;
-      let settledChapterToCentralAll = 0;
-      let settledChapterToCentralPeriod = 0;
-      for (const tr of modeFiltered) {
-        if (tr.source !== "settlement") continue;
-        if (!matchesMode(tr.externalId ?? null, sandboxMode)) continue;
-        const isThisPeriod = inPeriod(tr.postedAt, year, month);
-        if (tr.transferDirection === "central_to_chapter") {
-          settledCentralToChapterAll += tr.amountCents;
-          if (isThisPeriod) settledCentralToChapterPeriod += tr.amountCents;
-        } else if (tr.transferDirection === "chapter_to_central") {
-          settledChapterToCentralAll += tr.amountCents;
-          if (isThisPeriod) settledChapterToCentralPeriod += tr.amountCents;
-        }
-      }
-
-      const chapterOwesCentralAllCents = chapterOwesCentralAll.get(chapter._id) ?? 0;
-      const chapterOwesCentralPeriodCents =
-        chapterOwesCentralPeriod.get(chapter._id) ?? 0;
+      const grouped = chapterInterScopeRows(
+        chapterTxns,
+        centralBudgetIds,
+        chapterOwesCentralRowsByChapter.get(chapter._id) ?? [],
+        sandboxMode,
+      );
 
       const netCents =
-        centralOwesChapterAll -
-        settledCentralToChapterAll -
-        (chapterOwesCentralAllCents - settledChapterToCentralAll);
+        sumAllCents(grouped.centralOwesChapterRows) -
+        sumAllCents(grouped.settledCentralToChapterRows) -
+        (sumAllCents(grouped.chapterOwesCentralRows) -
+          sumAllCents(grouped.settledChapterToCentralRows));
       const periodNetCents =
-        centralOwesChapterPeriod -
-        settledCentralToChapterPeriod -
-        (chapterOwesCentralPeriodCents - settledChapterToCentralPeriod);
+        sumInPeriodCents(grouped.centralOwesChapterRows, year, month) -
+        sumInPeriodCents(grouped.settledCentralToChapterRows, year, month) -
+        (sumInPeriodCents(grouped.chapterOwesCentralRows, year, month) -
+          sumInPeriodCents(grouped.settledChapterToCentralRows, year, month));
 
       rows.push({
         chapterId: chapter._id,
@@ -1190,6 +1114,211 @@ export const interScopeBalances = query({
       });
     }
     return rows;
+  },
+});
+
+// ── WP-dashboard-drill: `interScopeBalances`' shared row-computing helpers ──
+
+/** Direction (a)'s target set (every CENTRAL budget, any year) + every
+ *  chapter — the context both `interScopeBalances` and
+ *  `interScopeBalanceContributors` need before they can compute anything. */
+async function loadInterScopeContext(
+  ctx: QueryCtx,
+): Promise<{ centralBudgetIds: Set<Id<"budgets">>; chapters: Doc<"chapters">[] }> {
+  const centralBudgetDocs = await ctx.db
+    .query("budgets")
+    .withIndex("by_chapter", (q) => q.eq("chapterId", CENTRAL))
+    .take(ROLLUP_SCAN_LIMIT);
+  if (centralBudgetDocs.length === ROLLUP_SCAN_LIMIT) {
+    console.warn(
+      `[transfers] interScopeBalances hit ROLLUP_SCAN_LIMIT (${ROLLUP_SCAN_LIMIT}) reading central budgets; direction (a) target set truncated.`,
+    );
+  }
+  const chapters = await ctx.db.query("chapters").take(ROLLUP_SCAN_LIMIT);
+  if (chapters.length === ROLLUP_SCAN_LIMIT) {
+    console.warn(
+      `[transfers] interScopeBalances hit ROLLUP_SCAN_LIMIT (${ROLLUP_SCAN_LIMIT}) reading chapters; result rows truncated.`,
+    );
+  }
+  return { centralBudgetIds: new Set(centralBudgetDocs.map((b) => b._id)), chapters };
+}
+
+/** Direction (b)'s raw rows (see `interScopeBalances`' doc comment — verified
+ *  unattributable through every write path today, computed generically
+ *  anyway), grouped by the chapter whose budget absorbed the spend. Read once
+ *  (central-owned txns are low-volume, like the City Launch Fund scan);
+ *  mode-filtered inline via `txnMatchesMode`. */
+async function loadChapterOwesCentralRows(
+  ctx: QueryCtx,
+  centralBudgetIds: Set<Id<"budgets">>,
+  sandboxMode: boolean,
+): Promise<Map<Id<"chapters">, Doc<"transactions">[]>> {
+  const centralTxns = await ctx.db
+    .query("transactions")
+    .withIndex("by_chapter", (q) => q.eq("chapterId", CENTRAL))
+    .take(ROLLUP_SCAN_LIMIT);
+  if (centralTxns.length === ROLLUP_SCAN_LIMIT) {
+    console.warn(
+      `[transfers] interScopeBalances hit ROLLUP_SCAN_LIMIT (${ROLLUP_SCAN_LIMIT}) reading central-owned transactions; direction (b) truncated.`,
+    );
+  }
+  const budgetCache = new Map<Id<"budgets">, Doc<"budgets"> | null>();
+  async function resolveBudget(id: Id<"budgets">): Promise<Doc<"budgets"> | null> {
+    if (!budgetCache.has(id)) budgetCache.set(id, await ctx.db.get(id));
+    return budgetCache.get(id) ?? null;
+  }
+  const byChapter = new Map<Id<"chapters">, Doc<"transactions">[]>();
+  for (const tr of centralTxns) {
+    if (!isSpend(tr) || tr.budgetId == null || centralBudgetIds.has(tr.budgetId)) continue;
+    if (!txnMatchesMode(tr, sandboxMode)) continue;
+    const linked = await resolveBudget(tr.budgetId);
+    if (!linked || linked.chapterId === CENTRAL) continue; // dangling, or (shouldn't happen) central
+    const chId = linked.chapterId as Id<"chapters">;
+    const rows = byChapter.get(chId) ?? [];
+    rows.push(tr);
+    byChapter.set(chId, rows);
+  }
+  return byChapter;
+}
+
+/**
+ * ONE chapter's four row groups behind its `interScopeBalances` net figures:
+ * direction (a) rows (this chapter's spend linked to a central budget),
+ * direction (b) rows (passed in, pre-scanned by `loadChapterOwesCentralRows`),
+ * and the two settlement-leg directions already recorded. Every group is
+ * mode-filtered. `interScopeBalances` sums each group (all-time, and
+ * `inPeriod`-filtered for the period figure); `interScopeBalanceContributors`
+ * returns them directly as the "why" behind a chapter's balance.
+ */
+function chapterInterScopeRows(
+  chapterTxns: Doc<"transactions">[],
+  centralBudgetIds: Set<Id<"budgets">>,
+  chapterOwesCentralRows: Doc<"transactions">[],
+  sandboxMode: boolean,
+): {
+  centralOwesChapterRows: Doc<"transactions">[];
+  chapterOwesCentralRows: Doc<"transactions">[];
+  settledCentralToChapterRows: Doc<"transactions">[];
+  settledChapterToCentralRows: Doc<"transactions">[];
+} {
+  const modeFiltered = chapterTxns.filter((tr) => txnMatchesMode(tr, sandboxMode));
+
+  const centralOwesChapterRows = modeFiltered.filter(
+    (tr) => isSpend(tr) && tr.budgetId != null && centralBudgetIds.has(tr.budgetId),
+  );
+
+  const settlementRows = modeFiltered.filter(
+    (tr) => tr.source === "settlement" && matchesMode(tr.externalId ?? null, sandboxMode),
+  );
+  const settledCentralToChapterRows = settlementRows.filter(
+    (tr) => tr.transferDirection === "central_to_chapter",
+  );
+  const settledChapterToCentralRows = settlementRows.filter(
+    (tr) => tr.transferDirection === "chapter_to_central",
+  );
+
+  return {
+    centralOwesChapterRows,
+    chapterOwesCentralRows,
+    settledCentralToChapterRows,
+    settledChapterToCentralRows,
+  };
+}
+
+function sumAllCents(rows: Doc<"transactions">[]): number {
+  return rows.reduce((s, tr) => s + tr.amountCents, 0);
+}
+
+function sumInPeriodCents(rows: Doc<"transactions">[], year: number, month: number): number {
+  return rows.reduce((s, tr) => (inPeriod(tr.postedAt, year, month) ? s + tr.amountCents : s), 0);
+}
+
+/** `YYYY-MM-DD` in America/New_York — the same one-liner as
+ *  `finances.ts#easternDateStr` (unexported there); duplicated here rather
+ *  than importing across an off-limits file for a single date formatter. */
+function easternDateStrLocal(ts: number): string {
+  return new Date(ts).toLocaleDateString("en-CA", { timeZone: "America/New_York" });
+}
+
+type InterScopeContributorDirection =
+  | "central_owes_chapter"
+  | "chapter_owes_central"
+  | "settlement_central_to_chapter"
+  | "settlement_chapter_to_central";
+
+const interScopeContributorRow = v.object({
+  id: v.id("transactions"),
+  date: v.string(),
+  amountCents: v.number(),
+  description: v.union(v.string(), v.null()),
+  merchantName: v.union(v.string(), v.null()),
+  direction: v.union(
+    v.literal("central_owes_chapter"),
+    v.literal("chapter_owes_central"),
+    v.literal("settlement_central_to_chapter"),
+    v.literal("settlement_chapter_to_central"),
+  ),
+});
+
+/**
+ * WP-dashboard-drill: the raw transactions/settlement legs composing ONE
+ * chapter's `interScopeBalances` row — "why does Central owe NY $160.20?"
+ * Reuses `chapterInterScopeRows`, the EXACT same predicates `interScopeBalances`
+ * itself sums, so the signed sum of these rows' `amountCents` (central_owes -
+ * settlement_central_to_chapter - (chapter_owes - settlement_chapter_to_central))
+ * always equals that query's `netCents` for the same chapter. ALL-TIME (no
+ * year/month arg) — `netCents` itself is all-time, not `periodNetCents`.
+ *
+ * Gate: central VIEWER+ reach, same as `interScopeBalances`.
+ */
+export const interScopeBalanceContributors = query({
+  args: { chapterId: v.id("chapters") },
+  returns: v.array(interScopeContributorRow),
+  handler: async (ctx, { chapterId }) => {
+    const home = (await requireChapterId(ctx)) as Id<"chapters">;
+    await requireCentralFinanceRole(ctx, home, "viewer");
+    const sandboxMode = await readSandbox(ctx);
+
+    const { centralBudgetIds } = await loadInterScopeContext(ctx);
+    const chapterOwesCentralRowsByChapter = await loadChapterOwesCentralRows(
+      ctx,
+      centralBudgetIds,
+      sandboxMode,
+    );
+    const chapterTxns = await ctx.db
+      .query("transactions")
+      .withIndex("by_chapter", (q) => q.eq("chapterId", chapterId))
+      .take(ROLLUP_SCAN_LIMIT);
+
+    const grouped = chapterInterScopeRows(
+      chapterTxns,
+      centralBudgetIds,
+      chapterOwesCentralRowsByChapter.get(chapterId) ?? [],
+      sandboxMode,
+    );
+
+    const tagged: Array<Doc<"transactions"> & { direction: InterScopeContributorDirection }> = [
+      ...grouped.centralOwesChapterRows.map((tr) => ({ ...tr, direction: "central_owes_chapter" as const })),
+      ...grouped.chapterOwesCentralRows.map((tr) => ({ ...tr, direction: "chapter_owes_central" as const })),
+      ...grouped.settledCentralToChapterRows.map((tr) => ({
+        ...tr,
+        direction: "settlement_central_to_chapter" as const,
+      })),
+      ...grouped.settledChapterToCentralRows.map((tr) => ({
+        ...tr,
+        direction: "settlement_chapter_to_central" as const,
+      })),
+    ];
+    tagged.sort((a, b) => b.postedAt - a.postedAt);
+
+    return tagged.map((tr) => ({
+      id: tr._id,
+      date: easternDateStrLocal(tr.postedAt),
+      amountCents: tr.amountCents,
+      description: tr.description ?? null,
+      merchantName: tr.merchantName ?? null,
+      direction: tr.direction,
+    }));
   },
 });
 

@@ -8,7 +8,7 @@
 import { useState } from "react";
 import { Pressable, Text, View } from "react-native";
 import { useQuery } from "convex/react";
-import { useRouter } from "expo-router";
+import { useRouter, type Router } from "expo-router";
 import type { FunctionReturnType } from "convex/server";
 import { api } from "@events-os/convex/_generated/api";
 import type { Id } from "@events-os/convex/_generated/dataModel";
@@ -85,45 +85,32 @@ export function CentralView({
         ))}
       </TileRow>
 
-      {/* Org-wide Unattributed: this period's spend across every chapter with
-          no explicit budget link — every central budget card below is BLIND
-          to it (no derive-matching fallback exists — see WP-0.1). Read-only
-          (no tap-through: Reconcile is chapter-scoped, and this sum spans
-          every chapter, so there's no single destination to jump to). */}
-      {data.orgUnattributedCents > 0 ? (
-        <View className="mb-3 flex-row items-center gap-3 rounded-lg border border-warn bg-warn-bg p-4 shadow-card">
-          <View className="flex-1">
-            <Text className="text-sm font-semibold text-ink">
-              Unattributed: {formatCents(data.orgUnattributedCents)}
-            </Text>
-            <Text className="text-xs text-muted">
-              Org-wide spend this period with no budget attached — chase each
-              chapter's Treasurer to code it in Reconcile.
-            </Text>
-          </View>
-        </View>
-      ) : null}
+      {/* Org-wide Unattributed: this period's spend across every chapter (+
+          central itself) with no explicit budget link — every central budget
+          card below is BLIND to it (no derive-matching fallback exists — see
+          WP-0.1). Tappable: expands into the actual rows (WP-dashboard-drill),
+          backed by `dashboardDrill.orgUnattributedTransactions`. */}
+      <UnattributedSection
+        cents={data.orgUnattributedCents}
+        year={year}
+        month={month}
+        period={period}
+        onViewChapter={onViewChapter}
+      />
 
-      {/* WP-3.2 FM/ED oversight: a read-only count of budgets awaiting a
-          decision, across every chapter + central. The 85% principle keeps
-          this a pure audit signal — chapter budgets are approved BY the
-          Chapter Director, never gated from here; only a central budget's
-          own card (below) offers a decision on THIS screen. */}
-      {data.pendingBudgetApprovalsCount > 0 ? (
-        <View className="mb-3 flex-row items-center gap-3 rounded-lg border border-accent bg-accent-soft p-4 shadow-card">
-          <View className="flex-1">
-            <Text className="text-sm font-semibold text-ink">
-              {data.pendingBudgetApprovalsCount === 1
-                ? "1 budget awaiting approval"
-                : `${data.pendingBudgetApprovalsCount} budgets awaiting approval`}
-            </Text>
-            <Text className="text-xs text-muted">
-              Across every chapter + central — chapter budgets are decided on
-              their own chapter's dashboard; central budgets right below.
-            </Text>
-          </View>
-        </View>
-      ) : null}
+      {/* WP-3.2 FM/ED oversight: a count of budgets awaiting a decision,
+          across every chapter + central. Tappable: expands into the actual
+          budgets (WP-dashboard-drill), backed by
+          `dashboardDrill.pendingBudgetApprovals`. The 85% principle still
+          holds — chapter budgets are approved BY the Chapter Director (a
+          chapter row here peeks into that chapter's own dashboard, where the
+          decision lives); only a central budget's own card (below, or via
+          this list's central rows) offers a decision on THIS screen. */}
+      <PendingApprovalsSection
+        count={data.pendingBudgetApprovalsCount}
+        onViewChapter={onViewChapter}
+        onEditBudget={onEditBudget}
+      />
 
       {/* City Launch Fund (WP-4.1/4.2): the chapter→central skim balance minus
           launch grants paid out, plus the affordance to record/initiate a
@@ -190,7 +177,248 @@ export function CentralView({
   );
 }
 
+// ── Unattributed banner, drilled down (WP-dashboard-drill) ──────────────────
+
+type UnattributedTxnRow =
+  FunctionReturnType<typeof api.dashboardDrill.orgUnattributedTransactions>["rows"][number];
+
+// Org-wide Unattributed: this period's spend across every chapter (+ central
+// itself) with no explicit budget link — every central budget card is BLIND
+// to it (no derive-matching fallback exists — see WP-0.1). Tappable; the
+// detail query only fires once expanded (`"skip"` otherwise).
+function UnattributedSection({
+  cents,
+  year,
+  month,
+  period,
+  onViewChapter,
+}: {
+  cents: number;
+  year: number;
+  month: number;
+  period: DashPeriodMode;
+  onViewChapter: (chapterId: Id<"chapters">, chapterName: string) => void;
+}) {
+  const router = useRouter();
+  const [expanded, setExpanded] = useState(false);
+  const detail = useQuery(
+    api.dashboardDrill.orgUnattributedTransactions,
+    expanded ? { year, month, period } : "skip",
+  );
+  if (cents <= 0) return null;
+  return (
+    <View className="mb-3 rounded-lg border border-warn bg-warn-bg p-4 shadow-card">
+      <Pressable
+        onPress={() => setExpanded((e) => !e)}
+        accessibilityRole="button"
+        className="flex-row items-center gap-3"
+      >
+        <View className="flex-1">
+          <Text className="text-sm font-semibold text-ink">
+            Unattributed: {formatCents(cents)}
+          </Text>
+          <Text className="text-xs text-muted">
+            Org-wide spend this period with no budget attached — chase each
+            chapter's Treasurer to code it in Reconcile.
+          </Text>
+        </View>
+        <Icon
+          name={expanded ? "chevron-up" : "chevron-down"}
+          size={16}
+          color={colors.muted}
+        />
+      </Pressable>
+      {expanded ? (
+        <View className="mt-3 gap-2 border-t border-border pt-3">
+          {detail === undefined ? (
+            <Text className="text-xs text-muted">Loading…</Text>
+          ) : detail.rows.length === 0 ? (
+            <Text className="text-xs text-muted">Nothing unattributed.</Text>
+          ) : (
+            <>
+              {detail.rows.map((row) => (
+                <UnattributedTxnRowView
+                  key={row.id}
+                  row={row}
+                  router={router}
+                  onViewChapter={onViewChapter}
+                />
+              ))}
+              {detail.totalCount > detail.rows.length ? (
+                <Text className="text-2xs text-faint">
+                  Showing {detail.rows.length} of {detail.totalCount}.
+                </Text>
+              ) : null}
+            </>
+          )}
+        </View>
+      ) : null}
+    </View>
+  );
+}
+
+function UnattributedTxnRowView({
+  row,
+  router,
+  onViewChapter,
+}: {
+  row: UnattributedTxnRow;
+  router: Router;
+  onViewChapter: (chapterId: Id<"chapters">, chapterName: string) => void;
+}) {
+  const label = row.description ?? row.merchantName ?? "Unlabeled charge";
+  return (
+    <View className="flex-row items-center justify-between gap-3">
+      <Text className="flex-1 text-xs text-ink" numberOfLines={1}>
+        {row.chapterName} · {row.date} · {label} · {formatCents(row.amountCents)}
+      </Text>
+      {row.chapterId === CENTRAL ? (
+        // Central-owned rows are fully correct today — any central-reach
+        // caller already gets the right central-scoped Reconcile queue, no
+        // peek needed (see `reconcile.tsx`'s new `scope`/`filter` params).
+        <Pressable
+          onPress={() =>
+            router.navigate("/finances/reconcile?scope=central&filter=needs_budget" as never)
+          }
+          hitSlop={8}
+          accessibilityRole="button"
+        >
+          <Text className="text-2xs font-semibold text-accent">Reconcile centrally →</Text>
+        </Pressable>
+      ) : (
+        // Real-chapter rows: PEEK, then navigate straight to Reconcile —
+        // Phase 2 (WP-A/#228 shipped `listReconcile`'s central-gated
+        // `chapterId` arg, mirroring `dashboardChapter`'s own drill-down).
+        // `reconcile.tsx` reads the SAME `useChapterContext()` peek state
+        // this `enterPeek` call sets and threads it into `listReconcile`, so
+        // the screen that mounts after this navigation shows THIS chapter's
+        // queue, not the caller's own home chapter's.
+        <Pressable
+          // Safe cast: this branch only renders when `row.chapterId !== CENTRAL`
+          // above, but that narrowing doesn't persist into this closure (a TS
+          // limitation, not a runtime one).
+          onPress={() => {
+            onViewChapter(row.chapterId as Id<"chapters">, row.chapterName);
+            router.navigate("/finances/reconcile?filter=needs_budget" as never);
+          }}
+          hitSlop={8}
+          accessibilityRole="button"
+        >
+          <Text className="text-2xs font-semibold text-accent">
+            Reconcile in {row.chapterName} →
+          </Text>
+        </Pressable>
+      )}
+    </View>
+  );
+}
+
+// ── Awaiting-approval banner, drilled down (WP-dashboard-drill) ─────────────
+
+type PendingApprovalRow = FunctionReturnType<typeof api.dashboardDrill.pendingBudgetApprovals>[number];
+
+// WP-3.2 FM/ED oversight: a count of budgets awaiting a decision, across
+// every chapter + central. Tappable; the detail query only fires once
+// expanded. A chapter row peeks into that chapter's own dashboard (where the
+// decision is actually made — `dashboardChapter` is peek-aware, no gap here);
+// a central row reuses the existing `onEditBudget` — the same "Edit budget"
+// path `CentralBudgetCard` already opens, which surfaces
+// `BudgetApprovalActions` (Approve / Request changes).
+function PendingApprovalsSection({
+  count,
+  onViewChapter,
+  onEditBudget,
+}: {
+  count: number;
+  onViewChapter: (chapterId: Id<"chapters">, chapterName: string) => void;
+  onEditBudget: (budgetId: string) => void;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const rows = useQuery(api.dashboardDrill.pendingBudgetApprovals, expanded ? {} : "skip");
+  if (count <= 0) return null;
+  return (
+    <View className="mb-3 rounded-lg border border-accent bg-accent-soft p-4 shadow-card">
+      <Pressable
+        onPress={() => setExpanded((e) => !e)}
+        accessibilityRole="button"
+        className="flex-row items-center gap-3"
+      >
+        <View className="flex-1">
+          <Text className="text-sm font-semibold text-ink">
+            {count === 1 ? "1 budget awaiting approval" : `${count} budgets awaiting approval`}
+          </Text>
+          <Text className="text-xs text-muted">
+            Across every chapter + central — chapter budgets are decided on
+            their own chapter's dashboard; central budgets right below.
+          </Text>
+        </View>
+        <Icon
+          name={expanded ? "chevron-up" : "chevron-down"}
+          size={16}
+          color={colors.muted}
+        />
+      </Pressable>
+      {expanded ? (
+        <View className="mt-3 gap-2 border-t border-border pt-3">
+          {rows === undefined ? (
+            <Text className="text-xs text-muted">Loading…</Text>
+          ) : (
+            rows.map((b) => (
+              <PendingApprovalRowView
+                key={b.budgetId}
+                row={b}
+                onViewChapter={onViewChapter}
+                onEditBudget={onEditBudget}
+              />
+            ))
+          )}
+        </View>
+      ) : null}
+    </View>
+  );
+}
+
+function PendingApprovalRowView({
+  row,
+  onViewChapter,
+  onEditBudget,
+}: {
+  row: PendingApprovalRow;
+  onViewChapter: (chapterId: Id<"chapters">, chapterName: string) => void;
+  onEditBudget: (budgetId: string) => void;
+}) {
+  return (
+    <Pressable
+      onPress={() =>
+        row.chapterId === CENTRAL
+          ? onEditBudget(row.budgetId)
+          : onViewChapter(row.chapterId, row.chapterName)
+      }
+      accessibilityRole="button"
+      className="flex-row items-center justify-between gap-3"
+    >
+      <Text className="flex-1 text-xs text-ink" numberOfLines={1}>
+        {row.name} · {row.chapterName}
+      </Text>
+      <Text className="text-xs text-muted" style={{ fontVariant: ["tabular-nums"] }}>
+        {formatCents(row.amountCents)}
+      </Text>
+      <Icon name="chevron-right" size={14} color={colors.muted} />
+    </Pressable>
+  );
+}
+
 type CityLaunchFund = CentralDash["cityLaunchFund"];
+
+// WP-dashboard-drill (owner addendum 2026-07-17): the owner's actual
+// confusion with this card isn't its size (the empty state is already
+// compact) — it's WHAT the fund is. One quiet explainer line, present in
+// BOTH the empty and active card, grounded in the City Launch Playbook model
+// (see docs/plans/finance-v2-split-prd.md §0.1: "~15% skim, chapter → central
+// City Launch Fund, monthly" UP, "one-time launch grant, central → new
+// chapter (equipment + training trip)" DOWN).
+const CITY_LAUNCH_FUND_EXPLAINER =
+  "Collects the ~15% monthly skim from each chapter; pays out as a one-time grant when a new city launches.";
 
 // The City Launch Fund position + the "Record transfer" affordance (skim in /
 // grant out). The balance is all-time (skims received − launch grants made);
@@ -213,9 +441,10 @@ function CityLaunchFundCard({
   if (neverActive) {
     return (
       <View className="mb-3 flex-row items-center justify-between gap-3 rounded-lg border border-border bg-raised px-4 py-3">
-        <Text className="flex-1 text-sm text-muted">
-          No City Launch Fund activity yet.
-        </Text>
+        <View className="flex-1">
+          <Text className="text-sm text-muted">No City Launch Fund activity yet.</Text>
+          <Text className="mt-0.5 text-2xs text-faint">{CITY_LAUNCH_FUND_EXPLAINER}</Text>
+        </View>
         <Button
           title="Record transfer"
           icon="plus"
@@ -235,6 +464,7 @@ function CityLaunchFundCard({
             Skims received {formatCents(fund.skimsReceivedCents)} − grants made{" "}
             {formatCents(fund.launchGrantsMadeCents)}
           </Text>
+          <Text className="mt-0.5 text-2xs text-faint">{CITY_LAUNCH_FUND_EXPLAINER}</Text>
         </View>
         <Button
           title="Record transfer"
@@ -260,11 +490,23 @@ function CityLaunchFundCard({
   );
 }
 
+const CONTRIBUTOR_DIRECTION_LABEL: Record<
+  FunctionReturnType<typeof api.transfers.interScopeBalanceContributors>[number]["direction"],
+  string
+> = {
+  central_owes_chapter: "chapter spend → central budget",
+  chapter_owes_central: "central spend → chapter budget",
+  settlement_central_to_chapter: "settled — central paid",
+  settlement_chapter_to_central: "settled — chapter paid",
+};
+
 // WP-4.5: "Your card determines whose account paid; reconcile determines
 // whose budget it was; Central settles the difference monthly alongside the
 // skim." Only chapters with a NONZERO net render a row — a zero balance is
 // nothing to settle. Positive `netCents` = central owes the chapter; negative
-// = the chapter owes central (displayed with `Math.abs`).
+// = the chapter owes central (displayed with `Math.abs`). Each row expands
+// (WP-dashboard-drill) into the actual transactions/settlement legs behind
+// the number, via `transfers.interScopeBalanceContributors`.
 function InterScopeBalancesSection({
   year,
   month,
@@ -277,33 +519,84 @@ function InterScopeBalancesSection({
   const balances =
     useQuery(api.transfers.interScopeBalances, { year, month }) ?? [];
   const owed = balances.filter((b) => b.netCents !== 0);
+  const [expandedChapterId, setExpandedChapterId] = useState<Id<"chapters"> | null>(null);
   if (owed.length === 0) return null;
   return (
     <View className="mb-3 rounded-lg border border-border bg-raised p-4 shadow-card">
       <Text className="font-display text-base text-ink">Inter-chapter balances</Text>
-      <Text className="mb-3 text-xs text-muted">
-        Settle alongside the monthly skim.
+      <Text className="text-xs text-muted">Settle alongside the monthly skim.</Text>
+      <Text className="mb-3 text-2xs text-faint">
+        Settle opens a confirmation — record a transfer made outside the app, or
+        initiate a real one.
       </Text>
       <View className="gap-2">
-        {owed.map((b) => (
-          <View
-            key={b.chapterId}
-            className="flex-row items-center justify-between gap-3"
-          >
-            <Text className="flex-1 text-sm text-ink" numberOfLines={2}>
-              {b.netCents > 0
-                ? `Central owes ${b.chapterName} ${formatCents(b.netCents)}`
-                : `${b.chapterName} owes central ${formatCents(Math.abs(b.netCents))}`}
-            </Text>
-            <Button
-              title="Settle"
-              size="sm"
-              variant="secondary"
-              onPress={() => onSettle(b.chapterId, b.chapterName, b.netCents)}
-            />
-          </View>
-        ))}
+        {owed.map((b) => {
+          const expanded = expandedChapterId === b.chapterId;
+          return (
+            <View key={b.chapterId}>
+              {/* Toggle (Pressable) and Settle (Button) are SIBLINGS, not
+                  nested — a Button nested inside a Pressable is a
+                  double-touchable trap on RN Web (the DOM click bubbles to
+                  BOTH handlers). */}
+              <View className="flex-row items-center justify-between gap-3">
+                <Pressable
+                  onPress={() => setExpandedChapterId(expanded ? null : b.chapterId)}
+                  accessibilityRole="button"
+                  className="flex-1 flex-row items-center gap-1.5"
+                >
+                  <Icon
+                    name={expanded ? "chevron-down" : "chevron-right"}
+                    size={14}
+                    color={colors.muted}
+                  />
+                  <Text className="flex-1 text-sm text-ink" numberOfLines={2}>
+                    {b.netCents > 0
+                      ? `Central owes ${b.chapterName} ${formatCents(b.netCents)}`
+                      : `${b.chapterName} owes central ${formatCents(Math.abs(b.netCents))}`}
+                  </Text>
+                </Pressable>
+                <Button
+                  title="Settle"
+                  size="sm"
+                  variant="secondary"
+                  onPress={() => onSettle(b.chapterId, b.chapterName, b.netCents)}
+                />
+              </View>
+              {expanded ? (
+                <InterScopeContributorsList chapterId={b.chapterId} />
+              ) : null}
+            </View>
+          );
+        })}
       </View>
+    </View>
+  );
+}
+
+function InterScopeContributorsList({ chapterId }: { chapterId: Id<"chapters"> }) {
+  const contributors = useQuery(api.transfers.interScopeBalanceContributors, { chapterId });
+  return (
+    <View className="ml-5 mt-2 gap-1.5 border-l border-border pl-3">
+      {contributors === undefined ? (
+        <Text className="text-2xs text-muted">Loading…</Text>
+      ) : contributors.length === 0 ? (
+        <Text className="text-2xs text-muted">Nothing contributing yet.</Text>
+      ) : (
+        contributors.map((row) => (
+          <View key={row.id} className="flex-row items-center justify-between gap-3">
+            <Text className="flex-1 text-2xs text-muted" numberOfLines={1}>
+              {row.date} · {row.description ?? row.merchantName ?? "Unlabeled"} ·{" "}
+              {CONTRIBUTOR_DIRECTION_LABEL[row.direction]}
+            </Text>
+            <Text
+              className="text-2xs text-muted"
+              style={{ fontVariant: ["tabular-nums"] }}
+            >
+              {formatCents(row.amountCents)}
+            </Text>
+          </View>
+        ))
+      )}
     </View>
   );
 }
