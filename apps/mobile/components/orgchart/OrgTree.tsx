@@ -1,7 +1,7 @@
 import { ScrollView, Text, View } from "react-native";
 import { colors } from "../../lib/theme";
 import { SeatBox, SEAT_BOX_WIDTH } from "./SeatBox";
-import type { TreeNode } from "./treeUtils";
+import { subtreeDepth, type TreeNode } from "./treeUtils";
 
 /**
  * The tree canvas: root box top-center, its FIRST level of reports laid out
@@ -16,25 +16,75 @@ import type { TreeNode } from "./treeUtils";
  */
 export function OrgTree({
   root,
+  orphans,
   selectedKey,
   onSelect,
 }: {
   root: TreeNode;
+  orphans: TreeNode[];
   selectedKey: string | null;
   onSelect: (node: TreeNode) => void;
 }) {
   return (
-    <ScrollView
-      horizontal
-      showsHorizontalScrollIndicator
-      contentContainerStyle={{ paddingHorizontal: 24, paddingVertical: 24 }}
+    <View>
+      <ScrollView
+        horizontal
+        showsHorizontalScrollIndicator
+        contentContainerStyle={{ paddingHorizontal: 24, paddingVertical: 24 }}
+      >
+        <RootLevel root={root} selectedKey={selectedKey} onSelect={onSelect} />
+      </ScrollView>
+      {orphans.length > 0 ? (
+        <UnplacedStrip orphans={orphans} selectedKey={selectedKey} onSelect={onSelect} />
+      ) : null}
+    </View>
+  );
+}
+
+/** Seats present in the payload but unreachable from the tree root (see
+ *  `treeUtils.findOrphanSeats`) — a partially-applied structure edit can
+ *  transiently produce these. Rendered as a flat, muted strip at the bottom
+ *  of the canvas instead of silently vanishing, so a broken structure edit
+ *  is visible instead of invisible. */
+function UnplacedStrip({
+  orphans,
+  selectedKey,
+  onSelect,
+}: {
+  orphans: TreeNode[];
+  selectedKey: string | null;
+  onSelect: (node: TreeNode) => void;
+}) {
+  return (
+    <View
+      style={{
+        borderTopWidth: 1,
+        borderTopColor: colors.border,
+        paddingHorizontal: 24,
+        paddingVertical: 16,
+      }}
     >
-      <RootLevel root={root} selectedKey={selectedKey} onSelect={onSelect} />
-    </ScrollView>
+      <Text className="mb-2 text-2xs font-bold uppercase tracking-wider text-faint">
+        Unplaced ({orphans.length})
+      </Text>
+      <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8, opacity: 0.6 }}>
+        {orphans.map((node) => (
+          <SeatBox
+            key={node.key}
+            node={node}
+            selected={node.key === selectedKey}
+            onPress={() => onSelect(node)}
+          />
+        ))}
+      </View>
+    </View>
   );
 }
 
 const STEM = 18; // vertical connector segment length (root→bar, bar→box)
+const RAIL_X = 10; // rail x-position within the connector gutter
+const ELBOW_STUB = 14; // horizontal stub length, rail → box
+const GUTTER = RAIL_X + ELBOW_STUB; // indent added per nested VerticalChildren level
 
 /** Root box + its first-level reports, laid out horizontally with the
  *  classic top-down "T" connector: one stem from the root down to a bar, the
@@ -58,29 +108,38 @@ function RootLevel({
         <>
           <View style={{ width: 1, height: STEM, backgroundColor: colors.border }} />
           <View style={{ flexDirection: "row" }}>
-            {firstLevel.map((child, i) => (
-              <View key={child.key} style={{ alignItems: "flex-start" }}>
-                <FirstLevelConnector
-                  isFirst={i === 0}
-                  isLast={i === firstLevel.length - 1}
-                  solo={firstLevel.length === 1}
-                />
-                <SeatBox
-                  node={child}
-                  selected={child.key === selectedKey}
-                  onPress={() => onSelect(child)}
-                />
-                {child.children.length > 0 ? (
-                  <View style={{ marginTop: 8 }}>
-                    <VerticalChildren
-                      nodes={child.children}
-                      selectedKey={selectedKey}
-                      onSelect={onSelect}
-                    />
-                  </View>
-                ) : null}
-              </View>
-            ))}
+            {firstLevel.map((child, i) => {
+              // A column's TRUE rendered width — SEAT_BOX_WIDTH plus one
+              // GUTTER per nested VerticalChildren level below it. Computed
+              // (not measured) so the T-bar can be sized deterministically in
+              // the same pass, and set explicitly on the column so its
+              // rendered width can never drift from what the bar assumes.
+              const width = SEAT_BOX_WIDTH + subtreeDepth(child) * GUTTER;
+              return (
+                <View key={child.key} style={{ alignItems: "flex-start", width }}>
+                  <FirstLevelConnector
+                    isFirst={i === 0}
+                    isLast={i === firstLevel.length - 1}
+                    solo={firstLevel.length === 1}
+                    width={width}
+                  />
+                  <SeatBox
+                    node={child}
+                    selected={child.key === selectedKey}
+                    onPress={() => onSelect(child)}
+                  />
+                  {child.children.length > 0 ? (
+                    <View style={{ marginTop: 8 }}>
+                      <VerticalChildren
+                        nodes={child.children}
+                        selectedKey={selectedKey}
+                        onSelect={onSelect}
+                      />
+                    </View>
+                  ) : null}
+                </View>
+              );
+            })}
           </View>
         </>
       ) : null}
@@ -88,31 +147,41 @@ function RootLevel({
   );
 }
 
-/** The horizontal bar + drop stem above one first-level box. Anchored to a
- *  CONSTANT pixel offset (`SEAT_BOX_WIDTH / 2`, the box's own center) rather
- *  than a percentage — so it stays correct even though sibling columns are
- *  variable-width (a branch's own subtree can be much wider than one box). */
+/** The horizontal bar + drop stem above one first-level box. The drop stem is
+ *  anchored to a CONSTANT pixel offset (`SEAT_BOX_WIDTH / 2`, the box's own
+ *  center — the box is always left-aligned within its column). The BAR,
+ *  though, must reach the column's TRUE right/left edge to meet a
+ *  neighboring column's segment — so `width` is the column's actual
+ *  rendered width (`SEAT_BOX_WIDTH` + one gutter per nested level below it,
+ *  see `RootLevel`), not a hardcoded `SEAT_BOX_WIDTH`. Getting this wrong is
+ *  invisible for `isFirst`/`isLast` columns (their bar only needs to reach
+ *  the box's own center) but leaves a visible gap over any MIDDLE column
+ *  whose subtree is wider than one box (e.g. a chapter's `music_lead` /
+ *  `event_lead`, each one level deep). */
 function FirstLevelConnector({
   isFirst,
   isLast,
   solo,
+  width,
 }: {
   isFirst: boolean;
   isLast: boolean;
   solo: boolean;
+  width: number;
 }) {
   const center = SEAT_BOX_WIDTH / 2;
   // The bar segment this column contributes to the shared horizontal line —
-  // each column only draws from its OWN box-center to whichever edge(s)
-  // touch a sibling, so adjoining columns' segments meet exactly at the
-  // shared boundary regardless of how wide either column ends up being.
+  // each column draws from its OWN box-center to whichever edge(s) touch a
+  // sibling, using the column's TRUE width so adjoining columns' segments
+  // meet exactly at the shared boundary regardless of how wide either column
+  // ends up being.
   const barStyle = isFirst
-    ? { left: center, right: 0 } // leftmost: center → right edge
+    ? { left: center, right: 0 } // leftmost: center → true right edge
     : isLast
       ? { left: 0, width: center } // rightmost: left edge → center
-      : { left: 0, right: 0 }; // middle: spans the full column
+      : { left: 0, right: 0 }; // middle: spans the full (true) column width
   return (
-    <View style={{ height: STEM, width: SEAT_BOX_WIDTH }}>
+    <View style={{ height: STEM, width }}>
       {!solo ? (
         <View
           style={{
@@ -140,9 +209,6 @@ function FirstLevelConnector({
 
 // ── Vertical stack (every level below the first) ────────────────────────────
 
-const RAIL_X = 10; // rail x-position within the connector gutter
-const ELBOW_STUB = 14; // horizontal stub length, rail → box
-const GUTTER = RAIL_X + ELBOW_STUB;
 const ROW_HEAD_H = 60; // connector height — matches one seat box's rendered height
 
 function VerticalChildren({

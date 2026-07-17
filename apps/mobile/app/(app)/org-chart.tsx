@@ -25,8 +25,9 @@ import {
   buildChartTree,
   buildFullTree,
   computeReportsTo,
+  findNodeByKey,
+  type ChartBuild,
   type FullChart,
-  type TreeNode,
 } from "../../components/orgchart/treeUtils";
 
 /** Panel-beside-tree breakpoint — wider than the shell's own 760px desktop
@@ -40,7 +41,11 @@ export default function OrgChartScreen() {
   const wide = width >= WIDE;
 
   const [scopeChoice, setScopeChoice] = useState<ScopeChoice>("central");
-  const [selected, setSelected] = useState<TreeNode | null>(null);
+  // Only the selection KEY lives in state — the actual node is re-resolved
+  // from the live `chart` query on every render (`findNodeByKey` below), so
+  // a holder change elsewhere while the panel is open shows up here too
+  // instead of the panel showing a stale snapshot captured at click time.
+  const [selectedKey, setSelectedKey] = useState<string | null>(null);
 
   // Switching scope pills rebuilds an entirely different tree — a box
   // selected in the old one may not even exist in the new one (and even
@@ -48,21 +53,26 @@ export default function OrgChartScreen() {
   // a bug). Clear the selection on every scope change.
   const handleScopeChange = (next: ScopeChoice) => {
     setScopeChoice(next);
-    setSelected(null);
+    setSelectedKey(null);
   };
+
+  const { root, orphans }: ChartBuild = useMemo(() => {
+    if (!chart) return { root: null, orphans: [] };
+    if (scopeChoice === "central") return buildChartTree(chart.central, "central");
+    if (scopeChoice === "full") return buildFullTree(chart);
+    const chapter = chart.chapters.find((c) => c.chapterId === scopeChoice);
+    return chapter ? buildChartTree(chapter.seats, chapter.chapterId) : { root: null, orphans: [] };
+  }, [chart, scopeChoice]);
+
+  const selected = useMemo(
+    () => findNodeByKey(root, orphans, selectedKey),
+    [root, orphans, selectedKey],
+  );
 
   const detail = useQuery(
     api.seats.seatDetail,
     selected ? { defId: selected.seat.defId, scope: selected.scope } : "skip",
   );
-
-  const root = useMemo(() => {
-    if (!chart) return null;
-    if (scopeChoice === "central") return buildChartTree(chart.central, "central");
-    if (scopeChoice === "full") return buildFullTree(chart);
-    const chapter = chart.chapters.find((c) => c.chapterId === scopeChoice);
-    return chapter ? buildChartTree(chapter.seats, chapter.chapterId) : null;
-  }, [chart, scopeChoice]);
 
   const reportsTo = useMemo(() => {
     if (!chart || !selected) return null;
@@ -95,8 +105,9 @@ export default function OrgChartScreen() {
           <View className="flex-1 overflow-hidden rounded-lg border border-border bg-raised shadow-card">
             <OrgTree
               root={root}
+              orphans={orphans}
               selectedKey={selected?.key ?? null}
-              onSelect={setSelected}
+              onSelect={(node) => setSelectedKey(node.key)}
             />
           </View>
           <View style={{ width: wide ? 340 : "100%" }}>

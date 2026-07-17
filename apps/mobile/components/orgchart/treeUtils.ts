@@ -52,23 +52,83 @@ function childrenOf(seats: SeatNode[], parentSlug: string): SeatNode[] {
     .sort((a, b) => a.sortOrder - b.sortOrder);
 }
 
-function buildSubtree(seats: SeatNode[], seat: SeatNode, scope: NodeScope): TreeNode {
+/** Bounds `buildSubtree`/`graft`'s recursion — mirrors `computeReportsTo`'s
+ *  bounded ancestor walk (`guard < 30`). The shared taxonomy is acyclic
+ *  today, but a future DB-editable chart (structure edits) could introduce a
+ *  cyclic `parentSlug` chain; without a cap that hangs/stack-overflows the
+ *  render pass instead of degrading. */
+const MAX_TREE_DEPTH = 30;
+
+function buildSubtree(seats: SeatNode[], seat: SeatNode, scope: NodeScope, depth = 0): TreeNode {
+  if (depth >= MAX_TREE_DEPTH) {
+    console.warn(
+      `[org-chart] Seat tree exceeded max depth (${MAX_TREE_DEPTH}) below "${seat.slug}" — likely a cyclic parentSlug chain. Truncating.`,
+    );
+    return { key: `${scope}:${seat.defId}`, seat, scope, children: [] };
+  }
   return {
     key: `${scope}:${seat.defId}`,
     seat,
     scope,
-    children: childrenOf(seats, seat.slug).map((c) => buildSubtree(seats, c, scope)),
+    children: childrenOf(seats, seat.slug).map((c) => buildSubtree(seats, c, scope, depth + 1)),
   };
 }
 
-/** Build one chart's tree (central-only, or a single chapter's) from its ROOT
- *  seat — every chart has exactly one (`parentSlug === SEAT_ROOT`). `null`
- *  only if the chart hasn't been seeded (defensive; shouldn't happen once the
- *  template migration has run). */
-export function buildChartTree(seats: SeatNode[], scope: NodeScope): TreeNode | null {
+/**
+ * Seats present in the payload but never reached by `buildSubtree`'s
+ * parent→child walk from the chart's root — a dangling `parentSlug` (points
+ * at a slug that doesn't exist in this chart) OR a whole disconnected/cyclic
+ * sub-graph. Real scenario: a partially-applied structure edit can
+ * transiently leave a seat pointing at a slug that no longer exists.
+ * Cycle-safe (tracks visited slugs instead of counting depth) since a
+ * disconnected cycle should still surface every seat in it as orphaned, not
+ * just the first.
+ */
+export function findOrphanSeats(seats: SeatNode[]): SeatNode[] {
   const root = seats.find((s) => s.parentSlug === SEAT_ROOT);
-  if (!root) return null;
-  return buildSubtree(seats, root, scope);
+  const visited = new Set<string>();
+  if (root) {
+    const stack = [root.slug];
+    while (stack.length > 0) {
+      const slug = stack.pop() as string;
+      if (visited.has(slug)) continue; // cycle guard
+      visited.add(slug);
+      for (const child of childrenOf(seats, slug)) stack.push(child.slug);
+    }
+  }
+  const orphans = seats.filter((s) => !visited.has(s.slug));
+  if (orphans.length > 0) {
+    console.warn(
+      `[org-chart] ${orphans.length} orphaned seat(s) not reachable from the chart root: ${orphans
+        .map((s) => `${s.slug} (parentSlug="${s.parentSlug}")`)
+        .join(", ")}`,
+    );
+  }
+  return orphans;
+}
+
+/** A built chart: the tree rooted at the chart's root seat, plus any
+ *  `findOrphanSeats` couldn't place — rendered by the caller as a flat
+ *  "Unplaced" strip instead of being silently dropped (see `OrgTree`). */
+export type ChartBuild = {
+  root: TreeNode | null;
+  orphans: TreeNode[];
+};
+
+/** Build one chart's tree (central-only, or a single chapter's) from its ROOT
+ *  seat — every chart has exactly one (`parentSlug === SEAT_ROOT`). `root` is
+ *  `null` only if the chart hasn't been seeded (defensive; shouldn't happen
+ *  once the template migration has run). */
+export function buildChartTree(seats: SeatNode[], scope: NodeScope): ChartBuild {
+  const orphans: TreeNode[] = findOrphanSeats(seats).map((seat) => ({
+    key: `${scope}:orphan:${seat.defId}`,
+    seat,
+    scope,
+    children: [],
+  }));
+  const root = seats.find((s) => s.parentSlug === SEAT_ROOT);
+  if (!root) return { root: null, orphans };
+  return { root: buildSubtree(seats, root, scope), orphans };
 }
 
 /**
@@ -77,24 +137,73 @@ export function buildChartTree(seats: SeatNode[], scope: NodeScope): TreeNode | 
  * chapter's `chapter_director` rolls up into server-side
  * (`CHAPTER_ROLLUP_PARENT`, today `expansion_director`). Every chapter is
  * identical in shape (same shared chapter chart), only occupancy differs.
+ * Orphans are pooled across the central chart AND every chapter.
  */
-export function buildFullTree(chart: FullChart): TreeNode | null {
-  const centralTree = buildChartTree(chart.central, "central");
-  if (!centralTree) return null;
+export function buildFullTree(chart: FullChart): ChartBuild {
+  const centralBuild = buildChartTree(chart.central, "central");
+  if (!centralBuild.root) return centralBuild;
 
-  function graft(node: TreeNode): TreeNode {
-    const children = node.children.map(graft);
+  const orphans: TreeNode[] = [...centralBuild.orphans];
+
+  function graft(node: TreeNode, depth = 0): TreeNode {
+    if (depth >= MAX_TREE_DEPTH) {
+      console.warn(
+        `[org-chart] Chapter graft exceeded max depth (${MAX_TREE_DEPTH}) at "${node.seat.slug}" — truncating.`,
+      );
+      return node;
+    }
+    const children = node.children.map((c) => graft(c, depth + 1));
     if (node.seat.slug === CHAPTER_ROLLUP_PARENT) {
       for (const chapter of chart.chapters) {
-        const chapterRoot = buildChartTree(chapter.seats, chapter.chapterId);
-        if (chapterRoot) {
-          children.push({ ...chapterRoot, chapterLabel: chapter.chapterName });
+        const chapterBuild = buildChartTree(chapter.seats, chapter.chapterId);
+        orphans.push(...chapterBuild.orphans);
+        if (chapterBuild.root) {
+          children.push({ ...chapterBuild.root, chapterLabel: chapter.chapterName });
         }
       }
     }
     return { ...node, children };
   }
-  return graft(centralTree);
+  const root = graft(centralBuild.root);
+  return { root, orphans };
+}
+
+/** Depth of the subtree hanging below `node` — 0 if it's a leaf, else
+ *  1 + the deepest child. Used by `OrgTree`'s first-level connector to
+ *  compute a column's true rendered width (`SEAT_BOX_WIDTH` plus one
+ *  indent-gutter per nested level below it) instead of assuming every
+ *  first-level column is the same fixed width. */
+export function subtreeDepth(node: TreeNode): number {
+  if (node.children.length === 0) return 0;
+  return 1 + Math.max(...node.children.map(subtreeDepth));
+}
+
+/**
+ * Live lookup of a `TreeNode` by its `key`, searching the built tree plus any
+ * "Unplaced" orphans. Lets the caller hold only a `key` string in component
+ * state and re-resolve the actual node from the CURRENT `chart` query result
+ * on every render, rather than holding a `TreeNode` snapshot captured at
+ * click time that goes stale if a holder changes while the panel is open.
+ */
+export function findNodeByKey(
+  root: TreeNode | null,
+  orphans: TreeNode[],
+  key: string | null,
+): TreeNode | null {
+  if (!key) return null;
+  function walk(node: TreeNode): TreeNode | null {
+    if (node.key === key) return node;
+    for (const child of node.children) {
+      const found = walk(child);
+      if (found) return found;
+    }
+    return null;
+  }
+  if (root) {
+    const found = walk(root);
+    if (found) return found;
+  }
+  return orphans.find((o) => o.key === key) ?? null;
 }
 
 // ── "Reports to" ─────────────────────────────────────────────────────────────
