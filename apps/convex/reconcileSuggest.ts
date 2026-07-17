@@ -257,19 +257,52 @@ function normalizeMerchantText(text: string | null | undefined): string {
   return (text ?? "").trim().toLowerCase();
 }
 
-function merchantTokens(...texts: (string | null | undefined)[]): Set<string> {
-  const combined = texts.filter(Boolean).join(" ").toLowerCase();
-  const stripped = combined.replace(/[^a-z0-9\s]/g, " ");
-  const tokens = stripped
+/** Shared base tokenizer — lowercase, strip to alnum + space, split on
+ *  whitespace. Deliberately applies NO stopword/length filtering: that's a
+ *  policy decision each CALLER makes on top (merchant-similarity matching
+ *  filters noise words to avoid false-positive fuzzy matches on things like
+ *  "LLC"/"Inc"; label SEARCH must not — a literal word in an event/project
+ *  name, even a common one like "The" or "And", still has to be matchable).
+ *  Using one shared base keeps the two policies from silently drifting apart
+ *  (the bug this fixes: label search used to reuse `merchantTokens`, which
+ *  strips exactly the words a multi-word label match needed). */
+function baseTokens(text: string | null | undefined): string[] {
+  return (text ?? "")
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, " ")
     .split(/\s+/)
-    .filter((t) => t.length > 1 && !MERCHANT_STOPWORDS.has(t));
-  return new Set(tokens);
+    .filter(Boolean);
+}
+
+/** Tier 2's OWN token policy (merchant/description similarity) — noise words
+ *  and 1-char tokens filtered so "SQ *HOME DEPOT INC" fuzzy-matches "Home
+ *  Depot Supply Co" without every merchant string spuriously overlapping on
+ *  "inc"/"co"/"the". */
+function merchantTokens(...texts: (string | null | undefined)[]): Set<string> {
+  const combined = texts.filter(Boolean).join(" ");
+  return new Set(
+    baseTokens(combined).filter((t) => t.length > 1 && !MERCHANT_STOPWORDS.has(t)),
+  );
+}
+
+/** Search's label-token policy — NO stopword/length filtering (see
+ *  `baseTokens`'s doc comment). Used for the ref's own label + its linked
+ *  budget's label, never for merchant similarity. */
+function labelTokens(...texts: (string | null | undefined)[]): Set<string> {
+  const combined = texts.filter(Boolean).join(" ");
+  return new Set(baseTokens(combined));
 }
 
 /** Load a candidate budget's spend, capped + sandbox/excluded-filtered so
  *  tier 1/2 evidence only ever comes from txns actually visible on the
  *  reconcile surface — never a hidden-mode Increase sync row or an
- *  intentionally-excluded charge. */
+ *  intentionally-excluded charge. NEWEST-first (`.order("desc")` — by the
+ *  index's implicit `_creationTime` tiebreak): tier 1/2 evidence should
+ *  reflect RECENT categorization behavior. Without this, a long-lived budget
+ *  with more history than the per-budget cap would have its OLDEST rows win
+ *  the cap (Convex's default index order is ascending), silently burying a
+ *  txn from last week behind hundreds of rows from last year — exactly
+ *  backwards for "is this where we've been spending lately." */
 async function loadBudgetTxns(
   ctx: QueryCtx,
   budgetId: Id<"budgets">,
@@ -278,6 +311,7 @@ async function loadBudgetTxns(
   const rows = await ctx.db
     .query("transactions")
     .withIndex("by_budget", (q) => q.eq("budgetId", budgetId))
+    .order("desc")
     .take(TXN_PER_BUDGET_SCAN_LIMIT);
   const filtered = rows.filter(
     (t) => t.status !== "excluded" && txnMatchesMode(t, sandboxMode),
@@ -431,14 +465,17 @@ function matchBucket(
   const labelNorm = normalizeSearchText(candidate.label);
   if (labelNorm.startsWith(normalizedQuery)) return 0;
 
-  const labelTokens = merchantTokens(candidate.label, candidate.budget?.label);
-  labelTokens.add(candidate.refKind); // type keyword: "event" / "project" / "recurring"
+  // Label search uses `labelTokens` (NO stopword/length filtering) — NOT
+  // `merchantTokens`, which would silently drop a legitimate word like "The"
+  // or "And" from a multi-word event/project name (see `baseTokens`'s doc).
+  const candidateLabelTokens = labelTokens(candidate.label, candidate.budget?.label);
+  candidateLabelTokens.add(candidate.refKind); // type keyword: "event" / "project" / "recurring"
   const dTokens = dateSearchTokens(candidate.tier3Ts, candidate.budget);
 
-  const coveredByLabel = queryTokens.every((t) => labelTokens.has(t));
+  const coveredByLabel = queryTokens.every((t) => candidateLabelTokens.has(t));
   if (coveredByLabel) return 1;
 
-  const coveredByEither = queryTokens.every((t) => labelTokens.has(t) || dTokens.has(t));
+  const coveredByEither = queryTokens.every((t) => candidateLabelTokens.has(t) || dTokens.has(t));
   const anyDateHit = queryTokens.some((t) => dTokens.has(t));
   if (coveredByEither && anyDateHit) return 2;
 
@@ -558,10 +595,15 @@ export const rankForPicker = query({
       }),
     );
 
-    const search = args.search?.trim() ?? "";
-    if (search.length > 0) {
-      const normalizedQuery = normalizeSearchText(search);
-      const queryTokens = tokenizeSearch(search);
+    const searchRaw = args.search?.trim() ?? "";
+    const queryTokens = searchRaw.length > 0 ? tokenizeSearch(searchRaw) : [];
+    // A query with no matchable alnum content (e.g. "!!!") tokenizes to ZERO
+    // tokens. Gating on `queryTokens.length` (not `searchRaw.length`) matters:
+    // `matchBucket`'s `queryTokens.every(...)` is vacuously TRUE for an empty
+    // array, which would otherwise match every candidate — the opposite of
+    // "no matchable search text". Treat it as no search at all.
+    if (queryTokens.length > 0) {
+      const normalizedQuery = normalizeSearchText(searchRaw);
       const matched = scored
         .map((row) => {
           const candidate = candidates.find(

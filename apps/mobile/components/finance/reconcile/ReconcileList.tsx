@@ -24,7 +24,7 @@
  * had no Reconcile entry point before this; the member's own "My transactions"
  * flag flow is untouched.
  */
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { View, Text, Pressable, Platform, ScrollView, TextInput } from "react-native";
 import { useMutation, useQuery } from "convex/react";
 import { api } from "@events-os/convex/_generated/api";
@@ -44,7 +44,11 @@ import { colors } from "../../../lib/theme";
 import { alertError } from "../../../lib/errors";
 import { TransactionNoteModal } from "../modals/TransactionNoteModal";
 import { STATUS_OPTIONS, signedMoney, shortDate, type TxnRow } from "./helpers";
-import { resolveForPickerValue, buildRankedForPickerItems } from "./forPicker";
+import {
+  resolveForPickerValue,
+  buildRankedForPickerItems,
+  type RankForPickerResult,
+} from "./forPicker";
 
 const NUM = { fontVariant: ["tabular-nums" as const] };
 // Server-side search debounce (owner addendum) — a round trip per keystroke
@@ -545,9 +549,24 @@ function ForPickerCell({
     api.reconcileSuggest.rankForPicker,
     visible ? { transactionId, search: debouncedSearch.trim() || undefined } : "skip",
   );
-  const items = ranked ? buildRankedForPickerItems(ranked) : baseItems;
+  // Keep the LAST resolved ranked payload rendered while a new args-tuple
+  // (a debounce settle changing `search`) is in flight — `useQuery` returns
+  // `undefined` for the whole round trip of a genuinely new subscription, so
+  // without this every keystroke settle would flash the popover from the
+  // current (possibly search-filtered) results all the way back to the
+  // unranked `baseItems` fallback and then back again once the new result
+  // lands. Reset on close so a FRESH open never shows a stale previous
+  // search's results before its own default-view query resolves.
+  const lastRankedRef = useRef<RankForPickerResult | undefined>(undefined);
+  useEffect(() => {
+    if (!visible) lastRankedRef.current = undefined;
+  }, [visible]);
+  if (ranked !== undefined) lastRankedRef.current = ranked;
+  const effectiveRanked = ranked ?? lastRankedRef.current;
+
+  const items = effectiveRanked ? buildRankedForPickerItems(effectiveRanked) : baseItems;
   const current = baseItems.find((i) => !i.header && i.value === value);
-  const noMatches = ranked?.searching === true && items.length === 0;
+  const noMatches = effectiveRanked?.searching === true && items.length === 0;
 
   function handleClose() {
     close();
@@ -627,6 +646,11 @@ function ForPickerCell({
             )
           )}
         </View>
+        {effectiveRanked?.truncated ? (
+          <Text className="border-t border-border/60 px-3 py-1.5 text-2xs text-faint">
+            Ranked from recent history
+          </Text>
+        ) : null}
       </Popover>
     </>
   );

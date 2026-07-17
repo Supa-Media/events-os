@@ -481,19 +481,29 @@ describe("reconcileSuggest.rankForPicker: single appearance", () => {
 // ── Bounded reads ─────────────────────────────────────────────────────────
 
 describe("reconcileSuggest.rankForPicker: bounded reads", () => {
-  test("a budget with more than the per-budget txn scan cap still resolves tier 1 and reports truncated", async () => {
+  test("evidence is taken NEWEST-first — a nearby transaction inserted LAST among 350 old ones still wins the 300-row cap and ranks tier 1", async () => {
+    // This is the ordering-sensitive case: with Convex's default ASCENDING
+    // index order, `.take(300)` over 351 rows would take the 350 OLD
+    // (oldest-inserted) rows and silently drop the one nearby, recently-
+    // inserted transaction — burying real, current evidence behind ancient
+    // history. `loadBudgetTxns` must `.order("desc")` so the cap keeps the
+    // NEWEST-inserted rows instead.
     const t = newT();
     const s = await setupChapter(t);
     await asChapterViewer(s);
     const eventId = await seedEvent(s, { name: "Busy Budget Event" });
     const budgetId = await seedOneTimeBudget(s, s.chapterId, "event", eventId);
-    // 301 transactions on one budget — over the 300-row per-budget scan cap.
-    for (let i = 0; i < 301; i++) {
+    // 350 OLD transactions, far outside the ±10-day tier-1 window, inserted
+    // FIRST (oldest by `_creationTime`).
+    for (let i = 0; i < 350; i++) {
       await seedTxn(s, s.chapterId, {
         budgetId,
-        postedAt: NOW - 5 * DAY_MS - i * 60_000,
+        postedAt: NOW - 400 * DAY_MS - i * 60_000,
       });
     }
+    // The NEWEST-inserted transaction (highest `_creationTime`, seeded last)
+    // IS within the ±10-day tier-1 window.
+    await seedTxn(s, s.chapterId, { budgetId, postedAt: NOW - 3 * DAY_MS });
     const txnId = await seedSubjectTxn(s, s.chapterId);
 
     const result = await s.as.query(api.reconcileSuggest.rankForPicker, {
@@ -586,5 +596,57 @@ describe("reconcileSuggest.rankForPicker: search", () => {
     });
     const ids = result.rows.map((r) => r.refId);
     expect(ids.indexOf(prefixEventId as string)).toBeLessThan(ids.indexOf(tokenEventId as string));
+  });
+
+  test("a query with no matchable characters (e.g. '!!!') is treated as an EMPTY search — the default tiered view, never match-everything", async () => {
+    // Regression: `matchBucket`'s `queryTokens.every(...)` is vacuously TRUE
+    // for an empty token array, so a query that tokenizes to nothing (all
+    // punctuation) used to match every candidate instead of none.
+    const t = newT();
+    const s = await setupChapter(t);
+    await asChapterViewer(s);
+    const eventId = await seedEvent(s, { name: "Sunday Gathering", eventDate: NOW + 5 * DAY_MS });
+    const txnId = await seedSubjectTxn(s, s.chapterId);
+
+    const withPunctuation = await s.as.query(api.reconcileSuggest.rankForPicker, {
+      transactionId: txnId,
+      search: "!!!",
+    });
+    const withoutSearch = await s.as.query(api.reconcileSuggest.rankForPicker, {
+      transactionId: txnId,
+    });
+    expect(withPunctuation.searching).toBe(false);
+    expect(withPunctuation.rows).toEqual(withoutSearch.rows);
+    // Sanity: the event really is a live candidate — a vacuous "everything
+    // matches" bug and a genuinely-empty candidate set look identical unless
+    // we confirm there's something in the default view to (not) filter.
+    expect(withoutSearch.rows.some((r) => r.refId === (eventId as string))).toBe(true);
+  });
+
+  test("a multi-word label match is not broken by the merchant-similarity stopword list (e.g. 'And')", async () => {
+    // Regression: label search used to reuse `merchantTokens` (tier 2's
+    // fuzzy-merchant-matching tokenizer), which strips common words like
+    // "and" as noise. A query built from non-contiguous label tokens that
+    // happen to include a stopword must still match via whole-token coverage
+    // — not fall through to nothing just because "and" was silently dropped
+    // from the candidate's own token set.
+    const t = newT();
+    const s = await setupChapter(t);
+    await asChapterViewer(s);
+    const eventId = await seedEvent(s, {
+      name: "Youth And Young Adults Retreat",
+      eventDate: NOW + 500 * DAY_MS,
+    });
+    await seedEvent(s, { name: "Choir Concert", eventDate: NOW + 500 * DAY_MS });
+    const txnId = await seedSubjectTxn(s, s.chapterId);
+
+    // "and retreat" is NOT a contiguous substring of the label (word order
+    // differs), so this can only match via whole-token-set coverage —
+    // exercising exactly the path the stopword-filtering bug broke.
+    const result = await s.as.query(api.reconcileSuggest.rankForPicker, {
+      transactionId: txnId,
+      search: "and retreat",
+    });
+    expect(result.rows.map((r) => r.refId)).toEqual([eventId as string]);
   });
 });
