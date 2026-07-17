@@ -61,8 +61,10 @@ import {
   effectiveBudgetApprovalStatus,
   financeRoleAtLeast,
   MODULE_DEFAULT_CATEGORY_NAMES,
+  MODULE_LABELS,
   VENDOR_DEFAULT_CATEGORY_NAME,
   type BudgetRefKind,
+  type ModuleKey,
 } from "@events-os/shared";
 import { getChapterIdOrNull } from "./lib/context";
 import { requireFinanceRole, getFinanceRole, type FinanceAccess } from "./lib/finance";
@@ -389,6 +391,13 @@ async function collectEventPlannedRows(
       .withIndex("by_event", (q) => q.eq("eventId", eventId))
       .take(GRID_SCAN_LIMIT),
   ]);
+  // `eventModules` only carries CUSTOM per-event module rows (core modules
+  // live as deltas on the `events` doc itself — `coreModuleOverrides` /
+  // `disabledCoreModules`, resolved via `eventActiveModules`, not this
+  // table). So a CORE module key (`planning_doc`, `comms`, …) is never in
+  // this map — fall back to the platform's own `MODULE_LABELS` (the same
+  // human labels `CORE_MODULES` / the module tabs use) before ever showing
+  // the raw key.
   const moduleLabel = new Map<string, string>(eventModuleRows.map((m) => [m.key, m.label]));
   const currencyColumnsByModule = new Map<string, { key: string; label: string }[]>();
   for (const col of eventColumnRows) {
@@ -411,7 +420,8 @@ async function collectEventPlannedRows(
   for (const item of items) {
     const currencyCols = currencyColumnsByModule.get(item.module);
     if (!currencyCols || currencyCols.length === 0) continue;
-    const typeLabel = moduleLabel.get(item.module) ?? item.module;
+    const typeLabel =
+      moduleLabel.get(item.module) ?? MODULE_LABELS[item.module as ModuleKey] ?? item.module;
     const multiCol = currencyCols.length > 1;
     for (const col of currencyCols) {
       const cents = dollarsToCents(item.fields?.[col.key]);

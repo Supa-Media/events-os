@@ -1116,6 +1116,59 @@ describe("moneyViews.eventCostGrid", () => {
     expect(result.rows).toHaveLength(0);
   });
 
+  // ── PR #234 adversarial-review follow-up: CORE modules have no
+  //    `eventModules` row in real production (`instantiateEvent` only clones
+  //    one per CUSTOM `templateModules` row — core state lives as deltas on
+  //    the event doc, see `lib/templates.ts`). Every fixture above always
+  //    calls `seedEventModule` even for core keys, which papered over the
+  //    real-world gap: `typeLabel` fell through to the raw module key
+  //    ("planning_doc") whenever a core module's `eventModules` row was
+  //    (correctly, per production) absent. ───────────────────────────────────
+
+  test("a CORE module's typeLabel falls back to its real CORE_MODULES label (not the raw key) when the event has NO eventModules row for it — the actual production shape for an unmodified template", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await asChapterManager(s);
+    const eventId = await seedEvent(s, s.chapterId);
+    // Deliberately NO `seedEventModule` call — mirrors a real event: core
+    // modules never get an `eventModules` row, only their `eventColumns`.
+    await seedEventColumn(s, eventId, "comms", "cost", { label: "Cost" });
+    await seedEventItem(s, eventId, "comms", { title: "Robocall", cost: 60 });
+
+    const result = await s.as.query(api.moneyViews.eventCostGrid, { eventId });
+    expect(result.rows).toHaveLength(1);
+    expect(result.rows[0]).toMatchObject({
+      sourceKind: "event_item",
+      module: "comms",
+      typeLabel: "Comms Schedule", // CORE_MODULES' real label, not "comms"
+      categoryName: "Comms Schedule", // no chapter category seeded, so falls back to typeLabel same as every other case here
+      label: "Robocall",
+      plannedCents: 6000,
+    });
+  });
+
+  test("a CUSTOM module still uses its own eventModules label, unaffected by the CORE_MODULES fallback", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await asChapterManager(s);
+    const eventId = await seedEvent(s, s.chapterId);
+    // "vip_ops" is not a CORE_MODULES key, so MODULE_LABELS has no entry for
+    // it — its display label can ONLY come from its own eventModules row.
+    await seedEventModule(s, eventId, "vip_ops", { label: "VIP Operations" });
+    await seedEventColumn(s, eventId, "vip_ops", "cost", { label: "Cost" });
+    await seedEventItem(s, eventId, "vip_ops", { title: "Green room catering", cost: 120 });
+
+    const result = await s.as.query(api.moneyViews.eventCostGrid, { eventId });
+    expect(result.rows).toHaveLength(1);
+    expect(result.rows[0]).toMatchObject({
+      sourceKind: "event_item",
+      module: "vip_ops",
+      typeLabel: "VIP Operations",
+      label: "Green room catering",
+      plannedCents: 12000,
+    });
+  });
+
   // ── Opus review follow-ups (PR #216): double-counting — linked merges,
   //    unlinked duplicates flagged ──────────────────────────────────────────
 
