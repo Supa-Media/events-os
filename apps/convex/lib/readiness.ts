@@ -163,9 +163,20 @@ export async function phaseReadinessBundle(
   let ownerDone = 0;
   for (const m of resolved) {
     if (!m.ownerRoleKey) continue;
-    ownerTotal += 1;
+    // Only a measurable pre-plan unit when the event actually HAS a role by
+    // that key to assign — an active module's `ownerRoleKey` is a platform-
+    // wide default (see CORE_MODULES), not a guarantee the event carries a
+    // matching `eventRoles` row. A blank event clones ZERO roles from its
+    // (contentless) template, so every core module's default owner key is
+    // unmatched — counting those as "1 unmeetable unit" each would forever
+    // read a fresh, roleless event's pre-plan as "0%, not ready" (a real,
+    // never-satisfiable debt) instead of "—" (nothing to measure yet: there's
+    // no role to assign until one exists). Once the event actually has a role
+    // at that key, the check becomes real again (measurable, and completable).
     const role: any = roleByKey.get(m.ownerRoleKey);
-    if (role && assignedRoleIds.has(String(role._id))) ownerDone += 1;
+    if (!role) continue;
+    ownerTotal += 1;
+    if (assignedRoleIds.has(String(role._id))) ownerDone += 1;
   }
 
   const prePlanExtra = {

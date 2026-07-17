@@ -15,12 +15,13 @@
  */
 import { query, mutation, QueryCtx } from "./_generated/server";
 import { Doc, Id } from "./_generated/dataModel";
-import { ConvexError, v } from "convex/values";
+import { v } from "convex/values";
 import { DEFAULT_ROLES, GRID_CORE_MODULE_KEYS } from "@events-os/shared";
 import {
   requireUserId,
   requireChapterId,
   requireEventType,
+  requireManagedEventType,
   getChapterIdOrNull,
 } from "./lib/context";
 import {
@@ -31,25 +32,11 @@ import {
   deepCopyTemplate,
 } from "./lib/templates";
 
-/**
- * Throw unless the template is user-managed. Platform templates (the Academy
- * training template) are seeded and owned by the platform — users can't edit
- * or archive them, and events are only spun up from them by the Academy.
- */
-function requireUserManaged(eventType: Doc<"eventTypes">): void {
-  if (eventType.isPlatform === true) {
-    throw new ConvexError({
-      code: "PLATFORM_TEMPLATE",
-      message: "This template is managed by the platform and can't be changed.",
-    });
-  }
-  if (eventType.isBlank === true) {
-    throw new ConvexError({
-      code: "BLANK_TEMPLATE",
-      message: "The Blank event template is managed automatically and can't be changed.",
-    });
-  }
-}
+// Throw unless the template is user-managed (neither a platform template nor
+// the chapter's synthesized Blank-event template) — `assertTemplateManaged`
+// in lib/context.ts, shared by every template-content mutation across
+// roles.ts/columns.ts/items.ts/modules.ts/templatePeople.ts, not just this
+// file's own `update`/`archive`.
 
 /** A template's roles ({ _id, label }), ordered. */
 async function templateRoles(ctx: QueryCtx, eventTypeId: Id<"eventTypes">) {
@@ -239,8 +226,7 @@ export const update = mutation({
     description: v.optional(v.string()),
   },
   handler: async (ctx, { eventTypeId, ...patch }) => {
-    const et = await requireEventType(ctx, eventTypeId);
-    requireUserManaged(et);
+    const et = await requireManagedEventType(ctx, eventTypeId);
     const fields: Record<string, unknown> = {};
     if (patch.name !== undefined) {
       fields.name = patch.name;
@@ -312,7 +298,7 @@ export const duplicate = mutation({
 export const archive = mutation({
   args: { eventTypeId: v.id("eventTypes") },
   handler: async (ctx, { eventTypeId }) => {
-    requireUserManaged(await requireEventType(ctx, eventTypeId));
+    await requireManagedEventType(ctx, eventTypeId);
     await ctx.db.patch(eventTypeId, { isArchived: true, updatedAt: Date.now() });
     return eventTypeId;
   },
