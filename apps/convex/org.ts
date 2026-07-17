@@ -73,6 +73,15 @@ const NAV_RETURNS = v.object({
   tierReasons: v.array(v.string()),
   /** The chapter's display name — the shell shows who you're operating as. */
   chapterName: v.union(v.string(), v.null()),
+  /**
+   * Whether the Finances tab should show in the nav. True for the `admin`/
+   * `lead` tiers (the transition grandfather — nobody loses the tab while
+   * seats roll out, an explicit owner decision) OR when the caller holds ANY
+   * seat (any scope — central or a chapter) whose `capabilities` include
+   * `"nav.finances"`. This is nav VISIBILITY only, not access control: the
+   * in-screen finance guards (already seat-aware) stay the real gate.
+   */
+  showFinances: v.boolean(),
 });
 
 /**
@@ -95,6 +104,50 @@ async function selfSeatIds(
   return rows
     .filter((r) => r.scope === "central" || r.scope === chapterId)
     .map((r) => r.seatDefId);
+}
+
+/** Bound on how many seat assignments a single person can hold, mirroring
+ *  `selfSeatIds`/`lib/seats.ts`'s same-purpose limits — generous for a real
+ *  person's small handful of seats. */
+const PERSON_SEAT_ASSIGNMENT_LIMIT = 200;
+
+/**
+ * True iff `personId` holds ANY seat assignment — at ANY scope, central or
+ * every chapter, unlike `selfSeatIds`'s chapter-scoped resolution — whose
+ * seat def carries the `"nav.finances"` capability. This is a pure nav-
+ * visibility check (see `showFinances`'s doc on `NAV_RETURNS`); it does not
+ * gate money access anywhere.
+ *
+ * PERSON-KEYED, not user-keyed like `lib/finance.ts#isCentralEdOrFm` — this
+ * only ever gets called with `nav`'s own `self` (the caller's HOME-chapter
+ * `people` row from `viewerPerson`), not every `people` row the caller's
+ * `userId` owns. `isCentralEdOrFm` deliberately walks every row for the
+ * user (mirroring `financeRoles.mySeats`) specifically so a seat on a
+ * non-home row still counts; this helper inherits `nav`'s existing
+ * home-chapter-only scoping instead of introducing a different one for just
+ * this field. Practically: a genuinely multi-chapter user whose
+ * `nav.finances` seat hangs off a `people` row OTHER than their home-chapter
+ * one won't see it here and falls back to the tier grandfather (still true
+ * for admin/lead). This is the same latent gap `lib/context.ts`'s
+ * `requireChapterId` doc tracks as `TODO(latent, #143)` — every
+ * `viewerPerson`-derived read in `nav`/`lib/org.ts`/`lib/finance.ts`
+ * (`tier`, `canManage`, `teamView`, `getFinanceRole`) already only acts on
+ * the home-chapter row, so this isn't a new restriction, just one more read
+ * that inherits it. Not a bug to fix here — see that TODO for the real fix.
+ */
+async function hasFinancesNavSeat(
+  ctx: QueryCtx,
+  personId: Id<"people">,
+): Promise<boolean> {
+  const assignments = await ctx.db
+    .query("seatAssignments")
+    .withIndex("by_person", (q) => q.eq("personId", personId))
+    .take(PERSON_SEAT_ASSIGNMENT_LIMIT);
+  for (const assignment of assignments) {
+    const def = await ctx.db.get(assignment.seatDefId);
+    if (def?.capabilities.includes("nav.finances")) return true;
+  }
+  return false;
 }
 
 /**
@@ -179,6 +232,7 @@ export const nav = query({
         tier: "member" as const,
         tierReasons: ["You're not in a chapter yet"],
         chapterName: null,
+        showFinances: false,
       };
     }
     const chapter = await ctx.db.get(chapterId as Id<"chapters">);
@@ -212,6 +266,13 @@ export const nav = query({
       canManage,
       self,
     );
+    // Finances tab visibility: tier admin/lead (transition grandfather — see
+    // `showFinances`'s doc) OR a held `nav.finances` seat. Placeholder rows
+    // never reach here as `self` — `viewerPerson` already excludes them.
+    const showFinances =
+      tier === "admin" ||
+      tier === "lead" ||
+      (self != null && (await hasFinancesNavSeat(ctx, self._id)));
     return {
       isAdmin,
       canManage,
@@ -220,6 +281,7 @@ export const nav = query({
       tier,
       tierReasons,
       chapterName: chapter?.name ?? null,
+      showFinances,
     };
   },
 });

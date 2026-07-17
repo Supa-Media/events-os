@@ -7,6 +7,7 @@
 import { describe, expect, test } from "vitest";
 import { api } from "../_generated/api";
 import type { Id } from "../_generated/dataModel";
+import type { SeatCapability } from "@events-os/shared";
 import {
   newT,
   run,
@@ -173,7 +174,12 @@ async function addDuty(
  *  seat defs are a global table, not chapter-scoped). */
 async function addSeat(
   s: ChapterSetup,
-  opts: { slug: string; title: string; chart: "central" | "chapter" },
+  opts: {
+    slug: string;
+    title: string;
+    chart: "central" | "chapter";
+    capabilities?: SeatCapability[];
+  },
 ) {
   return await run(s.t, (ctx) =>
     ctx.db.insert("seatDefs", {
@@ -183,7 +189,7 @@ async function addSeat(
       parentSlug: "root",
       maxHolders: 1,
       duties: [],
-      capabilities: [],
+      capabilities: opts.capabilities ?? [],
       sortOrder: 0,
       createdAt: Date.now(),
       updatedAt: Date.now(),
@@ -330,6 +336,118 @@ describe("org.nav tier derivation", () => {
     const nav = await as.query(api.org.nav, {});
     expect(nav.tier).toBe("member");
     expect(nav.tierReasons[0]).toContain("Default");
+  });
+});
+
+describe("org.nav showFinances", () => {
+  test("treasurer-seat member (no tier) → true", async () => {
+    const s = await setupChapter(newT());
+    const person = await addPerson(s, "Treasurer", { isTeamMember: true });
+    const seatId = await addSeat(s, {
+      slug: "treasurer",
+      title: "Treasurer",
+      chart: "chapter",
+      capabilities: ["nav.finances"],
+    });
+    await addSeatAssignment(s, seatId, s.chapterId, person);
+    const { as } = await addUser(s, "treasurer@publicworship.life", {
+      personId: person,
+    });
+    const nav = await as.query(api.org.nav, {});
+    // Holding the seat is enough on its own — the caller is a plain "member"
+    // tier (isTeamMember, no reports, no owned duty), not admin/lead.
+    expect(nav.tier).toBe("member");
+    expect(nav.showFinances).toBe(true);
+  });
+
+  test("a central-scope nav.finances seat also grants it (any scope)", async () => {
+    const s = await setupChapter(newT());
+    const person = await addPerson(s, "Finance Manager", {
+      isTeamMember: true,
+    });
+    const seatId = await addSeat(s, {
+      slug: "financial_manager",
+      title: "Financial Manager",
+      chart: "central",
+      capabilities: ["nav.finances"],
+    });
+    await addSeatAssignment(s, seatId, "central", person);
+    const { as } = await addUser(s, "fm@publicworship.life", {
+      personId: person,
+    });
+    const nav = await as.query(api.org.nav, {});
+    expect(nav.showFinances).toBe(true);
+  });
+
+  test("seatless member → false", async () => {
+    const s = await setupChapter(newT());
+    const person = await addPerson(s, "Plain Member", { isTeamMember: true });
+    const { as } = await addUser(s, "plain@publicworship.life", {
+      personId: person,
+    });
+    const nav = await as.query(api.org.nav, {});
+    expect(nav.tier).toBe("member");
+    expect(nav.showFinances).toBe(false);
+  });
+
+  test("a seat with unrelated capabilities does not grant it", async () => {
+    const s = await setupChapter(newT());
+    const person = await addPerson(s, "Bookkeeper", { isTeamMember: true });
+    const seatId = await addSeat(s, {
+      slug: "bookkeeper_seat",
+      title: "Bookkeeper",
+      chart: "chapter",
+      capabilities: ["finance.record"],
+    });
+    await addSeatAssignment(s, seatId, s.chapterId, person);
+    const { as } = await addUser(s, "bookkeeper@publicworship.life", {
+      personId: person,
+    });
+    const nav = await as.query(api.org.nav, {});
+    expect(nav.showFinances).toBe(false);
+  });
+
+  test("admin with no seat → true (grandfather)", async () => {
+    const s = await setupChapter(newT());
+    const nav = await s.as.query(api.org.nav, {});
+    expect(nav.tier).toBe("admin");
+    expect(nav.showFinances).toBe(true);
+  });
+
+  test("lead (manages reports) with no seat → true (grandfather)", async () => {
+    const s = await setupChapter(newT());
+    const boss = await addPerson(s, "Boss", { isTeamMember: true });
+    await addPerson(s, "Report", { isTeamMember: true, managerId: boss });
+    const { as } = await addUser(s, "boss2@publicworship.life", {
+      personId: boss,
+    });
+    const nav = await as.query(api.org.nav, {});
+    expect(nav.tier).toBe("lead");
+    expect(nav.showFinances).toBe(true);
+  });
+
+  test("placeholder person holding the seat is skipped — false", async () => {
+    const s = await setupChapter(newT());
+    // A placeholder roster row (event-scoped stand-in) is never treated as
+    // `self` — `viewerPerson` filters `isPlaceholder === true` — so even if a
+    // seat assignment somehow points at one, the caller sees no `self` to
+    // check seats against.
+    const person = await addPerson(s, "Placeholder Treasurer", {
+      isTeamMember: true,
+    });
+    await run(s.t, (ctx) => ctx.db.patch(person, { isPlaceholder: true }));
+    const seatId = await addSeat(s, {
+      slug: "treasurer2",
+      title: "Treasurer",
+      chart: "chapter",
+      capabilities: ["nav.finances"],
+    });
+    await addSeatAssignment(s, seatId, s.chapterId, person);
+    const { as } = await addUser(s, "phantom@publicworship.life", {
+      personId: person,
+    });
+    const nav = await as.query(api.org.nav, {});
+    expect(nav.showFinances).toBe(false);
   });
 });
 

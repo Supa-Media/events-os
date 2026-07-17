@@ -29,9 +29,10 @@ const NAV: NavEntry[] = [
   // Inventory — the chapter gear registry (logistics-lead domain). Gated
   // admin-or-lead in useNav, right after Songs.
   { label: "Inventory", icon: "package", path: "/inventory" },
-  // Finances — the native money layer. Gated admin-or-lead for now (kept behind
-  // the nav-tier gate while the feature is under construction); the in-screen
-  // guards enforce the real `financeRoles` capability.
+  // Finances — the native money layer. Gated by `org.nav.showFinances`: tier
+  // admin/lead (transition grandfather) OR a held `nav.finances` seat. The
+  // in-screen guards enforce the real `financeRoles`/seat capability — this
+  // is nav visibility only.
   { label: "Finances", icon: "dollar-sign", path: "/finances" },
   // The Academy is for everyone — never permission-gated (see useNav).
   { label: "Academy", icon: "award", path: "/academy" },
@@ -45,7 +46,9 @@ const NAV: NavEntry[] = [
  * `org.nav.tier` (admin | lead | member | volunteer). The server states the
  * policy once; this and every scoped screen's own guard just render it:
  *   Events   everyone except volunteer      Briefing  volunteer only
- *   People / Inventory / Finances  admin or lead    Work  everyone except volunteer
+ *   People / Inventory  admin or lead        Work  everyone except volunteer
+ *   Finances  server-computed `showFinances` (admin/lead OR a `nav.finances`
+ *             seat — see `org.nav`'s doc; NOT re-derived from tier here)
  *   Songs / Academy / Org Chart     everyone
  * Nav hiding is NOT access control — each screen keeps its in-screen guard.
  */
@@ -60,8 +63,9 @@ function useNav(): NavEntry[] {
         return tier === "volunteer";
       case "/people":
       case "/inventory":
-      case "/finances":
         return tier === "admin" || tier === "lead";
+      case "/finances":
+        return org?.showFinances === true;
       case "/team":
         // Work: everyone except volunteer — but keep the teamView nuance so a
         // caller with no roster row isn't shown an empty Work tab.
