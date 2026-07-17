@@ -1,17 +1,22 @@
 /**
- * MoneyView (WP-3.3) — "what's this thing costing?" ONE money surface per
- * event/project (`moneyViews.refMoney` assembles the same shape for either
- * `refKind`): budget header (approval-aware cap + approval chip), an inline
- * "Edit plan" affordance onto the SAME `budgetLines` planner Finances uses
- * (`BudgetLineItemsEditor` — no second line-item editor), planned-vs-actual
- * by category, the unplanned-spend bucket, a money-IN summary (tickets +
- * donations), and a recent linked-transactions list. Every OTHER write still
- * happens in Finances (the budget's amount/approval) or Reconcile
- * (attributing a transaction to a budget) — only the plan itself is editable
- * here, retiring the old per-event Budget v1 tab onto this one surface.
+ * MoneyView (WP-3.3, evolved by PR4) — "what's this thing costing?" ONE money
+ * surface per event/project (`moneyViews.refMoney` assembles the same shape
+ * for either `refKind`): budget header (approval-aware cap + approval chip),
+ * planned-vs-actual by category, the unplanned-spend bucket, a money-IN
+ * summary (tickets + donations), and a recent linked-transactions list.
+ *
+ * PR4 ("the plan IS the database"): the plan is no longer edited through a
+ * separate "Edit plan" modal onto `BudgetLineItemsEditor` — for an EVENT ref,
+ * `PlanGrid` (below) IS the plan, an always-visible inline database with its
+ * own [+ Add] row. A PROJECT ref has no `PlanGrid` (no `eventItems`/
+ * `engagements` to unify — schema-level), so it still plans in Finances
+ * (`BudgetLineItemsEditor`, reached via "View in Finances" / the empty
+ * state's "Plan it in Finances" link) — unchanged for that ref kind. Every
+ * OTHER write still happens in Finances (the budget's amount/approval) or
+ * Reconcile (attributing a transaction to a budget).
  */
 import { useState } from "react";
-import { Modal, Pressable, ScrollView, Text, View } from "react-native";
+import { Modal, Pressable, Text, View } from "react-native";
 import { useRouter } from "expo-router";
 import { useMutation, useQuery } from "convex/react";
 import type { FunctionReturnType } from "convex/server";
@@ -21,8 +26,7 @@ import { formatCents } from "@events-os/shared";
 import { Badge, Button, Card, EmptyState, Icon, SectionHeader, Select } from "../ui";
 import { Money, BudgetBar, txnStatusTone } from "../finance/dashboard/parts";
 import { BudgetApprovalChip } from "../finance/dashboard/BudgetApprovalActions";
-import { BudgetLineItemsEditor } from "../finance/modals/BudgetLineItemsEditor";
-import { EventCostGrid } from "./EventCostGrid";
+import { PlanGrid } from "./PlanGrid";
 import { TransactionNoteModal } from "../finance/modals/TransactionNoteModal";
 import { ReceiptCell } from "../finance/reconcile/ReconcileList";
 import { colors } from "../../lib/theme";
@@ -50,7 +54,6 @@ export function MoneyView({
   // cards already have, or a draft born here has no way to ever become
   // attributable without leaving this screen.
   const submitForReview = useMutation(api.finances.submitBudgetForApproval);
-  const [editingPlanId, setEditingPlanId] = useState<Id<"budgets"> | null>(null);
   const [editingTxn, setEditingTxn] = useState<TxnRowData | null>(null);
   const [summoning, setSummoning] = useState(false);
   const [sending, setSending] = useState(false);
@@ -73,8 +76,10 @@ export function MoneyView({
   async function handleAddBudget() {
     setSummoning(true);
     try {
-      const budgetId = await summonBudget({ refKind, scopeRefId: refId });
-      setEditingPlanId(budgetId);
+      // No modal to open afterward (PR4 retired `EditPlanModal`) — summoning
+      // makes `budget` non-null on the next query tick, which alone swaps
+      // this view over to the normal header + `PlanGrid` render below.
+      await summonBudget({ refKind, scopeRefId: refId });
     } catch (err) {
       alertError(err);
     } finally {
@@ -128,9 +133,12 @@ export function MoneyView({
             ) : undefined
           }
         />
-        {refKind === "event" ? <EventCostGrid eventId={refId as Id<"events">} /> : null}
-        {editingPlanId ? (
-          <EditPlanModal budgetId={editingPlanId} onClose={() => setEditingPlanId(null)} />
+        {refKind === "event" ? (
+          <PlanGrid
+            source={{ kind: "event", eventId: refId as Id<"events"> }}
+            budgetId={null}
+            capCents={null}
+          />
         ) : null}
       </>
     );
@@ -182,15 +190,6 @@ export function MoneyView({
                 loading={sending}
                 onPress={() => void handleSendForReview(budget.id)}
               />
-            ) : null}
-            {budget.canEditPlan ? (
-              <Pressable
-                onPress={() => setEditingPlanId(budget.id)}
-                className="flex-row items-center gap-1 active:opacity-70"
-              >
-                <Text className="text-sm font-medium text-accent">Edit plan</Text>
-                <Icon name="edit-2" size={13} color={colors.accent} />
-              </Pressable>
             ) : null}
             <Pressable
               onPress={openFinances}
@@ -246,32 +245,36 @@ export function MoneyView({
         </Card>
       ) : null}
 
-      {/* ── Cost inventory: every cost-bearing item on the event, not just
-            the finance plan below (phase 2, "one money surface"). ────────── */}
-      {refKind === "event" ? <EventCostGrid eventId={refId as Id<"events">} /> : null}
+      {/* ── Plan: THE plan, an always-visible inline database (PR4) — every
+            cost-bearing row on the event, not just the category breakdown
+            below. ──────────────────────────────────────────────────────── */}
+      {refKind === "event" ? (
+        <PlanGrid
+          source={{ kind: "event", eventId: refId as Id<"events"> }}
+          budgetId={budget.id}
+          capCents={totalPlannedCents}
+        />
+      ) : null}
 
-      {/* ── Plan: planned-vs-actual by category ──────────────────────────── */}
+      {/* ── Planned vs actual by category (derived from the plan above) ──── */}
       {lineCount === 0 ? (
         <View className="mt-4">
           <EmptyState
             icon="list"
             title="No plan yet"
-            message="Break this budget down by category (people, location, gear…) so this view can show planned vs. actual."
+            message={
+              refKind === "event"
+                ? "Add a cost above and it'll show up here, broken down by category."
+                : "Break this budget down by category (people, location, gear…) so this view can show planned vs. actual."
+            }
             action={
-              budget.canEditPlan ? (
-                <Pressable
-                  onPress={() => setEditingPlanId(budget.id)}
-                  className="active:opacity-70"
-                >
-                  <Text className="text-sm font-semibold text-accent">Plan it →</Text>
-                </Pressable>
-              ) : (
+              refKind === "project" ? (
                 <Pressable onPress={openFinances} className="active:opacity-70">
                   <Text className="text-sm font-semibold text-accent">
                     Plan it in Finances →
                   </Text>
                 </Pressable>
-              )
+              ) : undefined
             }
           />
         </View>
@@ -353,57 +356,10 @@ export function MoneyView({
         </Text>
       ) : null}
 
-      {editingPlanId ? (
-        <EditPlanModal budgetId={editingPlanId} onClose={() => setEditingPlanId(null)} />
-      ) : null}
       {editingTxn ? (
         <TxnEditModal tr={editingTxn} onClose={() => setEditingTxn(null)} />
       ) : null}
     </View>
-  );
-}
-
-/**
- * "Edit plan" — the ONE line-item editor, reused as-is from Finances
- * (`BudgetLineItemsEditor`, WP-3.1). Mirrors `BudgetCreateModal`'s own
- * overlay/sheet chrome so the affordance feels native to the rest of Money,
- * not a bolted-on Finances screen. Deliberately does NOT reopen the full
- * `BudgetCreateModal` (amount/type/cadence/tags) — this is the retired Budget
- * v1's replacement, so it only ever plans line items; the budget's own
- * amount/level/tags still live in Finances.
- */
-function EditPlanModal({
-  budgetId,
-  onClose,
-}: {
-  budgetId: Id<"budgets">;
-  onClose: () => void;
-}) {
-  return (
-    <Modal visible transparent animationType="fade" onRequestClose={onClose}>
-      <Pressable
-        onPress={onClose}
-        className="flex-1 items-center justify-center bg-ink/30 p-6"
-      >
-        <Pressable
-          onPress={() => {}}
-          className="w-full max-w-lg overflow-hidden rounded-xl border border-border bg-raised shadow-pop"
-        >
-          <View className="flex-row items-center justify-between border-b border-border px-5 py-4">
-            <Text className="font-display text-lg text-ink">Edit plan</Text>
-            <Pressable onPress={onClose} hitSlop={8} className="rounded-md p-1">
-              <Icon name="x" size={18} color={colors.muted} />
-            </Pressable>
-          </View>
-          <ScrollView className="max-h-[560px] px-5 py-4">
-            <BudgetLineItemsEditor budgetId={budgetId} />
-          </ScrollView>
-          <View className="flex-row justify-end border-t border-border px-5 py-4">
-            <Button title="Done" onPress={onClose} />
-          </View>
-        </Pressable>
-      </Pressable>
-    </Modal>
   );
 }
 
