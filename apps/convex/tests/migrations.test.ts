@@ -304,6 +304,7 @@ const REGISTRY_NAMES = [
   "0020_permits_states_and_fallback",
   "0021_inventory_category_to_tags",
   "0022_seed_seat_defs",
+  "0023_seed_seat_assignments",
 ];
 const SEEDED_HISTORICAL = [
   "backfillMissingDefaultColumns",

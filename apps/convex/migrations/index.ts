@@ -35,6 +35,7 @@ import { backfillRunOfShowDuration } from "./0019_backfill_run_of_show_duration"
 import { permitsStatesAndFallback } from "./0020_permits_states_and_fallback";
 import { inventoryCategoryToTags } from "./0021_inventory_category_to_tags";
 import { seedSeatDefs } from "./0022_seed_seat_defs";
+import { seedSeatAssignments } from "./0023_seed_seat_assignments";
 
 /** One registered migration: a stable `name` (the ledger key) + its effect. */
 export type Migration = {
@@ -69,4 +70,6 @@ export const MIGRATIONS: Migration[] = [
   inventoryCategoryToTags,
   // Org chart v1 — seed seatDefs from the shared SEAT_DEFS template.
   seedSeatDefs,
+  // Org chart v1 — seed seatAssignments from legacy specializedRoles.
+  seedSeatAssignments,
 ];
