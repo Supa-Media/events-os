@@ -85,6 +85,7 @@ import type * as migrations_0020_permits_states_and_fallback from "../migrations
 import type * as migrations_0021_inventory_category_to_tags from "../migrations/0021_inventory_category_to_tags.js";
 import type * as migrations_index from "../migrations/index.js";
 import type * as modules from "../modules.js";
+import type * as moneyViews from "../moneyViews.js";
 import type * as org from "../org.js";
 import type * as people from "../people.js";
 import type * as places from "../places.js";
@@ -219,6 +220,7 @@ declare const fullApi: ApiFromModules<{
   "migrations/0021_inventory_category_to_tags": typeof migrations_0021_inventory_category_to_tags;
   "migrations/index": typeof migrations_index;
   modules: typeof modules;
+  moneyViews: typeof moneyViews;
   org: typeof org;
   people: typeof people;
   places: typeof places;

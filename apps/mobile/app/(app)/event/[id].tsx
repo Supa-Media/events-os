@@ -31,6 +31,7 @@ import { ModuleSection } from "../../../components/event/ModuleSection";
 import TicketingTab from "../../../components/event/ticketing/TicketingTab";
 import BudgetTab from "../../../components/event/budget/BudgetTab";
 import GearTab from "../../../components/event/gear/GearTab";
+import { MoneyView } from "../../../components/money/MoneyView";
 import { colors, modulePhase } from "../../../lib/theme";
 import { usePhasePulse } from "../../../lib/usePhasePulse";
 import {
@@ -285,7 +286,7 @@ export default function EventDetailScreen() {
   // matches nothing). Any other unknown/stale key falls back to the first area
   // tab.
   const activeTab =
-    tab === "tickets" || tab === "budget" || tab === "gear"
+    tab === "tickets" || tab === "budget" || tab === "gear" || tab === "money"
       ? tab
       : tabs.some((t) => t.key === tab)
         ? (tab as string)
@@ -590,6 +591,9 @@ export default function EventDetailScreen() {
               budgetActive={activeTab === "budget"}
               onGear={() => router.setParams({ tab: "gear" })}
               gearActive={activeTab === "gear"}
+              onMoney={() => router.setParams({ tab: "money" })}
+              moneyActive={activeTab === "money"}
+              isTraining={event.isTraining === true}
               onSongs={() => router.push(`/event/${eventId}/songs`)}
               meView={meView}
               onToggleMeView={() => setMeView((v) => !v)}
@@ -665,6 +669,25 @@ export default function EventDetailScreen() {
               </Text>
             </Pressable>
             <GearTab eventId={eventId} />
+          </Narrow>
+        ) : activeTab === "money" ? (
+
+          /* ── Money: what's this event costing? Planned vs actual by
+                category, assembled from the v2 budget + its planned lines +
+                linked transactions. An operational tool opened from the
+                tools row, so it gets the same "Back to planning" affordance.
+                Training events never open this (isTraining hides the tool). */
+          <Narrow>
+            <Pressable
+              onPress={() => router.setParams({ tab: fallbackTab })}
+              className="mb-2 flex-row items-center gap-1.5 self-start active:opacity-70"
+            >
+              <Icon name="arrow-left" size={15} color={colors.muted} />
+              <Text className="text-sm font-medium text-muted">
+                Back to planning
+              </Text>
+            </Pressable>
+            <MoneyView refKind="event" refId={eventId} />
           </Narrow>
         ) : activeTab === "crew" ? (
           /* ── Crew & Duties: WHO is on each team (engagements) plus, below,

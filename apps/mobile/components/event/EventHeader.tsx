@@ -1016,6 +1016,9 @@ export function EventTools({
   budgetActive,
   onGear,
   gearActive,
+  onMoney,
+  moneyActive,
+  isTraining,
   onSongs,
   meView,
   onToggleMeView,
@@ -1032,6 +1035,12 @@ export function EventTools({
   onGear: () => void;
   /** True while the Gear surface is showing — flags ⋯ and its menu row. */
   gearActive: boolean;
+  onMoney: () => void;
+  /** True while the Money surface is showing — flags ⋯ and its menu row. */
+  moneyActive: boolean;
+  /** Training events have no finance rows (the #172 invariant) — hides the
+   *  Money tool entirely rather than opening it onto a permanently-empty view. */
+  isTraining: boolean;
   onSongs: () => void;
   meView: boolean;
   onToggleMeView: () => void;
@@ -1112,10 +1121,12 @@ export function EventTools({
               ? "More tools (Budget open)"
               : gearActive
                 ? "More tools (Gear open)"
-                : "More tools"
+                : moneyActive
+                  ? "More tools (Money open)"
+                  : "More tools"
         }
         className={`rounded-md border px-2.5 py-2 active:opacity-80 web:hover:bg-sunken ${
-          ticketsActive || budgetActive || gearActive
+          ticketsActive || budgetActive || gearActive || moneyActive
             ? "border-accent bg-accent-soft"
             : "border-border-strong bg-raised"
         }`}
@@ -1124,7 +1135,7 @@ export function EventTools({
           name="more-horizontal"
           size={15}
           color={
-            ticketsActive || budgetActive || gearActive
+            ticketsActive || budgetActive || gearActive || moneyActive
               ? colors.accent
               : colors.ink
           }
@@ -1149,6 +1160,17 @@ export function EventTools({
             onBudget();
           }}
         />
+        {isTraining ? null : (
+          <ToolsMenuRow
+            icon="pie-chart"
+            label="Money"
+            active={moneyActive}
+            onPress={() => {
+              closeMenu();
+              onMoney();
+            }}
+          />
+        )}
         <ToolsMenuRow
           icon="package"
           label="Gear"
