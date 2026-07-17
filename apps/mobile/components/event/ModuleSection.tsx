@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { View, Text, Pressable } from "react-native";
+import { View, Text, Pressable, useWindowDimensions } from "react-native";
 import { useRouter } from "expo-router";
 import { useMutation } from "convex/react";
 import { api } from "@events-os/convex/_generated/api";
@@ -18,6 +18,9 @@ import { SiteMapSubsection } from "./SiteMapSubsection";
 import { type ModuleOwnerInfo } from "./EventModuleRollup";
 import { GuideLink } from "./GuideLink";
 
+/** Below this width the module header stacks its controls onto their own row. */
+const STACK_HEADER_WIDTH = 640;
+
 /**
  * One active module's section on the event screen. Renders the owner bar + a
  * "Mark ready / Ready ✓" toggle in the header, then the module's grid (or, for
@@ -35,6 +38,7 @@ export function ModuleSection({
   ready,
   onAssignOwner,
   filterItemIds,
+  hideTitle = false,
 }: {
   eventId: string;
   module: ResolvedModule;
@@ -45,9 +49,13 @@ export function ModuleSection({
   onAssignOwner: () => void;
   /** Me view: only show these item ids (for modules the user doesn't own). */
   filterItemIds?: Set<string> | null;
+  /** Suppress the section title (the mobile drill-in back bar already names it),
+   *  and use the stacked, non-overlapping header layout. */
+  hideTitle?: boolean;
 }) {
   const router = useRouter();
   const setReady = useMutation(api.modules.setReady);
+  const { width } = useWindowDimensions();
 
   // Day-offset modules (Comms, Planning Doc) can be read as a table or a calendar.
   // Comms opens on the calendar; the rest keep the table as home.
@@ -56,47 +64,94 @@ export function ModuleSection({
     defaultCalendarView(module.key),
   );
 
+  // On a phone the title, the owner pill, the table/calendar toggle and the
+  // ready pill can't share one row without overlapping — below this width (or
+  // whenever the drill-in back bar already owns the title) we stack the header:
+  // title + ready on top, the owner pill on its own line, and the table/calendar
+  // toggle as a full-width segmented control underneath.
+  const stackControls = width < STACK_HEADER_WIDTH || hideTitle;
+  const secondaryControls =
+    hasCalendar || module.key === "supplies" ? (
+      <View
+        className={`flex-row items-center gap-2 ${stackControls ? "flex-1" : ""}`}
+      >
+        {hasCalendar ? (
+          <ViewToggle
+            value={view}
+            onChange={setView}
+            expand={stackControls}
+            options={[
+              { key: "table", icon: "list", label: "Table" },
+              { key: "calendar", icon: "calendar", label: "Calendar" },
+            ]}
+          />
+        ) : null}
+        {module.key === "supplies" ? (
+          <Button
+            title="Packing mode"
+            icon="package"
+            size="sm"
+            variant="secondary"
+            onPress={() => router.push(`/event/${eventId}/packing`)}
+          />
+        ) : null}
+      </View>
+    ) : null;
+
+  const readyToggle = (
+    <ReadyToggle
+      ready={ready}
+      onToggle={() =>
+        setReady({ eventId: eventId as any, key: module.key, ready: !ready })
+      }
+    />
+  );
+
+  const ownerAccessory = (
+    <View className="flex-row items-center gap-1">
+      <OwnerPill owner={owner} onPress={onAssignOwner} />
+      {/* Quiet "How this works" link to this area's guide. */}
+      <GuideLink moduleKey={module.key} />
+    </View>
+  );
+
   return (
     <View>
-      <SectionHeader
-        title={module.label}
-        titleAccessory={
-          <View className="flex-row items-center gap-1">
-            <OwnerPill owner={owner} onPress={onAssignOwner} />
-            {/* Quiet "How this works" link to this area's guide. */}
-            <GuideLink moduleKey={module.key} />
-          </View>
-        }
-        right={
-          <View className="flex-row items-center gap-2">
-            {hasCalendar ? (
-              <ViewToggle
-                value={view}
-                onChange={setView}
-                options={[
-                  { key: "table", icon: "list", label: "Table" },
-                  { key: "calendar", icon: "calendar", label: "Calendar" },
-                ]}
-              />
-            ) : null}
-            {module.key === "supplies" ? (
-              <Button
-                title="Packing mode"
-                icon="package"
-                size="sm"
-                variant="secondary"
-                onPress={() => router.push(`/event/${eventId}/packing`)}
-              />
-            ) : null}
-            <ReadyToggle
-              ready={ready}
-              onToggle={() =>
-                setReady({ eventId: eventId as any, key: module.key, ready: !ready })
-              }
-            />
-          </View>
-        }
-      />
+      {stackControls ? (
+        // Narrow / drilled-in: stack the header so the owner pill and the ready
+        // toggle never collide. The title is dropped when the back bar already
+        // shows it (hideTitle); otherwise it shares the top row with Ready.
+        <View className="mb-3 mt-6 gap-2.5">
+          {hideTitle ? (
+            <View className="flex-row items-center justify-between gap-3">
+              {ownerAccessory}
+              {readyToggle}
+            </View>
+          ) : (
+            <>
+              <View className="flex-row items-center justify-between gap-3">
+                <Text className="text-xs font-bold uppercase tracking-wider text-muted">
+                  {module.label}
+                </Text>
+                {readyToggle}
+              </View>
+              <View className="flex-row">{ownerAccessory}</View>
+            </>
+          )}
+          {secondaryControls}
+        </View>
+      ) : (
+        <SectionHeader
+          title={module.label}
+          titleAccessory={ownerAccessory}
+          right={
+            <View className="flex-row items-center gap-2">
+              {secondaryControls}
+              {readyToggle}
+            </View>
+          }
+        />
+      )}
 
       {hasCalendar && view === "calendar" ? (
         <ModuleCalendar
@@ -173,27 +228,37 @@ function OwnerPill({
   );
 }
 
-/** Small segmented control for switching a module's surface (table ↔ calendar). */
+/**
+ * Small segmented control for switching a module's surface (table ↔ calendar).
+ * `expand` stretches it to fill its row (each option splitting the width evenly)
+ * — used on phones where it lives on its own line as a full-width control.
+ */
 function ViewToggle<T extends string>({
   value,
   onChange,
   options,
+  expand,
 }: {
   value: T;
   onChange: (next: T) => void;
   options: Array<{ key: T; icon: IconName; label: string }>;
+  expand?: boolean;
 }) {
   return (
-    <View className="flex-row rounded-pill border border-border bg-raised p-0.5">
+    <View
+      className={`flex-row rounded-pill border border-border bg-raised p-0.5 ${
+        expand ? "flex-1" : ""
+      }`}
+    >
       {options.map((opt) => {
         const active = opt.key === value;
         return (
           <Pressable
             key={opt.key}
             onPress={() => onChange(opt.key)}
-            className={`flex-row items-center gap-1.5 rounded-pill px-3 py-1 ${
-              active ? "bg-accent-soft" : ""
-            } active:opacity-80`}
+            className={`flex-row items-center justify-center gap-1.5 rounded-pill px-3 py-1 ${
+              expand ? "flex-1" : ""
+            } ${active ? "bg-accent-soft" : ""} active:opacity-80`}
           >
             <Icon
               name={opt.icon}

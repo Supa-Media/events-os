@@ -16,7 +16,6 @@ import {
   offsetDaysBetween,
   commsTimingLabel,
   groupByDay,
-  soonestUpcoming,
 } from "@events-os/shared";
 import { formatDate } from "../../../lib/format";
 import {
@@ -111,17 +110,15 @@ export function useModuleCalendar({
     };
   }, [items, eventDate]);
 
-  // Open on the soonest upcoming item (or the event's month), and select it.
-  const seed = useMemo(() => {
-    const next = soonestUpcoming(scheduled, (x) => x.due, Date.now());
-    return next?.due ?? eventDate;
-  }, [scheduled, eventDate]);
-
+  // Open on the current month with today selected — the same place the "Today"
+  // reset lands. (It used to open on the soonest upcoming send and fall back to
+  // the event's month, which stranded you months away from now whenever nothing
+  // was scheduled ahead of today.)
   const [view, setView] = useState(() => {
-    const d = new Date(seed);
+    const d = new Date();
     return { year: d.getFullYear(), month: d.getMonth() };
   });
-  const [selected, setSelected] = useState(() => startOfDay(seed));
+  const [selected, setSelected] = useState(() => startOfDay(Date.now()));
   const [composing, setComposing] = useState(false);
 
   const step = (delta: number) => {
