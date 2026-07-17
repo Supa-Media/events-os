@@ -2,6 +2,8 @@ import { ActivityIndicator, Text, View } from "react-native";
 import { SEAT_ROOT } from "@events-os/shared";
 import { Avatar, Badge, Card, EmptyState, SectionHeader } from "../ui";
 import { colors } from "../../lib/theme";
+import { SeatActionsPanel } from "./SeatActions";
+import { RenameSeatControl, StructureEditActions } from "./StructureEditor";
 import {
   avatarNameFor,
   capabilityLabel,
@@ -16,17 +18,42 @@ import {
  * column). Shows scope + holder-count, the seat title, who holds it, its
  * duties, its powers (capabilities translated to plain language), and who it
  * reports to (computed client-side in `treeUtils.computeReportsTo`).
+ *
+ * Adds two OPTIONAL interactive layers on top of that same read-only view:
+ *  - `SeatActionsPanel` (propose a change / assign directly) for any
+ *    non-derived seat.
+ *  - `StructureEditActions` + an inline rename control, shown only when
+ *    `editMode` is true (the screen only sets it true for an eligible
+ *    editor — see `org-chart.tsx`).
+ * A caller that omits `isSuperuser`/`editMode`/`chartSeatOptions` gets back
+ * EXACTLY the shipped read-only panel — no behavior change for anyone who
+ * doesn't pass them.
  */
 export function SeatDetailPanel({
   selected,
   scopeName,
   detail,
   reportsTo,
+  isSuperuser = false,
+  editMode = false,
+  chartSeatOptions = [],
+  onSeatRemoved,
 }: {
   selected: TreeNode | null;
   scopeName: string;
   detail: SeatDetail | null | undefined;
   reportsTo: ReportsTo;
+  /** Enables the "Assign directly" action for a superuser caller. */
+  isSuperuser?: boolean;
+  /** True only when the caller passed the `org.editChart` gate — see
+   *  `org-chart.tsx`'s `canEditStructure`. */
+  editMode?: boolean;
+  /** Every OTHER seat in the SAME chart as the selected seat — reparent
+   *  candidates for `StructureEditActions`' "Move" picker. */
+  chartSeatOptions?: { slug: string; title: string }[];
+  /** Called after a successful `removeSeat` so the screen can clear the
+   *  now-nonexistent selection. */
+  onSeatRemoved?: () => void;
 }) {
   if (!selected) {
     return (
@@ -64,11 +91,39 @@ export function SeatDetailPanel({
       <Text className="text-2xs font-bold uppercase tracking-wider text-muted">
         {scopeName} · {holderCountLabel}
       </Text>
-      <Text className="mt-1 font-display text-2xl text-ink">{detail.title}</Text>
+      <View className="mt-1 flex-row items-center gap-2">
+        <Text className="font-display text-2xl text-ink">{detail.title}</Text>
+        {editMode ? <RenameSeatControl slug={detail.slug} title={detail.title} /> : null}
+      </View>
       {detail.derived ? (
         <Text className="mt-1 text-xs italic text-faint">
           Mirrors each chapter — computed, never assigned directly.
         </Text>
+      ) : null}
+
+      {!detail.derived ? (
+        <SeatActionsPanel
+          seatDefId={detail.defId}
+          scope={selected.scope}
+          seatTitle={detail.title}
+          maxHolders={detail.maxHolders}
+          holders={detail.holders}
+          isSuperuser={isSuperuser}
+        />
+      ) : null}
+
+      {editMode && !detail.derived ? (
+        <StructureEditActions
+          slug={detail.slug}
+          seatTitle={detail.title}
+          chart={detail.chart}
+          maxHolders={detail.maxHolders}
+          duties={detail.duties}
+          capabilities={detail.capabilities}
+          parentSlug={selected.seat.parentSlug}
+          siblingSeats={chartSeatOptions}
+          onRemoved={() => onSeatRemoved?.()}
+        />
       ) : null}
 
       <SectionHeader title="Held by" />

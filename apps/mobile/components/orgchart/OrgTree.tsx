@@ -19,11 +19,14 @@ export function OrgTree({
   orphans,
   selectedKey,
   onSelect,
+  onAddSeat,
 }: {
   root: TreeNode;
   orphans: TreeNode[];
   selectedKey: string | null;
   onSelect: (node: TreeNode) => void;
+  /** Present only in structure-edit mode — see `SeatBox`'s "+" affix. */
+  onAddSeat?: (node: TreeNode) => void;
 }) {
   return (
     <View>
@@ -32,10 +35,15 @@ export function OrgTree({
         showsHorizontalScrollIndicator
         contentContainerStyle={{ paddingHorizontal: 24, paddingVertical: 24 }}
       >
-        <RootLevel root={root} selectedKey={selectedKey} onSelect={onSelect} />
+        <RootLevel root={root} selectedKey={selectedKey} onSelect={onSelect} onAddSeat={onAddSeat} />
       </ScrollView>
       {orphans.length > 0 ? (
-        <UnplacedStrip orphans={orphans} selectedKey={selectedKey} onSelect={onSelect} />
+        <UnplacedStrip
+          orphans={orphans}
+          selectedKey={selectedKey}
+          onSelect={onSelect}
+          onAddSeat={onAddSeat}
+        />
       ) : null}
     </View>
   );
@@ -50,10 +58,12 @@ function UnplacedStrip({
   orphans,
   selectedKey,
   onSelect,
+  onAddSeat,
 }: {
   orphans: TreeNode[];
   selectedKey: string | null;
   onSelect: (node: TreeNode) => void;
+  onAddSeat?: (node: TreeNode) => void;
 }) {
   return (
     <View
@@ -74,6 +84,7 @@ function UnplacedStrip({
             node={node}
             selected={node.key === selectedKey}
             onPress={() => onSelect(node)}
+            onAddSeat={onAddSeat}
           />
         ))}
       </View>
@@ -94,15 +105,22 @@ function RootLevel({
   root,
   selectedKey,
   onSelect,
+  onAddSeat,
 }: {
   root: TreeNode;
   selectedKey: string | null;
   onSelect: (node: TreeNode) => void;
+  onAddSeat?: (node: TreeNode) => void;
 }) {
   const firstLevel = root.children;
   return (
     <View style={{ alignItems: "center" }}>
-      <SeatBox node={root} selected={root.key === selectedKey} onPress={() => onSelect(root)} />
+      <SeatBox
+        node={root}
+        selected={root.key === selectedKey}
+        onPress={() => onSelect(root)}
+        onAddSeat={onAddSeat}
+      />
 
       {firstLevel.length > 0 ? (
         <>
@@ -127,6 +145,7 @@ function RootLevel({
                     node={child}
                     selected={child.key === selectedKey}
                     onPress={() => onSelect(child)}
+                    onAddSeat={onAddSeat}
                   />
                   {child.children.length > 0 ? (
                     <View style={{ marginTop: 8 }}>
@@ -134,6 +153,7 @@ function RootLevel({
                         nodes={child.children}
                         selectedKey={selectedKey}
                         onSelect={onSelect}
+                        onAddSeat={onAddSeat}
                       />
                     </View>
                   ) : null}
@@ -215,10 +235,12 @@ function VerticalChildren({
   nodes,
   selectedKey,
   onSelect,
+  onAddSeat,
 }: {
   nodes: TreeNode[];
   selectedKey: string | null;
   onSelect: (node: TreeNode) => void;
+  onAddSeat?: (node: TreeNode) => void;
 }) {
   return (
     <View>
@@ -229,6 +251,7 @@ function VerticalChildren({
           isLast={i === nodes.length - 1}
           selectedKey={selectedKey}
           onSelect={onSelect}
+          onAddSeat={onAddSeat}
         />
       ))}
     </View>
@@ -246,11 +269,13 @@ function VerticalRow({
   isLast,
   selectedKey,
   onSelect,
+  onAddSeat,
 }: {
   node: TreeNode;
   isLast: boolean;
   selectedKey: string | null;
   onSelect: (node: TreeNode) => void;
+  onAddSeat?: (node: TreeNode) => void;
 }) {
   return (
     <View style={{ flexDirection: "row" }}>
@@ -278,10 +303,20 @@ function VerticalRow({
       </View>
       <View style={{ paddingBottom: 8 }}>
         {node.chapterLabel ? <ChapterLabel name={node.chapterLabel} /> : null}
-        <SeatBox node={node} selected={node.key === selectedKey} onPress={() => onSelect(node)} />
+        <SeatBox
+          node={node}
+          selected={node.key === selectedKey}
+          onPress={() => onSelect(node)}
+          onAddSeat={onAddSeat}
+        />
         {node.children.length > 0 ? (
           <View style={{ marginTop: 4 }}>
-            <VerticalChildren nodes={node.children} selectedKey={selectedKey} onSelect={onSelect} />
+            <VerticalChildren
+              nodes={node.children}
+              selectedKey={selectedKey}
+              onSelect={onSelect}
+              onAddSeat={onAddSeat}
+            />
           </View>
         ) : null}
       </View>
