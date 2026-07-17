@@ -25,7 +25,11 @@
  * resolve the caller's roster row through). Unlike `events.ts`'s peek
  * queries, there's no separate `chapterId` arg here — the ref itself names
  * its own chapter, so "foreign" is detected by comparing it to the caller's
- * home chapter directly.
+ * home chapter directly. A foreign ref WITHOUT central reach returns the same
+ * quiet empty shape as a nonexistent ref — matching `events.get`'s uniform
+ * not-found pattern — rather than throwing FORBIDDEN, which would let an
+ * authenticated prober learn cross-chapter record existence just by
+ * comparing throw-vs-empty across refIds.
  *
  * Training events NEVER get a budget row (the #172 invariant enforced by
  * every budget-creation path) — a training ref simply reads back a null
@@ -39,7 +43,7 @@ import { ConvexError, v } from "convex/values";
 import { Doc, Id } from "./_generated/dataModel";
 import { BUDGET_REF_KINDS, countsAsSpend, type BudgetRefKind } from "@events-os/shared";
 import { getChapterIdOrNull } from "./lib/context";
-import { requireFinanceRole, requireFinanceCentral } from "./lib/finance";
+import { requireFinanceRole, getFinanceRole } from "./lib/finance";
 
 // A generous bound on budgets-per-ref / lines-per-budget / txns-per-budget —
 // human-authored plans and a single event/project's spend, never a synced
@@ -51,10 +55,14 @@ const refKindValidator = v.union(...BUDGET_REF_KINDS.map((k) => v.literal(k)));
 /**
  * Resolve + authorize a single event/project ref for a Money read. Returns
  * `null` when the ref doesn't exist (quiet 404, matching `events.get`'s /
- * `projects.get`'s "not found" shape rather than throwing on a stale link).
- * Throws `ConvexError` for a genuine authz failure (foreign chapter, no
- * finance role, no home chapter) — the Money view is behind a finance role
- * like every other finance read, so a denial should surface, not go quiet.
+ * `projects.get`'s "not found" shape) — AND when it exists in a foreign
+ * chapter the caller can't see (no central reach). The two cases are
+ * deliberately indistinguishable to the caller: an authenticated prober must
+ * not be able to enumerate cross-chapter record existence by comparing
+ * throw-vs-empty across refIds (see the module doc comment). A caller with NO
+ * finance role at all in their OWN chapter still gets a genuine `ConvexError`
+ * — that's an access denial on a ref they can already see exists (via every
+ * other event/project surface), not an existence leak.
  */
 async function resolveRefAuthz(
   ctx: QueryCtx,
@@ -80,10 +88,14 @@ async function resolveRefAuthz(
     });
   }
   if (refChapterId !== ownChapterId) {
-    // Foreign chapter — central (org-wide) reach required, checked through
-    // the CALLER'S OWN chapter (never the target ref's chapter — mirrors
-    // `dashboardChapter`'s central drill-down gate exactly).
-    await requireFinanceCentral(ctx, ownChapterId);
+    // Foreign chapter: central (org-wide) reach required, checked through the
+    // CALLER'S OWN chapter (never the target ref's chapter — mirrors
+    // `dashboardChapter`'s central drill-down gate exactly). Checked via
+    // `getFinanceRole` (not `requireFinanceCentral`) so a failed check can
+    // return the same quiet `null` as a nonexistent ref instead of throwing —
+    // closes the existence oracle. Central-reach callers still get real data.
+    const access = await getFinanceRole(ctx, ownChapterId);
+    if (!access.isCentral) return null;
   } else {
     await requireFinanceRole(ctx, ownChapterId, "viewer");
   }
@@ -161,17 +173,30 @@ export const refMoney = query({
         id: v.id("budgets"),
         amountCents: v.number(),
         label: v.union(v.string(), v.null()),
-        // Best-effort until WP-3.2 lands a first-class `budgets` approval
-        // status field: derived from the generic append-only `approvals`
-        // audit trail (subjectType:"budget"), the most recent approve/reject
-        // action wins. `null` = no decision recorded yet (draft, or the
-        // approval workflow hasn't shipped/been used for this budget).
-        approvalState: v.union(v.literal("approved"), v.literal("rejected"), v.null()),
+        // WP-3.2 (a parallel, not-yet-merged WP) lands `budgets.approvalStatus`
+        // as a first-class field. Read dynamically/optionally below so THIS
+        // PR doesn't couple to that schema change — `null` until WP-3.2
+        // merges, then this lights up automatically with no further changes
+        // here. Typed properly (imported from `@events-os/shared`) once
+        // merged.
+        approvalStatus: v.union(
+          v.literal("draft"),
+          v.literal("submitted"),
+          v.literal("approved"),
+          v.literal("changes_requested"),
+          v.null(),
+        ),
       }),
       v.null(),
     ),
     categories: v.array(moneyCategoryRow),
     unplannedCents: v.number(),
+    // Planned but not broken into any category line yet — `budget.amountCents`
+    // minus the sum of `budgetLines.plannedCents` across every by_ref budget,
+    // floored at 0. Keeps the header total and the category-row sum visibly
+    // reconciling: category rows alone can undercount the header amount when
+    // a budget hasn't been fully allocated to lines.
+    unallocatedPlannedCents: v.number(),
     transactions: v.array(moneyTxnSummary),
     totalPlannedCents: v.number(),
     totalActualCents: v.number(),
@@ -186,6 +211,7 @@ export const refMoney = query({
       budget: null,
       categories: [] as never[],
       unplannedCents: 0,
+      unallocatedPlannedCents: 0,
       transactions: [] as never[],
       totalPlannedCents: 0,
       totalActualCents: 0,
@@ -208,6 +234,11 @@ export const refMoney = query({
         q.eq("refKind", args.refKind).eq("scopeRefId", args.refId),
       )
       .take(SCAN_LIMIT);
+    if (budgets.length === SCAN_LIMIT) {
+      console.warn(
+        `[moneyViews] refMoney hit SCAN_LIMIT (${SCAN_LIMIT}) reading budgets for ${args.refKind} ${args.refId}; sums may be truncated.`,
+      );
+    }
 
     if (budgets.length === 0) {
       return { ...empty, isTraining: authz.isTraining };
@@ -219,25 +250,45 @@ export const refMoney = query({
 
     const [linesByBudget, txnsByBudget] = await Promise.all([
       Promise.all(
-        budgets.map((b) =>
-          ctx.db
+        budgets.map(async (b) => {
+          const rows = await ctx.db
             .query("budgetLines")
             .withIndex("by_budget", (q) => q.eq("budgetId", b._id))
-            .take(SCAN_LIMIT),
-        ),
+            .take(SCAN_LIMIT);
+          if (rows.length === SCAN_LIMIT) {
+            console.warn(
+              `[moneyViews] refMoney hit SCAN_LIMIT (${SCAN_LIMIT}) reading budgetLines for budget ${b._id}; planned totals may be truncated.`,
+            );
+          }
+          return rows;
+        }),
       ),
       Promise.all(
-        budgets.map((b) =>
-          ctx.db
+        budgets.map(async (b) => {
+          const rows = await ctx.db
             .query("transactions")
             .withIndex("by_budget", (q) => q.eq("budgetId", b._id))
-            .take(SCAN_LIMIT),
-        ),
+            .take(SCAN_LIMIT);
+          if (rows.length === SCAN_LIMIT) {
+            console.warn(
+              `[moneyViews] refMoney hit SCAN_LIMIT (${SCAN_LIMIT}) reading transactions for budget ${b._id}; actuals may be truncated.`,
+            );
+          }
+          return rows;
+        }),
       ),
     ]);
     const lines = linesByBudget.flat();
-    const txns = txnsByBudget.flat();
-    const spendTxns = txns.filter(isSpend);
+    // Defense-in-depth + consistency with `finances.ts#actualsForRef`: never
+    // sum/list a transaction from another chapter, even though `by_budget`
+    // can't help but return one once a budget moves to central
+    // (`transferProjectScope` moves the budget AND its linked transactions to
+    // central together — the REF's own `chapterId` never changes, so
+    // filtering back down to it here keeps this view in lockstep with
+    // `projectActuals`/the dashboard for the same ref; the Central row
+    // already reports that spend under its own roof — one home per dollar).
+    const refChapterTxns = txnsByBudget.flat().filter((tr) => tr.chapterId === authz.chapterId);
+    const spendTxns = refChapterTxns.filter(isSpend);
 
     // ── Plan (ESTIMATED-side, invariant #2 — never mixed with actuals below) ──
     type CatKey = Id<"budgetCategories"> | null;
@@ -288,20 +339,21 @@ export const refMoney = query({
     const totalPlannedCents = budgets.reduce((sum, b) => sum + b.amountCents, 0);
     const totalActualCents = spendTxns.reduce((sum, tr) => sum + tr.amountCents, 0);
 
-    // Best-effort approval state (see the field's own doc comment above).
-    const approvals = await ctx.db
-      .query("approvals")
-      .withIndex("by_subject", (q) =>
-        q.eq("subjectType", "budget").eq("subjectId", primary._id),
-      )
-      .collect();
-    const latestDecision = approvals
-      .filter((a) => a.action === "approve" || a.action === "reject")
-      .sort((a, b) => b.createdAt - a.createdAt)[0];
-    const approvalState: "approved" | "rejected" | null =
-      latestDecision == null ? null : latestDecision.action === "approve" ? "approved" : "rejected";
+    // Planned but not yet broken into any category line — keeps the header
+    // total and the sum of category rows visibly reconciling (see the
+    // field's own doc comment on the return validator above).
+    const totalLinesCents = lines.reduce((sum, l) => sum + l.plannedCents, 0);
+    const unallocatedPlannedCents = Math.max(0, totalPlannedCents - totalLinesCents);
 
-    const transactions = [...txns]
+    // WP-3.2 (a parallel, not-yet-merged WP) lands `budgets.approvalStatus`
+    // as a first-class field — read it dynamically/optionally so this PR
+    // doesn't couple to that schema change (see the return validator's own
+    // doc comment above).
+    const approvalStatus =
+      (primary as { approvalStatus?: "draft" | "submitted" | "approved" | "changes_requested" })
+        .approvalStatus ?? null;
+
+    const transactions = [...refChapterTxns]
       .sort((a, b) => b.postedAt - a.postedAt)
       .slice(0, 50)
       .map(toMoneyTxnSummary);
@@ -314,10 +366,11 @@ export const refMoney = query({
         id: primary._id,
         amountCents: primary.amountCents,
         label: primary.label ?? null,
-        approvalState,
+        approvalStatus,
       },
       categories,
       unplannedCents,
+      unallocatedPlannedCents,
       transactions,
       totalPlannedCents,
       totalActualCents,

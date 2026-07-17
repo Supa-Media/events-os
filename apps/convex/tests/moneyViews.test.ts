@@ -11,7 +11,9 @@ import type { Id } from "../_generated/dataModel";
  * + the unplanned-spend bucket + multi-budget summing (#171) + authz that
  * mirrors `finances.dashboardChapter`'s central drill-down /
  * `events.ts#resolvePeekChapterId` (own-chapter viewer OK, foreign
- * non-central FORBIDDEN, central OK for foreign).
+ * non-central gets the quiet empty shape — NOT a throw, matching
+ * `events.get`'s uniform not-found pattern so an existence oracle can't leak
+ * cross-chapter record existence — central OK for foreign).
  */
 
 async function seedSelfPerson(s: ChapterSetup): Promise<Id<"people">> {
@@ -237,16 +239,23 @@ describe("moneyViews.refMoney: authz", () => {
     expect(result.budget).toBeNull();
   });
 
-  test("a chapter-scoped manager CANNOT read a different chapter's event (FORBIDDEN)", async () => {
+  test("a chapter-scoped manager reading a different chapter's event gets the quiet empty shape (existence oracle closed, not FORBIDDEN)", async () => {
     const t = newT();
     const s = await setupChapter(t);
     await asChapterManager(s);
     const boston = await makeChapter(s, "Boston");
     const eventId = await seedEvent(s, boston, { name: "Boston Event" });
 
-    await expect(
-      s.as.query(api.moneyViews.refMoney, { refKind: "event", refId: eventId }),
-    ).rejects.toBeInstanceOf(ConvexError);
+    // Same shape as a NONEXISTENT ref (see the "nonexistent ref" test below) —
+    // a caller without central reach must not be able to tell "doesn't exist"
+    // apart from "exists in a chapter I can't see".
+    const result = await s.as.query(api.moneyViews.refMoney, {
+      refKind: "event",
+      refId: eventId,
+    });
+    expect(result.budget).toBeNull();
+    expect(result.categories).toEqual([]);
+    expect(result.transactions).toEqual([]);
   });
 
   test("a PLAIN person with a genuine scope:\"central\" grant CAN read a different chapter's event (not the superuser short-circuit)", async () => {
@@ -356,6 +365,7 @@ describe("moneyViews.refMoney: empty states", () => {
     expect(result.budget).toBeNull();
     expect(result.categories).toEqual([]);
     expect(result.unplannedCents).toBe(0);
+    expect(result.unallocatedPlannedCents).toBe(0);
     expect(result.transactions).toEqual([]);
     expect(result.totalPlannedCents).toBe(0);
     expect(result.totalActualCents).toBe(0);
@@ -381,13 +391,18 @@ describe("moneyViews.refMoney: empty states", () => {
       id: budgetId,
       amountCents: 50000,
       label: "Sunday Gathering",
-      approvalState: null,
+      // No `budgets.approvalStatus` field exists yet on this branch's schema
+      // (WP-3.2 lands it in a parallel WP) — read dynamically/optionally, so
+      // it's `null` until that merges.
+      approvalStatus: null,
     });
     expect(result.categories).toEqual([]);
     expect(result.lineCount).toBe(0);
     expect(result.totalPlannedCents).toBe(50000);
     expect(result.totalActualCents).toBe(0);
     expect(result.totalRemainingCents).toBe(50000);
+    // No lines at all → the entire budget is unallocated.
+    expect(result.unallocatedPlannedCents).toBe(50000);
   });
 
   test("budget with lines but no spend → planned-only view (actualCents 0 per category)", async () => {
@@ -509,6 +524,9 @@ describe("moneyViews.refMoney: category grouping + unplanned bucket", () => {
     expect(result.totalActualCents).toBe(64000);
     expect(result.totalPlannedCents).toBe(100000);
     expect(result.totalRemainingCents).toBe(100000 - 64000);
+    // Lines sum to 40000 + 20000 + 10000 + 5000 = 75000 against a 100000
+    // budget → 25000 still unallocated to any category.
+    expect(result.unallocatedPlannedCents).toBe(25000);
   });
 });
 
@@ -544,9 +562,11 @@ describe("moneyViews.refMoney: multi-budget summing", () => {
     expect(result.totalPlannedCents).toBe(40000); // 30000 + 10000
     expect(result.totalActualCents).toBe(7000); // 5000 + 2000
     expect(result.transactions).toHaveLength(2);
+    // No lines seeded on either budget → the full 40000 is unallocated.
+    expect(result.unallocatedPlannedCents).toBe(40000);
   });
 
-  test("a project's budget that moved to central still sums via by_ref (WP-2.2 discovery)", async () => {
+  test("a project's budget that moved to central still sums its PLANNED total via by_ref, but its actual spend is chapter-filtered out (WP-2.2 discovery, consistent with actualsForRef)", async () => {
     const t = newT();
     const s = await setupChapter(t, { email: "seyi@publicworship.life" }); // superuser = central
     const projectId = await seedProject(s, s.chapterId, "Music Recording");
@@ -554,6 +574,8 @@ describe("moneyViews.refMoney: multi-budget summing", () => {
       amountCents: 300000,
       label: "Central music budget",
     });
+    // This transaction's chapterId is "central" (it moved with the budget),
+    // NOT the project's own chapterId (`s.chapterId`, which never changes).
     await seedTxn(s, "central", budgetId, { amountCents: 15000 });
 
     const result = await s.as.query(api.moneyViews.refMoney, {
@@ -561,8 +583,16 @@ describe("moneyViews.refMoney: multi-budget summing", () => {
       refId: projectId,
     });
     expect(result.budget?.id).toBe(budgetId);
+    // Planned total still sums every by_ref budget regardless of level.
     expect(result.totalPlannedCents).toBe(300000);
-    expect(result.totalActualCents).toBe(15000);
+    // But actual spend is filtered to the REF's own chapter — same rule as
+    // `finances.ts#actualsForRef` — so this view stays in lockstep with
+    // `projectActuals`/the dashboard for the same ref. The Central row
+    // already reports this spend under its own roof (one home per dollar).
+    expect(result.totalActualCents).toBe(0);
+    expect(result.transactions).toEqual([]);
+    // No lines seeded → the full 300000 is unallocated.
+    expect(result.unallocatedPlannedCents).toBe(300000);
   });
 });
 
@@ -600,55 +630,13 @@ describe("moneyViews.refMoney: training events", () => {
   });
 });
 
-// ── Approval state (best-effort, from the generic `approvals` audit trail) ───
-
-describe("moneyViews.refMoney: approval state", () => {
-  test("null with no approvals recorded; reflects the most recent approve/reject action", async () => {
-    const t = newT();
-    const s = await setupChapter(t);
-    const personId = await asChapterManager(s);
-    const eventId = await seedEvent(s, s.chapterId, { name: "Approved Event" });
-    const budgetId = await seedOneTimeBudget(s, s.chapterId, "event", eventId, {
-      amountCents: 20000,
-    });
-
-    const before = await s.as.query(api.moneyViews.refMoney, {
-      refKind: "event",
-      refId: eventId,
-    });
-    expect(before.budget?.approvalState).toBeNull();
-
-    await run(s.t, (ctx) =>
-      ctx.db.insert("approvals", {
-        chapterId: s.chapterId,
-        subjectType: "budget",
-        subjectId: budgetId,
-        action: "approve",
-        actorPersonId: personId,
-        createdAt: 1000,
-      }),
-    );
-    const afterApprove = await s.as.query(api.moneyViews.refMoney, {
-      refKind: "event",
-      refId: eventId,
-    });
-    expect(afterApprove.budget?.approvalState).toBe("approved");
-
-    // A LATER reject supersedes the earlier approve.
-    await run(s.t, (ctx) =>
-      ctx.db.insert("approvals", {
-        chapterId: s.chapterId,
-        subjectType: "budget",
-        subjectId: budgetId,
-        action: "reject",
-        actorPersonId: personId,
-        createdAt: 2000,
-      }),
-    );
-    const afterReject = await s.as.query(api.moneyViews.refMoney, {
-      refKind: "event",
-      refId: eventId,
-    });
-    expect(afterReject.budget?.approvalState).toBe("rejected");
-  });
-});
+// NOTE: there used to be an "approval state" describe block here, seeding
+// fake `approvals` rows with `subjectType:"budget"` and asserting a derived
+// `approvalState`. Nothing in the codebase actually writes an approvals row
+// with that subjectType (verified codebase-wide) — the derivation was dead
+// code exercised only by its own fake-seeded tests. Deleted along with the
+// derivation itself: `refMoney` now reads `budgets.approvalStatus` directly
+// (dynamically/optionally, since that field lands with the parallel WP-3.2
+// and isn't in this branch's schema yet — see `moneyViews.ts`'s own doc
+// comments). See the "no lines and no spend" empty-state test above for the
+// `approvalStatus: null` assertion on THIS branch's schema.

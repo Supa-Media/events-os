@@ -286,7 +286,13 @@ export default function EventDetailScreen() {
   // matches nothing). Any other unknown/stale key falls back to the first area
   // tab.
   const activeTab =
-    tab === "tickets" || tab === "budget" || tab === "gear" || tab === "money"
+    tab === "tickets" ||
+    tab === "budget" ||
+    tab === "gear" ||
+    // Money is hidden from the tools row for training events (the #172
+    // invariant) — a stale/hand-typed `?tab=money` deep link must not bypass
+    // that by opening the tool anyway.
+    (tab === "money" && event.isTraining !== true)
       ? tab
       : tabs.some((t) => t.key === tab)
         ? (tab as string)

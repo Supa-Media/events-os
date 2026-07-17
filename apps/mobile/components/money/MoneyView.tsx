@@ -14,7 +14,7 @@ import { useQuery } from "convex/react";
 import type { FunctionReturnType } from "convex/server";
 import { api } from "@events-os/convex/_generated/api";
 import { formatCents } from "@events-os/shared";
-import { Badge, Card, EmptyState, Icon, SectionHeader } from "../ui";
+import { Badge, Card, EmptyState, Icon, SectionHeader, type BadgeTone } from "../ui";
 import { Money, BudgetBar, txnStatusTone } from "../finance/dashboard/parts";
 import { colors } from "../../lib/theme";
 import { formatDate } from "../../lib/format";
@@ -22,6 +22,28 @@ import { formatDate } from "../../lib/format";
 type MoneyData = FunctionReturnType<typeof api.moneyViews.refMoney>;
 type CategoryRowData = MoneyData["categories"][number];
 type TxnRowData = MoneyData["transactions"][number];
+type BudgetApprovalStatus = NonNullable<
+  NonNullable<MoneyData["budget"]>["approvalStatus"]
+>;
+
+// Mirrors WP-3.2's `BudgetApprovalActions.tsx` chip vocabulary (draft /
+// submitted / approved / changes_requested) — hardcoded rather than imported
+// since that field/labels don't exist on this branch's `@events-os/shared`
+// yet (a parallel, not-yet-merged WP). The chip only ever renders once
+// `budget.approvalStatus` is non-null, so it stays dormant until WP-3.2 lands
+// and starts populating the field — no further changes needed here then.
+const APPROVAL_STATUS_LABEL: Record<BudgetApprovalStatus, string> = {
+  draft: "Draft",
+  submitted: "Awaiting approval",
+  approved: "Approved",
+  changes_requested: "Changes requested",
+};
+const APPROVAL_STATUS_TONE: Record<BudgetApprovalStatus, BadgeTone> = {
+  draft: "neutral",
+  submitted: "warn",
+  approved: "success",
+  changes_requested: "danger",
+};
 
 export function MoneyView({
   refKind,
@@ -49,6 +71,7 @@ export function MoneyView({
     budget,
     categories,
     unplannedCents,
+    unallocatedPlannedCents,
     transactions,
     totalPlannedCents,
     totalActualCents,
@@ -70,6 +93,7 @@ export function MoneyView({
     totalPlannedCents > 0
       ? Math.round((totalActualCents / totalPlannedCents) * 100)
       : 0;
+  const shownTransactions = transactions.slice(0, 10);
 
   return (
     <View>
@@ -91,11 +115,12 @@ export function MoneyView({
             ) : null}
           </View>
           <View className="items-end gap-2">
-            {budget.approvalState ? (
+            {/* Dormant until WP-3.2 lands `budgets.approvalStatus` — `null`
+                today on every real budget, so this simply doesn't render. */}
+            {budget.approvalStatus ? (
               <Badge
-                label={budget.approvalState === "approved" ? "Approved" : "Rejected"}
-                tone={budget.approvalState === "approved" ? "success" : "danger"}
-                icon={budget.approvalState === "approved" ? "check" : "x"}
+                label={APPROVAL_STATUS_LABEL[budget.approvalStatus]}
+                tone={APPROVAL_STATUS_TONE[budget.approvalStatus]}
               />
             ) : null}
             <Pressable
@@ -151,6 +176,21 @@ export function MoneyView({
             {categories.map((c) => (
               <CategoryRow key={c.categoryId ?? "uncategorized"} row={c} />
             ))}
+            {/* Subtle reconciliation row: the budget header's total planned
+                amount can exceed the sum of category rows above when not all
+                of it has been broken into a line yet — keep that gap visible
+                rather than letting the two numbers silently disagree. */}
+            {unallocatedPlannedCents > 0 ? (
+              <View className="flex-row items-center justify-between gap-3 rounded-lg border border-dashed border-border px-4 py-2.5">
+                <Text className="text-xs text-muted">Unallocated</Text>
+                <Text
+                  className="text-xs text-muted"
+                  style={{ fontVariant: ["tabular-nums"] }}
+                >
+                  {formatCents(unallocatedPlannedCents)}
+                </Text>
+              </View>
+            ) : null}
           </View>
         </>
       )}
@@ -179,9 +219,19 @@ export function MoneyView({
       {/* ── Recent linked transactions ────────────────────────────────────── */}
       {transactions.length > 0 ? (
         <>
-          <SectionHeader title="Recent transactions" count={transactions.length} />
+          <SectionHeader
+            title="Recent transactions"
+            // The header count matches what's actually rendered below —
+            // "10 of 42" rather than a bare 42 that implies every row is on
+            // screen when only the first page is.
+            count={
+              transactions.length > shownTransactions.length
+                ? `${shownTransactions.length} of ${transactions.length}`
+                : shownTransactions.length
+            }
+          />
           <Card padding="none">
-            {transactions.slice(0, 10).map((tr, i) => (
+            {shownTransactions.map((tr, i) => (
               <TxnRow key={tr.id} tr={tr} first={i === 0} />
             ))}
           </Card>
