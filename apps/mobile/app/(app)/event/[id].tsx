@@ -530,6 +530,11 @@ export default function EventDetailScreen() {
           budgetValue={budgetValue}
           onChangeBudget={setBudgetInput}
           onSaveBudget={handleSaveBudget}
+          scope={scope}
+          scopeChapterName={scopeChapterName}
+          homeChapterName={homeChapterName}
+          canChangeScope={canChangeScope}
+          onChangeScope={handleScopeChange}
           owner={owner}
           roleRows={roleRows}
           onOpenOwner={() => setOwnerOpen(true)}

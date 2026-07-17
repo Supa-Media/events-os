@@ -60,26 +60,65 @@ export function EventTabBar({
    */
   trailing?: React.ReactNode;
 }) {
+  // Overflow hint: the strip has no scrollbar (showsHorizontalScrollIndicator
+  // is off, to stay quiet), so a many-module event can hide its later tabs
+  // (Money among them) with no visual cue that there's more to scroll to. A
+  // right-edge fade appears only once content genuinely overflows and there's
+  // still more to the right — it clears itself once fully scrolled.
+  const containerWidth = useRef(0);
+  const contentWidth = useRef(0);
+  const [canScrollRight, setCanScrollRight] = useState(false);
+
+  function recomputeOverflow(scrollX: number) {
+    const overflow = contentWidth.current - containerWidth.current;
+    setCanScrollRight(overflow > 4 && scrollX < overflow - 4);
+  }
+
   return (
     <View className="mb-6 border-b border-border">
       <View className="flex-row items-center gap-3">
-        <ScrollView
-          horizontal
-          showsHorizontalScrollIndicator={false}
-          style={{ flexGrow: 1, flexShrink: 1 }}
-          contentContainerStyle={{ gap: 4, alignItems: "center" }}
-        >
-          {tabs.map((t) => (
-            <TabButton
-              key={t.key}
-              tab={t}
-              active={t.key === activeKey}
-              highlighted={t.phase != null && t.phase === highlightPhase}
-              onSelect={() => onSelect(t.key)}
+        <View style={{ flexGrow: 1, flexShrink: 1, position: "relative" }}>
+          <ScrollView
+            horizontal
+            showsHorizontalScrollIndicator={false}
+            scrollEventThrottle={32}
+            onLayout={(e) => {
+              containerWidth.current = e.nativeEvent.layout.width;
+              recomputeOverflow(0);
+            }}
+            onContentSizeChange={(w) => {
+              contentWidth.current = w;
+              recomputeOverflow(0);
+            }}
+            onScroll={(e) => recomputeOverflow(e.nativeEvent.contentOffset.x)}
+            contentContainerStyle={{ gap: 4, alignItems: "center" }}
+          >
+            {tabs.map((t) => (
+              <TabButton
+                key={t.key}
+                tab={t}
+                active={t.key === activeKey}
+                highlighted={t.phase != null && t.phase === highlightPhase}
+                onSelect={() => onSelect(t.key)}
+              />
+            ))}
+            {addModule ? <AddModuleTab config={addModule} /> : null}
+          </ScrollView>
+          {canScrollRight ? (
+            <View
+              pointerEvents="none"
+              style={{
+                position: "absolute",
+                right: 0,
+                top: 0,
+                bottom: 0,
+                width: 28,
+                background: `linear-gradient(to right, transparent, ${colors.raised})`,
+                backgroundColor: Platform.OS === "web" ? undefined : "rgba(255,255,255,0.55)",
+              } as any}
             />
-          ))}
-          {addModule ? <AddModuleTab config={addModule} /> : null}
-        </ScrollView>
+          ) : null}
+        </View>
         {trailing ? (
           <View className="flex-row items-center gap-1.5 pb-1.5">{trailing}</View>
         ) : null}
