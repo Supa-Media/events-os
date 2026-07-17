@@ -1,7 +1,7 @@
 /// <reference types="vite/client" />
 import { describe, expect, test } from "vitest";
 import { ConvexError } from "convex/values";
-import { newT, run, setupChapter, type ChapterSetup } from "./setup.helpers";
+import { newT, run, setupChapter, type ChapterSetup, type TestConvex } from "./setup.helpers";
 import { api } from "../_generated/api";
 import type { Id } from "../_generated/dataModel";
 
@@ -15,6 +15,39 @@ import type { Id } from "../_generated/dataModel";
  * `events.get`'s uniform not-found pattern so an existence oracle can't leak
  * cross-chapter record existence — central OK for foreign).
  */
+
+/** A genuinely NON-ADMIN member — `setupChapter`'s own `s.as` caller is
+ *  ALWAYS a chapter admin (`userChapters.role:"admin"`), which alone clears
+ *  `callerHasEventEditRights` (admins manage everyone) regardless of any
+ *  finance role layered on top — so a "plain member, not the event's owner"
+ *  scenario needs a truly separate, non-admin identity, not just a second
+ *  `financeRoles` grant on the same admin caller. */
+async function addNonAdminMember(
+  s: ChapterSetup,
+  opts: { email: string; name: string },
+): Promise<{ as: ReturnType<TestConvex["withIdentity"]>; personId: Id<"people"> }> {
+  const userId = await run(s.t, (ctx) => ctx.db.insert("users", { email: opts.email }));
+  await run(s.t, (ctx) =>
+    ctx.db.insert("userChapters", {
+      userId,
+      chapterId: s.chapterId,
+      role: "member",
+      isActive: true,
+      joinedAt: Date.now(),
+    }),
+  );
+  const personId = await run(s.t, (ctx) =>
+    ctx.db.insert("people", {
+      chapterId: s.chapterId,
+      name: opts.name,
+      userId,
+      isTeamMember: true,
+      createdAt: Date.now(),
+    }),
+  );
+  const as = s.t.withIdentity({ subject: `${userId}|session`, issuer: "test" });
+  return { as, personId };
+}
 
 async function seedSelfPerson(s: ChapterSetup): Promise<Id<"people">> {
   return await run(s.t, (ctx) =>
@@ -780,5 +813,154 @@ describe("moneyViews.refMoney: approval-aware cap + canEditPlan", () => {
       refId: eventId,
     });
     expect(result.incomeCents).toBe(15000);
+  });
+});
+
+// ── canEditTransactions (the Money-tab "Recent transactions" edit gate) ─────
+
+describe("moneyViews.refMoney: canEditTransactions", () => {
+  test("true for a bookkeeper+ caller (mirrors canEditPlan)", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await asChapterManager(s);
+    const eventId = await seedEvent(s, s.chapterId, { name: "Retreat" });
+    await seedOneTimeBudget(s, s.chapterId, "event", eventId, { amountCents: 10000 });
+
+    const result = await s.as.query(api.moneyViews.refMoney, {
+      refKind: "event",
+      refId: eventId,
+    });
+    expect(result.canEditTransactions).toBe(true);
+  });
+
+  test("true for a plain (non-admin) viewer who is ALSO the event's owner (event-lead carve-out)", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const owner = await addNonAdminMember(s, {
+      email: "owner@publicworship.life",
+      name: "Event Owner",
+    });
+    await run(s.t, (ctx) =>
+      ctx.db.insert("financeRoles", {
+        chapterId: s.chapterId,
+        personId: owner.personId,
+        role: "viewer", // viewer only, not bookkeeper+
+        scope: "chapter",
+        createdAt: Date.now(),
+      }),
+    );
+    const eventId = await run(s.t, async (ctx) => {
+      const eventTypeId = await ctx.db.insert("eventTypes", {
+        chapterId: s.chapterId,
+        name: "Service",
+        slug: `service-${Date.now()}`,
+        version: 1,
+        createdBy: s.userId,
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      });
+      return ctx.db.insert("events", {
+        chapterId: s.chapterId,
+        eventTypeId,
+        templateVersion: 1,
+        name: "My Event",
+        eventDate: Date.now(),
+        status: "planning",
+        ownerPersonId: owner.personId,
+        createdBy: s.userId,
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      });
+    });
+    await seedOneTimeBudget(s, s.chapterId, "event", eventId, { amountCents: 10000 });
+
+    const result = await owner.as.query(api.moneyViews.refMoney, {
+      refKind: "event",
+      refId: eventId,
+    });
+    expect(result.canEditTransactions).toBe(true);
+  });
+
+  test("false for a plain (non-admin) viewer who is NOT the event's owner and doesn't manage them", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const member = await addNonAdminMember(s, {
+      email: "member@publicworship.life",
+      name: "Plain Member",
+    });
+    // A finance VIEWER grant so they can at least READ the Money tab — the
+    // question this test pins is whether that ALONE also clears the
+    // event-edit carve-out (it must not).
+    await run(s.t, (ctx) =>
+      ctx.db.insert("financeRoles", {
+        chapterId: s.chapterId,
+        personId: member.personId,
+        role: "viewer",
+        scope: "chapter",
+        createdAt: Date.now(),
+      }),
+    );
+    const owner = await addNonAdminMember(s, {
+      email: "owner@publicworship.life",
+      name: "Event Owner",
+    });
+    const eventId = await run(s.t, async (ctx) => {
+      const eventTypeId = await ctx.db.insert("eventTypes", {
+        chapterId: s.chapterId,
+        name: "Service",
+        slug: `service-${Date.now()}`,
+        version: 1,
+        createdBy: s.userId,
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      });
+      return ctx.db.insert("events", {
+        chapterId: s.chapterId,
+        eventTypeId,
+        templateVersion: 1,
+        name: "Someone Else's Event",
+        eventDate: Date.now(),
+        status: "planning",
+        ownerPersonId: owner.personId,
+        createdBy: s.userId,
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      });
+    });
+    await seedOneTimeBudget(s, s.chapterId, "event", eventId, { amountCents: 10000 });
+
+    const result = await member.as.query(api.moneyViews.refMoney, {
+      refKind: "event",
+      refId: eventId,
+    });
+    expect(result.canEditTransactions).toBe(false);
+  });
+
+  test("always false for a project ref — no event-lead concept applies", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await asChapterViewer(s);
+    const projectId = await seedProject(s, s.chapterId, "Some Project");
+    await seedOneTimeBudget(s, s.chapterId, "project", projectId, { amountCents: 10000 });
+
+    const result = await s.as.query(api.moneyViews.refMoney, {
+      refKind: "project",
+      refId: projectId,
+    });
+    expect(result.canEditTransactions).toBe(false);
+  });
+
+  test("false (not true) in the empty shape when there's no budget yet", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await asChapterViewer(s);
+    const eventId = await seedEvent(s, s.chapterId, { name: "Bare Event" });
+
+    const result = await s.as.query(api.moneyViews.refMoney, {
+      refKind: "event",
+      refId: eventId,
+    });
+    expect(result.budget).toBeNull();
+    expect(result.canEditTransactions).toBe(false);
   });
 });

@@ -552,12 +552,17 @@ describe("chapter_director finance.viewer — SEE, never RECORD/RECONCILE-write 
     const cdPersonId = await seedSelfPerson(s);
     await assignSeatDirect(s, cdPersonId, "chapter_director", s.chapterId);
 
+    // Blocked on BOTH legs of the combined gate (owner decision, 2026-07-17,
+    // `requireTxnNoteReceiptCategoryAccess`): finance.viewer alone never
+    // clears bookkeeper+, AND this txn has no `budgetId` at all (created via
+    // `createManualTransaction` above with none), so there's no event to
+    // scope an event-lead carve-out to either — FORBIDDEN either way.
     await expect(
       s.as.mutation(api.finances.setTransactionNote, {
         transactionId: txnId,
         note: "CD trying to annotate — should be blocked",
       }),
-    ).rejects.toThrow(/Bookkeeper finance role/);
+    ).rejects.toThrow(/finance role, or edit rights on the event/);
   });
 
   test("a chapter_director seat does NOT clear the manager-rank gate — updateBudget stays blocked beyond what finance.approve allows", async () => {
