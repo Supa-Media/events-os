@@ -39,6 +39,13 @@
  * "Supply"/"Comms" until a row in THAT module got a cost first, a chicken-
  * and-egg the per-row Type cell doesn't have (it only ever needs to offer
  * modules that already exist, since it's converting an EXISTING row).
+ * `FALLBACK_TYPE_OPTIONS` is further filtered to the event's actually-ACTIVE
+ * modules (`modules.listForEvent`'s `active` set) before joining the union —
+ * a customized event that dropped a core module (e.g. Comms) must never
+ * offer it here, or `addEventItem` → `requireActiveEventModule` rejects the
+ * submit. While that query is still loading, the bare 3-module list is used
+ * as-is (better an occasional stale offer than blocking Add-row on a second
+ * round-trip).
  *
  * "Add row": Task/Supply/Comms/any other grid-derived module type creates a
  * REAL item there (`items.addEventItem`); "Plan only" creates a `budgetLines`
@@ -137,10 +144,21 @@ export function PlanGrid({
   const router = useRouter();
   const data = useQuery(api.moneyViews.eventCostGrid, { eventId });
   const categoriesQuery = useQuery(api.finances.listCategories, {});
+  // Add-row's Type-picker bootstrap needs to know which modules are
+  // actually active on THIS event (not just which ones already have a cost
+  // row) — see `FALLBACK_TYPE_OPTIONS`'s doc above. `undefined` while
+  // loading; `activeModuleKeys` stays `null` in that window so the fallback
+  // filter below is skipped rather than incorrectly treating "not loaded
+  // yet" as "nothing active."
+  const modulesData = useQuery(api.modules.listForEvent, { eventId });
   const [addOpen, setAddOpen] = useState(false);
 
   const rows = useMemo(() => data?.rows ?? [], [data]);
   const categoriesRaw = useMemo(() => categoriesQuery ?? [], [categoriesQuery]);
+  const activeModuleKeys = useMemo(
+    () => (modulesData ? new Set(modulesData.active.map((m) => m.key)) : null),
+    [modulesData],
+  );
 
   // Every module a currency-column row already exists for on THIS event —
   // the Type cell/add-row's option set (see module doc above).
@@ -211,6 +229,7 @@ export function PlanGrid({
           eventId={eventId}
           budgetId={budgetId}
           typeOptions={typeOptions}
+          activeModuleKeys={activeModuleKeys}
           categoryOptions={categoryOptions}
           onDone={() => setAddOpen(false)}
         />
@@ -578,12 +597,17 @@ function AddRow({
   eventId,
   budgetId,
   typeOptions,
+  activeModuleKeys,
   categoryOptions,
   onDone,
 }: {
   eventId: Id<"events">;
   budgetId: Id<"budgets"> | null;
   typeOptions: TypeOption[];
+  /** The event's actually-active module keys (`modules.listForEvent`), or
+   *  `null` while that query is still loading — see `FALLBACK_TYPE_OPTIONS`'s
+   *  doc above. */
+  activeModuleKeys: Set<string> | null;
   categoryOptions: CategoryOption[];
   onDone: () => void;
 }) {
@@ -593,9 +617,17 @@ function AddRow({
   const summonBudget = useMutation(api.finances.summonBudgetForRef);
 
   const seenModules = new Set(typeOptions.map((o) => o.value));
+  // Bootstrap fallback, narrowed to modules the event actually has active —
+  // never offer one a customized event dropped (`requireActiveEventModule`
+  // would reject the submit). Still loading `activeModuleKeys`? Use the bare
+  // 3-module list as-is rather than blocking Add-row on a second round-trip.
+  const fallbackOptions =
+    activeModuleKeys != null
+      ? FALLBACK_TYPE_OPTIONS.filter((o) => activeModuleKeys.has(o.value))
+      : FALLBACK_TYPE_OPTIONS;
   const itemTypeOptions: TypeOption[] = [
     ...typeOptions,
-    ...FALLBACK_TYPE_OPTIONS.filter((o) => !seenModules.has(o.value)),
+    ...fallbackOptions.filter((o) => !seenModules.has(o.value)),
   ];
   const allTypeOptions: TypeOption[] = [
     ...itemTypeOptions,
