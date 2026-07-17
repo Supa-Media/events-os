@@ -17,10 +17,13 @@
  * admins can inspect anyone; everyone else only people in their own subtree.
  *
  * Manager/report relationships (`nav`'s `canManage`, `overview`'s
- * `hasReports`/`canManage`, `workload`'s `managers`/`reports`/subtree) are
- * SEAT-DERIVED FIRST, falling back per-person to the stored `people.managerId`
- * only for someone who holds no seat at all — see `lib/org.ts`'s "Seat-derived
- * managers" section for the full algorithm and rationale.
+ * `hasReports`/`canManage`/`people[].effectiveManagerIds`, `workload`'s
+ * `managers`/`reports`/subtree) are SEAT-DERIVED FIRST, falling back
+ * per-person to the stored `people.managerId` only for someone who holds no
+ * seat at all — see `lib/org.ts`'s "Seat-derived managers" section for the
+ * full algorithm and rationale. The Team tab's client-side tree (both List
+ * and Chart views) builds from `overview.people[].effectiveManagerIds`, not
+ * raw `managerId` — one server-side derivation, consumed everywhere.
  */
 import { query } from "./_generated/server";
 import type { QueryCtx } from "./_generated/server";
@@ -39,6 +42,7 @@ import {
   buildEffectiveChildrenOf,
   resolveEffectiveManagers,
   hasEffectiveReports,
+  personEffectiveManagerIds,
 } from "./lib/org";
 
 /** The slim person shape the org surfaces render (no contact details). */
@@ -307,8 +311,9 @@ export const overview = query({
     ]);
     // Seat truth first, `managerId` fallback per-person — see `lib/org.ts`'s
     // "Seat-derived managers" section. `people[].managerId` in the response
-    // below stays the raw STORED value (the Team tab's tree still reads it
-    // directly); only `hasReports`/`canManage` here reflect the seat layer.
+    // below stays the raw STORED value; `hasReports`/`canManage` AND the new
+    // `effectiveManagerIds` field below reflect the seat layer — the Team
+    // tab's tree builds from `effectiveManagerIds`, not raw `managerId`.
     const childrenOf = buildEffectiveChildrenOf(index, roster);
     const viewer = await viewerFromRoster(ctx, roster);
     const hasReports =
@@ -321,6 +326,12 @@ export const overview = query({
     // nothing to show.
     const visible: Doc<"people">[] = isAdmin || viewer ? roster : [];
 
+    // Roster-local ids only — a seat-derived manager who isn't on THIS
+    // chapter's roster (e.g. a cross-chapter central-seat holder) has no node
+    // to hang under in the Team tab's tree, same exclusion
+    // `buildEffectiveChildrenOf` already applies internally.
+    const rosterIds = new Set(roster.map((p) => p._id));
+
     return {
       isAdmin,
       selfPersonId: viewer?._id ?? null,
@@ -328,6 +339,14 @@ export const overview = query({
       people: await Promise.all(
         visible.map(async (p) => ({
           ...slim(p),
+          // Effective (seat-derived ∪ managerId-fallback) manager ids, in the
+          // SAME per-person order `workload.managers` resolves them in (both
+          // call `personEffectiveManagerIds`) — usually one entry, several
+          // iff a multi-holder seat is the nearest ancestor with holders.
+          // Filtered to the roster so the client can look parents up by id.
+          effectiveManagerIds: personEffectiveManagerIds(index, p).filter(
+            (id) => rosterIds.has(id),
+          ),
           isTeamMember: p.isTeamMember === true || p.userId != null,
           imageUrl: p.image ? await ctx.storage.getUrl(p.image) : null,
         })),

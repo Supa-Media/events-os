@@ -268,3 +268,86 @@ describe("seat-derived write gates agree with reads (manageablePersonIds / requi
     ).resolves.not.toThrow();
   });
 });
+
+// `org.overview`'s `people[].effectiveManagerIds` is what the Work tab's
+// client-side tree (`team.tsx`) builds its List/Chart hierarchy from, instead
+// of raw `managerId` — see that file's header comment. These tests exercise
+// the field directly, mirroring the `workload.managers` assertions above.
+describe("overview.people[].effectiveManagerIds (Work tab tree source)", () => {
+  test("a seat-only report's effectiveManagerIds is seat-derived; managerId stays the raw stored value (unset)", async () => {
+    const s = await seatSetup();
+    const dana = await makePerson(s, "Dana");
+    const mia = await makePerson(s, "Mia"); // no stored managerId
+    await assign(s, "chapter_director", s.chapterId, dana);
+    await assign(s, "music_lead", s.chapterId, mia);
+
+    const overview = await s.as.query(api.org.overview);
+    const miaRow = overview.people.find((p) => p._id === mia)!;
+    expect(miaRow.effectiveManagerIds).toEqual([dana]);
+    expect(miaRow.managerId).toBeNull();
+  });
+
+  test("a seatless person's effectiveManagerIds falls back to their stored managerId", async () => {
+    const s = await seatSetup();
+    const dana = await makePerson(s, "Dana");
+    const vic = await makePerson(s, "Vic", { managerId: dana }); // no seat at all
+
+    const overview = await s.as.query(api.org.overview);
+    const vicRow = overview.people.find((p) => p._id === vic)!;
+    expect(vicRow.effectiveManagerIds).toEqual([dana]);
+  });
+
+  test("the executive director (top of the org) has an empty effectiveManagerIds — not a fallback signal", async () => {
+    const s = await seatSetup();
+    const eli = await makePerson(s, "Eli");
+    await assign(s, "executive_director", "central", eli);
+
+    const overview = await s.as.query(api.org.overview);
+    const eliRow = overview.people.find((p) => p._id === eli)!;
+    expect(eliRow.effectiveManagerIds).toEqual([]);
+  });
+
+  test("a multi-holder parent seat puts ALL holders in effectiveManagerIds — no stored primary", async () => {
+    const s = await seatSetup();
+    const dana = await makePerson(s, "Dana");
+    const mo = await makePerson(s, "Mo");
+    const val = await makePerson(s, "Val");
+    await assign(s, "music_lead", s.chapterId, dana);
+    await assign(s, "music_lead", s.chapterId, mo);
+    await assign(s, "vocal_lead", s.chapterId, val);
+
+    const overview = await s.as.query(api.org.overview);
+    const valRow = overview.people.find((p) => p._id === val)!;
+    expect([...valRow.effectiveManagerIds].sort()).toEqual([dana, mo].sort());
+  });
+
+  test("a seat-derived manager who isn't on this chapter's roster (cross-chapter central seat) is excluded from effectiveManagerIds", async () => {
+    const s = await seatSetup();
+    const mia = await makePerson(s, "Mia");
+    // chapter_director left vacant — Mia's manager rolls up to the central
+    // expansion_director, held by someone in a DIFFERENT chapter.
+    await assign(s, "music_lead", s.chapterId, mia);
+    const otherChapterId = await run(s.t, (ctx) =>
+      ctx.db.insert("chapters", { name: "Other Chapter", isActive: true }),
+    );
+    const erin = await run(s.t, (ctx) =>
+      ctx.db.insert("people", {
+        chapterId: otherChapterId,
+        name: "Erin",
+        isTeamMember: true,
+        createdAt: Date.now(),
+      }),
+    );
+    await assign(s, "expansion_director", "central", erin);
+
+    // The person-keyed answer (workload.managers) still resolves Erin by id,
+    // even though she's out of Mia's chapter roster.
+    const workload = await s.as.query(api.org.workload, { personId: mia });
+    expect(workload!.managers.map((m) => m.name)).toEqual(["Erin"]);
+
+    // But the roster-local tree field has nothing to hang her under.
+    const overview = await s.as.query(api.org.overview);
+    const miaRow = overview.people.find((p) => p._id === mia)!;
+    expect(miaRow.effectiveManagerIds).toEqual([]);
+  });
+});
