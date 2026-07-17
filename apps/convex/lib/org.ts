@@ -285,10 +285,63 @@ export async function resolveEffectiveManagers(
   );
 }
 
+/** True iff `personId` holds at least one seat (central or this chapter) — a
+ *  single cheap indexed read. Being a seat-derived manager of ANYONE requires
+ *  holding the ancestor seat that answer comes from, so a person who holds no
+ *  seat at all can be ruled out as a seat-only manager without ever loading
+ *  the roster or the chart — see `hasEffectiveReports`. */
+async function holdsAnySeat(
+  ctx: QueryCtx,
+  personId: Id<"people">,
+): Promise<boolean> {
+  const anySeat = await ctx.db
+    .query("seatAssignments")
+    .withIndex("by_person", (q) => q.eq("personId", personId))
+    .first();
+  return anySeat !== null;
+}
+
 /**
- * Assert the caller is a manager (has at least one direct report) or a
- * chapter admin. The gate for org-shaping edits: responsibility definitions
- * and the runbook docs they point at.
+ * True iff `personId` manages at least one other person, seat-derived first,
+ * `managerId` fallback per-person — the ONE "am I a manager?" check every
+ * read surface (`nav.canManage`) and write gate (`requireManagerOrAdmin`)
+ * shares, so a seat-only manager is never shown an affordance that then
+ * 403s. Built on the SAME `buildEffectiveChildrenOf` `manageablePersonIds`
+ * uses — one derivation, several call sites.
+ *
+ * Cheap path first (a stored `managerId` report — the common case for an
+ * established manager). If that's empty, checks whether `personId` holds ANY
+ * seat (one more cheap indexed read, see `holdsAnySeat`) before paying for
+ * the full roster + org-chart load that a seat-aware answer requires — an
+ * ordinary seatless caller with no stored reports (the overwhelming common
+ * case, e.g. every plain volunteer) short-circuits to `false` without ever
+ * touching the roster or seat tables. This keeps `nav`'s per-screen poll
+ * cheap for everyone except an actual seat-holder.
+ */
+export async function hasEffectiveReports(
+  ctx: QueryCtx,
+  chapterId: Id<"chapters">,
+  personId: Id<"people">,
+): Promise<boolean> {
+  const firstReport = await ctx.db
+    .query("people")
+    .withIndex("by_manager", (q) => q.eq("managerId", personId))
+    .first();
+  if (firstReport !== null) return true;
+
+  if (!(await holdsAnySeat(ctx, personId))) return false;
+
+  const [roster, index] = await Promise.all([
+    chapterRoster(ctx, chapterId),
+    loadSeatManagerIndex(ctx, chapterId),
+  ]);
+  return (buildEffectiveChildrenOf(index, roster).get(personId) ?? []).length > 0;
+}
+
+/**
+ * Assert the caller is a manager (has at least one direct report, seat-derived
+ * or stored) or a chapter admin. The gate for org-shaping edits: responsibility
+ * definitions and the runbook docs they point at.
  */
 export async function requireManagerOrAdmin(
   ctx: QueryCtx,
@@ -296,13 +349,7 @@ export async function requireManagerOrAdmin(
 ): Promise<void> {
   if (await isChapterAdmin(ctx, chapterId)) return;
   const viewer = await viewerPerson(ctx, chapterId);
-  if (viewer) {
-    const firstReport = await ctx.db
-      .query("people")
-      .withIndex("by_manager", (q) => q.eq("managerId", viewer._id))
-      .first();
-    if (firstReport !== null) return;
-  }
+  if (viewer && (await hasEffectiveReports(ctx, chapterId, viewer._id))) return;
   throw new ConvexError({
     code: "FORBIDDEN",
     message: "Only managers and admins can do this.",
@@ -344,6 +391,12 @@ export async function readableCheckInSubject(
  * admins (returned as null, meaning "no restriction"), the caller's subtree if
  * they're on the roster, or the empty set. Pass `roster` when the caller
  * already loaded it, to avoid a second chapter-wide read.
+ *
+ * Seat-derived first, `managerId` fallback per-person — the SAME
+ * `buildEffectiveChildrenOf` the read surfaces (`org.overview`/`org.workload`)
+ * use, so a seat-only manager's WRITE reach (`checkIns.log`, `projects.remove`,
+ * event-role reassignment — everything that calls this) never disagrees with
+ * what they were just shown they could manage.
  */
 export async function manageablePersonIds(
   ctx: QueryCtx,
@@ -354,5 +407,6 @@ export async function manageablePersonIds(
   const people = roster ?? (await chapterRoster(ctx, chapterId));
   const viewer = await viewerFromRoster(ctx, people);
   if (!viewer) return new Set();
-  return subtreeIds(buildChildrenOf(people), viewer);
+  const index = await loadSeatManagerIndex(ctx, chapterId);
+  return subtreeIds(buildEffectiveChildrenOf(index, people), viewer);
 }

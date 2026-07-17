@@ -7,6 +7,7 @@
  * real seats, and check the manager/report relationships those queries derive.
  */
 import { describe, expect, test } from "vitest";
+import { ConvexError } from "convex/values";
 import { api } from "../_generated/api";
 import type { Id } from "../_generated/dataModel";
 import { runSeedSeatDefs } from "../migrations/0022_seed_seat_defs";
@@ -207,5 +208,63 @@ describe("seat-derived reports flip canManage (org.nav / org.overview / org.work
       canManage: false,
     });
     expect((await asVic.query(api.org.overview)).canManage).toBe(false);
+  });
+});
+
+// The read surfaces above (`nav`/`overview`/`workload`) and the WRITE gates
+// below (`checkIns.log` via `manageablePersonIds`, `responsibilities.create`
+// via `requireManagerOrAdmin`) must agree exactly — both are built on the
+// SAME `buildEffectiveChildrenOf`/`hasEffectiveReports` derivation in
+// `lib/org.ts`, so a seat-only manager is never shown an affordance
+// (canManage: true, a visible "Log 1:1" / "Add duty" button) that then 403s.
+describe("seat-derived write gates agree with reads (manageablePersonIds / requireManagerOrAdmin)", () => {
+  test("a seat-only chapter_director can log a check-in for, and create a responsibility affecting, a seat-derived report", async () => {
+    const s = await seatSetup();
+    const dana = await makePerson(s, "Dana"); // no stored managerId reports point at Dana
+    const mia = await makePerson(s, "Mia"); // seat-derived report only, no managerId set
+    await assign(s, "chapter_director", s.chapterId, dana);
+    await assign(s, "music_lead", s.chapterId, mia);
+    const asDana = await addUser(s, "dana-write@publicworship.life", dana);
+
+    // WRITE: checkIns.log (gated by `manageablePersonIds`).
+    await expect(
+      asDana.mutation(api.checkIns.log, { personId: mia, type: "skip" }),
+    ).resolves.not.toThrow();
+
+    // WRITE: responsibilities.create (gated by `requireManagerOrAdmin`).
+    await expect(
+      asDana.mutation(api.responsibilities.create, {
+        title: "Book the rehearsal space",
+      }),
+    ).resolves.not.toThrow();
+  });
+
+  test("a non-manager remains FORBIDDEN from both write gates", async () => {
+    const s = await seatSetup();
+    const dana = await makePerson(s, "Dana");
+    const vic = await makePerson(s, "Vic"); // no seat, no reports of either kind
+    await assign(s, "chapter_director", s.chapterId, dana);
+    const asVic = await addUser(s, "vic-write@publicworship.life", vic);
+
+    await expect(
+      asVic.mutation(api.checkIns.log, { personId: dana, type: "skip" }),
+    ).rejects.toThrow(ConvexError);
+    await expect(
+      asVic.mutation(api.responsibilities.create, { title: "Not allowed" }),
+    ).rejects.toThrow(ConvexError);
+  });
+
+  test("a stored-managerId manager (no seats involved at all) is unchanged", async () => {
+    const s = await seatSetup();
+    const bob = await makePerson(s, "Bob");
+    const cara = await makePerson(s, "Cara", { managerId: bob });
+    const asBob = await addUser(s, "bob-write@publicworship.life", bob);
+
+    await expect(
+      asBob.mutation(api.checkIns.log, { personId: cara, type: "skip" }),
+    ).resolves.not.toThrow();
+    await expect(
+      asBob.mutation(api.responsibilities.create, { title: "Legacy-managed duty" }),
+    ).resolves.not.toThrow();
   });
 });

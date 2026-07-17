@@ -38,6 +38,7 @@ import {
   loadSeatManagerIndex,
   buildEffectiveChildrenOf,
   resolveEffectiveManagers,
+  hasEffectiveReports,
 } from "./lib/org";
 
 /** The slim person shape the org surfaces render (no contact details). */
@@ -185,26 +186,16 @@ export const nav = query({
     const self = await viewerPerson(ctx, chapterId as Id<"chapters">);
     let canManage = isAdmin;
     if (!canManage && self) {
-      // Cheap path first (the common case: a stored-`managerId` report) since
-      // this is polled on every screen. Only fall to the heavier seat-aware
-      // check — which loads the whole roster + org chart — when that finds
-      // nothing, so a caller who's ONLY a manager via a held seat (no
-      // managerId-based reports at all) still gets `canManage: true`.
-      const firstReport = await ctx.db
-        .query("people")
-        .withIndex("by_manager", (q) => q.eq("managerId", self._id))
-        .first();
-      if (firstReport !== null) {
-        canManage = true;
-      } else {
-        const [roster, index] = await Promise.all([
-          chapterRoster(ctx, chapterId as Id<"chapters">),
-          loadSeatManagerIndex(ctx, chapterId as Id<"chapters">),
-        ]);
-        canManage =
-          (buildEffectiveChildrenOf(index, roster).get(self._id) ?? [])
-            .length > 0;
-      }
+      // `hasEffectiveReports` is the SAME seat-aware check `requireManagerOrAdmin`
+      // (the write gate) uses — cheap for the common case (a stored-`managerId`
+      // report, or a seatless caller with none), only paying for the full
+      // roster + org-chart load when the caller actually holds a seat. See
+      // `lib/org.ts` for why that's a safe short-circuit.
+      canManage = await hasEffectiveReports(
+        ctx,
+        chapterId as Id<"chapters">,
+        self._id,
+      );
     }
     // Team-surface policy, stated ONCE for every client. Read is transparent:
     // the whole org view for admins, managers, AND every roster member (so
@@ -406,14 +397,26 @@ export const workload = query({
     return {
       person: { ...slim(person), email: person.email ?? null },
       caller,
-      // Read is transparent within a chapter, but a cross-chapter
-      // central-seat manager's OWN workload page isn't openable from here
-      // (this query is scoped to the caller's chapter) — `viewable` reflects
-      // that so the client doesn't render a dead link.
-      managers: managerDocs.map((m) => ({
-        ...slim(m),
-        viewable: m.chapterId === person.chapterId,
-      })),
+      // A cross-chapter central-seat manager is a NEW possibility this PR
+      // introduces (the stored-`managerId` fallback was always same-chapter).
+      // Showing their name at all is consistent with `seats.chart`'s
+      // deliberate org-transparency decision (2026-07-16, see `seats.ts`'s
+      // file doc: the org chart is visible to every signed-in member,
+      // cross-chapter, by design) — but the shape exposed here is trimmed to
+      // the SAME slim fields the chart exposes (`chartHolderValidator`:
+      // name + image, not `managerId`/`role`/other roster internals from a
+      // chapter the caller may not belong to). `viewable` is `false` for a
+      // cross-chapter manager since `workload` itself is chapter-scoped —
+      // their own page isn't openable from here, so the client doesn't
+      // render a dead link.
+      managers: await Promise.all(
+        managerDocs.map(async (m) => ({
+          _id: m._id,
+          name: m.name,
+          imageUrl: m.image ? await ctx.storage.getUrl(m.image) : null,
+          viewable: m.chapterId === person.chapterId,
+        })),
+      ),
       reports: reports.map((r) => ({
         ...slim(r),
         reportCount: (childrenOf.get(r._id) ?? []).length,
