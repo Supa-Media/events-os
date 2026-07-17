@@ -137,8 +137,8 @@ async function seat(
   defId: Id<"seatDefs">,
   scope: Id<"chapters"> | "central",
   personId: Id<"people">,
-) {
-  await run(s.t, (ctx) =>
+): Promise<Id<"seatAssignments">> {
+  return run(s.t, (ctx) =>
     ctx.db.insert("seatAssignments", { seatDefId: defId, scope, personId, createdAt: Date.now() }),
   );
 }
@@ -812,17 +812,275 @@ describe("seatProposals access control", () => {
   });
 });
 
-// ── approve — BLOCKED ────────────────────────────────────────────────────────
+// ── approve — executes with full assignSeat/unassignSeat validation parity ─
 //
-// `approve` (execute the change atomically via `seats.assignSeat`/
-// `unassignSeat`'s validated path) is NOT YET SHIPPED — see the file-level
-// doc comment in `seatProposals.ts` for the precise ~15-line export needed
-// from `seats.ts` (out of scope: `seats.ts` is owned by other in-flight
-// branches). These stubs document the intended coverage so it isn't lost;
-// `.skip` keeps the suite green without asserting anything false.
-describe.skip("seatProposals.approve — BLOCKED on a seats.ts export (see seatProposals.ts doc comment)", () => {
-  test.todo("approval executes the seat change with full assignSeat parity (maxHolders replace)");
-  test.todo("a SoD violation at execution time fails the approval as a proposal failure, not a silent skip");
-  test.todo("approval reverses/creates the specializedRoles write-through exactly like assignSeat/unassignSeat");
-  test.todo("approving flips status to \"approved\" and sets decidedByPersonId/decidedAt atomically with the seat change");
+// `approve` calls `seats.ts`'s exported `assignSeatImpl`/`unassignSeatImpl`
+// (auth-free helpers behind the public, superuser-gated `assignSeat`/
+// `unassignSeat` mutations) — the EXACT SAME validated path, never
+// duplicated. See the file-level doc comment in `seatProposals.ts`.
+
+/** The `specializedRoles` slot row at (scope, title), or null — mirrors
+ *  `seats.test.ts`'s helper of the same name. */
+async function specializedRoleRow(
+  s: ChapterSetup,
+  scope: Id<"chapters"> | "central",
+  title: "executive_director" | "president" | "finance_manager",
+) {
+  return run(s.t, (ctx) =>
+    ctx.db
+      .query("specializedRoles")
+      .withIndex("by_scope_and_title", (q) => q.eq("scope", scope).eq("title", title))
+      .first(),
+  );
+}
+
+/** The person's `financeRoles` grant at a scope, or null — mirrors
+ *  `seats.test.ts`'s helper of the same name. */
+async function financeGrant(
+  s: ChapterSetup,
+  scope: Id<"chapters"> | "central",
+  personId: Id<"people">,
+) {
+  return run(s.t, (ctx) =>
+    ctx.db
+      .query("financeRoles")
+      .withIndex("by_chapter_and_person", (q) => q.eq("chapterId", scope).eq("personId", personId))
+      .first(),
+  );
+}
+
+/** Seed a proposer holding `chapter_director` at `s.chapterId` and a decider
+ *  holding `expansion_director` at central (above them, via the
+ *  CHAPTER_ROLLUP_PARENT bridge) — the standard rig every `approve` test
+ *  below builds on. */
+async function proposerAndDeciderRig(s: ChapterSetup) {
+  const cdDef = await defBySlug(s, "chapter_director");
+  const expansionDef = await defBySlug(s, "expansion_director");
+  const proposer = await personActor(s, s.chapterId, "CD-Approve", `cd-approve-${Math.random()}@publicworship.life`);
+  await seat(s, cdDef._id, s.chapterId, proposer.personId);
+  const decider = await personActor(s, s.chapterId, "Expansion-Approve", `expansion-approve-${Math.random()}@publicworship.life`);
+  await seat(s, expansionDef._id, "central", decider.personId);
+  return { proposer, decider };
+}
+
+describe("seatProposals.approve", () => {
+  test("executes the seat change with full assignSeat parity (maxHolders===1 replaces the incumbent)", async () => {
+    const s = await baseSetup();
+    const { proposer, decider } = await proposerAndDeciderRig(s);
+    const musicLeadDef = await defBySlug(s, "music_lead");
+    const incumbent = await makePerson(s, s.chapterId, "Incumbent");
+    const incumbentAssignmentId = await seat(s, musicLeadDef._id, s.chapterId, incumbent);
+    const replacement = await makePerson(s, s.chapterId, "Replacement");
+
+    const proposalId = await proposer.as.mutation(api.seatProposals.propose, {
+      seatDefId: musicLeadDef._id,
+      scope: s.chapterId,
+      action: "fill",
+      subjectPersonId: replacement,
+    });
+    await decider.as.mutation(api.seatProposals.approve, { proposalId });
+
+    // The incumbent's OLD assignment row is gone (maxHolders===1 replace,
+    // not a second row) — exactly what `assignSeat` itself does.
+    expect(await run(s.t, (ctx) => ctx.db.get(incumbentAssignmentId))).toBeNull();
+    const rows = await run(s.t, (ctx) =>
+      ctx.db
+        .query("seatAssignments")
+        .withIndex("by_scope_and_seat", (q) =>
+          q.eq("scope", s.chapterId).eq("seatDefId", musicLeadDef._id),
+        )
+        .collect(),
+    );
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.personId).toBe(replacement);
+  });
+
+  test("a SoD violation at execution time leaves the proposal PENDING with the error surfaced, not silently declined", async () => {
+    const s = await baseSetup();
+    const cdDef = await defBySlug(s, "chapter_director");
+    const treasurerDef = await defBySlug(s, "treasurer");
+    const expansionDef = await defBySlug(s, "expansion_director");
+    const edDef = await defBySlug(s, "executive_director");
+
+    // A 3-level rig: expansion_director proposes INTO the chapter (via the
+    // rollup bridge), executive_director (above expansion_director) decides.
+    const proposer = await personActor(s, s.chapterId, "Expansion-Sod", "expansion-sod@publicworship.life");
+    await seat(s, expansionDef._id, "central", proposer.personId);
+    const decider = await personActor(s, s.chapterId, "ED-Sod", "ed-sod@publicworship.life");
+    await seat(s, edDef._id, "central", decider.personId);
+
+    // The SUBJECT (distinct from the proposer) already holds treasurer
+    // (record-side) at this chapter — proposing to ALSO fill chapter_director
+    // (approve-side) for them at the SAME scope is a SoD conflict `propose`
+    // never checks (only `assignSeatImpl` does) — so it must surface at
+    // `approve` time, not `propose` time.
+    const subject = await makePerson(s, s.chapterId, "AlreadyTreasurer");
+    const treasurerAssignmentId = await seat(s, treasurerDef._id, s.chapterId, subject);
+
+    const proposalId = await proposer.as.mutation(api.seatProposals.propose, {
+      seatDefId: cdDef._id,
+      scope: s.chapterId,
+      action: "fill",
+      subjectPersonId: subject,
+    });
+
+    await expect(
+      decider.as.mutation(api.seatProposals.approve, { proposalId }),
+    ).rejects.toBeInstanceOf(ConvexError);
+
+    // The WHOLE transaction rolled back: no chapter_director assignment was
+    // created, and the proposal is untouched — still pending, not
+    // auto-declined.
+    const cdRows = await run(s.t, (ctx) =>
+      ctx.db
+        .query("seatAssignments")
+        .withIndex("by_scope_and_seat", (q) =>
+          q.eq("scope", s.chapterId).eq("seatDefId", cdDef._id),
+        )
+        .collect(),
+    );
+    expect(cdRows).toHaveLength(0);
+    const mine = await proposer.as.query(api.seatProposals.myProposals, {});
+    expect(mine.find((p) => p.proposalId === proposalId)?.status).toBe("pending");
+
+    // The proposal is still actionable: once the conflict clears (the
+    // subject's treasurer seat is removed, WITHOUT touching the proposer's or
+    // decider's own qualifying seats), the SAME proposal can still succeed —
+    // it isn't dead.
+    await run(s.t, (ctx) => ctx.db.delete(treasurerAssignmentId));
+    await decider.as.mutation(api.seatProposals.approve, { proposalId });
+    const decided = (await proposer.as.query(api.seatProposals.myProposals, {})).find(
+      (p) => p.proposalId === proposalId,
+    );
+    expect(decided?.status).toBe("approved");
+  });
+
+  test("write-through parity: filling a legacyTitle seat bridges specializedRoles + financeRoles exactly like assignSeat", async () => {
+    const s = await baseSetup();
+    const { proposer, decider } = await proposerAndDeciderRig(s);
+    const treasurerDef = await defBySlug(s, "treasurer");
+    const subject = await makePerson(s, s.chapterId, "NewTreasurer");
+
+    const proposalId = await proposer.as.mutation(api.seatProposals.propose, {
+      seatDefId: treasurerDef._id,
+      scope: s.chapterId,
+      action: "fill",
+      subjectPersonId: subject,
+    });
+    await decider.as.mutation(api.seatProposals.approve, { proposalId });
+
+    const roleRow = await specializedRoleRow(s, s.chapterId, "finance_manager");
+    expect(roleRow?.personId).toBe(subject);
+    const grant = await financeGrant(s, s.chapterId, subject);
+    expect(grant?.role).toBe("manager");
+  });
+
+  test("write-through parity: vacating a legacyTitle seat reverses the bridge exactly like unassignSeat", async () => {
+    const s = await baseSetup();
+    const { proposer, decider } = await proposerAndDeciderRig(s);
+    const treasurerDef = await defBySlug(s, "treasurer");
+    const holder = await makePerson(s, s.chapterId, "OutgoingTreasurer");
+
+    // Seed the CURRENT holder through the real superuser `assignSeat` path
+    // (not a raw insert) so the specializedRoles/financeRoles write-through
+    // genuinely exists to reverse — mirrors `seats.test.ts`'s own setup.
+    const { as: suAs } = await signInAs(s.t, "seyi@publicworship.life");
+    await suAs.mutation(api.seats.assignSeat, {
+      seatDefId: treasurerDef._id,
+      scope: s.chapterId,
+      personId: holder,
+    });
+    expect((await financeGrant(s, s.chapterId, holder))?.role).toBe("manager");
+
+    const proposalId = await proposer.as.mutation(api.seatProposals.propose, {
+      seatDefId: treasurerDef._id,
+      scope: s.chapterId,
+      action: "vacate",
+      subjectPersonId: holder,
+    });
+    await decider.as.mutation(api.seatProposals.approve, { proposalId });
+
+    expect(await specializedRoleRow(s, s.chapterId, "finance_manager")).toBeNull();
+    expect(await financeGrant(s, s.chapterId, holder)).toBeNull();
+  });
+
+  test("sets status/decidedByPersonId/decidedAt atomically with the seat change", async () => {
+    const s = await baseSetup();
+    const { proposer, decider } = await proposerAndDeciderRig(s);
+    const musicLeadDef = await defBySlug(s, "music_lead");
+    const subject = await makePerson(s, s.chapterId, "Subject");
+
+    const proposalId = await proposer.as.mutation(api.seatProposals.propose, {
+      seatDefId: musicLeadDef._id,
+      scope: s.chapterId,
+      action: "fill",
+      subjectPersonId: subject,
+    });
+
+    // Before approval: no seat assignment exists yet.
+    const before = await run(s.t, (ctx) =>
+      ctx.db
+        .query("seatAssignments")
+        .withIndex("by_scope_and_seat", (q) =>
+          q.eq("scope", s.chapterId).eq("seatDefId", musicLeadDef._id),
+        )
+        .collect(),
+    );
+    expect(before).toHaveLength(0);
+
+    await decider.as.mutation(api.seatProposals.approve, { proposalId });
+
+    const decided = (await proposer.as.query(api.seatProposals.myProposals, {})).find(
+      (p) => p.proposalId === proposalId,
+    )!;
+    expect(decided.status).toBe("approved");
+    expect(decided.decidedByPersonId).toBe(decider.personId);
+    expect(decided.decidedAt).toBeGreaterThan(0);
+
+    const after = await run(s.t, (ctx) =>
+      ctx.db
+        .query("seatAssignments")
+        .withIndex("by_scope_and_seat", (q) =>
+          q.eq("scope", s.chapterId).eq("seatDefId", musicLeadDef._id),
+        )
+        .collect(),
+    );
+    expect(after).toHaveLength(1);
+    expect(after[0]!.personId).toBe(subject);
+  });
+
+  test("the proposer can never approve their own proposal", async () => {
+    const s = await baseSetup();
+    const { proposer } = await proposerAndDeciderRig(s);
+    const musicLeadDef = await defBySlug(s, "music_lead");
+    const subject = await makePerson(s, s.chapterId, "Subject");
+    const proposalId = await proposer.as.mutation(api.seatProposals.propose, {
+      seatDefId: musicLeadDef._id,
+      scope: s.chapterId,
+      action: "fill",
+      subjectPersonId: subject,
+    });
+
+    await expect(
+      proposer.as.mutation(api.seatProposals.approve, { proposalId }),
+    ).rejects.toBeInstanceOf(ConvexError);
+  });
+
+  test("approve rejects a non-pending proposal", async () => {
+    const s = await baseSetup();
+    const { proposer, decider } = await proposerAndDeciderRig(s);
+    const musicLeadDef = await defBySlug(s, "music_lead");
+    const subject = await makePerson(s, s.chapterId, "Subject");
+    const proposalId = await proposer.as.mutation(api.seatProposals.propose, {
+      seatDefId: musicLeadDef._id,
+      scope: s.chapterId,
+      action: "fill",
+      subjectPersonId: subject,
+    });
+    await proposer.as.mutation(api.seatProposals.cancel, { proposalId });
+
+    await expect(
+      decider.as.mutation(api.seatProposals.approve, { proposalId }),
+    ).rejects.toBeInstanceOf(ConvexError);
+  });
 });

@@ -21,58 +21,28 @@
  * is above it) and any `derived` seat (holders are computed, never assigned)
  * can never be the SUBJECT of a proposal — rejected at propose time.
  *
- * ── BLOCKED: `approve` is not yet shipped ──────────────────────────────────
- * Approving a proposal must EXECUTE the change atomically through the exact
- * same validated path `seats.assignSeat`/`unassignSeat` enforce (maxHolders
+ * `approve` EXECUTES the change atomically through the exact same validated
+ * path `seats.assignSeat`/`unassignSeat` enforce — `assignSeatImpl`/
+ * `unassignSeatImpl` (exported by `seats.ts`, auth-free, mirroring
+ * `specializedRoles.assignSpecializedRoleImpl`'s contract exactly): maxHolders
  * replace-or-cap, scope-local SoD, derived-seat rejection, the
- * `specializedRoles`/finance write-through bridge) — a proposal approval must
- * NEVER bypass a check direct assignment enforces, and this file must never
- * duplicate that validation logic (the two copies WOULD drift).
- *
- * `seats.ts`'s `assignSeat`/`unassignSeat` mutations embed that validation
- * directly in their `requireSuperuser`-gated handlers — unlike
- * `specializedRoles.ts`, which cleanly separates an auth-free
- * `assignSpecializedRoleImpl`/`removeSpecializedRoleImpl` (exported, called
- * directly by both `specializedRoles.assignSpecializedRole` AND
- * `seats.assignSeat`'s write-through). Calling the PUBLIC `seats.assignSeat`
- * via `ctx.runMutation` doesn't work either: the nested call still runs under
- * the ORIGINAL caller's identity, so `requireSuperuser` inside it would
- * reject every non-superuser approver — exactly the people this feature
- * exists to let approve without a superuser in the loop.
- *
- * Needed (mirrors `specializedRoles.ts`'s pattern exactly), a ~15-line
- * extraction from `seats.ts` (out of scope for this file per the task's file
- * ownership — `seats.ts` is owned by other in-flight branches):
- *
- *   export async function assignSeatImpl(
- *     ctx: MutationCtx,
- *     userId: Id<"users">,
- *     args: { seatDefId: Id<"seatDefs">; scope: Id<"chapters"> | "central"; personId: Id<"people"> },
- *   ): Promise<Id<"seatAssignments">> { ...the current assignSeat handler body, verbatim, minus the
- *     `requireSuperuser`/`requireUserId` lines... }
- *
- *   export async function unassignSeatImpl(
- *     ctx: MutationCtx,
- *     assignmentId: Id<"seatAssignments">,
- *   ): Promise<null> { ...the current unassignSeat handler body, verbatim, minus `requireSuperuser`... }
- *
- * with the public `assignSeat`/`unassignSeat` mutations becoming thin
- * `requireSuperuser` + `assignSeatImpl(...)` wrappers (exactly how
- * `specializedRoles.assignSpecializedRole` wraps `assignSpecializedRoleImpl`
- * today). Once that lands, `approve` here becomes: resolve eligibility (the
- * exact same `resolveEligibleApprovers` helper `decline` already uses below,
- * fully implemented + tested), then call `assignSeatImpl`/`unassignSeatImpl`
- * and flip `status` to `"approved"` in the SAME transaction.
- *
- * Everything else in this file (schema, `propose`, `decline`, `cancel`,
- * `pendingProposals`, `myProposals`, and the full tree-walk/authorization
- * machinery `approve` will reuse) is complete and tested.
+ * `specializedRoles`/finance write-through bridge. A proposal approval NEVER
+ * bypasses a check direct assignment enforces, and this file never duplicates
+ * that validation logic. If execution throws (e.g. a SoD violation that
+ * arose after `propose` time), the whole mutation throws too — Convex rolls
+ * back the ENTIRE transaction, so the proposal row is untouched and stays
+ * `"pending"` with the `ConvexError` surfaced directly to the approver (their
+ * client sees exactly the same error `assignSeat` would have thrown). We
+ * deliberately do NOT auto-decline on a validation failure — the underlying
+ * seat state may become valid again (e.g. the conflicting holder is removed),
+ * and the proposal should still be actionable rather than silently dead.
  */
 import { query, mutation } from "./_generated/server";
 import { ConvexError, v } from "convex/values";
 import { Doc, Id } from "./_generated/dataModel";
 import type { QueryCtx, MutationCtx } from "./_generated/server";
 import { SEAT_ROOT, CHAPTER_ROLLUP_PARENT, MULTI_HOLDER_CAP } from "@events-os/shared";
+import { assignSeatImpl, unassignSeatImpl } from "./seats";
 import { requireAccess, requireUserId } from "./lib/context";
 
 type Scope = Id<"chapters"> | "central";
@@ -512,10 +482,92 @@ export const propose = mutation({
 });
 
 /**
+ * Approve a pending proposal — EXECUTES the seat change atomically (see the
+ * file-level doc comment for why this reuses `seats.ts`'s
+ * `assignSeatImpl`/`unassignSeatImpl` rather than duplicating validation).
+ * Requires the caller to be an ELIGIBLE DECIDER (see `resolveEligibleDeciders`
+ * — same resolver `decline` uses). The proposer may never decide their own
+ * proposal. If execution throws (maxHolders, SoD, derived-seat, or a
+ * `"vacate"` whose subject no longer holds the seat), the ENTIRE mutation
+ * rolls back — the proposal stays `"pending"` and the error surfaces to the
+ * approver verbatim; we do not auto-decline (see file doc comment for why).
+ */
+export const approve = mutation({
+  args: { proposalId: v.id("seatProposals") },
+  returns: v.null(),
+  handler: async (ctx, { proposalId }) => {
+    await requireAccess(ctx);
+    const proposal = await ctx.db.get(proposalId);
+    if (!proposal) {
+      throw new ConvexError({ code: "NOT_FOUND", message: "That proposal doesn't exist." });
+    }
+    if (proposal.status !== "pending") {
+      throw new ConvexError({
+        code: "NOT_PENDING",
+        message: "This proposal has already been decided.",
+      });
+    }
+
+    const callerUserId = (await requireUserId(ctx)) as Id<"users">;
+    const callerPersonIds = await myPersonIds(ctx);
+    if (callerPersonIds.includes(proposal.proposedByPersonId)) {
+      throw new ConvexError({
+        code: "CANNOT_DECIDE_OWN",
+        message: "You can't decide your own proposal.",
+      });
+    }
+
+    const resolved = await resolveEligibleDeciders(ctx, proposal);
+    const deciderPersonId = resolved?.eligiblePersonIds.find((id) =>
+      callerPersonIds.includes(id),
+    );
+    if (!deciderPersonId) {
+      throw new ConvexError({
+        code: "FORBIDDEN",
+        message: "You're not eligible to decide this proposal.",
+      });
+    }
+
+    // Execute — the exact validated path `assignSeat`/`unassignSeat` enforce.
+    // A thrown ConvexError here aborts the WHOLE transaction (nothing below
+    // runs, and nothing above persists either), so the proposal is left
+    // exactly as it was: still "pending".
+    if (proposal.action === "fill") {
+      await assignSeatImpl(ctx, callerUserId, {
+        seatDefId: proposal.seatDefId,
+        scope: proposal.scope,
+        personId: proposal.subjectPersonId,
+      });
+    } else {
+      const holders = await ctx.db
+        .query("seatAssignments")
+        .withIndex("by_scope_and_seat", (q) =>
+          q.eq("scope", proposal.scope).eq("seatDefId", proposal.seatDefId),
+        )
+        .take(MAX_SLOT_READ);
+      const current = holders.find((h) => h.personId === proposal.subjectPersonId);
+      if (!current) {
+        throw new ConvexError({
+          code: "NOT_HOLDER",
+          message: "That person no longer holds this seat — nothing to vacate.",
+        });
+      }
+      await unassignSeatImpl(ctx, current._id);
+    }
+
+    await ctx.db.patch(proposalId, {
+      status: "approved",
+      decidedByPersonId: deciderPersonId,
+      decidedAt: Date.now(),
+    });
+    return null;
+  },
+});
+
+/**
  * Decline a pending proposal. Requires the caller to be an ELIGIBLE DECIDER
- * (see `resolveEligibleDeciders`) — the same authorization `approve` will
- * use once it's wired to seat-change execution (see the file-level doc
- * comment). The proposer may never decide their own proposal.
+ * (see `resolveEligibleDeciders`) — the same authorization `approve` uses.
+ * The proposer may never decide their own proposal.
  */
 export const decline = mutation({
   args: { proposalId: v.id("seatProposals") },
