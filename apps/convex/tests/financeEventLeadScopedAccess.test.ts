@@ -100,13 +100,13 @@ async function seedProject(s: ChapterSetup, name: string): Promise<Id<"projects"
 async function seedEventBudget(
   s: ChapterSetup,
   eventId: Id<"events">,
-  opts: { chapterId?: Id<"chapters"> | "central" } = {},
+  opts: { chapterId?: Id<"chapters"> | "central"; type?: "one_time" | "recurring" } = {},
 ): Promise<Id<"budgets">> {
   return await run(s.t, (ctx) =>
     ctx.db.insert("budgets", {
       chapterId: opts.chapterId ?? s.chapterId,
       amountCents: 100000,
-      type: "one_time",
+      type: opts.type ?? "one_time",
       refKind: "event",
       scopeRefId: eventId,
       cadence: "per_instance",
@@ -139,7 +139,10 @@ async function seedProjectBudget(
 async function seedTxn(
   s: ChapterSetup,
   budgetId: Id<"budgets">,
-  opts: { chapterId?: Id<"chapters"> | "central"; status?: "unreviewed" | "categorized" } = {},
+  opts: {
+    chapterId?: Id<"chapters"> | "central";
+    status?: "unreviewed" | "categorized" | "reconciled" | "excluded";
+  } = {},
 ): Promise<Id<"transactions">> {
   return await run(s.t, (ctx) =>
     ctx.db.insert("transactions", {
@@ -405,5 +408,123 @@ describe("finance: event-lead scoped note/receipt/category access", () => {
     });
     const txn = await run(t, (ctx) => ctx.db.get(txnId));
     expect(txn?.receiptStorageId).toBe(storageId);
+  });
+
+  // ── Opus review follow-ups (PR #218) ──────────────────────────────────────
+
+  test("defensive guard: eventForTxn returns null (no event-lead carve-out) for a budget whose refKind is 'event' but type ISN'T one_time", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const owner = await addMember(s, { email: "owner@publicworship.life", name: "Owner" });
+    const eventId = await seedEvent(s, { ownerPersonId: owner.personId });
+    // Malformed on purpose (bypasses every real creation path's invariant) —
+    // pins the new `type === "one_time"` belt-and-suspenders check.
+    const budgetId = await seedEventBudget(s, eventId, { type: "recurring" });
+    const txnId = await seedTxn(s, budgetId);
+
+    await expect(
+      owner.as.mutation(api.finances.setTransactionNote, {
+        transactionId: txnId,
+        note: "Should be blocked — budget isn't really one_time",
+      }),
+    ).rejects.toBeInstanceOf(ConvexError);
+  });
+
+  test("RECONCILED LOCK: the event owner CANNOT re-categorize a reconciled transaction — clear error, ask the treasurer to reopen it", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const owner = await addMember(s, { email: "owner@publicworship.life", name: "Owner" });
+    const eventId = await seedEvent(s, { ownerPersonId: owner.personId });
+    const budgetId = await seedEventBudget(s, eventId);
+    const txnId = await seedTxn(s, budgetId, { status: "reconciled" });
+    const categoryId = await run(s.t, async (ctx) => {
+      const fundId = await ctx.db.insert("funds", {
+        chapterId: s.chapterId,
+        name: "General Fund",
+        restriction: "unrestricted",
+        sortOrder: 0,
+        isActive: true,
+        createdAt: Date.now(),
+      });
+      return ctx.db.insert("budgetCategories", {
+        chapterId: s.chapterId,
+        fundId,
+        name: "Production",
+        kind: "lineItem",
+        isActive: true,
+        createdAt: Date.now(),
+      });
+    });
+
+    let caught: unknown;
+    try {
+      await owner.as.mutation(api.finances.setTransactionCategory, {
+        transactionId: txnId,
+        categoryId,
+      });
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(ConvexError);
+    expect((caught as ConvexError<{ code: string }>).data.code).toBe("RECONCILED_LOCKED");
+
+    // Clearing the category (null) is locked too, not just setting a new one.
+    await expect(
+      owner.as.mutation(api.finances.setTransactionCategory, {
+        transactionId: txnId,
+        categoryId: null,
+      }),
+    ).rejects.toBeInstanceOf(ConvexError);
+
+    const txn = await run(t, (ctx) => ctx.db.get(txnId));
+    expect(txn?.categoryId).toBeUndefined(); // untouched by either rejected attempt
+  });
+
+  test("RECONCILED LOCK does not apply to a bookkeeper+ caller — their existing power to re-categorize a reconciled txn is unchanged", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const bookkeeper = await addMember(s, {
+      email: "bookkeeper@publicworship.life",
+      name: "Bookkeeper",
+    });
+    await run(s.t, (ctx) =>
+      ctx.db.insert("financeRoles", {
+        chapterId: s.chapterId,
+        personId: bookkeeper.personId,
+        role: "bookkeeper",
+        scope: "chapter",
+        createdAt: Date.now(),
+      }),
+    );
+    const owner = await addMember(s, { email: "owner@publicworship.life", name: "Owner" });
+    const eventId = await seedEvent(s, { ownerPersonId: owner.personId });
+    const budgetId = await seedEventBudget(s, eventId);
+    const txnId = await seedTxn(s, budgetId, { status: "reconciled" });
+    const categoryId = await run(s.t, async (ctx) => {
+      const fundId = await ctx.db.insert("funds", {
+        chapterId: s.chapterId,
+        name: "General Fund",
+        restriction: "unrestricted",
+        sortOrder: 0,
+        isActive: true,
+        createdAt: Date.now(),
+      });
+      return ctx.db.insert("budgetCategories", {
+        chapterId: s.chapterId,
+        fundId,
+        name: "Production",
+        kind: "lineItem",
+        isActive: true,
+        createdAt: Date.now(),
+      });
+    });
+
+    await bookkeeper.as.mutation(api.finances.setTransactionCategory, {
+      transactionId: txnId,
+      categoryId,
+    });
+    const txn = await run(t, (ctx) => ctx.db.get(txnId));
+    expect(txn?.categoryId).toBe(categoryId);
+    expect(txn?.status).toBe("reconciled"); // untouched — only categoryId changed
   });
 });
