@@ -1,4 +1,5 @@
 import { Pressable, Text, View } from "react-native";
+import { Icon } from "../ui";
 import { colors } from "../../lib/theme";
 import type { TreeNode } from "./treeUtils";
 
@@ -15,62 +16,82 @@ export const SEAT_BOX_WIDTH = 188;
  * border plus a "mirrors each chapter" hint. Tapping selects it for the
  * detail panel; one person legitimately appears in several boxes (pre-split
  * reality), so this never tries to dedupe holders across boxes.
+ *
+ * In structure-edit mode (`onAddSeat` provided), a small "+" affix appears
+ * bottom-right — the per-parent "add a seat under this one" affordance —
+ * without disturbing the box's own tap target for selection.
  */
 export function SeatBox({
   node,
   selected,
   onPress,
+  onAddSeat,
 }: {
   node: TreeNode;
   selected: boolean;
   onPress: () => void;
+  /** Present only in structure-edit mode — renders the "+" affix. */
+  onAddSeat?: (node: TreeNode) => void;
 }) {
   const { seat } = node;
 
   return (
-    <Pressable
-      accessibilityRole="button"
-      accessibilityLabel={`${seat.title}${seat.vacant ? ", vacant" : ""}`}
-      onPress={onPress}
-      style={{ width: SEAT_BOX_WIDTH }}
-      className={`gap-1 rounded-md border bg-raised px-3 py-2 shadow-card ${
-        selected ? "border-accent" : "border-border"
-      } ${seat.derived ? "border-dashed" : ""}`}
-    >
-      <Text
-        className="text-2xs font-bold uppercase tracking-wider text-muted"
-        numberOfLines={1}
+    <View style={{ width: SEAT_BOX_WIDTH }}>
+      <Pressable
+        accessibilityRole="button"
+        accessibilityLabel={`${seat.title}${seat.vacant ? ", vacant" : ""}`}
+        onPress={onPress}
+        className={`gap-1 rounded-md border bg-raised px-3 py-2 shadow-card ${
+          selected ? "border-accent" : "border-border"
+        } ${seat.derived ? "border-dashed" : ""}`}
       >
-        {seat.title}
-      </Text>
+        <Text
+          className="text-2xs font-bold uppercase tracking-wider text-muted"
+          numberOfLines={1}
+        >
+          {seat.title}
+        </Text>
 
-      {seat.vacant ? (
-        <View className="flex-row items-center gap-1.5">
-          <View
-            style={{
-              width: 8,
-              height: 8,
-              borderRadius: 4,
-              borderWidth: 1.5,
-              borderColor: colors.faint,
-            }}
-          />
-          <Text className="text-xs italic text-faint">Vacant</Text>
-        </View>
-      ) : (
-        <View className="flex-row items-center gap-1.5">
-          <View
-            style={{ width: 8, height: 8, borderRadius: 4, backgroundColor: colors.success }}
-          />
-          <Text className="flex-1 text-xs text-ink" numberOfLines={1}>
-            {seat.holders.length === 1 ? seat.holders[0].name : `${seat.holders.length} people`}
-          </Text>
-        </View>
-      )}
+        {seat.vacant ? (
+          <View className="flex-row items-center gap-1.5">
+            <View
+              style={{
+                width: 8,
+                height: 8,
+                borderRadius: 4,
+                borderWidth: 1.5,
+                borderColor: colors.faint,
+              }}
+            />
+            <Text className="text-xs italic text-faint">Vacant</Text>
+          </View>
+        ) : (
+          <View className="flex-row items-center gap-1.5">
+            <View
+              style={{ width: 8, height: 8, borderRadius: 4, backgroundColor: colors.success }}
+            />
+            <Text className="flex-1 text-xs text-ink" numberOfLines={1}>
+              {seat.holders.length === 1 ? seat.holders[0].name : `${seat.holders.length} people`}
+            </Text>
+          </View>
+        )}
 
-      {seat.derived ? (
-        <Text className="text-2xs italic text-faint">mirrors each chapter</Text>
+        {seat.derived ? (
+          <Text className="text-2xs italic text-faint">mirrors each chapter</Text>
+        ) : null}
+      </Pressable>
+
+      {onAddSeat ? (
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel={`Add a seat under ${seat.title}`}
+          onPress={() => onAddSeat(node)}
+          hitSlop={6}
+          className="absolute -bottom-2.5 -right-2.5 h-6 w-6 items-center justify-center rounded-pill border border-accent bg-raised shadow-card"
+        >
+          <Icon name="plus" size={13} color={colors.accent} />
+        </Pressable>
       ) : null}
-    </Pressable>
+    </View>
   );
 }

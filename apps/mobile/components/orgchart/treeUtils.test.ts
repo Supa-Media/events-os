@@ -11,6 +11,7 @@ import {
   findNodeByKey,
   findOrphanSeats,
   subtreeDepth,
+  subtreeSlugs,
   type ChartHolder,
   type FullChart,
   type SeatNode,
@@ -219,6 +220,36 @@ describe("subtreeDepth", () => {
     const b = root?.children.find((c) => c.seat.slug === "b");
     expect(subtreeDepth(a as TreeNode)).toBe(2); // a -> a1 -> a1x
     expect(subtreeDepth(b as TreeNode)).toBe(0); // leaf
+  });
+});
+
+// ── subtreeSlugs ─────────────────────────────────────────────────────────────
+
+describe("subtreeSlugs", () => {
+  test("includes the root slug itself plus every descendant, excludes siblings/ancestors", () => {
+    const slugs = subtreeSlugs(wellFormedSeats(), "a");
+    expect([...slugs].sort()).toEqual(["a", "a1", "a1x"]);
+  });
+
+  test("a leaf's subtree is just itself", () => {
+    expect(subtreeSlugs(wellFormedSeats(), "b")).toEqual(new Set(["b"]));
+  });
+
+  test("the chart root's subtree is every seat", () => {
+    const slugs = subtreeSlugs(wellFormedSeats(), "root-seat");
+    expect([...slugs].sort()).toEqual(["a", "a1", "a1x", "b", "c", "root-seat"]);
+  });
+
+  test("bounds recursion against a cyclic parentSlug chain instead of hanging", () => {
+    const seats: SeatNode[] = [
+      seat({ slug: "root-seat", parentSlug: SEAT_ROOT }),
+      seat({ slug: "x", parentSlug: "root-seat" }),
+      seat({ slug: "y", parentSlug: "x" }),
+      { ...seat({ slug: "x", parentSlug: "y" }), defId: "x2" as unknown as Id<"seatDefs"> },
+    ];
+    const start = Date.now();
+    subtreeSlugs(seats, "root-seat");
+    expect(Date.now() - start).toBeLessThan(2000); // didn't hang
   });
 });
 
