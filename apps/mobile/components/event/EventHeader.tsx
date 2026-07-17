@@ -26,6 +26,7 @@ import {
   measureAnchor,
   type ChipAnchor,
 } from "../role/RoleChips";
+import { ScopeToggle, type ScopeChoice } from "../team/ScopeToggle";
 import { colors } from "../../lib/theme";
 import { formatDateTime } from "../../lib/format";
 import {
@@ -79,6 +80,11 @@ export function EventHeader({
   budgetValue,
   onChangeBudget,
   onSaveBudget,
+  scope,
+  scopeChapterName,
+  homeChapterName,
+  canChangeScope,
+  onChangeScope,
   owner,
   roleRows,
   onOpenOwner,
@@ -113,6 +119,18 @@ export function EventHeader({
   budgetValue: string;
   onChangeBudget: (text: string) => void;
   onSaveBudget: () => void;
+  /** Money attribution: "central" or the event's own chapter id — see
+   *  `events.get`'s `scope`. Same shape the Money tab's "Belongs to" row reads. */
+  scope: string;
+  scopeChapterName: string | null;
+  homeChapterName: string | null;
+  /** Whether this caller can move the event's budget between Central/chapter
+   *  (central write reach on the event's home chapter) — same gate the Money
+   *  tab's "Belongs to" row already respects; unchanged here. */
+  canChangeScope: boolean;
+  /** The SAME `transferEventScope` confirm flow the Money tab drives — no
+   *  second implementation, just a second entry point into it. */
+  onChangeScope: (next: ScopeChoice) => void;
   owner: { _id: string; name: string } | null;
   roleRows: RoleRow[];
   onOpenOwner: () => void;
@@ -182,6 +200,21 @@ export function EventHeader({
                 onSave={onSaveBudget}
               />
             </View>
+            {/* Training events have no money life (the #172 invariant) — every
+                other Money entry point (EventTools' ⋯ menu, the Money tab
+                itself) hides accordingly, so the header chip does too. */}
+            {event.isTraining === true ? null : (
+              <View className="flex-row items-center gap-x-1.5">
+                <MetaDot />
+                <ScopeSeg
+                  scope={scope}
+                  scopeChapterName={scopeChapterName}
+                  homeChapterName={homeChapterName}
+                  canChangeScope={canChangeScope}
+                  onChangeScope={onChangeScope}
+                />
+              </View>
+            )}
           </View>
 
           {/* Row 3 — people: owner, assigned roles, folded open roles, ＋ */}
@@ -552,6 +585,77 @@ function BudgetSeg({
               onPress={commitClose}
             />
           </View>
+        </View>
+      </Popover>
+    </>
+  );
+}
+
+/**
+ * "Belongs to" — money attribution, right next to the budget figure. This is
+ * the SAME toggle + the same `transferEventScope` confirm flow the Money
+ * tab's "Belongs to" row drives (see event/[id].tsx `handleScopeChange`,
+ * passed in as `onChangeScope`) — a second, more discoverable entry point
+ * into it, not a second implementation. Read-only chip when the caller can't
+ * change it (mirrors the Money tab's `canChangeScope` gate exactly). The
+ * caller (the meta line above) skips mounting this entirely for training
+ * events — they have no money life (#172) so there's nothing to attribute.
+ */
+function ScopeSeg({
+  scope,
+  scopeChapterName,
+  homeChapterName,
+  canChangeScope,
+  onChangeScope,
+}: {
+  scope: string;
+  scopeChapterName: string | null;
+  homeChapterName: string | null;
+  canChangeScope: boolean;
+  onChangeScope: (next: ScopeChoice) => void;
+}) {
+  const { ref, anchor, visible, open, close } = useAnchor();
+  const value: ScopeChoice = scope === "central" ? "central" : "chapter";
+  const label = value === "central" ? "Central" : (scopeChapterName ?? "This chapter");
+
+  if (!canChangeScope) {
+    return (
+      <View
+        className="flex-row items-center gap-1 rounded-pill border border-border-strong bg-raised px-2 py-0.5"
+        accessibilityLabel={`Belongs to ${label}`}
+      >
+        <Icon name="layers" size={10} color={colors.faint} />
+        <Text className="text-xs font-medium text-muted">{label}</Text>
+      </View>
+    );
+  }
+
+  return (
+    <>
+      <Pressable
+        ref={ref}
+        onPress={open}
+        accessibilityRole="button"
+        accessibilityLabel={`Belongs to ${label}. Change attribution`}
+        className="flex-row items-center gap-1 rounded-pill border border-border-strong bg-raised px-2 py-0.5 active:opacity-80 web:hover:bg-sunken"
+      >
+        <Icon name="layers" size={10} color={colors.muted} />
+        <Text className="text-xs font-medium text-ink">{label}</Text>
+        <Icon name="chevron-down" size={10} color={colors.muted} />
+      </Pressable>
+      <Popover visible={visible} anchor={anchor} width={220} onClose={close}>
+        <View className="gap-2 p-3">
+          <Text className="text-2xs font-bold uppercase tracking-wider text-muted">
+            Belongs to
+          </Text>
+          <ScopeToggle
+            value={value}
+            chapterName={homeChapterName ?? "This chapter"}
+            onChange={(next) => {
+              close();
+              onChangeScope(next);
+            }}
+          />
         </View>
       </Popover>
     </>
