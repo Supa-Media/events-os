@@ -29,6 +29,7 @@ import {
   buildProjectTree,
   type ProjectDoc,
 } from "../../../components/team/ProjectCard";
+import { MoneyView } from "../../../components/money/MoneyView";
 import { colors, spacing } from "../../../lib/theme";
 import { formatDate, formatDateTime } from "../../../lib/format";
 
@@ -153,6 +154,14 @@ export default function ProjectScreen() {
           defaultExpanded
           canManage={detail.canManage}
         />
+
+        {/* Money — what's this project costing? Planned vs actual by
+            category, assembled from the v2 budget + its planned lines +
+            linked transactions; a link through to the budget in Finances. */}
+        <View className="mt-6">
+          <SectionHeader title="Money" />
+          <MoneyView refKind="project" refId={projectId} />
+        </View>
 
         {/* Update log — the audit trail of every change, newest first. */}
         {log && log.length > 0 ? (
