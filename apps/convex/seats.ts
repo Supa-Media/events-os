@@ -40,6 +40,7 @@ import {
   assignSpecializedRoleImpl,
   removeSpecializedRoleImpl,
 } from "./specializedRoles";
+import { getSeatDerivedCapabilities } from "./lib/seats";
 
 const seatChartValidator = v.union(...SEAT_CHARTS.map((c) => v.literal(c)));
 const seatCapabilityValidator = v.union(
@@ -815,5 +816,298 @@ export const unassignSeat = mutation({
 
     await deleteSeatAssignment(ctx, assignment, def);
     return null;
+  },
+});
+
+// ── Capability shadow audit (READ-ONLY) ─────────────────────────────────────
+//
+// The gate before any future "flip enforcement from `financeRoles` /
+// `specializedRoles` to seat-derived capabilities" change: a superuser-only,
+// ZERO-WRITE report diffing `lib/seats.ts#getSeatDerivedCapabilities` (what
+// the org chart SAYS a person should be able to do) against what's actually
+// STORED today. Every finding is informational — nothing here reads back
+// into an enforcement decision anywhere in the app yet.
+//
+// Three diff rules (see `capabilityAudit`'s doc comment for the full
+// rationale of each):
+//  (a) seat-derived `financeRole` ("manager"|null) vs the stored
+//      `financeRoles` row's `role`, per (person, scope) — `"bookkeeper"`/
+//      `"viewer"` stored grants with no seat backing are EXPECTED (the
+//      residual layer) and never reported.
+//  (b) seat-derived `accountsAccess` (central only) vs whether the person
+//      holds a CENTRAL `specializedRoles` row titled `executive_director` or
+//      `finance_manager` — the same check `lib/finance.ts#isCentralEdOrFm`
+//      makes, replicated per-person here (that function walks every `people`
+//      row a USER owns; the audit iterates by `personId` directly).
+//  (c) `seatAssignments` rows whose seat carries a `legacyTitle` vs their
+//      `specializedRoles` mirror row, checked in BOTH directions (seat
+//      without mirror, and mirror without seat).
+
+/** Bound on how many rows each of the three source tables (`seatAssignments`,
+ *  `financeRoles`, `specializedRoles`) is scanned to build the "every person
+ *  with SOME grant" universe — generous headroom over `ROLLUP_SCAN_LIMIT`'s
+ *  5000 chapter-scan convention used elsewhere in finance. `truncated` is set
+ *  (and a warning logged) if any table hits its cap, so a truncated audit is
+ *  never silently reported as clean. */
+const AUDIT_TABLE_SCAN_LIMIT = 5000;
+
+/** Bound on how many mismatches a single audit run reports — protects the
+ *  response payload from an unbounded blowup if drift is much larger than
+ *  expected. `checkedPeople` still counts every person scanned even past this
+ *  cap; only the mismatch LIST is capped. Hitting it sets `truncated`. */
+const AUDIT_MISMATCH_CAP = 2000;
+
+const capabilityAuditMismatchKindValidator = v.union(
+  // (a) financeRole diffs.
+  v.literal("seat_implies_manager_but_stored_missing"),
+  v.literal("stored_manager_with_no_seat"),
+  // (b) accountsAccess diffs (always at scope "central").
+  v.literal("seat_implies_accounts_but_no_specialized_title"),
+  v.literal("specialized_title_grants_accounts_with_no_seat"),
+  // (c) legacyTitle <-> specializedRoles mirror diffs.
+  v.literal("seat_legacy_title_missing_specializedRoles_mirror"),
+  v.literal("specializedRoles_row_missing_seat_mirror"),
+);
+
+/** A typed scope value back out of a `getSeatDerivedCapabilities` record key
+ *  (see that module's doc comment — a scopeKey is always either the literal
+ *  `"central"` or an `Id<"chapters">` stringified). */
+function scopeFromKey(key: string): Id<"chapters"> | "central" {
+  return key === "central" ? "central" : (key as Id<"chapters">);
+}
+
+/**
+ * Capability shadow audit — superuser-gated (same check `assignSeat`/
+ * `unassignSeat` use), 100% READ-ONLY. For every person who has EITHER a
+ * `seatAssignments` row, a `financeRoles` grant, or a `specializedRoles` row
+ * (the union — someone with only a stored grant and no seat is exactly the
+ * drift this audit exists to find), diffs seat-derived capability against
+ * stored state per the three rules above and returns every mismatch found.
+ *
+ * Never enforces, throws-on-drift, or writes anything — it's a report, not a
+ * gate. Bounded reads throughout (see `AUDIT_TABLE_SCAN_LIMIT` /
+ * `AUDIT_MISMATCH_CAP`); `truncated: true` means the report is a LOWER BOUND
+ * on actual drift, not a complete accounting.
+ */
+export const capabilityAudit = query({
+  args: {},
+  returns: v.object({
+    checkedPeople: v.number(),
+    mismatches: v.array(
+      v.object({
+        personId: v.id("people"),
+        scope: v.union(v.id("chapters"), v.literal("central")),
+        kind: capabilityAuditMismatchKindValidator,
+        // Heterogeneous by `kind` ("manager" / a legacyTitle / etc.) — see
+        // the per-kind comments below for exactly what each side means.
+        seatSide: v.union(v.string(), v.null()),
+        storedSide: v.union(v.string(), v.null()),
+      }),
+    ),
+    truncated: v.boolean(),
+  }),
+  handler: async (ctx) => {
+    await requireSuperuser(ctx);
+
+    const seatAssignmentRows = await ctx.db
+      .query("seatAssignments")
+      .take(AUDIT_TABLE_SCAN_LIMIT);
+    const financeRoleRows = await ctx.db
+      .query("financeRoles")
+      .take(AUDIT_TABLE_SCAN_LIMIT);
+    const specializedRoleRows = await ctx.db
+      .query("specializedRoles")
+      .take(AUDIT_TABLE_SCAN_LIMIT);
+
+    let truncated = false;
+    if (seatAssignmentRows.length === AUDIT_TABLE_SCAN_LIMIT) {
+      truncated = true;
+      console.warn(
+        `[seats.capabilityAudit] hit AUDIT_TABLE_SCAN_LIMIT (${AUDIT_TABLE_SCAN_LIMIT}) reading seatAssignments; audit may be incomplete.`,
+      );
+    }
+    if (financeRoleRows.length === AUDIT_TABLE_SCAN_LIMIT) {
+      truncated = true;
+      console.warn(
+        `[seats.capabilityAudit] hit AUDIT_TABLE_SCAN_LIMIT (${AUDIT_TABLE_SCAN_LIMIT}) reading financeRoles; audit may be incomplete.`,
+      );
+    }
+    if (specializedRoleRows.length === AUDIT_TABLE_SCAN_LIMIT) {
+      truncated = true;
+      console.warn(
+        `[seats.capabilityAudit] hit AUDIT_TABLE_SCAN_LIMIT (${AUDIT_TABLE_SCAN_LIMIT}) reading specializedRoles; audit may be incomplete.`,
+      );
+    }
+
+    // Group every already-loaded row by personId (avoids re-querying per
+    // person — the three tables above are the FULL bounded universe already).
+    const assignmentsByPerson = new Map<Id<"people">, Doc<"seatAssignments">[]>();
+    for (const r of seatAssignmentRows) {
+      const arr = assignmentsByPerson.get(r.personId) ?? [];
+      arr.push(r);
+      assignmentsByPerson.set(r.personId, arr);
+    }
+    const financeByPerson = new Map<Id<"people">, Doc<"financeRoles">[]>();
+    for (const r of financeRoleRows) {
+      const arr = financeByPerson.get(r.personId) ?? [];
+      arr.push(r);
+      financeByPerson.set(r.personId, arr);
+    }
+    const specializedByPerson = new Map<Id<"people">, Doc<"specializedRoles">[]>();
+    for (const r of specializedRoleRows) {
+      const arr = specializedByPerson.get(r.personId) ?? [];
+      arr.push(r);
+      specializedByPerson.set(r.personId, arr);
+    }
+
+    // The union: every person with SOME grant, from ANY of the three tables.
+    const personIds = new Set<Id<"people">>([
+      ...assignmentsByPerson.keys(),
+      ...financeByPerson.keys(),
+      ...specializedByPerson.keys(),
+    ]);
+
+    const mismatches: {
+      personId: Id<"people">;
+      scope: Id<"chapters"> | "central";
+      kind:
+        | "seat_implies_manager_but_stored_missing"
+        | "stored_manager_with_no_seat"
+        | "seat_implies_accounts_but_no_specialized_title"
+        | "specialized_title_grants_accounts_with_no_seat"
+        | "seat_legacy_title_missing_specializedRoles_mirror"
+        | "specializedRoles_row_missing_seat_mirror";
+      seatSide: string | null;
+      storedSide: string | null;
+    }[] = [];
+    const recordMismatch = (entry: (typeof mismatches)[number]) => {
+      if (mismatches.length >= AUDIT_MISMATCH_CAP) {
+        truncated = true;
+        return;
+      }
+      mismatches.push(entry);
+    };
+
+    for (const personId of personIds) {
+      // Seat-derived side: the SAME helper the future enforcement flip would
+      // call — dogfooded here rather than re-implemented.
+      const seatDerived = await getSeatDerivedCapabilities(ctx, personId);
+      const personAssignments = assignmentsByPerson.get(personId) ?? [];
+      const personFinance = financeByPerson.get(personId) ?? [];
+      const personSpecialized = specializedByPerson.get(personId) ?? [];
+
+      // ── (a) financeRole: seat-derived "manager"|null vs stored role,
+      // per scope. Scope universe = every scope the person has EITHER a
+      // seat-derived entry OR a stored financeRoles row for.
+      const scopeKeys = new Set<string>([
+        ...Object.keys(seatDerived),
+        ...personFinance.map((r) => String(r.chapterId)),
+      ]);
+      for (const key of scopeKeys) {
+        const scope = scopeFromKey(key);
+        const seatRole = seatDerived[key]?.financeRole ?? null;
+        const storedRow = personFinance.find((r) => String(r.chapterId) === key);
+        const storedRole = storedRow?.role ?? null;
+
+        if (seatRole === "manager" && storedRole !== "manager") {
+          // The chart implies manager-level finance write access at this
+          // scope, but the stored grant is missing or weaker
+          // (bookkeeper/viewer/absent) — the person can't actually do what
+          // their seat says they should be able to.
+          recordMismatch({
+            personId,
+            scope,
+            kind: "seat_implies_manager_but_stored_missing",
+            seatSide: "manager",
+            storedSide: storedRole,
+          });
+        } else if (seatRole === null && storedRole === "manager") {
+          // A stored manager grant with NO seat backing it — either a
+          // direct `grantFinanceRole` call, or a seat's write-through that
+          // outlived its seat assignment. Real drift; NOT the
+          // bookkeeper/viewer residual layer (that's excluded below by
+          // simply never matching this branch).
+          recordMismatch({
+            personId,
+            scope,
+            kind: "stored_manager_with_no_seat",
+            seatSide: null,
+            storedSide: "manager",
+          });
+        }
+        // Every other combination is EXPECTED, not drift:
+        //  - seatRole "manager" + storedRole "manager": in sync.
+        //  - seatRole null + storedRole "bookkeeper"/"viewer": the residual
+        //    layer — a hand-granted lower-rank role with no seat need not
+        //    (and structurally can't) exist. By rule, never reported.
+      }
+
+      // ── (b) accountsAccess (central only) vs isCentralEdOrFm's per-person
+      // specializedRoles-title check.
+      const seatAccounts = seatDerived["central"]?.accountsAccess ?? false;
+      const hasCentralEdOrFmTitle = personSpecialized.some(
+        (r) =>
+          r.scope === "central" &&
+          (r.title === "executive_director" || r.title === "finance_manager"),
+      );
+      if (seatAccounts && !hasCentralEdOrFmTitle) {
+        recordMismatch({
+          personId,
+          scope: "central",
+          kind: "seat_implies_accounts_but_no_specialized_title",
+          seatSide: "accounts",
+          storedSide: null,
+        });
+      } else if (!seatAccounts && hasCentralEdOrFmTitle) {
+        recordMismatch({
+          personId,
+          scope: "central",
+          kind: "specialized_title_grants_accounts_with_no_seat",
+          seatSide: null,
+          storedSide: "accounts",
+        });
+      }
+
+      // ── (c) legacyTitle seat <-> specializedRoles mirror, both directions.
+      const legacyPairs: { scope: Id<"chapters"> | "central"; legacyTitle: string }[] = [];
+      for (const a of personAssignments) {
+        const def = await ctx.db.get(a.seatDefId);
+        if (!def || !def.legacyTitle) continue;
+        legacyPairs.push({ scope: a.scope, legacyTitle: def.legacyTitle });
+
+        const hasMirror = personSpecialized.some(
+          (r) => r.scope === a.scope && r.title === def.legacyTitle,
+        );
+        if (!hasMirror) {
+          recordMismatch({
+            personId,
+            scope: a.scope,
+            kind: "seat_legacy_title_missing_specializedRoles_mirror",
+            seatSide: def.legacyTitle,
+            storedSide: null,
+          });
+        }
+      }
+      for (const r of personSpecialized) {
+        const hasMirror = legacyPairs.some(
+          (p) => p.scope === r.scope && p.legacyTitle === r.title,
+        );
+        if (!hasMirror) {
+          recordMismatch({
+            personId,
+            scope: r.scope,
+            kind: "specializedRoles_row_missing_seat_mirror",
+            seatSide: null,
+            storedSide: r.title,
+          });
+        }
+      }
+    }
+
+    return {
+      checkedPeople: personIds.size,
+      mismatches,
+      truncated,
+    };
   },
 });
