@@ -820,6 +820,37 @@ function txnCountsTowardBudgetDash(
   return inYtdBudgetWindow(tr.postedAt, b, dp.month);
 }
 
+/**
+ * Whether a txn's spend counts toward a budget for a By-tag AGGREGATE (tag
+ * rollups + the tag drill-down) — NOT the same rule as `txnCountsTowardBudgetDash`,
+ * which is deliberately CARD-shaped: for a budget with its OWN declared
+ * `month`/`quarter` (e.g. an event budget stamped to May at creation), it
+ * narrows `inPeriod` to THAT fixed month/quarter regardless of `dp` — correct
+ * for a card, whose own bar reports on the budget's declared period no matter
+ * which month you're viewing, but wrong for an AGGREGATE: a July charge on a
+ * May-fixed budget would never count toward July's tag total (it only matches
+ * May), while that same May charge would count toward EVERY month's tag total
+ * including July (nothing in the check compares against `dp` at all once
+ * `b.month` is set). That's the mis-scoping bug — a tag's "by month" total
+ * silently tracked the budget's own fixed month instead of the viewed one, so
+ * a July dashboard could show May's spend under "Events" while missing July's.
+ *
+ * A tag AGGREGATE needs the opposite rule: sum whatever this budget's linked
+ * spend actually POSTED in the dashboard's OWN period (`inDashRange`), full
+ * stop — ignoring the budget's own month/quarter narrowers entirely. This is
+ * also what keeps a 12-month sum of a tag's aggregate exactly equal to its
+ * whole-year (YTD) total: every linked spend txn is posted in exactly one
+ * month, so it's counted in exactly one month's aggregate, never dropped or
+ * double-counted regardless of which month the underlying budget declares.
+ */
+function txnCountsTowardTagAgg(
+  tr: Doc<"transactions">,
+  b: Doc<"budgets">,
+  dp: DashPeriod,
+): boolean {
+  return isSpend(tr) && tr.budgetId === b._id && inDashRange(tr.postedAt, dp);
+}
+
 /** Is a recurring budget active anywhere in the dashboard period (any month for YTD)? */
 function recurringAppliesToDash(b: Doc<"budgets">, dp: DashPeriod): boolean {
   if (!dp.ytd) return recurringAppliesToMonth(b, dp.year, dp.month);
@@ -1926,13 +1957,15 @@ export const dashboardChapter = query({
       // Tag totals are LINKED-ONLY: count only txns EXPLICITLY linked
       // (`budgetId`) to a budget carrying the tag — NO derived matching. A linked
       // txn has exactly one `budgetId`, so it's counted once (no dedup needed).
-      // `txnCountsTowardBudgetDash` still applies the `isSpend` gate + the linked
-      // budget's period window (widened to Jan..throughMonth in YTD).
+      // `txnCountsTowardTagAgg` (NOT `txnCountsTowardBudgetDash` — see its doc
+      // comment) scopes purely to the txn's own posted date falling in `dp`, so
+      // a fixed-month one-time budget's spend lands in the month it was
+      // actually posted, not the budget's own declared month.
       let spentCents = 0;
       for (const tr of yearTxns) {
         if (tr.budgetId == null) continue;
         const b = tagBudgets.get(tr.budgetId);
-        if (b && txnCountsTowardBudgetDash(tr, b, dp)) spentCents += tr.amountCents;
+        if (b && txnCountsTowardTagAgg(tr, b, dp)) spentCents += tr.amountCents;
       }
       // Only surface a tag rollup once it has an actual charge in the shown
       // period (month or YTD): a budgeted-but-unspent tag is noise on the
@@ -2437,11 +2470,14 @@ export const dashboardCentral = query({
         // Tag totals are LINKED-ONLY (see dashboardChapter): only txns
         // explicitly linked to a budget carrying the tag count — no derived
         // matching. One `budgetId` per txn → counted once, no dedup.
+        // `txnCountsTowardTagAgg`, NOT `txnCountsTowardBudgetDash` — see its
+        // doc comment (a fixed-month budget's spend must land in the month it
+        // was actually posted, not the budget's own declared month).
         let spent = 0;
         for (const tr of periodTxns) {
           if (tr.budgetId == null) continue;
           const b = tagBudgets.get(tr.budgetId);
-          if (b && txnCountsTowardBudgetDash(tr, b, dp)) spent += tr.amountCents;
+          if (b && txnCountsTowardTagAgg(tr, b, dp)) spent += tr.amountCents;
         }
         const key = `${tag.kind ?? ""}::${tag.name}`;
         const agg =
@@ -2487,6 +2523,16 @@ export const dashboardCentral = query({
     // must behave identically to its chapter counterpart, not just avoid the
     // month-less double-count.
     const centralSpentById = new Map<Id<"budgets">, number>();
+    // The By-tag AGGREGATE's own spend per central budget — DELIBERATELY a
+    // separate map from `centralSpentById` (which feeds the recurring central
+    // budget CARD's own `spentCents`/`pct` below, via `txnCountsTowardBudgetDash`
+    // — CARD-shaped, out of this fix's scope). `txnCountsTowardTagAgg` (see its
+    // doc comment) scopes purely to the txn's own posted date, so a fixed-
+    // month/quarter central budget's spend lands in the month it was actually
+    // posted rather than always reporting its own declared month regardless of
+    // which month the org dashboard is viewing. Read by the central tag loop
+    // below instead of `centralSpentById`.
+    const centralTagAggSpentById = new Map<Id<"budgets">, number>();
     const centralBudgets: (typeof centralBudgetCard.type)[] = [];
     const getCentralEvent = nameCache(ctx, "events");
     const getCentralProject = nameCache(ctx, "projects");
@@ -2501,17 +2547,28 @@ export const dashboardCentral = query({
       // aggregate (tag-rollup) sum below and the one-time card's own
       // cumulative sum, so neither has to re-filter mode separately.
       const modeMatched = linked.filter((tr) => txnMatchesMode(tr, sandboxMode));
-      // The AGGREGATE (dashboard-period-scoped) spend — always computed for
+      // The CARD's (dashboard-period-scoped) spend — always computed for
       // EVERY central budget regardless of card visibility, exactly like
       // `dashboardChapter`'s tag rollups independently re-derive each
       // budget's month-scoped spend rather than reusing a one-time card's
-      // cumulative number. Feeds `centralSpentById`, which the central tag
-      // rollup below reads.
+      // cumulative number. Feeds `centralSpentById`, which the recurring
+      // central budget CARD below reads (`txnCountsTowardTagAgg`'s doc
+      // comment flags this as carrying the same fixed-month/quarter
+      // mis-scoping bug this PR fixes for tag rollups — a pre-existing,
+      // separate CARD-visibility issue left for a follow-up, out of this
+      // fix's declared scope).
       const spentCents = modeMatched.reduce(
         (s, tr) => (txnCountsTowardBudgetDash(tr, cb, dp) ? s + tr.amountCents : s),
         0,
       );
       centralSpentById.set(cb._id, spentCents);
+      centralTagAggSpentById.set(
+        cb._id,
+        modeMatched.reduce(
+          (s, tr) => (txnCountsTowardTagAgg(tr, cb, dp) ? s + tr.amountCents : s),
+          0,
+        ),
+      );
 
       if (effectiveType(cb) === "one_time") {
         // Bug 1 (F1): the exact same treatment as `dashboardChapter`'s
@@ -2642,7 +2699,9 @@ export const dashboardCentral = query({
       let spent = 0;
       let budget = 0;
       for (const b of tagBudgets.values()) {
-        spent += centralSpentById.get(b._id) ?? 0;
+        // `centralTagAggSpentById`, NOT `centralSpentById` (the CARD's own
+        // number) — see its declaration above.
+        spent += centralTagAggSpentById.get(b._id) ?? 0;
         budget += budgetAllocationForDash(b, dp);
       }
       const key = `${tag.kind ?? ""}::${tag.name}`;
@@ -2769,9 +2828,11 @@ export const budgetVsActual = query({
       allocatedCents: v.number(),
       actualCents: v.number(),
       // WP-3.2 (B1): the EFFECTIVE cap (`effectiveCapCents`) — every over-cap
-      // warning surface, and the mobile dashboard's tag-detail backfill
-      // (`ChapterView`/`CentralView`), compares/displays against THIS, never
-      // `allocatedCents` alone (see the schema doc on `budgets.approvedCents`).
+      // warning surface compares/displays against THIS, never `allocatedCents`
+      // alone (see the schema doc on `budgets.approvedCents`). The mobile
+      // dashboard's tag-detail sheet now sources its own figures from
+      // `tagDrilldown` instead of backfilling from this query (see that
+      // query's doc comment for why).
       approvedCapCents: v.number(),
     }),
   ),
@@ -2822,6 +2883,235 @@ export const budgetVsActual = query({
         approvedCapCents: effectiveCapCents(b),
       };
     });
+  },
+});
+
+const tagDrilldownBudgetRow = v.object({
+  id: v.id("budgets"),
+  label: v.string(),
+  type: typeValidator,
+  cadence: cadenceValidator,
+  level: v.union(v.literal("chapter"), v.literal("central")),
+  // Which chapter owns this budget — populated only for a `scope: "central"`
+  // call (a chapter-scope call's rows are all the caller's own chapter, by
+  // construction). `null` for a central-owned (`level: "central"`) budget.
+  chapterName: v.union(v.string(), v.null()),
+  spentCents: v.number(),
+  budgetCents: v.number(),
+});
+
+/**
+ * The tag detail sheet's budget list: every budget carrying a By-tag rollup
+ * row's tag, each with its OWN spend/allocation scoped to the SAME `{year,
+ * month, period}` the rollup row itself used — so `Σ(budgets[].spentCents)`
+ * equals the rollup row's `spentCents` and `Σ(budgets[].budgetCents)` equals
+ * its `budgetCents`, exactly (both sides run the identical
+ * `txnCountsTowardTagAgg`/`budgetAllocationForDash` pair, over the identical
+ * budget set — chapter tag → this chapter's own-year budgets carrying it;
+ * central tag (name+kind) → every chapter's + central's own-year budgets
+ * carrying a same-named tag, mirroring `dashboardCentral`'s `tagAgg` merge).
+ *
+ * Replaces the old client-side glue (`ChapterView`/`CentralView`'s "R1d"
+ * backfill): the sheet used to derive its "carrying budgets" from
+ * `listBudgets` (real allocations, but NOT period-scoped) and patch in spend
+ * from `budgetVsActual({year})` (no `month`, so always a whole-YEAR read,
+ * disagreeing with a month-mode rollup header) — rows never summed to the
+ * header. Worse, for a CENTRAL drill-down `budgetVsActual` only ever resolves
+ * the CALLER's OWN chapter (`readChapterId`); a pure central-only seat holder
+ * with no chapter-level finance grant of their own got an EMPTY backfill, so
+ * EVERY row read "—" regardless of which chapter actually owned the budget.
+ * This query fixes both: it computes each row's spend itself (nothing to
+ * disagree with the header), and for `scope: "central"` it relies on the
+ * caller's ALREADY-VERIFIED central reach (`requireFinanceCentral`) to read
+ * every chapter's contributing budgets directly — no per-chapter viewer grant
+ * of the caller's own required, closing the PR #106 gap for real.
+ *
+ * KNOWN, UNCHANGED GAP (mirrors `dashboardChapter`/`dashboardCentral`'s own
+ * tag rollups, not introduced here): a CHAPTER budget carrying a CENTRAL-level
+ * tag (`tagLevelAllowed` permits this) is invisible to every tag surface —
+ * `dashboardChapter` only scans the chapter's OWN `budgetTags`, and
+ * `dashboardCentral` only scans central `budgetTags` against CENTRAL-owned
+ * budgets — so neither the rollup nor this drill-down ever surfaces that
+ * combination. Left as-is so this drill-down keeps reconciling with the
+ * (equally gapped) rollup header above it; fixing the gap itself is a
+ * follow-up that touches both call sites together.
+ */
+export const tagDrilldown = query({
+  args: {
+    year: v.number(),
+    month: v.optional(v.number()),
+    period: v.optional(v.union(v.literal("month"), v.literal("ytd"))),
+    scope: v.union(v.literal("chapter"), v.literal("central")),
+    // `scope: "chapter"` — drill into a DIFFERENT chapter's dashboard (central
+    // peek — mirrors `dashboardChapter`'s own `chapterId` arg + authz). Absent
+    // (or the caller's own chapter) is the normal same-chapter case. The
+    // rollup row's real `tagId` (a chapter dashboard's tag rollups always
+    // carry one).
+    chapterId: v.optional(v.id("chapters")),
+    tagId: v.optional(v.id("budgetTags")),
+    // `scope: "central"` — the rollup row aggregates same-named (+ same-kind)
+    // tags across chapters and carries no single tag id, so it's matched by
+    // (name, kind) instead, exactly like `dashboardCentral`'s own `tagAgg` key.
+    tagName: v.optional(v.string()),
+    tagKind: v.optional(v.union(tagKindValidator, v.null())),
+  },
+  returns: v.object({ budgets: v.array(tagDrilldownBudgetRow) }),
+  handler: async (ctx, args) => {
+    const empty = { budgets: [] as never[] };
+    const now = easternParts(Date.now());
+    const year = args.year;
+    const month = args.month ?? now.month;
+    const ytd = (args.period ?? "month") === "ytd";
+    const dp: DashPeriod = { year, month, ytd };
+    const sandboxMode = await readSandbox(ctx);
+    const rows: (typeof tagDrilldownBudgetRow.type)[] = [];
+
+    const rowFor = (
+      b: Doc<"budgets">,
+      spentCents: number,
+      level: "chapter" | "central",
+      chapterName: string | null,
+    ): typeof tagDrilldownBudgetRow.type => ({
+      id: b._id,
+      label: b.label ?? (b.scope ? BUDGET_SCOPE_LABELS[b.scope] : "Budget"),
+      type: effectiveType(b),
+      cadence: b.cadence,
+      level,
+      chapterName,
+      spentCents,
+      budgetCents: budgetAllocationForDash(b, dp),
+    });
+
+    if (args.scope === "chapter") {
+      if (args.tagId == null) return empty;
+      const ownChapterId = await readChapterId(ctx);
+      const chapterId = args.chapterId ?? ownChapterId;
+      if (!chapterId) return empty;
+      // Same drill-down authz as `dashboardChapter`: viewing a DIFFERENT
+      // chapter than the caller's own needs central reach, checked through
+      // the caller's OWN chapter (never the target one).
+      if (args.chapterId != null && args.chapterId !== ownChapterId) {
+        if (!ownChapterId) {
+          throw new ConvexError({
+            code: "NO_CHAPTER",
+            message: "You don't belong to a chapter yet.",
+          });
+        }
+        await requireFinanceCentral(ctx, ownChapterId);
+      } else {
+        await requireFinanceRole(ctx, chapterId, "viewer");
+      }
+
+      const tag = await ctx.db.get(args.tagId);
+      // Tenancy: a chapter-scope drill-down only ever resolves a tag actually
+      // owned by the chapter being viewed — a central tag (or another
+      // chapter's) never reaches this branch (see the central-tag gap note
+      // above; the rollup itself never emits a `tagId` for those either).
+      if (!tag || tag.chapterId !== chapterId) return empty;
+
+      const links = await ctx.db
+        .query("budgetTagLinks")
+        .withIndex("by_tag", (q) => q.eq("tagId", args.tagId!))
+        .take(ROLLUP_SCAN_LIMIT);
+      const yearTxns = await loadPeriodTxns(ctx, chapterId, year, sandboxMode);
+      for (const link of links) {
+        const b = await ctx.db.get(link.budgetId);
+        if (!b || b.chapterId !== chapterId || b.year !== year) continue;
+        const spentCents = yearTxns.reduce(
+          (s, tr) => (txnCountsTowardTagAgg(tr, b, dp) ? s + tr.amountCents : s),
+          0,
+        );
+        rows.push(rowFor(b, spentCents, "chapter", null));
+      }
+    } else {
+      if (args.tagName == null || args.tagKind === undefined) return empty;
+      const ownChapterId = await readChapterId(ctx);
+      if (!ownChapterId) return empty;
+      await requireFinanceCentral(ctx, ownChapterId);
+
+      const chapters = await ctx.db.query("chapters").take(ROLLUP_SCAN_LIMIT);
+      for (const chapter of chapters) {
+        const tags = await ctx.db
+          .query("budgetTags")
+          .withIndex("by_chapter", (q) => q.eq("chapterId", chapter._id))
+          .take(ROLLUP_SCAN_LIMIT);
+        const matching = tags.filter(
+          (t) => t.name === args.tagName && (t.kind ?? null) === args.tagKind,
+        );
+        if (matching.length === 0) continue;
+        const chBudgets = await ctx.db
+          .query("budgets")
+          .withIndex("by_chapter_and_period", (q) =>
+            q.eq("chapterId", chapter._id).eq("year", year),
+          )
+          .take(ROLLUP_SCAN_LIMIT);
+        const chBudgetById = new Map(chBudgets.map((b) => [b._id, b] as const));
+        const yearTxns = await loadPeriodTxns(ctx, chapter._id, year, sandboxMode);
+        for (const tag of matching) {
+          const links = await ctx.db
+            .query("budgetTagLinks")
+            .withIndex("by_tag", (q) => q.eq("tagId", tag._id))
+            .take(ROLLUP_SCAN_LIMIT);
+          for (const link of links) {
+            const b = chBudgetById.get(link.budgetId);
+            if (!b) continue;
+            const spentCents = yearTxns.reduce(
+              (s, tr) => (txnCountsTowardTagAgg(tr, b, dp) ? s + tr.amountCents : s),
+              0,
+            );
+            rows.push(rowFor(b, spentCents, "chapter", chapter.name));
+          }
+        }
+      }
+
+      // Central-owned tags/budgets — mirrors `dashboardCentral`'s own central
+      // tag loop (which reads `centralBudgetDocs`/`centralTagAggSpentById`;
+      // this query re-derives the same figures independently since it isn't
+      // handed the dashboard's already-loaded maps).
+      const centralTags = await ctx.db
+        .query("budgetTags")
+        .withIndex("by_chapter", (q) => q.eq("chapterId", CENTRAL))
+        .take(ROLLUP_SCAN_LIMIT);
+      const matchingCentral = centralTags.filter(
+        (t) => t.name === args.tagName && (t.kind ?? null) === args.tagKind,
+      );
+      if (matchingCentral.length > 0) {
+        const centralBudgetDocs = await ctx.db
+          .query("budgets")
+          .withIndex("by_chapter_and_period", (q) =>
+            q.eq("chapterId", CENTRAL).eq("year", year),
+          )
+          .take(ROLLUP_SCAN_LIMIT);
+        const centralBudgetById = new Map(
+          centralBudgetDocs.map((b) => [b._id, b] as const),
+        );
+        for (const tag of matchingCentral) {
+          const links = await ctx.db
+            .query("budgetTagLinks")
+            .withIndex("by_tag", (q) => q.eq("tagId", tag._id))
+            .take(ROLLUP_SCAN_LIMIT);
+          for (const link of links) {
+            const b = centralBudgetById.get(link.budgetId);
+            if (!b) continue;
+            const linked = await ctx.db
+              .query("transactions")
+              .withIndex("by_budget", (q) => q.eq("budgetId", b._id))
+              .take(ROLLUP_SCAN_LIMIT);
+            const spentCents = linked.reduce(
+              (s, tr) =>
+                txnMatchesMode(tr, sandboxMode) && txnCountsTowardTagAgg(tr, b, dp)
+                  ? s + tr.amountCents
+                  : s,
+              0,
+            );
+            rows.push(rowFor(b, spentCents, "central", null));
+          }
+        }
+      }
+    }
+
+    rows.sort((a, b) => b.spentCents - a.spentCents);
+    return { budgets: rows };
   },
 });
 

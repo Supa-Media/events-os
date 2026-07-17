@@ -40,6 +40,29 @@ async function grantManager(s: ChapterSetup): Promise<void> {
   );
 }
 
+/**
+ * Grant a REAL (non-superuser) `scope: "central"` finance role, with NO
+ * accompanying `scope: "chapter"` grant — a "pure central-only seat holder"
+ * (an ED/FM with org-wide reach but no chapter-level finance grant of their
+ * own). `getFinanceRole` matches a central grant against ANY target chapterId
+ * (`g.scope === "central"`, regardless of which real chapter the row happens
+ * to be keyed on — mirrors `grantFinanceRole`'s own "keyed on the granting
+ * chapter" convention), so `chapterId: s.chapterId` here is just the granting
+ * chapter, not a claim they hold chapter-level reach there too.
+ */
+async function grantCentralOnly(s: ChapterSetup): Promise<void> {
+  const personId = await seedSelfPerson(s);
+  await run(s.t, (ctx) =>
+    ctx.db.insert("financeRoles", {
+      chapterId: s.chapterId,
+      personId,
+      role: "manager",
+      scope: "central",
+      createdAt: Date.now(),
+    }),
+  );
+}
+
 /** Raw-insert a General Fund so the category seeder has somewhere to hang them. */
 async function insertGeneralFund(
   s: ChapterSetup,
@@ -983,5 +1006,323 @@ describe("Bug 1 (F1 follow-up) — 12-month sum invariant + central one-time car
     const may = await s.as.query(api.finances.dashboardChapter, { year, month: 5 });
     const mayCard = may.oneTimeBudgets.find((b) => b.id === budgetId);
     expect(mayCard?.spentCents).toBe(7500);
+  });
+});
+
+describe("By-tag rollup month-scoping + drill-down reconciliation (fix/tag-rollup-month-scope)", () => {
+  test("a fixed-month one-time budget's tag row is HIDDEN in a month with no activity, present in its own month", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await grantManager(s);
+    const year = 2026;
+    const eventId = await seedEvent(s, { name: "Spring Fling", eventDate: tsInMonth(year, 5) });
+
+    const tagId = await s.as.mutation(api.finances.createBudgetTag, {
+      name: "Events",
+      kind: "custom",
+    });
+    const budgetId = await s.as.mutation(api.finances.createBudget, {
+      amountCents: 250000,
+      type: "one_time",
+      refKind: "event",
+      cadence: "per_instance",
+      year,
+      month: 5, // fixed to May, mirroring `createEventBudget`'s real stamping
+      scopeRefId: eventId,
+      tagIds: [tagId],
+    });
+    const mayTxn = await s.as.mutation(api.finances.createManualTransaction, {
+      flow: "outflow",
+      amountCents: 187730,
+      postedAt: tsInMonth(year, 5),
+    });
+    await s.as.mutation(api.finances.categorizeTransaction, { transactionId: mayTxn, budgetId });
+
+    // Before the fix, `budgetEffectivePeriod`'s own-month-wins rule made this
+    // May spend show up in EVERY month's tag rollup (the txn's own month was
+    // compared against the BUDGET's declared month, never against the viewed
+    // month) — a July view with zero actual July activity on this tag still
+    // rendered it.
+    const july = await s.as.query(api.finances.dashboardChapter, { year, month: 7 });
+    expect(july.tagRollups.find((r) => r.tagId === tagId)).toBeUndefined();
+
+    const may = await s.as.query(api.finances.dashboardChapter, { year, month: 5 });
+    const row = may.tagRollups.find((r) => r.tagId === tagId);
+    expect(row?.spentCents).toBe(187730);
+  });
+
+  test("a tag's spend is scoped to the txn's OWN posted month, not the budget's declared month — 12 months summed equal the whole-year (YTD) total", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await grantManager(s);
+    const year = 2026;
+
+    const tagId = await s.as.mutation(api.finances.createBudgetTag, {
+      name: "Fundraisers",
+      kind: "custom",
+    });
+    // Fixed to January — before the fix, every OTHER month's spend on this
+    // budget was invisible to that month's own tag rollup (it only matched
+    // January), while January's own rollup wrongly summed the whole year.
+    const budgetId = await s.as.mutation(api.finances.createBudget, {
+      amountCents: 1200000,
+      type: "one_time",
+      cadence: "per_instance",
+      year,
+      month: 1,
+      label: "Gala fund",
+      tagIds: [tagId],
+    });
+
+    // A distinct, easily-summed amount every month ($10, $20, ..., $120) so a
+    // dropped or double-counted month is caught precisely.
+    let expectedTotal = 0;
+    for (let m = 1; m <= 12; m++) {
+      const amt = m * 1000;
+      expectedTotal += amt;
+      const txnId = await s.as.mutation(api.finances.createManualTransaction, {
+        flow: "outflow",
+        amountCents: amt,
+        postedAt: tsInMonth(year, m),
+      });
+      await s.as.mutation(api.finances.categorizeTransaction, { transactionId: txnId, budgetId });
+    }
+
+    let summedAcrossMonths = 0;
+    for (let m = 1; m <= 12; m++) {
+      const dash = await s.as.query(api.finances.dashboardChapter, { year, month: m });
+      const row = dash.tagRollups.find((r) => r.tagId === tagId);
+      expect(row?.spentCents ?? 0).toBe(m * 1000);
+      summedAcrossMonths += row?.spentCents ?? 0;
+    }
+    expect(summedAcrossMonths).toBe(expectedTotal);
+
+    const ytd = await s.as.query(api.finances.dashboardChapter, {
+      year,
+      month: 12,
+      period: "ytd",
+    });
+    expect(ytd.tagRollups.find((r) => r.tagId === tagId)?.spentCents).toBe(expectedTotal);
+  });
+
+  test("chapter tag drill-down: rows sum EXACTLY to the rollup row's header (spentCents AND budgetCents), across two budgets with different declared months", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await grantManager(s);
+    const year = 2026;
+    const month = 7;
+
+    const tagId = await s.as.mutation(api.finances.createBudgetTag, {
+      name: "Events",
+      kind: "custom",
+    });
+    // Budget A: fixed to May, but with a JULY charge (the mis-scoping case
+    // the fix targets).
+    const eventId = await seedEvent(s, { name: "May Gala", eventDate: tsInMonth(year, 5) });
+    const budgetA = await s.as.mutation(api.finances.createBudget, {
+      amountCents: 200000,
+      type: "one_time",
+      refKind: "event",
+      cadence: "per_instance",
+      year,
+      month: 5,
+      scopeRefId: eventId,
+      tagIds: [tagId],
+    });
+    const julyTxnA = await s.as.mutation(api.finances.createManualTransaction, {
+      flow: "outflow",
+      amountCents: 50000,
+      postedAt: tsInMonth(year, month),
+    });
+    await s.as.mutation(api.finances.categorizeTransaction, {
+      transactionId: julyTxnA,
+      budgetId: budgetA,
+    });
+
+    // Budget B: month-less, also with a July charge.
+    const budgetB = await s.as.mutation(api.finances.createBudget, {
+      amountCents: 300000,
+      type: "one_time",
+      cadence: "per_instance",
+      year,
+      label: "Second event",
+      tagIds: [tagId],
+    });
+    const julyTxnB = await s.as.mutation(api.finances.createManualTransaction, {
+      flow: "outflow",
+      amountCents: 12345,
+      postedAt: tsInMonth(year, month),
+    });
+    await s.as.mutation(api.finances.categorizeTransaction, {
+      transactionId: julyTxnB,
+      budgetId: budgetB,
+    });
+
+    const dash = await s.as.query(api.finances.dashboardChapter, { year, month });
+    const header = dash.tagRollups.find((r) => r.tagId === tagId);
+    expect(header).toBeDefined();
+    expect(header?.spentCents).toBe(62345);
+
+    const drilldown = await s.as.query(api.finances.tagDrilldown, {
+      year,
+      month,
+      scope: "chapter",
+      tagId,
+    });
+    expect(drilldown.budgets.map((b) => b.id).sort()).toEqual([budgetA, budgetB].sort());
+    const rowsSpent = drilldown.budgets.reduce((sum, b) => sum + b.spentCents, 0);
+    const rowsBudget = drilldown.budgets.reduce((sum, b) => sum + b.budgetCents, 0);
+    // Reconciliation: the drill-down's rows must sum to exactly the same
+    // header the rollup row above it showed — no "—" rows, no drift.
+    expect(rowsSpent).toBe(header!.spentCents);
+    expect(rowsBudget).toBe(header!.budgetCents);
+  });
+
+  test("central tag drill-down: a PURE central-only viewer (no chapter finance seat of their own) sees every chapter's contributing budgets, reconciling with the org rollup header", async () => {
+    const t = newT();
+    const s = await setupChapter(t, { chapterName: "New York" });
+    await grantCentralOnly(s);
+    const year = 2026;
+    const month = 7;
+
+    // The caller's OWN chapter (New York) carries the tag too — proves BOTH
+    // "their own chapter's budget" and "a chapter they hold no personal
+    // finance grant in at all" show up. Before the fix, a pure central-only
+    // holder's drill-down came back EMPTY for every row regardless of
+    // chapter — the old client backfill (`budgetVsActual`) only ever resolves
+    // the CALLER's own chapter, and this caller can't even call it (no
+    // chapter-scope grant to pass `requireFinanceRole(ctx, chapterId,
+    // "viewer")`).
+    const nyTagId = await run(t, (ctx) =>
+      ctx.db.insert("budgetTags", {
+        chapterId: s.chapterId,
+        name: "Events",
+        kind: "custom",
+        createdAt: Date.now(),
+      }),
+    );
+    const nyBudgetId = await run(t, (ctx) =>
+      ctx.db.insert("budgets", {
+        chapterId: s.chapterId,
+        amountCents: 250000,
+        type: "one_time",
+        cadence: "per_instance",
+        year,
+        label: "NY Gala",
+        createdAt: Date.now(),
+      }),
+    );
+    await run(t, (ctx) =>
+      ctx.db.insert("budgetTagLinks", {
+        budgetId: nyBudgetId,
+        tagId: nyTagId,
+        chapterId: s.chapterId,
+        createdAt: Date.now(),
+      }),
+    );
+    await run(t, (ctx) =>
+      ctx.db.insert("transactions", {
+        chapterId: s.chapterId,
+        source: "manual",
+        flow: "outflow",
+        amountCents: 38203,
+        postedAt: tsInMonth(year, month),
+        status: "unreviewed",
+        budgetId: nyBudgetId,
+        createdAt: Date.now(),
+      }),
+    );
+
+    // A SECOND, unrelated chapter (Boston) — the caller holds NO finance
+    // grant there at all, only central reach.
+    const bostonId = await run(t, (ctx) =>
+      ctx.db.insert("chapters", { name: "Boston", isActive: true, createdAt: Date.now() }),
+    );
+    const bostonTagId = await run(t, (ctx) =>
+      ctx.db.insert("budgetTags", {
+        chapterId: bostonId,
+        name: "Events",
+        kind: "custom",
+        createdAt: Date.now(),
+      }),
+    );
+    const bostonBudgetId = await run(t, (ctx) =>
+      ctx.db.insert("budgets", {
+        chapterId: bostonId,
+        amountCents: 150000,
+        type: "one_time",
+        cadence: "per_instance",
+        year,
+        label: "Boston Field Day",
+        createdAt: Date.now(),
+      }),
+    );
+    await run(t, (ctx) =>
+      ctx.db.insert("budgetTagLinks", {
+        budgetId: bostonBudgetId,
+        tagId: bostonTagId,
+        chapterId: bostonId,
+        createdAt: Date.now(),
+      }),
+    );
+    await run(t, (ctx) =>
+      ctx.db.insert("transactions", {
+        chapterId: bostonId,
+        source: "manual",
+        flow: "outflow",
+        amountCents: 149527,
+        postedAt: tsInMonth(year, month),
+        status: "unreviewed",
+        budgetId: bostonBudgetId,
+        createdAt: Date.now(),
+      }),
+    );
+
+    const dash = await s.as.query(api.finances.dashboardCentral, { year, month });
+    const header = dash.tagRollups.find((r) => r.tagName === "Events" && r.kind === "custom");
+    expect(header).toBeDefined();
+    expect(header?.spentCents).toBe(38203 + 149527);
+
+    const drilldown = await s.as.query(api.finances.tagDrilldown, {
+      year,
+      month,
+      scope: "central",
+      tagName: "Events",
+      tagKind: "custom",
+    });
+    expect(drilldown.budgets.map((b) => b.id).sort()).toEqual(
+      [nyBudgetId, bostonBudgetId].sort(),
+    );
+    const bostonRow = drilldown.budgets.find((b) => b.id === bostonBudgetId);
+    expect(bostonRow?.chapterName).toBe("Boston");
+    expect(bostonRow?.spentCents).toBe(149527);
+    const nyRow = drilldown.budgets.find((b) => b.id === nyBudgetId);
+    expect(nyRow?.chapterName).toBe("New York");
+    expect(nyRow?.spentCents).toBe(38203);
+
+    const rowsSpent = drilldown.budgets.reduce((sum, b) => sum + b.spentCents, 0);
+    expect(rowsSpent).toBe(header!.spentCents);
+  });
+
+  test("chapter-scope tagDrilldown requires finance access — throws for a caller with no finance role at all", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    // No grantManager — the caller has no finance role in their own chapter.
+    const tagId = await run(t, (ctx) =>
+      ctx.db.insert("budgetTags", {
+        chapterId: s.chapterId,
+        name: "Events",
+        kind: "custom",
+        createdAt: Date.now(),
+      }),
+    );
+    await expect(
+      s.as.query(api.finances.tagDrilldown, {
+        year: 2026,
+        month: 7,
+        scope: "chapter",
+        tagId,
+      }),
+    ).rejects.toThrow();
   });
 });
