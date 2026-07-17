@@ -4,6 +4,7 @@ import { ConvexError } from "convex/values";
 import { newT, run, setupChapter, type ChapterSetup } from "./setup.helpers";
 import { api } from "../_generated/api";
 import type { Id } from "../_generated/dataModel";
+import { CORE_MODULES } from "@events-os/shared";
 
 /**
  * Money views (WP-3.3) — `moneyViews.refMoney`, the event/project "what's
@@ -780,5 +781,484 @@ describe("moneyViews.refMoney: approval-aware cap + canEditPlan", () => {
       refId: eventId,
     });
     expect(result.incomeCents).toBe(15000);
+  });
+});
+
+// ── Event cost grid (phase 2) ────────────────────────────────────────────────
+
+async function seedEventItem(
+  s: ChapterSetup,
+  eventId: Id<"events">,
+  module: string,
+  opts: { title?: string; status?: string; cost?: number; fields?: Record<string, unknown> } = {},
+): Promise<Id<"eventItems">> {
+  const fields = {
+    ...(opts.cost !== undefined ? { cost: opts.cost } : {}),
+    ...(opts.fields ?? {}),
+  };
+  return await run(s.t, (ctx) =>
+    ctx.db.insert("eventItems", {
+      eventId,
+      chapterId: s.chapterId,
+      module,
+      title: opts.title ?? "Item",
+      order: 0,
+      status: opts.status,
+      fields: Object.keys(fields).length > 0 ? fields : undefined,
+    }),
+  );
+}
+
+/** Clone an `eventModules` row — display label for a module, exactly like
+ *  `lib/templates.ts#instantiateEvent` clones one per active module at event
+ *  creation. Defaults to the module's REAL `CORE_MODULES` label when known,
+ *  so grid `typeLabel` assertions match real production copy. */
+async function seedEventModule(
+  s: ChapterSetup,
+  eventId: Id<"events">,
+  module: string,
+  opts: { label?: string; order?: number } = {},
+): Promise<Id<"eventModules">> {
+  const coreLabel = CORE_MODULES.find((m) => m.key === module)?.label;
+  return await run(s.t, (ctx) =>
+    ctx.db.insert("eventModules", {
+      eventId,
+      key: module,
+      label: opts.label ?? coreLabel ?? module,
+      order: opts.order ?? 0,
+    }),
+  );
+}
+
+/** Clone an `eventColumns` row — exactly like `instantiateEvent` clones the
+ *  template's columns per-event. Defaults to a `currency` column (the type
+ *  `eventCostGrid` sweeps for). */
+async function seedEventColumn(
+  s: ChapterSetup,
+  eventId: Id<"events">,
+  module: string,
+  key: string,
+  opts: { label?: string; type?: "currency" | "text" | "number"; order?: number } = {},
+): Promise<Id<"eventColumns">> {
+  return await run(s.t, (ctx) =>
+    ctx.db.insert("eventColumns", {
+      eventId,
+      module,
+      key,
+      label: opts.label ?? key,
+      kind: "custom",
+      type: opts.type ?? "currency",
+      isVisible: true,
+      order: opts.order ?? 0,
+    }),
+  );
+}
+
+/** Clone the DEFAULT cost-bearing setup — a `cost`-keyed currency column
+ *  (+ its module's real label) on each of the given modules. Mirrors what a
+ *  real event gets from an unmodified template for Tasks/Supplies/Comms. */
+async function seedDefaultCostSetup(
+  s: ChapterSetup,
+  eventId: Id<"events">,
+  modules: string[],
+): Promise<void> {
+  for (const module of modules) {
+    await seedEventModule(s, eventId, module);
+    await seedEventColumn(s, eventId, module, "cost", { label: "Cost" });
+  }
+}
+
+async function seedPerson(s: ChapterSetup, name: string): Promise<Id<"people">> {
+  return await run(s.t, (ctx) =>
+    ctx.db.insert("people", {
+      chapterId: s.chapterId,
+      name,
+      isTeamMember: true,
+      createdAt: Date.now(),
+    }),
+  );
+}
+
+async function seedPaidEngagement(
+  s: ChapterSetup,
+  eventId: Id<"events">,
+  personId: Id<"people">,
+  opts: { amountUsd?: number; paymentStatus?: "unpaid" | "invoiced" | "paid" } = {},
+): Promise<Id<"engagements">> {
+  return await run(s.t, (ctx) =>
+    ctx.db.insert("engagements", {
+      chapterId: s.chapterId,
+      eventId,
+      personId,
+      type: "paid",
+      status: "confirmed",
+      amountUsd: opts.amountUsd,
+      paymentStatus: opts.paymentStatus ?? "unpaid",
+      createdAt: Date.now(),
+    }),
+  );
+}
+
+describe("moneyViews.eventCostGrid", () => {
+  test("collects Tasks/Supplies/Comms costs, paid vendors, and budget lines into one flat list", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await asChapterManager(s);
+    const eventId = await seedEvent(s, s.chapterId, { name: "Big Night" });
+    await seedDefaultCostSetup(s, eventId, ["planning_doc", "supplies", "comms"]);
+
+    await seedEventItem(s, eventId, "planning_doc", { title: "Sound tech", cost: 150, status: "in_progress" });
+    await seedEventItem(s, eventId, "supplies", { title: "Coffee", cost: 40 });
+    await seedEventItem(s, eventId, "comms", { title: "Flyer print", cost: 25 });
+    // run_of_show has NO currency column cloned onto this event — a dead end.
+    await seedEventItem(s, eventId, "run_of_show", { title: "Segment", cost: 999 });
+
+    const person = await seedPerson(s, "DJ Sam");
+    await seedPaidEngagement(s, eventId, person, { amountUsd: 300, paymentStatus: "paid" });
+
+    const fundId = await seedFund(s, s.chapterId);
+    const cat = await seedCategory(s, s.chapterId, fundId, "Venue");
+    const budgetId = await seedOneTimeBudget(s, s.chapterId, "event", eventId, { amountCents: 100000 });
+    await seedLine(s, budgetId, 20000, cat, 0);
+
+    const result = await s.as.query(api.moneyViews.eventCostGrid, { eventId });
+    expect(result.isTraining).toBe(false);
+    expect(result.rows).toHaveLength(5); // NOT the run_of_show row
+
+    const byId = new Map(result.rows.map((r) => [r.label, r]));
+    expect(byId.get("Sound tech")).toMatchObject({
+      sourceKind: "event_item",
+      typeLabel: "Tasks", // the real CORE_MODULES label, not a hand-picked short form
+      categoryName: "Tasks",
+      plannedCents: 15000, // $150 -> cents
+      status: "in_progress",
+      sourceLink: `/event/${eventId}?tab=planning_doc`,
+      linked: false,
+      possibleDuplicate: false,
+    });
+    expect(byId.get("Coffee")).toMatchObject({
+      typeLabel: "Supplies & Logistics",
+      categoryName: "Supplies & Logistics",
+      plannedCents: 4000,
+    });
+    expect(byId.get("Flyer print")).toMatchObject({
+      typeLabel: "Comms Schedule",
+      categoryName: "Comms Schedule",
+      plannedCents: 2500,
+    });
+    expect(byId.get("DJ Sam")).toMatchObject({
+      sourceKind: "vendor",
+      typeLabel: "Vendors",
+      categoryName: "Vendors",
+      plannedCents: 30000, // $300 -> cents
+      actualCents: 30000, // paid
+      status: "paid",
+      sourceLink: `/event/${eventId}?tab=crew`,
+    });
+    const lineRow = [...result.rows].find((r) => r.sourceKind === "budget_line")!;
+    expect(lineRow).toMatchObject({
+      typeLabel: "Budget lines",
+      categoryName: "Venue",
+      plannedCents: 20000,
+      sourceLink: null,
+      editable: true, // asChapterManager is bookkeeper+
+      linked: false,
+      possibleDuplicate: false,
+    });
+
+    expect(result.totalPlannedCents).toBe(15000 + 4000 + 2500 + 30000 + 20000);
+  });
+
+  test("excludes zero/negative/missing costs — a $0 or uncosted item never appears", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await asChapterViewer(s);
+    const eventId = await seedEvent(s, s.chapterId);
+    await seedDefaultCostSetup(s, eventId, ["planning_doc"]);
+    await seedEventItem(s, eventId, "planning_doc", { title: "No cost set" });
+    await seedEventItem(s, eventId, "planning_doc", { title: "Zero cost", cost: 0 });
+    await seedEventItem(s, eventId, "planning_doc", { title: "Negative (bad data)", cost: -5 });
+
+    const result = await s.as.query(api.moneyViews.eventCostGrid, { eventId });
+    expect(result.rows).toHaveLength(0);
+    expect(result.totalPlannedCents).toBe(0);
+  });
+
+  // ── Opus review follow-ups (PR #216): dynamic module sweep ────────────────
+
+  test("a custom currency column on Permits (OUTSIDE the old 3-module allowlist) appears in the grid, and — keyed 'cost' — its figure agrees EXACTLY with events.get's budgetSpent", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await asChapterManager(s);
+    const eventId = await seedEvent(s, s.chapterId, { name: "Permit Night" });
+    // A chapter customized Permits with a "Cost" column keyed "cost" —
+    // columns.ts#addColumn's toKey("Cost") === "cost", the SAME key
+    // events.ts#get's budgetSpent always reads regardless of module.
+    await seedEventModule(s, eventId, "permits", { label: "Permits" });
+    await seedEventColumn(s, eventId, "permits", "cost", { label: "Cost" });
+    await seedEventItem(s, eventId, "permits", { title: "Noise permit", cost: 75 });
+
+    const result = await s.as.query(api.moneyViews.eventCostGrid, { eventId });
+    expect(result.rows).toHaveLength(1);
+    expect(result.rows[0]).toMatchObject({
+      sourceKind: "event_item",
+      typeLabel: "Permits",
+      categoryName: "Permits",
+      label: "Noise permit",
+      plannedCents: 7500,
+      sourceLink: `/event/${eventId}?tab=permits`,
+    });
+
+    // Both totals agree BY CONSTRUCTION: the grid's cents figure / 100 equals
+    // the header's whole-dollar figure, since both ultimately read the SAME
+    // `fields.cost` value on the SAME item.
+    const eventData = await s.as.query(api.events.get, { eventId });
+    expect(eventData?.budgetSpent).toBe(75);
+    expect(result.totalPlannedCents / 100).toBe(eventData?.budgetSpent);
+  });
+
+  test("a custom currency column with a NON-'cost' key (e.g. Permits 'fee') is captured by the grid — a completeness improvement over budgetSpent, which stays key-blind to it", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await asChapterManager(s);
+    const eventId = await seedEvent(s, s.chapterId, { name: "Permit Night" });
+    await seedEventModule(s, eventId, "permits", { label: "Permits" });
+    await seedEventColumn(s, eventId, "permits", "fee", { label: "Fee" });
+    await seedEventItem(s, eventId, "permits", { title: "Noise permit", fields: { fee: 40 } });
+
+    const result = await s.as.query(api.moneyViews.eventCostGrid, { eventId });
+    expect(result.rows).toHaveLength(1);
+    expect(result.rows[0]).toMatchObject({ label: "Noise permit", plannedCents: 4000 });
+
+    // budgetSpent NEVER sees this — it only ever reads the literal `cost`
+    // key, so this row is a genuine grid-only completeness win, not a bug.
+    const eventData = await s.as.query(api.events.get, { eventId });
+    expect(eventData?.budgetSpent).toBe(0);
+  });
+
+  test("a module with MULTIPLE currency columns produces one row PER column, disambiguated by the column's own label", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await asChapterManager(s);
+    const eventId = await seedEvent(s, s.chapterId);
+    await seedEventModule(s, eventId, "supplies", { label: "Supplies & Logistics" });
+    await seedEventColumn(s, eventId, "supplies", "cost", { label: "Cost" });
+    await seedEventColumn(s, eventId, "supplies", "deposit", { label: "Deposit" });
+    await seedEventItem(s, eventId, "supplies", {
+      title: "Tent rental",
+      fields: { cost: 200, deposit: 50 },
+    });
+
+    const result = await s.as.query(api.moneyViews.eventCostGrid, { eventId });
+    expect(result.rows).toHaveLength(2);
+    const labels = result.rows.map((r) => r.label).sort();
+    expect(labels).toEqual(["Tent rental — Cost", "Tent rental — Deposit"]);
+    expect(result.totalPlannedCents).toBe(20000 + 5000);
+  });
+
+  test("a module with NO currency column contributes nothing, even with a real cost value in fields.cost (mirrors budgetSpent's key, not its module-blindness)", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await asChapterManager(s);
+    const eventId = await seedEvent(s, s.chapterId);
+    // run_of_show module cloned WITHOUT a currency column.
+    await seedEventModule(s, eventId, "run_of_show", { label: "Run of Show" });
+    await seedEventItem(s, eventId, "run_of_show", { title: "Segment", cost: 999 });
+
+    const result = await s.as.query(api.moneyViews.eventCostGrid, { eventId });
+    expect(result.rows).toHaveLength(0);
+  });
+
+  // ── Opus review follow-ups (PR #216): double-counting — linked merges,
+  //    unlinked duplicates flagged ──────────────────────────────────────────
+
+  test("a LINKED budget line (sourceRef -> the event item) MERGES into that item's row — no separate row, no double-count, category upgraded from the line", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await asChapterManager(s);
+    const eventId = await seedEvent(s, s.chapterId, { name: "Linked Test" });
+    await seedDefaultCostSetup(s, eventId, ["planning_doc"]);
+    const itemId = await seedEventItem(s, eventId, "planning_doc", {
+      title: "Sound tech",
+      cost: 150,
+      status: "in_progress",
+    });
+
+    const fundId = await seedFund(s, s.chapterId);
+    const cat = await seedCategory(s, s.chapterId, fundId, "Production");
+    const budgetId = await seedOneTimeBudget(s, s.chapterId, "event", eventId, { amountCents: 100000 });
+    // Directly seeded with sourceRef — no mutation sets this today (forward-
+    // looking infra); this is exactly how a future "plan this task's cost in
+    // Finances" flow would write it.
+    await run(s.t, (ctx) =>
+      ctx.db.insert("budgetLines", {
+        budgetId,
+        description: "Sound tech (finance plan copy)",
+        categoryId: cat,
+        plannedCents: 15000,
+        sortOrder: 0,
+        createdBy: s.userId,
+        createdAt: Date.now(),
+        sourceRef: { kind: "eventItem", id: String(itemId) },
+      }),
+    );
+
+    const result = await s.as.query(api.moneyViews.eventCostGrid, { eventId });
+    // ONE row (the module row), not two — the line never became its own row.
+    expect(result.rows).toHaveLength(1);
+    expect(result.rows[0]).toMatchObject({
+      sourceKind: "event_item",
+      label: "Sound tech", // module row's own label wins, not the line's
+      plannedCents: 15000, // module row's own cost wins, not summed with the line
+      categoryName: "Production", // upgraded from the linked line's REAL category
+      linked: true,
+      possibleDuplicate: false,
+    });
+    // No double-count: total is the module row's figure ONCE, not +15000 again.
+    expect(result.totalPlannedCents).toBe(15000);
+  });
+
+  test("a DANGLING sourceRef (target not in the grid) falls back to a normal unlinked row — the line's plan data doesn't vanish", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await asChapterManager(s);
+    const eventId = await seedEvent(s, s.chapterId);
+    const budgetId = await seedOneTimeBudget(s, s.chapterId, "event", eventId, { amountCents: 100000 });
+    await run(s.t, (ctx) =>
+      ctx.db.insert("budgetLines", {
+        budgetId,
+        description: "Orphaned link",
+        plannedCents: 5000,
+        sortOrder: 0,
+        createdBy: s.userId,
+        createdAt: Date.now(),
+        // Points at an eventItem id that was never seeded (or has no
+        // qualifying currency column) — nothing in the grid to merge into.
+        sourceRef: { kind: "eventItem", id: "nonexistent_item_id" },
+      }),
+    );
+
+    const result = await s.as.query(api.moneyViews.eventCostGrid, { eventId });
+    expect(result.rows).toHaveLength(1);
+    expect(result.rows[0]).toMatchObject({
+      sourceKind: "budget_line",
+      label: "Orphaned link",
+      plannedCents: 5000,
+      linked: false,
+    });
+  });
+
+  test("an UNLINKED budget line whose label overlaps a module row's is flagged possibleDuplicate on BOTH sides — and BOTH still count toward the total (nothing silently dropped)", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await asChapterManager(s);
+    const eventId = await seedEvent(s, s.chapterId, { name: "Duplicate Risk" });
+    await seedDefaultCostSetup(s, eventId, ["planning_doc"]);
+    await seedEventItem(s, eventId, "planning_doc", { title: "Sound tech", cost: 150 });
+
+    const budgetId = await seedOneTimeBudget(s, s.chapterId, "event", eventId, { amountCents: 100000 });
+    // A realistically-colliding label — seeded directly (not via `seedLine`,
+    // whose default description is a generic "Line") so the token overlap
+    // with the Task above ("Sound tech") is deliberate and legible here.
+    await run(s.t, (ctx) =>
+      ctx.db.insert("budgetLines", {
+        budgetId,
+        description: "Sound tech deposit",
+        plannedCents: 15000,
+        sortOrder: 0,
+        createdBy: s.userId,
+        createdAt: Date.now(),
+      }),
+    );
+
+    const result = await s.as.query(api.moneyViews.eventCostGrid, { eventId });
+    expect(result.rows).toHaveLength(2); // NOT merged — nothing proves they're the same expense
+    const task = result.rows.find((r) => r.sourceKind === "event_item")!;
+    const line = result.rows.find((r) => r.sourceKind === "budget_line")!;
+    expect(task.possibleDuplicate).toBe(true);
+    expect(line.possibleDuplicate).toBe(true);
+    expect(task.linked).toBe(false);
+    expect(line.linked).toBe(false);
+    // Both amounts still count — a visible over-count warning beats a
+    // silent under-count.
+    expect(result.totalPlannedCents).toBe(15000 + 15000);
+  });
+
+  test("DISTINCT labels never trigger a false-positive duplicate flag", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await asChapterManager(s);
+    const eventId = await seedEvent(s, s.chapterId);
+    await seedDefaultCostSetup(s, eventId, ["planning_doc"]);
+    await seedEventItem(s, eventId, "planning_doc", { title: "Sound tech", cost: 150 });
+    const budgetId = await seedOneTimeBudget(s, s.chapterId, "event", eventId, { amountCents: 100000 });
+    await seedLine(s, budgetId, 5000, undefined, 0);
+
+    const result = await s.as.query(api.moneyViews.eventCostGrid, { eventId });
+    expect(result.rows).toHaveLength(2);
+    expect(result.rows.every((r) => r.possibleDuplicate === false)).toBe(true);
+  });
+
+  test("an UNPAID vendor has a null actualCents (committed, not yet spent)", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await asChapterViewer(s);
+    const eventId = await seedEvent(s, s.chapterId);
+    const person = await seedPerson(s, "Caterer Co");
+    await seedPaidEngagement(s, eventId, person, { amountUsd: 500, paymentStatus: "unpaid" });
+
+    const result = await s.as.query(api.moneyViews.eventCostGrid, { eventId });
+    expect(result.rows).toHaveLength(1);
+    expect(result.rows[0].actualCents).toBeNull();
+    expect(result.rows[0].status).toBe("unpaid");
+  });
+
+  test("a budget-line row's editable flag mirrors canEditPlan — false for a plain viewer", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await asChapterViewer(s);
+    const eventId = await seedEvent(s, s.chapterId);
+    const budgetId = await seedOneTimeBudget(s, s.chapterId, "event", eventId, { amountCents: 10000 });
+    await seedLine(s, budgetId, 5000);
+
+    const result = await s.as.query(api.moneyViews.eventCostGrid, { eventId });
+    expect(result.rows).toHaveLength(1);
+    expect(result.rows[0].editable).toBe(false);
+  });
+
+  test("a training event returns an empty grid (#172) even if it somehow has cost rows", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await asChapterViewer(s);
+    const eventId = await seedEvent(s, s.chapterId, { isTraining: true });
+    await seedEventItem(s, eventId, "planning_doc", { title: "Should not show", cost: 100 });
+
+    const result = await s.as.query(api.moneyViews.eventCostGrid, { eventId });
+    expect(result.isTraining).toBe(true);
+    expect(result.rows).toHaveLength(0);
+  });
+
+  test("a nonexistent event returns the quiet empty shape (no throw)", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await asChapterViewer(s);
+    const eventId = await seedEvent(s, s.chapterId);
+    await run(s.t, (ctx) => ctx.db.delete(eventId));
+
+    const result = await s.as.query(api.moneyViews.eventCostGrid, { eventId });
+    expect(result.rows).toEqual([]);
+    expect(result.totalPlannedCents).toBe(0);
+  });
+
+  test("a foreign chapter's event with no central reach gets the quiet empty shape", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await asChapterManager(s);
+    const boston = await makeChapter(s, "Boston");
+    const eventId = await seedEvent(s, boston);
+    await seedEventItem(s, eventId, "planning_doc", { title: "Boston cost", cost: 50 });
+
+    const result = await s.as.query(api.moneyViews.eventCostGrid, { eventId });
+    expect(result.rows).toEqual([]);
   });
 });

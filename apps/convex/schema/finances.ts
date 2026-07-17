@@ -248,6 +248,25 @@ export const budgetLines = defineTable({
   sortOrder: v.number(),
   createdBy: v.id("users"),
   createdAt: v.number(),
+  // De-dup infrastructure for `moneyViews.eventCostGrid` (the unified event
+  // cost grid, PR #216): when a line represents the SAME real-world expense
+  // as an `eventItems` row (a Task/Supply/Comms cost) or an `engagements` row
+  // (a paid vendor), it can point at that row here so the grid merges the
+  // pair into ONE row instead of summing both — the module row wins for
+  // display (its own cost/amount + status/link), this line only contributes
+  // its category (the plan metadata the module side has no field for).
+  // OPTIONAL and UNUSED by any mutation today (`addLine`/`updateLine` don't
+  // accept it) — this is forward-looking schema-only infrastructure; nothing
+  // currently creates a link. A future flow (e.g. "plan this task's cost in
+  // Finances") would set it. Until then, an unlinked line whose label
+  // resembles a module row's is instead flagged `possibleDuplicate` by the
+  // grid — a human catches what the system can't yet prove.
+  sourceRef: v.optional(
+    v.object({
+      kind: v.union(v.literal("eventItem"), v.literal("engagement")),
+      id: v.string(),
+    }),
+  ),
 }).index("by_budget", ["budgetId"]);
 
 // ── Transactions (the unified ACTUAL record) ─────────────────────────────────
