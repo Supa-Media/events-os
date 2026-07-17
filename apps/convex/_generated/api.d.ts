@@ -119,6 +119,7 @@ import type * as schema_siteMap from "../schema/siteMap.js";
 import type * as schema_songs from "../schema/songs.js";
 import type * as schema_templates from "../schema/templates.js";
 import type * as schema_ticketing from "../schema/ticketing.js";
+import type * as seatProposals from "../seatProposals.js";
 import type * as seatStructure from "../seatStructure.js";
 import type * as seats from "../seats.js";
 import type * as seed from "../seed.js";
@@ -258,6 +259,7 @@ declare const fullApi: ApiFromModules<{
   "schema/songs": typeof schema_songs;
   "schema/templates": typeof schema_templates;
   "schema/ticketing": typeof schema_ticketing;
+  seatProposals: typeof seatProposals;
   seatStructure: typeof seatStructure;
   seats: typeof seats;
   seed: typeof seed;

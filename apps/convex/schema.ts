@@ -65,6 +65,7 @@ import {
 } from "./schema/finances";
 import { seatDefs, seatAssignments } from "./schema/seats";
 import { seatStructureLog } from "./schema/seatStructureLog";
+import { seatProposals } from "./schema/seatProposals";
 import { assets, assetReservations } from "./schema/inventory";
 import { docs } from "./schema/docs";
 import { siteMarkers, siteShapes, siteMapPlacements } from "./schema/siteMap";
@@ -234,6 +235,10 @@ const schema = defineSchema({
   // Structure-editing audit log (`seatStructure.ts`'s addSeat/renameSeat/
   // updateSeat/reparentSeat/removeSeat) — distinct from occupancy above.
   seatStructureLog,
+  // Two-party seat-change proposals (schema/seatProposals.ts) — a seat holder
+  // proposes filling/vacating a seat strictly below their own; a holder above
+  // the proposer approves. See seatProposals.ts for the write mutations.
+  seatProposals,
 
   // Inventory (M5.5) — chapter-owned asset registry + per-event reservations.
   // The first chapter-level typed entity; events RESERVE from the registry and
