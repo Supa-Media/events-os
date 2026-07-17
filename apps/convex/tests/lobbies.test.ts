@@ -293,6 +293,44 @@ describe("org.nav tier derivation", () => {
     expect(nav.tierReasons[0]).toContain("Chair the board meeting");
   });
 
+  // Regression: `org.deriveTier` reads through `responsibilities.orgWideCatalog`
+  // (the SAME resolution `responsibilities.list` uses), not a locally
+  // re-derived chapter-only scan — a seat-mapped duty authored in a DIFFERENT
+  // chapter is an org-wide expectation (owner decision, see
+  // `responsibilities.ts`'s `orgWideCatalog` doc), so it must land the tier
+  // exactly like an own-chapter duty would.
+  test("owns a duty AUTHORED IN ANOTHER CHAPTER via a held chapter-chart seat → lead (org-wide duty resolution)", async () => {
+    const s = await setupChapter(newT(), { chapterName: "New York" });
+    const s2 = await setupChapter(s.t, {
+      email: "austin-admin@publicworship.life",
+      chapterName: "Austin",
+    });
+    const seatId = await addSeat(s, {
+      slug: "chapter_director",
+      title: "Chapter Director",
+      chart: "chapter",
+    });
+    // NY authors the duty, mapped to the shared chapter-chart seat def.
+    await addDuty(s, {
+      assigneeSeatIds: [seatId],
+      title: "Run the chapter day-to-day",
+    });
+
+    // Austin's director holds the SAME seat def, at Austin's own scope —
+    // Austin never authored anything for this seat.
+    const austinDirector = await addPerson(s2, "Austin Director", {
+      isTeamMember: true,
+    });
+    await addSeatAssignment(s2, seatId, s2.chapterId, austinDirector);
+    const { as } = await addUser(s2, "director@publicworship.life", {
+      personId: austinDirector,
+    });
+
+    const nav = await as.query(api.org.nav, {});
+    expect(nav.tier).toBe("lead");
+    expect(nav.tierReasons[0]).toContain("Run the chapter day-to-day");
+  });
+
   test("core team member (no duty, no reports) → member", async () => {
     const s = await setupChapter(newT());
     const person = await addPerson(s, "Teammate", { isTeamMember: true });

@@ -412,13 +412,25 @@ describe("cleanupOrphanedPlacements", () => {
 });
 
 /**
- * 0024_repoint_derived_seat_duties — owner decision: Chapter Director is ONE
- * role with identical expectations across every chapter, so the central
- * chart's DERIVED `chapter_directors` mirror (holders computed, never
- * assigned) must never carry a duty of its own. This backfill repoints any
- * pre-fix `responsibilities.assigneeSeatIds` entry naming the derived seat
- * onto the real chapter-chart `chapter_director` seat, deduping if a row
- * already had both.
+ * 0024_repoint_derived_seat_duties — owner decision (verbatim): "the
+ * expectation for Chapter Director at one place is gonna be the same for the
+ * expectation somewhere else." Chapter Director is ONE role with identical
+ * expectations across every chapter, so the central chart's DERIVED
+ * `chapter_directors` mirror (holders computed, never assigned) must never
+ * carry a duty of its own. This backfill repoints any pre-fix
+ * `responsibilities.assigneeSeatIds` entry naming the derived seat onto the
+ * real chapter-chart `chapter_director` seat, deduping if a row already had
+ * both.
+ *
+ * These tests only pin the repoint MECHANICS (id-swap + dedupe + idempotency)
+ * — the real-world EFFECT of the repoint (an org-wide expectation reaching
+ * every chapter's director, not just the authoring chapter's) is pinned by
+ * `responsibilities.ts`'s `orgWideCatalog` resolution and exercised end-to-end
+ * in `tests/responsibilities.test.ts`'s "a duty authored in chapter A mapped
+ * to chapter_director is visible via list/dutiesForSeat from chapter B…"
+ * test — this file just proves the migration correctly gets a row OFF the
+ * dead derived id (which can never resolve, having no `seatAssignments`) and
+ * ONTO the real one, which `orgWideCatalog` then fans out org-wide.
  */
 describe("repointDerivedSeatDuties", () => {
   async function seedSeats(t: ReturnType<typeof newT>) {

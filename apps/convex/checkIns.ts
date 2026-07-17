@@ -95,7 +95,23 @@ export const log = mutation({
     for (const entry of args.responsibilities ?? []) {
       if (!entry.responsibilityId) continue;
       const doc = await ctx.db.get(entry.responsibilityId);
-      await requireInChapter(ctx, person.chapterId, doc, "Responsibility");
+      // A SEAT-MAPPED duty is an ORG-WIDE expectation (owner decision — see
+      // `responsibilities.ts`'s `orgWideCatalog`): it can show up on a
+      // report's workload even though its `chapterId` is some OTHER
+      // chapter's (whichever chapter happened to author it), so a 1:1
+      // referencing it must not be rejected as "not in your chapter." A
+      // PERSON/ROLE-scoped duty (no seats) keeps the strict same-chapter
+      // check — those never travel.
+      if ((doc?.assigneeSeatIds?.length ?? 0) > 0) {
+        if (!doc) {
+          throw new ConvexError({
+            code: "NOT_FOUND",
+            message: "Responsibility not found.",
+          });
+        }
+      } else {
+        await requireInChapter(ctx, person.chapterId, doc, "Responsibility");
+      }
     }
     for (const entry of args.projects ?? []) {
       if (!entry.projectId) continue;

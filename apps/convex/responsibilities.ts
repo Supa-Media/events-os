@@ -8,8 +8,8 @@
  * land on them, and editing is manager/admin-only throughout.
  */
 import { query, mutation } from "./_generated/server";
-import type { MutationCtx } from "./_generated/server";
-import { Id } from "./_generated/dataModel";
+import type { MutationCtx, QueryCtx } from "./_generated/server";
+import { Doc, Id } from "./_generated/dataModel";
 import { ConvexError, v } from "convex/values";
 import { RESPONSIBILITY_CADENCES, SEAT_CHARTS } from "@events-os/shared";
 import {
@@ -110,10 +110,87 @@ async function requireSeatDefs(
 // these rows feed the check-in accountability loop, so the person being held
 // to a duty must not be able to quietly delete or unassign it before their 1:1.
 
+/** Bound on the cross-chapter scan every org-wide seat-mapped-duty path does
+ *  (`orgWideCatalog`, `dutiesForSeat`) — every `responsibilities` row across
+ *  every chapter, since (per `orgWideCatalog`'s doc) a seat-mapped duty's
+ *  applicability is no longer confined to its authoring chapter. Generous
+ *  headroom for a mid-size org; mirrors `finances.ts`'s `ROLLUP_SCAN_LIMIT`
+ *  bounded-scan-with-truncation-warning convention (see `seats.ts`'s
+ *  `boundedChapters`, which this deliberately parallels but scans
+ *  `responsibilities` directly rather than enumerating `chapters`, since
+ *  applicability here turns on the DUTY rows, not per-chapter occupancy). */
+const MAX_CROSS_CHAPTER_DUTY_SCAN = 2000;
+
+/** Every `responsibilities` row across the WHOLE org, bounded — the one scan
+ *  site every org-wide duty path reads through (`orgWideCatalog`,
+ *  `dutiesForSeat`), so there's a single truncation-warning log instead of
+ *  one per caller. `context` names the caller for that warning, matching the
+ *  `[seats]`/`[finances]`-prefixed convention used elsewhere. */
+async function scanAllResponsibilities(
+  ctx: QueryCtx,
+  context: string,
+): Promise<Doc<"responsibilities">[]> {
+  const rows = await ctx.db
+    .query("responsibilities")
+    .take(MAX_CROSS_CHAPTER_DUTY_SCAN);
+  if (rows.length === MAX_CROSS_CHAPTER_DUTY_SCAN) {
+    console.warn(
+      `[responsibilities] ${context} hit MAX_CROSS_CHAPTER_DUTY_SCAN (${MAX_CROSS_CHAPTER_DUTY_SCAN}) rows; cross-chapter seat-mapped duties may be truncated until paginated enumeration lands.`,
+    );
+  }
+  return rows;
+}
+
 /**
- * The chapter's responsibility definitions, oldest first, each with a summary
- * of its How-To doc (kind/title/url) joined in so list surfaces can render the
- * affordance without a doc query per row.
+ * The responsibilities catalog relevant to `chapterId`: every row AUTHORED
+ * there (role/person/seat-mapped alike — the chapter's own business) UNION
+ * every SEAT-MAPPED row authored in ANY OTHER chapter.
+ *
+ * Owner decision (2026-07-17, verbatim): "the expectation for Chapter
+ * Director at one place is gonna be the same for the expectation somewhere
+ * else. If they need a fork in the road somewhere we'll deal with that
+ * later." So once a duty is mapped to a seat — chapter-chart OR central,
+ * no chart-type distinction — it is an ORG-WIDE expectation for every
+ * holder of that seat def, not scoped to whichever chapter happened to
+ * author it: the row's `chapterId` is authorship/home metadata for a
+ * seat-mapped duty, NOT an applicability filter. (Letting two chapters
+ * diverge on the same seat's expectations — "a fork in the road" — is
+ * explicitly deferred; there is no mechanism for it today.) PERSON/ROLE
+ * assignments (`assigneeSeatIds` unset) are UNCHANGED — they keep their
+ * existing chapter-local semantics; they were never meant to travel.
+ *
+ * This is the single source every duty-catalog consumer reads through —
+ * `list`, `dutiesForSeat` (which needs the org-wide half only, not the
+ * per-chapter union — see its own scan), and `org.ts`'s `deriveTier` all
+ * resolve through this or `scanAllResponsibilities`, so the rule lives in
+ * exactly one place.
+ */
+export async function orgWideCatalog(
+  ctx: QueryCtx,
+  chapterId: Id<"chapters">,
+  context: string,
+): Promise<Doc<"responsibilities">[]> {
+  const own = await ctx.db
+    .query("responsibilities")
+    .withIndex("by_chapter", (q) => q.eq("chapterId", chapterId))
+    .collect();
+  const all = await scanAllResponsibilities(ctx, context);
+  const foreignSeatMapped = all.filter(
+    (r) => r.chapterId !== chapterId && (r.assigneeSeatIds?.length ?? 0) > 0,
+  );
+  return [...own, ...foreignSeatMapped];
+}
+
+/**
+ * The chapter's responsibility CATALOG, oldest first, each with a summary of
+ * its How-To doc (kind/title/url) joined in so list surfaces can render the
+ * affordance without a doc query per row. Per `orgWideCatalog`, this is no
+ * longer just the rows this chapter authored: a seat-mapped duty authored by
+ * ANY chapter is part of every chapter's catalog too (one role, same
+ * expectations everywhere), so a chapter-B caller sees a chapter-A-authored
+ * "Chapter Director" duty right alongside chapter B's own. The How-To doc
+ * join is scoped to each ROW's OWN home chapter (`doc.chapterId === r.chapterId`),
+ * not the caller's — a foreign row's doc lives in ITS authoring chapter.
  *
  * Read is transparent: admins and every roster member get the whole catalog, so
  * any person's workload page can show the duties they carry — part of seeing the
@@ -128,12 +205,11 @@ export const list = query({
     if (!(await canViewChapterWork(ctx, chapterId as Id<"chapters">))) {
       return [];
     }
-    const rows = await ctx.db
-      .query("responsibilities")
-      .withIndex("by_chapter", (q) =>
-        q.eq("chapterId", chapterId as Id<"chapters">),
-      )
-      .collect();
+    const rows = await orgWideCatalog(
+      ctx,
+      chapterId as Id<"chapters">,
+      "responsibilities.list",
+    );
     return await Promise.all(
       rows.map(async (r) => {
         if (!r.howToDocId) return { ...r, howToDoc: null };
@@ -141,7 +217,7 @@ export const list = query({
         return {
           ...r,
           howToDoc:
-            doc && doc.chapterId === chapterId
+            doc && doc.chapterId === r.chapterId
               ? {
                   _id: doc._id,
                   kind: doc.kind,
@@ -556,28 +632,21 @@ export const chapterSeatHoldings = query({
   },
 });
 
-/** Bound on the cross-chapter scan `dutiesForSeat` does for a CENTRAL seat
- *  (every chapter's duty catalog, since a central seat's occupancy is
- *  chapter-independent). Generous headroom for a mid-size org; matches the
- *  spirit of `finances.ts`'s `ROLLUP_SCAN_LIMIT`-style bounded full scans. */
-const MAX_CROSS_CHAPTER_DUTY_SCAN = 2000;
-
 /**
  * The duties attached to one seat (`assigneeSeatIds` contains it).
  *
- * A CHAPTER-chart seat's occupancy is per-chapter, so its duties are scoped
- * to the CALLER'S own chapter — mirrors `list`'s chapter scoping (a duty row
- * always belongs to one chapter; there's no chapter-independent duty table).
- *
- * A CENTRAL-chart seat's occupancy is chapter-INDEPENDENT (the same seat,
- * held by the same people, "central" scope, regardless of which chapter's
- * roster they're homed in) — so a duty ANY chapter mapped to that seat is
- * relevant, not just the caller's own chapter's. Restricting to the caller's
- * chapter here would mean a chapter-A-authored duty mapped to a central seat
- * never reaches that seat's panel when browsed from chapter B, even though
- * the seat (and its holder) are the same either way. Gated the same as every
- * other seat/duty read — org-transparent to any signed-in roster member, not
- * just the authoring chapter's.
+ * Per `orgWideCatalog`'s owner-decision doc: a seat-mapped duty is an
+ * ORG-WIDE expectation for every holder of that seat def, so this reaches
+ * across EVERY chapter's duty catalog regardless of whether `seatDefId`
+ * names a CENTRAL-chart seat (occupancy already chapter-independent — the
+ * same seat, "central" scope, held by the same people regardless of which
+ * chapter's roster they're homed in) or a CHAPTER-chart seat (occupancy is
+ * per-chapter, but the DUTY mapped to it is no longer scoped to whichever
+ * chapter happened to author it). There's no chart-type branch here anymore
+ * — a chapter-A-authored duty mapped to a chapter-chart seat reaches that
+ * seat's panel browsed from chapter B exactly like a central-seat duty
+ * always did. Gated the same as every other seat/duty read — org-transparent
+ * to any signed-in roster member, not just the authoring chapter's.
  *
  * The org-chart UI (a later PR) is expected to call this while browsing a
  * seat's panel, central or chapter. Simple summary shape — no How-To doc
@@ -606,17 +675,7 @@ export const dutiesForSeat = query({
     // empty here too rather than surfacing stale pre-migration mappings.
     if (seat.derived === true) return [];
 
-    const rows =
-      seat.chart === "central"
-        ? await ctx.db
-            .query("responsibilities")
-            .take(MAX_CROSS_CHAPTER_DUTY_SCAN)
-        : await ctx.db
-            .query("responsibilities")
-            .withIndex("by_chapter", (q) =>
-              q.eq("chapterId", chapterId as Id<"chapters">),
-            )
-            .collect();
+    const rows = await scanAllResponsibilities(ctx, "responsibilities.dutiesForSeat");
 
     return rows
       .filter((r) => (r.assigneeSeatIds ?? []).includes(seatDefId))
