@@ -1,20 +1,27 @@
 /**
  * Seat-derived finance capabilities.
  *
- * This is the SINGLE place a future "flip enforcement to seats" change would
- * call to answer "what SHOULD this person be allowed to do, per the org
- * chart?" — as opposed to `lib/finance.ts` (`getFinanceRole`,
- * `isCentralEdOrFm`), which answers "what does the STORED
- * `financeRoles`/`specializedRoles` state say they're allowed to do?" today.
+ * This is the SINGLE place that answers "what SHOULD this person be allowed
+ * to do, per the org chart?" — as opposed to `lib/finance.ts`
+ * (`getFinanceRole`, `isCentralEdOrFm`), which answers "what does the STORED
+ * `financeRoles`/`specializedRoles` state say they're allowed to do?".
  *
- * Until that flip happens, this module is READ-ONLY and UNUSED by any
- * enforcement path — its only caller is the capability shadow audit
- * (`seats.ts#capabilityAudit`), which diffs its output against the stored
- * tables to find drift before anything is ever gated on it. Keep this file
- * dependency-light (no writes, no throws beyond what `ctx.db.query` itself
- * can do, no imports beyond `_generated` + `@events-os/shared`) so it stays
- * trivially auditable — every future capability the seat chart can grant
- * should be addable here without touching the stored-side tables at all.
+ * The enforcement flip LANDED in PR #195 ("B10 — seat-derived union"):
+ * `lib/finance.ts#getFinanceRole` / `#isCentralEdOrFm` now UNION this file's
+ * output with the stored ladder — this module is a live enforcement
+ * dependency, not a read-only shadow. A seat can only ever WIDEN what the
+ * stored tables already grant (seats derive `finance.manager`/
+ * `finance.viewer`/`finance.central`/`finance.accounts`, never revoke a
+ * hand-granted `financeRoles`/`specializedRoles` row) — see `lib/finance.ts`'s
+ * "B10" doc comment for the union formula itself. `seats.ts#bridgeDriftAudit`
+ * is a SEPARATE, narrower check now — it no longer simulates this union
+ * (that would be permanently stale post-flip); it only watches for
+ * `seatAssignments` ↔ `specializedRoles` mirror drift on the legacy-bridge
+ * titles (see that query's doc). Keep this file dependency-light (no writes,
+ * no throws beyond what `ctx.db.query` itself can do, no imports beyond
+ * `_generated` + `@events-os/shared`) so it stays trivially auditable — every
+ * future capability the seat chart can grant should be addable here without
+ * touching the stored-side tables at all.
  *
  * ## Mapping rules (READ THIS before extending)
  *
@@ -49,33 +56,32 @@
  *    mixed occupants) — capabilities OR together and the STRONGEST rank
  *    present sets the scope's flag (see the module doc's closing paragraph).
  *    `"bookkeeper"` — the ladder's MIDDLE rank — is NEVER produced by a seat;
- *    it stays a STORED-ONLY residual layer, same as before this file learned
- *    `"viewer"`: a finance manager can still hand-grant an ad-hoc bookkeeper
- *    (or a viewer with no matching seat) via `financeRoles.grantFinanceRole`
- *    with no seat needing to represent it. The planned flip is `effective =
- *    max(seat-derived, residual stored grants)` (see
- *    `seats.ts#capabilityAudit`'s doc), so a bookkeeper grant with no seat
- *    simply survives the flip via the residual side — this file just never
+ *    it stays a STORED-ONLY residual layer: a finance manager can still
+ *    hand-grant an ad-hoc bookkeeper (or a viewer with no matching seat) via
+ *    `financeRoles.grantFinanceRole` with no seat needing to represent it.
+ *    The union formula is `effective = max(seat-derived, residual stored
+ *    grants)` (see `lib/finance.ts`'s "B10" doc comment — this union is LIVE,
+ *    not planned; PR #195 shipped it), so a bookkeeper grant with no seat
+ *    simply survives the union via the residual side — this file just never
  *    PRODUCES that rank itself.
  *  - `centralReach`: true iff ANY seat at that scope carries
  *    `"finance.central"` (org-wide roll-up reach — the seat-derived
  *    equivalent of `lib/finance.ts#getFinanceRole`'s `isCentral`, which is
- *    ROLE-AGNOSTIC and WHOLE-PERSON, not scope-keyed — see that function's
- *    line 174 and `seats.ts#todaysIsCentral`). Today only central-chart seats
- *    (`executive_director`, `financial_manager`) carry this capability, so in
- *    practice this is only ever `true` under the `"central"` scopeKey — but
- *    the derivation itself is scope-agnostic, so a future chapter-chart seat
- *    granted `"finance.central"` would just work.
+ *    ROLE-AGNOSTIC and WHOLE-PERSON, not scope-keyed). Today only
+ *    central-chart seats (`executive_director`, `financial_manager`) carry
+ *    this capability, so in practice this is only ever `true` under the
+ *    `"central"` scopeKey — but the derivation itself is scope-agnostic, so
+ *    a future chapter-chart seat granted `"finance.central"` would just work.
  *  - `accountsAccess`: true iff ANY seat at that scope carries
  *    `"finance.accounts"` (the Accounts tab / Relay-cards gate — the
  *    seat-derived equivalent of `lib/finance.ts#isCentralEdOrFm`, which today
  *    derives this from a CENTRAL `specializedRoles` row titled
  *    `executive_director` or `finance_manager` instead of a seat).
  *    `isCentralEdOrFm` is USER-keyed (OR across every non-placeholder
- *    `people` row a user owns — lines 350-357), NOT person-keyed; this file
- *    stays person-keyed (a pure function of `personId`'s own seats) and
- *    leaves that user-level aggregation to the audit's
- *    `todaysAccountsAccessForPerson`, which replicates it exactly.
+ *    `people` row a user owns), NOT person-keyed; this file stays
+ *    person-keyed (a pure function of `personId`'s own seats) and leaves that
+ *    user-level aggregation to `isCentralEdOrFm` itself, which unions this
+ *    file's per-person result across the caller's linked `people` rows.
  *
  * Holding several seats at the same scope (or a multi-holder seat with
  * several occupants) just ORs together: one `true` / graded-rank value from
@@ -85,29 +91,41 @@
  * loop comment). There is no "un-deriving" a capability by ALSO holding a
  * weaker seat at the same scope — capabilities never subtract.
  *
- * ## Out of scope: 4 of the 8 `SEAT_CAPABILITIES`
+ * ## Out of scope for `getSeatDerivedCapabilities`'s ladder: 4 of the 8
+ * `SEAT_CAPABILITIES`
  *
  * `SEAT_CAPABILITIES` also includes `finance.approve`, `finance.record`,
- * `nav.finances`, and `org.editChart` — this file derives NONE of them, and
- * `capabilityAudit` compares none of them. Not an oversight:
+ * `nav.finances`, and `org.editChart` — `getSeatDerivedCapabilities` derives
+ * NONE of them into the graded finance-role ladder above. Not an oversight,
+ * but NOT "unread" either — three of the four now have their OWN dedicated
+ * reader elsewhere, deliberately kept separate from this ladder rather than
+ * folded into it:
  *
- *  - `finance.approve` / `finance.record` mark the org chart's "approve-side"
- *    (leadership) vs "record-side" (finance) seats, but the actual
- *    separation-of-duties enforcement (`seats.ts`'s `APPROVE_SEAT_SLUGS` /
- *    `RECORD_SEAT_SLUGS`, and `assignSpecializedRoleImpl`'s scope-local SoD
- *    check) is derived from `legacyTitle` + `titleKind`, NOT from these
- *    capability strings. They aren't part of the graded finance-role ladder
- *    this flip targets, so they're out of scope for THIS flip specifically —
- *    a future SoD-flip would need its own derivation function.
- *  - `nav.finances` / `org.editChart` are UI-visibility / org-chart-editing
- *    gates, not money-access gates `getFinanceRole`/`isCentralEdOrFm` cover
- *    at all.
+ *  - `finance.approve` IS read, by this file's own `holdsApprovalSeatAt`
+ *    below (the chapter budget-approval gate, owner decision — see that
+ *    function's doc) — added ADDITIVELY, specifically NOT folded into
+ *    `getSeatDerivedCapabilities`, because approve-side SoD is a different
+ *    axis than the manager/bookkeeper/viewer ladder.
+ *  - `finance.record` marks the org chart's "record-side" (finance) seats,
+ *    but has no reader anywhere yet — the actual separation-of-duties
+ *    enforcement (`seats.ts`'s `APPROVE_SEAT_SLUGS`/`RECORD_SEAT_SLUGS`, and
+ *    `assignSpecializedRoleImpl`'s scope-local SoD check) is derived from
+ *    `legacyTitle` + `titleKind`, NOT from this capability string.
+ *    `specializedRoles` (and the title-based SoD it backs) is still the live
+ *    source of truth for approve/record SoD — retiring it is a later
+ *    milestone, not part of B10.
+ *  - `nav.finances` IS read, by `org.ts` (Finances tab visibility, B0-ish nav
+ *    gate) — UI-visibility only, not a money-access gate
+ *    `getFinanceRole`/`isCentralEdOrFm` cover.
+ *  - `org.editChart` IS read, by `seatStructure.ts`/`lib/seatStructure.ts`
+ *    (who can edit the org chart's structure) — an org-chart-editing gate,
+ *    unrelated to money access.
  *
- * As of this PR, none of these four strings are read by any enforcement path
- * anywhere in `apps/convex` — they're declared on seat defs
- * (`@events-os/shared/seats.ts`) but purely descriptive today. If that
- * changes, extend this file (and `capabilityAudit`) rather than assuming a
- * clean audit already covers them.
+ * So `finance.record` is the only one of the four still purely descriptive
+ * today (declared on seat defs in `@events-os/shared/seats.ts`, read by
+ * nothing). If a reader for it ever lands, extend this doc (and this file's
+ * own `holdsApprovalSeatAt` is the pattern to follow: an additive, narrowly-
+ * scoped reader, not a fold-in to the ladder above).
  */
 import { Id } from "../_generated/dataModel";
 import { QueryCtx } from "../_generated/server";
@@ -154,10 +172,10 @@ export type SeatDerivedCapabilities = Record<string, SeatDerivedScopeCapabilitie
  * looks like a legitimate holder. `assignSeat` already refuses to CREATE a
  * placeholder assignment, so in steady state this never diverges from the
  * real gates in practice; if a person is DEMOTED to a placeholder after being
- * seated (leaving a stale assignment), that's exactly the kind of drift
- * `capabilityAudit`'s today-vs-post-flip comparison exists to surface — using
- * the real gates' placeholder-aware logic on the "today" side as the
- * baseline, not by filtering it out here too.
+ * seated (leaving a stale assignment), the real gates' own placeholder-aware
+ * logic (`isCentralEdOrFm`'s `isPlaceholder === true` skip) is what keeps
+ * that from granting anything — this function deliberately doesn't
+ * second-guess it here too.
  */
 export async function getSeatDerivedCapabilities(
   ctx: QueryCtx,
