@@ -226,6 +226,13 @@ export async function getSeatDerivedCapabilities(
  * exactly like `getSeatDerivedCapabilities`: one `by_person` query capped at
  * `PERSON_SEAT_ASSIGNMENT_LIMIT`, filtered in memory to `scope` (a person
  * holds a small handful of seats at most, never near the cap).
+ *
+ * Skips `derived` seat defs (e.g. central `chapter_directors`, rolled up
+ * from every chapter's `chapter_director` — never directly assigned)
+ * explicitly, rather than relying solely on `assignSeat` never creating a
+ * real `seatAssignments` row for one — the invariant stays true even if
+ * that assignment-time contract is ever violated (a stray/test-inserted
+ * row).
  */
 export async function holdsApprovalSeatAt(
   ctx: QueryCtx,
@@ -240,6 +247,7 @@ export async function holdsApprovalSeatAt(
   for (const assignment of assignments) {
     if (assignment.scope !== scope) continue;
     const def = await ctx.db.get(assignment.seatDefId);
+    if (def?.derived) continue; // computed/rolled-up seats are never real occupancy — belt-and-suspenders, see doc above
     if (def?.capabilities.includes("finance.approve")) return true;
   }
   return false;

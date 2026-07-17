@@ -155,7 +155,11 @@ async function defBySlug(s: ChapterSetup, slug: string) {
 
 /** Insert a `seatAssignments` row directly (bypassing `assignSeat`'s
  *  write-through) — isolates "what the seat alone implies" from any bridged
- *  stored grant, exactly like `financeGatesSeatUnion.test.ts`. */
+ *  stored grant, exactly like `financeGatesSeatUnion.test.ts`. Every real
+ *  chapter_director assignment below goes through this path, so
+ *  `holdsApprovalSeatAt`'s `def.derived` skip (a defense against a stray row
+ *  on a computed/rolled-up seat, e.g. central `chapter_directors`) is never
+ *  exercised by these tests — real `chapter_director` defs aren't `derived`. */
 async function assignSeatDirect(
   s: ChapterSetup,
   personId: Id<"people">,
