@@ -160,6 +160,17 @@ function DashboardBody({ seats }: { seats: Seats }) {
     else if (kind === "needs_budget") router.navigate("/finances/reconcile" as never);
   }
 
+  // Defensive no-op mirroring `onAttentionAction` above — `ChapterView`
+  // already hides every "Edit budget" affordance while peeking
+  // (`isDrilldown`), so this shouldn't fire, but the modal's save resolves
+  // the CALLER's own chapter server-side regardless of which budget id it's
+  // opened with, so opening it here while peeking would still set up a
+  // guaranteed-to-fail edit.
+  function onEditBudget(id: string) {
+    if (isPeeking) return;
+    setBudgetModal({ open: true, id: id as Id<"budgets">, central: false });
+  }
+
   // `seats` is guaranteed defined and non-empty here — FinancesScreen already
   // resolved the loading state and redirected a no-seat caller before
   // DashboardBody ever mounts.
@@ -227,9 +238,7 @@ function DashboardBody({ seats }: { seats: Seats }) {
               period={period}
               isDrilldown={isPeeking}
               onNewBudget={() => setBudgetModal({ open: true, id: null, central: false })}
-              onEditBudget={(id) =>
-                setBudgetModal({ open: true, id: id as Id<"budgets">, central: false })
-              }
+              onEditBudget={onEditBudget}
               onAddTransaction={() => setTxnModalOpen(true)}
               onAttentionAction={onAttentionAction}
             />

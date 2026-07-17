@@ -165,7 +165,11 @@ export function ChapterView({
       ) : (
         <View className="gap-3">
           {data.oneTimeBudgets.map((b) => (
-            <ProjectBudgetCard key={b.id} b={b} onPress={() => onEditBudget(b.id)} />
+            <ProjectBudgetCard
+              key={b.id}
+              b={b}
+              onPress={isDrilldown ? undefined : () => onEditBudget(b.id)}
+            />
           ))}
         </View>
       )}
@@ -193,7 +197,11 @@ export function ChapterView({
       ) : (
         <View className="flex-row flex-wrap gap-3">
           {data.recurringBudgets.map((b) => (
-            <RecurringBudgetCard key={b.id} b={b} onPress={() => onEditBudget(b.id)} />
+            <RecurringBudgetCard
+              key={b.id}
+              b={b}
+              onPress={isDrilldown ? undefined : () => onEditBudget(b.id)}
+            />
           ))}
         </View>
       )}
@@ -382,7 +390,13 @@ function AffordabilityHeader({
 }
 
 // ── Event / project budget card ──────────────────────────────────────────────
-function ProjectBudgetCard({ b, onPress }: { b: ProjectBudget; onPress: () => void }) {
+// `onPress` is omitted during a central drill-down (`isDrilldown` at the call
+// site) — both the "Edit budget" button and the approval actions below write
+// through mutations that resolve the CALLER's own chapter server-side
+// (`requireChapterId`/`requireInCallerChapter`), which isn't the chapter
+// being peeked, so they'd fail with a confusing "not found" error. Hiding the
+// affordance is simpler and clearer than letting the user hit that.
+function ProjectBudgetCard({ b, onPress }: { b: ProjectBudget; onPress?: () => void }) {
   const meta = [b.dateLabel, b.subtitle].filter(Boolean).join(" · ");
   return (
     <View className="rounded-lg border border-border bg-raised p-4 shadow-card">
@@ -439,16 +453,20 @@ function ProjectBudgetCard({ b, onPress }: { b: ProjectBudget; onPress: () => vo
         </View>
       ) : null}
 
-      <View className="mt-3 flex-row items-center justify-between gap-2">
-        <Button title="Edit budget" variant="ghost" size="sm" onPress={onPress} />
-        <BudgetApprovalActions budgetId={b.id} status={b.approvalStatus} />
-      </View>
+      {onPress ? (
+        <View className="mt-3 flex-row items-center justify-between gap-2">
+          <Button title="Edit budget" variant="ghost" size="sm" onPress={onPress} />
+          <BudgetApprovalActions budgetId={b.id} status={b.approvalStatus} />
+        </View>
+      ) : null}
     </View>
   );
 }
 
 // ── Recurring bucket card ────────────────────────────────────────────────────
-function RecurringBudgetCard({ b, onPress }: { b: RecurringBudget; onPress: () => void }) {
+// See `ProjectBudgetCard`'s doc comment above — same drill-down gating, same
+// reason (approval mutations resolve the caller's own chapter too).
+function RecurringBudgetCard({ b, onPress }: { b: RecurringBudget; onPress?: () => void }) {
   const cadenceLabel =
     b.cadence === "monthly" ? "Monthly" : b.cadence === "quarterly" ? "Quarterly" : "Yearly";
   return (
@@ -498,10 +516,12 @@ function RecurringBudgetCard({ b, onPress }: { b: RecurringBudget; onPress: () =
         </View>
       ) : null}
 
-      <View className="mt-3 flex-row items-center justify-between gap-2">
-        <Button title="Edit budget" variant="ghost" size="sm" onPress={onPress} />
-        <BudgetApprovalActions budgetId={b.id} status={b.approvalStatus} />
-      </View>
+      {onPress ? (
+        <View className="mt-3 flex-row items-center justify-between gap-2">
+          <Button title="Edit budget" variant="ghost" size="sm" onPress={onPress} />
+          <BudgetApprovalActions budgetId={b.id} status={b.approvalStatus} />
+        </View>
+      ) : null}
     </View>
   );
 }
