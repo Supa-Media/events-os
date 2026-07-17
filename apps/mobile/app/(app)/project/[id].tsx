@@ -55,11 +55,14 @@ export default function ProjectScreen() {
   // Move the project's money attribution — the SAME `transferProjectScope`
   // retroactive/creation flows both use (no second scope-move path). "chapter"
   // always means the project's own home chapter (`detail.chapterId`), the only
-  // non-central level a project-scoped budget can sit at.
+  // non-central level a project-scoped budget can sit at. Uses
+  // `homeChapterName` (always concrete), NOT `scopeChapterName` (null while
+  // the project currently sits at Central) — otherwise moving BACK from
+  // Central would confirm/label the destination as generic "the chapter".
   function handleScopeChange(next: "central" | "chapter") {
     if (!projectId || !detail) return;
     const target = next === "central" ? "central" : detail.chapterId;
-    const destLabel = next === "central" ? "Central" : detail.scopeChapterName ?? "the chapter";
+    const destLabel = next === "central" ? "Central" : detail.homeChapterName ?? "the chapter";
     confirmAction({
       title: `Move to ${destLabel}?`,
       message: `Moves the project and its budget/spend attribution to ${destLabel}.`,
@@ -191,7 +194,7 @@ export default function ProjectScreen() {
                 {detail.canChangeScope ? (
                   <ScopeToggle
                     value={detail.scope === "central" ? "central" : "chapter"}
-                    chapterName={detail.scopeChapterName ?? "This chapter"}
+                    chapterName={detail.homeChapterName ?? "This chapter"}
                     onChange={handleScopeChange}
                   />
                 ) : (

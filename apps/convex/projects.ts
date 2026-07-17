@@ -381,6 +381,17 @@ export const get = query({
     const scope: FinanceScope = budgetRow ? (budgetRow.chapterId as FinanceScope) : project.chapterId;
     const scopeChapterName =
       scope === "central" ? null : ((await ctx.db.get(scope))?.name ?? null);
+    // The project's HOME chapter's name, ALWAYS resolved regardless of the
+    // current scope — unlike `scopeChapterName` (null while at Central, by
+    // design, for the plain "current location" display), a client toggling
+    // between "Central" and "back to my chapter" needs a concrete label for
+    // the non-central option even while the project currently sits at
+    // Central. Reuses `scopeChapterName` when it already IS the home chapter
+    // (the common non-central case) instead of a second lookup.
+    const homeChapterName =
+      scope !== "central" && scope === project.chapterId
+        ? scopeChapterName
+        : ((await ctx.db.get(project.chapterId))?.name ?? null);
     const canChangeScope =
       ownChapterId != null && hasCentralWriteReach(await getFinanceRole(ctx, ownChapterId));
 
@@ -392,6 +403,7 @@ export const get = query({
       parentName: parent?.name ?? null,
       scope,
       scopeChapterName,
+      homeChapterName,
       canChangeScope,
     };
   },

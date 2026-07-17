@@ -566,7 +566,7 @@ describe("moneyViews.refMoney: multi-budget summing", () => {
     expect(result.unallocatedPlannedCents).toBe(40000);
   });
 
-  test("a project's budget that moved to central still sums its PLANNED total via by_ref, but its actual spend is chapter-filtered out (WP-2.2 discovery, consistent with actualsForRef)", async () => {
+  test("a project's budget that moved to central sums BOTH its planned total AND its actual spend — the view follows the money, not the ref's fixed home chapter (fixes a Central project under-reporting $0 actuals)", async () => {
     const t = newT();
     const s = await setupChapter(t, { email: "seyi@publicworship.life" }); // superuser = central
     const projectId = await seedProject(s, s.chapterId, "Music Recording");
@@ -575,8 +575,9 @@ describe("moneyViews.refMoney: multi-budget summing", () => {
       label: "Central music budget",
     });
     // This transaction's chapterId is "central" (it moved with the budget),
-    // NOT the project's own chapterId (`s.chapterId`, which never changes).
-    await seedTxn(s, "central", budgetId, { amountCents: 15000 });
+    // NOT the project's own chapterId (`s.chapterId`, which never changes —
+    // WP-2.2: projects have no central union on the row itself).
+    const txnId = await seedTxn(s, "central", budgetId, { amountCents: 15000 });
 
     const result = await s.as.query(api.moneyViews.refMoney, {
       refKind: "project",
@@ -585,12 +586,19 @@ describe("moneyViews.refMoney: multi-budget summing", () => {
     expect(result.budget?.id).toBe(budgetId);
     // Planned total still sums every by_ref budget regardless of level.
     expect(result.totalPlannedCents).toBe(300000);
-    // But actual spend is filtered to the REF's own chapter — same rule as
-    // `finances.ts#actualsForRef` — so this view stays in lockstep with
-    // `projectActuals`/the dashboard for the same ref. The Central row
-    // already reports this spend under its own roof (one home per dollar).
-    expect(result.totalActualCents).toBe(0);
-    expect(result.transactions).toEqual([]);
+    // Actual spend is filtered to THIS BUDGET's own current chapterId
+    // (central), NOT the ref's fixed home chapter — so the Money view keeps
+    // reporting the project's actuals once `transferProjectScope` has moved
+    // it, matching the "Belongs to: Central" label on the project page
+    // instead of silently zeroing out. `finances.ts#actualsForRef`
+    // (`projectActuals`/`eventActuals`) is intentionally DIFFERENT — it's
+    // keyed to the CALLER'S OWN chapter (a chapter-dashboard read), so it
+    // correctly still drops this once the money leaves that chapter; this
+    // view answers "what does this project cost" for whoever can already see
+    // it, regardless of level.
+    expect(result.totalActualCents).toBe(15000);
+    expect(result.transactions).toHaveLength(1);
+    expect(result.transactions[0].id).toBe(txnId);
     // No lines seeded → the full 300000 is unallocated.
     expect(result.unallocatedPlannedCents).toBe(300000);
   });

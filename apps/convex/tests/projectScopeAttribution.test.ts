@@ -86,6 +86,11 @@ describe("projects.create — money-attribution default", () => {
     const detail = await s.as.query(api.projects.get, { projectId });
     expect(detail?.scope).toBe("central");
     expect(detail?.scopeChapterName).toBeNull();
+    // `homeChapterName`, unlike `scopeChapterName`, stays concrete even while
+    // the project sits at Central — the UI's toggle/confirm-dialog needs a
+    // real label ("The New York Chapter") for the "move back" option, not a
+    // generic "This chapter" fallback (cosmetic fix, Opus review on #194).
+    expect(detail?.homeChapterName).toBe("New York");
   });
 
   test("a central-seat creator's $0 (work-tracking) project still gets a Central budget row, so a LATER dollar entry stays Central", async () => {
@@ -324,5 +329,46 @@ describe("projects.get — retroactive attribution + canChangeScope permission m
     // The project row itself is untouched — still home-chapter-scoped.
     const project = await run(s.t, (ctx) => ctx.db.get(projectId));
     expect(project?.chapterId).toBe(s.chapterId);
+  });
+});
+
+describe("end-to-end: Central attribution feeds moneyViews.refMoney (Opus review finding on PR #194)", () => {
+  test("central bookkeeper, $500 project -> Central, $300 central spend: Money view shows totalActualCents 30000, transactions present, planned 50000", async () => {
+    const s = await setupChapter(newT());
+    const personId = await seedSelfPerson(s);
+    await grantFinanceRole(s, personId, "bookkeeper", "central");
+
+    const projectId = (await s.as.mutation(api.projects.create, {
+      name: "Music Recording",
+      budgetUsd: 500,
+      scope: "central",
+    })) as Id<"projects">;
+
+    const budget = await projectBudget(s, projectId);
+    expect(budget?.chapterId).toBe("central");
+    expect(budget?.amountCents).toBe(50000);
+
+    // $300 of central spend posted against that same budget.
+    await run(s.t, (ctx) =>
+      ctx.db.insert("transactions", {
+        chapterId: "central",
+        budgetId: budget!._id,
+        source: "manual",
+        flow: "outflow",
+        amountCents: 30000,
+        postedAt: Date.now(),
+        status: "categorized",
+        createdAt: Date.now(),
+      }),
+    );
+
+    const money = await s.as.query(api.moneyViews.refMoney, {
+      refKind: "project",
+      refId: projectId,
+    });
+    expect(money.totalPlannedCents).toBe(50000);
+    expect(money.totalActualCents).toBe(30000);
+    expect(money.transactions).toHaveLength(1);
+    expect(money.transactions[0].amountCents).toBe(30000);
   });
 });
