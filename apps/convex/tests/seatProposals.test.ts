@@ -239,6 +239,31 @@ describe("seatProposals.propose — below-your-seat validation", () => {
       }),
     ).rejects.toBeInstanceOf(ConvexError);
   });
+
+  test("a chapter-A director CANNOT propose into chapter B (chapter-level authority doesn't cross chapters)", async () => {
+    const s = await baseSetup({ chapterName: "Chapter A" });
+    const cdDef = await defBySlug(s, "chapter_director");
+    const musicLeadDef = await defBySlug(s, "music_lead");
+    const { as, personId } = await personActor(s, s.chapterId, "DirectorA", "director-a@publicworship.life");
+    await seat(s, cdDef._id, s.chapterId, personId);
+    const chapterB = await makeChapter(s, "Chapter B");
+    const subject = await makePerson(s, chapterB, "Subject");
+
+    // Unlike a CENTRAL holder (which reaches every chapter via the
+    // CHAPTER_ROLLUP_PARENT bridge — see the test above), a chapter_director
+    // is chapter-scoped: chapter B's ancestor chain bridges to CENTRAL
+    // (expansion_director/executive_director), never to chapter A's own
+    // chapter_director. So a chapter-A director has no qualifying seat for
+    // anything in chapter B.
+    await expect(
+      as.mutation(api.seatProposals.propose, {
+        seatDefId: musicLeadDef._id,
+        scope: chapterB,
+        action: "fill",
+        subjectPersonId: subject,
+      }),
+    ).rejects.toBeInstanceOf(ConvexError);
+  });
 });
 
 // ── propose — structural validation ─────────────────────────────────────────
@@ -1064,6 +1089,54 @@ describe("seatProposals.approve", () => {
     await expect(
       proposer.as.mutation(api.seatProposals.approve, { proposalId }),
     ).rejects.toBeInstanceOf(ConvexError);
+  });
+
+  test("holding BOTH the proposer-qualifying seat AND the decider-qualifying seat can't route around the identity guard", async () => {
+    const s = await baseSetup();
+    const musicLeadDef = await defBySlug(s, "music_lead");
+    const vocalLeadDef = await defBySlug(s, "vocal_lead");
+    const cdDef = await defBySlug(s, "chapter_director");
+
+    // The SAME person holds music_lead (the LOW seat that qualifies them to
+    // propose for vocal_lead, its child) AND chapter_director (the HIGH seat
+    // that would otherwise be the nearest-occupied-ancestor decider for that
+    // same proposal — vocal_lead -> music_lead -> chapter_director).
+    const { as, personId } = await personActor(s, s.chapterId, "DualSeat", "dual-seat@publicworship.life");
+    await seat(s, musicLeadDef._id, s.chapterId, personId);
+    await seat(s, cdDef._id, s.chapterId, personId);
+
+    const subject = await makePerson(s, s.chapterId, "Subject");
+    const proposalId = await as.mutation(api.seatProposals.propose, {
+      seatDefId: vocalLeadDef._id,
+      scope: s.chapterId,
+      action: "fill",
+      subjectPersonId: subject,
+    });
+
+    // Holding the "decider seat" too must NOT let them approve their own
+    // proposal — the person-identity guard (checked by personId, not by
+    // seat) blocks it regardless of what else they hold.
+    let caught: unknown;
+    try {
+      await as.mutation(api.seatProposals.approve, { proposalId });
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(ConvexError);
+    expect((caught as ConvexError<{ code: string }>).data.code).toBe("CANNOT_DECIDE_OWN");
+
+    // The proposal is untouched — still pending, no seat was assigned.
+    const mine = await as.query(api.seatProposals.myProposals, {});
+    expect(mine.find((p) => p.proposalId === proposalId)?.status).toBe("pending");
+    const vocalLeadRows = await run(s.t, (ctx) =>
+      ctx.db
+        .query("seatAssignments")
+        .withIndex("by_scope_and_seat", (q) =>
+          q.eq("scope", s.chapterId).eq("seatDefId", vocalLeadDef._id),
+        )
+        .collect(),
+    );
+    expect(vocalLeadRows).toHaveLength(0);
   });
 
   test("approve rejects a non-pending proposal", async () => {
