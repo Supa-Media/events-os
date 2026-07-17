@@ -1910,3 +1910,6 @@ export * from "./academyCourses";
 
 // ── Finance (funds, budgets, transactions, reimbursements, cards, roles) ──────
 export * from "./finance";
+
+// ── Org-chart seat taxonomy (template constants + capability vocabulary) ─────
+export * from "./seats";

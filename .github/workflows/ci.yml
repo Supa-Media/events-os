@@ -12,4 +12,5 @@ jobs:
     with:
       app-slug: "events-os"
       strictness: "standard"
+      shared-package: "@events-os/shared"
     secrets: inherit
