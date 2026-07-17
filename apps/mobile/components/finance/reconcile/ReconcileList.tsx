@@ -24,9 +24,9 @@
  * had no Reconcile entry point before this; the member's own "My transactions"
  * flag flow is untouched.
  */
-import { useState } from "react";
-import { View, Text, Pressable, Platform, ScrollView } from "react-native";
-import { useMutation } from "convex/react";
+import { useEffect, useState } from "react";
+import { View, Text, Pressable, Platform, ScrollView, TextInput } from "react-native";
+import { useMutation, useQuery } from "convex/react";
 import { api } from "@events-os/convex/_generated/api";
 import type { Id } from "@events-os/convex/_generated/dataModel";
 import {
@@ -44,14 +44,18 @@ import { colors } from "../../../lib/theme";
 import { alertError } from "../../../lib/errors";
 import { TransactionNoteModal } from "../modals/TransactionNoteModal";
 import { STATUS_OPTIONS, signedMoney, shortDate, type TxnRow } from "./helpers";
-import { resolveForPickerValue } from "./forPicker";
+import { resolveForPickerValue, buildRankedForPickerItems } from "./forPicker";
 
 const NUM = { fontVariant: ["tabular-nums" as const] };
+// Server-side search debounce (owner addendum) — a round trip per keystroke
+// is wasteful; this mirrors `LocationAutocomplete`'s own debounce window.
+const SEARCH_DEBOUNCE_MS = 200;
 
 /** An option in the Category / For pickers; `header` rows are non-selectable.
  *  A "For" value is either a real `budgetId`, or a `summon:<refKind>:<id>`
- *  summon-candidate — see `forPicker.ts`. */
-export type PickerItem = { value: string; label: string; header?: boolean };
+ *  summon-candidate — see `forPicker.ts`. `reason` (ranked "For" rows only)
+ *  renders as a small sublabel — "2 transactions nearby in June", etc. */
+export type PickerItem = { value: string; label: string; header?: boolean; reason?: string };
 
 // Fixed column widths (px) — the grid scrolls horizontally on narrow web while
 // columns stay put, mirroring the People roster grid.
@@ -291,11 +295,15 @@ function ReconcileRow({
 
       {/* For (inline dropdown; grouped Events / Projects / Recurring — WP-U:
           one picker, one home per dollar. In central scope only Recurring ·
-          Central budgets are offered — events/projects are chapter-only). */}
+          Central budgets are offered — events/projects are chapter-only).
+          RANKED per-row (nearby spend → similar merchant → upcoming date →
+          everything else, budget-less demoted) via `reconcileSuggest.
+          rankForPicker` — see `ForPickerCell`. */}
       <Cell width={COLS.forCol}>
-        <PickerCell
+        <ForPickerCell
           value={row.budgetId}
-          items={forItems}
+          transactionId={id}
+          baseItems={forItems}
           placeholder={row.needsBudget ? "Needs budget" : "None"}
           warn={row.needsBudget}
           onChange={onForChange}
@@ -491,6 +499,132 @@ function PickerCell({
                 ) : null}
               </Pressable>
             ),
+          )}
+        </View>
+      </Popover>
+    </>
+  );
+}
+
+// ── "For" picker cell — RANKED, per-transaction (`reconcileSuggest.
+// rankForPicker` via `forPicker.ts#buildRankedForPickerItems`). A mini search
+// box (owner addendum) sits at the top of the popover, auto-focusing the
+// moment it opens, and drives the ranking query's `search` arg server-side
+// (debounced — every keystroke would otherwise be a round trip). Only fires
+// the ranking query while the popover is actually open (`useAnchor`'s
+// `visible`, Convex's "skip" pattern) — a grid full of unopened "For" cells
+// costs nothing beyond the base `forItems` this cell falls back to while the
+// ranked list is in flight, so the popover is never blank. ──────────────────
+function ForPickerCell({
+  value,
+  transactionId,
+  baseItems,
+  placeholder,
+  warn,
+  onChange,
+}: {
+  value: string | null;
+  transactionId: Id<"transactions">;
+  baseItems: PickerItem[];
+  placeholder: string;
+  warn?: boolean;
+  /** `""` clears the field (mapped to `null`). */
+  onChange: (value: string | null) => void;
+}) {
+  const { ref, anchor, visible, open, close } = useAnchor();
+  const [search, setSearch] = useState("");
+  const [debouncedSearch, setDebouncedSearch] = useState("");
+
+  useEffect(() => {
+    if (!visible) return;
+    const timer = setTimeout(() => setDebouncedSearch(search), SEARCH_DEBOUNCE_MS);
+    return () => clearTimeout(timer);
+  }, [search, visible]);
+
+  const ranked = useQuery(
+    api.reconcileSuggest.rankForPicker,
+    visible ? { transactionId, search: debouncedSearch.trim() || undefined } : "skip",
+  );
+  const items = ranked ? buildRankedForPickerItems(ranked) : baseItems;
+  const current = baseItems.find((i) => !i.header && i.value === value);
+  const noMatches = ranked?.searching === true && items.length === 0;
+
+  function handleClose() {
+    close();
+    setSearch("");
+    setDebouncedSearch("");
+  }
+
+  return (
+    <>
+      <Pressable
+        ref={ref}
+        onPress={open}
+        className="flex-1 px-2 py-1.5 active:opacity-70 web:hover:opacity-90"
+      >
+        {current ? (
+          <OptionTag label={current.label} />
+        ) : (
+          <Text className={`text-sm ${warn ? "text-warn" : "text-faint"}`}>
+            {placeholder}
+          </Text>
+        )}
+      </Pressable>
+      <Popover visible={visible} onClose={handleClose} anchor={anchor}>
+        <View className="border-b border-border/60 px-2 py-1.5">
+          <View className="flex-row items-center gap-1.5 rounded-md border border-border-strong bg-sunken px-2 py-1">
+            <Icon name="search" size={12} color={colors.faint} />
+            <TextInput
+              autoFocus
+              value={search}
+              onChangeText={setSearch}
+              placeholder="Search…"
+              placeholderTextColor={colors.faint}
+              autoCapitalize="none"
+              autoCorrect={false}
+              className="flex-1 py-0.5 text-xs text-ink"
+            />
+          </View>
+        </View>
+        <View className="py-1">
+          {noMatches ? (
+            <Text className="px-3 py-2 text-sm text-faint">No matches</Text>
+          ) : (
+            items.map((it) =>
+              it.header ? (
+                <Text
+                  key={it.value}
+                  className="px-3 pb-1 pt-2 text-2xs font-bold uppercase tracking-wider text-muted"
+                >
+                  {it.label}
+                </Text>
+              ) : (
+                <Pressable
+                  key={it.value}
+                  onPress={() => {
+                    onChange(it.value === "" ? null : it.value);
+                    handleClose();
+                  }}
+                  className="flex-row items-center justify-between gap-3 px-3 py-2 active:bg-sunken web:hover:bg-sunken"
+                >
+                  <View className="flex-1">
+                    {it.value === "" ? (
+                      <Text className="text-sm text-muted">{it.label}</Text>
+                    ) : (
+                      <OptionTag label={it.label} />
+                    )}
+                    {it.reason ? (
+                      <Text className="mt-0.5 text-2xs text-faint" numberOfLines={1}>
+                        {it.reason}
+                      </Text>
+                    ) : null}
+                  </View>
+                  {it.value === (value ?? "") ? (
+                    <Icon name="check" size={15} color={colors.accent} />
+                  ) : null}
+                </Pressable>
+              ),
+            )
           )}
         </View>
       </Popover>
