@@ -252,7 +252,7 @@ export function MoneyView({
         <PlanGrid
           source={{ kind: "event", eventId: refId as Id<"events"> }}
           budgetId={budget.id}
-          capCents={totalPlannedCents}
+          capCents={budget.amountCents}
         />
       ) : null}
 
