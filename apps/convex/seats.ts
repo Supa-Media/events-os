@@ -539,6 +539,24 @@ const RECORD_SEAT_SLUGS: ReadonlySet<string> = new Set(
   }),
 );
 
+// Fail LOUDLY at module load, not silently at runtime, if a future edit to
+// the shared seat template changes this shape (e.g. drops a `legacyTitle`, or
+// `titleKind` stops mapping one of them to leadership/finance). Today there
+// are exactly 2 seats per group (executive_director/chapter_director;
+// financial_manager/treasurer) — if that ever isn't true, `seatSodGroup()`
+// would silently return `null` more (or differently) than intended and SoD
+// enforcement would quietly weaken. Throwing here instead trips on deploy.
+if (APPROVE_SEAT_SLUGS.size !== 2) {
+  throw new Error(
+    `seats.ts: expected exactly 2 approve-side SoD seats, found ${APPROVE_SEAT_SLUGS.size} (${[...APPROVE_SEAT_SLUGS].join(", ")}). The shared seat template's legacyTitle/titleKind shape changed — update the SoD grouping deliberately.`,
+  );
+}
+if (RECORD_SEAT_SLUGS.size !== 2) {
+  throw new Error(
+    `seats.ts: expected exactly 2 record-side SoD seats, found ${RECORD_SEAT_SLUGS.size} (${[...RECORD_SEAT_SLUGS].join(", ")}). The shared seat template's legacyTitle/titleKind shape changed — update the SoD grouping deliberately.`,
+  );
+}
+
 /** Which SoD group (if any) a seat def belongs to. Only the 4 seats bridging
  *  to a leadership/finance `specializedRoles` title participate — every other
  *  seat (no `legacyTitle`, or a `legacyTitle` outside those groups) is `null`. */
@@ -623,6 +641,23 @@ async function deleteSeatAssignment(
  *  - Write-through: a seat with a `legacyTitle` upserts the matching
  *    `specializedRoles` row (+ finance bridge) via the shared helper. Seats
  *    without a `legacyTitle` write nothing to legacy tables.
+ *
+ * CAVEAT — the "idempotent no-op" re-affirm can still mutate legacy tables
+ * under DIVERGENCE. "Idempotent" describes `seatAssignments`: no new row, same
+ * assignment id returned. But the re-affirm still calls
+ * `assignSpecializedRoleImpl` for the seat's own holder, and that helper
+ * enforces "one holder per (scope, legacyTitle) slot" — so if the legacy slot
+ * has drifted to a DIFFERENT person B (e.g. reassigned directly through
+ * `specializedRoles.assignSpecializedRole` after this seat was assigned to A),
+ * re-affirming A's seat EVICTS B from the legacy slot and revokes B's finance
+ * bridge, even though nothing changed in `seatAssignments`. This is
+ * intentional "seat wins" write-through semantics (the seat is the source of
+ * truth once assigned) and it preserves read-parity between the two tables —
+ * but it means a caller relying on the no-op label to mean "no legacy-table
+ * side effects" would be wrong under divergence. Divergence itself should be
+ * rare/transient (both paths write through the same helper), but it IS
+ * reachable, e.g. by another actor calling `specializedRoles.
+ * assignSpecializedRole` directly on a slot this seat already occupies.
  */
 export const assignSeat = mutation({
   args: {
@@ -703,8 +738,12 @@ export const assignSeat = mutation({
     }
 
     if (sameHolder) {
-      // Idempotent no-op — but re-affirm the write-through, mirroring
-      // `assignSpecializedRoleImpl`'s own idempotent re-affirm.
+      // Idempotent no-op for `seatAssignments` — but re-affirm the
+      // write-through, mirroring `assignSpecializedRoleImpl`'s own idempotent
+      // re-affirm. NOTE: if the legacy (scope, legacyTitle) slot has diverged
+      // to a DIFFERENT person, this re-affirm call evicts them and revokes
+      // their finance bridge (one-holder-per-slot) — see the CAVEAT on this
+      // mutation's doc comment. Legacy tables are NOT guaranteed no-op here.
       if (def.legacyTitle) {
         await assignSpecializedRoleImpl(ctx, userId, {
           personId,

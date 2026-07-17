@@ -1,6 +1,6 @@
 import { describe, expect, test } from "vitest";
 import { ConvexError } from "convex/values";
-import { SEAT_IDS, SEAT_DEFS, MULTI_HOLDER_CAP } from "@events-os/shared";
+import { SEAT_IDS, SEAT_DEFS, MULTI_HOLDER_CAP, titleKind } from "@events-os/shared";
 import { api } from "../_generated/api";
 import type { Id } from "../_generated/dataModel";
 import { newT, run, setupChapter, type ChapterSetup } from "./setup.helpers";
@@ -550,6 +550,19 @@ describe("seats.chart NOT_FOUND / seats.seatDetail INVALID_SCOPE", () => {
  * centerpiece — write-through PARITY with `specializedRoles.assignSpecializedRole`
  * for every seat carrying a `legacyTitle`.
  */
+
+// Guards the shape `seats.ts`'s module-load assertion depends on — if this
+// ever fails, the assertion itself should be throwing on import too (see
+// APPROVE_SEAT_SLUGS/RECORD_SEAT_SLUGS in seats.ts).
+test("exactly 2 seats map to each SoD group (approve/record) via legacyTitle + titleKind", () => {
+  const kindOf = (id: (typeof SEAT_IDS)[number]) => {
+    const legacy = SEAT_DEFS[id].legacyTitle;
+    return legacy === undefined ? undefined : titleKind(legacy);
+  };
+  expect(SEAT_IDS.filter((id) => kindOf(id) === "leadership")).toHaveLength(2);
+  expect(SEAT_IDS.filter((id) => kindOf(id) === "finance")).toHaveLength(2);
+});
+
 describe("seats.assignSeat — validation", () => {
   test("a non-superuser is rejected", async () => {
     const t = newT();
