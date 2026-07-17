@@ -508,6 +508,7 @@ export function BudgetCreateModal({
             {/* WP-3.1: editing an existing budget already has a real id, so
                 the "plan this budget" breakdown shows inline right here. */}
             {editing ? <BudgetLineItemsEditor budgetId={editing.id} /> : null}
+            {editing ? <ApprovalHistory budgetId={editing.id} /> : null}
           </ScrollView>
           )}
 
@@ -549,6 +550,43 @@ export function BudgetCreateModal({
         </Pressable>
       </Pressable>
     </Modal>
+  );
+}
+
+// ── Approval history (WP-wave4 item 8-LOW, opus review 2026-07-17) ──────────
+/**
+ * "We can even mark it as legacy approved... keep a record of approvers"
+ * (owner) — a minimal, read-only surface over the PERMANENT
+ * `budgetApprovalLog` (never the last-decision-only `budgets` fields, which
+ * a later send/approve/request-changes — or a scope move — overwrites).
+ * Newest first; nothing to show for a budget with no decisions yet (a
+ * brand-new draft that's never been sent).
+ */
+function ApprovalHistory({ budgetId }: { budgetId: Id<"budgets"> }) {
+  const log = useQuery(api.finances.listBudgetApprovalLog, { budgetId }) ?? [];
+  if (log.length === 0) return null;
+  return (
+    <Field label="History">
+      <View className="gap-1.5 rounded-md border border-border bg-sunken px-3 py-2.5">
+        {log.map((row, i) => {
+          const verb =
+            row.action === "sent"
+              ? "Sent for review by"
+              : row.action === "approved"
+                ? "Approved by"
+                : "Changes requested by";
+          const partyNote = row.party === "single" ? " · 1-party" : "";
+          const when = new Date(row.decidedAt).toLocaleDateString();
+          return (
+            <Text key={i} className="text-xs text-muted">
+              {verb} {row.decidedByName}
+              {partyNote} · {when}
+              {row.note ? ` — "${row.note}"` : ""}
+            </Text>
+          );
+        })}
+      </View>
+    </Field>
   );
 }
 

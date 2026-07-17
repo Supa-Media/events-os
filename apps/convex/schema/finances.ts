@@ -203,6 +203,39 @@ export const budgets = defineTable({
   // aggregate, both scan this instead of a full `by_chapter` + JS filter.
   .index("by_chapter_and_approval_status", ["chapterId", "approvalStatus"]);
 
+// ── Budget approval log (WP-wave4 item 8-LOW, opus review 2026-07-17) ────────
+/** APPEND-ONLY durable history of every budget workflow decision — the
+ *  owner's own ask: "we can even mark it as legacy approved... keep a
+ *  record of approvers." `budgets.approvalParty`/`approvedByPersonId`/
+ *  `approvedAt`/`submittedByPersonId`/`submittedAt` are LAST-DECISION-ONLY
+ *  (each field gets overwritten by the next send/approve/request-changes,
+ *  and `moveBudgetScope` resets them on a scope move) — this table is the
+ *  permanent record those fields can never be, one row per decision,
+ *  NEVER updated or deleted once written (not even by `moveBudgetScope` or
+ *  `deleteBudget` — a budget's own history outlives the row; nothing reads
+ *  this table by `budgetId` expecting the parent to still exist). Written
+ *  by `submitBudgetForApproval` ("sent"), `approveBudget` ("approved"),
+ *  and `requestBudgetChanges` ("changes_requested") — never by anything
+ *  else. Surfaced minimally today (`listBudgetApprovalLog`, the budget
+ *  edit modal's compact history line); the record exists independent of
+ *  whether today's UI reads it. */
+export const budgetApprovalLog = defineTable({
+  budgetId: v.id("budgets"),
+  action: v.union(
+    v.literal("sent"),
+    v.literal("approved"),
+    v.literal("changes_requested"),
+  ),
+  // Only meaningful for "approved" (the SoD axis item 8 widened) — "sent"
+  // and "changes_requested" never take the superuser bypass, so they're
+  // always effectively "two_party" but don't bother stamping it (nothing
+  // reads it for those two actions).
+  party: v.optional(v.union(v.literal("single"), v.literal("two_party"))),
+  decidedByPersonId: v.id("people"),
+  decidedAt: v.number(),
+  note: v.optional(v.string()),
+}).index("by_budget", ["budgetId"]);
+
 // ── Budget tags (managed, level-scoped) ──────────────────────────────────────
 /** A managed tag definition on a budget LEVEL (a real chapter or `"central"`).
  *  The flexible filter + rollup dimension: `team`/`template` tags carry a

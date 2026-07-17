@@ -1333,6 +1333,28 @@ export function eventBudgetLabel(
  * `events.updateDetails`'s edit-path trigger, both of which only call this
  * when `!isTraining && budget > 0`); this function always creates.
  */
+/**
+ * WP-wave4 (HIGH, opus review 2026-07-17): a budget with a real starting
+ * amount must NEVER be born approved. Every auto-created budget (an entity's
+ * create-time hook, its edit-path "dollar entry summons a row" trigger, or
+ * `healRowlessEntityBudgets`' sweep) now starts in `"draft"` exactly like a
+ * hand-created one via `finances.createBudget` — so item 5's approval gate
+ * (`isAttributableBudget`) correctly blocks attribution until someone sends
+ * it for review and it's approved (draft → send → approve, same as any
+ * other budget; the owner's superuser one-party approve, item 8, makes a
+ * solo backfill workable in three taps). A `$0` SUMMON (`ensureBudgetForRef`'s
+ * get-or-create, no real allocation yet) is the one exception — it stays
+ * unset/grandfathered-shaped exactly as before; there's nothing to gate
+ * until a real amount is entered, at which point `setBudgetAmount`'s I1
+ * retrigger rule (the grandfathered-row-first-increase case) already flips
+ * it to a draft increase requiring an explicit send. EXISTING budgets
+ * (already `undefined`/grandfathered before this PR) are UNTOUCHED — no
+ * migration, no backfill; this only changes what a NEW row starts as.
+ */
+function autoCreatedBudgetApprovalStatus(amountCents: number): "draft" | undefined {
+  return amountCents > 0 ? "draft" : undefined;
+}
+
 export async function createEventBudget(
   ctx: MutationCtx,
   event: {
@@ -1376,6 +1398,7 @@ export async function createEventBudget(
     month: parts.month,
     createdBy: userId,
     createdAt: Date.now(),
+    approvalStatus: autoCreatedBudgetApprovalStatus(amountCents),
   });
   const seen = new Set<string>();
   await autoTagEventBudget(ctx, budgetId, event.chapterId, event._id as string, seen, userId);
@@ -1510,6 +1533,9 @@ export async function createProjectBudget(
     month: parts.month,
     createdBy: userId,
     createdAt: Date.now(),
+    // WP-wave4 (HIGH, opus review): see `createEventBudget`'s twin doc
+    // comment — never born approved when a real amount is entered.
+    approvalStatus: autoCreatedBudgetApprovalStatus(amountCents),
   });
   const seen = new Set<string>();
   await autoTagProjectBudget(ctx, budgetId, project.chapterId, seen, userId);
@@ -4642,6 +4668,32 @@ function assertBudgetTransition(
   }
 }
 
+/**
+ * WP-wave4 (item 8-LOW, opus review 2026-07-17): append one durable row to
+ * `budgetApprovalLog` — the permanent record `budgets`' own last-decision-only
+ * fields (`approvalParty`, `approvedByPersonId`/`approvedAt`,
+ * `submittedByPersonId`/`submittedAt`) can never be (each gets overwritten by
+ * the next decision, and `moveBudgetScope` resets them on a scope move).
+ * Called from `submitBudgetForApproval`/`approveBudget`/`requestBudgetChanges`
+ * ONLY — never updated or deleted afterward by anything, including
+ * `moveBudgetScope`/`deleteBudget` (a budget's history outlives the row).
+ */
+async function logBudgetDecision(
+  ctx: MutationCtx,
+  budgetId: Id<"budgets">,
+  action: "sent" | "approved" | "changes_requested",
+  decidedByPersonId: Id<"people">,
+  extra: { party?: "single" | "two_party"; note?: string } = {},
+): Promise<void> {
+  await ctx.db.insert("budgetApprovalLog", {
+    budgetId,
+    action,
+    decidedByPersonId,
+    decidedAt: Date.now(),
+    ...extra,
+  });
+}
+
 export const submitBudgetForApproval = mutation({
   args: { budgetId: v.id("budgets") },
   returns: v.null(),
@@ -4674,6 +4726,7 @@ export const submitBudgetForApproval = mutation({
       submittedByPersonId: personId,
       submittedAt: Date.now(),
     });
+    await logBudgetDecision(ctx, budgetId, "sent", personId);
     // WP-wave4 (item 3): notify the scope's approvers (chapter: Treasurer +
     // Chapter Director; central: ED + FM) — best-effort email, scheduled so
     // this mutation doesn't wait on the network call (Resend needs an action
@@ -4861,13 +4914,18 @@ export const approveBudget = mutation({
     if (!bypassSoD) {
       assertSeparationOfDuties(callerPersonId, budget.submittedByPersonId);
     }
+    const approvalParty: "single" | "two_party" = bypassSoD ? "single" : "two_party";
     await ctx.db.patch(budgetId, {
       approvalStatus: "approved",
       approvedCents: budget.amountCents,
       approvedByPersonId: callerPersonId,
       approvedAt: Date.now(),
       reviewNote: note,
-      approvalParty: bypassSoD ? "single" : "two_party",
+      approvalParty,
+    });
+    await logBudgetDecision(ctx, budgetId, "approved", callerPersonId, {
+      party: approvalParty,
+      note,
     });
     return null;
   },
@@ -4897,7 +4955,76 @@ export const requestBudgetChanges = mutation({
       approvedAt: Date.now(),
       reviewNote: note,
     });
+    // `requestBudgetChanges` is deliberately NOT widened for self-submission
+    // (item 8's bypass is approve-only) — the assert above already proved
+    // this is always a different-identity decision, so "two_party" is the
+    // only value this action can ever record.
+    await logBudgetDecision(ctx, budgetId, "changes_requested", callerPersonId, {
+      party: "two_party",
+      note,
+    });
     return null;
+  },
+});
+
+const budgetApprovalLogRow = v.object({
+  action: v.union(
+    v.literal("sent"),
+    v.literal("approved"),
+    v.literal("changes_requested"),
+  ),
+  party: v.union(v.literal("single"), v.literal("two_party"), v.null()),
+  decidedByName: v.string(),
+  decidedAt: v.number(),
+  note: v.union(v.string(), v.null()),
+});
+
+/**
+ * WP-wave4 (item 8-LOW, opus review 2026-07-17): the PERMANENT decision
+ * history for one budget, newest first — `budgetApprovalLog`'s append-only
+ * rows resolved to display names. Gated identically to `budgetLines.listLines`
+ * (viewer+ at the budget's own level: chapter viewer, or central reach —
+ * OR, item 1, a central `finance.approve` seat) — a budget's own history is
+ * exactly as visible as its plan. Bounded to the most recent 20 decisions
+ * (a real budget goes through a small handful of send/approve/
+ * request-changes rounds, never hundreds).
+ */
+export const listBudgetApprovalLog = query({
+  args: { budgetId: v.id("budgets") },
+  returns: v.array(budgetApprovalLogRow),
+  handler: async (ctx, { budgetId }) => {
+    const chapterId = await readChapterId(ctx);
+    if (!chapterId) return [];
+    const budget = await requireInCallerChapter(
+      ctx,
+      chapterId,
+      "budgets",
+      budgetId,
+      "Budget",
+      { allowCentral: true },
+    );
+    if (budget.chapterId === CENTRAL) {
+      await requireCentralFinanceRoleOrEdSeat(ctx, chapterId, "viewer");
+    } else {
+      await requireFinanceRole(ctx, chapterId, "viewer");
+    }
+    const rows = await ctx.db
+      .query("budgetApprovalLog")
+      .withIndex("by_budget", (q) => q.eq("budgetId", budgetId))
+      .order("desc")
+      .take(20);
+    const out: (typeof budgetApprovalLogRow.type)[] = [];
+    for (const r of rows) {
+      const person = await ctx.db.get(r.decidedByPersonId);
+      out.push({
+        action: r.action,
+        party: r.party ?? null,
+        decidedByName: person?.name ?? "Unknown",
+        decidedAt: r.decidedAt,
+        note: r.note ?? null,
+      });
+    }
+    return out;
   },
 });
 
@@ -7693,7 +7820,16 @@ async function moveBudgetScope(
     categoryId: undefined,
     teamId: undefined,
     ...(resetsProvenance
-      ? { approvalStatus: "submitted" as const, approvedByPersonId: undefined }
+      ? {
+          approvalStatus: "submitted" as const,
+          approvedByPersonId: undefined,
+          // WP-wave4 (item 8-LOW): a stale "single-party approved" record no
+          // longer describes the CURRENT state once a decision is reset —
+          // the budget needs re-approval at the new scope. The PERMANENT
+          // `budgetApprovalLog` trail is untouched (never rewritten); this
+          // only clears the last-decision-only field the chip reads.
+          approvalParty: undefined,
+        }
       : {}),
   });
   const links = await ctx.db
