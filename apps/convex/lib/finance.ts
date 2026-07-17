@@ -18,6 +18,21 @@
  * All checks throw `ConvexError` (never a plain `Error`) so the app's
  * AuthErrorBoundary can surface them instead of dead-ending in the root
  * error boundary.
+ *
+ * ## B10 — seat-derived union (the enforcement flip)
+ *
+ * `getFinanceRole` and `isCentralEdOrFm` now UNION the org chart's opinion
+ * (`lib/seats.ts#getSeatDerivedCapabilities`) with the STORED ladder above —
+ * never a replacement. A seat can only ever WIDEN what the stored tables
+ * already grant (seats derive `finance.manager`/`finance.central`/
+ * `finance.accounts`, never revoke a hand-granted `financeRoles`/
+ * `specializedRoles` row). This is the exact union formula
+ * `seats.ts#capabilityAudit` simulated before this flip shipped — see that
+ * query's doc comment for the full framing, and its module doc's "Mapping
+ * rules" section (`lib/seats.ts`) for what a seat can and can't derive. The
+ * superuser short-circuit at the top of each function is UNCHANGED — the
+ * audit has no way to verify that bypass (nothing in the scanned tables to
+ * key off), so it stays untouched by design.
  */
 import { ConvexError } from "convex/values";
 import {
@@ -33,6 +48,7 @@ import { MutationCtx, QueryCtx } from "../_generated/server";
 import { isSuperuser } from "./superuser";
 import { viewerPerson } from "./org";
 import { requireUserId } from "./context";
+import { getSeatDerivedCapabilities } from "./seats";
 
 // A generous bound on a single chapter's funds (they number in the single
 // digits post-WP-1.4; this mirrors the scan limits used elsewhere in finance).
@@ -126,10 +142,22 @@ export async function resolveCallerPersonId(
   return person._id;
 }
 
+/** `max(a, b)` on the graded finance-role ladder — `null` iff BOTH are
+ *  `null`. Mirrors `seats.ts#capabilityAudit`'s identically-named/-shaped
+ *  helper; kept local here (not shared) per the flip's one-file-revert
+ *  requirement — this file must stand alone. */
+function maxRole(a: FinanceRole | null, b: FinanceRole | null): FinanceRole | null {
+  if (a === null) return b;
+  if (b === null) return a;
+  return FINANCE_ROLE_RANK[a] >= FINANCE_ROLE_RANK[b] ? a : b;
+}
+
 /**
  * Resolve the caller's finance capability. Superusers short-circuit to central
- * manager; otherwise the effective role is the highest-ranked of their
- * chapter-scoped and central-scoped `financeRoles` grants.
+ * manager (UNCHANGED by the B10 flip — see the module doc). Otherwise the
+ * effective role/reach is the UNION (B10) of the org chart's seat-derived
+ * opinion and the highest-ranked of the stored chapter-scoped/central-scoped
+ * `financeRoles` grants — never a replacement of either side.
  */
 export async function getFinanceRole(
   ctx: QueryCtx,
@@ -171,13 +199,45 @@ export async function getFinanceRole(
   const applicable = grants.filter(
     (g) => g.chapterId === chapterId || g.scope === "central",
   );
-  const isCentral = applicable.some((g) => g.scope === "central");
-  let role: FinanceRole | null = null;
+  const storedIsCentral = applicable.some((g) => g.scope === "central");
+  let storedRole: FinanceRole | null = null;
   for (const g of applicable) {
-    if (role == null || FINANCE_ROLE_RANK[g.role] > FINANCE_ROLE_RANK[role]) {
-      role = g.role;
+    if (
+      storedRole == null ||
+      FINANCE_ROLE_RANK[g.role] > FINANCE_ROLE_RANK[storedRole]
+    ) {
+      storedRole = g.role;
     }
   }
+
+  // B10 — seat-derived side of the union (see module doc). Deliberately NOT
+  // merged across scopes here: `seatDerived[chapterId]`'s role contributes
+  // ONLY at this chapter, mirroring exactly how `capabilityAudit` compared
+  // per scope (its `todaysRoleAtScope`/`maxRole` pairing). A central
+  // `finance.manager` seat (e.g. `financial_manager`) doesn't need a
+  // seat-side merge into every chapter anyway — its real assignment
+  // write-through already bridges a STORED central `financeRoles` grant
+  // (`bridgeFinanceManagerGrant`), which `applicable` above already folds in
+  // everywhere via the `g.scope === "central"` arm. Seats only ever derive
+  // `"manager"`, never `"bookkeeper"`/`"viewer"` — those two ranks are a
+  // stored-only residual layer that survives the flip via `storedRole`
+  // above (see `lib/seats.ts`'s "Mapping rules").
+  const seatDerived = await getSeatDerivedCapabilities(ctx, person._id);
+  const seatRoleHere = seatDerived[String(chapterId)]?.financeRole ?? null;
+  const seatAnyCentralReach = Object.values(seatDerived).some(
+    (caps) => caps.centralReach,
+  );
+
+  const role = maxRole(seatRoleHere, storedRole);
+  // Whole-person, scope-agnostic (mirrors `storedIsCentral`'s own shape and
+  // `capabilityAudit`'s `todaysIsCentral`/`postFlipCentral`) — a seat granting
+  // `finance.central` ANYWHERE gives org-wide roll-up reach, same as a bare
+  // central `financeRoles` grant does today. This is what closes the
+  // pre-flagged gap confirmed by the prod audit: `executive_director`'s seat
+  // carries `finance.central` but its write-through never bridges a stored
+  // central grant (only `finance_manager`-kind titles bridge) — so an ED
+  // holder had NO central reach today; post-flip they do.
+  const isCentral = storedIsCentral || seatAnyCentralReach;
 
   return {
     personId: person._id,
@@ -333,16 +393,22 @@ export function assertSeparationOfDuties(
 
 /**
  * WP-1.2: true iff the caller holds a CENTRAL `executive_director` or
- * `finance_manager` SPECIALIZED role (or is a superuser — the implicit-central
- * bootstrap path, mirrored everywhere else in finance). TIGHTER than
- * `getFinanceRole(...).isCentral` (which also passes a plain central
- * `financeRoles` grant with no ED/FM title): this is the gate for surfaces that
- * should be invisible to everyone except the two org-level seats named in the
- * PRD (§0.2) — the Accounts tab + the Cards tab's Relay/legacy section.
+ * `finance_manager` SPECIALIZED role, OR (B10) a seat carrying
+ * `finance.accounts` at central (see module doc) — or is a superuser (the
+ * implicit-central bootstrap path, UNCHANGED by the flip, mirrored
+ * everywhere else in finance). TIGHTER than `getFinanceRole(...).isCentral`
+ * (which also passes a plain central `financeRoles` grant with no ED/FM
+ * title/seat): this is the gate for surfaces that should be invisible to
+ * everyone except the two org-level seats named in the PRD (§0.2) — the
+ * Accounts tab + the Cards tab's Relay/legacy section.
  *
  * Mirrors `financeRoles.mySeats`' pattern of walking every `people` row the
  * caller's userId owns (a finance seat isn't chapter-scoped the way a normal
- * roster lookup is) rather than requiring the caller's own chapter membership.
+ * roster lookup is) rather than requiring the caller's own chapter membership
+ * — and (B10) checks the seat-derived side PER SIBLING inside that same
+ * walk, exactly as `capabilityAudit`'s `todaysAccountsAccessForPerson` (the
+ * stored-title side) + its per-personId `seatDerived["central"]?.
+ * accountsAccess` check were compared together for each audited person.
  */
 export async function isCentralEdOrFm(ctx: QueryCtx): Promise<boolean> {
   if (await isSuperuser(ctx)) return true;
@@ -359,15 +425,20 @@ export async function isCentralEdOrFm(ctx: QueryCtx): Promise<boolean> {
       .query("specializedRoles")
       .withIndex("by_person", (q) => q.eq("personId", person._id))
       .collect();
-    if (
-      roles.some(
-        (r) =>
-          r.scope === "central" &&
-          (r.title === "executive_director" || r.title === "finance_manager"),
-      )
-    ) {
-      return true;
-    }
+    const titleMatch = roles.some(
+      (r) =>
+        r.scope === "central" &&
+        (r.title === "executive_director" || r.title === "finance_manager"),
+    );
+    if (titleMatch) return true;
+
+    // B10 — seat-derived side of the union: a central seat carrying
+    // `finance.accounts` (today: `executive_director`, `financial_manager`)
+    // grants Accounts reach even when the `specializedRoles` write-through
+    // mirror is missing or stale — the exact gap `capabilityAudit`'s
+    // `flip_changes_accounts_access` mismatch kind polices.
+    const seatDerived = await getSeatDerivedCapabilities(ctx, person._id);
+    if (seatDerived["central"]?.accountsAccess) return true;
   }
   return false;
 }
