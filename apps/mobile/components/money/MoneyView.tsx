@@ -8,12 +8,14 @@
  * PR4 ("the plan IS the database"): the plan is no longer edited through a
  * separate "Edit plan" modal onto `BudgetLineItemsEditor` — for an EVENT ref,
  * `PlanGrid` (below) IS the plan, an always-visible inline database with its
- * own [+ Add] row. A PROJECT ref has no `PlanGrid` (no `eventItems`/
- * `engagements` to unify — schema-level), so it still plans in Finances
- * (`BudgetLineItemsEditor`, reached via "View in Finances" / the empty
- * state's "Plan it in Finances" link) — unchanged for that ref kind. Every
- * OTHER write still happens in Finances (the budget's amount/approval) or
- * Reconcile (attributing a transaction to a budget).
+ * own [+ Add] row.
+ *
+ * PR5: a PROJECT ref now gets the SAME inline plan, just in `PlanGrid`'s
+ * budget-only mode (`kind: "budget"`) — a project has no `eventItems`/
+ * `engagements` to unify (schema-level), so its plan is budget LINES only,
+ * same data `BudgetLineItemsEditor` (retired) used to edit in a separate
+ * Finances modal. Every OTHER write still happens in Finances (the budget's
+ * amount/approval) or Reconcile (attributing a transaction to a budget).
  */
 import { useState } from "react";
 import { Modal, Pressable, Text, View } from "react-native";
@@ -139,7 +141,19 @@ export function MoneyView({
             budgetId={null}
             capCents={null}
           />
-        ) : null}
+        ) : (
+          // PR5: a budget-less project plans through budget-only mode too —
+          // its own "+ Add" row lazily summons the project's budget on first
+          // add, mirroring the event path's lazy summon above.
+          <PlanGrid
+            source={{
+              kind: "budget",
+              summon: { refKind: "project", scopeRefId: refId as Id<"projects"> },
+            }}
+            budgetId={null}
+            capCents={null}
+          />
+        )}
       </>
     );
   }
@@ -245,16 +259,19 @@ export function MoneyView({
         </Card>
       ) : null}
 
-      {/* ── Plan: THE plan, an always-visible inline database (PR4) — every
-            cost-bearing row on the event, not just the category breakdown
-            below. ──────────────────────────────────────────────────────── */}
+      {/* ── Plan: THE plan, an always-visible inline database (PR4, extended
+            to projects by PR5) — every cost-bearing row (event: items ∪
+            vendors ∪ budget lines; project: budget lines only), not just the
+            category breakdown below. ─────────────────────────────────────── */}
       {refKind === "event" ? (
         <PlanGrid
           source={{ kind: "event", eventId: refId as Id<"events"> }}
           budgetId={budget.id}
           capCents={budget.amountCents}
         />
-      ) : null}
+      ) : (
+        <PlanGrid source={{ kind: "budget" }} budgetId={budget.id} capCents={budget.amountCents} />
+      )}
 
       {/* ── Planned vs actual by category (derived from the plan above) ──── */}
       {lineCount === 0 ? (
@@ -262,20 +279,7 @@ export function MoneyView({
           <EmptyState
             icon="list"
             title="No plan yet"
-            message={
-              refKind === "event"
-                ? "Add a cost above and it'll show up here, broken down by category."
-                : "Break this budget down by category (people, location, gear…) so this view can show planned vs. actual."
-            }
-            action={
-              refKind === "project" ? (
-                <Pressable onPress={openFinances} className="active:opacity-70">
-                  <Text className="text-sm font-semibold text-accent">
-                    Plan it in Finances →
-                  </Text>
-                </Pressable>
-              ) : undefined
-            }
+            message="Add a cost above and it'll show up here, broken down by category."
           />
         </View>
       ) : (

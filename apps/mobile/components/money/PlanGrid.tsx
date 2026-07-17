@@ -85,10 +85,19 @@ type GridRow = GridData["rows"][number];
 type TypeOption = { value: string; label: string };
 type CategoryOption = { id: string; name: string };
 
-/** The one-shot "which ref is this plan for" discriminator — only `event` is
- *  implemented in this PR; a `budget`-only mode (planning a chapter/central
- *  budget with no event behind it) is a future extension of this same shape. */
-export type PlanGridSource = { kind: "event"; eventId: Id<"events"> };
+/** The one-shot "which ref is this plan for" discriminator.
+ *  - `event`: the full items ∪ vendors ∪ budgetLines grid (`eventCostGrid`).
+ *  - `budget` (PR5): budget-lines ONLY — planning a budget directly
+ *    (`BudgetCreateModal`) or a PROJECT ref (which has no `eventItems`/
+ *    `engagements` to unify — schema-level, so it plans through its budget's
+ *    lines alone, same as before PR4 unified the event side). `summon` is
+ *    present only when this plan can lazily create its OWN budget on first
+ *    add (mirrors the event path's `budgetId: null` + summon-on-add) — a
+ *    caller that already guarantees a real `budgetId` (e.g. `BudgetCreateModal`,
+ *    which only renders this once the budget exists) omits it. */
+export type PlanGridSource =
+  | { kind: "event"; eventId: Id<"events"> }
+  | { kind: "budget"; summon?: { refKind: "project"; scopeRefId: Id<"projects"> } };
 
 // Bootstrap-only fallback for an event with ZERO cost rows yet (so the
 // grid-derived `typeOptions` set is empty) — see the module doc above. NEVER
@@ -115,6 +124,19 @@ const COL_CHEVRON = 24;
 const TABLE_WIDTH =
   COL_ITEM + COL_TYPE + COL_CATEGORY + COL_STATUS + COL_PLANNED + COL_ACTUAL + COL_CHEVRON;
 
+// Budget mode (PR5) — collapsed columns: no Type (every row IS a plan line,
+// a repeated static label adds nothing), no Status/Actual (budget lines have
+// neither — always "—" in event mode's grid). ACTION replaces CHEVRON: a
+// budget line has no `sourceLink` to drill into, but (unlike an event-mode
+// row, which "deletes" by zeroing its cost) `budgetLines.addLine`/`updateLine`
+// reject a zero/negative amount outright — so this mode needs a REAL delete
+// affordance, same as `BudgetLineItemsEditor` had.
+const BCOL_ITEM = 220;
+const BCOL_CATEGORY = 150;
+const BCOL_PLANNED = 110;
+const BCOL_ACTION = 32;
+const BUDGET_TABLE_WIDTH = BCOL_ITEM + BCOL_CATEGORY + BCOL_PLANNED + BCOL_ACTION;
+
 function dollarsToCents(text: string): number | null {
   const dollars = parseFloat(text);
   if (!Number.isFinite(dollars) || dollars < 0) return null;
@@ -126,18 +148,44 @@ function parseRowId(id: string): { kind: "event_item" | "vendor" | "budget_line"
   return { kind: kind as "event_item" | "vendor" | "budget_line", refId };
 }
 
+/**
+ * Hook-free dispatcher — picks the mode-specific component by `source.kind`
+ * WITHOUT calling any hooks itself, so neither branch's hook sequence is
+ * ever conditionally skipped (a `PlanGrid` instance can be re-rendered with
+ * a different `source.kind` — e.g. a budget-less project that just summoned
+ * its budget switches props on the SAME call site — which would otherwise
+ * trip `react-hooks/rules-of-hooks`: `BudgetPlanGrid` and `EventPlanGrid`
+ * each own their full, unconditional hook list).
+ */
 export function PlanGrid({
   source,
   budgetId,
   capCents,
 }: {
   source: PlanGridSource;
-  /** The ref's current v2 budget row, if any — a "Plan only" add-row needs
-   *  somewhere to attach (`budgetLines.addLine`); `null` until one is
-   *  summoned (lazily, on first plan-only add — see `AddRow`). */
+  /** The plan's current v2 budget row, if any. Event mode: the "Plan only"
+   *  add-row's attach point (`budgetLines.addLine`), `null` until one is
+   *  summoned (lazily, on first plan-only add). Budget mode: the budget
+   *  itself — `null` only when `source.summon` is set (a budget-less
+   *  project) and no budget has been summoned yet. */
   budgetId: Id<"budgets"> | null;
   /** The effective approval cap (`refMoney.budget.amountCents`) for the
    *  "Planned $X of $CAP" footer — `null` when no budget exists yet. */
+  capCents: number | null;
+}) {
+  if (source.kind === "budget") {
+    return <BudgetPlanGrid source={source} budgetId={budgetId} capCents={capCents} />;
+  }
+  return <EventPlanGrid source={source} budgetId={budgetId} capCents={capCents} />;
+}
+
+function EventPlanGrid({
+  source,
+  budgetId,
+  capCents,
+}: {
+  source: Extract<PlanGridSource, { kind: "event" }>;
+  budgetId: Id<"budgets"> | null;
   capCents: number | null;
 }) {
   const eventId = source.eventId;
@@ -452,16 +500,20 @@ function TypeCell({ row, typeOptions }: { row: GridRow; typeOptions: TypeOption[
 }
 
 /** Category — dropdown over the chapter's active categories, plus a synthetic
- *  "— Auto —" option that clears the row's own override back to the
- *  module/vendor default-name match. Every row type carries a
+ *  clear option that resets the row's own override. For `event_item`/`vendor`
+ *  rows that falls back to the module/vendor default-name match, so it reads
+ *  "— Auto —"; a `budget_line` row has no default-match concept at all
+ *  (`collectEventPlannedRows` never resolves one for it), so it reads
+ *  "— No category —" there instead. Every row type carries a
  *  `budgetCategoryId`-shaped override on its own home table. */
 function CategoryCell({ row, categoryOptions }: { row: GridRow; categoryOptions: CategoryOption[] }) {
   const updateEventItem = useMutation(api.items.updateEventItem);
   const updateEngagement = useMutation(api.engagements.update);
   const updateLine = useMutation(api.budgetLines.updateLine);
 
+  const clearLabel = row.sourceKind === "budget_line" ? "— No category —" : "— Auto —";
   const options = [
-    { value: AUTO_CATEGORY, label: "— Auto —" },
+    { value: AUTO_CATEGORY, label: clearLabel },
     ...categoryOptions.map((c) => ({
       value: c.id,
       label: row.categoryIsDefault && row.categoryId === c.id ? `${c.name} · auto` : c.name,
@@ -746,6 +798,323 @@ function AddRow({
           loading={saving}
           onPress={() => void handleAdd()}
         />
+      </View>
+    </View>
+  );
+}
+
+// ── Budget mode (PR5) — budget-lines-only plan, replacing `BudgetLineItemsEditor`.
+// Reuses `ItemCell`/`CategoryCell`/`CostCell` UNCHANGED — they already branch on
+// `sourceKind === "budget_line"` (added in PR4 for the event grid's plan-only
+// rows) and read/write via `budgetLines.updateLine`, so a synthetic `GridRow`
+// built straight off `budgetLines.listLines` slots in with zero new code paths
+// in those cells. Only the layout (3 columns + a real delete action, no Type/
+// Status/Actual/Chevron) and the add-row (always "plan only", no Type picker)
+// are new. ────────────────────────────────────────────────────────────────────
+
+type LineSummary = FunctionReturnType<typeof api.budgetLines.listLines>[number];
+
+/** Adapt a `budgetLines` row into the SAME `GridRow` shape `eventCostGrid`
+ *  returns, so the event grid's own cell components can render/edit it
+ *  as-is. Always `editable: true` — `BudgetLineItemsEditor` (what this
+ *  replaces) never gated its inputs client-side either; an unauthorized
+ *  write is rejected server-side (`requireLineWriteAccess`) and surfaces via
+ *  the cell's own `alertError` catch, same as every other write in this file. */
+function lineToGridRow(line: LineSummary, categoryName: string): GridRow {
+  return {
+    id: `budget_line:${line.id}`,
+    sourceKind: "budget_line",
+    module: null,
+    typeLabel: "Budget lines",
+    label: line.description,
+    categoryName,
+    categoryId: line.categoryId,
+    categoryIsDefault: false,
+    plannedCents: line.plannedCents,
+    actualCents: null,
+    status: null,
+    editable: true,
+    sourceLink: null,
+    linked: false,
+    possibleDuplicate: false,
+  };
+}
+
+function BudgetPlanGrid({
+  source,
+  budgetId,
+  capCents,
+}: {
+  source: Extract<PlanGridSource, { kind: "budget" }>;
+  budgetId: Id<"budgets"> | null;
+  capCents: number | null;
+}) {
+  const lines = useQuery(api.budgetLines.listLines, budgetId ? { budgetId } : "skip");
+  const categoriesQuery = useQuery(api.finances.listCategories, {});
+  const [addOpen, setAddOpen] = useState(false);
+
+  const categoryOptions: CategoryOption[] = useMemo(
+    () => (categoriesQuery ?? []).filter((c) => c.isActive).map((c) => ({ id: c.id, name: c.name })),
+    [categoriesQuery],
+  );
+  const categoryNameById = useMemo(
+    () => new Map(categoryOptions.map((c) => [c.id, c.name] as const)),
+    [categoryOptions],
+  );
+
+  // `sortOrder`, NOT alphabetical — `listLines` already returns lines in
+  // that order (see `budgetLines.ts#loadLines`), and `BudgetLineItemsEditor`
+  // (what this replaces) preserved it as-is. Re-sorting by label would make
+  // rows jump around on every add/rename, which the old editor never did.
+  const rows: GridRow[] = useMemo(() => {
+    if (!lines) return [];
+    return [...lines]
+      .sort((a, b) => a.sortOrder - b.sortOrder)
+      .map((l) => lineToGridRow(l, l.categoryId ? (categoryNameById.get(l.categoryId) ?? "Uncategorized") : "Uncategorized"));
+  }, [lines, categoryNameById]);
+
+  const totalPlannedCents = useMemo(
+    () => rows.reduce((sum, r) => sum + r.plannedCents, 0),
+    [rows],
+  );
+
+  // A budget-less project (`budgetId === null`, `source.summon` set) has no
+  // lines to load yet — never "loading," just genuinely empty until the
+  // first add summons a budget. Only a REAL budgetId's still-pending query
+  // is a loading state.
+  const loading = budgetId != null && lines === undefined;
+
+  return (
+    <View className="mt-6">
+      <SectionHeader
+        title="Plan"
+        count={rows.length}
+        right={
+          <Pressable
+            onPress={() => setAddOpen((o) => !o)}
+            className="flex-row items-center gap-1 active:opacity-70"
+          >
+            <Icon name={addOpen ? "x" : "plus"} size={14} color={colors.accent} />
+            <Text className="text-sm font-medium text-accent">
+              {addOpen ? "Close" : "Add"}
+            </Text>
+          </Pressable>
+        }
+      />
+      <Text className="mb-3 -mt-2 text-xs text-muted">
+        What you're planning to spend this budget on.
+      </Text>
+
+      {addOpen ? (
+        <BudgetAddRow
+          budgetId={budgetId}
+          summon={source.summon}
+          categoryOptions={categoryOptions}
+          onDone={() => setAddOpen(false)}
+        />
+      ) : null}
+
+      {loading ? (
+        <Text className="text-sm text-muted">Loading plan…</Text>
+      ) : rows.length === 0 ? (
+        <EmptyState
+          icon="list"
+          title="No plan lines yet"
+          message="Break this budget down into what you're planning to spend it on."
+        />
+      ) : (
+        <ScrollView horizontal showsHorizontalScrollIndicator={false}>
+          <View style={{ width: BUDGET_TABLE_WIDTH, flexGrow: 0, flexShrink: 0 }}>
+            <Table>
+              <TableHeader>
+                <HeaderCell width={BCOL_ITEM}>Item</HeaderCell>
+                <HeaderCell width={BCOL_CATEGORY}>Category</HeaderCell>
+                <HeaderCell width={BCOL_PLANNED} align="right">
+                  Planned
+                </HeaderCell>
+                <HeaderCell width={BCOL_ACTION}> </HeaderCell>
+              </TableHeader>
+              {rows.map((row, i) => (
+                <BudgetLineRowView
+                  key={row.id}
+                  row={row}
+                  last={i === rows.length - 1}
+                  categoryOptions={categoryOptions}
+                />
+              ))}
+            </Table>
+          </View>
+        </ScrollView>
+      )}
+
+      {rows.length > 0 ? (
+        <View className="mt-2 flex-row items-center justify-end gap-2 px-1">
+          <Text className="text-xs text-muted">{capCents != null ? "Planned" : "Total"}</Text>
+          <Text className="text-sm font-semibold text-ink" style={{ fontVariant: ["tabular-nums"] }}>
+            {formatCents(totalPlannedCents)}
+          </Text>
+          {capCents != null ? (
+            <Text className="text-xs text-muted">of {formatCents(capCents)}</Text>
+          ) : null}
+        </View>
+      ) : null}
+    </View>
+  );
+}
+
+/** One budget-line row: Item / Category / Planned (reusing the event grid's
+ *  own cells verbatim) + a real delete action — `budgetLines.updateLine`
+ *  rejects a zero/negative `plannedCents` outright (`assertPlannedCents`), so
+ *  unlike an event-mode row this one can't "delete by zeroing the cost." */
+function BudgetLineRowView({
+  row,
+  last,
+  categoryOptions,
+}: {
+  row: GridRow;
+  last: boolean;
+  categoryOptions: CategoryOption[];
+}) {
+  const removeLine = useMutation(api.budgetLines.removeLine);
+  const [removing, setRemoving] = useState(false);
+
+  async function handleRemove() {
+    const { refId } = parseRowId(row.id);
+    setRemoving(true);
+    try {
+      await removeLine({ lineId: refId as Id<"budgetLines"> });
+    } catch (err) {
+      alertError(err);
+    } finally {
+      setRemoving(false);
+    }
+  }
+
+  return (
+    <Row last={last}>
+      <Cell width={BCOL_ITEM}>
+        <ItemCell row={row} readOnly={false} />
+      </Cell>
+      <Cell width={BCOL_CATEGORY}>
+        <CategoryCell row={row} categoryOptions={categoryOptions} />
+      </Cell>
+      <Cell width={BCOL_PLANNED} align="right">
+        <CostCell row={row} />
+      </Cell>
+      <Cell width={BCOL_ACTION} align="center">
+        <Pressable
+          onPress={() => void handleRemove()}
+          disabled={removing}
+          hitSlop={8}
+          accessibilityLabel={`Remove ${row.label}`}
+          className="active:opacity-70"
+        >
+          <Icon name="x" size={15} color={colors.muted} />
+        </Pressable>
+      </Cell>
+    </Row>
+  );
+}
+
+/** Add-row (budget mode): always a plan-only line — no Type picker, since
+ *  every row IS a `budgetLines` row here. Mirrors event mode's plan-only
+ *  branch (lazily summons a budget via `summon` when `budgetId` is still
+ *  `null` — a budget-less project's first add). */
+function BudgetAddRow({
+  budgetId,
+  summon,
+  categoryOptions,
+  onDone,
+}: {
+  budgetId: Id<"budgets"> | null;
+  summon?: { refKind: "project"; scopeRefId: Id<"projects"> };
+  categoryOptions: CategoryOption[];
+  onDone: () => void;
+}) {
+  const addLine = useMutation(api.budgetLines.addLine);
+  const summonBudget = useMutation(api.finances.summonBudgetForRef);
+  const [description, setDescription] = useState("");
+  const [amount, setAmount] = useState("");
+  const [categoryId, setCategoryId] = useState("");
+  const [saving, setSaving] = useState(false);
+
+  async function handleAdd() {
+    const trimmed = description.trim();
+    if (!trimmed) {
+      alertError(new Error("Enter what this line is for."));
+      return;
+    }
+    const cents = dollarsToCents(amount);
+    if (cents === null || cents <= 0) {
+      alertError(new Error("Enter a valid planned amount."));
+      return;
+    }
+    setSaving(true);
+    try {
+      let bId = budgetId;
+      if (!bId) {
+        if (!summon) {
+          alertError(new Error("No budget to plan yet."));
+          return;
+        }
+        bId = await summonBudget({ refKind: summon.refKind, scopeRefId: summon.scopeRefId });
+      }
+      await addLine({
+        budgetId: bId,
+        description: trimmed,
+        plannedCents: cents,
+        ...(categoryId ? { categoryId: categoryId as Id<"budgetCategories"> } : {}),
+      });
+      setDescription("");
+      setAmount("");
+      setCategoryId("");
+      onDone();
+    } catch (err) {
+      alertError(err);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <View className="mb-3 gap-2 rounded-lg border border-dashed border-border p-3">
+      <View className="flex-row items-center gap-2">
+        <View className="flex-1">
+          <TextInput
+            value={description}
+            onChangeText={setDescription}
+            placeholder="What's this for?"
+            placeholderTextColor={colors.faint}
+            className="rounded-md border border-border-strong bg-raised px-3 py-2.5 text-base text-ink"
+          />
+        </View>
+        <View className="w-24">
+          <View className="flex-row items-center rounded-md border border-border-strong bg-raised px-2">
+            <Text className="text-base text-faint">$</Text>
+            <TextInput
+              value={amount}
+              onChangeText={setAmount}
+              placeholder="0"
+              placeholderTextColor={colors.faint}
+              keyboardType="decimal-pad"
+              className="flex-1 py-2 text-base text-ink"
+            />
+          </View>
+        </View>
+      </View>
+      <View className="w-40">
+        <Select
+          value={categoryId}
+          options={[
+            { value: "", label: "— No category —" },
+            ...categoryOptions.map((c) => ({ value: c.id, label: c.name })),
+          ]}
+          onChange={setCategoryId}
+          placeholder="— No category —"
+        />
+      </View>
+      <View className="flex-row justify-end">
+        <Button title="Add" icon="plus" size="sm" loading={saving} onPress={() => void handleAdd()} />
       </View>
     </View>
   );

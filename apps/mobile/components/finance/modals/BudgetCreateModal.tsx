@@ -31,7 +31,7 @@ import {
 import { Badge, Button, Field, Icon, Select, TextField } from "../../ui";
 import { colors } from "../../../lib/theme";
 import { alertError } from "../../../lib/errors";
-import { BudgetLineItemsEditor } from "./BudgetLineItemsEditor";
+import { PlanGrid } from "../../money/PlanGrid";
 
 const MONTHS = [
   "January", "February", "March", "April", "May", "June",
@@ -359,7 +359,7 @@ export function BudgetCreateModal({
   // transitions draft/changes_requested → submitted and notifies the scope's
   // approvers server-side. In the post-create "Plan this budget" step there's
   // nothing new to save (the fields are locked; only the plan lines, which
-  // save themselves via `BudgetLineItemsEditor`), so it submits directly.
+  // save themselves via `PlanGrid`'s budget mode), so it submits directly.
   const [sending, setSending] = useState(false);
   async function sendForReview() {
     setSending(true);
@@ -426,7 +426,13 @@ export function BudgetCreateModal({
                   Break it down below, then send it for review when it's ready
                   — the plan stays fully editable until then.
                 </Text>
-                <BudgetLineItemsEditor budgetId={createdBudgetId} />
+                <View className="border-t border-border pt-4">
+                  <PlanGrid
+                    source={{ kind: "budget" }}
+                    budgetId={createdBudgetId}
+                    capCents={createdBudget?.amountCents ?? null}
+                  />
+                </View>
               </ScrollView>
               <View className="flex-row justify-end gap-2 border-t border-border px-5 py-4">
                 <Button title="Done — I'll send it later" variant="secondary" onPress={onClose} />
@@ -577,7 +583,15 @@ export function BudgetCreateModal({
 
             {/* WP-3.1: editing an existing budget already has a real id, so
                 the "plan this budget" breakdown shows inline right here. */}
-            {editing ? <BudgetLineItemsEditor budgetId={editing.id} /> : null}
+            {editing ? (
+              <View className="mt-4 border-t border-border pt-4">
+                <PlanGrid
+                  source={{ kind: "budget" }}
+                  budgetId={editing.id}
+                  capCents={editing.amountCents}
+                />
+              </View>
+            ) : null}
             {editing ? <ApprovalHistory budgetId={editing.id} /> : null}
           </ScrollView>
           )}
