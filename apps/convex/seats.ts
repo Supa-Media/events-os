@@ -20,18 +20,26 @@
  * its "holders" are computed by rolling up every chapter's `chapter_director`
  * (the chapter chart's root seat), never assigned directly.
  */
-import { query } from "./_generated/server";
+import { query, mutation } from "./_generated/server";
 import { ConvexError, v } from "convex/values";
 import { Doc, Id } from "./_generated/dataModel";
-import type { QueryCtx } from "./_generated/server";
+import type { QueryCtx, MutationCtx } from "./_generated/server";
 import {
   SEAT_CHARTS,
   SEAT_CAPABILITIES,
   SEAT_ROOT,
   MULTI_HOLDER_CAP,
+  SEAT_IDS,
+  SEAT_DEFS,
+  titleKind,
 } from "@events-os/shared";
 import { requireAccess, requireUserId } from "./lib/context";
+import { requireSuperuser } from "./lib/superuser";
 import { ROLLUP_SCAN_LIMIT } from "./finances";
+import {
+  assignSpecializedRoleImpl,
+  removeSpecializedRoleImpl,
+} from "./specializedRoles";
 
 const seatChartValidator = v.union(...SEAT_CHARTS.map((c) => v.literal(c)));
 const seatCapabilityValidator = v.union(
@@ -492,5 +500,281 @@ export const mySeatAssignments = query({
     }
     results.sort((a, b) => a.createdAt - b.createdAt);
     return results;
+  },
+});
+
+// ── Write mutations (assign / unassign) ─────────────────────────────────────
+//
+// Super-admin gated (v1 — mirrors `specializedRoles.ts`'s gating; a later PR
+// may widen this to seat-capability-gated self-service delegation). A seat
+// with a `legacyTitle` write-throughs to the legacy `specializedRoles` table
+// (+ its finance bridge) via the SHARED implementation extracted above, so
+// every existing finance gate that reads `specializedRoles`/`financeRoles`
+// keeps seeing exactly the rows it sees today — assigning a seat and assigning
+// the equivalent specialized role produce byte-for-byte the same legacy state.
+
+/** Bounded read of a (scope, seatDefId) slot's occupants — `MULTI_HOLDER_CAP`
+ *  is the hard ceiling on any seat's holder count (single-holder seats never
+ *  have more than one row in practice, but this bound is universal). */
+const MAX_SLOT_READ = MULTI_HOLDER_CAP + 1;
+
+/**
+ * Org-chart SoD groups: the "approve-side" (leadership: ED / chapter director)
+ * and "record-side" (finance: financial manager / treasurer) seats — derived
+ * from `SEAT_DEFS`' `legacyTitle` + `titleKind`, NOT hardcoded string pairs, so
+ * the grouping can never drift from the legacy taxonomy it mirrors. A person
+ * may not hold seats from both groups in the SAME scope (mirrors
+ * `specializedRoles`' scope-local leadership/finance SoD rule exactly).
+ */
+const APPROVE_SEAT_SLUGS: ReadonlySet<string> = new Set(
+  SEAT_IDS.filter((id) => {
+    const legacy = SEAT_DEFS[id].legacyTitle;
+    return legacy !== undefined && titleKind(legacy) === "leadership";
+  }),
+);
+const RECORD_SEAT_SLUGS: ReadonlySet<string> = new Set(
+  SEAT_IDS.filter((id) => {
+    const legacy = SEAT_DEFS[id].legacyTitle;
+    return legacy !== undefined && titleKind(legacy) === "finance";
+  }),
+);
+
+/** Which SoD group (if any) a seat def belongs to. Only the 4 seats bridging
+ *  to a leadership/finance `specializedRoles` title participate — every other
+ *  seat (no `legacyTitle`, or a `legacyTitle` outside those groups) is `null`. */
+function seatSodGroup(def: Doc<"seatDefs">): "approve" | "record" | null {
+  if (APPROVE_SEAT_SLUGS.has(def.slug)) return "approve";
+  if (RECORD_SEAT_SLUGS.has(def.slug)) return "record";
+  return null;
+}
+
+/** True iff `personId` already holds some OTHER seat in `group` at `scope`. */
+async function personHoldsOtherGroupSeatInScope(
+  ctx: MutationCtx,
+  personId: Id<"people">,
+  scope: Id<"chapters"> | "central",
+  group: "approve" | "record",
+): Promise<boolean> {
+  const assignments = await ctx.db
+    .query("seatAssignments")
+    .withIndex("by_person", (q) => q.eq("personId", personId))
+    .take(200);
+  for (const a of assignments) {
+    if (a.scope !== scope) continue;
+    const otherDef = await ctx.db.get(a.seatDefId);
+    if (!otherDef) continue;
+    if (seatSodGroup(otherDef) === group) return true;
+  }
+  return false;
+}
+
+/**
+ * Reverse a seat's write-through: if `def` has a `legacyTitle`, find the
+ * corresponding `specializedRoles` slot (one holder per (scope, title)) and,
+ * IF it's still held by the SAME person being removed from the seat, remove
+ * it through `removeSpecializedRoleImpl` — which itself only revokes the
+ * finance bridge if no other finance specialized role at that scope should
+ * keep it alive (the "only-revoke-if-no-other-source" guard). Skips silently
+ * if the legacy slot has already diverged (e.g. reassigned directly through
+ * `specializedRoles`) — a seat unassign should never delete someone ELSE's
+ * legacy role row.
+ */
+async function reverseSeatWriteThrough(
+  ctx: MutationCtx,
+  def: Doc<"seatDefs">,
+  scope: Id<"chapters"> | "central",
+  personId: Id<"people">,
+): Promise<void> {
+  if (!def.legacyTitle) return;
+  const row = await ctx.db
+    .query("specializedRoles")
+    .withIndex("by_scope_and_title", (q) =>
+      q.eq("scope", scope).eq("title", def.legacyTitle!),
+    )
+    .first();
+  if (row && row.personId === personId) {
+    await removeSpecializedRoleImpl(ctx, row._id);
+  }
+}
+
+/** Delete a seat assignment row and reverse its write-through, if any. */
+async function deleteSeatAssignment(
+  ctx: MutationCtx,
+  assignment: Doc<"seatAssignments">,
+  def: Doc<"seatDefs">,
+): Promise<void> {
+  await ctx.db.delete(assignment._id);
+  await reverseSeatWriteThrough(ctx, def, assignment.scope, assignment.personId);
+}
+
+/**
+ * Assign a person to a seat, at a scope. Super-admin only.
+ *
+ *  - Rejects a `derived` seat (its holders are computed, never assigned).
+ *  - Rejects a chart/scope mismatch (central seat ⇔ `scope === "central"`;
+ *    chapter seat ⇔ `scope` is a real chapter id).
+ *  - Rejects a placeholder or nonexistent person.
+ *  - Scope-local SoD: rejects if the person already holds a seat from the
+ *    OTHER org-chart group (approve vs record) at this SAME scope.
+ *  - `maxHolders === 1`: replaces the incumbent (today's `specializedRoles`
+ *    slot semantics), reversing their write-through too. Assigning the
+ *    CURRENT holder again is an idempotent no-op (re-affirms the bridge).
+ *  - `maxHolders > 1`: rejects at cap; idempotent no-op if already a holder.
+ *  - Write-through: a seat with a `legacyTitle` upserts the matching
+ *    `specializedRoles` row (+ finance bridge) via the shared helper. Seats
+ *    without a `legacyTitle` write nothing to legacy tables.
+ */
+export const assignSeat = mutation({
+  args: {
+    seatDefId: v.id("seatDefs"),
+    scope: v.union(v.id("chapters"), v.literal("central")),
+    personId: v.id("people"),
+  },
+  returns: v.id("seatAssignments"),
+  handler: async (ctx, { seatDefId, scope, personId }) => {
+    await requireSuperuser(ctx);
+    const userId = (await requireUserId(ctx)) as Id<"users">;
+
+    const def = await ctx.db.get(seatDefId);
+    if (!def) {
+      throw new ConvexError({ code: "NOT_FOUND", message: "That seat doesn't exist." });
+    }
+    if (def.derived === true) {
+      throw new ConvexError({
+        code: "DERIVED_SEAT",
+        message: "This seat's holders are computed automatically and can't be assigned directly.",
+      });
+    }
+
+    const scopeIsCentral = scope === "central";
+    if (def.chart === "central" && !scopeIsCentral) {
+      throw new ConvexError({
+        code: "INVALID_SCOPE",
+        message: "This seat belongs to the central chart.",
+      });
+    }
+    if (def.chart === "chapter" && scopeIsCentral) {
+      throw new ConvexError({
+        code: "INVALID_SCOPE",
+        message: "This seat belongs to a chapter chart — pass a chapter id.",
+      });
+    }
+    if (!scopeIsCentral) {
+      const chapter = await ctx.db.get(scope as Id<"chapters">);
+      if (!chapter) {
+        throw new ConvexError({ code: "NOT_FOUND", message: "That chapter doesn't exist." });
+      }
+    }
+
+    const person = await ctx.db.get(personId);
+    if (!person) {
+      throw new ConvexError({ code: "NOT_FOUND", message: "That person doesn't exist." });
+    }
+    if (person.isPlaceholder === true) {
+      throw new ConvexError({
+        code: "INVALID_PERSON",
+        message: "A placeholder person can't be assigned a seat.",
+      });
+    }
+
+    // Existing occupants of this exact (scope, seatDefId) slot.
+    const existing = await ctx.db
+      .query("seatAssignments")
+      .withIndex("by_scope_and_seat", (q) =>
+        q.eq("scope", scope).eq("seatDefId", seatDefId),
+      )
+      .take(MAX_SLOT_READ);
+    const sameHolder = existing.find((a) => a.personId === personId);
+
+    // Scope-local SoD — skipped for the idempotent same-holder case (no NEW
+    // conflict is introduced by reaffirming a seat someone already holds).
+    if (!sameHolder) {
+      const group = seatSodGroup(def);
+      if (group) {
+        const otherGroup = group === "approve" ? "record" : "approve";
+        if (await personHoldsOtherGroupSeatInScope(ctx, personId, scope, otherGroup)) {
+          throw new ConvexError({
+            code: "SOD_VIOLATION",
+            message:
+              "Separation of duties: one person can't hold both an approve-side and a record-side seat in the same scope.",
+          });
+        }
+      }
+    }
+
+    if (sameHolder) {
+      // Idempotent no-op — but re-affirm the write-through, mirroring
+      // `assignSpecializedRoleImpl`'s own idempotent re-affirm.
+      if (def.legacyTitle) {
+        await assignSpecializedRoleImpl(ctx, userId, {
+          personId,
+          scope,
+          title: def.legacyTitle,
+        });
+      }
+      return sameHolder._id;
+    }
+
+    if (def.maxHolders === 1) {
+      // Replace the incumbent (today's specializedRoles slot semantics),
+      // reversing their write-through the same way `unassignSeat` would.
+      for (const incumbent of existing) {
+        await deleteSeatAssignment(ctx, incumbent, def);
+      }
+    } else if (existing.length >= def.maxHolders) {
+      throw new ConvexError({
+        code: "SEAT_FULL",
+        message: `This seat already has its maximum of ${def.maxHolders} holders.`,
+      });
+    }
+
+    const assignmentId = await ctx.db.insert("seatAssignments", {
+      seatDefId,
+      scope,
+      personId,
+      grantedBy: userId,
+      createdAt: Date.now(),
+    });
+
+    if (def.legacyTitle) {
+      await assignSpecializedRoleImpl(ctx, userId, {
+        personId,
+        scope,
+        title: def.legacyTitle,
+      });
+    }
+
+    return assignmentId;
+  },
+});
+
+/**
+ * Unassign a seat holder. Super-admin only. Deletes the assignment and
+ * reverses its write-through (if the seat has a `legacyTitle`) through the
+ * same shared helper `assignSeat`'s incumbent-replacement path uses.
+ */
+export const unassignSeat = mutation({
+  args: { assignmentId: v.id("seatAssignments") },
+  returns: v.null(),
+  handler: async (ctx, { assignmentId }) => {
+    await requireSuperuser(ctx);
+
+    const assignment = await ctx.db.get(assignmentId);
+    if (!assignment) {
+      throw new ConvexError({
+        code: "NOT_FOUND",
+        message: "That seat assignment doesn't exist.",
+      });
+    }
+
+    const def = await ctx.db.get(assignment.seatDefId);
+    if (!def) {
+      // Stale assignment on a deleted def — nothing to write-through-reverse.
+      await ctx.db.delete(assignmentId);
+      return null;
+    }
+
+    await deleteSeatAssignment(ctx, assignment, def);
+    return null;
   },
 });
