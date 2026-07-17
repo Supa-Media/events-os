@@ -200,3 +200,55 @@ export async function getSeatDerivedCapabilities(
   }
   return result;
 }
+
+/**
+ * True iff `personId` holds ANY seat AT `scope` whose def carries
+ * `finance.approve` — the seat-derived side of the CHAPTER budget-approval
+ * gate (`finances.ts#loadBudgetForApprovalDecision`). Owner decision:
+ * "Chapter Director does have financial powers, they approve budgets... a
+ * budget shouldn't get approved without the chapter director" — today
+ * `chapter_director` is the only chapter-chart seat carrying
+ * `finance.approve` (see `SEAT_DEFS` in `@events-os/shared`), but this reads
+ * the capability generically so any future seat wired the same way just
+ * works with no gate change.
+ *
+ * ADDITIVE, not folded into `getSeatDerivedCapabilities` above: that
+ * function's module doc explicitly calls `finance.approve` out of scope for
+ * the graded finance-role ladder it derives (approve-side SoD is a
+ * different axis than manager/bookkeeper/viewer) — wiring it here, directly
+ * at the approval gate rather than through the ladder, is the "future
+ * SoD-flip" that doc anticipated. `getSeatDerivedCapabilities` stays
+ * unchanged and un-audited for this capability.
+ *
+ * `scope` is always a real chapter id — CENTRAL budgets stay on
+ * `requireCentralEdOrFm` (title-based, unchanged); this helper is never
+ * consulted for a central-scoped approval decision. Indexed + bounded
+ * exactly like `getSeatDerivedCapabilities`: one `by_person` query capped at
+ * `PERSON_SEAT_ASSIGNMENT_LIMIT`, filtered in memory to `scope` (a person
+ * holds a small handful of seats at most, never near the cap).
+ *
+ * Skips `derived` seat defs (e.g. central `chapter_directors`, rolled up
+ * from every chapter's `chapter_director` — never directly assigned)
+ * explicitly, rather than relying solely on `assignSeat` never creating a
+ * real `seatAssignments` row for one — the invariant stays true even if
+ * that assignment-time contract is ever violated (a stray/test-inserted
+ * row).
+ */
+export async function holdsApprovalSeatAt(
+  ctx: QueryCtx,
+  personId: Id<"people">,
+  scope: Id<"chapters">,
+): Promise<boolean> {
+  const assignments = await ctx.db
+    .query("seatAssignments")
+    .withIndex("by_person", (q) => q.eq("personId", personId))
+    .take(PERSON_SEAT_ASSIGNMENT_LIMIT);
+
+  for (const assignment of assignments) {
+    if (assignment.scope !== scope) continue;
+    const def = await ctx.db.get(assignment.seatDefId);
+    if (def?.derived) continue; // computed/rolled-up seats are never real occupancy — belt-and-suspenders, see doc above
+    if (def?.capabilities.includes("finance.approve")) return true;
+  }
+  return false;
+}

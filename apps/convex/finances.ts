@@ -86,6 +86,7 @@ import {
 } from "./lib/finance";
 import { requireSuperuser } from "./lib/superuser";
 import { viewerPerson } from "./lib/org";
+import { holdsApprovalSeatAt } from "./lib/seats";
 import {
   ensureDefaultFunds,
   insertDefaultExpenseCategories,
@@ -4418,10 +4419,22 @@ export const updateBudget = mutation({
 // an editor action (bookkeeper+ at the budget's scope); approve/request-
 // changes is an APPROVER action, scope-gated + identity-SoD'd exactly like
 // reimbursements (`assertApprovalSoD` in `reimbursements.ts`):
-//   - chapter budget  → chapter finance MANAGER rank (Chapter Director /
-//     Treasurer seats bridge to this — `requireFinanceManager`).
+//   - chapter budget  → EITHER chapter finance MANAGER rank (Treasurer —
+//     `requireFinanceManager`) OR the caller holds a seat carrying
+//     `finance.approve` at that chapter (Chapter Director —
+//     `holdsApprovalSeatAt`, `lib/seats.ts`). Owner decision: "Chapter
+//     Director does have financial powers, they approve budgets... a budget
+//     shouldn't get approved without the chapter director." The CD's
+//     leadership-kind title never bridges a `financeRoles` manager grant
+//     (unlike Treasurer's `finance_manager` title), so without this seat
+//     path a CD-only holder could never approve — this closes that gap
+//     without widening the Treasurer path.
 //   - central budget  → the ED or FM SPECIALIZED role (`requireCentralEdOrFm`),
-//     tighter than plain central finance reach.
+//     tighter than plain central finance reach. UNCHANGED — the ED's seat
+//     also carries `finance.approve`, but that's covered by the existing
+//     title check (`legacyTitle: "executive_director"`); `holdsApprovalSeatAt`
+//     is never consulted for a central-scoped decision, so a chapter
+//     director's seat can't widen central approval.
 // Either scope: approver ≠ submitter (identity, not role) — a dual-hat holder
 // who submitted as one seat cannot approve their own submission as the other.
 
@@ -4474,9 +4487,10 @@ export const submitBudgetForApproval = mutation({
 
 /** Load a budget for an approve/request-changes decision: resolve the
  *  caller's chapter + identity, verify the budget is visible to them, and
- *  gate on the APPROVER capability for its scope (chapter manager, or
- *  central ED/FM). Shared by `approveBudget` + `requestBudgetChanges` so the
- *  two decisions can never gate differently. */
+ *  gate on the APPROVER capability for its scope (chapter manager rank OR a
+ *  chapter `finance.approve` seat, or central ED/FM). Shared by
+ *  `approveBudget` + `requestBudgetChanges` so the two decisions can never
+ *  gate differently. */
 async function loadBudgetForApprovalDecision(
   ctx: MutationCtx,
   budgetId: Id<"budgets">,
@@ -4490,12 +4504,25 @@ async function loadBudgetForApprovalDecision(
     "Budget",
     { allowCentral: true },
   );
+  const callerPersonId = await resolveCallerPersonId(ctx, chapterId);
   if (budget.chapterId === CENTRAL) {
     await requireCentralEdOrFm(ctx);
   } else {
-    await requireFinanceManager(ctx, chapterId);
+    // `requireInCallerChapter` above already proved `budget.chapterId ===
+    // chapterId` (the caller's OWN chapter) or threw NOT_FOUND — so a
+    // Chapter Director seated at a DIFFERENT chapter never reaches this
+    // branch with a matching scope to check. EITHER path clears the gate:
+    // manager rank (Treasurer, unchanged) OR a `finance.approve` seat here
+    // (Chapter Director — the owner-mandated fix).
+    const hasApprovalSeat = await holdsApprovalSeatAt(
+      ctx,
+      callerPersonId,
+      chapterId,
+    );
+    if (!hasApprovalSeat) {
+      await requireFinanceManager(ctx, chapterId);
+    }
   }
-  const callerPersonId = await resolveCallerPersonId(ctx, chapterId);
   return { budget, callerPersonId };
 }
 
