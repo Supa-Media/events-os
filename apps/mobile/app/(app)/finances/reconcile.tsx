@@ -35,6 +35,7 @@
 import { useMemo, useState } from "react";
 import { View, Text, TextInput, Pressable } from "react-native";
 import { useQuery, useMutation } from "convex/react";
+import { useLocalSearchParams } from "expo-router";
 import { api } from "@events-os/convex/_generated/api";
 import type { Id } from "@events-os/convex/_generated/dataModel";
 import {
@@ -96,8 +97,26 @@ export default function ReconcileScreen() {
   );
 }
 
+const FILTER_KEYS = new Set<FilterKey>([
+  "all",
+  "needs_budget",
+  "missing_receipt",
+  "uncategorized",
+  "ready",
+]);
+
 function ReconcileGrid() {
-  const [filter, setFilter] = useState<FilterKey>("needs_budget");
+  // WP-dashboard-drill: optional deep-link params (e.g. from the central
+  // dashboard's "Reconcile centrally →" affordance) — override the initial
+  // state only; the pills/toggle remain fully interactive afterward. Unknown
+  // or malformed values fall back to the existing defaults, never throw.
+  const params = useLocalSearchParams<{ filter?: string; scope?: string }>();
+  const initialFilter: FilterKey =
+    params.filter && FILTER_KEYS.has(params.filter as FilterKey)
+      ? (params.filter as FilterKey)
+      : "needs_budget";
+
+  const [filter, setFilter] = useState<FilterKey>(initialFilter);
   const [query, setQuery] = useState("");
   const [searchFocused, setSearchFocused] = useState(false);
   const [selected, setSelected] = useState<Set<string>>(new Set());
@@ -106,7 +125,12 @@ function ReconcileGrid() {
   // txns. `mySeats` resolves their real seats; a central seat unlocks the toggle.
   const seats = useQuery(api.financeRoles.mySeats, {}) ?? [];
   const hasCentralSeat = seats.some((s) => s.scope === "central");
-  const [scope, setScope] = useState<"chapter" | "central">("chapter");
+  const [scope, setScope] = useState<"chapter" | "central">(
+    params.scope === "central" ? "central" : "chapter",
+  );
+  // A non-central caller passing `?scope=central` harmlessly falls back to
+  // chapter scope here, same as the toggle already does — no new authz
+  // surface (the server still gates `scope:"central"` on central reach).
   const centralScope = scope === "central" && hasCentralSeat;
   // R1b: "Mark personal" (cards.flagPersonalCharge's manager path) is a
   // manager-only action — a bookkeeper has full Reconcile access but not this.
