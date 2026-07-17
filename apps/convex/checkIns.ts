@@ -101,15 +101,12 @@ export const log = mutation({
       // chapter's (whichever chapter happened to author it), so a 1:1
       // referencing it must not be rejected as "not in your chapter." A
       // PERSON/ROLE-scoped duty (no seats) keeps the strict same-chapter
-      // check — those never travel.
-      if ((doc?.assigneeSeatIds?.length ?? 0) > 0) {
-        if (!doc) {
-          throw new ConvexError({
-            code: "NOT_FOUND",
-            message: "Responsibility not found.",
-          });
-        }
-      } else {
+      // check — those never travel. `doc` is guaranteed non-null in the
+      // `if` branch (optional chaining short-circuits a null doc's
+      // `assigneeSeatIds` to `undefined`, so `?? 0 > 0` is only ever true
+      // for a real row) — a missing/foreign PERSON/ROLE-scoped id still
+      // gets the existence check via `requireInChapter` below.
+      if ((doc?.assigneeSeatIds?.length ?? 0) === 0) {
         await requireInChapter(ctx, person.chapterId, doc, "Responsibility");
       }
     }
