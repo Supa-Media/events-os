@@ -1,10 +1,22 @@
-import { describe, expect, test } from "vitest";
+import { afterEach, describe, expect, test } from "vitest";
 import { ConvexError } from "convex/values";
 import { SEAT_ROOT, MULTI_HOLDER_CAP } from "@events-os/shared";
 import { api } from "../_generated/api";
 import type { Doc, Id } from "../_generated/dataModel";
 import { newT, run, setupChapter, type ChapterSetup } from "./setup.helpers";
 import { runSeedSeatDefs } from "../migrations/0022_seed_seat_defs";
+import {
+  __setSafetyScanLimitForTests,
+  __resetSafetyScanLimitForTests,
+} from "../seatStructure";
+
+// Every SAFETY-scan test below shrinks the fail-closed scan bound so it's
+// hittable without a multi-thousand-row fixture. Always reset — a leaked
+// override would silently make every OTHER test's safety scans fail-closed
+// at a tiny bound too.
+afterEach(() => {
+  __resetSafetyScanLimitForTests();
+});
 
 /**
  * Org chart STRUCTURE editor (`seatStructure.ts`) — the `org.editChart`
@@ -365,7 +377,7 @@ describe("seatStructure.updateSeat", () => {
     expect((await defBySlug(s, "event_organizers")).maxHolders).toBe(5);
   });
 
-  test("writes an audit log row with before/after snapshots", async () => {
+  test("writes an audit log row with before/after snapshots (duties SUMMARIZED, not the raw array)", async () => {
     const s = await edSetup();
     const before = await defBySlug(s, "music_lead");
     await s.as.mutation(api.seatStructure.updateSeat, {
@@ -374,8 +386,53 @@ describe("seatStructure.updateSeat", () => {
     });
     const log = await s.as.query(api.seatStructure.structureLog, {});
     const row = log.find((r) => r.slug === "music_lead" && r.mutation === "updateSeat")!;
-    expect((row.before as { duties?: string[] }).duties).toEqual(before.duties);
-    expect((row.after as { duties?: string[] }).duties).toEqual(["Duty A"]);
+    expect((row.before as { duties?: { count: number; preview: string[] } }).duties).toEqual({
+      count: before.duties.length,
+      preview: before.duties,
+    });
+    expect((row.after as { duties?: { count: number; preview: string[] } }).duties).toEqual({
+      count: 1,
+      preview: ["Duty A"],
+    });
+  });
+
+  test("rejects updating a derived seat (mirrors reparentSeat/removeSeat's guard)", async () => {
+    const s = await edSetup();
+    await expect(
+      s.as.mutation(api.seatStructure.updateSeat, {
+        slug: "chapter_directors",
+        capabilities: ["nav.finances"],
+      }),
+    ).rejects.toBeInstanceOf(ConvexError);
+    await expect(
+      s.as.mutation(api.seatStructure.updateSeat, {
+        slug: "chapter_directors",
+        maxHolders: 10,
+      }),
+    ).rejects.toBeInstanceOf(ConvexError);
+    await expect(
+      s.as.mutation(api.seatStructure.updateSeat, {
+        slug: "chapter_directors",
+        duties: ["x"],
+      }),
+    ).rejects.toBeInstanceOf(ConvexError);
+  });
+
+  test("audit snapshot caps a long duties array (count + truncated preview, not the raw list)", async () => {
+    const s = await edSetup();
+    const manyDuties = Array.from({ length: 20 }, (_, i) => `Duty number ${i}`.repeat(5));
+    await s.as.mutation(api.seatStructure.updateSeat, {
+      slug: "music_lead",
+      duties: manyDuties,
+    });
+    const log = await s.as.query(api.seatStructure.structureLog, {});
+    const row = log.find((r) => r.slug === "music_lead" && r.mutation === "updateSeat")!;
+    const after = row.after as { duties?: { count: number; preview: string[] } };
+    expect(after.duties?.count).toBe(20);
+    expect(after.duties?.preview.length).toBeLessThan(20);
+    for (const p of after.duties?.preview ?? []) {
+      expect(p.length).toBeLessThanOrEqual(81); // AUDIT_DUTY_CHARS + the ellipsis char
+    }
   });
 });
 
@@ -617,6 +674,47 @@ describe("seatStructure.removeSeat", () => {
     ).rejects.toBeInstanceOf(ConvexError);
   });
 
+  test("rejects removing a seat with a duty still mapped to it (#188 assigneeSeatIds)", async () => {
+    const s = await edSetup();
+    const def = await defBySlug(s, "production_coordinator");
+    await run(s.t, (ctx) =>
+      ctx.db.insert("responsibilities", {
+        chapterId: s.chapterId,
+        title: "Run the projector",
+        cadence: "weekly",
+        assigneeSeatIds: [def._id],
+        createdBy: s.userId,
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      }),
+    );
+
+    await expect(
+      s.as.mutation(api.seatStructure.removeSeat, { slug: "production_coordinator" }),
+    ).rejects.toBeInstanceOf(ConvexError);
+    expect(await tryDefBySlug(s, "production_coordinator")).not.toBeNull();
+  });
+
+  test("removes cleanly once the duty is unmapped", async () => {
+    const s = await edSetup();
+    const def = await defBySlug(s, "production_coordinator");
+    const respId = await run(s.t, (ctx) =>
+      ctx.db.insert("responsibilities", {
+        chapterId: s.chapterId,
+        title: "Run the projector",
+        cadence: "weekly",
+        assigneeSeatIds: [def._id],
+        createdBy: s.userId,
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      }),
+    );
+    await run(s.t, (ctx) => ctx.db.patch(respId, { assigneeSeatIds: [] }));
+
+    await s.as.mutation(api.seatStructure.removeSeat, { slug: "production_coordinator" });
+    expect(await tryDefBySlug(s, "production_coordinator")).toBeNull();
+  });
+
   test("writes an audit log row with a `before` snapshot and no `after`", async () => {
     const s = await edSetup();
     await s.as.mutation(api.seatStructure.removeSeat, { slug: "production_coordinator" });
@@ -624,6 +722,211 @@ describe("seatStructure.removeSeat", () => {
     const row = log.find((r) => r.slug === "production_coordinator" && r.mutation === "removeSeat")!;
     expect(row.after).toBeUndefined();
     expect((row.before as { title?: string }).title).toBe("Production Coordinator");
+  });
+});
+
+// ── Fail-closed SAFETY scans ─────────────────────────────────────────────────
+
+describe("seatStructure — fail-closed SAFETY scans", () => {
+  test("occupied-seat check REJECTS (fail-closed) once the scan would be truncated, instead of proceeding as if unoccupied", async () => {
+    const s = await edSetup();
+    // A holder on a TOTALLY UNRELATED seat pushes the total seatAssignments
+    // row count to the (shrunk) bound — the scan can no longer prove
+    // "production_coordinator has zero holders" is complete, so it must
+    // reject rather than silently answer "unoccupied".
+    const otherPerson = await run(s.t, (ctx) =>
+      ctx.db.insert("people", { chapterId: s.chapterId, name: "Other", createdAt: Date.now() }),
+    );
+    await directlyAssign(s, "event_organizers", s.chapterId, otherPerson);
+
+    // 2 total seatAssignments rows exist now (ED + this one). Shrink the
+    // bound to exactly 2 so the scan comes back AT the limit.
+    __setSafetyScanLimitForTests(2);
+
+    await expect(
+      s.as.mutation(api.seatStructure.removeSeat, { slug: "production_coordinator" }),
+    ).rejects.toBeInstanceOf(ConvexError);
+    // Definitely NOT deleted — the fail-closed path never reaches the delete.
+    expect(await tryDefBySlug(s, "production_coordinator")).not.toBeNull();
+  });
+
+  test("maxHolders-floor check REJECTS (fail-closed) once the scan would be truncated, instead of proceeding with an undercount", async () => {
+    const s = await edSetup();
+    const otherPerson = await run(s.t, (ctx) =>
+      ctx.db.insert("people", { chapterId: s.chapterId, name: "Other", createdAt: Date.now() }),
+    );
+    await directlyAssign(s, "event_organizers", s.chapterId, otherPerson);
+
+    __setSafetyScanLimitForTests(2); // ED assignment + the one above = 2
+
+    await expect(
+      s.as.mutation(api.seatStructure.updateSeat, { slug: "event_organizers", maxHolders: 3 }),
+    ).rejects.toBeInstanceOf(ConvexError);
+  });
+
+  test("duty-reference check REJECTS (fail-closed) once the scan would be truncated", async () => {
+    const s = await edSetup();
+    await run(s.t, (ctx) =>
+      ctx.db.insert("responsibilities", {
+        chapterId: s.chapterId,
+        title: "Unrelated duty",
+        cadence: "weekly",
+        createdBy: s.userId,
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      }),
+    );
+
+    __setSafetyScanLimitForTests(1); // exactly 1 responsibilities row exists
+
+    await expect(
+      s.as.mutation(api.seatStructure.removeSeat, { slug: "production_coordinator" }),
+    ).rejects.toBeInstanceOf(ConvexError);
+  });
+
+  test("a scan comfortably UNDER the bound still resolves normally (fail-closed only trips AT the limit)", async () => {
+    const s = await edSetup();
+    __setSafetyScanLimitForTests(50); // ED's 1 assignment is nowhere near 50
+    await s.as.mutation(api.seatStructure.removeSeat, { slug: "production_coordinator" });
+    expect(await tryDefBySlug(s, "production_coordinator")).toBeNull();
+  });
+});
+
+// ── Global org.editChart lockout guard ──────────────────────────────────────
+
+describe("seatStructure — global org.editChart lockout guard", () => {
+  // NOTE on reachability: for a NON-superuser, the gate (`requireChartEditor`)
+  // already REQUIRES the caller to currently hold `org.editChart` via SOME
+  // seat. If the def being edited is a DIFFERENT seat than the one granting
+  // the caller their own power, that other seat is untouched by the edit and
+  // remains a live witness — the global check can never fire in that shape,
+  // by construction (see the two "safely allowed" tests below). The global
+  // check is therefore reachable for a non-superuser ONLY on the overlapping
+  // case — stripping their OWN sole qualifying seat, where self-lockout is
+  // ALSO independently true — and unconditionally for a superuser (who holds
+  // no qualifying seat at all, so self-lockout's early-return never applies
+  // to them). Both are covered below, plus a dedicated test proving
+  // self-lockout fires on its own when the ORG still has another active
+  // editor but the CALLER personally doesn't.
+
+  test("a non-superuser CAN strip org.editChart from someone ELSE's OCCUPIED seat, as long as their own seat still grants it", async () => {
+    const s = await edSetup(); // ED's own executive_director seat is occupied + carries org.editChart
+    const deputySeatId = await s.as.mutation(api.seatStructure.addSeat, {
+      chart: "central",
+      parentSlug: "executive_director",
+      title: "Deputy Director",
+      maxHolders: 1,
+      duties: [],
+      capabilities: ["org.editChart"],
+    });
+    const deputyDef = await run(s.t, (ctx) => ctx.db.get(deputySeatId));
+    const deputyPersonId = await run(s.t, (ctx) =>
+      ctx.db.insert("people", { chapterId: s.chapterId, name: "Deputy", createdAt: Date.now() }),
+    );
+    await run(s.t, (ctx) =>
+      ctx.db.insert("seatAssignments", {
+        seatDefId: deputySeatId,
+        scope: "central",
+        personId: deputyPersonId,
+        createdAt: Date.now(),
+      }),
+    );
+
+    // The ED's OWN seat still carries org.editChart with an active holder
+    // (the ED, untouched by this edit) — the org retains an editor
+    // throughout, so this is safely allowed.
+    await s.as.mutation(api.seatStructure.updateSeat, {
+      slug: deputyDef!.slug,
+      capabilities: [],
+    });
+    expect((await defBySlug(s, deputyDef!.slug)).capabilities).toEqual([]);
+  });
+
+  test("a non-superuser CAN strip org.editChart from an UNOCCUPIED seat, same reason", async () => {
+    const s = await edSetup(); // ED seat is occupied and carries org.editChart
+    const unoccupiedSeatId = await s.as.mutation(api.seatStructure.addSeat, {
+      chart: "central",
+      parentSlug: "executive_director",
+      title: "Vacant Deputy",
+      maxHolders: 1,
+      duties: [],
+      capabilities: ["org.editChart"],
+    });
+    const unoccupiedDef = await run(s.t, (ctx) => ctx.db.get(unoccupiedSeatId));
+
+    await s.as.mutation(api.seatStructure.updateSeat, {
+      slug: unoccupiedDef!.slug,
+      capabilities: [],
+    });
+    expect((await defBySlug(s, unoccupiedDef!.slug)).capabilities).toEqual([]);
+  });
+
+  test("a non-superuser stripping their OWN sole qualifying seat is rejected (overlap with self-lockout — GLOBAL_EDITCHART_LOCKOUT fires, the more accurate message since there's no OTHER editor to ask)", async () => {
+    const s = await edSetup(); // executive_director is the ONLY seat anywhere carrying org.editChart
+    let caught: unknown;
+    try {
+      await s.as.mutation(api.seatStructure.updateSeat, {
+        slug: "executive_director",
+        capabilities: [],
+      });
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(ConvexError);
+    expect((caught as ConvexError<{ code: string }>).data.code).toBe(
+      "GLOBAL_EDITCHART_LOCKOUT",
+    );
+    expect((await defBySlug(s, "executive_director")).capabilities).toContain("org.editChart");
+  });
+
+  test("SELF-lockout fires on its own when the ORG retains another active editor but the CALLER personally would lose their power", async () => {
+    const s = await edSetup();
+    // A SEPARATE person holds a SEPARATE org.editChart seat — the org
+    // retains an editor no matter what the ED does to their OWN seat, so the
+    // GLOBAL check can never fire here; only SELF-lockout is at stake.
+    const deputySeatId = await s.as.mutation(api.seatStructure.addSeat, {
+      chart: "central",
+      parentSlug: "executive_director",
+      title: "Deputy Director",
+      maxHolders: 1,
+      duties: [],
+      capabilities: ["org.editChart"],
+    });
+    const deputyPersonId = await run(s.t, (ctx) =>
+      ctx.db.insert("people", { chapterId: s.chapterId, name: "Deputy", createdAt: Date.now() }),
+    );
+    await run(s.t, (ctx) =>
+      ctx.db.insert("seatAssignments", {
+        seatDefId: deputySeatId,
+        scope: "central",
+        personId: deputyPersonId,
+        createdAt: Date.now(),
+      }),
+    );
+
+    let caught: unknown;
+    try {
+      await s.as.mutation(api.seatStructure.updateSeat, {
+        slug: "executive_director", // the ED's OWN, sole personal source of org.editChart
+        capabilities: [],
+      });
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(ConvexError);
+    expect((caught as ConvexError<{ code: string }>).data.code).toBe("SELF_LOCKOUT");
+  });
+
+  test("a superuser MAY strip the last active org.editChart seat (backstop) — allowed, not silent", async () => {
+    const t = newT();
+    await run(t, (ctx) => runSeedSeatDefs(ctx));
+    const s = await setupChapter(t, { email: "seyi@publicworship.life" }); // superuser, no seat at all
+
+    await s.as.mutation(api.seatStructure.updateSeat, {
+      slug: "executive_director",
+      capabilities: [],
+    });
+    expect((await defBySlug(s, "executive_director")).capabilities).toEqual([]);
   });
 });
 

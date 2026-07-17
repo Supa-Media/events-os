@@ -64,6 +64,54 @@ const mutationKindValidator = v.union(
  *  `seats.ts`'s own `MAX_CHART_SEATS`. */
 const MAX_CHART_SEATS = 300;
 
+/**
+ * Fail-closed bound for SAFETY scans — the occupied-seat check, the
+ * maxHolders floor, the duty-reference check, and the global-lockout scan
+ * all need an EXHAUSTIVE answer ("does ANY row reference this def, anywhere,
+ * full stop") to be correct. A truncated scan there isn't a slightly-stale
+ * read, it's UNVERIFIABLE: hitting this bound means the true answer could be
+ * either way, so `assertScanCompleteOrThrow` below REJECTS the mutation
+ * rather than silently proceeding on partial data. This is the opposite of
+ * `ROLLUP_SCAN_LIMIT`-bounded DISPLAY reads elsewhere in this app (e.g.
+ * `seats.ts`'s chapter/holder rollups), which warn-and-truncate because a
+ * stale READ is an acceptable UX cost — these are WRITE-gating safety
+ * invariants on a real-money-adjacent permission, where a false "clear" can
+ * delete an occupied seat or under-count holders.
+ *
+ * `let`, not `const`, ONLY so `tests/seatStructure.test.ts` can shrink it to
+ * something practically hittable without inserting thousands of rows — see
+ * `__setSafetyScanLimitForTests`/`__resetSafetyScanLimitForTests`. Never
+ * reassigned from production code.
+ */
+let SAFETY_SCAN_LIMIT: number = ROLLUP_SCAN_LIMIT;
+
+/** TEST-ONLY seam for `SAFETY_SCAN_LIMIT` (see above) — lets a test actually
+ *  drive a safety scan past its bound without a multi-thousand-row fixture.
+ *  Never called from production code; only imported by
+ *  `tests/seatStructure.test.ts`. */
+export function __setSafetyScanLimitForTests(limit: number): void {
+  SAFETY_SCAN_LIMIT = limit;
+}
+
+/** Restores `SAFETY_SCAN_LIMIT` to its production value. Call in `afterEach`
+ *  whenever a test calls `__setSafetyScanLimitForTests`. */
+export function __resetSafetyScanLimitForTests(): void {
+  SAFETY_SCAN_LIMIT = ROLLUP_SCAN_LIMIT;
+}
+
+/** Throws if a SAFETY scan (see `SAFETY_SCAN_LIMIT` above) came back exactly
+ *  at the bound — meaning it may have been truncated, so the caller's "no
+ *  match found" (or "count is N") can't be trusted. `context` names the
+ *  check for the error message. */
+function assertScanCompleteOrThrow(rowCount: number, context: string): void {
+  if (rowCount === SAFETY_SCAN_LIMIT) {
+    throw new ConvexError({
+      code: "SCAN_LIMIT_EXCEEDED",
+      message: `Too many records to verify this safely (${context}) — contact an admin.`,
+    });
+  }
+}
+
 // ── Internal helpers ─────────────────────────────────────────────────────────
 
 /** A seat def by slug, globally (not chart-scoped) — slugs are unique across
@@ -128,22 +176,19 @@ function wouldCreateCycle(
   return false;
 }
 
-/** Bounded scan over EVERY `seatAssignments` row (no index keys on
- *  `seatDefId` alone — see `schema/seats.ts`'s indexes), used by both the
- *  occupied-seat removal guard and the maxHolders floor below. Both callers
- *  need "every holder of this def, across every scope", which the schema
- *  can only answer with a full bounded scan. */
+/** Bounded, FAIL-CLOSED scan over EVERY `seatAssignments` row (no index keys
+ *  on `seatDefId` alone — see `schema/seats.ts`'s indexes), used by the
+ *  occupied-seat removal guard, the maxHolders floor, and the global-lockout
+ *  check below. All three need "every holder of this def, across every
+ *  scope", which the schema can only answer with a full scan — see
+ *  `SAFETY_SCAN_LIMIT` for why hitting the bound throws instead of warning. */
 async function allAssignmentsForDef(
   ctx: QueryCtx | MutationCtx,
   seatDefId: Id<"seatDefs">,
   context: string,
 ): Promise<Doc<"seatAssignments">[]> {
-  const rows = await ctx.db.query("seatAssignments").take(ROLLUP_SCAN_LIMIT);
-  if (rows.length === ROLLUP_SCAN_LIMIT) {
-    console.warn(
-      `[seatStructure] ${context} hit ROLLUP_SCAN_LIMIT (${ROLLUP_SCAN_LIMIT}) seatAssignments; results truncated until paginated enumeration lands.`,
-    );
-  }
+  const rows = await ctx.db.query("seatAssignments").take(SAFETY_SCAN_LIMIT);
+  assertScanCompleteOrThrow(rows.length, context);
   return rows.filter((r) => r.seatDefId === seatDefId);
 }
 
@@ -168,6 +213,67 @@ async function maxHolderCountAnyScope(
     counts.set(key, (counts.get(key) ?? 0) + 1);
   }
   return counts.size === 0 ? 0 : Math.max(...counts.values());
+}
+
+/** True iff any `responsibilities` row still maps a duty to `seatDefId` via
+ *  `assigneeSeatIds` (added by #188, "duties attach to seats"). There's no
+ *  index into that array field (Convex indexes can't key on array contents),
+ *  so this is a bounded, FAIL-CLOSED full-table scan — same
+ *  `SAFETY_SCAN_LIMIT` rule as `allAssignmentsForDef` above: a truncated scan
+ *  can't be trusted to say "no references", so it throws instead. */
+async function seatHasDutyReferences(
+  ctx: QueryCtx | MutationCtx,
+  seatDefId: Id<"seatDefs">,
+): Promise<boolean> {
+  const rows = await ctx.db.query("responsibilities").take(SAFETY_SCAN_LIMIT);
+  assertScanCompleteOrThrow(rows.length, "duty-reference check");
+  return rows.some((r) => r.assigneeSeatIds?.includes(seatDefId) === true);
+}
+
+/** Every OTHER seat def (any chart) that currently carries `org.editChart`,
+ *  excluding `excludeDefId` — the candidate pool for the global-lockout
+ *  check below. Bounded/fail-closed like the scans above: org charts are a
+ *  few dozen seats, nowhere near `SAFETY_SCAN_LIMIT`, but the same rule
+ *  applies for consistency and future-proofing. */
+async function otherEditChartDefs(
+  ctx: QueryCtx | MutationCtx,
+  excludeDefId: Id<"seatDefs">,
+): Promise<Doc<"seatDefs">[]> {
+  const rows = await ctx.db.query("seatDefs").take(SAFETY_SCAN_LIMIT);
+  assertScanCompleteOrThrow(rows.length, "global org.editChart lockout check");
+  return rows.filter(
+    (d) => d._id !== excludeDefId && d.capabilities.includes("org.editChart"),
+  );
+}
+
+/** True iff at least one of `defs` currently has any holder, anywhere. */
+async function anyDefHasAHolder(
+  ctx: QueryCtx | MutationCtx,
+  defs: Doc<"seatDefs">[],
+): Promise<boolean> {
+  for (const d of defs) {
+    if (await seatHasAnyAssignment(ctx, d._id)) return true;
+  }
+  return false;
+}
+
+/** Bound on how many duties an audit snapshot keeps IN FULL, and how many
+ *  characters of each — the log stores a preview, not the whole list, so a
+ *  seat with a long duties array can't blow up `seatStructureLog` row size
+ *  (see finding 5 on PR #190). */
+const AUDIT_DUTIES_PREVIEW_COUNT = 5;
+const AUDIT_DUTY_CHARS = 80;
+
+/** A small, bounded stand-in for a `duties` array in an audit snapshot: a
+ *  total count (so nothing about "how many" is lost) plus a short preview of
+ *  the first few, each truncated. Never the full array. */
+function summarizeDuties(duties: readonly string[]): { count: number; preview: string[] } {
+  return {
+    count: duties.length,
+    preview: duties
+      .slice(0, AUDIT_DUTIES_PREVIEW_COUNT)
+      .map((d) => (d.length > AUDIT_DUTY_CHARS ? `${d.slice(0, AUDIT_DUTY_CHARS)}…` : d)),
+  };
 }
 
 /** `title`, lowercased and stripped to `[a-z0-9_]`, falling back to `"seat"`
@@ -297,7 +403,7 @@ export const addSeat = mutation({
       chart: args.chart,
       parentSlug: args.parentSlug,
       maxHolders: args.maxHolders,
-      duties: args.duties,
+      duties: summarizeDuties(args.duties),
       capabilities: args.capabilities,
     });
 
@@ -339,8 +445,11 @@ export const renameSeat = mutation({
 
 /**
  * Update a seat's `maxHolders`/`duties`/`capabilities` (any subset — omitted
- * fields are left untouched). Enforces the `maxHolders` floor (can't drop
- * below the seat's current largest per-scope holder count) and runs the
+ * fields are left untouched). Rejects a `derived` seat (its holders — and
+ * hence its effective `maxHolders`/floor — are computed, not editable;
+ * mirrors `reparentSeat`/`removeSeat`'s guard). Enforces the `maxHolders`
+ * floor (can't drop below the seat's current largest per-scope holder
+ * count), the GLOBAL org.editChart lockout guard (below), and runs the
  * self-lockout simulation before committing (a capabilities change is
  * exactly the case that guard exists for).
  */
@@ -355,6 +464,14 @@ export const updateSeat = mutation({
   handler: async (ctx, { slug, maxHolders, duties, capabilities }) => {
     const editor = await requireChartEditor(ctx);
     const def = await requireDefBySlug(ctx, slug);
+
+    if (def.derived === true) {
+      throw new ConvexError({
+        code: "DERIVED_SEAT",
+        message:
+          "This seat's holders are computed automatically — its duties/capabilities/maxHolders can't be edited.",
+      });
+    }
 
     const patch: Partial<Pick<Doc<"seatDefs">, "maxHolders" | "duties" | "capabilities">> = {};
     const before: Record<string, unknown> = {};
@@ -375,10 +492,36 @@ export const updateSeat = mutation({
     }
     if (duties !== undefined) {
       patch.duties = duties;
-      before.duties = def.duties;
-      after.duties = duties;
+      before.duties = summarizeDuties(def.duties);
+      after.duties = summarizeDuties(duties);
     }
     if (capabilities !== undefined) {
+      // GLOBAL org.editChart LOCKOUT GUARD — distinct from (and checked
+      // before) the self-lockout simulation below: self-lockout protects
+      // only the CALLER's own powers; this protects the ORG's, when the
+      // caller doesn't hold the seat being stripped but it's the last one
+      // carrying org.editChart with any active holder anywhere. A
+      // superuser may still do this knowingly (they're the backstop for
+      // exactly this state) — loudly logged, never silent.
+      const losingEditChart =
+        def.capabilities.includes("org.editChart") && !capabilities.includes("org.editChart");
+      if (losingEditChart) {
+        const others = await otherEditChartDefs(ctx, def._id);
+        const someoneElseStillHolds = await anyDefHasAHolder(ctx, others);
+        if (!someoneElseStillHolds) {
+          if (editor.isSuperuser) {
+            console.warn(
+              `[seatStructure] updateSeat(${def.slug}) by superuser ${editor.userId} removes the LAST seat carrying org.editChart with any active holder — no one will be able to edit the org chart's structure until a superuser restores it.`,
+            );
+          } else {
+            throw new ConvexError({
+              code: "GLOBAL_EDITCHART_LOCKOUT",
+              message:
+                "This would remove org-chart editing power from EVERYONE — no seat would carry org.editChart with an active holder anymore. Only a superuser can make this change.",
+            });
+          }
+        }
+      }
       patch.capabilities = capabilities;
       before.capabilities = def.capabilities;
       after.capabilities = capabilities;
@@ -466,10 +609,11 @@ export const reparentSeat = mutation({
 
 /**
  * Remove a seat. Rejects: a `derived` seat, a chart's root, a seat with ANY
- * current holder in ANY scope (vacate first via `seats.unassignSeat`), or a
- * seat that's still someone else's parent (reparent/remove children first —
- * removing it would otherwise dangle their `parentSlug`, breaking the
- * chart's tree shape).
+ * current holder in ANY scope (vacate first via `seats.unassignSeat`), a
+ * seat that still has a duty mapped to it (unmap it in the Duties grid
+ * first — see `seatHasDutyReferences`), or a seat that's still someone
+ * else's parent (reparent/remove children first — removing it would
+ * otherwise dangle their `parentSlug`, breaking the chart's tree shape).
  *
  * Self-lockout is checked BEFORE the occupied-seat check, so removing a seat
  * the EDITOR THEMSELVES holds surfaces the specific "you'd lock yourself
@@ -505,6 +649,14 @@ export const removeSeat = mutation({
       });
     }
 
+    if (await seatHasDutyReferences(ctx, def._id)) {
+      throw new ConvexError({
+        code: "SEAT_HAS_DUTIES",
+        message:
+          "This seat still has duties mapped to it — unmap them (Duties grid) before removing it.",
+      });
+    }
+
     const bySlug = await chartDefsBySlug(ctx, def.chart);
     const hasChildren = [...bySlug.values()].some((d) => d.parentSlug === def.slug);
     if (hasChildren) {
@@ -525,7 +677,7 @@ export const removeSeat = mutation({
         chart: def.chart,
         parentSlug: def.parentSlug,
         maxHolders: def.maxHolders,
-        duties: def.duties,
+        duties: summarizeDuties(def.duties),
         capabilities: def.capabilities,
       },
       undefined,

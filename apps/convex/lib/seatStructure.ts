@@ -80,6 +80,11 @@ export interface ChartEditor {
   /** One of `personIds` for the audit log — the caller's FIRST roster row,
    *  or `undefined` for a superuser backstop edit with no roster row at all. */
   editorPersonId: Id<"people"> | undefined;
+  /** True iff the caller reached the gate via the superuser backstop, not a
+   *  held `org.editChart` seat. Used by `updateSeat`'s global-lockout guard:
+   *  a superuser may knowingly strip the LAST `org.editChart`-holding seat
+   *  (they're the backstop for exactly this case), a regular editor may not. */
+  isSuperuser: boolean;
 }
 
 /**
@@ -97,7 +102,7 @@ export async function requireChartEditor(
   const editorPersonId = personIds[0];
 
   if (await isSuperuser(ctx)) {
-    return { userId, personIds, editorPersonId };
+    return { userId, personIds, editorPersonId, isSuperuser: true };
   }
 
   const caps = await effectiveCapabilities(ctx, personIds);
@@ -108,7 +113,7 @@ export async function requireChartEditor(
         "Only a seat holder with org-chart editing power can edit the org chart's structure.",
     });
   }
-  return { userId, personIds, editorPersonId };
+  return { userId, personIds, editorPersonId, isSuperuser: false };
 }
 
 /**
