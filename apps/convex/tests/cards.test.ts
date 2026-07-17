@@ -3469,32 +3469,19 @@ describe("revealCardDetails", () => {
   });
 
   const FAKE_PAN = "4242424242424242";
-  const FAKE_CVC = "999";
-
-  /**
-   * Strip Convex system fields (`_creationTime`, `_id`) before the
-   * PAN-persistence sweep below serializes every row to JSON. `_creationTime`
-   * is a live `Date.now()` epoch-ms timestamp — over enough CI runs its digits
-   * inevitably contain a short run like "999", which would false-positive
-   * against `FAKE_CVC` even though nothing was actually persisted (this bit
-   * CI: a `_creationTime` of `...894999` "contained" the 3-digit CVC). Neither
-   * field can ever legitimately hold card data, so removing them only
-   * eliminates the collision source — it does not weaken the guarantee: every
-   * other field of every document is still swept, so the test still fails if
-   * the PAN/CVC/expiry leak into ANY actual document data.
-   */
-  function stripSystemFields(value: unknown): unknown {
-    if (Array.isArray(value)) return value.map(stripSystemFields);
-    if (value && typeof value === "object") {
-      const out: Record<string, unknown> = {};
-      for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
-        if (k === "_creationTime" || k === "_id") continue;
-        out[k] = stripSystemFields(v);
-      }
-      return out;
-    }
-    return value;
-  }
+  // A distinctive, non-numeric canary — NOT a plausible digit run. The
+  // original "999" was a 3-digit substring that could (and on CI did)
+  // coincidentally appear inside some *other* document's unrelated epoch-ms
+  // `Date.now()` field (`_creationTime`, `cardDetailsRevealAttempts.createdAt`,
+  // `people.createdAt`, `cards.createdAt`, …) — any of those 13-digit
+  // timestamps has a real chance of containing "999" somewhere. Nothing in
+  // `revealCardDetails`/`beginRevealCardDetails` (apps/convex/cards.ts) or
+  // this test's mock plumbing assumes the CVC is numeric or a fixed length —
+  // the action just does `String(details.verification_code ?? "")` and the
+  // return validator is a bare `v.string()` — so a long, unique,
+  // non-digit-only value is safe and makes an accidental substring match
+  // across any real document field practically impossible.
+  const FAKE_CVC = "CVC_CANARY_7f3a";
 
   /** Only the GET /cards/{id}/details endpoint is ever hit by this flow. */
   function mockCardDetailsFetch() {
@@ -3632,7 +3619,7 @@ describe("revealCardDetails", () => {
         allDocs.push(...rows);
       }
     });
-    const dump = JSON.stringify(allDocs.map(stripSystemFields));
+    const dump = JSON.stringify(allDocs);
     expect(dump).not.toContain(FAKE_PAN);
     expect(dump).not.toContain(FAKE_CVC);
   });
