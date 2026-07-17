@@ -41,6 +41,10 @@ export function SeatBox({
         accessibilityRole="button"
         accessibilityLabel={`${seat.title}${seat.vacant ? ", vacant" : ""}`}
         onPress={onPress}
+        // The canvas's own background sets `cursor: grab` (click-drag pans
+        // the chart) — this override keeps a seat box reading as clickable,
+        // not draggable, since `cursor` otherwise inherits from the canvas.
+        style={{ cursor: "pointer" } as any}
         className={`gap-1 rounded-md border bg-raised px-3 py-2 shadow-card ${
           selected ? "border-accent" : "border-border"
         } ${seat.derived ? "border-dashed" : ""}`}
@@ -87,6 +91,7 @@ export function SeatBox({
           accessibilityLabel={`Add a seat under ${seat.title}`}
           onPress={() => onAddSeat(node)}
           hitSlop={6}
+          style={{ cursor: "pointer" } as any}
           className="absolute -bottom-2.5 -right-2.5 h-6 w-6 items-center justify-center rounded-pill border border-accent bg-raised shadow-card"
         >
           <Icon name="plus" size={13} color={colors.accent} />

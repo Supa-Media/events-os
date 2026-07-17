@@ -1,10 +1,17 @@
 /**
  * Org chart STRUCTURE editor UI — the "Edit structure" mode's affordances:
- * add a seat under a parent, rename, edit duties/capabilities/maxHolders,
- * reparent, and remove. Every mutation here is `seatStructure.ts`'s, gated
- * server-side by `org.editChart` (or superuser) — this file does no gating
- * of its own beyond what the screen decides to render (see `org-chart.tsx`'s
+ * add a seat under a parent, rename, edit capabilities/maxHolders, reparent,
+ * and remove. Every mutation here is `seatStructure.ts`'s, gated server-side
+ * by `org.editChart` (or superuser) — this file does no gating of its own
+ * beyond what the screen decides to render (see `org-chart.tsx`'s
  * `canEditStructure`).
+ *
+ * Duties are NOT edited here — `seatDefs.duties` is a seeded template-string
+ * list (the owner calls it "fake duties") that's been superseded by the real
+ * Work → Duties system (`responsibilities.ts` — see `SeatDetailPanel.tsx`'s
+ * doc comment). The field stays in the schema untouched (existing rows keep
+ * whatever they have; `addSeat` still sends an empty array, `updateSeat`
+ * simply never patches it) but has exactly one home now: Work → Duties.
  *
  * Every failure surfaces the backend's `ConvexError` message VERBATIM
  * (`alertError`) — the occupied/duty-ref/self-lockout/cycle/global-lockout
@@ -58,7 +65,6 @@ export function AddSeatModal({
   const addSeat = useMutation(api.seatStructure.addSeat);
   const [title, setTitle] = useState("");
   const [maxHolders, setMaxHolders] = useState<1 | typeof MULTI_HOLDER_CAP>(1);
-  const [dutiesText, setDutiesText] = useState("");
   const [capabilities, setCapabilities] = useState<Set<SeatCapability>>(new Set());
   const [submitting, setSubmitting] = useState(false);
 
@@ -66,7 +72,6 @@ export function AddSeatModal({
     if (visible) {
       setTitle("");
       setMaxHolders(1);
-      setDutiesText("");
       setCapabilities(new Set());
     }
   }, [visible]);
@@ -89,10 +94,10 @@ export function AddSeatModal({
         parentSlug,
         title: title.trim(),
         maxHolders,
-        duties: dutiesText
-          .split("\n")
-          .map((d) => d.trim())
-          .filter(Boolean),
+        // Duties have one home now — Work → Duties (`responsibilities.ts`) —
+        // not this modal. `seatStructure.addSeat` still requires the arg
+        // (the schema field stays), so a new seat simply starts with none.
+        duties: [],
         capabilities: [...capabilities],
       });
       onClose();
@@ -149,21 +154,6 @@ export function AddSeatModal({
                     onPress={() => setMaxHolders(MULTI_HOLDER_CAP)}
                   />
                 </View>
-              </View>
-
-              <View>
-                <Text className="mb-1.5 text-sm font-semibold text-ink">
-                  Duties (one per line, optional)
-                </Text>
-                <TextInput
-                  value={dutiesText}
-                  onChangeText={setDutiesText}
-                  placeholder={"Plan the event\nCoordinate volunteers"}
-                  placeholderTextColor={colors.faint}
-                  multiline
-                  numberOfLines={4}
-                  className="min-h-[92px] rounded-md border border-border-strong bg-raised px-3 py-2.5 text-base text-ink"
-                />
               </View>
 
               <View>
@@ -307,14 +297,14 @@ export function RenameSeatControl({ slug, title }: { slug: string; title: string
   );
 }
 
-// ── Edit duties / capabilities / maxHolders ─────────────────────────────────
+// ── Edit capabilities / maxHolders ──────────────────────────────────────────
+// Duties are edited in Work → Duties, not here — see this file's doc comment.
 
 function EditSeatModal({
   visible,
   slug,
   seatTitle,
   initialMaxHolders,
-  initialDuties,
   initialCapabilities,
   onClose,
 }: {
@@ -322,7 +312,6 @@ function EditSeatModal({
   slug: string;
   seatTitle: string;
   initialMaxHolders: number;
-  initialDuties: readonly string[];
   initialCapabilities: readonly string[];
   onClose: () => void;
 }) {
@@ -330,7 +319,6 @@ function EditSeatModal({
   const [maxHolders, setMaxHolders] = useState<1 | typeof MULTI_HOLDER_CAP>(
     initialMaxHolders === 1 ? 1 : MULTI_HOLDER_CAP,
   );
-  const [dutiesText, setDutiesText] = useState(initialDuties.join("\n"));
   const [capabilities, setCapabilities] = useState<Set<SeatCapability>>(
     new Set(initialCapabilities as SeatCapability[]),
   );
@@ -339,7 +327,6 @@ function EditSeatModal({
   useEffect(() => {
     if (visible) {
       setMaxHolders(initialMaxHolders === 1 ? 1 : MULTI_HOLDER_CAP);
-      setDutiesText(initialDuties.join("\n"));
       setCapabilities(new Set(initialCapabilities as SeatCapability[]));
     }
     // Reset only when the modal (re)opens for a given seat — not on every
@@ -362,10 +349,9 @@ function EditSeatModal({
       await updateSeat({
         slug,
         maxHolders,
-        duties: dutiesText
-          .split("\n")
-          .map((d) => d.trim())
-          .filter(Boolean),
+        // Duties omitted on purpose — `duties` is optional on `updateSeat`;
+        // leaving it out means the existing (untouched) schema value is left
+        // exactly as-is. See this file's doc comment.
         capabilities: [...capabilities],
       });
       onClose();
@@ -408,20 +394,6 @@ function EditSeatModal({
                     onPress={() => setMaxHolders(MULTI_HOLDER_CAP)}
                   />
                 </View>
-              </View>
-
-              <View>
-                <Text className="mb-1.5 text-sm font-semibold text-ink">
-                  Duties (one per line)
-                </Text>
-                <TextInput
-                  value={dutiesText}
-                  onChangeText={setDutiesText}
-                  multiline
-                  numberOfLines={4}
-                  placeholderTextColor={colors.faint}
-                  className="min-h-[92px] rounded-md border border-border-strong bg-raised px-3 py-2.5 text-base text-ink"
-                />
               </View>
 
               <View>
@@ -540,7 +512,6 @@ export function StructureEditActions({
   seatTitle,
   chart,
   maxHolders,
-  duties,
   capabilities,
   parentSlug,
   siblingSeats,
@@ -550,7 +521,6 @@ export function StructureEditActions({
   seatTitle: string;
   chart: "central" | "chapter";
   maxHolders: number;
-  duties: readonly string[];
   capabilities: readonly string[];
   parentSlug: string;
   /** Every OTHER seat in the same chart — reparent candidates. */
@@ -612,7 +582,6 @@ export function StructureEditActions({
         slug={slug}
         seatTitle={seatTitle}
         initialMaxHolders={maxHolders}
-        initialDuties={duties}
         initialCapabilities={capabilities}
         onClose={() => setEditOpen(false)}
       />
