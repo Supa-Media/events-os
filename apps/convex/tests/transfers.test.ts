@@ -1319,3 +1319,89 @@ describe("interScopeBalances — mode-filtered settlements (IMPORTANT 1 parity, 
     );
   });
 });
+
+// ── WP-dashboard-drill: interScopeBalanceContributors ───────────────────────
+//
+// The row-level "why" behind an `interScopeBalances` row — reuses the exact
+// same predicates via the extracted `chapterInterScopeRows` helper, so the
+// signed sum of these rows must always equal `netCents` for the same chapter.
+
+describe("interScopeBalanceContributors", () => {
+  test("contributor rows' signed sum reconciles exactly to interScopeBalances' netCents", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await asCentral(s, "bookkeeper");
+    const centralBudgetId = await makeCentralBudget(s, 100_000);
+    // Two direction-(a) contributions (chapter spend linked to a central budget).
+    await chapterSpendLinkedTo(s, centralBudgetId, 12_000, MARCH_2026);
+    await chapterSpendLinkedTo(s, centralBudgetId, 8_000, MARCH_2026 + 86_400_000);
+    // A partial settlement against it.
+    await s.as.mutation(api.transfers.recordSettlementTransfer, {
+      chapterId: s.chapterId,
+      year: 2026,
+      month: 3,
+      amountCents: 6_000,
+      direction: "central_to_chapter",
+    });
+
+    const balances = await s.as.query(api.transfers.interScopeBalances, {
+      year: 2026,
+      month: 3,
+    });
+    const netCents = balances.find((b) => b.chapterId === s.chapterId)?.netCents;
+    expect(netCents).toBe(12_000 + 8_000 - 6_000); // 14_000
+
+    const contributors = await s.as.query(
+      api.transfers.interScopeBalanceContributors,
+      { chapterId: s.chapterId },
+    );
+    expect(contributors).toHaveLength(3);
+    const signedSum = contributors.reduce((sum, row) => {
+      if (row.direction === "central_owes_chapter") return sum + row.amountCents;
+      if (row.direction === "settlement_central_to_chapter") return sum - row.amountCents;
+      if (row.direction === "chapter_owes_central") return sum - row.amountCents;
+      // settlement_chapter_to_central
+      return sum + row.amountCents;
+    }, 0);
+    expect(signedSum).toBe(netCents);
+    expect(
+      contributors.filter((r) => r.direction === "central_owes_chapter"),
+    ).toHaveLength(2);
+    expect(
+      contributors.filter((r) => r.direction === "settlement_central_to_chapter"),
+    ).toHaveLength(1);
+    // Newest-first.
+    expect(contributors[0].amountCents).toBe(6_000); // the settlement, posted latest
+  });
+
+  test("a chapter with no inter-scope activity returns an empty list", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await asCentral(s, "viewer");
+    const contributors = await s.as.query(
+      api.transfers.interScopeBalanceContributors,
+      { chapterId: s.chapterId },
+    );
+    expect(contributors).toEqual([]);
+  });
+
+  test("authz: chapter manager (no central reach) is FORBIDDEN; central viewer can read", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await asChapterManager(s);
+    await expect(
+      s.as.query(api.transfers.interScopeBalanceContributors, {
+        chapterId: s.chapterId,
+      }),
+    ).rejects.toThrow(/central/i);
+
+    const t2 = newT();
+    const s2 = await setupChapter(t2);
+    await asCentral(s2, "viewer");
+    const contributors = await s2.as.query(
+      api.transfers.interScopeBalanceContributors,
+      { chapterId: s2.chapterId },
+    );
+    expect(Array.isArray(contributors)).toBe(true);
+  });
+});
