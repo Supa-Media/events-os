@@ -35,6 +35,9 @@ const NAV: NavEntry[] = [
   { label: "Finances", icon: "dollar-sign", path: "/finances" },
   // The Academy is for everyone — never permission-gated (see useNav).
   { label: "Academy", icon: "award", path: "/academy" },
+  // Org Chart — read-only, org-transparent (mirrors `seats.chart`'s "the whole
+  // team may see the whole org" stance). Also never permission-gated.
+  { label: "Org Chart", icon: "share-2", path: "/org-chart" },
 ];
 
 /**
@@ -43,7 +46,7 @@ const NAV: NavEntry[] = [
  * policy once; this and every scoped screen's own guard just render it:
  *   Events   everyone except volunteer      Briefing  volunteer only
  *   People / Inventory / Finances  admin or lead    Work  everyone except volunteer
- *   Songs / Academy     everyone
+ *   Songs / Academy / Org Chart     everyone
  * Nav hiding is NOT access control — each screen keeps its in-screen guard.
  */
 function useNav(): NavEntry[] {
@@ -65,6 +68,7 @@ function useNav(): NavEntry[] {
         return tier != null && tier !== "volunteer" && org?.teamView != null;
       case "/song-library":
       case "/academy":
+      case "/org-chart":
         return true;
       default:
         return false;
