@@ -12,8 +12,8 @@
  * exactly their own subtree, and everyone else gets nothing (the nav entry is
  * hidden for them too). `projects.list` is scoped the same way.
  */
-import { useMemo, useState } from "react";
-import { View, Text, Pressable, ScrollView } from "react-native";
+import { useEffect, useMemo, useState } from "react";
+import { View, Text, Pressable, ScrollView, Modal } from "react-native";
 import { useRouter } from "expo-router";
 import { useQuery, useMutation } from "convex/react";
 import type { FunctionReturnType } from "convex/server";
@@ -36,6 +36,10 @@ import {
 } from "../../../components/team/ProjectCard";
 import { OrgChart } from "../../../components/team/OrgChart";
 import { WorkloadView } from "../../../components/team/WorkloadView";
+import {
+  ScopeToggle,
+  type ProjectScopeChoice,
+} from "../../../components/team/ScopeToggle";
 import { DutiesGrid } from "../../../components/work/DutiesGrid";
 import { MineSection } from "../../../components/work/MineSection";
 import { colors, spacing } from "../../../lib/theme";
@@ -52,6 +56,13 @@ export default function TeamScreen() {
   // doc) — always the caller's own chapter, so no chapterId arg is passed.
   const projects = useQuery(api.projects.list, {});
   const createProject = useMutation(api.projects.create);
+  // Creation-time money-attribution picker (owner spec: "creator's highest
+  // hat" default, editable). `isCentral` is false (no picker) for every
+  // caller without central WRITE reach — a chapter-only creator's "New
+  // project" tap stays the same one-tap instant create it always was; nothing
+  // changes for them.
+  const scopeOptions = useQuery(api.projects.scopeOptions);
+  const [scopePickerOpen, setScopePickerOpen] = useState(false);
   const [view, setView] = useState<"list" | "chart">("list");
   // Top-level Work segments: the org's Projects vs the chapter's Duties catalog
   // (leads/admins only — this whole branch is gated on teamView === "org").
@@ -152,6 +163,24 @@ export default function TeamScreen() {
     () => buildProjectTree(projects ?? []),
     [projects],
   );
+
+  // "New project" — instant one-tap create for everyone, EXCEPT a caller with
+  // central finance write reach gets the scope picker first (owner spec: the
+  // multi-hat creator explicitly wants to choose at creation time). The
+  // picker itself just gathers `scope`; `projects.create` resolves the
+  // ("creator's highest hat") default server-side regardless, so this is only
+  // ever an override, never the sole place the default is enforced.
+  function handleNewProject() {
+    if (scopeOptions?.isCentral) {
+      setScopePickerOpen(true);
+      return;
+    }
+    void createProject({ name: "New project" }).catch(alertError);
+  }
+  function handleCreateWithScope(scope: ProjectScopeChoice) {
+    setScopePickerOpen(false);
+    void createProject({ name: "New project", scope }).catch(alertError);
+  }
 
   if (nav === undefined || overview === undefined || projects === undefined) {
     return <Screen loading />;
@@ -304,9 +333,7 @@ export default function TeamScreen() {
                   icon="plus"
                   size="sm"
                   variant="secondary"
-                  onPress={() =>
-                    void createProject({ name: "New project" }).catch(alertError)
-                  }
+                  onPress={handleNewProject}
                 />
               }
             />
@@ -329,14 +356,20 @@ export default function TeamScreen() {
               icon="plus"
               size="sm"
               variant="secondary"
-              onPress={() =>
-                    void createProject({ name: "New project" }).catch(alertError)
-                  }
+              onPress={handleNewProject}
             />
           </View>
         ) : null}
         </Narrow>
       )}
+
+      <NewProjectScopeModal
+        visible={scopePickerOpen}
+        chapterName={scopeOptions?.chapterName ?? "This chapter"}
+        defaultScope={scopeOptions?.defaultScope ?? "chapter"}
+        onCancel={() => setScopePickerOpen(false)}
+        onCreate={handleCreateWithScope}
+      />
     </Screen>
   );
 }
@@ -477,5 +510,62 @@ function OrgNode({
         </View>
       ) : null}
     </View>
+  );
+}
+
+/**
+ * The "New project" creation-time scope picker — only ever shown to a caller
+ * with central finance write reach (`projects.scopeOptions.isCentral`); a
+ * chapter-only creator never sees this, their "New project" tap stays the
+ * one-tap instant create it always was. `defaultScope` is the resolved
+ * "creator's highest hat" default (always Central here, since this modal only
+ * opens for a central-capable caller) — shown pre-selected but editable, so
+ * it's never a silent guess.
+ */
+function NewProjectScopeModal({
+  visible,
+  chapterName,
+  defaultScope,
+  onCancel,
+  onCreate,
+}: {
+  visible: boolean;
+  chapterName: string;
+  defaultScope: ProjectScopeChoice;
+  onCancel: () => void;
+  onCreate: (scope: ProjectScopeChoice) => void;
+}) {
+  const [scope, setScope] = useState<ProjectScopeChoice>(defaultScope);
+  // Re-sync to the resolved default every time the picker opens (it can only
+  // change between opens if the caller's own finance roles change).
+  useEffect(() => {
+    if (visible) setScope(defaultScope);
+  }, [visible, defaultScope]);
+
+  return (
+    <Modal visible={visible} transparent animationType="fade" onRequestClose={onCancel}>
+      <Pressable
+        onPress={onCancel}
+        className="flex-1 items-center justify-center bg-ink/30 p-6"
+      >
+        <Pressable
+          onPress={() => {}}
+          className="w-full max-w-sm rounded-xl border border-border bg-raised p-4 shadow-pop"
+          style={{ gap: spacing.md }}
+        >
+          <Text className="font-display text-lg text-ink">New project</Text>
+          <View style={{ gap: spacing.xs }}>
+            <Text className="text-xs font-bold uppercase tracking-wider text-faint">
+              Belongs to
+            </Text>
+            <ScopeToggle value={scope} chapterName={chapterName} onChange={setScope} />
+          </View>
+          <View className="flex-row justify-end gap-2">
+            <Button title="Cancel" variant="secondary" onPress={onCancel} />
+            <Button title="Create" onPress={() => onCreate(scope)} />
+          </View>
+        </Pressable>
+      </Pressable>
+    </Modal>
   );
 }
