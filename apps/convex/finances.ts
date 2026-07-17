@@ -1495,13 +1495,20 @@ export async function createProjectBudget(
     chapterId: Id<"chapters">;
     name: string;
     startDate?: number;
+    deadline?: number;
     createdAt: number;
     budgetUsd?: number;
   },
   // Optional — see `createEventBudget`'s twin comment.
   userId: Id<"users"> | undefined,
 ): Promise<void> {
-  const parts = easternParts(project.startDate ?? project.createdAt);
+  // `deadline` first — it's the project's one REAL, directly-editable date
+  // (see `forPickerOptions`'s "NO FABRICATED DATES" doc comment); `startDate`/
+  // `createdAt` are only here because `budgets.year`/`month` are REQUIRED
+  // integers (schema) that must always resolve to something, unlike a picker
+  // label's optional date suffix — this is a required-fallback chain, not a
+  // second instance of the fabricated-date bug that fix addressed elsewhere.
+  const parts = easternParts(project.deadline ?? project.startDate ?? project.createdAt);
   // Sibling projects sharing this exact name in the chapter (includes the
   // project just inserted, since this runs after that write in the same
   // transaction) decide whether the bare name is ambiguous.
@@ -1512,7 +1519,7 @@ export async function createProjectBudget(
       .take(ROLLUP_SCAN_LIMIT)
   ).filter((p) => p.name === project.name);
   const sameMonthCount = siblings.filter((p) => {
-    const sp = easternParts(p.startDate ?? p.createdAt);
+    const sp = easternParts(p.deadline ?? p.startDate ?? p.createdAt);
     return sp.year === parts.year && sp.month === parts.month;
   }).length;
   const label = projectBudgetLabel(project.name, parts, siblings.length, sameMonthCount);
@@ -5582,7 +5589,10 @@ async function runBackfillProjectBudgets(
   const NUL = " ";
   for (const p of projects) {
     if (p.budgetUsd == null || p.budgetUsd <= 0) continue; // owner rule: no money, no budget
-    const parts = easternParts(p.startDate ?? p.createdAt);
+    // `deadline` first — see `createProjectBudget`'s twin comment (budget
+    // identity & dates fix): this loop duplicates that function's dating
+    // logic rather than calling it, so it needs the same fix independently.
+    const parts = easternParts(p.deadline ?? p.startDate ?? p.createdAt);
     const nk = `${p.chapterId}${NUL}${p.name}`;
     const mk = `${nk}${NUL}${parts.year}-${parts.month}`;
     nameCounts.set(nk, (nameCounts.get(nk) ?? 0) + 1);
@@ -5623,7 +5633,7 @@ async function runBackfillProjectBudgets(
     }
     const cid = p.chapterId;
     const existing = await projectBudgetsByRef(cid);
-    const parts = easternParts(p.startDate ?? p.createdAt);
+    const parts = easternParts(p.deadline ?? p.startDate ?? p.createdAt);
     const nk = `${cid}${NUL}${p.name}`;
     const mk = `${nk}${NUL}${parts.year}-${parts.month}`;
     const label = projectBudgetLabel(

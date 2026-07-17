@@ -31,6 +31,7 @@ async function seedProject(
   opts: {
     name?: string;
     startDate?: number;
+    deadline?: number;
     budgetUsd?: number;
   } = {},
 ): Promise<Id<"projects">> {
@@ -40,6 +41,7 @@ async function seedProject(
       name: opts.name ?? "Music Recording",
       status: "not_started",
       startDate: opts.startDate,
+      deadline: opts.deadline,
       budgetUsd: opts.budgetUsd,
       createdBy: s.userId,
       createdAt: Date.now(),
@@ -107,6 +109,26 @@ describe("backfillProjectBudgets (internal)", () => {
     // dedicated tag kind, per WP-3.4's "no new tag investment").
     expect(row.tagKinds).toEqual(["custom"]);
     expect(row.tagNames).toEqual(["Projects"]);
+  });
+
+  test("derives year/month from `deadline`, not `startDate`, when both are set (budget identity & dates fix)", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    // A project due March but merely STARTED in September the prior year —
+    // the bug this fixes: `createProjectBudget` never even looked at
+    // `deadline`, so its budget landed under September/prior-year.
+    const projectId = await seedProject(s, {
+      startDate: tsInMonth(2025, 9),
+      deadline: tsInMonth(2026, 3),
+      budgetUsd: 400,
+    });
+
+    const result = await t.mutation(internal.finances.backfillProjectBudgets, {});
+    expect(result.created).toBe(1);
+
+    const [row] = await budgetsFor(s, projectId);
+    expect(row.budget.year).toBe(2026);
+    expect(row.budget.month).toBe(3);
   });
 
   test("owner rule: skips a project with no budgetUsd — no budget object at all", async () => {
@@ -364,6 +386,22 @@ describe("projects.create: auto-creates a one_time budget (WP-3.4 create-time ho
     expect(row.tagNames).toEqual(["Projects"]);
   });
 
+  test("creating a project with both startDate and deadline derives the budget's year/month from deadline", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+
+    const projectId = (await s.as.mutation(api.projects.create, {
+      name: "Album Launch",
+      startDate: tsInMonth(2025, 9),
+      deadline: tsInMonth(2026, 3),
+      budgetUsd: 500,
+    })) as Id<"projects">;
+
+    const [row] = await budgetsFor(s, projectId);
+    expect(row.budget.year).toBe(2026);
+    expect(row.budget.month).toBe(3);
+  });
+
   test("owner rule: no budgetUsd given → no budget object at all (work-tracking-only project)", async () => {
     const t = newT();
     const s = await setupChapter(t);
@@ -525,6 +563,23 @@ describe("projects.update: edit-path trigger summons a budget on 0 → positive 
     expect(row.budget.amountCents).toBe(40000);
     expect(row.budget.label).toBe("Starts Free");
     expect(row.tagNames).toEqual(["Projects"]);
+  });
+
+  test("summoning a budget via a budgetUsd edit derives year/month from the project's deadline (already set), not its startDate", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const projectId = (await s.as.mutation(api.projects.create, {
+      name: "Deadline Set Already",
+      startDate: tsInMonth(2025, 9),
+      deadline: tsInMonth(2026, 3),
+    })) as Id<"projects">;
+    expect(await budgetsFor(s, projectId)).toEqual([]);
+
+    await s.as.mutation(api.projects.update, { projectId, budgetUsd: 400 });
+
+    const [row] = await budgetsFor(s, projectId);
+    expect(row.budget.year).toBe(2026);
+    expect(row.budget.month).toBe(3);
   });
 
   test("raising budgetUsd from 0 to positive also summons the budget", async () => {

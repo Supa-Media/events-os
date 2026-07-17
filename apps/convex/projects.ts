@@ -628,6 +628,7 @@ export const create = mutation({
           chapterId: chapterId as Id<"chapters">,
           name: args.name,
           startDate: args.startDate,
+          deadline: args.deadline,
           createdAt: now,
           budgetUsd: args.budgetUsd,
         },
@@ -906,6 +907,8 @@ export const update = mutation({
               : project.name,
           startDate:
             patch.startDate !== undefined ? (patch.startDate ?? undefined) : project.startDate,
+          deadline:
+            patch.deadline !== undefined ? (patch.deadline ?? undefined) : project.deadline,
           createdAt: project.createdAt,
           budgetUsd: patch.budgetUsd,
         },
