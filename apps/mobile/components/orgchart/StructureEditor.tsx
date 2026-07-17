@@ -29,9 +29,12 @@ export function StructureEditBanner() {
     <View className="mb-4 flex-row items-start gap-3 rounded-lg border border-warn bg-warn-bg px-4 py-3">
       <Icon name="alert-triangle" size={16} color={colors.warn} />
       <Text className="flex-1 text-sm text-ink">
-        <Text className="font-bold">Structure editing</Text> — Executive Director
-        only. Adding, renaming, moving, and removing seats here changes the org
-        chart immediately for everyone, and is logged.
+        <Text className="font-bold">Structure editing</Text> — requires the
+        &quot;Edit the org chart&quot; power (held by the Executive Director
+        today). Adding, renaming, moving, and removing seats here changes the
+        org chart immediately for everyone, and is logged. Changes that would
+        remove your own powers are blocked (a Board above the ED comes
+        later).
       </Text>
     </View>
   );

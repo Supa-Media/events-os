@@ -14,6 +14,14 @@ import type { Id } from "@events-os/convex/_generated/dataModel";
  * `org.editChart`" — is resolved by mounting one of these per seat the
  * caller holds (`seats.mySeatAssignments`, almost always 0-2 rows) rather
  * than a single extra query. Renders nothing.
+ *
+ * Reports `undefined` on unmount so the caller can DELETE this probe's entry
+ * instead of only ever accumulating `true`/`false` — otherwise a seat
+ * assignment that's removed mid-session (reassigned away, direct-assigned
+ * over) unmounts its probe but leaves a stale `true` behind forever, keeping
+ * every edit affordance visible for a caller who no longer holds
+ * `org.editChart` on anything (server-side mutations still reject them, but
+ * the UI shouldn't keep inviting a guaranteed-FORBIDDEN action).
  */
 export function EditChartCapabilityProbe({
   defId,
@@ -22,7 +30,7 @@ export function EditChartCapabilityProbe({
 }: {
   defId: Id<"seatDefs">;
   scope: "central" | Id<"chapters">;
-  onResult: (assignmentKey: string, hasEditChart: boolean) => void;
+  onResult: (assignmentKey: string, hasEditChart: boolean | undefined) => void;
 }) {
   const detail = useQuery(api.seats.seatDetail, { defId, scope });
   useEffect(() => {
@@ -33,5 +41,17 @@ export function EditChartCapabilityProbe({
     // on purpose so a caller re-render doesn't re-fire this effect.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [detail, defId, scope]);
+
+  // Mount-once cleanup: fires ONLY when this probe unmounts (empty dep
+  // array), not on every `detail` refresh above. `defId`/`scope` are
+  // captured from the render that mounted this probe — stable for its
+  // lifetime since the caller keys each probe by `assignmentId` (a change in
+  // defId/scope for the same assignment would be a genuinely different seat
+  // assignment, i.e. a different probe instance).
+  useEffect(() => {
+    return () => onResult(`${scope}:${defId}`, undefined);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   return null;
 }

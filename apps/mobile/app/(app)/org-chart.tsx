@@ -32,6 +32,7 @@ import {
   buildFullTree,
   computeReportsTo,
   findNodeByKey,
+  subtreeSlugs,
   type ChartBuild,
   type FullChart,
   type TreeNode,
@@ -65,10 +66,26 @@ export default function OrgChartScreen() {
   // (`mySeatAssignments`, almost always 0-2 rows) and aggregates whether ANY
   // of them carries `org.editChart`. Superuser always passes (the same
   // backstop `requireChartEditor` grants server-side) — skip probing then.
+  //
+  // `editCapFlags` must mirror the LIVE probe set, not just accumulate: a
+  // probe reports `undefined` on unmount (its seat assignment disappeared —
+  // reassigned away, direct-assigned over), and that DELETES the key here
+  // rather than leaving a stale `true` behind. Without this, "Edit
+  // structure" and every edit affordance would keep showing for a caller who
+  // no longer holds `org.editChart` on anything, only to have every mutation
+  // rejected server-side.
   const mySeatAssignments = useQuery(api.seats.mySeatAssignments, isSuperuser ? "skip" : {});
   const [editCapFlags, setEditCapFlags] = useState<Record<string, boolean>>({});
-  const reportEditCap = useCallback((key: string, hasEditChart: boolean) => {
-    setEditCapFlags((prev) => (prev[key] === hasEditChart ? prev : { ...prev, [key]: hasEditChart }));
+  const reportEditCap = useCallback((key: string, hasEditChart: boolean | undefined) => {
+    setEditCapFlags((prev) => {
+      if (hasEditChart === undefined) {
+        if (!(key in prev)) return prev;
+        const next = { ...prev };
+        delete next[key];
+        return next;
+      }
+      return prev[key] === hasEditChart ? prev : { ...prev, [key]: hasEditChart };
+    });
   }, []);
   const canEditStructure = isSuperuser || Object.values(editCapFlags).some(Boolean);
 
@@ -115,13 +132,21 @@ export default function OrgChartScreen() {
   // is one shared definition stamped onto every chapter (see `seats.ts`'s
   // file doc), so ANY chapter's seat list enumerates the same slugs/titles —
   // this uses the selected seat's OWN chapter when it's chapter-scoped.
+  //
+  // Excludes the selected seat's own subtree (itself + every descendant):
+  // reparenting a seat under one of its own descendants is always a cycle —
+  // the backend correctly rejects it, but there's no reason to present those
+  // as clickable options and force the editor into a guaranteed error.
   const chartSeatOptions = useMemo(() => {
     if (!chart || !selected) return [];
     const seats =
       selected.scope === "central"
         ? chart.central
         : (chart.chapters.find((c) => c.chapterId === selected.scope)?.seats ?? []);
-    return seats.filter((s) => !s.derived).map((s) => ({ slug: s.slug, title: s.title }));
+    const excluded = subtreeSlugs(seats, selected.seat.slug);
+    return seats
+      .filter((s) => !s.derived && !excluded.has(s.slug))
+      .map((s) => ({ slug: s.slug, title: s.title }));
   }, [chart, selected]);
 
   if (chart === undefined) {

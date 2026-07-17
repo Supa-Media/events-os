@@ -107,6 +107,24 @@ export function findOrphanSeats(seats: SeatNode[]): SeatNode[] {
   return orphans;
 }
 
+/**
+ * Every slug in the subtree rooted at `rootSlug` — INCLUDING `rootSlug`
+ * itself. Used to filter a seat's own descendants out of reparent candidate
+ * lists (`org-chart.tsx`'s `chartSeatOptions`): moving a seat under one of
+ * its own descendants is always a cycle, which the backend already rejects,
+ * but there's no reason to present those as clickable "Move" options.
+ * Depth-bounded the same way `buildSubtree` is, for the same reason (a
+ * future DB-editable chart could introduce a cyclic `parentSlug` chain).
+ */
+export function subtreeSlugs(seats: SeatNode[], rootSlug: string, depth = 0): Set<string> {
+  const result = new Set<string>([rootSlug]);
+  if (depth >= MAX_TREE_DEPTH) return result;
+  for (const child of childrenOf(seats, rootSlug)) {
+    for (const slug of subtreeSlugs(seats, child.slug, depth + 1)) result.add(slug);
+  }
+  return result;
+}
+
 /** A built chart: the tree rooted at the chart's root seat, plus any
  *  `findOrphanSeats` couldn't place — rendered by the caller as a flat
  *  "Unplaced" strip instead of being silently dropped (see `OrgTree`). */
