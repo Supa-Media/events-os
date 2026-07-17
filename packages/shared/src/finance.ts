@@ -113,6 +113,46 @@ export const BUDGET_CADENCE_LABELS: Record<BudgetCadence, string> = {
 export const BUDGET_ROLLOVER_POLICIES = ["none", "accumulate"] as const;
 export type BudgetRolloverPolicy = (typeof BUDGET_ROLLOVER_POLICIES)[number];
 
+// ── Budget approval workflow (WP-3.2) ────────────────────────────────────────
+// State machine: draft → submitted → approved | changes_requested. A budget
+// created before this feature shipped carries NO `approvalStatus` at all
+// (`undefined`, not one of these four literals) — GRANDFATHERED, treated as
+// "approved at its current amount" for display + cap purposes
+// (`effectiveBudgetApprovalStatus`/`effectiveCapCents` in `finances.ts`) with
+// zero workflow friction UNTIL its first edit: it can't be manually
+// re-submitted, and a DECREASE never touches it. But an amount INCREASE
+// retriggers on its FIRST occurrence (I1, review) exactly like a literally
+// `"approved"` budget crossing its cap — `setBudgetAmount` stamps
+// `approvedCents` at the pre-edit amount and flips it to `"submitted"`,
+// joining the real workflow from then on. This is deliberate — shipping the
+// feature must not suddenly gate hundreds of existing prod budgets that are
+// never touched again, but the owner's "raising a cap needs a fresh look"
+// rule still has to apply the moment one IS touched.
+export const BUDGET_APPROVAL_STATUSES = [
+  "draft",
+  "submitted",
+  "approved",
+  "changes_requested",
+] as const;
+export type BudgetApprovalStatus = (typeof BUDGET_APPROVAL_STATUSES)[number];
+
+export const BUDGET_APPROVAL_STATUS_LABELS: Record<BudgetApprovalStatus, string> = {
+  draft: "Draft",
+  submitted: "Awaiting approval",
+  approved: "Approved",
+  changes_requested: "Changes requested",
+};
+
+/** A budget's EFFECTIVE approval status: the stored value, or `"approved"` for
+ *  a grandfathered legacy row that predates this feature (see the tuple's doc
+ *  comment above). Display + cap resolution both go through this — never read
+ *  `budget.approvalStatus` raw for either purpose. */
+export function effectiveBudgetApprovalStatus(
+  status: BudgetApprovalStatus | undefined,
+): BudgetApprovalStatus {
+  return status ?? "approved";
+}
+
 // ── Transactions ─────────────────────────────────────────────────────────────
 // The unified ACTUAL spend/inflow record — the ONLY table summed for "actual".
 // Estimated money (budgets, projects.budgetUsd, events.budget, item costs,

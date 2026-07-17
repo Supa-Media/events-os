@@ -40,6 +40,7 @@ import {
   txnStatusTone,
 } from "./parts";
 import { TagRollupSection, type BudgetSpend, type TagRollup } from "./TagRollup";
+import { BudgetApprovalActions, BudgetApprovalChip } from "./BudgetApprovalActions";
 
 type ChapterDash = FunctionReturnType<typeof api.finances.dashboardChapter>;
 type ProjectBudget = ChapterDash["oneTimeBudgets"][number];
@@ -120,7 +121,10 @@ export function ChapterView({
       isDrilldown || !selectedTag ? "skip" : { year },
     ) ?? [];
 
-  // Per-budget actuals for the tag-detail sheet, keyed by budget id.
+  // Per-budget actuals for the tag-detail sheet, keyed by budget id. Uses the
+  // EFFECTIVE cap (`approvedCapCents`, B1 review) as `budgetCents` — never
+  // `allocatedCents` (the raw, possibly pending-increase amount) — so a budget
+  // backfilled here reads the same cap the dashboard cards above already do.
   const spentByBudgetId = useMemo(() => {
     const m = new Map<string, BudgetSpend>();
     for (const b of data.oneTimeBudgets)
@@ -129,7 +133,7 @@ export function ChapterView({
       m.set(b.id, { spentCents: b.spentCents, budgetCents: b.budgetCents });
     for (const b of budgetActuals) {
       if (b.budgetId && !m.has(b.budgetId)) {
-        m.set(b.budgetId, { spentCents: b.actualCents, budgetCents: b.allocatedCents });
+        m.set(b.budgetId, { spentCents: b.actualCents, budgetCents: b.approvedCapCents });
       }
     }
     return m;
@@ -260,13 +264,28 @@ export function ChapterView({
                     onPress={isDrilldown ? undefined : () => onAttentionAction("needs_budget")}
                   />
                 ) : null}
-                {data.attention.map((a, i) => (
-                  <AttentionCard
-                    key={i}
-                    a={a}
-                    onPress={isDrilldown ? undefined : () => onAttentionAction(a.kind)}
-                  />
-                ))}
+                {data.attention.map((a, i) => {
+                  // M3 (review): "budget_approvals" has no real destination —
+                  // `onAttentionAction` doesn't handle that kind (the decision
+                  // happens right on the budget card below, per
+                  // `chapterAttentionQueue`'s own doc comment) — so it must
+                  // never render as a tappable dead click.
+                  const navigable = !isDrilldown && a.kind !== "budget_approvals";
+                  return (
+                    <AttentionCard
+                      key={i}
+                      a={a}
+                      onPress={navigable ? () => onAttentionAction(a.kind) : undefined}
+                      inertHint={
+                        isDrilldown
+                          ? "switch chapters to act on this"
+                          : a.kind === "budget_approvals"
+                            ? "decide right on the budget card below"
+                            : undefined
+                      }
+                    />
+                  );
+                })}
               </View>
             )}
             {/* Coded-to-central — info-tier (not a warning): spend that's
@@ -375,6 +394,11 @@ function ProjectBudgetCard({ b, onPress }: { b: ProjectBudget; onPress: () => vo
             </Text>
             <Chip label={b.cadence === "per_instance" ? "Per instance" : "One-off"} />
             {b.sourceBadge ? <Badge label={b.sourceBadge} tone="info" /> : null}
+            <BudgetApprovalChip
+              status={b.approvalStatus}
+              approvedCents={b.approvedCents}
+              requestedCents={b.requestedCents}
+            />
           </View>
           {meta ? <Text className="mt-0.5 text-xs text-muted">{meta}</Text> : null}
         </View>
@@ -395,6 +419,10 @@ function ProjectBudgetCard({ b, onPress }: { b: ProjectBudget; onPress: () => vo
         </Text>
       </View>
 
+      {b.reviewNote && b.approvalStatus === "changes_requested" ? (
+        <Text className="mt-2 text-xs text-danger">"{b.reviewNote}"</Text>
+      ) : null}
+
       {b.categories.length > 0 ? (
         <View className="mt-3 gap-2 border-t border-border pt-3">
           {b.categories.map((c, i) => (
@@ -411,8 +439,9 @@ function ProjectBudgetCard({ b, onPress }: { b: ProjectBudget; onPress: () => vo
         </View>
       ) : null}
 
-      <View className="mt-3">
+      <View className="mt-3 flex-row items-center justify-between gap-2">
         <Button title="Edit budget" variant="ghost" size="sm" onPress={onPress} />
+        <BudgetApprovalActions budgetId={b.id} status={b.approvalStatus} />
       </View>
     </View>
   );
@@ -429,8 +458,13 @@ function RecurringBudgetCard({ b, onPress }: { b: RecurringBudget; onPress: () =
           <Text className="font-display text-base text-ink" numberOfLines={1}>
             {b.name}
           </Text>
-          <View className="mt-1">
+          <View className="mt-1 flex-row flex-wrap items-center gap-1.5">
             <Chip label={cadenceLabel} />
+            <BudgetApprovalChip
+              status={b.approvalStatus}
+              approvedCents={b.approvedCents}
+              requestedCents={b.requestedCents}
+            />
           </View>
         </View>
         <Text className="text-sm text-muted" style={{ fontVariant: ["tabular-nums"] }}>
@@ -443,6 +477,10 @@ function RecurringBudgetCard({ b, onPress }: { b: RecurringBudget; onPress: () =
         <Text className="text-xs text-muted">{b.pct}% spent</Text>
         {b.note ? <Text className="text-xs text-muted">{b.note}</Text> : null}
       </View>
+
+      {b.reviewNote && b.approvalStatus === "changes_requested" ? (
+        <Text className="mt-2 text-xs text-danger">"{b.reviewNote}"</Text>
+      ) : null}
 
       {b.categories && b.categories.length > 0 ? (
         <View className="mt-3 gap-2 border-t border-border pt-3">
@@ -460,8 +498,9 @@ function RecurringBudgetCard({ b, onPress }: { b: RecurringBudget; onPress: () =
         </View>
       ) : null}
 
-      <View className="mt-3">
+      <View className="mt-3 flex-row items-center justify-between gap-2">
         <Button title="Edit budget" variant="ghost" size="sm" onPress={onPress} />
+        <BudgetApprovalActions budgetId={b.id} status={b.approvalStatus} />
       </View>
     </View>
   );
@@ -599,9 +638,21 @@ function NeedsBudgetCard({
 // ── Attention card ───────────────────────────────────────────────────────────
 // `onPress` is omitted while drilled into another chapter — the target tabs
 // (Reimbursements / Cards) are hard-scoped to the CALLER's own chapter, so
-// "Review" would silently act on the wrong chapter's queue. Renders as an
-// inert row with a note instead of a live nav action.
-function AttentionCard({ a, onPress }: { a: Attention; onPress?: () => void }) {
+// "Review" would silently act on the wrong chapter's queue — and also (M3,
+// review) for a "budget_approvals" row, which has no destination at all (the
+// decision happens right on the budget card, not a nav target). Renders as an
+// inert row with a note instead of a live nav action either way; `inertHint`
+// lets the caller explain WHY (different wording for the two cases).
+function AttentionCard({
+  a,
+  onPress,
+  inertHint,
+}: {
+  a: Attention;
+  onPress?: () => void;
+  /** Appended to `a.detail` when this card renders inert (no `onPress`). */
+  inertHint?: string;
+}) {
   const content = (
     <>
       <View className="h-9 min-w-[36px] items-center justify-center rounded-pill bg-accent-soft px-2">
@@ -612,7 +663,7 @@ function AttentionCard({ a, onPress }: { a: Attention; onPress?: () => void }) {
       <View className="flex-1">
         <Text className="text-sm font-semibold text-ink">{a.title}</Text>
         <Text className="text-xs text-muted">
-          {onPress ? a.detail : `${a.detail} · switch chapters to act on this`}
+          {onPress ? a.detail : inertHint ? `${a.detail} · ${inertHint}` : a.detail}
         </Text>
       </View>
       {onPress ? (

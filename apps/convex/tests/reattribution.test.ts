@@ -894,6 +894,140 @@ describe("transferProjectScope", () => {
     const rows = await run(t, (ctx) => ctx.db.query("reattributionAudit").collect());
     expect(rows.length).toBe(2);
   });
+
+  // M1 (review): crossing the chapter↔central boundary invalidates the OLD
+  // scope's approval — the new scope's approver must bless it fresh.
+  describe("M1: resets approval provenance across the boundary", () => {
+    test("an APPROVED budget resets to submitted, keeps approvedCents as the cap, clears approvedBy", async () => {
+      const t = newT();
+      const s = await setupChapter(t, { email: SUPER });
+      const approverPersonId = await seedSelfPerson(s);
+
+      const project = await seedProject(s, s.chapterId, "Music Recording");
+      const projectBudget = await seedBudget(s, s.chapterId, {
+        type: "one_time",
+        refKind: "project",
+        scopeRefId: project,
+        approvalStatus: "approved",
+        approvedCents: 100000,
+        approvedByPersonId: approverPersonId,
+        approvedAt: Date.now(),
+      });
+
+      await s.as.mutation(api.finances.transferProjectScope, {
+        projectId: project,
+        target: "central",
+      });
+
+      const b = await run(t, (ctx) => ctx.db.get(projectBudget));
+      expect(b?.chapterId).toBe("central");
+      expect(b?.approvalStatus).toBe("submitted");
+      // The cap survives the move — only the STATUS + stale approver reset.
+      expect(b?.approvedCents).toBe(100000);
+      expect(b?.approvedByPersonId).toBeUndefined();
+    });
+
+    test("a SUBMITTED (pending) budget stays submitted, keeps its approvedCents cap, clears approvedBy", async () => {
+      const t = newT();
+      const s = await setupChapter(t, { email: SUPER });
+      const staleReviewerPersonId = await seedSelfPerson(s);
+
+      const project = await seedProject(s, s.chapterId, "Music Recording");
+      // A budget mid-retrigger: `approvedCents` holds the OLD in-force cap
+      // while `amountCents` already moved to the new (unapproved) figure —
+      // and it carries a stale `approvedByPersonId` from a PRIOR decision
+      // cycle (e.g. an earlier `requestBudgetChanges`).
+      const projectBudget = await seedBudget(s, s.chapterId, {
+        type: "one_time",
+        refKind: "project",
+        scopeRefId: project,
+        amountCents: 150000,
+        approvalStatus: "submitted",
+        approvedCents: 100000,
+        approvedByPersonId: staleReviewerPersonId,
+      });
+
+      await s.as.mutation(api.finances.transferProjectScope, {
+        projectId: project,
+        target: "central",
+      });
+
+      const b = await run(t, (ctx) => ctx.db.get(projectBudget));
+      expect(b?.approvalStatus).toBe("submitted");
+      expect(b?.approvedCents).toBe(100000);
+      expect(b?.approvedByPersonId).toBeUndefined();
+      expect(b?.amountCents).toBe(150000); // untouched by the move
+    });
+
+    test("a DRAFT budget is left alone — no approval provenance to invalidate", async () => {
+      const t = newT();
+      const s = await setupChapter(t, { email: SUPER });
+      await seedSelfPerson(s);
+
+      const project = await seedProject(s, s.chapterId, "Music Recording");
+      const projectBudget = await seedBudget(s, s.chapterId, {
+        type: "one_time",
+        refKind: "project",
+        scopeRefId: project,
+        approvalStatus: "draft",
+      });
+
+      await s.as.mutation(api.finances.transferProjectScope, {
+        projectId: project,
+        target: "central",
+      });
+
+      const b = await run(t, (ctx) => ctx.db.get(projectBudget));
+      expect(b?.approvalStatus).toBe("draft");
+    });
+
+    test("a CHANGES_REQUESTED budget is left alone (only approved/submitted reset)", async () => {
+      const t = newT();
+      const s = await setupChapter(t, { email: SUPER });
+      const reviewerPersonId = await seedSelfPerson(s);
+
+      const project = await seedProject(s, s.chapterId, "Music Recording");
+      const projectBudget = await seedBudget(s, s.chapterId, {
+        type: "one_time",
+        refKind: "project",
+        scopeRefId: project,
+        approvalStatus: "changes_requested",
+        approvedByPersonId: reviewerPersonId,
+        reviewNote: "Break out the line items first",
+      });
+
+      await s.as.mutation(api.finances.transferProjectScope, {
+        projectId: project,
+        target: "central",
+      });
+
+      const b = await run(t, (ctx) => ctx.db.get(projectBudget));
+      expect(b?.approvalStatus).toBe("changes_requested");
+      expect(b?.approvedByPersonId).toBe(reviewerPersonId); // untouched
+    });
+
+    test("a GRANDFATHERED budget (no approvalStatus) is left alone", async () => {
+      const t = newT();
+      const s = await setupChapter(t, { email: SUPER });
+      await seedSelfPerson(s);
+
+      const project = await seedProject(s, s.chapterId, "Music Recording");
+      const projectBudget = await seedBudget(s, s.chapterId, {
+        type: "one_time",
+        refKind: "project",
+        scopeRefId: project,
+        // No `approvalStatus` field at all — a pre-feature legacy row.
+      });
+
+      await s.as.mutation(api.finances.transferProjectScope, {
+        projectId: project,
+        target: "central",
+      });
+
+      const b = await run(t, (ctx) => ctx.db.get(projectBudget));
+      expect(b?.approvalStatus).toBeUndefined();
+    });
+  });
 });
 
 // ── reassignTargets (bulk-bar picker source) ─────────────────────────────────

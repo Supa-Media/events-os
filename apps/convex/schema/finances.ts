@@ -9,6 +9,7 @@ import {
   BUDGET_TAG_KINDS,
   BUDGET_CADENCES,
   BUDGET_ROLLOVER_POLICIES,
+  BUDGET_APPROVAL_STATUSES,
   TRANSACTION_SOURCES,
   TRANSACTION_FLOWS,
   TRANSACTION_STATUSES,
@@ -142,6 +143,35 @@ export const budgets = defineTable({
   ),
   createdBy: v.optional(v.id("users")),
   createdAt: v.number(),
+
+  // ── Approval workflow (WP-3.2, additive) ───────────────────────────────────
+  // ABSENT on a budget created before this feature shipped — a grandfathered
+  // legacy row, treated as "approved at its current amount" everywhere (see
+  // `effectiveBudgetApprovalStatus` in `@events-os/shared`) UNTIL its first
+  // increase, which retriggers it into `"submitted"` (I1, `setBudgetAmount`).
+  // Never write `"approved"` implicitly; only the `approveBudget` mutation
+  // sets that literal value.
+  approvalStatus: v.optional(
+    v.union(...BUDGET_APPROVAL_STATUSES.map((s) => v.literal(s))),
+  ),
+  // The cap a budget is APPROVED to spend against — set (and refreshed) only by
+  // `approveBudget`, at the amount then in force, OR stamped by
+  // `setBudgetAmount`'s retrigger (a literally-approved budget's increase, or a
+  // grandfathered budget's FIRST increase — I1). While a budget sits
+  // `"submitted"`/`"changes_requested"` from a retrigger, this keeps the OLD,
+  // still-in-force cap: `amountCents` has already moved to the new
+  // (not-yet-approved) figure. Every numeric surface — cards, bars, over-cap
+  // warnings — compares/displays against `effectiveCapCents` (`finances.ts`),
+  // never `amountCents` alone.
+  approvedCents: v.optional(v.number()),
+  approvedByPersonId: v.optional(v.id("people")),
+  approvedAt: v.optional(v.number()),
+  submittedByPersonId: v.optional(v.id("people")),
+  submittedAt: v.optional(v.number()),
+  // The approver's note — a "why" on `changes_requested`, an optional remark
+  // on `approved`. Cleared (patched to `undefined`) on a fresh decision with
+  // no note.
+  reviewNote: v.optional(v.string()),
 })
   .index("by_chapter", ["chapterId"])
   .index("by_chapter_and_period", ["chapterId", "year"])
@@ -155,7 +185,11 @@ export const budgets = defineTable({
   // strands budgets that already transferred to central on a later reverse
   // transfer). `transferProjectScope` uses this to find ALL of a project's
   // budgets regardless of where they currently live.
-  .index("by_ref", ["refKind", "scopeRefId"]);
+  .index("by_ref", ["refKind", "scopeRefId"])
+  // The chapter (or central) approval queue: "every budget of mine awaiting a
+  // decision" — WP-3.2's attention-queue item + the FM's cross-chapter oversight
+  // aggregate, both scan this instead of a full `by_chapter` + JS filter.
+  .index("by_chapter_and_approval_status", ["chapterId", "approvalStatus"]);
 
 // ── Budget tags (managed, level-scoped) ──────────────────────────────────────
 /** A managed tag definition on a budget LEVEL (a real chapter or `"central"`).
