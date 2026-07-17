@@ -6818,6 +6818,13 @@ export const listReconcile = query({
     // (mirrors `dashboardChapter`'s optional-chapterId central drill-down).
     // Absent → the caller's own chapter, exactly as before.
     scope: v.optional(v.literal("central")),
+    // Central drill-down: view a DIFFERENT real chapter's reconcile queue —
+    // independent of `scope:"central"` (that's the CENTRAL-owned-txns
+    // bucket; this is "central viewer picks one specific chapter"). Mirrors
+    // `dashboardChapter`'s own `chapterId` drill-down gate exactly. Ignored
+    // when `scope:"central"` is also set (that branch wins — the two never
+    // conflict since `chapterId` is only consulted in the `else` branch).
+    chapterId: v.optional(v.id("chapters")),
   },
   returns: v.object({ rows: v.array(reconcileRow), counts: reconcileCounts }),
   handler: async (ctx, args) => {
@@ -6831,15 +6838,24 @@ export const listReconcile = query({
     };
     const homeChapterId = await readChapterId(ctx);
     if (!homeChapterId) return { rows: [], counts: zero };
-    // Resolve the reconcile scope: central (org-wide reach) or the caller's
-    // own chapter (viewer). Central-owned txns key on the `"central"` sentinel.
+    // Resolve the reconcile scope: central (org-wide reach), a DIFFERENT
+    // chapter via central drill-down, or the caller's own chapter (viewer).
+    // Central-owned txns key on the `"central"` sentinel.
     let scope: FinanceScope;
     if (args.scope === "central") {
       await requireFinanceCentral(ctx, homeChapterId);
       scope = CENTRAL;
+    } else if (args.chapterId != null && args.chapterId !== homeChapterId) {
+      // The central check resolves the caller's finance capability through
+      // their OWN chapter, never the target — a central grant is scope-wide
+      // regardless of which chapterId it's checked against, but
+      // `getFinanceRole` only finds a roster row in the chapter passed in
+      // (mirrors `dashboardChapter`'s identical drill-down gate comment).
+      await requireFinanceCentral(ctx, homeChapterId);
+      scope = args.chapterId;
     } else {
       await requireFinanceRole(ctx, homeChapterId, "viewer");
-      scope = homeChapterId;
+      scope = args.chapterId ?? homeChapterId;
     }
 
     const sandboxMode = await readSandbox(ctx);
