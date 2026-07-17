@@ -83,6 +83,7 @@ import type * as migrations_0018_backfill_course_completions from "../migrations
 import type * as migrations_0019_backfill_run_of_show_duration from "../migrations/0019_backfill_run_of_show_duration.js";
 import type * as migrations_0020_permits_states_and_fallback from "../migrations/0020_permits_states_and_fallback.js";
 import type * as migrations_0021_inventory_category_to_tags from "../migrations/0021_inventory_category_to_tags.js";
+import type * as migrations_0022_seed_seat_defs from "../migrations/0022_seed_seat_defs.js";
 import type * as migrations_index from "../migrations/index.js";
 import type * as modules from "../modules.js";
 import type * as moneyViews from "../moneyViews.js";
@@ -117,6 +118,7 @@ import type * as schema_siteMap from "../schema/siteMap.js";
 import type * as schema_songs from "../schema/songs.js";
 import type * as schema_templates from "../schema/templates.js";
 import type * as schema_ticketing from "../schema/ticketing.js";
+import type * as seats from "../seats.js";
 import type * as seed from "../seed.js";
 import type * as seedTicketing from "../seedTicketing.js";
 import type * as setlists from "../setlists.js";
@@ -218,6 +220,7 @@ declare const fullApi: ApiFromModules<{
   "migrations/0019_backfill_run_of_show_duration": typeof migrations_0019_backfill_run_of_show_duration;
   "migrations/0020_permits_states_and_fallback": typeof migrations_0020_permits_states_and_fallback;
   "migrations/0021_inventory_category_to_tags": typeof migrations_0021_inventory_category_to_tags;
+  "migrations/0022_seed_seat_defs": typeof migrations_0022_seed_seat_defs;
   "migrations/index": typeof migrations_index;
   modules: typeof modules;
   moneyViews: typeof moneyViews;
@@ -252,6 +255,7 @@ declare const fullApi: ApiFromModules<{
   "schema/songs": typeof schema_songs;
   "schema/templates": typeof schema_templates;
   "schema/ticketing": typeof schema_ticketing;
+  seats: typeof seats;
   seed: typeof seed;
   seedTicketing: typeof seedTicketing;
   setlists: typeof setlists;
