@@ -22,6 +22,13 @@
  * next to). If `finances.ts` ever exports the originals, delete these
  * duplicates in favor of them.
  *
+ * `chapterHealth`'s per-row PARTITION (chapter-owned spend excluding
+ * central-linked vs. central-owned-plus-chapter-linked-to-central — see
+ * `isCentralLinked` in that query) is applied identically to BOTH the row's
+ * `spendYtdCents` headline and its `monthlySpendCents` sparkline (via
+ * `bucketSpendByMonthFiltered`), so the two always agree — see the
+ * "monthlySpendCents partitions like spendYtdCents" test.
+ *
  * Both queries are read-only and change no money invariant.
  */
 import { ConvexError, v } from "convex/values";
@@ -101,17 +108,36 @@ function sumSpendLocal(txns: Doc<"transactions">[]): number {
 
 /**
  * Per-calendar-month (Eastern) SPEND totals for a year's worth of already
- * mode-filtered transactions — the ONE bucketing function both `spendByMonth`
- * and `chapterHealth`'s `monthlySpendCents` sparkline use, so the two stay in
- * lockstep (a fleet-panel sparkline must read identically to the chart it
- * sits next to). A timestamp outside `year` is dropped (possible because
+ * mode-filtered transactions — the ONE bucketing function `spendByMonth`
+ * uses for every scope (each of which counts EVERY spend txn it reads, no
+ * partition). A timestamp outside `year` is dropped (possible because
  * `loadYearTxnsLocal` pads its UTC window a day on each side) — mirrors
  * `inPeriod`'s own year check.
  */
 function bucketSpendByMonth(txns: Doc<"transactions">[], year: number): number[] {
+  return bucketSpendByMonthFiltered(txns, year, () => true);
+}
+
+/**
+ * `bucketSpendByMonth`, narrowed by a per-txn `include` predicate — the
+ * bucketing `chapterHealth`'s `monthlySpendCents` sparkline uses, so a fleet
+ * row's monthly bars sum to EXACTLY that row's own `spendYtdCents` partition
+ * (chapter rows exclude central-linked spend; the central row folds in
+ * chapter spend linked to a central budget) rather than `spendByMonth`'s
+ * unpartitioned "every txn this scope owns" definition. Review fix (PR #237):
+ * `monthlySpendCents` used to reuse `bucketSpendByMonth` unfiltered, so a
+ * chapter row's sparkline (full chapter spend) silently disagreed with its
+ * own `spendYtdCents` headline (central-linked spend excluded) whenever any
+ * spend was linked to a central budget.
+ */
+function bucketSpendByMonthFiltered(
+  txns: Doc<"transactions">[],
+  year: number,
+  include: (tr: Doc<"transactions">) => boolean,
+): number[] {
   const months = new Array(12).fill(0) as number[];
   for (const tr of txns) {
-    if (!isSpend(tr)) continue;
+    if (!isSpend(tr) || !include(tr)) continue;
     const p = easternParts(tr.postedAt);
     if (p.year !== year) continue;
     months[p.month - 1] += tr.amountCents;
@@ -298,7 +324,11 @@ const chapterHealthRow = v.object({
   toReviewCount: v.number(),
   pendingApprovalsCount: v.number(),
   // Current-year spend, one entry per calendar month (index 0 = January) —
-  // the fleet row's sparkline. Same bucketing `spendByMonth` uses.
+  // the fleet row's sparkline. Uses the SAME per-txn partition as this row's
+  // own `spendYtdCents` (chapter rows exclude central-linked spend; the
+  // central row folds it in) — restricted to `Jan..throughMonth` fixtures,
+  // `sum(monthlySpendCents) === spendYtdCents`. NOT the same definition
+  // `spendByMonth` uses for its own scopes (see that query's doc comment).
   monthlySpendCents: v.array(v.number()),
 });
 
@@ -347,8 +377,20 @@ export const chapterHealth = query({
       .take(ROLLUP_SCAN_LIMIT);
     const centralBudgetIds = new Set(centralBudgetDocs.map((b) => b._id));
 
+    // The per-txn partition test EVERY number in this file that splits
+    // chapter-vs-central spend uses: true iff a txn is explicitly linked to a
+    // CENTRAL budget (mirrors `dashboardCentral`'s `centralBudgetIds`
+    // partition). Shared by the YTD split below AND the sparkline bucketing
+    // (`bucketSpendByMonthFiltered`) so the two can never disagree.
+    const isCentralLinked = (tr: Doc<"transactions">): boolean =>
+      tr.budgetId != null && centralBudgetIds.has(tr.budgetId);
+
     const rows: (typeof chapterHealthRow.type)[] = [];
     let chapterLinkedToCentralCents = 0;
+    // Accumulates, month by month, every real chapter's spend linked to a
+    // central budget — folded into the central row's OWN sparkline below
+    // (its `spendYtdCents` already folds the scalar version of this in).
+    const centralLinkedMonths = new Array(12).fill(0) as number[];
 
     for (const chapter of chapters) {
       // ONE indexed range scan for the whole year, per chapter — reused for
@@ -359,10 +401,7 @@ export const chapterHealth = query({
 
       const chapterPeriodSpend = sumSpendLocal(dashTxns);
       const linkedToCentralThisChapter = dashTxns.reduce(
-        (s, tr) =>
-          isSpend(tr) && tr.budgetId != null && centralBudgetIds.has(tr.budgetId)
-            ? s + tr.amountCents
-            : s,
+        (s, tr) => (isSpend(tr) && isCentralLinked(tr) ? s + tr.amountCents : s),
         0,
       );
       chapterLinkedToCentralCents += linkedToCentralThisChapter;
@@ -408,14 +447,17 @@ export const chapterHealth = query({
         )
         .take(ROLLUP_SCAN_LIMIT);
 
-      // The EXACT `teammateCount` predicate `finances.chapterAffordability`
-      // uses (see its own doc comment there) — reused here so backer-based
-      // affordability numbers never drift between the chapter's own header
-      // and this fleet row.
+      // The EXACT `teammateCount` read + predicate `finances.chapterAffordability`
+      // uses (see its own doc comment there), byte-for-byte down to `.collect()`
+      // (NOT `.take(ROLLUP_SCAN_LIMIT)` — a roster is small and the header
+      // itself never bounds this read, so this fleet row can't drift from it
+      // on a chapter whose roster happens to exceed the scan limit) — reused
+      // here so backer-based affordability numbers never drift between the
+      // chapter's own header and this fleet row.
       const roster = await ctx.db
         .query("people")
         .withIndex("by_chapter", (q) => q.eq("chapterId", chapter._id))
-        .take(ROLLUP_SCAN_LIMIT);
+        .collect();
       const teammateCount = roster.filter(
         (p) =>
           p.isSamplePerson !== true &&
@@ -442,6 +484,12 @@ export const chapterHealth = query({
         underWaterCents = Math.max(0, -computed.discretionaryCents);
       }
 
+      // Sparkline: same `isCentralLinked` partition as `spendYtdCents` above
+      // — this chapter's OWN spend excludes central-linked txns; those are
+      // folded into the central row's sparkline instead (accumulated below).
+      const chapterLinkedMonths = bucketSpendByMonthFiltered(yearTxns, year, isCentralLinked);
+      for (let i = 0; i < 12; i++) centralLinkedMonths[i] += chapterLinkedMonths[i];
+
       rows.push({
         chapterId: chapter._id,
         name: chapter.name,
@@ -454,7 +502,11 @@ export const chapterHealth = query({
         unattributedCount,
         toReviewCount: unreviewed.length,
         pendingApprovalsCount: chapterPendingBudgets.length,
-        monthlySpendCents: bucketSpendByMonth(yearTxns, year),
+        monthlySpendCents: bucketSpendByMonthFiltered(
+          yearTxns,
+          year,
+          (tr) => !isCentralLinked(tr),
+        ),
       });
     }
 
@@ -513,6 +565,13 @@ export const chapterHealth = query({
       )
       .take(ROLLUP_SCAN_LIMIT);
 
+    // Sparkline: central-owned spend (every txn, no partition needed — a
+    // central-owned txn is never "central-linked", it just IS central) PLUS
+    // every chapter's central-linked spend accumulated above — the same two
+    // disjoint parts `spendYtdCents` sums below.
+    const centralOwnedMonths = bucketSpendByMonth(centralOwnedYearTxns, year);
+    const centralMonths = centralOwnedMonths.map((cents, i) => cents + centralLinkedMonths[i]);
+
     rows.unshift({
       chapterId: CENTRAL,
       name: "Central",
@@ -525,7 +584,7 @@ export const chapterHealth = query({
       unattributedCount: centralUnattributedCount,
       toReviewCount: centralUnreviewed.length,
       pendingApprovalsCount: centralPendingBudgets.length,
-      monthlySpendCents: bucketSpendByMonth(centralOwnedYearTxns, year),
+      monthlySpendCents: centralMonths,
     });
 
     return rows;

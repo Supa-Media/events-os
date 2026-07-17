@@ -384,6 +384,53 @@ describe("chapterHealth: affordability", () => {
   });
 });
 
+// ── chapterHealth: monthlySpendCents must partition the SAME way as spendYtdCents ──
+
+describe("chapterHealth: monthlySpendCents partitions like spendYtdCents", () => {
+  test("chapter spend linked to a central budget lands in the CENTRAL row's sparkline, not the chapter's own", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await asCentral(s, "manager");
+    const centralBudgetId = await insertBudget(s, {
+      chapterId: CENTRAL,
+      amountCents: 100_000,
+      year: 2026,
+    });
+
+    freezeNow(); // Jul 17 2026 -> throughMonth = 7, year = 2026
+
+    // Every txn below falls within Jan..throughMonth (2026), so a row's
+    // full-12-month sparkline sum is directly comparable to its YTD headline.
+    await insertTxn(s, { chapterId: s.chapterId, amountCents: 10_000, postedAt: tsInMonth(2026, 3) }); // chapter's own
+    await insertTxn(s, {
+      chapterId: s.chapterId,
+      amountCents: 6_000,
+      postedAt: tsInMonth(2026, 5),
+      budgetId: centralBudgetId, // chapter spend explicitly linked to central
+    });
+    await insertTxn(s, { chapterId: CENTRAL, amountCents: 3_000, postedAt: tsInMonth(2026, 2) }); // central-owned
+
+    const rows = await s.as.query(api.dashboardCharts.chapterHealth, {});
+    const sum = (arr: number[]) => arr.reduce((a, b) => a + b, 0);
+    const chapterRow = rows.find((r) => r.chapterId === s.chapterId)!;
+    const centralRow = rows.find((r) => r.chapterId === CENTRAL)!;
+
+    // The headline numbers themselves (the partition dashboardCentral uses).
+    expect(chapterRow.spendYtdCents).toBe(10_000);
+    expect(centralRow.spendYtdCents).toBe(3_000 + 6_000);
+
+    // The sparkline must sum to EXACTLY the same partition, not the chapter's
+    // FULL spend (which would wrongly include the linked $6,000).
+    expect(sum(chapterRow.monthlySpendCents)).toBe(chapterRow.spendYtdCents);
+    expect(sum(centralRow.monthlySpendCents)).toBe(centralRow.spendYtdCents);
+
+    // And the linked $6,000 shows up in central's MAY bucket, not chapter's.
+    expect(chapterRow.monthlySpendCents[4]).toBe(0); // May, chapter row
+    expect(centralRow.monthlySpendCents[4]).toBe(6_000); // May, central row
+    expect(centralRow.monthlySpendCents[1]).toBe(3_000); // Feb, central-owned
+  });
+});
+
 // ── PARITY: numbers must agree with the dashboards they sit next to ──────────
 
 describe("parity with dashboardCentral / dashboardChapter / dashboardDrill", () => {
@@ -463,15 +510,49 @@ describe("parity with dashboardCentral / dashboardChapter / dashboardDrill", () 
 
     freezeNow(); // Jul 17 2026 -> throughMonth = 7, year = 2026
 
-    // Chapter budgets (recurring monthly, so it accumulates across months).
+    // Chapter budgets: a recurring MONTHLY budget (accumulates across
+    // months) + a recurring QUARTERLY budget (review fix: exercises the
+    // `monthEquivalentBudgetCentsLocal` quarterly branch, `capCents / 3`).
     await insertBudget(s, { chapterId: s.chapterId, amountCents: 10_000, year: 2026, cadence: "monthly" });
+    await insertBudget(s, { chapterId: s.chapterId, amountCents: 9_000, year: 2026, cadence: "quarterly" });
     await insertBudget(s, { chapterId: otherChapter, amountCents: 5_000, year: 2026, cadence: "monthly" });
-    // A central recurring budget.
+    // Central budgets: a recurring monthly budget, PLUS a ONE_TIME central
+    // budget (review fix: exercises the central-budget-CARD branch —
+    // `effectiveCapCents` counted in full, never month-scaled) that is also
+    // GRANDFATHERED (no `approvalStatus` — review fix: exercises
+    // `effectiveCapCents`'s "absent status falls back to `amountCents`"
+    // branch, same as every other budget in this fixture, none of which sets
+    // `approvalStatus`).
     await insertBudget(s, { chapterId: CENTRAL, amountCents: 60_000, year: 2026, cadence: "monthly" });
+    const oneTimeCentralBudgetId = await insertBudget(s, {
+      chapterId: CENTRAL,
+      amountCents: 25_000,
+      year: 2026,
+      cadence: "one_off",
+      type: "one_time",
+    });
 
     await insertTxn(s, { chapterId: s.chapterId, amountCents: 12_000, postedAt: tsInMonth(2026, 3) });
+    // Chapter spend explicitly linked to a CENTRAL budget (review fix: the
+    // partition every number in this file must apply consistently) — must
+    // count toward the CENTRAL row's spend, not the chapter's own.
+    await insertTxn(s, {
+      chapterId: s.chapterId,
+      amountCents: 5_000,
+      postedAt: tsInMonth(2026, 4),
+      budgetId: oneTimeCentralBudgetId,
+    });
     await insertTxn(s, { chapterId: otherChapter, amountCents: 4_000, postedAt: tsInMonth(2026, 5) });
     await insertTxn(s, { chapterId: CENTRAL, amountCents: 7_000, postedAt: tsInMonth(2026, 2) });
+    // Some spend against the one_time central budget itself too, so its
+    // `effectiveCapCents` contribution isn't a zero-spend straggler either
+    // way (doesn't change the assertion, just exercises the realistic case).
+    await insertTxn(s, {
+      chapterId: CENTRAL,
+      amountCents: 1_000,
+      postedAt: tsInMonth(2026, 6),
+      budgetId: oneTimeCentralBudgetId,
+    });
 
     const [healthRows, centralDash] = await Promise.all([
       s.as.query(api.dashboardCharts.chapterHealth, {}),
@@ -485,8 +566,16 @@ describe("parity with dashboardCentral / dashboardChapter / dashboardDrill", () 
       expect(healthRow!.budgetYtdCents).toBe(rollupRow.budgetCents);
     }
     // Sanity: every dashboardCentral rollup row was actually checked (no
-    // silent no-op if the rollup came back empty).
+    // silent no-op if the rollup came back empty), AND the partition was
+    // actually exercised (the chapter-linked-to-central txn moved real money
+    // out of the chapter row and into the central row — this would have
+    // caught the review-fix bug where `spendYtdCents` and `budgetYtdCents`
+    // matched by coincidence on an unpartitioned fixture).
     expect(centralDash.chapterRollup.length).toBeGreaterThanOrEqual(3); // central + 2 chapters
+    const chapterRow = healthRows.find((r) => r.chapterId === s.chapterId)!;
+    const centralRow = healthRows.find((r) => r.chapterId === CENTRAL)!;
+    expect(chapterRow.spendYtdCents).toBe(12_000); // excludes the linked $5,000
+    expect(centralRow.spendYtdCents).toBe(7_000 + 1_000 + 5_000); // central-owned + linked
   });
 
   test("(c) chapterHealth's pendingApprovalsCount == dashboardDrill.pendingBudgetApprovals count per chapter", async () => {
