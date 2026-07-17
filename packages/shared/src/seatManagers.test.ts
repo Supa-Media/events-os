@@ -14,10 +14,13 @@ const SEAT_DEFS: SeatManagerSeatDef<string>[] = [
   // Central chart
   { seatDefId: "executive_director", chart: "central", slug: "executive_director", parentSlug: "root" },
   { seatDefId: "expansion_director", chart: "central", slug: "expansion_director", parentSlug: "executive_director" },
+  { seatDefId: "development_director", chart: "central", slug: "development_director", parentSlug: "executive_director" },
   // Chapter chart (shared shape, stamped per chapter via `scope`)
   { seatDefId: "chapter_director", chart: "chapter", slug: "chapter_director", parentSlug: "root" },
   { seatDefId: "music_lead", chart: "chapter", slug: "music_lead", parentSlug: "chapter_director" },
   { seatDefId: "vocal_lead", chart: "chapter", slug: "vocal_lead", parentSlug: "music_lead" },
+  { seatDefId: "event_lead", chart: "chapter", slug: "event_lead", parentSlug: "chapter_director" },
+  { seatDefId: "event_organizers", chart: "chapter", slug: "event_organizers", parentSlug: "event_lead" },
 ];
 
 const CENTRAL = "central";
@@ -86,6 +89,106 @@ describe("deriveSeatManagerIds", () => {
   test("a person who holds no seat at all returns null — distinct from a real empty answer", () => {
     const index = makeIndex([{ seatDefId: "chapter_director", scope: "chapterA", personId: "dana" }]);
     expect(deriveSeatManagerIds(index, "someone-else", CENTRAL, CHAPTER_ROLLUP_PARENT)).toBeNull();
+  });
+
+  describe("multi-seat mutual pair (PR #205 regression — prod-shaped)", () => {
+    // Eli (ED) also holds chapter_director in chapterA; Jess (expansion
+    // director) also holds event_lead in that SAME chapter. Per-seat walks
+    // independently derive each as a candidate manager of the other: Eli's
+    // chapter_director seat rolls up to expansion_director (Jess); Jess's
+    // expansion_director seat's parent is executive_director (Eli). Without
+    // the seniority tie-break this is a genuine mutual edge — Eli must win as
+    // the parent (their `executive_director` seat is strictly closer to the
+    // central root than Jess's best seat, `expansion_director`).
+    function mutualPairIndex() {
+      return makeIndex([
+        { seatDefId: "executive_director", scope: CENTRAL, personId: "eli" },
+        { seatDefId: "chapter_director", scope: "chapterA", personId: "eli" },
+        { seatDefId: "expansion_director", scope: CENTRAL, personId: "jess" },
+        { seatDefId: "event_lead", scope: "chapterA", personId: "jess" },
+      ]);
+    }
+
+    test("the ED has no manager despite also holding a chapter_director seat that rolls up to the expansion director", () => {
+      const index = mutualPairIndex();
+      expect(deriveSeatManagerIds(index, "eli", CENTRAL, CHAPTER_ROLLUP_PARENT)).toEqual([]);
+    });
+
+    test("the expansion director reports to the ED, never the reverse", () => {
+      const index = mutualPairIndex();
+      expect(deriveSeatManagerIds(index, "jess", CENTRAL, CHAPTER_ROLLUP_PARENT)).toEqual(["eli"]);
+    });
+
+    test("a third, single-seat report under the expansion director's chapter still resolves normally (no orphaned subtree)", () => {
+      const index = makeIndex([
+        { seatDefId: "executive_director", scope: CENTRAL, personId: "eli" },
+        { seatDefId: "chapter_director", scope: "chapterA", personId: "eli" },
+        { seatDefId: "expansion_director", scope: CENTRAL, personId: "jess" },
+        { seatDefId: "event_lead", scope: "chapterA", personId: "jess" },
+        // A plain single-seat report: vocal_lead's parent (music_lead) is
+        // vacant, so the walk continues up to chapter_director — held by Eli.
+        { seatDefId: "vocal_lead", scope: "chapterA", personId: "vic" },
+      ]);
+      // Proves the fix doesn't disturb ordinary reports elsewhere in the same
+      // chapter — vic still resolves normally to Eli, not swallowed by the
+      // mutual-pair filtering happening for eli/jess above.
+      expect(deriveSeatManagerIds(index, "vic", CENTRAL, CHAPTER_ROLLUP_PARENT)).toEqual(["eli"]);
+    });
+  });
+
+  describe("blanket seniority filter is intentional (owner decision 2026-07-17)", () => {
+    // Adversarial review flagged this exact shape as "over-pruning": X is a
+    // central Development Director (senior, depth 1) who ALSO volunteers on
+    // a chapter's `event_organizers` seat (junior, under Y's `event_lead`).
+    // X and Y never point back at each other — this is NOT a cycle, it's an
+    // ordinary multi-seat holder with two unrelated hats. A cycle-scoped fix
+    // was built that would keep Y as one of X's managers here (since the
+    // edge never participates in a cycle) — but the OWNER reviewed this
+    // exact repro and ruled the pruning INTENDED, verbatim (2026-07-17):
+    // "this is good, we don't want people who are technically 'lower' being
+    // able to see their 1:1 checkins for now." The cycle-scoped revision was
+    // reverted; this test now PINS the owner-decided behavior — X's manager
+    // is the ED ONLY. Y (technically junior overall, despite being the real
+    // structural manager of X's event_organizers seat) is NOT a manager of
+    // X, and must not gain check-in/1:1 authority over them (see the
+    // gate-level pin in `orgSeatManagers.test.ts`). Do not "fix" this again
+    // without a new owner decision superseding the one quoted above.
+    test("a person's unrelated senior seat DOES strip a real, non-cyclic manager from a junior seat — by design", () => {
+      const index = makeIndex([
+        { seatDefId: "executive_director", scope: CENTRAL, personId: "ed" },
+        { seatDefId: "development_director", scope: CENTRAL, personId: "x" },
+        { seatDefId: "event_organizers", scope: "chapterA", personId: "x" },
+        { seatDefId: "event_lead", scope: "chapterA", personId: "y" },
+      ]);
+      expect(deriveSeatManagerIds(index, "x", CENTRAL, CHAPTER_ROLLUP_PARENT)).toEqual(["ed"]);
+      // y's own manager (via event_lead's rollup to chapter_director, vacant,
+      // then to the central expansion_director, vacant, then to the ED) is
+      // unaffected — y isn't in a cycle with anyone either.
+      expect(deriveSeatManagerIds(index, "y", CENTRAL, CHAPTER_ROLLUP_PARENT)).toEqual(["ed"]);
+      expect(deriveSeatManagerIds(index, "ed", CENTRAL, CHAPTER_ROLLUP_PARENT)).toEqual([]);
+    });
+
+    // A genuine 3-node cycle: Vee holds vocal_lead (reports up to Emm's
+    // music_lead) AND expansion_director@central (Cee's chapter_director
+    // rolls up to it) — closing a ring Vee -> Emm -> Cee -> Vee. Seniority
+    // (min depth across every seat held): Vee=1 (expansion_director),
+    // Cee=2 (chapter_director), Emm=3 (music_lead) — a strict order, so the
+    // cycle resolves into the linear chain Vee (root) <- Cee <- Emm. The
+    // blanket filter (this test) and a cycle-scoped filter agree here — a
+    // real cycle's internal edges get the same seniority comparison either
+    // way; blanket additionally prunes non-cyclic edges elsewhere, which is
+    // the owner-decided behavior pinned above.
+    test("a 3-node cycle resolves into a linear chain ordered by seniority", () => {
+      const index = makeIndex([
+        { seatDefId: "vocal_lead", scope: "chapterA", personId: "vee" },
+        { seatDefId: "expansion_director", scope: CENTRAL, personId: "vee" },
+        { seatDefId: "music_lead", scope: "chapterA", personId: "emm" },
+        { seatDefId: "chapter_director", scope: "chapterA", personId: "cee" },
+      ]);
+      expect(deriveSeatManagerIds(index, "vee", CENTRAL, CHAPTER_ROLLUP_PARENT)).toEqual([]);
+      expect(deriveSeatManagerIds(index, "cee", CENTRAL, CHAPTER_ROLLUP_PARENT)).toEqual(["vee"]);
+      expect(deriveSeatManagerIds(index, "emm", CENTRAL, CHAPTER_ROLLUP_PARENT)).toEqual(["cee"]);
+    });
   });
 
   test("union across every seat the person holds is deduped by person id", () => {

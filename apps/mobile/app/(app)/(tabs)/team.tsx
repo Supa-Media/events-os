@@ -35,6 +35,7 @@ import {
   buildProjectTree,
 } from "../../../components/team/ProjectCard";
 import { OrgChart } from "../../../components/team/OrgChart";
+import { buildOrgTree } from "../../../components/team/orgTree";
 import { WorkloadView } from "../../../components/team/WorkloadView";
 import {
   ScopeToggle,
@@ -102,58 +103,7 @@ export default function TeamScreen() {
         hasSeatTitle: seatTitles.length > 0,
       };
     });
-    const managerIds = new Set(
-      roster.flatMap((p) => p.effectiveManagerIds),
-    );
-    const included = roster.filter(
-      (p) =>
-        p.isTeamMember || p.effectiveManagerIds.length > 0 || managerIds.has(p._id),
-    );
-    const includedIds = new Set(included.map((p) => p._id));
-    const childrenOf = new Map<Id<"people">, OrgPerson[]>();
-    for (const p of included) {
-      // Multi-manager people (a multi-holder parent seat) nest under ONE
-      // parent — the first seat-derived manager, deterministically, matching
-      // the order `org.workload`'s "Reports to" line resolves them in (both
-      // read `effectiveManagerIds`/`personEffectiveManagerIds` the same way).
-      const managerId = p.effectiveManagerIds[0];
-      if (!managerId || !includedIds.has(managerId)) continue;
-      const list = childrenOf.get(managerId) ?? [];
-      list.push(p);
-      childrenOf.set(managerId, list);
-    }
-    const roots = included.filter((p) => {
-      const managerId = p.effectiveManagerIds[0];
-      return !managerId || !includedIds.has(managerId);
-    });
-
-    // Subtree sizes (people below each node), cycle-safe via visited set.
-    const teamSize = new Map<Id<"people">, number>();
-    const sizeOf = (id: Id<"people">, visited: Set<Id<"people">>): number => {
-      if (visited.has(id)) return 0;
-      visited.add(id);
-      let n = 0;
-      for (const child of childrenOf.get(id) ?? []) {
-        n += 1 + sizeOf(child._id, visited);
-      }
-      teamSize.set(id, n);
-      return n;
-    };
-    for (const r of roots) sizeOf(r._id, new Set());
-
-    roots.sort(
-      (a, b) =>
-        (teamSize.get(b._id) ?? 0) - (teamSize.get(a._id) ?? 0) ||
-        a.name.localeCompare(b.name),
-    );
-    for (const list of childrenOf.values()) {
-      list.sort(
-        (a, b) =>
-          (teamSize.get(b._id) ?? 0) - (teamSize.get(a._id) ?? 0) ||
-          a.name.localeCompare(b.name),
-      );
-    }
-    return { included, includedIds, childrenOf, roots, teamSize };
+    return buildOrgTree(roster);
   }, [overview, seatTitlesByPerson]);
 
   // Project rollups: how many (non-done) projects each person's subtree owns.

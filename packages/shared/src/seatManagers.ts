@@ -29,6 +29,69 @@
  *    a seat but has zero seat-derived managers" — so a caller can fall back
  *    to a pre-seat manager signal (this repo: `people.managerId`) only for
  *    people the seat tree has no opinion about.
+ *
+ * SENIORITY FILTER — BLANKET BY DESIGN (2026-07-17, post-#205 regression fix;
+ * OWNER DECISION 2026-07-17, verbatim: "this is good, we don't want people
+ * who are technically 'lower' being able to see their 1:1 checkins for now."
+ * — see `orgSeatManagers.test.ts`'s "multi-seat mutual pair" and "blanket
+ * seniority filter is intentional" describe blocks):
+ *
+ *  A person who holds MULTIPLE seats gets a candidate manager from EACH seat's
+ *  independent walk, unioned together. When two people each hold a senior
+ *  central seat AND a junior seat that rolls up through the other's senior
+ *  seat, the per-seat walks can produce a genuine two-way edge — e.g. the
+ *  Executive Director also holds a chapter's `chapter_director` seat, which
+ *  rolls up to the Expansion Director; the Expansion Director also holds
+ *  `event_lead` in that same chapter, which rolls up (via `chapter_director`)
+ *  back to the Executive Director. Each is correctly derived as a candidate
+ *  manager of the other. Left as a mutual edge, EVERY consumer that walks this
+ *  as a tree (`buildEffectiveChildrenOf`, the Work tab's client-side
+ *  roots/children builder in `team.tsx`) treats "my manager is included in
+ *  the roster" as "I am not a root" for BOTH people — so neither becomes a
+ *  root, and the entire subtree hanging off them (which, for an ED/expansion-
+ *  director pair, is most of the org) never gets attached to anything and
+ *  silently vanishes from the tree. Only people with no seat-derived manager
+ *  at all (nothing feeding their `out` set) survive as visible roots.
+ *
+ *  Fix: after collecting the raw per-seat-derived candidate set, filter it to
+ *  keep only candidates who are ACTUALLY more senior than the person overall
+ *  — "the central-chart-root-closer person wins as the parent." Seniority is
+ *  a person's STRUCTURAL distance to the central chart's root (`seatDepth`,
+ *  below): 0 for the central root seat, +1 per `parentSlug` hop, chapter
+ *  seats crossing into the central chart via `chapterRollupParentSlug` like
+ *  the main walk does. A person's overall seniority is the MIN depth across
+ *  EVERY seat they hold (their single most-senior seat), not the depth of
+ *  whichever seat is currently being walked — not just cycle-internal edges.
+ *  A candidate is kept as a manager only if their best seat is STRICTLY
+ *  closer to the root than the person's own best seat. Depth strictly
+ *  decreases along every surviving edge, so the resulting graph can never
+ *  contain a cycle of any length, not just 2-cycles.
+ *
+ *  This is DELIBERATELY blanket, not scoped to cycle-internal edges only. An
+ *  adversarial review of an earlier revision of this fix flagged that a
+ *  blanket compare also drops a manager edge that never participates in a
+ *  cycle at all — e.g. a central Development Director who also volunteers on
+ *  an unrelated chapter's `event_organizers` seat loses that chapter's Event
+ *  Lead as a manager, because the Development Director seat outranks the
+ *  Event Lead overall. A cycle-scoped revision was built and shipped to fix
+ *  that specifically — then the owner reviewed the reviewer's own repro and
+ *  RULED IT INTENDED (see the quote above): someone who also holds a more
+ *  senior seat elsewhere should NOT be manageable (1:1 check-ins, etc.) by a
+ *  less-senior manager on a junior seat, even a real non-cyclic one. The
+ *  cycle-scoped revision was reverted; this blanket filter is the spec.
+ *
+ *  In the ED/expansion-director example: the ED's overall depth is 0 (their
+ *  `executive_director` seat), so a candidate at depth 1 (`expansion_director`)
+ *  fails the strict-improvement check and is dropped — the ED has no manager,
+ *  correctly. The expansion director's overall depth is 1, and the ED's is 0,
+ *  which strictly improves on it — kept. Net: expansion director reports to
+ *  the ED, never the reverse, regardless of which of their several seats
+ *  produced the raw edge.
+ *
+ *  Equal-depth ties (not expected in the current acyclic seat taxonomy — every
+ *  real ancestor relationship strictly decreases depth — but kept as a
+ *  defensive fallback) are broken by comparing person ids lexicographically,
+ *  so exactly one direction survives instead of either both or neither.
  */
 
 import { SEAT_ROOT } from "./seats";
@@ -120,6 +183,75 @@ export type SeatManagerResult<PersonId extends string> = PersonId[] | null;
  *  this only guards a future DB-editable chart from hanging on a loop. */
 const WALK_GUARD = 30;
 
+/** The two index fields seat-depth needs — a structural (chart+slug) lookup,
+ *  never occupancy — so it type-checks against a `SeatManagerIndex` of any
+ *  `PersonId`/`Scope` without a cast (those type params don't appear here). */
+type SeatDefLookup<SeatDefId extends string> = Pick<
+  SeatManagerIndex<SeatDefId, string, string>,
+  "defById" | "defBySlug"
+>;
+
+/**
+ * A seat's STRUCTURAL distance to the central chart's root — 0 for the
+ * central root itself, +1 per `parentSlug` hop, crossing chapter→central at
+ * `chapterRollupParentSlug` exactly like the manager walk. Purely a function
+ * of the seat TAXONOMY (chart + slug), never occupancy — every chapter shares
+ * the same chapter-chart seat defs, so this is scope-independent and safe to
+ * memoize once per index. See the module header's "SENIORITY FILTER —
+ * BLANKET BY DESIGN" section for why this exists.
+ */
+function seatDepth<SeatDefId extends string>(
+  index: SeatDefLookup<SeatDefId>,
+  seatDefId: SeatDefId,
+  chapterRollupParentSlug: string,
+  memo: Map<SeatDefId, number>,
+  guard = 0,
+): number {
+  const cached = memo.get(seatDefId);
+  if (cached !== undefined) return cached;
+  if (guard >= WALK_GUARD) return Infinity; // defensive — see WALK_GUARD
+
+  const def = index.defById.get(seatDefId);
+  if (!def) return Infinity; // dangling — defensive, shouldn't happen
+
+  let depth: number;
+  if (def.parentSlug === SEAT_ROOT_SENTINEL) {
+    if (def.chart === "central") {
+      depth = 0; // the true top of the org
+    } else {
+      const rollupParent = index.defBySlug.get(
+        chartSlugKey("central", chapterRollupParentSlug),
+      );
+      depth = rollupParent
+        ? seatDepth(index, rollupParent.seatDefId, chapterRollupParentSlug, memo, guard + 1) + 1
+        : Infinity; // dangling rollup target — defensive, same fail-safe as a dangling seatDefId (least-senior, never wins a manager slot)
+    }
+  } else {
+    const parent = index.defBySlug.get(chartSlugKey(def.chart, def.parentSlug));
+    depth = parent
+      ? seatDepth(index, parent.seatDefId, chapterRollupParentSlug, memo, guard + 1) + 1
+      : Infinity; // dangling parentSlug — defensive, same fail-safe as above (was `0`/most-senior — fail-open bug; a seat structurally cut off from any root must never silently outrank everyone)
+  }
+  memo.set(seatDefId, depth);
+  return depth;
+}
+
+/** A person's overall seniority: the shallowest (most senior) of every seat
+ *  they hold. `Infinity` for a seatless person — never actually compared
+ *  against, since only seat holders can appear as seat-derived candidates. */
+function personSeatDepth<SeatDefId extends string, PersonId extends string>(
+  index: SeatDefLookup<SeatDefId> & Pick<SeatManagerIndex<SeatDefId, PersonId, string>, "seatsByPerson">,
+  personId: PersonId,
+  chapterRollupParentSlug: string,
+  memo: Map<SeatDefId, number>,
+): number {
+  const heldSeats = index.seatsByPerson.get(personId);
+  if (!heldSeats || heldSeats.length === 0) return Infinity;
+  return Math.min(
+    ...heldSeats.map((h) => seatDepth(index, h.seatDefId, chapterRollupParentSlug, memo)),
+  );
+}
+
 export function deriveSeatManagerIds<
   SeatDefId extends string,
   PersonId extends string,
@@ -168,7 +300,21 @@ export function deriveSeatManagerIds<
       parentSlug = parent.parentSlug;
     }
   }
-  return [...out];
+
+  // Blanket seniority tie-break — DELIBERATE, not cycle-scoped (owner
+  // decision 2026-07-17, see the module header's "SENIORITY FILTER — BLANKET
+  // BY DESIGN" section): keep a candidate only if THEY are strictly more
+  // senior overall than `personId`, even when this specific edge never
+  // participates in a cycle. Ties (not expected in the current taxonomy)
+  // break deterministically by id so exactly one direction survives.
+  const depthMemo = new Map<SeatDefId, number>();
+  const ownDepth = personSeatDepth(index, personId, chapterRollupParentSlug, depthMemo);
+  const filtered = [...out].filter((candidateId) => {
+    const candidateDepth = personSeatDepth(index, candidateId, chapterRollupParentSlug, depthMemo);
+    if (candidateDepth !== ownDepth) return candidateDepth < ownDepth;
+    return candidateId < personId;
+  });
+  return filtered;
 }
 
 /** Seat-derived managers if the person holds any seat; otherwise the stored
