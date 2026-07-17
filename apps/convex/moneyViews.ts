@@ -504,36 +504,74 @@ export const refMoney = query({
 /**
  * "Everything with a cost line item" — EVERY cost-bearing row on a single
  * event in ONE flat list, not just the finance plan (`budgetLines`) `refMoney`
- * above covers: `eventItems.fields.cost` (Tasks/Supplies/Comms — the SAME
- * figure the header's `budgetSpent` gauge already sums, `events.ts:192-203`),
- * paid-vendor `engagements.amountUsd` (`engagements.ts#paidTotalForEvent`),
- * and `budgetLines` (WP-3.1). Owner spec: a database-style grid — Type /
- * Label / Category / Planned $ / Actual-or-status / source-link — editable in
- * place, writing back to each row's OWN home mutation (source of truth stays
- * in the home table; this is a rollup + inline-edit view, not a new ledger).
+ * above covers: `eventItems.fields[currencyColumnKey]` (Tasks/Supplies/
+ * Comms/Permits/etc — ANY module with a `type:"currency"` column, built-in
+ * or chapter-custom), paid-vendor `engagements.amountUsd`
+ * (`engagements.ts#paidTotalForEvent`), and `budgetLines` (WP-3.1). Owner
+ * spec: a database-style grid — Type / Label / Category / Planned $ /
+ * Actual-or-status / source-link — editable in place, writing back to each
+ * row's OWN home mutation (source of truth stays in the home table; this is
+ * a rollup + inline-edit view, not a new ledger).
  *
- * MONEY UNIT NOTE: `eventItems.fields.cost` and `engagements.amountUsd` are
+ * THE MODEL (Opus review, PR #216, 2026-07-17):
+ *   - Grid rows ARE the plan for anything with a home module (Task/Supply/
+ *     Comms/any custom currency column, or a paid Vendor) — their cost lives
+ *     on the module's own record, edited there or here, never duplicated
+ *     into a `budgetLines` row.
+ *   - `budgetLines` rows are for costs with NO home module (an AV rental
+ *     that isn't a Task, a permit fee before Permits had a currency column,
+ *     a category-level allocation) — the free-form finance-plan fallback.
+ *   - LINKED pairs are MERGED, not summed: a `budgetLines` row with
+ *     `sourceRef` pointing at the module row it represents contributes only
+ *     its category (plan metadata the module side has no field for) — the
+ *     module row's own cost/status/link still wins for display, and the
+ *     line does NOT get a separate row or count toward the total twice.
+ *     Nothing creates a link yet (no mutation sets `sourceRef` today) — this
+ *     is forward-looking infrastructure for a future "plan this task's cost
+ *     in Finances" flow.
+ *   - UNLINKED duplicates are FLAGGED, not merged: since nothing proves two
+ *     unlinked rows represent the same expense, a same-ish-label collision
+ *     between a `budgetLines` row and a module row (e.g. Task "Sound tech"
+ *     + budget line "Sound tech deposit") sets `possibleDuplicate` on BOTH
+ *     rows — a human catches what the system can't yet prove, but neither
+ *     row's amount is dropped from the total (silently hiding a real cost
+ *     would be worse than a visible over-count warning).
+ *
+ * MODULE COVERAGE: dynamically swept from THIS EVENT's own `eventColumns`
+ * (cloned per-event at instantiation, `lib/templates.ts` — includes every
+ * custom `currency`-type column a chapter added via `columns.ts#addColumn`,
+ * on ANY module, not a hardcoded 3-module allowlist). For the common case
+ * (an unmodified template, only a `cost` key on Tasks/Supplies/Comms) this
+ * sweep finds exactly those 3 modules — so the grid's per-item figures agree
+ * with `events.ts#get`'s `budgetSpent` rollup (which sums `fields.cost`
+ * across every module, key-oblivious) BY CONSTRUCTION whenever the item's
+ * own module actually has a `cost`-keyed currency column. A currency column
+ * with a DIFFERENT key (e.g. a custom Permits "fee" column) is invisible to
+ * the OLD `budgetSpent` gauge (which only ever reads the literal `cost` key)
+ * but IS captured here — a deliberate completeness improvement over the
+ * header gauge, not a regression against it.
+ *
+ * MONEY UNIT NOTE: `eventItems.fields[key]` and `engagements.amountUsd` are
  * whole ESTIMATED USD DOLLARS (mirrors `events.budget`) — NOT integer cents
  * like every `finances.ts`/`budgetLines` figure. Every dollar figure here is
  * `Math.round(dollars * 100)` before it joins `plannedCents` so the grid's
  * rollup is apples-to-apples with the finance side.
  *
- * TYPE → CATEGORY: none of `eventItems`/`engagements` carry a real
- * `budgetCategories` link (no schema field exists) — so `categoryName` here
- * is the TYPE's own label (Tasks / Supplies / Comms / Vendors), not a real
- * finance category id. `budgetLines` rows keep their REAL category (or
- * "Uncategorized"). Giving Tasks/Supplies/Comms/Vendors a genuine
- * `budgetCategories` link (so Reconcile/transactions could categorize
- * against the same taxonomy) is a deliberate, called-out follow-up — see this
- * PR's body — not attempted here (it's a schema change on tables this file
- * doesn't own).
+ * TYPE → CATEGORY: an unlinked module row's `categoryName` is its own
+ * module's display label (Tasks / Supplies & Logistics / Permits / Vendors —
+ * whatever `eventModules.label` says, built-in or chapter-custom), not a
+ * real finance category id — none of `eventItems`/`engagements` carry a
+ * `budgetCategories` link (no schema field exists on those tables). A
+ * LINKED module row instead shows the linked line's REAL category. Giving
+ * every module row a genuine `budgetCategories` link unconditionally (so
+ * Reconcile/transactions could categorize against the same taxonomy even
+ * unlinked) is a further follow-up, not attempted here.
  *
- * DOUBLE-COUNTING: this grid's rows are the CANONICAL cost inventory —
- * `refMoney` above stays a narrower "plan vs. approved cap" view scoped to
- * `budgetLines` only (unchanged by this addition). The two totals are
- * DIFFERENT axes on purpose (this grid's total is everything that costs
- * money; `refMoney`'s is the finance PLAN measured against its approval cap)
- * — see the PR body for why they aren't merged into one number here.
+ * TWO TOTALS, ON PURPOSE: `refMoney` above stays a narrower "plan vs.
+ * approved cap" view scoped to `budgetLines` only (unchanged by this
+ * addition) — the finance PLAN measured against its approval cap. This
+ * grid's total is "everything that costs money, full stop" — a different
+ * axis. They are not merged into one number here; see the PR body.
  *
  * WRITE-BACK gating: each row is editable under its OWN home table's
  * EXISTING rule, never a new one — `eventItems`/`engagements` are editable by
@@ -545,18 +583,6 @@ export const refMoney = query({
  * already see the Money tab sees the grid, but editability within it still
  * follows each row's native rule, not a finance role.
  */
-
-// Cost-bearing `eventItems` modules — every module whose default columns ship
-// a `cost` field (`packages/shared/src/index.ts` DEFAULT_COLUMNS). Comms'
-// `cost` column defaults to `isVisible:false` in its OWN grid but still holds
-// a real value the header's `budgetSpent` sums — same here, visibility is a
-// display concern, not a data one.
-const COST_BEARING_MODULES: Record<string, { typeLabel: string; categoryName: string }> = {
-  planning_doc: { typeLabel: "Task", categoryName: "Tasks" },
-  supplies: { typeLabel: "Supply", categoryName: "Supplies" },
-  // "Comms" is already the plural/mass-noun form — no naive "+s" here.
-  comms: { typeLabel: "Comms", categoryName: "Comms" },
-};
 
 const GRID_SCAN_LIMIT = 2000;
 
@@ -585,15 +611,71 @@ const gridRow = v.object({
   // `null` for a `budget_line` row, which is edited right here via
   // `MoneyView`'s own "Edit plan" modal, not a separate screen.
   sourceLink: v.union(v.string(), v.null()),
+  // True when this (module) row absorbed a `budgetLines` row's category via
+  // `sourceRef` — the line itself never became a separate row (see the
+  // module doc's "THE MODEL"). Always `false` on a `budget_line` row: a
+  // TRULY linked line is folded away entirely, never surfaced as its own row.
+  linked: v.boolean(),
+  // True when this row's normalized label overlaps an UNLINKED row of a
+  // DIFFERENT sourceKind (module vs. budget_line) — a possible same-expense
+  // collision the system can't prove, flagged for a human. Never set on a
+  // linked row (already provably not a duplicate — it's the SAME expense,
+  // by construction, not a suspected one).
+  possibleDuplicate: v.boolean(),
 });
 
-/** Round a whole-dollar figure (`eventItems.fields.cost` / `engagements.
+type WorkingRow = {
+  id: string;
+  sourceKind: "event_item" | "vendor" | "budget_line";
+  typeLabel: string;
+  label: string;
+  categoryName: string;
+  plannedCents: number;
+  actualCents: number | null;
+  status: string | null;
+  editable: boolean;
+  sourceLink: string | null;
+  linked: boolean;
+  possibleDuplicate: boolean;
+  /** Transient (stripped before return) — the `eventItems`/`engagements` doc
+   *  id this row was sourced from, for `sourceRef` link resolution. `null`
+   *  for a `budget_line` row (which is never itself a link TARGET). */
+  refId: string | null;
+};
+
+/** Round a whole-dollar figure (`eventItems.fields[key]` / `engagements.
  *  amountUsd`) to integer cents — mirrors `events.ts#budgetSpent`'s own
  *  `Number(...)` + finite guard, then converts to the finance side's unit. */
 function dollarsToCents(value: unknown): number | null {
   const n = Number(value);
   if (!Number.isFinite(n) || n <= 0) return null;
   return Math.round(n * 100);
+}
+
+// A short, generic English stopword list — enough to keep "the AV budget" and
+// "the AV rental" from colliding on "the", without pulling in an NLP library.
+const DUPLICATE_STOPWORDS = new Set([
+  "the", "and", "for", "with", "from", "this", "that", "cost", "cents", "fee",
+]);
+
+/** Normalize a row label into its SIGNIFICANT lowercase word-tokens (>= 4
+ *  chars, not a stopword) — a deliberately simple, conservative "does this
+ *  look like the same expense" signal: two labels are flagged as a possible
+ *  duplicate when they share at least one significant token, never on a
+ *  bare/short/common word alone. Reused consistently for every row (module
+ *  and budget-line alike) so the comparison is symmetric. */
+function significantTokens(label: string): Set<string> {
+  return new Set(
+    label
+      .toLowerCase()
+      .split(/[^a-z0-9]+/)
+      .filter((t) => t.length >= 4 && !DUPLICATE_STOPWORDS.has(t)),
+  );
+}
+
+function tokensOverlap(a: Set<string>, b: Set<string>): boolean {
+  for (const t of a) if (b.has(t)) return true;
+  return false;
 }
 
 export const eventCostGrid = query({
@@ -609,20 +691,33 @@ export const eventCostGrid = query({
     if (!authz) return empty;
     if (authz.isTraining) return { ...empty, isTraining: true }; // #172
 
-    const rows: {
-      id: string;
-      sourceKind: "event_item" | "vendor" | "budget_line";
-      typeLabel: string;
-      label: string;
-      categoryName: string;
-      plannedCents: number;
-      actualCents: number | null;
-      status: string | null;
-      editable: boolean;
-      sourceLink: string | null;
-    }[] = [];
+    const rows: WorkingRow[] = [];
 
-    // ── eventItems (Tasks / Supplies / Comms) ──────────────────────────────
+    // ── Module label + currency-column sweep (dynamic, ALL modules) ────────
+    // `eventColumns` is THIS event's own cloned column snapshot (every
+    // module, built-in or chapter-custom) — see the module doc's "MODULE
+    // COVERAGE" note for why this replaces a hardcoded module allowlist.
+    const [eventColumnRows, eventModuleRows] = await Promise.all([
+      ctx.db
+        .query("eventColumns")
+        .withIndex("by_event", (q) => q.eq("eventId", args.eventId))
+        .take(GRID_SCAN_LIMIT),
+      ctx.db
+        .query("eventModules")
+        .withIndex("by_event", (q) => q.eq("eventId", args.eventId))
+        .take(GRID_SCAN_LIMIT),
+    ]);
+    const moduleLabel = new Map<string, string>(eventModuleRows.map((m) => [m.key, m.label]));
+    const currencyColumnsByModule = new Map<string, { key: string; label: string }[]>();
+    for (const col of eventColumnRows) {
+      if (col.type !== "currency") continue;
+      const entry = { key: col.key, label: col.label };
+      const bucket = currencyColumnsByModule.get(col.module);
+      if (bucket) bucket.push(entry);
+      else currencyColumnsByModule.set(col.module, [entry]);
+    }
+
+    // ── eventItems (every module with a currency column) ───────────────────
     const items = await ctx.db
       .query("eventItems")
       .withIndex("by_event", (q) => q.eq("eventId", args.eventId))
@@ -633,22 +728,32 @@ export const eventCostGrid = query({
       );
     }
     for (const item of items) {
-      const moduleInfo = COST_BEARING_MODULES[item.module];
-      if (!moduleInfo) continue;
-      const cents = dollarsToCents(item.fields?.cost);
-      if (cents === null) continue;
-      rows.push({
-        id: `event_item:${item._id}`,
-        sourceKind: "event_item",
-        typeLabel: moduleInfo.typeLabel,
-        label: item.title || "(untitled)",
-        categoryName: moduleInfo.categoryName,
-        plannedCents: cents,
-        actualCents: null,
-        status: item.status ?? null,
-        editable: true, // same native chapter-member gate `items.ts` already enforces
-        sourceLink: `/event/${args.eventId}?tab=${item.module}`,
-      });
+      const currencyCols = currencyColumnsByModule.get(item.module);
+      if (!currencyCols || currencyCols.length === 0) continue;
+      const typeLabel = moduleLabel.get(item.module) ?? item.module;
+      const multiCol = currencyCols.length > 1;
+      for (const col of currencyCols) {
+        const cents = dollarsToCents(item.fields?.[col.key]);
+        if (cents === null) continue;
+        const title = item.title || "(untitled)";
+        rows.push({
+          id: `event_item:${item._id}:${col.key}`,
+          sourceKind: "event_item",
+          typeLabel,
+          // Disambiguate only when a module genuinely has more than one
+          // currency column (rare) — keeps the common case's label clean.
+          label: multiCol ? `${title} — ${col.label}` : title,
+          categoryName: typeLabel,
+          plannedCents: cents,
+          actualCents: null,
+          status: item.status ?? null,
+          editable: true, // same native chapter-member gate `items.ts` already enforces
+          sourceLink: `/event/${args.eventId}?tab=${item.module}`,
+          linked: false,
+          possibleDuplicate: false,
+          refId: String(item._id),
+        });
+      }
     }
 
     // ── Paid vendors (Crew & Duties) ────────────────────────────────────────
@@ -668,7 +773,7 @@ export const eventCostGrid = query({
       rows.push({
         id: `vendor:${eng._id}`,
         sourceKind: "vendor",
-        typeLabel: "Vendor",
+        typeLabel: "Vendors",
         label: person?.name ?? "(unknown)",
         categoryName: "Vendors",
         plannedCents: cents,
@@ -676,14 +781,18 @@ export const eventCostGrid = query({
         status: eng.paymentStatus ?? null,
         editable: true, // same native chapter-member gate `engagements.ts` already enforces
         sourceLink: `/event/${args.eventId}?tab=crew`,
+        linked: false,
+        possibleDuplicate: false,
+        refId: String(eng._id),
       });
     });
 
-    // ── Budget lines (the finance plan, WP-3.1) ─────────────────────────────
+    // ── Budget lines (the finance plan, WP-3.1) — merge linked, else a row ──
     const budgets = await ctx.db
       .query("budgets")
       .withIndex("by_ref", (q) => q.eq("refKind", "event").eq("scopeRefId", args.eventId))
       .take(GRID_SCAN_LIMIT);
+    const budgetLineRows: WorkingRow[] = [];
     for (const budget of budgets) {
       const lines = await ctx.db
         .query("budgetLines")
@@ -698,20 +807,64 @@ export const eventCostGrid = query({
       });
       const canEdit = canEditBudgetPlan(authz, budget.chapterId);
       for (const line of lines) {
-        rows.push({
+        const resolvedCategoryName = line.categoryId
+          ? (categoryName.get(line.categoryId) ?? "Uncategorized")
+          : "Uncategorized";
+
+        // LINKED: fold this line's category into every module row sourced
+        // from `sourceRef.id`, and don't give the line its own row at all —
+        // "module row wins for display" (its cost/status/link are untouched;
+        // only `categoryName` is upgraded to the line's REAL category).
+        if (line.sourceRef) {
+          const targets = rows.filter((r) => r.refId === line.sourceRef!.id);
+          if (targets.length > 0) {
+            for (const target of targets) {
+              target.linked = true;
+              target.categoryName = resolvedCategoryName;
+            }
+            continue; // merged — no separate budget_line row, no double count.
+          }
+          // Dangling sourceRef (the linked item/engagement isn't a grid row —
+          // e.g. it was deleted, or its module lost its currency column) —
+          // fall through and show the line as a normal unlinked row so its
+          // plan data doesn't just vanish.
+        }
+
+        budgetLineRows.push({
           id: `budget_line:${line._id}`,
           sourceKind: "budget_line",
-          typeLabel: "Budget line",
+          typeLabel: "Budget lines",
           label: line.description,
-          categoryName: line.categoryId
-            ? (categoryName.get(line.categoryId) ?? "Uncategorized")
-            : "Uncategorized",
+          categoryName: resolvedCategoryName,
           plannedCents: line.plannedCents,
           actualCents: null,
           status: null,
           editable: canEdit,
           sourceLink: null,
+          linked: false,
+          possibleDuplicate: false,
+          refId: null,
         });
+      }
+    }
+    rows.push(...budgetLineRows);
+
+    // ── Possible-duplicate flagging (unlinked rows only) ────────────────────
+    // Conservative + symmetric: only compares a `budget_line` row against a
+    // module row (`event_item`/`vendor`) — the double-count shape the review
+    // actually flagged — never two rows of the SAME sourceKind (two Tasks
+    // named similarly aren't a "same expense counted twice" concern).
+    const moduleRows = rows.filter((r) => r.sourceKind !== "budget_line" && !r.linked);
+    const moduleTokens = moduleRows.map((r) => significantTokens(r.label));
+    for (const line of budgetLineRows) {
+      if (line.linked) continue; // already provably the same expense, not "possible"
+      const lineTokens = significantTokens(line.label);
+      if (lineTokens.size === 0) continue;
+      for (let i = 0; i < moduleRows.length; i++) {
+        if (tokensOverlap(lineTokens, moduleTokens[i])) {
+          line.possibleDuplicate = true;
+          moduleRows[i].possibleDuplicate = true;
+        }
       }
     }
 
@@ -722,7 +875,7 @@ export const eventCostGrid = query({
 
     return {
       isTraining: false,
-      rows,
+      rows: rows.map(({ refId: _refId, ...row }) => row),
       totalPlannedCents: rows.reduce((sum, r) => sum + r.plannedCents, 0),
     };
   },
