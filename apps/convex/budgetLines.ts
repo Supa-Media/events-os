@@ -438,9 +438,32 @@ export const mergeLineIntoItem = mutation({
     }
 
     // The one cross-file write: patching eventItems' plan-view category from
-    // budgetLines.ts is data, not code ownership (see PR6a scope note).
+    // budgetLines.ts is data, not code ownership (see PR6a scope note). Must
+    // clear the SAME bar `items.ts#updateEventItem` enforces on this exact
+    // field (tenancy AND active) — not just this file's own (tenancy-only)
+    // `verifyCategory`, which governs a LINE's own categoryId, a looser
+    // invariant than an ITEM's. Two proven exploit shapes without this:
+    // (a) a central budget's line can carry a category from a DIFFERENT
+    // chapter than the event's (verified against the CALLER's chapter at
+    // add-time, not the event's), and (b) a category can be deactivated
+    // after the line was created. Re-verify against the ITEM's own chapter
+    // right here rather than trusting the line's stored categoryId.
     if (line.categoryId && !item.budgetCategoryId) {
-      await ctx.db.patch(args.itemId, { budgetCategoryId: line.categoryId });
+      let categoryUsable = false;
+      try {
+        await verifyCategory(ctx, event.chapterId, line.categoryId);
+        const category = await ctx.db.get(line.categoryId);
+        categoryUsable = category?.isActive !== false;
+      } catch {
+        categoryUsable = false;
+      }
+      if (categoryUsable) {
+        await ctx.db.patch(args.itemId, { budgetCategoryId: line.categoryId });
+      }
+      // A bad/foreign/inactive category shouldn't block the dedup — the
+      // user's intent here is "merge this duplicate away", not "set this
+      // category". Skip the copy, still delete the line below (matches
+      // PR #232's drop-silently choice for an unusable category).
     }
     await ctx.db.delete(args.lineId);
     return null;

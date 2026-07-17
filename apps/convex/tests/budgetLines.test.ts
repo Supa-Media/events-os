@@ -871,6 +871,83 @@ describe("mergeLineIntoItem: human-confirmed dedup of a duplicate plan line (PR6
       s.as.mutation(api.budgetLines.mergeLineIntoItem, { lineId, itemId }),
     ).rejects.toBeInstanceOf(ConvexError);
   });
+
+  test("a central-budget line whose category belongs to a DIFFERENT chapter than the event: merge still succeeds (line deleted), category NOT copied", async () => {
+    const t = newT();
+    const s = await setupChapter(t, { chapterName: "Chapter A" });
+    const { eventId, itemId } = await seedEvent(s);
+
+    // The merging caller needs BOTH gates: central line-write reach (any home
+    // chapter) AND event-edit access (home chapter === the event's chapter).
+    // Grant `s` (home chapter A) a central bookkeeper role alongside their
+    // existing chapter role, so the SAME caller clears both sides.
+    const personId = await seedSelfPerson(s);
+    await run(t, (ctx) =>
+      ctx.db.insert("financeRoles", {
+        chapterId: s.chapterId,
+        personId,
+        role: "bookkeeper",
+        scope: "central",
+        createdAt: Date.now(),
+      }),
+    );
+
+    const centralBudgetId = await run(t, (ctx) =>
+      ctx.db.insert("budgets", {
+        chapterId: "central",
+        amountCents: 100000,
+        type: "one_time",
+        refKind: "event",
+        scopeRefId: eventId,
+        cadence: "yearly",
+        year: 2026,
+        createdAt: Date.now(),
+      }),
+    );
+
+    // A category that belongs to a DIFFERENT chapter than the event's — only
+    // reachable by direct-inserting the line (addLine's own verifyCategory
+    // would reject this category for a chapter-A-homed caller; this exploit
+    // shape is what the merge's OWN re-verify must catch, per the bug fix).
+    const chapterB = await setupChapter(t, { chapterName: "Chapter B" });
+    const foreignCategoryId = await seedCategory(chapterB);
+    const lineId = await run(t, (ctx) =>
+      ctx.db.insert("budgetLines", {
+        budgetId: centralBudgetId,
+        description: "AV rental",
+        plannedCents: 15000,
+        categoryId: foreignCategoryId,
+        sortOrder: 0,
+        createdBy: s.userId,
+        createdAt: Date.now(),
+      }),
+    );
+
+    await s.as.mutation(api.budgetLines.mergeLineIntoItem, { lineId, itemId });
+
+    expect(await run(t, (ctx) => ctx.db.get(lineId))).toBeNull();
+    const item = await run(t, (ctx) => ctx.db.get(itemId));
+    expect(item?.budgetCategoryId).toBeUndefined();
+  });
+
+  test("a deactivated category on the line: merge still succeeds (line deleted), category NOT copied", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const { eventId, itemId } = await seedEvent(s);
+    const budgetId = await makeEventBudget(s, eventId);
+    const categoryId = await seedCategory(s);
+    const lineId = await addLineToBudget(s, budgetId, { categoryId });
+
+    // The category is retired AFTER the line was created — verifyCategory's
+    // active check must still catch it at merge time.
+    await run(t, (ctx) => ctx.db.patch(categoryId, { isActive: false }));
+
+    await s.as.mutation(api.budgetLines.mergeLineIntoItem, { lineId, itemId });
+
+    expect(await run(t, (ctx) => ctx.db.get(lineId))).toBeNull();
+    const item = await run(t, (ctx) => ctx.db.get(itemId));
+    expect(item?.budgetCategoryId).toBeUndefined();
+  });
 });
 
 describe("deleteBudget cascades its lines", () => {
