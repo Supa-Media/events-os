@@ -1,4 +1,4 @@
-import { describe, expect, test } from "vitest";
+import { describe, expect, test, vi } from "vitest";
 import { ConvexError } from "convex/values";
 import { api } from "../_generated/api";
 import type { Id } from "../_generated/dataModel";
@@ -1155,5 +1155,449 @@ describe("seatProposals.approve", () => {
     await expect(
       decider.as.mutation(api.seatProposals.approve, { proposalId }),
     ).rejects.toBeInstanceOf(ConvexError);
+  });
+});
+
+// ── propose — chain-top auto-execute ────────────────────────────────────────
+//
+// The ED sits at the central chart's TRUE ROOT — `resolveEligibleDeciders`
+// can never find anyone above them, so a normal two-party ED proposal would
+// sit "pending" forever (the reported deadlock). `propose` special-cases
+// exactly this "chain-top" case: no ancestor seat DEF exists above the
+// proposer's own qualifying seat anywhere in the walk (NOT merely "no one
+// currently occupies" one — see the file doc comment's "Chain-top
+// auto-execute" section). See `seatProposals.ts`'s `resolveEligibleDeciders`
+// for the `"chain-top"` vs `"none"` distinction this suite exercises.
+
+describe("seatProposals.propose — chain-top auto-execute", () => {
+  test("the ED (root holder) proposes filling a vacant seat below them: executes immediately, approved + self-decided + auto-note", async () => {
+    const s = await baseSetup();
+    const edDef = await defBySlug(s, "executive_director");
+    const ddDef = await defBySlug(s, "development_director"); // vacant, direct child of executive_director
+    const { as, personId: edPersonId } = await personActor(s, s.chapterId, "ED", "ed-fill@publicworship.life");
+    await seat(s, edDef._id, "central", edPersonId);
+    const subject = await makePerson(s, s.chapterId, "NewDevDirector");
+
+    const proposalId = await as.mutation(api.seatProposals.propose, {
+      seatDefId: ddDef._id,
+      scope: "central",
+      action: "fill",
+      subjectPersonId: subject,
+      note: "Filling this while we're pre-Board.",
+    });
+    expect(proposalId).toBeDefined();
+
+    // Executed immediately — the assignment exists right away, no approval
+    // step needed.
+    const rows = await run(s.t, (ctx) =>
+      ctx.db
+        .query("seatAssignments")
+        .withIndex("by_scope_and_seat", (q) => q.eq("scope", "central").eq("seatDefId", ddDef._id))
+        .collect(),
+    );
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.personId).toBe(subject);
+
+    const mine = await as.query(api.seatProposals.myProposals, {});
+    const decided = mine.find((p) => p.proposalId === proposalId)!;
+    expect(decided.status).toBe("approved");
+    expect(decided.decidedByPersonId).toBe(edPersonId);
+    expect(decided.decidedAt).toBe(decided.createdAt);
+    expect(decided.autoExecuted).toBe(true);
+    expect(decided.note).toContain("Filling this while we're pre-Board.");
+    expect(decided.note).toContain("Auto-executed");
+    expect(decided.note?.toLowerCase()).toContain("chain top");
+  });
+
+  test("the ED proposes vacating a held seat below them: executes immediately, approved + self-decided + auto-note", async () => {
+    const s = await baseSetup();
+    const edDef = await defBySlug(s, "executive_director");
+    const ddDef = await defBySlug(s, "development_director");
+    const { as, personId: edPersonId } = await personActor(s, s.chapterId, "ED2", "ed-vacate@publicworship.life");
+    await seat(s, edDef._id, "central", edPersonId);
+    const holder = await makePerson(s, s.chapterId, "OutgoingDevDirector");
+    await seat(s, ddDef._id, "central", holder);
+
+    const proposalId = await as.mutation(api.seatProposals.propose, {
+      seatDefId: ddDef._id,
+      scope: "central",
+      action: "vacate",
+      subjectPersonId: holder,
+    });
+
+    const rows = await run(s.t, (ctx) =>
+      ctx.db
+        .query("seatAssignments")
+        .withIndex("by_scope_and_seat", (q) => q.eq("scope", "central").eq("seatDefId", ddDef._id))
+        .collect(),
+    );
+    expect(rows).toHaveLength(0);
+
+    const mine = await as.query(api.seatProposals.myProposals, {});
+    const decided = mine.find((p) => p.proposalId === proposalId)!;
+    expect(decided.status).toBe("approved");
+    expect(decided.decidedByPersonId).toBe(edPersonId);
+    expect(decided.decidedAt).toBe(decided.createdAt);
+    expect(decided.autoExecuted).toBe(true);
+    expect(decided.note).toContain("Auto-executed");
+  });
+
+  test("a mid-chain proposer with a VACANT (but existing) ancestor stays pending — NOT chain-top", async () => {
+    const s = await baseSetup();
+    // A 3-level runtime chain hanging off chapter_director, with EVERY
+    // ancestor above the proposer left vacant (regional_lead, chapter_director,
+    // and the central expansion_director/executive_director roots) — the
+    // ancestor seat DEFS structurally exist all the way to the true root, but
+    // nobody occupies any of them. This must NOT auto-execute: it's
+    // indistinguishable from "waiting for someone to fill in above me", not
+    // "nobody could ever be above me".
+    const regionalLead = await insertSeatDef(s, {
+      slug: "regional_lead_chaintop_test",
+      chart: "chapter",
+      parentSlug: "chapter_director",
+      maxHolders: 5,
+    });
+    const regionalScout = await insertSeatDef(s, {
+      slug: "regional_scout_chaintop_test",
+      chart: "chapter",
+      parentSlug: "regional_lead_chaintop_test",
+      maxHolders: 1,
+    });
+    const regionalVolunteer = await insertSeatDef(s, {
+      slug: "regional_volunteer_chaintop_test",
+      chart: "chapter",
+      parentSlug: "regional_scout_chaintop_test",
+      maxHolders: 1,
+    });
+    void regionalLead;
+    const { as: scoutAs, personId: scoutPersonId } = await personActor(
+      s,
+      s.chapterId,
+      "ScoutChainTop",
+      "scout-chaintop@publicworship.life",
+    );
+    await seat(s, regionalScout, s.chapterId, scoutPersonId);
+    const subject = await makePerson(s, s.chapterId, "Subject");
+
+    const proposalId = await scoutAs.mutation(api.seatProposals.propose, {
+      seatDefId: regionalVolunteer,
+      scope: s.chapterId,
+      action: "fill",
+      subjectPersonId: subject,
+    });
+    expect(proposalId).toBeDefined();
+
+    // NOT auto-executed: no assignment was created, and the proposal is
+    // still pending, self-decided fields unset.
+    const rows = await run(s.t, (ctx) =>
+      ctx.db
+        .query("seatAssignments")
+        .withIndex("by_scope_and_seat", (q) =>
+          q.eq("scope", s.chapterId).eq("seatDefId", regionalVolunteer),
+        )
+        .collect(),
+    );
+    expect(rows).toHaveLength(0);
+
+    const mine = await scoutAs.query(api.seatProposals.myProposals, {});
+    const pending = mine.find((p) => p.proposalId === proposalId)!;
+    expect(pending.status).toBe("pending");
+    expect(pending.decidedByPersonId).toBeUndefined();
+    expect(pending.decidedAt).toBeUndefined();
+    expect(pending.autoExecuted).toBeFalsy();
+  });
+
+  test("ordinary two-party flow is unchanged: a mid-chain proposer with an occupied ancestor still goes pending, not auto-executed", async () => {
+    const s = await baseSetup();
+    const cdDef = await defBySlug(s, "chapter_director");
+    const musicLeadDef = await defBySlug(s, "music_lead");
+    const { personId: cdPersonId } = await personActor(s, s.chapterId, "CDRegression", "cd-regression@publicworship.life");
+    await seat(s, cdDef._id, s.chapterId, cdPersonId);
+    const { as: leaderAs, personId: leaderPersonId } = await personActor(
+      s,
+      s.chapterId,
+      "LeaderRegression",
+      "leader-regression@publicworship.life",
+    );
+    await seat(s, musicLeadDef._id, s.chapterId, leaderPersonId);
+    const subject = await makePerson(s, s.chapterId, "Subject");
+
+    const proposalId = await leaderAs.mutation(api.seatProposals.propose, {
+      seatDefId: (await defBySlug(s, "vocal_lead"))._id,
+      scope: s.chapterId,
+      action: "fill",
+      subjectPersonId: subject,
+    });
+
+    const mine = await leaderAs.query(api.seatProposals.myProposals, {});
+    const decided = mine.find((p) => p.proposalId === proposalId)!;
+    expect(decided.status).toBe("pending");
+    expect(decided.autoExecuted).toBeFalsy();
+  });
+
+  test("a validation failure during chain-top auto-execute (SoD conflict) throws and persists nothing — no assignment, no proposal row", async () => {
+    const s = await baseSetup();
+    const cdDef = await defBySlug(s, "chapter_director"); // approve-side (legacyTitle "president")
+    const treasurerDef = await defBySlug(s, "treasurer"); // record-side (legacyTitle "finance_manager")
+    const edDef = await defBySlug(s, "executive_director");
+
+    const { as, personId: edPersonId } = await personActor(s, s.chapterId, "ED-Sod-Chaintop", "ed-sod-chaintop@publicworship.life");
+    await seat(s, edDef._id, "central", edPersonId);
+    void edPersonId;
+
+    // The subject already holds treasurer (record-side) at this chapter —
+    // the ED (chain-top) proposing to ALSO fill chapter_director
+    // (approve-side) for them at the SAME scope is a SoD conflict `propose`
+    // never checks up front (only `assignSeatImpl` does), so it must surface
+    // while auto-executing, not be silently swallowed.
+    const subject = await makePerson(s, s.chapterId, "AlreadyTreasurer");
+    await seat(s, treasurerDef._id, s.chapterId, subject);
+
+    await expect(
+      as.mutation(api.seatProposals.propose, {
+        seatDefId: cdDef._id,
+        scope: s.chapterId,
+        action: "fill",
+        subjectPersonId: subject,
+      }),
+    ).rejects.toBeInstanceOf(ConvexError);
+
+    // Whole mutation rolled back: no chapter_director assignment, and no
+    // proposal row was ever written (not even a "pending" one) — chain-top
+    // execution happens BEFORE the insert.
+    const cdRows = await run(s.t, (ctx) =>
+      ctx.db
+        .query("seatAssignments")
+        .withIndex("by_scope_and_seat", (q) => q.eq("scope", s.chapterId).eq("seatDefId", cdDef._id))
+        .collect(),
+    );
+    expect(cdRows).toHaveLength(0);
+    const mine = await as.query(api.seatProposals.myProposals, {});
+    expect(mine).toHaveLength(0);
+  });
+
+  test("a future ancestor seat re-enables two-party for the ED: no longer chain-top once someone sits above them", async () => {
+    const s = await baseSetup();
+    const edDef = await defBySlug(s, "executive_director");
+    const ddDef = await defBySlug(s, "development_director");
+    const { as: edAs, personId: edPersonId } = await personActor(s, s.chapterId, "ED3", "ed-board@publicworship.life");
+    await seat(s, edDef._id, "central", edPersonId);
+
+    // Insert a runtime "board" seat ABOVE the ED (re-pointing executive_director's
+    // parentSlug at it) — mirrors a future Board seat landing above the ED.
+    const boardDefId = await insertSeatDef(s, {
+      slug: "board_chaintop_test",
+      chart: "central",
+      parentSlug: "root",
+      maxHolders: 5,
+    });
+    await run(s.t, (ctx) => ctx.db.patch(edDef._id, { parentSlug: "board_chaintop_test" }));
+    const { as: boardAs, personId: boardPersonId } = await personActor(
+      s,
+      s.chapterId,
+      "BoardMember",
+      "board-member@publicworship.life",
+    );
+    await seat(s, boardDefId, "central", boardPersonId);
+
+    const subject = await makePerson(s, s.chapterId, "NewDevDirector2");
+    const proposalId = await edAs.mutation(api.seatProposals.propose, {
+      seatDefId: ddDef._id,
+      scope: "central",
+      action: "fill",
+      subjectPersonId: subject,
+    });
+
+    // No longer auto-executed — a decider (the Board member) now exists
+    // above the ED, so it goes through the normal two-party flow.
+    const mine = await edAs.query(api.seatProposals.myProposals, {});
+    expect(mine.find((p) => p.proposalId === proposalId)?.status).toBe("pending");
+
+    await boardAs.mutation(api.seatProposals.approve, { proposalId });
+    const decided = (await edAs.query(api.seatProposals.myProposals, {})).find(
+      (p) => p.proposalId === proposalId,
+    );
+    expect(decided?.status).toBe("approved");
+    expect(decided?.decidedByPersonId).toBe(boardPersonId);
+  });
+});
+
+// ── propose — chain-top fails CLOSED on a broken/truncated ancestor chain ──
+//
+// `ancestorChain` must never let "the walk gave up" read as "reached the
+// top" — a dangling `parentSlug` or a missing `CHAPTER_ROLLUP_PARENT` bridge
+// target truncates the chain the SAME shape a genuine root does (nothing
+// left in the array), so `resolveEligibleDeciders` must trust ONLY the
+// explicit `reachedRoot` flag, never chain-array-emptiness, to decide
+// chain-top. See `AncestorWalkResult`'s doc comment in `seatProposals.ts`.
+
+describe("seatProposals.propose — chain-top fails closed on a broken ancestor chain", () => {
+  test("a dangling parentSlug mid-chain: stays pending, not auto-executed, and warns", async () => {
+    const s = await baseSetup();
+    // A malformed runtime seat whose OWN parentSlug points at a slug that was
+    // never seeded — simulates partial/anomalous seeding or an out-of-band
+    // DB write, not reachable through the (#190) structure editor's own
+    // validated mutations.
+    const danglingMid = await insertSeatDef(s, {
+      slug: "dangling_mid_test",
+      chart: "chapter",
+      parentSlug: "ghost_seat_never_seeded",
+      maxHolders: 1,
+    });
+    const danglingChild = await insertSeatDef(s, {
+      slug: "dangling_child_test",
+      chart: "chapter",
+      parentSlug: "dangling_mid_test",
+      maxHolders: 1,
+    });
+    const { as, personId } = await personActor(s, s.chapterId, "DanglingMid", "dangling-mid@publicworship.life");
+    await seat(s, danglingMid, s.chapterId, personId);
+    const subject = await makePerson(s, s.chapterId, "Subject");
+
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const proposalId = await as.mutation(api.seatProposals.propose, {
+        seatDefId: danglingChild,
+        scope: s.chapterId,
+        action: "fill",
+        subjectPersonId: subject,
+      });
+      expect(proposalId).toBeDefined();
+
+      // NOT auto-executed — the walk gave up on the dangling parentSlug, it
+      // never actually reached the true chart root.
+      const rows = await run(s.t, (ctx) =>
+        ctx.db
+          .query("seatAssignments")
+          .withIndex("by_scope_and_seat", (q) =>
+            q.eq("scope", s.chapterId).eq("seatDefId", danglingChild),
+          )
+          .collect(),
+      );
+      expect(rows).toHaveLength(0);
+
+      const mine = await as.query(api.seatProposals.myProposals, {});
+      const pending = mine.find((p) => p.proposalId === proposalId)!;
+      expect(pending.status).toBe("pending");
+      expect(pending.autoExecuted).toBeFalsy();
+      expect(pending.decidedByPersonId).toBeUndefined();
+
+      expect(warnSpy).toHaveBeenCalled();
+      const warned = warnSpy.mock.calls.some((call) =>
+        String(call[0]).includes("ghost_seat_never_seeded"),
+      );
+      expect(warned).toBe(true);
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
+  test("a missing CHAPTER_ROLLUP_PARENT bridge target: stays pending, not auto-executed, and warns", async () => {
+    const s = await baseSetup();
+    // Delete the seeded `expansion_director` row — the rollup bridge target
+    // every chapter root (`chapter_director`) needs to climb into central.
+    await run(s.t, async (ctx) => {
+      const bridgeDef = await ctx.db
+        .query("seatDefs")
+        .withIndex("by_slug", (q) => q.eq("slug", "expansion_director"))
+        .unique();
+      if (bridgeDef) await ctx.db.delete(bridgeDef._id);
+    });
+
+    const cdDef = await defBySlug(s, "chapter_director");
+    const musicLeadDef = await defBySlug(s, "music_lead");
+    const { as, personId } = await personActor(s, s.chapterId, "BridgeGone", "bridge-gone@publicworship.life");
+    await seat(s, cdDef._id, s.chapterId, personId);
+    const subject = await makePerson(s, s.chapterId, "Subject");
+
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const proposalId = await as.mutation(api.seatProposals.propose, {
+        seatDefId: musicLeadDef._id,
+        scope: s.chapterId,
+        action: "fill",
+        subjectPersonId: subject,
+      });
+      expect(proposalId).toBeDefined();
+
+      const rows = await run(s.t, (ctx) =>
+        ctx.db
+          .query("seatAssignments")
+          .withIndex("by_scope_and_seat", (q) =>
+            q.eq("scope", s.chapterId).eq("seatDefId", musicLeadDef._id),
+          )
+          .collect(),
+      );
+      expect(rows).toHaveLength(0);
+
+      const mine = await as.query(api.seatProposals.myProposals, {});
+      const pending = mine.find((p) => p.proposalId === proposalId)!;
+      expect(pending.status).toBe("pending");
+      expect(pending.autoExecuted).toBeFalsy();
+      expect(pending.decidedByPersonId).toBeUndefined();
+
+      expect(warnSpy).toHaveBeenCalled();
+      const warned = warnSpy.mock.calls.some((call) =>
+        String(call[0]).includes("expansion_director"),
+      );
+      expect(warned).toBe(true);
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+});
+
+// ── autoExecuted is the AUTHORITATIVE marker, never inferred from `note` ───
+
+describe("seatProposals.propose — autoExecuted is structured, not inferred from note text", () => {
+  test("an ordinary (non-chain-top) proposal whose caller-note contains the auto-execute marker text still has autoExecuted unset", async () => {
+    const s = await baseSetup();
+    const cdDef = await defBySlug(s, "chapter_director");
+    const musicLeadDef = await defBySlug(s, "music_lead");
+    const { as, personId } = await personActor(s, s.chapterId, "NoteInjector", "note-injector@publicworship.life");
+    await seat(s, cdDef._id, s.chapterId, personId);
+    const subject = await makePerson(s, s.chapterId, "Subject");
+
+    // A caller pastes the human-readable auto-execute marker text into their
+    // OWN note on an ordinary two-party proposal — this must not be
+    // mistaken for a genuine chain-top auto-execution by any consumer.
+    const impersonatingNote =
+      "Auto-executed: no seat exists above the proposer's in the org chart to approve this change (chain top).";
+
+    const proposalId = await as.mutation(api.seatProposals.propose, {
+      seatDefId: musicLeadDef._id,
+      scope: s.chapterId,
+      action: "fill",
+      subjectPersonId: subject,
+      note: impersonatingNote,
+    });
+
+    const mine = await as.query(api.seatProposals.myProposals, {});
+    const pending = mine.find((p) => p.proposalId === proposalId)!;
+    expect(pending.status).toBe("pending");
+    expect(pending.note).toBe(impersonatingNote);
+    expect(pending.autoExecuted).toBeFalsy();
+    expect(pending.decidedByPersonId).toBeUndefined();
+  });
+});
+
+// ── seats.assignSeat — untouched by this file's changes ────────────────────
+
+describe("seats.assignSeat — superuser direct assignment (regression, untouched by seatProposals changes)", () => {
+  test("a superuser can still assign a seat directly, unaffected by propose's chain-top branch", async () => {
+    const s = await baseSetup();
+    const musicLeadDef = await defBySlug(s, "music_lead");
+    const person = await makePerson(s, s.chapterId, "DirectAssign");
+    const { as: suAs } = await signInAs(s.t, "seyi@publicworship.life");
+
+    const assignmentId = await suAs.mutation(api.seats.assignSeat, {
+      seatDefId: musicLeadDef._id,
+      scope: s.chapterId,
+      personId: person,
+    });
+    expect(assignmentId).toBeDefined();
+
+    const row = await run(s.t, (ctx) => ctx.db.get(assignmentId));
+    expect(row?.personId).toBe(person);
   });
 });

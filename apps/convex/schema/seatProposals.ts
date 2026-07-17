@@ -52,6 +52,15 @@ export const seatProposals = defineTable({
   status: statusValidator,
   decidedByPersonId: v.optional(v.id("people")),
   note: v.optional(v.string()),
+  // AUTHORITATIVE, server-set marker that this proposal executed via the
+  // chain-top path (`seatProposals.ts`'s "Chain-top auto-execute" section) —
+  // never derived from `note`, which is caller-influenced free text a
+  // proposer could otherwise paste the human-readable auto-execute marker
+  // into on an ORDINARY proposal, impersonating self-approval. Every write
+  // to this table sets this explicitly (`true` on the chain-top path,
+  // `false` otherwise) rather than leaving it implicit; `optional` only for
+  // backward compatibility with rows written before this field existed.
+  autoExecuted: v.optional(v.boolean()),
   createdAt: v.number(),
   decidedAt: v.optional(v.number()),
 })
