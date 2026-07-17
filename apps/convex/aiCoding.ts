@@ -525,16 +525,13 @@ async function codeTransaction(
       ? proposal.rationale.slice(0, 1000)
       : undefined;
 
-  await ctx.runMutation(internal.aiCodingData.writeSuggestion, {
-    transactionId,
-    fundId,
-    categoryId,
-    budgetId,
-    confidence,
-    rationale,
-    model,
-  });
-
+  // Log the audit-trail row BEFORE writeSuggestion — matches every failure
+  // branch above (log first, act second): the OpenRouter call is already
+  // billed at this point, so the usage row must exist even if the
+  // subsequent writeSuggestion mutation throws (e.g. a dangling/foreign id
+  // slipping past sanitization). logUsageEvent is itself best-effort
+  // (try/catch inside), so it can never be the thing that prevents the
+  // suggestion from being written.
   await logUsageEvent(ctx, {
     chapterId: transaction.chapterId,
     transactionId,
@@ -543,6 +540,16 @@ async function codeTransaction(
     model,
     outcome: "suggested",
     usage,
+  });
+
+  await ctx.runMutation(internal.aiCodingData.writeSuggestion, {
+    transactionId,
+    fundId,
+    categoryId,
+    budgetId,
+    confidence,
+    rationale,
+    model,
   });
 
   return {

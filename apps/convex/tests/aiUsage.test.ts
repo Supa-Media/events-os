@@ -327,6 +327,75 @@ describe("aiUsageEvents — written by codeTransaction (aiCoding.ts)", () => {
     const events = await allUsageEvents(s);
     expect(events[0].model).toBe("some/other-paid-model");
   });
+
+  // Ordering fix (post-review): `codeTransaction`'s SUCCESS branch now logs
+  // the usage event BEFORE calling `writeSuggestion`, matching every failure
+  // branch (log first, act second) — the OpenRouter call is already billed
+  // once a reply comes back, so the audit row must exist even if the
+  // subsequent DB write throws. This reproduces a genuine (if rare) race
+  // reachable through the real pipeline: `loadForSuggestion` reads the fund
+  // into `context` before the network call, so it survives `codeTransaction`'s
+  // in-memory sanitization against that context — but the fund is deleted
+  // WHILE the (mocked) OpenRouter call is in flight, so `writeSuggestion`'s
+  // live re-validation (`assertLinkInChapter`) throws when it re-reads the DB.
+  test("writeSuggestion throwing after a successful reply still leaves the usage event logged", async () => {
+    process.env.OPENROUTER_API_KEY = "test-key";
+    const t = newT();
+    const s = await setupChapter(t);
+    const personId = await seedSelfPerson(s);
+    await grantRole(s, personId, "bookkeeper");
+    const { fundId, categoryId } = await seedFundAndCategory(s);
+    const txnId = await seedTxn(s);
+
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => {
+        // The race: delete the fund mid-flight, after it was already loaded
+        // into `context.funds` (and thus the sanitization allow-list).
+        await run(s.t, (ctx) => ctx.db.delete(fundId));
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            choices: [
+              {
+                message: {
+                  content: JSON.stringify({
+                    fundId,
+                    categoryId,
+                    confidence: 0.8,
+                    rationale: "match",
+                  }),
+                },
+              },
+            ],
+            usage: { prompt_tokens: 50, completion_tokens: 20 },
+          }),
+        };
+      }),
+    );
+
+    // writeSuggestion's live re-check finds the fund gone and throws; nothing
+    // here catches it, so the action call itself rejects.
+    await expect(
+      s.as.action(api.aiCoding.suggestCoding, { transactionId: txnId }),
+    ).rejects.toBeInstanceOf(ConvexError);
+
+    // The usage event was logged BEFORE writeSuggestion threw — the billed
+    // call is never left unaccounted for just because the DB write failed.
+    // `outcome: "suggested"` reflects the MODEL's reply (a valid, billable
+    // proposal came back) — it is not a claim that the write succeeded; the
+    // transaction's own (absent) `aiSuggestion` below is the source of truth
+    // for whether coding was actually applied.
+    const events = await allUsageEvents(s);
+    expect(events).toHaveLength(1);
+    expect(events[0].outcome).toBe("suggested");
+    expect(events[0].promptTokens).toBe(50);
+    expect(events[0].completionTokens).toBe(20);
+
+    const txn = await run(s.t, (ctx) => ctx.db.get(txnId));
+    expect(txn?.aiSuggestion).toBeUndefined();
+  });
 });
 
 describe("acceptSuggestion backfills suggestionAccepted on the latest usage event", () => {
