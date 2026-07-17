@@ -29,6 +29,7 @@ import {
   titleKind,
   titleAllowsScope,
   type SpecializedRoleKind,
+  type SpecializedRoleTitle,
 } from "@events-os/shared";
 import { Id } from "./_generated/dataModel";
 import { requireUserId } from "./lib/context";
@@ -49,6 +50,110 @@ function otherKind(kind: SpecializedRoleKind): SpecializedRoleKind {
 }
 
 /**
+ * Shared implementation behind `assignSpecializedRole` AND the org-chart seats
+ * write-through bridge (`seats.assignSeat`, for a seat with a `legacyTitle`).
+ * Both entry points are super-admin gated by their CALLERS before reaching
+ * here — this helper itself does no auth check, so it must never be exposed
+ * directly as a public mutation. `userId` is the caller, recorded as
+ * `createdBy`. Enforces scope-validity, the scope-local SoD constraint,
+ * one-holder-per-slot (replacing the incumbent), and the finance bridge for
+ * finance titles — unchanged from the original `assignSpecializedRole` body.
+ */
+export async function assignSpecializedRoleImpl(
+  ctx: MutationCtx,
+  userId: Id<"users">,
+  { personId, scope, title }: { personId: Id<"people">; scope: Id<"chapters"> | "central"; title: SpecializedRoleTitle },
+): Promise<Id<"specializedRoles">> {
+  const scopeIsCentral = scope === "central";
+
+  // 1. Scope-validity: ED → central only, president → chapter only,
+  //    finance_manager → either.
+  if (!titleAllowsScope(title, scopeIsCentral)) {
+    throw new ConvexError({
+      code: "INVALID_SCOPE",
+      message: `The ${specializedRoleLabel(title, scopeIsCentral)} role can't be assigned at ${
+        scopeIsCentral ? "the org (central) level" : "a chapter"
+      }.`,
+    });
+  }
+
+  // 2. Scope + person must exist. A real chapter scope must be a real chapter;
+  //    the person must be a real roster person. NOTE: specialized roles are
+  //    org-oversight roles a super-admin may grant across chapters, so we do
+  //    NOT require the person to belong to the scope chapter — that keeps the
+  //    cross-scope SoD carve-out (president@A + finance_manager@B) reachable.
+  if (!scopeIsCentral) {
+    const chapter = await ctx.db.get(scope as Id<"chapters">);
+    if (!chapter) {
+      throw new ConvexError({ code: "NOT_FOUND", message: "That chapter doesn't exist." });
+    }
+  }
+  const person = await ctx.db.get(personId);
+  if (!person) {
+    throw new ConvexError({ code: "NOT_FOUND", message: "That person doesn't exist." });
+  }
+
+  const kind = titleKind(title);
+
+  // 3. Separation of duties (scope-local): the target person can't already hold
+  //    a role of the OTHER kind in THIS scope.
+  const otherKindRows = await ctx.db
+    .query("specializedRoles")
+    .withIndex("by_scope_and_kind", (q) =>
+      q.eq("scope", scope).eq("roleKind", otherKind(kind)),
+    )
+    .collect();
+  if (otherKindRows.some((r) => r.personId === personId)) {
+    throw new ConvexError({
+      code: "SOD_VIOLATION",
+      message:
+        "Separation of duties: one person can't hold both a leadership and a finance role in the same scope.",
+    });
+  }
+
+  // 4. Slot: one holder per (scope, title). If already filled by a DIFFERENT
+  //    person, remove the incumbent (+ unbridge if it was a finance title).
+  const slotRows = await ctx.db
+    .query("specializedRoles")
+    .withIndex("by_scope_and_title", (q) =>
+      q.eq("scope", scope).eq("title", title),
+    )
+    .collect();
+  const sameHolder = slotRows.find((r) => r.personId === personId);
+  if (sameHolder) {
+    // Idempotent: the person already holds this exact slot. Re-affirm the
+    // finance bridge (in case a prior grant was revoked) and return.
+    if (kind === "finance") {
+      await bridgeFinanceManagerGrant(ctx, scope as FinanceScope, personId);
+    }
+    return sameHolder._id;
+  }
+  for (const incumbent of slotRows) {
+    await ctx.db.delete(incumbent._id);
+    if (incumbent.roleKind === "finance") {
+      await unbridgeIfNoOtherFinanceRole(ctx, scope, incumbent.personId, incumbent._id);
+    }
+  }
+
+  // 5. Insert the new assignment.
+  const roleId = await ctx.db.insert("specializedRoles", {
+    personId,
+    scope,
+    title,
+    roleKind: kind,
+    createdBy: userId,
+    createdAt: Date.now(),
+  });
+
+  // 6. Finance bridge: a finance title confers a `financeRoles` manager grant.
+  if (kind === "finance") {
+    await bridgeFinanceManagerGrant(ctx, scope as FinanceScope, personId);
+  }
+
+  return roleId;
+}
+
+/**
  * Assign a specialized role. Super-admin only. Enforces scope-validity, the
  * scope-local SoD constraint, one-holder-per-slot (replacing the incumbent), and
  * the finance bridge for finance titles.
@@ -63,96 +168,32 @@ export const assignSpecializedRole = mutation({
   handler: async (ctx, { personId, scope, title }) => {
     await requireSuperuser(ctx);
     const userId = (await requireUserId(ctx)) as Id<"users">;
-
-    const scopeIsCentral = scope === "central";
-
-    // 1. Scope-validity: ED → central only, president → chapter only,
-    //    finance_manager → either.
-    if (!titleAllowsScope(title, scopeIsCentral)) {
-      throw new ConvexError({
-        code: "INVALID_SCOPE",
-        message: `The ${specializedRoleLabel(title, scopeIsCentral)} role can't be assigned at ${
-          scopeIsCentral ? "the org (central) level" : "a chapter"
-        }.`,
-      });
-    }
-
-    // 2. Scope + person must exist. A real chapter scope must be a real chapter;
-    //    the person must be a real roster person. NOTE: specialized roles are
-    //    org-oversight roles a super-admin may grant across chapters, so we do
-    //    NOT require the person to belong to the scope chapter — that keeps the
-    //    cross-scope SoD carve-out (president@A + finance_manager@B) reachable.
-    if (!scopeIsCentral) {
-      const chapter = await ctx.db.get(scope as Id<"chapters">);
-      if (!chapter) {
-        throw new ConvexError({ code: "NOT_FOUND", message: "That chapter doesn't exist." });
-      }
-    }
-    const person = await ctx.db.get(personId);
-    if (!person) {
-      throw new ConvexError({ code: "NOT_FOUND", message: "That person doesn't exist." });
-    }
-
-    const kind = titleKind(title);
-
-    // 3. Separation of duties (scope-local): the target person can't already hold
-    //    a role of the OTHER kind in THIS scope.
-    const otherKindRows = await ctx.db
-      .query("specializedRoles")
-      .withIndex("by_scope_and_kind", (q) =>
-        q.eq("scope", scope).eq("roleKind", otherKind(kind)),
-      )
-      .collect();
-    if (otherKindRows.some((r) => r.personId === personId)) {
-      throw new ConvexError({
-        code: "SOD_VIOLATION",
-        message:
-          "Separation of duties: one person can't hold both a leadership and a finance role in the same scope.",
-      });
-    }
-
-    // 4. Slot: one holder per (scope, title). If already filled by a DIFFERENT
-    //    person, remove the incumbent (+ unbridge if it was a finance title).
-    const slotRows = await ctx.db
-      .query("specializedRoles")
-      .withIndex("by_scope_and_title", (q) =>
-        q.eq("scope", scope).eq("title", title),
-      )
-      .collect();
-    const sameHolder = slotRows.find((r) => r.personId === personId);
-    if (sameHolder) {
-      // Idempotent: the person already holds this exact slot. Re-affirm the
-      // finance bridge (in case a prior grant was revoked) and return.
-      if (kind === "finance") {
-        await bridgeFinanceManagerGrant(ctx, scope as FinanceScope, personId);
-      }
-      return sameHolder._id;
-    }
-    for (const incumbent of slotRows) {
-      await ctx.db.delete(incumbent._id);
-      if (incumbent.roleKind === "finance") {
-        await unbridgeIfNoOtherFinanceRole(ctx, scope, incumbent.personId, incumbent._id);
-      }
-    }
-
-    // 5. Insert the new assignment.
-    const roleId = await ctx.db.insert("specializedRoles", {
-      personId,
-      scope,
-      title,
-      roleKind: kind,
-      createdBy: userId,
-      createdAt: Date.now(),
-    });
-
-    // 6. Finance bridge: a finance title confers a `financeRoles` manager grant.
-    if (kind === "finance") {
-      await bridgeFinanceManagerGrant(ctx, scope as FinanceScope, personId);
-    }
-
-    return roleId;
+    return await assignSpecializedRoleImpl(ctx, userId, { personId, scope, title });
   },
 });
+
+/**
+ * Shared implementation behind `removeSpecializedRole` AND the org-chart seats
+ * write-through bridge (`seats.unassignSeat`). No auth check — callers gate.
+ * If the role was a finance title, revokes the bridged `financeRoles` grant
+ * unless the person still holds another finance specialized role at the same
+ * scope that should keep it alive.
+ */
+export async function removeSpecializedRoleImpl(
+  ctx: MutationCtx,
+  roleId: Id<"specializedRoles">,
+): Promise<void> {
+  const row = await ctx.db.get(roleId);
+  if (!row) {
+    throw new ConvexError({ code: "NOT_FOUND", message: "That role assignment doesn't exist." });
+  }
+
+  await ctx.db.delete(roleId);
+
+  if (row.roleKind === "finance") {
+    await unbridgeIfNoOtherFinanceRole(ctx, row.scope, row.personId, roleId);
+  }
+}
 
 /**
  * Remove a specialized role. Super-admin only. If it was a finance title, revoke
@@ -164,17 +205,7 @@ export const removeSpecializedRole = mutation({
   returns: v.null(),
   handler: async (ctx, { roleId }) => {
     await requireSuperuser(ctx);
-
-    const row = await ctx.db.get(roleId);
-    if (!row) {
-      throw new ConvexError({ code: "NOT_FOUND", message: "That role assignment doesn't exist." });
-    }
-
-    await ctx.db.delete(roleId);
-
-    if (row.roleKind === "finance") {
-      await unbridgeIfNoOtherFinanceRole(ctx, row.scope, row.personId, roleId);
-    }
+    await removeSpecializedRoleImpl(ctx, roleId);
     return null;
   },
 });
