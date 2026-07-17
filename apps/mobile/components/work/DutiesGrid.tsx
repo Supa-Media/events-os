@@ -3,17 +3,36 @@
  *
  * Extracted from the Duties screen so it can render both there (its own route,
  * kept for deep links) and inside the Work tab's Duties segment. Each row is a
- * DEFINITION that fans out: assign it to roles ("Director") and every person
- * holding that role gets it as an individual duty on their Work page; assign
- * specific people when no role fits. The How-to column is the handoff
- * documentation; cadence says how often (daily … yearly, or ad hoc).
+ * DEFINITION that fans out: assign it to org-chart SEATS ("Chapter Director")
+ * and every person holding one of those seats gets it as an individual duty on
+ * their Work page; assign specific people when no seat fits. The How-to column
+ * is the handoff documentation; cadence says how often (daily … yearly, or ad
+ * hoc).
+ *
+ * The Roles column is a TRANSITION surface: a duty created before seats
+ * existed still carries legacy `assigneeRoles` strings, shown here as muted
+ * read-only chips next to a seat picker ("Map to seats"). Picking a seat calls
+ * the targeted `responsibilities.addSeat` mutation (mirrors `addAssignee` —
+ * read-modify-write inside the transaction, not a whole-array patch), which
+ * clears the legacy strings in the same edit the FIRST time a duty gets any
+ * seat — there's no way to add a NEW legacy role string from this grid; the
+ * seat picker IS the Roles column once a duty is created. See
+ * `responsibilityAppliesTo` (`@events-os/shared`) for the matching rule this
+ * UI mirrors: seats win over legacy roles the instant a duty has any.
+ *
+ * Two guardrails sit in front of `addSeat`/`removeSeat` (`guardedSeatChange`):
+ * mapping a duty onto a seat NOBODY currently holds warns that the people it
+ * currently reaches via the legacy role lose it until the seat is filled;
+ * removing a duty's last seat once its legacy strings are already gone warns
+ * that it'll apply to nobody. Both are one-tap-to-proceed confirmations, not
+ * hard blocks — an owner can still map onto a vacant seat on purpose.
  *
  * Self-contained: it owns its own queries + mutations, so both mount points
  * render `<DutiesGrid />` with no wiring. Callers gate visibility (nav.canManage)
  * — this component assumes the caller is allowed to manage the catalog.
  */
-import { useMemo, useRef, useState } from "react";
-import { View, Text, Pressable, ScrollView, TextInput } from "react-native";
+import { useMemo, useState } from "react";
+import { Modal, View, Text, Pressable, ScrollView } from "react-native";
 import { useQuery, useMutation } from "convex/react";
 import { api } from "@events-os/convex/_generated/api";
 import type { Doc, Id } from "@events-os/convex/_generated/dataModel";
@@ -41,7 +60,6 @@ import {
   type HowToDocSummary,
 } from "../team/HowToDocCell";
 import { colors, spacing } from "../../lib/theme";
-import { parseList } from "../../lib/format";
 import { alertError } from "../../lib/errors";
 import { confirmAction } from "../event/ticketing/helpers";
 
@@ -71,6 +89,72 @@ const DELETE_W = 38;
 const TABLE_WIDTH =
   Object.values(COLS).reduce((sum, w) => sum + w, 0) + DELETE_W;
 
+/**
+ * Mapping-flow guardrails, shared by the seat picker's toggle and a seat
+ * chip's ✕ — both are one seat-at-a-time edits, so both need the same two
+ * checks before committing:
+ *
+ *  1. ADDING a seat that's the duty's FIRST seat (`currentSeatCount === 0`,
+ *     i.e. this click IS the mapping) onto a seat nobody currently holds
+ *     (`seatHolderCount === 0`) — when the duty still had people reaching it
+ *     via the (about-to-be-abandoned) legacy role match (`legacyMatchCount >
+ *     0`), warn that they're about to lose it until the seat is filled.
+ *  2. REMOVING the duty's LAST seat (`currentSeatCount === 1`) when its
+ *     legacy roles are already cleared (`legacyRoles.length === 0`, always
+ *     true once a duty has been mapped) — warn that the duty will apply to
+ *     nobody (barring direct assignees).
+ *
+ * Neither check applies to any other add/remove (adding a 2nd+ seat, or
+ * removing down to 1+ remaining) — `commit()` runs immediately for those.
+ */
+function guardedSeatChange({
+  isAdding,
+  currentSeatCount,
+  legacyRoles,
+  legacyMatchCount = 0,
+  seatHolderCount = 0,
+  commit,
+}: {
+  isAdding: boolean;
+  currentSeatCount: number;
+  legacyRoles: string[];
+  /** How many people currently reach this duty via `legacyRoles` — only
+   *  needed for the ADD/vacancy check. */
+  legacyMatchCount?: number;
+  /** How many people hold the seat being added — only needed for the
+   *  ADD/vacancy check. */
+  seatHolderCount?: number;
+  commit: () => void;
+}) {
+  if (
+    isAdding &&
+    currentSeatCount === 0 &&
+    seatHolderCount === 0 &&
+    legacyMatchCount > 0
+  ) {
+    confirmAction({
+      title: "This seat is vacant",
+      message: `${legacyMatchCount} ${legacyMatchCount === 1 ? "person" : "people"} currently matched by "${legacyRoles.join(", ")}" will lose this duty until the seat is filled.`,
+      confirmLabel: "Map anyway",
+      destructive: true,
+      onConfirm: commit,
+    });
+    return;
+  }
+  if (!isAdding && currentSeatCount === 1 && legacyRoles.length === 0) {
+    confirmAction({
+      title: "Remove the last seat?",
+      message:
+        "This duty will apply to nobody (unless someone is directly assigned) — the old role text is gone.",
+      confirmLabel: "Remove",
+      destructive: true,
+      onConfirm: commit,
+    });
+    return;
+  }
+  commit();
+}
+
 export function DutiesGrid({
   header = "full",
 }: {
@@ -84,30 +168,61 @@ export function DutiesGrid({
 } = {}) {
   const responsibilities = useQuery(api.responsibilities.list);
   const people = useQuery(api.people.list, {});
+  const seatOptions = useQuery(api.responsibilities.seatOptions);
+  const seatHoldings = useQuery(api.responsibilities.chapterSeatHoldings);
   const create = useMutation(api.responsibilities.create);
   const addAssignee = useMutation(api.responsibilities.addAssignee);
+  // Grid-level (not per-row): the seat picker below lives at the grid, not
+  // inside any one `ResponsibilityRow`. Targeted, like addAssignee/
+  // removeAssignee — never a whole-array `update({ assigneeSeatIds })`.
+  const addSeat = useMutation(api.responsibilities.addSeat);
+  const removeSeat = useMutation(api.responsibilities.removeSeat);
 
   const [search, setSearch] = useState("");
   // ONE picker for the whole grid (a per-row picker would mount a hidden
   // Modal + roster watcher on every row); rows just say which row it's for.
   const [pickerForRow, setPickerForRow] =
     useState<Id<"responsibilities"> | null>(null);
+  // Same one-picker-for-the-grid reasoning for the seat picker.
+  const [seatPickerForRow, setSeatPickerForRow] =
+    useState<Id<"responsibilities"> | null>(null);
 
   const nameById = useMemo(
     () => new Map((people ?? []).map((p) => [p._id, p.name])),
     [people],
   );
-  // Distinct job titles across the roster (original casing) — autocomplete.
-  const allRoles = useMemo(() => {
-    const byNorm = new Map<string, string>();
-    for (const p of people ?? []) {
-      const norm = normalizeRole(p.role);
-      if (norm && !byNorm.has(norm)) byNorm.set(norm, p.role!.trim());
-    }
-    return Array.from(byNorm.values()).sort((a, b) => a.localeCompare(b));
-  }, [people]);
 
-  // How many people hold each (normalized) role — dangling-role warnings.
+  // Seat title + chart, by seatDefId — chip labels and the picker's
+  // Central/Chapter grouping.
+  const seatById = useMemo(
+    () => new Map((seatOptions ?? []).map((s) => [s.seatDefId, s])),
+    [seatOptions],
+  );
+
+  // Which seats each person holds (their own chapter's chapter-chart seats +
+  // every central-chart seat — see `chapterSeatHoldings`), for resolving
+  // `responsibilityAppliesTo`'s seat-based match.
+  const personSeatIds = useMemo(() => {
+    const map = new Map<Id<"people">, Id<"seatDefs">[]>();
+    for (const h of seatHoldings ?? []) {
+      map.set(h.personId, [...(map.get(h.personId) ?? []), h.seatDefId]);
+    }
+    return map;
+  }, [seatHoldings]);
+
+  // The reverse index — who holds THIS seat — for the mapping-flow vacancy
+  // guardrail (is the seat being mapped actually vacant?).
+  const holdersBySeat = useMemo(() => {
+    const map = new Map<Id<"seatDefs">, Set<Id<"people">>>();
+    for (const h of seatHoldings ?? []) {
+      if (!map.has(h.seatDefId)) map.set(h.seatDefId, new Set());
+      map.get(h.seatDefId)!.add(h.personId);
+    }
+    return map;
+  }, [seatHoldings]);
+
+  // How many people hold each (normalized) LEGACY role — dangling-role
+  // warnings on unmapped duties' muted chips.
   const roleHolders = useMemo(() => {
     const map = new Map<string, number>();
     for (const p of people ?? []) {
@@ -117,17 +232,23 @@ export function DutiesGrid({
     return map;
   }, [people]);
 
-  // How many people each row currently fans out to (role match + direct).
+  // How many people each row currently fans out to (seat/role match + direct).
   const holderCount = useMemo(() => {
     const map = new Map<Id<"responsibilities">, number>();
     for (const r of responsibilities ?? []) {
       map.set(
         r._id,
-        (people ?? []).filter((p) => responsibilityAppliesTo(r, p)).length,
+        (people ?? []).filter((p) =>
+          responsibilityAppliesTo(r, {
+            _id: p._id,
+            role: p.role,
+            seatIds: personSeatIds.get(p._id),
+          }),
+        ).length,
       );
     }
     return map;
-  }, [responsibilities, people]);
+  }, [responsibilities, people, personSeatIds]);
 
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
@@ -225,11 +346,12 @@ export function DutiesGrid({
                   key={r._id}
                   row={r}
                   nameById={nameById}
+                  seatById={seatById}
                   roleHolders={roleHolders}
-                  allRoles={allRoles}
                   holders={holderCount.get(r._id) ?? 0}
                   isLast={i === filtered.length - 1}
                   onOpenPicker={() => setPickerForRow(r._id)}
+                  onOpenSeatPicker={() => setSeatPickerForRow(r._id)}
                 />
               ))
             )}
@@ -257,7 +379,7 @@ export function DutiesGrid({
           <View style={{ marginTop: spacing.md }}>
             <EmptyState
               title="Document the recurring work"
-              message="e.g. “Meet with directs — bi-weekly — Directors” or “Create event flyers — ad hoc — Designer”. Assign to roles so one row covers everyone holding it."
+              message="e.g. “Meet with directs — bi-weekly — Chapter Director” or “Create event flyers — ad hoc — Communications”. Assign to seats so one row covers everyone holding it."
             />
           </View>
         </Narrow>
@@ -279,6 +401,36 @@ export function DutiesGrid({
         }}
         onClose={() => setPickerForRow(null)}
       />
+
+      <SeatPicker
+        visible={seatPickerForRow !== null}
+        seats={seatOptions ?? []}
+        selectedIds={
+          (responsibilities.find((r) => r._id === seatPickerForRow)
+            ?.assigneeSeatIds as Id<"seatDefs">[] | undefined) ?? []
+        }
+        onToggle={(seatDefId) => {
+          const row = responsibilities.find((r) => r._id === seatPickerForRow);
+          if (!row) return;
+          const current = row.assigneeSeatIds ?? [];
+          const isAdding = !current.includes(seatDefId);
+          guardedSeatChange({
+            isAdding,
+            currentSeatCount: current.length,
+            legacyRoles: row.assigneeRoles ?? [],
+            legacyMatchCount: holderCount.get(row._id) ?? 0,
+            seatHolderCount: holdersBySeat.get(seatDefId)?.size ?? 0,
+            commit: () => {
+              const mutate = isAdding ? addSeat : removeSeat;
+              void mutate({
+                responsibilityId: row._id,
+                seatDefId,
+              }).catch(alertError);
+            },
+          });
+        }}
+        onClose={() => setSeatPickerForRow(null)}
+      />
     </>
   );
 }
@@ -286,23 +438,26 @@ export function DutiesGrid({
 function ResponsibilityRow({
   row,
   nameById,
+  seatById,
   roleHolders,
-  allRoles,
   holders,
   isLast,
   onOpenPicker,
+  onOpenSeatPicker,
 }: {
   row: Responsibility;
   nameById: Map<Id<"people">, string>;
+  seatById: Map<Id<"seatDefs">, { title: string; chart: "central" | "chapter" }>;
   roleHolders: Map<string, number>;
-  allRoles: string[];
   holders: number;
   isLast: boolean;
   onOpenPicker: () => void;
+  onOpenSeatPicker: () => void;
 }) {
   const updateMutation = useMutation(api.responsibilities.update);
   const removeMutation = useMutation(api.responsibilities.remove);
   const removeAssignee = useMutation(api.responsibilities.removeAssignee);
+  const removeSeatMutation = useMutation(api.responsibilities.removeSeat);
   const id = row._id;
 
   const update = (args: Omit<Parameters<typeof updateMutation>[0], "responsibilityId">) => {
@@ -336,16 +491,33 @@ function ResponsibilityRow({
         />
       </Cell>
 
-      {/* Assignee roles (fan-out): comma-edited chips; a role nobody holds
-          reads in danger red so a job-title rename can't silently detach it. */}
+      {/* Assignee seats (fan-out, current model): read-only chips resolved
+          from `assigneeSeatIds`, plus a seat picker. A duty not yet mapped to
+          seats shows its LEGACY `assigneeRoles` strings muted — read-only,
+          nothing here can add a new one — next to the same picker, which is
+          the one-time mapping flow ("Map to seats"). */}
       <Cell width={COLS.roles}>
-        <RolesCell
-          values={row.assigneeRoles ?? []}
+        <SeatsCell
+          seatIds={(row.assigneeSeatIds as Id<"seatDefs">[] | undefined) ?? []}
+          legacyRoles={row.assigneeRoles ?? []}
+          seatById={seatById}
           roleHolders={roleHolders}
-          allRoles={allRoles}
-          onCommit={(next) =>
-            update({ assigneeRoles: next.length > 0 ? next : null })
-          }
+          onOpenPicker={onOpenSeatPicker}
+          onRemoveSeat={(seatDefId) => {
+            const current =
+              (row.assigneeSeatIds as Id<"seatDefs">[] | undefined) ?? [];
+            guardedSeatChange({
+              isAdding: false,
+              currentSeatCount: current.length,
+              legacyRoles: row.assigneeRoles ?? [],
+              commit: () => {
+                void removeSeatMutation({
+                  responsibilityId: id,
+                  seatDefId,
+                }).catch(alertError);
+              },
+            });
+          }}
         />
       </Cell>
 
@@ -447,131 +619,189 @@ function Cell({ width, children }: { width: number; children: React.ReactNode })
   );
 }
 
-// Role chips + comma editor with type-ahead over the roster's job titles.
-function RolesCell({
-  values,
+/**
+ * Seat chips + legacy-role transition chips. A duty with `assigneeSeatIds`
+ * shows ONLY seat chips (purple, removable) — seats are authoritative once
+ * mapped. A duty with no seats yet but legacy `assigneeRoles` shows those
+ * strings as muted, read-only "(legacy)" chips: there's no editor for them
+ * anymore, only the seat picker ("Map to seats"), which replaces them in one
+ * edit. A duty with neither shows "—" and a plain "+".
+ */
+function SeatsCell({
+  seatIds,
+  legacyRoles,
+  seatById,
   roleHolders,
-  allRoles,
-  onCommit,
+  onOpenPicker,
+  onRemoveSeat,
 }: {
-  values: string[];
+  seatIds: Id<"seatDefs">[];
+  legacyRoles: string[];
+  seatById: Map<Id<"seatDefs">, { title: string; chart: "central" | "chapter" }>;
   roleHolders: Map<string, number>;
-  allRoles: string[];
-  onCommit: (next: string[]) => void;
+  onOpenPicker: () => void;
+  onRemoveSeat: (seatDefId: Id<"seatDefs">) => void;
 }) {
-  const [editing, setEditing] = useState(false);
-
-  if (editing) {
-    return (
-      <RolesEditor
-        initial={values}
-        allRoles={allRoles}
-        onDone={(next) => {
-          onCommit(next);
-          setEditing(false);
-        }}
-      />
-    );
-  }
+  const hasSeats = seatIds.length > 0;
+  const unmappedLegacy = !hasSeats && legacyRoles.length > 0;
 
   return (
-    <Pressable
-      onPress={() => setEditing(true)}
-      className="flex-1 flex-row flex-wrap items-center gap-1 px-2 py-1.5 active:opacity-70 web:hover:opacity-90"
-    >
-      {values.length === 0 ? (
-        <Text className="text-sm text-faint">—</Text>
-      ) : (
-        values.map((s) => {
-          const holds = (roleHolders.get(normalizeRole(s)) ?? 0) > 0;
-          return (
+    <View className="flex-1 flex-row flex-wrap items-center gap-1 px-2 py-1.5">
+      {hasSeats
+        ? seatIds.map((seatDefId) => (
             <OptionTag
-              key={s}
-              label={holds ? s : `${s} — no one holds this role`}
-              color={holds ? "purple" : "red"}
+              key={seatDefId}
+              label={seatById.get(seatDefId)?.title ?? "Seat"}
+              color="purple"
+              onRemove={() => onRemoveSeat(seatDefId)}
             />
-          );
-        })
+          ))
+        : null}
+      {unmappedLegacy
+        ? legacyRoles.map((s) => {
+            const holds = (roleHolders.get(normalizeRole(s)) ?? 0) > 0;
+            return (
+              <OptionTag
+                key={s}
+                label={holds ? `${s} (legacy)` : `${s} — no one holds this role`}
+                color={holds ? "gray" : "red"}
+              />
+            );
+          })
+        : null}
+      {!hasSeats && legacyRoles.length === 0 ? (
+        <Text className="text-sm text-faint">—</Text>
+      ) : null}
+      {unmappedLegacy ? (
+        <Pressable
+          onPress={onOpenPicker}
+          hitSlop={4}
+          className="rounded px-1 py-0.5 active:bg-sunken web:hover:bg-sunken"
+        >
+          <Text className="text-2xs font-semibold text-accent">
+            Map to seats
+          </Text>
+        </Pressable>
+      ) : (
+        <Pressable
+          onPress={onOpenPicker}
+          hitSlop={6}
+          accessibilityLabel="Add a seat"
+          className="rounded p-0.5 active:bg-sunken web:hover:bg-sunken"
+        >
+          <Icon name="plus" size={13} color={colors.faint} />
+        </Pressable>
       )}
-    </Pressable>
+    </View>
   );
 }
 
 /**
- * Comma-list editor with INLINE type-ahead: as you type a role, existing job
- * titles matching the current (last) token render as tappable chips right
- * below the input — inside the cell, NOT in a Modal popover. (A Modal steals
- * focus from the input the moment it mounts on web, which blurred the field,
- * fired the blur-commit, and closed the editor before a single keystroke —
- * the flicker.) Exactly ONE commit ever fires (`done` guard): a chip's
- * onPressIn wins over the input's blur, and blur itself is the click-away
- * commit.
+ * Multi-select seat picker, grouped Central seats / Chapter seats — mirrors
+ * `RolePicker`'s centered-modal chrome, but toggles (stays open across
+ * multiple picks) instead of picking once and closing, since a duty commonly
+ * fans out to more than one seat.
  */
-function RolesEditor({
-  initial,
-  allRoles,
-  onDone,
+function SeatPicker({
+  visible,
+  seats,
+  selectedIds,
+  onToggle,
+  onClose,
 }: {
-  initial: string[];
-  allRoles: string[];
-  onDone: (next: string[]) => void;
+  visible: boolean;
+  seats: { seatDefId: Id<"seatDefs">; title: string; chart: "central" | "chapter" }[];
+  selectedIds: Id<"seatDefs">[];
+  onToggle: (seatDefId: Id<"seatDefs">) => void;
+  onClose: () => void;
 }) {
-  const [text, setText] = useState(initial.join(", "));
-  const done = useRef(false);
-  const latest = useRef(text);
-  latest.current = text;
-
-  const parts = text.split(",");
-  const token = normalizeRole(parts[parts.length - 1]);
-  const already = new Set(parseList(text).map(normalizeRole));
-  const matches = allRoles
-    .filter(
-      (r) =>
-        !already.has(normalizeRole(r)) &&
-        (token === "" || normalizeRole(r).includes(token)),
-    )
-    .slice(0, 5);
-
-  function commit(finalText: string) {
-    if (done.current) return; // pick+blur / submit+blur must not double-fire
-    done.current = true;
-    onDone(parseList(finalText));
-  }
+  const central = seats.filter((s) => s.chart === "central");
+  const chapter = seats.filter((s) => s.chart === "chapter");
+  const selected = new Set(selectedIds);
 
   return (
-    <View className="flex-1 py-1">
-      <TextInput
-        value={text}
-        onChangeText={setText}
-        placeholder="Director, Designer…"
-        placeholderTextColor={colors.faint}
-        autoFocus
-        autoCapitalize="words"
-        onSubmitEditing={() => commit(latest.current)}
-        // Click-away commits; a chip's onPressIn already committed by the
-        // time this runs, and the `done` guard makes it a no-op.
-        onBlur={() => commit(latest.current)}
-        className="px-2 py-0.5 text-sm leading-snug text-ink"
-        style={{ minWidth: 40 }}
-      />
-      {matches.length > 0 ? (
-        <View className="flex-row flex-wrap items-center gap-1 px-2 pt-1">
-          {matches.map((r) => (
-            <Pressable
-              key={r}
-              onPressIn={() => {
-                // Fires before the input's blur — deterministic pick.
-                const kept = parts.slice(0, -1).join(",");
-                commit(kept ? `${kept}, ${r}` : r);
-              }}
-              className="flex-row items-center gap-1 rounded-pill border border-border bg-sunken px-2 py-0.5 active:opacity-70 web:hover:border-border-strong"
-            >
-              <Icon name="plus" size={10} color={colors.muted} />
-              <Text className="text-xs font-medium text-muted">{r}</Text>
+    <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
+      <Pressable
+        onPress={onClose}
+        className="flex-1 items-center justify-center bg-ink/30 p-6"
+      >
+        <Pressable
+          onPress={() => {}}
+          className="w-full max-w-md overflow-hidden rounded-xl border border-border bg-raised shadow-pop"
+        >
+          <View className="flex-row items-center justify-between border-b border-border px-5 py-4">
+            <Text className="font-display text-lg text-ink">
+              Assign to seats
+            </Text>
+            <Pressable onPress={onClose} hitSlop={8} className="rounded-md p-1">
+              <Icon name="x" size={18} color={colors.muted} />
             </Pressable>
-          ))}
-        </View>
-      ) : null}
+          </View>
+
+          <ScrollView className="max-h-96">
+            {seats.length === 0 ? (
+              <Text className="px-5 py-6 text-center text-base text-muted">
+                No seats defined yet — set up the org chart first.
+              </Text>
+            ) : (
+              <>
+                {central.length > 0 ? <SeatGroupHeader label="Central seats" /> : null}
+                {central.map((s) => (
+                  <SeatOptionRow
+                    key={s.seatDefId}
+                    label={s.title}
+                    selected={selected.has(s.seatDefId)}
+                    onPress={() => onToggle(s.seatDefId)}
+                  />
+                ))}
+                {chapter.length > 0 ? <SeatGroupHeader label="Chapter seats" /> : null}
+                {chapter.map((s) => (
+                  <SeatOptionRow
+                    key={s.seatDefId}
+                    label={s.title}
+                    selected={selected.has(s.seatDefId)}
+                    onPress={() => onToggle(s.seatDefId)}
+                  />
+                ))}
+              </>
+            )}
+          </ScrollView>
+        </Pressable>
+      </Pressable>
+    </Modal>
+  );
+}
+
+function SeatGroupHeader({ label }: { label: string }) {
+  return (
+    <View className="border-b border-border bg-sunken px-5 py-1.5">
+      <Text className="text-2xs font-bold uppercase tracking-wider text-muted">
+        {label}
+      </Text>
     </View>
+  );
+}
+
+function SeatOptionRow({
+  label,
+  selected,
+  onPress,
+}: {
+  label: string;
+  selected: boolean;
+  onPress: () => void;
+}) {
+  return (
+    <Pressable
+      onPress={onPress}
+      className="flex-row items-center justify-between border-b border-border px-5 py-3 active:bg-sunken web:hover:bg-sunken"
+    >
+      <Text
+        className={`text-base ${selected ? "font-semibold text-accent" : "text-ink"}`}
+      >
+        {label}
+      </Text>
+      {selected ? <Icon name="check" size={16} color={colors.accent} /> : null}
+    </Pressable>
   );
 }

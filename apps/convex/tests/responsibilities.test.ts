@@ -322,6 +322,422 @@ describe("responsibilities", () => {
   });
 });
 
+/** Insert a bare-bones `seatDefs` row directly (the seat-mutations PR that
+ *  would add a `create` mutation isn't in this branch's stack yet — seat defs
+ *  are a global table, not chapter-scoped, so this doesn't need `s`'s chapter
+ *  at all beyond reusing its `t`). */
+async function insertSeat(
+  s: ChapterSetup,
+  opts: {
+    slug: string;
+    title: string;
+    chart: "central" | "chapter";
+    parentSlug?: string;
+    maxHolders?: number;
+  },
+): Promise<Id<"seatDefs">> {
+  return run(s.t, (ctx) =>
+    ctx.db.insert("seatDefs", {
+      slug: opts.slug,
+      title: opts.title,
+      chart: opts.chart,
+      parentSlug: opts.parentSlug ?? "root",
+      maxHolders: opts.maxHolders ?? 1,
+      duties: [],
+      capabilities: [],
+      sortOrder: 0,
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    }),
+  );
+}
+
+/** Insert a `seatAssignments` row directly (same reasoning as `insertSeat` —
+ *  the assignment-mutations PR isn't in this branch's stack). */
+async function insertSeatAssignment(
+  s: ChapterSetup,
+  seatDefId: Id<"seatDefs">,
+  scope: Id<"chapters"> | "central",
+  personId: Id<"people">,
+): Promise<Id<"seatAssignments">> {
+  return run(s.t, (ctx) =>
+    ctx.db.insert("seatAssignments", {
+      seatDefId,
+      scope,
+      personId,
+      createdAt: Date.now(),
+    }),
+  );
+}
+
+describe("responsibilities × seats", () => {
+  test("appliesTo: chapter-chart seat resolves per-chapter, central-chart seat resolves at central scope", async () => {
+    const s = await setupChapter(newT(), { chapterName: "New York" });
+    const s2 = await setupChapter(s.t, {
+      email: "leader2@publicworship.life",
+      chapterName: "Austin",
+    });
+
+    const treasurerId = await insertSeat(s, {
+      slug: "treasurer",
+      title: "Treasurer",
+      chart: "chapter",
+    });
+    const chairId = await insertSeat(s, {
+      slug: "board_chair",
+      title: "Board Chair",
+      chart: "central",
+    });
+
+    const alice = (await s.as.mutation(api.people.create, {
+      name: "Alice",
+    })) as Id<"people">;
+    const dave = (await s2.as.mutation(api.people.create, {
+      name: "Dave",
+    })) as Id<"people">;
+    const bob = (await s.as.mutation(api.people.create, {
+      name: "Bob",
+    })) as Id<"people">;
+
+    // Alice holds "treasurer" in NY, Dave holds the SAME seat def in Austin —
+    // different scope rows for the shared chart shape. Bob holds the central
+    // seat (scope "central").
+    await insertSeatAssignment(s, treasurerId, s.chapterId, alice);
+    await insertSeatAssignment(s, treasurerId, s2.chapterId, dave);
+    await insertSeatAssignment(s, chairId, "central", bob);
+
+    function seatsByPerson(
+      rows: { personId: Id<"people">; seatDefId: Id<"seatDefs"> }[],
+    ) {
+      const map = new Map<Id<"people">, Id<"seatDefs">[]>();
+      for (const r of rows) {
+        map.set(r.personId, [...(map.get(r.personId) ?? []), r.seatDefId]);
+      }
+      return map;
+    }
+
+    // NY's own view: Alice's NY-scope treasurer + Bob's central seat resolve;
+    // Dave's Austin-scope holding of the SAME seat def does NOT.
+    const nySeats = seatsByPerson(
+      await s.as.query(api.responsibilities.chapterSeatHoldings),
+    );
+    expect(nySeats.get(alice)).toEqual([treasurerId]);
+    expect(nySeats.get(bob)).toEqual([chairId]);
+    expect(nySeats.has(dave)).toBe(false);
+
+    // Austin's own view: Dave's Austin-scope treasurer + the SAME Bob central
+    // seat resolve; Alice's NY-scope holding does NOT.
+    const austinSeats = seatsByPerson(
+      await s2.as.query(api.responsibilities.chapterSeatHoldings),
+    );
+    expect(austinSeats.get(dave)).toEqual([treasurerId]);
+    expect(austinSeats.get(bob)).toEqual([chairId]);
+    expect(austinSeats.has(alice)).toBe(false);
+
+    // The pure matching rule, fed each chapter's own resolved seatIds.
+    const treasurerDuty = { assigneeSeatIds: [treasurerId] };
+    expect(
+      responsibilityAppliesTo(treasurerDuty, {
+        _id: alice,
+        seatIds: nySeats.get(alice),
+      }),
+    ).toBe(true);
+    expect(
+      responsibilityAppliesTo(treasurerDuty, {
+        _id: dave,
+        seatIds: nySeats.get(dave) ?? [],
+      }),
+    ).toBe(false); // Dave doesn't resolve in NY's holdings
+
+    const chairDuty = { assigneeSeatIds: [chairId] };
+    expect(
+      responsibilityAppliesTo(chairDuty, {
+        _id: bob,
+        seatIds: austinSeats.get(bob),
+      }),
+    ).toBe(true); // central seat resolves the same from either chapter's view
+  });
+
+  test("legacy role fallback applies only until a duty is mapped to seats, and mapping clears the legacy strings", async () => {
+    const s = await setupChapter(newT());
+    const { alice } = await seedChain(s); // alice's role is "Director"
+
+    const seatId = await insertSeat(s, {
+      slug: "director_seat",
+      title: "Director Seat",
+      chart: "chapter",
+    });
+
+    const dutyId = (await s.as.mutation(api.responsibilities.create, {
+      title: "Meet with directs",
+      assigneeRoles: ["director"],
+    })) as Id<"responsibilities">;
+
+    let [row] = await s.as.query(api.responsibilities.list);
+    // Before mapping: the legacy role string still fans out to Alice.
+    expect(
+      responsibilityAppliesTo(row, { _id: alice, role: "Director" }),
+    ).toBe(true);
+
+    // Map the duty to a seat — even one Alice doesn't (yet) hold.
+    await s.as.mutation(api.responsibilities.update, {
+      responsibilityId: dutyId,
+      assigneeSeatIds: [seatId],
+    });
+    [row] = await s.as.query(api.responsibilities.list);
+    expect(row.assigneeSeatIds).toEqual([seatId]);
+    // The mapping mutation cleared the legacy strings…
+    expect(row.assigneeRoles).toBeUndefined();
+    // …so the (still-true) role match no longer applies: seats are
+    // authoritative from here on, regardless of `person.role`.
+    expect(
+      responsibilityAppliesTo(row, { _id: alice, role: "Director", seatIds: [] }),
+    ).toBe(false);
+
+    // Once Alice actually holds the mapped seat, she fans out via the seat.
+    await insertSeatAssignment(s, seatId, s.chapterId, alice);
+    const holdings = await s.as.query(api.responsibilities.chapterSeatHoldings);
+    const aliceSeatIds = holdings
+      .filter((h) => h.personId === alice)
+      .map((h) => h.seatDefId);
+    expect(
+      responsibilityAppliesTo(row, {
+        _id: alice,
+        role: "Director",
+        seatIds: aliceSeatIds,
+      }),
+    ).toBe(true);
+  });
+
+  test("create drops legacy roles when seats are given from the start", async () => {
+    const s = await setupChapter(newT());
+    const seatId = await insertSeat(s, {
+      slug: "x",
+      title: "X",
+      chart: "chapter",
+    });
+
+    await s.as.mutation(api.responsibilities.create, {
+      title: "Fresh duty",
+      assigneeSeatIds: [seatId],
+      assigneeRoles: ["director"], // ignored — seats win from the start
+    });
+    const [row] = await s.as.query(api.responsibilities.list);
+    expect(row.assigneeSeatIds).toEqual([seatId]);
+    expect(row.assigneeRoles).toBeUndefined();
+  });
+
+  test("direct person assignment applies regardless of seats — untouched by the seats transition", async () => {
+    const s = await setupChapter(newT());
+    const cara = (await s.as.mutation(api.people.create, {
+      name: "Cara",
+    })) as Id<"people">;
+    const seatId = await insertSeat(s, {
+      slug: "some_seat",
+      title: "Some Seat",
+      chart: "chapter",
+    });
+
+    const dutyId = (await s.as.mutation(api.responsibilities.create, {
+      title: "Special task",
+      assigneeSeatIds: [seatId],
+      assigneePersonIds: [cara],
+    })) as Id<"responsibilities">;
+    const [row] = await s.as.query(api.responsibilities.list);
+    // Cara holds no seat, but the direct assignment still applies.
+    expect(responsibilityAppliesTo(row, { _id: cara, seatIds: [] })).toBe(
+      true,
+    );
+
+    // Targeted removeAssignee still only touches the direct assignment.
+    await s.as.mutation(api.responsibilities.removeAssignee, {
+      responsibilityId: dutyId,
+      personId: cara,
+    });
+    const [row2] = await s.as.query(api.responsibilities.list);
+    expect(row2.assigneePersonIds).toBeUndefined();
+    expect(row2.assigneeSeatIds).toEqual([seatId]);
+  });
+
+  test("dutiesForSeat returns duties mapped to that seat, scoped to the caller's own chapter", async () => {
+    const s = await setupChapter(newT());
+    const s2 = await setupChapter(s.t, {
+      email: "leader2@publicworship.life",
+      chapterName: "Austin",
+    });
+    const seatId = await insertSeat(s, {
+      slug: "y",
+      title: "Y Seat",
+      chart: "chapter",
+    });
+
+    const dutyId = (await s.as.mutation(api.responsibilities.create, {
+      title: "Do the thing",
+      cadence: "weekly",
+      assigneeSeatIds: [seatId],
+    })) as Id<"responsibilities">;
+    await s.as.mutation(api.responsibilities.create, {
+      title: "Unrelated duty",
+    });
+
+    const result = await s.as.query(api.responsibilities.dutiesForSeat, {
+      seatDefId: seatId,
+    });
+    expect(result).toEqual([
+      { id: dutyId, title: "Do the thing", cadence: "weekly" },
+    ]);
+
+    // Austin hasn't mapped anything to this (shared-shape) seat def yet — the
+    // query is scoped to the caller's own chapter's duties, like `list`.
+    expect(
+      await s2.as.query(api.responsibilities.dutiesForSeat, {
+        seatDefId: seatId,
+      }),
+    ).toEqual([]);
+  });
+
+  test("dutiesForSeat reaches ACROSS chapters for a CENTRAL seat — a chapter-A duty is visible browsing from chapter B", async () => {
+    const s = await setupChapter(newT(), { chapterName: "New York" });
+    const s2 = await setupChapter(s.t, {
+      email: "leader2@publicworship.life",
+      chapterName: "Austin",
+    });
+    const centralSeatId = await insertSeat(s, {
+      slug: "board_chair",
+      title: "Board Chair",
+      chart: "central",
+    });
+
+    // Chapter A (NY) authors a duty mapped to the shared central seat.
+    const dutyId = (await s.as.mutation(api.responsibilities.create, {
+      title: "Chair the board meeting",
+      cadence: "monthly",
+      assigneeSeatIds: [centralSeatId],
+    })) as Id<"responsibilities">;
+
+    // Chapter B (Austin) never authored anything for this seat, but browsing
+    // the SAME central seat from Austin's own chart still surfaces NY's duty
+    // — central occupancy (and its duties) is chapter-independent.
+    const fromAustin = await s2.as.query(api.responsibilities.dutiesForSeat, {
+      seatDefId: centralSeatId,
+    });
+    expect(fromAustin).toEqual([
+      { id: dutyId, title: "Chair the board meeting", cadence: "monthly" },
+    ]);
+    // …and it still resolves from NY's own view too.
+    const fromNY = await s.as.query(api.responsibilities.dutiesForSeat, {
+      seatDefId: centralSeatId,
+    });
+    expect(fromNY).toEqual(fromAustin);
+
+    // A CHAPTER-chart seat, by contrast, stays chapter-scoped (asserted in
+    // the test above this one) — only central seats get the cross-chapter
+    // reach, since only central occupancy is actually chapter-independent.
+  });
+
+  test("addSeat / removeSeat edit one seat membership, race-safely — mirrors addAssignee/removeAssignee", async () => {
+    const s = await setupChapter(newT());
+    const seatA = await insertSeat(s, {
+      slug: "seat-a",
+      title: "Seat A",
+      chart: "chapter",
+    });
+    const seatB = await insertSeat(s, {
+      slug: "seat-b",
+      title: "Seat B",
+      chart: "chapter",
+    });
+
+    const id = (await s.as.mutation(api.responsibilities.create, {
+      title: "Storage upkeep",
+      assigneeRoles: ["director"], // legacy — should be cleared by addSeat
+    })) as Id<"responsibilities">;
+    const row = async () =>
+      (await s.as.query(api.responsibilities.list)).find((r) => r._id === id)!;
+
+    // Adding the FIRST seat is the mapping flow: clears legacy roles.
+    await s.as.mutation(api.responsibilities.addSeat, {
+      responsibilityId: id,
+      seatDefId: seatA,
+    });
+    expect((await row()).assigneeSeatIds).toEqual([seatA]);
+    expect((await row()).assigneeRoles).toBeUndefined();
+
+    // Targeted add appends without rewriting the array; re-adding is a no-op.
+    await s.as.mutation(api.responsibilities.addSeat, {
+      responsibilityId: id,
+      seatDefId: seatB,
+    });
+    await s.as.mutation(api.responsibilities.addSeat, {
+      responsibilityId: id,
+      seatDefId: seatB,
+    });
+    expect((await row()).assigneeSeatIds).toEqual([seatA, seatB]);
+
+    // Targeted remove drops only the named seat.
+    await s.as.mutation(api.responsibilities.removeSeat, {
+      responsibilityId: id,
+      seatDefId: seatA,
+    });
+    expect((await row()).assigneeSeatIds).toEqual([seatB]);
+
+    // Removing the last seat clears the field entirely (not `[]`), and does
+    // NOT resurrect the legacy roles — they're gone for good once mapped.
+    await s.as.mutation(api.responsibilities.removeSeat, {
+      responsibilityId: id,
+      seatDefId: seatB,
+    });
+    expect((await row()).assigneeSeatIds).toBeUndefined();
+    expect((await row()).assigneeRoles).toBeUndefined();
+
+    // Both are manager/admin-gated like addAssignee/removeAssignee.
+    const { cara } = await seedChain(s);
+    const asCara = await addUser(s, "cara-seats@publicworship.life", {
+      personId: cara,
+    });
+    await expect(
+      asCara.mutation(api.responsibilities.addSeat, {
+        responsibilityId: id,
+        seatDefId: seatA,
+      }),
+    ).rejects.toThrow(ConvexError);
+    await expect(
+      asCara.mutation(api.responsibilities.removeSeat, {
+        responsibilityId: id,
+        seatDefId: seatA,
+      }),
+    ).rejects.toThrow(ConvexError);
+  });
+
+  test("seatOptions lists every seat def, org-transparently", async () => {
+    const s = await setupChapter(newT());
+    const asVisitor = await addUser(s, "visitor@publicworship.life");
+    const centralId = await insertSeat(s, {
+      slug: "c1",
+      title: "Central One",
+      chart: "central",
+    });
+    const chapterId2 = await insertSeat(s, {
+      slug: "ch1",
+      title: "Chapter One",
+      chart: "chapter",
+    });
+
+    const options = await s.as.query(api.responsibilities.seatOptions);
+    expect(options).toEqual(
+      expect.arrayContaining([
+        { seatDefId: centralId, title: "Central One", chart: "central" },
+        { seatDefId: chapterId2, title: "Chapter One", chart: "chapter" },
+      ]),
+    );
+    // A signed-in account with no roster row gets nothing — same
+    // read-transparency gate as `list`.
+    expect(await asVisitor.query(api.responsibilities.seatOptions)).toEqual(
+      [],
+    );
+  });
+});
+
 describe("check-ins", () => {
   test("managers log for their subtree; never on themselves or outside it", async () => {
     const s = await setupChapter(newT());

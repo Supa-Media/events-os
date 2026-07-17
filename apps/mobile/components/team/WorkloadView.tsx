@@ -69,8 +69,26 @@ export function WorkloadView({
   const workload = useQuery(api.org.workload, { personId });
   const projects = useQuery(api.projects.list, {});
   const responsibilities = useQuery(api.responsibilities.list);
+  // Seat holdings — CRITICAL for `responsibilityAppliesTo`: a duty mapped to
+  // seats ignores its legacy `assigneeRoles` entirely (see the shared fn's
+  // doc comment), so without this every seat-mapped duty would silently drop
+  // off everyone's Workload + the 1:1 check-in seed list the instant a
+  // manager maps it — including the seat's actual holder.
+  const seatHoldings = useQuery(api.responsibilities.chapterSeatHoldings);
   const checkIns = useQuery(api.checkIns.listForSubtree, { personId });
   const createProject = useMutation(api.projects.create);
+
+  const personSeatIds = useMemo(() => {
+    const map = new Map<Id<"people">, Id<"seatDefs">[]>();
+    for (const h of seatHoldings ?? []) {
+      map.set(h.personId, [...(map.get(h.personId) ?? []), h.seatDefId]);
+    }
+    return map;
+  }, [seatHoldings]);
+  const seatTitleById = useMemo(
+    () => new Map((seatHoldings ?? []).map((h) => [h.seatDefId, h.seatTitle])),
+    [seatHoldings],
+  );
 
   const [checkInFor, setCheckInFor] = useState<{
     _id: Id<"people">;
@@ -134,7 +152,9 @@ export function WorkloadView({
     return map;
   }, [projects, projectById]);
 
-  /** Everyone's responsibilities (role fan-out + direct), one pass. */
+  /** Everyone's responsibilities (seat fan-out + legacy role fan-out +
+   *  direct), one pass. `seatIds` is what makes a seat-mapped duty actually
+   *  match — see the `seatHoldings` query above. */
   const respByPerson = useMemo(() => {
     const map = new Map<Id<"people">, Responsibility[]>();
     const people = [
@@ -146,11 +166,16 @@ export function WorkloadView({
     for (const p of people) {
       map.set(
         p._id,
-        (responsibilities ?? []).filter((r) => responsibilityAppliesTo(r, p)),
+        (responsibilities ?? []).filter((r) =>
+          responsibilityAppliesTo(r, {
+            ...p,
+            seatIds: personSeatIds.get(p._id),
+          }),
+        ),
       );
     }
     return map;
-  }, [responsibilities, workload]);
+  }, [responsibilities, workload, personSeatIds]);
   const respFor = (id: Id<"people">) => respByPerson.get(id) ?? [];
 
   /**
@@ -442,7 +467,12 @@ export function WorkloadView({
             ) : (
               <DutyRows
                 items={ownResponsibilities}
-                person={{ _id: person._id, role: person.role }}
+                person={{
+                  _id: person._id,
+                  role: person.role,
+                  seatIds: personSeatIds.get(person._id),
+                }}
+                seatTitleById={seatTitleById}
                 canUnassign={canEditDuties}
               />
             )}
@@ -483,6 +513,8 @@ export function WorkloadView({
                     member={m}
                     roots={rootsByOwner.get(m._id) ?? []}
                     responsibilities={respFor(m._id)}
+                    seatIds={personSeatIds.get(m._id)}
+                    seatTitleById={seatTitleById}
                     checkIns={checkInsByPerson.get(m._id) ?? []}
                     projectTree={projectTree}
                     peopleById={peopleById}
@@ -646,6 +678,8 @@ function TeamMemberBlock({
   member,
   roots,
   responsibilities,
+  seatIds,
+  seatTitleById,
   checkIns,
   projectTree,
   peopleById,
@@ -662,6 +696,9 @@ function TeamMemberBlock({
   member: Member;
   roots: ProjectDoc[];
   responsibilities: Responsibility[];
+  /** Seat defs this member holds — for DutyRows' "via {seat}" provenance. */
+  seatIds?: readonly Id<"seatDefs">[];
+  seatTitleById?: Map<Id<"seatDefs">, string>;
   checkIns: CheckInRow[];
   projectTree: Map<Id<"projects">, ProjectDoc[]>;
   peopleById: Map<Id<"people">, string>;
@@ -753,7 +790,8 @@ function TeamMemberBlock({
           {responsibilities.length > 0 ? (
             <DutyRows
               items={responsibilities}
-              person={{ _id: member._id, role: member.role }}
+              person={{ _id: member._id, role: member.role, seatIds }}
+              seatTitleById={seatTitleById}
               canUnassign={!!onAddDuty}
             />
           ) : null}

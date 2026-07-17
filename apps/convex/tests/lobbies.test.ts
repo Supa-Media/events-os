@@ -147,7 +147,12 @@ async function addRoleAssignment(
 
 async function addDuty(
   s: ChapterSetup,
-  opts: { assigneePersonIds?: Id<"people">[]; assigneeRoles?: string[]; title?: string } = {},
+  opts: {
+    assigneePersonIds?: Id<"people">[];
+    assigneeRoles?: string[];
+    assigneeSeatIds?: Id<"seatDefs">[];
+    title?: string;
+  } = {},
 ) {
   return await run(s.t, (ctx) =>
     ctx.db.insert("responsibilities", {
@@ -156,9 +161,49 @@ async function addDuty(
       cadence: "weekly",
       assigneePersonIds: opts.assigneePersonIds,
       assigneeRoles: opts.assigneeRoles,
+      assigneeSeatIds: opts.assigneeSeatIds,
       createdBy: s.userId,
       createdAt: Date.now(),
       updatedAt: Date.now(),
+    }),
+  );
+}
+
+/** Insert a bare-bones `seatDefs` row directly (no seat-mutations PR needed —
+ *  seat defs are a global table, not chapter-scoped). */
+async function addSeat(
+  s: ChapterSetup,
+  opts: { slug: string; title: string; chart: "central" | "chapter" },
+) {
+  return await run(s.t, (ctx) =>
+    ctx.db.insert("seatDefs", {
+      slug: opts.slug,
+      title: opts.title,
+      chart: opts.chart,
+      parentSlug: "root",
+      maxHolders: 1,
+      duties: [],
+      capabilities: [],
+      sortOrder: 0,
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    }),
+  );
+}
+
+/** Insert a `seatAssignments` row directly. */
+async function addSeatAssignment(
+  s: ChapterSetup,
+  seatDefId: Id<"seatDefs">,
+  scope: Id<"chapters"> | "central",
+  personId: Id<"people">,
+) {
+  return await run(s.t, (ctx) =>
+    ctx.db.insert("seatAssignments", {
+      seatDefId,
+      scope,
+      personId,
+      createdAt: Date.now(),
     }),
   );
 }
@@ -192,6 +237,54 @@ describe("org.nav tier derivation", () => {
     const nav = await as.query(api.org.nav, {});
     expect(nav.tier).toBe("lead");
     expect(nav.tierReasons[0]).toContain("Lock the doors");
+  });
+
+  // Regression: `responsibilityAppliesTo` ignores legacy `assigneeRoles`
+  // ENTIRELY the instant a duty has `assigneeSeatIds` — so `deriveTier` must
+  // resolve the caller's own held seats (`selfSeatIds`) or a duty owned
+  // purely via a seat silently falls through to "member" instead of "lead".
+  test("owns a duty via a held seat (no reports, no legacy role match) → lead", async () => {
+    const s = await setupChapter(newT());
+    const person = await addPerson(s, "Seat Holder", { isTeamMember: true });
+    const seatId = await addSeat(s, {
+      slug: "sound_lead",
+      title: "Sound Lead",
+      chart: "chapter",
+    });
+    await addSeatAssignment(s, seatId, s.chapterId, person);
+    await addDuty(s, {
+      assigneeSeatIds: [seatId],
+      title: "Run the sound board",
+    });
+    const { as } = await addUser(s, "seat@publicworship.life", {
+      personId: person,
+    });
+    const nav = await as.query(api.org.nav, {});
+    expect(nav.tier).toBe("lead");
+    expect(nav.tierReasons[0]).toContain("Run the sound board");
+  });
+
+  test("holds a CENTRAL seat a duty is mapped to → lead", async () => {
+    const s = await setupChapter(newT());
+    const person = await addPerson(s, "Central Seat Holder", {
+      isTeamMember: true,
+    });
+    const seatId = await addSeat(s, {
+      slug: "board_chair",
+      title: "Board Chair",
+      chart: "central",
+    });
+    await addSeatAssignment(s, seatId, "central", person);
+    await addDuty(s, {
+      assigneeSeatIds: [seatId],
+      title: "Chair the board meeting",
+    });
+    const { as } = await addUser(s, "chair@publicworship.life", {
+      personId: person,
+    });
+    const nav = await as.query(api.org.nav, {});
+    expect(nav.tier).toBe("lead");
+    expect(nav.tierReasons[0]).toContain("Chair the board meeting");
   });
 
   test("core team member (no duty, no reports) → member", async () => {
