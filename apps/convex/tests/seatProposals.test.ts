@@ -792,6 +792,64 @@ describe("seatProposals queries — visibility", () => {
     expect(mine.find((p) => p.proposalId === first)?.status).toBe("cancelled");
     expect(mine.find((p) => p.proposalId === second)?.status).toBe("pending");
   });
+
+  test("myProposals always includes a JUST-CREATED proposal even for a proposer with far more than the per-row scan limit of history", async () => {
+    const s = await baseSetup();
+    const cdDef = await defBySlug(s, "chapter_director");
+    const musicLeadDef = await defBySlug(s, "music_lead");
+    const { as, personId } = await personActor(
+      s,
+      s.chapterId,
+      "Prolific",
+      "prolific@publicworship.life",
+    );
+    await seat(s, cdDef._id, s.chapterId, personId);
+
+    // Flood the proposer's OWN proposal history well past `myProposals`'
+    // per-row scan bound (200) — bypassing the `propose` mutation (its
+    // duplicate-pending / below-your-seat checks aren't the point of this
+    // test) by inserting rows directly, oldest first, so `_creationTime`
+    // increases with insertion order exactly as it would in production.
+    const fillerSubject = await makePerson(s, s.chapterId, "FillerSubject");
+    const baseTime = Date.now() - 1_000_000;
+    for (let i = 0; i < 205; i++) {
+      await run(s.t, (ctx) =>
+        ctx.db.insert("seatProposals", {
+          seatDefId: musicLeadDef._id,
+          scope: s.chapterId,
+          action: "fill",
+          subjectPersonId: fillerSubject,
+          proposedByPersonId: personId,
+          status: "declined",
+          autoExecuted: false,
+          createdAt: baseTime + i,
+        }),
+      );
+    }
+
+    // The REAL newest proposal, created through the actual mutation — the
+    // exact scenario `SeatActions.tsx`'s chain-top-status re-read depends on
+    // (re-reading `myProposals` immediately after `propose` to check the row
+    // it just created).
+    const realSubject = await makePerson(s, s.chapterId, "RealSubject");
+    const newestProposalId = await as.mutation(api.seatProposals.propose, {
+      seatDefId: musicLeadDef._id,
+      scope: s.chapterId,
+      action: "fill",
+      subjectPersonId: realSubject,
+    });
+
+    const mine = await as.query(api.seatProposals.myProposals, {});
+    // Newest-first, and the just-created proposal is ALWAYS present — before
+    // the fix, an unordered `.take(200)` grabbed the OLDEST 200 rows, so a
+    // 206th (newest) proposal would be silently missing here.
+    expect(mine[0]!.proposalId).toBe(newestProposalId);
+    // Capped at the per-row scan bound.
+    expect(mine).toHaveLength(200);
+    // The very oldest filler row was dropped — proof the cap keeps the
+    // NEWEST 200, not an arbitrary (or oldest-first) 200.
+    expect(mine.some((p) => p.createdAt === baseTime)).toBe(false);
+  });
 });
 
 // ── access control ───────────────────────────────────────────────────────────

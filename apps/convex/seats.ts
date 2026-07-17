@@ -36,7 +36,7 @@ import {
   type FinanceRole,
 } from "@events-os/shared";
 import { requireAccess, requireUserId } from "./lib/context";
-import { requireSuperuser } from "./lib/superuser";
+import { isSuperuser, requireSuperuser } from "./lib/superuser";
 import { ROLLUP_SCAN_LIMIT } from "./finances";
 import {
   assignSpecializedRoleImpl,
@@ -85,6 +85,12 @@ type DetailedHolder = {
   imageUrl: string | null;
   createdAt: number;
   grantedBy: Id<"users"> | null;
+  /** The underlying `seatAssignments` row backing this holder — even a
+   *  DERIVED seat's holders resolve through a real assignment row (the
+   *  chapter-level one being rolled up), so this is always populated here.
+   *  `seatDetail` strips it back out for a non-superuser caller before it
+   *  ever reaches the client — see that query's handler. */
+  assignmentId: Id<"seatAssignments">;
 };
 
 /** Resolve a `people` row to its display name/image, skipping placeholders
@@ -127,6 +133,7 @@ async function detailedHoldersForScope(
       ...resolved,
       createdAt: row.createdAt,
       grantedBy: row.grantedBy ?? null,
+      assignmentId: row._id,
     });
   }
   return out;
@@ -371,6 +378,13 @@ export const seatDetail = query({
           imageUrl: v.union(v.string(), v.null()),
           createdAt: v.number(),
           grantedBy: v.union(v.id("users"), v.null()),
+          // Only present for a superuser caller (the only caller who can
+          // actually ACT on it — `unassignSeat` is superuser-gated too). A
+          // non-superuser gets holder rows with this field simply absent,
+          // never a leaked id they can't use. See `assignmentId` on
+          // `DetailedHolder` for why this is populated even for a derived
+          // seat's rolled-up holders.
+          assignmentId: v.optional(v.id("seatAssignments")),
         }),
       ),
       createdAt: v.number(),
@@ -415,6 +429,14 @@ export const seatDetail = query({
         })()
       : detailedHoldersForScope(ctx, scope, defId);
 
+    // Gate `assignmentId` to a superuser caller ONLY — mirrors the
+    // `requireSuperuser` gate on `unassignSeat` itself, the one mutation this
+    // id is for. `isSuperuser` never throws (unlike `requireSuperuser`), so a
+    // non-superuser caller still gets the rest of `seatDetail` back normally,
+    // just without an id they couldn't act on anyway.
+    const callerIsSuperuser = await isSuperuser(ctx);
+    const resolvedHolders = await holders;
+
     return {
       defId: def._id,
       slug: def.slug,
@@ -424,7 +446,14 @@ export const seatDetail = query({
       capabilities: def.capabilities,
       maxHolders: def.maxHolders,
       derived: isDerived,
-      holders: await holders,
+      holders: resolvedHolders.map((h) => ({
+        personId: h.personId,
+        name: h.name,
+        imageUrl: h.imageUrl,
+        createdAt: h.createdAt,
+        grantedBy: h.grantedBy,
+        ...(callerIsSuperuser ? { assignmentId: h.assignmentId } : {}),
+      })),
       createdAt: def.createdAt,
       updatedAt: def.updatedAt,
     };
@@ -503,6 +532,84 @@ export const mySeatAssignments = query({
     }
     results.sort((a, b) => a.createdAt - b.createdAt);
     return results;
+  },
+});
+
+/** Bound on how many people a single (per-chapter, or central) scan of
+ *  `assignablePeople` reads before slicing to the returned cap — generous
+ *  headroom over any realistic chapter roster, mirroring `MAX_CHART_SEATS`'s
+ *  convention. */
+const MAX_PEOPLE_SCAN_PER_CHAPTER = 300;
+
+/** Final cap on how many people `assignablePeople` hands back to the client —
+ *  it feeds a picker UI, not an export, so this is capped well below the
+ *  per-chapter scan bound above even for a large org. */
+const MAX_ASSIGNABLE_PEOPLE = 500;
+
+/**
+ * The roster a seat-change picker (propose or direct-assign) may choose from,
+ * at a given seat SCOPE — the scope-aware counterpart to `people.list` (which
+ * is hardcoded to the CALLER's own chapter, wrong for proposing/assigning into
+ * a different chapter or into central). Non-placeholder, non-sample-person
+ * only (mirrors `people.list`'s own filter).
+ *
+ *  - `scope: <chapterId>` → that chapter's roster only.
+ *  - `scope: "central"` → EVERY chapter's roster, org-wide — mirrors the
+ *    org-transparency precedent `seats.chart`'s full-tree read already
+ *    established (a central seat, or a central holder proposing into any
+ *    chapter via the rollup bridge, can draw from anyone in the org, not just
+ *    the caller's own chapter).
+ *
+ * Gated by `requireAccess` only (signed-in + allowed) — same as `chart` /
+ * `seatDetail` / `mySeatAssignments`: this powers the propose flow, which any
+ * signed-in member may use, not just a superuser.
+ */
+export const assignablePeople = query({
+  args: {
+    scope: v.union(v.id("chapters"), v.literal("central")),
+  },
+  returns: v.array(chartHolderValidator),
+  handler: async (ctx, { scope }) => {
+    await requireAccess(ctx);
+
+    let people: Doc<"people">[];
+    if (scope === "central") {
+      const chapters = await boundedChapters(ctx, "assignablePeople central scope");
+      const perChapter = await Promise.all(
+        chapters.map((c) =>
+          ctx.db
+            .query("people")
+            .withIndex("by_chapter", (q) => q.eq("chapterId", c._id))
+            .take(MAX_PEOPLE_SCAN_PER_CHAPTER),
+        ),
+      );
+      people = perChapter.flat();
+    } else {
+      const chapter = await ctx.db.get(scope);
+      if (!chapter) {
+        throw new ConvexError({
+          code: "NOT_FOUND",
+          message: "That chapter doesn't exist.",
+        });
+      }
+      people = await ctx.db
+        .query("people")
+        .withIndex("by_chapter", (q) => q.eq("chapterId", scope))
+        .take(MAX_PEOPLE_SCAN_PER_CHAPTER);
+    }
+
+    const eligible = people
+      .filter((p) => p.isPlaceholder !== true && p.isSamplePerson !== true)
+      .sort((a, b) => a.name.localeCompare(b.name))
+      .slice(0, MAX_ASSIGNABLE_PEOPLE);
+
+    return await Promise.all(
+      eligible.map(async (p) => ({
+        personId: p._id,
+        name: p.name,
+        imageUrl: p.image ? await ctx.storage.getUrl(p.image) : null,
+      })),
+    );
   },
 });
 
