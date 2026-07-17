@@ -1,7 +1,13 @@
 import { describe, expect, test } from "vitest";
 import { api } from "../_generated/api";
 import type { Id } from "../_generated/dataModel";
-import { newT, run, setupChapter, type ChapterSetup } from "./setup.helpers";
+import {
+  newT,
+  run,
+  setupChapter,
+  type ChapterSetup,
+  type TestConvex,
+} from "./setup.helpers";
 import { runSeedSeatDefs } from "../migrations/0022_seed_seat_defs";
 
 /**
@@ -97,6 +103,20 @@ async function assignSeatDirect(
       createdAt: Date.now(),
     }),
   );
+}
+
+/** A second, superuser-authenticated client on the SAME `convex-test`
+ *  instance — needed to call `assignSeat`/`unassignSeat` themselves (both
+ *  superuser-gated), independent of whichever identity `s.as` represents. No
+ *  chapter membership needed: `requireSuperuser` only checks the allowlisted
+ *  email on the `users` row, never chapter access. */
+async function superuserIdentity(
+  s: ChapterSetup,
+): Promise<ReturnType<TestConvex["withIdentity"]>> {
+  const superuserId = await run(s.t, (ctx) =>
+    ctx.db.insert("users", { email: "seyi@publicworship.life" }),
+  );
+  return s.t.withIdentity({ subject: `${superuserId}|session`, issuer: "test" });
 }
 
 describe("getFinanceRole — central reach union (via stripeFinance.canConnectAccount)", () => {
@@ -308,6 +328,122 @@ describe("isCentralEdOrFm — accounts-access union (via financeRoles.canViewAcc
     expect(await s.as.query(api.financeRoles.canViewAccounts, {})).toBe(
       false,
     );
+  });
+});
+
+describe("seat-derived union — invariant pins (from Opus review of #195)", () => {
+  test("cross-chapter isolation — a treasurer seat at chapter A grants nothing at chapter B for the same person", async () => {
+    const s = await seatSetup(); // home chapter ("New York") = "chapter B" below
+    await seedSelfPerson(s); // the caller's OWN roster row at chapter B — no seat, no grant
+
+    // A second chapter, with a SEPARATE roster row for the SAME userId —
+    // exactly `financeSeats.test.ts`'s (g) "dual-chapter person" shape.
+    const chapterA = await run(s.t, (ctx) =>
+      ctx.db.insert("chapters", {
+        name: "Chapter A",
+        isActive: true,
+        createdAt: Date.now(),
+      }),
+    );
+    const personAtChapterA = await run(s.t, (ctx) =>
+      ctx.db.insert("people", {
+        chapterId: chapterA,
+        name: "Caller (Chapter A)",
+        userId: s.userId,
+        isTeamMember: true,
+        createdAt: Date.now(),
+      }),
+    );
+    await assignSeatDirect(s, personAtChapterA, "treasurer", chapterA);
+
+    // The caller's ACTIVE chapter (`requireChapterId`, via `userChapters`)
+    // is still chapter B — their chapter-A treasurer seat must not leak in.
+    const targetPersonId = await makeTargetPerson(s);
+    await expect(
+      s.as.mutation(api.financeRoles.grantFinanceRole, {
+        personId: targetPersonId,
+        role: "viewer",
+        scope: "chapter",
+      }),
+    ).rejects.toThrow();
+  });
+
+  test("unassignSeat drops access from BOTH the seat-derived source and its bridged financeRoles grant", async () => {
+    const s = await seatSetup();
+    const personId = await seedSelfPerson(s);
+    const treasurerDef = await defBySlug(s, "treasurer");
+    const superuserAs = await superuserIdentity(s);
+
+    // The REAL write-through: treasurer's `legacyTitle` is `finance_manager`
+    // (a finance-kind title), so this ALSO bridges a stored chapter
+    // `financeRoles` manager grant — both `assignSeat`/`unassignSeat` are
+    // superuser-gated, hence the separate `superuserAs` identity.
+    const assignmentId = await superuserAs.mutation(api.seats.assignSeat, {
+      seatDefId: treasurerDef._id,
+      scope: s.chapterId,
+      personId,
+    });
+
+    const targetPersonId = await makeTargetPerson(s);
+    // Gate passes while the seat (+ its bridge) is live.
+    await expect(
+      s.as.mutation(api.financeRoles.grantFinanceRole, {
+        personId: targetPersonId,
+        role: "viewer",
+        scope: "chapter",
+      }),
+    ).resolves.toBeDefined();
+
+    await superuserAs.mutation(api.seats.unassignSeat, { assignmentId });
+
+    // Gate now rejects — neither the seat-derived source nor the bridged
+    // stored grant survive the unassign.
+    const targetPersonId2 = await makeTargetPerson(s);
+    await expect(
+      s.as.mutation(api.financeRoles.grantFinanceRole, {
+        personId: targetPersonId2,
+        role: "viewer",
+        scope: "chapter",
+      }),
+    ).rejects.toThrow();
+  });
+
+  test("a chapter_director seat (finance.approve only, no finance.manager) does NOT clear the manager-rank gate", async () => {
+    const s = await seatSetup();
+    const personId = await seedSelfPerson(s);
+    await assignSeatDirect(s, personId, "chapter_director", s.chapterId);
+    const targetPersonId = await makeTargetPerson(s);
+
+    await expect(
+      s.as.mutation(api.financeRoles.grantFinanceRole, {
+        personId: targetPersonId,
+        role: "viewer",
+        scope: "chapter",
+      }),
+    ).rejects.toThrow();
+  });
+
+  test("a stored chapter manager grant with NO seat at all still clears the manager-rank gate — the residual side, pinned positively", async () => {
+    const s = await seatSetup();
+    const personId = await seedSelfPerson(s);
+    await run(s.t, (ctx) =>
+      ctx.db.insert("financeRoles", {
+        chapterId: s.chapterId,
+        personId,
+        role: "manager",
+        scope: "chapter",
+        createdAt: Date.now(),
+      }),
+    );
+    const targetPersonId = await makeTargetPerson(s);
+
+    await expect(
+      s.as.mutation(api.financeRoles.grantFinanceRole, {
+        personId: targetPersonId,
+        role: "viewer",
+        scope: "chapter",
+      }),
+    ).resolves.toBeDefined();
   });
 });
 
