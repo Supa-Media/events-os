@@ -305,6 +305,7 @@ const REGISTRY_NAMES = [
   "0021_inventory_category_to_tags",
   "0022_seed_seat_defs",
   "0023_seed_seat_assignments",
+  "0024_add_cd_finance_viewer",
 ];
 const SEEDED_HISTORICAL = [
   "backfillMissingDefaultColumns",

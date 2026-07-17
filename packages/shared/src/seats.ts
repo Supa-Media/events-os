@@ -46,9 +46,20 @@ export const MULTI_HOLDER_CAP = 50 as const;
  *  gates a specific privileged action/surface (e.g. `nav.finances` shows the
  *  Finances tab; `org.editChart` allows editing the org chart itself). Most
  *  seats carry none — capabilities are the exception, stamped only on seats
- *  that need real authority, not every leadership title. */
+ *  that need real authority, not every leadership title.
+ *
+ *  `finance.viewer` (owner decision, 2026-07-16 — see `chapter_director`'s
+ *  def below): read-only reach onto a scope's finance surfaces (dashboard,
+ *  reconcile grid, budgets) — the bottom rung of the graded ladder
+ *  (`viewer` < `bookkeeper` < `manager`, `lib/finance.ts`). Distinct from
+ *  `finance.manager`, which additionally derives WRITE rights. A seat
+ *  carrying `finance.viewer` never gains record/reconcile-write or
+ *  budget-edit access from that capability alone — see
+ *  `apps/convex/lib/seats.ts`'s "Mapping rules" for how it derives into the
+ *  graded ladder. */
 export const SEAT_CAPABILITIES = [
   "finance.manager",
+  "finance.viewer",
   "finance.central",
   "finance.accounts",
   "finance.approve",
@@ -340,7 +351,15 @@ export const SEAT_DEFS: Record<SeatId, SeatDef> = {
       "Own chapter budget approval",
       "Report up to central",
     ],
-    capabilities: ["finance.approve", "nav.finances"],
+    // Owner decision (2026-07-16): "Chapter Director does have financial
+    // powers, they approve budgets, they can also see spending... they
+    // should see how the money is spent as well. But they still need to get
+    // their things reconciled by their treasurer or financial manager." —
+    // `finance.viewer` adds the SEE half (read-only reach: dashboard,
+    // reconcile grid, budgets); `finance.approve` already covered the
+    // approve half. Deliberately NOT `finance.manager` — that would also
+    // derive record/reconcile-write, which stays the Treasurer's job.
+    capabilities: ["finance.approve", "finance.viewer", "nav.finances"],
     legacyTitle: "president",
   },
   treasurer: {

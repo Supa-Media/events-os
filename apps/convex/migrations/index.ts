@@ -36,6 +36,7 @@ import { permitsStatesAndFallback } from "./0020_permits_states_and_fallback";
 import { inventoryCategoryToTags } from "./0021_inventory_category_to_tags";
 import { seedSeatDefs } from "./0022_seed_seat_defs";
 import { seedSeatAssignments } from "./0023_seed_seat_assignments";
+import { addCdFinanceViewer } from "./0024_add_cd_finance_viewer";
 
 /** One registered migration: a stable `name` (the ledger key) + its effect. */
 export type Migration = {
@@ -72,4 +73,7 @@ export const MIGRATIONS: Migration[] = [
   seedSeatDefs,
   // Org chart v1 — seed seatAssignments from legacy specializedRoles.
   seedSeatAssignments,
+  // Chapter Director finance visibility (owner decision, 2026-07-16) — patch
+  // the live chapter_director seatDefs row to add finance.viewer.
+  addCdFinanceViewer,
 ];

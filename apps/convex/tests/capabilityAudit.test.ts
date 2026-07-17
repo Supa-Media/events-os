@@ -110,31 +110,31 @@ describe("seats.capabilityAudit — seeded parity", () => {
 
     const treasurerDef = await defBySlug(s, "treasurer");
     const fmDef = await defBySlug(s, "financial_manager");
-    const chapterDirectorDef = await defBySlug(s, "chapter_director");
 
     // FM holds a `finance.accounts`-carrying seat, so it needs a REAL
     // `userId` for `todaysAccountsAccessForPerson` to be able to resolve it
     // at all (mirrors `isCentralEdOrFm`'s requirement — a person with no
-    // linked user can never be "the caller"). Treasurer/president don't
-    // carry that capability, so they don't need one.
+    // linked user can never be "the caller"). Treasurer doesn't carry that
+    // capability, so it doesn't need one.
     //
-    // NOTE: `executive_director` is deliberately NOT included here — see the
-    // "flip-simulation drift" describe block below. Its `legacyTitle`
-    // ("executive_director") is a LEADERSHIP title, and
-    // `assignSpecializedRoleImpl` only bridges FINANCE-kind titles to
-    // `financeRoles` (step 6: `if (kind === "finance")`). So assigning the
-    // ED seat TODAY never grants `financeRoles` central reach — a genuine,
-    // pre-existing gap between the seat template's `finance.central`
-    // capability and the current bridge, unrelated to drift. It's exactly
-    // the kind of divergence `flip_changes_central_reach` exists to
-    // surface, so it's covered by its own dedicated test instead of
+    // NOTE: `executive_director` and (as of the finance.viewer PR,
+    // 2026-07-17) `chapter_director` are deliberately NOT included here —
+    // see the "flip-simulation drift" describe block below. Both carry a
+    // seat capability (`finance.central` / `finance.viewer` respectively)
+    // that `assignSpecializedRoleImpl` never bridges to a stored grant for a
+    // LEADERSHIP-kind title (`president`/`executive_director`) — only
+    // FINANCE-kind titles bridge (step 6: `if (kind === "finance")`). So
+    // assigning either seat TODAY produces a genuine, pre-existing/by-design
+    // gap between the seat template's capability and the current bridge,
+    // unrelated to drift. It's exactly the kind of divergence
+    // `flip_changes_central_reach` / `flip_changes_finance_role` exist to
+    // surface, so each is covered by its own dedicated test instead of
     // polluting this "everything's in sync" baseline.
     const fmUserId = await run(s.t, (ctx) =>
       ctx.db.insert("users", { email: "fran@publicworship.life" }),
     );
     const treasurer = await makePerson(s, s.chapterId, "Tara Treasurer");
     const fm = await makePerson(s, s.chapterId, "Fran FM", { userId: fmUserId });
-    const president = await makePerson(s, s.chapterId, "Percy President");
 
     await s.as.mutation(api.seats.assignSeat, {
       seatDefId: treasurerDef._id,
@@ -146,16 +146,11 @@ describe("seats.capabilityAudit — seeded parity", () => {
       scope: "central",
       personId: fm,
     });
-    await s.as.mutation(api.seats.assignSeat, {
-      seatDefId: chapterDirectorDef._id,
-      scope: s.chapterId,
-      personId: president,
-    });
 
     const result = await audit(s);
     expect(result.status).toBe("clean");
     expect(result.mismatches).toEqual([]);
-    expect(result.checkedPeople).toBeGreaterThanOrEqual(3);
+    expect(result.checkedPeople).toBeGreaterThanOrEqual(2);
   });
 });
 
@@ -232,6 +227,40 @@ describe("seats.capabilityAudit — flip-simulation drift", () => {
         scope: "central",
         kind: "flip_changes_central_reach",
         seatSide: "central-reach",
+        storedSide: null,
+      },
+    ]);
+  });
+
+  test("a chapter_director seat (no finance.manager bridge) is reported as flip_changes_finance_role — the finance.viewer widening (owner decision, 2026-07-16)", async () => {
+    const s = await superuserSetup();
+    const cdDef = await defBySlug(s, "chapter_director");
+    // chapter_director doesn't carry finance.accounts, so (unlike the ED
+    // case above) no real userId is needed for this dimension.
+    const person = await makePerson(s, s.chapterId, "Percy President");
+
+    // The REAL assignSeat write-through: chapter_director's legacyTitle
+    // ("president") is a LEADERSHIP title, so it bridges to
+    // `specializedRoles` but NEVER to `financeRoles` (only `finance_manager`
+    // does — see `assignSpecializedRoleImpl`). So today's stored finance
+    // role for this person stays null even though the seat now carries
+    // `finance.viewer` (added by the finance.viewer PR) — a genuine
+    // post-flip widening from null to "viewer", exactly what this audit
+    // exists to surface.
+    await s.as.mutation(api.seats.assignSeat, {
+      seatDefId: cdDef._id,
+      scope: s.chapterId,
+      personId: person,
+    });
+
+    const result = await audit(s);
+    const mine = result.mismatches.filter((m) => m.personId === person);
+    expect(mine).toEqual([
+      {
+        personId: person,
+        scope: s.chapterId,
+        kind: "flip_changes_finance_role",
+        seatSide: "viewer",
         storedSide: null,
       },
     ]);
