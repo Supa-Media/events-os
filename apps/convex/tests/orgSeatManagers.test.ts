@@ -462,3 +462,57 @@ describe("prod-shaped multi-seat mutual pair (PR #205 regression)", () => {
     }
   });
 });
+
+// Adversarial review finding (2026-07-17): an earlier version of the cycle
+// fix used a BLANKET seniority filter — keep a candidate manager only if
+// they're senior to the person's single most-senior seat, checked against
+// EVERY candidate, not just ones inside an actual cycle. That silently
+// dropped legitimate, non-cyclic manager edges: a central Development
+// Director who also volunteers on a chapter's multi-holder `event_organizers`
+// seat lost their real, non-cyclic `event_lead` manager for that seat, purely
+// because their UNRELATED central seat outranked the event lead overall.
+// Since `buildEffectiveChildrenOf` is what `manageablePersonIds` /
+// `hasEffectiveReports` walk, that silently stripped the event lead's WRITE
+// authority (`checkIns.log`, `responsibilities.*`) over that volunteer — a
+// real authorization regression, not just a display bug. The fix must be
+// CYCLE-SCOPED (only touch edges that are actually part of a cycle), so this
+// non-cyclic edge survives untouched. Pinned here at the GATE level (not just
+// the `effectiveManagerIds` field) since that's what actually broke.
+describe("cycle-scoped tie-break preserves non-cyclic write authority (adversarial review fix)", () => {
+  test("a person's unrelated senior central seat does not strip their real chapter manager's write authority", async () => {
+    const s = await seatSetup();
+    const ed = await makePerson(s, "ED");
+    // X: central Development Director (senior) who ALSO volunteers as an NY
+    // event_organizers co-holder (junior) — two entirely unrelated seats.
+    const x = await makePerson(s, "X");
+    // Y: the NY Event Lead — X's REAL, non-cyclic manager for the
+    // event_organizers seat. Y never points back at X or ED, so this is not
+    // a cycle at all.
+    const y = await makePerson(s, "Y");
+    await assign(s, "executive_director", "central", ed);
+    await assign(s, "development_director", "central", x);
+    await assign(s, "event_organizers", s.chapterId, x);
+    await assign(s, "event_lead", s.chapterId, y);
+    const asY = await addUser(s, "y-write@publicworship.life", y);
+
+    // READ: overview.people[].effectiveManagerIds keeps BOTH managers — the
+    // ED (via development_director) AND Y (via event_organizers). Neither is
+    // senior to the other in a way that creates a cycle, so both survive.
+    const overview = await s.as.query(api.org.overview);
+    const xRow = overview.people.find((p) => p._id === x)!;
+    expect([...xRow.effectiveManagerIds].sort()).toEqual([ed, y].sort());
+
+    // WRITE: the event lead (Y) — not an admin, not the ED — must still be
+    // able to log a check-in for X. This is the actual regression: a blanket
+    // seniority filter silently 403s this exact call.
+    await expect(
+      asY.mutation(api.checkIns.log, { personId: x, type: "skip" }),
+    ).resolves.not.toThrow();
+
+    // And Y genuinely has reports (canManage), not just a read-side artifact.
+    expect(await asY.query(api.org.nav)).toMatchObject({
+      isAdmin: false,
+      canManage: true,
+    });
+  });
+});

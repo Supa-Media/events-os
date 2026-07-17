@@ -30,8 +30,9 @@
  *    to a pre-seat manager signal (this repo: `people.managerId`) only for
  *    people the seat tree has no opinion about.
  *
- * MUTUAL-SEAT CYCLE TIE-BREAK (2026-07-17, post-#205 regression fix — see
- * `orgSeatManagers.test.ts`'s "multi-seat mutual pair" describe block):
+ * MUTUAL-SEAT CYCLE TIE-BREAK (2026-07-17, post-#205 regression fix, revised
+ * 2026-07-17 after adversarial review — see `orgSeatManagers.test.ts`'s
+ * "multi-seat mutual pair" and "cycle-scoped tie-break" describe blocks):
  *
  *  A person who holds MULTIPLE seats gets a candidate manager from EACH seat's
  *  independent walk, unioned together. When two people each hold a senior
@@ -50,33 +51,51 @@
  *  silently vanishes from the tree. Only people with no seat-derived manager
  *  at all (nothing feeding their `out` set) survive as visible roots.
  *
- *  Fix: after collecting the raw per-seat-derived candidate set, filter it to
- *  keep only candidates who are ACTUALLY more senior than the person overall
- *  — "the central-chart-root-closer person wins as the parent." Seniority is
- *  a person's STRUCTURAL distance to the central chart's root (`depthOf`,
- *  below): 0 for the central root seat, +1 per `parentSlug` hop, chapter
- *  seats crossing into the central chart via `chapterRollupParentSlug` like
- *  the main walk does. A person's overall seniority is the MIN depth across
- *  every seat they hold (their single most-senior seat), not the depth of
- *  whichever seat is currently being walked — that's what makes this
- *  hierarchy-wide rather than a narrow "just this one pair" patch: a
- *  candidate is kept as a manager only if their best seat is STRICTLY closer
- *  to the root than the person's own best seat. Depth strictly decreases
- *  along every surviving edge, so the resulting graph can never contain a
- *  cycle of any length, not just 2-cycles.
+ *  Fix: this is a graph-cycle problem, so it's fixed as one. `deriveSeatManagerIds`
+ *  is no longer a purely per-person computation — it consults a RESOLVED
+ *  manager graph built once per `(index, centralScope, chapterRollupParentSlug)`
+ *  (`buildResolvedManagerGraph`, cached in `resolvedGraphCache`):
  *
- *  In the ED/expansion-director example: the ED's overall depth is 0 (their
- *  `executive_director` seat), so a candidate at depth 1 (`expansion_director`)
- *  fails the strict-improvement check and is dropped — the ED has no manager,
- *  correctly. The expansion director's overall depth is 1, and the ED's is 0,
- *  which strictly improves on it — kept. Net: expansion director reports to
- *  the ED, never the reverse, regardless of which of their several seats
- *  produced the raw edge.
+ *   1. Compute the RAW per-seat-derived candidate set for every seat-holding
+ *      person (`rawSeatManagerIds` — the walk, unfiltered).
+ *   2. Find strongly-connected components (Tarjan's algorithm, `tarjanSCCs`)
+ *      over that raw graph. Only an SCC of size > 1 is an actual cycle.
+ *   3. For every edge `child -> parent` INSIDE such an SCC (both endpoints in
+ *      the same cycle), drop the edge unless `parent` is STRICTLY more senior
+ *      than `child` — "the central-chart-root-closer person wins as the
+ *      parent." Seniority is a person's structural distance to the central
+ *      chart's root (`seatDepth`), minimized across EVERY seat they hold, not
+ *      just the seat that produced this one edge. Equal-depth ties (not
+ *      expected in the current acyclic taxonomy) break deterministically by
+ *      comparing person ids. Edges that leave the SCC, or that never touched
+ *      a cycle at all, are left completely untouched.
  *
- *  Equal-depth ties (not expected in the current acyclic seat taxonomy — every
- *  real ancestor relationship strictly decreases depth — but kept as a
- *  defensive fallback) are broken by comparing person ids lexicographically,
- *  so exactly one direction survives instead of either both or neither.
+ *  Scoping the filter to cycle-internal edges (rather than a blanket
+ *  "candidate must be senior to my BEST seat" compare over every candidate,
+ *  which an earlier version of this fix did) matters: a person can
+ *  legitimately hold one senior, unrelated central seat (e.g. Development
+ *  Director) AND a junior chapter seat whose REAL, non-cyclic manager is
+ *  someone with no seat anywhere near as senior (e.g. an NY Event Lead they
+ *  volunteer under as an `event_organizers` co-holder). That edge never
+ *  participates in a cycle — nothing points back from the Event Lead into the
+ *  Development Director — so it must survive untouched. A blanket seniority
+ *  compare wrongly drops it (the person's unrelated central seat "outranks"
+ *  their real chapter manager), which silently strips that manager's
+ *  `buildEffectiveChildrenOf`-derived write authority (`checkIns.log`,
+ *  `responsibilities.*` via `requireManagerOrAdmin`) over them. Because every
+ *  edge inside a resolved SCC still strictly decreases in seniority once
+ *  broken (a residual cycle would require seniority to strictly decrease all
+ *  the way around and back to the start, which is impossible for a finite
+ *  order), one pass over each SCC is sufficient — no iteration to fixpoint
+ *  needed.
+ *
+ *  In the ED/expansion-director example: the ED (depth 0) and the expansion
+ *  director (depth 1) form a 2-node SCC. The ED's edge to the expansion
+ *  director fails (the expansion director isn't senior to the ED) and is
+ *  dropped — the ED has no manager. The expansion director's edge to the ED
+ *  succeeds and is kept. Net: expansion director reports to the ED, never the
+ *  reverse — the SAME outcome as the original fix for this case, just no
+ *  longer at the cost of dropping unrelated, non-cyclic edges elsewhere.
  */
 
 import { SEAT_ROOT } from "./seats";
@@ -209,13 +228,13 @@ function seatDepth<SeatDefId extends string>(
       );
       depth = rollupParent
         ? seatDepth(index, rollupParent.seatDefId, chapterRollupParentSlug, memo, guard + 1) + 1
-        : 1; // dangling rollup target — defensive
+        : Infinity; // dangling rollup target — defensive, same fail-safe as a dangling seatDefId (least-senior, never wins a manager slot)
     }
   } else {
     const parent = index.defBySlug.get(chartSlugKey(def.chart, def.parentSlug));
     depth = parent
       ? seatDepth(index, parent.seatDefId, chapterRollupParentSlug, memo, guard + 1) + 1
-      : 0; // dangling parentSlug — defensive
+      : Infinity; // dangling parentSlug — defensive, same fail-safe as above (was `0`/most-senior — fail-open bug; a seat structurally cut off from any root must never silently outrank everyone)
   }
   memo.set(seatDefId, depth);
   return depth;
@@ -237,7 +256,15 @@ function personSeatDepth<SeatDefId extends string, PersonId extends string>(
   );
 }
 
-export function deriveSeatManagerIds<
+/**
+ * The RAW per-seat-derived candidate managers for one person — every seat
+ * they hold, walked and unioned, with NO cycle-break filtering applied. This
+ * is the graph's edge set BEFORE `buildResolvedManagerGraph` prunes
+ * cycle-internal backward edges; `deriveSeatManagerIds` never calls this
+ * directly (it reads the resolved graph instead) — it exists so the graph
+ * builder can compute every seat-holder's raw edges the same way.
+ */
+function rawSeatManagerIds<
   SeatDefId extends string,
   PersonId extends string,
   Scope extends string,
@@ -246,9 +273,9 @@ export function deriveSeatManagerIds<
   personId: PersonId,
   centralScope: Scope,
   chapterRollupParentSlug: string,
-): SeatManagerResult<PersonId> {
+): PersonId[] {
   const heldSeats = index.seatsByPerson.get(personId);
-  if (!heldSeats || heldSeats.length === 0) return null;
+  if (!heldSeats || heldSeats.length === 0) return [];
 
   const out = new Set<PersonId>();
   for (const held of heldSeats) {
@@ -285,19 +312,169 @@ export function deriveSeatManagerIds<
       parentSlug = parent.parentSlug;
     }
   }
+  return [...out];
+}
 
-  // Mutual-seat cycle tie-break: keep a candidate only if THEY are strictly
-  // more senior overall than `personId` — see the module header's
-  // "MUTUAL-SEAT CYCLE TIE-BREAK" section. Ties (not expected in the current
-  // taxonomy) break deterministically by id so exactly one direction survives.
+/**
+ * Strongly-connected components of a directed graph (Tarjan's algorithm),
+ * over a `PersonId -> PersonId[]` "my managers" adjacency. A component of
+ * size 1 is just an ordinary node (no cycle); size > 1 means every member is
+ * mutually reachable from every other — a genuine cycle. The seat-manager
+ * graph is small (bounded by roster size), so plain recursion is fine.
+ */
+function tarjanSCCs<PersonId extends string>(
+  nodeIds: PersonId[],
+  edges: Map<PersonId, PersonId[]>,
+): PersonId[][] {
+  let counter = 0;
+  const indexOf = new Map<PersonId, number>();
+  const lowlink = new Map<PersonId, number>();
+  const onStack = new Set<PersonId>();
+  const stack: PersonId[] = [];
+  const components: PersonId[][] = [];
+
+  function strongConnect(v: PersonId) {
+    indexOf.set(v, counter);
+    lowlink.set(v, counter);
+    counter++;
+    stack.push(v);
+    onStack.add(v);
+
+    for (const w of edges.get(v) ?? []) {
+      if (!indexOf.has(w)) {
+        strongConnect(w);
+        lowlink.set(v, Math.min(lowlink.get(v)!, lowlink.get(w)!));
+      } else if (onStack.has(w)) {
+        lowlink.set(v, Math.min(lowlink.get(v)!, indexOf.get(w)!));
+      }
+    }
+
+    if (lowlink.get(v) === indexOf.get(v)) {
+      const component: PersonId[] = [];
+      let w: PersonId;
+      do {
+        w = stack.pop()!;
+        onStack.delete(w);
+        component.push(w);
+      } while (w !== v);
+      components.push(component);
+    }
+  }
+
+  for (const v of nodeIds) {
+    if (!indexOf.has(v)) strongConnect(v);
+  }
+  return components;
+}
+
+/**
+ * The resolved manager graph for every seat-holding person in `index`: raw
+ * edges (`rawSeatManagerIds`) with cycle-internal backward edges pruned — see
+ * the module header's "MUTUAL-SEAT CYCLE TIE-BREAK" section for the full
+ * algorithm and why it's scoped to cycle-internal edges only.
+ */
+function buildResolvedManagerGraph<
+  SeatDefId extends string,
+  PersonId extends string,
+  Scope extends string,
+>(
+  index: SeatManagerIndex<SeatDefId, PersonId, Scope>,
+  centralScope: Scope,
+  chapterRollupParentSlug: string,
+): Map<PersonId, PersonId[]> {
+  const personIds = [...index.seatsByPerson.keys()];
+
+  const raw = new Map<PersonId, PersonId[]>();
+  for (const personId of personIds) {
+    raw.set(personId, rawSeatManagerIds(index, personId, centralScope, chapterRollupParentSlug));
+  }
+
   const depthMemo = new Map<SeatDefId, number>();
-  const ownDepth = personSeatDepth(index, personId, chapterRollupParentSlug, depthMemo);
-  const filtered = [...out].filter((candidateId) => {
-    const candidateDepth = personSeatDepth(index, candidateId, chapterRollupParentSlug, depthMemo);
-    if (candidateDepth !== ownDepth) return candidateDepth < ownDepth;
-    return candidateId < personId;
-  });
-  return filtered;
+  const seniority = new Map<PersonId, number>();
+  for (const personId of personIds) {
+    seniority.set(personId, personSeatDepth(index, personId, chapterRollupParentSlug, depthMemo));
+  }
+
+  const resolved = new Map<PersonId, Set<PersonId>>();
+  for (const [id, managerIds] of raw) resolved.set(id, new Set(managerIds));
+
+  for (const component of tarjanSCCs(personIds, raw)) {
+    if (component.length < 2) continue; // a singleton is never a cycle
+    const inCycle = new Set(component);
+    for (const child of component) {
+      const managerIds = resolved.get(child);
+      if (!managerIds) continue;
+      const childRank = seniority.get(child) ?? Infinity;
+      for (const parent of [...managerIds]) {
+        if (!inCycle.has(parent)) continue; // edge leaves the cycle — untouched
+        const parentRank = seniority.get(parent) ?? Infinity;
+        const parentIsMoreSenior =
+          parentRank !== childRank ? parentRank < childRank : parent < child;
+        if (!parentIsMoreSenior) managerIds.delete(parent);
+      }
+    }
+  }
+
+  const out = new Map<PersonId, PersonId[]>();
+  for (const [id, managerIds] of resolved) out.set(id, [...managerIds]);
+  return out;
+}
+
+/** Caches `buildResolvedManagerGraph` per index object (a fresh index is built
+ *  once per chapter-scoped read — see `lib/org.ts`'s `loadSeatManagerIndex` —
+ *  and then queried per-person many times over, so this turns an O(roster ×
+ *  seats) rebuild into a one-time cost per read). Keyed additionally by
+ *  `centralScope`/`chapterRollupParentSlug` since those are call-supplied,
+ *  not part of the index itself — defensive, since every real caller passes
+ *  the same constants for a given index. */
+const resolvedGraphCache = new WeakMap<
+  SeatManagerIndex<string, string, string>,
+  Map<string, Map<string, string[]>>
+>();
+
+function getResolvedManagerGraph<
+  SeatDefId extends string,
+  PersonId extends string,
+  Scope extends string,
+>(
+  index: SeatManagerIndex<SeatDefId, PersonId, Scope>,
+  centralScope: Scope,
+  chapterRollupParentSlug: string,
+): Map<PersonId, PersonId[]> {
+  const cacheKey = `${String(centralScope)} ${chapterRollupParentSlug}`;
+  const indexKey = index as unknown as SeatManagerIndex<string, string, string>;
+  let byKey = resolvedGraphCache.get(indexKey);
+  if (!byKey) {
+    byKey = new Map();
+    resolvedGraphCache.set(indexKey, byKey);
+  }
+  let graph = byKey.get(cacheKey);
+  if (!graph) {
+    graph = buildResolvedManagerGraph(
+      index,
+      centralScope,
+      chapterRollupParentSlug,
+    ) as unknown as Map<string, string[]>;
+    byKey.set(cacheKey, graph);
+  }
+  return graph as unknown as Map<PersonId, PersonId[]>;
+}
+
+export function deriveSeatManagerIds<
+  SeatDefId extends string,
+  PersonId extends string,
+  Scope extends string,
+>(
+  index: SeatManagerIndex<SeatDefId, PersonId, Scope>,
+  personId: PersonId,
+  centralScope: Scope,
+  chapterRollupParentSlug: string,
+): SeatManagerResult<PersonId> {
+  const heldSeats = index.seatsByPerson.get(personId);
+  if (!heldSeats || heldSeats.length === 0) return null;
+
+  const graph = getResolvedManagerGraph(index, centralScope, chapterRollupParentSlug);
+  return graph.get(personId) ?? [];
 }
 
 /** Seat-derived managers if the person holds any seat; otherwise the stored

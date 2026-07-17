@@ -14,11 +14,13 @@ const SEAT_DEFS: SeatManagerSeatDef<string>[] = [
   // Central chart
   { seatDefId: "executive_director", chart: "central", slug: "executive_director", parentSlug: "root" },
   { seatDefId: "expansion_director", chart: "central", slug: "expansion_director", parentSlug: "executive_director" },
+  { seatDefId: "development_director", chart: "central", slug: "development_director", parentSlug: "executive_director" },
   // Chapter chart (shared shape, stamped per chapter via `scope`)
   { seatDefId: "chapter_director", chart: "chapter", slug: "chapter_director", parentSlug: "root" },
   { seatDefId: "music_lead", chart: "chapter", slug: "music_lead", parentSlug: "chapter_director" },
   { seatDefId: "vocal_lead", chart: "chapter", slug: "vocal_lead", parentSlug: "music_lead" },
   { seatDefId: "event_lead", chart: "chapter", slug: "event_lead", parentSlug: "chapter_director" },
+  { seatDefId: "event_organizers", chart: "chapter", slug: "event_organizers", parentSlug: "event_lead" },
 ];
 
 const CENTRAL = "central";
@@ -131,6 +133,52 @@ describe("deriveSeatManagerIds", () => {
       // chapter — vic still resolves normally to Eli, not swallowed by the
       // mutual-pair filtering happening for eli/jess above.
       expect(deriveSeatManagerIds(index, "vic", CENTRAL, CHAPTER_ROLLUP_PARENT)).toEqual(["eli"]);
+    });
+  });
+
+  describe("cycle-scoped tie-break (adversarial review fix — 2026-07-17)", () => {
+    // Reviewer repro: X is a central Development Director (senior, depth 1)
+    // who ALSO volunteers on a chapter's `event_organizers` seat (junior,
+    // under Y's `event_lead`). X and Y never point back at each other — X's
+    // managers are {ed, y}, Y's manager is {ed}, ed has none — so there is NO
+    // cycle here at all. An earlier version of this fix used a BLANKET
+    // "candidate must be senior to my single most-senior seat" filter, which
+    // wrongly dropped Y (X's real, non-cyclic event_organizers manager)
+    // because X's unrelated development_director seat outranked Y overall.
+    // The cycle-scoped fix must leave this untouched: X keeps BOTH managers.
+    test("a person's unrelated senior seat does NOT strip a real, non-cyclic manager from an unrelated junior seat", () => {
+      const index = makeIndex([
+        { seatDefId: "executive_director", scope: CENTRAL, personId: "ed" },
+        { seatDefId: "development_director", scope: CENTRAL, personId: "x" },
+        { seatDefId: "event_organizers", scope: "chapterA", personId: "x" },
+        { seatDefId: "event_lead", scope: "chapterA", personId: "y" },
+      ]);
+      expect(deriveSeatManagerIds(index, "x", CENTRAL, CHAPTER_ROLLUP_PARENT)?.sort()).toEqual(
+        ["ed", "y"].sort(),
+      );
+      // y's own manager (via event_lead's rollup to chapter_director, vacant,
+      // then to the central expansion_director, vacant, then to the ED) is
+      // unaffected — not part of any cycle either.
+      expect(deriveSeatManagerIds(index, "y", CENTRAL, CHAPTER_ROLLUP_PARENT)).toEqual(["ed"]);
+      expect(deriveSeatManagerIds(index, "ed", CENTRAL, CHAPTER_ROLLUP_PARENT)).toEqual([]);
+    });
+
+    // A genuine 3-node cycle: Vee holds vocal_lead (reports up to Emm's
+    // music_lead) AND expansion_director@central (Cee's chapter_director
+    // rolls up to it) — closing a ring Vee -> Emm -> Cee -> Vee. Seniority
+    // (min depth across every seat held): Vee=1 (expansion_director),
+    // Cee=2 (chapter_director), Emm=3 (music_lead) — a strict order, so the
+    // cycle must resolve into the linear chain Vee (root) <- Cee <- Emm.
+    test("a 3-node cycle resolves into a linear chain ordered by seniority", () => {
+      const index = makeIndex([
+        { seatDefId: "vocal_lead", scope: "chapterA", personId: "vee" },
+        { seatDefId: "expansion_director", scope: CENTRAL, personId: "vee" },
+        { seatDefId: "music_lead", scope: "chapterA", personId: "emm" },
+        { seatDefId: "chapter_director", scope: "chapterA", personId: "cee" },
+      ]);
+      expect(deriveSeatManagerIds(index, "vee", CENTRAL, CHAPTER_ROLLUP_PARENT)).toEqual([]);
+      expect(deriveSeatManagerIds(index, "cee", CENTRAL, CHAPTER_ROLLUP_PARENT)).toEqual(["vee"]);
+      expect(deriveSeatManagerIds(index, "emm", CENTRAL, CHAPTER_ROLLUP_PARENT)).toEqual(["cee"]);
     });
   });
 

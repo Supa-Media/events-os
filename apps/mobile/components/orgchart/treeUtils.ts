@@ -241,6 +241,18 @@ export type ReportsTo = {
  * rollup-parent seat (`expansion_director`), mirroring the server's
  * chapter→central rollup. Returns `null` at the true top of the org (central
  * root) or if every ancestor is vacant/same-person all the way up.
+ *
+ * Deliberately UNFILTERED by `@events-os/shared`'s manager-graph cycle-break
+ * (see `seatManagers.ts`'s "MUTUAL-SEAT CYCLE TIE-BREAK" section) — this is a
+ * per-SEAT "who's the next box up" walk, always a real tree by construction
+ * (a seat has exactly one ancestor chain), so it can't cycle in the first
+ * place. The Work tab and every write gate (`checkIns.log`,
+ * `responsibilities.*`) read the acyclic per-PERSON hierarchy instead, which
+ * can legitimately drop one seat-derived edge for a person who holds seats in
+ * two branches that point back at each other. For an ordinary multi-seat
+ * holder outside a cycle the two views agree; for someone IN a broken cycle
+ * (or downstream of one) they can diverge — this panel shows what a specific
+ * seat's box reports to, not the resolved authority relationship.
  */
 export function computeReportsTo(
   node: SeatNode,
