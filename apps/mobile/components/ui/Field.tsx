@@ -81,12 +81,14 @@ type Option = {
  */
 export function Select({
   label,
+  hint,
   value,
   options,
   onChange,
   placeholder = "Select…",
 }: {
   label?: string;
+  hint?: string;
   value: string | null;
   options: Option[];
   onChange: (value: string) => void;
@@ -97,7 +99,7 @@ export function Select({
   const current = options.find((o) => !o.header && o.value === value);
 
   return (
-    <Field label={label}>
+    <Field label={label} hint={hint}>
       <Pressable
         onPress={() => setOpen((o) => !o)}
         onHoverIn={() => setHovered(true)}

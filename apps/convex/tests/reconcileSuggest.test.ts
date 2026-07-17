@@ -8,9 +8,18 @@ import type { Id } from "../_generated/dataModel";
 /**
  * `reconcileSuggest.rankForPicker` — the "For" picker's ranking (owner spec:
  * nearby-spend, then similar-merchant, then upcoming date, then everything
- * else with budget-less refs demoted). Pins each tier rule individually, the
- * single-appearance invariant, the gate (mirrors `listReconcile`), and the
- * search addendum's match-quality ordering.
+ * else). Pins each tier rule individually, the single-appearance invariant,
+ * the gate (mirrors `listReconcile`), and the search addendum's match-quality
+ * ordering.
+ *
+ * WP-wave4 (item 5, owner addendum 2026-07-17): a ref with no budget, or an
+ * unapproved one, no longer ranks AT ALL (`isAttributableBudget` — see
+ * `finances.ts`) — the old tier-4 "budget-less, demoted" behavior is retired.
+ * `seedOneTimeBudget` never sets `approvalStatus`, so every fixture budget
+ * here is GRANDFATHERED (`effectiveBudgetApprovalStatus` reads absent as
+ * `"approved"`) — every test below that wants a ref to RANK seeds it a
+ * budget for exactly that reason; a dedicated `describe` block pins the
+ * budget-less/unapproved EXCLUSION itself.
  */
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -123,7 +132,14 @@ async function seedOneTimeBudget(
   chapterId: Id<"chapters"> | "central",
   refKind: "event" | "project",
   scopeRefId: string,
-  opts: { amountCents?: number; label?: string; createdAt?: number } = {},
+  opts: {
+    amountCents?: number;
+    label?: string;
+    createdAt?: number;
+    /** WP-wave4: defaults to omitted (grandfathered → reads as "approved").
+     *  Pass an explicit non-approved status to test the exclusion itself. */
+    approvalStatus?: "draft" | "submitted" | "approved" | "changes_requested";
+  } = {},
 ): Promise<Id<"budgets">> {
   return await run(s.t, (ctx) =>
     ctx.db.insert("budgets", {
@@ -137,6 +153,7 @@ async function seedOneTimeBudget(
       year: 2026,
       createdBy: s.userId,
       createdAt: opts.createdAt ?? Date.now(),
+      approvalStatus: opts.approvalStatus,
     }),
   );
 }
@@ -376,11 +393,12 @@ describe("reconcileSuggest.rankForPicker: tier 2 (similar merchant)", () => {
 // ── Tier 3: upcoming date ─────────────────────────────────────────────────
 
 describe("reconcileSuggest.rankForPicker: tier 3 (event/deadline proximity)", () => {
-  test("an event dated within ±45 days ranks tier 3 (budget-less events still rank)", async () => {
+  test("a BUDGETED event dated within ±45 days ranks tier 3", async () => {
     const t = newT();
     const s = await setupChapter(t);
     await asChapterViewer(s);
     const eventId = await seedEvent(s, { name: "Upcoming Gala", eventDate: NOW + 10 * DAY_MS });
+    await seedOneTimeBudget(s, s.chapterId, "event", eventId);
     const txnId = await seedSubjectTxn(s, s.chapterId);
 
     const result = await s.as.query(api.reconcileSuggest.rankForPicker, {
@@ -388,7 +406,6 @@ describe("reconcileSuggest.rankForPicker: tier 3 (event/deadline proximity)", ()
     });
     const row = result.rows.find((r) => r.refId === (eventId as string));
     expect(row?.tier).toBe(3);
-    expect(row?.hasBudget).toBe(false);
     expect(row?.reason).toContain("10 days away");
   });
 
@@ -403,6 +420,7 @@ describe("reconcileSuggest.rankForPicker: tier 3 (event/deadline proximity)", ()
       startDate: startDateTs,
       deadline: deadlineTs,
     });
+    await seedOneTimeBudget(s, s.chapterId, "project", projectId);
     const txnId = await seedSubjectTxn(s, s.chapterId);
 
     const result = await s.as.query(api.reconcileSuggest.rankForPicker, {
@@ -419,13 +437,14 @@ describe("reconcileSuggest.rankForPicker: tier 3 (event/deadline proximity)", ()
     expect(row.label).not.toContain(startDateLabel);
   });
 
-  test("a project with NO deadline never gets tier 3 (falls to tier 4) and shows NO date claim — bare name only, even though startDate/createdAt exist", async () => {
+  test("a BUDGETED project with NO deadline never gets tier 3 (falls to tier 4) and shows NO date claim — bare name only, even though startDate/createdAt exist", async () => {
     const t = newT();
     const s = await setupChapter(t);
     await asChapterViewer(s);
     const projectId = await seedProject(s, "Deadline-less Project", {
       startDate: NOW,
     });
+    await seedOneTimeBudget(s, s.chapterId, "project", projectId);
     const txnId = await seedSubjectTxn(s, s.chapterId);
 
     const result = await s.as.query(api.reconcileSuggest.rankForPicker, {
@@ -451,6 +470,7 @@ describe("reconcileSuggest.rankForPicker: tier 3 (event/deadline proximity)", ()
     await asChapterViewer(s);
     const deadlineTs = NOW + 200 * DAY_MS; // outside tier 3's ±45-day window
     const projectId = await seedProject(s, "Love Wins", { deadline: deadlineTs });
+    await seedOneTimeBudget(s, s.chapterId, "project", projectId);
     const txnId = await seedSubjectTxn(s, s.chapterId);
 
     const result = await s.as.query(api.reconcileSuggest.rankForPicker, {
@@ -471,6 +491,7 @@ describe("reconcileSuggest.rankForPicker: tier 3 (event/deadline proximity)", ()
     await asChapterViewer(s);
     const eventDateTs = NOW + 200 * DAY_MS; // outside tier 3's window → tier 4
     const eventId = await seedEvent(s, { name: "Choir Gala", eventDate: eventDateTs });
+    await seedOneTimeBudget(s, s.chapterId, "event", eventId);
     const txnId = await seedSubjectTxn(s, s.chapterId);
 
     const result = await s.as.query(api.reconcileSuggest.rankForPicker, {
@@ -482,11 +503,12 @@ describe("reconcileSuggest.rankForPicker: tier 3 (event/deadline proximity)", ()
     expect(row.dateLabel).toBe(expectedLabel);
   });
 
-  test("a date more than 45 days away does not rank tier 3", async () => {
+  test("a BUDGETED ref dated more than 45 days away does not rank tier 3", async () => {
     const t = newT();
     const s = await setupChapter(t);
     await asChapterViewer(s);
     const eventId = await seedEvent(s, { name: "Distant Event", eventDate: NOW + 90 * DAY_MS });
+    await seedOneTimeBudget(s, s.chapterId, "event", eventId);
     const txnId = await seedSubjectTxn(s, s.chapterId);
 
     const result = await s.as.query(api.reconcileSuggest.rankForPicker, {
@@ -497,10 +519,33 @@ describe("reconcileSuggest.rankForPicker: tier 3 (event/deadline proximity)", ()
   });
 });
 
-// ── Tier 4: everything else, budget-less demoted ──────────────────────────
+// ── Tier 4: everything else ────────────────────────────────────────────────
 
-describe("reconcileSuggest.rankForPicker: tier 4 (the rest, budget-less demoted)", () => {
-  test("a budget-less project with no other signal is tier 4 and sorts AFTER budgeted tier-4 refs in its group", async () => {
+describe("reconcileSuggest.rankForPicker: tier 4 (everything else)", () => {
+  test("a budgeted project with no other signal is tier 4", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await asChapterViewer(s);
+    const projectId = await seedProject(s, "Zebra Project");
+    await seedOneTimeBudget(s, s.chapterId, "project", projectId);
+    const txnId = await seedSubjectTxn(s, s.chapterId);
+
+    const result = await s.as.query(api.reconcileSuggest.rankForPicker, {
+      transactionId: txnId,
+    });
+    const row = result.rows.find((r) => r.refId === (projectId as string));
+    expect(row?.tier).toBe(4);
+  });
+});
+
+// ── WP-wave4 (item 5): unbudgeted/unapproved exclusion ─────────────────────
+// Owner addendum (2026-07-17): "only approved budgets can have charges
+// attached" — a ref with no budget, or one still draft/submitted/
+// changes_requested, must not rank AT ALL (not even demoted to tier 4, and
+// not even via a search match) — see `finances.ts#isAttributableBudget`.
+
+describe("reconcileSuggest.rankForPicker: unbudgeted/unapproved refs never rank", () => {
+  test("a project with NO budget at all does not appear anywhere in the results", async () => {
     const t = newT();
     const s = await setupChapter(t);
     await asChapterViewer(s);
@@ -512,17 +557,64 @@ describe("reconcileSuggest.rankForPicker: tier 4 (the rest, budget-less demoted)
     const result = await s.as.query(api.reconcileSuggest.rankForPicker, {
       transactionId: txnId,
     });
-    const budgeted = result.rows.find((r) => r.refId === (budgetedProjectId as string))!;
-    const budgetless = result.rows.find((r) => r.refId === (budgetlessProjectId as string))!;
-    expect(budgeted.tier).toBe(4);
-    expect(budgetless.tier).toBe(4);
-    expect(budgeted.hasBudget).toBe(true);
-    expect(budgetless.hasBudget).toBe(false);
-    // Despite "Aardvark" sorting alphabetically first, the budgeted ref
-    // (Zebra) is NOT demoted — budget-less refs trail even out of A-Z order.
-    const budgetedIdx = result.rows.indexOf(budgeted);
-    const budgetlessIdx = result.rows.indexOf(budgetless);
-    expect(budgetedIdx).toBeLessThan(budgetlessIdx);
+    expect(result.rows.some((r) => r.refId === (budgetedProjectId as string))).toBe(true);
+    expect(result.rows.some((r) => r.refId === (budgetlessProjectId as string))).toBe(false);
+  });
+
+  test("an event whose budget is still DRAFT does not rank", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await asChapterViewer(s);
+    const eventId = await seedEvent(s, { name: "Draft-budget Gala", eventDate: NOW + 5 * DAY_MS });
+    await seedOneTimeBudget(s, s.chapterId, "event", eventId, { approvalStatus: "draft" });
+    const txnId = await seedSubjectTxn(s, s.chapterId);
+
+    const result = await s.as.query(api.reconcileSuggest.rankForPicker, {
+      transactionId: txnId,
+    });
+    expect(result.rows.some((r) => r.refId === (eventId as string))).toBe(false);
+  });
+
+  test("an event whose budget is SUBMITTED (not yet approved) does not rank", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await asChapterViewer(s);
+    const eventId = await seedEvent(s, { name: "Submitted-budget Gala", eventDate: NOW + 5 * DAY_MS });
+    await seedOneTimeBudget(s, s.chapterId, "event", eventId, { approvalStatus: "submitted" });
+    const txnId = await seedSubjectTxn(s, s.chapterId);
+
+    const result = await s.as.query(api.reconcileSuggest.rankForPicker, {
+      transactionId: txnId,
+    });
+    expect(result.rows.some((r) => r.refId === (eventId as string))).toBe(false);
+  });
+
+  test("an event whose budget is APPROVED ranks normally", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await asChapterViewer(s);
+    const eventId = await seedEvent(s, { name: "Approved-budget Gala", eventDate: NOW + 5 * DAY_MS });
+    await seedOneTimeBudget(s, s.chapterId, "event", eventId, { approvalStatus: "approved" });
+    const txnId = await seedSubjectTxn(s, s.chapterId);
+
+    const result = await s.as.query(api.reconcileSuggest.rankForPicker, {
+      transactionId: txnId,
+    });
+    expect(result.rows.some((r) => r.refId === (eventId as string))).toBe(true);
+  });
+
+  test("a search query never surfaces a budget-less ref, even on an exact label match", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await asChapterViewer(s);
+    const eventId = await seedEvent(s, { name: "Unbudgeted Retreat", eventDate: NOW + 500 * DAY_MS });
+    const txnId = await seedSubjectTxn(s, s.chapterId);
+
+    const result = await s.as.query(api.reconcileSuggest.rankForPicker, {
+      transactionId: txnId,
+      search: "retreat",
+    });
+    expect(result.rows.some((r) => r.refId === (eventId as string))).toBe(false);
   });
 });
 
@@ -592,7 +684,9 @@ describe("reconcileSuggest.rankForPicker: search", () => {
     const s = await setupChapter(t);
     await asChapterViewer(s);
     const eventId = await seedEvent(s, { name: "Youth Retreat", eventDate: NOW + 500 * DAY_MS });
-    await seedEvent(s, { name: "Choir Concert", eventDate: NOW + 500 * DAY_MS });
+    await seedOneTimeBudget(s, s.chapterId, "event", eventId);
+    const otherId = await seedEvent(s, { name: "Choir Concert", eventDate: NOW + 500 * DAY_MS });
+    await seedOneTimeBudget(s, s.chapterId, "event", otherId);
     const txnId = await seedSubjectTxn(s, s.chapterId);
 
     const result = await s.as.query(api.reconcileSuggest.rankForPicker, {
@@ -609,7 +703,9 @@ describe("reconcileSuggest.rankForPicker: search", () => {
     await asChapterViewer(s);
     const julyTs = Date.UTC(2026, 6, 6, 17, 0, 0);
     const eventId = await seedEvent(s, { name: "Pitch Deck Design for EP", eventDate: julyTs });
-    await seedEvent(s, { name: "Some Other Event", eventDate: NOW + 500 * DAY_MS });
+    await seedOneTimeBudget(s, s.chapterId, "event", eventId);
+    const otherId = await seedEvent(s, { name: "Some Other Event", eventDate: NOW + 500 * DAY_MS });
+    await seedOneTimeBudget(s, s.chapterId, "event", otherId);
     const txnId = await seedSubjectTxn(s, s.chapterId);
 
     const result = await s.as.query(api.reconcileSuggest.rankForPicker, {
@@ -624,7 +720,9 @@ describe("reconcileSuggest.rankForPicker: search", () => {
     const s = await setupChapter(t);
     await asChapterViewer(s);
     const projectId = await seedProject(s, "Some Work");
-    await seedEvent(s, { name: "Some Work Event", eventDate: NOW + 500 * DAY_MS });
+    await seedOneTimeBudget(s, s.chapterId, "project", projectId);
+    const eventId = await seedEvent(s, { name: "Some Work Event", eventDate: NOW + 500 * DAY_MS });
+    await seedOneTimeBudget(s, s.chapterId, "event", eventId);
     const txnId = await seedSubjectTxn(s, s.chapterId);
 
     const result = await s.as.query(api.reconcileSuggest.rankForPicker, {
@@ -638,7 +736,8 @@ describe("reconcileSuggest.rankForPicker: search", () => {
     const t = newT();
     const s = await setupChapter(t);
     await asChapterViewer(s);
-    await seedEvent(s, { name: "Sunday Gathering" });
+    const eventId = await seedEvent(s, { name: "Sunday Gathering" });
+    await seedOneTimeBudget(s, s.chapterId, "event", eventId);
     const txnId = await seedSubjectTxn(s, s.chapterId);
 
     const result = await s.as.query(api.reconcileSuggest.rankForPicker, {
@@ -655,8 +754,10 @@ describe("reconcileSuggest.rankForPicker: search", () => {
     await asChapterViewer(s);
     // Prefix match: label STARTS WITH "band".
     const prefixEventId = await seedEvent(s, { name: "Band Practice", eventDate: NOW + 500 * DAY_MS });
+    await seedOneTimeBudget(s, s.chapterId, "event", prefixEventId);
     // Looser match: "band" appears as a token but not a prefix.
     const tokenEventId = await seedEvent(s, { name: "Worship Band Retreat", eventDate: NOW + 500 * DAY_MS });
+    await seedOneTimeBudget(s, s.chapterId, "event", tokenEventId);
     const txnId = await seedSubjectTxn(s, s.chapterId);
 
     const result = await s.as.query(api.reconcileSuggest.rankForPicker, {
@@ -675,6 +776,7 @@ describe("reconcileSuggest.rankForPicker: search", () => {
     const s = await setupChapter(t);
     await asChapterViewer(s);
     const eventId = await seedEvent(s, { name: "Sunday Gathering", eventDate: NOW + 5 * DAY_MS });
+    await seedOneTimeBudget(s, s.chapterId, "event", eventId);
     const txnId = await seedSubjectTxn(s, s.chapterId);
 
     const withPunctuation = await s.as.query(api.reconcileSuggest.rankForPicker, {
@@ -706,7 +808,9 @@ describe("reconcileSuggest.rankForPicker: search", () => {
       name: "Youth And Young Adults Retreat",
       eventDate: NOW + 500 * DAY_MS,
     });
-    await seedEvent(s, { name: "Choir Concert", eventDate: NOW + 500 * DAY_MS });
+    await seedOneTimeBudget(s, s.chapterId, "event", eventId);
+    const otherId = await seedEvent(s, { name: "Choir Concert", eventDate: NOW + 500 * DAY_MS });
+    await seedOneTimeBudget(s, s.chapterId, "event", otherId);
     const txnId = await seedSubjectTxn(s, s.chapterId);
 
     // "and retreat" is NOT a contiguous substring of the label (word order

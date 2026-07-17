@@ -172,6 +172,18 @@ export const budgets = defineTable({
   // on `approved`. Cleared (patched to `undefined`) on a fresh decision with
   // no note.
   reviewNote: v.optional(v.string()),
+  // WP-wave4 (item 8, owner addendum 2026-07-17) — TEMPORARY governance
+  // relaxation: while the owner is solo-building/backfilling history, a
+  // SUPERUSER may approve a budget they themselves submitted/edited
+  // (bypassing the normal SoD identity block — everyone else still gets it).
+  // Set ONLY by `approveBudget`, alongside `approvalStatus: "approved"`:
+  // `"single"` when that decision took the self-approval bypass, `"two_party"`
+  // for every normal (different-identity) approval. Absent on any budget
+  // that has never been approved. A durable, re-reviewable record ("we can
+  // even mark it as legacy approved... keep a record of approvers" — owner)
+  // for when the org grows past one person — never overwritten by anything
+  // other than a fresh `approveBudget` decision.
+  approvalParty: v.optional(v.union(v.literal("single"), v.literal("two_party"))),
 })
   .index("by_chapter", ["chapterId"])
   .index("by_chapter_and_period", ["chapterId", "year"])

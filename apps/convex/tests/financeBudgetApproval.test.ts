@@ -329,7 +329,7 @@ describe("the increase-retrigger rule", () => {
     return { budgetId, submitter, approver };
   }
 
-  test("an amount INCREASE past the approved cap auto-resubmits; approvedCents is preserved", async () => {
+  test("WP-wave4 (item 3): an amount INCREASE past the approved cap becomes a DRAFT INCREASE — not an auto-resubmit; approvedCents is preserved as the still-enforced cap", async () => {
     const t = newT();
     const s = await setupChapter(t);
     const { budgetId, submitter } = await approvedChapterBudget(s, 100000);
@@ -337,6 +337,8 @@ describe("the increase-retrigger rule", () => {
     let doc = await getBudget(s, budgetId);
     expect(doc?.approvalStatus).toBe("approved");
     expect(doc?.approvedCents).toBe(100000);
+    // Stamped by the ORIGINAL submit (before this test's own retrigger).
+    expect(doc?.submittedByPersonId).toBe(submitter);
 
     // `s.as` (the original submitter) is the one editing the amount here.
     await s.as.mutation(api.finances.updateBudget, {
@@ -344,12 +346,47 @@ describe("the increase-retrigger rule", () => {
       patch: { amountCents: 150000 },
     });
     doc = await getBudget(s, budgetId);
-    expect(doc?.approvalStatus).toBe("submitted");
+    // WP-wave4: the retrigger flips to "draft" (a draft increase, fully
+    // editable, NOT auto-submitted) — the caller must deliberately
+    // `submitBudgetForApproval` to send it for review.
+    expect(doc?.approvalStatus).toBe("draft");
     expect(doc?.amountCents).toBe(150000);
-    // The OLD cap survives untouched while the increase is pending.
+    // The OLD cap survives untouched while the increase sits unsent.
     expect(doc?.approvedCents).toBe(100000);
-    // The auto-resubmit stamps the EDITOR making this change as the submitter.
+    // The retrigger itself doesn't touch `submittedByPersonId` — it's left
+    // exactly as the ORIGINAL submit stamped it (a real
+    // `submitBudgetForApproval` call is what re-stamps it for real).
     expect(doc?.submittedByPersonId).toBe(submitter);
+  });
+
+  test("WP-wave4 (item 3): a draft increase requires an explicit send before it can be approved; the old cap keeps driving effectiveCapCents until then", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const { budgetId, approver } = await approvedChapterBudget(s, 100000);
+
+    await s.as.mutation(api.finances.updateBudget, {
+      budgetId,
+      patch: { amountCents: 150000 },
+    });
+    let doc = await getBudget(s, budgetId);
+    expect(doc?.approvalStatus).toBe("draft");
+
+    // Not yet submitted — approving is illegal.
+    await expect(
+      approver.as.mutation(api.finances.approveBudget, { budgetId }),
+    ).rejects.toBeInstanceOf(ConvexError);
+
+    // Explicit send required (draft is a valid `submitBudgetForApproval` source).
+    await s.as.mutation(api.finances.submitBudgetForApproval, { budgetId });
+    doc = await getBudget(s, budgetId);
+    expect(doc?.approvalStatus).toBe("submitted");
+    // The OLD cap is still what's enforced until a decision.
+    expect(doc?.approvedCents).toBe(100000);
+
+    await approver.as.mutation(api.finances.approveBudget, { budgetId });
+    doc = await getBudget(s, budgetId);
+    expect(doc?.approvalStatus).toBe("approved");
+    expect(doc?.approvedCents).toBe(150000);
   });
 
   test("a DECREASE never retriggers — status + approvedCents stay put", async () => {
@@ -428,10 +465,10 @@ describe("grandfathered legacy budgets — inert until touched (I1)", () => {
     expect(raw?.approvalStatus).toBeUndefined();
   });
 
-  test("I1: the FIRST amount increase retriggers — stamps approvedCents at the OLD amount + submits", async () => {
+  test("I1: the FIRST amount increase retriggers — stamps approvedCents at the OLD amount, joins the workflow as a DRAFT increase (WP-wave4: not an auto-submit)", async () => {
     const t = newT();
     const s = await setupChapter(t);
-    const editor = await asChapterManager(s);
+    await asChapterManager(s);
     const budgetId = await insertLegacyBudget(s, 60000);
 
     await s.as.mutation(api.finances.updateBudget, {
@@ -440,11 +477,13 @@ describe("grandfathered legacy budgets — inert until touched (I1)", () => {
     });
     const doc = await getBudget(s, budgetId);
     expect(doc?.amountCents).toBe(200000);
-    expect(doc?.approvalStatus).toBe("submitted");
+    // WP-wave4: joins the workflow as "draft" (a draft increase) — same as
+    // the literal-approved retrigger rule, NOT an auto-submit.
+    expect(doc?.approvalStatus).toBe("draft");
     // The OLD (pre-edit) amount becomes the still-in-force cap — same as the
     // literal-approved retrigger rule.
     expect(doc?.approvedCents).toBe(60000);
-    expect(doc?.submittedByPersonId).toBe(editor);
+    expect(doc?.submittedByPersonId).toBeUndefined();
   });
 
   test("I1: a DECREASE on a still-fully-legacy budget never stamps anything", async () => {
@@ -463,7 +502,7 @@ describe("grandfathered legacy budgets — inert until touched (I1)", () => {
     expect(doc?.submittedByPersonId).toBeUndefined();
   });
 
-  test("I1: once retriggered, the budget behaves like any other submitted budget (can be approved)", async () => {
+  test("I1: once retriggered (as a draft increase) and explicitly SENT, the budget behaves like any other submitted budget (can be approved)", async () => {
     const t = newT();
     const s = await setupChapter(t);
     await asChapterManager(s, "Editor");
@@ -472,12 +511,18 @@ describe("grandfathered legacy budgets — inert until touched (I1)", () => {
       budgetId,
       patch: { amountCents: 200000 },
     });
+    let doc = await getBudget(s, budgetId);
+    expect(doc?.approvalStatus).toBe("draft");
+
+    // WP-wave4: a deliberate send is required — the retrigger alone doesn't
+    // enter the approval queue.
+    await s.as.mutation(api.finances.submitBudgetForApproval, { budgetId });
 
     const approver = await addMember(s, { email: "approver@publicworship.life", name: "Approver" });
     await grantRole(s, approver.personId, "manager", "chapter");
     await approver.as.mutation(api.finances.approveBudget, { budgetId });
 
-    const doc = await getBudget(s, budgetId);
+    doc = await getBudget(s, budgetId);
     expect(doc?.approvalStatus).toBe("approved");
     expect(doc?.approvedCents).toBe(200000);
   });
@@ -590,7 +635,9 @@ describe("B1 (review): the effective cap drives every dashboard numeric surface"
       patch: { amountCents: 200000 },
     });
     b = await card();
-    expect(b.approvalStatus).toBe("submitted");
+    // WP-wave4: the retrigger is a DRAFT increase now (fully editable, not
+    // auto-submitted) — `effectiveCapCents` still holds it to the OLD cap.
+    expect(b.approvalStatus).toBe("draft");
     expect(b.pct).toBe(85);
     expect(b.status).toBe("warn");
     expect(b.remainingCents).toBe(15000);
@@ -599,6 +646,14 @@ describe("B1 (review): the effective cap drives every dashboard numeric surface"
     // visible even though every OTHER surface reports the old cap.
     expect(b.requestedCents).toBe(200000);
     expect(b.approvedCents).toBe(100000);
+
+    // A deliberate send is required before it can be decided on.
+    await s.as.mutation(api.finances.submitBudgetForApproval, { budgetId });
+    b = await card();
+    expect(b.approvalStatus).toBe("submitted");
+    // Still the OLD cap while awaiting the decision.
+    expect(b.pct).toBe(85);
+    expect(b.budgetCents).toBe(100000);
 
     // A DIFFERENT manager approves the new $2,000 — only now does it flip.
     const secondApprover = await addMember(s, { email: "second@publicworship.life", name: "Second" });

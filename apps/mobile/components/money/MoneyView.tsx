@@ -148,6 +148,7 @@ export function MoneyView({
               status={budget.approvalStatus}
               approvedCents={budget.approvedCents}
               requestedCents={budget.requestedCents}
+              approvalParty={budget.approvalParty}
             />
             {budget.canEditPlan ? (
               <Pressable

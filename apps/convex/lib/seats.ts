@@ -221,11 +221,11 @@ export async function getSeatDerivedCapabilities(
 
 /**
  * True iff `personId` holds ANY seat AT `scope` whose def carries
- * `finance.approve` — the seat-derived side of the CHAPTER budget-approval
- * gate (`finances.ts#loadBudgetForApprovalDecision`). Owner decision:
- * "Chapter Director does have financial powers, they approve budgets... a
- * budget shouldn't get approved without the chapter director" — today
- * `chapter_director` is the only chapter-chart seat carrying
+ * `finance.approve` — the seat-derived side of a budget-approval-adjacent
+ * gate. Owner decision: "Chapter Director does have financial powers, they
+ * approve budgets... a budget shouldn't get approved without the chapter
+ * director" — today `chapter_director` (chapter scope) and
+ * `executive_director` (central scope) are the only seats carrying
  * `finance.approve` (see `SEAT_DEFS` in `@events-os/shared`), but this reads
  * the capability generically so any future seat wired the same way just
  * works with no gate change.
@@ -234,16 +234,26 @@ export async function getSeatDerivedCapabilities(
  * function's module doc explicitly calls `finance.approve` out of scope for
  * the graded finance-role ladder it derives (approve-side SoD is a
  * different axis than manager/bookkeeper/viewer) — wiring it here, directly
- * at the approval gate rather than through the ladder, is the "future
- * SoD-flip" that doc anticipated. `getSeatDerivedCapabilities` stays
- * unchanged and un-audited for this capability.
+ * at the gate rather than through the ladder, is the "future SoD-flip" that
+ * doc anticipated. `getSeatDerivedCapabilities` stays unchanged and
+ * un-audited for this capability.
  *
- * `scope` is always a real chapter id — CENTRAL budgets stay on
- * `requireCentralEdOrFm` (title-based, unchanged); this helper is never
- * consulted for a central-scoped approval decision. Indexed + bounded
- * exactly like `getSeatDerivedCapabilities`: one `by_person` query capped at
- * `PERSON_SEAT_ASSIGNMENT_LIMIT`, filtered in memory to `scope` (a person
- * holds a small handful of seats at most, never near the cap).
+ * `scope` accepts EITHER a real chapter id OR the `"central"` sentinel, but
+ * the two are consulted for DIFFERENT gates today:
+ *  - A real chapter id → `finances.ts#loadBudgetForApprovalDecision`, the
+ *    chapter budget-approval DECISION gate (approve/request-changes).
+ *  - `"central"` → NOT the approval decision (central budgets stay on
+ *    `requireCentralEdOrFm`, title-based, unchanged there) — instead the
+ *    central budget EDIT surface's widened gate (WP-wave4:
+ *    `lib/finance.ts#requireCentralFinanceRoleOrEdSeat`, consulted by
+ *    `budgetLines.ts`), so the ED can plan/edit a central budget's amount +
+ *    line items without also holding a stored central `financeRoles` grant.
+ *    A Chapter Director's own seat is scoped to their OWN chapter, never
+ *    `"central"`, so this never lets a CD widen central access.
+ * Indexed + bounded exactly like `getSeatDerivedCapabilities`: one
+ * `by_person` query capped at `PERSON_SEAT_ASSIGNMENT_LIMIT`, filtered in
+ * memory to `scope` (a person holds a small handful of seats at most, never
+ * near the cap).
  *
  * Skips `derived` seat defs (e.g. central `chapter_directors`, rolled up
  * from every chapter's `chapter_director` — never directly assigned)
@@ -255,7 +265,7 @@ export async function getSeatDerivedCapabilities(
 export async function holdsApprovalSeatAt(
   ctx: QueryCtx,
   personId: Id<"people">,
-  scope: Id<"chapters">,
+  scope: Id<"chapters"> | "central",
 ): Promise<boolean> {
   const assignments = await ctx.db
     .query("seatAssignments")

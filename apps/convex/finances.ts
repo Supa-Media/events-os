@@ -25,11 +25,18 @@
  *  - Reads are bounded (`.take()` / paginate); rollups scope the index read to
  *    the period + chapter.
  */
-import { query, mutation, internalMutation } from "./_generated/server";
+import {
+  query,
+  mutation,
+  internalMutation,
+  internalQuery,
+  internalAction,
+} from "./_generated/server";
 import type { MutationCtx, QueryCtx } from "./_generated/server";
 import { ConvexError, v } from "convex/values";
 import { paginationOptsValidator } from "convex/server";
 import { Doc, Id } from "./_generated/dataModel";
+import { internal } from "./_generated/api";
 import {
   FUND_RESTRICTIONS,
   BUDGET_CATEGORY_KINDS,
@@ -76,7 +83,7 @@ import {
   requireFinanceRole,
   requireFinanceManager,
   requireFinanceCentral,
-  requireCentralFinanceRole,
+  requireCentralFinanceRoleOrEdSeat,
   requireCentralEdOrFm,
   resolveCallerPersonId,
   assertSeparationOfDuties,
@@ -84,13 +91,15 @@ import {
   defaultFundId,
   type FinanceScope,
 } from "./lib/finance";
-import { requireSuperuser } from "./lib/superuser";
+import { requireSuperuser, isSuperuser } from "./lib/superuser";
 import { viewerPerson, callerHasEventEditRights } from "./lib/org";
 import { holdsApprovalSeatAt } from "./lib/seats";
 import {
   ensureDefaultFunds,
   insertDefaultExpenseCategories,
 } from "./lib/seed/finance";
+import { sendEmail, emailShell } from "./ticketingEmails";
+import { escapeHtml } from "./lib/html";
 
 // ── Enum validators (built from the shared tuples) ───────────────────────────
 const restrictionValidator = v.union(
@@ -149,6 +158,10 @@ const budgetApprovalFields = {
   approvedCents: v.union(v.number(), v.null()),
   reviewNote: v.union(v.string(), v.null()),
   requestedCents: v.number(),
+  // WP-wave4 (item 8): which SoD path the last `approveBudget` decision took
+  // — `null` until a budget has been approved at least once (mirrors
+  // `approvedCents`'s own null-until-decided shape).
+  approvalParty: v.union(v.literal("single"), v.literal("two_party"), v.null()),
 };
 
 const budgetSummary = v.object({
@@ -316,7 +329,18 @@ const centralTile = v.object({
 // spend summed from EVERY chapter's transactions explicitly linked to it.
 const centralBudgetCard = v.object({
   id: v.id("budgets"),
-  label: v.union(v.string(), v.null()),
+  // WP-wave4 (item 2 — ref name/date sync): the resolved display name — a
+  // one-time card's linked event/project's LIVE name (falling back to the
+  // budget's own stored label/type-word when unlinked or the ref vanished —
+  // see `resolveBudgetRef`), or the recurring fallback for a bucket budget.
+  // Replaces the old raw `label` field (its only consumer, `CentralView`'s
+  // `CentralBudgetCard`, re-derived this exact fallback client-side).
+  name: v.string(),
+  dateLabel: v.union(v.string(), v.null()),
+  // WP-wave4 (item 4 — deep links): the linked event/project (one-time
+  // central budgets only — a recurring central budget carries neither).
+  refKind: v.union(refKindValidator, v.null()),
+  scopeRefId: v.union(v.string(), v.null()),
   // Legacy scope (nullable on v2-native central budgets).
   scope: v.union(scopeValidator, v.null()),
   cadence: cadenceValidator,
@@ -335,6 +359,12 @@ const projectBudgetCard = v.object({
   sourceBadge: v.optional(v.union(v.string(), v.null())),
   dateLabel: v.optional(v.union(v.string(), v.null())),
   subtitle: v.optional(v.union(v.string(), v.null())),
+  // WP-wave4 (item 4 — deep links): the linked event/project, so the client
+  // can offer an "open" button to `/event/[id]` or `/project/[id]`. Null for
+  // a budget with no ref (shouldn't happen on a one-time card, but kept
+  // nullable rather than asserted so a data anomaly degrades to "no button").
+  refKind: v.union(refKindValidator, v.null()),
+  scopeRefId: v.union(v.string(), v.null()),
   spentCents: v.number(),
   budgetCents: v.number(),
   pct: v.number(),
@@ -447,33 +477,90 @@ function budgetApprovalCardFields(b: Doc<"budgets">) {
     approvedCents: b.approvedCents ?? null,
     reviewNote: b.reviewNote ?? null,
     requestedCents: b.amountCents,
+    approvalParty: b.approvalParty ?? null,
   };
 }
 
 /**
  * WP-3.2 review (B1): THE cap every numeric budget surface computes against —
  * pct, remaining, status, and every card/bar/rollup's `budgetCents`. A budget
- * currently `"submitted"` or `"changes_requested"` WITH a recorded
- * `approvedCents` reports that still-in-force cap (an increase past it is
- * pending review, never advertised as already available); every other case
- * (draft, plainly approved, or a grandfathered legacy row with no literal
- * status) reports the plain `amountCents`. Grandfathered rows need no special
- * case here — they carry no `approvalStatus` at all, so they never match the
- * `"submitted"`/`"changes_requested"` check until `setBudgetAmount`'s retrigger
- * rule (I1) stamps one explicitly on their first increase.
+ * currently `"submitted"`, `"changes_requested"`, OR (WP-wave4 item 3) a
+ * DRAFT INCREASE (`"draft"` WITH a recorded `approvedCents` — see
+ * `setBudgetAmount`'s retrigger doc) reports that still-in-force `approvedCents`
+ * cap (an increase past it is pending review/send, never advertised as
+ * already available); every other case (a brand-new draft with no prior
+ * approval, plainly approved, or a grandfathered legacy row with no literal
+ * status) reports the plain `amountCents`. A brand-new draft never has
+ * `approvedCents` set (only `approveBudget`/the retrigger ever stamp it), so
+ * the `b.approvedCents != null` guard is what tells the two `"draft"` cases
+ * apart. Grandfathered rows need no special case here — they carry no
+ * `approvalStatus` at all, so they never match until `setBudgetAmount`'s
+ * retrigger rule (I1) stamps one explicitly on their first increase.
  *
  * Checks the RAW `approvalStatus` (not `effectiveBudgetApprovalStatus`) —
  * deliberately: the effective mapping only ever renames "absent" to
- * `"approved"`, so it can never itself equal `"submitted"`/`"changes_requested"`.
+ * `"approved"`, so it can never itself equal `"submitted"`/`"changes_requested"`/
+ * `"draft"`.
  */
 export function effectiveCapCents(b: Doc<"budgets">): number {
   if (
-    (b.approvalStatus === "submitted" || b.approvalStatus === "changes_requested") &&
+    (b.approvalStatus === "submitted" ||
+      b.approvalStatus === "changes_requested" ||
+      b.approvalStatus === "draft") &&
     b.approvedCents != null
   ) {
     return b.approvedCents;
   }
   return b.amountCents;
+}
+
+/**
+ * WP-wave4 (item 5 — owner addendum, 2026-07-17): "is there a reason why I
+ * can attach a charge to a project with no budget yet? We should only be
+ * able to add it for approved budgets." A budget is ATTRIBUTABLE — offerable
+ * by the "For" picker (`forPickerOptions`, `reconcileSuggest.ts`'s
+ * independent `rankForPicker` scan) and acceptable to
+ * `categorizeTransaction`/`bulkCategorize`/`createManualTransaction` — only
+ * once `effectiveBudgetApprovalStatus(b.approvalStatus) === "approved"`. A
+ * GRANDFATHERED legacy budget (`approvalStatus` absent) counts as approved
+ * per that function's own normalization (it maps "absent" to `"approved"`,
+ * never anything else), so pre-WP-3.2 budgets attribute exactly as they
+ * always could. A `"draft"`, `"submitted"`, or `"changes_requested"` budget —
+ * including a DRAFT INCREASE (still `"draft"`, WP-wave4 item 3) — is NOT
+ * attributable: draft → send → approve is now the only path to one.
+ *
+ * The SINGLE gate both the picker (read-side, filters silently) and the
+ * write-side mutations (throw) share, so they can never drift on which refs
+ * are offerable vs. acceptable.
+ */
+export function isAttributableBudget(b: Doc<"budgets"> | null | undefined): b is Doc<"budgets"> {
+  return b != null && effectiveBudgetApprovalStatus(b.approvalStatus) === "approved";
+}
+
+/**
+ * Assert `budgetId` is attributable (`isAttributableBudget`) — the WRITE-side
+ * half of the item-5 gate. Every transaction-attribution mutation calls this
+ * (`categorizeTransaction`, `bulkCategorize`, `createManualTransaction`) —
+ * never a chapter/central-scope check (that's `requireInCallerChapter`'s job,
+ * called separately at each site); this is purely the approval-status axis.
+ * A rejected attribution leaves the transaction exactly where it was — still
+ * in the loud "Needs budget" bucket (`unattributedCents`/`needs_budget`
+ * filter), the intended holding state until its target budget clears review.
+ */
+async function assertBudgetApprovedForAttribution(
+  ctx: QueryCtx,
+  budgetId: Id<"budgets">,
+): Promise<void> {
+  const budget = await ctx.db.get(budgetId);
+  if (!budget) {
+    throw new ConvexError({ code: "NOT_FOUND", message: "Budget not found." });
+  }
+  if (!isAttributableBudget(budget)) {
+    throw new ConvexError({
+      code: "BUDGET_NOT_APPROVED",
+      message: `"${budgetDisplayName(budget)}" isn't approved yet — only approved budgets can have charges attached. It'll stay in Needs Budget until it's approved.`,
+    });
+  }
 }
 
 function toBudgetSummary(
@@ -931,28 +1018,66 @@ function tagAllocationForDash(
 }
 
 /**
- * Resolve a one-time budget's linked event/project ref date, for relevance
- * checks OUTSIDE the one-time CARD loop (which already resolves this inline
- * for its own visibility gate) — the tag rollups and tag drill-down need the
- * exact same signal to feed `tagAllocationForDash`/`oneTimeCardAppliesToDash`.
- * `getEvent`/`getProject` are the caller's own `nameCache`s, so repeat lookups
- * of the same ref (a budget can carry more than one tag) cost no extra reads.
+ * WP-wave4 (item 2 — ref name/date sync): a one_time budget's LIVE display
+ * fields, resolved from its linked event/project at READ TIME rather than a
+ * stale mirrored `budget.label` — a rename or date change on the ref follows
+ * everywhere this is called without a separate write-through step. `name` is
+ * the ref's current `name` (event or project); `dateLabel`/`refDate` are the
+ * event's `eventDate`, or the project's `deadline` (a project with no
+ * deadline gets no date claim — see `forPickerOptions`'s "NO FABRICATED
+ * DATES" doc comment for why `startDate`/`createdAt` are never substituted).
+ * Falls back to the budget's OWN stored `label`/type-word
+ * (`budgetDisplayName`) when the budget carries no ref, OR the ref has
+ * vanished (a deleted event/project doesn't cascade to its budget) — the
+ * fallback is never a raw "null"/blank card.
+ *
+ * The SINGLE resolver for every dashboard/tag/picker surface that shows a
+ * one-time budget's name (`dashboardChapter`'s one-time cards,
+ * `dashboardCentral`'s central one-time cards, `tagDrilldown`'s budget rows)
+ * — before this, `dashboardChapter` had its own inline copy and
+ * `dashboardCentral`/`tagDrilldown` didn't resolve live refs at all (still
+ * exposing the stale stored `label`). `getEvent`/`getProject` are the
+ * caller's own `nameCache`s (bounded read-through caches), so repeat lookups
+ * of the same ref — a budget can carry more than one tag, or appear under
+ * more than one call site in a single query — cost no extra reads.
+ */
+async function resolveBudgetRef(
+  b: Doc<"budgets">,
+  getEvent: (id: Id<"events">) => Promise<Doc<"events"> | null>,
+  getProject: (id: Id<"projects">) => Promise<Doc<"projects"> | null>,
+): Promise<{ name: string; dateLabel: string | null; refDate: number | null }> {
+  const refKind = effectiveRefKind(b);
+  if (refKind === "event" && b.scopeRefId) {
+    const ev = await getEvent(b.scopeRefId as Id<"events">);
+    if (ev) {
+      return { name: ev.name, dateLabel: easternDateStr(ev.eventDate), refDate: ev.eventDate };
+    }
+  } else if (refKind === "project" && b.scopeRefId) {
+    const pr = await getProject(b.scopeRefId as Id<"projects">);
+    if (pr) {
+      return {
+        name: pr.name,
+        dateLabel: pr.deadline ? easternDateStr(pr.deadline) : null,
+        refDate: pr.deadline ?? pr.startDate ?? null,
+      };
+    }
+  }
+  return { name: budgetDisplayName(b), dateLabel: null, refDate: null };
+}
+
+/**
+ * Resolve a one-time budget's linked event/project ref date alone, for
+ * relevance checks that don't need the display name (`tagAllocationForDash`'s
+ * gate, consulted by the tag rollups) — a thin wrapper over
+ * `resolveBudgetRef` so those call sites don't build a name/dateLabel string
+ * they never use.
  */
 async function refDateForBudget(
   b: Doc<"budgets">,
   getEvent: (id: Id<"events">) => Promise<Doc<"events"> | null>,
   getProject: (id: Id<"projects">) => Promise<Doc<"projects"> | null>,
 ): Promise<number | null> {
-  const refKind = effectiveRefKind(b);
-  if (refKind === "event" && b.scopeRefId) {
-    const ev = await getEvent(b.scopeRefId as Id<"events">);
-    return ev?.eventDate ?? null;
-  }
-  if (refKind === "project" && b.scopeRefId) {
-    const pr = await getProject(b.scopeRefId as Id<"projects">);
-    return pr ? (pr.deadline ?? pr.startDate ?? null) : null;
-  }
-  return null;
+  return (await resolveBudgetRef(b, getEvent, getProject)).refDate;
 }
 
 /** Translate a client patch: `null` clears the field, `undefined` is untouched. */
@@ -1900,24 +2025,7 @@ export const dashboardChapter = query({
     for (const b of budgets) {
       if (effectiveType(b) !== "one_time") continue;
       const refKind = effectiveRefKind(b);
-      let name = b.label ?? "One-time";
-      let dateLabel: string | null = null;
-      let refDate: number | null = null;
-      if (refKind === "event" && b.scopeRefId) {
-        const ev = await getEvent(b.scopeRefId as Id<"events">);
-        if (ev) {
-          name = ev.name;
-          dateLabel = easternDateStr(ev.eventDate);
-          refDate = ev.eventDate;
-        }
-      } else if (refKind === "project" && b.scopeRefId) {
-        const pr = await getProject(b.scopeRefId as Id<"projects">);
-        if (pr) {
-          name = pr.name;
-          dateLabel = pr.deadline ? easternDateStr(pr.deadline) : null;
-          refDate = pr.deadline ?? pr.startDate ?? null;
-        }
-      }
+      const { name, dateLabel, refDate } = await resolveBudgetRef(b, getEvent, getProject);
       if (!oneTimeCardAppliesToDash(b, dp, refDate, yearTxns)) continue;
       // Bug 1b: the card's OWN bar stays CUMULATIVE (never month-sliced) even
       // though its VISIBILITY above is month-gated — see `oneTimeCardBreakdown`.
@@ -1925,6 +2033,14 @@ export const dashboardChapter = query({
       // B1: the CAP driving pct/remaining/status is the EFFECTIVE one — a
       // budget pending an increase never advertises the unapproved amount.
       const capCents = effectiveCapCents(b);
+      // WP-wave4 (item 9): a zero-cap, zero-spend ref-linked card is a
+      // "$0.00/$0.00" straggler — a summoned-on-pick budget nobody ever
+      // filled an amount into (the flow itself is retired, item 5, but
+      // legacy rows survive until `removeEmptyAutoBudgets` runs on prod —
+      // see that fn's doc comment, which already covers this exact shape).
+      // Hide it from the dashboard as a belt, independent of the ops
+      // cleanup's own timing.
+      if (capCents === 0 && spentCents === 0) continue;
       const pct = pctOf(spentCents, capCents);
       oneTimeBudgets.push({
         id: b._id,
@@ -1933,6 +2049,10 @@ export const dashboardChapter = query({
         sourceBadge: null,
         dateLabel,
         subtitle: null,
+        // WP-wave4 (item 4 — deep links): the linked ref, so the card can
+        // offer an "open" button straight to the event/project page.
+        refKind: refKind ?? null,
+        scopeRefId: b.scopeRefId ?? null,
         spentCents,
         budgetCents: capCents,
         pct,
@@ -2663,10 +2783,16 @@ export const dashboardCentral = query({
       );
       // Captured for the central tag loop below, regardless of `type` — a
       // recurring budget's entries here are simply unused (`tagAllocationForDash`
-      // only consults them for a `one_time` budget).
-      const refDate = await refDateForBudget(cb, getEvent, getProject);
+      // only consults them for a `one_time` budget). WP-wave4: also resolves
+      // the card's live display name/date (item 2) in the same read.
+      const { name: cbName, dateLabel: cbDateLabel, refDate } = await resolveBudgetRef(
+        cb,
+        getEvent,
+        getProject,
+      );
       centralRefDateById.set(cb._id, refDate);
       centralModeMatchedById.set(cb._id, modeMatched);
+      const cbRefKind = effectiveType(cb) === "one_time" ? effectiveRefKind(cb) : null;
 
       if (effectiveType(cb) === "one_time") {
         // Bug 1 (F1): the exact same treatment as `dashboardChapter`'s
@@ -2679,10 +2805,17 @@ export const dashboardCentral = query({
         // index query above), so this is just its total spend, unconditionally.
         const cardSpentCents = sumSpend(modeMatched);
         const budgetCents = budgetAllocationForDash(cb, dp);
+        // WP-wave4 (item 9): hide a zero-cap, zero-spend ref-linked
+        // straggler — see `dashboardChapter`'s identical belt-and-suspenders
+        // guard for the full reasoning.
+        if (budgetCents === 0 && cardSpentCents === 0) continue;
         const pct = pctOf(cardSpentCents, budgetCents);
         centralBudgets.push({
           id: cb._id,
-          label: cb.label ?? null,
+          name: cbName,
+          dateLabel: cbDateLabel,
+          refKind: cbRefKind ?? null,
+          scopeRefId: cb.scopeRefId ?? null,
           scope: cb.scope ?? null,
           cadence: cb.cadence,
           year: cb.year,
@@ -2700,7 +2833,10 @@ export const dashboardCentral = query({
       const pct = pctOf(spentCents, budgetCents);
       centralBudgets.push({
         id: cb._id,
-        label: cb.label ?? null,
+        name: cbName,
+        dateLabel: null,
+        refKind: null,
+        scopeRefId: null,
         scope: cb.scope ?? null,
         cadence: cb.cadence,
         year: cb.year,
@@ -2985,7 +3121,10 @@ export const budgetVsActual = query({
 
 const tagDrilldownBudgetRow = v.object({
   id: v.id("budgets"),
-  label: v.string(),
+  // WP-wave4 (item 2 — ref name/date sync): the resolved live display name
+  // (`resolveBudgetRef`) — a one-time row's linked event/project's CURRENT
+  // name, falling back to the budget's own stored label/type-word.
+  name: v.string(),
   type: typeValidator,
   cadence: cadenceValidator,
   level: v.union(v.literal("chapter"), v.literal("central")),
@@ -3079,10 +3218,10 @@ export const tagDrilldown = query({
       chapterName: string | null,
       relevantTxns: Doc<"transactions">[],
     ): Promise<typeof tagDrilldownBudgetRow.type> => {
-      const refDate = await refDateForBudget(b, getEvent, getProject);
+      const { name, refDate } = await resolveBudgetRef(b, getEvent, getProject);
       return {
         id: b._id,
-        label: b.label ?? (b.scope ? BUDGET_SCOPE_LABELS[b.scope] : "Budget"),
+        name,
         type: effectiveType(b),
         cadence: b.cadence,
         level,
@@ -3775,9 +3914,8 @@ export const listBudgets = query({
 });
 
 // ── The "For" picker (WP-U: one home per dollar) ─────────────────────────────
-/** `name + date` — the "For" picker's row label, always dated (unlike
- *  `eventBudgetLabel`/`projectBudgetLabel`'s conditional disambiguation) so a
- *  budget-less summon-candidate reads exactly like a budgeted one. */
+/** `name + date` — the "For" picker's row label, always dated so a match
+ *  reads unambiguously among same-named siblings. */
 function pickerRefLabel(name: string, ts: number): string {
   const p = easternParts(ts);
   const monthName = MONTH_NAMES[p.month - 1].slice(0, 3);
@@ -3786,11 +3924,14 @@ function pickerRefLabel(name: string, ts: number): string {
 
 const forPickerRefRow = v.object({
   label: v.string(),
-  // Present when a budget already exists for this event/project (the one_time
-  // budget created by the D8 create-time hook or a backfill); `null` marks a
-  // SUMMON-CANDIDATE — the picker still offers it (grouped the same way), and
-  // choosing it calls `summonBudgetForRef` first to create its $0 budget.
-  budgetId: v.union(v.id("budgets"), v.null()),
+  // WP-wave4 (item 5): ALWAYS a real, APPROVED budget now — a row for a
+  // ref with no budget yet, or one whose budget isn't approved, is simply
+  // OMITTED from the list (not included with a `null` here). The old
+  // "summon a $0 budget on pick" flow (`summonBudgetForRef` called from the
+  // picker) is retired — see `isAttributableBudget`'s doc. An unbudgeted or
+  // not-yet-approved ref's spend stays visible another way: the dashboard's
+  // "Needs budget" bucket (`unattributedCents`).
+  budgetId: v.id("budgets"),
 });
 
 export const forPickerOptions = query({
@@ -3868,7 +4009,8 @@ export const forPickerOptions = query({
         setPreferOldest(eventBudgetByRef, b.scopeRefId, b);
       } else if (b.type === "one_time" && b.refKind === "project" && b.scopeRefId) {
         setPreferOldest(projectBudgetByRef, b.scopeRefId, b);
-      } else {
+      } else if (isAttributableBudget(b)) {
+        // WP-wave4 (item 5): a recurring budget is offered ONLY once approved.
         recurring.push({ budgetId: b._id, label: budgetDisplayName(b), level: "chapter" });
       }
     }
@@ -3884,18 +4026,11 @@ export const forPickerOptions = query({
         projectIds.has(b.scopeRefId)
       ) {
         setPreferOldest(projectBudgetByRef, b.scopeRefId, b);
-      } else {
+      } else if (isAttributableBudget(b)) {
         recurring.push({ budgetId: b._id, label: budgetDisplayName(b), level: "central" });
       }
     }
 
-    const eventRows = events
-      .filter((e) => !e.isTraining)
-      .map((e) => ({
-        eventId: e._id,
-        label: pickerRefLabel(e.name, e.eventDate),
-        budgetId: eventBudgetByRef.get(e._id as string)?._id ?? null,
-      }));
     // NO FABRICATED DATES (identical fix to #219's `reconcileSuggest.ts` —
     // that PR's own commit judged this static list's `startDate ?? createdAt`
     // fallback "fine" since nothing here cross-checks it against a second,
@@ -3908,13 +4043,35 @@ export const forPickerOptions = query({
     // (`ProjectCard.tsx`'s "Due {date}"/"Set deadline", `projects.ts#update`)
     // — never derived from `startDate`/`createdAt`. A project with no
     // `deadline` now shows its bare name, no date claim.
-    const projectRows = projects.map((p) => {
+    //
+    // WP-wave4 (item 5): a ref with no budget, or an unapproved one, is
+    // OMITTED entirely — `isAttributableBudget` is the single gate (shared
+    // with `reconcileSuggest.ts`'s independent scan). Its spend stays
+    // visible in the dashboard's "Needs budget" bucket instead.
+    const eventRows = events
+      .filter((e) => !e.isTraining)
+      .flatMap((e) => {
+        const budget = eventBudgetByRef.get(e._id as string);
+        if (!isAttributableBudget(budget)) return [];
+        return [
+          {
+            eventId: e._id,
+            label: pickerRefLabel(e.name, e.eventDate),
+            budgetId: budget._id,
+          },
+        ];
+      });
+    const projectRows = projects.flatMap((p) => {
+      const budget = projectBudgetByRef.get(p._id as string);
+      if (!isAttributableBudget(budget)) return [];
       const dateTs = p.deadline ?? null;
-      return {
-        projectId: p._id,
-        label: dateTs != null ? pickerRefLabel(p.name, dateTs) : p.name,
-        budgetId: projectBudgetByRef.get(p._id as string)?._id ?? null,
-      };
+      return [
+        {
+          projectId: p._id,
+          label: dateTs != null ? pickerRefLabel(p.name, dateTs) : p.name,
+          budgetId: budget._id,
+        },
+      ];
     });
 
     return { events: eventRows, projects: projectRows, recurring };
@@ -3936,9 +4093,17 @@ export const forPickerOptions = query({
  * Exported so the `0026_migrate_budget_v1_lines` migration can reuse the exact
  * same get-or-create (rather than re-deriving it) when it needs to ensure a
  * legacy Budget v1 event's finance budget row exists before inserting its
- * migrated `budgetLines`. Mobile still summons through the public
- * `summonBudgetForRef` mutation below — this export is for other MUTATION-side
- * callers with a `MutationCtx` already in hand.
+ * migrated `budgetLines`. This export is for other MUTATION-side callers
+ * with a `MutationCtx` already in hand.
+ *
+ * WP-wave4 (item 5): RETIRED as the "For" transaction-attribution picker's
+ * summon-on-pick trigger (owner decision 2026-07-17 — an unbudgeted ref must
+ * never become silently attributable by picking it; only an APPROVED budget
+ * is attributable now, see `isAttributableBudget`). The public
+ * `summonBudgetForRef` mutation below still exists and is still called from
+ * ONE place — the ref's own page (`MoneyView.tsx`'s "Add budget" button),
+ * which starts a budget's lifecycle (draft → send → approve, WP-wave4 item
+ * 3), not a transaction's.
  */
 export async function ensureBudgetForRef(
   ctx: MutationCtx,
@@ -4192,22 +4357,28 @@ export const createBudget = mutation({
  * stays a real budget. A recurring or central budget (no `scopeRefId`) has
  * no entity to mirror onto, so this is a no-op past the row write.
  *
- * WP-3.2 · THE RETRIGGER: an amount INCREASE past the approved cap on a
- * budget whose approval status is the LITERAL `"approved"` auto-resubmits it
- * (flips to `"submitted"`, stamps `submittedByPersonId` as the CALLER making
- * this edit) — an approver blessed a specific number; silently spending past
- * it without a second look defeats the point of approving at all. Decreases,
- * and edits that don't cross the approved cap, never retrigger —
- * `approvedCents` is only ever refreshed by `approveBudget` itself.
+ * WP-3.2 · THE RETRIGGER (WP-wave4 item 3 UPDATE — no longer an
+ * auto-RESUBMIT): an amount INCREASE past the approved cap on a budget whose
+ * approval status is the LITERAL `"approved"` flips it back to `"draft"` — a
+ * DRAFT INCREASE, fully editable, that does NOT notify anyone or enter the
+ * approval queue until the caller deliberately calls
+ * `submitBudgetForApproval` (which sends it for review AND notifies the
+ * scope's approvers). `approvedCents` is left untouched, so `effectiveCapCents`
+ * keeps enforcing the OLD, still-in-force cap the whole time the increase
+ * sits unsent — an approver blessed a specific number; silently spending past
+ * it without a second look (or without even a deliberate send) defeats the
+ * point of approving at all. Decreases, and edits that don't cross the
+ * approved cap, never retrigger — `approvedCents` is only ever refreshed by
+ * `approveBudget` itself.
  *
  * I1 (review): a GRANDFATHERED legacy budget (`approvalStatus` absent, reads
  * as `effectiveBudgetApprovalStatus` `"approved"`) retriggers too, but only on
  * its FIRST increase — the moment it stops being untouched-since-migration.
  * That first increase stamps `approvedCents` at the OLD (pre-edit) amount and
- * flips it to `"submitted"`, exactly like the literal-approved path, so it
- * joins the real workflow from then on. A decrease on a still-fully-legacy
- * budget stays untouched (no stamp at all) — see the tuple's doc comment in
- * `@events-os/shared`.
+ * flips it to `"draft"`, exactly like the literal-approved path, so it joins
+ * the real workflow (as a draft increase awaiting an explicit send) from then
+ * on. A decrease on a still-fully-legacy budget stays untouched (no stamp at
+ * all) — see the tuple's doc comment in `@events-os/shared`.
  */
 export async function setBudgetAmount(
   ctx: MutationCtx,
@@ -4221,22 +4392,18 @@ export async function setBudgetAmount(
   }
   await ctx.db.patch(budgetId, { amountCents });
 
-  /** Flip to `"submitted"` for a retrigger, stamping the CALLER as the
-   *  submitter when one can be resolved. Uses `viewerPerson` (never-throwing)
-   *  rather than `resolveCallerPersonId` — `setBudgetAmount` is ALSO reached
-   *  from the entity-edit paths (`events.updateDetails` / `projects.update`),
-   *  whose caller may hold no finance roster row at all (editing a budget
-   *  FIELD doesn't require finance access, unlike the dashboard's own budget
-   *  editing). The retrigger (and its cap protection) still fires either way;
-   *  `submittedByPersonId` is simply left unset when there's no one to
-   *  attribute it to, rather than crashing the entity edit outright. */
-  async function retriggerSubmit(extra: Record<string, unknown>): Promise<void> {
-    const editorChapterId = (await requireChapterId(ctx)) as Id<"chapters">;
-    const editorPerson = await viewerPerson(ctx, editorChapterId);
+  /** Flip to `"draft"` for a retrigger (WP-wave4 item 3) — NOT an
+   *  auto-resubmit; the caller must explicitly `submitBudgetForApproval` to
+   *  send the increase for review + notify the scope's approvers. `extra`
+   *  carries `approvedCents` for the grandfathered-first-increase branch
+   *  below, keeping the OLD amount as the still-enforced cap
+   *  (`effectiveCapCents`) until it's deliberately sent. No submitter/notify
+   *  stamping happens here (unlike the old auto-`"submitted"` behavior) —
+   *  `submitBudgetForApproval` stamps `submittedByPersonId`/`submittedAt` for
+   *  real when that deliberate send happens. */
+  async function retriggerDraft(extra: Record<string, unknown>): Promise<void> {
     await ctx.db.patch(budgetId, {
-      approvalStatus: "submitted",
-      submittedAt: Date.now(),
-      ...(editorPerson ? { submittedByPersonId: editorPerson._id } : {}),
+      approvalStatus: "draft",
       ...extra,
     });
   }
@@ -4246,14 +4413,15 @@ export async function setBudgetAmount(
     amountCents > effectiveCapCents(budget)
   ) {
     // `approvedCents` is DELIBERATELY left untouched — it stays the
-    // effective (old, still-in-force) spending cap while this increase
-    // waits for a decision.
-    await retriggerSubmit({});
+    // effective (old, still-in-force) spending cap while this increase sits
+    // as an editable draft, unsent.
+    await retriggerDraft({});
   } else if (budget.approvalStatus === undefined && amountCents > budget.amountCents) {
     // I1: the grandfathered budget's FIRST increase — stamp `approvedCents`
     // at the OLD amount (the cap it was silently "approved at") and join the
-    // real workflow, same as a literally-approved budget crossing its cap.
-    await retriggerSubmit({ approvedCents: budget.amountCents });
+    // real workflow as a draft increase, same as a literally-approved budget
+    // crossing its cap.
+    await retriggerDraft({ approvedCents: budget.amountCents });
   }
   const refKind = effectiveRefKind(budget);
   if (!refKind || !budget.scopeRefId) return;
@@ -4488,7 +4656,10 @@ export const submitBudgetForApproval = mutation({
       { allowCentral: true },
     );
     if (budget.chapterId === CENTRAL) {
-      await requireCentralFinanceRole(ctx, chapterId, "bookkeeper");
+      // WP-wave4 (item 1): the ED can plan/edit a central budget (see
+      // `budgetLines.ts`) — they can also SEND their own draft for review
+      // without needing a stored central rank grant too.
+      await requireCentralFinanceRoleOrEdSeat(ctx, chapterId, "bookkeeper");
     } else {
       await requireFinanceRole(ctx, chapterId, "bookkeeper");
     }
@@ -4503,6 +4674,123 @@ export const submitBudgetForApproval = mutation({
       submittedByPersonId: personId,
       submittedAt: Date.now(),
     });
+    // WP-wave4 (item 3): notify the scope's approvers (chapter: Treasurer +
+    // Chapter Director; central: ED + FM) — best-effort email, scheduled so
+    // this mutation doesn't wait on the network call (Resend needs an action
+    // context; see `notifyBudgetApprovers`).
+    await ctx.scheduler.runAfter(0, internal.finances.notifyBudgetApprovers, {
+      budgetId,
+    });
+    return null;
+  },
+});
+
+/**
+ * WP-wave4 (item 3): resolve everything `notifyBudgetApprovers` needs to
+ * email a budget's approvers — the budget's live display name
+ * (`resolveBudgetRef`) and the scope's approvers, found via EITHER the seat
+ * chart (`chapter_director`/`treasurer`, or `executive_director`/
+ * `financial_manager` at `"central"`) OR the legacy `specializedRoles` title
+ * (`"president"`/`"finance_manager"`, or `"executive_director"`/
+ * `"finance_manager"` at central) — unioned + deduped by person, mirroring
+ * the "seat widens, never replaces the stored side" philosophy elsewhere in
+ * finance auth (`lib/finance.ts`'s B10 doc). A scope with no
+ * seated/titled holder (or a holder with no `email` on file) simply
+ * contributes no row — best-effort, matches `sendReimbursementReminders`'s
+ * philosophy (never blocks the submit itself).
+ */
+export const getBudgetSubmissionContext = internalQuery({
+  args: { budgetId: v.id("budgets") },
+  returns: v.union(
+    v.object({
+      budgetName: v.string(),
+      level: v.union(v.literal("chapter"), v.literal("central")),
+      approvers: v.array(v.object({ email: v.string(), name: v.string() })),
+    }),
+    v.null(),
+  ),
+  handler: async (ctx, { budgetId }) => {
+    const budget = await ctx.db.get(budgetId);
+    if (!budget) return null;
+    const level: BudgetLevel = budget.chapterId;
+    const { name: budgetName } = await resolveBudgetRef(
+      budget,
+      nameCache(ctx, "events"),
+      nameCache(ctx, "projects"),
+    );
+    const seatSlugs =
+      level === CENTRAL
+        ? ["executive_director", "financial_manager"]
+        : ["chapter_director", "treasurer"];
+    const titleNames: readonly string[] =
+      level === CENTRAL
+        ? ["executive_director", "finance_manager"]
+        : ["president", "finance_manager"];
+
+    const personIds = new Set<Id<"people">>();
+    const seated = await ctx.db
+      .query("seatAssignments")
+      .withIndex("by_scope", (q) => q.eq("scope", level))
+      .collect();
+    for (const a of seated) {
+      const def = await ctx.db.get(a.seatDefId);
+      if (def && !def.derived && seatSlugs.includes(def.slug)) personIds.add(a.personId);
+    }
+    const titled = await ctx.db
+      .query("specializedRoles")
+      .withIndex("by_scope", (q) => q.eq("scope", level))
+      .collect();
+    for (const r of titled) {
+      if (titleNames.includes(r.title)) personIds.add(r.personId);
+    }
+
+    const approvers: { email: string; name: string }[] = [];
+    for (const personId of personIds) {
+      const p = await ctx.db.get(personId);
+      if (p?.email) approvers.push({ email: p.email, name: p.name });
+    }
+    return {
+      budgetName,
+      level: level === CENTRAL ? ("central" as const) : ("chapter" as const),
+      approvers,
+    };
+  },
+});
+
+/**
+ * WP-wave4 (item 3): email a budget's approvers that it's awaiting their
+ * review. Best-effort Resend — a no-op that only logs when `RESEND_API_KEY`
+ * is unset (mirrors `reimbursements.ts#sendReimbursementReminders` / the
+ * ticketing emails), so dev + CI never send. Scheduled (never awaited
+ * inline) from `submitBudgetForApproval`, since a mutation can't perform the
+ * network call itself.
+ *
+ * PUSH NOTIFICATIONS ARE A FOLLOW-UP, NOT SHIPPED HERE: this repo has no
+ * server-side push-token infra today (`@supa-media/notifications`'s
+ * `NotificationProvider` is client-only — it registers device permissions
+ * and exposes a token, but nothing persists it server-side, and no Convex
+ * action calls the Expo Push API anywhere). Building that (a `pushTokens`
+ * table + registration mutation + a push-send action) is out of scope for
+ * this PR; email is the full notification surface for now.
+ */
+export const notifyBudgetApprovers = internalAction({
+  args: { budgetId: v.id("budgets") },
+  returns: v.null(),
+  handler: async (ctx, { budgetId }) => {
+    const submission = await ctx.runQuery(internal.finances.getBudgetSubmissionContext, {
+      budgetId,
+    });
+    if (!submission) return null;
+    const scopeLabel = submission.level === "central" ? "central budget" : "chapter budget";
+    for (const approver of submission.approvers) {
+      await sendEmail(
+        approver.email,
+        `Budget awaiting your review: ${submission.budgetName}`,
+        emailShell(`
+          <h1 style="margin:0 0 12px;font-size:24px;line-height:1.2">Budget awaiting review</h1>
+          <p style="margin:0 0 16px;font-family:-apple-system,'Segoe UI',Roboto,sans-serif;font-size:14px;line-height:1.6;color:#7A5A5A">Hi ${escapeHtml(approver.name)} — the ${escapeHtml(scopeLabel)} "${escapeHtml(submission.budgetName)}" was just sent for review. Open the finance dashboard to approve it or request changes.</p>`),
+      );
+    }
     return null;
   },
 });
@@ -4561,13 +4849,25 @@ export const approveBudget = mutation({
       ["submitted"],
       "approve",
     );
-    assertSeparationOfDuties(callerPersonId, budget.submittedByPersonId);
+    // WP-wave4 (item 8, owner addendum 2026-07-17) — TEMPORARY governance
+    // relaxation: while solo-building/backfilling history, a SUPERUSER may
+    // approve their OWN submission (the normal SoD identity block stays for
+    // EVERYONE ELSE, unconditionally). `approvalParty` records which path a
+    // decision took — a durable, re-reviewable trail for when the org grows
+    // past one person. `requestBudgetChanges` is deliberately NOT widened —
+    // the addendum only asked for the approve path.
+    const selfSubmitted = callerPersonId === budget.submittedByPersonId;
+    const bypassSoD = selfSubmitted && (await isSuperuser(ctx));
+    if (!bypassSoD) {
+      assertSeparationOfDuties(callerPersonId, budget.submittedByPersonId);
+    }
     await ctx.db.patch(budgetId, {
       approvalStatus: "approved",
       approvedCents: budget.amountCents,
       approvedByPersonId: callerPersonId,
       approvedAt: Date.now(),
       reviewNote: note,
+      approvalParty: bypassSoD ? "single" : "two_party",
     });
     return null;
   },
@@ -6663,6 +6963,8 @@ export const createManualTransaction = mutation({
       if (args.budgetId) {
         // A central txn may only attribute to a CENTRAL budget.
         await requireInCallerChapter(ctx, CENTRAL, "budgets", args.budgetId, "Budget");
+        // WP-wave4 (item 5): only an APPROVED budget can take a charge.
+        await assertBudgetApprovedForAttribution(ctx, args.budgetId);
       }
       return await ctx.db.insert("transactions", {
         chapterId: CENTRAL,
@@ -6689,6 +6991,8 @@ export const createManualTransaction = mutation({
       await requireInCallerChapter(ctx, chapterId, "budgets", args.budgetId, "Budget", {
         allowCentral: true,
       });
+      // WP-wave4 (item 5): only an APPROVED budget can take a charge.
+      await assertBudgetApprovedForAttribution(ctx, args.budgetId);
     }
     // Categorized on entry when a fund/category/budget was EXPLICITLY
     // supplied, else unreviewed — computed before the silent fund default
@@ -6760,6 +7064,9 @@ export const categorizeTransaction = mutation({
       await requireInCallerChapter(ctx, scope, "budgets", args.budgetId, "Budget", {
         allowCentral: true,
       });
+      // WP-wave4 (item 5): only an APPROVED budget can take a charge — the
+      // "For" picker's own target gate.
+      await assertBudgetApprovedForAttribution(ctx, args.budgetId);
     }
     const patch = cleanPatch({
       fundId: args.fundId,
@@ -6802,6 +7109,14 @@ export const bulkCategorize = mutation({
   },
   returns: v.object({ updated: v.number() }),
   handler: async (ctx, args) => {
+    // WP-wave4 (item 5): only an APPROVED budget can take a charge — checked
+    // ONCE up front (unlike per-row scope, the approval-status check doesn't
+    // depend on which row it's applied to: `args.budgetId` is the same
+    // target for the whole batch), so a rejection fails the bulk action
+    // atomically before any row is touched.
+    if (args.budgetId) {
+      await assertBudgetApprovedForAttribution(ctx, args.budgetId);
+    }
     // Per-row scope resolution (WP-2.1): a bulk selection is normally all one
     // scope, but resolving each row's scope keeps mixed selections correct — a
     // central row authorizes at central reach, a chapter row at bookkeeper.

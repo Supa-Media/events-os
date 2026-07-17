@@ -24,14 +24,19 @@
  * picked by the parent budget's LEVEL, "at the budget's scope" (not the
  * caller's default chapter role):
  *  - list                 → viewer+ at the budget's level (chapter viewer, or
- *                            central reach + viewer for a central budget).
+ *                            central reach + viewer for a central budget) —
+ *                            OR (WP-wave4) the caller holding a central-chart
+ *                            `finance.approve` seat (the ED — see
+ *                            `requireCentralFinanceRoleOrEdSeat`).
  *  - add/update/remove/
  *    reorder               → bookkeeper+ at the budget's level (chapter
  *                            bookkeeper, or central reach + bookkeeper for a
  *                            central budget) — mirrors `requireCentralFinanceRole`'s
  *                            money-write gate (#151), since a plan is a
  *                            meaningful financial record even though it's
- *                            estimated-side.
+ *                            estimated-side. Central ALSO accepts the ED-seat
+ *                            widening above, so the ED can plan a central
+ *                            budget without a stored central rank grant.
  * This is intentionally TIGHTER than `listBudgets` (which lets any chapter
  * viewer read every central budget's headline) — a budget's line-by-line
  * breakdown is a more granular record, so central budgets' lines are gated on
@@ -43,7 +48,7 @@ import { ConvexError, v } from "convex/values";
 import { Doc, Id } from "./_generated/dataModel";
 import { CENTRAL } from "@events-os/shared";
 import { requireChapterId, requireUserId, getChapterIdOrNull } from "./lib/context";
-import { requireFinanceRole, requireCentralFinanceRole } from "./lib/finance";
+import { requireFinanceRole, requireCentralFinanceRoleOrEdSeat } from "./lib/finance";
 
 // A generous bound on lines-per-budget: a plan breakdown is a human-authored
 // list of categories, not a synced feed, so this is far above any real usage.
@@ -82,27 +87,29 @@ async function loadOwningBudget(
   return budget;
 }
 
-/** viewer+ at the budget's own level (chapter viewer, or central reach). */
+/** viewer+ at the budget's own level (chapter viewer, or central reach —
+ *  OR, WP-wave4, a central `finance.approve` seat: the ED). */
 async function requireLineReadAccess(
   ctx: QueryCtx,
   chapterId: Id<"chapters">,
   budget: Doc<"budgets">,
 ): Promise<void> {
   if (budget.chapterId === CENTRAL) {
-    await requireCentralFinanceRole(ctx, chapterId, "viewer");
+    await requireCentralFinanceRoleOrEdSeat(ctx, chapterId, "viewer");
   } else {
     await requireFinanceRole(ctx, chapterId, "viewer");
   }
 }
 
-/** bookkeeper+ at the budget's own level (chapter bookkeeper, or central reach). */
+/** bookkeeper+ at the budget's own level (chapter bookkeeper, or central reach —
+ *  OR, WP-wave4, a central `finance.approve` seat: the ED). */
 async function requireLineWriteAccess(
   ctx: MutationCtx,
   chapterId: Id<"chapters">,
   budget: Doc<"budgets">,
 ): Promise<void> {
   if (budget.chapterId === CENTRAL) {
-    await requireCentralFinanceRole(ctx, chapterId, "bookkeeper");
+    await requireCentralFinanceRoleOrEdSeat(ctx, chapterId, "bookkeeper");
   } else {
     await requireFinanceRole(ctx, chapterId, "bookkeeper");
   }

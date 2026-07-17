@@ -9,9 +9,11 @@
  * project, or recurring budget) attribute the spend for the rollups — there's
  * no fund picker (funds are backend-only, WP-1.4); the transaction silently
  * lands on the chapter's General Fund server-side. Backed by
- * `createManualTransaction`, which now accepts a single `budgetId` (picking a
- * budget-less event/project first summons its $0 budget via
- * `finances.summonBudgetForRef`).
+ * `createManualTransaction`, which accepts a single `budgetId` — WP-wave4
+ * (item 5): only an APPROVED budget's ref is offered by the picker at all
+ * (`forPickerOptions` filters server-side), and the old "summon a $0 budget
+ * on pick" flow is retired — picking an unbudgeted/unapproved ref is no
+ * longer possible from here.
  */
 import { useMemo, useState } from "react";
 import { Modal, Pressable, ScrollView, Text, View } from "react-native";
@@ -21,7 +23,7 @@ import type { Id } from "@events-os/convex/_generated/dataModel";
 import { Button, DateTimeField, Field, Icon, Select, TextField } from "../../ui";
 import { colors } from "../../../lib/theme";
 import { alertError } from "../../../lib/errors";
-import { buildForPickerItems, resolveForPickerValue } from "../reconcile/forPicker";
+import { buildForPickerItems } from "../reconcile/forPicker";
 
 const FLOW_OPTIONS = [
   { value: "outflow", label: "Outflow (charge)" },
@@ -30,7 +32,6 @@ const FLOW_OPTIONS = [
 
 export function ManualTransactionModal({ onClose }: { onClose: () => void }) {
   const create = useMutation(api.finances.createManualTransaction);
-  const summonBudgetForRef = useMutation(api.finances.summonBudgetForRef);
   const forOptions = useQuery(api.finances.forPickerOptions, {});
 
   const [merchant, setMerchant] = useState("");
@@ -69,9 +70,6 @@ export function ManualTransactionModal({ onClose }: { onClose: () => void }) {
     }
     setSaving(true);
     try {
-      const budgetId = forValue
-        ? await resolveForPickerValue(forValue, (args) => summonBudgetForRef(args))
-        : null;
       await create({
         flow,
         amountCents,
@@ -79,7 +77,7 @@ export function ManualTransactionModal({ onClose }: { onClose: () => void }) {
         ...(merchant.trim() ? { merchantName: merchant.trim() } : {}),
         ...(description.trim() ? { description: description.trim() } : {}),
         ...(categoryId ? { categoryId: categoryId as Id<"budgetCategories"> } : {}),
-        ...(budgetId ? { budgetId } : {}),
+        ...(forValue ? { budgetId: forValue as Id<"budgets"> } : {}),
       });
       onClose();
     } catch (err) {
@@ -153,6 +151,7 @@ export function ManualTransactionModal({ onClose }: { onClose: () => void }) {
             />
             <Select
               label="For (optional)"
+              hint="Projects and events appear here once their budget is approved."
               value={forValue}
               options={forItems}
               onChange={(v) => setForValue(v || null)}

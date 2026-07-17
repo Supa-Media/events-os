@@ -11,6 +11,7 @@
  */
 import { useState } from "react";
 import { Pressable, Text, View } from "react-native";
+import { useRouter } from "expo-router";
 import type { FunctionReturnType } from "convex/server";
 import { api } from "@events-os/convex/_generated/api";
 import type { Id } from "@events-os/convex/_generated/dataModel";
@@ -40,6 +41,7 @@ import {
   txnStatusTone,
   type DashPeriodMode,
 } from "./parts";
+import { awaitingApprovalZeroCapDisplay } from "./awaitingApproval";
 import { TagRollupSection, type TagRollup } from "./TagRollup";
 import { BudgetApprovalActions, BudgetApprovalChip } from "./BudgetApprovalActions";
 
@@ -123,6 +125,23 @@ export function ChapterView({
         ))}
       </TileRow>
 
+      {/* WP-wave4 (item 7): "Add transaction" lives HERE, always reachable,
+          because the "Recent transactions" section below (its old home)
+          disappears entirely once there's nothing to show — an empty
+          section is dead weight, but the action that FILLS it can't
+          disappear along with it. */}
+      {!isDrilldown ? (
+        <View className="mb-3 flex-row justify-end">
+          <Button
+            title="Add transaction"
+            icon="plus"
+            size="sm"
+            variant="secondary"
+            onPress={onAddTransaction}
+          />
+        </View>
+      ) : null}
+
       <View className="mt-3">
         <AiCodingBanner />
       </View>
@@ -190,35 +209,19 @@ export function ChapterView({
         onSelect={setSelectedTag}
       />
 
-      {/* Recent transactions */}
-      <SectionHeader
-        title="Recent transactions"
-        count={needsReview > 0 ? `${needsReview} need review` : undefined}
-        right={
-          isDrilldown ? undefined : (
-            <Button
-              title="Add transaction"
-              icon="plus"
-              size="sm"
-              variant="secondary"
-              onPress={onAddTransaction}
-            />
-          )
-        }
-      />
-      {data.recentTransactions.length === 0 ? (
-        <EmptyState
-          title="No transactions yet"
-          message="Charges and manual entries show up here as they land."
-          action={
-            isDrilldown ? undefined : (
-              <Button title="Add transaction" icon="plus" size="sm" onPress={onAddTransaction} />
-            )
-          }
-        />
-      ) : (
-        <TransactionsTable rows={data.recentTransactions} />
-      )}
+      {/* Recent transactions — WP-wave4 (item 7): hidden entirely when
+          empty ("if there are no transactions in a section we should just
+          hide the section" — owner). "Add transaction" stays reachable
+          near the KPI tiles above regardless. */}
+      {data.recentTransactions.length > 0 ? (
+        <>
+          <SectionHeader
+            title="Recent transactions"
+            count={needsReview > 0 ? `${needsReview} need review` : undefined}
+          />
+          <TransactionsTable rows={data.recentTransactions} />
+        </>
+      ) : null}
 
       {/* Needs your attention */}
       {(() => {
@@ -373,7 +376,13 @@ function AffordabilityHeader({
 // being peeked, so they'd fail with a confusing "not found" error. Hiding the
 // affordance is simpler and clearer than letting the user hit that.
 function ProjectBudgetCard({ b, onPress }: { b: ProjectBudget; onPress?: () => void }) {
+  const router = useRouter();
   const meta = [b.dateLabel, b.subtitle].filter(Boolean).join(" · ");
+  // WP-wave4 (item 6): a $0-approved-cap budget still AWAITING a decision
+  // shows spend against the REQUESTED amount, never the nonsense "100% /
+  // danger-red" the raw $0 cap would otherwise produce.
+  const display = awaitingApprovalZeroCapDisplay(b);
+  const remainingCents = display.budgetCents - b.spentCents;
   return (
     <View className="rounded-lg border border-border bg-raised p-4 shadow-card">
       <View className="mb-2 flex-row items-start justify-between gap-3">
@@ -388,7 +397,19 @@ function ProjectBudgetCard({ b, onPress }: { b: ProjectBudget; onPress?: () => v
               status={b.approvalStatus}
               approvedCents={b.approvedCents}
               requestedCents={b.requestedCents}
+              approvalParty={b.approvalParty}
             />
+            {/* WP-wave4 (item 4 — deep links): jump to the linked event/project. */}
+            {b.refKind && b.scopeRefId ? (
+              <Pressable
+                onPress={() => router.push(`/${b.refKind}/${b.scopeRefId}` as never)}
+                hitSlop={8}
+                accessibilityRole="button"
+                accessibilityLabel={`Open ${b.refKind}`}
+              >
+                <Icon name="external-link" size={14} color={colors.muted} />
+              </Pressable>
+            ) : null}
           </View>
           {meta ? <Text className="mt-0.5 text-xs text-muted">{meta}</Text> : null}
         </View>
@@ -396,16 +417,19 @@ function ProjectBudgetCard({ b, onPress }: { b: ProjectBudget; onPress?: () => v
           className="text-sm text-muted"
           style={{ fontVariant: ["tabular-nums"] }}
         >
-          {formatCents(b.spentCents)} / {formatCents(b.budgetCents)}
+          {formatCents(b.spentCents)} / {formatCents(display.budgetCents)}
+          {display.isAwaitingApproval ? " (requested)" : ""}
         </Text>
       </View>
 
-      <BudgetBar pct={b.pct} status={b.status} />
+      <BudgetBar pct={display.pct} status={display.status} />
 
       <View className="mt-1.5 flex-row items-center justify-between">
-        <Text className="text-xs text-muted">{b.pct}% spent</Text>
         <Text className="text-xs text-muted">
-          <Money cents={b.remainingCents} className="text-xs text-muted" /> left
+          {display.pct}% {display.isAwaitingApproval ? "of requested" : "spent"}
+        </Text>
+        <Text className="text-xs text-muted">
+          <Money cents={remainingCents} className="text-xs text-muted" /> left
         </Text>
       </View>
 
@@ -445,6 +469,8 @@ function ProjectBudgetCard({ b, onPress }: { b: ProjectBudget; onPress?: () => v
 function RecurringBudgetCard({ b, onPress }: { b: RecurringBudget; onPress?: () => void }) {
   const cadenceLabel =
     b.cadence === "monthly" ? "Monthly" : b.cadence === "quarterly" ? "Quarterly" : "Yearly";
+  // WP-wave4 (item 6): see `ProjectBudgetCard`'s identical treatment.
+  const display = awaitingApprovalZeroCapDisplay(b);
   return (
     <View className="min-w-[260px] flex-1 rounded-lg border border-border bg-raised p-4 shadow-card">
       <View className="mb-2 flex-row items-start justify-between gap-2">
@@ -458,17 +484,21 @@ function RecurringBudgetCard({ b, onPress }: { b: RecurringBudget; onPress?: () 
               status={b.approvalStatus}
               approvedCents={b.approvedCents}
               requestedCents={b.requestedCents}
+              approvalParty={b.approvalParty}
             />
           </View>
         </View>
         <Text className="text-sm text-muted" style={{ fontVariant: ["tabular-nums"] }}>
-          {formatCents(b.spentCents)} / {formatCents(b.budgetCents)}
+          {formatCents(b.spentCents)} / {formatCents(display.budgetCents)}
+          {display.isAwaitingApproval ? " (requested)" : ""}
         </Text>
       </View>
 
-      <BudgetBar pct={b.pct} status={b.status} />
+      <BudgetBar pct={display.pct} status={display.status} />
       <View className="mt-1.5 flex-row items-center justify-between">
-        <Text className="text-xs text-muted">{b.pct}% spent</Text>
+        <Text className="text-xs text-muted">
+          {display.pct}% {display.isAwaitingApproval ? "of requested" : "spent"}
+        </Text>
         {b.note ? <Text className="text-xs text-muted">{b.note}</Text> : null}
       </View>
 

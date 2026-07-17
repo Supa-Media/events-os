@@ -8,10 +8,11 @@
  *
  * The "For" picker (WP-U: one home per dollar) replaces the old separate
  * Budget + Link pickers with ONE picker, grouped Events / Projects / Recurring
- * — built from `finances.forPickerOptions` (see `forPicker.ts`). Picking a
- * budget-less event/project summons its $0 budget first
- * (`finances.summonBudgetForRef`), then categorizes to the resulting real
- * `budgetId`.
+ * — built from `finances.forPickerOptions` (see `forPicker.ts`). WP-wave4
+ * (item 5, owner addendum 2026-07-17): only a ref with an APPROVED budget is
+ * ever offered — `forPickerOptions` filters server-side
+ * (`isAttributableBudget`), so a picked value is always a real `budgetId`
+ * already; the old "summon a $0 budget on pick" flow is retired.
  *
  * Filtering is SERVER-SIDE via `listReconcile({ filter })`, so each pill is
  * truthful across ALL of the chapter's charges (not just one page) and carries a
@@ -59,7 +60,7 @@ import {
   type FilterKey,
 } from "../../../components/finance/reconcile/helpers";
 import { BulkBar } from "../../../components/finance/reconcile/BulkBar";
-import { buildForPickerItems, resolveForPickerValue } from "../../../components/finance/reconcile/forPicker";
+import { buildForPickerItems } from "../../../components/finance/reconcile/forPicker";
 
 function NoFinanceAccess() {
   return (
@@ -119,12 +120,11 @@ function ReconcileGrid() {
   );
   // All chapter categories (no fund filter — coding is category + For only).
   const categories = useQuery(api.finances.listCategories, {}) ?? [];
-  // The "For" picker's option groups (WP-U) — events/projects (budgeted +
-  // summon-candidates) + recurring budgets by level.
+  // The "For" picker's option groups (WP-U) — events/projects + recurring
+  // budgets by level, every row carrying a real, APPROVED budget (item 5).
   const forOptions = useQuery(api.finances.forPickerOptions, {});
 
   const bulkCategorize = useMutation(api.finances.bulkCategorize);
-  const summonBudgetForRef = useMutation(api.finances.summonBudgetForRef);
   const setStatus = useMutation(api.finances.setTransactionStatus);
   const reassignTransactions = useMutation(api.finances.reassignTransactions);
   const { run, toast, dismiss } = useActionRunner();
@@ -231,12 +231,11 @@ function ReconcileGrid() {
   }
   async function bulkSetFor(value: string | null) {
     await run(
-      async () => {
-        const budgetId = value
-          ? await resolveForPickerValue(value, (args) => summonBudgetForRef(args))
-          : null;
-        return bulkCategorize({ transactionIds: bulkIds, budgetId });
-      },
+      () =>
+        bulkCategorize({
+          transactionIds: bulkIds,
+          budgetId: value ? (value as Id<"budgets">) : null,
+        }),
       { errorTitle: "Couldn't set budget" },
     );
   }

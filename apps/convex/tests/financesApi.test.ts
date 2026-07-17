@@ -15,6 +15,22 @@ import type { Id } from "../_generated/dataModel";
  * rejection.
  */
 
+/**
+ * WP-wave4 (item 5, owner addendum 2026-07-17): a transaction can only
+ * attribute to an APPROVED budget now (`isAttributableBudget` in
+ * `finances.ts`) — `createBudget` starts every new budget at `"draft"`
+ * (unchanged, WP-3.2), so this file's fixture budgets (which this suite
+ * immediately attributes spend to, to exercise budget-vs-actual math — NOT
+ * the approval workflow itself, which `cdBudgetApproval.test.ts`/
+ * `financeBudgetApproval.test.ts` already cover) need a direct patch to
+ * `"approved"` rather than a full submit+approve round-trip through a second
+ * identity. Bypasses the workflow mutations on purpose — isolates "is the
+ * MONEY MATH right" from "does the approval GATE work".
+ */
+async function approveBudgetDirect(s: ChapterSetup, budgetId: Id<"budgets">): Promise<void> {
+  await run(s.t, (ctx) => ctx.db.patch(budgetId, { approvalStatus: "approved" }));
+}
+
 async function seedSelfPerson(s: ChapterSetup): Promise<Id<"people">> {
   return await run(s.t, (ctx) =>
     ctx.db.insert("people", {
@@ -188,6 +204,7 @@ describe("budgets + budgetVsActual (Estimated ≠ Actual)", () => {
       categoryId,
       label: "Food · March",
     });
+    await approveBudgetDirect(s, budgetId);
 
     // A real $120.00 outflow coded to Food in March, EXPLICITLY linked to the
     // budget → counts as actual (fund/category alone is no longer enough).
@@ -318,6 +335,7 @@ describe("budgets + budgetVsActual (Estimated ≠ Actual)", () => {
       month,
       label: "Soon-to-be-deleted",
     });
+    await approveBudgetDirect(s, budgetId);
     const txnId = await s.as.mutation(api.finances.createManualTransaction, {
       flow: "outflow",
       amountCents: 4200,
@@ -866,6 +884,7 @@ describe("enriched dashboards (prototype shapes)", () => {
       year,
       scopeRefId: eventId,
     });
+    await approveBudgetDirect(s, budgetId);
 
     // $100 real spend on the event, coded to Food, EXPLICITLY linked to the
     // budget (WP-U: `createManualTransaction` no longer accepts a separate
@@ -939,6 +958,7 @@ describe("enriched dashboards (prototype shapes)", () => {
       categoryId,
       label: "Software · June",
     });
+    await approveBudgetDirect(s, budgetId);
     const txnId = await s.as.mutation(api.finances.createManualTransaction, {
       flow: "outflow",
       amountCents: 9000, // 90% → warn
@@ -1033,6 +1053,7 @@ describe("enriched dashboards (prototype shapes)", () => {
       categoryId,
       label: "Ad spend · monthly",
     });
+    await approveBudgetDirect(s, budgetId);
     // $30 Jan, $50 Feb, $90 March — all coded to Ad spend AND explicitly
     // linked to the budget (fund/category alone is no longer an attribution
     // link under the explicit-only rule).
@@ -1239,6 +1260,7 @@ describe("money-math regression fixes", () => {
       categoryId,
       label: "Ad spend · monthly",
     });
+    await approveBudgetDirect(s, budgetId);
     // $30 spent in March, $50 in April — both explicitly linked to the budget.
     const marchTxnId = await s.as.mutation(api.finances.createManualTransaction, {
       flow: "outflow",

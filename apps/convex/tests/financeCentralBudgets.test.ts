@@ -36,6 +36,19 @@ async function seedSelfPerson(s: ChapterSetup): Promise<Id<"people">> {
   );
 }
 
+/**
+ * WP-wave4 (item 5, owner addendum 2026-07-17): a transaction can only
+ * attribute to an APPROVED budget now (`isAttributableBudget` in
+ * `finances.ts`) — `createBudget` starts every new budget at `"draft"`
+ * (unchanged, WP-3.2), so this file's fixture budgets (which this suite
+ * immediately attributes spend to, to exercise budget-vs-actual money math —
+ * NOT the approval workflow itself, already covered elsewhere) need a direct
+ * patch to `"approved"` rather than a full submit+approve round-trip.
+ */
+async function approveBudgetDirect(s: ChapterSetup, budgetId: Id<"budgets">): Promise<void> {
+  await run(s.t, (ctx) => ctx.db.patch(budgetId, { approvalStatus: "approved" }));
+}
+
 /** A chapter-only manager (person + manager grant, scope chapter). */
 async function asChapterManager(s: ChapterSetup): Promise<Id<"people">> {
   const personId = await seedSelfPerson(s);
@@ -78,6 +91,7 @@ describe("central budgets: create gating + storage", () => {
       central: true,
       label: "Org Marketing",
     });
+    await approveBudgetDirect(s, budgetId);
     const doc = await run(s.t, (ctx) => ctx.db.get(budgetId));
     expect(doc?.chapterId).toBe("central");
   });
@@ -107,6 +121,7 @@ describe("central budgets: create gating + storage", () => {
       central: true,
       label: "City Launch Fund",
     });
+    await approveBudgetDirect(s, budgetId);
     const doc = await run(s.t, (ctx) => ctx.db.get(budgetId));
     expect(doc?.chapterId).toBe("central");
   });
@@ -123,6 +138,7 @@ describe("listBudgets: chapter + central, level-tagged", () => {
       year: 2026,
       label: "NY Ops",
     });
+    await approveBudgetDirect(s, chapterBudget);
     const centralBudget = await s.as.mutation(api.finances.createBudget, {
       amountCents: 500000,
       type: "recurring",
@@ -131,6 +147,7 @@ describe("listBudgets: chapter + central, level-tagged", () => {
       central: true,
       label: "Org",
     });
+    await approveBudgetDirect(s, centralBudget);
     const budgets = await s.as.query(api.finances.listBudgets, {});
     expect(budgets.find((b) => b.id === chapterBudget)?.level).toBe("chapter");
     expect(budgets.find((b) => b.id === centralBudget)?.level).toBe("central");
@@ -148,6 +165,7 @@ describe("categorize: budget attribution tenancy", () => {
       year: 2026,
       central: true,
     });
+    await approveBudgetDirect(s, centralBudget);
     const txnId = await s.as.mutation(api.finances.createManualTransaction, {
       flow: "outflow",
       amountCents: 5000,
@@ -226,6 +244,7 @@ describe("budget attribution: explicit link only — no derive-matching", () => 
       categoryId,
       label: "A",
     });
+    await approveBudgetDirect(s, budgetA);
     const budgetB = await s.as.mutation(api.finances.createBudget, {
       amountCents: 100000,
       type: "recurring",
@@ -236,6 +255,7 @@ describe("budget attribution: explicit link only — no derive-matching", () => 
       categoryId,
       label: "B",
     });
+    await approveBudgetDirect(s, budgetB);
 
     // txn1 ($100): explicitly linked to A.
     const txn1 = await s.as.mutation(api.finances.createManualTransaction, {
@@ -287,6 +307,7 @@ describe("budget attribution: an explicit link still buckets by the budget's per
       year,
       label: "Monthly",
     });
+    await approveBudgetDirect(s, monthly);
 
     // $80 posted in MARCH, explicitly linked to the monthly budget.
     const txn = await s.as.mutation(api.finances.createManualTransaction, {
@@ -326,6 +347,7 @@ describe("dashboardChapter: a chapter txn linked to a CENTRAL budget", () => {
       central: true,
       label: "Org Marketing",
     });
+    await approveBudgetDirect(s, centralBudget);
     // A chapter-level budget too, to prove it's NOT vacuumed in there either.
     const chapterBudget = await s.as.mutation(api.finances.createBudget, {
       amountCents: 100000,
@@ -335,6 +357,7 @@ describe("dashboardChapter: a chapter txn linked to a CENTRAL budget", () => {
       month,
       label: "Chapter Ops",
     });
+    await approveBudgetDirect(s, chapterBudget);
 
     // Legal: a chapter txn explicitly linked to a central budget.
     const txnId = await s.as.mutation(api.finances.createManualTransaction, {
@@ -377,6 +400,7 @@ describe("dashboardCentral: central budgets roll up org-wide", () => {
       central: true,
       label: "Org Ads",
     });
+    await approveBudgetDirect(s, centralBudget);
 
     // NY: a $70 spend linked to the central budget.
     await run(t, (ctx) =>
@@ -444,6 +468,7 @@ describe("dashboardCentral: central budgets roll up org-wide", () => {
       central: true,
       label: "Org Ads",
     });
+    await approveBudgetDirect(s, centralBudget);
 
     // A prod-mode transaction ($70) and a sandbox-mode transaction ($40),
     // both linked to the same central budget. txnMatchesMode only applies
@@ -506,6 +531,7 @@ describe("dashboardCentral: central budgets roll up org-wide", () => {
       central: true,
       label: "Org Ads",
     });
+    await approveBudgetDirect(s, centralBudget);
 
     await run(t, (ctx) =>
       ctx.db.insert("transactions", {
@@ -655,6 +681,7 @@ describe("budgets v2: create by type + auto-tag", () => {
       year: 2026,
       scopeRefId: eventId,
     });
+    await approveBudgetDirect(s, budgetId);
 
     const budgets = await s.as.query(api.finances.listBudgets, {});
     const row = budgets.find((b) => b.id === budgetId);
@@ -677,6 +704,7 @@ describe("budgets v2: create by type + auto-tag", () => {
       year: 2026,
       label: "Ops",
     });
+    await approveBudgetDirect(s, budgetId);
     const budgets = await s.as.query(api.finances.listBudgets, {});
     const row = budgets.find((b) => b.id === budgetId);
     expect(row?.type).toBe("recurring");
@@ -713,6 +741,7 @@ describe("budgets v2: multi-tag rollups", () => {
       month,
       tagIds: [tagX, tagY],
     });
+    await approveBudgetDirect(s, budgetId);
 
     // $60 spend explicitly linked to the budget.
     const txnId = await s.as.mutation(api.finances.createManualTransaction, {
@@ -758,6 +787,7 @@ describe("budgets v2: tag rollups are linked-only", () => {
       tagIds: [tag],
       label: "A",
     });
+    await approveBudgetDirect(s, budgetA);
     await s.as.mutation(api.finances.createBudget, {
       amountCents: 100000,
       type: "recurring",
@@ -828,6 +858,7 @@ describe("dashboardCentral: central-level tags roll up", () => {
       tagIds: [orgTag],
       label: "Org",
     });
+    await approveBudgetDirect(s, centralBudget);
 
     // A $90 spend explicitly linked to the central budget.
     await run(t, (ctx) =>
@@ -866,6 +897,7 @@ describe("updateBudget: refKind/scopeRefId consistency + event auto-tag on conve
       year: 2026,
       scopeRefId: eventId,
     });
+    await approveBudgetDirect(s, budgetId);
 
     // Flipping refKind to "project" without a matching scopeRefId would leave the
     // stale event id compared as a project id → rejected.
@@ -891,6 +923,7 @@ describe("updateBudget: refKind/scopeRefId consistency + event auto-tag on conve
       year: 2026,
       label: "Ops",
     });
+    await approveBudgetDirect(s, budgetId);
 
     // Convert to a one_time event budget (supplying the matching event ref).
     await s.as.mutation(api.finances.updateBudget, {
@@ -996,6 +1029,7 @@ describe("budgets v2: explicit-only attribution regardless of type", () => {
       year,
       scopeRefId: eventId,
     });
+    await approveBudgetDirect(s, oneTime);
     const recurring = await s.as.mutation(api.finances.createBudget, {
       amountCents: 50000,
       type: "recurring",
@@ -1004,6 +1038,7 @@ describe("budgets v2: explicit-only attribution regardless of type", () => {
       month,
       label: "Ops",
     });
+    await approveBudgetDirect(s, recurring);
 
     // $80 destined for the event's budget, and $20 with no link at all —
     // NEITHER carries a `budgetId` yet (WP-U: `createManualTransaction` no

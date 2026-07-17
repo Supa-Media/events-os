@@ -35,21 +35,46 @@ const STATUS_TONE: Record<BudgetApprovalStatus, BadgeTone> = {
  *  own `budgetCents` is the EFFECTIVE cap now, B1 review, so it can't be used
  *  here), the chip's own label makes BOTH numbers explicit — "Awaiting
  *  approval — approved $X, requested $Y" — so the increase-retrigger rule is
- *  visible right on the card, not just in a tooltip somewhere. */
+ *  visible right on the card, not just in a tooltip somewhere.
+ *
+ * WP-wave4 (item 3): a `"draft"` budget is now ALWAYS a deliberate,
+ * not-yet-sent state (new or increased — see `finances.ts#setBudgetAmount`'s
+ * retrigger doc) — never silently identical to "nothing's happening". The
+ * chip reads "Draft — not sent" so it's never hidden. A DRAFT INCREASE
+ * (`approvedCents` set and different from `requestedCents` — the OLD approved
+ * cap is still what's enforced, see `effectiveCapCents`) gets the same
+ * both-numbers treatment the pending-submitted case already uses.
+ *
+ * WP-wave4 (item 8): an `"approved"` budget shows "1-party approved" instead
+ * of the plain "Approved" label when `approvalParty === "single"` — the
+ * TEMPORARY superuser self-approval bypass (`finances.ts#approveBudget`) —
+ * so a solo-approved decision is never visually indistinguishable from a
+ * normal two-person one. `null`/`"two_party"` render the unchanged default
+ * label. */
 export function BudgetApprovalChip({
   status,
   approvedCents,
   requestedCents,
+  approvalParty,
 }: {
   status: BudgetApprovalStatus;
   approvedCents: number | null;
   requestedCents: number;
+  /** Optional so existing callers (not yet threading the field through)
+   *  still compile — absent renders exactly like `null`/`"two_party"`. */
+  approvalParty?: "single" | "two_party" | null;
 }) {
-  const pending =
-    status === "submitted" && approvedCents != null && approvedCents !== requestedCents;
-  const label = pending
-    ? `Awaiting approval — approved ${formatCents(approvedCents!)}, requested ${formatCents(requestedCents)}`
-    : BUDGET_APPROVAL_STATUS_LABELS[status];
+  const pendingIncrease = approvedCents != null && approvedCents !== requestedCents;
+  const label =
+    status === "submitted" && pendingIncrease
+      ? `Awaiting approval — approved ${formatCents(approvedCents!)}, requested ${formatCents(requestedCents)}`
+      : status === "draft" && pendingIncrease
+        ? `Draft — not sent (approved ${formatCents(approvedCents!)}, requesting ${formatCents(requestedCents)})`
+        : status === "draft"
+          ? "Draft — not sent"
+          : status === "approved" && approvalParty === "single"
+            ? "1-party approved"
+            : BUDGET_APPROVAL_STATUS_LABELS[status];
   return <Badge label={label} tone={STATUS_TONE[status]} />;
 }
 
@@ -84,7 +109,7 @@ export function BudgetApprovalActions({
   if (status === "draft" || status === "changes_requested") {
     return (
       <Button
-        title="Submit for approval"
+        title="Send for review"
         variant="secondary"
         size="sm"
         loading={busy}
