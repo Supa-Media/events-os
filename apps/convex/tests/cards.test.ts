@@ -3469,7 +3469,19 @@ describe("revealCardDetails", () => {
   });
 
   const FAKE_PAN = "4242424242424242";
-  const FAKE_CVC = "999";
+  // A distinctive, non-numeric canary — NOT a plausible digit run. The
+  // original "999" was a 3-digit substring that could (and on CI did)
+  // coincidentally appear inside some *other* document's unrelated epoch-ms
+  // `Date.now()` field (`_creationTime`, `cardDetailsRevealAttempts.createdAt`,
+  // `people.createdAt`, `cards.createdAt`, …) — any of those 13-digit
+  // timestamps has a real chance of containing "999" somewhere. Nothing in
+  // `revealCardDetails`/`beginRevealCardDetails` (apps/convex/cards.ts) or
+  // this test's mock plumbing assumes the CVC is numeric or a fixed length —
+  // the action just does `String(details.verification_code ?? "")` and the
+  // return validator is a bare `v.string()` — so a long, unique,
+  // non-digit-only value is safe and makes an accidental substring match
+  // across any real document field practically impossible.
+  const FAKE_CVC = "CVC_CANARY_7f3a";
 
   /** Only the GET /cards/{id}/details endpoint is ever hit by this flow. */
   function mockCardDetailsFetch() {
