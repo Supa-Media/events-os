@@ -27,12 +27,13 @@
  * already grant (seats derive `finance.manager`/`finance.central`/
  * `finance.accounts`, never revoke a hand-granted `financeRoles`/
  * `specializedRoles` row). This is the exact union formula
- * `seats.ts#capabilityAudit` simulated before this flip shipped — see that
- * query's doc comment for the full framing, and its module doc's "Mapping
- * rules" section (`lib/seats.ts`) for what a seat can and can't derive. The
- * superuser short-circuit at the top of each function is UNCHANGED — the
- * audit has no way to verify that bypass (nothing in the scanned tables to
- * key off), so it stays untouched by design.
+ * `seats.ts#capabilityAudit` (since retired — see `seats.ts#bridgeDriftAudit`,
+ * a narrower bridge-mirror-drift check, not a flip simulation) simulated
+ * before this flip shipped — see `lib/seats.ts`'s module doc's "Mapping
+ * rules" section for what a seat can and can't derive. The superuser
+ * short-circuit at the top of each function is UNCHANGED — no audit
+ * verifies that bypass (nothing in any scanned table to key off), so it
+ * stays untouched by design.
  */
 import { ConvexError } from "convex/values";
 import {
@@ -143,9 +144,10 @@ export async function resolveCallerPersonId(
 }
 
 /** `max(a, b)` on the graded finance-role ladder — `null` iff BOTH are
- *  `null`. Mirrors `seats.ts#capabilityAudit`'s identically-named/-shaped
- *  helper; kept local here (not shared) per the flip's one-file-revert
- *  requirement — this file must stand alone. */
+ *  `null`. Kept local here (not shared) per the flip's one-file-revert
+ *  requirement — this file must stand alone. (The now-retired
+ *  `seats.ts#capabilityAudit` used to carry an identically-named/-shaped
+ *  copy for its own flip simulation; that audit and its copy are gone.) */
 function maxRole(a: FinanceRole | null, b: FinanceRole | null): FinanceRole | null {
   if (a === null) return b;
   if (b === null) return a;
@@ -212,8 +214,8 @@ export async function getFinanceRole(
 
   // B10 — seat-derived side of the union (see module doc). Deliberately NOT
   // merged across scopes here: `seatDerived[chapterId]`'s role contributes
-  // ONLY at this chapter, mirroring exactly how `capabilityAudit` compared
-  // per scope (its `todaysRoleAtScope`/`maxRole` pairing). A central
+  // ONLY at this chapter — the same per-scope comparison the now-retired
+  // `seats.ts#capabilityAudit` used to run for its flip simulation. A central
   // `finance.manager` seat (e.g. `financial_manager`) doesn't need a
   // seat-side merge into every chapter anyway — its real assignment
   // write-through already bridges a STORED central `financeRoles` grant
@@ -230,8 +232,9 @@ export async function getFinanceRole(
   );
 
   const role = maxRole(seatRoleHere, storedRole);
-  // Whole-person, scope-agnostic (mirrors `storedIsCentral`'s own shape and
-  // `capabilityAudit`'s `todaysIsCentral`/`postFlipCentral`) — a seat granting
+  // Whole-person, scope-agnostic (mirrors `storedIsCentral`'s own shape —
+  // the now-retired `seats.ts#capabilityAudit` used to compare this exact
+  // dimension for its flip simulation) — a seat granting
   // `finance.central` ANYWHERE gives org-wide roll-up reach, same as a bare
   // central `financeRoles` grant does today. This is what closes the
   // pre-flagged gap confirmed by the prod audit: `executive_director`'s seat
@@ -407,9 +410,9 @@ export function assertSeparationOfDuties(
  * caller's userId owns (a finance seat isn't chapter-scoped the way a normal
  * roster lookup is) rather than requiring the caller's own chapter membership
  * — and (B10) checks the seat-derived side PER SIBLING inside that same
- * walk, exactly as `capabilityAudit`'s `todaysAccountsAccessForPerson` (the
- * stored-title side) + its per-personId `seatDerived["central"]?.
- * accountsAccess` check were compared together for each audited person.
+ * walk. (The now-retired `seats.ts#capabilityAudit` used to compare this
+ * exact stored-title-vs-seat-derived pairing, per audited person, for its
+ * flip simulation.)
  */
 export async function isCentralEdOrFm(ctx: QueryCtx): Promise<boolean> {
   if (await isSuperuser(ctx)) return true;
@@ -436,8 +439,10 @@ export async function isCentralEdOrFm(ctx: QueryCtx): Promise<boolean> {
     // B10 — seat-derived side of the union: a central seat carrying
     // `finance.accounts` (today: `executive_director`, `financial_manager`)
     // grants Accounts reach even when the `specializedRoles` write-through
-    // mirror is missing or stale — the exact gap `capabilityAudit`'s
-    // `flip_changes_accounts_access` mismatch kind polices.
+    // mirror is missing or stale. (`seats.ts#bridgeDriftAudit` watches for
+    // exactly that missing-mirror case today — a data-integrity check, not
+    // a capability-outcome one; see its doc for why that distinction
+    // matters post-flip.)
     const seatDerived = await getSeatDerivedCapabilities(ctx, person._id);
     if (seatDerived["central"]?.accountsAccess) return true;
   }

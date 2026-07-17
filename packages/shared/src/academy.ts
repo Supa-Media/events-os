@@ -3811,7 +3811,7 @@ const SECTIONS_IN_ORDER: Omit<AcademySection, "order">[] = [
     blocks: [
       {
         kind: "p",
-        text: "The Governance page is where seats get assigned: Executive Director and Financial Manager at central, Chapter Director and Treasurer per chapter. Each is one holder per seat — assigning a new Executive Director replaces the old one, it doesn't add a second.",
+        text: "Seats get assigned from the **Org Chart** tab: a superuser can assign a holder directly, and anyone else proposes a change for the seat's holder (or the seat above it) to confirm — a two-party handoff, not a unilateral edit. Executive Director and Financial Manager sit at central; Chapter Director and Treasurer sit per chapter. Each is one holder per seat — assigning a new Executive Director replaces the old one, it doesn't add a second. Editing the chart's STRUCTURE itself (adding, moving, or removing seats) is separate and narrower: only the Executive Director or a superuser can do that.",
       },
       {
         kind: "table",

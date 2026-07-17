@@ -29,13 +29,23 @@ import { runSeedSeatDefs } from "../migrations/0022_seed_seat_defs";
  *    graded-role union.
  *  - `financeRoles.canViewAccounts` returns `isCentralEdOrFm(...)` verbatim.
  *
- * Every scenario here mirrors a `seats.ts#capabilityAudit` drift case (see
- * `capabilityAudit.test.ts`) — this file proves the audit's PREDICTED
- * post-flip outcome is what the REAL gates now do. The production audit run
- * ahead of this flip found exactly ONE delta (an `executive_director`
- * holder gaining central reach — the first describe block below) and ZERO
- * narrowing deltas; every other scenario here is a "stays exactly the same"
- * pin, not a behavior change.
+ * Every scenario here mirrors a drift fixture shape from `seats.ts`'s
+ * capability audit — at the time this file was written, that audit was
+ * `capabilityAudit` (a today-vs-post-flip FLIP SIMULATION run ahead of B10
+ * to predict exactly this file's outcomes) and its production run found
+ * exactly ONE delta (an `executive_director` holder gaining central reach —
+ * the first describe block below) and ZERO narrowing deltas; every other
+ * scenario here was a "stays exactly the same" pin, not a behavior change.
+ * `capabilityAudit` has SINCE been retired (its flip-simulation went
+ * permanently stale once B10 actually shipped) and replaced by
+ * `bridgeDriftAudit` (`bridgeDriftAudit.test.ts`) — a narrower check that no
+ * longer predicts gate outcomes at all, just `seatAssignments` ↔
+ * `specializedRoles` mirror drift. This file's own fixtures (direct
+ * `seatAssignments` inserts bypassing `assignSeat`'s write-through) still
+ * happen to share their SHAPE with `bridgeDriftAudit.test.ts`'s drift
+ * fixtures, but the two files test different things now: this one pins what
+ * the LIVE gates actually do; that one only watches for bridge-mirror
+ * staleness.
  */
 
 async function seatSetup(
@@ -121,7 +131,7 @@ async function defBySlug(s: ChapterSetup, slug: string) {
 }
 
 /** Insert a `seatAssignments` row directly (bypassing `assignSeat`'s
- *  write-through), exactly mirroring `capabilityAudit.test.ts`'s drift
+ *  write-through), the same shape as `bridgeDriftAudit.test.ts`'s drift
  *  fixtures — isolates "what the chart alone implies" from the stored
  *  bridge/mirror rows a real assignment would also create. */
 async function assignSeatDirect(
@@ -223,7 +233,7 @@ describe("getFinanceRole — central reach union (via stripeFinance.canConnectAc
 });
 
 describe("getFinanceRole — graded role union (via financeRoles.grantFinanceRole, manager-gated)", () => {
-  test("a treasurer seat assigned directly (bypassing the financeRoles bridge) now clears the manager gate — the flip_changes_finance_role drift capabilityAudit predicted", async () => {
+  test("a treasurer seat assigned directly (bypassing the financeRoles bridge) now clears the manager gate — the B10 seat-derived union widening", async () => {
     const s = await seatSetup();
     const personId = await seedSelfPerson(s);
     await assignSeatDirect(s, personId, "treasurer", s.chapterId);
@@ -293,7 +303,7 @@ describe("getFinanceRole — graded role union (via financeRoles.grantFinanceRol
 });
 
 describe("isCentralEdOrFm — accounts-access union (via financeRoles.canViewAccounts)", () => {
-  test("a financial_manager seat, with the specializedRoles mirror a real assignment would also write DELETED, still sees Accounts — seat-derived accountsAccess survives the mirror gap (the flip_changes_accounts_access drift capabilityAudit predicted)", async () => {
+  test("a financial_manager seat, with the specializedRoles mirror a real assignment would also write DELETED, still sees Accounts — seat-derived accountsAccess survives the mirror gap", async () => {
     const s = await seatSetup();
     const personId = await seedSelfPerson(s);
 
@@ -303,7 +313,7 @@ describe("isCentralEdOrFm — accounts-access union (via financeRoles.canViewAcc
     // directly here (rather than via the superuser-gated `assignSeat`
     // mutation, which would need a second caller identity) so this test can
     // then delete JUST the mirror, simulating drift, exactly like
-    // `capabilityAudit.test.ts`'s matching scenario.
+    // `bridgeDriftAudit.test.ts`'s matching scenario.
     await assignSeatDirect(s, personId, "financial_manager", "central");
     await run(s.t, (ctx) =>
       ctx.db.insert("financeRoles", {
