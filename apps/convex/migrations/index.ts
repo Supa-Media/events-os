@@ -39,6 +39,7 @@ import { seedSeatAssignments } from "./0023_seed_seat_assignments";
 import { repointDerivedSeatDuties } from "./0024_repoint_derived_seat_duties";
 import { addCdFinanceViewer } from "./0025_add_cd_finance_viewer";
 import { migrateBudgetV1Lines } from "./0026_migrate_budget_v1_lines";
+import { syncLinkedBudgetIdentity } from "./0027_sync_linked_budget_identity";
 
 /** One registered migration: a stable `name` (the ledger key) + its effect. */
 export type Migration = {
@@ -86,4 +87,8 @@ export const MIGRATIONS: Migration[] = [
   // `budgetLines` (get-or-create the event's finance budget row, migrate each
   // line, delete the drained v1 rows) so `schema/budget.ts` can be removed.
   migrateBudgetV1Lines,
+  // Budget identity & dates — backfill the write-through sync
+  // (`syncBudgetIdentityForRef`) onto every existing linked one_time budget
+  // whose label/year/month already drifted from its live entity.
+  syncLinkedBudgetIdentity,
 ];

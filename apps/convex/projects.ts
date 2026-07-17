@@ -34,6 +34,7 @@ import {
   createProjectBudget,
   getBudgetForRef,
   setBudgetAmount,
+  syncBudgetIdentityForRef,
 } from "./finances";
 
 /**
@@ -628,6 +629,7 @@ export const create = mutation({
           chapterId: chapterId as Id<"chapters">,
           name: args.name,
           startDate: args.startDate,
+          deadline: args.deadline,
           createdAt: now,
           budgetUsd: args.budgetUsd,
         },
@@ -906,10 +908,32 @@ export const update = mutation({
               : project.name,
           startDate:
             patch.startDate !== undefined ? (patch.startDate ?? undefined) : project.startDate,
+          deadline:
+            patch.deadline !== undefined ? (patch.deadline ?? undefined) : project.deadline,
           createdAt: project.createdAt,
           budgetUsd: patch.budgetUsd,
         },
         budgetUserId,
+      );
+    }
+
+    // Budget identity & dates (item 2): a rename or a startDate/deadline
+    // change write-throughs onto the linked budget's stored label/year/
+    // month — a no-op when nothing is linked yet, or when the summon-trigger
+    // just above already created a fresh budget with matching identity.
+    if (patch.name !== undefined || patch.deadline !== undefined || patch.startDate !== undefined) {
+      const effectiveName =
+        patch.name !== undefined && patch.name.trim() ? patch.name.trim() : project.name;
+      const effectiveDeadline =
+        patch.deadline !== undefined ? (patch.deadline ?? undefined) : project.deadline;
+      const effectiveStartDate =
+        patch.startDate !== undefined ? (patch.startDate ?? undefined) : project.startDate;
+      await syncBudgetIdentityForRef(
+        ctx,
+        "project",
+        projectId,
+        effectiveName,
+        effectiveDeadline ?? effectiveStartDate ?? project.createdAt,
       );
     }
 

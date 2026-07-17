@@ -23,6 +23,7 @@ import { api } from "@events-os/convex/_generated/api";
 import type { Id } from "@events-os/convex/_generated/dataModel";
 import {
   BUDGET_TYPE_LABELS,
+  easternParts,
   type BudgetCadence,
   type BudgetRefKind,
   type BudgetType,
@@ -195,6 +196,33 @@ export function BudgetCreateModal({
     cadence === "monthly" || cadence === "per_instance" || cadence === "one_off";
   const isEventBudget = type === "one_time" && refKind === "event";
 
+  // Budget identity & dates: a budget linked to an event/project ALWAYS
+  // takes its name and period from that entity — the backend rejects any
+  // attempt to set label/year/month on one (`updateBudget`'s
+  // LINKED_BUDGET_IDENTITY check). Covers both "editing an already-linked
+  // budget" and "creating/editing with a ref currently selected." An
+  // untethered one-time budget (`type === "one_time"` with no `refSel`)
+  // still needs its own manual label/period, same as recurring.
+  const isLinked = type === "one_time" && !!refSel;
+  const linkedEvent = isLinked && refKind === "event"
+    ? events.find((e) => e._id === scopeRefId)
+    : undefined;
+  const linkedProject = isLinked && refKind === "project"
+    ? projects.find((p) => p._id === scopeRefId)
+    : undefined;
+  const linkedRefName = linkedEvent?.name ?? linkedProject?.name ?? null;
+  // The date that would drive the derived year/month — an event's real
+  // eventDate, or a project's deadline (falling back to startDate/
+  // createdAt, mirroring the backend's createProjectBudget derivation —
+  // see that function's doc comment for why this required fallback chain
+  // isn't a re-introduction of the "no fabricated dates" bug fixed
+  // elsewhere for optional UI date suffixes).
+  const linkedRefDate = linkedEvent
+    ? linkedEvent.eventDate
+    : linkedProject
+      ? (linkedProject.deadline ?? linkedProject.startDate ?? linkedProject.createdAt)
+      : null;
+
   // Tags usable at this budget's level: a central budget takes central tags
   // only; a chapter budget takes chapter + central tags.
   const level = central ? "central" : "chapter";
@@ -244,19 +272,30 @@ export function BudgetCreateModal({
   }
 
   async function saveEditing(amountCents: number, yr: number): Promise<void> {
+    // Budget identity & dates: a linked budget's label/year/month are the
+    // entity's, always — the backend REJECTS a patch that even mentions
+    // these keys on a linked budget (LINKED_BUDGET_IDENTITY), so they must
+    // be OMITTED entirely here, not sent as `null` (sending `null` still
+    // trips the rejection — it's gated on the key being present, not its
+    // value).
+    const identityFields = isLinked
+      ? {}
+      : {
+          label: label.trim() || null,
+          year: yr,
+          month: showMonth ? month : null,
+          quarter: showQuarter ? quarter : null,
+        };
     await update({
       budgetId: editing!.id,
       patch: {
         amountCents,
-        label: label.trim() || null,
         type,
         cadence,
         refKind: type === "one_time" ? refKind ?? null : null,
         scopeRefId: type === "one_time" ? scopeRefId ?? null : null,
-        year: yr,
-        month: showMonth ? month : null,
-        quarter: showQuarter ? quarter : null,
         categoryId: (categoryId as Id<"budgetCategories"> | null) ?? null,
+        ...identityFields,
       },
       // Send the full current set so backend replaces links (auto tags kept).
       tagIds,
@@ -273,11 +312,23 @@ export function BudgetCreateModal({
         await saveEditing(amountCents, yr);
         onClose();
       } else {
-        const period = {
-          year: yr,
-          month: showMonth ? month ?? undefined : undefined,
-          quarter: showQuarter ? quarter ?? undefined : undefined,
-        };
+        // Budget identity & dates: `createBudget`'s `year` arg is required,
+        // so a linked one-time create still HAS to send year/month/label —
+        // just computed from the picked ref's own date/name instead of the
+        // (hidden, never user-edited) Year/Month/Name fields. Mirrors the
+        // backend's own derivation (`createProjectBudget`'s deadline-first
+        // fallback) so the freshly-created row's stored identity already
+        // matches what the write-through sync would later converge it to.
+        const derivedParts =
+          isLinked && linkedRefDate != null ? easternParts(linkedRefDate) : null;
+        const period = derivedParts
+          ? { year: derivedParts.year, month: derivedParts.month }
+          : {
+              year: yr,
+              month: showMonth ? month ?? undefined : undefined,
+              quarter: showQuarter ? quarter ?? undefined : undefined,
+            };
+        const derivedLabel = isLinked ? linkedRefName ?? undefined : label.trim() || undefined;
         const newBudgetId = await create({
           amountCents,
           type,
@@ -286,7 +337,7 @@ export function BudgetCreateModal({
           ...(type === "one_time" && refKind ? { refKind } : {}),
           ...(type === "one_time" && scopeRefId ? { scopeRefId } : {}),
           ...period,
-          ...(label.trim() ? { label: label.trim() } : {}),
+          ...(derivedLabel ? { label: derivedLabel } : {}),
           ...(categoryId ? { categoryId: categoryId as Id<"budgetCategories"> } : {}),
           ...(tagIds.length ? { tagIds } : {}),
         });
@@ -384,12 +435,16 @@ export function BudgetCreateModal({
             </>
           ) : (
           <ScrollView className="max-h-[560px] px-5 py-4">
-            <TextField
-              label="Name"
-              value={label}
-              onChangeText={setLabel}
-              placeholder="e.g. Fall retreat, Equipment…"
-            />
+            {/* Budget identity & dates: a linked budget's Name is the
+                entity's own — never a free-text field here. */}
+            {!isLinked ? (
+              <TextField
+                label="Name"
+                value={label}
+                onChangeText={setLabel}
+                placeholder="e.g. Fall retreat, Equipment…"
+              />
+            ) : null}
             <TextField
               label="Amount (USD)"
               value={amount}
@@ -450,43 +505,58 @@ export function BudgetCreateModal({
               />
             )}
 
-            <View className="flex-row gap-3">
-              <View className="flex-1">
-                <TextField
-                  label="Year"
-                  value={year}
-                  onChangeText={setYear}
-                  keyboardType="number-pad"
-                />
+            {/* Budget identity & dates: once a ref is picked, its name and
+                period are derived — this replaces the (now-hidden) Name/
+                Year/Month fields with a plain statement of that fact. */}
+            {isLinked && linkedRefName ? (
+              <View className="mb-3 rounded-md border border-border bg-sunken px-3 py-2.5">
+                <Text className="text-sm text-muted">
+                  Budget for: <Text className="font-semibold text-ink">{linkedRefName}</Text> —
+                  derives its name and month from the linked{" "}
+                  {refKind === "event" ? "event" : "project"}.
+                </Text>
               </View>
-              {showMonth ? (
+            ) : null}
+
+            {!isLinked ? (
+              <View className="flex-row gap-3">
                 <View className="flex-1">
-                  <Select
-                    label="Month"
-                    value={month == null ? "" : String(month)}
-                    placeholder="Every month"
-                    options={[
-                      { value: "", label: "Every month" },
-                      ...MONTHS.map((m, i) => ({ value: String(i + 1), label: m })),
-                    ]}
-                    onChange={(v) => setMonth(v === "" ? null : parseInt(v, 10))}
+                  <TextField
+                    label="Year"
+                    value={year}
+                    onChangeText={setYear}
+                    keyboardType="number-pad"
                   />
                 </View>
-              ) : null}
-              {showQuarter ? (
-                <View className="flex-1">
-                  <Select
-                    label="Quarter"
-                    value={quarter == null ? null : String(quarter)}
-                    options={[1, 2, 3, 4].map((q) => ({
-                      value: String(q),
-                      label: `Q${q}`,
-                    }))}
-                    onChange={(v) => setQuarter(parseInt(v, 10))}
-                  />
-                </View>
-              ) : null}
-            </View>
+                {showMonth ? (
+                  <View className="flex-1">
+                    <Select
+                      label="Month"
+                      value={month == null ? "" : String(month)}
+                      placeholder="Every month"
+                      options={[
+                        { value: "", label: "Every month" },
+                        ...MONTHS.map((m, i) => ({ value: String(i + 1), label: m })),
+                      ]}
+                      onChange={(v) => setMonth(v === "" ? null : parseInt(v, 10))}
+                    />
+                  </View>
+                ) : null}
+                {showQuarter ? (
+                  <View className="flex-1">
+                    <Select
+                      label="Quarter"
+                      value={quarter == null ? null : String(quarter)}
+                      options={[1, 2, 3, 4].map((q) => ({
+                        value: String(q),
+                        label: `Q${q}`,
+                      }))}
+                      onChange={(v) => setQuarter(parseInt(v, 10))}
+                    />
+                  </View>
+                ) : null}
+              </View>
+            ) : null}
 
             <TagPicker
               tags={usableTags}

@@ -309,6 +309,7 @@ const REGISTRY_NAMES = [
   "0024_repoint_derived_seat_duties",
   "0025_add_cd_finance_viewer",
   "0026_migrate_budget_v1_lines",
+  "0027_sync_linked_budget_identity",
 ];
 const SEEDED_HISTORICAL = [
   "backfillMissingDefaultColumns",

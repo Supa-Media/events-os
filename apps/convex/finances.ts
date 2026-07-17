@@ -816,13 +816,16 @@ function budgetEffectivePeriod(
  * `type` yet derives one from its legacy `scope` (event/project → one_time,
  * everything else → recurring), so dashboards keep working before the backfill.
  */
-function effectiveType(b: Doc<"budgets">): BudgetType {
+export function effectiveType(b: Doc<"budgets">): BudgetType {
   if (b.type) return b.type;
   return b.scope === "event" || b.scope === "project" ? "one_time" : "recurring";
 }
 
-/** A one_time budget's ref kind, deriving from legacy `scope` when unset. */
-function effectiveRefKind(b: Doc<"budgets">): BudgetRefKind | null {
+/** A one_time budget's ref kind, deriving from legacy `scope` when unset.
+ *  Exported for the `0027_sync_linked_budget_identity` migration, which
+ *  needs to find every effectively-linked budget, tolerant of un-migrated
+ *  legacy rows the same way every other v2 reader is. */
+export function effectiveRefKind(b: Doc<"budgets">): BudgetRefKind | null {
   if (b.refKind) return b.refKind;
   if (b.scope === "event") return "event";
   if (b.scope === "project") return "project";
@@ -1447,6 +1450,57 @@ export async function getBudgetForRef(
 }
 
 /**
+ * WRITE-THROUGH identity sync (budget identity & dates, item 2): when a
+ * linked event/project's NAME or PERIOD-DEFINING DATE changes, repoint the
+ * budget's STORED `label`/`year`/`month` at the entity's new identity — a
+ * no-op when no budget is linked (`getBudgetForRef` finds nothing).
+ *
+ * This is distinct from (and doesn't replace) `resolveBudgetRef`'s LIVE
+ * read-time resolution (WP-wave4 item 2, PR #225), which already makes a
+ * rename/date-change show up correctly on every dashboard/drilldown surface
+ * with no write-through at all. What LIVE resolution can't fix: the stored
+ * `year` is the ONLY thing `dashboardChapter`/`dashboardCentral` key their
+ * `by_chapter_and_period` fetch on — a budget whose stored `year` has
+ * drifted from its entity's real year is never even fetched into the right
+ * year's dashboard, no matter how live the display resolver is. So this
+ * sync keeps the STORED bucket correct, which the live resolver depends on
+ * being correct in the first place.
+ *
+ * `name` is the entity's RAW name (no sibling-disambiguation re-run) —
+ * matches `resolveBudgetRef`'s own established precedent of using
+ * `ev.name`/`pr.name` directly for every live display surface, so the
+ * stored fallback label never diverges from what's already shown live
+ * everywhere. The disambiguated `eventBudgetLabel`/`projectBudgetLabel`
+ * logic stays create-time-only, unchanged.
+ *
+ * Called from `events.updateDetails` (name changes) + `events.reschedule`
+ * AND `ai.rescheduleEvent` (both change `eventDate` — `updateDetails`
+ * doesn't touch it, and the AI `reschedule_event` tool patches the date via
+ * its own separate mutation rather than calling `events.reschedule`, so it
+ * carries its own identical call; keep both in sync if either changes) —
+ * and from `projects.update` (name/startDate/deadline changes, one
+ * mutation). NOT called from `updateBudget`'s own ref conversion path
+ * (owner decision: keep it simple, no auto-derivation on conversion — see
+ * that function's rejection check for the paired half of this decision).
+ */
+export async function syncBudgetIdentityForRef(
+  ctx: MutationCtx,
+  refKind: BudgetRefKind,
+  scopeRefId: string,
+  name: string,
+  periodDate: number,
+): Promise<void> {
+  const budget = await getBudgetForRef(ctx, refKind, scopeRefId);
+  if (!budget) return;
+  const parts = easternParts(periodDate);
+  const patch: Record<string, unknown> = {};
+  if (budget.label !== name) patch.label = name;
+  if (budget.year !== parts.year) patch.year = parts.year;
+  if (budget.month !== parts.month) patch.month = parts.month;
+  if (Object.keys(patch).length > 0) await ctx.db.patch(budget._id, patch);
+}
+
+/**
  * The display label for a PROJECT budget — same disambiguation shape as
  * `eventBudgetLabel`, keyed off the project's `startDate` (callers fall back
  * to `createdAt` when unset, since a project has no required instance date
@@ -1495,13 +1549,20 @@ export async function createProjectBudget(
     chapterId: Id<"chapters">;
     name: string;
     startDate?: number;
+    deadline?: number;
     createdAt: number;
     budgetUsd?: number;
   },
   // Optional — see `createEventBudget`'s twin comment.
   userId: Id<"users"> | undefined,
 ): Promise<void> {
-  const parts = easternParts(project.startDate ?? project.createdAt);
+  // `deadline` first — it's the project's one REAL, directly-editable date
+  // (see `forPickerOptions`'s "NO FABRICATED DATES" doc comment); `startDate`/
+  // `createdAt` are only here because `budgets.year`/`month` are REQUIRED
+  // integers (schema) that must always resolve to something, unlike a picker
+  // label's optional date suffix — this is a required-fallback chain, not a
+  // second instance of the fabricated-date bug that fix addressed elsewhere.
+  const parts = easternParts(project.deadline ?? project.startDate ?? project.createdAt);
   // Sibling projects sharing this exact name in the chapter (includes the
   // project just inserted, since this runs after that write in the same
   // transaction) decide whether the bare name is ambiguous.
@@ -1512,7 +1573,7 @@ export async function createProjectBudget(
       .take(ROLLUP_SCAN_LIMIT)
   ).filter((p) => p.name === project.name);
   const sameMonthCount = siblings.filter((p) => {
-    const sp = easternParts(p.startDate ?? p.createdAt);
+    const sp = easternParts(p.deadline ?? p.startDate ?? p.createdAt);
     return sp.year === parts.year && sp.month === parts.month;
   }).length;
   const label = projectBudgetLabel(project.name, parts, siblings.length, sameMonthCount);
@@ -1674,10 +1735,20 @@ function oneTimeCardBreakdown(
  * period (Bug 1a — one-time budgets used to render on EVERY month regardless
  * of relevance, e.g. a May event budget showing up in July). YTD/year mode
  * always shows every one-time card (unchanged). Month mode shows a card only
- * when it's actually relevant to THAT month: its own declared `month` matches,
- * OR its linked event/project falls in that month, OR it already has spend
- * posted in that month (covers a month-less budget with real activity this
- * month even before any of the other two signals apply).
+ * when it's actually relevant to THAT month:
+ *  - a resolvable `refDate` (the linked event/project's real date) DECIDES
+ *    relevance on its own — budget identity & dates fix: this used to be
+ *    OR'd with the stored `month` check below, so a budget whose stored
+ *    `month` happened to match the viewed month (e.g. its CREATION month,
+ *    before the write-through sync existed) would short-circuit true even
+ *    when its entity's real date said otherwise — a March-due project's card
+ *    could show up in July just because that's when someone entered its
+ *    budget. Now the stored `month` is a FALLBACK, consulted only when there
+ *    is no `refDate` to resolve (a budget with no ref, or whose ref has
+ *    vanished);
+ *  - OR it already has spend posted in that month (covers a month-less
+ *    budget with real activity this month even before either signal above
+ *    applies) — unaffected by this fix, still an independent OR.
  */
 function oneTimeCardAppliesToDash(
   b: Doc<"budgets">,
@@ -1686,8 +1757,11 @@ function oneTimeCardAppliesToDash(
   yearTxns: Doc<"transactions">[],
 ): boolean {
   if (dp.ytd) return true;
-  if (b.month != null && b.month === dp.month) return true;
-  if (refDate != null && inPeriod(refDate, dp.year, dp.month)) return true;
+  if (refDate != null) {
+    if (inPeriod(refDate, dp.year, dp.month)) return true;
+  } else if (b.month != null && b.month === dp.month) {
+    return true;
+  }
   return yearTxns.some(
     (tr) => tr.budgetId === b._id && isSpend(tr) && inPeriod(tr.postedAt, dp.year, dp.month),
   );
@@ -4453,6 +4527,36 @@ export const updateBudget = mutation({
     // the effective pair, not just a freshly-patched `scopeRefId`.
     const scopeRefIdProvided = patch.scopeRefId !== undefined;
     const effScopeRefId = scopeRefIdProvided ? patch.scopeRefId : budget.scopeRefId ?? null;
+    // Budget identity & dates (item 3): a budget that IS (or is BECOMING, via
+    // this same patch) a linked one_time budget always takes its name/period
+    // from the linked event/project — never a caller-supplied value. Gated on
+    // the EFFECTIVE POST-PATCH state (not the pre-patch one) so converting an
+    // unlinked budget onto a ref can't sneak in a custom label/year/month in
+    // the same call — `BudgetCreateModal.tsx` never sends these fields once a
+    // ref is selected, whether editing an already-linked budget or converting
+    // one. Unlinked/recurring budgets (post-patch) are untouched by this
+    // check — they keep full control over their own label/year/month, exactly
+    // as before. Deliberately NOT auto-deriving the correct identity here on
+    // conversion (owner decision, keep it simple) — a budget newly linked via
+    // this mutation keeps its prior label/year/month until the entity's own
+    // next edit triggers `syncBudgetIdentityForRef`. `quarter` is included
+    // for completeness (review nit) — a one_time budget's cadence never
+    // actually surfaces it, but the patch validator structurally allows it,
+    // so it's blocked the same as year/month rather than silently accepted.
+    const isLinkedAfterPatch = newType === "one_time" && !!newRefKind && effScopeRefId != null;
+    if (
+      isLinkedAfterPatch &&
+      (patch.label !== undefined ||
+        patch.year !== undefined ||
+        patch.month !== undefined ||
+        patch.quarter !== undefined)
+    ) {
+      throw new ConvexError({
+        code: "LINKED_BUDGET_IDENTITY",
+        message:
+          "This budget's name and period come from its linked event/project — edit the event/project instead.",
+      });
+    }
     // Changing `refKind` while keeping a stale `scopeRefId` would silently make
     // the budget match nothing (an event id compared as a project id, or vice
     // versa). Reject rather than persist a mismatched ref.
@@ -5582,7 +5686,10 @@ async function runBackfillProjectBudgets(
   const NUL = " ";
   for (const p of projects) {
     if (p.budgetUsd == null || p.budgetUsd <= 0) continue; // owner rule: no money, no budget
-    const parts = easternParts(p.startDate ?? p.createdAt);
+    // `deadline` first — see `createProjectBudget`'s twin comment (budget
+    // identity & dates fix): this loop duplicates that function's dating
+    // logic rather than calling it, so it needs the same fix independently.
+    const parts = easternParts(p.deadline ?? p.startDate ?? p.createdAt);
     const nk = `${p.chapterId}${NUL}${p.name}`;
     const mk = `${nk}${NUL}${parts.year}-${parts.month}`;
     nameCounts.set(nk, (nameCounts.get(nk) ?? 0) + 1);
@@ -5623,7 +5730,7 @@ async function runBackfillProjectBudgets(
     }
     const cid = p.chapterId;
     const existing = await projectBudgetsByRef(cid);
-    const parts = easternParts(p.startDate ?? p.createdAt);
+    const parts = easternParts(p.deadline ?? p.startDate ?? p.createdAt);
     const nk = `${cid}${NUL}${p.name}`;
     const mk = `${nk}${NUL}${parts.year}-${parts.month}`;
     const label = projectBudgetLabel(
@@ -6719,6 +6826,13 @@ export const listReconcile = query({
     // (mirrors `dashboardChapter`'s optional-chapterId central drill-down).
     // Absent → the caller's own chapter, exactly as before.
     scope: v.optional(v.literal("central")),
+    // Central drill-down: view a DIFFERENT real chapter's reconcile queue —
+    // independent of `scope:"central"` (that's the CENTRAL-owned-txns
+    // bucket; this is "central viewer picks one specific chapter"). Mirrors
+    // `dashboardChapter`'s own `chapterId` drill-down gate exactly. Ignored
+    // when `scope:"central"` is also set (that branch wins — the two never
+    // conflict since `chapterId` is only consulted in the `else` branch).
+    chapterId: v.optional(v.id("chapters")),
   },
   returns: v.object({ rows: v.array(reconcileRow), counts: reconcileCounts }),
   handler: async (ctx, args) => {
@@ -6732,15 +6846,24 @@ export const listReconcile = query({
     };
     const homeChapterId = await readChapterId(ctx);
     if (!homeChapterId) return { rows: [], counts: zero };
-    // Resolve the reconcile scope: central (org-wide reach) or the caller's
-    // own chapter (viewer). Central-owned txns key on the `"central"` sentinel.
+    // Resolve the reconcile scope: central (org-wide reach), a DIFFERENT
+    // chapter via central drill-down, or the caller's own chapter (viewer).
+    // Central-owned txns key on the `"central"` sentinel.
     let scope: FinanceScope;
     if (args.scope === "central") {
       await requireFinanceCentral(ctx, homeChapterId);
       scope = CENTRAL;
+    } else if (args.chapterId != null && args.chapterId !== homeChapterId) {
+      // The central check resolves the caller's finance capability through
+      // their OWN chapter, never the target — a central grant is scope-wide
+      // regardless of which chapterId it's checked against, but
+      // `getFinanceRole` only finds a roster row in the chapter passed in
+      // (mirrors `dashboardChapter`'s identical drill-down gate comment).
+      await requireFinanceCentral(ctx, homeChapterId);
+      scope = args.chapterId;
     } else {
       await requireFinanceRole(ctx, homeChapterId, "viewer");
-      scope = homeChapterId;
+      scope = args.chapterId ?? homeChapterId;
     }
 
     const sandboxMode = await readSandbox(ctx);
