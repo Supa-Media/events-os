@@ -1,0 +1,127 @@
+import { describe, expect, test } from "vitest";
+import {
+  buildSeatManagerIndex,
+  deriveSeatManagerIds,
+  effectiveManagerIds,
+  type SeatManagerAssignment,
+  type SeatManagerSeatDef,
+} from "./seatManagers";
+
+// A trimmed slice of the real taxonomy, enough to exercise chapter→central
+// rollup, multi-holder parents, and self-held ancestors without dragging in
+// the full SEAT_DEFS template.
+const SEAT_DEFS: SeatManagerSeatDef<string>[] = [
+  // Central chart
+  { seatDefId: "executive_director", chart: "central", slug: "executive_director", parentSlug: "root" },
+  { seatDefId: "expansion_director", chart: "central", slug: "expansion_director", parentSlug: "executive_director" },
+  // Chapter chart (shared shape, stamped per chapter via `scope`)
+  { seatDefId: "chapter_director", chart: "chapter", slug: "chapter_director", parentSlug: "root" },
+  { seatDefId: "music_lead", chart: "chapter", slug: "music_lead", parentSlug: "chapter_director" },
+  { seatDefId: "vocal_lead", chart: "chapter", slug: "vocal_lead", parentSlug: "music_lead" },
+];
+
+const CENTRAL = "central";
+const CHAPTER_ROLLUP_PARENT = "expansion_director";
+
+function makeIndex(assignments: SeatManagerAssignment<string, string, string>[]) {
+  return buildSeatManagerIndex(SEAT_DEFS, assignments);
+}
+
+describe("deriveSeatManagerIds", () => {
+  test("chapter music_lead reports to the chapter_director", () => {
+    const index = makeIndex([
+      { seatDefId: "music_lead", scope: "chapterA", personId: "mia" },
+      { seatDefId: "chapter_director", scope: "chapterA", personId: "dana" },
+    ]);
+    expect(deriveSeatManagerIds(index, "mia", CENTRAL, CHAPTER_ROLLUP_PARENT)).toEqual(["dana"]);
+  });
+
+  test("vacant chapter_director rolls up to the central expansion_director's holders", () => {
+    const index = makeIndex([
+      { seatDefId: "music_lead", scope: "chapterA", personId: "mia" },
+      // chapter_director is vacant — no assignment for it.
+      { seatDefId: "expansion_director", scope: CENTRAL, personId: "erin" },
+    ]);
+    expect(deriveSeatManagerIds(index, "mia", CENTRAL, CHAPTER_ROLLUP_PARENT)).toEqual(["erin"]);
+  });
+
+  test("the executive director (top of the org) has no managers — a real answer, not a fallback signal", () => {
+    const index = makeIndex([{ seatDefId: "executive_director", scope: CENTRAL, personId: "eli" }]);
+    expect(deriveSeatManagerIds(index, "eli", CENTRAL, CHAPTER_ROLLUP_PARENT)).toEqual([]);
+  });
+
+  test("a multi-holder parent seat returns ALL of its holders as managers", () => {
+    const index = makeIndex([
+      { seatDefId: "vocal_lead", scope: "chapterA", personId: "val" },
+      { seatDefId: "music_lead", scope: "chapterA", personId: "mia" },
+      { seatDefId: "music_lead", scope: "chapterA", personId: "mo" },
+    ]);
+    expect(
+      deriveSeatManagerIds(index, "val", CENTRAL, CHAPTER_ROLLUP_PARENT)?.sort(),
+    ).toEqual(["mia", "mo"]);
+  });
+
+  test("an ancestor held by exactly the same person is skipped — you don't report to yourself", () => {
+    // Dana holds both music_lead and its ancestor chapter_director — the walk
+    // must skip chapter_director (fully identical holder set) and keep going
+    // up to the vacant... in this case nothing further, so no managers.
+    const index = makeIndex([
+      { seatDefId: "music_lead", scope: "chapterA", personId: "dana" },
+      { seatDefId: "chapter_director", scope: "chapterA", personId: "dana" },
+    ]);
+    expect(deriveSeatManagerIds(index, "dana", CENTRAL, CHAPTER_ROLLUP_PARENT)).toEqual([]);
+  });
+
+  test("self-held ancestor is skipped but the walk continues past it to a real manager", () => {
+    // Dana holds both music_lead and chapter_director (self-held, skipped),
+    // but expansion_director is held by someone else — Dana's manager.
+    const index = makeIndex([
+      { seatDefId: "music_lead", scope: "chapterA", personId: "dana" },
+      { seatDefId: "chapter_director", scope: "chapterA", personId: "dana" },
+      { seatDefId: "expansion_director", scope: CENTRAL, personId: "erin" },
+    ]);
+    expect(deriveSeatManagerIds(index, "dana", CENTRAL, CHAPTER_ROLLUP_PARENT)).toEqual(["erin"]);
+  });
+
+  test("a person who holds no seat at all returns null — distinct from a real empty answer", () => {
+    const index = makeIndex([{ seatDefId: "chapter_director", scope: "chapterA", personId: "dana" }]);
+    expect(deriveSeatManagerIds(index, "someone-else", CENTRAL, CHAPTER_ROLLUP_PARENT)).toBeNull();
+  });
+
+  test("union across every seat the person holds is deduped by person id", () => {
+    // Mia holds both music_lead AND vocal_lead in the same chapter, both
+    // reporting to the same chapter_director — the result has one entry, not two.
+    const index = makeIndex([
+      { seatDefId: "music_lead", scope: "chapterA", personId: "mia" },
+      { seatDefId: "vocal_lead", scope: "chapterA", personId: "mia" },
+      { seatDefId: "chapter_director", scope: "chapterA", personId: "dana" },
+    ]);
+    expect(deriveSeatManagerIds(index, "mia", CENTRAL, CHAPTER_ROLLUP_PARENT)).toEqual(["dana"]);
+  });
+});
+
+describe("effectiveManagerIds", () => {
+  test("seatless person falls back to the stored managerId", () => {
+    const index = makeIndex([{ seatDefId: "chapter_director", scope: "chapterA", personId: "dana" }]);
+    expect(effectiveManagerIds(index, "volunteer-vic", "dana", CENTRAL, CHAPTER_ROLLUP_PARENT)).toEqual(["dana"]);
+  });
+
+  test("seatless person with no stored manager either has none", () => {
+    const index = makeIndex([]);
+    expect(effectiveManagerIds(index, "vic", null, CENTRAL, CHAPTER_ROLLUP_PARENT)).toEqual([]);
+  });
+
+  test("a seat-holder's stored managerId is ignored once seat-derived truth applies", () => {
+    const index = makeIndex([
+      { seatDefId: "music_lead", scope: "chapterA", personId: "mia" },
+      { seatDefId: "chapter_director", scope: "chapterA", personId: "dana" },
+    ]);
+    // Mia's legacy stored manager ("legacy-boss") is a stale flag; seat truth wins.
+    expect(effectiveManagerIds(index, "mia", "legacy-boss", CENTRAL, CHAPTER_ROLLUP_PARENT)).toEqual(["dana"]);
+  });
+
+  test("the executive director's seat-derived empty answer is NOT overridden by a stale stored managerId", () => {
+    const index = makeIndex([{ seatDefId: "executive_director", scope: CENTRAL, personId: "eli" }]);
+    expect(effectiveManagerIds(index, "eli", "stale-boss", CENTRAL, CHAPTER_ROLLUP_PARENT)).toEqual([]);
+  });
+});

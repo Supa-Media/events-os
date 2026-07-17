@@ -13,6 +13,12 @@ import { Doc, Id } from "../_generated/dataModel";
 import { QueryCtx } from "../_generated/server";
 import { requireUserId, getChapterIdOrNull } from "./context";
 import { isSuperuser } from "./superuser";
+import {
+  CHAPTER_ROLLUP_PARENT,
+  buildSeatManagerIndex,
+  effectiveManagerIds,
+  type SeatManagerIndex,
+} from "@events-os/shared";
 
 /** Membership roles that carry chapter-admin authority. */
 const ADMIN_ROLES = new Set(["admin", "lead"]);
@@ -151,10 +157,191 @@ export function subtreeIds(
   return new Set(subtreeNodes(childrenOf, root).map((n) => n.person._id));
 }
 
+// ── Seat-derived managers ────────────────────────────────────────────────────
+//
+// Manager truth is MOVING from `people.managerId` (a hand-set flag) to the org
+// chart itself (`seatDefs` + `seatAssignments`) — see `@events-os/shared`'s
+// `seatManagers.ts` for the pure walk algorithm, kept in lockstep with the Org
+// Chart tab's client-side `computeReportsTo` (`treeUtils.ts` on
+// `feat/orgchart-tab`). This is a PHASED, READ-SIDE-ONLY cutover: a person who
+// holds ANY seat gets their manager(s) from the seat tree exclusively (never
+// falls back, even if that's an empty list — e.g. the executive director);
+// a person who holds no seat still falls back to their stored `managerId`, so
+// the large majority of the roster (no seat assigned yet) sees no change.
+// `people.managerId` is NOT removed or stopped being written here — that's a
+// later milestone once the org chart's assignment UI is the primary way
+// managers get set.
+
+/** Bounded scan caps for loading the org chart into memory once per read —
+ *  the seat taxonomy is small (~30 defs total across both charts) and a
+ *  chapter's occupancy is bounded by its roster size, so these are generous
+ *  ceilings, not a real limit in practice. */
+const SEAT_DEF_SCAN_LIMIT = 500;
+const SEAT_ASSIGNMENT_SCAN_LIMIT = 2000;
+
+/** The scope union `seatAssignments.scope` uses — a real chapter id, or the
+ *  `"central"` sentinel (mirrors `finances.ts`'s `budgets.chapterId`). */
+export type SeatManagerScope = Id<"chapters"> | "central";
+
+/** Load the org chart (both charts' seat defs, plus this chapter's own
+ *  occupancy AND every central-chart seat's occupancy) into the pure
+ *  `seatManagers` algorithm's index shape. One read per caller per chapter —
+ *  cheap relative to the roster/duties reads `overview`/`workload` already do.
+ */
+export async function loadSeatManagerIndex(
+  ctx: QueryCtx,
+  chapterId: Id<"chapters">,
+): Promise<SeatManagerIndex<Id<"seatDefs">, Id<"people">, SeatManagerScope>> {
+  const defs = await ctx.db.query("seatDefs").take(SEAT_DEF_SCAN_LIMIT);
+  const seatDefs = defs.map((d) => ({
+    seatDefId: d._id,
+    chart: d.chart,
+    slug: d.slug,
+    parentSlug: d.parentSlug,
+  }));
+
+  const [centralAssignments, chapterAssignments] = await Promise.all([
+    ctx.db
+      .query("seatAssignments")
+      .withIndex("by_scope", (q) => q.eq("scope", "central"))
+      .take(SEAT_ASSIGNMENT_SCAN_LIMIT),
+    ctx.db
+      .query("seatAssignments")
+      .withIndex("by_scope", (q) => q.eq("scope", chapterId))
+      .take(SEAT_ASSIGNMENT_SCAN_LIMIT),
+  ]);
+  const seatAssignments = [...centralAssignments, ...chapterAssignments].map(
+    (a) => ({
+      seatDefId: a.seatDefId,
+      scope: a.scope,
+      personId: a.personId,
+    }),
+  );
+
+  return buildSeatManagerIndex(seatDefs, seatAssignments);
+}
+
+/** One person's effective manager ids — seat-derived if they hold any seat,
+ *  the stored `managerId` fallback otherwise. See the module header. */
+export function personEffectiveManagerIds(
+  index: SeatManagerIndex<Id<"seatDefs">, Id<"people">, SeatManagerScope>,
+  person: Doc<"people">,
+): Id<"people">[] {
+  return effectiveManagerIds(
+    index,
+    person._id,
+    person.managerId ?? null,
+    "central",
+    CHAPTER_ROLLUP_PARENT,
+  );
+}
+
 /**
- * Assert the caller is a manager (has at least one direct report) or a
- * chapter admin. The gate for org-shaping edits: responsibility definitions
- * and the runbook docs they point at.
+ * A manager → direct-reports map layered like `buildChildrenOf`, except each
+ * person's manager edge(s) come from `personEffectiveManagerIds` — seat truth
+ * first, `managerId` fallback per-person. Unlike `buildChildrenOf`, this can
+ * fan a report out under MULTIPLE managers (a multi-holder parent seat), so
+ * it's a DAG in that case, not a strict tree — `subtreeNodes`/`subtreeIds`'
+ * BFS still terminates correctly over it (already visited-set guarded).
+ *
+ * A seat-derived manager who isn't in THIS chapter's `roster` (e.g. a
+ * central-seat holder who happens to belong to a different chapter) is
+ * dropped from the map — there's no chapter-scoped subtree node to hang them
+ * on yet. Their `personEffectiveManagerIds` answer is still correct; only the
+ * roster-local rollup can't represent them. Read-side derivation only, so
+ * their reports still resolve their manager via `personEffectiveManagerIds`
+ * directly (see `org.ts`'s `workload`) even though they don't show up here.
+ */
+export function buildEffectiveChildrenOf(
+  index: SeatManagerIndex<Id<"seatDefs">, Id<"people">, SeatManagerScope>,
+  roster: Doc<"people">[],
+): Map<Id<"people">, Doc<"people">[]> {
+  const rosterIds = new Set(roster.map((p) => p._id));
+  const childrenOf = new Map<Id<"people">, Doc<"people">[]>();
+  for (const p of roster) {
+    for (const managerId of personEffectiveManagerIds(index, p)) {
+      if (!rosterIds.has(managerId)) continue;
+      const list = childrenOf.get(managerId) ?? [];
+      list.push(p);
+      childrenOf.set(managerId, list);
+    }
+  }
+  return childrenOf;
+}
+
+/** The caller's own manager docs, resolved directly by id (not restricted to
+ *  the chapter roster — a central-seat manager may live in a different
+ *  chapter). Placeholders never count as managers (mirrors `chapterRoster`'s
+ *  filter). Order follows `personEffectiveManagerIds`. */
+export async function resolveEffectiveManagers(
+  ctx: QueryCtx,
+  index: SeatManagerIndex<Id<"seatDefs">, Id<"people">, SeatManagerScope>,
+  person: Doc<"people">,
+): Promise<Doc<"people">[]> {
+  const ids = personEffectiveManagerIds(index, person);
+  const docs = await Promise.all(ids.map((id) => ctx.db.get(id)));
+  return docs.filter(
+    (d): d is Doc<"people"> => d !== null && d.isPlaceholder !== true,
+  );
+}
+
+/** True iff `personId` holds at least one seat (central or this chapter) — a
+ *  single cheap indexed read. Being a seat-derived manager of ANYONE requires
+ *  holding the ancestor seat that answer comes from, so a person who holds no
+ *  seat at all can be ruled out as a seat-only manager without ever loading
+ *  the roster or the chart — see `hasEffectiveReports`. */
+async function holdsAnySeat(
+  ctx: QueryCtx,
+  personId: Id<"people">,
+): Promise<boolean> {
+  const anySeat = await ctx.db
+    .query("seatAssignments")
+    .withIndex("by_person", (q) => q.eq("personId", personId))
+    .first();
+  return anySeat !== null;
+}
+
+/**
+ * True iff `personId` manages at least one other person, seat-derived first,
+ * `managerId` fallback per-person — the ONE "am I a manager?" check every
+ * read surface (`nav.canManage`) and write gate (`requireManagerOrAdmin`)
+ * shares, so a seat-only manager is never shown an affordance that then
+ * 403s. Built on the SAME `buildEffectiveChildrenOf` `manageablePersonIds`
+ * uses — one derivation, several call sites.
+ *
+ * Cheap path first (a stored `managerId` report — the common case for an
+ * established manager). If that's empty, checks whether `personId` holds ANY
+ * seat (one more cheap indexed read, see `holdsAnySeat`) before paying for
+ * the full roster + org-chart load that a seat-aware answer requires — an
+ * ordinary seatless caller with no stored reports (the overwhelming common
+ * case, e.g. every plain volunteer) short-circuits to `false` without ever
+ * touching the roster or seat tables. This keeps `nav`'s per-screen poll
+ * cheap for everyone except an actual seat-holder.
+ */
+export async function hasEffectiveReports(
+  ctx: QueryCtx,
+  chapterId: Id<"chapters">,
+  personId: Id<"people">,
+): Promise<boolean> {
+  const firstReport = await ctx.db
+    .query("people")
+    .withIndex("by_manager", (q) => q.eq("managerId", personId))
+    .first();
+  if (firstReport !== null) return true;
+
+  if (!(await holdsAnySeat(ctx, personId))) return false;
+
+  const [roster, index] = await Promise.all([
+    chapterRoster(ctx, chapterId),
+    loadSeatManagerIndex(ctx, chapterId),
+  ]);
+  return (buildEffectiveChildrenOf(index, roster).get(personId) ?? []).length > 0;
+}
+
+/**
+ * Assert the caller is a manager (has at least one direct report, seat-derived
+ * or stored) or a chapter admin. The gate for org-shaping edits: responsibility
+ * definitions and the runbook docs they point at.
  */
 export async function requireManagerOrAdmin(
   ctx: QueryCtx,
@@ -162,13 +349,7 @@ export async function requireManagerOrAdmin(
 ): Promise<void> {
   if (await isChapterAdmin(ctx, chapterId)) return;
   const viewer = await viewerPerson(ctx, chapterId);
-  if (viewer) {
-    const firstReport = await ctx.db
-      .query("people")
-      .withIndex("by_manager", (q) => q.eq("managerId", viewer._id))
-      .first();
-    if (firstReport !== null) return;
-  }
+  if (viewer && (await hasEffectiveReports(ctx, chapterId, viewer._id))) return;
   throw new ConvexError({
     code: "FORBIDDEN",
     message: "Only managers and admins can do this.",
@@ -210,6 +391,12 @@ export async function readableCheckInSubject(
  * admins (returned as null, meaning "no restriction"), the caller's subtree if
  * they're on the roster, or the empty set. Pass `roster` when the caller
  * already loaded it, to avoid a second chapter-wide read.
+ *
+ * Seat-derived first, `managerId` fallback per-person — the SAME
+ * `buildEffectiveChildrenOf` the read surfaces (`org.overview`/`org.workload`)
+ * use, so a seat-only manager's WRITE reach (`checkIns.log`, `projects.remove`,
+ * event-role reassignment — everything that calls this) never disagrees with
+ * what they were just shown they could manage.
  */
 export async function manageablePersonIds(
   ctx: QueryCtx,
@@ -220,5 +407,6 @@ export async function manageablePersonIds(
   const people = roster ?? (await chapterRoster(ctx, chapterId));
   const viewer = await viewerFromRoster(ctx, people);
   if (!viewer) return new Set();
-  return subtreeIds(buildChildrenOf(people), viewer);
+  const index = await loadSeatManagerIndex(ctx, chapterId);
+  return subtreeIds(buildEffectiveChildrenOf(index, people), viewer);
 }

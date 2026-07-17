@@ -239,7 +239,7 @@ describe("org.workload", () => {
     const workload = await s.as.query(api.org.workload, { personId: alice });
     expect(workload).not.toBeNull();
     expect(workload!.person.name).toBe("Alice");
-    expect(workload!.manager).toBeNull();
+    expect(workload!.managers).toEqual([]);
     expect(workload!.reports.map((r) => r.name)).toEqual(["Bob"]);
     expect(workload!.reports[0].reportCount).toBe(1);
 
@@ -253,7 +253,7 @@ describe("org.workload", () => {
 
     // Mid-chain view: Bob's workload knows his manager and only his subtree.
     const bobView = await s.as.query(api.org.workload, { personId: bob });
-    expect(bobView!.manager!.name).toBe("Alice");
+    expect(bobView!.managers.map((m) => m.name)).toEqual(["Alice"]);
     expect(bobView!.members.map((m) => m.name).sort()).toEqual(["Bob", "Cara"]);
   });
 
@@ -593,10 +593,10 @@ describe("review-cycle regressions", () => {
     // Bob viewing himself: he can now open his own boss's page too (read is
     // transparent), even though he can't manage her.
     const bobView = await asBob.query(api.org.workload, { personId: bob });
-    expect(bobView!.manager!.name).toBe("Alice");
-    expect(bobView!.manager!.viewable).toBe(true);
+    expect(bobView!.managers.map((m) => m.name)).toEqual(["Alice"]);
+    expect(bobView!.managers[0].viewable).toBe(true);
     const adminView = await s.as.query(api.org.workload, { personId: bob });
-    expect(adminView!.manager!.viewable).toBe(true);
+    expect(adminView!.managers[0].viewable).toBe(true);
   });
 });
 
