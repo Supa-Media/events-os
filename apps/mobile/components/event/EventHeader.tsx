@@ -200,16 +200,21 @@ export function EventHeader({
                 onSave={onSaveBudget}
               />
             </View>
-            <View className="flex-row items-center gap-x-1.5">
-              <MetaDot />
-              <ScopeSeg
-                scope={scope}
-                scopeChapterName={scopeChapterName}
-                homeChapterName={homeChapterName}
-                canChangeScope={canChangeScope}
-                onChangeScope={onChangeScope}
-              />
-            </View>
+            {/* Training events have no money life (the #172 invariant) — every
+                other Money entry point (EventTools' ⋯ menu, the Money tab
+                itself) hides accordingly, so the header chip does too. */}
+            {event.isTraining === true ? null : (
+              <View className="flex-row items-center gap-x-1.5">
+                <MetaDot />
+                <ScopeSeg
+                  scope={scope}
+                  scopeChapterName={scopeChapterName}
+                  homeChapterName={homeChapterName}
+                  canChangeScope={canChangeScope}
+                  onChangeScope={onChangeScope}
+                />
+              </View>
+            )}
           </View>
 
           {/* Row 3 — people: owner, assigned roles, folded open roles, ＋ */}
@@ -592,7 +597,9 @@ function BudgetSeg({
  * tab's "Belongs to" row drives (see event/[id].tsx `handleScopeChange`,
  * passed in as `onChangeScope`) — a second, more discoverable entry point
  * into it, not a second implementation. Read-only chip when the caller can't
- * change it (mirrors the Money tab's `canChangeScope` gate exactly).
+ * change it (mirrors the Money tab's `canChangeScope` gate exactly). The
+ * caller (the meta line above) skips mounting this entirely for training
+ * events — they have no money life (#172) so there's nothing to attribute.
  */
 function ScopeSeg({
   scope,

@@ -107,15 +107,29 @@ export function EventTabBar({
           {canScrollRight ? (
             <View
               pointerEvents="none"
-              style={{
-                position: "absolute",
-                right: 0,
-                top: 0,
-                bottom: 0,
-                width: 28,
-                background: `linear-gradient(to right, transparent, ${colors.raised})`,
-                backgroundColor: Platform.OS === "web" ? undefined : "rgba(255,255,255,0.55)",
-              } as any}
+              style={
+                Platform.OS === "web"
+                  ? ({
+                      position: "absolute",
+                      right: 0,
+                      top: 0,
+                      bottom: 0,
+                      width: 28,
+                      background: `linear-gradient(to right, transparent, ${colors.raised})`,
+                    } as any)
+                  : {
+                      // Native has no CSS gradient here — a flat, partly
+                      // transparent wash in the same surface token reads as
+                      // "more content" without a hardcoded color.
+                      position: "absolute",
+                      right: 0,
+                      top: 0,
+                      bottom: 0,
+                      width: 28,
+                      backgroundColor: colors.raised,
+                      opacity: 0.55,
+                    }
+              }
             />
           ) : null}
         </View>
