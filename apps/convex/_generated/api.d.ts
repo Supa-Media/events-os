@@ -99,6 +99,7 @@ import type * as places from "../places.js";
 import type * as profiles from "../profiles.js";
 import type * as projectActions from "../projectActions.js";
 import type * as projects from "../projects.js";
+import type * as reconcileSuggest from "../reconcileSuggest.js";
 import type * as reimbursements from "../reimbursements.js";
 import type * as reminders from "../reminders.js";
 import type * as responsibilities from "../responsibilities.js";
@@ -248,6 +249,7 @@ declare const fullApi: ApiFromModules<{
   profiles: typeof profiles;
   projectActions: typeof projectActions;
   projects: typeof projects;
+  reconcileSuggest: typeof reconcileSuggest;
   reimbursements: typeof reimbursements;
   reminders: typeof reminders;
   responsibilities: typeof responsibilities;
