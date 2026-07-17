@@ -75,6 +75,7 @@ import {
   aiUsage,
   aiSettings,
 } from "./schema/ai";
+import { aiUsageEvents } from "./schema/aiUsage";
 import { academyProgress, courseCompletions } from "./schema/academy";
 import { schemaMigrations } from "./schema/migrations";
 
@@ -251,6 +252,10 @@ const schema = defineSchema({
   aiMessages,
   aiUsage,
   aiSettings,
+
+  // AI usage audit trail — finance auto-coding's per-call OpenRouter log
+  // (distinct from the assistant's `aiUsage` budget table above).
+  aiUsageEvents,
 
   // Academy (per-person curriculum progress + earned course badges).
   academyProgress,
