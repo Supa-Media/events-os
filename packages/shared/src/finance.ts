@@ -871,3 +871,38 @@ export function settlementTransferGroupId(
 ): string {
   return `settle-${chapterId}-${year}-${String(month).padStart(2, "0")}`;
 }
+
+// ── Money-page unification (WP-money-unify PR1) ───────────────────────────────
+// A cost-bearing row (`eventItems`, `engagements`) now carries an OPTIONAL
+// `budgetCategoryId` override (see `schema/events.ts#eventItems` /
+// `schema/people.ts#engagements`). When it's unset, a read-side consumer (the
+// Money-page plan view, landing in a follow-up PR) falls back to a sensible
+// DEFAULT category per module — good-enough categorization out of the box
+// without forcing every row to be hand-categorized.
+
+/**
+ * Default budget-category NAME per module key, keyed by the item's `module`
+ * string (`eventItems.module` — see `MODULE_KEYS` in `./index`). A module not
+ * listed here (e.g. `volunteer_expectations`, `retro` — not typically
+ * cost-bearing) or any future/custom module key falls back to `"Other"` at
+ * the consumer.
+ *
+ * Names MUST match a chapter's seeded category names EXACTLY —
+ * `DEFAULT_EXPENSE_CATEGORIES` in `apps/convex/lib/seed/finance.ts:28-42`
+ * (Convex-side; not importable from this package) is the source of truth. A
+ * unit test pins this coupling by comparing the two lists directly.
+ */
+export const MODULE_DEFAULT_CATEGORY_NAMES: Record<string, string> = {
+  supplies: "Supplies",
+  comms: "Marketing & Advertising",
+  planning_doc: "Other",
+  permits: "Other",
+  run_of_show: "Other",
+};
+
+/**
+ * Default budget-category name for a paid `engagements` row (a vendor) with
+ * no `budgetCategoryId` override. Must also match a name in
+ * `DEFAULT_EXPENSE_CATEGORIES` — see `MODULE_DEFAULT_CATEGORY_NAMES` above.
+ */
+export const VENDOR_DEFAULT_CATEGORY_NAME = "Professional Services";

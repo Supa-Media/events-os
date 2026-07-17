@@ -101,6 +101,10 @@ export const eventItems = defineTable({
   prePlanChecked: v.optional(v.array(v.string())),
   // Back-calculated from the event date for day-offset modules.
   dueDate: v.optional(v.number()),
+  // Category override for the Money-page plan view (WP-money-unify PR1):
+  // unset → the module default mapping (`MODULE_DEFAULT_CATEGORY_NAMES`)
+  // applies at read time.
+  budgetCategoryId: v.optional(v.id("budgetCategories")),
 })
   .index("by_event", ["eventId"])
   .index("by_event_module", ["eventId", "module"])
