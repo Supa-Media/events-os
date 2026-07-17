@@ -40,6 +40,7 @@ import {
   txnStatusTone,
 } from "./parts";
 import { TagRollupSection, type BudgetSpend, type TagRollup } from "./TagRollup";
+import { BudgetApprovalActions, BudgetApprovalChip } from "./BudgetApprovalActions";
 
 type ChapterDash = FunctionReturnType<typeof api.finances.dashboardChapter>;
 type ProjectBudget = ChapterDash["oneTimeBudgets"][number];
@@ -375,6 +376,11 @@ function ProjectBudgetCard({ b, onPress }: { b: ProjectBudget; onPress: () => vo
             </Text>
             <Chip label={b.cadence === "per_instance" ? "Per instance" : "One-off"} />
             {b.sourceBadge ? <Badge label={b.sourceBadge} tone="info" /> : null}
+            <BudgetApprovalChip
+              status={b.approvalStatus}
+              approvedCents={b.approvedCents}
+              amountCents={b.budgetCents}
+            />
           </View>
           {meta ? <Text className="mt-0.5 text-xs text-muted">{meta}</Text> : null}
         </View>
@@ -395,6 +401,10 @@ function ProjectBudgetCard({ b, onPress }: { b: ProjectBudget; onPress: () => vo
         </Text>
       </View>
 
+      {b.reviewNote && b.approvalStatus === "changes_requested" ? (
+        <Text className="mt-2 text-xs text-danger">"{b.reviewNote}"</Text>
+      ) : null}
+
       {b.categories.length > 0 ? (
         <View className="mt-3 gap-2 border-t border-border pt-3">
           {b.categories.map((c, i) => (
@@ -411,8 +421,9 @@ function ProjectBudgetCard({ b, onPress }: { b: ProjectBudget; onPress: () => vo
         </View>
       ) : null}
 
-      <View className="mt-3">
+      <View className="mt-3 flex-row items-center justify-between gap-2">
         <Button title="Edit budget" variant="ghost" size="sm" onPress={onPress} />
+        <BudgetApprovalActions budgetId={b.id} status={b.approvalStatus} />
       </View>
     </View>
   );
@@ -429,8 +440,13 @@ function RecurringBudgetCard({ b, onPress }: { b: RecurringBudget; onPress: () =
           <Text className="font-display text-base text-ink" numberOfLines={1}>
             {b.name}
           </Text>
-          <View className="mt-1">
+          <View className="mt-1 flex-row flex-wrap items-center gap-1.5">
             <Chip label={cadenceLabel} />
+            <BudgetApprovalChip
+              status={b.approvalStatus}
+              approvedCents={b.approvedCents}
+              amountCents={b.budgetCents}
+            />
           </View>
         </View>
         <Text className="text-sm text-muted" style={{ fontVariant: ["tabular-nums"] }}>
@@ -443,6 +459,10 @@ function RecurringBudgetCard({ b, onPress }: { b: RecurringBudget; onPress: () =
         <Text className="text-xs text-muted">{b.pct}% spent</Text>
         {b.note ? <Text className="text-xs text-muted">{b.note}</Text> : null}
       </View>
+
+      {b.reviewNote && b.approvalStatus === "changes_requested" ? (
+        <Text className="mt-2 text-xs text-danger">"{b.reviewNote}"</Text>
+      ) : null}
 
       {b.categories && b.categories.length > 0 ? (
         <View className="mt-3 gap-2 border-t border-border pt-3">
@@ -460,8 +480,9 @@ function RecurringBudgetCard({ b, onPress }: { b: RecurringBudget; onPress: () =
         </View>
       ) : null}
 
-      <View className="mt-3">
+      <View className="mt-3 flex-row items-center justify-between gap-2">
         <Button title="Edit budget" variant="ghost" size="sm" onPress={onPress} />
+        <BudgetApprovalActions budgetId={b.id} status={b.approvalStatus} />
       </View>
     </View>
   );

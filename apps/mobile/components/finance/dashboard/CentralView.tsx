@@ -21,6 +21,7 @@ import { Button, EmptyState, Icon, SectionHeader } from "../../ui";
 import { colors } from "../../../lib/theme";
 import { BudgetBar, Chip, Tile, TileRow } from "./parts";
 import { TagRollupSection, type BudgetSpend, type TagRollup } from "./TagRollup";
+import { BudgetApprovalActions, BudgetApprovalChip } from "./BudgetApprovalActions";
 
 type CentralDash = FunctionReturnType<typeof api.finances.dashboardCentral>;
 type ChapterRollup = CentralDash["chapterRollup"][number];
@@ -115,6 +116,27 @@ export function CentralView({
             <Text className="text-xs text-muted">
               Org-wide spend this period with no budget attached — chase each
               chapter's Treasurer to code it in Reconcile.
+            </Text>
+          </View>
+        </View>
+      ) : null}
+
+      {/* WP-3.2 FM/ED oversight: a read-only count of budgets awaiting a
+          decision, across every chapter + central. The 85% principle keeps
+          this a pure audit signal — chapter budgets are approved BY the
+          Chapter Director, never gated from here; only a central budget's
+          own card (below) offers a decision on THIS screen. */}
+      {data.pendingBudgetApprovalsCount > 0 ? (
+        <View className="mb-3 flex-row items-center gap-3 rounded-lg border border-accent bg-accent-soft p-4 shadow-card">
+          <View className="flex-1">
+            <Text className="text-sm font-semibold text-ink">
+              {data.pendingBudgetApprovalsCount === 1
+                ? "1 budget awaiting approval"
+                : `${data.pendingBudgetApprovalsCount} budgets awaiting approval`}
+            </Text>
+            <Text className="text-xs text-muted">
+              Across every chapter + central — chapter budgets are decided on
+              their own chapter's dashboard; central budgets right below.
             </Text>
           </View>
         </View>
@@ -255,8 +277,13 @@ function CentralBudgetCard({ b }: { b: CentralBudget }) {
           <Text className="font-display text-base text-ink" numberOfLines={1}>
             {name}
           </Text>
-          <View className="mt-1">
+          <View className="mt-1 flex-row flex-wrap items-center gap-1.5">
             <Chip label={BUDGET_CADENCE_LABELS[b.cadence]} />
+            <BudgetApprovalChip
+              status={b.approvalStatus}
+              approvedCents={b.approvedCents}
+              amountCents={b.budgetCents}
+            />
           </View>
         </View>
         <Text
@@ -268,6 +295,12 @@ function CentralBudgetCard({ b }: { b: CentralBudget }) {
       </View>
       <BudgetBar pct={b.pct} status={b.status} />
       <Text className="mt-1.5 text-xs text-muted">{b.pct}% spent</Text>
+      {b.reviewNote && b.approvalStatus === "changes_requested" ? (
+        <Text className="mt-2 text-xs text-danger">"{b.reviewNote}"</Text>
+      ) : null}
+      <View className="mt-3">
+        <BudgetApprovalActions budgetId={b.id} status={b.approvalStatus} />
+      </View>
     </View>
   );
 }

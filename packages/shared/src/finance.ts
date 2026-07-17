@@ -113,6 +113,42 @@ export const BUDGET_CADENCE_LABELS: Record<BudgetCadence, string> = {
 export const BUDGET_ROLLOVER_POLICIES = ["none", "accumulate"] as const;
 export type BudgetRolloverPolicy = (typeof BUDGET_ROLLOVER_POLICIES)[number];
 
+// ── Budget approval workflow (WP-3.2) ────────────────────────────────────────
+// State machine: draft → submitted → approved | changes_requested. A budget
+// created before this feature shipped carries NO `approvalStatus` at all
+// (`undefined`, not one of these four literals) — GRANDFATHERED, treated as
+// "approved at its current amount" for display + cap purposes
+// (`effectiveApprovalStatus`/`effectiveApprovedCapCents` in `finances.ts`) with
+// zero workflow friction: it can't be manually re-submitted, and an amount
+// INCREASE on it does NOT auto-resubmit (the retrigger only fires off the
+// literal `"approved"` status, set the first time a human runs the real
+// workflow on a budget). This is deliberate — shipping the feature must not
+// suddenly gate hundreds of existing prod budgets.
+export const BUDGET_APPROVAL_STATUSES = [
+  "draft",
+  "submitted",
+  "approved",
+  "changes_requested",
+] as const;
+export type BudgetApprovalStatus = (typeof BUDGET_APPROVAL_STATUSES)[number];
+
+export const BUDGET_APPROVAL_STATUS_LABELS: Record<BudgetApprovalStatus, string> = {
+  draft: "Draft",
+  submitted: "Awaiting approval",
+  approved: "Approved",
+  changes_requested: "Changes requested",
+};
+
+/** A budget's EFFECTIVE approval status: the stored value, or `"approved"` for
+ *  a grandfathered legacy row that predates this feature (see the tuple's doc
+ *  comment above). Display + cap resolution both go through this — never read
+ *  `budget.approvalStatus` raw for either purpose. */
+export function effectiveBudgetApprovalStatus(
+  status: BudgetApprovalStatus | undefined,
+): BudgetApprovalStatus {
+  return status ?? "approved";
+}
+
 // ── Transactions ─────────────────────────────────────────────────────────────
 // The unified ACTUAL spend/inflow record — the ONLY table summed for "actual".
 // Estimated money (budgets, projects.budgetUsd, events.budget, item costs,

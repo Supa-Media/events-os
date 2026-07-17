@@ -38,6 +38,8 @@ import {
   BUDGET_REF_KINDS,
   BUDGET_TAG_KINDS,
   BUDGET_CADENCES,
+  BUDGET_APPROVAL_STATUSES,
+  BUDGET_APPROVAL_STATUS_LABELS,
   TRANSACTION_SOURCES,
   TRANSACTION_FLOWS,
   TRANSACTION_STATUSES,
@@ -58,8 +60,10 @@ import {
   matchesAnyKeyword,
   REASSIGN_BATCH_CAP,
   chapterAffordability as chapterAffordabilityCalc,
+  effectiveBudgetApprovalStatus,
   type BudgetType,
   type BudgetRefKind,
+  type BudgetApprovalStatus,
 } from "@events-os/shared";
 import { readSandbox } from "./financeSettings";
 import { isMissingReceiptCharge, unlockCardIfReceiptsResolved } from "./cards";
@@ -72,6 +76,10 @@ import {
   requireFinanceRole,
   requireFinanceManager,
   requireFinanceCentral,
+  requireCentralFinanceRole,
+  requireCentralEdOrFm,
+  resolveCallerPersonId,
+  assertSeparationOfDuties,
   getFinanceRole,
   defaultFundId,
   type FinanceScope,
@@ -95,6 +103,9 @@ const typeValidator = v.union(...BUDGET_TYPES.map((t) => v.literal(t)));
 const refKindValidator = v.union(...BUDGET_REF_KINDS.map((k) => v.literal(k)));
 const tagKindValidator = v.union(...BUDGET_TAG_KINDS.map((k) => v.literal(k)));
 const cadenceValidator = v.union(...BUDGET_CADENCES.map((c) => v.literal(c)));
+const approvalStatusValidator = v.union(
+  ...BUDGET_APPROVAL_STATUSES.map((s) => v.literal(s)),
+);
 const sourceValidator = v.union(...TRANSACTION_SOURCES.map((s) => v.literal(s)));
 const flowValidator = v.union(...TRANSACTION_FLOWS.map((f) => v.literal(f)));
 const statusValidator = v.union(
@@ -126,6 +137,16 @@ const budgetTagRef = v.object({
   kind: v.union(tagKindValidator, v.null()),
 });
 
+// WP-3.2: the approval-workflow fields every budget projection carries.
+// `approvalStatus` is always the EFFECTIVE status (`effectiveBudgetApprovalStatus`
+// — a grandfathered legacy row reads as `"approved"`, never `null`). `approvedCents`
+// stays `null` until a budget has been through `approveBudget` at least once.
+const budgetApprovalFields = {
+  approvalStatus: approvalStatusValidator,
+  approvedCents: v.union(v.number(), v.null()),
+  reviewNote: v.union(v.string(), v.null()),
+};
+
 const budgetSummary = v.object({
   id: v.id("budgets"),
   amountCents: v.number(),
@@ -148,6 +169,7 @@ const budgetSummary = v.object({
   // Whether this is a chapter budget or an org-level (central) budget. Feeds the
   // reconcile Budget picker's Chapter / Central grouping.
   level: v.union(v.literal("chapter"), v.literal("central")),
+  ...budgetApprovalFields,
 });
 
 // A per-tag rollup row (chapter dashboard carries `tagId`; central aggregates
@@ -302,6 +324,7 @@ const centralBudgetCard = v.object({
   spentCents: v.number(),
   pct: v.number(),
   status: okWarnValidator,
+  ...budgetApprovalFields,
 });
 
 const projectBudgetCard = v.object({
@@ -317,6 +340,7 @@ const projectBudgetCard = v.object({
   remainingCents: v.number(),
   status: okWarnValidator,
   categories: v.array(categoryBreakdown),
+  ...budgetApprovalFields,
 });
 
 const recurringBudgetCard = v.object({
@@ -333,6 +357,7 @@ const recurringBudgetCard = v.object({
   status: okWarnValidator,
   categories: v.optional(v.array(categoryBreakdown)),
   note: v.optional(v.union(v.string(), v.null())),
+  ...budgetApprovalFields,
 });
 
 const recentTxnCard = v.object({
@@ -406,6 +431,30 @@ function toTeamSummary(tm: Doc<"financeTeams">) {
   };
 }
 
+/**
+ * WP-3.2: the approval-workflow fields shared by every budget card projection
+ * (`toBudgetSummary` + the dashboard's project/recurring/central cards). Always
+ * the EFFECTIVE status (grandfathered legacy rows read as `"approved"`) — see
+ * `effectiveBudgetApprovalStatus`.
+ */
+function budgetApprovalCardFields(b: Doc<"budgets">) {
+  return {
+    approvalStatus: effectiveBudgetApprovalStatus(b.approvalStatus),
+    approvedCents: b.approvedCents ?? null,
+    reviewNote: b.reviewNote ?? null,
+  };
+}
+
+/** The cap a budget is currently approved to spend against: the recorded
+ *  `approvedCents`, else its current `amountCents` (grandfathered legacy rows,
+ *  and any budget that's never yet been through `approveBudget`, fall back to
+ *  the plain allocation). Over-cap spend warnings compare actual spend against
+ *  THIS, never `amountCents` alone — see the schema doc comment on
+ *  `budgets.approvedCents`. */
+function effectiveApprovedCapCents(b: Doc<"budgets">): number {
+  return b.approvedCents ?? b.amountCents;
+}
+
 function toBudgetSummary(
   b: Doc<"budgets">,
   tags: { id: Id<"budgetTags">; name: string; kind: (typeof BUDGET_TAG_KINDS)[number] | null }[],
@@ -427,6 +476,7 @@ function toBudgetSummary(
     teamId: b.teamId ?? null,
     tags,
     level: b.chapterId === CENTRAL ? ("central" as const) : ("chapter" as const),
+    ...budgetApprovalCardFields(b),
   };
 }
 
@@ -1426,6 +1476,35 @@ async function chapterAttentionQueue(
     });
   }
 
+  // (c) Budgets awaiting approval (WP-3.2): explicit submissions only — a
+  // grandfathered legacy budget never appears here (its literal
+  // `approvalStatus` is absent, not `"submitted"`). The decision itself
+  // happens right on the budget card (Approve / Request changes), so this
+  // row is a pure count/nudge — no dedicated destination to navigate to.
+  const pendingBudgets = await ctx.db
+    .query("budgets")
+    .withIndex("by_chapter_and_approval_status", (q) =>
+      q.eq("chapterId", chapterId).eq("approvalStatus", "submitted"),
+    )
+    .take(ROLLUP_SCAN_LIMIT);
+  if (pendingBudgets.length === ROLLUP_SCAN_LIMIT) {
+    console.warn(
+      `[finances] attention queue hit ROLLUP_SCAN_LIMIT (${ROLLUP_SCAN_LIMIT}) reading pending-approval budgets for chapter ${chapterId}; count truncated.`,
+    );
+  }
+  if (pendingBudgets.length > 0) {
+    items.push({
+      kind: "budget_approvals",
+      title: "Budgets awaiting approval",
+      badgeCount: pendingBudgets.length,
+      detail:
+        pendingBudgets.length === 1
+          ? "1 budget needs a decision"
+          : `${pendingBudgets.length} budgets need a decision`,
+      actionLabel: "Review",
+    });
+  }
+
   return items;
 }
 
@@ -1613,6 +1692,7 @@ export const dashboardChapter = query({
         remainingCents: b.amountCents - spentCents,
         status: statusFor(pct),
         categories,
+        ...budgetApprovalCardFields(b),
       });
     }
 
@@ -1646,6 +1726,7 @@ export const dashboardChapter = query({
         status: statusFor(pct),
         categories: categories.length ? categories : undefined,
         note: null,
+        ...budgetApprovalCardFields(b),
       });
     }
 
@@ -2035,6 +2116,12 @@ export const dashboardCentral = query({
       periodLaunchGrantsMadeCents: v.number(),
       periodNetCents: v.number(),
     }),
+    // WP-3.2 FM/ED oversight: the count of budgets sitting `"submitted"` right
+    // now, across EVERY chapter + central — a read-only aggregate (the actual
+    // decision happens on each chapter's own dashboard, or right here for a
+    // central budget's own card). Never gates anything — the 85% principle
+    // keeps central's role audit, not approval.
+    pendingBudgetApprovalsCount: v.number(),
   }),
   handler: async (ctx, args) => {
     const now = easternParts(Date.now());
@@ -2060,6 +2147,7 @@ export const dashboardCentral = query({
       totalMonthSpendCents: 0,
       orgUnattributedCents: 0,
       cityLaunchFund: emptyFund,
+      pendingBudgetApprovalsCount: 0,
     };
     const chapterId = await readChapterId(ctx);
     if (!chapterId) return empty;
@@ -2087,6 +2175,12 @@ export const dashboardCentral = query({
     let orgUnattributedCents = 0;
     let activeChapters = 0;
     let toReviewOrg = 0;
+    // WP-3.2: budgets sitting "submitted" right now — central's own
+    // contribution seeds the count (from `centralBudgetDocs`, already loaded
+    // above); each chapter's own is added inside the loop below.
+    let pendingBudgetApprovalsCount = centralBudgetDocs.filter(
+      (b) => b.approvalStatus === "submitted",
+    ).length;
     // Running sum of CHAPTER spend explicitly linked to a central budget — the
     // amount partitioned OUT of each chapter's own row (below) and INTO the
     // Central row. Kept disjoint from central-OWNED spend (a real chapter's
@@ -2151,6 +2245,9 @@ export const dashboardCentral = query({
         (s, b) => s + monthEquivForDash(b, dp),
         0,
       );
+      pendingBudgetApprovalsCount += chBudgets.filter(
+        (b) => b.approvalStatus === "submitted",
+      ).length;
 
       // Tag attribution: for each of this chapter's tags, sum the linked-txn
       // actuals of its year budgets, then merge into the org-wide by-tag agg.
@@ -2250,6 +2347,7 @@ export const dashboardCentral = query({
         spentCents,
         pct,
         status: statusFor(pct),
+        ...budgetApprovalCardFields(cb),
       });
     }
 
@@ -2438,6 +2536,7 @@ export const dashboardCentral = query({
       totalMonthSpendCents,
       orgUnattributedCents,
       cityLaunchFund,
+      pendingBudgetApprovalsCount,
     };
   },
 });
@@ -2453,6 +2552,10 @@ export const budgetVsActual = query({
       scope: v.union(scopeValidator, v.null()),
       allocatedCents: v.number(),
       actualCents: v.number(),
+      // WP-3.2: the cap while an approval is pending — `approvedCents ??
+      // amountCents`. Every over-cap warning surface compares against THIS,
+      // never `allocatedCents` alone (see the schema doc on `approvedCents`).
+      approvedCapCents: v.number(),
     }),
   ),
   handler: async (ctx, args) => {
@@ -2499,6 +2602,7 @@ export const budgetVsActual = query({
         scope: b.scope ?? null,
         allocatedCents: b.amountCents,
         actualCents,
+        approvedCapCents: effectiveApprovedCapCents(b),
       };
     });
   },
@@ -3411,6 +3515,10 @@ export const createBudget = mutation({
       categoryId: args.categoryId,
       createdBy: userId,
       createdAt: Date.now(),
+      // WP-3.2: a NEW budget starts the approval workflow at "draft" — unlike
+      // a pre-existing (grandfathered) row, which carries no `approvalStatus`
+      // at all. Only new budgets are submittable/approvable from day one.
+      approvalStatus: "draft",
     });
     const seen = new Set<string>();
     for (const tagId of args.tagIds ?? []) {
@@ -3442,9 +3550,16 @@ export const createBudget = mutation({
  * stays a real budget. A recurring or central budget (no `scopeRefId`) has
  * no entity to mirror onto, so this is a no-op past the row write.
  *
- * WP-3.2 breadcrumb: an amount INCREASE on an already-APPROVED budget should
- * retrigger the approval workflow — hook that check in here once budget
- * approval ships.
+ * WP-3.2 · THE RETRIGGER: an amount INCREASE past the approved cap on a
+ * budget whose approval status is the LITERAL `"approved"` auto-resubmits it
+ * (flips to `"submitted"`, stamps `submittedByPersonId` as the CALLER making
+ * this edit) — an approver blessed a specific number; silently spending past
+ * it without a second look defeats the point of approving at all. A
+ * grandfathered legacy budget (`approvalStatus` absent, never literally
+ * `"approved"`) does NOT retrigger — see the tuple's doc comment in
+ * `@events-os/shared` for why. Decreases, and edits that don't cross the
+ * approved cap, never retrigger — `approvedCents` is only ever refreshed by
+ * `approveBudget` itself.
  */
 export async function setBudgetAmount(
   ctx: MutationCtx,
@@ -3457,6 +3572,21 @@ export async function setBudgetAmount(
     throw new ConvexError({ code: "NOT_FOUND", message: "Budget not found." });
   }
   await ctx.db.patch(budgetId, { amountCents });
+  if (
+    budget.approvalStatus === "approved" &&
+    amountCents > effectiveApprovedCapCents(budget)
+  ) {
+    const editorChapterId = (await requireChapterId(ctx)) as Id<"chapters">;
+    const editorPersonId = await resolveCallerPersonId(ctx, editorChapterId);
+    await ctx.db.patch(budgetId, {
+      approvalStatus: "submitted",
+      submittedByPersonId: editorPersonId,
+      submittedAt: Date.now(),
+      // `approvedCents` is DELIBERATELY left untouched — it stays the
+      // effective (old, still-in-force) spending cap while this increase
+      // waits for a decision.
+    });
+  }
   const refKind = effectiveRefKind(budget);
   if (!refKind || !budget.scopeRefId) return;
   const mirrorDollars = amountCents > 0 ? amountCents / 100 : undefined;
@@ -3634,6 +3764,145 @@ export const updateBudget = mutation({
         userId,
       );
     }
+    return null;
+  },
+});
+
+// ── Budget approval workflow (WP-3.2) ────────────────────────────────────────
+// State machine: draft → submitted → approved | changes_requested. Submit is
+// an editor action (bookkeeper+ at the budget's scope); approve/request-
+// changes is an APPROVER action, scope-gated + identity-SoD'd exactly like
+// reimbursements (`assertApprovalSoD` in `reimbursements.ts`):
+//   - chapter budget  → chapter finance MANAGER rank (Chapter Director /
+//     Treasurer seats bridge to this — `requireFinanceManager`).
+//   - central budget  → the ED or FM SPECIALIZED role (`requireCentralEdOrFm`),
+//     tighter than plain central finance reach.
+// Either scope: approver ≠ submitter (identity, not role) — a dual-hat holder
+// who submitted as one seat cannot approve their own submission as the other.
+
+/** Assert a budget's EFFECTIVE approval status permits `action`. */
+function assertBudgetTransition(
+  current: BudgetApprovalStatus,
+  allowedFrom: readonly BudgetApprovalStatus[],
+  action: string,
+): void {
+  if (!allowedFrom.includes(current)) {
+    throw new ConvexError({
+      code: "ILLEGAL_TRANSITION",
+      message: `Can't ${action} a budget that's ${BUDGET_APPROVAL_STATUS_LABELS[current]}.`,
+    });
+  }
+}
+
+export const submitBudgetForApproval = mutation({
+  args: { budgetId: v.id("budgets") },
+  returns: v.null(),
+  handler: async (ctx, { budgetId }) => {
+    const chapterId = (await requireChapterId(ctx)) as Id<"chapters">;
+    const budget = await requireInCallerChapter(
+      ctx,
+      chapterId,
+      "budgets",
+      budgetId,
+      "Budget",
+      { allowCentral: true },
+    );
+    if (budget.chapterId === CENTRAL) {
+      await requireCentralFinanceRole(ctx, chapterId, "bookkeeper");
+    } else {
+      await requireFinanceRole(ctx, chapterId, "bookkeeper");
+    }
+    assertBudgetTransition(
+      effectiveBudgetApprovalStatus(budget.approvalStatus),
+      ["draft", "changes_requested"],
+      "submit",
+    );
+    const personId = await resolveCallerPersonId(ctx, chapterId);
+    await ctx.db.patch(budgetId, {
+      approvalStatus: "submitted",
+      submittedByPersonId: personId,
+      submittedAt: Date.now(),
+    });
+    return null;
+  },
+});
+
+/** Load a budget for an approve/request-changes decision: resolve the
+ *  caller's chapter + identity, verify the budget is visible to them, and
+ *  gate on the APPROVER capability for its scope (chapter manager, or
+ *  central ED/FM). Shared by `approveBudget` + `requestBudgetChanges` so the
+ *  two decisions can never gate differently. */
+async function loadBudgetForApprovalDecision(
+  ctx: MutationCtx,
+  budgetId: Id<"budgets">,
+): Promise<{ budget: Doc<"budgets">; callerPersonId: Id<"people"> }> {
+  const chapterId = (await requireChapterId(ctx)) as Id<"chapters">;
+  const budget = await requireInCallerChapter(
+    ctx,
+    chapterId,
+    "budgets",
+    budgetId,
+    "Budget",
+    { allowCentral: true },
+  );
+  if (budget.chapterId === CENTRAL) {
+    await requireCentralEdOrFm(ctx);
+  } else {
+    await requireFinanceManager(ctx, chapterId);
+  }
+  const callerPersonId = await resolveCallerPersonId(ctx, chapterId);
+  return { budget, callerPersonId };
+}
+
+export const approveBudget = mutation({
+  args: { budgetId: v.id("budgets"), note: v.optional(v.string()) },
+  returns: v.null(),
+  handler: async (ctx, { budgetId, note }) => {
+    const { budget, callerPersonId } = await loadBudgetForApprovalDecision(
+      ctx,
+      budgetId,
+    );
+    assertBudgetTransition(
+      effectiveBudgetApprovalStatus(budget.approvalStatus),
+      ["submitted"],
+      "approve",
+    );
+    assertSeparationOfDuties(callerPersonId, budget.submittedByPersonId);
+    await ctx.db.patch(budgetId, {
+      approvalStatus: "approved",
+      approvedCents: budget.amountCents,
+      approvedByPersonId: callerPersonId,
+      approvedAt: Date.now(),
+      reviewNote: note,
+    });
+    return null;
+  },
+});
+
+export const requestBudgetChanges = mutation({
+  args: { budgetId: v.id("budgets"), note: v.string() },
+  returns: v.null(),
+  handler: async (ctx, { budgetId, note }) => {
+    const { budget, callerPersonId } = await loadBudgetForApprovalDecision(
+      ctx,
+      budgetId,
+    );
+    assertBudgetTransition(
+      effectiveBudgetApprovalStatus(budget.approvalStatus),
+      ["submitted"],
+      "request changes on",
+    );
+    assertSeparationOfDuties(callerPersonId, budget.submittedByPersonId);
+    // `approvedByPersonId`/`approvedAt` double as "last reviewer / reviewed
+    // at" for BOTH decisions (there's no separate schema field for a
+    // changes-requested reviewer) — only `reviewNote` + `approvalStatus`
+    // itself distinguish which decision was made.
+    await ctx.db.patch(budgetId, {
+      approvalStatus: "changes_requested",
+      approvedByPersonId: callerPersonId,
+      approvedAt: Date.now(),
+      reviewNote: note,
+    });
     return null;
   },
 });

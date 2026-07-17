@@ -2752,12 +2752,13 @@ const SECTIONS_IN_ORDER: Omit<AcademySection, "order">[] = [
   // Five role courses (Finances for Everyone / Treasurer / Chapter Director /
   // Financial Manager / Executive Director), authored from the shipped
   // finance surface (Reconcile, the 7-day receipt auto-lock, reimbursements,
-  // seats, explicit-only budget attribution, central budgets) — see
-  // `docs/plans/finance-v2-split-prd.md` §Phase 5. Where a lesson teaches a
-  // workflow that isn't built yet (budget approval, automated skim/launch-
-  // grant transfers — both Phase 3/4), a `tip` block says so plainly; the
-  // doctrine is real even where the button isn't yet. Content authoring
-  // depth here is WP-5.1's "concise starter content" — full depth is WP-5.2.
+  // seats, explicit-only budget attribution, central budgets, the budget
+  // approval workflow — WP-3.2) — see `docs/plans/finance-v2-split-prd.md`
+  // §Phase 5. Where a lesson teaches a workflow that isn't built yet
+  // (automated skim/launch-grant transfers — Phase 4), a `tip` block says so
+  // plainly; the doctrine is real even where the button isn't yet. Content
+  // authoring depth here is WP-5.1's "concise starter content" — full depth
+  // is WP-5.2.
 
   // ── 31 · Finances for everyone: stewardship ────────────────────────────────
   {
@@ -3328,7 +3329,7 @@ const SECTIONS_IN_ORDER: Omit<AcademySection, "order">[] = [
   {
     slug: "finance-approving-budgets",
     title: "Approving budgets",
-    subtitle: "The 85% principle — and what's live today vs. coming",
+    subtitle: "The 85% principle — submit, approve, and the auto-resubmit rule",
     minutes: 3,
     blocks: [
       {
@@ -3343,14 +3344,15 @@ const SECTIONS_IN_ORDER: Omit<AcademySection, "order">[] = [
       {
         kind: "bullets",
         items: [
-          "**Who approves what:** a chapter budget is approved by you (the Chapter Director); your Treasurer can also approve one if you were the one who submitted it — separation of duties always picks whoever ISN'T the requester.",
+          "**How it works:** whoever plans a budget taps **Submit for approval** right on its card. It then shows **Awaiting approval** to anyone who can act on it — tap **Approve** or **Request changes** (with a reason) straight from that same card.",
+          "**Who approves what:** a chapter budget is approved by you (the Chapter Director); your Treasurer can also approve one if you were the one who submitted it — separation of duties always picks whoever ISN'T the requester, even a dual-hat holder acting on their own submission.",
           "**Central budgets are the mirror image:** approved by the Executive Director, or the Financial Manager if the ED submitted it.",
-          "**Over the approved cap:** spending past what a budget allows raises a loud warning today — it doesn't block the card yet.",
+          "**Over the approved cap:** spending past what a budget allows raises a loud warning right on the card — it doesn't block the card yet.",
         ],
       },
       {
         kind: "tip",
-        text: "**Coming soon:** the actual submit → approve/changes-requested workflow (a button in the app) isn't built yet — it's a near-term addition to the finance system. Until it ships, get sign-off the way chapters do it today: a real conversation with whoever approves, before the spending starts. This lesson teaches the doctrine that workflow will enforce, not a screen you can tap through yet.",
+        text: "**Increasing an approved budget re-opens it.** Bump the amount on a budget that's already Approved, and it flips straight back to Awaiting approval — automatically, the moment you save the higher number, and whoever made the edit becomes the new submitter. The OLD approved amount stays the spending cap until someone re-approves the new one, so a live budget's money is never silently expanded without a second look. Decreasing a budget, or reshuffling its line items, never re-triggers a review.",
       },
       {
         kind: "reveal",
@@ -3386,16 +3388,16 @@ const SECTIONS_IN_ORDER: Omit<AcademySection, "order">[] = [
           "The Financial Manager's cross-chapter audit is oversight after the money moves, not pre-approval before it does.",
       },
       {
-        prompt: "Is the in-app budget-approval workflow (submit → approve) live today?",
+        prompt: "You bump an APPROVED budget's amount from $2,000 to $3,000. What happens?",
         options: [
-          "Yes, fully live",
-          "Not yet — it's a near-term addition; approval today happens by conversation, not a button",
-          "It was live and was removed",
-          "Only for central budgets",
+          "Nothing — the higher amount is available immediately",
+          "It flips back to Awaiting approval automatically; the old $2,000 stays the spending cap until someone re-approves",
+          "The budget is deleted and a new one is created",
+          "Only a Financial Manager can ever raise a budget's amount",
         ],
         answerIndex: 1,
         explanation:
-          "Budget line items and the approval state machine are Phase 3 work — the doctrine is real now, the button is coming.",
+          "An increase on an approved budget auto-resubmits it — the old approved amount keeps working as the cap while the new one waits for a decision. Decreases and line reshuffles never do this.",
       },
     ],
   },

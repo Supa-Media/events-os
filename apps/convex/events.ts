@@ -1105,8 +1105,9 @@ export const updateDetails = mutation({
     // call, so the two can never drift apart. `fields.budget` is only set
     // directly here when there's NO row yet — the D8 trigger below then
     // decides whether this edit is enough money to summon one.
-    // WP-3.2: an amount INCREASE on an approved budget should retrigger
-    // approval — hook that check in here once budget approval ships.
+    // WP-3.2: `setBudgetAmount` itself now handles the increase-retrigger (an
+    // amount bump past the approved cap on an APPROVED budget auto-resubmits
+    // it) — nothing extra to do here, this call site gets it for free.
     let wroteThroughToBudget = false;
     if (patch.budget !== undefined) {
       const existingBudget = await getBudgetForRef(ctx, "event", eventId);
