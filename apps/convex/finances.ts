@@ -85,7 +85,7 @@ import {
   type FinanceScope,
 } from "./lib/finance";
 import { requireSuperuser } from "./lib/superuser";
-import { viewerPerson } from "./lib/org";
+import { viewerPerson, callerHasEventEditRights } from "./lib/org";
 import { holdsApprovalSeatAt } from "./lib/seats";
 import {
   ensureDefaultFunds,
@@ -6546,6 +6546,69 @@ async function requireReconcileTxn(
   return { txn, homeChapterId, scope: txn.chapterId };
 }
 
+/**
+ * The single EVENT a transaction's budget is scoped to, if any — `null` for
+ * a txn attributed to no budget, or one whose budget isn't a one_time EVENT
+ * budget (a project/recurring/central budget has no single event to scope an
+ * "event lead" gate to). Used ONLY by the note/receipt/category scoped
+ * carve-out below — never widens what a project's or a recurring budget's
+ * txns are reachable by.
+ */
+async function eventForTxn(
+  ctx: MutationCtx,
+  txn: Doc<"transactions">,
+): Promise<Doc<"events"> | null> {
+  if (!txn.budgetId) return null;
+  const budget = await ctx.db.get(txn.budgetId);
+  if (!budget || budget.refKind !== "event" || !budget.scopeRefId) return null;
+  return await ctx.db.get(budget.scopeRefId as Id<"events">);
+}
+
+/**
+ * NOTE / RECEIPT / CATEGORY scoped gate (owner decision, 2026-07-17,
+ * verbatim: "they shouldn't be able to change the budget bucket, but they
+ * should be able to do everything else like write notes, add receipts,
+ * change the category etc"). A caller with EVENT EDIT rights
+ * (`callerHasEventEditRights` — the event's owner/lead, or a chapter admin)
+ * may act on a transaction attributed to THEIR OWN event's budget, for
+ * note/receipt/category ONLY. Reattribution (`budgetId`/`fundId`/`teamId`),
+ * amount, and status are NEVER reachable through this gate — those stay
+ * `categorizeTransaction`'s/the reconcile grid's bookkeeper+-only territory,
+ * completely untouched by this addition.
+ *
+ * PURE ADDITIVE — the existing finance-role path (`requireReconcileTxn`,
+ * bookkeeper+, central-aware) is tried FIRST and, on success, returns
+ * immediately with the finance rank's UNCHANGED existing power; the event-
+ * lead carve-out is only ever consulted once that path has already failed,
+ * so no finance-role caller's reach can shrink because of this gate.
+ */
+async function requireTxnNoteReceiptCategoryAccess(
+  ctx: MutationCtx,
+  transactionId: Id<"transactions">,
+): Promise<Doc<"transactions">> {
+  try {
+    const { txn } = await requireReconcileTxn(ctx, transactionId, "bookkeeper");
+    return txn;
+  } catch (err) {
+    if (!(err instanceof ConvexError)) throw err;
+    // Fall through — the caller isn't bookkeeper+ (or has no home chapter at
+    // all); try the event-lead scoped carve-out below before giving up.
+  }
+  const txn = (await ctx.db.get(transactionId)) as Doc<"transactions"> | null;
+  if (!txn) {
+    throw new ConvexError({ code: "NOT_FOUND", message: "Transaction not found." });
+  }
+  const event = await eventForTxn(ctx, txn);
+  if (event && (await callerHasEventEditRights(ctx, event))) {
+    return txn;
+  }
+  throw new ConvexError({
+    code: "FORBIDDEN",
+    message:
+      "This action needs a finance role, or edit rights on the event this transaction belongs to.",
+  });
+}
+
 export const createManualTransaction = mutation({
   args: {
     flow: flowValidator,
@@ -6834,13 +6897,22 @@ export const attachReceipt = mutation({
       // A central-owned txn's receipt is central-desk territory (no cardholder
       // "own txn" path — central issues no cards). Gate on central reach AND
       // the bookkeeper rank (requireFinanceCentral alone only checks reach,
-      // not role — see requireReconcileTxn for the same fix).
-      const access = await requireFinanceCentral(ctx, chapterId);
-      if (!financeRoleAtLeast(access.role, "bookkeeper")) {
-        throw new ConvexError({
-          code: "FORBIDDEN",
-          message: `This action needs at least the ${FINANCE_ROLE_LABELS.bookkeeper} finance role.`,
-        });
+      // not role — see requireReconcileTxn for the same fix) — UNLESS the
+      // caller has event edit rights on the event this (possibly central-
+      // moved) budget still belongs to (owner decision, 2026-07-17 — see
+      // `requireTxnNoteReceiptCategoryAccess`'s own doc comment; kept as a
+      // parallel inline check here since `attachReceipt`'s own-txn carve-out
+      // doesn't compose with that helper's `requireReconcileTxn`-first shape).
+      const access = await getFinanceRole(ctx, chapterId);
+      const isBookkeeperCentral = access.isCentral && financeRoleAtLeast(access.role, "bookkeeper");
+      if (!isBookkeeperCentral) {
+        const event = await eventForTxn(ctx, txn);
+        if (!event || !(await callerHasEventEditRights(ctx, event))) {
+          throw new ConvexError({
+            code: "FORBIDDEN",
+            message: `This action needs at least the ${FINANCE_ROLE_LABELS.bookkeeper} finance role, or edit rights on the event this transaction belongs to.`,
+          });
+        }
       }
     } else {
       if (txn.chapterId !== chapterId) {
@@ -6852,11 +6924,14 @@ export const attachReceipt = mutation({
       const access = await getFinanceRole(ctx, chapterId);
       const isOwnTxn = access.personId != null && access.personId === txn.personId;
       if (!isOwnTxn && !financeRoleAtLeast(access.role, "bookkeeper")) {
-        throw new ConvexError({
-          code: "FORBIDDEN",
-          message:
-            "Only the transaction's own person or a bookkeeper can attach a receipt.",
-        });
+        const event = await eventForTxn(ctx, txn);
+        if (!event || !(await callerHasEventEditRights(ctx, event))) {
+          throw new ConvexError({
+            code: "FORBIDDEN",
+            message:
+              "Only the transaction's own person, a bookkeeper, or someone with edit rights on the event this transaction belongs to can attach a receipt.",
+          });
+        }
       }
     }
     await ctx.db.patch(args.transactionId, {
@@ -6893,16 +6968,17 @@ export const flagPersonal = mutation({
 /**
  * R1a — set (or clear) a transaction's freeform note: "who was this for and
  * why" (the business/mission justification budget + category alone don't
- * capture). Same authz as `categorizeTransaction` (scope-aware
- * `requireReconcileTxn`, bookkeeper rank) — coding a charge and annotating it
- * are the same reconcile-grid privilege. `null` (or an all-whitespace string)
- * clears the note; anything else is trimmed and capped at `MAX_NOTE_LENGTH`.
+ * capture). Bookkeeper+ (scope-aware `requireReconcileTxn`) keeps its
+ * existing, unchanged reach; a caller with EVENT EDIT rights on the txn's own
+ * event may also note it (`requireTxnNoteReceiptCategoryAccess` — see its own
+ * doc comment). `null` (or an all-whitespace string) clears the note;
+ * anything else is trimmed and capped at `MAX_NOTE_LENGTH`.
  */
 export const setTransactionNote = mutation({
   args: { transactionId: v.id("transactions"), note: v.union(v.string(), v.null()) },
   returns: v.null(),
   handler: async (ctx, args) => {
-    await requireReconcileTxn(ctx, args.transactionId, "bookkeeper");
+    await requireTxnNoteReceiptCategoryAccess(ctx, args.transactionId);
     const trimmed = args.note?.trim() || null;
     if (trimmed && trimmed.length > MAX_NOTE_LENGTH) {
       throw new ConvexError({
@@ -6911,6 +6987,54 @@ export const setTransactionNote = mutation({
       });
     }
     await ctx.db.patch(args.transactionId, { note: trimmed ?? undefined });
+    return null;
+  },
+});
+
+/**
+ * CATEGORY-ONLY edit — deliberately NARROWER than `categorizeTransaction`
+ * (which also reattributes `fundId`/`teamId`/`budgetId`). Same combined gate
+ * as `setTransactionNote` above (bookkeeper+'s existing power, OR event-edit
+ * rights on the txn's own event) — but this mutation can NEVER touch
+ * anything but `categoryId`, so the event-lead carve-out can never reach
+ * fund/team/budget/amount/status through it, by construction (there's no arg
+ * for any of those). Finance ranks already have the fuller
+ * `categorizeTransaction` for bulk attribution; this is an additional,
+ * narrower tool that happens to also serve them, not a replacement.
+ */
+export const setTransactionCategory = mutation({
+  args: {
+    transactionId: v.id("transactions"),
+    categoryId: v.union(v.id("budgetCategories"), v.null()),
+  },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    const txn = await requireTxnNoteReceiptCategoryAccess(ctx, args.transactionId);
+    if (args.categoryId) {
+      // Central txns carry no chapter-scoped category (mirrors
+      // `categorizeTransaction`'s own central branch).
+      if (txn.chapterId === CENTRAL) {
+        throw new ConvexError({
+          code: "UNSUPPORTED",
+          message: "A central transaction can't be given a chapter-scoped category.",
+        });
+      }
+      await requireInCallerChapter(
+        ctx,
+        txn.chapterId,
+        "budgetCategories",
+        args.categoryId,
+        "Category",
+      );
+    }
+    const patch: Record<string, unknown> = { categoryId: args.categoryId ?? undefined };
+    // Advance unreviewed -> categorized the same way `categorizeTransaction`
+    // does when a category makes the txn "coded".
+    if (args.categoryId && txn.status === "unreviewed") patch.status = "categorized";
+    // A human just categorized this manually — clear any stored AI suggestion,
+    // mirrors `categorizeTransaction`'s own rule.
+    patch.aiSuggestion = undefined;
+    await ctx.db.patch(args.transactionId, patch);
     return null;
   },
 });
