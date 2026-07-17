@@ -136,29 +136,34 @@ describe("deriveSeatManagerIds", () => {
     });
   });
 
-  describe("cycle-scoped tie-break (adversarial review fix — 2026-07-17)", () => {
-    // Reviewer repro: X is a central Development Director (senior, depth 1)
-    // who ALSO volunteers on a chapter's `event_organizers` seat (junior,
-    // under Y's `event_lead`). X and Y never point back at each other — X's
-    // managers are {ed, y}, Y's manager is {ed}, ed has none — so there is NO
-    // cycle here at all. An earlier version of this fix used a BLANKET
-    // "candidate must be senior to my single most-senior seat" filter, which
-    // wrongly dropped Y (X's real, non-cyclic event_organizers manager)
-    // because X's unrelated development_director seat outranked Y overall.
-    // The cycle-scoped fix must leave this untouched: X keeps BOTH managers.
-    test("a person's unrelated senior seat does NOT strip a real, non-cyclic manager from an unrelated junior seat", () => {
+  describe("blanket seniority filter is intentional (owner decision 2026-07-17)", () => {
+    // Adversarial review flagged this exact shape as "over-pruning": X is a
+    // central Development Director (senior, depth 1) who ALSO volunteers on
+    // a chapter's `event_organizers` seat (junior, under Y's `event_lead`).
+    // X and Y never point back at each other — this is NOT a cycle, it's an
+    // ordinary multi-seat holder with two unrelated hats. A cycle-scoped fix
+    // was built that would keep Y as one of X's managers here (since the
+    // edge never participates in a cycle) — but the OWNER reviewed this
+    // exact repro and ruled the pruning INTENDED, verbatim (2026-07-17):
+    // "this is good, we don't want people who are technically 'lower' being
+    // able to see their 1:1 checkins for now." The cycle-scoped revision was
+    // reverted; this test now PINS the owner-decided behavior — X's manager
+    // is the ED ONLY. Y (technically junior overall, despite being the real
+    // structural manager of X's event_organizers seat) is NOT a manager of
+    // X, and must not gain check-in/1:1 authority over them (see the
+    // gate-level pin in `orgSeatManagers.test.ts`). Do not "fix" this again
+    // without a new owner decision superseding the one quoted above.
+    test("a person's unrelated senior seat DOES strip a real, non-cyclic manager from a junior seat — by design", () => {
       const index = makeIndex([
         { seatDefId: "executive_director", scope: CENTRAL, personId: "ed" },
         { seatDefId: "development_director", scope: CENTRAL, personId: "x" },
         { seatDefId: "event_organizers", scope: "chapterA", personId: "x" },
         { seatDefId: "event_lead", scope: "chapterA", personId: "y" },
       ]);
-      expect(deriveSeatManagerIds(index, "x", CENTRAL, CHAPTER_ROLLUP_PARENT)?.sort()).toEqual(
-        ["ed", "y"].sort(),
-      );
+      expect(deriveSeatManagerIds(index, "x", CENTRAL, CHAPTER_ROLLUP_PARENT)).toEqual(["ed"]);
       // y's own manager (via event_lead's rollup to chapter_director, vacant,
       // then to the central expansion_director, vacant, then to the ED) is
-      // unaffected — not part of any cycle either.
+      // unaffected — y isn't in a cycle with anyone either.
       expect(deriveSeatManagerIds(index, "y", CENTRAL, CHAPTER_ROLLUP_PARENT)).toEqual(["ed"]);
       expect(deriveSeatManagerIds(index, "ed", CENTRAL, CHAPTER_ROLLUP_PARENT)).toEqual([]);
     });
@@ -168,7 +173,11 @@ describe("deriveSeatManagerIds", () => {
     // rolls up to it) — closing a ring Vee -> Emm -> Cee -> Vee. Seniority
     // (min depth across every seat held): Vee=1 (expansion_director),
     // Cee=2 (chapter_director), Emm=3 (music_lead) — a strict order, so the
-    // cycle must resolve into the linear chain Vee (root) <- Cee <- Emm.
+    // cycle resolves into the linear chain Vee (root) <- Cee <- Emm. The
+    // blanket filter (this test) and a cycle-scoped filter agree here — a
+    // real cycle's internal edges get the same seniority comparison either
+    // way; blanket additionally prunes non-cyclic edges elsewhere, which is
+    // the owner-decided behavior pinned above.
     test("a 3-node cycle resolves into a linear chain ordered by seniority", () => {
       const index = makeIndex([
         { seatDefId: "vocal_lead", scope: "chapterA", personId: "vee" },

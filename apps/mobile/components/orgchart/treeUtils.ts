@@ -242,17 +242,32 @@ export type ReportsTo = {
  * chapter→central rollup. Returns `null` at the true top of the org (central
  * root) or if every ancestor is vacant/same-person all the way up.
  *
- * Deliberately UNFILTERED by `@events-os/shared`'s manager-graph cycle-break
- * (see `seatManagers.ts`'s "MUTUAL-SEAT CYCLE TIE-BREAK" section) — this is a
- * per-SEAT "who's the next box up" walk, always a real tree by construction
- * (a seat has exactly one ancestor chain), so it can't cycle in the first
- * place. The Work tab and every write gate (`checkIns.log`,
- * `responsibilities.*`) read the acyclic per-PERSON hierarchy instead, which
- * can legitimately drop one seat-derived edge for a person who holds seats in
- * two branches that point back at each other. For an ordinary multi-seat
- * holder outside a cycle the two views agree; for someone IN a broken cycle
- * (or downstream of one) they can diverge — this panel shows what a specific
- * seat's box reports to, not the resolved authority relationship.
+ * Deliberately UNFILTERED by `@events-os/shared`'s manager-graph seniority
+ * filter (see `seatManagers.ts`'s "SENIORITY FILTER — BLANKET BY DESIGN"
+ * section) — this is a per-SEAT "who's the next box up" walk, always a real
+ * tree by construction (a seat has exactly one ancestor chain), so it can't
+ * cycle in the first place and doesn't need any filtering. The Work tab and
+ * every write gate (`checkIns.log`, `responsibilities.*`) read the
+ * SENIORITY-FILTERED per-PERSON hierarchy instead, which — by owner decision
+ * (2026-07-17, see `seatManagers.ts`) — drops a seat-derived manager edge
+ * whenever the manager isn't more senior than the person OVERALL, not just
+ * when the edge is part of a literal cycle. That covers two shapes:
+ *
+ *  - A genuine 2+-node cycle between multi-seat holders (e.g. an ED who also
+ *    holds a chapter's `chapter_director` seat, paired with someone whose
+ *    chapter seat rolls back up to the ED) — resolved by seniority so exactly
+ *    one direction survives.
+ *  - A "senior multi-hat" person: someone who holds one senior, unrelated
+ *    seat (e.g. a central Development Director) AND a junior chapter seat
+ *    whose real structural manager is someone LESS senior overall (e.g. that
+ *    chapter's Event Lead). That manager edge is real and non-cyclic, but is
+ *    still dropped — the owner ruled that a "technically lower" manager
+ *    should not gain 1:1/check-in authority over someone senior elsewhere.
+ *
+ * So this panel and the Work tab/write gates can legitimately show DIFFERENT
+ * "reports to" answers for either shape: this panel always shows the nearest
+ * differently-held ancestor seat for the box being viewed; the Work tab shows
+ * only the seniority-filtered subset of that person's seat-derived edges.
  */
 export function computeReportsTo(
   node: SeatNode,
