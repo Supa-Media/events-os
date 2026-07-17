@@ -782,3 +782,198 @@ describe("moneyViews.refMoney: approval-aware cap + canEditPlan", () => {
     expect(result.incomeCents).toBe(15000);
   });
 });
+
+// ── Event cost grid (phase 2) ────────────────────────────────────────────────
+
+async function seedEventItem(
+  s: ChapterSetup,
+  eventId: Id<"events">,
+  module: string,
+  opts: { title?: string; status?: string; cost?: number } = {},
+): Promise<Id<"eventItems">> {
+  return await run(s.t, (ctx) =>
+    ctx.db.insert("eventItems", {
+      eventId,
+      chapterId: s.chapterId,
+      module,
+      title: opts.title ?? "Item",
+      order: 0,
+      status: opts.status,
+      fields: opts.cost !== undefined ? { cost: opts.cost } : undefined,
+    }),
+  );
+}
+
+async function seedPerson(s: ChapterSetup, name: string): Promise<Id<"people">> {
+  return await run(s.t, (ctx) =>
+    ctx.db.insert("people", {
+      chapterId: s.chapterId,
+      name,
+      isTeamMember: true,
+      createdAt: Date.now(),
+    }),
+  );
+}
+
+async function seedPaidEngagement(
+  s: ChapterSetup,
+  eventId: Id<"events">,
+  personId: Id<"people">,
+  opts: { amountUsd?: number; paymentStatus?: "unpaid" | "invoiced" | "paid" } = {},
+): Promise<Id<"engagements">> {
+  return await run(s.t, (ctx) =>
+    ctx.db.insert("engagements", {
+      chapterId: s.chapterId,
+      eventId,
+      personId,
+      type: "paid",
+      status: "confirmed",
+      amountUsd: opts.amountUsd,
+      paymentStatus: opts.paymentStatus ?? "unpaid",
+      createdAt: Date.now(),
+    }),
+  );
+}
+
+describe("moneyViews.eventCostGrid", () => {
+  test("collects Tasks/Supplies/Comms costs, paid vendors, and budget lines into one flat list", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await asChapterManager(s);
+    const eventId = await seedEvent(s, s.chapterId, { name: "Big Night" });
+
+    await seedEventItem(s, eventId, "planning_doc", { title: "Sound tech", cost: 150, status: "in_progress" });
+    await seedEventItem(s, eventId, "supplies", { title: "Coffee", cost: 40 });
+    await seedEventItem(s, eventId, "comms", { title: "Flyer print", cost: 25 });
+    // run_of_show has no `cost` column at all — must be a dead end.
+    await seedEventItem(s, eventId, "run_of_show", { title: "Segment", cost: 999 });
+
+    const person = await seedPerson(s, "DJ Sam");
+    await seedPaidEngagement(s, eventId, person, { amountUsd: 300, paymentStatus: "paid" });
+
+    const fundId = await seedFund(s, s.chapterId);
+    const cat = await seedCategory(s, s.chapterId, fundId, "Venue");
+    const budgetId = await seedOneTimeBudget(s, s.chapterId, "event", eventId, { amountCents: 100000 });
+    await seedLine(s, budgetId, 20000, cat);
+
+    const result = await s.as.query(api.moneyViews.eventCostGrid, { eventId });
+    expect(result.isTraining).toBe(false);
+    expect(result.rows).toHaveLength(5); // NOT the run_of_show row
+
+    const byId = new Map(result.rows.map((r) => [r.label, r]));
+    expect(byId.get("Sound tech")).toMatchObject({
+      sourceKind: "event_item",
+      typeLabel: "Task",
+      categoryName: "Tasks",
+      plannedCents: 15000, // $150 -> cents
+      status: "in_progress",
+      sourceLink: `/event/${eventId}?tab=planning_doc`,
+    });
+    expect(byId.get("Coffee")).toMatchObject({
+      typeLabel: "Supply",
+      categoryName: "Supplies", // not the naive "Supplys"
+      plannedCents: 4000,
+    });
+    expect(byId.get("Flyer print")).toMatchObject({
+      typeLabel: "Comms",
+      categoryName: "Comms", // already plural — not "Commss"
+      plannedCents: 2500,
+    });
+    expect(byId.get("DJ Sam")).toMatchObject({
+      sourceKind: "vendor",
+      typeLabel: "Vendor",
+      categoryName: "Vendors",
+      plannedCents: 30000, // $300 -> cents
+      actualCents: 30000, // paid
+      status: "paid",
+      sourceLink: `/event/${eventId}?tab=crew`,
+    });
+    const lineRow = [...result.rows].find((r) => r.sourceKind === "budget_line")!;
+    expect(lineRow).toMatchObject({
+      typeLabel: "Budget line",
+      categoryName: "Venue",
+      plannedCents: 20000,
+      sourceLink: null,
+      editable: true, // asChapterManager is bookkeeper+
+    });
+
+    expect(result.totalPlannedCents).toBe(15000 + 4000 + 2500 + 30000 + 20000);
+  });
+
+  test("excludes zero/negative/missing costs — a $0 or uncosted item never appears", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await asChapterViewer(s);
+    const eventId = await seedEvent(s, s.chapterId);
+    await seedEventItem(s, eventId, "planning_doc", { title: "No cost set" });
+    await seedEventItem(s, eventId, "planning_doc", { title: "Zero cost", cost: 0 });
+    await seedEventItem(s, eventId, "planning_doc", { title: "Negative (bad data)", cost: -5 });
+
+    const result = await s.as.query(api.moneyViews.eventCostGrid, { eventId });
+    expect(result.rows).toHaveLength(0);
+    expect(result.totalPlannedCents).toBe(0);
+  });
+
+  test("an UNPAID vendor has a null actualCents (committed, not yet spent)", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await asChapterViewer(s);
+    const eventId = await seedEvent(s, s.chapterId);
+    const person = await seedPerson(s, "Caterer Co");
+    await seedPaidEngagement(s, eventId, person, { amountUsd: 500, paymentStatus: "unpaid" });
+
+    const result = await s.as.query(api.moneyViews.eventCostGrid, { eventId });
+    expect(result.rows).toHaveLength(1);
+    expect(result.rows[0].actualCents).toBeNull();
+    expect(result.rows[0].status).toBe("unpaid");
+  });
+
+  test("a budget-line row's editable flag mirrors canEditPlan — false for a plain viewer", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await asChapterViewer(s);
+    const eventId = await seedEvent(s, s.chapterId);
+    const budgetId = await seedOneTimeBudget(s, s.chapterId, "event", eventId, { amountCents: 10000 });
+    await seedLine(s, budgetId, 5000);
+
+    const result = await s.as.query(api.moneyViews.eventCostGrid, { eventId });
+    expect(result.rows).toHaveLength(1);
+    expect(result.rows[0].editable).toBe(false);
+  });
+
+  test("a training event returns an empty grid (#172) even if it somehow has cost rows", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await asChapterViewer(s);
+    const eventId = await seedEvent(s, s.chapterId, { isTraining: true });
+    await seedEventItem(s, eventId, "planning_doc", { title: "Should not show", cost: 100 });
+
+    const result = await s.as.query(api.moneyViews.eventCostGrid, { eventId });
+    expect(result.isTraining).toBe(true);
+    expect(result.rows).toHaveLength(0);
+  });
+
+  test("a nonexistent event returns the quiet empty shape (no throw)", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await asChapterViewer(s);
+    const eventId = await seedEvent(s, s.chapterId);
+    await run(s.t, (ctx) => ctx.db.delete(eventId));
+
+    const result = await s.as.query(api.moneyViews.eventCostGrid, { eventId });
+    expect(result.rows).toEqual([]);
+    expect(result.totalPlannedCents).toBe(0);
+  });
+
+  test("a foreign chapter's event with no central reach gets the quiet empty shape", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await asChapterManager(s);
+    const boston = await makeChapter(s, "Boston");
+    const eventId = await seedEvent(s, boston);
+    await seedEventItem(s, eventId, "planning_doc", { title: "Boston cost", cost: 50 });
+
+    const result = await s.as.query(api.moneyViews.eventCostGrid, { eventId });
+    expect(result.rows).toEqual([]);
+  });
+});

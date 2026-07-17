@@ -499,3 +499,231 @@ export const refMoney = query({
     };
   },
 });
+
+// ── Event cost grid (phase 2 of "one money surface") ────────────────────────
+/**
+ * "Everything with a cost line item" — EVERY cost-bearing row on a single
+ * event in ONE flat list, not just the finance plan (`budgetLines`) `refMoney`
+ * above covers: `eventItems.fields.cost` (Tasks/Supplies/Comms — the SAME
+ * figure the header's `budgetSpent` gauge already sums, `events.ts:192-203`),
+ * paid-vendor `engagements.amountUsd` (`engagements.ts#paidTotalForEvent`),
+ * and `budgetLines` (WP-3.1). Owner spec: a database-style grid — Type /
+ * Label / Category / Planned $ / Actual-or-status / source-link — editable in
+ * place, writing back to each row's OWN home mutation (source of truth stays
+ * in the home table; this is a rollup + inline-edit view, not a new ledger).
+ *
+ * MONEY UNIT NOTE: `eventItems.fields.cost` and `engagements.amountUsd` are
+ * whole ESTIMATED USD DOLLARS (mirrors `events.budget`) — NOT integer cents
+ * like every `finances.ts`/`budgetLines` figure. Every dollar figure here is
+ * `Math.round(dollars * 100)` before it joins `plannedCents` so the grid's
+ * rollup is apples-to-apples with the finance side.
+ *
+ * TYPE → CATEGORY: none of `eventItems`/`engagements` carry a real
+ * `budgetCategories` link (no schema field exists) — so `categoryName` here
+ * is the TYPE's own label (Tasks / Supplies / Comms / Vendors), not a real
+ * finance category id. `budgetLines` rows keep their REAL category (or
+ * "Uncategorized"). Giving Tasks/Supplies/Comms/Vendors a genuine
+ * `budgetCategories` link (so Reconcile/transactions could categorize
+ * against the same taxonomy) is a deliberate, called-out follow-up — see this
+ * PR's body — not attempted here (it's a schema change on tables this file
+ * doesn't own).
+ *
+ * DOUBLE-COUNTING: this grid's rows are the CANONICAL cost inventory —
+ * `refMoney` above stays a narrower "plan vs. approved cap" view scoped to
+ * `budgetLines` only (unchanged by this addition). The two totals are
+ * DIFFERENT axes on purpose (this grid's total is everything that costs
+ * money; `refMoney`'s is the finance PLAN measured against its approval cap)
+ * — see the PR body for why they aren't merged into one number here.
+ *
+ * WRITE-BACK gating: each row is editable under its OWN home table's
+ * EXISTING rule, never a new one — `eventItems`/`engagements` are editable by
+ * any of the event's own chapter members today (`requireEvent` ==
+ * `requireOwned`, no stronger role exists yet), `budgetLines` rows keep
+ * `canEditBudgetPlan`'s bookkeeper+ gate from `refMoney` above. The READ
+ * itself is gated the same as `refMoney` (finance viewer+ in the ref's own
+ * chapter, or central reach for a foreign one) — so only someone who can
+ * already see the Money tab sees the grid, but editability within it still
+ * follows each row's native rule, not a finance role.
+ */
+
+// Cost-bearing `eventItems` modules — every module whose default columns ship
+// a `cost` field (`packages/shared/src/index.ts` DEFAULT_COLUMNS). Comms'
+// `cost` column defaults to `isVisible:false` in its OWN grid but still holds
+// a real value the header's `budgetSpent` sums — same here, visibility is a
+// display concern, not a data one.
+const COST_BEARING_MODULES: Record<string, { typeLabel: string; categoryName: string }> = {
+  planning_doc: { typeLabel: "Task", categoryName: "Tasks" },
+  supplies: { typeLabel: "Supply", categoryName: "Supplies" },
+  // "Comms" is already the plural/mass-noun form — no naive "+s" here.
+  comms: { typeLabel: "Comms", categoryName: "Comms" },
+};
+
+const GRID_SCAN_LIMIT = 2000;
+
+const gridSourceKindValidator = v.union(
+  v.literal("event_item"),
+  v.literal("vendor"),
+  v.literal("budget_line"),
+);
+
+const gridRow = v.object({
+  id: v.string(),
+  sourceKind: gridSourceKindValidator,
+  typeLabel: v.string(),
+  label: v.string(),
+  categoryName: v.string(),
+  plannedCents: v.number(),
+  // Vendors: the same figure once `paymentStatus === "paid"`, else null (not
+  // yet actually spent). Tasks/Supplies/Comms/BudgetLines have no separate
+  // actual concept — always null here (their `plannedCents` figure IS the
+  // committed cost; `refMoney`'s `transactions`-based actuals are the real
+  // "money that moved" side for the finance plan).
+  actualCents: v.union(v.number(), v.null()),
+  status: v.union(v.string(), v.null()),
+  editable: v.boolean(),
+  // Deep link to the row's home surface (`?tab=<module>` / `?tab=crew`) —
+  // `null` for a `budget_line` row, which is edited right here via
+  // `MoneyView`'s own "Edit plan" modal, not a separate screen.
+  sourceLink: v.union(v.string(), v.null()),
+});
+
+/** Round a whole-dollar figure (`eventItems.fields.cost` / `engagements.
+ *  amountUsd`) to integer cents — mirrors `events.ts#budgetSpent`'s own
+ *  `Number(...)` + finite guard, then converts to the finance side's unit. */
+function dollarsToCents(value: unknown): number | null {
+  const n = Number(value);
+  if (!Number.isFinite(n) || n <= 0) return null;
+  return Math.round(n * 100);
+}
+
+export const eventCostGrid = query({
+  args: { eventId: v.id("events") },
+  returns: v.object({
+    isTraining: v.boolean(),
+    rows: v.array(gridRow),
+    totalPlannedCents: v.number(),
+  }),
+  handler: async (ctx, args) => {
+    const empty = { isTraining: false, rows: [] as never[], totalPlannedCents: 0 };
+    const authz = await resolveRefAuthz(ctx, "event", args.eventId);
+    if (!authz) return empty;
+    if (authz.isTraining) return { ...empty, isTraining: true }; // #172
+
+    const rows: {
+      id: string;
+      sourceKind: "event_item" | "vendor" | "budget_line";
+      typeLabel: string;
+      label: string;
+      categoryName: string;
+      plannedCents: number;
+      actualCents: number | null;
+      status: string | null;
+      editable: boolean;
+      sourceLink: string | null;
+    }[] = [];
+
+    // ── eventItems (Tasks / Supplies / Comms) ──────────────────────────────
+    const items = await ctx.db
+      .query("eventItems")
+      .withIndex("by_event", (q) => q.eq("eventId", args.eventId))
+      .take(GRID_SCAN_LIMIT);
+    if (items.length === GRID_SCAN_LIMIT) {
+      console.warn(
+        `[moneyViews] eventCostGrid hit GRID_SCAN_LIMIT (${GRID_SCAN_LIMIT}) reading eventItems for event ${args.eventId}; rows may be truncated.`,
+      );
+    }
+    for (const item of items) {
+      const moduleInfo = COST_BEARING_MODULES[item.module];
+      if (!moduleInfo) continue;
+      const cents = dollarsToCents(item.fields?.cost);
+      if (cents === null) continue;
+      rows.push({
+        id: `event_item:${item._id}`,
+        sourceKind: "event_item",
+        typeLabel: moduleInfo.typeLabel,
+        label: item.title || "(untitled)",
+        categoryName: moduleInfo.categoryName,
+        plannedCents: cents,
+        actualCents: null,
+        status: item.status ?? null,
+        editable: true, // same native chapter-member gate `items.ts` already enforces
+        sourceLink: `/event/${args.eventId}?tab=${item.module}`,
+      });
+    }
+
+    // ── Paid vendors (Crew & Duties) ────────────────────────────────────────
+    const paidEngagements = await ctx.db
+      .query("engagements")
+      .withIndex("by_event_type", (q) =>
+        q.eq("eventId", args.eventId).eq("type", "paid"),
+      )
+      .take(GRID_SCAN_LIMIT);
+    const vendorPeople = await Promise.all(
+      paidEngagements.map((e) => ctx.db.get(e.personId)),
+    );
+    paidEngagements.forEach((eng, i) => {
+      const cents = dollarsToCents(eng.amountUsd);
+      if (cents === null) return;
+      const person = vendorPeople[i];
+      rows.push({
+        id: `vendor:${eng._id}`,
+        sourceKind: "vendor",
+        typeLabel: "Vendor",
+        label: person?.name ?? "(unknown)",
+        categoryName: "Vendors",
+        plannedCents: cents,
+        actualCents: eng.paymentStatus === "paid" ? cents : null,
+        status: eng.paymentStatus ?? null,
+        editable: true, // same native chapter-member gate `engagements.ts` already enforces
+        sourceLink: `/event/${args.eventId}?tab=crew`,
+      });
+    });
+
+    // ── Budget lines (the finance plan, WP-3.1) ─────────────────────────────
+    const budgets = await ctx.db
+      .query("budgets")
+      .withIndex("by_ref", (q) => q.eq("refKind", "event").eq("scopeRefId", args.eventId))
+      .take(GRID_SCAN_LIMIT);
+    for (const budget of budgets) {
+      const lines = await ctx.db
+        .query("budgetLines")
+        .withIndex("by_budget", (q) => q.eq("budgetId", budget._id))
+        .take(GRID_SCAN_LIMIT);
+      const categoryIds = [...new Set(lines.map((l) => l.categoryId).filter(Boolean))] as Id<"budgetCategories">[];
+      const categoryDocs = await Promise.all(categoryIds.map((id) => ctx.db.get(id)));
+      const categoryName = new Map<string, string>();
+      categoryIds.forEach((id, i) => {
+        const doc = categoryDocs[i];
+        if (doc) categoryName.set(id, doc.name);
+      });
+      const canEdit = canEditBudgetPlan(authz, budget.chapterId);
+      for (const line of lines) {
+        rows.push({
+          id: `budget_line:${line._id}`,
+          sourceKind: "budget_line",
+          typeLabel: "Budget line",
+          label: line.description,
+          categoryName: line.categoryId
+            ? (categoryName.get(line.categoryId) ?? "Uncategorized")
+            : "Uncategorized",
+          plannedCents: line.plannedCents,
+          actualCents: null,
+          status: null,
+          editable: canEdit,
+          sourceLink: null,
+        });
+      }
+    }
+
+    rows.sort((a, b) => {
+      if (a.typeLabel !== b.typeLabel) return a.typeLabel.localeCompare(b.typeLabel);
+      return a.label.localeCompare(b.label);
+    });
+
+    return {
+      isTraining: false,
+      rows,
+      totalPlannedCents: rows.reduce((sum, r) => sum + r.plannedCents, 0),
+    };
+  },
+});
