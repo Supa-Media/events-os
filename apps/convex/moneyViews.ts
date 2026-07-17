@@ -262,6 +262,9 @@ export const refMoney = query({
         approvedCents: v.union(v.number(), v.null()),
         requestedCents: v.number(),
         reviewNote: v.union(v.string(), v.null()),
+        // WP-wave4 (item 8): which SoD path the last approval decision took
+        // (mirrors `finances.ts#budgetApprovalCardFields`).
+        approvalParty: v.union(v.literal("single"), v.literal("two_party"), v.null()),
         // Whether the CALLER can write this budget's plan (`budgetLines`) —
         // see `canEditBudgetPlan`'s own doc comment for the exact gate.
         canEditPlan: v.boolean(),
@@ -516,6 +519,7 @@ export const refMoney = query({
         approvedCents: primary.approvedCents ?? null,
         requestedCents: primary.amountCents,
         reviewNote: primary.reviewNote ?? null,
+        approvalParty: primary.approvalParty ?? null,
         canEditPlan: canEditPlanValue,
       },
       categories,

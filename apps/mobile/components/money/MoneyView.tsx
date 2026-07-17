@@ -43,9 +43,28 @@ export function MoneyView({
   const router = useRouter();
   const data = useQuery(api.moneyViews.refMoney, { refKind, refId });
   const summonBudget = useMutation(api.finances.summonBudgetForRef);
+  // WP-wave4 (HIGH, opus review 2026-07-17): auto-created budgets (a real
+  // amount entered on this event/project's own header) now start in
+  // "draft" too (never born approved) — this entity's own Money surface
+  // needs the SAME deliberate send affordance the Finances dashboard
+  // cards already have, or a draft born here has no way to ever become
+  // attributable without leaving this screen.
+  const submitForReview = useMutation(api.finances.submitBudgetForApproval);
   const [editingPlanId, setEditingPlanId] = useState<Id<"budgets"> | null>(null);
   const [editingTxn, setEditingTxn] = useState<TxnRowData | null>(null);
   const [summoning, setSummoning] = useState(false);
+  const [sending, setSending] = useState(false);
+
+  async function handleSendForReview(budgetId: Id<"budgets">) {
+    setSending(true);
+    try {
+      await submitForReview({ budgetId });
+    } catch (err) {
+      alertError(err);
+    } finally {
+      setSending(false);
+    }
+  }
 
   function openFinances() {
     router.navigate("/finances" as never);
@@ -148,7 +167,22 @@ export function MoneyView({
               status={budget.approvalStatus}
               approvedCents={budget.approvedCents}
               requestedCents={budget.requestedCents}
+              approvalParty={budget.approvalParty}
             />
+            {/* WP-wave4 (HIGH): a draft (or changes-requested) budget born
+                HERE — from a real amount entered on this event/project —
+                needs the same deliberate "Send for review" the Finances
+                dashboard cards offer, or it can never become attributable. */}
+            {budget.canEditPlan &&
+            (budget.approvalStatus === "draft" || budget.approvalStatus === "changes_requested") ? (
+              <Button
+                title="Send for review"
+                size="sm"
+                variant="secondary"
+                loading={sending}
+                onPress={() => void handleSendForReview(budget.id)}
+              />
+            ) : null}
             {budget.canEditPlan ? (
               <Pressable
                 onPress={() => setEditingPlanId(budget.id)}

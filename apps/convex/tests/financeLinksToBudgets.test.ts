@@ -164,10 +164,22 @@ async function seedLegacyTxn(
   );
 }
 
+/**
+ * WP-wave4 (item 5, owner addendum 2026-07-17): a budget is offered by the
+ * "For" picker only once APPROVED (`isAttributableBudget` in `finances.ts`)
+ * — `createBudget` starts every new budget at `"draft"` (unchanged, WP-3.2),
+ * so this suite patches it straight to `"approved"` (bypassing the
+ * submit+approve round-trip — these tests exercise the picker's SHAPE/
+ * grouping, not the approval workflow itself).
+ */
+async function approveBudgetDirect(s: ChapterSetup, budgetId: Id<"budgets">): Promise<void> {
+  await run(s.t, (ctx) => ctx.db.patch(budgetId, { approvalStatus: "approved" }));
+}
+
 // ── forPickerOptions ──────────────────────────────────────────────────────────
 
 describe("forPickerOptions — the 'For' picker's option groups", () => {
-  test("groups events/projects (budgeted + summon-candidates) and recurring budgets by level", async () => {
+  test("groups events/projects with an APPROVED budget; a budget-less or unapproved ref is OMITTED entirely", async () => {
     const t = newT();
     const s = await setupChapter(t);
     await asChapterManager(s);
@@ -182,6 +194,18 @@ describe("forPickerOptions — the 'For' picker's option groups", () => {
       year: 2026,
       scopeRefId: budgetedEventId,
     });
+    await approveBudgetDirect(s, eventBudgetId);
+
+    // A budget that exists but hasn't cleared review yet — also omitted.
+    const unapprovedEventId = await seedEvent(s, s.chapterId, { name: "Unapproved Event" });
+    await s.as.mutation(api.finances.createBudget, {
+      amountCents: 15000,
+      type: "one_time",
+      refKind: "event",
+      cadence: "per_instance",
+      year: 2026,
+      scopeRefId: unapprovedEventId,
+    }); // left in "draft" — never approved
 
     const budgetedProjectId = await seedProject(s, s.chapterId, "Budgeted Project");
     const bareProjectId = await seedProject(s, s.chapterId, "Bare Project");
@@ -193,6 +217,7 @@ describe("forPickerOptions — the 'For' picker's option groups", () => {
       year: 2026,
       scopeRefId: budgetedProjectId,
     });
+    await approveBudgetDirect(s, projectBudgetId);
 
     const recurringChapterBudgetId = await s.as.mutation(api.finances.createBudget, {
       amountCents: 100000,
@@ -202,23 +227,33 @@ describe("forPickerOptions — the 'For' picker's option groups", () => {
       month: 1,
       label: "Ops",
     });
+    await approveBudgetDirect(s, recurringChapterBudgetId);
+    // A recurring budget still in draft — also omitted.
+    await s.as.mutation(api.finances.createBudget, {
+      amountCents: 60000,
+      type: "recurring",
+      cadence: "monthly",
+      year: 2026,
+      month: 1,
+      label: "Draft bucket",
+    });
 
     const options = await s.as.query(api.finances.forPickerOptions, {});
 
     const eventRow = options.events.find((e) => e.eventId === budgetedEventId);
     expect(eventRow?.budgetId).toBe(eventBudgetId);
-    const bareEventRow = options.events.find((e) => e.eventId === bareEventId);
-    expect(bareEventRow).toBeDefined();
-    expect(bareEventRow?.budgetId).toBeNull();
+    // Budget-less AND unapproved-budget events are OMITTED, not present with
+    // a null `budgetId` — the old summon-candidate shape is retired.
+    expect(options.events.some((e) => e.eventId === bareEventId)).toBe(false);
+    expect(options.events.some((e) => e.eventId === unapprovedEventId)).toBe(false);
 
     const projectRow = options.projects.find((p) => p.projectId === budgetedProjectId);
     expect(projectRow?.budgetId).toBe(projectBudgetId);
-    const bareProjectRow = options.projects.find((p) => p.projectId === bareProjectId);
-    expect(bareProjectRow).toBeDefined();
-    expect(bareProjectRow?.budgetId).toBeNull();
+    expect(options.projects.some((p) => p.projectId === bareProjectId)).toBe(false);
 
     const recurringRow = options.recurring.find((r) => r.budgetId === recurringChapterBudgetId);
     expect(recurringRow?.level).toBe("chapter");
+    expect(options.recurring.some((r) => r.label === "Draft bucket")).toBe(false);
     // The one_time budgets are NOT also listed under recurring.
     expect(options.recurring.some((r) => r.budgetId === eventBudgetId)).toBe(false);
     expect(options.recurring.some((r) => r.budgetId === projectBudgetId)).toBe(false);
@@ -236,6 +271,15 @@ describe("forPickerOptions — the 'For' picker's option groups", () => {
       deadline: deadlineTs,
       startDate: startDateTs,
     });
+    const budgetId = await s.as.mutation(api.finances.createBudget, {
+      amountCents: 10000,
+      type: "one_time",
+      refKind: "project",
+      cadence: "per_instance",
+      year: 2026,
+      scopeRefId: projectId,
+    });
+    await approveBudgetDirect(s, budgetId);
 
     const options = await s.as.query(api.finances.forPickerOptions, {});
     const row = options.projects.find((p) => p.projectId === projectId)!;
@@ -251,6 +295,15 @@ describe("forPickerOptions — the 'For' picker's option groups", () => {
     const projectId = await seedProject(s, s.chapterId, "Deadline-less Project", {
       startDate: startDateTs,
     });
+    const budgetId = await s.as.mutation(api.finances.createBudget, {
+      amountCents: 10000,
+      type: "one_time",
+      refKind: "project",
+      cadence: "per_instance",
+      year: 2026,
+      scopeRefId: projectId,
+    });
+    await approveBudgetDirect(s, budgetId);
 
     const options = await s.as.query(api.finances.forPickerOptions, {});
     const row = options.projects.find((p) => p.projectId === projectId)!;
@@ -266,6 +319,15 @@ describe("forPickerOptions — the 'For' picker's option groups", () => {
       deadline: deadlineTs,
       createdAt: Date.now(), // real wall-clock "today" — the fabricated-date bug's source
     });
+    const budgetId = await s.as.mutation(api.finances.createBudget, {
+      amountCents: 10000,
+      type: "one_time",
+      refKind: "project",
+      cadence: "per_instance",
+      year: 2026,
+      scopeRefId: projectId,
+    });
+    await approveBudgetDirect(s, budgetId);
 
     const options = await s.as.query(api.finances.forPickerOptions, {});
     const row = options.projects.find((p) => p.projectId === projectId)!;
@@ -281,6 +343,15 @@ describe("forPickerOptions — the 'For' picker's option groups", () => {
     await asChapterManager(s);
     const eventDate = Date.now() + 10 * 24 * 60 * 60 * 1000;
     const eventId = await seedEvent(s, s.chapterId, { name: "Sunday Gathering", eventDate });
+    const budgetId = await s.as.mutation(api.finances.createBudget, {
+      amountCents: 10000,
+      type: "one_time",
+      refKind: "event",
+      cadence: "per_instance",
+      year: 2026,
+      scopeRefId: eventId,
+    });
+    await approveBudgetDirect(s, budgetId);
 
     const options = await s.as.query(api.finances.forPickerOptions, {});
     const row = options.events.find((e) => e.eventId === eventId)!;
@@ -299,10 +370,16 @@ describe("forPickerOptions — the 'For' picker's option groups", () => {
       year: 2026,
       scopeRefId: projectId,
     });
+    await approveBudgetDirect(s, budgetId);
     await s.as.mutation(api.finances.transferProjectScope, {
       projectId,
       target: "central",
     });
+    // `moveBudgetScope` deliberately resets an approved/submitted budget's
+    // provenance to "submitted" on a scope move (WP-2.2) — re-approve so this
+    // test's OWN assertion (grouping, not approval status) still exercises an
+    // attributable budget.
+    await approveBudgetDirect(s, budgetId);
 
     const options = await s.as.query(api.finances.forPickerOptions, {});
     const projectRow = options.projects.find((p) => p.projectId === projectId);
@@ -321,6 +398,7 @@ describe("forPickerOptions — the 'For' picker's option groups", () => {
       central: true,
       label: "City Launch Fund",
     });
+    await approveBudgetDirect(s, centralBudgetId);
 
     const options = await s.as.query(api.finances.forPickerOptions, {});
     const row = options.recurring.find((r) => r.budgetId === centralBudgetId);
@@ -878,6 +956,7 @@ describe("dashboardChapter recentTransactions.codedTo is budget-first", () => {
       year: 2026,
       scopeRefId: eventId,
     });
+    await approveBudgetDirect(s, budgetId);
     const txnId = await s.as.mutation(api.finances.createManualTransaction, {
       flow: "outflow",
       amountCents: 4000,
@@ -902,6 +981,7 @@ describe("dashboardChapter recentTransactions.codedTo is budget-first", () => {
       month: new Date().getUTCMonth() + 1,
       label: "Ops",
     });
+    await approveBudgetDirect(s, budgetId);
     const txnId = await s.as.mutation(api.finances.createManualTransaction, {
       flow: "outflow",
       amountCents: 2000,

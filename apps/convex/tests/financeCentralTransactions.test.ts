@@ -217,6 +217,7 @@ describe("dashboardCentral: central-owned txns roll up", () => {
       central: true,
       label: "Org Ads",
     });
+    await run(t, (ctx) => ctx.db.patch(centralBudget, { approvalStatus: "approved" }));
 
     // Central-owned txns: $40 linked to the central budget + $10 unattributed.
     await seedCentralTxn(s, { amountCents: 4000, postedAt: when, budgetId: centralBudget });
@@ -403,6 +404,7 @@ describe("reconcile writes: central-owned txns", () => {
       central: true,
       label: "Org Ads",
     });
+    await run(t, (ctx) => ctx.db.patch(centralBudget, { approvalStatus: "approved" }));
 
     await s.as.mutation(api.finances.categorizeTransaction, {
       transactionId: centralTxn,
@@ -550,6 +552,7 @@ describe("reconcile writes: central-owned txns", () => {
       central: true,
       label: "Org Ads",
     });
+    await run(t, (ctx) => ctx.db.patch(centralBudget, { approvalStatus: "approved" }));
 
     const res = await s.as.mutation(api.finances.bulkCategorize, {
       transactionIds: [a, b],
@@ -754,6 +757,10 @@ describe("central-loop e2e: a real ingestion path chains through to the dashboar
       central: true,
       label: "Org Ads",
     });
+    // WP-wave4 (item 5): only an APPROVED budget can take a charge — direct
+    // patch (not the full submit+approve round-trip) since this e2e test is
+    // exercising the ingest→reconcile→dashboard chain, not the approval gate.
+    await run(t, (ctx) => ctx.db.patch(centralBudget, { approvalStatus: "approved" }));
     await s.as.mutation(api.finances.categorizeTransaction, {
       transactionId: txnId,
       budgetId: centralBudget,

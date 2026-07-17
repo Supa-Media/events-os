@@ -13,10 +13,13 @@
  *
  * The "For" column (WP-U: one home per dollar) replaces the old separate
  * Budget + Link columns/pickers with ONE picker, grouped Events / Projects /
- * Recurring — see `forPicker.ts`. Picking a budget-less event/project first
- * SUMMONS its $0 budget (`finances.summonBudgetForRef`), then categorizes to
- * the resulting real `budgetId` — `categorizeTransaction` accepts a
- * `budgetId` only now, never a separate event/project link.
+ * Recurring — see `forPicker.ts`. WP-wave4 (item 5, owner addendum
+ * 2026-07-17): only a ref with an APPROVED budget is ever offered
+ * (`isAttributableBudget`, filtered server-side by both `forPickerOptions`
+ * and `reconcileSuggest.rankForPicker`), so a picked value is always a real
+ * `budgetId` already — `categorizeTransaction` accepts a `budgetId` only,
+ * never a separate event/project link, and the old "summon a $0 budget on
+ * pick" flow is retired.
  *
  * Actions (R1): a note icon (filled when set, tap → `TransactionNoteModal`)
  * and, for a finance MANAGER on a card charge that isn't already personal, a
@@ -44,11 +47,7 @@ import { colors } from "../../../lib/theme";
 import { alertError } from "../../../lib/errors";
 import { TransactionNoteModal } from "../modals/TransactionNoteModal";
 import { STATUS_OPTIONS, signedMoney, shortDate, type TxnRow } from "./helpers";
-import {
-  resolveForPickerValue,
-  buildRankedForPickerItems,
-  type RankForPickerResult,
-} from "./forPicker";
+import { buildRankedForPickerItems, type RankForPickerResult } from "./forPicker";
 
 const NUM = { fontVariant: ["tabular-nums" as const] };
 // Server-side search debounce (owner addendum) — a round trip per keystroke
@@ -177,7 +176,6 @@ function ReconcileRow({
   isManager: boolean;
 }) {
   const categorize = useMutation(api.finances.categorizeTransaction);
-  const summonBudgetForRef = useMutation(api.finances.summonBudgetForRef);
   const setStatus = useMutation(api.finances.setTransactionStatus);
   const attachReceipt = useMutation(api.finances.attachReceipt);
   const generateUploadUrl = useMutation(api.storage.generateUploadUrl);
@@ -205,17 +203,15 @@ function ReconcileRow({
     }
   }
 
-  // The "For" picker's current value is just `budgetId` (WP-U: one home per
-  // dollar) — no separate link resolution needed.
+  // The "For" picker's value is just `budgetId` (WP-U: one home per dollar) —
+  // always a real, APPROVED budget already (item 5) — no summon/resolution
+  // step needed.
   function onForChange(value: string | null) {
-    if (!value) {
-      guard(categorize({ transactionId: id, budgetId: null }));
-      return;
-    }
     guard(
-      resolveForPickerValue(value, (args) => summonBudgetForRef(args)).then(
-        (budgetId) => categorize({ transactionId: id, budgetId }),
-      ),
+      categorize({
+        transactionId: id,
+        budgetId: value ? (value as Id<"budgets">) : null,
+      }),
     );
   }
 

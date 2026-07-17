@@ -27,6 +27,19 @@ async function seedSelfPerson(s: ChapterSetup): Promise<Id<"people">> {
   );
 }
 
+/**
+ * WP-wave4 (item 5, owner addendum 2026-07-17): a transaction can only
+ * attribute to an APPROVED budget now (`isAttributableBudget` in
+ * `finances.ts`) — `createBudget` starts every new budget at `"draft"`
+ * (unchanged, WP-3.2), so this file's fixture budgets (which this suite
+ * immediately attributes spend to, to exercise budget-vs-actual money math —
+ * NOT the approval workflow itself, already covered elsewhere) need a direct
+ * patch to `"approved"` rather than a full submit+approve round-trip.
+ */
+async function approveBudgetDirect(s: ChapterSetup, budgetId: Id<"budgets">): Promise<void> {
+  await run(s.t, (ctx) => ctx.db.patch(budgetId, { approvalStatus: "approved" }));
+}
+
 async function grantManager(s: ChapterSetup): Promise<void> {
   const personId = await seedSelfPerson(s);
   await run(s.t, (ctx) =>
@@ -613,6 +626,7 @@ describe("Bug 1 — one-time budgets ignore the month selector (dashboardChapter
       month: 5,
       scopeRefId: eventId,
     });
+    await approveBudgetDirect(s, budgetId);
     const txnId = await s.as.mutation(api.finances.createManualTransaction, {
       flow: "outflow",
       amountCents: 25000,
@@ -661,6 +675,7 @@ describe("Bug 1 — one-time budgets ignore the month selector (dashboardChapter
       year,
       scopeRefId: eventId,
     });
+    await approveBudgetDirect(s, budgetId);
 
     // September (the event's own date) shows the card via the ref-date signal.
     const sept = await s.as.query(api.finances.dashboardChapter, { year, month: 9 });
@@ -713,6 +728,7 @@ describe("Bug 1 — one-time budgets ignore the month selector (dashboardChapter
       year,
       scopeRefId: projectId,
     });
+    await approveBudgetDirect(s, budgetId);
 
     // $300 posted in May, explicitly linked.
     const mayTxn = await s.as.mutation(api.finances.createManualTransaction, {
@@ -757,6 +773,7 @@ describe("Bug 1 — one-time budgets ignore the month selector (dashboardChapter
       label: "Equipment",
       tagIds: [tagId],
     });
+    await approveBudgetDirect(s, budgetId);
 
     const mayTxn = await s.as.mutation(api.finances.createManualTransaction, {
       flow: "outflow",
@@ -794,6 +811,7 @@ describe("Bug 2 — an unfunded (capCents <= 0) budget with real spend must NOT 
       month,
       label: "Unfunded",
     });
+    await approveBudgetDirect(s, budgetId);
     const txnId = await s.as.mutation(api.finances.createManualTransaction, {
       flow: "outflow",
       amountCents: 149527,
@@ -826,6 +844,7 @@ describe("Bug 2 — an unfunded (capCents <= 0) budget with real spend must NOT 
       month,
       label: "Unfunded, unspent",
     });
+    await approveBudgetDirect(s, budgetId);
 
     const dash = await s.as.query(api.finances.dashboardChapter, { year, month });
     const card = dash.recurringBudgets.find((b) => b.id === budgetId);
@@ -852,6 +871,7 @@ describe("Bug 2 — an unfunded (capCents <= 0) budget with real spend must NOT 
       month: 5,
       scopeRefId: eventId,
     });
+    await approveBudgetDirect(s, budgetId);
     const txnId = await s.as.mutation(api.finances.createManualTransaction, {
       flow: "outflow",
       amountCents: 5000,
@@ -892,6 +912,7 @@ describe("Bug 1 (F1 follow-up) — 12-month sum invariant + central one-time car
       year,
       scopeRefId: projectId,
     });
+    await approveBudgetDirect(s, budgetId);
 
     // A distinct, easily-summed amount every month ($10, $20, ..., $120) so an
     // off-by-one double-count or a dropped month is caught precisely, not
@@ -935,6 +956,7 @@ describe("Bug 1 (F1 follow-up) — 12-month sum invariant + central one-time car
       scopeRefId: eventId,
       central: true,
     });
+    await approveBudgetDirect(s, budgetId);
     const txnId = await s.as.mutation(api.finances.createManualTransaction, {
       flow: "outflow",
       amountCents: 40000,
@@ -981,6 +1003,7 @@ describe("Bug 1 (F1 follow-up) — 12-month sum invariant + central one-time car
       month: 5, // fixed to May
       scopeRefId: eventId,
     });
+    await approveBudgetDirect(s, budgetId);
     // A JULY charge — outside the budget's own declared month.
     const julyTxn = await s.as.mutation(api.finances.createManualTransaction, {
       flow: "outflow",
@@ -1031,6 +1054,7 @@ describe("By-tag rollup month-scoping + drill-down reconciliation (fix/tag-rollu
       scopeRefId: eventId,
       tagIds: [tagId],
     });
+    await approveBudgetDirect(s, budgetId);
     const mayTxn = await s.as.mutation(api.finances.createManualTransaction, {
       flow: "outflow",
       amountCents: 187730,
@@ -1073,6 +1097,7 @@ describe("By-tag rollup month-scoping + drill-down reconciliation (fix/tag-rollu
       label: "Gala fund",
       tagIds: [tagId],
     });
+    await approveBudgetDirect(s, budgetId);
 
     // A distinct, easily-summed amount every month ($10, $20, ..., $120) so a
     // dropped or double-counted month is caught precisely.
@@ -1129,6 +1154,7 @@ describe("By-tag rollup month-scoping + drill-down reconciliation (fix/tag-rollu
       scopeRefId: eventId,
       tagIds: [tagId],
     });
+    await approveBudgetDirect(s, budgetA);
     const julyTxnA = await s.as.mutation(api.finances.createManualTransaction, {
       flow: "outflow",
       amountCents: 50000,
@@ -1148,6 +1174,7 @@ describe("By-tag rollup month-scoping + drill-down reconciliation (fix/tag-rollu
       label: "Second event",
       tagIds: [tagId],
     });
+    await approveBudgetDirect(s, budgetB);
     const julyTxnB = await s.as.mutation(api.finances.createManualTransaction, {
       flow: "outflow",
       amountCents: 12345,
@@ -1348,6 +1375,7 @@ describe("Residual tag-allocation-denominator bug — the by-tag ALLOCATION (not
       label: "June mixer",
       tagIds: [tagId],
     });
+    await approveBudgetDirect(s, juneBudgetId);
     const juneTxn = await s.as.mutation(api.finances.createManualTransaction, {
       flow: "outflow",
       amountCents: 30000, // $300
@@ -1367,6 +1395,7 @@ describe("Residual tag-allocation-denominator bug — the by-tag ALLOCATION (not
       label: "July gala",
       tagIds: [tagId],
     });
+    await approveBudgetDirect(s, julyBudgetId);
     const julyTxn = await s.as.mutation(api.finances.createManualTransaction, {
       flow: "outflow",
       amountCents: 40000, // $400
@@ -1412,6 +1441,7 @@ describe("Residual tag-allocation-denominator bug — the by-tag ALLOCATION (not
       label: "Recurring events fund",
       tagIds: [tagId],
     });
+    await approveBudgetDirect(s, recurringBudgetId);
 
     // One-time budget fixed to June — the smoke's mis-scoping case.
     const juneBudgetId = await s.as.mutation(api.finances.createBudget, {
@@ -1423,6 +1453,7 @@ describe("Residual tag-allocation-denominator bug — the by-tag ALLOCATION (not
       label: "June mixer",
       tagIds: [tagId],
     });
+    await approveBudgetDirect(s, juneBudgetId);
 
     // A token $1 spend every month, linked to the RECURRING budget, keeps the
     // tag row visible (non-zero spend) across all 12 months even though the
@@ -1485,6 +1516,7 @@ describe("Residual tag-allocation-denominator bug — the by-tag ALLOCATION (not
       label: "June mixer",
       tagIds: [tagId],
     });
+    await approveBudgetDirect(s, juneBudgetId);
     const juneTxn = await s.as.mutation(api.finances.createManualTransaction, {
       flow: "outflow",
       amountCents: 30000,
@@ -1504,6 +1536,7 @@ describe("Residual tag-allocation-denominator bug — the by-tag ALLOCATION (not
       label: "July gala",
       tagIds: [tagId],
     });
+    await approveBudgetDirect(s, julyBudgetId);
     const julyTxn = await s.as.mutation(api.finances.createManualTransaction, {
       flow: "outflow",
       amountCents: 40000,
@@ -1673,6 +1706,7 @@ describe("Residual tag-allocation-denominator bug — the by-tag ALLOCATION (not
       tagIds: [tagId],
       central: true,
     });
+    await approveBudgetDirect(s, juneBudgetId);
     await s.as.mutation(api.finances.createManualTransaction, {
       flow: "outflow",
       amountCents: 30000,
@@ -1691,6 +1725,7 @@ describe("Residual tag-allocation-denominator bug — the by-tag ALLOCATION (not
       tagIds: [tagId],
       central: true,
     });
+    await approveBudgetDirect(s, julyBudgetId);
     await s.as.mutation(api.finances.createManualTransaction, {
       flow: "outflow",
       amountCents: 40000,

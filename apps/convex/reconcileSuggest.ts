@@ -12,9 +12,18 @@
  * ranked list's candidates never drift from the base picker's) or imports an
  * already-exported, stable helper (`ROLLUP_SCAN_LIMIT`, `txnMatchesMode`).
  * READ-ONLY: this file never writes `transactions`/`budgets` — attribution
- * itself still only ever happens through `finances.categorizeTransaction` /
- * `summonBudgetForRef`, called by the client AFTER a pick (see `forPicker.ts`
- * on the mobile side). No ranking heuristic here moves money.
+ * itself still only ever happens through `finances.categorizeTransaction`,
+ * called by the client AFTER a pick (see `forPicker.ts` on the mobile side).
+ * No ranking heuristic here moves money.
+ *
+ * WP-wave4 (item 5, owner addendum 2026-07-17): "only approved budgets can
+ * have charges attached" retired the summon-on-pick flow this module's tier
+ * 4 used to demote (not exclude) budget-less refs into. Every candidate
+ * `gatherCandidates` returns is now filtered to `isAttributableBudget`
+ * (`finances.ts`, approved-or-grandfathered) BEFORE scoring — a budget-less
+ * or not-yet-approved ref never reaches ANY tier, not even tier 3's date
+ * proximity. Its spend stays visible another way: the dashboard's "Needs
+ * budget" bucket.
  *
  * ── The four tiers (owner spec, verbatim intent) ─────────────────────────
  *  1. The ref's linked budget already has a transaction posted within ±10
@@ -23,13 +32,9 @@
  *     to it (normalized merchant/description token overlap; an EXACT
  *     normalized-merchant match outranks a fuzzy token-overlap one).
  *  3. The ref's own date (an event's `eventDate`, a project's `deadline`) is
- *     within ±45 days of this charge's date, nearest first. Applies even to
- *     a BUDGET-LESS ref (summon-candidates still deserve a date-based rank).
+ *     within ±45 days of this charge's date, nearest first.
  *  4. Everything else — the base grouped list (Events / Projects / Recurring
- *     · Chapter / Recurring · Central), budget-less refs demoted to a
- *     trailing "no budget yet" subsection PER GROUP (placement fix only —
- *     the summon-$0 flow stays available there, per the owner's "it's
- *     placement, not existence" framing).
+ *     · Chapter / Recurring · Central).
  * A ref appears exactly once, in its BEST (lowest-numbered) tier.
  *
  * ── Search (owner addendum) ───────────────────────────────────────────────
@@ -58,7 +63,7 @@ import {
   type FinanceScope,
 } from "./lib/finance";
 import { readSandbox } from "./financeSettings";
-import { ROLLUP_SCAN_LIMIT, txnMatchesMode } from "./finances";
+import { ROLLUP_SCAN_LIMIT, txnMatchesMode, isAttributableBudget } from "./finances";
 
 // ── Scan bounds ───────────────────────────────────────────────────────────
 // Top-level events/projects/budgets scans mirror `forPickerOptions`'s own
@@ -398,9 +403,13 @@ const rankedRow = v.object({
   refId: v.string(),
   label: v.string(),
   dateLabel: v.union(v.string(), v.null()),
-  budgetId: v.union(v.id("budgets"), v.null()),
+  // WP-wave4 (item 5): ALWAYS a real, ATTRIBUTABLE (approved) budget now —
+  // `gatherCandidates`'s output is filtered to `isAttributableBudget` before
+  // any row is scored (see `rankForPicker`'s handler), so a budget-less or
+  // not-yet-approved ref never reaches this shape at all. `hasBudget` (the
+  // old tier-4 "no budget yet" grouping signal) is retired along with it.
+  budgetId: v.id("budgets"),
   level: v.union(v.literal("chapter"), v.literal("central"), v.null()),
-  hasBudget: v.boolean(),
 });
 
 // Internal scratch shape carrying the sort keys the public row drops.
@@ -411,9 +420,8 @@ type ScoredRow = {
   refId: string;
   label: string;
   dateLabel: string | null;
-  budgetId: Id<"budgets"> | null;
+  budgetId: Id<"budgets">;
   level: "chapter" | "central" | null;
-  hasBudget: boolean;
   // Sort-only:
   tier1Count: number;
   tier2ExactRank: number; // 0 = exact, 1 = fuzzy
@@ -532,7 +540,17 @@ export const rankForPicker = query({
       scope = homeChapterId;
     }
 
-    const allCandidates = await gatherCandidates(ctx, homeChapterId);
+    // WP-wave4 (item 5, owner addendum 2026-07-17): a candidate is only
+    // OFFERED once its budget is attributable (`isAttributableBudget` —
+    // exported from `finances.ts` so this independent scan can never drift
+    // from `forPickerOptions`'s own filter) — a ref with no budget yet, or
+    // one still draft/submitted/changes_requested, no longer ranks at all.
+    // The old tier-4 "· No budget yet" trailing subsection (a summon-
+    // candidate placement fix) is retired along with the summon-on-pick flow
+    // itself; every remaining candidate here always carries a real budget.
+    const allCandidates = (await gatherCandidates(ctx, homeChapterId)).filter((c) =>
+      isAttributableBudget(c.budget),
+    );
     // A CENTRAL-owned txn can only ever attribute to a central budget
     // (`categorizeTransaction`'s own gate) — mirrors the Reconcile grid's
     // existing client-side restriction (`reconcile.tsx`'s `centralScope`
@@ -548,19 +566,22 @@ export const rankForPicker = query({
 
     const scored = await Promise.all(
       candidates.map(async (c): Promise<ScoredRow> => {
+        // Non-null: `candidates` was already filtered to `isAttributableBudget`
+        // above, so every row scored here always carries a real budget — the
+        // `!` just tells TS what the filter already guarantees at runtime.
+        const budget = c.budget!;
         const base = {
           refKind: c.refKind,
           refId: c.refId,
           label: c.label,
           dateLabel: c.refKind === "recurring" ? null : c.tier3Ts != null ? shortDateLabel(c.tier3Ts) : null,
-          budgetId: c.budget?._id ?? null,
+          budgetId: budget._id,
           level: c.level,
-          hasBudget: c.budget != null,
           groupOrder: groupOrderFor(c),
         };
 
-        if (c.budget) {
-          const { rows, truncated: t } = await loadBudgetTxns(ctx, c.budget._id, sandboxMode);
+        {
+          const { rows, truncated: t } = await loadBudgetTxns(ctx, budget._id, sandboxMode);
           if (t) truncated = true;
           const t1 = tier1Evidence(rows, txn);
           if (t1) {
@@ -650,7 +671,9 @@ export const rankForPicker = query({
           return a.tier3DiffDays - b.tier3DiffDays || a.label.localeCompare(b.label);
         default:
           if (a.groupOrder !== b.groupOrder) return a.groupOrder - b.groupOrder;
-          if (a.hasBudget !== b.hasBudget) return a.hasBudget ? -1 : 1;
+          // WP-wave4 (item 5): the old "budgeted before budget-less" tie-break
+          // is retired — every row here always has a budget now (filtered
+          // upstream), so it's a pure alphabetical tie-break.
           return a.label.localeCompare(b.label);
       }
     });
@@ -669,6 +692,5 @@ function toPublicRow(r: ScoredRow): typeof rankedRow.type {
     dateLabel: r.dateLabel,
     budgetId: r.budgetId,
     level: r.level,
-    hasBudget: r.hasBudget,
   };
 }

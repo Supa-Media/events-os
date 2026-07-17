@@ -1,13 +1,10 @@
 // No @types/jest / ambient globals configured for this package — import test
 // globals explicitly from @jest/globals (mirrors `lib/financeSeats.test.ts`).
-import { describe, expect, jest, test } from "@jest/globals";
+import { describe, expect, test } from "@jest/globals";
 import type { Id } from "@events-os/convex/_generated/dataModel";
 import {
   buildForPickerItems,
   buildRankedForPickerItems,
-  isSummonValue,
-  parseSummonValue,
-  resolveForPickerValue,
   type ForPickerOptions,
   type RankForPickerResult,
 } from "./forPicker";
@@ -16,17 +13,20 @@ function budgetId(n: number): Id<"budgets"> {
   return `budget${n}` as Id<"budgets">;
 }
 
-// ── buildForPickerItems: budget-less demotion ───────────────────────────────
+// ── buildForPickerItems ─────────────────────────────────────────────────────
+// WP-wave4 (item 5, owner addendum 2026-07-17): `forPickerOptions` now only
+// ever returns a ref with a real, APPROVED budget (`isAttributableBudget`,
+// server-side) — a budget-less or unapproved ref is OMITTED entirely, never
+// present with a null `budgetId`. The old "summon-on-pick" encoding/demotion
+// this file used to pin is retired along with it.
 
 describe("buildForPickerItems", () => {
-  test("budget-less events/projects are demoted to a trailing 'No budget yet' subsection per group", () => {
+  test("groups events/projects/recurring, every row carrying a real budgetId", () => {
     const options: ForPickerOptions = {
       events: [
         { eventId: "e1" as Id<"events">, label: "Sunday Gathering · Jun 1, 2026", budgetId: budgetId(1) },
-        { eventId: "e2" as Id<"events">, label: "Pitch Deck for EP · Jul 6, 2026", budgetId: null },
       ],
       projects: [
-        { projectId: "p1" as Id<"projects">, label: "Zebra Project · Jun 1, 2026", budgetId: null },
         { projectId: "p2" as Id<"projects">, label: "Music Recording · Jun 1, 2026", budgetId: budgetId(2) },
       ],
       recurring: [
@@ -42,41 +42,31 @@ describe("buildForPickerItems", () => {
       "None",
       "Events",
       "Sunday Gathering · Jun 1, 2026",
-      "Events · No budget yet",
-      "Pitch Deck for EP · Jul 6, 2026",
       "Projects",
       "Music Recording · Jun 1, 2026",
-      "Projects · No budget yet",
-      "Zebra Project · Jun 1, 2026",
       "Recurring · Chapter",
       "Ops",
       "Recurring · Central",
       "City Launch Fund",
     ]);
-    // The budget-less event's value is still a summon-candidate, not lost.
-    const summonRow = items.find((i) => i.label === "Pitch Deck for EP · Jul 6, 2026")!;
-    expect(isSummonValue(summonRow.value)).toBe(true);
-    expect(parseSummonValue(summonRow.value)).toEqual({ refKind: "event", scopeRefId: "e2" });
+    const eventRow = items.find((i) => i.label === "Sunday Gathering · Jun 1, 2026")!;
+    expect(eventRow.value).toBe(budgetId(1));
   });
 
-  test("a group with NO budget-less refs has no 'No budget yet' subsection at all", () => {
+  test("an empty group renders no header at all", () => {
     const options: ForPickerOptions = {
       events: [{ eventId: "e1" as Id<"events">, label: "Sunday Gathering", budgetId: budgetId(1) }],
       projects: [],
       recurring: [],
     };
     const items = buildForPickerItems(options);
-    expect(items.some((i) => i.label.includes("No budget yet"))).toBe(false);
+    expect(items.some((i) => i.label === "Projects")).toBe(false);
+    expect(items.some((i) => i.label === "Recurring · Chapter")).toBe(false);
   });
 
-  test("a group that is ENTIRELY budget-less still gets its subsection header (no empty primary header)", () => {
-    const options: ForPickerOptions = {
-      events: [{ eventId: "e1" as Id<"events">, label: "Task-shaped Event", budgetId: null }],
-      projects: [],
-      recurring: [],
-    };
-    const items = buildForPickerItems(options);
-    expect(items.map((i) => i.label)).toEqual(["None", "Events · No budget yet", "Task-shaped Event"]);
+  test("no options at all renders just the 'None' row", () => {
+    const options: ForPickerOptions = { events: [], projects: [], recurring: [] };
+    expect(buildForPickerItems(options)).toEqual([{ value: "", label: "None" }]);
   });
 });
 
@@ -90,9 +80,8 @@ function rankedRow(overrides: Partial<RankForPickerResult["rows"][number]>): Ran
     refId: "e1",
     label: "Some Event · Jun 1, 2026",
     dateLabel: "Jun 1, 2026",
-    budgetId: null,
+    budgetId: budgetId(1),
     level: null,
-    hasBudget: false,
     ...overrides,
   };
 }
@@ -109,7 +98,6 @@ describe("buildRankedForPickerItems: default (non-searching) view", () => {
           refId: "e1",
           label: "Nearby Event",
           budgetId: budgetId(1),
-          hasBudget: true,
         }),
         rankedRow({
           tier: 2,
@@ -118,9 +106,8 @@ describe("buildRankedForPickerItems: default (non-searching) view", () => {
           refId: "p1",
           label: "Similar Project",
           budgetId: budgetId(2),
-          hasBudget: true,
         }),
-        rankedRow({ tier: 4, refId: "e2", label: "Everything Else Event", hasBudget: true, budgetId: budgetId(3) }),
+        rankedRow({ tier: 4, refId: "e2", label: "Everything Else Event", budgetId: budgetId(3) }),
       ],
     };
 
@@ -134,31 +121,24 @@ describe("buildRankedForPickerItems: default (non-searching) view", () => {
     expect(items.find((i) => i.label === "Everything Else Event")).toBeDefined();
   });
 
-  test("tier-4 budget-less refs land in a trailing 'No budget yet' subsection, mirroring buildForPickerItems", () => {
+  test("every tier-4 row carries a real budgetId — no 'No budget yet' subsection exists anymore", () => {
     const ranked: RankForPickerResult = {
       searching: false,
       truncated: false,
       rows: [
-        rankedRow({ tier: 4, refId: "e1", label: "Budgeted Event", hasBudget: true, budgetId: budgetId(1) }),
-        rankedRow({ tier: 4, refId: "e2", label: "Budget-less Event", hasBudget: false, budgetId: null }),
+        rankedRow({ tier: 4, refId: "e1", label: "Budgeted Event", budgetId: budgetId(1) }),
       ],
     };
     const items = buildRankedForPickerItems(ranked);
-    const labels = items.map((i) => i.label);
-    expect(labels).toEqual([
-      "None",
-      "Events",
-      "Budgeted Event",
-      "Events · No budget yet",
-      "Budget-less Event",
-    ]);
+    expect(items.map((i) => i.label)).toEqual(["None", "Events", "Budgeted Event"]);
+    expect(items.some((i) => i.label.includes("No budget yet"))).toBe(false);
   });
 
   test("no tiers 1-3 present → no 'Suggested' section at all", () => {
     const ranked: RankForPickerResult = {
       searching: false,
       truncated: false,
-      rows: [rankedRow({ tier: 4, refId: "e1", label: "Plain Event", hasBudget: true, budgetId: budgetId(1) })],
+      rows: [rankedRow({ tier: 4, refId: "e1", label: "Plain Event", budgetId: budgetId(1) })],
     };
     const items = buildRankedForPickerItems(ranked);
     expect(items.some((i) => i.label === "Suggested")).toBe(false);
@@ -183,23 +163,5 @@ describe("buildRankedForPickerItems: search mode", () => {
   test("an empty search result is an empty list (caller renders the 'No matches' state)", () => {
     const ranked: RankForPickerResult = { searching: true, truncated: false, rows: [] };
     expect(buildRankedForPickerItems(ranked)).toEqual([]);
-  });
-});
-
-// ── Value resolution (unchanged behavior, guarded against regressions) ────
-
-describe("resolveForPickerValue", () => {
-  test("a real budgetId value resolves to itself without calling summon", async () => {
-    const summon = jest.fn(async (): Promise<Id<"budgets">> => budgetId(9));
-    const result = await resolveForPickerValue(budgetId(1), summon);
-    expect(result).toBe(budgetId(1));
-    expect(summon).not.toHaveBeenCalled();
-  });
-
-  test("a summon-candidate value calls summon with the parsed ref", async () => {
-    const summon = jest.fn(async () => budgetId(9));
-    const result = await resolveForPickerValue("summon:project:p1", summon);
-    expect(summon).toHaveBeenCalledWith({ refKind: "project", scopeRefId: "p1" });
-    expect(result).toBe(budgetId(9));
   });
 });

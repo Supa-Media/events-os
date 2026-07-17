@@ -90,6 +90,9 @@ export function BudgetCreateModal({
 }) {
   const create = useMutation(api.finances.createBudget);
   const update = useMutation(api.finances.updateBudget);
+  // WP-wave4 (item 3): a new/increased budget no longer auto-submits — it
+  // sits in "draft" (fully editable) until this deliberate action.
+  const submitForReview = useMutation(api.finances.submitBudgetForApproval);
   const createTag = useMutation(api.finances.createBudgetTag);
   const budgets = useQuery(api.finances.listBudgets) ?? [];
   const allTags = (useQuery(api.finances.listBudgetTags) ?? []) as TagOption[];
@@ -222,45 +225,59 @@ export function BudgetCreateModal({
     setTagIds((prev) => [...prev, created]);
   }
 
-  async function submit() {
+  // Shared by "Save budget" and "Send for review" (which saves first, so a
+  // deliberate send never ships stale fields). Returns false on a validation
+  // failure (caller bails without saving/sending); re-throws a mutation error
+  // so each caller's own try/catch handles it.
+  function readAmountAndYear(): { amountCents: number; yr: number } | null {
     const dollars = parseFloat(amount);
     if (!Number.isFinite(dollars) || dollars < 0) {
       alertError(new Error("Enter a valid dollar amount."));
-      return;
+      return null;
     }
-    const amountCents = Math.round(dollars * 100);
     const yr = parseInt(year, 10);
     if (!Number.isInteger(yr)) {
       alertError(new Error("Enter a valid year."));
-      return;
+      return null;
     }
+    return { amountCents: Math.round(dollars * 100), yr };
+  }
+
+  async function saveEditing(amountCents: number, yr: number): Promise<void> {
+    await update({
+      budgetId: editing!.id,
+      patch: {
+        amountCents,
+        label: label.trim() || null,
+        type,
+        cadence,
+        refKind: type === "one_time" ? refKind ?? null : null,
+        scopeRefId: type === "one_time" ? scopeRefId ?? null : null,
+        year: yr,
+        month: showMonth ? month : null,
+        quarter: showQuarter ? quarter : null,
+        categoryId: (categoryId as Id<"budgetCategories"> | null) ?? null,
+      },
+      // Send the full current set so backend replaces links (auto tags kept).
+      tagIds,
+    });
+  }
+
+  async function submit() {
+    const parsed = readAmountAndYear();
+    if (!parsed) return;
+    const { amountCents, yr } = parsed;
     setSaving(true);
     try {
-      const period = {
-        year: yr,
-        month: showMonth ? month ?? undefined : undefined,
-        quarter: showQuarter ? quarter ?? undefined : undefined,
-      };
       if (editing) {
-        await update({
-          budgetId: editing.id,
-          patch: {
-            amountCents,
-            label: label.trim() || null,
-            type,
-            cadence,
-            refKind: type === "one_time" ? refKind ?? null : null,
-            scopeRefId: type === "one_time" ? scopeRefId ?? null : null,
-            year: yr,
-            month: showMonth ? month : null,
-            quarter: showQuarter ? quarter : null,
-            categoryId: (categoryId as Id<"budgetCategories"> | null) ?? null,
-          },
-          // Send the full current set so backend replaces links (auto tags kept).
-          tagIds,
-        });
+        await saveEditing(amountCents, yr);
         onClose();
       } else {
+        const period = {
+          year: yr,
+          month: showMonth ? month ?? undefined : undefined,
+          quarter: showQuarter ? quarter ?? undefined : undefined,
+        };
         const newBudgetId = await create({
           amountCents,
           type,
@@ -274,13 +291,42 @@ export function BudgetCreateModal({
           ...(tagIds.length ? { tagIds } : {}),
         });
         // WP-3.1: don't close — stay open on the new budget so "Plan this
-        // budget" is the next thing the user sees.
+        // budget" is the next thing the user sees. It's created in "draft"
+        // (WP-wave4 item 3) — NOT auto-submitted — so this step's own "Send
+        // for review" button (below) is a deliberate, separate action.
         setCreatedBudgetId(newBudgetId);
       }
     } catch (err) {
       alertError(err);
     } finally {
       setSaving(false);
+    }
+  }
+
+  // WP-wave4 (item 3): "Send for review" — while editing, saves the current
+  // form FIRST (a deliberate send should never ship stale fields), then
+  // transitions draft/changes_requested → submitted and notifies the scope's
+  // approvers server-side. In the post-create "Plan this budget" step there's
+  // nothing new to save (the fields are locked; only the plan lines, which
+  // save themselves via `BudgetLineItemsEditor`), so it submits directly.
+  const [sending, setSending] = useState(false);
+  async function sendForReview() {
+    setSending(true);
+    try {
+      if (editing) {
+        const parsed = readAmountAndYear();
+        if (!parsed) return;
+        await saveEditing(parsed.amountCents, parsed.yr);
+        await submitForReview({ budgetId: editing.id });
+        onClose();
+      } else if (createdBudgetId) {
+        await submitForReview({ budgetId: createdBudgetId });
+        onClose();
+      }
+    } catch (err) {
+      alertError(err);
+    } finally {
+      setSending(false);
     }
   }
 
@@ -315,14 +361,25 @@ export function BudgetCreateModal({
           {justCreated && createdBudgetId ? (
             <>
               <ScrollView className="max-h-[560px] px-5 py-4">
-                <Text className="mb-1 text-base text-ink">
-                  {createdBudget?.label ?? "Budget"} created
-                  {createdBudget ? ` — ${(createdBudget.amountCents / 100).toLocaleString(undefined, { style: "currency", currency: "USD" })}` : ""}
+                <View className="mb-1 flex-row flex-wrap items-center gap-2">
+                  <Text className="text-base text-ink">
+                    {createdBudget?.label ?? "Budget"} created
+                    {createdBudget ? ` — ${(createdBudget.amountCents / 100).toLocaleString(undefined, { style: "currency", currency: "USD" })}` : ""}
+                  </Text>
+                  {/* WP-wave4 (item 3): a new budget starts in draft — never
+                      auto-submitted — so this stays visibly unsent until the
+                      "Send for review" action below. */}
+                  <Badge label="Draft — not sent" tone="neutral" />
+                </View>
+                <Text className="mb-3 text-xs text-muted">
+                  Break it down below, then send it for review when it's ready
+                  — the plan stays fully editable until then.
                 </Text>
                 <BudgetLineItemsEditor budgetId={createdBudgetId} />
               </ScrollView>
-              <View className="flex-row justify-end border-t border-border px-5 py-4">
-                <Button title="Done" onPress={onClose} />
+              <View className="flex-row justify-end gap-2 border-t border-border px-5 py-4">
+                <Button title="Done — I'll send it later" variant="secondary" onPress={onClose} />
+                <Button title="Send for review" onPress={sendForReview} loading={sending} />
               </View>
             </>
           ) : (
@@ -451,22 +508,85 @@ export function BudgetCreateModal({
             {/* WP-3.1: editing an existing budget already has a real id, so
                 the "plan this budget" breakdown shows inline right here. */}
             {editing ? <BudgetLineItemsEditor budgetId={editing.id} /> : null}
+            {editing ? <ApprovalHistory budgetId={editing.id} /> : null}
           </ScrollView>
           )}
 
           {!justCreated ? (
-            <View className="flex-row justify-end gap-2 border-t border-border px-5 py-4">
-              <Button title="Cancel" variant="secondary" onPress={onClose} />
-              <Button
-                title={editing ? "Save budget" : "Create budget"}
-                onPress={submit}
-                loading={saving}
-              />
+            <View className="flex-row items-center justify-between gap-2 border-t border-border px-5 py-4">
+              {/* WP-wave4 (item 3): a draft/changes-requested budget stays
+                  visibly unsent right in the editor, not just on the card. */}
+              {editing &&
+              (editing.approvalStatus === "draft" ||
+                editing.approvalStatus === "changes_requested") ? (
+                <Badge
+                  label={editing.approvalStatus === "draft" ? "Draft — not sent" : "Changes requested"}
+                  tone={editing.approvalStatus === "draft" ? "neutral" : "danger"}
+                />
+              ) : (
+                <View />
+              )}
+              <View className="flex-row gap-2">
+                <Button title="Cancel" variant="secondary" onPress={onClose} />
+                <Button
+                  title={editing ? "Save budget" : "Create budget"}
+                  onPress={submit}
+                  loading={saving}
+                  disabled={sending}
+                />
+                {editing &&
+                (editing.approvalStatus === "draft" ||
+                  editing.approvalStatus === "changes_requested") ? (
+                  <Button
+                    title="Send for review"
+                    onPress={sendForReview}
+                    loading={sending}
+                    disabled={saving}
+                  />
+                ) : null}
+              </View>
             </View>
           ) : null}
         </Pressable>
       </Pressable>
     </Modal>
+  );
+}
+
+// ── Approval history (WP-wave4 item 8-LOW, opus review 2026-07-17) ──────────
+/**
+ * "We can even mark it as legacy approved... keep a record of approvers"
+ * (owner) — a minimal, read-only surface over the PERMANENT
+ * `budgetApprovalLog` (never the last-decision-only `budgets` fields, which
+ * a later send/approve/request-changes — or a scope move — overwrites).
+ * Newest first; nothing to show for a budget with no decisions yet (a
+ * brand-new draft that's never been sent).
+ */
+function ApprovalHistory({ budgetId }: { budgetId: Id<"budgets"> }) {
+  const log = useQuery(api.finances.listBudgetApprovalLog, { budgetId }) ?? [];
+  if (log.length === 0) return null;
+  return (
+    <Field label="History">
+      <View className="gap-1.5 rounded-md border border-border bg-sunken px-3 py-2.5">
+        {log.map((row, i) => {
+          const verb =
+            row.action === "sent"
+              ? "Sent for review by"
+              : row.action === "approved"
+                ? "Approved by"
+                : "Changes requested by";
+          const partyNote = row.party === "single" ? " · 1-party" : "";
+          const when = new Date(row.decidedAt).toLocaleDateString();
+          return (
+            <Text key={i} className="text-xs text-muted">
+              {verb} {row.decidedByName}
+              {partyNote} · {when}
+              {row.note ? ` — "${row.note}"` : ""}
+            </Text>
+          );
+        })}
+      </View>
+    </Field>
   );
 }
 

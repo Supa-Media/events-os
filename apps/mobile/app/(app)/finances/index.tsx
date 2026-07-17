@@ -171,6 +171,13 @@ function DashboardBody({ seats }: { seats: Seats }) {
     setBudgetModal({ open: true, id: id as Id<"budgets">, central: false });
   }
 
+  // WP-wave4 (item 1): the central desk's own "Edit budget" — `central: true`
+  // so `BudgetCreateModal` locks the level field the same way `onNewBudget`
+  // (central) does; the modal already handles edit-vs-create via `id`.
+  function onEditCentralBudget(id: string) {
+    setBudgetModal({ open: true, id: id as Id<"budgets">, central: true });
+  }
+
   // `seats` is guaranteed defined and non-empty here — FinancesScreen already
   // resolved the loading state and redirected a no-seat caller before
   // DashboardBody ever mounts.
@@ -208,6 +215,7 @@ function DashboardBody({ seats }: { seats: Seats }) {
               period={period}
               onViewChapter={enterPeek}
               onNewBudget={() => setBudgetModal({ open: true, id: null, central: true })}
+              onEditBudget={onEditCentralBudget}
               onRecordTransfer={(chapters) =>
                 setTransferModal({ open: true, chapters })
               }
@@ -279,6 +287,7 @@ function CentralSection({
   period,
   onViewChapter,
   onNewBudget,
+  onEditBudget,
   onRecordTransfer,
   onSettle,
 }: {
@@ -286,6 +295,7 @@ function CentralSection({
   period: DashPeriodMode;
   onViewChapter: (chapterId: Id<"chapters">, chapterName: string) => void;
   onNewBudget: () => void;
+  onEditBudget: (budgetId: string) => void;
   onRecordTransfer: (
     chapters: Array<{ chapterId: Id<"chapters">; chapterName: string }>,
   ) => void;
@@ -313,6 +323,7 @@ function CentralSection({
       period={period}
       onViewChapter={onViewChapter}
       onNewBudget={onNewBudget}
+      onEditBudget={onEditBudget}
       onRecordTransfer={() => onRecordTransfer(realChapters)}
       onSettle={(chapterId, _chapterName, netCents) =>
         onSettle(realChapters, chapterId, netCents)

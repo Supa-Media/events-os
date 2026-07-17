@@ -8,18 +8,15 @@
 import { useState } from "react";
 import { Pressable, Text, View } from "react-native";
 import { useQuery } from "convex/react";
+import { useRouter } from "expo-router";
 import type { FunctionReturnType } from "convex/server";
 import { api } from "@events-os/convex/_generated/api";
 import type { Id } from "@events-os/convex/_generated/dataModel";
-import {
-  BUDGET_CADENCE_LABELS,
-  BUDGET_SCOPE_LABELS,
-  CENTRAL,
-  formatCents,
-} from "@events-os/shared";
+import { BUDGET_CADENCE_LABELS, CENTRAL, formatCents } from "@events-os/shared";
 import { Button, EmptyState, Icon, SectionHeader } from "../../ui";
 import { colors } from "../../../lib/theme";
 import { BudgetBar, Chip, Tile, TileRow, type DashPeriodMode } from "./parts";
+import { awaitingApprovalZeroCapDisplay } from "./awaitingApproval";
 import { TagRollupSection, type TagRollup } from "./TagRollup";
 import { BudgetApprovalActions, BudgetApprovalChip } from "./BudgetApprovalActions";
 
@@ -34,6 +31,7 @@ export function CentralView({
   period,
   onViewChapter,
   onNewBudget,
+  onEditBudget,
   onRecordTransfer,
   onSettle,
 }: {
@@ -52,6 +50,14 @@ export function CentralView({
   onViewChapter: (chapterId: Id<"chapters">, chapterName: string) => void;
   /** Open `BudgetCreateModal` preset + locked to the central scope. */
   onNewBudget: () => void;
+  /** WP-wave4 (item 1): open `BudgetCreateModal` on an EXISTING central
+   *  budget, mirroring `ChapterView`'s "Edit budget". The server accepts the
+   *  edit from a central manager (Treasurer/FM, unchanged) OR the ED's seat
+   *  (`budgetLines.ts`/`lib/finance.ts#requireCentralFinanceRoleOrEdSeat`) —
+   *  this button itself is unconditional (mirrors `ChapterView`'s always-shown
+   *  affordance); a caller lacking either path gets a FORBIDDEN toast from
+   *  the mutation, not a hidden button. */
+  onEditBudget: (budgetId: string) => void;
   /** Open `TransferRecordModal` (record/initiate a skim in or a grant out). */
   onRecordTransfer: () => void;
   /** WP-4.5: open `TransferRecordModal` PRESET to a settlement for this
@@ -144,7 +150,7 @@ export function CentralView({
       ) : (
         <View className="flex-row flex-wrap gap-3">
           {data.centralBudgets.map((b) => (
-            <CentralBudgetCard key={b.id} b={b} />
+            <CentralBudgetCard key={b.id} b={b} onEdit={() => onEditBudget(b.id)} />
           ))}
         </View>
       )}
@@ -196,6 +202,30 @@ function CityLaunchFundCard({
   fund: CityLaunchFund;
   onRecordTransfer: () => void;
 }) {
+  // WP-wave4 (item 7, owner addendum 2026-07-17): "$0 with no transfers ever
+  // → hide until first activity" — but the "Record transfer" affordance is
+  // the ONLY entry point to record the very FIRST skim/grant, so it can't
+  // just vanish with the card; keep a compact standalone action in its place.
+  const neverActive =
+    fund.positionCents === 0 &&
+    fund.skimsReceivedCents === 0 &&
+    fund.launchGrantsMadeCents === 0;
+  if (neverActive) {
+    return (
+      <View className="mb-3 flex-row items-center justify-between gap-3 rounded-lg border border-border bg-raised px-4 py-3">
+        <Text className="flex-1 text-sm text-muted">
+          No City Launch Fund activity yet.
+        </Text>
+        <Button
+          title="Record transfer"
+          icon="plus"
+          size="sm"
+          variant="secondary"
+          onPress={onRecordTransfer}
+        />
+      </View>
+    );
+  }
   return (
     <View className="mb-3 rounded-lg border border-border bg-raised p-4 shadow-card">
       <View className="mb-2 flex-row items-start justify-between gap-3">
@@ -299,23 +329,41 @@ function CentralRollupRow({ c }: { c: ChapterRollup }) {
   );
 }
 
-function CentralBudgetCard({ b }: { b: CentralBudget }) {
-  // `scope` is a nullable legacy column on v2 budgets — fall back when absent.
-  const name =
-    b.label?.trim() || (b.scope ? BUDGET_SCOPE_LABELS[b.scope] : "Central budget");
+function CentralBudgetCard({ b, onEdit }: { b: CentralBudget; onEdit: () => void }) {
+  const router = useRouter();
+  // WP-wave4 (item 6): see `ChapterView`'s `ProjectBudgetCard` for the full
+  // reasoning — spend vs REQUESTED while awaiting a decision on a $0 cap.
+  const display = awaitingApprovalZeroCapDisplay(b);
   return (
     <View className="min-w-[260px] flex-1 rounded-lg border border-border bg-raised p-4 shadow-card">
       <View className="mb-2 flex-row items-start justify-between gap-2">
         <View className="flex-1">
-          <Text className="font-display text-base text-ink" numberOfLines={1}>
-            {name}
-          </Text>
+          <View className="flex-row flex-wrap items-center gap-2">
+            <Text className="font-display text-base text-ink" numberOfLines={1}>
+              {b.name}
+            </Text>
+            {/* WP-wave4 (item 4 — deep links): jump to the linked event/project. */}
+            {b.refKind && b.scopeRefId ? (
+              <Pressable
+                onPress={() =>
+                  router.push(`/${b.refKind}/${b.scopeRefId}` as never)
+                }
+                hitSlop={8}
+                accessibilityRole="button"
+                accessibilityLabel={`Open ${b.refKind}`}
+              >
+                <Icon name="external-link" size={14} color={colors.muted} />
+              </Pressable>
+            ) : null}
+          </View>
+          {b.dateLabel ? <Text className="mt-0.5 text-xs text-muted">{b.dateLabel}</Text> : null}
           <View className="mt-1 flex-row flex-wrap items-center gap-1.5">
             <Chip label={BUDGET_CADENCE_LABELS[b.cadence]} />
             <BudgetApprovalChip
               status={b.approvalStatus}
               approvedCents={b.approvedCents}
               requestedCents={b.requestedCents}
+              approvalParty={b.approvalParty}
             />
           </View>
         </View>
@@ -323,15 +371,19 @@ function CentralBudgetCard({ b }: { b: CentralBudget }) {
           className="text-sm text-muted"
           style={{ fontVariant: ["tabular-nums"] }}
         >
-          {formatCents(b.spentCents)} / {formatCents(b.budgetCents)}
+          {formatCents(b.spentCents)} / {formatCents(display.budgetCents)}
+          {display.isAwaitingApproval ? " (requested)" : ""}
         </Text>
       </View>
-      <BudgetBar pct={b.pct} status={b.status} />
-      <Text className="mt-1.5 text-xs text-muted">{b.pct}% spent</Text>
+      <BudgetBar pct={display.pct} status={display.status} />
+      <Text className="mt-1.5 text-xs text-muted">
+        {display.pct}% {display.isAwaitingApproval ? "of requested" : "spent"}
+      </Text>
       {b.reviewNote && b.approvalStatus === "changes_requested" ? (
         <Text className="mt-2 text-xs text-danger">"{b.reviewNote}"</Text>
       ) : null}
-      <View className="mt-3">
+      <View className="mt-3 flex-row items-center justify-between gap-2">
+        <Button title="Edit budget" variant="ghost" size="sm" onPress={onEdit} />
         <BudgetApprovalActions budgetId={b.id} status={b.approvalStatus} />
       </View>
     </View>

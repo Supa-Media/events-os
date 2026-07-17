@@ -431,6 +431,8 @@ describe("moneyViews.refMoney: empty states", () => {
       approvedCents: null,
       requestedCents: 50000,
       reviewNote: null,
+      // Never approved via `approveBudget` (grandfathered) — no party recorded.
+      approvalParty: null,
       // A plain chapter VIEWER (not bookkeeper+) — can read the plan, can't
       // write it.
       canEditPlan: false,

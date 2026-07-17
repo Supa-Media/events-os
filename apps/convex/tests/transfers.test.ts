@@ -924,18 +924,31 @@ describe("transferReadiness", () => {
 // case); a `settlement` transfer pair true-ups the resulting cash imbalance,
 // mirroring the skim/launch-grant ledger machinery exactly.
 
+/** WP-wave4 (item 5, owner addendum 2026-07-17): a transaction can only
+ *  attribute to an APPROVED budget now (`isAttributableBudget` in
+ *  `finances.ts`) — `createBudget` starts every new budget at `"draft"`
+ *  (unchanged, WP-3.2). Every caller of `makeChapterBudget`/`makeCentralBudget`
+ *  in this file immediately attributes spend to it (`chapterSpendLinkedTo`),
+ *  so both helpers approve directly (bypassing the submit+approve workflow —
+ *  this file exercises inter-scope balance MATH, not the approval gate). */
+async function approveBudgetDirect(s: ChapterSetup, budgetId: Id<"budgets">): Promise<void> {
+  await run(s.t, (ctx) => ctx.db.patch(budgetId, { approvalStatus: "approved" }));
+}
+
 /** A chapter (non-central) budget, minimal fields. */
 async function makeChapterBudget(
   s: ChapterSetup,
   amountCents: number,
   year = 2026,
 ): Promise<Id<"budgets">> {
-  return s.as.mutation(api.finances.createBudget, {
+  const budgetId = await s.as.mutation(api.finances.createBudget, {
     amountCents,
     type: "recurring",
     cadence: "monthly",
     year,
   });
+  await approveBudgetDirect(s, budgetId);
+  return budgetId;
 }
 
 /** A central budget, minimal fields (caller needs central reach). */
@@ -944,13 +957,15 @@ async function makeCentralBudget(
   amountCents: number,
   year = 2026,
 ): Promise<Id<"budgets">> {
-  return s.as.mutation(api.finances.createBudget, {
+  const budgetId = await s.as.mutation(api.finances.createBudget, {
     amountCents,
     type: "recurring",
     cadence: "monthly",
     year,
     central: true,
   });
+  await approveBudgetDirect(s, budgetId);
+  return budgetId;
 }
 
 /** A chapter-owned outflow txn (a card charge) explicitly linked to a budget. */

@@ -28,7 +28,7 @@ import type { FunctionReturnType } from "convex/server";
 import { api } from "@events-os/convex/_generated/api";
 import type { Id } from "@events-os/convex/_generated/dataModel";
 import { formatCents } from "@events-os/shared";
-import { Badge, EmptyState, Icon, SectionHeader } from "../../ui";
+import { Badge, Icon, SectionHeader } from "../../ui";
 import { colors } from "../../../lib/theme";
 import { BudgetBar } from "./parts";
 
@@ -81,25 +81,35 @@ export function TagRollupSection({
   selected: TagRollup | null;
   onSelect: (r: TagRollup | null) => void;
 }) {
+  // WP-wave4 (item 7, owner addendum 2026-07-17): "if there are no
+  // transactions in a section we should just hide the section" — a "No
+  // tagged spend yet" placeholder is dead weight when nothing's tagged;
+  // hide the whole section (header included) rather than show an empty box.
+  if (rollups.length === 0) {
+    return selected ? (
+      <TagDetailModal
+        rollup={selected}
+        scope={scope}
+        year={year}
+        month={month}
+        period={period}
+        chapterId={chapterId}
+        onClose={() => onSelect(null)}
+      />
+    ) : null;
+  }
   return (
     <>
-      <SectionHeader title="By tag" count={rollups.length || undefined} />
-      {rollups.length === 0 ? (
-        <EmptyState
-          title="No tagged spend yet"
-          message="Tag budgets (e.g. a “Fundraisers” tag) to roll their spend up here."
-        />
-      ) : (
-        <View className="gap-3">
-          {rollups.map((r, i) => (
-            <TagRollupRow
-              key={r.tagId ?? `${r.tagName}:${i}`}
-              r={r}
-              onPress={() => onSelect(r)}
-            />
-          ))}
-        </View>
-      )}
+      <SectionHeader title="By tag" count={rollups.length} />
+      <View className="gap-3">
+        {rollups.map((r, i) => (
+          <TagRollupRow
+            key={r.tagId ?? `${r.tagName}:${i}`}
+            r={r}
+            onPress={() => onSelect(r)}
+          />
+        ))}
+      </View>
 
       {selected ? (
         <TagDetailModal
@@ -238,7 +248,7 @@ function BudgetGroup({ title, budgets }: { title: string; budgets: DrilldownBudg
 }
 
 function BudgetLine({ b }: { b: DrilldownBudget }) {
-  const name = b.label.trim() || (b.type === "one_time" ? "One-time budget" : "Recurring budget");
+  const name = b.name;
   const pct = b.budgetCents > 0 ? Math.round((b.spentCents / b.budgetCents) * 100) : 0;
   return (
     <View className="gap-1 border-t border-border py-2.5">

@@ -49,7 +49,7 @@ import { MutationCtx, QueryCtx } from "../_generated/server";
 import { isSuperuser } from "./superuser";
 import { viewerPerson } from "./org";
 import { requireUserId } from "./context";
-import { getSeatDerivedCapabilities } from "./seats";
+import { getSeatDerivedCapabilities, holdsApprovalSeatAt } from "./seats";
 
 // A generous bound on a single chapter's funds (they number in the single
 // digits post-WP-1.4; this mirrors the scan limits used elsewhere in finance).
@@ -314,6 +314,46 @@ export async function requireCentralFinanceRole(
     });
   }
   return access;
+}
+
+/**
+ * `requireCentralFinanceRole`, widened for the ED (WP-wave4): accepts EITHER
+ * central reach at the `min` graded rank (unchanged — the Treasurer/Financial
+ * Manager path) OR the caller holding a CENTRAL-chart seat carrying
+ * `finance.approve` (today only `executive_director` — see `SEAT_DEFS` in
+ * `@events-os/shared`). Mirrors #209's chapter Chapter-Director-approves
+ * widening (`lib/seats.ts#holdsApprovalSeatAt`), but for the central budget
+ * EDIT surface (`budgetLines.ts`'s plan add/update/remove/reorder + list),
+ * NOT the approval DECISION — `finances.ts#loadBudgetForApprovalDecision`
+ * stays on `requireCentralEdOrFm` (title-based) for central, unchanged; the
+ * ED's seat also carries `finance.approve`, but that decision path is
+ * covered by the existing title check already, so this widening is purely
+ * additive there too.
+ *
+ * The ED's seat carries `finance.central`/`finance.accounts`/`finance.approve`
+ * but deliberately NOT `finance.manager` (see `SEAT_DEFS`), so
+ * `getSeatDerivedCapabilities` never derives a graded role for them — without
+ * this widening `getFinanceRole(...).role` stays `null` for an ED holding no
+ * OTHER stored grant, and `financeRoleAtLeast(null, min)` always fails. This
+ * is the gap that widening closes: `access.isCentral` is already `true` for
+ * an ED (their seat's `finance.central` capability), just `access.role` isn't.
+ */
+export async function requireCentralFinanceRoleOrEdSeat(
+  ctx: QueryCtx,
+  chapterId: Id<"chapters">,
+  min: FinanceRole,
+): Promise<FinanceAccess> {
+  const access = await getFinanceRole(ctx, chapterId);
+  if (access.isCentral && financeRoleAtLeast(access.role, min)) {
+    return access;
+  }
+  if (access.personId && (await holdsApprovalSeatAt(ctx, access.personId, "central"))) {
+    return access;
+  }
+  throw new ConvexError({
+    code: "FORBIDDEN",
+    message: `This action needs central finance access at the ${FINANCE_ROLE_LABELS[min]} level or higher.`,
+  });
 }
 
 /**
