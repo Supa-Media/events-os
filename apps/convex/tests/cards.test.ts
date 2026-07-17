@@ -2873,6 +2873,130 @@ describe("issueCard env routing", () => {
   });
 });
 
+// ── issueCard / requestCard × sandbox↔prod idempotency (prod regression) ─────
+//
+// Repro of the production failure: the owner (a `@publicworship.life` staffer)
+// held a leftover SANDBOX card (issued while `sandboxMode` was on). After the
+// deployment flipped to production, issuing them a real card returned the
+// sandbox card as `existing` (mode-blind idempotency) — no prod card was ever
+// minted, and `listCards`/`myCard` then HID the sandbox card, so they saw no
+// card at all. Idempotency must be environment-aware: an off-mode card never
+// blocks minting the current-mode card.
+describe("issueCard × sandbox↔prod idempotency (prod regression)", () => {
+  const ENV = ["INCREASE_API_KEY", "INCREASE_SANDBOX_API_KEY"] as const;
+  const originalFetch = globalThis.fetch;
+  const originalEnv: Partial<Record<(typeof ENV)[number], string>> = {};
+  for (const k of ENV) originalEnv[k] = process.env[k];
+
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+    for (const k of ENV) {
+      if (originalEnv[k] === undefined) delete process.env[k];
+      else process.env[k] = originalEnv[k];
+    }
+  });
+
+  test("a leftover SANDBOX card does NOT block issuing a real PROD card", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await seedManager(s);
+    const holder = await seedPerson(s, { name: "Holder" });
+
+    // Production deployment with an active PROD Increase account.
+    await setSandboxMode(s, false);
+    await seedIncreaseAccount(s, "acct_prod");
+
+    // The holder still carries an ACTIVE sandbox card from earlier testing.
+    await seedCard(s, {
+      cardholderPersonId: holder,
+      increaseCardId: "sandbox_card_old",
+      last4: "0000",
+    });
+
+    process.env.INCREASE_API_KEY = "prod_key";
+    const calls = mockRecordingFetch({ id: "card_new", last4: "9999" });
+
+    const card = await s.as.action(api.cards.issueCard, {
+      cardholderPersonId: holder,
+      type: "virtual",
+    });
+
+    // A REAL prod card was minted (not the sandbox card returned as `existing`).
+    expect(card.last4).toBe("9999");
+    const post = calls.find(
+      (c) => c.method === "POST" && c.url.includes("/cards"),
+    );
+    expect(post).toBeTruthy();
+
+    // Both cards now coexist: the old sandbox one and the new prod one.
+    const holderCards = await run(s.t, (ctx) =>
+      ctx.db
+        .query("cards")
+        .withIndex("by_cardholder", (q) =>
+          q.eq("cardholderPersonId", holder),
+        )
+        .collect(),
+    );
+    expect(
+      holderCards.some((c) => c.increaseCardId === "card_new"),
+    ).toBe(true);
+    expect(
+      holderCards.some((c) => c.increaseCardId === "sandbox_card_old"),
+    ).toBe(true);
+  });
+
+  test("a same-environment active card is STILL deduped (returned as existing)", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await seedManager(s);
+    const holder = await seedPerson(s, { name: "Holder" });
+
+    await setSandboxMode(s, false);
+    await seedIncreaseAccount(s, "acct_prod");
+    await seedCard(s, {
+      cardholderPersonId: holder,
+      increaseCardId: "card_existing",
+      last4: "1234",
+    });
+
+    process.env.INCREASE_API_KEY = "prod_key";
+    const calls = mockRecordingFetch({ id: "card_new", last4: "9999" });
+
+    const card = await s.as.action(api.cards.issueCard, {
+      cardholderPersonId: holder,
+      type: "virtual",
+    });
+
+    // Idempotency intact for the SAME environment: no second prod card minted.
+    expect(card.last4).toBe("1234");
+    expect(
+      calls.find((c) => c.method === "POST" && c.url.includes("/cards")),
+    ).toBeUndefined();
+  });
+
+  test("requestCard: a leftover SANDBOX card does NOT strand a prod requester", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    // The caller is the requester (person linked to the authed user), eligible.
+    const requester = await seedPerson(s, {
+      name: "Requester",
+      userId: s.userId,
+      pwEmail: "requester@publicworship.life",
+    });
+
+    await setSandboxMode(s, false);
+    await seedCard(s, {
+      cardholderPersonId: requester,
+      increaseCardId: "sandbox_card_old",
+      last4: "0000",
+    });
+
+    // In prod mode the off-mode card is ignored — the request goes through.
+    const req = await s.as.mutation(api.cards.requestCard, {});
+    expect(req.status).toBe("requested");
+  });
+});
+
 // ── issueCard × Digital Card Profile attach (WP-C.2) ─────────────────────────
 
 /** Like `mockRecordingFetch`, but also parses the JSON request body so tests
