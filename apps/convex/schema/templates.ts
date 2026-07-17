@@ -45,6 +45,15 @@ export const eventTypes = defineTable({
   // platform templates (the pre-2026-07 single-capstone sandbox) have no key
   // and are simply ignored by the current capstones.
   platformKey: v.optional(v.string()),
+  // The chapter's ad-hoc "Blank event" template — lazily get-or-created (one
+  // per chapter, slug "blank-event") by `getOrCreateBlankTemplate` the first
+  // time someone picks "Blank event" on New Event. Has zero roles/items/
+  // columns/modules by construction, so `instantiateEvent` clones nothing —
+  // that IS the "no pre-filled tasks or roles" behavior, for free. Hidden
+  // from `templates.list`/the Templates tab (same treatment as `isPlatform`)
+  // and protected from user edits/archiving via `requireUserManaged` — but,
+  // unlike `isPlatform`, IS a normal `createFromTemplate` target.
+  isBlank: v.optional(v.boolean()),
   version: v.number(),
   isArchived: v.optional(v.boolean()),
   createdBy: v.id("users"),

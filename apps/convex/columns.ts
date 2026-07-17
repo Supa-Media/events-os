@@ -13,6 +13,7 @@ import { COLUMN_TYPES, type ColumnType } from "@events-os/shared";
 import {
   requireEvent,
   requireEventType,
+  requireManagedEventType,
   requireOwned,
 } from "./lib/context";
 import { bumpVersion } from "./lib/templates";
@@ -67,7 +68,7 @@ export const addColumn = mutation({
     config: v.optional(v.any()),
   },
   handler: async (ctx, args) => {
-    await requireEventType(ctx, args.eventTypeId);
+    await requireManagedEventType(ctx, args.eventTypeId);
     // Reject unknown column types so a bad client can't write a type the grid
     // can't render (the value would silently break rendering/parsing).
     if (!KNOWN_COLUMN_TYPES.has(args.type)) {
@@ -124,7 +125,7 @@ export const updateColumn = mutation({
   handler: async (ctx, { columnId, ...patch }) => {
     const col = await ctx.db.get(columnId);
     if (!col) return columnId;
-    await requireEventType(ctx, col.eventTypeId);
+    await requireManagedEventType(ctx, col.eventTypeId);
     const fields: Record<string, unknown> = {};
     for (const [k, val] of Object.entries(patch)) {
       if (val !== undefined) fields[k] = val;
@@ -141,7 +142,7 @@ export const removeColumn = mutation({
   handler: async (ctx, { columnId }) => {
     const col = await ctx.db.get(columnId);
     if (!col) return columnId;
-    await requireEventType(ctx, col.eventTypeId);
+    await requireManagedEventType(ctx, col.eventTypeId);
     if (col.kind === "system") {
       // System columns are structural; hide instead of delete.
       await ctx.db.patch(columnId, { isVisible: false });
@@ -162,7 +163,7 @@ export const reorderColumns = mutation({
     orderedIds: v.array(v.id("templateColumns")),
   },
   handler: async (ctx, { eventTypeId, module, orderedIds }) => {
-    await requireEventType(ctx, eventTypeId);
+    await requireManagedEventType(ctx, eventTypeId);
     for (let i = 0; i < orderedIds.length; i++) {
       const col = await ctx.db.get(orderedIds[i]);
       if (col && col.eventTypeId === eventTypeId && col.module === module) {

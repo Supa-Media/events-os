@@ -28,7 +28,7 @@ import {
   requireUserId,
   requireChapterId,
   requireEvent,
-  requireEventType,
+  requireManagedEventType,
 } from "./lib/context";
 import { toKey } from "./roles";
 import {
@@ -75,7 +75,7 @@ export const createCustomForTemplate = mutation({
     ownerRoleKey: v.optional(v.string()),
   },
   handler: async (ctx, { eventTypeId, label, ownerRoleKey }) => {
-    await requireEventType(ctx, eventTypeId);
+    await requireManagedEventType(ctx, eventTypeId);
     const rows = await ctx.db
       .query("templateModules")
       .withIndex("by_template", (q) => q.eq("eventTypeId", eventTypeId))
@@ -106,7 +106,7 @@ export const updateCustomForTemplate = mutation({
   handler: async (ctx, { moduleId, ...patch }) => {
     const row = await ctx.db.get(moduleId);
     if (!row) return moduleId;
-    await requireEventType(ctx, row.eventTypeId);
+    await requireManagedEventType(ctx, row.eventTypeId);
     const fields: Record<string, unknown> = {};
     if (patch.label !== undefined) fields.label = patch.label;
     if (patch.isActive !== undefined) fields.isActive = patch.isActive;
@@ -122,7 +122,7 @@ export const deleteCustomForTemplate = mutation({
   handler: async (ctx, { moduleId }) => {
     const row = await ctx.db.get(moduleId);
     if (!row) return moduleId;
-    await requireEventType(ctx, row.eventTypeId);
+    await requireManagedEventType(ctx, row.eventTypeId);
     await deleteTemplateModuleData(ctx, row.eventTypeId, row.key);
     await ctx.db.delete(moduleId);
     await bumpVersion(ctx, row.eventTypeId);
@@ -138,7 +138,7 @@ export const toggleCoreForTemplate = mutation({
     enabled: v.boolean(),
   },
   handler: async (ctx, { eventTypeId, key, enabled }) => {
-    const et = await requireEventType(ctx, eventTypeId);
+    const et = await requireManagedEventType(ctx, eventTypeId);
     if (!isCoreKey(key)) return eventTypeId;
     const disabled = new Set(et.disabledCoreModules ?? []);
     if (enabled) disabled.delete(key);
@@ -161,7 +161,7 @@ export const setOwnerForTemplate = mutation({
     ownerRoleKey: v.union(v.string(), v.null()),
   },
   handler: async (ctx, { eventTypeId, key, ownerRoleKey }) => {
-    const et = await requireEventType(ctx, eventTypeId);
+    const et = await requireManagedEventType(ctx, eventTypeId);
     const next = ownerRoleKey ?? undefined;
     if (isCoreKey(key)) {
       await ctx.db.patch(eventTypeId, {
@@ -193,7 +193,7 @@ export const renameCoreForTemplate = mutation({
     label: v.union(v.string(), v.null()),
   },
   handler: async (ctx, { eventTypeId, key, label }) => {
-    const et = await requireEventType(ctx, eventTypeId);
+    const et = await requireManagedEventType(ctx, eventTypeId);
     if (!isCoreKey(key)) return eventTypeId;
     await ctx.db.patch(eventTypeId, {
       coreModuleOverrides: setOverrideLabel(

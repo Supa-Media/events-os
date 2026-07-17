@@ -16,7 +16,8 @@ import { v } from "convex/values";
 import {
   requireChapterId,
   requireEvent,
-  requireEventType,
+  requireManagedEventType,
+  assertTemplateManaged,
 } from "./lib/context";
 
 /** Kebab-case slug from a display name. */
@@ -61,7 +62,7 @@ export const createForTemplate = mutation({
     key: v.optional(v.string()),
   },
   handler: async (ctx, args) => {
-    await requireEventType(ctx, args.eventTypeId);
+    await requireManagedEventType(ctx, args.eventTypeId);
     const roles = await ctx.db
       .query("templateRoles")
       .withIndex("by_template", (q) => q.eq("eventTypeId", args.eventTypeId))
@@ -87,7 +88,7 @@ export const updateTemplateRole = mutation({
   handler: async (ctx, { roleId, ...patch }) => {
     const role = await ctx.db.get(roleId);
     if (!role) return roleId;
-    await requireEventType(ctx, role.eventTypeId);
+    await requireManagedEventType(ctx, role.eventTypeId);
     const fields: Record<string, unknown> = {};
     if (patch.label !== undefined) fields.label = patch.label;
     if (patch.description !== undefined) fields.description = patch.description;
@@ -102,7 +103,7 @@ export const deleteTemplateRole = mutation({
   handler: async (ctx, { roleId }) => {
     const role = await ctx.db.get(roleId);
     if (!role) return roleId;
-    await requireEventType(ctx, role.eventTypeId);
+    await requireManagedEventType(ctx, role.eventTypeId);
     await ctx.db.delete(roleId);
     return roleId;
   },
@@ -118,6 +119,7 @@ export const reorderTemplateRoles = mutation({
       if (!role) continue;
       const et = await ctx.db.get(role.eventTypeId);
       if (et && et.chapterId === chapterId) {
+        assertTemplateManaged(et);
         await ctx.db.patch(orderedIds[i], { order: i });
       }
     }

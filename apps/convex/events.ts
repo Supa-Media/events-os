@@ -46,6 +46,7 @@ import {
   instantiateEvent,
   eventActiveModules,
   getPersonForUser,
+  getOrCreateBlankTemplate,
 } from "./lib/templates";
 import {
   phaseReadiness,
@@ -158,7 +159,12 @@ export const scopeOptions = query({
  */
 export const createFromTemplate = mutation({
   args: {
-    eventTypeId: v.id("eventTypes"),
+    // Omitted for the ad-hoc "Blank event" path — the New Event screen's
+    // synthetic Blank card doesn't pick a real template id. Resolved below to
+    // the chapter's lazily-created blank template (zero roles/items/columns),
+    // so the SAME templating engine (`instantiateEvent`) still runs — the
+    // blank template's emptiness is what makes it a no-op clone.
+    eventTypeId: v.optional(v.id("eventTypes")),
     name: v.string(),
     eventDate: v.number(),
     location: v.optional(v.string()),
@@ -171,7 +177,14 @@ export const createFromTemplate = mutation({
   },
   handler: async (ctx, args) => {
     const userId = await requireUserId(ctx);
-    const eventType = await requireEventType(ctx, args.eventTypeId);
+    const eventType = args.eventTypeId
+      ? await requireEventType(ctx, args.eventTypeId)
+      : await getOrCreateBlankTemplate(
+          ctx,
+          (await requireChapterId(ctx)) as Id<"chapters">,
+          userId as Id<"users">,
+          Date.now(),
+        );
     // The Academy training template only instantiates through startTraining
     // (which flags the event isTraining and scopes it to the learner) — never
     // reaches here, so training events never see a `scope` arg and never get

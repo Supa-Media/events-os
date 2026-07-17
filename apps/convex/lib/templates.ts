@@ -9,6 +9,7 @@ import {
   DEFAULT_COLUMNS,
   DAY_OFFSET_MODULES,
   DEFAULT_ROLES,
+  MODULE_READY_PHASE,
   computeDueDate,
   defaultStatusValue,
   resolveActiveModules,
@@ -396,6 +397,70 @@ export async function deepCopyTemplate(
   }
 
   return roleIdMap;
+}
+
+const BLANK_TEMPLATE_SLUG = "blank-event";
+const BLANK_TEMPLATE_NAME = "Blank event";
+
+/**
+ * Core modules with a "mark as ready" gate (see `MODULE_READY_PHASE`) count
+ * that gate as a measurable pre-plan/planning unit whenever the module is
+ * ACTIVE — deliberately independent of item count (a real template's author
+ * can turn one on and rely purely on the ready gate: "confirmed nothing's
+ * needed here", see `readiness.test.ts`'s supplies fixture). That's correct
+ * for a template someone actually configured. It's wrong for the Blank
+ * template, where NOBODY decided these 5 workstreams apply — they're only
+ * "active" because a freshly-synthesized template's `disabledCoreModules`
+ * defaults to `[]`. Left active, every blank event would be born with 2-3
+ * unmeetable gates and read "0%" (not-ready-yet) for Pre-plan/Planning
+ * instead of "—" (nothing to measure) — false unreadiness for workstreams the
+ * user hasn't even decided they need. Disabling them here is the fix: they
+ * stay one tap away via "+ Area" the moment the user decides a workstream
+ * genuinely applies, at which point the gate math is exactly what should
+ * kick in. `planning_doc` (Tasks) and `retro` (Debrief) have no ready gate,
+ * so they stay active — the ad-hoc path's actual home for its own tasks.
+ */
+const BLANK_TEMPLATE_DISABLED_CORE_MODULES = Object.keys(MODULE_READY_PHASE);
+
+/**
+ * Get-or-create the chapter's ad-hoc "Blank event" template: a real
+ * `eventTypes` row with zero roles/items/columns/modules, so
+ * `instantiateEvent` clones nothing onto events spun up from it — the
+ * "standard empty areas, no cloned tasks/roles" ad-hoc path reuses the exact
+ * same templating engine as every named template, no forked create path.
+ * Idempotent per chapter via the `by_chapter_slug` index (one row per
+ * chapter, lazily made on first use rather than seeded up front).
+ */
+export async function getOrCreateBlankTemplate(
+  ctx: any,
+  chapterId: Id<"chapters">,
+  userId: Id<"users">,
+  now: number,
+) {
+  const existing = await ctx.db
+    .query("eventTypes")
+    .withIndex("by_chapter_slug", (q: any) =>
+      q.eq("chapterId", chapterId).eq("slug", BLANK_TEMPLATE_SLUG),
+    )
+    .first();
+  if (existing) return existing;
+
+  const eventTypeId = await ctx.db.insert("eventTypes", {
+    chapterId,
+    name: BLANK_TEMPLATE_NAME,
+    slug: BLANK_TEMPLATE_SLUG,
+    description: "Ad-hoc event — no pre-filled tasks or roles.",
+    isBlank: true,
+    // See BLANK_TEMPLATE_DISABLED_CORE_MODULES: no ready-gated workstream is
+    // presumed relevant until the user turns it on.
+    disabledCoreModules: BLANK_TEMPLATE_DISABLED_CORE_MODULES,
+    version: 1,
+    isArchived: false,
+    createdBy: userId,
+    createdAt: now,
+    updatedAt: now,
+  });
+  return await ctx.db.get(eventTypeId);
 }
 
 /**

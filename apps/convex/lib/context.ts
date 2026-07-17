@@ -123,3 +123,48 @@ export async function requireEventType(
 ): Promise<Doc<"eventTypes">> {
   return requireOwned(ctx, "eventTypes", templateId, "Event type");
 }
+
+/**
+ * Assert a template is user-managed — neither a platform template (Academy
+ * training) nor the chapter's synthesized ad-hoc "Blank event" template (see
+ * `getOrCreateBlankTemplate`). Both are owned/seeded by the platform, not the
+ * user: a platform template must stay exactly what the Academy authored, and
+ * the Blank template must stay PERMANENTLY EMPTY (zero roles/items/columns/
+ * modules) — that emptiness is the entire mechanism behind "no pre-filled
+ * tasks or roles" on an ad-hoc event. Any content-mutation entry point that
+ * writes onto a template (add/update/delete/reorder a role, column, item,
+ * module, or placeholder-crew row) must call this — or `requireManagedEventType`
+ * below — before writing, or a user could silently pollute either template
+ * through direct API calls (the UI never offers them as edit targets, but the
+ * mutations themselves don't stop a client from trying).
+ */
+export function assertTemplateManaged(eventType: Doc<"eventTypes">): void {
+  if (eventType.isPlatform === true) {
+    throw new ConvexError({
+      code: "PLATFORM_TEMPLATE",
+      message: "This template is managed by the platform and can't be changed.",
+    });
+  }
+  if (eventType.isBlank === true) {
+    throw new ConvexError({
+      code: "BLANK_TEMPLATE",
+      message: "The Blank event template is managed automatically and can't be changed.",
+    });
+  }
+}
+
+/**
+ * `requireEventType` + `assertTemplateManaged` in one call — the standard
+ * guard for every template-CONTENT write (as opposed to `requireEventType`
+ * alone, which still fits template-metadata reads and the templating engine's
+ * own internal clone-FROM-a-template reads, which must keep working on the
+ * Blank template).
+ */
+export async function requireManagedEventType(
+  ctx: QueryCtx,
+  templateId: Id<"eventTypes">,
+): Promise<Doc<"eventTypes">> {
+  const eventType = await requireEventType(ctx, templateId);
+  assertTemplateManaged(eventType);
+  return eventType;
+}

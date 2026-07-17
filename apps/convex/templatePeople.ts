@@ -9,7 +9,11 @@
  */
 import { query, mutation } from "./_generated/server";
 import { v } from "convex/values";
-import { requireChapterId, requireInChapter } from "./lib/context";
+import {
+  requireChapterId,
+  requireInChapter,
+  assertTemplateManaged,
+} from "./lib/context";
 import { maxOrder } from "./lib/templates";
 import { deleteTemplatePlacementsForRef } from "./lib/placements";
 
@@ -41,6 +45,7 @@ export const create = mutation({
     const chapterId = await requireChapterId(ctx);
     const et = await ctx.db.get(args.eventTypeId);
     await requireInChapter(ctx, chapterId, et, "Event type");
+    assertTemplateManaged(et!);
     const rows = await ctx.db
       .query("templatePeople")
       .withIndex("by_template", (q: any) =>
@@ -76,6 +81,7 @@ export const update = mutation({
     if (!row) return templatePersonId;
     const et = await ctx.db.get(row.eventTypeId);
     await requireInChapter(ctx, chapterId, et, "Event type");
+    assertTemplateManaged(et!);
     const fields: Record<string, unknown> = {};
     for (const [key, value] of Object.entries(patch)) {
       // null = explicit clear (store undefined); undefined = leave unchanged.
@@ -107,6 +113,7 @@ export const remove = mutation({
     if (!row) return templatePersonId;
     const et = await ctx.db.get(row.eventTypeId);
     await requireInChapter(ctx, chapterId, et, "Event type");
+    assertTemplateManaged(et!);
     // Cascade: drop any site-map chips pointing at this placeholder crew row.
     await deleteTemplatePlacementsForRef(
       ctx,

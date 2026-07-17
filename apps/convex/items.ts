@@ -28,7 +28,7 @@ import {
 import {
   requireChapterId,
   requireEvent,
-  requireEventType,
+  requireManagedEventType,
   requireOwned,
   requireUserId,
 } from "./lib/context";
@@ -263,7 +263,7 @@ export const addTemplateItem = mutation({
     fields: fieldsValidator,
   },
   handler: async (ctx, args) => {
-    const et = await requireEventType(ctx, args.eventTypeId);
+    const et = await requireManagedEventType(ctx, args.eventTypeId);
     await requireActiveTemplateModule(ctx, et, args.module);
     const items = await ctx.db
       .query("templateItems")
@@ -302,7 +302,7 @@ export const updateTemplateItem = mutation({
   handler: async (ctx, { itemId, ...patch }) => {
     const item = await ctx.db.get(itemId);
     if (!item) return itemId;
-    await requireEventType(ctx, item.eventTypeId);
+    await requireManagedEventType(ctx, item.eventTypeId);
     const fields: Record<string, unknown> = {};
     if (patch.title !== undefined) fields.title = patch.title;
     if (patch.offsetDays !== undefined) fields.offsetDays = patch.offsetDays;
@@ -330,7 +330,7 @@ export const toggleTemplatePrePlan = mutation({
   handler: async (ctx, { itemId, colKey }) => {
     const item = await ctx.db.get(itemId);
     if (!item) return itemId;
-    await requireEventType(ctx, item.eventTypeId);
+    await requireManagedEventType(ctx, item.eventTypeId);
     const current = item.prePlanColumns ?? [];
     const next = current.includes(colKey)
       ? current.filter((k) => k !== colKey)
@@ -348,7 +348,7 @@ export const removeTemplateItem = mutation({
   handler: async (ctx, { itemId }) => {
     const item = await ctx.db.get(itemId);
     if (!item) return itemId;
-    await requireEventType(ctx, item.eventTypeId);
+    await requireManagedEventType(ctx, item.eventTypeId);
     // Cascade: drop any site-map chips pointing at this supply item.
     if (item.module === "supplies") {
       await deleteTemplatePlacementsForRef(
@@ -371,7 +371,7 @@ export const reorderTemplateItems = mutation({
     orderedIds: v.array(v.id("templateItems")),
   },
   handler: async (ctx, { eventTypeId, module, orderedIds }) => {
-    await requireEventType(ctx, eventTypeId);
+    await requireManagedEventType(ctx, eventTypeId);
     for (let i = 0; i < orderedIds.length; i++) {
       const item = await ctx.db.get(orderedIds[i]);
       if (item && item.eventTypeId === eventTypeId && item.module === module) {
