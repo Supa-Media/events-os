@@ -584,28 +584,27 @@ describe("chapter_director finance.viewer — SEE, never RECORD/RECONCILE-write 
     ).rejects.toThrow(/Manager finance role/);
   });
 
-  test("KNOWN GAP, pre-existing and OUT OF SCOPE for this PR: a chapter_director seat ALONE still cannot approveBudget", async () => {
-    // The owner's decision names approval as something CD "does have" today
-    // — this test exists to actually VERIFY that claim against the real
-    // gate, not just assume it. It does NOT hold: `president` (chapter_
-    // director's `legacyTitle`) is a LEADERSHIP-kind specializedRoles title,
-    // and `specializedRoles.ts`'s write-through only bridges a stored
+  test("GAP CLOSED by #209: a chapter_director seat ALONE now approves a chapter budget", async () => {
+    // This test used to pin the OPPOSITE outcome ("KNOWN GAP, pre-existing
+    // and OUT OF SCOPE for this PR [#208]"): `president` (chapter_director's
+    // `legacyTitle`) is a LEADERSHIP-kind specializedRoles title, and
+    // `specializedRoles.ts`'s write-through only bridges a stored
     // `financeRoles` MANAGER grant for FINANCE-kind titles
-    // (`bridgeFinanceManagerGrant` — see its module doc: "Leadership titles
-    // (ED/president) ... do NOT themselves grant finance write capability" —
-    // and its own TODO: "wire president/ED into approval flows ... out of
-    // scope for this backend phase"). `finances.approveBudget`'s chapter path
-    // gates on `requireFinanceManager` (manager rank) via
-    // `loadBudgetForApprovalDecision`, NOT on `finance.approve` — and
-    // `finance.approve` is explicitly documented (`lib/seats.ts`'s "Out of
-    // scope" section) as NOT part of the graded ladder this file derives.
-    // So a chapter_director holder with no OTHER grant fails this gate today,
-    // seat or no seat — `finance.viewer` (this PR) doesn't change that; it
-    // only widens READS. Wiring the president/ED bridge into approveBudget is
-    // a separate, pre-existing TODO this PR deliberately does not touch
-    // (out of ownership: `finances.ts`/`specializedRoles.ts`). This test pins
-    // TODAY's real behavior so a future PR that adds that wiring trips this
-    // test loudly, as a reminder to update it, instead of silently.
+    // (`bridgeFinanceManagerGrant`) — so a chapter_director seat alone never
+    // cleared `approveBudget`'s `requireFinanceManager` gate, even though the
+    // owner's decision names approval as something CD "does have."
+    //
+    // #209 closed that gap directly at the approval gate:
+    // `finances.ts#loadBudgetForApprovalDecision` now accepts EITHER manager
+    // rank (unchanged, Treasurer et al) OR the caller holding a seat with
+    // `finance.approve` at the budget's chapter
+    // (`lib/seats.ts#holdsApprovalSeatAt` — additive, NOT folded into
+    // `getSeatDerivedCapabilities`/the graded-role union this file otherwise
+    // exercises). Full positive coverage (self-approval SoD, central
+    // isolation, cross-chapter isolation, manager-path regression) lives in
+    // `cdBudgetApproval.test.ts`; this is just the flip of the pin that used
+    // to live here, so this file's own history stays honest about the
+    // outcome it originally recorded.
     const s = await seatSetup();
     const manager = await addMember(s, {
       email: "manager2@publicworship.life",
@@ -632,9 +631,10 @@ describe("chapter_director finance.viewer — SEE, never RECORD/RECONCILE-write 
     const cdPersonId = await seedSelfPerson(s);
     await assignSeatDirect(s, cdPersonId, "chapter_director", s.chapterId);
 
-    await expect(
-      s.as.mutation(api.finances.approveBudget, { budgetId }),
-    ).rejects.toThrow(/Manager finance role/);
+    await s.as.mutation(api.finances.approveBudget, { budgetId });
+    const doc = await run(s.t, (ctx) => ctx.db.get(budgetId));
+    expect(doc?.approvalStatus).toBe("approved");
+    expect(doc?.approvedByPersonId).toBe(cdPersonId);
   });
 
   test("treasurer's derived role is unaffected by chapter_director's new capability — still manager-rank, no viewer bleed", async () => {
