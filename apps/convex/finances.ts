@@ -6552,7 +6552,12 @@ async function requireReconcileTxn(
  * budget (a project/recurring/central budget has no single event to scope an
  * "event lead" gate to). Used ONLY by the note/receipt/category scoped
  * carve-out below — never widens what a project's or a recurring budget's
- * txns are reachable by.
+ * txns are reachable by. Checks `type === "one_time"` alongside
+ * `refKind === "event"` — today every `refKind:"event"` budget is also
+ * `type:"one_time"` (a real event has no OTHER reason to carry `refKind`),
+ * so this is defensive belt-and-suspenders against that schema invariant
+ * ever drifting, not a behavior change against current data (Opus review,
+ * PR #218).
  */
 async function eventForTxn(
   ctx: MutationCtx,
@@ -6560,7 +6565,14 @@ async function eventForTxn(
 ): Promise<Doc<"events"> | null> {
   if (!txn.budgetId) return null;
   const budget = await ctx.db.get(txn.budgetId);
-  if (!budget || budget.refKind !== "event" || !budget.scopeRefId) return null;
+  if (
+    !budget ||
+    budget.type !== "one_time" ||
+    budget.refKind !== "event" ||
+    !budget.scopeRefId
+  ) {
+    return null;
+  }
   return await ctx.db.get(budget.scopeRefId as Id<"events">);
 }
 
@@ -6585,10 +6597,10 @@ async function eventForTxn(
 async function requireTxnNoteReceiptCategoryAccess(
   ctx: MutationCtx,
   transactionId: Id<"transactions">,
-): Promise<Doc<"transactions">> {
+): Promise<{ txn: Doc<"transactions">; viaFinance: boolean }> {
   try {
     const { txn } = await requireReconcileTxn(ctx, transactionId, "bookkeeper");
-    return txn;
+    return { txn, viaFinance: true };
   } catch (err) {
     if (!(err instanceof ConvexError)) throw err;
     // Fall through — the caller isn't bookkeeper+ (or has no home chapter at
@@ -6600,7 +6612,7 @@ async function requireTxnNoteReceiptCategoryAccess(
   }
   const event = await eventForTxn(ctx, txn);
   if (event && (await callerHasEventEditRights(ctx, event))) {
-    return txn;
+    return { txn, viaFinance: false };
   }
   throw new ConvexError({
     code: "FORBIDDEN",
@@ -7001,6 +7013,14 @@ export const setTransactionNote = mutation({
  * for any of those). Finance ranks already have the fuller
  * `categorizeTransaction` for bulk attribution; this is an additional,
  * narrower tool that happens to also serve them, not a replacement.
+ *
+ * RECONCILED LOCK (owner: "they still need to get their things reconciled by
+ * their treasurer or financial manager", product call on PR #218's review):
+ * once a transaction is `status:"reconciled"`, the event-lead carve-out may
+ * NOT re-categorize or clear its category — the Treasurer has closed it, and
+ * reopening a reconciled row is bookkeeper+ territory (`categorizeTransaction`
+ * still allows it, unchanged). Bookkeeper+ callers here are UNAFFECTED by
+ * this lock — only the event-lead path checks it.
  */
 export const setTransactionCategory = mutation({
   args: {
@@ -7009,7 +7029,17 @@ export const setTransactionCategory = mutation({
   },
   returns: v.null(),
   handler: async (ctx, args) => {
-    const txn = await requireTxnNoteReceiptCategoryAccess(ctx, args.transactionId);
+    const { txn, viaFinance } = await requireTxnNoteReceiptCategoryAccess(
+      ctx,
+      args.transactionId,
+    );
+    if (!viaFinance && txn.status === "reconciled") {
+      throw new ConvexError({
+        code: "RECONCILED_LOCKED",
+        message:
+          "This transaction is closed by your treasurer — ask them to reopen it before changing its category.",
+      });
+    }
     if (args.categoryId) {
       // Central txns carry no chapter-scoped category (mirrors
       // `categorizeTransaction`'s own central branch).
