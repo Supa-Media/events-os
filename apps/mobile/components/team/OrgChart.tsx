@@ -5,7 +5,7 @@
  * (a rail with a drop into each column, drawio-style); everything below a
  * direct stacks VERTICALLY — indented cards hung off a spine with elbow
  * connectors — so wide leadership rows stay scannable while deep teams stay
- * compact. Cards are one-line: avatar, name, role, rollup counts. Purely a
+ * compact. Cards are one-line: avatar, name, title, rollup counts. Purely a
  * different projection of the same `childrenOf` the list view uses; cycles
  * are pruned once in a memo so the recursive render stays pure.
  */
@@ -18,7 +18,11 @@ import { colors } from "../../lib/theme";
 export type OrgChartPerson = {
   _id: Id<"people">;
   name: string;
-  role: string | null;
+  /** Seat title(s) if the person holds any, else their legacy `role` — see
+   *  `hasSeatTitle` for which one this is (mirrors the List view's #188
+   *  title-source pattern). */
+  title: string | null;
+  hasSeatTitle: boolean;
   imageUrl?: string | null;
 };
 
@@ -195,9 +199,14 @@ function Card({ person, maps }: { person: OrgChartPerson; maps: TreeMaps }) {
         <Text className="text-sm font-semibold text-ink" numberOfLines={1}>
           {person.name}
         </Text>
-        {person.role ? (
-          <Text className="text-xs text-muted" numberOfLines={1}>
-            {person.role}
+        {person.title ? (
+          <Text
+            className={`text-xs ${
+              person.hasSeatTitle ? "text-muted" : "italic text-faint"
+            }`}
+            numberOfLines={1}
+          >
+            {person.title}
           </Text>
         ) : null}
       </View>

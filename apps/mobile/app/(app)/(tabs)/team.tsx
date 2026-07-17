@@ -47,11 +47,19 @@ import { alertError } from "../../../lib/errors";
 
 type Overview = FunctionReturnType<typeof api.org.overview>;
 type Person = Overview["people"][number];
+/** A roster person plus the tree/chart display title — seat titles first
+ *  (mirrors People tab's #188 `TitleCell` pattern), muted legacy
+ *  `person.role` fallback for anyone who holds no seat. */
+type OrgPerson = Person & { title: string | null; hasSeatTitle: boolean };
 
 export default function TeamScreen() {
   const router = useRouter();
   const nav = useQuery(api.org.nav);
   const overview = useQuery(api.org.overview);
+  // Seat titles held, by person — same query/shape People tab's Title column
+  // mirrors (see `people.tsx`'s `seatTitlesByPerson`). Chapter-scoped, gated
+  // server-side on `canViewChapterWork` — empty for a caller with no access.
+  const seatHoldings = useQuery(api.responsibilities.chapterSeatHoldings);
   // Work's org-hierarchy view isn't peek-scoped (see ChapterContext's file
   // doc) — always the caller's own chapter, so no chapterId arg is passed.
   const projects = useQuery(api.projects.list, {});
@@ -68,29 +76,56 @@ export default function TeamScreen() {
   // (leads/admins only — this whole branch is gated on teamView === "org").
   const [section, setSection] = useState<"projects" | "duties">("projects");
 
+  // Seat titles held, by person — the tree's row-title mirror of the People
+  // tab's Title column (#188).
+  const seatTitlesByPerson = useMemo(() => {
+    const map = new Map<Id<"people">, string[]>();
+    for (const h of seatHoldings ?? []) {
+      map.set(h.personId, [...(map.get(h.personId) ?? []), h.seatTitle]);
+    }
+    return map;
+  }, [seatHoldings]);
+
   // The org chart covers team members plus anyone wired into a manager
   // relationship (so a report who isn't flagged Team yet still shows up).
   // `overview.people` is already scoped server-side (chapter for admins,
-  // the caller's subtree for managers).
+  // the caller's subtree for managers). The tree's PARENT/CHILD edges come
+  // from `effectiveManagerIds` (seat-derived ∪ `managerId` fallback, the
+  // same derivation `org.overview`'s `hasReports`/`canManage` and
+  // `org.workload` use) — never raw `managerId` directly.
   const org = useMemo(() => {
-    const roster = overview?.people ?? [];
+    const roster: OrgPerson[] = (overview?.people ?? []).map((p) => {
+      const seatTitles = seatTitlesByPerson.get(p._id) ?? [];
+      return {
+        ...p,
+        title: seatTitles.length > 0 ? seatTitles.join(", ") : (p.role ?? null),
+        hasSeatTitle: seatTitles.length > 0,
+      };
+    });
     const managerIds = new Set(
-      roster.map((p) => p.managerId).filter((id): id is Id<"people"> => !!id),
+      roster.flatMap((p) => p.effectiveManagerIds),
     );
     const included = roster.filter(
-      (p) => p.isTeamMember || p.managerId != null || managerIds.has(p._id),
+      (p) =>
+        p.isTeamMember || p.effectiveManagerIds.length > 0 || managerIds.has(p._id),
     );
     const includedIds = new Set(included.map((p) => p._id));
-    const childrenOf = new Map<Id<"people">, Person[]>();
+    const childrenOf = new Map<Id<"people">, OrgPerson[]>();
     for (const p of included) {
-      if (!p.managerId || !includedIds.has(p.managerId)) continue;
-      const list = childrenOf.get(p.managerId) ?? [];
+      // Multi-manager people (a multi-holder parent seat) nest under ONE
+      // parent — the first seat-derived manager, deterministically, matching
+      // the order `org.workload`'s "Reports to" line resolves them in (both
+      // read `effectiveManagerIds`/`personEffectiveManagerIds` the same way).
+      const managerId = p.effectiveManagerIds[0];
+      if (!managerId || !includedIds.has(managerId)) continue;
+      const list = childrenOf.get(managerId) ?? [];
       list.push(p);
-      childrenOf.set(p.managerId, list);
+      childrenOf.set(managerId, list);
     }
-    const roots = included.filter(
-      (p) => !p.managerId || !includedIds.has(p.managerId),
-    );
+    const roots = included.filter((p) => {
+      const managerId = p.effectiveManagerIds[0];
+      return !managerId || !includedIds.has(managerId);
+    });
 
     // Subtree sizes (people below each node), cycle-safe via visited set.
     const teamSize = new Map<Id<"people">, number>();
@@ -119,7 +154,7 @@ export default function TeamScreen() {
       );
     }
     return { included, includedIds, childrenOf, roots, teamSize };
-  }, [overview]);
+  }, [overview, seatTitlesByPerson]);
 
   // Project rollups: how many (non-done) projects each person's subtree owns.
   const projectCount = useMemo(() => {
@@ -431,8 +466,8 @@ function OrgNode({
   projectCount,
   onOpen,
 }: {
-  person: Person;
-  childrenOf: Map<Id<"people">, Person[]>;
+  person: OrgPerson;
+  childrenOf: Map<Id<"people">, OrgPerson[]>;
   teamSize: Map<Id<"people">, number>;
   projectCount: Map<Id<"people">, number>;
   onOpen: (id: Id<"people">) => void;
@@ -473,9 +508,14 @@ function OrgNode({
           <Text className="text-sm font-medium text-ink" numberOfLines={1}>
             {person.name}
           </Text>
-          {person.role ? (
-            <Text className="text-xs text-muted" numberOfLines={1}>
-              {person.role}
+          {person.title ? (
+            <Text
+              className={`text-xs ${
+                person.hasSeatTitle ? "text-muted" : "italic text-faint"
+              }`}
+              numberOfLines={1}
+            >
+              {person.title}
             </Text>
           ) : null}
         </View>
