@@ -10,12 +10,18 @@ import {
  * Responsibility — ongoing, recurring org work ("Meet with directs", "Create
  * event flyers"), distinct from projects (which finish).
  *
- * One row FANS OUT: assigned to roles (`assigneeRoles`, matched against
- * people.role case-insensitively) so "all Directors" is a single row that
- * shows up as an individual responsibility for every person holding the role,
- * and/or to specific people (`assigneePersonIds`) when no role fits. The
- * how-to column documents how the work is actually done, so a handoff doesn't
- * need a meeting.
+ * One row FANS OUT: assigned to org-chart SEATS (`assigneeSeatIds`, the
+ * current model) so "whoever holds Chapter Director" is a single row that
+ * shows up as an individual responsibility for every person holding one of
+ * those seats, and/or to specific people (`assigneePersonIds`) when no seat
+ * fits. `assigneeRoles` is the LEGACY fan-out (freeform strings matched
+ * against `people.role` case-insensitively) — still honored, but ONLY for a
+ * duty that has no `assigneeSeatIds` mapped yet (see `responsibilityAppliesTo`
+ * in `@events-os/shared`). The one-time mapping flow (Duties grid) writes
+ * `assigneeSeatIds` and clears `assigneeRoles` in the same edit; there is no
+ * UI to add NEW legacy role strings anymore — the Roles column is the seat
+ * picker going forward. The how-to column documents how the work is actually
+ * done, so a handoff doesn't need a meeting.
  */
 export const responsibilities = defineTable({
   chapterId: v.id("chapters"),
@@ -28,9 +34,18 @@ export const responsibilities = defineTable({
   // Deploy C after `materializeHowToDocs` migrated the text into docs).
   howToDocId: v.optional(v.id("docs")),
   cadence: v.union(...RESPONSIBILITY_CADENCES.map((c) => v.literal(c))),
-  // Role titles this fans out to (normalized match against people.role).
+  // Org-chart seats this fans out to (current model). A person applies via a
+  // seat when they hold it at the scope relevant to this duty's chapter — see
+  // `responsibilities.chapterSeatHoldings` for the resolution rule (chapter-
+  // chart seats resolve in THIS chapter; central-chart seats resolve at the
+  // "central" scope regardless of chapter).
+  assigneeSeatIds: v.optional(v.array(v.id("seatDefs"))),
+  // LEGACY role titles this fans out to (normalized match against
+  // people.role). Only consulted while `assigneeSeatIds` is unset — see the
+  // table doc comment above. Kept so pre-seats duties keep working until an
+  // owner maps them.
   assigneeRoles: v.optional(v.array(v.string())),
-  // Direct person assignments, for work no existing role covers.
+  // Direct person assignments, for work no existing seat covers.
   assigneePersonIds: v.optional(v.array(v.id("people"))),
   notes: v.optional(v.string()),
   createdBy: v.id("users"),

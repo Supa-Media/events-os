@@ -3,12 +3,16 @@
  * Extracted from WorkloadView so person surfaces (workload page, People detail)
  * share one rendering.
  *
- * Pass `person` to turn on per-person provenance: rows that reach them through
- * their title show a "via {title}" tag — those aren't memberships, so the only
- * way to stop them is editing the definition's roles in the Duties grid or
- * changing the person's title. `canUnassign` (manager/admin — the server
- * enforces it again) adds the ✕ on directly-assigned rows, calling the
- * targeted `removeAssignee` mutation.
+ * Pass `person` to turn on per-person provenance: a row that reaches them
+ * through a held SEAT shows "via {seat title}" (pass `person.seatIds` — the
+ * seat defs they hold — and `seatTitleById` to resolve the label; both
+ * optional, so a caller that hasn't wired seat data yet just gets no seat
+ * provenance line, same as before this existed); one that reaches them
+ * through their legacy job title shows "via {title}". Those aren't
+ * memberships, so the only way to stop either is editing the definition
+ * (Duties grid) or changing the person's seat/title. `canUnassign`
+ * (manager/admin — the server enforces it again) adds the ✕ on
+ * directly-assigned rows, calling the targeted `removeAssignee` mutation.
  */
 import { View, Text, Pressable, Linking } from "react-native";
 import { useRouter, usePathname } from "expo-router";
@@ -32,12 +36,23 @@ type Responsibility = FunctionReturnType<
 export function DutyRows({
   items,
   person,
+  seatTitleById,
   canUnassign = false,
   onBeforeNavigate,
 }: {
   items: Responsibility[];
   /** The person these rows are shown FOR — enables provenance + unassign. */
-  person?: { _id: Id<"people">; role: string | null };
+  person?: {
+    _id: Id<"people">;
+    role: string | null;
+    /** Seat defs this person holds (their chapter's + central) — pass to
+     *  turn on "via {seat}" provenance on seat-mapped rows. Omit if the
+     *  caller hasn't resolved seat holdings; rows still render fine. */
+    seatIds?: readonly Id<"seatDefs">[];
+  };
+  /** Seat title by id, for resolving `person.seatIds` into a display label.
+   *  Only needed alongside `person.seatIds`. */
+  seatTitleById?: Map<Id<"seatDefs">, string>;
   /** Show the unassign ✕ on directly-assigned rows (managers/admins). */
   canUnassign?: boolean;
   /** Called right before an in-app route push (the How-To doc page). A host
@@ -67,11 +82,21 @@ export function DutyRows({
         const direct = person
           ? (r.assigneePersonIds ?? []).includes(person._id)
           : false;
-        const viaRole = person?.role
-          ? (r.assigneeRoles ?? []).find(
-              (x) => normalizeRole(x) === normalizeRole(person.role),
-            )
-          : undefined;
+        // Seats are authoritative once mapped — only look at the legacy role
+        // when the row has no seats (mirrors `responsibilityAppliesTo`).
+        const seatIds = (r.assigneeSeatIds as Id<"seatDefs">[] | undefined) ?? [];
+        const viaSeatId =
+          seatIds.length > 0
+            ? (person?.seatIds ?? []).find((id) => seatIds.includes(id))
+            : undefined;
+        const viaSeat = viaSeatId ? seatTitleById?.get(viaSeatId) : undefined;
+        const viaRole =
+          seatIds.length === 0 && person?.role
+            ? (r.assigneeRoles ?? []).find(
+                (x) => normalizeRole(x) === normalizeRole(person.role),
+              )
+            : undefined;
+        const via = viaSeat ?? viaRole;
         return (
           <View
             key={r._id}
@@ -107,9 +132,9 @@ export function DutyRows({
                   </Text>
                 </Pressable>
               ) : null}
-              {viaRole ? (
+              {via ? (
                 <Text className="text-2xs text-faint" numberOfLines={1}>
-                  via {viaRole}
+                  via {via}
                 </Text>
               ) : null}
               <OptionTag
@@ -121,8 +146,8 @@ export function DutyRows({
                   onPress={() =>
                     confirmAction({
                       title: "Unassign duty?",
-                      message: viaRole
-                        ? `${r.title} will no longer be directly assigned — it still applies to them via the “${viaRole}” title.`
+                      message: via
+                        ? `${r.title} will no longer be directly assigned — it still applies to them via “${via}”.`
                         : `${r.title} will no longer apply to them.`,
                       confirmLabel: "Unassign",
                       destructive: true,

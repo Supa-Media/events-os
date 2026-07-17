@@ -9,6 +9,7 @@ import {
   Linking,
   Platform,
 } from "react-native";
+import { useRouter } from "expo-router";
 import { useQuery, useMutation } from "convex/react";
 import { api } from "@events-os/convex/_generated/api";
 import {
@@ -125,6 +126,9 @@ export default function PeopleScreen() {
   const people = useQuery(api.people.list, {}) as Person[] | undefined;
   const org = useQuery(api.org.nav);
   const create = useMutation(api.people.create);
+  // The Title column mirrors org-chart seat titles (the current model) —
+  // `people.role` is only the fallback shown when someone holds no seat.
+  const seatHoldings = useQuery(api.responsibilities.chapterSeatHoldings);
 
   const [search, setSearch] = useState("");
   const [skillFilter, setSkillFilter] = useState<string | null>(null);
@@ -138,6 +142,15 @@ export default function PeopleScreen() {
     () => new Map((people ?? []).map((p) => [p._id, p.name])),
     [people],
   );
+
+  // Seat titles held, by person — the Title column's read-only mirror.
+  const seatTitlesByPerson = useMemo(() => {
+    const map = new Map<Id<"people">, string[]>();
+    for (const h of seatHoldings ?? []) {
+      map.set(h.personId, [...(map.get(h.personId) ?? []), h.seatTitle]);
+    }
+    return map;
+  }, [seatHoldings]);
 
   // Per-persona counts for the segmented control, so the filtering model is
   // legible at a glance (Team 12 · Volunteers 30 · Vendors 5) rather than a
@@ -308,6 +321,7 @@ export default function PeopleScreen() {
                     p.managerId ? nameById.get(p.managerId) ?? null : null
                   }
                   canEditManager={org?.isAdmin === true}
+                  seatTitles={seatTitlesByPerson.get(p._id) ?? []}
                   isLast={i === filtered.length - 1}
                   onOpen={() => setOpenId(p._id)}
                 />
@@ -347,6 +361,7 @@ function PersonRow({
   person,
   managerName,
   canEditManager,
+  seatTitles,
   isLast,
   onOpen,
 }: {
@@ -354,6 +369,10 @@ function PersonRow({
   managerName: string | null;
   /** Rewiring the org tree is admin-only (enforced server-side too). */
   canEditManager: boolean;
+  /** Org-chart seat titles this person holds — the Title column's mirror.
+   *  Empty when they hold no seat (falls back to the legacy `person.role`
+   *  string, shown muted). */
+  seatTitles: string[];
   isLast: boolean;
   onOpen: () => void;
 }) {
@@ -433,13 +452,13 @@ function PersonRow({
         />
       </Cell>
 
-      {/* Role (job title / vendor service line) */}
+      {/* Title: read-only mirror of held org-chart seats (the current model —
+          see the file doc comment). No editor here anymore; assignment
+          happens on the Org Chart. Falls back to the legacy `person.role`
+          free-text string, visibly muted, only while this person holds no
+          seat. */}
       <Cell width={COLS.role}>
-        <InlineText
-          value={person.role ?? ""}
-          placeholder="—"
-          onCommit={(t) => update({ personId: id, role: t.trim() || null })}
-        />
+        <TitleCell seatTitles={seatTitles} legacyRole={person.role ?? null} />
       </Cell>
 
       {/* Email */}
@@ -644,6 +663,45 @@ function PersonRow({
         </Pressable>
       </View>
     </View>
+  );
+}
+
+/**
+ * Title column body: the person's held org-chart seat titles (comma-joined),
+ * or — while they hold none — their legacy `person.role` free-text string,
+ * muted so it reads as a fallback, not the source of truth. The whole cell is
+ * a link to the Org Chart (the ONLY place roles/titles are assigned now); the
+ * small external-link glyph is the "roles come from the Org Chart" hint,
+ * kept to one line so the row height matches every other single-line cell in
+ * this grid. NOTE: `/org-chart` is this PR's best guess at the seats org-chart
+ * UI's route — the parallel org-chart PR hadn't landed a route on this
+ * branch yet; confirm/adjust the path when that PR merges.
+ */
+function TitleCell({
+  seatTitles,
+  legacyRole,
+}: {
+  seatTitles: string[];
+  legacyRole: string | null;
+}) {
+  const router = useRouter();
+  const hasSeats = seatTitles.length > 0;
+  const label = hasSeats ? seatTitles.join(", ") : legacyRole;
+  return (
+    <Pressable
+      onPress={() => router.push("/org-chart" as any)}
+      hitSlop={4}
+      accessibilityLabel="Roles come from the Org Chart"
+      className="flex-1 flex-row items-center gap-1 px-2 py-1.5 active:opacity-70 web:hover:opacity-90"
+    >
+      <Text
+        className={`flex-1 text-sm ${hasSeats ? "text-ink" : "italic text-faint"}`}
+        numberOfLines={1}
+      >
+        {label || "Set on Org Chart"}
+      </Text>
+      <Icon name="external-link" size={11} color={colors.faint} />
+    </Pressable>
   );
 }
 
@@ -862,6 +920,23 @@ function PersonDetailBody({
   const nav = useQuery(api.org.nav);
   const canManage = nav?.canManage === true;
   const duties = useQuery(api.responsibilities.list, canManage ? {} : "skip");
+  // Seat holdings, for resolving `responsibilityAppliesTo`'s seat-based match
+  // and DutyRows' "via {seat}" provenance — same gate as `duties` above.
+  const seatHoldings = useQuery(
+    api.responsibilities.chapterSeatHoldings,
+    canManage ? {} : "skip",
+  );
+  const personSeatIds = useMemo(
+    () =>
+      (seatHoldings ?? [])
+        .filter((h) => h.personId === person._id)
+        .map((h) => h.seatDefId),
+    [seatHoldings, person._id],
+  );
+  const seatTitleById = useMemo(
+    () => new Map((seatHoldings ?? []).map((h) => [h.seatDefId, h.seatTitle])),
+    [seatHoldings],
+  );
   // Read-only mirror of this person's specialized (leadership/finance) roles.
   // Super-admin gated on the backend — skip the query for anyone else, and mirror
   // the same gate on the chapter-name lookup used to label chapter-scoped roles.
@@ -877,7 +952,11 @@ function PersonDetailBody({
   );
   const [addDutyOpen, setAddDutyOpen] = useState(false);
   const personDuties = (duties ?? []).filter((r) =>
-    responsibilityAppliesTo(r, { _id: person._id, role: person.role ?? null }),
+    responsibilityAppliesTo(r, {
+      _id: person._id,
+      role: person.role ?? null,
+      seatIds: personSeatIds,
+    }),
   );
 
   return (
@@ -953,7 +1032,12 @@ function PersonDetailBody({
               <View className="mb-4">
                 <DutyRows
                   items={personDuties}
-                  person={{ _id: person._id, role: person.role ?? null }}
+                  person={{
+                    _id: person._id,
+                    role: person.role ?? null,
+                    seatIds: personSeatIds,
+                  }}
+                  seatTitleById={seatTitleById}
                   canUnassign
                   // This surface lives in a Modal — close it before pushing
                   // the How-To doc route, or the page opens underneath it.

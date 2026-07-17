@@ -1781,21 +1781,49 @@ export function normalizeRole(role?: string | null): string {
 }
 
 /**
- * Does a responsibility row fan out to this person? True when their role
- * matches one of the assignee roles (case-insensitively) or they're assigned
- * directly. The single matching rule shared by every surface that expands
- * definitions into per-person responsibilities.
+ * Does a responsibility row fan out to this person? Three ways in, checked in
+ * this order:
+ *
+ *  1. SEATS — `assigneeSeatIds` (org-chart seat defs). If a duty has ANY seats
+ *     mapped, it applies to a person holding one of them, and the legacy
+ *     role-string match below is skipped ENTIRELY for that duty — mapping a
+ *     duty to seats supersedes its old freeform roles (the one-time mapping
+ *     mutation clears `assigneeRoles` when it writes `assigneeSeatIds`, but
+ *     this guards the in-between state too). Callers resolve `person.seatIds`
+ *     themselves (this is a pure function — seat membership is a DB read);
+ *     pass the seat defs the person holds AT THE SCOPE RELEVANT to this duty
+ *     (their own chapter's chapter-chart seats + any central-chart seats,
+ *     mirroring how `responsibilities.chapterSeatHoldings` resolves it).
+ *  2. LEGACY ROLES — `assigneeRoles`, matched case-insensitively against
+ *     `person.role`. Only consulted when the duty has NO seats mapped (step 1
+ *     transition rule).
+ *  3. DIRECT — `assigneePersonIds`. Always checked regardless of 1/2 — a
+ *     personal duty assignment never depends on role or seat.
+ *
+ * The single matching rule shared by every surface that expands definitions
+ * into per-person responsibilities.
  */
 export function responsibilityAppliesTo(
   r: {
     assigneeRoles?: readonly string[] | null;
+    assigneeSeatIds?: readonly string[] | null;
     assigneePersonIds?: readonly string[] | null;
   },
-  person: { _id: string; role?: string | null },
+  person: {
+    _id: string;
+    role?: string | null;
+    seatIds?: readonly string[] | null;
+  },
 ): boolean {
-  const role = normalizeRole(person.role);
-  if (role && (r.assigneeRoles ?? []).some((x) => normalizeRole(x) === role)) {
-    return true;
+  const seats = r.assigneeSeatIds ?? [];
+  if (seats.length > 0) {
+    const held = new Set(person.seatIds ?? []);
+    if (seats.some((s) => held.has(s))) return true;
+  } else {
+    const role = normalizeRole(person.role);
+    if (role && (r.assigneeRoles ?? []).some((x) => normalizeRole(x) === role)) {
+      return true;
+    }
   }
   return (r.assigneePersonIds ?? []).includes(person._id);
 }
