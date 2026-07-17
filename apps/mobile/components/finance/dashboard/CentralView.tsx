@@ -82,13 +82,15 @@ export function CentralView({
     ) ?? [];
 
   // Per-central-budget actuals for the tag-detail sheet, keyed by budget id.
+  // Uses the EFFECTIVE cap (`approvedCapCents`, B1 review) as `budgetCents` —
+  // never `allocatedCents` (the raw, possibly pending-increase amount).
   const spentByBudgetId = useMemo(() => {
     const m = new Map<string, BudgetSpend>();
     for (const b of data.centralBudgets)
       m.set(b.id, { spentCents: b.spentCents, budgetCents: b.budgetCents });
     for (const b of budgetActuals) {
       if (b.budgetId && !m.has(b.budgetId)) {
-        m.set(b.budgetId, { spentCents: b.actualCents, budgetCents: b.allocatedCents });
+        m.set(b.budgetId, { spentCents: b.actualCents, budgetCents: b.approvedCapCents });
       }
     }
     return m;
@@ -282,7 +284,7 @@ function CentralBudgetCard({ b }: { b: CentralBudget }) {
             <BudgetApprovalChip
               status={b.approvalStatus}
               approvedCents={b.approvedCents}
-              amountCents={b.budgetCents}
+              requestedCents={b.requestedCents}
             />
           </View>
         </View>

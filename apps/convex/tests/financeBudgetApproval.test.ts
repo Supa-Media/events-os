@@ -396,7 +396,7 @@ describe("the increase-retrigger rule", () => {
   });
 });
 
-describe("grandfathered legacy budgets are unaffected", () => {
+describe("grandfathered legacy budgets — inert until touched (I1)", () => {
   /** Insert a budget row directly (bypassing `createBudget`) so it carries
    *  NO `approvalStatus` at all — a pre-feature legacy row. */
   async function insertLegacyBudget(s: ChapterSetup, amountCents: number): Promise<Id<"budgets">> {
@@ -428,10 +428,10 @@ describe("grandfathered legacy budgets are unaffected", () => {
     expect(raw?.approvalStatus).toBeUndefined();
   });
 
-  test("an amount increase does NOT retrigger — no approvalStatus is ever written", async () => {
+  test("I1: the FIRST amount increase retriggers — stamps approvedCents at the OLD amount + submits", async () => {
     const t = newT();
     const s = await setupChapter(t);
-    await asChapterManager(s);
+    const editor = await asChapterManager(s);
     const budgetId = await insertLegacyBudget(s, 60000);
 
     await s.as.mutation(api.finances.updateBudget, {
@@ -440,8 +440,46 @@ describe("grandfathered legacy budgets are unaffected", () => {
     });
     const doc = await getBudget(s, budgetId);
     expect(doc?.amountCents).toBe(200000);
+    expect(doc?.approvalStatus).toBe("submitted");
+    // The OLD (pre-edit) amount becomes the still-in-force cap — same as the
+    // literal-approved retrigger rule.
+    expect(doc?.approvedCents).toBe(60000);
+    expect(doc?.submittedByPersonId).toBe(editor);
+  });
+
+  test("I1: a DECREASE on a still-fully-legacy budget never stamps anything", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await asChapterManager(s);
+    const budgetId = await insertLegacyBudget(s, 60000);
+
+    await s.as.mutation(api.finances.updateBudget, {
+      budgetId,
+      patch: { amountCents: 40000 },
+    });
+    const doc = await getBudget(s, budgetId);
+    expect(doc?.amountCents).toBe(40000);
     expect(doc?.approvalStatus).toBeUndefined();
     expect(doc?.submittedByPersonId).toBeUndefined();
+  });
+
+  test("I1: once retriggered, the budget behaves like any other submitted budget (can be approved)", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await asChapterManager(s, "Editor");
+    const budgetId = await insertLegacyBudget(s, 60000);
+    await s.as.mutation(api.finances.updateBudget, {
+      budgetId,
+      patch: { amountCents: 200000 },
+    });
+
+    const approver = await addMember(s, { email: "approver@publicworship.life", name: "Approver" });
+    await grantRole(s, approver.personId, "manager", "chapter");
+    await approver.as.mutation(api.finances.approveBudget, { budgetId });
+
+    const doc = await getBudget(s, budgetId);
+    expect(doc?.approvalStatus).toBe("approved");
+    expect(doc?.approvedCents).toBe(200000);
   });
 
   test("cannot be manually submitted (effective status is already \"approved\")", async () => {
@@ -497,6 +535,85 @@ describe("over-cap spend warning uses approvedCapCents while pending", () => {
   });
 });
 
+describe("B1 (review): the effective cap drives every dashboard numeric surface", () => {
+  test("the exact review scenario — raising an approved+warn budget can't drop its pct/status/remaining until re-approved", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await asChapterManager(s, "Submitter");
+    const projectId = await run(s.t, (ctx) =>
+      ctx.db.insert("projects", {
+        chapterId: s.chapterId,
+        name: "Fall Retreat",
+        status: "in_progress",
+        createdBy: s.userId,
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      }),
+    );
+    const budgetId = await s.as.mutation(api.finances.createBudget, {
+      amountCents: 100000, // $1,000
+      type: "one_time",
+      refKind: "project",
+      cadence: "per_instance",
+      year: 2026,
+      scopeRefId: projectId,
+    });
+    await s.as.mutation(api.finances.submitBudgetForApproval, { budgetId });
+    const approver = await addMember(s, { email: "approver@publicworship.life", name: "Approver" });
+    await grantRole(s, approver.personId, "manager", "chapter");
+    await approver.as.mutation(api.finances.approveBudget, { budgetId });
+
+    // $850 spend, explicitly linked — 85% of the $1,000 approved cap (warn).
+    await s.as.mutation(api.finances.createManualTransaction, {
+      flow: "outflow",
+      amountCents: 85000,
+      postedAt: tsInMonth(2026, 6),
+      budgetId,
+    });
+
+    async function card() {
+      const dash = await s.as.query(api.finances.dashboardChapter, { year: 2026, month: 6 });
+      const found = dash.oneTimeBudgets.find((b) => b.id === budgetId);
+      if (!found) throw new Error("card not found");
+      return found;
+    }
+
+    let b = await card();
+    expect(b.pct).toBe(85);
+    expect(b.status).toBe("warn");
+    expect(b.remainingCents).toBe(15000);
+
+    // Raise to $2,000 — the RAW amount moves, but every dashboard surface must
+    // keep reporting against the OLD $1,000 approved cap until re-approved.
+    await s.as.mutation(api.finances.updateBudget, {
+      budgetId,
+      patch: { amountCents: 200000 },
+    });
+    b = await card();
+    expect(b.approvalStatus).toBe("submitted");
+    expect(b.pct).toBe(85);
+    expect(b.status).toBe("warn");
+    expect(b.remainingCents).toBe(15000);
+    expect(b.budgetCents).toBe(100000);
+    // The chip's OWN numbers stay distinct: the raw requested amount is still
+    // visible even though every OTHER surface reports the old cap.
+    expect(b.requestedCents).toBe(200000);
+    expect(b.approvedCents).toBe(100000);
+
+    // A DIFFERENT manager approves the new $2,000 — only now does it flip.
+    const secondApprover = await addMember(s, { email: "second@publicworship.life", name: "Second" });
+    await grantRole(s, secondApprover.personId, "manager", "chapter");
+    await secondApprover.as.mutation(api.finances.approveBudget, { budgetId });
+
+    b = await card();
+    expect(b.approvalStatus).toBe("approved");
+    expect(b.budgetCents).toBe(200000);
+    expect(b.pct).toBe(43); // Math.round(85000 / 200000 * 100)
+    expect(b.status).toBe("ok");
+    expect(b.remainingCents).toBe(115000);
+  });
+});
+
 describe("queue counts", () => {
   test("chapter dashboard attention queue surfaces the pending count", async () => {
     const t = newT();
@@ -536,13 +653,42 @@ describe("queue counts", () => {
     });
     await s.as.mutation(api.finances.submitBudgetForApproval, { budgetId: centralBudget });
 
-    // Both budgets are year:2026 — `dashboardCentral`'s pending-count IS
-    // year-scoped (built from the same `by_chapter_and_period` reads as the
-    // rest of the dashboard), so the query year must match.
     const dash = await s.as.query(api.finances.dashboardCentral, {
       year: 2026,
       month: 6,
     });
     expect(dash.pendingBudgetApprovalsCount).toBe(2);
+  });
+
+  // I2 (review): the aggregate MUST match the chapter queues exactly — both
+  // read `by_chapter_and_approval_status`, year-agnostic. Before the fix, this
+  // count was built from the dashboard's own YEAR-SCOPED budget reads
+  // (`by_chapter_and_period`), so a submission from a year other than the
+  // dashboard's selected one was invisible to FM/ED oversight even though it
+  // sat right there in the chapter's own attention queue.
+  test("I2: a cross-year submission is still counted — matches the chapter queue's year-agnostic definition", async () => {
+    const t = newT();
+    const s = await setupChapter(t, { email: "seyi@publicworship.life" }); // superuser = central
+    await asChapterManager(s, "Manager");
+
+    // A submission in a DIFFERENT year than the dashboard's selected one.
+    const oldYearBudget = await createChapterBudget(s, 20000, 2023);
+    await s.as.mutation(api.finances.submitBudgetForApproval, { budgetId: oldYearBudget });
+
+    // The chapter's own attention queue (year-agnostic) already sees it.
+    const chapterDash = await s.as.query(api.finances.dashboardChapter, {
+      year: 2026,
+      month: 6,
+    });
+    const item = chapterDash.attention.find((a) => a.kind === "budget_approvals");
+    expect(item?.badgeCount).toBe(1);
+
+    // The central aggregate — queried for a DIFFERENT year (2026) — must see
+    // it too, exactly like the chapter queue does.
+    const dash = await s.as.query(api.finances.dashboardCentral, {
+      year: 2026,
+      month: 6,
+    });
+    expect(dash.pendingBudgetApprovalsCount).toBe(1);
   });
 });

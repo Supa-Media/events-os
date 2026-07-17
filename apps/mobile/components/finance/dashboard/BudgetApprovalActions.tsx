@@ -31,23 +31,24 @@ const STATUS_TONE: Record<BudgetApprovalStatus, BadgeTone> = {
 };
 
 /** The approval-status chip. When a `"submitted"` budget's `approvedCents`
- *  differs from its (already-bumped) `amountCents`, the chip's own label
- *  makes the still-in-force cap explicit — "Awaiting approval (approved at
- *  $X)" — so the increase-retrigger rule is visible right on the card, not
- *  just in a tooltip somewhere. */
+ *  differs from its RAW `requestedCents` (the current `amountCents` — a card's
+ *  own `budgetCents` is the EFFECTIVE cap now, B1 review, so it can't be used
+ *  here), the chip's own label makes BOTH numbers explicit — "Awaiting
+ *  approval — approved $X, requested $Y" — so the increase-retrigger rule is
+ *  visible right on the card, not just in a tooltip somewhere. */
 export function BudgetApprovalChip({
   status,
   approvedCents,
-  amountCents,
+  requestedCents,
 }: {
   status: BudgetApprovalStatus;
   approvedCents: number | null;
-  amountCents: number;
+  requestedCents: number;
 }) {
   const pending =
-    status === "submitted" && approvedCents != null && approvedCents !== amountCents;
+    status === "submitted" && approvedCents != null && approvedCents !== requestedCents;
   const label = pending
-    ? `Awaiting approval (approved at ${formatCents(approvedCents!)})`
+    ? `Awaiting approval — approved ${formatCents(approvedCents!)}, requested ${formatCents(requestedCents)}`
     : BUDGET_APPROVAL_STATUS_LABELS[status];
   return <Badge label={label} tone={STATUS_TONE[status]} />;
 }

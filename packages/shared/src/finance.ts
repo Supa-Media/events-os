@@ -118,12 +118,16 @@ export type BudgetRolloverPolicy = (typeof BUDGET_ROLLOVER_POLICIES)[number];
 // created before this feature shipped carries NO `approvalStatus` at all
 // (`undefined`, not one of these four literals) — GRANDFATHERED, treated as
 // "approved at its current amount" for display + cap purposes
-// (`effectiveApprovalStatus`/`effectiveApprovedCapCents` in `finances.ts`) with
-// zero workflow friction: it can't be manually re-submitted, and an amount
-// INCREASE on it does NOT auto-resubmit (the retrigger only fires off the
-// literal `"approved"` status, set the first time a human runs the real
-// workflow on a budget). This is deliberate — shipping the feature must not
-// suddenly gate hundreds of existing prod budgets.
+// (`effectiveBudgetApprovalStatus`/`effectiveCapCents` in `finances.ts`) with
+// zero workflow friction UNTIL its first edit: it can't be manually
+// re-submitted, and a DECREASE never touches it. But an amount INCREASE
+// retriggers on its FIRST occurrence (I1, review) exactly like a literally
+// `"approved"` budget crossing its cap — `setBudgetAmount` stamps
+// `approvedCents` at the pre-edit amount and flips it to `"submitted"`,
+// joining the real workflow from then on. This is deliberate — shipping the
+// feature must not suddenly gate hundreds of existing prod budgets that are
+// never touched again, but the owner's "raising a cap needs a fresh look"
+// rule still has to apply the moment one IS touched.
 export const BUDGET_APPROVAL_STATUSES = [
   "draft",
   "submitted",

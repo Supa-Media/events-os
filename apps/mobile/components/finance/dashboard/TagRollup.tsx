@@ -233,7 +233,15 @@ function BudgetLine({ b, spend }: { b: BudgetRow; spend: BudgetSpend | undefined
   const name =
     b.label?.trim() ||
     (b.type === "one_time" ? "One-time budget" : "Recurring budget");
-  const allocatedCents = b.amountCents;
+  // B1 (review): the CAP is `spend.budgetCents` — the EFFECTIVE cap fed by the
+  // dashboard cards ∪ the `budgetVsActual` backfill (`ChapterView`/
+  // `CentralView`'s `spentByBudgetId`) — never `b.amountCents` (the raw
+  // `listBudgets` allocation), which would silently advertise an unapproved
+  // increase in this sheet even though the cards above already resist it.
+  // Falls back to the raw amount only if a budget is somehow missing from
+  // `spend` entirely (shouldn't happen — every budget here is either a
+  // dashboard card or backfilled).
+  const allocatedCents = spend?.budgetCents ?? b.amountCents;
   const spentCents = spend?.spentCents;
   const pct =
     spentCents != null && allocatedCents > 0
