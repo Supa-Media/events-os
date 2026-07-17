@@ -108,6 +108,23 @@ const PERSON_SEAT_ASSIGNMENT_LIMIT = 200;
  * seat def carries the `"nav.finances"` capability. This is a pure nav-
  * visibility check (see `showFinances`'s doc on `NAV_RETURNS`); it does not
  * gate money access anywhere.
+ *
+ * PERSON-KEYED, not user-keyed like `lib/finance.ts#isCentralEdOrFm` — this
+ * only ever gets called with `nav`'s own `self` (the caller's HOME-chapter
+ * `people` row from `viewerPerson`), not every `people` row the caller's
+ * `userId` owns. `isCentralEdOrFm` deliberately walks every row for the
+ * user (mirroring `financeRoles.mySeats`) specifically so a seat on a
+ * non-home row still counts; this helper inherits `nav`'s existing
+ * home-chapter-only scoping instead of introducing a different one for just
+ * this field. Practically: a genuinely multi-chapter user whose
+ * `nav.finances` seat hangs off a `people` row OTHER than their home-chapter
+ * one won't see it here and falls back to the tier grandfather (still true
+ * for admin/lead). This is the same latent gap `lib/context.ts`'s
+ * `requireChapterId` doc tracks as `TODO(latent, #143)` — every
+ * `viewerPerson`-derived read in `nav`/`lib/org.ts`/`lib/finance.ts`
+ * (`tier`, `canManage`, `teamView`, `getFinanceRole`) already only acts on
+ * the home-chapter row, so this isn't a new restriction, just one more read
+ * that inherits it. Not a bug to fix here — see that TODO for the real fix.
  */
 async function hasFinancesNavSeat(
   ctx: QueryCtx,
