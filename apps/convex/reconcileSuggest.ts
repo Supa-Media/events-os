@@ -4,13 +4,16 @@
  * the bookkeeper sees the likely home first instead of an unranked dump of
  * every budget-less task-shaped project (the owner's "very bad" report).
  *
- * OWNERSHIP: intentionally separate from `finances.ts` (whose budget/
- * transaction-write region is owned by a parallel WP) — mirrors `moneyViews.
- * ts`'s discipline: every read here either RE-DERIVES its own bounded index
- * scan (the candidate gather below duplicates `finances.forPickerOptions`'s
- * exact events/projects/budgets scan + one-budget-per-ref dedup so the
- * ranked list's candidates never drift from the base picker's) or imports an
- * already-exported, stable helper (`ROLLUP_SCAN_LIMIT`, `txnMatchesMode`).
+ * OWNERSHIP: separate from `finances.ts` (whose budget/transaction-write
+ * region is a different surface) — mirrors `moneyViews.ts`'s discipline:
+ * every read here either calls an already-exported, stable helper
+ * (`ROLLUP_SCAN_LIMIT`, `txnMatchesMode`, `isAttributableBudget`, and — as of
+ * the scan-unification below — `gatherForPickerCandidates`) or does its own
+ * narrow, bounded work on top of one. The candidate gather itself used to be
+ * RE-DERIVED here (byte-identical to `finances.forPickerOptions`'s own scan,
+ * per #217's review, back when `finances.ts` was owned by a parallel WP);
+ * that constraint is gone, so both surfaces now call the single scan in
+ * `lib/forPickerCandidates.ts` instead of maintaining two copies.
  * READ-ONLY: this file never writes `transactions`/`budgets` — attribution
  * itself still only ever happens through `finances.categorizeTransaction`,
  * called by the client AFTER a pick (see `forPicker.ts` on the mobile side).
@@ -19,7 +22,7 @@
  * WP-wave4 (item 5, owner addendum 2026-07-17): "only approved budgets can
  * have charges attached" retired the summon-on-pick flow this module's tier
  * 4 used to demote (not exclude) budget-less refs into. Every candidate
- * `gatherCandidates` returns is now filtered to `isAttributableBudget`
+ * `gatherForPickerCandidates` returns is now filtered to `isAttributableBudget`
  * (`finances.ts`, approved-or-grandfathered) BEFORE scoring — a budget-less
  * or not-yet-approved ref never reaches ANY tier, not even tier 3's date
  * proximity. Its spend stays visible another way: the dashboard's "Needs
@@ -50,12 +53,7 @@ import { query } from "./_generated/server";
 import type { QueryCtx } from "./_generated/server";
 import { v } from "convex/values";
 import { Doc, Id } from "./_generated/dataModel";
-import {
-  CENTRAL,
-  FINANCE_TIMEZONE,
-  BUDGET_TYPE_LABELS,
-  type BudgetType,
-} from "@events-os/shared";
+import { CENTRAL, FINANCE_TIMEZONE } from "@events-os/shared";
 import { getChapterIdOrNull } from "./lib/context";
 import {
   requireFinanceRole,
@@ -64,6 +62,7 @@ import {
 } from "./lib/finance";
 import { readSandbox } from "./financeSettings";
 import { ROLLUP_SCAN_LIMIT, txnMatchesMode, isAttributableBudget } from "./finances";
+import { gatherForPickerCandidates, type PickerCandidate } from "./lib/forPickerCandidates";
 
 // ── Scan bounds ───────────────────────────────────────────────────────────
 // Top-level events/projects/budgets scans mirror `forPickerOptions`'s own
@@ -79,9 +78,9 @@ const TXN_PER_BUDGET_SCAN_LIMIT = 300;
 const NEARBY_WINDOW_MS = 10 * 24 * 60 * 60 * 1000;
 const DEADLINE_WINDOW_MS = 45 * 24 * 60 * 60 * 1000;
 
-// ── Date / label formatting (mirrors `finances.ts#pickerRefLabel`'s output
-// exactly — "Mon D, YYYY" — so a ranked row's label reads identically to the
-// same ref's label in the base grouped list) ────────────────────────────────
+// ── Date / label formatting for tier reasons/search only (candidate labels
+// themselves come from the shared `gatherForPickerCandidates` below — this
+// `shortDateLabel` backs `dateLabel`/search's date tokens, a narrower need). ─
 function shortDateLabel(ts: number): string {
   return new Date(ts).toLocaleDateString("en-US", {
     timeZone: FINANCE_TIMEZONE,
@@ -96,165 +95,14 @@ function fullMonthName(ts: number): string {
     month: "long",
   });
 }
-function pickerRefLabel(name: string, ts: number): string {
-  return `${name} · ${shortDateLabel(ts)}`;
-}
 
-/** A budget's v2 `type`, tolerant of un-migrated legacy rows — mirrors
- *  `finances.ts#effectiveType` (not exported; re-derived here per the module
- *  doc's ownership discipline). */
-function effectiveBudgetType(b: Doc<"budgets">): BudgetType {
-  if (b.type) return b.type;
-  return b.scope === "event" || b.scope === "project" ? "one_time" : "recurring";
-}
-/** Mirrors `finances.ts#budgetDisplayName` (not exported). */
-function budgetDisplayName(b: Doc<"budgets">): string {
-  return b.label?.trim() || BUDGET_TYPE_LABELS[effectiveBudgetType(b)];
-}
-
-// ── Candidate gather (mirrors `finances.forPickerOptions`'s exact scan +
-// one-budget-per-ref dedup, so the ranked set never drifts from the base
-// picker's — see the module doc) ────────────────────────────────────────────
-type Candidate = {
-  refKind: "event" | "project" | "recurring";
-  refId: string;
-  label: string;
-  /** The ref's own date for TIER 3 ranking — event's `eventDate`, project's
-   *  `deadline` ONLY (per owner spec, not the closer-of-start/deadline the
-   *  base list's label uses). `null` for a recurring budget (no ref date) or
-   *  a deadline-less project. */
-  tier3Ts: number | null;
-  budget: Doc<"budgets"> | null;
-  level: "chapter" | "central" | null;
-};
-
-async function gatherCandidates(
-  ctx: QueryCtx,
-  homeChapterId: Id<"chapters">,
-): Promise<Candidate[]> {
-  const [events, projects, chapterBudgets, centralBudgets] = await Promise.all([
-    ctx.db
-      .query("events")
-      .withIndex("by_chapter", (q) => q.eq("chapterId", homeChapterId))
-      .take(TOP_LEVEL_SCAN_LIMIT),
-    ctx.db
-      .query("projects")
-      .withIndex("by_chapter", (q) => q.eq("chapterId", homeChapterId))
-      .take(TOP_LEVEL_SCAN_LIMIT),
-    ctx.db
-      .query("budgets")
-      .withIndex("by_chapter", (q) => q.eq("chapterId", homeChapterId))
-      .take(TOP_LEVEL_SCAN_LIMIT),
-    ctx.db
-      .query("budgets")
-      .withIndex("by_chapter", (q) => q.eq("chapterId", CENTRAL))
-      .take(TOP_LEVEL_SCAN_LIMIT),
-  ]);
-  if (
-    events.length === TOP_LEVEL_SCAN_LIMIT ||
-    projects.length === TOP_LEVEL_SCAN_LIMIT ||
-    chapterBudgets.length === TOP_LEVEL_SCAN_LIMIT ||
-    centralBudgets.length === TOP_LEVEL_SCAN_LIMIT
-  ) {
-    console.warn(
-      `[reconcileSuggest] rankForPicker hit TOP_LEVEL_SCAN_LIMIT (${TOP_LEVEL_SCAN_LIMIT}) gathering candidates for chapter ${homeChapterId}; ranked list may be truncated.`,
-    );
-  }
-  const projectIds = new Set(projects.map((p) => p._id as string));
-
-  const eventBudgetByRef = new Map<string, Doc<"budgets">>();
-  const projectBudgetByRef = new Map<string, Doc<"budgets">>();
-  const recurring: { budget: Doc<"budgets">; level: "chapter" | "central" }[] = [];
-
-  // Same "keep the OLDEST" dedup rule as `forPickerOptions` (a ref should
-  // only ever have one budget — the D8 invariant — but legacy data can carry
-  // a duplicate; this keeps the ranked pick's budgetId identical to the base
-  // picker's, so the same ref never appears at two different budgetIds
-  // across the two lists).
-  const setPreferOldest = (
-    map: Map<string, Doc<"budgets">>,
-    key: string,
-    candidate: Doc<"budgets">,
-  ) => {
-    const existing = map.get(key);
-    if (!existing || candidate.createdAt < existing.createdAt) {
-      map.set(key, candidate);
-    }
-  };
-
-  for (const b of chapterBudgets) {
-    if (b.type === "one_time" && b.refKind === "event" && b.scopeRefId) {
-      setPreferOldest(eventBudgetByRef, b.scopeRefId, b);
-    } else if (b.type === "one_time" && b.refKind === "project" && b.scopeRefId) {
-      setPreferOldest(projectBudgetByRef, b.scopeRefId, b);
-    } else {
-      recurring.push({ budget: b, level: "chapter" });
-    }
-  }
-  for (const b of centralBudgets) {
-    if (
-      b.type === "one_time" &&
-      b.refKind === "project" &&
-      b.scopeRefId &&
-      projectIds.has(b.scopeRefId)
-    ) {
-      setPreferOldest(projectBudgetByRef, b.scopeRefId, b);
-    } else {
-      recurring.push({ budget: b, level: "central" });
-    }
-  }
-
-  const candidates: Candidate[] = [];
-  for (const e of events) {
-    if (e.isTraining) continue;
-    // `events.eventDate` is a REQUIRED field (`v.number()`, not optional) —
-    // every event row always has a real date, so there is no fallback to
-    // audit here (unlike a project's `deadline`, which is optional).
-    candidates.push({
-      refKind: "event",
-      refId: e._id,
-      label: pickerRefLabel(e.name, e.eventDate),
-      tier3Ts: e.eventDate,
-      budget: eventBudgetByRef.get(e._id as string) ?? null,
-      level: null,
-    });
-  }
-  for (const p of projects) {
-    // NO FABRICATED DATES: the label's date must come from the exact same
-    // field tier 3 ranks on (`projects.deadline` — the real, directly-
-    // editable field the app's own Project screen reads/writes, see
-    // `apps/mobile/components/team/ProjectCard.tsx`'s "Due {date}" /
-    // "Set deadline" UI; it is NOT derived from linked tasks). Previously
-    // this fell back to `startDate ?? createdAt` when `deadline` was unset
-    // — silently substituting the project's ROW-CREATION timestamp as if it
-    // were a meaningful date. That produced a self-contradicting row (owner
-    // report: "Love Wins · Jul 17, 2026" — Jul 17 was TODAY, i.e.
-    // `createdAt` — right next to a CORRECTLY-computed "Project deadline 5
-    // days away" reason sourced from the real March 28 `deadline`). A
-    // project with no `deadline` now shows its bare name — no date claim —
-    // and (via `tier3Ts: null` below) never qualifies for tier 3.
-    const dateTs = p.deadline ?? null;
-    candidates.push({
-      refKind: "project",
-      refId: p._id,
-      label: dateTs != null ? pickerRefLabel(p.name, dateTs) : p.name,
-      tier3Ts: dateTs,
-      budget: projectBudgetByRef.get(p._id as string) ?? null,
-      level: null,
-    });
-  }
-  for (const r of recurring) {
-    candidates.push({
-      refKind: "recurring",
-      refId: r.budget._id,
-      label: budgetDisplayName(r.budget),
-      tier3Ts: null,
-      budget: r.budget,
-      level: r.level,
-    });
-  }
-  return candidates;
-}
+// ── Candidate gather — `gatherForPickerCandidates` (`lib/forPickerCandidates.
+// ts`) is the SAME scan + one-budget-per-ref dedup `finances.forPickerOptions`
+// calls, so the ranked set never drifts from the base picker's (see the
+// module doc). `Candidate` is a local alias for the shared `PickerCandidate`
+// shape — kept so this file's internal signatures don't have to spell out the
+// import everywhere. ─────────────────────────────────────────────────────────
+type Candidate = PickerCandidate;
 
 // ── Tier 1/2 evidence: a candidate's OWN budget's already-categorized spend
 // (bounded per-budget `by_budget` index scan) ───────────────────────────────
@@ -404,7 +252,7 @@ const rankedRow = v.object({
   label: v.string(),
   dateLabel: v.union(v.string(), v.null()),
   // WP-wave4 (item 5): ALWAYS a real, ATTRIBUTABLE (approved) budget now —
-  // `gatherCandidates`'s output is filtered to `isAttributableBudget` before
+  // `gatherForPickerCandidates`'s output is filtered to `isAttributableBudget` before
   // any row is scored (see `rankForPicker`'s handler), so a budget-less or
   // not-yet-approved ref never reaches this shape at all. `hasBudget` (the
   // old tier-4 "no budget yet" grouping signal) is retired along with it.
@@ -548,9 +396,13 @@ export const rankForPicker = query({
     // The old tier-4 "· No budget yet" trailing subsection (a summon-
     // candidate placement fix) is retired along with the summon-on-pick flow
     // itself; every remaining candidate here always carries a real budget.
-    const allCandidates = (await gatherCandidates(ctx, homeChapterId)).filter((c) =>
-      isAttributableBudget(c.budget),
-    );
+    const gathered = await gatherForPickerCandidates(ctx, homeChapterId, TOP_LEVEL_SCAN_LIMIT);
+    if (gathered.truncated) {
+      console.warn(
+        `[reconcileSuggest] rankForPicker hit TOP_LEVEL_SCAN_LIMIT (${TOP_LEVEL_SCAN_LIMIT}) gathering candidates for chapter ${homeChapterId}; ranked list may be truncated.`,
+      );
+    }
+    const allCandidates = gathered.candidates.filter((c) => isAttributableBudget(c.budget));
     // A CENTRAL-owned txn can only ever attribute to a central budget
     // (`categorizeTransaction`'s own gate) — mirrors the Reconcile grid's
     // existing client-side restriction (`reconcile.tsx`'s `centralScope`

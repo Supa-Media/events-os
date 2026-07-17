@@ -73,6 +73,7 @@ import {
   type BudgetApprovalStatus,
 } from "@events-os/shared";
 import { readSandbox } from "./financeSettings";
+import { gatherForPickerCandidates } from "./lib/forPickerCandidates";
 import { isMissingReceiptCharge, unlockCardIfReceiptsResolved } from "./cards";
 import {
   getChapterIdOrNull,
@@ -3940,13 +3941,13 @@ export const listBudgets = query({
 });
 
 // ── The "For" picker (WP-U: one home per dollar) ─────────────────────────────
-/** `name + date` — the "For" picker's row label, always dated so a match
- *  reads unambiguously among same-named siblings. */
-function pickerRefLabel(name: string, ts: number): string {
-  const p = easternParts(ts);
-  const monthName = MONTH_NAMES[p.month - 1].slice(0, 3);
-  return `${name} · ${monthName} ${p.day}, ${p.year}`;
-}
+// Candidate gather (events/projects/budgets scan + one-budget-per-ref dedup +
+// row label) lives in `lib/forPickerCandidates.ts#gatherForPickerCandidates`
+// — the SAME scan `reconcileSuggest.rankForPicker` calls, so the two "For"
+// picker surfaces can never drift apart on what's offered (see that file's
+// module doc for the history: re-derived independently at #217, reconciled
+// into this one scan once the parallel-ownership constraint that forced the
+// duplication was gone).
 
 const forPickerRefRow = v.object({
   label: v.string(),
@@ -3989,73 +3990,16 @@ export const forPickerOptions = query({
     if (!chapterId) return empty;
     await requireFinanceRole(ctx, chapterId, "viewer");
 
-    const [events, projects, chapterBudgets, centralBudgets] = await Promise.all([
-      ctx.db
-        .query("events")
-        .withIndex("by_chapter", (q) => q.eq("chapterId", chapterId))
-        .take(ROLLUP_SCAN_LIMIT),
-      ctx.db
-        .query("projects")
-        .withIndex("by_chapter", (q) => q.eq("chapterId", chapterId))
-        .take(ROLLUP_SCAN_LIMIT),
-      ctx.db
-        .query("budgets")
-        .withIndex("by_chapter", (q) => q.eq("chapterId", chapterId))
-        .take(ROLLUP_SCAN_LIMIT),
-      ctx.db
-        .query("budgets")
-        .withIndex("by_chapter", (q) => q.eq("chapterId", CENTRAL))
-        .take(ROLLUP_SCAN_LIMIT),
-    ]);
-    const projectIds = new Set(projects.map((p) => p._id as string));
-
-    const eventBudgetByRef = new Map<string, Doc<"budgets">>();
-    const projectBudgetByRef = new Map<string, Doc<"budgets">>();
-    const recurring: { budgetId: Id<"budgets">; label: string; level: "chapter" | "central" }[] = [];
-
-    // A ref should only ever have one budget (the D8 invariant, enforced at
-    // creation by `createBudget`'s dedup guard), but legacy data can still
-    // carry a duplicate one_time budget for the same ref. Rule: keep the
-    // OLDEST (lowest `createdAt`) — the auto-created/backfilled one, not
-    // whichever happened to sort last in the scan — so the picker shows ONE
-    // deterministic entry per ref instead of flapping between duplicates.
-    const setPreferOldest = (
-      map: Map<string, Doc<"budgets">>,
-      key: string,
-      candidate: Doc<"budgets">,
-    ) => {
-      const existing = map.get(key);
-      if (!existing || candidate.createdAt < existing.createdAt) {
-        map.set(key, candidate);
-      }
-    };
-
-    for (const b of chapterBudgets) {
-      if (b.type === "one_time" && b.refKind === "event" && b.scopeRefId) {
-        setPreferOldest(eventBudgetByRef, b.scopeRefId, b);
-      } else if (b.type === "one_time" && b.refKind === "project" && b.scopeRefId) {
-        setPreferOldest(projectBudgetByRef, b.scopeRefId, b);
-      } else if (isAttributableBudget(b)) {
-        // WP-wave4 (item 5): a recurring budget is offered ONLY once approved.
-        recurring.push({ budgetId: b._id, label: budgetDisplayName(b), level: "chapter" });
-      }
-    }
-    for (const b of centralBudgets) {
-      // A central one_time PROJECT budget only belongs in this chapter's
-      // groups when it's THIS chapter's project (post-`transferProjectScope`)
-      // — a central budget for some other chapter's project stays invisible
-      // here (events never carry a central budget — see the schema doc).
-      if (
-        b.type === "one_time" &&
-        b.refKind === "project" &&
-        b.scopeRefId &&
-        projectIds.has(b.scopeRefId)
-      ) {
-        setPreferOldest(projectBudgetByRef, b.scopeRefId, b);
-      } else if (isAttributableBudget(b)) {
-        recurring.push({ budgetId: b._id, label: budgetDisplayName(b), level: "central" });
-      }
-    }
+    // `gatherForPickerCandidates` returns EVERY event/project/recurring-budget
+    // candidate (budget-less or unapproved ones included, `budget: null` or
+    // not-yet-approved) — WP-wave4 (item 5)'s `isAttributableBudget` gate is
+    // applied below, per output group, exactly as it was before this scan was
+    // shared (a ref with no budget, or an unapproved one, is OMITTED entirely
+    // — its spend stays visible in the dashboard's "Needs budget" bucket
+    // instead). Truncation (unlikely — see `ROLLUP_SCAN_LIMIT`'s doc) isn't
+    // logged here, unlike `reconcileSuggest.rankForPicker`'s own caller-side
+    // warning — this list has no per-request "may be truncated" UI to back it.
+    const { candidates } = await gatherForPickerCandidates(ctx, chapterId, ROLLUP_SCAN_LIMIT);
 
     // NO FABRICATED DATES (identical fix to #219's `reconcileSuggest.ts` —
     // that PR's own commit judged this static list's `startDate ?? createdAt`
@@ -4067,37 +4011,22 @@ export const forPickerOptions = query({
     // second date is present to visibly contradict it). `projects.deadline`
     // is the one real, directly-editable date field
     // (`ProjectCard.tsx`'s "Due {date}"/"Set deadline", `projects.ts#update`)
-    // — never derived from `startDate`/`createdAt`. A project with no
-    // `deadline` now shows its bare name, no date claim.
-    //
-    // WP-wave4 (item 5): a ref with no budget, or an unapproved one, is
-    // OMITTED entirely — `isAttributableBudget` is the single gate (shared
-    // with `reconcileSuggest.ts`'s independent scan). Its spend stays
-    // visible in the dashboard's "Needs budget" bucket instead.
-    const eventRows = events
-      .filter((e) => !e.isTraining)
-      .flatMap((e) => {
-        const budget = eventBudgetByRef.get(e._id as string);
-        if (!isAttributableBudget(budget)) return [];
-        return [
-          {
-            eventId: e._id,
-            label: pickerRefLabel(e.name, e.eventDate),
-            budgetId: budget._id,
-          },
-        ];
-      });
-    const projectRows = projects.flatMap((p) => {
-      const budget = projectBudgetByRef.get(p._id as string);
-      if (!isAttributableBudget(budget)) return [];
-      const dateTs = p.deadline ?? null;
-      return [
-        {
-          projectId: p._id,
-          label: dateTs != null ? pickerRefLabel(p.name, dateTs) : p.name,
-          budgetId: budget._id,
-        },
-      ];
+    // — never derived from `startDate`/`createdAt`; `gatherForPickerCandidates`
+    // already enforces this when it builds each candidate's `label`.
+    const eventRows = candidates.flatMap((c) => {
+      if (c.refKind !== "event" || !isAttributableBudget(c.budget)) return [];
+      return [{ eventId: c.refId as Id<"events">, label: c.label, budgetId: c.budget._id }];
+    });
+    const projectRows = candidates.flatMap((c) => {
+      if (c.refKind !== "project" || !isAttributableBudget(c.budget)) return [];
+      return [{ projectId: c.refId as Id<"projects">, label: c.label, budgetId: c.budget._id }];
+    });
+    const recurring = candidates.flatMap((c) => {
+      if (c.refKind !== "recurring" || !isAttributableBudget(c.budget)) return [];
+      // Non-null: every "recurring" candidate carries a chapter/central level
+      // (only an event/project candidate's `level` is `null`) — see
+      // `PickerCandidate`'s doc in `lib/forPickerCandidates.ts`.
+      return [{ budgetId: c.budget._id, label: c.label, level: c.level as "chapter" | "central" }];
     });
 
     return { events: eventRows, projects: projectRows, recurring };
