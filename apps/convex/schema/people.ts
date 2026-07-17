@@ -147,6 +147,10 @@ export const engagements = defineTable({
   ),
   notes: v.optional(v.string()),
   createdAt: v.number(),
+  // Category override for the Money-page plan view (WP-money-unify PR1):
+  // unset → the module default mapping (`MODULE_DEFAULT_CATEGORY_NAMES`)
+  // applies at read time.
+  budgetCategoryId: v.optional(v.id("budgetCategories")),
 })
   .index("by_event", ["eventId"])
   .index("by_event_type", ["eventId", "type"])
