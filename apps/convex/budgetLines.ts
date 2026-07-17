@@ -47,7 +47,12 @@ import type { MutationCtx, QueryCtx } from "./_generated/server";
 import { ConvexError, v } from "convex/values";
 import { Doc, Id } from "./_generated/dataModel";
 import { CENTRAL } from "@events-os/shared";
-import { requireChapterId, requireUserId, getChapterIdOrNull } from "./lib/context";
+import {
+  requireChapterId,
+  requireUserId,
+  getChapterIdOrNull,
+  requireEvent,
+} from "./lib/context";
 import { requireFinanceRole, requireCentralFinanceRoleOrEdSeat } from "./lib/finance";
 
 // A generous bound on lines-per-budget: a plan breakdown is a human-authored
@@ -368,6 +373,99 @@ export const reorderLines = mutation({
         await ctx.db.patch(line._id, { sortOrder: i });
       }
     }
+    return null;
+  },
+});
+
+/**
+ * Human-confirmed dedup (PR6a): legacy data often contains a manual
+ * `budgetLines` row that duplicates an `eventItems` cost row (the same
+ * expense, entered twice to satisfy two different views before the event
+ * cost grid unified them — `moneyViews.ts`'s `possibleDuplicate` heuristic
+ * flags the collision but deliberately never auto-deletes; token overlap on a
+ * label is too weak a signal to touch money rows unattended). This mutation
+ * is the human's confirmation: fold ONE flagged line into the item it
+ * duplicates.
+ *
+ * Effect is intentionally narrow — the item's own cost value (its module
+ * `fields[costKey]`) is untouched and stays the planned amount; the line only
+ * contributes its category (plan metadata the module side has no field for)
+ * when the item doesn't already have one, then the line itself is deleted
+ * (mirroring `removeLine`). No `sourceRef` is written — that link schema is
+ * retired in a later cleanup PR alongside the UI merge button; this mutation
+ * is the standalone backend half.
+ *
+ * Gating requires BOTH: line-write access on the line's own budget
+ * (`requireLineWriteAccess`, bookkeeper+ at the budget's scope — reused
+ * as-is) AND event-edit access on the item's event (`requireEvent`, the same
+ * gate `items.ts`'s own mutations call directly with no extra role check —
+ * see `addEventItem`/`updateEventItem`). A caller who only clears one side is
+ * rejected; a plan line and the item it's merging into can belong to
+ * different roles' reach (a central-budget bookkeeper vs. a chapter's event
+ * editor), so neither gate alone is sufficient.
+ */
+export const mergeLineIntoItem = mutation({
+  args: {
+    lineId: v.id("budgetLines"),
+    itemId: v.id("eventItems"),
+  },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    const chapterId = (await requireChapterId(ctx)) as Id<"chapters">;
+
+    const line = await ctx.db.get(args.lineId);
+    if (!line) {
+      throw new ConvexError({ code: "NOT_FOUND", message: "Budget line not found." });
+    }
+    const budget = await loadOwningBudget(ctx, chapterId, line.budgetId);
+    await requireLineWriteAccess(ctx, chapterId, budget);
+
+    const item = await ctx.db.get(args.itemId);
+    if (!item) {
+      throw new ConvexError({ code: "NOT_FOUND", message: "Event item not found." });
+    }
+    const event = await requireEvent(ctx, item.eventId);
+
+    // Sanity: a line can only merge into an item on ITS OWN event — the
+    // line's budget must be a one_time EVENT budget scoped to this exact
+    // event (rejects a recurring/central-category budget's line, a budget
+    // scoped to a DIFFERENT event, and a project budget).
+    if (budget.refKind !== "event" || budget.scopeRefId !== (event._id as string)) {
+      throw new ConvexError({
+        code: "EVENT_MISMATCH",
+        message: "This plan line isn't on this item's event — it can't be merged here.",
+      });
+    }
+
+    // The one cross-file write: patching eventItems' plan-view category from
+    // budgetLines.ts is data, not code ownership (see PR6a scope note). Must
+    // clear the SAME bar `items.ts#updateEventItem` enforces on this exact
+    // field (tenancy AND active) — not just this file's own (tenancy-only)
+    // `verifyCategory`, which governs a LINE's own categoryId, a looser
+    // invariant than an ITEM's. Two proven exploit shapes without this:
+    // (a) a central budget's line can carry a category from a DIFFERENT
+    // chapter than the event's (verified against the CALLER's chapter at
+    // add-time, not the event's), and (b) a category can be deactivated
+    // after the line was created. Re-verify against the ITEM's own chapter
+    // right here rather than trusting the line's stored categoryId.
+    if (line.categoryId && !item.budgetCategoryId) {
+      let categoryUsable = false;
+      try {
+        await verifyCategory(ctx, event.chapterId, line.categoryId);
+        const category = await ctx.db.get(line.categoryId);
+        categoryUsable = category?.isActive !== false;
+      } catch {
+        categoryUsable = false;
+      }
+      if (categoryUsable) {
+        await ctx.db.patch(args.itemId, { budgetCategoryId: line.categoryId });
+      }
+      // A bad/foreign/inactive category shouldn't block the dedup — the
+      // user's intent here is "merge this duplicate away", not "set this
+      // category". Skip the copy, still delete the line below (matches
+      // PR #232's drop-silently choice for an unusable category).
+    }
+    await ctx.db.delete(args.lineId);
     return null;
   },
 });
