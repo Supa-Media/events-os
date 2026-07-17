@@ -410,3 +410,32 @@ export async function manageablePersonIds(
   const index = await loadSeatManagerIndex(ctx, chapterId);
   return subtreeIds(buildEffectiveChildrenOf(index, people), viewer);
 }
+
+/**
+ * Whether the CALLER has EDIT rights on `event` — its owner (`ownerPersonId`),
+ * anyone who MANAGES that owner through the reporting chain
+ * (`manageablePersonIds`, the SAME write-reach `checkIns.log`/
+ * `projects.remove`/event-role reassignment already use), or a chapter admin
+ * (`manageablePersonIds` returns `null`). Mirrors the `iAmEventOwner` /
+ * `iManageEventOwner` pair `events.ts`'s todo-list query already computes
+ * inline for "yours vs. overseeing" — extracted here so a WRITE gate outside
+ * `events.ts` (e.g. a scoped finance carve-out) can reuse the exact same
+ * "who leads this event" definition instead of re-deriving it.
+ *
+ * An event with NO `ownerPersonId` set has no lead beyond a chapter admin —
+ * returns `false` for everyone else, never a throw, so a caller can compose
+ * this into a broader OR-gate ("finance role OR event edit rights") without
+ * an early exception short-circuiting the other branch.
+ */
+export async function callerHasEventEditRights(
+  ctx: QueryCtx,
+  event: Doc<"events">,
+): Promise<boolean> {
+  const chapterId = event.chapterId as Id<"chapters">;
+  const manageable = await manageablePersonIds(ctx, chapterId);
+  if (manageable === null) return true; // chapter admin
+  const me = await viewerPerson(ctx, chapterId);
+  if (!me || !event.ownerPersonId) return false;
+  if (String(event.ownerPersonId) === String(me._id)) return true; // the owner themself
+  return manageable.has(event.ownerPersonId as Id<"people">); // manages the owner
+}

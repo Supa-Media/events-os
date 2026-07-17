@@ -53,6 +53,7 @@ import {
 import { getChapterIdOrNull } from "./lib/context";
 import { requireFinanceRole, getFinanceRole, type FinanceAccess } from "./lib/finance";
 import { effectiveCapCents } from "./finances";
+import { callerHasEventEditRights } from "./lib/org";
 
 // A generous bound on budgets-per-ref / lines-per-budget / txns-per-budget —
 // human-authored plans and a single event/project's spend, never a synced
@@ -192,6 +193,13 @@ const moneyTxnSummary = v.object({
   merchantName: v.union(v.string(), v.null()),
   description: v.union(v.string(), v.null()),
   categoryId: v.union(v.id("budgetCategories"), v.null()),
+  // Note/receipt state — surfaced so the Money tab's "Recent transactions"
+  // section (a reconcile-lite view, owner decision 2026-07-17) can render
+  // the current note + receipt status without a second round-trip. Mirrors
+  // `finances.ts#toTxnSummary`'s own fields exactly.
+  note: v.union(v.string(), v.null()),
+  hasReceipt: v.boolean(),
+  reminderStage: v.union(v.literal("none"), v.literal("flagged"), v.literal("escalated")),
 });
 
 function toMoneyTxnSummary(tr: Doc<"transactions">) {
@@ -204,6 +212,9 @@ function toMoneyTxnSummary(tr: Doc<"transactions">) {
     merchantName: tr.merchantName ?? null,
     description: tr.description ?? null,
     categoryId: tr.categoryId ?? null,
+    note: tr.note ?? null,
+    hasReceipt: tr.receiptStorageId != null,
+    reminderStage: tr.receiptReminderStage ?? ("none" as const),
   };
 }
 
@@ -280,6 +291,15 @@ export const refMoney = query({
     // empty shape so the "Add budget" affordance can render before any
     // budget row is created.
     canSummonBudget: v.boolean(),
+    // Whether the caller can act on `transactions` below — note/receipt/
+    // category ONLY, never reattribution/amount/status (owner decision,
+    // 2026-07-17). True for bookkeeper+ (mirrors `budget.canEditPlan`'s own
+    // gate) OR — new — a caller with EVENT EDIT rights on THIS event
+    // (`callerHasEventEditRights`, event refKind only; always `false` for a
+    // project ref, which has no "lead" concept). A client-side DISPLAY hint
+    // only — the real boundary is each mutation's own server-side gate
+    // (`finances.ts#requireTxnNoteReceiptCategoryAccess`).
+    canEditTransactions: v.boolean(),
   }),
   handler: async (ctx, args) => {
     const empty = {
@@ -297,6 +317,7 @@ export const refMoney = query({
       lineCount: 0,
       incomeCents: 0,
       canSummonBudget: false,
+      canEditTransactions: false,
     };
 
     const authz = await resolveRefAuthz(ctx, args.refKind, args.refId);
@@ -472,6 +493,17 @@ export const refMoney = query({
       .slice(0, 50)
       .map(toMoneyTxnSummary);
 
+    const canEditPlanValue = canEditBudgetPlan(authz, primary.chapterId);
+    // `canEditTransactions`: bookkeeper+ (same gate as the plan above) OR —
+    // new, owner decision 2026-07-17 — event edit rights on THIS event. Only
+    // resolved via the (extra) event-edit lookup when the finance-role gate
+    // already failed, so a bookkeeper+ caller never pays for it.
+    let canEditTransactions = canEditPlanValue;
+    if (!canEditTransactions && args.refKind === "event") {
+      const event = await ctx.db.get(args.refId as Id<"events">);
+      if (event) canEditTransactions = await callerHasEventEditRights(ctx, event);
+    }
+
     return {
       refKind: args.refKind,
       refId: args.refId,
@@ -484,7 +516,7 @@ export const refMoney = query({
         approvedCents: primary.approvedCents ?? null,
         requestedCents: primary.amountCents,
         reviewNote: primary.reviewNote ?? null,
-        canEditPlan: canEditBudgetPlan(authz, primary.chapterId),
+        canEditPlan: canEditPlanValue,
       },
       categories,
       unplannedCents,
@@ -496,6 +528,7 @@ export const refMoney = query({
       lineCount: lines.length,
       incomeCents,
       canSummonBudget: false,
+      canEditTransactions,
     };
   },
 });
