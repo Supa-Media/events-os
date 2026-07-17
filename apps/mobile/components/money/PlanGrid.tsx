@@ -148,6 +148,15 @@ function parseRowId(id: string): { kind: "event_item" | "vendor" | "budget_line"
   return { kind: kind as "event_item" | "vendor" | "budget_line", refId };
 }
 
+/**
+ * Hook-free dispatcher — picks the mode-specific component by `source.kind`
+ * WITHOUT calling any hooks itself, so neither branch's hook sequence is
+ * ever conditionally skipped (a `PlanGrid` instance can be re-rendered with
+ * a different `source.kind` — e.g. a budget-less project that just summoned
+ * its budget switches props on the SAME call site — which would otherwise
+ * trip `react-hooks/rules-of-hooks`: `BudgetPlanGrid` and `EventPlanGrid`
+ * each own their full, unconditional hook list).
+ */
 export function PlanGrid({
   source,
   budgetId,
@@ -167,6 +176,18 @@ export function PlanGrid({
   if (source.kind === "budget") {
     return <BudgetPlanGrid source={source} budgetId={budgetId} capCents={capCents} />;
   }
+  return <EventPlanGrid source={source} budgetId={budgetId} capCents={capCents} />;
+}
+
+function EventPlanGrid({
+  source,
+  budgetId,
+  capCents,
+}: {
+  source: Extract<PlanGridSource, { kind: "event" }>;
+  budgetId: Id<"budgets"> | null;
+  capCents: number | null;
+}) {
   const eventId = source.eventId;
   const router = useRouter();
   const data = useQuery(api.moneyViews.eventCostGrid, { eventId });
@@ -841,11 +862,15 @@ function BudgetPlanGrid({
     [categoryOptions],
   );
 
+  // `sortOrder`, NOT alphabetical — `listLines` already returns lines in
+  // that order (see `budgetLines.ts#loadLines`), and `BudgetLineItemsEditor`
+  // (what this replaces) preserved it as-is. Re-sorting by label would make
+  // rows jump around on every add/rename, which the old editor never did.
   const rows: GridRow[] = useMemo(() => {
     if (!lines) return [];
-    return lines
-      .map((l) => lineToGridRow(l, l.categoryId ? (categoryNameById.get(l.categoryId) ?? "Uncategorized") : "Uncategorized"))
-      .sort((a, b) => a.label.localeCompare(b.label));
+    return [...lines]
+      .sort((a, b) => a.sortOrder - b.sortOrder)
+      .map((l) => lineToGridRow(l, l.categoryId ? (categoryNameById.get(l.categoryId) ?? "Uncategorized") : "Uncategorized"));
   }, [lines, categoryNameById]);
 
   const totalPlannedCents = useMemo(
