@@ -167,6 +167,7 @@ export const TRANSACTION_SOURCES = [
   "repayment", // an offsetting credit from a personal-charge repayment
   "skim", // a leg of the monthly chapter→central City Launch Fund skim (WP-4.1)
   "launch_grant", // a leg of a one-time central→chapter launch grant (WP-4.2)
+  "settlement", // a leg of a monthly central↔chapter inter-scope settlement (WP-4.5)
 ] as const;
 export type TransactionSource = (typeof TRANSACTION_SOURCES)[number];
 
@@ -783,11 +784,14 @@ export function skimAmountCents(monthlyBackerRevenueCents: number): number {
   return Math.round(monthlyBackerRevenueCents * CENTRAL_SKIM_PCT);
 }
 
-/** The two directions money flows between a chapter and central. Stored on the
+/** The kinds of money movement between a chapter and central. Stored on the
  *  transfer legs as `transactions.source` (mirroring `reimbursement`), so a leg
  *  is self-describing and the City Launch Fund position is a simple sum by
- *  source over central-scope legs — no group-id prefix parsing. */
-export const TRANSFER_KINDS = ["skim", "launch_grant"] as const;
+ *  source over central-scope legs — no group-id prefix parsing. `settlement`
+ *  (WP-4.5) is the third kind: it true-ups the net cash imbalance created by
+ *  cross-scope attribution (a card on one scope's account paying for the
+ *  other scope's budget) — see `settlementTransferGroupId` below. */
+export const TRANSFER_KINDS = ["skim", "launch_grant", "settlement"] as const;
 export type TransferKind = (typeof TRANSFER_KINDS)[number];
 
 /**
@@ -840,4 +844,30 @@ export function launchTemplateTotalCents(): number {
     (sum, line) => sum + Math.max(0, line.amountCents),
     0,
   );
+}
+
+// ── Inter-scope settlement balances (WP-4.5) ──────────────────────────────────
+// Owner policy: "Your card determines whose account paid; reconcile determines
+// whose budget it was; Central settles the difference monthly alongside the
+// skim." Cards stay account-scoped (cash physics) but attribution (a txn's
+// `budgetId`) crosses scopes freely — a chapter's card can pay for a central
+// budget line. That creates a net CASH imbalance between the two accounts,
+// separate from the skim: a `settlement` transfer pair (like a skim/launch
+// grant) true-ups the difference. See `apps/convex/transfers.ts#interScopeBalances`
+// for the ledger-derived balance computation.
+
+/**
+ * The deterministic id shared by both legs of ONE MONTH's settlement between
+ * central and a chapter — one per (chapter, year, month), regardless of
+ * direction (a settlement can run either way in a given month). Doubles as
+ * the Increase `Idempotency-Key` and the re-record guard, so a given month's
+ * settlement can be recorded/initiated exactly once, mirroring
+ * `skimTransferGroupId`.
+ */
+export function settlementTransferGroupId(
+  chapterId: string,
+  year: number,
+  month: number,
+): string {
+  return `settle-${chapterId}-${year}-${String(month).padStart(2, "0")}`;
 }

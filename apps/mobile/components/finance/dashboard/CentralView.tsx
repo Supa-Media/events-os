@@ -30,13 +30,18 @@ type CentralBudget = CentralDash["centralBudgets"][number];
 export function CentralView({
   data,
   year,
+  month,
   onViewChapter,
   onNewBudget,
   onRecordTransfer,
+  onSettle,
 }: {
   data: CentralDash;
   /** The dashboard's currently-selected year (R1d — see `spentByBudgetId`). */
   year: number;
+  /** The dashboard's currently-selected (through-)month — WP-4.5's inter-scope
+   *  balances section reads the same {year, month} the dashboard is showing. */
+  month: number;
   /** Drill into one chapter's chapter-perspective dashboard (central-only —
    *  the backend re-checks central reach via `dashboardChapter({chapterId})`). */
   onViewChapter: (chapterId: Id<"chapters">, chapterName: string) => void;
@@ -44,6 +49,10 @@ export function CentralView({
   onNewBudget: () => void;
   /** Open `TransferRecordModal` (record/initiate a skim in or a grant out). */
   onRecordTransfer: () => void;
+  /** WP-4.5: open `TransferRecordModal` PRESET to a settlement for this
+   *  chapter — `netCents` carries both the amount and direction (positive =
+   *  central pays the chapter, negative = the chapter pays central). */
+  onSettle: (chapterId: Id<"chapters">, chapterName: string, netCents: number) => void;
 }) {
   // The "By chapter" rollup's Central row (chapterId === CENTRAL, always
   // present — see `dashboardCentral`) vs the real per-chapter rows.
@@ -149,6 +158,12 @@ export function CentralView({
           transfer. Ledger-derived (skim inflow − launch outflow). */}
       <CityLaunchFundCard fund={data.cityLaunchFund} onRecordTransfer={onRecordTransfer} />
 
+      {/* Inter-chapter balances (WP-4.5): the cash imbalance created when a
+          chapter's card pays for a central budget line (or vice versa) —
+          separate from the skim, "settle alongside" it. Read-only until a
+          human taps Settle; visible-but-unsettled otherwise (owner policy). */}
+      <InterScopeBalancesSection year={year} month={month} onSettle={onSettle} />
+
       {/* Org-wide (central) budgets — spend across every chapter. */}
       <SectionHeader
         title="Central budgets"
@@ -243,6 +258,54 @@ function CityLaunchFundCard({
           {formatCents(fund.periodNetCents)} this period
         </Text>
       ) : null}
+    </View>
+  );
+}
+
+// WP-4.5: "Your card determines whose account paid; reconcile determines
+// whose budget it was; Central settles the difference monthly alongside the
+// skim." Only chapters with a NONZERO net render a row — a zero balance is
+// nothing to settle. Positive `netCents` = central owes the chapter; negative
+// = the chapter owes central (displayed with `Math.abs`).
+function InterScopeBalancesSection({
+  year,
+  month,
+  onSettle,
+}: {
+  year: number;
+  month: number;
+  onSettle: (chapterId: Id<"chapters">, chapterName: string, netCents: number) => void;
+}) {
+  const balances =
+    useQuery(api.transfers.interScopeBalances, { year, month }) ?? [];
+  const owed = balances.filter((b) => b.netCents !== 0);
+  if (owed.length === 0) return null;
+  return (
+    <View className="mb-3 rounded-lg border border-border bg-raised p-4 shadow-card">
+      <Text className="font-display text-base text-ink">Inter-chapter balances</Text>
+      <Text className="mb-3 text-xs text-muted">
+        Settle alongside the monthly skim.
+      </Text>
+      <View className="gap-2">
+        {owed.map((b) => (
+          <View
+            key={b.chapterId}
+            className="flex-row items-center justify-between gap-3"
+          >
+            <Text className="flex-1 text-sm text-ink" numberOfLines={2}>
+              {b.netCents > 0
+                ? `Central owes ${b.chapterName} ${formatCents(b.netCents)}`
+                : `${b.chapterName} owes central ${formatCents(Math.abs(b.netCents))}`}
+            </Text>
+            <Button
+              title="Settle"
+              size="sm"
+              variant="secondary"
+              onPress={() => onSettle(b.chapterId, b.chapterName, b.netCents)}
+            />
+          </View>
+        ))}
+      </View>
     </View>
   );
 }

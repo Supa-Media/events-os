@@ -299,13 +299,25 @@ export const transactions = defineTable({
   engagementId: v.optional(v.id("engagements")),
   cardId: v.optional(v.id("cards")),
   reimbursementId: v.optional(v.id("reimbursementRequests")),
-  // WP-4.1/4.2: the shared reference linking the two legs of a central↔chapter
-  // transfer pair (a skim or a launch grant). Both legs carry the SAME
-  // deterministic id (see `skimTransferGroupId`/`launchTransferGroupId`), which
-  // also serves as the Increase account-transfer Idempotency-Key + the
-  // re-record guard. The leg's `source` (`skim`/`launch_grant`) names the kind;
-  // its `chapterId` (a real chapter vs the `"central"` sentinel) names the side.
+  // WP-4.1/4.2/4.5: the shared reference linking the two legs of a
+  // central↔chapter transfer pair (a skim, launch grant, or settlement). Both
+  // legs carry the SAME deterministic id (see `skimTransferGroupId`/
+  // `launchTransferGroupId`/`settlementTransferGroupId`), which also serves as
+  // the Increase account-transfer Idempotency-Key + the re-record guard. The
+  // leg's `source` (`skim`/`launch_grant`/`settlement`) names the kind; its
+  // `chapterId` (a real chapter vs the `"central"` sentinel) names the side.
   transferGroupId: v.optional(v.string()),
+  // WP-4.5 ONLY: which way a `settlement` pair moved money — `skim`/
+  // `launch_grant` never need this (their direction is FIXED by kind: a skim
+  // is always chapter→central, a launch grant always central→chapter), but a
+  // settlement can true-up the imbalance either way, and both legs otherwise
+  // carry identical `flow:"transfer"` + `source:"settlement"` with no way to
+  // tell which side paid. Both legs of a pair carry the SAME value (it
+  // describes the pair, not the individual leg) — a reader resolves "did MY
+  // scope give or receive" by comparing its own `chapterId` against this.
+  transferDirection: v.optional(
+    v.union(v.literal("central_to_chapter"), v.literal("chapter_to_central")),
+  ),
 
   status: v.union(...TRANSACTION_STATUSES.map((s) => v.literal(s))),
 
