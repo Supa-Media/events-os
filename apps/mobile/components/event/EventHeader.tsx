@@ -6,6 +6,7 @@ import {
   TextInput,
   Platform,
   Dimensions,
+  useWindowDimensions,
 } from "react-native";
 import {
   Card,
@@ -145,107 +146,140 @@ export function EventHeader({
   onSelectPhase?: (phase: PhaseKey) => void;
   activePhase?: PhaseKey | null;
 }) {
+  // Desktop keeps the original two-column header (vitals left, phase rings
+  // clustered top-right); mobile stacks them and turns the rings into a
+  // full-width strip under a divider, so four evenly-spread rings read as one
+  // left-to-right timeline instead of a cramped corner cluster.
+  const { width } = useWindowDimensions();
+  const compact = width < 760;
+
+  const vitals = (
+    <>
+      {/* Event type eyebrow — only when it says something the title doesn't. */}
+      {eventTypeName && eventTypeName !== event.name ? (
+        <Text className="-mb-1 text-xs font-bold uppercase tracking-wider text-accent">
+          {eventTypeName}
+        </Text>
+      ) : null}
+
+      {/* Row 1 — title + status pill */}
+      <View className="flex-row flex-wrap items-center gap-2.5">
+        <TitleInput
+          value={nameValue}
+          onChangeText={onChangeName}
+          onBlur={onSaveName}
+        />
+        <StatusPill status={event.status as EventStatus} onSetStatus={onSetStatus} />
+      </View>
+
+      {/* Row 2 — the quiet meta line: date · location · budget. Each
+          "· segment" pair is grouped so a wrap never strands a dot at a
+          line start; the zIndex lifts the row (and the location
+          autocomplete dropdown inside it) above the people row below. */}
+      <View
+        className="flex-row flex-wrap items-center gap-x-1.5 gap-y-1"
+        style={{ zIndex: 20 }}
+      >
+        <DateSeg eventDate={event.eventDate} onReschedule={onReschedule} />
+        <View
+          className="flex-row items-center gap-x-1.5"
+          style={{ flexShrink: 1, minWidth: 0 }}
+        >
+          <MetaDot />
+          <LocationSeg
+            location={event.location ?? null}
+            value={locationValue}
+            onChangeText={onChangeLocation}
+            onSave={onSaveLocation}
+          />
+        </View>
+        <View className="flex-row items-center gap-x-1.5">
+          <MetaDot />
+          <BudgetSeg
+            budget={event.budget ?? null}
+            spent={budgetSpent}
+            pct={budgetPct}
+            value={budgetValue}
+            onChangeText={onChangeBudget}
+            onSave={onSaveBudget}
+          />
+        </View>
+        {/* Training events have no money life (the #172 invariant) — every
+            other Money entry point (EventTools' ⋯ menu, the Money tab
+            itself) hides accordingly, so the header chip does too. */}
+        {event.isTraining === true ? null : (
+          <View className="flex-row items-center gap-x-1.5">
+            <MetaDot />
+            <ScopeSeg
+              scope={scope}
+              scopeChapterName={scopeChapterName}
+              homeChapterName={homeChapterName}
+              canChangeScope={canChangeScope}
+              onChangeScope={onChangeScope}
+            />
+          </View>
+        )}
+      </View>
+
+      {/* Row 3 — people: owner, assigned roles, folded open roles, ＋ */}
+      <PeopleRow
+        owner={owner}
+        roleRows={roleRows}
+        onOpenOwner={onOpenOwner}
+        onPickRole={onPickRole}
+        onRenameRole={onRenameRole}
+        onDeleteRole={onDeleteRole}
+        onAddRole={onAddRole}
+      />
+    </>
+  );
+
+  const rings = (
+    <PhaseBreakdown
+      phases={phases}
+      expected={expectedPhases}
+      pace={pacePhases}
+      size={compact ? 44 : 48}
+      spread={compact}
+      onSelectPhase={onSelectPhase}
+      activePhase={activePhase}
+    />
+  );
+  const pacePill = (
+    <PacePill
+      pace={pacePhases}
+      open={whatsNextOpen}
+      onToggle={onToggleWhatsNext}
+    />
+  );
+
   return (
     // z-10 keeps overlays that escape the card (the location dropdown) above
-    // the later-in-DOM siblings below it (tab rail, grids).
+    // the later-in-DOM siblings below it (tab rail / plan list, grids).
     <Card className="z-10 mb-4">
-      <View className="flex-row flex-wrap items-start gap-x-6 gap-y-4">
-        <View className="flex-1 gap-2.5" style={{ minWidth: 280 }}>
-          {/* Event type eyebrow — only when it says something the title doesn't. */}
-          {eventTypeName && eventTypeName !== event.name ? (
-            <Text className="-mb-1 text-xs font-bold uppercase tracking-wider text-accent">
-              {eventTypeName}
-            </Text>
-          ) : null}
-
-          {/* Row 1 — title + status pill */}
-          <View className="flex-row flex-wrap items-center gap-2.5">
-            <TitleInput
-              value={nameValue}
-              onChangeText={onChangeName}
-              onBlur={onSaveName}
-            />
-            <StatusPill status={event.status as EventStatus} onSetStatus={onSetStatus} />
+      {compact ? (
+        /* Mobile — vitals stacked full width; the phase rings become a quiet
+           full-width strip under a divider, with the single pace pill. */
+        <>
+          <View className="gap-2.5">{vitals}</View>
+          <View className="mt-4 border-t border-border pt-3.5">
+            {rings}
+            <View className="mt-3 flex-row">{pacePill}</View>
           </View>
-
-          {/* Row 2 — the quiet meta line: date · location · budget. Each
-              "· segment" pair is grouped so a wrap never strands a dot at a
-              line start; the zIndex lifts the row (and the location
-              autocomplete dropdown inside it) above the people row below. */}
-          <View
-            className="flex-row flex-wrap items-center gap-x-1.5 gap-y-1"
-            style={{ zIndex: 20 }}
-          >
-            <DateSeg eventDate={event.eventDate} onReschedule={onReschedule} />
-            <View
-              className="flex-row items-center gap-x-1.5"
-              style={{ flexShrink: 1, minWidth: 0 }}
-            >
-              <MetaDot />
-              <LocationSeg
-                location={event.location ?? null}
-                value={locationValue}
-                onChangeText={onChangeLocation}
-                onSave={onSaveLocation}
-              />
-            </View>
-            <View className="flex-row items-center gap-x-1.5">
-              <MetaDot />
-              <BudgetSeg
-                budget={event.budget ?? null}
-                spent={budgetSpent}
-                pct={budgetPct}
-                value={budgetValue}
-                onChangeText={onChangeBudget}
-                onSave={onSaveBudget}
-              />
-            </View>
-            {/* Training events have no money life (the #172 invariant) — every
-                other Money entry point (EventTools' ⋯ menu, the Money tab
-                itself) hides accordingly, so the header chip does too. */}
-            {event.isTraining === true ? null : (
-              <View className="flex-row items-center gap-x-1.5">
-                <MetaDot />
-                <ScopeSeg
-                  scope={scope}
-                  scopeChapterName={scopeChapterName}
-                  homeChapterName={homeChapterName}
-                  canChangeScope={canChangeScope}
-                  onChangeScope={onChangeScope}
-                />
-              </View>
-            )}
+        </>
+      ) : (
+        /* Desktop — the original two-column header: vitals left, the phase
+           rings + pace pill clustered top-right. */
+        <View className="flex-row flex-wrap items-start gap-x-6 gap-y-4">
+          <View className="flex-1 gap-2.5" style={{ minWidth: 280 }}>
+            {vitals}
           </View>
-
-          {/* Row 3 — people: owner, assigned roles, folded open roles, ＋ */}
-          <PeopleRow
-            owner={owner}
-            roleRows={roleRows}
-            onOpenOwner={onOpenOwner}
-            onPickRole={onPickRole}
-            onRenameRole={onRenameRole}
-            onDeleteRole={onDeleteRole}
-            onAddRole={onAddRole}
-          />
+          <View className="items-end gap-2">
+            {rings}
+            {pacePill}
+          </View>
         </View>
-
-        {/* Phase readiness (right) — quiet rings + the single pace pill. */}
-        <View className="items-end gap-2">
-          <PhaseBreakdown
-            phases={phases}
-            expected={expectedPhases}
-            pace={pacePhases}
-            size={48}
-            onSelectPhase={onSelectPhase}
-            activePhase={activePhase}
-          />
-          <PacePill
-            pace={pacePhases}
-            open={whatsNextOpen}
-            onToggle={onToggleWhatsNext}
-          />
-        </View>
-      </View>
+      )}
     </Card>
   );
 }

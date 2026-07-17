@@ -132,6 +132,7 @@ export function PhaseBreakdown({
   expected,
   pace,
   size = 52,
+  spread = false,
   onSelectPhase,
   activePhase,
 }: {
@@ -141,12 +142,21 @@ export function PhaseBreakdown({
   /** Per-phase overdue tallies; omit to render without pace captions. */
   pace?: Record<PhaseKey, PhasePace | null>;
   size?: number;
+  /** Spread the rings evenly across the full width (a header strip) rather
+   *  than clustering them at their natural width (the compact right column). */
+  spread?: boolean;
   /** Tap a ring → pulse its tabs. Rings are inert when omitted. */
   onSelectPhase?: (phase: PhaseKey) => void;
   activePhase?: PhaseKey | null;
 }) {
   return (
-    <View className="flex-row flex-wrap items-start gap-x-5 gap-y-2">
+    <View
+      className={
+        spread
+          ? "flex-row items-start justify-between"
+          : "flex-row flex-wrap items-start gap-x-5 gap-y-2"
+      }
+    >
       {PHASE_KEYS.map((key) => {
         const score = phases[key];
         const target = expected?.[key];

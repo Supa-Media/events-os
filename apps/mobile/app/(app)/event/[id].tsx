@@ -1,5 +1,12 @@
 import { useMemo, useState, type ComponentProps } from "react";
-import { View, Text, Pressable, Alert, Platform } from "react-native";
+import {
+  View,
+  Text,
+  Pressable,
+  Alert,
+  Platform,
+  useWindowDimensions,
+} from "react-native";
 import { Stack, useRouter, useLocalSearchParams } from "expo-router";
 import { useQuery, useMutation } from "convex/react";
 import { api } from "@events-os/convex/_generated/api";
@@ -20,6 +27,7 @@ import { AiAssistantPanel } from "../../../components/ai/AiAssistantPanel";
 import { CrewSections } from "../../../components/event/CrewSections";
 import { EventHeader, EventTools } from "../../../components/event/EventHeader";
 import { EventTabBar, type EventTab } from "../../../components/event/EventTabBar";
+import { PlanSections } from "../../../components/event/PlanSections";
 import { EventTodos } from "../../../components/event/EventTodos";
 import { GuidesSection } from "../../../components/event/GuidesSection";
 import { SandboxScope } from "../../../components/event/SandboxScope";
@@ -63,6 +71,11 @@ export default function EventDetailScreen() {
   const { id, tab } = useLocalSearchParams<{ id: string; tab?: string }>();
   const eventId = id as Id<"events">;
   const { run, toast, dismiss } = useActionRunner();
+  // Responsive split: at/above the app's desktop breakpoint we keep the
+  // horizontal tab rail with the active section always visible; below it (and on
+  // native phones) the sections become a vertical, drill-in plan.
+  const { width } = useWindowDimensions();
+  const isMobile = width < 760;
 
   // Personal "Me view" filter — filters the tabs (and the What's-next panel)
   // down to the modules and tasks the current user owns (api.events.myWork).
@@ -302,26 +315,40 @@ export default function EventDetailScreen() {
       ? [{ key: "crew", label: "Crew & Duties" }]
       : []),
   ];
-  // With no Overview tab, unknown/missing/legacy (?tab=overview) keys land on
-  // the first area tab.
-  const fallbackTab = tabs[0]?.key ?? "crew";
-  // Tickets (the public event page) and Money (the ONE money surface for this
-  // event, retiring the old separate Budget tab) are operational TOOLS, not
-  // areas — they open from the header tools row, not the tab row, but still
-  // live at `?tab=tickets` / `?tab=money` so deep links and back/forward keep
-  // working. While one is open no tab is active (activeKey matches nothing).
-  // Any other unknown/stale key falls back to the first area tab.
+  // The event's landing view is the vertical PLAN OVERVIEW (`?tab=plan`, or no
+  // tab). Selecting a section drills in to `?tab=<key>`; unknown/missing/legacy
+  // (`?tab=overview`) keys fall back to the overview.
+  const PLAN = "plan";
+  // Tickets (the public event page), Gear, and Money (the ONE money surface for
+  // this event, retiring the old separate Budget tab) are operational TOOLS,
+  // not areas — they open from the overview tools row but live at
+  // `?tab=tickets|gear|money` so deep links and back/forward keep working.
+  // Money is hidden from that row for training events (the #172 invariant), so a
+  // stale/hand-typed `?tab=money` must not bypass it.
   const activeTab =
     tab === "tickets" ||
     tab === "gear" ||
-    // Money is hidden from the tools row for training events (the #172
-    // invariant) — a stale/hand-typed `?tab=money` deep link must not bypass
-    // that by opening the tool anyway.
     (tab === "money" && event.isTraining !== true)
       ? tab
       : tabs.some((t) => t.key === tab)
         ? (tab as string)
-        : fallbackTab;
+        : // Mobile lands on the plan overview; desktop has no overview, so it
+          // opens the first area with the tab rail visible.
+          isMobile
+          ? PLAN
+          : (tabs[0]?.key ?? "crew");
+  // The plan overview is a MOBILE-only surface; on desktop a real section is
+  // always active, so `isOverview` is never true there.
+  const isOverview = isMobile && activeTab === PLAN;
+  // Label shown on a drilled-in section's back bar.
+  const activeSectionLabel =
+    activeTab === "tickets"
+      ? "Event page"
+      : activeTab === "gear"
+        ? "Gear"
+        : activeTab === "money"
+          ? "Money"
+          : (tabs.find((t) => t.key === activeTab)?.label ?? "Section");
   // Custom event-module rows, keyed by module key, so a rollup row can resolve
   // its `eventModules` id for deletion.
   const customModuleIdByKey = new Map(
@@ -482,6 +509,36 @@ export default function EventDetailScreen() {
     ]);
   }
 
+  // Enrich each tab into a plan-overview row: its phase/progress (already on the
+  // tab) plus the resolved owner, done/total, and an overdue flag (soonest due
+  // in the past with work remaining). The Crew tab reads the expectations
+  // module's summary/owner.
+  const nowTs = Date.now();
+  const planSections = tabs.map((t) => {
+    const modKey = t.key === "crew" ? "volunteer_expectations" : t.key;
+    const summary = summaryByModule.get(modKey);
+    const ready = readyByModule.get(modKey) ?? false;
+    const mod = activeModules.find((m) => m.key === modKey);
+    const ownerName = mod ? (moduleOwner(mod)?.person?.name ?? null) : null;
+    const overdue =
+      !ready &&
+      summary?.nextDueDate != null &&
+      summary.nextDueDate < nowTs &&
+      (summary.done ?? 0) < (summary.total ?? 0);
+    return {
+      key: t.key,
+      label: t.label,
+      phase: t.phase,
+      progress: t.progress,
+      done: summary?.done,
+      total: summary?.total,
+      hasStatus: summary?.hasStatus,
+      ready,
+      ownerName,
+      overdue,
+    };
+  });
+
   return (
     // Training sandboxes scope every person picker below (roles, grid cells,
     // crew) to the learner + placeholder people — enforced server-side; the
@@ -502,6 +559,11 @@ export default function EventDetailScreen() {
           <Text className="text-sm font-medium text-muted">Events</Text>
         </Pressable>
 
+        {/* Header + What's-next show on desktop (always) and on the mobile plan
+            overview. A drilled-in mobile section shows a compact back bar
+            instead, since that section's own content headlines the screen. */}
+        {!isMobile || isOverview ? (
+          <>
         {/* Workspace header — everything from the old Overview edits inline
             here: title, status pill, date/location/budget meta line, and the
             owner + roles row. The pace pill toggles the What's-next panel. */}
@@ -610,81 +672,122 @@ export default function EventDetailScreen() {
           )
         ) : null}
 
-        {/* Module navigation — same tab bar on web + mobile (scrolls on
-            phones); the operational tools ride the same rail, pinned right. */}
-        <EventTabBar
-          tabs={tabs}
-          activeKey={activeTab}
-          highlightPhase={pulsePhase}
-          onSelect={(key) => router.setParams({ tab: key })}
-          trailing={
-            <EventTools
-              eventId={eventId}
-              onDayOf={() => router.push(`/event/${eventId}/day-of`)}
-              onTickets={() => router.setParams({ tab: "tickets" })}
-              ticketsActive={activeTab === "tickets"}
-              onGear={() => router.setParams({ tab: "gear" })}
-              gearActive={activeTab === "gear"}
-              onMoney={() => router.setParams({ tab: "money" })}
-              moneyActive={activeTab === "money"}
-              isTraining={event.isTraining === true}
-              onSongs={() => router.push(`/event/${eventId}/songs`)}
-              meView={meView}
-              onToggleMeView={() => setMeView((v) => !v)}
-              onDelete={confirmDelete}
-            />
-          }
-          addModule={
-            meView
-              ? undefined
-              : {
-                  disabledCore: moduleData?.disabledCore ?? [],
-                  onEnableCore: (key) =>
-                    void run(
-                      () => toggleCoreModule({ eventId, key, enabled: true }),
-                      { errorTitle: "Couldn't enable area" },
-                    ),
-                  onCreateCustom: (label) =>
-                    void run(() => createCustomModule({ eventId, label }), {
-                      errorTitle: "Couldn't add area",
-                    }),
-                }
-          }
-        />
+          </>
+        ) : (
+          /* A drilled-in mobile section — a compact way back to the plan; the
+             section body renders full-width below. */
+          <View className="mb-4 flex-row items-center gap-2.5">
+            <Pressable
+              onPress={() => router.setParams({ tab: PLAN })}
+              className="flex-row items-center gap-1.5 rounded-pill border border-border bg-raised px-3 py-1.5 active:opacity-80"
+            >
+              <Icon name="arrow-left" size={15} color={colors.ink} />
+              <Text className="text-sm font-semibold text-ink">Plan</Text>
+            </Pressable>
+            <Text
+              className="min-w-0 flex-1 font-display text-lg text-ink"
+              numberOfLines={1}
+            >
+              {activeSectionLabel}
+            </Text>
+          </View>
+        )}
+
+        {/* Navigation — desktop keeps the horizontal tab rail with the active
+            section always visible below it; the mobile plan overview uses the
+            vertical section list; a drilled-in mobile section shows neither
+            (its body renders below). */}
+        {!isMobile ? (
+          <EventTabBar
+            tabs={tabs}
+            activeKey={activeTab}
+            highlightPhase={pulsePhase}
+            onSelect={(key) => router.setParams({ tab: key })}
+            trailing={
+              <EventTools
+                eventId={eventId}
+                onDayOf={() => router.push(`/event/${eventId}/day-of`)}
+                onTickets={() => router.setParams({ tab: "tickets" })}
+                ticketsActive={activeTab === "tickets"}
+                onGear={() => router.setParams({ tab: "gear" })}
+                gearActive={activeTab === "gear"}
+                onMoney={() => router.setParams({ tab: "money" })}
+                moneyActive={activeTab === "money"}
+                isTraining={event.isTraining === true}
+                onSongs={() => router.push(`/event/${eventId}/songs`)}
+                meView={meView}
+                onToggleMeView={() => setMeView((v) => !v)}
+                onDelete={confirmDelete}
+              />
+            }
+            addModule={
+              meView
+                ? undefined
+                : {
+                    disabledCore: moduleData?.disabledCore ?? [],
+                    onEnableCore: (key) =>
+                      void run(
+                        () => toggleCoreModule({ eventId, key, enabled: true }),
+                        { errorTitle: "Couldn't enable area" },
+                      ),
+                    onCreateCustom: (label) =>
+                      void run(() => createCustomModule({ eventId, label }), {
+                        errorTitle: "Couldn't add area",
+                      }),
+                  }
+            }
+          />
+        ) : isOverview ? (
+          <PlanSections
+            sections={planSections}
+            onSelect={(key) => router.setParams({ tab: key })}
+            tools={
+              <EventTools
+                eventId={eventId}
+                onDayOf={() => router.push(`/event/${eventId}/day-of`)}
+                onTickets={() => router.setParams({ tab: "tickets" })}
+                ticketsActive={false}
+                onGear={() => router.setParams({ tab: "gear" })}
+                gearActive={false}
+                onMoney={() => router.setParams({ tab: "money" })}
+                moneyActive={false}
+                isTraining={event.isTraining === true}
+                onSongs={() => router.push(`/event/${eventId}/songs`)}
+                meView={meView}
+                onToggleMeView={() => setMeView((v) => !v)}
+                onDelete={confirmDelete}
+              />
+            }
+            addModule={
+              meView
+                ? undefined
+                : {
+                    disabledCore: moduleData?.disabledCore ?? [],
+                    onEnableCore: (key) =>
+                      void run(
+                        () => toggleCoreModule({ eventId, key, enabled: true }),
+                        { errorTitle: "Couldn't enable area" },
+                      ),
+                    onCreateCustom: (label) =>
+                      void run(() => createCustomModule({ eventId, label }), {
+                        errorTitle: "Couldn't add area",
+                      }),
+                  }
+            }
+          />
+        ) : null}
         </Narrow>
 
-        {activeTab === "tickets" ? (
-
-          /* ── Tickets: the shareable public page + RSVPs/tickets admin.
-                Opened from the header tools row (no tab is active here), so
-                give an explicit way back to the planning surface. ─────────── */
+        {isOverview ? null : activeTab === "tickets" ? (
+          /* ── Tickets: the shareable public page + RSVPs/tickets admin. The
+                back-to-plan bar above is the way back. ────────────────────── */
           <Narrow>
-            <Pressable
-              onPress={() => router.setParams({ tab: fallbackTab })}
-              className="mb-2 flex-row items-center gap-1.5 self-start active:opacity-70"
-            >
-              <Icon name="arrow-left" size={15} color={colors.muted} />
-              <Text className="text-sm font-medium text-muted">
-                Back to planning
-              </Text>
-            </Pressable>
             <TicketingTab eventId={eventId} />
           </Narrow>
         ) : activeTab === "gear" ? (
-
           /* ── Gear: this event's reservations against the chapter inventory.
-                An operational tool opened from the tools row, so it gets the
-                same "Back to planning" affordance. ────────────────────────── */
+                The back-to-plan bar above is the way back. ────────────────── */
           <Narrow>
-            <Pressable
-              onPress={() => router.setParams({ tab: fallbackTab })}
-              className="mb-2 flex-row items-center gap-1.5 self-start active:opacity-70"
-            >
-              <Icon name="arrow-left" size={15} color={colors.muted} />
-              <Text className="text-sm font-medium text-muted">
-                Back to planning
-              </Text>
-            </Pressable>
             <GearTab eventId={eventId} />
           </Narrow>
         ) : activeTab === "money" ? (
@@ -695,17 +798,9 @@ export default function EventDetailScreen() {
                 assembled from the v2 budget + its planned lines + linked
                 transactions. An operational tool opened from the tools row,
                 so it gets the same "Back to planning" affordance. Training
-                events never open this (isTraining hides the tool). */
+                events never open this (isTraining hides the tool). The
+                back-to-plan bar above is the way back. */
           <Narrow>
-            <Pressable
-              onPress={() => router.setParams({ tab: fallbackTab })}
-              className="mb-2 flex-row items-center gap-1.5 self-start active:opacity-70"
-            >
-              <Icon name="arrow-left" size={15} color={colors.muted} />
-              <Text className="text-sm font-medium text-muted">
-                Back to planning
-              </Text>
-            </Pressable>
             <SectionHeader
               title="Money"
               right={
@@ -791,6 +886,9 @@ export default function EventDetailScreen() {
                 ready={readyByModule.get(m.key) ?? false}
                 onAssignOwner={() => openOwnerPicker(m)}
                 filterItemIds={filterItemIds}
+                // Mobile drills into one section under a back bar that already
+                // names it — suppress the section's own (duplicate) title there.
+                hideTitle={isMobile}
               />
             );
           })()
