@@ -1,5 +1,7 @@
 import { ActivityIndicator, Text, View } from "react-native";
-import { SEAT_ROOT } from "@events-os/shared";
+import { useQuery } from "convex/react";
+import { api } from "@events-os/convex/_generated/api";
+import { RESPONSIBILITY_CADENCE_LABELS, SEAT_ROOT } from "@events-os/shared";
 import { Avatar, Badge, Card, EmptyState, SectionHeader } from "../ui";
 import { colors } from "../../lib/theme";
 import { SeatActionsPanel } from "./SeatActions";
@@ -18,6 +20,12 @@ import {
  * column). Shows scope + holder-count, the seat title, who holds it, its
  * duties, its powers (capabilities translated to plain language), and who it
  * reports to (computed client-side in `treeUtils.computeReportsTo`).
+ *
+ * DUTIES come from `responsibilities.dutiesForSeat` — the REAL duties mapped
+ * to this seat in Work → Duties (title + cadence) — NOT `detail.duties`
+ * (`seatDefs.duties`), which is a seeded TEMPLATE string list the owner calls
+ * "fake duties". That field stays in the schema (still editable nowhere —
+ * see `StructureEditor.tsx`'s doc comment) but is never rendered here.
  *
  * Adds two OPTIONAL interactive layers on top of that same read-only view:
  *  - `SeatActionsPanel` (propose a change / assign directly) for any
@@ -55,6 +63,14 @@ export function SeatDetailPanel({
    *  now-nonexistent selection. */
   onSeatRemoved?: () => void;
 }) {
+  // Hooks run unconditionally, before the early returns below (rules of
+  // hooks) — `"skip"` while there's no seat selected yet, same pattern
+  // `org-chart.tsx` uses for `seats.seatDetail` itself.
+  const duties = useQuery(
+    api.responsibilities.dutiesForSeat,
+    selected ? { seatDefId: selected.seat.defId } : "skip",
+  );
+
   if (!selected) {
     return (
       <EmptyState
@@ -118,7 +134,6 @@ export function SeatDetailPanel({
           seatTitle={detail.title}
           chart={detail.chart}
           maxHolders={detail.maxHolders}
-          duties={detail.duties}
           capabilities={detail.capabilities}
           parentSlug={selected.seat.parentSlug}
           siblingSeats={chartSeatOptions}
@@ -143,14 +158,23 @@ export function SeatDetailPanel({
       )}
 
       <SectionHeader title="Duties" />
-      {detail.duties.length === 0 ? (
-        <Text className="text-sm text-muted">None attached yet.</Text>
+      {duties === undefined ? (
+        <View className="items-start py-2">
+          <ActivityIndicator size="small" color={colors.accent} />
+        </View>
+      ) : duties.length === 0 ? (
+        <Text className="text-sm text-muted">
+          No duties mapped yet — attach them in Work → Duties.
+        </Text>
       ) : (
         <View className="gap-1.5">
-          {detail.duties.map((d, i) => (
-            <View key={i} className="flex-row items-start gap-2">
-              <Text className="mt-0.5 text-sm text-muted">·</Text>
-              <Text className="flex-1 text-sm text-ink">{d}</Text>
+          {duties.map((d) => (
+            <View key={d.id} className="flex-row items-start justify-between gap-2">
+              <View className="flex-row items-start gap-2">
+                <Text className="mt-0.5 text-sm text-muted">·</Text>
+                <Text className="flex-1 text-sm text-ink">{d.title}</Text>
+              </View>
+              <Text className="text-xs text-muted">{RESPONSIBILITY_CADENCE_LABELS[d.cadence]}</Text>
             </View>
           ))}
         </View>

@@ -1,18 +1,19 @@
-import { ScrollView, Text, View } from "react-native";
+import { Text, View } from "react-native";
 import { colors } from "../../lib/theme";
 import { SeatBox, SEAT_BOX_WIDTH } from "./SeatBox";
 import { subtreeDepth, type TreeNode } from "./treeUtils";
 
 /**
- * The tree canvas: root box top-center, its FIRST level of reports laid out
+ * The tree content: root box top-center, its FIRST level of reports laid out
  * horizontally underneath with the classic "T" connector, and every level
  * below THAT rendered as a vertical, indented stack with elbow connectors
  * (space-efficient — reads as "these all report to the box above").
  *
- * Owns its OWN horizontal scroll (the page body never scrolls sideways) —
- * branches can be much wider than the screen, especially the Expansion
- * Director branch in the Full tree view once every chapter's subtree is
- * grafted underneath it.
+ * Pure content — no scrolling or pan/zoom of its own. It's rendered inside
+ * `OrgChartCanvas`'s pannable/zoomable transform layer (see `org-chart.tsx`),
+ * which owns navigating a tree that can be much wider than the screen,
+ * especially the Expansion Director branch in the Full tree view once every
+ * chapter's subtree is grafted underneath it.
  */
 export function OrgTree({
   root,
@@ -29,21 +30,17 @@ export function OrgTree({
   onAddSeat?: (node: TreeNode) => void;
 }) {
   return (
-    <View>
-      <ScrollView
-        horizontal
-        showsHorizontalScrollIndicator
-        contentContainerStyle={{ paddingHorizontal: 24, paddingVertical: 24 }}
-      >
-        <RootLevel root={root} selectedKey={selectedKey} onSelect={onSelect} onAddSeat={onAddSeat} />
-      </ScrollView>
+    <View style={{ paddingHorizontal: 24, paddingVertical: 24 }}>
+      <RootLevel root={root} selectedKey={selectedKey} onSelect={onSelect} onAddSeat={onAddSeat} />
       {orphans.length > 0 ? (
-        <UnplacedStrip
-          orphans={orphans}
-          selectedKey={selectedKey}
-          onSelect={onSelect}
-          onAddSeat={onAddSeat}
-        />
+        <View style={{ marginTop: 24 }}>
+          <UnplacedStrip
+            orphans={orphans}
+            selectedKey={selectedKey}
+            onSelect={onSelect}
+            onAddSeat={onAddSeat}
+          />
+        </View>
       ) : null}
     </View>
   );
@@ -70,8 +67,7 @@ function UnplacedStrip({
       style={{
         borderTopWidth: 1,
         borderTopColor: colors.border,
-        paddingHorizontal: 24,
-        paddingVertical: 16,
+        paddingTop: 16,
       }}
     >
       <Text className="mb-2 text-2xs font-bold uppercase tracking-wider text-faint">
