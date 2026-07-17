@@ -604,6 +604,275 @@ describe("budgetPlanSummary: plan-vs-allocation math", () => {
   });
 });
 
+describe("mergeLineIntoItem: human-confirmed dedup of a duplicate plan line (PR6a)", () => {
+  /** An event + a single eventItem on it, direct-inserted (mirrors
+   *  `engagementBudgetCategory.test.ts#seedEngagement`) — bypasses the
+   *  `items.ts` write path, which is out of scope for this file. */
+  async function seedEvent(
+    s: ChapterSetup,
+  ): Promise<{ eventId: Id<"events">; itemId: Id<"eventItems"> }> {
+    const { t, chapterId, userId } = s;
+    return await run(t, async (ctx) => {
+      const now = Date.now();
+      const eventTypeId = await ctx.db.insert("eventTypes", {
+        chapterId,
+        name: "T",
+        slug: "t",
+        version: 1,
+        isArchived: false,
+        createdBy: userId,
+        createdAt: now,
+        updatedAt: now,
+      });
+      const eventId = await ctx.db.insert("events", {
+        chapterId,
+        eventTypeId,
+        templateVersion: 1,
+        name: "Gala",
+        eventDate: now,
+        status: "planning",
+        createdBy: userId,
+        createdAt: now,
+        updatedAt: now,
+      });
+      const itemId = await ctx.db.insert("eventItems", {
+        eventId,
+        chapterId,
+        module: "supplies",
+        title: "Sound tech deposit",
+        order: 0,
+      });
+      return { eventId, itemId };
+    });
+  }
+
+  async function seedCategory(s: ChapterSetup): Promise<Id<"budgetCategories">> {
+    return await run(s.t, async (ctx) => {
+      const fundId = await ctx.db.insert("funds", {
+        chapterId: s.chapterId,
+        name: "General",
+        restriction: "unrestricted",
+        sortOrder: 0,
+        createdAt: Date.now(),
+      });
+      return await ctx.db.insert("budgetCategories", {
+        chapterId: s.chapterId,
+        fundId,
+        name: "AV",
+        kind: "lineItem",
+        createdAt: Date.now(),
+      });
+    });
+  }
+
+  /** A one_time EVENT budget scoped to `eventId`, created as a manager (the
+   *  `createBudget` gate) — mirrors `makeChapterBudget` but with the
+   *  refKind/scopeRefId a real event-linked budget carries. */
+  async function makeEventBudget(
+    s: ChapterSetup,
+    eventId: Id<"events">,
+    amountCents = 100000,
+  ): Promise<Id<"budgets">> {
+    await grantChapterRole(s, "manager");
+    return await s.as.mutation(api.finances.createBudget, {
+      amountCents,
+      type: "one_time",
+      refKind: "event",
+      scopeRefId: eventId,
+      cadence: "yearly",
+      year: 2026,
+    });
+  }
+
+  async function addLineToBudget(
+    s: ChapterSetup,
+    budgetId: Id<"budgets">,
+    opts: { description?: string; plannedCents?: number; categoryId?: Id<"budgetCategories"> } = {},
+  ): Promise<Id<"budgetLines">> {
+    // addLine requires bookkeeper+; the manager grant from makeEventBudget
+    // already covers that rank.
+    return await s.as.mutation(api.budgetLines.addLine, {
+      budgetId,
+      description: opts.description ?? "Sound tech deposit",
+      plannedCents: opts.plannedCents ?? 20000,
+      categoryId: opts.categoryId,
+    });
+  }
+
+  test("happy merge: line deleted, category copied when item had none", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const { eventId, itemId } = await seedEvent(s);
+    const budgetId = await makeEventBudget(s, eventId);
+    const categoryId = await seedCategory(s);
+    const lineId = await addLineToBudget(s, budgetId, { categoryId });
+
+    await s.as.mutation(api.budgetLines.mergeLineIntoItem, { lineId, itemId });
+
+    expect(await run(t, (ctx) => ctx.db.get(lineId))).toBeNull();
+    const item = await run(t, (ctx) => ctx.db.get(itemId));
+    expect(item?.budgetCategoryId).toBe(categoryId);
+  });
+
+  test("item already has a category: line's category is NOT copied, line still deleted", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const { eventId, itemId } = await seedEvent(s);
+    const budgetId = await makeEventBudget(s, eventId);
+    const existingCategoryId = await seedCategory(s);
+    await run(t, (ctx) => ctx.db.patch(itemId, { budgetCategoryId: existingCategoryId }));
+    const lineCategoryId = await seedCategory(s);
+    const lineId = await addLineToBudget(s, budgetId, { categoryId: lineCategoryId });
+
+    await s.as.mutation(api.budgetLines.mergeLineIntoItem, { lineId, itemId });
+
+    expect(await run(t, (ctx) => ctx.db.get(lineId))).toBeNull();
+    const item = await run(t, (ctx) => ctx.db.get(itemId));
+    expect(item?.budgetCategoryId).toBe(existingCategoryId);
+  });
+
+  test("line with no category: just deleted, item's category (absent) untouched", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const { eventId, itemId } = await seedEvent(s);
+    const budgetId = await makeEventBudget(s, eventId);
+    const lineId = await addLineToBudget(s, budgetId);
+
+    await s.as.mutation(api.budgetLines.mergeLineIntoItem, { lineId, itemId });
+
+    expect(await run(t, (ctx) => ctx.db.get(lineId))).toBeNull();
+    const item = await run(t, (ctx) => ctx.db.get(itemId));
+    expect(item?.budgetCategoryId).toBeUndefined();
+  });
+
+  test("cross-event mismatch: a line on a DIFFERENT event's budget is rejected", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const { eventId: eventA, itemId: itemOnA } = await seedEvent(s);
+    const budgetA = await makeEventBudget(s, eventA);
+    const lineOnA = await addLineToBudget(s, budgetA);
+
+    // A second event in the same chapter, with its own budget/item.
+    const { eventId: eventB } = await seedEvent(s);
+    const budgetB = await makeEventBudget(s, eventB);
+    const lineOnB = await addLineToBudget(s, budgetB);
+
+    // lineOnB's budget is scoped to eventB, not eventA — merging it into
+    // itemOnA (on eventA) must be rejected.
+    await expect(
+      s.as.mutation(api.budgetLines.mergeLineIntoItem, { lineId: lineOnB, itemId: itemOnA }),
+    ).rejects.toBeInstanceOf(ConvexError);
+
+    // Sanity: the matching pair (lineOnA + itemOnA) still works.
+    await s.as.mutation(api.budgetLines.mergeLineIntoItem, { lineId: lineOnA, itemId: itemOnA });
+    expect(await run(t, (ctx) => ctx.db.get(lineOnA))).toBeNull();
+  });
+
+  test("a recurring (non-event-linked) budget's line is rejected", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const { itemId } = await seedEvent(s);
+    const recurringBudgetId = await makeChapterBudget(s);
+    const lineId = await addLineToBudget(s, recurringBudgetId);
+
+    await expect(
+      s.as.mutation(api.budgetLines.mergeLineIntoItem, { lineId, itemId }),
+    ).rejects.toBeInstanceOf(ConvexError);
+    // The line survives a rejected merge.
+    expect(await run(t, (ctx) => ctx.db.get(lineId))).not.toBeNull();
+  });
+
+  test("caller with line access (central bookkeeper) but no event access (foreign home chapter) is rejected", async () => {
+    const t = newT();
+    const s = await setupChapter(t, { chapterName: "Chapter A" });
+    const { eventId, itemId } = await seedEvent(s);
+    // A CENTRAL budget scoped to chapter A's event — direct-inserted
+    // (bypassing `createBudget`'s own central-creation gate, out of scope
+    // for this file) since only the RESULTING budget row's shape matters
+    // here.
+    const centralBudgetId = await run(t, (ctx) =>
+      ctx.db.insert("budgets", {
+        chapterId: "central",
+        amountCents: 100000,
+        type: "one_time",
+        refKind: "event",
+        scopeRefId: eventId,
+        cadence: "yearly",
+        year: 2026,
+        createdAt: Date.now(),
+      }),
+    );
+
+    // A second chapter (B) — the central bookkeeper's HOME chapter. Central
+    // reach grants line-write access on ANY central budget regardless of
+    // home chapter, but `requireEvent` still gates on the caller's own
+    // chapter matching the event's chapter (chapter A) — which chapter B
+    // never does.
+    const chapterB = await setupChapter(t, { chapterName: "Chapter B" });
+    const centralBookkeeper = await addCentralCallerWithRole(
+      t,
+      chapterB.chapterId,
+      "central-bk@publicworship.life",
+      "bookkeeper",
+    );
+    const lineId = await centralBookkeeper.mutation(api.budgetLines.addLine, {
+      budgetId: centralBudgetId,
+      description: "AV rental",
+      plannedCents: 15000,
+    });
+
+    await expect(
+      centralBookkeeper.mutation(api.budgetLines.mergeLineIntoItem, { lineId, itemId }),
+    ).rejects.toBeInstanceOf(ConvexError);
+  });
+
+  test("caller with event access but no line access (chapter viewer, below bookkeeper) is rejected", async () => {
+    const t = newT();
+    const s = await setupChapter(t, { chapterName: "Chapter A" });
+    const { eventId, itemId } = await seedEvent(s);
+    const budgetId = await makeEventBudget(s, eventId);
+    const lineId = await addLineToBudget(s, budgetId);
+
+    // A second caller in the SAME chapter (so `requireEvent` passes) with
+    // only a VIEWER finance grant (below the bookkeeper+ `requireLineWriteAccess` needs).
+    const asViewer = await addChapterCallerWithRole(
+      t,
+      s.chapterId,
+      "viewer@publicworship.life",
+      "viewer",
+    );
+    await expect(
+      asViewer.mutation(api.budgetLines.mergeLineIntoItem, { lineId, itemId }),
+    ).rejects.toBeInstanceOf(ConvexError);
+  });
+
+  test("missing line is rejected (NOT_FOUND, per file idiom)", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const { eventId, itemId } = await seedEvent(s);
+    const budgetId = await makeEventBudget(s, eventId);
+    const lineId = await addLineToBudget(s, budgetId);
+    await s.as.mutation(api.budgetLines.removeLine, { lineId });
+
+    await expect(
+      s.as.mutation(api.budgetLines.mergeLineIntoItem, { lineId, itemId }),
+    ).rejects.toBeInstanceOf(ConvexError);
+  });
+
+  test("missing item is rejected (NOT_FOUND, per file idiom)", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const { eventId, itemId } = await seedEvent(s);
+    const budgetId = await makeEventBudget(s, eventId);
+    const lineId = await addLineToBudget(s, budgetId);
+    await run(t, (ctx) => ctx.db.delete(itemId));
+
+    await expect(
+      s.as.mutation(api.budgetLines.mergeLineIntoItem, { lineId, itemId }),
+    ).rejects.toBeInstanceOf(ConvexError);
+  });
+});
+
 describe("deleteBudget cascades its lines", () => {
   test("deleting a budget also deletes every budgetLines row for it", async () => {
     const t = newT();
