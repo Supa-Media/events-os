@@ -679,7 +679,16 @@ export function txnMatchesMode(tr: Doc<"transactions">, sandboxMode: boolean): b
  * `contextMonth`. A MONTHLY budget stored as "$2,000/mo" carries no `month`, so
  * without this it would (wrongly) match all 12 months — its spend is scoped to
  * the queried month. Quarterly → the quarter of the queried month; yearly → the
- * whole year; per-instance / one-off use the budget's OWN declared period.
+ * whole year; per-instance / one-off use the budget's OWN declared month/quarter
+ * when it has one — and otherwise ALSO fall back to `contextMonth`, exactly like
+ * the monthly branch: a one-time budget with no stored `month` (a leader can
+ * create one via `createBudget` without picking one) is not "every month, all
+ * year" any more than a month-less recurring budget is — without this fallback
+ * its spend would double-count into every month's aggregate (tag rollups,
+ * `budgetVsActual`, central budget cards). Callers that want a one-time
+ * budget's OWN cumulative (not month-scoped) total — the one-time dashboard
+ * CARD's own bar — must pass `contextMonth: undefined` explicitly (see
+ * `oneTimeCardBreakdown`), never this function's default behavior.
  */
 function budgetEffectivePeriod(
   b: Doc<"budgets">,
@@ -700,8 +709,10 @@ function budgetEffectivePeriod(
       return { year };
     case "per_instance":
     case "one_off":
-    default:
-      return { year, month: b.month ?? undefined, quarter: b.quarter ?? undefined };
+    default: {
+      const month = b.month ?? contextMonth;
+      return { year, month: month ?? undefined, quarter: b.quarter ?? undefined };
+    }
   }
 }
 
@@ -1287,13 +1298,25 @@ function easternDateStr(ts: number): string {
   });
 }
 
-/** Integer percent spent-of-budget (0 when the budget is 0). */
+/**
+ * Integer percent spent-of-budget. An unfunded budget (`budget <= 0`, e.g. a
+ * $0/never-approved cap) with real spend against it is NOT "0% spent" —
+ * that reads as healthy when it's actually unfunded overspend — so it reports
+ * 100 (the client's `BudgetBar` already goes danger-red at `pct >= 100`,
+ * purely off this field — no separate "over" status is needed). An unfunded
+ * budget with NO spend yet stays a quiet 0 (nothing wrong to flag yet).
+ */
 function pctOf(spent: number, budget: number): number {
-  if (budget <= 0) return 0;
+  if (budget <= 0) return spent > 0 ? 100 : 0;
   return Math.round((spent / budget) * 100);
 }
 
-/** A budget is "warn" once ≥80% spent, else "ok". */
+/**
+ * A budget is "warn" once ≥80% spent, else "ok". There is no separate "over"
+ * literal — an unfunded-and-overspent budget already reports `pct: 100` (see
+ * `pctOf`), which is ≥80 ("warn") AND trips the client `BudgetBar`'s own
+ * `pct >= 100` danger-red rule, so the loud state is carried by `pct` alone.
+ */
 function statusFor(pct: number): "ok" | "warn" {
   return pct >= 80 ? "warn" : "ok";
 }
@@ -1309,23 +1332,18 @@ function sumSpend(txns: Doc<"transactions">[]): number {
   return txns.reduce((s, tr) => (isSpend(tr) ? s + tr.amountCents : s), 0);
 }
 
-/**
- * The spent total + per-category breakdown for one budget, from an already-
- * loaded year of transactions. `catName` resolves category ids to names. `dp`
- * scopes recurring (monthly/quarterly) budgets to the dashboard's period: a
- * single month (so a "$2,000/mo" budget reports one month's spend) in month
- * mode, or the cumulative Jan..throughMonth range in YTD mode.
- */
-function budgetSpendBreakdown(
+/** Shared spend + per-category breakdown body for an already-narrowed list of
+ *  a budget's matching transactions — factored out of `budgetSpendBreakdown`
+ *  so `oneTimeCardBreakdown` (a DIFFERENT period narrowing, see below) doesn't
+ *  duplicate the category-grouping/bar-normalizing logic. */
+function spendBreakdownFor(
   b: Doc<"budgets">,
-  yearTxns: Doc<"transactions">[],
+  matching: Doc<"transactions">[],
   catName: Map<Id<"budgetCategories">, string>,
-  dp: DashPeriod,
 ): {
   spentCents: number;
   categories: { name: string; spentCents: number; barPct: number }[];
 } {
-  const matching = yearTxns.filter((tr) => txnCountsTowardBudgetDash(tr, b, dp));
   const spentCents = matching.reduce((s, tr) => s + tr.amountCents, 0);
   const byCat = new Map<string, number>();
   for (const tr of matching) {
@@ -1344,6 +1362,80 @@ function budgetSpendBreakdown(
       barPct: barPctOf(cents, denom),
     }));
   return { spentCents, categories };
+}
+
+/**
+ * The spent total + per-category breakdown for one budget, from an already-
+ * loaded year of transactions. `catName` resolves category ids to names. `dp`
+ * scopes recurring (monthly/quarterly) budgets to the dashboard's period: a
+ * single month (so a "$2,000/mo" budget reports one month's spend) in month
+ * mode, or the cumulative Jan..throughMonth range in YTD mode. Also used for
+ * MONTH-MODE AGGREGATES that fold in one-time budgets (tag rollups, central
+ * budget cards) — those must NOT double-count a month-less one-time budget's
+ * spend into every month, which `txnCountsTowardBudgetDash` now guards via
+ * `budgetEffectivePeriod`'s `contextMonth` fallback. The one-time dashboard
+ * CARD itself does NOT use this — see `oneTimeCardBreakdown`.
+ */
+function budgetSpendBreakdown(
+  b: Doc<"budgets">,
+  yearTxns: Doc<"transactions">[],
+  catName: Map<Id<"budgetCategories">, string>,
+  dp: DashPeriod,
+): {
+  spentCents: number;
+  categories: { name: string; spentCents: number; barPct: number }[];
+} {
+  const matching = yearTxns.filter((tr) => txnCountsTowardBudgetDash(tr, b, dp));
+  return spendBreakdownFor(b, matching, catName);
+}
+
+/**
+ * A one-time budget CARD's own actuals — CUMULATIVE for the budget's year,
+ * never sliced to the dashboard's viewed month: an event/project budget is a
+ * total plan, not a per-month allocation, so unlike `budgetSpendBreakdown`
+ * (used for month-mode AGGREGATES that fold one-time budgets in, e.g. tag
+ * rollups) the card's own bar/pct/remaining must stay stable as the viewer
+ * steps through months — only the card's VISIBILITY is month-gated (see
+ * `oneTimeCardAppliesToDash`), never its own numbers. Passes `contextMonth:
+ * undefined` to `txnCountsTowardBudget` so a budget with no stored `month`
+ * sums its whole year (same explicit-link + `isSpend` attribution rule as
+ * everywhere else); a budget WITH a stored `month` still scopes to it (its
+ * own declared period, unchanged from before this fix).
+ */
+function oneTimeCardBreakdown(
+  b: Doc<"budgets">,
+  yearTxns: Doc<"transactions">[],
+  catName: Map<Id<"budgetCategories">, string>,
+): {
+  spentCents: number;
+  categories: { name: string; spentCents: number; barPct: number }[];
+} {
+  const matching = yearTxns.filter((tr) => txnCountsTowardBudget(tr, b, undefined));
+  return spendBreakdownFor(b, matching, catName);
+}
+
+/**
+ * True iff a one-time budget CARD belongs on the dashboard for the viewed
+ * period (Bug 1a — one-time budgets used to render on EVERY month regardless
+ * of relevance, e.g. a May event budget showing up in July). YTD/year mode
+ * always shows every one-time card (unchanged). Month mode shows a card only
+ * when it's actually relevant to THAT month: its own declared `month` matches,
+ * OR its linked event/project falls in that month, OR it already has spend
+ * posted in that month (covers a month-less budget with real activity this
+ * month even before any of the other two signals apply).
+ */
+function oneTimeCardAppliesToDash(
+  b: Doc<"budgets">,
+  dp: DashPeriod,
+  refDate: number | null,
+  yearTxns: Doc<"transactions">[],
+): boolean {
+  if (dp.ytd) return true;
+  if (b.month != null && b.month === dp.month) return true;
+  if (refDate != null && inPeriod(refDate, dp.year, dp.month)) return true;
+  return yearTxns.some(
+    (tr) => tr.budgetId === b._id && isSpend(tr) && inPeriod(tr.postedAt, dp.year, dp.month),
+  );
 }
 
 /** Is a recurring budget active for the dashboard's {year, month}? */
@@ -1696,26 +1788,37 @@ export const dashboardChapter = query({
       .take(ROLLUP_SCAN_LIMIT);
 
     // One-time (event / project) budget cards (per-instance / one-off).
+    // Bug 1a: month mode only shows a card RELEVANT to the viewed month (own
+    // `month`, linked ref's date, or spend posted this month) — YTD/year mode
+    // keeps every one-time card, unchanged. Resolve the ref (name/dateLabel/
+    // refDate) BEFORE deciding relevance since the relevance check itself
+    // needs the ref's date.
     const oneTimeBudgets: (typeof projectBudgetCard.type)[] = [];
     for (const b of budgets) {
       if (effectiveType(b) !== "one_time") continue;
       const refKind = effectiveRefKind(b);
-      const { spentCents, categories } = budgetSpendBreakdown(b, yearTxns, catName, dp);
       let name = b.label ?? "One-time";
       let dateLabel: string | null = null;
+      let refDate: number | null = null;
       if (refKind === "event" && b.scopeRefId) {
         const ev = await getEvent(b.scopeRefId as Id<"events">);
         if (ev) {
           name = ev.name;
           dateLabel = easternDateStr(ev.eventDate);
+          refDate = ev.eventDate;
         }
       } else if (refKind === "project" && b.scopeRefId) {
         const pr = await getProject(b.scopeRefId as Id<"projects">);
         if (pr) {
           name = pr.name;
           dateLabel = pr.deadline ? easternDateStr(pr.deadline) : null;
+          refDate = pr.deadline ?? pr.startDate ?? null;
         }
       }
+      if (!oneTimeCardAppliesToDash(b, dp, refDate, yearTxns)) continue;
+      // Bug 1b: the card's OWN bar stays CUMULATIVE (never month-sliced) even
+      // though its VISIBILITY above is month-gated — see `oneTimeCardBreakdown`.
+      const { spentCents, categories } = oneTimeCardBreakdown(b, yearTxns, catName);
       // B1: the CAP driving pct/remaining/status is the EFFECTIVE one — a
       // budget pending an increase never advertises the unapproved amount.
       const capCents = effectiveCapCents(b);

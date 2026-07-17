@@ -541,3 +541,305 @@ describe("WP-0.1 — explicit-only budget attribution + Unattributed bucket", ()
     expect(dash.orgUnattributedCents).toBe(5500);
   });
 });
+
+/** Seed an eventType + event in a chapter; returns its id. */
+async function seedEvent(
+  s: ChapterSetup,
+  opts: { name?: string; eventDate: number },
+): Promise<Id<"events">> {
+  return await run(s.t, async (ctx) => {
+    const eventTypeId = await ctx.db.insert("eventTypes", {
+      chapterId: s.chapterId,
+      name: "Worship with Strangers",
+      slug: "wws",
+      version: 1,
+      createdBy: s.userId,
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    });
+    return await ctx.db.insert("events", {
+      chapterId: s.chapterId,
+      eventTypeId,
+      templateVersion: 1,
+      name: opts.name ?? "May Concert",
+      eventDate: opts.eventDate,
+      status: "planning",
+      createdBy: s.userId,
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    });
+  });
+}
+
+describe("Bug 1 — one-time budgets ignore the month selector (dashboardChapter)", () => {
+  test("(a) a May-event budget is ABSENT from July's month view, but present in May and in YTD-through-July", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await grantManager(s);
+    const year = 2026;
+    const eventId = await seedEvent(s, { eventDate: tsInMonth(year, 5) });
+
+    // Mirrors `createEventBudget`'s real shape: `month` stamped from the
+    // event's own date at creation time.
+    const budgetId = await s.as.mutation(api.finances.createBudget, {
+      amountCents: 100000,
+      type: "one_time",
+      refKind: "event",
+      cadence: "per_instance",
+      year,
+      month: 5,
+      scopeRefId: eventId,
+    });
+    const txnId = await s.as.mutation(api.finances.createManualTransaction, {
+      flow: "outflow",
+      amountCents: 25000,
+      postedAt: tsInMonth(year, 5),
+    });
+    await s.as.mutation(api.finances.categorizeTransaction, { transactionId: txnId, budgetId });
+
+    // Before the fix, EVERY one_time budget rendered in EVERY month — a July
+    // view must no longer show a May event's budget card.
+    const july = await s.as.query(api.finances.dashboardChapter, { year, month: 7 });
+    expect(july.oneTimeBudgets.find((b) => b.id === budgetId)).toBeUndefined();
+
+    // May's own view still shows it, with its full (cumulative) spend.
+    const may = await s.as.query(api.finances.dashboardChapter, { year, month: 5 });
+    const card = may.oneTimeBudgets.find((b) => b.id === budgetId);
+    expect(card).toBeDefined();
+    expect(card?.spentCents).toBe(25000);
+    expect(card?.name).toBe("May Concert");
+
+    // YTD-through-July keeps every one-time card, unchanged.
+    const ytdJuly = await s.as.query(api.finances.dashboardChapter, {
+      year,
+      month: 7,
+      period: "ytd",
+    });
+    const ytdCard = ytdJuly.oneTimeBudgets.find((b) => b.id === budgetId);
+    expect(ytdCard).toBeDefined();
+    expect(ytdCard?.spentCents).toBe(25000);
+  });
+
+  test("(a2) a MONTH-LESS one-time budget's card stays visible via its linked event's date, and via its own posted spend", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await grantManager(s);
+    const year = 2026;
+    const eventId = await seedEvent(s, { name: "Fall Retreat", eventDate: tsInMonth(year, 9) });
+
+    // No `month` passed — `createBudget` allows a one_time budget with no
+    // stored month (the direct-create path, distinct from the auto-stamped
+    // `createEventBudget` helper).
+    const budgetId = await s.as.mutation(api.finances.createBudget, {
+      amountCents: 50000,
+      type: "one_time",
+      refKind: "event",
+      cadence: "per_instance",
+      year,
+      scopeRefId: eventId,
+    });
+
+    // September (the event's own date) shows the card via the ref-date signal.
+    const sept = await s.as.query(api.finances.dashboardChapter, { year, month: 9 });
+    expect(sept.oneTimeBudgets.find((b) => b.id === budgetId)).toBeDefined();
+
+    // August has neither an explicit month, nor a matching ref date, nor any
+    // spend yet — the card is correctly absent.
+    const augBefore = await s.as.query(api.finances.dashboardChapter, { year, month: 8 });
+    expect(augBefore.oneTimeBudgets.find((b) => b.id === budgetId)).toBeUndefined();
+
+    // Prep spend posted in AUGUST (before the event) now makes it relevant to
+    // August too, via the "has transactions posted this month" signal.
+    const txnId = await s.as.mutation(api.finances.createManualTransaction, {
+      flow: "outflow",
+      amountCents: 8000,
+      postedAt: tsInMonth(year, 8),
+    });
+    await s.as.mutation(api.finances.categorizeTransaction, { transactionId: txnId, budgetId });
+
+    const augAfter = await s.as.query(api.finances.dashboardChapter, { year, month: 8 });
+    const augCard = augAfter.oneTimeBudgets.find((b) => b.id === budgetId);
+    expect(augCard).toBeDefined();
+    // The card's own bar is cumulative — the September event's date doesn't
+    // narrow it, so it still reports the one August prep transaction so far.
+    expect(augCard?.spentCents).toBe(8000);
+  });
+
+  test("(b) a MONTH-LESS one-time budget's spend counts once, in its posted month — not in every month (budgetVsActual)", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await grantManager(s);
+    const year = 2026;
+
+    // A one_time (project) budget summoned with NO month at all.
+    const projectId = await run(t, (ctx) =>
+      ctx.db.insert("projects", {
+        chapterId: s.chapterId,
+        name: "Website Refresh",
+        status: "in_progress",
+        createdBy: s.userId,
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      }),
+    );
+    const budgetId = await s.as.mutation(api.finances.createBudget, {
+      amountCents: 200000,
+      type: "one_time",
+      refKind: "project",
+      cadence: "per_instance",
+      year,
+      scopeRefId: projectId,
+    });
+
+    // $300 posted in May, explicitly linked.
+    const mayTxn = await s.as.mutation(api.finances.createManualTransaction, {
+      flow: "outflow",
+      amountCents: 30000,
+      postedAt: tsInMonth(year, 5),
+    });
+    await s.as.mutation(api.finances.categorizeTransaction, {
+      transactionId: mayTxn,
+      budgetId,
+    });
+
+    // Before the fix, `budgetEffectivePeriod`'s per_instance branch ignored
+    // `contextMonth` entirely for a month-less budget, so this $300 counted
+    // toward EVERY month's `actualCents` — not just May's.
+    const may = await s.as.query(api.finances.budgetVsActual, { year, month: 5 });
+    expect(may.find((r) => r.budgetId === budgetId)?.actualCents).toBe(30000);
+
+    const june = await s.as.query(api.finances.budgetVsActual, { year, month: 6 });
+    expect(june.find((r) => r.budgetId === budgetId)?.actualCents).toBe(0);
+
+    // The whole-year read (no month arg) still sums it exactly once.
+    const wholeYear = await s.as.query(api.finances.budgetVsActual, { year });
+    expect(wholeYear.find((r) => r.budgetId === budgetId)?.actualCents).toBe(30000);
+  });
+
+  test("(b2) the same double-count guard applies to a chapter tag rollup folding in a month-less one-time budget", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await grantManager(s);
+    const year = 2026;
+
+    const tagId = await s.as.mutation(api.finances.createBudgetTag, {
+      name: "Capital",
+      kind: "custom",
+    });
+    const budgetId = await s.as.mutation(api.finances.createBudget, {
+      amountCents: 200000,
+      type: "one_time",
+      cadence: "per_instance",
+      year,
+      label: "Equipment",
+      tagIds: [tagId],
+    });
+
+    const mayTxn = await s.as.mutation(api.finances.createManualTransaction, {
+      flow: "outflow",
+      amountCents: 15000,
+      postedAt: tsInMonth(year, 5),
+    });
+    await s.as.mutation(api.finances.categorizeTransaction, {
+      transactionId: mayTxn,
+      budgetId,
+    });
+
+    const may = await s.as.query(api.finances.dashboardChapter, { year, month: 5 });
+    expect(may.tagRollups.find((r) => r.tagId === tagId)?.spentCents).toBe(15000);
+
+    // June must NOT also report the May spend — the rollup zero-spend filter
+    // hides the tag entirely once its (correctly month-scoped) total is 0.
+    const june = await s.as.query(api.finances.dashboardChapter, { year, month: 6 });
+    expect(june.tagRollups.find((r) => r.tagId === tagId)).toBeUndefined();
+  });
+});
+
+describe("Bug 2 — an unfunded (capCents <= 0) budget with real spend must NOT read as healthy", () => {
+  test("a $0-cap budget with spend reports pct 100 (loud red bar), not 0% / green", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await grantManager(s);
+    const year = 2026;
+    const month = 5;
+
+    const budgetId = await s.as.mutation(api.finances.createBudget, {
+      amountCents: 0,
+      type: "recurring",
+      cadence: "monthly",
+      year,
+      month,
+      label: "Unfunded",
+    });
+    const txnId = await s.as.mutation(api.finances.createManualTransaction, {
+      flow: "outflow",
+      amountCents: 149527,
+      postedAt: tsInMonth(year, month),
+    });
+    await s.as.mutation(api.finances.categorizeTransaction, { transactionId: txnId, budgetId });
+
+    const dash = await s.as.query(api.finances.dashboardChapter, { year, month });
+    const card = dash.recurringBudgets.find((b) => b.id === budgetId);
+    expect(card?.spentCents).toBe(149527);
+    expect(card?.budgetCents).toBe(0);
+    // The loud/red state is carried purely through `pct` (client `BudgetBar`
+    // goes danger-red at `pct >= 100`) — no separate "over" status literal.
+    expect(card?.pct).toBe(100);
+    expect(card?.status).toBe("warn");
+  });
+
+  test("a $0-cap budget with NO spend stays quiet: pct 0, status ok", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await grantManager(s);
+    const year = 2026;
+    const month = 5;
+
+    const budgetId = await s.as.mutation(api.finances.createBudget, {
+      amountCents: 0,
+      type: "recurring",
+      cadence: "monthly",
+      year,
+      month,
+      label: "Unfunded, unspent",
+    });
+
+    const dash = await s.as.query(api.finances.dashboardChapter, { year, month });
+    const card = dash.recurringBudgets.find((b) => b.id === budgetId);
+    // A $0/unspent budget with nothing linked to it never surfaces at all —
+    // `recurringAppliesToDash` still gates it in; assert the shape directly.
+    expect(card?.spentCents ?? 0).toBe(0);
+    expect(card?.pct ?? 0).toBe(0);
+    expect(card?.status ?? "ok").toBe("ok");
+  });
+
+  test("a one-time budget's own card also reports the loud pct 100 / warn state when unfunded and spent", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await grantManager(s);
+    const year = 2026;
+    const eventId = await seedEvent(s, { eventDate: tsInMonth(year, 5) });
+
+    const budgetId = await s.as.mutation(api.finances.createBudget, {
+      amountCents: 0,
+      type: "one_time",
+      refKind: "event",
+      cadence: "per_instance",
+      year,
+      month: 5,
+      scopeRefId: eventId,
+    });
+    const txnId = await s.as.mutation(api.finances.createManualTransaction, {
+      flow: "outflow",
+      amountCents: 5000,
+      postedAt: tsInMonth(year, 5),
+    });
+    await s.as.mutation(api.finances.categorizeTransaction, { transactionId: txnId, budgetId });
+
+    const dash = await s.as.query(api.finances.dashboardChapter, { year, month: 5 });
+    const card = dash.oneTimeBudgets.find((b) => b.id === budgetId);
+    expect(card?.pct).toBe(100);
+    expect(card?.status).toBe("warn");
+    expect(card?.remainingCents).toBe(-5000);
+  });
+});
