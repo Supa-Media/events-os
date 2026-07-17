@@ -1089,8 +1089,9 @@ function PersonDetailBody({
         )}
 
         {/* Governance roles (super-admin only): a read-only mirror of this
-            person's specialized leadership/finance roles. Assignment happens on
-            the Governance page — this section only reflects the current state. */}
+            person's specialized leadership/finance roles. Assignment happens
+            from the Org Chart (`/org-chart`) — this section only reflects
+            the current state. */}
         {isSuperuser &&
         specializedRoles !== undefined &&
         specializedRoles.length > 0 ? (
@@ -1120,7 +1121,7 @@ function PersonDetailBody({
               })}
             </View>
             <Text className="mt-2 text-xs text-faint">
-              Manage these on the Governance page.
+              Manage these from the Org Chart.
             </Text>
           </View>
         ) : null}

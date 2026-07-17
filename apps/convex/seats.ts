@@ -32,9 +32,7 @@ import {
   SEAT_IDS,
   SEAT_DEFS,
   titleKind,
-  FINANCE_ROLE_RANK,
   SPECIALIZED_ROLE_TITLES,
-  type FinanceRole,
   type SpecializedRoleTitle,
 } from "@events-os/shared";
 import { requireAccess, requireUserId } from "./lib/context";
@@ -44,7 +42,6 @@ import {
   assignSpecializedRoleImpl,
   removeSpecializedRoleImpl,
 } from "./specializedRoles";
-import { getSeatDerivedCapabilities } from "./lib/seats";
 
 const seatChartValidator = v.union(...SEAT_CHARTS.map((c) => v.literal(c)));
 const seatCapabilityValidator = v.union(
@@ -1081,65 +1078,56 @@ export const unassignSeat = mutation({
   },
 });
 
-// ── Capability shadow audit (READ-ONLY) ─────────────────────────────────────
+// ── Bridge drift audit (READ-ONLY) ──────────────────────────────────────────
 //
-// The gate before any future "flip enforcement from `financeRoles` /
-// `specializedRoles` to seat-derived capabilities" change. This is a FLIP
-// SIMULATION, not a raw seat-vs-stored diff: the planned flip is
-// `effective = max(seat-derived, residual stored grants)` — seats are a NEW
-// layer stacked ON TOP of whatever's already stored, never a replacement for
-// it (nothing is retired). So for every subject this audit computes:
+// Post-B10 (PR #195), `lib/finance.ts#getFinanceRole` / `#isCentralEdOrFm`
+// UNION seat-derived capabilities with the stored `financeRoles`/
+// `specializedRoles` tables directly — the flip already shipped, so a
+// today-vs-post-flip SIMULATION (this audit's original design) is
+// permanently stale: its "today" replica hard-codes the PRE-flip formulas,
+// which no longer describe what the real gates do. Comparing "today" against
+// itself would be meaningless, so that comparison is gone entirely — not
+// replaced with a live-formula version, because `getSeatDerivedCapabilities`
+// is already dogfooded directly inside the real gates (see `lib/finance.ts`'s
+// "B10" doc comment); there is no separate "would this change anything"
+// question left to ask.
 //
-//  (a) TODAY's effective outcome — the exact formula the real gates use
-//      right now (`lib/finance.ts#getFinanceRole` / `#isCentralEdOrFm`),
-//      replicated line-for-line below (see each helper's doc comment for the
-//      precise citation), evaluated directly against this person's rows
-//      instead of through an authenticated caller's `ctx`.
-//  (b) POST-FLIP's effective outcome — `max(seat-derived, today's stored)`,
-//      i.e. the same union formula the flip will use.
+// What's left, and what this audit now IS: `assignSeat`'s write-through
+// keeps a `seatAssignments` row (on a `legacyTitle`-bearing seat def)
+// mirrored onto a `specializedRoles` row at the same (scope, title) — see
+// `assignSpecializedRoleImpl` / `removeSpecializedRoleImpl` in
+// `specializedRoles.ts`, which `seats.ts`'s assign/unassign mutations call
+// through. That mirror can drift out of sync with the seat layer (e.g. a
+// migration or direct DB edit bypassing the write-through), and the bridge —
+// `specializedRoles` still backs the title-based separation-of-duties checks
+// (`APPROVE_SEAT_SLUGS`/`RECORD_SEAT_SLUGS`, `assignSpecializedRoleImpl`'s
+// scope-local SoD) — stays live until that table is retired in a later
+// milestone. Until then, drift here is a real data-integrity bug, not a
+// historical curiosity, so this audit keeps watching for exactly two shapes:
 //
-// and reports every subject where (a) ≠ (b): a case where flipping
-// enforcement to seats would ACTUALLY CHANGE what someone can do. Because
-// the union formula never drops existing stored capability, this can only
-// ever fire in the "grants something new" direction — a seat implying a
-// capability today's stored state doesn't already cover. An orphan stored
-// grant with NO seat behind it (e.g. a hand-granted `financeRoles` manager
-// row nobody's seat represents) does NOT produce a mismatch here: the flip
-// keeps it via the residual/stored side, so (a) and (b) agree. That is a
-// legitimate governance-hygiene question ("should this ungoverned grant
-// exist at all?") but it is NOT a flip-safety question, which is the ONLY
-// thing this audit answers. (This is a deliberate narrowing from an earlier
-// version of this audit that flagged orphan grants directly — dropped
-// because it conflated "the flip would break this" with "this looks messy.")
+//  - a `seatAssignments` row on a `legacyTitle`-bearing def with NO matching
+//    `specializedRoles` mirror (the write-through never ran, or ran and was
+//    since deleted).
+//  - a `specializedRoles` row with NO matching `seatAssignments` row (an
+//    orphaned mirror — the seat was unassigned/reassigned but the mirror
+//    survived, or the row was hand-inserted with no seat behind it at all).
 //
-// A SEPARATE, complementary check — (c) below — verifies `seatAssignments`
-// rows whose seat carries a `legacyTitle` stay mirrored onto their
-// `specializedRoles` row, in BOTH directions. This isn't a capability-outcome
-// comparison at all (the flip doesn't touch `specializedRoles`); it's a
-// data-integrity check catching drift like a seat's write-through mirror
-// being deleted directly, bypassing `unassignSeat`.
-//
-// OUT OF SCOPE (see `lib/seats.ts`'s module doc for the full list + why):
-// `finance.approve`/`finance.record` (governed by the SoD groups derived
-// from `legacyTitle`/`titleKind`, not by this capability string, and not
-// part of the finance ROLE ladder this flip targets), `nav.finances` /
-// `org.editChart` (non-finance-ladder gates). The superuser allowlist
-// (`lib/superuser.ts`) is ALSO out of scope — see the doc comment on
-// `capabilityAudit` below.
+// Both directions are reported, at the (personId, scope) granularity, same
+// response shape the audit always had (`mismatches`/`checkedPeople`/
+// `status`) — only the CONTENT changed. The finance-role/central-reach/
+// accounts-access flip-simulation kinds, and every helper that computed
+// them (`todaysRoleAtScope`/`todaysIsCentral`/`todaysAccountsAccessForPerson`/
+// `maxRole`/`scopeFromKey`), are gone along with the `financeRoles` table
+// read they depended on — this audit no longer touches `financeRoles` or
+// `getSeatDerivedCapabilities` at all.
 
-/** Bound on how many rows each of the three source tables (`seatAssignments`,
- *  `financeRoles`, `specializedRoles`) is scanned to build the "every person
- *  with SOME grant" universe — generous headroom over `ROLLUP_SCAN_LIMIT`'s
- *  5000 chapter-scan convention used elsewhere in finance. Hitting a cap sets
- *  `status: "truncated"` (see the query doc) so a truncated audit can never
- *  be read as `"clean"`. */
+/** Bound on how many rows each of the two source tables (`seatAssignments`,
+ *  `specializedRoles`) is scanned to build the "every person with SOME grant"
+ *  universe — generous headroom over `ROLLUP_SCAN_LIMIT`'s 5000 chapter-scan
+ *  convention used elsewhere in finance. Hitting a cap sets `status:
+ *  "truncated"` (see the query doc) so a truncated audit can never be read as
+ *  `"clean"`. */
 const AUDIT_TABLE_SCAN_LIMIT = 5000;
-
-/** Bound on how many `people` rows a single user can own, scanned when
- *  replicating `isCentralEdOrFm`'s user-keyed OR walk (see
- *  `todaysAccountsAccessForPerson`) — generous over the realistic handful of
- *  chapters a person might have a roster row in. */
-const USER_PEOPLE_SCAN_LIMIT = 200;
 
 /** Bound on how many mismatches a single audit run reports — protects the
  *  response payload from an unbounded blowup if drift is much larger than
@@ -1148,168 +1136,24 @@ const USER_PEOPLE_SCAN_LIMIT = 200;
  *  "truncated"` too. */
 const AUDIT_MISMATCH_CAP = 2000;
 
-const capabilityAuditMismatchKindValidator = v.union(
-  // (a)+(b) flip-simulation outcome changes.
-  v.literal("flip_changes_finance_role"),
-  v.literal("flip_changes_central_reach"),
-  v.literal("flip_changes_accounts_access"),
-  // (c) legacyTitle <-> specializedRoles mirror diffs (data-integrity, not
-  // an outcome comparison — see the section doc above).
+const bridgeDriftMismatchKindValidator = v.union(
   v.literal("seat_legacy_title_missing_specializedRoles_mirror"),
   v.literal("specializedRoles_row_missing_seat_mirror"),
 );
 
-/** A typed scope value back out of a `getSeatDerivedCapabilities` record key
- *  (see that module's doc comment — a scopeKey is always either the literal
- *  `"central"` or an `Id<"chapters">` stringified). */
-function scopeFromKey(key: string): Id<"chapters"> | "central" {
-  return key === "central" ? "central" : (key as Id<"chapters">);
-}
-
-/**
- * TODAY's effective finance role at a given scope for a person, replicating
- * `lib/finance.ts#getFinanceRole` (lines 160-180) EXACTLY:
- *
- *   const applicable = grants.filter(
- *     (g) => g.chapterId === chapterId || g.scope === "central",
- *   );
- *   ...
- *   for (const g of applicable) {
- *     if (role == null || FINANCE_ROLE_RANK[g.role] > FINANCE_ROLE_RANK[role]) {
- *       role = g.role;
- *     }
- *   }
- *
- * i.e. "applicable" = this scope's own grant(s) UNION any grant with
- * `scope === "central"` regardless of which `chapterId` IT'S keyed at (a
- * direct `grantFinanceRole` call can key a central-reach grant on the
- * granter's own real chapter, not just the `"central"` sentinel — see
- * `bridgeFinanceManagerGrant` vs `grantFinanceRole` in `lib/finance.ts`).
- * Effective role is the STRONGEST rank across `applicable`, not
- * first-created. Operates on the person's already-loaded `financeRoles` rows
- * (any chapterId) rather than re-querying — same formula, no `ctx.auth`
- * involved (the subject is a `personId`, not the calling user).
- */
-function todaysRoleAtScope(
-  personFinanceRows: Doc<"financeRoles">[],
-  scope: Id<"chapters"> | "central",
-): FinanceRole | null {
-  const applicable = personFinanceRows.filter(
-    (g) => g.chapterId === scope || g.scope === "central",
-  );
-  let role: FinanceRole | null = null;
-  for (const g of applicable) {
-    if (role === null || FINANCE_ROLE_RANK[g.role] > FINANCE_ROLE_RANK[role]) {
-      role = g.role;
-    }
-  }
-  return role;
-}
-
-/**
- * TODAY's `isCentral`, replicating `lib/finance.ts#getFinanceRole` line 174
- * EXACTLY:
- *
- *   const isCentral = applicable.some((g) => g.scope === "central");
- *
- * ROLE-AGNOSTIC and NOT scope-keyed — a whole-person flag, true iff the
- * person holds ANY `financeRoles` row (any `chapterId`) with `scope ===
- * "central"`, including a bare `viewer`/`bookkeeper` central grant. This is
- * the exact dimension the earlier version of this audit never checked (the
- * headline false-clean hole from review) — a central-scoped bookkeeper/
- * viewer grant DOES confer real org-wide roll-up reach today
- * (`moneyViews.ts`, `stripeFinance.ts`, `lib/centralReach.ts` all gate on
- * `isCentral`, not `role`), even though it's the graded-role "residual
- * layer" for rule (a)'s purposes.
- */
-function todaysIsCentral(personFinanceRows: Doc<"financeRoles">[]): boolean {
-  return personFinanceRows.some((g) => g.scope === "central");
-}
-
-/**
- * TODAY's accounts access for a person, replicating
- * `lib/finance.ts#isCentralEdOrFm` (lines 347-373) at its REAL keying
- * granularity — USER-keyed, not person-keyed:
- *
- *   const people = await ctx.db.query("people")
- *     .withIndex("by_user", (q) => q.eq("userId", userId)).collect();
- *   for (const person of people) {
- *     if (person.isPlaceholder === true) continue;
- *     const roles = await ctx.db.query("specializedRoles")
- *       .withIndex("by_person", (q) => q.eq("personId", person._id)).collect();
- *     if (roles.some((r) => r.scope === "central" &&
- *       (r.title === "executive_director" || r.title === "finance_manager")))
- *       return true;
- *   }
- *
- * i.e. every NON-PLACEHOLDER `people` row the SAME user owns is OR'd
- * together — holding the title on ANY of a user's roster rows grants access
- * everywhere, not just at that specific row's chapter. A person with no
- * linked `userId`, or who is THEMSELVES a placeholder, can never be resolved
- * as an authenticated caller at all — `isCentralEdOrFm` could never surface
- * their specializedRoles through this path, so it's `false` for them
- * regardless of what they personally hold. This intentionally excludes
- * `isCentralEdOrFm`'s superuser short-circuit (line 348) — see
- * `capabilityAudit`'s doc comment for why superuser is out of the audited
- * union entirely.
- */
-async function todaysAccountsAccessForPerson(
-  ctx: QueryCtx,
-  person: Doc<"people"> | null,
-  specializedByPerson: Map<Id<"people">, Doc<"specializedRoles">[]>,
-): Promise<boolean> {
-  if (!person || person.isPlaceholder === true || !person.userId) return false;
-
-  const siblings = await ctx.db
-    .query("people")
-    .withIndex("by_user", (q) => q.eq("userId", person.userId!))
-    .take(USER_PEOPLE_SCAN_LIMIT);
-
-  for (const sibling of siblings) {
-    if (sibling.isPlaceholder === true) continue;
-    // `specializedByPerson` was built from a FULL bounded table scan (see the
-    // handler), so every sibling's rows are already present here — no extra
-    // query needed per sibling.
-    const roles = specializedByPerson.get(sibling._id) ?? [];
-    if (
-      roles.some(
-        (r) =>
-          r.scope === "central" &&
-          (r.title === "executive_director" || r.title === "finance_manager"),
-      )
-    ) {
-      return true;
-    }
-  }
-  return false;
-}
-
-/** `max(seat-derived, today's stored)` on the graded finance-role ladder —
- *  the POST-FLIP role-at-scope formula. `null` iff BOTH sides are `null`. */
-function maxRole(
-  a: FinanceRole | null,
-  b: FinanceRole | null,
-): FinanceRole | null {
-  if (a === null) return b;
-  if (b === null) return a;
-  return FINANCE_ROLE_RANK[a] >= FINANCE_ROLE_RANK[b] ? a : b;
-}
-
-/** Shared response shape for `capabilityAudit` and its ops-only twin
- *  `capabilityAuditSystem` — see the doc comment above `capabilityAudit` for
- *  the full framing of what's returned. */
-const capabilityAuditReturns = v.object({
+/** Shared response shape for `bridgeDriftAudit` and its ops-only twin
+ *  `bridgeDriftAuditSystem` — see the doc comment above `bridgeDriftAudit`
+ *  for the full framing of what's returned. */
+const bridgeDriftAuditReturns = v.object({
   checkedPeople: v.number(),
   mismatches: v.array(
     v.object({
       personId: v.id("people"),
       scope: v.union(v.id("chapters"), v.literal("central")),
-      kind: capabilityAuditMismatchKindValidator,
-      // Heterogeneous by `kind` (a role name / "central-reach" /
-      // "accounts" / a legacyTitle) — see the per-kind comments below for
-      // exactly what each side means. `null` means "no value on this
-      // side" (not the `"central"` scope sentinel — that's a `scope`
-      // value, never a `seatSide`/`storedSide` value).
+      kind: bridgeDriftMismatchKindValidator,
+      // `seatSide`/`storedSide` are both a `legacyTitle` string on whichever
+      // side HAS the row, `null` on the side that's missing it — never both
+      // non-null (that would be parity, not a mismatch) and never both null.
       seatSide: v.union(v.string(), v.null()),
       storedSide: v.union(v.string(), v.null()),
     }),
@@ -1322,19 +1166,16 @@ const capabilityAuditReturns = v.object({
 });
 
 /**
- * The actual flip-simulation audit — extracted out of `capabilityAudit` so
- * `capabilityAuditSystem` (the ops-only `internalQuery` twin below) can reuse
- * the EXACT same logic instead of a hand-copied fork that could drift. Takes
- * NO auth dependency and performs NO auth check itself — every caller of this
- * function is responsible for its own gate (see the two exports below for
- * what each one uses).
+ * The actual bridge-drift audit — extracted out of `bridgeDriftAudit` so
+ * `bridgeDriftAuditSystem` (the ops-only `internalQuery` twin below) can
+ * reuse the EXACT same logic instead of a hand-copied fork that could drift.
+ * Takes NO auth dependency and performs NO auth check itself — every caller
+ * of this function is responsible for its own gate (see the two exports
+ * below for what each one uses).
  */
-async function capabilityAuditImpl(ctx: QueryCtx) {
+async function bridgeDriftAuditImpl(ctx: QueryCtx) {
   const seatAssignmentRows = await ctx.db
     .query("seatAssignments")
-    .take(AUDIT_TABLE_SCAN_LIMIT);
-  const financeRoleRows = await ctx.db
-    .query("financeRoles")
     .take(AUDIT_TABLE_SCAN_LIMIT);
   const specializedRoleRows = await ctx.db
     .query("specializedRoles")
@@ -1344,35 +1185,23 @@ async function capabilityAuditImpl(ctx: QueryCtx) {
   if (seatAssignmentRows.length === AUDIT_TABLE_SCAN_LIMIT) {
     truncated = true;
     console.warn(
-      `[seats.capabilityAudit] hit AUDIT_TABLE_SCAN_LIMIT (${AUDIT_TABLE_SCAN_LIMIT}) reading seatAssignments; audit may be incomplete.`,
-    );
-  }
-  if (financeRoleRows.length === AUDIT_TABLE_SCAN_LIMIT) {
-    truncated = true;
-    console.warn(
-      `[seats.capabilityAudit] hit AUDIT_TABLE_SCAN_LIMIT (${AUDIT_TABLE_SCAN_LIMIT}) reading financeRoles; audit may be incomplete.`,
+      `[seats.bridgeDriftAudit] hit AUDIT_TABLE_SCAN_LIMIT (${AUDIT_TABLE_SCAN_LIMIT}) reading seatAssignments; audit may be incomplete.`,
     );
   }
   if (specializedRoleRows.length === AUDIT_TABLE_SCAN_LIMIT) {
     truncated = true;
     console.warn(
-      `[seats.capabilityAudit] hit AUDIT_TABLE_SCAN_LIMIT (${AUDIT_TABLE_SCAN_LIMIT}) reading specializedRoles; audit may be incomplete.`,
+      `[seats.bridgeDriftAudit] hit AUDIT_TABLE_SCAN_LIMIT (${AUDIT_TABLE_SCAN_LIMIT}) reading specializedRoles; audit may be incomplete.`,
     );
   }
 
   // Group every already-loaded row by personId (avoids re-querying per
-  // person — the three tables above are the FULL bounded universe already).
+  // person — both tables above are the FULL bounded universe already).
   const assignmentsByPerson = new Map<Id<"people">, Doc<"seatAssignments">[]>();
   for (const r of seatAssignmentRows) {
     const arr = assignmentsByPerson.get(r.personId) ?? [];
     arr.push(r);
     assignmentsByPerson.set(r.personId, arr);
-  }
-  const financeByPerson = new Map<Id<"people">, Doc<"financeRoles">[]>();
-  for (const r of financeRoleRows) {
-    const arr = financeByPerson.get(r.personId) ?? [];
-    arr.push(r);
-    financeByPerson.set(r.personId, arr);
   }
   const specializedByPerson = new Map<Id<"people">, Doc<"specializedRoles">[]>();
   for (const r of specializedRoleRows) {
@@ -1381,10 +1210,9 @@ async function capabilityAuditImpl(ctx: QueryCtx) {
     specializedByPerson.set(r.personId, arr);
   }
 
-  // The union: every person with SOME grant, from ANY of the three tables.
+  // The union: every person with SOME row, from EITHER table.
   const personIds = new Set<Id<"people">>([
     ...assignmentsByPerson.keys(),
-    ...financeByPerson.keys(),
     ...specializedByPerson.keys(),
   ]);
 
@@ -1392,9 +1220,6 @@ async function capabilityAuditImpl(ctx: QueryCtx) {
     personId: Id<"people">;
     scope: Id<"chapters"> | "central";
     kind:
-      | "flip_changes_finance_role"
-      | "flip_changes_central_reach"
-      | "flip_changes_accounts_access"
       | "seat_legacy_title_missing_specializedRoles_mirror"
       | "specializedRoles_row_missing_seat_mirror";
     seatSide: string | null;
@@ -1409,76 +1234,10 @@ async function capabilityAuditImpl(ctx: QueryCtx) {
   };
 
   for (const personId of personIds) {
-    // Seat-derived side: the SAME helper the future enforcement flip would
-    // call — dogfooded here rather than re-implemented.
-    const seatDerived = await getSeatDerivedCapabilities(ctx, personId);
     const personAssignments = assignmentsByPerson.get(personId) ?? [];
-    const personFinance = financeByPerson.get(personId) ?? [];
     const personSpecialized = specializedByPerson.get(personId) ?? [];
-    const person = await ctx.db.get(personId);
 
-    // ── (a)+(b) financeRole flip simulation, per scope. Scope universe =
-    // every scope the person has EITHER a seat-derived entry OR a stored
-    // financeRoles row for.
-    const scopeKeys = new Set<string>([
-      ...Object.keys(seatDerived),
-      ...personFinance.map((r) => String(r.chapterId)),
-    ]);
-    for (const key of scopeKeys) {
-      const scope = scopeFromKey(key);
-      const todayRole = todaysRoleAtScope(personFinance, scope);
-      const postFlipRole = maxRole(seatDerived[key]?.financeRole ?? null, todayRole);
-      if (todayRole !== postFlipRole) {
-        recordMismatch({
-          personId,
-          scope,
-          kind: "flip_changes_finance_role",
-          seatSide: postFlipRole,
-          storedSide: todayRole,
-        });
-      }
-    }
-
-    // ── isCentral flip simulation — whole-person, role-agnostic. Can only
-    // ever flip false→true (the union formula never drops a stored grant),
-    // but compared as a genuine equality check rather than assumed, so a
-    // future non-monotonic flip formula wouldn't silently go unaudited.
-    const seatAnyCentralReach = Object.values(seatDerived).some(
-      (caps) => caps.centralReach,
-    );
-    const todayCentral = todaysIsCentral(personFinance);
-    const postFlipCentral = todayCentral || seatAnyCentralReach;
-    if (todayCentral !== postFlipCentral) {
-      recordMismatch({
-        personId,
-        scope: "central",
-        kind: "flip_changes_central_reach",
-        seatSide: postFlipCentral ? "central-reach" : null,
-        storedSide: todayCentral ? "central-reach" : null,
-      });
-    }
-
-    // ── accountsAccess flip simulation — central only (see doc comment).
-    const seatAccounts = seatDerived["central"]?.accountsAccess ?? false;
-    const todayAccounts = await todaysAccountsAccessForPerson(
-      ctx,
-      person,
-      specializedByPerson,
-    );
-    const postFlipAccounts = todayAccounts || seatAccounts;
-    if (todayAccounts !== postFlipAccounts) {
-      recordMismatch({
-        personId,
-        scope: "central",
-        kind: "flip_changes_accounts_access",
-        seatSide: postFlipAccounts ? "accounts" : null,
-        storedSide: todayAccounts ? "accounts" : null,
-      });
-    }
-
-    // ── (c) legacyTitle seat <-> specializedRoles mirror, both directions
-    // — data-integrity, NOT a capability-outcome comparison (see the
-    // section doc above).
+    // legacyTitle seat -> specializedRoles mirror, both directions.
     const legacyPairs: { scope: Id<"chapters"> | "central"; legacyTitle: string }[] = [];
     for (const a of personAssignments) {
       const def = await ctx.db.get(a.seatDefId);
@@ -1528,37 +1287,26 @@ async function capabilityAuditImpl(ctx: QueryCtx) {
 }
 
 /**
- * Capability shadow audit — superuser-gated (same check `assignSeat`/
- * `unassignSeat` use), 100% READ-ONLY. A FLIP SIMULATION: for every person
- * who has EITHER a `seatAssignments` row, a `financeRoles` grant, or a
- * `specializedRoles` row (the union), computes TODAY's effective outcome
- * (`todaysRoleAtScope` / `todaysIsCentral` / `todaysAccountsAccessForPerson`
- * — the real gates' exact formulas) and POST-FLIP's effective outcome
- * (`max`/`OR` of seat-derived and today's stored — the flip's own formula),
- * and reports every subject where they disagree. Plus the separate (c)
- * legacyTitle/specializedRoles mirror integrity check. See the section doc
- * above the constants for the full framing.
+ * Bridge drift audit — superuser-gated (same check `assignSeat`/
+ * `unassignSeat` use), 100% READ-ONLY. Checks that every `seatAssignments`
+ * row on a `legacyTitle`-bearing seat def stays mirrored onto a
+ * `specializedRoles` row at the same (scope, title) — `assignSeat`'s
+ * write-through contract (`assignSpecializedRoleImpl` /
+ * `removeSpecializedRoleImpl` in `specializedRoles.ts`) — in BOTH
+ * directions: a seat with no mirror, and a mirror with no seat. See the
+ * section doc above the constants for the full framing, including why this
+ * replaced the old flip-simulation audit (the B10 flip in PR #195 already
+ * shipped, so simulating it is permanently stale).
  *
- * `accountsAccess` is compared at `scope: "central"` ONLY (mirroring
- * `isCentralEdOrFm`, which is inherently central-only) — a `finance.accounts`
- * capability on a hypothetical chapter-scoped seat would never be checked by
- * this rule (no such seat exists in `SEAT_DEFS` today). `isCentral` is a
- * WHOLE-PERSON flag, not scope-keyed (see `todaysIsCentral`); its mismatch
- * entries use `scope: "central"` as a conventional label, not a claim that
- * the underlying grant is keyed there.
- *
- * OUT OF THE AUDITED UNION — the superuser allowlist (`lib/superuser.ts`).
- * `isSuperuser` short-circuits BOTH `getFinanceRole` (→ central manager) and
- * `isCentralEdOrFm` (→ true) unconditionally, with NO seat/`financeRoles`/
- * `specializedRoles` row required — a superuser with zero rows anywhere
- * still passes every real gate today (pinned by
- * `capabilityAudit.test.ts`'s "superuser bypass" test, which calls the REAL
- * `financeRoles.mySeats`/`canViewAccounts` queries, not this audit). This
- * audit has NO WAY to observe that bypass (there's nothing in any of the
- * three scanned tables to key off), so it gives ZERO verification that a
- * flip preserves it. **The flip PR must leave the superuser short-circuit
- * completely untouched** — this audit cannot vouch for that; it must be
- * verified independently.
+ * This is a DATA-INTEGRITY check, not a capability-outcome comparison — it
+ * says nothing about what anyone can currently DO (that's `lib/finance.ts`'s
+ * live union formula, verified independently by
+ * `tests/financeGatesSeatUnion.test.ts`). It exists only because
+ * `specializedRoles` remains the live source of truth for title-based
+ * separation-of-duties (`APPROVE_SEAT_SLUGS`/`RECORD_SEAT_SLUGS`) until that
+ * table is retired in a later milestone — while it's live, a drifted mirror
+ * is a real bug (e.g. someone who still holds a seat losing SoD-relevant
+ * standing, or a departed holder's title lingering).
  *
  * Never enforces, throws-on-drift, or writes anything — it's a report, not a
  * gate. Bounded reads throughout (see `AUDIT_TABLE_SCAN_LIMIT` /
@@ -1568,17 +1316,17 @@ async function capabilityAuditImpl(ctx: QueryCtx) {
  * would otherwise misread a truncated run as clean, which is exactly why
  * `status` exists instead of a bare boolean.
  */
-export const capabilityAudit = query({
+export const bridgeDriftAudit = query({
   args: {},
-  returns: capabilityAuditReturns,
+  returns: bridgeDriftAuditReturns,
   handler: async (ctx) => {
     await requireSuperuser(ctx);
-    return await capabilityAuditImpl(ctx);
+    return await bridgeDriftAuditImpl(ctx);
   },
 });
 
 /**
- * Ops-only twin of `capabilityAudit` — an `internalQuery`, not a `query`.
+ * Ops-only twin of `bridgeDriftAudit` — an `internalQuery`, not a `query`.
  * Internal functions carry no client-reachable HTTP/API surface at all: only
  * `query`/`mutation`/`action` exports are exposed to the public API Convex
  * generates, so `internalQuery` exports are unreachable from the mobile/web
@@ -1588,21 +1336,21 @@ export const capabilityAudit = query({
  * which already require a deploy key / admin access to the deployment
  * itself. That's why this has NO `requireSuperuser` call — there is no
  * end-user identity to gate here (`npx convex run --prod` has none, which is
- * exactly why `capabilityAudit` can't be run that way); the access control
+ * exactly why `bridgeDriftAudit` can't be run that way); the access control
  * for this surface is deployment access, not an in-app role check.
  *
- * Exists so ops can run the flip-simulation audit against prod
- * (`npx convex run --prod seats:capabilityAuditSystem`) ahead of the
- * enforcement flip, without a superuser-authenticated user session. Calls
- * the identical `capabilityAuditImpl` `capabilityAudit` does — same reads,
- * same formulas, same output shape — so the two are guaranteed to agree;
- * pinned by a test in `capabilityAudit.test.ts` asserting byte-identical
- * results for the same data.
+ * Exists so ops can run the bridge-drift audit against prod
+ * (`npx convex run --prod seats:bridgeDriftAuditSystem`) without a
+ * superuser-authenticated user session. Calls the identical
+ * `bridgeDriftAuditImpl` `bridgeDriftAudit` does — same reads, same
+ * formulas, same output shape — so the two are guaranteed to agree; pinned
+ * by a test in `bridgeDriftAudit.test.ts` asserting byte-identical results
+ * for the same data.
  */
-export const capabilityAuditSystem = internalQuery({
+export const bridgeDriftAuditSystem = internalQuery({
   args: {},
-  returns: capabilityAuditReturns,
+  returns: bridgeDriftAuditReturns,
   handler: async (ctx) => {
-    return await capabilityAuditImpl(ctx);
+    return await bridgeDriftAuditImpl(ctx);
   },
 });

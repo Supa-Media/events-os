@@ -186,12 +186,6 @@ export default function ProfileScreen() {
             variant="secondary"
             onPress={() => router.push("/guest-access")}
           />
-          <Button
-            title="Governance roles"
-            icon="shield"
-            variant="secondary"
-            onPress={() => router.push("/governance")}
-          />
         </View>
       ) : null}
 
