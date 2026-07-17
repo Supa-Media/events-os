@@ -60,6 +60,7 @@ import {
   createEventBudget,
   getBudgetForRef,
   setBudgetAmount,
+  syncBudgetIdentityForRef,
 } from "./finances";
 import { getFinanceRole, type FinanceAccess, type FinanceScope } from "./lib/finance";
 
@@ -1201,7 +1202,7 @@ export const myBriefing = query({
 export const reschedule = mutation({
   args: { eventId: v.id("events"), eventDate: v.number() },
   handler: async (ctx, { eventId, eventDate }) => {
-    await requireEvent(ctx, eventId);
+    const event = await requireEvent(ctx, eventId);
     await ctx.db.patch(eventId, { eventDate, updatedAt: Date.now() });
     const items = await ctx.db
       .query("eventItems")
@@ -1214,6 +1215,11 @@ export const reschedule = mutation({
         });
       }
     }
+    // Budget identity & dates (item 2): the ONLY mutation that changes
+    // `eventDate` — `updateDetails` doesn't touch it — so this is the sole
+    // hook point for a linked budget's stored year/month to follow a
+    // reschedule. No-op when nothing is linked.
+    await syncBudgetIdentityForRef(ctx, "event", eventId, event.name, eventDate);
     return eventId;
   },
 });
@@ -1300,6 +1306,15 @@ export const updateDetails = mutation({
         },
         userId,
       );
+    }
+
+    // Budget identity & dates (item 2): a rename write-throughs onto the
+    // linked budget's stored label — a no-op when nothing is linked yet, or
+    // when this call summoned a fresh budget just above (its label already
+    // matches). Gated on a real name edit only — `updateDetails` never
+    // touches `eventDate` (see `reschedule` for that half).
+    if (patch.name !== undefined && patch.name.trim()) {
+      await syncBudgetIdentityForRef(ctx, "event", eventId, patch.name.trim(), event.eventDate);
     }
     return eventId;
   },
