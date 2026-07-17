@@ -9,13 +9,39 @@
  */
 import { query, mutation, QueryCtx } from "./_generated/server";
 import { Id } from "./_generated/dataModel";
-import { v } from "convex/values";
+import { v, ConvexError } from "convex/values";
 import {
   requireEvent,
   requireOwned,
   getChapterIdOrNull,
 } from "./lib/context";
 import { deleteEventPlacementsForRef } from "./lib/placements";
+
+/**
+ * A `budgetCategoryId` override, if any, must belong to the CALLER's own
+ * chapter (categories are always chapter-scoped) AND be active — mirrors
+ * `budgetLines.ts#verifyCategory` / `items.ts#verifyCategory`.
+ */
+async function verifyCategory(
+  ctx: QueryCtx,
+  chapterId: Id<"chapters">,
+  categoryId: Id<"budgetCategories"> | null | undefined,
+): Promise<void> {
+  if (!categoryId) return;
+  const category = await ctx.db.get(categoryId);
+  if (!category || category.chapterId !== chapterId) {
+    throw new ConvexError({
+      code: "NOT_FOUND",
+      message: "Category not found in your chapter.",
+    });
+  }
+  if (category.isActive === false) {
+    throw new ConvexError({
+      code: "INACTIVE_CATEGORY",
+      message: "This category is no longer active.",
+    });
+  }
+}
 
 const engagementType = v.union(v.literal("volunteer"), v.literal("paid"));
 const engagementStatus = v.union(
@@ -124,6 +150,9 @@ export const update = mutation({
     amountUsd: v.optional(v.union(v.number(), v.null())),
     paymentStatus: v.optional(paymentStatus),
     notes: v.optional(v.union(v.string(), v.null())),
+    // Money-page category override; null clears back to the module default
+    // mapping (`VENDOR_DEFAULT_CATEGORY_NAME`, applied at read time).
+    budgetCategoryId: v.optional(v.union(v.id("budgetCategories"), v.null())),
   },
   handler: async (ctx, { engagementId, ...patch }) => {
     const eng = await requireOwned(ctx, "engagements", engagementId, "Engagement");
@@ -148,6 +177,12 @@ export const update = mutation({
       fields.amountUsd = patch.amountUsd ?? undefined;
     if (patch.paymentStatus !== undefined) fields.paymentStatus = patch.paymentStatus;
     if (patch.notes !== undefined) fields.notes = patch.notes ?? undefined;
+    if (patch.budgetCategoryId !== undefined) {
+      if (patch.budgetCategoryId !== null) {
+        await verifyCategory(ctx, eng.chapterId, patch.budgetCategoryId);
+      }
+      fields.budgetCategoryId = patch.budgetCategoryId ?? undefined;
+    }
     await ctx.db.patch(engagementId, fields);
     return engagementId;
   },

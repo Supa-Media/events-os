@@ -79,6 +79,34 @@ async function requireActiveTemplateModule(
   }
 }
 
+/**
+ * A `budgetCategoryId` override, if any, must belong to the CALLER's own
+ * chapter (categories are always chapter-scoped) AND be active — mirrors
+ * `budgetLines.ts#verifyCategory`, plus the active check the Money-page plan
+ * view (a follow-up PR) needs: a row shouldn't silently point at a category a
+ * chapter retired.
+ */
+async function verifyCategory(
+  ctx: QueryCtx,
+  chapterId: Id<"chapters">,
+  categoryId: Id<"budgetCategories"> | null | undefined,
+): Promise<void> {
+  if (!categoryId) return;
+  const category = await ctx.db.get(categoryId);
+  if (!category || category.chapterId !== chapterId) {
+    throw new ConvexError({
+      code: "NOT_FOUND",
+      message: "Category not found in your chapter.",
+    });
+  }
+  if (category.isActive === false) {
+    throw new ConvexError({
+      code: "INACTIVE_CATEGORY",
+      message: "This category is no longer active.",
+    });
+  }
+}
+
 /** Merge a `fields` patch into existing fields (so single-cell edits don't wipe). */
 function mergeFields(
   existing: Record<string, any> | undefined,
@@ -564,6 +592,9 @@ export const updateEventItem = mutation({
     status: v.optional(v.union(v.string(), v.null())),
     // Manual row height (px); null resets the row back to auto-fit.
     rowHeight: v.optional(v.union(v.number(), v.null())),
+    // Money-page category override; null clears back to the module default
+    // mapping (`MODULE_DEFAULT_CATEGORY_NAMES`, applied at read time).
+    budgetCategoryId: v.optional(v.union(v.id("budgetCategories"), v.null())),
     fields: fieldsValidator,
   },
   handler: async (ctx, { itemId, ...patch }) => {
@@ -584,6 +615,12 @@ export const updateEventItem = mutation({
     if (patch.status !== undefined) fields.status = patch.status ?? undefined;
     if (patch.rowHeight !== undefined)
       fields.rowHeight = patch.rowHeight ?? undefined;
+    if (patch.budgetCategoryId !== undefined) {
+      if (patch.budgetCategoryId !== null) {
+        await verifyCategory(ctx, event.chapterId, patch.budgetCategoryId);
+      }
+      fields.budgetCategoryId = patch.budgetCategoryId ?? undefined;
+    }
     // Supplies: a manual status pick from the grid becomes the derived-status
     // OVERRIDE (fields.statusOverride); clearing it (null) reverts to auto.
     let bagPatch = patch.fields;
