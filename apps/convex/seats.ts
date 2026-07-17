@@ -33,7 +33,9 @@ import {
   SEAT_DEFS,
   titleKind,
   FINANCE_ROLE_RANK,
+  SPECIALIZED_ROLE_TITLES,
   type FinanceRole,
+  type SpecializedRoleTitle,
 } from "@events-os/shared";
 import { requireAccess, requireUserId } from "./lib/context";
 import { isSuperuser, requireSuperuser } from "./lib/superuser";
@@ -532,6 +534,118 @@ export const mySeatAssignments = query({
     }
     results.sort((a, b) => a.createdAt - b.createdAt);
     return results;
+  },
+});
+
+const specializedTitleValidator = v.union(
+  ...SPECIALIZED_ROLE_TITLES.map((t) => v.literal(t)),
+);
+
+/**
+ * The distinct desk SCOPES (WP-S switcher fix) the caller holds ANY org-chart
+ * seat assignment in — one entry for `"central"` and/or one per chapter,
+ * deduped from `mySeatAssignments`' per-assignment rows (a person can hold
+ * several seats in the same scope, e.g. `chapter_director` + `event_lead`;
+ * this collapses those into one desk entry). `title` is the assignment's
+ * seat's `legacyTitle` where one exists (e.g. `chapter_director` ->
+ * `"president"`, displayed as "Chapter Director" — see
+ * `specializedRoleLabel`), read straight off `SEAT_DEFS` rather than the
+ * `specializedRoles` table, so it's correct even if that table's write-through
+ * mirror is stale. When a scope has several seats, whichever assignment is
+ * read LAST wins the title shown — seat order isn't meaningful here, this is
+ * display enrichment only.
+ *
+ * THIS IS DESK MEMBERSHIP ONLY — it says nothing about finance CAPABILITY. A
+ * seat like `chapter_director` carries `nav.finances` (shows the Finances
+ * tab) and `finance.approve`, but NOT `finance.manager` — holding it alone
+ * does not grant a `financeRoles` read/write floor (see `lib/finance.ts`'s
+ * `getFinanceRole` — a seat only derives a finance role when it carries the
+ * `finance.manager` capability). `ChapterContext` unions this list with
+ * `financeRoles.mySeats` (which independently grants a desk to finance-only
+ * grant holders with no org-chart seat) purely to decide what counts as a
+ * "your seats" desk vs. read-only peek — every finance WRITE/READ gate stays
+ * exactly as it is today, keyed off `financeRoles`/seat-derived CAPABILITIES,
+ * never this list.
+ */
+export const myDeskChapters = query({
+  args: {},
+  returns: v.array(
+    v.union(
+      v.object({
+        scope: v.literal("central"),
+        title: v.optional(specializedTitleValidator),
+      }),
+      v.object({
+        scope: v.id("chapters"),
+        chapterName: v.string(),
+        title: v.optional(specializedTitleValidator),
+      }),
+    ),
+  ),
+  handler: async (ctx) => {
+    // Mirrors `mySeatAssignments`: org-transparent read, gated only by
+    // `requireAccess` (no chapter-/central-scoping beyond that).
+    await requireAccess(ctx);
+    const userId = (await requireUserId(ctx)) as Id<"users">;
+    const peopleRows = await ctx.db
+      .query("people")
+      .withIndex("by_user", (q) => q.eq("userId", userId))
+      .collect();
+    const realPeople = peopleRows.filter((p) => p.isPlaceholder !== true);
+
+    const assignments = (
+      await Promise.all(
+        realPeople.map((p) =>
+          ctx.db
+            .query("seatAssignments")
+            .withIndex("by_person", (q) => q.eq("personId", p._id))
+            .collect(),
+        ),
+      )
+    ).flat();
+
+    let hasCentral = false;
+    let centralTitle: SpecializedRoleTitle | undefined;
+    const chapterTitles = new Map<Id<"chapters">, SpecializedRoleTitle | undefined>();
+    for (const a of assignments) {
+      const def = await ctx.db.get(a.seatDefId);
+      if (!def) continue; // stale assignment on a deleted def
+      if (a.scope === "central") {
+        hasCentral = true;
+        if (def.legacyTitle) centralTitle = def.legacyTitle;
+      } else {
+        if (!chapterTitles.has(a.scope) || def.legacyTitle) {
+          chapterTitles.set(
+            a.scope,
+            def.legacyTitle ?? chapterTitles.get(a.scope),
+          );
+        }
+      }
+    }
+
+    const chapters = [];
+    for (const [chapterId, title] of chapterTitles) {
+      const chapter = await ctx.db.get(chapterId);
+      if (!chapter) continue; // stale assignment on a deleted chapter
+      chapters.push({
+        scope: chapterId,
+        chapterName: chapter.name,
+        ...(title !== undefined ? { title } : {}),
+      });
+    }
+    chapters.sort((a, b) => a.chapterName.localeCompare(b.chapterName));
+
+    return [
+      ...(hasCentral
+        ? [
+            {
+              scope: "central" as const,
+              ...(centralTitle !== undefined ? { title: centralTitle } : {}),
+            },
+          ]
+        : []),
+      ...chapters,
+    ];
   },
 });
 

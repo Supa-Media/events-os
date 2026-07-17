@@ -25,6 +25,19 @@ const EDGE_MARGIN = 8;
  * press; the panel itself is absolutely positioned beneath the anchor and flips
  * above when it would overflow the window bottom. With no anchor it centers like
  * a small dialog. Clicks inside the panel are swallowed so they don't close it.
+ *
+ * Flip-above positioning anchors the panel's BOTTOM edge to the trigger's top
+ * edge (via the `bottom` style, not `top`) rather than computing a `top` from
+ * the FIXED `MAX_PANEL_HEIGHT`. The panel's actual rendered height is almost
+ * always far less than `MAX_PANEL_HEIGHT` (it hugs its content, capped at that
+ * max) — positioning from `top = anchor.y - MAX_PANEL_HEIGHT` assumed the
+ * panel to be exactly that tall, leaving a large empty gap between a short
+ * panel and its trigger for anchors near the bottom of the window (e.g. the
+ * shell's bottom-left desk-switcher pill). Anchoring from `bottom` instead
+ * makes the panel grow upward from the trigger regardless of its content
+ * height. The scrollable max height is also clamped to the actual space
+ * available above the anchor so a tall panel still can't overflow past the
+ * top edge of the window.
  */
 export function Popover({ visible, onClose, anchor, width, children }: Props) {
   if (!visible) return null;
@@ -35,8 +48,10 @@ export function Popover({ visible, onClose, anchor, width, children }: Props) {
     position: "absolute";
     left?: number;
     top?: number;
+    bottom?: number;
     width: number;
   };
+  let scrollMaxHeight = MAX_PANEL_HEIGHT;
 
   if (anchor) {
     const panelWidth = width ?? Math.max(anchor.width, 240);
@@ -47,12 +62,16 @@ export function Popover({ visible, onClose, anchor, width, children }: Props) {
 
     const belowTop = anchor.y + anchor.height + GAP;
     const overflowsBottom = belowTop + MAX_PANEL_HEIGHT > window.height;
-    // Flip above when there isn't room below.
-    const top = overflowsBottom
-      ? Math.max(EDGE_MARGIN, anchor.y - GAP - MAX_PANEL_HEIGHT)
-      : belowTop;
-
-    panelStyle = { position: "absolute", left, top, width: panelWidth };
+    if (overflowsBottom) {
+      // Flip above: anchor the BOTTOM edge just above the trigger (see the
+      // function doc) and clamp the scroll height to the real space above it.
+      const bottom = Math.max(EDGE_MARGIN, window.height - anchor.y + GAP);
+      const spaceAbove = anchor.y - GAP - EDGE_MARGIN;
+      scrollMaxHeight = Math.max(0, Math.min(MAX_PANEL_HEIGHT, spaceAbove));
+      panelStyle = { position: "absolute", left, bottom, width: panelWidth };
+    } else {
+      panelStyle = { position: "absolute", left, top: belowTop, width: panelWidth };
+    }
   } else {
     panelStyle = { position: "absolute", width: width ?? 240 };
   }
@@ -70,7 +89,7 @@ export function Popover({ visible, onClose, anchor, width, children }: Props) {
           style={anchor ? panelStyle : undefined}
           className="overflow-hidden rounded-lg border border-border bg-raised shadow-pop"
         >
-          <ScrollView style={{ maxHeight: MAX_PANEL_HEIGHT }}>
+          <ScrollView style={{ maxHeight: scrollMaxHeight }}>
             <View style={!anchor ? { width: width ?? 240 } : undefined}>
               {children}
             </View>

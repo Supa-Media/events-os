@@ -6,19 +6,43 @@
  * state into this), and any future chapter-scoped screen.
  *
  * Two states:
- *  - `{kind:"seat", scope}` — the caller is at one of their REAL finance seats
- *    (`"central"`, or a chapter id they hold a `financeRoles` grant in).
+ *  - `{kind:"seat", scope}` — the caller is at one of their REAL desks
+ *    (`"central"`, or a chapter id) — see "What counts as a desk" below.
  *  - `{kind:"peek", chapterId, chapterName}` — a CENTRAL-seat holder browsing
- *    a chapter they do NOT hold a seat in, read-only. Peek is only ever
+ *    a chapter they do NOT hold a desk in, read-only. Peek is only ever
  *    entered from a central seat, so `exitPeek` always has a central seat to
  *    fall back to.
  *
  * Source of truth for what's available: `financeRoles.mySeats` (the caller's
- * real seats) + `financeRoles.listChaptersForPeek` (every chapter in the org,
+ * REAL `financeRoles`-granted seats) UNIONED with `seats.myDeskChapters` (the
+ * caller's org-chart-SEAT-only desks — see "What counts as a desk" below),
+ * plus `financeRoles.listChaptersForPeek` (every chapter in the org,
  * central-seat holders only — the Peek list, filtered here to exclude any
- * chapter the caller already holds a real seat in). A single-context caller
- * (one chapter seat, no central, no peek reach) gets a fixed context and no
- * pill at all — see `showSwitcher`.
+ * chapter the caller already holds a real DESK in, from either source). A
+ * single-context caller (one chapter desk, no central, no peek reach) gets a
+ * fixed context and no pill at all — see `showSwitcher`.
+ *
+ * ## What counts as a desk (WP-S switcher fix, 2026-07-17)
+ *
+ * A chapter where the caller holds ANY org-chart seat (`seatAssignments`, via
+ * `seats.myDeskChapters`) is a REAL DESK, not a peek — org-chart seats are the
+ * source of truth for desk MEMBERSHIP, independent of `financeRoles`. Before
+ * this fix, desks were derived ONLY from `financeRoles.mySeats`, so a
+ * `chapter_director` seat holder with no separate `financeRoles` grant (that
+ * seat carries `nav.finances`/`finance.approve`, not `finance.manager` — see
+ * `SEAT_DEFS`) fell through to the Peek list for their OWN chapter, read-only.
+ * Central desk = a central-chart seat assignment OR the pre-existing central
+ * `financeRoles`/seat-derived finance reach (the union keeps a finance-only
+ * central grant holder with no central seat assignment from losing their
+ * desk). This changes DESK/READ SCOPING only (which desk the switcher shows
+ * and what a peek-vs-seat context resolves to) — every finance WRITE gate is
+ * untouched, still keyed off `financeRoles`/seat CAPABILITIES
+ * (`lib/finance.ts#getFinanceRole`), never this union. A desk with no
+ * matching finance capability can still get a `FORBIDDEN` from a finance read
+ * (e.g. `finances.dashboardChapter`'s viewer floor) — `FinanceBoundary`
+ * degrades that to a friendly "Finance access needed" state rather than
+ * crashing (see `apps/mobile/app/(app)/finances/index.tsx`); it is NOT
+ * widened by this fix. See the seat's own doc comment on `myDeskChapters`.
  *
  * SCOPE (WP-S, see the PR for the full writeup; extended by the Events/
  * Projects peek follow-up):
@@ -61,7 +85,7 @@ import {
 import { useConvexAuth, useQuery } from "convex/react";
 import { api } from "@events-os/convex/_generated/api";
 import type { Id } from "@events-os/convex/_generated/dataModel";
-import { seatKeyOf, type Seat } from "./financeSeats";
+import { mergeDesks, seatKeyOf, type Seat } from "./financeSeats";
 
 /** A real seat's scope key: `"central"` or a chapter id. */
 export type ChapterScope = "central" | Id<"chapters">;
@@ -75,9 +99,10 @@ export type PeekChapter = { chapterId: Id<"chapters">; name: string };
 type ChapterSeat = Extract<Seat, { scope: "chapter" }>;
 
 type ChapterContextApi = {
-  /** True until `mySeats` resolves. */
+  /** True until `mySeats` and `myDeskChapters` both resolve. */
   loading: boolean;
-  /** The caller's real finance seats, central first. `[]` = no finance seat. */
+  /** The caller's real desks (finance seats UNIONED with org-chart-seat-only
+   *  desks), central first. `[]` = no desk at all. */
   seats: Seat[];
   /** The caller's central seat, or null. */
   centralSeat: Seat | null;
@@ -109,7 +134,8 @@ const ChapterCtx = createContext<ChapterContextApi | null>(null);
 
 export function ChapterContextProvider({ children }: { children: ReactNode }) {
   const { isAuthenticated } = useConvexAuth();
-  const seats = useQuery(api.financeRoles.mySeats, isAuthenticated ? {} : "skip");
+  const financeSeats = useQuery(api.financeRoles.mySeats, isAuthenticated ? {} : "skip");
+  const deskChapters = useQuery(api.seats.myDeskChapters, isAuthenticated ? {} : "skip");
   const peekChaptersRaw = useQuery(
     api.financeRoles.listChaptersForPeek,
     isAuthenticated ? {} : "skip",
@@ -126,6 +152,14 @@ export function ChapterContextProvider({ children }: { children: ReactNode }) {
     chapterId: Id<"chapters">;
     chapterName: string;
   } | null>(null);
+
+  // The caller's real desks: `financeRoles.mySeats` UNIONED with
+  // `seats.myDeskChapters` — see the module doc's "What counts as a desk" and
+  // `mergeDesks`' own doc for exactly how the two are combined.
+  const seats: Seat[] | undefined = useMemo(() => {
+    if (financeSeats === undefined || deskChapters === undefined) return undefined;
+    return mergeDesks(financeSeats, deskChapters);
+  }, [financeSeats, deskChapters]);
 
   const centralSeat = seats?.find((s) => s.scope === "central") ?? null;
   const chapterSeats = useMemo(

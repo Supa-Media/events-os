@@ -419,6 +419,158 @@ describe("seats.mySeatAssignments", () => {
   });
 });
 
+/**
+ * `seats.myDeskChapters` (WP-S switcher fix) — the desk-membership query that
+ * fixes the switcher deriving desks ONLY from `financeRoles.mySeats`: a
+ * `chapter_director` (or any other) seat holder with no separate
+ * `financeRoles` grant now shows up as a real desk here, not just in
+ * `mySeatAssignments`' flat per-assignment list. `ChapterContext`/`mergeDesks`
+ * (mobile) union this with `financeRoles.mySeats` — see `ChapterContext`'s
+ * "What counts as a desk" doc.
+ */
+describe("seats.myDeskChapters", () => {
+  test("a chapter_director seat with NO financeRoles grant is still a desk, titled 'president'", async () => {
+    const t = newT();
+    await run(t, (ctx) => runSeedSeatDefs(ctx));
+    const s = await setupChapter(t, { chapterName: "New York" });
+    const chapterDirectorDef = await defBySlug(s, "chapter_director");
+
+    const personId = await run(t, (ctx) =>
+      ctx.db.insert("people", {
+        chapterId: s.chapterId,
+        name: "Nia NY",
+        userId: s.userId,
+        createdAt: Date.now(),
+      }),
+    );
+    await run(t, (ctx) =>
+      ctx.db.insert("seatAssignments", {
+        seatDefId: chapterDirectorDef._id,
+        scope: s.chapterId,
+        personId,
+        createdAt: Date.now(),
+      }),
+    );
+    // Confirm the premise: no financeRoles grant exists for this seat alone
+    // (chapter_director carries `nav.finances`/`finance.approve`, not
+    // `finance.manager` — see `SEAT_DEFS`).
+    expect(await financeGrant(s, s.chapterId, personId)).toBeNull();
+
+    const desks = await s.as.query(api.seats.myDeskChapters, {});
+    expect(desks).toEqual([
+      { scope: s.chapterId, chapterName: "New York", title: "president" },
+    ]);
+  });
+
+  test("a central seat assignment is a desk even with no financeRoles grant", async () => {
+    const t = newT();
+    await run(t, (ctx) => runSeedSeatDefs(ctx));
+    const s = await setupChapter(t);
+    const edDef = await defBySlug(s, "executive_director");
+
+    const personId = await run(t, (ctx) =>
+      ctx.db.insert("people", {
+        chapterId: s.chapterId,
+        name: "Ela ED",
+        userId: s.userId,
+        createdAt: Date.now(),
+      }),
+    );
+    await run(t, (ctx) =>
+      ctx.db.insert("seatAssignments", {
+        seatDefId: edDef._id,
+        scope: "central",
+        personId,
+        createdAt: Date.now(),
+      }),
+    );
+
+    const desks = await s.as.query(api.seats.myDeskChapters, {});
+    expect(desks).toEqual([{ scope: "central", title: "executive_director" }]);
+  });
+
+  test("a seat with no legacyTitle is still a desk, with no title field", async () => {
+    const t = newT();
+    await run(t, (ctx) => runSeedSeatDefs(ctx));
+    const s = await setupChapter(t, { chapterName: "New York" });
+    const musicLeadDef = await defBySlug(s, "music_lead");
+
+    const personId = await run(t, (ctx) =>
+      ctx.db.insert("people", {
+        chapterId: s.chapterId,
+        name: "Max Music",
+        userId: s.userId,
+        createdAt: Date.now(),
+      }),
+    );
+    await run(t, (ctx) =>
+      ctx.db.insert("seatAssignments", {
+        seatDefId: musicLeadDef._id,
+        scope: s.chapterId,
+        personId,
+        createdAt: Date.now(),
+      }),
+    );
+
+    const desks = await s.as.query(api.seats.myDeskChapters, {});
+    expect(desks).toEqual([{ scope: s.chapterId, chapterName: "New York" }]);
+  });
+
+  test("central-first ordering: a dual central + chapter seat holder gets both, central first", async () => {
+    const t = newT();
+    await run(t, (ctx) => runSeedSeatDefs(ctx));
+    const s = await setupChapter(t, { chapterName: "New York" });
+    const edDef = await defBySlug(s, "executive_director");
+    const chapterDirectorDef = await defBySlug(s, "chapter_director");
+
+    const personId = await run(t, (ctx) =>
+      ctx.db.insert("people", {
+        chapterId: s.chapterId,
+        name: "Dana Dual",
+        userId: s.userId,
+        createdAt: Date.now(),
+      }),
+    );
+    await run(t, (ctx) =>
+      ctx.db.insert("seatAssignments", {
+        seatDefId: edDef._id,
+        scope: "central",
+        personId,
+        createdAt: Date.now(),
+      }),
+    );
+    await run(t, (ctx) =>
+      ctx.db.insert("seatAssignments", {
+        seatDefId: chapterDirectorDef._id,
+        scope: s.chapterId,
+        personId,
+        createdAt: Date.now(),
+      }),
+    );
+
+    const desks = await s.as.query(api.seats.myDeskChapters, {});
+    expect(desks).toEqual([
+      { scope: "central", title: "executive_director" },
+      { scope: s.chapterId, chapterName: "New York", title: "president" },
+    ]);
+  });
+
+  test("returns nothing for a caller with no seat assignment", async () => {
+    const t = newT();
+    await run(t, (ctx) => runSeedSeatDefs(ctx));
+    const s = await setupChapter(t);
+
+    const desks = await s.as.query(api.seats.myDeskChapters, {});
+    expect(desks).toEqual([]);
+  });
+
+  test("rejects a fully signed-out caller", async () => {
+    const t = newT();
+    await run(t, (ctx) => runSeedSeatDefs(ctx));
+    await expect(t.query(api.seats.myDeskChapters, {})).rejects.toThrow(ConvexError);
+  });
+});
+
 describe("seats access control", () => {
   test("chart/seatDetail/mySeatAssignments all reject a fully signed-out caller", async () => {
     const t = newT();
