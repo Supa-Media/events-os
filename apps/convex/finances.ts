@@ -7117,6 +7117,114 @@ async function moveBudgetScope(
   }
 }
 
+/**
+ * Shared engine behind `transferProjectScope` AND `transferEventScope`: move
+ * every budget linked to a single project/event ref (found via `by_ref`,
+ * regardless of which scope currently owns it — see the REVERSE-transfer note
+ * below) plus every transaction linked to those budgets, then write ONE
+ * `reattributionAudit` row. Extracted (not duplicated) so both refs share the
+ * exact same move semantics — a behavior-preserving refactor of the
+ * project-only WP-2.2 code: `transferProjectScope`'s own test suite is
+ * unchanged and still green, proving this split didn't alter its behavior.
+ *
+ * Neither a project's nor an event's ROW has a central scope / chapterId
+ * union (WP-2.2 finding, reconfirmed for events — `schema/events.ts` has
+ * `chapterId: v.id("chapters")`, no union): the ref ROW always stays
+ * chapter-scoped, only its money moves. Callers report that back to their own
+ * client as `projectScopeDeferred`/`eventScopeDeferred: true`.
+ */
+async function transferRefScope(
+  ctx: MutationCtx,
+  args: {
+    refKind: BudgetRefKind;
+    refId: Id<"projects"> | Id<"events">;
+    /** e.g. `Project "Music Recording"` / `Event "Sunday Gathering"` — the
+     *  audit summary's subject line. */
+    refLabel: string;
+    sourceScope: FinanceScope;
+    target: FinanceScope;
+    note: string | undefined;
+    actor: { personId: Id<"people"> | null; userId: Id<"users"> };
+  },
+): Promise<{
+  budgetsMoved: number;
+  txnsMoved: number;
+  auditId: Id<"reattributionAudit">;
+}> {
+  const { refKind, refId, refLabel, sourceScope, target, note, actor } = args;
+
+  // 1. Move the ref's BUDGETS (one_time budgets whose refKind/scopeRefId point
+  //    at this project/event). Found via `by_ref` — NOT scoped to
+  //    `sourceScope` — because the ref's own `chapterId` never changes
+  //    (WP-2.2 finding). Scoping this lookup to the ref's home chapter meant a
+  //    REVERSE transfer (chapter → central → back to chapter) couldn't find
+  //    budgets that already moved to central: it queried the chapter, but the
+  //    budgets lived at central by then, so they were silently stranded.
+  //    `by_ref` finds them regardless of which scope currently owns them.
+  const refBudgets = await ctx.db
+    .query("budgets")
+    .withIndex("by_ref", (q) => q.eq("refKind", refKind).eq("scopeRefId", refId))
+    .take(ROLLUP_SCAN_LIMIT);
+  let budgetsMoved = 0;
+  for (const b of refBudgets) {
+    if (b.chapterId === target) continue;
+    await moveBudgetScope(ctx, b, target);
+    budgetsMoved++;
+  }
+
+  // 2. Move the transactions ATTACHED TO those budgets (WP-U: one home per
+  //    dollar — the money follows the BUDGET, discovered via `by_budget`,
+  //    not the txn's own vestigial `projectId`/`eventId` FK, untouched by
+  //    `computeReassignmentPatch`). A ref can carry more than one one_time
+  //    budget over its life (rare, but possible), so this unions every
+  //    budget's linked transactions.
+  const linked: Doc<"transactions">[] = [];
+  for (const b of refBudgets) {
+    const rows = await ctx.db
+      .query("transactions")
+      .withIndex("by_budget", (q) => q.eq("budgetId", b._id))
+      .take(ROLLUP_SCAN_LIMIT);
+    if (rows.length === ROLLUP_SCAN_LIMIT) {
+      console.warn(
+        `[finances] transferRefScope hit ROLLUP_SCAN_LIMIT (${ROLLUP_SCAN_LIMIT}) reading transactions for budget ${b._id}; some linked transactions may not have moved.`,
+      );
+    }
+    linked.push(...rows);
+  }
+  const priorStates: ReattributionPriorState[] = [];
+  const movedTxnIds: Id<"transactions">[] = [];
+  for (const txn of linked) {
+    if (txn.chapterId === target) continue;
+    priorStates.push(snapshotPriorState(txn));
+    const patch = await computeReassignmentPatch(ctx, txn, target);
+    await ctx.db.patch(txn._id, patch);
+    movedTxnIds.push(txn._id);
+  }
+
+  const summary = `${refLabel}: ${await financeScopeName(
+    ctx,
+    sourceScope,
+  )} → ${await financeScopeName(ctx, target)} (${budgetsMoved} budget(s), ${
+    movedTxnIds.length
+  } txn(s))`;
+  const auditId = await ctx.db.insert("reattributionAudit", {
+    kind: refKind === "project" ? "project_transfer" : "event_transfer",
+    actorUserId: actor.userId,
+    ...(actor.personId ? { actorPersonId: actor.personId } : {}),
+    transactionIds: movedTxnIds,
+    target,
+    summary,
+    priorStates,
+    ...(refKind === "project"
+      ? { projectId: refId as Id<"projects"> }
+      : { eventId: refId as Id<"events"> }),
+    budgetsMoved,
+    ...(note ? { note } : {}),
+    createdAt: Date.now(),
+  });
+  return { budgetsMoved, txnsMoved: movedTxnIds.length, auditId };
+}
+
 export const transferProjectScope = mutation({
   args: {
     projectId: v.id("projects"),
@@ -7132,7 +7240,7 @@ export const transferProjectScope = mutation({
     projectScopeDeferred: v.boolean(),
   }),
   handler: async (ctx, args) => {
-    const { personId, userId } = await requireCentralWrite(ctx, "bookkeeper");
+    const actor = await requireCentralWrite(ctx, "bookkeeper");
     const project = await ctx.db.get(args.projectId);
     if (!project) {
       throw new ConvexError({ code: "NOT_FOUND", message: "Project not found." });
@@ -7143,83 +7251,75 @@ export const transferProjectScope = mutation({
         throw new ConvexError({ code: "NOT_FOUND", message: "Target chapter not found." });
       }
     }
-    const sourceScope = project.chapterId as FinanceScope;
-
-    // 1. Move the project's BUDGETS (one_time budgets whose refKind:"project"
-    //    scopeRefId points at this project). Found via `by_ref` — NOT scoped to
-    //    `sourceScope` — because `project.chapterId` never changes (WP-2.2
-    //    finding). Scoping this lookup to the project's home chapter meant a
-    //    REVERSE transfer (chapter → central → back to chapter) couldn't find
-    //    budgets that already moved to central: it queried the chapter, but the
-    //    budgets lived at central by then, so they were silently stranded.
-    //    `by_ref` finds them regardless of which scope currently owns them.
-    const projectBudgets = await ctx.db
-      .query("budgets")
-      .withIndex("by_ref", (q) =>
-        q.eq("refKind", "project").eq("scopeRefId", args.projectId),
-      )
-      .take(ROLLUP_SCAN_LIMIT);
-    let budgetsMoved = 0;
-    for (const b of projectBudgets) {
-      if (b.chapterId === args.target) continue;
-      await moveBudgetScope(ctx, b, args.target);
-      budgetsMoved++;
-    }
-
-    // 2. Move the transactions ATTACHED TO those budgets (WP-U: one home per
-    //    dollar — the money follows the BUDGET, discovered via `by_budget`,
-    //    not the txn's own `projectId` FK, which is now vestigial and untouched
-    //    by `computeReassignmentPatch`). A project can carry more than one
-    //    one_time budget over its life (rare, but possible), so this unions
-    //    every budget's linked transactions.
-    const linked: Doc<"transactions">[] = [];
-    for (const b of projectBudgets) {
-      const rows = await ctx.db
-        .query("transactions")
-        .withIndex("by_budget", (q) => q.eq("budgetId", b._id))
-        .take(ROLLUP_SCAN_LIMIT);
-      if (rows.length === ROLLUP_SCAN_LIMIT) {
-        console.warn(
-          `[finances] transferProjectScope hit ROLLUP_SCAN_LIMIT (${ROLLUP_SCAN_LIMIT}) reading transactions for budget ${b._id}; some linked transactions may not have moved.`,
-        );
-      }
-      linked.push(...rows);
-    }
-    const priorStates: ReattributionPriorState[] = [];
-    const movedTxnIds: Id<"transactions">[] = [];
-    for (const txn of linked) {
-      if (txn.chapterId === args.target) continue;
-      priorStates.push(snapshotPriorState(txn));
-      const patch = await computeReassignmentPatch(ctx, txn, args.target);
-      await ctx.db.patch(txn._id, patch);
-      movedTxnIds.push(txn._id);
-    }
-
-    const summary = `Project "${project.name}": ${await financeScopeName(
-      ctx,
-      sourceScope,
-    )} → ${await financeScopeName(ctx, args.target)} (${budgetsMoved} budget(s), ${
-      movedTxnIds.length
-    } txn(s))`;
-    const auditId = await ctx.db.insert("reattributionAudit", {
-      kind: "project_transfer",
-      actorUserId: userId,
-      ...(personId ? { actorPersonId: personId } : {}),
-      transactionIds: movedTxnIds,
+    const { budgetsMoved, txnsMoved, auditId } = await transferRefScope(ctx, {
+      refKind: "project",
+      refId: args.projectId,
+      refLabel: `Project "${project.name}"`,
+      sourceScope: project.chapterId as FinanceScope,
       target: args.target,
-      summary,
-      priorStates,
-      projectId: args.projectId,
-      budgetsMoved,
-      ...(args.note ? { note: args.note } : {}),
-      createdAt: Date.now(),
+      note: args.note,
+      actor,
     });
-    return {
-      budgetsMoved,
-      txnsMoved: movedTxnIds.length,
-      auditId,
-      projectScopeDeferred: true,
-    };
+    return { budgetsMoved, txnsMoved, auditId, projectScopeDeferred: true };
+  },
+});
+
+/**
+ * The event twin of `transferProjectScope` — same central-bookkeeper+ gate,
+ * same `by_ref`-driven budget+transaction move, same one-audit-row trail
+ * (`transferRefScope` above is the shared engine). The event ROW stays
+ * chapter-scoped either way (`eventScopeDeferred: true`, always) — WP-2.2's
+ * "no central union on the ref row" finding applies identically to events
+ * (`schema/events.ts#chapterId` is a strict `v.id("chapters")`).
+ *
+ * NO-BUDGET EVENTS (design choice, owner spec item 5): a Training event
+ * (`isTraining`) never gets a budget row by invariant (see `events.ts#get`'s
+ * doc comment / `createEventBudget`'s callers), and an operational event with
+ * no dollar amount entered yet also has none. Rather than a hard error, this
+ * NO-OPS SANELY — `refBudgets` comes back empty, `budgetsMoved`/`txnsMoved`
+ * are both `0`, and a single audit row is still written (mirrors
+ * `transferProjectScope`'s existing behavior for a budget-less project
+ * exactly; there was never a special case for "zero budgets found" before
+ * this feature, so events don't invent one either). The "Belongs to" row
+ * still flips immediately (`events.get`'s `scope` reads whichever chapter a
+ * FUTURE budget would land in — see that query's doc comment), so a
+ * coordinator who sets the scope before entering a dollar amount gets the
+ * behavior they'd expect.
+ */
+export const transferEventScope = mutation({
+  args: {
+    eventId: v.id("events"),
+    target: reattributionTargetValidator,
+    note: v.optional(v.string()),
+  },
+  returns: v.object({
+    budgetsMoved: v.number(),
+    txnsMoved: v.number(),
+    auditId: v.id("reattributionAudit"),
+    eventScopeDeferred: v.boolean(),
+  }),
+  handler: async (ctx, args) => {
+    const actor = await requireCentralWrite(ctx, "bookkeeper");
+    const event = await ctx.db.get(args.eventId);
+    if (!event) {
+      throw new ConvexError({ code: "NOT_FOUND", message: "Event not found." });
+    }
+    if (args.target !== CENTRAL) {
+      const chapter = await ctx.db.get(args.target);
+      if (!chapter) {
+        throw new ConvexError({ code: "NOT_FOUND", message: "Target chapter not found." });
+      }
+    }
+    const { budgetsMoved, txnsMoved, auditId } = await transferRefScope(ctx, {
+      refKind: "event",
+      refId: args.eventId,
+      refLabel: `Event "${event.name}"`,
+      sourceScope: event.chapterId as FinanceScope,
+      target: args.target,
+      note: args.note,
+      actor,
+    });
+    return { budgetsMoved, txnsMoved, auditId, eventScopeDeferred: true };
   },
 });
 
@@ -7439,7 +7539,11 @@ export const listReattributionAudit = query({
   returns: v.array(
     v.object({
       id: v.id("reattributionAudit"),
-      kind: v.union(v.literal("bulk_reassign"), v.literal("project_transfer")),
+      kind: v.union(
+        v.literal("bulk_reassign"),
+        v.literal("project_transfer"),
+        v.literal("event_transfer"),
+      ),
       actorName: v.union(v.string(), v.null()),
       txnCount: v.number(),
       target: reattributionTargetValidator,
@@ -7461,7 +7565,7 @@ export const listReattributionAudit = query({
       .take(limit);
     const out: {
       id: Id<"reattributionAudit">;
-      kind: "bulk_reassign" | "project_transfer";
+      kind: "bulk_reassign" | "project_transfer" | "event_transfer";
       actorName: string | null;
       txnCount: number;
       target: FinanceScope;
