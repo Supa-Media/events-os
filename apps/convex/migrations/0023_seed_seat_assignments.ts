@@ -1,14 +1,13 @@
 import type { MutationCtx } from "../_generated/server";
 import type { Migration } from "./index";
-import type { Id } from "../_generated/dataModel";
 
 /**
  * Org chart v1: seed `seatAssignments` from legacy `specializedRoles` rows.
  *
  * Each `specializedRoles` row has a (personId, scope, title) triple. This
- * migration maps the title (optionally scoped) to a seat slug via legacyTitle,
- * resolves the corresponding `seatDefs` row, and inserts a `seatAssignments`
- * row with the same scope and personId.
+ * migration maps the title (optionally scoped) to a seat slug, resolves the
+ * corresponding `seatDefs` row, and inserts a `seatAssignments` row with the
+ * same scope and personId.
  *
  * Title → seat slug mapping:
  * - `executive_director` @ central → `executive_director` seat
@@ -16,43 +15,32 @@ import type { Id } from "../_generated/dataModel";
  * - `finance_manager` @ central → `financial_manager` seat
  * - `finance_manager` @ chapter → `treasurer` seat
  *
- * Unknown titles are skipped and counted; idempotency is achieved by checking
- * for an existing (seatDefId, scope, personId) triple before inserting. The
- * `createdAt` timestamp is preserved from the original `specializedRoles` row,
- * and `grantedBy` is populated from `createdBy` if present.
+ * Malformed rows (title/scope combinations that don't map, or seatDefs
+ * lookup failures) are skipped and logged. Idempotency is achieved by
+ * checking for pre-existing (seatDefId, scope, personId) assignments via
+ * index query. The `createdAt` timestamp is preserved from the original
+ * `specializedRoles` row, and `grantedBy` is populated from `createdBy`
+ * if present.
  *
- * This migration does NOT touch `financeRoles` or call any bridge — the legacy
- * rows already exist; this migration only mirrors them into seats.
+ * This migration mirrors legacy data without touching `financeRoles` or
+ * calling any bridge — the legacy rows already exist; this migration only
+ * populates the new seats table.
  */
 export async function runSeedSeatAssignments(ctx: MutationCtx) {
   let created = 0;
   let skipped = 0;
-  let unknownTitles = 0;
-  const now = Date.now();
+  let skippedMalformed = 0;
+  const skippedMalformedIds: string[] = [];
 
   // Collect all legacy specializedRoles rows.
   const specializedRoles = await ctx.db.query("specializedRoles").collect();
 
-  // Map title + scope → seat slug (resolved at runtime from seatDefs.legacyTitle).
-  const titleToSeatSlug = new Map<string, string>();
-
-  // Pre-populate the mapping from seatDefs.legacyTitle.
-  const seatDefs = await ctx.db.query("seatDefs").collect();
-  for (const seatDef of seatDefs) {
-    if (seatDef.legacyTitle) {
-      // Store both the title alone and a title@scope key for context-aware lookups.
-      // For now, we'll use a simpler approach: build a map keyed by title + scope check.
-      if (!titleToSeatSlug.has(seatDef.legacyTitle)) {
-        titleToSeatSlug.set(seatDef.legacyTitle, seatDef.slug);
-      }
-    }
-  }
-
   for (const role of specializedRoles) {
-    const { title, scope, personId, createdBy, createdAt } = role;
+    const { _id: roleId, title, scope, personId, createdBy, createdAt } = role;
 
     // Determine the target seat slug based on title and scope.
     let targetSlug: string | null = null;
+    let malformationReason: string | null = null;
 
     if (title === "executive_director" && scope === "central") {
       targetSlug = "executive_director";
@@ -64,10 +52,16 @@ export async function runSeedSeatAssignments(ctx: MutationCtx) {
     } else if (title === "finance_manager" && scope !== "central") {
       // finance_manager at a chapter scope maps to treasurer.
       targetSlug = "treasurer";
+    } else {
+      // Malformed: title/scope combo doesn't map to any seat.
+      malformationReason = `unhandled title/scope: ${title}@${
+        scope === "central" ? "central" : "chapter"
+      }`;
     }
 
     if (!targetSlug) {
-      unknownTitles++;
+      skippedMalformed++;
+      skippedMalformedIds.push(`${roleId} (${malformationReason})`);
       continue;
     }
 
@@ -78,22 +72,23 @@ export async function runSeedSeatAssignments(ctx: MutationCtx) {
       .unique();
 
     if (!seatDef) {
-      // This shouldn't happen if migrations are ordered correctly, but skip if it does.
-      unknownTitles++;
+      // This shouldn't happen if migrations are ordered correctly (0022 must
+      // run before 0023), but log it if it does so we can diagnose.
+      skippedMalformed++;
+      skippedMalformedIds.push(`${roleId} (seatDef not found: slug ${targetSlug})`);
       continue;
     }
 
-    // Check for an existing identical (seatDefId, scope, personId) assignment.
-    const allAssignments = await ctx.db
+    // Check for an existing identical (seatDefId, scope, personId) assignment
+    // using the index for O(1) lookups that scale with data growth.
+    const candidates = await ctx.db
       .query("seatAssignments")
+      .withIndex("by_scope_and_seat", (q) =>
+        q.eq("scope", scope).eq("seatDefId", seatDef._id),
+      )
       .collect();
 
-    const existing = allAssignments.find(
-      (a) =>
-        a.seatDefId === seatDef._id &&
-        a.scope === scope &&
-        a.personId === personId,
-    );
+    const existing = candidates.find((a) => a.personId === personId);
 
     if (existing) {
       skipped++;
@@ -111,7 +106,15 @@ export async function runSeedSeatAssignments(ctx: MutationCtx) {
     created++;
   }
 
-  return { created, skipped, unknownTitles };
+  // Log malformed rows if any, so operators can investigate.
+  if (skippedMalformed > 0) {
+    console.warn(
+      `[0023_seed_seat_assignments] Skipped ${skippedMalformed} malformed specializedRoles:`,
+      skippedMalformedIds,
+    );
+  }
+
+  return { created, skipped, skippedMalformed };
 }
 
 export const seedSeatAssignments: Migration = {
