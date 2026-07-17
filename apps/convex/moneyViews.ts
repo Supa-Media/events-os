@@ -41,9 +41,18 @@ import { query } from "./_generated/server";
 import type { QueryCtx } from "./_generated/server";
 import { ConvexError, v } from "convex/values";
 import { Doc, Id } from "./_generated/dataModel";
-import { BUDGET_REF_KINDS, countsAsSpend, type BudgetRefKind } from "@events-os/shared";
+import {
+  BUDGET_REF_KINDS,
+  BUDGET_APPROVAL_STATUSES,
+  CENTRAL,
+  countsAsSpend,
+  effectiveBudgetApprovalStatus,
+  financeRoleAtLeast,
+  type BudgetRefKind,
+} from "@events-os/shared";
 import { getChapterIdOrNull } from "./lib/context";
-import { requireFinanceRole, getFinanceRole } from "./lib/finance";
+import { requireFinanceRole, getFinanceRole, type FinanceAccess } from "./lib/finance";
+import { effectiveCapCents } from "./finances";
 
 // A generous bound on budgets-per-ref / lines-per-budget / txns-per-budget —
 // human-authored plans and a single event/project's spend, never a synced
@@ -51,6 +60,9 @@ import { requireFinanceRole, getFinanceRole } from "./lib/finance";
 const SCAN_LIMIT = 2000;
 
 const refKindValidator = v.union(...BUDGET_REF_KINDS.map((k) => v.literal(k)));
+const approvalStatusValidator = v.union(
+  ...BUDGET_APPROVAL_STATUSES.map((s) => v.literal(s)),
+);
 
 /**
  * Resolve + authorize a single event/project ref for a Money read. Returns
@@ -63,12 +75,23 @@ const refKindValidator = v.union(...BUDGET_REF_KINDS.map((k) => v.literal(k)));
  * finance role at all in their OWN chapter still gets a genuine `ConvexError`
  * — that's an access denial on a ref they can already see exists (via every
  * other event/project surface), not an existence leak.
+ *
+ * Also returns the caller's own `chapterId` + resolved `FinanceAccess` (not
+ * just a pass/fail) so `refMoney` can compute a precise `canEditPlan` gate
+ * once it knows which chapter/level the ref's budget actually lives at —
+ * see that computation's own comment below for why a coarse "!isDrilldown"
+ * gate (the dashboard's own "Edit budget" affordance) isn't safe to copy
+ * verbatim here: a foreign ref's budget can still be chapter-owned (never
+ * moved to central), which `budgetLines.ts#loadOwningBudget` would 404 on.
  */
 async function resolveRefAuthz(
   ctx: QueryCtx,
   refKind: BudgetRefKind,
   refId: string,
-): Promise<{ chapterId: Id<"chapters">; isTraining: boolean } | null> {
+): Promise<
+  | { chapterId: Id<"chapters">; isTraining: boolean; ownChapterId: Id<"chapters">; access: FinanceAccess }
+  | null
+> {
   let ref: Doc<"events"> | Doc<"projects"> | null = null;
   if (refKind === "event") {
     const id = ctx.db.normalizeId("events", refId);
@@ -87,6 +110,7 @@ async function resolveRefAuthz(
       message: "You don't belong to a chapter yet.",
     });
   }
+  let access: FinanceAccess;
   if (refChapterId !== ownChapterId) {
     // Foreign chapter: central (org-wide) reach required, checked through the
     // CALLER'S OWN chapter (never the target ref's chapter — mirrors
@@ -94,15 +118,52 @@ async function resolveRefAuthz(
     // `getFinanceRole` (not `requireFinanceCentral`) so a failed check can
     // return the same quiet `null` as a nonexistent ref instead of throwing —
     // closes the existence oracle. Central-reach callers still get real data.
-    const access = await getFinanceRole(ctx, ownChapterId);
+    access = await getFinanceRole(ctx, ownChapterId);
     if (!access.isCentral) return null;
   } else {
-    await requireFinanceRole(ctx, ownChapterId, "viewer");
+    access = await requireFinanceRole(ctx, ownChapterId, "viewer");
   }
 
   const isTraining =
     refKind === "event" ? (ref as Doc<"events">).isTraining === true : false;
-  return { chapterId: refChapterId, isTraining };
+  return { chapterId: refChapterId, isTraining, ownChapterId, access };
+}
+
+/**
+ * Whether the caller can write this ref's budget PLAN (add/update/remove/
+ * reorder `budgetLines`, or summon a first budget row) — mirrors
+ * `budgetLines.ts#loadOwningBudget` + `#requireLineWriteAccess` EXACTLY so
+ * the "Edit plan" affordance never appears for a caller whose first tap would
+ * 403. Deliberately tighter than the finance dashboard's own "Edit budget"
+ * button (gated there by a coarse `!isDrilldown`): unlike a dashboard budget
+ * card — which a caller only ever reaches already scoped to their own chapter
+ * or a genuine central desk — `refMoney` also serves a REF in a FOREIGN
+ * chapter to a central-reach viewer, and that ref's budget can still be
+ * chapter-owned by the FOREIGN chapter (never moved to central) — a case
+ * `loadOwningBudget` 404s on regardless of the caller's central reach.
+ *
+ *  - No budget row yet: writable only when the ref is in the caller's OWN
+ *    chapter (summon always lands there — `ensureBudgetForRef` inserts under
+ *    `event.chapterId`, never central) and the caller is bookkeeper+.
+ *  - A chapter-owned budget: writable only when that chapter IS the caller's
+ *    own chapter (else `loadOwningBudget` 404s) and bookkeeper+.
+ *  - A central-owned budget: writable when the caller holds central reach at
+ *    bookkeeper+, regardless of whose ref it's attached to.
+ */
+function canEditBudgetPlan(
+  authz: { ownChapterId: Id<"chapters">; chapterId: Id<"chapters">; access: FinanceAccess },
+  budgetChapterId: Id<"chapters"> | "central" | null,
+): boolean {
+  const bookkeeperPlus = financeRoleAtLeast(authz.access.role, "bookkeeper");
+  if (budgetChapterId === null) {
+    // No budget row yet — summon-then-edit, only possible on the caller's own
+    // chapter's own ref.
+    return authz.chapterId === authz.ownChapterId && bookkeeperPlus;
+  }
+  if (budgetChapterId === CENTRAL) {
+    return authz.access.isCentral && bookkeeperPlus;
+  }
+  return budgetChapterId === authz.ownChapterId && bookkeeperPlus;
 }
 
 /** True iff a transaction contributes to category/budget SPEND — mirrors
@@ -171,21 +232,28 @@ export const refMoney = query({
     budget: v.union(
       v.object({
         id: v.id("budgets"),
+        // The EFFECTIVE cap (`finances.ts#effectiveCapCents`, B1) — a budget
+        // currently `"submitted"`/`"changes_requested"` WITH a recorded
+        // `approvedCents` reports that still-in-force cap, never the pending
+        // (not-yet-approved) `amountCents` increase. Every other case reports
+        // the plain `amountCents`. Matches every other numeric budget surface
+        // (dashboard cards, `finances.ts`'s own pct/remaining/status math).
         amountCents: v.number(),
         label: v.union(v.string(), v.null()),
-        // WP-3.2 (a parallel, not-yet-merged WP) lands `budgets.approvalStatus`
-        // as a first-class field. Read dynamically/optionally below so THIS
-        // PR doesn't couple to that schema change — `null` until WP-3.2
-        // merges, then this lights up automatically with no further changes
-        // here. Typed properly (imported from `@events-os/shared`) once
-        // merged.
-        approvalStatus: v.union(
-          v.literal("draft"),
-          v.literal("submitted"),
-          v.literal("approved"),
-          v.literal("changes_requested"),
-          v.null(),
-        ),
+        // Always the EFFECTIVE status (`effectiveBudgetApprovalStatus`) — a
+        // grandfathered legacy row with no stored `approvalStatus` reads as
+        // `"approved"`, never a bare `null` (WP-3.2 has merged; this is no
+        // longer a "lights up later" placeholder).
+        approvalStatus: approvalStatusValidator,
+        // Alongside the effective cap above, for `BudgetApprovalChip`'s "approved
+        // at $X, requested $Y" pending-increase copy (mirrors
+        // `finances.ts#budgetApprovalCardFields` exactly).
+        approvedCents: v.union(v.number(), v.null()),
+        requestedCents: v.number(),
+        reviewNote: v.union(v.string(), v.null()),
+        // Whether the CALLER can write this budget's plan (`budgetLines`) —
+        // see `canEditBudgetPlan`'s own doc comment for the exact gate.
+        canEditPlan: v.boolean(),
       }),
       v.null(),
     ),
@@ -202,6 +270,16 @@ export const refMoney = query({
     totalActualCents: v.number(),
     totalRemainingCents: v.number(),
     lineCount: v.number(),
+    // Money IN (tickets + donations, from `eventPages`) — a summary-only
+    // read alongside the spend-side view above. See the module doc's income
+    // section for why this is a conscious, narrow addition (not a full
+    // recreation of Budget v1's net-reconciliation math).
+    incomeCents: v.number(),
+    // Whether the caller can SUMMON a first ($0) budget row when none exists
+    // yet — same gate as `canEditPlan`, exposed even in the `budget: null`
+    // empty shape so the "Add budget" affordance can render before any
+    // budget row is created.
+    canSummonBudget: v.boolean(),
   }),
   handler: async (ctx, args) => {
     const empty = {
@@ -217,10 +295,24 @@ export const refMoney = query({
       totalActualCents: 0,
       totalRemainingCents: 0,
       lineCount: 0,
+      incomeCents: 0,
+      canSummonBudget: false,
     };
 
     const authz = await resolveRefAuthz(ctx, args.refKind, args.refId);
     if (!authz) return empty;
+
+    // Money IN — same reconciliation source Budget v1's `budgetSummary` read
+    // (`eventPages.revenueCents` + `donationsCents`, one page per event).
+    // Projects have no `eventPages` row, so this is 0 for `refKind:"project"`.
+    const page =
+      args.refKind === "event"
+        ? await ctx.db
+            .query("eventPages")
+            .withIndex("by_event", (q) => q.eq("eventId", args.refId as Id<"events">))
+            .unique()
+        : null;
+    const incomeCents = (page?.revenueCents ?? 0) + (page?.donationsCents ?? 0);
 
     // Every one_time budget attached to this ref, wherever it currently
     // lives (a budget's LEVEL can move — WP-2.2's `transferProjectScope` —
@@ -241,7 +333,12 @@ export const refMoney = query({
     }
 
     if (budgets.length === 0) {
-      return { ...empty, isTraining: authz.isTraining };
+      return {
+        ...empty,
+        isTraining: authz.isTraining,
+        incomeCents,
+        canSummonBudget: canEditBudgetPlan(authz, null),
+      };
     }
 
     // The primary/header budget: earliest-created wins when a legacy
@@ -355,7 +452,11 @@ export const refMoney = query({
       if (!plannedByCategory.has(key)) unplannedCents += cents;
     }
 
-    const totalPlannedCents = budgets.reduce((sum, b) => sum + b.amountCents, 0);
+    // The EFFECTIVE cap (B1, `finances.ts#effectiveCapCents`) — a pending,
+    // not-yet-approved increase never inflates the planned/remaining math a
+    // step ahead of the actual approval. Summed across every by_ref budget,
+    // same as the raw sum it replaces.
+    const totalPlannedCents = budgets.reduce((sum, b) => sum + effectiveCapCents(b), 0);
     const totalActualCents = spendTxns.reduce((sum, tr) => sum + tr.amountCents, 0);
 
     // Planned but not yet broken into any category line — keeps the header
@@ -364,13 +465,7 @@ export const refMoney = query({
     const totalLinesCents = lines.reduce((sum, l) => sum + l.plannedCents, 0);
     const unallocatedPlannedCents = Math.max(0, totalPlannedCents - totalLinesCents);
 
-    // WP-3.2 (a parallel, not-yet-merged WP) lands `budgets.approvalStatus`
-    // as a first-class field — read it dynamically/optionally so this PR
-    // doesn't couple to that schema change (see the return validator's own
-    // doc comment above).
-    const approvalStatus =
-      (primary as { approvalStatus?: "draft" | "submitted" | "approved" | "changes_requested" })
-        .approvalStatus ?? null;
+    const approvalStatus = effectiveBudgetApprovalStatus(primary.approvalStatus);
 
     const transactions = [...refChapterTxns]
       .sort((a, b) => b.postedAt - a.postedAt)
@@ -383,9 +478,13 @@ export const refMoney = query({
       isTraining: authz.isTraining,
       budget: {
         id: primary._id,
-        amountCents: primary.amountCents,
+        amountCents: effectiveCapCents(primary),
         label: primary.label ?? null,
         approvalStatus,
+        approvedCents: primary.approvedCents ?? null,
+        requestedCents: primary.amountCents,
+        reviewNote: primary.reviewNote ?? null,
+        canEditPlan: canEditBudgetPlan(authz, primary.chapterId),
       },
       categories,
       unplannedCents,
@@ -395,6 +494,8 @@ export const refMoney = query({
       totalActualCents,
       totalRemainingCents: totalPlannedCents - totalActualCents,
       lineCount: lines.length,
+      incomeCents,
+      canSummonBudget: false,
     };
   },
 });

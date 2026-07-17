@@ -230,11 +230,12 @@ export const budgetTagLinks = defineTable({
  *  chunk of the budget's `amountCents` allocation. ESTIMATED-side only
  *  (invariant #2) — a budget line's `plannedCents` is NEVER summed with
  *  `transactions` actuals; it exists purely to answer "what is this budget
- *  FOR" before a dollar is spent. Distinct from the legacy per-EVENT
- *  `budgetLineItems` table (`schema/budget.ts`, Budget v1, which also tracks
- *  an `actualCents` per line) — this is the v2 `budgets` table's (chapter OR
- *  central) planning breakdown, named `budgetLines` to avoid colliding with
- *  the v1 table. Tenancy is resolved through the parent `budgets` row (a
+ *  FOR" before a dollar is spent. Named `budgetLines` to avoid colliding with
+ *  the now-RETIRED per-EVENT `budgetLineItems` table (Budget v1, which also
+ *  tracked an `actualCents` per line — migrated onto this table by
+ *  `0026_migrate_budget_v1_lines`; see `moneyViews.ts`/`MoneyView.tsx` for the
+ *  single event/project Money surface this table now feeds). Tenancy is
+ *  resolved through the parent `budgets` row (a
  *  central budget's lines have no chapter to denormalize onto), so every
  *  read/write goes through the parent budget's scope gate. */
 export const budgetLines = defineTable({

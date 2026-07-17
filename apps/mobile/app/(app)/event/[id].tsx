@@ -29,7 +29,6 @@ import {
 } from "../../../components/event/EventModuleRollup";
 import { ModuleSection } from "../../../components/event/ModuleSection";
 import TicketingTab from "../../../components/event/ticketing/TicketingTab";
-import BudgetTab from "../../../components/event/budget/BudgetTab";
 import GearTab from "../../../components/event/gear/GearTab";
 import { MoneyView } from "../../../components/money/MoneyView";
 import { ScopeToggle } from "../../../components/team/ScopeToggle";
@@ -306,15 +305,14 @@ export default function EventDetailScreen() {
   // With no Overview tab, unknown/missing/legacy (?tab=overview) keys land on
   // the first area tab.
   const fallbackTab = tabs[0]?.key ?? "crew";
-  // Tickets (the public event page) and Budget (the per-line budget) are
-  // operational TOOLS, not areas — they open from the header tools row, not the
-  // tab row, but still live at `?tab=tickets` / `?tab=budget` so deep links and
-  // back/forward keep working. While one is open no tab is active (activeKey
-  // matches nothing). Any other unknown/stale key falls back to the first area
-  // tab.
+  // Tickets (the public event page) and Money (the ONE money surface for this
+  // event, retiring the old separate Budget tab) are operational TOOLS, not
+  // areas — they open from the header tools row, not the tab row, but still
+  // live at `?tab=tickets` / `?tab=money` so deep links and back/forward keep
+  // working. While one is open no tab is active (activeKey matches nothing).
+  // Any other unknown/stale key falls back to the first area tab.
   const activeTab =
     tab === "tickets" ||
-    tab === "budget" ||
     tab === "gear" ||
     // Money is hidden from the tools row for training events (the #172
     // invariant) — a stale/hand-typed `?tab=money` deep link must not bypass
@@ -625,8 +623,6 @@ export default function EventDetailScreen() {
               onDayOf={() => router.push(`/event/${eventId}/day-of`)}
               onTickets={() => router.setParams({ tab: "tickets" })}
               ticketsActive={activeTab === "tickets"}
-              onBudget={() => router.setParams({ tab: "budget" })}
-              budgetActive={activeTab === "budget"}
               onGear={() => router.setParams({ tab: "gear" })}
               gearActive={activeTab === "gear"}
               onMoney={() => router.setParams({ tab: "money" })}
@@ -674,23 +670,6 @@ export default function EventDetailScreen() {
             </Pressable>
             <TicketingTab eventId={eventId} />
           </Narrow>
-        ) : activeTab === "budget" ? (
-
-          /* ── Budget: the per-line budget (planned/actual/receipts) + income
-                reconciliation. Also an operational tool opened from the tools
-                row, so it gets the same "Back to planning" affordance. ─────── */
-          <Narrow>
-            <Pressable
-              onPress={() => router.setParams({ tab: fallbackTab })}
-              className="mb-2 flex-row items-center gap-1.5 self-start active:opacity-70"
-            >
-              <Icon name="arrow-left" size={15} color={colors.muted} />
-              <Text className="text-sm font-medium text-muted">
-                Back to planning
-              </Text>
-            </Pressable>
-            <BudgetTab eventId={eventId} />
-          </Narrow>
         ) : activeTab === "gear" ? (
 
           /* ── Gear: this event's reservations against the chapter inventory.
@@ -710,11 +689,13 @@ export default function EventDetailScreen() {
           </Narrow>
         ) : activeTab === "money" ? (
 
-          /* ── Money: what's this event costing? Planned vs actual by
-                category, assembled from the v2 budget + its planned lines +
-                linked transactions. An operational tool opened from the
-                tools row, so it gets the same "Back to planning" affordance.
-                Training events never open this (isTraining hides the tool). */
+          /* ── Money: the ONE money surface for this event (the old separate
+                Budget tab is retired onto this one — see `moneyViews.ts`).
+                Budget header + "Edit plan" + planned vs actual by category,
+                assembled from the v2 budget + its planned lines + linked
+                transactions. An operational tool opened from the tools row,
+                so it gets the same "Back to planning" affordance. Training
+                events never open this (isTraining hides the tool). */
           <Narrow>
             <Pressable
               onPress={() => router.setParams({ tab: fallbackTab })}

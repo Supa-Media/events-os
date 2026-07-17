@@ -1116,8 +1116,6 @@ export function EventTools({
   onDayOf,
   onTickets,
   ticketsActive,
-  onBudget,
-  budgetActive,
   onGear,
   gearActive,
   onMoney,
@@ -1133,9 +1131,6 @@ export function EventTools({
   onTickets: () => void;
   /** True while the Tickets surface is showing — flags ⋯ and its menu row. */
   ticketsActive: boolean;
-  onBudget: () => void;
-  /** True while the Budget surface is showing — flags ⋯ and its menu row. */
-  budgetActive: boolean;
   onGear: () => void;
   /** True while the Gear surface is showing — flags ⋯ and its menu row. */
   gearActive: boolean;
@@ -1221,16 +1216,14 @@ export function EventTools({
         accessibilityLabel={
           ticketsActive
             ? "More tools (Event page open)"
-            : budgetActive
-              ? "More tools (Budget open)"
-              : gearActive
-                ? "More tools (Gear open)"
-                : moneyActive
-                  ? "More tools (Money open)"
-                  : "More tools"
+            : gearActive
+              ? "More tools (Gear open)"
+              : moneyActive
+                ? "More tools (Money open)"
+                : "More tools"
         }
         className={`rounded-md border px-2.5 py-2 active:opacity-80 web:hover:bg-sunken ${
-          ticketsActive || budgetActive || gearActive || moneyActive
+          ticketsActive || gearActive || moneyActive
             ? "border-accent bg-accent-soft"
             : "border-border-strong bg-raised"
         }`}
@@ -1239,9 +1232,7 @@ export function EventTools({
           name="more-horizontal"
           size={15}
           color={
-            ticketsActive || budgetActive || gearActive || moneyActive
-              ? colors.accent
-              : colors.ink
+            ticketsActive || gearActive || moneyActive ? colors.accent : colors.ink
           }
         />
       </Pressable>
@@ -1255,18 +1246,9 @@ export function EventTools({
             onTickets();
           }}
         />
-        <ToolsMenuRow
-          icon="dollar-sign"
-          label="Budget"
-          active={budgetActive}
-          onPress={() => {
-            closeMenu();
-            onBudget();
-          }}
-        />
         {isTraining ? null : (
           <ToolsMenuRow
-            icon="pie-chart"
+            icon="dollar-sign"
             label="Money"
             active={moneyActive}
             onPress={() => {

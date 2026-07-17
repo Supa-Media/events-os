@@ -4,6 +4,7 @@ import { ConvexError } from "convex/values";
 import { newT, run, setupChapter, type ChapterSetup } from "./setup.helpers";
 import { api, internal } from "../_generated/api";
 import type { Id } from "../_generated/dataModel";
+import { easternParts } from "@events-os/shared";
 
 /**
  * WP-U — "one home per dollar": budgetId subsumes the old eventId/projectId
@@ -111,17 +112,35 @@ async function seedProject(
   s: ChapterSetup,
   chapterId: Id<"chapters">,
   name: string,
+  opts: { deadline?: number; startDate?: number; createdAt?: number } = {},
 ): Promise<Id<"projects">> {
   return await run(s.t, (ctx) =>
     ctx.db.insert("projects", {
       chapterId,
       name,
       status: "in_progress",
+      deadline: opts.deadline,
+      startDate: opts.startDate,
       createdBy: s.userId,
-      createdAt: Date.now(),
+      createdAt: opts.createdAt ?? Date.now(),
       updatedAt: Date.now(),
     }),
   );
+}
+
+const MONTH_NAMES_FOR_TEST = [
+  "January", "February", "March", "April", "May", "June",
+  "July", "August", "September", "October", "November", "December",
+];
+
+/** Mirrors `finances.ts#pickerRefLabel` exactly (not exported — re-derived
+ *  here, via the SAME exported `easternParts`, so a test can assert the
+ *  EXACT label text a row shows — the only way to catch a wrong SOURCE FIELD
+ *  for the date, not just a wrong tier/group). */
+function pickerRefLabelForTest(name: string, ts: number): string {
+  const p = easternParts(ts);
+  const monthName = MONTH_NAMES_FOR_TEST[p.month - 1].slice(0, 3);
+  return `${name} · ${monthName} ${p.day}, ${p.year}`;
 }
 
 /** Raw-insert a "legacy" transaction carrying ONLY the pre-WP-U FK (no
@@ -203,6 +222,69 @@ describe("forPickerOptions — the 'For' picker's option groups", () => {
     // The one_time budgets are NOT also listed under recurring.
     expect(options.recurring.some((r) => r.budgetId === eventBudgetId)).toBe(false);
     expect(options.recurring.some((r) => r.budgetId === projectBudgetId)).toBe(false);
+  });
+
+  // ── No fabricated dates (identical fix to #219's reconcileSuggest.ts) ─────
+
+  test("a project's label derives its date from `deadline` — never `startDate` — even when both are set", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await asChapterManager(s);
+    const deadlineTs = Date.now() + 3 * 24 * 60 * 60 * 1000;
+    const startDateTs = Date.now() + 500 * 24 * 60 * 60 * 1000;
+    const projectId = await seedProject(s, s.chapterId, "Pitch Deck for EP", {
+      deadline: deadlineTs,
+      startDate: startDateTs,
+    });
+
+    const options = await s.as.query(api.finances.forPickerOptions, {});
+    const row = options.projects.find((p) => p.projectId === projectId)!;
+    expect(row.label).toBe(pickerRefLabelForTest("Pitch Deck for EP", deadlineTs));
+    expect(row.label).not.toBe(pickerRefLabelForTest("Pitch Deck for EP", startDateTs));
+  });
+
+  test("a project with NO deadline shows its bare name — no date claim borrowed from startDate or createdAt", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await asChapterManager(s);
+    const startDateTs = Date.now() + 500 * 24 * 60 * 60 * 1000;
+    const projectId = await seedProject(s, s.chapterId, "Deadline-less Project", {
+      startDate: startDateTs,
+    });
+
+    const options = await s.as.query(api.finances.forPickerOptions, {});
+    const row = options.projects.find((p) => p.projectId === projectId)!;
+    expect(row.label).toBe("Deadline-less Project");
+  });
+
+  test("a project's label shows its REAL deadline, never createdAt (the live 'Love Wins' bug: createdAt is real wall-clock 'now', deadline is a fixed unrelated date)", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await asChapterManager(s);
+    const deadlineTs = Date.now() + 200 * 24 * 60 * 60 * 1000; // a fixed, far-off real deadline
+    const projectId = await seedProject(s, s.chapterId, "Love Wins", {
+      deadline: deadlineTs,
+      createdAt: Date.now(), // real wall-clock "today" — the fabricated-date bug's source
+    });
+
+    const options = await s.as.query(api.finances.forPickerOptions, {});
+    const row = options.projects.find((p) => p.projectId === projectId)!;
+    const deadlineLabel = pickerRefLabelForTest("Love Wins", deadlineTs);
+    const todayLabel = pickerRefLabelForTest("Love Wins", Date.now());
+    expect(row.label).toBe(deadlineLabel);
+    expect(row.label).not.toBe(todayLabel);
+  });
+
+  test("an event's label is always pinned to its (required) eventDate — unaffected by this fix, audited and unchanged", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await asChapterManager(s);
+    const eventDate = Date.now() + 10 * 24 * 60 * 60 * 1000;
+    const eventId = await seedEvent(s, s.chapterId, { name: "Sunday Gathering", eventDate });
+
+    const options = await s.as.query(api.finances.forPickerOptions, {});
+    const row = options.events.find((e) => e.eventId === eventId)!;
+    expect(row.label).toBe(pickerRefLabelForTest("Sunday Gathering", eventDate));
   });
 
   test("a project's budget that moved to central still appears in the projects group (by_ref discovery), not recurring", async () => {

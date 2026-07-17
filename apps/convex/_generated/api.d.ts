@@ -16,7 +16,6 @@ import type * as aiCoding from "../aiCoding.js";
 import type * as aiCodingData from "../aiCodingData.js";
 import type * as auth from "../auth.js";
 import type * as blasts from "../blasts.js";
-import type * as budget from "../budget.js";
 import type * as budgetLines from "../budgetLines.js";
 import type * as cards from "../cards.js";
 import type * as checkIns from "../checkIns.js";
@@ -90,6 +89,7 @@ import type * as migrations_0022_seed_seat_defs from "../migrations/0022_seed_se
 import type * as migrations_0023_seed_seat_assignments from "../migrations/0023_seed_seat_assignments.js";
 import type * as migrations_0024_repoint_derived_seat_duties from "../migrations/0024_repoint_derived_seat_duties.js";
 import type * as migrations_0025_add_cd_finance_viewer from "../migrations/0025_add_cd_finance_viewer.js";
+import type * as migrations_0026_migrate_budget_v1_lines from "../migrations/0026_migrate_budget_v1_lines.js";
 import type * as migrations_index from "../migrations/index.js";
 import type * as modules from "../modules.js";
 import type * as moneyViews from "../moneyViews.js";
@@ -109,7 +109,6 @@ import type * as schema_academy from "../schema/academy.js";
 import type * as schema_accessAllowlist from "../schema/accessAllowlist.js";
 import type * as schema_ai from "../schema/ai.js";
 import type * as schema_aiUsage from "../schema/aiUsage.js";
-import type * as schema_budget from "../schema/budget.js";
 import type * as schema_chapters from "../schema/chapters.js";
 import type * as schema_docs from "../schema/docs.js";
 import type * as schema_events from "../schema/events.js";
@@ -166,7 +165,6 @@ declare const fullApi: ApiFromModules<{
   aiCodingData: typeof aiCodingData;
   auth: typeof auth;
   blasts: typeof blasts;
-  budget: typeof budget;
   budgetLines: typeof budgetLines;
   cards: typeof cards;
   checkIns: typeof checkIns;
@@ -240,6 +238,7 @@ declare const fullApi: ApiFromModules<{
   "migrations/0023_seed_seat_assignments": typeof migrations_0023_seed_seat_assignments;
   "migrations/0024_repoint_derived_seat_duties": typeof migrations_0024_repoint_derived_seat_duties;
   "migrations/0025_add_cd_finance_viewer": typeof migrations_0025_add_cd_finance_viewer;
+  "migrations/0026_migrate_budget_v1_lines": typeof migrations_0026_migrate_budget_v1_lines;
   "migrations/index": typeof migrations_index;
   modules: typeof modules;
   moneyViews: typeof moneyViews;
@@ -259,7 +258,6 @@ declare const fullApi: ApiFromModules<{
   "schema/accessAllowlist": typeof schema_accessAllowlist;
   "schema/ai": typeof schema_ai;
   "schema/aiUsage": typeof schema_aiUsage;
-  "schema/budget": typeof schema_budget;
   "schema/chapters": typeof schema_chapters;
   "schema/docs": typeof schema_docs;
   "schema/events": typeof schema_events;
