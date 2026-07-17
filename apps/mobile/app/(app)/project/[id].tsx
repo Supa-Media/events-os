@@ -11,7 +11,7 @@
 import { useMemo } from "react";
 import { View, Text, Pressable, Platform } from "react-native";
 import { useLocalSearchParams, useRouter } from "expo-router";
-import { useQuery } from "convex/react";
+import { useQuery, useMutation } from "convex/react";
 import { api } from "@events-os/convex/_generated/api";
 import type { Id } from "@events-os/convex/_generated/dataModel";
 import {
@@ -29,9 +29,12 @@ import {
   buildProjectTree,
   type ProjectDoc,
 } from "../../../components/team/ProjectCard";
+import { ScopeToggle } from "../../../components/team/ScopeToggle";
 import { MoneyView } from "../../../components/money/MoneyView";
 import { colors, spacing } from "../../../lib/theme";
 import { formatDate, formatDateTime } from "../../../lib/format";
+import { alertError } from "../../../lib/errors";
+import { confirmAction } from "../../../components/event/ticketing/helpers";
 
 export default function ProjectScreen() {
   const router = useRouter();
@@ -47,6 +50,28 @@ export default function ProjectScreen() {
     api.projects.updateLog,
     projectId ? { projectId } : "skip",
   );
+  const transferScope = useMutation(api.finances.transferProjectScope);
+
+  // Move the project's money attribution — the SAME `transferProjectScope`
+  // retroactive/creation flows both use (no second scope-move path). "chapter"
+  // always means the project's own home chapter (`detail.chapterId`), the only
+  // non-central level a project-scoped budget can sit at. Uses
+  // `homeChapterName` (always concrete), NOT `scopeChapterName` (null while
+  // the project currently sits at Central) — otherwise moving BACK from
+  // Central would confirm/label the destination as generic "the chapter".
+  function handleScopeChange(next: "central" | "chapter") {
+    if (!projectId || !detail) return;
+    const target = next === "central" ? "central" : detail.chapterId;
+    const destLabel = next === "central" ? "Central" : detail.homeChapterName ?? "the chapter";
+    confirmAction({
+      title: `Move to ${destLabel}?`,
+      message: `Moves the project and its budget/spend attribution to ${destLabel}.`,
+      confirmLabel: "Move",
+      onConfirm: () => {
+        void transferScope({ projectId, target }).catch(alertError);
+      },
+    });
+  }
 
   const peopleById = useMemo(
     () => new Map((people ?? []).map((p) => [p._id, p.name])),
@@ -159,7 +184,27 @@ export default function ProjectScreen() {
             category, assembled from the v2 budget + its planned lines +
             linked transactions; a link through to the budget in Finances. */}
         <View className="mt-6">
-          <SectionHeader title="Money" />
+          <SectionHeader
+            title="Money"
+            right={
+              <View className="flex-row items-center gap-2">
+                <Text className="text-xs font-semibold uppercase tracking-wider text-faint">
+                  Belongs to
+                </Text>
+                {detail.canChangeScope ? (
+                  <ScopeToggle
+                    value={detail.scope === "central" ? "central" : "chapter"}
+                    chapterName={detail.homeChapterName ?? "This chapter"}
+                    onChange={handleScopeChange}
+                  />
+                ) : (
+                  <Text className="text-xs font-semibold text-ink">
+                    {detail.scope === "central" ? "Central" : detail.scopeChapterName ?? "This chapter"}
+                  </Text>
+                )}
+              </View>
+            }
+          />
           <MoneyView refKind="project" refId={projectId} />
         </View>
 

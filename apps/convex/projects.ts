@@ -7,10 +7,14 @@
  * event when the project IS an event. Chapter-scoped like everything else.
  */
 import { query, mutation, QueryCtx, MutationCtx } from "./_generated/server";
-import { internal } from "./_generated/api";
+import { api, internal } from "./_generated/api";
 import { Doc, Id } from "./_generated/dataModel";
 import { v, ConvexError } from "convex/values";
-import { PROJECT_STATUSES, PROJECT_STATUS_LABELS } from "@events-os/shared";
+import {
+  PROJECT_STATUSES,
+  PROJECT_STATUS_LABELS,
+  financeRoleAtLeast,
+} from "@events-os/shared";
 import {
   requireUserId,
   requireChapterId,
@@ -24,12 +28,35 @@ import {
   canViewChapterWork,
 } from "./lib/org";
 import { requireCentralReach } from "./lib/centralReach";
+import { getFinanceRole, type FinanceAccess, type FinanceScope } from "./lib/finance";
 import {
   assertIntegerCents,
   createProjectBudget,
   getBudgetForRef,
   setBudgetAmount,
 } from "./finances";
+
+/**
+ * A project's money-attribution scope: "central" or "chapter" — a project's
+ * ROW has no central union yet (WP-2.2 finding; see `finances.
+ * transferProjectScope`'s doc comment), so this is always about where the
+ * project's BUDGET currently lives, never `projects.chapterId` itself.
+ */
+const projectScopeChoice = v.union(v.literal("central"), v.literal("chapter"));
+
+/**
+ * True iff `access` can actually EXECUTE a central money move — central reach
+ * AND at least the bookkeeper write rank. Mirrors `finances.
+ * transferProjectScope`'s own gate (`requireCentralWrite(ctx, "bookkeeper")`)
+ * exactly, so nothing here ever offers/defaults-to/claims-permission-for a
+ * scope the mutation would then refuse. A plain `getFinanceRole(...).isCentral`
+ * is NOT enough — that's reach only, and a central VIEWER has reach but no
+ * write rank (they'd be rejected by `summonBudgetForRef`/`transferProjectScope`
+ * just like a chapter viewer).
+ */
+function hasCentralWriteReach(access: FinanceAccess): boolean {
+  return access.isCentral && financeRoleAtLeast(access.role, "bookkeeper");
+}
 
 const projectStatus = v.union(...PROJECT_STATUSES.map((s) => v.literal(s)));
 
@@ -156,6 +183,35 @@ async function logProjectUpdate(
     createdAt: Date.now(),
   });
 }
+
+/**
+ * The creation-time scope picker's options for the caller's own chapter: their
+ * chapter's name, whether they hold central (org-wide) finance reach, and the
+ * resulting default ("creator's highest hat" — owner spec). Uses the SAME
+ * `getFinanceRole` primitive `finances.transferProjectScope`'s gate checks, so
+ * the default this offers is never a scope the caller would then be refused
+ * when `projects.create` re-checks it server-side.
+ */
+export const scopeOptions = query({
+  args: {},
+  handler: async (ctx) => {
+    const chapterId = (await getChapterIdOrNull(ctx)) as Id<"chapters"> | null;
+    if (!chapterId) return null;
+    const chapter = await ctx.db.get(chapterId);
+    if (!chapter) return null;
+    const access = await getFinanceRole(ctx, chapterId);
+    const canCentral = hasCentralWriteReach(access);
+    return {
+      chapterId,
+      chapterName: chapter.name,
+      // Whether the picker should even be offered — a central VIEWER has
+      // reach but no write rank, so they get no picker (same as a chapter-only
+      // caller): the mutation would refuse "central" from them anyway.
+      isCentral: canCentral,
+      defaultScope: (canCentral ? "central" : "chapter") as "central" | "chapter",
+    };
+  },
+});
 
 /**
  * Resolve which chapter a peek-capable Projects read should scope to: the
@@ -313,12 +369,42 @@ export const get = query({
     const budgetRow = await getBudgetForRef(ctx, "project", projectId);
     const budgetUsd =
       budgetRow && budgetRow.amountCents > 0 ? budgetRow.amountCents / 100 : undefined;
+
+    // Money attribution ("Belongs to"): the project ROW never moves off its
+    // home chapter (WP-2.2 finding — see `finances.transferProjectScope`'s doc
+    // comment), so the real attribution is wherever its BUDGET currently lives
+    // — central, once `transferProjectScope` has moved it, else the project's
+    // own home chapter (no budget yet reads the same as "still home"). Central
+    // reach to CHANGE it is the caller's own (`ownChapterId`), never the
+    // project's — mirrors `transferProjectScope`'s `requireCentralWrite` gate
+    // exactly, so this flag never promises an affordance the mutation refuses.
+    const scope: FinanceScope = budgetRow ? (budgetRow.chapterId as FinanceScope) : project.chapterId;
+    const scopeChapterName =
+      scope === "central" ? null : ((await ctx.db.get(scope))?.name ?? null);
+    // The project's HOME chapter's name, ALWAYS resolved regardless of the
+    // current scope — unlike `scopeChapterName` (null while at Central, by
+    // design, for the plain "current location" display), a client toggling
+    // between "Central" and "back to my chapter" needs a concrete label for
+    // the non-central option even while the project currently sits at
+    // Central. Reuses `scopeChapterName` when it already IS the home chapter
+    // (the common non-central case) instead of a second lookup.
+    const homeChapterName =
+      scope !== "central" && scope === project.chapterId
+        ? scopeChapterName
+        : ((await ctx.db.get(project.chapterId))?.name ?? null);
+    const canChangeScope =
+      ownChapterId != null && hasCentralWriteReach(await getFinanceRole(ctx, ownChapterId));
+
     return {
       ...project,
       budgetUsd,
       canManage,
       ownerName: ownerPerson?.name ?? null,
       parentName: parent?.name ?? null,
+      scope,
+      scopeChapterName,
+      homeChapterName,
+      canChangeScope,
     };
   },
 });
@@ -492,6 +578,11 @@ export const create = mutation({
     deadline: v.optional(v.number()),
     budgetUsd: v.optional(v.number()),
     blocker: v.optional(v.string()),
+    // Money-attribution override for the creation-time scope picker. Omitted
+    // by callers that don't show the picker (e.g. a sub-project's "Add
+    // sub-project" quick-create) — the default below still applies, so every
+    // creation path gets the "creator's highest hat" behavior for free.
+    scope: v.optional(projectScopeChoice),
   },
   handler: async (ctx, args) => {
     const chapterId = await requireChapterId(ctx);
@@ -550,6 +641,38 @@ export const create = mutation({
       "created",
       "Created the project",
     );
+
+    // Money attribution ("creator's highest hat" default, owner spec): a
+    // caller with central (org-wide) finance reach gets Central by default;
+    // re-resolved SERVER-SIDE (never trusts a client-supplied `scope` alone)
+    // so an unspecified `scope` still lands correctly for every creation path
+    // — not just the one with a picker. The project ROW stays chapter-scoped
+    // either way (WP-2.2 finding); "central" here moves its BUDGET, through
+    // the SAME `transferProjectScope` retroactive changes use (no second
+    // scope-move path). `summonBudgetForRef` first guarantees a (possibly $0)
+    // budget row exists — idempotent, so it's a no-op when `createProjectBudget`
+    // above already made one — so a LATER dollar entry writes through to the
+    // already-central row instead of silently landing back at the chapter.
+    const access = await getFinanceRole(ctx, chapterId as Id<"chapters">);
+    const canCentral = hasCentralWriteReach(access);
+    const effectiveScope = args.scope ?? (canCentral ? "central" : "chapter");
+    if (effectiveScope === "central") {
+      if (!canCentral) {
+        throw new ConvexError({
+          code: "FORBIDDEN",
+          message: "Only central finance roles can attribute a project to Central.",
+        });
+      }
+      await ctx.runMutation(api.finances.summonBudgetForRef, {
+        refKind: "project",
+        scopeRefId: projectId,
+      });
+      await ctx.runMutation(api.finances.transferProjectScope, {
+        projectId,
+        target: "central",
+        note: "Set at creation",
+      });
+    }
     return projectId;
   },
 });

@@ -279,15 +279,34 @@ export const refMoney = query({
       ),
     ]);
     const lines = linesByBudget.flat();
-    // Defense-in-depth + consistency with `finances.ts#actualsForRef`: never
-    // sum/list a transaction from another chapter, even though `by_budget`
-    // can't help but return one once a budget moves to central
-    // (`transferProjectScope` moves the budget AND its linked transactions to
-    // central together — the REF's own `chapterId` never changes, so
-    // filtering back down to it here keeps this view in lockstep with
-    // `projectActuals`/the dashboard for the same ref; the Central row
-    // already reports that spend under its own roof — one home per dollar).
-    const refChapterTxns = txnsByBudget.flat().filter((tr) => tr.chapterId === authz.chapterId);
+    // SCOPE-AWARE (fixes a Central project under-reporting $0 actuals): filter
+    // each budget's transactions down to THAT BUDGET's own current `chapterId`
+    // — never `authz.chapterId` (the REF's home chapter, which never becomes
+    // `"central"` — projects have no central union on the row itself, WP-2.2).
+    // Once `transferProjectScope` moves a project's budget to `"central"`, its
+    // linked transactions move with it (same patch); anchoring the filter to
+    // each budget's OWN chapterId instead of the ref's fixed home chapter
+    // means this view's actuals follow the money to wherever the "Belongs to"
+    // row says it now lives, rather than silently zeroing out.
+    //
+    // This is DIFFERENT from `finances.ts#actualsForRef` (`projectActuals`/
+    // `eventActuals`) on purpose: those are keyed to the CALLER'S OWN chapter
+    // (a chapter-dashboard read — "how much does MY copy of this cost", which
+    // correctly drops to zero once the money leaves), not to the ref. This
+    // view answers "what does this project/event cost, period" for whoever is
+    // already authorized to see it (visibility is unchanged — `resolveRefAuthz`
+    // above still gates who gets here at all) — the ONE-HOME-PER-DOLLAR
+    // invariant still holds: each transaction's `chapterId` is a single value,
+    // so it's counted here (the ref's own money view) and, separately, in
+    // whichever finance dashboard (chapter or central) currently owns it —
+    // never both `refMoney` AND `actualsForRef` for the SAME level, and never
+    // twice within `refMoney` itself, since a transaction belongs to exactly
+    // one budget. Defense-in-depth is preserved too: a stale/duplicate
+    // transaction whose `chapterId` doesn't match ITS OWN budget's current
+    // scope is still dropped, just anchored to the right value.
+    const refChapterTxns = budgets.flatMap((b, i) =>
+      txnsByBudget[i].filter((tr) => tr.chapterId === b.chapterId),
+    );
     const spendTxns = refChapterTxns.filter(isSpend);
 
     // ── Plan (ESTIMATED-side, invariant #2 — never mixed with actuals below) ──
