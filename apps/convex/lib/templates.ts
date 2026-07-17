@@ -398,6 +398,47 @@ export async function deepCopyTemplate(
   return roleIdMap;
 }
 
+const BLANK_TEMPLATE_SLUG = "blank-event";
+const BLANK_TEMPLATE_NAME = "Blank event";
+
+/**
+ * Get-or-create the chapter's ad-hoc "Blank event" template: a real
+ * `eventTypes` row with zero roles/items/columns/modules, so
+ * `instantiateEvent` clones nothing onto events spun up from it — the
+ * "standard empty areas, no cloned tasks/roles" ad-hoc path reuses the exact
+ * same templating engine as every named template, no forked create path.
+ * Idempotent per chapter via the `by_chapter_slug` index (one row per
+ * chapter, lazily made on first use rather than seeded up front).
+ */
+export async function getOrCreateBlankTemplate(
+  ctx: any,
+  chapterId: Id<"chapters">,
+  userId: Id<"users">,
+  now: number,
+) {
+  const existing = await ctx.db
+    .query("eventTypes")
+    .withIndex("by_chapter_slug", (q: any) =>
+      q.eq("chapterId", chapterId).eq("slug", BLANK_TEMPLATE_SLUG),
+    )
+    .first();
+  if (existing) return existing;
+
+  const eventTypeId = await ctx.db.insert("eventTypes", {
+    chapterId,
+    name: BLANK_TEMPLATE_NAME,
+    slug: BLANK_TEMPLATE_SLUG,
+    description: "Ad-hoc event — no pre-filled tasks or roles.",
+    isBlank: true,
+    version: 1,
+    isArchived: false,
+    createdBy: userId,
+    createdAt: now,
+    updatedAt: now,
+  });
+  return await ctx.db.get(eventTypeId);
+}
+
 /**
  * THE TEMPLATING ENGINE. Snapshot a template into a live event: insert the
  * event, clone its columns onto the event, then clone its items (back-

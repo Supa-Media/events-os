@@ -43,6 +43,12 @@ function requireUserManaged(eventType: Doc<"eventTypes">): void {
       message: "This template is managed by the platform and can't be changed.",
     });
   }
+  if (eventType.isBlank === true) {
+    throw new ConvexError({
+      code: "BLANK_TEMPLATE",
+      message: "The Blank event template is managed automatically and can't be changed.",
+    });
+  }
 }
 
 /** A template's roles ({ _id, label }), ordered. */
@@ -69,8 +75,11 @@ export const list = query({
       .collect();
     // Platform templates (the Academy training run) never surface in the
     // Templates tab or the New Event picker — the Academy owns that flow.
+    // The chapter's Blank-event template is likewise excluded — it surfaces
+    // as its own first-class "Blank event" card on New Event, not as a
+    // regular list-backed template (it has no roles/columns/items).
     const active = types.filter(
-      (t) => t.isArchived !== true && t.isPlatform !== true,
+      (t) => t.isArchived !== true && t.isPlatform !== true && t.isBlank !== true,
     );
     const withMeta = await Promise.all(
       active.map(async (t) => {

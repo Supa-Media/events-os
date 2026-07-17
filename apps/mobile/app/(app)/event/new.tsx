@@ -23,10 +23,19 @@ import {
 } from "../../../components/ui";
 import { ScopeToggle, type ScopeChoice } from "../../../components/team/ScopeToggle";
 import { colors, radius, spacing } from "../../../lib/theme";
-import { parseDateInput, parseDateTimeInput, formatDateTime } from "../../../lib/format";
+import { parseDateTimeInput, formatDateTime } from "../../../lib/format";
 import { MeridiemButton } from "../../../components/ui/DateTimeField";
 import { errorMessage } from "../../../lib/errors";
 import type { Id } from "@events-os/convex/_generated/dataModel";
+import { getCreateBlockReason } from "../../../components/event/newEventValidation";
+
+/**
+ * Sentinel for the ad-hoc "Blank event" card — not a real `eventTypes` id.
+ * `handleCreate` omits `eventTypeId` entirely when this is selected;
+ * `events.createFromTemplate` resolves it server-side to the chapter's
+ * lazily-created blank template (see `getOrCreateBlankTemplate`).
+ */
+const BLANK_TEMPLATE_ID = "blank" as const;
 
 /**
  * Date picker. On web this is the browser's native `<input type="date">` (real
@@ -290,9 +299,9 @@ export default function NewEventScreen() {
     if (!scopeTouched && scopeOptions?.defaultScope) setScope(scopeOptions.defaultScope);
   }, [scopeTouched, scopeOptions?.defaultScope]);
 
-  const [selectedId, setSelectedId] = useState<Id<"eventTypes"> | null>(
-    (templateId as Id<"eventTypes"> | undefined) ?? null,
-  );
+  const [selectedId, setSelectedId] = useState<
+    Id<"eventTypes"> | typeof BLANK_TEMPLATE_ID | null
+  >((templateId as Id<"eventTypes"> | undefined) ?? null);
   const [name, setName] = useState("");
   const [touchedName, setTouchedName] = useState(false);
   // Prefill from a `?date=YYYY-MM-DD` deep-link (e.g. tapping an open day on the
@@ -318,49 +327,48 @@ export default function NewEventScreen() {
     );
   }
 
-  const selected = templates.find((t) => t._id === selectedId) ?? null;
-  // Default the name to the template name until the user types their own.
+  const selected =
+    selectedId && selectedId !== BLANK_TEMPLATE_ID
+      ? templates.find((t) => t._id === selectedId) ?? null
+      : null;
+  // Default the name to the template name until the user types their own —
+  // Blank has no template to borrow a name from, so it starts empty.
   const effectiveName = touchedName ? name : selected?.name ?? "";
   const parsedDateTime =
     date && time ? parseDateTimeInput(date, time) : null;
+  const blockReason = getCreateBlockReason({
+    selectedId,
+    effectiveName,
+    date,
+    time,
+  });
 
   function pickTemplate(t: TemplateRow) {
     setSelectedId(t._id);
     if (!touchedName) setName("");
   }
 
+  function pickBlank() {
+    setSelectedId(BLANK_TEMPLATE_ID);
+    if (!touchedName) setName("");
+  }
+
   async function handleCreate() {
     setError(null);
-    if (!selectedId) {
-      setError("Pick a template first.");
+    if (blockReason) {
+      setError(blockReason);
       return;
     }
     const finalName = effectiveName.trim();
-    if (!finalName) {
-      setError("Give the event a name.");
-      return;
-    }
-    if (parseDateInput(date) === null) {
-      setError(
-        date.trim()
-          ? "That date isn't valid — check the year, month, and day."
-          : "Pick an event date.",
-      );
-      return;
-    }
-    if (!time.trim()) {
-      setError("Set a start time — the run of show is timed from it.");
-      return;
-    }
-    const ts = parseDateTimeInput(date, time);
-    if (ts === null) {
-      setError("That start time isn't valid — check the hour and minute.");
-      return;
-    }
+    const ts = parseDateTimeInput(date, time)!;
     setCreating(true);
     try {
       const id = await create({
-        eventTypeId: selectedId,
+        // Omitted for the Blank card — `createFromTemplate` resolves the
+        // chapter's ad-hoc blank template server-side (see
+        // `getOrCreateBlankTemplate`).
+        eventTypeId:
+          selectedId && selectedId !== BLANK_TEMPLATE_ID ? selectedId : undefined,
         name: finalName,
         eventDate: ts,
         location: location.trim() || undefined,
@@ -382,10 +390,55 @@ export default function NewEventScreen() {
       <Stack.Screen options={{ headerShown: true, title: "New event" }} />
       <Screen>
         <SectionHeader title="Template" />
+        <View style={styles.templateList}>
+          {/* Ad-hoc path (owner spec: "I shouldn't need [a template] for an
+              event I'm planning on the fly") — always offered, even when the
+              chapter has zero named templates, so creation is never blocked
+              on template management. */}
+          {(() => {
+            const blankActive = selectedId === BLANK_TEMPLATE_ID;
+            return (
+              <Pressable
+                onPress={pickBlank}
+                style={[styles.templateRow, blankActive && styles.templateActive]}
+                accessibilityRole="button"
+                accessibilityState={{ selected: blankActive }}
+              >
+                <View style={styles.templateText}>
+                  <Text style={styles.templateName}>Blank event</Text>
+                  <Text style={styles.templateMeta}>
+                    Start from scratch — no pre-filled tasks or roles
+                  </Text>
+                </View>
+                {blankActive ? <Badge label="Selected" tone="accent" /> : null}
+              </Pressable>
+            );
+          })()}
+          {templates.map((t: TemplateRow) => {
+            const active = t._id === selectedId;
+            return (
+              <Pressable
+                key={t._id}
+                onPress={() => pickTemplate(t)}
+                style={[styles.templateRow, active && styles.templateActive]}
+                accessibilityRole="button"
+                accessibilityState={{ selected: active }}
+              >
+                <View style={styles.templateText}>
+                  <Text style={styles.templateName}>{t.name}</Text>
+                  <Text style={styles.templateMeta}>
+                    {t.roles.length} roles · {t.taskCount} tasks
+                  </Text>
+                </View>
+                {active ? <Badge label="Selected" tone="accent" /> : null}
+              </Pressable>
+            );
+          })}
+        </View>
         {templates.length === 0 ? (
           <EmptyState
-            title="No templates yet"
-            message="Create a template before starting an event."
+            title="No named templates yet"
+            message="Blank event above works for a one-off — or create a reusable template."
             action={
               <Button
                 title="Go to Templates"
@@ -394,28 +447,7 @@ export default function NewEventScreen() {
               />
             }
           />
-        ) : (
-          <View style={styles.templateList}>
-            {templates.map((t: TemplateRow) => {
-              const active = t._id === selectedId;
-              return (
-                <Pressable
-                  key={t._id}
-                  onPress={() => pickTemplate(t)}
-                  style={[styles.templateRow, active && styles.templateActive]}
-                >
-                  <View style={styles.templateText}>
-                    <Text style={styles.templateName}>{t.name}</Text>
-                    <Text style={styles.templateMeta}>
-                      {t.roles.length} roles · {t.taskCount} tasks
-                    </Text>
-                  </View>
-                  {active ? <Badge label="Selected" tone="accent" /> : null}
-                </Pressable>
-              );
-            })}
-          </View>
-        )}
+        ) : null}
 
         <SectionHeader title="Details" />
         <Card>
@@ -461,8 +493,16 @@ export default function NewEventScreen() {
             title="Create event"
             onPress={handleCreate}
             loading={creating}
-            disabled={!selectedId}
+            disabled={!!blockReason}
           />
+          {/* Never leave a dead grey button unexplained (live-blocker
+              postmortem) — the reason always matches the disabled check
+              above, both driven by `getCreateBlockReason`. Suppressed once an
+              `error` is already showing (e.g. a submit failure) to avoid two
+              overlapping one-liners. */}
+          {blockReason && !error ? (
+            <Text style={styles.blockReason}>{blockReason}</Text>
+          ) : null}
         </Card>
       </Screen>
     </>
@@ -486,6 +526,12 @@ const styles = StyleSheet.create({
   templateName: { fontSize: 15, fontWeight: "600", color: colors.text },
   templateMeta: { fontSize: 13, color: colors.muted },
   error: { color: colors.danger, fontSize: 13, marginBottom: spacing.sm },
+  blockReason: {
+    color: colors.muted,
+    fontSize: 13,
+    textAlign: "center",
+    marginTop: spacing.xs,
+  },
   dateParts: { flexDirection: "row", alignItems: "center", gap: spacing.xs },
   timeParts: { flexDirection: "row", alignItems: "center", gap: spacing.xs },
   meridiem: { flexDirection: "row", gap: spacing.xs, marginLeft: spacing.xs },
