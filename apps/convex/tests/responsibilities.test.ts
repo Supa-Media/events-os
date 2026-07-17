@@ -880,9 +880,15 @@ describe("responsibilities × seats", () => {
     const austinRow = austinList.find((r) => r._id === dutyId)!;
     expect(austinRow).toBeDefined();
     expect(austinRow.chapterId).toBe(s.chapterId); // authorship stays NY's
-    // …and it's still in NY's own list too (the matrix's other direction).
+    // `authoredByChapterName` is the Duties grid's read-only signal — set
+    // (to the authoring chapter's name) from Austin's view, null from NY's.
+    expect(austinRow.authoredByChapterName).toBe("New York");
+    // …and it's still in NY's own list too (the matrix's other direction),
+    // where it's the caller's OWN row — no provenance label needed.
     const nyList = await s.as.query(api.responsibilities.list);
-    expect(nyList.find((r) => r._id === dutyId)).toBeDefined();
+    const nyRow = nyList.find((r) => r._id === dutyId);
+    expect(nyRow).toBeDefined();
+    expect(nyRow!.authoredByChapterName).toBeNull();
 
     // REAL PATH #3 — "applies in their workload data": the EXACT combination
     // WorkloadView does client-side (list + chapterSeatHoldings, fed through

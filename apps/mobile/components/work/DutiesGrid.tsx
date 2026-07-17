@@ -30,6 +30,18 @@
  * Self-contained: it owns its own queries + mutations, so both mount points
  * render `<DutiesGrid />` with no wiring. Callers gate visibility (nav.canManage)
  * — this component assumes the caller is allowed to manage the catalog.
+ *
+ * ORG-WIDE ROWS (owner decision, 2026-07-17 — see `responsibilities.ts`'s
+ * `orgWideCatalog`): `responsibilities.list` now includes seat-mapped duties
+ * AUTHORED BY OTHER CHAPTERS (one role, same expectations everywhere — e.g.
+ * every chapter sees the SAME "Chapter Director" duty). Those rows carry
+ * `authoredByChapterName` (non-null = foreign) and render READ-ONLY here: no
+ * inline editors, no seat/person picker, no delete — a muted lock badge with
+ * provenance instead. This isn't cosmetic — `update`/`addSeat`/`removeSeat`/
+ * `remove`/`addAssignee`/`removeAssignee` all gate on `requireOwned`
+ * (authoring-chapter-only server-side), so an editable-looking foreign row
+ * would throw on every write. Editable rows are exactly the caller's own
+ * chapter's rows, matching the server gates 1:1.
  */
 import { useMemo, useState } from "react";
 import { Modal, View, Text, Pressable, ScrollView } from "react-native";
@@ -53,6 +65,7 @@ import {
   GridHeaderCell,
   SelectCell,
   PersonPicker,
+  Badge,
   type SelectOption,
 } from "../ui";
 import {
@@ -72,6 +85,10 @@ const CADENCE_OPTIONS: SelectOption<ResponsibilityCadence>[] =
 
 type Responsibility = Doc<"responsibilities"> & {
   howToDoc: HowToDocSummary | null;
+  /** Non-null = this row was authored by ANOTHER chapter (an org-wide
+   *  seat-mapped duty) — the authoring chapter's name. Null = the caller's
+   *  OWN chapter authored it. See `responsibilities.list`'s doc comment. */
+  authoredByChapterName: string | null;
 };
 
 // Fixed column widths (px) — mirrors the People grid's chrome.
@@ -459,6 +476,10 @@ function ResponsibilityRow({
   const removeAssignee = useMutation(api.responsibilities.removeAssignee);
   const removeSeatMutation = useMutation(api.responsibilities.removeSeat);
   const id = row._id;
+  // Foreign = authored by another chapter (an org-wide seat-mapped duty —
+  // see the file doc comment). Every write path below is gated on this
+  // exactly matching the server's `requireOwned` (authoring-chapter-only).
+  const isForeign = row.authoredByChapterName !== null;
 
   const update = (args: Omit<Parameters<typeof updateMutation>[0], "responsibilityId">) => {
     void updateMutation({ responsibilityId: id, ...args }).catch(alertError);
@@ -470,38 +491,64 @@ function ResponsibilityRow({
         isLast ? "border-b-0" : ""
       }`}
     >
-      {/* Title */}
+      {/* Title — a foreign row also carries the "Defined by {chapter}"
+          provenance badge, the one visible signal for why the rest of the
+          row is locked. */}
       <Cell width={COLS.title}>
-        <InlineText
-          value={row.title}
-          placeholder="Duty"
-          weight="medium"
-          onCommit={(t) => {
-            if (t.trim()) update({ title: t.trim() });
-          }}
-        />
+        {isForeign ? (
+          <View className="flex-1 gap-1 px-2 py-1.5">
+            <Text
+              className="text-sm font-medium text-ink"
+              numberOfLines={1}
+            >
+              {row.title || "Duty"}
+            </Text>
+            <Badge
+              label={`Defined by ${row.authoredByChapterName}`}
+              tone="neutral"
+              icon="lock"
+            />
+          </View>
+        ) : (
+          <InlineText
+            value={row.title}
+            placeholder="Duty"
+            weight="medium"
+            onCommit={(t) => {
+              if (t.trim()) update({ title: t.trim() });
+            }}
+          />
+        )}
       </Cell>
 
       {/* Cadence */}
       <Cell width={COLS.cadence}>
-        <SelectCell
-          value={row.cadence}
-          options={CADENCE_OPTIONS}
-          onChange={(cadence) => update({ cadence })}
-        />
+        {isForeign ? (
+          <Text className="px-2 text-sm text-ink">
+            {RESPONSIBILITY_CADENCE_LABELS[row.cadence]}
+          </Text>
+        ) : (
+          <SelectCell
+            value={row.cadence}
+            options={CADENCE_OPTIONS}
+            onChange={(cadence) => update({ cadence })}
+          />
+        )}
       </Cell>
 
       {/* Assignee seats (fan-out, current model): read-only chips resolved
           from `assigneeSeatIds`, plus a seat picker. A duty not yet mapped to
           seats shows its LEGACY `assigneeRoles` strings muted — read-only,
           nothing here can add a new one — next to the same picker, which is
-          the one-time mapping flow ("Map to seats"). */}
+          the one-time mapping flow ("Map to seats"). A FOREIGN row shows the
+          same chips with no remove/add affordance at all — `readOnly`. */}
       <Cell width={COLS.roles}>
         <SeatsCell
           seatIds={(row.assigneeSeatIds as Id<"seatDefs">[] | undefined) ?? []}
           legacyRoles={row.assigneeRoles ?? []}
           seatById={seatById}
           roleHolders={roleHolders}
+          readOnly={isForeign}
           onOpenPicker={onOpenSeatPicker}
           onRemoveSeat={(seatDefId) => {
             const current =
@@ -521,29 +568,36 @@ function ResponsibilityRow({
         />
       </Cell>
 
-      {/* Directly-assigned people: chips + picker */}
+      {/* Directly-assigned people: chips + picker (foreign rows: chips only,
+          no remove/add — same reasoning as the seats cell). */}
       <Cell width={COLS.people}>
         <View className="flex-1 flex-row flex-wrap items-center gap-1 px-2 py-1.5">
-          {(row.assigneePersonIds ?? []).map((pid) => (
-            <OptionTag
-              key={pid}
-              label={nameById.get(pid) ?? "?"}
-              onRemove={() =>
-                void removeAssignee({
-                  responsibilityId: id,
-                  personId: pid,
-                }).catch(alertError)
-              }
-            />
-          ))}
-          <Pressable
-            onPress={onOpenPicker}
-            hitSlop={6}
-            accessibilityLabel="Assign a person"
-            className="rounded p-0.5 active:bg-sunken web:hover:bg-sunken"
-          >
-            <Icon name="plus" size={13} color={colors.faint} />
-          </Pressable>
+          {(row.assigneePersonIds ?? []).map((pid) =>
+            isForeign ? (
+              <OptionTag key={pid} label={nameById.get(pid) ?? "?"} />
+            ) : (
+              <OptionTag
+                key={pid}
+                label={nameById.get(pid) ?? "?"}
+                onRemove={() =>
+                  void removeAssignee({
+                    responsibilityId: id,
+                    personId: pid,
+                  }).catch(alertError)
+                }
+              />
+            ),
+          )}
+          {isForeign ? null : (
+            <Pressable
+              onPress={onOpenPicker}
+              hitSlop={6}
+              accessibilityLabel="Assign a person"
+              className="rounded p-0.5 active:bg-sunken web:hover:bg-sunken"
+            >
+              <Icon name="plus" size={13} color={colors.faint} />
+            </Pressable>
+          )}
         </View>
       </Cell>
 
@@ -555,10 +609,14 @@ function ResponsibilityRow({
       </Cell>
 
       {/* How to (the handoff doc): link / video / note / markdown page —
-          the same doc primitive behind event-grid How-To cells. */}
+          the same doc primitive behind event-grid How-To cells. Foreign rows
+          get the read-only rendering (`editable={false}` disables the inline
+          note/link/video text fields too — see `HowToDocCell`'s doc
+          comment — not just the kind-menu). */}
       <Cell width={COLS.howTo}>
         <HowToDocCell
           doc={row.howToDoc}
+          editable={!isForeign}
           onSetDoc={(docId) =>
             update(docId ? { howToDocId: docId } : { howToDocId: null })
           }
@@ -567,42 +625,60 @@ function ResponsibilityRow({
 
       {/* Description */}
       <Cell width={COLS.description}>
-        <InlineText
-          value={row.description ?? ""}
-          placeholder="—"
-          onCommit={(t) => update({ description: t.trim() || null })}
-        />
+        {isForeign ? (
+          <Text className="px-2 text-sm text-ink" numberOfLines={1}>
+            {row.description || "—"}
+          </Text>
+        ) : (
+          <InlineText
+            value={row.description ?? ""}
+            placeholder="—"
+            onCommit={(t) => update({ description: t.trim() || null })}
+          />
+        )}
       </Cell>
 
       {/* Notes */}
       <Cell width={COLS.notes}>
-        <InlineText
-          value={row.notes ?? ""}
-          placeholder="—"
-          onCommit={(t) => update({ notes: t.trim() || null })}
-        />
+        {isForeign ? (
+          <Text className="px-2 text-sm text-ink" numberOfLines={1}>
+            {row.notes || "—"}
+          </Text>
+        ) : (
+          <InlineText
+            value={row.notes ?? ""}
+            placeholder="—"
+            onCommit={(t) => update({ notes: t.trim() || null })}
+          />
+        )}
       </Cell>
 
-      {/* Delete gutter */}
+      {/* Delete gutter — a foreign row gets a muted, non-interactive lock
+          instead of the delete affordance: only the authoring chapter's
+          managers/admins can remove it (`remove` gates on `requireOwned`). */}
       <View style={{ width: DELETE_W }} className="items-center justify-center">
-        <Pressable
-          onPress={() =>
-            confirmAction({
-              title: "Delete duty?",
-              message: `"${row.title || "This duty"}" will be removed for everyone holding it.`,
-              confirmLabel: "Delete",
-              destructive: true,
-              onConfirm: () => {
-                void removeMutation({ responsibilityId: id }).catch(alertError);
-              },
-            })
-          }
-          hitSlop={4}
-          accessibilityLabel="Delete duty"
-          className="rounded p-1 active:bg-sunken web:hover:bg-sunken"
-        >
-          <Icon name="trash-2" size={14} color={colors.danger} />
-        </Pressable>
+        {isForeign ? (
+          <Icon name="lock" size={14} color={colors.faint} />
+        ) : (
+          <Pressable
+            onPress={() =>
+              confirmAction({
+                title: "Delete duty?",
+                message: `"${row.title || "This duty"}" will be removed for everyone holding it.`,
+                confirmLabel: "Delete",
+                destructive: true,
+                onConfirm: () => {
+                  void removeMutation({ responsibilityId: id }).catch(alertError);
+                },
+              })
+            }
+            hitSlop={4}
+            accessibilityLabel="Delete duty"
+            className="rounded p-1 active:bg-sunken web:hover:bg-sunken"
+          >
+            <Icon name="trash-2" size={14} color={colors.danger} />
+          </Pressable>
+        )}
       </View>
     </View>
   );
@@ -632,6 +708,7 @@ function SeatsCell({
   legacyRoles,
   seatById,
   roleHolders,
+  readOnly = false,
   onOpenPicker,
   onRemoveSeat,
 }: {
@@ -639,6 +716,9 @@ function SeatsCell({
   legacyRoles: string[];
   seatById: Map<Id<"seatDefs">, { title: string; chart: "central" | "chapter" }>;
   roleHolders: Map<string, number>;
+  /** A FOREIGN (org-wide, another chapter's) row: chips only, no remove ✕ and
+   *  no "+"/"Map to seats" affordance — this chapter can't edit it. */
+  readOnly?: boolean;
   onOpenPicker: () => void;
   onRemoveSeat: (seatDefId: Id<"seatDefs">) => void;
 }) {
@@ -648,14 +728,22 @@ function SeatsCell({
   return (
     <View className="flex-1 flex-row flex-wrap items-center gap-1 px-2 py-1.5">
       {hasSeats
-        ? seatIds.map((seatDefId) => (
-            <OptionTag
-              key={seatDefId}
-              label={seatById.get(seatDefId)?.title ?? "Seat"}
-              color="purple"
-              onRemove={() => onRemoveSeat(seatDefId)}
-            />
-          ))
+        ? seatIds.map((seatDefId) =>
+            readOnly ? (
+              <OptionTag
+                key={seatDefId}
+                label={seatById.get(seatDefId)?.title ?? "Seat"}
+                color="purple"
+              />
+            ) : (
+              <OptionTag
+                key={seatDefId}
+                label={seatById.get(seatDefId)?.title ?? "Seat"}
+                color="purple"
+                onRemove={() => onRemoveSeat(seatDefId)}
+              />
+            ),
+          )
         : null}
       {unmappedLegacy
         ? legacyRoles.map((s) => {
@@ -672,7 +760,7 @@ function SeatsCell({
       {!hasSeats && legacyRoles.length === 0 ? (
         <Text className="text-sm text-faint">—</Text>
       ) : null}
-      {unmappedLegacy ? (
+      {readOnly ? null : unmappedLegacy ? (
         <Pressable
           onPress={onOpenPicker}
           hitSlop={4}

@@ -190,7 +190,15 @@ export async function orgWideCatalog(
  * expectations everywhere), so a chapter-B caller sees a chapter-A-authored
  * "Chapter Director" duty right alongside chapter B's own. The How-To doc
  * join is scoped to each ROW's OWN home chapter (`doc.chapterId === r.chapterId`),
- * not the caller's — a foreign row's doc lives in ITS authoring chapter.
+ * not the caller's — a foreign row's doc lives in ITS authoring chapter. Each
+ * row also carries `authoredByChapterName`: `null` when the CALLER'S OWN
+ * chapter authored it (editable everywhere the server allows), or the
+ * authoring chapter's name when it's a foreign org-wide row — the Duties grid
+ * (`DutiesGrid.tsx`) uses this to render foreign rows READ-ONLY (no inline
+ * editors would work anyway: `update`/`addSeat`/`removeSeat`/`remove` all
+ * gate on `requireOwned`, authoring-chapter-only) with a "Defined by
+ * {chapter}" provenance label, without a separate query to figure out which
+ * rows are "mine".
  *
  * Read is transparent: admins and every roster member get the whole catalog, so
  * any person's workload page can show the duties they carry — part of seeing the
@@ -210,12 +218,39 @@ export const list = query({
       chapterId as Id<"chapters">,
       "responsibilities.list",
     );
+
+    // Resolve each FOREIGN row's authoring chapter NAME once per distinct
+    // chapter (not once per row) — the Duties grid's read-only provenance
+    // label ("Defined by {chapter}") for an org-wide duty this chapter
+    // didn't author, so the client can render it read-only without a
+    // separate query/context to figure out "is this mine". `null` on
+    // `authoredByChapterName` below means the CALLER'S own chapter authored
+    // it (the common case, and the only case pre-org-wide-catalog).
+    const foreignChapterIds = Array.from(
+      new Set(rows.filter((r) => r.chapterId !== chapterId).map((r) => r.chapterId)),
+    );
+    const foreignChapters = await Promise.all(
+      foreignChapterIds.map((id) => ctx.db.get(id)),
+    );
+    const chapterNameById = new Map(
+      foreignChapters
+        .filter((c): c is NonNullable<typeof c> => c !== null)
+        .map((c) => [c._id, c.name]),
+    );
+
     return await Promise.all(
       rows.map(async (r) => {
-        if (!r.howToDocId) return { ...r, howToDoc: null };
+        const authoredByChapterName: string | null =
+          r.chapterId === chapterId
+            ? null
+            : (chapterNameById.get(r.chapterId) ?? "another chapter");
+        if (!r.howToDocId) {
+          return { ...r, howToDoc: null, authoredByChapterName };
+        }
         const doc = await ctx.db.get(r.howToDocId);
         return {
           ...r,
+          authoredByChapterName,
           howToDoc:
             doc && doc.chapterId === r.chapterId
               ? {
