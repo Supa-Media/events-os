@@ -102,11 +102,7 @@ export function Tile({
       <Text className="text-2xs font-bold uppercase tracking-wider text-muted">
         {label}
       </Text>
-      <Text
-        className={`font-display text-2xl ${valueClassName}`}
-        style={TABULAR}
-        numberOfLines={1}
-      >
+      <Text className={`font-display text-2xl ${valueClassName}`} style={TABULAR}>
         {value}
       </Text>
       {meta ? <Text className="text-xs text-muted">{meta}</Text> : null}
