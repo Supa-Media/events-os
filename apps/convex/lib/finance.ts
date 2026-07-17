@@ -218,10 +218,11 @@ export async function getFinanceRole(
   // seat-side merge into every chapter anyway — its real assignment
   // write-through already bridges a STORED central `financeRoles` grant
   // (`bridgeFinanceManagerGrant`), which `applicable` above already folds in
-  // everywhere via the `g.scope === "central"` arm. Seats only ever derive
-  // `"manager"`, never `"bookkeeper"`/`"viewer"` — those two ranks are a
-  // stored-only residual layer that survives the flip via `storedRole`
-  // above (see `lib/seats.ts`'s "Mapping rules").
+  // everywhere via the `g.scope === "central"` arm. Seats derive `"manager"`
+  // (`financial_manager`/`treasurer`) or `"viewer"` (`chapter_director`, the
+  // finance.viewer PR) — never `"bookkeeper"`, which stays a stored-only
+  // residual layer that survives the flip via `storedRole` above (see
+  // `lib/seats.ts`'s "Mapping rules").
   const seatDerived = await getSeatDerivedCapabilities(ctx, person._id);
   const seatRoleHere = seatDerived[String(chapterId)]?.financeRole ?? null;
   const seatAnyCentralReach = Object.values(seatDerived).some(

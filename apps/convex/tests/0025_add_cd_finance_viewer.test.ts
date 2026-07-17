@@ -1,5 +1,5 @@
 /**
- * Test suite for migration 0024: patching the live `chapter_director`
+ * Test suite for migration 0025: patching the live `chapter_director`
  * `seatDefs` row to add `finance.viewer` (owner decision, 2026-07-16 — CD
  * sees chapter spending, but reconcile/record stays the Treasurer's job).
  *
@@ -7,7 +7,7 @@
  * row per `SEAT_IDS` entry, not one per chapter. As of THIS PR the shared
  * template (`SEAT_DEFS.chapter_director`) already carries `finance.viewer`,
  * so a FRESH `0022` seed (a brand-new deploy, or any org/chapter stamped
- * after this ships) already has it — 0024 is a no-op there. The migration
+ * after this ships) already has it — 0025 is a no-op there. The migration
  * exists for the row that's ALREADY LIVE from before this PR: `0022` only
  * inserts a `chapter_director` row if `by_slug` finds none, so a pre-existing
  * live row is never re-seeded from the updated template and needs this
@@ -19,7 +19,7 @@ import { describe, expect, test } from "vitest";
 import { internal } from "../_generated/api";
 import { newT, run } from "./setup.helpers";
 import { runSeedSeatDefs } from "../migrations/0022_seed_seat_defs";
-import { runAddCdFinanceViewer } from "../migrations/0024_add_cd_finance_viewer";
+import { runAddCdFinanceViewer } from "../migrations/0025_add_cd_finance_viewer";
 
 async function chapterDirectorDef(t: ReturnType<typeof newT>) {
   return run(t, (ctx) =>
@@ -57,7 +57,7 @@ async function seedPrePrChapterDirectorRow(t: ReturnType<typeof newT>) {
   );
 }
 
-describe("0024_add_cd_finance_viewer", () => {
+describe("0025_add_cd_finance_viewer", () => {
   test("adds finance.viewer to a pre-PR live chapter_director row, preserving its other capabilities", async () => {
     const t = newT();
     await seedPrePrChapterDirectorRow(t);
@@ -93,7 +93,7 @@ describe("0024_add_cd_finance_viewer", () => {
     ]);
   });
 
-  test("a fresh 0022 seed (post-PR template) already carries finance.viewer, so 0024 is a no-op", async () => {
+  test("a fresh 0022 seed (post-PR template) already carries finance.viewer, so 0025 is a no-op", async () => {
     const t = newT();
     await run(t, (ctx) => runSeedSeatDefs(ctx));
 

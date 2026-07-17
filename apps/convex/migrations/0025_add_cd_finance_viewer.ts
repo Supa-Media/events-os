@@ -55,6 +55,6 @@ export async function runAddCdFinanceViewer(ctx: MutationCtx) {
 }
 
 export const addCdFinanceViewer: Migration = {
-  name: "0024_add_cd_finance_viewer",
+  name: "0025_add_cd_finance_viewer",
   run: runAddCdFinanceViewer,
 };
