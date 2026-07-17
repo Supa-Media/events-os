@@ -18,6 +18,7 @@ const SEAT_DEFS: SeatManagerSeatDef<string>[] = [
   { seatDefId: "chapter_director", chart: "chapter", slug: "chapter_director", parentSlug: "root" },
   { seatDefId: "music_lead", chart: "chapter", slug: "music_lead", parentSlug: "chapter_director" },
   { seatDefId: "vocal_lead", chart: "chapter", slug: "vocal_lead", parentSlug: "music_lead" },
+  { seatDefId: "event_lead", chart: "chapter", slug: "event_lead", parentSlug: "chapter_director" },
 ];
 
 const CENTRAL = "central";
@@ -86,6 +87,51 @@ describe("deriveSeatManagerIds", () => {
   test("a person who holds no seat at all returns null — distinct from a real empty answer", () => {
     const index = makeIndex([{ seatDefId: "chapter_director", scope: "chapterA", personId: "dana" }]);
     expect(deriveSeatManagerIds(index, "someone-else", CENTRAL, CHAPTER_ROLLUP_PARENT)).toBeNull();
+  });
+
+  describe("multi-seat mutual pair (PR #205 regression — prod-shaped)", () => {
+    // Eli (ED) also holds chapter_director in chapterA; Jess (expansion
+    // director) also holds event_lead in that SAME chapter. Per-seat walks
+    // independently derive each as a candidate manager of the other: Eli's
+    // chapter_director seat rolls up to expansion_director (Jess); Jess's
+    // expansion_director seat's parent is executive_director (Eli). Without
+    // the seniority tie-break this is a genuine mutual edge — Eli must win as
+    // the parent (their `executive_director` seat is strictly closer to the
+    // central root than Jess's best seat, `expansion_director`).
+    function mutualPairIndex() {
+      return makeIndex([
+        { seatDefId: "executive_director", scope: CENTRAL, personId: "eli" },
+        { seatDefId: "chapter_director", scope: "chapterA", personId: "eli" },
+        { seatDefId: "expansion_director", scope: CENTRAL, personId: "jess" },
+        { seatDefId: "event_lead", scope: "chapterA", personId: "jess" },
+      ]);
+    }
+
+    test("the ED has no manager despite also holding a chapter_director seat that rolls up to the expansion director", () => {
+      const index = mutualPairIndex();
+      expect(deriveSeatManagerIds(index, "eli", CENTRAL, CHAPTER_ROLLUP_PARENT)).toEqual([]);
+    });
+
+    test("the expansion director reports to the ED, never the reverse", () => {
+      const index = mutualPairIndex();
+      expect(deriveSeatManagerIds(index, "jess", CENTRAL, CHAPTER_ROLLUP_PARENT)).toEqual(["eli"]);
+    });
+
+    test("a third, single-seat report under the expansion director's chapter still resolves normally (no orphaned subtree)", () => {
+      const index = makeIndex([
+        { seatDefId: "executive_director", scope: CENTRAL, personId: "eli" },
+        { seatDefId: "chapter_director", scope: "chapterA", personId: "eli" },
+        { seatDefId: "expansion_director", scope: CENTRAL, personId: "jess" },
+        { seatDefId: "event_lead", scope: "chapterA", personId: "jess" },
+        // A plain single-seat report: vocal_lead's parent (music_lead) is
+        // vacant, so the walk continues up to chapter_director — held by Eli.
+        { seatDefId: "vocal_lead", scope: "chapterA", personId: "vic" },
+      ]);
+      // Proves the fix doesn't disturb ordinary reports elsewhere in the same
+      // chapter — vic still resolves normally to Eli, not swallowed by the
+      // mutual-pair filtering happening for eli/jess above.
+      expect(deriveSeatManagerIds(index, "vic", CENTRAL, CHAPTER_ROLLUP_PARENT)).toEqual(["eli"]);
+    });
   });
 
   test("union across every seat the person holds is deduped by person id", () => {
