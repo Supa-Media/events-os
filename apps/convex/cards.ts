@@ -601,7 +601,15 @@ export const beginIssueCard = internalMutation({
         : null;
     const hasKey = !!process.env.INCREASE_API_KEY;
 
-    // Idempotent-ish: don't mint a second ACTIVE card for the same person.
+    // Idempotent-ish: don't mint a second ACTIVE card for the same person — but
+    // only when the existing active card is in the CURRENT Increase environment.
+    // A leftover SANDBOX card (issued while `sandboxMode` was on) must NOT block
+    // minting a real PRODUCTION card once the deployment flips to prod: without
+    // this the mode-blind match returns the off-mode card as `existing`, no prod
+    // card is ever minted, and `listCards`/`myCard` then HIDE that sandbox card
+    // (`matchesMode`) — so the holder is left seeing no card at all and issuance
+    // silently "fails". A null-id degraded card is env-neutral (`matchesMode` →
+    // true), so it still dedups AND still reaches the vendor-retry branch below.
     const existing = await ctx.db
       .query("cards")
       .withIndex("by_cardholder", (q) =>
@@ -609,7 +617,10 @@ export const beginIssueCard = internalMutation({
       )
       .take(CARD_SCAN_LIMIT);
     const activeSame = existing.find(
-      (c) => c.chapterId === chapterId && c.status === "active",
+      (c) =>
+        c.chapterId === chapterId &&
+        c.status === "active" &&
+        matchesMode(c.increaseCardId ?? null, sandboxMode),
     );
     if (activeSame) {
       // A previously-degraded row (no `increaseCardId`) is NOT permanently
@@ -1183,13 +1194,21 @@ export const requestCard = mutation({
       });
     }
 
+    // Mirror `beginIssueCard`'s environment-aware idempotency: only a live card
+    // IN THE CURRENT Increase environment blocks a new request. A leftover
+    // off-mode (e.g. sandbox) card must not strand a `@publicworship.life`
+    // staffer on "You already have a card" once the deployment flips to prod.
+    const sandboxMode = await readSandbox(ctx);
     const existingCards = await ctx.db
       .query("cards")
       .withIndex("by_cardholder", (q) => q.eq("cardholderPersonId", person._id))
       .take(CARD_SCAN_LIMIT);
     if (
       existingCards.some(
-        (c) => c.chapterId === chapterId && c.status !== "canceled",
+        (c) =>
+          c.chapterId === chapterId &&
+          c.status !== "canceled" &&
+          matchesMode(c.increaseCardId ?? null, sandboxMode),
       )
     ) {
       throw new ConvexError({
