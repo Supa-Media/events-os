@@ -223,15 +223,12 @@ const txnSummaryFields = {
 };
 const txnSummary = v.object(txnSummaryFields);
 
-// `personTransactions`'s projection (the member's own "My transactions" view):
-// same shape as `txnSummary`, minus `note`. DELIBERATE privacy default — `note`
-// is the bookkeeper's internal finance annotation ("who was this for and why"),
-// not something written for the cardholder to read. `listReconcile` (the
-// bookkeeper surface) still carries it in full; only the member-facing
-// projection strips it. Flip consciously (i.e. re-add `note` here) if member
-// transparency into bookkeeper notes is ever wanted.
-const { note: _personTxnOmittedNote, ...personTxnSummaryFields } = txnSummaryFields;
-const personTxnSummary = v.object(personTxnSummaryFields);
+// `personTransactions`'s projection (the member's own "My transactions" view)
+// is `txnSummary` itself — same shape, no field stripped. Owner decision: a
+// member MAY see the bookkeeper's `note` ("who was this for and why") on
+// THEIR OWN transactions (read-only), but never on anyone else's. Since the
+// shape is uniform, that gate happens per-row in `toMemberTxnSummary` (nulling
+// `note` rather than omitting the key) — see its doc comment.
 
 // The resolved cardholder behind a charge: the `personId` on the txn, else the
 // person who owns the `cardId`. Powers the reconcile Cardholder column.
@@ -532,14 +529,23 @@ function toTxnSummary(tr: Doc<"transactions">) {
 }
 
 /**
- * `personTransactions`'s projection — `toTxnSummary` minus `note`. Destructures
- * the key off entirely (not `note: null`) so a member's own-transactions
- * response never carries a `note` field at all, even when the bookkeeper has
- * set one. See `personTxnSummary`'s doc comment for why this is deliberate.
+ * `personTransactions`'s per-row projection: `toTxnSummary`, with `note`
+ * nulled out UNLESS `tr` belongs to the viewer's own person. `viewerPersonId`
+ * is the CALLER's own resolved person (`self._id`), not the `personId` being
+ * queried — `personTransactions` also serves the finance-role "look up a
+ * different person's transactions" audit path (see its doc comment), and
+ * that path must never leak the bookkeeper's note through this endpoint even
+ * though every row in a given call shares one `personId`. Checked per-row
+ * (not once for the whole response) so this stays correct if the query is
+ * ever broadened to return rows for more than one person at a time.
  */
-function toPersonTxnSummary(tr: Doc<"transactions">) {
-  const { note: _omittedNote, ...rest } = toTxnSummary(tr);
-  return rest;
+function toMemberTxnSummary(
+  tr: Doc<"transactions">,
+  viewerPersonId: Id<"people"> | null,
+) {
+  const summary = toTxnSummary(tr);
+  const isOwn = viewerPersonId != null && tr.personId === viewerPersonId;
+  return { ...summary, note: isOwn ? summary.note : null };
 }
 
 // ── Money / tenancy guards ───────────────────────────────────────────────────
@@ -2940,13 +2946,17 @@ export const teamActuals = query({
  * finance-role read. Looking up a DIFFERENT person's transactions (the
  * manager/bookkeeper audit path) still requires at least the viewer role.
  *
- * Privacy default: the projection omits `note` entirely (see
- * `personTxnSummary`) — a member's own transactions never surface the
- * bookkeeper's internal annotation.
+ * Note visibility: a member sees the bookkeeper's `note` on THEIR OWN
+ * transactions (owner decision — read-only, no member editing), never on
+ * anyone else's. `toMemberTxnSummary` enforces this per-row against the
+ * caller's own resolved person, independent of which `personId` was queried,
+ * so the finance-role audit path above never leaks a note through this
+ * member-facing endpoint (that path still sees notes in full via
+ * `listReconcile`, the bookkeeper surface).
  */
 export const personTransactions = query({
   args: { personId: v.optional(v.id("people")) },
-  returns: v.array(personTxnSummary),
+  returns: v.array(txnSummary),
   handler: async (ctx, args) => {
     const chapterId = await readChapterId(ctx);
     if (!chapterId) return [];
@@ -2962,6 +2972,7 @@ export const personTransactions = query({
       personId = self?._id ?? null;
     }
     if (!personId) return [];
+    const viewerPersonId = self?._id ?? null;
     const rows = await ctx.db
       .query("transactions")
       .withIndex("by_person", (q) => q.eq("personId", personId!))
@@ -2969,7 +2980,7 @@ export const personTransactions = query({
     // Defense-in-depth: never leak a row linked from another chapter.
     return rows
       .filter((tr) => tr.chapterId === chapterId)
-      .map(toPersonTxnSummary);
+      .map((tr) => toMemberTxnSummary(tr, viewerPersonId));
   },
 });
 

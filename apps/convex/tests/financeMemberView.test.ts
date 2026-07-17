@@ -115,7 +115,10 @@ describe("personTransactions — no-seat member reads their own", () => {
     expect(rows.map((r) => r.id)).toEqual([otherTxn]);
   });
 
-  test("never includes the bookkeeper's internal note, even when set", async () => {
+  // Owner decision: a member sees the bookkeeper's freeform `note` on THEIR
+  // OWN transactions (read-only) — but never on anyone else's, including via
+  // the finance-role "look up a different person" audit path above.
+  test("a member sees the bookkeeper's note on their OWN transaction", async () => {
     const t = newT();
     const s = await setupChapter(t);
     const me = await seedPerson(s, { name: "Caller", userId: s.userId });
@@ -124,7 +127,34 @@ describe("personTransactions — no-seat member reads their own", () => {
 
     const rows = await s.as.query(api.finances.personTransactions, {});
     expect(rows).toHaveLength(1);
-    expect(rows[0]).not.toHaveProperty("note");
+    expect(rows[0].note).toBe("Reimbursed via Venmo");
+  });
+
+  test("a member's own transaction with no note set surfaces `note: null`", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const me = await seedPerson(s, { name: "Caller", userId: s.userId });
+    await seedTxn(s, { personId: me, amountCents: 1200 });
+
+    const rows = await s.as.query(api.finances.personTransactions, {});
+    expect(rows).toHaveLength(1);
+    expect(rows[0].note).toBeNull();
+  });
+
+  test("a viewer reading a DIFFERENT person's transactions never sees that person's note", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const me = await seedPerson(s, { name: "Caller", userId: s.userId });
+    await grantRole(s, me, "viewer");
+    const other = await seedPerson(s, { name: "Someone else" });
+    const otherTxn = await seedTxn(s, { personId: other, amountCents: 555 });
+    await run(s.t, (ctx) => ctx.db.patch(otherTxn, { note: "Private bookkeeper note" }));
+
+    const rows = await s.as.query(api.finances.personTransactions, {
+      personId: other,
+    });
+    expect(rows).toHaveLength(1);
+    expect(rows[0].note).toBeNull();
   });
 
   test("no roster row at all → empty (no throw)", async () => {
