@@ -1,9 +1,18 @@
 import { describe, expect, test } from "vitest";
+import { ConvexError } from "convex/values";
 import { SEAT_IDS, SEAT_DEFS } from "@events-os/shared";
 import { api } from "../_generated/api";
 import type { Id } from "../_generated/dataModel";
 import { newT, run, setupChapter } from "./setup.helpers";
 import { runSeedSeatDefs } from "../migrations/0022_seed_seat_defs";
+
+/** Insert a bare `users` row and return a client authenticated as them
+ *  (mirrors `guestAccess.test.ts`'s `signInAs`). */
+async function signInAs(t: ReturnType<typeof newT>, email: string) {
+  const userId = await run(t, (ctx) => ctx.db.insert("users", { email }));
+  const as = t.withIdentity({ subject: `${userId}|session`, issuer: "test" });
+  return { as, userId: userId as Id<"users"> };
+}
 
 /**
  * Org chart (seats) — schema seed + read queries.
@@ -321,5 +330,126 @@ describe("seats.mySeatAssignments", () => {
 
     const mine = await s.as.query(api.seats.mySeatAssignments, {});
     expect(mine).toEqual([]);
+  });
+});
+
+describe("seats access control", () => {
+  test("chart/seatDetail/mySeatAssignments all reject a fully signed-out caller", async () => {
+    const t = newT();
+    await run(t, (ctx) => runSeedSeatDefs(ctx));
+
+    await expect(t.query(api.seats.chart, {})).rejects.toThrow(ConvexError);
+    await expect(
+      t.query(api.seats.mySeatAssignments, {}),
+    ).rejects.toThrow(ConvexError);
+
+    const anyDef = await run(t, (ctx) =>
+      ctx.db.query("seatDefs").withIndex("by_slug", (q) => q.eq("slug", "treasurer")).unique(),
+    );
+    await expect(
+      t.query(api.seats.seatDetail, { defId: anyDef!._id, scope: "central" }),
+    ).rejects.toThrow(ConvexError);
+  });
+
+  test("chart/seatDetail/mySeatAssignments all reject a signed-in-but-unapproved caller", async () => {
+    const t = newT();
+    await run(t, (ctx) => runSeedSeatDefs(ctx));
+    const { as } = await signInAs(t, "not-approved@gmail.com");
+
+    await expect(as.query(api.seats.chart, {})).rejects.toThrow(ConvexError);
+    await expect(
+      as.query(api.seats.mySeatAssignments, {}),
+    ).rejects.toThrow(ConvexError);
+
+    const anyDef = await run(t, (ctx) =>
+      ctx.db.query("seatDefs").withIndex("by_slug", (q) => q.eq("slug", "treasurer")).unique(),
+    );
+    await expect(
+      as.query(api.seats.seatDetail, { defId: anyDef!._id, scope: "central" }),
+    ).rejects.toThrow(ConvexError);
+  });
+});
+
+describe("seats.chart NOT_FOUND / seats.seatDetail INVALID_SCOPE", () => {
+  test("chart({scope}) throws NOT_FOUND for a chapter that no longer exists", async () => {
+    const t = newT();
+    await run(t, (ctx) => runSeedSeatDefs(ctx));
+    const s = await setupChapter(t);
+
+    const staleChapterId = await run(t, async (ctx) => {
+      const id = await ctx.db.insert("chapters", {
+        name: "Deleted Chapter",
+        isActive: true,
+        createdAt: Date.now(),
+      });
+      await ctx.db.delete(id);
+      return id;
+    });
+
+    await expect(
+      s.as.query(api.seats.chart, { scope: staleChapterId }),
+    ).rejects.toThrow(ConvexError);
+  });
+
+  test("seatDetail returns null for an unknown defId", async () => {
+    const t = newT();
+    await run(t, (ctx) => runSeedSeatDefs(ctx));
+    const s = await setupChapter(t);
+
+    const staleDefId = await run(t, async (ctx) => {
+      const def = await ctx.db
+        .query("seatDefs")
+        .withIndex("by_slug", (q) => q.eq("slug", "treasurer"))
+        .unique();
+      if (!def) throw new Error("treasurer not seeded");
+      await ctx.db.delete(def._id);
+      return def._id;
+    });
+
+    const result = await s.as.query(api.seats.seatDetail, {
+      defId: staleDefId,
+      scope: s.chapterId,
+    });
+    expect(result).toBeNull();
+  });
+
+  test("seatDetail throws INVALID_SCOPE passing a chapter id for a central-chart seat", async () => {
+    const t = newT();
+    await run(t, (ctx) => runSeedSeatDefs(ctx));
+    const s = await setupChapter(t);
+
+    const centralDef = await run(t, (ctx) =>
+      ctx.db
+        .query("seatDefs")
+        .withIndex("by_slug", (q) => q.eq("slug", "executive_director"))
+        .unique(),
+    );
+
+    await expect(
+      s.as.query(api.seats.seatDetail, {
+        defId: centralDef!._id,
+        scope: s.chapterId,
+      }),
+    ).rejects.toThrow(ConvexError);
+  });
+
+  test("seatDetail throws INVALID_SCOPE passing 'central' for a chapter-chart seat", async () => {
+    const t = newT();
+    await run(t, (ctx) => runSeedSeatDefs(ctx));
+    const s = await setupChapter(t);
+
+    const chapterDef = await run(t, (ctx) =>
+      ctx.db
+        .query("seatDefs")
+        .withIndex("by_slug", (q) => q.eq("slug", "treasurer"))
+        .unique(),
+    );
+
+    await expect(
+      s.as.query(api.seats.seatDetail, {
+        defId: chapterDef!._id,
+        scope: "central",
+      }),
+    ).rejects.toThrow(ConvexError);
   });
 });
