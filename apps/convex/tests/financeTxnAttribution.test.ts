@@ -843,3 +843,145 @@ describe("Bug 2 — an unfunded (capCents <= 0) budget with real spend must NOT 
     expect(card?.remainingCents).toBe(-5000);
   });
 });
+
+describe("Bug 1 (F1 follow-up) — 12-month sum invariant + central one-time cards", () => {
+  test("a month-less one-time budget's actualCents summed across all 12 months equals the whole-year total exactly (no month dropped, none double-counted)", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await grantManager(s);
+    const year = 2026;
+
+    const projectId = await run(t, (ctx) =>
+      ctx.db.insert("projects", {
+        chapterId: s.chapterId,
+        name: "Year-Round Initiative",
+        status: "in_progress",
+        createdBy: s.userId,
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      }),
+    );
+    const budgetId = await s.as.mutation(api.finances.createBudget, {
+      amountCents: 1200000,
+      type: "one_time",
+      refKind: "project",
+      cadence: "per_instance",
+      year,
+      scopeRefId: projectId,
+    });
+
+    // A distinct, easily-summed amount every month ($10, $20, ..., $120) so an
+    // off-by-one double-count or a dropped month is caught precisely, not
+    // masked by equal amounts.
+    let expectedTotal = 0;
+    for (let m = 1; m <= 12; m++) {
+      const amt = m * 1000;
+      expectedTotal += amt;
+      const txnId = await s.as.mutation(api.finances.createManualTransaction, {
+        flow: "outflow",
+        amountCents: amt,
+        postedAt: tsInMonth(year, m),
+      });
+      await s.as.mutation(api.finances.categorizeTransaction, { transactionId: txnId, budgetId });
+    }
+
+    let summedAcrossMonths = 0;
+    for (let m = 1; m <= 12; m++) {
+      const rows = await s.as.query(api.finances.budgetVsActual, { year, month: m });
+      summedAcrossMonths += rows.find((r) => r.budgetId === budgetId)?.actualCents ?? 0;
+    }
+    expect(summedAcrossMonths).toBe(expectedTotal);
+
+    const wholeYear = await s.as.query(api.finances.budgetVsActual, { year });
+    expect(wholeYear.find((r) => r.budgetId === budgetId)?.actualCents).toBe(expectedTotal);
+  });
+
+  test("F1: a central one-time (event) budget is hidden on an org-dashboard month it's irrelevant to, and its card stays cumulative on a relevant one", async () => {
+    const t = newT();
+    const s = await setupChapter(t, { email: "seyi@publicworship.life" });
+    const year = 2026;
+    const eventId = await seedEvent(s, { name: "Central Gala", eventDate: tsInMonth(year, 5) });
+
+    const budgetId = await s.as.mutation(api.finances.createBudget, {
+      amountCents: 500000,
+      type: "one_time",
+      refKind: "event",
+      cadence: "per_instance",
+      year,
+      month: 5,
+      scopeRefId: eventId,
+      central: true,
+    });
+    const txnId = await s.as.mutation(api.finances.createManualTransaction, {
+      flow: "outflow",
+      amountCents: 40000,
+      postedAt: tsInMonth(year, 5),
+    });
+    await s.as.mutation(api.finances.categorizeTransaction, { transactionId: txnId, budgetId });
+
+    // Before F1, EVERY central budget rendered on EVERY month regardless of
+    // type — a July org view must no longer show a May central event budget.
+    const july = await s.as.query(api.finances.dashboardCentral, { year, month: 7 });
+    expect(july.centralBudgets.find((b) => b.id === budgetId)).toBeUndefined();
+
+    // May's own view still shows it, with its full (lifetime) spend.
+    const may = await s.as.query(api.finances.dashboardCentral, { year, month: 5 });
+    const card = may.centralBudgets.find((b) => b.id === budgetId);
+    expect(card).toBeDefined();
+    expect(card?.spentCents).toBe(40000);
+
+    // YTD-through-July keeps every one-time card, unchanged — same as the
+    // chapter dashboard's YTD behavior.
+    const ytdJuly = await s.as.query(api.finances.dashboardCentral, {
+      year,
+      month: 7,
+      period: "ytd",
+    });
+    const ytdCard = ytdJuly.centralBudgets.find((b) => b.id === budgetId);
+    expect(ytdCard).toBeDefined();
+    expect(ytdCard?.spentCents).toBe(40000);
+  });
+
+  test("F2 (fixed): a fixed-month one-time budget's card, made visible by an out-of-month charge, now DISPLAYS that same charge instead of showing $0", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await grantManager(s);
+    const year = 2026;
+    const eventId = await seedEvent(s, { name: "May Gala", eventDate: tsInMonth(year, 5) });
+
+    const budgetId = await s.as.mutation(api.finances.createBudget, {
+      amountCents: 100000,
+      type: "one_time",
+      refKind: "event",
+      cadence: "per_instance",
+      year,
+      month: 5, // fixed to May
+      scopeRefId: eventId,
+    });
+    // A JULY charge — outside the budget's own declared month.
+    const julyTxn = await s.as.mutation(api.finances.createManualTransaction, {
+      flow: "outflow",
+      amountCents: 7500,
+      postedAt: tsInMonth(year, 7),
+    });
+    await s.as.mutation(api.finances.categorizeTransaction, { transactionId: julyTxn, budgetId });
+
+    const july = await s.as.query(api.finances.dashboardChapter, { year, month: 7 });
+    const card = july.oneTimeBudgets.find((b) => b.id === budgetId);
+    // Visible in July — the July charge is exactly why (`oneTimeCardAppliesToDash`'s
+    // "has spend this month" signal).
+    expect(card).toBeDefined();
+    // ...and now DISPLAYS that same charge: `oneTimeCardBreakdown` is
+    // genuinely lifetime (matches purely on the explicit link + `isSpend`,
+    // same as `actualsForRef`) — it no longer narrows to the budget's own
+    // declared `month`, which previously left the card showing $0 spent even
+    // though a real charge was the reason it was visible at all.
+    expect(card?.spentCents).toBe(7500);
+
+    // May's own view reports the SAME lifetime total, not an empty May-only
+    // slice — the card's number never depends on which month you're viewing.
+    const may = await s.as.query(api.finances.dashboardChapter, { year, month: 5 });
+    const mayCard = may.oneTimeBudgets.find((b) => b.id === budgetId);
+    expect(mayCard?.spentCents).toBe(7500);
+  });
+});

@@ -685,10 +685,10 @@ export function txnMatchesMode(tr: Doc<"transactions">, sandboxMode: boolean): b
  * create one via `createBudget` without picking one) is not "every month, all
  * year" any more than a month-less recurring budget is — without this fallback
  * its spend would double-count into every month's aggregate (tag rollups,
- * `budgetVsActual`, central budget cards). Callers that want a one-time
- * budget's OWN cumulative (not month-scoped) total — the one-time dashboard
- * CARD's own bar — must pass `contextMonth: undefined` explicitly (see
- * `oneTimeCardBreakdown`), never this function's default behavior.
+ * `budgetVsActual`, central budget cards). NOT used at all for a one-time
+ * dashboard CARD's own bar (chapter or central) — that's a genuinely lifetime
+ * total, ignoring even the budget's OWN declared month/quarter; see
+ * `oneTimeCardBreakdown`, which never calls this function.
  */
 function budgetEffectivePeriod(
   b: Doc<"budgets">,
@@ -1390,17 +1390,21 @@ function budgetSpendBreakdown(
 }
 
 /**
- * A one-time budget CARD's own actuals — CUMULATIVE for the budget's year,
- * never sliced to the dashboard's viewed month: an event/project budget is a
- * total plan, not a per-month allocation, so unlike `budgetSpendBreakdown`
- * (used for month-mode AGGREGATES that fold one-time budgets in, e.g. tag
- * rollups) the card's own bar/pct/remaining must stay stable as the viewer
- * steps through months — only the card's VISIBILITY is month-gated (see
- * `oneTimeCardAppliesToDash`), never its own numbers. Passes `contextMonth:
- * undefined` to `txnCountsTowardBudget` so a budget with no stored `month`
- * sums its whole year (same explicit-link + `isSpend` attribution rule as
- * everywhere else); a budget WITH a stored `month` still scopes to it (its
- * own declared period, unchanged from before this fix).
+ * A one-time budget CARD's own actuals — genuinely LIFETIME, not just
+ * un-sliced from the dashboard's viewed month: an event/project budget is a
+ * total plan, not a per-month allocation, so its own bar/pct/remaining must
+ * stay stable as the viewer steps through months — only the card's
+ * VISIBILITY is month-gated (see `oneTimeCardAppliesToDash`), never its own
+ * numbers. Matches purely on the explicit `budgetId` link + `isSpend` — the
+ * SAME no-period rule `actualsForRef` (`eventActuals`/`projectActuals`) uses
+ * — deliberately bypassing `budgetEffectivePeriod`/`txnCountsTowardBudget`
+ * entirely, so a budget WITH a stored `month`/`quarter` no longer narrows the
+ * card to just that period either (an earlier version of this fix still
+ * applied the budget's own declared month, which left a coherence gap: a
+ * fixed-month budget's card could be made VISIBLE in an off month by an
+ * out-of-period charge — `oneTimeCardAppliesToDash`'s "has spend this month"
+ * signal — while its own bar still reported $0, hiding the very charge that
+ * made it show up; matching `actualsForRef`'s rule closes that gap).
  */
 function oneTimeCardBreakdown(
   b: Doc<"budgets">,
@@ -1410,7 +1414,7 @@ function oneTimeCardBreakdown(
   spentCents: number;
   categories: { name: string; spentCents: number; barPct: number }[];
 } {
-  const matching = yearTxns.filter((tr) => txnCountsTowardBudget(tr, b, undefined));
+  const matching = yearTxns.filter((tr) => tr.budgetId === b._id && isSpend(tr));
   return spendBreakdownFor(b, matching, catName);
 }
 
@@ -2476,9 +2480,16 @@ export const dashboardCentral = query({
     // per-row partition) — reused here, no second scan. Per-chapter rollups
     // above never see these budgets in their OWN allocation (they query
     // budgets by real chapterId) and now exclude their linked spend too, so
-    // nothing here is double-counted.
+    // nothing here is double-counted. `getCentralEvent`/`getCentralProject`
+    // resolve a one-time central budget's linked ref for the SAME visibility
+    // gate `dashboardChapter` uses (F1) — a central one_time budget is
+    // creatable (`createBudget` allows `type:"one_time" && central:true`) and
+    // must behave identically to its chapter counterpart, not just avoid the
+    // month-less double-count.
     const centralSpentById = new Map<Id<"budgets">, number>();
     const centralBudgets: (typeof centralBudgetCard.type)[] = [];
+    const getCentralEvent = nameCache(ctx, "events");
+    const getCentralProject = nameCache(ctx, "projects");
     for (const cb of centralBudgetDocs) {
       const linked = await ctx.db
         .query("transactions")
@@ -2486,15 +2497,59 @@ export const dashboardCentral = query({
         .take(ROLLUP_SCAN_LIMIT);
       // Unlike yearTxns/periodTxns (already mode-filtered via loadPeriodTxns),
       // this is a raw by-budget scan — filter sandbox vs prod explicitly so
-      // central budget cards don't mix modes (#151).
-      const spentCents = linked.reduce(
-        (s, tr) =>
-          txnMatchesMode(tr, sandboxMode) && txnCountsTowardBudgetDash(tr, cb, dp)
-            ? s + tr.amountCents
-            : s,
+      // central budget cards don't mix modes (#151). Shared by both the
+      // aggregate (tag-rollup) sum below and the one-time card's own
+      // cumulative sum, so neither has to re-filter mode separately.
+      const modeMatched = linked.filter((tr) => txnMatchesMode(tr, sandboxMode));
+      // The AGGREGATE (dashboard-period-scoped) spend — always computed for
+      // EVERY central budget regardless of card visibility, exactly like
+      // `dashboardChapter`'s tag rollups independently re-derive each
+      // budget's month-scoped spend rather than reusing a one-time card's
+      // cumulative number. Feeds `centralSpentById`, which the central tag
+      // rollup below reads.
+      const spentCents = modeMatched.reduce(
+        (s, tr) => (txnCountsTowardBudgetDash(tr, cb, dp) ? s + tr.amountCents : s),
         0,
       );
       centralSpentById.set(cb._id, spentCents);
+
+      if (effectiveType(cb) === "one_time") {
+        // Bug 1 (F1): the exact same treatment as `dashboardChapter`'s
+        // one-time loop — month-gated CARD visibility, and a CUMULATIVE (never
+        // month-sliced) card bar — so the same budget object behaves
+        // identically on the chapter and org dashboards. `refDate` needs the
+        // linked event/project even though `centralBudgetCard` (unlike
+        // `projectBudgetCard`) has no name/dateLabel field to display it in.
+        const refKind = effectiveRefKind(cb);
+        let refDate: number | null = null;
+        if (refKind === "event" && cb.scopeRefId) {
+          refDate = (await getCentralEvent(cb.scopeRefId as Id<"events">))?.eventDate ?? null;
+        } else if (refKind === "project" && cb.scopeRefId) {
+          const pr = await getCentralProject(cb.scopeRefId as Id<"projects">);
+          refDate = pr ? pr.deadline ?? pr.startDate ?? null : null;
+        }
+        if (!oneTimeCardAppliesToDash(cb, dp, refDate, modeMatched)) continue;
+        // Genuinely lifetime (see `oneTimeCardBreakdown`'s doc comment) —
+        // `modeMatched` is already `budgetId === cb._id`-scoped (the `by_budget`
+        // index query above), so this is just its total spend, unconditionally.
+        const cardSpentCents = sumSpend(modeMatched);
+        const budgetCents = budgetAllocationForDash(cb, dp);
+        const pct = pctOf(cardSpentCents, budgetCents);
+        centralBudgets.push({
+          id: cb._id,
+          label: cb.label ?? null,
+          scope: cb.scope ?? null,
+          cadence: cb.cadence,
+          year: cb.year,
+          budgetCents,
+          spentCents: cardSpentCents,
+          pct,
+          status: statusFor(pct),
+          ...budgetApprovalCardFields(cb),
+        });
+        continue;
+      }
+
       // Allocation scales with the period in YTD so spent-vs-allocated stays comparable.
       const budgetCents = budgetAllocationForDash(cb, dp);
       const pct = pctOf(spentCents, budgetCents);
