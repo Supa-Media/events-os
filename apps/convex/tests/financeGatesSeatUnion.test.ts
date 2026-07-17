@@ -72,6 +72,42 @@ async function makeTargetPerson(s: ChapterSetup): Promise<Id<"people">> {
   );
 }
 
+/** A second, real member identity on the SAME chapter — mirrors
+ *  `financeBudgetApproval.test.ts`'s `addMember` helper. Needed so a scenario
+ *  can have a MANAGER create/submit a budget or transaction while the
+ *  CALLER identity (`s.as`) is the chapter_director seat holder under test —
+ *  `s.as`/`s.userId` alone can't play both roles at once. */
+async function addMember(
+  s: ChapterSetup,
+  opts: { email: string; name: string },
+): Promise<{
+  as: ReturnType<TestConvex["withIdentity"]>;
+  userId: Id<"users">;
+  personId: Id<"people">;
+}> {
+  const userId = await run(s.t, (ctx) => ctx.db.insert("users", { email: opts.email }));
+  await run(s.t, (ctx) =>
+    ctx.db.insert("userChapters", {
+      userId,
+      chapterId: s.chapterId,
+      role: "member",
+      isActive: true,
+      joinedAt: Date.now(),
+    }),
+  );
+  const personId = await run(s.t, (ctx) =>
+    ctx.db.insert("people", {
+      chapterId: s.chapterId,
+      name: opts.name,
+      userId,
+      isTeamMember: true,
+      createdAt: Date.now(),
+    }),
+  );
+  const as = s.t.withIdentity({ subject: `${userId}|session`, issuer: "test" });
+  return { as, userId, personId };
+}
+
 /** The seatDef row seeded for a template `slug`. */
 async function defBySlug(s: ChapterSetup, slug: string) {
   const def = await run(s.t, (ctx) =>
@@ -408,7 +444,7 @@ describe("seat-derived union — invariant pins (from Opus review of #195)", () 
     ).rejects.toThrow();
   });
 
-  test("a chapter_director seat (finance.approve only, no finance.manager) does NOT clear the manager-rank gate", async () => {
+  test("a chapter_director seat (finance.approve + finance.viewer, no finance.manager) does NOT clear the manager-rank gate", async () => {
     const s = await seatSetup();
     const personId = await seedSelfPerson(s);
     await assignSeatDirect(s, personId, "chapter_director", s.chapterId);
@@ -444,6 +480,197 @@ describe("seat-derived union — invariant pins (from Opus review of #195)", () 
         scope: "chapter",
       }),
     ).resolves.toBeDefined();
+  });
+});
+
+describe("chapter_director finance.viewer — SEE, never RECORD/RECONCILE-write (owner decision, 2026-07-16)", () => {
+  // Owner's verbatim intent: "Chapter Director does have financial powers,
+  // they approve budgets, they can also see spending... they should see how
+  // the money is spent as well. But they still need to get their things
+  // reconciled by their treasurer or financial manager." This block pins the
+  // SoD boundary that decision implies: `chapter_director` now derives
+  // `financeRole: "viewer"` at its own chapter (a pure widening from `null`
+  // — see `financeGatesSeatUnion`'s framing at the top of this file), which
+  // clears every VIEWER-rank read gate but NONE of the BOOKKEEPER/MANAGER-
+  // rank write gates.
+
+  test("a chapter_director seat alone now clears dashboardChapter's viewer gate (previously null role, previously threw)", async () => {
+    const s = await seatSetup();
+    const cdPersonId = await seedSelfPerson(s);
+    await assignSeatDirect(s, cdPersonId, "chapter_director", s.chapterId);
+
+    await expect(
+      s.as.query(api.finances.dashboardChapter, {}),
+    ).resolves.toBeDefined();
+  });
+
+  test("a chapter_director seat alone now clears listReconcile's viewer gate — CD can see the reconcile grid", async () => {
+    const s = await seatSetup();
+    const cdPersonId = await seedSelfPerson(s);
+    await assignSeatDirect(s, cdPersonId, "chapter_director", s.chapterId);
+
+    await expect(
+      s.as.query(api.finances.listReconcile, {}),
+    ).resolves.toBeDefined();
+  });
+
+  test("a chapter_director seat does NOT clear the bookkeeper-rank write gate — setTransactionNote (reconcile-write) stays blocked", async () => {
+    const s = await seatSetup();
+    // A separate, ACTUAL bookkeeper records a transaction to annotate — the
+    // CD identity (s.as) can't do this itself (createManualTransaction needs
+    // bookkeeper+, which finance.viewer never grants).
+    const bookkeeper = await addMember(s, {
+      email: "bookkeeper@publicworship.life",
+      name: "Bookkeeper",
+    });
+    await run(s.t, (ctx) =>
+      ctx.db.insert("financeRoles", {
+        chapterId: s.chapterId,
+        personId: bookkeeper.personId,
+        role: "bookkeeper",
+        scope: "chapter",
+        createdAt: Date.now(),
+      }),
+    );
+    const txnId = await bookkeeper.as.mutation(api.finances.createManualTransaction, {
+      flow: "outflow",
+      amountCents: 4200,
+      postedAt: Date.now(),
+      merchantName: "Coffee Shop",
+    });
+
+    const cdPersonId = await seedSelfPerson(s);
+    await assignSeatDirect(s, cdPersonId, "chapter_director", s.chapterId);
+
+    await expect(
+      s.as.mutation(api.finances.setTransactionNote, {
+        transactionId: txnId,
+        note: "CD trying to annotate — should be blocked",
+      }),
+    ).rejects.toThrow(/Bookkeeper finance role/);
+  });
+
+  test("a chapter_director seat does NOT clear the manager-rank gate — updateBudget stays blocked beyond what finance.approve allows", async () => {
+    const s = await seatSetup();
+    const manager = await addMember(s, {
+      email: "manager@publicworship.life",
+      name: "Manager",
+    });
+    await run(s.t, (ctx) =>
+      ctx.db.insert("financeRoles", {
+        chapterId: s.chapterId,
+        personId: manager.personId,
+        role: "manager",
+        scope: "chapter",
+        createdAt: Date.now(),
+      }),
+    );
+    const budgetId = await manager.as.mutation(api.finances.createBudget, {
+      amountCents: 100000,
+      type: "recurring",
+      cadence: "yearly",
+      year: 2026,
+      label: "Ops",
+    });
+
+    const cdPersonId = await seedSelfPerson(s);
+    await assignSeatDirect(s, cdPersonId, "chapter_director", s.chapterId);
+
+    await expect(
+      s.as.mutation(api.finances.updateBudget, {
+        budgetId,
+        patch: { amountCents: 200000 },
+      }),
+    ).rejects.toThrow(/Manager finance role/);
+  });
+
+  test("KNOWN GAP, pre-existing and OUT OF SCOPE for this PR: a chapter_director seat ALONE still cannot approveBudget", async () => {
+    // The owner's decision names approval as something CD "does have" today
+    // — this test exists to actually VERIFY that claim against the real
+    // gate, not just assume it. It does NOT hold: `president` (chapter_
+    // director's `legacyTitle`) is a LEADERSHIP-kind specializedRoles title,
+    // and `specializedRoles.ts`'s write-through only bridges a stored
+    // `financeRoles` MANAGER grant for FINANCE-kind titles
+    // (`bridgeFinanceManagerGrant` — see its module doc: "Leadership titles
+    // (ED/president) ... do NOT themselves grant finance write capability" —
+    // and its own TODO: "wire president/ED into approval flows ... out of
+    // scope for this backend phase"). `finances.approveBudget`'s chapter path
+    // gates on `requireFinanceManager` (manager rank) via
+    // `loadBudgetForApprovalDecision`, NOT on `finance.approve` — and
+    // `finance.approve` is explicitly documented (`lib/seats.ts`'s "Out of
+    // scope" section) as NOT part of the graded ladder this file derives.
+    // So a chapter_director holder with no OTHER grant fails this gate today,
+    // seat or no seat — `finance.viewer` (this PR) doesn't change that; it
+    // only widens READS. Wiring the president/ED bridge into approveBudget is
+    // a separate, pre-existing TODO this PR deliberately does not touch
+    // (out of ownership: `finances.ts`/`specializedRoles.ts`). This test pins
+    // TODAY's real behavior so a future PR that adds that wiring trips this
+    // test loudly, as a reminder to update it, instead of silently.
+    const s = await seatSetup();
+    const manager = await addMember(s, {
+      email: "manager2@publicworship.life",
+      name: "Manager",
+    });
+    await run(s.t, (ctx) =>
+      ctx.db.insert("financeRoles", {
+        chapterId: s.chapterId,
+        personId: manager.personId,
+        role: "manager",
+        scope: "chapter",
+        createdAt: Date.now(),
+      }),
+    );
+    const budgetId = await manager.as.mutation(api.finances.createBudget, {
+      amountCents: 100000,
+      type: "recurring",
+      cadence: "yearly",
+      year: 2026,
+      label: "Ops",
+    });
+    await manager.as.mutation(api.finances.submitBudgetForApproval, { budgetId });
+
+    const cdPersonId = await seedSelfPerson(s);
+    await assignSeatDirect(s, cdPersonId, "chapter_director", s.chapterId);
+
+    await expect(
+      s.as.mutation(api.finances.approveBudget, { budgetId }),
+    ).rejects.toThrow(/Manager finance role/);
+  });
+
+  test("treasurer's derived role is unaffected by chapter_director's new capability — still manager-rank, no viewer bleed", async () => {
+    const s = await seatSetup();
+    const treasurerPersonId = await seedSelfPerson(s);
+    await assignSeatDirect(s, treasurerPersonId, "treasurer", s.chapterId);
+
+    await expect(
+      s.as.query(api.finances.dashboardChapter, {}),
+    ).resolves.toBeDefined();
+    const targetPersonId = await makeTargetPerson(s);
+    await expect(
+      s.as.mutation(api.financeRoles.grantFinanceRole, {
+        personId: targetPersonId,
+        role: "viewer",
+        scope: "chapter",
+      }),
+    ).resolves.toBeDefined(); // manager rank still clears the manager gate
+  });
+
+  test("a bare central financeRoles viewer grant with no seat — the residual layer — is unaffected by this change", async () => {
+    const s = await seatSetup();
+    const personId = await seedSelfPerson(s);
+    await run(s.t, (ctx) =>
+      ctx.db.insert("financeRoles", {
+        chapterId: "central",
+        personId,
+        role: "viewer",
+        scope: "central",
+        createdAt: Date.now(),
+      }),
+    );
+
+    expect(await s.as.query(api.stripeFinance.canConnectAccount, {})).toBe(
+      true,
+    );
   });
 });
 

@@ -149,7 +149,7 @@ describe("chapter ↔ central rollup", () => {
   });
 });
 
-describe("spec snapshot (owner-approved taxonomy, 2026-07-16)", () => {
+describe("spec snapshot (owner-approved taxonomy, 2026-07-16; chapter_director finance.viewer added 2026-07-17 per owner decision — see seats.ts's chapter_director doc comment)", () => {
   // Pins the exact set of seats + which ones carry capabilities, so a future
   // edit to SEAT_DEFS trips a loud, specific failure here instead of silently
   // drifting from the approved org-chart flowchart. Only 4 seats carry any
@@ -185,7 +185,9 @@ describe("spec snapshot (owner-approved taxonomy, 2026-07-16)", () => {
     chapter_directors: [],
     recruiting_associate: [],
     training_associate: [],
-    chapter_director: ["finance.approve", "nav.finances"],
+    // 2026-07-17: added finance.viewer (owner decision — CD sees chapter
+    // spending, but reconcile/record stays the Treasurer's job).
+    chapter_director: ["finance.approve", "finance.viewer", "nav.finances"],
     treasurer: ["finance.manager", "finance.record", "nav.finances"],
     music_lead: [],
     vocal_lead: [],

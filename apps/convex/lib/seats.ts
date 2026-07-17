@@ -33,17 +33,30 @@
  *    scope representation. The returned record has one entry per DISTINCT
  *    scope the person holds ANY seat at; a person with seats at both
  *    `"central"` and a chapter gets two entries, computed independently.
- *  - `financeRole`: `"manager"` iff ANY seat the person holds AT THAT SCOPE
- *    carries the `"finance.manager"` capability (e.g. `treasurer` at a
- *    chapter, `financial_manager` at central) — else `null`. This is the
- *    ONLY graded value a seat can derive; seats never derive `"bookkeeper"`
- *    or `"viewer"`. Those two lower ranks are a STORED-ONLY residual layer —
- *    a finance manager can still hand-grant a read-only viewer or an ad-hoc
- *    bookkeeper via `financeRoles.grantFinanceRole` with no seat needing to
- *    represent it. The planned flip is `effective = max(seat-derived,
- *    residual stored grants)` (see `seats.ts#capabilityAudit`'s doc), so a
- *    bookkeeper/viewer grant with no seat simply survives the flip via the
- *    residual side — this file just never PRODUCES those two ranks itself.
+ *  - `financeRole`: the graded ladder rank (`"viewer"` < `"bookkeeper"` <
+ *    `"manager"`, `FINANCE_ROLE_RANK` in `@events-os/shared`) implied by the
+ *    seat capabilities the person holds AT THAT SCOPE, per this mapping
+ *    table:
+ *
+ *      | Seat capability    | Derived financeRole | Example seat            |
+ *      |--------------------|----------------------|-------------------------|
+ *      | `finance.manager`  | `"manager"`           | `treasurer`, `financial_manager` |
+ *      | `finance.viewer`   | `"viewer"`            | `chapter_director` (owner decision, 2026-07-16 — see its `SEAT_DEFS` doc comment: "they can also see spending... they should see how the money is spent as well. But they still need to get their things reconciled by their treasurer or financial manager.") |
+ *      | (neither)          | `null`                | every other seat        |
+ *
+ *    `"manager"` always wins over `"viewer"` when a scope somehow carries
+ *    both (holding several seats at one scope, or a multi-holder seat with
+ *    mixed occupants) — capabilities OR together and the STRONGEST rank
+ *    present sets the scope's flag (see the module doc's closing paragraph).
+ *    `"bookkeeper"` — the ladder's MIDDLE rank — is NEVER produced by a seat;
+ *    it stays a STORED-ONLY residual layer, same as before this file learned
+ *    `"viewer"`: a finance manager can still hand-grant an ad-hoc bookkeeper
+ *    (or a viewer with no matching seat) via `financeRoles.grantFinanceRole`
+ *    with no seat needing to represent it. The planned flip is `effective =
+ *    max(seat-derived, residual stored grants)` (see
+ *    `seats.ts#capabilityAudit`'s doc), so a bookkeeper grant with no seat
+ *    simply survives the flip via the residual side — this file just never
+ *    PRODUCES that rank itself.
  *  - `centralReach`: true iff ANY seat at that scope carries
  *    `"finance.central"` (org-wide roll-up reach — the seat-derived
  *    equivalent of `lib/finance.ts#getFinanceRole`'s `isCentral`, which is
@@ -65,12 +78,14 @@
  *    `todaysAccountsAccessForPerson`, which replicates it exactly.
  *
  * Holding several seats at the same scope (or a multi-holder seat with
- * several occupants) just ORs together: one `true` / `"manager"` from ANY
- * one seat at a scope is enough to set that scope's flag. There is no
- * "un-deriving" a capability by ALSO holding a weaker seat at the same
- * scope — capabilities never subtract.
+ * several occupants) just ORs together: one `true` / graded-rank value from
+ * ANY one seat at a scope is enough to set that scope's flag, and the
+ * STRONGEST rank present wins (a `finance.manager` seat always beats a
+ * `finance.viewer` seat at the same scope — see `getSeatDerivedCapabilities`'s
+ * loop comment). There is no "un-deriving" a capability by ALSO holding a
+ * weaker seat at the same scope — capabilities never subtract.
  *
- * ## Out of scope: 4 of the 7 `SEAT_CAPABILITIES`
+ * ## Out of scope: 4 of the 8 `SEAT_CAPABILITIES`
  *
  * `SEAT_CAPABILITIES` also includes `finance.approve`, `finance.record`,
  * `nav.finances`, and `org.editChart` — this file derives NONE of them, and
@@ -104,10 +119,11 @@ const PERSON_SEAT_ASSIGNMENT_LIMIT = 200;
 
 /** One scope's seat-derived finance capability. */
 export interface SeatDerivedScopeCapabilities {
-  /** `"manager"` iff some seat at this scope carries `finance.manager`,
-   *  else `null`. Seats never derive `"bookkeeper"`/`"viewer"` — see the
-   *  module doc's "Mapping rules". */
-  financeRole: "manager" | null;
+  /** `"manager"` iff some seat at this scope carries `finance.manager`;
+   *  else `"viewer"` iff some seat at this scope carries `finance.viewer`;
+   *  else `null`. Seats never derive `"bookkeeper"` — see the module doc's
+   *  "Mapping rules" table. */
+  financeRole: "manager" | "viewer" | null;
   /** True iff some seat at this scope carries `finance.central`. */
   centralReach: boolean;
   /** True iff some seat at this scope carries `finance.accounts`. */
@@ -166,7 +182,19 @@ export async function getSeatDerivedCapabilities(
         accountsAccess: false,
       });
 
-    if (def.capabilities.includes("finance.manager")) entry.financeRole = "manager";
+    // "manager" always wins — order-independent whether this assignment (or
+    // an earlier one at the same scope) is the one that carries it, since a
+    // later `finance.viewer`-only assignment must never downgrade an
+    // already-set "manager" (capabilities only ever OR together, never
+    // subtract — see the module doc's closing paragraph).
+    if (def.capabilities.includes("finance.manager")) {
+      entry.financeRole = "manager";
+    } else if (
+      def.capabilities.includes("finance.viewer") &&
+      entry.financeRole !== "manager"
+    ) {
+      entry.financeRole = "viewer";
+    }
     if (def.capabilities.includes("finance.central")) entry.centralReach = true;
     if (def.capabilities.includes("finance.accounts")) entry.accountsAccess = true;
   }
