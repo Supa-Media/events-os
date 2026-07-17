@@ -15,7 +15,7 @@
  * a VENDOR needs a person picker (an existing, heavier flow on Crew & Duties)
  * so its "+" just deep-links there rather than duplicating that picker here.
  */
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Pressable, Text, TextInput, View } from "react-native";
 import { useRouter } from "expo-router";
 import { useMutation, useQuery } from "convex/react";
@@ -37,7 +37,7 @@ import {
   TableHeader,
 } from "../ui";
 import { colors } from "../../lib/theme";
-import { alertError } from "../../lib/errors";
+import { alertError, alertInfo } from "../../lib/errors";
 
 type GridData = FunctionReturnType<typeof api.moneyViews.eventCostGrid>;
 type GridRow = GridData["rows"][number];
@@ -116,7 +116,10 @@ export function EventCostGrid({ eventId }: { eventId: Id<"events"> }) {
           <View key={typeLabel} className="mt-3">
             <Table>
               <TableHeader>
-                <HeaderCell flex={3}>{typeLabel}s</HeaderCell>
+                {/* `typeLabel` is already the group's own display label
+                    (a real module label, or "Vendors"/"Budget lines") — no
+                    naive "+s" here (that's the bug that produced "Supplys"). */}
+                <HeaderCell flex={3}>{typeLabel}</HeaderCell>
                 <HeaderCell flex={2}>Status</HeaderCell>
                 <HeaderCell width={110} align="right">
                   Planned
@@ -160,9 +163,25 @@ function GridRowView({
   return (
     <Row last={last}>
       <Cell flex={3}>
-        <Text className="text-sm text-ink" numberOfLines={1}>
-          {row.label}
-        </Text>
+        <View className="flex-row items-center gap-1.5">
+          {row.linked ? (
+            <Icon name="link" size={12} color={colors.muted} />
+          ) : null}
+          <Text className="flex-1 text-sm text-ink" numberOfLines={1}>
+            {row.label}
+          </Text>
+        </View>
+        {row.possibleDuplicate ? (
+          <View className="mt-0.5 flex-row items-center gap-1">
+            <Icon name="alert-triangle" size={11} color={colors.warn} />
+            <Text className="text-2xs text-warn">Possible duplicate</Text>
+          </View>
+        ) : null}
+        {row.linked ? (
+          <Text className="mt-0.5 text-2xs text-muted">
+            Category linked from the finance plan
+          </Text>
+        ) : null}
       </Cell>
       <Cell flex={2}>
         {row.status ? (
@@ -191,6 +210,19 @@ function CostCell({ row }: { row: GridRow }) {
   const updateLine = useMutation(api.budgetLines.updateLine);
   const [amount, setAmount] = useState((row.plannedCents / 100).toString());
   const [saving, setSaving] = useState(false);
+  // Tracks whether the field is actively being typed into — gates the
+  // resync effect below so an external update (a fresh query result after
+  // someone ELSE's edit, or this cell's own successful commit re-rendering)
+  // never stomps text the user is mid-typing.
+  const [focused, setFocused] = useState(false);
+
+  // Opus review, PR #216 ("stale-input smell"): `amount` used to be seeded
+  // ONCE from `row.plannedCents` on mount and never resynced — a concurrent
+  // edit from someone else (or a server-side rounding difference) would
+  // leave this cell showing a stale figure until the component remounted.
+  useEffect(() => {
+    if (!focused) setAmount((row.plannedCents / 100).toString());
+  }, [row.plannedCents, focused]);
 
   if (!row.editable) {
     return (
@@ -210,11 +242,15 @@ function CostCell({ row }: { row: GridRow }) {
     if (cents === row.plannedCents) return;
     setSaving(true);
     try {
-      const [kind, id] = row.id.split(":");
+      // `event_item` ids are `event_item:<itemId>:<columnKey>` (the currency
+      // COLUMN this figure belongs to — may not be "cost" for a chapter-
+      // custom column, e.g. Permits' "fee"). `vendor`/`budget_line` ids have
+      // no third segment; `colKey` is simply unused for those.
+      const [kind, id, colKey] = row.id.split(":");
       if (kind === "event_item") {
         await updateEventItem({
           itemId: id as Id<"eventItems">,
-          fields: { cost: cents / 100 },
+          fields: { [colKey ?? "cost"]: cents / 100 },
         });
       } else if (kind === "vendor") {
         await updateEngagement({
@@ -223,6 +259,13 @@ function CostCell({ row }: { row: GridRow }) {
         });
       } else {
         await updateLine({ lineId: id as Id<"budgetLines">, patch: { plannedCents: cents } });
+      }
+      // Opus review, PR #216 ("$0-edit UX gotcha"): a cleared/zeroed cost is
+      // a REAL write, but rows with no cost never appear in this list — the
+      // row will vanish on the next read. Say so, rather than a silent
+      // disappearance with no explanation.
+      if (cents === 0) {
+        alertInfo("This row will disappear from the list — it no longer has a cost to show.");
       }
     } catch (err) {
       alertError(err);
@@ -238,7 +281,11 @@ function CostCell({ row }: { row: GridRow }) {
       <TextInput
         value={amount}
         onChangeText={setAmount}
-        onBlur={() => void commit()}
+        onFocus={() => setFocused(true)}
+        onBlur={() => {
+          setFocused(false);
+          void commit();
+        }}
         onSubmitEditing={() => void commit()}
         editable={!saving}
         keyboardType="decimal-pad"

@@ -28,3 +28,17 @@ export function alertError(err: unknown): void {
   }
   Alert.alert("Something went wrong", message);
 }
+
+/**
+ * Cross-platform INFO confirmation — same web/native split as `alertError`,
+ * for a non-error notice a fire-and-forget cell edit needs to surface (e.g.
+ * "this row will disappear from the list now" after a $0 edit that
+ * technically succeeded — a silent vanish reads as a bug even when it isn't).
+ */
+export function alertInfo(message: string, title = "Note"): void {
+  if (Platform.OS === "web") {
+    if (typeof window !== "undefined") window.alert(message);
+    return;
+  }
+  Alert.alert(title, message);
+}
