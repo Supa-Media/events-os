@@ -36,8 +36,10 @@ export type SeatChart = (typeof SEAT_CHARTS)[number];
 export const SEAT_ROOT = "root" as const;
 
 /** Finite cap on how many holders a "*" (multi-holder) seat may have. Bounds
- *  reads of a seat's holder list — no seat is ever truly unbounded. */
-export const MULTI_HOLDER_CAP = 50;
+ *  reads of a seat's holder list — no seat is ever truly unbounded. `as const`
+ *  so `typeof MULTI_HOLDER_CAP` is the literal `50`, letting `SeatDef.maxHolders`
+ *  narrow to exactly the two valid values instead of `number`. */
+export const MULTI_HOLDER_CAP = 50 as const;
 
 // ── Capabilities ─────────────────────────────────────────────────────────────
 /** The fixed vocabulary of capability strings a seat may carry. A capability
@@ -99,7 +101,7 @@ export interface SeatDef {
    *  root seat. Always another seat in the SAME chart. */
   parentId: SeatId | typeof SEAT_ROOT;
   /** 1 for a single-holder seat, or `MULTI_HOLDER_CAP` for a "*" seat. */
-  maxHolders: number;
+  maxHolders: 1 | typeof MULTI_HOLDER_CAP;
   /** Default template duties (owner edits per-org/chapter at runtime later).
    *  Populated for single-holder leadership seats; empty for associate/multi
    *  seats, which don't carry a fixed duty list in the template. */
@@ -445,11 +447,22 @@ export function seatChildren(id: SeatId): SeatId[] {
 }
 
 /** `id`'s ancestor chain, nearest first, walking `parentId` up to (but not
- *  including) the chart's `SEAT_ROOT`. */
+ *  including) the chart's `SEAT_ROOT`. These constants are acyclic today (see
+ *  `seats.test.ts`), but defs move to a DB-editable `seatDefs` table in a
+ *  later PR — a bad edit there could reintroduce a cycle, so this guards
+ *  against an infinite loop by throwing on a revisit rather than trusting the
+ *  data forever. */
 export function seatAncestors(id: SeatId): SeatId[] {
   const ancestors: SeatId[] = [];
+  const visited = new Set<SeatId>();
   let current: SeatId | typeof SEAT_ROOT = SEAT_DEFS[id].parentId;
   while (current !== SEAT_ROOT) {
+    if (visited.has(current)) {
+      throw new Error(
+        `seatAncestors: cycle detected in seat parent chain at "${current}" (starting from "${id}")`,
+      );
+    }
+    visited.add(current);
     ancestors.push(current);
     current = SEAT_DEFS[current].parentId;
   }

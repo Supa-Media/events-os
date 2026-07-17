@@ -148,3 +148,69 @@ describe("chapter ↔ central rollup", () => {
     expect(SEAT_DEFS[CHAPTER_ROLLUP_PARENT].chart).toBe("central");
   });
 });
+
+describe("spec snapshot (owner-approved taxonomy, 2026-07-16)", () => {
+  // Pins the exact set of seats + which ones carry capabilities, so a future
+  // edit to SEAT_DEFS trips a loud, specific failure here instead of silently
+  // drifting from the approved org-chart flowchart. Only 4 seats carry any
+  // capability today — every other seat's array must be empty.
+  const EXPECTED_CAPABILITIES_BY_SEAT: Record<SeatId, readonly string[]> = {
+    executive_director: [
+      "finance.central",
+      "finance.accounts",
+      "finance.approve",
+      "nav.finances",
+      "org.editChart",
+    ],
+    financial_manager: [
+      "finance.manager",
+      "finance.central",
+      "finance.accounts",
+      "finance.record",
+      "nav.finances",
+    ],
+    development_director: [],
+    partnership_associate: [],
+    fundraising_associate: [],
+    music_director: [],
+    a_and_r: [],
+    artists: [],
+    musicians: [],
+    songwriters: [],
+    marketing_director: [],
+    social_media_manager: [],
+    graphic_designer: [],
+    marketing_associate: [],
+    expansion_director: [],
+    chapter_directors: [],
+    recruiting_associate: [],
+    training_associate: [],
+    chapter_director: ["finance.approve", "nav.finances"],
+    treasurer: ["finance.manager", "finance.record", "nav.finances"],
+    music_lead: [],
+    vocal_lead: [],
+    band_lead: [],
+    event_lead: [],
+    event_organizers: [],
+    production_coordinator: [],
+    marketing_lead: [],
+  };
+
+  test("SEAT_IDS has exactly 27 seats", () => {
+    expect(SEAT_IDS).toHaveLength(27);
+  });
+
+  test("EXPECTED_CAPABILITIES_BY_SEAT covers every seat id (snapshot itself hasn't drifted)", () => {
+    expect(Object.keys(EXPECTED_CAPABILITIES_BY_SEAT).sort()).toEqual(
+      [...SEAT_IDS].sort(),
+    );
+  });
+
+  test("every seat's capabilities array matches the pinned spec exactly", () => {
+    for (const id of SEAT_IDS) {
+      expect(SEAT_DEFS[id].capabilities).toEqual(
+        EXPECTED_CAPABILITIES_BY_SEAT[id],
+      );
+    }
+  });
+});
