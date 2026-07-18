@@ -108,11 +108,13 @@ describe("academy course completions", () => {
   test("passing every quiz awards the quiz-only courses, not the capstone-gated ones", async () => {
     const s = await setupLearner();
     await passAllQuizzes(s);
-    // Foundations + Fundamentals + the Works, Management, and Finances
-    // (WP-5.1, no capstones yet) courses are all quiz modules → earned. The
-    // three event role courses end in a role capstone and Owning-an-event
-    // needs its capstones, so a quiz pass alone can't earn any of them.
+    // Foundations + Fundamentals + the Works, Management, Finances (WP-5.1,
+    // no capstones yet), Music, and Marketing & Media (also no capstones
+    // yet) courses are all quiz modules → earned. The three event role
+    // courses end in a role capstone and Owning-an-event needs its
+    // capstones, so a quiz pass alone can't earn any of them.
     expect(await badges(s)).toEqual([
+      "brand-and-voice",
       "care-and-accountability",
       "chapter-director",
       "chapter-money-model",
@@ -126,9 +128,11 @@ describe("academy course completions", () => {
       "growing-the-team",
       "how-we-work",
       "leading-worship",
+      "media-pipeline",
       "partnerships",
       "producing-and-artistry",
       "projects",
+      "short-form-editing",
       "the-director-standard",
       "the-one-on-one",
       "treasurer",
