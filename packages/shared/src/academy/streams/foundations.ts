@@ -1,18 +1,23 @@
 /**
  * The Foundations stream — who Public Worship is, before how Chapter OS
- * works. Two courses: the mission/org/teams orientation every new teammate
- * needs first ("Welcome to Public Worship"), and the everyday culture that
- * makes the rest of it work ("How we work" — communication, attendance,
- * where information lives, and the posture behind spending). Placed FIRST
- * in the curriculum and catalog — everything else in the Academy assumes a
- * reader who already has this context.
+ * works. Two courses: the mission/org/teams/prayer orientation every new
+ * teammate needs first ("Welcome to Public Worship"), and the everyday
+ * culture that makes the rest of it work ("How we work" — communication,
+ * attendance, where information lives, the posture behind spending, and
+ * owning your commitments). Placed FIRST in the curriculum and catalog —
+ * everything else in the Academy assumes a reader who already has this
+ * context.
  *
  * Authored from the Public Worship Notion archive (mission/vision, the
- * onboarding guide, the Project Lead role, the attendance policy) and
- * `packages/shared/src/seats.ts` (the org-chart seat taxonomy — SEAT_DEFS).
- * Personnel are never hardcoded here: who holds a seat changes, so every
- * lesson that touches the org chart points the reader to the live Org Chart
- * tab instead of naming names.
+ * onboarding guide, the Project Lead role, the attendance policy),
+ * `packages/shared/src/seats.ts` (the org-chart seat taxonomy — SEAT_DEFS),
+ * and the July 2026 All-Team Meeting deck (the Google Chat migration off
+ * Slack, prayer-before-planning + local-church covering, and the meeting/1:1
+ * rhythm + capacity-honesty norms — its Relay→KleerCard and "Event OS /
+ * Notion is source of truth" slides are superseded by the shipped app and
+ * intentionally NOT taught here). Personnel are never hardcoded here: who
+ * holds a seat changes, so every lesson that touches the org chart points the
+ * reader to the live Org Chart tab instead of naming names.
  *
  * Owned exclusively by this file for content authoring — do not add
  * Foundations sections or courses anywhere else. See `../index` for how
@@ -350,96 +355,191 @@ export const FOUNDATIONS_SECTIONS: Omit<AcademySection, "order">[] = [
     ],
   },
 
-  // ── 4 · Communication ────────────────────────────────────────────────────────
+  // ── 4 · We pray before we plan ───────────────────────────────────────────────
   {
-    slug: "foundations-communication",
-    title: "Communication",
-    subtitle: "Threads, tags, and no side-channels",
+    slug: "foundations-we-pray-before-we-plan",
+    title: "We pray before we plan",
+    subtitle: "The agenda waits on prayer",
     minutes: 3,
     blocks: [
       {
         kind: "p",
-        text: "Slack is where Public Worship works — not group texts, not DMs. If a conversation about the mission isn't in Slack, the rest of the team can't see it, search it, or pick it up later.",
-      },
-      {
-        kind: "bullets",
-        items: [
-          "**Use threads.** A back-and-forth buried in a channel is unreadable a day later — reply in a thread under the message it's about instead of flooding the channel.",
-          "**Tag with intention.** @mention only when you actually need a direct response or action from that person — not as a way to be seen.",
-          "**Manage your notifications.** Check Slack regularly, especially anywhere you're tagged; Slack on your phone is the difference between a same-day reply and a stalled project.",
-          "**Avoid side-channels.** Keep work off iMessage, WhatsApp, and IG DMs — not because those apps are bad, but because a decision made there is invisible to everyone else on the project.",
-        ],
+        text: "Every all-team gathering opens the same way: fellowship, then prayer, worship, and the Word — before a single agenda item. That order isn't a formality to get through before the \"real\" meeting starts. It's the posture the rest of the meeting sits inside.",
       },
       {
         kind: "rule",
-        title: "If it isn't in Slack, it didn't happen",
-        text: "A side-channel conversation feels faster in the moment, but it quietly recreates the exact problem group chats and spreadsheets cause everywhere else: one person's memory becomes the plan. Slack is the record everyone else can trust and search.",
+        title: "We pray before we plan",
+        text: "Pray for Public Worship, for your team, and for the people we serve — before the plan gets made, not squeezed in once the real business is done. A plan built without that prayer is still just a plan; the prayer is what makes it worship.",
       },
-      { kind: "heading", text: "The acknowledgment you owe" },
+      { kind: "heading", text: "PW supplements — it never replaces" },
       {
         kind: "p",
-        text: "On an active project, a leadership message deserves a fast response even when you can't act on it yet — a thread reply like \"seeing this, will follow up by Thursday\" costs ten seconds. Silence reads the same as \"ignored,\" whether or not that's true.",
+        text: "Public Worship exists alongside your local church, not instead of it. Your home church is where you're planted, known, and spiritually covered — no amount of serving here changes that, or should try to.",
+      },
+      {
+        kind: "rule",
+        title: "Keep serving your local church — that's your tithe. PW is the sacrificial giving.",
+        text: "Your local church gets your ordinary, ongoing commitment: consistent, expected, foundational. What you give to Public Worship sits on top of that — sacrificial giving from an already-planted life, never a replacement for having one.",
       },
       {
         kind: "reveal",
         prompt:
-          "Your team lead posts an urgent ask in the project channel and you can't get to it for two hours. What's the move?",
+          "You've been giving so much time to Public Worship that you've quietly stopped attending your home church's services. What does this lesson say about that?",
         answer:
-          "Reply in-thread right away with what you saw and when you'll act, then do the work when you can. The quick ack buys you the two hours; staying silent is what actually breaks trust, not the delay itself.",
+          "That's the exact drift this teaching warns against. PW is meant to supplement your walk with a local church, not crowd out the place a local church holds in it — if serving here is displacing your own covering, the fix is re-planting at home, not doing more here.",
       },
       {
         kind: "tip",
-        text: 'Further reading: "Onboarding – All Public Worship" — https://www.notion.so/2227f1c177b680998edce655167fdab4',
+        text: "If serving here is starting to crowd out your own church attendance, that's a conversation worth having with your Director early — not something to quietly push through.",
       },
     ],
     quiz: [
       {
-        prompt:
-          "Why does Public Worship ask people to avoid iMessage/WhatsApp/IG DMs for work conversations?",
+        prompt: "What comes before planning at a Public Worship gathering?",
         options: [
-          "Those apps are considered untrustworthy",
-          "It keeps every work conversation visible and transparent in one searchable place, instead of scattered where the rest of the team can't see it",
-          "It's a cost-saving measure",
-          "It's required by the non-profit's bylaws",
+          "The agenda, with prayer as a quick formality first",
+          "Prayer for PW, your team, and the people we serve",
+          "Nothing — meetings go straight to business",
+          "Whatever the meeting has time left for",
         ],
         answerIndex: 1,
         explanation:
-          "The rule isn't about the apps themselves — it's that a decision made in a side-channel is invisible to everyone who wasn't in that one DM.",
+          "Prayer for the mission, the team, and the people we serve comes first, genuinely — not as a warm-up act before the plan gets made.",
       },
       {
-        prompt: "What's the point of replying in a thread instead of the main channel?",
+        prompt: "What is Public Worship's relationship to your local church?",
         options: [
-          "Threads send push notifications faster",
-          "It keeps the main channel readable by grouping a back-and-forth under the message it's actually about",
-          "The main channel has a message limit",
-          "Threads are private, main channels are not",
+          "It replaces the need to attend a local church",
+          "It supplements local church life — it does not replace it",
+          "It functions as its own denomination",
+          "It only matters for people serving in leadership",
         ],
         answerIndex: 1,
         explanation:
-          "Threads are a readability tool: without them, a channel becomes a wall of back-and-forth nobody can follow a day later.",
+          "PW is explicitly a supplement to local church life, never a substitute — your home church remains where you're planted and covered.",
       },
       {
-        prompt:
-          "Your team lead pings an urgent ask in the project channel and you can't act on it for two hours. Best move?",
+        prompt: "What's the difference between your tithe and what you give to Public Worship?",
         options: [
-          "Wait until you can fully address it, then reply once",
-          "Reply in-thread immediately with what you saw and when you'll follow up, then do the work when you're able",
-          "Forward it to someone else to handle",
-          "Nothing — urgent asks will get chased if they're truly urgent",
+          "There's no difference — they're the same giving",
+          "Your local church is the tithe — ordinary and ongoing; PW is the sacrificial giving on top of that",
+          "Public Worship replaces your tithe entirely",
+          "Tithing isn't discussed at Public Worship",
         ],
         answerIndex: 1,
         explanation:
-          "A fast acknowledgment costs seconds and prevents the message from reading as ignored — the actual work can still come later.",
+          "Keep serving your local church — that's your tithe. What you give to PW is the sacrificial giving, extra on top of an already-planted life.",
       },
     ],
   },
 
-  // ── 5 · Showing up ───────────────────────────────────────────────────────────
+  // ── 5 · Communication ────────────────────────────────────────────────────────
+  {
+    slug: "foundations-communication",
+    title: "Communication",
+    subtitle: "The tool changed. The culture didn't.",
+    minutes: 4,
+    blocks: [
+      {
+        kind: "p",
+        text: "Public Worship's team communication lives in Google Chat now — Slack is being phased out so team communication, Google Workspace groups, and access permissions can all live in one ecosystem. If you're a Slack habit-of-mind, this lesson is the same culture, new address.",
+      },
+      {
+        kind: "bullets",
+        items: [
+          "**One thread per topic or task.** A decision, a blocker, a follow-up — each gets its own thread, so it's still easy to find a week later instead of buried in a wall of unrelated messages.",
+          "**Use the relevant space, not a DM, when others need visibility.** If more than one person needs to see something or act on it, it belongs in the team or project space it's about — a DM shows it to exactly one person, and the decision becomes invisible to everyone else.",
+          "**Tag only the people who need to act.** @mention the person or people who actually need to see or do something — not the whole space, and not as a way of being seen yourself.",
+          "**Text is fine for urgent things.** Google Chat is the default, not the only channel — if something is genuinely time-sensitive, texting is completely acceptable.",
+        ],
+      },
+      {
+        kind: "rule",
+        title: "The tool changed. The culture didn't.",
+        text: "Threads, visibility, and tagging with intention were never Slack features — they're Public Worship's communication culture, and they hold regardless of which app they run in. Learn the principles here, not the app chrome.",
+      },
+      { kind: "heading", text: "The acknowledgment you owe" },
+      {
+        kind: "p",
+        text: 'Acknowledge time-sensitive messages as soon as you reasonably can — even a short reply counts. "Saw this, I\'m at work, I can respond tonight" is a complete, acceptable answer. It costs ten seconds and tells the sender you have it; leaving it on read tells them nothing.',
+      },
+      {
+        kind: "reveal",
+        prompt:
+          "Your Director sends a time-sensitive ask while you're at work, and you genuinely can't respond until tonight. What do you do right now?",
+        answer:
+          '"Saw this, I\'m at work, I can respond tonight" — sent the moment you see it, not saved up until you have a full answer. That one line tells them the message landed and buys you the hours you actually need, instead of leaving them to wonder if you saw it at all.',
+      },
+      { kind: "heading", text: "Finding your spaces" },
+      {
+        kind: "p",
+        text: "Chat spaces are tied to your Google Workspace group memberships, not handed out one at a time — the right group membership brings the matching space with it. Missing a space you should have? Check your own group memberships at groups.google.com first. If something's still wrong after that, contact Operations.",
+      },
+      {
+        kind: "tip",
+        text: 'Further reading: "Onboarding – All Public Worship" — https://www.notion.so/2227f1c177b680998edce655167fdab4 (its Slack section is now outdated — the tool has since changed to Google Chat; the norms carry over).',
+      },
+    ],
+    quiz: [
+      {
+        prompt: "Where does Public Worship's team communication live today, and why the change?",
+        options: [
+          "Slack, unchanged — nothing moved",
+          "Google Chat — so team communication, Google Workspace groups, and access permissions can all live in one ecosystem",
+          "Whatever app each team prefers, chosen independently",
+          "Email threads, replacing chat entirely",
+        ],
+        answerIndex: 1,
+        explanation:
+          "Slack is being phased out specifically so communication, group membership, and permissions all sit inside one Google Workspace ecosystem instead of two disconnected systems.",
+      },
+      {
+        prompt:
+          "You have an update that two teammates need to see and act on. What's the right move?",
+        options: [
+          "DM each of them separately so it's more personal",
+          "Post it in the relevant team or project space and tag just those two people",
+          "Post it in the space and tag everyone so nobody misses it",
+          "Text the whole team individually",
+        ],
+        answerIndex: 1,
+        explanation:
+          "Use the space when others need visibility — a DM hides the decision from everyone but the two of you. Tag only the people who need to act, not the whole space.",
+      },
+      {
+        prompt:
+          'Your Director pings a time-sensitive ask while you\'re at work and can\'t reply properly until tonight. What\'s the right response right now?',
+        options: [
+          "Nothing — reply once, fully, tonight",
+          'A quick acknowledgment now — "Saw this, I\'m at work, I can respond tonight" — then the real reply when you can',
+          "Forward it to someone else to answer instead",
+          "Wait for them to follow up before responding at all",
+        ],
+        answerIndex: 1,
+        explanation:
+          "Acknowledge time-sensitive messages as soon as you reasonably can. A ten-second ack tells the sender the message landed; silence reads as ignored whether or not that's true.",
+      },
+      {
+        prompt: "You're missing a Chat space you should have access to. What do you check first?",
+        options: [
+          "Nothing — ask Operations to add you immediately",
+          "Your own Google Workspace group memberships at groups.google.com — spaces follow group membership",
+          "Nothing can be done; spaces are assigned randomly",
+          "Wait until the next all-team meeting to ask",
+        ],
+        answerIndex: 1,
+        explanation:
+          "Chat spaces are tied to Google Workspace groups, so a missing space is usually a group-membership issue you can check yourself first — contact Operations only if it's still wrong after that.",
+      },
+    ],
+  },
+
+  // ── 6 · Showing up ───────────────────────────────────────────────────────────
   {
     slug: "foundations-showing-up",
     title: "Showing up",
     subtitle: "Alignment over consensus, and the notice you owe",
-    minutes: 4,
+    minutes: 5,
     blocks: [
       {
         kind: "p",
@@ -467,6 +567,19 @@ export const FOUNDATIONS_SECTIONS: Omit<AcademySection, "order">[] = [
       {
         kind: "p",
         text: "Exceeding the yearly threshold doesn't trigger removal — it triggers a mandatory 1:1 with the Executive Director to review the policy and reaffirm commitment. Only exceeding 1.5x the threshold (6 for directors, 3 for team members) leads to removal. The first response is always a real conversation, not an ultimatum.",
+      },
+      { kind: "heading", text: "Meetings and 1:1s aren't separate from the commitment — they ARE it" },
+      {
+        kind: "p",
+        text: "Monthly all-team meetings are part of what it means to be on the active team — where the whole team prays, aligns, makes decisions, and builds trust together, not a status update you can skip if the agenda looks thin.",
+      },
+      {
+        kind: "bullets",
+        items: [
+          "**Everyone gets a recurring 1:1 with their Director** — at least every other week, weekly encouraged while a project is actively running. It's where alignment and course-correction happen in real time, not just once a month.",
+          "**Both sides own making it happen.** A 1:1 that keeps slipping isn't only the Director's miss, or only the team member's — either person can, and should, be the one who gets it back on the calendar.",
+          "**Serious conflict gets communicated early**, the same way a blocker does. Sitting on a real disagreement until it grows helps nobody — say something while there's still time to work with it.",
+        ],
       },
       {
         kind: "reveal",
@@ -529,10 +642,22 @@ export const FOUNDATIONS_SECTIONS: Omit<AcademySection, "order">[] = [
         explanation:
           "There's a ladder: the mandatory 1:1 comes first, and removal is reserved for exceeding 1.5x the yearly threshold — dependability matters, but the response scales.",
       },
+      {
+        prompt: "How often should you meet 1:1 with your Director?",
+        options: [
+          "Never — 1:1s are optional",
+          "At least every other week, with weekly encouraged during active projects",
+          "Only once, when you first join the team",
+          "Only if you personally request one",
+        ],
+        answerIndex: 1,
+        explanation:
+          "Every-other-week is the floor, not a suggestion — and an active project calls for going weekly. It's how alignment happens continuously, and it's on BOTH the team member and the Director to make it happen.",
+      },
     ],
   },
 
-  // ── 6 · Where things live ────────────────────────────────────────────────────
+  // ── 7 · Where things live ────────────────────────────────────────────────────
   {
     slug: "foundations-where-things-live",
     title: "Where things live",
@@ -627,7 +752,7 @@ export const FOUNDATIONS_SECTIONS: Omit<AcademySection, "order">[] = [
     ],
   },
 
-  // ── 7 · Spending like it's not yours ────────────────────────────────────────
+  // ── 8 · Spending like it's not yours ────────────────────────────────────────
   {
     slug: "foundations-spending",
     title: "Spending like it's not yours",
@@ -698,6 +823,104 @@ export const FOUNDATIONS_SECTIONS: Omit<AcademySection, "order">[] = [
       },
     ],
   },
+
+  // ── 9 · Owning your yes ──────────────────────────────────────────────────────
+  {
+    slug: "foundations-owning-your-yes",
+    title: "Owning your yes",
+    subtitle: "A smaller yes you can keep beats a bigger one you can't",
+    minutes: 3,
+    blocks: [
+      {
+        kind: "p",
+        text: "Every commitment at Public Worship is voluntary — which makes what you say yes to matter more, not less. A smaller, honest commitment beats a larger one you can't carry.",
+      },
+      {
+        kind: "rule",
+        title: "A smaller, honest commitment beats a larger one you can't carry",
+        text: "Saying yes to less and delivering all of it builds more trust than saying yes to everything and quietly dropping half. Scope your yes to what's actually true about your week, not to what sounds most helpful in the moment.",
+      },
+      { kind: "heading", text: "If you can't own it, say so early" },
+      {
+        kind: "p",
+        text: "Capacity changes — that's normal, not a failure. What matters is when you say something: the moment you know you can't carry a commitment, say so, while there's still time for someone else to pick it up. Disappearing, or letting a deadline quietly slip past, is what actually damages the team — not the fact that life got in the way.",
+      },
+      {
+        kind: "bullets",
+        items: [
+          "**Every committed task has an owner, a deadline, and a definition of done.** If any of those three is missing or vague, the commitment isn't real yet — pin down all three before you call something owned.",
+          "**Scope changes and blockers get raised early.** The moment something changes — the ask got bigger, you hit a wall — that's the moment to say so, not the day the deadline arrives.",
+          "**Communication protects everyone's time.** Because we're volunteer-led, communication is how we protect one another's time — a heads-up early is a gift to whoever's counting on you.",
+        ],
+      },
+      {
+        kind: "rule",
+        title: "Accountability isn't punishment",
+        text: "Accountability isn't punishment — it's how we protect trust, momentum, and each other's time. Someone following up on a commitment isn't checking up on you; it's the team taking your commitment as seriously as you did when you made it.",
+      },
+      {
+        kind: "reveal",
+        prompt:
+          "Two weeks into a task you volunteered for, you realize you underestimated how much time it actually needs, and you're not going to hit the deadline. What's the move?",
+        answer:
+          "Say so now, not at the deadline. Tell your owner or Director today that the scope grew and the timeline's at risk — that's exactly the moment raising a blocker is supposed to happen. A smaller, renegotiated commitment you can actually deliver beats silently missing the date you originally promised.",
+      },
+      {
+        kind: "tip",
+        text: "Before you say yes to something, check whether you can answer all three: who owns it, when is it due, and what does \"done\" actually look like? If you can't answer all three, it isn't a real commitment yet — for either of you.",
+      },
+    ],
+    quiz: [
+      {
+        prompt: "Which commitment is more trustworthy?",
+        options: [
+          "Saying yes to everything asked of you",
+          "A smaller, honest commitment you can actually carry",
+          "Whichever commitment sounds most impressive to say yes to",
+          "Never committing to anything at all",
+        ],
+        answerIndex: 1,
+        explanation:
+          "A smaller, honest yes you deliver in full builds more trust than a bigger yes that quietly falls apart halfway through.",
+      },
+      {
+        prompt: "Partway through a task, you realize you can't finish it on time. What should you do?",
+        options: [
+          "Say nothing and hope you catch up",
+          "Wait until the deadline to explain what happened",
+          "Say so as soon as you know, so someone can help or the plan can adjust",
+          "Quietly hand it to someone else without telling anyone",
+        ],
+        answerIndex: 2,
+        explanation:
+          "If you can't own something, say so early — don't disappear or let the deadline slip. Raising it early is what gives the team time to actually respond.",
+      },
+      {
+        prompt: "What three things does every committed task need, per this lesson?",
+        options: [
+          "A budget, a location, and a timeline",
+          "An owner, a deadline, and a definition of done",
+          "A chat thread, a doc, and a reminder",
+          "A team name, a project name, and a color code",
+        ],
+        answerIndex: 1,
+        explanation:
+          "Owner, deadline, definition of done — if any of the three is missing, the commitment isn't actually pinned down yet, no matter how enthusiastic the yes was.",
+      },
+      {
+        prompt: "Why does this lesson say accountability isn't punishment?",
+        options: [
+          "Because nobody actually enforces it",
+          "Because it's how the team protects trust, momentum, and each other's time — not a way of catching someone out",
+          "Because only Directors are ever held accountable",
+          "Because volunteers can't be held accountable at all",
+        ],
+        answerIndex: 1,
+        explanation:
+          "Following up on a commitment is the team taking it as seriously as you did when you made it — protection, not a gotcha.",
+      },
+    ],
+  },
 ];
 
 /** The Foundations stream's theme entry. */
@@ -724,6 +947,7 @@ export const FOUNDATIONS_COURSES: Course[] = [
       "foundations-seeds-and-soil",
       "foundations-chapters-and-central",
       "foundations-the-work",
+      "foundations-we-pray-before-we-plan",
     ],
   },
   {
@@ -742,6 +966,7 @@ export const FOUNDATIONS_COURSES: Course[] = [
       "foundations-showing-up",
       "foundations-where-things-live",
       "foundations-spending",
+      "foundations-owning-your-yes",
     ],
   },
 ];

@@ -18,7 +18,12 @@
  * (4 sections — `mktg-the-look`, `mktg-hit-record`, `mktg-shoot-to-timeline`,
  * `mktg-getting-access` — 2 courses; a caption-voice lesson and a
  * short-form-editing course were authored and then descoped before merge —
- * see `streams/marketing.ts`'s header comment). Total: 77 sections. Section
+ * see `streams/marketing.ts`'s header comment); and the July All-Team
+ * Meeting fold into Foundations — two sections appended
+ * (foundations-we-pray-before-we-plan onto Welcome to Public Worship,
+ * foundations-owning-your-yes onto How we work), plus a rewritten
+ * foundations-communication and an enriched foundations-showing-up (see
+ * `streams/foundations.ts`'s header comment). Total: 79 sections. Section
  * slugs and their order are otherwise untouched — any OTHER drift here is
  * still a real regression.
  */
@@ -30,10 +35,12 @@ const EXPECTED_SECTION_SLUGS: string[] = [
   "foundations-seeds-and-soil",
   "foundations-chapters-and-central",
   "foundations-the-work",
+  "foundations-we-pray-before-we-plan",
   "foundations-communication",
   "foundations-showing-up",
   "foundations-where-things-live",
   "foundations-spending",
+  "foundations-owning-your-yes",
   "what-is-events-os",
   "organizers-and-crew",
   "anatomy-of-an-event",
@@ -141,18 +148,26 @@ const EXPECTED_SECTIONS: {
     capstoneKind: null,
   },
   {
-    slug: "foundations-communication",
-    title: "Communication",
+    slug: "foundations-we-pray-before-we-plan",
+    title: "We pray before we plan",
     minutes: 3,
     quizLength: 3,
     optional: false,
     capstoneKind: null,
   },
   {
-    slug: "foundations-showing-up",
-    title: "Showing up",
+    slug: "foundations-communication",
+    title: "Communication",
     minutes: 4,
     quizLength: 4,
+    optional: false,
+    capstoneKind: null,
+  },
+  {
+    slug: "foundations-showing-up",
+    title: "Showing up",
+    minutes: 5,
+    quizLength: 5,
     optional: false,
     capstoneKind: null,
   },
@@ -169,6 +184,14 @@ const EXPECTED_SECTIONS: {
     title: "Spending like it's not yours",
     minutes: 3,
     quizLength: 3,
+    optional: false,
+    capstoneKind: null,
+  },
+  {
+    slug: "foundations-owning-your-yes",
+    title: "Owning your yes",
+    minutes: 3,
+    quizLength: 4,
     optional: false,
     capstoneKind: null,
   },
@@ -743,12 +766,12 @@ const EXPECTED_COURSES: {
   {
     slug: "welcome-to-public-worship",
     themeKey: "foundations",
-    moduleSlugs: ["foundations-seeds-and-soil", "foundations-chapters-and-central", "foundations-the-work"],
+    moduleSlugs: ["foundations-seeds-and-soil", "foundations-chapters-and-central", "foundations-the-work", "foundations-we-pray-before-we-plan"],
   },
   {
     slug: "how-we-work",
     themeKey: "foundations",
-    moduleSlugs: ["foundations-communication", "foundations-showing-up", "foundations-where-things-live", "foundations-spending"],
+    moduleSlugs: ["foundations-communication", "foundations-showing-up", "foundations-where-things-live", "foundations-spending", "foundations-owning-your-yes"],
   },
   {
     slug: "chapter-os-fundamentals",
