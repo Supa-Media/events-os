@@ -27,7 +27,7 @@ import {
   Text,
 } from "react-native";
 import { useMutation, useQuery } from "convex/react";
-import { useLocalSearchParams } from "expo-router";
+import { useLocalSearchParams, useRouter } from "expo-router";
 // expo-image-picker is Expo Go-safe (classified `core`); only used on native.
 import * as ImagePicker from "expo-image-picker";
 import { api } from "@events-os/convex/_generated/api";
@@ -114,6 +114,7 @@ type GiftRow = {
 export default function DonorDetailScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const donorId = id as Id<"donors">;
+  const router = useRouter();
   const access = useQuery(api.givingPlatform.myGivingAccess, {});
   const data = useQuery(api.givingPlatform.getDonor, { donorId });
 
@@ -127,7 +128,11 @@ export default function DonorDetailScreen() {
     );
   }
 
-  const { donor, gifts } = data as { donor: typeof data.donor; gifts: GiftRow[] };
+  const { donor, gifts, person } = data as {
+    donor: typeof data.donor;
+    gifts: GiftRow[];
+    person: { _id: Id<"people">; name: string } | null;
+  };
   const canManage = access.canManage;
   return (
     <Screen>
@@ -147,6 +152,19 @@ export default function DonorDetailScreen() {
             {donor.kind}
             {donor.source ? ` · ${donor.source}` : ""}
           </Text>
+          {/* Territories P5 — this donor's 1:1 linked roster person (chapter-
+              scope donors only; central donors never link, see schema doc). */}
+          {person ? (
+            <Pressable
+              onPress={() => router.navigate("/people" as never)}
+              className="mt-2 flex-row items-center gap-1.5 self-start active:opacity-70"
+            >
+              <Icon name="user" size={13} color={colors.muted} />
+              <Text className="text-xs font-medium text-accent">
+                Linked to {person.name} on the roster
+              </Text>
+            </Pressable>
+          ) : null}
         </View>
 
         <View className="mb-4 flex-row flex-wrap gap-3">

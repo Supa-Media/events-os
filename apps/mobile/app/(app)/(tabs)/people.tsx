@@ -39,6 +39,7 @@ import {
   personaOf,
   responsibilityAppliesTo,
   type Persona,
+  formatCents,
 } from "@events-os/shared";
 import { DutyRows } from "../../../components/work/DutyRows";
 import { AddResponsibilityModal } from "../../../components/team/AddResponsibilityModal";
@@ -65,6 +66,20 @@ const STATUS_OPTIONS: SelectOption<RosterStatus>[] = [
 // resolves from the stored storageId. Persona (`team` / `volunteer` / `vendor`)
 // is DERIVED from signals via the shared `personaOf`, not stored.
 type Person = Doc<"people"> & { imageUrl?: string | null };
+
+// One "Givers" overlay mark (territories P5) — sourced from
+// `givingPlatform.giverMarks`, keyed by `personId`. "Giver" is an OVERLAY on
+// top of persona (Team/Volunteer/Vendor), never a persona of its own — a Team
+// member can also be a giver. Absent entirely (empty map) for a caller with no
+// giving access at this chapter, so the whole overlay quietly disappears
+// rather than erroring.
+type GiverMark = {
+  personId: Id<"people">;
+  donorId: Id<"donors">;
+  lifetimeCents: number;
+  lastGiftAt?: number;
+  status: string;
+};
 
 // The segmented filter adds an "all" sentinel on top of the shared Persona set.
 type PersonaFilter = Persona | "all";
@@ -130,11 +145,32 @@ export default function PeopleScreen() {
   // `people.role` is only the fallback shown when someone holds no seat.
   const seatHoldings = useQuery(api.responsibilities.chapterSeatHoldings);
 
+  // Givers overlay (territories P5). Every roster row shares one `chapterId`
+  // (the roster query is already hard-scoped to the caller's own chapter), so
+  // the first row's is the current chapter — skip the query until the roster
+  // has loaded at least one row. Returns `[]` for a caller with no giving
+  // access at this chapter (quiet degrade, never a throw — see
+  // `givingPlatform.giverMarks`), so the overlay simply doesn't render below.
+  const chapterId = people && people.length > 0 ? people[0].chapterId : undefined;
+  const giverMarks = useQuery(
+    api.givingPlatform.giverMarks,
+    chapterId ? { chapterId } : "skip",
+  ) as GiverMark[] | undefined;
+  const giverMarksByPerson = useMemo(() => {
+    const map = new Map<Id<"people">, GiverMark>();
+    for (const m of giverMarks ?? []) map.set(m.personId, m);
+    return map;
+  }, [giverMarks]);
+  const hasGiverOverlay = giverMarksByPerson.size > 0;
+
   const [search, setSearch] = useState("");
   const [skillFilter, setSkillFilter] = useState<string | null>(null);
   // Default to the core Team — the common case (a lead manages their team, not
   // the full roster of volunteers/vendors). "All" is one tap away.
   const [persona, setPersona] = useState<PersonaFilter>("team");
+  // Givers overlay toggle — independent of the persona segments (a Team member
+  // can also be a giver), so it composes with whichever persona is selected.
+  const [giversOnly, setGiversOnly] = useState(false);
   const [openId, setOpenId] = useState<string | null>(null);
 
   // Manager names by id — one map instead of a per-row roster scan.
@@ -181,12 +217,13 @@ export default function PeopleScreen() {
     const query = search.trim().toLowerCase();
     return (people ?? []).filter((p) => {
       if (persona !== "all" && personaOf(p) !== persona) return false;
+      if (giversOnly && !giverMarksByPerson.has(p._id)) return false;
       if (skillFilter && !(p.services ?? []).includes(skillFilter))
         return false;
       if (query && !p.name.toLowerCase().includes(query)) return false;
       return true;
     });
-  }, [people, persona, skillFilter, search]);
+  }, [people, persona, giversOnly, giverMarksByPerson, skillFilter, search]);
 
   if (people === undefined) return <Screen loading />;
 
@@ -234,6 +271,21 @@ export default function PeopleScreen() {
           );
         })}
       </View>
+
+      {/* Givers overlay chip (territories P5) — absent entirely when the
+          caller has no giving access at this chapter (`giverMarks` returns
+          `[]`), so the People tab renders exactly as before for everyone
+          else. An OVERLAY, not a persona: composes with whichever segment is
+          selected above. */}
+      {hasGiverOverlay ? (
+        <View style={styles.filterBar}>
+          <Pill
+            label={`Givers  ${giverMarksByPerson.size}`}
+            selected={giversOnly}
+            onPress={() => setGiversOnly((v) => !v)}
+          />
+        </View>
+      ) : null}
 
       {/* Search + skill filter chips */}
       <TextField
@@ -322,6 +374,7 @@ export default function PeopleScreen() {
                   }
                   canEditManager={org?.isAdmin === true}
                   seatTitles={seatTitlesByPerson.get(p._id) ?? []}
+                  giverMark={giverMarksByPerson.get(p._id) ?? null}
                   isLast={i === filtered.length - 1}
                   onOpen={() => setOpenId(p._id)}
                 />
@@ -351,7 +404,11 @@ export default function PeopleScreen() {
         </Narrow>
       ) : null}
 
-      <PersonDetail person={openPerson} onClose={() => setOpenId(null)} />
+      <PersonDetail
+        person={openPerson}
+        giverMark={openPerson ? giverMarksByPerson.get(openPerson._id) ?? null : null}
+        onClose={() => setOpenId(null)}
+      />
     </Screen>
   );
 }
@@ -362,6 +419,7 @@ function PersonRow({
   managerName,
   canEditManager,
   seatTitles,
+  giverMark,
   isLast,
   onOpen,
 }: {
@@ -373,6 +431,10 @@ function PersonRow({
    *  Empty when they hold no seat (falls back to the legacy `person.role`
    *  string, shown muted). */
   seatTitles: string[];
+  /** Territories P5 "Givers" overlay mark, or null when this person hasn't
+   *  given (or the caller has no giving access — the whole overlay is absent
+   *  in that case, upstream). */
+  giverMark: GiverMark | null;
   isLast: boolean;
   onOpen: () => void;
 }) {
@@ -440,6 +502,19 @@ function PersonRow({
             logged-in team member from a roster-only contact. */}
         {person.userId ? (
           <Icon name="user-check" size={14} color={colors.success} />
+        ) : null}
+        {/* Giver overlay badge (territories P5) — a heart + lifetime giving,
+            NOT a persona: a Team member/Volunteer/Vendor can also be a giver. */}
+        {giverMark ? (
+          <View
+            className="flex-row items-center gap-0.5"
+            accessibilityLabel={`Giver — ${formatCents(giverMark.lifetimeCents)} lifetime`}
+          >
+            <Icon name="heart" size={11} color={colors.danger} />
+            <Text className="text-2xs font-semibold text-muted">
+              {formatCents(giverMark.lifetimeCents)}
+            </Text>
+          </View>
         ) : null}
       </View>
 
@@ -877,9 +952,11 @@ function ListCell({
 /** Centered modal detail: read-only contact + event history. */
 function PersonDetail({
   person,
+  giverMark,
   onClose,
 }: {
   person: Person | null;
+  giverMark: GiverMark | null;
   onClose: () => void;
 }) {
   return (
@@ -897,7 +974,13 @@ function PersonDetail({
           onPress={() => {}}
           className="w-full max-w-lg overflow-hidden rounded-xl border border-border bg-raised shadow-pop"
         >
-          {person ? <PersonDetailBody person={person} onClose={onClose} /> : null}
+          {person ? (
+            <PersonDetailBody
+              person={person}
+              giverMark={giverMark}
+              onClose={onClose}
+            />
+          ) : null}
         </Pressable>
       </Pressable>
     </Modal>
@@ -906,9 +989,11 @@ function PersonDetail({
 
 function PersonDetailBody({
   person,
+  giverMark,
   onClose,
 }: {
   person: Person;
+  giverMark: GiverMark | null;
   onClose: () => void;
 }) {
   const history = useQuery(api.engagements.historyForPerson, {
@@ -958,6 +1043,7 @@ function PersonDetailBody({
       seatIds: personSeatIds,
     }),
   );
+  const router = useRouter();
 
   return (
     <>
@@ -991,6 +1077,36 @@ function PersonDetailBody({
                 url={`tel:${person.phone}`}
               />
             ) : null}
+          </View>
+        ) : null}
+
+        {/* Giving (territories P5) — a small lifetime-giving line linking to
+            the donor record, shown only when this person is a marked giver
+            (absent for everyone else, and absent entirely for a caller with
+            no giving access — `giverMark` is null in both cases). */}
+        {giverMark ? (
+          <View className="mb-4">
+            <Text className="mb-2 text-2xs font-bold uppercase tracking-wider text-muted">
+              Giving
+            </Text>
+            <Pressable
+              onPress={() => {
+                onClose();
+                router.push(`/giving/donor/${giverMark.donorId}` as never);
+              }}
+              className="flex-row items-center justify-between rounded-lg border border-border bg-raised p-3 active:opacity-70"
+            >
+              <View className="flex-row items-center gap-2">
+                <Icon name="heart" size={14} color={colors.danger} />
+                <Text className="text-sm text-ink">Lifetime giving</Text>
+              </View>
+              <View className="flex-row items-center gap-1">
+                <Text className="text-sm font-semibold text-ink">
+                  {formatCents(giverMark.lifetimeCents)}
+                </Text>
+                <Icon name="chevron-right" size={14} color={colors.muted} />
+              </View>
+            </Pressable>
           </View>
         ) : null}
 
