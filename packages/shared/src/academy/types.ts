@@ -217,8 +217,11 @@ export type AcademyAudience = "role" | "ownership" | "team";
  * both), finances (WP-5.1 — enablement for the finance v2 split,
  * `docs/plans/finance-v2-split-prd.md` §Phase 5), music (the
  * doxological songwriting/song-selection framework, worship-leader
- * submission, and producer/artist roles), and marketing (the PW brand kit
- * and the field-to-edit media pipeline).
+ * submission, and producer/artist roles), marketing (the PW brand kit
+ * and the field-to-edit media pipeline), and development (F-6 — the
+ * donor CRM, the backer model, sponsorships & partnerships, and the
+ * city-launch economics backer giving funds,
+ * `docs/plans/giving-platform.md` §8).
  */
 export type AcademyThemeKey =
   | "foundations"
@@ -227,7 +230,8 @@ export type AcademyThemeKey =
   | "management"
   | "finances"
   | "music"
-  | "marketing";
+  | "marketing"
+  | "development";
 
 /** One stream: a titled grouping courses belong to via `themeKey`. */
 export interface Theme {

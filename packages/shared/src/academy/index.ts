@@ -1,8 +1,8 @@
 /**
- * The Academy — assembles the seven content streams (Foundations, Events,
- * Works, Management, Finances, Music, Marketing & Media) into the flat
- * curriculum and course/theme catalog that the mobile Academy screens and
- * the Convex grading backend read.
+ * The Academy — assembles the eight content streams (Foundations, Events,
+ * Works, Management, Finances, Music, Marketing & Media, Development) into
+ * the flat curriculum and course/theme catalog that the mobile Academy
+ * screens and the Convex grading backend read.
  *
  * This is the ONLY file that concatenates streams — it exists so a
  * mid-curriculum insert or a stream re-order is a one-line change here, and
@@ -47,6 +47,11 @@ import {
   MARKETING_SECTIONS,
   MARKETING_THEME,
 } from "./streams/marketing";
+import {
+  DEVELOPMENT_COURSES,
+  DEVELOPMENT_SECTIONS,
+  DEVELOPMENT_THEME,
+} from "./streams/development";
 import type {
   AcademySection,
   AcademyThemeKey,
@@ -62,7 +67,9 @@ export * from "./quizShuffle";
 // former monolith's flat array used, with Foundations prepended — then
 // Music, then Marketing & Media, both appended after Finances (Marketing &
 // Media added after Music; sibling stream PRs may land concurrently and
-// shift this tail, resolved at merge time).
+// shift this tail, resolved at merge time), then Development appended last
+// (F-6 — the giving platform's Academy content, landing after Marketing &
+// Media).
 const SECTIONS_IN_ORDER: Omit<AcademySection, "order">[] = [
   ...FOUNDATIONS_SECTIONS,
   ...EVENTS_SECTIONS,
@@ -71,6 +78,7 @@ const SECTIONS_IN_ORDER: Omit<AcademySection, "order">[] = [
   ...FINANCES_SECTIONS,
   ...MUSIC_SECTIONS,
   ...MARKETING_SECTIONS,
+  ...DEVELOPMENT_SECTIONS,
 ];
 
 /**
@@ -130,6 +138,7 @@ export const ACADEMY_THEMES: Theme[] = [
   FINANCES_THEME,
   MUSIC_THEME,
   MARKETING_THEME,
+  DEVELOPMENT_THEME,
 ];
 
 /**
@@ -148,6 +157,7 @@ export const ACADEMY_COURSES: Course[] = [
   ...FINANCES_COURSES,
   ...MUSIC_COURSES,
   ...MARKETING_COURSES,
+  ...DEVELOPMENT_COURSES,
 ];
 
 /** Look up a course by slug, or undefined. */
