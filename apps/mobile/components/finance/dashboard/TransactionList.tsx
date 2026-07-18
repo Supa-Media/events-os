@@ -5,6 +5,19 @@
  * SAME `isSpend` gate every budget/category total on this dashboard already
  * sums with, so this list always sums to exactly the mini-bar it drills into.
  *
+ * Review fix (finding #1): `year`/`month`/`quarter` here are the SAME
+ * widened effective period the mini-bar itself used (see
+ * `ChapterView`'s `effectivePeriodFor` — monthly cadence → `month`,
+ * quarterly → `quarter`, yearly → year-only), not always the dashboard's own
+ * selected month — a quarterly/yearly recurring bucket's bar widens beyond
+ * one month even in month mode (`finances.ts#budgetEffectivePeriod`), and a
+ * single-month drill-down used to silently under-sum vs. that wider bar.
+ *
+ * Review fix (finding #2): filters by `categoryName` (the SAME name the
+ * mini-bar grouped by — `finances.ts#spendBreakdownFor`), not `categoryId` —
+ * two funds can share a category name, and a single id would miss the
+ * other's transactions. See `dashboardCharts.budgetTransactions`'s own doc.
+ *
  * LAZY: this component only exists while its parent `CategoryRow` is
  * expanded (plain conditional mount — the "Convex skip until expanded" rule
  * the brief asks for), so a budget row full of unopened category bars costs
@@ -31,25 +44,43 @@ export type DrilldownTxn = FunctionReturnType<
 
 export function TransactionList({
   budgetId,
-  categoryId,
+  categoryName,
   year,
   month,
+  quarter,
+  rangeNote,
   onOpenTransaction,
 }: {
   budgetId: Id<"budgets">;
-  categoryId: Id<"budgetCategories"> | "uncategorized";
+  /** Review fix (finding #2): the category's resolved NAME (the mini-bar's
+   *  own grouping key — `finances.ts#spendBreakdownFor`), or the
+   *  `"Uncategorized"` bucket. Never a raw `categoryId` — see this file's
+   *  own module doc + `dashboardCharts.budgetTransactions`'s. */
+  categoryName: string;
   year: number;
-  /** Absent = the dashboard's YTD mode (`budgetTransactions` reads the whole
-   *  year in that case, matching the mini-bar it drills into). */
+  /** Absent = a widened period (YTD mode, or a yearly-cadence bar's month-mode
+   *  widening — see `quarter` below) — `budgetTransactions` reads the whole
+   *  year in that case, matching the mini-bar it drills into. */
   month?: number;
+  /** Review fix (finding #1): set for a quarterly-cadence bar viewed in month
+   *  mode — the SAME quarter its mini-bar widened to
+   *  (`finances.ts#budgetEffectivePeriod`). Mutually exclusive with `month`. */
+  quarter?: number;
+  /** Review fix (finding #1): a small note ("this quarter" / "this year")
+   *  shown above the list when its period is WIDER than the dashboard's own
+   *  selected month — so it's clear why a row from outside the visible month
+   *  bar shows up here. `undefined` when the drill-down period equals the
+   *  page's own period (monthly cadence, or YTD mode). */
+  rangeNote?: string;
   onOpenTransaction: (txn: DrilldownTxn) => void;
 }) {
   const router = useRouter();
   const result = useQuery(api.dashboardCharts.budgetTransactions, {
     budgetId,
-    categoryId,
+    categoryName,
     year,
     month,
+    quarter,
   });
 
   if (result === undefined) {
@@ -63,6 +94,9 @@ export function TransactionList({
   if (result.rows.length === 0) {
     return (
       <View className="border-t border-border/60 py-2 pl-3">
+        {rangeNote ? (
+          <Text className="pb-1 text-2xs text-faint">Showing {rangeNote}</Text>
+        ) : null}
         <Text className="text-2xs text-faint">No transactions this period.</Text>
       </View>
     );
@@ -70,6 +104,9 @@ export function TransactionList({
 
   return (
     <View className="gap-0.5 border-t border-border/60 py-1.5 pl-3">
+      {rangeNote ? (
+        <Text className="px-1.5 pb-0.5 text-2xs text-faint">Showing {rangeNote}</Text>
+      ) : null}
       {result.rows.map((txn) => (
         <Pressable
           key={txn.id}

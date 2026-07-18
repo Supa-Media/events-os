@@ -34,6 +34,21 @@ import { awaitingApprovalZeroCapDisplay } from "./awaitingApproval";
 import { orderRows } from "./rowOrdering";
 import { TransactionList, type DrilldownTxn } from "./TransactionList";
 
+/**
+ * The `{year, month?}` (or wider) window a category→transactions drill-down
+ * requests — see `dashboardCharts.budgetTransactions`'s own doc for exactly
+ * what each field means. `rangeNote` (review fix, finding #1) is a small
+ * "this quarter"/"this year" label shown in the drilled-down list's header
+ * when this period is WIDER than the dashboard's own selected month, so it's
+ * clear why a row from outside the visible month bar shows up.
+ */
+export type DrilldownPeriod = {
+  year: number;
+  month?: number;
+  quarter?: number;
+  rangeNote?: string;
+};
+
 export type BudgetTableRow = {
   id: Id<"budgets">;
   name: string;
@@ -45,15 +60,6 @@ export type BudgetTableRow = {
     name: string;
     spentCents: number;
     barPct: number;
-    /** DASH-2.1 UI additive: the resolved category id (or the
-     *  `"uncategorized"` sentinel) driving this bar's transaction
-     *  drill-down. `undefined` when it couldn't be resolved — e.g. while a
-     *  central caller is PEEKING a chapter, `ChapterView` deliberately
-     *  leaves this unset (its own `listCategories` read is never peek-aware,
-     *  so resolving a name to an id there could point at the WRONG
-     *  chapter's category — see `ChapterView`'s own comment). The bar then
-     *  renders with no chevron rather than risk that. */
-    categoryId?: Id<"budgetCategories"> | "uncategorized";
   }[];
   approvalStatus: BudgetApprovalStatus;
   approvedCents: number | null;
@@ -81,6 +87,12 @@ export type BudgetTableRow = {
    *  `showRequested` (an awaiting-approval row) is true, which keeps its own
    *  "$spent / $requested requested" phrasing unconditionally. */
   capLabelOverride?: string;
+  /** Review fix (finding #1) additive: this ROW's own effective drill-down
+   *  period, overriding the group-level `drilldownPeriod` prop below —
+   *  `ChapterView`'s `recurringRows` builder sets this to the budget's
+   *  cadence-widened period (quarter/year, see `recurringDrilldownPeriod`);
+   *  absent for one-time rows, which stay on the group default. */
+  drilldownPeriod?: DrilldownPeriod;
 };
 
 const FOLD_AFTER = 5;
@@ -112,13 +124,13 @@ export function BudgetTableGroup({
    *  budgets + chapter/tag rollup rows) passes a larger value so its
    *  rollup rows aren't folded away by default. */
   foldAfter?: number;
-  /** DASH-2.1 UI additive: `{year, month?}` for the category→transactions
-   *  drill-down's `budgetTransactions` call — the SAME period the dashboard
-   *  is currently showing. A category row only offers its chevron when this
-   *  AND `onOpenTransaction` are both set AND the row's own `categoryId` was
-   *  resolved — `CentralView`'s rows never carry a `categoryId` today, so
-   *  passing this there is harmless but inert. */
-  drilldownPeriod?: { year: number; month?: number };
+  /** DASH-2.1 UI additive: the DEFAULT drill-down period for rows that don't
+   *  set their own `row.drilldownPeriod` (one-time "Events & projects" rows —
+   *  see `BudgetTableRow.drilldownPeriod`'s own doc for the recurring-row
+   *  override). A category row only offers its chevron when a period (row or
+   *  group) AND `onOpenTransaction` are both set — `CentralView`'s rows never
+   *  wire either today, so passing this there is harmless but inert. */
+  drilldownPeriod?: DrilldownPeriod;
   /** DASH-2.1 UI additive: open the transaction detail modal for one row —
    *  bubbled up from a category's transaction list. */
   onOpenTransaction?: (txn: DrilldownTxn, budgetName: string) => void;
@@ -220,7 +232,7 @@ function BudgetRow({
   expanded: boolean;
   onToggleExpand: () => void;
   onPressRow?: (id: string) => void;
-  drilldownPeriod?: { year: number; month?: number };
+  drilldownPeriod?: DrilldownPeriod;
   onOpenTransaction?: (txn: DrilldownTxn, budgetName: string) => void;
 }) {
   const display = awaitingApprovalZeroCapDisplay({
@@ -340,7 +352,7 @@ function BudgetRow({
               budgetId={row.id}
               budgetName={row.name}
               category={c}
-              drilldownPeriod={drilldownPeriod}
+              drilldownPeriod={row.drilldownPeriod ?? drilldownPeriod}
               onOpenTransaction={onOpenTransaction}
             />
           ))}
@@ -359,10 +371,18 @@ function BudgetRow({
 // ── Category row — DASH-2.1 UI's one-more-level drill-down: tapping a
 // category mini-bar's OWN chevron expands a lazy `TransactionList` right
 // below it (only mounted while open — "skip until expanded"). No chevron
-// (plain mini-bar, unchanged from before this PR) when `category.categoryId`
-// couldn't be resolved (see `BudgetTableRow.categories[].categoryId`'s own
-// doc comment) or the caller didn't wire `drilldownPeriod`/`onOpenTransaction`
-// (e.g. `CentralView`'s rows, which never carry a `categoryId` today). ───────
+// (plain mini-bar, unchanged from before this PR) when the caller didn't
+// wire `drilldownPeriod`/`onOpenTransaction` (e.g. `CentralView`'s rows,
+// which never carry either today). Review fix (finding #2): drills by the
+// category's own NAME (`category.name` — the server's own grouping key for
+// this bar, `finances.ts#spendBreakdownFor`) rather than a client-resolved
+// id, so it can never miss a same-named category in a different fund — see
+// `dashboardCharts.budgetTransactions`'s own doc for the matching semantics.
+// This also means a category bar's drill-down works even while a central
+// caller is PEEKING a chapter (previously disabled — the old id-resolution
+// path could point at the WRONG chapter's category while peeking; a NAME
+// can't, since `budgetTransactions` resolves it against the budget's own
+// chapter server-side). ───────────────────────────────────────────────────
 function CategoryRow({
   budgetId,
   budgetName,
@@ -373,12 +393,11 @@ function CategoryRow({
   budgetId: Id<"budgets">;
   budgetName: string;
   category: NonNullable<BudgetTableRow["categories"]>[number];
-  drilldownPeriod?: { year: number; month?: number };
+  drilldownPeriod?: DrilldownPeriod;
   onOpenTransaction?: (txn: DrilldownTxn, budgetName: string) => void;
 }) {
   const [open, setOpen] = useState(false);
-  const drillable =
-    category.categoryId != null && drilldownPeriod != null && onOpenTransaction != null;
+  const drillable = drilldownPeriod != null && onOpenTransaction != null;
 
   return (
     <View className="gap-1">
@@ -402,9 +421,11 @@ function CategoryRow({
       {open && drillable ? (
         <TransactionList
           budgetId={budgetId}
-          categoryId={category.categoryId!}
+          categoryName={category.name}
           year={drilldownPeriod!.year}
           month={drilldownPeriod!.month}
+          quarter={drilldownPeriod!.quarter}
+          rangeNote={drilldownPeriod!.rangeNote}
           onOpenTransaction={(txn) => onOpenTransaction!(txn, budgetName)}
         />
       ) : null}

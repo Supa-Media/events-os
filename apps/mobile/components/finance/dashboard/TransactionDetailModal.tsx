@@ -51,6 +51,18 @@
  * `viewingPeekedChapter` use) and renders every field READ-ONLY with one
  * explanatory line, rather than dead buttons that would toast a failed
  * write.
+ *
+ * ROLE (review fix, finding #3): peek alone doesn't cover every failing
+ * write — a chapter finance VIEWER (below bookkeeper) reaches their OWN
+ * chapter's dashboard (`dashboardChapter` only requires `viewer`) and can
+ * drill into this modal without peeking at all, at which point every
+ * mutation above would still throw (they all require `bookkeeper`+). The
+ * caller passes `canRecordTransactions` (resolved server-side by
+ * `dashboardCharts.spendByMonth`, which `ChapterView` already fetches for
+ * its own chapter) and `readOnly` below is `peeking || !canRecordTransactions`
+ * — the SAME read-only treatment either way, so a viewer sees the identical
+ * "no dead disabled buttons" experience a peeking central caller does, just
+ * with a role-appropriate explanatory line.
  */
 import { useEffect, useState } from "react";
 import { Modal, Pressable, ScrollView, Text, View } from "react-native";
@@ -109,9 +121,14 @@ type Normalized = {
 export function TransactionDetailModal({
   source,
   onClose,
+  canRecordTransactions,
 }: {
   source: TransactionDetailSource;
   onClose: () => void;
+  /** Review fix (finding #3): the caller's OWN resolved write capability for
+   *  this chapter (bookkeeper+) — see this file's own module doc's "ROLE"
+   *  section. Combined with `peeking` below to gate every edit control. */
+  canRecordTransactions: boolean;
 }) {
   const { context } = useChapterContext();
   const peeking = context?.kind === "peek";
@@ -119,6 +136,10 @@ export function TransactionDetailModal({
   // `context?.kind === "peek"` check (not `peeking` above) so TS narrows
   // `context` to the peek variant right here.
   const peekedChapterId = context?.kind === "peek" ? context.chapterId : undefined;
+  // Review fix (finding #3): read-only for EITHER reason — peeking a chapter
+  // that isn't the caller's own, OR a below-bookkeeper role on their own
+  // chapter. Same treatment either way (see module doc).
+  const readOnly = peeking || !canRecordTransactions;
 
   // Only fires for the "lookup" entry (the digest row) — an EXISTING query
   // (the Reconcile grid's own data source), peek-aware via `chapterId` the
@@ -129,10 +150,10 @@ export function TransactionDetailModal({
   );
 
   // Category picker options — only fetched when editing is actually possible
-  // (never while peeking, and peeking is the ONLY state where the viewed
-  // chapter could differ from the caller's own — so this is always the
-  // correct chapter's categories whenever it's used).
-  const categories = useQuery(api.finances.listCategories, peeking ? "skip" : {}) ?? [];
+  // (never while read-only — peeking, or a below-bookkeeper role — so this is
+  // always the correct chapter's categories AND never wasted on a viewer who
+  // can't use them).
+  const categories = useQuery(api.finances.listCategories, readOnly ? "skip" : {}) ?? [];
 
   const normalized: Normalized | "loading" | "not_found" =
     source.kind === "detail"
@@ -220,7 +241,8 @@ export function TransactionDetailModal({
               <TransactionDetailBody
                 txn={normalized}
                 categories={categories}
-                readOnly={peeking}
+                readOnly={readOnly}
+                readOnlyReason={peeking ? "peek" : "role"}
               />
             )}
           </ScrollView>
@@ -234,10 +256,15 @@ function TransactionDetailBody({
   txn,
   categories,
   readOnly,
+  readOnlyReason,
 }: {
   txn: Normalized;
   categories: { id: Id<"budgetCategories">; name: string }[];
   readOnly: boolean;
+  /** Which read-only banner to show — see `TransactionDetailModal`'s module
+   *  doc's "ROLE" section (review fix, finding #3). Ignored when `readOnly`
+   *  is false. */
+  readOnlyReason: "peek" | "role";
 }) {
   const setCategory = useMutation(api.finances.setTransactionCategory);
   const setNote = useMutation(api.finances.setTransactionNote);
@@ -276,7 +303,64 @@ function TransactionDetailBody({
   const [savingNote, setSavingNote] = useState(false);
   const noteDirty = noteValue !== savedNote;
 
-  const guard = (p: Promise<unknown>) => p.catch((err) => alertError(err));
+  // Review fix (finding #4): EVERY optimistic setter below mirrors this same
+  // shape — set the optimistic value immediately (instant feedback), fire the
+  // mutation, and on rejection REVERT to the pre-edit value + toast. Before
+  // this fix only Note followed this discipline (it never applied its
+  // optimistic value until the write actually succeeded); the other four
+  // fields (`guard`'s old fire-and-forget shape) left the modal showing the
+  // value the server just refused — including `attachReceipt`, whose old
+  // `await guard(...); setHasReceiptState(true)` shape set "Attached" even
+  // when the upload/attach mutation FAILED (`guard` swallows the rejection,
+  // so the unconditional `setHasReceiptState(true)` after it always ran).
+  async function editCategory(newCategoryId: Id<"budgetCategories"> | null) {
+    const prevId = categoryId;
+    const prevName = categoryName;
+    setCategoryIdState(newCategoryId);
+    setCategoryNameState(
+      newCategoryId ? (categories.find((c) => c.id === newCategoryId)?.name ?? null) : null,
+    );
+    try {
+      await setCategory({ transactionId: txn.id, categoryId: newCategoryId });
+    } catch (err) {
+      setCategoryIdState(prevId);
+      setCategoryNameState(prevName);
+      alertError(err);
+    }
+  }
+
+  async function editStatus(next: TransactionStatus) {
+    const prev = status;
+    setStatusState(next);
+    try {
+      await setStatus({ transactionId: txn.id, status: next });
+    } catch (err) {
+      setStatusState(prev);
+      alertError(err);
+    }
+  }
+
+  async function editReceipt(storageId: Id<"_storage">) {
+    const prev = hasReceipt;
+    setHasReceiptState(true);
+    try {
+      await attachReceipt({ transactionId: txn.id, storageId });
+    } catch (err) {
+      setHasReceiptState(prev);
+      alertError(err);
+    }
+  }
+
+  async function editPersonal(next: boolean) {
+    const prev = isPersonal;
+    setIsPersonalState(next);
+    try {
+      await flagPersonal({ transactionId: txn.id, isPersonal: next });
+    } catch (err) {
+      setIsPersonalState(prev);
+      alertError(err);
+    }
+  }
 
   async function saveNote() {
     setSavingNote(true);
@@ -299,7 +383,9 @@ function TransactionDetailBody({
         <View className="flex-row items-center gap-2 rounded-md border border-border bg-sunken px-3 py-2">
           <Icon name="lock" size={13} color={colors.muted} />
           <Text className="flex-1 text-2xs text-muted">
-            Editing happens in this chapter's own Reconcile.
+            {readOnlyReason === "peek"
+              ? "Editing happens in this chapter's own Reconcile."
+              : "Viewing only — recording requires the Treasurer/bookkeeper role."}
           </Text>
         </View>
       ) : null}
@@ -318,11 +404,7 @@ function TransactionDetailBody({
             label={categoryName}
             categories={categories}
             onChange={(newCategoryId) => {
-              setCategoryIdState(newCategoryId);
-              setCategoryNameState(
-                newCategoryId ? (categories.find((c) => c.id === newCategoryId)?.name ?? null) : null,
-              );
-              guard(setCategory({ transactionId: txn.id, categoryId: newCategoryId }));
+              void editCategory(newCategoryId);
             }}
           />
         )}
@@ -339,8 +421,7 @@ function TransactionDetailBody({
               value={status}
               options={STATUS_OPTIONS}
               onChange={(v) => {
-                setStatusState(v);
-                guard(setStatus({ transactionId: txn.id, status: v }));
+                void editStatus(v);
               }}
             />
           </View>
@@ -357,8 +438,7 @@ function TransactionDetailBody({
             hasReceipt={hasReceipt}
             reminderStage={txn.reminderStage}
             onUpload={async (storageId) => {
-              await guard(attachReceipt({ transactionId: txn.id, storageId }));
-              setHasReceiptState(true);
+              await editReceipt(storageId);
             }}
             generateUploadUrl={generateUploadUrl}
           />
@@ -376,9 +456,7 @@ function TransactionDetailBody({
           ) : (
             <Pressable
               onPress={() => {
-                const next = !isPersonal;
-                setIsPersonalState(next);
-                guard(flagPersonal({ transactionId: txn.id, isPersonal: next }));
+                void editPersonal(!isPersonal);
               }}
               accessibilityRole="button"
               className="flex-row items-center gap-2 self-start rounded-md border border-border-strong px-2.5 py-1.5 active:opacity-70 web:hover:bg-sunken"

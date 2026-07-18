@@ -24,11 +24,10 @@
  */
 import { useMemo, useState } from "react";
 import { Pressable, Text, useWindowDimensions, View } from "react-native";
-import { useQuery } from "convex/react";
 import type { FunctionReturnType } from "convex/server";
 import { api } from "@events-os/convex/_generated/api";
 import type { Id } from "@events-os/convex/_generated/dataModel";
-import { formatCents } from "@events-os/shared";
+import { formatCents, quarterOfMonth } from "@events-os/shared";
 import { Badge, Button, Icon, SectionHeader } from "../../ui";
 import { colors } from "../../../lib/theme";
 import { Money, SignedMoney, Tile, TileRow, type DashPeriodMode } from "./parts";
@@ -88,6 +87,41 @@ function monthHonestRecurring(
   const unit = CADENCE_UNIT[b.cadence as "quarterly" | "yearly"];
   const capLabelOverride = `${formatCents(periodSpendCents)} this month · ${formatCents(cadenceSpendCents)} of ${formatCents(fullCapCents)} this ${unit}`;
   return { pct, capLabelOverride };
+}
+
+/**
+ * DASH-2.1 UI fix (review finding #1 — "drill must sum to the tapped bar"):
+ * a recurring budget's own category mini-bars widen to the budget's effective
+ * period in month mode (`finances.ts#budgetEffectivePeriod`, via
+ * `txnCountsTowardBudgetDash`) — monthly cadence stays scoped to one month,
+ * but quarterly widens to the whole quarter and yearly to the whole year,
+ * regardless of which single month the dashboard is showing. A transactions
+ * drill-down that only ever requested one month under-summed vs. that wider
+ * bar. This returns the SAME widened period for `dashboardCharts.
+ * budgetTransactions` to request (mirrors `budgetEffectivePeriod`'s own
+ * switch, not re-deriving it — a budget with a FIXED `quarter` narrower than
+ * `contextMonth`'s own quarter would only be VISIBLE on this dashboard when
+ * they already agree — see that function's doc comment for why
+ * `quarterOfMonth(month)` is always correct here). YTD mode already reads the
+ * whole year for every cadence (`drilldownPeriod` below omits `month`
+ * entirely there), so this only changes month-mode behavior.
+ */
+function recurringDrilldownPeriod(
+  cadence: RecurringBudget["cadence"],
+  year: number,
+  month: number,
+  mode: DashPeriodMode,
+): { year: number; month?: number; quarter?: number; rangeNote?: string } {
+  if (mode !== "month") return { year };
+  switch (cadence) {
+    case "quarterly":
+      return { year, quarter: quarterOfMonth(month), rangeNote: "this quarter" };
+    case "yearly":
+      return { year, rangeNote: "this year" };
+    case "monthly":
+    default:
+      return { year, month };
+  }
 }
 type MonthlySpend = FunctionReturnType<typeof api.dashboardCharts.spendByMonth>;
 
@@ -200,31 +234,6 @@ export function ChapterView({
     [data.attention, pendingApprovals.length],
   );
 
-  // DASH-2.1 UI (feature 2): category name → id, resolving each budget card's
-  // `categories[].name` (server groups by NAME only — see `categoryBreakdown`
-  // in `finances.ts`, unchanged by this PR) to a real `budgetId` for the
-  // transactions drill-down. `listCategories` is the caller's OWN chapter,
-  // never peek-aware — skipped entirely while peeking so a name is never
-  // resolved against the WRONG chapter's categories (see
-  // `BudgetTableRow.categories[].categoryId`'s own doc comment in
-  // `BudgetTable.tsx`); every category bar's chevron simply doesn't render
-  // in that state instead.
-  const categoriesResult = useQuery(api.finances.listCategories, isDrilldown ? "skip" : {});
-  const categoryIdByName = useMemo(
-    () => new Map((categoriesResult ?? []).map((c) => [c.name, c.id])),
-    [categoriesResult],
-  );
-  function resolveCategoryId(name: string): Id<"budgetCategories"> | "uncategorized" | undefined {
-    if (isDrilldown) return undefined;
-    if (name === "Uncategorized") return "uncategorized";
-    return categoryIdByName.get(name);
-  }
-  function withCategoryIds(
-    cats: { name: string; spentCents: number; barPct: number }[] | undefined,
-  ) {
-    return cats?.map((c) => ({ ...c, categoryId: resolveCategoryId(c.name) }));
-  }
-
   // DASH-2.1 UI: the drill-down's own detail modal (opened by drilling
   // through a category's transaction list, from either budget table below —
   // a SEPARATE piece of state from `RecentDigest`'s own modal, mirroring
@@ -234,6 +243,14 @@ export function ChapterView({
     setDetailSource({ kind: "detail", txn, budgetName });
   }
   const drilldownPeriod = { year, month: period === "month" ? month : undefined };
+  // DASH-2.1 UI fix (review finding #3): whether the CALLER can actually
+  // record a transaction edit here — `spendByMonth` (already fetched for
+  // this chapter/year as `monthly`) resolves this against the SAME chapter
+  // this view is showing, `false` while peeking/drilling a different one
+  // (mirrors `TransactionDetailModal`'s own peek gate). Threaded into every
+  // `TransactionDetailModal` instance below so it can lock edit controls for
+  // a below-bookkeeper viewer, not just a peeking central caller.
+  const canRecordTransactions = monthly?.canRecordTransactions ?? false;
 
   const oneTimeRows: BudgetTableRow[] = data.oneTimeBudgets.map((b) => ({
     id: b.id,
@@ -242,7 +259,7 @@ export function ChapterView({
     spentCents: b.spentCents,
     budgetCents: b.budgetCents,
     pct: b.pct,
-    categories: withCategoryIds(b.categories),
+    categories: b.categories,
     approvalStatus: b.approvalStatus,
     approvedCents: b.approvedCents,
     requestedCents: b.requestedCents,
@@ -259,12 +276,16 @@ export function ChapterView({
       spentCents: b.spentCents,
       budgetCents: b.budgetCents,
       pct,
-      categories: withCategoryIds(b.categories),
+      categories: b.categories,
       approvalStatus: b.approvalStatus,
       approvedCents: b.approvedCents,
       requestedCents: b.requestedCents,
       reviewNote: b.reviewNote,
       capLabelOverride,
+      // Review fix (finding #1): this row's OWN effective drill-down period,
+      // overriding the group-level `drilldownPeriod` below (which stays
+      // month-only — correct for the "Events & projects" one-time table).
+      drilldownPeriod: recurringDrilldownPeriod(b.cadence, year, month, period),
     };
   });
 
@@ -378,6 +399,7 @@ export function ChapterView({
           <RecentDigest
             rows={data.recentTransactions}
             onViewAll={isDrilldown ? undefined : () => onAttentionAction("needs_budget")}
+            canRecordTransactions={canRecordTransactions}
           />
         </View>
       </View>
@@ -385,7 +407,11 @@ export function ChapterView({
       {/* DASH-2.1 UI: the drill-down's own detail modal (see `openDrilldownTxn`
           above) — `RecentDigest` owns a SEPARATE instance for its own rows. */}
       {detailSource ? (
-        <TransactionDetailModal source={detailSource} onClose={() => setDetailSource(null)} />
+        <TransactionDetailModal
+          source={detailSource}
+          onClose={() => setDetailSource(null)}
+          canRecordTransactions={canRecordTransactions}
+        />
       ) : null}
     </View>
   );
@@ -535,7 +561,17 @@ function ReviewLinkTile({ tile, onPress }: { tile: ChapterTile; onPress?: () => 
 // display the instant it opens (peek-safe — server-resolved for whichever
 // chapter this digest belongs to) rather than showing blank fields while
 // that lookup is in flight.
-function RecentDigest({ rows, onViewAll }: { rows: RecentTxn[]; onViewAll?: () => void }) {
+function RecentDigest({
+  rows,
+  onViewAll,
+  canRecordTransactions,
+}: {
+  rows: RecentTxn[];
+  onViewAll?: () => void;
+  /** Review fix (finding #3) — see `ChapterView`'s own `canRecordTransactions`
+   *  doc comment. */
+  canRecordTransactions: boolean;
+}) {
   const [openId, setOpenId] = useState<Id<"transactions"> | null>(null);
   const openRow = openId ? rows.find((r) => r.id === openId) : null;
 
@@ -590,6 +626,7 @@ function RecentDigest({ rows, onViewAll }: { rows: RecentTxn[]; onViewAll?: () =
             },
           }}
           onClose={() => setOpenId(null)}
+          canRecordTransactions={canRecordTransactions}
         />
       ) : null}
     </View>
