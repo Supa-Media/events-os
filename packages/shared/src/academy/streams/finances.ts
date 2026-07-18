@@ -37,7 +37,7 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
     slug: "finance-stewardship",
     title: "Where the money comes from",
     subtitle: "Backers, the card, and spending like it's not yours",
-    minutes: 3,
+    minutes: 4,
     blocks: [
       {
         kind: "p",
@@ -49,6 +49,7 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
           "**A backer gives monthly, not once.** The floor is $50/month — a real, recurring commitment, not a one-time donation.",
           "**Backer count, not backer dollars, drives the model.** Headcount sets the tier a chapter operates at (see the Treasurer and Chapter Director courses) — a chapter grows by adding backers, not by asking existing ones for more.",
           "**The card exists so you don't front cash.** You spend on the mission's behalf; the app tracks it so nobody — including you — has to remember what you're owed.",
+          "**Reach for the Public Worship card first.** For any Public Worship expense, always try the Public Worship card before reimbursing yourself or covering it another way — it's the cleanest record and the default path, not a last resort.",
         ],
       },
       {
@@ -61,7 +62,19 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
         prompt:
           "You're at the hardware store buying event supplies and spot a discounted item you personally want, same trip. Put it on the Public Worship card?",
         answer:
-          "No — even a great deal. The card is for mission spending only; personal items go on your own card, full stop. If a personal charge lands on the church card by accident, flag it immediately (the next lesson) rather than hoping nobody notices.",
+          "No — even a great deal. The card is for mission spending only; personal items go on your own card, full stop. If a personal charge lands on the Public Worship card by accident, flag it immediately (the next lesson) rather than hoping nobody notices.",
+      },
+      {
+        kind: "rule",
+        title: "Want to cover something personally? Donate it, don't spend it.",
+        text: '"I\'ll just cover the meal myself" feels generous, but it quietly takes the expense off the books — Public Worship never sees it, your Treasurer can\'t track it, and a handful of these a year adds up to real spending nobody can account for. The steward\'s move is the SAME generosity, routed correctly: make a donation to Public Worship, then let Public Worship pay the expense on the Public Worship card. Same dollars out of your pocket, same mission funded — but now it\'s a clean, trackable record instead of an invisible one. And unlike a silent personal cover, your gift may be deductible depending on applicable tax rules and the nature of the contribution.',
+      },
+      {
+        kind: "reveal",
+        prompt:
+          "Your team is $40 short for the after-event meal. You're tempted to just pay it yourself so nobody has to deal with reimbursement. What's the better move?",
+        answer:
+          "Donate the $40 to Public Worship, then let Public Worship pay for the meal on the Public Worship card. Same generosity, same $40 out of your pocket — but now it's a real, trackable gift instead of an invisible personal favor, and it may be deductible depending on applicable tax rules and the nature of the contribution.",
       },
     ],
     quiz: [
@@ -104,7 +117,7 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
       {
         prompt: "You see a discounted personal item while buying event supplies. What's the rule?",
         options: [
-          "Buy it on the church card — it was a good deal",
+          "Buy it on the Public Worship card — it was a good deal",
           "Never put personal purchases on the card; flag it immediately if one lands there by accident",
           "Only buy it if it's under $20",
           "Ask your Treasurer first, then buy it either way",
@@ -112,6 +125,19 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
         answerIndex: 1,
         explanation:
           "The card is mission-only, no exceptions for good deals. An accidental personal charge gets flagged right away, not left for someone else to find later.",
+      },
+      {
+        prompt:
+          "A teammate wants to personally cover a $40 team meal instead of dealing with reimbursement. What's the steward's move?",
+        options: [
+          "Let them quietly cover it — it saves everyone the reimbursement paperwork",
+          "Tell them personal generosity toward the team isn't allowed at all",
+          "Have them donate the $40 to Public Worship, then let Public Worship pay for the meal on the Public Worship card",
+          "Have them put it on their own card and expense it later as a personal gift",
+        ],
+        answerIndex: 2,
+        explanation:
+          "Same generosity, routed correctly: a donation plus the Public Worship card keeps the expense on the books instead of turning into one more untrackable personal favor — and it may be deductible depending on applicable tax rules and the nature of the contribution.",
       },
     ],
   },
@@ -121,11 +147,16 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
     slug: "finance-card-and-receipts",
     title: "Your card and the 7-day rule",
     subtitle: "Spend, then close the loop before the grace window ends",
-    minutes: 3,
+    minutes: 4,
     blocks: [
       {
         kind: "p",
         text: "Every charge on your Public Worship card needs a receipt attached in the app — not for bureaucracy, but so your Treasurer can close the books without chasing you down a month later. You have **7 days** from the charge to upload one.",
+      },
+      {
+        kind: "rule",
+        title: "No receipt, no coverage — every expense, any amount",
+        text: "This is absolute: every Public Worship expense needs a receipt, or a clear photo of one — a $5 card swipe and a $1,000 reimbursement claim follow the exact same rule. There's no purchase too small to bother with and no method that's exempt. If you can't produce a receipt or a clear photo of one, you may be PERSONALLY RESPONSIBLE for the charge: a card purchase can end up flagged as a personal charge you owe back, and a reimbursement claim with no receipt can simply be denied. The receipt isn't paperwork for its own sake — it's what keeps an expense being Public Worship's instead of quietly becoming yours.",
       },
       {
         kind: "table",
@@ -199,6 +230,19 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
         explanation:
           "My Transactions is your mini-reconcile — attach receipts and flag charges on your own transactions without needing a finance seat.",
       },
+      {
+        prompt:
+          "A $6 supply run and a $940 reimbursement claim both show up with no receipt. Which one actually needs a receipt to keep you from being personally on the hook?",
+        options: [
+          "Only the $940 one — small charges are exempt",
+          "Neither — receipts are only for reimbursements, not card charges",
+          "Both — the receipt rule doesn't scale with the dollar amount or the method",
+          "Only the card charge — reimbursements are covered automatically once approved",
+        ],
+        answerIndex: 2,
+        explanation:
+          "The rule is absolute: a receipt (or a clear photo of one) is required no matter the amount or the method. Skip it on either one and you risk being personally responsible — a card charge can be flagged personal, a reimbursement claim can simply be denied.",
+      },
     ],
   },
 
@@ -207,7 +251,7 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
     slug: "finance-reimbursements-and-flags",
     title: "Reimbursement, and flagging a charge",
     subtitle: "Two directions: what you're owed, what you owe",
-    minutes: 3,
+    minutes: 5,
     blocks: [
       {
         kind: "p",
@@ -216,15 +260,20 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
       {
         kind: "bullets",
         items: [
-          "**Reimbursement — Public Worship owes you:** submit the request in-app with line items; it moves through submitted → approved → paying → paid. Someone else — never you — has to approve it.",
+          "**Reimbursement — Public Worship owes you:** submit the request in-app with line items and a receipt for each one; it moves through submitted → approved → paying → paid. Someone else — never you — has to approve it.",
           "**Personal-charge flag — you owe Public Worship:** flag your own charge as personal on My Transactions, or a manager flags it for you. It opens an owed balance, tracked the same way, just pointed the other direction.",
           "**Both directions live in one place:** the Reimbursements tab shows \"Public Worship owes you\" and \"you owe Public Worship\" side by side, so nothing nets out silently.",
+          "**Don't recognize a charge at all?** That's different from a personal charge you remember making — flagging it \"personal\" says YOU made it. If a charge on the Public Worship card is a genuine mystery, freeze the card yourself right away (instant, self-serve, reversible), then tell your Treasurer or the Financial Manager immediately so they can look into it. Don't guess by flagging an unrecognized charge as personal.",
         ],
       },
       {
         kind: "rule",
         title: "Approver ≠ you, always",
-        text: "Separation of duties means the person who submits a reimbursement is never the person who approves it — even a Treasurer can't approve their own request. It's the same rule for everyone, including the Executive Director.",
+        text: "Separation of duties means the person who submits a reimbursement is never the person who approves it — even a Treasurer can't approve their own request. It's the same rule for everyone, including the Executive Director. In practice, your chapter's Treasurer approves most requests; if the Treasurer is the one requesting, it's the central Financial Manager who approves instead — their reach covers every chapter, which is exactly the failsafe for \"the approver and the requester would otherwise be the same person.\"",
+      },
+      {
+        kind: "tip",
+        text: "**Something time-sensitive?** There's no in-app \"urgent\" flag or fast lane — a request sits in the same queue whether it's due in an hour or next month. Submit it the moment you know, then reach your Treasurer (or the Financial Manager, if they're the one who'd have to approve it) directly — a call or a text — and ask them to check the queue. The app keeps the record; a direct nudge to the person who can actually approve it is what makes it fast.",
       },
       {
         kind: "try_status",
@@ -238,17 +287,73 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
         caption:
           "Rejected and canceled exist too — those land in your History, not stuck in the middle.",
       },
+      {
+        kind: "scenario",
+        prompt:
+          "You're at the store buying event supplies. The Public Worship card is declined — or you realize you left it at home. What's the move?",
+        options: [
+          {
+            text: "Buy it on your own card and quietly let it go — it's not worth the paperwork",
+            feedback:
+              "That's the exact pattern this system exists to avoid: a small personal cover that never gets tracked. Submit a reimbursement request instead.",
+          },
+          {
+            text: "Pay with your own card, then submit a reimbursement request for it",
+            correct: true,
+            feedback:
+              "Right. Paying out of pocket happens — the fix is tracking it, not hiding it. Submit the reimbursement with your receipt and it moves through the normal approve → paid flow.",
+          },
+          {
+            text: "Skip the purchase entirely and try again another day",
+            feedback:
+              "Sometimes that's fine, but if the team genuinely needs the supplies now, pay and request reimbursement — don't stall the event over a card hiccup.",
+          },
+          {
+            text: "Ask a teammate to \"just cover it\" as a personal favor and move on",
+            feedback:
+              "Same problem, just handed to someone else — an untracked personal favor instead of a tracked reimbursement.",
+          },
+        ],
+      },
+      {
+        kind: "scenario",
+        prompt:
+          "A teammate says, \"Don't worry about the reimbursement, I'll just cover the team dinner myself.\" What's actually the better move?",
+        options: [
+          {
+            text: "Let them — it's generous, and it saves everyone the reimbursement paperwork",
+            feedback:
+              "Generous, yes — but it takes the expense off the books entirely. A dozen of these a year and nobody can say what the team actually spent.",
+          },
+          {
+            text: "Have them donate the cost to Public Worship, then let Public Worship pay for the dinner on the Public Worship card",
+            correct: true,
+            feedback:
+              "Same generosity, routed correctly: a real, trackable gift instead of an invisible personal favor — and it may be deductible depending on applicable tax rules and the nature of the contribution.",
+          },
+          {
+            text: "Tell them personal generosity toward the team isn't allowed",
+            feedback:
+              "The generosity is welcome — it just needs to go through a donation, not a silent personal cover.",
+          },
+          {
+            text: "Have them submit a reimbursement made out to a charity instead",
+            feedback:
+              "That's not how it works — the clean path is a straightforward donation to Public Worship, which then pays the actual expense.",
+          },
+        ],
+      },
     ],
     quiz: [
       {
         prompt: "You paid for event supplies with your own card. What do you do?",
         options: [
-          "Nothing — it evens out eventually",
           "Submit a reimbursement request with the line items",
+          "Nothing — it evens out eventually",
           "Ask your Treasurer to send you cash directly",
           "Put it on your Public Worship card retroactively",
         ],
-        answerIndex: 1,
+        answerIndex: 0,
         explanation:
           "A reimbursement request is the front door for out-of-pocket mission spending — it's how \"Public Worship owes you\" gets tracked to paid.",
       },
@@ -256,35 +361,47 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
         prompt: "A personal charge accidentally hit your Public Worship card. What's true?",
         options: [
           "It's fine, the card is shared",
-          "Flag it — that opens an amount YOU owe Public Worship, tracked until repaid",
           "Nothing happens automatically",
           "Only a manager can notice this, never you",
+          "Flag it — that opens an amount YOU owe Public Worship, tracked until repaid",
         ],
-        answerIndex: 1,
+        answerIndex: 3,
         explanation:
           "Flagging is available on your OWN transactions, not just to managers — catching your own mistake early is the fastest way to clear it.",
       },
       {
-        prompt: "Who can approve your own reimbursement request?",
+        prompt: "Your chapter's Treasurer submits a reimbursement request for their own out-of-pocket purchase. Who can approve it?",
         options: [
-          "You can, if you hold a Treasurer or higher seat",
-          "Nobody who is you — SoD requires a different approver every time",
-          "Whoever submits it fastest",
-          "The Executive Director always, automatically",
+          "The Treasurer — they hold the seat that normally approves these",
+          "The Chapter Director — chapter finance items are theirs to sign off on",
+          "The central Financial Manager — SoD blocks the Treasurer from approving their own request, and the FM's central-scope grant reaches every chapter",
+          "The Executive Director, automatically, since they outrank the Treasurer",
+        ],
+        answerIndex: 2,
+        explanation:
+          "Approver ≠ requester is identity-based — even a Treasurer can't approve their own request. A Chapter Director's finance access doesn't reach reimbursement approval, so the Financial Manager — whose grant covers every chapter — is the real failsafe.",
+      },
+      {
+        prompt: "You spot a charge on the Public Worship card you genuinely don't recognize. What's the right move?",
+        options: [
+          "Flag it as a personal charge so it's tracked as an owed balance",
+          "Freeze the card yourself right away, then tell your Treasurer or the Financial Manager immediately",
+          "Wait to see if it happens again before doing anything",
+          "Ignore it — the 7-day receipt rule will catch it automatically",
         ],
         answerIndex: 1,
         explanation:
-          "Approver ≠ requester is identity-based, not role-based — holding a higher seat doesn't let you sign off on your own request.",
+          "Flagging \"personal\" says you made the charge — wrong move for a genuine mystery. Freezing your own card is instant and self-serve, and looping in your Treasurer or the Financial Manager gets it actually investigated.",
       },
       {
         prompt: "Where do you see both directions — what you're owed and what you owe — at once?",
         options: [
-          "Two different apps",
           "The Reimbursements tab, side by side",
+          "Two different apps",
           "Only in a spreadsheet the Treasurer keeps",
           "You have to ask the Financial Manager",
         ],
-        answerIndex: 1,
+        answerIndex: 0,
         explanation:
           "Both directions render together on the same screen — nothing you owe quietly offsets something you're owed without you seeing it.",
       },
