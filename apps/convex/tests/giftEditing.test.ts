@@ -2,7 +2,6 @@ import { describe, expect, test } from "vitest";
 import { api } from "../_generated/api";
 import { newT, run, setupChapter, storeBlob, type ChapterSetup } from "./setup.helpers";
 import { runSeedSeatDefs } from "../migrations/0022_seed_seat_defs";
-import { runGiftMethodSources } from "../migrations/0031_gift_method_sources";
 import {
   recordGiftForDonor,
   editGiftRow,
@@ -19,8 +18,11 @@ import type { Id } from "../_generated/dataModel";
  *   - GIFT_LOCKED on money fields for a system-written (Stripe/donation) gift,
  *     while note + receipts still succeed,
  *   - receipts bounded at 10,
- *   - migration 0031 relabels `imported` (both branches) and is idempotent,
  *   - the widened-source record path persists a new source literal.
+ *
+ * (Migration 0031's relabel-`imported` coverage lived here too, until
+ * Territories Deploy B removed the literal it depended on — see the note by
+ * the old "Migration 0031" section below.)
  */
 
 const NINETY_ONE_DAYS_MS = 91 * 24 * 60 * 60 * 1000;
@@ -379,90 +381,20 @@ describe("receipts bound", () => {
   });
 });
 
-// ── Migration 0031: relabel `imported` ────────────────────────────────────────
-
-describe("migration 0031_gift_method_sources", () => {
-  test("maps both branches and is idempotent (pure relabel)", async () => {
-    const t = newT();
-    const s = await setupChapter(t);
-
-    const ids = await run(t, async (ctx) => {
-      // Donor whose provenance is Givebutter import.
-      const gbDonor = await ctx.db.insert("donors", {
-        scope: "central",
-        kind: "individual",
-        name: "GB Donor",
-        status: "active",
-        source: "givebutter-import",
-        lifetimeCents: 3000,
-        giftCount: 2,
-        createdAt: Date.now(),
-      });
-      // A plain manual donor.
-      const manualDonor = await ctx.db.insert("donors", {
-        scope: "central",
-        kind: "individual",
-        name: "Manual Donor",
-        status: "active",
-        source: "manual",
-        lifetimeCents: 1000,
-        giftCount: 1,
-        createdAt: Date.now(),
-      });
-
-      const mkGift = (
-        donorId: Id<"donors">,
-        amountCents: number,
-        externalRef?: string,
-      ) =>
-        ctx.db.insert("gifts", {
-          donorId,
-          scope: "central" as const,
-          amountCents,
-          currency: "usd",
-          receivedAt: Date.now(),
-          method: "imported" as const,
-          ...(externalRef ? { externalRef } : {}),
-          createdAt: Date.now(),
-        });
-
-      // a) imported + externalRef → givebutter
-      const withRef = await mkGift(manualDonor, 1000, "gb_txn_9");
-      // b) imported + donor.source givebutter-import → givebutter
-      const gbSourced = await mkGift(gbDonor, 2000);
-      // c) imported, neither signal → other
-      const plain = await mkGift(manualDonor, 500);
-      return { withRef, gbSourced, plain };
-    });
-
-    const res = await run(t, (ctx) => runGiftMethodSources(ctx));
-    expect(res.relabeled).toBe(3);
-    expect(res.toGivebutter).toBe(2);
-    expect(res.toOther).toBe(1);
-
-    const methods = await run(t, async (ctx) => ({
-      withRef: (await ctx.db.get(ids.withRef))?.method,
-      gbSourced: (await ctx.db.get(ids.gbSourced))?.method,
-      plain: (await ctx.db.get(ids.plain))?.method,
-    }));
-    expect(methods.withRef).toBe("givebutter");
-    expect(methods.gbSourced).toBe("givebutter");
-    expect(methods.plain).toBe("other");
-
-    // Amounts untouched (pure relabel).
-    const amounts = await run(t, async (ctx) => ({
-      withRef: (await ctx.db.get(ids.withRef))?.amountCents,
-      plain: (await ctx.db.get(ids.plain))?.amountCents,
-    }));
-    expect(amounts.withRef).toBe(1000);
-    expect(amounts.plain).toBe(500);
-
-    // Re-run → nothing left to relabel.
-    const again = await run(t, (ctx) => runGiftMethodSources(ctx));
-    expect(again.relabeled).toBe(0);
-    void s;
-  });
-});
+// ── Migration 0031 ───────────────────────────────────────────────────────────
+//
+// This block used to seed `method: "imported"` gift rows and assert 0031's
+// both-branch relabel (externalRef/donor-source → `givebutter`, else `other`)
+// was idempotent. Territories Deploy B dropped `"imported"` from
+// `GIFT_METHODS` — unlike the undeclared-TABLE precedent elsewhere in this
+// registry (e.g. `0026_migrate_budget_v1_lines.test.ts`'s `(ctx.db as any)`
+// seeding), `gifts` is still a real, schema-validated table, and Convex
+// enforces its `method` union on every write regardless of TypeScript casts.
+// So a gift row with `method: "imported"` can no longer be constructed at
+// all, in a test or otherwise — there's nothing left this block could
+// exercise. See `migrations/0031_gift_method_sources.ts`'s module doc for how
+// the migration itself stays compiling (a `string` cast on read, since the
+// comparison can now never match).
 
 // ── Widened-source record path ────────────────────────────────────────────────
 

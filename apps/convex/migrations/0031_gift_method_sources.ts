@@ -5,9 +5,8 @@ import type { Migration } from "./index";
  * Gift sources cutover (docs/plans/giving-territories.md — territories P4).
  *
  * The `gifts.method` union merged into one "source" field and widened to add
- * `zelle | venmo | givebutter | other`. `imported` is now DEPRECATED LEGACY —
- * this relabels every remaining `imported` gift onto the new vocabulary so a
- * follow-up PR can drop the literal from the schema (DEPLOY-B(gift-sources)):
+ * `zelle | venmo | givebutter | other`. `imported` was DEPRECATED LEGACY —
+ * this relabels every remaining `imported` gift onto the new vocabulary:
  *
  *  - `imported` → `givebutter` when the gift looks Givebutter-sourced: it has an
  *    `externalRef` (the Givebutter txn id, set by the CSV import dedup) OR its
@@ -21,6 +20,13 @@ import type { Migration } from "./index";
  * IDEMPOTENT: after a run no gift has `method: "imported"` left, so a re-run
  * relabels nothing. Bounded by pagination; prod data is near-empty at this stage
  * (same note as 0029/0030), so this completes in one pass.
+ *
+ * Territories Deploy B dropped `"imported"` from `GIFT_METHODS` (this migration
+ * already ran in prod, so it never needs to match that literal again live), so
+ * `gift.method` is read as a plain `string` below rather than the (now
+ * narrower) schema union — same reasoning as the undeclared-table `any` reads
+ * elsewhere in this registry (e.g. `0017_purge_guest_allowlist.ts`), just for a
+ * since-narrowed field instead of a since-dropped table.
  */
 
 /** Rows per page — bounded reads over the (small) gifts table. */
@@ -36,7 +42,10 @@ export async function runGiftMethodSources(ctx: MutationCtx) {
       .paginate({ numItems: PAGE_SIZE, cursor });
 
     for (const gift of page.page) {
-      if (gift.method !== "imported") continue;
+      // `"imported"` no longer types as a `gifts.method` literal (dropped from
+      // `GIFT_METHODS` in Territories Deploy B) — cast to `string` for the
+      // comparison so this ledgered migration still compiles.
+      if ((gift.method as string) !== "imported") continue;
 
       let next: "givebutter" | "other" = "other";
       if (gift.externalRef !== undefined) {

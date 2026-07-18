@@ -660,7 +660,7 @@ function donationMethodToGift(
     case "cash":
       return "cash";
     default:
-      return "imported"; // "other" — a manual entry with no better channel
+      return "other"; // a manual entry with no better channel
   }
 }
 

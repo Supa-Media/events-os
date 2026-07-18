@@ -59,19 +59,17 @@ export const DONOR_SOURCES = [
  *  taken money through. Order: the original set first, then the appended sources
  *  — never renumber, callers persist these literals.
  *
- *  DEPLOY-B(gift-sources): `imported` is DEPRECATED LEGACY, kept in the union
- *  THIS deploy only so migration 0031 can read the old rows. 0031 relabels every
- *  `imported` gift to `givebutter` (Givebutter provenance) or `other`; a
- *  follow-up PR drops the literal once 0031 has run in prod — see the
- *  `DEPLOY-B(gift-sources):` markers. New gifts never write it. */
+ *  The legacy `imported` literal (Givebutter-history rows imported before the
+ *  merged "Source" field existed) was relabeled onto `givebutter`/`other` by
+ *  migration 0031 and dropped from this union once 0031 had run in prod — see
+ *  `migrations/0031_gift_method_sources.ts`. New gifts never wrote it even
+ *  while it was still in the union. */
 export const GIFT_METHODS = [
   "stripe",
   "cash",
   "check",
   "wire",
   "in_kind",
-  // DEPLOY-B(gift-sources): deprecated — see the note above. Removed next PR.
-  "imported",
   // Appended sources (widened for the merged "Source" field — territories P4).
   "zelle",
   "venmo",
