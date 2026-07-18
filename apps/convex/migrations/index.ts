@@ -44,6 +44,7 @@ import { reawardCourseCompletions } from "./0028_reaward_course_completions";
 import { territoriesCutover } from "./0029_territories_cutover";
 import { backfillLaunchFund } from "./0030_backfill_launch_fund";
 import { giftMethodSources } from "./0031_gift_method_sources";
+import { linkDonorPeople } from "./0032_link_donor_people";
 
 /** One registered migration: a stable `name` (the ledger key) + its effect. */
 export type Migration = {
@@ -113,4 +114,9 @@ export const MIGRATIONS: Migration[] = [
   // the merged/widened source vocabulary (`givebutter` when Givebutter-sourced,
   // else `other`). Pure relabel, no rollup/pot change; idempotent. See 0031.
   giftMethodSources,
+  // Donor↔People link backfill — stamp `donors.personId` for every existing
+  // chapter-scope donor via the same matching primitive new writes use
+  // (`linkDonorToPerson`); central-scope donors stay unlinked by design.
+  // Idempotent (already-linked donors skipped). See 0032.
+  linkDonorPeople,
 ];
