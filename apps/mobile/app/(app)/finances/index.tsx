@@ -52,6 +52,7 @@ import { BudgetCreateModal } from "../../../components/finance/modals/BudgetCrea
 import { ManualTransactionModal } from "../../../components/finance/modals/ManualTransactionModal";
 import { BackerCountModal } from "../../../components/finance/modals/BackerCountModal";
 import { TransferRecordModal } from "../../../components/finance/modals/TransferRecordModal";
+import { MilestoneLadderModal } from "../../../components/finance/modals/MilestoneLadderModal";
 
 type Seats = FunctionReturnType<typeof api.financeRoles.mySeats>;
 
@@ -129,6 +130,8 @@ function DashboardBody({ seats }: { seats: Seats }) {
     central: boolean;
   }>({ open: false, id: null, central: false });
   const [txnModalOpen, setTxnModalOpen] = useState(false);
+  // Backer milestone ladder editor (giving-platform PRD §3), central desk only.
+  const [milestoneModalOpen, setMilestoneModalOpen] = useState(false);
   // City Launch Fund transfer modal (central desk). Carries the real chapters
   // money can move to/from (from the central dashboard's rollup). `preset`
   // (WP-4.5) is set when opened from the "Inter-chapter balances" section's
@@ -217,12 +220,26 @@ function DashboardBody({ seats }: { seats: Seats }) {
             <PeriodSwitch value={period} onChange={setPeriod} />
           </View>
           {atCentralDesk ? (
-            <Button
-              title="New budget"
-              icon="plus"
-              size="sm"
-              onPress={() => setBudgetModal({ open: true, id: null, central: true })}
-            />
+            <View className="flex-row flex-wrap items-center gap-2">
+              {/* Giving-platform PRD §3: central finance-manager rank only
+                  (the backend re-checks via `requireCentralFinanceRole` on
+                  save regardless of this affordance). */}
+              {centralSeat?.role === "manager" ? (
+                <Button
+                  title="Milestone ladder"
+                  icon="list"
+                  size="sm"
+                  variant="secondary"
+                  onPress={() => setMilestoneModalOpen(true)}
+                />
+              ) : null}
+              <Button
+                title="New budget"
+                icon="plus"
+                size="sm"
+                onPress={() => setBudgetModal({ open: true, id: null, central: true })}
+              />
+            </View>
           ) : null}
         </View>
 
@@ -286,6 +303,10 @@ function DashboardBody({ seats }: { seats: Seats }) {
 
       {txnModalOpen ? (
         <ManualTransactionModal onClose={() => setTxnModalOpen(false)} />
+      ) : null}
+
+      {milestoneModalOpen ? (
+        <MilestoneLadderModal onClose={() => setMilestoneModalOpen(false)} />
       ) : null}
 
       {transferModal.open ? (
