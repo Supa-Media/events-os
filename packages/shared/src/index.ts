@@ -1940,6 +1940,9 @@ export * from "./playbook";
 // stream in ./academy/streams/*; ./academy assembles + re-exports it all. ──
 export * from "./academy";
 
+// ── Academy role paths (seat/event-hat → ordered course playlist) ─────────────
+export * from "./academyPaths";
+
 // ── Finance (funds, budgets, transactions, reimbursements, cards, roles) ──────
 export * from "./finance";
 
