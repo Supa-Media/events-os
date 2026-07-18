@@ -58,7 +58,8 @@ export const DEVELOPMENT_SECTIONS: Omit<AcademySection, "order">[] = [
         kind: "bullets",
         items: [
           "**Donor** — any person or org that has ever given, once or a hundred times. Every donor gets a CRM record: identity, status, giving history.",
-          "**Gift** — one dollar amount received, ever, from any source: a Stripe charge, cash, a check, a wire, in-kind, or imported history from Givebutter. Every gift is one row in the giving history.",
+          "**Gift** — one dollar amount received, ever, with nothing of equal value given back — mission giving, not a purchase. It can arrive through any channel (Chapter OS/Stripe, cash, check, wire, Zelle, Venmo, imported Givebutter history, in-kind), and every gift is one row in the giving history.",
+          "**Ticket buyer ≠ donor.** Someone who buys an event ticket gets something of equal value in return — a seat. That's a purchase, not a gift, so it never creates a donor or a gift record; it's tracked as a contact with purchase history instead. See \"Canonical import\" later in this course for why that line matters.",
           "**Backer** — a donor with an *active, recurring monthly pledge* to a specific city, at or above the $50/month floor. Backers are what the affordability tiers count — see the next course.",
           "**Sponsor / partner** — an organization-level relationship (a church, a business, or a foundation) attached to a sponsor package, not a one-time or per-month personal gift.",
           "**Prospect territory** — a place on the map raising backers toward opening a chapter. Under the hood it's already a real chapter, just an inactive one (a \"shadow chapter\") — so backers attach to it directly from day one, before it's officially live.",
@@ -91,16 +92,16 @@ export const DEVELOPMENT_SECTIONS: Omit<AcademySection, "order">[] = [
           "Donor is the broad CRM record — anyone who's ever given. Backer is the narrower, recurring-pledge subset that the affordability tiers actually count.",
       },
       {
-        prompt: "What counts as one \"gift\" in the system?",
+        prompt: "What counts as one \"gift\" in the system, and what doesn't?",
         options: [
-          "Only Stripe payments",
-          "Only recurring monthly pledges",
-          "One dollar amount received, ever, from any source — a card charge, cash, a check, a wire, in-kind, or imported history",
-          "Only donations made through an event page",
+          "Only Stripe payments count",
+          "Only recurring monthly pledges count",
+          "Any mission giving with nothing given back — through any channel — counts; a ticket purchase does NOT, because the buyer got a seat in return",
+          "Only donations made through an event page count",
         ],
         answerIndex: 2,
         explanation:
-          "\"Gift\" is deliberately broad — it's the unit of giving history no matter which channel the money came through.",
+          "\"Gift\" is deliberately broad on CHANNEL (Chapter OS, cash, check, wire, Zelle, Venmo, Givebutter, in-kind) but narrow on KIND — nothing of equal value came back to the giver. A ticket sale fails that test on purpose.",
       },
       {
         prompt: "What is a \"prospect territory\"?",
@@ -153,6 +154,10 @@ export const DEVELOPMENT_SECTIONS: Omit<AcademySection, "order">[] = [
         kind: "rule",
         title: "Status is derived, never hand-set",
         text: "Nobody picks a donor's status from a dropdown. It's recomputed automatically every time a gift is recorded, from lastGiftAt — cross the 90-day line with no new gift, and a donor quietly becomes lapsed on its own.",
+      },
+      {
+        kind: "tip",
+        text: "**The giving desk isn't the only place a donor shows up.** A chapter-scope donor who's also on the roster gets a small \"giver\" mark right on the People tab — lifetime total, last-gift date — so anyone looking up a volunteer or team member can see the giving relationship without switching desks. Only donors who've actually GIVEN get the mark (giftCount > 0); a prospect with no gift yet, or a contact who only ever bought an event ticket, never shows one — ticket buyers aren't donors (see the import lesson later in this course).",
       },
       {
         kind: "reveal",
@@ -303,73 +308,133 @@ export const DEVELOPMENT_SECTIONS: Omit<AcademySection, "order">[] = [
     ],
   },
 
-  // ── 88 · Donor stewardship: backfill and import ─────────────────────────
+  // ── 88 · Donor stewardship: the canonical import ────────────────────────
   {
     slug: "dev-import-and-backfill",
-    title: "Backfilling history: CSV import and manual entry",
-    subtitle: "Two ways giving history gets into the CRM, both safe to re-run",
-    minutes: 4,
+    title: "The canonical import: preview, classify, commit",
+    subtitle: "One paste, four row types, and the line between a donor and a ticket buyer",
+    minutes: 5,
     blocks: [
       {
         kind: "p",
-        text: "Real giving history doesn't start the day the Giving desk launches — people have been giving for years, mostly through Givebutter. Getting that history in is first-class, not an afterthought, and it comes in two shapes.",
+        text: "Real giving history doesn't start the day the Giving desk launches — people have been giving for years, mostly through Givebutter. Getting that history in is first-class, not an afterthought: ONE import flow now covers every bulk data-onboarding case, and manual gift entry (the \"they gave $500 by check in March\" case, recorded right on a donor's own detail screen) still covers the one-off backfill.",
       },
       {
         kind: "bullets",
         items: [
-          "**CSV import** — a Givebutter export, row by row: name, email, amount, date, and a Givebutter transaction id. Donors are matched or created by email; gifts are deduped on that transaction id, so running the same file twice never double-counts.",
-          "**Manual gift entry** — the \"they gave $500 by check in March\" case, recorded right on the donor's own detail screen: amount, method (check, cash, wire, card, in-kind, or imported), and an optional note.",
+          "**gift** — mission giving. Match-or-creates a donor, then adds a gift to their history.",
+          "**ticket** — a ticket buyer's history. NEVER a donor or a gift — match-or-creates a chapter contact and, when possible, links their purchase to the real event.",
+          "**contact** — just a person to add to the roster, nothing financial attached.",
+          "**recurring** — a monthly pledge that can't be auto-ported (its card lives on another platform) — the same \"awaiting re-signup\" shape the backer-model course covers, now reachable from any import file.",
         ],
       },
       {
         kind: "rule",
-        title: "Gifts are history, not the ledger",
-        text: "Every gift you import or record by hand is a SOURCE record — proof this money came in, from whom, and why. The actual bank-account truth still comes only from reconciled transactions on the finance side; giving history and financial actuals are deliberately two different things that never double-count each other.",
+        title: "Why classification is the whole point",
+        text: "Givebutter (and platforms like it) consolidate ticket sales and mission giving into ONE export — the bank only ever sees a lump payout, never the split. Import that naively as \"gifts\" and every ticket buyer inflates the donor CRM with someone who never actually gave anything. So every row is classified BEFORE anything is created: only a `gift` or `recurring` row ever creates a donor. A `ticket` row becomes a contact with purchase history — full stop.",
+      },
+      {
+        kind: "p",
+        text: "Every import is two steps, on purpose: PREVIEW first (read-only — nothing is written), then COMMIT. The preview shows a disposition for every row, plus a summary with the gift-row-count vs. ticket-row-count split. That split is the tell: if you meant to import mission gifts and the preview shows mostly ticket rows (or vice versa), the source file's rowType column is probably wrong — and you find out before a single donor record is touched, not after.",
+      },
+      {
+        kind: "table",
+        headers: ["Situation", "What the preview shows"],
+        rows: [
+          ["A brand-new gift with a transaction id", "new"],
+          ["The same transaction id already imported", "duplicate — skipped automatically"],
+          [
+            "Same donor, same amount, within 24h of an existing gift, no transaction id",
+            "suspected-duplicate — skipped unless you explicitly include it",
+          ],
+          ["A ticket buyer whose purchase matches a real event", "matched-order"],
+          ["A ticket buyer with no matching event/order", "history-only — still just a contact"],
+        ],
       },
       {
         kind: "reveal",
         prompt:
-          "You accidentally run the same Givebutter CSV export through import twice. What happens?",
+          "You accidentally run the same import file through commit twice. What happens?",
         answer:
-          "Nothing bad — each gift's Givebutter transaction id is the dedup key, so the second run skips every row it already imported and only new rows (if any) go in. That's why import is safe to re-run whenever a fresh export comes in.",
+          "Nothing bad — a gift's transaction id (when present) is the hard dedup key, a recurring pledge dedupes the same way within its donor, and a contact/ticket row just re-matches the same person instead of creating a duplicate. The second run imports nothing new. That's why re-running a fresh export, or retrying after a partial failure, is always safe.",
+      },
+      {
+        kind: "scenario",
+        prompt:
+          "You paste in a Givebutter export and the preview summary shows 40 ticket rows and only 3 gift rows — but you were expecting mostly mission gifts. What's the right move?",
+        options: [
+          {
+            text: "Commit anyway — the numbers will sort themselves out",
+            feedback:
+              "The gift/ticket split exists precisely to catch this BEFORE commit. Committing blind risks importing the wrong thing as the wrong thing.",
+          },
+          {
+            text: "Stop, check the source file's rowType column, and re-paste with it fixed before committing anything",
+            correct: true,
+            feedback:
+              "Right — a lopsided split like this usually means the export's rows were misclassified (e.g. a ticket-sales file pasted in as if it were all giving). Preview is free; use it.",
+          },
+          {
+            text: "Manually delete the 3 gift rows so only tickets import",
+            feedback:
+              "That throws away real data instead of fixing the actual problem — the rowType column upstream.",
+          },
+          {
+            text: "Include the suspected duplicates to make the gift count look right",
+            feedback:
+              "Suspected-duplicates and a rowType mismatch are unrelated problems — that toggle doesn't fix a misclassified export.",
+          },
+        ],
       },
     ],
     quiz: [
       {
-        prompt: "What makes a Givebutter CSV import safe to run more than once?",
+        prompt: "What determines whether an imported row creates a donor, or just a contact?",
         options: [
-          "It isn't — a second run always double-counts",
-          "Each row's Givebutter transaction id dedupes it, so an already-imported gift is skipped on a re-run",
-          "The system asks for manual confirmation on every row",
-          "Only an admin can run it, which prevents mistakes",
+          "The dollar amount on the row",
+          "Its rowType — only `gift` and `recurring` ever create a donor; `ticket` always becomes a contact, never a donor",
+          "Whichever the importer guesses is more likely",
+          "All rows create a donor by default",
         ],
         answerIndex: 1,
         explanation:
-          "Dedup on the transaction id is the whole design — a fresh export can always be re-run without fear of doubling anyone's history.",
+          "Classification, not amount or guesswork, is the rule — a ticket buyer got something of equal value back (a seat), so that row can never become a gift.",
       },
       {
-        prompt: "When would you use manual gift entry instead of CSV import?",
+        prompt: "What happens BEFORE any import can write data?",
         options: [
-          "For every single gift, always",
-          "For a one-off backfill — like a check someone mentions they gave months ago that never made it into an export",
-          "Manual entry doesn't exist",
-          "Only for gifts over $1,000",
+          "Nothing — commit runs immediately",
+          "A read-only preview: a disposition per row, plus a summary with the gift/ticket row-count split",
+          "An email confirmation to the donor",
+          "A manual finance sign-off",
         ],
         answerIndex: 1,
         explanation:
-          "Manual entry is the \"backfill one donor's story\" tool — CSV import is the \"bring in a whole export at once\" tool. Same result (a gift on the record), different scale.",
+          "Preview-then-commit is the whole safety model — the split in the summary is exactly what catches a misclassified export before it pollutes the CRM.",
       },
       {
-        prompt: "Why do gifts and financial transactions stay two separate things?",
+        prompt: "A gift row has no transaction id, but matches an existing donor's amount and date within 24 hours. What's its disposition, and what happens on commit?",
         options: [
-          "Gifts are a giving-history source record; transactions are the only real actuals ledger — keeping them separate stops giving from ever double-counting into finance's numbers",
-          "It's a technical limitation that will be fixed later",
-          "Gifts are only for chapters; transactions are only for central",
-          "There's no real difference, just different screens",
+          "\"new\" — it always imports",
+          "\"suspected-duplicate\" — skipped on commit unless explicitly included",
+          "\"invalid\" — the row is rejected outright",
+          "It's silently merged into the existing gift",
         ],
-        answerIndex: 0,
+        answerIndex: 1,
         explanation:
-          "This is a deliberate boundary, not an accident — the Giving desk owns donors and giving history; the finance side owns what actually hit the bank.",
+          "Without a hard transaction id to trust, the 24-hour/same-amount heuristic flags a likely accidental double-entry for a human to confirm, rather than either blocking it forever or importing it blind.",
+      },
+      {
+        prompt: "What does a `recurring` import row create?",
+        options: [
+          "An active Stripe subscription immediately",
+          "A donor (match-or-create) plus a pledge in the same \"awaiting re-signup\" past_due state the backer-model course teaches — it does not count as a backer yet",
+          "A one-time gift only",
+          "Nothing — recurring rows aren't supported",
+        ],
+        answerIndex: 1,
+        explanation:
+          "Same honest shape as the dedicated recurring-cutover tool it replaced: the pledge is real, but it isn't collecting on our rails until the donor re-signs up.",
       },
     ],
   },
@@ -565,8 +630,8 @@ export const DEVELOPMENT_SECTIONS: Omit<AcademySection, "order">[] = [
       {
         kind: "bullets",
         items: [
-          "**One-time and past history** — a CSV export brings in donors and their past gifts, exactly like the backfill import from the earlier lesson.",
-          "**Recurring donors** — imported as pledge-shaped rows, but they CANNOT be auto-ported onto our billing. Each one needs a personal re-signup ask: send them their city's page, they subscribe fresh on our rails.",
+          "**One-time and past history** — the canonical import's `gift` rows bring in donors and their past gifts, exactly like the earlier lesson's preview-then-commit flow. Because a Givebutter export mixes ticket sales in with real giving, the SAME file's ticket-purchase rows import as `ticket` rows instead — contacts with purchase history, never donors, so the migration itself can't accidentally inflate the donor CRM.",
+          "**Recurring donors** — the canonical import's `recurring` rows, but they CANNOT be auto-ported onto our billing. Each one needs a personal re-signup ask: send them their city's page, they subscribe fresh on our rails.",
         ],
       },
       {

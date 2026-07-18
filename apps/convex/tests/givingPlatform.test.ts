@@ -11,8 +11,10 @@ import type { Id } from "../_generated/dataModel";
  *   - removeGift decrement + clamp,
  *   - event-donation dual-write (card fulfill creates donor+gift; removeDonation
  *     cleans up),
- *   - CSV import dedup / re-run safety,
  *   - access gating (non-privileged caller rejected; seat holder passes).
+ *
+ * Territories P6's canonical import (dedup / re-run safety, row-type
+ * classification) has its own suite: `tests/canonicalImport.test.ts`.
  */
 
 const NINETY_ONE_DAYS_MS = 91 * 24 * 60 * 60 * 1000;
@@ -326,51 +328,9 @@ describe("event-donation dual-write", () => {
   });
 });
 
-// ── CSV import dedup / re-run ─────────────────────────────────────────────────
-
-describe("importGivebutterCsv", () => {
-  test("imports donors + gifts, dedups on externalRef, and is safely re-runnable", async () => {
-    const s = await devDirectorSetup();
-    const rows = [
-      {
-        name: "Gina Giver",
-        email: "gina@example.com",
-        amountCents: 2000,
-        receivedAt: Date.now(),
-        externalRef: "gb_txn_1",
-      },
-      {
-        name: "Gina Giver",
-        email: "gina@example.com",
-        amountCents: 3500,
-        receivedAt: Date.now(),
-        externalRef: "gb_txn_2",
-      },
-    ];
-
-    const first = await s.as.mutation(api.givingPlatform.importGivebutterCsv, {
-      scope: "central",
-      rows,
-    });
-    expect(first.imported).toBe(2);
-    expect(first.skipped).toBe(0);
-
-    // Re-run the SAME export → both gifts dedup on externalRef, nothing new.
-    const second = await s.as.mutation(api.givingPlatform.importGivebutterCsv, {
-      scope: "central",
-      rows,
-    });
-    expect(second.imported).toBe(0);
-    expect(second.skipped).toBe(2);
-
-    const dash = await s.as.query(api.givingPlatform.givingDashboard, {
-      scope: "central",
-    });
-    expect(dash.donorCount).toBe(1); // both gifts matched the one email
-    expect(dash.giftCount).toBe(2);
-    expect(dash.lifetimeCents).toBe(5500);
-  });
-});
+// Territories P6: `importGivebutterCsv`'s dedup/re-run tests moved to
+// `tests/canonicalImport.test.ts` (the `gift` row type there ports the exact
+// same externalRef dedup — see `givingImport.ts`'s header comment).
 
 // ── Access gating ─────────────────────────────────────────────────────────────
 

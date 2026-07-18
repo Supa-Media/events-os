@@ -116,7 +116,7 @@ function DashboardBody({
         {data.topDonors.length === 0 ? (
           <EmptyState
             title="No donors yet"
-            message="Record a gift or import your Givebutter history to get started."
+            message="Record a gift or bring in history from the Import tab to get started."
           />
         ) : (
           <View className="gap-2">

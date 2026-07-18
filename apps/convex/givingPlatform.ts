@@ -7,10 +7,14 @@
  * nav/desk gate, like `financeRoles.mySeats`).
  *
  * Writes (gated by `requireGivingManage`): `upsertDonor`, `recordGift` (manual
- * backfill), `removeGift`, `importGivebutterCsv` (dedup on `externalRef`,
- * re-runnable). Every rollup mutation goes through the shared primitives in
- * `lib/givingDonors.ts`, so the counters stay identical to the event-donation
- * dual-write path in `giving.ts`.
+ * backfill), `removeGift`. Every rollup mutation goes through the shared
+ * primitives in `lib/givingDonors.ts`, so the counters stay identical to the
+ * event-donation dual-write path in `giving.ts`.
+ *
+ * Territories P6: bulk data-onboarding (one-time gifts, ticket-buyer history,
+ * plain contacts, recurring pledges) moved OUT of this file and into
+ * `givingImport.ts`'s canonical preview/commit import — see its header
+ * comment. The legacy `importGivebutterCsv` is gone.
  *
  * Money is always integer cents; `transactions` stays the only actuals ledger
  * (PRD §7). See docs/plans/giving-platform.md §1.
@@ -20,7 +24,6 @@ import {
   mutation,
   query,
 } from "./_generated/server";
-import type { MutationCtx } from "./_generated/server";
 import { ConvexError, v } from "convex/values";
 import { internal } from "./_generated/api";
 import { Id } from "./_generated/dataModel";
@@ -68,9 +71,9 @@ const DONOR_GIFTS_LIMIT = 100;
 const GIFT_WINDOW_LIMIT = 10000;
 /** Top donors surfaced on the dashboard. */
 const TOP_DONORS_LIMIT = 5;
-/** Rows processed per CSV-import / backfill transaction before self-reschedule
- *  (keeps each mutation within Convex's per-transaction document limits). */
-const IMPORT_BATCH_SIZE = 100;
+/** Rows processed per backfill transaction before self-reschedule (keeps each
+ *  mutation within Convex's per-transaction document limits). The CSV-import
+ *  batch size this comment used to describe now lives in `givingImport.ts`. */
 const BACKFILL_BATCH_SIZE = 100;
 
 const THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1000;
@@ -508,110 +511,12 @@ export const removeGift = mutation({
   },
 });
 
-// ── CSV import (Givebutter backfill) ─────────────────────────────────────────
-
-const importRowValidator = v.object({
-  name: v.string(),
-  email: v.optional(v.string()),
-  amountCents: v.number(),
-  receivedAt: v.number(),
-  externalRef: v.string(),
-  recurring: v.optional(v.boolean()),
-});
-
-type ImportRow = {
-  name: string;
-  email?: string;
-  amountCents: number;
-  receivedAt: number;
-  externalRef: string;
-  recurring?: boolean;
-};
-
-/**
- * Process one batch of parsed Givebutter rows: match-or-create donors by
- * lowercased email (fallback: exact name), dedupe gifts on `externalRef` (so a
- * re-run is safe), and self-reschedule the remainder to stay within
- * per-transaction limits. Shared by the public `importGivebutterCsv` (gated) and
- * the internal continuation.
- */
-async function importRows(
-  ctx: MutationCtx,
-  scope: GivingScope,
-  rows: ImportRow[],
-): Promise<{ imported: number; skipped: number; scheduledRemaining: number }> {
-  const slice = rows.slice(0, IMPORT_BATCH_SIZE);
-  let imported = 0;
-  let skipped = 0;
-
-  for (const row of slice) {
-    if (row.amountCents <= 0 || !Number.isInteger(row.amountCents)) {
-      skipped++;
-      continue; // a malformed amount never blocks the rest of the import
-    }
-    // `externalRef` dedup — a re-run of the same export inserts nothing.
-    const existing = await ctx.db
-      .query("gifts")
-      .withIndex("by_externalRef", (q) => q.eq("externalRef", row.externalRef))
-      .first();
-    if (existing) {
-      skipped++;
-      continue;
-    }
-    const donorId = await matchOrCreateDonor(ctx, {
-      scope,
-      name: row.name,
-      email: row.email,
-      source: "givebutter-import",
-    });
-    await recordGiftForDonor(ctx, {
-      donorId,
-      amountCents: row.amountCents,
-      receivedAt: row.receivedAt,
-      method: "imported",
-      externalRef: row.externalRef,
-      ...(row.recurring ? { note: "Recurring (Givebutter)" } : {}),
-    });
-    imported++;
-  }
-
-  const remaining = rows.slice(IMPORT_BATCH_SIZE);
-  if (remaining.length > 0) {
-    await ctx.scheduler.runAfter(0, internal.givingPlatform.importGivebutterRest, {
-      scope,
-      rows: remaining,
-    });
-  }
-  return { imported, skipped, scheduledRemaining: remaining.length };
-}
-
-/**
- * Import parsed Givebutter rows (donors + gifts). Match-or-creates donors by
- * lowercased email, dedupes gifts on `externalRef` (re-runnable), and processes
- * in batches. Admin-gated (`giving.manage` at `scope`); the continuation runs
- * as an internal scheduled mutation.
- */
-export const importGivebutterCsv = mutation({
-  args: { scope: scopeValidator, rows: v.array(importRowValidator) },
-  returns: v.object({
-    imported: v.number(),
-    skipped: v.number(),
-    scheduledRemaining: v.number(),
-  }),
-  handler: async (ctx, { scope, rows }) => {
-    await requireGivingManage(ctx, scope as GivingScope);
-    return await importRows(ctx, scope as GivingScope, rows);
-  },
-});
-
-/** Internal continuation of `importGivebutterCsv` (already gated when scheduled). */
-export const importGivebutterRest = internalMutation({
-  args: { scope: scopeValidator, rows: v.array(importRowValidator) },
-  handler: async (ctx, { scope, rows }) => {
-    await importRows(ctx, scope as GivingScope, rows);
-    return null;
-  },
-});
+// Territories P6: the Givebutter-only `importGivebutterCsv`/`importRows`/
+// `importGivebutterRest` trio (donors + gifts, `externalRef` dedup) is
+// SUPERSEDED by the canonical import's `gift` row type
+// (`givingImport.ts#previewImport` / `#importCanonical`) — same dedup rule,
+// PLUS row-type classification so a Givebutter export's ticket-sale rows can
+// no longer be mistakenly imported as gifts. See that file's header comment.
 
 // ── Backfill migration (event donations → gifts) ─────────────────────────────
 

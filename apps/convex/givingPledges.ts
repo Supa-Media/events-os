@@ -53,8 +53,10 @@ const STRIPE_API = "https://api.stripe.com/v1";
 
 /** The monthly pledge FLOOR, in cents ($20 — the schema's `≥ 2000`, PRD §2's
  *  smallest preset). A pledge below `BACKER_UNIT_CENTS` still counts the donor
- *  as a donor, just not as a backer (see `recomputeChapterBackerCount`). */
-const PLEDGE_FLOOR_CENTS = 2000;
+ *  as a donor, just not as a backer (see `recomputeChapterBackerCount`).
+ *  Exported for `givingImport.ts` (territories P6), which enforces the same
+ *  floor on a canonical `recurring` row's `recurringMonthlyCents`. */
+export const PLEDGE_FLOOR_CENTS = 2000;
 
 /** Bounded read for the derived backer-count recompute — mirrors the
  *  `GIFT_WINDOW_LIMIT` bounded-recompute precedent in `givingPlatform.ts`. A
@@ -66,10 +68,6 @@ const PLEDGE_LIST_LIMIT = 500;
 
 /** Pledges shown on a donor's detail (a donor holds very few). */
 const DONOR_PLEDGE_LIMIT = 50;
-
-/** Import cap per call — Givebutter recurring-donor lists are small (tens), so
- *  one bounded batch covers a cutover import without self-reschedule. */
-const IMPORT_LIMIT = 500;
 
 const scopeValidator = v.union(v.id("chapters"), v.literal("central"));
 const pledgeStatusValidator = v.union(
@@ -780,71 +778,11 @@ export const getDonorPledges = query({
   },
 });
 
-// ── Givebutter recurring import (cutover tooling) ─────────────────────────────
-
-/**
- * Import Givebutter recurring donors as pledge-shaped rows (PRD §2 cutover):
- * match-or-create the donor, then insert an `origin:"imported"` pledge. These
- * land as `past_due` — the Givebutter card CANNOT be ported (it lives in
- * Givebutter's Stripe), so the pledge is real but NOT collecting on our rails
- * yet; it's awaiting the donor's personal re-signup. `past_due` (not `active`)
- * keeps imported rows OUT of the derived backer count until re-signed, which is
- * the honest state during the cutover window. Dedup is on `externalRef` (the
- * Givebutter recurrence id) within the donor's own pledges, so a re-run is safe.
- * Admin-gated (`giving.manage` at `scope`).
- */
-export const importGivebutterRecurring = mutation({
-  args: {
-    scope: scopeValidator,
-    rows: v.array(
-      v.object({
-        email: v.optional(v.string()),
-        name: v.string(),
-        amountCents: v.number(),
-        externalRef: v.string(),
-      }),
-    ),
-  },
-  returns: v.object({ imported: v.number(), skipped: v.number() }),
-  handler: async (ctx, { scope, rows }) => {
-    await requireGivingManage(ctx, scope as GivingScope);
-    let imported = 0;
-    let skipped = 0;
-    for (const row of rows.slice(0, IMPORT_LIMIT)) {
-      if (!Number.isInteger(row.amountCents) || row.amountCents < PLEDGE_FLOOR_CENTS) {
-        skipped++; // a malformed amount never blocks the rest of the import
-        continue;
-      }
-      const donorId = await matchOrCreateDonor(ctx, {
-        scope: scope as GivingScope,
-        name: row.name,
-        email: row.email,
-        source: "givebutter-import",
-      });
-      // Dedup on externalRef within this donor's pledges (a bounded scan — a
-      // donor holds very few pledges).
-      const donorPledges = await ctx.db
-        .query("pledges")
-        .withIndex("by_donor", (q) => q.eq("donorId", donorId))
-        .take(DONOR_PLEDGE_LIMIT);
-      if (donorPledges.some((p) => p.externalRef === row.externalRef)) {
-        skipped++;
-        continue;
-      }
-      await ctx.db.insert("pledges", {
-        donorId,
-        scope: scope as GivingScope,
-        amountCents: row.amountCents,
-        status: "past_due",
-        origin: "imported",
-        externalRef: row.externalRef,
-        createdAt: Date.now(),
-      });
-      imported++;
-    }
-    return { imported, skipped };
-  },
-});
+// Territories P6: the Givebutter-specific `importGivebutterRecurring` cutover
+// tool (match-or-create donor + dedup an `origin:"imported"` pledge on
+// externalRef within the donor's pledges) is SUPERSEDED by the canonical
+// import's `recurring` row type (`givingImport.ts#importCanonical` — same
+// dedup rule, ported verbatim) — see that file's header comment.
 
 // ── Receipt payload ───────────────────────────────────────────────────────────
 

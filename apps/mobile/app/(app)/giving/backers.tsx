@@ -3,15 +3,17 @@
  * pledges grouped by lifecycle (active · past due · imported-awaiting-resignup ·
  * canceled), each with its monthly amount and a link to the donor. Shows the
  * derived backer-count summary (active pledges at/above the $50 unit — the
- * number the affordability header now reads), and, for managers, a Givebutter
- * recurring-import section mirroring the donor CSV backfill.
+ * number the affordability header now reads).
  *
- * Reads `listPledges` (gated by `requireGivingView`); the import posts to
- * `importGivebutterRecurring` (gated server-side by `giving.manage`).
+ * Reads `listPledges` (gated by `requireGivingView`). Territories P6: bulk
+ * recurring-pledge import (the old inline Givebutter form here) moved to the
+ * desk's own `Import` tab (`import.tsx`) — see that screen for the canonical
+ * preview/commit flow that now covers `recurring` rows alongside gifts,
+ * tickets, and contacts.
  */
-import { useMemo, useState } from "react";
+import { useMemo } from "react";
 import { ActivityIndicator, View, Text, Pressable } from "react-native";
-import { useMutation, useQuery } from "convex/react";
+import { useQuery } from "convex/react";
 import { useRouter } from "expo-router";
 import { api } from "@events-os/convex/_generated/api";
 import type { Id } from "@events-os/convex/_generated/dataModel";
@@ -19,13 +21,10 @@ import { BACKER_UNIT_CENTS, formatCents } from "@events-os/shared";
 import {
   Badge,
   type BadgeTone,
-  Button,
-  Card,
   EmptyState,
   Narrow,
   Screen,
   SectionHeader,
-  TextField,
 } from "../../../components/ui";
 import { colors } from "../../../lib/theme";
 
@@ -66,16 +65,10 @@ export default function BackersScreen() {
       </Screen>
     );
   }
-  return <BackersBody scope={access.scope} canManage={access.canManage} />;
+  return <BackersBody scope={access.scope} />;
 }
 
-function BackersBody({
-  scope,
-  canManage,
-}: {
-  scope: GivingScope;
-  canManage: boolean;
-}) {
+function BackersBody({ scope }: { scope: GivingScope }) {
   const router = useRouter();
   const pledges = useQuery(api.givingPledges.listPledges, { scope }) as
     | PledgeRow[]
@@ -127,7 +120,7 @@ function BackersBody({
         {pledges.length === 0 ? (
           <EmptyState
             title="No pledges yet"
-            message="Backers appear here once they subscribe, or import your Givebutter recurring donors below."
+            message="Backers appear here once they subscribe, or import recurring donors from the Import tab."
           />
         ) : (
           <>
@@ -161,8 +154,6 @@ function BackersBody({
             />
           </>
         )}
-
-        {canManage ? <ImportRecurringForm scope={scope} /> : null}
       </Narrow>
     </Screen>
   );
@@ -209,87 +200,6 @@ function PledgeGroup({
           </Pressable>
         ))}
       </View>
-    </View>
-  );
-}
-
-/**
- * Paste a Givebutter recurring export — one `email, name, amount, externalRef`
- * per line — and import them as `imported` pledges (dedup on externalRef,
- * re-runnable). Amounts are dollars; blank/`#` lines are skipped.
- */
-function ImportRecurringForm({ scope }: { scope: GivingScope }) {
-  const importRecurring = useMutation(api.givingPledges.importGivebutterRecurring);
-  const [text, setText] = useState("");
-  const [busy, setBusy] = useState(false);
-  const [result, setResult] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
-
-  async function submit() {
-    setError(null);
-    setResult(null);
-    const rows: {
-      email?: string;
-      name: string;
-      amountCents: number;
-      externalRef: string;
-    }[] = [];
-    for (const raw of text.split(/\r?\n/)) {
-      const line = raw.trim();
-      if (!line || line.startsWith("#")) continue;
-      const [email, name, amount, externalRef] = line
-        .split(",")
-        .map((c) => c.trim());
-      const dollars = Number.parseFloat(amount ?? "");
-      if (!name || !externalRef || !Number.isFinite(dollars)) continue;
-      rows.push({
-        ...(email ? { email } : {}),
-        name,
-        amountCents: Math.round(dollars * 100),
-        externalRef,
-      });
-    }
-    if (rows.length === 0) {
-      setError("No valid rows — use: email, name, amount, externalRef");
-      return;
-    }
-    setBusy(true);
-    try {
-      const res = await importRecurring({ scope, rows });
-      setResult(`Imported ${res.imported} · skipped ${res.skipped}.`);
-      setText("");
-    } catch {
-      setError("Couldn't import — check your access and the format.");
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  return (
-    <View className="mb-4">
-      <SectionHeader title="Import Givebutter recurring" />
-      <Card>
-        <Text className="mb-2 text-xs text-muted">
-          One donor per line: email, name, monthly amount, Givebutter recurrence
-          id. Imported as &quot;awaiting re-signup&quot; — they don&apos;t count
-          as backers until they subscribe on our rails.
-        </Text>
-        <TextField
-          label="Rows"
-          value={text}
-          onChangeText={setText}
-          multiline
-          numberOfLines={5}
-          placeholder={"ada@example.com, Ada Lovelace, 50, gb_rec_1"}
-        />
-        {error ? (
-          <Text className="mb-2 text-sm text-danger">{error}</Text>
-        ) : null}
-        {result ? (
-          <Text className="mb-2 text-sm text-success">{result}</Text>
-        ) : null}
-        <Button title="Import recurring" onPress={submit} loading={busy} />
-      </Card>
     </View>
   );
 }

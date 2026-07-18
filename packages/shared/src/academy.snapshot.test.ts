@@ -60,6 +60,23 @@
  * DIRECTLY to it, and launch is a flag-flip that moves no money (the old
  * central-held/owner-decision teaching is obsolete). Slug, minutes, quiz
  * lengths, and order are all unchanged, so only that one title moved here.
+ *
+ * Territories P6 (canonical import, docs/plans/giving-territories.md) then
+ * RETITLED `dev-import-and-backfill` — "Backfilling history: CSV import and
+ * manual entry" → "The canonical import: preview, classify, commit" — and
+ * rewrote it end to end for the one preview-then-commit import that replaced
+ * the Givebutter-only CSV/recurring importers: the four row types, the
+ * gift-vs-ticket classification rule (a ticket buyer got a seat back, so
+ * that row can never become a donor), the dedup/suspected-duplicate rules,
+ * and the gift/ticket split that catches a misclassified export before
+ * commit. Minutes 4→5, quiz length 3→4 (both bumped below); slug and course
+ * placement are unchanged. `dev-giving-vocabulary`'s "Gift" bullet and its
+ * quiz were also touched (added the ticket-buyer-isn't-a-donor distinction,
+ * still 4 questions), `dev-donor-crm-basics` gained a tip about the People
+ * tab's giver marks (P5, previously undocumented), and
+ * `dev-givebutter-migration`'s import bullets now point at the canonical
+ * import instead of the deleted CSV tool — none of those three change
+ * title/minutes/quiz-length, so nothing else moved in the tables below.
  */
 import { describe, expect, test } from "vitest";
 import { ACADEMY_COURSES, ACADEMY_SECTIONS } from "./academy";
@@ -872,9 +889,9 @@ const EXPECTED_SECTIONS: {
   },
   {
     slug: "dev-import-and-backfill",
-    title: "Backfilling history: CSV import and manual entry",
-    minutes: 4,
-    quizLength: 3,
+    title: "The canonical import: preview, classify, commit",
+    minutes: 5,
+    quizLength: 4,
     optional: false,
     capstoneKind: null,
   },

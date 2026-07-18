@@ -10,7 +10,7 @@
  */
 import { ConvexError } from "convex/values";
 import { Doc, Id } from "../_generated/dataModel";
-import { MutationCtx } from "../_generated/server";
+import { MutationCtx, QueryCtx } from "../_generated/server";
 import { normalizeEmail } from "./access";
 import type { GivingScope } from "./givingAccess";
 import { territoryForChapter } from "../territories";
@@ -169,14 +169,19 @@ export async function applyLaunchFundDelta(
 
 /**
  * Find a donor in `scope` by lowercased email (the primary dedup key), falling
- * back to an exact trimmed name match when no email is given — the same
- * match-or-create rule the CSV import + event dual-write share. Returns the
- * existing donor doc, or `null`.
+ * back to exact phone, then exact trimmed name — the match-or-create rule the
+ * canonical import (territories P6), the legacy CSV import, and the event
+ * dual-write all share. Phone is a read-only-safe fallback (the
+ * `by_scope_and_phone` index, otherwise unused until P6) for a row that has no
+ * email but does have a phone number. `ctx` is typed `QueryCtx` — every branch
+ * only reads — so this is callable from a `query` (the import preview) as well
+ * as every existing `MutationCtx` caller (a `MutationCtx` satisfies `QueryCtx`
+ * structurally). Returns the existing donor doc, or `null`.
  */
 export async function findDonorInScope(
-  ctx: MutationCtx,
+  ctx: QueryCtx,
   scope: GivingScope,
-  opts: { email?: string; name?: string },
+  opts: { email?: string; phone?: string; name?: string },
 ): Promise<Doc<"donors"> | null> {
   const email = normalizeEmail(opts.email) ?? undefined;
   if (email) {
@@ -187,6 +192,16 @@ export async function findDonorInScope(
       )
       .first();
     if (byEmail) return byEmail;
+  }
+  const phone = opts.phone?.trim() || undefined;
+  if (phone) {
+    const byPhone = await ctx.db
+      .query("donors")
+      .withIndex("by_scope_and_phone", (q) =>
+        q.eq("scope", scope).eq("phone", phone),
+      )
+      .first();
+    if (byPhone) return byPhone;
   }
   const name = opts.name?.trim();
   if (name) {
@@ -257,18 +272,21 @@ export async function linkDonorToPerson(
 }
 
 /**
- * Match-or-create a donor in `scope`. Dedups by lowercased email then exact
- * name (see `findDonorInScope`); a fresh donor starts as a `prospect` with
- * zeroed rollups and bumps the scope's donor + prospect counts. Returns the
- * donor id (existing rows are left untouched — callers patch fields explicitly).
+ * Match-or-create a donor in `scope`. Dedups by lowercased email, then exact
+ * phone, then exact name (see `findDonorInScope`); a fresh donor starts as a
+ * `prospect` with zeroed rollups and bumps the scope's donor + prospect
+ * counts. Returns the donor id (existing rows are left untouched — callers
+ * patch fields explicitly).
  *
  * A brand-new CHAPTER-scope donor is linked to the roster immediately
  * (`linkDonorToPerson`) — central-scope creates no-op there. `phone` is an
- * OPTIONAL arg (most callers — the event dual-write, CSV import — never have
- * one) specifically so it's part of the first-insert record and therefore the
- * first link attempt's phone-match branch; a caller that learns the phone
- * only AFTER this call (or omits it here) relies on `upsertDonor`'s edit-path
- * retry to pick up the link later (see its own doc comment).
+ * OPTIONAL arg (most callers — the event dual-write, legacy CSV import — never
+ * had one; territories P6's canonical import always passes it through)
+ * specifically so it's part of the first-insert record and therefore both the
+ * MATCH step above (the phone fallback) and the first link attempt's
+ * phone-match branch; a caller that learns the phone only AFTER this call (or
+ * omits it here) relies on `upsertDonor`'s edit-path retry to pick up the link
+ * later (see its own doc comment).
  */
 export async function matchOrCreateDonor(
   ctx: MutationCtx,
@@ -286,7 +304,11 @@ export async function matchOrCreateDonor(
   const email = normalizeEmail(args.email) ?? undefined;
   const phone = args.phone?.trim() || undefined;
 
-  const existing = await findDonorInScope(ctx, args.scope, { email, name });
+  const existing = await findDonorInScope(ctx, args.scope, {
+    email,
+    phone,
+    name,
+  });
   if (existing) return existing._id;
 
   const now = Date.now();
