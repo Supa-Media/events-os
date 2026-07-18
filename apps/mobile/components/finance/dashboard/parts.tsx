@@ -274,23 +274,3 @@ export function PeriodSwitch({
     </View>
   );
 }
-
-// ── AI auto-coding banner ────────────────────────────────────────────────────
-/** The static "AI auto-coding is on" explainer strip from the prototype. */
-export function AiCodingBanner() {
-  return (
-    <View className="mb-1 flex-row items-start gap-3 rounded-lg border border-lavender/60 bg-lavender/20 px-4 py-3">
-      <View className="mt-0.5">
-        <Icon name="sparkles" size={16} color={colors.statPurple} />
-      </View>
-      <View className="flex-1">
-        <Text className="text-sm font-semibold text-ink">AI auto-coding is on</Text>
-        <Text className="mt-0.5 text-sm text-muted">
-          New charges get a suggested category & event/project from the card,
-          the time, and what's on the calendar that week — review it in
-          Reconcile and hit Accept. Nothing is coded automatically.
-        </Text>
-      </View>
-    </View>
-  );
-}
