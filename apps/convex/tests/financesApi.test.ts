@@ -1385,3 +1385,229 @@ describe("money-math regression fixes", () => {
     ).rejects.toBeInstanceOf(ConvexError);
   });
 });
+
+/**
+ * DASH-2.1 — owner-reported bugs on the live chapter dashboard's
+ * recurring-bucket cards:
+ *  (1) MONTH mode: a yearly/quarterly bucket showed the SAME cumulative
+ *      year/quarter spend in every month ("Equipment Repairs & Upgrades ·
+ *      Yearly · $978.78/$1,000 · 98%" in Feb AND Apr) — fixed by ADDING
+ *      `periodSpendCents` (month-only spend) alongside the unchanged
+ *      cumulative `spentCents`/`budgetCents` pair.
+ *  (2) YTD mode: a yearly budget's denominator was prorated by elapsed
+ *      months ($1,000/12×5 = $416.65 → "235% · Over" for a pot available all
+ *      year) — fixed by changing `budgetCents`' semantics in place: yearly →
+ *      full cap, quarterly → cap × quarters elapsed, monthly unchanged.
+ */
+describe("DASH-2.1: period-honest recurring buckets", () => {
+  test("bug 1 — yearly bucket: periodSpendCents is month-scoped; cadenceSpendCents/spentCents stays cumulative (identical every month)", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await asManager(s);
+    const year = 2026;
+    const budgetId = await s.as.mutation(api.finances.createBudget, {
+      amountCents: 100_000, // $1,000/yr
+      type: "recurring",
+      cadence: "yearly",
+      year,
+      label: "Equipment Repairs & Upgrades",
+    });
+    await approveBudgetDirect(s, budgetId);
+
+    const marchTxnId = await s.as.mutation(api.finances.createManualTransaction, {
+      flow: "outflow",
+      amountCents: 30_000,
+      postedAt: tsInMonth(year, 3),
+    });
+    await s.as.mutation(api.finances.categorizeTransaction, {
+      transactionId: marchTxnId,
+      budgetId,
+    });
+    const aprilTxnId = await s.as.mutation(api.finances.createManualTransaction, {
+      flow: "outflow",
+      amountCents: 50_000,
+      postedAt: tsInMonth(year, 4),
+    });
+    await s.as.mutation(api.finances.categorizeTransaction, {
+      transactionId: aprilTxnId,
+      budgetId,
+    });
+
+    const march = await s.as.query(api.finances.dashboardChapter, { year, month: 3 });
+    const april = await s.as.query(api.finances.dashboardChapter, { year, month: 4 });
+    const mCard = march.recurringBudgets.find((r) => r.id === budgetId);
+    const aCard = april.recurringBudgets.find((r) => r.id === budgetId);
+
+    // The OLD bug: cumulative spend identical in both months (kept for
+    // backward compat — the deployed UI still reads `spentCents`/`budgetCents`).
+    expect(mCard?.spentCents).toBe(80_000); // 30,000 + 50,000
+    expect(aCard?.spentCents).toBe(80_000);
+    expect(mCard?.cadenceSpendCents).toBe(80_000);
+    expect(aCard?.cadenceSpendCents).toBe(80_000);
+    expect(mCard?.fullCapCents).toBe(100_000);
+    expect(aCard?.fullCapCents).toBe(100_000);
+
+    // The FIX: periodSpendCents is month-honest.
+    expect(mCard?.periodSpendCents).toBe(30_000);
+    expect(aCard?.periodSpendCents).toBe(50_000);
+  });
+
+  test("bug 1 — quarterly bucket: periodSpendCents narrows to the queried month within the quarter", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await asManager(s);
+    const year = 2026;
+    // Recurring quarterly ($900/quarter, no fixed quarter — applies to every
+    // quarter, like a month-less monthly budget applies to every month).
+    const budgetId = await s.as.mutation(api.finances.createBudget, {
+      amountCents: 9_000,
+      type: "recurring",
+      cadence: "quarterly",
+      year,
+    });
+    await approveBudgetDirect(s, budgetId);
+    // Q2 = Apr/May/Jun.
+    const aprilTxnId = await s.as.mutation(api.finances.createManualTransaction, {
+      flow: "outflow",
+      amountCents: 3_000,
+      postedAt: tsInMonth(year, 4),
+    });
+    await s.as.mutation(api.finances.categorizeTransaction, {
+      transactionId: aprilTxnId,
+      budgetId,
+    });
+    const mayTxnId = await s.as.mutation(api.finances.createManualTransaction, {
+      flow: "outflow",
+      amountCents: 2_000,
+      postedAt: tsInMonth(year, 5),
+    });
+    await s.as.mutation(api.finances.categorizeTransaction, {
+      transactionId: mayTxnId,
+      budgetId,
+    });
+
+    const april = await s.as.query(api.finances.dashboardChapter, { year, month: 4 });
+    const may = await s.as.query(api.finances.dashboardChapter, { year, month: 5 });
+    const aCard = april.recurringBudgets.find((r) => r.id === budgetId);
+    const mCard = may.recurringBudgets.find((r) => r.id === budgetId);
+
+    // Old bug: same whole-quarter cumulative in both months.
+    expect(aCard?.spentCents).toBe(5_000);
+    expect(mCard?.spentCents).toBe(5_000);
+    // Fix: month-honest.
+    expect(aCard?.periodSpendCents).toBe(3_000);
+    expect(mCard?.periodSpendCents).toBe(2_000);
+  });
+
+  test("bug 1 — monthly bucket: periodSpendCents equals the pre-existing spentCents (already month-scoped)", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await asManager(s);
+    const year = 2026;
+    const budgetId = await s.as.mutation(api.finances.createBudget, {
+      amountCents: 200_000,
+      type: "recurring",
+      cadence: "monthly",
+      year,
+    });
+    await approveBudgetDirect(s, budgetId);
+    const txnId = await s.as.mutation(api.finances.createManualTransaction, {
+      flow: "outflow",
+      amountCents: 5_000,
+      postedAt: tsInMonth(year, 6),
+    });
+    await s.as.mutation(api.finances.categorizeTransaction, { transactionId: txnId, budgetId });
+
+    const june = await s.as.query(api.finances.dashboardChapter, { year, month: 6 });
+    const card = june.recurringBudgets.find((r) => r.id === budgetId);
+    expect(card?.spentCents).toBe(5_000);
+    expect(card?.periodSpendCents).toBe(5_000);
+    expect(card?.cadenceSpendCents).toBe(5_000);
+  });
+
+  test("bug 2 — YTD yearly denominator is the FULL cap (owner scenario: $978.78/$1,000 = 98%, not prorated)", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await asManager(s);
+    const year = 2026;
+    const budgetId = await s.as.mutation(api.finances.createBudget, {
+      amountCents: 100_000, // $1,000/yr
+      type: "recurring",
+      cadence: "yearly",
+      year,
+    });
+    await approveBudgetDirect(s, budgetId);
+    // $500.00 Jan + $478.78 Apr = $978.78 through April.
+    const janTxnId = await s.as.mutation(api.finances.createManualTransaction, {
+      flow: "outflow",
+      amountCents: 50_000,
+      postedAt: tsInMonth(year, 1),
+    });
+    await s.as.mutation(api.finances.categorizeTransaction, { transactionId: janTxnId, budgetId });
+    const aprTxnId = await s.as.mutation(api.finances.createManualTransaction, {
+      flow: "outflow",
+      amountCents: 47_878,
+      postedAt: tsInMonth(year, 4),
+    });
+    await s.as.mutation(api.finances.categorizeTransaction, { transactionId: aprTxnId, budgetId });
+
+    const ytdApril = await s.as.query(api.finances.dashboardChapter, {
+      year,
+      month: 4,
+      period: "ytd",
+    });
+    const card = ytdApril.recurringBudgets.find((r) => r.id === budgetId);
+    // Old bug: budgetCents = 100,000/12 × 4 = 33,333 (way over 100%).
+    expect(card?.budgetCents).toBe(100_000); // full cap, not prorated
+    expect(card?.spentCents).toBe(97_878);
+    expect(card?.pct).toBe(98); // 978.78 / 1,000 rounded
+    expect(card?.status).toBe("warn");
+  });
+
+  test("bug 2 — YTD quarterly denominator is cap × QUARTERS elapsed, not cap/3 × months elapsed", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await asManager(s);
+    const year = 2026;
+    // $900/quarter, recurring (no fixed quarter).
+    const budgetId = await s.as.mutation(api.finances.createBudget, {
+      amountCents: 9_000,
+      type: "recurring",
+      cadence: "quarterly",
+      year,
+    });
+    await approveBudgetDirect(s, budgetId);
+
+    // Through May (month 5): 2 quarters have started (Q1 complete, Q2
+    // in progress) — old (buggy) per-month sum would give 9,000/3 × 5 = 15,000.
+    const ytdMay = await s.as.query(api.finances.dashboardChapter, {
+      year,
+      month: 5,
+      period: "ytd",
+    });
+    const card = ytdMay.recurringBudgets.find((r) => r.id === budgetId);
+    expect(card?.budgetCents).toBe(18_000); // 9,000 × 2 quarters elapsed
+  });
+
+  test("bug 2 — YTD monthly denominator is unchanged (cap × months elapsed)", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await asManager(s);
+    const year = 2026;
+    const budgetId = await s.as.mutation(api.finances.createBudget, {
+      amountCents: 200_000, // $2,000/mo
+      type: "recurring",
+      cadence: "monthly",
+      year,
+    });
+    await approveBudgetDirect(s, budgetId);
+
+    const ytdMarch = await s.as.query(api.finances.dashboardChapter, {
+      year,
+      month: 3,
+      period: "ytd",
+    });
+    const card = ytdMarch.recurringBudgets.find((r) => r.id === budgetId);
+    expect(card?.budgetCents).toBe(600_000); // 200,000 × 3 months, unchanged
+  });
+});

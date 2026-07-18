@@ -1,6 +1,6 @@
 /// <reference types="vite/client" />
 import { afterEach, describe, expect, test, vi } from "vitest";
-import { newT, run, setupChapter, type ChapterSetup } from "./setup.helpers";
+import { newT, run, setupChapter, storeBlob, type ChapterSetup } from "./setup.helpers";
 import { api } from "../_generated/api";
 import type { Id } from "../_generated/dataModel";
 import { CENTRAL } from "@events-os/shared";
@@ -631,5 +631,409 @@ describe("parity with dashboardCentral / dashboardChapter / dashboardDrill", () 
     expect(healthRows.find((r) => r.chapterId === s.chapterId)!.pendingApprovalsCount).toBe(2);
     expect(healthRows.find((r) => r.chapterId === otherChapter)!.pendingApprovalsCount).toBe(1);
     expect(healthRows.find((r) => r.chapterId === CENTRAL)!.pendingApprovalsCount).toBe(1);
+  });
+
+  test("(d) DASH-2.1 bug 2 — chapterHealth's cadence-aware YTD denominator (`ytdCadenceAllocationCentsLocal`) matches dashboardCentral's own (`ytdCadenceAllocationCents` in finances.ts), pinned to exact values so the two implementations can't silently drift", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await asCentral(s, "manager");
+
+    freezeNow(Date.UTC(2026, 4, 17, 16, 0, 0)); // May 17 2026 -> throughMonth = 5
+
+    // Yearly: full cap regardless of elapsed months (owner bug — was
+    // prorated cap/12 × monthsElapsed).
+    await insertBudget(s, {
+      chapterId: s.chapterId,
+      amountCents: 100_000,
+      year: 2026,
+      cadence: "yearly",
+    });
+    // Quarterly, no fixed quarter: cap × quarters elapsed. By May, Q1 is
+    // complete and Q2 has started -> 2 quarters -> 9,000 × 2 = 18,000 (the
+    // OLD per-month sum would have given 9,000/3 × 5 = 15,000).
+    await insertBudget(s, {
+      chapterId: s.chapterId,
+      amountCents: 9_000,
+      year: 2026,
+      cadence: "quarterly",
+    });
+
+    const [healthRows, chapterDash] = await Promise.all([
+      s.as.query(api.dashboardCharts.chapterHealth, {}),
+      s.as.query(api.finances.dashboardChapter, { year: 2026, month: 5, period: "ytd" }),
+    ]);
+
+    const healthRow = healthRows.find((r) => r.chapterId === s.chapterId)!;
+    // dashboardChapter's own recurring cards use the exact same
+    // `monthEquivForDash`/`ytdCadenceAllocationCents` finances.ts pair.
+    const yearlyCard = chapterDash.recurringBudgets.find((r) => r.cadence === "yearly")!;
+    const quarterlyCard = chapterDash.recurringBudgets.find((r) => r.cadence === "quarterly")!;
+    expect(yearlyCard.budgetCents).toBe(100_000);
+    expect(quarterlyCard.budgetCents).toBe(18_000);
+
+    // The by-chapter rollup (`chapterHealth.budgetYtdCents`, backed by the
+    // LOCAL duplicate) sums EVERY chapter budget's YTD allocation -> the two
+    // cards above, added together.
+    expect(healthRow.budgetYtdCents).toBe(yearlyCard.budgetCents + quarterlyCard.budgetCents);
+    expect(healthRow.budgetYtdCents).toBe(118_000);
+  });
+});
+
+// ── budgetTransactions (DASH-2.1 bug 3) ───────────────────────────────────────
+
+async function insertFund(s: ChapterSetup, chapterId: Id<"chapters">): Promise<Id<"funds">> {
+  return run(s.t, (ctx) =>
+    ctx.db.insert("funds", {
+      chapterId,
+      name: "General",
+      restriction: "unrestricted",
+      sortOrder: 0,
+      createdAt: Date.now(),
+    }),
+  );
+}
+
+async function insertCategory(
+  s: ChapterSetup,
+  chapterId: Id<"chapters">,
+  fundId: Id<"funds">,
+  name: string,
+): Promise<Id<"budgetCategories">> {
+  return run(s.t, (ctx) =>
+    ctx.db.insert("budgetCategories", {
+      chapterId,
+      fundId,
+      name,
+      kind: "lineItem",
+      createdAt: Date.now(),
+    }),
+  );
+}
+
+async function insertPerson(
+  s: ChapterSetup,
+  chapterId: Id<"chapters">,
+  name: string,
+): Promise<Id<"people">> {
+  return run(s.t, (ctx) => ctx.db.insert("people", { chapterId, name, createdAt: Date.now() }));
+}
+
+async function insertCard(
+  s: ChapterSetup,
+  chapterId: Id<"chapters">,
+  cardholderPersonId: Id<"people">,
+): Promise<Id<"cards">> {
+  return run(s.t, (ctx) =>
+    ctx.db.insert("cards", {
+      chapterId,
+      cardholderPersonId,
+      type: "virtual",
+      status: "active",
+      createdAt: Date.now(),
+    }),
+  );
+}
+
+describe("budgetTransactions", () => {
+  test("filters to the budget + period + category, sorted newest-first", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await asChapterManager(s);
+    const budgetId = await insertBudget(s, {
+      chapterId: s.chapterId,
+      amountCents: 100_000,
+      year: 2026,
+      cadence: "yearly",
+    });
+    const fundId = await insertFund(s, s.chapterId);
+    const catA = await insertCategory(s, s.chapterId, fundId, "Parts");
+    const catB = await insertCategory(s, s.chapterId, fundId, "Labor");
+
+    // In period + category A.
+    const inPeriodA1 = await insertTxn(s, {
+      chapterId: s.chapterId,
+      amountCents: 3_000,
+      postedAt: tsInMonth(2026, 3, 10),
+      budgetId,
+    });
+    await run(s.t, (ctx) => ctx.db.patch(inPeriodA1, { categoryId: catA, status: "categorized" }));
+    const inPeriodA2 = await insertTxn(s, {
+      chapterId: s.chapterId,
+      amountCents: 5_000,
+      postedAt: tsInMonth(2026, 3, 20),
+      budgetId,
+    });
+    await run(s.t, (ctx) => ctx.db.patch(inPeriodA2, { categoryId: catA, status: "categorized" }));
+    // In period, different category — must be excluded by the categoryId filter.
+    const inPeriodB = await insertTxn(s, {
+      chapterId: s.chapterId,
+      amountCents: 9_000,
+      postedAt: tsInMonth(2026, 3, 15),
+      budgetId,
+    });
+    await run(s.t, (ctx) => ctx.db.patch(inPeriodB, { categoryId: catB, status: "categorized" }));
+    // Outside the period (April, category A) — must be excluded by the month filter.
+    const outsidePeriod = await insertTxn(s, {
+      chapterId: s.chapterId,
+      amountCents: 7_000,
+      postedAt: tsInMonth(2026, 4, 1),
+      budgetId,
+    });
+    await run(s.t, (ctx) => ctx.db.patch(outsidePeriod, { categoryId: catA }));
+    // Linked to the budget but NOT spend (a transfer leg) — must be excluded.
+    await insertTxn(s, {
+      chapterId: s.chapterId,
+      amountCents: 99_000,
+      postedAt: tsInMonth(2026, 3, 12),
+      budgetId,
+      flow: "transfer",
+    });
+
+    const res = await s.as.query(api.dashboardCharts.budgetTransactions, {
+      budgetId,
+      categoryId: catA,
+      year: 2026,
+      month: 3,
+    });
+    expect(res.totalCount).toBe(2);
+    expect(res.rows.map((r) => r.id)).toEqual([inPeriodA2, inPeriodA1]); // newest first
+    expect(res.rows.every((r) => r.categoryName === "Parts")).toBe(true);
+  });
+
+  test("'uncategorized' sentinel matches only rows with no categoryId", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await asChapterManager(s);
+    const budgetId = await insertBudget(s, {
+      chapterId: s.chapterId,
+      amountCents: 10_000,
+      year: 2026,
+    });
+    const fundId = await insertFund(s, s.chapterId);
+    const catA = await insertCategory(s, s.chapterId, fundId, "Parts");
+
+    const uncategorizedTxn = await insertTxn(s, {
+      chapterId: s.chapterId,
+      amountCents: 1_000,
+      postedAt: tsInMonth(2026, 6),
+      budgetId,
+    });
+    const categorizedTxn = await insertTxn(s, {
+      chapterId: s.chapterId,
+      amountCents: 2_000,
+      postedAt: tsInMonth(2026, 6),
+      budgetId,
+    });
+    await run(s.t, (ctx) => ctx.db.patch(categorizedTxn, { categoryId: catA }));
+
+    const res = await s.as.query(api.dashboardCharts.budgetTransactions, {
+      budgetId,
+      categoryId: "uncategorized",
+      year: 2026,
+      month: 6,
+    });
+    expect(res.rows.map((r) => r.id)).toEqual([uncategorizedTxn]);
+
+    // No categoryId arg at all -> every row in the period, uncategorized AND categorized.
+    const allRes = await s.as.query(api.dashboardCharts.budgetTransactions, {
+      budgetId,
+      year: 2026,
+      month: 6,
+    });
+    expect(allRes.totalCount).toBe(2);
+  });
+
+  test("caps rows at 200 but reports the true totalCount", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await asChapterManager(s);
+    const budgetId = await insertBudget(s, {
+      chapterId: s.chapterId,
+      amountCents: 10_000_000,
+      year: 2026,
+      cadence: "yearly",
+    });
+    for (let i = 0; i < 210; i++) {
+      await insertTxn(s, {
+        chapterId: s.chapterId,
+        amountCents: 100,
+        postedAt: tsInMonth(2026, 1, 1) + i * 60_000,
+        budgetId,
+      });
+    }
+    const res = await s.as.query(api.dashboardCharts.budgetTransactions, {
+      budgetId,
+      year: 2026,
+    });
+    expect(res.rows).toHaveLength(200);
+    expect(res.totalCount).toBe(210);
+  });
+
+  test("resolves receipt presence, category name, and person name (direct + card-cardholder fallback)", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await asChapterManager(s);
+    const budgetId = await insertBudget(s, {
+      chapterId: s.chapterId,
+      amountCents: 10_000,
+      year: 2026,
+    });
+    const fundId = await insertFund(s, s.chapterId);
+    const catA = await insertCategory(s, s.chapterId, fundId, "Parts");
+    const directPerson = await insertPerson(s, s.chapterId, "Direct Spender");
+    const cardholder = await insertPerson(s, s.chapterId, "Cardholder Spender");
+    const cardId = await insertCard(s, s.chapterId, cardholder);
+    const storageId = await storeBlob(s.t);
+
+    // Direct personId, WITH a receipt.
+    const directTxnId = await insertTxn(s, {
+      chapterId: s.chapterId,
+      amountCents: 1_500,
+      postedAt: tsInMonth(2026, 2),
+      budgetId,
+    });
+    await run(s.t, (ctx) =>
+      ctx.db.patch(directTxnId, {
+        categoryId: catA,
+        personId: directPerson,
+        receiptStorageId: storageId,
+        note: "Reimbursed via check",
+      }),
+    );
+    // Card-only (no personId) — must resolve to the cardholder, NO receipt.
+    const cardTxnId = await insertTxn(s, {
+      chapterId: s.chapterId,
+      amountCents: 2_500,
+      postedAt: tsInMonth(2026, 2),
+      budgetId,
+    });
+    await run(s.t, (ctx) => ctx.db.patch(cardTxnId, { cardId }));
+
+    const res = await s.as.query(api.dashboardCharts.budgetTransactions, {
+      budgetId,
+      year: 2026,
+      month: 2,
+    });
+    const directRow = res.rows.find((r) => r.id === directTxnId)!;
+    const cardRow = res.rows.find((r) => r.id === cardTxnId)!;
+
+    expect(directRow.personId).toBe(directPerson);
+    expect(directRow.personName).toBe("Direct Spender");
+    expect(directRow.categoryName).toBe("Parts");
+    expect(directRow.hasReceipt).toBe(true);
+    expect(directRow.note).toBe("Reimbursed via check");
+
+    expect(cardRow.personId).toBe(cardholder);
+    expect(cardRow.personName).toBe("Cardholder Spender");
+    expect(cardRow.hasReceipt).toBe(false);
+    expect(cardRow.categoryName).toBeNull();
+  });
+
+  test("authz: a plain chapter manager (no central reach) is REJECTED from a foreign chapter's budget", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await asChapterManager(s);
+    const otherChapter = await makeChapter(s, "Austin");
+    const foreignBudgetId = await insertBudget(s, {
+      chapterId: otherChapter,
+      amountCents: 10_000,
+      year: 2026,
+    });
+
+    await expect(
+      s.as.query(api.dashboardCharts.budgetTransactions, {
+        budgetId: foreignBudgetId,
+        year: 2026,
+      }),
+    ).rejects.toThrow();
+  });
+
+  test("authz: a plain chapter manager (no central reach) is REJECTED from a CENTRAL budget", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await asChapterManager(s);
+    const centralBudgetId = await insertBudget(s, {
+      chapterId: CENTRAL,
+      amountCents: 10_000,
+      year: 2026,
+    });
+
+    await expect(
+      s.as.query(api.dashboardCharts.budgetTransactions, {
+        budgetId: centralBudgetId,
+        year: 2026,
+      }),
+    ).rejects.toThrow();
+  });
+
+  test("authz: a central-reach caller CAN read a foreign chapter's budget AND a CENTRAL budget", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await asCentral(s, "viewer");
+    const otherChapter = await makeChapter(s, "Austin");
+    const foreignBudgetId = await insertBudget(s, {
+      chapterId: otherChapter,
+      amountCents: 10_000,
+      year: 2026,
+    });
+    const centralBudgetId = await insertBudget(s, {
+      chapterId: CENTRAL,
+      amountCents: 10_000,
+      year: 2026,
+    });
+
+    await expect(
+      s.as.query(api.dashboardCharts.budgetTransactions, {
+        budgetId: foreignBudgetId,
+        year: 2026,
+      }),
+    ).resolves.toBeDefined();
+    await expect(
+      s.as.query(api.dashboardCharts.budgetTransactions, {
+        budgetId: centralBudgetId,
+        year: 2026,
+      }),
+    ).resolves.toBeDefined();
+  });
+
+  test("authz: a viewer role IS enough to read their own chapter's budget", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const personId = await seedSelfPerson(s);
+    await run(s.t, (ctx) =>
+      ctx.db.insert("financeRoles", {
+        chapterId: s.chapterId,
+        personId,
+        role: "viewer",
+        scope: "chapter",
+        createdAt: Date.now(),
+      }),
+    );
+    const budgetId = await insertBudget(s, {
+      chapterId: s.chapterId,
+      amountCents: 10_000,
+      year: 2026,
+    });
+
+    await expect(
+      s.as.query(api.dashboardCharts.budgetTransactions, { budgetId, year: 2026 }),
+    ).resolves.toBeDefined();
+  });
+
+  test("throws NOT_FOUND for a nonexistent budget", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await asChapterManager(s);
+    const budgetId = await insertBudget(s, {
+      chapterId: s.chapterId,
+      amountCents: 10_000,
+      year: 2026,
+    });
+    // Delete it out from under the query.
+    await run(s.t, (ctx) => ctx.db.delete(budgetId));
+
+    await expect(
+      s.as.query(api.dashboardCharts.budgetTransactions, { budgetId, year: 2026 }),
+    ).rejects.toThrow();
   });
 });

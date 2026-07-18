@@ -1,26 +1,28 @@
 /**
- * DASHBOARD CHART QUERIES (DASH-1) — backend for the chart-led dashboard
- * redesign: a spend-by-month bar chart (which doubles as the page's period
- * filter, with per-chapter sparklines) and a "Chapters at a glance" fleet
- * panel.
+ * DASHBOARD CHART QUERIES (DASH-1, extended DASH-2.1) — backend for the
+ * chart-led dashboard redesign: a spend-by-month bar chart (which doubles as
+ * the page's period filter, with per-chapter sparklines), a "Chapters at a
+ * glance" fleet panel, and (DASH-2.1) a per-budget transaction drill-down.
  *
- * Lives in its own file, mirroring `dashboardDrill.ts`'s precedent: this PR's
- * ownership is scoped to a NEW file only, and `finances.ts` must not be
- * touched. A handful of small helpers below are DELIBERATE, COMMENTED
- * duplicates of unexported `finances.ts` helpers (`loadPeriodTxns` →
- * `loadYearTxnsLocal`, `inDashRange` → `inYtdRangeLocal`,
- * `monthEquivalentBudgetCents`/`monthEquivForDash`/`budgetAllocationForDash`
- * → the `*Local` variants below, `sumSpend` → `sumSpendLocal`) — they can't be
- * imported because `finances.ts` doesn't export them, and this file must not
- * modify that one. Where possible they're built from EXPORTED primitives
+ * Lives in its own file, mirroring `dashboardDrill.ts`'s precedent. DASH-1's
+ * ownership was scoped to this NEW file only, with `finances.ts` untouched —
+ * DASH-2.1 owns BOTH files (the same PR/agent), so where a fix needed to
+ * apply to a value `finances.ts` itself computes (the YTD denominator bug —
+ * see `ytdCadenceAllocationCentsLocal`'s doc comment), it was made in
+ * `finances.ts` directly AND mirrored here, not routed around. The
+ * DELIBERATE, COMMENTED duplicates of unexported `finances.ts` helpers below
+ * predate that (`loadPeriodTxns` → `loadYearTxnsLocal`, `inDashRange` →
+ * `inYtdRangeLocal`, `monthEquivalentBudgetCents`/`monthEquivForDash`/
+ * `budgetAllocationForDash` → the `*Local` variants, `sumSpend` →
+ * `sumSpendLocal`) and are KEPT duplicated rather than consolidated into
+ * imports — `dashboardCharts.test.ts` carries a PARITY test against the real
+ * `dashboardCentral`/`dashboardChapter`/`dashboardDrill.pendingBudgetApprovals`
+ * numbers for the same fixture (the PR #231 lesson: drill-down numbers MUST
+ * agree with the banners they sit next to), so the two can never silently
+ * drift apart. Where possible they're built from EXPORTED primitives
  * (`isSpend`, `txnMatchesMode`, `effectiveCapCents`, `effectiveType`,
  * `ROLLUP_SCAN_LIMIT`) instead of re-deriving semantics; where a formula has
- * to be copied wholesale, the comment says so and `dashboardCharts.test.ts`
- * carries a PARITY test against the real `dashboardCentral`/`dashboardChapter`/
- * `dashboardDrill.pendingBudgetApprovals` numbers for the same fixture — the
- * PR #231 lesson (drill-down numbers MUST agree with the banners they sit
- * next to). If `finances.ts` ever exports the originals, delete these
- * duplicates in favor of them.
+ * to be copied wholesale, the comment says so.
  *
  * `chapterHealth`'s per-row PARTITION (chapter-owned spend excluding
  * central-linked vs. central-owned-plus-chapter-linked-to-central — see
@@ -29,7 +31,7 @@
  * `bucketSpendByMonthFiltered`), so the two always agree — see the
  * "monthlySpendCents partitions like spendYtdCents" test.
  *
- * Both queries are read-only and change no money invariant.
+ * All queries are read-only and change no money invariant.
  */
 import { ConvexError, v } from "convex/values";
 import { query } from "./_generated/server";
@@ -40,6 +42,8 @@ import {
   easternParts,
   quarterOfMonth,
   chapterAffordability as chapterAffordabilityCalc,
+  TRANSACTION_FLOWS,
+  TRANSACTION_STATUSES,
 } from "@events-os/shared";
 import { getChapterIdOrNull, requireChapterId } from "./lib/context";
 import { requireFinanceRole, requireFinanceCentral } from "./lib/finance";
@@ -49,6 +53,7 @@ import {
   txnMatchesMode,
   effectiveCapCents,
   effectiveType,
+  inPeriod,
   ROLLUP_SCAN_LIMIT,
 } from "./finances";
 
@@ -179,8 +184,37 @@ function monthEquivalentBudgetCentsLocal(
 }
 
 /**
+ * Duplicate of `finances.ts`'s private `ytdCadenceAllocationCents`
+ * (unexported) — BYTE-EQUIVALENT to the original (DASH-2.1 bug 2: the YTD
+ * denominator for a recurring budget is NOT a per-month sum for
+ * `quarterly`/`yearly` — see that function's doc comment for the full
+ * reasoning + the exact owner-reported scenario it fixes). `null` (not the
+ * `finances.ts` original's own private `DashPeriod`-shaped `dp`, which this
+ * file has no equivalent type for) falls through to the caller's unchanged
+ * per-month-sum loop for `monthly`/`per_instance`/`one_off`.
+ */
+function ytdCadenceAllocationCentsLocal(
+  b: Doc<"budgets">,
+  throughMonth: number,
+): number | null {
+  const capCents = effectiveCapCents(b);
+  if (b.cadence === "yearly") return capCents;
+  if (b.cadence === "quarterly") {
+    if (b.quarter != null) {
+      const quarterStartMonth = (b.quarter - 1) * 3 + 1;
+      return quarterStartMonth <= throughMonth ? capCents : 0;
+    }
+    const quartersElapsed = Math.ceil(throughMonth / 3);
+    return capCents * quartersElapsed;
+  }
+  return null;
+}
+
+/**
  * Duplicate of `finances.ts`'s private `monthEquivForDash` (unexported),
- * narrowed to the YTD case only: sums `monthEquivalentBudgetCentsLocal`
+ * narrowed to the YTD case only: the cadence-aware YTD allocation
+ * (`ytdCadenceAllocationCentsLocal` — DASH-2.1 bug 2) for `quarterly`/
+ * `yearly`, else the unchanged sum of `monthEquivalentBudgetCentsLocal`
  * across months 1..throughMonth. Applied uniformly to EVERY budget of a
  * chapter (one_time included) — mirrors `dashboardCentral`'s own by-chapter
  * rollup, which reduces `chBudgets` with `monthEquivForDash` regardless of
@@ -192,6 +226,10 @@ function monthEquivForDashYtdLocal(
   year: number,
   throughMonth: number,
 ): number {
+  if (b.year === year) {
+    const cadenceAllocation = ytdCadenceAllocationCentsLocal(b, throughMonth);
+    if (cadenceAllocation != null) return cadenceAllocation;
+  }
   let sum = 0;
   for (let m = 1; m <= throughMonth; m++) {
     sum += monthEquivalentBudgetCentsLocal(b, year, m);
@@ -588,5 +626,182 @@ export const chapterHealth = query({
     });
 
     return rows;
+  },
+});
+
+// ── (c) budgetTransactions — the category→transactions drill-down (DASH-2.1) ─
+
+const budgetTxnFlowValidator = v.union(...TRANSACTION_FLOWS.map((f) => v.literal(f)));
+const budgetTxnStatusValidator = v.union(...TRANSACTION_STATUSES.map((s) => v.literal(s)));
+
+const budgetTxnRow = v.object({
+  id: v.id("transactions"),
+  // Eastern-bucketed elsewhere; the raw ms timestamp here — the client
+  // formats it (mirrors every other "date" field this dashboard's cards
+  // return as a display-ready value EXCEPT this one, which a detail modal
+  // needs as a real timestamp to sort/re-bucket by).
+  date: v.number(),
+  description: v.union(v.string(), v.null()),
+  merchantName: v.union(v.string(), v.null()),
+  amountCents: v.number(),
+  flow: budgetTxnFlowValidator,
+  categoryId: v.union(v.id("budgetCategories"), v.null()),
+  categoryName: v.union(v.string(), v.null()),
+  // The resolved "who spent this" — the txn's own `personId`, falling back to
+  // its card's cardholder (mirrors `listReconcile`'s `resolveCardholder`).
+  personId: v.union(v.id("people"), v.null()),
+  personName: v.union(v.string(), v.null()),
+  hasReceipt: v.boolean(),
+  // Reconcile-detail-modal fields: the RAW status (never narrowed — a
+  // `budgetTransactions` row can be edited via the existing reconcile
+  // mutations, which need the true current status to decide what's offered),
+  // the personal-charge flag, and the bookkeeper's freeform note.
+  status: budgetTxnStatusValidator,
+  isPersonal: v.boolean(),
+  note: v.union(v.string(), v.null()),
+});
+
+// Bounded output — a category/budget drill-down is a UI list, not a report;
+// `totalCount` (below) tells the client when it's been truncated.
+const BUDGET_TXN_DRILLDOWN_CAP = 200;
+
+/**
+ * DASH-2.1 (bug 3): the spend transactions attributed to one budget
+ * (optionally narrowed to one category, or the `"uncategorized"` sentinel),
+ * for a given year (+ optional month) — powers a category→transactions
+ * drill-down and a click-to-view/edit detail modal. Editing reuses the
+ * EXISTING reconcile mutations (`finances.categorizeTransaction`,
+ * `finances.setTransactionNote`, `finances.flagPersonal`, `finances.excludeTransaction`,
+ * `finances.attachReceipt`, …) — this query adds no new write path.
+ *
+ * "Spend" is the SAME `isSpend` gate every budget/category total on this
+ * dashboard already sums with (outflow, non-transfer, non-excluded,
+ * non-personal) — so this list's rows always sum to EXACTLY the card/rollup
+ * total a user clicked through from (the PR #231 lesson again: a drill-down
+ * that used a looser filter than the number it drills into would show
+ * different totals than what it's explaining). An excluded/personal/transfer
+ * leg that was ever linked to this budget is intentionally NOT listed here —
+ * it isn't part of this budget's spend by definition; it's still reachable
+ * (and editable) via the main Reconcile grid.
+ *
+ * Period: `inPeriod(postedAt, year, month)` — the caller's own year/month,
+ * independent of the budget's cadence/declared month (a click on a specific
+ * month bar of a yearly bucket's breakdown asks for THAT month's txns, not
+ * whatever month the budget itself happens to be stamped to).
+ *
+ * Gate: same access as viewing that budget's chapter dashboard — the budget's
+ * OWN chapter (`viewer` role), or central reach through the caller's own home
+ * chapter for a budget owned by a different chapter or by `"central"`
+ * (mirrors `dashboardChapter`'s optional-chapterId central drill-down gate,
+ * `spendByMonth`'s gate above, and every other central-drill-down site in
+ * this codebase). `ConvexError` otherwise.
+ */
+export const budgetTransactions = query({
+  args: {
+    budgetId: v.id("budgets"),
+    categoryId: v.optional(v.union(v.id("budgetCategories"), v.literal("uncategorized"))),
+    year: v.number(),
+    month: v.optional(v.number()),
+  },
+  returns: v.object({
+    rows: v.array(budgetTxnRow),
+    totalCount: v.number(),
+  }),
+  handler: async (ctx, args) => {
+    const budget = await ctx.db.get(args.budgetId);
+    if (!budget) {
+      throw new ConvexError({ code: "NOT_FOUND", message: "Budget not found." });
+    }
+
+    const ownChapterId = (await getChapterIdOrNull(ctx)) as Id<"chapters"> | null;
+    if (budget.chapterId !== ownChapterId) {
+      if (!ownChapterId) {
+        throw new ConvexError({
+          code: "NO_CHAPTER",
+          message: "You don't belong to a chapter yet.",
+        });
+      }
+      await requireFinanceCentral(ctx, ownChapterId);
+    } else {
+      await requireFinanceRole(ctx, ownChapterId, "viewer");
+    }
+
+    const sandboxMode = await readSandbox(ctx);
+    const linked = await ctx.db
+      .query("transactions")
+      .withIndex("by_budget", (q) => q.eq("budgetId", args.budgetId))
+      .take(ROLLUP_SCAN_LIMIT);
+    if (linked.length === ROLLUP_SCAN_LIMIT) {
+      console.warn(
+        `[dashboardCharts] budgetTransactions hit ROLLUP_SCAN_LIMIT (${ROLLUP_SCAN_LIMIT}) for budget ${args.budgetId}; result truncated.`,
+      );
+    }
+
+    const matching = linked.filter((tr) => {
+      if (!txnMatchesMode(tr, sandboxMode) || !isSpend(tr)) return false;
+      if (!inPeriod(tr.postedAt, args.year, args.month)) return false;
+      if (args.categoryId == null) return true;
+      return args.categoryId === "uncategorized"
+        ? tr.categoryId == null
+        : tr.categoryId === args.categoryId;
+    });
+    matching.sort((a, b) => b.postedAt - a.postedAt);
+
+    const totalCount = matching.length;
+    const page = matching.slice(0, BUDGET_TXN_DRILLDOWN_CAP);
+
+    // Read-through caches — bounded to the page's own distinct refs.
+    const categoryCache = new Map<Id<"budgetCategories">, string | null>();
+    const personCache = new Map<Id<"people">, string | null>();
+    const cardCache = new Map<Id<"cards">, Doc<"cards"> | null>();
+
+    const rows: (typeof budgetTxnRow.type)[] = [];
+    for (const tr of page) {
+      let categoryName: string | null = null;
+      if (tr.categoryId) {
+        if (!categoryCache.has(tr.categoryId)) {
+          const cat = await ctx.db.get(tr.categoryId);
+          categoryCache.set(tr.categoryId, cat?.name ?? null);
+        }
+        categoryName = categoryCache.get(tr.categoryId) ?? null;
+      }
+
+      // Cardholder resolution mirrors `listReconcile`'s `resolveCardholder`:
+      // the txn's own `personId`, falling back to its card's cardholder.
+      let personId = tr.personId ?? null;
+      if (!personId && tr.cardId) {
+        if (!cardCache.has(tr.cardId)) {
+          cardCache.set(tr.cardId, await ctx.db.get(tr.cardId));
+        }
+        personId = cardCache.get(tr.cardId)?.cardholderPersonId ?? null;
+      }
+      let personName: string | null = null;
+      if (personId) {
+        if (!personCache.has(personId)) {
+          const person = await ctx.db.get(personId);
+          personCache.set(personId, person?.name ?? null);
+        }
+        personName = personCache.get(personId) ?? null;
+      }
+
+      rows.push({
+        id: tr._id,
+        date: tr.postedAt,
+        description: tr.description ?? null,
+        merchantName: tr.merchantName ?? null,
+        amountCents: tr.amountCents,
+        flow: tr.flow,
+        categoryId: tr.categoryId ?? null,
+        categoryName,
+        personId,
+        personName,
+        hasReceipt: tr.receiptStorageId != null,
+        status: tr.status,
+        isPersonal: tr.isPersonal === true,
+        note: tr.note ?? null,
+      });
+    }
+
+    return { rows, totalCount };
   },
 });
