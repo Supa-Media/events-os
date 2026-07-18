@@ -312,6 +312,7 @@ const REGISTRY_NAMES = [
   "0027_sync_linked_budget_identity",
   "0028_reaward_course_completions",
   "0029_territories_cutover",
+  "0030_backfill_launch_fund",
 ];
 const SEEDED_HISTORICAL = [
   "backfillMissingDefaultColumns",
