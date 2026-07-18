@@ -31,9 +31,20 @@ export const aiUsageEvents = defineTable({
   // union just keeps this table ready for a future central-scoped caller
   // without a schema migration.
   chapterId: v.union(v.id("chapters"), v.literal("central")),
-  // How the call originated: the hourly cron sweep (`sweepUnsuggestedTransactions`)
-  // or a bookkeeper manually requesting a suggestion (`suggestCoding`).
-  triggeredBy: v.union(v.literal("sweep"), v.literal("manual")),
+  // How the call originated: the hourly cron sweep
+  // (`sweepUnsuggestedTransactions`, now mostly a backstop), the DEBOUNCED
+  // on-ingest sweep that fires soon after a new transaction lands
+  // (`ingestSuggestionSweep` — see `aiCodingData.ts`'s "ON-INGEST HOOK" doc
+  // comment), or a bookkeeper manually requesting a suggestion via the
+  // Reconcile grid's per-row "Suggest" button (`suggestCoding`). "sweep" and
+  // "ingest" share the exact same eligibility rule and model-call cap
+  // (`runSuggestionSweep`) — this field is purely for the audit trail so the
+  // two triggers show up distinctly in the Accounts tab's AI usage log.
+  triggeredBy: v.union(
+    v.literal("sweep"),
+    v.literal("ingest"),
+    v.literal("manual"),
+  ),
   // The transaction this call was coding, when the call was transaction-scoped
   // (always true for `finance_auto_coding` today, but optional so the shape
   // holds for a future feature-level call with no single subject).
@@ -77,3 +88,29 @@ export const aiUsageEvents = defineTable({
 })
   .index("by_chapter_and_time", ["chapterId", "createdAt"])
   .index("by_transaction", ["subjectTransactionId"]);
+
+/**
+ * ONE-ROW debounce mutex for the on-ingest suggestion trigger (see
+ * `aiCodingData.ts`'s `scheduleSuggestionOnIngest` / `ingestSuggestionSweep`).
+ * A transaction-creating mutation (the Increase webhook apply path, the
+ * manual-add path) flips `pending` to `true` and schedules
+ * `ingestSuggestionSweep` ONLY when no sweep is already scheduled — every
+ * other arrival within that window is absorbed into the same pending sweep
+ * instead of scheduling its own. This is what turns a burst of N
+ * near-simultaneous transaction arrivals (e.g. several webhook redeliveries,
+ * or a bookkeeper bulk-adding manual entries) into ONE batched sweep call
+ * rather than N parallel OpenRouter calls.
+ *
+ * Deployment-wide, not chapter-scoped — one pending sweep covers every
+ * chapter's newly-arrived transactions, mirroring the hourly cron's own
+ * deployment-wide scan. Concurrent writers racing the read-then-write below
+ * are safe: Convex's OCC serializes writes to this single document, so a
+ * losing mutation retries, re-reads `pending: true` (already flipped by the
+ * winner), and no-ops rather than double-scheduling.
+ */
+export const aiCodingIngestState = defineTable({
+  pending: v.boolean(),
+  // Informational only (debugging/observability) — when the currently-
+  // pending sweep (if any) was scheduled.
+  scheduledAt: v.optional(v.number()),
+});

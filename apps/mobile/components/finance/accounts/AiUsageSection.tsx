@@ -33,6 +33,16 @@ const OUTCOME: Record<
   no_suggestion: { label: "No match", tone: "neutral" },
 };
 
+/** How a call originated (`aiUsageEvents.triggeredBy`) — "ingest" is the
+ *  debounced sweep that fires soon after a new transaction lands, distinct
+ *  from the hourly cron backstop and a bookkeeper's on-demand "Suggest" tap
+ *  in Reconcile. See `aiCodingData.ts`'s `runSuggestionSweep`. */
+const TRIGGERED_BY_LABEL: Record<"sweep" | "ingest" | "manual", string> = {
+  sweep: "Hourly sweep",
+  ingest: "On arrival",
+  manual: "Manual",
+};
+
 /** Micro-USD (1e-6 USD, see `aiUsageEvents.costUsdMicros`) as a dollar
  *  string. Per-call costs are often well under a cent, so this shows more
  *  precision than the usual `$X.XX` money formatting elsewhere in finance. */
@@ -57,9 +67,11 @@ export function AiUsageSection() {
     <>
       <SectionHeader title="AI usage" titleAccessory={<AiUsageIcon />} />
       <Text className="mb-3 text-sm text-muted">
-        Every AI auto-coding call — who/what it was for, which model, and its
-        cost — logged for review. This is the audit trail behind allowing a
-        paid model here.
+        New charges get a coding suggestion within seconds of arriving —
+        review it in Reconcile, or tap "Suggest" on any charge that doesn't
+        have one yet. Every call — who/what it was for, which model, and its
+        cost — is logged for review here. This is the audit trail behind
+        allowing a paid model.
       </Text>
 
       {usage === undefined ? (
@@ -117,7 +129,7 @@ export function AiUsageSection() {
                       </View>
                       <Text className="text-xs text-faint">
                         {formatDateTime(e.createdAt)} ·{" "}
-                        {e.triggeredBy === "sweep" ? "Hourly sweep" : "Manual"} ·{" "}
+                        {TRIGGERED_BY_LABEL[e.triggeredBy]} ·{" "}
                         {e.model} · {formatMicroCost(e.costUsdMicros)}
                       </Text>
                     </View>

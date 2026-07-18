@@ -75,6 +75,7 @@ import {
 import { readSandbox } from "./financeSettings";
 import { gatherForPickerCandidates } from "./lib/forPickerCandidates";
 import { isMissingReceiptCharge, unlockCardIfReceiptsResolved } from "./cards";
+import { queueSuggestionOnIngest } from "./aiCodingData";
 import {
   getChapterIdOrNull,
   requireChapterId,
@@ -7344,7 +7345,7 @@ export const createManualTransaction = mutation({
     // Silently default to the chapter's General Fund when the client omits a
     // fund (every UI now does — funds are backend-only, see WP-1.4).
     const fundId = args.fundId ?? (await defaultFundId(ctx, chapterId)) ?? undefined;
-    return await ctx.db.insert("transactions", {
+    const txnId = await ctx.db.insert("transactions", {
       chapterId,
       source: args.source ?? "manual",
       flow: args.flow,
@@ -7362,6 +7363,14 @@ export const createManualTransaction = mutation({
       createdBy: userId,
       createdAt: Date.now(),
     });
+    // ON-INGEST HOOK — fire-and-forget: ONLY schedules a separate transaction
+    // that does the actual eligibility + debounce work (a manual entry
+    // submitted already coded — `status` above is already `"categorized"` —
+    // no-ops there), so neither a throw nor debounce-mutex contention can
+    // ever roll back this money insert. See
+    // `aiCodingData.queueSuggestionOnIngest`'s doc comment.
+    await queueSuggestionOnIngest(ctx, txnId);
+    return txnId;
   },
 });
 
