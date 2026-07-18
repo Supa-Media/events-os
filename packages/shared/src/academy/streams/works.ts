@@ -351,6 +351,597 @@ export const WORKS_SECTIONS: Omit<AcademySection, "order">[] = [
       },
     ],
   },
+
+  // ── 25 · Works: leading a project — defining it ─────────────────────────────
+  {
+    slug: "works-defining-a-project",
+    title: "Defining the project",
+    subtitle: "What it is, what done looks like, and who's allowed to lead it",
+    minutes: 3,
+    blocks: [
+      {
+        kind: "p",
+        text: "You already know the shape of a project from the last course: finite work, one owner, a finish line. Leading one is a different job than owning a task inside one — this course is about being the person who makes sure the whole thing lands, on time, at the standard Public Worship holds itself to.",
+      },
+      {
+        kind: "rule",
+        title: "Not about doing everything — about ensuring everything gets done",
+        text: "A Project Lead's job isn't to personally execute every row. It's to own the timeline and the communication, pull in whoever the project actually needs from any team, and make sure the finished thing meets the standard — the same doctrine as owning an event, one layer up.",
+      },
+      { kind: "heading", text: "Anyone can lead a project" },
+      {
+        kind: "p",
+        text: "Seniority isn't a requirement — a team Director can lead a project, and so can someone who just joined. What actually qualifies you is willingness to own the outcome and see it through, not tenure or title. If you're the one who cares enough to make it happen, it's yours to lead.",
+      },
+      { kind: "heading", text: "Writing the definition of done" },
+      {
+        kind: "p",
+        text: "A project's purpose line answers \"why does this exist.\" Its **definition of done** answers something narrower and more useful: \"how will anyone — including you — know it's actually finished?\" Skip this and every conversation about scope becomes an argument nobody can win, because nobody agreed what winning looks like.",
+      },
+      {
+        kind: "table",
+        headers: ["Sounds like a definition of done", "Is actually one"],
+        rows: [
+          [
+            "\"Redesign the welcome cards\"",
+            "\"New welcome card design approved by the Marketing Director, printed, and in every chapter's greeter kit by [date]\"",
+          ],
+          [
+            "\"Get the giving page live\"",
+            "\"Giving page accepts a real donation, is linked from the app's home tab, and the Treasurer has confirmed it reconciles\"",
+          ],
+          [
+            "\"Find a winter venue\"",
+            "\"Signed contract on file for a venue that fits capacity and budget, for [dates]\"",
+          ],
+        ],
+      },
+      {
+        kind: "rule",
+        title: "A definition of done ends the argument before it starts",
+        text: "Write it specific enough that two different people would agree, independently, on whether it happened. If it needs a judgment call to know you're finished, it isn't a definition of done yet — it's still a vibe.",
+      },
+      {
+        kind: "reveal",
+        prompt:
+          "You're asked to \"own onboarding for new members.\" What's your first move as Project Lead?",
+        answer:
+          "Before you assign a single task, write what done actually looks like — e.g., \"every new member gets a welcome message within 24 hours and completes the Foundations trio within their first month.\" Without that, you can run onboarding forever and never know if you're succeeding.",
+      },
+      {
+        kind: "link",
+        label: "Further reading: Atlassian — What is a Definition of Done?",
+        url: "https://www.atlassian.com/agile/project-management/definition-of-done",
+      },
+    ],
+    quiz: [
+      {
+        prompt:
+          "A first-week volunteer wants to lead the flyer redesign project. Per this lesson, what's the issue?",
+        options: [
+          "They need a team Director's sign-off first",
+          "New members can only lead projects under $50",
+          "There isn't one — anyone willing to own the outcome can lead a project",
+          "They should wait a year before leading anything",
+        ],
+        answerIndex: 2,
+        explanation:
+          "Seniority isn't the qualifier — ownership is. A Project Lead can be a Director or someone who just joined.",
+      },
+      {
+        prompt: "What does a Project Lead actually own, according to this lesson?",
+        options: [
+          "Personally doing every task on the project",
+          "The timeline, the communication, and the standard the finished thing has to meet — not every row themselves",
+          "Nothing until the deadline",
+          "Only the budget line",
+        ],
+        answerIndex: 1,
+        explanation:
+          "It's the same distinction Foundations teaches: ensuring everything gets done, not doing everything yourself.",
+      },
+      {
+        prompt:
+          "Why does a project need a written definition of done, not just a purpose line?",
+        options: [
+          "It's a formality nobody actually checks",
+          "Purpose and definition of done are the same thing",
+          "Only budgeted projects need one",
+          "A purpose line says why it exists; a definition of done says exactly how anyone would know it's finished — specific enough two people would agree independently",
+        ],
+        answerIndex: 3,
+        explanation:
+          "Skip the definition of done and scope arguments become unwinnable — nobody agreed what \"finished\" meant.",
+      },
+      {
+        prompt: "Which of these is an actual definition of done?",
+        options: [
+          "\"Make the giving page good\"",
+          "\"Giving page accepts a real donation, is linked from the home tab, and the Treasurer has confirmed it reconciles\"",
+          "\"Get people excited about giving\"",
+          "\"Work on the giving page this quarter\"",
+        ],
+        answerIndex: 1,
+        explanation:
+          "Specific and checkable — two different people could independently verify every clause of it.",
+      },
+    ],
+  },
+
+  // ── 26 · Works: leading a project — planning the work ───────────────────────
+  {
+    slug: "works-planning-the-work",
+    title: "Planning the work",
+    subtitle: "Breaking it down, owning every piece, and pulling people across teams",
+    minutes: 4,
+    blocks: [
+      {
+        kind: "p",
+        text: "A definition of done tells you where you're going. Planning is turning that into rows a team can actually pick up — broken down small enough that each one has a single, clear owner.",
+      },
+      { kind: "heading", text: "Every task needs the same three things" },
+      {
+        kind: "p",
+        text: "This is the same triad Public Worship asks of any commitment, project or not: an owner, a deadline, and a definition of done. A task missing any of the three isn't actually assigned yet, no matter how clearly you described it in the group chat.",
+      },
+      {
+        kind: "bullets",
+        items: [
+          "**Owner** — one name, not \"the Music team.\" A task two people co-own is a task nobody owns.",
+          "**Deadline** — not \"soon.\" A real date, one someone can miss and you'd notice.",
+          "**Definition of done** — what finished looks like for THIS task, not just the project overall.",
+        ],
+      },
+      {
+        kind: "rule",
+        title: "If any of the three is missing, it isn't a real commitment yet",
+        text: "Pin down owner, deadline, and definition of done before you call a task assigned — the same bar \"Owning your yes\" sets for any commitment at Public Worship.",
+      },
+      { kind: "heading", text: "Deadlines need real lead time, not wishful thinking" },
+      {
+        kind: "p",
+        text: "Work backward from the finish line, not forward from today. Printing takes 3 days. A vendor contract needs a week for signatures. Ask what each step actually requires before you promise a date, or your plan is a wish wearing a calendar.",
+      },
+      { kind: "heading", text: "Projects pull from any team, on purpose" },
+      {
+        kind: "p",
+        text: "Projects are built to cross teams — that's not a workaround, it's the design. A Project Lead can ask anyone for help with a task the project genuinely needs, regardless of which team's channel they usually sit in.",
+      },
+      {
+        kind: "tree",
+        caption:
+          "You're pulled onto another team's project — your own team stays looped in, not routed around.",
+        nodes: [
+          { label: "Fall Flyer Campaign — Project Lead (Marketing)", depth: 0 },
+          { label: "You — pulled in for social copy", depth: 1, highlight: "self" },
+          { label: "Your manager — Music Lead, kept in the loop", depth: 1, highlight: "manager" },
+        ],
+      },
+      {
+        kind: "rule",
+        title: "Loop in the manager, don't route around them",
+        text: "Pulling someone across teams works because it's out in the open. Tell the person's own manager what you need and for how long — the same beat as raising a scope change early: silence protects nobody, a heads-up protects everyone's time.",
+      },
+      {
+        kind: "reveal",
+        prompt:
+          "You need someone from the Music team for two afternoons of video editing help. What do you do before you message them?",
+        answer:
+          "Tell their manager (the Music Lead) what you need and roughly how long it'll take, so it isn't a surprise when it shows up at their next 1:1. Then make the ask directly — projects are built to cross teams, but the person's home team should never be blindsided by where their week went.",
+      },
+      {
+        kind: "link",
+        label: "Further reading: Basecamp — Shape Up (breaking work into real bets)",
+        url: "https://basecamp.com/shapeup",
+      },
+    ],
+    quiz: [
+      {
+        prompt:
+          "What three things does every task in a project plan need, echoing the same rule as any commitment at Public Worship?",
+        options: [
+          "A budget, a name, and a channel",
+          "A priority level, a color, and a tag",
+          "An owner, a deadline, and a definition of done",
+          "A Director's approval, always",
+        ],
+        answerIndex: 2,
+        explanation:
+          "Same triad as \"Owning your yes\" — miss any of the three and the task isn't actually assigned yet.",
+      },
+      {
+        prompt: "Two people are both loosely responsible for the same task. What's wrong with that?",
+        options: [
+          "A task with two owners is a task nobody actually owns",
+          "Nothing — more hands means it gets done faster",
+          "It's fine as long as one of them is a Director",
+          "Co-ownership is required for tasks over a week long",
+        ],
+        answerIndex: 0,
+        explanation:
+          "Owner means one name. Shared ownership quietly becomes no ownership the moment things get busy.",
+      },
+      {
+        prompt: "Why work backward from the deadline instead of forward from today when scheduling a task?",
+        options: [
+          "Forward planning is always faster",
+          "Only vendors need lead-time math",
+          "It doesn't matter which direction you plan from",
+          "Real steps — printing, contracts, approvals — take actual lead time; working backward is what keeps the date honest",
+        ],
+        answerIndex: 3,
+        explanation:
+          "A deadline set without accounting for real lead times is a wish wearing a calendar, not a plan.",
+      },
+      {
+        prompt:
+          "You're on the Music team and a Project Lead from Marketing asks you to help with social copy. What should already have happened?",
+        options: [
+          "Nothing — they should have asked your Music Lead's permission before ever talking to you",
+          "You should refuse — it's not your team's project",
+          "The Project Lead told your manager what they need and roughly how long, so it isn't a surprise at your next 1:1",
+          "Only Directors can be asked to help outside their team",
+        ],
+        answerIndex: 2,
+        explanation:
+          "Projects are built to cross teams on purpose — the ask is yours to say yes to. What protects everyone is the Project Lead looping your manager in early, not asking permission instead of you.",
+      },
+    ],
+  },
+
+  // ── 27 · Works: leading a project — the budget ──────────────────────────────
+  {
+    slug: "works-the-project-budget",
+    title: "Building the budget",
+    subtitle: "Draft, send for review, approved — and what a raise actually does",
+    minutes: 4,
+    blocks: [
+      {
+        kind: "p",
+        text: "Every project gets its own one-time budget the moment it's created — its money home from day one. If yours doesn't have one yet, one tap of **Add budget** on the project's own page summons a $0 draft. Either way, nothing is approved until someone deliberately moves it forward.",
+      },
+      { kind: "heading", text: "The plan lives as line items" },
+      {
+        kind: "p",
+        text: "Build the plan the same way you built the task list: real numbers against real things — venue, vendor, print run — not one lump sum. Line items are what let anyone, including your approver, see what they're actually saying yes to.",
+      },
+      { kind: "heading", text: "Draft → Send for review → Approved" },
+      {
+        kind: "bullets",
+        items: [
+          "**Draft** — yours to edit freely. Nobody outside your own head has weighed in, and nothing you type here spends anything.",
+          "**Send for review** — a deliberate tap. The moment you send it, the budget is Awaiting approval and visible to whoever can act on it.",
+          "**Approve or Request changes** — the approver clears it, or kicks it back with a reason, which reopens it for editing and a fresh send.",
+        ],
+      },
+      {
+        kind: "table",
+        headers: ["Scope", "Who approves it"],
+        rows: [
+          ["Chapter project", "Treasurer or Chapter Director"],
+          ["Central project", "Executive Director or Financial Manager"],
+        ],
+      },
+      {
+        kind: "rule",
+        title: "Approver ≠ you, always",
+        text: "Whoever sends a budget for review can never be the one who approves it — the same separation of duties that governs every other budget in the app, chapter or central.",
+      },
+      {
+        kind: "rule",
+        title: "Raising the cap sends it back to Draft — but nobody's told",
+        text: "Bump an APPROVED budget's amount and it drops straight back to Draft the moment you save — not Awaiting approval, and not auto-submitted. The OLD approved figure keeps working as the real spending cap the whole time, so nothing silently expands. But the increase itself is invisible to every approver until YOU deliberately hit Send for review again. Skip that tap and the raise is never reviewed.",
+      },
+      {
+        kind: "p",
+        text: "Spending against an approved budget — using the Public Worship card, closing the receipt loop within the 7-day window — works exactly like it does everywhere else in the app. \"Finances for Everyone\" covers the mechanics; nothing about being a Project Lead changes them.",
+      },
+      {
+        kind: "scenario",
+        prompt:
+          "A vendor quote for stage rental comes in 40% over your project's approved budget line. What do you do?",
+        options: [
+          {
+            text: "Book it anyway — the event's close, there's no time to wait",
+            feedback:
+              "Spending past the approved cap doesn't get quietly waved through — it raises a loud warning on the budget, and it puts you in the position of explaining an overrun after the fact instead of a raise before it.",
+          },
+          {
+            text: "Find the difference by quietly padding another line so the total looks unchanged",
+            feedback:
+              "That's not a plan, it's a hope that nobody checks the math. Line items exist so an approver can see what they're actually saying yes to — moving numbers around to hide a real cost defeats the point of the plan.",
+          },
+          {
+            text: "Raise it now: adjust the plan to fit the approved cap, or bump the line and immediately re-send the budget for review",
+            correct: true,
+            feedback:
+              "Right — the old approved amount is still the real cap until someone acts, so surface the gap the moment you know about it. Either descope to fit what's approved, or raise the amount and hit Send for review yourself; skip that tap and the increase is never reviewed.",
+          },
+          {
+            text: "Wait a week to see if the vendor's price comes down before deciding anything",
+            feedback:
+              "Waiting doesn't shrink the gap between the quote and your cap — it just shrinks how much runway you have to fix it. Raise it the moment you know, the same as any other blocker.",
+          },
+        ],
+      },
+      {
+        kind: "tip",
+        text: "In the app: raising a budget's amount is a save, not an approval. The tap that actually matters — the one that gets it in front of your Treasurer or Chapter Director — is Send for review. Do both in the same sitting.",
+      },
+    ],
+    quiz: [
+      {
+        prompt: "What state is a brand-new project's budget in the moment the project is created?",
+        options: [
+          "There's no budget until you request one",
+          "Draft — an editable $0 or planned-amount budget nobody's reviewed yet",
+          "Approved automatically, using whatever amount was planned",
+          "Awaiting approval",
+        ],
+        answerIndex: 1,
+        explanation:
+          "Every project's budget starts as a Draft, whether it's created with a planned amount or summoned later with Add budget.",
+      },
+      {
+        prompt: "Who approves a chapter project's budget?",
+        options: [
+          "Only the Executive Director",
+          "Whoever submitted it, if they hold a finance seat",
+          "Central approves every chapter budget",
+          "The Treasurer or Chapter Director",
+        ],
+        answerIndex: 3,
+        explanation:
+          "Chapter-scope budgets are approved by the Treasurer or Chapter Director; central-scope by the ED or Financial Manager — never by whoever sent it.",
+      },
+      {
+        prompt:
+          "You raise an APPROVED project budget from $1,000 to $1,400 and don't re-send it for review. What's the live spending cap right now?",
+        options: [
+          "$1,400 — available immediately",
+          "Whatever the last transaction used",
+          "$1,000 — the old approved amount, until you send the raise for review and it's approved",
+          "$0 — spending is frozen until the raise clears",
+        ],
+        answerIndex: 2,
+        explanation:
+          "The increase flips the budget back to Draft, not Awaiting approval — the OLD approved figure keeps enforcing the cap until you deliberately resend it and someone approves the new amount.",
+      },
+      {
+        prompt: "A vendor quote comes in over your approved budget line. What's the wrong move?",
+        options: [
+          "Descope the plan to fit what's approved",
+          "Flag it to your approver the same day you find out",
+          "Spend past the cap and explain it after the fact",
+          "Raise the line and immediately send it for review",
+        ],
+        answerIndex: 2,
+        explanation:
+          "Never just spend past an approved cap. Raise the gap early — adjust the plan or resend the raised budget — the same way you'd escalate any other blocker.",
+      },
+    ],
+  },
+
+  // ── 28 · Works: leading a project — tracking and escalating ────────────────
+  {
+    slug: "works-tracking-and-escalating",
+    title: "Tracking execution, escalating risks",
+    subtitle: "Checkpoints, outcomes over tasks, and closing the loop with your Director",
+    minutes: 4,
+    blocks: [
+      {
+        kind: "p",
+        text: "You're not doing every task, so tracking a project means watching everyone else's slice of it — not just logging your own progress. The project's comment thread is still the progression record; as Project Lead, you're the one making sure it stays true for the whole thing, not just your own rows.",
+      },
+      { kind: "heading", text: "Checkpoints, not surprises" },
+      {
+        kind: "p",
+        text: "Set a rhythm for checking in on the pieces you didn't personally touch — a weekly pass through the task list is enough for most projects. The goal isn't policing; it's catching a slipping piece while there's still time to do something about it.",
+      },
+      {
+        kind: "rule",
+        title: "Outcomes, not tasks",
+        text: "Your job is the finished thing, not a checklist of completed rows. A task getting marked done that doesn't actually move the project toward its definition of done is theater — track whether the OUTCOME is on track, not just whether boxes are checked.",
+      },
+      { kind: "heading", text: "\"Someone dropped out\" is not an excuse" },
+      {
+        kind: "p",
+        text: "People get sick, get busy, or take on more than they can carry — that's normal, not a scandal. What isn't acceptable is a task quietly going dark because the person attached to it went dark. The plan has to survive people being people; that's your job to build in, not theirs to apologize for.",
+      },
+      {
+        kind: "bullets",
+        items: [
+          "**Notice fast.** A checkpoint exists so a stalled task surfaces in days, not at the deadline.",
+          "**Raise it directly first.** Ask the person what's actually happening before you assume the worst or route around them.",
+          "**Don't silently absorb it.** Taking over their task yourself hides the real problem — the project's staffing — behind your own overtime.",
+        ],
+      },
+      {
+        kind: "scenario",
+        prompt:
+          "A teammate pulled in from another team goes quiet on their task three days before the deadline. What's the right move?",
+        options: [
+          {
+            text: "Quietly finish the task yourself so the project isn't at risk",
+            feedback:
+              "That solves this task and hides the real problem — you'll be doing this again next time, and nobody who could actually fix the staffing gap even knows it exists.",
+          },
+          {
+            text: "Message them directly today; if you don't hear back same-day, loop in their manager and yours early",
+            correct: true,
+            feedback:
+              "Right — raise it to the person first, then escalate to the managers on both sides while there's still time to react. Early is a conversation; the deadline is a crisis.",
+          },
+          {
+            text: "Wait until the deadline passes, then explain what happened",
+            feedback:
+              "Waiting doesn't create options — it removes them. The moment you notice a task's gone quiet is the moment to act, not the moment after it's already too late to matter.",
+          },
+          {
+            text: "Remove them from the project without talking to them first",
+            feedback:
+              "You don't know what's actually happening yet. Ask directly before you assume — going straight to removal skips the conversation that might resolve this in five minutes.",
+          },
+        ],
+      },
+      {
+        kind: "rule",
+        title: "Escalate early, with a proposed path",
+        text: "When a risk is real, tell your Director — before the deadline, not after. Bring what's stuck and what you think should happen next: descope, extend, or pull in more help. A blocker with a proposed path is a decision your Director can make in a minute; a blocker with no path is a problem they have to solve from scratch.",
+      },
+      {
+        kind: "p",
+        text: "Closing the loop matters as much as raising the flag: once your Director weighs in, tell whoever's affected what changed and why. An escalation that goes quiet after the decision is as bad as one that never got made.",
+      },
+      {
+        kind: "link",
+        label: "Further reading: Andon — the manufacturing practice of stopping the line the moment something's wrong",
+        url: "https://en.wikipedia.org/wiki/Andon_(manufacturing)",
+      },
+    ],
+    quiz: [
+      {
+        prompt: "As Project Lead, what does tracking the project actually mean?",
+        options: [
+          "Logging only your own tasks",
+          "Re-doing tasks yourself to make sure they're right",
+          "Watching every piece of the project, including the tasks other people own, for what's slipping",
+          "Waiting for people to report problems on their own",
+        ],
+        answerIndex: 2,
+        explanation:
+          "You're not doing every task, so tracking means watching everyone's slice — that's the job a Project Lead actually does.",
+      },
+      {
+        prompt: "Why does this lesson say to track outcomes, not tasks?",
+        options: [
+          "Outcomes are easier to measure than tasks",
+          "A checked-off task that doesn't actually move the project toward its definition of done is theater — the real measure is whether the outcome is on track",
+          "Tasks don't matter at all",
+          "Only the final task in a project counts",
+        ],
+        answerIndex: 1,
+        explanation:
+          "A full checklist with a missed outcome isn't success. Track whether the project is actually getting where it needs to go.",
+      },
+      {
+        prompt:
+          "A task's owner goes quiet before the deadline. What does \"'someone dropped out' is not an excuse\" mean here?",
+        options: [
+          "The person is always at fault",
+          "The deadline moves automatically when someone drops out",
+          "A stalled task can't be blamed away — the plan has to survive people being people, and it's the Project Lead's job to catch it and adapt, not just note the excuse",
+          "Projects should never rely on more than one person",
+        ],
+        answerIndex: 2,
+        explanation:
+          "People get overloaded — that's normal. What isn't acceptable is the task going dark unnoticed. Catching it and adapting the plan is the Project Lead's job.",
+      },
+      {
+        prompt: "What makes an escalation to your Director useful rather than just a complaint?",
+        options: [
+          "Waiting until you're certain nothing can be done before saying anything",
+          "Escalating as loudly and publicly as possible",
+          "Escalating only after the deadline has already passed",
+          "Bringing what's stuck AND a proposed path — descope, extend, or pull in help — so it's a decision your Director can make quickly",
+        ],
+        answerIndex: 3,
+        explanation:
+          "A blocker with a proposed path is a decision; a blocker with no path is a problem your Director has to solve from scratch. Early plus a path is what makes escalation work.",
+      },
+    ],
+  },
+
+  // ── 29 · Works: leading a project — finishing well ──────────────────────────
+  {
+    slug: "works-finishing-well",
+    title: "Completing and reviewing",
+    subtitle: "The debrief, closing the money, and celebrating the people",
+    minutes: 3,
+    blocks: [
+      {
+        kind: "p",
+        text: "Marking a project Done is the easy part. Finishing it well means the next project inherits something real from this one — not just a green checkmark nobody learns from.",
+      },
+      { kind: "heading", text: "The debrief" },
+      {
+        kind: "p",
+        text: "Before you close it out, get the people who carried the project in a room (or a thread) and ask three questions: what worked, what didn't, and what should the next Project Lead know before they start. Write the answers down where the next person will actually find them — a debrief nobody reads is just a meeting.",
+      },
+      {
+        kind: "rule",
+        title: "Learnings go in the written source immediately",
+        text: "The same reflex duties use for their runbooks: the moment you learn something worth knowing, it goes in the doc, not in your memory. A debrief that stays a conversation dies with the people who were in the room.",
+      },
+      { kind: "heading", text: "Close the loose financial ends" },
+      {
+        kind: "p",
+        text: "Before you call the project done, make sure the budget matches reality: every charge attributed, every receipt closed, and the budget itself reflects what actually got spent — not what was originally planned. A project marked Done with an open budget just becomes someone else's cleanup.",
+      },
+      {
+        kind: "bullets",
+        items: [
+          "**Reconcile the last charges.** Nothing should be sitting unattributed once the project wraps.",
+          "**True up the amount.** If you underspent or overspent the approved cap, the record should say so honestly — that's data the next Project Lead needs.",
+          "**Hand off, don't abandon.** If anything's still open — a reimbursement, a pending invoice — name it explicitly so it doesn't fall through the cracks.",
+        ],
+      },
+      { kind: "heading", text: "Celebrate the people" },
+      {
+        kind: "p",
+        text: "A project that pulled people across three teams for six weeks deserves more than a status change. Say thank you specifically — what someone actually did, not a group \"great job everyone\" — to the people who showed up for a project that wasn't even their normal team's work.",
+      },
+      {
+        kind: "reveal",
+        prompt: "The giving page project just shipped. What's left before you mark it Done and move on?",
+        answer:
+          "Run the debrief (what worked, what didn't, what the next lead should know — written down), reconcile the budget so nothing's left unattributed, and thank the specific people who helped — including anyone pulled in from another team. Done with none of that is done only for you.",
+      },
+      {
+        kind: "link",
+        label: "Further reading: Atlassian — how to run an effective project retrospective",
+        url: "https://www.atlassian.com/team-playbook/plays/retrospective",
+      },
+    ],
+    quiz: [
+      {
+        prompt: "Why does this lesson say a debrief nobody reads \"is just a meeting\"?",
+        options: [
+          "Meetings are inherently useless",
+          "Learnings only help the next project if they're written where the next Project Lead will actually find them — a spoken debrief dies with the people in the room",
+          "Debriefs should never be written down",
+          "Only Directors need to read debriefs",
+        ],
+        answerIndex: 1,
+        explanation:
+          "Same reflex as duty runbooks: write it down immediately, or the learning doesn't survive past the people who were there.",
+      },
+      {
+        prompt: "What does \"closing the loose financial ends\" require before a project is really done?",
+        options: [
+          "Financial cleanup is the Treasurer's job, never the Project Lead's",
+          "Only the approved amount needs to be correct, not actual spend",
+          "Every charge reconciled and attributed, and the budget trued up to reflect what actually got spent",
+          "Nothing — the budget can stay open indefinitely",
+        ],
+        answerIndex: 2,
+        explanation:
+          "A project marked Done with an open budget just becomes someone else's cleanup — reconcile and true up the numbers before you close it out.",
+      },
+      {
+        prompt: "What's the better way to thank the people who helped on a project?",
+        options: [
+          "Thanking only the people from your own team",
+          "Waiting until the next project to mention it",
+          "A single group message: \"great job everyone\"",
+          "Specific thanks naming what each person actually did — especially anyone pulled in from another team",
+        ],
+        answerIndex: 3,
+        explanation:
+          "Specific beats generic — especially for people who gave time to a project that wasn't even their normal team's work.",
+      },
+    ],
+  },
 ];
 
 /** The Works stream's theme entry. */
@@ -373,6 +964,26 @@ export const WORKS_COURSES: Course[] = [
       "deadline, blockers, and driving it to done.",
     icon: "briefcase",
     moduleSlugs: ["works-projects", "works-driving-a-project"],
+  },
+  {
+    slug: "leading-a-project",
+    themeKey: "works",
+    title: "Leading a project",
+    level: "intermediate",
+    audience: "role",
+    description:
+      "The whole arc of running a project: defining it and its finish " +
+      "line, planning the work and pulling people across teams, building " +
+      "and raising the budget, tracking execution and escalating risk, " +
+      "and finishing well.",
+    icon: "target",
+    moduleSlugs: [
+      "works-defining-a-project",
+      "works-planning-the-work",
+      "works-the-project-budget",
+      "works-tracking-and-escalating",
+      "works-finishing-well",
+    ],
   },
   {
     slug: "duties",
