@@ -1,69 +1,65 @@
 /**
- * Chapter perspective of the finance dashboard — one chapter's money this month:
- * the affordability header (WP-4.3), KPI tiles, the AI auto-coding banner,
- * event/project budget cards, recurring buckets (with a "New budget" action),
- * the recent-transactions table (with an "Add transaction" action and
- * AI-suggestion Accept), and the attention queue.
+ * DASH-2 "Command center" — the chapter perspective of the finance
+ * dashboard, redesigned around ONE chart that doubles as the page's period
+ * filter (per the owner-approved mockup, top to bottom):
+ *  1. the affordability strip (WP-4.3, restyled — the under-water figure is
+ *     now a red PILL, not plain red text);
+ *  2. a 4-tile KPI band (Spent·YTD with a sparkline, the two biggest budget
+ *     tiles, "To review N ›" styled as a link);
+ *  3. a two-column grid — LEFT: the spend-by-month bar chart (clicking a bar
+ *     IS the page's period filter — no second control) + the dense "Events &
+ *     projects" / "Recurring buckets" tables (awaiting-approval rows pinned,
+ *     categories folded behind a row chevron); RIGHT: the restyled attention
+ *     rail, a "Where it went" category panel, and a recent-transactions
+ *     digest;
+ *  4. one shared `Meter` component for spent-of-cap color everywhere (gold /
+ *     amber / red — see `meterTone.ts`) — no more per-surface guessing.
  *
- * Figures come straight from `api.finances.dashboardChapter` (the bulk of the
- * view) and `api.finances.chapterAffordability` (the header strip) — this
- * view is pure presentation over those two contracts.
+ * Figures come from `api.finances.dashboardChapter` (the bulk of the view),
+ * `api.finances.chapterAffordability` (the header strip), and
+ * `api.dashboardCharts.spendByMonth` (the bar chart + sparkline) — this view
+ * stays pure presentation over those three contracts, plus a few CLIENT-SIDE
+ * derivations documented in `capLine.ts` / `categoryRollup.ts` /
+ * `rowOrdering.ts` (this PR's ownership excludes adding new Convex queries).
  */
-import { useState } from "react";
-import { Pressable, Text, View } from "react-native";
-import { useRouter } from "expo-router";
+import { useMemo, useState } from "react";
+import { Pressable, Text, useWindowDimensions, View } from "react-native";
 import type { FunctionReturnType } from "convex/server";
 import { api } from "@events-os/convex/_generated/api";
 import type { Id } from "@events-os/convex/_generated/dataModel";
 import { formatCents } from "@events-os/shared";
-import {
-  Badge,
-  Button,
-  Cell,
-  EmptyState,
-  HeaderCell,
-  Icon,
-  Row,
-  SectionHeader,
-  Table,
-  TableHeader,
-} from "../../ui";
+import { Badge, Button, Icon, SectionHeader } from "../../ui";
 import { colors } from "../../../lib/theme";
-import {
-  AiCodingBanner,
-  BudgetBar,
-  Chip,
-  MiniBar,
-  Money,
-  SignedMoney,
-  Tile,
-  TileRow,
-  txnStatusTone,
-  type DashPeriodMode,
-} from "./parts";
-import { awaitingApprovalZeroCapDisplay } from "./awaitingApproval";
-import { TagRollupSection, type TagRollup } from "./TagRollup";
-import { BudgetApprovalActions, BudgetApprovalChip } from "./BudgetApprovalActions";
+import { Money, SignedMoney, Tile, TileRow, type DashPeriodMode } from "./parts";
+import { SparkLine } from "./SparkLine";
+import { MonthBars } from "./MonthBars";
+import { monthlyOperatingCapCents } from "./capLine";
+import { categoryRollup } from "./categoryRollup";
+import { CategoryBars } from "./CategoryBars";
+import { AttentionRail } from "./AttentionRail";
+import { BudgetTableGroup, type BudgetTableRow } from "./BudgetTable";
 
 type ChapterDash = FunctionReturnType<typeof api.finances.dashboardChapter>;
-type ProjectBudget = ChapterDash["oneTimeBudgets"][number];
-type RecurringBudget = ChapterDash["recurringBudgets"][number];
 type RecentTxn = ChapterDash["recentTransactions"][number];
-type Attention = ChapterDash["attention"][number];
 type Affordability = FunctionReturnType<typeof api.finances.chapterAffordability>;
+type MonthlySpend = FunctionReturnType<typeof api.dashboardCharts.spendByMonth>;
+
+/** Below this width the two-column grid stacks to one column. */
+const STACK_WIDTH = 900;
 
 export function ChapterView({
   data,
   affordability,
+  monthly,
   year,
   month,
   period,
-  chapterId,
   onNewBudget,
   onEditBudget,
   onAddTransaction,
   onAttentionAction,
   onEditBackerCount,
+  onChangePeriod,
   isDrilldown = false,
 }: {
   data: ChapterDash;
@@ -71,67 +67,139 @@ export function ChapterView({
    *  query is still loading — the header renders nothing until then rather
    *  than blocking the rest of the dashboard on it. */
   affordability: Affordability | undefined;
-  /** The dashboard's currently-selected year/(through-)month/mode — passed
-   *  straight through to the tag-detail sheet's `tagDrilldown` query so its
-   *  numbers stay scoped to whatever `data` itself was fetched with. */
+  /** `api.dashboardCharts.spendByMonth` for this chapter/year — the bar
+   *  chart + KPI sparkline. `undefined` while loading (its own query; the
+   *  chart/sparkline render nothing until it resolves). */
+  monthly: MonthlySpend | undefined;
+  /** The dashboard's currently-selected year/(through-)month/mode. */
   year: number;
   month: number;
   period: DashPeriodMode;
-  /** The chapter this dashboard is showing — the caller's own, or (while
-   *  peeking, `isDrilldown`) a different one. Threaded into `tagDrilldown` so
-   *  its drill-down sheet resolves the chapter actually being VIEWED, not the
-   *  caller's own (mirrors `dashboardChapter`'s own `chapterId` arg). */
-  chapterId?: Id<"chapters">;
   onNewBudget: () => void;
   onEditBudget: (budgetId: string) => void;
   onAddTransaction: () => void;
   /** Navigate for an attention row's action (`a.kind`: "reimbursements" → the
    *  Reimbursements tab, "cards" → the Cards tab, "needs_budget" → Reconcile
-   *  pre-filtered to unattributed spend). */
+   *  pre-filtered to unattributed spend). Also reused by the "To review" KPI
+   *  tile and the recent-transactions digest's "View all" — Reconcile is the
+   *  dashboard's one review surface; there's no separate destination for
+   *  "unreviewed" generically. */
   onAttentionAction: (kind: string) => void;
   /** Open the backer-count edit modal. Only ever called when
    *  `affordability.canEdit` is true (the affordance is hidden otherwise). */
   onEditBackerCount: () => void;
+  /** Clicking a spend-by-month bar sets the SAME period state the page's
+   *  ‹ › picker uses — one state, no second control (see `MonthBars`). */
+  onChangePeriod: (next: { year: number; month: number; period: DashPeriodMode }) => void;
   /**
    * True while a central viewer is drilled into a chapter that ISN'T their
    * own (see finances/index.tsx). Every write action here — "New budget",
-   * "Add transaction" — resolves to the CALLER's own chapter server-side
-   * (`requireChapterId`, no chapterId arg), so offering them while viewing a
-   * different chapter would silently write to the wrong place. Drill-down is
-   * read-only: hide the write actions, and the attention queue's "Review"
-   * action (it navigates to the caller's OWN reimbursements/cards tab, not
-   * this chapter's).
+   * "Add transaction", approvals — resolves to the CALLER's own chapter
+   * server-side, so offering them while viewing a different chapter would
+   * silently write to the wrong place. Drill-down is read-only.
    */
   isDrilldown?: boolean;
 }) {
-  const needsReview = data.recentTransactions.filter(
-    (t) => txnStatusTone(t.status).label === "Needs review",
-  ).length;
+  const { width } = useWindowDimensions();
+  const stacked = width < STACK_WIDTH;
 
-  // The tag-detail sheet's open/selected tag — CONTROLLED here (not owned by
-  // `TagRollupSection`) so its `tagDrilldown` query only runs while the sheet
-  // is actually open.
-  const [selectedTag, setSelectedTag] = useState<TagRollup | null>(null);
+  const selectedMonth = period === "month" ? month : null;
+  function handleSelectMonth(m: number) {
+    if (period === "month" && month === m) {
+      onChangePeriod({ year, month, period: "ytd" });
+    } else {
+      onChangePeriod({ year, month: m, period: "month" });
+    }
+  }
+
+  const capCentsPerMonth = useMemo(
+    () =>
+      monthlyOperatingCapCents(
+        data.recurringBudgets.map((b) => ({ cadence: b.cadence, budgetCents: b.budgetCents })),
+        period,
+        month,
+      ),
+    [data.recurringBudgets, period, month],
+  );
+
+  const spentTile = data.tiles.find((t) => t.label.startsWith("Spent"));
+  const reviewTile = data.tiles.find((t) => t.label === "To review");
+  const otherTiles = data.tiles.filter((t) => t !== spentTile && t !== reviewTile);
+  const periodSpendCents = spentTile?.subValueCents ?? 0;
+
+  const rollup = useMemo(
+    () => categoryRollup([...data.oneTimeBudgets, ...data.recurringBudgets], periodSpendCents),
+    [data.oneTimeBudgets, data.recurringBudgets, periodSpendCents],
+  );
+
+  const pendingApprovals = useMemo(
+    () =>
+      [...data.oneTimeBudgets, ...data.recurringBudgets]
+        .filter((b) => b.approvalStatus === "submitted")
+        .map((b) => ({
+          id: b.id,
+          name: b.name,
+          requestedCents: b.requestedCents,
+          approvalStatus: b.approvalStatus,
+        })),
+    [data.oneTimeBudgets, data.recurringBudgets],
+  );
+
+  const oneTimeRows: BudgetTableRow[] = data.oneTimeBudgets.map((b) => ({
+    id: b.id,
+    name: b.name,
+    meta: [b.dateLabel, b.subtitle].filter(Boolean).join(" · ") || null,
+    spentCents: b.spentCents,
+    budgetCents: b.budgetCents,
+    pct: b.pct,
+    categories: b.categories,
+    approvalStatus: b.approvalStatus,
+    approvedCents: b.approvedCents,
+    requestedCents: b.requestedCents,
+    reviewNote: b.reviewNote,
+  }));
+
+  const cadenceLabel = { monthly: "Monthly", quarterly: "Quarterly", yearly: "Yearly" } as const;
+  const recurringRows: BudgetTableRow[] = data.recurringBudgets.map((b) => ({
+    id: b.id,
+    name: b.name,
+    meta: [cadenceLabel[b.cadence], b.note].filter(Boolean).join(" · ") || null,
+    spentCents: b.spentCents,
+    budgetCents: b.budgetCents,
+    pct: b.pct,
+    categories: b.categories,
+    approvalStatus: b.approvalStatus,
+    approvedCents: b.approvedCents,
+    requestedCents: b.requestedCents,
+    reviewNote: b.reviewNote,
+  }));
+
+  const emptyMonths = useMemo(
+    () => Array.from({ length: 12 }, (_, i) => ({ month: i + 1, spendCents: 0 })),
+    [],
+  );
 
   return (
     <View>
-      {/* Affordability header (WP-4.3): "can we afford this?" in one line. */}
+      {/* 1. Affordability strip (WP-4.3): "can we afford this?" in one line. */}
       <AffordabilityHeader data={affordability} onEdit={onEditBackerCount} />
 
-      {/* KPI tiles */}
+      {/* 2. KPI band */}
       <TileRow>
-        {data.tiles.map((t, i) => (
+        {spentTile ? <SpentTile tile={spentTile} monthly={monthly} /> : null}
+        {otherTiles.map((t, i) => (
           <Tile key={i} label={t.label} value={t.value} meta={t.meta} />
         ))}
+        {reviewTile ? (
+          <ReviewLinkTile
+            tile={reviewTile}
+            onPress={isDrilldown ? undefined : () => onAttentionAction("needs_budget")}
+          />
+        ) : null}
       </TileRow>
 
-      {/* WP-wave4 (item 7): "Add transaction" lives HERE, always reachable,
-          because the "Recent transactions" section below (its old home)
-          disappears entirely once there's nothing to show — an empty
-          section is dead weight, but the action that FILLS it can't
-          disappear along with it. */}
       {!isDrilldown ? (
-        <View className="mb-3 flex-row justify-end">
+        <View className="mb-1 flex-row justify-end">
           <Button
             title="Add transaction"
             icon="plus"
@@ -142,156 +210,75 @@ export function ChapterView({
         </View>
       ) : null}
 
-      <View className="mt-3">
-        <AiCodingBanner />
-      </View>
-
-      {/* Events & projects */}
-      <SectionHeader title="Events & projects" count={data.oneTimeBudgets.length} />
-      {data.oneTimeBudgets.length === 0 ? (
-        <EmptyState
-          title="No event or project budgets yet"
-          message="Budget an event or project to track its spend against a plan."
-        />
-      ) : (
-        <View className="gap-3">
-          {data.oneTimeBudgets.map((b) => (
-            <ProjectBudgetCard
-              key={b.id}
-              b={b}
-              onPress={isDrilldown ? undefined : () => onEditBudget(b.id)}
+      {/* 3. Two-column grid — ~1.6fr/1fr, stacks under STACK_WIDTH. */}
+      <View className={stacked ? "mt-2 gap-4" : "mt-2 flex-row gap-4"}>
+        {/* LEFT */}
+        <View style={stacked ? undefined : { flex: 1.6 }}>
+          <SectionHeader title="Spend by month" />
+          <View className="rounded-lg border border-border bg-raised p-4 shadow-card">
+            <MonthBars
+              months={monthly?.months ?? emptyMonths}
+              partialMonth={monthly?.partialMonth ?? null}
+              capCentsPerMonth={capCentsPerMonth}
+              selectedMonth={selectedMonth}
+              onSelectMonth={handleSelectMonth}
             />
-          ))}
-        </View>
-      )}
+          </View>
 
-      {/* Recurring buckets */}
-      <SectionHeader
-        title="Recurring buckets"
-        count="monthly · quarterly · yearly"
-        right={
-          isDrilldown ? undefined : (
-            <Button title="New budget" icon="plus" size="sm" onPress={onNewBudget} />
-          )
-        }
-      />
-      {data.recurringBudgets.length === 0 ? (
-        <EmptyState
-          title="No recurring buckets"
-          message="Create a monthly, quarterly, or yearly budget for a team or category."
-          action={
-            isDrilldown ? undefined : (
-              <Button title="New budget" icon="plus" size="sm" onPress={onNewBudget} />
-            )
-          }
-        />
-      ) : (
-        <View className="flex-row flex-wrap gap-3">
-          {data.recurringBudgets.map((b) => (
-            <RecurringBudgetCard
-              key={b.id}
-              b={b}
-              onPress={isDrilldown ? undefined : () => onEditBudget(b.id)}
-            />
-          ))}
-        </View>
-      )}
-
-      {/* By tag — interactive rollup ("spent on Fundraisers") */}
-      <TagRollupSection
-        rollups={data.tagRollups}
-        scope="chapter"
-        year={year}
-        month={month}
-        period={period}
-        chapterId={chapterId}
-        selected={selectedTag}
-        onSelect={setSelectedTag}
-      />
-
-      {/* Recent transactions — WP-wave4 (item 7): hidden entirely when
-          empty ("if there are no transactions in a section we should just
-          hide the section" — owner). "Add transaction" stays reachable
-          near the KPI tiles above regardless. */}
-      {data.recentTransactions.length > 0 ? (
-        <>
-          <SectionHeader
-            title="Recent transactions"
-            count={needsReview > 0 ? `${needsReview} need review` : undefined}
+          <BudgetTableGroup
+            title="Events & projects"
+            rows={oneTimeRows}
+            isDrilldown={isDrilldown}
+            emptyTitle="No event or project budgets yet"
+            emptyMessage="Budget an event or project to track its spend against a plan."
+            onPressRow={onEditBudget}
           />
-          <TransactionsTable rows={data.recentTransactions} />
-        </>
-      ) : null}
 
-      {/* Needs your attention */}
-      {(() => {
-        // Period-scoped (matches `unattributedCents`'s scope + "this period"
-        // copy) — NOT `toBudgetCount` (all-time), which could show "$0.00"
-        // over "N transactions need a budget this period".
-        const needsBudget = data.unattributedCount;
-        const attentionCount = data.attention.length + (needsBudget > 0 ? 1 : 0);
-        return (
-          <>
-            <SectionHeader
-              title="Needs your attention"
-              count={attentionCount || undefined}
+          <BudgetTableGroup
+            title="Recurring buckets"
+            rows={recurringRows}
+            isDrilldown={isDrilldown}
+            collapsible
+            emptyTitle="No recurring buckets"
+            emptyMessage="Create a monthly, quarterly, or yearly budget for a team or category."
+            onPressRow={onEditBudget}
+          />
+
+          {!isDrilldown ? (
+            <View className="mt-2 flex-row justify-end">
+              <Button title="New budget" icon="plus" size="sm" onPress={onNewBudget} />
+            </View>
+          ) : null}
+        </View>
+
+        {/* RIGHT */}
+        <View style={stacked ? undefined : { flex: 1 }} className="gap-4">
+          <View>
+            <SectionHeader title="Needs your attention" />
+            <AttentionRail
+              attention={data.attention}
+              unattributedCount={data.unattributedCount}
+              unattributedCents={data.unattributedCents}
+              centralLinkedCents={data.centralLinkedCents}
+              pendingApprovals={pendingApprovals}
+              isDrilldown={isDrilldown}
+              onAttentionAction={onAttentionAction}
             />
-            {attentionCount === 0 ? (
-              <EmptyState
-                icon="check-circle"
-                title="All clear"
-                message="No reimbursements to approve or cards nearing a receipt lock."
-              />
-            ) : (
-              <View className="gap-3">
-                {needsBudget > 0 ? (
-                  <NeedsBudgetCard
-                    count={needsBudget}
-                    unattributedCents={data.unattributedCents}
-                    onPress={isDrilldown ? undefined : () => onAttentionAction("needs_budget")}
-                  />
-                ) : null}
-                {data.attention.map((a, i) => {
-                  // M3 (review): "budget_approvals" has no real destination —
-                  // `onAttentionAction` doesn't handle that kind (the decision
-                  // happens right on the budget card below, per
-                  // `chapterAttentionQueue`'s own doc comment) — so it must
-                  // never render as a tappable dead click.
-                  const navigable = !isDrilldown && a.kind !== "budget_approvals";
-                  return (
-                    <AttentionCard
-                      key={i}
-                      a={a}
-                      onPress={navigable ? () => onAttentionAction(a.kind) : undefined}
-                      inertHint={
-                        isDrilldown
-                          ? "switch chapters to act on this"
-                          : a.kind === "budget_approvals"
-                            ? "decide right on the budget card below"
-                            : undefined
-                      }
-                    />
-                  );
-                })}
-              </View>
-            )}
-            {/* Coded-to-central — info-tier (not a warning): spend that's
-                legitimately linked to a central budget, so it's excluded from
-                Unattributed above but wouldn't otherwise appear anywhere on
-                this chapter's dashboard. */}
-            {data.centralLinkedCents > 0 ? (
-              <View className="mt-3 flex-row items-center gap-2 rounded-md bg-info-bg px-3 py-2">
-                <Icon name="info" size={14} color={colors.info} />
-                <Text className="flex-1 text-xs text-info">
-                  Coded to central budgets:{" "}
-                  <Money cents={data.centralLinkedCents} className="text-xs font-semibold text-info" />{" "}
-                  — tracked on the central dashboard, not a chapter card.
-                </Text>
-              </View>
-            ) : null}
-          </>
-        );
-      })()}
+          </View>
+
+          <View>
+            <SectionHeader title="Where it went" />
+            <View className="rounded-lg border border-border bg-raised p-4 shadow-card">
+              <CategoryBars rollup={rollup} />
+            </View>
+          </View>
+
+          <RecentDigest
+            rows={data.recentTransactions}
+            onViewAll={isDrilldown ? undefined : () => onAttentionAction("needs_budget")}
+          />
+        </View>
+      </View>
     </View>
   );
 }
@@ -341,18 +328,17 @@ function AffordabilityHeader({
       <Money cents={data.floorCents} className="text-sm text-ink" />
       <Text className="text-sm text-muted">floor +</Text>
       <Money cents={data.skimCents} className="text-sm text-ink" />
-      <Text className="text-sm text-muted">skim →</Text>
-      {underwater ? (
-        <Text className="text-sm font-semibold text-danger">
-          under water by{" "}
-          <Money cents={-data.discretionaryCents} className="text-sm font-semibold text-danger" />
-        </Text>
-      ) : (
-        <Text className="text-sm font-semibold text-ink">
-          <Money cents={data.discretionaryCents} className="text-sm font-semibold text-ink" />{" "}
-          discretionary
-        </Text>
-      )}
+      <Text className="text-sm text-muted">skim</Text>
+      <View className="ml-1">
+        {underwater ? (
+          <Badge label={`Under water by ${formatCents(-data.discretionaryCents)}`} tone="danger" />
+        ) : (
+          <Text className="text-sm font-semibold text-ink">
+            <Money cents={data.discretionaryCents} className="text-sm font-semibold text-ink" />{" "}
+            discretionary
+          </Text>
+        )}
+      </View>
       {data.canEdit ? (
         <Pressable
           onPress={onEdit}
@@ -368,354 +354,107 @@ function AffordabilityHeader({
   );
 }
 
-// ── Event / project budget card ──────────────────────────────────────────────
-// `onPress` is omitted during a central drill-down (`isDrilldown` at the call
-// site) — both the "Edit budget" button and the approval actions below write
-// through mutations that resolve the CALLER's own chapter server-side
-// (`requireChapterId`/`requireInCallerChapter`), which isn't the chapter
-// being peeked, so they'd fail with a confusing "not found" error. Hiding the
-// affordance is simpler and clearer than letting the user hit that.
-function ProjectBudgetCard({ b, onPress }: { b: ProjectBudget; onPress?: () => void }) {
-  const router = useRouter();
-  const meta = [b.dateLabel, b.subtitle].filter(Boolean).join(" · ");
-  // WP-wave4 (item 6): a $0-approved-cap budget still AWAITING a decision
-  // shows spend against the REQUESTED amount, never the nonsense "100% /
-  // danger-red" the raw $0 cap would otherwise produce.
-  const display = awaitingApprovalZeroCapDisplay(b);
-  const remainingCents = display.budgetCents - b.spentCents;
+// ── KPI tile variants ────────────────────────────────────────────────────────
+type ChapterTile = ChapterDash["tiles"][number];
+
+/** The "Spent · …" tile with its own sparkline in the top-right corner. */
+function SpentTile({ tile, monthly }: { tile: ChapterTile; monthly: MonthlySpend | undefined }) {
   return (
-    <View className="rounded-lg border border-border bg-raised p-4 shadow-card">
-      <View className="mb-2 flex-row items-start justify-between gap-3">
-        <View className="flex-1">
-          <View className="flex-row flex-wrap items-center gap-2">
-            <Text className="font-display text-lg text-ink" numberOfLines={1}>
-              {b.name}
-            </Text>
-            <Chip label={b.cadence === "per_instance" ? "Per instance" : "One-off"} />
-            {b.sourceBadge ? <Badge label={b.sourceBadge} tone="info" /> : null}
-            <BudgetApprovalChip
-              status={b.approvalStatus}
-              approvedCents={b.approvedCents}
-              requestedCents={b.requestedCents}
-              approvalParty={b.approvalParty}
-            />
-            {/* WP-wave4 (item 4 — deep links): jump to the linked event/project. */}
-            {b.refKind && b.scopeRefId ? (
-              <Pressable
-                onPress={() => router.push(`/${b.refKind}/${b.scopeRefId}` as never)}
-                hitSlop={8}
-                accessibilityRole="button"
-                accessibilityLabel={`Open ${b.refKind}`}
-              >
-                <Icon name="external-link" size={14} color={colors.muted} />
-              </Pressable>
-            ) : null}
-          </View>
-          {meta ? <Text className="mt-0.5 text-xs text-muted">{meta}</Text> : null}
-        </View>
-        <Text
-          className="text-sm text-muted"
-          style={{ fontVariant: ["tabular-nums"] }}
-        >
-          {formatCents(b.spentCents)} / {formatCents(display.budgetCents)}
-          {display.isAwaitingApproval ? " (requested)" : ""}
+    <View className="min-w-[150px] flex-1 gap-1.5 rounded-lg border border-border bg-raised p-4 shadow-card">
+      <View className="flex-row items-start justify-between gap-2">
+        <Text className="text-2xs font-bold uppercase tracking-wider text-muted">
+          {tile.label}
         </Text>
+        {monthly ? <SparkLine months={monthly.months} partialMonth={monthly.partialMonth} /> : null}
       </View>
-
-      <BudgetBar pct={display.pct} status={display.status} />
-
-      <View className="mt-1.5 flex-row items-center justify-between">
-        <Text className="text-xs text-muted">
-          {display.pct}% {display.isAwaitingApproval ? "of requested" : "spent"}
-        </Text>
-        <Text className="text-xs text-muted">
-          <Money cents={remainingCents} className="text-xs text-muted" /> left
-        </Text>
-      </View>
-
-      {b.reviewNote && b.approvalStatus === "changes_requested" ? (
-        <Text className="mt-2 text-xs text-danger">"{b.reviewNote}"</Text>
-      ) : null}
-
-      {b.categories.length > 0 ? (
-        <View className="mt-3 gap-2 border-t border-border pt-3">
-          {b.categories.map((c, i) => (
-            <View key={i} className="gap-1">
-              <View className="flex-row items-center justify-between">
-                <Text className="text-xs text-ink" numberOfLines={1}>
-                  {c.name}
-                </Text>
-                <Money cents={c.spentCents} className="text-xs text-muted" />
-              </View>
-              <MiniBar barPct={c.barPct} />
-            </View>
-          ))}
-        </View>
-      ) : null}
-
-      {onPress ? (
-        <View className="mt-3 flex-row items-center justify-between gap-2">
-          <Button title="Edit budget" variant="ghost" size="sm" onPress={onPress} />
-          <BudgetApprovalActions budgetId={b.id} status={b.approvalStatus} />
-        </View>
-      ) : null}
+      <Text className="font-display text-2xl text-ink" style={{ fontVariant: ["tabular-nums"] }}>
+        {tile.value}
+      </Text>
+      {tile.meta ? <Text className="text-xs text-muted">{tile.meta}</Text> : null}
     </View>
   );
 }
 
-// ── Recurring bucket card ────────────────────────────────────────────────────
-// See `ProjectBudgetCard`'s doc comment above — same drill-down gating, same
-// reason (approval mutations resolve the caller's own chapter too).
-function RecurringBudgetCard({ b, onPress }: { b: RecurringBudget; onPress?: () => void }) {
-  const cadenceLabel =
-    b.cadence === "monthly" ? "Monthly" : b.cadence === "quarterly" ? "Quarterly" : "Yearly";
-  // WP-wave4 (item 6): see `ProjectBudgetCard`'s identical treatment.
-  const display = awaitingApprovalZeroCapDisplay(b);
+/** The "To review N" tile, styled as a link ("To review N ›") into Reconcile. */
+function ReviewLinkTile({ tile, onPress }: { tile: ChapterTile; onPress?: () => void }) {
+  const content = (
+    <>
+      <View className="flex-row items-center justify-between gap-2">
+        <Text className="text-2xs font-bold uppercase tracking-wider text-muted">
+          {tile.label}
+        </Text>
+        {onPress ? <Icon name="chevron-right" size={12} color={colors.accent} /> : null}
+      </View>
+      <Text
+        className={`font-display text-2xl ${onPress ? "text-accent" : "text-ink"}`}
+        style={{ fontVariant: ["tabular-nums"] }}
+      >
+        {tile.value}
+      </Text>
+      {tile.meta ? <Text className="text-xs text-muted">{tile.meta}</Text> : null}
+    </>
+  );
+  if (!onPress) {
+    return (
+      <View className="min-w-[150px] flex-1 gap-1.5 rounded-lg border border-border bg-raised p-4 shadow-card">
+        {content}
+      </View>
+    );
+  }
   return (
-    <View className="min-w-[260px] flex-1 rounded-lg border border-border bg-raised p-4 shadow-card">
-      <View className="mb-2 flex-row items-start justify-between gap-2">
-        <View className="flex-1">
-          <Text className="font-display text-base text-ink" numberOfLines={1}>
-            {b.name}
-          </Text>
-          <View className="mt-1 flex-row flex-wrap items-center gap-1.5">
-            <Chip label={cadenceLabel} />
-            <BudgetApprovalChip
-              status={b.approvalStatus}
-              approvedCents={b.approvedCents}
-              requestedCents={b.requestedCents}
-              approvalParty={b.approvalParty}
-            />
-          </View>
-        </View>
-        <Text className="text-sm text-muted" style={{ fontVariant: ["tabular-nums"] }}>
-          {formatCents(b.spentCents)} / {formatCents(display.budgetCents)}
-          {display.isAwaitingApproval ? " (requested)" : ""}
-        </Text>
-      </View>
-
-      <BudgetBar pct={display.pct} status={display.status} />
-      <View className="mt-1.5 flex-row items-center justify-between">
-        <Text className="text-xs text-muted">
-          {display.pct}% {display.isAwaitingApproval ? "of requested" : "spent"}
-        </Text>
-        {b.note ? <Text className="text-xs text-muted">{b.note}</Text> : null}
-      </View>
-
-      {b.reviewNote && b.approvalStatus === "changes_requested" ? (
-        <Text className="mt-2 text-xs text-danger">"{b.reviewNote}"</Text>
-      ) : null}
-
-      {b.categories && b.categories.length > 0 ? (
-        <View className="mt-3 gap-2 border-t border-border pt-3">
-          {b.categories.map((c, i) => (
-            <View key={i} className="gap-1">
-              <View className="flex-row items-center justify-between">
-                <Text className="text-xs text-ink" numberOfLines={1}>
-                  {c.name}
-                </Text>
-                <Money cents={c.spentCents} className="text-xs text-muted" />
-              </View>
-              <MiniBar barPct={c.barPct} />
-            </View>
-          ))}
-        </View>
-      ) : null}
-
-      {onPress ? (
-        <View className="mt-3 flex-row items-center justify-between gap-2">
-          <Button title="Edit budget" variant="ghost" size="sm" onPress={onPress} />
-          <BudgetApprovalActions budgetId={b.id} status={b.approvalStatus} />
-        </View>
-      ) : null}
-    </View>
+    <Pressable
+      onPress={onPress}
+      accessibilityRole="button"
+      className="min-w-[150px] flex-1 gap-1.5 rounded-lg border border-border bg-raised p-4 shadow-card web:hover:border-accent"
+    >
+      {content}
+    </Pressable>
   );
 }
 
-// ── Recent transactions table ────────────────────────────────────────────────
-function TransactionsTable({ rows }: { rows: RecentTxn[] }) {
+// ── Recent transactions digest ───────────────────────────────────────────────
+// 4-5 rows (merchant · budget shortname · amount) + "All N in Reconcile ›".
+// `N` is the recent-window count `dashboardChapter` returns (capped at
+// `RECENT_TXN_COUNT`), not a true period total — the dashboard doesn't fetch
+// one (Reconcile itself is the full ledger).
+function RecentDigest({ rows, onViewAll }: { rows: RecentTxn[]; onViewAll?: () => void }) {
+  if (rows.length === 0) return null;
+  const shown = rows.slice(0, 5);
   return (
-    <Table>
-      <TableHeader>
-        <HeaderCell flex={2}>Transaction</HeaderCell>
-        <HeaderCell flex={2}>Coded to</HeaderCell>
-        <HeaderCell width={110} align="right">
-          Amount
-        </HeaderCell>
-        <HeaderCell width={120} align="right">
-          Status
-        </HeaderCell>
-      </TableHeader>
-      {rows.map((t, i) => {
-        const status = txnStatusTone(t.status);
-        const spender = [t.spenderName, t.cardLast4 ? `•• ${t.cardLast4}` : null]
-          .filter(Boolean)
-          .join(" · ");
-        return (
-          <Row key={t.id} last={i === rows.length - 1}>
-            <Cell flex={2}>
-              <Text className="text-sm font-semibold text-ink" numberOfLines={1}>
+    <View>
+      <SectionHeader title="Recent transactions" />
+      <View className="overflow-hidden rounded-lg border border-border bg-raised shadow-card">
+        {shown.map((t, i) => (
+          <View
+            key={t.id}
+            className={`flex-row items-center justify-between gap-2 px-3 py-2 ${
+              i === shown.length - 1 ? "" : "border-b border-border"
+            }`}
+          >
+            <View className="min-w-0 flex-1">
+              <Text className="text-xs font-semibold text-ink" numberOfLines={1}>
                 {t.merchant ?? "—"}
               </Text>
-              <Text className="text-xs text-muted" numberOfLines={1}>
-                {[t.date, spender || null, t.timeOrNote || null]
-                  .filter(Boolean)
-                  .join(" · ")}
+              <Text className="text-2xs text-muted" numberOfLines={1}>
+                {t.codedTo?.projectOrEvent || t.codedTo?.category || "Uncoded"}
               </Text>
-            </Cell>
-            <Cell flex={2}>
-              {t.codedTo ? (
-                <>
-                  <Text className="text-sm text-ink" numberOfLines={1}>
-                    {t.codedTo.projectOrEvent || "—"}
-                  </Text>
-                  {t.codedTo.category ? (
-                    <Text className="text-xs text-muted" numberOfLines={1}>
-                      {t.codedTo.category}
-                    </Text>
-                  ) : null}
-                </>
-              ) : t.aiSuggestion ? (
-                <View className="gap-1">
-                  <Badge
-                    label={`AI: ${t.aiSuggestion.category || "—"}`}
-                    tone="lavender"
-                    icon="sparkles"
-                  />
-                </View>
-              ) : (
-                <Text className="text-xs text-faint">Uncoded</Text>
-              )}
-            </Cell>
-            <Cell width={110} align="right">
-              <SignedMoney cents={t.amountCents} flow={t.flow} className="text-sm font-semibold" />
-            </Cell>
-            <Cell width={120} align="right">
-              <Badge label={status.label} tone={status.tone} />
-            </Cell>
-          </Row>
-        );
-      })}
-    </Table>
-  );
-}
-
-// ── Needs-a-budget / Unattributed attention row ──────────────────────────────
-// Un-budgeted spend nudged to Reconcile so each charge gets tagged to a
-// budget. `count` (`dashboardChapter.unattributedCount`) and `unattributedCents`
-// share the same THIS-PERIOD scope + predicate — the dollar figure every
-// budget card on the dashboard is blind to (no derive-matching fallback
-// exists — see WP-0.1). Hidden when the count is 0 (caller-gated). Tappable
-// (unless drilled into another chapter) → Reconcile's `needs_budget` filter.
-function NeedsBudgetCard({
-  count,
-  unattributedCents,
-  onPress,
-}: {
-  count: number;
-  unattributedCents: number;
-  onPress?: () => void;
-}) {
-  const content = (
-    <>
-      <View className="h-9 min-w-[36px] items-center justify-center rounded-pill bg-warn-soft px-2">
-        <Text
-          className="text-sm font-bold text-warn"
-          style={{ fontVariant: ["tabular-nums"] }}
-        >
-          {count}
-        </Text>
+            </View>
+            <SignedMoney cents={t.amountCents} flow={t.flow} className="text-xs font-semibold" />
+          </View>
+        ))}
+        {onViewAll ? (
+          <Pressable
+            onPress={onViewAll}
+            accessibilityRole="button"
+            className="flex-row items-center justify-center gap-1.5 border-t border-border py-2 web:hover:bg-sunken"
+          >
+            <Text className="text-xs font-semibold text-accent">
+              All {rows.length} in Reconcile
+            </Text>
+            <Icon name="chevron-right" size={12} color={colors.accent} />
+          </Pressable>
+        ) : null}
       </View>
-      <View className="flex-1">
-        <Text className="text-sm font-semibold text-ink">
-          Unattributed: <Money cents={unattributedCents} className="text-sm font-semibold text-ink" />
-        </Text>
-        <Text className="text-xs text-muted">
-          {count === 1
-            ? "1 transaction needs a budget this period"
-            : `${count} transactions need a budget this period`}{" "}
-          — tag each charge so it counts against a plan.
-        </Text>
-      </View>
-      {onPress ? <Icon name="chevron-right" size={16} color={colors.muted} /> : null}
-      <Badge label="Reconcile" tone="warn" icon="tag" />
-    </>
-  );
-
-  if (!onPress) {
-    return (
-      <View className="flex-row items-center gap-3 rounded-lg border border-warn bg-warn-bg p-4 shadow-card">
-        {content}
-      </View>
-    );
-  }
-
-  return (
-    <Pressable
-      onPress={onPress}
-      accessibilityRole="button"
-      className="flex-row items-center gap-3 rounded-lg border border-warn bg-warn-bg p-4 shadow-card active:opacity-80"
-    >
-      {content}
-    </Pressable>
-  );
-}
-
-// ── Attention card ───────────────────────────────────────────────────────────
-// `onPress` is omitted while drilled into another chapter — the target tabs
-// (Reimbursements / Cards) are hard-scoped to the CALLER's own chapter, so
-// "Review" would silently act on the wrong chapter's queue — and also (M3,
-// review) for a "budget_approvals" row, which has no destination at all (the
-// decision happens right on the budget card, not a nav target). Renders as an
-// inert row with a note instead of a live nav action either way; `inertHint`
-// lets the caller explain WHY (different wording for the two cases).
-function AttentionCard({
-  a,
-  onPress,
-  inertHint,
-}: {
-  a: Attention;
-  onPress?: () => void;
-  /** Appended to `a.detail` when this card renders inert (no `onPress`). */
-  inertHint?: string;
-}) {
-  const content = (
-    <>
-      <View className="h-9 min-w-[36px] items-center justify-center rounded-pill bg-accent-soft px-2">
-        <Text className="text-sm font-bold text-accent" style={{ fontVariant: ["tabular-nums"] }}>
-          {a.badgeCount}
-        </Text>
-      </View>
-      <View className="flex-1">
-        <Text className="text-sm font-semibold text-ink">{a.title}</Text>
-        <Text className="text-xs text-muted">
-          {onPress ? a.detail : inertHint ? `${a.detail} · ${inertHint}` : a.detail}
-        </Text>
-      </View>
-      {onPress ? (
-        <>
-          <Badge label={a.actionLabel} tone="accent" />
-          <Icon name="chevron-right" size={16} color={colors.muted} />
-        </>
-      ) : null}
-    </>
-  );
-
-  if (!onPress) {
-    return (
-      <View className="flex-row items-center gap-3 rounded-lg border border-border bg-raised p-4 shadow-card opacity-70">
-        {content}
-      </View>
-    );
-  }
-
-  return (
-    <Pressable
-      onPress={onPress}
-      accessibilityRole="button"
-      className="flex-row items-center gap-3 rounded-lg border border-border bg-raised p-4 shadow-card active:bg-sunken web:hover:border-border-strong"
-    >
-      {content}
-    </Pressable>
+    </View>
   );
 }

@@ -249,6 +249,10 @@ function DashboardBody({ seats }: { seats: Seats }) {
               onEditBudget={onEditBudget}
               onAddTransaction={() => setTxnModalOpen(true)}
               onAttentionAction={onAttentionAction}
+              onChangePeriod={(next) => {
+                setYm({ year: next.year, month: next.month });
+                setPeriod(next.period);
+              }}
             />
           </FinanceBoundary>
         )}
@@ -341,6 +345,7 @@ function ChapterSection({
   onEditBudget,
   onAddTransaction,
   onAttentionAction,
+  onChangePeriod,
 }: {
   chapterId: Id<"chapters"> | undefined;
   ym: { year: number; month: number };
@@ -350,12 +355,24 @@ function ChapterSection({
   onEditBudget: (budgetId: string) => void;
   onAddTransaction: () => void;
   onAttentionAction: (kind: string) => void;
+  /** DASH-2: a spend-by-month bar click sets this — the SAME state the
+   *  page's ‹ › picker / Month-YTD toggle drive. */
+  onChangePeriod: (next: { year: number; month: number; period: DashPeriodMode }) => void;
 }) {
   const data = useQuery(api.finances.dashboardChapter, { chapterId, ...ym, period });
   // Separate query (WP-4.3): its own loading state never blocks the rest of
   // the dashboard — `ChapterView`/`AffordabilityHeader` renders nothing until
   // it resolves.
   const affordability = useQuery(api.finances.chapterAffordability, { chapterId });
+  // DASH-2: the spend-by-month chart + KPI sparkline. Skipped until
+  // `chapterId` resolves (a central-only holder before entering Peek has no
+  // chapter scope to chart — `dashboardChapter`/`chapterAffordability` fall
+  // back to the caller's own chapter server-side, but `spendByMonth` takes a
+  // required `scope` arg with no such fallback).
+  const monthly = useQuery(
+    api.dashboardCharts.spendByMonth,
+    chapterId ? { scope: chapterId, year: ym.year } : "skip",
+  );
   const [editingBackerCount, setEditingBackerCount] = useState(false);
 
   if (data === undefined) return <LoadingBlock />;
@@ -364,15 +381,16 @@ function ChapterSection({
       <ChapterView
         data={data}
         affordability={affordability}
+        monthly={monthly}
         year={ym.year}
         month={ym.month}
         period={period}
-        chapterId={chapterId}
         onNewBudget={onNewBudget}
         onEditBudget={onEditBudget}
         onAddTransaction={onAddTransaction}
         onAttentionAction={onAttentionAction}
         onEditBackerCount={() => setEditingBackerCount(true)}
+        onChangePeriod={onChangePeriod}
         isDrilldown={isDrilldown}
       />
       {editingBackerCount ? (
