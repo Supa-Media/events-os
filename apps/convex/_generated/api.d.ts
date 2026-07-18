@@ -52,6 +52,8 @@ import type * as lib_giveApiRoutes from "../lib/giveApiRoutes.js";
 import type * as lib_givePage from "../lib/givePage.js";
 import type * as lib_givePageClient from "../lib/givePageClient.js";
 import type * as lib_givePageStyles from "../lib/givePageStyles.js";
+import type * as lib_givingAccess from "../lib/givingAccess.js";
+import type * as lib_givingDonors from "../lib/givingDonors.js";
 import type * as lib_guides from "../lib/guides.js";
 import type * as lib_html from "../lib/html.js";
 import type * as lib_landingPage from "../lib/landingPage.js";
@@ -219,6 +221,8 @@ declare const fullApi: ApiFromModules<{
   "lib/givePage": typeof lib_givePage;
   "lib/givePageClient": typeof lib_givePageClient;
   "lib/givePageStyles": typeof lib_givePageStyles;
+  "lib/givingAccess": typeof lib_givingAccess;
+  "lib/givingDonors": typeof lib_givingDonors;
   "lib/guides": typeof lib_guides;
   "lib/html": typeof lib_html;
   "lib/landingPage": typeof lib_landingPage;

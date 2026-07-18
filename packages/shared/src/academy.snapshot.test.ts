@@ -45,6 +45,13 @@
  * `streams/finances.ts`'s header comment). Total: 96 sections. Section slugs
  * and their order are otherwise untouched — any OTHER drift here is still a
  * real regression.
+ *
+ * `dev-prospect-cities-and-map` had its COPY + quiz corrected once the public
+ * `/give` map shipped (PR #275, giving-platform §5): the map/city pages are now
+ * taught as live, and launch's non-automatic pledge re-scope is told honestly
+ * (an open owner decision, PRD Appendix C#3). Its title, minutes, and
+ * quiz-length are unchanged, so the snapshotted values below stay put — only
+ * the lesson prose and two answer keys moved.
  */
 import { describe, expect, test } from "vitest";
 import { ACADEMY_COURSES, ACADEMY_SECTIONS } from "./academy";
