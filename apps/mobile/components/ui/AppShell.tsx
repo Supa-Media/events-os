@@ -46,6 +46,12 @@ const NAV: NavEntry[] = [
   // in-screen guards enforce the real `financeRoles`/seat capability — this
   // is nav visibility only.
   { label: "Finances", icon: "dollar-sign", path: "/finances", group: "A" },
+  // Giving — the development team's donor CRM (F-6 P1). Its own desk beside
+  // Finances (Development ≠ Finance; PRD §6, B8). Gated by
+  // `givingPlatform.myGivingAccess.canView` (a held `nav.giving`/`giving.view`
+  // seat, or superuser) — the in-screen `requireGivingView` gate is the real
+  // one; this is nav visibility only.
+  { label: "Giving", icon: "gift", path: "/giving", group: "A" },
   // The Academy is for everyone — never permission-gated (see useNav).
   { label: "Academy", icon: "award", path: "/academy", group: "R" },
   // Org Chart — read-only, org-transparent (mirrors `seats.chart`'s "the whole
@@ -85,6 +91,10 @@ function groupForSidebar(nav: NavEntry[]): { group: ParaGroup; items: NavEntry[]
  */
 function useNav(): NavEntry[] {
   const org = useQuery(api.org.nav);
+  // The giving desk's own nav gate (a held `nav.giving`/`giving.view` seat, or
+  // superuser) — separate from `org.nav` so the development desk's visibility
+  // stays a pure `nav.giving` check, mirroring `financeRoles.mySeats`.
+  const giving = useQuery(api.givingPlatform.myGivingAccess, {});
   const tier = org?.tier;
   return NAV.filter((n) => {
     switch (n.path) {
@@ -97,6 +107,8 @@ function useNav(): NavEntry[] {
         return tier === "admin" || tier === "lead";
       case "/finances":
         return org?.showFinances === true;
+      case "/giving":
+        return giving?.canView === true;
       case "/team":
         // Work: everyone except volunteer — but keep the teamView nuance so a
         // caller with no roster row isn't shown an empty Work tab.
