@@ -23,12 +23,18 @@
  * THREE TRIGGERS feed the same `suggestCodingSystem`/`suggestCoding` core
  * (`aiCoding.ts`'s `codeTransaction`), all funneling through
  * `runSuggestionSweep` or `loadForSuggestion` below:
- *  - on-ingest (PRIMARY) — `scheduleSuggestionOnIngest`, called from
+ *  - on-ingest (PRIMARY) — `queueSuggestionOnIngest`, called from
  *    `increase.applyIncreaseCardTransaction` and
  *    `finances.createManualTransaction` right after a new transaction is
- *    inserted, debounces into `ingestSuggestionSweep` within seconds.
+ *    inserted. It does ONLY a try/catch-wrapped `ctx.scheduler.runAfter` —
+ *    the actual eligibility + debounce-mutex work runs in the SEPARATE
+ *    transaction of the scheduled `scheduleSuggestionOnIngest`, so neither a
+ *    throw nor mutex-row OCC contention can ever touch the money-writing
+ *    mutation that triggered it (review finding, PR #265). That in turn
+ *    debounces into `ingestSuggestionSweep` within seconds.
  *  - hourly cron (BACKSTOP) — `sweepUnsuggestedTransactions`, mops up
- *    anything ingest's batch cap left behind.
+ *    anything ingest's batch cap left behind, and self-heals a wedged
+ *    debounce mutex (`STALE_MUTEX_MS`).
  *  - on-demand (MANUAL) — a bookkeeper taps "Suggest" in Reconcile on a row
  *    that still has none; calls the public `suggestCoding` action directly.
  *
@@ -626,59 +632,132 @@ async function runSuggestionSweep(
 }
 
 /**
+ * How long the debounce mutex (`aiCodingIngestState`) can sit `pending:true`
+ * before it's treated as WEDGED rather than genuinely in-flight (review
+ * finding, PR #265): if `ingestSuggestionSweep` ever throws AFTER staging its
+ * `pending:false` clear but before the rest of that same mutation completes,
+ * the clear rolls back with everything else in it — Convex mutations are
+ * all-or-nothing — leaving `pending:true` forever, since `scheduleIngestSweep`
+ * trusts a `pending:true` row to mean "already covered" and never reschedules.
+ * Past this threshold a `pending:true` row self-heals two ways: the very next
+ * arrival's `scheduleIngestSweep` call reschedules instead of trusting it, and
+ * the hourly cron backstop (`sweepUnsuggestedTransactions`) clears it
+ * unconditionally even with zero new arrivals to trigger the former.
+ */
+const STALE_MUTEX_MS = 15 * 60 * 1000;
+
+function isMutexStale(state: Doc<"aiCodingIngestState">, now: number): boolean {
+  return now - (state.scheduledAt ?? 0) > STALE_MUTEX_MS;
+}
+
+/**
  * Hourly cron trigger (see `crons.ts`'s "ai auto-coding sweep"). Now mostly a
  * quiet BACKSTOP: `scheduleSuggestionOnIngest` (below) covers newly-arriving
  * transactions within seconds, so by the time this runs there's usually
  * nothing left — it only finds something when ingest's own `SWEEP_BATCH` cap
  * was exceeded by a large burst, or a transaction predates this feature.
+ *
+ * Also the STALE-MUTEX SELF-HEAL backstop (review finding, PR #265,
+ * `STALE_MUTEX_MS`'s doc comment): clears a `pending:true` debounce mutex row
+ * unconditionally once it's older than `STALE_MUTEX_MS`, guaranteeing the
+ * on-ingest fast path can never stay wedged for more than an hour even if
+ * zero new transactions arrive to trigger `scheduleIngestSweep`'s own,
+ * faster self-heal.
  */
 export const sweepUnsuggestedTransactions = internalMutation({
   args: {},
   returns: v.object({ scheduled: v.number() }),
-  handler: async (ctx) => runSuggestionSweep(ctx, "sweep"),
+  handler: async (ctx) => {
+    const state = await ctx.db.query("aiCodingIngestState").first();
+    if (state?.pending && isMutexStale(state, Date.now())) {
+      await ctx.db.patch(state._id, { pending: false });
+    }
+    return await runSuggestionSweep(ctx, "sweep");
+  },
 });
 
 /**
  * ON-INGEST HOOK — call from a transaction-creating mutation (the Increase
  * webhook apply path, `increase.applyIncreaseCardTransaction`; the manual-add
- * path, `finances.createManualTransaction`) with the just-inserted doc, in
- * the SAME transaction as the insert. No-ops for anything the sweep would
- * skip anyway (central-owned, or already categorized on entry — e.g. a
- * manual entry submitted with a category/budget already picked), so those
- * never wake the debounce for nothing.
+ * path, `finances.createManualTransaction`) right after the insert, passing
+ * the new transaction's id.
  *
- * DEGRADE EARLY (mirrors `runSuggestionSweep`'s own key check): when
- * `OPENROUTER_API_KEY` is unset the whole feature is off, so this returns
- * before touching the debounce mutex or scheduling anything — there's no
- * point waking a sweep that would just no-op `INGEST_SWEEP_DELAY_MS` later
- * anyway. This also means the many existing tests for the two ingest paths
- * above (which don't set the key) never acquire a scheduled function to
- * drain — only tests that specifically exercise AI coding do, and they set
- * the key deliberately.
+ * STRUCTURAL SAFETY (review finding, PR #265 — "nothing about suggestions may
+ * ever affect a money write"): this does ONLY an append-only
+ * `ctx.scheduler.runAfter` call, wrapped in try/catch as belt-and-braces —
+ * scheduling can't contend with another transaction the way a read-then-write
+ * on a shared row can, but the try/catch means even an unexpected scheduling
+ * failure is swallowed (logged) rather than propagated. It deliberately does
+ * NOT read or write the debounce mutex (`aiCodingIngestState`) itself, does
+ * NOT re-check `OPENROUTER_API_KEY`, and does NOT check eligibility — ALL of
+ * that (the actual "mutex logic") lives entirely inside `scheduleSuggestionOnIngest`
+ * below, which runs in its OWN, separate transaction once scheduled. This
+ * means NEITHER a throw NOR an OCC conflict on the shared mutex row can EVER
+ * roll back or retry the money-writing mutation that just inserted this
+ * transaction — a suggestion nicety can never fail a money write.
  */
-export async function scheduleSuggestionOnIngest(
+export async function queueSuggestionOnIngest(
   ctx: MutationCtx,
-  txn: Doc<"transactions">,
+  transactionId: Id<"transactions">,
 ): Promise<void> {
-  if (!process.env.OPENROUTER_API_KEY) return;
-  if (!isEligibleForSuggestion(txn, Date.now())) return;
-  await scheduleIngestSweep(ctx);
+  try {
+    await ctx.scheduler.runAfter(
+      0,
+      internal.aiCodingData.scheduleSuggestionOnIngest,
+      { transactionId },
+    );
+  } catch (err) {
+    console.log(
+      `[aiCoding] Failed to schedule the ingest hook for ${transactionId}: ${String(err)}`,
+    );
+  }
 }
+
+/**
+ * The actual on-ingest eligibility + debounce-mutex logic — runs in its OWN
+ * transaction, scheduled (never awaited inline) by `queueSuggestionOnIngest`
+ * from the money-writing mutation that just inserted `transactionId` (see
+ * that function's doc comment for why this separation matters). Re-reads the
+ * transaction fresh (it may have changed in the moment since it was
+ * scheduled — e.g. a race with a manual edit) and degrades exactly like
+ * `runSuggestionSweep` does: when `OPENROUTER_API_KEY` is unset or the
+ * transaction isn't eligible, this is a no-op. The many existing tests for
+ * the two ingest paths (which don't set the key) still never acquire a
+ * scheduled function that does real work to drain — this one just reads one
+ * doc and returns.
+ */
+export const scheduleSuggestionOnIngest = internalMutation({
+  args: { transactionId: v.id("transactions") },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    if (!process.env.OPENROUTER_API_KEY) return null;
+    const txn = await ctx.db.get(args.transactionId);
+    if (!txn || !isEligibleForSuggestion(txn, Date.now())) return null;
+    await scheduleIngestSweep(ctx);
+    return null;
+  },
+});
 
 /**
  * Debounce: schedule `ingestSuggestionSweep` at most once per
  * `INGEST_SWEEP_DELAY_MS` window, via the single-row `aiCodingIngestState`
- * mutex (see its schema doc comment). Concurrent ingest mutations racing this
+ * mutex (see its schema doc comment). Concurrent callers racing this
  * read-then-write are safe — Convex's OCC serializes writes to the same
  * document, so a losing mutation retries, re-reads `pending: true` (already
  * flipped by the winner), and no-ops instead of scheduling a second sweep.
  * This is what turns "N transactions land in a burst" into ONE batched sweep
  * call (itself still capped at `SWEEP_BATCH` model calls via
- * `runSuggestionSweep`) instead of N parallel OpenRouter calls.
+ * `runSuggestionSweep`) instead of N parallel OpenRouter calls. A row whose
+ * `pending:true` has gone STALE (`isMutexStale`, review finding PR #265) is
+ * treated as not-really-pending here — this is the fast half of the
+ * self-heal; `sweepUnsuggestedTransactions` is the slow half that doesn't
+ * need a new arrival to trigger it. Only ever called from
+ * `scheduleSuggestionOnIngest`'s own separate transaction — never from a
+ * money-writing mutation directly.
  */
 async function scheduleIngestSweep(ctx: MutationCtx): Promise<void> {
   const state = await ctx.db.query("aiCodingIngestState").first();
-  if (state?.pending) return; // already scheduled — it'll pick this txn up too
+  if (state?.pending && !isMutexStale(state, Date.now())) return;
   if (state) {
     await ctx.db.patch(state._id, { pending: true, scheduledAt: Date.now() });
   } else {
@@ -696,12 +775,22 @@ async function scheduleIngestSweep(ctx: MutationCtx): Promise<void> {
 
 /**
  * The debounced on-ingest sweep itself — fires `INGEST_SWEEP_DELAY_MS` after
- * `scheduleIngestSweep` first schedules it. Clears the mutex BEFORE scanning
- * (not after) so a transaction that lands concurrently with this run — after
- * the scan already started — schedules a FRESH follow-up sweep rather than
- * silently falling into a gap between "this run's scan" and "the mutex
- * clearing". Delegates to the same `runSuggestionSweep` core the hourly cron
- * uses, labelled `"ingest"` for the audit trail.
+ * `scheduleIngestSweep` first schedules it. Clears the mutex FIRST in this
+ * handler (not after `runSuggestionSweep`) so a transaction whose OWN
+ * `scheduleSuggestionOnIngest` call reads the row AFTER this clear commits
+ * sees `pending:false` and schedules a fresh follow-up sweep, rather than
+ * wrongly trusting a sweep that's already mid-flight to cover it.
+ *
+ * CAUTION (review finding, PR #265): because a Convex mutation is
+ * all-or-nothing, this ordering does NOT protect against the handler
+ * throwing LATER in this same call — if `runSuggestionSweep` itself throws
+ * (e.g. `ctx.scheduler.runAfter` fails scheduling one of up to `SWEEP_BATCH`
+ * actions), the WHOLE transaction rolls back, including this clear, and the
+ * mutex stays wedged at `pending:true`. `STALE_MUTEX_MS` (see its doc
+ * comment) is the real backstop for that case, not this ordering — in-
+ * transaction code order changes nothing about rollback atomicity. Delegates
+ * to the same `runSuggestionSweep` core the hourly cron uses, labelled
+ * `"ingest"` for the audit trail.
  */
 export const ingestSuggestionSweep = internalMutation({
   args: {},

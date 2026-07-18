@@ -75,7 +75,7 @@ import {
 import { readSandbox } from "./financeSettings";
 import { gatherForPickerCandidates } from "./lib/forPickerCandidates";
 import { isMissingReceiptCharge, unlockCardIfReceiptsResolved } from "./cards";
-import { scheduleSuggestionOnIngest } from "./aiCodingData";
+import { queueSuggestionOnIngest } from "./aiCodingData";
 import {
   getChapterIdOrNull,
   requireChapterId,
@@ -7311,12 +7311,13 @@ export const createManualTransaction = mutation({
       createdBy: userId,
       createdAt: Date.now(),
     });
-    // ON-INGEST HOOK — no-ops when the entry was submitted already coded
-    // (`status` above is already `"categorized"`), so a manual entry the
-    // bookkeeper picked a category/budget for on the way in never wakes the
-    // debounce for nothing. See `aiCodingData.scheduleSuggestionOnIngest`.
-    const inserted = await ctx.db.get(txnId);
-    if (inserted) await scheduleSuggestionOnIngest(ctx, inserted);
+    // ON-INGEST HOOK — fire-and-forget: ONLY schedules a separate transaction
+    // that does the actual eligibility + debounce work (a manual entry
+    // submitted already coded — `status` above is already `"categorized"` —
+    // no-ops there), so neither a throw nor debounce-mutex contention can
+    // ever roll back this money insert. See
+    // `aiCodingData.queueSuggestionOnIngest`'s doc comment.
+    await queueSuggestionOnIngest(ctx, txnId);
     return txnId;
   },
 });

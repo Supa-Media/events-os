@@ -3,33 +3,57 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { newT, run, setupChapter, type ChapterSetup } from "./setup.helpers";
 import { api, internal } from "../_generated/api";
 import type { Id } from "../_generated/dataModel";
+import type { MutationCtx } from "../_generated/server";
+import { queueSuggestionOnIngest } from "../aiCodingData";
 
 /**
  * ON-INGEST AI-coding suggestion tests — the owner's ask that a charge gets a
- * coding suggestion AS IT ARRIVES, not just on the old hourly-only cron
- * (`aiCodingData.ts`'s `scheduleSuggestionOnIngest` / `ingestSuggestionSweep` /
- * `runSuggestionSweep`):
+ * coding suggestion AS IT ARRIVES, not just on the old hourly-only cron.
  *
- *  - inserting an eligible transaction via either ingest path (the Increase
- *    webhook apply mutation, `increase.applyIncreaseCardTransaction`; the
- *    manual-add mutation, `finances.createManualTransaction`) schedules
- *    EXACTLY ONE debounced `ingestSuggestionSweep` job — a burst of several
- *    eligible arrivals within the debounce window still schedules only one
- *    (burst safety: the mutex in `aiCodingIngestState`),
- *  - a central-owned charge, and a manual entry submitted already coded,
- *    never wake the debounce (nothing to suggest),
- *  - with `OPENROUTER_API_KEY` unset, neither ingest path schedules anything
- *    at all — this is also what keeps every OTHER finance/increase test in
- *    this suite (which doesn't set the key) leak-free: no new scheduled
- *    function is created for them,
- *  - `ingestSuggestionSweep` clears the debounce mutex and schedules
- *    `aiCoding.suggestCodingSystem` (labelled `triggeredBy:"ingest"` for the
- *    audit trail) for each still-eligible transaction, using the exact same
- *    eligibility rule + `SWEEP_BATCH` cap as the hourly cron — never
- *    double-suggesting a txn that already carries a proposal,
- *  - end to end: a charge lands, the debounced sweep fires, and the
- *    transaction comes out the other side with a real `aiSuggestion` +
- *    an `aiUsageEvents` row crediting `"ingest"`.
+ * TWO-HOP ARCHITECTURE (review findings 1 + 2, PR #265 — "nothing about
+ * suggestions may ever affect a money write"):
+ *  - hop 1 (`queueSuggestionOnIngest`, called INLINE by the money mutation):
+ *    does ONLY a try/catch-wrapped `ctx.scheduler.runAfter` targeting
+ *    `aiCodingData.scheduleSuggestionOnIngest` — append-only, can't contend
+ *    with the money write, and a failure is swallowed rather than
+ *    propagated. ALWAYS scheduled, unconditionally, for every transaction
+ *    insert — no key check, no eligibility check happens at this layer.
+ *  - hop 2 (`scheduleSuggestionOnIngest`, an internalMutation, fires in its
+ *    OWN separate transaction once scheduled): does the actual `OPENROUTER_API_KEY`
+ *    check, re-reads the transaction, checks eligibility, and — only if
+ *    eligible — debounces into `ingestSuggestionSweep` (hop 3) via the
+ *    `aiCodingIngestState` mutex. NEITHER a throw NOR OCC contention on that
+ *    shared mutex row here can ever roll back or retry the money mutation
+ *    that triggered hop 1, since they're fully separate transactions.
+ *
+ * Most tests below directly invoke hop 2 (`t.mutation(internal.aiCodingData.
+ * scheduleSuggestionOnIngest, {transactionId})`) to simulate it firing,
+ * rather than draining real/fake timers through the chain — this is
+ * deterministic and exercises the exact same code a real scheduled firing
+ * would run.
+ *
+ * Coverage:
+ *  - hop 1 is scheduled for EVERY insert (even central-owned, even with no
+ *    key) — the money mutation itself has zero conditionals;
+ *  - hop 2 debounces into exactly one `ingestSuggestionSweep` even when
+ *    several independently-scheduled hop-1 firings race it (sequential
+ *    dedup — see that test's own comment for what this does and doesn't
+ *    prove);
+ *  - hop 2 no-ops for a central-owned charge, an already-categorized manual
+ *    entry, or when the key is unset — without ever touching the mutex;
+ *  - a central manual entry never even schedules hop 1 (the money mutation's
+ *    central branch doesn't call the hook at all);
+ *  - `ingestSuggestionSweep` (hop 3) schedules `suggestCodingSystem`
+ *    (`triggeredBy:"ingest"`) only for still-eligible transactions, same cap
+ *    as the hourly cron — never double-suggesting;
+ *  - structural safety: a scheduling failure in hop 1 is swallowed, and the
+ *    money row is durably committed before hop 1 has even run;
+ *  - stale-mutex self-heal: a wedged `pending:true` row (hop 3 threw after
+ *    staging its clear) is cleared by the hourly cron unconditionally, and
+ *    by the very next hop-2 firing that notices it's stale;
+ *  - end to end: a charge lands, all three hops fire, and the transaction
+ *    comes out the other side with a real `aiSuggestion` + an `"ingest"`-
+ *    labelled `aiUsageEvents` row.
  */
 
 // ── shared seed helpers (mirrors aiCoding.test.ts / increaseCards.test.ts) ──
@@ -79,6 +103,25 @@ async function asBookkeeper(s: ChapterSetup): Promise<Id<"people">> {
   return personId;
 }
 
+/** A bare, directly-insertable unreviewed chapter transaction (bypasses both
+ *  ingest mutations — used by tests that isolate hop 2/3's own logic). */
+async function seedBareTxn(
+  s: ChapterSetup,
+  extra: Partial<{ status: "unreviewed" | "categorized"; amountCents: number }> = {},
+): Promise<Id<"transactions">> {
+  return await run(s.t, (ctx) =>
+    ctx.db.insert("transactions", {
+      chapterId: s.chapterId,
+      source: "manual",
+      flow: "outflow",
+      amountCents: extra.amountCents ?? 1000,
+      postedAt: Date.now(),
+      status: extra.status ?? "unreviewed",
+      createdAt: Date.now(),
+    }),
+  );
+}
+
 /** Every scheduled `_scheduled_functions` row (name + first arg), for
  *  asserting on WHAT got scheduled without firing it. */
 async function scheduledJobs(
@@ -90,8 +133,18 @@ async function scheduledJobs(
   return rows.map((r) => ({ name: r.name, args: r.args[0] }));
 }
 
+function jobsNamed(jobs: { name: string; args: unknown }[], fragment: string) {
+  return jobs.filter((j) => j.name.includes(fragment));
+}
+
 async function ingestState(s: ChapterSetup) {
   return await run(s.t, (ctx) => ctx.db.query("aiCodingIngestState").first());
+}
+
+/** Directly invoke hop 2 (simulates the scheduled `scheduleSuggestionOnIngest`
+ *  firing) — deterministic, no timer wrangling needed. */
+async function fireHop2(t: ReturnType<typeof newT>, transactionId: Id<"transactions">) {
+  await t.mutation(internal.aiCodingData.scheduleSuggestionOnIngest, { transactionId });
 }
 
 /** Stub OpenRouter's HTTP response as a successful chat completion whose
@@ -108,7 +161,7 @@ function stubOpenRouterOk(content: string) {
   );
 }
 
-// ── env save/restore (OPENROUTER_API_KEY toggles the whole feature) ────────
+// ── env save/restore (OPENROUTER_API_KEY toggles hop 2's degrade) ──────────
 
 describe("on-ingest AI-coding suggestions", () => {
   let savedKey: string | undefined;
@@ -124,7 +177,7 @@ describe("on-ingest AI-coding suggestions", () => {
   });
 
   describe("Increase webhook apply path (applyIncreaseCardTransaction)", () => {
-    test("an eligible chapter charge schedules exactly one debounced ingest sweep", async () => {
+    test("an eligible chapter charge schedules hop 1, which (once fired) debounces into ONE ingest sweep", async () => {
       process.env.OPENROUTER_API_KEY = "test-key";
       vi.useFakeTimers();
       try {
@@ -132,7 +185,7 @@ describe("on-ingest AI-coding suggestions", () => {
         const s = await setupChapter(t);
         await seedIncreaseAccount(s, "account_x");
 
-        await t.mutation(internal.increase.applyIncreaseCardTransaction, {
+        const result = await t.mutation(internal.increase.applyIncreaseCardTransaction, {
           externalId: "txn_1",
           accountId: "account_x",
           flow: "outflow",
@@ -140,19 +193,40 @@ describe("on-ingest AI-coding suggestions", () => {
           postedAt: Date.now(),
           merchantName: "Office Depot",
         });
+        expect(result).toEqual({ inserted: true, skipped: false });
 
-        const state = await ingestState(s);
-        expect(state?.pending).toBe(true);
+        // Fake timers: hop 1 hasn't fired yet — exactly one pending job.
+        const hop1Jobs = await scheduledJobs(s);
+        expect(jobsNamed(hop1Jobs, "scheduleSuggestionOnIngest")).toHaveLength(1);
+        expect(await ingestState(s)).toBeNull(); // mutex untouched until hop 1 runs
 
-        const jobs = await scheduledJobs(s);
-        expect(jobs).toHaveLength(1);
-        expect(jobs[0].name).toContain("ingestSuggestionSweep");
+        const txn = await run(s.t, (ctx) =>
+          ctx.db
+            .query("transactions")
+            .withIndex("by_external_id", (q) => q.eq("externalId", "txn_1"))
+            .unique(),
+        );
+        await fireHop2(t, txn!._id);
+
+        expect((await ingestState(s))?.pending).toBe(true);
+        const afterHop2 = await scheduledJobs(s);
+        expect(jobsNamed(afterHop2, "ingestSuggestionSweep")).toHaveLength(1);
       } finally {
         vi.useRealTimers();
       }
     });
 
-    test("a burst of several eligible charges still schedules only ONE ingest sweep (debounce)", async () => {
+    test("sequential dedup: several eligible charges each schedule their own hop 1, but only the first to fire schedules the sweep", async () => {
+      // NOTE (review finding 6a, PR #265): this awaits each hop-1 firing
+      // ONE AT A TIME — convex-test, like real Convex, serializes mutations,
+      // so this proves SEQUENTIAL dedup (the mutex correctly recognizes
+      // "already pending" across N independently-scheduled hop-1 firings).
+      // It does NOT exercise genuinely concurrent hop-1 firings racing the
+      // same OCC read-then-write — that's inherently hard to force
+      // deterministically in this harness. Convex's documented OCC semantics
+      // (a losing writer retries against the winner's committed state) are
+      // what the shared-row read-then-write pattern relies on for the
+      // concurrent case; this test covers the always-true sequential one.
       process.env.OPENROUTER_API_KEY = "test-key";
       vi.useFakeTimers();
       try {
@@ -160,6 +234,7 @@ describe("on-ingest AI-coding suggestions", () => {
         const s = await setupChapter(t);
         await seedIncreaseAccount(s, "account_x");
 
+        const txnIds: Id<"transactions">[] = [];
         for (let i = 0; i < 5; i++) {
           await t.mutation(internal.increase.applyIncreaseCardTransaction, {
             externalId: `txn_burst_${i}`,
@@ -169,19 +244,30 @@ describe("on-ingest AI-coding suggestions", () => {
             postedAt: Date.now(),
             merchantName: "Burst Merchant",
           });
+          const txn = await run(s.t, (ctx) =>
+            ctx.db
+              .query("transactions")
+              .withIndex("by_external_id", (q) => q.eq("externalId", `txn_burst_${i}`))
+              .unique(),
+          );
+          txnIds.push(txn!._id);
         }
+        // Each insert scheduled its OWN hop-1 job — that layer has no dedup.
+        expect(jobsNamed(await scheduledJobs(s), "scheduleSuggestionOnIngest")).toHaveLength(5);
 
-        // Still exactly one pending sweep — every arrival after the first was
-        // absorbed by the mutex, not scheduled its own.
+        // Fire all 5 hop-1 jobs, one at a time.
+        for (const id of txnIds) await fireHop2(t, id);
+
+        // Still exactly one pending sweep — every firing after the first saw
+        // `pending:true` and no-opped rather than scheduling its own.
         const jobs = await scheduledJobs(s);
-        const sweeps = jobs.filter((j) => j.name.includes("ingestSuggestionSweep"));
-        expect(sweeps).toHaveLength(1);
+        expect(jobsNamed(jobs, "ingestSuggestionSweep")).toHaveLength(1);
       } finally {
         vi.useRealTimers();
       }
     });
 
-    test("a central-owned charge never wakes the debounce (central isn't auto-coded)", async () => {
+    test("a central-owned charge's hop 1 fires but is a no-op (central isn't auto-coded)", async () => {
       process.env.OPENROUTER_API_KEY = "test-key";
       vi.useFakeTimers();
       try {
@@ -197,36 +283,61 @@ describe("on-ingest AI-coding suggestions", () => {
           postedAt: Date.now(),
         });
 
+        // Hop 1 IS scheduled — the money mutation schedules unconditionally.
+        expect(jobsNamed(await scheduledJobs(s), "scheduleSuggestionOnIngest")).toHaveLength(1);
+
+        const txn = await run(s.t, (ctx) =>
+          ctx.db
+            .query("transactions")
+            .withIndex("by_external_id", (q) => q.eq("externalId", "txn_central"))
+            .unique(),
+        );
+        await fireHop2(t, txn!._id);
+
+        // But firing it is a no-op: central is never eligible.
         expect(await ingestState(s)).toBeNull();
-        expect(await scheduledJobs(s)).toHaveLength(0);
+        expect(jobsNamed(await scheduledJobs(s), "ingestSuggestionSweep")).toHaveLength(0);
       } finally {
         vi.useRealTimers();
       }
     });
 
-    test("degrades to scheduling nothing when OPENROUTER_API_KEY is unset", async () => {
+    test("hop 1 is scheduled even with no key set, but firing it is a no-op (the degrade lives in hop 2, not the money mutation)", async () => {
       delete process.env.OPENROUTER_API_KEY;
-      const t = newT();
-      const s = await setupChapter(t);
-      await seedIncreaseAccount(s, "account_x");
+      vi.useFakeTimers();
+      try {
+        const t = newT();
+        const s = await setupChapter(t);
+        await seedIncreaseAccount(s, "account_x");
 
-      await t.mutation(internal.increase.applyIncreaseCardTransaction, {
-        externalId: "txn_nokey",
-        accountId: "account_x",
-        flow: "outflow",
-        amountCents: 4200,
-        postedAt: Date.now(),
-      });
+        await t.mutation(internal.increase.applyIncreaseCardTransaction, {
+          externalId: "txn_nokey",
+          accountId: "account_x",
+          flow: "outflow",
+          amountCents: 4200,
+          postedAt: Date.now(),
+        });
 
-      // No mutex row, no scheduled function — this is also what keeps every
-      // OTHER (non-AI) test that calls this mutation leak-free.
-      expect(await ingestState(s)).toBeNull();
-      expect(await scheduledJobs(s)).toHaveLength(0);
+        expect(jobsNamed(await scheduledJobs(s), "scheduleSuggestionOnIngest")).toHaveLength(1);
+
+        const txn = await run(s.t, (ctx) =>
+          ctx.db
+            .query("transactions")
+            .withIndex("by_external_id", (q) => q.eq("externalId", "txn_nokey"))
+            .unique(),
+        );
+        await fireHop2(t, txn!._id);
+
+        expect(await ingestState(s)).toBeNull();
+        expect(jobsNamed(await scheduledJobs(s), "ingestSuggestionSweep")).toHaveLength(0);
+      } finally {
+        vi.useRealTimers();
+      }
     });
   });
 
   describe("manual-add path (createManualTransaction)", () => {
-    test("an unreviewed manual entry schedules the debounced ingest sweep", async () => {
+    test("an unreviewed manual entry's hop 1 debounces into the ingest sweep once fired", async () => {
       process.env.OPENROUTER_API_KEY = "test-key";
       vi.useFakeTimers();
       try {
@@ -234,21 +345,24 @@ describe("on-ingest AI-coding suggestions", () => {
         const s = await setupChapter(t);
         await asBookkeeper(s);
 
-        await s.as.mutation(api.finances.createManualTransaction, {
+        const txnId = await s.as.mutation(api.finances.createManualTransaction, {
           flow: "outflow",
           amountCents: 2500,
           postedAt: Date.now(),
           merchantName: "Hardware Store",
         });
 
+        expect(jobsNamed(await scheduledJobs(s), "scheduleSuggestionOnIngest")).toHaveLength(1);
+        await fireHop2(t, txnId);
+
         expect((await ingestState(s))?.pending).toBe(true);
-        expect(await scheduledJobs(s)).toHaveLength(1);
+        expect(jobsNamed(await scheduledJobs(s), "ingestSuggestionSweep")).toHaveLength(1);
       } finally {
         vi.useRealTimers();
       }
     });
 
-    test("a manual entry submitted already-categorized does NOT wake the debounce", async () => {
+    test("a manual entry submitted already-categorized: hop 1 fires but is a no-op", async () => {
       process.env.OPENROUTER_API_KEY = "test-key";
       vi.useFakeTimers();
       try {
@@ -272,22 +386,25 @@ describe("on-ingest AI-coding suggestions", () => {
           });
         });
 
-        await s.as.mutation(api.finances.createManualTransaction, {
+        const txnId = await s.as.mutation(api.finances.createManualTransaction, {
           flow: "outflow",
           amountCents: 2500,
           postedAt: Date.now(),
           categoryId,
         });
 
+        expect(jobsNamed(await scheduledJobs(s), "scheduleSuggestionOnIngest")).toHaveLength(1);
+        await fireHop2(t, txnId);
+
         // Already `status:"categorized"` on entry — nothing to suggest.
         expect(await ingestState(s)).toBeNull();
-        expect(await scheduledJobs(s)).toHaveLength(0);
+        expect(jobsNamed(await scheduledJobs(s), "ingestSuggestionSweep")).toHaveLength(0);
       } finally {
         vi.useRealTimers();
       }
     });
 
-    test("a central manual entry never wakes the debounce", async () => {
+    test("a central manual entry never schedules hop 1 at all", async () => {
       process.env.OPENROUTER_API_KEY = "test-key";
       vi.useFakeTimers();
       try {
@@ -301,6 +418,9 @@ describe("on-ingest AI-coding suggestions", () => {
           central: true,
         });
 
+        // The money mutation's central branch never calls the hook at all —
+        // not even hop 1 gets scheduled (unlike the central Increase-charge
+        // case above, where the SAME code path handles both).
         expect(await ingestState(s)).toBeNull();
         expect(await scheduledJobs(s)).toHaveLength(0);
       } finally {
@@ -309,25 +429,15 @@ describe("on-ingest AI-coding suggestions", () => {
     });
   });
 
-  describe("ingestSuggestionSweep (the debounced sweep itself)", () => {
+  describe("ingestSuggestionSweep (hop 3, the debounced sweep itself)", () => {
     test("clears the mutex and schedules suggestCodingSystem (triggeredBy: ingest) for eligible txns only", async () => {
       process.env.OPENROUTER_API_KEY = "test-key";
       const t = newT();
       const s = await setupChapter(t);
 
-      // Seed directly (bypassing the ingest mutations) so this test isolates
-      // the sweep's OWN eligibility + scheduling logic.
-      const eligibleId = await run(s.t, (ctx) =>
-        ctx.db.insert("transactions", {
-          chapterId: s.chapterId,
-          source: "manual",
-          flow: "outflow",
-          amountCents: 1000,
-          postedAt: Date.now(),
-          status: "unreviewed",
-          createdAt: Date.now(),
-        }),
-      );
+      // Seed directly (bypassing both ingest hops) so this test isolates the
+      // sweep's OWN eligibility + scheduling logic.
+      const eligibleId = await seedBareTxn(s, { amountCents: 1000 });
       // Already suggested — must be skipped (never double-suggest).
       await run(s.t, (ctx) =>
         ctx.db.insert("transactions", {
@@ -341,7 +451,7 @@ describe("on-ingest AI-coding suggestions", () => {
           aiSuggestion: { suggestedAt: Date.now(), confidence: 0.5 },
         }),
       );
-      // Simulate a mutex left pending by an ingest hook.
+      // Simulate a mutex left pending by an ingest hop.
       await run(s.t, (ctx) =>
         ctx.db.insert("aiCodingIngestState", {
           pending: true,
@@ -356,7 +466,7 @@ describe("on-ingest AI-coding suggestions", () => {
       expect(state?.pending).toBe(false);
 
       const jobs = await scheduledJobs(s);
-      const suggestJobs = jobs.filter((j) => j.name.includes("suggestCodingSystem"));
+      const suggestJobs = jobsNamed(jobs, "suggestCodingSystem");
       expect(suggestJobs).toHaveLength(1);
       expect(suggestJobs[0].args).toMatchObject({
         transactionId: eligibleId,
@@ -368,17 +478,7 @@ describe("on-ingest AI-coding suggestions", () => {
       delete process.env.OPENROUTER_API_KEY;
       const t = newT();
       const s = await setupChapter(t);
-      await run(s.t, (ctx) =>
-        ctx.db.insert("transactions", {
-          chapterId: s.chapterId,
-          source: "manual",
-          flow: "outflow",
-          amountCents: 1000,
-          postedAt: Date.now(),
-          status: "unreviewed",
-          createdAt: Date.now(),
-        }),
-      );
+      await seedBareTxn(s);
       await run(s.t, (ctx) =>
         ctx.db.insert("aiCodingIngestState", { pending: true, scheduledAt: Date.now() }),
       );
@@ -390,7 +490,122 @@ describe("on-ingest AI-coding suggestions", () => {
     });
   });
 
-  describe("end-to-end: charge lands → debounced sweep fires → a real suggestion lands", () => {
+  describe("structural safety: the ingest hook can never fail a money write (review findings 1 + 2, PR #265)", () => {
+    test("queueSuggestionOnIngest swallows a scheduler failure rather than throwing (belt-and-braces try/catch)", async () => {
+      const t = newT();
+      const s = await setupChapter(t);
+      const txnId = await seedBareTxn(s);
+
+      await run(s.t, async (ctx) => {
+        // Stub `ctx.scheduler.runAfter` to simulate the append-only schedule
+        // call itself failing — the ONE thing hop 1 does.
+        const brokenCtx: MutationCtx = {
+          ...ctx,
+          scheduler: {
+            ...ctx.scheduler,
+            runAfter: () => {
+              throw new Error("scheduler unavailable (simulated)");
+            },
+          },
+        } as MutationCtx;
+
+        await expect(
+          queueSuggestionOnIngest(brokenCtx, txnId),
+        ).resolves.toBeUndefined();
+      });
+    });
+
+    test("the money insert is already durably committed before hop 1 has even run", async () => {
+      process.env.OPENROUTER_API_KEY = "test-key";
+      vi.useFakeTimers();
+      try {
+        const t = newT();
+        const s = await setupChapter(t);
+        await seedIncreaseAccount(s, "account_x");
+
+        const result = await t.mutation(internal.increase.applyIncreaseCardTransaction, {
+          externalId: "txn_committed_first",
+          accountId: "account_x",
+          flow: "outflow",
+          amountCents: 4200,
+          postedAt: Date.now(),
+        });
+        expect(result).toEqual({ inserted: true, skipped: false });
+
+        // Fake timers: hop 1 has NOT run yet. The money row is already
+        // durably present regardless — its success can never have depended
+        // on anything hop 1/2/3 do, since they haven't run at all.
+        const txn = await run(s.t, (ctx) =>
+          ctx.db
+            .query("transactions")
+            .withIndex("by_external_id", (q) => q.eq("externalId", "txn_committed_first"))
+            .unique(),
+        );
+        expect(txn).not.toBeNull();
+        expect(jobsNamed(await scheduledJobs(s), "scheduleSuggestionOnIngest")).toHaveLength(1);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+  });
+
+  describe("stale-mutex self-heal (review finding 3, PR #265)", () => {
+    const STALE_MUTEX_MS = 15 * 60 * 1000;
+
+    test("the hourly cron clears a wedged pending mutex row even with zero new arrivals", async () => {
+      process.env.OPENROUTER_API_KEY = "test-key";
+      const t = newT();
+      const s = await setupChapter(t);
+      const staleAt = Date.now() - (STALE_MUTEX_MS + 60_000);
+      await run(s.t, (ctx) =>
+        ctx.db.insert("aiCodingIngestState", { pending: true, scheduledAt: staleAt }),
+      );
+
+      await t.mutation(internal.aiCodingData.sweepUnsuggestedTransactions, {});
+
+      expect((await ingestState(s))?.pending).toBe(false);
+    });
+
+    test("the hourly cron leaves a genuinely fresh pending row alone", async () => {
+      process.env.OPENROUTER_API_KEY = "test-key";
+      const t = newT();
+      const s = await setupChapter(t);
+      await run(s.t, (ctx) =>
+        ctx.db.insert("aiCodingIngestState", { pending: true, scheduledAt: Date.now() }),
+      );
+
+      await t.mutation(internal.aiCodingData.sweepUnsuggestedTransactions, {});
+
+      // Still pending — a real in-flight sweep must not be disturbed.
+      expect((await ingestState(s))?.pending).toBe(true);
+    });
+
+    test("a new arrival self-heals a wedged mutex immediately, without waiting for the cron", async () => {
+      process.env.OPENROUTER_API_KEY = "test-key";
+      vi.useFakeTimers();
+      try {
+        const t = newT();
+        const s = await setupChapter(t);
+        const staleAt = Date.now() - (STALE_MUTEX_MS + 60_000);
+        await run(s.t, (ctx) =>
+          ctx.db.insert("aiCodingIngestState", { pending: true, scheduledAt: staleAt }),
+        );
+        const txnId = await seedBareTxn(s);
+
+        // Directly fire hop 2, simulating a new arrival's hop-1 job running.
+        await fireHop2(t, txnId);
+
+        const state = await ingestState(s);
+        expect(state?.pending).toBe(true);
+        expect(state?.scheduledAt).toBeGreaterThan(staleAt);
+        expect(jobsNamed(await scheduledJobs(s), "ingestSuggestionSweep")).toHaveLength(1);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+  });
+
+  describe("end-to-end: charge lands → all three hops fire → a real suggestion lands", () => {
     test("an Increase card charge gets a suggestion + an 'ingest' audit-trail row", async () => {
       process.env.OPENROUTER_API_KEY = "test-key";
       stubOpenRouterOk(
