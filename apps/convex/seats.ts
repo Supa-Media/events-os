@@ -162,10 +162,15 @@ function findChapterRootDef(
   return chapterChartDefs.find((d) => d.parentSlug === SEAT_ROOT) ?? null;
 }
 
-/** Every chapter, bounded the same way `org.listChaptersForPeek` bounds its
- *  scan. `context` names the caller for the truncation warning, mirroring
- *  the `[finances]`-prefixed `ROLLUP_SCAN_LIMIT` logging convention used
- *  throughout `finances.ts`/`transfers.ts`/`financeRoles.ts`. */
+/** Every ACTIVE chapter (shadow/pre-launch territory rows excluded — see
+ *  `lib/chapters.ts#listActiveChapters`), bounded the same way
+ *  `org.listChaptersForPeek` bounds its scan. `context` names the caller for
+ *  the truncation warning, mirroring the `[finances]`-prefixed
+ *  `ROLLUP_SCAN_LIMIT` logging convention used throughout
+ *  `finances.ts`/`transfers.ts`/`financeRoles.ts`. Inlines the same
+ *  `isActive !== false` filter `listActiveChapters` applies (rather than
+ *  calling it directly) because the truncation warning needs the RAW
+ *  pre-filter scan length, not the filtered count. */
 async function boundedChapters(
   ctx: QueryCtx,
   context: string,
@@ -176,7 +181,7 @@ async function boundedChapters(
       `[seats] ${context} hit ROLLUP_SCAN_LIMIT (${ROLLUP_SCAN_LIMIT}) chapters; results truncated until paginated chapter enumeration lands.`,
     );
   }
-  return chapters;
+  return chapters.filter((c) => c.isActive !== false);
 }
 
 /** A derived seat's computed holders: every chapter's holder(s) of the

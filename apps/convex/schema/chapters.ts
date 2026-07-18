@@ -9,6 +9,15 @@ export const chapters = defineTable({
   name: v.string(),
   slug: v.optional(v.string()),
   image: v.optional(v.string()),
+  // Absent/`true` = active (house convention: `isActive !== false`, NOT
+  // `=== true` — don't flip this or every pre-existing chapter that predates
+  // the column silently vanishes). `false` = a "shadow" chapter: prospect
+  // territories pre-create these rows before a city actually launches, and
+  // they must never appear on a fleet surface. Every enumerator that lists
+  // "all chapters" (finance roll-ups, org charts, dashboards, cron fanouts,
+  // ops seeding, …) MUST go through `lib/chapters.ts#listActiveChapters`
+  // rather than querying this table directly — that's the one place the
+  // `isActive` gate is applied.
   isActive: v.optional(v.boolean()),
   createdAt: v.optional(v.number()),
   // WP-4.3 affordability header: the chapter's backer headcount. Originally

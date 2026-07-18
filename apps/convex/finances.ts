@@ -97,6 +97,7 @@ import {
 import { requireSuperuser, isSuperuser } from "./lib/superuser";
 import { viewerPerson, callerHasEventEditRights } from "./lib/org";
 import { holdsApprovalSeatAt } from "./lib/seats";
+import { listActiveChapters } from "./lib/chapters";
 import {
   ensureDefaultFunds,
   insertDefaultExpenseCategories,
@@ -2844,7 +2845,7 @@ export const dashboardCentral = query({
     if (!chapterId) return empty;
     await requireFinanceCentral(ctx, chapterId);
 
-    const chapters = await ctx.db.query("chapters").take(ROLLUP_SCAN_LIMIT);
+    const chapters = await listActiveChapters(ctx, ROLLUP_SCAN_LIMIT);
     // Read the env flag once for the whole cross-chapter rollup.
     const sandboxMode = await readSandbox(ctx);
     // Shared read-through ref caches: a one-time budget's linked event/project
@@ -3596,7 +3597,7 @@ export const tagDrilldown = query({
       if (!ownChapterId) return empty;
       await requireFinanceCentral(ctx, ownChapterId);
 
-      const chapters = await ctx.db.query("chapters").take(ROLLUP_SCAN_LIMIT);
+      const chapters = await listActiveChapters(ctx, ROLLUP_SCAN_LIMIT);
       for (const chapter of chapters) {
         const tags = await ctx.db
           .query("budgetTags")
@@ -4047,7 +4048,7 @@ export const runSeedDefaultExpenseCategories = internalMutation({
   returns: v.object({ chaptersSeeded: v.number(), inserted: v.number() }),
   handler: async (ctx) => {
     const now = Date.now();
-    const chapters = await ctx.db.query("chapters").take(ROLLUP_SCAN_LIMIT);
+    const chapters = await listActiveChapters(ctx, ROLLUP_SCAN_LIMIT);
     let chaptersSeeded = 0;
     let inserted = 0;
     for (const c of chapters) {
