@@ -18,20 +18,25 @@
  * (4 sections — `mktg-the-look`, `mktg-hit-record`, `mktg-shoot-to-timeline`,
  * `mktg-getting-access` — 2 courses; a caption-voice lesson and a
  * short-form-editing course were authored and then descoped before merge —
- * see `streams/marketing.ts`'s header comment); and the July All-Team
+ * see `streams/marketing.ts`'s header comment); the July All-Team
  * Meeting fold into Foundations — two sections appended
  * (foundations-we-pray-before-we-plan onto Welcome to Public Worship,
  * foundations-owning-your-yes onto How we work), plus a rewritten
  * foundations-communication and an enriched foundations-showing-up (see
- * `streams/foundations.ts`'s header comment); and the Finances-for-Everyone
+ * `streams/foundations.ts`'s header comment); the Finances-for-Everyone
  * owner review pass — no sections added/moved, but `finance-stewardship`,
  * `finance-card-and-receipts`, and `finance-reimbursements-and-flags` grew
  * (minutes + quizLength bumped) for the Public Worship card terminology
  * sweep, the donate-instead-of-personally-covering pattern, the absolute
  * receipt rule, and the code-verified reimbursement-approval/urgent-path
- * content (see `streams/finances.ts`'s header comment). Total: 79 sections.
- * Section slugs and their order are otherwise untouched — any OTHER drift
- * here is still a real regression.
+ * content (see `streams/finances.ts`'s header comment); and the "Leading a
+ * project" course — five sections appended to the Works stream
+ * (works-defining-a-project, works-planning-the-work,
+ * works-the-project-budget, works-tracking-and-escalating,
+ * works-finishing-well), with the new `leading-a-project` course inserted
+ * between `projects` and `duties` in the Works course catalog. Total: 84
+ * sections. Section slugs and their order are otherwise untouched — any
+ * OTHER drift here is still a real regression.
  */
 import { describe, expect, test } from "vitest";
 import { ACADEMY_COURSES, ACADEMY_SECTIONS } from "./academy";
@@ -71,6 +76,11 @@ const EXPECTED_SECTION_SLUGS: string[] = [
   "works-driving-a-project",
   "works-duties",
   "works-owning-a-duty",
+  "works-defining-a-project",
+  "works-planning-the-work",
+  "works-the-project-budget",
+  "works-tracking-and-escalating",
+  "works-finishing-well",
   "mgmt-one-on-one",
   "mgmt-reviewing-the-work",
   "mgmt-caring-for-people",
@@ -388,6 +398,46 @@ const EXPECTED_SECTIONS: {
   {
     slug: "works-owning-a-duty",
     title: "Owning a duty",
+    minutes: 3,
+    quizLength: 3,
+    optional: false,
+    capstoneKind: null,
+  },
+  {
+    slug: "works-defining-a-project",
+    title: "Defining the project",
+    minutes: 3,
+    quizLength: 4,
+    optional: false,
+    capstoneKind: null,
+  },
+  {
+    slug: "works-planning-the-work",
+    title: "Planning the work",
+    minutes: 4,
+    quizLength: 4,
+    optional: false,
+    capstoneKind: null,
+  },
+  {
+    slug: "works-the-project-budget",
+    title: "Building the budget",
+    minutes: 4,
+    quizLength: 4,
+    optional: false,
+    capstoneKind: null,
+  },
+  {
+    slug: "works-tracking-and-escalating",
+    title: "Tracking execution, escalating risks",
+    minutes: 4,
+    quizLength: 4,
+    optional: false,
+    capstoneKind: null,
+  },
+  {
+    slug: "works-finishing-well",
+    title: "Completing and reviewing",
     minutes: 3,
     quizLength: 3,
     optional: false,
@@ -808,6 +858,17 @@ const EXPECTED_COURSES: {
     slug: "projects",
     themeKey: "works",
     moduleSlugs: ["works-projects", "works-driving-a-project"],
+  },
+  {
+    slug: "leading-a-project",
+    themeKey: "works",
+    moduleSlugs: [
+      "works-defining-a-project",
+      "works-planning-the-work",
+      "works-the-project-budget",
+      "works-tracking-and-escalating",
+      "works-finishing-well",
+    ],
   },
   {
     slug: "duties",

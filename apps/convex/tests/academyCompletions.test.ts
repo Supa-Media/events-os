@@ -127,6 +127,7 @@ describe("academy course completions", () => {
       "financial-manager",
       "growing-the-team",
       "how-we-work",
+      "leading-a-project",
       "leading-worship",
       "media-pipeline",
       "partnerships",

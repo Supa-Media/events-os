@@ -1368,7 +1368,7 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
     blocks: [
       {
         kind: "p",
-        text: "Every event and project gets its own one-time budget — its money home from day one. Type a planned amount in when you create it and the budget is already there, in Draft; skip that and one tap of **Add budget** on the event or project's own page summons the same $0 draft later. Either way, nothing is approved yet — a budget is a plan until someone deliberately moves it forward.",
+        text: "An event or project doesn't automatically get a budget — plenty are pure work-tracking, no dollars involved. A budget only exists once real money enters the picture: type a planned amount in when you create it and a Draft budget is created right then, or tap **Add budget** on the event or project's own page later, once there's actually something to plan. Either way, nothing is approved yet — a budget is a plan until someone deliberately moves it forward.",
       },
       {
         kind: "bullets",
@@ -1398,16 +1398,17 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
     ],
     quiz: [
       {
-        prompt: "What state is a brand-new budget in the moment it's created?",
+        prompt:
+          "An event is created with no dollar amount entered. What's true about its budget right now?",
         options: [
-          "Approved, using the planned amount as the cap",
-          "Draft — an editable plan nobody outside its author has seen yet",
-          "Awaiting approval automatically",
-          "There's no budget until someone submits one",
+          "It's sitting in Draft at $0, waiting for someone to send it for review",
+          "It's Awaiting approval automatically",
+          "There's no budget row at all yet — most events need none; one appears once a real amount is entered or someone taps Add budget",
+          "It's Approved automatically at $0",
         ],
-        answerIndex: 1,
+        answerIndex: 2,
         explanation:
-          "Every budget is born a Draft — auto-created from a planned amount or summoned with one tap — and stays editable until someone deliberately sends it forward.",
+          "A budget only exists once real money enters the picture. No amount at creation means no budget row yet, not a hidden Draft one — the moment a real amount is entered or Add budget is tapped, THAT budget is born a Draft.",
       },
       {
         prompt: "What moves a budget out of Draft and into review?",
