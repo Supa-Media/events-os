@@ -2739,6 +2739,15 @@ export const chapterAffordability = query({
  * CALLER's own chapter (`requireChapterId`) — there is no chapterId arg,
  * mirroring every other write in this file (a central drill-down viewer never
  * gets a write path here; the UI hides the edit affordance via `canEdit`).
+ *
+ * MIGRATION NOTE (F-6 P2): `chapters.backerCount` is now DERIVED from active
+ * pledges by `givingPledges.recomputeChapterBackerCount` on every pledge
+ * transition. This manual override is kept as an escape hatch during the
+ * Givebutter cutover (imported recurrences aren't yet re-signed on our rails,
+ * so the derived number is intentionally low until they are). Once cutover
+ * completes (PRD Appendix C#4), this mutation + its `BackerCountModal` retire —
+ * any pledge write would otherwise clobber a hand-set number on the next
+ * recompute, so the two must not be used in parallel long-term.
  */
 export const setBackerCount = mutation({
   args: { backerCount: v.number() },

@@ -190,3 +190,34 @@ export const sendDonationReceiptEmail = internalAction({
     return null;
   },
 });
+
+/**
+ * Monthly receipt after a backer's Stripe billing cycle is recorded
+ * (F-6 P2 `invoice.paid`). Extends the donation-receipt pattern; copy speaks to
+ * standing monthly support rather than a one-time gift. Reads its payload from
+ * the gift written for the cycle.
+ */
+export const sendPledgeReceiptEmail = internalAction({
+  args: { giftId: v.id("gifts") },
+  handler: async (ctx, { giftId }) => {
+    const payload = await ctx.runQuery(
+      internal.givingPledges.getPledgeReceiptPayload,
+      { giftId },
+    );
+    if (!payload) return null;
+    const { email, name, amountCents, chapterName } = payload;
+    const firstName = name.split(/\s+/)[0] || "friend";
+    const amount = `$${(amountCents / 100).toFixed(amountCents % 100 === 0 ? 0 : 2)}`;
+    const city = chapterName ?? "Public Worship";
+    await sendEmail(
+      email,
+      `Your monthly gift to ${city}`,
+      emailShell(`
+      <h1 style="margin:0 0 12px;font-size:26px;line-height:1.2">Thank you, ${firstName} 🙏</h1>
+      <p style="margin:0 0 20px;font-family:-apple-system,'Segoe UI',Roboto,sans-serif;font-size:14px;line-height:1.6;color:${MUTED}">Your monthly gift of <b>${amount}</b> to <b>${city}</b> came through. Backers like you are what make the work possible, month after month — thank you for standing with us.</p>
+      <div style="background:#fff;border:1px dashed #E4CFCB;border-radius:14px;padding:18px;text-align:center;font-family:'SF Mono',Menlo,Consolas,monospace;font-size:28px;font-weight:700;color:${ACCENT}">${amount}<span style="font-size:14px;font-weight:400;color:${MUTED}"> / month</span></div>
+      <p style="margin:16px 0 0;font-family:-apple-system,'Segoe UI',Roboto,sans-serif;font-size:12px;line-height:1.6;color:${MUTED}">Need to update your card or change your amount? Just reply to this email and we'll send you a secure link.</p>`),
+    );
+    return null;
+  },
+});

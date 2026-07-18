@@ -10,14 +10,16 @@ import { Pill } from "../../../components/ui";
  * AppShell provides the app chrome; this layout adds the in-app giving tabs
  * above the active screen, mirroring the finances `_layout` pill nav.
  *
- * Phase 1 ships Dashboard · Donors; Backers · Sponsorships · Cities land in
- * later phases. The tabs render only for a caller who can see the desk
- * (`myGivingAccess.canView`) — the same `nav.giving` gate the AppShell nav
- * entry uses; each screen keeps its own backend `requireGivingView` gate.
+ * Phase 1 shipped Dashboard · Donors; P2 adds Backers (recurring pledges);
+ * Sponsorships · Cities land in later phases. The tabs render only for a caller
+ * who can see the desk (`myGivingAccess.canView`) — the same `nav.giving` gate
+ * the AppShell nav entry uses; each screen keeps its own backend
+ * `requireGivingView` gate.
  */
 const TABS: { label: string; path: string }[] = [
   { label: "Dashboard", path: "/giving" },
   { label: "Donors", path: "/giving/donors" },
+  { label: "Backers", path: "/giving/backers" },
 ];
 
 /** Active when the pathname is the tab's route (exact for the index, prefix for

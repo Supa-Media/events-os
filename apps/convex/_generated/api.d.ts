@@ -34,6 +34,7 @@ import type * as financeSettings from "../financeSettings.js";
 import type * as finances from "../finances.js";
 import type * as giving from "../giving.js";
 import type * as givingPlatform from "../givingPlatform.js";
+import type * as givingPledges from "../givingPledges.js";
 import type * as guests from "../guests.js";
 import type * as http from "../http.js";
 import type * as increase from "../increase.js";
@@ -192,6 +193,7 @@ declare const fullApi: ApiFromModules<{
   finances: typeof finances;
   giving: typeof giving;
   givingPlatform: typeof givingPlatform;
+  givingPledges: typeof givingPledges;
   guests: typeof guests;
   http: typeof http;
   increase: typeof increase;

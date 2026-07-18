@@ -67,6 +67,31 @@ export const GIFT_METHODS = [
 const givingScope = v.union(v.id("chapters"), v.literal("central"));
 
 /**
+ * A recurring pledge's lifecycle, tracking the Stripe subscription behind it
+ * (PRD §2):
+ *  - `incomplete` — created, awaiting the donor's first successful checkout;
+ *  - `active`     — the subscription is live and paying (counts toward backers
+ *                   at/above `BACKER_UNIT_CENTS`);
+ *  - `past_due`   — a cycle's payment failed; Stripe Smart Retries is dunning;
+ *  - `canceled`   — the subscription ended (donor canceled, or Stripe gave up).
+ */
+export const PLEDGE_STATUSES = [
+  "incomplete",
+  "active",
+  "past_due",
+  "canceled",
+] as const;
+
+/**
+ * Where a pledge came from:
+ *  - `stripe`   — a real recurring subscription on OUR rails (Stripe Billing);
+ *  - `imported` — a Givebutter recurrence that CANNOT be ported (its card lives
+ *                 in Givebutter's Stripe, PRD §2). Tracked as a pledge-shaped
+ *                 row awaiting the donor's personal re-signup on our rails.
+ */
+export const PLEDGE_ORIGINS = ["stripe", "imported"] as const;
+
+/**
  * A donor — any person or org that has ever given, stewarded by one scope.
  * Denormalized rollups (`lifetimeCents` / `giftCount` / `firstGiftAt` /
  * `lastGiftAt`) are maintained on every gift write and clamped ≥ 0; `status` is
@@ -123,6 +148,11 @@ export const gifts = defineTable({
   externalRef: v.optional(v.string()), // Givebutter txn id (import dedup key)
   note: v.optional(v.string()),
   recordedBy: v.optional(v.id("users")), // manual/backfill entries
+  // P2 recurring: set for a gift written from a Stripe subscription billing
+  // cycle (`invoice.paid`). `stripeInvoiceId` is the cycle's idempotency key —
+  // one gift per invoice, safe on webhook redelivery.
+  pledgeId: v.optional(v.id("pledges")),
+  stripeInvoiceId: v.optional(v.string()),
   createdAt: v.number(),
 })
   .index("by_donor", ["donorId"])
@@ -130,7 +160,10 @@ export const gifts = defineTable({
   // The dashboard's last-30-days window (bounded range read, never a full scan).
   .index("by_scope_and_received", ["scope", "receivedAt"])
   .index("by_externalRef", ["externalRef"])
-  .index("by_donation", ["donationId"]);
+  .index("by_donation", ["donationId"])
+  .index("by_pledge", ["pledgeId"])
+  // One gift per billing cycle — the `invoice.paid` idempotency lookup.
+  .index("by_stripeInvoice", ["stripeInvoiceId"]);
 
 /**
  * Per-scope denormalized aggregates for the giving dashboard — one row per
@@ -151,3 +184,44 @@ export const givingScopeRollups = defineTable({
   prospectCount: v.number(),
   updatedAt: v.number(),
 }).index("by_scope", ["scope"]);
+
+/**
+ * A recurring pledge (PRD §2) — a donor's standing monthly commitment to a
+ * city, backed by a Stripe subscription (or an imported Givebutter recurrence
+ * awaiting re-signup). A donor with an `active` pledge at/above
+ * `BACKER_UNIT_CENTS` is a BACKER — what the affordability tiers count.
+ *
+ * `gifts` is still the giving HISTORY: each paid billing cycle (`invoice.paid`)
+ * writes one `gifts` row with `pledgeId` set, so recurring giving shows up in
+ * the CRM exactly like every other gift. This row is the SUBSCRIPTION state,
+ * not the money history.
+ *
+ * Money is integer cents; `amountCents` is the monthly pledge (≥ 2000 = $20
+ * floor, enforced at the write path). Stripe ids are optional because an
+ * `incomplete` pledge has no subscription yet, and an `imported` pledge never
+ * gets one until the donor re-signs up on our rails.
+ */
+export const pledges = defineTable({
+  donorId: v.id("donors"),
+  // The city this pledge backs. P3 (public map) adds prospect-city scoping —
+  // a `cityCampaigns` ref — to this union; today it's a live chapter or central.
+  scope: givingScope,
+  amountCents: v.number(), // int ≥ 2000 ($20 floor), enforced at the write path
+  status: v.union(...PLEDGE_STATUSES.map((s) => v.literal(s))),
+  origin: v.union(...PLEDGE_ORIGINS.map((o) => v.literal(o))),
+  // Present once a Stripe subscription is created/linked (absent while
+  // `incomplete`, and for `imported` rows that never got one).
+  stripeCustomerId: v.optional(v.string()),
+  stripeSubscriptionId: v.optional(v.string()),
+  externalRef: v.optional(v.string()), // Givebutter recurrence id (import dedup)
+  startedAt: v.optional(v.number()), // when the subscription first went active
+  canceledAt: v.optional(v.number()),
+  currentPeriodEnd: v.optional(v.number()), // synced from the subscription
+  createdAt: v.number(),
+})
+  .index("by_donor", ["donorId"])
+  // The admin list + the derived backer-count recompute (active pledges per
+  // scope) both read this.
+  .index("by_scope_and_status", ["scope", "status"])
+  // Webhook resolution: an invoice/subscription event → its pledge.
+  .index("by_stripe_subscription", ["stripeSubscriptionId"]);
