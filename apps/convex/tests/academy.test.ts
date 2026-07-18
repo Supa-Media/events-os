@@ -175,13 +175,13 @@ async function platformTemplates(s: ChapterSetup) {
 }
 
 describe("curriculum content", () => {
-  test("sixty-three ordered sections; six capstones; one optional bonus", () => {
-    expect(ACADEMY_SECTION_COUNT).toBe(63);
+  test("seventy-three ordered sections; six capstones; one optional bonus", () => {
+    expect(ACADEMY_SECTION_COUNT).toBe(73);
     expect(ACADEMY_SECTIONS.map((s) => s.order)).toEqual(
-      Array.from({ length: 63 }, (_v, i) => i + 1),
+      Array.from({ length: 73 }, (_v, i) => i + 1),
     );
     // The optional bonus is excluded from the trained denominator.
-    expect(ACADEMY_REQUIRED_SECTION_COUNT).toBe(62);
+    expect(ACADEMY_REQUIRED_SECTION_COUNT).toBe(72);
     expect(ACADEMY_CAPSTONE_SECTIONS).toHaveLength(6);
     // The suite leans on this order — pin it.
     expect(CAPSTONE_JOIN.capstone!.kind).toBe("join_event");
