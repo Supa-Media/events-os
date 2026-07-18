@@ -14,32 +14,62 @@ import { colors } from "../../lib/theme";
 import { useChapterContext } from "../../lib/ChapterContext";
 import { seatKeyOf, seatLabelOf } from "../../lib/financeSeats";
 
-type NavEntry = { label: string; icon: IconName; path: string };
+type ParaGroup = "P" | "A" | "R";
+
+type NavEntry = { label: string; icon: IconName; path: string; group: ParaGroup };
 
 // Fixed order — tabs appear/disappear by tier but NEVER reorder. Briefing sits
 // right after Events so a volunteer (who sees Briefing, not Events) still gets
 // a stable leading tab. Duties and Templates are gone from the nav (folded into
 // Work and Events respectively); their routes survive for deep links.
+//
+// `group` is a subtle PARA (Tiago Forte) label the desktop Sidebar renders
+// above each cluster — see `groupForSidebar` below. It does NOT change this
+// array's order (BottomNav renders `NAV` verbatim, untouched by PARA) and it
+// is NOT access control, same as everything else here.
+//   P — project-oriented: what you're actively doing (Events/Briefing, Work).
+//   A — areas of ongoing responsibility: People, Songs, Inventory, Finances.
+//   R — resources: reference material anyone can consult (Academy, Org Chart).
+//   Archive (the 2nd "A") has no nav items yet, so it never renders.
 const NAV: NavEntry[] = [
-  { label: "Events", icon: "layout", path: "/" },
-  { label: "Briefing", icon: "clipboard", path: "/briefing" },
-  { label: "People", icon: "users", path: "/people" },
-  { label: "Work", icon: "git-branch", path: "/team" },
-  { label: "Songs", icon: "music", path: "/song-library" },
+  { label: "Events", icon: "layout", path: "/", group: "P" },
+  { label: "Briefing", icon: "clipboard", path: "/briefing", group: "P" },
+  { label: "People", icon: "users", path: "/people", group: "A" },
+  { label: "Work", icon: "git-branch", path: "/team", group: "P" },
+  { label: "Songs", icon: "music", path: "/song-library", group: "A" },
   // Inventory — the chapter gear registry (logistics-lead domain). Gated
   // admin-or-lead in useNav, right after Songs.
-  { label: "Inventory", icon: "package", path: "/inventory" },
+  { label: "Inventory", icon: "package", path: "/inventory", group: "A" },
   // Finances — the native money layer. Gated by `org.nav.showFinances`: tier
   // admin/lead (transition grandfather) OR a held `nav.finances` seat. The
   // in-screen guards enforce the real `financeRoles`/seat capability — this
   // is nav visibility only.
-  { label: "Finances", icon: "dollar-sign", path: "/finances" },
+  { label: "Finances", icon: "dollar-sign", path: "/finances", group: "A" },
   // The Academy is for everyone — never permission-gated (see useNav).
-  { label: "Academy", icon: "award", path: "/academy" },
+  { label: "Academy", icon: "award", path: "/academy", group: "R" },
   // Org Chart — read-only, org-transparent (mirrors `seats.chart`'s "the whole
   // team may see the whole org" stance). Also never permission-gated.
-  { label: "Org Chart", icon: "share-2", path: "/org-chart" },
+  { label: "Org Chart", icon: "share-2", path: "/org-chart", group: "R" },
 ];
+
+// Render order for the PARA groups in the desktop sidebar. Archive ("A") is
+// deliberately omitted — nothing is filed there yet, and an empty labelled
+// group would just be noise.
+const PARA_ORDER: ParaGroup[] = ["P", "A", "R"];
+
+/**
+ * Buckets the caller's visible nav entries into PARA groups for the sidebar,
+ * preserving each item's relative order from `NAV` within its bucket (a
+ * stable partition, not a resort) and dropping any group that ends up empty
+ * (e.g. while `org.nav` is still loading and nothing has resolved visible
+ * yet). BottomNav does NOT use this — it renders `nav` flat, untouched.
+ */
+function groupForSidebar(nav: NavEntry[]): { group: ParaGroup; items: NavEntry[] }[] {
+  return PARA_ORDER.map((group) => ({
+    group,
+    items: nav.filter((n) => n.group === group),
+  })).filter((g) => g.items.length > 0);
+}
 
 /**
  * The nav entries the caller may see, as a per-tier switch on the derived
@@ -259,16 +289,23 @@ function Sidebar({ onCollapse }: { onCollapse: () => void }) {
             </Pressable>
           </View>
 
-          {/* Nav */}
-          <View className="gap-0.5">
-            {nav.map((n) => (
-              <SidebarNavItem
-                key={n.path}
-                label={n.label}
-                icon={n.icon}
-                active={isActive(pathname, n.path)}
-                onPress={() => router.navigate(n.path as any)}
-              />
+          {/* Nav — subtly grouped by PARA (see `groupForSidebar`). */}
+          <View>
+            {groupForSidebar(nav).map(({ group, items }, i) => (
+              <View key={group} className={i === 0 ? "" : "mt-3"}>
+                <ParaGroupLabel letter={group} />
+                <View className="gap-0.5">
+                  {items.map((n) => (
+                    <SidebarNavItem
+                      key={n.path}
+                      label={n.label}
+                      icon={n.icon}
+                      active={isActive(pathname, n.path)}
+                      onPress={() => router.navigate(n.path as any)}
+                    />
+                  ))}
+                </View>
+              </View>
             ))}
           </View>
 
@@ -279,6 +316,22 @@ function Sidebar({ onCollapse }: { onCollapse: () => void }) {
         </View>
       </SafeAreaView>
     </View>
+  );
+}
+
+/**
+ * A subtle single-letter PARA (Projects / Areas / Resources / Archive) group
+ * label above a sidebar cluster — small, low-contrast, not a loud section
+ * header. It's a light organizing cue, not a new taxonomy the app teaches
+ * anywhere else, so it stays a single muted letter rather than a spelled-out
+ * word (spelling out "Projects" in particular would collide with the
+ * existing "Projects" view nested inside Work).
+ */
+function ParaGroupLabel({ letter }: { letter: ParaGroup }) {
+  return (
+    <Text className="px-3 pb-1 text-2xs font-semibold tracking-wider text-faint">
+      {letter}
+    </Text>
   );
 }
 
