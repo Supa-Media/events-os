@@ -9,6 +9,18 @@ import {
   rolePathProgress,
 } from "./academyPaths";
 
+// Every real path now carries the Foundations trio, so none has an empty
+// `courseSlugs`. This hand-built path exercises the "no written courses yet"
+// behavior (empty required set → fraction 0, no next module) that a
+// coming-soon-only path used to represent.
+const EMPTY_PATH: RolePath = {
+  seatSlug: "__empty_fixture__",
+  kind: "event_hat",
+  title: "Empty fixture",
+  icon: "circle",
+  courseSlugs: [],
+};
+
 describe("ROLE_PATHS integrity", () => {
   test("module loads without throwing (assertions passed at import)", () => {
     // The module ran assertRolePathIntegrity() at load; calling it again must
@@ -45,7 +57,11 @@ describe("getRolePath", () => {
   test("looks up by (kind, seatSlug) identity", () => {
     const p = getRolePath("event_hat", "everyone");
     expect(p?.title).toBe("New member");
-    expect(p?.courseSlugs).toEqual(["finances-for-everyone"]);
+    expect(p?.courseSlugs).toEqual([
+      "welcome-to-public-worship",
+      "how-we-work",
+      "finances-for-everyone",
+    ]);
   });
 
   test("returns undefined for a wrong-kind lookup", () => {
@@ -55,20 +71,21 @@ describe("getRolePath", () => {
 });
 
 describe("requiredModuleSlugsForPath", () => {
-  test("empty for a coming-soon-only path (no courses)", () => {
-    const musicLead = getRolePath("seat", "music_lead")!;
-    expect(musicLead.courseSlugs).toEqual([]);
-    expect(requiredModuleSlugsForPath(musicLead)).toEqual([]);
+  test("empty for a path with no (written) courses", () => {
+    expect(EMPTY_PATH.courseSlugs).toEqual([]);
+    expect(requiredModuleSlugsForPath(EMPTY_PATH)).toEqual([]);
   });
 
   test("unions required modules across the path's courses", () => {
     const treasurer = getRolePath("seat", "treasurer")!;
     const required = requiredModuleSlugsForPath(treasurer);
-    // finances-for-everyone (3 modules) + treasurer (3 modules), no optionals.
-    expect(required.length).toBe(6);
+    // Foundations trio + chapter-money-model + treasurer, all with no optionals:
+    // welcome-to-public-worship (3) + how-we-work (4) + finances-for-everyone (3)
+    // + chapter-money-model (3) + treasurer (3) = 16 modules.
+    expect(required.length).toBe(16);
     expect(new Set(required).size).toBe(required.length); // deduped
-    expect(required).toContain("finance-stewardship");
-    expect(required).toContain("finance-monthly-close");
+    expect(required).toContain("finance-stewardship"); // finances-for-everyone
+    expect(required).toContain("finance-monthly-close"); // treasurer
   });
 });
 
@@ -114,9 +131,8 @@ describe("rolePathProgress", () => {
     expect(result.completed).toBe(1);
   });
 
-  test("coming-soon-only path (no courses) is fraction 0, not a full bar", () => {
-    const musicLead = getRolePath("seat", "music_lead")!;
-    const result = rolePathProgress(musicLead, new Set());
+  test("path with no courses is fraction 0, not a full bar", () => {
+    const result = rolePathProgress(EMPTY_PATH, new Set());
     expect(result).toEqual({ completed: 0, total: 0, fraction: 0 });
   });
 });
@@ -146,8 +162,7 @@ describe("nextIncompleteModuleForPath", () => {
     expect(next).toBeNull();
   });
 
-  test("returns null for a coming-soon-only path (nothing to do yet)", () => {
-    const musicLead = getRolePath("seat", "music_lead")!;
-    expect(nextIncompleteModuleForPath(musicLead, new Set())).toBeNull();
+  test("returns null for a path with no courses (nothing to do yet)", () => {
+    expect(nextIncompleteModuleForPath(EMPTY_PATH, new Set())).toBeNull();
   });
 });
