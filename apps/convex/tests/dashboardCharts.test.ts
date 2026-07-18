@@ -320,6 +320,90 @@ describe("spendByMonth: partialMonth", () => {
   });
 });
 
+// ── spendByMonth: canRecordTransactions (review finding #3) ──────────────────
+// `TransactionDetailModal` gates its edit controls on this field, not just
+// peek — a chapter finance VIEWER (below bookkeeper) reaches their own
+// chapter's dashboard fine (`dashboardChapter` only requires `viewer`), but
+// every reconcile mutation the modal fires requires `bookkeeper`+ and would
+// throw. See `dashboardCharts.spendByMonth`'s own doc for the field.
+describe("spendByMonth: canRecordTransactions (review finding #3)", () => {
+  test("a chapter VIEWER (below bookkeeper) on their OWN chapter gets `canRecordTransactions: false`", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const personId = await seedSelfPerson(s);
+    await run(s.t, (ctx) =>
+      ctx.db.insert("financeRoles", {
+        chapterId: s.chapterId,
+        personId,
+        role: "viewer",
+        scope: "chapter",
+        createdAt: Date.now(),
+      }),
+    );
+
+    const res = await s.as.query(api.dashboardCharts.spendByMonth, {
+      scope: s.chapterId,
+      year: 2026,
+    });
+    expect(res.canRecordTransactions).toBe(false);
+  });
+
+  test("a chapter BOOKKEEPER on their OWN chapter gets `canRecordTransactions: true`", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const personId = await seedSelfPerson(s);
+    await run(s.t, (ctx) =>
+      ctx.db.insert("financeRoles", {
+        chapterId: s.chapterId,
+        personId,
+        role: "bookkeeper",
+        scope: "chapter",
+        createdAt: Date.now(),
+      }),
+    );
+
+    const res = await s.as.query(api.dashboardCharts.spendByMonth, {
+      scope: s.chapterId,
+      year: 2026,
+    });
+    expect(res.canRecordTransactions).toBe(true);
+  });
+
+  test("a chapter MANAGER on their OWN chapter gets `canRecordTransactions: true`", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await asChapterManager(s);
+
+    const res = await s.as.query(api.dashboardCharts.spendByMonth, {
+      scope: s.chapterId,
+      year: 2026,
+    });
+    expect(res.canRecordTransactions).toBe(true);
+  });
+
+  test("`canRecordTransactions` is FALSE for a foreign chapter / 'org' / 'central' — writes always resolve to the caller's OWN chapter, so a peek/drill-down scope never grants it even for a central manager", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await asCentral(s, "manager");
+    const otherChapter = await makeChapter(s, "Austin");
+
+    const foreign = await s.as.query(api.dashboardCharts.spendByMonth, {
+      scope: otherChapter,
+      year: 2026,
+    });
+    expect(foreign.canRecordTransactions).toBe(false);
+
+    const org = await s.as.query(api.dashboardCharts.spendByMonth, { scope: "org", year: 2026 });
+    expect(org.canRecordTransactions).toBe(false);
+
+    const central = await s.as.query(api.dashboardCharts.spendByMonth, {
+      scope: CENTRAL,
+      year: 2026,
+    });
+    expect(central.canRecordTransactions).toBe(false);
+  });
+});
+
 // ── chapterHealth: authz ──────────────────────────────────────────────────────
 
 describe("chapterHealth: authz", () => {
@@ -1035,5 +1119,279 @@ describe("budgetTransactions", () => {
     await expect(
       s.as.query(api.dashboardCharts.budgetTransactions, { budgetId, year: 2026 }),
     ).rejects.toThrow();
+  });
+});
+
+// ── budgetTransactions: `quarter` widening (review finding #1) ───────────────
+// A quarterly-cadence budget's category mini-bar widens to the WHOLE quarter
+// in month mode (`finances.ts#budgetEffectivePeriod`, via
+// `txnCountsTowardBudgetDash`) — the drill-down must be able to request that
+// SAME widened period, or it silently under-sums vs. the bar it drilled into
+// (the exact owner-reported bug the PR #252 review flagged).
+describe("budgetTransactions: quarter widening (review finding #1)", () => {
+  test("`quarter` widens the period filter to the whole quarter, not just one month", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await asChapterManager(s);
+    const budgetId = await insertBudget(s, {
+      chapterId: s.chapterId,
+      amountCents: 90_000,
+      year: 2026,
+      cadence: "quarterly",
+    });
+    // Q1 = Jan..Mar.
+    const jan = await insertTxn(s, {
+      chapterId: s.chapterId,
+      amountCents: 1_000,
+      postedAt: tsInMonth(2026, 1),
+      budgetId,
+    });
+    const feb = await insertTxn(s, {
+      chapterId: s.chapterId,
+      amountCents: 2_000,
+      postedAt: tsInMonth(2026, 2),
+      budgetId,
+    });
+    const mar = await insertTxn(s, {
+      chapterId: s.chapterId,
+      amountCents: 3_000,
+      postedAt: tsInMonth(2026, 3),
+      budgetId,
+    });
+    // Q2 — must be excluded by `quarter: 1`.
+    await insertTxn(s, {
+      chapterId: s.chapterId,
+      amountCents: 9_000,
+      postedAt: tsInMonth(2026, 4),
+      budgetId,
+    });
+
+    const res = await s.as.query(api.dashboardCharts.budgetTransactions, {
+      budgetId,
+      year: 2026,
+      quarter: 1,
+    });
+    expect(res.rows.map((r) => r.id).sort()).toEqual([jan, feb, mar].sort());
+    expect(res.rows.reduce((sum, r) => sum + r.amountCents, 0)).toBe(6_000);
+  });
+
+  test("a quarterly recurring budget's category mini-bar (dashboardChapter, month mode) equals the drill-down's total when the drill-down requests the SAME widened quarter — parity", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await asChapterManager(s);
+    const budgetId = await insertBudget(s, {
+      chapterId: s.chapterId,
+      amountCents: 90_000,
+      year: 2026,
+      cadence: "quarterly",
+      label: "Travel",
+    });
+    const fundId = await insertFund(s, s.chapterId);
+    const catA = await insertCategory(s, s.chapterId, fundId, "Flights");
+
+    for (const [txnMonth, cents] of [
+      [1, 1_000],
+      [2, 2_000],
+      [3, 3_000],
+    ] as const) {
+      const txnId = await insertTxn(s, {
+        chapterId: s.chapterId,
+        amountCents: cents,
+        postedAt: tsInMonth(2026, txnMonth),
+        budgetId,
+      });
+      await run(s.t, (ctx) => ctx.db.patch(txnId, { categoryId: catA, status: "categorized" }));
+    }
+
+    // Viewing FEBRUARY in month mode — a quarterly budget's own bar widens to
+    // the whole quarter (Q1) regardless of the single selected month.
+    const chapterDash = await s.as.query(api.finances.dashboardChapter, {
+      year: 2026,
+      month: 2,
+      period: "month",
+    });
+    const row = chapterDash.recurringBudgets.find((r) => r.id === budgetId)!;
+    const categoryBar = row.categories!.find((c) => c.name === "Flights")!;
+    expect(categoryBar.spentCents).toBe(6_000); // Jan+Feb+Mar, not just Feb's 2,000
+
+    // The drill-down, requesting the SAME widened quarter (Q1 — February is
+    // in Q1) — must sum to EXACTLY the bar figure above.
+    const drill = await s.as.query(api.dashboardCharts.budgetTransactions, {
+      budgetId,
+      categoryName: "Flights",
+      year: 2026,
+      quarter: 1,
+    });
+    expect(drill.rows).toHaveLength(3);
+    expect(drill.rows.reduce((sum, r) => sum + r.amountCents, 0)).toBe(categoryBar.spentCents);
+
+    // Sanity: the OLD single-month drill-down under-sums vs. the bar — the
+    // exact bug review finding #1 flagged.
+    const monthOnlyDrill = await s.as.query(api.dashboardCharts.budgetTransactions, {
+      budgetId,
+      categoryName: "Flights",
+      year: 2026,
+      month: 2,
+    });
+    expect(monthOnlyDrill.rows.reduce((sum, r) => sum + r.amountCents, 0)).toBe(2_000);
+  });
+
+  test("a yearly recurring budget's category mini-bar equals the drill-down's total when the drill-down requests year-only (no month/quarter)", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await asChapterManager(s);
+    const budgetId = await insertBudget(s, {
+      chapterId: s.chapterId,
+      amountCents: 120_000,
+      year: 2026,
+      cadence: "yearly",
+      label: "Insurance",
+    });
+    const fundId = await insertFund(s, s.chapterId);
+    const catA = await insertCategory(s, s.chapterId, fundId, "Premiums");
+
+    for (const [txnMonth, cents] of [
+      [2, 5_000],
+      [8, 7_000],
+    ] as const) {
+      const txnId = await insertTxn(s, {
+        chapterId: s.chapterId,
+        amountCents: cents,
+        postedAt: tsInMonth(2026, txnMonth),
+        budgetId,
+      });
+      await run(s.t, (ctx) => ctx.db.patch(txnId, { categoryId: catA, status: "categorized" }));
+    }
+
+    const chapterDash = await s.as.query(api.finances.dashboardChapter, {
+      year: 2026,
+      month: 2,
+      period: "month",
+    });
+    const row = chapterDash.recurringBudgets.find((r) => r.id === budgetId)!;
+    const categoryBar = row.categories!.find((c) => c.name === "Premiums")!;
+    expect(categoryBar.spentCents).toBe(12_000); // both months, not just February's 5,000
+
+    // Year-only (no `month`, no `quarter`) — the yearly-cadence widening.
+    const drill = await s.as.query(api.dashboardCharts.budgetTransactions, {
+      budgetId,
+      categoryName: "Premiums",
+      year: 2026,
+    });
+    expect(drill.rows).toHaveLength(2);
+    expect(drill.rows.reduce((sum, r) => sum + r.amountCents, 0)).toBe(categoryBar.spentCents);
+  });
+});
+
+// ── budgetTransactions: `categoryName` filter (review finding #2) ────────────
+// The mini-bars group by category NAME (`finances.ts#spendBreakdownFor`), but
+// categories are only unique PER FUND — two funds can each have a
+// same-named category. The old client behavior (name -> id via a last-wins
+// `Map`, then filtering by ONE `categoryId`) would silently drop the other
+// fund's transactions from the drill-down.
+describe("budgetTransactions: categoryName filter (review finding #2)", () => {
+  test("categoryName matches every category sharing that name, across funds — the drill-down sums to the bar even with duplicate category names", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await asChapterManager(s);
+    const budgetId = await insertBudget(s, {
+      chapterId: s.chapterId,
+      amountCents: 50_000,
+      year: 2026,
+      cadence: "yearly",
+    });
+    const fundA = await insertFund(s, s.chapterId);
+    const fundB = await run(s.t, (ctx) =>
+      ctx.db.insert("funds", {
+        chapterId: s.chapterId,
+        name: "Building Fund",
+        restriction: "unrestricted",
+        sortOrder: 1,
+        createdAt: Date.now(),
+      }),
+    );
+    // Two DIFFERENT categories (different funds) that happen to share a name.
+    const catA = await insertCategory(s, s.chapterId, fundA, "Supplies");
+    const catB = await insertCategory(s, s.chapterId, fundB, "Supplies");
+    expect(catA).not.toBe(catB);
+
+    const txnA = await insertTxn(s, {
+      chapterId: s.chapterId,
+      amountCents: 1_000,
+      postedAt: tsInMonth(2026, 5),
+      budgetId,
+    });
+    await run(s.t, (ctx) => ctx.db.patch(txnA, { categoryId: catA, status: "categorized" }));
+    const txnB = await insertTxn(s, {
+      chapterId: s.chapterId,
+      amountCents: 4_000,
+      postedAt: tsInMonth(2026, 5),
+      budgetId,
+    });
+    await run(s.t, (ctx) => ctx.db.patch(txnB, { categoryId: catB, status: "categorized" }));
+
+    // The bar (`spendBreakdownFor` groups by NAME) sums BOTH categories.
+    const chapterDash = await s.as.query(api.finances.dashboardChapter, {
+      year: 2026,
+      month: 5,
+      period: "month",
+    });
+    const row = chapterDash.recurringBudgets.find((r) => r.id === budgetId)!;
+    const categoryBar = row.categories!.find((c) => c.name === "Supplies")!;
+    expect(categoryBar.spentCents).toBe(5_000);
+
+    // `categoryName` (new) matches both — sums to EXACTLY the bar.
+    const byName = await s.as.query(api.dashboardCharts.budgetTransactions, {
+      budgetId,
+      categoryName: "Supplies",
+      year: 2026,
+    });
+    expect(byName.rows.map((r) => r.id).sort()).toEqual([txnA, txnB].sort());
+    expect(byName.rows.reduce((sum, r) => sum + r.amountCents, 0)).toBe(categoryBar.spentCents);
+
+    // Sanity: the OLD `categoryId`-only filter would have missed catB's txn —
+    // the exact bug review finding #2 flagged.
+    const byIdOnly = await s.as.query(api.dashboardCharts.budgetTransactions, {
+      budgetId,
+      categoryId: catA,
+      year: 2026,
+    });
+    expect(byIdOnly.rows.map((r) => r.id)).toEqual([txnA]);
+    expect(byIdOnly.rows.reduce((sum, r) => sum + r.amountCents, 0)).toBe(1_000);
+  });
+
+  test("categoryName: 'Uncategorized' matches rows with no categoryId, same as the `categoryId: 'uncategorized'` sentinel", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await asChapterManager(s);
+    const budgetId = await insertBudget(s, {
+      chapterId: s.chapterId,
+      amountCents: 10_000,
+      year: 2026,
+    });
+    const fundId = await insertFund(s, s.chapterId);
+    const catA = await insertCategory(s, s.chapterId, fundId, "Parts");
+
+    const uncategorizedTxn = await insertTxn(s, {
+      chapterId: s.chapterId,
+      amountCents: 1_000,
+      postedAt: tsInMonth(2026, 6),
+      budgetId,
+    });
+    const categorizedTxn = await insertTxn(s, {
+      chapterId: s.chapterId,
+      amountCents: 2_000,
+      postedAt: tsInMonth(2026, 6),
+      budgetId,
+    });
+    await run(s.t, (ctx) => ctx.db.patch(categorizedTxn, { categoryId: catA }));
+
+    const res = await s.as.query(api.dashboardCharts.budgetTransactions, {
+      budgetId,
+      categoryName: "Uncategorized",
+      year: 2026,
+      month: 6,
+    });
+    expect(res.rows.map((r) => r.id)).toEqual([uncategorizedTxn]);
   });
 });

@@ -42,6 +42,7 @@ import {
   easternParts,
   quarterOfMonth,
   chapterAffordability as chapterAffordabilityCalc,
+  financeRoleAtLeast,
   TRANSACTION_FLOWS,
   TRANSACTION_STATUSES,
 } from "@events-os/shared";
@@ -281,6 +282,17 @@ export const spendByMonth = query({
     // draws that bar hollow — an in-progress month, not a completed one).
     // `null` for any other year.
     partialMonth: v.union(v.number(), v.null()),
+    // DASH-2.1 UI fix (review finding #3): whether the CALLER holds at least
+    // the bookkeeper finance role on `scope` — additive, so `TransactionDetailModal`
+    // (opened from `ChapterView`, which already fetches this query for its
+    // own chapter) can gate its edit controls on write capability, not just
+    // peek. Deliberately `false` for `"org"`/`"central"`/any OTHER chapter
+    // (the `scope !== ownChapterId` branch below): every reconcile mutation
+    // this modal fires resolves to the CALLER's own chapter server-side, so
+    // recording here would either fail outright or silently target the wrong
+    // chapter — those callers are peek/drill-down-only and already forced
+    // read-only by `ChapterView`'s own `isDrilldown`/peek check.
+    canRecordTransactions: v.boolean(),
   }),
   handler: async (ctx, args) => {
     const ownChapterId = (await getChapterIdOrNull(ctx)) as Id<"chapters"> | null;
@@ -311,6 +323,7 @@ export const spendByMonth = query({
       return {
         months: months.map((spendCents, i) => ({ month: i + 1, spendCents })),
         partialMonth,
+        canRecordTransactions: false,
       };
     }
 
@@ -318,6 +331,7 @@ export const spendByMonth = query({
     // `scope !== ownChapterId` alone covers BOTH "central" (never equal to a
     // real chapter id) and "a different chapter than the caller's own" — the
     // exact same drill-down gate `dashboardChapter` applies (see module doc).
+    let canRecordTransactions = false;
     if (scope !== ownChapterId) {
       if (!ownChapterId) {
         throw new ConvexError({
@@ -329,7 +343,8 @@ export const spendByMonth = query({
     } else {
       // `scope === ownChapterId` here, so it's necessarily a real chapter id
       // (never `"central"`, which never equals a real `Id<"chapters">`).
-      await requireFinanceRole(ctx, scope as Id<"chapters">, "viewer");
+      const access = await requireFinanceRole(ctx, scope as Id<"chapters">, "viewer");
+      canRecordTransactions = financeRoleAtLeast(access.role, "bookkeeper");
     }
 
     const txns = await loadYearTxnsLocal(ctx, scope, args.year, sandboxMode);
@@ -337,6 +352,7 @@ export const spendByMonth = query({
     return {
       months: months.map((spendCents, i) => ({ month: i + 1, spendCents })),
       partialMonth,
+      canRecordTransactions,
     };
   },
 });
@@ -684,10 +700,34 @@ const BUDGET_TXN_DRILLDOWN_CAP = 200;
  * it isn't part of this budget's spend by definition; it's still reachable
  * (and editable) via the main Reconcile grid.
  *
- * Period: `inPeriod(postedAt, year, month)` — the caller's own year/month,
- * independent of the budget's cadence/declared month (a click on a specific
- * month bar of a yearly bucket's breakdown asks for THAT month's txns, not
- * whatever month the budget itself happens to be stamped to).
+ * Period: `inPeriod(postedAt, year, month, quarter)` — the caller's own
+ * year/month/quarter, independent of the budget's cadence/declared month (a
+ * click on a specific month bar of a yearly bucket's breakdown asks for THAT
+ * month's txns, not whatever month the budget itself happens to be stamped
+ * to). Review fix (finding #1): the category mini-bars on a quarterly/yearly
+ * RECURRING budget row widen to that cadence's whole period in month mode
+ * (`finances.ts#budgetEffectivePeriod`, via `txnCountsTowardBudgetDash`), so
+ * a drill-down that only ever accepted a single `month` under-summed vs. the
+ * bar it drilled into. `quarter` (new) lets the caller request the SAME
+ * widened period the bar used; omitting BOTH `month` and `quarter` (only
+ * `year`) reads the whole year, matching a yearly cadence's widening. The
+ * caller decides which to pass — this query applies no cadence logic of its
+ * own, mirroring `inPeriod`'s own "just a filter" contract.
+ *
+ * Category: `categoryId` (exact id, or the `"uncategorized"` sentinel) OR
+ * `categoryName` (new, review finding #2) — mutually a caller's choice,
+ * `categoryName` takes precedence when both are somehow set. The mini-bars
+ * this drill-down drills FROM group by category NAME, not id
+ * (`finances.ts#spendBreakdownFor`), because categories are only unique
+ * PER FUND — two funds can each have a "Supplies" category, and a budget's
+ * spend can be split across both. Filtering by a single `categoryId` (the
+ * old client behavior: name → id via a last-wins `Map`) would silently drop
+ * the other fund's same-named category's transactions. `categoryName`
+ * resolves the SAME way `spendBreakdownFor` groups (a resolvable
+ * `categoryId` → its name, else `"Uncategorized"`) so every category sharing
+ * that name matches, and the drill-down's total can never fall short of the
+ * bar's. `categoryId` is kept for other callers that already have a real id
+ * to filter by (e.g. a single-fund chapter, where the two can never diverge).
  *
  * Gate: same access as viewing that budget's chapter dashboard — the budget's
  * OWN chapter (`viewer` role), or central reach through the caller's own home
@@ -700,8 +740,14 @@ export const budgetTransactions = query({
   args: {
     budgetId: v.id("budgets"),
     categoryId: v.optional(v.union(v.id("budgetCategories"), v.literal("uncategorized"))),
+    // Review fix (finding #2): filter by the category's resolved NAME instead
+    // — see the module doc above. Takes precedence over `categoryId` when set.
+    categoryName: v.optional(v.string()),
     year: v.number(),
     month: v.optional(v.number()),
+    // Review fix (finding #1): the widened quarter a quarterly-cadence bar's
+    // period covered in month mode — see the module doc above.
+    quarter: v.optional(v.number()),
   },
   returns: v.object({
     rows: v.array(budgetTxnRow),
@@ -737,34 +783,50 @@ export const budgetTransactions = query({
       );
     }
 
-    const matching = linked.filter((tr) => {
-      if (!txnMatchesMode(tr, sandboxMode) || !isSpend(tr)) return false;
-      if (!inPeriod(tr.postedAt, args.year, args.month)) return false;
-      if (args.categoryId == null) return true;
-      return args.categoryId === "uncategorized"
-        ? tr.categoryId == null
-        : tr.categoryId === args.categoryId;
-    });
+    // Read-through caches — bounded to the LINKED set's own distinct refs
+    // (category names are resolved here too, ahead of pagination, because
+    // `categoryName` filtering needs every candidate row's resolved name —
+    // see `resolveCategoryName` below).
+    const categoryCache = new Map<Id<"budgetCategories">, string | null>();
+    async function resolveCategoryName(id: Id<"budgetCategories">): Promise<string | null> {
+      if (!categoryCache.has(id)) {
+        const cat = await ctx.db.get(id);
+        categoryCache.set(id, cat?.name ?? null);
+      }
+      return categoryCache.get(id) ?? null;
+    }
+
+    const matching: Doc<"transactions">[] = [];
+    for (const tr of linked) {
+      if (!txnMatchesMode(tr, sandboxMode) || !isSpend(tr)) continue;
+      if (!inPeriod(tr.postedAt, args.year, args.month, args.quarter)) continue;
+      if (args.categoryName != null) {
+        // SAME resolution `spendBreakdownFor` groups bars by: a resolvable
+        // `categoryId` → its name, else the `"Uncategorized"` bucket — so
+        // every category sharing this name matches, not just one id.
+        const name = tr.categoryId ? ((await resolveCategoryName(tr.categoryId)) ?? "Uncategorized") : "Uncategorized";
+        if (name !== args.categoryName) continue;
+      } else if (args.categoryId != null) {
+        const matchesCategory =
+          args.categoryId === "uncategorized"
+            ? tr.categoryId == null
+            : tr.categoryId === args.categoryId;
+        if (!matchesCategory) continue;
+      }
+      matching.push(tr);
+    }
     matching.sort((a, b) => b.postedAt - a.postedAt);
 
     const totalCount = matching.length;
     const page = matching.slice(0, BUDGET_TXN_DRILLDOWN_CAP);
 
     // Read-through caches — bounded to the page's own distinct refs.
-    const categoryCache = new Map<Id<"budgetCategories">, string | null>();
     const personCache = new Map<Id<"people">, string | null>();
     const cardCache = new Map<Id<"cards">, Doc<"cards"> | null>();
 
     const rows: (typeof budgetTxnRow.type)[] = [];
     for (const tr of page) {
-      let categoryName: string | null = null;
-      if (tr.categoryId) {
-        if (!categoryCache.has(tr.categoryId)) {
-          const cat = await ctx.db.get(tr.categoryId);
-          categoryCache.set(tr.categoryId, cat?.name ?? null);
-        }
-        categoryName = categoryCache.get(tr.categoryId) ?? null;
-      }
+      const categoryName = tr.categoryId ? await resolveCategoryName(tr.categoryId) : null;
 
       // Cardholder resolution mirrors `listReconcile`'s `resolveCardholder`:
       // the txn's own `personId`, falling back to its card's cardholder.

@@ -27,7 +27,7 @@ import { Pressable, Text, useWindowDimensions, View } from "react-native";
 import type { FunctionReturnType } from "convex/server";
 import { api } from "@events-os/convex/_generated/api";
 import type { Id } from "@events-os/convex/_generated/dataModel";
-import { formatCents } from "@events-os/shared";
+import { formatCents, quarterOfMonth } from "@events-os/shared";
 import { Badge, Button, Icon, SectionHeader } from "../../ui";
 import { colors } from "../../../lib/theme";
 import { Money, SignedMoney, Tile, TileRow, type DashPeriodMode } from "./parts";
@@ -39,10 +39,90 @@ import { extraApprovalsCount } from "./extraApprovals";
 import { CategoryBars } from "./CategoryBars";
 import { AttentionRail } from "./AttentionRail";
 import { BudgetTableGroup, type BudgetTableRow } from "./BudgetTable";
+import type { DrilldownTxn } from "./TransactionList";
+import { TransactionDetailModal, type TransactionDetailSource } from "./TransactionDetailModal";
 
 type ChapterDash = FunctionReturnType<typeof api.finances.dashboardChapter>;
 type RecentTxn = ChapterDash["recentTransactions"][number];
 type Affordability = FunctionReturnType<typeof api.finances.chapterAffordability>;
+type RecurringBudget = ChapterDash["recurringBudgets"][number];
+
+// DASH-2.1 UI (feature 1): a recurring bucket's cadence unit, for the
+// "…this quarter"/"…this year" phrasing — monthly needs no phrasing (its
+// `periodSpendCents` already equals `spentCents`, see `recurringBudgetCard`'s
+// own doc comment in `finances.ts`).
+const CADENCE_UNIT: Record<"quarterly" | "yearly", string> = {
+  quarterly: "quarter",
+  yearly: "year",
+};
+
+/**
+ * DASH-2.1 UI (feature 1): month-honest recurring rows. In month mode, a
+ * quarterly/yearly bucket's plain "$spent / $cap" reads as the SAME
+ * cumulative figure in every month (the owner report this backend PR, #242,
+ * fixed the denominators for) — this derives the composite label AND the
+ * meter's own pct from the additive `periodSpendCents`/`fullCapCents`/
+ * `cadenceSpendCents` fields (#242), never a prorated slice of the full cap.
+ * `undefined`/`b.pct` (server's existing cadence-cumulative ratio, which
+ * ALREADY equals `cadenceSpendCents/fullCapCents` — see those fields' own
+ * doc comment) for every other case: monthly cadence (unchanged), YTD mode
+ * (no change needed — #242 already fixed YTD's own denominators), or a
+ * budget whose additive fields aren't populated (older data shape).
+ */
+function monthHonestRecurring(
+  b: RecurringBudget,
+  period: DashPeriodMode,
+): { pct: number; capLabelOverride: string | undefined } {
+  const eligible =
+    period === "month" &&
+    (b.cadence === "quarterly" || b.cadence === "yearly") &&
+    b.periodSpendCents != null &&
+    b.fullCapCents != null &&
+    b.cadenceSpendCents != null;
+  if (!eligible) return { pct: b.pct, capLabelOverride: undefined };
+  const periodSpendCents = b.periodSpendCents!;
+  const fullCapCents = b.fullCapCents!;
+  const cadenceSpendCents = b.cadenceSpendCents!;
+  const pct = fullCapCents > 0 ? Math.round((cadenceSpendCents / fullCapCents) * 100) : 0;
+  const unit = CADENCE_UNIT[b.cadence as "quarterly" | "yearly"];
+  const capLabelOverride = `${formatCents(periodSpendCents)} this month · ${formatCents(cadenceSpendCents)} of ${formatCents(fullCapCents)} this ${unit}`;
+  return { pct, capLabelOverride };
+}
+
+/**
+ * DASH-2.1 UI fix (review finding #1 — "drill must sum to the tapped bar"):
+ * a recurring budget's own category mini-bars widen to the budget's effective
+ * period in month mode (`finances.ts#budgetEffectivePeriod`, via
+ * `txnCountsTowardBudgetDash`) — monthly cadence stays scoped to one month,
+ * but quarterly widens to the whole quarter and yearly to the whole year,
+ * regardless of which single month the dashboard is showing. A transactions
+ * drill-down that only ever requested one month under-summed vs. that wider
+ * bar. This returns the SAME widened period for `dashboardCharts.
+ * budgetTransactions` to request (mirrors `budgetEffectivePeriod`'s own
+ * switch, not re-deriving it — a budget with a FIXED `quarter` narrower than
+ * `contextMonth`'s own quarter would only be VISIBLE on this dashboard when
+ * they already agree — see that function's doc comment for why
+ * `quarterOfMonth(month)` is always correct here). YTD mode already reads the
+ * whole year for every cadence (`drilldownPeriod` below omits `month`
+ * entirely there), so this only changes month-mode behavior.
+ */
+function recurringDrilldownPeriod(
+  cadence: RecurringBudget["cadence"],
+  year: number,
+  month: number,
+  mode: DashPeriodMode,
+): { year: number; month?: number; quarter?: number; rangeNote?: string } {
+  if (mode !== "month") return { year };
+  switch (cadence) {
+    case "quarterly":
+      return { year, quarter: quarterOfMonth(month), rangeNote: "this quarter" };
+    case "yearly":
+      return { year, rangeNote: "this year" };
+    case "monthly":
+    default:
+      return { year, month };
+  }
+}
 type MonthlySpend = FunctionReturnType<typeof api.dashboardCharts.spendByMonth>;
 
 /** Below this width the two-column grid stacks to one column. */
@@ -154,6 +234,24 @@ export function ChapterView({
     [data.attention, pendingApprovals.length],
   );
 
+  // DASH-2.1 UI: the drill-down's own detail modal (opened by drilling
+  // through a category's transaction list, from either budget table below —
+  // a SEPARATE piece of state from `RecentDigest`'s own modal, mirroring
+  // `CentralView`'s `selectedTag` precedent for a locally-owned detail sheet).
+  const [detailSource, setDetailSource] = useState<TransactionDetailSource | null>(null);
+  function openDrilldownTxn(txn: DrilldownTxn, budgetName: string) {
+    setDetailSource({ kind: "detail", txn, budgetName });
+  }
+  const drilldownPeriod = { year, month: period === "month" ? month : undefined };
+  // DASH-2.1 UI fix (review finding #3): whether the CALLER can actually
+  // record a transaction edit here — `spendByMonth` (already fetched for
+  // this chapter/year as `monthly`) resolves this against the SAME chapter
+  // this view is showing, `false` while peeking/drilling a different one
+  // (mirrors `TransactionDetailModal`'s own peek gate). Threaded into every
+  // `TransactionDetailModal` instance below so it can lock edit controls for
+  // a below-bookkeeper viewer, not just a peeking central caller.
+  const canRecordTransactions = monthly?.canRecordTransactions ?? false;
+
   const oneTimeRows: BudgetTableRow[] = data.oneTimeBudgets.map((b) => ({
     id: b.id,
     name: b.name,
@@ -169,19 +267,27 @@ export function ChapterView({
   }));
 
   const cadenceLabel = { monthly: "Monthly", quarterly: "Quarterly", yearly: "Yearly" } as const;
-  const recurringRows: BudgetTableRow[] = data.recurringBudgets.map((b) => ({
-    id: b.id,
-    name: b.name,
-    meta: [cadenceLabel[b.cadence], b.note].filter(Boolean).join(" · ") || null,
-    spentCents: b.spentCents,
-    budgetCents: b.budgetCents,
-    pct: b.pct,
-    categories: b.categories,
-    approvalStatus: b.approvalStatus,
-    approvedCents: b.approvedCents,
-    requestedCents: b.requestedCents,
-    reviewNote: b.reviewNote,
-  }));
+  const recurringRows: BudgetTableRow[] = data.recurringBudgets.map((b) => {
+    const { pct, capLabelOverride } = monthHonestRecurring(b, period);
+    return {
+      id: b.id,
+      name: b.name,
+      meta: [cadenceLabel[b.cadence], b.note].filter(Boolean).join(" · ") || null,
+      spentCents: b.spentCents,
+      budgetCents: b.budgetCents,
+      pct,
+      categories: b.categories,
+      approvalStatus: b.approvalStatus,
+      approvedCents: b.approvedCents,
+      requestedCents: b.requestedCents,
+      reviewNote: b.reviewNote,
+      capLabelOverride,
+      // Review fix (finding #1): this row's OWN effective drill-down period,
+      // overriding the group-level `drilldownPeriod` below (which stays
+      // month-only — correct for the "Events & projects" one-time table).
+      drilldownPeriod: recurringDrilldownPeriod(b.cadence, year, month, period),
+    };
+  });
 
   const emptyMonths = useMemo(
     () => Array.from({ length: 12 }, (_, i) => ({ month: i + 1, spendCents: 0 })),
@@ -241,6 +347,8 @@ export function ChapterView({
             emptyTitle="No event or project budgets yet"
             emptyMessage="Budget an event or project to track its spend against a plan."
             onPressRow={onEditBudget}
+            drilldownPeriod={drilldownPeriod}
+            onOpenTransaction={openDrilldownTxn}
           />
 
           <BudgetTableGroup
@@ -251,6 +359,8 @@ export function ChapterView({
             emptyTitle="No recurring buckets"
             emptyMessage="Create a monthly, quarterly, or yearly budget for a team or category."
             onPressRow={onEditBudget}
+            drilldownPeriod={drilldownPeriod}
+            onOpenTransaction={openDrilldownTxn}
           />
 
           {!isDrilldown ? (
@@ -289,9 +399,20 @@ export function ChapterView({
           <RecentDigest
             rows={data.recentTransactions}
             onViewAll={isDrilldown ? undefined : () => onAttentionAction("needs_budget")}
+            canRecordTransactions={canRecordTransactions}
           />
         </View>
       </View>
+
+      {/* DASH-2.1 UI: the drill-down's own detail modal (see `openDrilldownTxn`
+          above) — `RecentDigest` owns a SEPARATE instance for its own rows. */}
+      {detailSource ? (
+        <TransactionDetailModal
+          source={detailSource}
+          onClose={() => setDetailSource(null)}
+          canRecordTransactions={canRecordTransactions}
+        />
+      ) : null}
     </View>
   );
 }
@@ -430,7 +551,30 @@ function ReviewLinkTile({ tile, onPress }: { tile: ChapterTile; onPress?: () => 
 // `N` is the recent-window count `dashboardChapter` returns (capped at
 // `RECENT_TXN_COUNT`), not a true period total — the dashboard doesn't fetch
 // one (Reconcile itself is the full ledger).
-function RecentDigest({ rows, onViewAll }: { rows: RecentTxn[]; onViewAll?: () => void }) {
+//
+// DASH-2.1 UI (feature 3/4): each row is now tappable, opening the SAME
+// `TransactionDetailModal` the category drill-down uses via its "lookup"
+// entry — `recentTxnCard` (this row's own shape) carries a real transaction
+// id but not category id / receipt presence / a note (see
+// `TransactionDetailModal`'s own module doc), so the modal lazily resolves
+// those from `listReconcile`. `t.codedTo`'s own strings seed the modal's
+// display the instant it opens (peek-safe — server-resolved for whichever
+// chapter this digest belongs to) rather than showing blank fields while
+// that lookup is in flight.
+function RecentDigest({
+  rows,
+  onViewAll,
+  canRecordTransactions,
+}: {
+  rows: RecentTxn[];
+  onViewAll?: () => void;
+  /** Review fix (finding #3) — see `ChapterView`'s own `canRecordTransactions`
+   *  doc comment. */
+  canRecordTransactions: boolean;
+}) {
+  const [openId, setOpenId] = useState<Id<"transactions"> | null>(null);
+  const openRow = openId ? rows.find((r) => r.id === openId) : null;
+
   if (rows.length === 0) return null;
   const shown = rows.slice(0, 5);
   return (
@@ -438,9 +582,11 @@ function RecentDigest({ rows, onViewAll }: { rows: RecentTxn[]; onViewAll?: () =
       <SectionHeader title="Recent transactions" />
       <View className="overflow-hidden rounded-lg border border-border bg-raised shadow-card">
         {shown.map((t, i) => (
-          <View
+          <Pressable
             key={t.id}
-            className={`flex-row items-center justify-between gap-2 px-3 py-2 ${
+            onPress={() => setOpenId(t.id)}
+            accessibilityRole="button"
+            className={`flex-row items-center justify-between gap-2 px-3 py-2 active:opacity-70 web:hover:bg-sunken ${
               i === shown.length - 1 ? "" : "border-b border-border"
             }`}
           >
@@ -453,7 +599,7 @@ function RecentDigest({ rows, onViewAll }: { rows: RecentTxn[]; onViewAll?: () =
               </Text>
             </View>
             <SignedMoney cents={t.amountCents} flow={t.flow} className="text-xs font-semibold" />
-          </View>
+          </Pressable>
         ))}
         {onViewAll ? (
           <Pressable
@@ -468,6 +614,21 @@ function RecentDigest({ rows, onViewAll }: { rows: RecentTxn[]; onViewAll?: () =
           </Pressable>
         ) : null}
       </View>
+
+      {openRow ? (
+        <TransactionDetailModal
+          source={{
+            kind: "lookup",
+            transactionId: openRow.id,
+            fallback: {
+              budgetName: openRow.codedTo?.projectOrEvent || null,
+              categoryName: openRow.codedTo?.category || null,
+            },
+          }}
+          onClose={() => setOpenId(null)}
+          canRecordTransactions={canRecordTransactions}
+        />
+      ) : null}
     </View>
   );
 }
