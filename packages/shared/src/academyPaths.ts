@@ -478,6 +478,7 @@ export const ROLE_PATHS: RolePath[] = [
       "finances-for-everyone",
       "chapter-os-fundamentals",
       "owning-an-event",
+      "leading-a-project",
       "the-one-on-one",
       "care-and-accountability",
       "the-director-standard",

@@ -598,7 +598,7 @@ export const WORKS_SECTIONS: Omit<AcademySection, "order">[] = [
     blocks: [
       {
         kind: "p",
-        text: "Every project gets its own one-time budget the moment it's created — its money home from day one. If yours doesn't have one yet, one tap of **Add budget** on the project's own page summons a $0 draft. Either way, nothing is approved until someone deliberately moves it forward.",
+        text: "A project doesn't automatically get a budget — plenty of projects are pure work-tracking, no dollars involved. A budget only exists once real money enters the picture: enter a planned amount when you create the project and a Draft budget is created right then, or tap **Add budget** on the project's own page later, once there's actually something to plan. Either way, nothing is approved until someone deliberately moves it forward.",
       },
       { kind: "heading", text: "The plan lives as line items" },
       {
@@ -671,16 +671,17 @@ export const WORKS_SECTIONS: Omit<AcademySection, "order">[] = [
     ],
     quiz: [
       {
-        prompt: "What state is a brand-new project's budget in the moment the project is created?",
+        prompt:
+          "A project is created with a name, an owner, and a deadline — no dollar amount entered. What's true about its budget right now?",
         options: [
-          "There's no budget until you request one",
-          "Draft — an editable $0 or planned-amount budget nobody's reviewed yet",
-          "Approved automatically, using whatever amount was planned",
-          "Awaiting approval",
+          "It's sitting in Draft at $0, waiting for someone to send it for review",
+          "There's no budget row at all yet — most projects are work-tracking only; one appears once you enter a real amount or tap Add budget",
+          "It's Approved automatically at $0",
+          "It's Awaiting approval, pending the Treasurer",
         ],
         answerIndex: 1,
         explanation:
-          "Every project's budget starts as a Draft, whether it's created with a planned amount or summoned later with Add budget.",
+          "A budget only exists once real money enters the picture. No amount at creation means no budget row yet — not a hidden Draft one.",
       },
       {
         prompt: "Who approves a chapter project's budget?",
