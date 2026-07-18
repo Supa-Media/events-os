@@ -1907,9 +1907,22 @@ export const beginRevealCardDetails = internalMutation({
       )
       .take(CARD_DETAILS_REVEAL_MAX);
     if (recent.length >= CARD_DETAILS_REVEAL_MAX) {
+      // `recent` is ordered ascending by the `by_key_and_time` index, so
+      // `recent[0]` is the OLDEST attempt still inside the window — the one
+      // that ages out first and frees the next slot. Surfaced as
+      // `retryAfterSeconds` so the client can show a precise "try again in
+      // Xs" instead of the generic message alone.
+      const oldest = recent[0];
+      const retryAfterSeconds = Math.max(
+        1,
+        Math.ceil(
+          (oldest.createdAt + CARD_DETAILS_REVEAL_WINDOW_MS - Date.now()) / 1000,
+        ),
+      );
       throw new ConvexError({
         code: "RATE_LIMITED",
         message: "Too many attempts to view card details — try again in a bit.",
+        retryAfterSeconds,
       });
     }
     // Swept daily by maintenance.sweepRateLimitAttempts (crons.ts) once older
@@ -1973,6 +1986,123 @@ export const revealCardDetails = action({
       expirationYear: Number(details.expiration_year ?? 0),
       verificationCode: String(details.verification_code ?? ""),
     };
+  },
+});
+
+// ── cardBillingAddress (HOLDER-ONLY, decorative, never throws) ───────────────
+
+const billingAddressValidator = v.object({
+  line1: v.string(),
+  line2: v.union(v.string(), v.null()),
+  city: v.string(),
+  state: v.string(),
+  zip: v.string(),
+});
+
+/**
+ * Holder-only lookup of the Increase identifiers needed to fetch a card's
+ * billing address — the SAME holder-only gate as `beginRevealCardDetails`
+ * (a manager/FM/superuser who isn't the cardholder is FORBIDDEN), but NO rate
+ * limit: unlike PAN/CVC, a mailing address isn't the kind of secret worth
+ * throttling repeated reads of. Returns nulls (never throws) when the card
+ * isn't linked to Increase or the chapter's Increase account for the current
+ * mode isn't provisioned — the caller degrades to "address unavailable".
+ */
+export const holderIncreaseEnvForCard = internalQuery({
+  args: { cardId: v.id("cards") },
+  returns: v.object({
+    increaseCardId: v.union(v.string(), v.null()),
+    increaseEntityId: v.union(v.string(), v.null()),
+  }),
+  handler: async (ctx, { cardId }) => {
+    const chapterId = (await requireChapterId(ctx)) as Id<"chapters">;
+    const access = await getFinanceRole(ctx, chapterId);
+    const card = await requireOwnedCard(ctx, chapterId, cardId);
+    const isHolder =
+      access.personId != null && access.personId === card.cardholderPersonId;
+    if (!isHolder) {
+      throw new ConvexError({
+        code: "FORBIDDEN",
+        message: "Only the cardholder can view their own card details.",
+      });
+    }
+    if (!card.increaseCardId) {
+      // Legacy (Relay) / degraded card — no Increase object to ask.
+      return { increaseCardId: null, increaseEntityId: null };
+    }
+    const sandboxMode = await readSandbox(ctx);
+    const account = await getChapterAccountForMode(ctx, chapterId, sandboxMode);
+    return {
+      increaseCardId: card.increaseCardId,
+      increaseEntityId: account?.increaseEntityId ?? null,
+    };
+  },
+});
+
+/**
+ * Parse a billing address out of an Increase Entity object. Increase nests the
+ * address under the structure-specific bucket (`corporation.address`,
+ * `natural_person.address`, `trust.address`, `government_authority.address`,
+ * `joint.address`) rather than at the top level; try the bucket named by
+ * `structure` first, falling back to a top-level `address` for safety. Returns
+ * null on any shape that doesn't match — this is decorative display info, not
+ * worth failing the card view over.
+ */
+function extractEntityAddress(
+  entity: Record<string, unknown>,
+): { line1: string; line2: string | null; city: string; state: string; zip: string } | null {
+  const structure = entity.structure;
+  const bucket =
+    typeof structure === "string"
+      ? (entity[structure] as Record<string, unknown> | null | undefined)
+      : null;
+  const address = (bucket?.address ?? entity.address) as
+    | Record<string, unknown>
+    | null
+    | undefined;
+  if (!address || typeof address !== "object") return null;
+  const { line1, line2, city, state, zip } = address;
+  if (!line1 || !city || !state || !zip) return null;
+  return {
+    line1: String(line1),
+    line2: line2 ? String(line2) : null,
+    city: String(city),
+    state: String(state),
+    zip: String(zip),
+  };
+}
+
+/**
+ * The billing address on a card — the shared org Entity's registered address at
+ * Increase (this app never collects or stores an org address locally; see
+ * `increase.ts`'s SHARED-ENTITY MODEL doc comment — the Entity was created by
+ * hand in the Increase dashboard). HOLDER-ONLY (`holderIncreaseEnvForCard`
+ * above), NOT rate-limited (see its doc comment). DEGRADES to `null` — never
+ * throws on a vendor failure — when the card isn't Increase-linked, the
+ * chapter's account for this mode isn't provisioned, the API key is
+ * unconfigured, or the fetch/parse fails.
+ */
+export const cardBillingAddress = action({
+  args: { cardId: v.id("cards") },
+  returns: v.union(billingAddressValidator, v.null()),
+  handler: async (ctx, { cardId }) => {
+    const { increaseCardId, increaseEntityId } = await ctx.runQuery(
+      internal.cards.holderIncreaseEnvForCard,
+      { cardId },
+    );
+    if (!increaseCardId || !increaseEntityId) return null;
+    const { key, base } = increaseEnvForObjectId(increaseCardId);
+    if (!key) return null;
+    try {
+      const entity = await increaseGet(key, base, `/entities/${increaseEntityId}`);
+      return extractEntityAddress(entity);
+    } catch (err) {
+      console.error(
+        "[cards] cardBillingAddress: Increase entity fetch failed:",
+        err,
+      );
+      return null;
+    }
   },
 });
 

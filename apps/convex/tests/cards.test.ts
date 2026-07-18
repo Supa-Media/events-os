@@ -3713,9 +3713,14 @@ describe("revealCardDetails", () => {
       caught = err;
     }
     expect(caught).toBeInstanceOf(ConvexError);
-    expect((caught as ConvexError<{ code: string }>).data.code).toBe(
-      "RATE_LIMITED",
-    );
+    const data = (caught as ConvexError<{ code: string; retryAfterSeconds: number }>)
+      .data;
+    expect(data.code).toBe("RATE_LIMITED");
+    // The oldest of the 5 attempts just fired, so it should have ~1 hour left
+    // before it ages out of the window — bounded sanity check, not an exact
+    // clock assertion.
+    expect(data.retryAfterSeconds).toBeGreaterThan(0);
+    expect(data.retryAfterSeconds).toBeLessThanOrEqual(60 * 60);
   });
 
   test("the response is NEVER persisted — no document in ANY table contains the PAN", async () => {
@@ -3788,5 +3793,161 @@ describe("revealCardDetails", () => {
     await expect(
       s.as.action(api.cards.revealCardDetails, { cardId }),
     ).rejects.toBeInstanceOf(ConvexError);
+  });
+});
+
+// ── cardBillingAddress (HOLDER-ONLY, decorative, never throws) ───────────────
+
+describe("cardBillingAddress", () => {
+  const ENV = ["INCREASE_API_KEY", "INCREASE_SANDBOX_API_KEY"] as const;
+  const originalFetch = globalThis.fetch;
+  const originalEnv: Partial<Record<(typeof ENV)[number], string>> = {};
+  for (const k of ENV) originalEnv[k] = process.env[k];
+
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+    for (const k of ENV) {
+      if (originalEnv[k] === undefined) delete process.env[k];
+      else process.env[k] = originalEnv[k];
+    }
+  });
+
+  async function seedActiveAccount(
+    s: ChapterSetup,
+    opts: { increaseEntityId?: string; sandbox?: boolean } = {},
+  ): Promise<void> {
+    const now = Date.now();
+    await run(s.t, (ctx) =>
+      ctx.db.insert("increaseAccounts", {
+        chapterId: s.chapterId,
+        sandbox: opts.sandbox ?? false,
+        onboardingStatus: "active",
+        increaseAccountId: "account_addr_1",
+        increaseEntityId: opts.increaseEntityId,
+        createdAt: now,
+        updatedAt: now,
+      }),
+    );
+  }
+
+  function mockEntityFetch(address: Record<string, unknown> | null) {
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes("/entities/")) {
+        return new Response(
+          JSON.stringify({
+            id: "entity_1",
+            structure: "corporation",
+            corporation: address ? { address } : null,
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        );
+      }
+      return new Response("not found", { status: 404 });
+    }) as unknown as typeof fetch;
+  }
+
+  const FAKE_ADDRESS = {
+    line1: "123 Main St",
+    line2: "Suite 4",
+    city: "Raleigh",
+    state: "NC",
+    zip: "27601",
+  };
+
+  test("the holder gets the org Entity's billing address for their Increase card", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    process.env.INCREASE_API_KEY = "prod_key";
+    const holder = await seedPerson(s, { name: "Holder", userId: s.userId });
+    const cardId = await seedCard(s, {
+      cardholderPersonId: holder,
+      increaseCardId: "card_addr_1",
+      status: "active",
+    });
+    await seedActiveAccount(s, { increaseEntityId: "entity_1" });
+    mockEntityFetch(FAKE_ADDRESS);
+
+    const address = await s.as.action(api.cards.cardBillingAddress, { cardId });
+    expect(address).toEqual(FAKE_ADDRESS);
+  });
+
+  test("a manager (not the holder) is FORBIDDEN — same gate as revealCardDetails", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    process.env.INCREASE_API_KEY = "prod_key";
+    await seedManager(s);
+    const holder = await seedPerson(s, { name: "Holder" });
+    const cardId = await seedCard(s, {
+      cardholderPersonId: holder,
+      increaseCardId: "card_addr_2",
+      status: "active",
+    });
+    await seedActiveAccount(s, { increaseEntityId: "entity_1" });
+    mockEntityFetch(FAKE_ADDRESS);
+
+    await expect(
+      s.as.action(api.cards.cardBillingAddress, { cardId }),
+    ).rejects.toBeInstanceOf(ConvexError);
+  });
+
+  test("degrades to null for a legacy (Relay) card — never hits the network", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const holder = await seedPerson(s, { name: "Holder", userId: s.userId });
+    const cardId = await run(s.t, (ctx) =>
+      ctx.db.insert("cards", {
+        chapterId: s.chapterId,
+        cardholderPersonId: holder,
+        type: "physical",
+        source: "legacy",
+        last4: "4242",
+        status: "active",
+        createdAt: Date.now(),
+      }),
+    );
+    let fetchCalled = false;
+    globalThis.fetch = (async () => {
+      fetchCalled = true;
+      return new Response("should not be called", { status: 500 });
+    }) as unknown as typeof fetch;
+
+    const address = await s.as.action(api.cards.cardBillingAddress, { cardId });
+    expect(address).toBeNull();
+    expect(fetchCalled).toBe(false);
+  });
+
+  test("degrades to null when the chapter's Increase account isn't provisioned", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    process.env.INCREASE_API_KEY = "prod_key";
+    const holder = await seedPerson(s, { name: "Holder", userId: s.userId });
+    const cardId = await seedCard(s, {
+      cardholderPersonId: holder,
+      increaseCardId: "card_addr_3",
+      status: "active",
+    });
+    // No increaseAccounts row seeded at all.
+
+    const address = await s.as.action(api.cards.cardBillingAddress, { cardId });
+    expect(address).toBeNull();
+  });
+
+  test("degrades to null (never throws) when the Increase fetch fails", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    process.env.INCREASE_API_KEY = "prod_key";
+    const holder = await seedPerson(s, { name: "Holder", userId: s.userId });
+    const cardId = await seedCard(s, {
+      cardholderPersonId: holder,
+      increaseCardId: "card_addr_4",
+      status: "active",
+    });
+    await seedActiveAccount(s, { increaseEntityId: "entity_1" });
+    globalThis.fetch = (async () =>
+      new Response("boom", { status: 500 })) as unknown as typeof fetch;
+
+    const address = await s.as.action(api.cards.cardBillingAddress, { cardId });
+    expect(address).toBeNull();
   });
 });
