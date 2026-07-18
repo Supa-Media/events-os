@@ -202,6 +202,18 @@ export const gifts = defineTable({
   // can only ever have their note/receipts touched, never their money fields.
   editedAt: v.optional(v.number()),
   editedBy: v.optional(v.id("users")),
+  // Territories P7 (bank-credit gift matching, docs/plans/giving-territories.md
+  // §D10): set when this gift was CONFIRMED from a direct bank-credit candidate
+  // (`givingCandidates.confirmExternalGift`) — the evidence link back to the
+  // `transactions` row the money actually landed in. Evidence only: `gifts`
+  // stays giving HISTORY, `transactions` stays the only actuals ledger (no
+  // double-count — the linked transaction is never itself re-summed as a
+  // gift). Absent for every other gift (manual entry, CSV import, event
+  // dual-write, recurring cycle). `by_transaction` is both the display link
+  // AND the candidate query's "already confirmed" exclusion +
+  // `confirmExternalGift`'s idempotency check (at most one gift per
+  // transaction).
+  transactionId: v.optional(v.id("transactions")),
   createdAt: v.number(),
 })
   .index("by_donor", ["donorId"])
@@ -213,7 +225,29 @@ export const gifts = defineTable({
   .index("by_pledge", ["pledgeId"])
   // One gift per billing cycle — the `invoice.paid` idempotency lookup.
   .index("by_stripeInvoice", ["stripeInvoiceId"])
-  .index("by_sponsorship", ["sponsorshipId"]);
+  .index("by_sponsorship", ["sponsorshipId"])
+  // Territories P7: the evidence link's reverse lookup — "is this transaction
+  // already a confirmed gift" (candidate exclusion + confirm idempotency).
+  .index("by_transaction", ["transactionId"]);
+
+/**
+ * Territories P7 (bank-credit gift matching, §D10) — a development-team
+ * decision that a candidate bank-credit transaction is NOT a gift (an
+ * unrecognized deposit, a refund the heuristic missed, a provider payout the
+ * description didn't match) and should stop surfacing in
+ * `candidateExternalGifts`. Deliberately NOT a soft-delete flag on
+ * `transactions` itself — the transaction row is the actuals ledger and stays
+ * untouched; this is a tiny side-table recording ONE human decision (mirrors
+ * `personalRepayments`' single-purpose link-table shape). `by_transaction`
+ * powers both the exclusion lookup and `dismissGiftCandidate`'s idempotency
+ * (at most one dismissal per transaction — a second dismiss no-ops rather
+ * than piling up rows).
+ */
+export const dismissedGiftCandidates = defineTable({
+  transactionId: v.id("transactions"),
+  dismissedBy: v.id("users"),
+  dismissedAt: v.number(),
+}).index("by_transaction", ["transactionId"]);
 
 /**
  * Per-scope denormalized aggregates for the giving dashboard — one row per

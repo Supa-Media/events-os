@@ -69,6 +69,7 @@ import {
   gifts,
   givingScopeRollups,
   pledges,
+  dismissedGiftCandidates,
 } from "./schema/givingPlatform";
 import { sponsorPackages, sponsorships } from "./schema/sponsorships";
 import { cityCampaigns } from "./schema/cityCampaigns";
@@ -251,6 +252,11 @@ const schema = defineSchema({
   // paid cycles write `gifts` rows (`pledgeId` set). Derives `chapters.backerCount`
   // (see givingPledges.ts + docs/plans/giving-platform.md §2).
   pledges,
+  // Territories P7 (bank-credit gift matching, docs/plans/giving-territories.md
+  // §D10) — dismissal ledger for `candidateExternalGifts` (see
+  // `schema/givingPlatform.ts` for the shape; `gifts.transactionId` +
+  // `by_transaction` carry the confirm-side link).
+  dismissedGiftCandidates,
 
   // Sponsorships & partnerships (F-6, P4) — dev-director-authored sponsor
   // package tiers (`sponsorPackages`) + the agreement pipeline that tracks an
