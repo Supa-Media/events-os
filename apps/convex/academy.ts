@@ -947,6 +947,59 @@ export const courseCompleters = query({
 });
 
 /**
+ * Team-only training roster for a course, WITH the untrained state — the
+ * compact grid on the course page (owner report, 2026-07-18): the finances
+ * course's completer list was showing every chapter person (team, volunteer,
+ * vendor alike) in a growing vertical list with no way to see who HASN'T
+ * trained. Unlike `courseCompleters` above (chapter-visible, decision D4,
+ * completers-only — left untouched; `academy/path/[seatSlug].tsx` still
+ * consumes it as-is), this is:
+ *  - scoped to TEAM members only, same `isSamplePerson !== true &&
+ *    (isTeamMember === true || userId != null)` predicate `people.
+ *    teamMembers` uses (a team member is who's actually expected to record
+ *    transactions — a volunteer/vendor completing the course is real but not
+ *    what this roster is triaging);
+ *  - server-filtered rather than client-joined against `courseCompleters`
+ *    (a chapter's team can be large, and this returns everyone whether or
+ *    not they've trained — no reason to ship two full people scans to the
+ *    client to reconcile).
+ * Returns `null` when the caller has no chapter (mirrors `courseCompleters`).
+ */
+export const courseTeamTrainingRoster = query({
+  args: { courseSlug: v.string() },
+  handler: async (ctx, { courseSlug }) => {
+    const chapterId = await getChapterIdOrNull(ctx);
+    if (!chapterId) return null;
+    const people = await ctx.db
+      .query("people")
+      .withIndex("by_chapter", (q) => q.eq("chapterId", chapterId as Id<"chapters">))
+      .collect();
+    const team = people.filter(
+      (p) => p.isSamplePerson !== true && (p.isTeamMember === true || p.userId != null),
+    );
+    const completions = await ctx.db
+      .query("courseCompletions")
+      .withIndex("by_chapter_and_course", (q) =>
+        q
+          .eq("chapterId", chapterId as Id<"chapters">)
+          .eq("courseSlug", courseSlug),
+      )
+      .collect();
+    const trainedIds = new Set(completions.map((c) => String(c.personId)));
+    return await Promise.all(
+      team
+        .sort((a, b) => a.name.localeCompare(b.name))
+        .map(async (p) => ({
+          personId: p._id,
+          name: p.name,
+          imageUrl: p.image ? await ctx.storage.getUrl(p.image) : null,
+          trained: trainedIds.has(String(p._id)),
+        })),
+    );
+  },
+});
+
+/**
  * A person's earned course badges (slug + earnedAt), newest first — the chips
  * on their profile. Scoped to the caller's chapter, so it only returns badges
  * for someone on the caller's roster. Course titles/levels live in the shared

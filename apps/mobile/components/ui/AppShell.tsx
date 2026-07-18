@@ -5,6 +5,7 @@ import { usePathname, useRouter } from "expo-router";
 import { useAuthActions } from "@convex-dev/auth/react";
 import { useQuery } from "convex/react";
 import { api } from "@events-os/convex/_generated/api";
+import type { Id } from "@events-os/convex/_generated/dataModel";
 import { SidebarNavItem } from "./SidebarNav";
 import { Avatar } from "./Avatar";
 import { Icon, type IconName } from "./Icon";
@@ -153,6 +154,7 @@ export function AppShell({ children }: { children: ReactNode }) {
         <View className="flex-1">
           {peeking ? (
             <PeekBanner
+              chapterId={peeking.chapterId}
               chapterName={peeking.chapterName}
               onExit={exitPeek}
               scoped={scoped}
@@ -170,6 +172,7 @@ export function AppShell({ children }: { children: ReactNode }) {
       <MobileTopBar />
       {peeking ? (
         <PeekBanner
+          chapterId={peeking.chapterId}
           chapterName={peeking.chapterName}
           onExit={exitPeek}
           scoped={scoped}
@@ -219,16 +222,50 @@ function isScopedRoute(pathname: string): boolean {
  * (it's shell chrome, and `Exit` needs to stay reachable), but the copy adds
  * an honest qualifier instead of implying the whole app re-scoped when it
  * didn't.
+ *
+ * OWNER FIX (2026-07-18): peek is entered from CentralView's own "View
+ * chapter"/"Open on chapter ›" drilldowns for ANY chapter in the org-wide
+ * rollup — not just the switcher's own "Peek (read-only)" picker, which
+ * already excludes chapters the caller holds a real seat in (see
+ * `ChapterContext`'s `peekChapters` derivation). So a dual-hat holder (a
+ * central seat AND a chapter seat) can land here peeking their OWN chapter
+ * read-only, when they could just be AT that desk instead. When that's the
+ * case, the banner swaps its copy + primary action to a direct switch
+ * (`chooseSeat`, the SAME call the bottom-left `ContextPill`'s "Your seats"
+ * entries make) rather than the generic read-only-plus-Exit treatment.
  */
 function PeekBanner({
+  chapterId,
   chapterName,
   onExit,
   scoped,
 }: {
+  chapterId: Id<"chapters">;
   chapterName: string;
   onExit: () => void;
   scoped: boolean;
 }) {
+  const { chapterSeats, chooseSeat } = useChapterContext();
+  const ownSeat = chapterSeats.find((s) => s.chapterId === chapterId);
+
+  if (ownSeat) {
+    return (
+      <Pressable
+        onPress={() => chooseSeat(chapterId)}
+        accessibilityRole="button"
+        accessibilityLabel={`Switch to your seat at ${chapterName}`}
+        className="flex-row items-center gap-3 border-b border-border bg-warn-bg px-4 py-2 active:opacity-80 web:hover:opacity-90"
+      >
+        <Icon name="repeat" size={15} color={colors.warn} />
+        <Text className="flex-1 text-sm text-ink" numberOfLines={1}>
+          <Text className="font-semibold">You have a seat at {chapterName}</Text>
+          <Text className="text-muted"> — switch to it</Text>
+        </Text>
+        <Icon name="chevron-right" size={14} color={colors.accent} />
+      </Pressable>
+    );
+  }
+
   return (
     <View className="flex-row items-center gap-3 border-b border-border bg-warn-bg px-4 py-2">
       <Icon name="eye" size={15} color={colors.warn} />

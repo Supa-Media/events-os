@@ -30,8 +30,8 @@ import {
  * ACADEMY COURSE — `/academy/course/<slug>`. The drilled-in view of one course:
  * its title/level/description, the caller's required-module progress + earned
  * badge, the ordered module path (today's SectionRow/CapstoneRow, numbered
- * within THIS course), and a chapter-visible "Completed by" list. Each module
- * routes to the shared module screen (`/academy/<moduleSlug>`).
+ * within THIS course), and a compact TEAM training grid. Each module routes
+ * to the shared module screen (`/academy/<moduleSlug>`).
  */
 export default function AcademyCourseScreen() {
   const router = useRouter();
@@ -39,9 +39,15 @@ export default function AcademyCourseScreen() {
   const course = getAcademyCourse(slug ?? "");
 
   const progress = useQuery(api.academy.myProgress);
-  // Completer list is chapter-visible (decision D4) — everyone subscribes.
-  const completers = useQuery(
-    api.academy.courseCompleters,
+  // Owner fix (2026-07-18): was `api.academy.courseCompleters` (chapter-
+  // visible, decision D4, but completers-ONLY — every chapter person who'd
+  // earned the course, in a full-width vertical row each) — replaced with a
+  // TEAM-only roster that ALSO carries the untrained state, so the page shows
+  // a compact grid instead of a growing list that only ever grows down.
+  // `courseCompleters` itself is untouched — `academy/path/[seatSlug].tsx`
+  // still uses it as-is.
+  const roster = useQuery(
+    api.academy.courseTeamTrainingRoster,
     course ? { courseSlug: course.slug } : "skip",
   );
 
@@ -153,31 +159,40 @@ export default function AcademyCourseScreen() {
         })}
       </View>
 
-      {/* Completed by — chapter-visible. null = the caller has no chapter
-          (nothing to show); [] = the course exists but nobody's earned it yet. */}
-      {completers != null ? (
+      {/* Team training — a compact avatar+name grid, team members only, each
+          marked trained/untrained. `null` = the caller has no chapter
+          (nothing to show); `[]` = no team members in the chapter yet. */}
+      {roster != null ? (
         <>
-          <SectionHeader title="Completed by" count={completers.length} />
+          <SectionHeader title="Team training" count={roster.length} />
           <Card padding="md">
-            {completers.length === 0 ? (
+            {roster.length === 0 ? (
               <Text className="text-sm text-muted">
-                No one's earned this course yet — be the first.
+                No team members in this chapter yet.
               </Text>
             ) : (
-              <View className="gap-2.5">
-                {completers.map((p) => (
+              <View className="flex-row flex-wrap gap-2">
+                {roster.map((p) => (
                   <View
                     key={String(p.personId)}
-                    className="flex-row items-center gap-3"
+                    className={`flex-row items-center gap-1.5 rounded-full border px-2 py-1 ${
+                      p.trained
+                        ? "border-success-bg bg-success-bg"
+                        : "border-border bg-sunken"
+                    }`}
                   >
-                    <Avatar name={p.name} uri={p.imageUrl} size={28} />
+                    <Avatar name={p.name} uri={p.imageUrl} size={20} />
                     <Text
-                      className="flex-1 text-sm font-medium text-ink"
+                      className={`max-w-[120px] text-xs font-medium ${
+                        p.trained ? "text-ink" : "text-muted"
+                      }`}
                       numberOfLines={1}
                     >
                       {p.name}
                     </Text>
-                    <Icon name="award" size={16} color={colors.success} />
+                    {p.trained ? (
+                      <Icon name="award" size={12} color={colors.success} />
+                    ) : null}
                   </View>
                 ))}
               </View>

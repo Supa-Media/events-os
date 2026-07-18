@@ -94,6 +94,7 @@ import type * as migrations_0024_repoint_derived_seat_duties from "../migrations
 import type * as migrations_0025_add_cd_finance_viewer from "../migrations/0025_add_cd_finance_viewer.js";
 import type * as migrations_0026_migrate_budget_v1_lines from "../migrations/0026_migrate_budget_v1_lines.js";
 import type * as migrations_0027_sync_linked_budget_identity from "../migrations/0027_sync_linked_budget_identity.js";
+import type * as migrations_0028_reaward_course_completions from "../migrations/0028_reaward_course_completions.js";
 import type * as migrations_index from "../migrations/index.js";
 import type * as modules from "../modules.js";
 import type * as moneyViews from "../moneyViews.js";
@@ -248,6 +249,7 @@ declare const fullApi: ApiFromModules<{
   "migrations/0025_add_cd_finance_viewer": typeof migrations_0025_add_cd_finance_viewer;
   "migrations/0026_migrate_budget_v1_lines": typeof migrations_0026_migrate_budget_v1_lines;
   "migrations/0027_sync_linked_budget_identity": typeof migrations_0027_sync_linked_budget_identity;
+  "migrations/0028_reaward_course_completions": typeof migrations_0028_reaward_course_completions;
   "migrations/index": typeof migrations_index;
   modules: typeof modules;
   moneyViews: typeof moneyViews;

@@ -421,7 +421,18 @@ const recentTxnCard = v.object({
   timeOrNote: v.optional(v.union(v.string(), v.null())),
   codedTo: v.optional(
     v.union(
-      v.object({ projectOrEvent: v.string(), category: v.string() }),
+      v.object({
+        projectOrEvent: v.string(),
+        category: v.string(),
+        // WP-wave4 (item 4 — deep links) restore: the digest row's own
+        // budget ref, so `TransactionDetailModal`'s "lookup" entry (opened
+        // from this card) can offer the same "Part of: <name> ›" link a
+        // budget-scoped drill-down already carries. `null` for a recurring-
+        // budget-coded txn, or one with no ref (mirrors `projectOrEvent`
+        // itself, which is the SAME ref resolved to a display name below).
+        refKind: v.union(refKindValidator, v.null()),
+        scopeRefId: v.union(v.string(), v.null()),
+      }),
       v.null(),
     ),
   ),
@@ -1115,17 +1126,31 @@ function tagAllocationForDash(
  * caller's own `nameCache`s (bounded read-through caches), so repeat lookups
  * of the same ref — a budget can carry more than one tag, or appear under
  * more than one call site in a single query — cost no extra reads.
+ *
+ * `live` (review fix — dead-link parity): true only when a ref was actually
+ * resolved from a real event/project doc, false for the no-ref AND the
+ * vanished-ref fallback alike (`events.remove` doesn't cascade to a linked
+ * budget, so a deleted event's budget keeps a dead `scopeRefId` forever).
+ * Callers that offer an "open ref" link (`oneTimeBudgets`/`centralBudgets`
+ * cards) gate `refKind`/`scopeRefId` on this — never show a link for a ref
+ * that doesn't (or no longer) resolves, same rule `dashboardChapter`'s
+ * `codedTo.refKind` already applies to the recent-transactions digest.
  */
 async function resolveBudgetRef(
   b: Doc<"budgets">,
   getEvent: (id: Id<"events">) => Promise<Doc<"events"> | null>,
   getProject: (id: Id<"projects">) => Promise<Doc<"projects"> | null>,
-): Promise<{ name: string; dateLabel: string | null; refDate: number | null }> {
+): Promise<{ name: string; dateLabel: string | null; refDate: number | null; live: boolean }> {
   const refKind = effectiveRefKind(b);
   if (refKind === "event" && b.scopeRefId) {
     const ev = await getEvent(b.scopeRefId as Id<"events">);
     if (ev) {
-      return { name: ev.name, dateLabel: easternDateStr(ev.eventDate), refDate: ev.eventDate };
+      return {
+        name: ev.name,
+        dateLabel: easternDateStr(ev.eventDate),
+        refDate: ev.eventDate,
+        live: true,
+      };
     }
   } else if (refKind === "project" && b.scopeRefId) {
     const pr = await getProject(b.scopeRefId as Id<"projects">);
@@ -1134,10 +1159,11 @@ async function resolveBudgetRef(
         name: pr.name,
         dateLabel: pr.deadline ? easternDateStr(pr.deadline) : null,
         refDate: pr.deadline ?? pr.startDate ?? null,
+        live: true,
       };
     }
   }
-  return { name: budgetDisplayName(b), dateLabel: null, refDate: null };
+  return { name: budgetDisplayName(b), dateLabel: null, refDate: null, live: false };
 }
 
 /**
@@ -2226,7 +2252,7 @@ export const dashboardChapter = query({
     for (const b of budgets) {
       if (effectiveType(b) !== "one_time") continue;
       const refKind = effectiveRefKind(b);
-      const { name, dateLabel, refDate } = await resolveBudgetRef(b, getEvent, getProject);
+      const { name, dateLabel, refDate, live } = await resolveBudgetRef(b, getEvent, getProject);
       if (!oneTimeCardAppliesToDash(b, dp, refDate, yearTxns)) continue;
       // Bug 1b: the card's OWN bar stays CUMULATIVE (never month-sliced) even
       // though its VISIBILITY above is month-gated — see `oneTimeCardBreakdown`.
@@ -2251,9 +2277,13 @@ export const dashboardChapter = query({
         dateLabel,
         subtitle: null,
         // WP-wave4 (item 4 — deep links): the linked ref, so the card can
-        // offer an "open" button straight to the event/project page.
-        refKind: refKind ?? null,
-        scopeRefId: b.scopeRefId ?? null,
+        // offer an "open" button straight to the event/project page. Review
+        // fix (dead-link parity): only when `live` — a deleted event/project
+        // doesn't cascade to its budget, so an unresolved ref never offers a
+        // link (same rule the recent-transactions digest's `codedTo.refKind`
+        // already applies).
+        refKind: live ? (refKind ?? null) : null,
+        scopeRefId: live ? (b.scopeRefId ?? null) : null,
         spentCents,
         budgetCents: capCents,
         pct,
@@ -2428,13 +2458,27 @@ export const dashboardChapter = query({
       // budget's own display name, so a recurring-budget-coded txn is no
       // longer silently blank here.
       let projectOrEvent: string | undefined;
+      // WP-wave4 (item 4 — deep links) restore: the live ref behind
+      // `projectOrEvent` — set ONLY when that name actually resolved from a
+      // LIVE event/project (never for the `budgetDisplayName` fallback, so
+      // the modal's link never points at a vanished ref).
+      let recentRefKind: BudgetRefKind | null = null;
+      let recentScopeRefId: string | null = null;
       if (tr.budgetId) {
         const budget = await getBudget(tr.budgetId);
         if (budget) {
           if (budget.refKind === "event" && budget.scopeRefId) {
             projectOrEvent = (await getEvent(budget.scopeRefId as Id<"events">))?.name;
+            if (projectOrEvent) {
+              recentRefKind = "event";
+              recentScopeRefId = budget.scopeRefId;
+            }
           } else if (budget.refKind === "project" && budget.scopeRefId) {
             projectOrEvent = (await getProject(budget.scopeRefId as Id<"projects">))?.name;
+            if (projectOrEvent) {
+              recentRefKind = "project";
+              recentScopeRefId = budget.scopeRefId;
+            }
           }
           projectOrEvent ??= budgetDisplayName(budget);
         }
@@ -2445,7 +2489,12 @@ export const dashboardChapter = query({
       const categoryName = tr.categoryId ? catName.get(tr.categoryId) : undefined;
       const codedTo =
         projectOrEvent || categoryName
-          ? { projectOrEvent: projectOrEvent ?? "", category: categoryName ?? "" }
+          ? {
+              projectOrEvent: projectOrEvent ?? "",
+              category: categoryName ?? "",
+              refKind: recentRefKind,
+              scopeRefId: recentScopeRefId,
+            }
           : null;
       const ai =
         tr.aiSuggestion && tr.aiSuggestion.categoryId
@@ -2996,7 +3045,7 @@ export const dashboardCentral = query({
       // recurring budget's entries here are simply unused (`tagAllocationForDash`
       // only consults them for a `one_time` budget). WP-wave4: also resolves
       // the card's live display name/date (item 2) in the same read.
-      const { name: cbName, dateLabel: cbDateLabel, refDate } = await resolveBudgetRef(
+      const { name: cbName, dateLabel: cbDateLabel, refDate, live: cbLive } = await resolveBudgetRef(
         cb,
         getEvent,
         getProject,
@@ -3025,8 +3074,11 @@ export const dashboardCentral = query({
           id: cb._id,
           name: cbName,
           dateLabel: cbDateLabel,
-          refKind: cbRefKind ?? null,
-          scopeRefId: cb.scopeRefId ?? null,
+          // Review fix (dead-link parity): same `live`-gate as
+          // `dashboardChapter`'s one-time cards — see `resolveBudgetRef`'s
+          // own doc comment.
+          refKind: cbLive ? (cbRefKind ?? null) : null,
+          scopeRefId: cbLive ? (cb.scopeRefId ?? null) : null,
           scope: cb.scope ?? null,
           cadence: cb.cadence,
           year: cb.year,

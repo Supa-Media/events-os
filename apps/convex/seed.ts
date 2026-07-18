@@ -1395,3 +1395,68 @@ export const fieldDayTemplate = internalMutation({
     return { eventTypeId, name, chapter: chapter.name, itemsInserted };
   },
 });
+
+/**
+ * Dev-only: grant the first signed-in user a CHAPTER-scope finance "manager"
+ * seat at "The New York Chapter" (mirrors `seedChapterFinance`'s own chapter-
+ * manager grant, but callable standalone — `reseedNyDemo` doesn't call
+ * `seedChapterFinance`, so a fresh NY chapter has no funds/finance roles of
+ * its own). Needed to exercise the "dual-seat" peek-banner scenario (a
+ * central-seat holder who ALSO holds a real desk at the chapter they're
+ * peeking) without hand-editing the database. Idempotent: upserts by
+ * (chapterId, personId).
+ *
+ * Runnable with `npx convex run seed:grantNyFinanceSeat`. Needs the caller to
+ * have already completed onboarding into NY (so they have a `people` row
+ * there) — run this AFTER signing in and picking "The New York Chapter".
+ *
+ * SECURITY: internalMutation — no auth, dashboard/CLI only, mirrors every
+ * other dev-seed mutation in this file (`reseedNyDemo`, `seedOverseeingDemo`).
+ */
+export const grantNyFinanceSeat = internalMutation({
+  args: {},
+  handler: async (ctx: MutationCtx) => {
+    const chapter = await ctx.db
+      .query("chapters")
+      .withIndex("by_slug", (q) => q.eq("slug", NEW_YORK_CHAPTER_SLUG))
+      .first();
+    if (!chapter) return { ok: false, reason: "run seed:ensureChapters first" };
+    const nyChapterId = chapter._id as Id<"chapters">;
+
+    const firstUser = await ctx.db.query("users").first();
+    if (!firstUser) return { ok: false, reason: "no users — sign in once" };
+
+    const person = (
+      await ctx.db
+        .query("people")
+        .withIndex("by_user", (q) => q.eq("userId", firstUser._id as Id<"users">))
+        .collect()
+    ).find((p) => p.chapterId === nyChapterId);
+    if (!person) {
+      return {
+        ok: false,
+        reason: "no people row at NY — complete onboarding into NY first",
+      };
+    }
+
+    const existing = await ctx.db
+      .query("financeRoles")
+      .withIndex("by_chapter_and_person", (q) =>
+        q.eq("chapterId", nyChapterId).eq("personId", person._id),
+      )
+      .first();
+    if (existing) {
+      await ctx.db.patch(existing._id, { role: "manager", scope: "chapter" });
+      return { ok: true, granted: false, alreadyHadGrant: true };
+    }
+    await ctx.db.insert("financeRoles", {
+      chapterId: nyChapterId,
+      personId: person._id,
+      role: "manager",
+      scope: "chapter",
+      grantedByPersonId: person._id,
+      createdAt: Date.now(),
+    });
+    return { ok: true, granted: true };
+  },
+});
