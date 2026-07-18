@@ -37,7 +37,7 @@ import type { FunctionReturnType } from "convex/server";
 import { api } from "@events-os/convex/_generated/api";
 import type { Id } from "@events-os/convex/_generated/dataModel";
 import { CENTRAL } from "@events-os/shared";
-import { EmptyState, Narrow, Screen } from "../../../components/ui";
+import { Button, EmptyState, Narrow, Screen } from "../../../components/ui";
 import { colors } from "../../../lib/theme";
 import { useChapterContext } from "../../../lib/ChapterContext";
 import {
@@ -196,16 +196,34 @@ function DashboardBody({ seats }: { seats: Seats }) {
 
   const atCentralDesk = context?.kind === "seat" && context.scope === "central";
 
+  // DASH-3: the SAME {year, month, period} setter both dashboards' own
+  // click-to-filter bar charts drive (`ChapterView`'s spend-by-month bars,
+  // `CentralView`'s org-wide ones) — one state, no second control.
+  function handleChangePeriod(next: { year: number; month: number; period: DashPeriodMode }) {
+    setYm({ year: next.year, month: next.month });
+    setPeriod(next.period);
+  }
+
   return (
     <Screen>
       <Narrow>
-        {/* Controls: month stepper + Month/YTD toggle. Which desk you're at is
-            the shell's context pill now, not a control on this screen. */}
+        {/* Controls: month stepper + Month/YTD toggle, plus — at the central
+            desk only — "New budget" (DASH-3: moved out of mid-page into this
+            header row). Which desk you're at is the shell's context pill
+            now, not a control on this screen. */}
         <View className="mb-4 flex-row flex-wrap items-center justify-between gap-3">
           <View className="flex-row flex-wrap items-center gap-2">
             <MonthStepper year={ym.year} month={ym.month} period={period} onChange={setYm} />
             <PeriodSwitch value={period} onChange={setPeriod} />
           </View>
+          {atCentralDesk ? (
+            <Button
+              title="New budget"
+              icon="plus"
+              size="sm"
+              onPress={() => setBudgetModal({ open: true, id: null, central: true })}
+            />
+          ) : null}
         </View>
 
         {atCentralDesk ? (
@@ -214,8 +232,8 @@ function DashboardBody({ seats }: { seats: Seats }) {
               ym={ym}
               period={period}
               onViewChapter={enterPeek}
-              onNewBudget={() => setBudgetModal({ open: true, id: null, central: true })}
               onEditBudget={onEditCentralBudget}
+              onChangePeriod={handleChangePeriod}
               onRecordTransfer={(chapters) =>
                 setTransferModal({ open: true, chapters })
               }
@@ -249,10 +267,7 @@ function DashboardBody({ seats }: { seats: Seats }) {
               onEditBudget={onEditBudget}
               onAddTransaction={() => setTxnModalOpen(true)}
               onAttentionAction={onAttentionAction}
-              onChangePeriod={(next) => {
-                setYm({ year: next.year, month: next.month });
-                setPeriod(next.period);
-              }}
+              onChangePeriod={handleChangePeriod}
             />
           </FinanceBoundary>
         )}
@@ -290,16 +305,18 @@ function CentralSection({
   ym,
   period,
   onViewChapter,
-  onNewBudget,
   onEditBudget,
+  onChangePeriod,
   onRecordTransfer,
   onSettle,
 }: {
   ym: { year: number; month: number };
   period: DashPeriodMode;
   onViewChapter: (chapterId: Id<"chapters">, chapterName: string) => void;
-  onNewBudget: () => void;
   onEditBudget: (budgetId: string) => void;
+  /** DASH-3: a spend-by-month bar click sets this — the SAME state the
+   *  page's ‹ › picker / Month-YTD toggle drive (mirrors `ChapterSection`). */
+  onChangePeriod: (next: { year: number; month: number; period: DashPeriodMode }) => void;
   onRecordTransfer: (
     chapters: Array<{ chapterId: Id<"chapters">; chapterName: string }>,
   ) => void;
@@ -310,6 +327,11 @@ function CentralSection({
   ) => void;
 }) {
   const data = useQuery(api.finances.dashboardCentral, { ...ym, period });
+  // DASH-3: the org-wide bar chart + KPI sparkline (the SAME query result
+  // backs both — see `CentralView`'s module doc).
+  const monthly = useQuery(api.dashboardCharts.spendByMonth, { scope: "org", year: ym.year });
+  // DASH-3: the "Chapters at a glance" fleet panel.
+  const chapterHealth = useQuery(api.dashboardCharts.chapterHealth, {});
   if (data === undefined) return <LoadingBlock />;
   // The "By chapter" rollup leads with the Central row (chapterId === CENTRAL);
   // the transfer picker only wants the real chapters.
@@ -322,12 +344,14 @@ function CentralSection({
   return (
     <CentralView
       data={data}
+      monthly={monthly}
+      chapterHealth={chapterHealth}
       year={ym.year}
       month={ym.month}
       period={period}
       onViewChapter={onViewChapter}
-      onNewBudget={onNewBudget}
       onEditBudget={onEditBudget}
+      onChangePeriod={onChangePeriod}
       onRecordTransfer={() => onRecordTransfer(realChapters)}
       onSettle={(chapterId, _chapterName, netCents) =>
         onSettle(realChapters, chapterId, netCents)
