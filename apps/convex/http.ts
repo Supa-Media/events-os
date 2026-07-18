@@ -10,11 +10,17 @@ import {
 } from "./lib/landingPage";
 import { registerTicketApiRoutes } from "./lib/ticketApiRoutes";
 import { registerReimburseApiRoutes } from "./lib/reimburseApiRoutes";
+import { registerGiveApiRoutes } from "./lib/giveApiRoutes";
 import {
   renderReimburseForm,
   renderReimburseStatus,
   renderReimburseNotFound,
 } from "./lib/reimbursePage";
+import {
+  renderGiveMapPage,
+  renderGiveCampaignPage,
+  renderGiveNotFound,
+} from "./lib/givePage";
 import {
   renderProjectActionGone,
   renderProjectActionPage,
@@ -35,6 +41,9 @@ registerTicketApiRoutes(http);
 
 // JSON API for the public reimbursement page's client script (/api/reimburse/*).
 registerReimburseApiRoutes(http);
+
+// JSON API for the public giving map's become-a-backer form (/api/give/*).
+registerGiveApiRoutes(http);
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -118,6 +127,39 @@ http.route({
       : null;
     if (!ticket) return html(renderNotFound(), 404);
     return html(renderTicketPage(ticket, siteUrl()));
+  }),
+});
+
+// ── Public giving map: /give (the map) + /give/<slug> (a city's page) ───────
+// F-6 P3 (docs/plans/giving-platform.md §5): the map is aggregates-only, no
+// auth (`api.cityCampaigns.getPublicMapData`/`getPublicCampaign` never expose
+// donor PII). The campaign route reads `?pledge=success|canceled` off the
+// URL (the Stripe return param `givingPledges.startPledgeCheckout` sets) to
+// render the thank-you banner server-side — no extra client round-trip.
+
+http.route({
+  path: "/give",
+  method: "GET",
+  handler: httpAction(async (ctx) => {
+    const campaigns = await ctx.runQuery(api.cityCampaigns.getPublicMapData, {});
+    return html(renderGiveMapPage(campaigns, siteUrl()));
+  }),
+});
+
+http.route({
+  pathPrefix: "/give/",
+  method: "GET",
+  handler: httpAction(async (ctx, req) => {
+    const url = new URL(req.url);
+    const segments = url.pathname.split("/").filter(Boolean); // ["give", slug]
+    const slug = decodeURIComponent(segments[1] ?? "");
+    if (!slug || segments.length > 2) return html(renderGiveNotFound(), 404);
+    const data = await ctx.runQuery(api.cityCampaigns.getPublicCampaign, {
+      slug,
+    });
+    if (!data) return html(renderGiveNotFound(), 404);
+    const pledgeParam = url.searchParams.get("pledge");
+    return html(renderGiveCampaignPage(data, siteUrl(), pledgeParam));
   }),
 });
 
