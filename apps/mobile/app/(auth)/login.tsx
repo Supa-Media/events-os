@@ -2,12 +2,22 @@ import { useEffect } from "react";
 import { View, Text } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { KeyboardAwareScrollView } from "react-native-keyboard-controller";
-import { useRouter } from "expo-router";
+import { useLocalSearchParams, useRouter } from "expo-router";
 import { useConvexAuth } from "convex/react";
 import { Card, Button, TextField, Icon, ToastView } from "../../components/ui";
 import { colors } from "../../lib/theme";
 import { ALLOWED_DOMAIN } from "./login.helpers";
 import { useEmailOtpLogin } from "./useEmailOtpLogin";
+
+/** Only ever follow a same-app relative path. Rejects protocol-relative
+ *  ("//evil.com" — a browser resolves that as an absolute URL) and anything
+ *  that doesn't start with "/", so an untrusted `?redirect=` query param can
+ *  never bounce a signed-in user off the app. */
+function safeRedirect(redirect: string | undefined): string | null {
+  if (!redirect) return null;
+  if (!redirect.startsWith("/") || redirect.startsWith("//")) return null;
+  return redirect;
+}
 
 /**
  * OTP login for Chapter OS.
@@ -16,11 +26,17 @@ import { useEmailOtpLogin } from "./useEmailOtpLogin";
  * address). Invited guests — emails seeded into Convex's allowlist — switch to
  * guest mode and enter their full email; the OTP flow is otherwise identical.
  * All form state and logic live in `useEmailOtpLogin`; this screen just renders.
+ *
+ * Accepts an optional `?redirect=/some/path` — the `/reimburse-request`
+ * share-link page (and anything else that bounces an unauthenticated visitor
+ * here) sets it so a successful sign-in lands back where they started instead
+ * of the app home.
  */
 export default function LoginScreen() {
   const { isAuthenticated } = useConvexAuth();
   const router = useRouter();
   const insets = useSafeAreaInsets();
+  const { redirect } = useLocalSearchParams<{ redirect?: string }>();
   const login = useEmailOtpLogin();
   const { step, mode } = login;
 
@@ -31,8 +47,8 @@ export default function LoginScreen() {
   // redirect off auth state instead means we leave /login exactly once, after
   // the guard will let us through.
   useEffect(() => {
-    if (isAuthenticated) router.replace("/");
-  }, [isAuthenticated, router]);
+    if (isAuthenticated) router.replace(safeRedirect(redirect) ?? "/");
+  }, [isAuthenticated, redirect, router]);
 
   return (
     <View className="flex-1 bg-surface">
