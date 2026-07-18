@@ -70,10 +70,43 @@ second schema migration. The **rules**, recorded here:
 The accrual/freeze **wiring is deferred to the next PR**; this PR ships the
 fields only.
 
-### D10 — Bank-credit gift candidates (Territories P7)
+### D7 — The canonical import (Territories P6)
 
-*(D4–D9 cover sibling Territories/Giving PRs — donor/people linking, the
-import pipeline, etc. — tracked in their own PRs' docs, not renumbered here.)*
+*(D4–D6, D8–D9 cover sibling Territories/Giving PRs, tracked in their own PRs'
+docs, not renumbered here.)*
+
+One row schema, two-phase (preview → commit), replaces the Givebutter-only
+`importGivebutterCsv` (donors + gifts) and `importGivebutterRecurring`
+(pledge-shaped cutover rows) — both deleted. The owner context that drove the
+design: Givebutter consolidates ticket sales AND mission donations in the same
+export, and the bank only ever sees the lump payout, never the split — so the
+import must CLASSIFY every row before writing anything, or a ticket-sales file
+imported naively as "gifts" inflates the donor CRM with everyone who ever
+bought a ticket.
+
+- **One row, four `rowType`s**: `gift` (match-or-create donor + a `gifts`
+  row), `ticket` (NEVER a donor/gift — match-or-create a chapter `people`
+  contact, best-effort link purchase history to a real event via `eventHint` +
+  email), `contact` (match-or-create a person only), `recurring`
+  (match-or-create donor + an `origin:"imported"`, `status:"past_due"` pledge —
+  the same cutover shape `importGivebutterRecurring` used, ported verbatim).
+- **Preview is read-only** (`previewImport`, a query): classifies every row
+  via an in-memory per-call simulation (a query can't write) and returns a
+  disposition + a summary — the gift/ticket row-count split is what catches a
+  misclassified export before `importCanonical` commits anything.
+- **Dedup**: a gift's `externalRef` is the authoritative global dedup key when
+  present (`by_externalRef`); without one, a SUSPECTED-duplicate heuristic
+  applies — same donor + same `amountCents` + `receivedAt` within 24h of a
+  gift already counted for them — and is skipped on commit unless the caller
+  passes `allowSuspected: true`. A recurring row dedups its `externalRef`
+  within the matched donor's own pledges only.
+- `findDonorInScope` (`lib/givingDonors.ts`) gained a phone-match fallback
+  (email → phone → name) — the `by_scope_and_phone` index existed since P5 but
+  was unused until this PR.
+- See `apps/convex/givingImport.ts` for the implementation and full
+  classification/dedup doc comments.
+
+### D10 — Bank-credit gift candidates (Territories P7)
 
 Some giving arrives as a direct bank credit (Zelle/wire straight to the
 account) that never touches Stripe, so it never becomes a `gifts` row on its
@@ -131,3 +164,12 @@ Training-worthy: yes. The development-stream lessons were updated in the same PR
 — "prospect city" → "prospect territory", the shadow-chapter model, and
 direct-to-chapter scoping (the old "backers stay central-held until launch"
 teaching is obsolete).
+
+Territories P6 (D7, canonical import) also updated the stream in its own PR:
+`dev-import-and-backfill` was rewritten end to end for the preview-then-commit
+canonical import (retitled "The canonical import: preview, classify, commit"),
+`dev-giving-vocabulary`'s "Gift" bullet + quiz now teach the gift-vs-ticket
+classification rule, `dev-donor-crm-basics` gained a note on the People tab's
+giver marks (P5, previously undocumented), and `dev-givebutter-migration`'s
+import bullets point at the canonical import instead of the deleted
+Givebutter-only tool.
