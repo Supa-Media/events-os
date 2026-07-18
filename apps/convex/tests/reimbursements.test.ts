@@ -1144,6 +1144,135 @@ describe("in-app member self-service submission", () => {
   });
 });
 
+describe("optional 'For' tag (eventId/projectId)", () => {
+  /** Seed a minimal event in `s`'s chapter (needs an `eventTypes` row first —
+   *  mirrors the fixture other finance test suites use). */
+  async function seedEvent(s: ChapterSetup, name = "Fall Retreat"): Promise<Id<"events">> {
+    return await run(s.t, async (ctx) => {
+      const now = Date.now();
+      const eventTypeId = await ctx.db.insert("eventTypes", {
+        chapterId: s.chapterId,
+        name: "Service",
+        slug: "service",
+        version: 1,
+        isArchived: false,
+        createdBy: s.userId,
+        createdAt: now,
+        updatedAt: now,
+      });
+      return await ctx.db.insert("events", {
+        chapterId: s.chapterId,
+        eventTypeId,
+        templateVersion: 1,
+        name,
+        eventDate: now,
+        status: "planning",
+        createdBy: s.userId,
+        createdAt: now,
+        updatedAt: now,
+      });
+    });
+  }
+
+  async function seedProject(s: ChapterSetup, name = "New Building Fund"): Promise<Id<"projects">> {
+    return await run(s.t, (ctx) =>
+      ctx.db.insert("projects", {
+        chapterId: s.chapterId,
+        name,
+        status: "in_progress",
+        createdBy: s.userId,
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      }),
+    );
+  }
+
+  test("newRequestOptions surfaces the chapter's events + projects", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await seedPerson(s, { name: "Dana Rivers", userId: s.userId });
+    const eventId = await seedEvent(s, "Fall Retreat");
+    const projectId = await seedProject(s, "New Building Fund");
+
+    const options = await s.as.query(api.reimbursements.newRequestOptions, {});
+    expect(options.forOptions.events.map((e) => e.id)).toEqual([eventId]);
+    expect(options.forOptions.events[0].label).toContain("Fall Retreat");
+    expect(options.forOptions.projects.map((p) => p.id)).toEqual([projectId]);
+    expect(options.forOptions.projects[0].label).toBe("New Building Fund");
+  });
+
+  test("submitReimbursement stores an eventId tag and surfaces its label via get()", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const eventId = await seedEvent(s, "Fall Retreat");
+    const manager = await seedPerson(s, { name: "Manager", userId: s.userId, isTeamMember: true });
+    await grantRole(s, manager, "manager");
+    const requester = await addMember(s, { email: "dana@publicworship.life", name: "Dana Rivers" });
+
+    await requester.as.mutation(api.reimbursements.submitReimbursement, {
+      eventId,
+      lines: [{ description: "Gaffer tape", amountCents: 1200 }],
+    });
+
+    const rows = await s.as.query(api.reimbursements.list, {});
+    const detail = await s.as.query(api.reimbursements.get, {
+      reimbursementId: rows[0]._id,
+    });
+    expect(detail.forLabel).toBe("Fall Retreat");
+  });
+
+  test("submitReimbursement stores a projectId tag and surfaces its label via get()", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const projectId = await seedProject(s, "New Building Fund");
+    const manager = await seedPerson(s, { name: "Manager", userId: s.userId, isTeamMember: true });
+    await grantRole(s, manager, "manager");
+    const requester = await addMember(s, { email: "dana@publicworship.life", name: "Dana Rivers" });
+
+    await requester.as.mutation(api.reimbursements.submitReimbursement, {
+      projectId,
+      lines: [{ description: "Lumber", amountCents: 5000 }],
+    });
+
+    const rows = await s.as.query(api.reimbursements.list, {});
+    const detail = await s.as.query(api.reimbursements.get, {
+      reimbursementId: rows[0]._id,
+    });
+    expect(detail.forLabel).toBe("New Building Fund");
+  });
+
+  test("rejects both eventId and projectId on the same request", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await seedPerson(s, { name: "Dana Rivers", userId: s.userId });
+    const eventId = await seedEvent(s);
+    const projectId = await seedProject(s);
+
+    await expect(
+      s.as.mutation(api.reimbursements.submitReimbursement, {
+        eventId,
+        projectId,
+        lines: [{ description: "Gaffer tape", amountCents: 1200 }],
+      }),
+    ).rejects.toBeInstanceOf(ConvexError);
+  });
+
+  test("rejects an eventId that belongs to another chapter", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await seedPerson(s, { name: "Dana Rivers", userId: s.userId });
+    const other = await setupChapter(t, { email: "other@publicworship.life", chapterName: "Boston" });
+    const otherEventId = await seedEvent(other, "Boston's Own Event");
+
+    await expect(
+      s.as.mutation(api.reimbursements.submitReimbursement, {
+        eventId: otherEventId,
+        lines: [{ description: "Gaffer tape", amountCents: 1200 }],
+      }),
+    ).rejects.toBeInstanceOf(ConvexError);
+  });
+});
+
 describe("separation of duties", () => {
   test("the requester cannot approve their own request", async () => {
     const t = newT();

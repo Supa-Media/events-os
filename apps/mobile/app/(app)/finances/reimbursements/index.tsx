@@ -18,6 +18,11 @@
  * `SOD_VIOLATION` ConvexError is surfaced via the action runner. Also shows a
  * "personal charges outstanding" tile (D4) — `api.cards.personalRepaymentsOutstanding`,
  * the same aggregate the manager Cards view's "Personal to repay" tile uses.
+ * A seat holder is ALSO a chapter member who can incur their own out-of-pocket
+ * spend, so the queue header carries the same "Request a reimbursement"/"Share
+ * request link" CTAs the member view offers below — this view has no OWN
+ * request/history section (they use `myReimbursements` from the member
+ * perspective if they ever switch seats, same as anyone else).
  *
  * **No finance seat (member)**: two clear directions (D4), plus submit:
  *  - "You owe Public Worship" — `OwedBanner` (shared with the Cards-tab owe
@@ -32,13 +37,17 @@
  *    `isTerminal`/`REIMBURSEMENT_TERMINAL_STATUSES`, the codebase's one source
  *    of truth for "finished"), same data, filtered the other way, so nothing
  *    that used to be visible on this screen disappears.
- *  - "Request a reimbursement" CTA into the existing in-app submit form
- *    (`reimbursements/new.tsx`, untouched — built in #133).
+ *  - "Request a reimbursement" CTA into the shared `ReimbursementRequestForm`
+ *    (`components/finance/reimbursements/RequestForm.tsx`, built in #133,
+ *    extracted + given an optional "For" event/project picker here).
+ *  - "Share request link" — copies/shares the `/reimburse-request` page (a
+ *    sign-in-gated standalone form for anyone who hasn't found this tab yet).
  *
  * Built to `finances.html` (§ Reimbursements) and `docs/plans/finance.md`.
  */
 import { useMemo, useState } from "react";
-import { View, Text, Platform, Alert } from "react-native";
+import { View, Text, Platform, Alert, Share } from "react-native";
+import * as Linking from "expo-linking";
 import { useRouter } from "expo-router";
 import { useQuery, useMutation } from "convex/react";
 import { api } from "@events-os/convex/_generated/api";
@@ -79,6 +88,48 @@ import {
 type MyReimbursement = FunctionReturnType<
   typeof api.reimbursements.myReimbursements
 >[number];
+
+/** Cross-platform, non-blocking notice for the info-only payout edge (and the
+ *  "link copied" confirmation below). */
+function notify(title: string, message: string) {
+  if (Platform.OS === "web") window.alert(`${title}\n\n${message}`);
+  else Alert.alert(title, message);
+}
+
+/** The `/reimburse-request` share-link page's URL. Web: the current origin —
+ *  the page lives in this SAME Expo app, so wherever it's being viewed from
+ *  IS where the link resolves (mirrors `EventHeader.tsx`'s `shareCrew` link).
+ *  Native has no equivalent "this app's own web origin" signal, so it falls
+ *  back to the app's own URL scheme (`Linking.createURL` — openable only by
+ *  someone who already has the app installed; there's no universal-link
+ *  domain configured yet, see `app.config.js`'s `intentFilters`). */
+function reimburseRequestUrl(): string {
+  if (Platform.OS === "web" && typeof window !== "undefined") {
+    return `${window.location.origin}/reimburse-request`;
+  }
+  return Linking.createURL("/reimburse-request");
+}
+
+/** "Share request link" — copies (web) or opens the native share sheet
+ *  (native) for the reimbursement request page, so a member can text/email it
+ *  to someone who hasn't found it in the app yet. */
+async function shareRequestLink() {
+  const url = reimburseRequestUrl();
+  if (Platform.OS === "web") {
+    if (typeof navigator !== "undefined" && navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(url);
+      notify("Link copied", url);
+    } else if (typeof window !== "undefined") {
+      window.prompt("Share this reimbursement request link:", url);
+    }
+    return;
+  }
+  try {
+    await Share.share({ message: url });
+  } catch {
+    // User dismissed the share sheet — nothing to do.
+  }
+}
 
 /** A reimbursements table — shared between the "Public Worship owes you" and
  *  "History" sections below (identical shape, different status filter). */
@@ -155,14 +206,23 @@ function MemberReimbursementsScreen() {
   return (
     <Screen maxWidth={1080}>
       <Narrow>
-        <View className="mb-1 flex-row items-center justify-between">
+        <View className="mb-1 flex-row items-center justify-between gap-2">
           <Text className="font-display text-2xl text-ink">Reimbursements</Text>
-          <Button
-            title="Request a reimbursement"
-            size="sm"
-            icon="plus"
-            onPress={() => router.push("/finances/reimbursements/new")}
-          />
+          <View className="flex-row gap-2">
+            <Button
+              title="Share request link"
+              variant="secondary"
+              size="sm"
+              icon="share"
+              onPress={() => void shareRequestLink()}
+            />
+            <Button
+              title="Request a reimbursement"
+              size="sm"
+              icon="plus"
+              onPress={() => router.push("/finances/reimbursements/new")}
+            />
+          </View>
         </View>
         <Text className="mb-4 text-sm text-muted">
           Paid for something out of pocket? Submit a request and a finance
@@ -217,16 +277,11 @@ function MemberReimbursementsScreen() {
   );
 }
 
-/** Cross-platform, non-blocking notice for the info-only payout edge. */
-function notify(title: string, message: string) {
-  if (Platform.OS === "web") window.alert(`${title}\n\n${message}`);
-  else Alert.alert(title, message);
-}
-
 /** The seat holder's manager approval queue — all the finance-role-gated
  *  reads/writes live here, only ever mounted once `mySeats` confirms the
  *  caller holds a finance seat (see `ReimbursementsScreen` below). */
 function ManagerReimbursementsScreen() {
+  const router = useRouter();
   const [activeFilter, setActiveFilter] = useState<FilterKey>("all");
 
   const filter = FILTERS.find((f) => f.key === activeFilter)!;
@@ -308,12 +363,32 @@ function ManagerReimbursementsScreen() {
     <>
       <Screen maxWidth={1080}>
         <Narrow>
-          {/* Header — queue title + "N open · $X". */}
-          <View className="mb-1 flex-row items-baseline gap-2">
-            <Text className="font-display text-2xl text-ink">Reimbursements</Text>
-            <Text className="text-2xs font-bold uppercase tracking-wider text-muted">
-              {openStats.count} open · {formatCents(openStats.totalCents)}
-            </Text>
+          {/* Header — queue title + "N open · $X", plus a seat holder's own
+              submit CTAs (they're a chapter member too — see the file header
+              comment on the D3/D4 split). */}
+          <View className="mb-1 flex-row flex-wrap items-center justify-between gap-2">
+            <View className="flex-row items-baseline gap-2">
+              <Text className="font-display text-2xl text-ink">Reimbursements</Text>
+              <Text className="text-2xs font-bold uppercase tracking-wider text-muted">
+                {openStats.count} open · {formatCents(openStats.totalCents)}
+              </Text>
+            </View>
+            <View className="flex-row gap-2">
+              <Button
+                title="Share request link"
+                variant="secondary"
+                size="sm"
+                icon="share"
+                onPress={() => void shareRequestLink()}
+              />
+              <Button
+                title="Request a reimbursement"
+                variant="secondary"
+                size="sm"
+                icon="plus"
+                onPress={() => router.push("/finances/reimbursements/new")}
+              />
+            </View>
           </View>
           <Text className="mb-4 text-sm text-muted">
             Approve what volunteers and card-less team members spent, then pay

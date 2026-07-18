@@ -74,6 +74,8 @@ import {
 import { assertRoutingNumber, assertAccountNumber } from "./increase";
 import { sendEmail, emailShell } from "./ticketingEmails";
 import { escapeHtml } from "./lib/html";
+import { gatherForPickerCandidates } from "./lib/forPickerCandidates";
+import { ROLLUP_SCAN_LIMIT } from "./finances";
 
 const externalAccountFundingValidator = v.union(
   ...EXTERNAL_ACCOUNT_FUNDINGS.map((f) => v.literal(f)),
@@ -327,6 +329,24 @@ async function fundName(
   return fund?.name ?? null;
 }
 
+/** The request-level "For" tag's display name — the event's or project's own
+ *  name, whichever (if either) is set. Null when neither was tagged. */
+async function forLabel(
+  ctx: QueryCtx,
+  eventId: Id<"events"> | undefined,
+  projectId: Id<"projects"> | undefined,
+): Promise<string | null> {
+  if (eventId) {
+    const event = await ctx.db.get(eventId);
+    return event?.name ?? null;
+  }
+  if (projectId) {
+    const project = await ctx.db.get(projectId);
+    return project?.name ?? null;
+  }
+  return null;
+}
+
 /**
  * The real roster identity behind an in-app submission, or null. Only
  * populated when `identityVerified` is set (the authenticated `submitReimbursement`
@@ -398,6 +418,12 @@ async function createReimbursement(
      *  authenticated in-app path) rather than the public path's best-effort
      *  phone/email match. Drives `identityVerified` on the row. */
     identityVerified?: boolean;
+    /** Optional "what this was for" tag — an event OR a project, never both.
+     *  Purely informational (unlike a transaction's `budgetId`, this never
+     *  feeds budget-vs-actual math — see the file's ANTI-DOUBLE-COUNT
+     *  invariant). Only the in-app path collects this today. */
+    eventId?: Id<"events">;
+    projectId?: Id<"projects">;
     lines: SubmitLine[];
   },
 ): Promise<{
@@ -425,6 +451,24 @@ async function createReimbursement(
   const payeePhone = capOptional(input.payeePhone, 40);
   const purpose = capOptional(input.purpose, 2000);
   const bankAccountLast4 = sanitizeLast4(input.bankAccountLast4);
+
+  // "For" tag: an event OR a project, never both — verify whichever was
+  // supplied actually belongs to this chapter (untrusted input must never
+  // reference another chapter's ref).
+  if (input.eventId && input.projectId) {
+    throw new ConvexError({
+      code: "INVALID_INPUT",
+      message: "Pick an event or a project, not both.",
+    });
+  }
+  if (input.eventId) {
+    const event = await ctx.db.get(input.eventId);
+    await requireInChapter(ctx, chapterId, event, "Event");
+  }
+  if (input.projectId) {
+    const project = await ctx.db.get(input.projectId);
+    await requireInChapter(ctx, chapterId, project, "Project");
+  }
 
   if (input.lines.length === 0 || input.lines.length > 100) {
     throw new ConvexError({
@@ -481,6 +525,8 @@ async function createReimbursement(
     personId: input.personId ?? undefined,
     identityVerified: input.identityVerified === true ? true : undefined,
     purpose,
+    eventId: input.eventId,
+    projectId: input.projectId,
     totalCents,
     bankAccountLast4,
     submittedAt: now,
@@ -684,6 +730,9 @@ export const submitReimbursement = mutation({
     purpose: v.optional(v.string()),
     bankAccountLast4: v.optional(v.string()),
     requestPreApproval: v.optional(v.boolean()),
+    /** "What this was for" — an event or a project, never both. */
+    eventId: v.optional(v.id("events")),
+    projectId: v.optional(v.id("projects")),
     lines: v.array(submitLineValidator),
   },
   handler: async (ctx, args) => {
@@ -712,6 +761,8 @@ export const submitReimbursement = mutation({
       purpose: args.purpose,
       bankAccountLast4: args.bankAccountLast4,
       requestPreApproval: args.requestPreApproval,
+      eventId: args.eventId,
+      projectId: args.projectId,
       personId,
       // This IS the authenticated path — `personId` above came from
       // `resolveCallerPersonId`, the caller's own verified roster row.
@@ -724,22 +775,58 @@ export const submitReimbursement = mutation({
   },
 });
 
+/** One selectable event/project row for the "For" picker (request-level
+ *  `eventId`/`projectId` — see `createReimbursement`'s doc). */
+type ForOptionRow = { id: string; label: string };
+
+/**
+ * The chapter's events + projects for the request form's optional "For"
+ * picker — a plain informational tag, NOT the `finances.forPickerOptions`
+ * budget-attribution picker (that one requires a finance role and filters to
+ * only APPROVED budgets, neither of which applies here: any chapter member
+ * can tag their own request against any event/project, budgeted or not).
+ * Reuses `gatherForPickerCandidates`'s scan for the same dated labels, but
+ * drops its budget/recurring shaping entirely.
+ */
+async function forRequestOptions(
+  ctx: QueryCtx,
+  chapterId: Id<"chapters">,
+): Promise<{ events: ForOptionRow[]; projects: ForOptionRow[] }> {
+  const { candidates } = await gatherForPickerCandidates(ctx, chapterId, ROLLUP_SCAN_LIMIT);
+  return {
+    events: candidates
+      .filter((c) => c.refKind === "event")
+      .map((c) => ({ id: c.refId, label: c.label })),
+    projects: candidates
+      .filter((c) => c.refKind === "project")
+      .map((c) => ({ id: c.refId, label: c.label })),
+  };
+}
+
 /**
  * Display data for the in-app "Request a reimbursement" form: the caller's own
  * name/email/phone prefill (the SAME values `submitReimbursement` would default
  * to, so the form never shows something different from what actually gets
- * submitted) and the chapter's active funds for the fund picker. Deliberately
- * has NO finance-role gate (unlike `finances.listFunds`) — any authenticated
- * chapter member needs this to submit their own reimbursement, whether or not
- * they hold a finance grant. Degrades to empty/blank rather than throwing when
- * the caller has no chapter yet — `submitReimbursement` is the real gate.
+ * submitted), the chapter's active funds for the fund picker, and its
+ * events/projects for the optional "For" picker. Deliberately has NO
+ * finance-role gate (unlike `finances.listFunds`/`forPickerOptions`) — any
+ * authenticated chapter member needs this to submit their own reimbursement,
+ * whether or not they hold a finance grant. Degrades to empty/blank rather
+ * than throwing when the caller has no chapter yet — `submitReimbursement` is
+ * the real gate.
  */
 export const newRequestOptions = query({
   args: {},
   handler: async (ctx) => {
     const chapterId = await getChapterIdOrNull(ctx);
     if (!chapterId) {
-      return { defaultPayeeName: "", defaultPayeeEmail: "", defaultPayeePhone: "", funds: [] };
+      return {
+        defaultPayeeName: "",
+        defaultPayeeEmail: "",
+        defaultPayeePhone: "",
+        funds: [],
+        forOptions: { events: [], projects: [] },
+      };
     }
     const person = await viewerPerson(ctx, chapterId as Id<"chapters">);
     const authEmail = await getUserEmail(ctx);
@@ -755,6 +842,7 @@ export const newRequestOptions = query({
         .filter((f) => f.isActive !== false)
         .sort((a, b) => a.sortOrder - b.sortOrder)
         .map((f) => ({ id: f._id, name: f.name })),
+      forOptions: await forRequestOptions(ctx, chapterId as Id<"chapters">),
     };
   },
 });
@@ -1142,6 +1230,7 @@ export const get = query({
       // submission, or null (including on the public path).
       verifiedRosterName: await verifiedRosterName(ctx, request),
       purpose: request.purpose ?? null,
+      forLabel: await forLabel(ctx, request.eventId, request.projectId),
       requesterType: await requesterType(ctx, request.personId),
       totalCents: request.totalCents,
       approvedCents: request.approvedCents,
