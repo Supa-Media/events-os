@@ -70,6 +70,47 @@ second schema migration. The **rules**, recorded here:
 The accrual/freeze **wiring is deferred to the next PR**; this PR ships the
 fields only.
 
+### D10 — Bank-credit gift candidates (Territories P7)
+
+*(D4–D9 cover sibling Territories/Giving PRs — donor/people linking, the
+import pipeline, etc. — tracked in their own PRs' docs, not renumbered here.)*
+
+Some giving arrives as a direct bank credit (Zelle/wire straight to the
+account) that never touches Stripe, so it never becomes a `gifts` row on its
+own. The development team needs to SEE those credits and either confirm one
+into a real gift (linked to the source transaction as evidence) or dismiss it.
+
+- **`gifts.transactionId`** (+ `by_transaction`) is the evidence link.
+  `transactions` stays the only actuals ledger — the link never causes a
+  dollar to be summed twice; `confirmExternalGift` always takes the gift's
+  amount/date FROM the transaction, never a client-sent value.
+- **The exclusion rule** (a candidate is a recent inflow transaction that
+  ISN'T…):
+  1. **A card refund** — `cardId` set (the owner's heuristic: "a credit WITH
+     an associated card is a refund of a card purchase, NOT a gift").
+  2. **A transfer-flow leg** — `flow !== "inflow"` drops every skim /
+     launch_grant / settlement / reimbursement / repayment leg (all always
+     written `flow:"transfer"` by schema convention).
+  3. **A provider lump-sum payout (Stripe or Givebutter)** — neither provider
+     writes a dedicated `transactions.source` for "payout" today; a lump
+     deposit lands via `stripe_fc`/`relay_csv` exactly like any other bank
+     credit, but its bank-statement descriptor always NAMES the processor
+     (`merchantName`/`description`). Excluded by a case-insensitive
+     `"stripe"`/`"givebutter"` match on those two fields — a description
+     convention, not a structural guarantee, deliberately narrow so a real
+     donor is never coincidentally swept in.
+  4. **Already gift-linked** — a row in `gifts.by_transaction`.
+  5. **Already dismissed** — a row in `dismissedGiftCandidates.by_transaction`
+     (a tiny append-only table: `transactionId` + `dismissedBy` +
+     `dismissedAt`, a durable "not a gift" decision — no un-dismiss surface).
+- **Access**: `candidateExternalGifts` uses the same dual gate as
+  `prelaunchReadiness` — `giving.manage` at the scope OR central finance
+  viewer rank — so a finance auditor can see what development is about to
+  confirm as revenue even without a giving seat. `confirmExternalGift` /
+  `dismissGiftCandidate` stay manage-only.
+- See `apps/convex/givingCandidates.ts` for the implementation and full
+  exclusion-rule doc comment.
+
 ## Migration & rollout
 
 - `migrations/0029_territories_cutover.ts` seeds the New York territory

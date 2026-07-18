@@ -358,6 +358,10 @@ export async function recordGiftForDonor(
     stripeInvoiceId?: string;
     // P4: optional receipt proof captured at record time (bounded ≤ 10).
     receiptStorageIds?: Id<"_storage">[];
+    // P7: set when this gift is CONFIRMED from a bank-credit candidate — the
+    // evidence link back to the `transactions` row (see
+    // `schema/givingPlatform.ts`'s `gifts.transactionId` doc).
+    transactionId?: Id<"transactions">;
   },
 ): Promise<Id<"gifts">> {
   assertPositiveGiftCents(args.amountCents);
@@ -385,6 +389,7 @@ export async function recordGiftForDonor(
     ...(args.receiptStorageIds && args.receiptStorageIds.length > 0
       ? { receiptStorageIds: args.receiptStorageIds }
       : {}),
+    ...(args.transactionId ? { transactionId: args.transactionId } : {}),
     createdAt: now,
   });
 
