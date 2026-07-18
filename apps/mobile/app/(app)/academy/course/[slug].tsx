@@ -80,10 +80,7 @@ export default function AcademyCourseScreen() {
       {/* Header: back + eyebrow + title + level + description */}
       <View className="mb-2 flex-row items-center gap-2">
         <Pressable
-          onPress={() => {
-            if (router.canGoBack()) router.back();
-            else router.replace("/academy");
-          }}
+          onPress={() => router.replace("/academy")}
           hitSlop={8}
           accessibilityRole="button"
           accessibilityLabel="Back to Academy"

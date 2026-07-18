@@ -69,6 +69,21 @@ export type AcademyBlock =
   | { kind: "table"; headers: string[]; rows: string[][] }
   /** "In the app · …" pointer to the concrete UI move. */
   | { kind: "tip"; text: string }
+  /** Tappable pointer to an external doc — opens `url` in the browser. */
+  | { kind: "link"; label: string; url: string; note?: string }
+  /**
+   * A tree/org-chart diagram — an indented list of nodes (each with a `depth`),
+   * optionally highlighting the learner's own seat, their manager, and reports.
+   */
+  | {
+      kind: "tree";
+      caption?: string;
+      nodes: {
+        label: string;
+        depth: number;
+        highlight?: "self" | "manager" | "reports";
+      }[];
+    }
   /** Mini grid row with a tappable status chip — cycle it to the terminal state. */
   | {
       kind: "try_status";
@@ -86,6 +101,16 @@ export type AcademyBlock =
   | { kind: "try_ready"; criteria: string[] }
   /** Scenario card: "what would you do?" with a tap-to-reveal playbook answer. */
   | { kind: "reveal"; prompt: string; answer: string }
+  /**
+   * Multiple-choice scenario: pick an option, get its feedback inline. Wrong
+   * picks nudge and let you retry; the `correct` option confirms. Local state
+   * only — nothing is reported outward.
+   */
+  | {
+      kind: "scenario";
+      prompt: string;
+      options: { text: string; correct?: boolean; feedback: string }[];
+    }
   /** Scripted assistant exchange, revealed bubble-by-bubble on tap. */
   | { kind: "agent_demo"; exchanges: AcademyExchange[] };
 
@@ -96,6 +121,7 @@ export const ACADEMY_INTERACTIVE_KINDS = [
   "try_chain",
   "try_ready",
   "reveal",
+  "scenario",
   "agent_demo",
 ] as const satisfies readonly AcademyBlock["kind"][];
 

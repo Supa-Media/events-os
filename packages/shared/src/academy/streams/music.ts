@@ -5,7 +5,7 @@
  *
  * Content is authored, with strict fidelity, FROM three archived Notion
  * sources (verbatim archives of `bedecked-mandrill-c8b.notion.site`, captured
- * 2026-07-17 — see each `tip` block's "Further reading" for the internal
+ * 2026-07-17 — see each `link` block's "Further reading" for the internal
  * notion.so URL):
  *  - "PW Songwriting & Song Selection Philosophy (Draft)" — the doxological
  *    framework itself (Course 1, lessons 1–2 and 5).
@@ -87,8 +87,9 @@ export const MUSIC_SECTIONS: Omit<AcademySection, "order">[] = [
           "Not by this song alone. If the lyrics never leave the worshiper's own feelings, nothing has been carried out and laid at God's feet — that's real feeling, not yet a sacrifice. It doesn't make the moment fake; it means the sacrifice of praise Hebrews 13:15 describes is still waiting to be brought, by this song or another in the set.",
       },
       {
-        kind: "tip",
-        text: 'Further reading: "PW Songwriting & Song Selection Philosophy (Draft)" — https://www.notion.so/1792e8b016ec4b00b589344e95b55538',
+        kind: "link",
+        label: "Further reading: PW Songwriting & Song Selection Philosophy (Draft)",
+        url: "https://www.notion.so/1792e8b016ec4b00b589344e95b55538",
       },
     ],
     quiz: [
@@ -176,8 +177,9 @@ export const MUSIC_SECTIONS: Omit<AcademySection, "order">[] = [
           "No — direction is what matters, not the possessive. \"My life\" is being GIVEN to God here, yielded to His authority; the line runs outward. Compare \"my story, my journey\" — same word, but pointed at the worshiper's own biography as the content. Read for function, not the word.",
       },
       {
-        kind: "tip",
-        text: 'Further reading: "PW Songwriting & Song Selection Philosophy (Draft)" — https://www.notion.so/1792e8b016ec4b00b589344e95b55538',
+        kind: "link",
+        label: "Further reading: PW Songwriting & Song Selection Philosophy (Draft)",
+        url: "https://www.notion.so/1792e8b016ec4b00b589344e95b55538",
       },
     ],
     quiz: [
@@ -289,8 +291,14 @@ export const MUSIC_SECTIONS: Omit<AcademySection, "order">[] = [
           "Offering — the philosophy's own canonical example. \"I\" is the giver of wonder, sight, and hearing, turned outward to God's works. The worshiper's faculties are the instrument of the declaration, not its content — the magnifying glass, not what you see through it.",
       },
       {
-        kind: "tip",
-        text: 'Further reading: "PW Songwriting & Song Selection Philosophy (Draft)" — https://www.notion.so/1792e8b016ec4b00b589344e95b55538 · "Song Catalog: Doxological Analysis" — https://www.notion.so/e4d4cb6526964258a320a06f800c1f38',
+        kind: "link",
+        label: "Further reading: PW Songwriting & Song Selection Philosophy (Draft)",
+        url: "https://www.notion.so/1792e8b016ec4b00b589344e95b55538",
+      },
+      {
+        kind: "link",
+        label: "Further reading: Song Catalog: Doxological Analysis",
+        url: "https://www.notion.so/e4d4cb6526964258a320a06f800c1f38",
       },
     ],
     quiz: [
@@ -397,8 +405,14 @@ export const MUSIC_SECTIONS: Omit<AcademySection, "order">[] = [
           "Self as petitioner — the fifth anthropological shape. \"Open, show, fill, lead\" all ask God to act on the worshiper; the direction reverses from giving to receiving. It's the same shape as \"Open the eyes of my heart, Lord\" in the test.",
       },
       {
-        kind: "tip",
-        text: 'Further reading: "PW Songwriting & Song Selection Philosophy (Draft)" — https://www.notion.so/1792e8b016ec4b00b589344e95b55538 · "Song Catalog: Doxological Analysis" — https://www.notion.so/e4d4cb6526964258a320a06f800c1f38',
+        kind: "link",
+        label: "Further reading: PW Songwriting & Song Selection Philosophy (Draft)",
+        url: "https://www.notion.so/1792e8b016ec4b00b589344e95b55538",
+      },
+      {
+        kind: "link",
+        label: "Further reading: Song Catalog: Doxological Analysis",
+        url: "https://www.notion.so/e4d4cb6526964258a320a06f800c1f38",
       },
     ],
     quiz: [
@@ -486,8 +500,9 @@ export const MUSIC_SECTIONS: Omit<AcademySection, "order">[] = [
           "No — the same standard applies to every song, whether you wrote it or it's already in wide circulation. Popularity doesn't exempt a cover, a hymn, or a radio hit from the same line-by-line test as an original.",
       },
       {
-        kind: "tip",
-        text: 'Further reading: "PW Songwriting & Song Selection Philosophy (Draft)" — https://www.notion.so/1792e8b016ec4b00b589344e95b55538',
+        kind: "link",
+        label: "Further reading: PW Songwriting & Song Selection Philosophy (Draft)",
+        url: "https://www.notion.so/1792e8b016ec4b00b589344e95b55538",
       },
     ],
     quiz: [
@@ -570,8 +585,9 @@ export const MUSIC_SECTIONS: Omit<AcademySection, "order">[] = [
         text: "Set-building and rehearsal craft are coming to this course — for now, this is the per-song submission checklist.",
       },
       {
-        kind: "tip",
-        text: 'Further reading: "Worship Leader Checklist" — https://www.notion.so/1b67f1c177b68066b2b7fc5142e031b4',
+        kind: "link",
+        label: "Further reading: Worship Leader Checklist",
+        url: "https://www.notion.so/1b67f1c177b68066b2b7fc5142e031b4",
       },
     ],
     quiz: [
@@ -689,8 +705,9 @@ export const MUSIC_SECTIONS: Omit<AcademySection, "order">[] = [
           "Yes — that's Producer C in the apple metaphor, the Shopper. You don't grow or farm anything, but you still deliver the result. Producing is about understanding the steps to a result and either executing them, coordinating them, or using pre-existing solutions — not one specific hands-on skill.",
       },
       {
-        kind: "tip",
-        text: 'Further reading: "Music Producers: Understanding the Role" — https://www.notion.so/1427f1c177b680b88b43dc0e75dbe6c5',
+        kind: "link",
+        label: "Further reading: Music Producers: Understanding the Role",
+        url: "https://www.notion.so/1427f1c177b680b88b43dc0e75dbe6c5",
       },
     ],
     quiz: [
@@ -794,8 +811,9 @@ export const MUSIC_SECTIONS: Omit<AcademySection, "order">[] = [
           "It still shapes your brand — just not intentionally. Every photo or video you post adds to your public image, so the practical move is to be deliberate about visuals rather than random. Consistency is part of what builds trust.",
       },
       {
-        kind: "tip",
-        text: 'Further reading: "Artists: Understanding the Role" — https://www.notion.so/1497f1c177b680119082fa480a7707b8',
+        kind: "link",
+        label: "Further reading: Artists: Understanding the Role",
+        url: "https://www.notion.so/1497f1c177b680119082fa480a7707b8",
       },
     ],
     quiz: [
@@ -904,8 +922,9 @@ export const MUSIC_SECTIONS: Omit<AcademySection, "order">[] = [
           "No — it's stewardship, not personal judgment. Asking Public Worship to release an idea is asking the organization to bet $500 or more on it, since PW typically takes on the majority of the fiscal responsibility for its own releases. Selectivity protects that bet; it isn't a verdict on the songwriter.",
       },
       {
-        kind: "tip",
-        text: 'Further reading: "Artists: Understanding the Role" — https://www.notion.so/1497f1c177b680119082fa480a7707b8',
+        kind: "link",
+        label: "Further reading: Artists: Understanding the Role",
+        url: "https://www.notion.so/1497f1c177b680119082fa480a7707b8",
       },
     ],
     quiz: [

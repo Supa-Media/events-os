@@ -1,4 +1,4 @@
-import { View, Text, ScrollView } from "react-native";
+import { View, Text, ScrollView, Pressable, Linking } from "react-native";
 import type { AcademyBlock } from "@events-os/shared";
 import { Icon } from "../ui";
 import { colors } from "../../lib/theme";
@@ -9,6 +9,8 @@ import { TryOffset } from "./TryOffset";
 import { TryChain } from "./TryChain";
 import { TryReady } from "./TryReady";
 import { Reveal } from "./Reveal";
+import { Scenario } from "./Scenario";
+import { Tree } from "./Tree";
 import { AgentDemo } from "./AgentDemo";
 
 /**
@@ -73,6 +75,10 @@ function Block({ block }: { block: AcademyBlock }) {
       return <BlockTable headers={block.headers} rows={block.rows} />;
     case "tip":
       return <Tip text={block.text} />;
+    case "link":
+      return <LinkRow label={block.label} url={block.url} note={block.note} />;
+    case "tree":
+      return <Tree caption={block.caption} nodes={block.nodes} />;
     case "try_status":
     case "try_offset":
     case "try_chain":
@@ -86,6 +92,12 @@ function Block({ block }: { block: AcademyBlock }) {
       return (
         <TryCard eyebrow="What would you do?" icon="help-circle">
           <Reveal prompt={block.prompt} answer={block.answer} />
+        </TryCard>
+      );
+    case "scenario":
+      return (
+        <TryCard eyebrow="What would you do?" icon="compass">
+          <Scenario prompt={block.prompt} options={block.options} />
         </TryCard>
       );
     case "agent_demo":
@@ -181,6 +193,41 @@ function Tip({ text }: { text: string }) {
         <Text className="font-bold">In the app</Text> · <Inline text={text} />
       </Text>
     </View>
+  );
+}
+
+/** Tappable "Further reading" row — opens an external doc in the browser. */
+function LinkRow({
+  label,
+  url,
+  note,
+}: {
+  label: string;
+  url: string;
+  note?: string;
+}) {
+  return (
+    <Pressable
+      accessibilityRole="link"
+      onPress={() => {
+        void Linking.openURL(url).catch(() => {});
+      }}
+      className="flex-row items-start gap-2.5 rounded-md bg-sunken px-3 py-2.5 active:bg-accent-soft web:hover:bg-accent-soft"
+    >
+      <View className="mt-0.5">
+        <Icon name="external-link" size={13} color={colors.accent} />
+      </View>
+      <View className="flex-1">
+        <Text className="text-sm font-semibold leading-5 text-accent">
+          <Inline text={label} />
+        </Text>
+        {note ? (
+          <Text className="mt-0.5 text-xs leading-4 text-muted">
+            <Inline text={note} />
+          </Text>
+        ) : null}
+      </View>
+    </Pressable>
   );
 }
 
