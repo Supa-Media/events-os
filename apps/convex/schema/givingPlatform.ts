@@ -207,9 +207,22 @@ export const givingScopeRollups = defineTable({
  */
 export const pledges = defineTable({
   donorId: v.id("donors"),
-  // The city this pledge backs. P3 (public map) adds prospect-city scoping —
-  // a `cityCampaigns` ref — to this union; today it's a live chapter or central.
+  // The city this pledge backs: a live chapter, or `"central"`. P3 (public
+  // map) adds PROSPECT-city scoping on top of this union via `cityCampaignId`
+  // below, rather than widening the union itself (a `cityCampaigns` row is
+  // never a real chapter — PRD B6).
   scope: givingScope,
+  // P3: set iff this pledge backs a PROSPECT/RAISING city (a `cityCampaigns`
+  // row) rather than a live chapter. Convention (owner open question, PRD
+  // Appendix C#3): a prospect-city pledge ALWAYS carries `scope === "central"`
+  // together with this field — the money is central-held for that city until
+  // launch. Where exactly it's held (the dormant `funds.restriction:
+  // "designated"` is the candidate mechanism) is an explicit owner open
+  // question this PR does NOT resolve; today it behaves like any other
+  // central-scope pledge/gift, just tagged with the city it's earmarked for.
+  // Absent for every chapter-scoped and plain-central pledge (pre-P3 rows and
+  // real central donors alike).
+  cityCampaignId: v.optional(v.id("cityCampaigns")),
   amountCents: v.number(), // int ≥ 2000 ($20 floor), enforced at the write path
   status: v.union(...PLEDGE_STATUSES.map((s) => v.literal(s))),
   origin: v.union(...PLEDGE_ORIGINS.map((o) => v.literal(o))),
@@ -228,4 +241,7 @@ export const pledges = defineTable({
   // scope) both read this.
   .index("by_scope_and_status", ["scope", "status"])
   // Webhook resolution: an invoice/subscription event → its pledge.
-  .index("by_stripe_subscription", ["stripeSubscriptionId"]);
+  .index("by_stripe_subscription", ["stripeSubscriptionId"])
+  // P3: a campaign's active-pledge set, for `recomputeCityCampaignBackerCount`
+  // (mirrors `by_scope_and_status`'s role for chapters).
+  .index("by_cityCampaign", ["cityCampaignId"]);

@@ -45,7 +45,8 @@ import {
 } from "./lib/givingAccess";
 import { matchOrCreateDonor, recordGiftForDonor } from "./lib/givingDonors";
 import { PLEDGE_STATUSES } from "./schema/givingPlatform";
-import { siteUrl } from "./lib/siteUrl";
+import { siteUrl, givePagePath } from "./lib/siteUrl";
+import { recomputeCityCampaignBackerCount } from "./cityCampaigns";
 
 const STRIPE_API = "https://api.stripe.com/v1";
 
@@ -123,6 +124,24 @@ export async function recomputeChapterBackerCount(
   });
 }
 
+/**
+ * Recompute every counter a pledge transition can move: its chapter/central
+ * scope (a no-op for `"central"`, per `recomputeChapterBackerCount` above)
+ * AND, when set (P3 prospect-city pledges), its `cityCampaigns.backerCount`
+ * (`recomputeCityCampaignBackerCount`). Every webhook handler below calls
+ * this instead of `recomputeChapterBackerCount` directly, so a prospect-city
+ * pledge's campaign dot stays live exactly like a chapter's.
+ */
+async function recomputePledgeCounters(
+  ctx: MutationCtx,
+  pledge: Doc<"pledges">,
+): Promise<void> {
+  await recomputeChapterBackerCount(ctx, pledge.scope);
+  if (pledge.cityCampaignId) {
+    await recomputeCityCampaignBackerCount(ctx, pledge.cityCampaignId);
+  }
+}
+
 /** Resolve a pledge by its Stripe subscription id (webhook object → pledge). */
 async function pledgeBySubscription(
   ctx: MutationCtx,
@@ -166,10 +185,17 @@ function mapStripeSubStatus(
  * Validate a backer signup and create an `incomplete` pledge (+ match-or-create
  * the donor). Called by `startPledgeCheckout` right before Stripe. Mirrors
  * `giving.prepareDonation`.
+ *
+ * Backs EITHER a live chapter (`chapterId`) OR a prospect/raising city
+ * (`cityCampaignId`) — exactly one must be set (P3, PRD §5). A campaign
+ * pledge is stored with `scope: "central"` + `cityCampaignId` set (see the
+ * `pledges` schema doc comment for the money-location convention) and its
+ * donor is scoped to `"central"` too, matching that convention.
  */
 export const preparePledge = internalMutation({
   args: {
-    chapterId: v.id("chapters"),
+    chapterId: v.optional(v.id("chapters")),
+    cityCampaignId: v.optional(v.id("cityCampaigns")),
     amountCents: v.number(),
     name: v.string(),
     email: v.string(),
@@ -184,29 +210,68 @@ export const preparePledge = internalMutation({
         message: "A name and valid email are required.",
       });
     }
-    const chapter = await ctx.db.get(args.chapterId);
-    if (!chapter) {
+    if (!!args.chapterId === !!args.cityCampaignId) {
+      // Both set, or neither — exactly one target is valid.
       throw new ConvexError({
-        code: "NOT_FOUND",
-        message: "That city isn't available for backing.",
+        code: "INVALID_INPUT",
+        message: "A pledge must back exactly one city.",
       });
     }
 
+    let scope: GivingScope;
+    let cityCampaignId: Id<"cityCampaigns"> | undefined;
+    let displayName: string;
+    let campaignSlug: string | undefined;
+
+    if (args.cityCampaignId) {
+      const campaign = await ctx.db.get(args.cityCampaignId);
+      if (
+        !campaign ||
+        !campaign.publiclyVisible ||
+        (campaign.status !== "prospect" && campaign.status !== "raising")
+      ) {
+        throw new ConvexError({
+          code: "NOT_FOUND",
+          message: "That city isn't available for backing.",
+        });
+      }
+      scope = "central";
+      cityCampaignId = campaign._id;
+      displayName = campaign.name;
+      campaignSlug = campaign.slug;
+    } else {
+      const chapter = await ctx.db.get(args.chapterId!);
+      if (!chapter) {
+        throw new ConvexError({
+          code: "NOT_FOUND",
+          message: "That city isn't available for backing.",
+        });
+      }
+      scope = args.chapterId!;
+      displayName = chapter.name;
+    }
+
     const donorId = await matchOrCreateDonor(ctx, {
-      scope: args.chapterId,
+      scope,
       name,
       email,
-      source: "manual",
+      source: cityCampaignId ? "map" : "manual",
     });
     const pledgeId = await ctx.db.insert("pledges", {
       donorId,
-      scope: args.chapterId,
+      scope,
+      ...(cityCampaignId ? { cityCampaignId } : {}),
       amountCents: args.amountCents,
       status: "incomplete",
       origin: "stripe",
       createdAt: Date.now(),
     });
-    return { pledgeId, amountCents: args.amountCents, chapterName: chapter.name };
+    return {
+      pledgeId,
+      amountCents: args.amountCents,
+      chapterName: displayName,
+      campaignSlug,
+    };
   },
 });
 
@@ -217,10 +282,16 @@ export const preparePledge = internalMutation({
  * price. `metadata.pledgeId` is set on BOTH the session (for
  * `checkout.session.completed`) and the subscription (`subscription_data`), so
  * every downstream subscription event resolves back to this pledge.
+ *
+ * Backs EITHER a live chapter OR a prospect/raising city — see
+ * `preparePledge`. The public `/give/<slug>` route (P3) is the caller for a
+ * campaign pledge, resolving the slug to whichever id applies
+ * (`cityCampaigns.resolveCampaignForCheckout`) before calling this.
  */
 export const startPledgeCheckout = action({
   args: {
-    chapterId: v.id("chapters"),
+    chapterId: v.optional(v.id("chapters")),
+    cityCampaignId: v.optional(v.id("cityCampaigns")),
     amountCents: v.number(),
     name: v.string(),
     email: v.string(),
@@ -230,8 +301,10 @@ export const startPledgeCheckout = action({
       pledgeId: Id<"pledges">;
       amountCents: number;
       chapterName: string;
+      campaignSlug?: string;
     } = await ctx.runMutation(internal.givingPledges.preparePledge, {
       chapterId: args.chapterId,
+      cityCampaignId: args.cityCampaignId,
       amountCents: args.amountCents,
       name: args.name,
       email: args.email,
@@ -245,15 +318,19 @@ export const startPledgeCheckout = action({
       });
     }
 
-    // Return to the site with a thank-you state. P3's public city page
-    // (`/give/<slug>`) becomes the real return target; the base URL is the
-    // interim landing.
+    // Return to the site with a thank-you state. A campaign pledge (P3)
+    // returns to its own `/give/<slug>` page (which reads `?pledge=` to show
+    // the thank-you banner); a plain chapter pledge falls back to the site
+    // root, as before P3.
     const base = siteUrl();
+    const returnPath = prepared.campaignSlug
+      ? givePagePath(prepared.campaignSlug)
+      : "/";
     const body = new URLSearchParams();
     body.set("mode", "subscription");
     body.set("customer_email", args.email.trim().toLowerCase());
-    body.set("success_url", `${base}/?pledge=success`);
-    body.set("cancel_url", `${base}/?pledge=canceled`);
+    body.set("success_url", `${base}${returnPath}?pledge=success`);
+    body.set("cancel_url", `${base}${returnPath}?pledge=canceled`);
     body.set("metadata[pledgeId]", String(prepared.pledgeId));
     // Inline recurring price — one monthly line, unit = the pledge amount.
     body.set("line_items[0][quantity]", "1");
@@ -326,7 +403,7 @@ export const activatePledgeFromCheckout = internalMutation({
       ...(args.currentPeriodEnd ? { currentPeriodEnd: args.currentPeriodEnd } : {}),
       startedAt: pledge.startedAt ?? Date.now(),
     });
-    await recomputeChapterBackerCount(ctx, pledge.scope);
+    await recomputePledgeCounters(ctx, pledge);
     return true;
   },
 });
@@ -390,7 +467,7 @@ export const recordPledgeInvoice = internalMutation({
     }
     if (Object.keys(patch).length > 0) {
       await ctx.db.patch(pledge._id, patch);
-      if (patch.status) await recomputeChapterBackerCount(ctx, pledge.scope);
+      if (patch.status) await recomputePledgeCounters(ctx, pledge);
     }
     return true;
   },
@@ -406,7 +483,7 @@ export const markPledgePastDue = internalMutation({
     if (!pledge) return false;
     if (pledge.status !== "past_due" && pledge.status !== "canceled") {
       await ctx.db.patch(pledge._id, { status: "past_due" });
-      await recomputeChapterBackerCount(ctx, pledge.scope);
+      await recomputePledgeCounters(ctx, pledge);
     }
     return true;
   },
@@ -450,7 +527,7 @@ export const syncPledgeSubscription = internalMutation({
     await ctx.db.patch(pledge._id, patch);
     // A status or amount change can move a backer in/out of the derived count.
     if (patch.status !== undefined || patch.amountCents !== undefined) {
-      await recomputeChapterBackerCount(ctx, pledge.scope);
+      await recomputePledgeCounters(ctx, pledge);
     }
     return true;
   },
@@ -468,7 +545,7 @@ export const cancelPledgeSubscription = internalMutation({
         status: "canceled",
         canceledAt: Date.now(),
       });
-      await recomputeChapterBackerCount(ctx, pledge.scope);
+      await recomputePledgeCounters(ctx, pledge);
     }
     return true;
   },

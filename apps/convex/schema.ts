@@ -71,6 +71,7 @@ import {
   pledges,
 } from "./schema/givingPlatform";
 import { sponsorPackages, sponsorships } from "./schema/sponsorships";
+import { cityCampaigns } from "./schema/cityCampaigns";
 import { seatDefs, seatAssignments } from "./schema/seats";
 import { seatStructureLog } from "./schema/seatStructureLog";
 import { seatProposals } from "./schema/seatProposals";
@@ -257,6 +258,13 @@ const schema = defineSchema({
   // rows with `sponsorshipId` set (see schema/sponsorships.ts + sponsorships.ts).
   sponsorPackages,
   sponsorships,
+
+  // P3 public map — `cityCampaigns` (prospect/raising/launched cities on the
+  // public `/give` map). A prospect-city pledge is `pledges.scope === "central"`
+  // with `cityCampaignId` set (see schema/givingPlatform.ts's `pledges` doc
+  // comment) and derives `cityCampaigns.backerCount` the same way P2 derives
+  // `chapters.backerCount` (see cityCampaigns.ts + giving-platform.md §5).
+  cityCampaigns,
 
   // Org chart (seats) — a tree of seats shared by the central chart + every
   // chapter's identical chapter chart; occupancy is per-scope (see
