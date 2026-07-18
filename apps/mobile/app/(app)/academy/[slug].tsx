@@ -95,13 +95,12 @@ export default function AcademySectionScreen() {
       <Stack.Screen options={{ title: section.title }} />
       <ToastView toast={toast} onDismiss={dismiss} />
 
-      {/* Header: back + position + state */}
+      {/* Header: back + breadcrumb + state. "Back to Academy" is unconditional
+          (never history-dependent) so it always lands on the hub. The
+          breadcrumb crumbs are tappable: Academy → hub, course → course page. */}
       <View className="mb-2 flex-row items-center gap-2">
         <Pressable
-          onPress={() => {
-            if (router.canGoBack()) router.back();
-            else router.replace("/academy");
-          }}
+          onPress={() => router.replace("/academy")}
           hitSlop={8}
           accessibilityRole="button"
           accessibilityLabel="Back to Academy"
@@ -109,12 +108,38 @@ export default function AcademySectionScreen() {
         >
           <Icon name="arrow-left" size={18} color={colors.muted} />
         </Pressable>
-        <Text className="text-xs font-bold uppercase tracking-wider text-accent">
-          {here
-            ? `Module ${here.index + 1} of ${here.course.moduleSlugs.length} · ${here.course.title}`
-            : "Academy"}
-        </Text>
-        <View className="flex-1" />
+        <View className="flex-1 flex-row flex-wrap items-center gap-x-1">
+          <Pressable
+            onPress={() => router.replace("/academy")}
+            hitSlop={6}
+            accessibilityRole="link"
+            accessibilityLabel="Academy"
+          >
+            <Text className="text-xs font-bold uppercase tracking-wider text-accent web:hover:underline">
+              Academy
+            </Text>
+          </Pressable>
+          {here ? (
+            <>
+              <Text className="text-xs font-bold text-faint">›</Text>
+              <Pressable
+                onPress={() =>
+                  router.push(`/academy/course/${here.course.slug}`)
+                }
+                hitSlop={6}
+                accessibilityRole="link"
+                accessibilityLabel={`Course: ${here.course.title}`}
+              >
+                <Text className="text-xs font-bold uppercase tracking-wider text-accent web:hover:underline">
+                  {here.course.title}
+                </Text>
+              </Pressable>
+              <Text className="text-xs font-bold uppercase tracking-wider text-muted">
+                · Module {here.index + 1} of {here.course.moduleSlugs.length}
+              </Text>
+            </>
+          ) : null}
+        </View>
         {state?.passed ? (
           <Badge
             label={isCapstone ? "Complete 🎉" : "Quiz passed ✓"}
