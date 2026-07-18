@@ -503,15 +503,15 @@ export const FOUNDATIONS_SECTIONS: Omit<AcademySection, "order">[] = [
           "Someone posts a happy-birthday message for a teammate in the main team space. You want to add your own birthday wish. Where does it go?",
         options: [
           {
-            text: "Start a new thread just for your reply",
+            text: "Reply directly in the main space, same as the birthday post",
             feedback:
-              "Not quite — threads are for topics and tasks that need their own trail. A birthday wish is exactly the kind of thing that belongs in the open, in the main space, not tucked into a thread nobody else opens.",
+              "Not quite — the birthday post already started a thread of its own. Replying in the main space splits your wish off from it, and clutters the space everyone else is scanning for what's new.",
           },
           {
-            text: "Reply directly in the main space, same as the birthday post",
+            text: "Reply inside the thread under the birthday post",
             correct: true,
             feedback:
-              "Right — a birthday shoutout isn't the start of a task thread, it's a moment for the whole space to see. Threading it off would just hide well-wishes from the people they're for.",
+              "Right — one thread per topic, and the birthday post is the topic. Threading your wish underneath it keeps every reply together, right where the next person looking will find it, and leaves the main space scannable for whatever comes next.",
           },
         ],
       },
