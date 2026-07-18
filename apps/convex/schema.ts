@@ -72,7 +72,6 @@ import {
   dismissedGiftCandidates,
 } from "./schema/givingPlatform";
 import { sponsorPackages, sponsorships } from "./schema/sponsorships";
-import { cityCampaigns } from "./schema/cityCampaigns";
 import { territories } from "./schema/territories";
 import { seatDefs, seatAssignments } from "./schema/seats";
 import { seatStructureLog } from "./schema/seatStructureLog";
@@ -273,13 +272,6 @@ const schema = defineSchema({
   // here. Supersedes `cityCampaigns` (see schema/territories.ts + territories.ts
   // + docs/plans/giving-territories.md).
   territories,
-
-  // DEPLOY-B(territories): `cityCampaigns` is superseded by `territories` and is
-  // registered here ONLY so migration 0029 can read the legacy rows. Once 0029
-  // has run in prod, a follow-up PR removes this table + its registration,
-  // `apps/convex/cityCampaigns.ts`, and `pledges.cityCampaignId` /
-  // `pledges.by_cityCampaign`. Nothing in routes/UI references it anymore.
-  cityCampaigns,
 
   // Org chart (seats) — a tree of seats shared by the central chart + every
   // chapter's identical chapter chart; occupancy is per-scope (see

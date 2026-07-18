@@ -287,19 +287,13 @@ export const givingScopeRollups = defineTable({
  */
 export const pledges = defineTable({
   donorId: v.id("donors"),
-  // The city this pledge backs: a live chapter, or `"central"`. P3 (public
-  // map) adds PROSPECT-city scoping on top of this union via `cityCampaignId`
-  // below, rather than widening the union itself (a `cityCampaigns` row is
-  // never a real chapter — PRD B6).
+  // The city this pledge backs: a live chapter, or `"central"`. Under
+  // Territories a pledge ALWAYS scopes to a real chapter — a prospect
+  // territory's shadow chapter is a real (inactive) `chapters` row, so there's
+  // no separate prospect-city scoping concept. (Pre-Territories, prospect-city
+  // pledges scoped `"central"` + a now-retired `cityCampaignId` field;
+  // migration 0029 re-scoped every one of those rows onto its chapter.)
   scope: givingScope,
-  // DEPLOY-B(territories): LEGACY. Under Territories a pledge ALWAYS scopes to a
-  // real chapter (a prospect territory's shadow chapter is a real inactive
-  // `chapters` row) — the "central + cityCampaignId" convention is retired.
-  // Migration 0029 re-scopes every campaign-linked pledge onto its chapter and
-  // clears this field. It stays here (and `by_cityCampaign` below) ONLY so 0029
-  // can read the legacy rows; a follow-up PR (Deploy B) drops both once 0029 has
-  // run in prod. New pledges never set it.
-  cityCampaignId: v.optional(v.id("cityCampaigns")),
   amountCents: v.number(), // int ≥ 2000 ($20 floor), enforced at the write path
   status: v.union(...PLEDGE_STATUSES.map((s) => v.literal(s))),
   origin: v.union(...PLEDGE_ORIGINS.map((o) => v.literal(o))),
@@ -318,7 +312,4 @@ export const pledges = defineTable({
   // scope) both read this.
   .index("by_scope_and_status", ["scope", "status"])
   // Webhook resolution: an invoice/subscription event → its pledge.
-  .index("by_stripe_subscription", ["stripeSubscriptionId"])
-  // DEPLOY-B(territories): LEGACY — used by migration 0029 to find each
-  // campaign's pledges for re-scoping. Dropped with `cityCampaignId` in Deploy B.
-  .index("by_cityCampaign", ["cityCampaignId"]);
+  .index("by_stripe_subscription", ["stripeSubscriptionId"]);

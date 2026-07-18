@@ -1,16 +1,14 @@
 import type { MutationCtx } from "../_generated/server";
 import type { Migration } from "./index";
-import type { Doc, Id } from "../_generated/dataModel";
+import type { Id } from "../_generated/dataModel";
 import { AFFORDABILITY_TIERS, launchTemplateTotalCents } from "@events-os/shared";
-import { applyScopeDelta } from "../lib/givingDonors";
-import { recomputeChapterBackerCount } from "../givingPledges";
 import { territoryForChapter } from "../territories";
 
 /**
- * Territories cutover (docs/plans/giving-territories.md). Turns the retired
- * `cityCampaigns` model into `territories` (1:1 with chapters), and re-scopes
+ * Territories cutover (docs/plans/giving-territories.md). Turned the retired
+ * `cityCampaigns` model into `territories` (1:1 with chapters), and re-scoped
  * the campaign-linked pledge/donor/gift data DIRECTLY onto chapters (the old
- * "central + cityCampaignId" convention dies):
+ * "central + cityCampaignId" convention died):
  *
  *  a. Seed the New York territory (launched, linked to the live "new-york"
  *     chapter) so the flagship shows on `/give` immediately.
@@ -26,15 +24,32 @@ import { territoryForChapter } from "../territories";
  *     Donors that don't qualify stay central (reported in the result log).
  *  d. Recompute `chapters.backerCount` for every touched chapter.
  *
- * Idempotent: the prospect branch stamps `cityCampaigns.chapterId` as its
- * migration marker (so a re-run reuses the shadow chapter instead of making a
- * second one), and re-scoped pledges no longer surface via `by_cityCampaign`,
- * so nothing is processed twice. Prod data is near-empty; this runs in one
- * bounded pass.
+ * This migration is LEDGERED and has already run in prod (Territories P2
+ * deploy) — it never re-runs there. Territories Deploy B then dropped
+ * `cityCampaigns` (table + registration), `pledges.cityCampaignId`, and
+ * `pledges.by_cityCampaign` from the schema entirely, since nothing reads them
+ * anymore.
+ *
+ * Parts (b)-(d) above read `cityCampaigns` and `pledges.cityCampaignId` /
+ * `by_cityCampaign` — all now-undeclared. Unlike a simple undeclared-table
+ * drain (the `(ctx.db as any).query(...)` precedent in
+ * `0017_purge_guest_allowlist.ts` / `0026_migrate_budget_v1_lines.ts`), this
+ * migration's campaign re-scoping ALSO touches a since-removed field/index on
+ * a table (`pledges`) that still very much exists, across several call sites
+ * (query-by-index, read, write-undefined). There's no precedent for THAT
+ * shape of reference in this registry, and — critically — `cityCampaigns` can
+ * never hold a row again (its schema registration + every write path are
+ * gone), so parts (b)-(d) are now PROVABLY unreachable dead code, not just
+ * empty-by-happenstance. Rather than layer `any` casts across a real table's
+ * removed field to keep dead code "compiling in spirit," parts (b)-(d) are
+ * removed outright and this function no-ops for them — the ledger row (and
+ * this file, per the deletion PR's own rule) stay so the migration history
+ * remains legible. Part (a) (New York seeding) is untouched: it never
+ * referenced `cityCampaigns` and is still meaningful on a fresh deploy.
+ *
+ * Idempotent: unchanged from before — the NY-seeding branch is a no-op once
+ * the "new-york" chapter already has a territory.
  */
-
-/** Bounded reads — the campaign/pledge/donor/gift sets are all tiny here. */
-const SCAN_LIMIT = 5000;
 
 const NEW_YORK_CHAPTER_SLUG = "new-york";
 
@@ -82,6 +97,9 @@ async function freeSlug(
 export async function runTerritoriesCutover(ctx: MutationCtx) {
   const now = Date.now();
   const firstUser = await ctx.db.query("users").first();
+  // Shape kept stable for the historical audit trail even though, post
+  // Territories Deploy B, only `nySeeded`/`territoriesCreated` can ever move
+  // (see the module doc above) — every other field stays at its zero value.
   const result = {
     nySeeded: false,
     territoriesCreated: 0,
@@ -123,176 +141,10 @@ export async function runTerritoriesCutover(ctx: MutationCtx) {
     }
   }
 
-  // ── (b) One territory per legacy campaign (+ shadow chapter if prospect) ────
-  const campaigns = await ctx.db.query("cityCampaigns").take(SCAN_LIMIT);
-  // campaignId → the chapter its pledges/donors re-scope onto.
-  const campaignTargetChapter = new Map<string, Id<"chapters">>();
-
-  for (const campaign of campaigns) {
-    const createdBy = (firstUser?._id ?? campaign.createdBy) as Id<"users">;
-
-    if (campaign.status === "launched" && campaign.chapterId) {
-      const targetChapterId = campaign.chapterId;
-      campaignTargetChapter.set(campaign._id, targetChapterId);
-      const existing = await territoryForChapter(ctx, targetChapterId);
-      if (!existing) {
-        const slug = await freeSlug(ctx, campaign.slug, targetChapterId);
-        await ctx.db.insert("territories", {
-          chapterId: targetChapterId,
-          name: campaign.name,
-          region: campaign.region,
-          lat: campaign.lat,
-          lng: campaign.lng,
-          slug,
-          stage: "launched",
-          targetBackers: campaign.targetBackers,
-          story: campaign.story,
-          publiclyVisible: campaign.publiclyVisible,
-          launchFundCents: 0,
-          launchFundTargetCents: launchTemplateTotalCents(),
-          launchedAt: now,
-          createdAt: now,
-          createdBy,
-          updatedAt: now,
-        });
-        result.territoriesCreated++;
-      }
-      continue;
-    }
-
-    // prospect / raising → shadow chapter + territory (idempotent via the
-    // `chapterId` marker stamped on the campaign on first migration).
-    if (campaign.chapterId) {
-      const existing = await territoryForChapter(ctx, campaign.chapterId);
-      if (existing) {
-        campaignTargetChapter.set(campaign._id, campaign.chapterId);
-        continue; // already migrated
-      }
-    }
-    const slug = await freeSlug(ctx, campaign.slug);
-    const shadowChapterId = (await ctx.db.insert("chapters", {
-      name: campaign.name,
-      slug,
-      isActive: false,
-      backerCount: campaign.backerCount,
-      createdAt: now,
-    })) as Id<"chapters">;
-    result.shadowChaptersCreated++;
-    await ctx.db.insert("territories", {
-      chapterId: shadowChapterId,
-      name: campaign.name,
-      region: campaign.region,
-      lat: campaign.lat,
-      lng: campaign.lng,
-      slug,
-      stage: campaign.status, // "prospect" | "raising"
-      targetBackers: campaign.targetBackers,
-      story: campaign.story,
-      publiclyVisible: campaign.publiclyVisible,
-      launchFundCents: 0,
-      launchFundTargetCents: launchTemplateTotalCents(),
-      createdAt: now,
-      createdBy,
-      updatedAt: now,
-    });
-    result.territoriesCreated++;
-    // Stamp the marker so a re-run reuses this shadow chapter.
-    await ctx.db.patch(campaign._id, { chapterId: shadowChapterId });
-    campaignTargetChapter.set(campaign._id, shadowChapterId);
-  }
-
-  // ── (c) Re-scope campaign-linked pledges + qualifying donors/gifts ─────────
-  const touchedChapters = new Set<string>();
-  // Collect every campaign-linked pledge (pre-migration state) grouped by donor.
-  const donorTargets = new Map<string, Set<string>>(); // donorId → chapterIds
-  const campaignPledges: Array<{ pledge: Doc<"pledges">; target: Id<"chapters"> }> =
-    [];
-
-  for (const campaign of campaigns) {
-    const target = campaignTargetChapter.get(campaign._id);
-    if (!target) continue;
-    const pledges = await ctx.db
-      .query("pledges")
-      .withIndex("by_cityCampaign", (q) => q.eq("cityCampaignId", campaign._id))
-      .take(SCAN_LIMIT);
-    for (const pledge of pledges) {
-      campaignPledges.push({ pledge, target });
-      const key = pledge.donorId as string;
-      if (!donorTargets.has(key)) donorTargets.set(key, new Set());
-      donorTargets.get(key)!.add(target as string);
-    }
-  }
-
-  // Decide donor moves from the ORIGINAL pledge state (before clearing links).
-  const donorMoveTo = new Map<string, Id<"chapters">>();
-  for (const [donorKey, targets] of donorTargets) {
-    const donorId = donorKey as Id<"donors">;
-    const donor = await ctx.db.get(donorId);
-    if (!donor) continue;
-    const donorPledges = await ctx.db
-      .query("pledges")
-      .withIndex("by_donor", (q) => q.eq("donorId", donorId))
-      .take(SCAN_LIMIT);
-    const allCampaignLinked =
-      donorPledges.length > 0 &&
-      donorPledges.every((p) => p.cityCampaignId != null);
-    if (
-      donor.source === "map" &&
-      donor.scope === "central" &&
-      allCampaignLinked &&
-      targets.size === 1
-    ) {
-      donorMoveTo.set(donorKey, [...targets][0] as Id<"chapters">);
-    } else if (donor.scope === "central") {
-      result.donorsKeptCentral.push(donorId);
-    }
-  }
-
-  // Re-scope the pledges (clears the campaign link).
-  for (const { pledge, target } of campaignPledges) {
-    await ctx.db.patch(pledge._id, {
-      scope: target,
-      cityCampaignId: undefined,
-    });
-    result.pledgesRescoped++;
-    touchedChapters.add(target as string);
-  }
-
-  // Move qualifying donors + their gifts, with paired rollup deltas.
-  for (const [donorKey, chapterId] of donorMoveTo) {
-    const donorId = donorKey as Id<"donors">;
-    const donor = await ctx.db.get(donorId);
-    if (!donor || donor.scope !== "central") continue; // idempotent guard
-    const gifts = await ctx.db
-      .query("gifts")
-      .withIndex("by_donor", (q) => q.eq("donorId", donorId))
-      .take(SCAN_LIMIT);
-    for (const gift of gifts) {
-      await ctx.db.patch(gift._id, { scope: chapterId });
-    }
-    // Central loses the donor's rollups; the chapter gains them — net zero.
-    await applyScopeDelta(ctx, "central", {
-      lifetimeDelta: -donor.lifetimeCents,
-      giftDelta: -donor.giftCount,
-      donorDelta: -1,
-      statusFrom: donor.status,
-    });
-    await applyScopeDelta(ctx, chapterId, {
-      lifetimeDelta: donor.lifetimeCents,
-      giftDelta: donor.giftCount,
-      donorDelta: 1,
-      statusTo: donor.status,
-    });
-    await ctx.db.patch(donorId, { scope: chapterId });
-    result.donorsMoved++;
-    touchedChapters.add(chapterId as string);
-  }
-
-  // ── (d) Recompute the derived backer count per touched chapter ─────────────
-  for (const chapterKey of touchedChapters) {
-    await recomputeChapterBackerCount(ctx, chapterKey as Id<"chapters">);
-    result.chaptersRecomputed++;
-  }
+  // ── (b)-(d) Legacy `cityCampaigns` re-scoping — retired, see module doc ────
+  // `cityCampaigns` + `pledges.cityCampaignId` / `by_cityCampaign` no longer
+  // exist in the schema (Territories Deploy B), so there is nothing left to
+  // read here. This already ran to completion in prod before that deploy.
 
   return result;
 }

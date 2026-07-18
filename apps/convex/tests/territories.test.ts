@@ -18,8 +18,10 @@ import type { Id } from "../_generated/dataModel";
  *  - the `preparePledge` guard (an inactive chapter with no visible, still-
  *    raising territory is NOT_FOUND),
  *  - `setTerritoryStage` launch flips `chapters.isActive` + is terminal,
- *  - migration 0029: a campaign + central map donor/pledge/gift re-scope onto a
- *    shadow chapter with the rollup deltas netting to zero,
+ *  - migration 0029: seeds the launched New York territory (its only surviving
+ *    responsibility post Territories Deploy B — see that migration's module
+ *    doc for why its `cityCampaigns` re-scoping logic was retired, not just
+ *    left untested),
  *  - public queries are PII-free and read the backer count from the chapter.
  */
 
@@ -318,7 +320,6 @@ describe("preparePledge (territory-backed)", () => {
       ctx.db.get(prepared.pledgeId as Id<"pledges">),
     );
     expect(pledge?.scope).toBe(chapterId);
-    expect(pledge?.cityCampaignId).toBeUndefined();
     const donor = await run(s.t, (ctx) => ctx.db.get(pledge!.donorId));
     expect(donor?.scope).toBe(chapterId);
     expect(donor?.source).toBe("map");
@@ -589,184 +590,18 @@ describe("public territory reads", () => {
 });
 
 // ── Migration 0029 ───────────────────────────────────────────────────────────
+//
+// The `cityCampaigns` re-scoping coverage this block used to carry (a
+// campaign + its map donor/pledge/gift moving onto a shadow chapter with
+// rollup deltas netting to zero; a non-map donor's pledge re-scoping while the
+// donor itself stays central) tested migration 0029's parts (b)-(d). Those
+// parts were removed in Territories Deploy B once `cityCampaigns` +
+// `pledges.cityCampaignId` left the schema for good (0029 already ran to
+// completion in prod before that deploy) — see the module doc atop
+// `migrations/0029_territories_cutover.ts`. What's left below is part (a),
+// New York seeding, which never depended on `cityCampaigns`.
 
 describe("0029 territories cutover", () => {
-  test("re-scopes a campaign + its map donor/pledge/gift onto a shadow chapter, deltas net to zero", async () => {
-    const s = await devDirectorSetup();
-    const now = Date.now();
-
-    // Pre-migration legacy state: a prospect campaign + a central map donor with
-    // one campaign-linked active pledge and one gift, and the central rollup.
-    const { campaignId, donorId } = await run(s.t, async (ctx) => {
-      const campaignId = await ctx.db.insert("cityCampaigns", {
-        name: "Columbus",
-        region: "OH",
-        lat: 39.9612,
-        lng: -82.9988,
-        slug: "columbus-oh",
-        status: "prospect",
-        targetBackers: 20,
-        publiclyVisible: true,
-        backerCount: 1,
-        createdAt: now,
-        createdBy: s.userId,
-        updatedAt: now,
-      });
-      const donorId = await ctx.db.insert("donors", {
-        scope: "central",
-        kind: "individual",
-        name: "Map Donor",
-        email: "map@example.com",
-        status: "active",
-        source: "map",
-        lifetimeCents: 5000,
-        giftCount: 1,
-        lastGiftAt: now,
-        firstGiftAt: now,
-        createdAt: now,
-      });
-      const pledgeId = await ctx.db.insert("pledges", {
-        donorId,
-        scope: "central",
-        cityCampaignId: campaignId,
-        amountCents: 5000,
-        status: "active",
-        origin: "stripe",
-        createdAt: now,
-      });
-      await ctx.db.insert("gifts", {
-        donorId,
-        scope: "central",
-        amountCents: 5000,
-        currency: "usd",
-        receivedAt: now,
-        method: "stripe",
-        pledgeId,
-        createdAt: now,
-      });
-      await ctx.db.insert("givingScopeRollups", {
-        scope: "central",
-        lifetimeCents: 5000,
-        giftCount: 1,
-        donorCount: 1,
-        activeCount: 1,
-        lapsedCount: 0,
-        prospectCount: 0,
-        updatedAt: now,
-      });
-      return { campaignId, donorId };
-    });
-
-    const result = await run(s.t, (ctx) => runTerritoriesCutover(ctx));
-    expect(result.shadowChaptersCreated).toBe(1);
-    expect(result.pledgesRescoped).toBe(1);
-    expect(result.donorsMoved).toBe(1);
-
-    // The campaign now points at its shadow chapter (the idempotency marker).
-    const campaign = await run(s.t, (ctx) => ctx.db.get(campaignId));
-    const shadowChapterId = campaign!.chapterId as Id<"chapters">;
-    expect(shadowChapterId).toBeDefined();
-    const shadow = await chapterRow(s, shadowChapterId);
-    expect(shadow?.isActive).toBe(false);
-    expect(shadow?.backerCount).toBe(1); // recomputed from the re-scoped pledge
-
-    // Donor, pledge, and gift all re-scoped to the shadow chapter.
-    const donor = await run(s.t, (ctx) => ctx.db.get(donorId));
-    expect(donor?.scope).toBe(shadowChapterId);
-    const pledge = await run(s.t, (ctx) =>
-      ctx.db
-        .query("pledges")
-        .withIndex("by_donor", (q) => q.eq("donorId", donorId))
-        .first(),
-    );
-    expect(pledge?.scope).toBe(shadowChapterId);
-    expect(pledge?.cityCampaignId).toBeUndefined();
-    const gift = await run(s.t, (ctx) =>
-      ctx.db
-        .query("gifts")
-        .withIndex("by_donor", (q) => q.eq("donorId", donorId))
-        .first(),
-    );
-    expect(gift?.scope).toBe(shadowChapterId);
-
-    // Rollups: central drained to zero, chapter gained exactly the same — net 0.
-    const central = await run(s.t, (ctx) =>
-      ctx.db
-        .query("givingScopeRollups")
-        .withIndex("by_scope", (q) => q.eq("scope", "central"))
-        .unique(),
-    );
-    expect(central?.lifetimeCents).toBe(0);
-    expect(central?.giftCount).toBe(0);
-    expect(central?.donorCount).toBe(0);
-    expect(central?.activeCount).toBe(0);
-    const chapterRollup = await run(s.t, (ctx) =>
-      ctx.db
-        .query("givingScopeRollups")
-        .withIndex("by_scope", (q) => q.eq("scope", shadowChapterId))
-        .unique(),
-    );
-    expect(chapterRollup?.lifetimeCents).toBe(5000);
-    expect(chapterRollup?.giftCount).toBe(1);
-    expect(chapterRollup?.donorCount).toBe(1);
-    expect(chapterRollup?.activeCount).toBe(1);
-
-    // Idempotent: a re-run creates nothing more and moves nobody.
-    const again = await run(s.t, (ctx) => runTerritoriesCutover(ctx));
-    expect(again.shadowChaptersCreated).toBe(0);
-    expect(again.pledgesRescoped).toBe(0);
-    expect(again.donorsMoved).toBe(0);
-  });
-
-  test("a non-map donor's pledge re-scopes but the donor stays central (safety valve)", async () => {
-    const s = await devDirectorSetup();
-    const now = Date.now();
-    const { donorId } = await run(s.t, async (ctx) => {
-      const campaignId = await ctx.db.insert("cityCampaigns", {
-        name: "Austin",
-        region: "TX",
-        lat: 30.2672,
-        lng: -97.7431,
-        slug: "austin-tx",
-        status: "raising",
-        targetBackers: 20,
-        publiclyVisible: true,
-        backerCount: 0,
-        createdAt: now,
-        createdBy: s.userId,
-        updatedAt: now,
-      });
-      const donorId = await ctx.db.insert("donors", {
-        scope: "central",
-        kind: "individual",
-        name: "Manual Donor",
-        email: "manual@example.com",
-        status: "active",
-        source: "manual", // NOT map → stays central
-        lifetimeCents: 0,
-        giftCount: 0,
-        createdAt: now,
-      });
-      await ctx.db.insert("pledges", {
-        donorId,
-        scope: "central",
-        cityCampaignId: campaignId,
-        amountCents: 5000,
-        status: "active",
-        origin: "stripe",
-        createdAt: now,
-      });
-      return { donorId };
-    });
-
-    const result = await run(s.t, (ctx) => runTerritoriesCutover(ctx));
-    expect(result.pledgesRescoped).toBe(1);
-    expect(result.donorsMoved).toBe(0);
-    expect(result.donorsKeptCentral).toContainEqual(donorId);
-    const donor = await run(s.t, (ctx) => ctx.db.get(donorId));
-    expect(donor?.scope).toBe("central");
-  });
-
   test("seeds a launched New York territory linked to the new-york chapter", async () => {
     const s = await devDirectorSetup();
     const nyChapterId = await run(s.t, (ctx) =>
