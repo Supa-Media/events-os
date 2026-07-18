@@ -133,7 +133,7 @@ function DonorsBody({ scope }: { scope: GivingScope }) {
             message={
               anyFilterActive
                 ? "Try widening a filter above."
-                : "Record a gift on a donor, or import your Givebutter history."
+                : "Record a gift on a donor, or bring in history from the Import tab."
             }
           />
         ) : (

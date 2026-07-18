@@ -13,13 +13,16 @@ import { Pill } from "../../../components/ui";
  * Phase 1 shipped Dashboard · Donors; P2 adds Backers (recurring pledges);
  * P4 adds Sponsorships (the institutional-giving pipeline + package tiers);
  * Territories is the launch-map desk (see `apps/convex/territories.ts`).
- * The tabs render only for a caller who can see the desk
- * (`myGivingAccess.canView`) — the same `nav.giving` gate the AppShell nav
- * entry uses; each screen keeps its own backend `requireGivingView` gate.
- * (Sponsorships and Territories are both central-lens only — see
- * `schema/sponsorships.ts` / `territories.ts` — but the tabs are shown to
- * anyone with desk access; each screen degrades to an access-needed state
- * for a chapter-only or view-only caller, same as every other tab does.)
+ * Territories P6 adds Import (the canonical preview/commit bulk-import flow,
+ * `import.tsx` — replaces the old CSV backfill + the inline recurring-import
+ * form that used to live on Backers). The tabs render only for a caller who
+ * can see the desk (`myGivingAccess.canView`) — the same `nav.giving` gate
+ * the AppShell nav entry uses; each screen keeps its own backend
+ * `requireGivingView`/`requireGivingManage` gate. (Sponsorships, Territories,
+ * and Import are all manage-or-central-lens surfaces — but the tabs are shown
+ * to anyone with desk access; each screen degrades to an access-needed state
+ * for a caller who lacks the specific access it needs, same as every other
+ * tab does.)
  */
 const TABS: { label: string; path: string }[] = [
   { label: "Dashboard", path: "/giving" },
@@ -27,6 +30,7 @@ const TABS: { label: string; path: string }[] = [
   { label: "Backers", path: "/giving/backers" },
   { label: "Sponsorships", path: "/giving/sponsorships" },
   { label: "Territories", path: "/giving/territories" },
+  { label: "Import", path: "/giving/import" },
 ];
 
 /** Active when the pathname is the tab's route (exact for the index, prefix for
