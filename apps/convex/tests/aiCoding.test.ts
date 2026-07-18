@@ -1576,4 +1576,101 @@ describe("PR fix-suggest-broaden: acceptSuggestion staleness (baseline diff)", (
       s.as.mutation(api.aiCodingData.acceptSuggestion, { transactionId: txnId }),
     ).rejects.toBeInstanceOf(ConvexError);
   });
+
+  // Review pin tests (PR #269 adversarial review, observations 1 + coverage nit).
+
+  test("an unrelated human edit (note, receipt) survives Accept untouched", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const personId = await seedSelfPerson(s);
+    await grantRole(s, personId, "bookkeeper");
+    const { fundId, categoryId } = await seedFundAndCategory(s);
+    const txnId = await seedTxnWith(s, { status: "categorized", fundId, categoryId });
+    const proposedBudgetId = await seedBudget(s);
+
+    await s.t.mutation(internal.aiCodingData.writeSuggestion, {
+      transactionId: txnId,
+      budgetId: proposedBudgetId,
+      confidence: 0.8,
+      rationale: "Matches the usual vendor for this budget.",
+      model: "test/model",
+      baseline: { status: "categorized", fundId, categoryId, budgetId: null },
+    });
+
+    // Neither field is baseline-tracked — a bookkeeper jotting a note or
+    // attaching a receipt WHILE a suggestion sits pending must never be
+    // treated as "raced" staleness, and `acceptSuggestion`'s patch (status/
+    // fund/category/budget/aiSuggestion only) must never clobber them.
+    await s.as.mutation(api.finances.setTransactionNote, {
+      transactionId: txnId,
+      note: "Reimbursed by the youth group budget line.",
+    });
+    const receiptId = (await run(s.t, (ctx) =>
+      (ctx.storage as unknown as { store: (b: Blob) => Promise<Id<"_storage">> }).store(
+        new Blob(["receipt"], { type: "text/plain" }),
+      ),
+    )) as Id<"_storage">;
+    await s.as.mutation(api.finances.attachReceipt, {
+      transactionId: txnId,
+      storageId: receiptId,
+    });
+
+    await s.as.mutation(api.aiCodingData.acceptSuggestion, {
+      transactionId: txnId,
+    });
+
+    const txn = await run(s.t, (ctx) => ctx.db.get(txnId));
+    expect(txn?.budgetId).toEqual(proposedBudgetId);
+    expect(txn?.note).toBe("Reimbursed by the youth group budget line.");
+    expect(txn?.receiptStorageId).toEqual(receiptId);
+  });
+
+  test("rejects accept once the charge is flagged personal after the suggestion was computed", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const personId = await seedSelfPerson(s);
+    await grantRole(s, personId, "bookkeeper");
+    const { fundId, categoryId } = await seedFundAndCategory(s);
+    const txnId = await seedTxnWith(s, { status: "categorized", fundId, categoryId });
+    // The caller IS the cardholder, so `flagPersonalCharge`'s
+    // cardholder-or-manager gate is satisfied by the "bookkeeper" role
+    // already granted above.
+    const cardId = await run(s.t, (ctx) =>
+      ctx.db.insert("cards", {
+        chapterId: s.chapterId,
+        cardholderPersonId: personId,
+        type: "virtual",
+        status: "active",
+        createdAt: Date.now(),
+      }),
+    );
+    await run(s.t, (ctx) => ctx.db.patch(txnId, { cardId }));
+    const proposedBudgetId = await seedBudget(s);
+
+    // A suggestion is computed while the charge still looks like ordinary
+    // chapter spend — baseline captures fund/category/budget/status exactly
+    // as they stand (none of which `flagPersonalCharge` below touches).
+    await s.t.mutation(internal.aiCodingData.writeSuggestion, {
+      transactionId: txnId,
+      budgetId: proposedBudgetId,
+      confidence: 0.8,
+      rationale: "Matches the usual vendor for this budget.",
+      model: "test/model",
+      baseline: { status: "categorized", fundId, categoryId, budgetId: null },
+    });
+
+    // The cardholder realizes it was a personal charge and flags it — this
+    // sets `isPersonal` WITHOUT touching `aiSuggestion` or any baseline field,
+    // so the baseline diff alone would NOT catch this (review observation 1).
+    await s.as.mutation(api.cards.flagPersonalCharge, { transactionId: txnId });
+
+    await expect(
+      s.as.mutation(api.aiCodingData.acceptSuggestion, { transactionId: txnId }),
+    ).rejects.toBeInstanceOf(ConvexError);
+
+    // Never attached — the now-personal charge stays budget-less.
+    const txn = await run(s.t, (ctx) => ctx.db.get(txnId));
+    expect(txn?.budgetId).toBeUndefined();
+    expect(txn?.isPersonal).toBe(true);
+  });
 });

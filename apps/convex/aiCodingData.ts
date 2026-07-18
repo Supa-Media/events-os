@@ -1019,6 +1019,20 @@ export const acceptSuggestion = mutation({
           "This transaction was already reviewed manually; the stored AI suggestion is stale and can no longer be accepted.",
       });
     }
+    // Re-check `isSuggestible` against the LIVE txn, even when the baseline
+    // itself still matches (review observation 1, PR fix-suggest-broaden):
+    // `cards.flagPersonalCharge` sets `isPersonal` WITHOUT touching
+    // `aiSuggestion` or any baseline-tracked field (status/fund/category/
+    // budget), so a charge flagged personal after a suggestion was computed
+    // would otherwise still pass the baseline diff above and let Accept
+    // attach a budget/category to what's now a personal charge.
+    if (!isSuggestible(txn)) {
+      throw new ConvexError({
+        code: "ALREADY_REVIEWED",
+        message:
+          "This transaction is no longer eligible for an AI coding suggestion (e.g. it was flagged personal since); the stored suggestion can no longer be accepted.",
+      });
+    }
 
     // Copy only the links the suggestion actually carries; leave the rest
     // alone. Each id was validated against the chapter at write time (see
