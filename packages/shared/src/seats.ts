@@ -56,7 +56,16 @@ export const MULTI_HOLDER_CAP = 50 as const;
  *  carrying `finance.viewer` never gains record/reconcile-write or
  *  budget-edit access from that capability alone — see
  *  `apps/convex/lib/seats.ts`'s "Mapping rules" for how it derives into the
- *  graded ladder. */
+ *  graded ladder.
+ *
+ *  `giving.manage` / `giving.view` / `nav.giving` (F-6 P1 — the giving PRD §6):
+ *  the development-desk analog of the finance trio. `giving.view` reads the
+ *  donor CRM (dashboard, donor list + history); `giving.manage` additionally
+ *  writes it (upsert donors, record/remove gifts, CSV import); `nav.giving`
+ *  surfaces the desk in navigation (mirrors `nav.finances`). Resolved by
+ *  `apps/convex/lib/givingAccess.ts` off `lib/seats.ts#getSeatDerivedGivingCapabilities`
+ *  — a central holder sees every scope, a chapter `giving.view` seat sees only
+ *  its own chapter. */
 export const SEAT_CAPABILITIES = [
   "finance.manager",
   "finance.viewer",
@@ -66,6 +75,9 @@ export const SEAT_CAPABILITIES = [
   "finance.record",
   "nav.finances",
   "org.editChart",
+  "giving.manage",
+  "giving.view",
+  "nav.giving",
 ] as const;
 export type SeatCapability = (typeof SEAT_CAPABILITIES)[number];
 
@@ -146,6 +158,10 @@ export const SEAT_DEFS: Record<SeatId, SeatDef> = {
       "finance.approve",
       "nav.finances",
       "org.editChart",
+      // F-6 P1: the ED oversees the whole org's giving, including central's.
+      "giving.manage",
+      "giving.view",
+      "nav.giving",
     ],
     legacyTitle: "executive_director",
   },
@@ -180,7 +196,9 @@ export const SEAT_DEFS: Record<SeatId, SeatDef> = {
       "Steward major donors & partners",
       "Report on the funding pipeline",
     ],
-    capabilities: [],
+    // F-6 P1 (giving PRD §6): the seat finally gets its powers — full donor
+    // CRM read + write + config, plus the nav surface.
+    capabilities: ["giving.manage", "giving.view", "nav.giving"],
   },
   partnership_associate: {
     id: "partnership_associate",
@@ -189,7 +207,8 @@ export const SEAT_DEFS: Record<SeatId, SeatDef> = {
     parentId: "development_director",
     maxHolders: MULTI_HOLDER_CAP,
     duties: [],
-    capabilities: [],
+    // F-6 P1: associates read the development desk (write is the director's).
+    capabilities: ["giving.view", "nav.giving"],
   },
   fundraising_associate: {
     id: "fundraising_associate",
@@ -198,7 +217,8 @@ export const SEAT_DEFS: Record<SeatId, SeatDef> = {
     parentId: "development_director",
     maxHolders: MULTI_HOLDER_CAP,
     duties: [],
-    capabilities: [],
+    // F-6 P1: associates read the development desk (write is the director's).
+    capabilities: ["giving.view", "nav.giving"],
   },
   music_director: {
     id: "music_director",
@@ -359,7 +379,16 @@ export const SEAT_DEFS: Record<SeatId, SeatDef> = {
     // reconcile grid, budgets); `finance.approve` already covered the
     // approve half. Deliberately NOT `finance.manager` — that would also
     // derive record/reconcile-write, which stays the Treasurer's job.
-    capabilities: ["finance.approve", "finance.viewer", "nav.finances"],
+    // F-6 P1 (giving PRD §6): the chapter director is "the seat that raises
+    // money (backers)" — chapter-lens donor READ. Write/config stays central
+    // (development director / ED), so this is `giving.view`, not `giving.manage`.
+    capabilities: [
+      "finance.approve",
+      "finance.viewer",
+      "nav.finances",
+      "giving.view",
+      "nav.giving",
+    ],
     legacyTitle: "president",
   },
   treasurer: {
@@ -373,7 +402,14 @@ export const SEAT_DEFS: Record<SeatId, SeatDef> = {
       "Close the month",
       "Chase receipts",
     ],
-    capabilities: ["finance.manager", "finance.record", "nav.finances"],
+    // F-6 P1: the treasurer sees their chapter's donors (chapter-lens read).
+    capabilities: [
+      "finance.manager",
+      "finance.record",
+      "nav.finances",
+      "giving.view",
+      "nav.giving",
+    ],
     legacyTitle: "finance_manager",
   },
   music_lead: {

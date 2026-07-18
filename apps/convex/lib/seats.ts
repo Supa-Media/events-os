@@ -280,3 +280,68 @@ export async function holdsApprovalSeatAt(
   }
   return false;
 }
+
+// ── Giving (F-6 P1) seat-derived capabilities ────────────────────────────────
+
+/** One scope's seat-derived GIVING capabilities (the donor-CRM analog of the
+ *  finance trio above — see `getSeatDerivedGivingCapabilities`). */
+export interface SeatDerivedGivingScopeCapabilities {
+  /** True iff some seat at this scope carries `giving.view` (read the CRM). */
+  view: boolean;
+  /** True iff some seat at this scope carries `giving.manage` (write it). */
+  manage: boolean;
+  /** True iff some seat at this scope carries `nav.giving` (surface the desk). */
+  nav: boolean;
+}
+
+/** Per-scope seat-derived giving capabilities, keyed by `scopeKey` (the literal
+ *  string `"central"` or an `Id<"chapters">`, both valid object keys). */
+export type SeatDerivedGivingCapabilities = Record<
+  string,
+  SeatDerivedGivingScopeCapabilities
+>;
+
+/**
+ * The person's seat-derived GIVING capabilities, per scope. The development-desk
+ * analog of `getSeatDerivedCapabilities` above — kept SEPARATE from it (rather
+ * than folded into `SeatDerivedScopeCapabilities`) because the giving trio is
+ * not part of the graded finance-role ladder that function is the live
+ * enforcement dependency for; this mirrors `holdsApprovalSeatAt`'s "additive,
+ * narrowly-scoped reader" pattern. Consumed by `lib/givingAccess.ts`'s gates.
+ *
+ * Same shape/bounds as `getSeatDerivedCapabilities`: one indexed `by_person`
+ * query capped at `PERSON_SEAT_ASSIGNMENT_LIMIT`, one `ctx.db.get` per
+ * assignment to resolve its def; a stale/missing def contributes nothing;
+ * capabilities only ever OR together across a scope's seats (never subtract).
+ * No placeholder filter — the same "what the chart's DATA says" stance the
+ * companion function documents.
+ */
+export async function getSeatDerivedGivingCapabilities(
+  ctx: QueryCtx,
+  personId: Id<"people">,
+): Promise<SeatDerivedGivingCapabilities> {
+  const assignments = await ctx.db
+    .query("seatAssignments")
+    .withIndex("by_person", (q) => q.eq("personId", personId))
+    .take(PERSON_SEAT_ASSIGNMENT_LIMIT);
+
+  const result: SeatDerivedGivingCapabilities = {};
+  for (const assignment of assignments) {
+    const def = await ctx.db.get(assignment.seatDefId);
+    if (!def) continue; // stale assignment on a deleted def — nothing to derive
+
+    const scopeKey = String(assignment.scope);
+    const entry =
+      result[scopeKey] ??
+      (result[scopeKey] = { view: false, manage: false, nav: false });
+
+    // `giving.manage` implies read — a manager can always see what they manage.
+    if (def.capabilities.includes("giving.manage")) {
+      entry.manage = true;
+      entry.view = true;
+    }
+    if (def.capabilities.includes("giving.view")) entry.view = true;
+    if (def.capabilities.includes("nav.giving")) entry.nav = true;
+  }
+  return result;
+}

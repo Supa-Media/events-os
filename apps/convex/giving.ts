@@ -28,6 +28,10 @@ import { normalizeEmail } from "./lib/access";
 import { requireEvent, requireOwned, requireUserId } from "./lib/context";
 import { clearEmailCode } from "./lib/emailCodes";
 import {
+  dualWriteGiftForDonation,
+  removeGiftForDonation,
+} from "./lib/givingDonors";
+import {
   bumpRsvpCounters,
   getPublishedPage,
   getViewerRsvp,
@@ -97,6 +101,10 @@ export const recordDonation = mutation({
       createdAt: Date.now(),
     });
     await bumpGivingRollup(ctx, args.eventId, args.amountCents, 1);
+    // F-6 P1: mirror the settled donation into the donor CRM (additive — the
+    // event rollup above is untouched). Keyed to the event's chapter.
+    const donation = await ctx.db.get(donationId);
+    if (donation) await dualWriteGiftForDonation(ctx, donation);
     return donationId;
   },
 });
@@ -134,6 +142,9 @@ export const removeDonation = mutation({
     }
     if (donation.status === "paid") {
       await bumpGivingRollup(ctx, donation.eventId, -donation.amountCents, -1);
+      // F-6 P1: reverse the linked CRM gift (+ its donor rollups). No-op if the
+      // donation was never mirrored. Removes the gift BEFORE the donation row.
+      await removeGiftForDonation(ctx, donationId);
     }
     await ctx.db.delete(donationId);
     return null;
@@ -262,6 +273,11 @@ async function fulfillDonation(
     ...(stripePaymentIntentId ? { stripePaymentIntentId } : {}),
   });
   await bumpGivingRollup(ctx, donation.eventId, donation.amountCents, 1);
+  // F-6 P1: mirror the settled card donation into the donor CRM (idempotent on
+  // redelivery via the `donationId` link — the early `status === "paid"` return
+  // above already guards the rollup; this is a belt-and-suspenders no-op then).
+  const settled = await ctx.db.get(donationId);
+  if (settled) await dualWriteGiftForDonation(ctx, settled);
 
   // A completed Stripe payment proves the donor controls this email.
   if (donation.rsvpId) {
