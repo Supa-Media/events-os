@@ -102,6 +102,9 @@ describe("0025_add_cd_finance_viewer", () => {
       "finance.approve",
       "finance.viewer",
       "nav.finances",
+      // F-6 P1: chapter-lens giving capabilities on the template.
+      "giving.view",
+      "nav.giving",
     ]);
 
     const result = await run(t, (ctx) => runAddCdFinanceViewer(ctx));
@@ -146,6 +149,9 @@ describe("0025_add_cd_finance_viewer", () => {
       "finance.approve",
       "finance.viewer",
       "nav.finances",
+      // F-6 P1: chapter-lens giving capabilities on the template.
+      "giving.view",
+      "nav.giving",
     ]);
   });
 });

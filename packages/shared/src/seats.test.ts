@@ -152,8 +152,9 @@ describe("chapter ↔ central rollup", () => {
 describe("spec snapshot (owner-approved taxonomy, 2026-07-16; chapter_director finance.viewer added 2026-07-17 per owner decision — see seats.ts's chapter_director doc comment)", () => {
   // Pins the exact set of seats + which ones carry capabilities, so a future
   // edit to SEAT_DEFS trips a loud, specific failure here instead of silently
-  // drifting from the approved org-chart flowchart. Only 4 seats carry any
-  // capability today — every other seat's array must be empty.
+  // drifting from the approved org-chart flowchart. The finance trio + the
+  // F-6 P1 giving trio (giving.manage/giving.view/nav.giving) are the only
+  // capability-carrying seats — every other seat's array must be empty.
   const EXPECTED_CAPABILITIES_BY_SEAT: Record<SeatId, readonly string[]> = {
     executive_director: [
       "finance.central",
@@ -161,6 +162,9 @@ describe("spec snapshot (owner-approved taxonomy, 2026-07-16; chapter_director f
       "finance.approve",
       "nav.finances",
       "org.editChart",
+      "giving.manage",
+      "giving.view",
+      "nav.giving",
     ],
     financial_manager: [
       "finance.manager",
@@ -169,9 +173,9 @@ describe("spec snapshot (owner-approved taxonomy, 2026-07-16; chapter_director f
       "finance.record",
       "nav.finances",
     ],
-    development_director: [],
-    partnership_associate: [],
-    fundraising_associate: [],
+    development_director: ["giving.manage", "giving.view", "nav.giving"],
+    partnership_associate: ["giving.view", "nav.giving"],
+    fundraising_associate: ["giving.view", "nav.giving"],
     music_director: [],
     a_and_r: [],
     artists: [],
@@ -187,8 +191,21 @@ describe("spec snapshot (owner-approved taxonomy, 2026-07-16; chapter_director f
     training_associate: [],
     // 2026-07-17: added finance.viewer (owner decision — CD sees chapter
     // spending, but reconcile/record stays the Treasurer's job).
-    chapter_director: ["finance.approve", "finance.viewer", "nav.finances"],
-    treasurer: ["finance.manager", "finance.record", "nav.finances"],
+    // F-6 P1: chapter-lens giving.view + nav.giving (development desk read).
+    chapter_director: [
+      "finance.approve",
+      "finance.viewer",
+      "nav.finances",
+      "giving.view",
+      "nav.giving",
+    ],
+    treasurer: [
+      "finance.manager",
+      "finance.record",
+      "nav.finances",
+      "giving.view",
+      "nav.giving",
+    ],
     music_lead: [],
     vocal_lead: [],
     band_lead: [],
