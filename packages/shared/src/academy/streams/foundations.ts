@@ -172,7 +172,7 @@ export const FOUNDATIONS_SECTIONS: Omit<AcademySection, "order">[] = [
         kind: "bullets",
         items: [
           "**Everyone can see the whole chart.** The Org Chart tab shows both the central chart and every chapter's chart — it's not leadership-only information.",
-          "**Seat changes are two-party.** Anyone can propose a new holder for a seat, but it takes the seat's current holder (or the seat above it) to confirm the change — never a unilateral edit.",
+          "**Seat changes are two-party.** You can propose a new holder for a seat below one of your own — never any seat you don't outrank. It's confirmed by whoever holds the seat above YOURS in the chart, not by the target seat's own occupant — a deliberate, witnessed handoff, never a unilateral edit.",
           "**Vacancy is normal, and visible.** An empty seat shows up as empty on the chart. It doesn't get hidden, and it doesn't get silently auto-filled.",
         ],
       },
@@ -182,6 +182,10 @@ export const FOUNDATIONS_SECTIONS: Omit<AcademySection, "order">[] = [
           "You need to know who approves your chapter's budget this month, but you've never met your Chapter Director. Where do you look?",
         answer:
           "Open the Org Chart tab and find the Chapter Director seat for your chapter — it shows exactly who holds it right now, or that it's vacant. Never guess from an old group chat or last year's memory; seats change hands, and the chart is what stays current.",
+      },
+      {
+        kind: "tip",
+        text: "One exception at the very top: whoever sits at the chart's true root (today, the Executive Director) has nobody above them to confirm a change — their proposals take effect immediately, with the same audit trail a two-party decision leaves.",
       },
       {
         kind: "tip",
@@ -226,16 +230,16 @@ export const FOUNDATIONS_SECTIONS: Omit<AcademySection, "order">[] = [
           "The chart is deliberately not leadership-only information — anyone can open it and see the whole shape of the org, central and chapter alike.",
       },
       {
-        prompt: "How does a seat get a new holder?",
+        prompt: "Who's allowed to propose filling a vacant seat, and who confirms it?",
         options: [
-          "Whoever wants the seat can just take it",
-          "A two-party proposal: someone proposes a holder, and the seat's current holder or the seat above it confirms",
-          "Central assigns every seat, chapter and central alike, with no local input",
-          "Seats are inherited automatically by tenure",
+          "Anyone on the team can propose it, and the seat's own incoming holder confirms themselves",
+          "You can propose it only if you hold a seat above the vacant one, and it's confirmed by whoever holds the seat above YOURS — never the target seat's own occupant",
+          "Only the Executive Director can propose or confirm any seat change, chapter or central",
+          "Proposing and confirming are the same step — submitting a proposal fills the seat immediately",
         ],
         answerIndex: 1,
         explanation:
-          "It's a handoff, not a unilateral edit — a proposal plus a confirmation from the right person, which is also why vacancy is normal: nobody gets stuffed into a seat just to fill it.",
+          "It's a witnessed handoff, not a unilateral edit: you can only propose into a seat below one of your own, and the confirmation comes from above YOUR seat in the chart — not from the seat being filled. (The one exception is the chart's very top, which has nobody above it to confirm — see the tip above.)",
       },
     ],
   },
