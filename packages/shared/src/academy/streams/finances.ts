@@ -10,6 +10,16 @@
  * Owned exclusively by this file for content authoring — do not add Finances
  * sections or courses anywhere else. See `../index` for how this assembles
  * into the full curriculum/catalog.
+ *
+ * F-6 touch-up (giving-platform PRD §8): `finance-tiers-and-skim` no longer
+ * lets "backer count" stand as an unexplained given — it now teaches WHERE
+ * the number comes from (derived live from active pledges on the Giving
+ * page, a manual override surviving only as a Givebutter-migration
+ * fallback), with a new quiz question checking that reading. The
+ * `finance-stewardship` quiz's "future Giving page" aside was also
+ * corrected — the Giving page is shipped, not future. Every other Finances
+ * teaching in this file is unchanged; see `streams/development.ts` for the
+ * full backer-model lesson this touch-up points to.
  */
 
 import type {
@@ -100,7 +110,7 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
         ],
         answerIndex: 1,
         explanation:
-          "A backer gives every month, not once — $50/month is the floor for that ongoing commitment (above-and-beyond giving is separate, on the future Giving page).",
+          "A backer gives every month, not once — $50/month is the floor for that ongoing commitment (above-and-beyond giving, donor stewardship, and sponsorships live on the Giving page — see the Development stream).",
       },
       {
         prompt: "Why track backers by count instead of total dollars raised?",
@@ -825,6 +835,10 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
         text: "Every month, a flat **15%** of chapter revenue moves — as a real transfer, not a budget line — from the chapter's account to central's City Launch Fund. That fund is what pays a new city's ~$7,800–8,300 launch cost (equipment + the training trip) when it's ready to start.",
       },
       {
+        kind: "tip",
+        text: "**Where the backer number itself comes from:** it's reported straight from the Giving page now, not typed in by hand. Every ACTIVE pledge at or above the $50 floor recomputes the count automatically the moment a backer subscribes, misses a payment, or cancels (see the Development stream's backer-model course for the full lifecycle). A manual override still exists, but only as a fallback during the Givebutter migration window — once a chapter's pledges are current, nobody hand-types this number again.",
+      },
+      {
         kind: "reveal",
         prompt:
           "Your chapter crosses 31 backers this month. What tier are you in, and does the extra backer above 30 change your skim rate?",
@@ -880,6 +894,18 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
         answerIndex: 1,
         explanation:
           "The percentage is constant; only the base it's applied to grows as a chapter adds backers.",
+      },
+      {
+        prompt: "Where does a chapter's backer count actually come from today?",
+        options: [
+          "The Treasurer types it in by hand every month",
+          "It's recomputed automatically from active $50+ pledges on the Giving page — a manual override only survives as a Givebutter-migration fallback",
+          "Central emails it to the chapter once a quarter",
+          "It's calculated once a year during budgeting season",
+        ],
+        answerIndex: 1,
+        explanation:
+          "The count is derived, live, from real pledge activity — the old manual-entry seam only sticks around as a fallback while chapters finish moving off Givebutter.",
       },
     ],
   },

@@ -34,9 +34,17 @@
  * (works-defining-a-project, works-planning-the-work,
  * works-the-project-budget, works-tracking-and-escalating,
  * works-finishing-well), with the new `leading-a-project` course inserted
- * between `projects` and `duties` in the Works course catalog. Total: 84
- * sections. Section slugs and their order are otherwise untouched — any
- * OTHER drift here is still a real regression.
+ * between `projects` and `duties` in the Works course catalog; and the
+ * Development stream (F-6, `docs/plans/giving-platform.md` §8) appended
+ * after Marketing & Media — 12 sections (`dev-giving-vocabulary` through
+ * `dev-prospect-cities-and-map`) across 5 new courses (`giving-fundamentals`,
+ * `donor-stewardship`, `the-backer-model`, `sponsorships-and-partnerships`,
+ * `the-city-launch-story`), plus a Finances-stream touch-up:
+ * `finance-tiers-and-skim` gained one quiz question (now 5, was 4) teaching
+ * that the backer count is derived from pledges, not manually entered (see
+ * `streams/finances.ts`'s header comment). Total: 96 sections. Section slugs
+ * and their order are otherwise untouched — any OTHER drift here is still a
+ * real regression.
  */
 import { describe, expect, test } from "vitest";
 import { ACADEMY_COURSES, ACADEMY_SECTIONS } from "./academy";
@@ -127,6 +135,18 @@ const EXPECTED_SECTION_SLUGS: string[] = [
   "mktg-hit-record",
   "mktg-shoot-to-timeline",
   "mktg-getting-access",
+  "dev-giving-vocabulary",
+  "dev-donor-crm-basics",
+  "dev-relationship-workflow",
+  "dev-import-and-backfill",
+  "dev-backer-floor-and-ladder",
+  "dev-backer-lifecycle",
+  "dev-givebutter-migration",
+  "dev-sponsor-packages",
+  "dev-sponsorship-pipeline",
+  "dev-church-partnerships",
+  "dev-city-launch-economics",
+  "dev-prospect-cities-and-map",
 ];
 
 // Per-section fields that must not drift: title, minutes, quiz length,
@@ -639,7 +659,7 @@ const EXPECTED_SECTIONS: {
     slug: "finance-tiers-and-skim",
     title: "Tiers, the covenant, and the skim",
     minutes: 4,
-    quizLength: 4,
+    quizLength: 5,
     optional: false,
     capstoneKind: null,
   },
@@ -811,6 +831,102 @@ const EXPECTED_SECTIONS: {
     optional: false,
     capstoneKind: null,
   },
+  {
+    slug: "dev-giving-vocabulary",
+    title: "Donors, backers, sponsors: the words we use",
+    minutes: 4,
+    quizLength: 4,
+    optional: false,
+    capstoneKind: null,
+  },
+  {
+    slug: "dev-donor-crm-basics",
+    title: "The donor CRM: your desk",
+    minutes: 4,
+    quizLength: 4,
+    optional: false,
+    capstoneKind: null,
+  },
+  {
+    slug: "dev-relationship-workflow",
+    title: "Owners, notes, and the top-donor list",
+    minutes: 4,
+    quizLength: 3,
+    optional: false,
+    capstoneKind: null,
+  },
+  {
+    slug: "dev-import-and-backfill",
+    title: "Backfilling history: CSV import and manual entry",
+    minutes: 4,
+    quizLength: 3,
+    optional: false,
+    capstoneKind: null,
+  },
+  {
+    slug: "dev-backer-floor-and-ladder",
+    title: "The $50 floor, and the milestone ladder",
+    minutes: 4,
+    quizLength: 4,
+    optional: false,
+    capstoneKind: null,
+  },
+  {
+    slug: "dev-backer-lifecycle",
+    title: "A backer's lifecycle: subscribe, pay, sometimes falter",
+    minutes: 4,
+    quizLength: 4,
+    optional: false,
+    capstoneKind: null,
+  },
+  {
+    slug: "dev-givebutter-migration",
+    title: "The Givebutter migration: history in, recurring gifts re-signed",
+    minutes: 4,
+    quizLength: 4,
+    optional: false,
+    capstoneKind: null,
+  },
+  {
+    slug: "dev-sponsor-packages",
+    title: "Sponsor packages: benefits we give, commitments we keep",
+    minutes: 4,
+    quizLength: 4,
+    optional: false,
+    capstoneKind: null,
+  },
+  {
+    slug: "dev-sponsorship-pipeline",
+    title: "The pipeline: prospect to active partner",
+    minutes: 4,
+    quizLength: 4,
+    optional: false,
+    capstoneKind: null,
+  },
+  {
+    slug: "dev-church-partnerships",
+    title: "Church partnerships: two-sided, not transactional",
+    minutes: 4,
+    quizLength: 3,
+    optional: false,
+    capstoneKind: null,
+  },
+  {
+    slug: "dev-city-launch-economics",
+    title: "The 85/15 split and the City Launch Fund",
+    minutes: 3,
+    quizLength: 3,
+    optional: false,
+    capstoneKind: null,
+  },
+  {
+    slug: "dev-prospect-cities-and-map",
+    title: "Prospect cities: how a dot becomes a chapter",
+    minutes: 3,
+    quizLength: 4,
+    optional: false,
+    capstoneKind: null,
+  },
 ];
 
 // Course catalog: slug + themeKey + ordered moduleSlugs.
@@ -969,6 +1085,39 @@ const EXPECTED_COURSES: {
     slug: "media-pipeline",
     themeKey: "marketing",
     moduleSlugs: ["mktg-hit-record", "mktg-shoot-to-timeline", "mktg-getting-access"],
+  },
+  {
+    slug: "giving-fundamentals",
+    themeKey: "development",
+    moduleSlugs: ["dev-giving-vocabulary", "dev-donor-crm-basics"],
+  },
+  {
+    slug: "donor-stewardship",
+    themeKey: "development",
+    moduleSlugs: ["dev-relationship-workflow", "dev-import-and-backfill"],
+  },
+  {
+    slug: "the-backer-model",
+    themeKey: "development",
+    moduleSlugs: [
+      "dev-backer-floor-and-ladder",
+      "dev-backer-lifecycle",
+      "dev-givebutter-migration",
+    ],
+  },
+  {
+    slug: "sponsorships-and-partnerships",
+    themeKey: "development",
+    moduleSlugs: [
+      "dev-sponsor-packages",
+      "dev-sponsorship-pipeline",
+      "dev-church-partnerships",
+    ],
+  },
+  {
+    slug: "the-city-launch-story",
+    themeKey: "development",
+    moduleSlugs: ["dev-city-launch-economics", "dev-prospect-cities-and-map"],
   },
 ];
 

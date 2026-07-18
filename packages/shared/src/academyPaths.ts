@@ -235,6 +235,12 @@ export const ROLE_PATHS: RolePath[] = [
     kind: "seat",
     title: "Treasurer",
     icon: "dollar-sign",
+    // F-6: deliberately NOT given a Development-stream course. The Treasurer
+    // holds `giving.view` too, but their job is recording money (Reconcile),
+    // not raising it — the updated chapter-money-model course (see
+    // finance-tiers-and-skim) already teaches that the backer count feeding
+    // their dashboard is now reported from the Giving page. See the PR
+    // body's explicit decision.
     courseSlugs: [
       "welcome-to-public-worship",
       "how-we-work",
@@ -248,6 +254,15 @@ export const ROLE_PATHS: RolePath[] = [
     kind: "seat",
     title: "Chapter Director",
     icon: "compass",
+    // F-6: the Chapter Director is "the seat that raises money (backers)"
+    // (giving PRD §6) and holds chapter-lens `giving.view` — giving-fundamentals
+    // (the vocabulary + CRM basics they can see) and the-backer-model (the
+    // $50 floor, the ladder, the Stripe lifecycle) are directly their raising
+    // job. donor-stewardship and sponsorships-and-partnerships are
+    // deliberately left off this path: backfill/import needs `giving.manage`
+    // (central-only today, see the PR body's discrepancy note), and
+    // sponsorships is a central-lens-only desk — see the PR body for the
+    // explicit decision.
     courseSlugs: [
       "welcome-to-public-worship",
       "how-we-work",
@@ -262,6 +277,8 @@ export const ROLE_PATHS: RolePath[] = [
       "chapter-money-model",
       "chapter-director",
       "partnerships",
+      "giving-fundamentals",
+      "the-backer-model",
     ],
   },
 
@@ -303,6 +320,9 @@ export const ROLE_PATHS: RolePath[] = [
     kind: "seat",
     title: "Development Director",
     icon: "gift",
+    // F-6: the seat's coming-soon placeholder is fulfilled — the full
+    // Development stream (giving vocabulary, donor stewardship, the backer
+    // model, sponsorships & partnerships, the city-launch story).
     courseSlugs: [
       "welcome-to-public-worship",
       "how-we-work",
@@ -310,19 +330,28 @@ export const ROLE_PATHS: RolePath[] = [
       "partnerships",
       "growing-the-team",
       "the-director-standard",
+      "giving-fundamentals",
+      "donor-stewardship",
+      "the-backer-model",
+      "sponsorships-and-partnerships",
+      "the-city-launch-story",
     ],
-    comingSoon: ["Fundraising & donor ops"],
   },
   {
     seatSlug: "partnership_associate",
     kind: "seat",
     title: "Partnership Associate",
     icon: "users",
+    // F-6: partnerships is the associate's whole remit — the vocabulary
+    // course plus the institutional-giving desk (packages, pipeline, church
+    // partnership principles).
     courseSlugs: [
       "welcome-to-public-worship",
       "how-we-work",
       "finances-for-everyone",
       "partnerships",
+      "giving-fundamentals",
+      "sponsorships-and-partnerships",
     ],
   },
   {
@@ -330,11 +359,16 @@ export const ROLE_PATHS: RolePath[] = [
     kind: "seat",
     title: "Fundraising Associate",
     icon: "gift",
+    // F-6: fundraising is donors + backers — the vocabulary course, donor
+    // stewardship, and the backer model (Givebutter migration included).
     courseSlugs: [
       "welcome-to-public-worship",
       "how-we-work",
       "finances-for-everyone",
       "partnerships",
+      "giving-fundamentals",
+      "donor-stewardship",
+      "the-backer-model",
     ],
   },
   {
