@@ -3,6 +3,7 @@ import { supaAuthTables, supaNotificationTables } from "@supa-media/convex/schem
 
 import { chapters, userProfiles, userChapters } from "./schema/chapters";
 import { accessAllowlist } from "./schema/accessAllowlist";
+import { backerMilestones } from "./schema/backerMilestones";
 import { templateRoles, eventRoles } from "./schema/roles";
 import { templateModules, eventModules } from "./schema/modules";
 import { eventTypes, templateColumns, templateItems } from "./schema/templates";
@@ -222,6 +223,12 @@ const schema = defineSchema({
   // WP-C.3: rate limiter for the HOLDER-ONLY card-details reveal (add-to-wallet).
   cardDetailsRevealAttempts,
   financeSettings,
+
+  // Backer milestone ladder (giving-platform PRD §3) — dev-director-editable
+  // "N backers → chapter commits to X" rungs. Global-only for now; seeded
+  // from + falls back to `AFFORDABILITY_TIERS` (`@events-os/shared`). See
+  // `schema/backerMilestones.ts` + `backerMilestones.ts`.
+  backerMilestones,
 
   // Org chart (seats) — a tree of seats shared by the central chart + every
   // chapter's identical chapter chart; occupancy is per-scope (see

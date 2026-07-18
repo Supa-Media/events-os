@@ -705,16 +705,45 @@ export const AFFORDABILITY_TIERS: readonly {
   { minBackers: 20, label: "WWS" },
 ];
 
-/** Tier label shown below the lowest threshold in `AFFORDABILITY_TIERS`. */
+/** Tier label shown below the lowest threshold in `AFFORDABILITY_TIERS`
+ *  (or the lowest threshold of whatever `tiers` array is in play). */
 export const PRE_TIER_LABEL = "Pre-tier";
 
-/** The tier label for a given backer count: the highest threshold met in
- *  `AFFORDABILITY_TIERS`, else `PRE_TIER_LABEL`. */
-export function affordabilityTierLabel(backerCount: number): string {
-  for (const tier of AFFORDABILITY_TIERS) {
-    if (backerCount >= tier.minBackers) return tier.label;
+/** The `{minBackers, label}` shape a tier ladder needs — matches
+ *  `AFFORDABILITY_TIERS`'s element type and the `backerMilestones` table's
+ *  own two fields, so a Convex-side caller can map its rows straight into
+ *  this without re-declaring the shape. */
+export interface TierLike {
+  minBackers: number;
+  label: string;
+}
+
+/**
+ * The tier label for a given backer count: the HIGHEST `minBackers`
+ * threshold met in `tiers`, else `PRE_TIER_LABEL`. Order-independent (finds
+ * the max qualifying threshold rather than walking in array order), so it
+ * behaves the same whether `tiers` is sorted ascending (as
+ * `backerMilestones` rows come back) or descending (as `AFFORDABILITY_TIERS`
+ * is declared).
+ *
+ * `tiers` defaults to `AFFORDABILITY_TIERS` — the giving-platform PRD §3
+ * milestone ladder (`apps/convex/backerMilestones.ts`) is configurable, but
+ * this constant stays the fallback so finance never breaks if that config is
+ * empty. Every existing call site (omitting `tiers`) is unchanged.
+ */
+export function affordabilityTierLabel(
+  backerCount: number,
+  tiers: readonly TierLike[] = AFFORDABILITY_TIERS,
+): string {
+  let label = PRE_TIER_LABEL;
+  let bestMinBackers = -Infinity;
+  for (const tier of tiers) {
+    if (backerCount >= tier.minBackers && tier.minBackers > bestMinBackers) {
+      bestMinBackers = tier.minBackers;
+      label = tier.label;
+    }
   }
-  return PRE_TIER_LABEL;
+  return label;
 }
 
 /** The full WP-4.3 computation's shape — see `chapterAffordability`. */
@@ -740,11 +769,15 @@ export interface ChapterAffordability {
  * `teammateCount` is the chapter's active team-member headcount; see
  * `finances.chapterAffordability` in the Convex backend for exactly which
  * roster rows count (documented there since it queries `people`, which this
- * pure module can't reach).
+ * pure module can't reach). `tiers` (giving-platform PRD §3) optionally
+ * overrides the milestone ladder used for `tierLabel`; omitted, it defaults
+ * to `AFFORDABILITY_TIERS` via `affordabilityTierLabel` — every existing call
+ * site is unchanged.
  */
 export function chapterAffordability(
   backerCount: number,
   teammateCount: number,
+  tiers?: readonly TierLike[],
 ): ChapterAffordability {
   const monthlyRevenueCents = backerCount * BACKER_UNIT_CENTS;
   const floorCents =
@@ -754,7 +787,7 @@ export function chapterAffordability(
   const discretionaryCents = monthlyRevenueCents - floorCents - skimCents;
   return {
     monthlyRevenueCents,
-    tierLabel: affordabilityTierLabel(backerCount),
+    tierLabel: affordabilityTierLabel(backerCount, tiers),
     floorCents,
     skimCents,
     discretionaryCents,

@@ -73,6 +73,7 @@ import {
   type BudgetApprovalStatus,
 } from "@events-os/shared";
 import { readSandbox } from "./financeSettings";
+import { MAX_MILESTONES } from "./backerMilestones";
 import { gatherForPickerCandidates } from "./lib/forPickerCandidates";
 import { isMissingReceiptCharge, unlockCardIfReceiptsResolved } from "./cards";
 import { queueSuggestionOnIngest } from "./aiCodingData";
@@ -2708,7 +2709,22 @@ export const chapterAffordability = query({
         (p.isTeamMember === true || p.userId != null),
     ).length;
 
-    const computed = chapterAffordabilityCalc(backerCount, teammateCount);
+    // giving-platform PRD §3: the milestone ladder is now dev-director
+    // configurable (`backerMilestones.ts`). If any rows exist, use them for
+    // the tier label; otherwise `chapterAffordabilityCalc` falls back to the
+    // hardcoded `AFFORDABILITY_TIERS` constant (its own default arg) — the
+    // config table is never required to be populated for finance to work.
+    const milestoneRows = await ctx.db
+      .query("backerMilestones")
+      .withIndex("by_minBackers")
+      .order("asc")
+      .take(MAX_MILESTONES + 1);
+    const tiers =
+      milestoneRows.length > 0
+        ? milestoneRows.map((m) => ({ minBackers: m.minBackers, label: m.label }))
+        : undefined;
+
+    const computed = chapterAffordabilityCalc(backerCount, teammateCount, tiers);
     const canEdit = chapterId === ownChapterId && access.isManager;
 
     return { backerCount, teammateCount, ...computed, canEdit };
