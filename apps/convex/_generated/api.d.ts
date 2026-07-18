@@ -106,6 +106,7 @@ import type * as migrations_0026_migrate_budget_v1_lines from "../migrations/002
 import type * as migrations_0027_sync_linked_budget_identity from "../migrations/0027_sync_linked_budget_identity.js";
 import type * as migrations_0028_reaward_course_completions from "../migrations/0028_reaward_course_completions.js";
 import type * as migrations_0029_territories_cutover from "../migrations/0029_territories_cutover.js";
+import type * as migrations_0030_backfill_launch_fund from "../migrations/0030_backfill_launch_fund.js";
 import type * as migrations_index from "../migrations/index.js";
 import type * as modules from "../modules.js";
 import type * as moneyViews from "../moneyViews.js";
@@ -278,6 +279,7 @@ declare const fullApi: ApiFromModules<{
   "migrations/0027_sync_linked_budget_identity": typeof migrations_0027_sync_linked_budget_identity;
   "migrations/0028_reaward_course_completions": typeof migrations_0028_reaward_course_completions;
   "migrations/0029_territories_cutover": typeof migrations_0029_territories_cutover;
+  "migrations/0030_backfill_launch_fund": typeof migrations_0030_backfill_launch_fund;
   "migrations/index": typeof migrations_index;
   modules: typeof modules;
   moneyViews: typeof moneyViews;

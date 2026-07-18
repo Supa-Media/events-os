@@ -13,6 +13,7 @@ import { Doc, Id } from "../_generated/dataModel";
 import { MutationCtx } from "../_generated/server";
 import { normalizeEmail } from "./access";
 import type { GivingScope } from "./givingAccess";
+import { territoryForChapter } from "../territories";
 
 /** The 90-day lapse window (the AJ donor system's rule, PRD §1). */
 export const LAPSE_WINDOW_MS = 90 * 24 * 60 * 60 * 1000;
@@ -109,6 +110,44 @@ export async function applyScopeDelta(
       updatedAt: now,
     });
   }
+}
+
+/**
+ * Territories launch pot (docs/plans/giving-territories.md §D3) — the ONE
+ * choke point that moves a territory's `launchFundCents`. Returns `true` iff
+ * `scope` is a chapter whose linked territory (via `territoryForChapter`) is
+ * still `prospect`/`raising`; in that case it patches the territory's pot by
+ * `deltaCents` (clamped ≥ 0) and returns `true`. Returns `false` — patching
+ * NOTHING — for the `"central"` scope, a chapter with no territory, or a
+ * territory that has already `launched`.
+ *
+ * That `launched` short-circuit IS the freeze: pre-launch giving accrues 100%
+ * to the pot, but once the chapter goes live the pot stops moving in BOTH
+ * directions — a positive delta (a new gift) never bumps a launched pot, and a
+ * negative delta (a reversal of an old pre-launch gift) never un-bumps it
+ * either. The pot is a frozen snapshot of what was raised before launch.
+ *
+ * Callers: `recordGiftForDonor` (positive `amountCents` after insert) and
+ * `removeGiftRow` (negative, only for a gift that was actually counted). No
+ * other site may touch `launchFundCents` — keep pot math here.
+ */
+export async function applyLaunchFundDelta(
+  ctx: MutationCtx,
+  scope: GivingScope,
+  deltaCents: number,
+): Promise<boolean> {
+  if (scope === "central") return false;
+  const territory = await territoryForChapter(ctx, scope);
+  if (!territory) return false;
+  if (territory.stage !== "prospect" && territory.stage !== "raising") {
+    return false; // frozen at launch — no accrual, no reversal
+  }
+  const next = Math.max(0, territory.launchFundCents + deltaCents);
+  await ctx.db.patch(territory._id, {
+    launchFundCents: next,
+    updatedAt: Date.now(),
+  });
+  return true;
 }
 
 /**
@@ -273,6 +312,19 @@ export async function recordGiftForDonor(
     giftDelta: 1,
   });
   await recomputeDonorStatus(ctx, donor, { giftCount, lastGiftAt });
+
+  // Territories launch pot: a gift landing on a pre-launch territory's chapter
+  // accrues 100% to that territory's `launchFundCents`. `applyLaunchFundDelta`
+  // returns true only in that case; stamp the flag so the removal path can
+  // reverse EXACTLY this gift (and only it) later. See §D3.
+  const countedInLaunchFund = await applyLaunchFundDelta(
+    ctx,
+    donor.scope,
+    args.amountCents,
+  );
+  if (countedInLaunchFund) {
+    await ctx.db.patch(giftId, { countedInLaunchFund: true });
+  }
   return giftId;
 }
 
@@ -319,6 +371,15 @@ export async function removeGiftRow(
     giftDelta: -1,
   });
   await recomputeDonorStatus(ctx, donor, { giftCount, lastGiftAt });
+
+  // Territories launch pot: reverse ONLY a gift that was actually counted into
+  // its territory's pot (`countedInLaunchFund`). `applyLaunchFundDelta` no-ops
+  // if the territory has since launched (the freeze — a post-launch delete of a
+  // pre-launch gift never un-bumps the frozen pot; the flag stays on the
+  // deleted row's history, which is fine). See §D3.
+  if (gift.countedInLaunchFund) {
+    await applyLaunchFundDelta(ctx, gift.scope, -gift.amountCents);
+  }
 }
 
 /** Map an event `donations.method` to the giving `gifts.method` vocabulary. */

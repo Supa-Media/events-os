@@ -42,6 +42,7 @@ import { migrateBudgetV1Lines } from "./0026_migrate_budget_v1_lines";
 import { syncLinkedBudgetIdentity } from "./0027_sync_linked_budget_identity";
 import { reawardCourseCompletions } from "./0028_reaward_course_completions";
 import { territoriesCutover } from "./0029_territories_cutover";
+import { backfillLaunchFund } from "./0030_backfill_launch_fund";
 
 /** One registered migration: a stable `name` (the ledger key) + its effect. */
 export type Migration = {
@@ -103,4 +104,8 @@ export const MIGRATIONS: Migration[] = [
   // campaign-linked pledges/donors/gifts DIRECTLY onto their chapters (deltas
   // net to zero). Idempotent; see 0029_territories_cutover.ts.
   territoriesCutover,
+  // Territories launch pot — stamp `gifts.countedInLaunchFund` + set each
+  // pre-launch territory's `launchFundCents` from its chapter-scope gift sum
+  // (recompute-style, idempotent; launched pots left frozen). See 0030.
+  backfillLaunchFund,
 ];

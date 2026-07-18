@@ -289,7 +289,12 @@ export function CentralView({
         </View>
       </View>
 
-      {/* 3. Chapters at a glance — full-width, below the grid. */}
+      {/* 3. Pre-launch readiness — the financial manager's launch-decision
+          surface (dual-gated central finance viewer OR central giving.view;
+          renders only when there are prospect/raising territories). */}
+      <PrelaunchReadinessCard />
+
+      {/* 4. Chapters at a glance — full-width, below the grid. */}
       {chapterHealth ? <ChapterFleet rows={chapterHealth} onViewChapter={onViewChapter} /> : null}
 
       {selectedTag ? (
@@ -302,6 +307,90 @@ export function CentralView({
           onClose={() => setSelectedTag(null)}
         />
       ) : null}
+    </View>
+  );
+}
+
+// ── Pre-launch readiness ─────────────────────────────────────────────────────
+type PrelaunchRow = FunctionReturnType<typeof api.territories.prelaunchReadiness>[number];
+
+/** Days since a territory was created (for the "raising for N days" line). */
+function ageDays(ageMs: number): number {
+  return Math.max(0, Math.floor(ageMs / (24 * 60 * 60 * 1000)));
+}
+
+/**
+ * "Pre-launch readiness" — one row per prospect/raising territory with the
+ * numbers a financial manager weighs before launching: the launch pot (raised
+ * vs the ~$8k grant target + what central would still cover), backers (live vs
+ * goal), the active monthly pledge run-rate, the tier the chapter would start
+ * at, and how long it's been raising. Dual-gated in the backend
+ * (`prelaunchReadiness`); an empty result (no territories, or no access) simply
+ * renders nothing.
+ */
+function PrelaunchReadinessCard() {
+  const rows = useQuery(api.territories.prelaunchReadiness, {});
+  if (!rows || rows.length === 0) return null;
+  return (
+    <View className="mt-4">
+      <SectionHeader title="Pre-launch readiness" />
+      <View className="rounded-lg border border-border bg-raised shadow-card">
+        {rows.map((r, i) => (
+          <PrelaunchReadinessRow key={r.territoryId} row={r} first={i === 0} />
+        ))}
+      </View>
+    </View>
+  );
+}
+
+function PrelaunchReadinessRow({ row, first }: { row: PrelaunchRow; first: boolean }) {
+  const potPct =
+    row.potTargetCents > 0
+      ? Math.min(100, Math.round((row.potCents / row.potTargetCents) * 100))
+      : 0;
+  return (
+    <View className={`p-4${first ? "" : " border-t border-border"}`}>
+      <View className="flex-row items-center justify-between gap-2">
+        <Text className="flex-1 text-sm font-semibold text-ink" numberOfLines={1}>
+          {row.name}, {row.region}
+        </Text>
+        <Text className="text-2xs uppercase tracking-wider text-muted">
+          {row.stage} · {ageDays(row.ageMs)}d
+        </Text>
+      </View>
+
+      {/* Launch pot */}
+      <View className="mt-2 flex-row items-center justify-between gap-2">
+        <Text className="text-xs text-muted">Launch fund</Text>
+        <Text className="text-xs font-semibold text-ink" style={{ fontVariant: ["tabular-nums"] }}>
+          {formatCents(row.potCents)} of {formatCents(row.potTargetCents)}
+        </Text>
+      </View>
+      <View className="mt-1 h-1.5 overflow-hidden rounded-pill bg-sunken">
+        <View className="h-full rounded-pill bg-accent" style={{ width: `${potPct}%` }} />
+      </View>
+
+      {/* Numbers row */}
+      <View className="mt-2 flex-row flex-wrap gap-x-4 gap-y-1">
+        <ReadinessStat
+          label="Central still covers"
+          value={formatCents(row.remainingCentralBurdenCents)}
+        />
+        <ReadinessStat label="Backers" value={`${row.backerCount} / ${row.targetBackers}`} />
+        <ReadinessStat label="Active monthly" value={formatCents(row.activeMonthlyCents)} />
+        <ReadinessStat label="Starting tier" value={row.tierLabel} />
+      </View>
+    </View>
+  );
+}
+
+function ReadinessStat({ label, value }: { label: string; value: string }) {
+  return (
+    <View>
+      <Text className="text-2xs uppercase tracking-wider text-faint">{label}</Text>
+      <Text className="text-xs font-semibold text-ink" style={{ fontVariant: ["tabular-nums"] }}>
+        {value}
+      </Text>
     </View>
   );
 }

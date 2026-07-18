@@ -164,6 +164,12 @@ function TerritoriesBody() {
                       /give/{tr.slug} ·{" "}
                       {tr.publiclyVisible ? "visible" : "hidden"}
                     </Text>
+                    {tr.stage !== "launched" ? (
+                      <Text className="text-xs text-muted" numberOfLines={1}>
+                        Launch fund: {formatCents(tr.launchFundCents)} of{" "}
+                        {formatCents(tr.launchFundTargetCents)}
+                      </Text>
+                    ) : null}
                   </View>
                   <View className="items-end gap-1">
                     <Text className="text-sm font-semibold text-ink">

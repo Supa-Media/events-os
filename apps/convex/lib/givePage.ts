@@ -55,6 +55,14 @@ export type PublicTerritoryData = {
     commitment: string;
     description?: string;
   } | null;
+  // The pre-launch launch pot (docs/plans/giving-territories.md §D3), or `null`
+  // once launched (the page renders the launched state as before). `months` is
+  // the last-12 gift series, oldest→newest ("watch the pot go up").
+  launchFund: {
+    cents: number;
+    targetCents: number;
+    months: Array<{ month: string; cents: number }>;
+  } | null;
 };
 
 // ── Map projection ────────────────────────────────────────────────────────────
@@ -194,6 +202,49 @@ function explainerHtml(): string {
     <div class="fact"><div class="k">${localPct}% / ${skimPct}%</div><div class="v">${localPct}% of backer revenue stays local to the chapter; ${skimPct}% goes to the City Launch Fund that seeds the NEXT city.</div></div>
     <div class="fact"><div class="k">~${esc(formatCents(launchTemplateTotalCents(), { showCents: false }))}</div><div class="v">The one-time City Launch Fund grant — equipment plus a training trip — that starts a brand-new chapter.</div></div>
   </div>
+</section>`;
+}
+
+const MONTH_ABBR = [
+  "Jan", "Feb", "Mar", "Apr", "May", "Jun",
+  "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+];
+
+/** `"YYYY-MM"` → a short month label (e.g. "Mar"), else the raw key. */
+function monthAbbr(key: string): string {
+  const m = parseInt(key.split("-")[1] ?? "", 10);
+  return Number.isFinite(m) && m >= 1 && m <= 12 ? MONTH_ABBR[m - 1] : key;
+}
+
+/**
+ * The pre-launch launch-pot module: "Launch fund: $X of ~$8,000", a progress
+ * bar, simple month bars ("watch the pot go up"), and the transparency line
+ * that this pot offsets central's one-time City Launch Fund grant. Only
+ * rendered while the territory is pre-launch (`launchFund` non-null) — a
+ * launched territory funds itself and shows the launched state as before.
+ */
+function launchFundModuleHtml(fund: NonNullable<PublicTerritoryData["launchFund"]>): string {
+  const pct =
+    fund.targetCents > 0
+      ? Math.min(100, Math.round((fund.cents / fund.targetCents) * 100))
+      : 0;
+  const maxMonth = Math.max(1, ...fund.months.map((m) => m.cents));
+  const bars = fund.months
+    .map((m) => {
+      const h = Math.round((m.cents / maxMonth) * 100);
+      const title = `${monthAbbr(m.month)} — ${esc(formatCents(m.cents, { showCents: false }))}`;
+      return `<div class="lf-bar" title="${title}">
+  <div class="lf-bar-track"><div class="lf-bar-fill" style="height:${h}%"></div></div>
+  <div class="lf-bar-lbl">${esc(monthAbbr(m.month))}</div>
+</div>`;
+    })
+    .join("");
+  return `<section class="launch-fund">
+  <h2>Launch fund</h2>
+  <div class="lf-amount"><b>${esc(formatCents(fund.cents, { showCents: false }))}</b> of ~${esc(formatCents(fund.targetCents, { showCents: false }))}</div>
+  <div class="progress-track"><div class="progress-fill" style="width:${pct}%"></div></div>
+  <div class="lf-bars">${bars}</div>
+  <p class="lf-note">Every dollar backers give before launch goes straight into this pot — it offsets the one-time ~${esc(formatCents(launchTemplateTotalCents(), { showCents: false }))} City Launch Fund grant central would otherwise cover to start the chapter.</p>
 </section>`;
 }
 
@@ -377,6 +428,8 @@ ${BASE_CSS}${GIVE_CSS}
   </div>
 
   ${nextCallout}
+
+  ${data.launchFund ? launchFundModuleHtml(data.launchFund) : ""}
 
   <section class="ladder">
     <h2>What backers unlock</h2>
