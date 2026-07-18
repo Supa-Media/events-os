@@ -1,9 +1,11 @@
 /**
  * The Finances stream (WP-5.1) — where the money comes from, how it's
- * tracked, and who signs off on it. Also the Finances theme + its five role
- * courses (Finances for Everyone / Treasurer / Chapter Director / Financial
- * Manager / Executive Director) — see `docs/plans/finance-v2-split-prd.md`
- * §Phase 5.
+ * tracked, and who signs off on it. Also the Finances theme + its six
+ * courses: five role courses (Finances for Everyone / Treasurer / Chapter
+ * Director / Financial Manager / Executive Director) plus the shared
+ * `chapter-money-model` core course (tiers + skim, the budget lifecycle,
+ * one-home-per-dollar attribution) that Treasurer and Chapter Director both
+ * build on — see `docs/plans/finance-v2-split-prd.md` §Phase 5.
  *
  * Owned exclusively by this file for content authoring — do not add Finances
  * sections or courses anywhere else. See `../index` for how this assembles
@@ -672,7 +674,11 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
     ],
   },
 
-  // ── 39 · Chapter Director: tiers, the covenant, and the skim ───────────────
+  // ── 39 · Tiers, the covenant, and the skim ─────────────────────────────────
+  // Moved OUT of the Chapter Director course into the shared
+  // `chapter-money-model` course (Treasurer + Chapter Director both build on
+  // it) — see `FINANCES_COURSES` below. The section itself, its slug, and its
+  // curriculum position are unchanged; only its course membership moved.
   {
     slug: "finance-tiers-and-skim",
     title: "Tiers, the covenant, and the skim",
@@ -1224,6 +1230,198 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
       },
     ],
   },
+
+  // ── 46 · Chapter money model: the budget lifecycle ─────────────────────────
+  // New (chapter-money-model course). Submitter's-eye view of draft → send for
+  // review → approve/request-changes, generic across chapter and central scope
+  // — the CD-specific "85% principle" framing stays in `finance-approving-
+  // budgets`, owned by the Chapter Director course. Authored from the shipped
+  // workflow: `apps/convex/finances.ts` (`submitBudgetForApproval`,
+  // `approveBudget`, `requestBudgetChanges`, `BUDGET_APPROVAL_STATUSES` in
+  // `@events-os/shared`'s `finance.ts`) + the on-card actions in
+  // `BudgetApprovalActions.tsx` / `BudgetCreateModal.tsx` ("Send for review",
+  // "Request changes"). The temporary superuser self-approval bypass
+  // (WP-wave4 item 8, an owner-only solo-backfill exception) is deliberately
+  // left out — it's not part of the rule this audience needs.
+  {
+    slug: "finance-budget-lifecycle",
+    title: "The budget lifecycle",
+    subtitle: "Draft, send for review, approve — never by the person who sent it",
+    minutes: 3,
+    blocks: [
+      {
+        kind: "p",
+        text: "Every event and project gets its own one-time budget — its money home from day one. Type a planned amount in when you create it and the budget is already there, in Draft; skip that and one tap of **Add budget** on the event or project's own page summons the same $0 draft later. Either way, nothing is approved yet — a budget is a plan until someone deliberately moves it forward.",
+      },
+      {
+        kind: "bullets",
+        items: [
+          "**Draft** — the amount and line items are yours to edit freely. Nobody outside your own head has weighed in yet, and nothing you type here spends anything.",
+          "**Send for review** — a deliberate tap, never an autosave. The moment you send it, the budget is Awaiting approval and visible to whoever can act on it.",
+          "**Approve or Request changes** — the approver either clears it (Approved) or kicks it back with a reason (Changes requested), which reopens it for editing and a fresh send.",
+          "**Who approves what** — a chapter budget's approver is its Treasurer or Chapter Director; a central budget's is the Executive Director or Financial Manager.",
+        ],
+      },
+      {
+        kind: "rule",
+        title: "Approver ≠ submitter, no exceptions",
+        text: "Separation of duties means whoever sends a budget for review can never be the one who approves it — the same identity-based rule that governs reimbursements, applied to budgets.",
+      },
+      {
+        kind: "tip",
+        text: "**Raising the cap re-opens review.** Bump an APPROVED budget's amount and it flips straight back to Awaiting approval, automatically. The OLD approved figure stays the real spending cap until the new one clears review — a live budget's money is never silently expanded without a second look. Decreasing an amount, or reshuffling its line items, never re-triggers review.",
+      },
+      {
+        kind: "reveal",
+        prompt:
+          "A charge lands against an event whose budget is still sitting in Draft. Can anyone attribute it there right now?",
+        answer:
+          "No — only an APPROVED budget can take a charge. The transaction waits in Needs Budget, patiently, until the budget's owner sends it for review and someone approves it. Attribution and approval move together on purpose — see the next lesson.",
+      },
+    ],
+    quiz: [
+      {
+        prompt: "What state is a brand-new budget in the moment it's created?",
+        options: [
+          "Approved, using the planned amount as the cap",
+          "Draft — an editable plan nobody outside its author has seen yet",
+          "Awaiting approval automatically",
+          "There's no budget until someone submits one",
+        ],
+        answerIndex: 1,
+        explanation:
+          "Every budget is born a Draft — auto-created from a planned amount or summoned with one tap — and stays editable until someone deliberately sends it forward.",
+      },
+      {
+        prompt: "What moves a budget out of Draft and into review?",
+        options: [
+          "It happens automatically after 24 hours",
+          "A deliberate \"Send for review\" tap — nothing routes to an approver until you choose to send it",
+          "The first charge attributed to it",
+          "The Financial Manager pulls it into review",
+        ],
+        answerIndex: 1,
+        explanation:
+          "Send for review is an explicit action, not a side effect — a budget can sit in Draft indefinitely with zero consequence.",
+      },
+      {
+        prompt: "Who can approve a budget you just submitted?",
+        options: [
+          "Anyone with approval authority for that scope — except you",
+          "You can, if you also hold the approver's seat",
+          "Whoever is fastest to open the app",
+          "Nobody — a submitter's own budget is stuck forever",
+        ],
+        answerIndex: 0,
+        explanation:
+          "Approver ≠ submitter is about identity, not title — the same person can never wear both hats on one decision.",
+      },
+      {
+        prompt: "You raise an APPROVED budget's cap from $2,000 to $3,000. What actually limits spending while the increase awaits approval?",
+        options: [
+          "The new $3,000 — available immediately",
+          "The old $2,000 — still the live spending cap until someone approves the increase",
+          "Spending is blocked entirely until the increase clears",
+          "Whichever amount the last charge used",
+        ],
+        answerIndex: 1,
+        explanation:
+          "An increase auto-resubmits the budget, but the OLD approved amount keeps working as the real cap — nobody's spending power silently jumps before a second look.",
+      },
+    ],
+  },
+
+  // ── 47 · Chapter money model: one home per dollar ──────────────────────────
+  // New (chapter-money-model course). Explicit-only attribution, the "For"
+  // picker, and the chapter/central split. Authored from the CURRENT shipped
+  // rule (`apps/convex/finances.ts#isAttributableBudget`, WP-wave4 item 5,
+  // owner decision 2026-07-17): only an APPROVED budget is attributable, and
+  // the picker's old "summon a $0 budget on pick" behavior was retired
+  // alongside it — a not-yet-approved or absent budget's spend now surfaces
+  // in the "Needs Budget" bucket instead, resolved by sending that budget for
+  // review (previous lesson), not by picking it into existence.
+  {
+    slug: "finance-one-home-per-dollar",
+    title: "One home per dollar",
+    subtitle: "Explicit links only — nothing rides in silently",
+    minutes: 3,
+    blocks: [
+      {
+        kind: "p",
+        text: "Attribution in this system is explicit-only, everywhere: a transaction counts toward a budget the moment a person — or an accepted AI suggestion — deliberately links it there. Nothing is coded automatically; no charge quietly lands on the nearest-looking budget just because the dates or amounts happen to line up.",
+      },
+      {
+        kind: "bullets",
+        items: [
+          "**Unattributed is the honest name for \"not yet claimed.\"** Every charge without an explicit link sits in the Needs Budget bucket, in plain sight on the dashboard — a number the whole chapter works to drive to zero, never one to quietly bury.",
+          "**Only an approved budget can take a charge.** The \"For\" picker — grouped Events / Projects / Recurring — only ever offers budgets that have actually cleared review (the budget lifecycle, previous lesson). A Draft or Awaiting-approval budget can't receive a link yet, on purpose.",
+          "**An AI suggestion is a suggestion, not a link.** The assistant can propose a likely match for a charge, but nothing attributes until a person taps to accept it — same explicit-only rule, just with a head start.",
+        ],
+      },
+      {
+        kind: "rule",
+        title: "Every dollar belongs to a chapter or to central — never both",
+        text: "A budget's level is a real chapter, or the literal \"central\" scope — never null, never a mix of the two. A chapter's own dashboard never surfaces central's money alongside its own, and central's rollup never quietly absorbs a chapter's.",
+      },
+      {
+        kind: "reveal",
+        prompt:
+          "You're logging a charge for a brand-new event that doesn't have an approved budget yet. What happens in the \"For\" picker?",
+        answer:
+          "Nothing — that event's budget won't appear in the picker at all until it clears review. The charge sits in Needs Budget in the meantime; open the event's own page, use Add budget (or its existing Draft), and send it for review. Once it's approved, the same charge attributes cleanly.",
+      },
+    ],
+    quiz: [
+      {
+        prompt: "How does a transaction end up counted toward a budget?",
+        options: [
+          "The system infers the closest match automatically",
+          "A person — or an accepted AI suggestion — explicitly links it; nothing is inferred automatically",
+          "Any charge in the same category counts by default",
+          "The Treasurer assigns it at month-end",
+        ],
+        answerIndex: 1,
+        explanation:
+          "Explicit-only attribution means a link only exists because a human made it real — even an AI's suggestion needs a tap to count.",
+      },
+      {
+        prompt: "What does the Needs Budget bucket mean?",
+        options: [
+          "A bug in the sync",
+          "Spend with no explicit, approved-budget link yet — shown loudly on purpose, not silently absorbed",
+          "Money that left the account without a transaction record",
+          "Charges waiting on a bank sync",
+        ],
+        answerIndex: 1,
+        explanation:
+          "Needs Budget is a first-class, visible bucket — designed to be noticed and driven to zero, not hidden.",
+      },
+      {
+        prompt: "Why won't the \"For\" picker offer a budget that's still Draft or Awaiting approval?",
+        options: [
+          "It's a display bug",
+          "Only an approved budget is attributable — attribution and approval move together on purpose",
+          "Draft budgets are picker-only, approved budgets are hidden",
+          "The picker shows every budget regardless of status",
+        ],
+        answerIndex: 1,
+        explanation:
+          "The picker and the write-side attribution check share one gate: a budget has to clear review before a charge can call it home.",
+      },
+      {
+        prompt: "Can a chapter's dashboard show central's money mixed in with its own?",
+        options: [
+          "Yes, they roll up together automatically",
+          "No — every dollar belongs to exactly one level, chapter or central, never both",
+          "Only if the Financial Manager enables it",
+          "Only for the skim transfer",
+        ],
+        answerIndex: 1,
+        explanation:
+          "Chapter and central are separate homes for every dollar — a chapter's view never quietly includes central's money, or vice versa.",
+      },
+    ],
+  },
 ];
 
 /** The Finances stream's theme entry. */
@@ -1235,12 +1433,17 @@ export const FINANCES_THEME: Theme = {
 };
 
 /**
- * The Finances stream's courses, in catalog order. Five role courses,
- * most-to-least everyone. Every role course ends with a hands-on capstone in
- * other streams (founder 2026-07-14) — finance capstones need a dedicated
- * training-sandbox mechanic that doesn't exist yet, so these are lesson-only
- * for now; a capstone module can be appended later (module slugs stay
- * stable, so it's a pure addition, not a reshape).
+ * The Finances stream's courses, in catalog order. Six courses now: five
+ * role courses (most-to-least everyone) plus the shared `chapter-money-model`
+ * core course between Finances-for-Everyone and Treasurer — the org
+ * principle: a role path is a playlist of shared courses, and Chapter
+ * Director + Treasurer (later FM/ED — role-path wiring lands separately)
+ * both start from the exact same foundation instead of re-teaching it.
+ * Every role course ends with a hands-on capstone in other streams (founder
+ * 2026-07-14) — finance capstones need a dedicated training-sandbox
+ * mechanic that doesn't exist yet, so these are lesson-only for now; a
+ * capstone module can be appended later (module slugs stay stable, so it's
+ * a pure addition, not a reshape).
  */
 export const FINANCES_COURSES: Course[] = [
   {
@@ -1259,6 +1462,24 @@ export const FINANCES_COURSES: Course[] = [
       "finance-stewardship",
       "finance-card-and-receipts",
       "finance-reimbursements-and-flags",
+    ],
+  },
+  {
+    slug: "chapter-money-model",
+    themeKey: "finances",
+    title: "The chapter money model",
+    level: "intermediate",
+    audience: "team",
+    description:
+      "The shared foundation every finance leader builds on: what backer " +
+      "tiers unlock and where the skim goes, how a budget moves from draft " +
+      "to a real spending cap, and why every dollar has exactly one home. " +
+      "Treasurer and Chapter Director both start here.",
+    icon: "layers",
+    moduleSlugs: [
+      "finance-tiers-and-skim",
+      "finance-budget-lifecycle",
+      "finance-one-home-per-dollar",
     ],
   },
   {
@@ -1284,13 +1505,13 @@ export const FINANCES_COURSES: Course[] = [
     level: "leader",
     audience: "role",
     description:
-      "Raise-vs-manage separation, approving budgets under the 85% " +
-      "principle, and the tiers + skim that fund the network.",
+      "Raise-vs-manage separation and approving budgets under the 85% " +
+      "principle. Builds on the chapter money model course's tiers, skim, " +
+      "and budget-lifecycle foundation.",
     icon: "shield",
     moduleSlugs: [
       "finance-raise-vs-manage",
       "finance-approving-budgets",
-      "finance-tiers-and-skim",
     ],
   },
   {
