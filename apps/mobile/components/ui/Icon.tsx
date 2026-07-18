@@ -14,6 +14,9 @@ import { colors } from "../../lib/theme";
 const IONICONS_ALIASES = {
   // The four-point "sparkles" star is the widely recognized AI marker.
   sparkles: "sparkles",
+  // Feather's flag is outline-only; the solid Ionicons flag fills with `color`
+  // for markers that need to read as a bold, filled pin (e.g. the event day).
+  "flag-solid": "flag",
 } as const;
 
 export type IconName =

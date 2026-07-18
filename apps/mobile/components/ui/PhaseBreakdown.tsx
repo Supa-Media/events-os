@@ -13,33 +13,28 @@ type PhaseHue = { main: string; glow: string };
 
 /**
  * Label under a phase ring. Quiet by default (the ring's hue already encodes
- * the phase); lit in the hue when active/done, tinted amber when the phase has
- * overdue work — the only loud state.
+ * the phase — no decorative dot repeating it); lit in the hue when active/done,
+ * tinted amber (with a small attention dot) when the phase has overdue work —
+ * the only loud state.
  */
 function PhaseLabel({
   label,
   hue,
   lit,
-  dim,
   behind,
 }: {
   label: string;
   hue: PhaseHue;
   lit: boolean;
-  dim: boolean;
   behind: boolean;
 }) {
   return (
     <View className="flex-row items-center gap-1">
-      <View
-        style={{
-          width: 6,
-          height: 6,
-          borderRadius: 3,
-          backgroundColor: behind ? colors.warn : hue.main,
-          opacity: dim && !behind ? 0.35 : 1,
-        }}
-      />
+      {behind ? (
+        <View
+          style={{ width: 5, height: 5, borderRadius: 2.5, backgroundColor: colors.warn }}
+        />
+      ) : null}
       <Text
         className="text-2xs font-bold uppercase tracking-wider text-muted"
         style={behind ? { color: colors.warn } : lit ? { color: hue.main } : undefined}
@@ -105,7 +100,6 @@ function PhaseRing({
         label={PHASE_LABELS[phase]}
         hue={hue}
         lit={active || complete}
-        dim={pct == null}
         behind={behind}
       />
     </Pressable>
