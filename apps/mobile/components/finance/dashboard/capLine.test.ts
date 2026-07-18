@@ -29,4 +29,13 @@ describe("monthlyOperatingCapCents", () => {
     const recurring = [{ cadence: "monthly", budgetCents: 100000 }];
     expect(monthlyOperatingCapCents(recurring, "ytd", 0)).toBe(100000);
   });
+
+  test("null when monthly-cadence buckets exist but sum to $0 — no cap line, not a $0.00/mo line", () => {
+    const recurring = [
+      { cadence: "monthly", budgetCents: 0 },
+      { cadence: "monthly", budgetCents: 0 },
+    ];
+    expect(monthlyOperatingCapCents(recurring, "month", 3)).toBeNull();
+    expect(monthlyOperatingCapCents(recurring, "ytd", 4)).toBeNull();
+  });
 });

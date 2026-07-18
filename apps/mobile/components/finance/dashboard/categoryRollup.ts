@@ -7,40 +7,56 @@
  * `categories` breakdown (`oneTimeBudgets[].categories` /
  * `recurringBudgets[].categories`, already returned per-card for the
  * always-open category mini-bars this PR folds behind a row-expand chevron
- * instead) — so this sums those breakdowns by category NAME across every
- * card on the dashboard.
+ * instead) — so this sums those breakdowns by category NAME.
  *
- * DOCUMENTED LIMITATION: a ONE-TIME (event/project) budget's `categories`
- * breakdown is CUMULATIVE / all-time, not sliced to the dashboard's selected
- * period — see `finances.ts`'s `oneTimeCardBreakdown` doc comment ("Bug 1b:
- * the card's OWN bar stays CUMULATIVE ... even though its VISIBILITY is
- * month-gated"). A RECURRING budget's `categories` breakdown IS period-
- * scoped. So this rollup mixes a period-accurate figure (recurring) with an
- * all-time one (one-time) — the best available without a new query. Because
- * of that mismatch, `otherCents` (the period spend this rollup can't explain
- * with a per-budget category) is clamped at 0 rather than ever going
- * negative when the one-time cumulative total exceeds the period total.
+ * MODE-AWARE (fixed after adversarial review — this panel must never
+ * contradict the "Spent" KPI tile rendered right above it):
+ *  - a ONE-TIME (event/project) budget's `categories` breakdown is
+ *    CUMULATIVE / all-time, not sliced to the dashboard's selected period —
+ *    see `finances.ts`'s `oneTimeCardBreakdown` doc comment ("Bug 1b: the
+ *    card's OWN bar stays CUMULATIVE ... even though its VISIBILITY is
+ *    month-gated").
+ *  - a RECURRING budget's `categories` breakdown IS period-scoped.
+ * In `"month"` mode, mixing the two would total many multiples of the
+ * single-month "Spent" KPI with no user-facing qualifier — so month mode
+ * sums ONLY recurring (period-scoped) categories and the caller renders the
+ * "recurring spend by category — event budgets excluded" caption. In
+ * `"ytd"` mode, one-time budgets' cumulative-to-date categories are a
+ * reasonable approximation of their year-to-date contribution, so both
+ * sources are included and the caller renders the "· YTD" caption.
  */
 export type CategorySlice = { name: string; spentCents: number };
+export type CategoryRollupMode = "month" | "ytd";
 export type CategoryRollupResult = {
   /** Top `topN` categories, sorted by spend descending. */
   top: CategorySlice[];
   /** `max(0, periodSpendCents - sum(every categorized dollar this rollup found))` —
-   *  rendered as the "Other + uncoded" muted-fill row. */
+   *  rendered as the "Other + uncoded" muted-fill row. This clamp is ONLY
+   *  for the residual-rounding/uncategorized-spend case (both sides are now
+   *  computed from the same mode's data, so they should already roughly
+   *  agree) — it must never be relied on to paper over a period mismatch;
+   *  that's handled by scoping `cards` to `mode` above instead. */
   otherCents: number;
   /** The largest single value across `top` + `otherCents` — the bar chart's
    *  100%-width reference (never 0, so a single-category chapter still
    *  renders a sane bar). */
   maxCents: number;
+  /** User-facing qualifier for the panel — MUST be rendered next to the
+   *  title so the figures below never look silently mismatched with the
+   *  "Spent" KPI. */
+  caption: string;
 };
 
 export function categoryRollup(
-  cardsWithCategories: { categories?: CategorySlice[] | null }[],
+  oneTimeCards: { categories?: CategorySlice[] | null }[],
+  recurringCards: { categories?: CategorySlice[] | null }[],
   periodSpendCents: number,
+  mode: CategoryRollupMode,
   topN = 6,
 ): CategoryRollupResult {
+  const cards = mode === "month" ? recurringCards : [...oneTimeCards, ...recurringCards];
   const byName = new Map<string, number>();
-  for (const card of cardsWithCategories) {
+  for (const card of cards) {
     for (const c of card.categories ?? []) {
       byName.set(c.name, (byName.get(c.name) ?? 0) + c.spentCents);
     }
@@ -52,5 +68,9 @@ export function categoryRollup(
   const categorizedCents = sorted.reduce((s, c) => s + c.spentCents, 0);
   const otherCents = Math.max(0, periodSpendCents - categorizedCents);
   const maxCents = Math.max(1, ...top.map((c) => c.spentCents), otherCents);
-  return { top, otherCents, maxCents };
+  const caption =
+    mode === "month"
+      ? "Recurring spend by category — event budgets excluded"
+      : "Spend by category · YTD";
+  return { top, otherCents, maxCents, caption };
 }

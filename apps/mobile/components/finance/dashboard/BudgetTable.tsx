@@ -169,10 +169,23 @@ function BudgetRow({
     pct: row.pct,
     status: row.pct >= 80 ? "warn" : "ok",
   });
-  const capLabel = pinned || display.isAwaitingApproval
+  // Pinned (submitted) rows always show "$spent / $requested requested" —
+  // so the % next to it MUST be computed against that SAME requestedCents
+  // denominator, never the server's `pct` (which is spent / effectiveCapCents,
+  // i.e. the OLD approved cap for a resubmitted increase — see
+  // `finances.ts#effectiveCapCents`). Using `display.pct` here would only be
+  // correct for the zero-cap shape (`awaitingApprovalZeroCapDisplay` computes
+  // the identical spent/requested ratio); for every other pinned row the two
+  // diverge and the % would contradict the label right next to it.
+  const showRequested = pinned || display.isAwaitingApproval;
+  const pct = showRequested
+    ? row.requestedCents > 0
+      ? Math.round((row.spentCents / row.requestedCents) * 100)
+      : 0
+    : row.pct;
+  const capLabel = showRequested
     ? `${formatCents(row.spentCents)} / ${formatCents(row.requestedCents)} requested`
     : `${formatCents(row.spentCents)} / ${formatCents(row.budgetCents)}`;
-  const pct = pinned || display.isAwaitingApproval ? display.pct : row.pct;
   const hasCategories = row.categories && row.categories.length > 0;
 
   // The row's content EXCLUDING the trailing chevron — that chevron is a

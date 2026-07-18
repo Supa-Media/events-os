@@ -21,6 +21,10 @@ export function CategoryBars({ rollup }: { rollup: CategoryRollupResult }) {
 
   return (
     <View className="gap-2.5">
+      {/* Must always render — this panel's figures can otherwise look like
+       *  they silently contradict the "Spent" KPI tile above it (see
+       *  categoryRollup.ts's mode-aware doc comment). */}
+      <Text className="text-2xs text-muted">{rollup.caption}</Text>
       {rows.map((r) => {
         const widthPct = Math.max(2, Math.min(100, (r.spentCents / rollup.maxCents) * 100));
         return (

@@ -15,6 +15,15 @@
  * action"). With more than one, a single button can't disambiguate WHICH
  * budget to decide, so the row reads as a count + a pointer to the pinned
  * rows below rather than a broken multi-target action.
+ *
+ * Approvals visibility must be PERIOD-AGNOSTIC (fixed after adversarial
+ * review — this is the screen's headline job): `pendingApprovals` above is
+ * period-scoped (derived from `oneTimeBudgets`/`recurringBudgets`), so a
+ * budget submitted for a future month or a different year has no row here.
+ * `extraApprovalsCount` (see `extraApprovals.ts`) is the period-agnostic
+ * `budget_approvals` count from `attention` MINUS what's already visible in
+ * `pendingApprovals` — rendered as its own count row so that gap is never
+ * silent.
  */
 import type { ReactNode } from "react";
 import { Pressable, Text, View } from "react-native";
@@ -46,6 +55,8 @@ export function AttentionRail({
   unattributedCents,
   centralLinkedCents,
   pendingApprovals,
+  extraApprovalsCount,
+  onViewOtherPeriods,
   isDrilldown,
   onAttentionAction,
 }: {
@@ -54,6 +65,14 @@ export function AttentionRail({
   unattributedCents: number;
   centralLinkedCents: number;
   pendingApprovals: PendingApproval[];
+  /** Chapter-wide submitted-budget count MINUS what's already visible in
+   *  `pendingApprovals` — see `extraApprovals.ts`. Always period-agnostic;
+   *  never hidden, so approvals outside the current view stay visible. */
+  extraApprovalsCount: number;
+  /** Switch the dashboard to YTD (same year) so the approval(s) counted by
+   *  `extraApprovalsCount` become visible. `undefined` when already in YTD
+   *  mode (nothing further this control can do — see `ChapterView`). */
+  onViewOtherPeriods: (() => void) | undefined;
   isDrilldown: boolean;
   onAttentionAction: (kind: string) => void;
 }) {
@@ -61,7 +80,10 @@ export function AttentionRail({
   // the actual budgets rather than the count-only attention row).
   const otherItems = attention.filter((a) => a.kind !== "budget_approvals");
   const rowCount =
-    otherItems.length + (unattributedCount > 0 ? 1 : 0) + (pendingApprovals.length > 0 ? 1 : 0);
+    otherItems.length +
+    (unattributedCount > 0 ? 1 : 0) +
+    (pendingApprovals.length > 0 ? 1 : 0) +
+    (extraApprovalsCount > 0 ? 1 : 0);
 
   if (rowCount === 0 && centralLinkedCents <= 0) {
     return (
@@ -83,6 +105,20 @@ export function AttentionRail({
           detail={`${pendingApprovals.length} decisions needed`}
           actionLabel={isDrilldown ? undefined : "See rows below"}
           onPress={undefined}
+        />
+      ) : null}
+
+      {extraApprovalsCount > 0 ? (
+        <RailRow
+          count={extraApprovalsCount}
+          title={
+            extraApprovalsCount === 1
+              ? "1 more awaiting approval outside this view"
+              : `${extraApprovalsCount} more awaiting approval outside this view`
+          }
+          detail={onViewOtherPeriods ? "Submitted for a different month" : "Submitted for a different year"}
+          actionLabel={onViewOtherPeriods ? "View YTD" : undefined}
+          onPress={onViewOtherPeriods}
         />
       ) : null}
 

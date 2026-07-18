@@ -17,7 +17,9 @@
  * year's chart — not a true reconstruction of what the cap was in past
  * months (a bucket added, removed, or resized mid-year will misrepresent
  * months before/after that change). `null` when there are no monthly-cadence
- * buckets at all (nothing to draw).
+ * buckets at all, OR when the monthly-cadence buckets that DO exist sum to
+ * $0 — either way there's no meaningful cap to draw, so the caller renders
+ * no dashed line and no "$0.00/mo" label rather than a misleading zero cap.
  */
 export function monthlyOperatingCapCents(
   recurringBudgets: { cadence: string; budgetCents: number }[],
@@ -27,6 +29,7 @@ export function monthlyOperatingCapCents(
   const monthly = recurringBudgets.filter((b) => b.cadence === "monthly");
   if (monthly.length === 0) return null;
   const sumCents = monthly.reduce((s, b) => s + b.budgetCents, 0);
+  if (sumCents === 0) return null;
   const divisor = period === "ytd" ? Math.max(1, throughMonth) : 1;
   return Math.round(sumCents / divisor);
 }

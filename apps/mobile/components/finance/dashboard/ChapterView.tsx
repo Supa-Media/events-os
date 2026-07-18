@@ -35,6 +35,7 @@ import { SparkLine } from "./SparkLine";
 import { MonthBars } from "./MonthBars";
 import { monthlyOperatingCapCents } from "./capLine";
 import { categoryRollup } from "./categoryRollup";
+import { extraApprovalsCount } from "./extraApprovals";
 import { CategoryBars } from "./CategoryBars";
 import { AttentionRail } from "./AttentionRail";
 import { BudgetTableGroup, type BudgetTableRow } from "./BudgetTable";
@@ -128,8 +129,8 @@ export function ChapterView({
   const periodSpendCents = spentTile?.subValueCents ?? 0;
 
   const rollup = useMemo(
-    () => categoryRollup([...data.oneTimeBudgets, ...data.recurringBudgets], periodSpendCents),
-    [data.oneTimeBudgets, data.recurringBudgets, periodSpendCents],
+    () => categoryRollup(data.oneTimeBudgets, data.recurringBudgets, periodSpendCents, period),
+    [data.oneTimeBudgets, data.recurringBudgets, periodSpendCents, period],
   );
 
   const pendingApprovals = useMemo(
@@ -143,6 +144,14 @@ export function ChapterView({
           approvalStatus: b.approvalStatus,
         })),
     [data.oneTimeBudgets, data.recurringBudgets],
+  );
+
+  // Period-agnostic gap between the chapter-wide `budget_approvals` count
+  // (`data.attention`, no year/month filter) and what's actually visible
+  // above (`pendingApprovals`, period-scoped) — see `extraApprovals.ts`.
+  const extraApprovals = useMemo(
+    () => extraApprovalsCount(data.attention, pendingApprovals.length),
+    [data.attention, pendingApprovals.length],
   );
 
   const oneTimeRows: BudgetTableRow[] = data.oneTimeBudgets.map((b) => ({
@@ -261,6 +270,10 @@ export function ChapterView({
               unattributedCents={data.unattributedCents}
               centralLinkedCents={data.centralLinkedCents}
               pendingApprovals={pendingApprovals}
+              extraApprovalsCount={extraApprovals}
+              onViewOtherPeriods={
+                period === "ytd" ? undefined : () => onChangePeriod({ year, month, period: "ytd" })
+              }
               isDrilldown={isDrilldown}
               onAttentionAction={onAttentionAction}
             />
