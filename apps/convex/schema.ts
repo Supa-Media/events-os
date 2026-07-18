@@ -70,6 +70,7 @@ import {
   givingScopeRollups,
   pledges,
 } from "./schema/givingPlatform";
+import { sponsorPackages, sponsorships } from "./schema/sponsorships";
 import { seatDefs, seatAssignments } from "./schema/seats";
 import { seatStructureLog } from "./schema/seatStructureLog";
 import { seatProposals } from "./schema/seatProposals";
@@ -248,6 +249,14 @@ const schema = defineSchema({
   // paid cycles write `gifts` rows (`pledgeId` set). Derives `chapters.backerCount`
   // (see givingPledges.ts + docs/plans/giving-platform.md §2).
   pledges,
+
+  // Sponsorships & partnerships (F-6, P4) — dev-director-authored sponsor
+  // package tiers (`sponsorPackages`) + the agreement pipeline that tracks an
+  // org donor from prospect through an active partnership (`sponsorships`).
+  // Central lens only; a sponsorship's actual payments are ordinary `gifts`
+  // rows with `sponsorshipId` set (see schema/sponsorships.ts + sponsorships.ts).
+  sponsorPackages,
+  sponsorships,
 
   // Org chart (seats) — a tree of seats shared by the central chart + every
   // chapter's identical chapter chart; occupancy is per-scope (see

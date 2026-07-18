@@ -133,7 +133,8 @@ export const donors = defineTable({
  * of giving history. `donationId` links back to the event `donations` row a
  * gift was dual-written from (the migration + settle-time write use it for
  * idempotency); `externalRef` is the Givebutter transaction id, the dedup key
- * that makes CSV import safely re-runnable.
+ * that makes CSV import safely re-runnable; `sponsorshipId` (F-6 P4) links a
+ * payment to its `sponsorships` agreement — see `sponsorships.ts#recordSponsorshipGift`.
  */
 export const gifts = defineTable({
   donorId: v.id("donors"),
@@ -146,6 +147,8 @@ export const gifts = defineTable({
   eventId: v.optional(v.id("events")),
   donationId: v.optional(v.id("donations")), // link to the event donation row
   externalRef: v.optional(v.string()), // Givebutter txn id (import dedup key)
+  // F-6 P4: set when this payment is against a sponsorship agreement.
+  sponsorshipId: v.optional(v.id("sponsorships")),
   note: v.optional(v.string()),
   recordedBy: v.optional(v.id("users")), // manual/backfill entries
   // P2 recurring: set for a gift written from a Stripe subscription billing
@@ -163,7 +166,8 @@ export const gifts = defineTable({
   .index("by_donation", ["donationId"])
   .index("by_pledge", ["pledgeId"])
   // One gift per billing cycle — the `invoice.paid` idempotency lookup.
-  .index("by_stripeInvoice", ["stripeInvoiceId"]);
+  .index("by_stripeInvoice", ["stripeInvoiceId"])
+  .index("by_sponsorship", ["sponsorshipId"]);
 
 /**
  * Per-scope denormalized aggregates for the giving dashboard — one row per
