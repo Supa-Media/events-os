@@ -33,3 +33,25 @@ packages from GitHub Packages + reusable workflows pinned `@main`; local checkou
 - Updating: `pnpm update "@supa-media/*"`.
 - `supa.config.ts` is the framework config surface — keep it truthful (vault
   name, EAS project id); `scripts/dev.js` loads it at runtime.
+
+## The Academy Must Track the Product
+
+The Academy (packages/shared/src/academy/) is the org's canonical training —
+it teaches both the app and Public Worship's culture. It goes stale the moment
+a documented behavior changes. **Every PR that changes user-facing behavior,
+vocabulary, money rules, roles/seats, or org process must ask: "does the
+Academy need updating?"**
+
+- Renamed a concept, tab, or role? → grep the academy content for the old term.
+- Changed a flow a lesson teaches (budgets, reconcile, cards, events, seats)?
+  → update the lesson and its quiz in the same PR.
+- Shipped a new user-facing feature? → decide explicitly: new lesson, new
+  module, or "not training-worthy" (say so in the PR description).
+- Changed seat definitions in packages/shared/src/seats.ts? → check the role
+  paths (packages/shared/src/academyPaths.ts) cover the new/renamed seat.
+- Capstone templates (apps/convex/lib/seed/templates.ts) reference real
+  statuses/tabs — UI renames can silently break quests. Run the academy tests.
+
+When unsure whether a change is "training-worthy," it probably is — err on
+the side of updating. The integrity asserts catch structural drift; they
+cannot catch a lesson that now teaches the wrong thing.
