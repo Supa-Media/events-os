@@ -26,9 +26,21 @@ import type { MutationCtx, QueryCtx } from "./_generated/server";
 import { ConvexError, v } from "convex/values";
 import { internal } from "./_generated/api";
 import { Doc, Id } from "./_generated/dataModel";
-import { AFFORDABILITY_TIERS, launchTemplateTotalCents } from "@events-os/shared";
-import { requireGivingManage, requireGivingView } from "./lib/givingAccess";
-import { requireUserId } from "./lib/context";
+import {
+  AFFORDABILITY_TIERS,
+  affordabilityTierLabel,
+  easternParts,
+  financeRoleAtLeast,
+  launchTemplateTotalCents,
+  type TierLike,
+} from "@events-os/shared";
+import {
+  requireGivingManage,
+  requireGivingView,
+  resolveGivingAccess,
+} from "./lib/givingAccess";
+import { getChapterIdOrNull, requireUserId } from "./lib/context";
+import { getFinanceRole } from "./lib/finance";
 import { TERRITORY_STAGES } from "./schema/territories";
 import { MAX_MILESTONES } from "./backerMilestones";
 import { buildChapterRolesAndTemplates } from "./lib/seed/templates";
@@ -39,6 +51,68 @@ type TerritoryStage = (typeof TERRITORY_STAGES)[number];
 /** A generous bound on the admin territory list — the map is a handful of
  *  places at a time, nowhere near this. */
 const TERRITORY_LIST_LIMIT = 500;
+
+/** Bounded window scan for the public pot's month series + the readiness
+ *  desk's per-chapter pledge sum (range/index reads, never a full scan). */
+const GIFT_WINDOW_LIMIT = 10000;
+const PLEDGE_SCAN_LIMIT = 5000;
+
+/** A hair over 12 months so the earliest month-of-interest is fully covered by
+ *  the `receivedAt` lower bound; buckets outside the 12 labels are dropped. */
+const TWELVE_MONTHS_MS = 375 * 24 * 60 * 60 * 1000;
+
+/** `"YYYY-MM"` (Eastern) for a timestamp — the pot's month-bucket key. */
+function monthKey(ts: number): string {
+  const { year, month } = easternParts(ts);
+  return `${year}-${String(month).padStart(2, "0")}`;
+}
+
+/** The last 12 Eastern month labels, oldest→newest, ending in `now`'s month. */
+function lastTwelveMonthLabels(now: number): string[] {
+  const { year, month } = easternParts(now); // 1-based month
+  const labels: string[] = [];
+  for (let i = 11; i >= 0; i--) {
+    let y = year;
+    let m = month - i;
+    while (m <= 0) {
+      m += 12;
+      y -= 1;
+    }
+    labels.push(`${y}-${String(m).padStart(2, "0")}`);
+  }
+  return labels;
+}
+
+/** The tier ladder finance uses (configured `backerMilestones`, else the shared
+ *  `AFFORDABILITY_TIERS` fallback) — resolved exactly like
+ *  `finances.chapterAffordability`. Returns `undefined` to let
+ *  `affordabilityTierLabel` fall back to its own default. */
+async function resolveTierLadder(
+  ctx: QueryCtx,
+): Promise<readonly TierLike[] | undefined> {
+  const milestoneRows = await ctx.db
+    .query("backerMilestones")
+    .withIndex("by_minBackers")
+    .order("asc")
+    .take(MAX_MILESTONES + 1);
+  return milestoneRows.length > 0
+    ? milestoneRows.map((m) => ({ minBackers: m.minBackers, label: m.label }))
+    : undefined;
+}
+
+/** Sum of a chapter's ACTIVE monthly pledge amounts (bounded index read). */
+async function activePledgeMonthlyCents(
+  ctx: QueryCtx,
+  chapterId: Id<"chapters">,
+): Promise<number> {
+  const active = await ctx.db
+    .query("pledges")
+    .withIndex("by_scope_and_status", (q) =>
+      q.eq("scope", chapterId).eq("status", "active"),
+    )
+    .take(PLEDGE_SCAN_LIMIT);
+  return active.reduce((sum, p) => sum + p.amountCents, 0);
+}
 
 /** `<slug>` — lowercase letters/digits, dash-separated, no leading/trailing/
  *  double dashes. The `/give/<slug>` URL segment. */
@@ -502,6 +576,20 @@ const publicTerritoryValidator = v.union(
     story: v.union(v.string(), v.null()),
     milestones: v.array(milestoneRungValidator),
     nextMilestone: v.union(milestoneRungValidator, v.null()),
+    // The pre-launch launch pot (docs/plans/giving-territories.md §D3), or
+    // `null` once the territory has launched (the pot is frozen + the live
+    // chapter funds itself). `months` is the last-12 Eastern-month gift series
+    // ("watch the pot go up"), oldest→newest.
+    launchFund: v.union(
+      v.object({
+        cents: v.number(),
+        targetCents: v.number(),
+        months: v.array(
+          v.object({ month: v.string(), cents: v.number() }),
+        ),
+      }),
+      v.null(),
+    ),
   }),
   v.null(),
 );
@@ -552,6 +640,34 @@ export const getPublicTerritory = query({
     const nextMilestone =
       milestones.find((m) => m.minBackers > backerCount) ?? null;
 
+    // The launch pot — only while pre-launch; a launched territory freezes it
+    // and returns `null` (the public page renders the launched state instead).
+    let launchFund: {
+      cents: number;
+      targetCents: number;
+      months: Array<{ month: string; cents: number }>;
+    } | null = null;
+    if (territory.stage !== "launched") {
+      const now = Date.now();
+      const labels = lastTwelveMonthLabels(now);
+      const recent = await ctx.db
+        .query("gifts")
+        .withIndex("by_scope_and_received", (q) =>
+          q.eq("scope", territory.chapterId).gte("receivedAt", now - TWELVE_MONTHS_MS),
+        )
+        .take(GIFT_WINDOW_LIMIT);
+      const byMonth = new Map<string, number>();
+      for (const g of recent) {
+        const key = monthKey(g.receivedAt);
+        byMonth.set(key, (byMonth.get(key) ?? 0) + g.amountCents);
+      }
+      launchFund = {
+        cents: territory.launchFundCents,
+        targetCents: territory.launchFundTargetCents,
+        months: labels.map((m) => ({ month: m, cents: byMonth.get(m) ?? 0 })),
+      };
+    }
+
     return {
       name: territory.name,
       region: territory.region,
@@ -562,6 +678,110 @@ export const getPublicTerritory = query({
       story: territory.story ?? null,
       milestones,
       nextMilestone,
+      launchFund,
     };
+  },
+});
+
+// ── Pre-launch readiness (central finance's launch-decision surface) ─────────
+
+const prelaunchReadinessRow = v.object({
+  territoryId: v.id("territories"),
+  chapterId: v.id("chapters"),
+  name: v.string(),
+  region: v.string(),
+  slug: v.string(),
+  stage: stageValidator, // always "prospect" | "raising" here
+  createdAt: v.number(),
+  // Age since creation (ms) — how long this territory has been raising.
+  ageMs: v.number(),
+  // The launch pot + what central would still have to cover to hit the grant.
+  potCents: v.number(),
+  potTargetCents: v.number(),
+  remainingCentralBurdenCents: v.number(),
+  // Backers: the chapter's live derived count vs the territory's public goal.
+  backerCount: v.number(),
+  targetBackers: v.number(),
+  // Sum of ACTIVE monthly pledges on the chapter (the recurring run-rate).
+  activeMonthlyCents: v.number(),
+  // The affordability tier the chapter would START at, at its current backers.
+  tierLabel: v.string(),
+});
+
+/**
+ * The financial manager's launch-decision surface: one row per `prospect`/
+ * `raising` territory with everything needed to decide whether to launch —
+ * name/region/slug, stage, age, the launch pot (`cents`/`target`/what central
+ * would still owe to hit the grant), backers (live vs goal), the active
+ * monthly pledge run-rate, and the milestone tier the chapter would start at.
+ *
+ * ACCESS (dual gate, owner requirement): passes for EITHER central finance
+ * viewer rank (`getFinanceRole(...).isCentral` at ≥ viewer, resolved through
+ * the caller's own chapter like every finance dashboard) OR central
+ * `giving.view` — this is the launch call the financial manager makes, and
+ * either hat qualifies. A caller with ONLY chapter-scope reach (giving OR
+ * finance) gets an empty list (quiet degrade — the card simply doesn't render),
+ * never another scope's data.
+ */
+export const prelaunchReadiness = query({
+  args: {},
+  returns: v.array(prelaunchReadinessRow),
+  handler: async (ctx) => {
+    // Gate 1: central giving.view (or superuser). Quiet — no throw.
+    const giving = await resolveGivingAccess(ctx);
+    let allowed = giving.isSuperuser || giving.centralView;
+    // Gate 2: central finance viewer rank, resolved through the caller's own
+    // chapter (the same path every finance dashboard uses for central reach).
+    if (!allowed) {
+      const ownChapterId = await getChapterIdOrNull(ctx);
+      if (ownChapterId) {
+        const fin = await getFinanceRole(ctx, ownChapterId as Id<"chapters">);
+        allowed = fin.isCentral && financeRoleAtLeast(fin.role, "viewer");
+      }
+    }
+    if (!allowed) return [];
+
+    const tiers = await resolveTierLadder(ctx);
+    const now = Date.now();
+
+    const territories: Doc<"territories">[] = [];
+    for (const stage of ["prospect", "raising"] as const) {
+      const rows = await ctx.db
+        .query("territories")
+        .withIndex("by_stage", (q) => q.eq("stage", stage))
+        .take(TERRITORY_LIST_LIMIT);
+      territories.push(...rows);
+    }
+
+    const out: Array<typeof prelaunchReadinessRow.type> = [];
+    for (const t of territories) {
+      const chapter = await ctx.db.get(t.chapterId);
+      const backerCount = chapter?.backerCount ?? 0;
+      const activeMonthlyCents = await activePledgeMonthlyCents(ctx, t.chapterId);
+      out.push({
+        territoryId: t._id,
+        chapterId: t.chapterId,
+        name: t.name,
+        region: t.region,
+        slug: t.slug,
+        stage: t.stage,
+        createdAt: t.createdAt,
+        ageMs: Math.max(0, now - t.createdAt),
+        potCents: t.launchFundCents,
+        potTargetCents: t.launchFundTargetCents,
+        remainingCentralBurdenCents: Math.max(
+          0,
+          t.launchFundTargetCents - t.launchFundCents,
+        ),
+        backerCount,
+        targetBackers: t.targetBackers,
+        activeMonthlyCents,
+        tierLabel: affordabilityTierLabel(backerCount, tiers),
+      });
+    }
+    // Newest-raising context first (largest pot at the top reads better for the
+    // launch decision); stable, deterministic ordering.
+    out.sort((a, b) => b.potCents - a.potCents || b.createdAt - a.createdAt);
+    return out;
   },
 });

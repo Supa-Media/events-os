@@ -77,6 +77,20 @@ main.give{max-width:1080px;margin:0 auto;padding:20px 20px 96px}
 .progress-fill{height:100%;background:linear-gradient(90deg,var(--accent),var(--accent-hover));
   border-radius:999px;transition:width .3s}
 
+.launch-fund{margin-bottom:28px;border:1px solid var(--border);border-radius:16px;
+  padding:18px 18px 16px;background:var(--raised)}
+.launch-fund h2{font-family:'Corben',Georgia,serif;font-size:19px;font-weight:400;margin-bottom:6px}
+.lf-amount{font-size:15px;color:var(--muted);margin-bottom:12px}
+.lf-amount b{color:var(--accent);font-size:22px}
+.lf-bars{display:flex;align-items:flex-end;gap:6px;height:96px;margin:16px 0 10px}
+.lf-bar{flex:1;display:flex;flex-direction:column;align-items:center;gap:6px;min-width:0}
+.lf-bar-track{width:100%;height:72px;display:flex;align-items:flex-end;
+  background:var(--sunken);border-radius:6px;overflow:hidden}
+.lf-bar-fill{width:100%;background:linear-gradient(180deg,var(--accent-hover),var(--accent));
+  border-radius:6px 6px 0 0;min-height:2px;transition:height .3s}
+.lf-bar-lbl{font-size:10px;color:var(--faint);white-space:nowrap}
+.lf-note{font-size:13px;color:var(--muted);line-height:1.5;margin-top:4px}
+
 .ladder{margin-bottom:28px}
 .ladder h2,.explainer h2,.backer-form h2{font-family:'Corben',Georgia,serif;font-size:21px;
   font-weight:400;display:flex;align-items:center;gap:10px;margin-bottom:14px}
