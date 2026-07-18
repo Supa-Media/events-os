@@ -8,6 +8,12 @@
  * (D4) — the chapter-scope aggregate of not-yet-paid personal-charge
  * repayments, viewer+ gated. The same query backs the matching tile on the
  * Reimbursements manager queue.
+ *
+ * CARDHOLDERS TABLE (owner report item 2): Increase cards ONLY — `activeCards`
+ * excludes `source:"legacy"` (Relay) rows, which have no Increase controls and
+ * are managed entirely by `RelayCardsSection` below. Collapsed by default
+ * behind a "Cardholders (N)" toggle (mirrors `RelayCardsSection`'s own
+ * collapsed-by-default pattern) with condensed rows (`CardholderRow`).
  */
 import { useMemo, useState } from "react";
 import { Text, View } from "react-native";
@@ -47,13 +53,24 @@ export function ManagerCardsView() {
   const [issueOpen, setIssueOpen] = useState(false);
   const [controlsFor, setControlsFor] = useState<CardSummary | null>(null);
   const [decidingId, setDecidingId] = useState<string | null>(null);
+  // Collapsed by default — mirrors `RelayCardsSection`'s "rarely touched once
+  // set up" pattern. The count on the toggle itself doubles as the "how many
+  // cardholders" glance without needing to expand.
+  const [cardholdersExpanded, setCardholdersExpanded] = useState(false);
 
   // A canceled card is a terminal, permanently-closed record — WP-C.1 excludes
   // it from the active cardholders table + KPI aggregates (it can never
   // authorize again; there's nothing left to manage). It stays in the DB for
   // audit/spend history, just not in this operational view.
+  //
+  // Increase cards ONLY: a `source:"legacy"` row (`legacyCards.ts`'s Relay
+  // last-4 → person link) isn't a real Increase cardholder — no caps/
+  // validity/lock, and it never carries a receipt grace window (Relay never
+  // sets one). It's managed entirely in `RelayCardsSection` below, which
+  // already has its own link/unlink controls sourced from
+  // `api.legacyCards.listRelayCardCandidates` — nothing to move here.
   const activeCards = useMemo(
-    () => (cards ?? []).filter((c) => c.status !== "canceled"),
+    () => (cards ?? []).filter((c) => c.status !== "canceled" && c.source !== "legacy"),
     [cards],
   );
 
@@ -186,17 +203,28 @@ export function ManagerCardsView() {
         </>
       ) : null}
 
-      {/* Cardholders table. */}
+      {/* Cardholders — collapsed by default (WP owner report item 2): Increase
+          cards ONLY (`activeCards` above already excludes `source:"legacy"`),
+          condensed rows behind a "Cardholders (N)" toggle. */}
       <SectionHeader
         title="Cardholders"
-        count={loading ? undefined : "everyone gets one"}
+        count={loading ? undefined : String(activeCards.length)}
         right={
-          <Button
-            title="Issue card"
-            icon="plus"
-            size="sm"
-            onPress={() => setIssueOpen(true)}
-          />
+          <View className="flex-row items-center gap-2">
+            <Button
+              title="Issue card"
+              icon="plus"
+              size="sm"
+              onPress={() => setIssueOpen(true)}
+            />
+            <Button
+              title={cardholdersExpanded ? "Hide" : `Cardholders (${activeCards.length})`}
+              variant="secondary"
+              size="sm"
+              icon={cardholdersExpanded ? "chevron-up" : "chevron-down"}
+              onPress={() => setCardholdersExpanded((e) => !e)}
+            />
+          </View>
         }
       />
       {loading ? (
@@ -207,12 +235,11 @@ export function ManagerCardsView() {
           title="No cards issued yet"
           message="Issue the first person-owned card on the chapter's Increase account."
         />
-      ) : (
+      ) : cardholdersExpanded ? (
         <Table>
           <TableHeader>
-            <HeaderCell flex={2}>Cardholder</HeaderCell>
-            <HeaderCell flex={1.6}>Receipts</HeaderCell>
-            <HeaderCell width={110} align="right">
+            <HeaderCell flex={2.2}>Cardholder</HeaderCell>
+            <HeaderCell width={96} align="right">
               Spent · month
             </HeaderCell>
             <HeaderCell width={132} align="right">
@@ -231,7 +258,7 @@ export function ManagerCardsView() {
             />
           ))}
         </Table>
-      )}
+      ) : null}
 
       {/* External (Relay) card linking — bind synced last-4s to a cardholder. */}
       <RelayCardsSection />

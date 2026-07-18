@@ -1,8 +1,15 @@
 /**
- * One row of the manager cardholders table: avatar + name, type + masked number,
- * the receipts status, this-month spend, the lifecycle badge, and a ⋯ menu with
- * the manager actions (lock / unlock / edit controls). Pure presentation — the
- * mutations live in the parent so a single toast surfaces every failure.
+ * One CONDENSED row of the manager cardholders table (WP owner report item 2):
+ * avatar + name · last4, this-month spend, the lifecycle status chip, and a ⋯
+ * menu with the manager actions (lock / unlock / edit controls). Pure
+ * presentation — the mutations live in the parent so a single toast surfaces
+ * every failure.
+ *
+ * Increase cards ONLY — the parent (`ManagerCardsView`) filters out
+ * `source:"legacy"` (Relay) rows before this ever renders, so every card here
+ * has real Increase-issued controls (caps/validity/lock). A receipt overdue/
+ * due-soon isn't a separate table column anymore (condensed); it's folded
+ * into the name subtitle as a small inline flag instead.
  */
 import { Alert, Pressable, Text, View } from "react-native";
 import { formatCents } from "@events-os/shared";
@@ -42,11 +49,7 @@ export function CardholderRow({
   const { ref, anchor, visible, open, close } = useAnchor();
   const status = cardStatusBadge(card.status, card.frozenByHolder);
   const receipts = receiptStatus(card);
-
-  // Legacy (Relay) cards are external — Increase-only controls (caps/validity,
-  // lock/unlock) don't apply, so they carry no ⋯ actions. Manage them from the
-  // "Relay cards" section instead.
-  const isLegacy = card.source === "legacy";
+  const receiptDue = receipts.tone === "warn";
   const isCanceled = card.status === "canceled";
 
   // A card the HOLDER froze themselves (suspected foul play) — a manager's
@@ -69,68 +72,62 @@ export function CardholderRow({
     }
   }
 
-  const actions: ContextMenuAction[] =
-    isLegacy || isCanceled
-      ? []
-      : [
-          { label: "Edit controls…", icon: "sliders", onPress: onEditControls },
-          ...(card.status === "locked"
+  const actions: ContextMenuAction[] = isCanceled
+    ? []
+    : [
+        { label: "Edit controls…", icon: "sliders", onPress: onEditControls },
+        ...(card.status === "locked"
+          ? [
+              {
+                label: "Unlock card",
+                icon: "unlock" as const,
+                onPress: handleUnlockPress,
+              },
+            ]
+          : card.status === "active"
             ? [
                 {
-                  label: "Unlock card",
-                  icon: "unlock" as const,
-                  onPress: handleUnlockPress,
+                  label: "Lock card",
+                  icon: "lock" as const,
+                  onPress: onLock,
+                  destructive: true,
                 },
               ]
-            : card.status === "active"
-              ? [
-                  {
-                    label: "Lock card",
-                    icon: "lock" as const,
-                    onPress: onLock,
-                    destructive: true,
-                  },
-                ]
-              : []),
-          // FM/Treasurer-only server-side (`requireFinanceManager`) — same
-          // convention as Lock/Unlock above: always shown here, the backend
-          // gate is what actually enforces it.
-          {
-            label: "Cancel card…",
-            icon: "x-circle",
-            onPress: onCancel,
-            destructive: true,
-          },
-        ];
+            : []),
+        // FM/Treasurer-only server-side (`requireFinanceManager`) — same
+        // convention as Lock/Unlock above: always shown here, the backend
+        // gate is what actually enforces it.
+        {
+          label: "Cancel card…",
+          icon: "x-circle",
+          onPress: onCancel,
+          destructive: true,
+        },
+      ];
 
   return (
     <Row last={last}>
-      <Cell flex={2}>
+      <Cell flex={2.2}>
         <View className="flex-row items-center gap-2.5">
-          <Avatar name={card.cardholderName ?? "?"} size={30} />
+          <Avatar name={card.cardholderName ?? "?"} size={28} />
           <View className="flex-1">
-            <View className="flex-row items-center gap-1.5">
-              <Text className="text-sm font-semibold text-ink" numberOfLines={1}>
-                {card.cardholderName ?? "Unknown"}
-              </Text>
-              {isLegacy ? <Badge label="Relay" tone="neutral" /> : null}
-            </View>
-            <Text className="text-xs text-faint" numberOfLines={1}>
-              {cardTypeLabel(card.type)} ···{card.last4 ?? "••••"}
+            <Text className="text-sm font-semibold text-ink" numberOfLines={1}>
+              {card.cardholderName ?? "Unknown"}
             </Text>
+            <View className="flex-row items-center gap-1">
+              <Text className="text-xs text-faint" numberOfLines={1}>
+                {cardTypeLabel(card.type)} ···{card.last4 ?? "••••"}
+              </Text>
+              {receiptDue ? (
+                <Icon name="flag" size={10} color={colors.warn} />
+              ) : null}
+            </View>
           </View>
         </View>
       </Cell>
 
-      <Cell flex={1.6}>
-        <Badge label={receipts.label} tone={receipts.tone} icon={receipts.icon} />
-      </Cell>
-
-      <Cell width={110} align="right">
-        <Text
-          className="text-sm text-ink"
-          style={{ fontVariant: ["tabular-nums"] }}
-        >
+      <Cell width={96} align="right">
+        <Text className="text-sm text-ink" style={{ fontVariant: ["tabular-nums"] }}>
           {formatCents(card.spentThisMonthCents)}
         </Text>
       </Cell>

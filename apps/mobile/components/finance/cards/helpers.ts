@@ -5,6 +5,7 @@
  * integer cents — formatted only at the leaves via `formatCents`.
  */
 import type { FunctionReturnType } from "convex/server";
+import { ConvexError } from "convex/values";
 import { api } from "@events-os/convex/_generated/api";
 import type { CardStatus, CardType } from "@events-os/shared";
 import { RECEIPT_GRACE_DAYS } from "@events-os/shared";
@@ -101,4 +102,36 @@ export function receiptStatus(card: CardSummary): StatusChip {
 /** True once a card is "on the hook" for a receipt (drives the manager tile). */
 export function hasReceiptDue(card: CardSummary): boolean {
   return card.receiptGraceEndsAt != null || card.status === "locked";
+}
+
+/** "45" → "45s"; "125" → "3m" (rounds up so the holder never retries a beat
+ *  early). Used to turn `revealCardDetails`'s `retryAfterSeconds` into a
+ *  readable "try again in …" string. */
+export function formatRetryAfter(seconds: number): string {
+  if (seconds < 60) return `${seconds}s`;
+  return `${Math.ceil(seconds / 60)}m`;
+}
+
+/**
+ * `revealCardDetails` throws `ConvexError({ code: "RATE_LIMITED", message,
+ * retryAfterSeconds })` once the 5/hour cap is hit (`cards.ts`). Rewrite that
+ * into a precise "try again in Xs/Xm" message for the toast; every other error
+ * (FORBIDDEN, NOT_CONFIGURED, ILLEGAL_STATE, a network failure) passes through
+ * unchanged — `lib/errors.ts`'s `errorMessage` already reads its `.message`.
+ */
+export function toFriendlyRevealError(err: unknown): unknown {
+  if (err instanceof ConvexError) {
+    const data = err.data as
+      | { code?: string; message?: string; retryAfterSeconds?: number }
+      | undefined;
+    if (data?.code === "RATE_LIMITED" && typeof data.retryAfterSeconds === "number") {
+      return new ConvexError({
+        ...data,
+        message: `Too many attempts to view card details — try again in ${formatRetryAfter(
+          data.retryAfterSeconds,
+        )}.`,
+      });
+    }
+  }
+  return err;
 }
