@@ -50,18 +50,16 @@ export function registerGiveApiRoutes(http: HttpRouter): void {
     handler: jsonPost(async (ctx, body) => {
       const slug = String(body.slug ?? "");
       const resolved = await ctx.runQuery(
-        internal.cityCampaigns.resolveCampaignForCheckout,
+        internal.territories.resolveTerritoryForCheckout,
         { slug },
       );
       if (!resolved) {
         throw new ConvexError({
-          message: "This city isn't available for backing right now.",
+          message: "This territory isn't available for backing right now.",
         });
       }
       return ctx.runAction(api.givingPledges.startPledgeCheckout, {
-        ...(resolved.kind === "chapter"
-          ? { chapterId: resolved.chapterId }
-          : { cityCampaignId: resolved.cityCampaignId }),
+        chapterId: resolved.chapterId,
         amountCents: Math.floor(Number(body.amountCents)),
         name: String(body.name ?? ""),
         email: String(body.email ?? ""),

@@ -72,6 +72,7 @@ import {
 } from "./schema/givingPlatform";
 import { sponsorPackages, sponsorships } from "./schema/sponsorships";
 import { cityCampaigns } from "./schema/cityCampaigns";
+import { territories } from "./schema/territories";
 import { seatDefs, seatAssignments } from "./schema/seats";
 import { seatStructureLog } from "./schema/seatStructureLog";
 import { seatProposals } from "./schema/seatProposals";
@@ -259,11 +260,19 @@ const schema = defineSchema({
   sponsorPackages,
   sponsorships,
 
-  // P3 public map — `cityCampaigns` (prospect/raising/launched cities on the
-  // public `/give` map). A prospect-city pledge is `pledges.scope === "central"`
-  // with `cityCampaignId` set (see schema/givingPlatform.ts's `pledges` doc
-  // comment) and derives `cityCampaigns.backerCount` the same way P2 derives
-  // `chapters.backerCount` (see cityCampaigns.ts + giving-platform.md §5).
+  // Territories (giving-territories addendum) — a territory maps 1:1 with a
+  // real chapter (a "shadow chapter" while prospect); prospect pledges/donors/
+  // gifts scope DIRECTLY to that chapter, and launch is `chapters.isActive:
+  // true`. Backer count is ALWAYS read from the linked chapter — no counter
+  // here. Supersedes `cityCampaigns` (see schema/territories.ts + territories.ts
+  // + docs/plans/giving-territories.md).
+  territories,
+
+  // DEPLOY-B(territories): `cityCampaigns` is superseded by `territories` and is
+  // registered here ONLY so migration 0029 can read the legacy rows. Once 0029
+  // has run in prod, a follow-up PR removes this table + its registration,
+  // `apps/convex/cityCampaigns.ts`, and `pledges.cityCampaignId` /
+  // `pledges.by_cityCampaign`. Nothing in routes/UI references it anymore.
   cityCampaigns,
 
   // Org chart (seats) — a tree of seats shared by the central chart + every

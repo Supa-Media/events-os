@@ -47,7 +47,7 @@ import {
 import { matchOrCreateDonor, recordGiftForDonor } from "./lib/givingDonors";
 import { PLEDGE_STATUSES } from "./schema/givingPlatform";
 import { siteUrl, givePagePath } from "./lib/siteUrl";
-import { recomputeCityCampaignBackerCount } from "./cityCampaigns";
+import { territoryForChapter } from "./territories";
 
 const STRIPE_API = "https://api.stripe.com/v1";
 
@@ -126,21 +126,18 @@ export async function recomputeChapterBackerCount(
 }
 
 /**
- * Recompute every counter a pledge transition can move: its chapter/central
- * scope (a no-op for `"central"`, per `recomputeChapterBackerCount` above)
- * AND, when set (P3 prospect-city pledges), its `cityCampaigns.backerCount`
- * (`recomputeCityCampaignBackerCount`). Every webhook handler below calls
- * this instead of `recomputeChapterBackerCount` directly, so a prospect-city
- * pledge's campaign dot stays live exactly like a chapter's.
+ * Recompute every counter a pledge transition can move. With Territories, a
+ * pledge ALWAYS scopes to a real chapter (a prospect territory's shadow chapter
+ * or a live one), so this collapses to the chapter recompute — a no-op for
+ * `"central"`, per `recomputeChapterBackerCount` above. (Pre-Territories
+ * prospect-city pledges carried a `cityCampaignId`; migration 0029 re-scopes
+ * those onto their chapter, so there's no separate campaign counter to move.)
  */
 async function recomputePledgeCounters(
   ctx: MutationCtx,
   pledge: Doc<"pledges">,
 ): Promise<void> {
   await recomputeChapterBackerCount(ctx, pledge.scope);
-  if (pledge.cityCampaignId) {
-    await recomputeCityCampaignBackerCount(ctx, pledge.cityCampaignId);
-  }
 }
 
 /** Resolve a pledge by its Stripe subscription id (webhook object → pledge). */
@@ -187,16 +184,17 @@ function mapStripeSubStatus(
  * the donor). Called by `startPledgeCheckout` right before Stripe. Mirrors
  * `giving.prepareDonation`.
  *
- * Backs EITHER a live chapter (`chapterId`) OR a prospect/raising city
- * (`cityCampaignId`) — exactly one must be set (P3, PRD §5). A campaign
- * pledge is stored with `scope: "central"` + `cityCampaignId` set (see the
- * `pledges` schema doc comment for the money-location convention) and its
- * donor is scoped to `"central"` too, matching that convention.
+ * A pledge ALWAYS backs a real chapter (`chapterId`) — a territory maps 1:1
+ * with a chapter, and a prospect territory's shadow chapter is a real
+ * (inactive) `chapters` row that donors/pledges/gifts scope DIRECTLY to (the
+ * old "central + cityCampaignId" convention is gone). Guard: an INACTIVE
+ * chapter is only backable if it has a `publiclyVisible` territory still in
+ * `prospect`/`raising` (its shadow-chapter phase) — otherwise it's NOT_FOUND,
+ * so a random inactive/demo chapter can't be pledged to.
  */
 export const preparePledge = internalMutation({
   args: {
-    chapterId: v.optional(v.id("chapters")),
-    cityCampaignId: v.optional(v.id("cityCampaigns")),
+    chapterId: v.id("chapters"),
     amountCents: v.number(),
     name: v.string(),
     email: v.string(),
@@ -211,57 +209,51 @@ export const preparePledge = internalMutation({
         message: "A name and valid email are required.",
       });
     }
-    if (!!args.chapterId === !!args.cityCampaignId) {
-      // Both set, or neither — exactly one target is valid.
+
+    const chapter = await ctx.db.get(args.chapterId);
+    if (!chapter) {
       throw new ConvexError({
-        code: "INVALID_INPUT",
-        message: "A pledge must back exactly one city.",
+        code: "NOT_FOUND",
+        message: "That territory isn't available for backing.",
       });
     }
 
-    let scope: GivingScope;
-    let cityCampaignId: Id<"cityCampaigns"> | undefined;
-    let displayName: string;
-    let campaignSlug: string | undefined;
+    // A territory maps 1:1 with the chapter (present for prospect + launched
+    // alike); its slug is the return-URL segment for the /give thank-you.
+    const territory = await territoryForChapter(ctx, args.chapterId);
 
-    if (args.cityCampaignId) {
-      const campaign = await ctx.db.get(args.cityCampaignId);
+    // An inactive (shadow) chapter is only backable through a visible,
+    // still-raising territory — never a bare inactive/demo chapter.
+    if (chapter.isActive === false) {
       if (
-        !campaign ||
-        !campaign.publiclyVisible ||
-        (campaign.status !== "prospect" && campaign.status !== "raising")
+        !territory ||
+        !territory.publiclyVisible ||
+        (territory.stage !== "prospect" && territory.stage !== "raising")
       ) {
         throw new ConvexError({
           code: "NOT_FOUND",
-          message: "That city isn't available for backing.",
+          message: "That territory isn't available for backing.",
         });
       }
-      scope = "central";
-      cityCampaignId = campaign._id;
-      displayName = campaign.name;
-      campaignSlug = campaign.slug;
-    } else {
-      const chapter = await ctx.db.get(args.chapterId!);
-      if (!chapter) {
-        throw new ConvexError({
-          code: "NOT_FOUND",
-          message: "That city isn't available for backing.",
-        });
-      }
-      scope = args.chapterId!;
-      displayName = chapter.name;
     }
+
+    const scope: GivingScope = args.chapterId;
+    const territorySlug =
+      territory && territory.publiclyVisible ? territory.slug : undefined;
+    // A shadow-chapter (prospect-territory) backer came off the public map;
+    // a live-chapter backer is a direct signup.
+    const source: Doc<"donors">["source"] =
+      chapter.isActive === false ? "map" : "manual";
 
     const donorId = await matchOrCreateDonor(ctx, {
       scope,
       name,
       email,
-      source: cityCampaignId ? "map" : "manual",
+      source,
     });
     const pledgeId = await ctx.db.insert("pledges", {
       donorId,
       scope,
-      ...(cityCampaignId ? { cityCampaignId } : {}),
       amountCents: args.amountCents,
       status: "incomplete",
       origin: "stripe",
@@ -270,8 +262,8 @@ export const preparePledge = internalMutation({
     return {
       pledgeId,
       amountCents: args.amountCents,
-      chapterName: displayName,
-      campaignSlug,
+      chapterName: chapter.name,
+      territorySlug,
     };
   },
 });
@@ -284,15 +276,13 @@ export const preparePledge = internalMutation({
  * `checkout.session.completed`) and the subscription (`subscription_data`), so
  * every downstream subscription event resolves back to this pledge.
  *
- * Backs EITHER a live chapter OR a prospect/raising city — see
- * `preparePledge`. The public `/give/<slug>` route (P3) is the caller for a
- * campaign pledge, resolving the slug to whichever id applies
- * (`cityCampaigns.resolveCampaignForCheckout`) before calling this.
+ * Always backs a real chapter — see `preparePledge`. The public `/give/<slug>`
+ * route resolves the slug to its chapter id
+ * (`territories.resolveTerritoryForCheckout`) before calling this.
  */
 export const startPledgeCheckout = action({
   args: {
-    chapterId: v.optional(v.id("chapters")),
-    cityCampaignId: v.optional(v.id("cityCampaigns")),
+    chapterId: v.id("chapters"),
     amountCents: v.number(),
     name: v.string(),
     email: v.string(),
@@ -302,10 +292,9 @@ export const startPledgeCheckout = action({
       pledgeId: Id<"pledges">;
       amountCents: number;
       chapterName: string;
-      campaignSlug?: string;
+      territorySlug?: string;
     } = await ctx.runMutation(internal.givingPledges.preparePledge, {
       chapterId: args.chapterId,
-      cityCampaignId: args.cityCampaignId,
       amountCents: args.amountCents,
       name: args.name,
       email: args.email,
@@ -319,13 +308,13 @@ export const startPledgeCheckout = action({
       });
     }
 
-    // Return to the site with a thank-you state. A campaign pledge (P3)
+    // Return to the site with a thank-you state. A territory-backed pledge
     // returns to its own `/give/<slug>` page (which reads `?pledge=` to show
-    // the thank-you banner); a plain chapter pledge falls back to the site
-    // root, as before P3.
+    // the thank-you banner); a chapter with no public territory falls back to
+    // the site root.
     const base = siteUrl();
-    const returnPath = prepared.campaignSlug
-      ? givePagePath(prepared.campaignSlug)
+    const returnPath = prepared.territorySlug
+      ? givePagePath(prepared.territorySlug)
       : "/";
     const body = new URLSearchParams();
     body.set("mode", "subscription");

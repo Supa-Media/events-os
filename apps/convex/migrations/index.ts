@@ -41,6 +41,7 @@ import { addCdFinanceViewer } from "./0025_add_cd_finance_viewer";
 import { migrateBudgetV1Lines } from "./0026_migrate_budget_v1_lines";
 import { syncLinkedBudgetIdentity } from "./0027_sync_linked_budget_identity";
 import { reawardCourseCompletions } from "./0028_reaward_course_completions";
+import { territoriesCutover } from "./0029_territories_cutover";
 
 /** One registered migration: a stable `name` (the ledger key) + its effect. */
 export type Migration = {
@@ -97,4 +98,9 @@ export const MIGRATIONS: Migration[] = [
   // shared `chapter-money-model` course, so anyone who'd already passed both
   // of chapter-director's remaining modules picks up the badge.
   reawardCourseCompletions,
+  // Territories cutover — replace `cityCampaigns` with `territories` (1:1 with
+  // chapters), create shadow chapters for prospect/raising rows, and re-scope
+  // campaign-linked pledges/donors/gifts DIRECTLY onto their chapters (deltas
+  // net to zero). Idempotent; see 0029_territories_cutover.ts.
+  territoriesCutover,
 ];

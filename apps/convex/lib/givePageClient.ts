@@ -1,10 +1,10 @@
 /**
- * Browser script for the `/give/<slug>` campaign page's become-a-backer form
- * (F-6 P3). Vanilla JS (no build step), posts to the same-origin
- * `/api/give/pledge` httpAction (mirrors `/api/tickets/donate`'s shape —
- * `landingPageClient.ts#startDonation`) and redirects to the returned Stripe
- * Checkout URL. The map page (`/give`) needs no script — every dot is a plain
- * server-rendered `<a>`.
+ * Browser script for the `/give/<slug>` territory page's become-a-backer form
+ * (docs/plans/giving-territories.md). Vanilla JS (no build step), posts to the
+ * same-origin `/api/give/pledge` httpAction (mirrors `/api/tickets/donate`'s
+ * shape — `landingPageClient.ts#startDonation`) and redirects to the returned
+ * Stripe Checkout URL. The map page (`/give`) needs no script — every dot is a
+ * plain server-rendered `<a>`.
  */
 export const GIVE_CAMPAIGN_SCRIPT = `
 (function(){
@@ -29,7 +29,7 @@ function refreshButton(){
   var btn=$('gc_submit');
   if(!btn)return;
   var c=currentCents();
-  btn.textContent=c>0?('Back this city — '+money(c)+'/mo'):'Choose an amount';
+  btn.textContent=c>0?('Back this territory — '+money(c)+'/mo'):'Choose an amount';
   btn.disabled=c<=0;
 }
 function selectPreset(cents){

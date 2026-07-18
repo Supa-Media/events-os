@@ -1,9 +1,10 @@
 /**
- * Public giving map + campaign pages (F-6 P3, docs/plans/giving-platform.md
- * §5) — server-rendered HTML from Convex `httpAction`s, the same house
- * pattern as `landingPage.ts`: self-contained inline CSS/JS, OG tags, no
- * external assets (no map-tile service). Served by `http.ts` at `/give` (the
- * map) and `/give/<slug>` (one city's campaign page).
+ * Public giving map + territory pages (docs/plans/giving-territories.md) —
+ * server-rendered HTML from Convex `httpAction`s, the same house pattern as
+ * `landingPage.ts`: self-contained inline CSS/JS, OG tags, no external assets
+ * (no map-tile service). Served by `http.ts` at `/give` (the map) and
+ * `/give/<slug>` (one territory's page). URLs are unchanged from the retired
+ * cityCampaigns pages so already-shared links survive the cutover.
  *
  * The map's dots are plotted with a hand-rolled equirectangular projection
  * (see `projectPoint`) onto a simplified, hand-rolled continental-US outline
@@ -21,24 +22,24 @@ import {
   launchTemplateTotalCents,
 } from "@events-os/shared";
 
-type CampaignStatus = "prospect" | "raising" | "launched";
+type TerritoryStage = "prospect" | "raising" | "launched";
 
-export type MapCampaign = {
+export type MapTerritory = {
   name: string;
   region: string;
   lat: number;
   lng: number;
   slug: string;
-  status: CampaignStatus;
+  stage: TerritoryStage;
   backerCount: number;
   targetBackers: number;
 };
 
-export type PublicCampaignData = {
+export type PublicTerritoryData = {
   name: string;
   region: string;
   slug: string;
-  status: CampaignStatus;
+  stage: TerritoryStage;
   backerCount: number;
   targetBackers: number;
   story: string | null;
@@ -147,14 +148,14 @@ function usOutlinePath(): string {
 
 // ── Shared bits ────────────────────────────────────────────────────────────────
 
-const STATUS_LABEL: Record<CampaignStatus, string> = {
+const STAGE_LABEL: Record<TerritoryStage, string> = {
   prospect: "Prospect",
   raising: "Raising",
   launched: "Launched",
 };
 
-function statusChip(status: CampaignStatus): string {
-  return `<span class="chip ${status}">${STATUS_LABEL[status]}</span>`;
+function stageChip(stage: TerritoryStage): string {
+  return `<span class="chip ${stage}">${STAGE_LABEL[stage]}</span>`;
 }
 
 function ogHead(opts: {
@@ -200,7 +201,7 @@ const PRESET_AMOUNTS_CENTS = [2000, 5000, 10000];
 
 function becomeABackerForm(): string {
   return `<section class="backer-form">
-  <h2>Back this city</h2>
+  <h2>Back this territory</h2>
   <form id="gc_form">
     <div class="amtgrid">
       ${PRESET_AMOUNTS_CENTS.map(
@@ -214,7 +215,7 @@ function becomeABackerForm(): string {
     </div>
     <div class="fld"><label for="gc_name">Your name</label><input id="gc_name" autocomplete="name" placeholder="First and last name"></div>
     <div class="fld"><label for="gc_email">Email</label><input id="gc_email" type="email" autocomplete="email" placeholder="you@example.com"></div>
-    <button type="submit" class="submitbtn" id="gc_submit">Back this city</button>
+    <button type="submit" class="submitbtn" id="gc_submit">Back this territory</button>
     <div class="formerr" id="gc_err"></div>
     <div class="formok" id="gc_ok"></div>
   </form>
@@ -224,19 +225,19 @@ function becomeABackerForm(): string {
 // ── /give — the map ──────────────────────────────────────────────────────────
 
 export function renderGiveMapPage(
-  campaigns: MapCampaign[],
+  territories: MapTerritory[],
   siteUrl: string,
 ): string {
   const title = "Back a Public Worship chapter in your city";
   const description =
-    "See every Public Worship chapter and prospect city on one map, and become a monthly backer to help the next one launch.";
+    "See every Public Worship chapter and prospect territory on one map, and become a monthly backer to help the next one launch.";
 
-  const dots = campaigns
+  const dots = territories
     .map((c) => {
       const raw = projectPoint(c.lat, c.lng);
       const { x, y } = clampToView(raw);
-      const label = `${esc(c.name)}, ${esc(c.region)} — ${c.backerCount} of ${c.targetBackers} backers (${STATUS_LABEL[c.status]})`;
-      return `<a class="city-dot ${c.status}" href="${givePagePath(c.slug)}" aria-label="${label}">
+      const label = `${esc(c.name)}, ${esc(c.region)} — ${c.backerCount} of ${c.targetBackers} backers (${STAGE_LABEL[c.stage]})`;
+      return `<a class="city-dot ${c.stage}" href="${givePagePath(c.slug)}" aria-label="${label}">
   <circle class="ring" cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="12"></circle>
   <circle class="core" cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="6.5"></circle>
   <title>${label}</title>
@@ -244,10 +245,10 @@ export function renderGiveMapPage(
     })
     .join("\n");
 
-  const listRows = campaigns
+  const listRows = territories
     .map(
       (c) => `<a class="row" href="${givePagePath(c.slug)}">
-  <div class="info"><div class="nm">${esc(c.name)}, ${esc(c.region)}</div><div class="rg">${statusChip(c.status)}</div></div>
+  <div class="info"><div class="nm">${esc(c.name)}, ${esc(c.region)}</div><div class="rg">${stageChip(c.stage)}</div></div>
   <div class="stat"><span class="count">${c.backerCount} / ${c.targetBackers} backers</span></div>
 </a>`,
     )
@@ -271,9 +272,9 @@ ${BASE_CSS}${GIVE_CSS}
 
   <div class="mapwrap">
     ${
-      campaigns.length === 0
-        ? `<div class="map-empty">No cities on the map yet — check back soon.</div>`
-        : `<svg viewBox="0 0 ${MAP_VIEW_WIDTH} ${MAP_VIEW_HEIGHT}" role="img" aria-label="Map of Public Worship chapters and prospect cities across the continental United States">
+      territories.length === 0
+        ? `<div class="map-empty">No territories on the map yet — check back soon.</div>`
+        : `<svg viewBox="0 0 ${MAP_VIEW_WIDTH} ${MAP_VIEW_HEIGHT}" role="img" aria-label="Map of Public Worship chapters and prospect territories across the continental United States">
   <path class="us-outline" d="${usOutlinePath()}"></path>
   ${dots}
 </svg>`
@@ -281,13 +282,13 @@ ${BASE_CSS}${GIVE_CSS}
     <div class="legend">
       <span class="item"><span class="swatch launched"></span> Launched chapter</span>
       <span class="item"><span class="swatch raising"></span> Raising</span>
-      <span class="item"><span class="swatch prospect"></span> Prospect city</span>
+      <span class="item"><span class="swatch prospect"></span> Prospect territory</span>
     </div>
   </div>
 
   <div class="citylist">
-    <h2 class="serif">Every city</h2>
-    ${campaigns.length === 0 ? `<p style="color:var(--muted);font-size:14px">Nothing here yet.</p>` : listRows}
+    <h2 class="serif">Every territory</h2>
+    ${territories.length === 0 ? `<p style="color:var(--muted);font-size:14px">Nothing here yet.</p>` : listRows}
   </div>
 
   <footer style="margin-top:60px;text-align:center;font-size:12.5px;color:var(--faint)">Made with <span class="hearts">♥</span> by Public Worship</footer>
@@ -296,18 +297,18 @@ ${BASE_CSS}${GIVE_CSS}
 </html>`;
 }
 
-// ── /give/<slug> — one city's campaign page ───────────────────────────────────
+// ── /give/<slug> — one territory's page ───────────────────────────────────────
 
-export function renderGiveCampaignPage(
-  data: PublicCampaignData,
+export function renderGiveTerritoryPage(
+  data: PublicTerritoryData,
   siteUrl: string,
   pledgeParam: string | null,
 ): string {
   const url = `${siteUrl}${givePagePath(data.slug)}`;
   const title = `${data.name}, ${data.region} — ${data.backerCount} of ${data.targetBackers} backers`;
   const description = data.nextMilestone
-    ? `${Math.max(0, data.nextMilestone.minBackers - data.backerCount)} more backers unlock ${data.nextMilestone.commitment} in ${data.name}. Back this city for as little as $20/mo.`
-    : `Help ${data.name}, ${data.region} launch a Public Worship chapter. Back this city for as little as $20/mo.`;
+    ? `${Math.max(0, data.nextMilestone.minBackers - data.backerCount)} more backers unlock ${data.nextMilestone.commitment} in ${data.name}. Back this territory for as little as $20/mo.`
+    : `Help ${data.name}, ${data.region} launch a Public Worship chapter. Back this territory for as little as $20/mo.`;
 
   const progressPct = data.targetBackers > 0
     ? Math.min(100, Math.round((data.backerCount / data.targetBackers) * 100))
@@ -359,12 +360,12 @@ ${BASE_CSS}${GIVE_CSS}
 <body>
 <main class="give">
   <div class="give-topbar"><div class="wordmark">✦ PUBLIC WORSHIP ✦</div></div>
-  <a class="give-back" href="${givePagePath()}">← All cities</a>
+  <a class="give-back" href="${givePagePath()}">← All territories</a>
 
   ${thankYou}
 
   <div class="campaign-head">
-    ${statusChip(data.status)}
+    ${stageChip(data.stage)}
     <h1 class="serif">${esc(data.name)}</h1>
     <div class="region">${esc(data.region)}</div>
   </div>
@@ -399,11 +400,11 @@ ${GIVE_CAMPAIGN_SCRIPT}
 </html>`;
 }
 
-/** Friendly 404 for an unknown/hidden campaign slug. */
+/** Friendly 404 for an unknown/hidden territory slug. */
 export function renderGiveNotFound(): string {
   return `<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-<title>City not found · Public Worship</title>${FAVICON}${FONTS}
+<title>Territory not found · Public Worship</title>${FAVICON}${FONTS}
 <style>${BASE_CSS}
 .give-404{min-height:100vh;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;padding:24px;gap:10px}
 .give-404 h1{font-family:'Corben',Georgia,serif;font-size:34px}
@@ -411,6 +412,6 @@ export function renderGiveNotFound(): string {
 </style></head><body><div class="give-404">
 <div style="font-size:44px">🗺️</div>
 <h1>Nothing here yet</h1>
-<p>This city isn't on the map. <a href="${givePagePath()}">See every city →</a></p>
+<p>This territory isn't on the map. <a href="${givePagePath()}">See every territory →</a></p>
 </div></body></html>`;
 }

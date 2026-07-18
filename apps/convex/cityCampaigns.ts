@@ -1,4 +1,12 @@
 /**
+ * DEPLOY-B(territories): SUPERSEDED by `territories.ts`. This whole file is
+ * unreferenced by routes/UI — the public `/give` pages, the checkout resolver,
+ * and the admin desk all read `territories.ts` now. It stays ONLY so nothing
+ * breaks before migration 0029 runs in prod; a follow-up PR (Deploy B) deletes
+ * this file, `schema/cityCampaigns.ts` + its registration, and
+ * `pledges.cityCampaignId` / `pledges.by_cityCampaign`. Do not wire anything new
+ * to it.
+ *
  * Giving Platform (F-6, Phase 3) — the City Launch map's backend
  * (docs/plans/giving-platform.md §5). A `cityCampaigns` row is a dot on the
  * public `/give` map: a prospect city raising backers toward a chapter
