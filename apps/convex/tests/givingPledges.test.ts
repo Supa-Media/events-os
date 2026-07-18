@@ -1,6 +1,13 @@
-import { describe, expect, test, vi } from "vitest";
+import { afterEach, describe, expect, test, vi } from "vitest";
 import { api, internal } from "../_generated/api";
 import { newT, run, setupChapter, type ChapterSetup } from "./setup.helpers";
+
+// Stripe REST + env stubs are per-test (the recovery suite below); make sure
+// they never leak into the mutation-only tests in this file.
+afterEach(() => {
+  vi.unstubAllGlobals();
+  vi.unstubAllEnvs();
+});
 import { runSeedSeatDefs } from "../migrations/0022_seed_seat_defs";
 import type { Id } from "../_generated/dataModel";
 
@@ -250,6 +257,131 @@ describe("recordPledgeInvoice", () => {
     });
     expect((await pledgeRow(s, pledgeId))?.status).toBe("active");
     expect(await chapterBackerCount(s)).toBe(1);
+  });
+});
+
+// ── invoice.paid out-of-order recovery (finding A) ────────────────────────────
+
+describe("recordPledgeInvoice out-of-order recovery (finding A)", () => {
+  const SUB = "sub_race";
+  const KEY = "sk_test_recovery";
+
+  /** Stub Stripe's subscription-retrieve endpoint. `pledgeId` undefined models a
+   *  FOREIGN (non-pledge) subscription — its metadata carries no pledgeId. */
+  function stubSubscriptionFetch(pledgeId: string | undefined) {
+    const fetchMock = vi.fn(async (_url: string) => ({
+      ok: true,
+      status: 200,
+      text: async () => "",
+      json: async () => ({
+        id: SUB,
+        customer: "cus_race",
+        current_period_end: 1_900_000_000, // unix seconds
+        metadata: pledgeId ? { pledgeId } : {},
+      }),
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+    return fetchMock;
+  }
+
+  test("invoice.paid BEFORE session-completed recovers via metadata; exactly one gift; late session + redelivery no-op", async () => {
+    vi.useFakeTimers();
+    vi.stubEnv("STRIPE_SECRET_KEY", KEY);
+    try {
+      const t = newT();
+      const s = await setupChapter(t);
+      // A prepared-but-NOT-activated pledge — no stripeSubscriptionId linked yet.
+      const prepared = await t.mutation(internal.givingPledges.preparePledge, {
+        chapterId: s.chapterId,
+        amountCents: 5000,
+        name: "Racer",
+        email: "race@example.com",
+      });
+      const pledgeId = prepared.pledgeId as Id<"pledges">;
+      const fetchMock = stubSubscriptionFetch(String(pledgeId));
+
+      // invoice.paid arrives FIRST — nothing resolves by subscription id, so the
+      // gift is deferred to the scheduled recovery rather than dropped.
+      const early = await t.mutation(internal.givingPledges.recordPledgeInvoice, {
+        subscriptionId: SUB,
+        invoiceId: "in_race",
+        amountPaidCents: 5000,
+      });
+      expect(early).toBe(false);
+      expect(await chapterGifts(s)).toHaveLength(0);
+
+      // Drain the recovery: fetch subscription → link/activate → re-record.
+      await t.finishAllScheduledFunctions(vi.runAllTimers);
+      expect(fetchMock).toHaveBeenCalledOnce();
+
+      // Exactly one gift, pledge now active + linked + counted as a backer.
+      let gifts = await chapterGifts(s);
+      expect(gifts).toHaveLength(1);
+      expect(gifts[0]).toMatchObject({
+        pledgeId,
+        stripeInvoiceId: "in_race",
+        amountCents: 5000,
+        method: "stripe",
+      });
+      const pledge = await pledgeRow(s, pledgeId);
+      expect(pledge?.status).toBe("active");
+      expect(pledge?.stripeSubscriptionId).toBe(SUB);
+      expect(await chapterBackerCount(s)).toBe(1);
+
+      // The LATE checkout.session.completed for the same pledge is a clean no-op.
+      const late = await t.mutation(
+        internal.givingPledges.activatePledgeFromCheckout,
+        {
+          pledgeId: String(pledgeId),
+          stripeCustomerId: "cus_race",
+          stripeSubscriptionId: SUB,
+        },
+      );
+      expect(late).toBe(true);
+      expect(await chapterGifts(s)).toHaveLength(1);
+      expect(await chapterBackerCount(s)).toBe(1);
+
+      // (b) Redelivery of the SAME invoice after recovery stays idempotent.
+      const redelivered = await t.mutation(
+        internal.givingPledges.recordPledgeInvoice,
+        { subscriptionId: SUB, invoiceId: "in_race", amountPaidCents: 5000 },
+      );
+      expect(redelivered).toBe(true);
+      gifts = await chapterGifts(s);
+      expect(gifts).toHaveLength(1);
+
+      await t.finishAllScheduledFunctions(vi.runAllTimers);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test("(c) a foreign subscription (no pledgeId metadata) still no-ops — no gift, no pledge", async () => {
+    vi.useFakeTimers();
+    vi.stubEnv("STRIPE_SECRET_KEY", KEY);
+    try {
+      const t = newT();
+      const s = await setupChapter(t);
+      const fetchMock = stubSubscriptionFetch(undefined); // metadata has no pledgeId
+
+      const res = await t.mutation(internal.givingPledges.recordPledgeInvoice, {
+        subscriptionId: "sub_foreign",
+        invoiceId: "in_foreign",
+        amountPaidCents: 9900,
+      });
+      expect(res).toBe(false);
+
+      await t.finishAllScheduledFunctions(vi.runAllTimers);
+      expect(fetchMock).toHaveBeenCalledOnce();
+      // Not our subscription — nothing created.
+      expect(await chapterGifts(s)).toHaveLength(0);
+      const pledges = await run(s.t, (ctx) =>
+        ctx.db.query("pledges").collect(),
+      );
+      expect(pledges).toHaveLength(0);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 

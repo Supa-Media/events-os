@@ -27,6 +27,7 @@
  */
 import {
   action,
+  internalAction,
   internalMutation,
   internalQuery,
   mutation,
@@ -422,11 +423,37 @@ export const recordPledgeInvoice = internalMutation({
     invoiceId: v.string(),
     amountPaidCents: v.number(),
     currentPeriodEnd: v.optional(v.number()),
+    // Out-of-order guard (finding A): when the subscription can't be resolved
+    // to a pledge yet — an `invoice.paid` that raced ahead of the
+    // `checkout.session.completed` that links the subscription — schedule a
+    // one-shot recovery (`recoverPledgeInvoice`) that links the pledge from the
+    // subscription's `metadata.pledgeId` and re-records this invoice. The
+    // recovery's own re-call passes `false` so it can never loop.
+    attemptRecovery: v.optional(v.boolean()),
   },
   returns: v.boolean(),
   handler: async (ctx, args) => {
     const pledge = await pledgeBySubscription(ctx, args.subscriptionId);
-    if (!pledge) return false; // not our subscription — safe no-op
+    if (!pledge) {
+      // Not linked to a pledge (yet). Kick off metadata-based recovery unless
+      // this IS the recovery's terminal re-call. A truly foreign subscription
+      // (no pledgeId metadata) is a clean no-op inside the recovery action.
+      if (args.attemptRecovery !== false) {
+        await ctx.scheduler.runAfter(
+          0,
+          internal.givingPledges.recoverPledgeInvoice,
+          {
+            subscriptionId: args.subscriptionId,
+            invoiceId: args.invoiceId,
+            amountPaidCents: args.amountPaidCents,
+            ...(args.currentPeriodEnd
+              ? { currentPeriodEnd: args.currentPeriodEnd }
+              : {}),
+          },
+        );
+      }
+      return false; // safe no-op for now — recovery makes the real decision
+    }
 
     // Idempotent on the invoice id — exactly one gift per billing cycle.
     const existing = await ctx.db
@@ -470,6 +497,89 @@ export const recordPledgeInvoice = internalMutation({
       if (patch.status) await recomputePledgeCounters(ctx, pledge);
     }
     return true;
+  },
+});
+
+/**
+ * Out-of-order recovery for `invoice.paid` (finding A). Stripe does NOT
+ * guarantee event ordering, so an `invoice.paid` can be delivered BEFORE the
+ * `checkout.session.completed` that links a pledge's Stripe subscription — in
+ * which case `recordPledgeInvoice` can't resolve the subscription and would
+ * otherwise drop the first cycle's gift for good.
+ *
+ * This one-shot action (scheduled by `recordPledgeInvoice` only when no pledge
+ * resolves) closes that race WITHOUT touching the shared `/stripe/webhook`
+ * fan-out: it fetches the subscription from the Stripe REST API, reads the
+ * `metadata.pledgeId` that `startPledgeCheckout` stamps via
+ * `subscription_data[metadata]`, links + activates the pledge through the SAME
+ * `activatePledgeFromCheckout` the session path uses (so the two land in either
+ * order, idempotently), then re-records the invoice with `attemptRecovery:
+ * false` (terminal — never re-schedules). A subscription with no `pledgeId`
+ * metadata isn't ours: a clean no-op.
+ */
+export const recoverPledgeInvoice = internalAction({
+  args: {
+    subscriptionId: v.string(),
+    invoiceId: v.string(),
+    amountPaidCents: v.number(),
+    currentPeriodEnd: v.optional(v.number()),
+  },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    const secretKey = process.env.STRIPE_SECRET_KEY;
+    if (!secretKey) return null; // payments not configured — nothing to recover
+
+    const response = await fetch(
+      `${STRIPE_API}/subscriptions/${encodeURIComponent(args.subscriptionId)}`,
+      { headers: { Authorization: `Bearer ${secretKey}` } },
+    );
+    if (!response.ok) {
+      console.error(
+        "[stripe] pledge invoice recovery — subscription fetch failed:",
+        await response.text(),
+      );
+      return null;
+    }
+    const sub = (await response.json()) as {
+      id: string;
+      customer?: string | null;
+      current_period_end?: number | null;
+      metadata?: Record<string, string> | null;
+    };
+    const pledgeId = sub.metadata?.pledgeId;
+    if (!pledgeId) return null; // not one of our subscriptions — safe no-op
+
+    // Link + activate exactly as `checkout.session.completed` would (idempotent
+    // — a later session-completed for the same pledge then no-ops).
+    const linked: boolean = await ctx.runMutation(
+      internal.givingPledges.activatePledgeFromCheckout,
+      {
+        pledgeId,
+        ...(sub.customer ? { stripeCustomerId: sub.customer } : {}),
+        stripeSubscriptionId: args.subscriptionId,
+        ...(sub.current_period_end
+          ? { currentPeriodEnd: sub.current_period_end * 1000 }
+          : {}),
+      },
+    );
+    if (!linked) return null; // the pledgeId didn't resolve — nothing to record
+
+    // The subscription now resolves to a pledge — re-record the invoice. The
+    // `attemptRecovery: false` guard makes this terminal (no re-schedule loop).
+    const recorded: boolean = await ctx.runMutation(
+      internal.givingPledges.recordPledgeInvoice,
+      {
+        subscriptionId: args.subscriptionId,
+        invoiceId: args.invoiceId,
+        amountPaidCents: args.amountPaidCents,
+        ...(args.currentPeriodEnd
+          ? { currentPeriodEnd: args.currentPeriodEnd }
+          : {}),
+        attemptRecovery: false,
+      },
+    );
+    void recorded;
+    return null;
   },
 });
 
