@@ -5,7 +5,14 @@
  * snapshots) so a silent behavior change during the split — a re-ordered
  * section, a moved course, a changed minutes/quiz count — fails loudly.
  *
- * This test must pass UNCHANGED both before and after the split.
+ * This test passed UNCHANGED across the split itself. It was DELIBERATELY
+ * updated once since, for the `chapter-money-model` reshape (shared core
+ * course for Treasurer + Chapter Director): two sections appended
+ * (finance-budget-lifecycle, finance-one-home-per-dollar; 45 → 47 total),
+ * a new `chapter-money-model` course inserted between finances-for-everyone
+ * and treasurer, and `finance-tiers-and-skim` moved out of chapter-director's
+ * moduleSlugs into it. Section slugs and their order are otherwise untouched
+ * — any OTHER drift here is still a real regression.
  */
 import { describe, expect, test } from "vitest";
 import { ACADEMY_COURSES, ACADEMY_SECTIONS } from "./academy";
@@ -64,6 +71,8 @@ const EXPECTED_SECTION_SLUGS: string[] = [
   "finance-central-budgets",
   "finance-governance-and-seats",
   "finance-launch-grants-and-transfers",
+  "finance-budget-lifecycle",
+  "finance-one-home-per-dollar",
 ];
 
 // Per-section fields that must not drift: title, minutes, quiz length,
@@ -492,6 +501,22 @@ const EXPECTED_SECTIONS: {
     optional: false,
     capstoneKind: null,
   },
+  {
+    slug: "finance-budget-lifecycle",
+    title: "The budget lifecycle",
+    minutes: 3,
+    quizLength: 4,
+    optional: false,
+    capstoneKind: null,
+  },
+  {
+    slug: "finance-one-home-per-dollar",
+    title: "One home per dollar",
+    minutes: 3,
+    quizLength: 4,
+    optional: false,
+    capstoneKind: null,
+  },
 ];
 
 // Course catalog: slug + themeKey + ordered moduleSlugs.
@@ -566,6 +591,11 @@ const EXPECTED_COURSES: {
     moduleSlugs: ["finance-stewardship", "finance-card-and-receipts", "finance-reimbursements-and-flags"],
   },
   {
+    slug: "chapter-money-model",
+    themeKey: "finances",
+    moduleSlugs: ["finance-tiers-and-skim", "finance-budget-lifecycle", "finance-one-home-per-dollar"],
+  },
+  {
     slug: "treasurer",
     themeKey: "finances",
     moduleSlugs: ["finance-reconcile-grid", "finance-chasing-receipts", "finance-monthly-close"],
@@ -573,7 +603,7 @@ const EXPECTED_COURSES: {
   {
     slug: "chapter-director",
     themeKey: "finances",
-    moduleSlugs: ["finance-raise-vs-manage", "finance-approving-budgets", "finance-tiers-and-skim"],
+    moduleSlugs: ["finance-raise-vs-manage", "finance-approving-budgets"],
   },
   {
     slug: "financial-manager",

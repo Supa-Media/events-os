@@ -115,6 +115,7 @@ describe("academy course completions", () => {
     expect(await badges(s)).toEqual([
       "care-and-accountability",
       "chapter-director",
+      "chapter-money-model",
       "chapter-os-fundamentals",
       "directing",
       "duties",

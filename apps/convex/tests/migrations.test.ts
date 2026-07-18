@@ -310,6 +310,7 @@ const REGISTRY_NAMES = [
   "0025_add_cd_finance_viewer",
   "0026_migrate_budget_v1_lines",
   "0027_sync_linked_budget_identity",
+  "0028_reaward_course_completions",
 ];
 const SEEDED_HISTORICAL = [
   "backfillMissingDefaultColumns",
