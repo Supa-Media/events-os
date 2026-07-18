@@ -202,7 +202,25 @@ http.route({
     const event = JSON.parse(payload) as {
       id: string;
       type: string;
-      data: { object: { id: string; payment_intent?: string | null } };
+      data: {
+        object: {
+          id: string;
+          payment_intent?: string | null;
+          // checkout.session.completed (subscription mode): the backer session
+          // carries our pledge id in metadata + the created customer/subscription.
+          customer?: string | null;
+          subscription?: string | null;
+          metadata?: Record<string, string> | null;
+          // invoice.paid / invoice.payment_failed:
+          amount_paid?: number;
+          // customer.subscription.updated / .deleted:
+          status?: string;
+          current_period_end?: number; // unix SECONDS
+          items?: {
+            data?: Array<{ price?: { unit_amount?: number | null } }>;
+          };
+        };
+      };
     };
     const sessionId = event.data.object.id;
     if (event.type.startsWith("financial_connections.")) {
@@ -222,28 +240,84 @@ http.route({
         });
       }
     } else if (event.type === "checkout.session.completed") {
-      const paymentIntentId = event.data.object.payment_intent ?? undefined;
-      // One shared session id is either a ticket order OR a donation. Try the
-      // order first; only if it wasn't an order do we try the donation. Each
-      // path is idempotent (safe on webhook redelivery) and no-ops when the
-      // session isn't theirs, so neither can touch the other's rows.
-      const wasOrder = await ctx.runMutation(internal.ticketing.markSessionPaid, {
-        sessionId,
-        paymentIntentId,
-      });
-      if (!wasOrder) {
-        const wasDonation = await ctx.runMutation(
-          internal.giving.markDonationPaid,
+      const obj = event.data.object;
+      const pledgeId = obj.metadata?.pledgeId;
+      if (pledgeId) {
+        // A BACKER (subscription) checkout — identified by our pledge id in the
+        // session metadata (a ticket/donation session carries none). Activate
+        // the pledge + link its Stripe customer/subscription. Idempotent, and a
+        // no-op if the id doesn't resolve — so it can't touch other rows.
+        await ctx.runMutation(
+          internal.givingPledges.activatePledgeFromCheckout,
+          {
+            pledgeId,
+            ...(obj.customer ? { stripeCustomerId: obj.customer } : {}),
+            ...(obj.subscription
+              ? { stripeSubscriptionId: obj.subscription }
+              : {}),
+          },
+        );
+      } else {
+        const paymentIntentId = obj.payment_intent ?? undefined;
+        // One shared session id is either a ticket order OR a donation. Try the
+        // order first; only if it wasn't an order do we try the donation. Each
+        // path is idempotent (safe on webhook redelivery) and no-ops when the
+        // session isn't theirs, so neither can touch the other's rows.
+        const wasOrder = await ctx.runMutation(
+          internal.ticketing.markSessionPaid,
           { sessionId, paymentIntentId },
         );
-        if (!wasDonation) {
-          console.error(`[stripe] webhook for unknown session ${sessionId}`);
+        if (!wasOrder) {
+          const wasDonation = await ctx.runMutation(
+            internal.giving.markDonationPaid,
+            { sessionId, paymentIntentId },
+          );
+          if (!wasDonation) {
+            console.error(`[stripe] webhook for unknown session ${sessionId}`);
+          }
         }
       }
     } else if (event.type === "checkout.session.expired") {
       // Same fan-out for the abandoned-checkout case — each no-ops if not theirs.
       await ctx.runMutation(internal.ticketing.cancelPendingOrder, { sessionId });
       await ctx.runMutation(internal.giving.cancelPendingDonation, { sessionId });
+    } else if (event.type === "invoice.paid") {
+      // A backer's billing cycle settled — record ONE gift for it (idempotent on
+      // the invoice id) + bump the donor rollups. No-op if the subscription
+      // isn't a pledge's. Amount is read from the invoice, never a client value.
+      const inv = event.data.object;
+      if (inv.subscription) {
+        await ctx.runMutation(internal.givingPledges.recordPledgeInvoice, {
+          subscriptionId: inv.subscription,
+          invoiceId: inv.id,
+          amountPaidCents: inv.amount_paid ?? 0,
+        });
+      }
+    } else if (event.type === "invoice.payment_failed") {
+      const inv = event.data.object;
+      if (inv.subscription) {
+        await ctx.runMutation(internal.givingPledges.markPledgePastDue, {
+          subscriptionId: inv.subscription,
+        });
+      }
+    } else if (event.type === "customer.subscription.updated") {
+      // Sync status / period / amount. `data.object` is the subscription, so its
+      // id IS the subscription id. `current_period_end` is unix seconds → ms.
+      const sub = event.data.object;
+      await ctx.runMutation(internal.givingPledges.syncPledgeSubscription, {
+        subscriptionId: sub.id,
+        stripeStatus: sub.status ?? "",
+        ...(sub.current_period_end
+          ? { currentPeriodEnd: sub.current_period_end * 1000 }
+          : {}),
+        ...(sub.items?.data?.[0]?.price?.unit_amount != null
+          ? { amountCents: sub.items.data[0].price.unit_amount }
+          : {}),
+      });
+    } else if (event.type === "customer.subscription.deleted") {
+      await ctx.runMutation(internal.givingPledges.cancelPledgeSubscription, {
+        subscriptionId: event.data.object.id,
+      });
     }
     return new Response("ok", { status: 200 });
   }),
