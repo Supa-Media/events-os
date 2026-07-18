@@ -2022,6 +2022,68 @@ describe("listCards / myCard", () => {
     expect(result.cards[0].status).toBe("locked");
     expect(result.lastCanceled).toBeNull();
   });
+
+  // ── IMPORTANT 2: context-independent — a manager's own card, owner report ──
+  //
+  // `myCard` must find the caller's card off their OWN roster row(s), never
+  // off `requireChapterId`'s single "first `userChapters` membership" home
+  // chapter (mirrors `financeRoles.mySeats`'s `people.by_user` scan — see its
+  // test "(g) a person with grants in two different chapters..."). This is
+  // what makes the Cards screen's "My card" section correct regardless of
+  // which `ChapterContext` desk (home chapter / Central / peek) the caller is
+  // currently sitting at, since the screen never threads a `chapterId` into
+  // `myCard` at all.
+
+  test("myCard finds the caller's card in a DIFFERENT chapter than their `userChapters` home membership", async () => {
+    const t = newT();
+    const s = await setupChapter(t); // home chapter "New York" — no people/card row here
+    const atlanta = await run(s.t, (ctx) =>
+      ctx.db.insert("chapters", {
+        name: "Atlanta",
+        isActive: true,
+        createdAt: Date.now(),
+      }),
+    );
+    const atlantaPersonId = await run(s.t, (ctx) =>
+      ctx.db.insert("people", {
+        chapterId: atlanta,
+        name: "Caller",
+        userId: s.userId,
+        isTeamMember: true,
+        createdAt: Date.now(),
+      }),
+    );
+    await seedCard(s, {
+      cardholderPersonId: atlantaPersonId,
+      chapterId: atlanta,
+      last4: "5555",
+    });
+
+    const result = await s.as.query(api.cards.myCard, {});
+    expect(result.cards.length).toBe(1);
+    expect(result.cards[0].last4).toBe("5555");
+    expect(result.cards[0].cardholderPersonId).toBe(atlantaPersonId);
+  });
+
+  test("myCard never surfaces a card behind a placeholder roster row", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const placeholderId = await run(s.t, (ctx) =>
+      ctx.db.insert("people", {
+        chapterId: s.chapterId,
+        name: "Placeholder",
+        userId: s.userId,
+        isTeamMember: true,
+        isPlaceholder: true,
+        createdAt: Date.now(),
+      }),
+    );
+    await seedCard(s, { cardholderPersonId: placeholderId, last4: "6666" });
+
+    const result = await s.as.query(api.cards.myCard, {});
+    expect(result.cards).toEqual([]);
+    expect(result.lastCanceled).toBeNull();
+  });
 });
 
 describe("setCardControls (gates + tenancy)", () => {

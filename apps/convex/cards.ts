@@ -105,6 +105,8 @@ import {
   requireChapterId,
   requireInChapter,
   getChapterIdOrNull,
+  requireAccess,
+  requireUserId,
 } from "./lib/context";
 import {
   requireFinanceRole,
@@ -786,8 +788,24 @@ const myCardValidator = v.object({
   lastCanceled: v.union(cardSummaryValidator, v.null()),
 });
 
-/** The caller's own card(s) — the member card view. Any authed user; empty when
- *  they have no chapter / roster row yet.
+/** The caller's own card(s) — the member card view (also surfaced at the top
+ *  of the manager view — a manager is a cardholder too). Any authed user;
+ *  empty when they have no roster row anywhere yet.
+ *
+ *  DELIBERATELY context-independent: resolved off the caller's OWN `people`
+ *  rows (`by_user`, same scan `financeRoles.mySeats` uses for seat
+ *  resolution), never off `requireChapterId`/`getChapterIdOrNull`'s "first
+ *  `userChapters` membership" home chapter. Two reasons that matters here:
+ *   1. The Cards screen doesn't thread `ChapterContext` at all (no `chapterId`
+ *      arg) — a manager sitting at a Central desk, or peeking another
+ *      chapter, must still see THEIR OWN card, not nothing / not the peeked
+ *      chapter's.
+ *   2. `requireChapterId`'s single-membership limitation (see its own TODO)
+ *      would silently miss a genuinely multi-chapter person's card if their
+ *      roster row happens to live outside the "first" membership. Scanning
+ *      every real `people` row sidesteps that entirely.
+ *  `cardholderPersonId` already pins each card to one person's one chapter,
+ *  so no extra chapter filter is needed once scoped by person id.
  *
  *  A CANCELED card is never returned in `cards` (the primary pick) — a
  *  cardholder whose only card is canceled must reach the request-a-card
@@ -798,21 +816,29 @@ export const myCard = query({
   args: {},
   returns: myCardValidator,
   handler: async (ctx) => {
-    const chapterId = (await getChapterIdOrNull(ctx)) as Id<"chapters"> | null;
-    if (!chapterId) return { cards: [], lastCanceled: null };
-    const self = await viewerPerson(ctx, chapterId);
-    if (!self) return { cards: [], lastCanceled: null };
+    await requireAccess(ctx);
+    const userId = await requireUserId(ctx);
+    const people = await ctx.db
+      .query("people")
+      .withIndex("by_user", (q) => q.eq("userId", userId as Id<"users">))
+      .collect();
+    // Placeholder rows never count as "self" — mirrors `viewerPerson`.
+    const realPeople = people.filter((p) => p.isPlaceholder !== true);
+    if (realPeople.length === 0) return { cards: [], lastCanceled: null };
+
     const sandboxMode = await readSandbox(ctx);
-    const cards = await ctx.db
-      .query("cards")
-      .withIndex("by_cardholder", (q) => q.eq("cardholderPersonId", self._id))
-      .take(CARD_SCAN_LIMIT);
-    const inScope = cards.filter(
-      (c) =>
-        c.chapterId === chapterId &&
-        // Same environment filter as listCards: hide cross-env cards.
-        matchesMode(c.increaseCardId ?? null, sandboxMode),
+    const cardsByPerson = await Promise.all(
+      realPeople.map((p) =>
+        ctx.db
+          .query("cards")
+          .withIndex("by_cardholder", (q) => q.eq("cardholderPersonId", p._id))
+          .take(CARD_SCAN_LIMIT),
+      ),
     );
+    // Same environment filter as listCards: hide cross-env cards.
+    const inScope = cardsByPerson
+      .flat()
+      .filter((c) => matchesMode(c.increaseCardId ?? null, sandboxMode));
 
     const live = inScope.filter((c) => c.status !== "canceled");
     if (live.length > 0) {
