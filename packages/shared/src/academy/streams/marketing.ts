@@ -8,7 +8,7 @@
  * this assembles into the full curriculum/catalog.
  *
  * Sourced from captured Notion docs (session working material, not committed
- * to this repo — see the "Further reading" tip on each lesson for the
+ * to this repo — see the "Further reading" link on each lesson for the
  * canonical internal notion.so URL): PW Designs, Flyers, Fonts, Colors;
  * Busking Setup Electronics; Editing Prep; DaVinci Project Access; Dropbox
  * Access. Facebook Pixel setup is deliberately left out of `media-pipeline` —
@@ -83,8 +83,9 @@ export const MARKETING_SECTIONS: Omit<AcademySection, "order">[] = [
           "They don't wait. Pull the logo from the shared Logos folder, duplicate the PW Flyer for Distribution template in Canva, and swap in their event details. The whole point of a shared, self-serve asset kit is that a chapter never has to stall on a design because HQ is asleep or busy.",
       },
       {
-        kind: "tip",
-        text: "**Further reading:** \"PW Designs, Flyers, Fonts, Colors\" — internal Notion doc (https://www.notion.so/29c7f1c177b680e49273d51138fc1677).",
+        kind: "link",
+        label: "Further reading: PW Designs, Flyers, Fonts, Colors",
+        url: "https://www.notion.so/29c7f1c177b680e49273d51138fc1677",
       },
     ],
     quiz: [
@@ -171,8 +172,9 @@ export const MARKETING_SECTIONS: Omit<AcademySection, "order">[] = [
           "Check immediately — don't wait until the set is over. If the channels or the record light aren't red, nothing so far has been captured, and the sooner you catch it, the less you lose. Better to interrupt the session and fix it than to find out afterward that ten minutes are gone for good.",
       },
       {
-        kind: "tip",
-        text: "**Further reading:** \"Busking Setup Electronics\" — internal Notion doc (https://www.notion.so/23c7f1c177b680bfb2b6c4633951759f).",
+        kind: "link",
+        label: "Further reading: Busking Setup Electronics",
+        url: "https://www.notion.so/23c7f1c177b680bfb2b6c4633951759f",
       },
     ],
     quiz: [
@@ -273,8 +275,9 @@ export const MARKETING_SECTIONS: Omit<AcademySection, "order">[] = [
           "No — if a camera already recorded its own audio, there's no need to also pull from the separate Zoom recorder for that footage. The recorder's SD card matters specifically for cameras or setups that didn't capture their own sound.",
       },
       {
-        kind: "tip",
-        text: "**Further reading:** \"Editing Prep\" — internal Notion doc (https://www.notion.so/23f7f1c177b6806da147cf83f8998efa).",
+        kind: "link",
+        label: "Further reading: Editing Prep",
+        url: "https://www.notion.so/23f7f1c177b6806da147cf83f8998efa",
       },
     ],
     quiz: [
@@ -366,8 +369,14 @@ export const MARKETING_SECTIONS: Omit<AcademySection, "order">[] = [
           "Resolve Studio — the paid tier is required for color grading work; the free version won't cut it. Before any of that matters, though, you still need an admin to add you to the Public Worship organization and the Editors group, using the same email as your Blackmagic Cloud account.",
       },
       {
-        kind: "tip",
-        text: "**Further reading:** \"DaVinci Project Access\" — internal Notion doc (https://www.notion.so/23e7f1c177b68005a68cee77178bde81); \"Dropbox Access\" — internal Notion doc (https://www.notion.so/24c7f1c177b6808f9ad3d80f5e0b8e41).",
+        kind: "link",
+        label: "Further reading: DaVinci Project Access",
+        url: "https://www.notion.so/23e7f1c177b68005a68cee77178bde81",
+      },
+      {
+        kind: "link",
+        label: "Further reading: Dropbox Access",
+        url: "https://www.notion.so/24c7f1c177b6808f9ad3d80f5e0b8e41",
       },
     ],
     quiz: [
