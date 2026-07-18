@@ -49,10 +49,9 @@ import {
 import { colors } from "../../../../lib/theme";
 import { donorStatusTone } from "../donors";
 
-/** The merged "Source" picker — the widened `GIFT_METHODS` union minus the
- *  deprecated-legacy `imported` (never written for new gifts). `stripe` is our
- *  own rails, shown as "Chapter OS". Default is `cash` (the most common manual
- *  backfill). */
+/** The merged "Source" picker — the widened `GIFT_METHODS` union. `stripe` is
+ *  our own rails, shown as "Chapter OS". Default is `cash` (the most common
+ *  manual backfill). */
 const SOURCE_OPTIONS: { value: string; label: string }[] = [
   { value: "cash", label: "Cash" },
   { value: "check", label: "Check" },
@@ -66,14 +65,13 @@ const SOURCE_OPTIONS: { value: string; label: string }[] = [
 ];
 const DEFAULT_SOURCE = "cash";
 
-/** Every source's display label (covers legacy `imported` for old rows too). */
+/** Every source's display label. */
 const SOURCE_LABELS: Record<string, string> = {
   stripe: "Chapter OS",
   cash: "Cash",
   check: "Check",
   wire: "Wire",
   in_kind: "In-kind",
-  imported: "Imported",
   zelle: "Zelle",
   venmo: "Venmo",
   givebutter: "Givebutter",

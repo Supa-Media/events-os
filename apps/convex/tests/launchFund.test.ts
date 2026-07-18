@@ -229,7 +229,7 @@ describe("0030 backfill launch fund", () => {
         amountCents,
         currency: "usd",
         receivedAt: Date.now(),
-        method: "imported",
+        method: "other",
         createdAt: Date.now(),
       });
     });

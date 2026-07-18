@@ -59,19 +59,17 @@ export const DONOR_SOURCES = [
  *  taken money through. Order: the original set first, then the appended sources
  *  — never renumber, callers persist these literals.
  *
- *  DEPLOY-B(gift-sources): `imported` is DEPRECATED LEGACY, kept in the union
- *  THIS deploy only so migration 0031 can read the old rows. 0031 relabels every
- *  `imported` gift to `givebutter` (Givebutter provenance) or `other`; a
- *  follow-up PR drops the literal once 0031 has run in prod — see the
- *  `DEPLOY-B(gift-sources):` markers. New gifts never write it. */
+ *  The legacy `imported` literal (Givebutter-history rows imported before the
+ *  merged "Source" field existed) was relabeled onto `givebutter`/`other` by
+ *  migration 0031 and dropped from this union once 0031 had run in prod — see
+ *  `migrations/0031_gift_method_sources.ts`. New gifts never wrote it even
+ *  while it was still in the union. */
 export const GIFT_METHODS = [
   "stripe",
   "cash",
   "check",
   "wire",
   "in_kind",
-  // DEPLOY-B(gift-sources): deprecated — see the note above. Removed next PR.
-  "imported",
   // Appended sources (widened for the merged "Source" field — territories P4).
   "zelle",
   "venmo",
@@ -287,19 +285,13 @@ export const givingScopeRollups = defineTable({
  */
 export const pledges = defineTable({
   donorId: v.id("donors"),
-  // The city this pledge backs: a live chapter, or `"central"`. P3 (public
-  // map) adds PROSPECT-city scoping on top of this union via `cityCampaignId`
-  // below, rather than widening the union itself (a `cityCampaigns` row is
-  // never a real chapter — PRD B6).
+  // The city this pledge backs: a live chapter, or `"central"`. Under
+  // Territories a pledge ALWAYS scopes to a real chapter — a prospect
+  // territory's shadow chapter is a real (inactive) `chapters` row, so there's
+  // no separate prospect-city scoping concept. (Pre-Territories, prospect-city
+  // pledges scoped `"central"` + a now-retired `cityCampaignId` field;
+  // migration 0029 re-scoped every one of those rows onto its chapter.)
   scope: givingScope,
-  // DEPLOY-B(territories): LEGACY. Under Territories a pledge ALWAYS scopes to a
-  // real chapter (a prospect territory's shadow chapter is a real inactive
-  // `chapters` row) — the "central + cityCampaignId" convention is retired.
-  // Migration 0029 re-scopes every campaign-linked pledge onto its chapter and
-  // clears this field. It stays here (and `by_cityCampaign` below) ONLY so 0029
-  // can read the legacy rows; a follow-up PR (Deploy B) drops both once 0029 has
-  // run in prod. New pledges never set it.
-  cityCampaignId: v.optional(v.id("cityCampaigns")),
   amountCents: v.number(), // int ≥ 2000 ($20 floor), enforced at the write path
   status: v.union(...PLEDGE_STATUSES.map((s) => v.literal(s))),
   origin: v.union(...PLEDGE_ORIGINS.map((o) => v.literal(o))),
@@ -318,7 +310,4 @@ export const pledges = defineTable({
   // scope) both read this.
   .index("by_scope_and_status", ["scope", "status"])
   // Webhook resolution: an invoice/subscription event → its pledge.
-  .index("by_stripe_subscription", ["stripeSubscriptionId"])
-  // DEPLOY-B(territories): LEGACY — used by migration 0029 to find each
-  // campaign's pledges for re-scoping. Dropped with `cityCampaignId` in Deploy B.
-  .index("by_cityCampaign", ["cityCampaignId"]);
+  .index("by_stripe_subscription", ["stripeSubscriptionId"]);

@@ -42,7 +42,6 @@ const GIFT_METHODS: { value: string; label: string }[] = [
   { value: "wire", label: "Wire" },
   { value: "stripe", label: "Card / Stripe" },
   { value: "in_kind", label: "In-kind" },
-  { value: "imported", label: "Imported" },
 ];
 
 function pricingLabel(pkg: { pricing: { kind: string; amountCents: number } }) {
