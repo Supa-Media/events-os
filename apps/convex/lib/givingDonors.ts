@@ -226,6 +226,10 @@ export async function recordGiftForDonor(
     externalRef?: string;
     note?: string;
     recordedBy?: Id<"users">;
+    // P2 recurring: a gift written from a Stripe subscription billing cycle
+    // carries its `pledgeId` + the `stripeInvoiceId` (the cycle idempotency key).
+    pledgeId?: Id<"pledges">;
+    stripeInvoiceId?: string;
   },
 ): Promise<Id<"gifts">> {
   assertPositiveGiftCents(args.amountCents);
@@ -247,6 +251,8 @@ export async function recordGiftForDonor(
     ...(args.externalRef ? { externalRef: args.externalRef } : {}),
     ...(args.note ? { note: args.note } : {}),
     ...(args.recordedBy ? { recordedBy: args.recordedBy } : {}),
+    ...(args.pledgeId ? { pledgeId: args.pledgeId } : {}),
+    ...(args.stripeInvoiceId ? { stripeInvoiceId: args.stripeInvoiceId } : {}),
     createdAt: now,
   });
 

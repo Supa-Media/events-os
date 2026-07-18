@@ -11,12 +11,13 @@ export const chapters = defineTable({
   image: v.optional(v.string()),
   isActive: v.optional(v.boolean()),
   createdAt: v.optional(v.number()),
-  // WP-4.3 affordability header: the chapter's backer headcount, MANUAL entry
-  // until the Giving page (F-6) exists to report it directly. Absent/0 = not
-  // yet set — the affordability header shows a gentle prompt instead of a
-  // broken row. Least-invasive storage spot: one field on the chapter itself,
-  // editable by the chapter finance-manager rank (Chapter Director/Treasurer),
-  // rather than a new chapter-settings table for a single manual number.
+  // WP-4.3 affordability header: the chapter's backer headcount. Originally
+  // MANUAL entry (`finances.setBackerCount`); F-6 P2 makes it DERIVED —
+  // `givingPledges.recomputeChapterBackerCount` rewrites it from the count of
+  // active pledges (≥ `BACKER_UNIT_CENTS`) on every pledge transition. The
+  // manual setter stays as a cutover override and retires once Givebutter
+  // migration completes (see `finances.setBackerCount`). Absent/0 = not yet
+  // set — the affordability header shows a gentle prompt instead of a broken row.
   backerCount: v.optional(v.number()),
   backerCountUpdatedAt: v.optional(v.number()),
   backerCountUpdatedBy: v.optional(v.id("users")),

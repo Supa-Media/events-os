@@ -68,6 +68,7 @@ import {
   donors,
   gifts,
   givingScopeRollups,
+  pledges,
 } from "./schema/givingPlatform";
 import { seatDefs, seatAssignments } from "./schema/seats";
 import { seatStructureLog } from "./schema/seatStructureLog";
@@ -243,6 +244,10 @@ const schema = defineSchema({
   donors,
   gifts,
   givingScopeRollups,
+  // P2 recurring rails — `pledges` (Stripe-subscription-backed monthly backing);
+  // paid cycles write `gifts` rows (`pledgeId` set). Derives `chapters.backerCount`
+  // (see givingPledges.ts + docs/plans/giving-platform.md §2).
+  pledges,
 
   // Org chart (seats) — a tree of seats shared by the central chart + every
   // chapter's identical chapter chart; occupancy is per-scope (see
