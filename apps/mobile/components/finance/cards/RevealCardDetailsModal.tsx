@@ -6,7 +6,9 @@
  * see `cards.ts`'s `revealCardDetails` doc comment for the full chain of
  * custody). Auto-hides after 60s so a forgotten-open screen doesn't leave the
  * card number on display indefinitely; the countdown is visible so the holder
- * isn't surprised mid-copy.
+ * isn't surprised mid-copy. Each value (PAN / expiry / CVC) has its own
+ * `CopyButton` (`components/ui`, the same web Clipboard API used elsewhere in
+ * the app — no new dependency) so the holder can grab exactly what they need.
  *
  * Native push provisioning (a one-tap "Add to Apple Wallet" button) is
  * EXPLICITLY DEFERRED — it needs the Apple PassKit entitlement (out of scope
@@ -15,7 +17,7 @@
  */
 import { useEffect, useState } from "react";
 import { Modal, Pressable, Text, View } from "react-native";
-import { Icon } from "../../ui";
+import { CopyButton, Icon } from "../../ui";
 import { colors } from "../../../lib/theme";
 
 const AUTO_HIDE_SECONDS = 60;
@@ -90,13 +92,16 @@ export function RevealCardDetailsModal({
               <Text className="text-xs font-semibold uppercase tracking-wider text-muted">
                 Card number
               </Text>
-              <Text
-                className="font-display text-xl text-ink"
-                style={{ fontVariant: ["tabular-nums"] }}
-                selectable
-              >
-                {formatPan(details.primaryAccountNumber)}
-              </Text>
+              <View className="flex-row items-center gap-2">
+                <Text
+                  className="font-display text-xl text-ink"
+                  style={{ fontVariant: ["tabular-nums"] }}
+                  selectable
+                >
+                  {formatPan(details.primaryAccountNumber)}
+                </Text>
+                <CopyButton text={details.primaryAccountNumber} />
+              </View>
             </View>
 
             <View className="flex-row gap-6">
@@ -104,25 +109,33 @@ export function RevealCardDetailsModal({
                 <Text className="text-xs font-semibold uppercase tracking-wider text-muted">
                   Expiry
                 </Text>
-                <Text
-                  className="text-lg text-ink"
-                  style={{ fontVariant: ["tabular-nums"] }}
-                  selectable
-                >
-                  {formatExpiry(details.expirationMonth, details.expirationYear)}
-                </Text>
+                <View className="flex-row items-center gap-2">
+                  <Text
+                    className="text-lg text-ink"
+                    style={{ fontVariant: ["tabular-nums"] }}
+                    selectable
+                  >
+                    {formatExpiry(details.expirationMonth, details.expirationYear)}
+                  </Text>
+                  <CopyButton
+                    text={formatExpiry(details.expirationMonth, details.expirationYear)}
+                  />
+                </View>
               </View>
               <View className="gap-1">
                 <Text className="text-xs font-semibold uppercase tracking-wider text-muted">
                   CVC
                 </Text>
-                <Text
-                  className="text-lg text-ink"
-                  style={{ fontVariant: ["tabular-nums"] }}
-                  selectable
-                >
-                  {details.verificationCode}
-                </Text>
+                <View className="flex-row items-center gap-2">
+                  <Text
+                    className="text-lg text-ink"
+                    style={{ fontVariant: ["tabular-nums"] }}
+                    selectable
+                  >
+                    {details.verificationCode}
+                  </Text>
+                  <CopyButton text={details.verificationCode} />
+                </View>
               </View>
             </View>
 

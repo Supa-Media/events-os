@@ -13,7 +13,10 @@ type Props = {
  * The "Increase virtual" card art from the prototype (`.vcard`). Faithful to the
  * red-gradient look WITHOUT any native gradient dependency — a solid brand-red
  * base with two soft, semi-transparent overlay circles fake the diagonal sheen +
- * halo. Pure Views, web-safe, zero new modules.
+ * halo. Pure Views, web-safe, zero new modules. The "VISA" mark is static text
+ * (Increase issues on the Visa network) — no logo asset, no new dependency.
+ * Always shows the MASKED number — the full PAN only ever appears in
+ * `RevealCardDetailsModal`'s auto-hiding, tap-to-copy reveal.
  */
 export function VirtualCardArt({
   last4 = "••••",
@@ -44,11 +47,15 @@ export function VirtualCardArt({
         >
           •••• •••• •••• {last4}
         </Text>
-        <View className="mt-2 flex-row items-center justify-between">
-          <Text className="text-2xs uppercase tracking-wider text-white/85">
-            {holderName}
-          </Text>
-          <Text className="text-2xs text-white/85">{expLabel}</Text>
+        <View className="mt-2 flex-row items-end justify-between">
+          <View>
+            <Text className="text-2xs uppercase tracking-wider text-white/85">
+              {holderName}
+            </Text>
+            <Text className="text-2xs text-white/85">{expLabel}</Text>
+          </View>
+          {/* Network mark — italic wordmark, no logo asset. */}
+          <Text className="text-base font-black italic text-white">VISA</Text>
         </View>
       </View>
     </View>
