@@ -132,7 +132,6 @@ describe("academy course completions", () => {
       "partnerships",
       "producing-and-artistry",
       "projects",
-      "short-form-editing",
       "the-director-standard",
       "the-one-on-one",
       "treasurer",
