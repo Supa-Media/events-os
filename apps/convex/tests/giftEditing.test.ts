@@ -1,0 +1,486 @@
+import { describe, expect, test } from "vitest";
+import { api } from "../_generated/api";
+import { newT, run, setupChapter, storeBlob, type ChapterSetup } from "./setup.helpers";
+import { runSeedSeatDefs } from "../migrations/0022_seed_seat_defs";
+import { runGiftMethodSources } from "../migrations/0031_gift_method_sources";
+import {
+  recordGiftForDonor,
+  editGiftRow,
+  matchOrCreateDonor,
+} from "../lib/givingDonors";
+import type { Id } from "../_generated/dataModel";
+
+/**
+ * Territories P4 — gift editing / sources / receipts:
+ *   - amount edit moves donor rollup, scope rollup, AND the launch pot by the
+ *     same delta exactly once (flagged gift, pre-launch) and NOT the pot once
+ *     the territory has launched (freeze),
+ *   - receivedAt edit recomputes the donor bookends + re-derives status,
+ *   - GIFT_LOCKED on money fields for a system-written (Stripe/donation) gift,
+ *     while note + receipts still succeed,
+ *   - receipts bounded at 10,
+ *   - migration 0031 relabels `imported` (both branches) and is idempotent,
+ *   - the widened-source record path persists a new source literal.
+ */
+
+const NINETY_ONE_DAYS_MS = 91 * 24 * 60 * 60 * 1000;
+
+/** Seat the caller as development director at central (full giving.manage). */
+async function seatDevDirector(s: ChapterSetup): Promise<void> {
+  await run(s.t, async (ctx) => {
+    const personId = await ctx.db.insert("people", {
+      chapterId: s.chapterId,
+      name: "Seated Caller",
+      userId: s.userId,
+      createdAt: Date.now(),
+    });
+    const def = await ctx.db
+      .query("seatDefs")
+      .withIndex("by_slug", (q) => q.eq("slug", "development_director"))
+      .unique();
+    if (!def) throw new Error("development_director not seeded");
+    await ctx.db.insert("seatAssignments", {
+      seatDefId: def._id,
+      scope: "central",
+      personId,
+      createdAt: Date.now(),
+    });
+  });
+}
+
+async function devDirectorSetup(): Promise<ChapterSetup> {
+  const t = newT();
+  await run(t, (ctx) => runSeedSeatDefs(ctx));
+  const s = await setupChapter(t);
+  await seatDevDirector(s);
+  return s;
+}
+
+/** Create a territory linked to the setup's chapter at the given stage. */
+async function createTerritory(
+  s: ChapterSetup,
+  stage: "prospect" | "raising" | "launched",
+): Promise<Id<"territories">> {
+  return run(s.t, async (ctx) => {
+    const now = Date.now();
+    return ctx.db.insert("territories", {
+      chapterId: s.chapterId,
+      name: "Test Territory",
+      region: "NY",
+      lat: 40.7,
+      lng: -74,
+      slug: `terr-${Math.random().toString(36).slice(2, 8)}`,
+      stage,
+      targetBackers: 20,
+      publiclyVisible: true,
+      launchFundCents: 0,
+      launchFundTargetCents: 100000,
+      createdAt: now,
+      createdBy: s.userId,
+      updatedAt: now,
+    });
+  });
+}
+
+async function giftRow(s: ChapterSetup, giftId: Id<"gifts">) {
+  return run(s.t, (ctx) => ctx.db.get(giftId));
+}
+async function donorRow(s: ChapterSetup, donorId: Id<"donors">) {
+  return run(s.t, (ctx) => ctx.db.get(donorId));
+}
+async function territoryRow(s: ChapterSetup, territoryId: Id<"territories">) {
+  return run(s.t, (ctx) => ctx.db.get(territoryId));
+}
+async function scopeRollup(s: ChapterSetup, scope: Id<"chapters"> | "central") {
+  return run(s.t, (ctx) =>
+    ctx.db
+      .query("givingScopeRollups")
+      .withIndex("by_scope", (q) => q.eq("scope", scope))
+      .unique(),
+  );
+}
+
+// ── Amount edit: donor + scope + pot all move by the delta, once each ─────────
+
+describe("editGiftRow — amount delta", () => {
+  test("moves donor, scope, and the launch pot by the same delta (pre-launch)", async () => {
+    const s = await setupChapter(newT());
+    const territoryId = await createTerritory(s, "raising");
+
+    const { donorId, giftId } = await run(s.t, async (ctx) => {
+      const donorId = await matchOrCreateDonor(ctx, {
+        scope: s.chapterId,
+        name: "Chapter Backer",
+      });
+      const giftId = await recordGiftForDonor(ctx, {
+        donorId,
+        amountCents: 5000,
+        receivedAt: Date.now(),
+        method: "cash",
+        recordedBy: s.userId,
+      });
+      return { donorId, giftId };
+    });
+
+    // Recorded: flagged, and the pot accrued the full amount.
+    expect((await giftRow(s, giftId))?.countedInLaunchFund).toBe(true);
+    expect((await territoryRow(s, territoryId))?.launchFundCents).toBe(5000);
+    expect((await donorRow(s, donorId))?.lifetimeCents).toBe(5000);
+    expect((await scopeRollup(s, s.chapterId))?.lifetimeCents).toBe(5000);
+
+    // Edit up by +3000 → everything lands on 8000, once.
+    await run(s.t, (ctx) =>
+      editGiftRow(ctx, { giftId, amountCents: 8000, editedBy: s.userId }),
+    );
+    let gift = await giftRow(s, giftId);
+    expect(gift?.amountCents).toBe(8000);
+    expect(gift?.countedInLaunchFund).toBe(true); // flag never cleared by an edit
+    expect(gift?.editedAt).toBeGreaterThan(0);
+    expect(gift?.editedBy).toBe(s.userId);
+    expect((await donorRow(s, donorId))?.lifetimeCents).toBe(8000);
+    expect((await scopeRollup(s, s.chapterId))?.lifetimeCents).toBe(8000);
+    expect((await territoryRow(s, territoryId))?.launchFundCents).toBe(8000);
+
+    // Edit down by -2000 → 6000 everywhere.
+    await run(s.t, (ctx) =>
+      editGiftRow(ctx, { giftId, amountCents: 6000, editedBy: s.userId }),
+    );
+    expect((await donorRow(s, donorId))?.lifetimeCents).toBe(6000);
+    expect((await scopeRollup(s, s.chapterId))?.lifetimeCents).toBe(6000);
+    expect((await territoryRow(s, territoryId))?.launchFundCents).toBe(6000);
+  });
+
+  test("does NOT move the pot once the territory has launched (freeze)", async () => {
+    const s = await setupChapter(newT());
+    const territoryId = await createTerritory(s, "raising");
+
+    const { donorId, giftId } = await run(s.t, async (ctx) => {
+      const donorId = await matchOrCreateDonor(ctx, {
+        scope: s.chapterId,
+        name: "Pre-launch Backer",
+      });
+      const giftId = await recordGiftForDonor(ctx, {
+        donorId,
+        amountCents: 5000,
+        receivedAt: Date.now(),
+        method: "cash",
+        recordedBy: s.userId,
+      });
+      return { donorId, giftId };
+    });
+    expect((await territoryRow(s, territoryId))?.launchFundCents).toBe(5000);
+
+    // Territory launches — the pot freezes at 5000.
+    await run(s.t, (ctx) =>
+      ctx.db.patch(territoryId, { stage: "launched", launchedAt: Date.now() }),
+    );
+
+    // A post-launch amount correction moves donor + scope, but NOT the pot.
+    await run(s.t, (ctx) =>
+      editGiftRow(ctx, { giftId, amountCents: 9000, editedBy: s.userId }),
+    );
+    expect((await donorRow(s, donorId))?.lifetimeCents).toBe(9000);
+    expect((await scopeRollup(s, s.chapterId))?.lifetimeCents).toBe(9000);
+    expect((await territoryRow(s, territoryId))?.launchFundCents).toBe(5000); // frozen
+    // The flag stays on the row's history even though the pot didn't move.
+    expect((await giftRow(s, giftId))?.countedInLaunchFund).toBe(true);
+  });
+});
+
+// ── receivedAt edit: bookends + status ────────────────────────────────────────
+
+describe("editGiftRow — receivedAt", () => {
+  test("recomputes bookends and re-derives status across the lapse window", async () => {
+    const s = await setupChapter(newT());
+    const { donorId, giftId } = await run(s.t, async (ctx) => {
+      const donorId = await matchOrCreateDonor(ctx, {
+        scope: "central",
+        name: "Window Mover",
+      });
+      const giftId = await recordGiftForDonor(ctx, {
+        donorId,
+        amountCents: 4000,
+        receivedAt: Date.now(),
+        method: "check",
+        recordedBy: s.userId,
+      });
+      return { donorId, giftId };
+    });
+    expect((await donorRow(s, donorId))?.status).toBe("active");
+    expect((await scopeRollup(s, "central"))?.activeCount).toBe(1);
+
+    // Move the (only) gift to 91 days ago → bookends follow, status → lapsed.
+    const oldDate = Date.now() - NINETY_ONE_DAYS_MS;
+    await run(s.t, (ctx) =>
+      editGiftRow(ctx, { giftId, receivedAt: oldDate, editedBy: s.userId }),
+    );
+    let donor = await donorRow(s, donorId);
+    expect(donor?.status).toBe("lapsed");
+    expect(donor?.lastGiftAt).toBe(oldDate);
+    expect(donor?.firstGiftAt).toBe(oldDate);
+    let rollup = await scopeRollup(s, "central");
+    expect(rollup?.lapsedCount).toBe(1);
+    expect(rollup?.activeCount).toBe(0);
+
+    // Move it back to now → active again.
+    const now = Date.now();
+    await run(s.t, (ctx) =>
+      editGiftRow(ctx, { giftId, receivedAt: now, editedBy: s.userId }),
+    );
+    donor = await donorRow(s, donorId);
+    expect(donor?.status).toBe("active");
+    expect(donor?.lastGiftAt).toBe(now);
+    rollup = await scopeRollup(s, "central");
+    expect(rollup?.activeCount).toBe(1);
+    expect(rollup?.lapsedCount).toBe(0);
+  });
+});
+
+// ── GIFT_LOCKED: system-written gifts are note/receipt-only ────────────────────
+
+describe("editGift — GIFT_LOCKED", () => {
+  test("a Stripe/donation gift rejects money edits but allows note + receipts", async () => {
+    const s = await devDirectorSetup();
+    const donorId = (await s.as.mutation(api.givingPlatform.upsertDonor, {
+      scope: "central",
+      name: "Locked Gift Donor",
+      email: "locked@example.com",
+    })) as Id<"donors">;
+    const giftId = (await s.as.mutation(api.givingPlatform.recordGift, {
+      donorId,
+      amountCents: 5000,
+      method: "stripe",
+    })) as Id<"gifts">;
+
+    // Make it system-written (a recurring Stripe billing cycle).
+    await run(s.t, (ctx) =>
+      ctx.db.patch(giftId, { stripeInvoiceId: "in_test_lock" }),
+    );
+
+    // Amount / date / source edits are all refused.
+    await expect(
+      s.as.mutation(api.givingPlatform.editGift, { giftId, amountCents: 9999 }),
+    ).rejects.toThrow(/GIFT_LOCKED/);
+    await expect(
+      s.as.mutation(api.givingPlatform.editGift, {
+        giftId,
+        receivedAt: Date.now() - 1000,
+      }),
+    ).rejects.toThrow(/GIFT_LOCKED/);
+    await expect(
+      s.as.mutation(api.givingPlatform.editGift, { giftId, method: "cash" }),
+    ).rejects.toThrow(/GIFT_LOCKED/);
+
+    // Note + receipts still succeed, and the money fields are untouched.
+    const receiptId = await storeBlob(s.t);
+    await s.as.mutation(api.givingPlatform.editGift, {
+      giftId,
+      note: "Matched by finance",
+      receiptStorageIds: [receiptId],
+    });
+    const gift = await giftRow(s, giftId);
+    expect(gift?.note).toBe("Matched by finance");
+    expect(gift?.receiptStorageIds).toEqual([receiptId]);
+    expect(gift?.amountCents).toBe(5000);
+    expect(gift?.method).toBe("stripe");
+  });
+
+  test("a donation-linked gift is also money-locked", async () => {
+    const s = await devDirectorSetup();
+    const donorId = (await s.as.mutation(api.givingPlatform.upsertDonor, {
+      scope: "central",
+      name: "Donation Gift Donor",
+    })) as Id<"donors">;
+    const giftId = (await s.as.mutation(api.givingPlatform.recordGift, {
+      donorId,
+      amountCents: 3000,
+      method: "stripe",
+    })) as Id<"gifts">;
+    // Stamp a donation link (the value need only be present for the lock check).
+    await run(s.t, async (ctx) => {
+      const donationId = await ctx.db.insert("donations", {
+        chapterId: s.chapterId,
+        eventId: (await ctx.db.insert("events", {
+          chapterId: s.chapterId,
+          eventTypeId: await ctx.db.insert("eventTypes", {
+            chapterId: s.chapterId,
+            name: "T",
+            slug: "t",
+            version: 1,
+            createdBy: s.userId,
+            createdAt: Date.now(),
+            updatedAt: Date.now(),
+          }),
+          templateVersion: 1,
+          name: "E",
+          eventDate: Date.now(),
+          status: "planning",
+          createdBy: s.userId,
+          createdAt: Date.now(),
+          updatedAt: Date.now(),
+        })) as Id<"events">,
+        name: "X",
+        amountCents: 3000,
+        currency: "usd",
+        method: "card",
+        status: "paid",
+        createdAt: Date.now(),
+      });
+      await ctx.db.patch(giftId, { donationId });
+    });
+
+    await expect(
+      s.as.mutation(api.givingPlatform.editGift, { giftId, amountCents: 4000 }),
+    ).rejects.toThrow(/GIFT_LOCKED/);
+    // Note-only still fine.
+    await s.as.mutation(api.givingPlatform.editGift, { giftId, note: "ok" });
+    expect((await giftRow(s, giftId))?.note).toBe("ok");
+  });
+});
+
+// ── Receipts bounded at 10 ────────────────────────────────────────────────────
+
+describe("receipts bound", () => {
+  test("recordGift and editGift reject more than 10 receipts", async () => {
+    const s = await devDirectorSetup();
+    const donorId = (await s.as.mutation(api.givingPlatform.upsertDonor, {
+      scope: "central",
+      name: "Receipt Donor",
+    })) as Id<"donors">;
+
+    // Eleven real storage ids.
+    const ids: Id<"_storage">[] = [];
+    for (let i = 0; i < 11; i++) ids.push(await storeBlob(s.t));
+
+    await expect(
+      s.as.mutation(api.givingPlatform.recordGift, {
+        donorId,
+        amountCents: 1000,
+        method: "cash",
+        receiptStorageIds: ids,
+      }),
+    ).rejects.toThrow(/TOO_MANY_RECEIPTS/);
+
+    // Ten is fine; then editing to eleven is rejected.
+    const giftId = (await s.as.mutation(api.givingPlatform.recordGift, {
+      donorId,
+      amountCents: 1000,
+      method: "cash",
+      receiptStorageIds: ids.slice(0, 10),
+    })) as Id<"gifts">;
+    expect((await giftRow(s, giftId))?.receiptStorageIds).toHaveLength(10);
+
+    await expect(
+      s.as.mutation(api.givingPlatform.editGift, {
+        giftId,
+        receiptStorageIds: ids,
+      }),
+    ).rejects.toThrow(/TOO_MANY_RECEIPTS/);
+  });
+});
+
+// ── Migration 0031: relabel `imported` ────────────────────────────────────────
+
+describe("migration 0031_gift_method_sources", () => {
+  test("maps both branches and is idempotent (pure relabel)", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+
+    const ids = await run(t, async (ctx) => {
+      // Donor whose provenance is Givebutter import.
+      const gbDonor = await ctx.db.insert("donors", {
+        scope: "central",
+        kind: "individual",
+        name: "GB Donor",
+        status: "active",
+        source: "givebutter-import",
+        lifetimeCents: 3000,
+        giftCount: 2,
+        createdAt: Date.now(),
+      });
+      // A plain manual donor.
+      const manualDonor = await ctx.db.insert("donors", {
+        scope: "central",
+        kind: "individual",
+        name: "Manual Donor",
+        status: "active",
+        source: "manual",
+        lifetimeCents: 1000,
+        giftCount: 1,
+        createdAt: Date.now(),
+      });
+
+      const mkGift = (
+        donorId: Id<"donors">,
+        amountCents: number,
+        externalRef?: string,
+      ) =>
+        ctx.db.insert("gifts", {
+          donorId,
+          scope: "central" as const,
+          amountCents,
+          currency: "usd",
+          receivedAt: Date.now(),
+          method: "imported" as const,
+          ...(externalRef ? { externalRef } : {}),
+          createdAt: Date.now(),
+        });
+
+      // a) imported + externalRef → givebutter
+      const withRef = await mkGift(manualDonor, 1000, "gb_txn_9");
+      // b) imported + donor.source givebutter-import → givebutter
+      const gbSourced = await mkGift(gbDonor, 2000);
+      // c) imported, neither signal → other
+      const plain = await mkGift(manualDonor, 500);
+      return { withRef, gbSourced, plain };
+    });
+
+    const res = await run(t, (ctx) => runGiftMethodSources(ctx));
+    expect(res.relabeled).toBe(3);
+    expect(res.toGivebutter).toBe(2);
+    expect(res.toOther).toBe(1);
+
+    const methods = await run(t, async (ctx) => ({
+      withRef: (await ctx.db.get(ids.withRef))?.method,
+      gbSourced: (await ctx.db.get(ids.gbSourced))?.method,
+      plain: (await ctx.db.get(ids.plain))?.method,
+    }));
+    expect(methods.withRef).toBe("givebutter");
+    expect(methods.gbSourced).toBe("givebutter");
+    expect(methods.plain).toBe("other");
+
+    // Amounts untouched (pure relabel).
+    const amounts = await run(t, async (ctx) => ({
+      withRef: (await ctx.db.get(ids.withRef))?.amountCents,
+      plain: (await ctx.db.get(ids.plain))?.amountCents,
+    }));
+    expect(amounts.withRef).toBe(1000);
+    expect(amounts.plain).toBe(500);
+
+    // Re-run → nothing left to relabel.
+    const again = await run(t, (ctx) => runGiftMethodSources(ctx));
+    expect(again.relabeled).toBe(0);
+    void s;
+  });
+});
+
+// ── Widened-source record path ────────────────────────────────────────────────
+
+describe("widened source union", () => {
+  test("recordGift persists each newly-added source literal", async () => {
+    const s = await devDirectorSetup();
+    const donorId = (await s.as.mutation(api.givingPlatform.upsertDonor, {
+      scope: "central",
+      name: "Source Donor",
+    })) as Id<"donors">;
+
+    for (const method of ["zelle", "venmo", "givebutter", "other"] as const) {
+      const giftId = (await s.as.mutation(api.givingPlatform.recordGift, {
+        donorId,
+        amountCents: 1500,
+        method,
+      })) as Id<"gifts">;
+      expect((await giftRow(s, giftId))?.method).toBe(method);
+    }
+  });
+});

@@ -313,6 +313,7 @@ const REGISTRY_NAMES = [
   "0028_reaward_course_completions",
   "0029_territories_cutover",
   "0030_backfill_launch_fund",
+  "0031_gift_method_sources",
 ];
 const SEEDED_HISTORICAL = [
   "backfillMissingDefaultColumns",
