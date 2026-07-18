@@ -1,8 +1,8 @@
 /**
- * The Academy — assembles the six content streams (Foundations, Events,
- * Works, Management, Finances, Music) into the flat curriculum and
- * course/theme catalog that the mobile Academy screens and the Convex
- * grading backend read.
+ * The Academy — assembles the seven content streams (Foundations, Events,
+ * Works, Management, Finances, Music, Marketing & Media) into the flat
+ * curriculum and course/theme catalog that the mobile Academy screens and
+ * the Convex grading backend read.
  *
  * This is the ONLY file that concatenates streams — it exists so a
  * mid-curriculum insert or a stream re-order is a one-line change here, and
@@ -42,6 +42,11 @@ import {
   FINANCES_THEME,
 } from "./streams/finances";
 import { MUSIC_COURSES, MUSIC_SECTIONS, MUSIC_THEME } from "./streams/music";
+import {
+  MARKETING_COURSES,
+  MARKETING_SECTIONS,
+  MARKETING_THEME,
+} from "./streams/marketing";
 import type {
   AcademySection,
   AcademyThemeKey,
@@ -54,7 +59,9 @@ export * from "./types";
 // The curriculum, in reading order: Foundations first (who we are and how we
 // work), then Events, Works, Management, then Finances — the exact order the
 // former monolith's flat array used, with Foundations prepended — then
-// Music, appended after Finances.
+// Music, then Marketing & Media, both appended after Finances (Marketing &
+// Media added after Music; sibling stream PRs may land concurrently and
+// shift this tail, resolved at merge time).
 const SECTIONS_IN_ORDER: Omit<AcademySection, "order">[] = [
   ...FOUNDATIONS_SECTIONS,
   ...EVENTS_SECTIONS,
@@ -62,6 +69,7 @@ const SECTIONS_IN_ORDER: Omit<AcademySection, "order">[] = [
   ...MANAGEMENT_SECTIONS,
   ...FINANCES_SECTIONS,
   ...MUSIC_SECTIONS,
+  ...MARKETING_SECTIONS,
 ];
 
 /**
@@ -120,6 +128,7 @@ export const ACADEMY_THEMES: Theme[] = [
   MANAGEMENT_THEME,
   FINANCES_THEME,
   MUSIC_THEME,
+  MARKETING_THEME,
 ];
 
 /**
@@ -137,6 +146,7 @@ export const ACADEMY_COURSES: Course[] = [
   ...MANAGEMENT_COURSES,
   ...FINANCES_COURSES,
   ...MUSIC_COURSES,
+  ...MARKETING_COURSES,
 ];
 
 /** Look up a course by slug, or undefined. */

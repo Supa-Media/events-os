@@ -12,8 +12,13 @@
  * (finance-budget-lifecycle, finance-one-home-per-dollar), a new
  * `chapter-money-model` course inserted between finances-for-everyone and
  * treasurer, and `finance-tiers-and-skim` moved out of chapter-director's
- * moduleSlugs into it; and the Music stream appended after Finances (9
- * sections, 3 courses). Total: 54 sections base → 63 with Music. Section
+ * moduleSlugs into it; the Music stream appended after Finances (9 sections,
+ * 3 courses); the People & Leadership expansion of the Management stream's
+ * section/course set; and the Marketing & Media stream appended after Music
+ * (4 sections — `mktg-the-look`, `mktg-hit-record`, `mktg-shoot-to-timeline`,
+ * `mktg-getting-access` — 2 courses; a caption-voice lesson and a
+ * short-form-editing course were authored and then descoped before merge —
+ * see `streams/marketing.ts`'s header comment). Total: 77 sections. Section
  * slugs and their order are otherwise untouched — any OTHER drift here is
  * still a real regression.
  */
@@ -95,6 +100,10 @@ const EXPECTED_SECTION_SLUGS: string[] = [
   "music-what-a-producer-does",
   "music-artist-is-a-brand",
   "music-the-economics-of-a-song",
+  "mktg-the-look",
+  "mktg-hit-record",
+  "mktg-shoot-to-timeline",
+  "mktg-getting-access",
 ];
 
 // Per-section fields that must not drift: title, minutes, quiz length,
@@ -691,6 +700,38 @@ const EXPECTED_SECTIONS: {
     optional: false,
     capstoneKind: null,
   },
+  {
+    slug: "mktg-the-look",
+    title: "The look",
+    minutes: 3,
+    quizLength: 4,
+    optional: false,
+    capstoneKind: null,
+  },
+  {
+    slug: "mktg-hit-record",
+    title: "HIT RECORD",
+    minutes: 3,
+    quizLength: 4,
+    optional: false,
+    capstoneKind: null,
+  },
+  {
+    slug: "mktg-shoot-to-timeline",
+    title: "From shoot to timeline",
+    minutes: 4,
+    quizLength: 4,
+    optional: false,
+    capstoneKind: null,
+  },
+  {
+    slug: "mktg-getting-access",
+    title: "Getting access",
+    minutes: 3,
+    quizLength: 4,
+    optional: false,
+    capstoneKind: null,
+  },
 ];
 
 // Course catalog: slug + themeKey + ordered moduleSlugs.
@@ -828,6 +869,16 @@ const EXPECTED_COURSES: {
     slug: "producing-and-artistry",
     themeKey: "music",
     moduleSlugs: ["music-what-a-producer-does", "music-artist-is-a-brand", "music-the-economics-of-a-song"],
+  },
+  {
+    slug: "brand-and-voice",
+    themeKey: "marketing",
+    moduleSlugs: ["mktg-the-look"],
+  },
+  {
+    slug: "media-pipeline",
+    themeKey: "marketing",
+    moduleSlugs: ["mktg-hit-record", "mktg-shoot-to-timeline", "mktg-getting-access"],
   },
 ];
 

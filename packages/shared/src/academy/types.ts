@@ -189,9 +189,10 @@ export type AcademyAudience = "role" | "ownership" | "team";
  * mission, the org chart, and team culture; taught first), running events,
  * ongoing works (projects & duties), management (leading the people who do
  * both), finances (WP-5.1 — enablement for the finance v2 split,
- * `docs/plans/finance-v2-split-prd.md` §Phase 5), and music (the
+ * `docs/plans/finance-v2-split-prd.md` §Phase 5), music (the
  * doxological songwriting/song-selection framework, worship-leader
- * submission, and producer/artist roles).
+ * submission, and producer/artist roles), and marketing (the PW brand kit
+ * and the field-to-edit media pipeline).
  */
 export type AcademyThemeKey =
   | "foundations"
@@ -199,7 +200,8 @@ export type AcademyThemeKey =
   | "works"
   | "management"
   | "finances"
-  | "music";
+  | "music"
+  | "marketing";
 
 /** One stream: a titled grouping courses belong to via `themeKey`. */
 export interface Theme {
