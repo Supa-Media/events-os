@@ -6,13 +6,16 @@
  * section, a moved course, a changed minutes/quiz count — fails loudly.
  *
  * This test passed UNCHANGED across the split itself. It was DELIBERATELY
- * updated once since, for the `chapter-money-model` reshape (shared core
- * course for Treasurer + Chapter Director): two sections appended
- * (finance-budget-lifecycle, finance-one-home-per-dollar; 45 → 47 total),
- * a new `chapter-money-model` course inserted between finances-for-everyone
- * and treasurer, and `finance-tiers-and-skim` moved out of chapter-director's
- * moduleSlugs into it. Section slugs and their order are otherwise untouched
- * — any OTHER drift here is still a real regression.
+ * updated since for: the Foundations stream prepended (7 sections, 2
+ * courses); the `chapter-money-model` reshape (shared core course for
+ * Treasurer + Chapter Director) — two sections appended
+ * (finance-budget-lifecycle, finance-one-home-per-dollar), a new
+ * `chapter-money-model` course inserted between finances-for-everyone and
+ * treasurer, and `finance-tiers-and-skim` moved out of chapter-director's
+ * moduleSlugs into it; and the Music stream appended after Finances (9
+ * sections, 3 courses). Total: 54 sections base → 63 with Music. Section
+ * slugs and their order are otherwise untouched — any OTHER drift here is
+ * still a real regression.
  */
 import { describe, expect, test } from "vitest";
 import { ACADEMY_COURSES, ACADEMY_SECTIONS } from "./academy";
@@ -73,6 +76,15 @@ const EXPECTED_SECTION_SLUGS: string[] = [
   "finance-launch-grants-and-transfers",
   "finance-budget-lifecycle",
   "finance-one-home-per-dollar",
+  "music-worship-is-a-sacrifice",
+  "music-the-test",
+  "music-four-shapes-of-praise",
+  "music-the-five-drifts",
+  "music-running-the-room",
+  "music-submitting-a-song",
+  "music-what-a-producer-does",
+  "music-artist-is-a-brand",
+  "music-the-economics-of-a-song",
 ];
 
 // Per-section fields that must not drift: title, minutes, quiz length,
@@ -517,6 +529,78 @@ const EXPECTED_SECTIONS: {
     optional: false,
     capstoneKind: null,
   },
+  {
+    slug: "music-worship-is-a-sacrifice",
+    title: "Worship is a sacrifice",
+    minutes: 4,
+    quizLength: 4,
+    optional: false,
+    capstoneKind: null,
+  },
+  {
+    slug: "music-the-test",
+    title: "The test",
+    minutes: 3,
+    quizLength: 4,
+    optional: false,
+    capstoneKind: null,
+  },
+  {
+    slug: "music-four-shapes-of-praise",
+    title: "Four shapes of praise",
+    minutes: 4,
+    quizLength: 4,
+    optional: false,
+    capstoneKind: null,
+  },
+  {
+    slug: "music-the-five-drifts",
+    title: "The five drifts",
+    minutes: 4,
+    quizLength: 4,
+    optional: false,
+    capstoneKind: null,
+  },
+  {
+    slug: "music-running-the-room",
+    title: "Running the room",
+    minutes: 3,
+    quizLength: 3,
+    optional: false,
+    capstoneKind: null,
+  },
+  {
+    slug: "music-submitting-a-song",
+    title: "Submitting a song",
+    minutes: 3,
+    quizLength: 4,
+    optional: false,
+    capstoneKind: null,
+  },
+  {
+    slug: "music-what-a-producer-does",
+    title: "What a producer does",
+    minutes: 4,
+    quizLength: 4,
+    optional: false,
+    capstoneKind: null,
+  },
+  {
+    slug: "music-artist-is-a-brand",
+    title: "Artist = brand",
+    minutes: 3,
+    quizLength: 4,
+    optional: false,
+    capstoneKind: null,
+  },
+  {
+    slug: "music-the-economics-of-a-song",
+    title: "The economics of a song",
+    minutes: 3,
+    quizLength: 4,
+    optional: false,
+    capstoneKind: null,
+  },
 ];
 
 // Course catalog: slug + themeKey + ordered moduleSlugs.
@@ -614,6 +698,21 @@ const EXPECTED_COURSES: {
     slug: "executive-director",
     themeKey: "finances",
     moduleSlugs: ["finance-central-budgets", "finance-governance-and-seats", "finance-launch-grants-and-transfers"],
+  },
+  {
+    slug: "doxology-what-we-sing",
+    themeKey: "music",
+    moduleSlugs: ["music-worship-is-a-sacrifice", "music-the-test", "music-four-shapes-of-praise", "music-the-five-drifts", "music-running-the-room"],
+  },
+  {
+    slug: "leading-worship",
+    themeKey: "music",
+    moduleSlugs: ["music-submitting-a-song"],
+  },
+  {
+    slug: "producing-and-artistry",
+    themeKey: "music",
+    moduleSlugs: ["music-what-a-producer-does", "music-artist-is-a-brand", "music-the-economics-of-a-song"],
   },
 ];
 

@@ -1,11 +1,12 @@
 /**
- * The Academy — assembles the four content streams (Events, Works,
- * Management, Finances) into the flat curriculum and course/theme catalog
- * that the mobile Academy screens and the Convex grading backend read.
+ * The Academy — assembles the six content streams (Foundations, Events,
+ * Works, Management, Finances, Music) into the flat curriculum and
+ * course/theme catalog that the mobile Academy screens and the Convex
+ * grading backend read.
  *
  * This is the ONLY file that concatenates streams — it exists so a
  * mid-curriculum insert or a stream re-order is a one-line change here, and
- * so the four stream files (`./streams/*`) can be authored in parallel with
+ * so the stream files (`./streams/*`) can be authored in parallel with
  * zero merge overlap. Do not add sections or courses directly here; add them
  * to the owning stream file and this module assembles them.
  *
@@ -40,6 +41,7 @@ import {
   FINANCES_SECTIONS,
   FINANCES_THEME,
 } from "./streams/finances";
+import { MUSIC_COURSES, MUSIC_SECTIONS, MUSIC_THEME } from "./streams/music";
 import type {
   AcademySection,
   AcademyThemeKey,
@@ -51,13 +53,15 @@ export * from "./types";
 
 // The curriculum, in reading order: Foundations first (who we are and how we
 // work), then Events, Works, Management, then Finances — the exact order the
-// former monolith's flat array used, with Foundations prepended.
+// former monolith's flat array used, with Foundations prepended — then
+// Music, appended after Finances.
 const SECTIONS_IN_ORDER: Omit<AcademySection, "order">[] = [
   ...FOUNDATIONS_SECTIONS,
   ...EVENTS_SECTIONS,
   ...WORKS_SECTIONS,
   ...MANAGEMENT_SECTIONS,
   ...FINANCES_SECTIONS,
+  ...MUSIC_SECTIONS,
 ];
 
 /**
@@ -115,6 +119,7 @@ export const ACADEMY_THEMES: Theme[] = [
   WORKS_THEME,
   MANAGEMENT_THEME,
   FINANCES_THEME,
+  MUSIC_THEME,
 ];
 
 /**
@@ -131,6 +136,7 @@ export const ACADEMY_COURSES: Course[] = [
   ...WORKS_COURSES,
   ...MANAGEMENT_COURSES,
   ...FINANCES_COURSES,
+  ...MUSIC_COURSES,
 ];
 
 /** Look up a course by slug, or undefined. */
