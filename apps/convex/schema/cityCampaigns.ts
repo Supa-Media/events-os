@@ -2,6 +2,12 @@ import { defineTable } from "convex/server";
 import { v } from "convex/values";
 
 /**
+ * DEPLOY-B(territories): SUPERSEDED by `schema/territories.ts`. Registered in
+ * `schema.ts` ONLY so migration 0029 can read the legacy rows during the
+ * cutover. Once 0029 has run in prod, a follow-up PR (Deploy B) drops this
+ * table + its registration together with `apps/convex/cityCampaigns.ts` and the
+ * `pledges.cityCampaignId` / `pledges.by_cityCampaign` field+index.
+ *
  * The City Launch map (F-6, Phase 3) — the public `/give` acquisition surface
  * (docs/plans/giving-platform.md §5). A `cityCampaigns` row is a dot on the
  * map: a PROSPECT city raising backers toward a chapter launch. It is NOT a

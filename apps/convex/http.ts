@@ -18,7 +18,7 @@ import {
 } from "./lib/reimbursePage";
 import {
   renderGiveMapPage,
-  renderGiveCampaignPage,
+  renderGiveTerritoryPage,
   renderGiveNotFound,
 } from "./lib/givePage";
 import {
@@ -130,19 +130,24 @@ http.route({
   }),
 });
 
-// ── Public giving map: /give (the map) + /give/<slug> (a city's page) ───────
-// F-6 P3 (docs/plans/giving-platform.md §5): the map is aggregates-only, no
-// auth (`api.cityCampaigns.getPublicMapData`/`getPublicCampaign` never expose
-// donor PII). The campaign route reads `?pledge=success|canceled` off the
-// URL (the Stripe return param `givingPledges.startPledgeCheckout` sets) to
-// render the thank-you banner server-side — no extra client round-trip.
+// ── Public giving map: /give (the map) + /give/<slug> (a territory's page) ───
+// Territories (docs/plans/giving-territories.md): the map is aggregates-only,
+// no auth (`api.territories.getPublicMapData`/`getPublicTerritory` never expose
+// donor PII). URLs stay `/give` + `/give/<slug>` so already-shared links
+// survive the cityCampaigns → territories cutover. The territory route reads
+// `?pledge=success|canceled` off the URL (the Stripe return param
+// `givingPledges.startPledgeCheckout` sets) to render the thank-you banner
+// server-side — no extra client round-trip.
 
 http.route({
   path: "/give",
   method: "GET",
   handler: httpAction(async (ctx) => {
-    const campaigns = await ctx.runQuery(api.cityCampaigns.getPublicMapData, {});
-    return html(renderGiveMapPage(campaigns, siteUrl()));
+    const territories = await ctx.runQuery(
+      api.territories.getPublicMapData,
+      {},
+    );
+    return html(renderGiveMapPage(territories, siteUrl()));
   }),
 });
 
@@ -154,12 +159,12 @@ http.route({
     const segments = url.pathname.split("/").filter(Boolean); // ["give", slug]
     const slug = decodeURIComponent(segments[1] ?? "");
     if (!slug || segments.length > 2) return html(renderGiveNotFound(), 404);
-    const data = await ctx.runQuery(api.cityCampaigns.getPublicCampaign, {
+    const data = await ctx.runQuery(api.territories.getPublicTerritory, {
       slug,
     });
     if (!data) return html(renderGiveNotFound(), 404);
     const pledgeParam = url.searchParams.get("pledge");
-    return html(renderGiveCampaignPage(data, siteUrl(), pledgeParam));
+    return html(renderGiveTerritoryPage(data, siteUrl(), pledgeParam));
   }),
 });
 

@@ -1,7 +1,9 @@
 /**
- * CSS for the public `/give` map + `/give/<slug>` campaign pages (F-6 P3).
- * Appended after `BASE_CSS` (`landingPageStyles.ts`), same house pattern as
- * `LANDING_CSS` — one brand palette, no external stylesheet.
+ * CSS for the public `/give` map + `/give/<slug>` territory pages
+ * (docs/plans/giving-territories.md). Appended after `BASE_CSS`
+ * (`landingPageStyles.ts`), same house pattern as `LANDING_CSS` — one brand
+ * palette, no external stylesheet. (The internal `.city-dot`/`.citylist` class
+ * names are kept as-is — they're not user-visible copy.)
  */
 export const GIVE_CSS = `
 main.give{max-width:1080px;margin:0 auto;padding:20px 20px 96px}

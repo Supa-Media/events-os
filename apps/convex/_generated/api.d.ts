@@ -105,6 +105,7 @@ import type * as migrations_0025_add_cd_finance_viewer from "../migrations/0025_
 import type * as migrations_0026_migrate_budget_v1_lines from "../migrations/0026_migrate_budget_v1_lines.js";
 import type * as migrations_0027_sync_linked_budget_identity from "../migrations/0027_sync_linked_budget_identity.js";
 import type * as migrations_0028_reaward_course_completions from "../migrations/0028_reaward_course_completions.js";
+import type * as migrations_0029_territories_cutover from "../migrations/0029_territories_cutover.js";
 import type * as migrations_index from "../migrations/index.js";
 import type * as modules from "../modules.js";
 import type * as moneyViews from "../moneyViews.js";
@@ -146,6 +147,7 @@ import type * as schema_siteMap from "../schema/siteMap.js";
 import type * as schema_songs from "../schema/songs.js";
 import type * as schema_sponsorships from "../schema/sponsorships.js";
 import type * as schema_templates from "../schema/templates.js";
+import type * as schema_territories from "../schema/territories.js";
 import type * as schema_ticketing from "../schema/ticketing.js";
 import type * as seatProposals from "../seatProposals.js";
 import type * as seatStructure from "../seatStructure.js";
@@ -163,6 +165,7 @@ import type * as stripeFinance from "../stripeFinance.js";
 import type * as templatePeople from "../templatePeople.js";
 import type * as templateSync from "../templateSync.js";
 import type * as templates from "../templates.js";
+import type * as territories from "../territories.js";
 import type * as ticketing from "../ticketing.js";
 import type * as ticketingEmails from "../ticketingEmails.js";
 import type * as ticketingVerification from "../ticketingVerification.js";
@@ -274,6 +277,7 @@ declare const fullApi: ApiFromModules<{
   "migrations/0026_migrate_budget_v1_lines": typeof migrations_0026_migrate_budget_v1_lines;
   "migrations/0027_sync_linked_budget_identity": typeof migrations_0027_sync_linked_budget_identity;
   "migrations/0028_reaward_course_completions": typeof migrations_0028_reaward_course_completions;
+  "migrations/0029_territories_cutover": typeof migrations_0029_territories_cutover;
   "migrations/index": typeof migrations_index;
   modules: typeof modules;
   moneyViews: typeof moneyViews;
@@ -315,6 +319,7 @@ declare const fullApi: ApiFromModules<{
   "schema/songs": typeof schema_songs;
   "schema/sponsorships": typeof schema_sponsorships;
   "schema/templates": typeof schema_templates;
+  "schema/territories": typeof schema_territories;
   "schema/ticketing": typeof schema_ticketing;
   seatProposals: typeof seatProposals;
   seatStructure: typeof seatStructure;
@@ -332,6 +337,7 @@ declare const fullApi: ApiFromModules<{
   templatePeople: typeof templatePeople;
   templateSync: typeof templateSync;
   templates: typeof templates;
+  territories: typeof territories;
   ticketing: typeof ticketing;
   ticketingEmails: typeof ticketingEmails;
   ticketingVerification: typeof ticketingVerification;

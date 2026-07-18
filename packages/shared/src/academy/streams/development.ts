@@ -14,18 +14,19 @@
  * (`apps/mobile/app/(app)/giving/`), and the `giving.manage`/`giving.view`/
  * `nav.giving` capabilities in `packages/shared/src/seats.ts`.
  *
- * The public `/give` map and per-city campaign pages (`cityCampaigns` +
- * `apps/convex/lib/givePage.ts`) shipped in giving-platform PRD §5 (phase P3);
- * `dev-prospect-cities-and-map` teaches them as the live surface they are — the
- * map, a city's `/give/<slug>` page, and its become-a-backer flow — and stays
- * honest that at LAUNCH a campaign's central-held pledges do NOT auto-re-scope
- * onto the new chapter: that money move is an open owner decision (PRD Appendix
- * C#3) with an explicit TODO in `cityCampaigns.setCampaignStatus`, so the
- * public page just switches to the chapter's own live backer count. Likewise,
- * a higher "church backer" pledge unit (PRD Appendix C#1, ~$200–500/mo) is an
- * open owner decision, not shipped — `BACKER_UNIT_CENTS` is a single $50
- * floor today, so this stream teaches that one floor, not a church-specific
- * tier that doesn't exist in the schema.
+ * The public `/give` map and per-territory pages (`territories` +
+ * `apps/convex/lib/givePage.ts`) are the live acquisition surface;
+ * `dev-prospect-cities-and-map` teaches them as they now work under the
+ * Territories model (docs/plans/giving-territories.md): a territory maps 1:1
+ * with a real chapter, so a prospect territory is a "shadow chapter" (a real,
+ * inactive `chapters` row) from the moment it's created. Backers, donors, and
+ * gifts scope DIRECTLY to that chapter — the old "backers stay central-held
+ * until launch" model is GONE. Launch is a flag-flip (`chapters.isActive:
+ * true`) that provisions banking; nobody's money moves. Likewise, a higher
+ * "church backer" pledge unit (PRD Appendix C#1, ~$200–500/mo) is an open owner
+ * decision, not shipped — `BACKER_UNIT_CENTS` is a single $50 floor today, so
+ * this stream teaches that one floor, not a church-specific tier that doesn't
+ * exist in the schema.
  *
  * Owned exclusively by this file for content authoring — do not add
  * Development sections or courses anywhere else. See `../index` for how this
@@ -60,7 +61,7 @@ export const DEVELOPMENT_SECTIONS: Omit<AcademySection, "order">[] = [
           "**Gift** — one dollar amount received, ever, from any source: a Stripe charge, cash, a check, a wire, in-kind, or imported history from Givebutter. Every gift is one row in the giving history.",
           "**Backer** — a donor with an *active, recurring monthly pledge* to a specific city, at or above the $50/month floor. Backers are what the affordability tiers count — see the next course.",
           "**Sponsor / partner** — an organization-level relationship (a church, a business, or a foundation) attached to a sponsor package, not a one-time or per-month personal gift.",
-          "**Prospect city** — a dot on the future map raising backers toward launching a new chapter. Not a real chapter yet — just people believing in a city before it exists.",
+          "**Prospect territory** — a place on the map raising backers toward opening a chapter. Under the hood it's already a real chapter, just an inactive one (a \"shadow chapter\") — so backers attach to it directly from day one, before it's officially live.",
         ],
       },
       {
@@ -102,16 +103,16 @@ export const DEVELOPMENT_SECTIONS: Omit<AcademySection, "order">[] = [
           "\"Gift\" is deliberately broad — it's the unit of giving history no matter which channel the money came through.",
       },
       {
-        prompt: "What is a \"prospect city\"?",
+        prompt: "What is a \"prospect territory\"?",
         options: [
           "A chapter that's behind on its budget",
-          "A dot on the future map raising backers toward launching a new chapter — not a real chapter yet",
-          "A city Public Worship has decided never to launch",
-          "Any city with at least one donor",
+          "A place raising backers toward opening a chapter — backed by a real but inactive \"shadow chapter\" from day one",
+          "A place Public Worship has decided never to launch",
+          "Any place with at least one donor",
         ],
         answerIndex: 1,
         explanation:
-          "A prospect city is potential energy — backers believing in a place before it becomes an operating chapter.",
+          "A prospect territory maps 1:1 with a real chapter that simply isn't live yet — so backers scope to it directly, before it opens.",
       },
       {
         prompt: "How should you frame backing Public Worship to someone who already tithes at their own church?",
@@ -956,90 +957,90 @@ export const DEVELOPMENT_SECTIONS: Omit<AcademySection, "order">[] = [
     ],
   },
 
-  // ── 96 · The city-launch story: prospect cities and the map (concept) ────
+  // ── 96 · The launch story: prospect territories and the map (concept) ────
   {
     slug: "dev-prospect-cities-and-map",
-    title: "Prospect cities: how a dot becomes a chapter",
+    title: "Prospect territories: how a dot becomes a chapter",
     subtitle: "Backer campaigns, milestone promises, and the live public map",
     minutes: 3,
     blocks: [
       {
         kind: "p",
-        text: "A prospect city is exactly what it sounds like: a potential chapter — \"Columbus, OH\" — that doesn't exist as a real operating chapter yet, but has a story and a backer campaign raising toward one. Central or a development-director-level holder is who stands one up.",
+        text: "A prospect territory is a place — \"Columbus, OH\", \"Queens\" — that's raising backers toward opening a chapter. Here's the part that's easy to miss: a territory isn't a placeholder floating outside the system. The moment central adds one, a real chapter is created for it behind the scenes — an inactive \"shadow chapter\". Central or a development-director-level holder is who stands one up.",
       },
       {
         kind: "bullets",
         items: [
-          "**Same milestone ladder, public.** A prospect city's `/give/<slug>` page shows the exact same milestone ladder as a live chapter, framed as visible progress: \"17 of 20 backers — 3 more unlocks monthly Worship With Strangers in Columbus.\"",
+          "**Same milestone ladder, public.** A prospect territory's `/give/<slug>` page shows the exact same milestone ladder as a live chapter, framed as visible progress: \"17 of 20 backers — 3 more unlocks monthly Worship With Strangers in Columbus.\"",
           "**Shareable by design.** A backer campaign is meant to be forwarded — \"already 3 backers here, help get it to 20\" — with no donor's personal information ever exposed publicly.",
-          "**The dot becomes the chapter.** When a prospect city launches, central links it to a real chapter and its public page switches to showing that chapter's own live backer count. The people who backed the dot are its founding supporters — their pledges are held centrally for the city today, and exactly how that money formally moves onto the new chapter is an owner decision still being settled, so the re-scope isn't automatic yet.",
+          "**Launch is a flip, not a move.** Because backers, donors, and gifts scope DIRECTLY to the (shadow) chapter from their very first pledge, launching a territory doesn't move anyone's money anywhere. It simply flips that chapter live and provisions its banking; the public page keeps showing the same backer count, now on an officially-open chapter.",
         ],
       },
       {
         kind: "rule",
         title: "Belief comes before the building",
-        text: "A prospect city exists precisely so people can back a place before it has staff, a venue, or a launch date — the backer campaign IS the proof a city is ready, not a marketing afterthought once it already is.",
+        text: "A prospect territory exists precisely so people can back a place before it has staff, a venue, or a launch date. And because it's a real (if dormant) chapter from the start, every backer counts toward it from day one — the backer campaign IS the proof a place is ready, not a marketing afterthought once it already is.",
       },
       {
         kind: "tip",
-        text: "**Live now: the public `/give` map.** The map plots every publicly-visible city, and each city's `/give/<slug>` page carries the milestone ladder, a progress bar, and a become-a-backer form — preset $20 / $50 / $100 or a custom monthly amount — that starts a real Stripe subscription. A campaign only appears publicly once an admin marks it visible, so central can stage a city before announcing it. The map is aggregates-only: it never exposes a donor's name or contact details.",
+        text: "**Live now: the public `/give` map.** The map plots every publicly-visible territory, and each `/give/<slug>` page carries the milestone ladder, a progress bar, and a become-a-backer form — preset $20 / $50 / $100 or a custom monthly amount — that starts a real Stripe subscription. A territory shows publicly only once an admin marks it visible, so central can stage one before announcing it. The map is aggregates-only: it never exposes a donor's name or contact details.",
       },
       {
         kind: "reveal",
         prompt:
-          "A prospect city's backer campaign hits its launch target. What actually happens?",
+          "A prospect territory's backer campaign hits its launch target. What actually happens to its backers?",
         answer:
-          "Central makes the launch call and links the campaign to a real operating chapter; the map dot becomes that chapter and its public page switches to the chapter's own live backer count. The people who backed the dot are its founding supporters — their pledges are held centrally for the city, and formally moving that money onto the new chapter is an owner decision still being settled, so it isn't automatic yet.",
+          "Nothing moves — and that's the point. The territory was a real (inactive) chapter all along, and its backers, donors, and gifts were scoped to that chapter from their very first pledge. Launching just flips the chapter live and provisions its banking; the same backers are now its founding supporters on an officially-open chapter.",
       },
     ],
     quiz: [
       {
-        prompt: "What is a \"prospect city\"?",
+        prompt: "What is a \"prospect territory\"?",
         options: [
-          "Any city with an existing chapter",
-          "A potential future chapter raising backers toward launch — not a real chapter yet",
-          "A city Public Worship has ruled out",
+          "Any place with an existing, active chapter",
+          "A place raising backers toward launch — created as a real but inactive \"shadow chapter\" from day one",
+          "A place Public Worship has ruled out",
           "A backup location if a chapter closes",
         ],
         answerIndex: 1,
         explanation:
-          "It's potential, not yet reality — the whole point of a backer campaign is proving out demand before committing chapter resources.",
+          "A prospect territory maps 1:1 with a real chapter that simply isn't live yet — so backers, donors, and gifts attach to it directly.",
       },
       {
-        prompt: "Who typically stands up a new prospect city?",
+        prompt: "Who typically stands up a new prospect territory?",
         options: [
           "Any signed-in member",
           "Central or a development-director-level holder",
-          "The city itself, automatically",
+          "The place itself, automatically",
           "A random lottery",
         ],
         answerIndex: 1,
         explanation:
-          "Adding a potential chapter to the map is a deliberate, gated move — not something any member triggers casually.",
+          "Adding a territory to the map is a deliberate, gated move — not something any member triggers casually.",
       },
       {
         prompt: "Is the public `/give` map live today?",
         options: [
-          "Yes — the map and each city's `/give/<slug>` page, with a become-a-backer flow, are live",
+          "Yes — the map and each territory's `/give/<slug>` page, with a become-a-backer flow, are live",
           "No, it's still being built for a later release",
           "Only central users can see it",
-          "It goes live only after a city launches",
+          "It goes live only after a territory launches",
         ],
         answerIndex: 0,
         explanation:
-          "The map, the per-city campaign pages, and the Stripe-backed become-a-backer flow all shipped — a city shows publicly once an admin marks it visible.",
+          "The map, the per-territory pages, and the Stripe-backed become-a-backer flow all shipped — a territory shows publicly once an admin marks it visible.",
       },
       {
-        prompt: "What happens to a prospect city's backers the moment it launches into a real chapter?",
+        prompt: "What happens to a prospect territory's backers the moment it launches into a live chapter?",
         options: [
           "Their pledges are canceled and they must re-subscribe",
-          "The dot becomes the chapter and its page shows the chapter's live count; their central-held pledges stay put while the money re-scope is still being settled",
-          "They stay attached to the prospect campaign forever",
+          "Nothing moves — they were scoped to the chapter all along; launch just flips that chapter live and provisions its banking",
+          "They stay attached to a separate prospect record forever",
           "They're deleted and nothing is tracked",
         ],
         answerIndex: 1,
         explanation:
-          "Launch flips the dot to the chapter and the public count follows the chapter — but the campaign's backers are held centrally, and formally re-scoping that money is an owner decision still being settled, so nothing is lost yet it isn't automatic.",
+          "A territory is a real chapter from creation, so backers scope directly to it — launch flips `isActive` and provisions banking, without re-scoping anyone.",
       },
     ],
   },
@@ -1059,7 +1060,7 @@ export const DEVELOPMENT_THEME: Theme = {
  * stewardship (the relationship craft), the backer model (the recurring
  * rails + the Givebutter cutover), sponsorships & partnerships (the
  * institutional-giving desk), and the city-launch story (the economics
- * backer giving funds, plus the prospect-city story and the live public
+ * backer giving funds, plus the prospect-territory story and the live public
  * `/give` map — per this stream's header comment).
  */
 export const DEVELOPMENT_COURSES: Course[] = [
@@ -1071,7 +1072,7 @@ export const DEVELOPMENT_COURSES: Course[] = [
     audience: "team",
     description:
       "The vocabulary every development-desk holder needs — donor, gift, " +
-      "backer, sponsor, prospect city — and a tour of the donor CRM: " +
+      "backer, sponsor, prospect territory — and a tour of the donor CRM: " +
       "statuses, the 90-day lapse rule, and the top-donor dashboard.",
     icon: "gift",
     moduleSlugs: ["dev-giving-vocabulary", "dev-donor-crm-basics"],
@@ -1131,8 +1132,9 @@ export const DEVELOPMENT_COURSES: Course[] = [
     audience: "team",
     description:
       "The 85/15 split and the City Launch Fund from the giving side, plus " +
-      "the prospect-city/backer-campaign story and the live public `/give` " +
-      "map — including what launch does (and doesn't yet) do to a city's backers.",
+      "the prospect-territory/backer-campaign story and the live public `/give` " +
+      "map — including what launch does (flip the shadow chapter live) and " +
+      "doesn't (move anyone's money).",
     icon: "map",
     moduleSlugs: [
       "dev-city-launch-economics",

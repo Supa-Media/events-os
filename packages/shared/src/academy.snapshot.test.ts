@@ -49,9 +49,17 @@
  * `dev-prospect-cities-and-map` had its COPY + quiz corrected once the public
  * `/give` map shipped (PR #275, giving-platform §5): the map/city pages are now
  * taught as live, and launch's non-automatic pledge re-scope is told honestly
- * (an open owner decision, PRD Appendix C#3). Its title, minutes, and
- * quiz-length are unchanged, so the snapshotted values below stay put — only
- * the lesson prose and two answer keys moved.
+ * (an open owner decision, PRD Appendix C#3). Its minutes and quiz-length were
+ * unchanged then, so the snapshotted values stayed put.
+ *
+ * The Territories cutover (docs/plans/giving-territories.md) then RETITLED that
+ * section — "Prospect cities…" → "Prospect territories: how a dot becomes a
+ * chapter" (the ONLY title change below) — and rewrote its prose + quiz, plus
+ * the `dev-giving-vocabulary` "prospect city" → "prospect territory" copy: a
+ * territory now maps 1:1 with a real chapter ("shadow chapter"), backers scope
+ * DIRECTLY to it, and launch is a flag-flip that moves no money (the old
+ * central-held/owner-decision teaching is obsolete). Slug, minutes, quiz
+ * lengths, and order are all unchanged, so only that one title moved here.
  */
 import { describe, expect, test } from "vitest";
 import { ACADEMY_COURSES, ACADEMY_SECTIONS } from "./academy";
@@ -928,7 +936,7 @@ const EXPECTED_SECTIONS: {
   },
   {
     slug: "dev-prospect-cities-and-map",
-    title: "Prospect cities: how a dot becomes a chapter",
+    title: "Prospect territories: how a dot becomes a chapter",
     minutes: 3,
     quizLength: 4,
     optional: false,
