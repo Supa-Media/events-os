@@ -35,9 +35,11 @@ import {
 } from "./lib/givingAccess";
 import {
   assertPositiveGiftCents,
+  assertReceiptsBound,
   matchOrCreateDonor,
   recordGiftForDonor,
   removeGiftRow,
+  editGiftRow,
   dualWriteGiftForDonation,
 } from "./lib/givingDonors";
 import {
@@ -99,7 +101,22 @@ export const getDonor = query({
       .withIndex("by_donor", (q) => q.eq("donorId", donorId))
       .order("desc")
       .take(DONOR_GIFTS_LIMIT);
-    return { donor, gifts };
+    // Resolve each gift's receipt storage ids to servable URLs for display
+    // (mirrors how `people`/reimbursements resolve stored files). Missing files
+    // resolve to null and are dropped, so a thumbnail row only shows real proof.
+    const giftsWithReceipts = await Promise.all(
+      gifts.map(async (g) => ({
+        ...g,
+        receiptUrls: g.receiptStorageIds
+          ? (
+              await Promise.all(
+                g.receiptStorageIds.map((id) => ctx.storage.getUrl(id)),
+              )
+            ).filter((url): url is string => url !== null)
+          : [],
+      })),
+    );
+    return { donor, gifts: giftsWithReceipts };
   },
 });
 
@@ -279,6 +296,8 @@ export const recordGift = mutation({
     note: v.optional(v.string()),
     eventId: v.optional(v.id("events")),
     externalRef: v.optional(v.string()),
+    // P4: optional receipt proof captured at record time (bounded ≤ 10).
+    receiptStorageIds: v.optional(v.array(v.id("_storage"))),
   },
   returns: v.id("gifts"),
   handler: async (ctx, args) => {
@@ -288,6 +307,7 @@ export const recordGift = mutation({
     }
     await requireGivingManage(ctx, donor.scope);
     assertPositiveGiftCents(args.amountCents);
+    assertReceiptsBound(args.receiptStorageIds);
     const userId = (await requireUserId(ctx)) as Id<"users">;
 
     return await recordGiftForDonor(ctx, {
@@ -298,8 +318,64 @@ export const recordGift = mutation({
       note: args.note?.trim() || undefined,
       eventId: args.eventId,
       externalRef: args.externalRef,
+      receiptStorageIds: args.receiptStorageIds,
       recordedBy: userId,
     });
+  },
+});
+
+/**
+ * Edit a gift in place with delta-correct rollups (territories P4). A manual
+ * correction to any of amount / date / source / note / receipts. Manage-gated
+ * at the gift's scope; the money-field lock for system-written gifts (Stripe /
+ * event donation) lives in `editGiftRow`, which throws `GIFT_LOCKED` when an
+ * amount/date/source edit is attempted on one — note & receipts still succeed.
+ */
+export const editGift = mutation({
+  args: {
+    giftId: v.id("gifts"),
+    amountCents: v.optional(v.number()),
+    receivedAt: v.optional(v.number()),
+    method: v.optional(giftMethodValidator),
+    note: v.optional(v.string()),
+    receiptStorageIds: v.optional(v.array(v.id("_storage"))),
+  },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    const gift = await ctx.db.get(args.giftId);
+    if (!gift) {
+      throw new ConvexError({ code: "NOT_FOUND", message: "Gift not found." });
+    }
+    await requireGivingManage(ctx, gift.scope);
+    const userId = (await requireUserId(ctx)) as Id<"users">;
+    await editGiftRow(ctx, {
+      giftId: args.giftId,
+      amountCents: args.amountCents,
+      receivedAt: args.receivedAt,
+      method: args.method,
+      note: args.note,
+      receiptStorageIds: args.receiptStorageIds,
+      editedBy: userId,
+    });
+    return null;
+  },
+});
+
+/**
+ * Generate a short-lived receipt-upload URL for a gift under `donorId`'s scope
+ * (manage-gated — mirrors how reimbursements gate their upload URL). The client
+ * POSTs the file, then passes the returned `storageId` to `recordGift`
+ * (record-time proof) or `editGift` (attaching to an existing gift).
+ */
+export const generateGiftReceiptUploadUrl = mutation({
+  args: { donorId: v.id("donors") },
+  handler: async (ctx, { donorId }) => {
+    const donor = await ctx.db.get(donorId);
+    if (!donor) {
+      throw new ConvexError({ code: "NOT_FOUND", message: "Donor not found." });
+    }
+    await requireGivingManage(ctx, donor.scope);
+    return await ctx.storage.generateUploadUrl();
   },
 });
 

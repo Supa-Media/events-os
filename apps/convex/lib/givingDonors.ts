@@ -18,6 +18,22 @@ import { territoryForChapter } from "../territories";
 /** The 90-day lapse window (the AJ donor system's rule, PRD §1). */
 export const LAPSE_WINDOW_MS = 90 * 24 * 60 * 60 * 1000;
 
+/** A gift's receipt array is bounded (territories P4) — proof, not an archive.
+ *  Enforced at every write path (the schema validator can't cap array length). */
+export const MAX_GIFT_RECEIPTS = 10;
+
+/** Guard: a receipts array never exceeds `MAX_GIFT_RECEIPTS`. */
+export function assertReceiptsBound(
+  receiptStorageIds: readonly Id<"_storage">[] | undefined,
+): void {
+  if (receiptStorageIds && receiptStorageIds.length > MAX_GIFT_RECEIPTS) {
+    throw new ConvexError({
+      code: "TOO_MANY_RECEIPTS",
+      message: `A gift can have at most ${MAX_GIFT_RECEIPTS} receipts.`,
+    });
+  }
+}
+
 export type DonorStatus = "prospect" | "active" | "lapsed";
 
 /** Guard: gift amounts are whole cents strictly greater than zero (mirrors
@@ -269,9 +285,12 @@ export async function recordGiftForDonor(
     // carries its `pledgeId` + the `stripeInvoiceId` (the cycle idempotency key).
     pledgeId?: Id<"pledges">;
     stripeInvoiceId?: string;
+    // P4: optional receipt proof captured at record time (bounded ≤ 10).
+    receiptStorageIds?: Id<"_storage">[];
   },
 ): Promise<Id<"gifts">> {
   assertPositiveGiftCents(args.amountCents);
+  assertReceiptsBound(args.receiptStorageIds);
   const donor = await ctx.db.get(args.donorId);
   if (!donor) {
     throw new ConvexError({ code: "NOT_FOUND", message: "Donor not found." });
@@ -292,6 +311,9 @@ export async function recordGiftForDonor(
     ...(args.recordedBy ? { recordedBy: args.recordedBy } : {}),
     ...(args.pledgeId ? { pledgeId: args.pledgeId } : {}),
     ...(args.stripeInvoiceId ? { stripeInvoiceId: args.stripeInvoiceId } : {}),
+    ...(args.receiptStorageIds && args.receiptStorageIds.length > 0
+      ? { receiptStorageIds: args.receiptStorageIds }
+      : {}),
     createdAt: now,
   });
 
@@ -379,6 +401,154 @@ export async function removeGiftRow(
   // deleted row's history, which is fine). See §D3.
   if (gift.countedInLaunchFund) {
     await applyLaunchFundDelta(ctx, gift.scope, -gift.amountCents);
+  }
+}
+
+/**
+ * Edit a gift IN PLACE, keeping every rollup delta-correct (territories P4).
+ * The manual-correction counterpart to `recordGiftForDonor`/`removeGiftRow`:
+ * rather than delete-and-re-add (which would churn `createdAt` ordering and the
+ * launch-fund flag), it patches the existing row and applies only the deltas the
+ * change actually implies.
+ *
+ * LOCK: a SYSTEM-WRITTEN gift — one carrying a `stripeInvoiceId` (a recurring
+ * billing cycle) OR a `donationId` (an event donation dual-write) — is
+ * NOTE/RECEIPT-ONLY here. Stripe / the event donation is the source of truth for
+ * its money fields, so an edit that touches `amountCents`, `receivedAt`, or
+ * `method` throws `GIFT_LOCKED`; a note/receipts-only edit is allowed.
+ *
+ * AMOUNT: patches the gift, then moves the donor `lifetimeCents`, the scope
+ * rollup (`applyScopeDelta({lifetimeDelta})`), and — for a gift flagged
+ * `countedInLaunchFund` — the territory pot (`applyLaunchFundDelta`) by the SAME
+ * signed delta, exactly once each. The pot move respects the launch freeze:
+ * `applyLaunchFundDelta` no-ops on a launched territory, so a post-launch amount
+ * correction never disturbs the frozen pot. The `countedInLaunchFund` flag is
+ * NEVER cleared or set by an edit — it stays whatever the original record made
+ * it, so a later `removeGiftRow` still reverses the right rows.
+ *
+ * receivedAt: patches the gift, then recomputes the donor `first`/`lastGiftAt`
+ * bookends from the SAME two bounded `by_donor` reads `removeGiftRow` uses, and
+ * re-derives status (the new date may cross the 90-day lapse window).
+ *
+ * Any change stamps `editedAt`/`editedBy`. Validates cents (int > 0) and the
+ * receipts bound (≤ 10). A no-op edit (nothing actually changed) writes nothing.
+ */
+export async function editGiftRow(
+  ctx: MutationCtx,
+  args: {
+    giftId: Id<"gifts">;
+    amountCents?: number;
+    receivedAt?: number;
+    method?: Doc<"gifts">["method"];
+    note?: string;
+    receiptStorageIds?: Id<"_storage">[];
+    editedBy: Id<"users">;
+  },
+): Promise<void> {
+  const gift = await ctx.db.get(args.giftId);
+  if (!gift) {
+    throw new ConvexError({ code: "NOT_FOUND", message: "Gift not found." });
+  }
+  const donor = await ctx.db.get(gift.donorId);
+  if (!donor) {
+    throw new ConvexError({ code: "NOT_FOUND", message: "Donor not found." });
+  }
+
+  const amountChanging =
+    args.amountCents !== undefined && args.amountCents !== gift.amountCents;
+  const receivedAtChanging =
+    args.receivedAt !== undefined && args.receivedAt !== gift.receivedAt;
+  const methodChanging =
+    args.method !== undefined && args.method !== gift.method;
+
+  // Locked: Stripe / the event donation owns a system-written gift's money.
+  const systemWritten =
+    gift.stripeInvoiceId !== undefined || gift.donationId !== undefined;
+  if (systemWritten && (amountChanging || receivedAtChanging || methodChanging)) {
+    throw new ConvexError({
+      code: "GIFT_LOCKED",
+      message:
+        "This gift was recorded by Stripe or an event donation — only its note and receipts can be edited here.",
+    });
+  }
+
+  assertReceiptsBound(args.receiptStorageIds);
+  if (amountChanging) assertPositiveGiftCents(args.amountCents as number);
+
+  const giftPatch: Partial<Doc<"gifts">> = {};
+  const donorPatch: Partial<Doc<"donors">> = {};
+  let changed = false;
+
+  // ── Amount: patch + move donor/scope/pot by the same delta, once each. ──
+  if (amountChanging) {
+    const delta = (args.amountCents as number) - gift.amountCents;
+    giftPatch.amountCents = args.amountCents as number;
+    donorPatch.lifetimeCents = Math.max(0, donor.lifetimeCents + delta);
+    await applyScopeDelta(ctx, donor.scope, { lifetimeDelta: delta });
+    // Only a gift that was actually counted moves the pot; the freeze (a
+    // launched territory) is respected inside `applyLaunchFundDelta`. The
+    // `countedInLaunchFund` flag stays as-is — an edit never re-flags a gift.
+    if (gift.countedInLaunchFund) {
+      await applyLaunchFundDelta(ctx, gift.scope, delta);
+    }
+    changed = true;
+  }
+
+  if (methodChanging) {
+    giftPatch.method = args.method as Doc<"gifts">["method"];
+    changed = true;
+  }
+
+  // Note + receipts are allowed even for a locked gift.
+  if (args.note !== undefined) {
+    const note = args.note.trim();
+    giftPatch.note = note.length > 0 ? note : undefined;
+    changed = true;
+  }
+  if (args.receiptStorageIds !== undefined) {
+    giftPatch.receiptStorageIds =
+      args.receiptStorageIds.length > 0 ? args.receiptStorageIds : undefined;
+    changed = true;
+  }
+
+  if (receivedAtChanging) {
+    giftPatch.receivedAt = args.receivedAt as number;
+    changed = true;
+  }
+
+  if (!changed) return; // a no-op edit writes nothing.
+
+  giftPatch.editedAt = Date.now();
+  giftPatch.editedBy = args.editedBy;
+  await ctx.db.patch(args.giftId, giftPatch);
+
+  // receivedAt moved: recompute the bookends from the (now-patched) gift set,
+  // mirroring `removeGiftRow`'s two bounded `by_donor` reads.
+  if (receivedAtChanging) {
+    const newest = await ctx.db
+      .query("gifts")
+      .withIndex("by_donor", (q) => q.eq("donorId", donor._id))
+      .order("desc")
+      .first();
+    const oldest = await ctx.db
+      .query("gifts")
+      .withIndex("by_donor", (q) => q.eq("donorId", donor._id))
+      .order("asc")
+      .first();
+    donorPatch.lastGiftAt = newest?.receivedAt;
+    donorPatch.firstGiftAt = oldest?.receivedAt;
+  }
+
+  if (Object.keys(donorPatch).length > 0) {
+    await ctx.db.patch(donor._id, donorPatch);
+  }
+
+  // Status can only move when the last-gift date did (giftCount is unchanged).
+  if (receivedAtChanging) {
+    await recomputeDonorStatus(ctx, donor, {
+      giftCount: donor.giftCount,
+      lastGiftAt: donorPatch.lastGiftAt,
+    });
   }
 }
 

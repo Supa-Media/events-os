@@ -51,16 +51,32 @@ export const DONOR_SOURCES = [
   "map",
 ] as const;
 
-/** How a single gift's money arrived. Broader than the event `donations`
- *  method set (card/cash/other) because backfilled history spans every channel
- *  the development team has ever taken money through. */
+/** The "source" of a single gift — how the money arrived (the UI labels this
+ *  field "Source"; `stripe` displays as "Chapter OS", our own rails). Broader
+ *  than the event `donations` method set (card/cash/other) because both the
+ *  backfilled history AND external gifts (direct transfers, expensive purchases
+ *  made on behalf of the org) span every channel the development team has ever
+ *  taken money through. Order: the original set first, then the appended sources
+ *  — never renumber, callers persist these literals.
+ *
+ *  DEPLOY-B(gift-sources): `imported` is DEPRECATED LEGACY, kept in the union
+ *  THIS deploy only so migration 0031 can read the old rows. 0031 relabels every
+ *  `imported` gift to `givebutter` (Givebutter provenance) or `other`; a
+ *  follow-up PR drops the literal once 0031 has run in prod — see the
+ *  `DEPLOY-B(gift-sources):` markers. New gifts never write it. */
 export const GIFT_METHODS = [
   "stripe",
   "cash",
   "check",
   "wire",
   "in_kind",
+  // DEPLOY-B(gift-sources): deprecated — see the note above. Removed next PR.
   "imported",
+  // Appended sources (widened for the merged "Source" field — territories P4).
+  "zelle",
+  "venmo",
+  "givebutter",
+  "other",
 ] as const;
 
 /** A donor's `scope`: the chapter that stewards the relationship, or central. */
@@ -165,6 +181,17 @@ export const gifts = defineTable({
   // freeze — a post-launch delete leaves the flag on the deleted row's history
   // but never un-bumps a frozen pot). Absent/`false` = never counted.
   countedInLaunchFund: v.optional(v.boolean()),
+  // Territories P4 (gift sources/editing/receipts): file/image proof on a gift
+  // — especially external gifts (direct transfers, purchases made on behalf of
+  // the org that count toward the giver's statement). A BOUNDED array (≤ 10,
+  // enforced at the mutations, NOT the validator) that mirrors the house
+  // `receiptStorageId` pattern on `reimbursementLineItems`/`transactions`.
+  receiptStorageIds: v.optional(v.array(v.id("_storage"))),
+  // Set the first time a gift is edited in place (`editGiftRow`) — the audit
+  // stamp for a manual correction. System-written gifts (Stripe/event donation)
+  // can only ever have their note/receipts touched, never their money fields.
+  editedAt: v.optional(v.number()),
+  editedBy: v.optional(v.id("users")),
   createdAt: v.number(),
 })
   .index("by_donor", ["donorId"])
