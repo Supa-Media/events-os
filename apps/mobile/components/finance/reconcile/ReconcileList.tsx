@@ -11,6 +11,17 @@
  * ✓ or an inline upload; Amount is read-only (signed). The fund is hidden —
  * the backend defaults it to the General Fund on categorize.
  *
+ * Suggested / on-demand "Suggest": most unreviewed charges already carry a
+ * proposal by the time the bookkeeper opens this grid — new transactions get
+ * one within seconds of arriving (the on-ingest sweep, see
+ * `aiCodingData.scheduleSuggestionOnIngest`), not just on the old hourly
+ * cron. An unreviewed row that STILL has none (the on-ingest/hourly sweep's
+ * batch cap was exceeded, OPENROUTER_API_KEY was unset when it landed, or a
+ * prior attempt failed and is still cooling down) shows a "Suggest" button
+ * instead of the AI badge — tapping it runs the exact same model-call core
+ * (`aiCoding.suggestCoding`) for just that one transaction, on demand
+ * (`SuggestCell` below). Either path lands in the same Accept/reject UI.
+ *
  * The "For" column (WP-U: one home per dollar) replaces the old separate
  * Budget + Link columns/pickers with ONE picker, grouped Events / Projects /
  * Recurring — see `forPicker.ts`. WP-wave4 (item 5, owner addendum
@@ -29,7 +40,7 @@
  */
 import { useEffect, useRef, useState } from "react";
 import { View, Text, Pressable, Platform, ScrollView, TextInput } from "react-native";
-import { useMutation, useQuery } from "convex/react";
+import { useAction, useMutation, useQuery } from "convex/react";
 import { api } from "@events-os/convex/_generated/api";
 import type { Id } from "@events-os/convex/_generated/dataModel";
 import {
@@ -310,8 +321,13 @@ function ReconcileRow({
         />
       </Cell>
 
-      {/* Suggested (AI auto-coding proposal + Accept — only present when the
-          row is still unreviewed and the model proposed at least one link) */}
+      {/* Suggested — AI auto-coding proposal + Accept when the model has
+          already proposed something for this (still-unreviewed) row; a
+          still-unreviewed row with NO suggestion yet offers an on-demand
+          "Suggest" button instead (`SuggestCell`) rather than a bare dash —
+          most new charges are suggested within seconds on arrival, but the
+          batch cap / a cooling-down failed attempt / a stale charge that
+          predates the feature can still leave one without one. */}
       <Cell width={COLS.suggested}>
         {row.aiSuggestion ? (
           <View className="flex-1 gap-1 px-2 py-1.5">
@@ -328,6 +344,10 @@ function ReconcileRow({
               variant="secondary"
               onPress={() => guard(acceptSuggestion({ transactionId: id }))}
             />
+          </View>
+        ) : row.status === "unreviewed" ? (
+          <View className="flex-1 px-2 py-1.5">
+            <SuggestCell transactionId={id} />
           </View>
         ) : (
           <Text className="flex-1 px-2 py-1.5 text-sm text-faint">—</Text>
@@ -396,6 +416,46 @@ function ReconcileRow({
         />
       ) : null}
     </View>
+  );
+}
+
+// ── On-demand "Suggest" (Suggested column, unreviewed row with no proposal
+// yet) — runs the same model-call core as the on-ingest/hourly sweep
+// (`api.aiCoding.suggestCoding`) for just this one transaction. Bookkeeper+
+// gated server-side (`loadForSuggestion`'s finance-role check, same rank the
+// rest of this grid's writes require) — a caller without the role sees the
+// button fail with a readable error via `alertError`, same as every other
+// cell's `guard()`. Loading state is local (`busy`): the button shows a
+// spinner while the OpenRouter call is in flight and disables itself so a
+// double-tap can't fire two calls; on error it re-enables — tapping again is
+// the retry, no separate affordance needed. Success needs no local handling
+// at all: `listReconcile`'s live subscription re-renders this row with
+// `aiSuggestion` set the moment `writeSuggestion` commits, swapping this
+// button out for the normal Accept UI above. ──────────────────────────────
+function SuggestCell({ transactionId }: { transactionId: Id<"transactions"> }) {
+  const suggestCoding = useAction(api.aiCoding.suggestCoding);
+  const [busy, setBusy] = useState(false);
+
+  async function handleSuggest() {
+    setBusy(true);
+    try {
+      await suggestCoding({ transactionId });
+    } catch (err) {
+      alertError(err);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Button
+      title="Suggest"
+      size="sm"
+      variant="secondary"
+      icon="sparkles"
+      loading={busy}
+      onPress={handleSuggest}
+    />
   );
 }
 
