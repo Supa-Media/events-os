@@ -601,7 +601,7 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
   {
     slug: "finance-approving-budgets",
     title: "Approving budgets",
-    subtitle: "The 85% principle — submit, approve, and the auto-resubmit rule",
+    subtitle: "The 85% principle — submit, approve, and why raising the cap isn't automatic",
     minutes: 3,
     blocks: [
       {
@@ -624,7 +624,7 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
       },
       {
         kind: "tip",
-        text: "**Increasing an approved budget re-opens it.** Bump the amount on a budget that's already Approved, and it flips straight back to Awaiting approval — automatically, the moment you save the higher number, and whoever made the edit becomes the new submitter. The OLD approved amount stays the spending cap until someone re-approves the new one, so a live budget's money is never silently expanded without a second look. Decreasing a budget, or reshuffling its line items, never re-triggers a review.",
+        text: "**Increasing an approved budget kicks it back to Draft — but nobody's told.** Bump the amount on a budget that's already Approved, and it drops straight back to Draft the moment you save the higher number — NOT Awaiting approval, and NOT auto-submitted. The OLD approved amount keeps working as the spending cap the whole time, so nothing silently expands — but the increase itself sits invisible to every approver until YOU deliberately tap Submit for approval again. Skip that tap and the raise is never reviewed, and no approver is ever notified. Decreasing a budget, or reshuffling its line items, never triggers any of this.",
       },
       {
         kind: "reveal",
@@ -663,13 +663,13 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
         prompt: "You bump an APPROVED budget's amount from $2,000 to $3,000. What happens?",
         options: [
           "Nothing — the higher amount is available immediately",
-          "It flips back to Awaiting approval automatically; the old $2,000 stays the spending cap until someone re-approves",
+          "It drops back to Draft — NOT auto-submitted; the old $2,000 stays the spending cap, and the increase won't be reviewed until you send it for approval again",
           "The budget is deleted and a new one is created",
           "Only a Financial Manager can ever raise a budget's amount",
         ],
         answerIndex: 1,
         explanation:
-          "An increase on an approved budget auto-resubmits it — the old approved amount keeps working as the cap while the new one waits for a decision. Decreases and line reshuffles never do this.",
+          "An increase past the approved cap flips the budget back to Draft, not Awaiting approval — it's fully editable and invisible to approvers until you deliberately submit it again. The old approved amount keeps enforcing the cap the whole time it sits unsent. Decreases and line reshuffles never trigger any of this.",
       },
     ],
   },
@@ -1269,7 +1269,7 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
       },
       {
         kind: "tip",
-        text: "**Raising the cap re-opens review.** Bump an APPROVED budget's amount and it flips straight back to Awaiting approval, automatically. The OLD approved figure stays the real spending cap until the new one clears review — a live budget's money is never silently expanded without a second look. Decreasing an amount, or reshuffling its line items, never re-triggers review.",
+        text: "**Raising the cap sends it back to Draft — but nobody's told.** Bump an APPROVED budget's amount and it drops straight back to Draft the moment you save the higher number — NOT Awaiting approval, and NOT auto-submitted. The OLD approved figure keeps working as the real spending cap the whole time, so nothing silently expands — but the increase itself is invisible to every approver until YOU deliberately hit Send for review again. Skip that tap and the raise is never reviewed, and no approver is ever notified. Decreasing an amount, or reshuffling its line items, never triggers any of this.",
       },
       {
         kind: "reveal",
@@ -1317,16 +1317,16 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
           "Approver ≠ submitter is about identity, not title — the same person can never wear both hats on one decision.",
       },
       {
-        prompt: "You raise an APPROVED budget's cap from $2,000 to $3,000. What actually limits spending while the increase awaits approval?",
+        prompt: "You raise an APPROVED budget's cap from $2,000 to $3,000. It drops back to Draft — not automatically resubmitted. What actually limits spending until someone sends it for review again and it's approved?",
         options: [
           "The new $3,000 — available immediately",
-          "The old $2,000 — still the live spending cap until someone approves the increase",
+          "The old $2,000 — still the live spending cap until it's sent for review again and approved",
           "Spending is blocked entirely until the increase clears",
           "Whichever amount the last charge used",
         ],
         answerIndex: 1,
         explanation:
-          "An increase auto-resubmits the budget, but the OLD approved amount keeps working as the real cap — nobody's spending power silently jumps before a second look.",
+          "The increase flips the budget back to Draft, not Awaiting approval — it sits fully editable and invisible to approvers until someone deliberately sends it again. The OLD approved amount keeps enforcing the cap the whole time, so spending power never silently jumps — but skip that resend and the raise is never reviewed at all, and no approver is ever notified.",
       },
     ],
   },
