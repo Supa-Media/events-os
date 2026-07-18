@@ -11,15 +11,20 @@ import { Pill } from "../../../components/ui";
  * above the active screen, mirroring the finances `_layout` pill nav.
  *
  * Phase 1 shipped Dashboard · Donors; P2 adds Backers (recurring pledges);
- * Sponsorships · Cities land in later phases. The tabs render only for a caller
- * who can see the desk (`myGivingAccess.canView`) — the same `nav.giving` gate
- * the AppShell nav entry uses; each screen keeps its own backend
+ * P4 adds Sponsorships (the institutional-giving pipeline + package tiers).
+ * Cities lands in a later phase. The tabs render only for a caller who can
+ * see the desk (`myGivingAccess.canView`) — the same `nav.giving` gate the
+ * AppShell nav entry uses; each screen keeps its own backend
  * `requireGivingView` gate.
+ * (Sponsorships itself is central-lens only — see `schema/sponsorships.ts` —
+ * but the tab is shown to anyone with desk access; the screen degrades to an
+ * access-needed state for a chapter-only caller, same as the other tabs do.)
  */
 const TABS: { label: string; path: string }[] = [
   { label: "Dashboard", path: "/giving" },
   { label: "Donors", path: "/giving/donors" },
   { label: "Backers", path: "/giving/backers" },
+  { label: "Sponsorships", path: "/giving/sponsorships" },
 ];
 
 /** Active when the pathname is the tab's route (exact for the index, prefix for
