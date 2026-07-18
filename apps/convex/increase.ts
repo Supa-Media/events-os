@@ -88,6 +88,7 @@ import {
   requireCentralEdOrFm,
   type FinanceScope,
 } from "./lib/finance";
+import { scheduleSuggestionOnIngest } from "./aiCodingData";
 
 /** The org level's own Increase account (WP-1.2) — where the City Launch Fund
  *  lives (feeds the future skim destination). Named for the org, not a
@@ -2321,7 +2322,7 @@ export const applyIncreaseCardTransaction = internalMutation({
     // stays fund-less.
     const fundId = (await defaultFundId(ctx, chapterId)) ?? undefined;
 
-    await ctx.db.insert("transactions", {
+    const txnId = await ctx.db.insert("transactions", {
       chapterId,
       source: "increase_card",
       flow: args.flow,
@@ -2340,6 +2341,13 @@ export const applyIncreaseCardTransaction = internalMutation({
       status: "unreviewed",
       createdAt: Date.now(),
     });
+    // ON-INGEST HOOK (owner: suggestions generated AS TRANSACTIONS ARRIVE,
+    // not just on the hourly sweep) — no-ops for a central-owned txn (never
+    // auto-coded); debounces a burst of near-simultaneous card charges into
+    // ONE batched sweep rather than one OpenRouter call per charge. See
+    // `aiCodingData.scheduleSuggestionOnIngest`'s doc comment.
+    const inserted = await ctx.db.get(txnId);
+    if (inserted) await scheduleSuggestionOnIngest(ctx, inserted);
     return { inserted: true, skipped: false };
   },
 });

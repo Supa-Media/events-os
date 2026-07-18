@@ -100,11 +100,18 @@ crons.cron(
   {},
 );
 
-// Hourly: AI auto-coding sweep — for newly-synced, still-`unreviewed`
-// transactions with no `aiSuggestion` yet, schedule `aiCoding.suggestCodingSystem`
+// Hourly: AI auto-coding sweep — a QUIET BACKSTOP. New transactions get a
+// suggestion within seconds of arriving via the debounced on-ingest sweep
+// (`aiCodingData.scheduleSuggestionOnIngest`, called from the Increase
+// webhook apply path and the manual-add mutation), so this hourly run
+// usually finds nothing left to do. It still exists to catch anything ingest
+// missed — a burst larger than the per-run batch cap, or a transaction that
+// predates this feature — for newly-synced, still-`unreviewed` transactions
+// with no `aiSuggestion` yet, schedule `aiCoding.suggestCodingSystem`
 // (bounded batch, idempotent). No-ops when OPENROUTER_API_KEY is unset, matching
 // aiCoding.ts's degrade pattern. The model only ever proposes a coding — a human
-// accepts it in Reconcile.
+// accepts it in Reconcile (or requests one on demand via the grid's "Suggest"
+// button).
 crons.interval(
   "ai auto-coding sweep",
   { hours: 1 },

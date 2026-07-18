@@ -75,6 +75,7 @@ import {
 import { readSandbox } from "./financeSettings";
 import { gatherForPickerCandidates } from "./lib/forPickerCandidates";
 import { isMissingReceiptCharge, unlockCardIfReceiptsResolved } from "./cards";
+import { scheduleSuggestionOnIngest } from "./aiCodingData";
 import {
   getChapterIdOrNull,
   requireChapterId,
@@ -7292,7 +7293,7 @@ export const createManualTransaction = mutation({
     // Silently default to the chapter's General Fund when the client omits a
     // fund (every UI now does — funds are backend-only, see WP-1.4).
     const fundId = args.fundId ?? (await defaultFundId(ctx, chapterId)) ?? undefined;
-    return await ctx.db.insert("transactions", {
+    const txnId = await ctx.db.insert("transactions", {
       chapterId,
       source: args.source ?? "manual",
       flow: args.flow,
@@ -7310,6 +7311,13 @@ export const createManualTransaction = mutation({
       createdBy: userId,
       createdAt: Date.now(),
     });
+    // ON-INGEST HOOK — no-ops when the entry was submitted already coded
+    // (`status` above is already `"categorized"`), so a manual entry the
+    // bookkeeper picked a category/budget for on the way in never wakes the
+    // debounce for nothing. See `aiCodingData.scheduleSuggestionOnIngest`.
+    const inserted = await ctx.db.get(txnId);
+    if (inserted) await scheduleSuggestionOnIngest(ctx, inserted);
+    return txnId;
   },
 });
 
