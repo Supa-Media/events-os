@@ -5,23 +5,46 @@
  */
 import { Alert, Platform } from "react-native";
 
+/** Production Convex deployment (see reference_convex-prod-deploy-target). */
+const PROD_CONVEX_DEPLOYMENT = "vivid-rhinoceros-688";
+/** Branded custom domain fronting prod's public event pages. */
+const PROD_SITE_URL = "https://rsvp.publicworship.life";
+
 /**
- * Base URL of the public event pages (served from Convex http routes).
- * EXPO_PUBLIC_SITE_URL (custom domain, e.g. https://rsvp.publicworship.life)
- * wins when set. Otherwise derived from the Convex URL: cloud deployments
- * swap `.convex.cloud` → `.convex.site`; a local backend serves http routes
- * on the next port up (3210 → 3211).
+ * Pure resolver for the public-page base URL — kept separate from `publicSiteUrl`
+ * so it's unit-testable (babel-preset-expo inlines `EXPO_PUBLIC_*` at build time,
+ * so the reader below can't be exercised with test-time env). Precedence:
+ *   1. `siteUrl` (EXPO_PUBLIC_SITE_URL) — explicit override wins, always.
+ *   2. Prod: when pointed at the prod Convex deployment, the branded domain —
+ *      so the prod build is branded WITHOUT needing EXPO_PUBLIC_SITE_URL set.
+ *   3. Other cloud deployments: swap `.convex.cloud` → `.convex.site`.
+ *   4. Local backend: http routes serve on the next port up (3210 → 3211).
  */
-export function publicSiteUrl(): string {
-  const custom = (process.env.EXPO_PUBLIC_SITE_URL ?? "").replace(/\/+$/, "");
+export function resolvePublicSiteUrl(
+  siteUrl: string,
+  convexUrl: string,
+): string {
+  const custom = siteUrl.replace(/\/+$/, "");
   if (custom) return custom;
-  const url = (process.env.EXPO_PUBLIC_CONVEX_URL ?? "").replace(/\/+$/, "");
+  const url = convexUrl.replace(/\/+$/, "");
+  if (url.includes(PROD_CONVEX_DEPLOYMENT)) return PROD_SITE_URL;
   if (url.includes(".convex.cloud")) {
     return url.replace(".convex.cloud", ".convex.site");
   }
   const withPort = url.match(/^(.*):(\d+)$/);
   if (withPort) return `${withPort[1]}:${Number(withPort[2]) + 1}`;
   return url;
+}
+
+/**
+ * Base URL of the public event pages (served from Convex http routes). Reads
+ * the (build-time-inlined) Expo env and delegates to `resolvePublicSiteUrl`.
+ */
+export function publicSiteUrl(): string {
+  return resolvePublicSiteUrl(
+    process.env.EXPO_PUBLIC_SITE_URL ?? "",
+    process.env.EXPO_PUBLIC_CONVEX_URL ?? "",
+  );
 }
 
 /**
