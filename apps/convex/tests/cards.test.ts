@@ -2396,6 +2396,48 @@ describe("freezeCard / unfreezeCard", () => {
     expect(frozen.status).toBe("locked");
     expect(frozen.frozenByHolder).toBe(true);
   });
+
+  // ── PR review F1: holder-action gates must resolve the holder the SAME way
+  // `myCard` does (a scan of the caller's OWN `people` rows), not via
+  // `requireChapterId`'s single "first `userChapters` membership" home
+  // chapter — otherwise `myCard` can surface a card from a non-home chapter
+  // whose Freeze/Unfreeze buttons throw FORBIDDEN when the real holder taps
+  // them. `setupChapter` gives the caller a `userChapters` row at "New York";
+  // the card here lives entirely in a SEPARATE "Atlanta" chapter the caller
+  // has no `userChapters` membership in at all.
+
+  test("the holder freezes + unfreezes their own card even when it lives in a chapter OTHER than their userChapters home membership", async () => {
+    const t = newT();
+    const s = await setupChapter(t); // home chapter "New York" — no people/card row here
+    const atlanta = await run(s.t, (ctx) =>
+      ctx.db.insert("chapters", {
+        name: "Atlanta",
+        isActive: true,
+        createdAt: Date.now(),
+      }),
+    );
+    const atlantaPersonId = await run(s.t, (ctx) =>
+      ctx.db.insert("people", {
+        chapterId: atlanta,
+        name: "Caller",
+        userId: s.userId,
+        isTeamMember: true,
+        createdAt: Date.now(),
+      }),
+    );
+    const cardId = await seedCard(s, {
+      cardholderPersonId: atlantaPersonId,
+      chapterId: atlanta,
+    });
+
+    const frozen = await s.as.action(api.cards.freezeCard, { cardId });
+    expect(frozen.status).toBe("locked");
+    expect(frozen.frozenByHolder).toBe(true);
+
+    const unfrozen = await s.as.action(api.cards.unfreezeCard, { cardId });
+    expect(unfrozen.kind).toBe("active");
+    expect(unfrozen.card.status).toBe("active");
+  });
 });
 
 // ── WP-C.1: cancelCard (FM + Treasurer only — never self-serve) ─────────────
@@ -3856,6 +3898,52 @@ describe("revealCardDetails", () => {
       s.as.action(api.cards.revealCardDetails, { cardId }),
     ).rejects.toBeInstanceOf(ConvexError);
   });
+
+  // ── PR review F1: same holder-resolution fix as freezeCard/unfreezeCard —
+  // a card `myCard` surfaces from a chapter the caller has no `userChapters`
+  // membership in must still be revealable by its real holder, and the rate
+  // limit (keyed on the card, not the chapter) must still apply unchanged.
+
+  test("the holder reveals their own card's details even when the card lives in a chapter OTHER than their userChapters home membership", async () => {
+    const t = newT();
+    const s = await setupChapter(t); // home chapter "New York" — no people/card row here
+    process.env.INCREASE_API_KEY = "prod_key";
+    const atlanta = await run(s.t, (ctx) =>
+      ctx.db.insert("chapters", {
+        name: "Atlanta",
+        isActive: true,
+        createdAt: Date.now(),
+      }),
+    );
+    const atlantaPersonId = await run(s.t, (ctx) =>
+      ctx.db.insert("people", {
+        chapterId: atlanta,
+        name: "Caller",
+        userId: s.userId,
+        isTeamMember: true,
+        createdAt: Date.now(),
+      }),
+    );
+    const cardId = await seedCard(s, {
+      cardholderPersonId: atlantaPersonId,
+      chapterId: atlanta,
+      increaseCardId: "card_reveal_atlanta",
+      status: "active",
+    });
+    mockCardDetailsFetch();
+
+    const details = await s.as.action(api.cards.revealCardDetails, { cardId });
+    expect(details.primaryAccountNumber).toBe(FAKE_PAN);
+
+    // The 5/hour/card rate limit is keyed on the card, not the caller's home
+    // chapter — still enforced for this non-home-chapter card.
+    for (let i = 0; i < 4; i++) {
+      await s.as.action(api.cards.revealCardDetails, { cardId });
+    }
+    await expect(
+      s.as.action(api.cards.revealCardDetails, { cardId }),
+    ).rejects.toBeInstanceOf(ConvexError);
+  });
 });
 
 // ── cardBillingAddress (HOLDER-ONLY, decorative, never throws) ───────────────
@@ -4011,5 +4099,57 @@ describe("cardBillingAddress", () => {
 
     const address = await s.as.action(api.cards.cardBillingAddress, { cardId });
     expect(address).toBeNull();
+  });
+
+  // ── PR review F1: `holderIncreaseEnvForCard`'s chapter resolution must
+  // follow the CARD'S OWN chapter, not the caller's home chapter — the two
+  // differ for a card `myCard` surfaces from a chapter the caller has no
+  // `userChapters` membership in.
+
+  test("the holder gets the billing address even when the card lives in a chapter OTHER than their userChapters home membership — resolves the CARD's own chapter's account", async () => {
+    const t = newT();
+    const s = await setupChapter(t); // home chapter "New York" — no people/card/account row here
+    process.env.INCREASE_API_KEY = "prod_key";
+    const atlanta = await run(s.t, (ctx) =>
+      ctx.db.insert("chapters", {
+        name: "Atlanta",
+        isActive: true,
+        createdAt: Date.now(),
+      }),
+    );
+    const atlantaPersonId = await run(s.t, (ctx) =>
+      ctx.db.insert("people", {
+        chapterId: atlanta,
+        name: "Caller",
+        userId: s.userId,
+        isTeamMember: true,
+        createdAt: Date.now(),
+      }),
+    );
+    const cardId = await seedCard(s, {
+      cardholderPersonId: atlantaPersonId,
+      chapterId: atlanta,
+      increaseCardId: "card_addr_atlanta",
+      status: "active",
+    });
+    // The Increase account lives on ATLANTA, not the caller's home "New York"
+    // chapter — if the resolution still used the caller's home chapterId,
+    // this lookup would come up empty and degrade to null.
+    const now = Date.now();
+    await run(s.t, (ctx) =>
+      ctx.db.insert("increaseAccounts", {
+        chapterId: atlanta,
+        sandbox: false,
+        onboardingStatus: "active",
+        increaseAccountId: "account_addr_atlanta",
+        increaseEntityId: "entity_atlanta",
+        createdAt: now,
+        updatedAt: now,
+      }),
+    );
+    mockEntityFetch(FAKE_ADDRESS);
+
+    const address = await s.as.action(api.cards.cardBillingAddress, { cardId });
+    expect(address).toEqual(FAKE_ADDRESS);
   });
 });
