@@ -1,0 +1,542 @@
+/**
+ * Snapshot of the Academy curriculum + course catalog, captured BEFORE the
+ * academy.ts / academyCourses.ts monolith was split into per-stream files
+ * (packages/shared/src/academy/**). Hardcoded literal values (not vitest
+ * snapshots) so a silent behavior change during the split — a re-ordered
+ * section, a moved course, a changed minutes/quiz count — fails loudly.
+ *
+ * This test must pass UNCHANGED both before and after the split.
+ */
+import { describe, expect, test } from "vitest";
+import { ACADEMY_COURSES, ACADEMY_SECTIONS } from "./academy";
+
+// Ordered section slugs (curriculum/unlock order).
+const EXPECTED_SECTION_SLUGS: string[] = [
+  "what-is-events-os",
+  "organizers-and-crew",
+  "anatomy-of-an-event",
+  "being-an-owner",
+  "timing-and-offsets",
+  "phase-rings",
+  "tab-tasks",
+  "tab-comms",
+  "tab-run-of-show",
+  "tab-crew-duties",
+  "tab-supplies",
+  "tab-permits",
+  "tab-debrief",
+  "using-the-assistant",
+  "capstone-join-an-event",
+  "capstone-birthday-party",
+  "capstone-worship-event",
+  "capstone-comms-lead",
+  "capstone-event-lead",
+  "capstone-logistics-lead",
+  "works-projects",
+  "works-driving-a-project",
+  "works-duties",
+  "works-owning-a-duty",
+  "mgmt-one-on-one",
+  "mgmt-reviewing-the-work",
+  "mgmt-caring-for-people",
+  "mgmt-holding-the-line",
+  "mgmt-the-org-tree",
+  "mgmt-director-philosophy",
+  "finance-stewardship",
+  "finance-card-and-receipts",
+  "finance-reimbursements-and-flags",
+  "finance-reconcile-grid",
+  "finance-chasing-receipts",
+  "finance-monthly-close",
+  "finance-raise-vs-manage",
+  "finance-approving-budgets",
+  "finance-tiers-and-skim",
+  "finance-cross-chapter-audit",
+  "finance-receipt-escalation-queue",
+  "finance-accounts-and-cards-admin",
+  "finance-central-budgets",
+  "finance-governance-and-seats",
+  "finance-launch-grants-and-transfers",
+];
+
+// Per-section fields that must not drift: title, minutes, quiz length,
+// optional flag, capstone kind (null when not a capstone).
+const EXPECTED_SECTIONS: {
+  slug: string;
+  title: string;
+  minutes: number;
+  quizLength: number;
+  optional: boolean;
+  capstoneKind: string | null;
+}[] = [
+  {
+    slug: "what-is-events-os",
+    title: "What Chapter OS is",
+    minutes: 3,
+    quizLength: 4,
+    optional: false,
+    capstoneKind: null,
+  },
+  {
+    slug: "organizers-and-crew",
+    title: "Organizers and crew",
+    minutes: 3,
+    quizLength: 3,
+    optional: false,
+    capstoneKind: null,
+  },
+  {
+    slug: "anatomy-of-an-event",
+    title: "Anatomy of an event",
+    minutes: 4,
+    quizLength: 4,
+    optional: false,
+    capstoneKind: null,
+  },
+  {
+    slug: "being-an-owner",
+    title: "Being an owner",
+    minutes: 4,
+    quizLength: 5,
+    optional: false,
+    capstoneKind: null,
+  },
+  {
+    slug: "timing-and-offsets",
+    title: "Timing that moves with the date",
+    minutes: 3,
+    quizLength: 4,
+    optional: false,
+    capstoneKind: null,
+  },
+  {
+    slug: "phase-rings",
+    title: "The four rings",
+    minutes: 3,
+    quizLength: 4,
+    optional: false,
+    capstoneKind: null,
+  },
+  {
+    slug: "tab-tasks",
+    title: "Tasks",
+    minutes: 4,
+    quizLength: 5,
+    optional: false,
+    capstoneKind: null,
+  },
+  {
+    slug: "tab-comms",
+    title: "Comms Schedule",
+    minutes: 3,
+    quizLength: 4,
+    optional: false,
+    capstoneKind: null,
+  },
+  {
+    slug: "tab-run-of-show",
+    title: "Run of Show",
+    minutes: 3,
+    quizLength: 3,
+    optional: false,
+    capstoneKind: null,
+  },
+  {
+    slug: "tab-crew-duties",
+    title: "Crew Duties",
+    minutes: 5,
+    quizLength: 5,
+    optional: false,
+    capstoneKind: null,
+  },
+  {
+    slug: "tab-supplies",
+    title: "Supplies & Logistics",
+    minutes: 4,
+    quizLength: 5,
+    optional: false,
+    capstoneKind: null,
+  },
+  {
+    slug: "tab-permits",
+    title: "Permits",
+    minutes: 3,
+    quizLength: 3,
+    optional: false,
+    capstoneKind: null,
+  },
+  {
+    slug: "tab-debrief",
+    title: "Debrief",
+    minutes: 3,
+    quizLength: 3,
+    optional: false,
+    capstoneKind: null,
+  },
+  {
+    slug: "using-the-assistant",
+    title: "Working with the assistant",
+    minutes: 3,
+    quizLength: 3,
+    optional: false,
+    capstoneKind: null,
+  },
+  {
+    slug: "capstone-join-an-event",
+    title: "Capstone: join an event",
+    minutes: 8,
+    quizLength: 0,
+    optional: false,
+    capstoneKind: "join_event",
+  },
+  {
+    slug: "capstone-birthday-party",
+    title: "Capstone: plan a party from scratch",
+    minutes: 10,
+    quizLength: 0,
+    optional: false,
+    capstoneKind: "birthday_party",
+  },
+  {
+    slug: "capstone-worship-event",
+    title: "Bonus: plan a worship event",
+    minutes: 12,
+    quizLength: 0,
+    optional: true,
+    capstoneKind: "worship_event",
+  },
+  {
+    slug: "capstone-comms-lead",
+    title: "Capstone: run the comms",
+    minutes: 12,
+    quizLength: 0,
+    optional: false,
+    capstoneKind: "comms_lead",
+  },
+  {
+    slug: "capstone-event-lead",
+    title: "Capstone: run the plan",
+    minutes: 12,
+    quizLength: 0,
+    optional: false,
+    capstoneKind: "event_lead",
+  },
+  {
+    slug: "capstone-logistics-lead",
+    title: "Capstone: run the supplies",
+    minutes: 10,
+    quizLength: 0,
+    optional: false,
+    capstoneKind: "logistics_lead",
+  },
+  {
+    slug: "works-projects",
+    title: "Projects",
+    minutes: 3,
+    quizLength: 4,
+    optional: false,
+    capstoneKind: null,
+  },
+  {
+    slug: "works-driving-a-project",
+    title: "Driving a project to done",
+    minutes: 3,
+    quizLength: 3,
+    optional: false,
+    capstoneKind: null,
+  },
+  {
+    slug: "works-duties",
+    title: "Duties",
+    minutes: 3,
+    quizLength: 3,
+    optional: false,
+    capstoneKind: null,
+  },
+  {
+    slug: "works-owning-a-duty",
+    title: "Owning a duty",
+    minutes: 3,
+    quizLength: 3,
+    optional: false,
+    capstoneKind: null,
+  },
+  {
+    slug: "mgmt-one-on-one",
+    title: "The 1:1: person first, then work",
+    minutes: 4,
+    quizLength: 4,
+    optional: false,
+    capstoneKind: null,
+  },
+  {
+    slug: "mgmt-reviewing-the-work",
+    title: "Reviewing the work",
+    minutes: 3,
+    quizLength: 3,
+    optional: false,
+    capstoneKind: null,
+  },
+  {
+    slug: "mgmt-caring-for-people",
+    title: "People are a renewable resource",
+    minutes: 3,
+    quizLength: 3,
+    optional: false,
+    capstoneKind: null,
+  },
+  {
+    slug: "mgmt-holding-the-line",
+    title: "Holding the line",
+    minutes: 4,
+    quizLength: 4,
+    optional: false,
+    capstoneKind: null,
+  },
+  {
+    slug: "mgmt-the-org-tree",
+    title: "The manager tree",
+    minutes: 3,
+    quizLength: 3,
+    optional: false,
+    capstoneKind: null,
+  },
+  {
+    slug: "mgmt-director-philosophy",
+    title: "Directing",
+    minutes: 4,
+    quizLength: 4,
+    optional: false,
+    capstoneKind: null,
+  },
+  {
+    slug: "finance-stewardship",
+    title: "Where the money comes from",
+    minutes: 3,
+    quizLength: 4,
+    optional: false,
+    capstoneKind: null,
+  },
+  {
+    slug: "finance-card-and-receipts",
+    title: "Your card and the 7-day rule",
+    minutes: 3,
+    quizLength: 4,
+    optional: false,
+    capstoneKind: null,
+  },
+  {
+    slug: "finance-reimbursements-and-flags",
+    title: "Reimbursement, and flagging a charge",
+    minutes: 3,
+    quizLength: 4,
+    optional: false,
+    capstoneKind: null,
+  },
+  {
+    slug: "finance-reconcile-grid",
+    title: "Running Reconcile",
+    minutes: 4,
+    quizLength: 4,
+    optional: false,
+    capstoneKind: null,
+  },
+  {
+    slug: "finance-chasing-receipts",
+    title: "Chasing receipts",
+    minutes: 3,
+    quizLength: 3,
+    optional: false,
+    capstoneKind: null,
+  },
+  {
+    slug: "finance-monthly-close",
+    title: "The monthly close",
+    minutes: 3,
+    quizLength: 3,
+    optional: false,
+    capstoneKind: null,
+  },
+  {
+    slug: "finance-raise-vs-manage",
+    title: "Raise vs. manage",
+    minutes: 3,
+    quizLength: 3,
+    optional: false,
+    capstoneKind: null,
+  },
+  {
+    slug: "finance-approving-budgets",
+    title: "Approving budgets",
+    minutes: 3,
+    quizLength: 3,
+    optional: false,
+    capstoneKind: null,
+  },
+  {
+    slug: "finance-tiers-and-skim",
+    title: "Tiers, the covenant, and the skim",
+    minutes: 4,
+    quizLength: 4,
+    optional: false,
+    capstoneKind: null,
+  },
+  {
+    slug: "finance-cross-chapter-audit",
+    title: "Auditing every chapter",
+    minutes: 3,
+    quizLength: 3,
+    optional: false,
+    capstoneKind: null,
+  },
+  {
+    slug: "finance-receipt-escalation-queue",
+    title: "The receipt escalation queue",
+    minutes: 3,
+    quizLength: 3,
+    optional: false,
+    capstoneKind: null,
+  },
+  {
+    slug: "finance-accounts-and-cards-admin",
+    title: "Accounts, cards, and the City Launch Fund",
+    minutes: 3,
+    quizLength: 4,
+    optional: false,
+    capstoneKind: null,
+  },
+  {
+    slug: "finance-central-budgets",
+    title: "Central budgets",
+    minutes: 3,
+    quizLength: 3,
+    optional: false,
+    capstoneKind: null,
+  },
+  {
+    slug: "finance-governance-and-seats",
+    title: "Governance and seats",
+    minutes: 3,
+    quizLength: 3,
+    optional: false,
+    capstoneKind: null,
+  },
+  {
+    slug: "finance-launch-grants-and-transfers",
+    title: "Launch grants and the skim transfer",
+    minutes: 3,
+    quizLength: 3,
+    optional: false,
+    capstoneKind: null,
+  },
+];
+
+// Course catalog: slug + themeKey + ordered moduleSlugs.
+const EXPECTED_COURSES: {
+  slug: string;
+  themeKey: string;
+  moduleSlugs: string[];
+}[] = [
+  {
+    slug: "chapter-os-fundamentals",
+    themeKey: "events",
+    moduleSlugs: ["what-is-events-os", "organizers-and-crew", "anatomy-of-an-event", "timing-and-offsets", "phase-rings", "tab-debrief", "using-the-assistant"],
+  },
+  {
+    slug: "comms-lead",
+    themeKey: "events",
+    moduleSlugs: ["tab-crew-duties", "tab-comms", "capstone-comms-lead"],
+  },
+  {
+    slug: "event-lead",
+    themeKey: "events",
+    moduleSlugs: ["tab-tasks", "tab-run-of-show", "tab-permits", "capstone-event-lead"],
+  },
+  {
+    slug: "logistics-lead",
+    themeKey: "events",
+    moduleSlugs: ["tab-supplies", "capstone-logistics-lead"],
+  },
+  {
+    slug: "owning-an-event",
+    themeKey: "events",
+    moduleSlugs: ["being-an-owner", "capstone-join-an-event", "capstone-birthday-party", "capstone-worship-event"],
+  },
+  {
+    slug: "projects",
+    themeKey: "works",
+    moduleSlugs: ["works-projects", "works-driving-a-project"],
+  },
+  {
+    slug: "duties",
+    themeKey: "works",
+    moduleSlugs: ["works-duties", "works-owning-a-duty"],
+  },
+  {
+    slug: "the-one-on-one",
+    themeKey: "management",
+    moduleSlugs: ["mgmt-one-on-one", "mgmt-reviewing-the-work"],
+  },
+  {
+    slug: "care-and-accountability",
+    themeKey: "management",
+    moduleSlugs: ["mgmt-caring-for-people", "mgmt-holding-the-line"],
+  },
+  {
+    slug: "directing",
+    themeKey: "management",
+    moduleSlugs: ["mgmt-the-org-tree", "mgmt-director-philosophy"],
+  },
+  {
+    slug: "finances-for-everyone",
+    themeKey: "finances",
+    moduleSlugs: ["finance-stewardship", "finance-card-and-receipts", "finance-reimbursements-and-flags"],
+  },
+  {
+    slug: "treasurer",
+    themeKey: "finances",
+    moduleSlugs: ["finance-reconcile-grid", "finance-chasing-receipts", "finance-monthly-close"],
+  },
+  {
+    slug: "chapter-director",
+    themeKey: "finances",
+    moduleSlugs: ["finance-raise-vs-manage", "finance-approving-budgets", "finance-tiers-and-skim"],
+  },
+  {
+    slug: "financial-manager",
+    themeKey: "finances",
+    moduleSlugs: ["finance-cross-chapter-audit", "finance-receipt-escalation-queue", "finance-accounts-and-cards-admin"],
+  },
+  {
+    slug: "executive-director",
+    themeKey: "finances",
+    moduleSlugs: ["finance-central-budgets", "finance-governance-and-seats", "finance-launch-grants-and-transfers"],
+  },
+];
+
+describe("Academy curriculum snapshot (pre/post per-stream split)", () => {
+  test("section order is unchanged", () => {
+    expect(ACADEMY_SECTIONS.map((s) => s.slug)).toEqual(EXPECTED_SECTION_SLUGS);
+  });
+
+  test("per-section title/minutes/quiz length/optional/capstone kind are unchanged", () => {
+    const actual = ACADEMY_SECTIONS.map((s) => ({
+      slug: s.slug,
+      title: s.title,
+      minutes: s.minutes,
+      quizLength: s.quiz.length,
+      optional: s.optional === true,
+      capstoneKind: s.capstone?.kind ?? null,
+    }));
+    expect(actual).toEqual(EXPECTED_SECTIONS);
+  });
+
+  test("course catalog slugs/themeKeys/moduleSlugs are unchanged", () => {
+    const actual = ACADEMY_COURSES.map((c) => ({
+      slug: c.slug,
+      themeKey: c.themeKey,
+      moduleSlugs: c.moduleSlugs,
+    }));
+    expect(actual).toEqual(EXPECTED_COURSES);
+  });
+});

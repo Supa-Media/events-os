@@ -1935,11 +1935,10 @@ export * from "./seatManagers";
 // ── The planning playbook (generated from docs/agent.md) ─────────────────────
 export * from "./playbook";
 
-// ── The Academy curriculum (sections + quizzes + capstone constants) ──────────
+// ── The Academy curriculum (sections + quizzes + capstone constants) plus the
+// course/theme layer (themes → courses → module slugs). Content lives per-
+// stream in ./academy/streams/*; ./academy assembles + re-exports it all. ──
 export * from "./academy";
-
-// ── The Academy course/theme layer (themes → courses → module slugs) ──────────
-export * from "./academyCourses";
 
 // ── Finance (funds, budgets, transactions, reimbursements, cards, roles) ──────
 export * from "./finance";
