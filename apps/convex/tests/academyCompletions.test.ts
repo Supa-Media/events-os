@@ -4,8 +4,8 @@
  * Covers: the real-time award from submitQuiz (quiz-only courses) and from
  * syncCapstone (the capstone-gated Owning-an-event course); the optional bonus
  * capstone never being required; the 0018 backfill of existing progress; award
- * idempotency + `earnedAt` = max(passedAt); and the two read surfaces
- * (`courseCompleters`, `personBadges`).
+ * idempotency + `earnedAt` = max(passedAt); and the read surfaces
+ * (`courseCompleters`, `personBadges`, `courseTeamTrainingRoster`).
  */
 import { describe, expect, test } from "vitest";
 import { api } from "../_generated/api";
@@ -242,6 +242,86 @@ describe("academy course completions", () => {
       courseSlug: "owning-an-event",
     });
     expect(owning).toEqual([]);
+  });
+
+  test("courseTeamTrainingRoster: team-only filter + trained/untrained state", async () => {
+    const s = await setupLearner();
+    // A volunteer: no `isTeamMember`, no `userId` — the same shape
+    // `people.teamMembers` excludes. Must NOT appear in the roster.
+    const volunteerId = await run(s.t, (ctx) =>
+      ctx.db.insert("people", {
+        chapterId: s.chapterId,
+        name: "Val Volunteer",
+        createdAt: Date.now(),
+      }),
+    );
+    // A second real team member (no `userId`, but explicitly flagged) — MUST
+    // appear, untrained (never submits a quiz below).
+    const teammateId = await run(s.t, (ctx) =>
+      ctx.db.insert("people", {
+        chapterId: s.chapterId,
+        name: "Tam Teammate",
+        isTeamMember: true,
+        createdAt: Date.now(),
+      }),
+    );
+    // A sample/seed-bench person, flagged `isSamplePerson` — excluded even
+    // though `isTeamMember` is true, same as `people.teamMembers`.
+    await run(s.t, (ctx) =>
+      ctx.db.insert("people", {
+        chapterId: s.chapterId,
+        name: "Sam Sample",
+        isTeamMember: true,
+        isSamplePerson: true,
+        createdAt: Date.now(),
+      }),
+    );
+
+    // Before Casey earns the course: everyone real is UNTRAINED.
+    const before = await s.as.query(api.academy.courseTeamTrainingRoster, {
+      courseSlug: "projects",
+    });
+    expect(before).not.toBeNull();
+    const beforeIds = before!.map((p) => String(p.personId)).sort();
+    expect(beforeIds).toEqual(
+      [String(s.personId), String(teammateId)].sort(),
+    );
+    expect(beforeIds).not.toContain(String(volunteerId));
+    expect(before!.every((p) => p.trained === false)).toBe(true);
+
+    await passAllQuizzes(s);
+
+    const after = await s.as.query(api.academy.courseTeamTrainingRoster, {
+      courseSlug: "projects",
+    });
+    const byId = new Map(after!.map((p) => [String(p.personId), p]));
+    // Casey earned "projects" (via passAllQuizzes) — now trained.
+    expect(byId.get(String(s.personId))?.trained).toBe(true);
+    // Tam never submitted a quiz — still untrained.
+    expect(byId.get(String(teammateId))?.trained).toBe(false);
+    // The volunteer is still excluded regardless of anyone's trained state.
+    expect(byId.has(String(volunteerId))).toBe(false);
+
+    // Same chapter-visibility gate as `courseCompleters` — both null for a
+    // real, allowed-domain user with no `userChapters` membership at all
+    // (`getChapterIdOrNull`'s own "brand-new user" case).
+    const unaffiliatedId = await run(s.t, (ctx) =>
+      ctx.db.insert("users", { email: "new@publicworship.life" }),
+    );
+    const asUnaffiliated = s.t.withIdentity({
+      subject: `${unaffiliatedId}|session`,
+      issuer: "test",
+    });
+    expect(
+      await asUnaffiliated.query(api.academy.courseTeamTrainingRoster, {
+        courseSlug: "projects",
+      }),
+    ).toBeNull();
+    expect(
+      await asUnaffiliated.query(api.academy.courseCompleters, {
+        courseSlug: "projects",
+      }),
+    ).toBeNull();
   });
 
   test("every course slug the queries take resolves in the shared catalog", () => {

@@ -967,6 +967,11 @@ describe("dashboardChapter recentTransactions.codedTo is budget-first", () => {
     const dash = await s.as.query(api.finances.dashboardChapter, {});
     const card = dash.recentTransactions.find((r) => r.id === txnId);
     expect(card?.codedTo?.projectOrEvent).toBe("Fall Retreat Worship");
+    // Review fix (deep-link parity, WP-wave4 item 4): the digest row carries
+    // the SAME live ref TransactionDetailModal's "Part of" link needs — set
+    // only because the name above actually resolved from the live event.
+    expect(card?.codedTo?.refKind).toBe("event");
+    expect(card?.codedTo?.scopeRefId).toBe(eventId);
   });
 
   test("falls back to the budget's own display name for a recurring-budget-coded txn", async () => {
@@ -992,5 +997,60 @@ describe("dashboardChapter recentTransactions.codedTo is budget-first", () => {
     const dash = await s.as.query(api.finances.dashboardChapter, {});
     const card = dash.recentTransactions.find((r) => r.id === txnId);
     expect(card?.codedTo?.projectOrEvent).toBe("Ops");
+    // Review fix (deep-link parity): a recurring-budget-coded txn has no
+    // event/project ref at all — `refKind`/`scopeRefId` stay null, never a
+    // link into a nonexistent ref.
+    expect(card?.codedTo?.refKind).toBeNull();
+    expect(card?.codedTo?.scopeRefId).toBeNull();
+  });
+
+  test("a deleted event's orphaned budget never offers a dead 'open ref' link (card or digest)", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await asChapterManager(s);
+    const eventId = await seedEvent(s, s.chapterId, { name: "Cancelled Retreat" });
+    const budgetId = await s.as.mutation(api.finances.createBudget, {
+      amountCents: 40000,
+      type: "one_time",
+      refKind: "event",
+      cadence: "per_instance",
+      year: 2026,
+      scopeRefId: eventId,
+    });
+    await approveBudgetDirect(s, budgetId);
+    const txnId = await s.as.mutation(api.finances.createManualTransaction, {
+      flow: "outflow",
+      amountCents: 4000,
+      postedAt: Date.now(),
+      budgetId,
+    });
+
+    // `events.remove` does NOT cascade to the linked budget — the budget's
+    // own `refKind`/`scopeRefId` stay stored, now pointing at nothing.
+    await s.as.mutation(api.events.remove, { eventId });
+
+    const dash = await s.as.query(api.finances.dashboardChapter, {});
+    // Review fix (dead-link parity): the ONE-TIME BUDGET CARD (the row the
+    // finance dashboard renders the "Open event ›" affordance from) must NOT
+    // expose a link into the vanished event, even though the budget doc
+    // itself still carries `refKind: "event"` / the dead `scopeRefId`.
+    const card = dash.oneTimeBudgets.find((b) => b.id === budgetId);
+    expect(card).toBeDefined();
+    expect(card?.refKind).toBeNull();
+    expect(card?.scopeRefId).toBeNull();
+    // `name` still reads "Cancelled Retreat" — `createBudget` snapshots the
+    // ref's name into the budget's OWN `label` at creation time, and that's
+    // the fallback `resolveBudgetRef` reads once the live lookup misses (see
+    // `budgetDisplayName`) — never a blank/dead card. The actually-guarded
+    // behavior is `refKind`/`scopeRefId` below: those come ONLY from a LIVE
+    // resolution, not from the stored label, so they correctly go null even
+    // though the name coincidentally still matches.
+    expect(card?.name).toBe("Cancelled Retreat");
+
+    // The digest's `codedTo` was already gated on live resolution — locks
+    // that in for the exact scenario the card-path bug shared.
+    const digestCard = dash.recentTransactions.find((r) => r.id === txnId);
+    expect(digestCard?.codedTo?.refKind).toBeNull();
+    expect(digestCard?.codedTo?.scopeRefId).toBeNull();
   });
 });
