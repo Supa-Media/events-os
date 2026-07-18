@@ -1,4 +1,5 @@
 import { describe, expect, test } from "vitest";
+import { requiredModuleSlugsForCourse } from "./academy";
 import {
   ROLE_PATHS,
   type RolePath,
@@ -79,10 +80,14 @@ describe("requiredModuleSlugsForPath", () => {
   test("unions required modules across the path's courses", () => {
     const treasurer = getRolePath("seat", "treasurer")!;
     const required = requiredModuleSlugsForPath(treasurer);
-    // Foundations trio + chapter-money-model + treasurer, all with no optionals:
-    // welcome-to-public-worship (3) + how-we-work (4) + finances-for-everyone (3)
-    // + chapter-money-model (3) + treasurer (3) = 16 modules.
-    expect(required.length).toBe(16);
+    // Derive the expected count from the catalog itself so this test can't go
+    // stale when a course in the path gains a lesson (bit us when Foundations
+    // grew mid-flight): sum of each course's required modules, deduped.
+    const expected = new Set(
+      treasurer.courseSlugs.flatMap((slug) => requiredModuleSlugsForCourse(slug)),
+    );
+    expect(required.length).toBe(expected.size);
+    expect(required.length).toBeGreaterThanOrEqual(16);
     expect(new Set(required).size).toBe(required.length); // deduped
     expect(required).toContain("finance-stewardship"); // finances-for-everyone
     expect(required).toContain("finance-monthly-close"); // treasurer
