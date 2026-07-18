@@ -92,6 +92,8 @@ export default function DonorDetailScreen() {
           </View>
         ) : null}
 
+        <BackingSection donorId={donorId} />
+
         {access.canManage ? <RecordGiftForm donorId={donorId} /> : null}
 
         <SectionHeader title="Gift history" />
@@ -126,6 +128,49 @@ export default function DonorDetailScreen() {
         )}
       </Narrow>
     </Screen>
+  );
+}
+
+/** The donor's recurring pledges (F-6 P2), if any — the "active pledge" the
+ *  donor-detail screen is meant to surface. Renders nothing when the donor has
+ *  never pledged, so it stays out of the way for one-time givers. */
+function BackingSection({ donorId }: { donorId: Id<"donors"> }) {
+  const pledges = useQuery(api.givingPledges.getDonorPledges, { donorId });
+  if (pledges === undefined || pledges.length === 0) return null;
+  return (
+    <View className="mb-4">
+      <SectionHeader title="Backing" />
+      <View className="gap-2">
+        {pledges.map((p) => (
+          <View
+            key={p._id}
+            className="flex-row items-center justify-between rounded-lg border border-border bg-raised p-3"
+          >
+            <View>
+              <Text className="text-base font-semibold text-ink">
+                {formatCents(p.amountCents)}
+                <Text className="text-xs text-muted"> /mo</Text>
+              </Text>
+              <Text className="text-xs text-muted">
+                {p.origin === "imported" ? "Givebutter (awaiting re-signup)" : "Monthly pledge"}
+              </Text>
+            </View>
+            <Badge
+              label={p.status}
+              tone={
+                p.status === "active"
+                  ? "success"
+                  : p.status === "past_due"
+                    ? "warn"
+                    : p.status === "canceled"
+                      ? "danger"
+                      : "neutral"
+              }
+            />
+          </View>
+        ))}
+      </View>
+    </View>
   );
 }
 
