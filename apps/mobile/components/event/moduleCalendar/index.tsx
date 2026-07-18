@@ -150,22 +150,22 @@ export function ModuleCalendar({
 
   return (
     <View ref={drag.containerRef} collapsable={false}>
-      {/* Month nav: prev · serif month · next, with a jump-to-today reset. */}
-      <View className="mb-4 flex-row items-center gap-3">
+      {/* Month nav: prev · serif month · next, then the quiet event-day anchor
+          and a jump-to-today reset. Wraps on narrow screens. */}
+      <View className="mb-4 flex-row flex-wrap items-center gap-3">
         <NavButton icon="chevron-left" onPress={() => cal.step(-1)} />
         <Text className="font-display text-2xl text-ink">
           {MONTHS[view.month]} {view.year}
         </Text>
         <NavButton icon="chevron-right" onPress={() => cal.step(1)} />
         <View className="flex-1" />
+        <EventBanner
+          eventDate={eventDate}
+          daysAway={cal.daysAway}
+          onPress={cal.goToEvent}
+        />
         <Button title="Today" variant="secondary" size="sm" onPress={cal.goToday} />
       </View>
-
-      <EventBanner
-        eventDate={eventDate}
-        daysAway={cal.daysAway}
-        onPress={cal.goToEvent}
-      />
 
       {/* Move mode — the calendar itself is the date picker: tap a day. */}
       {moving ? (

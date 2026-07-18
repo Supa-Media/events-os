@@ -13,6 +13,7 @@ import {
   Button,
   Avatar,
   Icon,
+  type IconName,
   PhaseBreakdown,
   Popover,
   LocationAutocomplete,
@@ -162,67 +163,59 @@ export function EventHeader({
         </Text>
       ) : null}
 
-      {/* Row 1 — title + status pill */}
-      <View className="flex-row flex-wrap items-center gap-2.5">
+      {/* Row 1 — the title, on its own line so a long name never shoves the
+          status pill into the dead space before the rings. */}
+      <View className="flex-row">
         <TitleInput
           value={nameValue}
           onChangeText={onChangeName}
           onBlur={onSaveName}
         />
-        <StatusPill status={event.status as EventStatus} onSetStatus={onSetStatus} />
       </View>
 
-      {/* Row 2 — the quiet meta line: date · location · budget. Each
-          "· segment" pair is grouped so a wrap never strands a dot at a
-          line start; the zIndex lifts the row (and the location
-          autocomplete dropdown inside it) above the people row below. */}
+      {/* Row 2 — status + the meta line: state · when · where · budget ·
+          chapter. The status pill LEADS the row (grouped with the event's
+          details, not floating), then each fact leads with its own icon so no
+          dot separators are needed and the row simply wraps. The zIndex lifts
+          the row (and the location autocomplete dropdown inside it) above the
+          people row below. */}
       <View
-        className="flex-row flex-wrap items-center gap-x-1.5 gap-y-1"
+        className="flex-row flex-wrap items-center gap-x-4 gap-y-1.5"
         style={{ zIndex: 20 }}
       >
+        <StatusPill status={event.status as EventStatus} onSetStatus={onSetStatus} />
         <DateSeg eventDate={event.eventDate} onReschedule={onReschedule} />
-        <View
-          className="flex-row items-center gap-x-1.5"
-          style={{ flexShrink: 1, minWidth: 0 }}
-        >
-          <MetaDot />
-          <LocationSeg
-            location={event.location ?? null}
-            value={locationValue}
-            onChangeText={onChangeLocation}
-            onSave={onSaveLocation}
-          />
-        </View>
-        <View className="flex-row items-center gap-x-1.5">
-          <MetaDot />
-          <BudgetSeg
-            budget={event.budget ?? null}
-            spent={budgetSpent}
-            pct={budgetPct}
-            value={budgetValue}
-            onChangeText={onChangeBudget}
-            onSave={onSaveBudget}
-          />
-        </View>
+        <LocationSeg
+          location={event.location ?? null}
+          value={locationValue}
+          onChangeText={onChangeLocation}
+          onSave={onSaveLocation}
+        />
+        <BudgetSeg
+          budget={event.budget ?? null}
+          spent={budgetSpent}
+          pct={budgetPct}
+          value={budgetValue}
+          onChangeText={onChangeBudget}
+          onSave={onSaveBudget}
+        />
         {/* Training events have no money life (the #172 invariant) — every
             other Money entry point (EventTools' ⋯ menu, the Money tab
             itself) hides accordingly, so the header chip does too. */}
         {event.isTraining === true ? null : (
-          <View className="flex-row items-center gap-x-1.5">
-            <MetaDot />
-            <ScopeSeg
-              scope={scope}
-              scopeChapterName={scopeChapterName}
-              homeChapterName={homeChapterName}
-              canChangeScope={canChangeScope}
-              onChangeScope={onChangeScope}
-            />
-          </View>
+          <ScopeSeg
+            scope={scope}
+            scopeChapterName={scopeChapterName}
+            homeChapterName={homeChapterName}
+            canChangeScope={canChangeScope}
+            onChangeScope={onChangeScope}
+          />
         )}
       </View>
 
-      {/* Row 3 — people: owner, assigned roles, folded open roles, ＋ */}
-      <PeopleRow
+      {/* Row 3 — people, folded away by default: a quiet avatar-stack summary
+          expands to the full owner + roles editing row on tap. */}
+      <PeopleSection
         owner={owner}
         roleRows={roleRows}
         onOpenOwner={onOpenOwner}
@@ -258,23 +251,25 @@ export function EventHeader({
     // the later-in-DOM siblings below it (tab rail / plan list, grids).
     <Card className="z-10 mb-4">
       {compact ? (
-        /* Mobile — vitals stacked full width; the phase rings become a quiet
-           full-width strip under a divider, with the single pace pill. */
+        /* Mobile — vitals stacked full width; the phase rings gather into one
+           quiet inset "scoreboard" tray (with the single pace pill) so the four
+           circles read as one calm HUD, not a loose colorful strip. */
         <>
-          <View className="gap-2.5">{vitals}</View>
-          <View className="mt-4 border-t border-border pt-3.5">
+          <View className="gap-3">{vitals}</View>
+          <View className="mt-4 gap-3 rounded-lg bg-sunken px-3.5 py-3.5">
             {rings}
-            <View className="mt-3 flex-row">{pacePill}</View>
+            <View className="flex-row">{pacePill}</View>
           </View>
         </>
       ) : (
-        /* Desktop — the original two-column header: vitals left, the phase
-           rings + pace pill clustered top-right. */
+        /* Desktop — vitals left; the phase rings + pace pill cluster into one
+           inset scoreboard tray on the right, grouped and set off from the
+           dense meta/people text so the readiness HUD reads as a single unit. */
         <View className="flex-row flex-wrap items-start gap-x-6 gap-y-4">
-          <View className="flex-1 gap-2.5" style={{ minWidth: 280 }}>
+          <View className="flex-1 gap-3" style={{ minWidth: 280 }}>
             {vitals}
           </View>
-          <View className="items-end gap-2">
+          <View className="items-center gap-2.5 rounded-lg bg-sunken px-4 py-3.5">
             {rings}
             {pacePill}
           </View>
@@ -390,16 +385,15 @@ function StatusPill({
 
 /* ── Meta line segments ─────────────────────────────────────────────────── */
 
-function MetaDot() {
-  return <Text className="text-base text-faint">·</Text>;
-}
-
 /**
- * One tappable fact on the meta line. Quiet text at rest; hover reveals the
- * pencil + a soft wash (borders mean "editable", so facts don't wear boxes).
+ * One tappable fact on the meta line. A small leading icon names the KIND of
+ * fact (when / where / budget) so facts are self-identifying and need no dot
+ * separators between them. Quiet text at rest; hover reveals the pencil + a
+ * soft wash (borders mean "editable", so facts don't wear boxes).
  */
 function MetaSeg({
   text,
+  icon,
   faint,
   danger,
   suffix,
@@ -408,6 +402,8 @@ function MetaSeg({
   editLabel,
 }: {
   text: string;
+  /** Leading glyph naming the fact — calendar, map-pin, dollar-sign, … */
+  icon: IconName;
   /** Placeholder styling for "Add location" / "Add budget". */
   faint?: boolean;
   danger?: boolean;
@@ -423,6 +419,7 @@ function MetaSeg({
     : faint
       ? "text-faint"
       : "text-ink";
+  const iconColor = danger ? colors.danger : faint ? colors.faint : colors.muted;
   return (
     <Pressable
       ref={innerRef}
@@ -434,18 +431,19 @@ function MetaSeg({
       // Shrinkable + single-line so a long value (a full venue address)
       // ellipsizes instead of overflowing the card.
       style={{ flexShrink: 1, minWidth: 0 }}
-      className={`-mx-1 flex-row items-center gap-1 rounded-md px-1 py-0.5 active:opacity-70 ${
+      className={`-mx-1 flex-row items-center gap-1.5 rounded-md px-1 py-0.5 active:opacity-70 ${
         hovered ? "bg-sunken" : ""
       }`}
     >
+      <Icon name={icon} size={13} color={iconColor} />
       <Text
         numberOfLines={1}
         style={{ flexShrink: 1 }}
-        className={`text-base ${tone}`}
+        className={`text-sm ${tone}`}
       >
         {text}
       </Text>
-      {suffix ? <Text className="text-base text-muted">{suffix}</Text> : null}
+      {suffix ? <Text className="text-sm text-muted">{suffix}</Text> : null}
       {/* Always mounted (opacity-toggled) so hover doesn't reflow the line. */}
       <View style={{ opacity: hovered ? 1 : 0 }}>
         <Icon name="edit-2" size={11} color={colors.faint} />
@@ -474,6 +472,7 @@ function DateSeg({
     <>
       <MetaSeg
         innerRef={ref}
+        icon="calendar"
         text={formatDateTime(eventDate)}
         onPress={() => {
           setDraft(null);
@@ -534,6 +533,7 @@ function LocationSeg({
   }
   return (
     <MetaSeg
+      icon="map-pin"
       text={location ?? "Add location"}
       faint={location == null}
       onPress={() => setEditing(true)}
@@ -580,6 +580,7 @@ function BudgetSeg({
     <>
       <MetaSeg
         innerRef={ref}
+        icon="dollar-sign"
         text={text}
         faint={budget == null && spent === 0}
         danger={over}
@@ -655,11 +656,11 @@ function ScopeSeg({
   if (!canChangeScope) {
     return (
       <View
-        className="flex-row items-center gap-1 rounded-pill border border-border-strong bg-raised px-2 py-0.5"
+        className="flex-row items-center gap-1.5"
         accessibilityLabel={`Belongs to ${label}`}
       >
-        <Icon name="layers" size={10} color={colors.faint} />
-        <Text className="text-xs font-medium text-muted">{label}</Text>
+        <Icon name="layers" size={13} color={colors.muted} />
+        <Text className="text-sm text-muted">{label}</Text>
       </View>
     );
   }
@@ -671,11 +672,11 @@ function ScopeSeg({
         onPress={open}
         accessibilityRole="button"
         accessibilityLabel={`Belongs to ${label}. Change attribution`}
-        className="flex-row items-center gap-1 rounded-pill border border-border-strong bg-raised px-2 py-0.5 active:opacity-80 web:hover:bg-sunken"
+        className="-mx-1 flex-row items-center gap-1.5 rounded-md px-1 py-0.5 active:opacity-70 web:hover:bg-sunken"
       >
-        <Icon name="layers" size={10} color={colors.muted} />
-        <Text className="text-xs font-medium text-ink">{label}</Text>
-        <Icon name="chevron-down" size={10} color={colors.muted} />
+        <Icon name="layers" size={13} color={colors.muted} />
+        <Text className="text-sm text-ink">{label}</Text>
+        <Icon name="chevron-down" size={12} color={colors.faint} />
       </Pressable>
       <Popover visible={visible} anchor={anchor} width={220} onClose={close}>
         <View className="gap-2 p-3">
@@ -700,6 +701,114 @@ function ScopeSeg({
 
 function firstName(name: string): string {
   return name.trim().split(/\s+/)[0] ?? name;
+}
+
+/**
+ * People, collapsed by default. Who owns / leads an event is reference detail —
+ * not something a daily user needs occupying the header — so it folds into a
+ * quiet avatar-stack summary that expands to the full editable owner + roles
+ * row ({@link PeopleRow}) on tap.
+ */
+function PeopleSection(props: {
+  owner: { _id: string; name: string } | null;
+  roleRows: RoleRow[];
+  onOpenOwner: () => void;
+  onPickRole: (role: RoleRow) => void;
+  onRenameRole: (roleId: string, label: string) => void;
+  onDeleteRole: (roleId: string) => void;
+  onAddRole: (label: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const { owner, roleRows } = props;
+
+  if (open) {
+    return (
+      <View className="gap-2">
+        <Pressable
+          onPress={() => setOpen(false)}
+          accessibilityRole="button"
+          accessibilityLabel="Hide people"
+          className="-mx-1 flex-row items-center gap-1.5 self-start rounded-md px-1 py-0.5 active:opacity-70 web:hover:bg-sunken"
+        >
+          <Text className="text-2xs font-bold uppercase tracking-wider text-muted">
+            People
+          </Text>
+          <Icon name="chevron-up" size={13} color={colors.muted} />
+        </Pressable>
+        <PeopleRow {...props} />
+      </View>
+    );
+  }
+
+  // Collapsed: stack the faces actually on the event (owner first, then each
+  // distinct assigned person) and tally any still-open roles — one tappable
+  // summary that says "who's on this" without spelling out every role.
+  const seen = new Set<string>();
+  const faces: string[] = [];
+  if (owner) {
+    seen.add(owner._id);
+    faces.push(owner.name);
+  }
+  for (const r of roleRows) {
+    if (r.person && !seen.has(r.person._id)) {
+      seen.add(r.person._id);
+      faces.push(r.person.name);
+    }
+  }
+  const openCount = roleRows.filter((r) => r.person === null).length;
+  const empty = !owner && faces.length === 0;
+
+  return (
+    <Pressable
+      onPress={() => setOpen(true)}
+      accessibilityRole="button"
+      accessibilityLabel="Show owner and roles"
+      className="-mx-1 flex-row items-center gap-2 self-start rounded-md px-1 py-1 active:opacity-70 web:hover:bg-sunken"
+    >
+      <Icon name="users" size={14} color={colors.muted} />
+      {/* The label names the section so it's obvious what expands; the avatar
+          stack then previews WHO is on it. */}
+      <Text className="text-sm font-medium text-muted">
+        {empty ? "Add team & roles" : "Team & roles"}
+      </Text>
+      {faces.length > 0 ? <AvatarStack names={faces} /> : null}
+      {openCount > 0 ? (
+        <Text className="text-2xs font-semibold text-faint">{openCount} open</Text>
+      ) : null}
+      <Icon name="chevron-down" size={13} color={colors.faint} />
+    </Pressable>
+  );
+}
+
+/** Overlapping avatars (up to 4) + "+N" overflow — the collapsed people peek. */
+function AvatarStack({ names }: { names: string[] }) {
+  const shown = names.slice(0, 4);
+  const extra = names.length - shown.length;
+  return (
+    <View className="flex-row items-center">
+      {shown.map((name, i) => (
+        <View
+          key={i}
+          style={{
+            marginLeft: i === 0 ? 0 : -7,
+            borderRadius: 12,
+            borderWidth: 2,
+            borderColor: colors.raised,
+          }}
+        >
+          <Avatar name={name} size={20} />
+        </View>
+      ))}
+      {extra > 0 ? (
+        <View
+          style={{ marginLeft: -7, borderWidth: 2, borderColor: colors.raised }}
+          className="h-6 w-6 items-center justify-center rounded-full bg-sunken"
+        >
+          <Text className="text-2xs font-bold text-muted">+{extra}</Text>
+        </View>
+      ) : null}
+    </View>
+  );
 }
 
 /**

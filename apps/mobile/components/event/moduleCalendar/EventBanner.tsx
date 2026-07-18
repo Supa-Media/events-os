@@ -1,8 +1,9 @@
 /**
- * The event anchor — a persistent, high-contrast banner naming the event's date
- * with a live countdown. Everything on this calendar is timed relative to this
- * one day, so it stays pinned above the grid (and tappable to jump to it) no
- * matter which month you're browsing.
+ * The event anchor — a compact, tappable chip naming the event's date with a
+ * live countdown. Everything on this calendar is timed relative to this one day,
+ * so the chip sits in the month-nav row (and jumps to the day on tap) no matter
+ * which month you're browsing. Deliberately quiet: a small accent flag marks it
+ * as THE event day, while the grid carries the louder day-of highlight.
  */
 import { useState } from "react";
 import { View, Text, Pressable } from "react-native";
@@ -28,31 +29,19 @@ export function EventBanner({
       onPress={onPress}
       onHoverIn={() => setHovered(true)}
       onHoverOut={() => setHovered(false)}
-      className="mb-4 active:opacity-90"
+      className={`flex-row items-center gap-2 rounded-pill border border-accent/40 px-3 py-1.5 active:opacity-80 ${
+        hovered ? "bg-accent-soft/80" : "bg-accent-soft"
+      }`}
     >
-      <View
-        className={`flex-row items-center gap-3 rounded-lg border border-accent px-4 py-3 ${
-          hovered ? "bg-accent-soft/80" : "bg-accent-soft"
-        }`}
-      >
-        <View className="h-10 w-10 items-center justify-center rounded-full bg-accent">
-          <Icon name="flag" size={18} color={colors.raised} />
-        </View>
-        <View className="flex-1">
-          <Text className="text-2xs font-bold uppercase tracking-wider text-accent">
-            Event day
-          </Text>
-          <Text className="font-display text-base text-ink" numberOfLines={1}>
-            {WEEKDAYS_LONG[d.getDay()]}, {MONTHS[d.getMonth()]} {d.getDate()}
-          </Text>
-        </View>
-        <View className="rounded-pill bg-accent px-3 py-1">
-          <Text className="text-2xs font-bold text-white">
-            {eventCountdownLabel(daysAway)}
-          </Text>
-        </View>
-        <Icon name="chevron-right" size={16} color={colors.accent} />
-      </View>
+      <Icon name="flag-solid" size={13} color={colors.accent} />
+      <Text className="text-xs font-bold text-accent" numberOfLines={1}>
+        {WEEKDAYS_LONG[d.getDay()].slice(0, 3)}, {MONTHS[d.getMonth()].slice(0, 3)}{" "}
+        {d.getDate()}
+      </Text>
+      <View className="h-3 w-px bg-accent/25" />
+      <Text className="text-2xs font-semibold text-muted" numberOfLines={1}>
+        {eventCountdownLabel(daysAway)}
+      </Text>
     </Pressable>
   );
 }
