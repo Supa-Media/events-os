@@ -14,6 +14,15 @@
  * are managed entirely by `RelayCardsSection` below. Collapsed by default
  * behind a "Cardholders (N)" toggle (mirrors `RelayCardsSection`'s own
  * collapsed-by-default pattern) with condensed rows (`CardholderRow`).
+ *
+ * MY CARD (owner report item 1): a finance manager is a cardholder too — the
+ * SAME `MyCardSection` `MemberCardsView` renders (VirtualCardArt + reveal +
+ * billing address + Relay-only quiet note) is rendered at the top here.
+ * `MyCardSection` resolves `api.cards.myCard` off the caller's OWN roster row
+ * (never the currently-selected finance desk/context), so it shows the SAME
+ * card whether the manager is sitting at their chapter, at Central, or
+ * peeking another chapter — see `myCard`'s doc comment in `cards.ts`. Renders
+ * nothing when the manager holds no card anywhere (no empty shell).
  */
 import { useMemo, useState } from "react";
 import { Text, View } from "react-native";
@@ -38,6 +47,7 @@ import { CardholderRow } from "./CardholderRow";
 import { IssueCardModal } from "./IssueCardModal";
 import { CardControlsModal } from "./CardControlsModal";
 import { RelayCardsSection } from "./RelayCardsSection";
+import { MyCardSection } from "./MyCardSection";
 import { hasReceiptDue, type CardSummary } from "./helpers";
 
 export function ManagerCardsView() {
@@ -120,6 +130,11 @@ export function ManagerCardsView() {
         Person-owned spending cards on the chapter's Increase account. Everyone
         gets one, and each holder owns their own receipts.
       </Text>
+
+      {/* Owner report item 1: a finance manager is a cardholder too — their
+          OWN card visual, context-independent (see `MyCardSection`'s doc
+          comment). Renders nothing when the manager has no card yet. */}
+      <MyCardSection heading="My card" />
 
       {/* KPI tiles. */}
       <View className="mb-1 flex-row flex-wrap gap-3">

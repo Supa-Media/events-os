@@ -105,6 +105,8 @@ import {
   requireChapterId,
   requireInChapter,
   getChapterIdOrNull,
+  requireAccess,
+  requireUserId,
 } from "./lib/context";
 import {
   requireFinanceRole,
@@ -776,6 +778,73 @@ export const listCards = query({
   },
 });
 
+/**
+ * The caller's own real (non-placeholder) `people` row ids, across EVERY
+ * chapter — the same `people.by_user` scan `financeRoles.mySeats` uses for
+ * seat resolution. Deliberately NOT scoped to `requireChapterId`/
+ * `getChapterIdOrNull`'s single "first `userChapters` membership" home
+ * chapter — see `myCard`'s doc comment for why. Also enforces the app's
+ * domain-access gate (`requireAccess`), so every caller of this (or of
+ * `requireCallerIsHolder` below) gets it for free instead of each site
+ * re-deriving it.
+ *
+ * SHARED by `myCard`'s own card lookup and `requireCallerIsHolder` (every
+ * HOLDER-ONLY card action: freeze/unfreeze/reveal/billing-address) so the two
+ * can never drift apart again — a card `myCard` surfaces must always be one
+ * these same holder-action gates agree the caller owns.
+ */
+async function callerPersonIds(ctx: QueryCtx): Promise<Id<"people">[]> {
+  await requireAccess(ctx);
+  const userId = await requireUserId(ctx);
+  const people = await ctx.db
+    .query("people")
+    .withIndex("by_user", (q) => q.eq("userId", userId as Id<"users">))
+    .collect();
+  return people.filter((p) => p.isPlaceholder !== true).map((p) => p._id);
+}
+
+/** Load a card by id, asserting it exists — the holder-action counterpart to
+ *  `requireOwnedCard` below (which is the MANAGER flow, chapter-scoped to the
+ *  manager's own desk). Ownership for a holder action is checked separately,
+ *  via `requireCallerIsHolder`. */
+async function requireCard(
+  ctx: QueryCtx,
+  cardId: Id<"cards">,
+): Promise<Doc<"cards">> {
+  const card = await ctx.db.get(cardId);
+  if (!card) {
+    throw new ConvexError({ code: "NOT_FOUND", message: "Card not found." });
+  }
+  return card;
+}
+
+/**
+ * Assert the caller is a card's OWN holder — resolved via `callerPersonIds`
+ * (the SAME scan `myCard` uses), NEVER via `requireChapterId`'s single "first
+ * membership" home chapter. Every HOLDER-ONLY card action gates through this
+ * so a card `myCard` surfaces from OUTSIDE the caller's home chapter is still
+ * actionable by its real holder — before this helper, `beginFreezeCard`/
+ * `beginUnfreezeCard`/`beginRevealCardDetails`/`holderIncreaseEnvForCard`
+ * independently re-derived "is the caller the holder" off `getFinanceRole`'s
+ * HOME-chapter-scoped `personId`, so a card surfaced from a non-home chapter
+ * rendered Freeze/Reveal actions that threw FORBIDDEN when the real holder
+ * tapped them. Throws FORBIDDEN for anyone else — including a chapter/central
+ * MANAGER (those have their own separate, still chapter-scoped gates:
+ * `lockCard`/`unlockCard`/`setCardControls`/`cancelCard`/`requireOwnedCard`
+ * below — this never widens who may act, only fixes WHERE the holder is
+ * looked up).
+ */
+async function requireCallerIsHolder(
+  ctx: QueryCtx,
+  card: Doc<"cards">,
+  message = "Only the cardholder can do this.",
+): Promise<void> {
+  const personIds = await callerPersonIds(ctx);
+  if (!personIds.includes(card.cardholderPersonId)) {
+    throw new ConvexError({ code: "FORBIDDEN", message });
+  }
+}
+
 const myCardValidator = v.object({
   cards: v.array(cardSummaryValidator),
   // The caller's most recently issued CANCELED card, when they hold no live
@@ -786,8 +855,24 @@ const myCardValidator = v.object({
   lastCanceled: v.union(cardSummaryValidator, v.null()),
 });
 
-/** The caller's own card(s) — the member card view. Any authed user; empty when
- *  they have no chapter / roster row yet.
+/** The caller's own card(s) — the member card view (also surfaced at the top
+ *  of the manager view — a manager is a cardholder too). Any authed user;
+ *  empty when they have no roster row anywhere yet.
+ *
+ *  DELIBERATELY context-independent: resolved off the caller's OWN `people`
+ *  rows (`by_user`, same scan `financeRoles.mySeats` uses for seat
+ *  resolution), never off `requireChapterId`/`getChapterIdOrNull`'s "first
+ *  `userChapters` membership" home chapter. Two reasons that matters here:
+ *   1. The Cards screen doesn't thread `ChapterContext` at all (no `chapterId`
+ *      arg) — a manager sitting at a Central desk, or peeking another
+ *      chapter, must still see THEIR OWN card, not nothing / not the peeked
+ *      chapter's.
+ *   2. `requireChapterId`'s single-membership limitation (see its own TODO)
+ *      would silently miss a genuinely multi-chapter person's card if their
+ *      roster row happens to live outside the "first" membership. Scanning
+ *      every real `people` row sidesteps that entirely.
+ *  `cardholderPersonId` already pins each card to one person's one chapter,
+ *  so no extra chapter filter is needed once scoped by person id.
  *
  *  A CANCELED card is never returned in `cards` (the primary pick) — a
  *  cardholder whose only card is canceled must reach the request-a-card
@@ -798,21 +883,22 @@ export const myCard = query({
   args: {},
   returns: myCardValidator,
   handler: async (ctx) => {
-    const chapterId = (await getChapterIdOrNull(ctx)) as Id<"chapters"> | null;
-    if (!chapterId) return { cards: [], lastCanceled: null };
-    const self = await viewerPerson(ctx, chapterId);
-    if (!self) return { cards: [], lastCanceled: null };
+    const personIds = await callerPersonIds(ctx);
+    if (personIds.length === 0) return { cards: [], lastCanceled: null };
+
     const sandboxMode = await readSandbox(ctx);
-    const cards = await ctx.db
-      .query("cards")
-      .withIndex("by_cardholder", (q) => q.eq("cardholderPersonId", self._id))
-      .take(CARD_SCAN_LIMIT);
-    const inScope = cards.filter(
-      (c) =>
-        c.chapterId === chapterId &&
-        // Same environment filter as listCards: hide cross-env cards.
-        matchesMode(c.increaseCardId ?? null, sandboxMode),
+    const cardsByPerson = await Promise.all(
+      personIds.map((personId) =>
+        ctx.db
+          .query("cards")
+          .withIndex("by_cardholder", (q) => q.eq("cardholderPersonId", personId))
+          .take(CARD_SCAN_LIMIT),
+      ),
     );
+    // Same environment filter as listCards: hide cross-env cards.
+    const inScope = cardsByPerson
+      .flat()
+      .filter((c) => matchesMode(c.increaseCardId ?? null, sandboxMode));
 
     const live = inScope.filter((c) => c.status !== "canceled");
     if (live.length > 0) {
@@ -927,17 +1013,12 @@ export const beginFreezeCard = internalMutation({
     increaseCardId: v.union(v.string(), v.null()),
   }),
   handler: async (ctx, { cardId }) => {
-    const chapterId = (await requireChapterId(ctx)) as Id<"chapters">;
-    const access = await getFinanceRole(ctx, chapterId);
-    const card = await requireOwnedCard(ctx, chapterId, cardId);
-    const isHolder =
-      access.personId != null && access.personId === card.cardholderPersonId;
-    if (!isHolder) {
-      throw new ConvexError({
-        code: "FORBIDDEN",
-        message: "Only the cardholder can freeze their own card.",
-      });
-    }
+    const card = await requireCard(ctx, cardId);
+    await requireCallerIsHolder(
+      ctx,
+      card,
+      "Only the cardholder can freeze their own card.",
+    );
     if (card.status === "canceled") {
       throw new ConvexError({
         code: "ILLEGAL_TRANSITION",
@@ -1005,17 +1086,12 @@ export const beginUnfreezeCard = internalMutation({
     kind: v.union(v.literal("active"), v.literal("receipt_locked")),
   }),
   handler: async (ctx, { cardId }) => {
-    const chapterId = (await requireChapterId(ctx)) as Id<"chapters">;
-    const access = await getFinanceRole(ctx, chapterId);
-    const card = await requireOwnedCard(ctx, chapterId, cardId);
-    const isHolder =
-      access.personId != null && access.personId === card.cardholderPersonId;
-    if (!isHolder) {
-      throw new ConvexError({
-        code: "FORBIDDEN",
-        message: "Only the cardholder can unfreeze their own card.",
-      });
-    }
+    const card = await requireCard(ctx, cardId);
+    await requireCallerIsHolder(
+      ctx,
+      card,
+      "Only the cardholder can unfreeze their own card.",
+    );
     if (card.status !== "locked" || !card.frozenByHolder) {
       throw new ConvexError({
         code: "ILLEGAL_TRANSITION",
@@ -1874,17 +1950,12 @@ export const beginRevealCardDetails = internalMutation({
   args: { cardId: v.id("cards") },
   returns: v.object({ increaseCardId: v.string() }),
   handler: async (ctx, { cardId }) => {
-    const chapterId = (await requireChapterId(ctx)) as Id<"chapters">;
-    const access = await getFinanceRole(ctx, chapterId);
-    const card = await requireOwnedCard(ctx, chapterId, cardId);
-    const isHolder =
-      access.personId != null && access.personId === card.cardholderPersonId;
-    if (!isHolder) {
-      throw new ConvexError({
-        code: "FORBIDDEN",
-        message: "Only the cardholder can view their own card details.",
-      });
-    }
+    const card = await requireCard(ctx, cardId);
+    await requireCallerIsHolder(
+      ctx,
+      card,
+      "Only the cardholder can view their own card details.",
+    );
     if (!card.increaseCardId) {
       throw new ConvexError({
         code: "NOT_CONFIGURED",
@@ -2015,23 +2086,26 @@ export const holderIncreaseEnvForCard = internalQuery({
     increaseEntityId: v.union(v.string(), v.null()),
   }),
   handler: async (ctx, { cardId }) => {
-    const chapterId = (await requireChapterId(ctx)) as Id<"chapters">;
-    const access = await getFinanceRole(ctx, chapterId);
-    const card = await requireOwnedCard(ctx, chapterId, cardId);
-    const isHolder =
-      access.personId != null && access.personId === card.cardholderPersonId;
-    if (!isHolder) {
-      throw new ConvexError({
-        code: "FORBIDDEN",
-        message: "Only the cardholder can view their own card details.",
-      });
-    }
+    const card = await requireCard(ctx, cardId);
+    await requireCallerIsHolder(
+      ctx,
+      card,
+      "Only the cardholder can view their own card details.",
+    );
     if (!card.increaseCardId) {
       // Legacy (Relay) / degraded card — no Increase object to ask.
       return { increaseCardId: null, increaseEntityId: null };
     }
+    // The CARD's own chapter's account, not the caller's home chapter — a
+    // holder's card can now be surfaced (via `myCard`) from a chapter other
+    // than their `userChapters` home one, and the billing address always
+    // belongs to the account the card was actually issued under.
     const sandboxMode = await readSandbox(ctx);
-    const account = await getChapterAccountForMode(ctx, chapterId, sandboxMode);
+    const account = await getChapterAccountForMode(
+      ctx,
+      card.chapterId,
+      sandboxMode,
+    );
     return {
       increaseCardId: card.increaseCardId,
       increaseEntityId: account?.increaseEntityId ?? null,

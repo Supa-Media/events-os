@@ -1,10 +1,13 @@
 /**
- * Member perspective of the Cards tab — the caller's OWN card. Real data from
- * `api.cards.myCard` + `api.finances.personTransactions`: the red virtual-card
- * art, a status/spend summary with a receipt-due warning, the two hard controls
- * shown READ-ONLY (a member can't change their own cap/validity — that's a
- * manager action), the shared "You owe" banner (`OwedBanner`), and the ability
- * to flag one of their charges as a personal expense and pay it back.
+ * Member perspective of the Cards tab — the caller's OWN card. The red
+ * virtual-card art, status/spend summary, receipt-due warning, self-serve
+ * freeze/unfreeze, reveal, and billing address (the two hard controls shown
+ * READ-ONLY — a member can't change their own cap/validity, that's a manager
+ * action) live in the shared `MyCardSection`. This file adds what's specific
+ * to the member perspective: the "no card yet" request flow, the shared
+ * "You owe" banner (`OwedBanner`), and the ability to flag one of their
+ * charges (from `api.finances.personTransactions`) as a personal expense and
+ * pay it back.
  *
  * Personal-repayment flow (member side): Flag → `flagPersonalCharge` (returns the
  * repayment) → "Pay by card / bank" → `initiateRepayment({ repaymentId, method })`.
@@ -22,17 +25,15 @@
  * flag a charge on this member's behalf, so the source of truth can't be
  * session-local state anymore — see the query's doc comment).
  *
- * CARD VISUAL (owner report item 1): `myCard.cards` can include a `source:
- * "legacy"` (Relay) row alongside/instead of an Increase one (`legacyCards.ts`'s
- * link flow inserts a `cards` row for a linked external card too). This view
- * prefers the caller's Increase card for the art/reveal/billing-address block —
- * a Relay card has no Increase object behind it, so none of that applies. A
- * holder with ONLY a Relay card sees a quiet note instead of a blank card
- * shell; their charges/repayment flow below is unaffected either way (it's
- * keyed off transactions, not the card's vendor).
+ * CARD VISUAL (owner report item 1): the red virtual-card art, reveal modal,
+ * and billing address live in the shared `MyCardSection` — used here AND at
+ * the top of `ManagerCardsView` (a manager is a cardholder too). This file
+ * keeps only what's specific to the member perspective: the "no card yet"
+ * request flow (`lastCanceled`/`myRequest`), the shared "You owe" banner, and
+ * the per-charge flag/pay-back list.
  */
-import { useEffect, useMemo, useState } from "react";
-import { Alert, Text, View } from "react-native";
+import { useMemo, useState } from "react";
+import { Text, View } from "react-native";
 import { useAction, useMutation, useQuery } from "convex/react";
 import { api } from "@events-os/convex/_generated/api";
 import type { Id } from "@events-os/convex/_generated/dataModel";
@@ -40,41 +41,16 @@ import { formatCents } from "@events-os/shared";
 import {
   Badge,
   Button,
-  Card,
-  CopyButton,
   EmptyState,
   SectionHeader,
   TextField,
   ToastView,
 } from "../../ui";
 import { useActionRunner } from "../../../lib/useActionToast";
-import { VirtualCardArt } from "./VirtualCardArt";
 import { CardPhilosophy } from "./CardPhilosophy";
 import { OwedBanner } from "./OwedBanner";
-import {
-  RevealCardDetailsModal,
-  type RevealedCardDetails,
-} from "./RevealCardDetailsModal";
-import {
-  cardStatusBadge,
-  cardTypeLabel,
-  expLabel,
-  maskedNumber,
-  shortDate,
-  toFriendlyRevealError,
-  type CardSummary,
-  type MyRepayment,
-} from "./helpers";
-
-/** `null` = no address / unavailable (never fetched, or the vendor call
- *  degraded); `undefined` = still loading. */
-type BillingAddress = {
-  line1: string;
-  line2: string | null;
-  city: string;
-  state: string;
-  zip: string;
-};
+import { MyCardSection } from "./MyCardSection";
+import { shortDate, type MyRepayment } from "./helpers";
 
 export function MemberCardsView() {
   const myCard = useQuery(api.cards.myCard, {});
@@ -87,27 +63,11 @@ export function MemberCardsView() {
   // A member may only INITIATE a repayment (choose a method + kick it off) — the
   // offsetting credit is posted by a manager confirming receipt, never here.
   const initiateRepayment = useAction(api.cards.initiateRepayment);
-  // Self-serve freeze/unfreeze — instant, reversible ONLY by this same holder
-  // (distinct from a manager's lock / the receipt auto-lock).
-  const freezeCard = useAction(api.cards.freezeCard);
-  const unfreezeCard = useAction(api.cards.unfreezeCard);
   const requestCard = useMutation(api.cards.requestCard);
-  // HOLDER-ONLY, rate-limited (see `cards.ts`) — the manual add-to-wallet
-  // reveal. The response lives ONLY in this component's state; nothing is
-  // ever written back to Convex.
-  const revealCardDetails = useAction(api.cards.revealCardDetails);
-  // HOLDER-ONLY, NOT rate-limited (decorative — see `cards.ts`'s doc comment).
-  const fetchBillingAddress = useAction(api.cards.cardBillingAddress);
   const { run, toast, dismiss } = useActionRunner();
 
-  const [freezing, setFreezing] = useState(false);
   const [requestNote, setRequestNote] = useState("");
   const [requesting, setRequesting] = useState(false);
-  const [revealing, setRevealing] = useState(false);
-  const [revealed, setRevealed] = useState<RevealedCardDetails | null>(null);
-  const [address, setAddress] = useState<BillingAddress | null | undefined>(
-    undefined,
-  );
 
   // Transaction ids the member has already kicked off a SINGLE-row repayment
   // for (so that row shows the pending state rather than "Pay back" again).
@@ -123,40 +83,17 @@ export function MemberCardsView() {
     return m;
   }, [myRepayments]);
 
-  // Prefer an Increase-linked card for the visual/reveal/billing-address block
-  // — a Relay (`source:"legacy"`) row has no Increase object behind it. A
-  // holder can hold both (mid-migration) or only one.
+  // Only used for the top-level "no card at all" branch below — the visual
+  // card block itself (art/reveal/billing-address/quiet-note) lives entirely
+  // in `MyCardSection`, which resolves the same `increaseCards`/`onlyLegacyCard`
+  // split off its OWN `myCard` query.
   const increaseCards = useMemo(
     () => (cards ?? []).filter((c) => c.source !== "legacy"),
     [cards],
   );
   const onlyLegacyCard =
     increaseCards.length === 0 && (cards ?? []).some((c) => c.source === "legacy");
-  const card: CardSummary | undefined = increaseCards[0];
-
-  // Fetch the billing address once per Increase card — decorative info, not
-  // gated behind the "Show card details" reveal. Degrades to `null` (no
-  // block rendered) on any vendor/config failure; see `cardBillingAddress`'s
-  // doc comment for why this never throws.
-  useEffect(() => {
-    if (!card) {
-      setAddress(undefined);
-      return;
-    }
-    let cancelled = false;
-    setAddress(undefined);
-    fetchBillingAddress({ cardId: card.id })
-      .then((a) => {
-        if (!cancelled) setAddress(a);
-      })
-      .catch(() => {
-        if (!cancelled) setAddress(null);
-      });
-    return () => {
-      cancelled = true;
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- re-fetch only when the card itself changes
-  }, [card?.id]);
+  const card = increaseCards[0];
 
   async function handleFlag(transactionId: string) {
     // No local state to update on success — `myPersonalRepayments` is a live
@@ -173,46 +110,6 @@ export function MemberCardsView() {
       { errorTitle: "Couldn't start repayment" },
     );
     if (res) setInitiated((m) => ({ ...m, [transactionId]: true }));
-  }
-
-  async function handleFreeze(cardId: Id<"cards">) {
-    setFreezing(true);
-    await run(() => freezeCard({ cardId }), { errorTitle: "Couldn't freeze card" });
-    setFreezing(false);
-  }
-
-  async function handleUnfreeze(cardId: Id<"cards">) {
-    setFreezing(true);
-    const result = await run(() => unfreezeCard({ cardId }), {
-      errorTitle: "Couldn't unfreeze card",
-    });
-    // The receipt lock-eligibility re-check landed the card locked again
-    // instead of active — the "receipt-due" banner below already explains
-    // the lock, but a one-time heads-up avoids the freeze button silently
-    // doing "nothing" from the holder's perspective.
-    if (result?.kind === "receipt_locked") {
-      Alert.alert(
-        "Card unfrozen but locked",
-        "Card unfrozen but locked for overdue receipts — upload to unlock.",
-      );
-    }
-    setFreezing(false);
-  }
-
-  async function handleRevealDetails(cardId: Id<"cards">) {
-    setRevealing(true);
-    // Rewrite a RATE_LIMITED throw into a precise "try again in Xs/Xm"
-    // message before it reaches `run`'s toast — every other failure
-    // (FORBIDDEN, NOT_CONFIGURED, ILLEGAL_STATE, network) passes through as-is.
-    const result = await run(
-      () =>
-        revealCardDetails({ cardId }).catch((err) => {
-          throw toFriendlyRevealError(err);
-        }),
-      { errorTitle: "Couldn't show card details" },
-    );
-    if (result) setRevealed(result);
-    setRevealing(false);
   }
 
   async function handleRequestCard() {
@@ -293,21 +190,6 @@ export function MemberCardsView() {
   // reject a non-card charge (surfaced via the toast).
   const charges = (txns ?? []).filter((t) => t.flow === "outflow");
 
-  // Only meaningful when `card` is set (the two hard controls, read-only here).
-  const capLabel =
-    card?.monthlyCapCents != null ? formatCents(card.monthlyCapCents) : "No cap";
-  const validityLabel =
-    card?.validFrom != null || card?.validUntil != null
-      ? `${card?.validFrom != null ? shortDate(card.validFrom) : "Now"} – ${
-          card?.validUntil != null ? shortDate(card.validUntil) : "Open"
-        }`
-      : "No limit";
-  const status = card ? cardStatusBadge(card.status, card.frozenByHolder) : null;
-  const receiptOverdue = card
-    ? card.status === "locked" ||
-      (card.receiptGraceEndsAt != null && card.receiptGraceEndsAt <= Date.now())
-    : false;
-
   return (
     <View>
       <View className="mb-1">
@@ -318,156 +200,16 @@ export function MemberCardsView() {
         keep every charge's receipt current.
       </Text>
 
-      {/* Card art + summary — Increase cards only (`onlyLegacyCard` above). */}
-      {!card ? (
-        <View className="rounded-md border border-border bg-sunken px-3 py-2">
-          <Text className="text-xs text-muted">
-            Your card is a legacy Relay card — ask a finance manager if you
-            have questions about it.
-          </Text>
-        </View>
-      ) : (
-        <View className="flex-row flex-wrap gap-4">
-          <View className="min-w-[260px] flex-1">
-            <VirtualCardArt
-              last4={card.last4 ?? "••••"}
-              holderName={(card.cardholderName ?? "Cardholder").toUpperCase()}
-              expLabel={expLabel(card.validUntil)}
-              typeLabel={`Increase ${cardTypeLabel(card.type).toLowerCase()}`}
-            />
-          </View>
-
-          <View className="min-w-[260px] flex-1">
-            <Card>
-              <View className="gap-3">
-                <View className="flex-row items-center justify-between">
-                  <Text className="font-semibold text-ink">Your card</Text>
-                  <Badge label={status!.label} tone={status!.tone} icon={status!.icon} />
-                </View>
-
-                <View className="flex-row items-end justify-between">
-                  <View>
-                    <Text
-                      className="font-display text-2xl text-ink"
-                      style={{ fontVariant: ["tabular-nums"] }}
-                    >
-                      {formatCents(card.spentThisMonthCents)}
-                    </Text>
-                    <Text className="text-xs text-muted">spent this month</Text>
-                  </View>
-                  <Text className="text-xs text-faint">
-                    {maskedNumber(card.last4)}
-                  </Text>
-                </View>
-
-                {/* Receipt-due warning. */}
-                {card.receiptGraceEndsAt != null || card.status === "locked" ? (
-                  <View
-                    className={`rounded-md border px-3 py-2 ${
-                      receiptOverdue
-                        ? "border-danger bg-danger-bg"
-                        : "border-warn bg-warn-bg"
-                    }`}
-                  >
-                    <Text
-                      className={`text-xs ${receiptOverdue ? "text-danger" : "text-warn"}`}
-                    >
-                      {receiptOverdue
-                        ? "A receipt is overdue — your card locks until you add it."
-                        : `Add a receipt by ${
-                            card.receiptGraceEndsAt != null
-                              ? shortDate(card.receiptGraceEndsAt)
-                              : "soon"
-                          } to avoid an auto-lock.`}
-                    </Text>
-                  </View>
-                ) : null}
-
-                {/* Self-serve freeze — suspected foul play, instant + reversible
-                    only by this holder. A card locked for another reason
-                    (manager lock / receipt auto-lock) has no self-serve button
-                    here — the banners above already explain why it's locked. */}
-                {card.status === "active" ? (
-                  <Button
-                    title="Freeze card"
-                    variant="secondary"
-                    icon="shield-off"
-                    loading={freezing}
-                    onPress={() => handleFreeze(card.id)}
-                  />
-                ) : card.status === "locked" && card.frozenByHolder ? (
-                  <Button
-                    title="Unfreeze card"
-                    variant="secondary"
-                    icon="shield"
-                    loading={freezing}
-                    onPress={() => handleUnfreeze(card.id)}
-                  />
-                ) : null}
-
-                {/* Manual add-to-wallet — HOLDER-ONLY + rate-limited server-side
-                    (see `cards.ts`'s `revealCardDetails`). Only offered while
-                    the card is usable; native push provisioning ("Add to Apple
-                    Wallet" one-tap) is explicitly deferred. */}
-                {card.status === "active" ? (
-                  <Button
-                    title="Show card details / Add to wallet"
-                    variant="ghost"
-                    icon="credit-card"
-                    loading={revealing}
-                    onPress={() => handleRevealDetails(card.id)}
-                  />
-                ) : null}
-
-                {/* Billing address — the shared org Entity's registered address
-                    at Increase (decorative, not gated behind the reveal). Shown
-                    only once fetched; silently omitted when unavailable (a
-                    degraded card, unconfigured environment, or a failed vendor
-                    call — see `cardBillingAddress`'s doc comment). */}
-                {address ? (
-                  <View className="gap-1">
-                    <Text className="text-xs font-semibold uppercase tracking-wider text-muted">
-                      Billing address
-                    </Text>
-                    <View className="flex-row items-start justify-between gap-2">
-                      <Text className="flex-1 text-sm text-ink">
-                        {address.line1}
-                        {address.line2 ? `, ${address.line2}` : ""}
-                        {"\n"}
-                        {address.city}, {address.state} {address.zip}
-                      </Text>
-                      <CopyButton
-                        text={`${address.line1}${
-                          address.line2 ? `, ${address.line2}` : ""
-                        }, ${address.city}, ${address.state} ${address.zip}`}
-                      />
-                    </View>
-                  </View>
-                ) : null}
-
-                <View className="h-px bg-border" />
-
-                {/* The two hard controls — read-only for the cardholder. */}
-                <View className="gap-2">
-                  <ControlRow label="Monthly cap" value={capLabel} />
-                  <ControlRow label="Validity" value={validityLabel} />
-                  <Text className="text-2xs text-faint">
-                    Only a finance manager can change these.
-                  </Text>
-                </View>
-              </View>
-            </Card>
-          </View>
-        </View>
-      )}
+      {/* Card art + summary (art/reveal/billing-address/quiet-note) — shared
+          with the top of `ManagerCardsView` (owner report item 1). */}
+      <MyCardSection />
 
       {/* Shared "You owe Public Worship" banner — see `OwedBanner`'s doc
           comment. The member starts the repayment by their own card or bank;
           a manager confirms the money landed (posts the offsetting credit) —
-          nothing clears here. */}
-      <View className="mt-4">
-        <OwedBanner />
-      </View>
+          nothing clears here. `MyCardSection` already carries its own
+          bottom margin, so no extra `mt` here. */}
+      <OwedBanner />
 
       {/* My card charges — flag personal / pay back. */}
       <SectionHeader
@@ -554,24 +296,7 @@ export function MemberCardsView() {
       <SectionHeader title="How cards work" />
       <CardPhilosophy />
 
-      <RevealCardDetailsModal
-        details={revealed}
-        onClose={() => setRevealed(null)}
-      />
       <ToastView toast={toast} onDismiss={dismiss} />
-    </View>
-  );
-}
-
-function ControlRow({ label, value }: { label: string; value: string }) {
-  return (
-    <View className="flex-row items-center justify-between">
-      <Text className="text-xs font-semibold uppercase tracking-wider text-muted">
-        {label}
-      </Text>
-      <Text className="text-sm text-ink" style={{ fontVariant: ["tabular-nums"] }}>
-        {value}
-      </Text>
     </View>
   );
 }
