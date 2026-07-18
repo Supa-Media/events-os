@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "vitest";
-import { siteUrl } from "../lib/siteUrl";
+import { eventPageUrl, eventPath, siteUrl } from "../lib/siteUrl";
 
 /**
  * siteUrl() picks the base for every guest-facing link (pages, OG tags,
@@ -29,5 +29,32 @@ describe("siteUrl", () => {
   test("strips trailing slashes so callers can append paths", () => {
     process.env.PUBLIC_SITE_URL = "https://rsvp.publicworship.life/";
     expect(siteUrl()).toBe("https://rsvp.publicworship.life");
+  });
+});
+
+describe("eventPath / eventPageUrl", () => {
+  test("eventPath builds the /event/<slug> relative path", () => {
+    expect(eventPath("summer-night")).toBe("/event/summer-night");
+    expect(eventPath("summer-night", "cover")).toBe("/event/summer-night/cover");
+    expect(eventPath("summer-night", "calendar.ics")).toBe(
+      "/event/summer-night/calendar.ics",
+    );
+  });
+
+  test("eventPageUrl composes the absolute branded URL under PUBLIC_SITE_URL", () => {
+    process.env.PUBLIC_SITE_URL = "https://events.publicworship.life";
+    expect(eventPageUrl("summer-night")).toBe(
+      "https://events.publicworship.life/event/summer-night",
+    );
+    expect(eventPageUrl("summer-night", "cover")).toBe(
+      "https://events.publicworship.life/event/summer-night/cover",
+    );
+  });
+
+  test("eventPageUrl trims a trailing slash on the base (no //event/)", () => {
+    process.env.PUBLIC_SITE_URL = "https://events.publicworship.life/";
+    expect(eventPageUrl("summer-night")).toBe(
+      "https://events.publicworship.life/event/summer-night",
+    );
   });
 });

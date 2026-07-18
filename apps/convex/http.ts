@@ -45,14 +45,15 @@ function html(body: string, status = 200): Response {
   });
 }
 
-// ── Public event pages: /e/<slug>[/cover|/calendar.ics] ─────────────────────
+// ── Public event pages: /event/<slug>[/cover|/calendar.ics] ─────────────────
+// Served under the branded "/event/" prefix; the legacy "/e/" prefix is kept
+// as an alias (same handler) so already-shared links and OG-cached cover URLs
+// keep resolving. The handler derives slug/sub from the trailing path segments,
+// so it works unchanged under either prefix.
 
-http.route({
-  pathPrefix: "/e/",
-  method: "GET",
-  handler: httpAction(async (ctx, req) => {
+const publicEventPage = httpAction(async (ctx, req) => {
     const url = new URL(req.url);
-    const segments = url.pathname.split("/").filter(Boolean); // ["e", slug, ...]
+    const segments = url.pathname.split("/").filter(Boolean); // ["event"|"e", slug, ...]
     const slug = decodeURIComponent(segments[1] ?? "");
     const sub = segments[2] ?? null;
     if (!slug) return html(renderNotFound(), 404);
@@ -98,8 +99,11 @@ http.route({
 
     if (sub) return html(renderNotFound(), 404);
     return html(renderLandingPage(page, siteUrl()));
-  }),
 });
+
+http.route({ pathPrefix: "/event/", method: "GET", handler: publicEventPage });
+// Backward-compat alias for links shared before the "/event/" rename.
+http.route({ pathPrefix: "/e/", method: "GET", handler: publicEventPage });
 
 // ── Public ticket page: /t/<code> ────────────────────────────────────────────
 

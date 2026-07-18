@@ -11,6 +11,28 @@ export function siteUrl(): string {
 }
 
 /**
+ * URL path segment for public event pages. Was "e"; now "event" for branding
+ * (e.g. events.publicworship.life/event/<slug>). The old "/e/" prefix is kept
+ * as an alias in http.ts so already-shared links never break.
+ */
+export const EVENT_PATH = "event";
+
+/**
+ * Relative path of a public event page (or a sub-resource like "cover" /
+ * "calendar.ics"). For pure renderers (e.g. landingPage.ts) that receive the
+ * base URL as a parameter and can't call `siteUrl()` themselves — they compose
+ * `${siteUrl}${eventPath(slug, sub)}`.
+ */
+export function eventPath(slug: string, sub?: string): string {
+  return `/${EVENT_PATH}/${slug}${sub ? `/${sub}` : ""}`;
+}
+
+/** Absolute URL of a public event page (or a sub-resource). */
+export function eventPageUrl(slug: string, sub?: string): string {
+  return `${siteUrl()}${eventPath(slug, sub)}`;
+}
+
+/**
  * Deep link into the authenticated app (the Expo web build) at `path`, when
  * APP_URL is configured. Null otherwise — callers omit the link entirely
  * rather than sending a dead one.

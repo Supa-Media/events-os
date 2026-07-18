@@ -5,10 +5,12 @@ import {
   LANDING_CSS,
 } from "./landingPageStyles";
 import { LANDING_SCRIPT } from "./landingPageClient";
+import { eventPath } from "./siteUrl";
 
 /**
  * Public event landing page — server-rendered HTML (Posh/Partiful-style),
- * served by http.ts at /e/<slug>. Self-contained: inline CSS + vanilla JS
+ * served by http.ts at /event/<slug> (the legacy /e/<slug> alias still
+ * resolves). Self-contained: inline CSS + vanilla JS
  * that talks to same-origin /api/tickets/* httpActions, so link previews
  * (og:*) work for iMessage/WhatsApp and the page needs no separate hosting.
  *
@@ -107,8 +109,8 @@ export function renderLandingPage(
   siteUrl: string,
 ): string {
   const p = initial;
-  const coverUrl = p.hasCover ? `${siteUrl}/e/${p.slug}/cover` : null;
-  const pageUrl = `${siteUrl}/e/${p.slug}`;
+  const coverUrl = p.hasCover ? `${siteUrl}${eventPath(p.slug, "cover")}` : null;
+  const pageUrl = `${siteUrl}${eventPath(p.slug)}`;
   const dateLine = `${fmtDateLine(p.startDate)} · ${fmtTime(p.startDate)}${
     p.endDate ? ` – ${fmtTime(p.endDate)}` : ""
   }`;
@@ -317,7 +319,7 @@ ${FAVICON}${FONTS}
     <div class="type">${esc(t.ticketTypeName)}</div>
     ${statusBadge}
   </div>
-  <div class="foot">Show this at the door.${t.slug ? ` <a href="${siteUrl}/e/${esc(t.slug)}">Event details</a>` : ""}</div>
+  <div class="foot">Show this at the door.${t.slug ? ` <a href="${siteUrl}${eventPath(esc(t.slug))}">Event details</a>` : ""}</div>
 </div></div>
 <script src="https://cdn.jsdelivr.net/npm/qrcode-generator@1.4.4/qrcode.min.js"></script>
 <script>
@@ -352,7 +354,7 @@ export function renderIcs(args: {
   const escapeIcs = (s: string) =>
     s.replace(/\\/g, "\\\\").replace(/;/g, "\\;").replace(/,/g, "\\,").replace(/\n/g, "\\n");
   const location = [args.venueName, args.address].filter(Boolean).join(", ");
-  const url = `${args.siteUrl}/e/${args.slug}`;
+  const url = `${args.siteUrl}${eventPath(args.slug)}`;
   return [
     "BEGIN:VCALENDAR",
     "VERSION:2.0",

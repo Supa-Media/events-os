@@ -6,4 +6,10 @@
 module.exports = {
   testEnvironment: "node",
   testMatch: ["**/__tests__/**/*.test.js", "**/*.test.ts"],
+  moduleNameMapper: {
+    // babel-preset-expo injects `import "expo/virtual/env"` into any app module
+    // reading an EXPO_PUBLIC_* var; the real module is untransformed ESM, so map
+    // it to a process.env-backed stub for colocated unit tests.
+    "^expo/virtual/env$": "<rootDir>/jest/expoVirtualEnvStub.js",
+  },
 };

@@ -39,7 +39,7 @@ import {
   defaultOpenPhase,
   type LaunchPhaseKey,
 } from "./launchPhases";
-import { formatMoney, publicSiteUrl } from "./helpers";
+import { eventPageUrl, formatMoney } from "./helpers";
 
 export default function TicketingTab({ eventId }: { eventId: Id<"events"> }) {
   const { run, toast, dismiss } = useActionRunner();
@@ -225,7 +225,7 @@ function PublishShareCard({
   const updatePage = useMutation(api.ticketing.updatePage);
   const [slugInput, setSlugInput] = useState<string | null>(null);
   const slugValue = slugInput !== null ? slugInput : page.slug;
-  const link = `${publicSiteUrl()}/e/${page.slug}`;
+  const link = eventPageUrl(page.slug);
 
   async function saveSlug() {
     const next = slugValue.trim();

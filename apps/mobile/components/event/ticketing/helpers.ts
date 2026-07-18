@@ -24,6 +24,15 @@ export function publicSiteUrl(): string {
   return url;
 }
 
+/**
+ * Absolute URL of an event's public page on the branded domain (or the Convex
+ * fallback). The path segment is `/event/`; the old `/e/` prefix is kept as an
+ * alias server-side for backward compatibility with already-shared links.
+ */
+export function eventPageUrl(slug: string): string {
+  return `${publicSiteUrl()}/event/${slug}`;
+}
+
 /** Integer cents → "$12" / "$12.50". */
 export function formatMoney(cents: number): string {
   const dollars = cents / 100;
