@@ -11,20 +11,22 @@ import { Pill } from "../../../components/ui";
  * above the active screen, mirroring the finances `_layout` pill nav.
  *
  * Phase 1 shipped Dashboard · Donors; P2 adds Backers (recurring pledges);
- * P4 adds Sponsorships (the institutional-giving pipeline + package tiers).
- * Cities lands in a later phase. The tabs render only for a caller who can
- * see the desk (`myGivingAccess.canView`) — the same `nav.giving` gate the
- * AppShell nav entry uses; each screen keeps its own backend
- * `requireGivingView` gate.
- * (Sponsorships itself is central-lens only — see `schema/sponsorships.ts` —
- * but the tab is shown to anyone with desk access; the screen degrades to an
- * access-needed state for a chapter-only caller, same as the other tabs do.)
+ * P4 adds Sponsorships (the institutional-giving pipeline + package tiers);
+ * P3 adds Cities (the City Launch map desk — see `apps/convex/cityCampaigns.ts`).
+ * The tabs render only for a caller who can see the desk
+ * (`myGivingAccess.canView`) — the same `nav.giving` gate the AppShell nav
+ * entry uses; each screen keeps its own backend `requireGivingView` gate.
+ * (Sponsorships and Cities are both central-lens only — see
+ * `schema/sponsorships.ts` / `cityCampaigns.ts` — but the tabs are shown to
+ * anyone with desk access; each screen degrades to an access-needed state
+ * for a chapter-only or view-only caller, same as every other tab does.)
  */
 const TABS: { label: string; path: string }[] = [
   { label: "Dashboard", path: "/giving" },
   { label: "Donors", path: "/giving/donors" },
   { label: "Backers", path: "/giving/backers" },
   { label: "Sponsorships", path: "/giving/sponsorships" },
+  { label: "Cities", path: "/giving/cities" },
 ];
 
 /** Active when the pathname is the tab's route (exact for the index, prefix for
