@@ -14,6 +14,7 @@ import { MutationCtx } from "../_generated/server";
 import { normalizeEmail } from "./access";
 import type { GivingScope } from "./givingAccess";
 import { territoryForChapter } from "../territories";
+import { chapterRoster } from "./org";
 
 /** The 90-day lapse window (the AJ donor system's rule, PRD §1). */
 export const LAPSE_WINDOW_MS = 90 * 24 * 60 * 60 * 1000;
@@ -201,10 +202,73 @@ export async function findDonorInScope(
 }
 
 /**
+ * Territories P5 — link a CHAPTER-scope donor to its 1:1 `people` roster row,
+ * patching `donor.personId` and returning the linked id. Returns `null` — no
+ * roster read, no write — for a `"central"` donor: central donors have no
+ * chapter roster to link into and stay CRM-only (documented on the schema
+ * field). Idempotent to call repeatedly: a donor that's already linked is
+ * simply re-matched/re-patched to the same result by its callers, who guard
+ * on `personId === undefined` before invoking this.
+ *
+ * Match order within the donor's chapter roster (`lib/org.ts#chapterRoster`,
+ * which already excludes `isPlaceholder`/`isSamplePerson` rows — a bounded
+ * read, one chapter's roster):
+ *  1. normalized-lowercase email (both sides case-insensitive),
+ *  2. exact phone (both sides trimmed),
+ *  3. exact trimmed name.
+ *
+ * No match → insert a minimal roster row for this donor (mirrors the shape
+ * `people.create` writes: chapter, name, optional email/phone, `createdAt`)
+ * flagged `isTeamMember: false` and noted `"Added from Giving"` so it reads
+ * clearly as CRM-originated on the roster, not a manual add.
+ */
+export async function linkDonorToPerson(
+  ctx: MutationCtx,
+  donor: Doc<"donors">,
+): Promise<Id<"people"> | null> {
+  if (donor.scope === "central") return null; // no chapter roster to link into
+  const chapterId = donor.scope;
+  const roster = await chapterRoster(ctx, chapterId);
+
+  const email = normalizeEmail(donor.email) ?? undefined;
+  const phone = donor.phone?.trim() || undefined;
+  const name = donor.name.trim();
+
+  const match =
+    (email && roster.find((p) => normalizeEmail(p.email) === email)) ||
+    (phone && roster.find((p) => p.phone?.trim() === phone)) ||
+    (name && roster.find((p) => p.name.trim() === name)) ||
+    null;
+
+  const personId =
+    match?._id ??
+    (await ctx.db.insert("people", {
+      chapterId,
+      name: donor.name,
+      ...(donor.email ? { email: donor.email } : {}),
+      ...(donor.phone ? { phone: donor.phone } : {}),
+      isTeamMember: false,
+      notes: "Added from Giving",
+      createdAt: Date.now(),
+    }));
+
+  await ctx.db.patch(donor._id, { personId });
+  return personId;
+}
+
+/**
  * Match-or-create a donor in `scope`. Dedups by lowercased email then exact
  * name (see `findDonorInScope`); a fresh donor starts as a `prospect` with
  * zeroed rollups and bumps the scope's donor + prospect counts. Returns the
  * donor id (existing rows are left untouched — callers patch fields explicitly).
+ *
+ * A brand-new CHAPTER-scope donor is linked to the roster immediately
+ * (`linkDonorToPerson`) — central-scope creates no-op there. `phone` is an
+ * OPTIONAL arg (most callers — the event dual-write, CSV import — never have
+ * one) specifically so it's part of the first-insert record and therefore the
+ * first link attempt's phone-match branch; a caller that learns the phone
+ * only AFTER this call (or omits it here) relies on `upsertDonor`'s edit-path
+ * retry to pick up the link later (see its own doc comment).
  */
 export async function matchOrCreateDonor(
   ctx: MutationCtx,
@@ -212,6 +276,7 @@ export async function matchOrCreateDonor(
     scope: GivingScope;
     name: string;
     email?: string;
+    phone?: string;
     kind?: Doc<"donors">["kind"];
     source?: Doc<"donors">["source"];
     ownerPersonId?: Id<"people">;
@@ -219,6 +284,7 @@ export async function matchOrCreateDonor(
 ): Promise<Id<"donors">> {
   const name = args.name.trim() || "Anonymous";
   const email = normalizeEmail(args.email) ?? undefined;
+  const phone = args.phone?.trim() || undefined;
 
   const existing = await findDonorInScope(ctx, args.scope, { email, name });
   if (existing) return existing._id;
@@ -229,6 +295,7 @@ export async function matchOrCreateDonor(
     kind: args.kind ?? "individual",
     name,
     ...(email ? { email } : {}),
+    ...(phone ? { phone } : {}),
     status: "prospect",
     ...(args.ownerPersonId ? { ownerPersonId: args.ownerPersonId } : {}),
     ...(args.source ? { source: args.source } : {}),
@@ -240,6 +307,10 @@ export async function matchOrCreateDonor(
     donorDelta: 1,
     statusTo: "prospect",
   });
+  if (args.scope !== "central") {
+    const inserted = await ctx.db.get(donorId);
+    if (inserted) await linkDonorToPerson(ctx, inserted);
+  }
   return donorId;
 }
 

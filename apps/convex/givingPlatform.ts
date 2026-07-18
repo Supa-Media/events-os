@@ -41,10 +41,12 @@ import {
   removeGiftRow,
   editGiftRow,
   dualWriteGiftForDonation,
+  linkDonorToPerson,
 } from "./lib/givingDonors";
 import {
   DONOR_KINDS,
   DONOR_SOURCES,
+  DONOR_STATUSES,
   GIFT_METHODS,
 } from "./schema/givingPlatform";
 
@@ -53,6 +55,7 @@ import {
 const scopeValidator = v.union(v.id("chapters"), v.literal("central"));
 const donorKindValidator = v.union(...DONOR_KINDS.map((k) => v.literal(k)));
 const donorSourceValidator = v.union(...DONOR_SOURCES.map((s) => v.literal(s)));
+const donorStatusValidator = v.union(...DONOR_STATUSES.map((s) => v.literal(s)));
 const giftMethodValidator = v.union(...GIFT_METHODS.map((m) => v.literal(m)));
 
 /** A generous bound on a scope's donor list — mirrors `listDonationsAdmin`'s
@@ -74,20 +77,55 @@ const THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1000;
 
 // ── Reads ─────────────────────────────────────────────────────────────────────
 
-/** The scope's donors, strongest lifetime first (the "top donors" workflow). */
+/**
+ * The scope's donors, strongest lifetime first by default (the "top donors"
+ * workflow) — or, with `status` set, that status bucket via
+ * `by_scope_and_status` (no lifetime ordering guarantee in that mode). Either
+ * way the base read is bounded to `DONOR_LIST_LIMIT`; `kind`/`source`/
+ * `minLifetimeCents` are refined IN-MEMORY within that same bounded window
+ * (not a second indexed query — CRM filters compose, and Convex indexes only
+ * cover one leading combination each). A scope with more than
+ * `DONOR_LIST_LIMIT` donors matching the base read may undercount a narrow
+ * kind/source/lifetime filter — acceptable for the CRM's current scale (see
+ * `DONOR_LIST_LIMIT`'s own doc), same bound `listDonationsAdmin` already ships.
+ */
 export const listDonors = query({
-  args: { scope: scopeValidator },
-  handler: async (ctx, { scope }) => {
+  args: {
+    scope: scopeValidator,
+    status: v.optional(donorStatusValidator),
+    kind: v.optional(donorKindValidator),
+    source: v.optional(donorSourceValidator),
+    minLifetimeCents: v.optional(v.number()),
+  },
+  handler: async (ctx, { scope, status, kind, source, minLifetimeCents }) => {
     await requireGivingView(ctx, scope as GivingScope);
-    return await ctx.db
-      .query("donors")
-      .withIndex("by_scope_and_lifetime", (q) => q.eq("scope", scope))
-      .order("desc")
-      .take(DONOR_LIST_LIMIT);
+    const rows = status
+      ? await ctx.db
+          .query("donors")
+          .withIndex("by_scope_and_status", (q) =>
+            q.eq("scope", scope).eq("status", status),
+          )
+          .take(DONOR_LIST_LIMIT)
+      : await ctx.db
+          .query("donors")
+          .withIndex("by_scope_and_lifetime", (q) => q.eq("scope", scope))
+          .order("desc")
+          .take(DONOR_LIST_LIMIT);
+    return rows.filter((d) => {
+      if (kind !== undefined && d.kind !== kind) return false;
+      if (source !== undefined && d.source !== source) return false;
+      if (minLifetimeCents !== undefined && d.lifetimeCents < minLifetimeCents) {
+        return false;
+      }
+      return true;
+    });
   },
 });
 
-/** One donor + their recent gift history (the donor detail screen). */
+/** One donor + their recent gift history (the donor detail screen). `person`
+ *  is the linked roster row (territories P5, chapter-scope donors only) — just
+ *  the id + name, never a full people payload — present only when
+ *  `donor.personId` resolves to a live row. */
 export const getDonor = query({
   args: { donorId: v.id("donors") },
   handler: async (ctx, { donorId }) => {
@@ -116,7 +154,61 @@ export const getDonor = query({
           : [],
       })),
     );
-    return { donor, gifts: giftsWithReceipts };
+    const linkedPerson = donor.personId
+      ? await ctx.db.get(donor.personId)
+      : null;
+    return {
+      donor,
+      gifts: giftsWithReceipts,
+      person: linkedPerson ? { _id: linkedPerson._id, name: linkedPerson.name } : null,
+    };
+  },
+});
+
+/**
+ * Territories P5 — the chapter's "givers": every linked donor (`personId`
+ * set) who has actually given (`giftCount > 0` — a prospect with no gift
+ * never marks the roster). Feeds the People tab's "Givers" overlay chip + the
+ * per-row/detail giving marks, WITHOUT exposing full donor records to a
+ * caller who only has roster access.
+ *
+ * Access: requires `giving.view` at `chapterId` (or central reach) — but
+ * degrades QUIETLY to `[]` for a caller without it (never throws), so the
+ * People tab renders normally, with no giver marks, for everyone else. This
+ * mirrors `myGivingAccess`'s no-throw-for-the-nav pattern rather than the
+ * throwing `requireGivingView` callers elsewhere in this file.
+ */
+export const giverMarks = query({
+  args: { chapterId: v.id("chapters") },
+  returns: v.array(
+    v.object({
+      personId: v.id("people"),
+      donorId: v.id("donors"),
+      lifetimeCents: v.number(),
+      lastGiftAt: v.optional(v.number()),
+      status: donorStatusValidator,
+    }),
+  ),
+  handler: async (ctx, { chapterId }) => {
+    try {
+      await requireGivingView(ctx, chapterId as GivingScope);
+    } catch {
+      return []; // quiet degrade — no giving access, no marks (not a throw)
+    }
+    const donors = await ctx.db
+      .query("donors")
+      .withIndex("by_scope_and_lifetime", (q) => q.eq("scope", chapterId))
+      .order("desc")
+      .take(DONOR_LIST_LIMIT);
+    return donors
+      .filter((d) => d.personId !== undefined && d.giftCount > 0)
+      .map((d) => ({
+        personId: d.personId as Id<"people">,
+        donorId: d._id,
+        lifetimeCents: d.lifetimeCents,
+        lastGiftAt: d.lastGiftAt,
+        status: d.status,
+      }));
   },
 });
 
@@ -266,6 +358,16 @@ export const upsertDonor = mutation({
         });
       }
       await ctx.db.patch(args.donorId, patch);
+      // Territories P5: a CHAPTER-scope donor still unlinked (e.g. it was
+      // created before an email/phone existed to match on, or the first
+      // attempt found no roster match) gets a retry here — this edit may have
+      // just supplied the email/phone that makes the match possible now. A
+      // no-op for central donors (`linkDonorToPerson` short-circuits) and for
+      // an already-linked donor (guarded below, so a re-edit never re-scans
+      // the roster for nothing).
+      if (scope !== "central" && donor.personId === undefined) {
+        await linkDonorToPerson(ctx, { ...donor, ...patch });
+      }
       return args.donorId;
     }
 
@@ -273,11 +375,23 @@ export const upsertDonor = mutation({
       scope,
       name,
       email,
+      phone: args.phone,
       kind: args.kind,
       source: args.source ?? "manual",
       ownerPersonId: args.ownerPersonId,
     });
     await ctx.db.patch(donorId, patch);
+    // `matchOrCreateDonor` already tried to link a BRAND-NEW donor (email,
+    // phone, and name all considered — `phone` is passed through above so it
+    // participates in that first match). This is a belt-and-suspenders retry
+    // for the rare case it's still unlinked (e.g. `donorId` resolved to an
+    // EXISTING donor that predates `personId` — a no-op once linked).
+    if (scope !== "central") {
+      const created = await ctx.db.get(donorId);
+      if (created && created.personId === undefined) {
+        await linkDonorToPerson(ctx, created);
+      }
+    }
     return donorId;
   },
 });
