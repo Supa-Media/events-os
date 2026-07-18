@@ -14,12 +14,14 @@
  * (`apps/mobile/app/(app)/giving/`), and the `giving.manage`/`giving.view`/
  * `nav.giving` capabilities in `packages/shared/src/seats.ts`.
  *
- * NOT covered at the concrete-UI level: the public `/give` map and per-city
- * campaign pages (`cityCampaigns`) — those ship in a separate, parallel PR
- * (giving-platform PRD §5, phase P3) and had not merged as of this stream's
- * authoring. `dev-prospect-cities-and-map` teaches the STORY (what a prospect
- * city is, how backer campaigns launch chapters) at concept level only, with
- * a `tip` block flagging the deep-link TODO for when the map ships. Likewise,
+ * The public `/give` map and per-city campaign pages (`cityCampaigns` +
+ * `apps/convex/lib/givePage.ts`) shipped in giving-platform PRD §5 (phase P3);
+ * `dev-prospect-cities-and-map` teaches them as the live surface they are — the
+ * map, a city's `/give/<slug>` page, and its become-a-backer flow — and stays
+ * honest that at LAUNCH a campaign's central-held pledges do NOT auto-re-scope
+ * onto the new chapter: that money move is an open owner decision (PRD Appendix
+ * C#3) with an explicit TODO in `cityCampaigns.setCampaignStatus`, so the
+ * public page just switches to the chapter's own live backer count. Likewise,
  * a higher "church backer" pledge unit (PRD Appendix C#1, ~$200–500/mo) is an
  * open owner decision, not shipped — `BACKER_UNIT_CENTS` is a single $50
  * floor today, so this stream teaches that one floor, not a church-specific
@@ -958,7 +960,7 @@ export const DEVELOPMENT_SECTIONS: Omit<AcademySection, "order">[] = [
   {
     slug: "dev-prospect-cities-and-map",
     title: "Prospect cities: how a dot becomes a chapter",
-    subtitle: "Backer campaigns, milestone promises — the story, at concept level",
+    subtitle: "Backer campaigns, milestone promises, and the live public map",
     minutes: 3,
     blocks: [
       {
@@ -968,9 +970,9 @@ export const DEVELOPMENT_SECTIONS: Omit<AcademySection, "order">[] = [
       {
         kind: "bullets",
         items: [
-          "**Same milestone ladder, public.** The plan is for a prospect city's page to show the exact same milestone ladder as a live chapter, framed as visible progress: \"17 of 20 backers — 3 more unlocks monthly Worship With Strangers in Columbus.\"",
+          "**Same milestone ladder, public.** A prospect city's `/give/<slug>` page shows the exact same milestone ladder as a live chapter, framed as visible progress: \"17 of 20 backers — 3 more unlocks monthly Worship With Strangers in Columbus.\"",
           "**Shareable by design.** A backer campaign is meant to be forwarded — \"already 3 backers here, help get it to 20\" — with no donor's personal information ever exposed publicly.",
-          "**The dot becomes the chapter.** When a prospect city actually launches, its campaign converts: it gets a real chapter, its pledges re-scope to that chapter, and its backers start counting toward the chapter's own tiers going forward.",
+          "**The dot becomes the chapter.** When a prospect city launches, central links it to a real chapter and its public page switches to showing that chapter's own live backer count. The people who backed the dot are its founding supporters — their pledges are held centrally for the city today, and exactly how that money formally moves onto the new chapter is an owner decision still being settled, so the re-scope isn't automatic yet.",
         ],
       },
       {
@@ -980,14 +982,14 @@ export const DEVELOPMENT_SECTIONS: Omit<AcademySection, "order">[] = [
       },
       {
         kind: "tip",
-        text: "**Coming soon, not yet live.** The public map and each prospect city's own page are being built in a separate release. This lesson teaches the STORY — what a prospect city is and how a campaign becomes a chapter — not specific screens, because those screens don't exist yet. TODO: once the Cities pill and the public map ship, deep-link this lesson to the real prospect-city admin flow and the live `/give` map.",
+        text: "**Live now: the public `/give` map.** The map plots every publicly-visible city, and each city's `/give/<slug>` page carries the milestone ladder, a progress bar, and a become-a-backer form — preset $20 / $50 / $100 or a custom monthly amount — that starts a real Stripe subscription. A campaign only appears publicly once an admin marks it visible, so central can stage a city before announcing it. The map is aggregates-only: it never exposes a donor's name or contact details.",
       },
       {
         kind: "reveal",
         prompt:
           "A prospect city's backer campaign hits its launch target. What actually happens?",
         answer:
-          "Central makes the launch call, the campaign converts into a real operating chapter, and its existing pledges and backers re-scope onto that new chapter — the same people who backed the dot on the map become that chapter's first real backers.",
+          "Central makes the launch call and links the campaign to a real operating chapter; the map dot becomes that chapter and its public page switches to the chapter's own live backer count. The people who backed the dot are its founding supporters — their pledges are held centrally for the city, and formally moving that money onto the new chapter is an owner decision still being settled, so it isn't automatic yet.",
       },
     ],
     quiz: [
@@ -1018,26 +1020,26 @@ export const DEVELOPMENT_SECTIONS: Omit<AcademySection, "order">[] = [
       {
         prompt: "Is the public `/give` map live today?",
         options: [
-          "Yes, fully live",
-          "No — it's being built in a separate, later release; this lesson covers the story, not the screens",
-          "Only for central users",
-          "It was live but was removed",
+          "Yes — the map and each city's `/give/<slug>` page, with a become-a-backer flow, are live",
+          "No, it's still being built for a later release",
+          "Only central users can see it",
+          "It goes live only after a city launches",
         ],
-        answerIndex: 1,
+        answerIndex: 0,
         explanation:
-          "This is deliberately taught at concept level — the concrete map and city pages weren't shipped as of this lesson's writing.",
+          "The map, the per-city campaign pages, and the Stripe-backed become-a-backer flow all shipped — a city shows publicly once an admin marks it visible.",
       },
       {
-        prompt: "What happens to a prospect city's pledges when it launches into a real chapter?",
+        prompt: "What happens to a prospect city's backers the moment it launches into a real chapter?",
         options: [
-          "They're canceled and backers must re-subscribe",
-          "They re-scope onto the new chapter, and its backers start counting toward that chapter's own tiers",
+          "Their pledges are canceled and they must re-subscribe",
+          "The dot becomes the chapter and its page shows the chapter's live count; their central-held pledges stay put while the money re-scope is still being settled",
           "They stay attached to the prospect campaign forever",
-          "They move to central's own account permanently",
+          "They're deleted and nothing is tracked",
         ],
         answerIndex: 1,
         explanation:
-          "The backers who believed in the city before it existed become its first real backers the moment it launches — nothing is lost in the conversion.",
+          "Launch flips the dot to the chapter and the public count follows the chapter — but the campaign's backers are held centrally, and formally re-scoping that money is an owner decision still being settled, so nothing is lost yet it isn't automatic.",
       },
     ],
   },
@@ -1057,8 +1059,8 @@ export const DEVELOPMENT_THEME: Theme = {
  * stewardship (the relationship craft), the backer model (the recurring
  * rails + the Givebutter cutover), sponsorships & partnerships (the
  * institutional-giving desk), and the city-launch story (the economics
- * backer giving funds, plus the prospect-city/map concept — taught ahead of
- * its own UI shipping, per this stream's header comment).
+ * backer giving funds, plus the prospect-city story and the live public
+ * `/give` map — per this stream's header comment).
  */
 export const DEVELOPMENT_COURSES: Course[] = [
   {
@@ -1129,8 +1131,8 @@ export const DEVELOPMENT_COURSES: Course[] = [
     audience: "team",
     description:
       "The 85/15 split and the City Launch Fund from the giving side, plus " +
-      "the prospect-city/backer-campaign story at concept level (the public " +
-      "map ships in a later release).",
+      "the prospect-city/backer-campaign story and the live public `/give` " +
+      "map — including what launch does (and doesn't yet) do to a city's backers.",
     icon: "map",
     moduleSlugs: [
       "dev-city-launch-economics",
