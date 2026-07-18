@@ -574,7 +574,7 @@ describe("sweepUnsuggestedTransactions (the hourly cron trigger)", () => {
     else process.env.OPENROUTER_API_KEY = savedKey;
   });
 
-  test("schedules suggestCodingSystem only for unreviewed + unsuggested txns", async () => {
+  test("schedules suggestCodingSystem for unreviewed + categorized-but-needs-budget, unsuggested txns", async () => {
     process.env.OPENROUTER_API_KEY = "test-key";
     const t = newT();
     const s = await setupChapter(t);
@@ -587,24 +587,53 @@ describe("sweepUnsuggestedTransactions (the hourly cron trigger)", () => {
       rationale: "Already looked at this one.",
       suggestedAt: Date.now(),
     });
-    // Not unreviewed — must be skipped regardless of suggestion state.
-    const categorizedId = await seedTxn(s);
+    // PR fix-suggest-broaden: categorized but STILL missing a budget —
+    // now ALSO eligible (the "Needs budget" backlog the owner reported the
+    // Reconcile "Suggest" button was missing on).
+    const categorizedNeedsBudgetId = await seedTxn(s);
     await run(s.t, (ctx) =>
-      ctx.db.patch(categorizedId, { status: "categorized" }),
+      ctx.db.patch(categorizedNeedsBudgetId, { status: "categorized" }),
+    );
+    // FULLY coded (categorized AND budgeted) — must still be skipped, nothing
+    // left to suggest.
+    const { fundId: fund2, categoryId: category2 } = await seedFundAndCategory(s);
+    const budgetId = await run(s.t, (ctx) =>
+      ctx.db.insert("budgets", {
+        chapterId: s.chapterId,
+        amountCents: 50000,
+        type: "recurring",
+        cadence: "yearly",
+        year: 2026,
+        createdAt: Date.now(),
+      }),
+    );
+    const fullyCodedId = await seedTxn(s);
+    await run(s.t, (ctx) =>
+      ctx.db.patch(fullyCodedId, {
+        status: "categorized",
+        fundId: fund2,
+        categoryId: category2,
+        budgetId,
+      }),
     );
 
     const result = await s.t.mutation(
       internal.aiCodingData.sweepUnsuggestedTransactions,
       {},
     );
-    expect(result).toEqual({ scheduled: 1 });
+    expect(result).toEqual({ scheduled: 2 });
 
     const scheduled = await run(s.t, (ctx) =>
       ctx.db.system.query("_scheduled_functions").collect(),
     );
-    expect(scheduled).toHaveLength(1);
-    expect(scheduled[0].name).toContain("suggestCodingSystem");
-    expect(scheduled[0].args[0]).toMatchObject({ transactionId: pendingId });
+    expect(scheduled).toHaveLength(2);
+    const scheduledTxnIds = scheduled.map(
+      (job) => (job.args[0] as { transactionId: string }).transactionId,
+    );
+    expect(scheduledTxnIds.sort()).toEqual([pendingId, categorizedNeedsBudgetId].sort());
+    for (const job of scheduled) {
+      expect(job.name).toContain("suggestCodingSystem");
+    }
   });
 
   test("re-running the sweep never re-schedules an already-suggested txn", async () => {
@@ -1253,5 +1282,298 @@ describe("R2: prompt shape includes cardholder + ranked date-proximity sections"
     expect(userMsg).toContain(
       "CARDHOLDER\n(no cardholder on file for this transaction)",
     );
+  });
+});
+
+// ── PR fix-suggest-broaden ───────────────────────────────────────────────────
+// The owner-reported bug: PR #265's per-row "Suggest" button only ever
+// rendered on an UNREVIEWED row with no suggestion — a "Categorized" row that
+// still showed "Needs budget" (the majority of the backlog) got a bare "—"
+// with no way to trigger a suggestion. `finances.isSuggestible` is the ONE
+// predicate now shared by the button (`ReconcileList.tsx`), the on-demand
+// gate below (`loadForSuggestion`), and the sweep (`isEligibleForSuggestion`,
+// covered above in "sweepUnsuggestedTransactions").
+describe("PR fix-suggest-broaden: on-demand suggestCoding on a categorized+needs-budget row", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    delete process.env.OPENROUTER_API_KEY;
+  });
+
+  /** Raw-insert a transaction with full control over status/links/isPersonal —
+   *  `seedTxn` above only ever produces an `unreviewed` row. */
+  async function seedTxnWith(
+    s: ChapterSetup,
+    overrides: Partial<{
+      status: "unreviewed" | "categorized" | "reconciled" | "excluded";
+      flow: "inflow" | "outflow" | "transfer";
+      budgetId: Id<"budgets">;
+      categoryId: Id<"budgetCategories">;
+      fundId: Id<"funds">;
+      isPersonal: boolean;
+    }>,
+  ): Promise<Id<"transactions">> {
+    return await run(s.t, (ctx) =>
+      ctx.db.insert("transactions", {
+        chapterId: s.chapterId,
+        source: "manual",
+        flow: overrides.flow ?? "outflow",
+        amountCents: 4200,
+        postedAt: Date.now(),
+        merchantName: "Office Depot",
+        status: overrides.status ?? "unreviewed",
+        budgetId: overrides.budgetId,
+        categoryId: overrides.categoryId,
+        fundId: overrides.fundId,
+        isPersonal: overrides.isPersonal,
+        createdAt: Date.now(),
+      }),
+    );
+  }
+
+  async function seedBudget(s: ChapterSetup): Promise<Id<"budgets">> {
+    return await run(s.t, (ctx) =>
+      ctx.db.insert("budgets", {
+        chapterId: s.chapterId,
+        amountCents: 50000,
+        type: "recurring",
+        cadence: "yearly",
+        year: 2026,
+        createdAt: Date.now(),
+      }),
+    );
+  }
+
+  test("succeeds on a categorized row that still needs a budget", async () => {
+    process.env.OPENROUTER_API_KEY = "test-key";
+    const t = newT();
+    const s = await setupChapter(t);
+    const personId = await seedSelfPerson(s);
+    await grantRole(s, personId, "bookkeeper");
+    const { fundId, categoryId } = await seedFundAndCategory(s);
+    const txnId = await seedTxnWith(s, { status: "categorized", fundId, categoryId });
+
+    stubOpenRouterOk(
+      JSON.stringify({
+        categoryId,
+        confidence: 0.7,
+        rationale: "Matches the existing category; still needs a budget.",
+      }),
+    );
+
+    const result = await s.as.action(api.aiCoding.suggestCoding, {
+      transactionId: txnId,
+    });
+    expect(result).not.toBeNull();
+
+    const txn = await run(s.t, (ctx) => ctx.db.get(txnId));
+    expect(txn?.aiSuggestion?.categoryId).toEqual(categoryId);
+    // The model never moves money or advances status on its own.
+    expect(txn?.status).toBe("categorized");
+    expect(txn?.budgetId).toBeUndefined();
+  });
+
+  test("rejects a categorized row that already has a budget attached", async () => {
+    process.env.OPENROUTER_API_KEY = "test-key";
+    const t = newT();
+    const s = await setupChapter(t);
+    const personId = await seedSelfPerson(s);
+    await grantRole(s, personId, "bookkeeper");
+    const budgetId = await seedBudget(s);
+    const txnId = await seedTxnWith(s, { status: "categorized", budgetId });
+
+    await expect(
+      s.as.action(api.aiCoding.suggestCoding, { transactionId: txnId }),
+    ).rejects.toBeInstanceOf(ConvexError);
+  });
+
+  test("rejects a reconciled (treasurer-closed) row, even with no budget", async () => {
+    process.env.OPENROUTER_API_KEY = "test-key";
+    const t = newT();
+    const s = await setupChapter(t);
+    const personId = await seedSelfPerson(s);
+    await grantRole(s, personId, "bookkeeper");
+    const txnId = await seedTxnWith(s, { status: "reconciled" });
+
+    await expect(
+      s.as.action(api.aiCoding.suggestCoding, { transactionId: txnId }),
+    ).rejects.toBeInstanceOf(ConvexError);
+  });
+
+  test("rejects an excluded row", async () => {
+    process.env.OPENROUTER_API_KEY = "test-key";
+    const t = newT();
+    const s = await setupChapter(t);
+    const personId = await seedSelfPerson(s);
+    await grantRole(s, personId, "bookkeeper");
+    const txnId = await seedTxnWith(s, { status: "excluded" });
+
+    await expect(
+      s.as.action(api.aiCoding.suggestCoding, { transactionId: txnId }),
+    ).rejects.toBeInstanceOf(ConvexError);
+  });
+
+  test("rejects a personal charge, even if categorized with no budget", async () => {
+    process.env.OPENROUTER_API_KEY = "test-key";
+    const t = newT();
+    const s = await setupChapter(t);
+    const personId = await seedSelfPerson(s);
+    await grantRole(s, personId, "bookkeeper");
+    const txnId = await seedTxnWith(s, { status: "categorized", isPersonal: true });
+
+    await expect(
+      s.as.action(api.aiCoding.suggestCoding, { transactionId: txnId }),
+    ).rejects.toBeInstanceOf(ConvexError);
+  });
+
+  test("still succeeds on a plain unreviewed row (unchanged rule)", async () => {
+    process.env.OPENROUTER_API_KEY = "test-key";
+    const t = newT();
+    const s = await setupChapter(t);
+    const personId = await seedSelfPerson(s);
+    await grantRole(s, personId, "bookkeeper");
+    const txnId = await seedTxnWith(s, { status: "unreviewed" });
+
+    stubOpenRouterOk(JSON.stringify({ confidence: 0.3, rationale: "no strong match" }));
+
+    const result = await s.as.action(api.aiCoding.suggestCoding, {
+      transactionId: txnId,
+    });
+    expect(result).not.toBeNull();
+  });
+});
+
+describe("PR fix-suggest-broaden: acceptSuggestion staleness (baseline diff)", () => {
+  /** Raw-insert a transaction with full control over status/links. */
+  async function seedTxnWith(
+    s: ChapterSetup,
+    overrides: Partial<{
+      status: "unreviewed" | "categorized" | "reconciled" | "excluded";
+      budgetId: Id<"budgets">;
+      categoryId: Id<"budgetCategories">;
+      fundId: Id<"funds">;
+    }>,
+  ): Promise<Id<"transactions">> {
+    return await run(s.t, (ctx) =>
+      ctx.db.insert("transactions", {
+        chapterId: s.chapterId,
+        source: "manual",
+        flow: "outflow",
+        amountCents: 4200,
+        postedAt: Date.now(),
+        merchantName: "Office Depot",
+        status: overrides.status ?? "unreviewed",
+        budgetId: overrides.budgetId,
+        categoryId: overrides.categoryId,
+        fundId: overrides.fundId,
+        createdAt: Date.now(),
+      }),
+    );
+  }
+
+  async function seedBudget(s: ChapterSetup): Promise<Id<"budgets">> {
+    return await run(s.t, (ctx) =>
+      ctx.db.insert("budgets", {
+        chapterId: s.chapterId,
+        amountCents: 50000,
+        type: "recurring",
+        cadence: "yearly",
+        year: 2026,
+        createdAt: Date.now(),
+      }),
+    );
+  }
+
+  test("accepts a categorized+needs-budget row's suggestion when nothing changed since", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const personId = await seedSelfPerson(s);
+    await grantRole(s, personId, "bookkeeper");
+    const { fundId, categoryId } = await seedFundAndCategory(s);
+    const txnId = await seedTxnWith(s, { status: "categorized", fundId, categoryId });
+    const proposedBudgetId = await seedBudget(s);
+
+    // Mirrors what `codeTransaction` would write: baseline = what the loader
+    // read BEFORE the model call (categorized, this fund/category, no budget).
+    await s.t.mutation(internal.aiCodingData.writeSuggestion, {
+      transactionId: txnId,
+      budgetId: proposedBudgetId,
+      confidence: 0.8,
+      rationale: "Matches the usual vendor for this budget.",
+      model: "test/model",
+      baseline: { status: "categorized", fundId, categoryId, budgetId: null },
+    });
+
+    await s.as.mutation(api.aiCodingData.acceptSuggestion, {
+      transactionId: txnId,
+    });
+
+    const txn = await run(s.t, (ctx) => ctx.db.get(txnId));
+    expect(txn?.budgetId).toEqual(proposedBudgetId);
+    expect(txn?.status).toBe("categorized");
+    expect(txn?.aiSuggestion).toBeUndefined();
+  });
+
+  test("rejects a stale suggestion when a manual edit raced it (budget attached in between)", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const personId = await seedSelfPerson(s);
+    await grantRole(s, personId, "bookkeeper");
+    const { fundId, categoryId } = await seedFundAndCategory(s);
+    const txnId = await seedTxnWith(s, { status: "categorized", fundId, categoryId });
+    const staleBudgetId = await seedBudget(s);
+    const realBudgetId = await seedBudget(s);
+
+    // The bookkeeper manually attaches a budget via the "For" picker WHILE a
+    // suggestion is in flight — this already clears any stored suggestion
+    // (`categorizeTransaction`'s own rule), same as production.
+    await s.as.mutation(api.finances.categorizeTransaction, {
+      transactionId: txnId,
+      budgetId: realBudgetId,
+    });
+
+    // A straggling suggestion computed BEFORE that edit lands AFTER it (the
+    // real race `codeTransaction` can hit: `loadForSuggestion` read the txn
+    // with budgetId still null, then the human edited, then `writeSuggestion`
+    // persisted the now-stale proposal). Its baseline reflects the OLD
+    // (pre-edit) state, not the current one.
+    await s.t.mutation(internal.aiCodingData.writeSuggestion, {
+      transactionId: txnId,
+      budgetId: staleBudgetId,
+      confidence: 0.8,
+      rationale: "stale — computed before the manual budget attach",
+      model: "test/model",
+      baseline: { status: "categorized", fundId, categoryId, budgetId: null },
+    });
+
+    await expect(
+      s.as.mutation(api.aiCodingData.acceptSuggestion, { transactionId: txnId }),
+    ).rejects.toBeInstanceOf(ConvexError);
+
+    // The manual attach must survive untouched — never clobbered by the stale proposal.
+    const txn = await run(s.t, (ctx) => ctx.db.get(txnId));
+    expect(txn?.budgetId).toEqual(realBudgetId);
+  });
+
+  test("legacy suggestion with no baseline still falls back to the unreviewed-only gate", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const personId = await seedSelfPerson(s);
+    await grantRole(s, personId, "bookkeeper");
+    const { fundId, categoryId } = await seedFundAndCategory(s);
+    // Categorized (needs budget) but the suggestion was seeded directly with
+    // no `baseline` — mirrors a suggestion written before this field existed.
+    const txnId = await seedTxnWith(s, { status: "categorized", fundId, categoryId });
+    const budgetId = await seedBudget(s);
+    await run(s.t, (ctx) =>
+      ctx.db.patch(txnId, {
+        aiSuggestion: { budgetId, confidence: 0.5, suggestedAt: Date.now() },
+      }),
+    );
+
+    // No baseline -> falls back to "must still be exactly unreviewed", which
+    // this categorized row isn't — rejected, even though nothing raced it.
+    await expect(
+      s.as.mutation(api.aiCodingData.acceptSuggestion, { transactionId: txnId }),
+    ).rejects.toBeInstanceOf(ConvexError);
   });
 });

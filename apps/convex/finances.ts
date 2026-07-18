@@ -255,10 +255,12 @@ const cardholderRef = v.object({
 });
 
 // The AI auto-coding proposal, resolved to display names — only ever populated
-// (non-null) for a row that's still `unreviewed` AND carries at least one
-// proposed link, so the Reconcile grid only ever shows an actionable suggestion.
-// WP-U (one home per dollar): the model proposes a BUDGET directly instead of
-// a separate project/event link — `budgetId` subsumes both.
+// (non-null) for a row that's still `isSuggestible` (unreviewed, OR
+// categorized but still `needsBudget` — PR fix-suggest-broaden) AND carries at
+// least one proposed link, so the Reconcile grid only ever shows an
+// actionable suggestion. WP-U (one home per dollar): the model proposes a
+// BUDGET directly instead of a separate project/event link — `budgetId`
+// subsumes both.
 const reconcileAiSuggestion = v.object({
   fundId: v.union(v.id("funds"), v.null()),
   categoryId: v.union(v.id("budgetCategories"), v.null()),
@@ -642,7 +644,7 @@ function toTxnSummary(tr: Doc<"transactions">) {
     fundId: tr.fundId ?? null,
     categoryId: tr.categoryId ?? null,
     budgetId: tr.budgetId ?? null,
-    needsBudget: isSpend(tr) && tr.budgetId == null,
+    needsBudget: needsBudget(tr),
     hasReceipt: tr.receiptStorageId != null,
     cardLast4: tr.cardLast4 ?? null,
     reminderStage: tr.receiptReminderStage ?? ("none" as const),
@@ -724,6 +726,33 @@ export function isSpend(tr: Doc<"transactions">): boolean {
     tr.status !== "excluded" &&
     tr.isPersonal !== true
   );
+}
+
+/** True iff a spend transaction still needs a budget attached — the
+ *  Reconcile "needs budget" soft-attribution signal (never a hard block).
+ *  Exported so `aiCodingData.ts` can gate AI-suggestion eligibility off the
+ *  EXACT same predicate the grid's own `needs_budget` filter/badge use
+ *  (single source of truth — see `isSuggestible` below). */
+export function needsBudget(tr: Doc<"transactions">): boolean {
+  return isSpend(tr) && tr.budgetId == null;
+}
+
+/**
+ * True iff a transaction is a candidate for an AI coding suggestion (the
+ * Reconcile grid's per-row "Suggest" button, the on-demand `suggestCoding`
+ * gate, and the on-ingest/hourly sweep all share this ONE predicate — PR
+ * fix-suggest-broaden). A row qualifies either:
+ *  - it's still `unreviewed` (never reviewed at all — the original rule), OR
+ *  - it's `categorized` but STILL `needsBudget` (a human coded the category
+ *    but the row never got a budget attached — the majority of the
+ *    "Needs budget" backlog the owner reported this button was missing on).
+ * `reconciled` (treasurer-closed) and `excluded`/personal/non-spend rows are
+ * never suggestible, regardless of budget state — they fall outside both
+ * branches above by construction.
+ */
+export function isSuggestible(tr: Doc<"transactions">): boolean {
+  if (tr.status === "unreviewed") return true;
+  return tr.status === "categorized" && needsBudget(tr);
 }
 
 // ── Period helpers (Eastern-time bucketing) ──────────────────────────────────
@@ -2219,7 +2248,7 @@ export const dashboardChapter = query({
     let unattributedCents = 0;
     let unattributedCount = 0;
     for (const tr of periodTxns) {
-      if (isSpend(tr) && tr.budgetId == null) {
+      if (needsBudget(tr)) {
         unattributedCents += tr.amountCents;
         unattributedCount += 1;
       }
@@ -2578,7 +2607,7 @@ export const dashboardChapter = query({
       .withIndex("by_chapter_and_postedAt", (q) => q.eq("chapterId", chapterId))
       .take(ROLLUP_SCAN_LIMIT);
     const toBudgetCount = chapterTxns.reduce(
-      (n, tr) => (isSpend(tr) && tr.budgetId == null ? n + 1 : n),
+      (n, tr) => (needsBudget(tr) ? n + 1 : n),
       0,
     );
 
@@ -2868,7 +2897,7 @@ export const dashboardCentral = query({
       const chapterPeriodSpend = sumSpend(dashTxns);
       totalMonthSpendCents += chapterPeriodSpend;
       orgUnattributedCents += dashTxns.reduce(
-        (s, tr) => (isSpend(tr) && tr.budgetId == null ? s + tr.amountCents : s),
+        (s, tr) => (needsBudget(tr) ? s + tr.amountCents : s),
         0,
       );
       // This chapter ROW's spend excludes central-linked txns — those are
@@ -3127,7 +3156,7 @@ export const dashboardCentral = query({
     // tile and the org Unattributed sum, exactly like a chapter's spend does.
     totalMonthSpendCents += centralOwnedSpendCents;
     orgUnattributedCents += centralOwnedDashTxns.reduce(
-      (s, tr) => (isSpend(tr) && tr.budgetId == null ? s + tr.amountCents : s),
+      (s, tr) => (needsBudget(tr) ? s + tr.amountCents : s),
       0,
     );
     // Central-owned unreviewed txns count toward the org "to review" tile too —
@@ -7044,7 +7073,7 @@ export const listReconcile = query({
     // Per-filter counts in the same pass (spend/receipt/status predicates).
     const counts = { ...zero, all: all.length };
     for (const tr of all) {
-      if (isSpend(tr) && tr.budgetId == null) counts.needs_budget += 1;
+      if (needsBudget(tr)) counts.needs_budget += 1;
       if (isSpend(tr) && tr.receiptStorageId == null) counts.missing_receipt += 1;
       if (tr.status === "unreviewed") counts.uncategorized += 1;
       if (tr.status === "reconciled") counts.ready += 1;
@@ -7052,7 +7081,7 @@ export const listReconcile = query({
 
     const predicates: Record<string, (tr: Doc<"transactions">) => boolean> = {
       all: () => true,
-      needs_budget: (tr) => isSpend(tr) && tr.budgetId == null,
+      needs_budget: (tr) => needsBudget(tr),
       missing_receipt: (tr) => isSpend(tr) && tr.receiptStorageId == null,
       uncategorized: (tr) => tr.status === "unreviewed",
       ready: (tr) => tr.status === "reconciled",
@@ -7088,16 +7117,18 @@ export const listReconcile = query({
       return { personId, name: person.name, imageUrl };
     };
 
-    // The AI suggestion, resolved to display names — only for a still-unreviewed
-    // row whose proposal actually carries at least one link (a confidence/
-    // rationale-only proposal has nothing actionable to show or Accept).
-    // WP-U: the model proposes a BUDGET directly (one home per dollar) —
-    // `ai.projectId`/`ai.eventId` are dead schema-only fields nothing writes
-    // anymore (see `aiCodingData.writeSuggestion`).
+    // The AI suggestion, resolved to display names — only for a still-
+    // `isSuggestible` row (unreviewed, OR categorized but still needsBudget —
+    // PR fix-suggest-broaden, same predicate the per-row "Suggest" button and
+    // the sweep gate off) whose proposal actually carries at least one link (a
+    // confidence/rationale-only proposal has nothing actionable to show or
+    // Accept). WP-U: the model proposes a BUDGET directly (one home per
+    // dollar) — `ai.projectId`/`ai.eventId` are dead schema-only fields
+    // nothing writes anymore (see `aiCodingData.writeSuggestion`).
     const getBudget = nameCache(ctx, "budgets");
     const resolveAiSuggestion = async (tr: Doc<"transactions">) => {
       const ai = tr.aiSuggestion;
-      if (tr.status !== "unreviewed" || !ai) return null;
+      if (!isSuggestible(tr) || !ai) return null;
       if (!ai.fundId && !ai.categoryId && !ai.budgetId) return null;
       const [fund, category, budget] = await Promise.all([
         ai.fundId ? getFund(ai.fundId) : null,

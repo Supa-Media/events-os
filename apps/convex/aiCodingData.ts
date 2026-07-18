@@ -53,7 +53,8 @@ import { Doc, Id } from "./_generated/dataModel";
 import { internal } from "./_generated/api";
 import { requireChapterId, requireInChapter } from "./lib/context";
 import { requireFinanceRole, requireCentralEdOrFm } from "./lib/finance";
-import { CENTRAL } from "@events-os/shared";
+import { CENTRAL, TRANSACTION_STATUSES } from "@events-os/shared";
+import { isSuggestible } from "./finances";
 
 /** Cap on how many of each context list we hand the model — keeps reads bounded. */
 const CONTEXT_LIMIT = 100;
@@ -117,6 +118,14 @@ const suggestionContextValidator = v.object({
     merchantName: v.optional(v.string()),
     merchantCategory: v.optional(v.string()),
     description: v.optional(v.string()),
+    // The txn's OWN coding fields as read HERE, before the model call —
+    // `codeTransaction` threads these into `writeSuggestion`'s `baseline`
+    // (PR fix-suggest-broaden) so `acceptSuggestion` can detect a manual edit
+    // that raced the suggestion. Not model-prompt input.
+    status: v.union(...TRANSACTION_STATUSES.map((s) => v.literal(s))),
+    fundId: v.optional(v.id("funds")),
+    categoryId: v.optional(v.id("budgetCategories")),
+    budgetId: v.optional(v.id("budgets")),
   }),
   funds: v.array(
     v.object({
@@ -463,6 +472,10 @@ async function gatherSuggestionContext(
       merchantName: txn.merchantName,
       merchantCategory: txn.merchantCategory,
       description: txn.description,
+      status: txn.status,
+      fundId: txn.fundId,
+      categoryId: txn.categoryId,
+      budgetId: txn.budgetId,
     },
     funds: funds.map((f) => ({
       _id: f._id,
@@ -526,6 +539,17 @@ export const loadForSuggestion = internalQuery({
     }
     // Manual invocation is bookkeeper+ only (in the txn's chapter).
     await requireFinanceRole(ctx, txn.chapterId, "bookkeeper");
+    // Same eligibility rule the Reconcile grid's "Suggest" button and the
+    // sweep gate off (`finances.isSuggestible` — PR fix-suggest-broaden):
+    // never trust the client-side button condition alone for a row that
+    // shouldn't get a suggestion (`reconciled`, `excluded`, personal, or
+    // already budget-attached).
+    if (!isSuggestible(txn)) {
+      throw new ConvexError({
+        code: "NOT_SUGGESTIBLE",
+        message: "This transaction isn't eligible for an AI coding suggestion.",
+      });
+    }
     return await gatherSuggestionContext(ctx, txn, txn.chapterId);
   },
 });
@@ -561,19 +585,23 @@ export const loadForSuggestionSystem = internalQuery({
 });
 
 /**
- * True when a transaction is a candidate for an AI coding suggestion: still
- * `unreviewed`, chapter-owned (central txns are never auto-coded — central
- * has no funds/categories/projects/events context, same reason the loaders
- * above reject them), and either never attempted (no `aiSuggestion` at all)
- * or its last attempt was a failed-attempt marker that's past
- * `FAILED_ATTEMPT_COOLDOWN_MS`. Shared by BOTH triggers that call
- * `runSuggestionSweep` (the hourly cron and the debounced on-ingest sweep)
- * AND the on-ingest hook itself (`scheduleSuggestionOnIngest`), so all three
- * apply the exact same "who's eligible" rule.
+ * True when a transaction is a candidate for an AI coding suggestion:
+ * `isSuggestible` (`finances.ts` — still `unreviewed`, OR `categorized` but
+ * still `needsBudget`; PR fix-suggest-broaden), chapter-owned (central txns
+ * are never auto-coded — central has no funds/categories/projects/events
+ * context, same reason the loaders above reject them), and either never
+ * attempted (no `aiSuggestion` at all) or its last attempt was a
+ * failed-attempt marker that's past `FAILED_ATTEMPT_COOLDOWN_MS`. Shared by
+ * BOTH triggers that call `runSuggestionSweep` (the hourly cron and the
+ * debounced on-ingest sweep) AND the on-ingest hook itself
+ * (`scheduleSuggestionOnIngest`), so all three apply the exact same "who's
+ * eligible" rule — the SAME `isSuggestible` predicate also gates the manual
+ * `loadForSuggestion` path and the Reconcile grid's own "Suggest" button
+ * (`ReconcileList.tsx`'s `isSuggestible` mirror), so all four surfaces agree.
  */
 function isEligibleForSuggestion(tr: Doc<"transactions">, now: number): boolean {
-  if (tr.status !== "unreviewed") return false;
   if (tr.chapterId === CENTRAL) return false;
+  if (!isSuggestible(tr)) return false;
   const ai = tr.aiSuggestion;
   if (ai === undefined) return true;
   if (!ai.failed) return false;
@@ -848,6 +876,21 @@ export const writeSuggestion = internalMutation({
     // errored/non-200'd, or its reply didn't parse) rather than a real
     // proposal — see `FAILED_ATTEMPT_COOLDOWN_MS` above.
     failed: v.optional(v.boolean()),
+    // Snapshot of the txn's OWN status/fund/category/budget as `codeTransaction`
+    // read them BEFORE the OpenRouter call (`aiCoding.ts`'s `context.transaction`)
+    // — `acceptSuggestion`'s staleness gate. Omitted for a failed-attempt marker
+    // (never accept-able — see `EMPTY_SUGGESTION` there) and by any direct
+    // internal caller that doesn't have one (tests seeding a suggestion
+    // straight onto the doc); `acceptSuggestion` falls back to its original
+    // unreviewed-only gate when absent.
+    baseline: v.optional(
+      v.object({
+        status: v.union(...TRANSACTION_STATUSES.map((s) => v.literal(s))),
+        fundId: v.union(v.id("funds"), v.null()),
+        categoryId: v.union(v.id("budgetCategories"), v.null()),
+        budgetId: v.union(v.id("budgets"), v.null()),
+      }),
+    ),
   },
   returns: v.null(),
   handler: async (ctx, args) => {
@@ -890,6 +933,7 @@ export const writeSuggestion = internalMutation({
       model: args.model,
       suggestedAt: Date.now(),
       failed: args.failed,
+      baseline: args.baseline,
     };
     await ctx.db.patch(args.transactionId, { aiSuggestion });
     return null;
@@ -899,15 +943,33 @@ export const writeSuggestion = internalMutation({
 /**
  * Apply a transaction's stored AI suggestion (a human confirming the model's
  * proposal). Bookkeeper+ only. Copies the suggestion's present links onto the
- * transaction and advances it to `categorized`. Throws when there's no
+ * transaction and advances/keeps it at `categorized`. Throws when there's no
  * suggestion at all, when the suggestion carries no applicable links (so a
  * confidence/rationale-only suggestion never falsely marks a txn coded), or
- * when the transaction has already moved past `unreviewed` — a manual edit or
- * an earlier Accept means the stored suggestion is stale and must never
- * clobber whatever a human has since done. The suggestion is cleared once
- * applied, so accepting the same transaction twice is a no-op (the second
- * call hits `NO_SUGGESTION`, not a second overwrite). The model itself never
- * reaches this path.
+ * when the transaction is STALE relative to the suggestion — a manual edit or
+ * an earlier Accept raced it, and applying it now would silently clobber
+ * whatever a human has since done.
+ *
+ * STALENESS (PR fix-suggest-broaden): a suggestion can now be generated for a
+ * row that's already `categorized` (still `needsBudget` — see
+ * `finances.isSuggestible`), not only `unreviewed`, so "has the status moved
+ * off `unreviewed`" is no longer a valid staleness proxy on its own — a
+ * `categorized`-origin suggestion's status never moves again just because a
+ * human re-picked its category or attached a budget. Instead, when the
+ * suggestion carries a `baseline` (the txn's status/fund/category/budget AS
+ * `codeTransaction` read them, before the model call — see `writeSuggestion`),
+ * every one of those fields must still match the txn's LIVE values; any
+ * mismatch means a real edit happened since and the suggestion is rejected as
+ * stale. A suggestion with NO `baseline` (written before this field existed,
+ * or seeded directly by a test) falls back to the original rule: stale unless
+ * the txn is still exactly `unreviewed`. Note manual edits already clear
+ * `aiSuggestion` outright (`categorizeTransaction`/`setTransactionCategory`)
+ * — this gate only matters for the narrow race where a suggestion's write
+ * lands AFTER a manual edit already happened.
+ *
+ * The suggestion is cleared once applied, so accepting the same transaction
+ * twice is a no-op (the second call hits `NO_SUGGESTION`, not a second
+ * overwrite). The model itself never reaches this path.
  */
 export const acceptSuggestion = mutation({
   args: { transactionId: v.id("transactions") },
@@ -940,10 +1002,17 @@ export const acceptSuggestion = mutation({
     }
 
     // The suggestion is only safe to apply while the txn is still exactly as
-    // it was when the model looked at it. If a human already categorized it
-    // (or already accepted this same suggestion once), the stored proposal is
-    // stale — applying it now would silently clobber whatever they did.
-    if (txn.status !== "unreviewed") {
+    // it was when the model looked at it (see the doc comment above for why
+    // this is a field-by-field diff against `baseline`, not just a status
+    // check, now that a `categorized` row can also carry a suggestion).
+    const baseline = suggestion.baseline;
+    const stale = baseline
+      ? txn.status !== baseline.status ||
+        (txn.fundId ?? null) !== baseline.fundId ||
+        (txn.categoryId ?? null) !== baseline.categoryId ||
+        (txn.budgetId ?? null) !== baseline.budgetId
+      : txn.status !== "unreviewed"; // legacy suggestion, no baseline stored
+    if (stale) {
       throw new ConvexError({
         code: "ALREADY_REVIEWED",
         message:

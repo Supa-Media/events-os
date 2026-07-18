@@ -27,7 +27,7 @@ import type { ActionCtx } from "./_generated/server";
 import { internal } from "./_generated/api";
 import { v } from "convex/values";
 import { Id } from "./_generated/dataModel";
-import { aiCostUsd } from "@events-os/shared";
+import { aiCostUsd, type TransactionStatus } from "@events-os/shared";
 
 /**
  * The OpenRouter model finance auto-coding calls on. Config, not code:
@@ -120,6 +120,14 @@ interface SuggestionContext {
     merchantName?: string;
     merchantCategory?: string;
     description?: string;
+    // The txn's OWN coding fields as read HERE, before the OpenRouter call —
+    // threaded into `writeSuggestion`'s `baseline` (PR fix-suggest-broaden) so
+    // `acceptSuggestion` can detect a manual edit that raced this suggestion,
+    // not just used for prompting.
+    status: TransactionStatus;
+    fundId?: Id<"funds">;
+    categoryId?: Id<"budgetCategories">;
+    budgetId?: Id<"budgets">;
   };
   funds: { _id: Id<"funds">; name: string; restriction: string }[];
   categories: {
@@ -558,6 +566,14 @@ async function codeTransaction(
     confidence,
     rationale,
     model,
+    // Snapshot of what THIS txn looked like when we read it (before the
+    // OpenRouter call above) — `acceptSuggestion`'s staleness gate.
+    baseline: {
+      status: transaction.status,
+      fundId: transaction.fundId ?? null,
+      categoryId: transaction.categoryId ?? null,
+      budgetId: transaction.budgetId ?? null,
+    },
   });
 
   return {

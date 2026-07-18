@@ -39,8 +39,10 @@ import { queueSuggestionOnIngest } from "../aiCodingData";
  *    several independently-scheduled hop-1 firings race it (sequential
  *    dedup — see that test's own comment for what this does and doesn't
  *    prove);
- *  - hop 2 no-ops for a central-owned charge, an already-categorized manual
- *    entry, or when the key is unset — without ever touching the mutex;
+ *  - hop 2 no-ops for a central-owned charge, an already-categorized-AND-
+ *    budgeted manual entry (PR fix-suggest-broaden: categorized-but-still-
+ *    needs-budget is now ITSELF eligible, so "nothing to suggest" requires a
+ *    budget too), or when the key is unset — without ever touching the mutex;
  *  - a central manual entry never even schedules hop 1 (the money mutation's
  *    central branch doesn't call the hook at all);
  *  - `ingestSuggestionSweep` (hop 3) schedules `suggestCodingSystem`
@@ -362,7 +364,7 @@ describe("on-ingest AI-coding suggestions", () => {
       }
     });
 
-    test("a manual entry submitted already-categorized: hop 1 fires but is a no-op", async () => {
+    test("a manual entry submitted already-categorized AND budgeted: hop 1 fires but is a no-op", async () => {
       process.env.OPENROUTER_API_KEY = "test-key";
       vi.useFakeTimers();
       try {
@@ -392,11 +394,28 @@ describe("on-ingest AI-coding suggestions", () => {
           postedAt: Date.now(),
           categoryId,
         });
+        // PR fix-suggest-broaden: a `categorized` row with NO budget yet is
+        // now ITSELF eligible (`isSuggestible`) — this test's whole point is
+        // "nothing left to suggest", so give it a real budget too (raw-
+        // attached, bypassing the approval-gated `categorizeTransaction`
+        // mutation — this test isn't exercising that flow) so `needsBudget`
+        // is false.
+        const budgetId = await run(s.t, (ctx) =>
+          ctx.db.insert("budgets", {
+            chapterId: s.chapterId,
+            amountCents: 50000,
+            type: "recurring",
+            cadence: "yearly",
+            year: 2026,
+            createdAt: Date.now(),
+          }),
+        );
+        await run(s.t, (ctx) => ctx.db.patch(txnId, { budgetId }));
 
         expect(jobsNamed(await scheduledJobs(s), "scheduleSuggestionOnIngest")).toHaveLength(1);
         await fireHop2(t, txnId);
 
-        // Already `status:"categorized"` on entry — nothing to suggest.
+        // Already `status:"categorized"` + budgeted on entry — nothing to suggest.
         expect(await ingestState(s)).toBeNull();
         expect(jobsNamed(await scheduledJobs(s), "ingestSuggestionSweep")).toHaveLength(0);
       } finally {
