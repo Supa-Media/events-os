@@ -24,10 +24,11 @@
  */
 import { useMemo, useState } from "react";
 import { Pressable, Text, useWindowDimensions, View } from "react-native";
+import { useRouter } from "expo-router";
 import type { FunctionReturnType } from "convex/server";
 import { api } from "@events-os/convex/_generated/api";
 import type { Id } from "@events-os/convex/_generated/dataModel";
-import { formatCents, quarterOfMonth } from "@events-os/shared";
+import { formatCents, quarterOfMonth, type BudgetRefKind } from "@events-os/shared";
 import { Badge, Button, Icon, SectionHeader } from "../../ui";
 import { colors } from "../../../lib/theme";
 import { Money, SignedMoney, Tile, TileRow, type DashPeriodMode } from "./parts";
@@ -181,6 +182,7 @@ export function ChapterView({
    */
   isDrilldown?: boolean;
 }) {
+  const router = useRouter();
   const { width } = useWindowDimensions();
   const stacked = width < STACK_WIDTH;
 
@@ -239,10 +241,26 @@ export function ChapterView({
   // a SEPARATE piece of state from `RecentDigest`'s own modal, mirroring
   // `CentralView`'s `selectedTag` precedent for a locally-owned detail sheet).
   const [detailSource, setDetailSource] = useState<TransactionDetailSource | null>(null);
-  function openDrilldownTxn(txn: DrilldownTxn, budgetName: string) {
-    setDetailSource({ kind: "detail", txn, budgetName });
+  function openDrilldownTxn(
+    txn: DrilldownTxn,
+    budgetName: string,
+    refKind: BudgetRefKind | null,
+    scopeRefId: string | null,
+  ) {
+    setDetailSource({ kind: "detail", txn, budgetName, refKind, scopeRefId });
   }
   const drilldownPeriod = { year, month: period === "month" ? month : undefined };
+  // WP-wave4 (item 4 — deep links), restored: navigate to the row's linked
+  // event/project page. Only wired OUTSIDE a peeked drilldown (`isDrilldown`)
+  // — a peeked chapter's events/projects belong to THAT chapter, not the
+  // caller's own, and `/event/[id]`/`/project/[id]` are hard-scoped to the
+  // caller's own chapter via `requireOwned` (see `ChapterContext`'s own file
+  // doc, "event DETAIL navigation is disabled while peeking" — same rule the
+  // Events landing screen already follows for the identical reason).
+  const onOpenRef = isDrilldown
+    ? undefined
+    : (refKind: BudgetRefKind, scopeRefId: string) =>
+        router.push(`/${refKind}/${scopeRefId}` as never);
   // DASH-2.1 UI fix (review finding #3): whether the CALLER can actually
   // record a transaction edit here — `spendByMonth` (already fetched for
   // this chapter/year as `monthly`) resolves this against the SAME chapter
@@ -264,6 +282,8 @@ export function ChapterView({
     approvedCents: b.approvedCents,
     requestedCents: b.requestedCents,
     reviewNote: b.reviewNote,
+    refKind: b.refKind,
+    scopeRefId: b.scopeRefId,
   }));
 
   const cadenceLabel = { monthly: "Monthly", quarterly: "Quarterly", yearly: "Yearly" } as const;
@@ -349,6 +369,7 @@ export function ChapterView({
             onPressRow={onEditBudget}
             drilldownPeriod={drilldownPeriod}
             onOpenTransaction={openDrilldownTxn}
+            onOpenRef={onOpenRef}
           />
 
           <BudgetTableGroup
@@ -623,6 +644,8 @@ function RecentDigest({
             fallback: {
               budgetName: openRow.codedTo?.projectOrEvent || null,
               categoryName: openRow.codedTo?.category || null,
+              refKind: openRow.codedTo?.refKind ?? null,
+              scopeRefId: openRow.codedTo?.scopeRefId ?? null,
             },
           }}
           onClose={() => setOpenId(null)}

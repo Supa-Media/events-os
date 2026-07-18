@@ -67,10 +67,12 @@
 import { useEffect, useState } from "react";
 import { Modal, Pressable, ScrollView, Text, View } from "react-native";
 import { useMutation, useQuery } from "convex/react";
+import { useRouter } from "expo-router";
 import { api } from "@events-os/convex/_generated/api";
 import type { Id } from "@events-os/convex/_generated/dataModel";
 import {
   MAX_NOTE_LENGTH,
+  type BudgetRefKind,
   type TransactionFlow,
   type TransactionStatus,
 } from "@events-os/shared";
@@ -86,14 +88,28 @@ import type { DrilldownTxn } from "./TransactionList";
 const TABULAR = { fontVariant: ["tabular-nums" as const] };
 
 export type TransactionDetailSource =
-  | { kind: "detail"; txn: DrilldownTxn; budgetName: string | null }
+  | {
+      kind: "detail";
+      txn: DrilldownTxn;
+      budgetName: string | null;
+      /** WP-wave4 (item 4 — deep links) restore: the OWNING budget row's own
+       *  ref (mirrors `BudgetTableRow.refKind`/`scopeRefId`) — `null` for a
+       *  recurring bucket or an unlinked one-time budget. */
+      refKind: BudgetRefKind | null;
+      scopeRefId: string | null;
+    }
   | {
       kind: "lookup";
       transactionId: Id<"transactions">;
       /** The digest row's own already-resolved display strings — always
        *  correct for whichever chapter is being viewed (peek included),
        *  unlike anything resolvable client-side from a lookup alone. */
-      fallback: { budgetName: string | null; categoryName: string | null };
+      fallback: {
+        budgetName: string | null;
+        categoryName: string | null;
+        refKind: BudgetRefKind | null;
+        scopeRefId: string | null;
+      };
     };
 
 // Normalized shape both entry paths reduce to — everything the body renders
@@ -109,6 +125,8 @@ type Normalized = {
   categoryId: Id<"budgetCategories"> | null;
   categoryName: string | null;
   budgetName: string | null;
+  refKind: BudgetRefKind | null;
+  scopeRefId: string | null;
   personName: string | null;
   hasReceipt: boolean;
   reminderStage: "none" | "flagged" | "escalated";
@@ -168,6 +186,8 @@ export function TransactionDetailModal({
           categoryId: source.txn.categoryId,
           categoryName: source.txn.categoryName,
           budgetName: source.budgetName,
+          refKind: source.refKind,
+          scopeRefId: source.scopeRefId,
           personName: source.txn.personName,
           hasReceipt: source.txn.hasReceipt,
           reminderStage: "none", // not carried by `budgetTransactions` — see module doc
@@ -190,6 +210,8 @@ export function TransactionDetailModal({
               categoryId: row.categoryId,
               categoryName: source.fallback.categoryName,
               budgetName: source.fallback.budgetName,
+              refKind: source.fallback.refKind,
+              scopeRefId: source.fallback.scopeRefId,
               personName: row.cardholder?.name ?? null,
               hasReceipt: row.hasReceipt,
               reminderStage: row.reminderStage,
@@ -243,6 +265,7 @@ export function TransactionDetailModal({
                 categories={categories}
                 readOnly={readOnly}
                 readOnlyReason={peeking ? "peek" : "role"}
+                peeking={peeking}
               />
             )}
           </ScrollView>
@@ -257,6 +280,7 @@ function TransactionDetailBody({
   categories,
   readOnly,
   readOnlyReason,
+  peeking,
 }: {
   txn: Normalized;
   categories: { id: Id<"budgetCategories">; name: string }[];
@@ -265,7 +289,15 @@ function TransactionDetailBody({
    *  doc's "ROLE" section (review fix, finding #3). Ignored when `readOnly`
    *  is false. */
   readOnlyReason: "peek" | "role";
+  /** WP-wave4 (item 4 — deep links) restore: whether the caller is peeking a
+   *  chapter that isn't their own — same rule `ChapterView.onOpenRef` uses to
+   *  hide the row-level link, applied here to the "Part of" link too (the
+   *  linked event/project belongs to the PEEKED chapter, not the caller's
+   *  own, and `/event/[id]`/`/project/[id]` are hard-scoped server-side to
+   *  the caller's own chapter). */
+  peeking: boolean;
 }) {
+  const router = useRouter();
   const setCategory = useMutation(api.finances.setTransactionCategory);
   const setNote = useMutation(api.finances.setTransactionNote);
   const setStatus = useMutation(api.finances.setTransactionStatus);
@@ -391,7 +423,28 @@ function TransactionDetailBody({
       ) : null}
 
       <Row label="Cardholder" value={txn.personName ?? "—"} />
-      <Row label="Budget" value={txn.budgetName ?? "—"} />
+      {/* WP-wave4 (item 4 — deep links) restore: a "Part of: <name> ›" link
+          when the txn's budget is event/project-linked — hidden while
+          peeking (see this component's own `peeking` prop doc). Falls back
+          to the plain, non-interactive row otherwise (unlinked, or a
+          recurring-budget-coded txn). */}
+      {txn.refKind && txn.scopeRefId && !peeking ? (
+        <View>
+          <FieldLabel label="Budget" />
+          <Pressable
+            onPress={() => router.push(`/${txn.refKind}/${txn.scopeRefId}` as never)}
+            accessibilityRole="button"
+            className="flex-row items-center gap-1 self-start active:opacity-70 web:hover:opacity-90"
+          >
+            <Text className="text-sm font-medium text-accent" numberOfLines={1}>
+              Part of: {txn.budgetName ?? "—"}
+            </Text>
+            <Icon name="chevron-right" size={13} color={colors.accent} />
+          </Pressable>
+        </View>
+      ) : (
+        <Row label="Budget" value={txn.budgetName ?? "—"} />
+      )}
 
       {/* Category */}
       <View>

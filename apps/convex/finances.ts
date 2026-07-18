@@ -421,7 +421,18 @@ const recentTxnCard = v.object({
   timeOrNote: v.optional(v.union(v.string(), v.null())),
   codedTo: v.optional(
     v.union(
-      v.object({ projectOrEvent: v.string(), category: v.string() }),
+      v.object({
+        projectOrEvent: v.string(),
+        category: v.string(),
+        // WP-wave4 (item 4 — deep links) restore: the digest row's own
+        // budget ref, so `TransactionDetailModal`'s "lookup" entry (opened
+        // from this card) can offer the same "Part of: <name> ›" link a
+        // budget-scoped drill-down already carries. `null` for a recurring-
+        // budget-coded txn, or one with no ref (mirrors `projectOrEvent`
+        // itself, which is the SAME ref resolved to a display name below).
+        refKind: v.union(refKindValidator, v.null()),
+        scopeRefId: v.union(v.string(), v.null()),
+      }),
       v.null(),
     ),
   ),
@@ -2428,13 +2439,27 @@ export const dashboardChapter = query({
       // budget's own display name, so a recurring-budget-coded txn is no
       // longer silently blank here.
       let projectOrEvent: string | undefined;
+      // WP-wave4 (item 4 — deep links) restore: the live ref behind
+      // `projectOrEvent` — set ONLY when that name actually resolved from a
+      // LIVE event/project (never for the `budgetDisplayName` fallback, so
+      // the modal's link never points at a vanished ref).
+      let recentRefKind: BudgetRefKind | null = null;
+      let recentScopeRefId: string | null = null;
       if (tr.budgetId) {
         const budget = await getBudget(tr.budgetId);
         if (budget) {
           if (budget.refKind === "event" && budget.scopeRefId) {
             projectOrEvent = (await getEvent(budget.scopeRefId as Id<"events">))?.name;
+            if (projectOrEvent) {
+              recentRefKind = "event";
+              recentScopeRefId = budget.scopeRefId;
+            }
           } else if (budget.refKind === "project" && budget.scopeRefId) {
             projectOrEvent = (await getProject(budget.scopeRefId as Id<"projects">))?.name;
+            if (projectOrEvent) {
+              recentRefKind = "project";
+              recentScopeRefId = budget.scopeRefId;
+            }
           }
           projectOrEvent ??= budgetDisplayName(budget);
         }
@@ -2445,7 +2470,12 @@ export const dashboardChapter = query({
       const categoryName = tr.categoryId ? catName.get(tr.categoryId) : undefined;
       const codedTo =
         projectOrEvent || categoryName
-          ? { projectOrEvent: projectOrEvent ?? "", category: categoryName ?? "" }
+          ? {
+              projectOrEvent: projectOrEvent ?? "",
+              category: categoryName ?? "",
+              refKind: recentRefKind,
+              scopeRefId: recentScopeRefId,
+            }
           : null;
       const ai =
         tr.aiSuggestion && tr.aiSuggestion.categoryId

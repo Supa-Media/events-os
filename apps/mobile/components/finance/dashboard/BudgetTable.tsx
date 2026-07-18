@@ -24,7 +24,7 @@ import { useState } from "react";
 import { Pressable, Text, View } from "react-native";
 import { formatCents } from "@events-os/shared";
 import type { Id } from "@events-os/convex/_generated/dataModel";
-import type { BudgetApprovalStatus } from "@events-os/shared";
+import type { BudgetApprovalStatus, BudgetRefKind } from "@events-os/shared";
 import { EmptyState, Icon } from "../../ui";
 import { colors } from "../../../lib/theme";
 import { Chip, MiniBar, Money } from "./parts";
@@ -93,6 +93,12 @@ export type BudgetTableRow = {
    *  cadence-widened period (quarter/year, see `recurringDrilldownPeriod`);
    *  absent for one-time rows, which stay on the group default. */
   drilldownPeriod?: DrilldownPeriod;
+  /** WP-wave4 (item 4 — deep links), restored: a one-time budget's linked
+   *  event/project (see `projectBudgetCard`/`centralBudgetCard` in
+   *  `finances.ts`). `null`/absent for a recurring row, or a one-time budget
+   *  with no live ref — no open affordance renders either way. */
+  refKind?: BudgetRefKind | null;
+  scopeRefId?: string | null;
 };
 
 const FOLD_AFTER = 5;
@@ -108,6 +114,7 @@ export function BudgetTableGroup({
   foldAfter = FOLD_AFTER,
   drilldownPeriod,
   onOpenTransaction,
+  onOpenRef,
 }: {
   title: string;
   rows: BudgetTableRow[];
@@ -132,8 +139,26 @@ export function BudgetTableGroup({
    *  wire either today, so passing this there is harmless but inert. */
   drilldownPeriod?: DrilldownPeriod;
   /** DASH-2.1 UI additive: open the transaction detail modal for one row —
-   *  bubbled up from a category's transaction list. */
-  onOpenTransaction?: (txn: DrilldownTxn, budgetName: string) => void;
+   *  bubbled up from a category's transaction list. The trailing `refKind`/
+   *  `scopeRefId` mirror the OWNING row's own fields (WP-wave4 item 4 restore)
+   *  so the modal can offer the same "Part of: <name> ›" link the row itself
+   *  offers. */
+  onOpenTransaction?: (
+    txn: DrilldownTxn,
+    budgetName: string,
+    refKind: BudgetRefKind | null,
+    scopeRefId: string | null,
+  ) => void;
+  /** WP-wave4 (item 4 — deep links), restored: open the row's linked event/
+   *  project page. Absent on `CentralView` (see that file's own doc — a
+   *  central one-time budget's ref can belong to ANY chapter, and the event/
+   *  project detail screens are hard-scoped to the CALLER's own chapter via
+   *  `requireOwned`, so there's no safe way to offer this link there without
+   *  a central-reach bypass to that foundational primitive — flagged for the
+   *  owner rather than invented, mirrors `ChapterContext`'s own precedent for
+   *  peek). Wired by `ChapterView` only, and only outside a peeked drilldown.
+   */
+  onOpenRef?: (refKind: BudgetRefKind, scopeRefId: string) => void;
 }) {
   const [open, setOpen] = useState(true);
   const [showMore, setShowMore] = useState(false);
@@ -183,6 +208,7 @@ export function BudgetTableGroup({
                 onPressRow={onPressRow}
                 drilldownPeriod={drilldownPeriod}
                 onOpenTransaction={onOpenTransaction}
+                onOpenRef={onOpenRef}
               />
             ))}
             {visible.map((r) => (
@@ -196,6 +222,7 @@ export function BudgetTableGroup({
                 onPressRow={onPressRow}
                 drilldownPeriod={drilldownPeriod}
                 onOpenTransaction={onOpenTransaction}
+                onOpenRef={onOpenRef}
               />
             ))}
             {hidden.length > 0 ? (
@@ -225,6 +252,7 @@ function BudgetRow({
   onPressRow,
   drilldownPeriod,
   onOpenTransaction,
+  onOpenRef,
 }: {
   row: BudgetTableRow;
   pinned: boolean;
@@ -233,7 +261,13 @@ function BudgetRow({
   onToggleExpand: () => void;
   onPressRow?: (id: string) => void;
   drilldownPeriod?: DrilldownPeriod;
-  onOpenTransaction?: (txn: DrilldownTxn, budgetName: string) => void;
+  onOpenTransaction?: (
+    txn: DrilldownTxn,
+    budgetName: string,
+    refKind: BudgetRefKind | null,
+    scopeRefId: string | null,
+  ) => void;
+  onOpenRef?: (refKind: BudgetRefKind, scopeRefId: string) => void;
 }) {
   const display = awaitingApprovalZeroCapDisplay({
     approvalStatus: row.approvalStatus,
@@ -262,6 +296,13 @@ function BudgetRow({
     ? `${formatCents(row.spentCents)} / ${formatCents(row.requestedCents)} requested`
     : (row.capLabelOverride ?? `${formatCents(row.spentCents)} / ${formatCents(row.budgetCents)}`);
   const hasCategories = row.categories && row.categories.length > 0;
+  // WP-wave4 (item 4 — deep links), restored: only offer the link when the
+  // CALLER wired `onOpenRef` (ChapterView, outside a peeked drilldown — see
+  // that prop's own doc comment) AND the row actually carries a live ref.
+  const openRef =
+    onOpenRef && row.refKind && row.scopeRefId
+      ? { refKind: row.refKind, scopeRefId: row.scopeRefId }
+      : null;
 
   // The row's content EXCLUDING the trailing chevron — that chevron is a
   // SEPARATE sibling Pressable below (not nested inside this one). Nesting
@@ -314,6 +355,20 @@ function BudgetRow({
       ) : (
         rowContent
       )}
+      {openRef ? (
+        // WP-wave4 (item 4 — deep links), restored: a SEPARATE sibling
+        // Pressable (same "no nested buttons" rule as the chevron below —
+        // see that Pressable's own doc comment) so a row keeps its normal
+        // "expand categories" chevron even when it's also ref-linked.
+        <Pressable
+          onPress={() => onOpenRef!(openRef.refKind, openRef.scopeRefId)}
+          hitSlop={8}
+          accessibilityRole="button"
+          accessibilityLabel={`Open ${openRef.refKind}`}
+        >
+          <Icon name="external-link" size={13} color={colors.muted} />
+        </Pressable>
+      ) : null}
       <Pressable
         onPress={row.onChevronPress ?? onToggleExpand}
         hitSlop={8}
@@ -337,25 +392,42 @@ function BudgetRow({
         <Text className="px-3 pb-1.5 text-2xs text-danger">"{row.reviewNote}"</Text>
       ) : null}
 
-      {expanded && hasCategories ? (
+      {expanded && (hasCategories || openRef) ? (
         <View className="gap-2 border-b border-border bg-sunken/60 px-3 py-2.5">
-          {row.categories!.map((c) => (
-            // Keyed by NAME, not array index: `spendBreakdownFor` (finances.ts)
-            // re-sorts categories by spend on every write, so an index key
-            // would let a DIFFERENT category inherit this row's `open` state
-            // across a reorder (caught live: editing a transaction's category
-            // out of the top bar left the NEW top bar showing as expanded).
-            // Category names are the server's own grouping key, so they're
-            // stable across reorders.
-            <CategoryRow
-              key={c.name}
-              budgetId={row.id}
-              budgetName={row.name}
-              category={c}
-              drilldownPeriod={row.drilldownPeriod ?? drilldownPeriod}
-              onOpenTransaction={onOpenTransaction}
-            />
-          ))}
+          {openRef ? (
+            <Pressable
+              onPress={() => onOpenRef!(openRef.refKind, openRef.scopeRefId)}
+              accessibilityRole="button"
+              className="flex-row items-center gap-1 self-start active:opacity-70 web:hover:opacity-90"
+            >
+              <Text className="text-2xs font-semibold text-accent">
+                Open {openRef.refKind}
+              </Text>
+              <Icon name="chevron-right" size={11} color={colors.accent} />
+            </Pressable>
+          ) : null}
+          {hasCategories
+            ? row.categories!.map((c) => (
+                // Keyed by NAME, not array index: `spendBreakdownFor`
+                // (finances.ts) re-sorts categories by spend on every write,
+                // so an index key would let a DIFFERENT category inherit
+                // this row's `open` state across a reorder (caught live:
+                // editing a transaction's category out of the top bar left
+                // the NEW top bar showing as expanded). Category names are
+                // the server's own grouping key, so they're stable across
+                // reorders.
+                <CategoryRow
+                  key={c.name}
+                  budgetId={row.id}
+                  budgetName={row.name}
+                  refKind={row.refKind ?? null}
+                  scopeRefId={row.scopeRefId ?? null}
+                  category={c}
+                  drilldownPeriod={row.drilldownPeriod ?? drilldownPeriod}
+                  onOpenTransaction={onOpenTransaction}
+                />
+              ))
+            : null}
         </View>
       ) : null}
 
@@ -386,15 +458,24 @@ function BudgetRow({
 function CategoryRow({
   budgetId,
   budgetName,
+  refKind,
+  scopeRefId,
   category,
   drilldownPeriod,
   onOpenTransaction,
 }: {
   budgetId: Id<"budgets">;
   budgetName: string;
+  refKind: BudgetRefKind | null;
+  scopeRefId: string | null;
   category: NonNullable<BudgetTableRow["categories"]>[number];
   drilldownPeriod?: DrilldownPeriod;
-  onOpenTransaction?: (txn: DrilldownTxn, budgetName: string) => void;
+  onOpenTransaction?: (
+    txn: DrilldownTxn,
+    budgetName: string,
+    refKind: BudgetRefKind | null,
+    scopeRefId: string | null,
+  ) => void;
 }) {
   const [open, setOpen] = useState(false);
   const drillable = drilldownPeriod != null && onOpenTransaction != null;
@@ -426,7 +507,7 @@ function CategoryRow({
           month={drilldownPeriod!.month}
           quarter={drilldownPeriod!.quarter}
           rangeNote={drilldownPeriod!.rangeNote}
-          onOpenTransaction={(txn) => onOpenTransaction!(txn, budgetName)}
+          onOpenTransaction={(txn) => onOpenTransaction!(txn, budgetName, refKind, scopeRefId)}
         />
       ) : null}
     </View>
