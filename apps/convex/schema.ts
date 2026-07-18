@@ -64,6 +64,11 @@ import {
   cardDetailsRevealAttempts,
   financeSettings,
 } from "./schema/finances";
+import {
+  donors,
+  gifts,
+  givingScopeRollups,
+} from "./schema/givingPlatform";
 import { seatDefs, seatAssignments } from "./schema/seats";
 import { seatStructureLog } from "./schema/seatStructureLog";
 import { seatProposals } from "./schema/seatProposals";
@@ -229,6 +234,15 @@ const schema = defineSchema({
   // from + falls back to `AFFORDABILITY_TIERS` (`@events-os/shared`). See
   // `schema/backerMilestones.ts` + `backerMilestones.ts`.
   backerMilestones,
+
+  // Giving Platform (F-6, P1) — the development team's donor CRM: `donors`
+  // (chapter/central-scoped relationship records) + `gifts` (giving history,
+  // dual-written from event `donations`) + per-scope rollups for the dashboard.
+  // Money is integer cents; `transactions` stays the only actuals ledger (see
+  // docs/plans/giving-platform.md §1 + schema/givingPlatform.ts).
+  donors,
+  gifts,
+  givingScopeRollups,
 
   // Org chart (seats) — a tree of seats shared by the central chart + every
   // chapter's identical chapter chart; occupancy is per-scope (see
