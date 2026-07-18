@@ -251,14 +251,13 @@ function toMoneyTxnSummary(tr: Doc<"transactions">) {
  * both surfaces agree by construction rather than by two independently
  * hand-tuned sweeps drifting apart.
  *
- * MERGE (not new — lifted verbatim from `eventCostGrid`'s pre-PR2 logic): a
- * `budgetLines` row with `sourceRef` pointing at an `eventItems`/`engagements`
- * row ALSO present in this sweep is folded into that row (category only —
- * the module/vendor row's own cost/status/link wins) and does NOT appear as
- * its own entry — so summing `plannedCents` across the returned rows never
- * double-counts a linked pair. A DANGLING `sourceRef` (target not swept, e.g.
- * deleted or its module lost its currency column) falls back to a normal
- * unlinked `budget_line` row so its plan data doesn't vanish.
+ * Every `budgetLines` row gets its own entry here — there is no merge
+ * concept (the `sourceRef` link infrastructure that used to fold a line into
+ * its matching module row was retired: nothing ever wrote it, so it never
+ * actually linked anything). A same-expense collision between a
+ * `budgetLines` row and a module row is instead surfaced via
+ * `eventCostGrid`'s `possibleDuplicate` flag, a human-confirmed signal
+ * (`budgetLines.mergeLineIntoItem`), never an automatic merge.
  *
  * CATEGORY RESOLUTION per row: an explicit override
  * (`eventItems`/`engagements.budgetCategoryId`, or `budgetLines.categoryId`
@@ -300,21 +299,11 @@ type PlannedRow = {
   status: string | null;
   editable: boolean;
   sourceLink: string | null;
-  // True when this row absorbed a linked `budgetLines` row's category via
-  // `sourceRef` (see the module doc above) — always `false` on a
-  // `budget_line` row itself (a TRULY linked line is folded away, never
-  // returned as its own row).
-  linked: boolean;
   categoryId: Id<"budgetCategories"> | null;
   // True only when `categoryId` came from the DEFAULT-name match, never from
-  // an explicit override or a `sourceRef` merge.
+  // an explicit override.
   categoryIsDefault: boolean;
   categoryName: string;
-  /** The `eventItems`/`engagements` doc id this row was sourced from (as a
-   *  string), for `sourceRef` link matching — `null` for a `budget_line` row
-   *  (never itself a link TARGET). Internal join key; callers that return
-   *  rows to the client strip this field. */
-  refId: string | null;
 };
 
 /** Round a whole-dollar figure (`eventItems.fields[key]` / `engagements.
@@ -444,11 +433,9 @@ async function collectEventPlannedRows(
         status: item.status ?? null,
         editable: true, // same native chapter-member gate `items.ts` already enforces
         sourceLink: `/event/${eventId}?tab=${item.module}`,
-        linked: false,
         categoryId: resolved.categoryId,
         categoryIsDefault: resolved.categoryIsDefault,
         categoryName: resolved.categoryName ?? typeLabel,
-        refId: String(item._id),
       });
     }
   }
@@ -479,15 +466,13 @@ async function collectEventPlannedRows(
       status: eng.paymentStatus ?? null,
       editable: true, // same native chapter-member gate `engagements.ts` already enforces
       sourceLink: `/event/${eventId}?tab=crew`,
-      linked: false,
       categoryId: resolved.categoryId,
       categoryIsDefault: resolved.categoryIsDefault,
       categoryName: resolved.categoryName ?? "Vendors",
-      refId: String(eng._id),
     });
   }
 
-  // ── Budget lines (the finance plan, WP-3.1) — merge linked, else a row ──
+  // ── Budget lines (the finance plan, WP-3.1) — one row each ──────────────
   const budgets = await ctx.db
     .query("budgets")
     .withIndex("by_ref", (q) => q.eq("refKind", "event").eq("scopeRefId", eventId))
@@ -504,25 +489,6 @@ async function collectEventPlannedRows(
         ? ((await nameForExplicitId(line.categoryId)) ?? "Uncategorized")
         : "Uncategorized";
 
-      // LINKED: fold this line's category into every row sourced from
-      // `sourceRef.id`, and don't give the line its own row at all — "module
-      // row wins for display" (its cost/status/link are untouched; only the
-      // category is upgraded to the line's REAL category).
-      if (line.sourceRef) {
-        const targets = rows.filter((r) => r.refId === line.sourceRef!.id);
-        if (targets.length > 0) {
-          for (const target of targets) {
-            target.linked = true;
-            target.categoryId = line.categoryId ?? null;
-            target.categoryIsDefault = false;
-            target.categoryName = lineCategoryName;
-          }
-          continue; // merged — no separate budget_line row, no double count.
-        }
-        // Dangling sourceRef — fall through and show the line as a normal
-        // unlinked row so its plan data doesn't just vanish.
-      }
-
       budgetLineRows.push({
         id: `budget_line:${line._id}`,
         sourceKind: "budget_line",
@@ -534,11 +500,9 @@ async function collectEventPlannedRows(
         status: null,
         editable: canEdit,
         sourceLink: null,
-        linked: false,
         categoryId: line.categoryId ?? null,
         categoryIsDefault: false,
         categoryName: lineCategoryName,
-        refId: null,
       });
     }
   }
@@ -616,9 +580,9 @@ export const refMoney = query({
     totalRemainingCents: v.number(),
     // The planned-row count — gates the client's "No plan yet" empty state
     // (`lineCount === 0`). WP-money-unify PR2: for an EVENT ref this is the
-    // UNION row count (`eventItems` ∪ paid `engagements` ∪ `budgetLines`,
-    // post `sourceRef`-merge dedup), not the raw `budgetLines` count — an
-    // event whose only plan is cost-inventory items now reports a nonzero
+    // UNION row count (`eventItems` ∪ paid `engagements` ∪ `budgetLines`),
+    // not the raw `budgetLines` count — an event whose only plan is
+    // cost-inventory items now reports a nonzero
     // count here. Unchanged (raw `budgetLines.length`) for a PROJECT ref.
     lineCount: v.number(),
     // Money IN (tickets + donations, from `eventPages`) — a summary-only
@@ -920,21 +884,17 @@ export const refMoney = query({
  *   - `budgetLines` rows are for costs with NO home module (an AV rental
  *     that isn't a Task, a permit fee before Permits had a currency column,
  *     a category-level allocation) — the free-form finance-plan fallback.
- *   - LINKED pairs are MERGED, not summed: a `budgetLines` row with
- *     `sourceRef` pointing at the module row it represents contributes only
- *     its category (plan metadata the module side has no field for) — the
- *     module row's own cost/status/link still wins for display, and the
- *     line does NOT get a separate row or count toward the total twice.
- *     Nothing creates a link yet (no mutation sets `sourceRef` today) — this
- *     is forward-looking infrastructure for a future "plan this task's cost
- *     in Finances" flow.
- *   - UNLINKED duplicates are FLAGGED, not merged: since nothing proves two
- *     unlinked rows represent the same expense, a same-ish-label collision
- *     between a `budgetLines` row and a module row (e.g. Task "Sound tech"
- *     + budget line "Sound tech deposit") sets `possibleDuplicate` on BOTH
- *     rows — a human catches what the system can't yet prove, but neither
- *     row's amount is dropped from the total (silently hiding a real cost
- *     would be worse than a visible over-count warning).
+ *   - Duplicates are FLAGGED, never auto-merged: since nothing proves two
+ *     rows represent the same expense, a same-ish-label collision between a
+ *     `budgetLines` row and a module row (e.g. Task "Sound tech" + budget
+ *     line "Sound tech deposit") sets `possibleDuplicate` on BOTH rows — a
+ *     human catches what the system can't yet prove, but neither row's
+ *     amount is dropped from the total (silently hiding a real cost would be
+ *     worse than a visible over-count warning). The human's confirmation is
+ *     `budgetLines.mergeLineIntoItem` — a flagged line can be folded into its
+ *     matching `eventItems` row (category copied over, then the line is
+ *     deleted), offered by the PlanGrid UI whenever the paired row is an
+ *     `event_item` (never a `vendor` — the mutation only accepts eventItems).
  *
  * MODULE COVERAGE: dynamically swept from THIS EVENT's own `eventColumns`
  * (cloned per-event at instantiation, `lib/templates.ts` — includes every
@@ -956,8 +916,8 @@ export const refMoney = query({
  * `Math.round(dollars * 100)` before it joins `plannedCents` so the grid's
  * rollup is apples-to-apples with the finance side.
  *
- * TYPE → CATEGORY (WP-money-unify PR2, updated): an unlinked module row's
- * `categoryId` is resolved via `collectEventPlannedRows` — an explicit
+ * TYPE → CATEGORY (WP-money-unify PR2, updated): a module row's `categoryId`
+ * is resolved via `collectEventPlannedRows` — an explicit
  * `eventItems`/`engagements.budgetCategoryId` override (WP-money-unify PR1)
  * if set, else a DEFAULT category matched by name
  * (`MODULE_DEFAULT_CATEGORY_NAMES`/`VENDOR_DEFAULT_CATEGORY_NAME`) against
@@ -965,8 +925,7 @@ export const refMoney = query({
  * REAL category's name when one resolves; only an unresolved row (no
  * override, no default-name match) falls back to the module's own display
  * label (Tasks / Supplies & Logistics / Permits / Vendors — whatever
- * `eventModules.label` says). A LINKED module row instead always shows the
- * linked line's REAL category (`sourceRef` merge wins over both).
+ * `eventModules.label` says).
  *
  * TWO TOTALS — DIFFERENT AXES (WP-money-unify PR2, updated): `refMoney`
  * above no longer stays scoped to `budgetLines` alone — its planned side is
@@ -1030,16 +989,11 @@ const gridRow = v.object({
   // `null` for a `budget_line` row, which is edited right here via
   // `MoneyView`'s own "Edit plan" modal, not a separate screen.
   sourceLink: v.union(v.string(), v.null()),
-  // True when this (module) row absorbed a `budgetLines` row's category via
-  // `sourceRef` — the line itself never became a separate row (see the
-  // module doc's "THE MODEL"). Always `false` on a `budget_line` row: a
-  // TRULY linked line is folded away entirely, never surfaced as its own row.
-  linked: v.boolean(),
-  // True when this row's normalized label overlaps an UNLINKED row of a
-  // DIFFERENT sourceKind (module vs. budget_line) — a possible same-expense
-  // collision the system can't prove, flagged for a human. Never set on a
-  // linked row (already provably not a duplicate — it's the SAME expense,
-  // by construction, not a suspected one).
+  // True when this row's normalized label overlaps a row of a DIFFERENT
+  // sourceKind (module vs. budget_line) — a possible same-expense collision
+  // the system can't prove, flagged for a human (`budgetLines.mergeLineIntoItem`
+  // is the human-confirmed fix, offered by the UI when the paired row is an
+  // `event_item`).
   possibleDuplicate: v.boolean(),
 });
 
@@ -1087,23 +1041,21 @@ export const eventCostGrid = query({
     if (!authz) return empty;
     if (authz.isTraining) return { ...empty, isTraining: true }; // #172
 
-    // The full items ∪ vendors ∪ budgetLines sweep — sourceRef-merge already
-    // applied (see `collectEventPlannedRows`'s doc comment). `possibleDuplicate`
+    // The full items ∪ vendors ∪ budgetLines sweep. `possibleDuplicate`
     // (below) is the only thing left for this query to compute itself.
     const rows: GridWorkingRow[] = (
       await collectEventPlannedRows(ctx, args.eventId, authz.chapterId, authz)
     ).map((row) => ({ ...row, possibleDuplicate: false }));
     const budgetLineRows = rows.filter((r) => r.sourceKind === "budget_line");
 
-    // ── Possible-duplicate flagging (unlinked rows only) ────────────────────
+    // ── Possible-duplicate flagging ──────────────────────────────────────
     // Conservative + symmetric: only compares a `budget_line` row against a
     // module row (`event_item`/`vendor`) — the double-count shape the review
     // actually flagged — never two rows of the SAME sourceKind (two Tasks
     // named similarly aren't a "same expense counted twice" concern).
-    const moduleRows = rows.filter((r) => r.sourceKind !== "budget_line" && !r.linked);
+    const moduleRows = rows.filter((r) => r.sourceKind !== "budget_line");
     const moduleTokens = moduleRows.map((r) => significantTokens(r.label));
     for (const line of budgetLineRows) {
-      if (line.linked) continue; // already provably the same expense, not "possible"
       const lineTokens = significantTokens(line.label);
       if (lineTokens.size === 0) continue;
       for (let i = 0; i < moduleRows.length; i++) {
@@ -1121,7 +1073,7 @@ export const eventCostGrid = query({
 
     return {
       isTraining: false,
-      rows: rows.map(({ refId: _refId, ...row }) => row),
+      rows,
       totalPlannedCents: rows.reduce((sum, r) => sum + r.plannedCents, 0),
     };
   },

@@ -56,7 +56,7 @@
  * of scope for this PR (same reason — needs the person picker).
  */
 import { useEffect, useMemo, useState } from "react";
-import { Pressable, ScrollView, Text, TextInput, View } from "react-native";
+import { Alert, Platform, Pressable, ScrollView, Text, TextInput, View } from "react-native";
 import { useRouter } from "expo-router";
 import { useMutation, useQuery } from "convex/react";
 import type { FunctionReturnType } from "convex/server";
@@ -79,6 +79,8 @@ import {
 } from "../ui";
 import { colors } from "../../lib/theme";
 import { alertError, alertInfo } from "../../lib/errors";
+import { VendorConversionPrompt } from "./VendorConversionPrompt";
+import { findMergeTargetItem, type MergeTargetItem } from "./duplicateMatch";
 
 type GridData = FunctionReturnType<typeof api.moneyViews.eventCostGrid>;
 type GridRow = GridData["rows"][number];
@@ -146,6 +148,29 @@ function dollarsToCents(text: string): number | null {
 function parseRowId(id: string): { kind: "event_item" | "vendor" | "budget_line"; refId: string } {
   const [kind, refId] = id.split(":");
   return { kind: kind as "event_item" | "vendor" | "budget_line", refId };
+}
+
+/** Confirm merging a flagged `budget_line` into its matching item — web
+ *  `window.confirm`, native `Alert` (mirrors `EventModuleRollup.tsx`'s own
+ *  `confirmRemoveModule`). MUST show the amount delta per the PR #233
+ *  review's UI contract: the line's own planned amount disappears from the
+ *  total (it's deleted), the item's stays untouched. */
+function confirmMergeLine(
+  lineLabel: string,
+  lineCents: number,
+  itemLabel: string,
+  itemCents: number,
+  onConfirm: () => void,
+) {
+  const message = `Removes the ${formatCents(lineCents)} "${lineLabel}" line; "${itemLabel}"'s ${formatCents(itemCents)} stays — planned total drops by ${formatCents(lineCents)}.`;
+  if (Platform.OS === "web") {
+    if (typeof window !== "undefined" && window.confirm(message)) onConfirm();
+    return;
+  }
+  Alert.alert("Merge into item?", message, [
+    { text: "Cancel", style: "cancel" },
+    { text: "Merge", onPress: onConfirm },
+  ]);
 }
 
 /**
@@ -238,6 +263,25 @@ function EventPlanGrid({
     [categoriesRaw],
   );
 
+  // "Merge into item" targets, keyed by the flagged `budget_line` row's own
+  // id — the grid only returns a boolean `possibleDuplicate`, not WHICH row
+  // it overlaps, so this re-derives the specific pairing client-side (see
+  // `duplicateMatch.ts`'s doc comment). Deliberately EVENT_ITEM rows only —
+  // `budgetLines.mergeLineIntoItem` doesn't accept a vendor id, so a line
+  // whose only overlap is with a vendor row gets no merge affordance at all.
+  const mergeTargetsByRowId = useMemo(() => {
+    const candidateItems: MergeTargetItem[] = rows
+      .filter((r) => r.sourceKind === "event_item" && r.possibleDuplicate)
+      .map((r) => ({ itemId: parseRowId(r.id).refId, label: r.label, plannedCents: r.plannedCents }));
+    const map = new Map<string, MergeTargetItem>();
+    for (const r of rows) {
+      if (r.sourceKind !== "budget_line" || !r.possibleDuplicate) continue;
+      const target = findMergeTargetItem(r.label, candidateItems);
+      if (target) map.set(r.id, target);
+    }
+    return map;
+  }, [rows]);
+
   if (data === undefined) {
     return (
       <View className="mt-4">
@@ -312,17 +356,23 @@ function EventPlanGrid({
                 </HeaderCell>
                 <HeaderCell width={COL_CHEVRON}> </HeaderCell>
               </TableHeader>
-              {data.rows.map((row, i) => (
-                <GridRowView
-                  key={row.id}
-                  row={row}
-                  last={i === data.rows.length - 1}
-                  typeOptions={typeOptions}
-                  categoryOptions={categoryOptions}
-                  itemReadOnly={row.sourceKind === "event_item" && multiColItemIds.has(parseRowId(row.id).refId)}
-                  onOpen={row.sourceLink ? () => goTo(row.sourceLink!) : undefined}
-                />
-              ))}
+              {data.rows.map((row, i) => {
+                const isMultiCostItem =
+                  row.sourceKind === "event_item" && multiColItemIds.has(parseRowId(row.id).refId);
+                return (
+                  <GridRowView
+                    key={row.id}
+                    row={row}
+                    last={i === data.rows.length - 1}
+                    typeOptions={typeOptions}
+                    categoryOptions={categoryOptions}
+                    itemReadOnly={isMultiCostItem}
+                    hideVendorOption={isMultiCostItem}
+                    mergeTarget={mergeTargetsByRowId.get(row.id) ?? null}
+                    onOpen={row.sourceLink ? () => goTo(row.sourceLink!) : undefined}
+                  />
+                );
+              })}
             </Table>
           </View>
         </ScrollView>
@@ -349,6 +399,8 @@ function GridRowView({
   typeOptions,
   categoryOptions,
   itemReadOnly,
+  hideVendorOption,
+  mergeTarget,
   onOpen,
 }: {
   row: GridRow;
@@ -356,15 +408,24 @@ function GridRowView({
   typeOptions: TypeOption[];
   categoryOptions: CategoryOption[];
   itemReadOnly: boolean;
+  /** True for a multi-currency-column item (same rows `itemReadOnly` covers)
+   *  — see `TypeCell`'s own doc comment for why "Vendor…" is hidden, not
+   *  merely disabled, on these rows. */
+  hideVendorOption: boolean;
+  /** The `event_item` row this flagged `budget_line` row can merge into
+   *  (`duplicateMatch.findMergeTargetItem`) — `null` when this row isn't a
+   *  mergeable duplicate (not a budget_line, not flagged, or its only
+   *  overlap was with a vendor row, an invalid merge target). */
+  mergeTarget: MergeTargetItem | null;
   onOpen?: () => void;
 }) {
   return (
     <Row last={last}>
       <Cell width={COL_ITEM}>
-        <ItemCell row={row} readOnly={itemReadOnly} />
+        <ItemCell row={row} readOnly={itemReadOnly} mergeTarget={mergeTarget} />
       </Cell>
       <Cell width={COL_TYPE}>
-        <TypeCell row={row} typeOptions={typeOptions} />
+        <TypeCell row={row} typeOptions={typeOptions} hideVendorOption={hideVendorOption} />
       </Cell>
       <Cell width={COL_CATEGORY}>
         <CategoryCell row={row} categoryOptions={categoryOptions} />
@@ -401,12 +462,24 @@ function GridRowView({
 
 /** Item — the row's "what is this" label. Inline-editable (blur-commit) for
  *  `event_item`/`budget_line` rows; a vendor row's label is a real person's
- *  name (read-only here — renamed on Crew & Duties). */
-function ItemCell({ row, readOnly }: { row: GridRow; readOnly: boolean }) {
+ *  name (read-only here — renamed on Crew & Duties). A flagged `budget_line`
+ *  row with a resolved `mergeTarget` also gets a "Merge into item" button
+ *  (`budgetLines.mergeLineIntoItem`) — never offered onto a vendor row. */
+function ItemCell({
+  row,
+  readOnly,
+  mergeTarget,
+}: {
+  row: GridRow;
+  readOnly: boolean;
+  mergeTarget?: MergeTargetItem | null;
+}) {
   const updateEventItem = useMutation(api.items.updateEventItem);
   const updateLine = useMutation(api.budgetLines.updateLine);
+  const mergeLineIntoItem = useMutation(api.budgetLines.mergeLineIntoItem);
   const [title, setTitle] = useState(row.label);
   const [focused, setFocused] = useState(false);
+  const [merging, setMerging] = useState(false);
 
   useEffect(() => {
     if (!focused) setTitle(row.label);
@@ -433,10 +506,32 @@ function ItemCell({ row, readOnly }: { row: GridRow; readOnly: boolean }) {
     }
   }
 
+  async function doMerge() {
+    if (!mergeTarget) return;
+    const { refId: lineId } = parseRowId(row.id);
+    setMerging(true);
+    try {
+      await mergeLineIntoItem({
+        lineId: lineId as Id<"budgetLines">,
+        itemId: mergeTarget.itemId as Id<"eventItems">,
+      });
+    } catch (err) {
+      alertError(err);
+    } finally {
+      setMerging(false);
+    }
+  }
+
+  function handleMergePress() {
+    if (!mergeTarget || merging) return;
+    confirmMergeLine(row.label, row.plannedCents, mergeTarget.label, mergeTarget.plannedCents, () =>
+      void doMerge(),
+    );
+  }
+
   return (
     <View className="flex-1">
       <View className="flex-row items-center gap-1.5">
-        {row.linked ? <Icon name="link" size={12} color={colors.muted} /> : null}
         {editable ? (
           <TextInput
             value={title}
@@ -459,20 +554,50 @@ function ItemCell({ row, readOnly }: { row: GridRow; readOnly: boolean }) {
         <View className="mt-0.5 flex-row items-center gap-1">
           <Icon name="alert-triangle" size={11} color={colors.warn} />
           <Text className="text-2xs text-warn">Possible duplicate</Text>
+          {mergeTarget ? (
+            <Pressable onPress={handleMergePress} disabled={merging} hitSlop={6} className="ml-1 active:opacity-70">
+              <Text className="text-2xs font-medium text-accent">
+                {merging ? "Merging…" : "Merge into item"}
+              </Text>
+            </Pressable>
+          ) : null}
         </View>
-      ) : null}
-      {row.linked ? (
-        <Text className="mt-0.5 text-2xs text-muted">Category linked from the finance plan</Text>
       ) : null}
     </View>
   );
 }
 
+// Sentinel Type-cell option that opens the vendor-conversion prompt instead
+// of committing a module change directly — never a real `eventItems.module`
+// value, so it can never collide with a grid-derived option.
+const VENDOR_CONVERSION_OPTION = "__convert_to_vendor__";
+
 /** Type — dropdown (item rows only) that CONVERTS the item to a different
- *  module (`items.convertEventItemModule`); a static label for vendor /
- *  plan-only rows (neither has a "module" to change). */
-function TypeCell({ row, typeOptions }: { row: GridRow; typeOptions: TypeOption[] }) {
+ *  module (`items.convertEventItemModule`), OR — picking "Vendor…" — opens
+ *  the guided `VendorConversionPrompt` (pick/create a person, then
+ *  `items.convertItemToVendor`) rather than converting silently. A static
+ *  label for vendor/plan-only rows (neither has a "module" to change).
+ *
+ *  Review finding (PR #239): a multi-cost-column item (`hideVendorOption`,
+ *  same `multiColItemIds` set the Item cell's `readOnly` already uses) HIDES
+ *  "Vendor…" entirely rather than offering it and letting the mutation
+ *  reject with `MULTI_COST_CONVERSION` — that rejection only fires AFTER
+ *  the person-picker step, and the create-new-person path would have
+ *  already minted a real `people` doc by then with no way to undo it. Hidden,
+ *  not disabled, matching this repo's existing hidden-not-dead pattern (the
+ *  option simply isn't in `typeOptions` for a module row that's already the
+ *  current value, same idea). */
+function TypeCell({
+  row,
+  typeOptions,
+  hideVendorOption,
+}: {
+  row: GridRow;
+  typeOptions: TypeOption[];
+  hideVendorOption: boolean;
+}) {
   const convertModule = useMutation(api.items.convertEventItemModule);
+  const [vendorPromptOpen, setVendorPromptOpen] = useState(false);
 
   if (row.sourceKind === "vendor") {
     return <Text className="text-sm text-muted">Vendor</Text>;
@@ -485,6 +610,10 @@ function TypeCell({ row, typeOptions }: { row: GridRow; typeOptions: TypeOption[
   }
 
   async function handleChange(toModule: string) {
+    if (toModule === VENDOR_CONVERSION_OPTION) {
+      setVendorPromptOpen(true);
+      return;
+    }
     if (toModule === row.module) return;
     try {
       const { refId } = parseRowId(row.id);
@@ -494,8 +623,24 @@ function TypeCell({ row, typeOptions }: { row: GridRow; typeOptions: TypeOption[
     }
   }
 
+  const { refId: itemId } = parseRowId(row.id);
+  const options = hideVendorOption
+    ? typeOptions
+    : [...typeOptions, { value: VENDOR_CONVERSION_OPTION, label: "Vendor…" }];
+
   return (
-    <SelectCell value={row.module ?? ""} options={typeOptions} onChange={(v) => void handleChange(v)} />
+    <>
+      <SelectCell value={row.module ?? ""} options={options} onChange={(v) => void handleChange(v)} />
+      {hideVendorOption ? null : (
+        <VendorConversionPrompt
+          visible={vendorPromptOpen}
+          itemId={itemId as Id<"eventItems">}
+          itemLabel={row.label}
+          plannedCents={row.plannedCents}
+          onClose={() => setVendorPromptOpen(false)}
+        />
+      )}
+    </>
   );
 }
 
@@ -835,7 +980,6 @@ function lineToGridRow(line: LineSummary, categoryName: string): GridRow {
     status: null,
     editable: true,
     sourceLink: null,
-    linked: false,
     possibleDuplicate: false,
   };
 }

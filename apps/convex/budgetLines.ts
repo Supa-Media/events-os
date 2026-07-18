@@ -391,9 +391,10 @@ export const reorderLines = mutation({
  * `fields[costKey]`) is untouched and stays the planned amount; the line only
  * contributes its category (plan metadata the module side has no field for)
  * when the item doesn't already have one, then the line itself is deleted
- * (mirroring `removeLine`). No `sourceRef` is written — that link schema is
- * retired in a later cleanup PR alongside the UI merge button; this mutation
- * is the standalone backend half.
+ * (mirroring `removeLine`). No link is recorded anywhere — the `sourceRef`
+ * link schema this mutation's own doc used to point at was retired (nothing
+ * ever wrote it), so this mutation is the sole "same expense" reconciliation
+ * mechanism, paired with the PlanGrid UI's "Merge into item" button.
  *
  * Gating requires BOTH: line-write access on the line's own budget
  * (`requireLineWriteAccess`, bookkeeper+ at the budget's scope — reused

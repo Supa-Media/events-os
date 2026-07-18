@@ -980,7 +980,6 @@ describe("moneyViews.eventCostGrid", () => {
       plannedCents: 15000, // $150 -> cents
       status: "in_progress",
       sourceLink: `/event/${eventId}?tab=planning_doc`,
-      linked: false,
       possibleDuplicate: false,
     });
     expect(byId.get("Coffee")).toMatchObject({
@@ -1009,7 +1008,6 @@ describe("moneyViews.eventCostGrid", () => {
       plannedCents: 20000,
       sourceLink: null,
       editable: true, // asChapterManager is bookkeeper+
-      linked: false,
       possibleDuplicate: false,
     });
 
@@ -1169,86 +1167,11 @@ describe("moneyViews.eventCostGrid", () => {
     });
   });
 
-  // ── Opus review follow-ups (PR #216): double-counting — linked merges,
-  //    unlinked duplicates flagged ──────────────────────────────────────────
+  // ── Opus review follow-ups (PR #216): double-counting — unlinked
+  //    duplicates flagged (the `sourceRef` merge path was retired — nothing
+  //    ever wrote it — see the `budgetLines.sourceRef` removal PR) ──────────
 
-  test("a LINKED budget line (sourceRef -> the event item) MERGES into that item's row — no separate row, no double-count, category upgraded from the line", async () => {
-    const t = newT();
-    const s = await setupChapter(t);
-    await asChapterManager(s);
-    const eventId = await seedEvent(s, s.chapterId, { name: "Linked Test" });
-    await seedDefaultCostSetup(s, eventId, ["planning_doc"]);
-    const itemId = await seedEventItem(s, eventId, "planning_doc", {
-      title: "Sound tech",
-      cost: 150,
-      status: "in_progress",
-    });
-
-    const fundId = await seedFund(s, s.chapterId);
-    const cat = await seedCategory(s, s.chapterId, fundId, "Production");
-    const budgetId = await seedOneTimeBudget(s, s.chapterId, "event", eventId, { amountCents: 100000 });
-    // Directly seeded with sourceRef — no mutation sets this today (forward-
-    // looking infra); this is exactly how a future "plan this task's cost in
-    // Finances" flow would write it.
-    await run(s.t, (ctx) =>
-      ctx.db.insert("budgetLines", {
-        budgetId,
-        description: "Sound tech (finance plan copy)",
-        categoryId: cat,
-        plannedCents: 15000,
-        sortOrder: 0,
-        createdBy: s.userId,
-        createdAt: Date.now(),
-        sourceRef: { kind: "eventItem", id: String(itemId) },
-      }),
-    );
-
-    const result = await s.as.query(api.moneyViews.eventCostGrid, { eventId });
-    // ONE row (the module row), not two — the line never became its own row.
-    expect(result.rows).toHaveLength(1);
-    expect(result.rows[0]).toMatchObject({
-      sourceKind: "event_item",
-      label: "Sound tech", // module row's own label wins, not the line's
-      plannedCents: 15000, // module row's own cost wins, not summed with the line
-      categoryName: "Production", // upgraded from the linked line's REAL category
-      linked: true,
-      possibleDuplicate: false,
-    });
-    // No double-count: total is the module row's figure ONCE, not +15000 again.
-    expect(result.totalPlannedCents).toBe(15000);
-  });
-
-  test("a DANGLING sourceRef (target not in the grid) falls back to a normal unlinked row — the line's plan data doesn't vanish", async () => {
-    const t = newT();
-    const s = await setupChapter(t);
-    await asChapterManager(s);
-    const eventId = await seedEvent(s, s.chapterId);
-    const budgetId = await seedOneTimeBudget(s, s.chapterId, "event", eventId, { amountCents: 100000 });
-    await run(s.t, (ctx) =>
-      ctx.db.insert("budgetLines", {
-        budgetId,
-        description: "Orphaned link",
-        plannedCents: 5000,
-        sortOrder: 0,
-        createdBy: s.userId,
-        createdAt: Date.now(),
-        // Points at an eventItem id that was never seeded (or has no
-        // qualifying currency column) — nothing in the grid to merge into.
-        sourceRef: { kind: "eventItem", id: "nonexistent_item_id" },
-      }),
-    );
-
-    const result = await s.as.query(api.moneyViews.eventCostGrid, { eventId });
-    expect(result.rows).toHaveLength(1);
-    expect(result.rows[0]).toMatchObject({
-      sourceKind: "budget_line",
-      label: "Orphaned link",
-      plannedCents: 5000,
-      linked: false,
-    });
-  });
-
-  test("an UNLINKED budget line whose label overlaps a module row's is flagged possibleDuplicate on BOTH sides — and BOTH still count toward the total (nothing silently dropped)", async () => {
+  test("a budget line whose label overlaps a module row's is flagged possibleDuplicate on BOTH sides — and BOTH still count toward the total (nothing silently dropped)", async () => {
     const t = newT();
     const s = await setupChapter(t);
     await asChapterManager(s);
@@ -1277,8 +1200,6 @@ describe("moneyViews.eventCostGrid", () => {
     const line = result.rows.find((r) => r.sourceKind === "budget_line")!;
     expect(task.possibleDuplicate).toBe(true);
     expect(line.possibleDuplicate).toBe(true);
-    expect(task.linked).toBe(false);
-    expect(line.linked).toBe(false);
     // Both amounts still count — a visible over-count warning beats a
     // silent under-count.
     expect(result.totalPlannedCents).toBe(15000 + 15000);
@@ -1298,6 +1219,57 @@ describe("moneyViews.eventCostGrid", () => {
     expect(result.rows).toHaveLength(2);
     expect(result.rows.every((r) => r.possibleDuplicate === false)).toBe(true);
   });
+
+  /**
+   * Cross-package pin (PR #239 review): this exact table is mirrored in
+   * `apps/mobile/components/money/duplicateMatch.test.ts` (asserting
+   * `findMergeTargetItem`'s match/no-match) — same item/line label pairs,
+   * same expected duplicate outcome. `duplicateMatch.ts` is a hand-copied
+   * mirror of this file's `significantTokens`/`tokensOverlap` (different
+   * runtimes — mobile can't import this convex-function file's internals),
+   * so nothing enforces they stay in sync except this: if either copy's
+   * stopword list, length floor, or split regex drifts, ONE of these two
+   * suites fails for the SAME fixture pair. Keep the two tables
+   * byte-for-byte identical.
+   */
+  test.each([
+    ["Sound tech", "Sound tech deposit", true, "shared significant tokens"],
+    ["This vendor invoice", "This permit renewal", false, 'only a STOPWORD ("this") overlaps'],
+    [
+      "PA rental (event agreement)",
+      "Event insurance fee",
+      true,
+      'punctuation-split tokens overlap on "event" (short tokens "pa"/"fee" don\'t count)',
+    ],
+    ["SOUND CHECK setup", "sound check fee", true, "case-insensitive overlap"],
+  ] as const)(
+    "token-algorithm pin: %s vs %s -> possibleDuplicate=%s (%s)",
+    async (itemLabel, lineLabel, expectDuplicate, _why) => {
+      const t = newT();
+      const s = await setupChapter(t);
+      await asChapterManager(s);
+      const eventId = await seedEvent(s, s.chapterId);
+      await seedDefaultCostSetup(s, eventId, ["planning_doc"]);
+      await seedEventItem(s, eventId, "planning_doc", { title: itemLabel, cost: 100 });
+      const budgetId = await seedOneTimeBudget(s, s.chapterId, "event", eventId, { amountCents: 100000 });
+      await run(s.t, (ctx) =>
+        ctx.db.insert("budgetLines", {
+          budgetId,
+          description: lineLabel,
+          plannedCents: 10000,
+          sortOrder: 0,
+          createdBy: s.userId,
+          createdAt: Date.now(),
+        }),
+      );
+
+      const result = await s.as.query(api.moneyViews.eventCostGrid, { eventId });
+      const task = result.rows.find((r) => r.sourceKind === "event_item")!;
+      const line = result.rows.find((r) => r.sourceKind === "budget_line")!;
+      expect(task.possibleDuplicate).toBe(expectDuplicate);
+      expect(line.possibleDuplicate).toBe(expectDuplicate);
+    },
+  );
 
   test("an UNPAID vendor has a null actualCents (committed, not yet spent)", async () => {
     const t = newT();
@@ -1685,38 +1657,7 @@ describe("moneyViews.refMoney: planned union (PR2)", () => {
     expect(result.unallocatedPlannedCents).toBe(50000);
   });
 
-  test("a LINKED budgetLine (sourceRef -> an eventItem) contributes ONCE to the union, under the line's real category — no double count", async () => {
-    const t = newT();
-    const s = await setupChapter(t);
-    await asChapterManager(s);
-    const eventId = await seedEvent(s, s.chapterId, { name: "Linked union" });
-    await seedDefaultCostSetup(s, eventId, ["planning_doc"]);
-    const itemId = await seedEventItem(s, eventId, "planning_doc", { title: "Sound tech", cost: 150 });
-
-    const fundId = await seedFund(s, s.chapterId);
-    const productionCat = await seedCategory(s, s.chapterId, fundId, "Production");
-    const budgetId = await seedOneTimeBudget(s, s.chapterId, "event", eventId, { amountCents: 100000 });
-    await run(s.t, (ctx) =>
-      ctx.db.insert("budgetLines", {
-        budgetId,
-        description: "Sound tech (finance plan copy)",
-        categoryId: productionCat,
-        plannedCents: 15000,
-        sortOrder: 0,
-        createdBy: s.userId,
-        createdAt: Date.now(),
-        sourceRef: { kind: "eventItem", id: String(itemId) },
-      }),
-    );
-
-    const result = await s.as.query(api.moneyViews.refMoney, { refKind: "event", refId: eventId });
-    expect(result.lineCount).toBe(1); // the item row, merged — not 2
-    expect(result.categories).toEqual([
-      { categoryId: productionCat, categoryName: "Production", plannedCents: 15000, actualCents: 0 },
-    ]);
-  });
-
-  test("duplicate (unlinked) rows both count toward the union total — nothing silently dropped, mirrors eventCostGrid's possibleDuplicate semantics", async () => {
+  test("duplicate rows both count toward the union total — nothing silently dropped, mirrors eventCostGrid's possibleDuplicate semantics", async () => {
     const t = newT();
     const s = await setupChapter(t);
     await asChapterManager(s);
@@ -1725,7 +1666,7 @@ describe("moneyViews.refMoney: planned union (PR2)", () => {
     await seedEventItem(s, eventId, "planning_doc", { title: "Sound tech", cost: 150 });
 
     const budgetId = await seedOneTimeBudget(s, s.chapterId, "event", eventId, { amountCents: 100000 });
-    // A realistically-colliding, UNLINKED label — no sourceRef.
+    // A realistically-colliding label.
     await run(s.t, (ctx) =>
       ctx.db.insert("budgetLines", {
         budgetId,
@@ -1866,38 +1807,4 @@ describe("moneyViews.eventCostGrid: category resolution fields (PR2)", () => {
     });
   });
 
-  test("a LINKED module row's categoryId/categoryName are upgraded from the linked budgetLine — categoryIsDefault becomes false even if the row started on a default match", async () => {
-    const t = newT();
-    const s = await setupChapter(t);
-    await asChapterManager(s);
-    const eventId = await seedEvent(s, s.chapterId, { name: "Linked category upgrade" });
-    const fundId = await seedFund(s, s.chapterId);
-    await seedCategory(s, s.chapterId, fundId, MODULE_DEFAULT_CATEGORY_NAMES.supplies); // would default-match
-    const realCat = await seedCategory(s, s.chapterId, fundId, "Real Category");
-    await seedDefaultCostSetup(s, eventId, ["supplies"]);
-    const itemId = await seedEventItem(s, eventId, "supplies", { title: "Tent", cost: 100 });
-
-    const budgetId = await seedOneTimeBudget(s, s.chapterId, "event", eventId, { amountCents: 10000 });
-    await run(s.t, (ctx) =>
-      ctx.db.insert("budgetLines", {
-        budgetId,
-        description: "Tent (finance copy)",
-        categoryId: realCat,
-        plannedCents: 10000,
-        sortOrder: 0,
-        createdBy: s.userId,
-        createdAt: Date.now(),
-        sourceRef: { kind: "eventItem", id: String(itemId) },
-      }),
-    );
-
-    const result = await s.as.query(api.moneyViews.eventCostGrid, { eventId });
-    expect(result.rows).toHaveLength(1);
-    expect(result.rows[0]).toMatchObject({
-      linked: true,
-      categoryId: realCat,
-      categoryIsDefault: false,
-      categoryName: "Real Category",
-    });
-  });
 });

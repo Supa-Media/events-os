@@ -20,6 +20,10 @@ type PersonId = string;
 type Props = {
   visible: boolean;
   title?: string;
+  /** Optional one-line context shown under the title (e.g. the Money-page
+   *  item→vendor conversion prompt's cost preview) — omitted entirely when
+   *  unset, so every other caller's header is unchanged. */
+  subtitle?: string;
   selectedId?: PersonId | null;
   onPick: (personId: PersonId) => void;
   onClear?: () => void;
@@ -64,6 +68,7 @@ type Props = {
 export function PersonPicker({
   visible,
   title = "Assign person",
+  subtitle,
   selectedId,
   onPick,
   onClear,
@@ -123,11 +128,16 @@ export function PersonPicker({
           onPress={() => {}}
           className="w-full max-w-md overflow-hidden rounded-xl border border-border bg-raised shadow-pop"
         >
-          <View className="flex-row items-center justify-between border-b border-border px-5 py-4">
-            <Text className="font-display text-lg text-ink">{title}</Text>
-            <Pressable onPress={onClose} hitSlop={8} className="rounded-md p-1">
-              <Icon name="x" size={18} color={colors.muted} />
-            </Pressable>
+          <View className="border-b border-border px-5 py-4">
+            <View className="flex-row items-center justify-between">
+              <Text className="font-display text-lg text-ink">{title}</Text>
+              <Pressable onPress={onClose} hitSlop={8} className="rounded-md p-1">
+                <Icon name="x" size={18} color={colors.muted} />
+              </Pressable>
+            </View>
+            {subtitle ? (
+              <Text className="mt-1 text-sm text-muted">{subtitle}</Text>
+            ) : null}
           </View>
 
           {showSearch ? (
