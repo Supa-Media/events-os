@@ -389,6 +389,26 @@ const recurringBudgetCard = v.object({
   status: okWarnValidator,
   categories: v.optional(v.array(categoryBreakdown)),
   note: v.optional(v.union(v.string(), v.null())),
+  // DASH-2.1 (bug 1): ADDITIVE fields, kept alongside the pre-existing
+  // `spentCents`/`budgetCents`/`pct` triple (still the cadence-cumulative
+  // figure — "$978.78 of $1,000 this year" — so the deployed UI keeps reading
+  // correctly with zero changes) so a follow-up UI PR can render a
+  // month-honest breakdown too: "clicking a month should show breakdowns
+  // based on that month's transactions" (owner report — a yearly/quarterly
+  // bucket showed the SAME cumulative figure in every month).
+  //  - `periodSpendCents`: spend in the dashboard's SELECTED MONTH only,
+  //    regardless of cadence or period mode (month vs YTD) — for a `monthly`
+  //    cadence card in month mode this equals `spentCents` exactly (the
+  //    cumulative figure already IS one month); for `quarterly`/`yearly` it's
+  //    the narrower, actually-useful number.
+  //  - `fullCapCents`: the cadence's own full cap (`effectiveCapCents`),
+  //    invariant to cadence/period mode — always "$1,000", never a prorated
+  //    slice.
+  //  - `cadenceSpendCents`: alias of `spentCents` (named for clarity at the
+  //    call site) — the cumulative spend over the card's own cadence window.
+  periodSpendCents: v.optional(v.number()),
+  fullCapCents: v.optional(v.number()),
+  cadenceSpendCents: v.optional(v.number()),
   ...budgetApprovalFields,
 });
 
@@ -959,13 +979,64 @@ function recurringAppliesToDash(b: Doc<"budgets">, dp: DashPeriod): boolean {
 }
 
 /**
+ * DASH-2.1 (bug 2): a recurring budget's YTD denominator, cadence-aware — NOT
+ * a per-month sum (see `monthEquivForDash`'s doc comment for why the naive
+ * per-month sum is wrong for `quarterly`/`yearly`). Only reached for
+ * `b.year === dp.year` in `"ytd"` mode by a genuinely recurring cadence
+ * (`monthly`/`quarterly`/`yearly` — `effectiveType(b) !== "recurring"` budgets
+ * never reach `monthEquivForDash`'s ytd branch at all, so `per_instance`/
+ * `one_off` never hit this function).
+ *
+ * Owner rule (the exact bug report): "$978.78/$1,000 · 98%" for a YEARLY
+ * budget stayed identical from Feb through Apr because the OLD denominator
+ * was `capCents/12 * monthsElapsed` (a calendar pot prorated as if it were a
+ * monthly allowance) — by April that's `$1,000/12×5 = $416.65`, so genuine
+ * cumulative spend of $978.78 reads as "235% · Over", which is absurd for a
+ * POT that's fully available the whole year. Fixed semantics, mirroring
+ * `monthly`'s (unchanged, already-correct) "cap × months elapsed":
+ *  - `monthly`   → cap × months elapsed (unchanged, falls through below).
+ *  - `quarterly` → cap × QUARTERS elapsed (`Math.ceil(throughMonth / 3)`,
+ *    the same "the current, in-progress period's full cap is already
+ *    counted" rule `monthly` uses — by May, Q1 is fully elapsed AND Q2 has
+ *    started, so 2 quarters' worth is due, not 5/3). A budget fixed to ONE
+ *    specific quarter (`b.quarter` set) instead gets its cap once that
+ *    quarter has started, 0 before it — never a fractional quarter.
+ *  - `yearly`    → the FULL cap, unconditionally — a yearly budget is a pot
+ *    available all year, not something that accrues month by month.
+ */
+function ytdCadenceAllocationCents(b: Doc<"budgets">, dp: DashPeriod): number | null {
+  const capCents = effectiveCapCents(b);
+  if (b.cadence === "yearly") return capCents;
+  if (b.cadence === "quarterly") {
+    if (b.quarter != null) {
+      const quarterStartMonth = (b.quarter - 1) * 3 + 1;
+      return quarterStartMonth <= dp.month ? capCents : 0;
+    }
+    const quartersElapsed = Math.ceil(dp.month / 3);
+    return capCents * quartersElapsed;
+  }
+  // `monthly` (and any other cadence that reaches here) falls through to the
+  // caller's unchanged per-month-sum loop.
+  return null;
+}
+
+/**
  * A budget's month-equivalent allocation for the dashboard period: one month in
- * `"month"` mode (identical to `monthEquivalentBudgetCents`), or the sum across
- * months 1..throughMonth in `"ytd"` mode — so "spent vs allocated" stays
- * comparable when spend is accumulated YTD.
+ * `"month"` mode (identical to `monthEquivalentBudgetCents` — a deliberately
+ * DIFFERENT, comparison-normalized semantic from this function's own YTD
+ * branch, used e.g. by the central chapter roll-up to compare one month of
+ * mixed-cadence budgets; see that function's doc comment), or the cadence-aware
+ * YTD allocation in `"ytd"` mode (`ytdCadenceAllocationCents` for
+ * `quarterly`/`yearly` — DASH-2.1 bug 2; the sum across months 1..throughMonth
+ * for `monthly`/`per_instance`/`one_off`, UNCHANGED — "spent vs allocated"
+ * stays comparable when spend is accumulated YTD).
  */
 function monthEquivForDash(b: Doc<"budgets">, dp: DashPeriod): number {
   if (!dp.ytd) return monthEquivalentBudgetCents(b, dp.year, dp.month);
+  if (b.year === dp.year) {
+    const cadenceAllocation = ytdCadenceAllocationCents(b, dp);
+    if (cadenceAllocation != null) return cadenceAllocation;
+  }
   let sum = 0;
   for (let m = 1; m <= dp.month; m++) sum += monthEquivalentBudgetCents(b, dp.year, m);
   return sum;
@@ -1702,6 +1773,35 @@ function budgetSpendBreakdown(
 }
 
 /**
+ * DASH-2.1 (bug 1): a recurring budget's spend in the dashboard's SELECTED
+ * MONTH specifically (`dp.year`/`dp.month`) — regardless of the budget's own
+ * cadence or the dashboard's period mode (month vs YTD). Feeds the recurring
+ * card's new `periodSpendCents` field, from `yearTxns` already loaded for the
+ * dashboard (no extra scan).
+ *
+ * For a `monthly` cadence card in month mode this is identical to
+ * `spentCents` (`budgetSpendBreakdown`'s own cumulative figure already IS one
+ * month — see its doc comment). The gap this closes is `quarterly`/`yearly`:
+ * `budgetSpendBreakdown` in month mode widens to the whole quarter/year (via
+ * `budgetEffectivePeriod`), so a yearly bucket's `spentCents` reads as the
+ * SAME cumulative number in every month of the year (the exact owner report —
+ * "$978.78/$1,000 · 98%" unchanged from Feb through Apr). This function
+ * narrows to the one calendar month regardless.
+ */
+function monthOnlySpendCentsForBudget(
+  b: Doc<"budgets">,
+  yearTxns: Doc<"transactions">[],
+  dp: DashPeriod,
+): number {
+  let sum = 0;
+  for (const tr of yearTxns) {
+    if (tr.budgetId !== b._id || !isSpend(tr)) continue;
+    if (inPeriod(tr.postedAt, dp.year, dp.month)) sum += tr.amountCents;
+  }
+  return sum;
+}
+
+/**
  * A one-time budget CARD's own actuals — genuinely LIFETIME, not just
  * un-sliced from the dashboard's viewed month: an event/project budget is a
  * total plan, not a per-month allocation, so its own bar/pct/remaining must
@@ -2181,9 +2281,16 @@ export const dashboardChapter = query({
       const { spentCents, categories } = budgetSpendBreakdown(b, yearTxns, catName, dp);
       // Prefer an author label; fall back to a legacy team name, then a generic.
       let name = b.label ?? (b.teamId ? teamName.get(b.teamId) : undefined) ?? "Recurring";
-      // Allocation scales with the period in YTD (sum of month-equivalents).
+      // Allocation scales with the period in YTD (sum of month-equivalents;
+      // DASH-2.1 bug 2: cadence-aware for quarterly/yearly — see
+      // `monthEquivForDash`'s doc comment).
       const budgetCents = budgetAllocationForDash(b, dp);
       const pct = pctOf(spentCents, budgetCents);
+      // DASH-2.1 bug 1: ADDITIVE month-honest fields alongside the unchanged
+      // cumulative `spentCents`/`budgetCents`/`pct` — see `recurringBudgetCard`'s
+      // doc comment.
+      const periodSpendCents = monthOnlySpendCentsForBudget(b, yearTxns, dp);
+      const fullCapCents = effectiveCapCents(b);
       recurringBudgets.push({
         id: b._id,
         name,
@@ -2194,6 +2301,9 @@ export const dashboardChapter = query({
         status: statusFor(pct),
         categories: categories.length ? categories : undefined,
         note: null,
+        periodSpendCents,
+        fullCapCents,
+        cadenceSpendCents: spentCents,
         ...budgetApprovalCardFields(b),
       });
     }
