@@ -4,8 +4,9 @@ import { v } from "convex/values";
 /**
  * Ticketing — the public, attendee-facing layer of an event (Posh/Partiful
  * style). One `eventPages` row per event turns on a shareable landing page
- * (served by an httpAction at /e/<slug>) with RSVPs, ticket sales via Stripe,
- * comments + reactions, and email blasts.
+ * (served by an httpAction at /event/<slug>, with the legacy /e/<slug> prefix
+ * kept as an alias) with RSVPs, ticket sales via Stripe, comments + reactions,
+ * and email blasts.
  *
  * Public attendees have NO account: an RSVP row doubles as a lightweight guest
  * identity. Its secret `token` (random, returned once to the browser and kept
@@ -20,12 +21,12 @@ export const RSVP_STATUSES = ["going", "maybe", "not_going"] as const;
 export const eventPages = defineTable({
   eventId: v.id("events"),
   chapterId: v.id("chapters"),
-  // URL slug for the public page (/e/<slug>). Unique across the deployment.
+  // URL slug for the public page (/event/<slug>). Unique across the deployment.
   slug: v.string(),
   // Nothing is publicly readable until the page is explicitly published.
   published: v.boolean(),
   // Cover/flyer image — the hero of the landing page AND the OG/iMessage
-  // preview image (served publicly via /e/<slug>/cover).
+  // preview image (served publicly via /event/<slug>/cover).
   coverImage: v.optional(v.id("_storage")),
   // Short line under the title (e.g. "A night of worship on the rooftop").
   tagline: v.optional(v.string()),
