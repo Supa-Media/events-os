@@ -1,8 +1,23 @@
 import { ActivityIndicator, Text, View } from "react-native";
 import { useQuery } from "convex/react";
+import { useRouter } from "expo-router";
 import { api } from "@events-os/convex/_generated/api";
-import { RESPONSIBILITY_CADENCE_LABELS, SEAT_ROOT } from "@events-os/shared";
-import { Avatar, Badge, Card, EmptyState, SectionHeader } from "../ui";
+import type { Id } from "@events-os/convex/_generated/dataModel";
+import {
+  getRolePath,
+  RESPONSIBILITY_CADENCE_LABELS,
+  SEAT_ROOT,
+} from "@events-os/shared";
+import {
+  Avatar,
+  Badge,
+  Button,
+  Card,
+  EmptyState,
+  Icon,
+  type IconName,
+  SectionHeader,
+} from "../ui";
 import { colors } from "../../lib/theme";
 import { SeatActionsPanel } from "./SeatActions";
 import { RenameSeatControl, StructureEditActions } from "./StructureEditor";
@@ -70,6 +85,7 @@ export function SeatDetailPanel({
     api.responsibilities.dutiesForSeat,
     selected ? { seatDefId: selected.seat.defId } : "skip",
   );
+  const router = useRouter();
 
   if (!selected) {
     return (
@@ -101,6 +117,11 @@ export function SeatDetailPanel({
       : detail.holders.length === 1
         ? "One holder"
         : "Multiple holders";
+
+  // The role path for this seat, if any — org-chart seats are always
+  // `kind: "seat"` (never event hats), so the lookup is unambiguous. The
+  // derived-only rollup seat (`chapter_directors`) has none; guard for it.
+  const rolePath = getRolePath("seat", detail.slug);
 
   return (
     <Card>
@@ -156,6 +177,58 @@ export function SeatDetailPanel({
           ))}
         </View>
       )}
+
+      {rolePath ? (
+        <>
+          <SectionHeader title="Training" />
+          <View className="gap-2.5">
+            {/* Path identity — icon + title + course count, mirroring the
+                role-path detail page's header treatment. */}
+            <View className="flex-row items-center gap-2.5">
+              <View className="h-8 w-8 items-center justify-center rounded-lg bg-accent-soft">
+                <Icon name={rolePath.icon as IconName} size={16} color={colors.accent} />
+              </View>
+              <View className="flex-1">
+                <Text className="text-sm font-semibold text-ink" numberOfLines={1}>
+                  {rolePath.title}
+                </Text>
+                <Text className="text-xs text-muted">
+                  {rolePath.courseSlugs.length === 0
+                    ? "Courses on the way"
+                    : `${rolePath.courseSlugs.length} ${
+                        rolePath.courseSlugs.length === 1 ? "course" : "courses"
+                      }`}
+                </Text>
+              </View>
+            </View>
+
+            {/* Per-holder progress on THIS path's courses. Only holders (and
+                only when the path has real courses) — one `personBadges` query
+                per holder, which is fine at typical seat holder counts of 1. */}
+            {rolePath.courseSlugs.length > 0 && detail.holders.length > 0 ? (
+              <View className="gap-2">
+                {detail.holders.map((h) => (
+                  <HolderPathProgress
+                    key={h.personId}
+                    personId={h.personId}
+                    name={h.name}
+                    imageUrl={h.imageUrl}
+                    courseSlugs={rolePath.courseSlugs}
+                  />
+                ))}
+              </View>
+            ) : null}
+
+            <Button
+              title="View the path →"
+              variant="secondary"
+              size="sm"
+              onPress={() => router.push(`/academy/path/${detail.slug}?kind=seat`)}
+              className="mt-0.5 self-start"
+            />
+          </View>
+        </>
+      ) : null}
 
       <SectionHeader title="Duties" />
       {duties === undefined ? (
@@ -215,5 +288,51 @@ export function SeatDetailPanel({
         </View>
       )}
     </Card>
+  );
+}
+
+/**
+ * One holder's progress on a role path, scoped to that path's courses. Reads
+ * `academy.personBadges` (fully-EARNED course badges only — there is no
+ * per-module progress query for another person) and shows how many of the
+ * path's own courses they've completed. One query per holder; holder counts
+ * are low per seat (usually 1), so this stays cheap. Row layout matches the
+ * "Held by" list above (Avatar + name).
+ */
+function HolderPathProgress({
+  personId,
+  name,
+  imageUrl,
+  courseSlugs,
+}: {
+  personId: Id<"people">;
+  name: string;
+  imageUrl: string | null;
+  courseSlugs: string[];
+}) {
+  const badges = useQuery(api.academy.personBadges, { personId });
+  const total = courseSlugs.length;
+  const earned =
+    badges === undefined
+      ? undefined
+      : courseSlugs.filter((slug) => badges.some((b) => b.courseSlug === slug)).length;
+  const complete = earned !== undefined && total > 0 && earned === total;
+
+  return (
+    <View className="flex-row items-center gap-2.5">
+      <Avatar name={avatarNameFor(name)} uri={imageUrl} size={28} />
+      <Text className="flex-1 text-sm text-ink" numberOfLines={1}>
+        {name}
+      </Text>
+      {badges === undefined ? (
+        <ActivityIndicator size="small" color={colors.accent} />
+      ) : (
+        <Badge
+          label={`${earned}/${total} courses`}
+          tone={complete ? "success" : "neutral"}
+          icon={complete ? "award" : undefined}
+        />
+      )}
+    </View>
   );
 }
