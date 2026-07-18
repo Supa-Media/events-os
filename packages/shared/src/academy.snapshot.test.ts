@@ -12,6 +12,13 @@ import { ACADEMY_COURSES, ACADEMY_SECTIONS } from "./academy";
 
 // Ordered section slugs (curriculum/unlock order).
 const EXPECTED_SECTION_SLUGS: string[] = [
+  "foundations-seeds-and-soil",
+  "foundations-chapters-and-central",
+  "foundations-the-work",
+  "foundations-communication",
+  "foundations-showing-up",
+  "foundations-where-things-live",
+  "foundations-spending",
   "what-is-events-os",
   "organizers-and-crew",
   "anatomy-of-an-event",
@@ -69,6 +76,62 @@ const EXPECTED_SECTIONS: {
   optional: boolean;
   capstoneKind: string | null;
 }[] = [
+  {
+    slug: "foundations-seeds-and-soil",
+    title: "Seeds & soil",
+    minutes: 3,
+    quizLength: 4,
+    optional: false,
+    capstoneKind: null,
+  },
+  {
+    slug: "foundations-chapters-and-central",
+    title: "Chapters and central",
+    minutes: 4,
+    quizLength: 4,
+    optional: false,
+    capstoneKind: null,
+  },
+  {
+    slug: "foundations-the-work",
+    title: "The work",
+    minutes: 4,
+    quizLength: 4,
+    optional: false,
+    capstoneKind: null,
+  },
+  {
+    slug: "foundations-communication",
+    title: "Communication",
+    minutes: 3,
+    quizLength: 3,
+    optional: false,
+    capstoneKind: null,
+  },
+  {
+    slug: "foundations-showing-up",
+    title: "Showing up",
+    minutes: 4,
+    quizLength: 4,
+    optional: false,
+    capstoneKind: null,
+  },
+  {
+    slug: "foundations-where-things-live",
+    title: "Where things live",
+    minutes: 3,
+    quizLength: 4,
+    optional: false,
+    capstoneKind: null,
+  },
+  {
+    slug: "foundations-spending",
+    title: "Spending like it's not yours",
+    minutes: 3,
+    quizLength: 3,
+    optional: false,
+    capstoneKind: null,
+  },
   {
     slug: "what-is-events-os",
     title: "What Chapter OS is",
@@ -437,6 +500,16 @@ const EXPECTED_COURSES: {
   themeKey: string;
   moduleSlugs: string[];
 }[] = [
+  {
+    slug: "welcome-to-public-worship",
+    themeKey: "foundations",
+    moduleSlugs: ["foundations-seeds-and-soil", "foundations-chapters-and-central", "foundations-the-work"],
+  },
+  {
+    slug: "how-we-work",
+    themeKey: "foundations",
+    moduleSlugs: ["foundations-communication", "foundations-showing-up", "foundations-where-things-live", "foundations-spending"],
+  },
   {
     slug: "chapter-os-fundamentals",
     themeKey: "events",

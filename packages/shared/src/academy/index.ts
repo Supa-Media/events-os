@@ -20,6 +20,11 @@
  */
 
 import {
+  FOUNDATIONS_COURSES,
+  FOUNDATIONS_SECTIONS,
+  FOUNDATIONS_THEME,
+} from "./streams/foundations";
+import {
   EVENTS_COURSES,
   EVENTS_SECTIONS,
   EVENTS_THEME,
@@ -44,9 +49,11 @@ import type {
 
 export * from "./types";
 
-// The curriculum, in reading order: Events, then Works, then Management,
-// then Finances — the exact order the former monolith's flat array used.
+// The curriculum, in reading order: Foundations first (who we are and how we
+// work), then Events, Works, Management, then Finances — the exact order the
+// former monolith's flat array used, with Foundations prepended.
 const SECTIONS_IN_ORDER: Omit<AcademySection, "order">[] = [
+  ...FOUNDATIONS_SECTIONS,
   ...EVENTS_SECTIONS,
   ...WORKS_SECTIONS,
   ...MANAGEMENT_SECTIONS,
@@ -103,6 +110,7 @@ export function previousAcademySection(
  * vertically stacked, each with a horizontal rail of course tiles.
  */
 export const ACADEMY_THEMES: Theme[] = [
+  FOUNDATIONS_THEME,
   EVENTS_THEME,
   WORKS_THEME,
   MANAGEMENT_THEME,
@@ -118,6 +126,7 @@ export const ACADEMY_THEMES: Theme[] = [
  * module load).
  */
 export const ACADEMY_COURSES: Course[] = [
+  ...FOUNDATIONS_COURSES,
   ...EVENTS_COURSES,
   ...WORKS_COURSES,
   ...MANAGEMENT_COURSES,

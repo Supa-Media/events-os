@@ -22,6 +22,7 @@ import {
   ACADEMY_SECTION_COUNT,
   ACADEMY_TRAINING_TEMPLATES,
   defaultStatusOptions,
+  getAcademySection,
   previousModuleInCourse,
   type ModuleKey,
 } from "@events-os/shared";
@@ -174,13 +175,13 @@ async function platformTemplates(s: ChapterSetup) {
 }
 
 describe("curriculum content", () => {
-  test("forty-five ordered sections; six capstones; one optional bonus", () => {
-    expect(ACADEMY_SECTION_COUNT).toBe(45);
+  test("fifty-two ordered sections; six capstones; one optional bonus", () => {
+    expect(ACADEMY_SECTION_COUNT).toBe(52);
     expect(ACADEMY_SECTIONS.map((s) => s.order)).toEqual(
-      Array.from({ length: 45 }, (_v, i) => i + 1),
+      Array.from({ length: 52 }, (_v, i) => i + 1),
     );
     // The optional bonus is excluded from the trained denominator.
-    expect(ACADEMY_REQUIRED_SECTION_COUNT).toBe(44);
+    expect(ACADEMY_REQUIRED_SECTION_COUNT).toBe(51);
     expect(ACADEMY_CAPSTONE_SECTIONS).toHaveLength(6);
     // The suite leans on this order — pin it.
     expect(CAPSTONE_JOIN.capstone!.kind).toBe("join_event");
@@ -363,25 +364,28 @@ describe("quiz grading", () => {
   });
 
   test("within a course, module 2 is locked until module 1 passes (fundamentals)", async () => {
-    // SECTION_1 (what-is-events-os) and SECTION_2 (organizers-and-crew) are
-    // modules 1 and 2 of the fundamentals course — within-course ordering is
-    // still enforced under per-course unlock.
+    // This test is specifically about the "chapter-os-fundamentals" course
+    // chain, so it uses those literal slugs rather than SECTION_1/SECTION_2
+    // (which are just the first two sections of whatever course leads the
+    // catalog — currently Foundations' "Welcome to Public Worship").
+    const FUND_1 = "what-is-events-os";
+    const FUND_2 = "organizers-and-crew";
     const s = await setupLearner(newT());
-    expect(previousModuleInCourse(SECTION_2.slug)).toBe(SECTION_1.slug);
+    expect(previousModuleInCourse(FUND_2)).toBe(FUND_1);
     await expect(
       s.as.mutation(api.academy.submitQuiz, {
-        sectionSlug: SECTION_2.slug,
-        answers: correctAnswers(SECTION_2.slug),
+        sectionSlug: FUND_2,
+        answers: correctAnswers(FUND_2),
       }),
     ).rejects.toThrow(/first — sections complete in order/);
 
     await s.as.mutation(api.academy.submitQuiz, {
-      sectionSlug: SECTION_1.slug,
-      answers: correctAnswers(SECTION_1.slug),
+      sectionSlug: FUND_1,
+      answers: correctAnswers(FUND_1),
     });
     const res = await s.as.mutation(api.academy.submitQuiz, {
-      sectionSlug: SECTION_2.slug,
-      answers: correctAnswers(SECTION_2.slug),
+      sectionSlug: FUND_2,
+      answers: correctAnswers(FUND_2),
     });
     expect(res.passed).toBe(true);
 
@@ -389,17 +393,17 @@ describe("quiz grading", () => {
     const bySlug = new Map(progress.sections.map((x) => [x.slug, x]));
     // anatomy-of-an-event is module 3 of fundamentals, right after the just-
     // passed organizers-and-crew → unlocked.
-    expect(bySlug.get(ACADEMY_SECTIONS[2].slug)!.unlocked).toBe(true);
+    expect(bySlug.get(getAcademySection("anatomy-of-an-event")!.slug)!.unlocked).toBe(
+      true,
+    );
     // being-an-owner is the FIRST module of a DIFFERENT course (owning-an-event)
     // → open from the start under per-course unlock, even though nothing in that
     // course is passed. Under the old global order it locked behind anatomy.
-    expect(ACADEMY_SECTIONS[3].slug).toBe("being-an-owner");
-    expect(previousModuleInCourse(ACADEMY_SECTIONS[3].slug)).toBeNull();
-    expect(bySlug.get(ACADEMY_SECTIONS[3].slug)!.unlocked).toBe(true);
+    expect(previousModuleInCourse("being-an-owner")).toBeNull();
+    expect(bySlug.get("being-an-owner")!.unlocked).toBe(true);
     // timing-and-offsets is module 4 of fundamentals; its course-predecessor
     // (anatomy) isn't passed yet → still locked.
-    expect(ACADEMY_SECTIONS[4].slug).toBe("timing-and-offsets");
-    expect(bySlug.get(ACADEMY_SECTIONS[4].slug)!.unlocked).toBe(false);
+    expect(bySlug.get("timing-and-offsets")!.unlocked).toBe(false);
   });
 
   test("a passed section stays unlocked (and retakeable) across a curriculum insert", async () => {
