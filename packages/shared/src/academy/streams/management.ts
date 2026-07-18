@@ -652,7 +652,7 @@ export const MANAGEMENT_SECTIONS: Omit<AcademySection, "order">[] = [
         headers: ["When…", "The standard"],
         rows: [
           ["A project is active", "Acknowledge a leadership message within **30 minutes** — not resolve, acknowledge. \"Got it, thinking\" beats silence."],
-          ["A decision is needed", "Resolve it **same-day**, or propose a concrete path and a date it'll be resolved by"],
+          ["A decision is needed", "Resolve it **same-day** whenever possible, or propose a time to decide, or a clear next step"],
           ["Every week, no exceptions", "Send a **2-minute weekly update** — what moved, what's stuck, what you need"],
           ["Something has to be a no", "Never a bare no — offer an alternative, a scheduled discussion, or an honest assessment with a recommendation"],
         ],
@@ -675,7 +675,7 @@ export const MANAGEMENT_SECTIONS: Omit<AcademySection, "order">[] = [
       },
       {
         kind: "tip",
-        text: "Further reading — **Director Operating Standard (Effective 2026)**: https://www.notion.so/2d87f1c177b680c98426fb999e68b915. This page went private before it could be archived; this lesson is built from a verified crawl summary captured 2026-07-17 — flagged for an owner spot-check against the source.",
+        text: "Further reading — **Director Operating Standard (Effective 2026)**, §3: https://www.notion.so/2d87f1c177b680c98426fb999e68b915, and **Director Operating Standards - Shortened**, §1, §3–5: https://www.notion.so/b898b6724eaf4787849bcffa7feb3200.",
       },
     ],
     quiz: [
@@ -695,13 +695,13 @@ export const MANAGEMENT_SECTIONS: Omit<AcademySection, "order">[] = [
         prompt: "A decision needs to be made today. What does the standard require?",
         options: [
           "Wait until you're fully certain, however long that takes",
-          "Resolve it same-day, or propose a concrete path and date if you can't",
+          "Resolve it same-day whenever possible, or propose a time to decide or a clear next step",
           "Escalate every decision to Leadership",
           "Make the decision without telling anyone",
         ],
         answerIndex: 1,
         explanation:
-          "Same-day resolution or a same-day PATH — the standard accepts \"not yet, here's when\" as compliant. It doesn't accept silence.",
+          "Same-day resolution, or naming a time to decide, or a clear next step — the standard accepts \"not yet, here's when\" as compliant. It doesn't accept silence.",
       },
       {
         prompt: "Why does a 2-minute weekly update exist, given directors already have 1:1s and check-ins?",
@@ -751,18 +751,22 @@ export const MANAGEMENT_SECTIONS: Omit<AcademySection, "order">[] = [
         text: "Apology without a proposed time is just a feeling. Proposing times without acknowledging the miss is just logistics. Together, they're what turns a dropped ball into a recovered one — and they're what separates a director who's overwhelmed from one who's disengaging.",
       },
       {
-        kind: "table",
-        headers: ["Rung", "What it is"],
-        rows: [
-          ["**Warning / named miss**", "First slip — repair it, note it, move on"],
-          ["**Scope narrowing**", "Pattern forming — the department shrinks to what's actually being carried"],
-          ["**Time-bound improvement plan**", "Weekly check-ins, explicit and dated, until the pattern breaks"],
-          ["**Role redefinition**", "The pattern held through the lighter rungs — the role changes to fit what's real"],
+        kind: "p",
+        text: "A missed-then-repaired meeting is a non-event — the ritual above handles it. The standard also names what happens when the pattern doesn't break: meetings missed without notice, responses that stay slow or inconsistent, decision ownership avoided, or a director who has to be chased. When that's the real picture, Leadership has tools to reach for — not a script to run in order.",
+      },
+      {
+        kind: "bullets",
+        items: [
+          "**Adjust reporting structure** — change who the director is accountable to, day to day",
+          "**Narrow scope of responsibility** — shrink the role to what's actually being carried well",
+          "**A time-bound Performance Improvement Plan** — explicit expectations, with weekly check-ins to evaluate progress",
+          "**Redefine the role entirely** — reshape it to fit what's real",
         ],
       },
       {
-        kind: "p",
-        text: "None of this is punitive for its own sake — it's the same doctrine as holding the line with a direct report, one level up. A missed-then-repaired meeting is a non-event. A missed-then-silent one is data, and enough data points move you up the ladder.",
+        kind: "rule",
+        title: "Tools, not rungs",
+        text: "These four are not a fixed sequence, and there's no \"warning\" step that has to come first — Leadership picks whichever one actually answers the pattern in front of them, or more than one at once. \"These actions are about operational health, not punishment\": the goal is a role and a director that fit each other, not a ladder to climb.",
       },
       {
         kind: "reveal",
@@ -773,7 +777,7 @@ export const MANAGEMENT_SECTIONS: Omit<AcademySection, "order">[] = [
       },
       {
         kind: "tip",
-        text: "Further reading — **Director Operating Standard (Effective 2026)**: https://www.notion.so/2d87f1c177b680c98426fb999e68b915. Reconstructed from a verified crawl summary captured 2026-07-17 after the source page went private — flagged for an owner spot-check.",
+        text: "Further reading — **Director Operating Standard (Effective 2026)**, §4 and §9: https://www.notion.so/2d87f1c177b680c98426fb999e68b915.",
       },
     ],
     quiz: [
@@ -790,28 +794,28 @@ export const MANAGEMENT_SECTIONS: Omit<AcademySection, "order">[] = [
           "Either half alone is incomplete — feeling sorry without a next step, or logistics without acknowledgment. The ritual requires both, fast.",
       },
       {
-        prompt: "Why does silently absorbing a missed commitment (instead of repairing it) fail as a long-term fix?",
+        prompt: "A Director consistently misses meetings without notice, responds slowly, avoids decision ownership, and has to be chased. What does the standard say Leadership can do?",
         options: [
-          "It's actually the recommended default",
-          "As a pattern it hides the real problem instead of repairing it — the ladder exists so a slip gets addressed honestly instead of quietly absorbed",
-          "It isn't allowed under any circumstance, ever, ever",
-          "It only applies to non-directors",
+          "Nothing until a full quarter has passed",
+          "Reach for whichever tool fits — adjust reporting structure, narrow scope, a time-bound Performance Improvement Plan with weekly check-ins, or redefine the role — as the pattern calls for, not in a required order",
+          "Only issue a formal warning; nothing else is available",
+          "Remove the Director immediately with no conversation",
         ],
         answerIndex: 1,
         explanation:
-          "Same doctrine as the reporting-line accountability ladder: absorbing a failure silently teaches the pattern to continue. Naming it and repairing it honestly is what actually fixes it.",
+          "The standard lists four tools, not a fixed escalation path or a mandatory first warning. Which one applies depends on what's actually broken.",
       },
       {
-        prompt: "What's the accountability ladder's top rung, reserved for a pattern that survived every lighter step?",
+        prompt: "Why does the standard describe adjusting reporting structure, narrowing scope, a PIP, or redefining the role as being \"about operational health, not punishment\"?",
         options: [
-          "A single stern conversation",
-          "Role redefinition — the role changes shape to fit what's actually being carried",
-          "Immediate removal with no warning",
-          "Nothing — there is no top rung",
+          "Because they're never actually used in practice",
+          "Because the point is fixing a mismatch between the role and what's really being carried, not penalizing the person",
+          "Because only volunteers, never Directors, are subject to them",
+          "Because Leadership needs a reason to remove someone",
         ],
         answerIndex: 1,
         explanation:
-          "The ladder runs light to heavy, same shape as the reporting-line action ladder: warning, scope narrowing, a dated improvement plan, and only then role redefinition.",
+          "The frame matters: these are structural fixes for a role that's stopped fitting reality, applied deliberately — the same doctrine as fixing the system, not just the person, elsewhere in this stream.",
       },
     ],
   },
@@ -857,7 +861,7 @@ export const MANAGEMENT_SECTIONS: Omit<AcademySection, "order">[] = [
       },
       {
         kind: "tip",
-        text: "Further reading — **Director Expectations & Leadership Philosophy**: https://www.notion.so/2197f1c177b680d99fb9e919630ed294 and the **Director Operating Standard (Effective 2026)**: https://www.notion.so/2d87f1c177b680c98426fb999e68b915 (the latter reconstructed from a verified crawl summary captured 2026-07-17 — flagged for an owner spot-check).",
+        text: "Further reading — **Director Expectations & Leadership Philosophy**: https://www.notion.so/2197f1c177b680d99fb9e919630ed294, **Director Operating Standard (Effective 2026)**, §2, §6, §8: https://www.notion.so/2d87f1c177b680c98426fb999e68b915, and **Director Operating Standards - Shortened**, §3, §6: https://www.notion.so/b898b6724eaf4787849bcffa7feb3200.",
       },
     ],
     quiz: [
@@ -940,7 +944,7 @@ export const MANAGEMENT_SECTIONS: Omit<AcademySection, "order">[] = [
         kind: "table",
         headers: ["Step", "What happens"],
         rows: [
-          ["**1 · Create the role**", "Define it before you go looking — scope, expectations, time ask"],
+          ["**1 · Create the role**", "Define it before you go looking — purpose, responsibilities, ideal candidate traits"],
           ["**2 · Find candidates, in order**", "In-house → volunteer interest pool → public call/interest form → personal networks — always in that order, never skipping to \"who do I know\""],
           ["**3 · Interview**", "At least two team members, one shared rubric — see the next lesson"],
           ["**4 · Empowerment Trial**", "1–2 months of real, bounded work before anything is official"],
