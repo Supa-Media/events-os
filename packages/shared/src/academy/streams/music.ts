@@ -166,7 +166,7 @@ export const MUSIC_SECTIONS: Omit<AcademySection, "order">[] = [
       },
       {
         kind: "p",
-        text: 'Even the same verb can point in opposite directions. "When I in awesome wonder consider all the works Thy hands have made" uses "I" as the giver of consideration outward, toward God\'s works — offering, and welcome. "Who thought I\'d find You at the lowest place?" uses "I" as the reporter of personal surprise — testimony, and not the diet. Both have "I" as grammatical subject; the function is opposite.',
+        text: 'Even the same verb can point in opposite directions. "When I in awesome wonder consider all the worlds Thy hands have made" uses "I" as the giver of consideration outward, toward God\'s works — offering, and welcome. "Who thought I\'d find You at the lowest place?" uses "I" as the reporter of personal surprise — testimony, and not the diet. Both have "I" as grammatical subject; the function is opposite.',
       },
       {
         kind: "reveal",
@@ -218,7 +218,7 @@ export const MUSIC_SECTIONS: Omit<AcademySection, "order">[] = [
           "Same pronoun, opposite function: \"my\" can indicate covenant (naming who God is to me) or it can make the worshiper's own story the subject. Read for function, not the word.",
       },
       {
-        prompt: "\"When I in awesome wonder consider all the works Thy hands have made\" — what makes this offering, not testimony, despite the \"I\"?",
+        prompt: "\"When I in awesome wonder consider all the worlds Thy hands have made\" — what makes this offering, not testimony, despite the \"I\"?",
         options: [
           "It's an old hymn, so it's automatically doxological",
           "\"I\" is the giver of consideration outward, toward God's works — the direction is Godward, not inward",
