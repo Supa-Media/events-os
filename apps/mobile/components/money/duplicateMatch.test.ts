@@ -37,3 +37,44 @@ describe("findMergeTargetItem", () => {
     expect(findMergeTargetItem("Sound tech deposit", candidates)).toEqual(candidates[0]);
   });
 });
+
+/**
+ * Cross-package pin (PR #239 review): this exact table is mirrored in
+ * `apps/convex/tests/moneyViews.test.ts` (asserting the real
+ * `possibleDuplicate` flag off the server's `eventCostGrid` query) — same
+ * item/line label pairs, same expected duplicate outcome.
+ * `duplicateMatch.ts`'s `significantTokens`/`tokensOverlap` is a hand-copied
+ * mirror of `moneyViews.ts`'s own private copy (different runtimes — mobile
+ * can't import a convex-function file's internals), so nothing enforces they
+ * stay in sync except this: if either copy's stopword list, length floor, or
+ * split regex drifts, ONE of these two suites fails for the SAME fixture
+ * pair. Keep the two tables byte-for-byte identical.
+ */
+const TOKEN_ALGORITHM_FIXTURES: [string, string, boolean, string][] = [
+  ["Sound tech", "Sound tech deposit", true, "shared significant tokens"],
+  ["This vendor invoice", "This permit renewal", false, 'only a STOPWORD ("this") overlaps'],
+  [
+    "PA rental (event agreement)",
+    "Event insurance fee",
+    true,
+    'punctuation-split tokens overlap on "event" (short tokens "pa"/"fee" don\'t count)',
+  ],
+  ["SOUND CHECK setup", "sound check fee", true, "case-insensitive overlap"],
+];
+
+describe("findMergeTargetItem: cross-package token-algorithm pin", () => {
+  test.each(TOKEN_ALGORITHM_FIXTURES)(
+    "%s vs %s -> match=%s (%s)",
+    (itemLabel, lineLabel, expectMatch, _why) => {
+      const candidates: MergeTargetItem[] = [
+        { itemId: "item1", label: itemLabel, plannedCents: 10000 },
+      ];
+      const result = findMergeTargetItem(lineLabel, candidates);
+      if (expectMatch) {
+        expect(result).toEqual(candidates[0]);
+      } else {
+        expect(result).toBeNull();
+      }
+    },
+  );
+});

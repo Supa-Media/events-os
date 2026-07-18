@@ -356,18 +356,23 @@ function EventPlanGrid({
                 </HeaderCell>
                 <HeaderCell width={COL_CHEVRON}> </HeaderCell>
               </TableHeader>
-              {data.rows.map((row, i) => (
-                <GridRowView
-                  key={row.id}
-                  row={row}
-                  last={i === data.rows.length - 1}
-                  typeOptions={typeOptions}
-                  categoryOptions={categoryOptions}
-                  itemReadOnly={row.sourceKind === "event_item" && multiColItemIds.has(parseRowId(row.id).refId)}
-                  mergeTarget={mergeTargetsByRowId.get(row.id) ?? null}
-                  onOpen={row.sourceLink ? () => goTo(row.sourceLink!) : undefined}
-                />
-              ))}
+              {data.rows.map((row, i) => {
+                const isMultiCostItem =
+                  row.sourceKind === "event_item" && multiColItemIds.has(parseRowId(row.id).refId);
+                return (
+                  <GridRowView
+                    key={row.id}
+                    row={row}
+                    last={i === data.rows.length - 1}
+                    typeOptions={typeOptions}
+                    categoryOptions={categoryOptions}
+                    itemReadOnly={isMultiCostItem}
+                    hideVendorOption={isMultiCostItem}
+                    mergeTarget={mergeTargetsByRowId.get(row.id) ?? null}
+                    onOpen={row.sourceLink ? () => goTo(row.sourceLink!) : undefined}
+                  />
+                );
+              })}
             </Table>
           </View>
         </ScrollView>
@@ -394,6 +399,7 @@ function GridRowView({
   typeOptions,
   categoryOptions,
   itemReadOnly,
+  hideVendorOption,
   mergeTarget,
   onOpen,
 }: {
@@ -402,6 +408,10 @@ function GridRowView({
   typeOptions: TypeOption[];
   categoryOptions: CategoryOption[];
   itemReadOnly: boolean;
+  /** True for a multi-currency-column item (same rows `itemReadOnly` covers)
+   *  — see `TypeCell`'s own doc comment for why "Vendor…" is hidden, not
+   *  merely disabled, on these rows. */
+  hideVendorOption: boolean;
   /** The `event_item` row this flagged `budget_line` row can merge into
    *  (`duplicateMatch.findMergeTargetItem`) — `null` when this row isn't a
    *  mergeable duplicate (not a budget_line, not flagged, or its only
@@ -415,7 +425,7 @@ function GridRowView({
         <ItemCell row={row} readOnly={itemReadOnly} mergeTarget={mergeTarget} />
       </Cell>
       <Cell width={COL_TYPE}>
-        <TypeCell row={row} typeOptions={typeOptions} />
+        <TypeCell row={row} typeOptions={typeOptions} hideVendorOption={hideVendorOption} />
       </Cell>
       <Cell width={COL_CATEGORY}>
         <CategoryCell row={row} categoryOptions={categoryOptions} />
@@ -566,8 +576,26 @@ const VENDOR_CONVERSION_OPTION = "__convert_to_vendor__";
  *  module (`items.convertEventItemModule`), OR — picking "Vendor…" — opens
  *  the guided `VendorConversionPrompt` (pick/create a person, then
  *  `items.convertItemToVendor`) rather than converting silently. A static
- *  label for vendor/plan-only rows (neither has a "module" to change). */
-function TypeCell({ row, typeOptions }: { row: GridRow; typeOptions: TypeOption[] }) {
+ *  label for vendor/plan-only rows (neither has a "module" to change).
+ *
+ *  Review finding (PR #239): a multi-cost-column item (`hideVendorOption`,
+ *  same `multiColItemIds` set the Item cell's `readOnly` already uses) HIDES
+ *  "Vendor…" entirely rather than offering it and letting the mutation
+ *  reject with `MULTI_COST_CONVERSION` — that rejection only fires AFTER
+ *  the person-picker step, and the create-new-person path would have
+ *  already minted a real `people` doc by then with no way to undo it. Hidden,
+ *  not disabled, matching this repo's existing hidden-not-dead pattern (the
+ *  option simply isn't in `typeOptions` for a module row that's already the
+ *  current value, same idea). */
+function TypeCell({
+  row,
+  typeOptions,
+  hideVendorOption,
+}: {
+  row: GridRow;
+  typeOptions: TypeOption[];
+  hideVendorOption: boolean;
+}) {
   const convertModule = useMutation(api.items.convertEventItemModule);
   const [vendorPromptOpen, setVendorPromptOpen] = useState(false);
 
@@ -596,18 +624,22 @@ function TypeCell({ row, typeOptions }: { row: GridRow; typeOptions: TypeOption[
   }
 
   const { refId: itemId } = parseRowId(row.id);
-  const options = [...typeOptions, { value: VENDOR_CONVERSION_OPTION, label: "Vendor…" }];
+  const options = hideVendorOption
+    ? typeOptions
+    : [...typeOptions, { value: VENDOR_CONVERSION_OPTION, label: "Vendor…" }];
 
   return (
     <>
       <SelectCell value={row.module ?? ""} options={options} onChange={(v) => void handleChange(v)} />
-      <VendorConversionPrompt
-        visible={vendorPromptOpen}
-        itemId={itemId as Id<"eventItems">}
-        itemLabel={row.label}
-        plannedCents={row.plannedCents}
-        onClose={() => setVendorPromptOpen(false)}
-      />
+      {hideVendorOption ? null : (
+        <VendorConversionPrompt
+          visible={vendorPromptOpen}
+          itemId={itemId as Id<"eventItems">}
+          itemLabel={row.label}
+          plannedCents={row.plannedCents}
+          onClose={() => setVendorPromptOpen(false)}
+        />
+      )}
     </>
   );
 }

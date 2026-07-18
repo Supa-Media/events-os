@@ -1220,6 +1220,57 @@ describe("moneyViews.eventCostGrid", () => {
     expect(result.rows.every((r) => r.possibleDuplicate === false)).toBe(true);
   });
 
+  /**
+   * Cross-package pin (PR #239 review): this exact table is mirrored in
+   * `apps/mobile/components/money/duplicateMatch.test.ts` (asserting
+   * `findMergeTargetItem`'s match/no-match) — same item/line label pairs,
+   * same expected duplicate outcome. `duplicateMatch.ts` is a hand-copied
+   * mirror of this file's `significantTokens`/`tokensOverlap` (different
+   * runtimes — mobile can't import this convex-function file's internals),
+   * so nothing enforces they stay in sync except this: if either copy's
+   * stopword list, length floor, or split regex drifts, ONE of these two
+   * suites fails for the SAME fixture pair. Keep the two tables
+   * byte-for-byte identical.
+   */
+  test.each([
+    ["Sound tech", "Sound tech deposit", true, "shared significant tokens"],
+    ["This vendor invoice", "This permit renewal", false, 'only a STOPWORD ("this") overlaps'],
+    [
+      "PA rental (event agreement)",
+      "Event insurance fee",
+      true,
+      'punctuation-split tokens overlap on "event" (short tokens "pa"/"fee" don\'t count)',
+    ],
+    ["SOUND CHECK setup", "sound check fee", true, "case-insensitive overlap"],
+  ] as const)(
+    "token-algorithm pin: %s vs %s -> possibleDuplicate=%s (%s)",
+    async (itemLabel, lineLabel, expectDuplicate, _why) => {
+      const t = newT();
+      const s = await setupChapter(t);
+      await asChapterManager(s);
+      const eventId = await seedEvent(s, s.chapterId);
+      await seedDefaultCostSetup(s, eventId, ["planning_doc"]);
+      await seedEventItem(s, eventId, "planning_doc", { title: itemLabel, cost: 100 });
+      const budgetId = await seedOneTimeBudget(s, s.chapterId, "event", eventId, { amountCents: 100000 });
+      await run(s.t, (ctx) =>
+        ctx.db.insert("budgetLines", {
+          budgetId,
+          description: lineLabel,
+          plannedCents: 10000,
+          sortOrder: 0,
+          createdBy: s.userId,
+          createdAt: Date.now(),
+        }),
+      );
+
+      const result = await s.as.query(api.moneyViews.eventCostGrid, { eventId });
+      const task = result.rows.find((r) => r.sourceKind === "event_item")!;
+      const line = result.rows.find((r) => r.sourceKind === "budget_line")!;
+      expect(task.possibleDuplicate).toBe(expectDuplicate);
+      expect(line.possibleDuplicate).toBe(expectDuplicate);
+    },
+  );
+
   test("an UNPAID vendor has a null actualCents (committed, not yet spent)", async () => {
     const t = newT();
     const s = await setupChapter(t);
