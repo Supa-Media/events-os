@@ -1,11 +1,9 @@
 /**
- * "By tag" rollup — the interactive tag-spend section shared by the chapter and
- * central dashboards (the "spent on Fundraisers" flow). Each tag row shows its
- * rolled-up spent-of-allocated (from `dashboardChapter`/`dashboardCentral`'s
- * `tagRollups`) and is tappable → a detail sheet that names the total spend on
- * that tag and lists the budgets carrying it, sourced from
- * `api.finances.tagDrilldown` — a dedicated, period-scoped, authz-aware query
- * (see its doc comment in `finances.ts` for the full "why").
+ * "By tag" rollup detail sheet — a modal that names a tag's total spend and
+ * lists the budgets carrying it, sourced from `api.finances.tagDrilldown` — a
+ * dedicated, period-scoped, authz-aware query (see its doc comment in
+ * `finances.ts` for the full "why"). Shared by the chapter and central
+ * dashboards (the "spent on Fundraisers" flow).
  *
  * Replaces the old `listBudgets` (client-filtered, un-period-scoped) +
  * `budgetVsActual` (whole-year, caller's-own-chapter-only) backfill — that path
@@ -21,6 +19,13 @@
  * matched by id). The central rollup aggregates same-named + same-kind tags
  * across chapters and leaves `tagId` null (`scope="central"`, matched by
  * `tagName` + `kind`, mirroring `dashboardCentral`'s own `tagAgg` key).
+ *
+ * DASH-3: the old `TagRollupSection` (a tappable card per rollup + this
+ * modal) is gone — `CentralView`'s "By tag" rows are now dense rows in the
+ * combined budgets table (chip "tag", chevron opens THIS modal directly); the
+ * modal itself is unchanged and now exported for that caller. `ChapterView`
+ * doesn't consume this file at all (chapter tag rollups aren't in scope
+ * here).
  */
 import { Modal, Pressable, ScrollView, Text, View } from "react-native";
 import { useQuery } from "convex/react";
@@ -28,7 +33,7 @@ import type { FunctionReturnType } from "convex/server";
 import { api } from "@events-os/convex/_generated/api";
 import type { Id } from "@events-os/convex/_generated/dataModel";
 import { formatCents } from "@events-os/shared";
-import { Badge, Icon, SectionHeader } from "../../ui";
+import { Badge, Icon } from "../../ui";
 import { colors } from "../../../lib/theme";
 import { BudgetBar } from "./parts";
 
@@ -48,114 +53,10 @@ export function tagKindLabel(kind: string | null): string {
   return kind ? (KIND_LABEL[kind] ?? "Tag") : "Tag";
 }
 
-/**
- * The "By tag" dashboard section: a tappable row per tag rollup, plus the
- * detail sheet that opens on tap.
- *
- * `selected`/`onSelect` are CONTROLLED by the parent dashboard (rather than
- * owned here) so the detail sheet's `tagDrilldown` query only ever runs while
- * it's actually open — see `TagDetailModal`.
- */
-export function TagRollupSection({
-  rollups,
-  scope,
-  year,
-  month,
-  period,
-  chapterId,
-  selected,
-  onSelect,
-}: {
-  rollups: TagRollup[];
-  /** Which `tagDrilldown` branch to call — the chapter dashboard's own tag
-   *  rollup (real `tagId`) or the central org-wide rollup (name + kind). */
-  scope: "chapter" | "central";
-  year: number;
-  /** The dashboard's currently-viewed (through-)month. */
-  month: number;
-  period: "month" | "ytd";
-  /** `scope: "chapter"` only — a central viewer peeking into a DIFFERENT
-   *  chapter's dashboard (mirrors `dashboardChapter`'s own `chapterId` arg).
-   *  Absent (or the caller's own chapter) is the normal same-chapter case. */
-  chapterId?: Id<"chapters">;
-  selected: TagRollup | null;
-  onSelect: (r: TagRollup | null) => void;
-}) {
-  // WP-wave4 (item 7, owner addendum 2026-07-17): "if there are no
-  // transactions in a section we should just hide the section" — a "No
-  // tagged spend yet" placeholder is dead weight when nothing's tagged;
-  // hide the whole section (header included) rather than show an empty box.
-  if (rollups.length === 0) {
-    return selected ? (
-      <TagDetailModal
-        rollup={selected}
-        scope={scope}
-        year={year}
-        month={month}
-        period={period}
-        chapterId={chapterId}
-        onClose={() => onSelect(null)}
-      />
-    ) : null;
-  }
-  return (
-    <>
-      <SectionHeader title="By tag" count={rollups.length} />
-      <View className="gap-3">
-        {rollups.map((r, i) => (
-          <TagRollupRow
-            key={r.tagId ?? `${r.tagName}:${i}`}
-            r={r}
-            onPress={() => onSelect(r)}
-          />
-        ))}
-      </View>
-
-      {selected ? (
-        <TagDetailModal
-          rollup={selected}
-          scope={scope}
-          year={year}
-          month={month}
-          period={period}
-          chapterId={chapterId}
-          onClose={() => onSelect(null)}
-        />
-      ) : null}
-    </>
-  );
-}
-
-function TagRollupRow({ r, onPress }: { r: TagRollup; onPress: () => void }) {
-  return (
-    <Pressable
-      onPress={onPress}
-      className="rounded-lg border border-border bg-raised p-4 shadow-card active:bg-sunken web:hover:border-border-strong"
-    >
-      <View className="mb-2 flex-row items-center justify-between gap-3">
-        <View className="flex-1 flex-row items-center gap-2">
-          <Text className="font-display text-base text-ink" numberOfLines={1}>
-            {r.tagName}
-          </Text>
-          <Badge label={tagKindLabel(r.kind)} tone="neutral" />
-        </View>
-        <View className="flex-row items-center gap-2">
-          <Text className="text-sm text-muted" style={TABULAR}>
-            {formatCents(r.spentCents)} / {formatCents(r.budgetCents)}
-          </Text>
-          <Icon name="chevron-right" size={16} color={colors.muted} />
-        </View>
-      </View>
-      <BudgetBar pct={r.pct} status={r.status} />
-      <Text className="mt-1.5 text-xs text-muted">{r.pct}% spent</Text>
-    </Pressable>
-  );
-}
-
 // ── Tag detail sheet ─────────────────────────────────────────────────────────
 type DrilldownBudget = FunctionReturnType<typeof api.finances.tagDrilldown>["budgets"][number];
 
-function TagDetailModal({
+export function TagDetailModal({
   rollup,
   scope,
   year,

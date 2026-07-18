@@ -155,8 +155,14 @@ export function AttentionRail({
   );
 }
 
-/** One compact attention row: amber left stripe, count chip, one line, one action. */
-function RailRow({
+/**
+ * One compact attention row: amber left stripe, count chip, one line, one
+ * action. DASH-3 additive: exported (was module-private) so `CentralView`
+ * can compose its own restyled rail sections (pending approvals, org-wide
+ * unattributed, inter-chapter balances) from the SAME primitive instead of
+ * duplicating its markup — no change to this component itself.
+ */
+export function RailRow({
   count,
   title,
   detail,

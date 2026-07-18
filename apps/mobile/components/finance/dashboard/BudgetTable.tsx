@@ -27,7 +27,7 @@ import type { Id } from "@events-os/convex/_generated/dataModel";
 import type { BudgetApprovalStatus } from "@events-os/shared";
 import { EmptyState, Icon } from "../../ui";
 import { colors } from "../../../lib/theme";
-import { MiniBar, Money } from "./parts";
+import { Chip, MiniBar, Money } from "./parts";
 import { Meter, MeterDot, MeterPct, OverChip } from "./Meter";
 import { BudgetApprovalActions } from "./BudgetApprovalActions";
 import { awaitingApprovalZeroCapDisplay } from "./awaitingApproval";
@@ -45,6 +45,22 @@ export type BudgetTableRow = {
   approvedCents: number | null;
   requestedCents: number;
   reviewNote: string | null;
+  /** DASH-3 additive: a small chip rendered after the name (e.g. "chapter" /
+   *  "tag") for a synthetic rollup row that isn't a real budget. Absent for
+   *  every existing `ChapterView` row — no visual change there. */
+  chip?: string;
+  /** DASH-3 additive: overrides the trailing chevron's default "toggle
+   *  category expand" behavior with a navigation action (peek into a
+   *  chapter / open the tag-drill sheet) — renders a plain right chevron
+   *  instead of the up/down expand icon. Absent for every existing
+   *  `ChapterView` row — no behavior change there. */
+  onChevronPress?: () => void;
+  /** DASH-3 additive: a rollup row (chapter/tag) isn't a real budget, so
+   *  tapping the row body must not call the group's `onPressRow(id)` (which
+   *  would try to open a nonexistent budget for editing) — true disables
+   *  that tap target for this row only. Absent/false for every existing
+   *  `ChapterView` row — no behavior change there. */
+  disableRowPress?: boolean;
 };
 
 const FOLD_AFTER = 5;
@@ -57,6 +73,7 @@ export function BudgetTableGroup({
   emptyMessage,
   onPressRow,
   collapsible = false,
+  foldAfter = FOLD_AFTER,
 }: {
   title: string;
   rows: BudgetTableRow[];
@@ -67,6 +84,12 @@ export function BudgetTableGroup({
   /** The "Recurring buckets ▾" group can collapse entirely; the primary
    *  "Events & projects" panel can't (it's the page's main content). */
   collapsible?: boolean;
+  /** DASH-3 additive: how many non-pinned rows show before "Show N more ▾" —
+   *  defaults to `FOLD_AFTER` (5, ChapterView's existing behavior)
+   *  unmodified. The central dashboard's single combined table (central
+   *  budgets + chapter/tag rollup rows) passes a larger value so its
+   *  rollup rows aren't folded away by default. */
+  foldAfter?: number;
 }) {
   const [open, setOpen] = useState(true);
   const [showMore, setShowMore] = useState(false);
@@ -81,7 +104,7 @@ export function BudgetTableGroup({
     });
   }
 
-  const { pinned, visible, hidden } = orderRows(rows, showMore, FOLD_AFTER);
+  const { pinned, visible, hidden } = orderRows(rows, showMore, foldAfter);
 
   return (
     <View className="mt-4 overflow-hidden rounded-lg border border-border bg-raised shadow-card">
@@ -198,9 +221,12 @@ function BudgetRow({
     <View className="min-w-0 flex-1 flex-row items-center gap-2.5">
       <MeterDot pct={pct} />
       <View className="min-w-0 flex-1">
-        <Text className="text-xs font-semibold text-ink" numberOfLines={1}>
-          {row.name}
-        </Text>
+        <View className="flex-row items-center gap-1.5">
+          <Text className="min-w-0 shrink text-xs font-semibold text-ink" numberOfLines={1}>
+            {row.name}
+          </Text>
+          {row.chip ? <Chip label={row.chip} /> : null}
+        </View>
         {row.meta ? (
           <Text className="text-2xs text-muted" numberOfLines={1}>
             {row.meta}
@@ -225,7 +251,7 @@ function BudgetRow({
     <View
       className={`flex-row items-center gap-2.5 px-3 py-1.5 ${pinned ? "" : "border-b border-border"}`}
     >
-      {onPressRow && !isDrilldown ? (
+      {onPressRow && !isDrilldown && !row.disableRowPress ? (
         <Pressable
           onPress={() => onPressRow(row.id)}
           accessibilityRole="button"
@@ -236,8 +262,17 @@ function BudgetRow({
       ) : (
         rowContent
       )}
-      <Pressable onPress={onToggleExpand} hitSlop={8} accessibilityRole="button" accessibilityLabel="Expand categories">
-        <Icon name={expanded ? "chevron-up" : "chevron-down"} size={14} color={colors.muted} />
+      <Pressable
+        onPress={row.onChevronPress ?? onToggleExpand}
+        hitSlop={8}
+        accessibilityRole="button"
+        accessibilityLabel={row.onChevronPress ? "Open" : "Expand categories"}
+      >
+        <Icon
+          name={row.onChevronPress ? "chevron-right" : expanded ? "chevron-up" : "chevron-down"}
+          size={14}
+          color={colors.muted}
+        />
       </Pressable>
     </View>
   );
