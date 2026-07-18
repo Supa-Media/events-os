@@ -24,6 +24,7 @@ import {
   moduleCourseIndex,
   nextModuleInCourse,
   previousModuleInCourse,
+  shuffledOptionOrder,
   type AcademySection,
   type ModuleKey,
 } from "@events-os/shared";
@@ -183,6 +184,11 @@ export default function AcademySectionScreen() {
 
 // ── Quiz ──────────────────────────────────────────────────────────────────────
 
+/** A fresh 32-bit shuffle seed. Called only at event boundaries (never render). */
+function freshSeed(): number {
+  return Math.floor(Math.random() * 0x100000000);
+}
+
 function Quiz({
   section,
   unlocked,
@@ -205,6 +211,14 @@ function Quiz({
   );
   const [result, setResult] = useState<QuizResult | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  // One shuffle seed per attempt. Options render in a deterministic order
+  // derived from this seed (per question: seed + questionIndex), so a render
+  // never reshuffles and the order is stable within one attempt. Picking a
+  // fresh seed on mount / section change / retake reshuffles. The seed is only
+  // ever regenerated in an event boundary (initializer, reset effect, retake
+  // handler) — never at render time (that would fight the user and, on web,
+  // mismatch hydration).
+  const [shuffleSeed, setShuffleSeed] = useState<number>(freshSeed);
 
   // Fresh state when navigating between sections (the route reuses this
   // component instance across slugs).
@@ -212,6 +226,7 @@ function Quiz({
     setAnswers({});
     setSubmitted(null);
     setResult(null);
+    setShuffleSeed(freshSeed());
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [section.slug]);
 
@@ -298,7 +313,11 @@ function Quiz({
                 </Text>
               </View>
               <View className="mt-3 gap-1.5">
-                {q.options.map((opt, oi) => {
+                {/* Options render in a shuffled DISPLAY order; `oi` remains the
+                    ORIGINAL index used for selection, submit, and grading. */}
+                {shuffledOptionOrder(q.options.length, shuffleSeed + qi).map(
+                  (oi) => {
+                  const opt = q.options[oi];
                   const selected = shownAnswers[qi] === oi;
                   const showCorrect = graded != null && oi === graded.correctIndex;
                   const showWrong =
@@ -348,7 +367,8 @@ function Quiz({
                       </Text>
                     </Pressable>
                   );
-                })}
+                  },
+                )}
               </View>
               {graded ? (
                 <View className="mt-3 rounded-md bg-sunken px-3 py-2.5">
@@ -400,6 +420,7 @@ function Quiz({
                   setAnswers({});
                   setSubmitted(null);
                   setResult(null);
+                  setShuffleSeed(freshSeed()); // reshuffle on retake
                 }}
               />
             </View>
