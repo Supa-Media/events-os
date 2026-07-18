@@ -390,6 +390,26 @@ export const transactions = defineTable({
       // apart from "attempted and failed", so it can retry after a cooldown
       // instead of resubmitting every run forever. See aiCodingData.ts.
       failed: v.optional(v.boolean()),
+      // Snapshot of the txn's OWN status/fund/category/budget at the exact
+      // moment the model read it (`gatherSuggestionContext`, BEFORE the
+      // OpenRouter call) — PR fix-suggest-broaden. `acceptSuggestion` diffs
+      // this against the txn's LIVE values to detect a real human edit that
+      // raced the suggestion (a stale `writeSuggestion` landing after a
+      // manual edit already cleared the old suggestion), field-by-field —
+      // not just a status flip, since a `categorized`-origin suggestion
+      // (broadened eligibility) can be invalidated by a category/fund/budget
+      // change alone without the status itself moving again. Optional: a
+      // suggestion written before this field existed (or seeded directly in
+      // a test) has none, and `acceptSuggestion` falls back to its original
+      // unreviewed-only gate in that case.
+      baseline: v.optional(
+        v.object({
+          status: v.union(...TRANSACTION_STATUSES.map((s) => v.literal(s))),
+          fundId: v.union(v.id("funds"), v.null()),
+          categoryId: v.union(v.id("budgetCategories"), v.null()),
+          budgetId: v.union(v.id("budgets"), v.null()),
+        }),
+      ),
     }),
   ),
 

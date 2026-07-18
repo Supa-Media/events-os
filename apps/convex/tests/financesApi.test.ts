@@ -630,6 +630,96 @@ describe("listReconcile (server-side filters + counts + projections)", () => {
   });
 });
 
+// PR fix-suggest-broaden: `resolveAiSuggestion` used to only ever expose a
+// row's `aiSuggestion` to the client for a still-`unreviewed` row — a
+// `categorized` row's stored suggestion was silently NULLED OUT here, so even
+// after broadening the "Suggest" button + `suggestCoding`'s server gate, the
+// grid would generate a suggestion and then immediately drop it back to a
+// bare "—" once it re-subscribed. This exercises the SAME status/needsBudget
+// rule (`finances.isSuggestible`) at the `listReconcile` row-resolution layer.
+describe("listReconcile exposes aiSuggestion on a categorized+needs-budget row (PR fix-suggest-broaden)", () => {
+  async function insertTxnWithSuggestion(
+    s: ChapterSetup,
+    fields: Partial<{
+      status: "unreviewed" | "categorized" | "reconciled" | "excluded";
+      budgetId: Id<"budgets">;
+      isPersonal: boolean;
+    }>,
+    aiSuggestion: { categoryId?: Id<"budgetCategories">; confidence?: number },
+  ): Promise<Id<"transactions">> {
+    return await run(s.t, (ctx) =>
+      ctx.db.insert("transactions", {
+        chapterId: s.chapterId,
+        source: "manual",
+        flow: "outflow",
+        amountCents: 100,
+        postedAt: Date.now(),
+        status: fields.status ?? "unreviewed",
+        budgetId: fields.budgetId,
+        isPersonal: fields.isPersonal,
+        createdAt: Date.now(),
+        aiSuggestion: { ...aiSuggestion, suggestedAt: Date.now() },
+      }),
+    );
+  }
+
+  test("exposes it for categorized+needs-budget; nulls it out for reconciled and budget-attached rows", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await asManager(s);
+    const categoryId = await s.as.mutation(api.finances.createCategory, {
+      fundId: await s.as.mutation(api.finances.createFund, {
+        name: "General",
+        restriction: "unrestricted",
+        sortOrder: 0,
+      }),
+      name: "Supplies",
+      kind: "lineItem",
+    });
+    const budgetId = await s.as.mutation(api.finances.createBudget, {
+      amountCents: 10000,
+      type: "recurring",
+      cadence: "yearly",
+      year: 2026,
+    });
+
+    // Categorized, still needs a budget — the NEW eligible bucket.
+    const categorizedNeedsBudget = await insertTxnWithSuggestion(
+      s,
+      { status: "categorized" },
+      { categoryId, confidence: 0.6 },
+    );
+    // Categorized AND already budget-attached — the model looked at it
+    // before the budget attach cleared its old suggestion, so the aiSuggestion
+    // here (patched back by the raw insert) is stale and must never surface.
+    const categorizedBudgeted = await insertTxnWithSuggestion(
+      s,
+      { status: "categorized", budgetId },
+      { categoryId, confidence: 0.6 },
+    );
+    // Reconciled — never suggestible, regardless of budget state.
+    const reconciled = await insertTxnWithSuggestion(
+      s,
+      { status: "reconciled" },
+      { categoryId, confidence: 0.6 },
+    );
+    // Still unreviewed — the original rule, unchanged.
+    const unreviewed = await insertTxnWithSuggestion(
+      s,
+      { status: "unreviewed" },
+      { categoryId, confidence: 0.6 },
+    );
+
+    const { rows } = await s.as.query(api.finances.listReconcile, { filter: "all" });
+    const byId = new Map(rows.map((r) => [r.id, r]));
+
+    expect(byId.get(categorizedNeedsBudget)?.aiSuggestion?.categoryId).toEqual(categoryId);
+    expect(byId.get(categorizedBudgeted)?.aiSuggestion).toBeNull();
+    expect(byId.get(reconciled)?.aiSuggestion).toBeNull();
+    expect(byId.get(unreviewed)?.aiSuggestion?.categoryId).toEqual(categoryId);
+  });
+});
+
 describe("categorizeTransaction defaults the fund", () => {
   test("omitting fundId codes the txn to the General Fund; restricted funds are skipped", async () => {
     const t = newT();
