@@ -23,9 +23,15 @@
  * (foundations-we-pray-before-we-plan onto Welcome to Public Worship,
  * foundations-owning-your-yes onto How we work), plus a rewritten
  * foundations-communication and an enriched foundations-showing-up (see
- * `streams/foundations.ts`'s header comment). Total: 79 sections. Section
- * slugs and their order are otherwise untouched — any OTHER drift here is
- * still a real regression.
+ * `streams/foundations.ts`'s header comment); and the Finances-for-Everyone
+ * owner review pass — no sections added/moved, but `finance-stewardship`,
+ * `finance-card-and-receipts`, and `finance-reimbursements-and-flags` grew
+ * (minutes + quizLength bumped) for the Public Worship card terminology
+ * sweep, the donate-instead-of-personally-covering pattern, the absolute
+ * receipt rule, and the code-verified reimbursement-approval/urgent-path
+ * content (see `streams/finances.ts`'s header comment). Total: 79 sections.
+ * Section slugs and their order are otherwise untouched — any OTHER drift
+ * here is still a real regression.
  */
 import { describe, expect, test } from "vitest";
 import { ACADEMY_COURSES, ACADEMY_SECTIONS } from "./academy";
@@ -518,24 +524,24 @@ const EXPECTED_SECTIONS: {
   {
     slug: "finance-stewardship",
     title: "Where the money comes from",
-    minutes: 3,
-    quizLength: 4,
+    minutes: 4,
+    quizLength: 5,
     optional: false,
     capstoneKind: null,
   },
   {
     slug: "finance-card-and-receipts",
     title: "Your card and the 7-day rule",
-    minutes: 3,
-    quizLength: 4,
+    minutes: 4,
+    quizLength: 5,
     optional: false,
     capstoneKind: null,
   },
   {
     slug: "finance-reimbursements-and-flags",
     title: "Reimbursement, and flagging a charge",
-    minutes: 3,
-    quizLength: 4,
+    minutes: 5,
+    quizLength: 5,
     optional: false,
     capstoneKind: null,
   },
