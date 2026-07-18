@@ -1,10 +1,12 @@
 /**
  * GIVING · Donors — the scope's donor list, sorted by lifetime giving (the
  * "top donors" relationship workflow needs this ordering on day one, PRD §1).
- * Search-free in v1; status chips flag the reactivation queue (lapsed) at a
- * glance. Tapping a row opens the donor detail. The backend `listDonors` gates
- * on `requireGivingView`.
+ * Status/kind/source/lifetime-band chips (territories P5 CRM filters) refine
+ * the list; status chips flag the reactivation queue (lapsed) at a glance.
+ * Tapping a row opens the donor detail. The backend `listDonors` gates on
+ * `requireGivingView`.
  */
+import { useState } from "react";
 import { ActivityIndicator, View, Text, Pressable } from "react-native";
 import { useQuery } from "convex/react";
 import { useRouter } from "expo-router";
@@ -16,11 +18,49 @@ import {
   type BadgeTone,
   EmptyState,
   Narrow,
+  Pill,
   Screen,
 } from "../../../components/ui";
 import { colors } from "../../../lib/theme";
 
 type GivingScope = "central" | Id<"chapters">;
+
+// ── CRM filters (territories P5) ────────────────────────────────────────────
+// Hardcoded, mirroring `donor/[id].tsx`'s `SOURCE_OPTIONS` — mobile doesn't
+// import the convex-side schema literals directly, so the option lists are
+// kept in step with `schema/givingPlatform.ts`'s `DONOR_STATUSES`/
+// `DONOR_KINDS`/`DONOR_SOURCES` by hand (small, stable unions).
+
+const STATUS_FILTERS: { value: string; label: string }[] = [
+  { value: "all", label: "All" },
+  { value: "prospect", label: "Prospect" },
+  { value: "active", label: "Active" },
+  { value: "lapsed", label: "Lapsed" },
+];
+
+const KIND_FILTERS: { value: string; label: string }[] = [
+  { value: "all", label: "All kinds" },
+  { value: "individual", label: "Individual" },
+  { value: "church", label: "Church" },
+  { value: "business", label: "Business" },
+  { value: "foundation", label: "Foundation" },
+];
+
+const SOURCE_FILTERS: { value: string; label: string }[] = [
+  { value: "all", label: "All sources" },
+  { value: "manual", label: "Manual" },
+  { value: "event-donation", label: "Event donation" },
+  { value: "givebutter-import", label: "Givebutter" },
+  { value: "map", label: "Map" },
+];
+
+// Lifetime bands (dollars, converted to cents for the query arg).
+const LIFETIME_BANDS: { value: string; label: string; cents?: number }[] = [
+  { value: "all", label: "Any amount" },
+  { value: "100", label: "$100+", cents: 100_00 },
+  { value: "500", label: "$500+", cents: 500_00 },
+  { value: "1000", label: "$1k+", cents: 1_000_00 },
+];
 
 /** Donor status → chip tone: active reads calm, lapsed warns (reactivation
  *  queue), prospect is neutral (no gift yet). */
@@ -52,7 +92,22 @@ export default function DonorsScreen() {
 
 function DonorsBody({ scope }: { scope: GivingScope }) {
   const router = useRouter();
-  const donors = useQuery(api.givingPlatform.listDonors, { scope });
+  const [status, setStatus] = useState("all");
+  const [kind, setKind] = useState("all");
+  const [source, setSource] = useState("all");
+  const [band, setBand] = useState("all");
+
+  const minLifetimeCents = LIFETIME_BANDS.find((b) => b.value === band)?.cents;
+  const donors = useQuery(api.givingPlatform.listDonors, {
+    scope,
+    status: status === "all" ? undefined : (status as never),
+    kind: kind === "all" ? undefined : (kind as never),
+    source: source === "all" ? undefined : (source as never),
+    minLifetimeCents,
+  });
+
+  const anyFilterActive =
+    status !== "all" || kind !== "all" || source !== "all" || band !== "all";
 
   if (donors === undefined) {
     return (
@@ -65,10 +120,21 @@ function DonorsBody({ scope }: { scope: GivingScope }) {
   return (
     <Screen>
       <Narrow>
+        <View className="mb-3 gap-2">
+          <FilterRow options={STATUS_FILTERS} value={status} onChange={setStatus} />
+          <FilterRow options={KIND_FILTERS} value={kind} onChange={setKind} />
+          <FilterRow options={SOURCE_FILTERS} value={source} onChange={setSource} />
+          <FilterRow options={LIFETIME_BANDS} value={band} onChange={setBand} />
+        </View>
+
         {donors.length === 0 ? (
           <EmptyState
-            title="No donors yet"
-            message="Record a gift on a donor, or import your Givebutter history."
+            title={anyFilterActive ? "No donors match those filters" : "No donors yet"}
+            message={
+              anyFilterActive
+                ? "Try widening a filter above."
+                : "Record a gift on a donor, or import your Givebutter history."
+            }
           />
         ) : (
           <View className="gap-2">
@@ -83,7 +149,8 @@ function DonorsBody({ scope }: { scope: GivingScope }) {
                       {d.name}
                     </Text>
                     <Text className="text-xs text-muted" numberOfLines={1}>
-                      {d.email ?? "No email"} · {d.giftCount}{" "}
+                      {d.email ?? "No email"}
+                      {d.phone ? ` · ${d.phone}` : ""} · {d.giftCount}{" "}
                       {d.giftCount === 1 ? "gift" : "gifts"}
                     </Text>
                   </View>
@@ -100,5 +167,29 @@ function DonorsBody({ scope }: { scope: GivingScope }) {
         )}
       </Narrow>
     </Screen>
+  );
+}
+
+/** One row of filter chips, horizontally wrapped. */
+function FilterRow({
+  options,
+  value,
+  onChange,
+}: {
+  options: { value: string; label: string }[];
+  value: string;
+  onChange: (v: string) => void;
+}) {
+  return (
+    <View className="flex-row flex-wrap gap-1.5">
+      {options.map((o) => (
+        <Pill
+          key={o.value}
+          label={o.label}
+          selected={value === o.value}
+          onPress={() => onChange(value === o.value ? "all" : o.value)}
+        />
+      ))}
+    </View>
   );
 }

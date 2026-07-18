@@ -127,6 +127,13 @@ export const donors = defineTable({
   source: v.optional(v.union(...DONOR_SOURCES.map((s) => v.literal(s)))),
   // Linked member account, when the donor is also on the roster.
   userId: v.optional(v.id("users")),
+  // Territories P5: the chapter `people` row this donor 1:1-links to. Set by
+  // `lib/givingDonors.ts#linkDonorToPerson` on create/edit for a CHAPTER-scope
+  // donor only — a `"central"` donor has no chapter roster to link into and
+  // stays permanently unset (central donors are CRM-only). Powers the People
+  // tab's "Givers" overlay (`givingPlatform.giverMarks`) without leaking money
+  // fields into the roster payload itself.
+  personId: v.optional(v.id("people")),
   // Denormalized rollups (bumped on gift write, clamped ≥ 0).
   lifetimeCents: v.number(),
   giftCount: v.number(),
@@ -142,7 +149,10 @@ export const donors = defineTable({
   .index("by_scope_and_email", ["scope", "email"])
   .index("by_scope_and_name", ["scope", "name"])
   // Cross-scope email lookup (member linking, future dedup surfaces).
-  .index("by_email", ["email"]);
+  .index("by_email", ["email"])
+  // Phone fallback for `linkDonorToPerson`'s people-roster match (territories
+  // P5) — a scoped exact-phone lookup alongside the email/name indexes above.
+  .index("by_scope_and_phone", ["scope", "phone"]);
 
 /**
  * One gift — a single dollar-amount received, ever, from any source. The unit
