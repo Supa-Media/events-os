@@ -69,7 +69,7 @@ async function logUsageEvent(
     chapterId: Id<"chapters">;
     transactionId: Id<"transactions">;
     cardholderPersonId: Id<"people"> | undefined;
-    triggeredBy: "sweep" | "manual";
+    triggeredBy: TriggeredBy;
     model: string;
     outcome: "suggested" | "failed" | "no_suggestion";
     usage: OpenRouterUsage | undefined;
@@ -168,6 +168,13 @@ interface SuggestionContext {
   };
 }
 
+/** How a coding attempt originated — threaded through to the `aiUsageEvents`
+ *  audit trail. "sweep" = the hourly cron backstop; "ingest" = the debounced
+ *  sweep that fires soon after a new transaction lands
+ *  (`aiCodingData.ingestSuggestionSweep`); "manual" = a bookkeeper tapping
+ *  the Reconcile grid's per-row "Suggest" button. */
+type TriggeredBy = "sweep" | "ingest" | "manual";
+
 const OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions";
 
 /** Abort a hung completion — a coding suggestion is best-effort, never a stall. */
@@ -251,16 +258,17 @@ function parseModelJson(content: string): Record<string, unknown> | null {
 /**
  * The shared core: given an already-loaded coding context, call OpenRouter,
  * sanitize the proposal against that context, persist it via `writeSuggestion`,
- * and return it. Both `suggestCoding` (human-triggered, bookkeeper-gated by its
- * `loadForSuggestion` query) and `suggestCodingSystem` (cron-triggered, no
- * caller identity) share this — the only difference between them is which
- * loader gathered `context`.
+ * and return it. Both `suggestCoding` (human-triggered — Reconcile's per-row
+ * "Suggest" button, bookkeeper-gated by its `loadForSuggestion` query) and
+ * `suggestCodingSystem` (system-triggered — either the hourly cron or the
+ * debounced on-ingest sweep, no caller identity) share this — the only
+ * difference between them is which loader gathered `context`.
  */
 async function codeTransaction(
   ctx: ActionCtx,
   transactionId: Id<"transactions">,
   context: SuggestionContext,
-  triggeredBy: "sweep" | "manual",
+  triggeredBy: TriggeredBy,
 ): Promise<null | {
   fundId: Id<"funds"> | undefined;
   categoryId: Id<"budgetCategories"> | undefined;
@@ -578,19 +586,32 @@ export const suggestCoding = action({
 });
 
 /**
- * The SYSTEM (cron-triggered) counterpart to `suggestCoding` — no caller
- * identity, so it loads context via `loadForSuggestionSystem` (no bookkeeper
- * gate) instead. Only reachable internally, via the daily sweep in
- * `aiCodingData.sweepUnsuggestedTransactions`.
+ * The SYSTEM (cron/ingest-triggered) counterpart to `suggestCoding` — no
+ * caller identity, so it loads context via `loadForSuggestionSystem` (no
+ * bookkeeper gate) instead. Only reachable internally, via
+ * `aiCodingData.runSuggestionSweep` — scheduled either by the hourly cron
+ * (`sweepUnsuggestedTransactions`) or the debounced on-ingest sweep
+ * (`ingestSuggestionSweep`). `triggeredBy` distinguishes the two for the
+ * audit trail only (defaults to `"sweep"` for any caller that omits it —
+ * there is none today, but this keeps the arg backwards-compatible);
+ * eligibility and behavior are otherwise identical either way.
  */
 export const suggestCodingSystem = internalAction({
-  args: { transactionId: v.id("transactions") },
+  args: {
+    transactionId: v.id("transactions"),
+    triggeredBy: v.optional(v.union(v.literal("sweep"), v.literal("ingest"))),
+  },
   returns: v.union(v.null(), suggestionValidator),
   handler: async (ctx, args) => {
     const context: SuggestionContext = await ctx.runQuery(
       internal.aiCodingData.loadForSuggestionSystem,
       { transactionId: args.transactionId },
     );
-    return await codeTransaction(ctx, args.transactionId, context, "sweep");
+    return await codeTransaction(
+      ctx,
+      args.transactionId,
+      context,
+      args.triggeredBy ?? "sweep",
+    );
   },
 });

@@ -20,6 +20,18 @@
  *    advances to `categorized`. This is the only place a suggestion touches the
  *    real categorization.
  *
+ * THREE TRIGGERS feed the same `suggestCodingSystem`/`suggestCoding` core
+ * (`aiCoding.ts`'s `codeTransaction`), all funneling through
+ * `runSuggestionSweep` or `loadForSuggestion` below:
+ *  - on-ingest (PRIMARY) — `scheduleSuggestionOnIngest`, called from
+ *    `increase.applyIncreaseCardTransaction` and
+ *    `finances.createManualTransaction` right after a new transaction is
+ *    inserted, debounces into `ingestSuggestionSweep` within seconds.
+ *  - hourly cron (BACKSTOP) — `sweepUnsuggestedTransactions`, mops up
+ *    anything ingest's batch cap left behind.
+ *  - on-demand (MANUAL) — a bookkeeper taps "Suggest" in Reconcile on a row
+ *    that still has none; calls the public `suggestCoding` action directly.
+ *
  * Convention (mirrors `finances.ts`): every client-supplied id is verified to
  * live in the caller's chapter; failures throw `ConvexError`; reads are bounded.
  */
@@ -55,13 +67,29 @@ const EVENT_LIMIT = 50;
 const PERSON_LINK_LIMIT = 20;
 
 /**
- * Sweep sizing (the hourly cron). `SWEEP_SCAN` newest transactions are examined;
- * of those, the unreviewed + unsuggested ones (up to `SWEEP_BATCH`) get a
- * suggestion scheduled. Both bounds keep the cron cheap and rate-limit how many
- * OpenRouter calls a single sweep can fan out.
+ * Sweep sizing — shared by BOTH triggers that run `runSuggestionSweep` (the
+ * hourly cron backstop and the debounced on-ingest sweep, see below):
+ * `SWEEP_SCAN` newest transactions are examined; of those, the unreviewed +
+ * unsuggested ones (up to `SWEEP_BATCH`) get a suggestion scheduled. Both
+ * bounds keep a sweep cheap and rate-limit how many OpenRouter calls a single
+ * run can fan out — the on-ingest debounce (below) is what keeps a burst of
+ * arrivals from turning into a burst of SWEEPS, so reusing these same caps
+ * for it rather than inventing a smaller pair keeps there being exactly one
+ * throttle to reason about.
  */
 const SWEEP_SCAN = 200;
 const SWEEP_BATCH = 25;
+
+/**
+ * Delay before the debounced on-ingest sweep actually runs (see
+ * `scheduleSuggestionOnIngest` / `ingestSuggestionSweep` below) — batches a
+ * burst of near-simultaneous transaction arrivals (several webhook
+ * redeliveries, a bookkeeper bulk-adding manual entries) into ONE sweep call
+ * instead of one per arrival. Long enough to catch a realistic burst window;
+ * short enough that "suggestions on arrival" still reads as immediate next
+ * to the old hourly-only cron.
+ */
+const INGEST_SWEEP_DELAY_MS = 10_000;
 
 /**
  * Cooldown before the sweep retries a transaction whose last suggestion attempt
@@ -527,61 +555,161 @@ export const loadForSuggestionSystem = internalQuery({
 });
 
 /**
- * Hourly sweep (the cron trigger that makes AI auto-coding actually run). Scans
- * the newest `SWEEP_SCAN` transactions deployment-wide and, for each that is
- * still `unreviewed` and has NO `aiSuggestion` yet, schedules a system coding
- * suggestion (up to `SWEEP_BATCH` per run). Idempotent: a txn that already
- * carries a suggestion is skipped, so re-running never re-suggests or stacks.
+ * True when a transaction is a candidate for an AI coding suggestion: still
+ * `unreviewed`, chapter-owned (central txns are never auto-coded — central
+ * has no funds/categories/projects/events context, same reason the loaders
+ * above reject them), and either never attempted (no `aiSuggestion` at all)
+ * or its last attempt was a failed-attempt marker that's past
+ * `FAILED_ATTEMPT_COOLDOWN_MS`. Shared by BOTH triggers that call
+ * `runSuggestionSweep` (the hourly cron and the debounced on-ingest sweep)
+ * AND the on-ingest hook itself (`scheduleSuggestionOnIngest`), so all three
+ * apply the exact same "who's eligible" rule.
+ */
+function isEligibleForSuggestion(tr: Doc<"transactions">, now: number): boolean {
+  if (tr.status !== "unreviewed") return false;
+  if (tr.chapterId === CENTRAL) return false;
+  const ai = tr.aiSuggestion;
+  if (ai === undefined) return true;
+  if (!ai.failed) return false;
+  return now - (ai.suggestedAt ?? 0) > FAILED_ATTEMPT_COOLDOWN_MS;
+}
+
+/**
+ * Shared batch core for BOTH triggers that make AI auto-coding actually run:
+ * the hourly cron (`sweepUnsuggestedTransactions`, now mostly a quiet
+ * backstop since ingest covers new arrivals) and the debounced on-ingest
+ * sweep (`ingestSuggestionSweep`, scheduled by `scheduleSuggestionOnIngest`
+ * soon after a new transaction lands). Scans the newest `SWEEP_SCAN`
+ * transactions deployment-wide and, for each still-eligible one
+ * (`isEligibleForSuggestion`), schedules a system coding suggestion — up to
+ * `SWEEP_BATCH` per run. Idempotent: a txn that already carries a suggestion
+ * is skipped, so re-running (from either trigger) never re-suggests or
+ * stacks. `triggeredBy` is threaded through to `suggestCodingSystem` purely
+ * for the `aiUsageEvents` audit trail — the eligibility rule and model-call
+ * cap are IDENTICAL for both triggers, only the label differs.
  *
  * DEGRADE: when `OPENROUTER_API_KEY` is unset the whole feature is off — we log
  * and schedule nothing rather than fan out a batch of no-op actions. (The action
  * itself also degrades, so this is purely to avoid pointless scheduling.)
  */
+async function runSuggestionSweep(
+  ctx: MutationCtx,
+  triggeredBy: "sweep" | "ingest",
+): Promise<{ scheduled: number }> {
+  if (!process.env.OPENROUTER_API_KEY) {
+    console.log(
+      `[aiCoding] OPENROUTER_API_KEY unset — ${triggeredBy} sweep scheduling nothing.`,
+    );
+    return { scheduled: 0 };
+  }
+
+  // Newest-first across the deployment (default creation-time index). We only
+  // ever look at the freshest window — old un-coded charges are the bookkeeper's
+  // manual backlog, not something to keep re-scanning forever.
+  const recent = await ctx.db
+    .query("transactions")
+    .order("desc")
+    .take(SWEEP_SCAN);
+
+  const now = Date.now();
+  const pending = recent
+    .filter((tr) => isEligibleForSuggestion(tr, now))
+    .slice(0, SWEEP_BATCH);
+
+  for (const tr of pending) {
+    await ctx.scheduler.runAfter(0, internal.aiCoding.suggestCodingSystem, {
+      transactionId: tr._id,
+      triggeredBy,
+    });
+  }
+  return { scheduled: pending.length };
+}
+
+/**
+ * Hourly cron trigger (see `crons.ts`'s "ai auto-coding sweep"). Now mostly a
+ * quiet BACKSTOP: `scheduleSuggestionOnIngest` (below) covers newly-arriving
+ * transactions within seconds, so by the time this runs there's usually
+ * nothing left — it only finds something when ingest's own `SWEEP_BATCH` cap
+ * was exceeded by a large burst, or a transaction predates this feature.
+ */
 export const sweepUnsuggestedTransactions = internalMutation({
   args: {},
   returns: v.object({ scheduled: v.number() }),
+  handler: async (ctx) => runSuggestionSweep(ctx, "sweep"),
+});
+
+/**
+ * ON-INGEST HOOK — call from a transaction-creating mutation (the Increase
+ * webhook apply path, `increase.applyIncreaseCardTransaction`; the manual-add
+ * path, `finances.createManualTransaction`) with the just-inserted doc, in
+ * the SAME transaction as the insert. No-ops for anything the sweep would
+ * skip anyway (central-owned, or already categorized on entry — e.g. a
+ * manual entry submitted with a category/budget already picked), so those
+ * never wake the debounce for nothing.
+ *
+ * DEGRADE EARLY (mirrors `runSuggestionSweep`'s own key check): when
+ * `OPENROUTER_API_KEY` is unset the whole feature is off, so this returns
+ * before touching the debounce mutex or scheduling anything — there's no
+ * point waking a sweep that would just no-op `INGEST_SWEEP_DELAY_MS` later
+ * anyway. This also means the many existing tests for the two ingest paths
+ * above (which don't set the key) never acquire a scheduled function to
+ * drain — only tests that specifically exercise AI coding do, and they set
+ * the key deliberately.
+ */
+export async function scheduleSuggestionOnIngest(
+  ctx: MutationCtx,
+  txn: Doc<"transactions">,
+): Promise<void> {
+  if (!process.env.OPENROUTER_API_KEY) return;
+  if (!isEligibleForSuggestion(txn, Date.now())) return;
+  await scheduleIngestSweep(ctx);
+}
+
+/**
+ * Debounce: schedule `ingestSuggestionSweep` at most once per
+ * `INGEST_SWEEP_DELAY_MS` window, via the single-row `aiCodingIngestState`
+ * mutex (see its schema doc comment). Concurrent ingest mutations racing this
+ * read-then-write are safe — Convex's OCC serializes writes to the same
+ * document, so a losing mutation retries, re-reads `pending: true` (already
+ * flipped by the winner), and no-ops instead of scheduling a second sweep.
+ * This is what turns "N transactions land in a burst" into ONE batched sweep
+ * call (itself still capped at `SWEEP_BATCH` model calls via
+ * `runSuggestionSweep`) instead of N parallel OpenRouter calls.
+ */
+async function scheduleIngestSweep(ctx: MutationCtx): Promise<void> {
+  const state = await ctx.db.query("aiCodingIngestState").first();
+  if (state?.pending) return; // already scheduled — it'll pick this txn up too
+  if (state) {
+    await ctx.db.patch(state._id, { pending: true, scheduledAt: Date.now() });
+  } else {
+    await ctx.db.insert("aiCodingIngestState", {
+      pending: true,
+      scheduledAt: Date.now(),
+    });
+  }
+  await ctx.scheduler.runAfter(
+    INGEST_SWEEP_DELAY_MS,
+    internal.aiCodingData.ingestSuggestionSweep,
+    {},
+  );
+}
+
+/**
+ * The debounced on-ingest sweep itself — fires `INGEST_SWEEP_DELAY_MS` after
+ * `scheduleIngestSweep` first schedules it. Clears the mutex BEFORE scanning
+ * (not after) so a transaction that lands concurrently with this run — after
+ * the scan already started — schedules a FRESH follow-up sweep rather than
+ * silently falling into a gap between "this run's scan" and "the mutex
+ * clearing". Delegates to the same `runSuggestionSweep` core the hourly cron
+ * uses, labelled `"ingest"` for the audit trail.
+ */
+export const ingestSuggestionSweep = internalMutation({
+  args: {},
+  returns: v.object({ scheduled: v.number() }),
   handler: async (ctx) => {
-    if (!process.env.OPENROUTER_API_KEY) {
-      console.log(
-        "[aiCoding] OPENROUTER_API_KEY unset — sweep scheduling nothing.",
-      );
-      return { scheduled: 0 };
-    }
-
-    // Newest-first across the deployment (default creation-time index). We only
-    // ever look at the freshest window — old un-coded charges are the bookkeeper's
-    // manual backlog, not something to keep re-scanning forever.
-    const recent = await ctx.db
-      .query("transactions")
-      .order("desc")
-      .take(SWEEP_SCAN);
-
-    const now = Date.now();
-    // Eligible: never attempted (no `aiSuggestion` at all), OR the last attempt
-    // was a failed-attempt marker that's past the cooldown — anything else (a
-    // real proposal, or a failure still within cooldown) is skipped.
-    const isEligible = (tr: Doc<"transactions">): boolean => {
-      if (tr.status !== "unreviewed") return false;
-      // Central-owned txns (WP-2.1) aren't auto-coded — central has no funds/
-      // categories/projects/events context. Skip them (the loaders reject them
-      // too, this avoids scheduling a doomed suggestion action).
-      if (tr.chapterId === CENTRAL) return false;
-      const ai = tr.aiSuggestion;
-      if (ai === undefined) return true;
-      if (!ai.failed) return false;
-      return now - (ai.suggestedAt ?? 0) > FAILED_ATTEMPT_COOLDOWN_MS;
-    };
-
-    const pending = recent.filter(isEligible).slice(0, SWEEP_BATCH);
-
-    for (const tr of pending) {
-      await ctx.scheduler.runAfter(
-        0,
-        internal.aiCoding.suggestCodingSystem,
-        { transactionId: tr._id },
-      );
-    }
-    return { scheduled: pending.length };
+    const state = await ctx.db.query("aiCodingIngestState").first();
+    if (state) await ctx.db.patch(state._id, { pending: false });
+    return await runSuggestionSweep(ctx, "ingest");
   },
 });
 
@@ -814,7 +942,11 @@ export const recordUsageEvent = internalMutation({
   args: {
     feature: v.literal("finance_auto_coding"),
     chapterId: v.union(v.id("chapters"), v.literal(CENTRAL)),
-    triggeredBy: v.union(v.literal("sweep"), v.literal("manual")),
+    triggeredBy: v.union(
+      v.literal("sweep"),
+      v.literal("ingest"),
+      v.literal("manual"),
+    ),
     subjectTransactionId: v.optional(v.id("transactions")),
     cardholderPersonId: v.optional(v.id("people")),
     model: v.string(),
@@ -874,7 +1006,11 @@ export const getUsageSummary = query({
       v.object({
         id: v.id("aiUsageEvents"),
         createdAt: v.number(),
-        triggeredBy: v.union(v.literal("sweep"), v.literal("manual")),
+        triggeredBy: v.union(
+          v.literal("sweep"),
+          v.literal("ingest"),
+          v.literal("manual"),
+        ),
         model: v.string(),
         outcome: v.union(
           v.literal("suggested"),
