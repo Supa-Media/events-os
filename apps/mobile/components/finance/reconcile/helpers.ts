@@ -54,6 +54,28 @@ export const STATUS_OPTIONS: SelectOption<TransactionStatus>[] = [
   { value: "excluded", label: "Excluded", color: "red" },
 ];
 
+// ── AI-suggestion eligibility ────────────────────────────────────────────────
+/**
+ * True iff `row` is a candidate for the "Suggest" button (PR
+ * fix-suggest-broaden — the owner-reported bug: a "Categorized" row that
+ * still shows "Needs budget" got no button, just a bare "—"). Mirrors the
+ * server's `finances.isSuggestible` predicate EXACTLY (single source of
+ * truth: this same rule also gates the on-demand `suggestCoding` action and
+ * the on-ingest/hourly sweep) — a row qualifies either:
+ *  - it's still `unreviewed` (never reviewed at all — the original rule), OR
+ *  - it's `categorized` but STILL `needsBudget` (a human coded the category
+ *    but the row never got a budget attached).
+ * `reconciled` (treasurer-closed) and `excluded`/personal/non-spend rows are
+ * never suggestible — `needsBudget` is already `false` for the latter, and
+ * `reconciled` falls outside both branches by construction. The caller ALSO
+ * checks `!row.aiSuggestion` separately (a pending suggestion shows the
+ * Accept UI instead — see `ReconcileList.tsx`).
+ */
+export function isSuggestible(row: TxnRow): boolean {
+  if (row.status === "unreviewed") return true;
+  return row.status === "categorized" && row.needsBudget;
+}
+
 // ── Money + dates ────────────────────────────────────────────────────────────
 /** U+2212 true minus (matches the prototype), not an ASCII hyphen. */
 const MINUS = "−";

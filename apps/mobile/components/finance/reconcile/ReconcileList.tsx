@@ -15,12 +15,17 @@
  * proposal by the time the bookkeeper opens this grid — new transactions get
  * one within seconds of arriving (the on-ingest sweep, see
  * `aiCodingData.scheduleSuggestionOnIngest`), not just on the old hourly
- * cron. An unreviewed row that STILL has none (the on-ingest/hourly sweep's
- * batch cap was exceeded, OPENROUTER_API_KEY was unset when it landed, or a
- * prior attempt failed and is still cooling down) shows a "Suggest" button
- * instead of the AI badge — tapping it runs the exact same model-call core
- * (`aiCoding.suggestCoding`) for just that one transaction, on demand
- * (`SuggestCell` below). Either path lands in the same Accept/reject UI.
+ * cron. A still-`isSuggestible` row (`helpers.ts#isSuggestible` — unreviewed,
+ * OR categorized but still needing a budget; PR fix-suggest-broaden) that
+ * STILL has none (the on-ingest/hourly sweep's batch cap was exceeded,
+ * OPENROUTER_API_KEY was unset when it landed, or a prior attempt failed and
+ * is still cooling down) shows a "Suggest" button instead of the AI badge —
+ * tapping it runs the exact same model-call core (`aiCoding.suggestCoding`)
+ * for just that one transaction, on demand (`SuggestCell` below). Either path
+ * lands in the same Accept/reject UI. A "Categorized" row whose "For" cell
+ * still reads "Needs budget" is the majority of the backlog this covers — the
+ * button used to only ever render on an unreviewed row, leaving that whole
+ * bucket stuck at a bare "—" with no way to trigger a suggestion.
  *
  * The "For" column (WP-U: one home per dollar) replaces the old separate
  * Budget + Link columns/pickers with ONE picker, grouped Events / Projects /
@@ -57,7 +62,13 @@ import {
 import { colors } from "../../../lib/theme";
 import { alertError } from "../../../lib/errors";
 import { TransactionNoteModal } from "../modals/TransactionNoteModal";
-import { STATUS_OPTIONS, signedMoney, shortDate, type TxnRow } from "./helpers";
+import {
+  STATUS_OPTIONS,
+  isSuggestible,
+  signedMoney,
+  shortDate,
+  type TxnRow,
+} from "./helpers";
 import { buildRankedForPickerItems, type RankForPickerResult } from "./forPicker";
 
 const NUM = { fontVariant: ["tabular-nums" as const] };
@@ -345,7 +356,7 @@ function ReconcileRow({
               onPress={() => guard(acceptSuggestion({ transactionId: id }))}
             />
           </View>
-        ) : row.status === "unreviewed" ? (
+        ) : isSuggestible(row) ? (
           <View className="flex-1 px-2 py-1.5">
             <SuggestCell transactionId={id} />
           </View>
