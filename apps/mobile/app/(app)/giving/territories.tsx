@@ -1,21 +1,31 @@
 /**
- * GIVING · Cities — the City Launch map's admin desk (F-6 P3). Lists every
- * `cityCampaigns` row (prospect/raising/launched), a create/edit form, and
- * status transitions (launching a city requires picking the chapter it
- * became). This is a CENTRAL-only surface — the backend gates every mutation
- * + the list read on `giving.manage` at central (`cityCampaigns.ts`), unlike
- * Donors/Backers, which are per-chapter. A chapter-scoped giving holder (or a
- * central view-only holder) sees an access-needed state here even though they
- * can see the rest of the desk.
+ * GIVING · Territories — the launch-map admin desk (giving-territories
+ * addendum). Lists every territory (prospect/raising/launched), a create/edit
+ * form, and stage transitions. Creating a territory CREATES a real (inactive)
+ * "shadow chapter" behind the scenes; launching FLIPS that chapter live and
+ * provisions its banking — so there's no chapter picker here anymore.
  *
- * Public rendering of what this screen edits lives at `/give` +
- * `/give/<slug>` (`apps/convex/lib/givePage.ts`).
+ * CENTRAL-only: the backend gates every mutation + the list read on
+ * `giving.manage`/`giving.view` at central (`territories.ts`), unlike
+ * Donors/Backers, which are per-chapter. A chapter-scoped giving holder (or a
+ * central view-only holder) sees an access-needed state here.
+ *
+ * Public rendering of what this screen edits lives at `/give` + `/give/<slug>`
+ * (`apps/convex/lib/givePage.ts`).
  */
 import { useMemo, useState } from "react";
-import { ActivityIndicator, View, Text, Pressable, ScrollView } from "react-native";
+import {
+  ActivityIndicator,
+  Alert,
+  View,
+  Text,
+  Pressable,
+  ScrollView,
+} from "react-native";
 import { useMutation, useQuery } from "convex/react";
 import { api } from "@events-os/convex/_generated/api";
 import type { Id } from "@events-os/convex/_generated/dataModel";
+import { formatCents } from "@events-os/shared";
 import {
   Badge,
   type BadgeTone,
@@ -26,35 +36,38 @@ import {
   Narrow,
   Screen,
   SectionHeader,
-  Select,
   TextField,
 } from "../../../components/ui";
 import { colors } from "../../../lib/theme";
 
-type CampaignStatus = "prospect" | "raising" | "launched";
+type TerritoryStage = "prospect" | "raising" | "launched";
 
-type CampaignRow = {
-  _id: Id<"cityCampaigns">;
+type TerritoryRow = {
+  _id: Id<"territories">;
+  chapterId: Id<"chapters">;
   name: string;
   region: string;
   lat: number;
   lng: number;
   slug: string;
-  status: CampaignStatus;
-  chapterId: Id<"chapters"> | null;
+  stage: TerritoryStage;
   targetBackers: number;
   story: string | null;
   publiclyVisible: boolean;
+  launchFundCents: number;
+  launchFundTargetCents: number;
+  launchedAt: number | null;
   backerCount: number;
+  chapterIsActive: boolean;
 };
 
-function statusTone(status: CampaignStatus): BadgeTone {
-  if (status === "launched") return "success";
-  if (status === "raising") return "warn";
+function stageTone(stage: TerritoryStage): BadgeTone {
+  if (stage === "launched") return "success";
+  if (stage === "raising") return "warn";
   return "neutral";
 }
 
-export default function CitiesScreen() {
+export default function TerritoriesScreen() {
   const access = useQuery(api.givingPlatform.myGivingAccess, {});
 
   if (access === undefined) return <Screen loading />;
@@ -77,37 +90,34 @@ export default function CitiesScreen() {
         <Narrow>
           <EmptyState
             icon="lock"
-            title="Cities is managed centrally"
-            message="The City Launch map is a central surface — ask a development director to make changes here."
+            title="Territories are managed centrally"
+            message="The launch map is a central surface — ask a development director to make changes here."
           />
         </Narrow>
       </Screen>
     );
   }
-  return <CitiesBody />;
+  return <TerritoriesBody />;
 }
 
-function CitiesBody() {
-  const campaigns = useQuery(api.cityCampaigns.listCampaignsAdmin, {}) as
-    | CampaignRow[]
-    | undefined;
-  const chapters = useQuery(api.profiles.listChapters, {}) as
-    | { _id: Id<"chapters">; name: string }[]
+function TerritoriesBody() {
+  const territories = useQuery(api.territories.listTerritoriesAdmin, {}) as
+    | TerritoryRow[]
     | undefined;
 
-  const [editing, setEditing] = useState<Id<"cityCampaigns"> | "new" | null>(
+  const [editing, setEditing] = useState<Id<"territories"> | "new" | null>(
     null,
   );
 
-  const editingCampaign = useMemo(
+  const editingTerritory = useMemo(
     () =>
       editing && editing !== "new"
-        ? campaigns?.find((c) => c._id === editing) ?? null
+        ? territories?.find((t) => t._id === editing) ?? null
         : null,
-    [editing, campaigns],
+    [editing, territories],
   );
 
-  if (campaigns === undefined) {
+  if (territories === undefined) {
     return (
       <View className="items-center justify-center py-16">
         <ActivityIndicator color={colors.accent} />
@@ -119,9 +129,9 @@ function CitiesBody() {
     <Screen>
       <Narrow>
         <View className="mb-4 flex-row items-center justify-between">
-          <SectionHeader title={`Cities (${campaigns.length})`} />
+          <SectionHeader title={`Territories (${territories.length})`} />
           <Button
-            title="New city"
+            title="New territory"
             size="sm"
             icon="plus"
             onPress={() => setEditing("new")}
@@ -129,37 +139,37 @@ function CitiesBody() {
         </View>
 
         {editing ? (
-          <CampaignForm
-            campaign={editingCampaign}
-            chapters={chapters ?? []}
+          <TerritoryForm
+            territory={editingTerritory}
             onDone={() => setEditing(null)}
           />
-        ) : campaigns.length === 0 ? (
+        ) : territories.length === 0 ? (
           <EmptyState
-            title="No cities yet"
-            message="Add a potential chapter to put it on the /give map."
+            title="No territories yet"
+            message="Add a place raising backers to put it on the /give map. A shadow chapter is created behind the scenes."
           />
         ) : (
           <View className="gap-2">
-            {campaigns.map((c) => (
-              <Pressable key={c._id} onPress={() => setEditing(c._id)}>
+            {territories.map((tr) => (
+              <Pressable key={tr._id} onPress={() => setEditing(tr._id)}>
                 <View className="flex-row items-center justify-between rounded-lg border border-border bg-raised p-3">
                   <View className="flex-1 pr-3">
                     <Text
                       className="text-base font-semibold text-ink"
                       numberOfLines={1}
                     >
-                      {c.name}, {c.region}
+                      {tr.name}, {tr.region}
                     </Text>
                     <Text className="text-xs text-muted" numberOfLines={1}>
-                      /give/{c.slug} · {c.publiclyVisible ? "visible" : "hidden"}
+                      /give/{tr.slug} ·{" "}
+                      {tr.publiclyVisible ? "visible" : "hidden"}
                     </Text>
                   </View>
                   <View className="items-end gap-1">
                     <Text className="text-sm font-semibold text-ink">
-                      {c.backerCount} / {c.targetBackers}
+                      {tr.backerCount} / {tr.targetBackers}
                     </Text>
-                    <Badge label={c.status} tone={statusTone(c.status)} />
+                    <Badge label={tr.stage} tone={stageTone(tr.stage)} />
                   </View>
                 </View>
               </Pressable>
@@ -179,28 +189,36 @@ function slugify(name: string, region: string): string {
     .replace(/^-+|-+$/g, "");
 }
 
-function CampaignForm({
-  campaign,
-  chapters,
+/** Dollars string → integer cents, or undefined when blank/invalid. */
+function dollarsToCents(v: string): number | undefined {
+  const n = Number(v.trim().replace(/^\$/, ""));
+  if (!v.trim() || !Number.isFinite(n) || n < 0) return undefined;
+  return Math.round(n * 100);
+}
+
+function TerritoryForm({
+  territory,
   onDone,
 }: {
-  campaign: CampaignRow | null;
-  chapters: { _id: Id<"chapters">; name: string }[];
+  territory: TerritoryRow | null;
   onDone: () => void;
 }) {
-  const save = useMutation(api.cityCampaigns.saveCampaign);
-  const [name, setName] = useState(campaign?.name ?? "");
-  const [region, setRegion] = useState(campaign?.region ?? "");
-  const [lat, setLat] = useState(campaign ? String(campaign.lat) : "");
-  const [lng, setLng] = useState(campaign ? String(campaign.lng) : "");
-  const [slug, setSlug] = useState(campaign?.slug ?? "");
-  const [slugTouched, setSlugTouched] = useState(!!campaign);
+  const save = useMutation(api.territories.saveTerritory);
+  const [name, setName] = useState(territory?.name ?? "");
+  const [region, setRegion] = useState(territory?.region ?? "");
+  const [lat, setLat] = useState(territory ? String(territory.lat) : "");
+  const [lng, setLng] = useState(territory ? String(territory.lng) : "");
+  const [slug, setSlug] = useState(territory?.slug ?? "");
+  const [slugTouched, setSlugTouched] = useState(!!territory);
   const [targetBackers, setTargetBackers] = useState(
-    campaign ? String(campaign.targetBackers) : "",
+    territory ? String(territory.targetBackers) : "",
   );
-  const [story, setStory] = useState(campaign?.story ?? "");
+  const [story, setStory] = useState(territory?.story ?? "");
   const [publiclyVisible, setPubliclyVisible] = useState(
-    campaign?.publiclyVisible ?? false,
+    territory?.publiclyVisible ?? false,
+  );
+  const [launchFundTarget, setLaunchFundTarget] = useState(
+    territory ? String(territory.launchFundTargetCents / 100) : "",
   );
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -227,7 +245,7 @@ function CampaignForm({
     setBusy(true);
     try {
       await save({
-        campaignId: campaign?._id,
+        territoryId: territory?._id,
         name: name.trim(),
         region: region.trim(),
         lat: latNum,
@@ -236,11 +254,14 @@ function CampaignForm({
         ...(targetNum !== undefined ? { targetBackers: targetNum } : {}),
         story: story.trim() || undefined,
         publiclyVisible,
+        ...(dollarsToCents(launchFundTarget) !== undefined
+          ? { launchFundTargetCents: dollarsToCents(launchFundTarget) }
+          : {}),
       });
       onDone();
     } catch {
       setError(
-        "Couldn't save — check the slug is unique and lat/lng are in range.",
+        "Couldn't save — check the slug is unique (across territories AND chapters) and lat/lng are in range.",
       );
     } finally {
       setBusy(false);
@@ -250,15 +271,15 @@ function CampaignForm({
   return (
     <ScrollView>
       <Card>
-        <SectionHeader title={campaign ? "Edit city" : "New city"} />
+        <SectionHeader title={territory ? "Edit territory" : "New territory"} />
         <TextField
-          label="City name"
+          label="Territory name"
           value={name}
           onChangeText={(v) => {
             setName(v);
             onNameOrRegionChange(v, region);
           }}
-          placeholder="Columbus"
+          placeholder="Queens"
         />
         <TextField
           label="Region"
@@ -267,7 +288,7 @@ function CampaignForm({
             setRegion(v);
             onNameOrRegionChange(name, v);
           }}
-          placeholder="OH"
+          placeholder="NY"
         />
         <View className="flex-row gap-3">
           <View className="flex-1">
@@ -275,7 +296,7 @@ function CampaignForm({
               label="Latitude"
               value={lat}
               onChangeText={setLat}
-              placeholder="39.9612"
+              placeholder="40.7282"
               keyboardType="numbers-and-punctuation"
             />
           </View>
@@ -284,7 +305,7 @@ function CampaignForm({
               label="Longitude"
               value={lng}
               onChangeText={setLng}
-              placeholder="-82.9988"
+              placeholder="-73.7949"
               keyboardType="numbers-and-punctuation"
             />
           </View>
@@ -296,7 +317,7 @@ function CampaignForm({
             setSlugTouched(true);
             setSlug(v);
           }}
-          placeholder="columbus-oh"
+          placeholder="queens-ny"
           autoCapitalize="none"
         />
         <TextField
@@ -307,12 +328,19 @@ function CampaignForm({
           keyboardType="number-pad"
         />
         <TextField
+          label="Launch fund goal ($)"
+          value={launchFundTarget}
+          onChangeText={setLaunchFundTarget}
+          placeholder="Defaults to the launch-budget total"
+          keyboardType="numbers-and-punctuation"
+        />
+        <TextField
           label="Story"
           value={story}
           onChangeText={setStory}
           multiline
           numberOfLines={4}
-          placeholder="What's the story of this city so far?"
+          placeholder="What's the story of this territory so far?"
         />
         <Pressable
           className="mb-3 flex-row items-center gap-2"
@@ -329,10 +357,14 @@ function CampaignForm({
               <Icon name="check" size={13} color="#fff" />
             ) : null}
           </View>
-          <Text className="text-sm text-ink">Visible on the public /give map</Text>
+          <Text className="text-sm text-ink">
+            Visible on the public /give map
+          </Text>
         </Pressable>
 
-        {error ? <Text className="mb-2 text-sm text-danger">{error}</Text> : null}
+        {error ? (
+          <Text className="mb-2 text-sm text-danger">{error}</Text>
+        ) : null}
 
         <View className="flex-row gap-2">
           <Button title="Cancel" variant="secondary" onPress={onDone} />
@@ -340,87 +372,91 @@ function CampaignForm({
         </View>
       </Card>
 
-      {campaign ? (
-        <StatusSection campaign={campaign} chapters={chapters} />
-      ) : null}
+      {territory ? <StageSection territory={territory} /> : null}
     </ScrollView>
   );
 }
 
-function StatusSection({
-  campaign,
-  chapters,
-}: {
-  campaign: CampaignRow;
-  chapters: { _id: Id<"chapters">; name: string }[];
-}) {
-  const setStatus = useMutation(api.cityCampaigns.setCampaignStatus);
-  const [chapterId, setChapterId] = useState<string | null>(
-    campaign.chapterId,
-  );
+function StageSection({ territory }: { territory: TerritoryRow }) {
+  const setStage = useMutation(api.territories.setTerritoryStage);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  async function transition(status: CampaignStatus) {
+  const launched = territory.stage === "launched";
+
+  async function transition(stage: TerritoryStage) {
     setError(null);
-    if (status === "launched" && !chapterId) {
-      setError("Pick the chapter this city became first.");
-      return;
-    }
     setBusy(true);
     try {
-      await setStatus({
-        campaignId: campaign._id,
-        status,
-        ...(status === "launched"
-          ? { chapterId: chapterId as Id<"chapters"> }
-          : {}),
-      });
+      await setStage({ territoryId: territory._id, stage });
     } catch {
-      setError("Couldn't update status.");
+      setError("Couldn't update stage.");
     } finally {
       setBusy(false);
     }
   }
 
+  function confirmLaunch() {
+    Alert.alert(
+      `Launch ${territory.name}?`,
+      "This activates the shadow chapter (it goes live) and provisions its banking. Launching is permanent — a territory can't go back to prospect or raising.",
+      [
+        { text: "Cancel", style: "cancel" },
+        {
+          text: "Launch",
+          style: "destructive",
+          onPress: () => void transition("launched"),
+        },
+      ],
+    );
+  }
+
   return (
     <View className="mt-4">
-      <SectionHeader title="Status" />
+      <SectionHeader title="Stage" />
       <Card>
         <Text className="mb-3 text-sm text-muted">
-          Current: <Text className="font-semibold text-ink">{campaign.status}</Text>
+          Current:{" "}
+          <Text className="font-semibold text-ink">{territory.stage}</Text>
+          {"  ·  "}
+          Chapter: {territory.chapterIsActive ? "active" : "inactive (shadow)"}
         </Text>
         <View className="mb-3 flex-row flex-wrap gap-2">
           <Button
             title="Prospect"
             size="sm"
-            variant={campaign.status === "prospect" ? "primary" : "secondary"}
+            variant={territory.stage === "prospect" ? "primary" : "secondary"}
             onPress={() => transition("prospect")}
-            disabled={busy}
+            disabled={busy || launched}
           />
           <Button
             title="Raising"
             size="sm"
-            variant={campaign.status === "raising" ? "primary" : "secondary"}
+            variant={territory.stage === "raising" ? "primary" : "secondary"}
             onPress={() => transition("raising")}
-            disabled={busy}
+            disabled={busy || launched}
           />
           <Button
-            title="Launched"
+            title="Launch"
             size="sm"
-            variant={campaign.status === "launched" ? "primary" : "secondary"}
-            onPress={() => transition("launched")}
-            disabled={busy}
+            variant={launched ? "primary" : "secondary"}
+            onPress={confirmLaunch}
+            disabled={busy || launched}
           />
         </View>
-        <Select
-          label="Chapter this city became (required to launch)"
-          value={chapterId}
-          onChange={setChapterId}
-          options={chapters.map((c) => ({ value: c._id, label: c.name }))}
-          placeholder="Pick a chapter…"
-        />
-        {error ? <Text className="text-sm text-danger">{error}</Text> : null}
+
+        {/* Launch pot — display only; accrual/freeze wiring lands next PR. */}
+        <View className="rounded-lg border border-border bg-sunken p-3">
+          <Text className="text-xs text-muted">Launch fund</Text>
+          <Text className="text-sm font-semibold text-ink">
+            {formatCents(territory.launchFundCents)} of{" "}
+            {formatCents(territory.launchFundTargetCents)}
+          </Text>
+        </View>
+
+        {error ? (
+          <Text className="mt-2 text-sm text-danger">{error}</Text>
+        ) : null}
       </Card>
     </View>
   );
