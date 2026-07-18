@@ -33,6 +33,23 @@ export function eventPageUrl(slug: string, sub?: string): string {
 }
 
 /**
+ * URL path segment for the public giving map (F-6 P3, docs/plans/
+ * giving-platform.md §5): `/give` is the map, `/give/<slug>` a city campaign
+ * page.
+ */
+export const GIVE_PATH = "give";
+
+/** Relative path of the public giving map, or one city's campaign page. */
+export function givePagePath(slug?: string): string {
+  return slug ? `/${GIVE_PATH}/${slug}` : `/${GIVE_PATH}`;
+}
+
+/** Absolute URL of the public giving map, or one city's campaign page. */
+export function givePageUrl(slug?: string): string {
+  return `${siteUrl()}${givePagePath(slug)}`;
+}
+
+/**
  * Deep link into the authenticated app (the Expo web build) at `path`, when
  * APP_URL is configured. Null otherwise — callers omit the link entirely
  * rather than sending a dead one.
