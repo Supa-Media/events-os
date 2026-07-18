@@ -467,50 +467,14 @@ describe("derived chapters.backerCount", () => {
   });
 });
 
-// ── Givebutter recurring import ───────────────────────────────────────────────
-
-describe("importGivebutterRecurring", () => {
-  test("imports past_due imported pledges, dedups on externalRef, skips sub-floor", async () => {
-    const s = await devDirectorSetup();
-    const rows = [
-      { email: "gina@example.com", name: "Gina Giver", amountCents: 5000, externalRef: "gb_rec_1" },
-      { email: "gina@example.com", name: "Gina Giver", amountCents: 5000, externalRef: "gb_rec_2" },
-      { email: "tiny@example.com", name: "Tiny", amountCents: 1000, externalRef: "gb_rec_3" },
-    ];
-
-    const first = await s.as.mutation(
-      api.givingPledges.importGivebutterRecurring,
-      { scope: s.chapterId, rows },
-    );
-    expect(first.imported).toBe(2);
-    expect(first.skipped).toBe(1); // the sub-floor $10 row
-
-    const pledges = await run(s.t, (ctx) =>
-      ctx.db
-        .query("pledges")
-        .withIndex("by_scope_and_status", (q) => q.eq("scope", s.chapterId))
-        .collect(),
-    );
-    expect(pledges).toHaveLength(2);
-    expect(pledges.every((p) => p.status === "past_due")).toBe(true);
-    expect(pledges.every((p) => p.origin === "imported")).toBe(true);
-    // Imported rows are NOT backers (past_due).
-    expect(await chapterBackerCount(s)).toBe(0);
-
-    // Re-run the SAME export → both dedup on externalRef, nothing new.
-    const second = await s.as.mutation(
-      api.givingPledges.importGivebutterRecurring,
-      { scope: s.chapterId, rows },
-    );
-    expect(second.imported).toBe(0);
-    expect(second.skipped).toBe(3);
-  });
-});
+// Territories P6: `importGivebutterRecurring`'s dedup/past_due/gating tests
+// moved to `tests/canonicalImport.test.ts` (the `recurring` row type there
+// ports the exact same behavior — see `givingImport.ts`'s header comment).
 
 // ── Access gating ─────────────────────────────────────────────────────────────
 
 describe("pledge access gating", () => {
-  test("no giving seat is rejected; view-only can't import; a director passes", async () => {
+  test("no giving seat is rejected; a chapter treasurer sees (view) only; a director passes", async () => {
     const t = newT();
     await run(t, (ctx) => runSeedSeatDefs(ctx));
     const s = await setupChapter(t); // plain chapter admin, no giving seat
@@ -518,34 +482,16 @@ describe("pledge access gating", () => {
     await expect(
       s.as.query(api.givingPledges.listPledges, { scope: s.chapterId }),
     ).rejects.toThrow();
-    await expect(
-      s.as.mutation(api.givingPledges.importGivebutterRecurring, {
-        scope: s.chapterId,
-        rows: [{ name: "X", amountCents: 5000, externalRef: "gb_x" }],
-      }),
-    ).rejects.toThrow();
 
-    // A chapter treasurer sees (view) but cannot import (manage).
+    // A chapter treasurer sees (view) but cannot manage.
     await seatCaller(s, "treasurer", s.chapterId);
     await expect(
       s.as.query(api.givingPledges.listPledges, { scope: s.chapterId }),
     ).resolves.toBeDefined();
-    await expect(
-      s.as.mutation(api.givingPledges.importGivebutterRecurring, {
-        scope: s.chapterId,
-        rows: [{ name: "X", amountCents: 5000, externalRef: "gb_x" }],
-      }),
-    ).rejects.toThrow();
 
-    // A development director (central manage) can both view + import.
+    // A development director (central manage) can both view + manage.
     await seatCaller(s, "development_director", "central");
-    const imported = await s.as.mutation(
-      api.givingPledges.importGivebutterRecurring,
-      {
-        scope: s.chapterId,
-        rows: [{ name: "Y", amountCents: 5000, externalRef: "gb_y" }],
-      },
-    );
-    expect(imported.imported).toBe(1);
+    const access = await s.as.query(api.givingPlatform.myGivingAccess, {});
+    expect(access.canManage).toBe(true);
   });
 });
