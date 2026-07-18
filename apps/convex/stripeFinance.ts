@@ -68,6 +68,7 @@ import {
   getFinanceRole,
   defaultFundId,
 } from "./lib/finance";
+import { listActiveChapters } from "./lib/chapters";
 
 const STRIPE_API = "https://api.stripe.com/v1";
 
@@ -1262,7 +1263,7 @@ export const financeDiag = internalQuery({
       ? [await ctx.db.get(args.chapterId)].filter(
           (c): c is Doc<"chapters"> => c !== null,
         )
-      : await ctx.db.query("chapters").take(ACCOUNT_SCAN_LIMIT);
+      : await listActiveChapters(ctx, ACCOUNT_SCAN_LIMIT);
 
     const out = [];
     for (const chapter of chapters) {

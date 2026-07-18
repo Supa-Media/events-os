@@ -48,6 +48,7 @@ import {
 } from "@events-os/shared";
 import { getChapterIdOrNull, requireChapterId } from "./lib/context";
 import { requireFinanceRole, requireFinanceCentral } from "./lib/finance";
+import { listActiveChapters } from "./lib/chapters";
 import { readSandbox } from "./financeSettings";
 import {
   isSpend,
@@ -309,7 +310,7 @@ export const spendByMonth = query({
       }
       await requireFinanceCentral(ctx, ownChapterId);
 
-      const chapters = await ctx.db.query("chapters").take(ROLLUP_SCAN_LIMIT);
+      const chapters = await listActiveChapters(ctx, ROLLUP_SCAN_LIMIT);
       const months = new Array(12).fill(0) as number[];
       for (const chapter of chapters) {
         const txns = await loadYearTxnsLocal(ctx, chapter._id, args.year, sandboxMode);
@@ -418,7 +419,7 @@ export const chapterHealth = query({
     const year = now.year;
     const throughMonth = now.month;
 
-    const chapters = await ctx.db.query("chapters").take(ROLLUP_SCAN_LIMIT);
+    const chapters = await listActiveChapters(ctx, ROLLUP_SCAN_LIMIT);
 
     // Central budgets for THIS year — needed to partition each chapter's
     // central-linked spend OUT of its own row, exactly mirroring

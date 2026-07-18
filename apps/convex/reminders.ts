@@ -46,6 +46,8 @@ import { sendEmail, emailShell } from "./ticketingEmails";
 import { escapeHtml } from "./lib/html";
 import { statusColumnFor } from "./lib/readiness";
 import { appUrl, siteUrl } from "./lib/siteUrl";
+import { listActiveChapters } from "./lib/chapters";
+import { ROLLUP_SCAN_LIMIT } from "./finances";
 
 /** Don't resurface work overdue longer than this — it's stale, not urgent. */
 const OVERDUE_LOOKBACK_MS = 60 * DAY_MS;
@@ -415,11 +417,14 @@ export async function collectOpenWorkForChapter(
   return recipients;
 }
 
-/** Chapter ids to fan the collection over — one bounded transaction each. */
+/** Chapter ids to fan the collection over — one bounded transaction each.
+ *  ACTIVE chapters only (shadow/pre-launch territory rows excluded — see
+ *  `lib/chapters.ts#listActiveChapters`): nobody should get reminder digests
+ *  fanned out for a chapter that hasn't launched yet. */
 export const listChapterIds = internalQuery({
   args: {},
   handler: async (ctx) => {
-    const chapters = await ctx.db.query("chapters").collect();
+    const chapters = await listActiveChapters(ctx, ROLLUP_SCAN_LIMIT);
     return chapters.map((c) => c._id);
   },
 });

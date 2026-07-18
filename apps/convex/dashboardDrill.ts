@@ -145,6 +145,12 @@ export const pendingBudgetApprovals = query({
     const home = (await requireChapterId(ctx)) as Id<"chapters">;
     await requireFinanceCentral(ctx, home);
 
+    // Intentionally NOT gated through `lib/chapters.ts#listActiveChapters` —
+    // this name map (and its budget fanout below) is used for HISTORY
+    // rendering, and a submitted budget can reference a chapter that's since
+    // gone inactive. Excluding it here would just turn its name into
+    // "Unknown chapter" for no benefit (shadow/pre-launch chapters have no
+    // budgets to submit in the first place, so this doesn't surface them).
     const chapters = await ctx.db.query("chapters").take(ROLLUP_SCAN_LIMIT);
     const chapterNameById = new Map(chapters.map((c) => [c._id, c.name] as const));
 
@@ -230,6 +236,12 @@ export const orgUnattributedTransactions = query({
     const dp: DashPeriodLocal = { year, month, ytd };
     const sandboxMode = await readSandbox(ctx);
 
+    // Intentionally NOT gated through `lib/chapters.ts#listActiveChapters` —
+    // same reasoning as `pendingBudgetApprovals` above: this is a HISTORY
+    // drilldown (unattributed spend), and old transactions can reference a
+    // chapter that's since gone inactive. Excluding it would just turn its
+    // name into "Unknown chapter"; a shadow/pre-launch chapter has no
+    // transactions to show here in the first place.
     const chapters = await ctx.db.query("chapters").take(ROLLUP_SCAN_LIMIT);
     const chapterNameById = new Map(chapters.map((c) => [c._id, c.name] as const));
 

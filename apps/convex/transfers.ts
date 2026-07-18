@@ -1119,9 +1119,14 @@ export const interScopeBalances = query({
 
 // ── WP-dashboard-drill: `interScopeBalances`' shared row-computing helpers ──
 
-/** Direction (a)'s target set (every CENTRAL budget, any year) + every
- *  chapter — the context both `interScopeBalances` and
- *  `interScopeBalanceContributors` need before they can compute anything. */
+/** Direction (a)'s target set (every CENTRAL budget, any year) + every ACTIVE
+ *  chapter (shadow/pre-launch territory rows excluded — this also keeps skim
+ *  automation off shadow chapters, since `interScopeBalances`' rows drive it;
+ *  see `lib/chapters.ts#listActiveChapters`) — the context both
+ *  `interScopeBalances` and `interScopeBalanceContributors` need before they
+ *  can compute anything. Inlines the same `isActive !== false` filter
+ *  `listActiveChapters` applies (rather than calling it directly) because the
+ *  truncation warning needs the RAW pre-filter scan length. */
 async function loadInterScopeContext(
   ctx: QueryCtx,
 ): Promise<{ centralBudgetIds: Set<Id<"budgets">>; chapters: Doc<"chapters">[] }> {
@@ -1134,12 +1139,13 @@ async function loadInterScopeContext(
       `[transfers] interScopeBalances hit ROLLUP_SCAN_LIMIT (${ROLLUP_SCAN_LIMIT}) reading central budgets; direction (a) target set truncated.`,
     );
   }
-  const chapters = await ctx.db.query("chapters").take(ROLLUP_SCAN_LIMIT);
-  if (chapters.length === ROLLUP_SCAN_LIMIT) {
+  const rawChapters = await ctx.db.query("chapters").take(ROLLUP_SCAN_LIMIT);
+  if (rawChapters.length === ROLLUP_SCAN_LIMIT) {
     console.warn(
       `[transfers] interScopeBalances hit ROLLUP_SCAN_LIMIT (${ROLLUP_SCAN_LIMIT}) reading chapters; result rows truncated.`,
     );
   }
+  const chapters = rawChapters.filter((c) => c.isActive !== false);
   return { centralBudgetIds: new Set(centralBudgetDocs.map((b) => b._id)), chapters };
 }
 

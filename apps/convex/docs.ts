@@ -28,6 +28,8 @@ import {
   seedPlatformGuidesForChapter,
   type SeedGuidesResult,
 } from "./lib/platformGuides";
+import { listActiveChapters } from "./lib/chapters";
+import { ROLLUP_SCAN_LIMIT } from "./finances";
 
 /** The doc kinds — mirrors the `docs` table union. */
 const docKind = v.union(
@@ -406,7 +408,7 @@ export const seedPlatformGuides = internalMutation({
   handler: async (ctx, args) => {
     const chapters = args.chapterId
       ? [await ctx.db.get(args.chapterId)]
-      : await ctx.db.query("chapters").collect();
+      : await listActiveChapters(ctx, ROLLUP_SCAN_LIMIT);
 
     const results: Array<SeedGuidesResult & { chapter: string }> = [];
     for (const chapter of chapters) {
@@ -432,7 +434,7 @@ export const seedPlatformGuides = internalMutation({
 export const clearSeedHash = internalMutation({
   args: {},
   handler: async (ctx) => {
-    const chapters = await ctx.db.query("chapters").collect();
+    const chapters = await listActiveChapters(ctx, ROLLUP_SCAN_LIMIT);
     let cleared = 0;
     for (const chapter of chapters) {
       const guideDocs = await ctx.db

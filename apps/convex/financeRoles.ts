@@ -30,6 +30,7 @@ import {
 } from "./lib/finance";
 import { isSuperuser } from "./lib/superuser";
 import { ROLLUP_SCAN_LIMIT } from "./finances";
+import { listActiveChapters } from "./lib/chapters";
 
 const roleValidator = v.union(...FINANCE_ROLES.map((r) => v.literal(r)));
 const scopeValidator = v.union(...FINANCE_ROLE_SCOPES.map((s) => v.literal(s)));
@@ -328,7 +329,7 @@ export const listChaptersForPeek = query({
     }
     if (!isCentral) return [];
 
-    const chapters = await ctx.db.query("chapters").take(ROLLUP_SCAN_LIMIT);
+    const chapters = await listActiveChapters(ctx, ROLLUP_SCAN_LIMIT);
     return chapters
       .map((c) => ({ chapterId: c._id, name: c.name }))
       .sort((a, b) => a.name.localeCompare(b.name));
