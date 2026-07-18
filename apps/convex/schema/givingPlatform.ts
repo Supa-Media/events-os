@@ -156,6 +156,15 @@ export const gifts = defineTable({
   // one gift per invoice, safe on webhook redelivery.
   pledgeId: v.optional(v.id("pledges")),
   stripeInvoiceId: v.optional(v.string()),
+  // Territories launch pot (docs/plans/giving-territories.md §D3): `true` iff
+  // this gift's amount is currently counted inside its territory's
+  // `launchFundCents` pot — stamped by `recordGiftForDonor` when the gift lands
+  // on a chapter whose territory is still `prospect`/`raising` (100% pre-launch
+  // accrual). The flag makes reversal EXACT: `removeGiftRow` un-bumps the pot
+  // only for a flagged gift, and only while the territory hasn't launched (the
+  // freeze — a post-launch delete leaves the flag on the deleted row's history
+  // but never un-bumps a frozen pot). Absent/`false` = never counted.
+  countedInLaunchFund: v.optional(v.boolean()),
   createdAt: v.number(),
 })
   .index("by_donor", ["donorId"])
