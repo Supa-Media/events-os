@@ -290,43 +290,53 @@ function LineTable({
     return <Text className="mt-3 text-sm text-muted">Loading line items…</Text>;
   }
   return (
-    <View className="mt-3 overflow-hidden rounded-md border border-border">
-      <View className="flex-row bg-sunken px-3 py-2">
-        <Text className="flex-1 text-2xs font-bold uppercase tracking-wider text-muted">
-          Line item
-        </Text>
-        <Text className="w-16 text-center text-2xs font-bold uppercase tracking-wider text-muted">
-          Receipt
-        </Text>
-        <Text className="w-24 text-right text-2xs font-bold uppercase tracking-wider text-muted">
-          Amount
-        </Text>
-      </View>
-      {detail.lines.map((line) => (
-        <View
-          key={line._id}
-          className="flex-row items-center border-t border-border px-3 py-2"
-        >
-          <View className="flex-1 pr-2">
-            <Text className="text-sm font-medium text-ink">
-              {line.description}
-            </Text>
-            {line.category ? (
-              <Text className="text-xs text-muted">{line.category}</Text>
-            ) : null}
-          </View>
-          <View className="w-16 items-center">
-            {line.hasReceipt ? (
-              <Icon name="check" size={15} color={colors.success} />
-            ) : (
-              <Icon name="minus" size={15} color={colors.faint} />
-            )}
-          </View>
-          <Text className="w-24 text-right text-sm font-semibold text-ink">
-            {formatCents(line.amountCents)}
+    <View className="mt-3">
+      {/* The request-level "For" tag (an event or project, purely
+          informational — see `reimbursements.ts#forLabel`), when set. */}
+      {detail.forLabel ? (
+        <View className="mb-2 flex-row items-center gap-1.5">
+          <Icon name="tag" size={12} color={colors.muted} />
+          <Text className="text-xs text-muted">For: {detail.forLabel}</Text>
+        </View>
+      ) : null}
+      <View className="overflow-hidden rounded-md border border-border">
+        <View className="flex-row bg-sunken px-3 py-2">
+          <Text className="flex-1 text-2xs font-bold uppercase tracking-wider text-muted">
+            Line item
+          </Text>
+          <Text className="w-16 text-center text-2xs font-bold uppercase tracking-wider text-muted">
+            Receipt
+          </Text>
+          <Text className="w-24 text-right text-2xs font-bold uppercase tracking-wider text-muted">
+            Amount
           </Text>
         </View>
-      ))}
+        {detail.lines.map((line) => (
+          <View
+            key={line._id}
+            className="flex-row items-center border-t border-border px-3 py-2"
+          >
+            <View className="flex-1 pr-2">
+              <Text className="text-sm font-medium text-ink">
+                {line.description}
+              </Text>
+              {line.category ? (
+                <Text className="text-xs text-muted">{line.category}</Text>
+              ) : null}
+            </View>
+            <View className="w-16 items-center">
+              {line.hasReceipt ? (
+                <Icon name="check" size={15} color={colors.success} />
+              ) : (
+                <Icon name="minus" size={15} color={colors.faint} />
+              )}
+            </View>
+            <Text className="w-24 text-right text-sm font-semibold text-ink">
+              {formatCents(line.amountCents)}
+            </Text>
+          </View>
+        ))}
+      </View>
     </View>
   );
 }
