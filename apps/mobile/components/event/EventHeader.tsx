@@ -28,7 +28,7 @@ import {
   measureAnchor,
   type ChipAnchor,
 } from "../role/RoleChips";
-import { ScopeToggle, type ScopeChoice } from "../team/ScopeToggle";
+import { type ScopeChoice } from "../team/ScopeToggle";
 import { colors } from "../../lib/theme";
 import { formatDateTime } from "../../lib/format";
 import {
@@ -199,18 +199,9 @@ export function EventHeader({
           onChangeText={onChangeBudget}
           onSave={onSaveBudget}
         />
-        {/* Training events have no money life (the #172 invariant) — every
-            other Money entry point (EventTools' ⋯ menu, the Money tab
-            itself) hides accordingly, so the header chip does too. */}
-        {event.isTraining === true ? null : (
-          <ScopeSeg
-            scope={scope}
-            scopeChapterName={scopeChapterName}
-            homeChapterName={homeChapterName}
-            canChangeScope={canChangeScope}
-            onChangeScope={onChangeScope}
-          />
-        )}
+        {/* Money attribution (which chapter this belongs to) lives on the Money
+            tab's "Belongs to" row — the canonical control — so it no longer
+            clutters the header meta line. */}
       </View>
 
       {/* Row 3 — people, folded away by default: a quiet avatar-stack summary
@@ -620,77 +611,6 @@ function BudgetSeg({
               onPress={commitClose}
             />
           </View>
-        </View>
-      </Popover>
-    </>
-  );
-}
-
-/**
- * "Belongs to" — money attribution, right next to the budget figure. This is
- * the SAME toggle + the same `transferEventScope` confirm flow the Money
- * tab's "Belongs to" row drives (see event/[id].tsx `handleScopeChange`,
- * passed in as `onChangeScope`) — a second, more discoverable entry point
- * into it, not a second implementation. Read-only chip when the caller can't
- * change it (mirrors the Money tab's `canChangeScope` gate exactly). The
- * caller (the meta line above) skips mounting this entirely for training
- * events — they have no money life (#172) so there's nothing to attribute.
- */
-function ScopeSeg({
-  scope,
-  scopeChapterName,
-  homeChapterName,
-  canChangeScope,
-  onChangeScope,
-}: {
-  scope: string;
-  scopeChapterName: string | null;
-  homeChapterName: string | null;
-  canChangeScope: boolean;
-  onChangeScope: (next: ScopeChoice) => void;
-}) {
-  const { ref, anchor, visible, open, close } = useAnchor();
-  const value: ScopeChoice = scope === "central" ? "central" : "chapter";
-  const label = value === "central" ? "Central" : (scopeChapterName ?? "This chapter");
-
-  if (!canChangeScope) {
-    return (
-      <View
-        className="flex-row items-center gap-1.5"
-        accessibilityLabel={`Belongs to ${label}`}
-      >
-        <Icon name="layers" size={13} color={colors.muted} />
-        <Text className="text-sm text-muted">{label}</Text>
-      </View>
-    );
-  }
-
-  return (
-    <>
-      <Pressable
-        ref={ref}
-        onPress={open}
-        accessibilityRole="button"
-        accessibilityLabel={`Belongs to ${label}. Change attribution`}
-        className="-mx-1 flex-row items-center gap-1.5 rounded-md px-1 py-0.5 active:opacity-70 web:hover:bg-sunken"
-      >
-        <Icon name="layers" size={13} color={colors.muted} />
-        <Text className="text-sm text-ink">{label}</Text>
-        <Icon name="chevron-down" size={12} color={colors.faint} />
-      </Pressable>
-      <Popover visible={visible} anchor={anchor} width={220} onClose={close}>
-        <View className="gap-2 p-3">
-          <Text className="text-2xs font-bold uppercase tracking-wider text-muted">
-            Belongs to
-          </Text>
-          <ScopeToggle
-            value={value}
-            chapterName={homeChapterName ?? "This chapter"}
-            onChange={(next) => {
-              close();
-              onChangeScope(next);
-            }}
-          />
         </View>
       </Popover>
     </>
