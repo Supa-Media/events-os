@@ -43,6 +43,7 @@ import { syncLinkedBudgetIdentity } from "./0027_sync_linked_budget_identity";
 import { reawardCourseCompletions } from "./0028_reaward_course_completions";
 import { territoriesCutover } from "./0029_territories_cutover";
 import { backfillLaunchFund } from "./0030_backfill_launch_fund";
+import { giftMethodSources } from "./0031_gift_method_sources";
 
 /** One registered migration: a stable `name` (the ledger key) + its effect. */
 export type Migration = {
@@ -108,4 +109,8 @@ export const MIGRATIONS: Migration[] = [
   // pre-launch territory's `launchFundCents` from its chapter-scope gift sum
   // (recompute-style, idempotent; launched pots left frozen). See 0030.
   backfillLaunchFund,
+  // Gift sources cutover — relabel every deprecated-legacy `imported` gift onto
+  // the merged/widened source vocabulary (`givebutter` when Givebutter-sourced,
+  // else `other`). Pure relabel, no rollup/pot change; idempotent. See 0031.
+  giftMethodSources,
 ];
