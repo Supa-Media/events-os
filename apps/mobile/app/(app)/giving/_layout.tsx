@@ -10,7 +10,9 @@ import { Pill } from "../../../components/ui";
  * AppShell provides the app chrome; this layout adds the in-app giving tabs
  * above the active screen, mirroring the finances `_layout` pill nav.
  *
- * Phase 1 shipped Dashboard · Donors; P2 adds Backers (recurring pledges);
+ * Phase 1 shipped Dashboard · Donors; the Gifts ledger (a chronological feed
+ * of every gift in the book, newest-first, with edit / move-book / audit / add
+ * — owner requests #1–#4) sits beside Donors; P2 adds Backers (recurring pledges);
  * P4 adds Sponsorships (the institutional-giving pipeline + package tiers);
  * Territories is the launch-map desk (see `apps/convex/territories.ts`).
  * Territories P6 adds Import (the canonical preview/commit bulk-import flow,
@@ -26,6 +28,7 @@ import { Pill } from "../../../components/ui";
  */
 const TABS: { label: string; path: string }[] = [
   { label: "Dashboard", path: "/giving" },
+  { label: "Gifts", path: "/giving/gifts" },
   { label: "Donors", path: "/giving/donors" },
   { label: "Backers", path: "/giving/backers" },
   { label: "Sponsorships", path: "/giving/sponsorships" },

@@ -75,6 +75,31 @@ export const GIFT_METHODS = [
   "venmo",
   "givebutter",
   "other",
+  // Gifts ledger: Cash App is a distinct P2P rail the giving desk takes money
+  // through (the owner's Zelle/Cash App gifts) — genuinely absent above, so
+  // appended here (never renumber; callers persist these literals). "Paid on
+  // behalf of the org" gifts (an expensive purchase made for the org that
+  // counts toward the giver's statement) are already covered by `in_kind` — no
+  // new literal for that case.
+  "cash_app",
+] as const;
+
+/**
+ * Gifts ledger AUDIT — the "breadcrumb trail" (owner request #4b) of every
+ * human change to a gift: who did it, when, and a compact field-level summary.
+ * A new immutable row per create / edit / donor-reassign / scope-move, read
+ * newest-first on the gift detail via `by_gift`. This is the giving desk's
+ * cleanup accountability record, deliberately separate from the money rollups
+ * (which stay exact via `lib/givingDonors.ts`); the audit never affects a
+ * counter, it only narrates. System-written gifts (event dual-write, Stripe
+ * recurring cycle, CSV/canonical import) do NOT write audit rows — the trail is
+ * for HUMAN desk edits, not machine writes, so it stays legible during cleanup.
+ */
+export const GIFT_AUDIT_ACTIONS = [
+  "created",
+  "edited",
+  "reassignedDonor",
+  "movedScope",
 ] as const;
 
 /** A donor's `scope`: the chapter that stewards the relationship, or central. */
@@ -247,6 +272,40 @@ export const gifts = defineTable({
   // Territories P7: the evidence link's reverse lookup — "is this transaction
   // already a confirmed gift" (candidate exclusion + confirm idempotency).
   .index("by_transaction", ["transactionId"]);
+
+/**
+ * One audit breadcrumb for a HUMAN gift change (owner request #4b — "a
+ * breadcrumb trail of me showing I updated this"). Written by the giving-desk
+ * mutations (`addGift`, `editGift`, `reassignGiftDonor`, `moveGiftScope`) after
+ * the money write succeeds, so a row exists iff the change committed. Read
+ * bounded newest-first via `by_gift` on the gift detail. `changes` is a compact
+ * field-level diff (each `{field, from, to}` already stringified for display —
+ * "$50.00" → "$80.00", "New York" → "central"); `note` is the actor's optional
+ * "why". Immutable: rows are never patched or deleted (a gift's whole audit
+ * outlives an edit; only `removeGift`/`mergeDonors`, which delete gifts, orphan
+ * them, and an orphaned trail is harmless — it's never read without its gift).
+ */
+export const giftAudit = defineTable({
+  giftId: v.id("gifts"),
+  // The gift's scope at the time of the change (the "book" it was in) — kept
+  // for a possible future scope-filtered audit read; the primary read is by_gift.
+  scope: givingScope,
+  actorUserId: v.id("users"),
+  at: v.number(),
+  action: v.union(...GIFT_AUDIT_ACTIONS.map((a) => v.literal(a))),
+  // Compact, display-ready field-level change summary. Empty/absent for a bare
+  // "created" row. Values are pre-formatted strings (money, dates, labels).
+  changes: v.optional(
+    v.array(
+      v.object({
+        field: v.string(),
+        from: v.optional(v.string()),
+        to: v.optional(v.string()),
+      }),
+    ),
+  ),
+  note: v.optional(v.string()), // the actor's optional "why"
+}).index("by_gift", ["giftId"]);
 
 /**
  * Territories P7 (bank-credit gift matching, §D10) — a development-team

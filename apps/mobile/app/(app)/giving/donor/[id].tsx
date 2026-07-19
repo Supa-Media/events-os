@@ -57,6 +57,7 @@ const SOURCE_OPTIONS: { value: string; label: string }[] = [
   { value: "check", label: "Check" },
   { value: "wire", label: "Wire" },
   { value: "zelle", label: "Zelle" },
+  { value: "cash_app", label: "Cash App" },
   { value: "venmo", label: "Venmo" },
   { value: "givebutter", label: "Givebutter" },
   { value: "in_kind", label: "In-kind" },
@@ -73,6 +74,7 @@ const SOURCE_LABELS: Record<string, string> = {
   wire: "Wire",
   in_kind: "In-kind",
   zelle: "Zelle",
+  cash_app: "Cash App",
   venmo: "Venmo",
   givebutter: "Givebutter",
   other: "Other",
@@ -87,6 +89,7 @@ function sourceLabel(method: string): string {
 const EXTERNAL_SOURCES = new Set([
   "cash",
   "zelle",
+  "cash_app",
   "venmo",
   "wire",
   "in_kind",
