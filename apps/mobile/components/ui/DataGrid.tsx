@@ -149,25 +149,31 @@ export function GridCell({
 
 /** A grid row — bottom hairline, `bg-raised`, web hover tint to `bg-sunken`
  *  when the whole row is a press target (row tap → detail). Falls back to a
- *  plain (non-pressable) row when `onPress` is omitted. */
+ *  plain (non-pressable) row when `onPress` is omitted. `muted` (Backers'
+ *  paused-pledge rows) dims the whole row so a paused row reads as visually
+ *  distinct without hiding it — it's still in the list, still tappable. */
 export function GridRow({
   children,
   onPress,
   isLast = false,
   accessibilityLabel,
+  muted = false,
 }: {
   children: ReactNode;
   onPress?: () => void;
   /** Drop the bottom hairline on the final row. */
   isLast?: boolean;
   accessibilityLabel?: string;
+  /** Dim the row (e.g. a paused pledge) without removing it from the grid. */
+  muted?: boolean;
 }) {
   const [hovered, setHovered] = useState(false);
   const border = isLast ? "" : "border-b border-border";
+  const dim = muted ? "opacity-60" : "";
 
   if (!onPress) {
     return (
-      <View className={`flex-row items-stretch bg-raised ${border}`}>
+      <View className={`flex-row items-stretch bg-raised ${border} ${dim}`}>
         {children}
       </View>
     );
@@ -179,7 +185,7 @@ export function GridRow({
       onHoverOut={() => setHovered(false)}
       accessibilityRole="button"
       accessibilityLabel={accessibilityLabel}
-      className={`flex-row items-stretch ${border} ${hovered ? "bg-sunken" : "bg-raised"}`}
+      className={`flex-row items-stretch ${border} ${dim} ${hovered ? "bg-sunken" : "bg-raised"}`}
     >
       {children}
     </Pressable>
