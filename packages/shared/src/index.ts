@@ -488,6 +488,24 @@ export const INVENTORY_BACKED_SOURCES = ["chapter_storage"] as const;
 /** Sources that are external loans and carry lentBy / returnBy / fee fields. */
 export const LOAN_SOURCES = ["borrowed", "rented"] as const;
 
+/**
+ * Normalize a stored source value onto the provenance set. Legacy events keep
+ * their own copied option sets, so pre-cutover rows still carry the retired
+ * "storage"/"misc" values — the single alias table lives here.
+ */
+export function normalizeSupplySource(
+  source?: string | null,
+): string | null | undefined {
+  if (source === "storage") return "chapter_storage";
+  if (source === "misc") return "buy_in_store";
+  return source;
+}
+
+/** True when this (possibly legacy) source value links a chapter asset. */
+export function isInventoryBackedSource(source?: string | null): boolean {
+  return normalizeSupplySource(source) === "chapter_storage";
+}
+
 export const CONTAINER_OPTIONS: SelectOption[] = [
   { value: "black_luggage", label: "Black luggage", color: "purple" },
   { value: "green_luggage", label: "Green luggage", color: "green" },
@@ -552,14 +570,7 @@ export interface DerivedSupplyStatus {
  */
 export function deriveSupplyStatus(input: SupplyStatusInput): DerivedSupplyStatus {
   const { container, override } = input;
-  // Legacy alias: the retired "storage"/"misc" source values map onto the new
-  // provenance set, so pre-cutover event rows still derive sensibly.
-  const source =
-    input.source === "storage"
-      ? "chapter_storage"
-      : input.source === "misc"
-        ? "buy_in_store"
-        : input.source;
+  const source = normalizeSupplySource(input.source);
 
   if (override) return { value: override, isOverride: true };
 

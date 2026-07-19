@@ -1,6 +1,12 @@
 import { describe, expect, test } from "vitest";
 import { api } from "../_generated/api";
-import { newT, run, setupChapter, type ChapterSetup } from "./setup.helpers";
+import {
+  newT,
+  run,
+  setupChapter,
+  storeBlob,
+  type ChapterSetup,
+} from "./setup.helpers";
 import type { Id } from "../_generated/dataModel";
 
 /**
@@ -225,5 +231,265 @@ describe("supplies ⇄ inventory bridge", () => {
       (x) => x._id === sub,
     )!;
     expect(a.reservedLive).toBe(0);
+  });
+});
+
+async function reservedLive(
+  s: ChapterSetup,
+  assetId: Id<"assets">,
+): Promise<number> {
+  const a = (await s.as.query(api.inventory.listAssets, {})).find(
+    (x) => x._id === assetId,
+  );
+  return a?.reservedLive ?? 0;
+}
+
+async function supplyFields(
+  s: ChapterSetup,
+  itemId: Id<"eventItems">,
+): Promise<Record<string, any>> {
+  return await run(s.t, async (ctx) => (await ctx.db.get(itemId))?.fields ?? {});
+}
+
+describe("linkSupplyToAsset", () => {
+  test("links + reserves, and sets Source when the row had none", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const eventId = await seedEvent(s, "Worship Night");
+    const mixer = (await s.as.mutation(api.inventory.addAsset, {
+      name: "Mixer",
+      tags: ["audio"],
+      quantity: 1,
+    })) as Id<"assets">;
+    const item = await addSupply(s, eventId, { qty: 1 }, "Mixer");
+
+    await s.as.mutation(api.items.linkSupplyToAsset, {
+      itemId: item,
+      assetId: mixer,
+    });
+    expect(await reservedLive(s, mixer)).toBe(1);
+    const fields = await supplyFields(s, item);
+    expect(fields.linkedAssetId).toBe(mixer);
+    expect(fields.source).toBe("chapter_storage");
+    expect((await supplyStatus(s, eventId, item)).status).toBe(
+      "pull_from_storage",
+    );
+  });
+
+  test("legacy 'storage' source stays untouched but still reserves", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const eventId = await seedEvent(s, "Legacy Night");
+    const cable = (await s.as.mutation(api.inventory.addAsset, {
+      name: "XLR Cabling",
+      tags: ["cabling"],
+      quantity: 4,
+    })) as Id<"assets">;
+    // A pre-cutover row: its cloned option set still uses the retired value.
+    const item = await addSupply(s, eventId, { source: "storage", qty: 4 });
+
+    await s.as.mutation(api.items.linkSupplyToAsset, {
+      itemId: item,
+      assetId: cable,
+    });
+    const fields = await supplyFields(s, item);
+    expect(fields.source).toBe("storage");
+    expect(fields.linkedAssetId).toBe(cable);
+    expect(await reservedLive(s, cable)).toBe(4);
+    expect((await supplyStatus(s, eventId, item)).status).toBe(
+      "pull_from_storage",
+    );
+  });
+
+  test("re-link moves the reservation; null unlinks and releases", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const eventId = await seedEvent(s, "Gala");
+    const a1 = (await s.as.mutation(api.inventory.addAsset, {
+      name: "Speaker A",
+      quantity: 1,
+    })) as Id<"assets">;
+    const a2 = (await s.as.mutation(api.inventory.addAsset, {
+      name: "Speaker B",
+      quantity: 1,
+    })) as Id<"assets">;
+    const item = await addSupply(s, eventId, {
+      source: "chapter_storage",
+      linkedAssetId: a1,
+      qty: 1,
+    });
+    expect(await reservedLive(s, a1)).toBe(1);
+
+    await s.as.mutation(api.items.linkSupplyToAsset, {
+      itemId: item,
+      assetId: a2,
+    });
+    expect(await reservedLive(s, a1)).toBe(0);
+    expect(await reservedLive(s, a2)).toBe(1);
+
+    await s.as.mutation(api.items.linkSupplyToAsset, {
+      itemId: item,
+      assetId: null,
+    });
+    expect(await reservedLive(s, a2)).toBe(0);
+    expect((await supplyFields(s, item)).linkedAssetId).toBeUndefined();
+  });
+
+  test("rejects an asset from another chapter", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const other = await setupChapter(t, {
+      email: "other@publicworship.life",
+      chapterName: "Chicago",
+    });
+    const eventId = await seedEvent(s, "Retreat");
+    const foreign = (await other.as.mutation(api.inventory.addAsset, {
+      name: "Their speaker",
+      quantity: 1,
+    })) as Id<"assets">;
+    const item = await addSupply(s, eventId, { qty: 1 });
+
+    await expect(
+      s.as.mutation(api.items.linkSupplyToAsset, {
+        itemId: item,
+        assetId: foreign,
+      }),
+    ).rejects.toThrow(/not found/i);
+  });
+});
+
+describe("createAssetFromSupply", () => {
+  test("defaults name/qty/photo from the row, links + reserves", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const eventId = await seedEvent(s, "Concert");
+    const photo = await storeBlob(t);
+    const item = await addSupply(
+      s,
+      eventId,
+      { source: "buy_in_store", qty: 2, photo },
+      "Battery Charger",
+    );
+
+    const { assetId } = await s.as.mutation(api.items.createAssetFromSupply, {
+      itemId: item,
+    });
+    const asset = await run(s.t, (ctx) => ctx.db.get(assetId));
+    expect(asset).toMatchObject({
+      name: "Battery Charger",
+      quantity: 2,
+      acquired: true,
+      consumable: false,
+      photoStorageId: photo,
+    });
+    const fields = await supplyFields(s, item);
+    expect(fields.linkedAssetId).toBe(assetId);
+    // Promotion flips an acquired row onto the inventory-backed source.
+    expect(fields.source).toBe("chapter_storage");
+    // This event immediately holds its own copy.
+    expect(await reservedLive(s, assetId)).toBe(2);
+  });
+
+  test("explicit args win; a legacy http photo URL is not copied", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const eventId = await seedEvent(s, "Picnic");
+    const item = await addSupply(
+      s,
+      eventId,
+      { qty: 1, photo: "https://example.com/pic.png" },
+      "Cups",
+    );
+
+    const { assetId } = await s.as.mutation(api.items.createAssetFromSupply, {
+      itemId: item,
+      name: "Paper cups",
+      quantity: 200,
+      tags: ["consumables"],
+      consumable: true,
+    });
+    const asset = await run(s.t, (ctx) => ctx.db.get(assetId));
+    expect(asset).toMatchObject({
+      name: "Paper cups",
+      quantity: 200,
+      consumable: true,
+      tags: ["consumables"],
+    });
+    expect(asset?.photoStorageId).toBeUndefined();
+  });
+
+  test("blank name throws", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const eventId = await seedEvent(s, "Setup");
+    const item = await addSupply(s, eventId, { qty: 1 }, "");
+    await expect(
+      s.as.mutation(api.items.createAssetFromSupply, { itemId: item }),
+    ).rejects.toThrow(/needs a name/i);
+  });
+});
+
+describe("source switch-away clears the link", () => {
+  test("leaving chapter_storage releases the reservation AND drops the link", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const eventId = await seedEvent(s, "Worship Night");
+    const speaker = (await s.as.mutation(api.inventory.addAsset, {
+      name: "ALTO Speaker",
+      quantity: 1,
+    })) as Id<"assets">;
+    const item = await addSupply(s, eventId, {
+      source: "chapter_storage",
+      linkedAssetId: speaker,
+      qty: 1,
+    });
+    expect(await reservedLive(s, speaker)).toBe(1);
+
+    await s.as.mutation(api.items.updateEventItem, {
+      itemId: item,
+      fields: { source: "buy_in_store" },
+    });
+    expect(await reservedLive(s, speaker)).toBe(0);
+    expect((await supplyFields(s, item)).linkedAssetId).toBeUndefined();
+
+    // Switching back does NOT silently re-reserve the old asset.
+    await s.as.mutation(api.items.updateEventItem, {
+      itemId: item,
+      fields: { source: "chapter_storage" },
+    });
+    expect(await reservedLive(s, speaker)).toBe(0);
+  });
+});
+
+describe("listForEventModule linkedAsset payload", () => {
+  test("linked rows expose the asset identity + availability; others null", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const eventId = await seedEvent(s, "Worship Night");
+    const mic = (await s.as.mutation(api.inventory.addAsset, {
+      name: "SM58",
+      quantity: 4,
+    })) as Id<"assets">;
+    const linked = await addSupply(s, eventId, {
+      source: "chapter_storage",
+      linkedAssetId: mic,
+      qty: 2,
+    });
+    const plain = await addSupply(s, eventId, { source: "buy_in_store" }, "Ice");
+
+    const res = await s.as.query(api.items.listForEventModule, {
+      eventId,
+      module: "supplies",
+    });
+    const linkedRow = res.items.find((i: any) => i._id === linked) as any;
+    expect(linkedRow.linkedAsset).toMatchObject({
+      _id: mic,
+      name: "SM58",
+      onHand: 4,
+      available: 4, // other events hold nothing
+      consumable: false,
+    });
+    const plainRow = res.items.find((i: any) => i._id === plain) as any;
+    expect(plainRow.linkedAsset).toBeNull();
   });
 });
