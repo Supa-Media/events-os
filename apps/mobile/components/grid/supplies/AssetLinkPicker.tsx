@@ -84,7 +84,8 @@ export function AssetLinkPicker({
       )
     : list;
   const exactMatch = list.some((a) => a.name.trim().toLowerCase() === q);
-  const canCreate = search.trim().length > 0 && !exactMatch;
+  const canCreate =
+    assets !== undefined && search.trim().length > 0 && !exactMatch;
 
   return (
     <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>

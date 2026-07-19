@@ -199,7 +199,8 @@ export const RESERVED_TAB_KEYS = [
   // "budget" (Budget v1's per-line budget tab) retired — the ONE money
   // surface for an event is now "money" (`moneyViews.ts` / `MoneyView.tsx`).
   "money",
-  "gear",
+  // "gear" (the event Gear tool) retired — supply rows with Source = Chapter
+  // Storage reserve gear directly (docs/plans/inventory-supplies-unification.md).
 ] as const;
 
 // ── Inventory (chapter asset registry) ───────────────────────────────────────

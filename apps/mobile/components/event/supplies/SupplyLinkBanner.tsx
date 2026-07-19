@@ -28,7 +28,11 @@ export function SupplyLinkBanner({ eventId }: { eventId: string }) {
   const assets = useQuery(api.inventory.listAssets, open ? {} : "skip");
   const linkAsset = useMutation(api.items.linkSupplyToAsset);
   const createAsset = useMutation(api.items.createAssetFromSupply);
-  const [busyId, setBusyId] = useState<string | null>(null);
+  // A single flag gates every action chip and the "Link all matched" footer —
+  // per-row busy ids let other rows' chips stay tappable mid-loop, which can
+  // double-submit a mutation while "Link all matched" is running.
+  const [busy, setBusy] = useState(false);
+  const loading = open && assets === undefined;
 
   const unlinked = (data?.items ?? []).filter(
     (it: any) =>
@@ -41,28 +45,39 @@ export function SupplyLinkBanner({ eventId }: { eventId: string }) {
     (assets ?? []).find(
       (a: any) => a.name.trim().toLowerCase() === title.trim().toLowerCase(),
     );
-  const matched = visible.filter((it: any) => suggestionFor(it.title));
+  // While assets are still loading, nothing counts as matched — otherwise
+  // every row would flash "No matching asset" before the query resolves.
+  const matched = loading
+    ? []
+    : visible.filter((it: any) => suggestionFor(it.title));
 
   const doLink = async (itemId: string, assetId: string) => {
-    setBusyId(itemId);
+    setBusy(true);
     try {
       await linkAsset({ itemId: itemId as any, assetId: assetId as any });
     } finally {
-      setBusyId(null);
+      setBusy(false);
     }
   };
   const doCreate = async (itemId: string) => {
-    setBusyId(itemId);
+    setBusy(true);
     try {
       await createAsset({ itemId: itemId as any });
     } finally {
-      setBusyId(null);
+      setBusy(false);
     }
   };
   const linkAllMatched = async () => {
-    for (const it of matched) {
-      const match = suggestionFor(it.title);
-      if (match) await doLink(it._id, match._id);
+    setBusy(true);
+    try {
+      for (const it of matched) {
+        const match = suggestionFor(it.title);
+        if (match) {
+          await linkAsset({ itemId: it._id as any, assetId: match._id as any });
+        }
+      }
+    } finally {
+      setBusy(false);
     }
   };
 
@@ -126,8 +141,7 @@ export function SupplyLinkBanner({ eventId }: { eventId: string }) {
 
             <ScrollView className="max-h-96">
               {visible.map((it: any) => {
-                const match = suggestionFor(it.title);
-                const busy = busyId === it._id;
+                const match = loading ? undefined : suggestionFor(it.title);
                 return (
                   <View
                     key={it._id}
@@ -138,9 +152,11 @@ export function SupplyLinkBanner({ eventId }: { eventId: string }) {
                         {it.title || "Untitled row"}
                       </Text>
                       <Text className="text-xs text-muted" numberOfLines={1}>
-                        {match
-                          ? `Match: ${match.name} · ${match.available}/${match.quantity} free`
-                          : "No matching asset — create one from this row"}
+                        {loading
+                          ? "Checking Inventory…"
+                          : match
+                            ? `Match: ${match.name} · ${match.available}/${match.quantity} free`
+                            : "No matching asset — create one from this row"}
                       </Text>
                     </View>
                     <View className="flex-row items-center gap-2">
@@ -155,7 +171,7 @@ export function SupplyLinkBanner({ eventId }: { eventId: string }) {
                         <ActionChip
                           label="Create"
                           accent
-                          disabled={busy}
+                          disabled={busy || loading}
                           onPress={() => void doCreate(it._id)}
                         />
                       )}
@@ -175,7 +191,7 @@ export function SupplyLinkBanner({ eventId }: { eventId: string }) {
             {matched.length > 1 ? (
               <Pressable
                 onPress={() => void linkAllMatched()}
-                disabled={busyId !== null}
+                disabled={busy}
                 className="flex-row items-center justify-center gap-2 border-t border-border px-5 py-3 active:bg-sunken web:hover:bg-sunken"
               >
                 <Icon name="link" size={14} color={colors.accent} />

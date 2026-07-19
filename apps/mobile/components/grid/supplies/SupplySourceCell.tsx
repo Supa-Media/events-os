@@ -13,7 +13,7 @@ import { useState } from "react";
 import { View, Text, Pressable } from "react-native";
 import { useMutation } from "convex/react";
 import { api } from "@events-os/convex/_generated/api";
-import { isInventoryBackedSource } from "@events-os/shared";
+import { LOAN_SOURCES, isInventoryBackedSource } from "@events-os/shared";
 import { colors } from "../../../lib/theme";
 import { Icon } from "../../ui/Icon";
 import { OptionTag } from "../../ui/OptionTag";
@@ -54,6 +54,14 @@ export function SupplySourceCell({
   const current = opts.find((o) => o.value === value);
   const backed = isInventoryBackedSource(value);
   const linked = item.linkedAsset ?? null;
+  // Acquired rows (buy/order) aren't inventory-backed by default, but the
+  // Academy + PRD (docs/plans/inventory-supplies-unification.md §3) promise an
+  // explicit promotion path: "Keep in inventory" links/creates an asset
+  // without requiring the user to switch Source first. Loan sources
+  // (borrowed/rented) never promote — they return to their lender, not to
+  // chapter storage.
+  const isAcquiredSource =
+    value != null && !backed && !LOAN_SOURCES.includes(value);
 
   const pickOption = (picked: string) => {
     close();
@@ -116,6 +124,17 @@ export function SupplySourceCell({
               </Text>
             </Pressable>
           )
+        ) : null}
+        {isAcquiredSource && !linked ? (
+          <Pressable
+            disabled={!editable}
+            onPress={() => setPickerOpen(true)}
+            hitSlop={4}
+            className="flex-row items-center gap-1 active:opacity-70"
+          >
+            <Icon name="archive" size={11} color={colors.muted} />
+            <Text className="text-xs text-muted">Keep in inventory…</Text>
+          </Pressable>
         ) : null}
       </Pressable>
 

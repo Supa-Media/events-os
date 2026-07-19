@@ -125,6 +125,11 @@ function ItemRow({
   const qtyRaw = Number(field(item, "qty"));
   const qty = Number.isFinite(qtyRaw) ? qtyRaw : 1;
   const displayName = qty > 1 ? `${qty} × ${name}` : name;
+  // Another live event currently holds this row's linked inventory asset — a
+  // packer needs to see this at pack time so they don't grab it expecting it
+  // to be here.
+  const reservedElsewhere =
+    item.status === "reserved_elsewhere" && !!item.statusDetail;
   return (
     <View
       className="flex-row items-center gap-3 rounded-md px-1 py-2"
@@ -141,6 +146,18 @@ function ItemRow({
         </Text>
         {source ? (
           <OptionTag label={source.label} color={source.color} />
+        ) : null}
+        {reservedElsewhere ? (
+          <View className="flex-row items-center gap-1">
+            <Icon name="alert-triangle" size={11} color={colors.warn} />
+            <Text
+              className="flex-1 text-xs font-medium"
+              style={{ color: colors.warn }}
+              numberOfLines={1}
+            >
+              {item.statusDetail}
+            </Text>
+          </View>
         ) : null}
       </View>
       <CheckControl
