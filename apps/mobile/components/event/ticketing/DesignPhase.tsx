@@ -21,6 +21,7 @@ import { ToggleRow } from "./ToggleRow";
 import { SetupCard } from "./SetupCard";
 import { EventPagePreview } from "./EventPagePreview";
 import { TicketTypesCard } from "./TicketTypesCard";
+import { GivebutterSyncCard } from "./GivebutterSyncCard";
 
 type CardKey = "cover" | "location" | "rsvp" | "tickets" | "giving";
 
@@ -239,6 +240,8 @@ export function DesignPhase({
             hideMasterToggle
             bare
           />
+          {/* Import tickets sold on a Givebutter campaign (poll-only sync). */}
+          <GivebutterSyncCard eventId={eventId} page={page} run={run} />
         </SetupCard>
 
         {/* Accept donations — opt-in */}

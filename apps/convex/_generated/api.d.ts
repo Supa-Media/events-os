@@ -33,6 +33,7 @@ import type * as events from "../events.js";
 import type * as financeRoles from "../financeRoles.js";
 import type * as financeSettings from "../financeSettings.js";
 import type * as finances from "../finances.js";
+import type * as givebutterSync from "../givebutterSync.js";
 import type * as giving from "../giving.js";
 import type * as givingCandidates from "../givingCandidates.js";
 import type * as givingImport from "../givingImport.js";
@@ -207,6 +208,7 @@ declare const fullApi: ApiFromModules<{
   financeRoles: typeof financeRoles;
   financeSettings: typeof financeSettings;
   finances: typeof finances;
+  givebutterSync: typeof givebutterSync;
   giving: typeof giving;
   givingCandidates: typeof givingCandidates;
   givingImport: typeof givingImport;

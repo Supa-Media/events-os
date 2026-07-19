@@ -64,6 +64,13 @@ export const eventPages = defineTable({
   // Giving rollup (siblings of revenueCents; default 0 when unset).
   donationsCents: v.optional(v.number()),
   donationsCount: v.optional(v.number()),
+  // Givebutter live ticket sync (poll-only, PR B). When a campaign id is set,
+  // the manual "Sync now" button + the 15-min cron pull that campaign's tickets
+  // into native mirror orders/tickets/RSVPs (display attribution only — never
+  // the money ledger). Last-sync bookkeeping powers the sync card's status line.
+  givebutterCampaignId: v.optional(v.string()),
+  givebutterLastSyncedAt: v.optional(v.number()),
+  givebutterLastSyncError: v.optional(v.string()),
   createdBy: v.id("users"),
   createdAt: v.number(),
   updatedAt: v.number(),
@@ -91,6 +98,11 @@ export const ticketTypes = defineTable({
   sortOrder: v.number(),
   // Hidden from the public page when false (soft delete keeps sold history).
   isActive: v.boolean(),
+  // Set on MIRROR ticket types synthesized from an external provider's ticket
+  // sales (Givebutter, PR B). A mirror type is NEVER natively sellable
+  // (`isActive: false`) — it exists only so a synced ticket has a real
+  // `ticketTypeId` and the door scanner + rollups work for external buyers.
+  externalProvider: v.optional(v.literal("givebutter")),
   createdAt: v.number(),
   updatedAt: v.number(),
 }).index("by_event", ["eventId"]);
@@ -169,11 +181,18 @@ export const ticketOrders = defineTable({
   ),
   stripeCheckoutSessionId: v.optional(v.string()),
   stripePaymentIntentId: v.optional(v.string()),
+  // External provider attribution (Givebutter, PR B). A synced order carries NO
+  // Stripe fields; instead `externalProvider` + `externalRef` mark where it came
+  // from and dedup re-syncs. `externalRef` is "gb:ticket:<id>" for a Givebutter
+  // ticket — the idempotency key the sync applies on (`by_external_ref`).
+  externalProvider: v.optional(v.literal("givebutter")),
+  externalRef: v.optional(v.string()),
   createdAt: v.number(),
   updatedAt: v.number(),
 })
   .index("by_event", ["eventId"])
-  .index("by_stripe_session", ["stripeCheckoutSessionId"]);
+  .index("by_stripe_session", ["stripeCheckoutSessionId"])
+  .index("by_external_ref", ["externalRef"]);
 
 /**
  * A donation to an event — the money flow the schema couldn't record before
