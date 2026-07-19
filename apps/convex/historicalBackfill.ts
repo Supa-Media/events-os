@@ -64,6 +64,7 @@ import {
   findDonorInScope,
   matchOrCreateDonor,
   recordGiftForDonor,
+  hasPersonIdentifier,
 } from "./lib/givingDonors";
 import {
   matchIdentity,
@@ -505,22 +506,36 @@ async function handleRecurringRow(
  * EXECUTE reuses the canonical `matchOrCreatePersonContact` verbatim (a fresh
  * read-your-writes roster read + "Added from import" insert), so a ticket buyer
  * who is ALSO a gift donor this run dedups against the donor's linked person
- * instead of spawning a duplicate. DRY RUN simulates that against the current
- * DB roster + this page's pending contacts (its estimate can only OVER-count a
- * contact when the identity also appears on a gift/recurring row — the same
- * preview/commit imprecision the canonical importer carries).
+ * instead of spawning a duplicate. DRY RUN simulates it against the current DB
+ * roster + this page's pending contacts.
+ *
+ * Both honor the Attendance C OWNER RULE: a name-only row (no email AND no
+ * phone) that matches no existing roster person creates NOTHING — it's reported
+ * `skipped: "no-identifier"` (my ticket rows rely on that guard). The dry run's
+ * contact ESTIMATE can only over-count when an identity also appears on a
+ * gift/recurring row — the same preview/commit imprecision the canonical
+ * importer carries.
  */
 async function resolvePersonContact(
   ctx: MutationCtx,
   state: GivingState,
   opts: { name: string; email?: string; phone?: string },
-): Promise<{ isNew: boolean; personId?: Id<"people"> }> {
+): Promise<{
+  isNew: boolean;
+  personId?: Id<"people">;
+  skipped?: "no-identifier";
+}> {
   if (state.write) {
-    return await matchOrCreatePersonContact(ctx, state.chapterId, opts);
+    const res = await matchOrCreatePersonContact(ctx, state.chapterId, opts);
+    if (res.skipped) return { isNew: false, skipped: "no-identifier" };
+    return { isNew: res.isNew, personId: res.personId };
   }
   const roster = await chapterRoster(ctx, state.chapterId);
   if (matchIdentity(roster, opts).match) return { isNew: false };
   if (matchIdentity(state.pendingContacts, opts).match) return { isNew: false };
+  if (!hasPersonIdentifier({ email: opts.email, phone: opts.phone })) {
+    return { isNew: false, skipped: "no-identifier" };
+  }
   state.pendingContacts.push({
     name: opts.name,
     email: opts.email,
@@ -529,31 +544,22 @@ async function resolvePersonContact(
   return { isNew: true };
 }
 
-/** Common identity guard for ticket/contact rows: a row with no email, no
- *  phone, and no usable name can't become a meaningful contact — skip it. */
-function hasNoIdentifier(row: CanonicalImportRow): boolean {
-  const email = normalizeEmail(row.email);
-  const phone = row.phone?.trim();
-  const name = row.name.trim();
-  return !email && !phone && !name;
-}
-
 async function handleTicketRow(
   ctx: MutationCtx,
   state: GivingState,
   row: CanonicalImportRow,
   counts: GivingCounts,
 ): Promise<void> {
-  if (hasNoIdentifier(row)) {
-    counts.contactsSkippedNoIdentifier++;
-    return;
-  }
   const email = normalizeEmail(row.email) ?? undefined;
-  const { isNew, personId } = await resolvePersonContact(ctx, state, {
+  const { isNew, personId, skipped } = await resolvePersonContact(ctx, state, {
     name: row.name,
     email,
     phone: row.phone,
   });
+  if (skipped) {
+    counts.contactsSkippedNoIdentifier++;
+    return; // name-only, no person created — nothing to attach history to
+  }
   if (isNew) counts.contacts++;
 
   // Best-effort: link this buyer's ticket history to a real event + order.
@@ -589,15 +595,15 @@ async function handleContactRow(
   row: CanonicalImportRow,
   counts: GivingCounts,
 ): Promise<void> {
-  if (hasNoIdentifier(row)) {
-    counts.contactsSkippedNoIdentifier++;
-    return;
-  }
-  const { isNew } = await resolvePersonContact(ctx, state, {
+  const { isNew, skipped } = await resolvePersonContact(ctx, state, {
     name: row.name,
     email: normalizeEmail(row.email) ?? undefined,
     phone: row.phone,
   });
+  if (skipped) {
+    counts.contactsSkippedNoIdentifier++;
+    return;
+  }
   if (isNew) counts.contacts++;
 }
 
