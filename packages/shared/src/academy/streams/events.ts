@@ -1192,30 +1192,6 @@ export const EVENTS_SECTIONS: Omit<AcademySection, "order">[] = [
           "Have it answers \"do we have it?\" — Source answers \"WHERE is it?\" The packer may not be the person who fetched it, so the row carries the location.",
       },
       {
-        prompt: "Which ring does each half of a supply row feed?",
-        options: [
-          "Everything supplies feeds Day-of",
-          "Getting it (order/buy) feeds Planning; packing it feeds Day-of",
-          "Both feed Planning until the event starts",
-          "Supplies don't affect the rings",
-        ],
-        answerIndex: 1,
-        explanation:
-          "Buying and ordering are prep on a real-world clock — Planning. Packing is what makes the day run — Day-of, even if you pack early. That's why the Timing column matters: orders have lead times.",
-      },
-      {
-        prompt: "Why does the battery row deserve special paranoia?",
-        options: [
-          "Batteries are expensive",
-          "It must leave storage early enough to charge at home — there's no charger in storage",
-          "It's the heaviest item",
-          "The venue provides batteries anyway",
-        ],
-        answerIndex: 1,
-        explanation:
-          "A battery pulled from storage the night before arrives flat. This exact failure is why the original checklist marked it VERY IMPORTANT.",
-      },
-      {
         prompt: "What is the site map?",
         options: [
           "A photo of the venue from Google Maps",
@@ -1284,6 +1260,13 @@ export const EVENTS_SECTIONS: Omit<AcademySection, "order">[] = [
       {
         kind: "p",
         text: "Keep **condition** honest: a broken speaker marked *needs attention* with a note (\"crackles above half volume\") saves the next event a load-in surprise. The registry is only as trustworthy as its worst row.",
+      },
+      {
+        kind: "reveal",
+        prompt:
+          "Two Saturday events both list the chapter's one ALTO speaker. Event A linked it Tuesday; Event B adds its row Thursday. What does Event B see?",
+        answer:
+          "Event B's row derives to the real-time signal — **Event A · {container}** — the moment it links the asset. Nobody has to notice the clash: the registry computes availability from live reservations, and Event B finds out on Thursday in planning, not Saturday at load-in. They can borrow, rent, or talk to Event A — with two days to do it.",
       },
       {
         kind: "tip",

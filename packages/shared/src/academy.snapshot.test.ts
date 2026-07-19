@@ -106,8 +106,10 @@
  * the linking UI shipping): `tab-supplies` was rewritten for the provenance
  * Source model, the auto-derived Status (packed → Have it; "Event X ·
  * Container" for cross-event holds; override + back-to-auto), and the
- * "Keep in inventory" promotion — quiz length 5→7 (bumped below); its title,
- * minutes, and placement are unchanged. A NEW section `keeping-inventory`
+ * "Keep in inventory" promotion — two quiz questions swapped in (the rings
+ * and battery questions retired; both are taught elsewhere), so quiz length
+ * stays 5 and its title, minutes, and placement are unchanged. A NEW section
+ * `keeping-inventory`
  * (4 min, 4-quiz) was inserted after it, teaching the chapter gear registry:
  * reservations as a byproduct of supply rows, computed availability,
  * consumables/low-stock, and what belongs in the registry. The
@@ -385,7 +387,7 @@ const EXPECTED_SECTIONS: {
     slug: "tab-supplies",
     title: "Supplies & Logistics",
     minutes: 4,
-    quizLength: 7,
+    quizLength: 5,
     optional: false,
     capstoneKind: null,
   },
