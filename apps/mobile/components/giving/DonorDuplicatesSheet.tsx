@@ -16,7 +16,7 @@ import { useQuery, useMutation } from "convex/react";
 import { api } from "@events-os/convex/_generated/api";
 import type { Id } from "@events-os/convex/_generated/dataModel";
 import { formatCents } from "@events-os/shared";
-import { Icon, Badge, Button, EmptyState, type BadgeTone } from "../ui";
+import { Icon, Badge, Button, EmptyState, TextField, type BadgeTone } from "../ui";
 import { colors, spacing } from "../../lib/theme";
 import { alertError } from "../../lib/errors";
 
@@ -43,18 +43,20 @@ type DonorCandidate = {
   userId: Id<"users"> | null;
   createdAt: number;
 };
-type MatchKind = "email" | "phone" | "name";
+type MatchKind = "email" | "phone" | "name" | "similar";
 type Group = { matchKind: MatchKind; donors: DonorCandidate[] };
 
 const MATCH_LABEL: Record<MatchKind, string> = {
   email: "Same email",
   phone: "Same phone",
   name: "Same name (lower confidence)",
+  similar: "Similar (variant email/name)",
 };
 const MATCH_TONE: Record<MatchKind, BadgeTone> = {
   email: "accent",
   phone: "accent",
   name: "warn",
+  similar: "warn",
 };
 
 export function DonorDuplicatesSheet({
@@ -66,9 +68,13 @@ export function DonorDuplicatesSheet({
   visible: boolean;
   onClose: () => void;
 }) {
+  // Two ways in: the auto-DETECTED duplicate groups (email/phone/name/similar),
+  // and a manual "PICK TWO" path for the pairs detection can't see (owner
+  // request #5). Both run the same `dataHygiene.mergeDonors`.
+  const [tab, setTab] = useState<"detected" | "pick">("detected");
   const data = useQuery(
     api.dataHygiene.listDonorDuplicates,
-    visible ? { scope } : "skip",
+    visible && tab === "detected" ? { scope } : "skip",
   );
   const merge = useMutation(api.dataHygiene.mergeDonors);
   const [openGroup, setOpenGroup] = useState<number | null>(null);
@@ -81,6 +87,7 @@ export function DonorDuplicatesSheet({
   function close() {
     setOpenGroup(null);
     setSurvivorId(null);
+    setTab("detected");
     onClose();
   }
   function backToList() {
@@ -135,6 +142,32 @@ export function DonorDuplicatesSheet({
             </Pressable>
           </View>
 
+          {/* Mode switch — hidden while drilled into a detected group. */}
+          {!group ? (
+            <View className="flex-row gap-2 border-b border-border px-5 py-2">
+              {(["detected", "pick"] as const).map((t) => (
+                <Pressable
+                  key={t}
+                  onPress={() => setTab(t)}
+                  className={`rounded-pill px-3 py-1 ${
+                    tab === t ? "bg-accent" : "bg-sunken"
+                  }`}
+                >
+                  <Text
+                    className={`text-xs font-semibold ${
+                      tab === t ? "text-white" : "text-muted"
+                    }`}
+                  >
+                    {t === "detected" ? "Detected" : "Pick two to merge"}
+                  </Text>
+                </Pressable>
+              ))}
+            </View>
+          ) : null}
+
+          {tab === "pick" ? (
+            <PickTwoMerge scope={scope} onDone={close} />
+          ) : (
           <ScrollView style={{ maxHeight: 520 }} contentContainerStyle={{ padding: spacing.lg }}>
             {data === undefined ? (
               <Text className="text-sm text-muted">Scanning donors…</Text>
@@ -173,8 +206,9 @@ export function DonorDuplicatesSheet({
               </View>
             )}
           </ScrollView>
+          )}
 
-          {group ? (
+          {tab === "detected" && group ? (
             <View className="flex-row items-center justify-between gap-3 border-t border-border px-5 py-3">
               <Text className="flex-1 text-xs text-muted">
                 {survivorId
@@ -193,6 +227,176 @@ export function DonorDuplicatesSheet({
         </View>
       </View>
     </Modal>
+  );
+}
+
+/**
+ * Manual "pick two to merge" (owner request #5) — the pairs auto-detection can't
+ * see. Search + pick a SURVIVOR and a DUPLICATE from the scope's donor list,
+ * preview "what will move" (`previewDonorMerge`), then run `mergeDonors`.
+ */
+function PickTwoMerge({
+  scope,
+  onDone,
+}: {
+  scope: GivingScope;
+  onDone: () => void;
+}) {
+  const donors = useQuery(api.givingPlatform.listDonors, { scope });
+  const merge = useMutation(api.dataHygiene.mergeDonors);
+  const [search, setSearch] = useState("");
+  const [survivorId, setSurvivorId] = useState<Id<"donors"> | null>(null);
+  const [duplicateId, setDuplicateId] = useState<Id<"donors"> | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  const preview = useQuery(
+    api.givingPlatform.previewDonorMerge,
+    survivorId && duplicateId && survivorId !== duplicateId
+      ? { scope, survivorId, duplicateId }
+      : "skip",
+  );
+
+  const list = (donors ?? []) as DonorCandidate[];
+  const q = search.trim().toLowerCase();
+  const filtered = (q
+    ? list.filter((d) =>
+        [d.name, d.email ?? ""].join(" ").toLowerCase().includes(q),
+      )
+    : list
+  ).slice(0, 40);
+
+  /** Tapping a donor fills survivor first, then duplicate; a third tap on a
+   *  chosen row clears it. */
+  function pick(id: Id<"donors">) {
+    if (survivorId === id) return setSurvivorId(null);
+    if (duplicateId === id) return setDuplicateId(null);
+    if (!survivorId) return setSurvivorId(id);
+    if (!duplicateId) return setDuplicateId(id);
+  }
+
+  async function doMerge() {
+    if (!survivorId || !duplicateId) return;
+    const surv = list.find((d) => d._id === survivorId);
+    const dup = list.find((d) => d._id === duplicateId);
+    const ok =
+      typeof window !== "undefined" && typeof window.confirm === "function"
+        ? window.confirm(
+            `Merge ${dup?.name ?? "that donor"} into ${surv?.name ?? "the survivor"}? ` +
+              `Every gift, pledge and sponsorship moves onto the survivor, its totals ` +
+              `are recomputed, and the other record is deleted. This can't be undone.`,
+          )
+        : true;
+    if (!ok) return;
+    setBusy(true);
+    try {
+      await merge({ scope, survivorId, duplicateId });
+      setSurvivorId(null);
+      setDuplicateId(null);
+      onDone();
+    } catch (e) {
+      alertError(e);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <View>
+      <ScrollView style={{ maxHeight: 460 }} contentContainerStyle={{ padding: spacing.lg }}>
+        <Text className="mb-2 text-sm text-muted">
+          Tap to pick the donor to KEEP, then the one to merge in. The kept donor
+          is highlighted; the second is the one that gets absorbed.
+        </Text>
+        <TextField
+          value={search}
+          onChangeText={setSearch}
+          placeholder="Search donors…"
+          autoCapitalize="none"
+        />
+        {donors === undefined ? (
+          <Text className="text-sm text-muted">Loading donors…</Text>
+        ) : (
+          <View className="mt-1 gap-1">
+            {filtered.map((d) => {
+              const role =
+                survivorId === d._id
+                  ? "keep"
+                  : duplicateId === d._id
+                    ? "merge"
+                    : null;
+              return (
+                <Pressable
+                  key={d._id}
+                  onPress={() => pick(d._id)}
+                  className={`flex-row items-center justify-between rounded-lg border p-2.5 ${
+                    role === "keep"
+                      ? "border-accent bg-brand-100"
+                      : role === "merge"
+                        ? "border-warn bg-warn-bg"
+                        : "border-border bg-raised"
+                  }`}
+                >
+                  <View className="flex-1 pr-2">
+                    <Text className="text-sm font-semibold text-ink" numberOfLines={1}>
+                      {d.name}
+                    </Text>
+                    <Text className="text-xs text-muted" numberOfLines={1}>
+                      {d.email ?? "No email"} · {formatCents(d.lifetimeCents)} ·{" "}
+                      {d.giftCount} {d.giftCount === 1 ? "gift" : "gifts"}
+                    </Text>
+                  </View>
+                  {role ? (
+                    <Badge
+                      label={role === "keep" ? "Keep" : "Merge in"}
+                      tone={role === "keep" ? "accent" : "warn"}
+                    />
+                  ) : null}
+                </Pressable>
+              );
+            })}
+          </View>
+        )}
+
+        {preview ? (
+          <View className="mt-3 rounded-lg border border-border bg-raised p-3">
+            <Text className="mb-1 text-xs font-bold uppercase tracking-wider text-faint">
+              What will move
+            </Text>
+            <Text className="text-sm text-ink">
+              {preview.duplicate.name} → {preview.survivor.name}
+            </Text>
+            <Text className="mt-1 text-xs text-muted">
+              {preview.duplicate.giftCount} gift
+              {preview.duplicate.giftCount === 1 ? "" : "s"} ·{" "}
+              {preview.duplicate.pledgeCount} pledge
+              {preview.duplicate.pledgeCount === 1 ? "" : "s"} ·{" "}
+              {preview.duplicate.sponsorshipCount} sponsorship
+              {preview.duplicate.sponsorshipCount === 1 ? "" : "s"} move onto{" "}
+              {preview.survivor.name}.
+            </Text>
+            <Text className="mt-1 text-xs text-muted">
+              Result: {formatCents(preview.resulting.lifetimeCents)} lifetime ·{" "}
+              {preview.resulting.giftCount} gifts.
+            </Text>
+          </View>
+        ) : null}
+      </ScrollView>
+
+      <View className="flex-row items-center justify-between gap-3 border-t border-border px-5 py-3">
+        <Text className="flex-1 text-xs text-muted">
+          {survivorId && duplicateId
+            ? "Ready to merge."
+            : "Pick two donors — keep, then merge in."}
+        </Text>
+        <Button
+          title={busy ? "Merging…" : "Merge"}
+          variant="danger"
+          onPress={doMerge}
+          disabled={!survivorId || !duplicateId || busy}
+          loading={busy}
+        />
+      </View>
+    </View>
   );
 }
 
