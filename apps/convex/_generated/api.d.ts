@@ -31,6 +31,7 @@ import type * as engagements from "../engagements.js";
 import type * as eventAttendanceImport from "../eventAttendanceImport.js";
 import type * as eventTypes from "../eventTypes.js";
 import type * as events from "../events.js";
+import type * as financeGenesisBackfill from "../financeGenesisBackfill.js";
 import type * as financeRoles from "../financeRoles.js";
 import type * as financeSettings from "../financeSettings.js";
 import type * as finances from "../finances.js";
@@ -227,6 +228,7 @@ declare const fullApi: ApiFromModules<{
   eventAttendanceImport: typeof eventAttendanceImport;
   eventTypes: typeof eventTypes;
   events: typeof events;
+  financeGenesisBackfill: typeof financeGenesisBackfill;
   financeRoles: typeof financeRoles;
   financeSettings: typeof financeSettings;
   finances: typeof finances;
