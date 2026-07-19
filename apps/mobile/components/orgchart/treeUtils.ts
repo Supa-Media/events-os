@@ -317,6 +317,10 @@ export const CAPABILITY_LABELS: Record<string, string> = {
   "finance.manager": "Manage chapter finances",
   "nav.finances": "Finances tab",
   "org.editChart": "Edit the org chart",
+  // Giving desk (F-6) — the assignable giving power's three capabilities.
+  "giving.view": "See donors & giving",
+  "giving.manage": "Manage donors & gifts",
+  "nav.giving": "Giving desk tab",
 };
 
 export function capabilityLabel(id: string): string {

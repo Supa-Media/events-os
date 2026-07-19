@@ -153,8 +153,14 @@ describe("spec snapshot (owner-approved taxonomy, 2026-07-16; chapter_director f
   // Pins the exact set of seats + which ones carry capabilities, so a future
   // edit to SEAT_DEFS trips a loud, specific failure here instead of silently
   // drifting from the approved org-chart flowchart. The finance trio + the
-  // F-6 P1 giving trio (giving.manage/giving.view/nav.giving) are the only
-  // capability-carrying seats — every other seat's array must be empty.
+  // F-6 P1 giving trio (giving.manage/giving.view/nav.giving) are the
+  // capability-carrying seats. 2026-07-19 (owner decision, Seyi): giving became
+  // an assignable per-role POWER (apps/convex/seats.ts#setSeatGivingPower) —
+  // `financial_manager` and `expansion_director` gained the default
+  // `giving.view` + `nav.giving` (central-lens READ) as part of the owner's
+  // default-access list. These are TEMPLATE defaults; the ED retunes them at
+  // runtime, so this pin tracks what a fresh org is STAMPED with, not the live
+  // per-org state.
   const EXPECTED_CAPABILITIES_BY_SEAT: Record<SeatId, readonly string[]> = {
     executive_director: [
       "finance.central",
@@ -166,12 +172,16 @@ describe("spec snapshot (owner-approved taxonomy, 2026-07-16; chapter_director f
       "giving.view",
       "nav.giving",
     ],
+    // 2026-07-19: added giving.view + nav.giving (owner decision — FM gets
+    // central-lens donor READ as an assignable power default).
     financial_manager: [
       "finance.manager",
       "finance.central",
       "finance.accounts",
       "finance.record",
       "nav.finances",
+      "giving.view",
+      "nav.giving",
     ],
     development_director: ["giving.manage", "giving.view", "nav.giving"],
     partnership_associate: ["giving.view", "nav.giving"],
@@ -185,7 +195,10 @@ describe("spec snapshot (owner-approved taxonomy, 2026-07-16; chapter_director f
     social_media_manager: [],
     graphic_designer: [],
     marketing_associate: [],
-    expansion_director: [],
+    // 2026-07-19: added giving.view + nav.giving (owner decision — Expansion
+    // Director stewards the launch pipeline giving funds; central-lens READ as
+    // an assignable power default).
+    expansion_director: ["giving.view", "nav.giving"],
     chapter_directors: [],
     recruiting_associate: [],
     training_associate: [],

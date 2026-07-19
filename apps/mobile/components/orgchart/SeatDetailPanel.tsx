@@ -21,6 +21,7 @@ import {
 import { colors } from "../../lib/theme";
 import { SeatActionsPanel } from "./SeatActions";
 import { RenameSeatControl, StructureEditActions } from "./StructureEditor";
+import { GivingPowerControl } from "./GivingPowerControl";
 import {
   avatarNameFor,
   capabilityLabel,
@@ -263,6 +264,15 @@ export function SeatDetailPanel({
           ))}
         </View>
       )}
+
+      {/* Assignable giving power (owner decision 2026-07-19) — a per-role
+          None/View/Manage toggle for the Giving desk, shown ONLY to a caller
+          allowed to edit powers (`canEditPowers`: superuser or an
+          `org.editChart` holder — the same gate `setSeatGivingPower` enforces).
+          Not shown for a derived seat (its holders/powers are computed). */}
+      {detail.canEditPowers && !detail.derived ? (
+        <GivingPowerControl seatDefId={detail.defId} capabilities={detail.capabilities} />
+      ) : null}
 
       <SectionHeader title="Reports to" />
       {reportsTo === null ? (

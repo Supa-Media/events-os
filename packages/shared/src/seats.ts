@@ -176,12 +176,20 @@ export const SEAT_DEFS: Record<SeatId, SeatDef> = {
       "Approve chapter reimbursements",
       "Close the books monthly",
     ],
+    // Owner decision (2026-07-19, Seyi): the giving desk is now an assignable
+    // per-role POWER (see `apps/convex/seats.ts#setSeatGivingPower`). The
+    // Financial Manager is on the owner's default-access list — they oversee
+    // central money and need central-lens READ of the donor CRM, so `giving.view`
+    // + `nav.giving` (never `giving.manage` — record/edit/import stays the
+    // Development Director / ED desk). The ED can toggle this off at runtime.
     capabilities: [
       "finance.manager",
       "finance.central",
       "finance.accounts",
       "finance.record",
       "nav.finances",
+      "giving.view",
+      "nav.giving",
     ],
     legacyTitle: "finance_manager",
   },
@@ -328,7 +336,13 @@ export const SEAT_DEFS: Record<SeatId, SeatDef> = {
       "Support chapter directors",
       "Own the recruiting & training pipeline",
     ],
-    capabilities: [],
+    // Owner decision (2026-07-19, Seyi): giving-desk access is an assignable
+    // per-role POWER (see `apps/convex/seats.ts#setSeatGivingPower`). The
+    // Expansion Director is on the owner's default-access list — they steward
+    // the chapter/launch pipeline that giving funds, so they get central-lens
+    // READ (`giving.view` + `nav.giving`), never `giving.manage`. Toggleable
+    // by the ED at runtime.
+    capabilities: ["giving.view", "nav.giving"],
   },
   chapter_directors: {
     id: "chapter_directors",
