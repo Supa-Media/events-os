@@ -453,16 +453,46 @@ describe("attendance backfill", () => {
     ).rejects.toMatchObject({ data: { code: "MAPPING_MISMATCH" } });
   });
 
-  test("NO_PAGE when the event has no public page", async () => {
+  test("missing page: dry run reports pageWillBeCreated; execute creates an unpublished page", async () => {
     const s = await setupNy();
     const noPage = await createEvent(s, "Field Day", utc("2026-08-08"));
-    await expect(
-      s.t.mutation(internal.historicalBackfill.runAttendanceBackfill, {
-        dataset: "fieldday_tickets",
-        eventId: noPage,
-        execute: false,
-      }),
-    ).rejects.toMatchObject({ data: { code: "NO_PAGE" } });
+
+    const dry = await s.t.mutation(
+      internal.historicalBackfill.runAttendanceBackfill,
+      { dataset: "fieldday_tickets", eventId: noPage, execute: false },
+    );
+    expect(dry.pageWillBeCreated).toBe(true);
+    // Dry run must not have created anything.
+    const dryPage = await run(s.t, (ctx) =>
+      ctx.db
+        .query("eventPages")
+        .withIndex("by_event", (q) => q.eq("eventId", noPage))
+        .unique(),
+    );
+    expect(dryPage).toBeNull();
+
+    const exec = await s.t.mutation(
+      internal.historicalBackfill.runAttendanceBackfill,
+      { dataset: "fieldday_tickets", eventId: noPage, execute: true },
+    );
+    expect(exec.pageCreated).toBe(true);
+    const createdPage = await run(s.t, (ctx) =>
+      ctx.db
+        .query("eventPages")
+        .withIndex("by_event", (q) => q.eq("eventId", noPage))
+        .unique(),
+    );
+    expect(createdPage).not.toBeNull();
+    expect(createdPage!.published).toBe(false);
+    // Counters landed on the auto-created page.
+    expect(createdPage!.goingCount).toBeGreaterThan(0);
+
+    // Second execute run: page reused, not re-created.
+    const again = await s.t.mutation(
+      internal.historicalBackfill.runAttendanceBackfill,
+      { dataset: "fieldday_tickets", eventId: noPage, execute: true },
+    );
+    expect(again.pageCreated).toBeUndefined();
   });
 
   test("pages a >window dataset via offset / nextOffset", async () => {

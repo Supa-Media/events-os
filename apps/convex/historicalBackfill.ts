@@ -82,7 +82,6 @@ import {
 import {
   applyAttendanceRows,
   classifyAttendanceRows,
-  requireEventPage,
   type AttendanceRow,
 } from "./eventAttendanceImport";
 import { PLEDGE_FLOOR_CENTS } from "./givingPledges";
@@ -698,12 +697,85 @@ function verifyMapping(
   }
 }
 
+/** Lowercase-alnum-dash slug for backfill-created pages (local copy — the
+ *  ticketing.ts original is module-private, and importing would couple this
+ *  ops module to the public surface). */
+function backfillSlugify(name: string): string {
+  return (
+    name
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/^-+|-+$/g, "")
+      .slice(0, 60) || "event"
+  );
+}
+
+/**
+ * Load the event's page, or (execute mode only) create a minimal UNPUBLISHED
+ * one so historical guests have a counters home. Past events imported from
+ * Partiful never had a page — refusing (the importer UI's NO_PAGE behavior)
+ * would force an admin to hand-create four pages before the backfill.
+ * The created page is `published: false` with every toggle at the
+ * `ticketing.createPage` defaults, so nothing becomes publicly reachable.
+ * `createdBy` uses the first user (the `seed.ensureChapters` precedent —
+ * this internal runner has no authenticated actor).
+ */
+async function ensurePageForBackfill(
+  ctx: MutationCtx,
+  event: Doc<"events">,
+): Promise<{ page: Doc<"eventPages">; created: boolean }> {
+  const existing = await ctx.db
+    .query("eventPages")
+    .withIndex("by_event", (q) => q.eq("eventId", event._id))
+    .unique();
+  if (existing) return { page: existing, created: false };
+
+  const firstUser = await ctx.db.query("users").first();
+  if (!firstUser) {
+    throw new ConvexError({
+      code: "NO_USERS",
+      message: "Cannot create a page: no users exist in this deployment.",
+    });
+  }
+  let slug = backfillSlugify(event.name);
+  const clash = await ctx.db
+    .query("eventPages")
+    .withIndex("by_slug", (q) => q.eq("slug", slug))
+    .unique();
+  if (clash) slug = `${slug}-${event._id.slice(-4)}`;
+
+  const now = Date.now();
+  const pageId = await ctx.db.insert("eventPages", {
+    eventId: event._id,
+    chapterId: event.chapterId,
+    slug,
+    published: false,
+    hostName: "Public Worship",
+    addressVisibility: "public",
+    rsvpEnabled: true,
+    ticketsEnabled: false,
+    showGuestList: true,
+    activityRestricted: true,
+    goingCount: 0,
+    maybeCount: 0,
+    notGoingCount: 0,
+    ticketsSoldCount: 0,
+    revenueCents: 0,
+    createdBy: firstUser._id as Id<"users">,
+    createdAt: now,
+    updatedAt: now,
+  });
+  const page = await ctx.db.get(pageId);
+  return { page: page!, created: true };
+}
+
 /**
  * Backfill ONE attendance dataset onto ONE event's guest list. Verifies the
- * event↔mapping match (`MAPPING_MISMATCH`) and an existing public page
- * (`NO_PAGE`), then runs a window of the dataset's rows through the attendance
- * importer's own commit/classify core. `execute` omitted / false = a zero-write
- * dry run (classification counts); `true` commits. Pages via `offset` — follow
+ * event↔mapping match (`MAPPING_MISMATCH`); a missing page is auto-created
+ * UNPUBLISHED in execute mode (dry run reports `pageWillBeCreated`), then runs
+ * a window of the dataset's rows through the attendance importer's own
+ * commit/classify core. `execute` omitted / false = a zero-write dry run
+ * (classification counts); `true` commits. Pages via `offset` — follow
  * the returned `nextOffset` (null when done). Idempotent on re-run.
  */
 export const runAttendanceBackfill = internalMutation({
@@ -720,6 +792,8 @@ export const runAttendanceBackfill = internalMutation({
     processed: v.number(),
     nextOffset: v.union(v.number(), v.null()),
     counts: attendanceCountsValidator,
+    pageCreated: v.optional(v.boolean()),
+    pageWillBeCreated: v.optional(v.boolean()),
   }),
   handler: async (ctx, { dataset, eventId, execute, offset }) => {
     const write = execute ?? false;
@@ -730,7 +804,21 @@ export const runAttendanceBackfill = internalMutation({
       throw new ConvexError({ code: "NOT_FOUND", message: "Event not found." });
     }
     verifyMapping(dataset, event, MAPPING[dataset]);
-    const page = await requireEventPage(ctx, eventId);
+
+    let page: Doc<"eventPages"> | null = null;
+    let pageCreated = false;
+    let pageWillBeCreated = false;
+    if (write) {
+      const ensured = await ensurePageForBackfill(ctx, event);
+      page = ensured.page;
+      pageCreated = ensured.created;
+    } else {
+      page = await ctx.db
+        .query("eventPages")
+        .withIndex("by_event", (q) => q.eq("eventId", eventId))
+        .unique();
+      pageWillBeCreated = page === null;
+    }
 
     const rows = DATASET_ROWS[dataset];
     const window = rows.slice(start, start + ATTENDANCE_PAGE_SIZE);
@@ -742,7 +830,7 @@ export const runAttendanceBackfill = internalMutation({
       skippedInvalid: number;
     };
     if (write) {
-      counts = await applyAttendanceRows(ctx, eventId, page, window);
+      counts = await applyAttendanceRows(ctx, eventId, page!, window);
     } else {
       const { summary } = await classifyAttendanceRows(ctx, eventId, window);
       counts = {
@@ -761,6 +849,8 @@ export const runAttendanceBackfill = internalMutation({
       processed: window.length,
       nextOffset: next < rows.length ? next : null,
       counts,
+      ...(pageCreated ? { pageCreated } : {}),
+      ...(pageWillBeCreated ? { pageWillBeCreated } : {}),
     };
   },
 });
