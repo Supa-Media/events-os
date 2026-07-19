@@ -15,6 +15,7 @@ import {
 } from "./lib/context";
 import { isChapterAdmin } from "./lib/org";
 import { isCardEligible } from "@events-os/shared";
+import { writePersonAudit, diffFields } from "./lib/givingAudit";
 
 const vettingStatus = v.union(
   v.literal("unvetted"),
@@ -217,6 +218,44 @@ export const get = query({
   },
 });
 
+/** How many person-audit breadcrumbs the detail renders (newest-first). */
+const PERSON_AUDIT_READ_CAP = 100;
+
+/**
+ * A person's contact-edit audit trail (owner feedback #4), newest-first, with
+ * the actor's display name resolved. Scoped to the caller's chapter via
+ * `requireOwned`; bounded `by_person`.
+ */
+export const listPersonAudit = query({
+  args: { personId: v.id("people") },
+  handler: async (ctx, { personId }) => {
+    await requireOwned(ctx, "people", personId, "Person");
+    const rows = await ctx.db
+      .query("personAudit")
+      .withIndex("by_person", (q) => q.eq("personId", personId))
+      .order("desc")
+      .take(PERSON_AUDIT_READ_CAP);
+    const actorNames = new Map<string, string>();
+    for (const id of new Set(rows.map((a) => a.actorUserId))) {
+      const profile = await ctx.db
+        .query("userProfiles")
+        .withIndex("by_userId", (q) => q.eq("userId", id))
+        .unique();
+      actorNames.set(
+        id,
+        profile?.name ?? (await ctx.db.get(id))?.email ?? "Someone",
+      );
+    }
+    return rows.map((a) => ({
+      _id: a._id,
+      at: a.at,
+      changes: a.changes,
+      note: a.note ?? null,
+      actorName: actorNames.get(a.actorUserId) ?? "Someone",
+    }));
+  },
+});
+
 /** Add a person to the chapter roster. */
 export const create = mutation({
   args: {
@@ -304,9 +343,13 @@ export const update = mutation({
     image: v.optional(v.union(v.id("_storage"), v.null())),
     socialLink: v.optional(v.union(v.string(), v.null())),
     managerId: v.optional(v.union(v.id("people"), v.null())),
+    // Owner feedback #4: optional "why", recorded on the person-audit breadcrumb
+    // when a contact field (name/email/phone) changes.
+    why: v.optional(v.string()),
   },
-  handler: async (ctx, { personId, ...patch }) => {
+  handler: async (ctx, { personId, why, ...patch }) => {
     const person = await requireOwned(ctx, "people", personId, "Person");
+    const actorUserId = (await requireUserId(ctx)) as Id<"users">;
     if (patch.managerId !== undefined) {
       // Setting AND clearing a manager both reshape the org tree — admin only.
       await requireCanSetManager(ctx, person.chapterId);
@@ -331,6 +374,30 @@ export const update = mutation({
     // no longer written (accept the arg from OTA-lagged clients, then drop it).
     delete fields.isActive;
     await ctx.db.patch(personId, fields);
+
+    // Owner feedback #4: narrate a name/email/phone change on the person audit
+    // trail (cheap, additive — only the three contact fields, mirroring the
+    // donor audit). `fields` holds the resolved values the patch actually wrote.
+    const contactAfter = (key: "name" | "email" | "phone"): string | undefined =>
+      key in fields ? (fields[key] as string | undefined) : (person as any)[key];
+    const contactChanges = diffFields(
+      { name: "Name", email: "Email", phone: "Phone" },
+      { name: person.name, email: person.email, phone: person.phone },
+      {
+        name: contactAfter("name"),
+        email: contactAfter("email"),
+        phone: contactAfter("phone"),
+      },
+    );
+    if (contactChanges.length > 0) {
+      await writePersonAudit(ctx, {
+        personId,
+        chapterId: person.chapterId,
+        actorUserId,
+        changes: contactChanges,
+        note: why,
+      });
+    }
     return personId;
   },
 });

@@ -13,7 +13,12 @@ import {
   eventItems,
   roleAssignments,
 } from "./schema/events";
-import { people, engagements, templatePeople } from "./schema/people";
+import {
+  people,
+  engagements,
+  templatePeople,
+  personAudit,
+} from "./schema/people";
 import {
   projects,
   projectComments,
@@ -69,8 +74,10 @@ import {
   donors,
   gifts,
   giftAudit,
+  donorAudit,
   givingScopeRollups,
   pledges,
+  pledgeEvents,
   dismissedGiftCandidates,
 } from "./schema/givingPlatform";
 import { sponsorPackages, sponsorships } from "./schema/sponsorships";
@@ -165,6 +172,8 @@ const schema = defineSchema({
   people,
   engagements,
   templatePeople,
+  // Person contact-field edit audit (name/email/phone) — narration only.
+  personAudit,
 
   // Projects (nestable units of work, owned by people, optionally event-backed)
   // + their running comment history + email-action capability tokens.
@@ -253,11 +262,19 @@ const schema = defineSchema({
   // Gifts ledger: the human-edit audit breadcrumb trail (per-gift, newest-first
   // via by_gift). Written by the desk mutations, never affects a money rollup.
   giftAudit,
+  // Giving integrity tools (owner feedback #4): the donor-record edit + person-
+  // link audit trail (per-donor, newest-first via by_donor). Same narration-only
+  // role as giftAudit — never touches a money rollup.
+  donorAudit,
   givingScopeRollups,
   // P2 recurring rails — `pledges` (Stripe-subscription-backed monthly backing);
   // paid cycles write `gifts` rows (`pledgeId` set). Derives `chapters.backerCount`
   // (see givingPledges.ts + docs/plans/giving-platform.md §2).
   pledges,
+  // Giving integrity tools (owner feedback #5d): the pledge lifecycle history —
+  // one immutable event per status transition (manual AND system/billing) and
+  // per manual field edit, so a backer's paused/resumed/failed timeline is legible.
+  pledgeEvents,
   // Territories P7 (bank-credit gift matching, docs/plans/giving-territories.md
   // §D10) — dismissal ledger for `candidateExternalGifts` (see
   // `schema/givingPlatform.ts` for the shape; `gifts.transactionId` +

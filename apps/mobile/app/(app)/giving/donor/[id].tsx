@@ -47,6 +47,7 @@ import {
   TextField,
 } from "../../../../components/ui";
 import { colors } from "../../../../lib/theme";
+import { alertError } from "../../../../lib/errors";
 import { donorStatusTone } from "../donors";
 
 /** The merged "Source" picker — the widened `GIFT_METHODS` union. `stripe` is
@@ -192,7 +193,7 @@ export default function DonorDetailScreen() {
           </View>
         ) : null}
 
-        <BackingSection donorId={donorId} />
+        <BackingSection donorId={donorId} canManage={canManage} />
 
         {canManage ? <RecordGiftForm donorId={donorId} /> : null}
 
@@ -214,6 +215,8 @@ export default function DonorDetailScreen() {
             ))}
           </View>
         )}
+
+        <DonorHistory donorId={donorId} />
       </Narrow>
 
       {editing ? (
@@ -290,7 +293,13 @@ function GiftHistoryRow({
 /** The donor's recurring pledges (F-6 P2), if any — the "active pledge" the
  *  donor-detail screen is meant to surface. Renders nothing when the donor has
  *  never pledged, so it stays out of the way for one-time givers. */
-function BackingSection({ donorId }: { donorId: Id<"donors"> }) {
+function BackingSection({
+  donorId,
+  canManage,
+}: {
+  donorId: Id<"donors">;
+  canManage: boolean;
+}) {
   const pledges = useQuery(api.givingPledges.getDonorPledges, { donorId });
   if (pledges === undefined || pledges.length === 0) return null;
   return (
@@ -298,31 +307,157 @@ function BackingSection({ donorId }: { donorId: Id<"donors"> }) {
       <SectionHeader title="Backing" />
       <View className="gap-2">
         {pledges.map((p) => (
-          <View
-            key={p._id}
-            className="flex-row items-center justify-between rounded-lg border border-border bg-raised p-3"
-          >
-            <View>
-              <Text className="text-base font-semibold text-ink">
-                {formatCents(p.amountCents)}
-                <Text className="text-xs text-muted"> /mo</Text>
+          <PledgeCard key={p._id} pledge={p} canManage={canManage} />
+        ))}
+      </View>
+    </View>
+  );
+}
+
+/** One pledge card — status badge + (for a manager) pause/resume + an
+ *  expandable lifecycle history (owner feedback #5). */
+function PledgeCard({
+  pledge,
+  canManage,
+}: {
+  pledge: { _id: Id<"pledges">; amountCents: number; status: string; origin: string };
+  canManage: boolean;
+}) {
+  const setStatus = useMutation(api.givingPledges.setPledgeStatus);
+  const [showHistory, setShowHistory] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const history = useQuery(
+    api.givingPledges.pledgeHistory,
+    showHistory ? { pledgeId: pledge._id } : "skip",
+  );
+
+  async function toggle(next: "active" | "paused") {
+    setBusy(true);
+    try {
+      await setStatus({ pledgeId: pledge._id, status: next });
+    } catch (e) {
+      alertError(e);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <View className="rounded-lg border border-border bg-raised p-3">
+      <View className="flex-row items-center justify-between">
+        <View>
+          <Text className="text-base font-semibold text-ink">
+            {formatCents(pledge.amountCents)}
+            <Text className="text-xs text-muted"> /mo</Text>
+          </Text>
+          <Text className="text-xs text-muted">
+            {pledge.origin === "imported"
+              ? "Givebutter (awaiting re-signup)"
+              : "Monthly pledge"}
+          </Text>
+        </View>
+        <Badge
+          label={pledge.status}
+          tone={
+            pledge.status === "active"
+              ? "success"
+              : pledge.status === "past_due"
+                ? "warn"
+                : pledge.status === "canceled"
+                  ? "danger"
+                  : pledge.status === "paused"
+                    ? "warn"
+                    : "neutral"
+          }
+        />
+      </View>
+
+      <View className="mt-2 flex-row flex-wrap gap-2">
+        {canManage && pledge.status === "active" ? (
+          <Button title="Pause" icon="pause" size="sm" variant="secondary" loading={busy} onPress={() => toggle("paused")} />
+        ) : null}
+        {canManage && pledge.status === "paused" ? (
+          <Button title="Resume" icon="play" size="sm" variant="secondary" loading={busy} onPress={() => toggle("active")} />
+        ) : null}
+        <Button
+          title={showHistory ? "Hide history" : "History"}
+          icon="clock"
+          size="sm"
+          variant="ghost"
+          onPress={() => setShowHistory((v) => !v)}
+        />
+      </View>
+      {pledge.status === "paused" ? (
+        <Text className="mt-1 text-2xs text-muted">
+          Paused pledges stay here but don't count toward the backer number.
+        </Text>
+      ) : null}
+
+      {showHistory ? (
+        <View className="mt-2 gap-1.5">
+          {history === undefined ? (
+            <ActivityIndicator color={colors.accent} />
+          ) : history.length === 0 ? (
+            <Text className="text-xs text-muted">No history yet.</Text>
+          ) : (
+            history.map((e) => (
+              <View key={e._id} className="rounded-md border border-border bg-surface p-2">
+                <View className="flex-row items-center justify-between">
+                  <Text className="text-xs font-semibold text-ink">
+                    {e.from ? `${e.from} → ` : ""}
+                    {e.to ?? e.kind}
+                  </Text>
+                  <Text className="text-2xs text-muted">
+                    {new Date(e.at).toLocaleDateString()}
+                  </Text>
+                </View>
+                <Text className="text-2xs text-muted">by {e.actor}</Text>
+                {e.note ? (
+                  <Text className="mt-0.5 text-2xs italic text-muted">“{e.note}”</Text>
+                ) : null}
+              </View>
+            ))
+          )}
+        </View>
+      ) : null}
+    </View>
+  );
+}
+
+/** The donor's edit + person-link audit trail (owner feedback #4), newest-first.
+ *  Renders nothing until there's a breadcrumb, mirroring the gift audit trail. */
+const DONOR_AUDIT_LABEL: Record<string, string> = {
+  edited: "Edited",
+  linkedPerson: "Linked person",
+  unlinkedPerson: "Unlinked person",
+};
+function DonorHistory({ donorId }: { donorId: Id<"donors"> }) {
+  const audit = useQuery(api.givingPlatform.listDonorAudit, { donorId });
+  if (audit === undefined || audit.length === 0) return null;
+  return (
+    <View className="mt-4">
+      <SectionHeader title="History" />
+      <View className="gap-2">
+        {audit.map((a) => (
+          <View key={a._id} className="rounded-lg border border-border bg-raised p-2.5">
+            <View className="flex-row items-center justify-between">
+              <Text className="text-sm font-semibold text-ink">
+                {DONOR_AUDIT_LABEL[a.action] ?? a.action}
               </Text>
-              <Text className="text-xs text-muted">
-                {p.origin === "imported" ? "Givebutter (awaiting re-signup)" : "Monthly pledge"}
+              <Text className="text-2xs text-muted">
+                {new Date(a.at).toLocaleString()}
               </Text>
             </View>
-            <Badge
-              label={p.status}
-              tone={
-                p.status === "active"
-                  ? "success"
-                  : p.status === "past_due"
-                    ? "warn"
-                    : p.status === "canceled"
-                      ? "danger"
-                      : "neutral"
-              }
-            />
+            <Text className="text-xs text-muted">by {a.actorName}</Text>
+            {a.changes.map((c, i) => (
+              <Text key={i} className="mt-0.5 text-xs text-ink">
+                {c.field}: {c.from !== undefined ? `${c.from} → ` : ""}
+                {c.to ?? "—"}
+              </Text>
+            ))}
+            {a.note ? (
+              <Text className="mt-0.5 text-xs italic text-muted">“{a.note}”</Text>
+            ) : null}
           </View>
         ))}
       </View>

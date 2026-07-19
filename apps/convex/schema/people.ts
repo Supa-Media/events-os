@@ -88,6 +88,31 @@ export const people = defineTable({
   .index("by_manager", ["managerId"]);
 
 /**
+ * Person field AUDIT (owner feedback #4) — a lightweight, additive breadcrumb
+ * trail for the People tab: one immutable row per HUMAN change to a person's
+ * contact identity (name / email / phone) via `people.update`. Deliberately
+ * cheap: it does NOT audit every profile field, only the three that matter for
+ * "who is this and how do we reach them" (the same fields the donor audit
+ * tracks, so a merged donor↔person pair reads consistently). `changes` is a
+ * compact display-ready diff; read bounded newest-first via `by_person` on the
+ * person detail. Mirrors `giftAudit`/`donorAudit`'s narration-only shape.
+ */
+export const personAudit = defineTable({
+  personId: v.id("people"),
+  chapterId: v.id("chapters"),
+  actorUserId: v.id("users"),
+  at: v.number(),
+  changes: v.array(
+    v.object({
+      field: v.string(),
+      from: v.optional(v.string()),
+      to: v.optional(v.string()),
+    }),
+  ),
+  note: v.optional(v.string()),
+}).index("by_person", ["personId"]);
+
+/**
  * Template Crew (placeholder people) — stand-in crew authored on a TEMPLATE,
  * before any real person exists. They name the slots an event's Expectations
  * should be owned by (e.g. "Stage Manager", "Lead Usher"). When an event is

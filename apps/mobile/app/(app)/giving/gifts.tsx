@@ -616,6 +616,9 @@ const ACTION_LABEL: Record<string, string> = {
   edited: "Edited",
   reassignedDonor: "Reassigned donor",
   movedScope: "Moved book",
+  deleted: "Removed",
+  split: "Split",
+  createdBySplit: "Created by split",
 };
 
 function GiftDetailSheet({
@@ -632,21 +635,31 @@ function GiftDetailSheet({
   onClose: () => void;
 }) {
   const data = useQuery(api.givingPlatform.getGift, { giftId });
-  const [mode, setMode] = useState<"view" | "edit" | "move" | "reassign">(
-    "view",
-  );
+  const [mode, setMode] = useState<
+    "view" | "edit" | "move" | "reassign" | "remove" | "split"
+  >("view");
 
   const gift = data?.gift;
   const locked = data?.systemWritten === true;
+  const sheetTitle =
+    mode === "view"
+      ? "Gift"
+      : mode === "edit"
+        ? "Edit gift"
+        : mode === "move"
+          ? "Move book"
+          : mode === "reassign"
+            ? "Reassign donor"
+            : mode === "split"
+              ? "Split gift"
+              : "Remove gift";
 
   return (
     <Modal visible transparent animationType="fade" onRequestClose={onClose}>
       <View className="flex-1 justify-end bg-black/40">
         <View className="max-h-[90%] rounded-t-2xl bg-surface p-4">
           <View className="mb-3 flex-row items-center justify-between">
-            <Text className="text-lg font-bold text-ink">
-              {mode === "view" ? "Gift" : mode === "edit" ? "Edit gift" : mode === "move" ? "Move book" : "Reassign donor"}
-            </Text>
+            <Text className="text-lg font-bold text-ink">{sheetTitle}</Text>
             <Pressable onPress={onClose} hitSlop={8} accessibilityLabel="Close">
               <Icon name="x" size={20} color={colors.muted} />
             </Pressable>
@@ -666,7 +679,23 @@ function GiftDetailSheet({
                   onEdit={() => setMode("edit")}
                   onMove={() => setMode("move")}
                   onReassign={() => setMode("reassign")}
-                  onClose={onClose}
+                  onRemove={() => setMode("remove")}
+                  onSplit={() => setMode("split")}
+                />
+              ) : mode === "remove" ? (
+                <RemoveGiftForm
+                  giftId={giftId}
+                  onDone={() => setMode("view")}
+                  onRemoved={onClose}
+                />
+              ) : mode === "split" ? (
+                <SplitGiftForm
+                  giftId={giftId}
+                  amountCents={gift.amountCents}
+                  currentScope={gift.scope}
+                  scopeOptions={scopeOptions}
+                  onDone={() => setMode("view")}
+                  onSplit={onClose}
                 />
               ) : mode === "edit" ? (
                 <EditGiftForm
@@ -713,7 +742,8 @@ function GiftDetailView({
   onEdit,
   onMove,
   onReassign,
-  onClose,
+  onRemove,
+  onSplit,
 }: {
   data: {
     gift: {
@@ -734,30 +764,10 @@ function GiftDetailView({
   onEdit: () => void;
   onMove: () => void;
   onReassign: () => void;
-  onClose: () => void;
+  onRemove: () => void;
+  onSplit: () => void;
 }) {
-  const removeGift = useMutation(api.givingPlatform.removeGift);
-  const [busy, setBusy] = useState(false);
   const { gift } = data;
-
-  async function doRemove() {
-    const ok =
-      typeof window !== "undefined" && typeof window.confirm === "function"
-        ? window.confirm(
-            "Remove this gift? Its rollups reverse and it leaves the ledger. This can't be undone.",
-          )
-        : true;
-    if (!ok) return;
-    setBusy(true);
-    try {
-      await removeGift({ giftId: gift._id });
-      onClose();
-    } catch (e) {
-      alertError(e);
-    } finally {
-      setBusy(false);
-    }
-  }
 
   return (
     <View>
@@ -798,9 +808,14 @@ function GiftDetailView({
           <Button title="Edit" icon="edit-2" size="sm" variant="secondary" onPress={onEdit} />
           <Button title="Reassign donor" icon="user" size="sm" variant="secondary" onPress={onReassign} />
           {canManageCentral && !data.systemWritten ? (
-            <Button title="Move book" icon="repeat" size="sm" variant="secondary" onPress={onMove} />
+            <>
+              <Button title="Move book" icon="repeat" size="sm" variant="secondary" onPress={onMove} />
+              <Button title="Split" icon="scissors" size="sm" variant="secondary" onPress={onSplit} />
+            </>
           ) : null}
-          <Button title="Remove" icon="trash-2" size="sm" variant="danger" onPress={doRemove} loading={busy} />
+          {!data.systemWritten ? (
+            <Button title="Remove" icon="trash-2" size="sm" variant="danger" onPress={onRemove} />
+          ) : null}
         </View>
       ) : null}
 
@@ -1039,6 +1054,173 @@ function MoveBookForm({
         </View>
         <View className="flex-1">
           <Button title="Move gift" onPress={save} loading={saving} />
+        </View>
+      </View>
+    </View>
+  );
+}
+
+/**
+ * Remove a gift — owner feedback #1: removing has EFFECTS (rollups reverse), so
+ * the desk MAKES you say why before it's gone. The reason + a snapshot land on
+ * the book's audit trail.
+ */
+function RemoveGiftForm({
+  giftId,
+  onDone,
+  onRemoved,
+}: {
+  giftId: Id<"gifts">;
+  onDone: () => void;
+  onRemoved: () => void;
+}) {
+  const removeGift = useMutation(api.givingPlatform.removeGift);
+  const [why, setWhy] = useState("");
+  const [saving, setSaving] = useState(false);
+
+  async function save() {
+    if (!why.trim()) return;
+    setSaving(true);
+    try {
+      await removeGift({ giftId, why: why.trim() });
+      onRemoved();
+    } catch (e) {
+      alertError(e);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <View>
+      <Text className="mb-3 text-sm text-muted">
+        Removing this gift reverses the donor's and the book's totals and takes
+        it off the ledger. Say why — a snapshot of the gift is kept on the record.
+      </Text>
+      <TextField
+        label="Why are you removing it?"
+        value={why}
+        onChangeText={setWhy}
+        placeholder="e.g. Actually a ticket-sale payout, not a gift"
+        multiline
+      />
+      <View className="mt-2 flex-row gap-2">
+        <View className="flex-1">
+          <Button title="Cancel" variant="secondary" onPress={onDone} />
+        </View>
+        <View className="flex-1">
+          <Button
+            title="Remove gift"
+            variant="danger"
+            onPress={save}
+            loading={saving}
+            disabled={!why.trim()}
+          />
+        </View>
+      </View>
+    </View>
+  );
+}
+
+/**
+ * Split a gift into two parts across books — owner feedback #2. Keeps it simple:
+ * pick each part's book and the FIRST part's amount; the second part takes the
+ * remainder, so the two always sum to exactly the original. A reason is required.
+ */
+function SplitGiftForm({
+  giftId,
+  amountCents,
+  currentScope,
+  scopeOptions,
+  onDone,
+  onSplit,
+}: {
+  giftId: Id<"gifts">;
+  amountCents: number;
+  currentScope: GivingScope;
+  scopeOptions: { scope: GivingScope; label: string; canManage: boolean }[];
+  onDone: () => void;
+  onSplit: () => void;
+}) {
+  const splitGift = useMutation(api.givingPlatform.splitGift);
+  const books = scopeOptions.length > 0 ? scopeOptions : [];
+  const [scopeA, setScopeA] = useState<string>(currentScope);
+  const [scopeB, setScopeB] = useState<string>(
+    books.find((o) => o.scope !== currentScope)?.scope ?? currentScope,
+  );
+  const [amountA, setAmountA] = useState(String(amountCents / 100 / 2));
+  const [why, setWhy] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const centsA = Math.round((Number.parseFloat(amountA) || 0) * 100);
+  const centsB = amountCents - centsA;
+
+  async function save() {
+    setError(null);
+    if (!why.trim()) {
+      setError("Say why you're splitting this gift.");
+      return;
+    }
+    if (centsA <= 0 || centsB <= 0) {
+      setError(
+        `Each part must be more than $0 and less than ${formatCents(amountCents)}.`,
+      );
+      return;
+    }
+    setSaving(true);
+    try {
+      await splitGift({
+        giftId,
+        parts: [
+          { scope: scopeA as GivingScope, amountCents: centsA },
+          { scope: scopeB as GivingScope, amountCents: centsB },
+        ],
+        why: why.trim(),
+      });
+      onSplit();
+    } catch (e) {
+      alertError(e);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  const bookOptions = books.map((o) => ({ value: o.scope, label: o.label }));
+
+  return (
+    <View>
+      <Text className="mb-3 text-sm text-muted">
+        Split {formatCents(amountCents)} into two parts across books. The parts
+        always sum to the original — the second takes the remainder. Kept on both
+        gifts' history.
+      </Text>
+      <Select label="Part 1 book" value={scopeA} options={bookOptions} onChange={setScopeA} />
+      <TextField
+        label="Part 1 amount (USD)"
+        value={amountA}
+        onChangeText={setAmountA}
+        keyboardType="decimal-pad"
+        placeholder="0.00"
+      />
+      <Select label="Part 2 book" value={scopeB} options={bookOptions} onChange={setScopeB} />
+      <Text className="mb-2 text-sm text-muted">
+        Part 2 gets the remainder: {formatCents(Math.max(0, centsB))}
+      </Text>
+      <TextField
+        label="Why"
+        value={why}
+        onChangeText={setWhy}
+        placeholder="e.g. Split this wire between Central and New York"
+        multiline
+      />
+      {error ? <Text className="mb-2 text-sm text-danger">{error}</Text> : null}
+      <View className="flex-row gap-2">
+        <View className="flex-1">
+          <Button title="Cancel" variant="secondary" onPress={onDone} />
+        </View>
+        <View className="flex-1">
+          <Button title="Split gift" onPress={save} loading={saving} disabled={!why.trim()} />
         </View>
       </View>
     </View>

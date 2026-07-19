@@ -498,13 +498,15 @@ export const DEVELOPMENT_SECTIONS: Omit<AcademySection, "order">[] = [
           "**Add gift** — record a manual or external gift the rails never saw: a wire to the org's account, a Zelle or Cash App gift, something bought on behalf of the org. Past dates, the full source list, and receipts are all supported; a central manager also picks which book it belongs to.",
           "**Edit** — fix an amount, date, source, or note straight from the ledger. The donor's lifetime total and the book's rollups always re-derive to the exact truth — nobody ever hand-edits a total.",
           "**Reassign donor** — move a single gift onto the right donor in the same book (the small \"this gift landed on the wrong person\" fix).",
-          "**Move book** — a central manager can move a gift between books (central ↔ chapter, chapter ↔ chapter). The gift's donor is matched-or-created in the destination book, and BOTH books' totals net exactly — no money is invented or lost.",
+          "**Move book** — a central manager can move a WHOLE gift between books (central ↔ chapter, chapter ↔ chapter). The gift's donor is matched-or-created in the destination book, and BOTH books' totals net exactly — no money is invented or lost.",
+          "**Split** — a central manager can split ONE gift into two or more parts across books (central ↔ chapter): the parts must sum to exactly the original amount, and each part becomes its own gift for the same donor in its book (person-linked for a chapter, keeping the date, source, and receipts). His real case: one wire split between Central and New York, so each book shows its true share while the underlying-transaction story survives in the notes and audit.",
+          "**Remove** — delete a gift that shouldn't be there (an $820 \"donation\" that was really a ticket-sale payout; a stray ticket purchase). Removing has EFFECTS — it reverses the donor's and the book's totals — so the desk MAKES YOU say why first, and keeps a snapshot of the deleted gift on the record.",
         ],
       },
       {
         kind: "rule",
-        title: "Every change leaves a breadcrumb",
-        text: "Every add, edit, reassignment, and book-move writes an audit line on that gift — who did it, when, exactly what changed (old → new), and an optional \"why.\" Open any gift to read its full history. And a gift whose money is owned by its SOURCE — an event donation, a Stripe billing cycle, a matched bank credit — is protected: its amount, date, source, and book can't be edited or moved here, only its note and receipts.",
+        title: "Every change leaves a breadcrumb — and removing one asks why",
+        text: "Every add, edit, reassignment, book-move, and split writes an audit line on that gift — who did it, when, exactly what changed (old → new), and a \"why\" (optional on an edit, REQUIRED on a removal). A removal is special: because the row disappears, its breadcrumb carries a self-contained snapshot — donor, amount, date, book, source — so the trail stays readable even after the gift is gone. And a gift whose money is owned by its SOURCE — an event donation, a Stripe billing cycle, a matched bank credit — is protected: its amount, date, source, and book can't be edited, moved, or split here, only its note and receipts.",
       },
       {
         kind: "reveal",
@@ -561,7 +563,19 @@ export const DEVELOPMENT_SECTIONS: Omit<AcademySection, "order">[] = [
         ],
         answerIndex: 1,
         explanation:
-          "Moving a gift across books is a central-manage action; the source book loses exactly the gift, the destination gains exactly it, and its donor exists in the new book (matched or created, person-linked for a chapter).",
+          "Moving a gift across books is a central-manage action; the source book loses exactly the gift, the destination gains exactly it, and its donor exists in the new book (matched or created, person-linked for a chapter). Splitting is the same power finer-grained: the parts must sum to exactly the original, so no money is invented or lost.",
+      },
+      {
+        prompt: "Why does removing a gift make you type a reason first?",
+        options: [
+          "It doesn't — a gift is deleted the instant you tap Remove",
+          "Because removing reverses the donor's and the book's totals — it has effects — so the reason and a snapshot of the deleted gift are kept on the record",
+          "To email the donor an apology automatically",
+          "Only superusers are ever allowed to remove a gift",
+        ],
+        answerIndex: 1,
+        explanation:
+          "Real removals matter (an $820 payout mistaken for a gift, a stray ticket purchase). The required \"why\" plus a self-contained snapshot — donor, amount, date, book, source — keeps the trail readable after the gift itself is gone.",
       },
     ],
   },
@@ -603,7 +617,7 @@ export const DEVELOPMENT_SECTIONS: Omit<AcademySection, "order">[] = [
         prompt:
           "A donor pledges $20/month to a chapter. Do they count toward that chapter's backer milestones?",
         answer:
-          "No — they're a real, valued donor with an active recurring pledge, but the backer count only includes pledges at or above the $50 floor. Their gift still shows up in giving history every month; it just doesn't move the chapter's tier.",
+          "No — they're a real, valued donor with an active recurring pledge, but the backer count only includes pledges at or above the $50 floor. Their gift still shows up in giving history every month; it just doesn't move the chapter's tier. (There's a second way a pledge can be non-counting: a PAUSED pledge — see the next lesson — stays in the backers list but is left out of the count until it resumes.)",
       },
     ],
     quiz: [
@@ -657,7 +671,7 @@ export const DEVELOPMENT_SECTIONS: Omit<AcademySection, "order">[] = [
   {
     slug: "dev-backer-lifecycle",
     title: "A backer's lifecycle: subscribe, pay, sometimes falter",
-    subtitle: "incomplete → active → past_due → canceled, and who does what",
+    subtitle: "incomplete → active → past_due → canceled (+ a manual pause), and who does what",
     minutes: 4,
     blocks: [
       {
@@ -672,12 +686,18 @@ export const DEVELOPMENT_SECTIONS: Omit<AcademySection, "order">[] = [
           ["Active", "Subscription is live and paying"],
           ["Past due", "A billing cycle's payment failed; Stripe is retrying automatically"],
           ["Canceled", "The subscription ended — by the donor, or Stripe giving up on retries"],
+          ["Paused", "A MANUAL hold the desk sets — the pledge stays in the backers list (history preserved) but is left OUT of the count until it's resumed"],
         ],
       },
       {
         kind: "rule",
         title: "Each paid cycle is a gift, automatically",
-        text: "Every month a subscription successfully charges, one new row lands in that donor's giving history — recurring backing shows up in the CRM exactly like a one-time check, no manual entry required. A chapter's backer count recomputes the instant any pledge's status or amount changes, so it's always current.",
+        text: "Every month a subscription successfully charges, one new row lands in that donor's giving history — recurring backing shows up in the CRM exactly like a one-time check, no manual entry required. A chapter's backer count recomputes the instant any pledge's status or amount changes, so it's always current — and a paused pledge simply stops counting until it resumes.",
+      },
+      {
+        kind: "rule",
+        title: "Pause is manual; the rest is Stripe",
+        text: "Every status EXCEPT paused is driven by Stripe (checkout, successful charges, failed charges, cancellation). Paused is the one the development desk sets by hand — for a backer who asks to take a break — and it's deliberately \"sticky\": a routine Stripe re-sync won't quietly flip a paused pledge back to active, so a manual pause never fights the billing cycle. A paused pledge doesn't count toward the chapter's tier, but it never leaves the backers list — the relationship and its whole timeline are preserved. The desk can also correct a pledge's \"Since\" date or delete a pledge outright; each of those, like a pause or resume, is written to the pledge's history with who did it and why.",
       },
       {
         kind: "tip",
@@ -702,7 +722,7 @@ export const DEVELOPMENT_SECTIONS: Omit<AcademySection, "order">[] = [
         ],
         answerIndex: 1,
         explanation:
-          "Past_due is a Stripe-driven state — a failed charge, not a person's decision.",
+          "Past_due is a Stripe-driven state — a failed charge, not a person's decision. Pausing IS a real action, but it's a separate manual state (\"paused\"), not past_due.",
       },
       {
         prompt: "Who chases a backer's failed payment?",
@@ -739,6 +759,18 @@ export const DEVELOPMENT_SECTIONS: Omit<AcademySection, "order">[] = [
         answerIndex: 1,
         explanation:
           "Recurring giving is real giving history — it lands in the CRM the same way any other gift does, without anyone typing it in.",
+      },
+      {
+        prompt: "A backer asks to take a break, so you PAUSE their pledge. What happens to the chapter's backer count and the backers list?",
+        options: [
+          "The pledge is deleted and vanishes from the list",
+          "The count drops by one (paused pledges don't count), but the pledge stays in the backers list with its full history",
+          "Nothing changes until Stripe cancels the subscription",
+          "The count is unaffected — paused pledges still count as backers",
+        ],
+        answerIndex: 1,
+        explanation:
+          "Paused is a manual hold: it removes the backer from the count immediately, but the pledge — and its whole paused/resumed timeline — stays on the record. Resume it and the count goes back up. (Because a pause is local, the desk should still cancel in Stripe if they want to stop the card from being charged.)",
       },
     ],
   },

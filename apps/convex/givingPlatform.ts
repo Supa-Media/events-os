@@ -49,6 +49,7 @@ import {
   moveGiftToScope,
   dualWriteGiftForDonation,
   linkDonorToPerson,
+  isSystemWrittenGift,
 } from "./lib/givingDonors";
 import {
   writeGiftAudit,
@@ -56,6 +57,11 @@ import {
   GIFT_AUDIT_READ_CAP,
   type GiftFieldChange,
 } from "./lib/giftAudit";
+import {
+  writeDonorAudit,
+  diffFields,
+  GIVING_AUDIT_READ_CAP,
+} from "./lib/givingAudit";
 import {
   DONOR_KINDS,
   DONOR_SOURCES,
@@ -178,6 +184,30 @@ async function scopeRollupTotals(ctx: QueryCtx, scope: GivingScope) {
  * kind/source/lifetime filter — acceptable for the CRM's current scale (see
  * `DONOR_LIST_LIMIT`'s own doc), same bound `listDonationsAdmin` already ships.
  */
+/**
+ * Attach `linkedPersonName` (owner feedback #3c — the grid's "Linked person"
+ * column) to each donor row. `personId` already rides on the donor doc; this
+ * resolves the roster name with a bounded, deduped batch of `.get`s (one per
+ * distinct linked person — well under the list caps). Unlinked (or a dangling
+ * link) resolves to `null`.
+ */
+async function withLinkedPersonNames<T extends Doc<"donors">>(
+  ctx: QueryCtx,
+  rows: T[],
+): Promise<(T & { linkedPersonName: string | null })[]> {
+  const names = new Map<string, string>();
+  for (const id of new Set(
+    rows.map((r) => r.personId).filter((id): id is Id<"people"> => !!id),
+  )) {
+    const person = await ctx.db.get(id);
+    if (person) names.set(id, person.name);
+  }
+  return rows.map((r) => ({
+    ...r,
+    linkedPersonName: r.personId ? names.get(r.personId) ?? null : null,
+  }));
+}
+
 export const listDonors = query({
   args: {
     scope: scopeValidator,
@@ -240,7 +270,7 @@ export const listDonors = query({
         }
       }
       merged.sort((a, b) => b.lifetimeCents - a.lifetimeCents);
-      return merged.slice(0, ALL_SCOPES_CAP);
+      return await withLinkedPersonNames(ctx, merged.slice(0, ALL_SCOPES_CAP));
     }
 
     await requireGivingView(ctx, scope as GivingScope);
@@ -256,7 +286,7 @@ export const listDonors = query({
           .withIndex("by_scope_and_lifetime", (q) => q.eq("scope", scope))
           .order("desc")
           .take(DONOR_LIST_LIMIT);
-    return rows.filter(matchesRefinements);
+    return await withLinkedPersonNames(ctx, rows.filter(matchesRefinements));
   },
 });
 
@@ -780,11 +810,7 @@ export const listGifts = query({
           edited: r.gift.editedAt !== undefined,
           // A gift whose money is owned elsewhere (event donation / Stripe /
           // sponsorship / bank-credit) — the client hides destructive edits.
-          systemWritten:
-            r.gift.donationId !== undefined ||
-            r.gift.stripeInvoiceId !== undefined ||
-            r.gift.sponsorshipId !== undefined ||
-            r.gift.transactionId !== undefined,
+          systemWritten: isSystemWrittenGift(r.gift),
         })),
       ),
     };
@@ -840,11 +866,7 @@ export const getGift = query({
       gift: { ...gift, receiptUrls },
       donorName: donor?.name ?? "Unknown donor",
       bookLabel: await bookLabel(ctx, gift.scope),
-      systemWritten:
-        gift.donationId !== undefined ||
-        gift.stripeInvoiceId !== undefined ||
-        gift.sponsorshipId !== undefined ||
-        gift.transactionId !== undefined,
+      systemWritten: isSystemWrittenGift(gift),
       audit: auditRows.map((a) => ({
         _id: a._id,
         at: a.at,
@@ -1076,11 +1098,15 @@ export const upsertDonor = mutation({
     source: v.optional(donorSourceValidator),
     // Optional mailing address for postal outreach (F-6 donor address).
     address: v.optional(donorAddressValidator),
+    // Owner feedback #4: the actor's optional "why", recorded on the donor-edit
+    // audit breadcrumb (name/email/phone changes only).
+    why: v.optional(v.string()),
   },
   returns: v.id("donors"),
   handler: async (ctx, args) => {
     const scope = args.scope as GivingScope;
     await requireGivingManage(ctx, scope);
+    const actorUserId = (await requireUserId(ctx)) as Id<"users">;
 
     const name = args.name.trim();
     if (!name) {
@@ -1114,6 +1140,29 @@ export const upsertDonor = mutation({
         });
       }
       await ctx.db.patch(args.donorId, patch);
+      // Owner feedback #4: narrate a name/email/phone change on the donor audit
+      // trail (the identity fields — never the address/notes churn). `patch`
+      // only carries fields the caller sent, so an untouched field's "after" is
+      // the donor's existing value.
+      const contactChanges = diffFields(
+        { name: "Name", email: "Email", phone: "Phone" },
+        { name: donor.name, email: donor.email, phone: donor.phone },
+        {
+          name: patch.name,
+          email: "email" in patch ? patch.email : donor.email,
+          phone: "phone" in patch ? patch.phone : donor.phone,
+        },
+      );
+      if (contactChanges.length > 0) {
+        await writeDonorAudit(ctx, {
+          donorId: args.donorId,
+          scope,
+          actorUserId,
+          action: "edited",
+          changes: contactChanges,
+          note: args.why,
+        });
+      }
       // Territories P5: a CHAPTER-scope donor still unlinked (e.g. it was
       // created before an email/phone existed to match on, or the first
       // attempt found no roster match) gets a retry here — this edit may have
@@ -1122,7 +1171,18 @@ export const upsertDonor = mutation({
       // an already-linked donor (guarded below, so a re-edit never re-scans
       // the roster for nothing).
       if (scope !== "central" && donor.personId === undefined) {
-        await linkDonorToPerson(ctx, { ...donor, ...patch });
+        const linkedId = await linkDonorToPerson(ctx, { ...donor, ...patch });
+        // A retry that actually established the link leaves its own breadcrumb.
+        if (linkedId) {
+          const person = await ctx.db.get(linkedId);
+          await writeDonorAudit(ctx, {
+            donorId: args.donorId,
+            scope,
+            actorUserId,
+            action: "linkedPerson",
+            changes: [{ field: "Linked person", to: person?.name ?? "—" }],
+          });
+        }
       }
       return args.donorId;
     }
@@ -1149,6 +1209,132 @@ export const upsertDonor = mutation({
       }
     }
     return donorId;
+  },
+});
+
+/**
+ * Set (or clear) a donor's linked roster PERSON — the manual repair for owner
+ * feedback #3 (a merge, or a bad auto-link, left a chapter donor pointing at the
+ * wrong person or none). Manage-gated at the donor's scope.
+ *
+ *  - `personId` a live people row → link. A CHAPTER donor may only link to a
+ *    person on ITS OWN chapter's roster (the 1:1 invariant `linkDonorToPerson`
+ *    enforces); a CENTRAL donor has no chapter roster and can never be linked
+ *    (CRM-only), so a non-null personId is refused for central.
+ *  - `personId: null` → unlink (always allowed).
+ *
+ * Writes a `linkedPerson` / `unlinkedPerson` donor-audit breadcrumb.
+ */
+export const setDonorPerson = mutation({
+  args: {
+    donorId: v.id("donors"),
+    personId: v.union(v.id("people"), v.null()),
+    why: v.optional(v.string()),
+  },
+  returns: v.null(),
+  handler: async (ctx, { donorId, personId, why }) => {
+    const donor = await ctx.db.get(donorId);
+    if (!donor) {
+      throw new ConvexError({ code: "NOT_FOUND", message: "Donor not found." });
+    }
+    await requireGivingManage(ctx, donor.scope);
+    const actorUserId = (await requireUserId(ctx)) as Id<"users">;
+
+    if (personId !== null) {
+      if (donor.scope === "central") {
+        throw new ConvexError({
+          code: "INVALID_INPUT",
+          message:
+            "A central donor is CRM-only and can't link to a chapter roster person.",
+        });
+      }
+      const person = await ctx.db.get(personId);
+      if (!person) {
+        throw new ConvexError({
+          code: "NOT_FOUND",
+          message: "That person isn't on the roster.",
+        });
+      }
+      if (person.chapterId !== donor.scope) {
+        throw new ConvexError({
+          code: "CROSS_CHAPTER",
+          message: "A chapter donor can only link to a person on its own roster.",
+        });
+      }
+      if (donor.personId === personId) return null; // already linked here
+      await ctx.db.patch(donorId, { personId });
+      await writeDonorAudit(ctx, {
+        donorId,
+        scope: donor.scope,
+        actorUserId,
+        action: "linkedPerson",
+        changes: [
+          {
+            field: "Linked person",
+            from: donor.personId
+              ? (await ctx.db.get(donor.personId))?.name ?? "—"
+              : "—",
+            to: person.name,
+          },
+        ],
+        note: why,
+      });
+      return null;
+    }
+
+    // Unlink.
+    if (donor.personId === undefined) return null; // already unlinked
+    const prior = await ctx.db.get(donor.personId);
+    await ctx.db.patch(donorId, { personId: undefined });
+    await writeDonorAudit(ctx, {
+      donorId,
+      scope: donor.scope,
+      actorUserId,
+      action: "unlinkedPerson",
+      changes: [{ field: "Linked person", from: prior?.name ?? "—", to: "—" }],
+      note: why,
+    });
+    return null;
+  },
+});
+
+/**
+ * A donor's audit trail (owner feedback #4) — every human change to its identity
+ * fields + person link, newest-first, with the actor's name resolved. Read-gated
+ * on the donor's scope; bounded `by_donor`. Mirrors `getGift`'s audit render.
+ */
+export const listDonorAudit = query({
+  args: { donorId: v.id("donors") },
+  handler: async (ctx, { donorId }) => {
+    const donor = await ctx.db.get(donorId);
+    if (!donor) {
+      throw new ConvexError({ code: "NOT_FOUND", message: "Donor not found." });
+    }
+    await requireGivingView(ctx, donor.scope);
+    const rows = await ctx.db
+      .query("donorAudit")
+      .withIndex("by_donor", (q) => q.eq("donorId", donorId))
+      .order("desc")
+      .take(GIVING_AUDIT_READ_CAP);
+    const actorNames = new Map<string, string>();
+    for (const id of new Set(rows.map((a) => a.actorUserId))) {
+      const profile = await ctx.db
+        .query("userProfiles")
+        .withIndex("by_userId", (q) => q.eq("userId", id))
+        .unique();
+      actorNames.set(
+        id,
+        profile?.name ?? (await ctx.db.get(id))?.email ?? "Someone",
+      );
+    }
+    return rows.map((a) => ({
+      _id: a._id,
+      at: a.at,
+      action: a.action,
+      changes: a.changes ?? [],
+      note: a.note ?? null,
+      actorName: actorNames.get(a.actorUserId) ?? "Someone",
+    }));
   },
 });
 
@@ -1335,17 +1521,64 @@ export const generateGiftReceiptUploadUrlForScope = mutation({
   },
 });
 
-/** Remove a gift, reversing its rollups (clamped ≥ 0) + re-deriving status. */
+/**
+ * Remove a gift, reversing its rollups (clamped ≥ 0) + re-deriving status.
+ *
+ * Owner feedback #1 — deleting has EFFECTS, so it now REQUIRES a `why`
+ * (non-empty): the real cases are a Givebutter "donation" that was actually a
+ * ticket-sale payout (not a gift) and stray ticket purchases. Before the row is
+ * gone, a `deleted` audit breadcrumb is written carrying a self-contained
+ * SNAPSHOT (donor, amount, date, book, source) plus the reason — so the trail
+ * stays legible AFTER the gift doc no longer exists (read book-level via
+ * `giftAudit.by_scope_and_at`, since a deleted gift has no detail screen).
+ */
 export const removeGift = mutation({
-  args: { giftId: v.id("gifts") },
+  args: { giftId: v.id("gifts"), why: v.string() },
   returns: v.null(),
-  handler: async (ctx, { giftId }) => {
+  handler: async (ctx, { giftId, why }) => {
     const gift = await ctx.db.get(giftId);
     if (!gift) {
       throw new ConvexError({ code: "NOT_FOUND", message: "Gift not found." });
     }
     await requireGivingManage(ctx, gift.scope);
+    // A system-written gift is the mirror of an external record — deleting it
+    // here would desync the ledger from its source. Remove the source instead
+    // (delete the event donation, cancel the pledge, void the bank match).
+    if (isSystemWrittenGift(gift)) {
+      throw new ConvexError({
+        code: "GIFT_LOCKED",
+        message:
+          "This gift's money is owned by its source (an event, Stripe, a sponsorship, or a matched bank credit) — remove it from there, not here.",
+      });
+    }
+    const reason = why.trim();
+    if (!reason) {
+      throw new ConvexError({
+        code: "REASON_REQUIRED",
+        message: "Say why you're removing this gift — it has effects.",
+      });
+    }
+    const userId = (await requireUserId(ctx)) as Id<"users">;
+
+    // Snapshot BEFORE the row is gone (donor name resolved for readability).
+    const donor = await ctx.db.get(gift.donorId);
+    const snapshot: GiftFieldChange[] = [
+      { field: "Donor", to: donor?.name ?? "Unknown donor" },
+      { field: "Amount", to: auditCents(gift.amountCents) },
+      { field: "Date", to: new Date(gift.receivedAt).toLocaleDateString() },
+      { field: "Book", to: await bookLabel(ctx, gift.scope as GivingScope) },
+      { field: "Source", to: methodLabel(gift.method) },
+    ];
+
     await removeGiftRow(ctx, giftId);
+    await writeGiftAudit(ctx, {
+      giftId,
+      scope: gift.scope as GivingScope,
+      actorUserId: userId,
+      action: "deleted",
+      changes: snapshot,
+      note: reason,
+    });
     return null;
   },
 });
@@ -1435,6 +1668,15 @@ export const reassignGift = mutation({
       throw new ConvexError({ code: "NOT_FOUND", message: "Gift not found." });
     }
     await requireGivingManage(ctx, gift.scope);
+    // A system-written gift's donor identity comes from its source; reassigning
+    // it here would desync the mirror from that record (review finding).
+    if (isSystemWrittenGift(gift)) {
+      throw new ConvexError({
+        code: "GIFT_LOCKED",
+        message:
+          "This gift's donor is owned by its source (an event, Stripe, a sponsorship, or a matched bank credit) and can't be reassigned here.",
+      });
+    }
     const userId = (await requireUserId(ctx)) as Id<"users">;
     const result = await reassignGiftToDonor(ctx, {
       giftId: args.giftId,
@@ -1479,13 +1721,7 @@ export const moveGiftScope = mutation({
     // Cross-book move is a central-manage action.
     await requireGivingManage(ctx, "central");
 
-    const systemWritten =
-      gift.donationId !== undefined ||
-      gift.stripeInvoiceId !== undefined ||
-      gift.pledgeId !== undefined ||
-      gift.sponsorshipId !== undefined ||
-      gift.transactionId !== undefined;
-    if (systemWritten) {
+    if (isSystemWrittenGift(gift)) {
       throw new ConvexError({
         code: "GIFT_LOCKED",
         message:
@@ -1517,6 +1753,170 @@ export const moveGiftScope = mutation({
       note: args.reason,
     });
     return null;
+  },
+});
+
+/**
+ * Split ONE gift into ≥2 per-part gifts across books (owner feedback #2 — his
+ * use case: splitting a single wire between Central and New York while keeping
+ * the underlying-transaction story). CENTRAL-MANAGE gated (a cross-book action).
+ *
+ * Rules:
+ *  - ≥ 2 parts; each part's `amountCents` is a whole positive number of cents;
+ *    the parts sum EXACTLY to the original amount (no money invented or lost).
+ *  - A SYSTEM-WRITTEN gift (event donation / Stripe cycle / sponsorship / matched
+ *    bank credit) is refused — its money is owned by that source.
+ *  - Each part becomes its own gift: the SAME donor identity is matched-or-
+ *    created in the part's book (person-linked for a chapter, via
+ *    `matchOrCreateDonor`), with the original's date / method / receipts, and a
+ *    note suffixed "(split i/N)". The original is then removed.
+ *  - Rollups net EXACTLY: the original's contribution is reversed and the parts'
+ *    contributions are added, so every book + donor total balances to the penny.
+ *
+ * Audit: a `split` breadcrumb on the ORIGINAL (snapshot + the per-part book/amount
+ * refs) and a `createdBySplit` breadcrumb on EACH child (referencing the original).
+ */
+export const splitGift = mutation({
+  args: {
+    giftId: v.id("gifts"),
+    parts: v.array(v.object({ scope: scopeValidator, amountCents: v.number() })),
+    why: v.string(),
+  },
+  returns: v.object({ childGiftIds: v.array(v.id("gifts")) }),
+  handler: async (ctx, { giftId, parts, why }) => {
+    // A split can move money across books, so it's a central-manage action.
+    await requireGivingManage(ctx, "central");
+    const reason = why.trim();
+    if (!reason) {
+      throw new ConvexError({
+        code: "REASON_REQUIRED",
+        message: "Say why you're splitting this gift.",
+      });
+    }
+
+    const gift = await ctx.db.get(giftId);
+    if (!gift) {
+      throw new ConvexError({ code: "NOT_FOUND", message: "Gift not found." });
+    }
+
+    if (isSystemWrittenGift(gift)) {
+      throw new ConvexError({
+        code: "GIFT_LOCKED",
+        message:
+          "This gift's money is owned by its source (an event, Stripe, a sponsorship, or a matched bank credit) and can't be split here.",
+      });
+    }
+
+    if (parts.length < 2) {
+      throw new ConvexError({
+        code: "INVALID_INPUT",
+        message: "A split needs at least two parts.",
+      });
+    }
+    let sum = 0;
+    for (const p of parts) {
+      assertPositiveGiftCents(p.amountCents); // whole cents > 0
+      if (p.scope !== "central") {
+        const chapter = await ctx.db.get(p.scope as Id<"chapters">);
+        if (!chapter || chapter.isActive === false) {
+          throw new ConvexError({
+            code: "INVALID_INPUT",
+            message: "Each part must target an active chapter (or Central).",
+          });
+        }
+      }
+      sum += p.amountCents;
+    }
+    if (sum !== gift.amountCents) {
+      throw new ConvexError({
+        code: "SPLIT_MISMATCH",
+        message: `The parts must sum to exactly ${auditCents(
+          gift.amountCents,
+        )} (they sum to ${auditCents(sum)}).`,
+      });
+    }
+
+    const userId = (await requireUserId(ctx)) as Id<"users">;
+    const sourceDonor = await ctx.db.get(gift.donorId);
+    if (!sourceDonor) {
+      throw new ConvexError({ code: "NOT_FOUND", message: "Donor not found." });
+    }
+    const baseNote = gift.note?.trim();
+
+    // Create each part's gift (donor matched-or-created + person-linked per book).
+    const n = parts.length;
+    const childGiftIds: Id<"gifts">[] = [];
+    for (let i = 0; i < parts.length; i++) {
+      const part = parts[i];
+      const partScope = part.scope as GivingScope;
+      const donorId = await matchOrCreateDonor(ctx, {
+        scope: partScope,
+        name: sourceDonor.name,
+        email: sourceDonor.email,
+        phone: sourceDonor.phone,
+        kind: sourceDonor.kind,
+        source: sourceDonor.source,
+      });
+      const partNote = `${baseNote ? `${baseNote} ` : ""}(split ${i + 1}/${n})`;
+      const childId = await recordGiftForDonor(ctx, {
+        donorId,
+        amountCents: part.amountCents,
+        receivedAt: gift.receivedAt,
+        method: gift.method,
+        note: partNote,
+        recordedBy: userId,
+        ...(gift.receiptStorageIds && gift.receiptStorageIds.length > 0
+          ? { receiptStorageIds: gift.receiptStorageIds }
+          : {}),
+      });
+      childGiftIds.push(childId);
+      await writeGiftAudit(ctx, {
+        giftId: childId,
+        scope: partScope,
+        actorUserId: userId,
+        action: "createdBySplit",
+        changes: [
+          { field: "Amount", to: auditCents(part.amountCents) },
+          { field: "Book", to: await bookLabel(ctx, partScope) },
+          {
+            field: "Split from",
+            to: `${sourceDonor.name} · ${auditCents(gift.amountCents)}`,
+          },
+        ],
+        note: reason,
+      });
+    }
+
+    // Narrate the split on the original, then remove it (its rollups reverse).
+    await writeGiftAudit(ctx, {
+      giftId,
+      scope: gift.scope as GivingScope,
+      actorUserId: userId,
+      action: "split",
+      changes: [
+        { field: "Donor", to: sourceDonor.name },
+        { field: "Amount", to: auditCents(gift.amountCents) },
+        { field: "Date", to: new Date(gift.receivedAt).toLocaleDateString() },
+        { field: "Book", to: await bookLabel(ctx, gift.scope as GivingScope) },
+        {
+          field: "Split into",
+          to: `${n} parts (${(
+            await Promise.all(
+              parts.map(
+                async (p) =>
+                  `${await bookLabel(ctx, p.scope as GivingScope)} ${auditCents(
+                    p.amountCents,
+                  )}`,
+              ),
+            )
+          ).join(", ")})`,
+        },
+      ],
+      note: reason,
+    });
+    await removeGiftRow(ctx, giftId);
+
+    return { childGiftIds };
   },
 });
 

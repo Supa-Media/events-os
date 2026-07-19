@@ -14,16 +14,16 @@
 import { Id } from "../_generated/dataModel";
 import { MutationCtx } from "../_generated/server";
 import type { GivingScope } from "./givingAccess";
+import type { GIFT_AUDIT_ACTIONS } from "../schema/givingPlatform";
 
 /** How many audit breadcrumbs the gift detail renders (newest-first). A single
  *  gift accrues few human edits; this cap only guards a runaway trail. */
 export const GIFT_AUDIT_READ_CAP = 100;
 
-export type GiftAuditAction =
-  | "created"
-  | "edited"
-  | "reassignedDonor"
-  | "movedScope";
+/** Derived from the schema union so a new action literal can't drift out of
+ *  sync (created / edited / reassignedDonor / movedScope / deleted / split /
+ *  createdBySplit). */
+export type GiftAuditAction = (typeof GIFT_AUDIT_ACTIONS)[number];
 
 /** One display-ready field change ("Amount" $50.00 → $80.00). `from`/`to` are
  *  already stringified — the render never formats. */
