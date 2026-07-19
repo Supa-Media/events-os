@@ -4,7 +4,9 @@ import {
   Text,
   TextInput,
   Pressable,
+  ScrollView,
   ActivityIndicator,
+  Platform,
   TextInputProps,
 } from "react-native";
 import { useAction } from "convex/react";
@@ -186,15 +188,24 @@ export function LocationAutocomplete({
           }}
           className="overflow-hidden rounded-md border border-border bg-raised shadow-raised"
         >
-          {results.map((s) => (
-            <SuggestionRow
-              key={s.placeId || s.description}
-              suggestion={s}
-              // onPressIn (not onPress) so selection wins the race against the
-              // input's blur on web/native.
-              onPressIn={() => handleSelect(s)}
-            />
-          ))}
+          {/* Bounded + scrollable so a long list of matches never runs off the
+              card; keyboardShouldPersistTaps keeps a tap from dismissing the
+              keyboard before it selects (native). */}
+          <ScrollView
+            style={{ maxHeight: 224 }}
+            nestedScrollEnabled
+            keyboardShouldPersistTaps="handled"
+          >
+            {results.map((s) => (
+              <SuggestionRow
+                key={s.placeId || s.description}
+                suggestion={s}
+                // onPressIn (not onPress) so selection wins the race against the
+                // input's blur on web/native.
+                onPressIn={() => handleSelect(s)}
+              />
+            ))}
+          </ScrollView>
         </View>
       ) : null}
 
@@ -208,10 +219,16 @@ export function LocationAutocomplete({
 
   if (variant === "inline") return input;
 
+  // Lift the whole field (label + input + its absolute dropdown) above the form
+  // rows that follow it while the dropdown is open — otherwise the inner input's
+  // zIndex is trapped inside this Field and the suggestions render BEHIND the
+  // next field instead of overlaying it.
   return (
-    <Field label={label} hint={hint}>
-      {input}
-    </Field>
+    <View style={{ position: "relative", zIndex: showDropdown ? 30 : undefined }}>
+      <Field label={label} hint={hint}>
+        {input}
+      </Field>
+    </View>
   );
 }
 
@@ -223,9 +240,25 @@ function SuggestionRow({
   onPressIn: () => void;
 }) {
   const [hovered, setHovered] = useState(false);
+  // On web, a suggestion's mousedown would blur the input BEFORE any press
+  // registers — and that immediate blur hides the dropdown, so the row unmounts
+  // mid-click and the pick is lost (the free-text buffer commits instead).
+  // Drive selection from onMouseDown itself: it fires before blur, and
+  // preventDefault stops the blur entirely so focus stays put and the dropdown
+  // survives. (preventDefault also suppresses Pressable's own press on web, so
+  // we invoke the handler here rather than via onPressIn.)
+  const pressProps =
+    Platform.OS === "web"
+      ? {
+          onMouseDown: (e: any) => {
+            e.preventDefault();
+            onPressIn();
+          },
+        }
+      : { onPressIn };
   return (
     <Pressable
-      onPressIn={onPressIn}
+      {...(pressProps as any)}
       onHoverIn={() => setHovered(true)}
       onHoverOut={() => setHovered(false)}
       className={`flex-row items-center gap-2.5 px-3 py-2.5 ${

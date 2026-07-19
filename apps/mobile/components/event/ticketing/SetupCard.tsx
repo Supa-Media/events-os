@@ -84,8 +84,14 @@ export function SetupCard({
 }) {
   return (
     <View
-      className={`overflow-hidden rounded-xl border bg-raised ${
-        open ? "border-border-strong shadow-card" : "border-border"
+      // The open card floats above the cards below it so an overflowing child
+      // (e.g. the location autocomplete dropdown) overlays them instead of
+      // rendering behind. Only one card is open at a time, so this is safe.
+      style={{ position: "relative", zIndex: open ? 20 : undefined }}
+      className={`rounded-xl border bg-raised ${
+        open
+          ? "border-border-strong shadow-card"
+          : "overflow-hidden border-border"
       }`}
     >
       <View className="flex-row items-center gap-3 px-3.5 py-3">

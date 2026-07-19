@@ -14,7 +14,7 @@ import { View } from "react-native";
 import { useMutation } from "convex/react";
 import { api } from "@events-os/convex/_generated/api";
 import type { Doc, Id } from "@events-os/convex/_generated/dataModel";
-import { Button, Pill, TextField, Field } from "../../ui";
+import { Button, Pill, TextField, Field, LocationAutocomplete } from "../../ui";
 import type { ActionRunner } from "../../../lib/useActionToast";
 import { CoverPhotoPicker } from "./CoverPhotoPicker";
 import { ToggleRow } from "./ToggleRow";
@@ -149,10 +149,14 @@ export function DesignPhase({
             onChangeText={setVenueName}
             placeholder="The Chapel"
           />
-          <TextField
+          {/* Google Places autocomplete — buffers like the other fields and
+              commits on "Save page"; picking a suggestion fills the full
+              address via onChangeText/onSelect. */}
+          <LocationAutocomplete
             label="Address"
             value={address}
             onChangeText={setAddress}
+            onSelect={setAddress}
             placeholder="123 Main St, Austin TX"
           />
           <Field label="Who sees the address">
