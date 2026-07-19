@@ -394,3 +394,104 @@ describe("access gating", () => {
     ).rejects.toThrow();
   });
 });
+
+// ── Chapter lens (`chapterId` arg, WP-S follow-up) ──────────────────────────
+//
+// Before this arg existed, `myGivingAccess` hard-picked central for ANY
+// caller with central reach, so the mobile giving desk always rendered
+// central's book regardless of the app's chapter switcher (`ChapterContext`)
+// — the "No donors yet" production bug (central's book can be empty while a
+// switched-to chapter's isn't). These tests cover the new resolution:
+// central holders follow the requested chapter; a chapter-only holder can
+// never be steered into a chapter they don't hold, quietly falling back to
+// their own; access is never widened by the arg (every downstream giving
+// query still re-gates its own scope).
+describe("myGivingAccess chapter lens (chapterId arg)", () => {
+  test("a central holder + chapterId gets that chapter's scope, with correct canManage", async () => {
+    const t = newT();
+    await run(t, (ctx) => runSeedSeatDefs(ctx));
+    const s = await setupChapter(t);
+    await seatCaller(s, "development_director", "central"); // central giving.manage
+
+    // No chapterId → unchanged default (central).
+    const defaultAccess = await s.as.query(api.givingPlatform.myGivingAccess, {});
+    expect(defaultAccess.scope).toBe("central");
+
+    // The app's chapter lens wins: the central holder's book follows the
+    // switcher instead of always defaulting to central's.
+    const lensed = await s.as.query(api.givingPlatform.myGivingAccess, {
+      chapterId: s.chapterId,
+    });
+    expect(lensed.canView).toBe(true);
+    expect(lensed.canManage).toBe(true); // central manage = manage everywhere
+    expect(lensed.scope).toBe(s.chapterId);
+    expect(lensed.chapterName).toBe("New York"); // setupChapter's default name
+
+    // The lens is honored end to end: the scope's own donor list resolves.
+    await expect(
+      s.as.query(api.givingPlatform.listDonors, { scope: s.chapterId }),
+    ).resolves.toBeDefined();
+  });
+
+  test("a chapter-seat holder + their own chapterId sees their chapter (unchanged)", async () => {
+    const t = newT();
+    await run(t, (ctx) => runSeedSeatDefs(ctx));
+    const s = await setupChapter(t);
+    await seatCaller(s, "treasurer", s.chapterId); // chapter-scope giving.view
+
+    const lensed = await s.as.query(api.givingPlatform.myGivingAccess, {
+      chapterId: s.chapterId,
+    });
+    expect(lensed.canView).toBe(true);
+    expect(lensed.scope).toBe(s.chapterId);
+  });
+
+  test("a chapter-seat holder + a FOREIGN chapterId falls back to their own chapter", async () => {
+    const t = newT();
+    await run(t, (ctx) => runSeedSeatDefs(ctx));
+    const s = await setupChapter(t);
+    await seatCaller(s, "treasurer", s.chapterId);
+
+    // A second, unrelated chapter the caller holds no seat in.
+    const foreignChapterId = await run(t, (ctx) =>
+      ctx.db.insert("chapters", {
+        name: "Los Angeles",
+        isActive: true,
+        createdAt: Date.now(),
+      }),
+    );
+
+    const lensed = await s.as.query(api.givingPlatform.myGivingAccess, {
+      chapterId: foreignChapterId,
+    });
+    expect(lensed.canView).toBe(true);
+    // Never steered into the foreign chapter — falls back to their own.
+    expect(lensed.scope).toBe(s.chapterId);
+    expect(lensed.scope).not.toBe(foreignChapterId);
+  });
+
+  test("a signed-out/unprivileged caller + chapterId still degrades quietly (no throw, no access)", async () => {
+    const t = newT();
+    await run(t, (ctx) => runSeedSeatDefs(ctx));
+    const s = await setupChapter(t); // plain chapter admin, no giving seat
+
+    const lensed = await s.as.query(api.givingPlatform.myGivingAccess, {
+      chapterId: s.chapterId,
+    });
+    expect(lensed.canView).toBe(false);
+    expect(lensed.canManage).toBe(false);
+    expect(lensed.scope).toBeNull();
+  });
+
+  test("omitting chapterId is unchanged (backward compat)", async () => {
+    const t = newT();
+    await run(t, (ctx) => runSeedSeatDefs(ctx));
+    const s = await setupChapter(t);
+    await seatCaller(s, "development_director", "central");
+
+    const withNoArgs = await s.as.query(api.givingPlatform.myGivingAccess, {});
+    expect(withNoArgs.scope).toBe("central");
+    expect(withNoArgs.canView).toBe(true);
+    expect(withNoArgs.canManage).toBe(true);
+  });
+});

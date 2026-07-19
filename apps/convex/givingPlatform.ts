@@ -288,17 +288,53 @@ export const givingDashboard = query({
  * or unprivileged caller (no throw) so the nav can decide whether to render the
  * Giving desk at all. `scope` names the lens to render: `"central"` for a
  * central holder, else the caller's own chapter when they hold a chapter view.
+ *
+ * `chapterId` (optional) is the app's chapter lens — `ChapterContext`'s active
+ * seat/peek chapter, the SAME central-gated drill-down `finances.dashboardChapter`
+ * takes. Before this arg existed, a superuser/central holder ALWAYS got
+ * `scope: "central"` here regardless of the chapter switcher, so every giving
+ * screen rendered central's book even while the app was scoped to a chapter
+ * (the "No donors yet" bug — central's book can be empty while a chapter's
+ * isn't). When `chapterId` is provided AND the caller may view it (superuser,
+ * central view, or a chapter `giving.view` seat there), that chapter becomes
+ * the lens. Otherwise (absent, or a chapter the caller can't view — e.g. a
+ * foreign chapter under a chapter-only seat) this falls through to the
+ * pre-existing default: central for central holders, else the caller's own
+ * chapter. No enforcement risk either way — this query only ever picks WHICH
+ * scope to show; every downstream giving query re-gates its own scope via
+ * `requireGivingView`/`requireGivingManage` regardless of what this returns.
  */
 export const myGivingAccess = query({
-  args: {},
+  args: { chapterId: v.optional(v.id("chapters")) },
   returns: v.object({
     canView: v.boolean(),
     canManage: v.boolean(),
     scope: v.union(v.literal("central"), v.id("chapters"), v.null()),
     chapterName: v.union(v.string(), v.null()),
   }),
-  handler: async (ctx) => {
+  handler: async (ctx, { chapterId }) => {
     const access = await resolveGivingAccess(ctx);
+
+    // The app's chapter lens wins when the caller may actually view it.
+    if (chapterId !== undefined) {
+      const canViewRequested =
+        access.isSuperuser || access.centralView || access.viewChapters.has(chapterId);
+      if (canViewRequested) {
+        const chapter = await ctx.db.get(chapterId);
+        return {
+          canView: true,
+          canManage:
+            access.isSuperuser ||
+            access.centralManage ||
+            access.manageChapters.has(chapterId),
+          scope: chapterId,
+          chapterName: chapter?.name ?? null,
+        };
+      }
+      // Not viewable (e.g. a foreign chapter under a chapter-only seat) —
+      // fall through to the default-lens behavior below.
+    }
+
     // Central lens wins when the caller has central reach.
     if (access.isSuperuser || access.centralView) {
       return {
@@ -311,12 +347,12 @@ export const myGivingAccess = query({
     // Otherwise a chapter lens — the first chapter the caller can view.
     const chapterKey = [...access.viewChapters][0];
     if (chapterKey) {
-      const chapterId = chapterKey as Id<"chapters">;
-      const chapter = await ctx.db.get(chapterId);
+      const ownChapterId = chapterKey as Id<"chapters">;
+      const chapter = await ctx.db.get(ownChapterId);
       return {
         canView: true,
         canManage: access.manageChapters.has(chapterKey),
-        scope: chapterId,
+        scope: ownChapterId,
         chapterName: chapter?.name ?? null,
       };
     }
