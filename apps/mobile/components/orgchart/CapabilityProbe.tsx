@@ -32,7 +32,7 @@ export function EditChartCapabilityProbe({
   scope: "central" | Id<"chapters">;
   onResult: (assignmentKey: string, hasEditChart: boolean | undefined) => void;
 }) {
-  const detail = useQuery(api.seats.seatDetail, { defId, scope });
+  const detail = useQuery(api.seats.chartQueries.seatDetail, { defId, scope });
   useEffect(() => {
     if (detail) {
       onResult(`${scope}:${defId}`, detail.capabilities.includes("org.editChart"));

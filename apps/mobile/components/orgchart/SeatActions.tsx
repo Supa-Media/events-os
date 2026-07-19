@@ -83,7 +83,7 @@ function ProposeChangeModal({
   const convex = useConvex();
   // Scope-aware roster — the seat's `scope`, not the caller's own chapter
   // (see this file's header doc comment).
-  const people = useQuery(api.seats.assignablePeople, { scope });
+  const people = useQuery(api.seats.deskQueries.assignablePeople, { scope });
   const [action, setAction] = useState<"fill" | "vacate">("fill");
   const [subjectPersonId, setSubjectPersonId] = useState<Id<"people"> | null>(null);
   const [note, setNote] = useState("");
@@ -305,11 +305,11 @@ function DirectAssignModal({
   holders: HolderLite[];
   onClose: () => void;
 }) {
-  const assignSeat = useMutation(api.seats.assignSeat);
-  const unassignSeat = useMutation(api.seats.unassignSeat);
+  const assignSeat = useMutation(api.seats.mutations.assignSeat);
+  const unassignSeat = useMutation(api.seats.mutations.unassignSeat);
   // Scope-aware roster — the seat's `scope`, not the caller's own chapter
   // (see this file's header doc comment).
-  const people = useQuery(api.seats.assignablePeople, { scope });
+  const people = useQuery(api.seats.deskQueries.assignablePeople, { scope });
   const pickerPeople = useMemo(
     () => people?.map((p) => ({ _id: p.personId, name: p.name })),
     [people],

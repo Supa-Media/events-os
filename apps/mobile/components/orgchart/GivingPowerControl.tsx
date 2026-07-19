@@ -46,7 +46,7 @@ export function GivingPowerControl({
   seatDefId: Id<"seatDefs">;
   capabilities: readonly string[];
 }) {
-  const setPower = useMutation(api.seats.setSeatGivingPower);
+  const setPower = useMutation(api.seats.givingPower.setSeatGivingPower);
   const current = givingPowerOf(capabilities);
   const [saving, setSaving] = useState<GivingPower | null>(null);
 

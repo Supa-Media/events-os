@@ -170,7 +170,7 @@ describe("seats.chart", () => {
     await run(t, (ctx) => runSeedSeatDefs(ctx));
     const s = await setupChapter(t);
 
-    const result = await s.as.query(api.seats.chart, { scope: "central" });
+    const result = await s.as.query(api.seats.chartQueries.chart, { scope: "central" });
     expect(result.kind).toBe("central");
     if (result.kind !== "central") throw new Error("expected central");
     expect(result.seats).toHaveLength(CENTRAL_COUNT);
@@ -186,7 +186,7 @@ describe("seats.chart", () => {
     await run(t, (ctx) => runSeedSeatDefs(ctx));
     const s = await setupChapter(t);
 
-    const result = await s.as.query(api.seats.chart, { scope: s.chapterId });
+    const result = await s.as.query(api.seats.chartQueries.chart, { scope: s.chapterId });
     expect(result.kind).toBe("chapter");
     if (result.kind !== "chapter") throw new Error("expected chapter");
     expect(result.chapterName).toBe("New York"); // setupChapter's default name
@@ -207,7 +207,7 @@ describe("seats.chart", () => {
       }),
     );
 
-    const result = await s.as.query(api.seats.chart, {});
+    const result = await s.as.query(api.seats.chartQueries.chart, {});
     expect(result.kind).toBe("full");
     if (result.kind !== "full") throw new Error("expected full");
     expect(result.central).toHaveLength(CENTRAL_COUNT);
@@ -254,7 +254,7 @@ describe("seats.chart", () => {
       return { treasurerDefId: treasurerDef._id, personId };
     });
 
-    const home = await s.as.query(api.seats.chart, { scope: s.chapterId });
+    const home = await s.as.query(api.seats.chartQueries.chart, { scope: s.chapterId });
     if (home.kind !== "chapter") throw new Error("expected chapter");
     const treasurerNode = home.seats.find((n) => n.slug === "treasurer")!;
     expect(treasurerNode.vacant).toBe(false);
@@ -263,14 +263,14 @@ describe("seats.chart", () => {
     expect(treasurerNode.holders[0]!.name).toBe("Jordan Treasurer");
 
     // The SAME shared seat def, read at a DIFFERENT chapter's scope, is vacant.
-    const other = await s.as.query(api.seats.chart, { scope: otherChapterId });
+    const other = await s.as.query(api.seats.chartQueries.chart, { scope: otherChapterId });
     if (other.kind !== "chapter") throw new Error("expected chapter");
     const otherTreasurer = other.seats.find((n) => n.slug === "treasurer")!;
     expect(otherTreasurer.defId).toBe(treasurerDefId);
     expect(otherTreasurer.vacant).toBe(true);
 
     // seatDetail agrees.
-    const detail = await s.as.query(api.seats.seatDetail, {
+    const detail = await s.as.query(api.seats.chartQueries.seatDetail, {
       defId: treasurerDefId,
       scope: s.chapterId,
     });
@@ -322,7 +322,7 @@ describe("seats.chart", () => {
       });
     });
 
-    const central = await s.as.query(api.seats.chart, { scope: "central" });
+    const central = await s.as.query(api.seats.chartQueries.chart, { scope: "central" });
     if (central.kind !== "central") throw new Error("expected central");
     const derivedNode = central.seats.find((n) => n.slug === "chapter_directors")!;
     expect(derivedNode.derived).toBe(true);
@@ -333,7 +333,7 @@ describe("seats.chart", () => {
 
     // seatDetail on the derived seat aggregates the same way regardless of
     // the (ignored) scope argument.
-    const detail = await s.as.query(api.seats.seatDetail, {
+    const detail = await s.as.query(api.seats.chartQueries.seatDetail, {
       defId: derivedNode.defId,
       scope: "central",
     });
@@ -365,7 +365,7 @@ describe("seats.chart", () => {
       });
     });
 
-    const result = await s.as.query(api.seats.chart, { scope: s.chapterId });
+    const result = await s.as.query(api.seats.chartQueries.chart, { scope: s.chapterId });
     if (result.kind !== "chapter") throw new Error("expected chapter");
     const node = result.seats.find((n) => n.slug === "event_lead")!;
     expect(node.vacant).toBe(true);
@@ -400,7 +400,7 @@ describe("seats.mySeatAssignments", () => {
       return { musicLeadDefId: musicLeadDef._id, personId };
     });
 
-    const mine = await s.as.query(api.seats.mySeatAssignments, {});
+    const mine = await s.as.query(api.seats.deskQueries.mySeatAssignments, {});
     expect(mine).toHaveLength(1);
     expect(mine[0]!.seatDefId).toBe(musicLeadDefId);
     expect(mine[0]!.slug).toBe("music_lead");
@@ -414,7 +414,7 @@ describe("seats.mySeatAssignments", () => {
     await run(t, (ctx) => runSeedSeatDefs(ctx));
     const s = await setupChapter(t);
 
-    const mine = await s.as.query(api.seats.mySeatAssignments, {});
+    const mine = await s.as.query(api.seats.deskQueries.mySeatAssignments, {});
     expect(mine).toEqual([]);
   });
 });
@@ -456,7 +456,7 @@ describe("seats.myDeskChapters", () => {
     // `finance.manager` — see `SEAT_DEFS`).
     expect(await financeGrant(s, s.chapterId, personId)).toBeNull();
 
-    const desks = await s.as.query(api.seats.myDeskChapters, {});
+    const desks = await s.as.query(api.seats.deskQueries.myDeskChapters, {});
     expect(desks).toEqual([
       { scope: s.chapterId, chapterName: "New York", title: "president" },
     ]);
@@ -485,7 +485,7 @@ describe("seats.myDeskChapters", () => {
       }),
     );
 
-    const desks = await s.as.query(api.seats.myDeskChapters, {});
+    const desks = await s.as.query(api.seats.deskQueries.myDeskChapters, {});
     expect(desks).toEqual([{ scope: "central", title: "executive_director" }]);
   });
 
@@ -512,7 +512,7 @@ describe("seats.myDeskChapters", () => {
       }),
     );
 
-    const desks = await s.as.query(api.seats.myDeskChapters, {});
+    const desks = await s.as.query(api.seats.deskQueries.myDeskChapters, {});
     expect(desks).toEqual([{ scope: s.chapterId, chapterName: "New York" }]);
   });
 
@@ -548,7 +548,7 @@ describe("seats.myDeskChapters", () => {
       }),
     );
 
-    const desks = await s.as.query(api.seats.myDeskChapters, {});
+    const desks = await s.as.query(api.seats.deskQueries.myDeskChapters, {});
     expect(desks).toEqual([
       { scope: "central", title: "executive_director" },
       { scope: s.chapterId, chapterName: "New York", title: "president" },
@@ -560,14 +560,14 @@ describe("seats.myDeskChapters", () => {
     await run(t, (ctx) => runSeedSeatDefs(ctx));
     const s = await setupChapter(t);
 
-    const desks = await s.as.query(api.seats.myDeskChapters, {});
+    const desks = await s.as.query(api.seats.deskQueries.myDeskChapters, {});
     expect(desks).toEqual([]);
   });
 
   test("rejects a fully signed-out caller", async () => {
     const t = newT();
     await run(t, (ctx) => runSeedSeatDefs(ctx));
-    await expect(t.query(api.seats.myDeskChapters, {})).rejects.toThrow(ConvexError);
+    await expect(t.query(api.seats.deskQueries.myDeskChapters, {})).rejects.toThrow(ConvexError);
   });
 });
 
@@ -576,16 +576,16 @@ describe("seats access control", () => {
     const t = newT();
     await run(t, (ctx) => runSeedSeatDefs(ctx));
 
-    await expect(t.query(api.seats.chart, {})).rejects.toThrow(ConvexError);
+    await expect(t.query(api.seats.chartQueries.chart, {})).rejects.toThrow(ConvexError);
     await expect(
-      t.query(api.seats.mySeatAssignments, {}),
+      t.query(api.seats.deskQueries.mySeatAssignments, {}),
     ).rejects.toThrow(ConvexError);
 
     const anyDef = await run(t, (ctx) =>
       ctx.db.query("seatDefs").withIndex("by_slug", (q) => q.eq("slug", "treasurer")).unique(),
     );
     await expect(
-      t.query(api.seats.seatDetail, { defId: anyDef!._id, scope: "central" }),
+      t.query(api.seats.chartQueries.seatDetail, { defId: anyDef!._id, scope: "central" }),
     ).rejects.toThrow(ConvexError);
   });
 
@@ -594,16 +594,16 @@ describe("seats access control", () => {
     await run(t, (ctx) => runSeedSeatDefs(ctx));
     const { as } = await signInAs(t, "not-approved@gmail.com");
 
-    await expect(as.query(api.seats.chart, {})).rejects.toThrow(ConvexError);
+    await expect(as.query(api.seats.chartQueries.chart, {})).rejects.toThrow(ConvexError);
     await expect(
-      as.query(api.seats.mySeatAssignments, {}),
+      as.query(api.seats.deskQueries.mySeatAssignments, {}),
     ).rejects.toThrow(ConvexError);
 
     const anyDef = await run(t, (ctx) =>
       ctx.db.query("seatDefs").withIndex("by_slug", (q) => q.eq("slug", "treasurer")).unique(),
     );
     await expect(
-      as.query(api.seats.seatDetail, { defId: anyDef!._id, scope: "central" }),
+      as.query(api.seats.chartQueries.seatDetail, { defId: anyDef!._id, scope: "central" }),
     ).rejects.toThrow(ConvexError);
   });
 });
@@ -625,7 +625,7 @@ describe("seats.chart NOT_FOUND / seats.seatDetail INVALID_SCOPE", () => {
     });
 
     await expect(
-      s.as.query(api.seats.chart, { scope: staleChapterId }),
+      s.as.query(api.seats.chartQueries.chart, { scope: staleChapterId }),
     ).rejects.toThrow(ConvexError);
   });
 
@@ -644,7 +644,7 @@ describe("seats.chart NOT_FOUND / seats.seatDetail INVALID_SCOPE", () => {
       return def._id;
     });
 
-    const result = await s.as.query(api.seats.seatDetail, {
+    const result = await s.as.query(api.seats.chartQueries.seatDetail, {
       defId: staleDefId,
       scope: s.chapterId,
     });
@@ -664,7 +664,7 @@ describe("seats.chart NOT_FOUND / seats.seatDetail INVALID_SCOPE", () => {
     );
 
     await expect(
-      s.as.query(api.seats.seatDetail, {
+      s.as.query(api.seats.chartQueries.seatDetail, {
         defId: centralDef!._id,
         scope: s.chapterId,
       }),
@@ -684,7 +684,7 @@ describe("seats.chart NOT_FOUND / seats.seatDetail INVALID_SCOPE", () => {
     );
 
     await expect(
-      s.as.query(api.seats.seatDetail, {
+      s.as.query(api.seats.chartQueries.seatDetail, {
         defId: chapterDef!._id,
         scope: "central",
       }),
@@ -723,7 +723,7 @@ describe("seats.assignSeat — validation", () => {
     const def = await defBySlug(s, "music_lead");
     const p = await makePerson(s, s.chapterId, "P");
     await expect(
-      s.as.mutation(api.seats.assignSeat, {
+      s.as.mutation(api.seats.mutations.assignSeat, {
         seatDefId: def._id,
         scope: s.chapterId,
         personId: p,
@@ -736,7 +736,7 @@ describe("seats.assignSeat — validation", () => {
     const def = await defBySlug(s, "chapter_directors");
     const p = await makePerson(s, s.chapterId, "P");
     await expect(
-      s.as.mutation(api.seats.assignSeat, {
+      s.as.mutation(api.seats.mutations.assignSeat, {
         seatDefId: def._id,
         scope: "central",
         personId: p,
@@ -749,7 +749,7 @@ describe("seats.assignSeat — validation", () => {
     const def = await defBySlug(s, "executive_director");
     const p = await makePerson(s, s.chapterId, "P");
     await expect(
-      s.as.mutation(api.seats.assignSeat, {
+      s.as.mutation(api.seats.mutations.assignSeat, {
         seatDefId: def._id,
         scope: s.chapterId,
         personId: p,
@@ -762,7 +762,7 @@ describe("seats.assignSeat — validation", () => {
     const def = await defBySlug(s, "treasurer");
     const p = await makePerson(s, s.chapterId, "P");
     await expect(
-      s.as.mutation(api.seats.assignSeat, {
+      s.as.mutation(api.seats.mutations.assignSeat, {
         seatDefId: def._id,
         scope: "central",
         personId: p,
@@ -777,7 +777,7 @@ describe("seats.assignSeat — validation", () => {
     const fakeChapterId = s.chapterId; // valid id shape
     await run(s.t, (ctx) => ctx.db.delete(fakeChapterId));
     await expect(
-      s.as.mutation(api.seats.assignSeat, {
+      s.as.mutation(api.seats.mutations.assignSeat, {
         seatDefId: def._id,
         scope: fakeChapterId,
         personId: p,
@@ -791,7 +791,7 @@ describe("seats.assignSeat — validation", () => {
     const p = await makePerson(s, s.chapterId, "Ghost");
     await run(s.t, (ctx) => ctx.db.delete(p));
     await expect(
-      s.as.mutation(api.seats.assignSeat, {
+      s.as.mutation(api.seats.mutations.assignSeat, {
         seatDefId: def._id,
         scope: s.chapterId,
         personId: p,
@@ -804,7 +804,7 @@ describe("seats.assignSeat — validation", () => {
     const def = await defBySlug(s, "music_lead");
     const p = await makePlaceholderPerson(s, s.chapterId, "Placeholder");
     await expect(
-      s.as.mutation(api.seats.assignSeat, {
+      s.as.mutation(api.seats.mutations.assignSeat, {
         seatDefId: def._id,
         scope: s.chapterId,
         personId: p,
@@ -819,7 +819,7 @@ describe("seats.assignSeat — write-through parity", () => {
     const treasurerDef = await defBySlug(s, "treasurer");
     const p = await makePerson(s, s.chapterId, "Treasurer");
 
-    await s.as.mutation(api.seats.assignSeat, {
+    await s.as.mutation(api.seats.mutations.assignSeat, {
       seatDefId: treasurerDef._id,
       scope: s.chapterId,
       personId: p,
@@ -839,7 +839,7 @@ describe("seats.assignSeat — write-through parity", () => {
     const fmDef = await defBySlug(s, "financial_manager");
     const p = await makePerson(s, s.chapterId, "CentralFM");
 
-    await s.as.mutation(api.seats.assignSeat, {
+    await s.as.mutation(api.seats.mutations.assignSeat, {
       seatDefId: fmDef._id,
       scope: "central",
       personId: p,
@@ -857,7 +857,7 @@ describe("seats.assignSeat — write-through parity", () => {
     const edDef = await defBySlug(s, "executive_director");
     const p = await makePerson(s, s.chapterId, "ED");
 
-    await s.as.mutation(api.seats.assignSeat, {
+    await s.as.mutation(api.seats.mutations.assignSeat, {
       seatDefId: edDef._id,
       scope: "central",
       personId: p,
@@ -874,7 +874,7 @@ describe("seats.assignSeat — write-through parity", () => {
     const cdDef = await defBySlug(s, "chapter_director");
     const p = await makePerson(s, s.chapterId, "CD");
 
-    await s.as.mutation(api.seats.assignSeat, {
+    await s.as.mutation(api.seats.mutations.assignSeat, {
       seatDefId: cdDef._id,
       scope: s.chapterId,
       personId: p,
@@ -890,7 +890,7 @@ describe("seats.assignSeat — write-through parity", () => {
     const musicLeadDef = await defBySlug(s, "music_lead");
     const p = await makePerson(s, s.chapterId, "MusicLead");
 
-    await s.as.mutation(api.seats.assignSeat, {
+    await s.as.mutation(api.seats.mutations.assignSeat, {
       seatDefId: musicLeadDef._id,
       scope: s.chapterId,
       personId: p,
@@ -908,7 +908,7 @@ describe("seats.assignSeat — write-through parity", () => {
     const viaSeat = await makePerson(s, s.chapterId, "ViaSeat");
     const viaDirect = await makePerson(s, s.chapterId, "ViaDirect");
 
-    await s.as.mutation(api.seats.assignSeat, {
+    await s.as.mutation(api.seats.mutations.assignSeat, {
       seatDefId: treasurerDef._id,
       scope: s.chapterId,
       personId: viaSeat,
@@ -936,19 +936,19 @@ describe("seats.assignSeat — maxHolders semantics", () => {
     const first = await makePerson(s, s.chapterId, "First");
     const second = await makePerson(s, s.chapterId, "Second");
 
-    const firstAssignmentId = await s.as.mutation(api.seats.assignSeat, {
+    const firstAssignmentId = await s.as.mutation(api.seats.mutations.assignSeat, {
       seatDefId: def._id,
       scope: s.chapterId,
       personId: first,
     });
-    await s.as.mutation(api.seats.assignSeat, {
+    await s.as.mutation(api.seats.mutations.assignSeat, {
       seatDefId: def._id,
       scope: s.chapterId,
       personId: second,
     });
 
     expect(await run(s.t, (ctx) => ctx.db.get(firstAssignmentId))).toBeNull();
-    const detail = await s.as.query(api.seats.seatDetail, {
+    const detail = await s.as.query(api.seats.chartQueries.seatDetail, {
       defId: def._id,
       scope: s.chapterId,
     });
@@ -962,14 +962,14 @@ describe("seats.assignSeat — maxHolders semantics", () => {
     const first = await makePerson(s, s.chapterId, "TreasA");
     const second = await makePerson(s, s.chapterId, "TreasB");
 
-    await s.as.mutation(api.seats.assignSeat, {
+    await s.as.mutation(api.seats.mutations.assignSeat, {
       seatDefId: def._id,
       scope: s.chapterId,
       personId: first,
     });
     expect((await financeGrant(s, s.chapterId, first))?.role).toBe("manager");
 
-    await s.as.mutation(api.seats.assignSeat, {
+    await s.as.mutation(api.seats.mutations.assignSeat, {
       seatDefId: def._id,
       scope: s.chapterId,
       personId: second,
@@ -989,12 +989,12 @@ describe("seats.assignSeat — maxHolders semantics", () => {
     const def = await defBySlug(s, "music_lead");
     const p = await makePerson(s, s.chapterId, "Same");
 
-    const firstId = await s.as.mutation(api.seats.assignSeat, {
+    const firstId = await s.as.mutation(api.seats.mutations.assignSeat, {
       seatDefId: def._id,
       scope: s.chapterId,
       personId: p,
     });
-    const secondId = await s.as.mutation(api.seats.assignSeat, {
+    const secondId = await s.as.mutation(api.seats.mutations.assignSeat, {
       seatDefId: def._id,
       scope: s.chapterId,
       personId: p,
@@ -1017,7 +1017,7 @@ describe("seats.assignSeat — maxHolders semantics", () => {
     const def = await defBySlug(s, "treasurer");
     const p = await makePerson(s, s.chapterId, "ReAffirm");
 
-    await s.as.mutation(api.seats.assignSeat, {
+    await s.as.mutation(api.seats.mutations.assignSeat, {
       seatDefId: def._id,
       scope: s.chapterId,
       personId: p,
@@ -1029,7 +1029,7 @@ describe("seats.assignSeat — maxHolders semantics", () => {
     if (grant) await run(s.t, (ctx) => ctx.db.delete(grant._id));
     expect(await financeGrant(s, s.chapterId, p)).toBeNull();
 
-    await s.as.mutation(api.seats.assignSeat, {
+    await s.as.mutation(api.seats.mutations.assignSeat, {
       seatDefId: def._id,
       scope: s.chapterId,
       personId: p,
@@ -1059,7 +1059,7 @@ describe("seats.assignSeat — maxHolders semantics", () => {
 
     const overflow = await makePerson(s, s.chapterId, "Overflow");
     await expect(
-      s.as.mutation(api.seats.assignSeat, {
+      s.as.mutation(api.seats.mutations.assignSeat, {
         seatDefId: def._id,
         scope: s.chapterId,
         personId: overflow,
@@ -1067,7 +1067,7 @@ describe("seats.assignSeat — maxHolders semantics", () => {
     ).rejects.toBeInstanceOf(ConvexError);
 
     // Re-assigning an existing holder is still a no-op, even at the cap.
-    const repeatId = await s.as.mutation(api.seats.assignSeat, {
+    const repeatId = await s.as.mutation(api.seats.mutations.assignSeat, {
       seatDefId: def._id,
       scope: s.chapterId,
       personId: fillerIds[0]!,
@@ -1083,13 +1083,13 @@ describe("seats.assignSeat — scope-local separation of duties", () => {
     const treasurerDef = await defBySlug(s, "treasurer");
     const p = await makePerson(s, s.chapterId, "Dual");
 
-    await s.as.mutation(api.seats.assignSeat, {
+    await s.as.mutation(api.seats.mutations.assignSeat, {
       seatDefId: cdDef._id,
       scope: s.chapterId,
       personId: p,
     });
     await expect(
-      s.as.mutation(api.seats.assignSeat, {
+      s.as.mutation(api.seats.mutations.assignSeat, {
         seatDefId: treasurerDef._id,
         scope: s.chapterId,
         personId: p,
@@ -1103,13 +1103,13 @@ describe("seats.assignSeat — scope-local separation of duties", () => {
     const treasurerDef = await defBySlug(s, "treasurer");
     const p = await makePerson(s, s.chapterId, "Dual2");
 
-    await s.as.mutation(api.seats.assignSeat, {
+    await s.as.mutation(api.seats.mutations.assignSeat, {
       seatDefId: treasurerDef._id,
       scope: s.chapterId,
       personId: p,
     });
     await expect(
-      s.as.mutation(api.seats.assignSeat, {
+      s.as.mutation(api.seats.mutations.assignSeat, {
         seatDefId: cdDef._id,
         scope: s.chapterId,
         personId: p,
@@ -1124,12 +1124,12 @@ describe("seats.assignSeat — scope-local separation of duties", () => {
     const chapterB = await makeChapter(s, "Boston");
     const p = await makePerson(s, s.chapterId, "CrossScope");
 
-    await s.as.mutation(api.seats.assignSeat, {
+    await s.as.mutation(api.seats.mutations.assignSeat, {
       seatDefId: fmDef._id,
       scope: "central",
       personId: p,
     });
-    const treasurerAssignmentId = await s.as.mutation(api.seats.assignSeat, {
+    const treasurerAssignmentId = await s.as.mutation(api.seats.mutations.assignSeat, {
       seatDefId: treasurerDef._id,
       scope: chapterB,
       personId: p,
@@ -1143,12 +1143,12 @@ describe("seats.assignSeat — scope-local separation of duties", () => {
     const edDef = await defBySlug(s, "executive_director");
     const p = await makePerson(s, s.chapterId, "SameGroup");
 
-    await s.as.mutation(api.seats.assignSeat, {
+    await s.as.mutation(api.seats.mutations.assignSeat, {
       seatDefId: cdDef._id,
       scope: s.chapterId,
       personId: p,
     });
-    const edAssignmentId = await s.as.mutation(api.seats.assignSeat, {
+    const edAssignmentId = await s.as.mutation(api.seats.mutations.assignSeat, {
       seatDefId: edDef._id,
       scope: "central",
       personId: p,
@@ -1162,12 +1162,12 @@ describe("seats.assignSeat — scope-local separation of duties", () => {
     const musicLeadDef = await defBySlug(s, "music_lead");
     const p = await makePerson(s, s.chapterId, "NoSod");
 
-    await s.as.mutation(api.seats.assignSeat, {
+    await s.as.mutation(api.seats.mutations.assignSeat, {
       seatDefId: treasurerDef._id,
       scope: s.chapterId,
       personId: p,
     });
-    const musicLeadAssignmentId = await s.as.mutation(api.seats.assignSeat, {
+    const musicLeadAssignmentId = await s.as.mutation(api.seats.mutations.assignSeat, {
       seatDefId: musicLeadDef._id,
       scope: s.chapterId,
       personId: p,
@@ -1181,7 +1181,7 @@ describe("seats.unassignSeat", () => {
     const s = await superuserSetup();
     const def = await defBySlug(s, "music_lead");
     const p = await makePerson(s, s.chapterId, "P");
-    const assignmentId = await s.as.mutation(api.seats.assignSeat, {
+    const assignmentId = await s.as.mutation(api.seats.mutations.assignSeat, {
       seatDefId: def._id,
       scope: s.chapterId,
       personId: p,
@@ -1189,7 +1189,7 @@ describe("seats.unassignSeat", () => {
 
     const outsider = await setupChapter(s.t, { email: "leader@publicworship.life" });
     await expect(
-      outsider.as.mutation(api.seats.unassignSeat, { assignmentId }),
+      outsider.as.mutation(api.seats.mutations.unassignSeat, { assignmentId }),
     ).rejects.toBeInstanceOf(ConvexError);
   });
 
@@ -1197,14 +1197,14 @@ describe("seats.unassignSeat", () => {
     const s = await superuserSetup();
     const def = await defBySlug(s, "music_lead");
     const p = await makePerson(s, s.chapterId, "P");
-    const assignmentId = await s.as.mutation(api.seats.assignSeat, {
+    const assignmentId = await s.as.mutation(api.seats.mutations.assignSeat, {
       seatDefId: def._id,
       scope: s.chapterId,
       personId: p,
     });
-    await s.as.mutation(api.seats.unassignSeat, { assignmentId });
+    await s.as.mutation(api.seats.mutations.unassignSeat, { assignmentId });
     await expect(
-      s.as.mutation(api.seats.unassignSeat, { assignmentId }),
+      s.as.mutation(api.seats.mutations.unassignSeat, { assignmentId }),
     ).rejects.toBeInstanceOf(ConvexError);
   });
 
@@ -1212,13 +1212,13 @@ describe("seats.unassignSeat", () => {
     const s = await superuserSetup();
     const def = await defBySlug(s, "music_lead");
     const p = await makePerson(s, s.chapterId, "P");
-    const assignmentId = await s.as.mutation(api.seats.assignSeat, {
+    const assignmentId = await s.as.mutation(api.seats.mutations.assignSeat, {
       seatDefId: def._id,
       scope: s.chapterId,
       personId: p,
     });
 
-    await s.as.mutation(api.seats.unassignSeat, { assignmentId });
+    await s.as.mutation(api.seats.mutations.unassignSeat, { assignmentId });
     expect(await run(s.t, (ctx) => ctx.db.get(assignmentId))).toBeNull();
   });
 
@@ -1226,14 +1226,14 @@ describe("seats.unassignSeat", () => {
     const s = await superuserSetup();
     const def = await defBySlug(s, "treasurer");
     const p = await makePerson(s, s.chapterId, "Treasurer");
-    const assignmentId = await s.as.mutation(api.seats.assignSeat, {
+    const assignmentId = await s.as.mutation(api.seats.mutations.assignSeat, {
       seatDefId: def._id,
       scope: s.chapterId,
       personId: p,
     });
     expect((await financeGrant(s, s.chapterId, p))?.role).toBe("manager");
 
-    await s.as.mutation(api.seats.unassignSeat, { assignmentId });
+    await s.as.mutation(api.seats.mutations.unassignSeat, { assignmentId });
 
     expect(await specializedRoleRow(s, s.chapterId, "finance_manager")).toBeNull();
     expect(await financeGrant(s, s.chapterId, p)).toBeNull();
@@ -1245,15 +1245,15 @@ describe("seats.unassignSeat", () => {
     const treasurerDef = await defBySlug(s, "treasurer");
     const p = await makePerson(s, s.chapterId, "FreedUp");
 
-    const cdAssignmentId = await s.as.mutation(api.seats.assignSeat, {
+    const cdAssignmentId = await s.as.mutation(api.seats.mutations.assignSeat, {
       seatDefId: cdDef._id,
       scope: s.chapterId,
       personId: p,
     });
-    await s.as.mutation(api.seats.unassignSeat, { assignmentId: cdAssignmentId });
+    await s.as.mutation(api.seats.mutations.unassignSeat, { assignmentId: cdAssignmentId });
 
     // Now assigning the record-side seat to the same person/scope succeeds.
-    const treasurerAssignmentId = await s.as.mutation(api.seats.assignSeat, {
+    const treasurerAssignmentId = await s.as.mutation(api.seats.mutations.assignSeat, {
       seatDefId: treasurerDef._id,
       scope: s.chapterId,
       personId: p,
@@ -1267,7 +1267,7 @@ describe("seats.unassignSeat", () => {
     const first = await makePerson(s, s.chapterId, "First");
     const second = await makePerson(s, s.chapterId, "Second");
 
-    const firstAssignmentId = await s.as.mutation(api.seats.assignSeat, {
+    const firstAssignmentId = await s.as.mutation(api.seats.mutations.assignSeat, {
       seatDefId: def._id,
       scope: s.chapterId,
       personId: first,
@@ -1284,7 +1284,7 @@ describe("seats.unassignSeat", () => {
     );
 
     // The (now-stale) seat assignment row for `first` still exists — unassign it.
-    await s.as.mutation(api.seats.unassignSeat, { assignmentId: firstAssignmentId });
+    await s.as.mutation(api.seats.mutations.unassignSeat, { assignmentId: firstAssignmentId });
 
     // `second`'s legacy role + bridge must survive untouched.
     expect((await specializedRoleRow(s, s.chapterId, "finance_manager"))?.personId).toBe(
@@ -1304,13 +1304,13 @@ describe("seats.seatDetail — assignmentId exposure", () => {
     const s = await superuserSetup();
     const def = await defBySlug(s, "music_lead");
     const p = await makePerson(s, s.chapterId, "Holder");
-    const assignmentId = await s.as.mutation(api.seats.assignSeat, {
+    const assignmentId = await s.as.mutation(api.seats.mutations.assignSeat, {
       seatDefId: def._id,
       scope: s.chapterId,
       personId: p,
     });
 
-    const detail = await s.as.query(api.seats.seatDetail, {
+    const detail = await s.as.query(api.seats.chartQueries.seatDetail, {
       defId: def._id,
       scope: s.chapterId,
     });
@@ -1322,14 +1322,14 @@ describe("seats.seatDetail — assignmentId exposure", () => {
     const s = await superuserSetup();
     const def = await defBySlug(s, "music_lead");
     const p = await makePerson(s, s.chapterId, "Holder");
-    await s.as.mutation(api.seats.assignSeat, {
+    await s.as.mutation(api.seats.mutations.assignSeat, {
       seatDefId: def._id,
       scope: s.chapterId,
       personId: p,
     });
 
     const nonSuper = await setupChapter(s.t, { email: "leader@publicworship.life" });
-    const detail = await nonSuper.as.query(api.seats.seatDetail, {
+    const detail = await nonSuper.as.query(api.seats.chartQueries.seatDetail, {
       defId: def._id,
       scope: s.chapterId,
     });
@@ -1344,14 +1344,14 @@ describe("seats.seatDetail — assignmentId exposure", () => {
     const s = await superuserSetup();
     const cdDef = await defBySlug(s, "chapter_director");
     const p = await makePerson(s, s.chapterId, "CD");
-    const assignmentId = await s.as.mutation(api.seats.assignSeat, {
+    const assignmentId = await s.as.mutation(api.seats.mutations.assignSeat, {
       seatDefId: cdDef._id,
       scope: s.chapterId,
       personId: p,
     });
 
     const derivedDef = await defBySlug(s, "chapter_directors");
-    const detail = await s.as.query(api.seats.seatDetail, {
+    const detail = await s.as.query(api.seats.chartQueries.seatDetail, {
       defId: derivedDef._id,
       scope: "central",
     });
@@ -1385,7 +1385,7 @@ describe("seats.assignablePeople", () => {
     const otherChapterId = await makeChapter(s, "Boston");
     await makePerson(s, otherChapterId, "In Other Chapter");
 
-    const people = await s.as.query(api.seats.assignablePeople, {
+    const people = await s.as.query(api.seats.deskQueries.assignablePeople, {
       scope: s.chapterId,
     });
     expect(people.map((p) => p.personId)).toEqual([inChapter]);
@@ -1398,7 +1398,7 @@ describe("seats.assignablePeople", () => {
     const bostonPerson = await makePerson(s, bostonId, "Boston Person");
     await makePlaceholderPerson(s, bostonId, "Boston Placeholder");
 
-    const people = await s.as.query(api.seats.assignablePeople, {
+    const people = await s.as.query(api.seats.deskQueries.assignablePeople, {
       scope: "central",
     });
     expect(new Set(people.map((p) => p.personId))).toEqual(
@@ -1419,7 +1419,7 @@ describe("seats.assignablePeople", () => {
     });
 
     await expect(
-      s.as.query(api.seats.assignablePeople, { scope: staleChapterId }),
+      s.as.query(api.seats.deskQueries.assignablePeople, { scope: staleChapterId }),
     ).rejects.toBeInstanceOf(ConvexError);
   });
 
@@ -1428,7 +1428,7 @@ describe("seats.assignablePeople", () => {
     await run(t, (ctx) => runSeedSeatDefs(ctx));
     const s = await setupChapter(t);
     await expect(
-      t.query(api.seats.assignablePeople, { scope: s.chapterId }),
+      t.query(api.seats.deskQueries.assignablePeople, { scope: s.chapterId }),
     ).rejects.toBeInstanceOf(ConvexError);
   });
 
@@ -1438,7 +1438,7 @@ describe("seats.assignablePeople", () => {
     const s = await setupChapter(t, { email: "leader@publicworship.life" });
     const p = await makePerson(s, s.chapterId, "Someone");
 
-    const people = await s.as.query(api.seats.assignablePeople, {
+    const people = await s.as.query(api.seats.deskQueries.assignablePeople, {
       scope: s.chapterId,
     });
     expect(people.map((pp) => pp.personId)).toEqual([p]);

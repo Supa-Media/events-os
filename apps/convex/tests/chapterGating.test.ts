@@ -88,7 +88,7 @@ describe("chapter-fleet enumerators exclude isActive: false shadow chapters", ()
     await makeChapter(s, "Shadow City", false);
     const noField = await makeChapter(s, "Boston", undefined);
 
-    const result = await s.as.query(api.seats.chart, {});
+    const result = await s.as.query(api.seats.chartQueries.chart, {});
     if (result.kind !== "full") throw new Error("expected full");
 
     const names = result.chapters.map((c) => c.chapterName);

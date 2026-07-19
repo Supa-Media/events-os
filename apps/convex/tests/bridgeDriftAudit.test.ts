@@ -62,7 +62,7 @@ async function defBySlug(s: ChapterSetup, slug: string) {
 
 /** Run the audit as the setup's superuser caller. */
 function audit(s: ChapterSetup) {
-  return s.as.query(api.seats.bridgeDriftAudit, {});
+  return s.as.query(api.seats.bridgeDriftAudit.bridgeDriftAudit, {});
 }
 
 describe("seats.bridgeDriftAudit — gating", () => {
@@ -71,7 +71,7 @@ describe("seats.bridgeDriftAudit — gating", () => {
     await run(t, (ctx) => runSeedSeatDefs(ctx));
     const s = await setupChapter(t); // default email is NOT on the allowlist
 
-    await expect(s.as.query(api.seats.bridgeDriftAudit, {})).rejects.toThrow(
+    await expect(s.as.query(api.seats.bridgeDriftAudit.bridgeDriftAudit, {})).rejects.toThrow(
       ConvexError,
     );
   });
@@ -96,17 +96,17 @@ describe("seats.bridgeDriftAudit — seeded parity", () => {
     const fm = await makePerson(s, s.chapterId, "Fran FM");
     const president = await makePerson(s, s.chapterId, "Percy President");
 
-    await s.as.mutation(api.seats.assignSeat, {
+    await s.as.mutation(api.seats.mutations.assignSeat, {
       seatDefId: treasurerDef._id,
       scope: s.chapterId,
       personId: treasurer,
     });
-    await s.as.mutation(api.seats.assignSeat, {
+    await s.as.mutation(api.seats.mutations.assignSeat, {
       seatDefId: fmDef._id,
       scope: "central",
       personId: fm,
     });
-    await s.as.mutation(api.seats.assignSeat, {
+    await s.as.mutation(api.seats.mutations.assignSeat, {
       seatDefId: chapterDirectorDef._id,
       scope: s.chapterId,
       personId: president,
@@ -182,7 +182,7 @@ describe("seats.bridgeDriftAudit — drift: seat with a missing mirror", () => {
     const fmDef = await defBySlug(s, "financial_manager");
     const person = await makePerson(s, s.chapterId, "Fran FM");
 
-    await s.as.mutation(api.seats.assignSeat, {
+    await s.as.mutation(api.seats.mutations.assignSeat, {
       seatDefId: fmDef._id,
       scope: "central",
       personId: person,
@@ -248,7 +248,7 @@ describe("seats.bridgeDriftAudit — drift: orphaned mirror with no seat", () =>
     const treasurerDef = await defBySlug(s, "treasurer");
     const person = await makePerson(s, s.chapterId, "Tara Treasurer");
 
-    const assignmentId = await s.as.mutation(api.seats.assignSeat, {
+    const assignmentId = await s.as.mutation(api.seats.mutations.assignSeat, {
       seatDefId: treasurerDef._id,
       scope: s.chapterId,
       personId: person,
@@ -299,7 +299,7 @@ describe("seats.bridgeDriftAudit — internal ops twin (bridgeDriftAuditSystem)"
     // all. This is the whole point: ops can run it against prod where there
     // is no user identity for `requireSuperuser` to check.
     const viaInternalQuery = await s.t.query(
-      internal.seats.bridgeDriftAuditSystem,
+      internal.seats.bridgeDriftAudit.bridgeDriftAuditSystem,
       {},
     );
 
@@ -313,7 +313,7 @@ describe("seats.bridgeDriftAudit — internal ops twin (bridgeDriftAuditSystem)"
     await run(t, (ctx) => runSeedSeatDefs(ctx));
 
     // No `setupChapter`/`s.as` caller — nothing is signed in.
-    const result = await t.query(internal.seats.bridgeDriftAuditSystem, {});
+    const result = await t.query(internal.seats.bridgeDriftAudit.bridgeDriftAuditSystem, {});
     expect(result.status).toBe("clean");
     expect(result.checkedPeople).toBe(0);
   });

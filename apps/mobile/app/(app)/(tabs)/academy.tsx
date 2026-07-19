@@ -42,8 +42,8 @@ type AcademyProgress = FunctionReturnType<typeof api.academy.myProgress>;
 type AcademyChapter =
   | FunctionReturnType<typeof api.academy.chapterProgress>
   | undefined;
-type SeatAssignments = FunctionReturnType<typeof api.seats.mySeatAssignments>;
-type FullChart = FunctionReturnType<typeof api.seats.chart>;
+type SeatAssignments = FunctionReturnType<typeof api.seats.deskQueries.mySeatAssignments>;
+type FullChart = FunctionReturnType<typeof api.seats.chartQueries.chart>;
 
 export default function AcademyScreen() {
   const router = useRouter();
@@ -60,8 +60,8 @@ export default function AcademyScreen() {
   // The Roles view: the caller's held seats (drives "Your path"), plus the
   // full org chart (read ONCE — the same payload the Org Chart tab holds) for
   // per-seat chart classification + vacancy tags.
-  const mySeatAssignments = useQuery(api.seats.mySeatAssignments, {});
-  const fullChart = useQuery(api.seats.chart, {});
+  const mySeatAssignments = useQuery(api.seats.deskQueries.mySeatAssignments, {});
+  const fullChart = useQuery(api.seats.chartQueries.chart, {});
 
   // Segmented mode. Default "tracks"; auto-flip to "roles" exactly once, the
   // first time the caller's seat assignments resolve non-empty — but never

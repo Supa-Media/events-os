@@ -424,7 +424,7 @@ describe("seat-derived union — invariant pins (from Opus review of #195)", () 
     // (a finance-kind title), so this ALSO bridges a stored chapter
     // `financeRoles` manager grant — both `assignSeat`/`unassignSeat` are
     // superuser-gated, hence the separate `superuserAs` identity.
-    const assignmentId = await superuserAs.mutation(api.seats.assignSeat, {
+    const assignmentId = await superuserAs.mutation(api.seats.mutations.assignSeat, {
       seatDefId: treasurerDef._id,
       scope: s.chapterId,
       personId,
@@ -440,7 +440,7 @@ describe("seat-derived union — invariant pins (from Opus review of #195)", () 
       }),
     ).resolves.toBeDefined();
 
-    await superuserAs.mutation(api.seats.unassignSeat, { assignmentId });
+    await superuserAs.mutation(api.seats.mutations.unassignSeat, { assignmentId });
 
     // Gate now rejects — neither the seat-derived source nor the bridged
     // stored grant survive the unassign.

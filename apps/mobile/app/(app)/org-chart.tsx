@@ -67,7 +67,7 @@ const PANEL_WIDTH = 380;
 const PANEL_MARGIN = 24;
 
 export default function OrgChartScreen() {
-  const chart = useQuery(api.seats.chart, {}) as FullChart | undefined;
+  const chart = useQuery(api.seats.chartQueries.chart, {}) as FullChart | undefined;
   const me = useQuery(api.profiles.me);
   const isSuperuser = me?.isSuperuser === true;
   const { width } = useWindowDimensions();
@@ -97,7 +97,7 @@ export default function OrgChartScreen() {
   // structure" and every edit affordance would keep showing for a caller who
   // no longer holds `org.editChart` on anything, only to have every mutation
   // rejected server-side.
-  const mySeatAssignments = useQuery(api.seats.mySeatAssignments, isSuperuser ? "skip" : {});
+  const mySeatAssignments = useQuery(api.seats.deskQueries.mySeatAssignments, isSuperuser ? "skip" : {});
   const [editCapFlags, setEditCapFlags] = useState<Record<string, boolean>>({});
   const reportEditCap = useCallback((key: string, hasEditChart: boolean | undefined) => {
     setEditCapFlags((prev) => {
@@ -145,7 +145,7 @@ export default function OrgChartScreen() {
   const displaySelected = selected ?? lastSelectedRef.current;
 
   const detail = useQuery(
-    api.seats.seatDetail,
+    api.seats.chartQueries.seatDetail,
     displaySelected ? { defId: displaySelected.seat.defId, scope: displaySelected.scope } : "skip",
   );
 
