@@ -186,6 +186,12 @@ export default function ProfileScreen() {
             variant="secondary"
             onPress={() => router.push("/guest-access")}
           />
+          <Button
+            title="Integrations"
+            icon="key"
+            variant="secondary"
+            onPress={() => router.push("/integrations")}
+          />
         </View>
       ) : null}
 

@@ -90,6 +90,7 @@ import {
 import { aiUsageEvents, aiCodingIngestState } from "./schema/aiUsage";
 import { academyProgress, courseCompletions } from "./schema/academy";
 import { schemaMigrations } from "./schema/migrations";
+import { integrationSettings } from "./schema/integrationSettings";
 
 /**
  * Database schema for Chapter OS.
@@ -321,6 +322,12 @@ const schema = defineSchema({
 
   // Migration ledger (which data migrations have run on this deployment).
   schemaMigrations,
+
+  // Integration settings (Attendance E) — deployment-wide singleton for
+  // third-party API credentials configured in-app by a superuser (today: the
+  // Givebutter API key). See schema/integrationSettings.ts +
+  // integrationSettings.ts.
+  integrationSettings,
 });
 
 export default schema;

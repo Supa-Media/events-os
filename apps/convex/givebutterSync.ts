@@ -11,7 +11,10 @@
  * DESIGN (mirrors `increase.ts`): the network fetch lives in an ACTION; the DB
  * apply is a pure `internalMutation` (`applyGivebutterTickets`) so the mapping is
  * testable WITHOUT hitting Givebutter. Every function DEGRADES to a logged no-op
- * (never throws) when `GIVEBUTTER_API_KEY` is unset — same pattern as Increase.
+ * (never throws) when no API key is configured — same pattern as Increase. The
+ * key is resolved via `resolveGivebutterApiKey` (PR E): the in-app superuser
+ * setting (`integrationSettings.readGivebutterApiKey`) takes precedence, else
+ * the `GIVEBUTTER_API_KEY` deployment env var, else the no-op degrade.
  * There is NO webhook (Givebutter has no ticket/refund webhooks) — this is a
  * pull. The manual button has NO date gate, so pointing an old campaign id at a
  * past event simply backfills it; the cron alone stops polling dead campaigns.
@@ -459,6 +462,20 @@ interface GivebutterTicketsPage {
   meta?: { current_page?: number; last_page?: number };
 }
 
+/**
+ * Resolve the Givebutter API key for a sync run: the in-app superuser setting
+ * (`integrationSettings.readGivebutterApiKey`, PR E) takes precedence, else
+ * the deployment env var, else `null` (the caller degrades to a no-op).
+ * Actions have no `ctx.db`, so the setting is read via `ctx.runQuery`.
+ */
+async function resolveGivebutterApiKey(ctx: ActionCtx): Promise<string | null> {
+  const stored = await ctx.runQuery(
+    internal.integrationSettings.readGivebutterApiKey,
+    {},
+  );
+  return stored ?? process.env.GIVEBUTTER_API_KEY ?? null;
+}
+
 /** Parse a Givebutter ISO timestamp to ms, or null when absent/unparseable. */
 function parseTimestamp(value: string | null | undefined): number | null {
   if (!value) return null;
@@ -499,9 +516,10 @@ function normalizeTicket(raw: GivebutterTicketRaw): GbTicket | null {
  * (`syncAllGivebutterCampaigns`). Pure helper (not registered) so the cron calls
  * it directly rather than action→action (per Convex guidelines).
  *
- * DEGRADES to a logged no-op when `GIVEBUTTER_API_KEY` is unset or there's no
- * campaign configured. On a fetch/parse failure it records the error string on
- * the page (`givebutterLastSyncError`); on success it clears it. Follows Laravel
+ * DEGRADES to a logged no-op when no API key is configured (stored setting OR
+ * env — see `resolveGivebutterApiKey`) or there's no campaign configured. On a
+ * fetch/parse failure it records the error string on the page
+ * (`givebutterLastSyncError`); on success it clears it. Follows Laravel
  * pagination (`links.next`) up to a hard page cap; applies each API page as it
  * arrives so a mid-run failure still persists earlier pages.
  */
@@ -509,10 +527,10 @@ async function syncOneCampaign(
   ctx: ActionCtx,
   eventId: Id<"events">,
 ): Promise<void> {
-  const key = process.env.GIVEBUTTER_API_KEY;
+  const key = await resolveGivebutterApiKey(ctx);
   if (!key) {
     console.warn(
-      "[givebutter] sync skipped: GIVEBUTTER_API_KEY not configured",
+      "[givebutter] sync skipped: no API key configured (setting or env)",
     );
     return;
   }
@@ -582,16 +600,17 @@ export const syncGivebutterCampaign = internalAction({
 
 /**
  * Cron entry (every 15 min): sync every campaign whose event hasn't ended more
- * than 7 days ago. No-ops entirely without an API key. The manual button keeps
+ * than 7 days ago. No-ops entirely when no API key is configured (stored
+ * setting OR env — see `resolveGivebutterApiKey`). The manual button keeps
  * working forever regardless of the date gate.
  */
 export const syncAllGivebutterCampaigns = internalAction({
   args: {},
   returns: v.null(),
   handler: async (ctx) => {
-    if (!process.env.GIVEBUTTER_API_KEY) {
+    if (!(await resolveGivebutterApiKey(ctx))) {
       console.warn(
-        "[givebutter] cron sync skipped: GIVEBUTTER_API_KEY not configured",
+        "[givebutter] cron sync skipped: no API key configured (setting or env)",
       );
       return null;
     }
