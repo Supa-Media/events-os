@@ -77,6 +77,12 @@
  * `dev-givebutter-migration`'s import bullets now point at the canonical
  * import instead of the deleted CSV tool — none of those three change
  * title/minutes/quiz-length, so nothing else moved in the tables below.
+ *
+ * 2026-07-19 (owner decision, Seyi — giving desk as an assignable per-role
+ * power): `dev-donor-crm-basics` gained a rule + one quiz question explaining
+ * that Giving-desk access is a per-seat power (None/View/Manage) the ED assigns
+ * from the org chart — quiz length 4→5 (bumped below); its minutes, title, and
+ * placement are unchanged, so nothing else in the tables moved.
  */
 import { describe, expect, test } from "vitest";
 import { ACADEMY_COURSES, ACADEMY_SECTIONS } from "./academy";
@@ -875,7 +881,7 @@ const EXPECTED_SECTIONS: {
     slug: "dev-donor-crm-basics",
     title: "The donor CRM: your desk",
     minutes: 4,
-    quizLength: 4,
+    quizLength: 5,
     optional: false,
     capstoneKind: null,
   },

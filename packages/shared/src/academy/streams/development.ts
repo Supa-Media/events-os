@@ -160,6 +160,11 @@ export const DEVELOPMENT_SECTIONS: Omit<AcademySection, "order">[] = [
         text: "**The giving desk isn't the only place a donor shows up.** A chapter-scope donor who's also on the roster gets a small \"giver\" mark right on the People tab — lifetime total, last-gift date — so anyone looking up a volunteer or team member can see the giving relationship without switching desks. Only donors who've actually GIVEN get the mark (giftCount > 0); a prospect with no gift yet, or a contact who only ever bought an event ticket, never shows one — ticket buyers aren't donors (see the import lesson later in this course).",
       },
       {
+        kind: "rule",
+        title: "Who can open the Giving desk is a per-role power",
+        text: "Access to the Giving desk isn't wired to a job title in code — it's a POWER the Executive Director assigns to a seat, right from the org chart. Each seat can be set to None, View (see donors, history, and dashboards), or Manage (also record gifts, edit donors, and import). Out of the box the Development Director and Executive Director can Manage; the Development associates (Partnership & Fundraising), the Financial Manager and Expansion Director (central), and the Chapter Director and Treasurer (their own chapter) can View. The ED can retune any seat at any time — so if you can't see the desk and think you should, that's an org-chart power to grant, not a bug.",
+      },
+      {
         kind: "reveal",
         prompt:
           "A donor's last gift landed 91 days ago. What does their CRM record show, and what should you do about it?",
@@ -210,6 +215,18 @@ export const DEVELOPMENT_SECTIONS: Omit<AcademySection, "order">[] = [
         answerIndex: 0,
         explanation:
           "Those four stats are the desk's at-a-glance read — everything else (top donors, full history) is one tap deeper.",
+      },
+      {
+        prompt: "Who decides which roles can open the Giving desk?",
+        options: [
+          "It's hardcoded to the Development Director and can never change",
+          "The Executive Director — giving access is a per-seat power (None / View / Manage) assigned from the org chart",
+          "Every signed-in member can always see it",
+          "Only a superuser, by editing the database directly",
+        ],
+        answerIndex: 1,
+        explanation:
+          "Giving access is an assignable power on each org-chart seat, not a fixed title — the ED sets a seat to None, View, or Manage and can change it at any time.",
       },
     ],
   },
