@@ -1,9 +1,21 @@
 /**
- * GIVING · Backers — the recurring-pledge desk (F-6 P2). Lists the scope's
- * pledges grouped by lifecycle (active · past due · imported-awaiting-resignup ·
- * canceled), each with its monthly amount and a link to the donor. Shows the
- * derived backer-count summary (active pledges at/above the $50 unit — the
- * number the affordability header now reads).
+ * GIVING · Backers — the recurring-pledge desk (F-6 P2), restyled as an
+ * inline DATABASE GRID (owner request, 2026-07-19 — same "let's just have
+ * inline databases" treatment as Donors/Gifts), 1:1 on the Reconcile grid via
+ * the shared `DataGrid` primitives. Lists the scope's pledges grouped by
+ * lifecycle (active · past due · imported-awaiting-resignup · canceled) —
+ * that grouping is kept (an existing affordance: "past due" and "awaiting
+ * re-signup" are each their own actionable bucket) — with each group's rows
+ * now rendered as a grid (Name · Pledge · Frequency · Since · Status) instead
+ * of stacked cards. A client-side search box (name / email, mirrors the
+ * Gifts ledger's search, #303) narrows all groups at once. Shows the derived
+ * backer-count summary (active pledges at/above the $50 unit — the number
+ * the affordability header now reads).
+ *
+ * Every pledge on our rails is a MONTHLY commitment (`pledges.amountCents` —
+ * "the monthly pledge", schema doc) — there's no per-row cadence field, so
+ * the Frequency column is a constant "Monthly" label, not backend data this
+ * PR is missing.
  *
  * Reads `listPledges` (gated by `requireGivingView`). Territories P6: bulk
  * recurring-pledge import (the old inline Givebutter form here) moved to the
@@ -11,8 +23,8 @@
  * preview/commit flow that now covers `recurring` rows alongside gifts,
  * tickets, and contacts.
  */
-import { useMemo } from "react";
-import { ActivityIndicator, View, Text, Pressable } from "react-native";
+import { useMemo, useState } from "react";
+import { ActivityIndicator, View, Text } from "react-native";
 import { useQuery } from "convex/react";
 import { useRouter } from "expo-router";
 import { api } from "@events-os/convex/_generated/api";
@@ -22,12 +34,24 @@ import {
   Badge,
   type BadgeTone,
   EmptyState,
+  FULL_WIDTH,
+  GridCell,
+  GridContainer,
+  GridHeaderRow,
+  GridRow,
   Narrow,
   Screen,
   SectionHeader,
+  SortableHeaderCell,
+  TextField,
 } from "../../../components/ui";
 import { colors } from "../../../lib/theme";
 import { useGivingScope } from "../../../lib/useGivingScope";
+import {
+  nextSortState,
+  sortRows,
+  type SortDirection,
+} from "../../../components/giving/gridSort";
 
 type GivingScope = "central" | Id<"chapters">;
 
@@ -39,7 +63,21 @@ type PledgeRow = {
   amountCents: number;
   status: "incomplete" | "active" | "past_due" | "canceled";
   origin: "stripe" | "imported";
+  startedAt?: number;
+  createdAt: number;
 };
+
+const NUM = { fontVariant: ["tabular-nums" as const] };
+
+// Fixed column widths (px) — mirrors the Reconcile / Donors grids.
+const COLS = {
+  name: 260,
+  pledge: 120,
+  frequency: 110,
+  since: 130,
+  status: 130,
+} as const;
+const GRID_WIDTH = COLS.name + COLS.pledge + COLS.frequency + COLS.since + COLS.status;
 
 /** Pledge lifecycle → chip tone. */
 function pledgeStatusTone(status: string): BadgeTone {
@@ -71,31 +109,63 @@ export default function BackersScreen() {
   return <BackersBody scope={access.scope} />;
 }
 
+type SortKey = "name" | "pledge" | "since";
+type SortState = { key: SortKey; direction: SortDirection };
+
 function BackersBody({ scope }: { scope: GivingScope }) {
   const router = useRouter();
+  const [search, setSearch] = useState("");
+  const [sort, setSort] = useState<SortState>({ key: "since", direction: "desc" });
   const pledges = useQuery(api.givingPledges.listPledges, { scope }) as
     | PledgeRow[]
     | undefined;
+
+  // Client-side search (name / email) — mirrors the Gifts ledger's search
+  // (#303) — narrows every lifecycle group at once.
+  const searched = useMemo(() => {
+    const rows = pledges ?? [];
+    const q = search.trim().toLowerCase();
+    if (!q) return rows;
+    return rows.filter((p) =>
+      [p.donorName, p.donorEmail ?? ""].join(" ").toLowerCase().includes(q),
+    );
+  }, [pledges, search]);
 
   const groups = useMemo(() => {
     const active: PledgeRow[] = [];
     const pastDue: PledgeRow[] = [];
     const imported: PledgeRow[] = [];
     const canceled: PledgeRow[] = [];
-    for (const p of pledges ?? []) {
+    for (const p of searched) {
       if (p.status === "canceled") canceled.push(p);
       else if (p.origin === "imported") imported.push(p);
       else if (p.status === "active") active.push(p);
       else pastDue.push(p); // past_due / incomplete on our rails
     }
     // Backers = active pledges at/above the $50 unit (the derived count the
-    // affordability header reads; PRD Appendix C#2).
-    const backerCount = active.filter(
+    // affordability header reads; PRD Appendix C#2) — computed over the
+    // UNFILTERED-by-search set so the stat cards never shift with a search.
+    const allActive = (pledges ?? []).filter(
+      (p) => p.status !== "canceled" && p.origin !== "imported" && p.status === "active",
+    );
+    const backerCount = allActive.filter(
       (p) => p.amountCents >= BACKER_UNIT_CENTS,
     ).length;
-    const monthlyCents = active.reduce((sum, p) => sum + p.amountCents, 0);
-    return { active, pastDue, imported, canceled, backerCount, monthlyCents };
-  }, [pledges]);
+    const monthlyCents = allActive.reduce((sum, p) => sum + p.amountCents, 0);
+    return {
+      active,
+      pastDue,
+      imported,
+      canceled,
+      backerCount,
+      activeCount: allActive.length,
+      monthlyCents,
+    };
+  }, [searched, pledges]);
+
+  function toggleSort(key: SortKey) {
+    setSort((current) => nextSortState(key, current));
+  }
 
   if (pledges === undefined) {
     return (
@@ -105,18 +175,25 @@ function BackersBody({ scope }: { scope: GivingScope }) {
     );
   }
 
+  const searching = search.trim().length > 0;
+
   return (
-    <Screen>
+    <Screen maxWidth={FULL_WIDTH}>
       <Narrow>
-        <View className="mb-4 flex-row flex-wrap gap-3">
-          <Stat label="Backers" value={String(groups.backerCount)} />
-          <Stat
-            label="Active pledges"
-            value={String(groups.active.length)}
-          />
-          <Stat
-            label="Monthly recurring"
-            value={formatCents(groups.monthlyCents)}
+        <View className="mb-3 flex-row flex-wrap items-center justify-between gap-3">
+          <View className="flex-row flex-wrap gap-3">
+            <Stat label="Backers" value={String(groups.backerCount)} />
+            <Stat label="Active pledges" value={String(groups.activeCount)} />
+            <Stat label="Monthly recurring" value={formatCents(groups.monthlyCents)} />
+          </View>
+        </View>
+
+        <View className="mb-4 min-w-[160px]">
+          <TextField
+            value={search}
+            onChangeText={setSearch}
+            placeholder="Search name, email…"
+            autoCapitalize="none"
           />
         </View>
 
@@ -125,85 +202,171 @@ function BackersBody({ scope }: { scope: GivingScope }) {
             title="No pledges yet"
             message="Backers appear here once they subscribe, or import recurring donors from the Import tab."
           />
-        ) : (
-          <>
-            <PledgeGroup
-              title="Active"
-              rows={groups.active}
-              onOpen={(donorId) =>
-                router.navigate(`/giving/donor/${donorId}` as never)
-              }
-            />
-            <PledgeGroup
-              title="Past due"
-              rows={groups.pastDue}
-              onOpen={(donorId) =>
-                router.navigate(`/giving/donor/${donorId}` as never)
-              }
-            />
-            <PledgeGroup
-              title="Imported · awaiting re-signup"
-              rows={groups.imported}
-              onOpen={(donorId) =>
-                router.navigate(`/giving/donor/${donorId}` as never)
-              }
-            />
-            <PledgeGroup
-              title="Canceled"
-              rows={groups.canceled}
-              onOpen={(donorId) =>
-                router.navigate(`/giving/donor/${donorId}` as never)
-              }
-            />
-          </>
-        )}
+        ) : searching && searched.length === 0 ? (
+          <EmptyState
+            icon="search"
+            title="No matches"
+            message={`No backers match “${search.trim()}”.`}
+          />
+        ) : null}
       </Narrow>
+
+      {pledges.length > 0 && !(searching && searched.length === 0) ? (
+        <>
+          <PledgeGrid
+            title="Active"
+            rows={groups.active}
+            sort={sort}
+            onSort={toggleSort}
+            onOpen={(donorId) => router.navigate(`/giving/donor/${donorId}` as never)}
+          />
+          <PledgeGrid
+            title="Past due"
+            rows={groups.pastDue}
+            sort={sort}
+            onSort={toggleSort}
+            onOpen={(donorId) => router.navigate(`/giving/donor/${donorId}` as never)}
+          />
+          <PledgeGrid
+            title="Imported · awaiting re-signup"
+            rows={groups.imported}
+            sort={sort}
+            onSort={toggleSort}
+            onOpen={(donorId) => router.navigate(`/giving/donor/${donorId}` as never)}
+          />
+          <PledgeGrid
+            title="Canceled"
+            rows={groups.canceled}
+            sort={sort}
+            onSort={toggleSort}
+            onOpen={(donorId) => router.navigate(`/giving/donor/${donorId}` as never)}
+          />
+        </>
+      ) : null}
     </Screen>
   );
 }
 
-function PledgeGroup({
+/** One lifecycle group's grid — SectionHeader (title + count) above a
+ *  Reconcile-style grid (Name · Pledge · Frequency · Since · Status). Sort
+ *  state is shared across every group (one set of column headers behaves the
+ *  same everywhere), applied independently per group's rows. */
+function PledgeGrid({
   title,
   rows,
+  sort,
+  onSort,
   onOpen,
 }: {
   title: string;
   rows: PledgeRow[];
+  sort: SortState;
+  onSort: (key: SortKey) => void;
   onOpen: (donorId: Id<"donors">) => void;
 }) {
+  // Hooks run unconditionally, even for an empty group — the early return
+  // (below) happens after every hook.
+  const sorted = useMemo(() => {
+    const getValue = (p: PledgeRow) => {
+      if (sort.key === "name") return p.donorName.toLowerCase();
+      if (sort.key === "pledge") return p.amountCents;
+      return p.startedAt ?? p.createdAt;
+    };
+    return sortRows(rows, getValue, sort.direction);
+  }, [rows, sort]);
+
   if (rows.length === 0) return null;
+
   return (
-    <View className="mb-4">
-      <SectionHeader title={`${title} (${rows.length})`} />
-      <View className="gap-2">
-        {rows.map((p) => (
-          <Pressable key={p._id} onPress={() => onOpen(p.donorId)}>
-            <View className="flex-row items-center justify-between rounded-lg border border-border bg-raised p-3">
-              <View className="flex-1 pr-3">
-                <Text
-                  className="text-base font-semibold text-ink"
-                  numberOfLines={1}
-                >
-                  {p.donorName}
-                </Text>
-                {p.donorEmail ? (
-                  <Text className="text-xs text-muted" numberOfLines={1}>
-                    {p.donorEmail}
-                  </Text>
-                ) : null}
-              </View>
-              <View className="items-end gap-1">
-                <Text className="text-base font-semibold text-ink">
-                  {formatCents(p.amountCents)}
-                  <Text className="text-xs text-muted"> /mo</Text>
-                </Text>
-                <Badge label={p.status} tone={pledgeStatusTone(p.status)} />
-              </View>
-            </View>
-          </Pressable>
+    <View className="mb-5">
+      <Narrow>
+        <SectionHeader title={`${title} (${rows.length})`} />
+      </Narrow>
+      <GridContainer width={GRID_WIDTH}>
+        <GridHeaderRow>
+          <SortableHeaderCell
+            label="Name"
+            width={COLS.name}
+            active={sort.key === "name"}
+            direction={sort.direction}
+            onSort={() => onSort("name")}
+          />
+          <SortableHeaderCell
+            label="Pledge"
+            width={COLS.pledge}
+            align="right"
+            active={sort.key === "pledge"}
+            direction={sort.direction}
+            onSort={() => onSort("pledge")}
+          />
+          <SortableHeaderCell label="Frequency" width={COLS.frequency} />
+          <SortableHeaderCell
+            label="Since"
+            width={COLS.since}
+            active={sort.key === "since"}
+            direction={sort.direction}
+            onSort={() => onSort("since")}
+          />
+          <SortableHeaderCell label="Status" width={COLS.status} />
+        </GridHeaderRow>
+        {sorted.map((p, i) => (
+          <PledgeGridRow
+            key={p._id}
+            pledge={p}
+            isLast={i === sorted.length - 1}
+            onPress={() => onOpen(p.donorId)}
+          />
         ))}
-      </View>
+      </GridContainer>
     </View>
+  );
+}
+
+function PledgeGridRow({
+  pledge,
+  isLast,
+  onPress,
+}: {
+  pledge: PledgeRow;
+  isLast: boolean;
+  onPress: () => void;
+}) {
+  const since = pledge.startedAt ?? pledge.createdAt;
+  return (
+    <GridRow onPress={onPress} isLast={isLast} accessibilityLabel={`Open ${pledge.donorName}`}>
+      <GridCell width={COLS.name}>
+        <View className="flex-1 px-2 py-1.5">
+          <Text className="text-sm font-medium text-ink" numberOfLines={1}>
+            {pledge.donorName}
+          </Text>
+          {pledge.donorEmail ? (
+            <Text className="text-2xs text-muted" numberOfLines={1}>
+              {pledge.donorEmail}
+            </Text>
+          ) : null}
+        </View>
+      </GridCell>
+      <GridCell width={COLS.pledge}>
+        <Text className="flex-1 px-2 py-1.5 text-right text-sm font-semibold text-ink" style={NUM}>
+          {formatCents(pledge.amountCents)}
+        </Text>
+      </GridCell>
+      <GridCell width={COLS.frequency}>
+        <Text className="flex-1 px-2 py-1.5 text-sm text-muted" numberOfLines={1}>
+          Monthly
+        </Text>
+      </GridCell>
+      <GridCell width={COLS.since}>
+        <Text className="flex-1 px-2 py-1.5 text-sm text-muted" style={NUM}>
+          {new Date(since).toLocaleDateString()}
+        </Text>
+      </GridCell>
+      <GridCell width={COLS.status}>
+        <View className="flex-1 px-2 py-1.5">
+          <Badge label={pledge.status} tone={pledgeStatusTone(pledge.status)} />
+        </View>
+      </GridCell>
+    </GridRow>
   );
 }
 
