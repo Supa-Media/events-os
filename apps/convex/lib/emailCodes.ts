@@ -13,8 +13,13 @@ export const CODE_TTL_MS = 15 * 60 * 1000;
 export const RESEND_INTERVAL_MS = 60 * 1000;
 export const MAX_CODE_ATTEMPTS = 5;
 
-/** The RSVP fields verification needs (a full doc always qualifies). */
-export type VerifiableRsvp = Pick<Doc<"rsvps">, "_id" | "email">;
+/**
+ * The RSVP fields verification needs. `email` is spelled out as a REQUIRED
+ * string here (not `Pick<Doc<"rsvps">, "email">`, which is now optional since
+ * imported guests may lack one): a verification code is only ever sent to a
+ * real address, so callers must prove they have one before entering this flow.
+ */
+export type VerifiableRsvp = { _id: Id<"rsvps">; email: string };
 
 export function hashEmailCode(code: string): string {
   return sha256Hex(`rsvp-email-code:${code.trim()}`);

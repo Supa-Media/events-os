@@ -99,7 +99,17 @@ export const resendRsvpEmailCode = mutation({
         message: "Your email is already verified ✓",
       });
     }
-    await resendEmailCode(ctx, viewer);
+    // Unreachable in practice — an imported email-less guest never gets a
+    // pending code, so `emailVerified` is `undefined` (legacy=verified) and
+    // the guard above already returned. Kept for type-soundness: `email` is
+    // optional on the RSVP doc but required by `resendEmailCode`.
+    if (!viewer.email) {
+      throw new ConvexError({
+        code: "NO_EMAIL",
+        message: "This guest has no email on file to send a code to.",
+      });
+    }
+    await resendEmailCode(ctx, { _id: viewer._id, email: viewer.email });
     return { ok: true as const };
   },
 });

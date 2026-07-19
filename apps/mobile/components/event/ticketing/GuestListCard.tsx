@@ -25,7 +25,10 @@ export function GuestListCard({ eventId }: { eventId: Id<"events"> }) {
     if (!q) return rows;
     return rows.filter(
       (r) =>
-        r.name.toLowerCase().includes(q) || r.email.toLowerCase().includes(q),
+        r.name.toLowerCase().includes(q) ||
+        // Imported guests may have no email/phone — search only what exists.
+        (r.email?.toLowerCase().includes(q) ?? false) ||
+        (r.phone?.toLowerCase().includes(q) ?? false),
     );
   }, [rsvps, search]);
 
@@ -75,9 +78,13 @@ export function GuestListCard({ eventId }: { eventId: Id<"events"> }) {
                   {r.source === "ticket" ? "🎟 " : ""}
                   {r.name}
                 </Text>
-                <Text className="text-sm text-muted" numberOfLines={1}>
-                  {r.email}
-                </Text>
+                {/* Email if we have one, else phone, else nothing — an
+                    imported name-only guest shows just their name. */}
+                {r.email || r.phone ? (
+                  <Text className="text-sm text-muted" numberOfLines={1}>
+                    {r.email ?? r.phone}
+                  </Text>
+                ) : null}
               </View>
               <Badge label={meta.label} tone={meta.tone} />
             </View>

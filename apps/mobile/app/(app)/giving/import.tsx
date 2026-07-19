@@ -114,6 +114,150 @@ function parseCanonicalRows(text: string): { rows: CanonicalRow[]; skipped: numb
   return { rows, skipped };
 }
 
+// ── Givebutter transactions export preset ────────────────────────────────────
+// A separate paste shape from the canonical rows above: Givebutter's
+// transactions export (`Campaign Title,…,Reference Number,First Name,…`). Its
+// rows can't be classified by column alone — whether a campaign is mission
+// giving or ticket sales is the manager's call — so this preset extracts the
+// distinct campaign titles and lets the user map each to gift | ticket | skip,
+// then produces the SAME canonical rows the server already accepts (no backend
+// change). Uses a small quote-aware splitter because Givebutter quotes any
+// campaign title / name containing a comma.
+
+type GbRowKind = "gift" | "ticket" | "skip";
+
+/** Quote-aware split of one Givebutter CSV line (handles `"…"` + `""`). */
+function splitGbLine(line: string): string[] {
+  const cells: string[] = [];
+  let cur = "";
+  let inQuotes = false;
+  for (let i = 0; i < line.length; i++) {
+    const ch = line[i];
+    if (inQuotes) {
+      if (ch === '"') {
+        if (line[i + 1] === '"') {
+          cur += '"';
+          i++;
+        } else inQuotes = false;
+      } else cur += ch;
+    } else if (ch === '"') inQuotes = true;
+    else if (ch === ",") {
+      cells.push(cur.trim());
+      cur = "";
+    } else cur += ch;
+  }
+  cells.push(cur.trim());
+  return cells;
+}
+
+function gbHeaderIndex(headers: string[], name: string): number {
+  const t = name.trim().toLowerCase();
+  return headers.findIndex((h) => h.trim().toLowerCase() === t);
+}
+
+type GbTxnRow = {
+  campaign: string;
+  name: string;
+  email?: string;
+  phone?: string;
+  amountCents?: number;
+  receivedAt?: number;
+  externalRef?: string;
+  isMonthly: boolean;
+  refunded: boolean;
+};
+
+type GbTxnParse = { rows: GbTxnRow[]; campaigns: string[] };
+
+/** Detect + parse a Givebutter transactions export; null if not that shape. */
+function parseGivebutterTransactions(text: string): GbTxnParse | null {
+  const lines = text.split(/\r?\n/).filter((l) => l.trim() !== "");
+  if (lines.length < 1) return null;
+  const headers = splitGbLine(lines[0]);
+  const iCampaign = gbHeaderIndex(headers, "Campaign Title");
+  const iRef = gbHeaderIndex(headers, "Reference Number");
+  const iFirst = gbHeaderIndex(headers, "First Name");
+  if (iCampaign < 0 || iRef < 0 || iFirst < 0) return null; // not this export
+
+  const iLast = gbHeaderIndex(headers, "Last Name");
+  const iEmail = gbHeaderIndex(headers, "Email");
+  const iPhone = gbHeaderIndex(headers, "Phone");
+  const iAmount = gbHeaderIndex(headers, "Amount");
+  const iDate = gbHeaderIndex(headers, "Transaction Date (UTC)");
+  const iFreq = gbHeaderIndex(headers, "Frequency");
+  const iRefund = gbHeaderIndex(headers, "Refund Date");
+
+  const rows: GbTxnRow[] = [];
+  const campaigns = new Set<string>();
+  for (const raw of lines.slice(1)) {
+    const cells = splitGbLine(raw);
+    const name = [cells[iFirst], iLast >= 0 ? cells[iLast] : ""]
+      .map((c) => (c ?? "").trim())
+      .filter(Boolean)
+      .join(" ");
+    if (!name) continue;
+    const campaign = (cells[iCampaign] ?? "").trim() || "(no campaign)";
+    campaigns.add(campaign);
+    const amountRaw = iAmount >= 0 ? (cells[iAmount] ?? "").replace(/[^0-9.]/g, "") : "";
+    const amountCents = amountRaw ? Math.round(Number.parseFloat(amountRaw) * 100) : undefined;
+    const dateMs = iDate >= 0 ? Date.parse((cells[iDate] ?? "").trim()) : NaN;
+    const phoneDigits = iPhone >= 0 ? (cells[iPhone] ?? "").replace(/\D/g, "") : "";
+    rows.push({
+      campaign,
+      name,
+      ...(iEmail >= 0 && cells[iEmail]?.trim()
+        ? { email: cells[iEmail].trim().toLowerCase() }
+        : {}),
+      ...(phoneDigits.length >= 10 ? { phone: phoneDigits } : {}),
+      ...(amountCents !== undefined && Number.isFinite(amountCents) ? { amountCents } : {}),
+      ...(Number.isFinite(dateMs) ? { receivedAt: dateMs } : {}),
+      ...(iRef >= 0 && cells[iRef]?.trim() ? { externalRef: cells[iRef].trim() } : {}),
+      isMonthly: iFreq >= 0 && (cells[iFreq] ?? "").trim().toLowerCase() === "monthly",
+      refunded: iRefund >= 0 && (cells[iRefund] ?? "").trim() !== "",
+    });
+  }
+  return { rows, campaigns: [...campaigns].sort() };
+}
+
+/** Build canonical rows from parsed GB txns + a per-campaign mapping. Refunded
+ *  rows are dropped; a monthly frequency promotes a `gift` mapping to a
+ *  `recurring` pledge row. */
+function gbTransactionsToCanonical(
+  parse: GbTxnParse,
+  mapping: Record<string, GbRowKind>,
+): CanonicalRow[] {
+  const out: CanonicalRow[] = [];
+  for (const r of parse.rows) {
+    if (r.refunded) continue; // never import a refunded transaction
+    const kind = mapping[r.campaign] ?? "skip";
+    if (kind === "skip") continue;
+    const base = {
+      name: r.name,
+      ...(r.email ? { email: r.email } : {}),
+      ...(r.phone ? { phone: r.phone } : {}),
+      ...(r.receivedAt !== undefined ? { receivedAt: r.receivedAt } : {}),
+      ...(r.externalRef ? { externalRef: r.externalRef } : {}),
+      source: "givebutter",
+    };
+    if (kind === "ticket") {
+      out.push({ rowType: "ticket", ...base } as CanonicalRow);
+    } else if (r.isMonthly) {
+      out.push({
+        rowType: "recurring",
+        ...base,
+        ...(r.amountCents !== undefined ? { recurringMonthlyCents: r.amountCents } : {}),
+      } as CanonicalRow);
+    } else {
+      out.push({
+        rowType: "gift",
+        ...base,
+        ...(r.amountCents !== undefined ? { amountCents: r.amountCents } : {}),
+      } as CanonicalRow);
+    }
+  }
+  return out;
+}
+
 function dispositionTone(disposition: string): BadgeTone {
   if (disposition === "new" || disposition === "matched-order") return "success";
   if (disposition === "duplicate" || disposition === "matched") return "info";
@@ -145,6 +289,11 @@ export default function ImportScreen() {
 function ImportBody({ scope }: { scope: GivingScope }) {
   const [text, setText] = useState("");
   const [parseSkipped, setParseSkipped] = useState(0);
+  // Givebutter transactions preset: detected from the pasted header. When
+  // present, the per-campaign gift/ticket/skip mapping drives the canonical
+  // rows instead of the plain `parseCanonicalRows` path.
+  const gbParse = useMemo(() => parseGivebutterTransactions(text), [text]);
+  const [gbMapping, setGbMapping] = useState<Record<string, GbRowKind>>({});
   const [previewArgs, setPreviewArgs] = useState<
     { scope: GivingScope; rows: CanonicalRow[] } | "skip"
   >("skip");
@@ -169,6 +318,13 @@ function ImportBody({ scope }: { scope: GivingScope }) {
   function runPreview() {
     setCommitResult(null);
     setCommitError(null);
+    if (gbParse) {
+      // Givebutter transactions preset — map each campaign, then classify.
+      const rows = gbTransactionsToCanonical(gbParse, gbMapping);
+      setParseSkipped(0);
+      setPreviewArgs(rows.length === 0 ? "skip" : { scope, rows });
+      return;
+    }
     const { rows, skipped } = parseCanonicalRows(text);
     setParseSkipped(skipped);
     if (rows.length === 0) {
@@ -225,6 +381,13 @@ function ImportBody({ scope }: { scope: GivingScope }) {
             numberOfLines={8}
             placeholder={"gift,Ada Lovelace,ada@example.com,,50,2026-01-05,givebutter,gb_txn_1,,"}
           />
+          {gbParse ? (
+            <Text className="mb-2 text-xs text-success">
+              Detected a Givebutter transactions export · {gbParse.rows.length} row
+              {gbParse.rows.length === 1 ? "" : "s"} across {gbParse.campaigns.length}{" "}
+              campaign{gbParse.campaigns.length === 1 ? "" : "s"}. Map each campaign below.
+            </Text>
+          ) : null}
           <Button title="Preview" onPress={runPreview} disabled={!text.trim()} />
           {parseSkipped > 0 ? (
             <Text className="mt-2 text-xs text-warn">
@@ -233,6 +396,44 @@ function ImportBody({ scope }: { scope: GivingScope }) {
             </Text>
           ) : null}
         </Card>
+
+        {gbParse && gbParse.campaigns.length > 0 ? (
+          <View className="mb-4">
+            <SectionHeader title="Map campaigns" />
+            <Card>
+              <Text className="mb-2 text-xs text-muted">
+                For each Givebutter campaign, choose whether its transactions are mission{" "}
+                <Text className="font-semibold">gifts</Text> (creates donors + giving
+                history), event <Text className="font-semibold">tickets</Text> (contacts
+                only, never donors), or <Text className="font-semibold">skip</Text>. Rows
+                with a Refund Date are always skipped; a monthly frequency imports as a
+                recurring pledge.
+              </Text>
+              {gbParse.campaigns.map((campaign) => {
+                const current = gbMapping[campaign] ?? "skip";
+                return (
+                  <View key={campaign} className="mb-3">
+                    <Text className="mb-1 text-sm text-ink" numberOfLines={1}>
+                      {campaign}
+                    </Text>
+                    <View className="flex-row gap-2">
+                      {(["gift", "ticket", "skip"] as GbRowKind[]).map((kind) => (
+                        <Pill
+                          key={kind}
+                          label={kind}
+                          selected={current === kind}
+                          onPress={() =>
+                            setGbMapping((m) => ({ ...m, [campaign]: kind }))
+                          }
+                        />
+                      ))}
+                    </View>
+                  </View>
+                );
+              })}
+            </Card>
+          </View>
+        ) : null}
 
         {preview === undefined && previewArgs !== "skip" ? (
           <View className="items-center justify-center py-10">

@@ -107,8 +107,15 @@ export const getBlastPayload = internalQuery({
       blast.audience === "ticket_holders"
         ? rows.filter((r) => r.source === "ticket")
         : rows;
-    // Skip addresses that failed to verify (undefined = legacy = verified).
-    const filtered = inAudience.filter((r) => r.emailVerified !== false);
+    // Drop email-less guests (imported name-only rows) BEFORE anything else —
+    // an email blast can't reach them and `new Set(undefined)` would corrupt
+    // the recipient list. They're not lost: SMS targeting (blasts v2) will
+    // reclaim the ones that carry a phone. Then skip addresses that failed to
+    // verify (undefined = legacy = verified).
+    const filtered = inAudience.filter(
+      (r): r is typeof r & { email: string } =>
+        !!r.email && r.emailVerified !== false,
+    );
 
     // One email per address (an attendee can RSVP + buy).
     const emails = [...new Set(filtered.map((r) => r.email))];

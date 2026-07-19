@@ -329,6 +329,10 @@ export const DEVELOPMENT_SECTIONS: Omit<AcademySection, "order">[] = [
         ],
       },
       {
+        kind: "p",
+        text: "Don't confuse this with the EVENT attendance import (on an event's public page under Grow → Import attendance). That one only builds a single event's guest list — it writes RSVP rows and NEVER creates a donor or a roster contact — and it's where a name-only Partiful/spreadsheet/Givebutter guest export lands. This canonical import is the money-and-CRM path; the attendance import is the door-list path.",
+      },
+      {
         kind: "rule",
         title: "Why classification is the whole point",
         text: "Givebutter (and platforms like it) consolidate ticket sales and mission giving into ONE export — the bank only ever sees a lump payout, never the split. Import that naively as \"gifts\" and every ticket buyer inflates the donor CRM with someone who never actually gave anything. So every row is classified BEFORE anything is created: only a `gift` or `recurring` row ever creates a donor. A `ticket` row becomes a contact with purchase history — full stop.",

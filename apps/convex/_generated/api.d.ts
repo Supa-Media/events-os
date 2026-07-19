@@ -27,6 +27,7 @@ import type * as dashboardCharts from "../dashboardCharts.js";
 import type * as dashboardDrill from "../dashboardDrill.js";
 import type * as docs from "../docs.js";
 import type * as engagements from "../engagements.js";
+import type * as eventAttendanceImport from "../eventAttendanceImport.js";
 import type * as eventTypes from "../eventTypes.js";
 import type * as events from "../events.js";
 import type * as financeRoles from "../financeRoles.js";
@@ -200,6 +201,7 @@ declare const fullApi: ApiFromModules<{
   dashboardDrill: typeof dashboardDrill;
   docs: typeof docs;
   engagements: typeof engagements;
+  eventAttendanceImport: typeof eventAttendanceImport;
   eventTypes: typeof eventTypes;
   events: typeof events;
   financeRoles: typeof financeRoles;

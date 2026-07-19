@@ -29,6 +29,7 @@ import { formatDateTime } from "../../../lib/format";
 import { DesignPhase } from "./DesignPhase";
 import { GivingCard } from "./GivingCard";
 import { GuestListCard } from "./GuestListCard";
+import { ImportAttendanceCard } from "./ImportAttendanceCard";
 import { CheckInCard } from "./CheckInCard";
 import { BlastComposerCard } from "./BlastComposerCard";
 import { LaunchStepper } from "./LaunchStepper";
@@ -127,6 +128,9 @@ export default function TicketingTab({ eventId }: { eventId: Id<"events"> }) {
             </PhaseBlock>
             <PhaseBlock label="Guest list">
               <GuestListCard eventId={eventId} />
+            </PhaseBlock>
+            <PhaseBlock label="Import attendance">
+              <ImportAttendanceCard eventId={eventId} />
             </PhaseBlock>
           </View>
         );

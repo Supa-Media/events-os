@@ -103,7 +103,12 @@ export const rsvps = defineTable({
   eventId: v.id("events"),
   chapterId: v.id("chapters"),
   name: v.string(),
-  email: v.string(), // normalized lowercase
+  // Optional: import-created rows (Partiful/spreadsheet exports) are legal
+  // name-only guests with NO email and NO phone. Every PUBLIC flow
+  // (submitRsvp, prepareOrder, prepareDonation, email verification) still
+  // requires a real email — only the attendance importer inserts email-less
+  // rows, and those are unreachable by email blast until SMS targeting lands.
+  email: v.optional(v.string()), // normalized lowercase
   phone: v.optional(v.string()), // SMS-ready (blasts v2)
   status: v.union(...RSVP_STATUSES.map((s) => v.literal(s))),
   // Secret guest token (random). NEVER returned by public list queries.
@@ -112,6 +117,10 @@ export const rsvps = defineTable({
   source: v.optional(v.union(v.literal("rsvp"), v.literal("ticket"))),
   // false = a code is pending, true = confirmed, undefined = legacy (verified).
   emailVerified: v.optional(v.boolean()),
+  // Free-text note attached by the attendance importer (payment platform +
+  // handle, "Panelist", "+1 of X", ticket type/price, etc.). Never shown on
+  // the public page; admin-only context on the guest list.
+  note: v.optional(v.string()),
   createdAt: v.number(),
   updatedAt: v.number(),
 })
