@@ -88,11 +88,13 @@ export function signedMoney(amountCents: number, flow: string): string {
 
 const TZ = "America/New_York";
 
-/** `Jul 10` — the compact list/timeline date. */
+/** `Jul 10, 2025` — the compact list/timeline date. Year included because the
+ *  reconcile inbox now spans multiple years (historical/genesis imports). */
 export function shortDate(ts: number): string {
   return new Date(ts).toLocaleDateString("en-US", {
     month: "short",
     day: "2-digit",
+    year: "numeric",
     timeZone: TZ,
   });
 }

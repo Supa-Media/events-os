@@ -115,7 +115,7 @@ export function TransactionList({
           className="flex-row items-center gap-2 rounded px-1.5 py-1 active:opacity-70 web:hover:bg-sunken"
         >
           <Text
-            className="w-11 text-2xs text-faint"
+            className="w-[74px] text-2xs text-faint"
             style={{ fontVariant: ["tabular-nums"] }}
             numberOfLines={1}
           >

@@ -87,7 +87,8 @@ export type PickerItem = { value: string; label: string; header?: boolean; reaso
 const COLS = {
   check: 40,
   merchant: 210,
-  date: 92,
+  date: 118, // fits "Mar 15, 2026" — year added for multi-year history
+
   amount: 104,
   cardholder: 168,
   category: 168,
@@ -257,7 +258,7 @@ function ReconcileRow({
           className="flex-1 px-2 py-1.5 text-sm font-medium text-ink"
           numberOfLines={1}
         >
-          {row.merchantName ?? "Unlabeled charge"}
+          {row.merchantName ?? row.description ?? "Unlabeled charge"}
         </Text>
       </Cell>
 
