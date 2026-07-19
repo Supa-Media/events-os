@@ -570,7 +570,10 @@ describe("canonical import access gating", () => {
     const t = newT();
     await run(t, (ctx) => runSeedSeatDefs(ctx));
     const s = await setupChapter(t); // plain chapter admin, no giving seat
-    const row = { rowType: "contact" as const, name: "X" };
+    // Carries an email so the manage-gated commit actually creates a contact
+    // (a name-only row is now blocked by the no-identifier owner rule — this
+    // test is about access gating, not that rule).
+    const row = { rowType: "contact" as const, name: "X", email: "x@example.com" };
 
     await expect(
       s.as.query(api.givingImport.previewImport, { scope: s.chapterId, rows: [row] }),

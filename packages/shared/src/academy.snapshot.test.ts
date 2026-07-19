@@ -891,7 +891,7 @@ const EXPECTED_SECTIONS: {
     slug: "dev-import-and-backfill",
     title: "The canonical import: preview, classify, commit",
     minutes: 5,
-    quizLength: 4,
+    quizLength: 5,
     optional: false,
     capstoneKind: null,
   },

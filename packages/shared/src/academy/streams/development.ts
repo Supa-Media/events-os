@@ -363,6 +363,11 @@ export const DEVELOPMENT_SECTIONS: Omit<AcademySection, "order">[] = [
           "Nothing bad — a gift's transaction id (when present) is the hard dedup key, a recurring pledge dedupes the same way within its donor, and a contact/ticket row just re-matches the same person instead of creating a duplicate. The second run imports nothing new. That's why re-running a fresh export, or retrying after a partial failure, is always safe.",
       },
       {
+        kind: "rule",
+        title: "Keep the data clean: dedupe first, and no name-only rows",
+        text: "Two guardrails keep imports from polluting the roster and CRM. First: a contact or ticket row with NO email AND NO phone creates nothing — it's reported as \"no-identifier\" in the preview, because a name-only record is a guest, not a roster person (names collide constantly and a nameless row can never be safely matched later). Second: before you re-run an import against records that already exist, clean up known duplicates. Merging (People → Duplicates, and the Giving desk's donor duplicates) re-points every reference onto one survivor and recomputes the donor's giving totals, so a later import matches the one real record instead of spawning a second. Dedupe first, then re-import.",
+      },
+      {
         kind: "scenario",
         prompt:
           "You paste in a Givebutter export and the preview summary shows 40 ticket rows and only 3 gift rows — but you were expecting mostly mission gifts. What's the right move?",
@@ -439,6 +444,18 @@ export const DEVELOPMENT_SECTIONS: Omit<AcademySection, "order">[] = [
         answerIndex: 1,
         explanation:
           "Same honest shape as the dedicated recurring-cutover tool it replaced: the pledge is real, but it isn't collecting on our rails until the donor re-signs up.",
+      },
+      {
+        prompt: "An import row for a person has a name but no email and no phone. What happens?",
+        options: [
+          "A roster contact is created from the name alone",
+          "Nothing is created — it's reported as \"no-identifier\", because a name-only record is a guest, not a roster person",
+          "The whole import is rejected",
+          "It's imported as a donor instead",
+        ],
+        answerIndex: 1,
+        explanation:
+          "A row needs an email OR a phone to create a roster person — names collide constantly and a nameless row could never be safely deduped or contacted later. Clean up known duplicates (People → Duplicates, or the donor duplicates tool) before re-running an import, so it matches the one real record instead of spawning another.",
       },
     ],
   },

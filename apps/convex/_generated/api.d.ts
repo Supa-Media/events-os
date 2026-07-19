@@ -25,6 +25,7 @@ import type * as crons from "../crons.js";
 import type * as dashboard from "../dashboard.js";
 import type * as dashboardCharts from "../dashboardCharts.js";
 import type * as dashboardDrill from "../dashboardDrill.js";
+import type * as dataHygiene from "../dataHygiene.js";
 import type * as docs from "../docs.js";
 import type * as engagements from "../engagements.js";
 import type * as eventAttendanceImport from "../eventAttendanceImport.js";
@@ -200,6 +201,7 @@ declare const fullApi: ApiFromModules<{
   dashboard: typeof dashboard;
   dashboardCharts: typeof dashboardCharts;
   dashboardDrill: typeof dashboardDrill;
+  dataHygiene: typeof dataHygiene;
   docs: typeof docs;
   engagements: typeof engagements;
   eventAttendanceImport: typeof eventAttendanceImport;

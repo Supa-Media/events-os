@@ -37,6 +37,27 @@ export function assertReceiptsBound(
 
 export type DonorStatus = "prospect" | "active" | "lapsed";
 
+/**
+ * OWNER RULE (Attendance C — people/donor dedup): a `people` roster row must
+ * NEVER be created from an AUTOMATED giving path without at least ONE contact
+ * identifier — an email OR a phone. A name-only record is a guest, not a roster
+ * person: names collide constantly (so it can't be safely deduped), it can't be
+ * contacted, and it silently inflates the roster with rows the cleanup tool then
+ * has to chase. Matching an EXISTING roster row (by email, phone, OR name) stays
+ * allowed everywhere — only INSERTS are gated. Enforced at the two automated
+ * creation sources: `linkDonorToPerson` (below) and
+ * `givingImport.ts#matchOrCreatePersonContact`. Manual `people.create` (a
+ * deliberate admin add) is intentionally NOT gated here.
+ */
+export function hasPersonIdentifier(opts: {
+  email?: string | null;
+  phone?: string | null;
+}): boolean {
+  const email = normalizeEmail(opts.email) ?? undefined;
+  const phone = opts.phone?.trim() || undefined;
+  return Boolean(email || phone);
+}
+
 /** Guard: gift amounts are whole cents strictly greater than zero (mirrors
  *  `giving.ts#assertPositiveCents`). */
 export function assertPositiveGiftCents(amountCents: number): void {
@@ -255,9 +276,19 @@ export async function linkDonorToPerson(
     (name && roster.find((p) => p.name.trim() === name)) ||
     null;
 
-  const personId =
-    match?._id ??
-    (await ctx.db.insert("people", {
+  let personId: Id<"people">;
+  if (match) {
+    personId = match._id;
+  } else {
+    // OWNER RULE (Attendance C): never INSERT an identifier-less roster row from
+    // the donor link — a name-only donor stays UNLINKED (personId undefined). A
+    // later edit that adds an email/phone retries the link via `upsertDonor`'s
+    // edit-path retry. Name-only MATCHING above is still honored; only the
+    // insert below is gated. See `hasPersonIdentifier`.
+    if (!hasPersonIdentifier({ email: donor.email, phone: donor.phone })) {
+      return null;
+    }
+    personId = await ctx.db.insert("people", {
       chapterId,
       name: donor.name,
       ...(donor.email ? { email: donor.email } : {}),
@@ -265,7 +296,8 @@ export async function linkDonorToPerson(
       isTeamMember: false,
       notes: "Added from Giving",
       createdAt: Date.now(),
-    }));
+    });
+  }
 
   await ctx.db.patch(donor._id, { personId });
   return personId;
