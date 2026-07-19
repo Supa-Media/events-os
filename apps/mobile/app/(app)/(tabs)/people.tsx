@@ -9,7 +9,7 @@ import {
   Linking,
   Platform,
 } from "react-native";
-import { useRouter } from "expo-router";
+import { useLocalSearchParams, useRouter } from "expo-router";
 import { useQuery, useMutation } from "convex/react";
 import { api } from "@events-os/convex/_generated/api";
 import {
@@ -173,7 +173,15 @@ export default function PeopleScreen() {
   // Givers overlay toggle — independent of the persona segments (a Team member
   // can also be a giver), so it composes with whichever persona is selected.
   const [giversOnly, setGiversOnly] = useState(false);
-  const [openId, setOpenId] = useState<string | null>(null);
+  // Cross-tab deep link (giving CRM v2's Donors grid "Linked person" column —
+  // `router.navigate(\`/people?openId=\${personId}\`)`): opens straight to that
+  // person's detail sheet, the same modal a row tap opens locally. Read once
+  // as the initial state (mirrors `finances/reconcile.tsx`'s own `?filter=`/
+  // `?scope=` query-param precedent) — a param for a person outside the
+  // caller's own chapter roster (or no longer on it) simply finds no match
+  // below and the modal never opens (quiet degrade).
+  const openParam = useLocalSearchParams<{ openId?: string }>();
+  const [openId, setOpenId] = useState<string | null>(openParam.openId ?? null);
   // Admin-only duplicate review + merge (Attendance C).
   const [dupOpen, setDupOpen] = useState(false);
 

@@ -39,7 +39,7 @@ import type { FunctionReturnType } from "convex/server";
 import { api } from "@events-os/convex/_generated/api";
 import type { Id } from "@events-os/convex/_generated/dataModel";
 import { BUDGET_CADENCE_LABELS, CENTRAL, formatCents } from "@events-os/shared";
-import { Icon, SectionHeader } from "../../ui";
+import { Cell, HeaderCell, Icon, Row, SectionHeader, Table, TableHeader } from "../../ui";
 import { colors } from "../../../lib/theme";
 import { Money, Tile, TileRow, type DashPeriodMode } from "./parts";
 import { SparkLine } from "./SparkLine";
@@ -50,6 +50,7 @@ import { BudgetTableGroup, type BudgetTableRow } from "./BudgetTable";
 import { BudgetApprovalActions } from "./BudgetApprovalActions";
 import { TagDetailModal, type TagRollup } from "./TagRollup";
 import { ChapterFleet } from "./ChapterFleet";
+import { compactCents } from "./compactCents";
 import { tagRollupCategoryBars } from "./tagRollupCategoryBars";
 
 type CentralDash = FunctionReturnType<typeof api.finances.dashboardCentral>;
@@ -289,13 +290,17 @@ export function CentralView({
         </View>
       </View>
 
-      {/* 3. Pre-launch readiness — the financial manager's launch-decision
-          surface (dual-gated central finance viewer OR central giving.view;
-          renders only when there are prospect/raising territories). */}
-      <PrelaunchReadinessCard />
-
-      {/* 4. Chapters at a glance — full-width, below the grid. */}
+      {/* 3. Chapters at a glance — full-width, below the grid. */}
       {chapterHealth ? <ChapterFleet rows={chapterHealth} onViewChapter={onViewChapter} /> : null}
+
+      {/* 4. Pre-launch readiness — the financial manager's launch-decision
+          surface (dual-gated central finance viewer OR central giving.view;
+          renders only when there are prospect/raising territories). Directly
+          beneath Chapters at a glance, at the SAME row density (owner
+          feedback: it was taking too much vertical space) — collapsed by
+          default to a one-line-per-territory summary; expand a row for the
+          detail that already existed. */}
+      <PrelaunchReadinessCard />
 
       {selectedTag ? (
         <TagDetailModal
@@ -313,6 +318,7 @@ export function CentralView({
 
 // ── Pre-launch readiness ─────────────────────────────────────────────────────
 type PrelaunchRow = FunctionReturnType<typeof api.territories.prelaunchReadiness>[number];
+type TerritoryId = PrelaunchRow["territoryId"];
 
 /** Days since a territory was created (for the "raising for N days" line). */
 function ageDays(ageMs: number): number {
@@ -327,59 +333,131 @@ function ageDays(ageMs: number): number {
  * at, and how long it's been raising. Dual-gated in the backend
  * (`prelaunchReadiness`); an empty result (no territories, or no access) simply
  * renders nothing.
+ *
+ * Owner feedback (card diet): this used to be its own tall card of stacked
+ * detail blocks. It's now the SAME dense `Table`/`Row`/`Cell` density as
+ * "Chapters at a glance" right above it — COLLAPSED by default (a one-line
+ * summary per territory: launch fund progress, backers, active monthly,
+ * stage/age), each row expanding independently (tap anywhere on the row) to
+ * the full detail that already existed. No information was removed, only
+ * deferred behind a tap.
  */
 function PrelaunchReadinessCard() {
   const rows = useQuery(api.territories.prelaunchReadiness, {});
+  const [expandedId, setExpandedId] = useState<TerritoryId | null>(null);
   if (!rows || rows.length === 0) return null;
   return (
-    <View className="mt-4">
-      <SectionHeader title="Pre-launch readiness" />
-      <View className="rounded-lg border border-border bg-raised shadow-card">
+    <View className="mt-2">
+      <SectionHeader title="Pre-launch readiness" count={rows.length} />
+      <Table>
+        <TableHeader>
+          <HeaderCell flex={1.6}>Territory</HeaderCell>
+          <HeaderCell flex={1.3}>Launch fund</HeaderCell>
+          <HeaderCell flex={1}>Backers</HeaderCell>
+          <HeaderCell flex={1.1}>Active monthly</HeaderCell>
+          <HeaderCell flex={1.2} align="right">
+            Stage
+          </HeaderCell>
+        </TableHeader>
         {rows.map((r, i) => (
-          <PrelaunchReadinessRow key={r.territoryId} row={r} first={i === 0} />
+          <PrelaunchReadinessRow
+            key={r.territoryId}
+            row={r}
+            last={i === rows.length - 1}
+            expanded={expandedId === r.territoryId}
+            onToggle={() =>
+              setExpandedId((cur) => (cur === r.territoryId ? null : r.territoryId))
+            }
+          />
         ))}
-      </View>
+      </Table>
     </View>
   );
 }
 
-function PrelaunchReadinessRow({ row, first }: { row: PrelaunchRow; first: boolean }) {
+function PrelaunchReadinessRow({
+  row,
+  last,
+  expanded,
+  onToggle,
+}: {
+  row: PrelaunchRow;
+  last: boolean;
+  expanded: boolean;
+  onToggle: () => void;
+}) {
   const potPct =
     row.potTargetCents > 0
       ? Math.min(100, Math.round((row.potCents / row.potTargetCents) * 100))
       : 0;
   return (
-    <View className={`p-4${first ? "" : " border-t border-border"}`}>
-      <View className="flex-row items-center justify-between gap-2">
-        <Text className="flex-1 text-sm font-semibold text-ink" numberOfLines={1}>
-          {row.name}, {row.region}
-        </Text>
-        <Text className="text-2xs uppercase tracking-wider text-muted">
-          {row.stage} · {ageDays(row.ageMs)}d
-        </Text>
-      </View>
+    <View>
+      {/* `last` only suppresses Row's OWN border when expanded — the detail
+          panel below takes over as the block's trailing separator then. */}
+      <Row onPress={onToggle} last={expanded || last}>
+        <Cell flex={1.6}>
+          <Text className="font-display text-sm text-ink" numberOfLines={1}>
+            {row.name}, {row.region}
+          </Text>
+        </Cell>
+        <Cell flex={1.3}>
+          <View className="max-w-[140px] gap-1">
+            <View className="h-1 overflow-hidden rounded-pill bg-sunken">
+              <View className="h-full rounded-pill bg-accent" style={{ width: `${potPct}%` }} />
+            </View>
+            <Text className="text-2xs text-muted" style={{ fontVariant: ["tabular-nums"] }}>
+              {compactCents(row.potCents)}/{compactCents(row.potTargetCents)}
+            </Text>
+          </View>
+        </Cell>
+        <Cell flex={1}>
+          <Text className="text-xs text-muted" numberOfLines={1}>
+            {row.backerCount} / {row.targetBackers}
+          </Text>
+        </Cell>
+        <Cell flex={1.1}>
+          <Text
+            className="text-xs text-muted"
+            style={{ fontVariant: ["tabular-nums"] }}
+            numberOfLines={1}
+          >
+            {compactCents(row.activeMonthlyCents)}
+          </Text>
+        </Cell>
+        <Cell flex={1.2} align="right">
+          <View className="flex-row items-center gap-1.5">
+            <Text className="text-2xs uppercase tracking-wider text-muted" numberOfLines={1}>
+              {row.stage} · {ageDays(row.ageMs)}d
+            </Text>
+            <Icon name={expanded ? "chevron-up" : "chevron-down"} size={13} color={colors.muted} />
+          </View>
+        </Cell>
+      </Row>
+      {expanded ? (
+        <View className={`bg-sunken/60 px-4 py-3 ${last ? "" : "border-b border-border"}`}>
+          {/* Launch pot (full precision — the summary row above only shows
+              the compact $/target pair). */}
+          <View className="flex-row items-center justify-between gap-2">
+            <Text className="text-xs text-muted">Launch fund</Text>
+            <Text className="text-xs font-semibold text-ink" style={{ fontVariant: ["tabular-nums"] }}>
+              {formatCents(row.potCents)} of {formatCents(row.potTargetCents)}
+            </Text>
+          </View>
+          <View className="mt-1 h-1.5 overflow-hidden rounded-pill bg-sunken">
+            <View className="h-full rounded-pill bg-accent" style={{ width: `${potPct}%` }} />
+          </View>
 
-      {/* Launch pot */}
-      <View className="mt-2 flex-row items-center justify-between gap-2">
-        <Text className="text-xs text-muted">Launch fund</Text>
-        <Text className="text-xs font-semibold text-ink" style={{ fontVariant: ["tabular-nums"] }}>
-          {formatCents(row.potCents)} of {formatCents(row.potTargetCents)}
-        </Text>
-      </View>
-      <View className="mt-1 h-1.5 overflow-hidden rounded-pill bg-sunken">
-        <View className="h-full rounded-pill bg-accent" style={{ width: `${potPct}%` }} />
-      </View>
-
-      {/* Numbers row */}
-      <View className="mt-2 flex-row flex-wrap gap-x-4 gap-y-1">
-        <ReadinessStat
-          label="Central still covers"
-          value={formatCents(row.remainingCentralBurdenCents)}
-        />
-        <ReadinessStat label="Backers" value={`${row.backerCount} / ${row.targetBackers}`} />
-        <ReadinessStat label="Active monthly" value={formatCents(row.activeMonthlyCents)} />
-        <ReadinessStat label="Starting tier" value={row.tierLabel} />
-      </View>
+          <View className="mt-3 flex-row flex-wrap gap-x-4 gap-y-1">
+            <ReadinessStat
+              label="Central still covers"
+              value={formatCents(row.remainingCentralBurdenCents)}
+            />
+            <ReadinessStat label="Backers" value={`${row.backerCount} / ${row.targetBackers}`} />
+            <ReadinessStat label="Active monthly" value={formatCents(row.activeMonthlyCents)} />
+            <ReadinessStat label="Starting tier" value={row.tierLabel} />
+          </View>
+        </View>
+      ) : null}
     </View>
   );
 }

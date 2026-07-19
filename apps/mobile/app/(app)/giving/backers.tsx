@@ -22,6 +22,14 @@
  * desk's own `Import` tab (`import.tsx`) — see that screen for the canonical
  * preview/commit flow that now covers `recurring` rows alongside gifts,
  * tickets, and contacts.
+ *
+ * Giving CRM v2: "Export" (owner request #3) serializes exactly the rows on
+ * screen — every visible lifecycle group, each in its own current sort order,
+ * in the same top-to-bottom order the page renders them. Row-action menus
+ * (pause/resume, edit-since, delete-with-reason) + a pledge history view are
+ * DEFERRED to the parallel `claude/giving-integrity-tools` PR — those
+ * mutations (`setPledgeStatus`/`editPledgeStartedAt`/`deletePledge`/
+ * `pledgeHistory`) aren't on `main` yet as of this PR.
  */
 import { useMemo, useState } from "react";
 import { ActivityIndicator, View, Text } from "react-native";
@@ -33,6 +41,7 @@ import { BACKER_UNIT_CENTS, formatCents } from "@events-os/shared";
 import {
   Badge,
   type BadgeTone,
+  Button,
   EmptyState,
   FULL_WIDTH,
   GridCell,
@@ -47,6 +56,8 @@ import {
 } from "../../../components/ui";
 import { colors } from "../../../lib/theme";
 import { useGivingScope } from "../../../lib/useGivingScope";
+import { toCsv } from "../../../components/giving/csv";
+import { exportCsv } from "../../../components/giving/exportCsv";
 import {
   nextSortState,
   sortRows,
@@ -167,6 +178,39 @@ function BackersBody({ scope }: { scope: GivingScope }) {
     setSort((current) => nextSortState(key, current));
   }
 
+  // The same per-group sort `PledgeGrid` applies for DISPLAY — recomputed
+  // here (cheap, pure) so Export serializes rows in the exact order shown.
+  function sortedForExport(rows: PledgeRow[]): PledgeRow[] {
+    const getValue = (p: PledgeRow) => {
+      if (sort.key === "name") return p.donorName.toLowerCase();
+      if (sort.key === "pledge") return p.amountCents;
+      return p.startedAt ?? p.createdAt;
+    };
+    return sortRows(rows, getValue, sort.direction);
+  }
+
+  async function exportBackers() {
+    const headers = ["Name", "Email", "Pledge", "Frequency", "Since", "Status", "Group"];
+    const orderedGroups: [string, PledgeRow[]][] = [
+      ["Active", groups.active],
+      ["Past due", groups.pastDue],
+      ["Imported · awaiting re-signup", groups.imported],
+      ["Canceled", groups.canceled],
+    ];
+    const rows = orderedGroups.flatMap(([label, list]) =>
+      sortedForExport(list).map((p) => [
+        p.donorName,
+        p.donorEmail ?? "",
+        (p.amountCents / 100).toFixed(2),
+        "Monthly",
+        new Date(p.startedAt ?? p.createdAt).toLocaleDateString(),
+        p.status,
+        label,
+      ]),
+    );
+    await exportCsv(`backers-${Date.now()}.csv`, toCsv(headers, rows));
+  }
+
   if (pledges === undefined) {
     return (
       <View className="items-center justify-center py-16">
@@ -186,6 +230,13 @@ function BackersBody({ scope }: { scope: GivingScope }) {
             <Stat label="Active pledges" value={String(groups.activeCount)} />
             <Stat label="Monthly recurring" value={formatCents(groups.monthlyCents)} />
           </View>
+          <Button
+            title="Export"
+            icon="download"
+            size="sm"
+            variant="secondary"
+            onPress={() => void exportBackers()}
+          />
         </View>
 
         <View className="mb-4 min-w-[160px]">

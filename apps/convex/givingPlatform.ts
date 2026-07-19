@@ -699,13 +699,22 @@ async function bookLabel(
  * re-sorted in memory, capped per `GIFT_LEDGER_PER_SCOPE`. Donor names are
  * resolved from a bounded batch of `.get`s. Manage-gating lives on the write
  * paths; this read only needs `requireGivingView` on the scope (or central).
+ *
+ * `from`/`to` (giving CRM v2, owner request #2 — grid filtering): an optional
+ * received-at range, applied ON the same `by_scope_and_received` index read —
+ * a legitimate cheap server-side narrowing (the alternative is the client
+ * widening its already-bounded window and filtering in memory, which would
+ * silently drop older rows a date-range preset like "this year" needs to see).
+ * Both bounds are inclusive; omit either for an open range.
  */
 export const listGifts = query({
   args: {
     scope: scopeValidator,
     allScopes: v.optional(v.boolean()),
+    from: v.optional(v.number()),
+    to: v.optional(v.number()),
   },
-  handler: async (ctx, { scope, allScopes }) => {
+  handler: async (ctx, { scope, allScopes, from, to }) => {
     const typedScope = scope as GivingScope;
 
     // Gather the raw gift rows + the set of books they span.
@@ -721,7 +730,11 @@ export const listGifts = query({
       for (const s of scopes) {
         const page = await ctx.db
           .query("gifts")
-          .withIndex("by_scope_and_received", (q) => q.eq("scope", s))
+          .withIndex("by_scope_and_received", (q) => {
+            const withScope = q.eq("scope", s);
+            const withFrom = from !== undefined ? withScope.gte("receivedAt", from) : withScope;
+            return to !== undefined ? withFrom.lte("receivedAt", to) : withFrom;
+          })
           .order("desc")
           .take(GIFT_LEDGER_PER_SCOPE);
         for (const gift of page) rows.push({ gift, scope: s });
@@ -732,7 +745,11 @@ export const listGifts = query({
       await requireGivingView(ctx, typedScope);
       const page = await ctx.db
         .query("gifts")
-        .withIndex("by_scope_and_received", (q) => q.eq("scope", typedScope))
+        .withIndex("by_scope_and_received", (q) => {
+          const withScope = q.eq("scope", typedScope);
+          const withFrom = from !== undefined ? withScope.gte("receivedAt", from) : withScope;
+          return to !== undefined ? withFrom.lte("receivedAt", to) : withFrom;
+        })
         .order("desc")
         .take(GIFT_LEDGER_LIMIT);
       for (const gift of page) rows.push({ gift, scope: typedScope });

@@ -15,14 +15,33 @@
  * / each chapter — where "All chapters" runs `listDonors`'s central-gated
  * all-scopes merge (each row tagged with its chapter, shown as a Book
  * column). A chapter-only viewer sees neither the scope dropdown nor the
- * fleet — they stay locked to their own chapter. Tapping a row opens the
- * donor detail. The backend `listDonors` gates on `requireGivingView` — this
- * PR is UI-only, no query/column here needs data the backend doesn't already
- * return.
+ * fleet — they stay locked to their own chapter. The backend `listDonors`
+ * gates on `requireGivingView` — no query/column here needs data the backend
+ * didn't already return (`personId` was already on every `donors` doc).
+ *
+ * Giving CRM v2 (owner feedback, voice notes): Email/Phone are now real,
+ * EDITABLE columns (`InlineText`, mirrors the People roster grid's own
+ * inline-edit cells) committing through the exact same `upsertDonor` mutation
+ * the donor-detail screen uses — no new mutation, manage-gated server-side
+ * too. A "Linked person" column shows the roster tie `personId` already
+ * carries (territories P5's `linkDonorToPerson`): name resolved via
+ * `people.list` (the caller's own chapter roster — the only bounded query
+ * available; a cross-chapter link in all-scopes mode degrades to an
+ * icon-only "Linked" state, never a wrong name) with tap → the People tab's
+ * detail sheet (`/people?openId=<personId>`, that screen's own new deep-link
+ * param). Because two columns are now inline-editable, the row itself is no
+ * longer one big press target (a nested TextInput-inside-Pressable is unsafe
+ * on web — RN-web's Pressable is click-based and the click bubbles); instead
+ * the Name cell alone opens the donor detail, the same affordance the People
+ * grid uses (name/avatar cell double-duties, a dedicated icon elsewhere opens
+ * detail) — GridRow itself is unchanged, just unused here now.
+ *
+ * Export (owner request #3) serializes exactly the rows on screen — the
+ * post-filter/search/sort `sorted` array — via `components/giving/csv.ts`.
  */
 import { useMemo, useState } from "react";
 import { ActivityIndicator, View, Text, Pressable } from "react-native";
-import { useQuery } from "convex/react";
+import { useQuery, useMutation } from "convex/react";
 import { useRouter } from "expo-router";
 import { api } from "@events-os/convex/_generated/api";
 import type { Id } from "@events-os/convex/_generated/dataModel";
@@ -30,6 +49,7 @@ import { formatCents } from "@events-os/shared";
 import {
   Badge,
   type BadgeTone,
+  Button,
   EmptyState,
   FilterSelect,
   type FilterSelectOption,
@@ -40,14 +60,18 @@ import {
   GridHeaderRow,
   GridRow,
   Icon,
+  InlineText,
   Narrow,
   Screen,
   SortableHeaderCell,
   TextField,
 } from "../../../components/ui";
 import { colors } from "../../../lib/theme";
+import { alertError } from "../../../lib/errors";
 import { useGivingScope } from "../../../lib/useGivingScope";
 import { DonorDuplicatesSheet } from "../../../components/giving/DonorDuplicatesSheet";
+import { toCsv } from "../../../components/giving/csv";
+import { exportCsv } from "../../../components/giving/exportCsv";
 import {
   ALL_SCOPES_VALUE,
   anyFilterActive,
@@ -66,7 +90,10 @@ const NUM = { fontVariant: ["tabular-nums" as const] };
 // Fixed column widths (px) — the grid scrolls horizontally on narrow web
 // while columns stay put, mirroring the Reconcile / People roster grids.
 const COLS = {
-  name: 240,
+  name: 200,
+  email: 190,
+  phone: 130,
+  linked: 150,
   status: 108,
   kind: 116,
   lifetime: 130,
@@ -89,6 +116,7 @@ type SortState = { key: SortKey; direction: SortDirection };
  *  all-scopes row carrying a `scopeLabel` chapter tag (see the backend doc). */
 type DonorRow = {
   _id: Id<"donors">;
+  scope: GivingScope;
   name: string;
   email?: string;
   phone?: string;
@@ -98,6 +126,10 @@ type DonorRow = {
   lifetimeCents: number;
   lastGiftAt?: number;
   scopeLabel?: string;
+  /** Territories P5 roster tie (`linkDonorToPerson`) — set only for a
+   *  CHAPTER-scope donor once matched into that chapter's `people` roster;
+   *  a central donor's is permanently unset. */
+  personId?: Id<"people">;
 };
 
 // ── CRM filters (territories P5) ────────────────────────────────────────────
@@ -217,6 +249,37 @@ function DonorsBody({
     | DonorRow[]
     | undefined;
 
+  // "Linked person" column name resolution — best-effort. `people.list` is
+  // hard-scoped server-side to the CALLER's own chapter (no `chapterId` arg
+  // exists to aim it elsewhere), which matches every chapter-scope donor's
+  // `personId` exactly when the viewer IS that chapter (the common case).
+  // A central holder browsing another chapter (or "All chapters") simply
+  // won't find a name here — the Linked cell degrades to an icon-only state
+  // rather than ever showing a wrong person's name (see `DonorGridRow`).
+  const people = useQuery(api.people.list, {});
+  const personNameById = useMemo(() => {
+    const map = new Map<Id<"people">, string>();
+    for (const p of people ?? []) map.set(p._id, p.name);
+    return map;
+  }, [people]);
+
+  const upsertDonor = useMutation(api.givingPlatform.upsertDonor);
+  async function commitDonorField(
+    donor: DonorRow,
+    patch: { email?: string } | { phone?: string },
+  ) {
+    try {
+      await upsertDonor({
+        scope: donor.scope,
+        donorId: donor._id,
+        name: donor.name,
+        ...patch,
+      });
+    } catch (e) {
+      alertError(e);
+    }
+  }
+
   const isAllScopes = isCentral && scopeSel === ALL_SCOPES_VALUE;
   const filtersActive = anyFilterActive(filters);
 
@@ -254,13 +317,43 @@ function DonorsBody({
 
   const searching = search.trim().length > 0;
   const width = isAllScopes
-    ? COLS.name + COLS.status + COLS.kind + COLS.lifetime + COLS.lastGift + COLS.source + COLS.book
-    : COLS.name + COLS.status + COLS.kind + COLS.lifetime + COLS.lastGift + COLS.source;
+    ? COLS.name + COLS.email + COLS.phone + COLS.linked + COLS.status + COLS.kind + COLS.lifetime + COLS.lastGift + COLS.source + COLS.book
+    : COLS.name + COLS.email + COLS.phone + COLS.linked + COLS.status + COLS.kind + COLS.lifetime + COLS.lastGift + COLS.source;
+
+  // Export (owner request #3) — exactly the CURRENT view: post-filter,
+  // post-search, post-sort `sorted` rows, in the order shown.
+  async function exportDonors() {
+    const headers = [
+      "Name",
+      "Email",
+      "Phone",
+      "Linked person",
+      "Status",
+      "Kind",
+      "Lifetime",
+      "Last gift",
+      "Source",
+      ...(isAllScopes ? ["Book"] : []),
+    ];
+    const rows = sorted.map((d) => [
+      d.name,
+      d.email ?? "",
+      d.phone ?? "",
+      d.personId ? (personNameById.get(d.personId) ?? "Linked") : "",
+      d.status,
+      d.kind,
+      (d.lifetimeCents / 100).toFixed(2),
+      d.lastGiftAt ? new Date(d.lastGiftAt).toLocaleDateString() : "",
+      d.source ? (SOURCE_LABEL_BY_VALUE[d.source] ?? d.source) : "",
+      ...(isAllScopes ? [d.scopeLabel ?? ""] : []),
+    ]);
+    await exportCsv(`donors-${Date.now()}.csv`, toCsv(headers, rows));
+  }
 
   return (
     <Screen maxWidth={FULL_WIDTH}>
       <Narrow>
-        {/* Header — row count (+ "N of M" while searching) + Duplicates. */}
+        {/* Header — row count (+ "N of M" while searching) + Export + Duplicates. */}
         <View className="mb-3 flex-row items-center justify-between">
           {searching ? (
             <Text className="text-2xs font-bold uppercase tracking-wider text-muted">
@@ -269,17 +362,26 @@ function DonorsBody({
           ) : (
             <GridCountLabel label="Donors" count={donors.length} />
           )}
-          {canManage && !isAllScopes ? (
-            <Pressable
-              onPress={() => setDupOpen(true)}
-              hitSlop={6}
-              accessibilityLabel="Review duplicate donors"
-              className="flex-row items-center gap-1 rounded-md border border-border px-2 py-1 active:bg-sunken web:hover:bg-sunken"
-            >
-              <Icon name="copy" size={13} color={colors.muted} />
-              <Text className="text-xs font-semibold text-muted">Duplicates</Text>
-            </Pressable>
-          ) : null}
+          <View className="flex-row items-center gap-2">
+            <Button
+              title="Export"
+              icon="download"
+              size="sm"
+              variant="secondary"
+              onPress={() => void exportDonors()}
+            />
+            {canManage && !isAllScopes ? (
+              <Pressable
+                onPress={() => setDupOpen(true)}
+                hitSlop={6}
+                accessibilityLabel="Review duplicate donors"
+                className="flex-row items-center gap-1 rounded-md border border-border px-2 py-1 active:bg-sunken web:hover:bg-sunken"
+              >
+                <Icon name="copy" size={13} color={colors.muted} />
+                <Text className="text-xs font-semibold text-muted">Duplicates</Text>
+              </Pressable>
+            ) : null}
+          </View>
         </View>
 
         {/* CRM filter row — compact dropdowns + search, wrapping. */}
@@ -337,6 +439,9 @@ function DonorsBody({
               direction={sort.direction}
               onSort={() => toggleSort("name")}
             />
+            <SortableHeaderCell label="Email" width={COLS.email} />
+            <SortableHeaderCell label="Phone" width={COLS.phone} />
+            <SortableHeaderCell label="Linked person" width={COLS.linked} />
             <SortableHeaderCell label="Status" width={COLS.status} />
             <SortableHeaderCell label="Kind" width={COLS.kind} />
             <SortableHeaderCell
@@ -364,8 +469,15 @@ function DonorsBody({
               key={d._id}
               donor={d}
               showBook={isAllScopes}
+              canEdit={canManage}
+              personName={d.personId ? personNameById.get(d.personId) : undefined}
               isLast={i === sorted.length - 1}
-              onPress={() => router.navigate(`/giving/donor/${d._id}` as never)}
+              onOpen={() => router.navigate(`/giving/donor/${d._id}` as never)}
+              onOpenPerson={(personId) =>
+                router.navigate(`/people?openId=${personId}` as never)
+              }
+              onCommitEmail={(email) => void commitDonorField(d, { email })}
+              onCommitPhone={(phone) => void commitDonorField(d, { phone })}
             />
           ))}
         </GridContainer>
@@ -382,31 +494,96 @@ function DonorsBody({
   );
 }
 
-/** One donor row: Name (+ email/phone subtitle) · Status · Kind · Lifetime ·
- *  Last gift · Source (+ Book tag in all-scopes mode). */
+/**
+ * One donor row: Name (tap → donor detail — the row's OWN press target now
+ * that Email/Phone are inline-editable text inputs; nesting those inside a
+ * whole-row Pressable is unsafe on RN-web, where a click bubbles up to the
+ * ancestor) · Email · Phone (both `InlineText`, manage-gated) · Linked
+ * person (tap → the People tab's detail sheet) · Status · Kind · Lifetime ·
+ * Last gift · Source (+ Book tag in all-scopes mode).
+ */
 function DonorGridRow({
   donor,
   showBook,
+  canEdit,
+  personName,
   isLast,
-  onPress,
+  onOpen,
+  onOpenPerson,
+  onCommitEmail,
+  onCommitPhone,
 }: {
   donor: DonorRow;
   showBook: boolean;
+  /** Whether the caller can edit Email/Phone inline (`canManage`). */
+  canEdit: boolean;
+  /** The linked person's name, when resolvable — see `DonorsBody`'s doc on
+   *  why a cross-chapter link may resolve to no name at all. */
+  personName: string | undefined;
   isLast: boolean;
-  onPress: () => void;
+  onOpen: () => void;
+  onOpenPerson: (personId: Id<"people">) => void;
+  onCommitEmail: (email: string) => void;
+  onCommitPhone: (phone: string) => void;
 }) {
-  const contact = donor.email ?? donor.phone ?? "No contact";
   return (
-    <GridRow onPress={onPress} isLast={isLast} accessibilityLabel={`Open ${donor.name}`}>
+    <GridRow isLast={isLast}>
       <GridCell width={COLS.name}>
-        <View className="flex-1 px-2 py-1.5">
+        <Pressable
+          onPress={onOpen}
+          accessibilityRole="button"
+          accessibilityLabel={`Open ${donor.name}`}
+          className="flex-1 px-2 py-1.5 active:opacity-70 web:hover:opacity-80"
+        >
           <Text className="text-sm font-medium text-ink" numberOfLines={1}>
             {donor.name}
           </Text>
-          <Text className="text-2xs text-muted" numberOfLines={1}>
-            {contact}
+        </Pressable>
+      </GridCell>
+      <GridCell width={COLS.email}>
+        {canEdit ? (
+          <InlineText
+            value={donor.email ?? ""}
+            placeholder="—"
+            onCommit={(t) => onCommitEmail(t.trim())}
+          />
+        ) : (
+          <Text className="flex-1 px-2 py-1.5 text-sm text-muted" numberOfLines={1}>
+            {donor.email ?? "—"}
           </Text>
-        </View>
+        )}
+      </GridCell>
+      <GridCell width={COLS.phone}>
+        {canEdit ? (
+          <InlineText
+            value={donor.phone ?? ""}
+            placeholder="—"
+            onCommit={(t) => onCommitPhone(t.trim())}
+          />
+        ) : (
+          <Text className="flex-1 px-2 py-1.5 text-sm text-muted" numberOfLines={1}>
+            {donor.phone ?? "—"}
+          </Text>
+        )}
+      </GridCell>
+      <GridCell width={COLS.linked}>
+        {donor.personId ? (
+          <Pressable
+            onPress={() => onOpenPerson(donor.personId as Id<"people">)}
+            accessibilityRole="button"
+            accessibilityLabel={personName ? `Open ${personName}` : "Open linked person"}
+            className="flex-1 flex-row items-center gap-1 px-2 py-1.5 active:opacity-70 web:hover:opacity-80"
+          >
+            <Icon name="user-check" size={12} color={colors.success} />
+            <Text className="flex-1 text-sm text-accent" numberOfLines={1}>
+              {personName ?? "Linked"}
+            </Text>
+          </Pressable>
+        ) : (
+          <Text className="flex-1 px-2 py-1.5 text-sm text-faint" numberOfLines={1}>
+            Not linked
+          </Text>
+        )}
       </GridCell>
       <GridCell width={COLS.status}>
         <View className="flex-1 px-2 py-1.5">
