@@ -117,6 +117,31 @@ export async function requireChartEditor(
 }
 
 /**
+ * The NON-throwing companion to `requireChartEditor` — resolves whether the
+ * caller may edit the org chart (superuser backstop OR a held `org.editChart`
+ * seat) as a plain boolean, without throwing on a "no" answer. Exists so a
+ * READ query (e.g. `seats.seatDetail`'s `canEditPowers` flag) can surface the
+ * same gate the write mutations enforce to the client, WITHOUT duplicating the
+ * gate logic client-side and WITHOUT a `ConvexError` that a normal read must
+ * not raise. `false` for a signed-out / unapproved caller (mirrors
+ * `resolveGivingAccess`'s quiet no-reach stance rather than a throw).
+ */
+export async function canEditChart(
+  ctx: QueryCtx | MutationCtx,
+): Promise<boolean> {
+  try {
+    await requireAccess(ctx);
+  } catch {
+    return false; // signed-out / unapproved — no edit power, quietly
+  }
+  if (await isSuperuser(ctx)) return true;
+  const userId = (await requireUserId(ctx)) as Id<"users">;
+  const personIds = await callerPersonIds(ctx, userId);
+  const caps = await effectiveCapabilities(ctx, personIds);
+  return caps.has("org.editChart");
+}
+
+/**
  * SELF-LOCKOUT GUARD — the critical invariant. Simulates the in-flight edit
  * (via `overrides`) and rejects if the CALLER's own effective capability set
  * would SHRINK: if any capability they hold right now (most importantly

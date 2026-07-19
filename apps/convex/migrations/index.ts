@@ -45,6 +45,7 @@ import { territoriesCutover } from "./0029_territories_cutover";
 import { backfillLaunchFund } from "./0030_backfill_launch_fund";
 import { giftMethodSources } from "./0031_gift_method_sources";
 import { linkDonorPeople } from "./0032_link_donor_people";
+import { addGivingPowerDefaults } from "./0033_add_giving_power_defaults";
 
 /** One registered migration: a stable `name` (the ledger key) + its effect. */
 export type Migration = {
@@ -119,4 +120,10 @@ export const MIGRATIONS: Migration[] = [
   // (`linkDonorToPerson`); central-scope donors stay unlinked by design.
   // Idempotent (already-linked donors skipped). See 0032.
   linkDonorPeople,
+  // Giving desk as an assignable per-role power (owner decision 2026-07-19) —
+  // add the default giving.view + nav.giving to expansion_director &
+  // financial_manager's live seatDefs rows so already-seeded orgs pick up the
+  // two seats the owner's default-access list was missing. Additive-only, so
+  // it never clobbers a runtime giving-power edit (see 0033's doc). Idempotent.
+  addGivingPowerDefaults,
 ];

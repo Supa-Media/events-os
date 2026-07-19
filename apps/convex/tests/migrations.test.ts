@@ -315,6 +315,7 @@ const REGISTRY_NAMES = [
   "0030_backfill_launch_fund",
   "0031_gift_method_sources",
   "0032_link_donor_people",
+  "0033_add_giving_power_defaults",
 ];
 const SEEDED_HISTORICAL = [
   "backfillMissingDefaultColumns",
