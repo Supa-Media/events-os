@@ -106,32 +106,67 @@ function normName(name?: string | null): string {
 function normEmailKey(email?: string | null): string {
   return normalizeEmail(email) ?? "";
 }
+/** The email's LOCAL-PART with Gmail-style noise stripped (dots + `+tag`), so
+ *  `john.smith+pw@gmail` and `johnsmith@gmail` cluster. A cheap trivial-variant
+ *  key for the `similar` group — NOT a real dedup key (different domains can
+ *  share a local-part), so it's flagged lowest-confidence in the UI. */
+function normEmailLocal(email?: string | null): string {
+  const norm = normalizeEmail(email);
+  if (!norm) return "";
+  const local = norm.split("@")[0] ?? "";
+  return local.replace(/\+.*/, "").replace(/\./g, "");
+}
+/** Token-sorted collapsed name ("John Smith" and "Smith, John" → "john smith")
+ *  — clusters first/last-name-order variants for the `similar` group. */
+function normNameSorted(name?: string | null): string {
+  const n = normName(name);
+  if (!n) return "";
+  return n.split(" ").filter(Boolean).sort().join(" ");
+}
 
 // ═══════════════════════════════════════════════════════════════════════════
 // DETECTION
 // ═══════════════════════════════════════════════════════════════════════════
 
-type MatchKind = "email" | "phone" | "name";
+type MatchKind = "email" | "phone" | "name" | "similar";
 
 /**
  * Group `items` into suspect duplicate sets: by normalized email first, then
- * digits-only phone, then normalized name (lower confidence). A member set that
- * already surfaced under a stronger key isn't repeated under a weaker one (the
- * common "same people match on both email and phone" case collapses to one
- * email group). Email/phone groups rank ahead of name-only groups.
+ * digits-only phone, then normalized name (lower confidence), then — when
+ * `keyOf` supplies them — a `similar` pass keyed by the Gmail-normalized email
+ * local-part and the token-sorted name, which clusters trivial variants
+ * ("john.smith@gmail" vs "johnsmith@yahoo", "Smith John" vs "John Smith") the
+ * exact keys miss. A member set that already surfaced under a stronger key is
+ * never repeated under a weaker one (dedup by sorted member-id signature), so
+ * the `similar` pass only ever surfaces genuinely NEW clusters. Nothing fuzzy —
+ * just two extra exact keys.
  */
 function groupDuplicates<T extends { _id: string }>(
   items: T[],
-  keyOf: (t: T) => { email: string; phone: string; name: string },
+  keyOf: (t: T) => {
+    email: string;
+    phone: string;
+    name: string;
+    emailLocal?: string;
+    nameSorted?: string;
+  },
 ): { matchKind: MatchKind; members: T[] }[] {
   const byEmail = new Map<string, T[]>();
   const byPhone = new Map<string, T[]>();
   const byName = new Map<string, T[]>();
+  const byEmailLocal = new Map<string, T[]>();
+  const byNameSorted = new Map<string, T[]>();
+  const push = (m: Map<string, T[]>, key: string, it: T) => {
+    if (!key) return;
+    (m.get(key) ?? m.set(key, []).get(key)!).push(it);
+  };
   for (const it of items) {
     const k = keyOf(it);
-    if (k.email) (byEmail.get(k.email) ?? byEmail.set(k.email, []).get(k.email)!).push(it);
-    if (k.phone) (byPhone.get(k.phone) ?? byPhone.set(k.phone, []).get(k.phone)!).push(it);
-    if (k.name) (byName.get(k.name) ?? byName.set(k.name, []).get(k.name)!).push(it);
+    push(byEmail, k.email, it);
+    push(byPhone, k.phone, it);
+    push(byName, k.name, it);
+    push(byEmailLocal, k.emailLocal ?? "", it);
+    push(byNameSorted, k.nameSorted ?? "", it);
   }
   const out: { matchKind: MatchKind; members: T[] }[] = [];
   const seen = new Set<string>(); // sorted member-id signature already emitted
@@ -152,6 +187,8 @@ function groupDuplicates<T extends { _id: string }>(
   emit("email", byEmail); // strongest first
   emit("phone", byPhone);
   emit("name", byName); // lower confidence — flagged last
+  emit("similar", byEmailLocal); // trivial variants — lowest confidence
+  emit("similar", byNameSorted);
   return out;
 }
 
@@ -242,6 +279,10 @@ export const listDonorDuplicates = query({
       email: normEmailKey(d.email),
       phone: normPhone(d.phone),
       name: normName(d.name),
+      // Cheap trivial-variant clustering (deliverable) — email local-part +
+      // token-sorted name; surfaces variants the exact keys above miss.
+      emailLocal: normEmailLocal(d.email),
+      nameSorted: normNameSorted(d.name),
     }));
     return {
       groups: groups.map((g) => ({
