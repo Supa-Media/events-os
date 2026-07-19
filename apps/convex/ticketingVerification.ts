@@ -18,6 +18,13 @@ import {
   pendingCodeFor,
   resendEmailCode,
 } from "./lib/emailCodes";
+import {
+  MAX_CODE_ATTEMPTS as MAX_PHONE_ATTEMPTS,
+  beginPhoneVerification,
+  hashPhoneCode,
+  pendingPhoneCodeFor,
+  resendPhoneCode,
+} from "./lib/phoneCodes";
 import { getPublishedPage, getViewerRsvp } from "./ticketing";
 
 /** Resolve the viewer's RSVP from slug + guest token, or throw friendly. */
@@ -110,6 +117,106 @@ export const resendRsvpEmailCode = mutation({
       });
     }
     await resendEmailCode(ctx, { _id: viewer._id, email: viewer.email });
+    return { ok: true as const };
+  },
+});
+
+// ── PUBLIC phone verification (Attendance F) ─────────────────────────────────
+// The SMS mirror of the email pair above, plus an explicit `begin` (email
+// verification is begun by `submitRsvp`; phone verification has no public
+// submission entry yet — see the PR's public-flow scope note — so a phone
+// guest who already carries a phone on their RSVP starts it here). Serves
+// imported/synced phone guests and any RSVP that added a phone.
+
+/** The pending phone code, after the not-usable cases throw friendly errors. */
+async function requireUsablePhoneCode(
+  ctx: MutationCtx,
+  viewer: Doc<"rsvps">,
+): Promise<Doc<"rsvpPhoneCodes">> {
+  const pending = await pendingPhoneCodeFor(ctx, viewer._id);
+  if (!pending) {
+    throw new ConvexError({
+      code: "NO_CODE",
+      message: "No code on file — tap “Resend code” and we'll text a fresh one.",
+    });
+  }
+  if (pending.attempts >= MAX_PHONE_ATTEMPTS) {
+    throw new ConvexError({
+      code: "LOCKED",
+      message: "Too many tries — tap “Resend code” to get a fresh one.",
+    });
+  }
+  if (pending.expiresAt < Date.now()) {
+    throw new ConvexError({
+      code: "EXPIRED",
+      message: "That code expired — tap “Resend code” and we'll text a fresh one.",
+    });
+  }
+  return pending;
+}
+
+/** The viewer's phone, after the missing-phone case throws friendly. */
+function requirePhone(viewer: Doc<"rsvps">): string {
+  if (!viewer.phone) {
+    throw new ConvexError({
+      code: "NO_PHONE",
+      message: "Add a mobile number to your RSVP first, then verify it.",
+    });
+  }
+  return viewer.phone;
+}
+
+/** Begin (or restart) phone verification: mark unverified and text a code. */
+export const beginRsvpPhoneVerification = mutation({
+  args: { slug: v.string(), token: v.string() },
+  handler: async (ctx, { slug, token }) => {
+    const viewer = await requireViewer(ctx, slug, token);
+    const phone = requirePhone(viewer);
+    if (viewer.phoneVerified === true) {
+      throw new ConvexError({
+        code: "ALREADY_VERIFIED",
+        message: "Your number is already verified ✓",
+      });
+    }
+    await beginPhoneVerification(ctx, { _id: viewer._id, phone });
+    return { ok: true as const };
+  },
+});
+
+/** Confirm the texted 6-digit code and mark the RSVP's phone verified. */
+export const verifyRsvpPhone = mutation({
+  args: { slug: v.string(), token: v.string(), code: v.string() },
+  handler: async (ctx, { slug, token, code }) => {
+    const viewer = await requireViewer(ctx, slug, token);
+    if (viewer.phoneVerified === true) return { ok: true as const };
+
+    const pending = await requireUsablePhoneCode(ctx, viewer);
+    if (hashPhoneCode(code) !== pending.codeHash) {
+      await ctx.db.patch(pending._id, { attempts: pending.attempts + 1 });
+      return {
+        ok: false as const,
+        error: "That code doesn't match — double-check and try again.",
+      };
+    }
+    await ctx.db.patch(viewer._id, { phoneVerified: true, updatedAt: Date.now() });
+    await ctx.db.delete(pending._id);
+    return { ok: true as const };
+  },
+});
+
+/** Text a fresh code (rate-limited to one send per minute). */
+export const resendRsvpPhoneCode = mutation({
+  args: { slug: v.string(), token: v.string() },
+  handler: async (ctx, { slug, token }) => {
+    const viewer = await requireViewer(ctx, slug, token);
+    const phone = requirePhone(viewer);
+    if (viewer.phoneVerified === true) {
+      throw new ConvexError({
+        code: "ALREADY_VERIFIED",
+        message: "Your number is already verified ✓",
+      });
+    }
+    await resendPhoneCode(ctx, { _id: viewer._id, phone });
     return { ok: true as const };
   },
 });
