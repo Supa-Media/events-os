@@ -481,6 +481,91 @@ export const DEVELOPMENT_SECTIONS: Omit<AcademySection, "order">[] = [
     ],
   },
 
+  // ── 88.5 · Donor stewardship: the gifts ledger, editing & merge ─────────
+  {
+    slug: "dev-gifts-ledger-and-audit",
+    title: "The gifts ledger: see it, fix it, trace it",
+    subtitle: "Every gift as it lands — edit, move books, merge, all on the record",
+    minutes: 4,
+    blocks: [
+      {
+        kind: "p",
+        text: "The Gifts tab is the chronological feed of every gift in your book, newest first — the view for watching donations come in AND for cleaning up history. A central holder can switch it to \"All chapters\" to see every book's gifts in one feed, each row tagged with the book it belongs to. A quick search box filters the loaded rows by donor, note, or source.",
+      },
+      {
+        kind: "bullets",
+        items: [
+          "**Add gift** — record a manual or external gift the rails never saw: a wire to the org's account, a Zelle or Cash App gift, something bought on behalf of the org. Past dates, the full source list, and receipts are all supported; a central manager also picks which book it belongs to.",
+          "**Edit** — fix an amount, date, source, or note straight from the ledger. The donor's lifetime total and the book's rollups always re-derive to the exact truth — nobody ever hand-edits a total.",
+          "**Reassign donor** — move a single gift onto the right donor in the same book (the small \"this gift landed on the wrong person\" fix).",
+          "**Move book** — a central manager can move a gift between books (central ↔ chapter, chapter ↔ chapter). The gift's donor is matched-or-created in the destination book, and BOTH books' totals net exactly — no money is invented or lost.",
+        ],
+      },
+      {
+        kind: "rule",
+        title: "Every change leaves a breadcrumb",
+        text: "Every add, edit, reassignment, and book-move writes an audit line on that gift — who did it, when, exactly what changed (old → new), and an optional \"why.\" Open any gift to read its full history. And a gift whose money is owned by its SOURCE — an event donation, a Stripe billing cycle, a matched bank credit — is protected: its amount, date, source, and book can't be edited or moved here, only its note and receipts.",
+      },
+      {
+        kind: "reveal",
+        prompt:
+          "You spot the same donor twice in one chapter — once as \"Jon Smith,\" once as \"Jonathan Smith\" — each with real gifts. What's the clean fix, and what if instead it were just one gift sitting on the wrong donor?",
+        answer:
+          "For two duplicate donors: merge them. From Donors → Duplicates, take an auto-detected group OR use \"Pick two to merge\" to choose the two records yourself — the survivor keeps everything, every gift/pledge/sponsorship moves onto it, and its lifetime total is recomputed from the combined gifts. For a single misfiled gift, don't merge the donors — just reassign that one gift to the right donor from the ledger.",
+      },
+    ],
+    quiz: [
+      {
+        prompt: "What is the Gifts tab?",
+        options: [
+          "A place to configure Stripe billing",
+          "A chronological, newest-first feed of every gift in the book — and, for a central holder, every book at once with each row tagged",
+          "The same thing as the donor list, sorted by lifetime",
+          "A list of only the gifts you personally recorded",
+        ],
+        answerIndex: 1,
+        explanation:
+          "It's the \"watch the donations come in\" feed — and the desk you live in during cleanup, because edit / reassign / move / add all hang off it.",
+      },
+      {
+        prompt: "You edit a gift's amount from $50 to $80. What happens to the donor's lifetime total and the book's rollups?",
+        options: [
+          "You must also edit the donor's lifetime by hand to match",
+          "They re-derive to the exact truth automatically — a rollup is never hand-edited",
+          "Nothing — rollups only update on brand-new gifts",
+          "The old gift is deleted and a new one created, churning the history",
+        ],
+        answerIndex: 1,
+        explanation:
+          "Money integrity is the whole point: the edit moves the donor total and the scope rollup by exactly the delta, once each, and the audit records $50.00 → $80.00.",
+      },
+      {
+        prompt: "What does every add, edit, reassignment, or book-move to a gift leave behind?",
+        options: [
+          "Nothing — changes are silent",
+          "An audit breadcrumb: who changed it, when, what changed old → new, and an optional why",
+          "An email to the donor",
+          "A pending approval a director must sign off",
+        ],
+        answerIndex: 1,
+        explanation:
+          "The audit trail is the \"breadcrumb trail showing I updated this\" — open any gift to read its full change history.",
+      },
+      {
+        prompt: "Who can move a gift from one book to another, and what happens to the two books' totals?",
+        options: [
+          "Anyone with view access; the totals are left for finance to reconcile later",
+          "A central manager; the donor is matched-or-created in the destination and both books' totals net exactly",
+          "Only a superuser, and the gift's amount resets to zero",
+          "Nobody — a gift can never change books",
+        ],
+        answerIndex: 1,
+        explanation:
+          "Moving a gift across books is a central-manage action; the source book loses exactly the gift, the destination gains exactly it, and its donor exists in the new book (matched or created, person-linked for a chapter).",
+      },
+    ],
+  },
+
   // ── 89 · The backer model: the $50 floor and the ladder ─────────────────
   {
     slug: "dev-backer-floor-and-ladder",
@@ -1195,7 +1280,11 @@ export const DEVELOPMENT_COURSES: Course[] = [
       "top-donor workflow, and getting giving history — old and new — " +
       "onto the record via CSV import and manual backfill.",
     icon: "users",
-    moduleSlugs: ["dev-relationship-workflow", "dev-import-and-backfill"],
+    moduleSlugs: [
+      "dev-relationship-workflow",
+      "dev-import-and-backfill",
+      "dev-gifts-ledger-and-audit",
+    ],
   },
   {
     slug: "the-backer-model",

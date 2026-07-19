@@ -175,18 +175,20 @@ async function platformTemplates(s: ChapterSetup) {
 }
 
 describe("curriculum content", () => {
-  test("ninety-six ordered sections; six capstones; one optional bonus", () => {
+  test("ninety-seven ordered sections; six capstones; one optional bonus", () => {
     // 79 + 5 (the "Leading a project" course: works-defining-a-project,
     // works-planning-the-work, works-the-project-budget,
     // works-tracking-and-escalating, works-finishing-well — all required,
     // none capstones) + 12 (the Development stream, F-6: dev-giving-vocabulary
-    // through dev-prospect-cities-and-map — all required, none capstones).
-    expect(ACADEMY_SECTION_COUNT).toBe(96);
+    // through dev-prospect-cities-and-map — all required, none capstones)
+    // + 1 (the gifts-ledger PR: dev-gifts-ledger-and-audit, appended into the
+    // donor-stewardship course — required, not a capstone).
+    expect(ACADEMY_SECTION_COUNT).toBe(97);
     expect(ACADEMY_SECTIONS.map((s) => s.order)).toEqual(
-      Array.from({ length: 96 }, (_v, i) => i + 1),
+      Array.from({ length: 97 }, (_v, i) => i + 1),
     );
     // The optional bonus is excluded from the trained denominator.
-    expect(ACADEMY_REQUIRED_SECTION_COUNT).toBe(95);
+    expect(ACADEMY_REQUIRED_SECTION_COUNT).toBe(96);
     expect(ACADEMY_CAPSTONE_SECTIONS).toHaveLength(6);
     // The suite leans on this order — pin it.
     expect(CAPSTONE_JOIN.capstone!.kind).toBe("join_event");

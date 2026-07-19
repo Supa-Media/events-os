@@ -46,6 +46,13 @@
  * and their order are otherwise untouched — any OTHER drift here is still a
  * real regression.
  *
+ * The Gifts ledger PR then APPENDED one Development section,
+ * `dev-gifts-ledger-and-audit` (4 min, 4-quiz), into the `donor-stewardship`
+ * course after `dev-import-and-backfill` — teaching the chronological gifts
+ * ledger, edit-with-audit-trail, cross-book moves, donor reassignment, and
+ * manual merge (owner requests #1–#5). Total: 97 sections. That course now
+ * carries three modules; nothing else moved.
+ *
  * `dev-prospect-cities-and-map` had its COPY + quiz corrected once the public
  * `/give` map shipped (PR #275, giving-platform §5): the map/city pages are now
  * taught as live, and launch's non-automatic pledge re-scope is told honestly
@@ -177,6 +184,7 @@ const EXPECTED_SECTION_SLUGS: string[] = [
   "dev-donor-crm-basics",
   "dev-relationship-workflow",
   "dev-import-and-backfill",
+  "dev-gifts-ledger-and-audit",
   "dev-backer-floor-and-ladder",
   "dev-backer-lifecycle",
   "dev-givebutter-migration",
@@ -902,6 +910,14 @@ const EXPECTED_SECTIONS: {
     capstoneKind: null,
   },
   {
+    slug: "dev-gifts-ledger-and-audit",
+    title: "The gifts ledger: see it, fix it, trace it",
+    minutes: 4,
+    quizLength: 4,
+    optional: false,
+    capstoneKind: null,
+  },
+  {
     slug: "dev-backer-floor-and-ladder",
     title: "The $50 floor, and the milestone ladder",
     minutes: 4,
@@ -1132,7 +1148,11 @@ const EXPECTED_COURSES: {
   {
     slug: "donor-stewardship",
     themeKey: "development",
-    moduleSlugs: ["dev-relationship-workflow", "dev-import-and-backfill"],
+    moduleSlugs: [
+      "dev-relationship-workflow",
+      "dev-import-and-backfill",
+      "dev-gifts-ledger-and-audit",
+    ],
   },
   {
     slug: "the-backer-model",
