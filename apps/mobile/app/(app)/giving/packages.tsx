@@ -22,6 +22,7 @@ import {
   TextField,
 } from "../../../components/ui";
 import { colors } from "../../../lib/theme";
+import { useGivingScope } from "../../../lib/useGivingScope";
 
 const AUDIENCE_OPTIONS = [
   { value: "church", label: "Church" },
@@ -50,7 +51,10 @@ function pricingLabel(pkg: Doc<"sponsorPackages">) {
 }
 
 export default function PackagesScreen() {
-  const access = useQuery(api.givingPlatform.myGivingAccess, {});
+  // WP-S follow-up: the app's chapter lens — see `useGivingScope`'s own doc.
+  // Central lens only (mirrors Sponsorships/Territories).
+  const chapterId = useGivingScope();
+  const access = useQuery(api.givingPlatform.myGivingAccess, { chapterId });
 
   if (access === undefined) return <Screen loading />;
   if (!access.canView || access.scope !== "central") {

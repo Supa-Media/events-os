@@ -27,6 +27,7 @@ import {
   Select,
 } from "../../../components/ui";
 import { colors } from "../../../lib/theme";
+import { useGivingScope } from "../../../lib/useGivingScope";
 
 const STAGE_ORDER = ["prospect", "pitched", "committed", "active"] as const;
 const CLOSED_STATUSES = ["lapsed", "declined"] as const;
@@ -54,7 +55,15 @@ type SponsorshipRow = {
 };
 
 export default function SponsorshipsScreen() {
-  const access = useQuery(api.givingPlatform.myGivingAccess, {});
+  // WP-S follow-up: the app's chapter lens — see `useGivingScope`'s own doc.
+  // Sponsorships is inherently central-scoped data (no per-chapter
+  // equivalent — the org-wide institutional-giving pipeline), so wiring the
+  // lens through here means it's only reachable while the switcher is at the
+  // central desk, same as the central-only actions on the Finances
+  // dashboard (`atCentralDesk`-gated "New budget"/"Milestone ladder") that
+  // hide while peeking a chapter.
+  const chapterId = useGivingScope();
+  const access = useQuery(api.givingPlatform.myGivingAccess, { chapterId });
 
   if (access === undefined) return <Screen loading />;
   if (!access.canView || access.scope === null) {
@@ -77,7 +86,7 @@ export default function SponsorshipsScreen() {
           <EmptyState
             icon="lock"
             title="Sponsorships is a central-lens desk"
-            message="The sponsorship pipeline and package tiers are managed at the org level, not per chapter."
+            message="The sponsorship pipeline and package tiers are managed at the org level, not per chapter — switch to the Central desk to see them."
           />
         </Narrow>
       </Screen>

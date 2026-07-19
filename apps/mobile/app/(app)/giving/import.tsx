@@ -47,6 +47,7 @@ import {
   TextField,
 } from "../../../components/ui";
 import { colors } from "../../../lib/theme";
+import { useGivingScope } from "../../../lib/useGivingScope";
 
 type GivingScope = "central" | Id<"chapters">;
 
@@ -267,7 +268,9 @@ function dispositionTone(disposition: string): BadgeTone {
 }
 
 export default function ImportScreen() {
-  const access = useQuery(api.givingPlatform.myGivingAccess, {});
+  // WP-S follow-up: the app's chapter lens — see `useGivingScope`'s own doc.
+  const chapterId = useGivingScope();
+  const access = useQuery(api.givingPlatform.myGivingAccess, { chapterId });
 
   if (access === undefined) return <Screen loading />;
   if (!access.canManage || access.scope === null) {

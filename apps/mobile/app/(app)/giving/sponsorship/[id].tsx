@@ -25,6 +25,7 @@ import {
   TextField,
 } from "../../../../components/ui";
 import { colors } from "../../../../lib/theme";
+import { useGivingScope } from "../../../../lib/useGivingScope";
 import { sponsorshipStatusTone } from "../sponsorships";
 
 const STATUS_OPTIONS = [
@@ -63,7 +64,9 @@ function scopeLabel(scope: { kind: string }) {
 export default function SponsorshipDetailScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const sponsorshipId = id as Id<"sponsorships">;
-  const access = useQuery(api.givingPlatform.myGivingAccess, {});
+  // WP-S follow-up: the app's chapter lens — see `useGivingScope`'s own doc.
+  const chapterId = useGivingScope();
+  const access = useQuery(api.givingPlatform.myGivingAccess, { chapterId });
   const data = useQuery(api.sponsorships.getSponsorship, { sponsorshipId });
   // Called unconditionally (rules of hooks) even though the control it feeds
   // only renders for a manage-capability holder — see the Select below.

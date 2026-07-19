@@ -27,6 +27,7 @@ import {
   SectionHeader,
 } from "../../../components/ui";
 import { colors } from "../../../lib/theme";
+import { useGivingScope } from "../../../lib/useGivingScope";
 
 type GivingScope = "central" | Id<"chapters">;
 
@@ -49,7 +50,9 @@ function pledgeStatusTone(status: string): BadgeTone {
 }
 
 export default function BackersScreen() {
-  const access = useQuery(api.givingPlatform.myGivingAccess, {});
+  // WP-S follow-up: the app's chapter lens — see `useGivingScope`'s own doc.
+  const chapterId = useGivingScope();
+  const access = useQuery(api.givingPlatform.myGivingAccess, { chapterId });
 
   if (access === undefined) return <Screen loading />;
   if (!access.canView || access.scope === null) {

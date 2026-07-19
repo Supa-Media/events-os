@@ -39,6 +39,7 @@ import {
   TextField,
 } from "../../../components/ui";
 import { colors } from "../../../lib/theme";
+import { useGivingScope } from "../../../lib/useGivingScope";
 
 type TerritoryStage = "prospect" | "raising" | "launched";
 
@@ -68,7 +69,11 @@ function stageTone(stage: TerritoryStage): BadgeTone {
 }
 
 export default function TerritoriesScreen() {
-  const access = useQuery(api.givingPlatform.myGivingAccess, {});
+  // WP-S follow-up: the app's chapter lens — see `useGivingScope`'s own doc.
+  // Territories is CENTRAL-only (like Sponsorships/Packages), so wiring the
+  // lens through means it's reachable only while at the central desk.
+  const chapterId = useGivingScope();
+  const access = useQuery(api.givingPlatform.myGivingAccess, { chapterId });
 
   if (access === undefined) return <Screen loading />;
   if (!access.canView || access.scope === null) {
