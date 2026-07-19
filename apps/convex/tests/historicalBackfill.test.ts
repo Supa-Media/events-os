@@ -564,3 +564,55 @@ describe("embedded datasets", () => {
     }
   });
 });
+
+describe("full backfill aggregator", () => {
+  test("dry run resolves every dataset's event, aggregates, and writes nothing", async () => {
+    const s = await setupNy();
+    // One event per mapping entry (ptb + ptb_gb_tickets share Pop The Balloon).
+    await createEvent(s, "Love Thy Neighbor 2025", utc("2025-09-20"));
+    await createEvent(s, "Crossover Night 2026", utc("2025-12-31"));
+    await createEvent(s, "Eden", utc("2026-05-31"));
+    await createEvent(s, "Pop The Balloon", utc("2025-12-06"));
+    await createEvent(s, "Field Day", utc("2026-08-08"));
+
+    const res = await s.t.action(internal.historicalBackfill.runFullBackfill, {
+      execute: false,
+    });
+    expect(res.dryRun).toBe(true);
+    // Giving classified everything exactly once across windows.
+    const giftRows = GIVING_ROWS.filter((r) => r.rowType === "gift").length;
+    const recRows = GIVING_ROWS.filter((r) => r.rowType === "recurring").length;
+    expect(res.giving.gifts).toBe(giftRows + recRows);
+    // All six datasets resolved, in ATTENDANCE_DATASETS order, full coverage.
+    expect(res.attendance.map((a) => a.dataset)).toEqual([
+      "ltn",
+      "nye",
+      "eden",
+      "ptb",
+      "ptb_gb_tickets",
+      "fieldday_tickets",
+    ]);
+    const ltn = res.attendance[0];
+    expect(
+      ltn.counts.inserted + ltn.counts.updated + ltn.counts.skippedDuplicates +
+        ltn.counts.skippedInvalid,
+    ).toBe(LTN_ROWS.length);
+    // No pages existed → every dataset reports pageWillBeCreated on dry run.
+    expect(res.attendance.every((a) => a.pageWillBeCreated === true)).toBe(true);
+    // And nothing was written.
+    const db = await tableCounts(s, s.chapterId);
+    expect(db).toMatchObject({ donors: 0, gifts: 0, pledges: 0 });
+    const rsvpCount = await run(s.t, async (ctx) => {
+      const rows = await ctx.db.query("rsvps").take(5);
+      return rows.length;
+    });
+    expect(rsvpCount).toBe(0);
+  });
+
+  test("fails fast with MAPPING_MISMATCH when a dataset's event is missing", async () => {
+    const s = await setupNy();
+    await expect(
+      s.t.action(internal.historicalBackfill.runFullBackfill, { execute: false }),
+    ).rejects.toMatchObject({ data: { code: "MAPPING_MISMATCH" } });
+  });
+});

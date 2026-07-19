@@ -53,8 +53,13 @@
  * share the row's externalRef but in DIFFERENT dedup namespaces (per-donor
  * pledge vs global gift), so there's no collision and both stay idempotent.
  */
-import { internalMutation, internalQuery } from "./_generated/server";
+import {
+  internalAction,
+  internalMutation,
+  internalQuery,
+} from "./_generated/server";
 import type { MutationCtx, QueryCtx } from "./_generated/server";
+import { internal } from "./_generated/api";
 import { ConvexError, v } from "convex/values";
 import type { Doc, Id } from "./_generated/dataModel";
 import { normalizeEmail } from "./lib/access";
@@ -852,5 +857,151 @@ export const runAttendanceBackfill = internalMutation({
       ...(pageCreated ? { pageCreated } : {}),
       ...(pageWillBeCreated ? { pageWillBeCreated } : {}),
     };
+  },
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// FULL RUN — one dispatch drives every dataset window (ops ergonomics: the
+// run-convex-function workflow's concurrency group cancels bulk-queued runs,
+// so per-window dispatches can't be parallelized from outside).
+// ═══════════════════════════════════════════════════════════════════════════
+
+const MAPPING_DATE_TOLERANCE_FULL_MS = 36 * 60 * 60 * 1000;
+
+/**
+ * Run the ENTIRE historical backfill (giving + all six attendance datasets) in
+ * one call: resolves each dataset's event by the mapping table (exact name,
+ * date within 36h — MAPPING_MISMATCH listing candidates otherwise), then loops
+ * every window of every runner via `ctx.runMutation`, aggregating counts.
+ * `execute` omitted / false = full zero-write dry run. Idempotent overall
+ * (each underlying runner is). Attendance order follows ATTENDANCE_DATASETS
+ * (`ptb` before `ptb_gb_tickets`, per the mapping's ordering note).
+ */
+export const runFullBackfill = internalAction({
+  args: { execute: v.optional(v.boolean()) },
+  returns: v.object({
+    dryRun: v.boolean(),
+    giving: givingCountsValidator,
+    attendance: v.array(
+      v.object({
+        dataset: datasetValidator,
+        eventId: v.id("events"),
+        eventName: v.string(),
+        counts: attendanceCountsValidator,
+        pageCreated: v.optional(v.boolean()),
+        pageWillBeCreated: v.optional(v.boolean()),
+      }),
+    ),
+  }),
+  handler: async (ctx, { execute }) => {
+    const write = execute ?? false;
+
+    // ── Resolve every dataset's event up front (fail before any work). ──
+    const discovery: {
+      chapterId: Id<"chapters">;
+      events: {
+        eventId: Id<"events">;
+        name: string;
+        eventDate: number;
+        hasPage: boolean;
+      }[];
+    } = await ctx.runQuery(internal.historicalBackfill.listEventsForMapping, {});
+    const resolved: {
+      dataset: AttendanceDataset;
+      eventId: Id<"events">;
+      eventName: string;
+    }[] = [];
+    for (const dataset of ATTENDANCE_DATASETS) {
+      const map = MAPPING[dataset];
+      const expectedMs = Date.parse(`${map.eventDate}T00:00:00Z`);
+      const hits = discovery.events.filter(
+        (e) =>
+          e.name.trim().toLowerCase() === map.eventName.trim().toLowerCase() &&
+          Math.abs(e.eventDate - expectedMs) <= MAPPING_DATE_TOLERANCE_FULL_MS,
+      );
+      if (hits.length !== 1) {
+        throw new ConvexError({
+          code: "MAPPING_MISMATCH",
+          message:
+            `Dataset "${dataset}" resolved ${hits.length} events for ` +
+            `"${map.eventName}" on ${map.eventDate} — need exactly 1. ` +
+            `Chapter events: ${discovery.events.map((e) => e.name).join(", ")}`,
+        });
+      }
+      resolved.push({
+        dataset,
+        eventId: hits[0].eventId,
+        eventName: hits[0].name,
+      });
+    }
+
+    // ── Giving: every window. ──
+    const giving = {
+      donorsCreated: 0,
+      donorsMatched: 0,
+      gifts: 0,
+      giftsDuplicate: 0,
+      pledges: 0,
+      pledgesDuplicate: 0,
+      contacts: 0,
+      contactsSkippedNoIdentifier: 0,
+      ticketHistoryLinked: 0,
+      invalid: 0,
+    };
+    let gOffset: number | null = 0;
+    while (gOffset !== null) {
+      const res: {
+        nextOffset: number | null;
+        counts: typeof giving;
+      } = await ctx.runMutation(internal.historicalBackfill.runGivingBackfill, {
+        execute: write,
+        offset: gOffset,
+      });
+      for (const k of Object.keys(giving) as (keyof typeof giving)[]) {
+        giving[k] += res.counts[k];
+      }
+      gOffset = res.nextOffset;
+    }
+
+    // ── Attendance: every dataset, every window. ──
+    const attendance = [];
+    for (const { dataset, eventId, eventName } of resolved) {
+      const counts = {
+        inserted: 0,
+        updated: 0,
+        skippedDuplicates: 0,
+        skippedInvalid: 0,
+      };
+      let pageCreated = false;
+      let pageWillBeCreated = false;
+      let offset: number | null = 0;
+      while (offset !== null) {
+        const res: {
+          nextOffset: number | null;
+          counts: typeof counts;
+          pageCreated?: boolean;
+          pageWillBeCreated?: boolean;
+        } = await ctx.runMutation(
+          internal.historicalBackfill.runAttendanceBackfill,
+          { dataset, eventId, execute: write, offset },
+        );
+        for (const k of Object.keys(counts) as (keyof typeof counts)[]) {
+          counts[k] += res.counts[k];
+        }
+        pageCreated = pageCreated || res.pageCreated === true;
+        pageWillBeCreated = pageWillBeCreated || res.pageWillBeCreated === true;
+        offset = res.nextOffset;
+      }
+      attendance.push({
+        dataset,
+        eventId,
+        eventName,
+        counts,
+        ...(pageCreated ? { pageCreated } : {}),
+        ...(pageWillBeCreated ? { pageWillBeCreated } : {}),
+      });
+    }
+
+    return { dryRun: !write, giving, attendance };
   },
 });
