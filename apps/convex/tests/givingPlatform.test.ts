@@ -2,7 +2,7 @@ import { describe, expect, test } from "vitest";
 import { api, internal } from "../_generated/api";
 import { newT, run, setupChapter, type ChapterSetup } from "./setup.helpers";
 import { runSeedSeatDefs } from "../migrations/0022_seed_seat_defs";
-import type { Id } from "../_generated/dataModel";
+import type { Doc, Id } from "../_generated/dataModel";
 
 /**
  * Giving Platform (F-6 P1) — donor CRM tests:
@@ -493,5 +493,231 @@ describe("myGivingAccess chapter lens (chapterId arg)", () => {
     expect(withNoArgs.scope).toBe("central");
     expect(withNoArgs.canView).toBe(true);
     expect(withNoArgs.canManage).toBe(true);
+    expect(withNoArgs.isCentral).toBe(true);
+  });
+
+  test("isCentral is false for a chapter-only holder, true for a central holder", async () => {
+    const t = newT();
+    await run(t, (ctx) => runSeedSeatDefs(ctx));
+    const s = await setupChapter(t);
+    await seatCaller(s, "treasurer", s.chapterId); // chapter giving.view only
+    const chapterAccess = await s.as.query(api.givingPlatform.myGivingAccess, {});
+    expect(chapterAccess.isCentral).toBe(false);
+    expect(chapterAccess.scope).toBe(s.chapterId);
+  });
+});
+
+// ── Org-wide fleet (giving-dashboard v2) ────────────────────────────────────
+
+/** Insert a scope's denormalized rollup directly (bypassing gift writes) so a
+ *  fleet test controls each scope's totals precisely. */
+async function seedRollup(
+  s: ChapterSetup,
+  scope: Id<"chapters"> | "central",
+  totals: {
+    lifetimeCents: number;
+    giftCount: number;
+    donorCount: number;
+    activeCount: number;
+    lapsedCount: number;
+    prospectCount: number;
+  },
+) {
+  await run(s.t, (ctx) =>
+    ctx.db.insert("givingScopeRollups", { scope, ...totals, updatedAt: Date.now() }),
+  );
+}
+
+describe("dashboardFleet (org-wide fleet)", () => {
+  test("org totals sum every active scope's rollup; inactive chapters excluded; backer/target join", async () => {
+    const s = await devDirectorSetup(); // central dev director; s.chapterId = "New York" (active)
+
+    await seedRollup(s, "central", {
+      lifetimeCents: 10000,
+      giftCount: 2,
+      donorCount: 2,
+      activeCount: 1,
+      lapsedCount: 1,
+      prospectCount: 0,
+    });
+    await seedRollup(s, s.chapterId, {
+      lifetimeCents: 5000,
+      giftCount: 1,
+      donorCount: 1,
+      activeCount: 1,
+      lapsedCount: 0,
+      prospectCount: 0,
+    });
+
+    // Home chapter gets a backer count + a linked territory with a goal.
+    const { boston, shadow } = await run(s.t, async (ctx) => {
+      await ctx.db.patch(s.chapterId, { backerCount: 12 });
+      await ctx.db.insert("territories", {
+        chapterId: s.chapterId,
+        name: "New York",
+        region: "NY",
+        lat: 0,
+        lng: 0,
+        slug: "new-york",
+        stage: "raising",
+        targetBackers: 20,
+        publiclyVisible: true,
+        launchFundCents: 0,
+        launchFundTargetCents: 0,
+        createdAt: Date.now(),
+        createdBy: s.userId,
+        updatedAt: Date.now(),
+      });
+      const boston = await ctx.db.insert("chapters", {
+        name: "Boston",
+        isActive: true,
+        createdAt: Date.now(),
+      });
+      // A shadow/prospect chapter — must NEVER appear in the fleet.
+      const shadow = await ctx.db.insert("chapters", {
+        name: "Shadow",
+        isActive: false,
+        createdAt: Date.now(),
+      });
+      return { boston, shadow };
+    });
+
+    await seedRollup(s, boston, {
+      lifetimeCents: 3000,
+      giftCount: 1,
+      donorCount: 1,
+      activeCount: 0,
+      lapsedCount: 1,
+      prospectCount: 0,
+    });
+    // Shadow chapter has a (huge) rollup that must be excluded from the fleet.
+    await seedRollup(s, shadow, {
+      lifetimeCents: 99999,
+      giftCount: 9,
+      donorCount: 9,
+      activeCount: 9,
+      lapsedCount: 9,
+      prospectCount: 9,
+    });
+
+    const fleet = await s.as.query(api.givingPlatform.dashboardFleet, {});
+
+    // Central row leads; inactive chapter excluded.
+    expect(fleet.scopes[0].scope).toBe("central");
+    expect(fleet.scopes.some((r) => r.scope === shadow)).toBe(false);
+
+    // Org totals = central + New York + Boston (NOT the shadow chapter).
+    expect(fleet.org.lifetimeCents).toBe(10000 + 5000 + 3000);
+    expect(fleet.org.donorCount).toBe(2 + 1 + 1);
+    expect(fleet.org.lapsedCount).toBe(1 + 0 + 1);
+    // Backer/target join: only New York has a backer count + territory goal.
+    expect(fleet.org.backerCount).toBe(12);
+    expect(fleet.org.targetBackers).toBe(20);
+
+    const ny = fleet.scopes.find((r) => r.scope === s.chapterId)!;
+    expect(ny.backerCount).toBe(12);
+    expect(ny.targetBackers).toBe(20);
+    expect(ny.backersBelowTarget).toBe(true); // 12 < 20
+    expect(ny.hasLapsed).toBe(false);
+
+    const bostonRow = fleet.scopes.find((r) => r.scope === boston)!;
+    expect(bostonRow.backerCount).toBeNull(); // unset (absent/0)
+    expect(bostonRow.targetBackers).toBeNull(); // no territory
+    expect(bostonRow.backersBelowTarget).toBe(false);
+    expect(bostonRow.hasLapsed).toBe(true);
+
+    // Central's own row never carries a backer figure.
+    expect(fleet.scopes[0].backerCount).toBeNull();
+    expect(fleet.scopes[0].hasLapsed).toBe(true);
+  });
+
+  test("a chapter-only caller is rejected", async () => {
+    const t = newT();
+    await run(t, (ctx) => runSeedSeatDefs(ctx));
+    const s = await setupChapter(t);
+    await seatCaller(s, "treasurer", s.chapterId); // chapter giving.view only
+    await expect(
+      s.as.query(api.givingPlatform.dashboardFleet, {}),
+    ).rejects.toThrow();
+  });
+});
+
+// ── listDonors all-scopes (central) ─────────────────────────────────────────
+
+describe("listDonors all-scopes mode", () => {
+  test("merges every scope's donors, lifetime desc, with a chapter tag", async () => {
+    const s = await devDirectorSetup(); // central dev director; s.chapterId = "New York"
+
+    // Central donor — $70 lifetime.
+    const centralDonor = (await s.as.mutation(api.givingPlatform.upsertDonor, {
+      scope: "central",
+      name: "Central Whale",
+      email: "cw@example.com",
+    })) as Id<"donors">;
+    await s.as.mutation(api.givingPlatform.recordGift, {
+      donorId: centralDonor,
+      amountCents: 7000,
+      method: "check",
+    });
+
+    // Home-chapter donor — $30 lifetime.
+    const nyDonor = (await s.as.mutation(api.givingPlatform.upsertDonor, {
+      scope: s.chapterId,
+      name: "NY Donor",
+      email: "ny@example.com",
+    })) as Id<"donors">;
+    await s.as.mutation(api.givingPlatform.recordGift, {
+      donorId: nyDonor,
+      amountCents: 3000,
+      method: "check",
+    });
+
+    // A second active chapter + a $50 donor.
+    const boston = await run(s.t, (ctx) =>
+      ctx.db.insert("chapters", {
+        name: "Boston",
+        isActive: true,
+        createdAt: Date.now(),
+      }),
+    );
+    const bostonDonor = (await s.as.mutation(api.givingPlatform.upsertDonor, {
+      scope: boston,
+      name: "Boston Donor",
+      email: "bo@example.com",
+    })) as Id<"donors">;
+    await s.as.mutation(api.givingPlatform.recordGift, {
+      donorId: bostonDonor,
+      amountCents: 5000,
+      method: "check",
+    });
+
+    const all = (await s.as.query(api.givingPlatform.listDonors, {
+      scope: "central",
+      allScopes: true,
+    })) as Array<Doc<"donors"> & { scopeLabel: string }>;
+
+    // Merge order, strongest lifetime first: central($70) → boston($50) → ny($30).
+    const known = all
+      .map((d) => d._id)
+      .filter((id) => [centralDonor, bostonDonor, nyDonor].includes(id));
+    expect(known).toEqual([centralDonor, bostonDonor, nyDonor]);
+
+    // Each row carries its scope's chapter tag.
+    expect(all.find((d) => d._id === centralDonor)?.scopeLabel).toBe("Central");
+    expect(all.find((d) => d._id === nyDonor)?.scopeLabel).toBe("New York");
+    expect(all.find((d) => d._id === bostonDonor)?.scopeLabel).toBe("Boston");
+  });
+
+  test("all-scopes is central-gated (a chapter-only caller is rejected)", async () => {
+    const t = newT();
+    await run(t, (ctx) => runSeedSeatDefs(ctx));
+    const s = await setupChapter(t);
+    await seatCaller(s, "treasurer", s.chapterId); // chapter giving.view only
+    await expect(
+      s.as.query(api.givingPlatform.listDonors, {
+        scope: s.chapterId,
+        allScopes: true,
+      }),
+    ).rejects.toThrow();
   });
 });

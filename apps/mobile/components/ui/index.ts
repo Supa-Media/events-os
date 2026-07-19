@@ -15,6 +15,7 @@ export { ReadinessRing, MiniRing } from "./ReadinessRing";
 export { PhaseBreakdown } from "./PhaseBreakdown";
 export { ProgressBar } from "./ProgressBar";
 export { Field, TextField, Select } from "./Field";
+export { FilterSelect, type FilterSelectOption } from "./FilterSelect";
 export { LocationAutocomplete } from "./LocationAutocomplete";
 export { EmptyState } from "./EmptyState";
 export { SectionHeader } from "./SectionHeader";

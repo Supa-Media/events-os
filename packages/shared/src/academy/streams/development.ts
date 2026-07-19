@@ -139,7 +139,11 @@ export const DEVELOPMENT_SECTIONS: Omit<AcademySection, "order">[] = [
     blocks: [
       {
         kind: "p",
-        text: "The Giving desk's Dashboard opens to your scope's numbers: lifetime giving, giving in the last 30 days, total donors, and how many have lapsed. Below that, your top donors by lifetime giving — the same ordering the relationship workflow runs on, on day one, with no extra setup.",
+        text: "The Giving desk's Dashboard opens to what your reach covers. A chapter viewer (a chapter director or treasurer) sees their own chapter's numbers: lifetime giving, giving in the last 30 days, total donors, and how many have lapsed — then their top donors by lifetime giving, the same ordering the relationship workflow runs on, on day one, with no extra setup.",
+      },
+      {
+        kind: "p",
+        text: "A central holder (a development director or the ED) instead opens to the org-wide FLEET: those same rollups summed across every chapter, a \"needs your attention\" rail (chapters with lapsed donors to reactivate, and chapters whose backers sit below their territory goal), and a card for Central's own book plus one per chapter. Tapping a card drops the whole desk into that chapter so you can work it, then step back out to the fleet. On the Donors list, a central holder also gets a scope dropdown — All chapters, Central, or any single chapter — where \"All chapters\" browses every scope's donors in one lifetime-sorted list, each row tagged with its chapter. A chapter viewer never sees the fleet or the scope dropdown; they stay on their own chapter.",
       },
       {
         kind: "table",
