@@ -60,6 +60,11 @@ const GIVEBUTTER_API_BASE = "https://api.givebutter.com/v1";
  *  with more tickets than this can be re-synced to continue (dedup is total). */
 const GIVEBUTTER_MAX_PAGES = 50;
 
+/** Hard cap on pages followed while listing `/v1/campaigns` to resolve a
+ *  code/slug to a numeric id. Smaller than the ticket cap — an org's campaign
+ *  list is expected to be much shorter than any one campaign's ticket count. */
+const GIVEBUTTER_CAMPAIGN_LOOKUP_MAX_PAGES = 10;
+
 /** Manual-sync throttle: ignore a re-request within this window of the last one
  *  (guards a double-tap / impatient operator from stacking redundant syncs). */
 const SYNC_THROTTLE_MS = 60_000;
@@ -170,6 +175,33 @@ export const finishGivebutterSync = internalMutation({
     await ctx.db.patch(page._id, {
       givebutterLastSyncedAt: Date.now(),
       givebutterLastSyncError: error ?? undefined,
+      updatedAt: Date.now(),
+    });
+    return null;
+  },
+});
+
+/**
+ * Self-heal: once a non-numeric campaign value (a code or slug, e.g. copied
+ * from the campaign URL) resolves to Givebutter's numeric campaign id via
+ * `/v1/campaigns`, persist the numeric id on the page so every future sync
+ * (manual + cron) hits the tickets endpoint directly and skips the lookup.
+ * One-time, best-effort — a no-op if the page vanished mid-run.
+ */
+export const setResolvedCampaignId = internalMutation({
+  args: {
+    eventId: v.id("events"),
+    campaignId: v.string(),
+  },
+  returns: v.null(),
+  handler: async (ctx, { eventId, campaignId }) => {
+    const page = await ctx.db
+      .query("eventPages")
+      .withIndex("by_event", (q) => q.eq("eventId", eventId))
+      .unique();
+    if (!page) return null;
+    await ctx.db.patch(page._id, {
+      givebutterCampaignId: campaignId,
       updatedAt: Date.now(),
     });
     return null;
@@ -462,6 +494,81 @@ interface GivebutterTicketsPage {
   meta?: { current_page?: number; last_page?: number };
 }
 
+/** Raw Givebutter campaign object (the fields we match against). */
+interface GivebutterCampaignRaw {
+  id?: number | string;
+  code?: string | null;
+  slug?: string | null;
+}
+
+interface GivebutterCampaignsPage {
+  data?: GivebutterCampaignRaw[];
+  links?: { next?: string | null };
+}
+
+/**
+ * True when the configured campaign value is already the numeric Givebutter
+ * campaign id — no `/v1/campaigns` lookup needed (current/fast-path
+ * behavior, unchanged for every admin who entered the id correctly).
+ */
+function isNumericCampaignId(value: string): boolean {
+  return /^\d+$/.test(value.trim());
+}
+
+/**
+ * Resolve a non-numeric campaign value (the CODE or the SLUG from the
+ * campaign's public URL, e.g. `public-worship-field-day-um8he0`) to
+ * Givebutter's numeric campaign id. Admins are told to paste "your Givebutter
+ * campaign URL", which yields a slug, not the id the tickets endpoint
+ * actually wants — this is the fix for that mismatch (404 on the raw slug).
+ *
+ * Lists `GET /v1/campaigns` (Laravel-paginated — follows `links.next`, capped
+ * at `GIVEBUTTER_CAMPAIGN_LOOKUP_MAX_PAGES`) and matches case-insensitively
+ * against each campaign's `id` (stringified), `code`, and `slug`. Returns the
+ * numeric id string on a match, `null` when no campaign matches any page.
+ */
+async function resolveCampaignId(
+  key: string,
+  value: string,
+): Promise<string | null> {
+  const wanted = value.trim().toLowerCase();
+  let url: string | null = `${GIVEBUTTER_API_BASE}/campaigns`;
+  for (
+    let page = 0;
+    page < GIVEBUTTER_CAMPAIGN_LOOKUP_MAX_PAGES && url;
+    page++
+  ) {
+    const res = await fetch(url, {
+      method: "GET",
+      headers: {
+        Authorization: `Bearer ${key}`,
+        Accept: "application/json",
+      },
+    });
+    if (!res.ok) {
+      throw new Error(
+        `HTTP ${res.status} while looking up Givebutter campaign "${value}".`,
+      );
+    }
+    const body = (await res.json()) as GivebutterCampaignsPage;
+    for (const c of body.data ?? []) {
+      const id =
+        c.id !== undefined && c.id !== null && c.id !== ""
+          ? String(c.id)
+          : null;
+      if (
+        (id !== null && id.toLowerCase() === wanted) ||
+        (c.code ?? "").toLowerCase() === wanted ||
+        (c.slug ?? "").toLowerCase() === wanted
+      ) {
+        return id;
+      }
+    }
+    url = body.links?.next ?? null;
+  }
+  return null;
+}
+
 /**
  * Resolve the Givebutter API key for a sync run: the in-app superuser setting
  * (`integrationSettings.readGivebutterApiKey`, PR E) takes precedence, else
@@ -522,6 +629,15 @@ function normalizeTicket(raw: GivebutterTicketRaw): GbTicket | null {
  * (`givebutterLastSyncError`); on success it clears it. Follows Laravel
  * pagination (`links.next`) up to a hard page cap; applies each API page as it
  * arrives so a mid-run failure still persists earlier pages.
+ *
+ * CAMPAIGN VALUE RESOLUTION: the configured value is often not the numeric id
+ * — the UI hint says "found in your Givebutter campaign URL", which yields a
+ * SLUG (e.g. `public-worship-field-day-um8he0`), and Givebutter also exposes
+ * a short CODE. Only the numeric id works against the tickets endpoint, so a
+ * non-numeric value is resolved via `/v1/campaigns` first (see
+ * `resolveCampaignId`); on a match the resolved id is used for this run AND
+ * persisted back onto the page (self-heal, one-time — see
+ * `setResolvedCampaignId`), so every later sync skips the lookup entirely.
  */
 async function syncOneCampaign(
   ctx: ActionCtx,
@@ -542,8 +658,25 @@ async function syncOneCampaign(
 
   let errorMessage: string | null = null;
   try {
+    let campaignId = config.campaignId;
+    if (!isNumericCampaignId(campaignId)) {
+      const resolved = await resolveCampaignId(key, campaignId);
+      if (!resolved) {
+        throw new Error(
+          "Campaign not found — enter the numeric ID, code, or slug from Givebutter.",
+        );
+      }
+      campaignId = resolved;
+      // Self-heal: persist the numeric id so future syncs (manual + cron)
+      // skip this lookup entirely.
+      await ctx.runMutation(internal.givebutterSync.setResolvedCampaignId, {
+        eventId,
+        campaignId: resolved,
+      });
+    }
+
     let url: string | null = `${GIVEBUTTER_API_BASE}/campaigns/${encodeURIComponent(
-      config.campaignId,
+      campaignId,
     )}/tickets`;
     for (let page = 0; page < GIVEBUTTER_MAX_PAGES && url; page++) {
       const res = await fetch(url, {
@@ -554,7 +687,9 @@ async function syncOneCampaign(
         },
       });
       if (!res.ok) {
-        throw new Error(`HTTP ${res.status}`);
+        throw new Error(
+          `HTTP ${res.status} fetching Givebutter tickets — check the campaign ID.`,
+        );
       }
       const body = (await res.json()) as GivebutterTicketsPage;
       const rows = body.data ?? [];

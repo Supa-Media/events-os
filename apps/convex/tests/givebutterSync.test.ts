@@ -455,3 +455,160 @@ describe("no-key degrade", () => {
     expect((await pageRow(s, eventId))?.givebutterLastSyncedAt).toBeUndefined();
   });
 });
+
+// ── Campaign id/code/slug resolution (Attendance G) ──────────────────────────
+//
+// The UI hint says "found in your Givebutter campaign URL", which yields a
+// SLUG — not the numeric id the tickets endpoint requires — so a non-numeric
+// configured value must be resolved via `/v1/campaigns` before the tickets
+// fetch, and a numeric value must skip that lookup entirely (current/fast
+// path, unchanged).
+describe("campaign id/code/slug resolution", () => {
+  const realFetch = globalThis.fetch;
+  const originalKey = process.env.GIVEBUTTER_API_KEY;
+
+  afterEach(() => {
+    globalThis.fetch = realFetch;
+    if (originalKey === undefined) delete process.env.GIVEBUTTER_API_KEY;
+    else process.env.GIVEBUTTER_API_KEY = originalKey;
+  });
+
+  test("a non-numeric slug resolves via /v1/campaigns and self-heals the stored id", async () => {
+    process.env.GIVEBUTTER_API_KEY = "test_key";
+    const t = newT();
+    const s = await setupChapter(t);
+    const eventId = await seedEvent(s);
+    await seedPage(s, eventId, "public-worship-field-day-um8he0");
+
+    const calledUrls: string[] = [];
+    globalThis.fetch = (async (url: string) => {
+      calledUrls.push(url);
+      if (url.includes("/v1/campaigns") && !url.includes("/tickets")) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            data: [
+              {
+                id: 686283,
+                code: "UM8HE0",
+                slug: "public-worship-field-day-um8he0",
+              },
+            ],
+            links: { next: null },
+          }),
+          text: async () => "{}",
+        };
+      }
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({ data: [], links: { next: null } }),
+        text: async () => "{}",
+      };
+    }) as unknown as typeof fetch;
+
+    await expect(
+      t.action(internal.givebutterSync.syncGivebutterCampaign, { eventId }),
+    ).resolves.toBeNull();
+
+    // Self-healed: the page's stored value is now the resolved numeric id.
+    const page = await pageRow(s, eventId);
+    expect(page?.givebutterCampaignId).toBe("686283");
+    expect(page?.givebutterLastSyncError).toBeUndefined();
+
+    // The tickets fetch used the RESOLVED numeric id, not the raw slug.
+    expect(
+      calledUrls.some((u) => u.includes("/campaigns/686283/tickets")),
+    ).toBe(true);
+  });
+
+  test("case-insensitive match against a campaign's code", async () => {
+    process.env.GIVEBUTTER_API_KEY = "test_key";
+    const t = newT();
+    const s = await setupChapter(t);
+    const eventId = await seedEvent(s);
+    // Lowercase input; Givebutter's code is uppercase — must still match.
+    await seedPage(s, eventId, "um8he0");
+
+    globalThis.fetch = (async (url: string) => {
+      if (url.includes("/v1/campaigns") && !url.includes("/tickets")) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            data: [{ id: 686283, code: "UM8HE0", slug: "field-day-um8he0" }],
+            links: { next: null },
+          }),
+          text: async () => "{}",
+        };
+      }
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({ data: [], links: { next: null } }),
+        text: async () => "{}",
+      };
+    }) as unknown as typeof fetch;
+
+    await expect(
+      t.action(internal.givebutterSync.syncGivebutterCampaign, { eventId }),
+    ).resolves.toBeNull();
+
+    expect((await pageRow(s, eventId))?.givebutterCampaignId).toBe("686283");
+  });
+
+  test("an unknown value stamps a friendly not-found error, not a bare HTTP 404", async () => {
+    process.env.GIVEBUTTER_API_KEY = "test_key";
+    const t = newT();
+    const s = await setupChapter(t);
+    const eventId = await seedEvent(s);
+    await seedPage(s, eventId, "nonexistent-slug");
+
+    globalThis.fetch = (async () => ({
+      ok: true,
+      status: 200,
+      json: async () => ({ data: [], links: { next: null } }),
+      text: async () => "{}",
+    })) as unknown as typeof fetch;
+
+    await expect(
+      t.action(internal.givebutterSync.syncGivebutterCampaign, { eventId }),
+    ).resolves.toBeNull();
+
+    const page = await pageRow(s, eventId);
+    expect(page?.givebutterLastSyncError).toBe(
+      "Campaign not found — enter the numeric ID, code, or slug from Givebutter.",
+    );
+    // No match → no self-heal; the stored value is left as the admin entered it.
+    expect(page?.givebutterCampaignId).toBe("nonexistent-slug");
+  });
+
+  test("a numeric campaign id skips the /v1/campaigns lookup entirely", async () => {
+    process.env.GIVEBUTTER_API_KEY = "test_key";
+    const t = newT();
+    const s = await setupChapter(t);
+    const eventId = await seedEvent(s);
+    await seedPage(s, eventId, "686283");
+
+    const calledUrls: string[] = [];
+    globalThis.fetch = (async (url: string) => {
+      calledUrls.push(url);
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({ data: [], links: { next: null } }),
+        text: async () => "{}",
+      };
+    }) as unknown as typeof fetch;
+
+    await expect(
+      t.action(internal.givebutterSync.syncGivebutterCampaign, { eventId }),
+    ).resolves.toBeNull();
+
+    expect(calledUrls).toHaveLength(1);
+    expect(calledUrls[0]).toContain("/campaigns/686283/tickets");
+    expect(calledUrls.some((u) => u.endsWith("/v1/campaigns"))).toBe(false);
+    expect((await pageRow(s, eventId))?.givebutterCampaignId).toBe("686283");
+  });
+});

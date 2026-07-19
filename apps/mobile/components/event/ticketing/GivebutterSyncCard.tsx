@@ -70,13 +70,12 @@ export function GivebutterSyncCard({ eventId, page, run }: Props) {
       </View>
 
       <TextField
-        label="Campaign ID"
+        label="Campaign ID, code, or slug"
         value={campaignId}
         onChangeText={setCampaignId}
-        placeholder="e.g. 686283"
+        placeholder="e.g. 686283, UM8HE0, or the URL slug"
         autoCapitalize="none"
-        keyboardType="numeric"
-        hint="Found in your Givebutter campaign URL. Leave blank to disable."
+        hint="Campaign ID, code, or slug (e.g. 686283, UM8HE0, or the URL slug). Leave blank to disable."
       />
 
       <View className="flex-row gap-2">
