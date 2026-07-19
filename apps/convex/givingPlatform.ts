@@ -53,6 +53,7 @@ import {
   GIFT_METHODS,
   donorAddressValidator,
 } from "./schema/givingPlatform";
+import { BACKER_UNIT_CENTS } from "@events-os/shared";
 
 // ── Validators ────────────────────────────────────────────────────────────────
 
@@ -76,6 +77,12 @@ const TOP_DONORS_LIMIT = 5;
  *  mutation within Convex's per-transaction document limits). The CSV-import
  *  batch size this comment used to describe now lives in `givingImport.ts`. */
 const BACKFILL_BATCH_SIZE = 100;
+/** Bounded per-donor pledge read for `giverMarks`' `isBacker` derivation — a
+ *  donor realistically holds one or two pledges (re-signups after a lapse),
+ *  so this stays a small, indexed `by_donor` read repeated per giver, never
+ *  an unbounded scan. Mirrors the bounded-recompute precedent in
+ *  `givingPledges.ts` (`BACKER_RECOUNT_LIMIT`), scaled down to "per donor". */
+const GIVER_MARK_PLEDGE_LIMIT = 10;
 
 const THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1000;
 
@@ -173,8 +180,14 @@ export const getDonor = query({
  * Territories P5 — the chapter's "givers": every linked donor (`personId`
  * set) who has actually given (`giftCount > 0` — a prospect with no gift
  * never marks the roster). Feeds the People tab's "Givers" overlay chip + the
- * per-row/detail giving marks, WITHOUT exposing full donor records to a
- * caller who only has roster access.
+ * per-row/detail giving marks, WITHOUT exposing full donor records — or
+ * amounts — to the roster UI (owner privacy request: the People tab shows a
+ * heart/building icon, never a dollar figure; amounts stay in the giving
+ * desk, reached through the existing donor deep-link).
+ *
+ * `isBacker` mirrors `givingPledges.recomputeChapterBackerCount`'s EXACT
+ * predicate (active pledge at/above `BACKER_UNIT_CENTS`) — same floor, same
+ * status check — just evaluated per-donor instead of counted per-chapter.
  *
  * Access: requires `giving.view` at `chapterId` (or central reach) — but
  * degrades QUIETLY to `[]` for a caller without it (never throws), so the
@@ -188,9 +201,7 @@ export const giverMarks = query({
     v.object({
       personId: v.id("people"),
       donorId: v.id("donors"),
-      lifetimeCents: v.number(),
-      lastGiftAt: v.optional(v.number()),
-      status: donorStatusValidator,
+      isBacker: v.boolean(),
     }),
   ),
   handler: async (ctx, { chapterId }) => {
@@ -204,15 +215,27 @@ export const giverMarks = query({
       .withIndex("by_scope_and_lifetime", (q) => q.eq("scope", chapterId))
       .order("desc")
       .take(DONOR_LIST_LIMIT);
-    return donors
-      .filter((d) => d.personId !== undefined && d.giftCount > 0)
-      .map((d) => ({
-        personId: d.personId as Id<"people">,
-        donorId: d._id,
-        lifetimeCents: d.lifetimeCents,
-        lastGiftAt: d.lastGiftAt,
-        status: d.status,
-      }));
+    const givers = donors.filter(
+      (d) => d.personId !== undefined && d.giftCount > 0,
+    );
+    return await Promise.all(
+      givers.map(async (d) => {
+        // Bounded, indexed per-donor read (never unbounded/`.filter()`-on-
+        // query) — a donor realistically holds very few pledges.
+        const pledges = await ctx.db
+          .query("pledges")
+          .withIndex("by_donor", (q) => q.eq("donorId", d._id))
+          .take(GIVER_MARK_PLEDGE_LIMIT);
+        const isBacker = pledges.some(
+          (p) => p.status === "active" && p.amountCents >= BACKER_UNIT_CENTS,
+        );
+        return {
+          personId: d.personId as Id<"people">,
+          donorId: d._id,
+          isBacker,
+        };
+      }),
+    );
   },
 });
 
