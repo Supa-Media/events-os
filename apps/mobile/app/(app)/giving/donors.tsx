@@ -1,10 +1,14 @@
 /**
  * GIVING · Donors — the scope's donor list, sorted by lifetime giving (the
  * "top donors" relationship workflow needs this ordering on day one, PRD §1).
- * Status/kind/source/lifetime-band chips (territories P5 CRM filters) refine
- * the list; status chips flag the reactivation queue (lapsed) at a glance.
- * Tapping a row opens the donor detail. The backend `listDonors` gates on
- * `requireGivingView`.
+ *
+ * Giving-dashboard v2 CRM: the four stacked chip rows are replaced by compact
+ * `FilterSelect` dropdowns (status / kind / source / lifetime band). A CENTRAL
+ * holder also gets a SCOPE dropdown — All chapters / Central / each chapter —
+ * where "All chapters" runs `listDonors`'s central-gated all-scopes merge (each
+ * row tagged with its chapter). A chapter-only viewer sees neither the scope
+ * dropdown nor the fleet — they stay locked to their own chapter. Tapping a row
+ * opens the donor detail. The backend `listDonors` gates on `requireGivingView`.
  */
 import { useState } from "react";
 import { ActivityIndicator, View, Text, Pressable } from "react-native";
@@ -17,14 +21,20 @@ import {
   Badge,
   type BadgeTone,
   EmptyState,
+  FilterSelect,
+  type FilterSelectOption,
   Icon,
   Narrow,
-  Pill,
   Screen,
 } from "../../../components/ui";
 import { colors } from "../../../lib/theme";
 import { useGivingScope } from "../../../lib/useGivingScope";
 import { DonorDuplicatesSheet } from "../../../components/giving/DonorDuplicatesSheet";
+import {
+  ALL_SCOPES_VALUE,
+  anyFilterActive,
+  buildListDonorsArgs,
+} from "../../../components/giving/dashboard/donorFilters";
 
 type GivingScope = "central" | Id<"chapters">;
 
@@ -34,14 +44,14 @@ type GivingScope = "central" | Id<"chapters">;
 // kept in step with `schema/givingPlatform.ts`'s `DONOR_STATUSES`/
 // `DONOR_KINDS`/`DONOR_SOURCES` by hand (small, stable unions).
 
-const STATUS_FILTERS: { value: string; label: string }[] = [
+const STATUS_FILTERS: FilterSelectOption[] = [
   { value: "all", label: "All" },
   { value: "prospect", label: "Prospect" },
   { value: "active", label: "Active" },
   { value: "lapsed", label: "Lapsed" },
 ];
 
-const KIND_FILTERS: { value: string; label: string }[] = [
+const KIND_FILTERS: FilterSelectOption[] = [
   { value: "all", label: "All kinds" },
   { value: "individual", label: "Individual" },
   { value: "church", label: "Church" },
@@ -49,7 +59,7 @@ const KIND_FILTERS: { value: string; label: string }[] = [
   { value: "foundation", label: "Foundation" },
 ];
 
-const SOURCE_FILTERS: { value: string; label: string }[] = [
+const SOURCE_FILTERS: FilterSelectOption[] = [
   { value: "all", label: "All sources" },
   { value: "manual", label: "Manual" },
   { value: "event-donation", label: "Event donation" },
@@ -57,12 +67,13 @@ const SOURCE_FILTERS: { value: string; label: string }[] = [
   { value: "map", label: "Map" },
 ];
 
-// Lifetime bands (dollars, converted to cents for the query arg).
-const LIFETIME_BANDS: { value: string; label: string; cents?: number }[] = [
+// Lifetime bands (dollars, converted to cents for the query arg — see
+// `donorFilters.LIFETIME_BAND_CENTS`).
+const LIFETIME_BANDS: FilterSelectOption[] = [
   { value: "all", label: "Any amount" },
-  { value: "100", label: "$100+", cents: 100_00 },
-  { value: "500", label: "$500+", cents: 500_00 },
-  { value: "1000", label: "$1k+", cents: 1_000_00 },
+  { value: "100", label: "$100+" },
+  { value: "500", label: "$500+" },
+  { value: "1000", label: "$1k+" },
 ];
 
 /** Donor status → chip tone: active reads calm, lapsed warns (reactivation
@@ -92,29 +103,52 @@ export default function DonorsScreen() {
       </Screen>
     );
   }
-  return <DonorsBody scope={access.scope} canManage={access.canManage} />;
+  return (
+    <DonorsBody
+      lensScope={access.scope}
+      isCentral={access.isCentral}
+      canManage={access.canManage}
+    />
+  );
 }
 
-function DonorsBody({ scope, canManage }: { scope: GivingScope; canManage: boolean }) {
+function DonorsBody({
+  lensScope,
+  isCentral,
+  canManage,
+}: {
+  lensScope: GivingScope;
+  isCentral: boolean;
+  canManage: boolean;
+}) {
   const router = useRouter();
   const [status, setStatus] = useState("all");
   const [kind, setKind] = useState("all");
   const [source, setSource] = useState("all");
   const [band, setBand] = useState("all");
+  // The scope selector (central holders only): a chapter id, "central", or the
+  // all-scopes sentinel. Defaults to the app lens's own scope.
+  const [scopeSel, setScopeSel] = useState<string>(lensScope);
   // Duplicate review + merge — manage-gated (Attendance C).
   const [dupOpen, setDupOpen] = useState(false);
 
-  const minLifetimeCents = LIFETIME_BANDS.find((b) => b.value === band)?.cents;
-  const donors = useQuery(api.givingPlatform.listDonors, {
-    scope,
-    status: status === "all" ? undefined : (status as never),
-    kind: kind === "all" ? undefined : (kind as never),
-    source: source === "all" ? undefined : (source as never),
-    minLifetimeCents,
-  });
+  // Central holders get a scope dropdown built from the fleet (central + each
+  // active chapter). Skipped for chapter-only viewers (never central-gated).
+  const fleet = useQuery(
+    api.givingPlatform.dashboardFleet,
+    isCentral ? {} : "skip",
+  );
+  const scopeOptions: FilterSelectOption[] = [
+    { value: ALL_SCOPES_VALUE, label: "All chapters" },
+    ...(fleet?.scopes ?? []).map((s) => ({ value: s.scope, label: s.name })),
+  ];
 
-  const anyFilterActive =
-    status !== "all" || kind !== "all" || source !== "all" || band !== "all";
+  const filters = { status, kind, source, band };
+  const args = buildListDonorsArgs(filters, isCentral ? scopeSel : lensScope);
+  const donors = useQuery(api.givingPlatform.listDonors, args as never);
+
+  const isAllScopes = isCentral && scopeSel === ALL_SCOPES_VALUE;
+  const filtersActive = anyFilterActive(filters);
 
   if (donors === undefined) {
     return (
@@ -127,7 +161,7 @@ function DonorsBody({ scope, canManage }: { scope: GivingScope; canManage: boole
   return (
     <Screen>
       <Narrow>
-        {canManage ? (
+        {canManage && !isAllScopes ? (
           <View className="mb-2 flex-row items-center justify-end">
             <Pressable
               onPress={() => setDupOpen(true)}
@@ -140,84 +174,92 @@ function DonorsBody({ scope, canManage }: { scope: GivingScope; canManage: boole
             </Pressable>
           </View>
         ) : null}
-        <View className="mb-3 gap-2">
-          <FilterRow options={STATUS_FILTERS} value={status} onChange={setStatus} />
-          <FilterRow options={KIND_FILTERS} value={kind} onChange={setKind} />
-          <FilterRow options={SOURCE_FILTERS} value={source} onChange={setSource} />
-          <FilterRow options={LIFETIME_BANDS} value={band} onChange={setBand} />
+
+        {/* CRM filter row — compact dropdowns, wrapping. */}
+        <View className="mb-3 flex-row flex-wrap items-center gap-2">
+          {isCentral ? (
+            <FilterSelect
+              label="Scope"
+              value={scopeSel}
+              options={scopeOptions}
+              onChange={setScopeSel}
+              minWidth={220}
+            />
+          ) : null}
+          <FilterSelect label="Status" value={status} options={STATUS_FILTERS} onChange={setStatus} />
+          <FilterSelect label="Kind" value={kind} options={KIND_FILTERS} onChange={setKind} />
+          <FilterSelect label="Source" value={source} options={SOURCE_FILTERS} onChange={setSource} />
+          <FilterSelect label="Lifetime" value={band} options={LIFETIME_BANDS} onChange={setBand} />
         </View>
 
         {donors.length === 0 ? (
           <EmptyState
-            title={anyFilterActive ? "No donors match those filters" : "No donors yet"}
+            title={filtersActive ? "No donors match those filters" : "No donors yet"}
             message={
-              anyFilterActive
+              filtersActive
                 ? "Try widening a filter above."
                 : "Record a gift on a donor, or bring in history from the Import tab."
             }
           />
         ) : (
           <View className="gap-2">
-            {donors.map((d) => (
-              <Pressable
-                key={d._id}
-                onPress={() => router.navigate(`/giving/donor/${d._id}` as never)}
-              >
-                <View className="flex-row items-center justify-between rounded-lg border border-border bg-raised p-3">
-                  <View className="flex-1 pr-3">
-                    <Text className="text-base font-semibold text-ink" numberOfLines={1}>
-                      {d.name}
-                    </Text>
-                    <Text className="text-xs text-muted" numberOfLines={1}>
-                      {d.email ?? "No email"}
-                      {d.phone ? ` · ${d.phone}` : ""} · {d.giftCount}{" "}
-                      {d.giftCount === 1 ? "gift" : "gifts"}
-                    </Text>
+            {donors.map((d) => {
+              // All-scopes rows carry a `scopeLabel` chapter tag; single-scope
+              // rows don't (see `listDonors`).
+              const tag =
+                "scopeLabel" in d ? (d as { scopeLabel: string }).scopeLabel : null;
+              return (
+                <Pressable
+                  key={d._id}
+                  onPress={() => router.navigate(`/giving/donor/${d._id}` as never)}
+                >
+                  <View className="flex-row items-center justify-between rounded-lg border border-border bg-raised p-3">
+                    <View className="flex-1 pr-3">
+                      <View className="flex-row items-center gap-2">
+                        <Text
+                          className="text-base font-semibold text-ink"
+                          numberOfLines={1}
+                        >
+                          {d.name}
+                        </Text>
+                        {tag ? (
+                          <View className="rounded-pill bg-sunken px-1.5 py-0.5">
+                            <Text className="text-2xs font-semibold text-muted" numberOfLines={1}>
+                              {tag}
+                            </Text>
+                          </View>
+                        ) : null}
+                      </View>
+                      <Text className="text-xs text-muted" numberOfLines={1}>
+                        {d.email ?? "No email"}
+                        {d.phone ? ` · ${d.phone}` : ""} · {d.giftCount}{" "}
+                        {d.giftCount === 1 ? "gift" : "gifts"}
+                      </Text>
+                    </View>
+                    <View className="items-end gap-1">
+                      <Text
+                        className="text-base font-semibold text-ink"
+                        style={{ fontVariant: ["tabular-nums"] }}
+                      >
+                        {formatCents(d.lifetimeCents)}
+                      </Text>
+                      <Badge label={d.status} tone={donorStatusTone(d.status)} />
+                    </View>
                   </View>
-                  <View className="items-end gap-1">
-                    <Text className="text-base font-semibold text-ink">
-                      {formatCents(d.lifetimeCents)}
-                    </Text>
-                    <Badge label={d.status} tone={donorStatusTone(d.status)} />
-                  </View>
-                </View>
-              </Pressable>
-            ))}
+                </Pressable>
+              );
+            })}
           </View>
         )}
       </Narrow>
 
-      {canManage ? (
+      {canManage && !isAllScopes ? (
         <DonorDuplicatesSheet
-          scope={scope}
+          scope={scopeSel as GivingScope}
           visible={dupOpen}
           onClose={() => setDupOpen(false)}
         />
       ) : null}
     </Screen>
-  );
-}
-
-/** One row of filter chips, horizontally wrapped. */
-function FilterRow({
-  options,
-  value,
-  onChange,
-}: {
-  options: { value: string; label: string }[];
-  value: string;
-  onChange: (v: string) => void;
-}) {
-  return (
-    <View className="flex-row flex-wrap gap-1.5">
-      {options.map((o) => (
-        <Pill
-          key={o.value}
-          label={o.label}
-          selected={value === o.value}
-          onPress={() => onChange(value === o.value ? "all" : o.value)}
-        />
-      ))}
-    </View>
   );
 }

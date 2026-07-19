@@ -46,6 +46,12 @@ import {
 } from "../../../components/ui";
 import { colors } from "../../../lib/theme";
 import { useGivingScope } from "../../../lib/useGivingScope";
+import { useChapterContext } from "../../../lib/ChapterContext";
+import {
+  GivingCentralView,
+  type GivingScopeKey,
+} from "../../../components/giving/dashboard/GivingCentralView";
+import { GivingChapterView } from "../../../components/giving/dashboard/GivingChapterView";
 
 type GivingScope = "central" | Id<"chapters">;
 
@@ -79,6 +85,14 @@ export default function GivingDashboardScreen() {
   );
 }
 
+function LoadingBlock() {
+  return (
+    <View className="items-center justify-center py-16">
+      <ActivityIndicator color={colors.accent} />
+    </View>
+  );
+}
+
 function DashboardBody({
   scope,
   lensLabel,
@@ -89,65 +103,31 @@ function DashboardBody({
   canManage: boolean;
 }) {
   const router = useRouter();
-  const data = useQuery(api.givingPlatform.givingDashboard, { scope });
+  // The desk follows the app's chapter lens — a fleet card / attention row tap
+  // switches the ChapterContext the SAME way finance's `ChapterFleet` does
+  // (central `chooseSeat`, chapter `enterPeek`), so `useGivingScope` flips and
+  // the rest of the giving desk follows along. For a giving holder whose
+  // central desk comes from an org-chart seat, that context is present; the
+  // gate is always re-checked server-side regardless.
+  const { chooseSeat, enterPeek } = useChapterContext();
 
-  if (data === undefined) {
-    return (
-      <View className="items-center justify-center py-16">
-        <ActivityIndicator color={colors.accent} />
-      </View>
-    );
+  function onSelectScope(next: GivingScopeKey, name: string) {
+    if (next === "central") chooseSeat("central");
+    else enterPeek(next, name);
   }
 
   return (
     <Screen>
       <Narrow>
-        <Text className="mb-3 text-sm font-semibold text-muted">
-          {lensLabel} · Development
-        </Text>
-
-        <View className="mb-4 flex-row flex-wrap gap-3">
-          <Stat label="Lifetime giving" value={formatCents(data.lifetimeCents)} />
-          <Stat label="Last 30 days" value={formatCents(data.last30Cents)} />
-          <Stat label="Donors" value={String(data.donorCount)} />
-          <Stat
-            label="Lapsed"
-            value={String(data.lapsedCount)}
-            tone={data.lapsedCount > 0 ? "warn" : "neutral"}
-          />
-        </View>
-
-        <SectionHeader title="Top donors" />
-        {data.topDonors.length === 0 ? (
-          <EmptyState
-            title="No donors yet"
-            message="Record a gift or bring in history from the Import tab to get started."
-          />
+        {scope === "central" ? (
+          <CentralFleetSection onSelectScope={onSelectScope} />
         ) : (
-          <View className="gap-2">
-            {data.topDonors.map((d) => (
-              <Pressable
-                key={d._id}
-                onPress={() => router.navigate(`/giving/donor/${d._id}` as never)}
-              >
-                <Card>
-                  <View className="flex-row items-center justify-between">
-                    <View className="flex-1 pr-3">
-                      <Text className="text-base font-semibold text-ink" numberOfLines={1}>
-                        {d.name}
-                      </Text>
-                      <Text className="text-xs text-muted">
-                        {d.giftCount} {d.giftCount === 1 ? "gift" : "gifts"} · {d.status}
-                      </Text>
-                    </View>
-                    <Text className="text-base font-semibold text-ink">
-                      {formatCents(d.lifetimeCents)}
-                    </Text>
-                  </View>
-                </Card>
-              </Pressable>
-            ))}
-          </View>
+          <ChapterDashSection
+            scope={scope}
+            lensLabel={lensLabel}
+            onDonor={(id) => router.navigate(`/giving/donor/${id}` as never)}
+            onReactivate={() => router.navigate("/giving/donors" as never)}
+          />
         )}
 
         {canManage ? <PossibleGiftsSection scope={scope} /> : null}
@@ -156,24 +136,38 @@ function DashboardBody({
   );
 }
 
-function Stat({
-  label,
-  value,
-  tone = "neutral",
+/** Central lens → the org-wide fleet (`dashboardFleet`). */
+function CentralFleetSection({
+  onSelectScope,
 }: {
-  label: string;
-  value: string;
-  tone?: "neutral" | "warn";
+  onSelectScope: (scope: GivingScopeKey, name: string) => void;
 }) {
+  const data = useQuery(api.givingPlatform.dashboardFleet, {});
+  if (data === undefined) return <LoadingBlock />;
+  return <GivingCentralView data={data} onSelectScope={onSelectScope} />;
+}
+
+/** Chapter lens → the scope's own dashboard (`givingDashboard`), restyled. */
+function ChapterDashSection({
+  scope,
+  lensLabel,
+  onDonor,
+  onReactivate,
+}: {
+  scope: GivingScope;
+  lensLabel: string;
+  onDonor: (id: Id<"donors">) => void;
+  onReactivate: () => void;
+}) {
+  const data = useQuery(api.givingPlatform.givingDashboard, { scope });
+  if (data === undefined) return <LoadingBlock />;
   return (
-    <View className="min-w-[140px] flex-1 rounded-lg border border-border bg-raised p-3">
-      <Text className="text-xs text-muted">{label}</Text>
-      <Text
-        className={`mt-1 text-xl font-bold ${tone === "warn" ? "text-warn" : "text-ink"}`}
-      >
-        {value}
-      </Text>
-    </View>
+    <GivingChapterView
+      data={data}
+      lensLabel={lensLabel}
+      onDonor={onDonor}
+      onReactivate={onReactivate}
+    />
   );
 }
 
