@@ -75,7 +75,11 @@ import { Doc, Id } from "./_generated/dataModel";
 import { normalizeEmail } from "./lib/access";
 import { isChapterAdmin } from "./lib/org";
 import { requireGivingManage, type GivingScope } from "./lib/givingAccess";
-import { applyScopeDelta, deriveDonorStatus } from "./lib/givingDonors";
+import {
+  applyScopeDelta,
+  deriveDonorStatus,
+  linkDonorToPerson,
+} from "./lib/givingDonors";
 
 // ── Bounds ───────────────────────────────────────────────────────────────────
 /** Rows read per indexed-drain page. Patched rows leave the person index, so
@@ -716,6 +720,15 @@ export const mergeDonors = mutation({
 
     // 3) Contact field-merge (survivor keeps its own; blanks fill from duplicate;
     //    survivor keeps its `personId`, adopting the duplicate's only if unlinked).
+    //
+    // OWNER FEEDBACK #3a — the donor↔person link must SURVIVE a merge. The `fill`
+    // below carries `personId` in its field list, so the surviving donor keeps
+    // its own link, or ADOPTS the duplicate's when the survivor was unlinked
+    // (the exact case the owner hit: he merged two donor records and expected
+    // the person link to persist). Step 6 then re-links from the roster if the
+    // merged donor is a chapter donor that ended up with NO link at all (both
+    // sides unlinked, but the combined contact fields now match a roster row).
+    // The `donorPeople`/`dataHygiene` regression tests lock all three paths.
     const now = Date.now();
     const donorPatch: Record<string, unknown> = {
       lifetimeCents,
@@ -755,6 +768,18 @@ export const mergeDonors = mutation({
 
     // 5) Delete the now-merged duplicate donor.
     await ctx.db.delete(duplicateId);
+
+    // 6) OWNER FEEDBACK #3a — belt-and-suspenders re-link. If the merged donor
+    //    is a CHAPTER donor that ended up with NO person link (neither side had
+    //    one), retry the roster match now that its contact fields are unioned.
+    //    A no-op for a central donor or an already-linked survivor
+    //    (`linkDonorToPerson` short-circuits / the caller guards on undefined).
+    if (typedScope !== "central") {
+      const merged = await ctx.db.get(survivorId);
+      if (merged && merged.personId === undefined) {
+        await linkDonorToPerson(ctx, merged);
+      }
+    }
 
     return { repointed, fieldsFilled };
   },

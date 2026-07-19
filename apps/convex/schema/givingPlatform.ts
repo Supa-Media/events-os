@@ -100,6 +100,17 @@ export const GIFT_AUDIT_ACTIONS = [
   "edited",
   "reassignedDonor",
   "movedScope",
+  // Gifts ledger integrity tools (owner feedback #1/#2):
+  //  - `deleted`        — the gift row is GONE, so this breadcrumb carries a
+  //    self-contained SNAPSHOT of it (donor name, amount, date, book, source)
+  //    in `changes`, plus the required "why" in `note`. Read at the BOOK level
+  //    (`by_scope`) — a deleted gift has no detail screen to reach `by_gift`.
+  //  - `split`          — written on the ORIGINAL gift right before it's
+  //    replaced by its per-part children (snapshot + child book/amount refs).
+  //  - `createdBySplit` — written on EACH child gift, referencing the original.
+  "deleted",
+  "split",
+  "createdBySplit",
 ] as const;
 
 /** A donor's `scope`: the chapter that stewards the relationship, or central. */
@@ -130,12 +141,19 @@ export const donorAddressValidator = v.object({
  *                   at/above `BACKER_UNIT_CENTS`);
  *  - `past_due`   — a cycle's payment failed; Stripe Smart Retries is dunning;
  *  - `canceled`   — the subscription ended (donor canceled, or Stripe gave up).
+ *  - `paused`     — owner feedback #5a: a MANUAL, local hold. A paused pledge
+ *                   does NOT count toward `backerCount` (the derived count only
+ *                   sums `active` pledges, so `paused` is excluded for free) but
+ *                   STAYS in the backers list (history preserved). Appended last
+ *                   (never renumber — callers persist these literals). See
+ *                   `givingPledges.setPledgeStatus` for the Stripe interaction.
  */
 export const PLEDGE_STATUSES = [
   "incomplete",
   "active",
   "past_due",
   "canceled",
+  "paused",
 ] as const;
 
 /**
@@ -305,7 +323,75 @@ export const giftAudit = defineTable({
     ),
   ),
   note: v.optional(v.string()), // the actor's optional "why"
-}).index("by_gift", ["giftId"]);
+})
+  .index("by_gift", ["giftId"])
+  // Book-level trail: a `deleted` breadcrumb outlives its (now-gone) gift, so
+  // it can only be surfaced by scope, newest-first. Also lets the ledger show a
+  // book's recent human changes without walking every gift.
+  .index("by_scope_and_at", ["scope", "at"]);
+
+/**
+ * Donor field AUDIT (owner feedback #4) — the donor-record counterpart to
+ * `giftAudit`. One immutable breadcrumb per HUMAN change to a donor's identity
+ * fields (name / email / phone) OR its person link, written after the write
+ * commits. `changes` is a compact display-ready field-level diff (same shape as
+ * `giftAudit.changes`); `note` is the actor's optional "why". Read bounded
+ * newest-first via `by_donor` on the donor detail. System writes (import,
+ * event/Stripe dual-write, match-or-create) do NOT narrate — the trail is for
+ * desk edits, like `giftAudit`.
+ */
+export const DONOR_AUDIT_ACTIONS = [
+  "edited",
+  "linkedPerson",
+  "unlinkedPerson",
+] as const;
+
+export const donorAudit = defineTable({
+  donorId: v.id("donors"),
+  scope: givingScope,
+  actorUserId: v.id("users"),
+  at: v.number(),
+  action: v.union(...DONOR_AUDIT_ACTIONS.map((a) => v.literal(a))),
+  changes: v.optional(
+    v.array(
+      v.object({
+        field: v.string(),
+        from: v.optional(v.string()),
+        to: v.optional(v.string()),
+      }),
+    ),
+  ),
+  note: v.optional(v.string()),
+}).index("by_donor", ["donorId"]);
+
+/**
+ * Pledge lifecycle HISTORY (owner feedback #5d) — one immutable event per
+ * status transition (manual AND system/billing) and per manual field edit
+ * (`startedAt`, delete), so a backer's paused / resumed / card-failed / canceled
+ * timeline is legible. `actorUserId` is set for a human desk action and ABSENT
+ * for a system/billing transition (Stripe webhook, invoice cycle) — the read
+ * renders "System" when it's absent. `from`/`to` are display-ready strings.
+ * Read bounded newest-first via `by_pledge` on the backer detail.
+ */
+export const PLEDGE_EVENT_KINDS = [
+  "created",
+  "status",
+  "startedAt",
+  "amount",
+  "deleted",
+] as const;
+
+export const pledgeEvents = defineTable({
+  pledgeId: v.id("pledges"),
+  scope: givingScope,
+  at: v.number(),
+  // Absent = a system/billing transition (Stripe webhook / invoice cycle).
+  actorUserId: v.optional(v.id("users")),
+  kind: v.union(...PLEDGE_EVENT_KINDS.map((k) => v.literal(k))),
+  from: v.optional(v.string()),
+  to: v.optional(v.string()),
+  note: v.optional(v.string()),
+}).index("by_pledge", ["pledgeId"]);
 
 /**
  * Territories P7 (bank-credit gift matching, §D10) — a development-team

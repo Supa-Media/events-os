@@ -190,7 +190,10 @@ describe("removeGift", () => {
       method: "check",
     })) as Id<"gifts">;
 
-    await s.as.mutation(api.givingPlatform.removeGift, { giftId });
+    await s.as.mutation(api.givingPlatform.removeGift, {
+      giftId,
+      why: "test removal",
+    });
 
     const donor = await donorRow(s, donorId);
     expect(donor?.lifetimeCents).toBe(0);
@@ -694,7 +697,9 @@ describe("listDonors all-scopes mode", () => {
     const all = (await s.as.query(api.givingPlatform.listDonors, {
       scope: "central",
       allScopes: true,
-    })) as Array<Doc<"donors"> & { scopeLabel: string }>;
+    })) as Array<
+      Doc<"donors"> & { scopeLabel: string; linkedPersonName: string | null }
+    >;
 
     // Merge order, strongest lifetime first: central($70) → boston($50) → ny($30).
     const known = all

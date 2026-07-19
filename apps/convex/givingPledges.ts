@@ -48,6 +48,9 @@ import { matchOrCreateDonor, recordGiftForDonor } from "./lib/givingDonors";
 import { PLEDGE_STATUSES } from "./schema/givingPlatform";
 import { siteUrl, givePagePath } from "./lib/siteUrl";
 import { territoryForChapter } from "./territories";
+import { requireUserId } from "./lib/context";
+import { writePledgeEvent, GIVING_AUDIT_READ_CAP } from "./lib/givingAudit";
+import { auditCents } from "./lib/giftAudit";
 
 const STRIPE_API = "https://api.stripe.com/v1";
 
@@ -74,6 +77,39 @@ const pledgeStatusValidator = v.union(
   ...PLEDGE_STATUSES.map((s) => v.literal(s)),
 );
 type PledgeStatus = (typeof PLEDGE_STATUSES)[number];
+
+/** Display labels for a pledge status (the audit/history render). */
+const PLEDGE_STATUS_LABELS: Record<PledgeStatus, string> = {
+  incomplete: "Incomplete",
+  active: "Active",
+  past_due: "Past due",
+  canceled: "Canceled",
+  paused: "Paused",
+};
+
+/**
+ * Write a `status` pledge-lifecycle event (owner feedback #5d). `actorUserId`
+ * ABSENT = a system/billing transition (every webhook handler below); a manual
+ * desk transition passes the acting user. Called ONLY when the status actually
+ * changed, so the timeline has no phantom rows.
+ */
+async function logPledgeStatus(
+  ctx: MutationCtx,
+  pledge: Doc<"pledges">,
+  from: PledgeStatus,
+  to: PledgeStatus,
+  opts?: { actorUserId?: Id<"users">; note?: string },
+): Promise<void> {
+  await writePledgeEvent(ctx, {
+    pledgeId: pledge._id,
+    scope: pledge.scope as GivingScope,
+    kind: "status",
+    from: PLEDGE_STATUS_LABELS[from],
+    to: PLEDGE_STATUS_LABELS[to],
+    ...(opts?.actorUserId ? { actorUserId: opts.actorUserId } : {}),
+    ...(opts?.note ? { note: opts.note } : {}),
+  });
+}
 
 // ── Guards ────────────────────────────────────────────────────────────────────
 
@@ -257,6 +293,13 @@ export const preparePledge = internalMutation({
       origin: "stripe",
       createdAt: Date.now(),
     });
+    // Lifecycle history starts here (system-authored — the public checkout flow).
+    await writePledgeEvent(ctx, {
+      pledgeId,
+      scope,
+      kind: "created",
+      to: PLEDGE_STATUS_LABELS.incomplete,
+    });
     return {
       pledgeId,
       amountCents: args.amountCents,
@@ -391,6 +434,9 @@ export const activatePledgeFromCheckout = internalMutation({
       ...(args.currentPeriodEnd ? { currentPeriodEnd: args.currentPeriodEnd } : {}),
       startedAt: pledge.startedAt ?? Date.now(),
     });
+    if (pledge.status !== "active") {
+      await logPledgeStatus(ctx, pledge, pledge.status, "active");
+    }
     await recomputePledgeCounters(ctx, pledge);
     return true;
   },
@@ -472,8 +518,16 @@ export const recordPledgeInvoice = internalMutation({
     }
 
     // A paid cycle recovers a past_due pledge and refreshes the period end.
+    // A manually `paused` pledge is NOT auto-resumed by a stray paid cycle — the
+    // gift above is still recorded (money is money), but the owner's deliberate
+    // pause holds until they resume it or cancel in Stripe (see setPledgeStatus's
+    // "Stripe interaction" note). A `canceled` pledge is terminal.
     const patch: Partial<Doc<"pledges">> = {};
-    if (pledge.status !== "active" && pledge.status !== "canceled") {
+    if (
+      pledge.status !== "active" &&
+      pledge.status !== "canceled" &&
+      pledge.status !== "paused"
+    ) {
       patch.status = "active";
     }
     if (args.currentPeriodEnd && args.currentPeriodEnd !== pledge.currentPeriodEnd) {
@@ -481,7 +535,10 @@ export const recordPledgeInvoice = internalMutation({
     }
     if (Object.keys(patch).length > 0) {
       await ctx.db.patch(pledge._id, patch);
-      if (patch.status) await recomputePledgeCounters(ctx, pledge);
+      if (patch.status) {
+        await logPledgeStatus(ctx, pledge, pledge.status, patch.status);
+        await recomputePledgeCounters(ctx, pledge);
+      }
     }
     return true;
   },
@@ -578,8 +635,15 @@ export const markPledgePastDue = internalMutation({
   handler: async (ctx, args) => {
     const pledge = await pledgeBySubscription(ctx, args.subscriptionId);
     if (!pledge) return false;
-    if (pledge.status !== "past_due" && pledge.status !== "canceled") {
+    // A manually `paused` pledge isn't billing, so a dunning event doesn't move
+    // it to past_due — the pause holds. `canceled` is terminal.
+    if (
+      pledge.status !== "past_due" &&
+      pledge.status !== "canceled" &&
+      pledge.status !== "paused"
+    ) {
       await ctx.db.patch(pledge._id, { status: "past_due" });
+      await logPledgeStatus(ctx, pledge, pledge.status, "past_due");
       await recomputePledgeCounters(ctx, pledge);
     }
     return true;
@@ -600,7 +664,15 @@ export const syncPledgeSubscription = internalMutation({
     const pledge = await pledgeBySubscription(ctx, args.subscriptionId);
     if (!pledge) return false;
 
-    const status = mapStripeSubStatus(args.stripeStatus, pledge.status);
+    const mapped = mapStripeSubStatus(args.stripeStatus, pledge.status);
+    // A manually `paused` pledge is a LOCAL overlay Stripe knows nothing about
+    // (we don't pause_collection on the subscription — that's a documented
+    // follow-up). So a benign `subscription.updated` that maps to `active`/
+    // `past_due` must NOT clobber the pause; only a genuine Stripe `canceled`
+    // overrides it (the subscription really ended). This is what keeps a manual
+    // pause from "fighting the billing cycle" (owner feedback #5a).
+    const status =
+      pledge.status === "paused" && mapped !== "canceled" ? "paused" : mapped;
     const patch: Partial<Doc<"pledges">> = {};
     if (status !== pledge.status) patch.status = status;
     if (
@@ -622,6 +694,9 @@ export const syncPledgeSubscription = internalMutation({
     if (Object.keys(patch).length === 0) return true;
 
     await ctx.db.patch(pledge._id, patch);
+    if (patch.status !== undefined) {
+      await logPledgeStatus(ctx, pledge, pledge.status, patch.status);
+    }
     // A status or amount change can move a backer in/out of the derived count.
     if (patch.status !== undefined || patch.amountCents !== undefined) {
       await recomputePledgeCounters(ctx, pledge);
@@ -642,6 +717,7 @@ export const cancelPledgeSubscription = internalMutation({
         status: "canceled",
         canceledAt: Date.now(),
       });
+      await logPledgeStatus(ctx, pledge, pledge.status, "canceled");
       await recomputePledgeCounters(ctx, pledge);
     }
     return true;
@@ -775,6 +851,206 @@ export const getDonorPledges = query({
       .withIndex("by_donor", (q) => q.eq("donorId", donorId))
       .order("desc")
       .take(DONOR_PLEDGE_LIMIT);
+  },
+});
+
+// ── Manual backer management (owner feedback #5, giving-manage gated) ─────────
+
+/**
+ * Manually PAUSE or RESUME a backer's pledge (owner feedback #5a). A `paused`
+ * pledge does NOT count toward the chapter's `backerCount` (the derived
+ * predicate only counts `active` pledges, so paused is excluded automatically —
+ * no predicate change needed) but STAYS in the backers list (history preserved).
+ * Manage-gated at the pledge's scope; writes a `status` lifecycle event.
+ *
+ * Stripe interaction (owner feedback #5a "so a manual pause doesn't fight the
+ * billing cycle"): `paused` is a LOCAL overlay — we do NOT call Stripe
+ * `pause_collection` (a follow-up). To stop the subscription from re-flipping
+ * the pledge, the webhook handlers treat `paused` as sticky: a benign
+ * `subscription.updated` (→ active/past_due) and a dunning `payment_failed`
+ * leave a paused pledge paused; a paid `invoice.paid` still records the gift but
+ * doesn't auto-resume; only a genuine Stripe `canceled` overrides the pause.
+ * So the subscription may keep charging in the background — the owner should
+ * cancel in the Stripe portal to fully stop billing; the pause just removes the
+ * backer from the count immediately.
+ *
+ * Allowed transitions: pause from `active`/`past_due`; resume (→ `active`) from
+ * `paused`. `incomplete`/`canceled` are Stripe-owned terminal-ish states and
+ * aren't manually toggled here.
+ */
+export const setPledgeStatus = mutation({
+  args: {
+    pledgeId: v.id("pledges"),
+    status: v.union(v.literal("active"), v.literal("paused")),
+    why: v.optional(v.string()),
+  },
+  returns: v.null(),
+  handler: async (ctx, { pledgeId, status, why }) => {
+    const pledge = await ctx.db.get(pledgeId);
+    if (!pledge) {
+      throw new ConvexError({ code: "NOT_FOUND", message: "Pledge not found." });
+    }
+    await requireGivingManage(ctx, pledge.scope as GivingScope);
+    const actorUserId = (await requireUserId(ctx)) as Id<"users">;
+
+    if (pledge.status === status) return null; // no-op
+
+    if (status === "paused") {
+      if (pledge.status !== "active" && pledge.status !== "past_due") {
+        throw new ConvexError({
+          code: "INVALID_TRANSITION",
+          message: "Only an active or past-due pledge can be paused.",
+        });
+      }
+    } else {
+      // Resume → active, only from paused (never force-activate a Stripe state).
+      if (pledge.status !== "paused") {
+        throw new ConvexError({
+          code: "INVALID_TRANSITION",
+          message: "Only a paused pledge can be resumed.",
+        });
+      }
+    }
+
+    await ctx.db.patch(pledgeId, { status });
+    await logPledgeStatus(ctx, pledge, pledge.status, status, {
+      actorUserId,
+      note: why,
+    });
+    await recomputePledgeCounters(ctx, { ...pledge, status });
+    return null;
+  },
+});
+
+/**
+ * Correct a pledge's "Since" date (owner feedback #5b — his `startedAt` data is
+ * inaccurate). Manage-gated; requires a `why`; writes a `startedAt` event. Does
+ * NOT touch counters (the backer count doesn't depend on the start date).
+ */
+export const editPledgeStartedAt = mutation({
+  args: {
+    pledgeId: v.id("pledges"),
+    startedAt: v.number(),
+    why: v.string(),
+  },
+  returns: v.null(),
+  handler: async (ctx, { pledgeId, startedAt, why }) => {
+    const pledge = await ctx.db.get(pledgeId);
+    if (!pledge) {
+      throw new ConvexError({ code: "NOT_FOUND", message: "Pledge not found." });
+    }
+    await requireGivingManage(ctx, pledge.scope as GivingScope);
+    const reason = why.trim();
+    if (!reason) {
+      throw new ConvexError({
+        code: "REASON_REQUIRED",
+        message: "Say why you're changing the start date.",
+      });
+    }
+    const actorUserId = (await requireUserId(ctx)) as Id<"users">;
+    if (pledge.startedAt === startedAt) return null; // no-op
+
+    await ctx.db.patch(pledgeId, { startedAt });
+    await writePledgeEvent(ctx, {
+      pledgeId,
+      scope: pledge.scope as GivingScope,
+      kind: "startedAt",
+      from: pledge.startedAt
+        ? new Date(pledge.startedAt).toLocaleDateString()
+        : "—",
+      to: new Date(startedAt).toLocaleDateString(),
+      actorUserId,
+      note: reason,
+    });
+    return null;
+  },
+});
+
+/**
+ * Delete a pledge (owner feedback #5c). Manage-gated; requires a `why`. Writes a
+ * `deleted` lifecycle event carrying a SNAPSHOT (amount / status) + the reason
+ * BEFORE the row is gone, then removes it and recomputes the backer count.
+ *
+ * NOTE: paid billing cycles already wrote their own `gifts` rows (with
+ * `pledgeId` set) — those STAY as giving history; deleting the pledge only drops
+ * the subscription-state row, not the money the backer actually gave.
+ */
+export const deletePledge = mutation({
+  args: { pledgeId: v.id("pledges"), why: v.string() },
+  returns: v.null(),
+  handler: async (ctx, { pledgeId, why }) => {
+    const pledge = await ctx.db.get(pledgeId);
+    if (!pledge) {
+      throw new ConvexError({ code: "NOT_FOUND", message: "Pledge not found." });
+    }
+    await requireGivingManage(ctx, pledge.scope as GivingScope);
+    const reason = why.trim();
+    if (!reason) {
+      throw new ConvexError({
+        code: "REASON_REQUIRED",
+        message: "Say why you're deleting this pledge.",
+      });
+    }
+    const actorUserId = (await requireUserId(ctx)) as Id<"users">;
+
+    await writePledgeEvent(ctx, {
+      pledgeId,
+      scope: pledge.scope as GivingScope,
+      kind: "deleted",
+      from: `${auditCents(pledge.amountCents)}/mo · ${
+        PLEDGE_STATUS_LABELS[pledge.status]
+      }`,
+      actorUserId,
+      note: reason,
+    });
+    await ctx.db.delete(pledgeId);
+    await recomputePledgeCounters(ctx, pledge);
+    return null;
+  },
+});
+
+/**
+ * A pledge's lifecycle HISTORY (owner feedback #5d) — every status transition
+ * (manual AND system/billing) + field edit, newest-first. `actor` is the desk
+ * user's name, or "System" for a billing transition. Gated by the pledge's scope.
+ */
+export const pledgeHistory = query({
+  args: { pledgeId: v.id("pledges") },
+  handler: async (ctx, { pledgeId }) => {
+    const pledge = await ctx.db.get(pledgeId);
+    if (!pledge) {
+      throw new ConvexError({ code: "NOT_FOUND", message: "Pledge not found." });
+    }
+    await requireGivingView(ctx, pledge.scope as GivingScope);
+    const rows = await ctx.db
+      .query("pledgeEvents")
+      .withIndex("by_pledge", (q) => q.eq("pledgeId", pledgeId))
+      .order("desc")
+      .take(GIVING_AUDIT_READ_CAP);
+    const actorNames = new Map<string, string>();
+    for (const id of new Set(
+      rows
+        .map((e) => e.actorUserId)
+        .filter((id): id is Id<"users"> => id !== undefined),
+    )) {
+      const profile = await ctx.db
+        .query("userProfiles")
+        .withIndex("by_userId", (q) => q.eq("userId", id))
+        .unique();
+      actorNames.set(
+        id,
+        profile?.name ?? (await ctx.db.get(id))?.email ?? "Someone",
+      );
+    }
+    return rows.map((e) => ({
+      _id: e._id,
+      at: e.at,
+      kind: e.kind,
+      from: e.from ?? null,
+      to: e.to ?? null,
+      note: e.note ?? null,
+      actor: e.actorUserId ? actorNames.get(e.actorUserId) ?? "Someone" : "System",
+    }));
   },
 });
 
