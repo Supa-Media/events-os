@@ -39,7 +39,6 @@ import {
   personaOf,
   responsibilityAppliesTo,
   type Persona,
-  formatCents,
 } from "@events-os/shared";
 import { DutyRows } from "../../../components/work/DutyRows";
 import { AddResponsibilityModal } from "../../../components/team/AddResponsibilityModal";
@@ -74,12 +73,14 @@ type Person = Doc<"people"> & { imageUrl?: string | null };
 // member can also be a giver. Absent entirely (empty map) for a caller with no
 // giving access at this chapter, so the whole overlay quietly disappears
 // rather than erroring.
+//
+// Owner privacy request: the roster NEVER shows a dollar amount — only a
+// heart (giver) and, if `isBacker`, an additional building icon. Amounts
+// live only in the giving desk, reached through `donorId`'s deep-link.
 type GiverMark = {
   personId: Id<"people">;
   donorId: Id<"donors">;
-  lifetimeCents: number;
-  lastGiftAt?: number;
-  status: string;
+  isBacker: boolean;
 };
 
 // The segmented filter adds an "all" sentinel on top of the shared Persona set.
@@ -529,17 +530,22 @@ function PersonRow({
         {person.userId ? (
           <Icon name="user-check" size={14} color={colors.success} />
         ) : null}
-        {/* Giver overlay badge (territories P5) — a heart + lifetime giving,
-            NOT a persona: a Team member/Volunteer/Vendor can also be a giver. */}
+        {/* Giver overlay badge (territories P5) — a heart marks a giver, an
+            additional building icon marks a backer, NOT a persona: a Team
+            member/Volunteer/Vendor can also be a giver. Owner privacy
+            request: icons only, never a dollar amount — that lives in the
+            giving desk (tap through the detail sheet). */}
         {giverMark ? (
           <View
             className="flex-row items-center gap-0.5"
-            accessibilityLabel={`Giver — ${formatCents(giverMark.lifetimeCents)} lifetime`}
+            accessibilityLabel={
+              giverMark.isBacker ? "Giver · Backer" : "Giver"
+            }
           >
             <Icon name="heart" size={11} color={colors.danger} />
-            <Text className="text-2xs font-semibold text-muted">
-              {formatCents(giverMark.lifetimeCents)}
-            </Text>
+            {giverMark.isBacker ? (
+              <Icon name="building" size={11} color={colors.info} />
+            ) : null}
           </View>
         ) : null}
       </View>
@@ -1106,10 +1112,12 @@ function PersonDetailBody({
           </View>
         ) : null}
 
-        {/* Giving (territories P5) — a small lifetime-giving line linking to
-            the donor record, shown only when this person is a marked giver
+        {/* Giving (territories P5) — a heart/building mark linking to the
+            donor record, shown only when this person is a marked giver
             (absent for everyone else, and absent entirely for a caller with
-            no giving access — `giverMark` is null in both cases). */}
+            no giving access — `giverMark` is null in both cases). Owner
+            privacy request: NO dollar amount on the roster — tap through to
+            the giving desk for that. */}
         {giverMark ? (
           <View className="mb-4">
             <Text className="mb-2 text-2xs font-bold uppercase tracking-wider text-muted">
@@ -1120,18 +1128,21 @@ function PersonDetailBody({
                 onClose();
                 router.push(`/giving/donor/${giverMark.donorId}` as never);
               }}
+              accessibilityLabel={
+                giverMark.isBacker ? "Giver · Backer" : "Giver"
+              }
               className="flex-row items-center justify-between rounded-lg border border-border bg-raised p-3 active:opacity-70"
             >
               <View className="flex-row items-center gap-2">
                 <Icon name="heart" size={14} color={colors.danger} />
-                <Text className="text-sm text-ink">Lifetime giving</Text>
-              </View>
-              <View className="flex-row items-center gap-1">
-                <Text className="text-sm font-semibold text-ink">
-                  {formatCents(giverMark.lifetimeCents)}
+                {giverMark.isBacker ? (
+                  <Icon name="building" size={14} color={colors.info} />
+                ) : null}
+                <Text className="text-sm text-ink">
+                  {giverMark.isBacker ? "Giver · Backer" : "Giver"}
                 </Text>
-                <Icon name="chevron-right" size={14} color={colors.muted} />
               </View>
+              <Icon name="chevron-right" size={14} color={colors.muted} />
             </Pressable>
           </View>
         ) : null}
