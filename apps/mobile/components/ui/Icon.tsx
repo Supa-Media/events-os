@@ -17,6 +17,9 @@ const IONICONS_ALIASES = {
   // Feather's flag is outline-only; the solid Ionicons flag fills with `color`
   // for markers that need to read as a bold, filled pin (e.g. the event day).
   "flag-solid": "flag",
+  // Feather has no building glyph; Ionicons' "business" reads as the
+  // recognizable building icon used for the People tab's "backer" mark.
+  building: "business",
 } as const;
 
 export type IconName =
