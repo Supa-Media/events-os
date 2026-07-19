@@ -5,6 +5,7 @@ import { newT, run, setupChapter, type ChapterSetup } from "./setup.helpers";
 import { runSeedSeatDefs } from "../migrations/0022_seed_seat_defs";
 import { runLinkDonorPeople } from "../migrations/0032_link_donor_people";
 import type { Doc, Id } from "../_generated/dataModel";
+import { BACKER_UNIT_CENTS } from "@events-os/shared";
 
 /**
  * Territories P5 — donor↔people link, giver marks, CRM filters:
@@ -16,7 +17,11 @@ import type { Doc, Id } from "../_generated/dataModel";
  *   - placeholder/sample roster rows are never matched (or created as one),
  *   - migration 0032 backfills existing unlinked chapter donors and is
  *     idempotent,
- *   - `giverMarks` surfaces only gifted, linked donors and degrades quietly
+ *   - `giverMarks` surfaces only gifted, linked donors as a bare
+ *     `{personId, donorId, isBacker}` projection — NO money field on the
+ *     wire (owner privacy request) — derives `isBacker` from the same
+ *     active-pledge-at/above-`BACKER_UNIT_CENTS` predicate as
+ *     `givingPledges.recomputeChapterBackerCount`, and degrades quietly
  *     (never throws) for a caller with no giving access,
  *   - `listDonors`' new status/kind/source/minLifetimeCents filters compose.
  */
@@ -301,7 +306,7 @@ describe("migration 0032 — link donor people backfill", () => {
 // ── giverMarks ─────────────────────────────────────────────────────────────────
 
 describe("giverMarks", () => {
-  test("returns only linked donors who have actually given", async () => {
+  test("returns only linked donors who have actually given, with no money field on the wire", async () => {
     const s = await devDirectorSetup();
 
     // A giver: linked + gifted.
@@ -328,8 +333,107 @@ describe("giverMarks", () => {
     });
     expect(marks).toHaveLength(1);
     expect(marks[0].donorId).toBe(giverDonorId);
-    expect(marks[0].lifetimeCents).toBe(5000);
-    expect(marks[0].status).toBe("active");
+    expect(marks[0].isBacker).toBe(false);
+    // Owner privacy request: the wire projection carries no money fields.
+    expect(marks[0]).not.toHaveProperty("lifetimeCents");
+    expect(marks[0]).not.toHaveProperty("lastGiftAt");
+    expect(marks[0]).not.toHaveProperty("status");
+    expect(Object.keys(marks[0]).sort()).toEqual(
+      ["donorId", "isBacker", "personId"].sort(),
+    );
+  });
+
+  test("isBacker is true for a donor with an active pledge at/above BACKER_UNIT_CENTS, false otherwise", async () => {
+    const s = await devDirectorSetup();
+
+    // A backer: gifted + an ACTIVE pledge at the backer unit.
+    const backerDonorId = (await s.as.mutation(api.givingPlatform.upsertDonor, {
+      scope: s.chapterId,
+      name: "Backer Donor",
+      email: "backer@example.com",
+    })) as Id<"donors">;
+    await s.as.mutation(api.givingPlatform.recordGift, {
+      donorId: backerDonorId,
+      amountCents: 1000,
+      method: "cash",
+    });
+    await run(s.t, (ctx) =>
+      ctx.db.insert("pledges", {
+        donorId: backerDonorId,
+        scope: s.chapterId,
+        amountCents: BACKER_UNIT_CENTS,
+        status: "active",
+        origin: "stripe",
+        createdAt: Date.now(),
+      }),
+    );
+
+    // A giver with a pledge BELOW the backer unit — still a giver, not a backer.
+    const smallPledgeDonorId = (await s.as.mutation(
+      api.givingPlatform.upsertDonor,
+      { scope: s.chapterId, name: "Small Pledge Donor", email: "small@example.com" },
+    )) as Id<"donors">;
+    await s.as.mutation(api.givingPlatform.recordGift, {
+      donorId: smallPledgeDonorId,
+      amountCents: 1000,
+      method: "cash",
+    });
+    await run(s.t, (ctx) =>
+      ctx.db.insert("pledges", {
+        donorId: smallPledgeDonorId,
+        scope: s.chapterId,
+        amountCents: BACKER_UNIT_CENTS - 1000,
+        status: "active",
+        origin: "stripe",
+        createdAt: Date.now(),
+      }),
+    );
+
+    // A giver with a qualifying pledge that is CANCELED — not a backer.
+    const canceledPledgeDonorId = (await s.as.mutation(
+      api.givingPlatform.upsertDonor,
+      {
+        scope: s.chapterId,
+        name: "Canceled Pledge Donor",
+        email: "canceled@example.com",
+      },
+    )) as Id<"donors">;
+    await s.as.mutation(api.givingPlatform.recordGift, {
+      donorId: canceledPledgeDonorId,
+      amountCents: 1000,
+      method: "cash",
+    });
+    await run(s.t, (ctx) =>
+      ctx.db.insert("pledges", {
+        donorId: canceledPledgeDonorId,
+        scope: s.chapterId,
+        amountCents: BACKER_UNIT_CENTS,
+        status: "canceled",
+        origin: "stripe",
+        createdAt: Date.now(),
+        canceledAt: Date.now(),
+      }),
+    );
+
+    // A plain giver with no pledge at all — not a backer.
+    const plainGiverDonorId = (await s.as.mutation(
+      api.givingPlatform.upsertDonor,
+      { scope: s.chapterId, name: "Plain Giver", email: "plain@example.com" },
+    )) as Id<"donors">;
+    await s.as.mutation(api.givingPlatform.recordGift, {
+      donorId: plainGiverDonorId,
+      amountCents: 1000,
+      method: "cash",
+    });
+
+    const marks = await s.as.query(api.givingPlatform.giverMarks, {
+      chapterId: s.chapterId,
+    });
+    const byDonor = new Map(marks.map((m) => [m.donorId, m.isBacker]));
+    expect(byDonor.get(backerDonorId)).toBe(true);
+    expect(byDonor.get(smallPledgeDonorId)).toBe(false);
+    expect(byDonor.get(canceledPledgeDonorId)).toBe(false);
+    expect(byDonor.get(plainGiverDonorId)).toBe(false);
   });
 
   test("degrades quietly (empty array, no throw) for a caller with no giving access", async () => {
