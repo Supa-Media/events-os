@@ -83,7 +83,7 @@ describe("setSeatGivingPower — gate", () => {
     await seedSelfPerson(s); // holds no org.editChart seat
     const treasurer = await defBySlug(s, "treasurer");
     await expect(
-      s.as.mutation(api.seats.setSeatGivingPower, {
+      s.as.mutation(api.seats.givingPower.setSeatGivingPower, {
         seatDefId: treasurer._id,
         power: "manage",
       }),
@@ -94,7 +94,7 @@ describe("setSeatGivingPower — gate", () => {
     const s = await seatSetup();
     await makeCallerEd(s);
     const treasurer = await defBySlug(s, "treasurer");
-    const result = await s.as.mutation(api.seats.setSeatGivingPower, {
+    const result = await s.as.mutation(api.seats.givingPower.setSeatGivingPower, {
       seatDefId: treasurer._id,
       power: "manage",
     });
@@ -104,7 +104,7 @@ describe("setSeatGivingPower — gate", () => {
   test("a superuser is allowed", async () => {
     const s = await seatSetup({ email: "seyi@publicworship.life" });
     const treasurer = await defBySlug(s, "treasurer");
-    const result = await s.as.mutation(api.seats.setSeatGivingPower, {
+    const result = await s.as.mutation(api.seats.givingPower.setSeatGivingPower, {
       seatDefId: treasurer._id,
       power: "none",
     });
@@ -116,7 +116,7 @@ describe("setSeatGivingPower — gate", () => {
     const s = await seatSetup({ email: "seyi@publicworship.life" });
     const derived = await defBySlug(s, "chapter_directors");
     await expect(
-      s.as.mutation(api.seats.setSeatGivingPower, {
+      s.as.mutation(api.seats.givingPower.setSeatGivingPower, {
         seatDefId: derived._id,
         power: "view",
       }),
@@ -140,7 +140,7 @@ describe("setSeatGivingPower — capability transitions", () => {
     const fm = await defBySlug(s, "financial_manager");
 
     // manage: all three giving caps present, every finance cap preserved.
-    const afterManage = await s.as.mutation(api.seats.setSeatGivingPower, {
+    const afterManage = await s.as.mutation(api.seats.givingPower.setSeatGivingPower, {
       seatDefId: fm._id,
       power: "manage",
     });
@@ -150,7 +150,7 @@ describe("setSeatGivingPower — capability transitions", () => {
     expect(afterManage).toContain("nav.giving");
 
     // view: manage dropped, view + nav kept; finance untouched.
-    const afterView = await s.as.mutation(api.seats.setSeatGivingPower, {
+    const afterView = await s.as.mutation(api.seats.givingPower.setSeatGivingPower, {
       seatDefId: fm._id,
       power: "view",
     });
@@ -160,7 +160,7 @@ describe("setSeatGivingPower — capability transitions", () => {
     expect(afterView).toContain("nav.giving");
 
     // none: all giving stripped; every finance cap still present & intact.
-    const afterNone = await s.as.mutation(api.seats.setSeatGivingPower, {
+    const afterNone = await s.as.mutation(api.seats.givingPower.setSeatGivingPower, {
       seatDefId: fm._id,
       power: "none",
     });
@@ -176,7 +176,7 @@ describe("setSeatGivingPower — capability transitions", () => {
     await makeCallerEd(s); // caller holds executive_director (giving.manage)
     const ed = await defBySlug(s, "executive_director");
     await expect(
-      s.as.mutation(api.seats.setSeatGivingPower, {
+      s.as.mutation(api.seats.givingPower.setSeatGivingPower, {
         seatDefId: ed._id,
         power: "none",
       }),
@@ -217,7 +217,7 @@ describe("setSeatGivingPower — giving enforcement effect", () => {
     await directlyAssign(viewer, "executive_director", "central", edPerson);
     const expDef = await defBySlug(viewer, "expansion_director");
     const edAs = viewer.t.withIdentity({ subject: `${edUser}|session`, issuer: "test" });
-    await edAs.mutation(api.seats.setSeatGivingPower, {
+    await edAs.mutation(api.seats.givingPower.setSeatGivingPower, {
       seatDefId: expDef._id,
       power: "none",
     });

@@ -967,11 +967,11 @@ describe("seatStructure — chapter-chart edits are shared across every chapter"
       duties: ["Reconcile weekly", "Chase every receipt"],
     });
 
-    const ny = await s.as.query(api.seats.seatDetail, {
+    const ny = await s.as.query(api.seats.chartQueries.seatDetail, {
       defId: treasurerDef._id,
       scope: s.chapterId,
     });
-    const chicago = await s.as.query(api.seats.seatDetail, {
+    const chicago = await s.as.query(api.seats.chartQueries.seatDetail, {
       defId: treasurerDef._id,
       scope: chicagoId,
     });

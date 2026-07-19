@@ -1068,7 +1068,7 @@ describe("seatProposals.approve", () => {
     // (not a raw insert) so the specializedRoles/financeRoles write-through
     // genuinely exists to reverse — mirrors `seats.test.ts`'s own setup.
     const { as: suAs } = await signInAs(s.t, "seyi@publicworship.life");
-    await suAs.mutation(api.seats.assignSeat, {
+    await suAs.mutation(api.seats.mutations.assignSeat, {
       seatDefId: treasurerDef._id,
       scope: s.chapterId,
       personId: holder,
@@ -1648,7 +1648,7 @@ describe("seats.assignSeat — superuser direct assignment (regression, untouche
     const person = await makePerson(s, s.chapterId, "DirectAssign");
     const { as: suAs } = await signInAs(s.t, "seyi@publicworship.life");
 
-    const assignmentId = await suAs.mutation(api.seats.assignSeat, {
+    const assignmentId = await suAs.mutation(api.seats.mutations.assignSeat, {
       seatDefId: musicLeadDef._id,
       scope: s.chapterId,
       personId: person,

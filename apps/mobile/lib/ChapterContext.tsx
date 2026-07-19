@@ -135,7 +135,7 @@ const ChapterCtx = createContext<ChapterContextApi | null>(null);
 export function ChapterContextProvider({ children }: { children: ReactNode }) {
   const { isAuthenticated } = useConvexAuth();
   const financeSeats = useQuery(api.financeRoles.mySeats, isAuthenticated ? {} : "skip");
-  const deskChapters = useQuery(api.seats.myDeskChapters, isAuthenticated ? {} : "skip");
+  const deskChapters = useQuery(api.seats.deskQueries.myDeskChapters, isAuthenticated ? {} : "skip");
   const peekChaptersRaw = useQuery(
     api.financeRoles.listChaptersForPeek,
     isAuthenticated ? {} : "skip",

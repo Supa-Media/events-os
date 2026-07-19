@@ -83,7 +83,7 @@ import { ConvexError, v } from "convex/values";
 import { Doc, Id } from "./_generated/dataModel";
 import type { QueryCtx, MutationCtx } from "./_generated/server";
 import { SEAT_ROOT, CHAPTER_ROLLUP_PARENT, MULTI_HOLDER_CAP } from "@events-os/shared";
-import { assignSeatImpl, unassignSeatImpl } from "./seats";
+import { assignSeatImpl, unassignSeatImpl } from "./seats/mutations";
 import { requireAccess, requireUserId } from "./lib/context";
 
 type Scope = Id<"chapters"> | "central";

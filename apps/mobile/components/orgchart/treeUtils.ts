@@ -15,14 +15,14 @@ import { api } from "@events-os/convex/_generated/api";
 import type { Id } from "@events-os/convex/_generated/dataModel";
 import { CHAPTER_ROLLUP_PARENT, SEAT_ROOT } from "@events-os/shared";
 
-export type ChartResult = FunctionReturnType<typeof api.seats.chart>;
+export type ChartResult = FunctionReturnType<typeof api.seats.chartQueries.chart>;
 export type FullChart = Extract<ChartResult, { kind: "full" }>;
 export type SeatNode = FullChart["central"][number];
 export type ChapterSubtree = FullChart["chapters"][number];
 export type ChartHolder = SeatNode["holders"][number];
 
 export type SeatDetail = Extract<
-  FunctionReturnType<typeof api.seats.seatDetail>,
+  FunctionReturnType<typeof api.seats.chartQueries.seatDetail>,
   { defId: unknown }
 >;
 

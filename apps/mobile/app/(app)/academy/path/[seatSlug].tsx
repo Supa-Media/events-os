@@ -27,7 +27,7 @@ import {
   RESPONSIBILITY_CADENCE_LABELS,
 } from "@events-os/shared";
 
-type FullChart = FunctionReturnType<typeof api.seats.chart>;
+type FullChart = FunctionReturnType<typeof api.seats.chartQueries.chart>;
 type CourseCompleters = FunctionReturnType<typeof api.academy.courseCompleters>;
 type CompleterPerson = NonNullable<CourseCompleters>[number];
 
@@ -75,7 +75,7 @@ export default function RolePathScreen() {
   const progress = useQuery(api.academy.myProgress);
   // Full chart only to resolve slug → seatDefId for duties (seat paths only).
   const fullChart = useQuery(
-    api.seats.chart,
+    api.seats.chartQueries.chart,
     path && path.kind === "seat" ? {} : "skip",
   );
   const seatDefId =
