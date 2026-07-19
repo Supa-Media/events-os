@@ -17,11 +17,13 @@ import {
   Badge,
   type BadgeTone,
   EmptyState,
+  Icon,
   Narrow,
   Pill,
   Screen,
 } from "../../../components/ui";
 import { colors } from "../../../lib/theme";
+import { DonorDuplicatesSheet } from "../../../components/giving/DonorDuplicatesSheet";
 
 type GivingScope = "central" | Id<"chapters">;
 
@@ -87,15 +89,17 @@ export default function DonorsScreen() {
       </Screen>
     );
   }
-  return <DonorsBody scope={access.scope} />;
+  return <DonorsBody scope={access.scope} canManage={access.canManage} />;
 }
 
-function DonorsBody({ scope }: { scope: GivingScope }) {
+function DonorsBody({ scope, canManage }: { scope: GivingScope; canManage: boolean }) {
   const router = useRouter();
   const [status, setStatus] = useState("all");
   const [kind, setKind] = useState("all");
   const [source, setSource] = useState("all");
   const [band, setBand] = useState("all");
+  // Duplicate review + merge — manage-gated (Attendance C).
+  const [dupOpen, setDupOpen] = useState(false);
 
   const minLifetimeCents = LIFETIME_BANDS.find((b) => b.value === band)?.cents;
   const donors = useQuery(api.givingPlatform.listDonors, {
@@ -120,6 +124,19 @@ function DonorsBody({ scope }: { scope: GivingScope }) {
   return (
     <Screen>
       <Narrow>
+        {canManage ? (
+          <View className="mb-2 flex-row items-center justify-end">
+            <Pressable
+              onPress={() => setDupOpen(true)}
+              hitSlop={6}
+              accessibilityLabel="Review duplicate donors"
+              className="flex-row items-center gap-1 rounded-md border border-border px-2 py-1 active:bg-sunken web:hover:bg-sunken"
+            >
+              <Icon name="copy" size={13} color={colors.muted} />
+              <Text className="text-xs font-semibold text-muted">Duplicates</Text>
+            </Pressable>
+          </View>
+        ) : null}
         <View className="mb-3 gap-2">
           <FilterRow options={STATUS_FILTERS} value={status} onChange={setStatus} />
           <FilterRow options={KIND_FILTERS} value={kind} onChange={setKind} />
@@ -166,6 +183,14 @@ function DonorsBody({ scope }: { scope: GivingScope }) {
           </View>
         )}
       </Narrow>
+
+      {canManage ? (
+        <DonorDuplicatesSheet
+          scope={scope}
+          visible={dupOpen}
+          onClose={() => setDupOpen(false)}
+        />
+      ) : null}
     </Screen>
   );
 }

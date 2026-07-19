@@ -62,7 +62,7 @@ import { normalizeEmail } from "./lib/access";
 import { chapterRoster } from "./lib/org";
 import { requireGivingManage, type GivingScope } from "./lib/givingAccess";
 import { matchOrCreateDonor, recordGiftForDonor } from "./lib/givingDonors";
-import { findDonorInScope } from "./lib/givingDonors";
+import { findDonorInScope, hasPersonIdentifier } from "./lib/givingDonors";
 import { DONOR_KINDS, GIFT_METHODS } from "./schema/givingPlatform";
 import { PLEDGE_FLOOR_CENTS } from "./givingPledges";
 
@@ -151,7 +151,15 @@ const previewRowValidator = v.union(
     index: v.number(),
     rowType: v.literal("ticket"),
     donorMatch: donorMatchValidator,
-    disposition: v.union(v.literal("matched-order"), v.literal("history-only")),
+    // `no-identifier` (Attendance C owner rule): a ticket row with no email AND
+    // no phone that matches no existing roster row creates no contact — nothing
+    // to attach purchase history to, so it's honestly reported, not silently
+    // dropped as history-only.
+    disposition: v.union(
+      v.literal("matched-order"),
+      v.literal("history-only"),
+      v.literal("no-identifier"),
+    ),
     reason: v.optional(v.string()),
   }),
   v.object({
@@ -163,7 +171,15 @@ const previewRowValidator = v.union(
     // chapter roster to match-or-create into, so it's honestly reported
     // invalid rather than silently mislabeled "matched". See this file's
     // header + the PR description for the full list of such deviations.
-    disposition: v.union(v.literal("new"), v.literal("matched"), v.literal("invalid")),
+    // `no-identifier` (Attendance C owner rule): a contact row with no email
+    // AND no phone that doesn't match an existing roster row creates NOTHING —
+    // a name-only contact stays a guest. Distinct from `invalid` (central-scope).
+    disposition: v.union(
+      v.literal("new"),
+      v.literal("matched"),
+      v.literal("invalid"),
+      v.literal("no-identifier"),
+    ),
     reason: v.optional(v.string()),
   }),
   v.object({
@@ -203,6 +219,9 @@ const commitResultValidator = v.object({
   skippedDuplicates: v.number(),
   skippedSuspected: v.number(),
   skippedInvalid: v.number(),
+  // Attendance C owner rule: contact/ticket rows skipped because they had no
+  // email AND no phone and matched no existing roster row (no person created).
+  skippedNoIdentifier: v.number(),
   ticketHistoryLinked: v.number(),
   scheduledRemaining: v.number(),
 });
@@ -569,7 +588,7 @@ async function ensureRosterPool(
 
 type ContactPreview = {
   donorMatch: DonorMatch;
-  disposition: "new" | "matched" | "invalid";
+  disposition: "new" | "matched" | "invalid" | "no-identifier";
   reason?: string;
 };
 
@@ -593,13 +612,23 @@ async function previewContactRow(
     name: row.name,
   });
   if (match) return { donorMatch: via ?? "name", disposition: "matched" };
+  // OWNER RULE (Attendance C): a name-only contact (no email AND no phone) that
+  // matches no existing roster row creates NOTHING — it stays a guest. Matching
+  // by name above is still honored; only the create below is gated.
+  if (!hasPersonIdentifier({ email: row.email, phone: row.phone })) {
+    return {
+      donorMatch: "n/a",
+      disposition: "no-identifier",
+      reason: "No email or phone — a name-only contact stays a guest.",
+    };
+  }
   pool.push({ name: row.name, email: row.email, phone: row.phone });
   return { donorMatch: "new", disposition: "new" };
 }
 
 type TicketPreview = {
   donorMatch: DonorMatch;
-  disposition: "matched-order" | "history-only";
+  disposition: "matched-order" | "history-only" | "no-identifier";
   reason?: string;
 };
 
@@ -622,6 +651,16 @@ async function previewTicketRow(
     phone: row.phone,
     name: row.name,
   });
+  // OWNER RULE (Attendance C): a name-only ticket row (no email AND no phone)
+  // matching no existing roster row creates no contact — there's nothing to
+  // attach purchase history to, so report it rather than silently no-op.
+  if (!match && !hasPersonIdentifier({ email: row.email, phone: row.phone })) {
+    return {
+      donorMatch: "n/a",
+      disposition: "no-identifier",
+      reason: "No email or phone — no contact created for this ticket row.",
+    };
+  }
   const donorMatch: DonorMatch = match ? (via ?? "name") : "new";
   if (!match) pool.push({ name: row.name, email: row.email, phone: row.phone });
 
@@ -745,6 +784,7 @@ type CommitCounters = {
   skippedDuplicates: number;
   skippedSuspected: number;
   skippedInvalid: number;
+  skippedNoIdentifier: number;
   ticketHistoryLinked: number;
 };
 
@@ -759,10 +799,20 @@ async function matchOrCreatePersonContact(
   ctx: MutationCtx,
   chapterId: Id<"chapters">,
   args: { name: string; email?: string; phone?: string },
-): Promise<{ personId: Id<"people">; isNew: boolean }> {
+): Promise<
+  | { personId: Id<"people">; isNew: boolean; skipped?: undefined }
+  | { personId: null; isNew: false; skipped: "no-identifier" }
+> {
   const roster = await chapterRoster(ctx, chapterId);
   const { match } = matchIdentity(roster, args);
   if (match) return { personId: match._id, isNew: false };
+  // OWNER RULE (Attendance C): a name-only contact/ticket row (no email AND no
+  // phone) that matches no existing roster row creates NOTHING — a name-only
+  // record is a guest, not a roster person. Matching above is still allowed;
+  // only the insert below is gated. See `givingDonors.ts#hasPersonIdentifier`.
+  if (!hasPersonIdentifier({ email: args.email, phone: args.phone })) {
+    return { personId: null, isNew: false, skipped: "no-identifier" };
+  }
   const personId = await ctx.db.insert("people", {
     chapterId,
     name: args.name.trim() || "Unknown",
@@ -904,12 +954,16 @@ async function commitContactRow(
     counters.skippedInvalid++; // no chapter roster at central — see previewContactRow
     return;
   }
-  const { isNew } = await matchOrCreatePersonContact(ctx, scope, {
+  const res = await matchOrCreatePersonContact(ctx, scope, {
     name: row.name,
     email: row.email,
     phone: row.phone,
   });
-  if (isNew) counters.people++;
+  if (res.skipped) {
+    counters.skippedNoIdentifier++; // owner rule — name-only, nothing created
+    return;
+  }
+  if (res.isNew) counters.people++;
 }
 
 async function commitTicketRow(
@@ -920,11 +974,16 @@ async function commitTicketRow(
 ): Promise<void> {
   if (scope === "central") return; // no roster/ticket history at central — pure no-op
 
-  const { personId, isNew } = await matchOrCreatePersonContact(ctx, scope, {
+  const res = await matchOrCreatePersonContact(ctx, scope, {
     name: row.name,
     email: row.email,
     phone: row.phone,
   });
+  if (res.skipped) {
+    counters.skippedNoIdentifier++; // owner rule — name-only, nothing created
+    return;
+  }
+  const { personId, isNew } = res;
   if (isNew) counters.people++;
 
   if (row.eventHint && row.email) {
@@ -965,6 +1024,7 @@ async function importCanonicalBatch(
     skippedDuplicates: 0,
     skippedSuspected: 0,
     skippedInvalid: 0,
+    skippedNoIdentifier: 0,
     ticketHistoryLinked: 0,
   };
 
@@ -994,6 +1054,7 @@ async function importCanonicalBatch(
     skippedDuplicates: counters.skippedDuplicates,
     skippedSuspected: counters.skippedSuspected,
     skippedInvalid: counters.skippedInvalid,
+    skippedNoIdentifier: counters.skippedNoIdentifier,
     ticketHistoryLinked: counters.ticketHistoryLinked,
     scheduledRemaining: remaining.length,
   };

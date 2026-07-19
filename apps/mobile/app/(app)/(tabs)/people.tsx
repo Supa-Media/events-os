@@ -44,6 +44,7 @@ import {
 import { DutyRows } from "../../../components/work/DutyRows";
 import { AddResponsibilityModal } from "../../../components/team/AddResponsibilityModal";
 import { CourseBadgeChips } from "../../../components/academy/CourseBadgeChips";
+import { DuplicatesSheet } from "../../../components/people/DuplicatesSheet";
 
 // Vetting select options (gray / amber / green) — fed to the shared SelectCell.
 const VETTING_OPTIONS: SelectOption<VettingStatus>[] = [
@@ -172,6 +173,8 @@ export default function PeopleScreen() {
   // can also be a giver), so it composes with whichever persona is selected.
   const [giversOnly, setGiversOnly] = useState(false);
   const [openId, setOpenId] = useState<string | null>(null);
+  // Admin-only duplicate review + merge (Attendance C).
+  const [dupOpen, setDupOpen] = useState(false);
 
   // Manager names by id — one map instead of a per-row roster scan.
   const nameById = useMemo(
@@ -239,9 +242,24 @@ export default function PeopleScreen() {
       {/* Title row */}
       <View style={styles.titleRow}>
         <Text className="font-display text-2xl text-ink">People</Text>
-        <Text className="text-2xs font-bold uppercase tracking-wider text-muted">
-          Roster ({people.length})
-        </Text>
+        <View className="flex-row items-center gap-3">
+          {/* Duplicate review is chapter-admin only (merging re-points every
+              reference across the app; enforced server-side too). */}
+          {org?.isAdmin === true && chapterId ? (
+            <Pressable
+              onPress={() => setDupOpen(true)}
+              hitSlop={6}
+              accessibilityLabel="Review duplicate people"
+              className="flex-row items-center gap-1 rounded-md border border-border px-2 py-1 active:bg-sunken web:hover:bg-sunken"
+            >
+              <Icon name="copy" size={13} color={colors.muted} />
+              <Text className="text-xs font-semibold text-muted">Duplicates</Text>
+            </Pressable>
+          ) : null}
+          <Text className="text-2xs font-bold uppercase tracking-wider text-muted">
+            Roster ({people.length})
+          </Text>
+        </View>
       </View>
 
       {/* Persona segmented control (All · Team · Volunteers · Vendors) */}
@@ -409,6 +427,14 @@ export default function PeopleScreen() {
         giverMark={openPerson ? giverMarksByPerson.get(openPerson._id) ?? null : null}
         onClose={() => setOpenId(null)}
       />
+
+      {chapterId ? (
+        <DuplicatesSheet
+          chapterId={chapterId}
+          visible={dupOpen}
+          onClose={() => setDupOpen(false)}
+        />
+      ) : null}
     </Screen>
   );
 }
