@@ -288,6 +288,10 @@ async function fulfillDonation(
     if (
       rsvp &&
       paidViaStripe &&
+      // Both emails are optional now (imported guests may have none); require
+      // a real string on the rsvp so an email-less row never matches an
+      // email-less donation via `undefined === undefined`.
+      !!rsvp.email &&
       rsvp.email === donation.email &&
       rsvp.emailVerified === false
     ) {

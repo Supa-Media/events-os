@@ -53,7 +53,7 @@ type PublicPage = {
   }>;
   viewer: {
     name: string;
-    email: string;
+    email: string | null; // imported name-only guests may have no email
     status: string;
     emailVerified: boolean;
   } | null;

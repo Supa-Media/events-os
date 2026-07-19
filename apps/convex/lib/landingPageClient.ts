@@ -50,7 +50,7 @@ function openSheet(title,sub,cta,action){
   $('sheetsub').textContent=sub;
   $('sheetgo').textContent=cta;
   $('sheeterr').textContent='';
-  if(D.viewer){$('f_name').value=D.viewer.name;$('f_email').value=D.viewer.email;}
+  if(D.viewer){$('f_name').value=D.viewer.name;$('f_email').value=D.viewer.email||'';}
   $('overlay').classList.add('open');
   setTimeout(function(){$('f_name').focus();},100);
 }

@@ -420,7 +420,9 @@ export const listRsvpsAdmin = query({
     return rows.map((r) => ({
       id: r._id,
       name: r.name,
-      email: r.email,
+      // Imported name-only guests may have no email — project null, never
+      // undefined (the guest list renders phone/name for those rows).
+      email: r.email ?? null,
       phone: r.phone ?? null,
       status: r.status,
       source: r.source ?? "rsvp",
@@ -576,7 +578,8 @@ export const getPublicPage = query({
       viewer: viewer
         ? {
             name: viewer.name,
-            email: viewer.email,
+            // An imported guest viewing via token may lack an email — null it.
+            email: viewer.email ?? null,
             status: viewer.status,
             // Legacy rows (undefined) predate verification — treat as verified.
             emailVerified: viewer.emailVerified !== false,
@@ -1180,6 +1183,10 @@ async function fulfill(
       const paidViaStripe =
         stripePaymentIntentId !== undefined ||
         order.stripeCheckoutSessionId !== undefined;
+      // `rsvp.email` is now optional (imported guests may have none); the
+      // strict `=== order.email` (order.email is always a real string) is
+      // undefined-safe — an email-less rsvp never matches, so it's never
+      // auto-verified here, which is correct (it never had a pending code).
       if (
         rsvp &&
         paidViaStripe &&
