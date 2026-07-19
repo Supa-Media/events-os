@@ -52,8 +52,10 @@ export function newGuestToken(): string {
   );
 }
 
-/** Human-safe ticket code, e.g. "PW-8FK2-QW9T". */
-function newTicketCode(): string {
+/** Human-safe ticket code, e.g. "PW-8FK2-QW9T". Exported so the Givebutter sync
+ *  (`givebutterSync.ts`) mints REAL codes for synced tickets — the native door
+ *  scanner (`checkInTicket`) must work for external buyers too. */
+export function newTicketCode(): string {
   return `PW-${randomFrom(CODE_CHARS, 4)}-${randomFrom(CODE_CHARS, 4)}`;
 }
 
@@ -248,6 +250,10 @@ export const updatePage = mutation({
       showGuestList: v.optional(v.boolean()),
       activityRestricted: v.optional(v.boolean()),
       capacity: v.optional(v.union(v.number(), v.null())),
+      // Givebutter campaign id backing the live ticket sync (PR B). `null`
+      // unsets it (the null-sentinel pattern used by the fields below) — which
+      // stops the cron from polling this page but leaves already-synced rows.
+      givebutterCampaignId: v.optional(v.union(v.string(), v.null())),
     }),
   },
   handler: async (ctx, { pageId, patch }) => {
@@ -286,8 +292,15 @@ export const updatePage = mutation({
     }
 
     // v.null() sentinels → unset the optional field.
-    const { coverImage, endDate, capacity, givingPrompt, suggestedAmountsCents, ...rest } =
-      patch;
+    const {
+      coverImage,
+      endDate,
+      capacity,
+      givingPrompt,
+      suggestedAmountsCents,
+      givebutterCampaignId,
+      ...rest
+    } = patch;
     await ctx.db.patch(pageId, {
       ...rest,
       ...(coverImage !== undefined ? { coverImage: coverImage ?? undefined } : {}),
@@ -298,6 +311,9 @@ export const updatePage = mutation({
         : {}),
       ...(suggestedAmountsCents !== undefined
         ? { suggestedAmountsCents: suggestedAmountsCents ?? undefined }
+        : {}),
+      ...(givebutterCampaignId !== undefined
+        ? { givebutterCampaignId: givebutterCampaignId ?? undefined }
         : {}),
       updatedAt: Date.now(),
     });

@@ -119,4 +119,17 @@ crons.interval(
   {},
 );
 
+// Every 15 min: poll Givebutter for new/checked-in tickets on every event whose
+// campaign is still live (its event ended <7 days ago) and mirror them into the
+// native tickets/RSVPs/rollups. Poll-only (Givebutter has no ticket webhook);
+// idempotent via `ticketOrders.by_external_ref`. No-ops when GIVEBUTTER_API_KEY
+// is unset (local/dev). The manual "Sync now" button keeps working past the
+// 7-day cutoff for backfilling old campaigns.
+crons.interval(
+  "givebutter ticket sync",
+  { minutes: 15 },
+  internal.givebutterSync.syncAllGivebutterCampaigns,
+  {},
+);
+
 export default crons;
