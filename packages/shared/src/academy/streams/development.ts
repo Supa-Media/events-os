@@ -157,7 +157,7 @@ export const DEVELOPMENT_SECTIONS: Omit<AcademySection, "order">[] = [
       },
       {
         kind: "tip",
-        text: "**The giving desk isn't the only place a donor shows up.** A chapter-scope donor who's also on the roster gets a small \"giver\" mark right on the People tab — lifetime total, last-gift date — so anyone looking up a volunteer or team member can see the giving relationship without switching desks. Only donors who've actually GIVEN get the mark (giftCount > 0); a prospect with no gift yet, or a contact who only ever bought an event ticket, never shows one — ticket buyers aren't donors (see the import lesson later in this course).",
+        text: "**The giving desk isn't the only place a donor shows up.** A chapter-scope donor who's also on the roster gets a small mark right on the People tab — a heart for a giver, plus a building icon if they're also an active backer — so anyone looking up a volunteer or team member can see the giving relationship without switching desks. The roster deliberately shows icons only, never a dollar amount; tap the mark to jump to the donor's giving-desk record for the actual numbers. Only donors who've actually GIVEN get the mark (giftCount > 0); a prospect with no gift yet, or a contact who only ever bought an event ticket, never shows one — ticket buyers aren't donors (see the import lesson later in this course).",
       },
       {
         kind: "reveal",
