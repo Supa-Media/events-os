@@ -38,6 +38,27 @@ export function assertReceiptsBound(
 export type DonorStatus = "prospect" | "active" | "lapsed";
 
 /**
+ * A gift whose MONEY IS OWNED BY ITS SOURCE — an event donation dual-write
+ * (`donationId`), a Stripe recurring billing cycle (`stripeInvoiceId`), a
+ * sponsorship agreement payment (`sponsorshipId`), or a matched/confirmed bank
+ * credit (`transactionId`). Such a gift is the mirror of an external record, so
+ * the desk must NOT rewrite its money, delete it, split it, reassign it, or move
+ * its book here — those would desync the giving ledger from the source of truth
+ * (`transactions`/`sponsorships`/the event donation/Stripe). The single shared
+ * predicate, so every write path (`editGiftRow` lock + the `removeGift` /
+ * `splitGift` / `reassignGift` / `moveGiftScope` mutations + the read-side
+ * `systemWritten` flag) agrees on exactly which four fields lock a gift.
+ */
+export function isSystemWrittenGift(gift: Doc<"gifts">): boolean {
+  return (
+    gift.donationId !== undefined ||
+    gift.stripeInvoiceId !== undefined ||
+    gift.sponsorshipId !== undefined ||
+    gift.transactionId !== undefined
+  );
+}
+
+/**
  * OWNER RULE (Attendance C — people/donor dedup): a `people` roster row must
  * NEVER be created from an AUTOMATED giving path without at least ONE contact
  * identifier — an email OR a phone. A name-only record is a guest, not a roster
@@ -541,11 +562,11 @@ export async function removeGiftRow(
  * launch-fund flag), it patches the existing row and applies only the deltas the
  * change actually implies.
  *
- * LOCK: a SYSTEM-WRITTEN gift — one carrying a `stripeInvoiceId` (a recurring
- * billing cycle) OR a `donationId` (an event donation dual-write) — is
- * NOTE/RECEIPT-ONLY here. Stripe / the event donation is the source of truth for
- * its money fields, so an edit that touches `amountCents`, `receivedAt`, or
- * `method` throws `GIFT_LOCKED`; a note/receipts-only edit is allowed.
+ * LOCK: a SYSTEM-WRITTEN gift (`isSystemWrittenGift` — a Stripe billing cycle,
+ * an event donation dual-write, a sponsorship payment, OR a matched bank credit)
+ * is NOTE/RECEIPT-ONLY here. That source is the truth for its money fields, so an
+ * edit that touches `amountCents`, `receivedAt`, or `method` throws `GIFT_LOCKED`;
+ * a note/receipts-only edit is allowed.
  *
  * AMOUNT: patches the gift, then moves the donor `lifetimeCents`, the scope
  * rollup (`applyScopeDelta({lifetimeDelta})`), and — for a gift flagged
@@ -591,14 +612,20 @@ export async function editGiftRow(
   const methodChanging =
     args.method !== undefined && args.method !== gift.method;
 
-  // Locked: Stripe / the event donation owns a system-written gift's money.
-  const systemWritten =
-    gift.stripeInvoiceId !== undefined || gift.donationId !== undefined;
-  if (systemWritten && (amountChanging || receivedAtChanging || methodChanging)) {
+  // Locked: the money of a system-written gift is owned by its SOURCE — a Stripe
+  // cycle, an event donation, a sponsorship payment, OR a matched bank credit.
+  // A bank-confirmed (`transactionId`) or sponsorship (`sponsorshipId`) gift
+  // carries neither `stripeInvoiceId` nor `donationId`, so the old two-field
+  // check let its money be rewritten and desynced from `transactions`/the
+  // sponsorship — `isSystemWrittenGift` covers all four (review finding).
+  if (
+    isSystemWrittenGift(gift) &&
+    (amountChanging || receivedAtChanging || methodChanging)
+  ) {
     throw new ConvexError({
       code: "GIFT_LOCKED",
       message:
-        "This gift was recorded by Stripe or an event donation — only its note and receipts can be edited here.",
+        "This gift's money is owned by its source (Stripe, an event donation, a sponsorship, or a matched bank credit) — only its note and receipts can be edited here.",
     });
   }
 
@@ -629,16 +656,31 @@ export async function editGiftRow(
     changed = true;
   }
 
-  // Note + receipts are allowed even for a locked gift.
+  // Note + receipts are allowed even for a locked gift. Compare to the CURRENT
+  // value before flagging a change — a no-op resubmit must NOT stamp `editedAt`
+  // (which would show the gift "edited" forever while `editGift`'s audit diff is
+  // empty, so no breadcrumb — the stamp and the audit row must stay in lockstep;
+  // review finding).
   if (args.note !== undefined) {
     const note = args.note.trim();
-    giftPatch.note = note.length > 0 ? note : undefined;
-    changed = true;
+    const nextNote = note.length > 0 ? note : undefined;
+    if (nextNote !== gift.note) {
+      giftPatch.note = nextNote;
+      changed = true;
+    }
   }
   if (args.receiptStorageIds !== undefined) {
-    giftPatch.receiptStorageIds =
+    const nextReceipts =
       args.receiptStorageIds.length > 0 ? args.receiptStorageIds : undefined;
-    changed = true;
+    const current = gift.receiptStorageIds ?? [];
+    const next = nextReceipts ?? [];
+    const receiptsChanged =
+      current.length !== next.length ||
+      current.some((id, i) => id !== next[i]);
+    if (receiptsChanged) {
+      giftPatch.receiptStorageIds = nextReceipts;
+      changed = true;
+    }
   }
 
   if (receivedAtChanging) {

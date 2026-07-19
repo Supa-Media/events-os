@@ -1,6 +1,7 @@
 /// <reference types="vite/client" />
 import { describe, expect, test } from "vitest";
 import { api } from "../_generated/api";
+import { internal } from "../_generated/api";
 import { newT, run, setupChapter, type ChapterSetup } from "./setup.helpers";
 import { runSeedSeatDefs } from "../migrations/0022_seed_seat_defs";
 import type { Doc, Id } from "../_generated/dataModel";
@@ -269,6 +270,134 @@ describe("splitGift", () => {
         why: "x",
       }),
     ).rejects.toThrow(/owned by its source/i);
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Review findings — system-written lock covers all four source fields + the
+// no-op edit stamp stays in lockstep with the audit row.
+// ═══════════════════════════════════════════════════════════════════════════
+
+describe("system-written gift lock (review findings)", () => {
+  async function bankCreditGift(s: ChapterSetup) {
+    const donorId = (await s.as.mutation(api.givingPlatform.upsertDonor, {
+      scope: s.chapterId,
+      name: "Bank Donor",
+      email: "bank@x.com",
+    })) as Id<"donors">;
+    const txnId = await run(s.t, (ctx) =>
+      ctx.db.insert("transactions", {
+        chapterId: s.chapterId,
+        source: "manual",
+        flow: "inflow",
+        amountCents: 500000,
+        postedAt: Date.now(),
+        merchantName: "Wire in",
+        status: "unreviewed",
+        createdAt: Date.now(),
+      }),
+    );
+    const giftId = (await s.as.mutation(api.givingPlatform.recordGift, {
+      donorId,
+      amountCents: 500000,
+      method: "wire",
+    })) as Id<"gifts">;
+    await run(s.t, (ctx) => ctx.db.patch(giftId, { transactionId: txnId }));
+    return { donorId, giftId };
+  }
+
+  test("a bank-credit gift (transactionId) refuses edit/remove/reassign/split", async () => {
+    const s = await devDirectorSetup();
+    const { giftId } = await bankCreditGift(s);
+    const otherDonor = (await s.as.mutation(api.givingPlatform.upsertDonor, {
+      scope: s.chapterId,
+      name: "Other",
+      email: "other@x.com",
+    })) as Id<"donors">;
+
+    // The exact desync the review flagged: rewriting a $5,000 bank-confirmed gift.
+    await expect(
+      s.as.mutation(api.givingPlatform.editGift, { giftId, amountCents: 50000 }),
+    ).rejects.toThrow(/GIFT_LOCKED/);
+    await expect(
+      s.as.mutation(api.givingPlatform.removeGift, { giftId, why: "x" }),
+    ).rejects.toThrow(/GIFT_LOCKED/);
+    await expect(
+      s.as.mutation(api.givingPlatform.reassignGift, { giftId, toDonorId: otherDonor }),
+    ).rejects.toThrow(/GIFT_LOCKED/);
+    await expect(
+      s.as.mutation(api.givingPlatform.splitGift, {
+        giftId,
+        parts: [
+          { scope: s.chapterId, amountCents: 250000 },
+          { scope: "central", amountCents: 250000 },
+        ],
+        why: "x",
+      }),
+    ).rejects.toThrow(/GIFT_LOCKED/);
+  });
+
+  test("a sponsorship gift (sponsorshipId) refuses money edits", async () => {
+    const s = await devDirectorSetup();
+    const donorId = (await s.as.mutation(api.givingPlatform.upsertDonor, {
+      scope: "central",
+      name: "Sponsor",
+      email: "sponsor@x.com",
+    })) as Id<"donors">;
+    const packageId = await run(s.t, (ctx) =>
+      ctx.db.insert("sponsorPackages", {
+        name: "Gold",
+        tierRank: 1,
+        audience: "any",
+        pricing: { kind: "annual", amountCents: 100000 },
+        scope: { kind: "annual" },
+        benefits: ["logo"],
+        commitments: ["mention"],
+        active: true,
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+        updatedBy: s.userId,
+      }),
+    );
+    const sponsorshipId = await run(s.t, (ctx) =>
+      ctx.db.insert("sponsorships", {
+        donorId,
+        packageId,
+        status: "prospect",
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      }),
+    );
+    const giftId = (await s.as.mutation(api.givingPlatform.recordGift, {
+      donorId,
+      amountCents: 100000,
+      method: "wire",
+    })) as Id<"gifts">;
+    await run(s.t, (ctx) => ctx.db.patch(giftId, { sponsorshipId }));
+    await expect(
+      s.as.mutation(api.givingPlatform.editGift, { giftId, amountCents: 1 }),
+    ).rejects.toThrow(/GIFT_LOCKED/);
+  });
+
+  test("a no-op note resubmit does NOT stamp editedAt (no phantom 'edited')", async () => {
+    const s = await devDirectorSetup();
+    const donorId = (await s.as.mutation(api.givingPlatform.upsertDonor, {
+      scope: "central",
+      name: "Noop",
+      email: "noop@x.com",
+    })) as Id<"donors">;
+    const giftId = (await s.as.mutation(api.givingPlatform.recordGift, {
+      donorId,
+      amountCents: 5000,
+      method: "cash",
+      note: "same note",
+    })) as Id<"gifts">;
+    // Resubmit the SAME note — must not mark the gift edited.
+    await s.as.mutation(api.givingPlatform.editGift, { giftId, note: "same note" });
+    expect((await giftRow(s, giftId))?.editedAt).toBeUndefined();
+    // A real change does stamp it.
+    await s.as.mutation(api.givingPlatform.editGift, { giftId, note: "changed" });
+    expect((await giftRow(s, giftId))?.editedAt).toBeDefined();
   });
 });
 
@@ -650,7 +779,7 @@ describe("backer lifecycle", () => {
     // A system cancel via the webhook path (link a subscription id first).
     await run(s.t, (ctx) => ctx.db.patch(pledgeId, { stripeSubscriptionId: "sub_x" }));
     await run(s.t, (ctx) =>
-      ctx.runMutation(api.givingPledges.cancelPledgeSubscription, {
+      ctx.runMutation(internal.givingPledges.cancelPledgeSubscription, {
         subscriptionId: "sub_x",
       }),
     );
@@ -671,7 +800,7 @@ describe("backer lifecycle", () => {
 
     // Stripe says the subscription is still active — must NOT resume the pause.
     await run(s.t, (ctx) =>
-      ctx.runMutation(api.givingPledges.syncPledgeSubscription, {
+      ctx.runMutation(internal.givingPledges.syncPledgeSubscription, {
         subscriptionId: "sub_y",
         stripeStatus: "active",
       }),
@@ -683,7 +812,7 @@ describe("backer lifecycle", () => {
 
     // But a genuine Stripe cancel DOES override the pause.
     await run(s.t, (ctx) =>
-      ctx.runMutation(api.givingPledges.syncPledgeSubscription, {
+      ctx.runMutation(internal.givingPledges.syncPledgeSubscription, {
         subscriptionId: "sub_y",
         stripeStatus: "canceled",
       }),

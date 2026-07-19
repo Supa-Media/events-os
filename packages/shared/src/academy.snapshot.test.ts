@@ -90,6 +90,17 @@
  * that Giving-desk access is a per-seat power (None/View/Manage) the ED assigns
  * from the org chart — quiz length 4→5 (bumped below); its minutes, title, and
  * placement are unchanged, so nothing else in the tables moved.
+ *
+ * Giving integrity tools (owner feedback, Seyi — delete-with-reason, gift
+ * splits, paused backers): `dev-gifts-ledger-and-audit` gained a "Split" +
+ * "Remove (with a required reason)" teaching and one quiz question on why a
+ * removal asks why — quiz length 4→5 (bumped below). `dev-backer-lifecycle`
+ * gained the manual PAUSED status (a paused pledge stays listed but doesn't
+ * count, and is sticky against Stripe re-syncs) + a quiz question on pausing —
+ * quiz length 4→5 (bumped below); its subtitle now names the manual pause but
+ * its snapshotted title/minutes are unchanged. `dev-backer-floor-and-ladder`'s
+ * reveal added paused as a second non-counting reason (prose only — no snapshot
+ * change). No slugs, titles, minutes, or order moved beyond those two quiz bumps.
  */
 import { describe, expect, test } from "vitest";
 import { ACADEMY_COURSES, ACADEMY_SECTIONS } from "./academy";
@@ -913,7 +924,7 @@ const EXPECTED_SECTIONS: {
     slug: "dev-gifts-ledger-and-audit",
     title: "The gifts ledger: see it, fix it, trace it",
     minutes: 4,
-    quizLength: 4,
+    quizLength: 5,
     optional: false,
     capstoneKind: null,
   },
@@ -929,7 +940,7 @@ const EXPECTED_SECTIONS: {
     slug: "dev-backer-lifecycle",
     title: "A backer's lifecycle: subscribe, pay, sometimes falter",
     minutes: 4,
-    quizLength: 4,
+    quizLength: 5,
     optional: false,
     capstoneKind: null,
   },

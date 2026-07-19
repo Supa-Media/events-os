@@ -49,6 +49,7 @@ import {
   moveGiftToScope,
   dualWriteGiftForDonation,
   linkDonorToPerson,
+  isSystemWrittenGift,
 } from "./lib/givingDonors";
 import {
   writeGiftAudit,
@@ -792,11 +793,7 @@ export const listGifts = query({
           edited: r.gift.editedAt !== undefined,
           // A gift whose money is owned elsewhere (event donation / Stripe /
           // sponsorship / bank-credit) — the client hides destructive edits.
-          systemWritten:
-            r.gift.donationId !== undefined ||
-            r.gift.stripeInvoiceId !== undefined ||
-            r.gift.sponsorshipId !== undefined ||
-            r.gift.transactionId !== undefined,
+          systemWritten: isSystemWrittenGift(r.gift),
         })),
       ),
     };
@@ -852,11 +849,7 @@ export const getGift = query({
       gift: { ...gift, receiptUrls },
       donorName: donor?.name ?? "Unknown donor",
       bookLabel: await bookLabel(ctx, gift.scope),
-      systemWritten:
-        gift.donationId !== undefined ||
-        gift.stripeInvoiceId !== undefined ||
-        gift.sponsorshipId !== undefined ||
-        gift.transactionId !== undefined,
+      systemWritten: isSystemWrittenGift(gift),
       audit: auditRows.map((a) => ({
         _id: a._id,
         at: a.at,
@@ -1531,6 +1524,16 @@ export const removeGift = mutation({
       throw new ConvexError({ code: "NOT_FOUND", message: "Gift not found." });
     }
     await requireGivingManage(ctx, gift.scope);
+    // A system-written gift is the mirror of an external record — deleting it
+    // here would desync the ledger from its source. Remove the source instead
+    // (delete the event donation, cancel the pledge, void the bank match).
+    if (isSystemWrittenGift(gift)) {
+      throw new ConvexError({
+        code: "GIFT_LOCKED",
+        message:
+          "This gift's money is owned by its source (an event, Stripe, a sponsorship, or a matched bank credit) — remove it from there, not here.",
+      });
+    }
     const reason = why.trim();
     if (!reason) {
       throw new ConvexError({
@@ -1648,6 +1651,15 @@ export const reassignGift = mutation({
       throw new ConvexError({ code: "NOT_FOUND", message: "Gift not found." });
     }
     await requireGivingManage(ctx, gift.scope);
+    // A system-written gift's donor identity comes from its source; reassigning
+    // it here would desync the mirror from that record (review finding).
+    if (isSystemWrittenGift(gift)) {
+      throw new ConvexError({
+        code: "GIFT_LOCKED",
+        message:
+          "This gift's donor is owned by its source (an event, Stripe, a sponsorship, or a matched bank credit) and can't be reassigned here.",
+      });
+    }
     const userId = (await requireUserId(ctx)) as Id<"users">;
     const result = await reassignGiftToDonor(ctx, {
       giftId: args.giftId,
@@ -1692,13 +1704,7 @@ export const moveGiftScope = mutation({
     // Cross-book move is a central-manage action.
     await requireGivingManage(ctx, "central");
 
-    const systemWritten =
-      gift.donationId !== undefined ||
-      gift.stripeInvoiceId !== undefined ||
-      gift.pledgeId !== undefined ||
-      gift.sponsorshipId !== undefined ||
-      gift.transactionId !== undefined;
-    if (systemWritten) {
+    if (isSystemWrittenGift(gift)) {
       throw new ConvexError({
         code: "GIFT_LOCKED",
         message:
@@ -1776,13 +1782,7 @@ export const splitGift = mutation({
       throw new ConvexError({ code: "NOT_FOUND", message: "Gift not found." });
     }
 
-    const systemWritten =
-      gift.donationId !== undefined ||
-      gift.stripeInvoiceId !== undefined ||
-      gift.pledgeId !== undefined ||
-      gift.sponsorshipId !== undefined ||
-      gift.transactionId !== undefined;
-    if (systemWritten) {
+    if (isSystemWrittenGift(gift)) {
       throw new ConvexError({
         code: "GIFT_LOCKED",
         message:

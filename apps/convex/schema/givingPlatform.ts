@@ -259,8 +259,11 @@ export const gifts = defineTable({
   // `receiptStorageId` pattern on `reimbursementLineItems`/`transactions`.
   receiptStorageIds: v.optional(v.array(v.id("_storage"))),
   // Set the first time a gift is edited in place (`editGiftRow`) — the audit
-  // stamp for a manual correction. System-written gifts (Stripe/event donation)
-  // can only ever have their note/receipts touched, never their money fields.
+  // stamp for a manual correction. A SYSTEM-WRITTEN gift (`isSystemWrittenGift`
+  // — a Stripe cycle, an event donation, a sponsorship payment, OR a matched
+  // bank credit) can only ever have its note/receipts touched, never its money
+  // fields. `editedAt` is stamped iff something ACTUALLY changed (a no-op
+  // resubmit writes nothing), so an edit stamp exists iff an audit row does.
   editedAt: v.optional(v.number()),
   editedBy: v.optional(v.id("users")),
   // Territories P7 (bank-credit gift matching, docs/plans/giving-territories.md
