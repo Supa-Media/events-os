@@ -1,3 +1,24 @@
+/**
+ * The Convex HTTP router — the entire public, unauthenticated-by-default HTTP
+ * surface of the backend, as opposed to the `query`/`mutation`/`action`
+ * functions elsewhere in `apps/convex/`, which go through the Convex client
+ * and are gated by `lib/access.ts`.
+ *
+ * Routes fall into four groups: the auth callback routes
+ * (`auth.addHttpRoutes`); the JSON APIs backing the public ticketing,
+ * reimbursement, and giving client scripts (`/api/tickets/*`,
+ * `/api/reimburse/*`, `/api/give/*`); the server-rendered public pages
+ * (`/event/` — with `/e/` kept as a backward-compat alias, see the comment at
+ * its route below — `/t/`, `/give`, `/p/`, `/reimburse/`); and the two
+ * payment-provider webhook receivers (`/stripe/webhook`,
+ * `/increase/webhook`).
+ *
+ * This module's default export is what Convex's HTTP actions router
+ * dispatches on. Removing or misconfiguring it drops every public event
+ * page, ticket page, giving page, and reimbursement page, and both webhooks
+ * — whose signature verification (`verifyStripeSignature`,
+ * `verifyIncreaseSignature`) happens exactly here.
+ */
 import { httpRouter } from "convex/server";
 import { httpAction } from "./_generated/server";
 import { api, internal } from "./_generated/api";
