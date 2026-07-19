@@ -10,7 +10,7 @@
  * NOTHING and returns exactly the counts a real run would produce). Pass
  * `execute: true` to commit. Idempotent: a second execute run inserts nothing.
  *
- * TWO DATASETS, both embedded under `lib/seed/historical/`:
+ * THREE DATASETS, all embedded under `lib/seed/historical/`:
  *
  *  1. GENESIS BANK HISTORY (`GENESIS_BANK_ROWS`, 213 rows) — Kansi's complete,
  *     hand-categorized Relay bank export (Jun 2025 → Jun 2026). Each row lands
@@ -46,6 +46,18 @@
  *     ever the expense leg. `externalId: "genesis-ltn:<conf>"` (the unique Zelle
  *     confirmation code) is the idempotency key.
  *
+ *  3. IN-KIND EXPENSE MIRROR (`GENESIS_INKIND_EXPENSE_ROWS`, 37 rows) — the
+ *     genesis-era predecessor to dataset 2: personal purchases Seyi and Layomi
+ *     made on the org's behalf across 2024-2025, each ALREADY recorded on the
+ *     giving side as an in-kind gift (#304's giving backfill, `genesis:...`
+ *     externalRefs). This dataset mirrors the matching EXPENSE leg so finances/
+ *     reconcile reflects the same reality the giving ledger does. Same shape as
+ *     dataset 2: `source: "manual"` outflows, `status: "unreviewed"`, note
+ *     format `"<description> — paid personally by <fundedBy>; mirrors in-kind
+ *     gift <sourceGiftRef> (genesis)"`. `externalId` is the row's own
+ *     already-prefixed `externalRef` (`genesis-inkind-exp:<slug>`) — the
+ *     idempotency key.
+ *
  * DEDUP — avoiding double-representation with a LIVE bank feed. If the
  * Relay/Increase feed is already ingesting into `transactions`, some of the 213
  * bank rows may already exist (Kansi's export has no bank transaction ids to
@@ -54,18 +66,20 @@
  * `amountCents`, `postedAt` within ±2 days); a hit is skipped and counted
  * `alreadyPresent`. A matched real txn is CONSUMED (one-to-one), so two genuinely
  * distinct same-amount/same-day charges don't both collapse onto a single real
- * row. The LTN rows dedup by `externalId` ONLY (no date/amount heuristic) — they
- * are known-absent from the bank feed, so the heuristic could only ever produce
- * a false skip and wrongly drop a real expense.
+ * row. The LTN and in-kind rows dedup by `externalId` ONLY (no date/amount
+ * heuristic) — they are known-absent from the bank feed (personally paid, never
+ * touched the org bank), so the heuristic could only ever produce a false skip
+ * and wrongly drop a real expense.
  *
  * SCOPE — all of this is the org's NY-era operations, so every row is attributed
  * to the NY chapter (resolved by `NEW_YORK_CHAPTER_SLUG`), consistent with the
  * historical giving/attendance backfill and with what the chapter reconcile grid
  * (`finances.listReconcile`, `by_chapter_and_postedAt`) reads. Not `"central"`.
  *
- * BATCHING — 213 + 3 rows is one comfortable transaction (well under Convex's
- * per-transaction read/write budget; the existing giving backfill does 252 gifts
- * in one call). The existing-txn dedup read is bounded by `GENESIS_SCAN_LIMIT`.
+ * BATCHING — 213 + 3 + 37 rows is one comfortable transaction (well under
+ * Convex's per-transaction read/write budget; the existing giving backfill does
+ * 252 gifts in one call). The existing-txn dedup read is bounded by
+ * `GENESIS_SCAN_LIMIT`.
  */
 import { internalMutation } from "./_generated/server";
 import type { MutationCtx } from "./_generated/server";
@@ -74,9 +88,11 @@ import type { Doc, Id } from "./_generated/dataModel";
 import { NEW_YORK_CHAPTER_SLUG } from "./lib/seed/historical/mapping";
 import { GENESIS_BANK_ROWS } from "./lib/seed/historical/genesisBank";
 import { GENESIS_LTN_ROWS } from "./lib/seed/historical/genesisLtn";
+import { GENESIS_INKIND_EXPENSE_ROWS } from "./lib/seed/historical/genesisInkindExpenses";
 import type {
   GenesisBankRow,
   GenesisLtnRow,
+  GenesisInkindExpenseRow,
 } from "./lib/seed/historical/types";
 
 // ── Constants ────────────────────────────────────────────────────────────────
@@ -96,6 +112,7 @@ const DEDUP_DATE_TOLERANCE_MS = 2 * 24 * 60 * 60 * 1000;
  *  excludes our own prior inserts from the cross-source dedup candidate set. */
 const BANK_REF_PREFIX = "genesis-bank:";
 const LTN_REF_PREFIX = "genesis-ltn:";
+const INKIND_REF_PREFIX = "genesis-inkind-exp:";
 
 const MONTHS: Record<string, number> = {
   Jan: 0, Feb: 1, Mar: 2, Apr: 3, May: 4, Jun: 5,
@@ -210,7 +227,8 @@ async function loadExisting(
     if (tr.externalId) externalIds.add(tr.externalId);
     const isGenesis =
       tr.externalId?.startsWith(BANK_REF_PREFIX) ||
-      tr.externalId?.startsWith(LTN_REF_PREFIX);
+      tr.externalId?.startsWith(LTN_REF_PREFIX) ||
+      tr.externalId?.startsWith(INKIND_REF_PREFIX);
     if (isGenesis) continue;
     if (tr.flow === "transfer") continue; // transfers aren't category spend/income
     candidates.push({
@@ -331,12 +349,57 @@ async function applyLtnRow(
   counts.netCents -= row.amountCents; // an outflow
 }
 
+async function applyInkindRow(
+  ctx: MutationCtx,
+  opts: { write: boolean; chapterId: Id<"chapters">; externalIds: Set<string> },
+  row: GenesisInkindExpenseRow,
+  counts: DatasetCounts,
+): Promise<void> {
+  // These rows are already signed NEGATIVE (an expense) — unlike the LTN rows,
+  // which are stored non-negative. A non-negative or zero value is invalid.
+  if (!Number.isInteger(row.amountCents) || row.amountCents >= 0) {
+    counts.invalid++;
+    return;
+  }
+  // `externalRef` is already fully prefixed — used directly as the externalId.
+  const externalId = row.externalRef;
+  // These personally-paid purchases never touched the org bank feed, so — same
+  // as the LTN rows — dedup on `externalId` ONLY. No cross-source bank dedup.
+  if (opts.externalIds.has(externalId)) {
+    counts.alreadyPresent++;
+    return;
+  }
+
+  const note =
+    `${row.description} — paid personally by ${row.fundedBy}; mirrors in-kind ` +
+    `gift ${row.sourceGiftRef} (genesis)`;
+  if (opts.write) {
+    await ctx.db.insert("transactions", {
+      chapterId: opts.chapterId,
+      source: "manual",
+      flow: "outflow",
+      amountCents: Math.abs(row.amountCents),
+      currency: "usd",
+      postedAt: row.dateMs,
+      description: row.description,
+      note,
+      status: "unreviewed",
+      externalId,
+      createdAt: Date.now(),
+    });
+  }
+  opts.externalIds.add(externalId);
+  counts.inserted++;
+  counts.netCents += row.amountCents; // already negative (an outflow)
+}
+
 /**
  * Load the org's full financial history into `transactions` on the NY chapter.
  * `execute` omitted / false = a zero-write dry run reporting the exact counts a
  * real run would produce; `true` commits. Idempotent (self-dedup on `externalId`
- * + cross-source date/amount dedup vs. the live feed). Per-dataset counts +
- * overall signed net cents (inflows positive, outflows negative).
+ * + cross-source date/amount dedup vs. the live feed, bank dataset only).
+ * Per-dataset counts + overall signed net cents (inflows positive, outflows
+ * negative).
  */
 export const runFinanceGenesisBackfill = internalMutation({
   args: { execute: v.optional(v.boolean()) },
@@ -345,6 +408,7 @@ export const runFinanceGenesisBackfill = internalMutation({
     chapterId: v.id("chapters"),
     bank: datasetCountsValidator,
     ltn: datasetCountsValidator,
+    inkind: datasetCountsValidator,
     netCents: v.number(),
   }),
   handler: async (ctx, { execute }) => {
@@ -373,12 +437,23 @@ export const runFinanceGenesisBackfill = internalMutation({
       );
     }
 
+    const inkind = zeroCounts();
+    for (const row of GENESIS_INKIND_EXPENSE_ROWS) {
+      await applyInkindRow(
+        ctx,
+        { write, chapterId: chapter._id, externalIds },
+        row,
+        inkind,
+      );
+    }
+
     return {
       dryRun: !write,
       chapterId: chapter._id,
       bank,
       ltn,
-      netCents: bank.netCents + ltn.netCents,
+      inkind,
+      netCents: bank.netCents + ltn.netCents + inkind.netCents,
     };
   },
 });

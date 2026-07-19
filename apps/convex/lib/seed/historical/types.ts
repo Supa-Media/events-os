@@ -60,3 +60,29 @@ export type GenesisLtnRow = {
   /** Zelle confirmation code — unique, the dedup key. */
   conf: string;
 };
+
+/**
+ * One owner-paid in-kind expense — a personal purchase Seyi or Layomi made on
+ * the org's behalf during the genesis era, already recorded on the giving side
+ * as an in-kind gift (`sourceGiftRef`, a `genesis:...` externalRef from the
+ * giving backfill). This row is the matching EXPENSE leg.
+ *
+ * `amountCents` is a SIGNED integer and always NEGATIVE (an outflow) — unlike
+ * `GenesisLtnRow.amountCents`, which is stored non-negative. `externalRef` is
+ * already fully prefixed (`genesis-inkind-exp:<slug>`) and is used directly as
+ * the txn `externalId` (the idempotency key) — no further prefixing needed.
+ */
+export type GenesisInkindExpenseRow = {
+  /** Already-prefixed idempotency key, "genesis-inkind-exp:<slug>". */
+  externalRef: string;
+  /** UTC epoch ms — pre-resolved by the curator, no date-string parsing needed. */
+  dateMs: number;
+  /** SIGNED integer cents; always negative (an expense/outflow). */
+  amountCents: number;
+  /** What was purchased (becomes the txn description). */
+  description: string;
+  /** Who personally paid for it. */
+  fundedBy: "Oluseyi Olujide" | "Layomi Kupoluyi";
+  /** The matching giving-side in-kind gift's externalRef, for the note's cross-reference. */
+  sourceGiftRef: string;
+};
