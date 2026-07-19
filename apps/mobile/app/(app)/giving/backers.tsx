@@ -23,17 +23,28 @@
  * preview/commit flow that now covers `recurring` rows alongside gifts,
  * tickets, and contacts.
  *
- * Giving CRM v2: "Export" (owner request #3) serializes exactly the rows on
- * screen — every visible lifecycle group, each in its own current sort order,
- * in the same top-to-bottom order the page renders them. Row-action menus
- * (pause/resume, edit-since, delete-with-reason) + a pledge history view are
- * DEFERRED to the parallel `claude/giving-integrity-tools` PR — those
- * mutations (`setPledgeStatus`/`editPledgeStartedAt`/`deletePledge`/
- * `pledgeHistory`) aren't on `main` yet as of this PR.
+ * Backer lifecycle actions (#311's `setPledgeStatus` / `editPledgeStartedAt`
+ * / `deletePledge`, owner feedback #5): wired here as a row kebab menu, the
+ * same anchored-`ContextMenu` affordance the manager cards table uses
+ * (`CardholderRow`) — manage-gated, only rendered when `canManage`. A PAUSED
+ * pledge (a manual, local overlay — see `setPledgeStatus`'s doc; it does NOT
+ * count toward `backerCount` but stays in the list, sorted into the "Active"
+ * group since it's still a live subscription, just admin-muted) renders dim
+ * (`GridRow`'s `muted`) with its own "Paused" badge. Tapping a row's name
+ * opens a minimal detail sheet with the pledge's full lifecycle HISTORY
+ * (`pledgeHistory`, owner feedback #5d) — the "when was it paused/resumed/
+ * card-failed" timeline — plus a link through to the donor's full profile.
  */
 import { useMemo, useState } from "react";
-import { ActivityIndicator, View, Text } from "react-native";
-import { useQuery } from "convex/react";
+import {
+  ActivityIndicator,
+  Modal,
+  Pressable,
+  ScrollView,
+  View,
+  Text,
+} from "react-native";
+import { useMutation, useQuery } from "convex/react";
 import { useRouter } from "expo-router";
 import { api } from "@events-os/convex/_generated/api";
 import type { Id } from "@events-os/convex/_generated/dataModel";
@@ -42,22 +53,26 @@ import {
   Badge,
   type BadgeTone,
   Button,
+  ContextMenu,
+  type ContextMenuAction,
+  DateTimeField,
   EmptyState,
   FULL_WIDTH,
   GridCell,
   GridContainer,
   GridHeaderRow,
   GridRow,
+  Icon,
   Narrow,
   Screen,
   SectionHeader,
   SortableHeaderCell,
   TextField,
+  useAnchor,
 } from "../../../components/ui";
 import { colors } from "../../../lib/theme";
+import { alertError } from "../../../lib/errors";
 import { useGivingScope } from "../../../lib/useGivingScope";
-import { toCsv } from "../../../components/giving/csv";
-import { exportCsv } from "../../../components/giving/exportCsv";
 import {
   nextSortState,
   sortRows,
@@ -66,13 +81,15 @@ import {
 
 type GivingScope = "central" | Id<"chapters">;
 
+type PledgeStatus = "incomplete" | "active" | "past_due" | "canceled" | "paused";
+
 type PledgeRow = {
   _id: Id<"pledges">;
   donorId: Id<"donors">;
   donorName: string;
   donorEmail: string | null;
   amountCents: number;
-  status: "incomplete" | "active" | "past_due" | "canceled";
+  status: PledgeStatus;
   origin: "stripe" | "imported";
   startedAt?: number;
   createdAt: number;
@@ -80,21 +97,37 @@ type PledgeRow = {
 
 const NUM = { fontVariant: ["tabular-nums" as const] };
 
-// Fixed column widths (px) — mirrors the Reconcile / Donors grids.
+// Fixed column widths (px) — mirrors the Reconcile / Donors grids. `actions`
+// is only added to the grid width when the caller can manage (kebab column).
 const COLS = {
   name: 260,
   pledge: 120,
   frequency: 110,
   since: 130,
   status: 130,
+  actions: 44,
 } as const;
-const GRID_WIDTH = COLS.name + COLS.pledge + COLS.frequency + COLS.since + COLS.status;
+const BASE_GRID_WIDTH =
+  COLS.name + COLS.pledge + COLS.frequency + COLS.since + COLS.status;
 
-/** Pledge lifecycle → chip tone. */
-function pledgeStatusTone(status: string): BadgeTone {
+/** Display label for a pledge's status — the raw enum values aren't all
+ *  presentable as-is (`past_due`). */
+const STATUS_LABELS: Record<PledgeStatus, string> = {
+  incomplete: "Incomplete",
+  active: "Active",
+  past_due: "Past due",
+  canceled: "Canceled",
+  paused: "Paused",
+};
+
+/** Pledge lifecycle → chip tone. `paused` mirrors the donor-detail
+ *  `PledgeCard`'s own tone choice (warn — it needs attention, even though
+ *  it's a deliberate manual state, not an error). */
+function pledgeStatusTone(status: PledgeStatus): BadgeTone {
   if (status === "active") return "success";
   if (status === "past_due") return "warn";
   if (status === "canceled") return "danger";
+  if (status === "paused") return "warn";
   return "neutral";
 }
 
@@ -117,16 +150,23 @@ export default function BackersScreen() {
       </Screen>
     );
   }
-  return <BackersBody scope={access.scope} />;
+  return <BackersBody scope={access.scope} canManage={access.canManage} />;
 }
 
 type SortKey = "name" | "pledge" | "since";
 type SortState = { key: SortKey; direction: SortDirection };
 
-function BackersBody({ scope }: { scope: GivingScope }) {
+function BackersBody({
+  scope,
+  canManage,
+}: {
+  scope: GivingScope;
+  canManage: boolean;
+}) {
   const router = useRouter();
   const [search, setSearch] = useState("");
   const [sort, setSort] = useState<SortState>({ key: "since", direction: "desc" });
+  const [detailPledge, setDetailPledge] = useState<PledgeRow | null>(null);
   const pledges = useQuery(api.givingPledges.listPledges, { scope }) as
     | PledgeRow[]
     | undefined;
@@ -150,12 +190,18 @@ function BackersBody({ scope }: { scope: GivingScope }) {
     for (const p of searched) {
       if (p.status === "canceled") canceled.push(p);
       else if (p.origin === "imported") imported.push(p);
-      else if (p.status === "active") active.push(p);
+      // A manually paused pledge is still a live (just admin-muted)
+      // subscription — group it alongside Active so it stays visible where
+      // an owner would look for it; the row itself renders dim with a
+      // "Paused" badge (owner feedback #5a).
+      else if (p.status === "active" || p.status === "paused") active.push(p);
       else pastDue.push(p); // past_due / incomplete on our rails
     }
     // Backers = active pledges at/above the $50 unit (the derived count the
     // affordability header reads; PRD Appendix C#2) — computed over the
     // UNFILTERED-by-search set so the stat cards never shift with a search.
+    // `paused` is deliberately excluded (setPledgeStatus's doc): a paused
+    // pledge doesn't count toward the backer number.
     const allActive = (pledges ?? []).filter(
       (p) => p.status !== "canceled" && p.origin !== "imported" && p.status === "active",
     );
@@ -178,39 +224,6 @@ function BackersBody({ scope }: { scope: GivingScope }) {
     setSort((current) => nextSortState(key, current));
   }
 
-  // The same per-group sort `PledgeGrid` applies for DISPLAY — recomputed
-  // here (cheap, pure) so Export serializes rows in the exact order shown.
-  function sortedForExport(rows: PledgeRow[]): PledgeRow[] {
-    const getValue = (p: PledgeRow) => {
-      if (sort.key === "name") return p.donorName.toLowerCase();
-      if (sort.key === "pledge") return p.amountCents;
-      return p.startedAt ?? p.createdAt;
-    };
-    return sortRows(rows, getValue, sort.direction);
-  }
-
-  async function exportBackers() {
-    const headers = ["Name", "Email", "Pledge", "Frequency", "Since", "Status", "Group"];
-    const orderedGroups: [string, PledgeRow[]][] = [
-      ["Active", groups.active],
-      ["Past due", groups.pastDue],
-      ["Imported · awaiting re-signup", groups.imported],
-      ["Canceled", groups.canceled],
-    ];
-    const rows = orderedGroups.flatMap(([label, list]) =>
-      sortedForExport(list).map((p) => [
-        p.donorName,
-        p.donorEmail ?? "",
-        (p.amountCents / 100).toFixed(2),
-        "Monthly",
-        new Date(p.startedAt ?? p.createdAt).toLocaleDateString(),
-        p.status,
-        label,
-      ]),
-    );
-    await exportCsv(`backers-${Date.now()}.csv`, toCsv(headers, rows));
-  }
-
   if (pledges === undefined) {
     return (
       <View className="items-center justify-center py-16">
@@ -230,13 +243,6 @@ function BackersBody({ scope }: { scope: GivingScope }) {
             <Stat label="Active pledges" value={String(groups.activeCount)} />
             <Stat label="Monthly recurring" value={formatCents(groups.monthlyCents)} />
           </View>
-          <Button
-            title="Export"
-            icon="download"
-            size="sm"
-            variant="secondary"
-            onPress={() => void exportBackers()}
-          />
         </View>
 
         <View className="mb-4 min-w-[160px]">
@@ -269,51 +275,69 @@ function BackersBody({ scope }: { scope: GivingScope }) {
             rows={groups.active}
             sort={sort}
             onSort={toggleSort}
-            onOpen={(donorId) => router.navigate(`/giving/donor/${donorId}` as never)}
+            canManage={canManage}
+            onOpenDetail={setDetailPledge}
           />
           <PledgeGrid
             title="Past due"
             rows={groups.pastDue}
             sort={sort}
             onSort={toggleSort}
-            onOpen={(donorId) => router.navigate(`/giving/donor/${donorId}` as never)}
+            canManage={canManage}
+            onOpenDetail={setDetailPledge}
           />
           <PledgeGrid
             title="Imported · awaiting re-signup"
             rows={groups.imported}
             sort={sort}
             onSort={toggleSort}
-            onOpen={(donorId) => router.navigate(`/giving/donor/${donorId}` as never)}
+            canManage={canManage}
+            onOpenDetail={setDetailPledge}
           />
           <PledgeGrid
             title="Canceled"
             rows={groups.canceled}
             sort={sort}
             onSort={toggleSort}
-            onOpen={(donorId) => router.navigate(`/giving/donor/${donorId}` as never)}
+            canManage={canManage}
+            onOpenDetail={setDetailPledge}
           />
         </>
+      ) : null}
+
+      {detailPledge ? (
+        <BackerDetailSheet
+          pledge={detailPledge}
+          onClose={() => setDetailPledge(null)}
+          onOpenDonor={() => {
+            const donorId = detailPledge.donorId;
+            setDetailPledge(null);
+            router.navigate(`/giving/donor/${donorId}` as never);
+          }}
+        />
       ) : null}
     </Screen>
   );
 }
 
 /** One lifecycle group's grid — SectionHeader (title + count) above a
- *  Reconcile-style grid (Name · Pledge · Frequency · Since · Status). Sort
- *  state is shared across every group (one set of column headers behaves the
- *  same everywhere), applied independently per group's rows. */
+ *  Reconcile-style grid (Name · Pledge · Frequency · Since · Status[·⋯]).
+ *  Sort state is shared across every group (one set of column headers
+ *  behaves the same everywhere), applied independently per group's rows. */
 function PledgeGrid({
   title,
   rows,
   sort,
   onSort,
-  onOpen,
+  canManage,
+  onOpenDetail,
 }: {
   title: string;
   rows: PledgeRow[];
   sort: SortState;
   onSort: (key: SortKey) => void;
-  onOpen: (donorId: Id<"donors">) => void;
+  canManage: boolean;
+  onOpenDetail: (pledge: PledgeRow) => void;
 }) {
   // Hooks run unconditionally, even for an empty group — the early return
   // (below) happens after every hook.
@@ -328,12 +352,14 @@ function PledgeGrid({
 
   if (rows.length === 0) return null;
 
+  const width = BASE_GRID_WIDTH + (canManage ? COLS.actions : 0);
+
   return (
     <View className="mb-5">
       <Narrow>
         <SectionHeader title={`${title} (${rows.length})`} />
       </Narrow>
-      <GridContainer width={GRID_WIDTH}>
+      <GridContainer width={width}>
         <GridHeaderRow>
           <SortableHeaderCell
             label="Name"
@@ -359,13 +385,15 @@ function PledgeGrid({
             onSort={() => onSort("since")}
           />
           <SortableHeaderCell label="Status" width={COLS.status} />
+          {canManage ? <SortableHeaderCell label="" width={COLS.actions} /> : null}
         </GridHeaderRow>
         {sorted.map((p, i) => (
           <PledgeGridRow
             key={p._id}
             pledge={p}
             isLast={i === sorted.length - 1}
-            onPress={() => onOpen(p.donorId)}
+            canManage={canManage}
+            onOpenDetail={() => onOpenDetail(p)}
           />
         ))}
       </GridContainer>
@@ -376,17 +404,25 @@ function PledgeGrid({
 function PledgeGridRow({
   pledge,
   isLast,
-  onPress,
+  canManage,
+  onOpenDetail,
 }: {
   pledge: PledgeRow;
   isLast: boolean;
-  onPress: () => void;
+  canManage: boolean;
+  onOpenDetail: () => void;
 }) {
   const since = pledge.startedAt ?? pledge.createdAt;
+  const paused = pledge.status === "paused";
   return (
-    <GridRow onPress={onPress} isLast={isLast} accessibilityLabel={`Open ${pledge.donorName}`}>
+    <GridRow isLast={isLast} muted={paused}>
       <GridCell width={COLS.name}>
-        <View className="flex-1 px-2 py-1.5">
+        <Pressable
+          onPress={onOpenDetail}
+          accessibilityRole="button"
+          accessibilityLabel={`Open ${pledge.donorName}`}
+          className="flex-1 px-2 py-1.5 active:opacity-70 web:hover:opacity-80"
+        >
           <Text className="text-sm font-medium text-ink" numberOfLines={1}>
             {pledge.donorName}
           </Text>
@@ -395,7 +431,7 @@ function PledgeGridRow({
               {pledge.donorEmail}
             </Text>
           ) : null}
-        </View>
+        </Pressable>
       </GridCell>
       <GridCell width={COLS.pledge}>
         <Text className="flex-1 px-2 py-1.5 text-right text-sm font-semibold text-ink" style={NUM}>
@@ -414,10 +450,366 @@ function PledgeGridRow({
       </GridCell>
       <GridCell width={COLS.status}>
         <View className="flex-1 px-2 py-1.5">
-          <Badge label={pledge.status} tone={pledgeStatusTone(pledge.status)} />
+          <Badge label={STATUS_LABELS[pledge.status]} tone={pledgeStatusTone(pledge.status)} />
         </View>
       </GridCell>
+      {canManage ? (
+        <GridCell width={COLS.actions}>
+          <View className="flex-1 items-center justify-center px-1 py-1.5">
+            <BackerActionsMenu pledge={pledge} />
+          </View>
+        </GridCell>
+      ) : null}
     </GridRow>
+  );
+}
+
+// ── Row action menu — Pause/Resume, Edit since, Delete (owner feedback #5) ────
+// Same anchored-kebab affordance as the manager cards table
+// (`CardholderRow` — ⋯ button + `useAnchor` + `ContextMenu`).
+
+function BackerActionsMenu({ pledge }: { pledge: PledgeRow }) {
+  const { ref, anchor, visible, open, close } = useAnchor();
+  const [modal, setModal] = useState<
+    "pause" | "resume" | "editSince" | "delete" | null
+  >(null);
+
+  const actions: ContextMenuAction[] = [];
+  if (pledge.status === "active" || pledge.status === "past_due") {
+    actions.push({ label: "Pause", icon: "pause", onPress: () => setModal("pause") });
+  } else if (pledge.status === "paused") {
+    actions.push({ label: "Resume", icon: "play", onPress: () => setModal("resume") });
+  }
+  actions.push({
+    label: "Edit since…",
+    icon: "calendar",
+    onPress: () => setModal("editSince"),
+  });
+  actions.push({
+    label: "Delete…",
+    icon: "trash-2",
+    destructive: true,
+    onPress: () => setModal("delete"),
+  });
+
+  return (
+    <>
+      <Pressable
+        ref={ref}
+        onPress={open}
+        hitSlop={8}
+        accessibilityLabel={`Actions for ${pledge.donorName}`}
+        className="rounded-md p-1 active:bg-sunken web:hover:bg-sunken"
+      >
+        <Icon name="more-horizontal" size={16} color={colors.muted} />
+      </Pressable>
+      <ContextMenu
+        anchor={visible ? anchor : undefined}
+        actions={actions}
+        onClose={close}
+      />
+      {modal === "pause" || modal === "resume" ? (
+        <PauseResumeModal
+          pledge={pledge}
+          target={modal === "pause" ? "paused" : "active"}
+          onClose={() => setModal(null)}
+        />
+      ) : null}
+      {modal === "editSince" ? (
+        <EditSinceModal pledge={pledge} onClose={() => setModal(null)} />
+      ) : null}
+      {modal === "delete" ? (
+        <DeletePledgeModal pledge={pledge} onClose={() => setModal(null)} />
+      ) : null}
+    </>
+  );
+}
+
+/** Shared bottom-sheet chrome for the three action modals — mirrors the
+ *  Gifts/Donor-detail edit sheets (`Modal` + `bg-black/40` backdrop + a
+ *  rounded-top panel). */
+function ActionSheet({
+  title,
+  onClose,
+  children,
+}: {
+  title: string;
+  onClose: () => void;
+  children: React.ReactNode;
+}) {
+  return (
+    <Modal visible transparent animationType="fade" onRequestClose={onClose}>
+      <View className="flex-1 justify-end bg-black/40">
+        <View className="max-h-[88%] rounded-t-2xl bg-surface p-4">
+          <View className="mb-3 flex-row items-center justify-between">
+            <Text className="text-lg font-bold text-ink">{title}</Text>
+            <Pressable onPress={onClose} hitSlop={8} accessibilityLabel="Close">
+              <Icon name="x" size={20} color={colors.muted} />
+            </Pressable>
+          </View>
+          <ScrollView keyboardShouldPersistTaps="handled">{children}</ScrollView>
+        </View>
+      </View>
+    </Modal>
+  );
+}
+
+/** Pause/Resume — `why` is OPTIONAL per `setPledgeStatus`'s signature. */
+function PauseResumeModal({
+  pledge,
+  target,
+  onClose,
+}: {
+  pledge: PledgeRow;
+  target: "active" | "paused";
+  onClose: () => void;
+}) {
+  const setStatus = useMutation(api.givingPledges.setPledgeStatus);
+  const [why, setWhy] = useState("");
+  const [saving, setSaving] = useState(false);
+  const verb = target === "paused" ? "Pause" : "Resume";
+
+  async function submit() {
+    setSaving(true);
+    try {
+      await setStatus({
+        pledgeId: pledge._id,
+        status: target,
+        why: why.trim() || undefined,
+      });
+      onClose();
+    } catch (e) {
+      alertError(e);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <ActionSheet title={`${verb} pledge`} onClose={onClose}>
+      <Text className="mb-3 text-sm text-muted">
+        {target === "paused"
+          ? `${pledge.donorName}'s ${formatCents(pledge.amountCents)}/mo pledge stops counting toward the backer number immediately. Their Stripe subscription keeps billing in the background — cancel it in the Stripe portal to fully stop charges.`
+          : `${pledge.donorName}'s ${formatCents(pledge.amountCents)}/mo pledge counts toward the backer number again.`}
+      </Text>
+      <TextField
+        label="Reason (optional)"
+        value={why}
+        onChangeText={setWhy}
+        placeholder="A note for the history…"
+        multiline
+      />
+      <View className="mt-2 flex-row gap-2">
+        <View className="flex-1">
+          <Button title="Cancel" variant="secondary" onPress={onClose} />
+        </View>
+        <View className="flex-1">
+          <Button title={verb} onPress={() => void submit()} loading={saving} />
+        </View>
+      </View>
+    </ActionSheet>
+  );
+}
+
+/** Edit since — `why` is REQUIRED per `editPledgeStartedAt`'s signature. */
+function EditSinceModal({
+  pledge,
+  onClose,
+}: {
+  pledge: PledgeRow;
+  onClose: () => void;
+}) {
+  const editStartedAt = useMutation(api.givingPledges.editPledgeStartedAt);
+  const [startedAt, setStartedAt] = useState(pledge.startedAt ?? pledge.createdAt);
+  const [why, setWhy] = useState("");
+  const [saving, setSaving] = useState(false);
+
+  async function submit() {
+    if (!why.trim()) return;
+    setSaving(true);
+    try {
+      await editStartedAt({ pledgeId: pledge._id, startedAt, why: why.trim() });
+      onClose();
+    } catch (e) {
+      alertError(e);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <ActionSheet title="Edit since" onClose={onClose}>
+      <Text className="mb-3 text-sm text-muted">
+        Correct {pledge.donorName}'s pledge start date. Doesn't affect the
+        backer count — just when they showed up on the timeline.
+      </Text>
+      <View className="mb-3">
+        <Text className="mb-1 text-xs font-medium text-muted">Since</Text>
+        <DateTimeField value={startedAt} onChange={setStartedAt} />
+      </View>
+      <TextField
+        label="Why"
+        value={why}
+        onChangeText={setWhy}
+        placeholder="e.g. Backfilled from the old Givebutter export"
+        multiline
+      />
+      <View className="mt-2 flex-row gap-2">
+        <View className="flex-1">
+          <Button title="Cancel" variant="secondary" onPress={onClose} />
+        </View>
+        <View className="flex-1">
+          <Button
+            title="Save"
+            onPress={() => void submit()}
+            loading={saving}
+            disabled={!why.trim()}
+          />
+        </View>
+      </View>
+    </ActionSheet>
+  );
+}
+
+/** Delete — `why` is REQUIRED per `deletePledge`'s signature; a confirm step
+ *  spells out what's removed (and what STAYS — the paid gifts). */
+function DeletePledgeModal({
+  pledge,
+  onClose,
+}: {
+  pledge: PledgeRow;
+  onClose: () => void;
+}) {
+  const deletePledge = useMutation(api.givingPledges.deletePledge);
+  const [why, setWhy] = useState("");
+  const [saving, setSaving] = useState(false);
+
+  async function submit() {
+    if (!why.trim()) return;
+    setSaving(true);
+    try {
+      await deletePledge({ pledgeId: pledge._id, why: why.trim() });
+      onClose();
+    } catch (e) {
+      alertError(e);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <ActionSheet title="Delete pledge" onClose={onClose}>
+      <Text className="mb-3 text-sm text-ink">
+        This removes {pledge.donorName}'s {formatCents(pledge.amountCents)}/mo
+        pledge ({STATUS_LABELS[pledge.status]}) from the backers list.
+      </Text>
+      <Text className="mb-3 text-sm text-muted">
+        Any billing cycles they already paid stay on the giving ledger as
+        gifts — deleting the pledge only removes the subscription-state row,
+        not the money they gave. Say why — a snapshot is kept on the record.
+      </Text>
+      <TextField
+        label="Why are you deleting it?"
+        value={why}
+        onChangeText={setWhy}
+        placeholder="e.g. Duplicate pledge from a re-signup"
+        multiline
+      />
+      <View className="mt-2 flex-row gap-2">
+        <View className="flex-1">
+          <Button title="Cancel" variant="secondary" onPress={onClose} />
+        </View>
+        <View className="flex-1">
+          <Button
+            title="Delete pledge"
+            variant="danger"
+            onPress={() => void submit()}
+            loading={saving}
+            disabled={!why.trim()}
+          />
+        </View>
+      </View>
+    </ActionSheet>
+  );
+}
+
+// ── Backer detail sheet — pledge summary + full lifecycle history ─────────────
+
+const HISTORY_LABEL: Record<string, string> = {
+  status: "Status changed",
+  startedAt: "Since changed",
+  deleted: "Deleted",
+};
+
+function BackerDetailSheet({
+  pledge,
+  onClose,
+  onOpenDonor,
+}: {
+  pledge: PledgeRow;
+  onClose: () => void;
+  onOpenDonor: () => void;
+}) {
+  const history = useQuery(api.givingPledges.pledgeHistory, {
+    pledgeId: pledge._id,
+  });
+
+  return (
+    <ActionSheet title="Backer" onClose={onClose}>
+      <View className="mb-3">
+        <View className="flex-row items-center gap-2">
+          <Text className="text-xl font-bold text-ink">{pledge.donorName}</Text>
+          <Badge
+            label={STATUS_LABELS[pledge.status]}
+            tone={pledgeStatusTone(pledge.status)}
+          />
+        </View>
+        <Text className="mt-1 text-sm text-muted">
+          {formatCents(pledge.amountCents)}/mo
+          {pledge.origin === "imported" ? " · Givebutter (awaiting re-signup)" : ""}
+        </Text>
+        <Text className="mt-1 text-xs text-faint">
+          Since {new Date(pledge.startedAt ?? pledge.createdAt).toLocaleDateString()}
+        </Text>
+        <Button
+          title="View donor"
+          icon="user"
+          size="sm"
+          variant="secondary"
+          onPress={onOpenDonor}
+          className="mt-2 self-start"
+        />
+      </View>
+
+      <Text className="mb-1 text-xs font-bold uppercase tracking-wider text-faint">
+        History
+      </Text>
+      {history === undefined ? (
+        <ActivityIndicator color={colors.accent} />
+      ) : history.length === 0 ? (
+        <Text className="text-sm text-muted">No history recorded yet.</Text>
+      ) : (
+        <View className="gap-2">
+          {history.map((e) => (
+            <View key={e._id} className="rounded-lg border border-border bg-raised p-2.5">
+              <View className="flex-row items-center justify-between">
+                <Text className="text-sm font-semibold text-ink">
+                  {e.from ? `${e.from} → ` : ""}
+                  {e.to ?? HISTORY_LABEL[e.kind] ?? e.kind}
+                </Text>
+                <Text className="text-2xs text-muted">
+                  {new Date(e.at).toLocaleString()}
+                </Text>
+              </View>
+              <Text className="text-xs text-muted">by {e.actor}</Text>
+              {e.note ? (
+                <Text className="mt-0.5 text-xs italic text-muted">“{e.note}”</Text>
+              ) : null}
+            </View>
+          ))}
+        </View>
+      )}
+    </ActionSheet>
   );
 }
 
