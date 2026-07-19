@@ -23,13 +23,15 @@ import {
   internalMutation,
   mutation,
   query,
+  type QueryCtx,
 } from "./_generated/server";
 import { ConvexError, v } from "convex/values";
 import { internal } from "./_generated/api";
-import { Id } from "./_generated/dataModel";
+import { Doc, Id } from "./_generated/dataModel";
 import { paginationOptsValidator } from "convex/server";
 import { normalizeEmail } from "./lib/access";
 import { requireUserId } from "./lib/context";
+import { listActiveChapters } from "./lib/chapters";
 import {
   requireGivingView,
   requireGivingManage,
@@ -73,6 +75,20 @@ const DONOR_GIFTS_LIMIT = 100;
 const GIFT_WINDOW_LIMIT = 10000;
 /** Top donors surfaced on the dashboard. */
 const TOP_DONORS_LIMIT = 5;
+/** Active chapters read for the org-wide fleet (`dashboardFleet`) + the
+ *  all-scopes donor merge — bounded, shadow (prospect) chapters excluded via
+ *  `listActiveChapters`. Same order of magnitude as finance's `chapterHealth`
+ *  fleet scan. */
+const FLEET_CHAPTER_LIMIT = 200;
+/** Per-scope bound for `listDonors`'s central-only ALL-SCOPES merge: each scope
+ *  contributes at most this many of its strongest-lifetime donors before the
+ *  cross-scope merge. Keeps every per-scope read bounded (same index the
+ *  single-scope path uses). */
+const PER_SCOPE_ALL_LIMIT = 100;
+/** Hard cap on the merged all-scopes donor list after sorting by lifetime desc
+ *  — the CRM "All chapters" view is a top-donors list, not an export. A merge
+ *  that would exceed this is truncated to the strongest `ALL_SCOPES_CAP`. */
+const ALL_SCOPES_CAP = 500;
 /** Rows processed per backfill transaction before self-reschedule (keeps each
  *  mutation within Convex's per-transaction document limits). The CSV-import
  *  batch size this comment used to describe now lives in `givingImport.ts`. */
@@ -85,6 +101,43 @@ const BACKFILL_BATCH_SIZE = 100;
 const GIVER_MARK_PLEDGE_LIMIT = 10;
 
 const THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1000;
+
+/**
+ * A scope's last-30-days gift total — a BOUNDED range read over recent gifts
+ * (`by_scope_and_received`), never a full scan. Extracted from `givingDashboard`
+ * so the org-wide `dashboardFleet` computes it per scope the SAME way instead of
+ * duplicating the window logic (keeps the bound in one place).
+ */
+async function last30CentsForScope(
+  ctx: QueryCtx,
+  scope: GivingScope,
+): Promise<number> {
+  const cutoff = Date.now() - THIRTY_DAYS_MS;
+  const recent = await ctx.db
+    .query("gifts")
+    .withIndex("by_scope_and_received", (q) =>
+      q.eq("scope", scope).gte("receivedAt", cutoff),
+    )
+    .take(GIFT_WINDOW_LIMIT);
+  return recent.reduce((sum, g) => sum + g.amountCents, 0);
+}
+
+/** A scope's denormalized rollup totals (O(1), from `givingScopeRollups`),
+ *  zero-filled when the scope has no rollup row yet. */
+async function scopeRollupTotals(ctx: QueryCtx, scope: GivingScope) {
+  const rollup = await ctx.db
+    .query("givingScopeRollups")
+    .withIndex("by_scope", (q) => q.eq("scope", scope))
+    .unique();
+  return {
+    lifetimeCents: rollup?.lifetimeCents ?? 0,
+    giftCount: rollup?.giftCount ?? 0,
+    donorCount: rollup?.donorCount ?? 0,
+    activeCount: rollup?.activeCount ?? 0,
+    lapsedCount: rollup?.lapsedCount ?? 0,
+    prospectCount: rollup?.prospectCount ?? 0,
+  };
+}
 
 // ── Reads ─────────────────────────────────────────────────────────────────────
 
@@ -107,8 +160,64 @@ export const listDonors = query({
     kind: v.optional(donorKindValidator),
     source: v.optional(donorSourceValidator),
     minLifetimeCents: v.optional(v.number()),
+    // CENTRAL-ONLY "All chapters" mode (giving-dashboard v2 CRM): merge every
+    // active scope's strongest-lifetime donors into one cross-scope list. Gated
+    // on `requireGivingView(ctx, "central")`; ignores `scope`. Each per-scope
+    // read is bounded to `PER_SCOPE_ALL_LIMIT`, the merge is sorted by lifetime
+    // desc, and the whole list is capped at `ALL_SCOPES_CAP` (a chapter with
+    // more matching donors than its per-scope bound may undercount a narrow
+    // kind/source/lifetime filter — same acceptable tradeoff the single-scope
+    // path already ships, see `DONOR_LIST_LIMIT`). Each returned row carries a
+    // `scopeLabel` (the chapter name, or "Central") for the row's chapter tag.
+    allScopes: v.optional(v.boolean()),
   },
-  handler: async (ctx, { scope, status, kind, source, minLifetimeCents }) => {
+  handler: async (
+    ctx,
+    { scope, status, kind, source, minLifetimeCents, allScopes },
+  ) => {
+    // The CRM refinements (kind / source / min-lifetime) compose IN-MEMORY
+    // within the bounded index read — Convex indexes cover one leading
+    // combination each, so these can't be a second indexed query.
+    const matchesRefinements = (d: Doc<"donors">): boolean => {
+      if (kind !== undefined && d.kind !== kind) return false;
+      if (source !== undefined && d.source !== source) return false;
+      if (minLifetimeCents !== undefined && d.lifetimeCents < minLifetimeCents) {
+        return false;
+      }
+      return true;
+    };
+
+    if (allScopes) {
+      // Central reach only — the fleet-wide donor book.
+      await requireGivingView(ctx, "central");
+      const chapters = await listActiveChapters(ctx, FLEET_CHAPTER_LIMIT);
+      const nameByScope = new Map<string, string>([["central", "Central"]]);
+      for (const c of chapters) nameByScope.set(c._id, c.name);
+      const scopes: GivingScope[] = ["central", ...chapters.map((c) => c._id)];
+
+      const merged: Array<Doc<"donors"> & { scopeLabel: string }> = [];
+      for (const sc of scopes) {
+        const scopeRows = status
+          ? await ctx.db
+              .query("donors")
+              .withIndex("by_scope_and_status", (q) =>
+                q.eq("scope", sc).eq("status", status),
+              )
+              .take(PER_SCOPE_ALL_LIMIT)
+          : await ctx.db
+              .query("donors")
+              .withIndex("by_scope_and_lifetime", (q) => q.eq("scope", sc))
+              .order("desc")
+              .take(PER_SCOPE_ALL_LIMIT);
+        for (const d of scopeRows) {
+          if (!matchesRefinements(d)) continue;
+          merged.push({ ...d, scopeLabel: nameByScope.get(d.scope) ?? "—" });
+        }
+      }
+      merged.sort((a, b) => b.lifetimeCents - a.lifetimeCents);
+      return merged.slice(0, ALL_SCOPES_CAP);
+    }
+
     await requireGivingView(ctx, scope as GivingScope);
     const rows = status
       ? await ctx.db
@@ -122,14 +231,7 @@ export const listDonors = query({
           .withIndex("by_scope_and_lifetime", (q) => q.eq("scope", scope))
           .order("desc")
           .take(DONOR_LIST_LIMIT);
-    return rows.filter((d) => {
-      if (kind !== undefined && d.kind !== kind) return false;
-      if (source !== undefined && d.source !== source) return false;
-      if (minLifetimeCents !== undefined && d.lifetimeCents < minLifetimeCents) {
-        return false;
-      }
-      return true;
-    });
+    return rows.filter(matchesRefinements);
   },
 });
 
@@ -254,14 +356,7 @@ export const givingDashboard = query({
       .withIndex("by_scope", (q) => q.eq("scope", scope))
       .unique();
 
-    const cutoff = Date.now() - THIRTY_DAYS_MS;
-    const recent = await ctx.db
-      .query("gifts")
-      .withIndex("by_scope_and_received", (q) =>
-        q.eq("scope", scope).gte("receivedAt", cutoff),
-      )
-      .take(GIFT_WINDOW_LIMIT);
-    const last30Cents = recent.reduce((sum, g) => sum + g.amountCents, 0);
+    const last30Cents = await last30CentsForScope(ctx, scope as GivingScope);
 
     const topDonors = await ctx.db
       .query("donors")
@@ -311,14 +406,20 @@ export const myGivingAccess = query({
     canManage: v.boolean(),
     scope: v.union(v.literal("central"), v.id("chapters"), v.null()),
     chapterName: v.union(v.string(), v.null()),
+    // Whether the caller has CENTRAL (org-wide) giving reach — independent of
+    // which lens `scope` currently resolves to. The giving-dashboard-v2 CRM
+    // uses this to decide whether to offer the org-wide fleet dashboard and the
+    // "All chapters / Central / each chapter" scope dropdown; a chapter-only
+    // holder gets `false` and never sees either.
+    isCentral: v.boolean(),
   }),
   handler: async (ctx, { chapterId }) => {
     const access = await resolveGivingAccess(ctx);
+    const isCentral = access.isSuperuser || access.centralView;
 
     // The app's chapter lens wins when the caller may actually view it.
     if (chapterId !== undefined) {
-      const canViewRequested =
-        access.isSuperuser || access.centralView || access.viewChapters.has(chapterId);
+      const canViewRequested = isCentral || access.viewChapters.has(chapterId);
       if (canViewRequested) {
         const chapter = await ctx.db.get(chapterId);
         return {
@@ -329,6 +430,7 @@ export const myGivingAccess = query({
             access.manageChapters.has(chapterId),
           scope: chapterId,
           chapterName: chapter?.name ?? null,
+          isCentral,
         };
       }
       // Not viewable (e.g. a foreign chapter under a chapter-only seat) —
@@ -336,12 +438,13 @@ export const myGivingAccess = query({
     }
 
     // Central lens wins when the caller has central reach.
-    if (access.isSuperuser || access.centralView) {
+    if (isCentral) {
       return {
         canView: true,
         canManage: access.isSuperuser || access.centralManage,
         scope: "central" as const,
         chapterName: null,
+        isCentral: true,
       };
     }
     // Otherwise a chapter lens — the first chapter the caller can view.
@@ -354,6 +457,7 @@ export const myGivingAccess = query({
         canManage: access.manageChapters.has(chapterKey),
         scope: ownChapterId,
         chapterName: chapter?.name ?? null,
+        isCentral: false,
       };
     }
     return {
@@ -361,7 +465,147 @@ export const myGivingAccess = query({
       canManage: false,
       scope: null,
       chapterName: null,
+      isCentral: false,
     };
+  },
+});
+
+// ── Org-wide fleet (giving-dashboard v2) ─────────────────────────────────────
+
+const fleetScopeRow = v.object({
+  scope: scopeValidator,
+  name: v.string(),
+  lifetimeCents: v.number(),
+  last30Cents: v.number(),
+  giftCount: v.number(),
+  donorCount: v.number(),
+  activeCount: v.number(),
+  lapsedCount: v.number(),
+  prospectCount: v.number(),
+  // Manual-entry backer count (schema/chapters.ts: "Absent/0 = not yet set").
+  // `null` until a chapter configures a nonzero count; always `null` for
+  // central (no backer concept on central's own book).
+  backerCount: v.union(v.number(), v.null()),
+  // The linked territory's public backer goal (`territories.targetBackers`),
+  // or `null` when the chapter has no territory / is central.
+  targetBackers: v.union(v.number(), v.null()),
+  // Cheap attention signals, rollups-only.
+  hasLapsed: v.boolean(),
+  backersBelowTarget: v.boolean(),
+});
+
+/**
+ * The development director's org-wide FLEET view — every scope's giving at a
+ * glance, for a CENTRAL holder only (`requireGivingView(ctx, "central")`; a
+ * chapter-only caller is rejected). Mirrors finance's `dashboardCharts.chapterHealth`:
+ * a "Central" row (central's own donor book) leads, then one row per ACTIVE
+ * chapter (shadow/prospect chapters excluded via `listActiveChapters`).
+ *
+ * Every per-scope number is O(1) from `givingScopeRollups` EXCEPT `last30Cents`,
+ * a bounded range read per scope (`last30CentsForScope`, `by_scope_and_received`).
+ * `backerCount` comes off the chapter row; `targetBackers` is a single indexed
+ * `territories.by_chapter` read. `org` totals are the SUM across every scope
+ * row (central + chapters) — never a separate scan.
+ *
+ * Attention signals are rollups-only (cheap): `hasLapsed` (a reactivation
+ * queue exists) and `backersBelowTarget` (backers below the territory goal).
+ * The client derives the fleet attention RAIL from these (see
+ * `components/giving/dashboard/fleetAttention.ts`).
+ */
+export const dashboardFleet = query({
+  args: {},
+  returns: v.object({
+    org: v.object({
+      lifetimeCents: v.number(),
+      last30Cents: v.number(),
+      giftCount: v.number(),
+      donorCount: v.number(),
+      activeCount: v.number(),
+      lapsedCount: v.number(),
+      prospectCount: v.number(),
+      // Sum of every active chapter's backer count.
+      backerCount: v.number(),
+      // Sum of every linked territory's target (the org-wide backer goal).
+      targetBackers: v.number(),
+    }),
+    scopes: v.array(fleetScopeRow),
+  }),
+  handler: async (ctx) => {
+    await requireGivingView(ctx, "central");
+
+    const scopes: Array<typeof fleetScopeRow.type> = [];
+
+    // ── Central's own book (leads the fleet) ──
+    const centralTotals = await scopeRollupTotals(ctx, "central");
+    scopes.push({
+      scope: "central",
+      name: "Central",
+      ...centralTotals,
+      last30Cents: await last30CentsForScope(ctx, "central"),
+      backerCount: null,
+      targetBackers: null,
+      hasLapsed: centralTotals.lapsedCount > 0,
+      backersBelowTarget: false,
+    });
+
+    // ── One row per active chapter ──
+    const chapters = await listActiveChapters(ctx, FLEET_CHAPTER_LIMIT);
+    for (const chapter of chapters) {
+      const totals = await scopeRollupTotals(ctx, chapter._id);
+      const last30Cents = await last30CentsForScope(ctx, chapter._id);
+      // 1:1 territory (if any) — the public backer goal lives there.
+      const territory = await ctx.db
+        .query("territories")
+        .withIndex("by_chapter", (q) => q.eq("chapterId", chapter._id))
+        .first();
+      // "Absent/0 = not yet set" (schema/chapters.ts) — a zero count means
+      // unconfigured, so it reads as `null` (no backer bar), never "0 backers".
+      const rawBackers = chapter.backerCount ?? 0;
+      const backerCount = rawBackers > 0 ? rawBackers : null;
+      const targetBackers = territory ? territory.targetBackers : null;
+      const backersBelowTarget =
+        backerCount != null &&
+        targetBackers != null &&
+        backerCount < targetBackers;
+      scopes.push({
+        scope: chapter._id,
+        name: chapter.name,
+        ...totals,
+        last30Cents,
+        backerCount,
+        targetBackers,
+        hasLapsed: totals.lapsedCount > 0,
+        backersBelowTarget,
+      });
+    }
+
+    // ── Org totals = sum across every scope row ──
+    const org = scopes.reduce(
+      (acc, s) => ({
+        lifetimeCents: acc.lifetimeCents + s.lifetimeCents,
+        last30Cents: acc.last30Cents + s.last30Cents,
+        giftCount: acc.giftCount + s.giftCount,
+        donorCount: acc.donorCount + s.donorCount,
+        activeCount: acc.activeCount + s.activeCount,
+        lapsedCount: acc.lapsedCount + s.lapsedCount,
+        prospectCount: acc.prospectCount + s.prospectCount,
+        backerCount: acc.backerCount + (s.backerCount ?? 0),
+        targetBackers: acc.targetBackers + (s.targetBackers ?? 0),
+      }),
+      {
+        lifetimeCents: 0,
+        last30Cents: 0,
+        giftCount: 0,
+        donorCount: 0,
+        activeCount: 0,
+        lapsedCount: 0,
+        prospectCount: 0,
+        backerCount: 0,
+        targetBackers: 0,
+      },
+    );
+
+    return { org, scopes };
   },
 });
 
