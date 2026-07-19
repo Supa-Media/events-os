@@ -68,6 +68,7 @@ import {
 import {
   donors,
   gifts,
+  giftAudit,
   givingScopeRollups,
   pledges,
   dismissedGiftCandidates,
@@ -249,6 +250,9 @@ const schema = defineSchema({
   // docs/plans/giving-platform.md §1 + schema/givingPlatform.ts).
   donors,
   gifts,
+  // Gifts ledger: the human-edit audit breadcrumb trail (per-gift, newest-first
+  // via by_gift). Written by the desk mutations, never affects a money rollup.
+  giftAudit,
   givingScopeRollups,
   // P2 recurring rails — `pledges` (Stripe-subscription-backed monthly backing);
   // paid cycles write `gifts` rows (`pledgeId` set). Derives `chapters.backerCount`

@@ -682,6 +682,221 @@ export async function editGiftRow(
   }
 }
 
+/**
+ * Recompute a donor's rollups after ONE gift leaves it (reassigned to another
+ * donor or moved to another scope — the gift row is NOT deleted, only
+ * re-pointed). The gift must ALREADY have been re-pointed away before calling,
+ * so the `by_donor` bookend reads see only what remains. Mirrors
+ * `removeGiftRow`'s donor-side math (lifetime −amount clamped, count −1,
+ * bookends from the two bounded reads, status re-derived) WITHOUT the delete,
+ * the scope delta, or the pot reversal — the caller owns those. Pure donor doc.
+ */
+async function recomputeDonorAfterGiftLeft(
+  ctx: MutationCtx,
+  donor: Doc<"donors">,
+  amountCents: number,
+): Promise<void> {
+  const giftCount = Math.max(0, donor.giftCount - 1);
+  const newest = await ctx.db
+    .query("gifts")
+    .withIndex("by_donor", (q) => q.eq("donorId", donor._id))
+    .order("desc")
+    .first();
+  const oldest = await ctx.db
+    .query("gifts")
+    .withIndex("by_donor", (q) => q.eq("donorId", donor._id))
+    .order("asc")
+    .first();
+  const lastGiftAt = newest?.receivedAt;
+  await ctx.db.patch(donor._id, {
+    lifetimeCents: Math.max(0, donor.lifetimeCents - amountCents),
+    giftCount,
+    lastGiftAt,
+    firstGiftAt: oldest?.receivedAt,
+  });
+  await recomputeDonorStatus(ctx, donor, { giftCount, lastGiftAt });
+}
+
+/**
+ * Apply ONE gift's contribution to a donor that just gained it (the inverse of
+ * `recomputeDonorAfterGiftLeft`). Mirrors `recordGiftForDonor`'s donor-side math
+ * (lifetime +amount, count +1, bookends widened by `receivedAt`, status
+ * re-derived) WITHOUT inserting a gift, moving a scope rollup, or touching the
+ * pot — the caller owns those. Pure donor doc.
+ */
+async function applyGiftToDonor(
+  ctx: MutationCtx,
+  donor: Doc<"donors">,
+  amountCents: number,
+  receivedAt: number,
+): Promise<void> {
+  const giftCount = donor.giftCount + 1;
+  const lastGiftAt = Math.max(donor.lastGiftAt ?? 0, receivedAt);
+  const firstGiftAt = Math.min(
+    donor.firstGiftAt ?? Number.POSITIVE_INFINITY,
+    receivedAt,
+  );
+  await ctx.db.patch(donor._id, {
+    lifetimeCents: Math.max(0, donor.lifetimeCents + amountCents),
+    giftCount,
+    lastGiftAt,
+    firstGiftAt,
+  });
+  await recomputeDonorStatus(ctx, donor, { giftCount, lastGiftAt });
+}
+
+/**
+ * Reassign a gift to a DIFFERENT donor in the SAME scope (gifts ledger cleanup,
+ * owner request #2 — "two people giving under one name … merge their gifts").
+ * The scope rollup is untouched (the money never leaves the book, it only moves
+ * donors), and the launch pot is untouched (same scope, same territory, the
+ * `countedInLaunchFund` flag stays as-is). Both donors' lifetime / count /
+ * bookends / status re-derive exactly from actuals via the shared helpers.
+ * Throws on a cross-scope target (use `moveGiftToScope` for that) or a no-op
+ * same-donor target. Returns the display facts the audit line needs.
+ */
+export async function reassignGiftToDonor(
+  ctx: MutationCtx,
+  args: { giftId: Id<"gifts">; toDonorId: Id<"donors"> },
+): Promise<{
+  fromDonorId: Id<"donors">;
+  fromDonorName: string;
+  toDonorName: string;
+  scope: GivingScope;
+}> {
+  const gift = await ctx.db.get(args.giftId);
+  if (!gift) {
+    throw new ConvexError({ code: "NOT_FOUND", message: "Gift not found." });
+  }
+  const fromDonor = await ctx.db.get(gift.donorId);
+  const toDonor = await ctx.db.get(args.toDonorId);
+  if (!fromDonor || !toDonor) {
+    throw new ConvexError({ code: "NOT_FOUND", message: "Donor not found." });
+  }
+  if (fromDonor._id === toDonor._id) {
+    throw new ConvexError({
+      code: "INVALID_INPUT",
+      message: "That gift is already on this donor.",
+    });
+  }
+  if (fromDonor.scope !== toDonor.scope) {
+    throw new ConvexError({
+      code: "CROSS_SCOPE",
+      message: "Both donors must be in the same book to reassign a gift.",
+    });
+  }
+
+  // Re-point first so the bookend reads exclude this gift from the old donor.
+  await ctx.db.patch(args.giftId, { donorId: toDonor._id });
+  await recomputeDonorAfterGiftLeft(ctx, fromDonor, gift.amountCents);
+  await applyGiftToDonor(ctx, toDonor, gift.amountCents, gift.receivedAt);
+
+  return {
+    fromDonorId: fromDonor._id,
+    fromDonorName: fromDonor.name,
+    toDonorName: toDonor.name,
+    scope: fromDonor.scope,
+  };
+}
+
+/**
+ * Move a gift to a DIFFERENT scope/book (owner request #4a — central↔chapter,
+ * chapter↔chapter). The gift's donor must EXIST in the target scope: we
+ * match-or-create a donor there for the SAME identity as the source donor
+ * (`matchOrCreateDonor`, which also person-links a chapter donor), then apply
+ * paired rollup updates so BOTH scope rollups net EXACTLY:
+ *   - old scope: lifetime −amount, gift −1, and the old donor's status shift;
+ *   - new scope: lifetime +amount, gift +1, the new donor (created → donor+1),
+ *     and its status shift.
+ * The launch pot follows the money: the OLD scope's pot is un-bumped iff the
+ * gift was `countedInLaunchFund` (respecting the launch freeze via
+ * `applyLaunchFundDelta`), the flag is cleared, then the NEW scope's pot is
+ * bumped iff its territory is still pre-launch — and the flag re-set to match.
+ *
+ * Returns the target donor id + the display facts the audit line needs. The
+ * caller gates this (cross-book move = central manage) and blocks system-written
+ * gifts (event donation / Stripe / sponsorship / bank-credit), whose scope is
+ * owned elsewhere.
+ */
+export async function moveGiftToScope(
+  ctx: MutationCtx,
+  args: { giftId: Id<"gifts">; toScope: GivingScope },
+): Promise<{
+  toDonorId: Id<"donors">;
+  fromScope: GivingScope;
+  donorName: string;
+}> {
+  const gift = await ctx.db.get(args.giftId);
+  if (!gift) {
+    throw new ConvexError({ code: "NOT_FOUND", message: "Gift not found." });
+  }
+  const fromScope = gift.scope as GivingScope;
+  if (fromScope === args.toScope) {
+    throw new ConvexError({
+      code: "INVALID_INPUT",
+      message: "That gift is already in this book.",
+    });
+  }
+  const fromDonor = await ctx.db.get(gift.donorId);
+  if (!fromDonor) {
+    throw new ConvexError({ code: "NOT_FOUND", message: "Donor not found." });
+  }
+
+  // The gift's donor must exist in the target scope — match-or-create the same
+  // identity there (also person-links a new chapter donor).
+  const toDonorId = await matchOrCreateDonor(ctx, {
+    scope: args.toScope,
+    name: fromDonor.name,
+    email: fromDonor.email,
+    phone: fromDonor.phone,
+    kind: fromDonor.kind,
+    source: fromDonor.source,
+  });
+  const toDonor = await ctx.db.get(toDonorId);
+  if (!toDonor) {
+    throw new ConvexError({ code: "NOT_FOUND", message: "Donor not found." });
+  }
+
+  const amountCents = gift.amountCents;
+  const wasCounted = gift.countedInLaunchFund === true;
+
+  // Old-scope pot reversal FIRST (uses the gift's original scope). Freeze-safe.
+  if (wasCounted) {
+    await applyLaunchFundDelta(ctx, fromScope, -amountCents);
+  }
+
+  // Re-point the gift onto the new donor + new scope; clear the pot flag (the
+  // new-scope pot re-decides it below).
+  await ctx.db.patch(args.giftId, {
+    donorId: toDonor._id,
+    scope: args.toScope,
+    countedInLaunchFund: false,
+  });
+
+  // Old donor + old scope rollup lose exactly this gift.
+  await recomputeDonorAfterGiftLeft(ctx, fromDonor, amountCents);
+  await applyScopeDelta(ctx, fromScope, {
+    lifetimeDelta: -amountCents,
+    giftDelta: -1,
+  });
+
+  // New donor + new scope rollup gain exactly this gift.
+  await applyGiftToDonor(ctx, toDonor, amountCents, gift.receivedAt);
+  await applyScopeDelta(ctx, args.toScope, {
+    lifetimeDelta: amountCents,
+    giftDelta: 1,
+  });
+
+  // New-scope pot: accrue iff its territory is still pre-launch, and stamp the
+  // flag to match so a later removal reverses the right pot.
+  const countedNow = await applyLaunchFundDelta(ctx, args.toScope, amountCents);
+  if (countedNow) {
+    await ctx.db.patch(args.giftId, { countedInLaunchFund: true });
+  }
+
+  return { toDonorId: toDonor._id, fromScope, donorName: fromDonor.name };
+}
+
 /** Map an event `donations.method` to the giving `gifts.method` vocabulary. */
 function donationMethodToGift(
   method: Doc<"donations">["method"],
