@@ -98,6 +98,10 @@ import {
   type EventMapping,
 } from "./lib/seed/historical/mapping";
 import { GIVING_ROWS } from "./lib/seed/historical/giving";
+import {
+  GENESIS_GIFTS,
+  type GenesisGiftRow,
+} from "./lib/seed/historical/genesis";
 import { LTN_ROWS } from "./lib/seed/historical/ltn";
 import { NYE_ROWS } from "./lib/seed/historical/nye";
 import { EDEN_ROWS } from "./lib/seed/historical/eden";
@@ -275,6 +279,11 @@ type GivingState = {
   // Dry-run only: identities a ticket/contact row WOULD create this page, so a
   // second occurrence isn't double-counted (execute dedups via fresh reads).
   pendingContacts: IdentityLike[];
+  // Provenance stamped on donors this run MATERIALIZES (see `materializeDonor`).
+  // The Givebutter export runner leaves it unset → "givebutter-import"; the
+  // genesis runner sets "manual" (these predate Givebutter). Existing behavior
+  // is unchanged when omitted.
+  donorSource?: Doc<"donors">["source"];
 };
 
 /** Resolve (or register a would-be-created) donor for a gift/recurring row —
@@ -335,7 +344,7 @@ async function materializeDonor(
       email: entry.email,
       phone: entry.phone,
       kind: row.kind,
-      source: "givebutter-import",
+      source: state.donorSource ?? "givebutter-import",
     });
   }
   await fillDonorAddressIfBlank(ctx, entry.realId, row.address);
@@ -1003,5 +1012,165 @@ export const runFullBackfill = internalAction({
     }
 
     return { dryRun: !write, giving, attendance };
+  },
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// GENESIS GIVING BACKFILL — the org's PRE-PLATFORM giving history (2024–2026:
+// founder wires/transfers, paid-on-behalf & in-kind gifts, Notion-era
+// donations), owner-curated + APPROVED for production. Distinct from the
+// Givebutter-era `runGivingBackfill` above: a separate curated dataset
+// (`genesis.ts`), its own `genesis:`-prefixed externalRef namespace, and donors
+// stamped `source: "manual"` (these predate Givebutter). It reuses the SAME
+// commit path (`handleGiftRow` → `matchOrCreateDonor`/`recordGiftForDonor`) so
+// donor dedup, gift externalRef idempotency, and rollup integrity are identical.
+// ═══════════════════════════════════════════════════════════════════════════
+
+/** Genesis rows processed per `runGenesisBackfill` call. The dataset is small
+ *  (48 rows, one window), but the `offset`/`nextOffset` arg is kept for parity
+ *  with `runGivingBackfill` and headroom if the curated set ever grows. */
+const GENESIS_PAGE_SIZE = 100;
+
+/** Build a zeroed giving-counts accumulator (the genesis runner only ever
+ *  touches donor/gift fields; pledge/contact/ticket counts stay 0). */
+function emptyGivingCounts(): GivingCounts {
+  return {
+    donorsCreated: 0,
+    donorsMatched: 0,
+    gifts: 0,
+    giftsDuplicate: 0,
+    pledges: 0,
+    pledgesDuplicate: 0,
+    contacts: 0,
+    contactsSkippedNoIdentifier: 0,
+    ticketHistoryLinked: 0,
+    invalid: 0,
+  };
+}
+
+/**
+ * Map a genesis row's `method` + `inKind` onto the existing `gifts.method`
+ * union — NEVER a new literal. An in-kind / paid-on-behalf gift commits as
+ * `"in_kind"` (the schema's own in-kind marker), a founder wire as `"wire"`,
+ * and everything else (Notion-era external donations, Truist→Relay transfers)
+ * as `"other"` — the specific channel is preserved in the row's note.
+ */
+function genesisGiftMethod(row: GenesisGiftRow): Doc<"gifts">["method"] {
+  if (row.inKind) return "in_kind";
+  if (row.method === "wire") return "wire";
+  return "other";
+}
+
+/**
+ * Adapt a curated genesis row into the canonical gift-row shape the shared
+ * commit path (`handleGiftRow`) consumes. Genesis records carry no mailing
+ * address, so none is plumbed. The note is kept VERBATIM: the schema's
+ * `"in_kind"` method IS the in-kind marker, so a row's existing "In-kind — "
+ * note text is neither required nor re-prefixed (no double-prefixing).
+ */
+function genesisToGiftRow(row: GenesisGiftRow): CanonicalImportRow {
+  return {
+    rowType: "gift",
+    name: row.donorName,
+    ...(row.donorEmail ? { email: row.donorEmail } : {}),
+    amountCents: row.amountCents,
+    receivedAt: row.giftDateMs,
+    source: genesisGiftMethod(row),
+    externalRef: row.externalRef,
+    note: row.note,
+  };
+}
+
+/**
+ * Run ONE page of the genesis giving backfill against the NY chapter. `execute`
+ * omitted / false is a DRY RUN (zero writes, full simulation); `true` commits.
+ * Donors match-or-create per identity (email when the curated row has one, else
+ * exact name) and are stamped `source: "manual"`; gifts are idempotent by their
+ * `genesis:` externalRef (re-run = every row a duplicate, zero writes). Returns
+ * per-page counts (same shape as `runGivingBackfill`) PLUS `totalCents` — the
+ * sum of amounts NEWLY recorded this page (0 on an idempotent re-run). Pages via
+ * `offset` (window = `GENESIS_PAGE_SIZE`); follow `nextOffset` (null when done).
+ */
+export const runGenesisBackfill = internalMutation({
+  args: { execute: v.optional(v.boolean()), offset: v.optional(v.number()) },
+  returns: v.object({
+    dryRun: v.boolean(),
+    offset: v.number(),
+    processed: v.number(),
+    nextOffset: v.union(v.number(), v.null()),
+    counts: givingCountsValidator,
+    totalCents: v.number(),
+  }),
+  handler: async (ctx, { execute, offset }) => {
+    const chapter = await requireNyChapter(ctx);
+    const start = Math.max(0, offset ?? 0);
+    const state: GivingState = {
+      now: Date.now(),
+      write: execute ?? false,
+      scope: chapter._id,
+      chapterId: chapter._id,
+      donorPool: [],
+      seenGiftRefs: new Set(),
+      pendingContacts: [],
+      donorSource: "manual",
+    };
+    const counts = emptyGivingCounts();
+    let totalCents = 0;
+
+    const window = GENESIS_GIFTS.slice(start, start + GENESIS_PAGE_SIZE);
+    for (const genesisRow of window) {
+      const before = counts.gifts;
+      await handleGiftRow(ctx, state, genesisToGiftRow(genesisRow), counts);
+      // A newly-recorded gift (not a dup/invalid) contributes to the run total.
+      if (counts.gifts > before) totalCents += genesisRow.amountCents;
+    }
+
+    const next = start + GENESIS_PAGE_SIZE;
+    return {
+      dryRun: !state.write,
+      offset: start,
+      processed: window.length,
+      nextOffset: next < GENESIS_GIFTS.length ? next : null,
+      counts,
+      totalCents,
+    };
+  },
+});
+
+/**
+ * Drive the ENTIRE genesis giving backfill in one call: loops every window of
+ * `runGenesisBackfill` via `ctx.runMutation`, aggregating counts + `totalCents`.
+ * `execute` omitted / false = a full zero-write dry run; `true` commits.
+ * Idempotent overall (the underlying runner is). Mirrors `runFullBackfill`'s
+ * dispatch shape so the operator invokes it the same way after deploy.
+ */
+export const runGenesisGivingBackfill = internalAction({
+  args: { execute: v.optional(v.boolean()) },
+  returns: v.object({
+    dryRun: v.boolean(),
+    counts: givingCountsValidator,
+    totalCents: v.number(),
+  }),
+  handler: async (ctx, { execute }) => {
+    const write = execute ?? false;
+    const counts = emptyGivingCounts();
+    let totalCents = 0;
+    let offset: number | null = 0;
+    while (offset !== null) {
+      const res: {
+        nextOffset: number | null;
+        counts: GivingCounts;
+        totalCents: number;
+      } = await ctx.runMutation(
+        internal.historicalBackfill.runGenesisBackfill,
+        { execute: write, offset },
+      );
+      for (const k of Object.keys(counts) as (keyof GivingCounts)[]) {
+        counts[k] += res.counts[k];
+      }
+      totalCents += res.totalCents;
+      offset = res.nextOffset;
+    }
+    return { dryRun: !write, counts, totalCents };
   },
 });
