@@ -129,6 +129,11 @@ export const rsvps = defineTable({
   source: v.optional(v.union(v.literal("rsvp"), v.literal("ticket"))),
   // false = a code is pending, true = confirmed, undefined = legacy (verified).
   emailVerified: v.optional(v.boolean()),
+  // Phone verification (Attendance F), tri-state exactly like `emailVerified`:
+  // false = an SMS code is pending, true = confirmed, undefined = never
+  // started (imported/synced phone guests are undefined = not-yet-verified,
+  // but an SMS blast still reaches them — the gate is `!== false`).
+  phoneVerified: v.optional(v.boolean()),
   // Free-text note attached by the attendance importer (payment platform +
   // handle, "Panelist", "+1 of X", ticket type/price, etc.). Never shown on
   // the public page; admin-only context on the guest list.
@@ -146,6 +151,21 @@ export const rsvps = defineTable({
  * hash of the 6-digit code is stored; the plaintext goes out by email only.
  */
 export const rsvpEmailCodes = defineTable({
+  rsvpId: v.id("rsvps"),
+  codeHash: v.string(),
+  expiresAt: v.number(),
+  attempts: v.number(),
+  lastSentAt: v.number(),
+  createdAt: v.number(),
+}).index("by_rsvp", ["rsvpId"]);
+
+/**
+ * Pending phone-verification code for an RSVP (at most one per RSVP) — the SMS
+ * analog of `rsvpEmailCodes`, same shape and semantics (hashed 6-digit code,
+ * 15-min expiry, 5 attempts, one send/minute). Only a hash is stored; the
+ * plaintext goes out by SMS only.
+ */
+export const rsvpPhoneCodes = defineTable({
   rsvpId: v.id("rsvps"),
   codeHash: v.string(),
   expiresAt: v.number(),
