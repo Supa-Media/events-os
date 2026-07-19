@@ -6,6 +6,7 @@
   "scripts": {
     "start": "expo start",
     "dev": "expo start --dev-client",
+    "build": "expo export --platform web",
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
     "ios": "expo run:ios",
