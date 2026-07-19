@@ -37,7 +37,6 @@ import {
 } from "../../../components/event/EventModuleRollup";
 import { ModuleSection } from "../../../components/event/ModuleSection";
 import TicketingTab from "../../../components/event/ticketing/TicketingTab";
-import GearTab from "../../../components/event/gear/GearTab";
 import { MoneyView } from "../../../components/money/MoneyView";
 import { ScopeToggle } from "../../../components/team/ScopeToggle";
 import { colors, modulePhase } from "../../../lib/theme";
@@ -319,16 +318,16 @@ export default function EventDetailScreen() {
   // tab). Selecting a section drills in to `?tab=<key>`; unknown/missing/legacy
   // (`?tab=overview`) keys fall back to the overview.
   const PLAN = "plan";
-  // Tickets (the public event page), Gear, and Money (the ONE money surface for
+  // Tickets (the public event page) and Money (the ONE money surface for
   // this event, retiring the old separate Budget tab) are operational TOOLS,
   // not areas — they open from the overview tools row but live at
-  // `?tab=tickets|gear|money` so deep links and back/forward keep working.
+  // `?tab=tickets|money` so deep links and back/forward keep working.
   // Money is hidden from that row for training events (the #172 invariant), so a
-  // stale/hand-typed `?tab=money` must not bypass it.
+  // stale/hand-typed `?tab=money` must not bypass it. (The old Gear tool is
+  // retired: supply rows with Source = Chapter Storage reserve gear directly,
+  // so a stale `?tab=gear` falls back to the overview.)
   const activeTab =
-    tab === "tickets" ||
-    tab === "gear" ||
-    (tab === "money" && event.isTraining !== true)
+    tab === "tickets" || (tab === "money" && event.isTraining !== true)
       ? tab
       : tabs.some((t) => t.key === tab)
         ? (tab as string)
@@ -344,11 +343,9 @@ export default function EventDetailScreen() {
   const activeSectionLabel =
     activeTab === "tickets"
       ? "Event page"
-      : activeTab === "gear"
-        ? "Gear"
-        : activeTab === "money"
-          ? "Money"
-          : (tabs.find((t) => t.key === activeTab)?.label ?? "Section");
+      : activeTab === "money"
+        ? "Money"
+        : (tabs.find((t) => t.key === activeTab)?.label ?? "Section");
   // Custom event-module rows, keyed by module key, so a rollup row can resolve
   // its `eventModules` id for deletion.
   const customModuleIdByKey = new Map(
@@ -709,8 +706,6 @@ export default function EventDetailScreen() {
                 onDayOf={() => router.push(`/event/${eventId}/day-of`)}
                 onTickets={() => router.setParams({ tab: "tickets" })}
                 ticketsActive={activeTab === "tickets"}
-                onGear={() => router.setParams({ tab: "gear" })}
-                gearActive={activeTab === "gear"}
                 onMoney={() => router.setParams({ tab: "money" })}
                 moneyActive={activeTab === "money"}
                 isTraining={event.isTraining === true}
@@ -747,8 +742,6 @@ export default function EventDetailScreen() {
                 onDayOf={() => router.push(`/event/${eventId}/day-of`)}
                 onTickets={() => router.setParams({ tab: "tickets" })}
                 ticketsActive={false}
-                onGear={() => router.setParams({ tab: "gear" })}
-                gearActive={false}
                 onMoney={() => router.setParams({ tab: "money" })}
                 moneyActive={false}
                 isTraining={event.isTraining === true}
@@ -783,12 +776,6 @@ export default function EventDetailScreen() {
                 back-to-plan bar above is the way back. ────────────────────── */
           <Narrow>
             <TicketingTab eventId={eventId} />
-          </Narrow>
-        ) : activeTab === "gear" ? (
-          /* ── Gear: this event's reservations against the chapter inventory.
-                The back-to-plan bar above is the way back. ────────────────── */
-          <Narrow>
-            <GearTab eventId={eventId} />
           </Narrow>
         ) : activeTab === "money" ? (
 

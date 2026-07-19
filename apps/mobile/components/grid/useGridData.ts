@@ -50,6 +50,19 @@ export interface GridItem {
   owner?: { _id: string; name: string } | null;
   /** True when `owner` was inherited from the role (no explicit override). */
   ownerIsInherited?: boolean;
+  // Supplies only (event mode): the derived-status payload + linked asset.
+  /** "Event X · Container" detail when the status is reserved_elsewhere. */
+  statusDetail?: string | null;
+  /** False when fields.statusOverride is a manual hard-pick. */
+  statusIsDerived?: boolean;
+  /** The Chapter-Storage asset this row links, with live availability. */
+  linkedAsset?: {
+    _id: string;
+    name: string;
+    available: number;
+    onHand: number;
+    consumable: boolean;
+  } | null;
 }
 
 /**

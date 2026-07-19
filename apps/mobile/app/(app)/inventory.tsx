@@ -9,8 +9,8 @@
  *
  * Gated admin-or-lead in the nav (logistics-lead domain) AND in-screen here, so
  * a member/volunteer who deep-links lands on a friendly restricted state rather
- * than the registry. Reservations against these assets happen per-event from the
- * event's Gear tool.
+ * than the registry. Reservations against these assets happen per-event: a
+ * supplies row with Source = Chapter Storage links an asset and reserves it.
  */
 import { useMemo, useState } from "react";
 import { Text, View } from "react-native";
@@ -97,8 +97,8 @@ export default function InventoryScreen() {
             </View>
             <Text className="mb-3 text-sm text-muted">
               Your chapter's gear. Events reserve from here — two overlapping
-              events can't both claim the one battery. Reserve gear from an
-              event's Gear tool.
+              events can't both claim the one battery. Reserve gear by setting a
+              supply row's Source to Chapter Storage on the event.
             </Text>
 
             {/* Tags filter pill bar */}
