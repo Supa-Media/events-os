@@ -45,9 +45,17 @@ import {
   recordGiftForDonor,
   removeGiftRow,
   editGiftRow,
+  reassignGiftToDonor,
+  moveGiftToScope,
   dualWriteGiftForDonation,
   linkDonorToPerson,
 } from "./lib/givingDonors";
+import {
+  writeGiftAudit,
+  auditCents,
+  GIFT_AUDIT_READ_CAP,
+  type GiftFieldChange,
+} from "./lib/giftAudit";
 import {
   DONOR_KINDS,
   DONOR_SOURCES,
@@ -101,6 +109,23 @@ const BACKFILL_BATCH_SIZE = 100;
 const GIVER_MARK_PLEDGE_LIMIT = 10;
 
 const THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1000;
+
+/** Rows the chronological gifts ledger shows in a SINGLE scope (newest-first) —
+ *  a generous bound mirroring `DONOR_LIST_LIMIT`; client-side search filters
+ *  within this window (server search comes later). */
+const GIFT_LEDGER_LIMIT = 250;
+/** Per-book cap in the central all-scopes ledger: read this many newest gifts
+ *  from EACH book (`by_scope_and_received` desc), then merge + re-sort in
+ *  memory and slice to `GIFT_LEDGER_LIMIT`. Bounded per-scope reads (the house
+ *  pattern); a book with more than this many gifts inside the merged window may
+ *  have its oldest rows fall off the combined page — acceptable for a cleanup
+ *  feed, and documented like `DONOR_LIST_LIMIT`. */
+const GIFT_LEDGER_PER_SCOPE = 100;
+/** Per-scope donor cap for the org-wide identity-grouped view (mirrors
+ *  `DONOR_LIST_LIMIT`; strongest lifetimes first via `by_scope_and_lifetime`). */
+const ORG_DONORS_PER_SCOPE = 500;
+/** How many identity-grouped org donors to return (strongest total first). */
+const ORG_DONORS_LIMIT = 200;
 
 /**
  * A scope's last-30-days gift total — a BOUNDED range read over recent gifts
@@ -609,6 +634,410 @@ export const dashboardFleet = query({
   },
 });
 
+// ── Gifts ledger (owner request #1) ──────────────────────────────────────────
+
+/** normalized-lowercase name key (mirrors `dataHygiene.ts#normName`) — the
+ *  weakest identity-grouping fallback for the org-wide donor roll-up. */
+function normNameKey(name: string): string {
+  return name
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+/** Display label for a gift's source/method literal (mirrors the mobile
+ *  `SOURCE_LABELS`; `stripe` reads as "Chapter OS", our own rails). */
+const GIFT_METHOD_LABELS: Record<string, string> = {
+  stripe: "Chapter OS",
+  cash: "Cash",
+  check: "Check",
+  wire: "Wire",
+  in_kind: "In-kind",
+  zelle: "Zelle",
+  venmo: "Venmo",
+  givebutter: "Givebutter",
+  cash_app: "Cash App",
+  other: "Other",
+};
+function methodLabel(method: string): string {
+  return GIFT_METHOD_LABELS[method] ?? method;
+}
+
+/** The audit `changes` for a freshly-recorded gift (amount / date / source). */
+function giftCreatedChanges(
+  amountCents: number,
+  receivedAt: number,
+  method: string,
+): GiftFieldChange[] {
+  return [
+    { field: "Amount", to: auditCents(amountCents) },
+    { field: "Date", to: new Date(receivedAt).toLocaleDateString() },
+    { field: "Source", to: methodLabel(method) },
+  ];
+}
+
+/** Resolve a scope to its display "book" label (chapter name, or "Central").
+ *  `chapterNames` is an optional prebuilt map to avoid a per-row `.get`. */
+async function bookLabel(
+  ctx: QueryCtx,
+  scope: GivingScope,
+  chapterNames?: Map<string, string>,
+): Promise<string> {
+  if (scope === "central") return "Central";
+  if (chapterNames?.has(scope)) return chapterNames.get(scope) as string;
+  const chapter = await ctx.db.get(scope);
+  return chapter?.name ?? "Chapter";
+}
+
+/**
+ * The chronological GIFTS LEDGER (owner request #1) — every gift in a book,
+ * NEWEST-FIRST, the feed the giving desk lives in during cleanup. Reads
+ * `by_scope_and_received` descending (bounded, never a scan). With
+ * `allScopes: true` a CENTRAL holder gets the all-books feed: the newest gifts
+ * from every active book AND central, each row tagged with its book — merged +
+ * re-sorted in memory, capped per `GIFT_LEDGER_PER_SCOPE`. Donor names are
+ * resolved from a bounded batch of `.get`s. Manage-gating lives on the write
+ * paths; this read only needs `requireGivingView` on the scope (or central).
+ */
+export const listGifts = query({
+  args: {
+    scope: scopeValidator,
+    allScopes: v.optional(v.boolean()),
+  },
+  handler: async (ctx, { scope, allScopes }) => {
+    const typedScope = scope as GivingScope;
+
+    // Gather the raw gift rows + the set of books they span.
+    let rows: { gift: Doc<"gifts">; scope: GivingScope }[] = [];
+    const chapterNames = new Map<string, string>();
+
+    if (allScopes) {
+      // All-books feed — central reach only.
+      await requireGivingView(ctx, "central");
+      const chapters = await listActiveChapters(ctx);
+      for (const c of chapters) chapterNames.set(c._id, c.name);
+      const scopes: GivingScope[] = ["central", ...chapters.map((c) => c._id)];
+      for (const s of scopes) {
+        const page = await ctx.db
+          .query("gifts")
+          .withIndex("by_scope_and_received", (q) => q.eq("scope", s))
+          .order("desc")
+          .take(GIFT_LEDGER_PER_SCOPE);
+        for (const gift of page) rows.push({ gift, scope: s });
+      }
+      rows.sort((a, b) => b.gift.receivedAt - a.gift.receivedAt);
+      rows = rows.slice(0, GIFT_LEDGER_LIMIT);
+    } else {
+      await requireGivingView(ctx, typedScope);
+      const page = await ctx.db
+        .query("gifts")
+        .withIndex("by_scope_and_received", (q) => q.eq("scope", typedScope))
+        .order("desc")
+        .take(GIFT_LEDGER_LIMIT);
+      for (const gift of page) rows.push({ gift, scope: typedScope });
+    }
+
+    // Batch-resolve donor names (dedup the ids first).
+    const donorIds = [...new Set(rows.map((r) => r.gift.donorId))];
+    const donorNames = new Map<string, string>();
+    for (const id of donorIds) {
+      const donor = await ctx.db.get(id);
+      if (donor) donorNames.set(id, donor.name);
+    }
+
+    return {
+      allScopes: allScopes === true,
+      gifts: await Promise.all(
+        rows.map(async (r) => ({
+          _id: r.gift._id,
+          donorId: r.gift.donorId,
+          donorName: donorNames.get(r.gift.donorId) ?? "Unknown donor",
+          amountCents: r.gift.amountCents,
+          receivedAt: r.gift.receivedAt,
+          method: r.gift.method,
+          note: r.gift.note ?? null,
+          scope: r.scope,
+          bookLabel: await bookLabel(ctx, r.scope, chapterNames),
+          hasReceipts: (r.gift.receiptStorageIds?.length ?? 0) > 0,
+          edited: r.gift.editedAt !== undefined,
+          // A gift whose money is owned elsewhere (event donation / Stripe /
+          // sponsorship / bank-credit) — the client hides destructive edits.
+          systemWritten:
+            r.gift.donationId !== undefined ||
+            r.gift.stripeInvoiceId !== undefined ||
+            r.gift.sponsorshipId !== undefined ||
+            r.gift.transactionId !== undefined,
+        })),
+      ),
+    };
+  },
+});
+
+/**
+ * One gift's full detail for the ledger sheet: the gift (with resolved receipt
+ * URLs), its donor, the book label, and the AUDIT TRAIL (owner request #4b) —
+ * every human change newest-first, with the actor's name resolved. Read-gated
+ * on the gift's scope; bounded `by_gift` audit read.
+ */
+export const getGift = query({
+  args: { giftId: v.id("gifts") },
+  handler: async (ctx, { giftId }) => {
+    const gift = await ctx.db.get(giftId);
+    if (!gift) {
+      throw new ConvexError({ code: "NOT_FOUND", message: "Gift not found." });
+    }
+    await requireGivingView(ctx, gift.scope);
+    const donor = await ctx.db.get(gift.donorId);
+
+    const receiptUrls = gift.receiptStorageIds
+      ? (
+          await Promise.all(
+            gift.receiptStorageIds.map((id) => ctx.storage.getUrl(id)),
+          )
+        ).filter((url): url is string => url !== null)
+      : [];
+
+    const auditRows = await ctx.db
+      .query("giftAudit")
+      .withIndex("by_gift", (q) => q.eq("giftId", giftId))
+      .order("desc")
+      .take(GIFT_AUDIT_READ_CAP);
+
+    // Resolve each actor to a display name (userProfiles → users.email).
+    const actorNames = new Map<string, string>();
+    for (const id of new Set(auditRows.map((a) => a.actorUserId))) {
+      const profile = await ctx.db
+        .query("userProfiles")
+        .withIndex("by_userId", (q) => q.eq("userId", id))
+        .unique();
+      if (profile?.name) {
+        actorNames.set(id, profile.name);
+      } else {
+        const user = await ctx.db.get(id);
+        actorNames.set(id, user?.email ?? "Someone");
+      }
+    }
+
+    return {
+      gift: { ...gift, receiptUrls },
+      donorName: donor?.name ?? "Unknown donor",
+      bookLabel: await bookLabel(ctx, gift.scope),
+      systemWritten:
+        gift.donationId !== undefined ||
+        gift.stripeInvoiceId !== undefined ||
+        gift.sponsorshipId !== undefined ||
+        gift.transactionId !== undefined,
+      audit: auditRows.map((a) => ({
+        _id: a._id,
+        at: a.at,
+        action: a.action,
+        changes: a.changes ?? [],
+        note: a.note ?? null,
+        actorName: actorNames.get(a.actorUserId) ?? "Someone",
+      })),
+    };
+  },
+});
+
+/**
+ * The books the caller can act in (owner request #3/#4 scope choice + move
+ * target + the ledger's all-scopes toggle). A central holder gets Central plus
+ * every active chapter (all manageable when they hold central manage); a
+ * chapter holder gets only their own chapter(s). Quiet — never throws — so the
+ * client can render an add-gift/move affordance conditionally.
+ */
+export const givingScopeOptions = query({
+  args: {},
+  handler: async (ctx) => {
+    const access = await resolveGivingAccess(ctx);
+    const centralView = access.isSuperuser || access.centralView;
+    const centralManage = access.isSuperuser || access.centralManage;
+    const options: { scope: GivingScope; label: string; canManage: boolean }[] =
+      [];
+
+    if (centralView) {
+      options.push({ scope: "central", label: "Central", canManage: centralManage });
+      const chapters = await listActiveChapters(ctx);
+      for (const c of chapters) {
+        options.push({ scope: c._id, label: c.name, canManage: centralManage });
+      }
+      return {
+        canSeeAllScopes: true,
+        canManageCentral: centralManage,
+        options,
+      };
+    }
+
+    for (const key of access.viewChapters) {
+      const chapter = await ctx.db.get(key as Id<"chapters">);
+      options.push({
+        scope: key as GivingScope,
+        label: chapter?.name ?? "Chapter",
+        canManage: access.manageChapters.has(key),
+      });
+    }
+    return { canSeeAllScopes: false, canManageCentral: false, options };
+  },
+});
+
+/**
+ * ORG-WIDE donors grouped by IDENTITY (owner request #6) — "who are the biggest
+ * donors" when a donor can give centrally AND toward multiple chapters. Central
+ * reach only. Reads each book's donors (bounded, strongest-lifetime first),
+ * then groups IN MEMORY by identity: linked `personId` first (the strongest
+ * cross-book key), else normalized email, else exact normalized name. Each
+ * group sums lifetime across books and carries a per-book breakdown for
+ * drill-in. Sorted by combined lifetime desc, capped at `ORG_DONORS_LIMIT`.
+ */
+export const listOrgDonorsByIdentity = query({
+  args: {},
+  handler: async (ctx) => {
+    await requireGivingView(ctx, "central");
+    const chapters = await listActiveChapters(ctx);
+    const chapterNames = new Map<string, string>();
+    for (const c of chapters) chapterNames.set(c._id, c.name);
+    const scopes: GivingScope[] = ["central", ...chapters.map((c) => c._id)];
+
+    type Entry = {
+      donorId: Id<"donors">;
+      scope: GivingScope;
+      bookLabel: string;
+      lifetimeCents: number;
+    };
+    type Group = {
+      key: string;
+      name: string;
+      lifetimeCents: number;
+      giftCount: number;
+      books: Entry[];
+    };
+    const groups = new Map<string, Group>();
+
+    for (const s of scopes) {
+      const donors = await ctx.db
+        .query("donors")
+        .withIndex("by_scope_and_lifetime", (q) => q.eq("scope", s))
+        .order("desc")
+        .take(ORG_DONORS_PER_SCOPE);
+      const label = await bookLabel(ctx, s, chapterNames);
+      for (const d of donors) {
+        // Identity key: personId (strongest) → normalized email → exact name.
+        const key = d.personId
+          ? `p:${d.personId}`
+          : normalizeEmail(d.email)
+            ? `e:${normalizeEmail(d.email)}`
+            : `n:${normNameKey(d.name)}`;
+        const entry: Entry = {
+          donorId: d._id,
+          scope: s,
+          bookLabel: label,
+          lifetimeCents: d.lifetimeCents,
+        };
+        const existing = groups.get(key);
+        if (existing) {
+          existing.lifetimeCents += d.lifetimeCents;
+          existing.giftCount += d.giftCount;
+          existing.books.push(entry);
+          // Prefer a non-empty display name (a person-linked group keeps the
+          // first real name it saw).
+          if (!existing.name && d.name) existing.name = d.name;
+        } else {
+          groups.set(key, {
+            key,
+            name: d.name,
+            lifetimeCents: d.lifetimeCents,
+            giftCount: d.giftCount,
+            books: [entry],
+          });
+        }
+      }
+    }
+
+    const ranked = [...groups.values()]
+      .sort((a, b) => b.lifetimeCents - a.lifetimeCents)
+      .slice(0, ORG_DONORS_LIMIT)
+      .map((g) => ({
+        key: g.key,
+        name: g.name,
+        lifetimeCents: g.lifetimeCents,
+        giftCount: g.giftCount,
+        bookCount: g.books.length,
+        books: g.books
+          .slice()
+          .sort((a, b) => b.lifetimeCents - a.lifetimeCents),
+      }));
+    return { donors: ranked };
+  },
+});
+
+/**
+ * Preview a manual donor merge (owner request #5) — "what will move" before
+ * `dataHygiene.mergeDonors` runs. Both donors must be in `scope` (manage-gated).
+ * Reports the duplicate's gift/pledge/sponsorship counts + lifetime that will
+ * fold into the survivor, and the survivor's resulting lifetime/gift totals.
+ * Bounded `by_donor` counts (capped — a preview only needs "how many").
+ */
+export const previewDonorMerge = query({
+  args: {
+    scope: scopeValidator,
+    survivorId: v.id("donors"),
+    duplicateId: v.id("donors"),
+  },
+  handler: async (ctx, { scope, survivorId, duplicateId }) => {
+    const typedScope = scope as GivingScope;
+    await requireGivingManage(ctx, typedScope);
+    if (survivorId === duplicateId) {
+      throw new ConvexError({
+        code: "INVALID_INPUT",
+        message: "Pick two different donors.",
+      });
+    }
+    const survivor = await ctx.db.get(survivorId);
+    const duplicate = await ctx.db.get(duplicateId);
+    if (!survivor || !duplicate) {
+      throw new ConvexError({ code: "NOT_FOUND", message: "Donor not found." });
+    }
+    if (survivor.scope !== typedScope || duplicate.scope !== typedScope) {
+      throw new ConvexError({
+        code: "CROSS_SCOPE",
+        message: "Both donors must belong to this book to merge.",
+      });
+    }
+    const PREVIEW_CAP = 500;
+    const dupPledges = await ctx.db
+      .query("pledges")
+      .withIndex("by_donor", (q) => q.eq("donorId", duplicateId))
+      .take(PREVIEW_CAP);
+    const dupSponsorships = await ctx.db
+      .query("sponsorships")
+      .withIndex("by_donor", (q) => q.eq("donorId", duplicateId))
+      .take(PREVIEW_CAP);
+    return {
+      survivor: {
+        _id: survivor._id,
+        name: survivor.name,
+        lifetimeCents: survivor.lifetimeCents,
+        giftCount: survivor.giftCount,
+      },
+      duplicate: {
+        _id: duplicate._id,
+        name: duplicate.name,
+        lifetimeCents: duplicate.lifetimeCents,
+        giftCount: duplicate.giftCount,
+        pledgeCount: dupPledges.length,
+        sponsorshipCount: dupSponsorships.length,
+      },
+      // What the survivor becomes (gifts move; lifetime is recomputed from
+      // actuals by `mergeDonors`, which equals the sum for non-negative gifts).
+      resulting: {
+        lifetimeCents: survivor.lifetimeCents + duplicate.lifetimeCents,
+        giftCount: survivor.giftCount + duplicate.giftCount,
+      },
+    };
+  },
+});
+
 // ── Writes ─────────────────────────────────────────────────────────────────────
 
 /**
@@ -734,10 +1163,11 @@ export const recordGift = mutation({
     assertReceiptsBound(args.receiptStorageIds);
     const userId = (await requireUserId(ctx)) as Id<"users">;
 
-    return await recordGiftForDonor(ctx, {
+    const receivedAt = args.receivedAt ?? Date.now();
+    const giftId = await recordGiftForDonor(ctx, {
       donorId: args.donorId,
       amountCents: args.amountCents,
-      receivedAt: args.receivedAt ?? Date.now(),
+      receivedAt,
       method: args.method,
       note: args.note?.trim() || undefined,
       eventId: args.eventId,
@@ -745,6 +1175,14 @@ export const recordGift = mutation({
       receiptStorageIds: args.receiptStorageIds,
       recordedBy: userId,
     });
+    await writeGiftAudit(ctx, {
+      giftId,
+      scope: donor.scope,
+      actorUserId: userId,
+      action: "created",
+      changes: giftCreatedChanges(args.amountCents, receivedAt, args.method),
+    });
+    return giftId;
   },
 });
 
@@ -763,6 +1201,8 @@ export const editGift = mutation({
     method: v.optional(giftMethodValidator),
     note: v.optional(v.string()),
     receiptStorageIds: v.optional(v.array(v.id("_storage"))),
+    // The actor's optional "why", recorded on the audit breadcrumb.
+    reason: v.optional(v.string()),
   },
   returns: v.null(),
   handler: async (ctx, args) => {
@@ -772,6 +1212,54 @@ export const editGift = mutation({
     }
     await requireGivingManage(ctx, gift.scope);
     const userId = (await requireUserId(ctx)) as Id<"users">;
+
+    // Field-level diff computed from the PRE-edit gift (editGiftRow throws
+    // GIFT_LOCKED before any write for an illegal money edit, so a change here
+    // implies it actually committed).
+    const changes: GiftFieldChange[] = [];
+    if (args.amountCents !== undefined && args.amountCents !== gift.amountCents) {
+      changes.push({
+        field: "Amount",
+        from: auditCents(gift.amountCents),
+        to: auditCents(args.amountCents),
+      });
+    }
+    if (args.receivedAt !== undefined && args.receivedAt !== gift.receivedAt) {
+      changes.push({
+        field: "Date",
+        from: new Date(gift.receivedAt).toLocaleDateString(),
+        to: new Date(args.receivedAt).toLocaleDateString(),
+      });
+    }
+    if (args.method !== undefined && args.method !== gift.method) {
+      changes.push({
+        field: "Source",
+        from: methodLabel(gift.method),
+        to: methodLabel(args.method),
+      });
+    }
+    if (args.note !== undefined) {
+      const nextNote = args.note.trim();
+      if (nextNote !== (gift.note ?? "")) {
+        changes.push({
+          field: "Note",
+          from: gift.note ?? "—",
+          to: nextNote || "—",
+        });
+      }
+    }
+    if (args.receiptStorageIds !== undefined) {
+      const before = gift.receiptStorageIds?.length ?? 0;
+      const after = args.receiptStorageIds.length;
+      if (before !== after) {
+        changes.push({
+          field: "Receipts",
+          from: `${before}`,
+          to: `${after}`,
+        });
+      }
+    }
+
     await editGiftRow(ctx, {
       giftId: args.giftId,
       amountCents: args.amountCents,
@@ -781,6 +1269,18 @@ export const editGift = mutation({
       receiptStorageIds: args.receiptStorageIds,
       editedBy: userId,
     });
+
+    // Only narrate a real field change (a no-op edit writes no breadcrumb).
+    if (changes.length > 0) {
+      await writeGiftAudit(ctx, {
+        giftId: args.giftId,
+        scope: gift.scope,
+        actorUserId: userId,
+        action: "edited",
+        changes,
+        note: args.reason,
+      });
+    }
     return null;
   },
 });
@@ -803,6 +1303,21 @@ export const generateGiftReceiptUploadUrl = mutation({
   },
 });
 
+/**
+ * Receipt-upload URL gated by SCOPE rather than an existing donor — for the
+ * ledger's "Add gift" flow (owner request #3), where the donor is match-or-
+ * created only at record time and so has no id to gate on when the receipt is
+ * picked. Manage-gated at `scope`; the client passes the returned `storageId`
+ * to `addGift`.
+ */
+export const generateGiftReceiptUploadUrlForScope = mutation({
+  args: { scope: scopeValidator },
+  handler: async (ctx, { scope }) => {
+    await requireGivingManage(ctx, scope as GivingScope);
+    return await ctx.storage.generateUploadUrl();
+  },
+});
+
 /** Remove a gift, reversing its rollups (clamped ≥ 0) + re-deriving status. */
 export const removeGift = mutation({
   args: { giftId: v.id("gifts") },
@@ -814,6 +1329,176 @@ export const removeGift = mutation({
     }
     await requireGivingManage(ctx, gift.scope);
     await removeGiftRow(ctx, giftId);
+    return null;
+  },
+});
+
+/**
+ * Add a MANUAL / external gift straight from the ledger (owner request #3 —
+ * "Add gift"): the direct wires to the Relay account, Zelle/Cash App gifts,
+ * things paid on behalf of the org. Match-or-creates the donor in the chosen
+ * `scope` (central manager may pick any book; a chapter manager, their own),
+ * records the gift (past dates + the full source vocabulary + receipts all
+ * supported), and writes a `created` audit breadcrumb. Manage-gated at `scope`.
+ */
+export const addGift = mutation({
+  args: {
+    scope: scopeValidator,
+    name: v.string(),
+    email: v.optional(v.string()),
+    phone: v.optional(v.string()),
+    kind: v.optional(donorKindValidator),
+    amountCents: v.number(),
+    method: giftMethodValidator,
+    receivedAt: v.optional(v.number()),
+    note: v.optional(v.string()),
+    receiptStorageIds: v.optional(v.array(v.id("_storage"))),
+  },
+  returns: v.object({ giftId: v.id("gifts"), donorId: v.id("donors") }),
+  handler: async (ctx, args) => {
+    const scope = args.scope as GivingScope;
+    await requireGivingManage(ctx, scope);
+    const name = args.name.trim();
+    if (!name) {
+      throw new ConvexError({
+        code: "INVALID_INPUT",
+        message: "A donor name is required.",
+      });
+    }
+    assertPositiveGiftCents(args.amountCents);
+    assertReceiptsBound(args.receiptStorageIds);
+    const userId = (await requireUserId(ctx)) as Id<"users">;
+
+    const donorId = await matchOrCreateDonor(ctx, {
+      scope,
+      name,
+      email: args.email,
+      phone: args.phone,
+      kind: args.kind,
+      source: "manual",
+    });
+    const receivedAt = args.receivedAt ?? Date.now();
+    const giftId = await recordGiftForDonor(ctx, {
+      donorId,
+      amountCents: args.amountCents,
+      receivedAt,
+      method: args.method,
+      note: args.note?.trim() || undefined,
+      receiptStorageIds: args.receiptStorageIds,
+      recordedBy: userId,
+    });
+    await writeGiftAudit(ctx, {
+      giftId,
+      scope,
+      actorUserId: userId,
+      action: "created",
+      changes: giftCreatedChanges(args.amountCents, receivedAt, args.method),
+    });
+    return { giftId, donorId };
+  },
+});
+
+/**
+ * Reassign a gift to a different donor in the SAME book (owner request #2 —
+ * donor cleanup from the ledger). Manage-gated at the gift's scope; the target
+ * donor must be in that same scope (enforced in `reassignGiftToDonor`). Keeps
+ * both donors' rollups exact and the scope rollup neutral, then writes a
+ * `reassignedDonor` audit breadcrumb.
+ */
+export const reassignGift = mutation({
+  args: {
+    giftId: v.id("gifts"),
+    toDonorId: v.id("donors"),
+    reason: v.optional(v.string()),
+  },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    const gift = await ctx.db.get(args.giftId);
+    if (!gift) {
+      throw new ConvexError({ code: "NOT_FOUND", message: "Gift not found." });
+    }
+    await requireGivingManage(ctx, gift.scope);
+    const userId = (await requireUserId(ctx)) as Id<"users">;
+    const result = await reassignGiftToDonor(ctx, {
+      giftId: args.giftId,
+      toDonorId: args.toDonorId,
+    });
+    await writeGiftAudit(ctx, {
+      giftId: args.giftId,
+      scope: result.scope,
+      actorUserId: userId,
+      action: "reassignedDonor",
+      changes: [
+        { field: "Donor", from: result.fromDonorName, to: result.toDonorName },
+      ],
+      note: args.reason,
+    });
+    return null;
+  },
+});
+
+/**
+ * Move a gift to a different BOOK (owner request #4a — central↔chapter,
+ * chapter↔chapter). CENTRAL-MANAGE gated (a cross-book move is an org-level
+ * action): `requireGivingManage(ctx, "central")` passes only for a central
+ * manager / superuser. A SYSTEM-WRITTEN gift (event donation / Stripe cycle /
+ * sponsorship payment / confirmed bank credit) is refused — its book is owned
+ * by that source. The target donor is match-or-created in the destination book
+ * (with a person link for a chapter); both books' rollups net exactly. Writes a
+ * `movedScope` audit breadcrumb.
+ */
+export const moveGiftScope = mutation({
+  args: {
+    giftId: v.id("gifts"),
+    toScope: scopeValidator,
+    reason: v.optional(v.string()),
+  },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    const gift = await ctx.db.get(args.giftId);
+    if (!gift) {
+      throw new ConvexError({ code: "NOT_FOUND", message: "Gift not found." });
+    }
+    // Cross-book move is a central-manage action.
+    await requireGivingManage(ctx, "central");
+
+    const systemWritten =
+      gift.donationId !== undefined ||
+      gift.stripeInvoiceId !== undefined ||
+      gift.pledgeId !== undefined ||
+      gift.sponsorshipId !== undefined ||
+      gift.transactionId !== undefined;
+    if (systemWritten) {
+      throw new ConvexError({
+        code: "GIFT_LOCKED",
+        message:
+          "This gift's book is managed by its source (an event, Stripe, a sponsorship, or a matched bank credit) and can't be moved here.",
+      });
+    }
+
+    const toScope = args.toScope as GivingScope;
+    if (toScope !== "central") {
+      const chapter = await ctx.db.get(toScope);
+      if (!chapter || chapter.isActive === false) {
+        throw new ConvexError({
+          code: "INVALID_INPUT",
+          message: "Pick an active chapter (or Central) to move this gift to.",
+        });
+      }
+    }
+
+    const fromLabel = await bookLabel(ctx, gift.scope as GivingScope);
+    const userId = (await requireUserId(ctx)) as Id<"users">;
+    await moveGiftToScope(ctx, { giftId: args.giftId, toScope });
+    const toLabel = await bookLabel(ctx, toScope);
+    await writeGiftAudit(ctx, {
+      giftId: args.giftId,
+      scope: toScope,
+      actorUserId: userId,
+      action: "movedScope",
+      changes: [{ field: "Book", from: fromLabel, to: toLabel }],
+      note: args.reason,
+    });
     return null;
   },
 });
